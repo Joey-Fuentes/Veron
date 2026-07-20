@@ -42,7 +42,10 @@ M2libc is pinned transitively via M2-Planet's submodule gitlink at that commit.
 and remains unpinned for now; pin it when the handoff spike graduates.)
 
 These are upstream **build dependencies** (same category as gcc/musl), fetched in
-CI and never vendored into this repo.
+CI. A pinned, read-only copy of both is also vendored at
+[`../reference/`](../reference/) so the source can be consulted locally (the
+assistant's sandbox has no network and does not persist between sessions); the
+vendored copy is reference only and is not part of the build.
 
 ## 2. How this subset was derived
 

@@ -219,6 +219,14 @@ small `calloc`/`free` heap, and file I/O) versus what it deliberately **avoids**
 scope win), plus the runtime surface to provide and the stage-2 "floor" that must
 be cleared before stage 3 is writable.
 
+**Milestone 23 — M2-Planet + M2libc vendored as local reference.** The pinned
+spec source (M2-Planet `34fbd5c…`, M2libc `ca023d8…`) is now committed read-only
+under `spikes/reference/` so it can be consulted locally when designing against
+the target subset — the assistant's sandbox has no network and doesn't persist,
+so a CI-only pin was not enough to actually *read* the source in a later session.
+It is reference only (not built by CI; the `borrow-m2-demo` workflow still fetches
+its own pinned copy). See `spikes/reference/README.md`.
+
 ---
 
 ## 6. What's next
