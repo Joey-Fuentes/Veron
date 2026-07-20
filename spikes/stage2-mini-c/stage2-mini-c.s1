@@ -1,8 +1,16 @@
-# stage2 (mini-c): return <expr> with + - * and PARENS, via shunting-yard.
-# compiler op-stack: x24=base x25=top.  x27=current operator (survives emits).
-# emitted code uses a brk value stack (x9 in emitted program).
-adr x19 inbuf
-adr x22 outbuf
+# stage2 (mini-c): variables + assignment (single-char names, byte-sized).
+# int main(){ int a=<expr>; ... return <expr>; }
+# compiler brk buffers: x19 inbuf, x22 outbuf, x24 opstk.  x28=compile_expr ret,
+# x27=emit-helper ret, x26=current op.  emitted value stack = brk (x9).
+mov x0 0
+mov x8 214
+svc
+mov x19 x0
+add x22 x19 500
+add x24 x19 3000
+add x0 x19 3100
+mov x8 214
+svc
 mov x0 0
 mov x1 x19
 mov x2 400
@@ -10,110 +18,55 @@ mov x8 63
 svc
 mov x21 x0
 mov x23 0
-adr x24 opstk
-mov x25 0
-mov x20 0
-:search
-adr x9 pat
-mov x6 x20
-mov x7 0
-:trymatch
-ldrb w4 x9 x7
-cmp x4 0
-b.eq found
+mov x6 0
+:findbrace
 cmp x6 x21
-b.ge advance
+b.ge doneall
 ldrb w5 x19 x6
-cmp x4 x5
-b.ne advance
 add x6 x6 1
-add x7 x7 1
-b trymatch
-:advance
-add x20 x20 1
-cmp x20 x21
-b.lt search
-mov x6 x21
-:found
+cmp x5 123
+b.ne findbrace
 adr x9 spre
 bl emitstr
-:sloop
+:stmtloop
 bl skipsp
 cmp x6 x21
-b.ge sflush
+b.ge doneall
 ldrb w5 x19 x6
-cmp x5 59
-b.eq sflush
-cmp x5 48
-b.lt snotdig
-cmp x5 58
-b.ge snotdig
-bl emitnum
-b sloop
-:snotdig
-cmp x5 40
-b.eq sopen
-cmp x5 41
-b.eq sclose
-mov x27 x5
-:swhile
-cmp x25 0
-b.eq spushop
-sub x0 x25 1
-ldrb w4 x24 x0
-cmp x4 40
-b.eq spushop
-cmp x27 42
-b.eq scurmul
-b spop
-:scurmul
-cmp x4 42
-b.eq spop
-b spushop
-:spop
-sub x25 x25 1
-ldrb w26 x24 x25
-bl emitapply
-b swhile
-:spushop
-strb w27 x24 x25
-add x25 x25 1
+cmp x5 125
+b.eq doneall
+cmp x5 105
+b.eq doint
+cmp x5 114
+b.eq doreturn
 add x6 x6 1
-b sloop
-:sopen
-mov w5 40
-strb w5 x24 x25
-add x25 x25 1
+b stmtloop
+:doint
+add x6 x6 3
+bl skipsp
+ldrb w14 x19 x6
 add x6 x6 1
-b sloop
-:sclose
-:sclwhile
-cmp x25 0
-b.eq scldone
-sub x0 x25 1
-ldrb w4 x24 x0
-cmp x4 40
-b.eq sclparen
-sub x25 x25 1
-ldrb w26 x24 x25
-bl emitapply
-b sclwhile
-:sclparen
-sub x25 x25 1
-:scldone
+bl skipsp
 add x6 x6 1
-b sloop
-:sflush
-cmp x25 0
-b.eq sdone
-sub x25 x25 1
-ldrb w26 x24 x25
-cmp x26 40
-b.eq sflush
-bl emitapply
-b sflush
-:sdone
-adr x9 spost
+bl compile_expr
+adr x9 spop
+bl emitstr
+mov w5 x14
+strb w5 x22 x23
+add x23 x23 1
+adr x9 sstore
+bl emitstr
+add x6 x6 1
+b stmtloop
+:doreturn
+add x6 x6 6
+bl compile_expr
+adr x9 sret
+bl emitstr
+add x6 x6 1
+b stmtloop
+:doneall
+adr x9 sslots
 bl emitstr
 mov x0 1
 mov x1 x22
@@ -123,22 +76,132 @@ svc
 mov x0 0
 mov x8 93
 svc
-:emitnum
+:compile_expr
 mov x28 x30
+mov x25 0
+:celoop
+bl skipsp
+cmp x6 x21
+b.ge ceflush
+ldrb w5 x19 x6
+cmp x5 59
+b.eq ceflush
+cmp x5 125
+b.eq ceflush
+cmp x5 48
+b.lt cenotdig
+cmp x5 58
+b.ge cenotdig
+bl emitnum
+b celoop
+:cenotdig
+cmp x5 97
+b.lt cechkup
+cmp x5 123
+b.ge cechkup
+b cevar
+:cechkup
+cmp x5 65
+b.lt ceop
+cmp x5 91
+b.ge ceop
+:cevar
+bl emitvar
+b celoop
+:ceop
+cmp x5 40
+b.eq ceopen
+cmp x5 41
+b.eq ceclose
+mov x26 x5
+:cewhile
+cmp x25 0
+b.eq cepushop
+sub x0 x25 1
+ldrb w4 x24 x0
+cmp x4 40
+b.eq cepushop
+cmp x26 42
+b.eq cecurmul
+b cepop
+:cecurmul
+cmp x4 42
+b.eq cepop
+b cepushop
+:cepop
+sub x25 x25 1
+ldrb w11 x24 x25
+bl emitapply
+b cewhile
+:cepushop
+strb w26 x24 x25
+add x25 x25 1
+add x6 x6 1
+b celoop
+:ceopen
+mov w5 40
+strb w5 x24 x25
+add x25 x25 1
+add x6 x6 1
+b celoop
+:ceclose
+:ceclwhile
+cmp x25 0
+b.eq cecldone
+sub x0 x25 1
+ldrb w4 x24 x0
+cmp x4 40
+b.eq ceclparen
+sub x25 x25 1
+ldrb w11 x24 x25
+bl emitapply
+b ceclwhile
+:ceclparen
+sub x25 x25 1
+:cecldone
+add x6 x6 1
+b celoop
+:ceflush
+cmp x25 0
+b.eq cedone
+sub x25 x25 1
+ldrb w11 x24 x25
+cmp x11 40
+b.eq ceflush
+bl emitapply
+b ceflush
+:cedone
+mov x30 x28
+ret
+:emitnum
+mov x27 x30
 adr x9 smovx0
 bl emitstr
 bl copydig
 adr x9 spush
 bl emitstr
-mov x30 x28
+mov x30 x27
+ret
+:emitvar
+mov x27 x30
+ldrb w13 x19 x6
+add x6 x6 1
+adr x9 svaradr
+bl emitstr
+mov w5 x13
+strb w5 x22 x23
+add x23 x23 1
+adr x9 svarload
+bl emitstr
+mov x30 x27
 ret
 :emitapply
-mov x28 x30
+mov x27 x30
 adr x9 spoppop
 bl emitstr
-cmp x26 42
+cmp x11 42
 b.eq eamul
-cmp x26 45
+cmp x11 45
 b.eq easub
 adr x9 saddr
 b eaop
@@ -151,7 +214,7 @@ adr x9 ssubr
 bl emitstr
 adr x9 spush
 bl emitstr
-mov x30 x28
+mov x30 x27
 ret
 :emitstr
 mov x7 0
@@ -216,6 +279,12 @@ ret
 :spush
 .ascii "\nstr w0 x9\nadd x9 x9 4\n"
 .byte 0
+:svaradr
+.ascii "adr x1 "
+.byte 0
+:svarload
+.ascii "\nmov x2 0\nldrb w0 x1 x2\nstr w0 x9\nadd x9 x9 4\n"
+.byte 0
 :spoppop
 .ascii "sub x9 x9 4\nldr w0 x9\nsub x9 x9 4\nldr w1 x9\n"
 .byte 0
@@ -228,12 +297,17 @@ ret
 :smulr
 .ascii "mul x0 x1 x0"
 .byte 0
-:spost
+:spop
+.ascii "sub x9 x9 4\nldr w0 x9\nadr x1 "
+.byte 0
+:sstore
+.ascii "\nmov x2 0\nstrb w0 x1 x2\n"
+.byte 0
+:sret
 .ascii "sub x9 x9 4\nldr w0 x9\nmov x8 93\nsvc\n"
+.byte 0
+:sslots
+.ascii ":a\n.byte 0\n:b\n.byte 0\n:c\n.byte 0\n:d\n.byte 0\n:e\n.byte 0\n:f\n.byte 0\n:g\n.byte 0\n:h\n.byte 0\n:i\n.byte 0\n:j\n.byte 0\n:k\n.byte 0\n:l\n.byte 0\n:m\n.byte 0\n:n\n.byte 0\n:o\n.byte 0\n:p\n.byte 0\n:q\n.byte 0\n:r\n.byte 0\n:s\n.byte 0\n:t\n.byte 0\n:u\n.byte 0\n:v\n.byte 0\n:w\n.byte 0\n:x\n.byte 0\n:y\n.byte 0\n:z\n.byte 0\n"
 .byte 0
 :opstk
 .ascii "________________________________________________________________"
-:inbuf
-.ascii "................................................................................................................................................................................................................................................................................................................................................................................................................"
-:outbuf
-.ascii "................................................................................................................................................................................................................................................................................................................................................................................................................"

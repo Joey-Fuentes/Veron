@@ -11,32 +11,27 @@ prog.c           | stage2 | stage0-as | elf  ->  a.out ; ./a.out   (exit == valu
 
 ## What it compiles
 
-`int main(){ return <expr>; }` where `<expr>` is integers with `+ - *`, correct
-precedence, and **parentheses** to any depth:
-
 ```
-return (2+3)*4;   ->   ... value-stack code ...   -> exits 20
+int main(){ int a=<expr>; int b=<expr>; ... return <expr>; }
 ```
 
-### How
+- **variables + assignment**: single-char names (`a`..`z`) → labeled byte slots
+  (`:a`..`:z`) in the emitted program, accessed via `adr` + `ldrb`/`strb`.
+- **expressions**: integers, variables, `+ - *`, precedence, and parentheses,
+  via shunting-yard; emitted code uses a `brk` value stack.
 
-The compiler is **iterative** — it uses the shunting-yard algorithm with a
-compiler-side operator stack (no compiler recursion, which the language can't do
-cheaply). It emits **stack-machine code**: each number pushes onto a runtime
-**value stack** (a `brk` region addressed by `x9`), and each operator pops two,
-applies `add`/`sub`/`mul` (register), and pushes the result. The final value is
-popped into `x0` before exit.
+```
+int a=5; int b=a+1; return a*b;   ->  exits 30
+```
 
-This is the general foundation for everything nested that follows.
+## Notes / limits (what later increments lift)
 
-## Increments so far / next
-
-- ✅ `return N`
-- ✅ `+ -` (immediate chains)
-- ✅ `+ - *` with precedence (register codegen)
-- ✅ `+ - *` with precedence **and parentheses** (shunting-yard + value stack) — this
-- ⏭ `/` (needs a `udiv` in stage0-as); then variables + assignment (named slots,
-  reusing the name-table technique); then control flow — toward the
+- Variables are **byte-sized** (values 0-255) for now — keeps the emitted slot
+  table small. Intermediate expression values use the 32-bit value stack; only
+  variable *storage* is a byte. (Word-sized vars come with a stage-1 buffer
+  upgrade to brk.)
+- Statement forms: `int <c> = <expr>;` and `return <expr>;`. No reassignment,
+  `/`, or control flow yet — those are the next increments toward the
   M2-Planet-grade subset that hands off to the borrowed chain.
 
 ## Verified

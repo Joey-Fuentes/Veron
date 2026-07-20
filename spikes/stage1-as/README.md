@@ -14,19 +14,11 @@ same program with each distinct label mapped to a unique single character, so
 `:name` definitions, `b`/`bl`/`b.eq`/`b.ne`/`b.lt`/`b.ge name`, and `adr xR name`.
 `br`/`blr` (register operands) and everything else pass through unchanged.
 
-## Constraint: stage 1's own source uses SINGLE-char labels
-
-Stage 1 exists to give multi-char labels to programs *above* it — but
-`stage1-as.s0` is itself assembled by `stage0-as`, which is single-char only.
-So stage 1's own labels are single characters; the multi-char capability is for
-its input, not its source. (This is the last tool bound by that limit; stage 2,
-written in stage-1's language, gets multi-char labels.)
-
 ## How it works (within stage0-as's language)
 
-- **Memory**: buffers (inbuf/outbuf/nametable) live in the ELF R+W+X segment as
-  `.ascii` fillers, addressed with `[Xn+Xm]` register-offset loads/stores (the
-  proven-writable path; no `brk` dependency).
+- **Memory**: stage0-as has no `.space`/bss, so stage 1 gets buffers from `brk`
+  (inbuf / outbuf / nametable) and addresses them with `[Xn+Xm]` register-offset
+  loads/stores.
 - **No add-reg**: stage0-as `add` is immediate-only, so all indexing uses running
   offsets and `[base+index]` addressing; label chars come from a `.ascii` pool
   indexed by count (not `65+index` arithmetic).
@@ -39,13 +31,6 @@ written in stage-1's language, gets multi-char labels.)
 - Up to 62 distinct labels (single-char pool); fine for test programs.
 - Capability #1 only — later stage-1 increments add macros/convenience as stage 2
   (a small C compiler, written in stage-1's language) needs them.
-
-## Gotcha found the hard way
-
-stage0-as's register-compare only accepts **x-registers** (`cmp x.. x..`); a
-`w`-register second operand is silently parsed as an immediate. Stage 1's byte
-compare therefore uses `cmp x4 x5` (bytes are zero-extended, so x-compare is
-correct). The dev bench was made faithful to this so it can't mask it again.
 
 ## Verified
 
