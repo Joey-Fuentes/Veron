@@ -1,0 +1,81 @@
+name: spike
+
+# Rapid cross-arch proof-of-concepts. Assembles per-arch .s spikes and runs
+# them under QEMU user-mode, in parallel across x86_64 / aarch64 / riscv64.
+# Results land in the job summary so you can eyeball all three at a glance.
+
+on:
+  push:
+    paths:
+      - 'spikes/**'
+      - 'tools/spike.sh'
+      - '.github/workflows/spike.yml'
+  pull_request:
+    paths:
+      - 'spikes/**'
+      - 'tools/spike.sh'
+  workflow_dispatch:
+    inputs:
+      source:
+        description: 'Single .s file to run (blank = all matching spikes/**/*.<arch>.s)'
+        required: false
+        default: ''
+
+# A new push cancels the in-flight run for the same ref — no waiting on stale jobs.
+concurrency:
+  group: spike-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spike:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false          # always see all three arch results
+      matrix:
+        arch: [x86_64, aarch64, riscv64]
+    steps:
+      - uses: actions/checkout@v5   # current major is v7; v5 is a safe pin
+
+      # Swap this whole step for `container: ghcr.io/<you>/veron-ci:latest`
+      # on the job once you build ci/Dockerfile — cuts setup ~60s -> ~5s.
+      - name: Install toolchain (qemu-user + cross binutils)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user \
+            binutils-x86-64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            binutils-riscv64-linux-gnu
+
+      - name: Run ${{ matrix.arch }} spikes
+        run: |
+          chmod +x tools/spike.sh
+          arch="${{ matrix.arch }}"
+          sel="${{ github.event.inputs.source }}"
+
+          if [ -n "$sel" ]; then
+            files=("$sel")
+          else
+            mapfile -t files < <(find spikes -type f -name "*.${arch}.s" | sort)
+          fi
+
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no spikes for ${arch}"; exit 0
+          fi
+
+          { echo "### 🧪 ${arch}"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+          fail=0
+          for f in "${files[@]}"; do
+            echo "::group::${f}"
+            if tools/spike.sh "$arch" "$f" | tee -a "$GITHUB_STEP_SUMMARY"; then
+              :
+            else
+              fail=1
+            fi
+            echo "::endgroup::"
+          done
+
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit "$fail"
