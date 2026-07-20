@@ -1,0 +1,114 @@
+name: livebootstrap-pass1
+
+# SPIKE (invariants suspended). Runs the FIRST stage of the established no-host
+# bootstrap (live-bootstrap) on our runner, under bubblewrap, on amd64.
+#
+# pass1 = "up to the Linux build": stage0-posix -> M2-Planet -> mescc-tools ->
+# Mes -> tcc -> early gcc -> ... -> Linux. So the "borrowed tcc building gcc"
+# milestone appears INSIDE this run's log.
+#
+# This is HEAVY and EXPERIMENTAL: expect a long job, large disk use, and a real
+# chance it does not finish on the first try (timeout / disk / sandbox). It is
+# a bounded PROBE: it archives whatever target/ it built (even on failure) and
+# reports how far it climbed. If pass1 completes and uploads its image, a
+# follow-on pass2 workflow can download that artifact and continue — staged,
+# exactly like upstream's own CI.
+#
+# live-bootstrap is fetched as an upstream build dependency (like gcc/musl),
+# not vendored. Invocation mirrors its own .github/workflows/bwrap.yml (pass1).
+
+on:
+  push:
+    paths:
+      - '.github/workflows/livebootstrap-pass1.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: livebootstrap-pass1-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pass1:
+    name: live-bootstrap pass1 (up to Linux) under bubblewrap
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350          # public runners allow up to 6h; give it room
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Free up disk space (bootstrap needs headroom)
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+                      /opt/hostedtoolcache /usr/local/share/boost 2>/dev/null || true
+          sudo apt-get clean || true
+          df -h /
+
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap git
+
+      - name: Fetch live-bootstrap (upstream dep, full clone + submodules)
+        run: |
+          # Full depth + submodules: upstream notes shallow clones break here.
+          git clone --recursive https://github.com/fosslinux/live-bootstrap.git lb
+
+      - name: Work around Ubuntu 24.04 bubblewrap AppArmor restriction
+        run: |
+          sudo cp lb/.github/workflows/bwrap.apparmor /etc/apparmor.d/bwrap
+          sudo systemctl reload apparmor
+
+      - name: Fetch sources into a local mirror
+        working-directory: lb
+        run: |
+          mkdir -p mirror mirror-state
+          ./mirror.sh mirror mirror-state
+
+      - name: Run bootstrap — pass1
+        working-directory: lb
+        continue-on-error: true          # PROBE: capture progress, don't hard-fail
+        run: |
+          df -h /
+          ./rootfs.py --bwrap --external-sources --build-kernels \
+                      --cores 4 --internal-ci pass1 \
+                      --mirror "file://${PWD}/mirror"
+
+      - name: Report how far it climbed
+        if: always()
+        working-directory: lb
+        run: |
+          echo "## live-bootstrap pass1 — progress" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          df -h / | tail -1 >> "$GITHUB_STEP_SUMMARY"
+          echo "packages built (target/external/repo):" >> "$GITHUB_STEP_SUMMARY"
+          ls target/external/repo/ 2>/dev/null | sort >> "$GITHUB_STEP_SUMMARY" \
+            || echo "(no repo dir — stopped early)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # Quick greps so the log shows the tcc/gcc milestones if reached:
+          echo "=== tcc / gcc packages seen ==="
+          ls target/external/repo/ 2>/dev/null | grep -iE 'tcc|gcc' || echo "(tcc/gcc not reached yet)"
+
+      - name: Archive built packages (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pass1-packages
+          path: lb/target/external/repo/**
+          if-no-files-found: warn
+
+      - name: Tar and archive full pass1 image (for feeding pass2)
+        if: always()
+        working-directory: lb
+        run: |
+          if [ -d target ]; then
+            tar -cf "$GITHUB_WORKSPACE/pass1_image.tar" target || true
+            ls -lh "$GITHUB_WORKSPACE/pass1_image.tar" || true
+          else
+            echo "no target/ to tar"
+          fi
+
+      - name: Upload pass1 image
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pass1_image
+          path: pass1_image.tar
+          if-no-files-found: warn
