@@ -1,0 +1,73 @@
+name: stage0-as-demo
+
+# SPIKE stage0-as demo (invariants suspended). Builds the hand-written ARM64
+# mnemonic assembler, feeds it a small mov/svc program, and checks the emitted
+# machine code is byte-identical to the encodings we hand-derived earlier.
+# It also disassembles the output to show it decodes back to the instructions.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage0-as/**'
+      - '.github/workflows/stage0-as-demo.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: stage0-as-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain (qemu-user + aarch64 binutils)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu
+
+      - name: Build stage0-as and assemble a program
+        run: |
+          src=spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-as -o stage0-as.o "$src"
+          aarch64-linux-gnu-ld -static -o stage0-as stage0-as.o
+          echo "stage0-as built: $(stat -c%s stage0-as) bytes"
+
+          # A small program in stage0-as's own language (mov/svc, no labels yet).
+          # These are exactly the position-independent instructions from the
+          # hand-encoded hello world — so stage0-as should reproduce those bytes.
+          prog='# assemble the hello instruction stream (no adr/labels yet)
+          mov x0 1
+          mov x2 24
+          mov x8 64
+          svc
+          mov x0 0
+          mov x8 93
+          svc'
+
+          printf '%s\n' "$prog" | qemu-aarch64 ./stage0-as > out.bin
+          got=$(xxd -p out.bin | tr -d '\n')
+          want="200080d2020380d2080880d2010000d4000080d2a80b80d2010000d4"
+
+          {
+            echo "## stage0-as demo — mnemonics in, machine code out"
+            echo '```'
+            echo "bytes out : $got"
+            echo "expected  : $want"
+            echo ""
+            echo "disassembly of stage0-as output:"
+            aarch64-linux-gnu-objdump -D -b binary -m aarch64 out.bin
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "got : $got"
+          echo "want: $want"
+          if [ "$got" = "$want" ]; then
+            echo "PASS: stage0-as produced byte-identical machine code"
+          else
+            echo "FAIL: output did not match expected encoding"
+            exit 1
+          fi
