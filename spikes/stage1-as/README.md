@@ -24,9 +24,9 @@ written in stage-1's language, gets multi-char labels.)
 
 ## How it works (within stage0-as's language)
 
-- **Memory**: stage0-as has no `.space`/bss, so stage 1 gets buffers from `brk`
-  (inbuf / outbuf / nametable) and addresses them with `[Xn+Xm]` register-offset
-  loads/stores.
+- **Memory**: buffers (inbuf/outbuf/nametable) live in the ELF R+W+X segment as
+  `.ascii` fillers, addressed with `[Xn+Xm]` register-offset loads/stores (the
+  proven-writable path; no `brk` dependency).
 - **No add-reg**: stage0-as `add` is immediate-only, so all indexing uses running
   offsets and `[base+index]` addressing; label chars come from a `.ascii` pool
   indexed by count (not `65+index` arithmetic).
@@ -39,6 +39,13 @@ written in stage-1's language, gets multi-char labels.)
 - Up to 62 distinct labels (single-char pool); fine for test programs.
 - Capability #1 only — later stage-1 increments add macros/convenience as stage 2
   (a small C compiler, written in stage-1's language) needs them.
+
+## Gotcha found the hard way
+
+stage0-as's register-compare only accepts **x-registers** (`cmp x.. x..`); a
+`w`-register second operand is silently parsed as an immediate. Stage 1's byte
+compare therefore uses `cmp x4 x5` (bytes are zero-extended, so x-compare is
+correct). The dev bench was made faithful to this so it can't mask it again.
 
 ## Verified
 
