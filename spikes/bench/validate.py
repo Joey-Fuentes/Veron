@@ -66,6 +66,32 @@ if os.path.exists(s1p):
     # resolved output should be about as long as input (not truncated to ~500)
     check("stage1 not truncating ~10KB input", len(out) > 9000, True)
 
+print("== stage 2 uses WORD variable slots (through the real assembled ladder) ==")
+# Regression guard for the byte->word slot upgrade. Variables are 4-byte slots
+# loaded/stored with word ldr/str (not ldrb/strb). NOTE: with only + - * and a
+# mod-256 exit code, byte vs word storage is behaviourally INDISTINGUISHABLE by
+# exit code (mod-256 is a +,-,* homomorphism), so this guard is STRUCTURAL:
+# it checks the emitted instruction forms, plus exit codes for no regression.
+s2p = os.path.join(os.path.dirname(__file__), "..", "stage2-mini-c", "stage2-mini-c.s1")
+if os.path.exists(s1p) and os.path.exists(s2p):
+    _, s1prog, _ = assemble(open(s1p).read())
+    _, s2asm = run(s1prog, stdin=open(s2p).read().encode())     # resolve via REAL stage1
+    _, s2prog, _ = assemble(s2asm.decode())
+    def _emit(csrc):
+        _, out = run(s2prog, stdin=csrc.encode()); return out.decode()
+    def _exit(csrc):
+        rc, _ = run(assemble(_emit(csrc))[1]); return rc
+    em = _emit("int main(){int a=5;int b=a+2;return b;}")
+    check("stage2 var load is word (ldr w0 x1)",  "ldr w0 x1" in em, True)
+    check("stage2 var store is word (str w0 x1)", "str w0 x1" in em, True)
+    check("stage2 no byte var load (no ldrb x1)", "ldrb w0 x1" in em, False)
+    check("stage2 no byte var store (no strb x1)","strb w0 x1" in em, False)
+    check("stage2 slots are 4-byte", ".byte 0\n.byte 0\n.byte 0\n.byte 0" in em, True)
+    for cs, want in [("int main(){int a=5;int b=a+2;return b;}", 7),
+                     ("int main(){int a=10;return a*a;}", 100),
+                     ("int main(){int x=7;return (x+1)*2;}", 16)]:
+        check(f"stage2 exit {cs[:34]}", _exit(cs), want)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)

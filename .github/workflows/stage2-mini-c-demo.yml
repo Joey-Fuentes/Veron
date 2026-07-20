@@ -1,11 +1,16 @@
 name: stage2-mini-c-demo
 
-# SPIKE (invariants suspended). Stage 2 = mini-c. Now supports VARIABLES:
+# SPIKE (invariants suspended). Stage 2 = mini-c. Supports VARIABLES:
 #   int main(){ int a=<expr>; int b=<expr>; ... return <expr>; }
-# single-char var names -> labeled byte slots (:a..:z) in the emitted program;
-# a factor may be a number, a variable (load), or ( expr ). Compiler uses
-# shunting-yard; emitted code uses a brk value stack. Written in stage-1's
-# language. (Byte-sized vars: values 0-255 for this increment.)
+# single-char var names -> labeled WORD (4-byte) slots (:a..:z) in the emitted
+# program, accessed via adr + ldr/str; a factor may be a number, a variable
+# (load), or ( expr ). Compiler uses shunting-yard; emitted code uses a brk
+# value stack. Written in stage-1's language. (Word-sized vars: 32-bit storage.)
+#
+# NB: with only + - * and a mod-256 exit code, byte vs word storage is
+# indistinguishable by exit code, so this demo also STRUCTURALLY checks that the
+# emitted program uses word ldr/str + 4-byte slots, and byte-compares the new
+# ldr/str forms against real `as`.
 
 on:
   push:
@@ -31,7 +36,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-user binutils-aarch64-linux-gnu
-      - name: Build ladder and compile C with variables
+      - name: Build ladder and compile C with word-sized variables
         run: |
           aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
           aarch64-linux-gnu-ld -static -o stage0-as s0.o
@@ -41,6 +46,27 @@ jobs:
           cat spikes/stage2-mini-c/stage2-mini-c.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
           test -x stage2 || { echo "stage2 not built"; exit 1; }
 
+          # ---- byte-compare the WORD var load/store forms against real `as` ----
+          # stage2 emits `ldr w0 x1` / `str w0 x1` for word var access.
+          printf 'ldr w0 x1\nstr w0 x1\n' > ld.s0
+          printf '.text\n.global _start\n_start:\n\tldr w0,[x1]\n\tstr w0,[x1]\n' > ld_ref.s
+          aarch64-linux-gnu-as -o ld_ref.o ld_ref.s
+          aarch64-linux-gnu-objcopy -O binary --only-section=.text ld_ref.o ld_ref.bin
+          cat ld.s0 | qemu-aarch64 ./stage0-as > ld.bin
+          ld_ok=no; cmp -s ld.bin ld_ref.bin && ld_ok=yes
+          echo "word ldr/str ours: $(od -An -v -tx1 ld.bin | tr -d ' \n')"
+          echo "word ldr/str ref : $(od -An -v -tx1 ld_ref.bin | tr -d ' \n')"
+
+          # ---- structural: emitted program must use WORD forms, not byte forms ----
+          printf '%s' 'int main(){int a=5; int b=a+2; return b;}' | qemu-aarch64 ./stage2 > word.s
+          struct_ok=yes
+          grep -q 'ldr w0 x1' word.s || { echo "MISSING word var load"; struct_ok=no; }
+          grep -q 'str w0 x1' word.s || { echo "MISSING word var store"; struct_ok=no; }
+          grep -q 'ldrb w0 x1' word.s && { echo "REGRESSION: byte var load present"; struct_ok=no; }
+          grep -q 'strb w0 x1' word.s && { echo "REGRESSION: byte var store present"; struct_ok=no; }
+          nbyte=$(grep -c '^\.byte 0$' word.s || true)   # 26 slots x 4 bytes = 104
+          [ "$nbyte" = 104 ] || { echo "slots not 4-byte word (got $nbyte '.byte 0' lines, want 104)"; struct_ok=no; }
+
           fail=0
           try() {
             printf '%s' "$1" | qemu-aarch64 ./stage2 > out.s
@@ -48,7 +74,7 @@ jobs:
             set +e; qemu-aarch64 ./a.out; rc=$?; set -e
             printf '  %-52s exit=%-4s want=%-4s %s\n' "$1" "$rc" "$2" "$([ "$rc" = "$2" ] && echo OK || { echo DIFF; fail=1; })"
           }
-          echo "== stage-2 compiling C with variables =="
+          echo "== stage-2 compiling C with word-sized variables =="
           try 'int main(){int a=2; int b=3; return a+b;}'             5
           try 'int main(){int a=10; return a*a;}'                     100
           try 'int main(){int a=5; int b=a+1; return a*b;}'           30
@@ -61,16 +87,17 @@ jobs:
           try 'int main(){int a=200; return a;}'                      200
 
           {
-            echo "## stage2-mini-c — variables + assignment"
+            echo "## stage2-mini-c — word-sized variables"
             echo '```'
-            echo "int a=2;int b=3;return a+b;  -> 5"
+            echo "word ldr/str byte-identical to as : $ld_ok"
+            echo "emitted uses word forms + 4B slots: $struct_ok"
+            echo "int a=5;int b=a+2;return b; -> 7"
             echo "int a=5;int b=a+1;return a*b;-> 30"
-            echo "int a=3;int b=a*a;int c=b+1;return c; -> 10"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ]; then
-            echo "PASS: our stage-2 compiles variables/assignment to working aarch64 code."
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$struct_ok" = yes ]; then
+            echo "PASS: stage-2 compiles word-sized variables; ldr/str byte-correct; no byte-slot regression."
           else
-            echo "FAIL: see DIFFs above"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok struct=$struct_ok"; exit 1
           fi

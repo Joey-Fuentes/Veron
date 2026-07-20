@@ -15,8 +15,9 @@ prog.c           | stage2 | stage0-as | elf  ->  a.out ; ./a.out   (exit == valu
 int main(){ int a=<expr>; int b=<expr>; ... return <expr>; }
 ```
 
-- **variables + assignment**: single-char names (`a`..`z`) → labeled byte slots
-  (`:a`..`:z`) in the emitted program, accessed via `adr` + `ldrb`/`strb`.
+- **variables + assignment**: single-char names (`a`..`z`) → labeled **4-byte
+  (word) slots** (`:a`..`:z`) in the emitted program, accessed via `adr` +
+  `ldr`/`str`.
 - **expressions**: integers, variables, `+ - *`, precedence, and parentheses,
   via shunting-yard; emitted code uses a `brk` value stack.
 
@@ -26,10 +27,13 @@ int a=5; int b=a+1; return a*b;   ->  exits 30
 
 ## Notes / limits (what later increments lift)
 
-- Variables are **byte-sized** (values 0-255) for now — keeps the emitted slot
-  table small. Intermediate expression values use the 32-bit value stack; only
-  variable *storage* is a byte. (Word-sized vars come with a stage-1 buffer
-  upgrade to brk.)
+- Variables are **word-sized** (32-bit): 4-byte slots via word `ldr`/`str`,
+  matching the 32-bit value stack (the earlier byte-0-255 storage limit is
+  lifted). Slots are aligned by construction — the emitted program is all
+  4-byte instructions up to the slot table, so each 4-byte slot stays word-
+  aligned. NB: with only `+ - *` and a mod-256 exit code, byte vs word storage
+  is not distinguishable by exit code; the width matters once `/` or comparison
+  operators land.
 - Statement forms: `int <c> = <expr>;` and `return <expr>;`. No reassignment,
   `/`, or control flow yet — those are the next increments toward the
   M2-Planet-grade subset that hands off to the borrowed chain.

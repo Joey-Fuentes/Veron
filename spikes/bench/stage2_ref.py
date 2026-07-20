@@ -2,7 +2,7 @@
 Program: int main(){ int a=<expr>; int b=<expr>; ... return <expr>; }
 - single-char var names -> labeled data slots :a .. :z in the emitted program
 - factor := number | variable(load) | ( expr )
-- value stack in brk memory (x9); vars via adr + ldr/str word
+- value stack in brk memory (x9); vars via adr + ldr/str word (4-byte slots)
 """
 PREC={'+':1,'-':1,'*':2}
 def _tokens(s):
@@ -72,7 +72,7 @@ def compile_program(src):
             code+=["sub x9 x9 4","ldr w0 x9","mov x8 93","svc"]
             i+=1
         else: i+=1
-    # emit 26 word slots
+    # emit 26 word (4-byte) slots, zero-initialised (matches stage2-mini-c.s1)
     for ch in "abcdefghijklmnopqrstuvwxyz":
-        code+=[f":{ch}",'.ascii "____"']
+        code+=[f":{ch}",".byte 0",".byte 0",".byte 0",".byte 0"]
     return "\n".join(code)+"\n"

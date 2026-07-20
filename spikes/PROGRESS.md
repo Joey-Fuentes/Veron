@@ -141,6 +141,18 @@ stage-0 test: loop + memory + byte-compares), `elf-demo.yml`,
    image `.ascii` fillers to a `brk` heap (~20 KB each) with a `read` loop, using
    the new register `add`. Source shrank 15 KB → ~3 KB and it now handles large
    inputs without truncation — removing the growth ceiling for stage 2/3.
+18. **Stage 2 word-sized variables** — variable slots went from 1-byte
+   (`ldrb`/`strb`, `:a .byte 0`) to **4-byte word slots** (`ldr`/`str`, four
+   `.byte 0` per slot), lifting the 0-255 storage limit so variable storage
+   matches the 32-bit value stack. Change is confined to the emitted-code
+   strings — `ldr w0 x1`/`str w0 x1` are the same encoding family as the value
+   stack's `ldr w0 x9`/`str w0 x9`, so no stage0-as change was needed. Slots are
+   word-aligned by construction (all-4-byte instructions precede the slot table).
+   `stage2_ref.py` and a structural bench guard in `validate.py` are kept in
+   sync. (With only `+ - *` and a mod-256 exit, byte vs word storage is
+   exit-code-indistinguishable; the width becomes observable once `/` or
+   comparisons arrive — hence the guard checks the emitted *forms*, not just
+   exit codes.)
 
 Notable bug found and fixed along the way: the hand-built ELF failed to run
 because it lacked the execute bit — a *file-mode* issue, not a byte issue
@@ -157,9 +169,9 @@ stage in the language of the stage below.
   can process large stage-2/3 sources. See `spikes/stage1-as/`.
 - **Stage 2** — in progress. Compiles `int main(){ int a=<expr>; ... return
   <expr>; }` with variables, assignment, and `+ - *` expressions with precedence
-  and parentheses. Next increments toward an M2-Planet-grade subset: **control
-  flow** (`if`/`while`), then `/` (needs `udiv` in stage0-as), reassignment, and
-  word-sized variables.
+  and parentheses; variables are now **word-sized** (4-byte slots). Next
+  increments toward an M2-Planet-grade subset: **control flow** (`if`/`while`),
+  then `/` (needs `udiv` in stage0-as), and reassignment.
 - **Stage 3** — written in stage-2's language, once stage 2 is a usable C subset.
 - **Hand-off**: grow stage 2/3 to M2-Planet-grade C, then hand to the borrowed
   live-bootstrap chain (see `spikes/borrow-m2/`, `spikes/livebootstrap/`).
