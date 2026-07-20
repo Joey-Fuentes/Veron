@@ -13,7 +13,7 @@ Codegen is ITERATIVE with an explicit block stack (mirrors the asm: no cheap
 recursion). Control-flow jump targets use uppercase labels A,B,... (var slots use
 a..z, so they don't collide); up to 26 control-flow labels per program.
 """
-PREC={'+':1,'-':1,'*':2}
+PREC={'<':0,'>':0,'+':1,'-':1,'*':2}
 
 def _tokens(s):
     i=0;out=[]
@@ -26,7 +26,7 @@ def _tokens(s):
             out.append(('num',s[i:j])); i=j
         elif c.isalpha():
             out.append(('var',c)); i+=1
-        elif c in '+-*()':
+        elif c in '+-*<>()':
             out.append(('op',c)); i+=1
         else: i+=1
     return out
@@ -38,7 +38,12 @@ def _compile_expr(expr):
     def push_var(c): out.extend([f"adr x1 {c}","ldr w0 x1","str w0 x9","add x9 x9 4"])
     def apply(o):
         out.extend(["sub x9 x9 4","ldr w0 x9","sub x9 x9 4","ldr w1 x9"])
-        out.append({'+':"add x0 x1 x0",'-':"sub x0 x1 x0",'*':"mul x0 x1 x0"}[o])
+        if o=='<':      # a<b (unsigned32) = (a-b)>>63
+            out.extend(["sub x0 x1 x0","mov x2 63","lsr x0 x0 x2"])
+        elif o=='>':    # a>b = (b-a)>>63
+            out.extend(["sub x0 x0 x1","mov x2 63","lsr x0 x0 x2"])
+        else:
+            out.append({'+':"add x0 x1 x0",'-':"sub x0 x1 x0",'*':"mul x0 x1 x0"}[o])
         out.extend(["str w0 x9","add x9 x9 4"])
     for k,v in toks:
         if k=='num': push_num(v)
@@ -143,7 +148,10 @@ def evaluate(src):
             elif k=='v': st.append(env.get(v,0) & 0xFFFFFFFF)
             else:
                 b=st.pop(); a=st.pop()
-                st.append({'+':a+b,'-':a-b,'*':a*b}[v] & 0xFFFFFFFF)
+                if v=='<':   r=1 if (a & 0xFFFFFFFF) < (b & 0xFFFFFFFF) else 0
+                elif v=='>': r=1 if (a & 0xFFFFFFFF) > (b & 0xFFFFFFFF) else 0
+                else:        r={'+':a+b,'-':a-b,'*':a*b}[v]
+                st.append(r & 0xFFFFFFFF)
         return (st[-1] if st else 0) & 0xFFFFFFFF
     def skipws(i):
         while i<len(body) and body[i] in ' \t\n': i+=1

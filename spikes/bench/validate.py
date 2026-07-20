@@ -115,6 +115,31 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 cf exit -> {want}", _exit(cs), want)
 
+    print("== stage 2 relational operators: < > (unsigned-32, branchless) ==")
+    # Structural: a<b emits the branchless sign-bit extract of (a-b); a>b of (b-a).
+    # Unlike the arithmetic ops, comparisons ARE distinguishable by exit code, so
+    # the behavioural checks below are the real test; these pin the codegen shape.
+    emlt = _emit("int main(){int a=3;int b=5;return a<b;}")
+    check("stage2 '<' subtracts a-b (sub x0 x1 x0)", "sub x0 x1 x0" in emlt, True)
+    check("stage2 '<' extracts sign bit (mov x2 63)", "mov x2 63" in emlt, True)
+    check("stage2 '<' logical shift (lsr x0 x0 x2)", "lsr x0 x0 x2" in emlt, True)
+    emgt = _emit("int main(){int a=3;int b=5;return a>b;}")
+    check("stage2 '>' subtracts b-a (sub x0 x0 x1)", "sub x0 x0 x1" in emgt, True)
+    # Behavioural: exit codes through the real assembled ladder. Count-up loops,
+    # relational guards, precedence, and 0/1 results feeding arithmetic.
+    for cs, want in [
+        ("int main(){int i=0;int s=0;while(i<10){s=s+i;i=i+1;}return s;}", 45),
+        ("int main(){int i=1;int f=1;while(i<5){f=f*i;i=i+1;}return f;}", 24),
+        ("int main(){int n=5;int s=0;while(n>0){s=s+n;n=n-1;}return s;}", 15),
+        ("int main(){int a=3;int b=5;if(a<b){return 1;}return 0;}", 1),
+        ("int main(){int a=5;int b=5;if(a<b){return 1;}return 0;}", 0),
+        ("int main(){int a=7;int b=2;if(a>b){return 9;}return 0;}", 9),
+        ("int main(){int a=3;int b=4;return (a<b)+(b<a);}", 1),
+        ("int main(){return 2*2<3;}", 0),
+        ("int main(){int i=0;int t=0;while(i<3){int j=0;while(j<2){t=t+1;j=j+1;}i=i+1;}return t;}", 6),
+    ]:
+        check(f"stage2 rel exit -> {want}", _exit(cs), want)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)

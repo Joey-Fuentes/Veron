@@ -177,6 +177,19 @@ Notable bug found and fixed along the way: the hand-built ELF failed to run
 because it lacked the execute bit — a *file-mode* issue, not a byte issue
 (`readelf` was happy, QEMU was not). The `elf` tool now sets it itself.
 
+**Milestone 20 — stage 2 gains relational `<` and `>`.** Conditions can now be
+*relations*, not just nonzero-tests: `while(i<n)`, `if(a>b)`, count-up loops.
+The operators sit below `+ - *` in precedence and yield `0`/`1`, composing with
+arithmetic. Codegen is **branchless and label-free**: `a<b` is the sign bit of
+the 64-bit difference `(a-b) >> 63` (`sub`/`mov`/`lsr` — no new stage0-as
+instruction, no emitted branch), so it costs none of the 26 emitted-label slots.
+Comparisons are **unsigned-32** (loads zero-extend). Verified through the real
+assembled ladder (count-up sum, factorial via `i<5`, nested `<` loops, `>`
+guards, precedence) and pinned in `validate.py`. Only `<`/`>` shipped this
+increment: equality (`== != <= >=`) needs ~8 more single-char labels than the
+stage-1 pool (62, `A-Za-z0-9`) has room for — the compiler is at 61 — so the
+next increment expands stage-1's label pool first.
+
 ---
 
 ## 6. What's next
@@ -187,11 +200,12 @@ stage in the language of the stage below.
 - **Stage 1** — DONE (multi-character labels) and upgraded to `brk` buffers so it
   can process large stage-2/3 sources. See `spikes/stage1-as/`.
 - **Stage 2** — in progress. Compiles `int main(){ … }` with **word-sized**
-  variables, declaration + **reassignment**, `+ - *` expressions (precedence,
-  parentheses), and **control flow** (`if`/`while`, nested, nonzero-truth
-  conditions). Next increments toward an M2-Planet-grade subset: **comparison
-  operators** (`<`, `==`, … so conditions can be relations, not just countdowns)
-  and `/` (needs `udiv` in stage0-as).
+  variables, declaration + **reassignment**, `+ - *` expressions plus the
+  **relational** operators `<` and `>` (precedence, parentheses), and **control
+  flow** (`if`/`while`, nested). Conditions can be relations or nonzero-tests.
+  Next increments toward an M2-Planet-grade subset: **expand stage-1's 62-char
+  label pool** (the binding constraint on stage-2 growth), then **equality
+  operators** (`== != <= >=`), then `/` (needs `udiv` in stage0-as).
 - **Stage 3** — written in stage-2's language, once stage 2 is a usable C subset.
 - **Hand-off**: grow stage 2/3 to M2-Planet-grade C, then hand to the borrowed
   live-bootstrap chain (see `spikes/borrow-m2/`, `spikes/livebootstrap/`).

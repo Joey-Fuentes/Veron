@@ -4,6 +4,8 @@ name: stage2-mini-c-demo
 #   int main(){ int a=<expr>; a=<expr>; if(<expr>){...} while(<expr>){...} return <expr>; }
 # single-char var names -> labeled WORD (4-byte) slots (:a..:z), accessed via
 # adr + ldr/str; a factor may be a number, a variable (load), or ( expr ).
+# Expressions support + - * and relational < > (branchless, unsigned-32, below
+# + - * in precedence, yielding 0/1) so conditions can be relations.
 # Control flow (if/while, nested) tests the condition for nonzero; codegen is
 # iterative with a block stack and uppercase jump labels A.. (vars are lowercase,
 # no collision). Compiler uses shunting-yard; emitted code uses a brk value
@@ -80,6 +82,16 @@ jobs:
           grep -q '^b A$'  wh.s || { echo "while: MISSING back branch b A"; cf_ok=no; }
           grep -q 'b.eq B' wh.s || { echo "while: MISSING exit branch b.eq B"; cf_ok=no; }
 
+          # ---- structural: relational < > are branchless (sign bit of a difference) ----
+          rel_ok=yes
+          printf '%s' 'int main(){int a=3; int b=5; return a<b;}' | qemu-aarch64 ./stage2 > lt.s
+          grep -q 'sub x0 x1 x0' lt.s || { echo "'<': MISSING sub a-b";      rel_ok=no; }
+          grep -q 'mov x2 63'    lt.s || { echo "'<': MISSING sign-bit index"; rel_ok=no; }
+          grep -q 'lsr x0 x0 x2' lt.s || { echo "'<': MISSING logical shift";  rel_ok=no; }
+          grep -q 'b\.'          lt.s && { echo "'<': UNEXPECTED branch (should be branchless)"; rel_ok=no; }
+          printf '%s' 'int main(){int a=3; int b=5; return a>b;}' | qemu-aarch64 ./stage2 > gt.s
+          grep -q 'sub x0 x0 x1' gt.s || { echo "'>': MISSING sub b-a"; rel_ok=no; }
+
           fail=0
           try() {
             printf '%s' "$1" | qemu-aarch64 ./stage2 > out.s
@@ -113,21 +125,34 @@ jobs:
           try 'int main(){int a=6; int c=0; while(a){ if(a){ c=c+2; } a=a-1; } return c;}'                     12
           try 'int main(){int a=1; int b=1; int r=0; if(a){ if(b){ r=5; } } return r;}'                        5
 
+          echo "== stage-2: relational < > (unsigned-32, count-up loops) =="
+          try 'int main(){int i=0; int s=0; while(i<10){ s=s+i; i=i+1; } return s;}'   45
+          try 'int main(){int i=1; int f=1; while(i<5){ f=f*i; i=i+1; } return f;}'    24
+          try 'int main(){int n=5; int s=0; while(n>0){ s=s+n; n=n-1; } return s;}'    15
+          try 'int main(){int a=3; int b=5; if(a<b){ return 1; } return 0;}'          1
+          try 'int main(){int a=5; int b=5; if(a<b){ return 1; } return 0;}'          0
+          try 'int main(){int a=7; int b=2; if(a>b){ return 9; } return 0;}'          9
+          try 'int main(){int a=3; int b=4; return (a<b)+(b<a);}'                     1
+          try 'int main(){return 2*2<3;}'                                             0
+          try 'int main(){int i=0; int t=0; while(i<3){ int j=0; while(j<2){ t=t+1; j=j+1; } i=i+1; } return t;}'  6
+
           {
             echo "## stage2-mini-c — variables, if/while, reassignment"
             echo '```'
             echo "word ldr/str byte-identical to as   : $ld_ok"
             echo "emitted word forms + 4B slots       : $struct_ok"
             echo "if/while zero-test + A.. jump labels : $cf_ok"
+            echo "relational < > branchless (sub+lsr)  : $rel_ok"
             echo "while(n){s=s+n;n=n-1;} sum 1..10     -> 55"
-            echo "while(n){f=f*n;n=n-1;} 4!            -> 24"
+            echo "while(i<10) count-up sum            -> 45"
+            echo "while(i<5) factorial                -> 24"
             echo "nested while (3x2 increments)        -> 6"
             echo "nested if (a && b)                   -> 5"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ]; then
-            echo "PASS: stage-2 compiles variables, reassignment, if/while (nested); word ldr/str byte-correct; no byte-slot regression."
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ]; then
+            echo "PASS: stage-2 compiles variables, reassignment, if/while (nested), relational < > (branchless, unsigned-32); word ldr/str byte-correct; no byte-slot regression."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok struct=$struct_ok cf=$cf_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok"; exit 1
           fi

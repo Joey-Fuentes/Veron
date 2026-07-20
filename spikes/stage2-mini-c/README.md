@@ -24,8 +24,10 @@ int main(){
 - **variables + assignment**: single-char names (`a`..`z`) → labeled **4-byte
   (word) slots** (`:a`..`:z`) in the emitted program, accessed via `adr` +
   `ldr`/`str`. Declared with `int c=…;`, updated with `c=…;` (reassignment).
-- **expressions**: integers, variables, `+ - *`, precedence, and parentheses,
-  via shunting-yard; emitted code uses a `brk` value stack.
+- **expressions**: integers, variables, `+ - *`, the **relational** operators
+  `<` and `>`, precedence, and parentheses, via shunting-yard; emitted code uses
+  a `brk` value stack. `<`/`>` sit **below** `+ - *` in precedence and yield
+  `0`/`1`, so `while(i<n)` and `if(a>b)` compose naturally with arithmetic.
 - **control flow**: `if` and `while`, arbitrarily nested. The condition is any
   expression, tested for **nonzero = true** (C truthiness). Codegen is iterative
   with an explicit *block stack* (no recursion — a nested `bl` would clobber the
@@ -35,6 +37,7 @@ int main(){
 int a=5; int b=a+1; return a*b;                         ->  exits 30
 int n=10; int s=0; while(n){ s=s+n; n=n-1; } return s;  ->  exits 55  (sum 1..10)
 int n=4; int f=1; while(n){ f=f*n; n=n-1; } return f;   ->  exits 24  (4!)
+int i=0; int s=0; while(i<10){ s=s+i; i=i+1; } return s; ->  exits 45  (count-up)
 ```
 
 ## How control flow is emitted
@@ -55,9 +58,19 @@ variables may be named `i`, `w`, or `r` without ambiguity.
   program is all 4-byte instructions up to the slot table). NB: with only
   `+ - *` and a mod-256 exit code, byte vs word storage is not distinguishable by
   exit code; the width matters once `/` or comparison operators land.
-- Conditions test **nonzero**, not a relation: there are no comparison operators
-  (`<`, `==`, …) yet, so loops are written as countdowns (`while(n){…;n=n-1;}`).
-  Relational/logical operators are a later increment.
+- **Relational `<`/`>` are branchless and unsigned-32.** A comparison emits no
+  branch and no label — `a<b` is `(a-b) >> 63` (sign bit of the 64-bit
+  difference of two zero-extended 32-bit words), `a>b` is `(b-a) >> 63`, using
+  only `sub`/`lsr` that stage0-as already has. This keeps stage0-as untouched and
+  costs **zero** of the emitted program's 26 uppercase labels. Because the loads
+  zero-extend, ordering is **unsigned** 32-bit; signed comparison would need
+  sign-extension (`ldrsw`) and is a later refinement (equality is sign-agnostic).
+- **Equality `== != <= >=` are deferred**, not for lack of codegen (same
+  branchless trick) but for **stage-1 label budget**: the compiler is written in
+  stage-1's language, whose single-char label pool is exactly 62 (`A-Za-z0-9`).
+  The compiler currently uses 61 of them; the full comparison set needs ~8 more
+  labels than fit. The next increment expands stage-1's pool first, then adds the
+  equality operators. For now `a==b` is expressible as `(a<b)+(b<a)` being `0`.
 - Still no `/` (needs `udiv` in stage0-as). These are the next steps toward the
   M2-Planet-grade subset that hands off to the borrowed chain.
 

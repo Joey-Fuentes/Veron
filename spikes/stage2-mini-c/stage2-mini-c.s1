@@ -1,5 +1,6 @@
-# stage2 (mini-c): variables, assignment, reassignment, if, while.
+# stage2 (mini-c): variables, assignment, reassignment, if, while, relational < >.
 # int main(){ int a=<expr>; a=<expr>; if(<expr>){...} while(<expr>){...} return <expr>; }
+# expr operators: + - *  and relational < > (unsigned-32, lowest precedence, yield 0/1).
 # single-char WORD vars -> :a..:z (4-byte slots). control-flow labels A.. (uppercase).
 # compiler regs: x19 inbuf, x21 inlen, x22 outbuf, x23 outpos, x6 scan-pos,
 #   x24 opstk-base, x25 opstk-top, x26 cur-op, x11 op-to-apply, x14 store-target,
@@ -242,6 +243,14 @@ cmp x4 40
 b.eq cepushop
 cmp x26 42
 b.eq cecurmul
+cmp x26 60
+b.eq cepop
+cmp x26 62
+b.eq cepop
+cmp x4 60
+b.eq cepushop
+cmp x4 62
+b.eq cepushop
 b cepop
 :cecurmul
 cmp x4 42
@@ -264,7 +273,6 @@ add x25 x25 1
 add x6 x6 1
 b celoop
 :ceclose
-:ceclwhile
 cmp x25 0
 b.eq cecldone
 sub x0 x25 1
@@ -274,7 +282,7 @@ b.eq ceclparen
 sub x25 x25 1
 ldrb w11 x24 x25
 bl emitapply
-b ceclwhile
+b ceclose
 :ceclparen
 sub x25 x25 1
 :cecldone
@@ -318,11 +326,21 @@ ret
 mov x27 x30
 adr x9 spoppop
 bl emitstr
+cmp x11 60
+b.eq eaclt
+cmp x11 62
+b.eq eacgt
 cmp x11 42
 b.eq eamul
 cmp x11 45
 b.eq easub
 adr x9 saddr
+b eaop
+:eaclt
+adr x9 scmplt
+b eaop
+:eacgt
+adr x9 scmpgt
 b eaop
 :eamul
 adr x9 smulr
@@ -422,6 +440,12 @@ ret
 .byte 0
 :smulr
 .ascii "mul x0 x1 x0"
+.byte 0
+:scmplt
+.ascii "sub x0 x1 x0\nmov x2 63\nlsr x0 x0 x2"
+.byte 0
+:scmpgt
+.ascii "sub x0 x0 x1\nmov x2 63\nlsr x0 x0 x2"
 .byte 0
 :spop
 .ascii "sub x9 x9 4\nldr w0 x9\nadr x1 "
