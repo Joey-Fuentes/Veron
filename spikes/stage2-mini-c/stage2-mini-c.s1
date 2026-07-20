@@ -1,5 +1,4 @@
-# stage2 (mini-c) SEED: compile `int main(){return N;}` -> asm that exits N.
-# written in stage-1's language (multi-char labels); resolved by stage1.
+# stage2 (mini-c): return <expr> with + and - (immediate add/sub chains)
 adr x19 inbuf
 adr x22 outbuf
 mov x0 0
@@ -17,7 +16,7 @@ mov x7 0
 :trymatch
 ldrb w4 x9 x7
 cmp x4 0
-b.eq matched
+b.eq found
 cmp x6 x21
 b.ge advance
 ldrb w5 x19 x6
@@ -30,52 +29,48 @@ b trymatch
 add x20 x20 1
 cmp x20 x21
 b.lt search
-b emitzero
-:matched
-:skipsp
+mov x6 x21
+:found
+bl skipsp
+adr x9 smov
+bl emitstr
+bl copydig
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+:termloop
+bl skipsp
 cmp x6 x21
-b.ge emitzero
+b.ge done
 ldrb w5 x19 x6
-cmp x5 32
-b.eq skipadv
-cmp x5 9
-b.eq skipadv
-b digits
-:skipadv
+cmp x5 43
+b.eq doadd
+cmp x5 45
+b.eq dosub
+b done
+:doadd
 add x6 x6 1
-b skipsp
-:digits
-bl emitpre
-mov x8 0
-:copydig
-cmp x6 x21
-b.ge enddig
-ldrb w5 x19 x6
-cmp x5 48
-b.lt enddig
-cmp x5 58
-b.ge enddig
+bl skipsp
+adr x9 sadd
+bl emitstr
+bl copydig
+mov w5 10
 strb w5 x22 x23
 add x23 x23 1
+b termloop
+:dosub
 add x6 x6 1
-mov x8 1
-b copydig
-:enddig
-cmp x8 0
-b.eq zerodig
-b finish
-:zerodig
-mov w5 48
+bl skipsp
+adr x9 ssub
+bl emitstr
+bl copydig
+mov w5 10
 strb w5 x22 x23
 add x23 x23 1
-b finish
-:emitzero
-bl emitpre
-mov w5 48
-strb w5 x22 x23
-add x23 x23 1
-:finish
-bl emitpost
+b termloop
+:done
+adr x9 spost
+bl emitstr
 mov x0 1
 mov x1 x22
 mov x2 x23
@@ -84,40 +79,71 @@ svc
 mov x0 0
 mov x8 93
 svc
-:emitpre
-adr x9 pre
+:emitstr
 mov x7 0
-:epre
+:esloop
 ldrb w5 x9 x7
 cmp x5 0
-b.eq epredone
+b.eq esdone
 strb w5 x22 x23
 add x23 x23 1
 add x7 x7 1
-b epre
-:epredone
+b esloop
+:esdone
 ret
-:emitpost
-adr x9 post
-mov x7 0
-:epost
-ldrb w5 x9 x7
-cmp x5 0
-b.eq epostdone
+:skipsp
+cmp x6 x21
+b.ge skdone
+ldrb w5 x19 x6
+cmp x5 32
+b.eq skadv
+cmp x5 9
+b.eq skadv
+cmp x5 10
+b.eq skadv
+b skdone
+:skadv
+add x6 x6 1
+b skipsp
+:skdone
+ret
+:copydig
+mov x10 0
+:cdloop
+cmp x6 x21
+b.ge cddone
+ldrb w5 x19 x6
+cmp x5 48
+b.lt cddone
+cmp x5 58
+b.ge cddone
 strb w5 x22 x23
 add x23 x23 1
-add x7 x7 1
-b epost
-:epostdone
+add x6 x6 1
+mov x10 1
+b cdloop
+:cddone
+cmp x10 0
+b.ne cdret
+mov w5 48
+strb w5 x22 x23
+add x23 x23 1
+:cdret
 ret
 :pat
 .ascii "return"
 .byte 0
-:pre
+:smov
 .ascii "mov x0 "
 .byte 0
-:post
-.ascii "\nmov x8 93\nsvc\n"
+:sadd
+.ascii "add x0 x0 "
+.byte 0
+:ssub
+.ascii "sub x0 x0 "
+.byte 0
+:spost
+.ascii "mov x8 93\nsvc\n"
 .byte 0
 :inbuf
 .ascii "................................................................................................................................................................................................................................................................................................................................................................................................................"

@@ -1,14 +1,14 @@
 name: stage2-mini-c-demo
 
-# SPIKE (invariants suspended). Stage 2 = mini-c, SEED capability: compile
-# `int main(){return N;}` into assembly that exits with N. Written in STAGE-1's
-# language (multi-char labels), so it exercises the whole ladder:
+# SPIKE (invariants suspended). Stage 2 = mini-c. Now compiles
+# `return <expr>;` where <expr> is integers combined with + and - (left to
+# right), emitting mov + add/sub IMMEDIATE chains. Written in STAGE-1's language
+# (multi-char labels), exercising the whole ladder:
 #
 #   stage2.s1 | stage1 | stage0-as | elf  -> stage2 (the compiler)
-#   prog.c    | stage2 | stage0-as | elf  -> a.out ; ./a.out  (exit == N)
+#   prog.c    | stage2 | stage0-as | elf  -> a.out ; ./a.out  (exit == value)
 #
-# This is the first real compiler our own seed produces: C-ish source in,
-# working aarch64 machine code out.
+# (* / precedence come in a later increment, once stage0-as gains `mul`.)
 
 on:
   push:
@@ -40,39 +40,35 @@ jobs:
           aarch64-linux-gnu-ld -static -o stage0-as s0.o
           aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
           aarch64-linux-gnu-ld -static -o elf elf.o
-
-          # stage1 (macro-as): built from stage1-as.s0
           cat spikes/stage1-as/stage1-as.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
-          # stage2 (mini-c): written in stage-1's language, resolved by stage1
           cat spikes/stage2-mini-c/stage2-mini-c.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
           test -x stage2 || { echo "stage2 not built"; exit 1; }
 
-          # compile several C programs, run each, check exit code
           fail=0
-          try() {  # $1 = C source, $2 = expected exit
+          try() {
             printf '%s' "$1" | qemu-aarch64 ./stage2 > out.s
             cat out.s | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf a.out
             set +e; qemu-aarch64 ./a.out; rc=$?; set -e
-            printf '  %-32s -> %-14s exit=%-4s want=%-4s %s\n' "$1" "$(head -1 out.s)" "$rc" "$2" "$([ "$rc" = "$2" ] && echo OK || { echo DIFF; fail=1; })"
+            printf '  %-34s exit=%-4s want=%-4s %s\n' "$1" "$rc" "$2" "$([ "$rc" = "$2" ] && echo OK || { echo DIFF; fail=1; })"
           }
-          echo "== compiling C through our own stage-2 =="
-          try 'int main(){return 42;}'      42
-          try 'int main(){return 7;}'       7
-          try 'int main(){return 0;}'       0
-          try 'int main(){ return 200 ; }'  200
-          try 'int main(){}'                0
+          echo "== our stage-2 compiling C expressions =="
+          try 'int main(){return 7;}'             7
+          try 'int main(){return 2+3-1;}'         4
+          try 'int main(){return 10+20+30;}'      60
+          try 'int main(){return 100-58;}'        42
+          try 'int main(){ return 2 + 3 + 4 ; }'  9
+          try 'int main(){return 200-100-50;}'    50
+          try 'int main(){}'                      0
 
           {
-            echo "## stage2-mini-c — our seed compiles C (return N)"
+            echo "## stage2-mini-c — compiles return <expr> (+ and -)"
             echo '```'
-            echo "ladder: stage2.s1 | stage1 | stage0-as | elf -> stage2"
-            echo "        prog.c    | stage2 | stage0-as | elf -> a.out"
-            echo "42->42  7->7  0->0  200->200  (no return)->0"
+            echo "7->7  2+3-1->4  10+20+30->60  100-58->42  2+3+4->9  200-100-50->50  ()->0"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$fail" = 0 ]; then
-            echo "PASS: our stage-2 compiles C to working aarch64 code. Stage 2 seed lives."
+            echo "PASS: our stage-2 compiles integer +/- expressions to working aarch64 code."
           else
             echo "FAIL: see DIFFs above"; exit 1
           fi
