@@ -1,0 +1,57 @@
+name: seedas-demo
+
+# SPIKE seed-as demo (invariants suspended). Builds the hand-written ARM64
+# hex-loader and feeds it a commented, whitespaced hex dump of "Hello\n" to
+# prove it reads input and emits the correct raw bytes. Result -> job summary.
+
+on:
+  push:
+    paths:
+      - 'spikes/seedas/**'
+      - '.github/workflows/seedas-demo.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: seedas-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain (qemu-user + aarch64 binutils)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu
+
+      - name: Build seed-as and feed it hex
+        run: |
+          src=spikes/seedas/seed-as.aarch64.s
+          aarch64-linux-gnu-as -o seed-as.o "$src"
+          aarch64-linux-gnu-ld -static -o seed-as seed-as.o
+
+          # Commented, whitespaced hex dump of "Hello\n":
+          #   48 65 6c 6c 6f 0a  ->  H  e  l  l  o  \n
+          input='48 65 6c 6c 6f 0a   # spells Hello + newline; this comment is ignored'
+          out=$(printf '%s\n' "$input" | qemu-aarch64 ./seed-as)
+
+          {
+            echo "## seed-as demo — hex in, bytes out"
+            echo '```'
+            echo "seed-as size : $(stat -c%s seed-as) bytes"
+            echo "input        : 48 65 6c 6c 6f 0a  (+ comment/whitespace, ignored)"
+            echo "output       : $out"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "output: $out"
+          if [ "$out" = "Hello" ]; then
+            echo "PASS: seed-as decoded the hex dump into \"Hello\""
+          else
+            echo "FAIL: expected \"Hello\", got \"$out\""
+            exit 1
+          fi
