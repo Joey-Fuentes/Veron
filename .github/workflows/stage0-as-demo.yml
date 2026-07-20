@@ -1,14 +1,16 @@
 name: stage0-as-demo
 
-# SPIKE stage0-as demo (invariants suspended). Builds the hand-written ARM64
-# mnemonic assembler, feeds it a small mov/svc program, and checks the emitted
-# machine code is byte-identical to the encodings we hand-derived earlier.
-# It also disassembles the output to show it decodes back to the instructions.
+# SPIKE stage0-as demo (invariants suspended). Assembles a counting LOOP
+# (labels + branch + cmp + add) and checks it two ways:
+#   1) byte-identical to what the real assembler produces (pinpoints any
+#      encoding bug to the exact instruction), and
+#   2) runs end-to-end through the pipeline and exits with the computed code (5).
 
 on:
   push:
     paths:
       - 'spikes/stage0-as/**'
+      - 'spikes/elf/**'
       - '.github/workflows/stage0-as-demo.yml'
   workflow_dispatch:
 
@@ -29,45 +31,47 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             qemu-user binutils-aarch64-linux-gnu
 
-      - name: Build stage0-as and assemble a program
+      - name: Assemble a loop, compare to real `as`, and run it
         run: |
-          src=spikes/stage0-as/stage0-as.aarch64.s
-          aarch64-linux-gnu-as -o stage0-as.o "$src"
-          aarch64-linux-gnu-ld -static -o stage0-as stage0-as.o
-          echo "stage0-as built: $(stat -c%s stage0-as) bytes"
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
 
-          # A small program in stage0-as's own language (mov/svc, no labels yet).
-          # These are exactly the position-independent instructions from the
-          # hand-encoded hello world — so stage0-as should reproduce those bytes.
-          prog='# assemble the hello instruction stream (no adr/labels yet)
-          mov x0 1
-          mov x2 24
-          mov x8 64
-          svc
-          mov x0 0
-          mov x8 93
-          svc'
+          # program in stage0-as's language: count x0 from 0 to 5, exit(5)
+          printf 'mov x0 0\nmov x1 5\n:a\nadd x0 x0 1\ncmp x0 x1\nb.ne a\nmov x8 93\nsvc\n' > prog.s0
+          echo "=== program ==="; cat prog.s0
 
-          printf '%s\n' "$prog" | qemu-aarch64 ./stage0-as > out.bin
-          got=$(xxd -p out.bin | tr -d '\n')
-          want="200080d2020380d2080880d2010000d4000080d2a80b80d2010000d4"
+          # reference bytes from the real assembler (same program)
+          printf '.text\n.global _start\n_start:\n\tmov x0,#0\n\tmov x1,#5\na:\n\tadd x0,x0,#1\n\tcmp x0,x1\n\tb.ne a\n\tmov x8,#93\n\tsvc #0\n' > ref.s
+          aarch64-linux-gnu-as -o ref.o ref.s
+          aarch64-linux-gnu-objcopy -O binary --only-section=.text ref.o ref.bin
+
+          # our output
+          cat prog.s0 | qemu-aarch64 ./stage0-as > our.bin
+
+          echo "=== bytes ==="
+          echo "ours: $(od -An -v -tx1 our.bin | tr -d ' \n')"
+          echo "ref : $(od -An -v -tx1 ref.bin | tr -d ' \n')"
+
+          # run end to end
+          cat prog.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf out.elf
+          set +e; qemu-aarch64 ./out.elf; rc=$?; set -e
+          echo "=== run: exit $rc (expected 5) ==="
+
+          byteok=no; cmp -s our.bin ref.bin && byteok=yes
 
           {
-            echo "## stage0-as demo — mnemonics in, machine code out"
+            echo "## stage0-as — labels + control flow"
             echo '```'
-            echo "bytes out : $got"
-            echo "expected  : $want"
-            echo ""
-            echo "disassembly of stage0-as output:"
-            aarch64-linux-gnu-objdump -D -b binary -m aarch64 out.bin
+            echo "byte-identical to real as : $byteok"
+            echo "loop program exit         : $rc  (expected 5)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "got : $got"
-          echo "want: $want"
-          if [ "$got" = "$want" ]; then
-            echo "PASS: stage0-as produced byte-identical machine code"
+          if [ "$byteok" = "yes" ] && [ "$rc" = "5" ]; then
+            echo "PASS: labels/branches/arithmetic assemble byte-identically AND run"
           else
-            echo "FAIL: output did not match expected encoding"
+            echo "FAIL: byteok=$byteok exit=$rc — compare the two hex lines above"
             exit 1
           fi

@@ -1,180 +1,327 @@
 // ============================================================================
-// Veron — SPIKE stage0-as   (ARM64 / AArch64)      *** feasibility spike ***
+// Veron — SPIKE stage0-as  (ARM64 / AArch64)       *** feasibility spike ***
 // ============================================================================
 //
-//   Invariants SUSPENDED. Written in one shot in ordinary ARM64 assembly and
-//   built by GNU `as` (the spike ground floor). This is the FIRST tool of a
-//   small stage-0 toolkit:
+//   Invariants SUSPENDED. Written in ARM64 assembly, built by GNU `as`.
+//   Toolkit tool #1, now with LABELS + control flow (two-pass).
 //
-//        text mnemonics --[stage0-as]--> raw code bytes
-//                        --[labels ]--> (next tool)
-//                        --[elf    ]--> runnable       (next tool)
+//   text (mnemonics + labels) --[stage0-as]--> raw code bytes
 //
-//   stage0-as reads a line-oriented assembly program on stdin and writes the
-//   raw 4-byte little-endian machine word for each instruction to stdout.
-//   No labels, no ELF wrapper yet — just prove text -> correct bytes.
+//   This is intended to be the LAST tool hand-written in raw assembly: it is
+//   expressive enough that the next rung (stage 1) is written in *this*
+//   language instead of hand-encoded.
 //
-// Supported input (one instruction per line; leading spaces OK; '#' = comment):
-//        mov x<reg> <decimal-imm>      -> MOVZ  (0..65535 immediate)
-//        svc                           -> SVC #0
+// Input (one item per line; leading spaces OK; '#' = comment):
+//        mov x<d> <imm>            MOVZ  Xd,#imm
+//        add x<d> x<n> <imm>       ADD   Xd,Xn,#imm
+//        cmp x<n> x<m>             CMP   Xn,Xm      (subs xzr,Xn,Xm)
+//        b   <L>                   B     to label
+//        b.eq/b.ne/b.lt/b.ge <L>   B.cond to label
+//        svc                       SVC   #0
+//        :<L>                      define label <L> at current position
+//   Labels are a SINGLE character (e.g. :a ... b.ne a). Multi-char labels are
+//   a natural stage-1 capability. Well-formed input assumed (it's a spike).
 //
-// Encodings (as derived in the stage0 round-trip work):
-//        MOVZ Xd,#imm = 0xD2800000 | (imm << 5) | d
-//        SVC  #0      = 0xD4000001
+// Two passes over the input: pass 1 records label positions (no output),
+// pass 2 emits bytes. Branch offsets are (target - here)/4 in instruction
+// units — a difference of OUTPUT positions, so it needs no load address.
 //
-// Assumes well-formed input (it's a spike; the demo feeds it clean lines).
+// Encodings:
+//   mov  Xd,#imm  = 0xD2800000 | (imm<<5) | d
+//   add  Xd,Xn,#i = 0x91000000 | (i<<10) | (n<<5) | d
+//   cmp  Xn,Xm    = 0xEB000000 | (m<<16) | (n<<5) | 31
+//   b    L        = 0x14000000 | (off26 & 0x3FFFFFF)
+//   b.c  L        = 0x54000000 | ((off19 & 0x7FFFF)<<5) | cond
+//   svc           = 0xD4000001                cond: eq0 ne1 ge10 lt11
 //
-// Linux arm64 ABI: nr in x8, args x0..x2, svc #0.  read=63 write=64 exit=93.
-// Registers x19..x25 are callee-saved and survive our syscalls (kernel
-// preserves them), so parser state persists across read/write.
-//
-//   state:  x23 = input base   x22 = input length   x20 = cursor
-//           x24 = parsed register number (in mov)
+// state (callee-saved, survive syscalls):
+//   x19 inbuf base   x20 cursor   x21 inbuf length   x22 output offset
+//   x23 pass(1/2)    x24,x25,x26 temps   x27 symtab base
 // ============================================================================
 
-    .equ INBUF_SZ, 4096
+    .equ INBUF_SZ, 0x4000
 
     .text
     .global _start
 
 _start:
-    // ---- slurp all of stdin into inbuf ----
-    adr     x23, inbuf              // input base (fixed)
-    mov     x22, #0                 // bytes read so far
+    // ---- slurp stdin ----
+    adr     x19, inbuf
+    mov     x21, #0
 slurp:
-    mov     x0, #0                  // stdin
-    add     x1, x23, x22            // inbuf + offset
+    mov     x0, #0
+    add     x1, x19, x21
     mov     x2, #INBUF_SZ
-    sub     x2, x2, x22             // remaining space
+    sub     x2, x2, x21
     cmp     x2, #0
-    b.le    slurp_done              // buffer full
-    mov     x8, #63                 // read
+    b.le    slurp_done
+    mov     x8, #63
     svc     #0
     cmp     x0, #0
-    b.le    slurp_done              // EOF or error
-    add     x22, x22, x0
+    b.le    slurp_done
+    add     x21, x21, x0
     b       slurp
 slurp_done:
-    // x22 = total length; set cursor to 0
-    mov     x20, #0
+    adr     x27, symtab
+    mov     x23, #1                 // pass 1
 
-// ---- main line/token loop ----
-main_loop:
-    bl      skip_ws                 // skip spaces, tabs, newlines
-    cmp     x20, x22
-    b.ge    done                    // consumed all input
+pass_start:
+    mov     x20, #0                 // cursor
+    mov     x22, #0                 // output offset
 
-    ldrb    w0, [x23, x20]
-    cmp     w0, #0x23               // '#' comment?
+parse_loop:
+    bl      skip_ws
+    cmp     x20, x21
+    b.ge    pass_end
+    ldrb    w0, [x19, x20]
+    cmp     w0, #'#'
     b.eq    skip_line
-    cmp     w0, #'m'                // "mov"
-    b.eq    do_mov
-    cmp     w0, #'s'                // "svc"
-    b.eq    do_svc
-    b       skip_line               // unknown -> skip the line
+    cmp     w0, #':'
+    b.eq    do_label
+    cmp     w0, #'m'
+    b.eq    h_mov
+    cmp     w0, #'a'
+    b.eq    h_add
+    cmp     w0, #'c'
+    b.eq    h_cmp
+    cmp     w0, #'b'
+    b.eq    h_branch
+    cmp     w0, #'s'
+    b.eq    h_svc
+    b       skip_line               // unknown -> skip line
 
+pass_end:
+    cmp     x23, #2
+    b.eq    the_end
+    mov     x23, #2                 // switch to pass 2
+    b       pass_start
+the_end:
+    mov     x0, #0
+    mov     x8, #93
+    svc     #0
+
+// ---- skip to end of line (comments / unknown) ----
 skip_line:
-    cmp     x20, x22
-    b.ge    done
-    ldrb    w0, [x23, x20]
+    cmp     x20, x21
+    b.ge    parse_loop
+    ldrb    w10, [x19, x20]
     add     x20, x20, #1
-    cmp     w0, #0x0A               // newline ends the line
+    cmp     w10, #0x0A
     b.ne    skip_line
-    b       main_loop
+    b       parse_loop
 
-// ---- mov x<reg> <imm> ----
-do_mov:
-    add     x20, x20, #3            // skip "mov"
-    bl      skip_ws
-    ldrb    w0, [x23, x20]
-    cmp     w0, #'x'                // expect a register 'x..'
-    b.ne    skip_line               // malformed -> skip line
+// ---- :L  define label ----
+do_label:
+    add     x20, x20, #1            // past ':'
+    ldrb    w0, [x19, x20]          // label char
     add     x20, x20, #1
-    bl      parse_dec               // w0 = register number
-    mov     w24, w0                 // stash reg
-    bl      skip_ws
-    bl      parse_dec               // w0 = immediate
+    str     w22, [x27, w0, uxtw #2] // symtab[char] = current offset
+    b       parse_loop
 
-    // encode MOVZ: 0xD2800000 | (imm<<5) | reg
-    lsl     w0, w0, #5
-    movz    w2, #0xD280, lsl #16    // w2 = 0xD2800000
-    orr     w2, w2, w0              // | (imm<<5)
-    orr     w2, w2, w24             // | reg
-    bl      emit_word
-    b       main_loop
+// ---- mov x<d> <imm> ----
+h_mov:
+    add     x20, x20, #3
+    bl      skip_ws
+    ldrb    w0, [x19, x20]
+    cmp     w0, #'x'
+    b.ne    skip_line
+    add     x20, x20, #1
+    bl      parse_dec               // w0 = d
+    mov     w24, w0
+    bl      skip_ws
+    bl      parse_dec               // w0 = imm
+    lsl     w9, w0, #5
+    movz    w1, #0xD280, lsl #16
+    orr     w9, w9, w1
+    orr     w9, w9, w24
+    bl      emit
+    b       parse_loop
+
+// ---- add x<d> x<n> <imm> ----
+h_add:
+    add     x20, x20, #3
+    bl      skip_ws
+    ldrb    w0, [x19, x20]
+    cmp     w0, #'x'
+    b.ne    skip_line
+    add     x20, x20, #1
+    bl      parse_dec               // d
+    mov     w24, w0
+    bl      skip_ws
+    ldrb    w0, [x19, x20]
+    cmp     w0, #'x'
+    b.ne    skip_line
+    add     x20, x20, #1
+    bl      parse_dec               // n
+    mov     w25, w0
+    bl      skip_ws
+    bl      parse_dec               // imm
+    lsl     w9, w0, #10
+    movz    w1, #0x9100, lsl #16
+    orr     w9, w9, w1
+    orr     w9, w9, w25, lsl #5
+    orr     w9, w9, w24
+    bl      emit
+    b       parse_loop
+
+// ---- cmp x<n> x<m> ----
+h_cmp:
+    add     x20, x20, #3
+    bl      skip_ws
+    ldrb    w0, [x19, x20]
+    cmp     w0, #'x'
+    b.ne    skip_line
+    add     x20, x20, #1
+    bl      parse_dec               // n
+    mov     w24, w0
+    bl      skip_ws
+    ldrb    w0, [x19, x20]
+    cmp     w0, #'x'
+    b.ne    skip_line
+    add     x20, x20, #1
+    bl      parse_dec               // m
+    mov     w25, w0
+    movz    w9, #0xEB00, lsl #16
+    orr     w9, w9, w25, lsl #16
+    orr     w9, w9, w24, lsl #5
+    orr     w9, w9, #31
+    bl      emit
+    b       parse_loop
 
 // ---- svc ----
-do_svc:
-    add     x20, x20, #3            // skip "svc"
-    movz    w2, #0x0001             // w2 = 0x00000001
-    movk    w2, #0xD400, lsl #16    // w2 = 0xD4000001
-    bl      emit_word
-    b       main_loop
+h_svc:
+    add     x2, x20, #1
+    ldrb    w10, [x19, x2]
+    cmp     w10, #'v'               // ensure "svc"
+    b.ne    skip_line
+    add     x20, x20, #3
+    movz    w9, #0x0001
+    movk    w9, #0xD400, lsl #16
+    bl      emit
+    b       parse_loop
 
-done:
-    mov     x0, #0
-    mov     x8, #93                 // exit
-    svc     #0
+// ---- b / b.cond ----
+h_branch:
+    add     x2, x20, #1
+    ldrb    w10, [x19, x2]
+    cmp     w10, #'.'
+    b.eq    h_bcond
+    // unconditional B
+    add     x20, x20, #1            // past 'b'
+    bl      skip_ws
+    ldrb    w0, [x19, x20]          // label char
+    add     x20, x20, #1
+    ldr     w1, [x27, w0, uxtw #2]  // target offset
+    sub     w1, w1, w22             // target - here
+    asr     w1, w1, #2
+    and     w1, w1, #0x3FFFFFF
+    movz    w9, #0x1400, lsl #16
+    orr     w9, w9, w1
+    bl      emit
+    b       parse_loop
+h_bcond:
+    add     x20, x20, #2            // past "b."
+    ldrb    w2, [x19, x20]          // cond char 1
+    add     x3, x20, #1
+    ldrb    w3, [x19, x3]           // cond char 2
+    add     x20, x20, #2            // past cond
+    mov     w26, #14                // default AL
+    cmp     w2, #'e'
+    b.ne    bc_n
+    cmp     w3, #'q'
+    b.ne    bc_go
+    mov     w26, #0                 // eq
+    b       bc_go
+bc_n:
+    cmp     w2, #'n'
+    b.ne    bc_l
+    mov     w26, #1                 // ne
+    b       bc_go
+bc_l:
+    cmp     w2, #'l'
+    b.ne    bc_g
+    mov     w26, #11                // lt
+    b       bc_go
+bc_g:
+    cmp     w2, #'g'
+    b.ne    bc_go
+    mov     w26, #10                // ge
+bc_go:
+    bl      skip_ws
+    ldrb    w0, [x19, x20]          // label char
+    add     x20, x20, #1
+    ldr     w1, [x27, w0, uxtw #2]
+    sub     w1, w1, w22
+    asr     w1, w1, #2
+    and     w1, w1, #0x7FFFF
+    movz    w9, #0x5400, lsl #16
+    orr     w9, w9, w1, lsl #5
+    orr     w9, w9, w26
+    bl      emit
+    b       parse_loop
 
 // ============================================================================
-// helpers (leaf routines — they never call anything, so x30/lr stays valid,
-// and it survives the syscall in emit_word because Linux preserves it)
+// leaf helpers (no nested bl; x30 preserved, and survives the svc in emit)
 // ============================================================================
 
-// skip spaces / tabs / newlines / CR, advancing the cursor
+// skip spaces/tabs/newlines/CR
 skip_ws:
-    cmp     x20, x22
-    b.ge    sw_ret
-    ldrb    w9, [x23, x20]
-    cmp     w9, #' '                // 0x20
-    b.eq    sw_adv
-    cmp     w9, #0x09               // tab
-    b.eq    sw_adv
-    cmp     w9, #0x0A               // newline
-    b.eq    sw_adv
-    cmp     w9, #0x0D               // CR
-    b.eq    sw_adv
-    b       sw_ret
-sw_adv:
+    cmp     x20, x21
+    b.ge    sw_r
+    ldrb    w10, [x19, x20]
+    cmp     w10, #' '
+    b.eq    sw_a
+    cmp     w10, #0x09
+    b.eq    sw_a
+    cmp     w10, #0x0A
+    b.eq    sw_a
+    cmp     w10, #0x0D
+    b.eq    sw_a
+    b       sw_r
+sw_a:
     add     x20, x20, #1
     b       skip_ws
-sw_ret:
+sw_r:
     ret
 
-// parse a decimal number at the cursor -> w0 ; advances cursor past digits
+// parse decimal at cursor -> w0 ; advance cursor
 parse_dec:
-    mov     w9, #0                  // accumulator
-pd_loop:
-    cmp     x20, x22
-    b.ge    pd_ret
-    ldrb    w10, [x23, x20]
+    mov     w0, #0
+pd_l:
+    cmp     x20, x21
+    b.ge    pd_r
+    ldrb    w10, [x19, x20]
     cmp     w10, #'0'
-    b.lt    pd_ret
+    b.lt    pd_r
     cmp     w10, #'9'
-    b.gt    pd_ret
+    b.gt    pd_r
     sub     w10, w10, #'0'
     mov     w11, #10
-    mul     w9, w9, w11
-    add     w9, w9, w10
+    mul     w0, w0, w11
+    add     w0, w0, w10
     add     x20, x20, #1
-    b       pd_loop
-pd_ret:
-    mov     w0, w9
+    b       pd_l
+pd_r:
     ret
 
-// write the 32-bit word in w2 to stdout as 4 little-endian bytes
-emit_word:
-    adr     x9, outword
-    str     w2, [x9]                // store LE (aarch64 is little-endian)
-    mov     x0, #1                  // stdout
-    mov     x1, x9                  // buf
-    mov     x2, #4                  // count
-    mov     x8, #64                 // write
+// emit the 32-bit word in w9 (only in pass 2); always advance offset by 4
+emit:
+    cmp     x23, #2
+    b.ne    emit_adv
+    adr     x10, outword
+    str     w9, [x10]
+    mov     x0, #1
+    mov     x1, x10
+    mov     x2, #4
+    mov     x8, #64
     svc     #0
+emit_adv:
+    add     x22, x22, #4
     ret
 
 // ---------------------------------------------------------------------------
     .bss
     .align  4
 inbuf:   .space INBUF_SZ
+symtab:  .space 512          // 128 single-char labels x 4-byte offset
 outword: .space 4
