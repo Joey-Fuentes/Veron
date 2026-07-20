@@ -1,0 +1,90 @@
+name: borrow-tcc-native
+
+# SPIKE (invariants suspended). Self-host M2-Planet on aarch64 and run the
+# result on a NATIVE arm64 runner (no QEMU). The qemu-user run segfaulted
+# (M2libc aarch64 malloc/brk vs qemu-user); upstream's test1000 only ever runs
+# this binary on real aarch64. This is that condition.
+#
+# NOTE: ubuntu-24.04-arm runners are free on PUBLIC repos only. In a private
+# repo this job will not start (unsupported label) — use a larger arm64 runner.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/borrow-tcc-native.yml'
+      - 'spikes/borrow-tcc/**'
+  workflow_dispatch:
+
+concurrency:
+  group: borrow-tcc-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selfhost-arm64:
+    runs-on: ubuntu-24.04-arm      # native arm64; PUBLIC repos only
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Confirm native arch + install build basics (no qemu)
+        run: |
+          echo "uname -m: $(uname -m)"    # expect aarch64
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc make git
+
+      - name: Fetch upstream build deps
+        run: |
+          git clone --recursive --depth 1 https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git clone --recursive --depth 1 https://github.com/oriansj/mescc-tools.git upstream-mescc
+
+      - name: Build host tools (native arm64)
+        run: |
+          make -C upstream-m2planet M2-Planet
+          make -C upstream-mescc M1 hex2
+
+      - name: Self-host M2-Planet on aarch64 and RUN NATIVELY
+        run: |
+          set -ex
+          ROOT="$GITHUB_WORKSPACE"
+          M1="$ROOT/upstream-mescc/bin/M1"
+          HEX2="$ROOT/upstream-mescc/bin/hex2"
+          cd "$ROOT/upstream-m2planet"
+
+          ./bin/M2-Planet \
+            --architecture aarch64 \
+            -f M2libc/aarch64/linux/bootstrap.c -f M2libc/bootstrap.c \
+            -f cc.h -f M2libc/bootstrappable.c \
+            -f cc_globals.c -f cc_reader.c -f cc_strings.c -f cc_types.c \
+            -f cc_emit.c -f cc_core.c -f cc_macro.c -f cc.c \
+            --bootstrap-mode \
+            -o "$ROOT/cc.M1"
+          "$M1" -f M2libc/aarch64/aarch64_defs.M1 -f M2libc/aarch64/libc-core.M1 \
+                -f "$ROOT/cc.M1" --little-endian --architecture aarch64 -o "$ROOT/cc.hex2"
+          "$HEX2" -f M2libc/aarch64/ELF-aarch64.hex2 -f "$ROOT/cc.hex2" \
+                --little-endian --architecture aarch64 --base-address 0x400000 \
+                -o "$ROOT/M2-Planet.aarch64"
+          chmod +x "$ROOT/M2-Planet.aarch64"
+
+          printf 'int main()\n{\n\treturn 42;\n}\n' > "$ROOT/t.c"
+          ./bin/M2-Planet --architecture aarch64 -f "$ROOT/t.c" -o "$ROOT/host.M1"
+
+          # Run the self-hosted aarch64 compiler NATIVELY (no qemu):
+          "$ROOT/M2-Planet.aarch64" --architecture aarch64 -f "$ROOT/t.c" -o "$ROOT/self.M1"
+
+          ok=no
+          if cmp -s "$ROOT/host.M1" "$ROOT/self.M1"; then ok=yes; fi
+          {
+            echo "## borrow-tcc — self-host M2-Planet on NATIVE arm64"
+            echo '```'
+            echo "runner uname -m       : $(uname -m)"
+            echo "ran natively (no qemu): yes"
+            echo "output == host output : $ok  (byte-identical self-host)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$ok" = yes ]; then
+            echo "PASS: M2-Planet self-hosts on aarch64 and runs natively — byte-identical."
+          else
+            echo "FAIL: self-host output differed (or binary failed) even on native arm64."
+            exit 1
+          fi
