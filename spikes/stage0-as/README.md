@@ -1,41 +1,57 @@
-# spikes/stage0-as — SPIKE stage-0 assembler, tool #1 (feasibility tracer)
+# spikes/stage0-as — SPIKE stage-0 assembler (feasibility tracer)
 
-**Invariants SUSPENDED.** This is the first tool of a small stage-0 *toolkit*.
-Rather than one monolithic assembler, stage 0 is being built as several tiny,
-independently-testable programs that pipe together:
-
-```
-program.s0  --[stage0-as]-->  raw code bytes  --[labels]-->  resolved  --[elf]-->  runnable
-             (this tool)                        (next)                  (next)
-```
-
-## stage0-as (this tool)
-
-Reads a line-oriented assembly program on stdin, emits the raw 4-byte
-little-endian machine word for each instruction to stdout. Supported now:
+**Invariants SUSPENDED.** Hand-written in ARM64 assembly, built by GNU `as`. A
+two-pass mnemonic assembler: reads line-oriented assembly-with-labels on stdin,
+emits raw ARM64 machine-code bytes on stdout. This is the last tool written in
+raw assembly — higher stages are written in *this* language.
 
 ```
-mov x<reg> <decimal-imm>     # MOVZ
-svc                          # SVC #0
-# lines starting with '#' are comments; leading spaces are fine
+program.s | stage0-as > code.bin          # mnemonics -> raw code bytes
+program.s | stage0-as | elf out && ./out  # ...through elf -> runnable
 ```
 
-No labels and no ELF wrapper yet — those are the next two tools. This one just
-proves *text mnemonics -> correct machine-code bytes* on our setup.
+## Language reference
+
+One item per line. Leading whitespace is fine. Register operands are one letter
+(`w`/`x`) followed by a number. Labels are a **single character**.
+
+| Syntax | Meaning |
+|--------|---------|
+| `mov x<d> <imm>` | load 16-bit immediate (MOVZ) |
+| `mov x<d> x<n>` | register move |
+| `add x<d> x<n> <imm>` | add immediate |
+| `sub x<d> x<n> <imm>` | subtract immediate |
+| `cmp x<n> x<m>` | compare registers |
+| `cmp x<n> <imm>` | compare with immediate |
+| `b <L>` | unconditional branch to label |
+| `b.eq / b.ne / b.lt / b.ge <L>` | conditional branch |
+| `adr x<d> <L>` | address of label into register |
+| `ldrb w<t> x<n> x<m>` | load byte `[Xn + Xm]` |
+| `strb w<t> x<n> x<m>` | store byte `[Xn + Xm]` |
+| `ldr w<t> x<n>` | load word `[Xn]` |
+| `str w<t> x<n>` | store word `[Xn]` |
+| `svc` | supervisor call (`svc #0`) |
+| `:<L>` | define label `<L>` at current position |
+| `.byte <imm>` | emit one byte |
+| `.ascii "text"` | emit string bytes (`\n` supported) |
+| `# ...` | comment to end of line |
+
+Linux arm64 syscall ABI (for `svc`): number in `x8`, args in `x0..x5`.
+Common numbers: `read=63 write=64 openat=56 fchmod=52 close=57 exit=93`.
+
+**Two passes:** pass 1 records each `:label` position; pass 2 emits bytes with
+branch and `adr` offsets resolved. Offsets are differences of output positions,
+so they need no load address.
+
+## Known limits (motivate later stages)
+
+- Labels are single-character (multi-char labels are stage 1's job).
+- 16-bit immediates only (`mov`), 12-bit for `add`/`sub`/`cmp`.
+- Well-formed input assumed — minimal error checking (it's a spike).
 
 ## See it run
 
-Push anything under `spikes/stage0-as/**` and the **stage0-as-demo** workflow
-builds it, feeds it a small `mov`/`svc` program, and checks the output bytes are
-byte-identical to the encodings we hand-derived in the round-trip work. It also
-disassembles the output so you can see it decode back to the instructions.
-
-(Job-count note: a push here also triggers the generic **spike** matrix, which
-runs `stage0-as` with no stdin — it reads EOF and exits 0, a harmless build
-check. The **stage0-as-demo** run is the one that proves the assembler works.)
-
-## Next
-
-- `labels` tool — resolve `:label` / references (the gap the `adr` line exposed).
-- `elf` tool — wrap raw bytes in a minimal static ELF so output runs directly.
-- then higher stages get *written* in this language instead of hand-encoded.
+Push under `spikes/stage0-as/**` → the **stage0-as-demo** workflow assembles a
+counting loop and a memory store/load program, byte-compares them against the
+real assembler, and runs them under QEMU (expecting exit 5 and 7). See
+`spikes/PROGRESS.md` for the full picture.

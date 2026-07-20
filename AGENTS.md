@@ -18,12 +18,17 @@ and end-to-end auditable** builds. It is a proving ground, not a product.
 
 Target architectures: `x86_64`, `aarch64`, `riscv64`.
 
-**Current status — read before assuming a file exists.** The repo is in the
-**design phase**. The only executable code today is the **spike harness**
-(`tools/spike.sh`, `.github/workflows/spike.yml`) plus example spikes. The
-seed, stages, build engine, flavors, and ledger are *specified but not yet
-implemented*. Do not assume something exists because the design mentions it —
-check the filesystem.
+**Current status — read before assuming a file exists.** The design (seed,
+stages, build engine, flavors, ledger, all with invariants ON) under `seed/`,
+`stages/`, `lib/`, etc. is *specified but not yet implemented*. What *does*
+exist and run is the **feasibility-spike toolkit** under `spikes/` (invariants
+SUSPENDED — see `spikes/PROGRESS.md`): a working ARM64 pipeline
+`program.s | stage0-as | elf out` that turns assembly-with-labels into a running
+executable, all hand-written and byte-verified against the real assembler.
+`stage0-as` is **assembler-complete** (arithmetic, branches, single-char labels,
+memory, data). This is a proving ground, not Veron proper; do not copy spike
+code into `seed/`/`stages/` without re-applying the invariants. Do not assume
+something exists because the design mentions it — check the filesystem.
 
 ---
 
@@ -77,6 +82,51 @@ check the filesystem.
    to emit an audit record covering the **seven criteria** (§5). If a step
    can't be made hermetic and reproducible, **stop and flag it** rather than
    merging it.
+
+---
+
+## 2a. When to STOP and escalate
+
+Do **not** improvise past a boundary. Working around a rule you don't
+understand, or silently reinterpreting one so the task can proceed, is how the
+invariants erode one reasonable-seeming step at a time. In any of these cases,
+**stop, do not commit, and surface the issue to a human** (in your response,
+and if mid-task, as a clear note in the PR/branch):
+
+- **A task conflicts with an invariant (§2).** Never resolve the conflict by
+  weakening the invariant on your own. Stop and ask.
+- **The documentation is ambiguous, silent, or self-contradictory** on
+  something the task needs. Don't guess the design. Stop and ask.
+- **`AGENTS.md` and `ARCHITECTURE.md` disagree** in a way that matters (beyond
+  the design-vs-process split in the header). Stop and ask.
+- **The task would drift the design** — change the ladder, move the fork line,
+  alter the trust boundary, add a dependency, or set a precedent — that no
+  recorded decision covers. Design changes are human decisions. Stop and ask.
+- **You cannot make a build step hermetic and reproducible** (invariant #8).
+  Stop; do not merge a non-reproducible step to "fix later."
+- **Reality contradicts the docs** — the code does something the docs say it
+  doesn't, or vice versa. Stop and flag the discrepancy; do not code around it.
+
+When you stop, state plainly: what you were doing, which rule or doc is in the
+way, and the options as you see them. A blocked task with a clear question is a
+good outcome. A silently worked-around invariant is not.
+
+## 2b. Keep the documentation honest
+
+The docs are **living**, and they are the source of truth the *next* agent
+inherits. Treat divergence between docs and reality as a bug.
+
+- When a design decision is made or changed (by a human), **update
+  `ARCHITECTURE.md`** so the decision is recorded, and update `AGENTS.md` if it
+  changes a rule or workflow. Do this in the *same* change, not "later."
+- When you add real capability that supersedes a "planned" note (e.g. the
+  `check-fork-invariant` tool, the seed `roundtrip.sh`, a new stage), **update
+  the status notes and the relevant sections** so they stop saying "planned."
+- Never leave the docs describing a world that no longer exists. If you can't
+  update them correctly, that itself is a reason to **stop and ask** (§2a).
+- If a rule here turns out to be wrong or unworkable, **do not just ignore
+  it** — flag it so it can be fixed. A wrong rule that everyone quietly routes
+  around is worse than no rule.
 
 ---
 
@@ -217,4 +267,5 @@ git status                       # expect no a.elf, *.o, seed-as, etc.
 - [`TRUST-BOUNDARY.md`](./TRUST-BOUNDARY.md) — what is trusted and why
 - [`AUDIT.md`](./AUDIT.md) — audit-record format
 - [`spikes/README.md`](./spikes/README.md) — spike conventions
+- [`spikes/PROGRESS.md`](./spikes/PROGRESS.md) — bootstrap-spike progress + toolkit state
 - per-directory `README.md` files — what belongs in each directory
