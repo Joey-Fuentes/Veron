@@ -1,0 +1,60 @@
+name: elf-proto
+
+# SPIKE elf-proto (throwaway). Builds a hand-constructed minimal AArch64 ELF
+# around an exit(42) payload and proves the kernel/QEMU loads and runs it.
+# Success = the process exits 42. This pins the header byte layout for the
+# real `elf` tool.
+
+on:
+  push:
+    paths:
+      - 'spikes/elf-proto/**'
+      - '.github/workflows/elf-proto.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: elf-proto-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  proto:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain (qemu-user + binutils for readelf)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils
+
+      - name: Build the ELF and run it
+        run: |
+          python3 spikes/elf-proto/elf_proto.py
+
+          echo "--- file ---"
+          file a.elf
+          echo "--- readelf -h ---"
+          readelf -h a.elf
+
+          set +e
+          qemu-aarch64 ./a.elf
+          rc=$?
+          set -e
+
+          {
+            echo "## elf-proto — does a hand-built ELF run?"
+            echo '```'
+            echo "header bytes + entry are printed in the build step above"
+            echo "exit code: $rc   (expected 42)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "exit code: $rc (expected 42)"
+          if [ "$rc" = "42" ]; then
+            echo "PASS: the kernel loaded our hand-built ELF and ran it"
+          else
+            echo "FAIL: expected exit 42, got $rc"
+            exit 1
+          fi
