@@ -11,30 +11,33 @@ prog.c           | stage2 | stage0-as | elf  ->  a.out ; ./a.out   (exit == valu
 
 ## What it compiles
 
-`int main(){ return <expr>; }` where `<expr>` is integers combined with `+` and
-`-`, evaluated left to right:
+`int main(){ return <expr>; }` where `<expr>` is integers combined with `+ - *`
+and **correct precedence** (`*` binds tighter than `+`/`-`), via recursive
+descent:
 
 ```
-return 2+3-1;   ->   mov x0 2
-                     add x0 x0 3
-                     sub x0 x0 1
+return 2+3*4;   ->   mov x0 2        ; first term
+                     mov x1 3        ; next term
+                     mov x2 4
+                     mul x1 x1 x2    ; 3*4
+                     add x0 x0 x1    ; 2 + 12
                      mov x8 93
                      svc
 ```
 
-`+`/`-` become `add`/`sub` **immediate** chains — no new stage0-as ops needed.
-Whitespace is ignored; `int main(){}` (no `return`) compiles to `return 0`.
+Codegen uses `x0` as the running accumulator, `x1` for the current term, `x2` as
+multiply scratch — so it needs stage0-as's **register** `add`/`sub` and `mul`.
+Whitespace is ignored; no `return` compiles to `return 0`.
 
 ## Increments so far / next
 
-- ✅ `return N` (seed)
-- ✅ `return <int +/- int ...>` (this)
-- ⏭ `*` and precedence — needs a `mul` in stage0-as (next stage-0 convenience),
-  then a real expression parser. After that: variables, then control flow, toward
-  the M2-Planet-grade subset that hands off to the borrowed chain.
+- ✅ `return N`
+- ✅ `return <int +/- int ...>`
+- ✅ `return <expr with + - * and precedence>` (this)
+- ⏭ parentheses; then `/`; then variables and assignment; then control flow —
+  toward the M2-Planet-grade subset that hands off to the borrowed chain.
 
 ## Verified
 
 Developed and tested through the **real assembled ladder** on the dev bench
-(`spikes/bench/`) — not the Python references — so stage-1 read/buffer limits are
-modeled. CI (real `as` + QEMU) is ground truth.
+(`spikes/bench/`). CI (real `as` + QEMU) is ground truth.

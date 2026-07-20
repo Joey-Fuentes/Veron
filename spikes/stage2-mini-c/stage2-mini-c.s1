@@ -1,4 +1,5 @@
-# stage2 (mini-c): return <expr> with + and - (immediate add/sub chains)
+# stage2 (mini-c): return <expr> with + - * and precedence.
+# x0=accumulator, x1=term, x2=multiply scratch. term routines save x30 in x28.
 adr x19 inbuf
 adr x22 outbuf
 mov x0 0
@@ -31,14 +32,8 @@ cmp x20 x21
 b.lt search
 mov x6 x21
 :found
-bl skipsp
-adr x9 smov
-bl emitstr
-bl copydig
-mov w5 10
-strb w5 x22 x23
-add x23 x23 1
-:termloop
+bl term0
+:exprloop
 bl skipsp
 cmp x6 x21
 b.ge done
@@ -50,24 +45,22 @@ b.eq dosub
 b done
 :doadd
 add x6 x6 1
-bl skipsp
+bl term1
 adr x9 sadd
 bl emitstr
-bl copydig
 mov w5 10
 strb w5 x22 x23
 add x23 x23 1
-b termloop
+b exprloop
 :dosub
 add x6 x6 1
-bl skipsp
+bl term1
 adr x9 ssub
 bl emitstr
-bl copydig
 mov w5 10
 strb w5 x22 x23
 add x23 x23 1
-b termloop
+b exprloop
 :done
 adr x9 spost
 bl emitstr
@@ -79,6 +72,68 @@ svc
 mov x0 0
 mov x8 93
 svc
+:term0
+mov x28 x30
+adr x9 smov0
+bl emitstr
+bl copydig
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+:t0loop
+bl skipsp
+cmp x6 x21
+b.ge t0done
+ldrb w5 x19 x6
+cmp x5 42
+b.ne t0done
+add x6 x6 1
+adr x9 smov2
+bl emitstr
+bl copydig
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+adr x9 smul0
+bl emitstr
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+b t0loop
+:t0done
+mov x30 x28
+ret
+:term1
+mov x28 x30
+adr x9 smov1
+bl emitstr
+bl copydig
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+:t1loop
+bl skipsp
+cmp x6 x21
+b.ge t1done
+ldrb w5 x19 x6
+cmp x5 42
+b.ne t1done
+add x6 x6 1
+adr x9 smov2
+bl emitstr
+bl copydig
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+adr x9 smul1
+bl emitstr
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+b t1loop
+:t1done
+mov x30 x28
+ret
 :emitstr
 mov x7 0
 :esloop
@@ -109,6 +164,20 @@ b skipsp
 ret
 :copydig
 mov x10 0
+:cdskip
+cmp x6 x21
+b.ge cdloop
+ldrb w5 x19 x6
+cmp x5 32
+b.eq cdskadv
+cmp x5 9
+b.eq cdskadv
+cmp x5 10
+b.eq cdskadv
+b cdloop
+:cdskadv
+add x6 x6 1
+b cdskip
 :cdloop
 cmp x6 x21
 b.ge cddone
@@ -133,14 +202,26 @@ ret
 :pat
 .ascii "return"
 .byte 0
-:smov
+:smov0
 .ascii "mov x0 "
 .byte 0
+:smov1
+.ascii "mov x1 "
+.byte 0
+:smov2
+.ascii "mov x2 "
+.byte 0
+:smul0
+.ascii "mul x0 x0 x2"
+.byte 0
+:smul1
+.ascii "mul x1 x1 x2"
+.byte 0
 :sadd
-.ascii "add x0 x0 "
+.ascii "add x0 x0 x1"
 .byte 0
 :ssub
-.ascii "sub x0 x0 "
+.ascii "sub x0 x0 x1"
 .byte 0
 :spost
 .ascii "mov x8 93\nsvc\n"
