@@ -60,9 +60,18 @@ def encode(l, at, labels):
         d=_reg(p[1]); imm=int(p[2]); hw=int(p[3])//16
         return (0xF2800000|(hw<<21)|((imm&0xffff)<<5)|d, ('movk',d,imm,hw*16))
     if op=='add':
-        d=_reg(p[1]);n=_reg(p[2]);imm=int(p[3]); return (0x91000000|(imm<<10)|(n<<5)|d,('add',d,n,imm))
+        d=_reg(p[1]);n=_reg(p[2])
+        if p[3][0]=='x':
+            m=_reg(p[3]); return (0x8B000000|(m<<16)|(n<<5)|d,('addr',d,n,m))
+        imm=int(p[3]); return (0x91000000|(imm<<10)|(n<<5)|d,('add',d,n,imm))
     if op=='sub':
-        d=_reg(p[1]);n=_reg(p[2]);imm=int(p[3]); return (0xD1000000|(imm<<10)|(n<<5)|d,('sub',d,n,imm))
+        d=_reg(p[1]);n=_reg(p[2])
+        if p[3][0]=='x':
+            m=_reg(p[3]); return (0xCB000000|(m<<16)|(n<<5)|d,('subr',d,n,m))
+        imm=int(p[3]); return (0xD1000000|(imm<<10)|(n<<5)|d,('sub',d,n,imm))
+    if op=='mul':
+        d=_reg(p[1]);n=_reg(p[2]);m=_reg(p[3])
+        return (0x9B007C00|(m<<16)|(n<<5)|d,('mul',d,n,m))
     if op=='cmp':
         n=_reg(p[1])
         if p[2][0]=='x':                      # stage0-as: reg-compare ONLY for x-regs

@@ -1,0 +1,72 @@
+name: stage0-as-mul-demo
+
+# SPIKE (invariants suspended). Verifies the arithmetic ops added to stage0-as
+# for stage 2's expression codegen:
+#   add/sub x<d> x<n> x<m>   (register forms; immediate forms unchanged)
+#   mul x<d> x<n> x<m>       (= madd with xzr)
+# Byte-compared against real aarch64-linux-gnu-as, plus a runtime check that
+# `2 + 3*4` computes to 14 using mul + add-register.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage0-as/**'
+      - 'spikes/elf/**'
+      - '.github/workflows/stage0-as-mul-demo.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: stage0-as-mul-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user binutils-aarch64-linux-gnu
+      - name: Build stage0-as + elf, byte-check arithmetic ops, run 2+3*4
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+
+          # byte-compare add-reg / sub-reg / mul against real as
+          printf 'add x0 x0 x1\nsub x0 x0 x1\nmul x1 x1 x2\nmul x0 x1 x2\n' > ops.s0
+          printf '.text\n.global _start\n_start:\n\tadd x0,x0,x1\n\tsub x0,x0,x1\n\tmul x1,x1,x2\n\tmul x0,x1,x2\n' > ops_ref.s
+          aarch64-linux-gnu-as -o ops_ref.o ops_ref.s
+          aarch64-linux-gnu-objcopy -O binary --only-section=.text ops_ref.o ops_ref.bin
+          cat ops.s0 | qemu-aarch64 ./stage0-as > ops.bin
+          ops_ok=no; cmp -s ops.bin ops_ref.bin && ops_ok=yes
+
+          # confirm immediate add/sub still work (disambiguation): 5+3-1 -> 7
+          printf 'mov x0 5\nadd x0 x0 3\nsub x0 x0 1\nmov x8 93\nsvc\n' > imm.s0
+          cat imm.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf imm.elf
+          set +e; qemu-aarch64 ./imm.elf; imm_rc=$?; set -e
+
+          # runtime: 2 + 3*4 = 14  (mul + add-register)
+          printf 'mov x0 2\nmov x1 3\nmov x2 4\nmul x1 x1 x2\nadd x0 x0 x1\nmov x8 93\nsvc\n' > expr.s0
+          cat expr.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf expr.elf
+          set +e; qemu-aarch64 ./expr.elf; expr_rc=$?; set -e
+
+          echo "ops ours: $(od -An -v -tx1 ops.bin | tr -d ' \n')"
+          echo "ops ref : $(od -An -v -tx1 ops_ref.bin | tr -d ' \n')"
+          {
+            echo "## stage0-as — arithmetic ops for stage-2 codegen"
+            echo '```'
+            echo "add-reg/sub-reg/mul byte-identical : $ops_ok"
+            echo "immediate add/sub still work (5+3-1): $imm_rc  (expect 7)"
+            echo "runtime 2 + 3*4 (mul + add-reg)     : $expr_rc  (expect 14)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$ops_ok" = yes ] && [ "$imm_rc" = 7 ] && [ "$expr_rc" = 14 ]; then
+            echo "PASS: add/sub-reg + mul byte-correct and running; immediate forms intact."
+          else
+            echo "FAIL: ops=$ops_ok imm=$imm_rc expr=$expr_rc"; exit 1
+          fi

@@ -33,6 +33,8 @@ One item per line. Leading whitespace is fine. Register operands are one letter
 | `and x<d> x<n> x<m>` | bitwise AND (mask) |
 | `lsl/lsr/asr x<d> x<n> x<m>` | shift by register amount |
 | `movk x<d> <imm> <shift>` | insert 16-bit imm at shift 0/16/32/48 |
+| `add/sub x<d> x<n> x<m>` | register add/sub (3rd operand `x..`) |
+| `mul x<d> x<n> x<m>` | multiply (= madd with xzr) |
 | `adr x<d> <L>` | address of label into register |
 | `ldrb w<t> x<n> x<m>` | load byte `[Xn + Xm]` |
 | `strb w<t> x<n> x<m>` | store byte `[Xn + Xm]` |

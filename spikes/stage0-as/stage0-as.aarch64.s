@@ -14,6 +14,7 @@
 //   b / b.eq/ne/lt/ge <L>      svc                     :<L>
 //   bl <L>  ret  br x<n>  blr x<n>   (subroutines; base for stage 1)
 //   orr/and/lsl/lsr/asr x<d> x<n> x<m>    movk x<d> <imm> <shift>
+//   add/sub x<d> x<n> x<m> (register)     mul x<d> x<n> x<m>
 //   adr  x<d> <L>              ldrb/strb w<t> x<n> x<m>   ldr/str w<t> x<n>
 //   .byte <imm>                .ascii "text"           (\n supported)
 //
@@ -169,6 +170,10 @@ h_a:
 
 // ---- mov x<d> <imm>  or  mov x<d> x<n> ----
 h_mov:
+    add     x2, x20, #1
+    ldrb    w10, [x19, x2]
+    cmp     w10, #'u'               // 'mul'
+    b.eq    h_mul
     add     x2, x20, #3
     ldrb    w10, [x19, x2]
     cmp     w10, #'k'               // 'movk'
@@ -206,10 +211,21 @@ h_add:
     bl      next_reg
     mov     w25, w0
     bl      skip_ws
+    ldrb    w0, [x19, x20]
+    cmp     w0, #'x'
+    b.eq    h_add_reg
     bl      parse_dec
     lsl     w9, w0, #10
     movz    w1, #0x9100, lsl #16
     orr     w9, w9, w1
+    orr     w9, w9, w25, lsl #5
+    orr     w9, w9, w24
+    bl      emit
+    b       parse_loop
+h_add_reg:
+    bl      next_reg
+    movz    w9, #0x8B00, lsl #16
+    orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
     bl      emit
@@ -327,10 +343,21 @@ h_sub:
     bl      next_reg
     mov     w25, w0
     bl      skip_ws
+    ldrb    w0, [x19, x20]
+    cmp     w0, #'x'
+    b.eq    h_sub_reg
     bl      parse_dec
     lsl     w9, w0, #10
     movz    w1, #0xD100, lsl #16
     orr     w9, w9, w1
+    orr     w9, w9, w25, lsl #5
+    orr     w9, w9, w24
+    bl      emit
+    b       parse_loop
+h_sub_reg:
+    bl      next_reg
+    movz    w9, #0xCB00, lsl #16
+    orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
     bl      emit
@@ -503,6 +530,22 @@ h_movk:
     lsr     w0, w0, #4              // hw = shift / 16
     movz    w9, #0xF280, lsl #16
     orr     w9, w9, w0, lsl #21
+    orr     w9, w9, w25, lsl #5
+    orr     w9, w9, w24
+    bl      emit
+    b       parse_loop
+
+// ---- mul x<d> x<n> x<m>  (= madd with xzr) ----
+h_mul:
+    add     x20, x20, #3            // skip "mul"
+    bl      next_reg
+    mov     w24, w0
+    bl      next_reg
+    mov     w25, w0
+    bl      next_reg
+    movz    w9, #0x9B00, lsl #16
+    movk    w9, #0x7C00
+    orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
     bl      emit
