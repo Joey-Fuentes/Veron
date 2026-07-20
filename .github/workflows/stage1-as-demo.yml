@@ -1,0 +1,85 @@
+name: stage1-as-demo
+
+# SPIKE (invariants suspended). Stage 1 = macro-as, capability #1: MULTI-CHARACTER
+# LABELS. stage1-as.s0 is written in stage0-as's OWN language (subroutines +
+# shifts + brk) and assembled by stage0-as. It reads assembly with multi-char
+# labels and emits stage0-as-compatible single-char-label assembly:
+#
+#   prog.s1 | stage1 | stage0-as | elf out && ./out
+#
+# Checks: (1) a program using multi-char labels, resolved through stage1 and
+# assembled, is BYTE-IDENTICAL to real `as` of the equivalent; (2) it RUNS to
+# the right exit code; (3) an adr + memory program with a multi-char DATA label
+# also runs correctly.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage1-as/**'
+      - 'spikes/stage0-as/**'
+      - 'spikes/elf/**'
+      - '.github/workflows/stage1-as-demo.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: stage1-as-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user binutils-aarch64-linux-gnu
+      - name: Build stage0-as + elf, then stage1; resolve, byte-check, run
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+          hex() { od -An -v -tx1 "$1" | tr -d ' \n'; }
+
+          # --- build the stage1 executable (stage1.s0 assembled by stage0-as) ---
+          cat spikes/stage1-as/stage1-as.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
+          test -x stage1 || { echo "stage1 not built"; exit 1; }
+
+          # --- 1) multi-char labels: resolve -> assemble -> byte-compare vs as ---
+          printf 'mov x0 0\nmov x1 5\n:count\nadd x0 x0 1\ncmp x0 x1\nb.ne count\nbl addtwo\nmov x8 93\nsvc\n:addtwo\nadd x0 x0 2\nret\n' > loop.s1
+          cat loop.s1 | qemu-aarch64 ./stage1 > loop.resolved
+          echo "resolved:"; cat loop.resolved
+          cat loop.resolved | qemu-aarch64 ./stage0-as > loop.bin
+          printf '.text\n.global _start\n_start:\n\tmov x0,#0\n\tmov x1,#5\ncount:\n\tadd x0,x0,#1\n\tcmp x0,x1\n\tb.ne count\n\tbl addtwo\n\tmov x8,#93\n\tsvc #0\naddtwo:\n\tadd x0,x0,#2\n\tret\n' > loop_ref.s
+          aarch64-linux-gnu-as -o loop_ref.o loop_ref.s
+          aarch64-linux-gnu-objcopy -O binary --only-section=.text loop_ref.o loop_ref.bin
+          loop_ok=no; cmp -s loop.bin loop_ref.bin && loop_ok=yes
+
+          # run it (expect exit 7: loop to 5, addtwo +2)
+          cat loop.resolved | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf loop.elf
+          set +e; qemu-aarch64 ./loop.elf; loop_rc=$?; set -e
+
+          # --- 2) adr + memory with a multi-char DATA label (store 9, read back) ---
+          printf 'mov x0 9\nadr x1 slot\nmov x2 0\nstrb w0 x1 x2\nmov x0 0\nldrb w0 x1 x2\nmov x8 93\nsvc\n:slot\n.byte 0\n' > mem.s1
+          cat mem.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf mem.elf
+          set +e; qemu-aarch64 ./mem.elf; mem_rc=$?; set -e
+
+          echo "loop ours: $(hex loop.bin)"
+          echo "loop ref : $(hex loop_ref.bin)"
+          {
+            echo "## stage1-as — multi-character labels"
+            echo '```'
+            echo "resolved == real as (byte-identical) : $loop_ok"
+            echo "loop w/ multi-char labels exit       : $loop_rc  (expect 7)"
+            echo "adr+mem w/ multi-char data label exit: $mem_rc  (expect 9)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$loop_ok" = yes ] && [ "$loop_rc" = 7 ] && [ "$mem_rc" = 9 ]; then
+            echo "PASS: stage1 resolves multi-char labels; output byte-identical to as and runs. Stage 1 lives."
+          else
+            echo "FAIL: loop_ok=$loop_ok loop_rc=$loop_rc mem_rc=$mem_rc"
+            exit 1
+          fi

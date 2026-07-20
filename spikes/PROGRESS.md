@@ -109,6 +109,13 @@ stage-0 test: loop + memory + byte-compares), `elf-demo.yml`,
 8. `stage0-as` + memory/addressing (`adr`/`ldrb`/`strb`/`ldr`/`str`).
 9. `stage0-as` + `sub`/`mov`-reg/`cmp`-imm/`.byte`/`.ascii`; `elf` segment made
    writable → **runtime memory works**. **Stage 0 assembler-complete.**
+10. `stage0-as` + **subroutines** (`bl`/`ret`/`br`/`blr`), **shifts**
+   (`lsl`/`lsr`/`asr`), **logical** (`orr`/`and`), **wide-immediate** (`movk`) —
+   the base a stage-1 assembler is written on. Each byte-identical to real `as`.
+11. **Stage 1 (`macro-as`) capability #1: multi-character labels** —
+   `spikes/stage1-as/stage1-as.s0`, the first tool written **in stage0-as's own
+   language** (not hand-encoded). Resolves multi-char labels to single-char and
+   pipes into `stage0-as`; output byte-identical to `as`, runs under QEMU.
 
 Notable bug found and fixed along the way: the hand-built ELF failed to run
 because it lacked the execute bit — a *file-mode* issue, not a byte issue
@@ -121,11 +128,10 @@ because it lacked the execute bit — a *file-mode* issue, not a byte issue
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
 stage in the language of the stage below.
 
-- **Stage 1** — a more capable assembler, written **in `stage0-as`'s language**.
-  First capability: **multi-character labels** (stage 0 is limited to
-  single-char). This is ordinary programming now — no hand-encoding — with
-  `stage0-as` catching mistakes. Demo: assemble a test program through stage 1
-  and run it.
+- **Stage 1** — DONE for capability #1 (**multi-character labels**), see
+  `spikes/stage1-as/`. Written in stage0-as's language, byte-verified. Next
+  stage-1 increments add only what **stage 2** (a small C compiler, written in
+  stage-1's language) actually needs.
 - **Stage 2** — written in stage-1's language, adding the next capability.
 - **Stage 3** — written in stage-2's language. Each rung easier than the last.
 
