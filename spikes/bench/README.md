@@ -33,6 +33,14 @@ python3 validate.py                 # must pass before you trust the bench
 python3 -c "from interp import asm_run; print(asm_run(open('prog.s0').read())[0])"
 ```
 
+## Test stage-N through the REAL stage-(N-1), not the Python reference
+
+When developing stage 2+, resolve/assemble it by running the **actual assembled**
+lower stage through `interp.py` — not the convenience Python reference. The
+reference has no read/buffer limits, so it can hide real caps (e.g. a stage-1
+that only reads 500 bytes silently truncating a 2 KB stage-2 source). The real
+binary via `interp` models `read`/`brk`/buffer sizes.
+
 ## Faithfulness guards (known stage0-as limits the bench MUST model)
 
 - Labels are single-character (multi-char defs raise an error here).

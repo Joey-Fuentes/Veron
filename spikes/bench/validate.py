@@ -55,6 +55,17 @@ except ValueError:
 _,prog,_ = assemble("cmp w4 w5\n")
 check("cmp w4 w5 is NOT reg-compare", prog[0][0], "cmp_i")
 
+
+print("== stage 1 handles large inputs (no read truncation) ==")
+import os
+s1p = os.path.join(os.path.dirname(__file__), "..", "stage1-as", "stage1-as.s0")
+if os.path.exists(s1p):
+    _,s1prog,_ = assemble(open(s1p).read())
+    big = ("mov x0 0\n"*300) + "mov x8 93\nsvc\n"   # ~2.4 KB input
+    _,out = run(s1prog, stdin=big.encode())
+    # resolved output should be about as long as input (not truncated to ~500)
+    check("stage1 not truncating ~2.4KB input", len(out) > 2000, True)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)
