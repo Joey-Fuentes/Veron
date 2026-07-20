@@ -13,6 +13,7 @@
 //   sub  x<d> x<n> <imm>       cmp  x<n> x<m>          cmp x<n> <imm>
 //   b / b.eq/ne/lt/ge <L>      svc                     :<L>
 //   bl <L>  ret  br x<n>  blr x<n>   (subroutines; base for stage 1)
+//   orr/and/lsl/lsr/asr x<d> x<n> x<m>    movk x<d> <imm> <shift>
 //   adr  x<d> <L>              ldrb/strb w<t> x<n> x<m>   ldr/str w<t> x<n>
 //   .byte <imm>                .ascii "text"           (\n supported)
 //
@@ -79,6 +80,8 @@ parse_loop:
     b.eq    h_s
     cmp     w0, #'r'
     b.eq    h_ret
+    cmp     w0, #'o'
+    b.eq    h_orr
     b       skip_line
 pass_end:
     cmp     x23, #2
@@ -150,7 +153,13 @@ asc_emit:
 
 // ---- 'a' : add or adr ----
 h_a:
-    add     x2, x20, #2
+    add     x2, x20, #1
+    ldrb    w10, [x19, x2]
+    cmp     w10, #'n'               // 'and'
+    b.eq    h_and
+    cmp     w10, #'s'               // 'asr'
+    b.eq    h_asr
+    add     x2, x20, #2             // else 'd' -> add / adr
     ldrb    w10, [x19, x2]
     cmp     w10, #'d'
     b.eq    h_add
@@ -160,6 +169,10 @@ h_a:
 
 // ---- mov x<d> <imm>  or  mov x<d> x<n> ----
 h_mov:
+    add     x2, x20, #3
+    ldrb    w10, [x19, x2]
+    cmp     w10, #'k'               // 'movk'
+    b.eq    h_movk
     add     x20, x20, #3
     bl      skip_ws
     add     x20, x20, #1
@@ -250,11 +263,21 @@ h_cmp_reg:
 
 // ---- 'l' : ldrb or ldr ----
 h_l:
-    add     x2, x20, #3
+    add     x2, x20, #1
+    ldrb    w10, [x19, x2]
+    cmp     w10, #'s'               // 'lsl' / 'lsr'
+    b.eq    h_lsl_or_lsr
+    add     x2, x20, #3             // else 'd' -> ldr / ldrb
     ldrb    w10, [x19, x2]
     cmp     w10, #'b'
     b.eq    h_ldrb
     b       h_ldr
+h_lsl_or_lsr:
+    add     x2, x20, #2
+    ldrb    w10, [x19, x2]
+    cmp     w10, #'r'
+    b.eq    h_lsr
+    b       h_lsl
 h_ldrb:
     add     x20, x20, #4
     bl      next_reg
@@ -410,6 +433,78 @@ h_ret:
     add     x20, x20, #3            // skip "ret"
     movz    w9, #0x03C0
     movk    w9, #0xD65F, lsl #16
+    bl      emit
+    b       parse_loop
+
+// ---- orr/and x<d> x<n> x<m>  (combine / mask instruction fields) ----
+h_orr:
+    add     x20, x20, #3            // skip "orr"
+    bl      next_reg
+    mov     w24, w0
+    bl      next_reg
+    mov     w25, w0
+    bl      next_reg
+    movz    w9, #0xAA00, lsl #16
+    orr     w9, w9, w0, lsl #16
+    orr     w9, w9, w25, lsl #5
+    orr     w9, w9, w24
+    bl      emit
+    b       parse_loop
+h_and:
+    add     x20, x20, #3            // skip "and"
+    bl      next_reg
+    mov     w24, w0
+    bl      next_reg
+    mov     w25, w0
+    bl      next_reg
+    movz    w9, #0x8A00, lsl #16
+    orr     w9, w9, w0, lsl #16
+    orr     w9, w9, w25, lsl #5
+    orr     w9, w9, w24
+    bl      emit
+    b       parse_loop
+
+// ---- lsl/lsr/asr x<d> x<n> x<m>  (variable shift by register) ----
+h_lsl:
+    add     x20, x20, #3            // skip "lsl"
+    movz    w26, #0x2000
+    b       shift_common
+h_lsr:
+    add     x20, x20, #3            // skip "lsr"
+    movz    w26, #0x2400
+    b       shift_common
+h_asr:
+    add     x20, x20, #3            // skip "asr"
+    movz    w26, #0x2800
+shift_common:
+    bl      next_reg
+    mov     w24, w0
+    bl      next_reg
+    mov     w25, w0
+    bl      next_reg
+    movz    w9, #0x9AC0, lsl #16
+    orr     w9, w9, w26             // 0x2000/0x2400/0x2800 selector
+    orr     w9, w9, w0, lsl #16
+    orr     w9, w9, w25, lsl #5
+    orr     w9, w9, w24
+    bl      emit
+    b       parse_loop
+
+// ---- movk x<d> <imm> <shift>   shift in {0,16,32,48} ----
+h_movk:
+    add     x20, x20, #4            // skip "movk"
+    bl      next_reg                // d
+    mov     w24, w0
+    bl      skip_ws
+    bl      parse_dec               // imm16
+    mov     w25, w0
+    bl      skip_ws
+    bl      parse_dec               // shift
+    lsr     w0, w0, #4              // hw = shift / 16
+    movz    w9, #0xF280, lsl #16
+    orr     w9, w9, w0, lsl #21
+    orr     w9, w9, w25, lsl #5
+    orr     w9, w9, w24
     bl      emit
     b       parse_loop
 

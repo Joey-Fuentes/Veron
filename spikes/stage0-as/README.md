@@ -29,6 +29,10 @@ One item per line. Leading whitespace is fine. Register operands are one letter
 | `ret` | return via x30 |
 | `br x<n>` | branch to register |
 | `blr x<n>` | branch-to-register-and-link |
+| `orr x<d> x<n> x<m>` | bitwise OR (combine fields) |
+| `and x<d> x<n> x<m>` | bitwise AND (mask) |
+| `lsl/lsr/asr x<d> x<n> x<m>` | shift by register amount |
+| `movk x<d> <imm> <shift>` | insert 16-bit imm at shift 0/16/32/48 |
 | `adr x<d> <L>` | address of label into register |
 | `ldrb w<t> x<n> x<m>` | load byte `[Xn + Xm]` |
 | `strb w<t> x<n> x<m>` | store byte `[Xn + Xm]` |
@@ -50,7 +54,7 @@ so they need no load address.
 ## Known limits (motivate later stages)
 
 - Labels are single-character (multi-char labels are stage 1's job).
-- Subroutines (`bl`/`ret`/`br`/`blr`) were added as the base stage 1 is written on; still no shifts/logical-ops/wide-imm (those come as further stage-0 conveniences if stage 1 needs them).
+- Subroutines (`bl`/`ret`/`br`/`blr`) plus shifts (`lsl`/`lsr`/`asr`), logical (`orr`/`and`), and wide-immediate (`movk`) were added as the base stage 1 (macro-as) is written on. Shifts/`movk` take register/immediate forms sufficient to emit ARM64 encodings from within stage-1 code.
 - 16-bit immediates only (`mov`), 12-bit for `add`/`sub`/`cmp`.
 - Well-formed input assumed — minimal error checking (it's a spike).
 

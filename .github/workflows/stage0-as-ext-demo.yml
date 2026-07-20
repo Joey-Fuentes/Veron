@@ -1,10 +1,13 @@
 name: stage0-as-ext-demo
 
-# SPIKE (invariants suspended). Verifies the subroutine ops added to stage0-as
-# (bl / ret / br / blr) — the base that stage 1 (macro-as) is written on.
-#   1) byte-compare bl/ret/br/blr against real aarch64-linux-gnu-as
-#   2) runtime: a program that CALLS a subroutine and RETURNS, exit == 7
-# Each op is byte-verified against ground truth; the run proves call/return work.
+# SPIKE (invariants suspended). Verifies the primitives added to stage0-as to
+# make stage 1 (macro-as) writable:
+#   subroutines   : bl / ret / br / blr
+#   shifts        : lsl / lsr / asr   (register amount)
+#   logical       : orr / and
+#   wide-immediate: movk
+# Every op is byte-compared against real aarch64-linux-gnu-as, plus two runtime
+# checks: a call/return (exit 7) and a shift (1<<3 -> exit 8).
 
 on:
   push:
@@ -28,46 +31,53 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-user binutils-aarch64-linux-gnu
-      - name: Build stage0-as + elf, byte-check subroutine ops, run a call/return
+      - name: Build stage0-as + elf, byte-check new ops, run call/return + shift
         run: |
           aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
           aarch64-linux-gnu-ld -static -o stage0-as s0.o
           aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
           aarch64-linux-gnu-ld -static -o elf elf.o
-          hex() { od -An -v -tx1 "$1" | tr -d ' \n'; }
+          cmp_op() { # $1=our .s0  $2=ref .s  -> echoes yes/no
+            aarch64-linux-gnu-as -o r.o "$2"
+            aarch64-linux-gnu-objcopy -O binary --only-section=.text r.o r.bin
+            cat "$1" | qemu-aarch64 ./stage0-as > o.bin
+            if cmp -s o.bin r.bin; then echo yes; else echo no; fi
+          }
 
-          # ---- 1) byte-compare bl / ret / br / blr against real as ----
+          # ---- 1) subroutines: bl / ret / br / blr ----
           printf 'bl f\nret\nbr x16\nblr x17\n:f\nret\n' > sub.s0
-          printf '.text\n.global _start\n_start:\n\tbl f\n\tret\n\tbr x16\n\tblr x17\nf:\n\tret\n' > sub_ref.s
-          aarch64-linux-gnu-as -o sub_ref.o sub_ref.s
-          aarch64-linux-gnu-objcopy -O binary --only-section=.text sub_ref.o sub_ref.bin
-          cat sub.s0 | qemu-aarch64 ./stage0-as > sub.bin
-          sub_ok=no; cmp -s sub.bin sub_ref.bin && sub_ok=yes
+          printf '.text\n.global _start\n_start:\n\tbl f\n\tret\n\tbr x16\n\tblr x17\nf:\n\tret\n' > sub.s
+          sub_ok=$(cmp_op sub.s0 sub.s)
 
-          # ---- 2) runtime call/return: main calls 'a' (adds 2), returns, exit 7 ----
+          # ---- 2) shifts / logical / movk ----
+          printf 'orr x9 x9 x1\nand x9 x9 x1\nlsl x9 x0 x2\nlsr x9 x0 x2\nasr x1 x1 x2\nmovk x9 54400 16\n' > alu.s0
+          printf '.text\n.global _start\n_start:\n\torr x9,x9,x1\n\tand x9,x9,x1\n\tlsl x9,x0,x2\n\tlsr x9,x0,x2\n\tasr x1,x1,x2\n\tmovk x9,#0xD280,lsl #16\n' > alu.s
+          alu_ok=$(cmp_op alu.s0 alu.s)
+          echo "alu ours: $(cat alu.s0 | qemu-aarch64 ./stage0-as | od -An -v -tx1 | tr -d ' \n')"
+
+          # ---- 3) runtime: call/return -> exit 7 ----
           printf 'mov x0 5\nbl a\nmov x8 93\nsvc\n:a\nadd x0 x0 2\nret\n' > call.s0
-          printf '.text\n.global _start\n_start:\n\tmov x0,#5\n\tbl a\n\tmov x8,#93\n\tsvc #0\na:\n\tadd x0,x0,#2\n\tret\n' > call_ref.s
-          aarch64-linux-gnu-as -o call_ref.o call_ref.s
-          aarch64-linux-gnu-objcopy -O binary --only-section=.text call_ref.o call_ref.bin
-          cat call.s0 | qemu-aarch64 ./stage0-as > call.bin
-          call_ok=no; cmp -s call.bin call_ref.bin && call_ok=yes
           cat call.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf call.elf
           set +e; qemu-aarch64 ./call.elf; call_rc=$?; set -e
 
-          echo "sub  ours: $(hex sub.bin)"
-          echo "sub  ref : $(hex sub_ref.bin)"
+          # ---- 4) runtime: 1 << 3 -> exit 8 ----
+          printf 'mov x0 1\nmov x2 3\nlsl x0 x0 x2\nmov x8 93\nsvc\n' > shl.s0
+          cat shl.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf shl.elf
+          set +e; qemu-aarch64 ./shl.elf; shl_rc=$?; set -e
+
           {
-            echo "## stage0-as — subroutine ops (base for stage 1)"
+            echo "## stage0-as — stage-1 base primitives"
             echo '```'
-            echo "bl/ret/br/blr byte-identical : $sub_ok"
-            echo "call/return byte-identical    : $call_ok"
-            echo "call/return runtime exit      : $call_rc  (expect 7)"
+            echo "subroutines (bl/ret/br/blr) byte-identical  : $sub_ok"
+            echo "alu (orr/and/lsl/lsr/asr/movk) byte-identical: $alu_ok"
+            echo "runtime call/return exit : $call_rc  (expect 7)"
+            echo "runtime 1<<3 exit        : $shl_rc  (expect 8)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$sub_ok" = yes ] && [ "$call_ok" = yes ] && [ "$call_rc" = 7 ]; then
-            echo "PASS: bl/ret/br/blr correct; subroutines call and return. Stage 1 base is ready."
+          if [ "$sub_ok" = yes ] && [ "$alu_ok" = yes ] && [ "$call_rc" = 7 ] && [ "$shl_rc" = 8 ]; then
+            echo "PASS: subroutines + shifts/logical/movk byte-correct and running. Stage 1 base ready."
           else
-            echo "FAIL: sub_ok=$sub_ok call_ok=$call_ok call_rc=$call_rc"
+            echo "FAIL: sub=$sub_ok alu=$alu_ok call=$call_rc shl=$shl_rc"
             exit 1
           fi
