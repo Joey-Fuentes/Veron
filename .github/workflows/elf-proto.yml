@@ -1,9 +1,10 @@
 name: elf-proto
 
-# SPIKE elf-proto (throwaway). Builds a hand-constructed minimal AArch64 ELF
-# around an exit(42) payload and proves the kernel/QEMU loads and runs it.
-# Success = the process exits 42. This pins the header byte layout for the
-# real `elf` tool.
+# DIAGNOSTIC run. The hand-built ELF exited 1 with no signal; this workflow
+# finds out why by (1) running a real ld-linked exit(42) binary to prove QEMU
+# works here, (2) running our ELF under `qemu -strace` to see its syscalls,
+# and (3) printing `readelf -l` for both so we can diff the program headers.
+# Nothing is gated — we want all the output.
 
 on:
   push:
@@ -23,38 +24,36 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install toolchain (qemu-user + binutils for readelf)
+      - name: Install toolchain (qemu-user + aarch64 binutils)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            qemu-user binutils
+            qemu-user binutils-aarch64-linux-gnu
 
-      - name: Build the ELF and run it
+      - name: Reference — real ld-linked exit(42) (proves QEMU works)
+        run: |
+          printf '.text\n.global _start\n_start:\n\tmov x0, #42\n\tmov x8, #93\n\tsvc #0\n' > ref.s
+          aarch64-linux-gnu-as -o ref.o ref.s
+          aarch64-linux-gnu-ld -static -o ref.elf ref.o
+          echo "=== run reference under qemu ==="
+          set +e; qemu-aarch64 ./ref.elf; echo "REF exit: $?"; set -e
+          echo "=== reference program headers (known-good) ==="
+          readelf -l ref.elf
+          echo "=== reference entry ==="
+          readelf -h ref.elf | grep -i entry
+
+      - name: Ours — hand-built ELF (strace + headers)
         run: |
           python3 spikes/elf-proto/elf_proto.py
-
-          echo "--- file ---"
-          file a.elf
-          echo "--- readelf -h ---"
-          readelf -h a.elf
-
+          echo "=== our program headers ==="
+          readelf -l a.elf
+          echo "=== run ours under qemu -strace (shows guest syscalls) ==="
           set +e
-          qemu-aarch64 ./a.elf
-          rc=$?
+          qemu-aarch64 -strace ./a.elf
+          echo "OURS exit: $?"
           set -e
-
-          {
-            echo "## elf-proto — does a hand-built ELF run?"
-            echo '```'
-            echo "header bytes + entry are printed in the build step above"
-            echo "exit code: $rc   (expected 42)"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "exit code: $rc (expected 42)"
-          if [ "$rc" = "42" ]; then
-            echo "PASS: the kernel loaded our hand-built ELF and ran it"
-          else
-            echo "FAIL: expected exit 42, got $rc"
-            exit 1
-          fi
+          echo "=== also try plain run, capture any stderr ==="
+          set +e
+          qemu-aarch64 ./a.elf 2>&1
+          echo "OURS(plain) exit: $?"
+          set -e
