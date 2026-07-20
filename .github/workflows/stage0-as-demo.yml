@@ -1,10 +1,11 @@
 name: stage0-as-demo
 
-# SPIKE stage0-as demo (invariants suspended). Assembles a counting LOOP
-# (labels + branch + cmp + add) and checks it two ways:
-#   1) byte-identical to what the real assembler produces (pinpoints any
-#      encoding bug to the exact instruction), and
-#   2) runs end-to-end through the pipeline and exits with the computed code (5).
+# SPIKE stage0-as demo (invariants suspended). Two checks:
+#   1) regression: the counting LOOP still assembles byte-identically AND runs
+#      to exit 5 (guards the refactor of add/cmp to a shared reg parser)
+#   2) new: a program using adr/ldrb/strb/ldr/str assembles byte-identically to
+#      the real assembler (encoding verification; not run — stores need the
+#      writable segment that arrives in Shot B).
 
 on:
   push:
@@ -25,53 +26,55 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install toolchain (qemu-user + aarch64 binutils)
+      - name: Install toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             qemu-user binutils-aarch64-linux-gnu
 
-      - name: Assemble a loop, compare to real `as`, and run it
+      - name: Build, regression-test the loop, and byte-check memory ops
         run: |
           aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
           aarch64-linux-gnu-ld -static -o stage0-as s0.o
           aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
           aarch64-linux-gnu-ld -static -o elf elf.o
 
-          # program in stage0-as's language: count x0 from 0 to 5, exit(5)
-          printf 'mov x0 0\nmov x1 5\n:a\nadd x0 x0 1\ncmp x0 x1\nb.ne a\nmov x8 93\nsvc\n' > prog.s0
-          echo "=== program ==="; cat prog.s0
+          hex() { od -An -v -tx1 "$1" | tr -d ' \n'; }
 
-          # reference bytes from the real assembler (same program)
-          printf '.text\n.global _start\n_start:\n\tmov x0,#0\n\tmov x1,#5\na:\n\tadd x0,x0,#1\n\tcmp x0,x1\n\tb.ne a\n\tmov x8,#93\n\tsvc #0\n' > ref.s
-          aarch64-linux-gnu-as -o ref.o ref.s
-          aarch64-linux-gnu-objcopy -O binary --only-section=.text ref.o ref.bin
+          # ---- 1) regression: loop, byte-compare + run ----
+          printf 'mov x0 0\nmov x1 5\n:a\nadd x0 x0 1\ncmp x0 x1\nb.ne a\nmov x8 93\nsvc\n' > loop.s0
+          printf '.text\n.global _start\n_start:\n\tmov x0,#0\n\tmov x1,#5\na:\n\tadd x0,x0,#1\n\tcmp x0,x1\n\tb.ne a\n\tmov x8,#93\n\tsvc #0\n' > loop_ref.s
+          aarch64-linux-gnu-as -o loop_ref.o loop_ref.s
+          aarch64-linux-gnu-objcopy -O binary --only-section=.text loop_ref.o loop_ref.bin
+          cat loop.s0 | qemu-aarch64 ./stage0-as > loop.bin
+          loop_ok=no; cmp -s loop.bin loop_ref.bin && loop_ok=yes
+          cat loop.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf loop.elf
+          set +e; qemu-aarch64 ./loop.elf; loop_rc=$?; set -e
 
-          # our output
-          cat prog.s0 | qemu-aarch64 ./stage0-as > our.bin
+          # ---- 2) new: memory ops, byte-compare only ----
+          printf 'mov x2 0\nadr x1 d\nldrb w0 x1 x2\nstrb w0 x1 x2\nldr w3 x1\nstr w3 x1\n:d\n' > mem.s0
+          printf '.text\n.global _start\n_start:\n\tmov x2,#0\n\tadr x1,d\n\tldrb w0,[x1,x2]\n\tstrb w0,[x1,x2]\n\tldr w3,[x1]\n\tstr w3,[x1]\nd:\n' > mem_ref.s
+          aarch64-linux-gnu-as -o mem_ref.o mem_ref.s
+          aarch64-linux-gnu-objcopy -O binary --only-section=.text mem_ref.o mem_ref.bin
+          cat mem.s0 | qemu-aarch64 ./stage0-as > mem.bin
+          mem_ok=no; cmp -s mem.bin mem_ref.bin && mem_ok=yes
 
-          echo "=== bytes ==="
-          echo "ours: $(od -An -v -tx1 our.bin | tr -d ' \n')"
-          echo "ref : $(od -An -v -tx1 ref.bin | tr -d ' \n')"
-
-          # run end to end
-          cat prog.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf out.elf
-          set +e; qemu-aarch64 ./out.elf; rc=$?; set -e
-          echo "=== run: exit $rc (expected 5) ==="
-
-          byteok=no; cmp -s our.bin ref.bin && byteok=yes
+          echo "=== loop  ours: $(hex loop.bin)"
+          echo "=== loop  ref : $(hex loop_ref.bin)"
+          echo "=== mem   ours: $(hex mem.bin)"
+          echo "=== mem   ref : $(hex mem_ref.bin)"
 
           {
-            echo "## stage0-as — labels + control flow"
+            echo "## stage0-as — Shot A (memory + addressing)"
             echo '```'
-            echo "byte-identical to real as : $byteok"
-            echo "loop program exit         : $rc  (expected 5)"
+            echo "loop byte-identical : $loop_ok    loop exit: $loop_rc (expect 5)"
+            echo "mem  byte-identical : $mem_ok"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$byteok" = "yes" ] && [ "$rc" = "5" ]; then
-            echo "PASS: labels/branches/arithmetic assemble byte-identically AND run"
+          if [ "$loop_ok" = yes ] && [ "$loop_rc" = 5 ] && [ "$mem_ok" = yes ]; then
+            echo "PASS: loop still works; adr/ldrb/strb/ldr/str encode correctly"
           else
-            echo "FAIL: byteok=$byteok exit=$rc — compare the two hex lines above"
+            echo "FAIL: loop_ok=$loop_ok loop_rc=$loop_rc mem_ok=$mem_ok — see hex above"
             exit 1
           fi
