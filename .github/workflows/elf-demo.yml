@@ -1,0 +1,71 @@
+name: elf-demo
+
+# SPIKE elf demo (invariants suspended). Proves the whole toolkit pipeline:
+#   mnemonics --[stage0-as]--> code bytes --[elf OUTPATH]--> runnable file
+# The `elf` tool sets the executable bit itself, so the output runs with NO
+# host chmod. The demo program is exit(42), so success is $? == 42.
+
+on:
+  push:
+    paths:
+      - 'spikes/elf/**'
+      - 'spikes/stage0-as/**'
+      - '.github/workflows/elf-demo.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: elf-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain (qemu-user + aarch64 binutils)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu
+
+      - name: Build both tools and run the pipeline
+        run: |
+          # build stage0-as (from the repo)
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          # build the elf tool
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+
+          # a tiny program in stage0-as's language: exit(42)
+          printf '# exit 42\nmov x0 42\nmov x8 93\nsvc\n' > prog.s0
+          echo "=== program ==="; cat prog.s0
+
+          # THE PIPELINE: text -> stage0-as -> code bytes -> elf -> runnable file
+          cat prog.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf out.elf
+
+          echo "=== out.elf (elf tool set +x itself — note the mode) ==="
+          ls -l out.elf
+          echo "=== readelf ==="
+          readelf -h out.elf | grep -iE "Type|Machine|Entry"
+
+          echo "=== run it directly, NO host chmod ==="
+          set +e; qemu-aarch64 ./out.elf; rc=$?; set -e
+          echo "exit: $rc (expected 42)"
+
+          {
+            echo "## elf-demo — full pipeline"
+            echo '```'
+            echo "$(ls -l out.elf | awk '{print $1}')  out.elf"
+            echo "run exit: $rc  (expected 42)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$rc" = "42" ] && [ -x out.elf ]; then
+            echo "PASS: pipeline produced a runnable, executable binary with no host chmod"
+          else
+            echo "FAIL: exit=$rc, executable=$([ -x out.elf ] && echo yes || echo no)"
+            exit 1
+          fi
