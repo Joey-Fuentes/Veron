@@ -6,14 +6,16 @@ Program: int main(){ <stmt>* }
         | if ( <expr> ) { <stmt>* }
         | while ( <expr> ) { <stmt>* }
 Single-char var names -> labeled 4-byte (word) slots :a..:z in the emitted program.
-Expressions: number | var | ( expr ), with + - * (precedence, parens), shunting-yard.
-Truth test: nonzero (C semantics). No comparison operators yet.
+Expressions: number | var | ( expr ), with + - * and comparisons
+< > <= >= == != (C precedence, parens), shunting-yard.
+Truth test: nonzero (C semantics). Comparisons are unsigned-32, yield 0/1.
 
 Codegen is ITERATIVE with an explicit block stack (mirrors the asm: no cheap
 recursion). Control-flow jump targets use uppercase labels A,B,... (var slots use
 a..z, so they don't collide); up to 26 control-flow labels per program.
 """
-PREC={'<':0,'>':0,'+':1,'-':1,'*':2}
+# C precedence, low->high:  == !=  <  < > <= >=  <  + -  <  *
+PREC={'==':0,'!=':0,'<':1,'>':1,'<=':1,'>=':1,'+':2,'-':2,'*':3}
 
 def _tokens(s):
     i=0;out=[]
@@ -26,6 +28,12 @@ def _tokens(s):
             out.append(('num',s[i:j])); i=j
         elif c.isalpha():
             out.append(('var',c)); i+=1
+        elif c in '<>' and i+1<len(s) and s[i+1]=='=':   # <= >=
+            out.append(('op',c+'=')); i+=2
+        elif c=='=' and i+1<len(s) and s[i+1]=='=':       # ==
+            out.append(('op','==')); i+=2
+        elif c=='!' and i+1<len(s) and s[i+1]=='=':       # !=
+            out.append(('op','!=')); i+=2
         elif c in '+-*<>()':
             out.append(('op',c)); i+=1
         else: i+=1
@@ -42,6 +50,14 @@ def _compile_expr(expr):
             out.extend(["sub x0 x1 x0","mov x2 63","lsr x0 x0 x2"])
         elif o=='>':    # a>b = (b-a)>>63
             out.extend(["sub x0 x0 x1","mov x2 63","lsr x0 x0 x2"])
+        elif o=='<=':   # a<=b = 1-(a>b)
+            out.extend(["sub x0 x0 x1","mov x2 63","lsr x0 x0 x2","mov x2 1","sub x0 x2 x0"])
+        elif o=='>=':   # a>=b = 1-(a<b)
+            out.extend(["sub x0 x1 x0","mov x2 63","lsr x0 x0 x2","mov x2 1","sub x0 x2 x0"])
+        elif o=='!=':   # a!=b = (d|-d)>>63, d=a-b
+            out.extend(["sub x0 x1 x0","mov x2 0","sub x2 x2 x0","orr x0 x0 x2","mov x2 63","lsr x0 x0 x2"])
+        elif o=='==':   # a==b = 1-(a!=b)
+            out.extend(["sub x0 x1 x0","mov x2 0","sub x2 x2 x0","orr x0 x0 x2","mov x2 63","lsr x0 x0 x2","mov x2 1","sub x0 x2 x0"])
         else:
             out.append({'+':"add x0 x1 x0",'-':"sub x0 x1 x0",'*':"mul x0 x1 x0"}[o])
         out.extend(["str w0 x9","add x9 x9 4"])
@@ -147,10 +163,14 @@ def evaluate(src):
             if k=='n': st.append(v & 0xFFFFFFFF)
             elif k=='v': st.append(env.get(v,0) & 0xFFFFFFFF)
             else:
-                b=st.pop(); a=st.pop()
-                if v=='<':   r=1 if (a & 0xFFFFFFFF) < (b & 0xFFFFFFFF) else 0
-                elif v=='>': r=1 if (a & 0xFFFFFFFF) > (b & 0xFFFFFFFF) else 0
-                else:        r={'+':a+b,'-':a-b,'*':a*b}[v]
+                b=st.pop() & 0xFFFFFFFF; a=st.pop() & 0xFFFFFFFF
+                if v=='<':    r=1 if a <  b else 0     # unsigned-32 (loads zero-extend)
+                elif v=='>':  r=1 if a >  b else 0
+                elif v=='<=': r=1 if a <= b else 0
+                elif v=='>=': r=1 if a >= b else 0
+                elif v=='==': r=1 if a == b else 0
+                elif v=='!=': r=1 if a != b else 0
+                else:         r={'+':a+b,'-':a-b,'*':a*b}[v]
                 st.append(r & 0xFFFFFFFF)
         return (st[-1] if st else 0) & 0xFFFFFFFF
     def skipws(i):

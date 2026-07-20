@@ -168,6 +168,42 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 rel exit -> {want}", _exit(cs), want)
 
+    print("== stage 2 equality / relational-eq: == != <= >= (unsigned-32, branchless) ==")
+    # Structural: != is (d|-d)>>63 (an OR of a value and its negation); == is that
+    # then flipped (1-x); <= is '>' flipped; >= is '<' flipped. The flip is the
+    # tell-tale reversed-operand subtract 'sub x0 x2 x0'. All still branchless.
+    emne = _emit("int main(){int a=3;int b=5;return a!=b;}")
+    check("stage2 '!=' ORs d with -d (orr x0 x0 x2)", "orr x0 x0 x2" in emne, True)
+    check("stage2 '!=' negates d (sub x2 x2 x0)",     "sub x2 x2 x0" in emne, True)
+    check("stage2 '!=' has no flip (no sub x0 x2 x0)","sub x0 x2 x0" in emne, False)
+    check("stage2 '!=' is branchless (no b.)",        "\nb." in emne,        False)
+    emeq = _emit("int main(){int a=3;int b=5;return a==b;}")
+    check("stage2 '==' reuses != then flips (sub x0 x2 x0)", "sub x0 x2 x0" in emeq, True)
+    emle = _emit("int main(){int a=3;int b=5;return a<=b;}")
+    check("stage2 '<=' is '>' (sub x0 x0 x1) flipped", ("sub x0 x0 x1" in emle) and ("sub x0 x2 x0" in emle), True)
+    emge = _emit("int main(){int a=3;int b=5;return a>=b;}")
+    check("stage2 '>=' is '<' (sub x0 x1 x0) flipped", ("sub x0 x1 x0" in emge) and ("sub x0 x2 x0" in emge), True)
+    # Behavioural: exit codes through the real assembled ladder. Cover each op, the
+    # == < >= precedence ordering, arithmetic feeding a comparison, and <=/>= loop guards.
+    for cs, want in [
+        ("int main(){int a=5;int b=5;return a==b;}", 1),
+        ("int main(){int a=5;int b=6;return a==b;}", 0),
+        ("int main(){int a=5;int b=6;return a!=b;}", 1),
+        ("int main(){int a=5;int b=5;return a!=b;}", 0),
+        ("int main(){int a=4;int b=5;return a<=b;}", 1),
+        ("int main(){int a=6;int b=5;return a<=b;}", 0),
+        ("int main(){int a=5;int b=5;return a>=b;}", 1),
+        ("int main(){int a=4;int b=5;return a>=b;}", 0),
+        ("int main(){return 2+3==5;}", 1),               # arithmetic binds tighter than ==
+        ("int main(){int a=1;int b=2;int c=3;return a==b<c;}", 1),  # == below < : a==(b<c)
+        ("int main(){int i=1;int s=0;while(i<=5){s=s+i;i=i+1;}return s;}", 15),
+        ("int main(){int i=10;int s=0;while(i>=1){s=s+i;i=i-1;}return s;}", 55),
+        ("int main(){int a=7;if(a==7){return 3;}return 9;}", 3),
+        ("int main(){int a=7;if(a!=7){return 3;}return 9;}", 9),
+        ("int main(){int a=8;int b=8;int c=0;if(a==b){if(a>=b){c=42;}}return c;}", 42),
+    ]:
+        check(f"stage2 eq exit -> {want}", _exit(cs), want)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)

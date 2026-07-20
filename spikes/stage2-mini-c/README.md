@@ -24,10 +24,11 @@ int main(){
 - **variables + assignment**: single-char names (`a`..`z`) → labeled **4-byte
   (word) slots** (`:a`..`:z`) in the emitted program, accessed via `adr` +
   `ldr`/`str`. Declared with `int c=…;`, updated with `c=…;` (reassignment).
-- **expressions**: integers, variables, `+ - *`, the **relational** operators
-  `<` and `>`, precedence, and parentheses, via shunting-yard; emitted code uses
-  a `brk` value stack. `<`/`>` sit **below** `+ - *` in precedence and yield
-  `0`/`1`, so `while(i<n)` and `if(a>b)` compose naturally with arithmetic.
+- **expressions**: integers, variables, `+ - *`, the full **comparison** set
+  `< > <= >= == !=`, precedence, and parentheses, via shunting-yard; emitted code
+  uses a `brk` value stack. Four precedence levels (low→high): `== !=` `<`
+  `< > <= >=` `<` `+ -` `<` `*`, all left-associative. Comparisons yield `0`/`1`,
+  so `while(i<=n)`, `if(a==b)`, and `a==b<c` compose naturally with arithmetic.
 - **control flow**: `if` and `while`, arbitrarily nested. The condition is any
   expression, tested for **nonzero = true** (C truthiness). Codegen is iterative
   with an explicit *block stack* (no recursion — a nested `bl` would clobber the
@@ -59,21 +60,18 @@ variables may be named `i`, `w`, or `r` without ambiguity.
   `+ - *` and a mod-256 exit code, byte vs word storage was not distinguishable by
   exit code — so the word-slot guard is structural; the width matters for
   out-of-byte-range values and once `/` lands.
-- **Relational `<`/`>` are branchless and unsigned-32.** A comparison emits no
-  branch and no label — `a<b` is `(a-b) >> 63` (sign bit of the 64-bit
-  difference of two zero-extended 32-bit words), `a>b` is `(b-a) >> 63`, using
-  only `sub`/`lsr` that stage0-as already has. This keeps stage0-as untouched and
-  costs **zero** of the emitted program's 26 uppercase labels. Because the loads
-  zero-extend, ordering is **unsigned** 32-bit; signed comparison would need
-  sign-extension (`ldrsw`) and is a later refinement (equality is sign-agnostic).
-- **Equality `== != <= >=` are not in yet** — not for lack of codegen (the same
-  branchless trick extends to them: `a!=b` is `(d | -d) >> 63` with `d = a-b`,
-  `a==b` is `1 - that`, and `<=`/`>=` are `1 - (>)`/`1 - (<)`) but they were
-  split into their own increment for the **stage-1 label budget**. The compiler
-  is written in stage-1's language, and at 61 single-char labels it had no room
-  in the old 62-slot pool. Stage-1's pool has since been **expanded to 76**
-  (milestone 21), so equality is unblocked whenever we want it. For now
-  `a==b` is expressible as `(a<b)+(b<a)` being `0`.
+- **All six comparisons are branchless and unsigned-32.** A comparison emits no
+  branch and no label, using only `sub`/`orr`/`lsr` that stage0-as already has,
+  so it costs **zero** of the emitted program's 26 uppercase labels. The recipes
+  all reduce to the sign bit of a 64-bit difference of two zero-extended 32-bit
+  words: `a<b` is `(a-b) >> 63`, `a>b` is `(b-a) >> 63`, `a!=b` is
+  `(d | -d) >> 63` with `d = a-b`, and `a==b`, `a<=b`, `a>=b` are the `1 - x`
+  flip of `!=`, `>`, `<` respectively (a reversed-operand `sub x0 x2 x0`). Because
+  the loads zero-extend, ordering is **unsigned** 32-bit; signed ordering would
+  need sign-extension (`ldrsw`, not in stage0-as) and is a later refinement —
+  equality is sign-agnostic. The two-char operators carry internal operator-stack
+  sentinels (`1 2 3 4` for `<= >= == !=`) so the shunting-yard opstack stays
+  one byte per entry.
 - Still no `/` (needs `udiv` in stage0-as).
 
 Equality and `/` are small, self-contained increments that are available to pick
@@ -90,5 +88,9 @@ self-host, vendored at `spikes/reference/`).
 Developed and tested through the **real assembled ladder** on the dev bench
 (`spikes/bench/`): `stage2_ref.py` carries the codegen design plus an independent
 interpreter used as a test oracle, and `validate.py` pins structure and exit
-codes (including nested loops and reassignment). CI (real `as` + QEMU) is ground
-truth.
+codes (including nested loops, reassignment, and all six comparisons — precedence,
+`<=`/`>=` loop guards, and `==`/`!=` guards). CI (real `as` + QEMU) is ground
+truth. The compiler is written in stage-1's language and now uses **74** of the
+76 pool slots; adding equality took it from 61 to 74, so further stage-2 growth
+that needs more labels should economise or expand the pool (a cheap stage-1
+change) rather than cram.

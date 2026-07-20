@@ -1,6 +1,8 @@
-# stage2 (mini-c): variables, assignment, reassignment, if, while, relational < >.
+# stage2 (mini-c): variables, assignment, reassignment, if, while, comparisons.
 # int main(){ int a=<expr>; a=<expr>; if(<expr>){...} while(<expr>){...} return <expr>; }
-# expr operators: + - *  and relational < > (unsigned-32, lowest precedence, yield 0/1).
+# expr operators: + - *  and comparisons < > <= >= == != (unsigned-32, yield 0/1).
+# precedence (low->high): == !=  <  < > <= >=  <  + -  <  *  (all left-assoc, parens).
+# 2-char ops (<= >= == !=) carry internal opstack sentinels 1,2,3,4 respectively.
 # single-char WORD vars -> :a..:z (4-byte slots). control-flow labels A.. (uppercase).
 # compiler regs: x19 inbuf, x21 inlen, x22 outbuf, x23 outpos, x6 scan-pos,
 #   x24 opstk-base, x25 opstk-top, x26 cur-op, x11 op-to-apply, x14 store-target,
@@ -233,7 +235,46 @@ cmp x5 40
 b.eq ceopen
 cmp x5 41
 b.eq ceclose
+cmp x5 60
+b.eq celt
+cmp x5 62
+b.eq cegt
+cmp x5 61
+b.eq ceeq
+cmp x5 33
+b.eq cene
 mov x26 x5
+b cewhile
+:celt
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 61
+b.eq celte
+mov x26 60
+b cewhile
+:celte
+mov x26 1
+add x6 x6 1
+b cewhile
+:cegt
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 61
+b.eq cegte
+mov x26 62
+b cewhile
+:cegte
+mov x26 2
+add x6 x6 1
+b cewhile
+:ceeq
+mov x26 3
+add x6 x6 1
+b cewhile
+:cene
+mov x26 4
+add x6 x6 1
+b cewhile
 :cewhile
 cmp x25 0
 b.eq cepushop
@@ -243,15 +284,27 @@ cmp x4 40
 b.eq cepushop
 cmp x26 42
 b.eq cecurmul
-cmp x26 60
+cmp x26 43
+b.eq ceadd
+cmp x26 45
+b.eq ceadd
+cmp x26 3
 b.eq cepop
-cmp x26 62
+cmp x26 4
 b.eq cepop
-cmp x4 60
+cmp x4 3
 b.eq cepushop
-cmp x4 62
+cmp x4 4
 b.eq cepushop
 b cepop
+:ceadd
+cmp x4 42
+b.eq cepop
+cmp x4 43
+b.eq cepop
+cmp x4 45
+b.eq cepop
+b cepushop
 :cecurmul
 cmp x4 42
 b.eq cepop
@@ -334,6 +387,14 @@ cmp x11 42
 b.eq eamul
 cmp x11 45
 b.eq easub
+cmp x11 1
+b.eq eacle
+cmp x11 2
+b.eq eacge
+cmp x11 3
+b.eq eaceq
+cmp x11 4
+b.eq eacne
 adr x9 saddr
 b eaop
 :eaclt
@@ -347,6 +408,24 @@ adr x9 smulr
 b eaop
 :easub
 adr x9 ssubr
+b eaop
+:eacle
+adr x9 scmpgt
+bl emitstr
+adr x9 sflip
+b eaop
+:eacge
+adr x9 scmplt
+bl emitstr
+adr x9 sflip
+b eaop
+:eaceq
+adr x9 scmpne
+bl emitstr
+adr x9 sflip
+b eaop
+:eacne
+adr x9 scmpne
 :eaop
 bl emitstr
 adr x9 spush
@@ -446,6 +525,12 @@ ret
 .byte 0
 :scmpgt
 .ascii "sub x0 x0 x1\nmov x2 63\nlsr x0 x0 x2"
+.byte 0
+:scmpne
+.ascii "sub x0 x1 x0\nmov x2 0\nsub x2 x2 x0\norr x0 x0 x2\nmov x2 63\nlsr x0 x0 x2"
+.byte 0
+:sflip
+.ascii "\nmov x2 1\nsub x0 x2 x0"
 .byte 0
 :spop
 .ascii "sub x9 x9 4\nldr w0 x9\nadr x1 "

@@ -227,6 +227,24 @@ so a CI-only pin was not enough to actually *read* the source in a later session
 It is reference only (not built by CI; the `borrow-m2-demo` workflow still fetches
 its own pinned copy). See `spikes/reference/README.md`.
 
+**Milestone 24 — stage 2 equality + relational-equality: `== != <= >=`.** The
+four remaining comparison operators, completing `< > <= >= == !=`. All branchless
+and unsigned-32, reusing the sign-bit-of-a-difference recipe with **no stage0-as
+change** and **no emitted labels**: `a!=b` is `(d | -d) >> 63` (`d = a-b`), and
+`a==b`, `a<=b`, `a>=b` are the `1 - x` flip of `!=`, `>`, `<`. Two-char operators
+are recognised with one-char lookahead and carried on the shunting-yard operator
+stack as single-byte sentinels (`1 2 3 4`), and precedence gained a fourth level
+so equality sits **below** the relational ops (C order: `a==b<c` is `a==(b<c)`).
+Existing programs (no equality) emit **byte-identical** asm — verified by diffing
+old vs new compiler output — so it's a pure superset. The compiler grew from 61
+to **74** of stage-1's 76 pool slots (2 to spare; the m21 pool expansion is what
+made this fit). Developed on the bench against the oracle, then through the real
+assembled ladder. **CI-confirmed** (real `as` + QEMU): all six comparisons compile
+and run — `<=`/`>=` loop guards, `==`/`!=` in `if`, arithmetic-into-comparison and
+`==`-below-`<` precedence — with branchless codegen verified structurally and no
+regression. Remaining stage-2 leaf: `/` (needs `udiv`); the critical path stays
+the **floor** (see `TARGET-SUBSET.md`).
+
 ---
 
 ## 6. What's next
@@ -239,14 +257,13 @@ stage in the language of the stage below.
   slots (`A-Za-z0-9` + punctuation) so stage 2 can keep growing. See
   `spikes/stage1-as/`.
 - **Stage 2** — in progress. Compiles `int main(){ … }` with **word-sized**
-  variables, declaration + **reassignment**, `+ - *` expressions plus the
-  **relational** operators `<` and `>` (precedence, parentheses), and **control
-  flow** (`if`/`while`, nested). Conditions can be relations or nonzero-tests.
-  Equality (`== != <= >=`, unblocked by the m21 pool expansion) and `/` (needs
-  `udiv` in stage0-as) are small leaf increments available any time, but the
-  **critical path to stage 3 is the stage-2 "floor"**: functions + a real call
-  stack, pointers/`char`/arrays, `struct`, a small heap, multi-char
-  labels/identifiers, and I/O. See **`stage2-mini-c/TARGET-SUBSET.md`**.
+  variables, declaration + **reassignment**, `+ - *` expressions plus the full
+  **comparison** set `< > <= >= == !=` (four precedence levels, parentheses), and
+  **control flow** (`if`/`while`, nested). Conditions can be comparisons or
+  nonzero-tests. `/` (needs `udiv` in stage0-as) is the one remaining small leaf
+  increment, but the **critical path to stage 3 is the stage-2 "floor"**:
+  functions + a real call stack, pointers/`char`/arrays, `struct`, a small heap,
+  multi-char labels/identifiers, and I/O. See **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**
   (pinned at `34fbd5c…`, vendored read-only at `spikes/reference/`) into a working

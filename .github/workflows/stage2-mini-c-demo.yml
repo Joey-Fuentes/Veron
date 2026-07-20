@@ -4,8 +4,10 @@ name: stage2-mini-c-demo
 #   int main(){ int a=<expr>; a=<expr>; if(<expr>){...} while(<expr>){...} return <expr>; }
 # single-char var names -> labeled WORD (4-byte) slots (:a..:z), accessed via
 # adr + ldr/str; a factor may be a number, a variable (load), or ( expr ).
-# Expressions support + - * and relational < > (branchless, unsigned-32, below
-# + - * in precedence, yielding 0/1) so conditions can be relations.
+# Expressions support + - * and comparisons < > <= >= == != (branchless,
+# unsigned-32, yielding 0/1) so conditions can be relations. Precedence, low->high:
+# == !=  <  < > <= >=  <  + -  <  * . <= is '>' flipped, >= is '<' flipped,
+# != is (d|-d)>>63, == is != flipped (all reuse the existing sign-bit recipe).
 # Control flow (if/while, nested) tests the condition for nonzero; codegen is
 # iterative with a block stack and uppercase jump labels A.. (vars are lowercase,
 # no collision). Compiler uses shunting-yard; emitted code uses a brk value
@@ -92,6 +94,23 @@ jobs:
           printf '%s' 'int main(){int a=3; int b=5; return a>b;}' | qemu-aarch64 ./stage2 > gt.s
           grep -q 'sub x0 x0 x1' gt.s || { echo "'>': MISSING sub b-a"; rel_ok=no; }
 
+          # ---- structural: == != <= >= are branchless (reuse the sign-bit recipe) ----
+          eq_ok=yes
+          printf '%s' 'int main(){int a=3; int b=5; return a!=b;}' | qemu-aarch64 ./stage2 > ne.s
+          grep -q 'orr x0 x0 x2' ne.s || { echo "'!=': MISSING d|-d (orr)";     eq_ok=no; }
+          grep -q 'sub x2 x2 x0' ne.s || { echo "'!=': MISSING negate d";       eq_ok=no; }
+          grep -q 'sub x0 x2 x0' ne.s && { echo "'!=': UNEXPECTED flip";        eq_ok=no; }
+          grep -q 'b\.'          ne.s && { echo "'!=': UNEXPECTED branch";      eq_ok=no; }
+          printf '%s' 'int main(){int a=3; int b=5; return a==b;}' | qemu-aarch64 ./stage2 > eq.s
+          grep -q 'orr x0 x0 x2' eq.s || { echo "'==': MISSING d|-d (orr)";     eq_ok=no; }
+          grep -q 'sub x0 x2 x0' eq.s || { echo "'==': MISSING flip (1-x)";     eq_ok=no; }
+          printf '%s' 'int main(){int a=3; int b=5; return a<=b;}' | qemu-aarch64 ./stage2 > le.s
+          grep -q 'sub x0 x0 x1' le.s || { echo "'<=': MISSING '>' sub b-a";    eq_ok=no; }
+          grep -q 'sub x0 x2 x0' le.s || { echo "'<=': MISSING flip (1-x)";     eq_ok=no; }
+          printf '%s' 'int main(){int a=3; int b=5; return a>=b;}' | qemu-aarch64 ./stage2 > ge.s
+          grep -q 'sub x0 x1 x0' ge.s || { echo "'>=': MISSING '<' sub a-b";    eq_ok=no; }
+          grep -q 'sub x0 x2 x0' ge.s || { echo "'>=': MISSING flip (1-x)";     eq_ok=no; }
+
           fail=0
           try() {
             printf '%s' "$1" | qemu-aarch64 ./stage2 > out.s
@@ -136,6 +155,23 @@ jobs:
           try 'int main(){return 2*2<3;}'                                             0
           try 'int main(){int i=0; int t=0; while(i<3){ int j=0; while(j<2){ t=t+1; j=j+1; } i=i+1; } return t;}'  6
 
+          echo "== stage-2: equality / relational-eq == != <= >= (unsigned-32) =="
+          try 'int main(){int a=5; int b=5; return a==b;}'                            1
+          try 'int main(){int a=5; int b=6; return a==b;}'                            0
+          try 'int main(){int a=5; int b=6; return a!=b;}'                            1
+          try 'int main(){int a=5; int b=5; return a!=b;}'                            0
+          try 'int main(){int a=4; int b=5; return a<=b;}'                            1
+          try 'int main(){int a=6; int b=5; return a<=b;}'                            0
+          try 'int main(){int a=5; int b=5; return a>=b;}'                            1
+          try 'int main(){int a=4; int b=5; return a>=b;}'                            0
+          try 'int main(){return 2+3==5;}'                                            1
+          try 'int main(){int a=1; int b=2; int c=3; return a==b<c;}'                 1
+          try 'int main(){int i=1; int s=0; while(i<=5){ s=s+i; i=i+1; } return s;}'  15
+          try 'int main(){int i=10; int s=0; while(i>=1){ s=s+i; i=i-1; } return s;}' 55
+          try 'int main(){int a=7; if(a==7){ return 3; } return 9;}'                  3
+          try 'int main(){int a=7; if(a!=7){ return 3; } return 9;}'                  9
+          try 'int main(){int a=8; int b=8; int c=0; if(a==b){ if(a>=b){ c=42; } } return c;}'  42
+
           {
             echo "## stage2-mini-c — variables, if/while, reassignment"
             echo '```'
@@ -143,16 +179,18 @@ jobs:
             echo "emitted word forms + 4B slots       : $struct_ok"
             echo "if/while zero-test + A.. jump labels : $cf_ok"
             echo "relational < > branchless (sub+lsr)  : $rel_ok"
+            echo "equality == != <= >= branchless      : $eq_ok"
             echo "while(n){s=s+n;n=n-1;} sum 1..10     -> 55"
             echo "while(i<10) count-up sum            -> 45"
-            echo "while(i<5) factorial                -> 24"
+            echo "while(i<=5) count-up sum            -> 15"
+            echo "while(i>=1) count-down sum          -> 55"
             echo "nested while (3x2 increments)        -> 6"
-            echo "nested if (a && b)                   -> 5"
+            echo "nested if (a==b && a>=b)             -> 42"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ]; then
-            echo "PASS: stage-2 compiles variables, reassignment, if/while (nested), relational < > (branchless, unsigned-32); word ldr/str byte-correct; no byte-slot regression."
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ]; then
+            echo "PASS: stage-2 compiles variables, reassignment, if/while (nested), comparisons < > <= >= == != (branchless, unsigned-32); word ldr/str byte-correct; no byte-slot regression."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok"; exit 1
           fi
