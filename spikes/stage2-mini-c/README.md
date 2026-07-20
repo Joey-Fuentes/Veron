@@ -56,8 +56,9 @@ variables may be named `i`, `w`, or `r` without ambiguity.
 - Variables are **word-sized** (32-bit): 4-byte slots via word `ldr`/`str`,
   matching the 32-bit value stack. Slots are aligned by construction (the emitted
   program is all 4-byte instructions up to the slot table). NB: with only
-  `+ - *` and a mod-256 exit code, byte vs word storage is not distinguishable by
-  exit code; the width matters once `/` or comparison operators land.
+  `+ - *` and a mod-256 exit code, byte vs word storage was not distinguishable by
+  exit code — so the word-slot guard is structural; the width matters for
+  out-of-byte-range values and once `/` lands.
 - **Relational `<`/`>` are branchless and unsigned-32.** A comparison emits no
   branch and no label — `a<b` is `(a-b) >> 63` (sign bit of the 64-bit
   difference of two zero-extended 32-bit words), `a>b` is `(b-a) >> 63`, using
@@ -65,12 +66,14 @@ variables may be named `i`, `w`, or `r` without ambiguity.
   costs **zero** of the emitted program's 26 uppercase labels. Because the loads
   zero-extend, ordering is **unsigned** 32-bit; signed comparison would need
   sign-extension (`ldrsw`) and is a later refinement (equality is sign-agnostic).
-- **Equality `== != <= >=` are deferred**, not for lack of codegen (same
-  branchless trick) but for **stage-1 label budget**: the compiler is written in
-  stage-1's language, whose single-char label pool is exactly 62 (`A-Za-z0-9`).
-  The compiler currently uses 61 of them; the full comparison set needs ~8 more
-  labels than fit. The next increment expands stage-1's pool first, then adds the
-  equality operators. For now `a==b` is expressible as `(a<b)+(b<a)` being `0`.
+- **Equality `== != <= >=` are not in yet** — not for lack of codegen (the same
+  branchless trick extends to them: `a!=b` is `(d | -d) >> 63` with `d = a-b`,
+  `a==b` is `1 - that`, and `<=`/`>=` are `1 - (>)`/`1 - (<)`) but they were
+  split into their own increment for the **stage-1 label budget**. The compiler
+  is written in stage-1's language, and at 61 single-char labels it had no room
+  in the old 62-slot pool. Stage-1's pool has since been **expanded to 76**
+  (milestone 21), so equality is unblocked and is the next increment. For now
+  `a==b` is expressible as `(a<b)+(b<a)` being `0`.
 - Still no `/` (needs `udiv` in stage0-as). These are the next steps toward the
   M2-Planet-grade subset that hands off to the borrowed chain.
 
