@@ -1,0 +1,166 @@
+name: borrow-tcc-demo
+
+# SPIKE (invariants suspended). Two independent jobs:
+#   sample-aarch64  — self-host M2-Planet ON aarch64 (upstream test1000 recipe),
+#                     run it under QEMU, byte-compare vs the host build. GATES.
+#   reach-tcc-amd64 — build the borrowed tools for amd64, then build Mes (the
+#                     rung directly below tcc) via Mes's own kaem.x86_64.
+#                     Best-effort PROBE: continue-on-error, never fails the run.
+#
+# Upstreams are fetched as pinned-by-branch build dependencies, not vendored.
+
+on:
+  push:
+    paths:
+      - 'spikes/borrow-tcc/**'
+      - '.github/workflows/borrow-tcc-demo.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: borrow-tcc-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ------------------------------------------------------------------ Part A
+  sample-aarch64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install QEMU (aarch64) + build basics
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user gcc make git
+
+      - name: Fetch upstream build deps
+        run: |
+          git clone --recursive --depth 1 https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git clone --recursive --depth 1 https://github.com/oriansj/mescc-tools.git upstream-mescc
+
+      - name: Build host tools (M2-Planet, M1, hex2, blood-elf)
+        run: |
+          make -C upstream-m2planet M2-Planet
+          make -C upstream-mescc M1 hex2 blood-elf
+
+      - name: Self-host M2-Planet on aarch64 and verify it works
+        run: |
+          set -ex
+          ROOT="$GITHUB_WORKSPACE"
+          M1="$ROOT/upstream-mescc/bin/M1"
+          HEX2="$ROOT/upstream-mescc/bin/hex2"
+          BE="$ROOT/upstream-mescc/bin/blood-elf"
+
+          cd "$ROOT/upstream-m2planet"
+
+          # --- build an aarch64 M2-Planet from M2-Planet's own source (test1000) ---
+          ./bin/M2-Planet \
+            --architecture aarch64 \
+            -f M2libc/aarch64/linux/bootstrap.c \
+            -f M2libc/bootstrap.c \
+            -f cc.h \
+            -f M2libc/bootstrappable.c \
+            -f cc_globals.c -f cc_reader.c -f cc_strings.c -f cc_types.c \
+            -f cc_emit.c -f cc_core.c -f cc_macro.c -f cc.c \
+            --debug --bootstrap-mode \
+            -o "$ROOT/cc.M1"
+          "$BE" --64 -f "$ROOT/cc.M1" --little-endian --entry _start -o "$ROOT/cc-footer.M1"
+          "$M1" \
+            -f M2libc/aarch64/aarch64_defs.M1 \
+            -f M2libc/aarch64/libc-core.M1 \
+            -f "$ROOT/cc.M1" \
+            -f "$ROOT/cc-footer.M1" \
+            --little-endian --architecture aarch64 \
+            -o "$ROOT/cc.hex2"
+          "$HEX2" \
+            -f M2libc/aarch64/ELF-aarch64-debug.hex2 \
+            -f "$ROOT/cc.hex2" \
+            --little-endian --architecture aarch64 \
+            --base-address 0x400000 \
+            -o "$ROOT/M2-Planet.aarch64"
+
+          # --- prove the aarch64-built compiler runs and is correct ---
+          printf 'int main()\n{\n\treturn 42;\n}\n' > "$ROOT/t.c"
+          ./bin/M2-Planet --architecture aarch64 -f "$ROOT/t.c" -o "$ROOT/host.M1"
+          qemu-aarch64 "$ROOT/M2-Planet.aarch64" --architecture aarch64 -f "$ROOT/t.c" -o "$ROOT/self.M1"
+
+          ok=no
+          if cmp -s "$ROOT/host.M1" "$ROOT/self.M1"; then ok=yes; fi
+
+          {
+            echo "## borrow-tcc — Part A (self-host M2-Planet on aarch64)"
+            echo '```'
+            echo "aarch64 M2-Planet built : $( [ -s "$ROOT/M2-Planet.aarch64" ] && echo yes || echo no )"
+            echo "runs under qemu-aarch64 : yes"
+            echo "output == host output   : $ok  (byte-identical self-host)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$ok" = yes ]; then
+            echo "PASS: a real program (M2-Planet itself) compiles to aarch64, runs, and is byte-correct."
+          else
+            echo "FAIL: self-hosted aarch64 M2-Planet output differed from host."
+            exit 1
+          fi
+
+  # ------------------------------------------------------------------ Part B
+  reach-tcc-amd64:
+    runs-on: ubuntu-latest
+    continue-on-error: true      # PROBE: never fail the run
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build basics
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc make git
+
+      - name: Fetch upstream build deps (M2-Planet, mescc-tools, mes)
+        run: |
+          git clone --recursive --depth 1 https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git clone --recursive --depth 1 https://github.com/oriansj/mescc-tools.git upstream-mescc
+          git clone --depth 1 https://git.savannah.gnu.org/git/mes.git mes-src
+
+      - name: Build the borrowed toolchain for amd64 (native)
+        run: |
+          make -C upstream-m2planet M2-Planet
+          make -C upstream-mescc M1 hex2 blood-elf kaem get_machine catm
+
+      - name: Attempt to build Mes (rung below tcc) via kaem.x86_64
+        id: mes
+        run: |
+          set -x
+          ROOT="$GITHUB_WORKSPACE"
+          export PATH="$ROOT/upstream-m2planet/bin:$ROOT/upstream-mescc/bin:$PATH"
+          echo "tools on PATH:"; command -v M2-Planet M1 hex2 blood-elf kaem || true
+
+          cd mes-src
+          # kaem.x86_64 sets cc_cpu/mes_cpu/stage0_cpu then runs kaem.run,
+          # which drives M2-Planet to build bin/mes-m2 from Mes's own source.
+          set +e
+          kaem --verbose --strict --file kaem.x86_64
+          rc=$?
+          set -e
+
+          built=no
+          [ -x bin/mes-m2 ] && built=yes
+          [ -x "$ROOT/mes-src/bin/mes-m2" ] && built=yes
+
+          echo "mes kaem exit: $rc ; mes-m2 built: $built"
+          {
+            echo "## borrow-tcc — Part B (reach toward tcc: build Mes on amd64)"
+            echo '```'
+            echo "kaem.x86_64 exit code : $rc"
+            echo "bin/mes-m2 produced   : $built"
+            echo '```'
+            if [ "$built" = yes ]; then
+              echo "Mes built — tcc is the next rung (needs nyacc + mescc env; follow-on)."
+            else
+              echo "Mes not built here — log above shows where the mes bootstrap stopped."
+              echo "(Common cause: kaem.run reaching for a tool not in base mescc-tools.)"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Informational only — this job is continue-on-error.
+          exit 0
