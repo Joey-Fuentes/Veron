@@ -1,0 +1,107 @@
+name: borrow-m2-demo
+
+# SPIKE (invariants suspended). Proof-of-concept that the known no-host
+# bootstrap toolchain runs on THIS setup, targeting aarch64:
+#
+#   test.c --[M2-Planet --architecture aarch64]--> .M1
+#          --[M1 + M2libc aarch64 defs/libc-core]--> .hex2
+#          --[hex2 + M2libc aarch64 ELF header]----> static aarch64 ELF
+#          --[qemu-aarch64]--------------------------> exit code checked
+#
+# M2-Planet, mescc-tools and M2libc are fetched here purely as pinned
+# upstream BUILD DEPENDENCIES (same category as gcc/musl/linux elsewhere in
+# the ladder) — not vendored into this repo. This spike deliberately proves
+# the mechanism with two tiny programs that need no C library (libc-core.M1's
+# _start calls main() and uses its return value as the exit code). Escalating
+# to compiling real mescc-tools / self-hosting M2-Planet comes in a later
+# overlay.
+#
+# REPRODUCIBILITY: upstreams are cloned at a branch below, NOT pinned to a
+# commit hash. Reproducibility is suspended for spikes; pin to SHAs when this
+# graduates toward seed/stages.
+
+on:
+  push:
+    paths:
+      - 'spikes/borrow-m2/**'
+      - '.github/workflows/borrow-m2-demo.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: borrow-m2-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install QEMU user-mode (aarch64) + build basics
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user gcc make git
+
+      # --- fetch upstream build dependencies (unpinned; see header note) ---
+      - name: Fetch M2-Planet (+ M2libc submodule)
+        run: git clone --recursive --depth 1 https://github.com/oriansj/M2-Planet.git upstream-m2planet
+
+      - name: Fetch mescc-tools (+ M2libc submodule)
+        run: git clone --recursive --depth 1 https://github.com/oriansj/mescc-tools.git upstream-mescc
+
+      # --- build the borrowed toolchain with the host compiler ---
+      - name: Build M2-Planet, M1, hex2 (host gcc)
+        run: |
+          make -C upstream-m2planet M2-Planet
+          make -C upstream-mescc M1 hex2
+
+      - name: Compile test programs for aarch64 and run under QEMU
+        run: |
+          set -x
+          M2P=upstream-m2planet/bin/M2-Planet
+          M1=upstream-mescc/bin/M1
+          HEX2=upstream-mescc/bin/hex2
+          LIB=upstream-m2planet/M2libc/aarch64
+
+          build_and_run() {
+            name="$1"; src="$2"
+            "$M2P" --architecture aarch64 -f "$src" -o "${name}.M1"
+            "$M1" \
+              -f "$LIB/aarch64_defs.M1" \
+              -f "$LIB/libc-core.M1" \
+              -f "${name}.M1" \
+              --little-endian --architecture aarch64 \
+              -o "${name}.hex2"
+            "$HEX2" \
+              -f "$LIB/ELF-aarch64.hex2" \
+              -f "${name}.hex2" \
+              --little-endian --architecture aarch64 \
+              --base-address 0x400000 \
+              -o "${name}.elf"
+            set +e
+            qemu-aarch64 "./${name}.elf"; echo "$?"
+            set -e
+          }
+
+          rc42=$(build_and_run return42 spikes/borrow-m2/return42.c | tail -n1)
+          rc45=$(build_and_run loopsum  spikes/borrow-m2/loopsum.c  | tail -n1)
+
+          echo "return42 exit: $rc42 (expect 42)"
+          echo "loopsum  exit: $rc45 (expect 45)"
+
+          {
+            echo "## borrow-m2 — no-host toolchain on aarch64"
+            echo '```'
+            echo "M2-Planet -> M1 -> hex2 -> qemu-aarch64"
+            echo "return42 exit : $rc42   (expect 42)"
+            echo "loopsum  exit : $rc45   (expect 45)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$rc42" = 42 ] && [ "$rc45" = 45 ]; then
+            echo "PASS: the borrowed bootstrap toolchain compiles and runs aarch64 binaries on this setup."
+          else
+            echo "FAIL: rc42=$rc42 (want 42) rc45=$rc45 (want 45)"
+            exit 1
+          fi
