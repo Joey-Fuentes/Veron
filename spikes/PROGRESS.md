@@ -188,7 +188,23 @@ assembled ladder (count-up sum, factorial via `i<5`, nested `<` loops, `>`
 guards, precedence) and pinned in `validate.py`. Only `<`/`>` shipped this
 increment: equality (`== != <= >=`) needs ~8 more single-char labels than the
 stage-1 pool (62, `A-Za-z0-9`) has room for — the compiler is at 61 — so the
-next increment expands stage-1's label pool first.
+next increment expands stage-1's label pool first. **CI-confirmed** (real `as` +
+QEMU): relational `<`/`>` compile and run through the full ladder — count-up
+loops, factorial via `i<5`, `while(n>0)`, nested `<`, `>` guards, precedence —
+with branchless codegen verified structurally and no byte-slot regression.
+
+**Milestone 21 — stage 1's label pool expanded (62 → 76).** stage 1 maps each
+multi-char label to a single-char slot from a `.ascii` pool; that pool was the
+hard cap on distinct labels per program (stage 2 had reached 61 of 62). Since
+stage0-as accepts *any* byte as a label — its symtab is indexed by the raw
+character (`.space 512` = 128 entries) — the pool was extended past `A-Za-z0-9`
+with punctuation `_$@?!%^&~|=<>+`, no stage0-as change. Programs with ≤62 labels
+resolve byte-identically to before (the new slots are only reached beyond 62), so
+this is a pure headroom addition. Verified end-to-end on the bench (63–76-label
+programs resolve, assemble via stage0-as, and run to the right exit code,
+including backward branches and `adr` to punctuation-slot labels) and pinned in
+`validate.py`. This unblocks the equality operators (`== != <= >=`), which need
+~9 labels more than the old pool allowed.
 
 ---
 
@@ -198,14 +214,16 @@ The plan is a **capability-jump ladder**: keep each rung minimal, and write each
 stage in the language of the stage below.
 
 - **Stage 1** — DONE (multi-character labels) and upgraded to `brk` buffers so it
-  can process large stage-2/3 sources. See `spikes/stage1-as/`.
+  can process large stage-2/3 sources; label pool expanded to **76** single-char
+  slots (`A-Za-z0-9` + punctuation) so stage 2 can keep growing. See
+  `spikes/stage1-as/`.
 - **Stage 2** — in progress. Compiles `int main(){ … }` with **word-sized**
   variables, declaration + **reassignment**, `+ - *` expressions plus the
   **relational** operators `<` and `>` (precedence, parentheses), and **control
   flow** (`if`/`while`, nested). Conditions can be relations or nonzero-tests.
-  Next increments toward an M2-Planet-grade subset: **expand stage-1's 62-char
-  label pool** (the binding constraint on stage-2 growth), then **equality
-  operators** (`== != <= >=`), then `/` (needs `udiv` in stage0-as).
+  Next increments toward an M2-Planet-grade subset: **equality operators**
+  (`== != <= >=`) — now unblocked by the stage-1 pool expansion (milestone 21) —
+  then `/` (needs `udiv` in stage0-as).
 - **Stage 3** — written in stage-2's language, once stage 2 is a usable C subset.
 - **Hand-off**: grow stage 2/3 to M2-Planet-grade C, then hand to the borrowed
   live-bootstrap chain (see `spikes/borrow-m2/`, `spikes/livebootstrap/`).

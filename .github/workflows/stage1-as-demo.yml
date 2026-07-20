@@ -10,7 +10,8 @@ name: stage1-as-demo
 # Checks: (1) a program using multi-char labels, resolved through stage1 and
 # assembled, is BYTE-IDENTICAL to real `as` of the equivalent; (2) it RUNS to
 # the right exit code; (3) an adr + memory program with a multi-char DATA label
-# also runs correctly.
+# also runs correctly; (4) the expanded 76-slot label pool (A-Za-z0-9 + punct)
+# resolves a >62-label program through the real ladder to the right exit code.
 
 on:
   push:
@@ -72,6 +73,20 @@ jobs:
           out_bytes=$(cat big.s1 | qemu-aarch64 ./stage1 | wc -c)
           big_ok=no; [ "$out_bytes" -ge $((in_bytes - 200)) ] && big_ok=yes
 
+          # --- 4) label-pool expansion: >62 distinct labels force the new (punct) slots ---
+          # A fall-through chain of N labels; exit code == N iff every label (incl.
+          # punctuation-slot ones, indices 62+) resolves to the right offset.
+          : > pool.s1
+          echo 'mov x0 0' >> pool.s1
+          for i in $(seq 0 75); do printf 'b L%03d\n:L%03d\nadd x0 x0 1\n' "$i" "$i" >> pool.s1; done
+          printf 'mov x8 93\nsvc\n' >> pool.s1
+          cat pool.s1 | qemu-aarch64 ./stage1 > pool.resolved
+          # once >62 labels are used, punctuation slots appear as labels (e.g. ':_')
+          pool_punct=no; grep -q '^:_$' pool.resolved && pool_punct=yes
+          cat pool.resolved | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf pool.elf
+          set +e; qemu-aarch64 ./pool.elf; pool_rc=$?; set -e
+          pool_ok=no; [ "$pool_rc" = 76 ] && [ "$pool_punct" = yes ] && pool_ok=yes
+
           echo "loop ours: $(hex loop.bin)"
           echo "loop ref : $(hex loop_ref.bin)"
           {
@@ -81,12 +96,13 @@ jobs:
             echo "loop w/ multi-char labels exit       : $loop_rc  (expect 7)"
             echo "adr+mem w/ multi-char data label exit: $mem_rc  (expect 9)"
             echo "large input (~${in_bytes}B) not truncated : $big_ok  (out=${out_bytes}B)"
+            echo "76-label pool (punct slots) exit     : $pool_rc  (expect 76, punct=$pool_punct)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$loop_ok" = yes ] && [ "$loop_rc" = 7 ] && [ "$mem_rc" = 9 ] && [ "$big_ok" = yes ]; then
-            echo "PASS: stage1 resolves multi-char labels (byte-identical to as), runs, and handles large inputs."
+          if [ "$loop_ok" = yes ] && [ "$loop_rc" = 7 ] && [ "$mem_rc" = 9 ] && [ "$big_ok" = yes ] && [ "$pool_ok" = yes ]; then
+            echo "PASS: stage1 resolves multi-char labels (byte-identical to as), runs, handles large inputs, and the expanded 76-slot label pool resolves through the real ladder."
           else
-            echo "FAIL: loop_ok=$loop_ok loop_rc=$loop_rc mem_rc=$mem_rc big_ok=$big_ok"
+            echo "FAIL: loop_ok=$loop_ok loop_rc=$loop_rc mem_rc=$mem_rc big_ok=$big_ok pool_ok=$pool_ok"
             exit 1
           fi

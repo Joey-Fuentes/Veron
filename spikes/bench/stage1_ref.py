@@ -9,7 +9,7 @@ Label positions handled:
   adr xR name                (label = last token)
 Everything else (incl. br/blr which take registers) passes through verbatim.
 """
-POOL="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+POOL="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_$@?!%^&~|=<>+"
 
 def stage1(text):
     table={}          # name -> single char
