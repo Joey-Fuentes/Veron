@@ -16,8 +16,11 @@ name: borrow-m2-demo
 # to compiling real mescc-tools / self-hosting M2-Planet comes in a later
 # overlay.
 #
-# REPRODUCIBILITY: upstreams are cloned at a branch below, NOT pinned to a
-# commit hash. Reproducibility is suspended for spikes; pin to SHAs when this
+# REPRODUCIBILITY: M2-Planet is now PINNED to a commit below, because its source
+# is our C-subset spec (see spikes/stage2-mini-c/TARGET-SUBSET.md) and must not
+# drift under us; M2libc comes in transitively via M2-Planet's submodule gitlink
+# at that commit. mescc-tools is still cloned at a branch (it is the M1/hex2
+# assembler+linker, not part of the C-subset spec); pin it too when this
 # graduates toward seed/stages.
 
 on:
@@ -44,8 +47,15 @@ jobs:
           sudo apt-get install -y --no-install-recommends qemu-user gcc make git
 
       # --- fetch upstream build dependencies (unpinned; see header note) ---
-      - name: Fetch M2-Planet (+ M2libc submodule)
-        run: git clone --recursive --depth 1 https://github.com/oriansj/M2-Planet.git upstream-m2planet
+      - name: Fetch M2-Planet (pinned) + M2libc submodule
+        env:
+          M2PLANET_SHA: 34fbd5c2a9b6eb634a4f6ad95158dcd1efcf19e0
+        run: |
+          git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git -C upstream-m2planet checkout "$M2PLANET_SHA"
+          git -C upstream-m2planet submodule update --init --recursive
+          echo "M2-Planet pinned at: $(git -C upstream-m2planet rev-parse HEAD)"
+          echo "M2libc submodule at: $(git -C upstream-m2planet/M2libc rev-parse HEAD)"
 
       - name: Fetch mescc-tools (+ M2libc submodule)
         run: git clone --recursive --depth 1 https://github.com/oriansj/mescc-tools.git upstream-mescc
