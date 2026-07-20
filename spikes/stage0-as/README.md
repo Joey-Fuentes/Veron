@@ -25,6 +25,10 @@ One item per line. Leading whitespace is fine. Register operands are one letter
 | `cmp x<n> <imm>` | compare with immediate |
 | `b <L>` | unconditional branch to label |
 | `b.eq / b.ne / b.lt / b.ge <L>` | conditional branch |
+| `bl <L>` | branch-and-link to label (sets x30) |
+| `ret` | return via x30 |
+| `br x<n>` | branch to register |
+| `blr x<n>` | branch-to-register-and-link |
 | `adr x<d> <L>` | address of label into register |
 | `ldrb w<t> x<n> x<m>` | load byte `[Xn + Xm]` |
 | `strb w<t> x<n> x<m>` | store byte `[Xn + Xm]` |
@@ -46,6 +50,7 @@ so they need no load address.
 ## Known limits (motivate later stages)
 
 - Labels are single-character (multi-char labels are stage 1's job).
+- Subroutines (`bl`/`ret`/`br`/`blr`) were added as the base stage 1 is written on; still no shifts/logical-ops/wide-imm (those come as further stage-0 conveniences if stage 1 needs them).
 - 16-bit immediates only (`mov`), 12-bit for `add`/`sub`/`cmp`.
 - Well-formed input assumed — minimal error checking (it's a spike).
 

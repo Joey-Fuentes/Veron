@@ -1,0 +1,73 @@
+name: stage0-as-ext-demo
+
+# SPIKE (invariants suspended). Verifies the subroutine ops added to stage0-as
+# (bl / ret / br / blr) — the base that stage 1 (macro-as) is written on.
+#   1) byte-compare bl/ret/br/blr against real aarch64-linux-gnu-as
+#   2) runtime: a program that CALLS a subroutine and RETURNS, exit == 7
+# Each op is byte-verified against ground truth; the run proves call/return work.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage0-as/**'
+      - 'spikes/elf/**'
+      - '.github/workflows/stage0-as-ext-demo.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: stage0-as-ext-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user binutils-aarch64-linux-gnu
+      - name: Build stage0-as + elf, byte-check subroutine ops, run a call/return
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+          hex() { od -An -v -tx1 "$1" | tr -d ' \n'; }
+
+          # ---- 1) byte-compare bl / ret / br / blr against real as ----
+          printf 'bl f\nret\nbr x16\nblr x17\n:f\nret\n' > sub.s0
+          printf '.text\n.global _start\n_start:\n\tbl f\n\tret\n\tbr x16\n\tblr x17\nf:\n\tret\n' > sub_ref.s
+          aarch64-linux-gnu-as -o sub_ref.o sub_ref.s
+          aarch64-linux-gnu-objcopy -O binary --only-section=.text sub_ref.o sub_ref.bin
+          cat sub.s0 | qemu-aarch64 ./stage0-as > sub.bin
+          sub_ok=no; cmp -s sub.bin sub_ref.bin && sub_ok=yes
+
+          # ---- 2) runtime call/return: main calls 'a' (adds 2), returns, exit 7 ----
+          printf 'mov x0 5\nbl a\nmov x8 93\nsvc\n:a\nadd x0 x0 2\nret\n' > call.s0
+          printf '.text\n.global _start\n_start:\n\tmov x0,#5\n\tbl a\n\tmov x8,#93\n\tsvc #0\na:\n\tadd x0,x0,#2\n\tret\n' > call_ref.s
+          aarch64-linux-gnu-as -o call_ref.o call_ref.s
+          aarch64-linux-gnu-objcopy -O binary --only-section=.text call_ref.o call_ref.bin
+          cat call.s0 | qemu-aarch64 ./stage0-as > call.bin
+          call_ok=no; cmp -s call.bin call_ref.bin && call_ok=yes
+          cat call.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf call.elf
+          set +e; qemu-aarch64 ./call.elf; call_rc=$?; set -e
+
+          echo "sub  ours: $(hex sub.bin)"
+          echo "sub  ref : $(hex sub_ref.bin)"
+          {
+            echo "## stage0-as — subroutine ops (base for stage 1)"
+            echo '```'
+            echo "bl/ret/br/blr byte-identical : $sub_ok"
+            echo "call/return byte-identical    : $call_ok"
+            echo "call/return runtime exit      : $call_rc  (expect 7)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$sub_ok" = yes ] && [ "$call_ok" = yes ] && [ "$call_rc" = 7 ]; then
+            echo "PASS: bl/ret/br/blr correct; subroutines call and return. Stage 1 base is ready."
+          else
+            echo "FAIL: sub_ok=$sub_ok call_ok=$call_ok call_rc=$call_rc"
+            exit 1
+          fi

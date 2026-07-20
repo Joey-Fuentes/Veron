@@ -12,6 +12,7 @@
 //   mov  x<d> <imm>            mov  x<d> x<n>          add x<d> x<n> <imm>
 //   sub  x<d> x<n> <imm>       cmp  x<n> x<m>          cmp x<n> <imm>
 //   b / b.eq/ne/lt/ge <L>      svc                     :<L>
+//   bl <L>  ret  br x<n>  blr x<n>   (subroutines; base for stage 1)
 //   adr  x<d> <L>              ldrb/strb w<t> x<n> x<m>   ldr/str w<t> x<n>
 //   .byte <imm>                .ascii "text"           (\n supported)
 //
@@ -76,6 +77,8 @@ parse_loop:
     b.eq    h_l
     cmp     w0, #'s'
     b.eq    h_s
+    cmp     w0, #'r'
+    b.eq    h_ret
     b       skip_line
 pass_end:
     cmp     x23, #2
@@ -346,6 +349,11 @@ h_branch:
     ldrb    w10, [x19, x2]
     cmp     w10, #'.'
     b.eq    h_bcond
+    cmp     w10, #'l'               // 'bl' or 'blr'
+    b.eq    h_bl_or_blr
+    cmp     w10, #'r'               // 'br'
+    b.eq    h_br
+    // plain unconditional  b <L>
     add     x20, x20, #1
     bl      skip_ws
     ldrb    w0, [x19, x20]
@@ -358,6 +366,53 @@ h_branch:
     orr     w9, w9, w1
     bl      emit
     b       parse_loop
+
+// ---- bl <L>  (branch-and-link; sets x30 automatically) ----
+// same as 'b' but base 0x94000000; 'blr' when a 3rd char 'r' follows.
+h_bl_or_blr:
+    add     x2, x20, #2
+    ldrb    w10, [x19, x2]
+    cmp     w10, #'r'
+    b.eq    h_blr
+    add     x20, x20, #2            // skip "bl"
+    bl      skip_ws
+    ldrb    w0, [x19, x20]
+    add     x20, x20, #1
+    ldr     w1, [x27, w0, uxtw #2]
+    sub     w1, w1, w22
+    asr     w1, w1, #2
+    and     w1, w1, #0x3FFFFFF
+    movz    w9, #0x9400, lsl #16
+    orr     w9, w9, w1
+    bl      emit
+    b       parse_loop
+
+// ---- br x<n>  (branch to register) ----
+h_br:
+    add     x20, x20, #2            // skip "br"
+    bl      next_reg
+    movz    w9, #0xD61F, lsl #16
+    orr     w9, w9, w0, lsl #5
+    bl      emit
+    b       parse_loop
+
+// ---- blr x<n>  (branch-to-register-and-link) ----
+h_blr:
+    add     x20, x20, #3            // skip "blr"
+    bl      next_reg
+    movz    w9, #0xD63F, lsl #16
+    orr     w9, w9, w0, lsl #5
+    bl      emit
+    b       parse_loop
+
+// ---- ret  (return via x30) ----
+h_ret:
+    add     x20, x20, #3            // skip "ret"
+    movz    w9, #0x03C0
+    movk    w9, #0xD65F, lsl #16
+    bl      emit
+    b       parse_loop
+
 h_bcond:
     add     x20, x20, #2
     ldrb    w2, [x19, x20]
