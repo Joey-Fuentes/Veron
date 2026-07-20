@@ -61,10 +61,10 @@ import os
 s1p = os.path.join(os.path.dirname(__file__), "..", "stage1-as", "stage1-as.s0")
 if os.path.exists(s1p):
     _,s1prog,_ = assemble(open(s1p).read())
-    big = ("mov x0 0\n"*300) + "mov x8 93\nsvc\n"   # ~2.4 KB input
+    big = ("mov x0 0\n"*1200) + "mov x8 93\nsvc\n"  # ~10 KB input
     _,out = run(s1prog, stdin=big.encode())
     # resolved output should be about as long as input (not truncated to ~500)
-    check("stage1 not truncating ~2.4KB input", len(out) > 2000, True)
+    check("stage1 not truncating ~10KB input", len(out) > 9000, True)
 
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")

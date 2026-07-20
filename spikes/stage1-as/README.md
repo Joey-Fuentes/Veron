@@ -16,9 +16,12 @@ same program with each distinct label mapped to a unique single character, so
 
 ## How it works (within stage0-as's language)
 
-- **Memory**: stage0-as has no `.space`/bss, so stage 1 gets buffers from `brk`
-  (inbuf / outbuf / nametable) and addresses them with `[Xn+Xm]` register-offset
-  loads/stores.
+- **Memory**: buffers (inbuf/outbuf/nametable) come from `brk` — a large heap
+  (~20 KB each), addressed with register `add` for base offsets and `[Xn+Xm]`
+  loads/stores. A `read` loop fills inbuf until EOF, so large/chunked inputs are
+  handled. This keeps stage1's own source small (~3 KB) while it can process
+  much larger stage-2/3 sources.
+
 - **No add-reg**: stage0-as `add` is immediate-only, so all indexing uses running
   offsets and `[base+index]` addressing; label chars come from a `.ascii` pool
   indexed by count (not `65+index` arithmetic).

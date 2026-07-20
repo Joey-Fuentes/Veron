@@ -66,6 +66,12 @@ jobs:
           cat mem.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf mem.elf
           set +e; qemu-aarch64 ./mem.elf; mem_rc=$?; set -e
 
+          # --- 3) large input (brk buffers + read loop): ~10KB in, must not truncate ---
+          yes 'mov x0 0' | head -1200 > big.s1; printf 'mov x8 93\nsvc\n' >> big.s1
+          in_bytes=$(wc -c < big.s1)
+          out_bytes=$(cat big.s1 | qemu-aarch64 ./stage1 | wc -c)
+          big_ok=no; [ "$out_bytes" -ge $((in_bytes - 200)) ] && big_ok=yes
+
           echo "loop ours: $(hex loop.bin)"
           echo "loop ref : $(hex loop_ref.bin)"
           {
@@ -74,12 +80,13 @@ jobs:
             echo "resolved == real as (byte-identical) : $loop_ok"
             echo "loop w/ multi-char labels exit       : $loop_rc  (expect 7)"
             echo "adr+mem w/ multi-char data label exit: $mem_rc  (expect 9)"
+            echo "large input (~${in_bytes}B) not truncated : $big_ok  (out=${out_bytes}B)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$loop_ok" = yes ] && [ "$loop_rc" = 7 ] && [ "$mem_rc" = 9 ]; then
-            echo "PASS: stage1 resolves multi-char labels; output byte-identical to as and runs. Stage 1 lives."
+          if [ "$loop_ok" = yes ] && [ "$loop_rc" = 7 ] && [ "$mem_rc" = 9 ] && [ "$big_ok" = yes ]; then
+            echo "PASS: stage1 resolves multi-char labels (byte-identical to as), runs, and handles large inputs."
           else
-            echo "FAIL: loop_ok=$loop_ok loop_rc=$loop_rc mem_rc=$mem_rc"
+            echo "FAIL: loop_ok=$loop_ok loop_rc=$loop_rc mem_rc=$mem_rc big_ok=$big_ok"
             exit 1
           fi
