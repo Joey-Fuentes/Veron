@@ -126,6 +126,22 @@ stage-0 test: loop + memory + byte-compares), `elf-demo.yml`,
    locally before CI. `validate.py` pins it to CI ground truth; CI stays
    authoritative.
 
+14. `stage0-as` + register `add`/`sub` and `mul` (madd-with-xzr) — the arithmetic
+   base stage 2 needs to emit expression codegen. Byte-identical to real `as`;
+   immediate `add`/`sub` forms unchanged (disambiguated by an `x` 3rd operand).
+15. **Stage 2 expressions** — `return <expr>` grew from `N` to `+ -` (immediate
+   chains), then `+ - *` with **precedence** (recursive descent, register
+   codegen), then **parentheses** to any depth (shunting-yard, iterative, with a
+   runtime **value stack** in `brk` memory). The general expression foundation.
+16. **Stage 2 variables + assignment** — `int main(){ int a=<expr>; ... return
+   <expr>; }`. Single-char names → labeled byte slots (`:a`..`:z`) in the emitted
+   program via `adr`+`ldrb`/`strb`; a factor may be a number, variable, or
+   `( expr )`. A statement loop drives the shunting-yard expression compiler.
+17. **Stage 1 brk-buffer upgrade** — stage 1's inbuf/outbuf/nametable moved from
+   image `.ascii` fillers to a `brk` heap (~20 KB each) with a `read` loop, using
+   the new register `add`. Source shrank 15 KB → ~3 KB and it now handles large
+   inputs without truncation — removing the growth ceiling for stage 2/3.
+
 Notable bug found and fixed along the way: the hand-built ELF failed to run
 because it lacked the execute bit — a *file-mode* issue, not a byte issue
 (`readelf` was happy, QEMU was not). The `elf` tool now sets it itself.
@@ -137,12 +153,16 @@ because it lacked the execute bit — a *file-mode* issue, not a byte issue
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
 stage in the language of the stage below.
 
-- **Stage 1** — DONE for capability #1 (**multi-character labels**), see
-  `spikes/stage1-as/`. Written in stage0-as's language, byte-verified. Next
-  stage-1 increments add only what **stage 2** (a small C compiler, written in
-  stage-1's language) actually needs.
-- **Stage 2** — written in stage-1's language, adding the next capability.
-- **Stage 3** — written in stage-2's language. Each rung easier than the last.
+- **Stage 1** — DONE (multi-character labels) and upgraded to `brk` buffers so it
+  can process large stage-2/3 sources. See `spikes/stage1-as/`.
+- **Stage 2** — in progress. Compiles `int main(){ int a=<expr>; ... return
+  <expr>; }` with variables, assignment, and `+ - *` expressions with precedence
+  and parentheses. Next increments toward an M2-Planet-grade subset: **control
+  flow** (`if`/`while`), then `/` (needs `udiv` in stage0-as), reassignment, and
+  word-sized variables.
+- **Stage 3** — written in stage-2's language, once stage 2 is a usable C subset.
+- **Hand-off**: grow stage 2/3 to M2-Planet-grade C, then hand to the borrowed
+  live-bootstrap chain (see `spikes/borrow-m2/`, `spikes/livebootstrap/`).
 
 Scope rule: add the smallest capability per rung that makes the next rung
 writable. If a stage feels unwieldy to write, that's the signal to add one small
