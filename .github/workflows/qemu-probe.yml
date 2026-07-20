@@ -1,0 +1,72 @@
+name: qemu-probe
+
+# SPIKE (invariants suspended). Diagnostic: isolate qemu-user aarch64 behaviors
+# stage 1 depends on. Each probe is a tiny stage0-as program (spikes/qemu-probe/
+# pN_*.s0) with a KNOWN-correct exit code; CI runs it under qemu-user and
+# compares. Divergence localizes the behavior. Prime suspect: brk() heap under
+# qemu-user vs image (.ascii) memory in the elf R+W+X segment.
+
+on:
+  push:
+    paths:
+      - 'spikes/qemu-probe/**'
+      - 'spikes/stage0-as/**'
+      - 'spikes/elf/**'
+      - '.github/workflows/qemu-probe.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: qemu-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user binutils-aarch64-linux-gnu
+      - name: Build stage0-as + elf, run probes
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+          D=spikes/qemu-probe
+
+          # name expect stdin(optional)
+          run_probe() {
+            local f="$1" expect="$2" stdin="$3"
+            cat "$D/$f" | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf "$f.elf"
+            set +e
+            if [ -n "$stdin" ]; then printf "$stdin" | qemu-aarch64 "./$f.elf"; else qemu-aarch64 "./$f.elf"; fi
+            local rc=$?
+            set -e
+            printf '  %-16s got=%-4s expect=%-4s %s\n' "$f" "$rc" "$expect" "$([ "$rc" = "$expect" ] && echo OK || echo DIFF)"
+            echo "$f=$rc" >> results.txt
+          }
+
+          : > results.txt
+          echo "== probes =="
+          run_probe p1_brk_zero.s0  1  ""
+          run_probe p2_brk_near.s0  42 ""
+          run_probe p3_brk_far.s0   55 ""
+          run_probe p4_brk_read.s0  65 "A"
+          run_probe p5_img_write.s0 33 ""
+          run_probe p6_img_read.s0  65 "A"
+          run_probe p7_adr_far.s0   68 ""
+
+          {
+            echo "## qemu-probe — isolated behaviors (got vs expect)"
+            echo '```'
+            cat results.txt
+            echo ""
+            echo "expect: p1=1 p2=42 p3=55 p4=65 p5=33 p6=65 p7=68"
+            echo '```'
+            echo "If p5/p6/p7 pass but p2/p3/p4 differ -> brk() heap is the problem under"
+            echo "qemu-user; stage 1 should use image (.ascii) buffers, not brk."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "diagnostic complete (does not fail the run)"
