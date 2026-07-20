@@ -11,7 +11,7 @@ name: stage0-as-ldrx-demo
 # Byte-compared against real aarch64-linux-gnu-as (both w and x forms), plus
 # runtime checks: a 64-bit value survives str x + ldr x round-trip (a word store
 # would drop the high word), and a 64-bit frame value survives being saved to a
-# brk/data slot across a nested bl and restored.
+# data slot across a nested bl and restored.
 
 on:
   push:
@@ -52,86 +52,25 @@ jobs:
           echo "ldr/str ours: $(od -An -v -tx1 ls.bin | tr -d ' \n')"
           echo "ldr/str ref : $(od -An -v -tx1 ls_ref.bin | tr -d ' \n')"
 
-          run() {   # assemble+wrap+run a .s0 program, echo exit code into $rc
-            printf '%s' "$1" | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf prog.elf
-            set +e; qemu-aarch64 ./prog.elf; rc=$?; set -e
-          }
+          # an 8-byte zero data slot appended to each program (label :d)
+          SLOT='\n:d\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n'
 
           # ---- 64-bit round-trip: store 7<<32, load it back, shift down -> 7 ----
           # A word store would write only the low 32 bits (0), so exit would be 0.
-          run 'mov x0 0
-movk x0 7 32
-adr x1 d
-str x0 x1
-mov x0 0
-ldr x0 x1
-mov x2 32
-lsr x0 x0 x2
-mov x8 93
-svc
-:d
-.byte 0
-.byte 0
-.byte 0
-.byte 0
-.byte 0
-.byte 0
-.byte 0
-.byte 0
-'
-          rt_rc=$rc
+          printf "mov x0 0\nmovk x0 7 32\nadr x1 d\nstr x0 x1\nmov x0 0\nldr x0 x1\nmov x2 32\nlsr x0 x0 x2\nmov x8 93\nsvc$SLOT" > rt.s0
+          cat rt.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf rt.elf
+          set +e; qemu-aarch64 ./rt.elf; rt_rc=$?; set -e
 
-          # ---- control: the SAME program with word str/ldr truncates -> 0 ----
-          run 'mov x0 0
-movk x0 7 32
-adr x1 d
-str w0 x1
-mov x0 0
-ldr w0 x1
-mov x2 32
-lsr x0 x0 x2
-mov x8 93
-svc
-:d
-.byte 0
-.byte 0
-.byte 0
-.byte 0
-.byte 0
-.byte 0
-.byte 0
-.byte 0
-'
-          wtrunc_rc=$rc
+          # ---- control: the SAME shape with word str/ldr truncates -> 0 ----
+          printf "mov x0 0\nmovk x0 7 32\nadr x1 d\nstr w0 x1\nmov x0 0\nldr w0 x1\nmov x2 32\nlsr x0 x0 x2\nmov x8 93\nsvc$SLOT" > wt.s0
+          cat wt.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf wt.elf
+          set +e; qemu-aarch64 ./wt.elf; wtrunc_rc=$?; set -e
 
           # ---- call-stack enabler: save a 64-bit frame value (5<<32|3) to a slot,
           # make a nested bl (clobbers x0), restore, take the high word -> 5 ----
-          run 'mov x0 0
-movk x0 5 32
-movk x0 3 0
-adr x19 d
-str x0 x19
-mov x0 0
-bl f
-ldr x0 x19
-mov x2 32
-lsr x0 x0 x2
-mov x8 93
-svc
-:f
-mov x0 999
-ret
-:d
-.byte 0
-.byte 0
-.byte 0
-.byte 0
-.byte 0
-.byte 0
-.byte 0
-.byte 0
-'
-          cs_rc=$rc
+          printf "mov x0 0\nmovk x0 5 32\nmovk x0 3 0\nadr x19 d\nstr x0 x19\nmov x0 0\nbl f\nldr x0 x19\nmov x2 32\nlsr x0 x0 x2\nmov x8 93\nsvc\n:f\nmov x0 999\nret$SLOT" > cs.s0
+          cat cs.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf cs.elf
+          set +e; qemu-aarch64 ./cs.elf; cs_rc=$?; set -e
 
           {
             echo "## stage0-as — 64-bit ldr x / str x (call-stack enabler)"
