@@ -1,0 +1,125 @@
+# stage2 (mini-c) SEED: compile `int main(){return N;}` -> asm that exits N.
+# written in stage-1's language (multi-char labels); resolved by stage1.
+adr x19 inbuf
+adr x22 outbuf
+mov x0 0
+mov x1 x19
+mov x2 400
+mov x8 63
+svc
+mov x21 x0
+mov x23 0
+mov x20 0
+:search
+adr x9 pat
+mov x6 x20
+mov x7 0
+:trymatch
+ldrb w4 x9 x7
+cmp x4 0
+b.eq matched
+cmp x6 x21
+b.ge advance
+ldrb w5 x19 x6
+cmp x4 x5
+b.ne advance
+add x6 x6 1
+add x7 x7 1
+b trymatch
+:advance
+add x20 x20 1
+cmp x20 x21
+b.lt search
+b emitzero
+:matched
+:skipsp
+cmp x6 x21
+b.ge emitzero
+ldrb w5 x19 x6
+cmp x5 32
+b.eq skipadv
+cmp x5 9
+b.eq skipadv
+b digits
+:skipadv
+add x6 x6 1
+b skipsp
+:digits
+bl emitpre
+mov x8 0
+:copydig
+cmp x6 x21
+b.ge enddig
+ldrb w5 x19 x6
+cmp x5 48
+b.lt enddig
+cmp x5 58
+b.ge enddig
+strb w5 x22 x23
+add x23 x23 1
+add x6 x6 1
+mov x8 1
+b copydig
+:enddig
+cmp x8 0
+b.eq zerodig
+b finish
+:zerodig
+mov w5 48
+strb w5 x22 x23
+add x23 x23 1
+b finish
+:emitzero
+bl emitpre
+mov w5 48
+strb w5 x22 x23
+add x23 x23 1
+:finish
+bl emitpost
+mov x0 1
+mov x1 x22
+mov x2 x23
+mov x8 64
+svc
+mov x0 0
+mov x8 93
+svc
+:emitpre
+adr x9 pre
+mov x7 0
+:epre
+ldrb w5 x9 x7
+cmp x5 0
+b.eq epredone
+strb w5 x22 x23
+add x23 x23 1
+add x7 x7 1
+b epre
+:epredone
+ret
+:emitpost
+adr x9 post
+mov x7 0
+:epost
+ldrb w5 x9 x7
+cmp x5 0
+b.eq epostdone
+strb w5 x22 x23
+add x23 x23 1
+add x7 x7 1
+b epost
+:epostdone
+ret
+:pat
+.ascii "return"
+.byte 0
+:pre
+.ascii "mov x0 "
+.byte 0
+:post
+.ascii "\nmov x8 93\nsvc\n"
+.byte 0
+:inbuf
+.ascii "................................................................................................................................................................................................................................................................................................................................................................................................................"
+:outbuf
+.ascii "................................................................................................................................................................................................................................................................................................................................................................................................................"

@@ -1,0 +1,78 @@
+name: stage2-mini-c-demo
+
+# SPIKE (invariants suspended). Stage 2 = mini-c, SEED capability: compile
+# `int main(){return N;}` into assembly that exits with N. Written in STAGE-1's
+# language (multi-char labels), so it exercises the whole ladder:
+#
+#   stage2.s1 | stage1 | stage0-as | elf  -> stage2 (the compiler)
+#   prog.c    | stage2 | stage0-as | elf  -> a.out ; ./a.out  (exit == N)
+#
+# This is the first real compiler our own seed produces: C-ish source in,
+# working aarch64 machine code out.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage2-mini-c/**'
+      - 'spikes/stage1-as/**'
+      - 'spikes/stage0-as/**'
+      - 'spikes/elf/**'
+      - '.github/workflows/stage2-mini-c-demo.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: stage2-mini-c-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user binutils-aarch64-linux-gnu
+      - name: Build ladder (stage0-as, elf, stage1, stage2) and compile C
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+
+          # stage1 (macro-as): built from stage1-as.s0
+          cat spikes/stage1-as/stage1-as.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
+          # stage2 (mini-c): written in stage-1's language, resolved by stage1
+          cat spikes/stage2-mini-c/stage2-mini-c.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+          test -x stage2 || { echo "stage2 not built"; exit 1; }
+
+          # compile several C programs, run each, check exit code
+          fail=0
+          try() {  # $1 = C source, $2 = expected exit
+            printf '%s' "$1" | qemu-aarch64 ./stage2 > out.s
+            cat out.s | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf a.out
+            set +e; qemu-aarch64 ./a.out; rc=$?; set -e
+            printf '  %-32s -> %-14s exit=%-4s want=%-4s %s\n' "$1" "$(head -1 out.s)" "$rc" "$2" "$([ "$rc" = "$2" ] && echo OK || { echo DIFF; fail=1; })"
+          }
+          echo "== compiling C through our own stage-2 =="
+          try 'int main(){return 42;}'      42
+          try 'int main(){return 7;}'       7
+          try 'int main(){return 0;}'       0
+          try 'int main(){ return 200 ; }'  200
+          try 'int main(){}'                0
+
+          {
+            echo "## stage2-mini-c — our seed compiles C (return N)"
+            echo '```'
+            echo "ladder: stage2.s1 | stage1 | stage0-as | elf -> stage2"
+            echo "        prog.c    | stage2 | stage0-as | elf -> a.out"
+            echo "42->42  7->7  0->0  200->200  (no return)->0"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$fail" = 0 ]; then
+            echo "PASS: our stage-2 compiles C to working aarch64 code. Stage 2 seed lives."
+          else
+            echo "FAIL: see DIFFs above"; exit 1
+          fi

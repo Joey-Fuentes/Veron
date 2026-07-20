@@ -116,6 +116,15 @@ stage-0 test: loop + memory + byte-compares), `elf-demo.yml`,
    `spikes/stage1-as/stage1-as.s0`, the first tool written **in stage0-as's own
    language** (not hand-encoded). Resolves multi-char labels to single-char and
    pipes into `stage0-as`; output byte-identical to `as`, runs under QEMU.
+12. **Stage 2 (`mini-c`) SEED** — `spikes/stage2-mini-c/stage2-mini-c.s1`,
+   written **in stage-1's language** (multi-char labels). Compiles
+   `int main(){return N;}` to aarch64 machine code that exits N. The first
+   real compiler our own seed produces. Full ladder:
+   `stage2.s1 | stage1 | stage0-as | elf`, then `prog.c | stage2 | stage0-as | elf`.
+13. **Dev bench** — `spikes/bench/` (NOT part of the bootstrap): a Python model
+   of `stage0-as` + a small ARM64 interpreter to develop/test `.s0`/`.s1` code
+   locally before CI. `validate.py` pins it to CI ground truth; CI stays
+   authoritative.
 
 Notable bug found and fixed along the way: the hand-built ELF failed to run
 because it lacked the execute bit — a *file-mode* issue, not a byte issue
