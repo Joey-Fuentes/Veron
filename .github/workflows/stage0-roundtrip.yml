@@ -1,0 +1,38 @@
+name: stage0-roundtrip
+
+# EXPERIMENTAL stage 0 round-trip demo (spike zone — invariants suspended).
+# Assembles the hand-encoded ARM64 proof-of-concept, RUNS it (proves the bytes
+# execute), and DISASSEMBLES it (proves the raw words we authored decode back to
+# the instructions we intended). The disassembly lands in the job summary.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage0-arm64/**'
+      - '.github/workflows/stage0-roundtrip.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: stage0-roundtrip-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  roundtrip:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain (qemu-user + aarch64 binutils)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu
+
+      - name: Assemble, run, and disassemble (round-trip)
+        run: |
+          chmod +x tools/spike.sh
+          f=spikes/stage0-arm64/stage0-handencoded.aarch64.s
+          { echo "## stage0 hand-encoded — round-trip"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          tools/spike.sh aarch64 "$f" --dump | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
