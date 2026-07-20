@@ -72,10 +72,18 @@ variables may be named `i`, `w`, or `r` without ambiguity.
   split into their own increment for the **stage-1 label budget**. The compiler
   is written in stage-1's language, and at 61 single-char labels it had no room
   in the old 62-slot pool. Stage-1's pool has since been **expanded to 76**
-  (milestone 21), so equality is unblocked and is the next increment. For now
+  (milestone 21), so equality is unblocked whenever we want it. For now
   `a==b` is expressible as `(a<b)+(b<a)` being `0`.
-- Still no `/` (needs `udiv` in stage0-as). These are the next steps toward the
-  M2-Planet-grade subset that hands off to the borrowed chain.
+- Still no `/` (needs `udiv` in stage0-as).
+
+Equality and `/` are small, self-contained increments that are available to pick
+up any time, but they are **not the critical path** to stage 3. What actually
+gates stage 3 is the stage-2 **"floor"** — functions + a real call stack,
+pointers/`char`/arrays, `struct`, a small heap, multi-char labels/identifiers,
+and I/O — because stage 3 is a *compiler* written in stage-2's C. That floor,
+and the full target C subset it builds toward, are laid out in
+[`TARGET-SUBSET.md`](./TARGET-SUBSET.md) (derived from the pinned M2-Planet
+self-host, vendored at `spikes/reference/`).
 
 ## Verified
 

@@ -242,12 +242,17 @@ stage in the language of the stage below.
   variables, declaration + **reassignment**, `+ - *` expressions plus the
   **relational** operators `<` and `>` (precedence, parentheses), and **control
   flow** (`if`/`while`, nested). Conditions can be relations or nonzero-tests.
-  Next increments toward an M2-Planet-grade subset: **equality operators**
-  (`== != <= >=`) — now unblocked by the stage-1 pool expansion (milestone 21) —
-  then `/` (needs `udiv` in stage0-as).
-- **Stage 3** — written in stage-2's language, once stage 2 is a usable C subset.
-- **Hand-off**: grow stage 2/3 to M2-Planet-grade C, then hand to the borrowed
-  live-bootstrap chain (see `spikes/borrow-m2/`, `spikes/livebootstrap/`).
+  Equality (`== != <= >=`, unblocked by the m21 pool expansion) and `/` (needs
+  `udiv` in stage0-as) are small leaf increments available any time, but the
+  **critical path to stage 3 is the stage-2 "floor"**: functions + a real call
+  stack, pointers/`char`/arrays, `struct`, a small heap, multi-char
+  labels/identifiers, and I/O. See **`stage2-mini-c/TARGET-SUBSET.md`**.
+- **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
+- **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**
+  (pinned at `34fbd5c…`, vendored read-only at `spikes/reference/`) into a working
+  M2-Planet, which drives the borrowed live-bootstrap chain (see
+  `spikes/borrow-m2/`, `spikes/livebootstrap/`). The target C subset is spelled
+  out in `stage2-mini-c/TARGET-SUBSET.md`.
 
 Scope rule: add the smallest capability per rung that makes the next rung
 writable. If a stage feels unwieldy to write, that's the signal to add one small

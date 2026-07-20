@@ -21,6 +21,15 @@ program.s ──[stage0-as]──► code bytes ──[elf out]──► runnabl
 
 Full progress log, spike inventory, and what's next: **`PROGRESS.md`**.
 
+## Design & reference docs
+
+- `stage2-mini-c/TARGET-SUBSET.md` — the C subset the ladder is working toward
+  (derived from M2-Planet's self-host) and the stage-2 "floor" before stage 3.
+  **Read this for the near-term plan.**
+- `reference/` — pinned, read-only copies of the M2-Planet + M2libc source
+  (the handoff target), vendored so the source can be consulted locally. Not part
+  of the build; see `reference/README.md`.
+
 ## Naming convention (for the generic `spike` matrix)
 
 One source per architecture, tagged in the filename:
