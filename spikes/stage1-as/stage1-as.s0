@@ -21,92 +21,92 @@ mov x20 0
 mov x23 0
 mov x25 0
 mov x26 0
-:mainloop
+:M
 cmp x20 x21
-b.ge finish
-bl sksp
+b.ge F
+bl S
 cmp x20 x21
-b.ge finish
+b.ge F
 ldrb w0 x19 x20
 cmp w0 10
-b.eq main_nl
+b.eq N
 cmp w0 58
-b.eq main_def
+b.eq D
 cmp w0 35
-b.eq main_copy
+b.eq C
 cmp w0 97
-b.eq main_a
+b.eq A
 cmp w0 98
-b.eq main_b
-b main_copy
-:main_nl
+b.eq B
+b C
+:N
 mov w0 10
 strb w0 x22 x23
 add x23 x23 1
 add x20 x20 1
-b mainloop
-:main_def
+b M
+:D
 mov w0 58
 strb w0 x22 x23
 add x23 x23 1
 add x20 x20 1
-bl mapname
-bl cpnl
-b mainloop
-:main_copy
-bl cpnl
-b mainloop
-:main_a
+bl m
+bl n
+b M
+:C
+bl n
+b M
+:A
 add x2 x20 1
 ldrb w1 x19 x2
 cmp w1 100
-b.ne main_copy
+b.ne C
 add x3 x20 2
 ldrb w2 x19 x3
 cmp w2 114
-b.eq main_lbl
-b main_copy
-:main_b
+b.eq L
+b C
+:B
 add x2 x20 1
 ldrb w1 x19 x2
 cmp w1 32
-b.eq main_lbl
+b.eq L
 cmp w1 46
-b.eq main_lbl
+b.eq L
 cmp w1 108
-b.eq main_bl
-b main_copy
-:main_bl
+b.eq K
+b C
+:K
 add x3 x20 2
 ldrb w2 x19 x3
 cmp w2 114
-b.eq main_copy
-b main_lbl
-:main_lbl
-bl cptok
+b.eq C
+b L
+:L
+bl T
 mov w0 32
 strb w0 x22 x23
 add x23 x23 1
-bl sksp
+bl S
 cmp x20 x21
-b.ge main_lbl_map
+b.ge P
 ldrb w0 x19 x20
 cmp w0 120
-b.eq main_lbl_reg
+b.eq R
 cmp w0 119
-b.eq main_lbl_reg
-b main_lbl_map
-:main_lbl_reg
-bl cptok
+b.eq R
+b P
+:R
+bl T
 mov w0 32
 strb w0 x22 x23
 add x23 x23 1
-bl sksp
-:main_lbl_map
-bl mapname
-bl cpnl
-b mainloop
-:finish
+bl S
+:P
+bl m
+bl n
+b M
+:F
 mov x0 1
 mov x1 x22
 mov x2 x23
@@ -116,136 +116,136 @@ mov x0 0
 mov x8 93
 svc
 # ---- sksp: skip spaces/tabs in input ----
-:sksp
+:S
 cmp x20 x21
-b.ge sksp_done
+b.ge W
 ldrb w10 x19 x20
 cmp w10 32
-b.eq sksp_adv
+b.eq V
 cmp w10 9
-b.eq sksp_adv
-b sksp_done
-:sksp_adv
+b.eq V
+b W
+:V
 add x20 x20 1
-b sksp
-:sksp_done
+b S
+:W
 ret
 # ---- cptok: copy a token (until delimiter) input->output ----
-:cptok
+:T
 cmp x20 x21
-b.ge cptok_done
+b.ge U
 ldrb w0 x19 x20
 cmp w0 32
-b.eq cptok_done
+b.eq U
 cmp w0 9
-b.eq cptok_done
+b.eq U
 cmp w0 10
-b.eq cptok_done
+b.eq U
 strb w0 x22 x23
 add x23 x23 1
 add x20 x20 1
-b cptok
-:cptok_done
+b T
+:U
 ret
 # ---- cpnl: copy until newline inclusive ----
-:cpnl
+:n
 cmp x20 x21
-b.ge cpnl_done
+b.ge O
 ldrb w0 x19 x20
 strb w0 x22 x23
 add x23 x23 1
 add x20 x20 1
 cmp w0 10
-b.eq cpnl_done
-b cpnl
-:cpnl_done
+b.eq O
+b n
+:O
 ret
 # ---- mapname: read name at x20, map to single char, emit char, advance x20 ----
-:mapname
+:m
 mov x11 0
 mov x12 0
-:mn_scan
+:Z
 cmp x11 x26
-b.ge mn_notfound
+b.ge g
 mov x6 x20
 mov x7 x12
-:mn_cmp
+:c
 ldrb w4 x24 x7
 mov w8 0
 cmp x6 x21
-b.ge mn_qd
+b.ge Q
 ldrb w5 x19 x6
 cmp w5 32
-b.eq mn_qd
+b.eq Q
 cmp w5 9
-b.eq mn_qd
+b.eq Q
 cmp w5 10
-b.eq mn_qd
-b mn_notdelim
-:mn_qd
+b.eq Q
+b d
+:Q
 mov w8 1
-:mn_notdelim
+:d
 cmp w4 0
-b.eq mn_sczero
+b.eq z
 cmp w8 1
-b.eq mn_mismatch
+b.eq X
 cmp w4 w5
-b.ne mn_mismatch
+b.ne X
 add x6 x6 1
 add x7 x7 1
-b mn_cmp
-:mn_sczero
+b c
+:z
 cmp w8 1
-b.eq mn_found
-:mn_mismatch
+b.eq f
+:X
 ldrb w4 x24 x12
 add x12 x12 1
 cmp w4 0
-b.ne mn_mismatch
+b.ne X
 add x11 x11 1
-b mn_scan
-:mn_found
-adr x9 pool
+b Z
+:f
+adr x9 p
 ldrb w0 x9 x11
-b mn_emit
-:mn_notfound
+b E
+:g
 mov x6 x20
-:mn_copy
+:y
 cmp x6 x21
-b.ge mn_copydone
+b.ge H
 ldrb w4 x19 x6
 cmp w4 32
-b.eq mn_copydone
+b.eq H
 cmp w4 9
-b.eq mn_copydone
+b.eq H
 cmp w4 10
-b.eq mn_copydone
+b.eq H
 strb w4 x24 x25
 add x25 x25 1
 add x6 x6 1
-b mn_copy
-:mn_copydone
+b y
+:H
 mov w4 0
 strb w4 x24 x25
 add x25 x25 1
-adr x9 pool
+adr x9 p
 ldrb w0 x9 x26
 add x26 x26 1
-:mn_emit
+:E
 cmp x20 x21
-b.ge mn_advdone
+b.ge I
 ldrb w4 x19 x20
 cmp w4 32
-b.eq mn_advdone
+b.eq I
 cmp w4 9
-b.eq mn_advdone
+b.eq I
 cmp w4 10
-b.eq mn_advdone
+b.eq I
 add x20 x20 1
-b mn_emit
-:mn_advdone
+b E
+:I
 strb w0 x22 x23
 add x23 x23 1
 ret
-:pool
+:p
 .ascii "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"

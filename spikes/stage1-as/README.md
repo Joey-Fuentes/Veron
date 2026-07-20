@@ -14,6 +14,14 @@ same program with each distinct label mapped to a unique single character, so
 `:name` definitions, `b`/`bl`/`b.eq`/`b.ne`/`b.lt`/`b.ge name`, and `adr xR name`.
 `br`/`blr` (register operands) and everything else pass through unchanged.
 
+## Constraint: stage 1's own source uses SINGLE-char labels
+
+Stage 1 exists to give multi-char labels to programs *above* it — but
+`stage1-as.s0` is itself assembled by `stage0-as`, which is single-char only.
+So stage 1's own labels are single characters; the multi-char capability is for
+its input, not its source. (This is the last tool bound by that limit; stage 2,
+written in stage-1's language, gets multi-char labels.)
+
 ## How it works (within stage0-as's language)
 
 - **Memory**: stage0-as has no `.space`/bss, so stage 1 gets buffers from `brk`
