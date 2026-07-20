@@ -154,6 +154,25 @@ stage-0 test: loop + memory + byte-compares), `elf-demo.yml`,
    comparisons arrive — hence the guard checks the emitted *forms*, not just
    exit codes.)
 
+19. **Stage 2 control flow — `if`, `while`, reassignment** — the compiler now
+   handles `if (<expr>) { … }`, `while (<expr>) { … }` (condition tested for
+   nonzero), and reassignment `c=<expr>;`, all arbitrarily nested. Reassignment
+   rode along because a `while` that can't mutate its condition is hollow. Codegen
+   is **iterative with an explicit block stack** (a nested `bl` would clobber the
+   return register, so recursion isn't free) — on `{` the compiler pushes the
+   pending block's labels, on the matching `}` it pops and emits the close. Jump
+   targets are **uppercase** labels `A`,`B`,… (variable slots are lowercase, so no
+   collision); the condition reuses the existing shunting-yard expression engine
+   plus `cmp x0 0` / `b.eq`. No new stage0-as instruction was needed (the required
+   branches already existed). Statement dispatch was reworked to key on the second
+   character (keyword ⇒ letter, reassignment ⇒ space/`=`), which removed the
+   keyword/variable-name collision entirely (vars may be named `i`/`w`/`r`).
+   Designed and proven on the bench first: `stage2_ref.py` gained an independent
+   C-subset interpreter as a test oracle, and the `.s1` was checked against it
+   through the real assembled ladder (nested loops, factorial, sum 1..10,
+   nested `if`) before shipping; `validate.py` grew a matching structural +
+   exit-code guard.
+
 Notable bug found and fixed along the way: the hand-built ELF failed to run
 because it lacked the execute bit — a *file-mode* issue, not a byte issue
 (`readelf` was happy, QEMU was not). The `elf` tool now sets it itself.
@@ -167,11 +186,12 @@ stage in the language of the stage below.
 
 - **Stage 1** — DONE (multi-character labels) and upgraded to `brk` buffers so it
   can process large stage-2/3 sources. See `spikes/stage1-as/`.
-- **Stage 2** — in progress. Compiles `int main(){ int a=<expr>; ... return
-  <expr>; }` with variables, assignment, and `+ - *` expressions with precedence
-  and parentheses; variables are now **word-sized** (4-byte slots). Next
-  increments toward an M2-Planet-grade subset: **control flow** (`if`/`while`),
-  then `/` (needs `udiv` in stage0-as), and reassignment.
+- **Stage 2** — in progress. Compiles `int main(){ … }` with **word-sized**
+  variables, declaration + **reassignment**, `+ - *` expressions (precedence,
+  parentheses), and **control flow** (`if`/`while`, nested, nonzero-truth
+  conditions). Next increments toward an M2-Planet-grade subset: **comparison
+  operators** (`<`, `==`, … so conditions can be relations, not just countdowns)
+  and `/` (needs `udiv` in stage0-as).
 - **Stage 3** — written in stage-2's language, once stage 2 is a usable C subset.
 - **Hand-off**: grow stage 2/3 to M2-Planet-grade C, then hand to the borrowed
   live-bootstrap chain (see `spikes/borrow-m2/`, `spikes/livebootstrap/`).

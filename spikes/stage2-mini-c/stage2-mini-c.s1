@@ -1,19 +1,31 @@
-# stage2 (mini-c): variables + assignment (single-char names, byte-sized).
-# int main(){ int a=<expr>; ... return <expr>; }
-# compiler brk buffers: x19 inbuf, x22 outbuf, x24 opstk.  x28=compile_expr ret,
-# x27=emit-helper ret, x26=current op.  emitted value stack = brk (x9).
+# stage2 (mini-c): variables, assignment, reassignment, if, while.
+# int main(){ int a=<expr>; a=<expr>; if(<expr>){...} while(<expr>){...} return <expr>; }
+# single-char WORD vars -> :a..:z (4-byte slots). control-flow labels A.. (uppercase).
+# compiler regs: x19 inbuf, x21 inlen, x22 outbuf, x23 outpos, x6 scan-pos,
+#   x24 opstk-base, x25 opstk-top, x26 cur-op, x11 op-to-apply, x14 store-target,
+#   x15 blockstk-base, x16 blockstk-top, x17 next-label-char, x12/x13 label temps,
+#   x28 compile_expr ret, x27 emit-helper ret.  emitted value stack = brk (x9).
+# NOTE: statement dispatch keys on the 2nd char: a keyword's 2nd char is a letter
+#   (in/if/wh/re); a single-char var reassignment's is space or '=' -> no collision,
+#   so vars may be named i/w/r freely.
 mov x0 0
 mov x8 214
 svc
 mov x19 x0
-add x22 x19 500
-add x24 x19 3000
-add x0 x19 3100
+add x22 x19 600
+mov x1 5000
+add x24 x19 x1
+mov x1 5200
+add x15 x19 x1
+mov x16 0
+mov x17 65
+mov x1 5600
+add x0 x19 x1
 mov x8 214
 svc
 mov x0 0
 mov x1 x19
-mov x2 400
+mov x2 500
 mov x8 63
 svc
 mov x21 x0
@@ -34,16 +46,38 @@ cmp x6 x21
 b.ge doneall
 ldrb w5 x19 x6
 cmp x5 125
-b.eq doneall
-cmp x5 105
-b.eq doint
+b.eq doclose
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 97
+b.lt doreassign
+cmp x4 123
+b.ge doreassign
+cmp x5 119
+b.eq dowhile
 cmp x5 114
 b.eq doreturn
-add x6 x6 1
-b stmtloop
+cmp x4 110
+b.eq doint
+b doif
 :doint
 add x6 x6 3
 bl skipsp
+ldrb w14 x19 x6
+add x6 x6 1
+bl skipsp
+add x6 x6 1
+bl compile_expr
+adr x9 spop
+bl emitstr
+mov w5 x14
+strb w5 x22 x23
+add x23 x23 1
+adr x9 sstore
+bl emitstr
+add x6 x6 1
+b stmtloop
+:doreassign
 ldrb w14 x19 x6
 add x6 x6 1
 bl skipsp
@@ -63,6 +97,89 @@ add x6 x6 6
 bl compile_expr
 adr x9 sret
 bl emitstr
+add x6 x6 1
+b stmtloop
+:doif
+add x6 x6 2
+bl compile_expr
+mov x12 x17
+add x17 x17 1
+adr x9 scondtest
+bl emitstr
+mov w5 x12
+strb w5 x22 x23
+add x23 x23 1
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+mov w4 0
+strb w4 x15 x16
+add x16 x16 1
+mov w4 x12
+strb w4 x15 x16
+add x16 x16 1
+mov w4 0
+strb w4 x15 x16
+add x16 x16 1
+add x6 x6 1
+b stmtloop
+:dowhile
+add x6 x6 5
+mov x12 x17
+add x17 x17 1
+mov w0 x12
+bl emitlbl
+bl compile_expr
+mov x13 x17
+add x17 x17 1
+adr x9 scondtest
+bl emitstr
+mov w5 x13
+strb w5 x22 x23
+add x23 x23 1
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+mov w4 1
+strb w4 x15 x16
+add x16 x16 1
+mov w4 x12
+strb w4 x15 x16
+add x16 x16 1
+mov w4 x13
+strb w4 x15 x16
+add x16 x16 1
+add x6 x6 1
+b stmtloop
+:doclose
+cmp x16 0
+b.eq doneall
+sub x16 x16 3
+ldrb w4 x15 x16
+add x2 x16 1
+ldrb w12 x15 x2
+cmp x4 1
+b.ne docloseif
+mov w5 98
+strb w5 x22 x23
+add x23 x23 1
+mov w5 32
+strb w5 x22 x23
+add x23 x23 1
+mov w5 x12
+strb w5 x22 x23
+add x23 x23 1
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+add x2 x16 2
+ldrb w0 x15 x2
+bl emitlbl
+add x6 x6 1
+b stmtloop
+:docloseif
+mov w0 x12
+bl emitlbl
 add x6 x6 1
 b stmtloop
 :doneall
@@ -87,6 +204,8 @@ ldrb w5 x19 x6
 cmp x5 59
 b.eq ceflush
 cmp x5 125
+b.eq ceflush
+cmp x5 123
 b.eq ceflush
 cmp x5 48
 b.lt cenotdig
@@ -216,6 +335,16 @@ adr x9 spush
 bl emitstr
 mov x30 x27
 ret
+:emitlbl
+mov w5 58
+strb w5 x22 x23
+add x23 x23 1
+strb w0 x22 x23
+add x23 x23 1
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+ret
 :emitstr
 mov x7 0
 :esloop
@@ -267,9 +396,6 @@ strb w5 x22 x23
 add x23 x23 1
 :cdret
 ret
-:pat
-.ascii "return"
-.byte 0
 :spre
 .ascii "mov x0 0\nmov x8 214\nsvc\nmov x9 x0\nadd x0 x9 1000\nmov x8 214\nsvc\n"
 .byte 0
@@ -306,8 +432,9 @@ ret
 :sret
 .ascii "sub x9 x9 4\nldr w0 x9\nmov x8 93\nsvc\n"
 .byte 0
+:scondtest
+.ascii "sub x9 x9 4\nldr w0 x9\ncmp x0 0\nb.eq "
+.byte 0
 :sslots
 .ascii ":a\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:b\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:c\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:d\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:e\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:f\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:g\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:h\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:i\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:j\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:k\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:l\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:m\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:n\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:o\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:p\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:q\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:r\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:s\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:t\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:u\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:v\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:w\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:x\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:y\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:z\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n"
 .byte 0
-:opstk
-.ascii "________________________________________________________________"

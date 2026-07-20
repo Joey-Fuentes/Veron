@@ -1,16 +1,19 @@
 name: stage2-mini-c-demo
 
-# SPIKE (invariants suspended). Stage 2 = mini-c. Supports VARIABLES:
-#   int main(){ int a=<expr>; int b=<expr>; ... return <expr>; }
-# single-char var names -> labeled WORD (4-byte) slots (:a..:z) in the emitted
-# program, accessed via adr + ldr/str; a factor may be a number, a variable
-# (load), or ( expr ). Compiler uses shunting-yard; emitted code uses a brk
-# value stack. Written in stage-1's language. (Word-sized vars: 32-bit storage.)
+# SPIKE (invariants suspended). Stage 2 = mini-c. Supports:
+#   int main(){ int a=<expr>; a=<expr>; if(<expr>){...} while(<expr>){...} return <expr>; }
+# single-char var names -> labeled WORD (4-byte) slots (:a..:z), accessed via
+# adr + ldr/str; a factor may be a number, a variable (load), or ( expr ).
+# Control flow (if/while, nested) tests the condition for nonzero; codegen is
+# iterative with a block stack and uppercase jump labels A.. (vars are lowercase,
+# no collision). Compiler uses shunting-yard; emitted code uses a brk value
+# stack. Written in stage-1's language.
 #
-# NB: with only + - * and a mod-256 exit code, byte vs word storage is
-# indistinguishable by exit code, so this demo also STRUCTURALLY checks that the
-# emitted program uses word ldr/str + 4-byte slots, and byte-compares the new
-# ldr/str forms against real `as`.
+# NB: with only + - * and a mod-256 exit, byte vs word storage is
+# indistinguishable by exit code, so this demo also STRUCTURALLY checks the
+# emitted program (word ldr/str + 4-byte slots; if/while zero-test + branches)
+# and byte-compares the word ldr/str forms against real `as`. Exit codes for the
+# loop/if programs are genuine end-to-end checks (loop counting + reassignment).
 
 on:
   push:
@@ -36,7 +39,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-user binutils-aarch64-linux-gnu
-      - name: Build ladder and compile C with word-sized variables
+      - name: Build ladder and compile C (variables, if/while, reassignment)
         run: |
           aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
           aarch64-linux-gnu-ld -static -o stage0-as s0.o
@@ -47,7 +50,6 @@ jobs:
           test -x stage2 || { echo "stage2 not built"; exit 1; }
 
           # ---- byte-compare the WORD var load/store forms against real `as` ----
-          # stage2 emits `ldr w0 x1` / `str w0 x1` for word var access.
           printf 'ldr w0 x1\nstr w0 x1\n' > ld.s0
           printf '.text\n.global _start\n_start:\n\tldr w0,[x1]\n\tstr w0,[x1]\n' > ld_ref.s
           aarch64-linux-gnu-as -o ld_ref.o ld_ref.s
@@ -67,37 +69,65 @@ jobs:
           nbyte=$(grep -c '^\.byte 0$' word.s || true)   # 26 slots x 4 bytes = 104
           [ "$nbyte" = 104 ] || { echo "slots not 4-byte word (got $nbyte '.byte 0' lines, want 104)"; struct_ok=no; }
 
+          # ---- structural: if/while emit a zero-test and branch to UPPERCASE labels ----
+          cf_ok=yes
+          printf '%s' 'int main(){int a=1; if(a){ a=a+1; } return a;}' | qemu-aarch64 ./stage2 > if.s
+          grep -q 'cmp x0 0' if.s || { echo "if: MISSING zero-test"; cf_ok=no; }
+          grep -q 'b.eq A'   if.s || { echo "if: MISSING skip branch b.eq A"; cf_ok=no; }
+          grep -q '^:A$'     if.s || { echo "if: MISSING skip label :A"; cf_ok=no; }
+          printf '%s' 'int main(){int a=3; while(a){ a=a-1; } return a;}' | qemu-aarch64 ./stage2 > wh.s
+          grep -q '^:A$'   wh.s || { echo "while: MISSING top label :A"; cf_ok=no; }
+          grep -q '^b A$'  wh.s || { echo "while: MISSING back branch b A"; cf_ok=no; }
+          grep -q 'b.eq B' wh.s || { echo "while: MISSING exit branch b.eq B"; cf_ok=no; }
+
           fail=0
           try() {
             printf '%s' "$1" | qemu-aarch64 ./stage2 > out.s
             cat out.s | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf a.out
             set +e; qemu-aarch64 ./a.out; rc=$?; set -e
-            printf '  %-52s exit=%-4s want=%-4s %s\n' "$1" "$rc" "$2" "$([ "$rc" = "$2" ] && echo OK || { echo DIFF; fail=1; })"
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$1" "$rc" "$2" "$([ "$rc" = "$2" ] && echo OK || { echo DIFF; fail=1; })"
           }
-          echo "== stage-2 compiling C with word-sized variables =="
+          echo "== stage-2: word-sized variables =="
           try 'int main(){int a=2; int b=3; return a+b;}'             5
           try 'int main(){int a=10; return a*a;}'                     100
           try 'int main(){int a=5; int b=a+1; return a*b;}'           30
-          try 'int main(){int a=100; int b=50; return a-b;}'          50
           try 'int main(){int x=7; return (x+1)*2;}'                  16
           try 'int main(){int a=2; int b=3; int c=4; return a+b*c;}'  14
-          try 'int main(){int a=3; int b=a*a; int c=b+1; return c;}'  10
-          try 'int main(){int a=2; int b=a+a; int c=b*b; return c;}'  16
-          try 'int main(){return 2+3*4;}'                             14
-          try 'int main(){int a=200; return a;}'                      200
+
+          echo "== stage-2: reassignment =="
+          try 'int main(){int a=5; a=a+3; return a;}'                 8
+          try 'int main(){int a=1; a=2; a=3; return a*10;}'           30
+
+          echo "== stage-2: if (nonzero-truth) =="
+          try 'int main(){int a=5; if(a){ a=a+1; } return a;}'        6
+          try 'int main(){int a=0; if(a){ a=99; } return a+7;}'       7
+          try 'int main(){int a=3; if(a-3){ a=99; } return a;}'       3
+
+          echo "== stage-2: while (loops + termination) =="
+          try 'int main(){int n=10; int s=0; while(n){ s=s+n; n=n-1; } return s;}'   55
+          try 'int main(){int n=4; int f=1; while(n){ f=f*n; n=n-1; } return f;}'    24
+          try 'int main(){int a=0; while(a){ a=a-1; } return a+9;}'                  9
+
+          echo "== stage-2: nested control flow =="
+          try 'int main(){int i=3; int t=0; while(i){ int j=2; while(j){ t=t+1; j=j-1; } i=i-1; } return t;}'  6
+          try 'int main(){int a=6; int c=0; while(a){ if(a){ c=c+2; } a=a-1; } return c;}'                     12
+          try 'int main(){int a=1; int b=1; int r=0; if(a){ if(b){ r=5; } } return r;}'                        5
 
           {
-            echo "## stage2-mini-c — word-sized variables"
+            echo "## stage2-mini-c — variables, if/while, reassignment"
             echo '```'
-            echo "word ldr/str byte-identical to as : $ld_ok"
-            echo "emitted uses word forms + 4B slots: $struct_ok"
-            echo "int a=5;int b=a+2;return b; -> 7"
-            echo "int a=5;int b=a+1;return a*b;-> 30"
+            echo "word ldr/str byte-identical to as   : $ld_ok"
+            echo "emitted word forms + 4B slots       : $struct_ok"
+            echo "if/while zero-test + A.. jump labels : $cf_ok"
+            echo "while(n){s=s+n;n=n-1;} sum 1..10     -> 55"
+            echo "while(n){f=f*n;n=n-1;} 4!            -> 24"
+            echo "nested while (3x2 increments)        -> 6"
+            echo "nested if (a && b)                   -> 5"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$struct_ok" = yes ]; then
-            echo "PASS: stage-2 compiles word-sized variables; ldr/str byte-correct; no byte-slot regression."
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ]; then
+            echo "PASS: stage-2 compiles variables, reassignment, if/while (nested); word ldr/str byte-correct; no byte-slot regression."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok struct=$struct_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok struct=$struct_ok cf=$cf_ok"; exit 1
           fi

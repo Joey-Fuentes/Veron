@@ -92,6 +92,29 @@ if os.path.exists(s1p) and os.path.exists(s2p):
                      ("int main(){int x=7;return (x+1)*2;}", 16)]:
         check(f"stage2 exit {cs[:34]}", _exit(cs), want)
 
+    print("== stage 2 control flow: if / while / reassignment ==")
+    # Structural: if/while emit a zero-test and branch to UPPERCASE labels (var
+    # slots are lowercase a..z, so control-flow targets can't collide).
+    emif = _emit("int main(){int a=1;if(a){a=a+1;}return a;}")
+    check("stage2 if emits zero-test",         "cmp x0 0" in emif, True)
+    check("stage2 if skips on false (b.eq A)", "b.eq A" in emif, True)
+    check("stage2 if defines skip label (:A)", ":A\n" in emif, True)
+    emwh = _emit("int main(){int a=3;while(a){a=a-1;}return a;}")
+    check("stage2 while defines top label (:A)",  ":A\n" in emwh, True)
+    check("stage2 while branches back (b A)",     "\nb A\n" in emwh, True)
+    check("stage2 while exits on false (b.eq B)", "b.eq B" in emwh, True)
+    # Behavioural: exit codes through the real assembled ladder. These DO exercise
+    # loop counting + reassignment + nesting, so they are genuine end-to-end checks.
+    for cs, want in [
+        ("int main(){int n=10;int s=0;while(n){s=s+n;n=n-1;}return s;}", 55),
+        ("int main(){int n=4;int f=1;while(n){f=f*n;n=n-1;}return f;}", 24),
+        ("int main(){int a=5;a=a+3;return a;}", 8),
+        ("int main(){int a=0;if(a){a=99;}return a+7;}", 7),
+        ("int main(){int i=3;int t=0;while(i){int j=2;while(j){t=t+1;j=j-1;}i=i-1;}return t;}", 6),
+        ("int main(){int a=1;int b=1;int r=0;if(a){if(b){r=5;}}return r;}", 5),
+    ]:
+        check(f"stage2 cf exit -> {want}", _exit(cs), want)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)
