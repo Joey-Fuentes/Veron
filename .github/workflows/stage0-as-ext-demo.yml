@@ -50,7 +50,7 @@ jobs:
           sub_ok=$(cmp_op sub.s0 sub.s)
 
           # ---- 2) shifts / logical / movk ----
-          printf 'orr x9 x9 x1\nand x9 x9 x1\nlsl x9 x0 x2\nlsr x9 x0 x2\nasr x1 x1 x2\nmovk x9 54400 16\n' > alu.s0
+          printf 'orr x9 x9 x1\nand x9 x9 x1\nlsl x9 x0 x2\nlsr x9 x0 x2\nasr x1 x1 x2\nmovk x9 53888 16\n' > alu.s0
           printf '.text\n.global _start\n_start:\n\torr x9,x9,x1\n\tand x9,x9,x1\n\tlsl x9,x0,x2\n\tlsr x9,x0,x2\n\tasr x1,x1,x2\n\tmovk x9,#0xD280,lsl #16\n' > alu.s
           alu_ok=$(cmp_op alu.s0 alu.s)
           echo "alu ours: $(cat alu.s0 | qemu-aarch64 ./stage0-as | od -An -v -tx1 | tr -d ' \n')"
