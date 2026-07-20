@@ -1,12 +1,9 @@
 name: stage2-mini-c-demo
 
-# SPIKE (invariants suspended). Stage 2 = mini-c. Compiles `return <expr>;` where
-# <expr> uses integers with + - * and correct PRECEDENCE (recursive descent).
-# Register codegen: x0 accumulator, x1 term, x2 multiply scratch. Written in
-# stage-1's language (multi-char labels); needs stage0-as's register add/sub+mul.
-#
-#   stage2.s1 | stage1 | stage0-as | elf  -> stage2
-#   prog.c    | stage2 | stage0-as | elf  -> a.out ; ./a.out  (exit == value)
+# SPIKE (invariants suspended). Stage 2 = mini-c. Compiles `return <expr>;` with
+# + - * , precedence, AND parentheses. Compiler uses shunting-yard (iterative,
+# no compiler recursion); emitted code uses a value stack (brk memory, x9).
+# Written in stage-1's language; needs stage0-as register add/sub + mul + ldr/str.
 
 on:
   push:
@@ -32,7 +29,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-user binutils-aarch64-linux-gnu
-      - name: Build ladder and compile C expressions
+      - name: Build ladder and compile C expressions (with parens)
         run: |
           aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
           aarch64-linux-gnu-ld -static -o stage0-as s0.o
@@ -47,29 +44,29 @@ jobs:
             printf '%s' "$1" | qemu-aarch64 ./stage2 > out.s
             cat out.s | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf a.out
             set +e; qemu-aarch64 ./a.out; rc=$?; set -e
-            printf '  %-34s exit=%-4s want=%-4s %s\n' "$1" "$rc" "$2" "$([ "$rc" = "$2" ] && echo OK || { echo DIFF; fail=1; })"
+            printf '  %-36s exit=%-4s want=%-4s %s\n' "$1" "$rc" "$2" "$([ "$rc" = "$2" ] && echo OK || { echo DIFF; fail=1; })"
           }
-          echo "== stage-2 compiling C expressions (with precedence) =="
-          try 'int main(){return 7;}'            7
-          try 'int main(){return 2+3*4;}'        14
-          try 'int main(){return 2*3+4;}'        10
-          try 'int main(){return 2*3*4;}'        24
-          try 'int main(){return 10-2*3;}'       4
-          try 'int main(){return 1+2+3*4;}'      15
-          try 'int main(){return 100-6*7;}'      58
-          try 'int main(){ return 5 * 5 - 1 ; }' 24
-          try 'int main(){return 9*9;}'          81
-          try 'int main(){}'                     0
+          echo "== stage-2 compiling C expressions (parens + precedence) =="
+          try 'int main(){return 7;}'               7
+          try 'int main(){return 2+3*4;}'           14
+          try 'int main(){return (2+3)*4;}'         20
+          try 'int main(){return 2*(3+4);}'         14
+          try 'int main(){return (1+2)*(3+4);}'     21
+          try 'int main(){return ((1+2))*3;}'       9
+          try 'int main(){return 10-2*3;}'          4
+          try 'int main(){return (10-2)*(1+1);}'    16
+          try 'int main(){return 9*9;}'             81
+          try 'int main(){}'                        0
 
           {
-            echo "## stage2-mini-c — return <expr> with + - * and precedence"
+            echo "## stage2-mini-c — return <expr> with + - * and parentheses"
             echo '```'
-            echo "2+3*4->14  2*3+4->10  2*3*4->24  10-2*3->4  100-6*7->58  9*9->81"
+            echo "(2+3)*4->20  2*(3+4)->14  (1+2)*(3+4)->21  (10-2)*(1+1)->16"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$fail" = 0 ]; then
-            echo "PASS: our stage-2 compiles +,-,* with precedence to working aarch64 code."
+            echo "PASS: our stage-2 compiles parenthesized expressions to working aarch64 code."
           else
             echo "FAIL: see DIFFs above"; exit 1
           fi

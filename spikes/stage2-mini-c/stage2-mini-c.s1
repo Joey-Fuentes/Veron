@@ -1,5 +1,6 @@
-# stage2 (mini-c): return <expr> with + - * and precedence.
-# x0=accumulator, x1=term, x2=multiply scratch. term routines save x30 in x28.
+# stage2 (mini-c): return <expr> with + - * and PARENS, via shunting-yard.
+# compiler op-stack: x24=base x25=top.  x27=current operator (survives emits).
+# emitted code uses a brk value stack (x9 in emitted program).
 adr x19 inbuf
 adr x22 outbuf
 mov x0 0
@@ -9,6 +10,8 @@ mov x8 63
 svc
 mov x21 x0
 mov x23 0
+adr x24 opstk
+mov x25 0
 mov x20 0
 :search
 adr x9 pat
@@ -32,36 +35,84 @@ cmp x20 x21
 b.lt search
 mov x6 x21
 :found
-bl term0
-:exprloop
+adr x9 spre
+bl emitstr
+:sloop
 bl skipsp
 cmp x6 x21
-b.ge done
+b.ge sflush
 ldrb w5 x19 x6
-cmp x5 43
-b.eq doadd
-cmp x5 45
-b.eq dosub
-b done
-:doadd
+cmp x5 59
+b.eq sflush
+cmp x5 48
+b.lt snotdig
+cmp x5 58
+b.ge snotdig
+bl emitnum
+b sloop
+:snotdig
+cmp x5 40
+b.eq sopen
+cmp x5 41
+b.eq sclose
+mov x27 x5
+:swhile
+cmp x25 0
+b.eq spushop
+sub x0 x25 1
+ldrb w4 x24 x0
+cmp x4 40
+b.eq spushop
+cmp x27 42
+b.eq scurmul
+b spop
+:scurmul
+cmp x4 42
+b.eq spop
+b spushop
+:spop
+sub x25 x25 1
+ldrb w26 x24 x25
+bl emitapply
+b swhile
+:spushop
+strb w27 x24 x25
+add x25 x25 1
 add x6 x6 1
-bl term1
-adr x9 sadd
-bl emitstr
-mov w5 10
-strb w5 x22 x23
-add x23 x23 1
-b exprloop
-:dosub
+b sloop
+:sopen
+mov w5 40
+strb w5 x24 x25
+add x25 x25 1
 add x6 x6 1
-bl term1
-adr x9 ssub
-bl emitstr
-mov w5 10
-strb w5 x22 x23
-add x23 x23 1
-b exprloop
-:done
+b sloop
+:sclose
+:sclwhile
+cmp x25 0
+b.eq scldone
+sub x0 x25 1
+ldrb w4 x24 x0
+cmp x4 40
+b.eq sclparen
+sub x25 x25 1
+ldrb w26 x24 x25
+bl emitapply
+b sclwhile
+:sclparen
+sub x25 x25 1
+:scldone
+add x6 x6 1
+b sloop
+:sflush
+cmp x25 0
+b.eq sdone
+sub x25 x25 1
+ldrb w26 x24 x25
+cmp x26 40
+b.eq sflush
+bl emitapply
+b sflush
+:sdone
 adr x9 spost
 bl emitstr
 mov x0 1
@@ -72,66 +123,34 @@ svc
 mov x0 0
 mov x8 93
 svc
-:term0
+:emitnum
 mov x28 x30
-adr x9 smov0
+adr x9 smovx0
 bl emitstr
 bl copydig
-mov w5 10
-strb w5 x22 x23
-add x23 x23 1
-:t0loop
-bl skipsp
-cmp x6 x21
-b.ge t0done
-ldrb w5 x19 x6
-cmp x5 42
-b.ne t0done
-add x6 x6 1
-adr x9 smov2
+adr x9 spush
 bl emitstr
-bl copydig
-mov w5 10
-strb w5 x22 x23
-add x23 x23 1
-adr x9 smul0
-bl emitstr
-mov w5 10
-strb w5 x22 x23
-add x23 x23 1
-b t0loop
-:t0done
 mov x30 x28
 ret
-:term1
+:emitapply
 mov x28 x30
-adr x9 smov1
+adr x9 spoppop
 bl emitstr
-bl copydig
-mov w5 10
-strb w5 x22 x23
-add x23 x23 1
-:t1loop
-bl skipsp
-cmp x6 x21
-b.ge t1done
-ldrb w5 x19 x6
-cmp x5 42
-b.ne t1done
-add x6 x6 1
-adr x9 smov2
+cmp x26 42
+b.eq eamul
+cmp x26 45
+b.eq easub
+adr x9 saddr
+b eaop
+:eamul
+adr x9 smulr
+b eaop
+:easub
+adr x9 ssubr
+:eaop
 bl emitstr
-bl copydig
-mov w5 10
-strb w5 x22 x23
-add x23 x23 1
-adr x9 smul1
+adr x9 spush
 bl emitstr
-mov w5 10
-strb w5 x22 x23
-add x23 x23 1
-b t1loop
-:t1done
 mov x30 x28
 ret
 :emitstr
@@ -164,20 +183,6 @@ b skipsp
 ret
 :copydig
 mov x10 0
-:cdskip
-cmp x6 x21
-b.ge cdloop
-ldrb w5 x19 x6
-cmp x5 32
-b.eq cdskadv
-cmp x5 9
-b.eq cdskadv
-cmp x5 10
-b.eq cdskadv
-b cdloop
-:cdskadv
-add x6 x6 1
-b cdskip
 :cdloop
 cmp x6 x21
 b.ge cddone
@@ -202,30 +207,32 @@ ret
 :pat
 .ascii "return"
 .byte 0
-:smov0
+:spre
+.ascii "mov x0 0\nmov x8 214\nsvc\nmov x9 x0\nadd x0 x9 1000\nmov x8 214\nsvc\n"
+.byte 0
+:smovx0
 .ascii "mov x0 "
 .byte 0
-:smov1
-.ascii "mov x1 "
+:spush
+.ascii "\nstr w0 x9\nadd x9 x9 4\n"
 .byte 0
-:smov2
-.ascii "mov x2 "
+:spoppop
+.ascii "sub x9 x9 4\nldr w0 x9\nsub x9 x9 4\nldr w1 x9\n"
 .byte 0
-:smul0
-.ascii "mul x0 x0 x2"
+:saddr
+.ascii "add x0 x1 x0"
 .byte 0
-:smul1
-.ascii "mul x1 x1 x2"
+:ssubr
+.ascii "sub x0 x1 x0"
 .byte 0
-:sadd
-.ascii "add x0 x0 x1"
-.byte 0
-:ssub
-.ascii "sub x0 x0 x1"
+:smulr
+.ascii "mul x0 x1 x0"
 .byte 0
 :spost
-.ascii "mov x8 93\nsvc\n"
+.ascii "sub x9 x9 4\nldr w0 x9\nmov x8 93\nsvc\n"
 .byte 0
+:opstk
+.ascii "________________________________________________________________"
 :inbuf
 .ascii "................................................................................................................................................................................................................................................................................................................................................................................................................"
 :outbuf

@@ -1,47 +1,58 @@
-"""stage 2 increment: return <expr> with + - * and precedence.
-Recursive descent over: expr := term (('+'|'-') term)* ; term := num (('*') num)*
-Register codegen: value accumulates in x0; a term is computed in x1 (with x2 as
-scratch for multiply), then combined into x0 with add/sub REGISTER ops.
-
-Emitted shape for  2 + 3*4 :
-    mov x0 2          ; first term into x0
-    mov x1 3          ; next term into x1
-    mov x2 4
-    mul x1 x1 x2      ; 3*4
-    add x0 x0 x1      ; 2 + 12
-This keeps only ONE running accumulator (x0) plus one term register (x1); good
-enough for flat precedence with + - *.
+"""stage 2 increment: return <expr> with + - * AND parentheses.
+Compiler uses shunting-yard (iterative, no compiler recursion) to turn infix into
+stack-machine operations. Emitted code uses a VALUE STACK in memory (x9 = stack
+pointer into a data region 'S'):
+    PUSH n : mov x0 n ; str w0 x9 ; add x9 x9 4
+    APPLY o: pop b ; pop a ; a o b ; push
+Result ends on the stack; popped into x0 before exit.
 """
-class P:
-    def __init__(s,t): s.t=t; s.i=0
-    def sk(s):
-        while s.i<len(s.t) and s.t[s.i] in ' \t\n': s.i+=1
-    def num(s):
-        s.sk(); d=''
-        while s.i<len(s.t) and s.t[s.i].isdigit(): d+=s.t[s.i]; s.i+=1
-        return d or '0'
-    def peek(s):
-        s.sk(); return s.t[s.i] if s.i<len(s.t) else ''
+def _tokens(s):
+    i=0; out=[]
+    while i<len(s):
+        c=s[i]
+        if c in ' \t\n': i+=1; continue
+        if c.isdigit():
+            j=i
+            while j<len(s) and s[j].isdigit(): j+=1
+            out.append(('num', s[i:j])); i=j
+        elif c in '+-*()':
+            out.append(('op', c)); i+=1
+        elif c==';': break
+        else: i+=1
+    return out
+
+PREC={'+':1,'-':1,'*':2}
+
+def _shunt(tokens):
+    """infix tokens -> list of ('push',n) / ('apply',op)"""
+    out=[]; ops=[]
+    for kind,v in tokens:
+        if kind=='num': out.append(('push',v))
+        elif v=='(':
+            ops.append('(')
+        elif v==')':
+            while ops and ops[-1]!='(': out.append(('apply',ops.pop()))
+            if ops and ops[-1]=='(': ops.pop()
+        else:  # operator + - *
+            while ops and ops[-1]!='(' and PREC[ops[-1]]>=PREC[v]:
+                out.append(('apply',ops.pop()))
+            ops.append(v)
+    while ops:
+        op=ops.pop()
+        if op!='(': out.append(('apply',op))
+    return out
 
 def compile_return(src):
     i=src.find("return"); body = src[i+6:] if i>=0 else ""
-    p=P(body); out=[]
-    # first term -> x0
-    _term(p,out,'x0','x1','x2')
-    while True:
-        c=p.peek()
-        if c=='+':
-            p.i+=1; _term(p,out,'x1','x1','x2'); out.append("add x0 x0 x1")
-        elif c=='-':
-            p.i+=1; _term(p,out,'x1','x1','x2'); out.append("sub x0 x0 x1")
-        else: break
-    out += ["mov x8 93","svc"]
-    return "\n".join(out)+"\n"
-
-def _term(p,out,dst,tmp,scr):
-    # term := num ('*' num)* ; result in dst
-    out.append(f"mov {dst} {p.num()}")
-    while p.peek()=='*':
-        p.i+=1
-        out.append(f"mov {scr} {p.num()}")
-        out.append(f"mul {dst} {dst} {scr}")
+    seq=_shunt(_tokens(body))
+    code=["adr x9 S"]
+    if not seq: seq=[('push','0')]
+    for k,v in seq:
+        if k=='push':
+            code += [f"mov x0 {v}","str w0 x9","add x9 x9 4"]
+        else:
+            code += ["sub x9 x9 4","ldr w0 x9","sub x9 x9 4","ldr w1 x9"]
+            code += {'+':["add x0 x1 x0"],'-':["sub x0 x1 x0"],'*':["mul x0 x1 x0"]}[v]
+            code += ["str w0 x9","add x9 x9 4"]
+    code += ["sub x9 x9 4","ldr w0 x9","mov x8 93","svc"]
+    return "\n".join(code)+"\n"

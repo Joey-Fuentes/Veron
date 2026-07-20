@@ -11,31 +11,33 @@ prog.c           | stage2 | stage0-as | elf  ->  a.out ; ./a.out   (exit == valu
 
 ## What it compiles
 
-`int main(){ return <expr>; }` where `<expr>` is integers combined with `+ - *`
-and **correct precedence** (`*` binds tighter than `+`/`-`), via recursive
-descent:
+`int main(){ return <expr>; }` where `<expr>` is integers with `+ - *`, correct
+precedence, and **parentheses** to any depth:
 
 ```
-return 2+3*4;   ->   mov x0 2        ; first term
-                     mov x1 3        ; next term
-                     mov x2 4
-                     mul x1 x1 x2    ; 3*4
-                     add x0 x0 x1    ; 2 + 12
-                     mov x8 93
-                     svc
+return (2+3)*4;   ->   ... value-stack code ...   -> exits 20
 ```
 
-Codegen uses `x0` as the running accumulator, `x1` for the current term, `x2` as
-multiply scratch — so it needs stage0-as's **register** `add`/`sub` and `mul`.
-Whitespace is ignored; no `return` compiles to `return 0`.
+### How
+
+The compiler is **iterative** — it uses the shunting-yard algorithm with a
+compiler-side operator stack (no compiler recursion, which the language can't do
+cheaply). It emits **stack-machine code**: each number pushes onto a runtime
+**value stack** (a `brk` region addressed by `x9`), and each operator pops two,
+applies `add`/`sub`/`mul` (register), and pushes the result. The final value is
+popped into `x0` before exit.
+
+This is the general foundation for everything nested that follows.
 
 ## Increments so far / next
 
 - ✅ `return N`
-- ✅ `return <int +/- int ...>`
-- ✅ `return <expr with + - * and precedence>` (this)
-- ⏭ parentheses; then `/`; then variables and assignment; then control flow —
-  toward the M2-Planet-grade subset that hands off to the borrowed chain.
+- ✅ `+ -` (immediate chains)
+- ✅ `+ - *` with precedence (register codegen)
+- ✅ `+ - *` with precedence **and parentheses** (shunting-yard + value stack) — this
+- ⏭ `/` (needs a `udiv` in stage0-as); then variables + assignment (named slots,
+  reusing the name-table technique); then control flow — toward the
+  M2-Planet-grade subset that hands off to the borrowed chain.
 
 ## Verified
 
