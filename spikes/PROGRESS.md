@@ -206,6 +206,19 @@ including backward branches and `adr` to punctuation-slot labels) and pinned in
 `validate.py`. This unblocks the equality operators (`== != <= >=`), which need
 ~9 labels more than the old pool allowed.
 
+**Milestone 22 — handoff target pinned + C-subset spec written** *(planning, not
+a capability rung).* We now treat M2-Planet's own source as the concrete
+definition of the C subset the ladder must eventually accept (M2-Planet is
+self-hosting, so its source is written in exactly the subset it compiles). The
+`borrow-m2-demo` workflow pins M2-Planet to `34fbd5c…` (M2libc transitively via
+its submodule gitlink, `ca023d8…`) so the spec can't drift. `spikes/stage2-mini-c/
+TARGET-SUBSET.md` records what that subset actually **uses** (structs, enums,
+function pointers, multi-level pointers, arrays, full operators, recursion, a
+small `calloc`/`free` heap, and file I/O) versus what it deliberately **avoids**
+(`switch`/`case`, `do/while`, `union`, `typedef`, ternary, floats/longs — a real
+scope win), plus the runtime surface to provide and the stage-2 "floor" that must
+be cleared before stage 3 is writable.
+
 ---
 
 ## 6. What's next
