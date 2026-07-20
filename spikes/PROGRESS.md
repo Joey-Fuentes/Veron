@@ -245,6 +245,25 @@ and run — `<=`/`>=` loop guards, `==`/`!=` in `if`, arithmetic-into-comparison
 regression. Remaining stage-2 leaf: `/` (needs `udiv`); the critical path stays
 the **floor** (see `TARGET-SUBSET.md`).
 
+**Milestone 25 — stage 0: 64-bit `ldr x` / `str x`.** The first brick of the
+stage-2 **floor**: a real software call stack. stage0-as gained doubleword
+load/store — the first operand's register width now selects the size, so
+`ldr x<t> x<n>` / `str x<t> x<n>` emit the 64-bit forms (`0xF9400000` / `0xF9000000`,
+size bit 30) while `ldr w`/`str w` are byte-for-byte unchanged (`0xB94…`/`0xB90…`).
+It's a one-line-of-logic change (peek the width letter after `skip_ws`, pick the
+base) with no new mnemonic. This is the enabler the handoff flagged: you cannot
+build a call stack by `str`-ing `x30` or a frame pointer with a 32-bit store — it
+would truncate a 64-bit address — so functions + recursion + function pointers all
+depend on this. Mirrored in the bench (`s0as.py` width-aware encode, `interp.py`
+8-byte load/store) and pinned in `validate.py` (byte-compare of both widths, plus
+runtime proofs). **CI-confirmed** (real `as` + QEMU) via `stage0-as-ldrx-demo`:
+`ldr x`/`str x` byte-identical to `as` (w-forms intact); a 64-bit value survives a
+`str x`+`ldr x` round-trip and a save/restore across a nested `bl` (the call-stack
+pattern); and the same shape with word `str`/`ldr` truncates the high word, as
+expected. Next on the floor: a stage-2 label/codegen strategy (backpatch branch
+offsets, frame-relative variable addressing) so a compiler can emit far more than
+~128 labels, then functions on this call stack. See `TARGET-SUBSET.md`.
+
 ---
 
 ## 6. What's next
@@ -263,7 +282,10 @@ stage in the language of the stage below.
   nonzero-tests. `/` (needs `udiv` in stage0-as) is the one remaining small leaf
   increment, but the **critical path to stage 3 is the stage-2 "floor"**:
   functions + a real call stack, pointers/`char`/arrays, `struct`, a small heap,
-  multi-char labels/identifiers, and I/O. See **`stage2-mini-c/TARGET-SUBSET.md`**.
+  multi-char labels/identifiers, and I/O. The first floor brick is in place —
+  stage-0 **64-bit `ldr x`/`str x`** (m25), the call-stack enabler. Next: the
+  stage-2 label/codegen strategy, then functions on the call stack. See
+  **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**
   (pinned at `34fbd5c…`, vendored read-only at `spikes/reference/`) into a working

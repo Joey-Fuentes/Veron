@@ -16,6 +16,7 @@
 //   orr/and/lsl/lsr/asr x<d> x<n> x<m>    movk x<d> <imm> <shift>
 //   add/sub x<d> x<n> x<m> (register)     mul x<d> x<n> x<m>
 //   adr  x<d> <L>              ldrb/strb w<t> x<n> x<m>   ldr/str w<t> x<n>
+//   ldr/str x<t> x<n>          (64-bit load/store; first reg's width selects size)
 //   .byte <imm>                .ascii "text"           (\n supported)
 //
 // Encodings:
@@ -25,7 +26,8 @@
 //   b=0x14000000|off26   b.c=0x54000000|(off19<<5)|cond   svc=0xD4000001
 //   adr=0x10000000|((V&3)<<29)|(((V>>2)&0x7FFFF)<<5)|d
 //   ldrb=0x38606800|(m<<16)|(n<<5)|t    strb=0x38206800|(m<<16)|(n<<5)|t
-//   ldr =0xB9400000|(n<<5)|t            str =0xB9000000|(n<<5)|t
+//   ldr w=0xB9400000|(n<<5)|t   ldr x=0xF9400000|(n<<5)|t   (size bit30)
+//   str w=0xB9000000|(n<<5)|t   str x=0xF9000000|(n<<5)|t
 //   cond: eq0 ne1 ge10 lt11
 // ============================================================================
 
@@ -310,10 +312,16 @@ h_ldrb:
     b       parse_loop
 h_ldr:
     add     x20, x20, #3
+    bl      skip_ws                 // land on the reg-width letter (w/x)
+    ldrb    w10, [x19, x20]
+    movz    w9, #0xB940, lsl #16    // 32-bit: ldr w<t>, [x<n>]
+    cmp     w10, #'x'
+    b.ne    h_ldr_e
+    movz    w9, #0xF940, lsl #16    // 64-bit: ldr x<t>, [x<n>]
+h_ldr_e:
     bl      next_reg
     mov     w24, w0
     bl      next_reg
-    movz    w9, #0xB940, lsl #16
     orr     w9, w9, w0, lsl #5
     orr     w9, w9, w24
     bl      emit
@@ -370,10 +378,16 @@ h_st:
     b       h_str
 h_str:
     add     x20, x20, #3
+    bl      skip_ws                 // land on the reg-width letter (w/x)
+    ldrb    w10, [x19, x20]
+    movz    w9, #0xB900, lsl #16    // 32-bit: str w<t>, [x<n>]
+    cmp     w10, #'x'
+    b.ne    h_str_e
+    movz    w9, #0xF900, lsl #16    // 64-bit: str x<t>, [x<n>]
+h_str_e:
     bl      next_reg
     mov     w24, w0
     bl      next_reg
-    movz    w9, #0xB900, lsl #16
     orr     w9, w9, w0, lsl #5
     orr     w9, w9, w24
     bl      emit

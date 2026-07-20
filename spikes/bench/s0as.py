@@ -98,9 +98,13 @@ def encode(l, at, labels):
     if op=='strb':
         t=_reg(p[1]);n=_reg(p[2]);m=_reg(p[3]); return (0x38206800|(m<<16)|(n<<5)|t,('strb',t,n,m))
     if op=='ldr':
-        t=_reg(p[1]);n=_reg(p[2]); return (0xB9400000|(n<<5)|t,('ldr',t,n))
+        t=_reg(p[1]);n=_reg(p[2]); w=p[1][0]
+        base=0xF9400000 if w=='x' else 0xB9400000   # x-form sets size bit30
+        return (base|(n<<5)|t,('ldr',t,n,w))
     if op=='str':
-        t=_reg(p[1]);n=_reg(p[2]); return (0xB9000000|(n<<5)|t,('str',t,n))
+        t=_reg(p[1]);n=_reg(p[2]); w=p[1][0]
+        base=0xF9000000 if w=='x' else 0xB9000000
+        return (base|(n<<5)|t,('str',t,n,w))
     if op=='svc': return (0xD4000001,('svc',))
     if op=='ret': return (0xD65F03C0,('ret',))
     if op=='br':  n=_reg(p[1]); return (0xD61F0000|(n<<5),('br',n))

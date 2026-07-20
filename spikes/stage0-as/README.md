@@ -38,8 +38,10 @@ One item per line. Leading whitespace is fine. Register operands are one letter
 | `adr x<d> <L>` | address of label into register |
 | `ldrb w<t> x<n> x<m>` | load byte `[Xn + Xm]` |
 | `strb w<t> x<n> x<m>` | store byte `[Xn + Xm]` |
-| `ldr w<t> x<n>` | load word `[Xn]` |
-| `str w<t> x<n>` | store word `[Xn]` |
+| `ldr w<t> x<n>` | load word (32-bit) `[Xn]` |
+| `str w<t> x<n>` | store word (32-bit) `[Xn]` |
+| `ldr x<t> x<n>` | load doubleword (64-bit) `[Xn]` |
+| `str x<t> x<n>` | store doubleword (64-bit) `[Xn]` |
 | `svc` | supervisor call (`svc #0`) |
 | `:<L>` | define label `<L>` at current position |
 | `.byte <imm>` | emit one byte |
@@ -58,6 +60,11 @@ so they need no load address.
 - Labels are single-character (multi-char labels are stage 1's job).
 - Subroutines (`bl`/`ret`/`br`/`blr`) plus shifts (`lsl`/`lsr`/`asr`), logical (`orr`/`and`), and wide-immediate (`movk`) were added as the base stage 1 (macro-as) is written on. Shifts/`movk` take register/immediate forms sufficient to emit ARM64 encodings from within stage-1 code.
 - 16-bit immediates only (`mov`), 12-bit for `add`/`sub`/`cmp`.
+- Load/store are register-indirect at offset 0 only (`[Xn]`); word `ldr w`/`str w`
+  and doubleword `ldr x`/`str x` both exist — the first operand's width (`w`/`x`)
+  selects the size. The 64-bit forms are what let a stage above build a real
+  software call stack (saving/restoring a 64-bit `x30` or frame pointer in memory,
+  which a 32-bit store would truncate).
 - Well-formed input assumed — minimal error checking (it's a spike).
 
 ## See it run

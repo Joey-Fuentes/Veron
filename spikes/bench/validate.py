@@ -34,6 +34,10 @@ check("subroutines bl/ret/br/blr",
 check("alu orr/and/lsl/lsr/asr/movk",
       hexb("orr x9 x9 x1\nand x9 x9 x1\nlsl x9 x0 x2\nlsr x9 x0 x2\nasr x1 x1 x2\nmovk x9 53888 16\n"),
       "290101aa2901018a0920c29a0924c29a2128c29a0950baf2")
+# 64-bit ldr x/str x set the size bit (0xF9…); w-forms stay 32-bit (0xB9…).
+check("ldr/str x 64-bit + w unchanged",
+      hexb("ldr x0 x1\nstr x0 x1\nldr x5 x3\nldr w0 x1\nstr w0 x1\n"),
+      "200040f9200000f9650040f9200040b9200000b9")
 
 print("== runtime exit codes (confirmed in CI) ==")
 for name, prog, want in [
@@ -43,6 +47,25 @@ for name, prog, want in [
     ("shl  -> 8",  "mov x0 1\nmov x2 3\nlsl x0 x0 x2\nmov x8 93\nsvc\n", 8),
 ]:
     rc,_ = asm_run(prog); check(name, rc, want)
+
+print("== stage0-as 64-bit ldr x / str x (call-stack enabler) ==")
+# str x/ldr x must move all 64 bits. Each program builds a value whose HIGH word
+# is nonzero, round-trips it through a memory slot, shifts the high word down, and
+# exits it. A 32-bit store/load would drop the high word (exit 0), so a nonzero
+# exit is a genuine end-to-end proof of 64-bit width.
+_slot = "\n".join([":d"] + [".byte 0"]*8) + "\n"
+_rt = ("mov x0 0\nmovk x0 7 32\nadr x1 d\nstr x0 x1\n"
+       "mov x0 0\nldr x0 x1\nmov x2 32\nlsr x0 x0 x2\nmov x8 93\nsvc\n") + _slot
+check("ldr x/str x round-trip 7<<32 -> 7", asm_run(_rt)[0], 7)
+# control: the SAME shape with word str/ldr truncates the high word to 0
+_wt = ("mov x0 0\nmovk x0 7 32\nadr x1 d\nstr w0 x1\n"
+       "mov x0 0\nldr w0 x1\nmov x2 32\nlsr x0 x0 x2\nmov x8 93\nsvc\n") + _slot
+check("word str/ldr truncates high word -> 0", asm_run(_wt)[0], 0)
+# call-stack style: save a 64-bit frame value across a nested bl, then restore it
+_cs = ("mov x0 0\nmovk x0 5 32\nmovk x0 3 0\nadr x19 d\nstr x0 x19\n"
+       "mov x0 0\nbl f\nldr x0 x19\nmov x2 32\nlsr x0 x0 x2\nmov x8 93\nsvc\n"
+       ":f\nmov x0 999\nret\n") + _slot
+check("save/restore 64-bit across bl -> 5", asm_run(_cs)[0], 5)
 
 print("== faithfulness guards (bench must model stage0-as's limits) ==")
 # stage0-as labels are single-char: multi-char defs must be REJECTED

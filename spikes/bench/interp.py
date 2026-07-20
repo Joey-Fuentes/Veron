@@ -44,8 +44,12 @@ def run(prog, stdin=b'', mem_size=0x40000, trace=False):
         elif op=='adr': R[ins[1]]=ins[2]
         elif op=='ldrb': R[ins[1]]=img[R[ins[2]]+R[ins[3]]]
         elif op=='strb': img[R[ins[2]]+R[ins[3]]]=R[ins[1]]&0xff
-        elif op=='ldr': R[ins[1]]=struct.unpack_from('<I',img,R[ins[2]])[0]
-        elif op=='str': struct.pack_into('<I',img,R[ins[2]],R[ins[1]]&0xFFFFFFFF)
+        elif op=='ldr':
+            if len(ins)>3 and ins[3]=='x': R[ins[1]]=struct.unpack_from('<Q',img,R[ins[2]])[0]
+            else:                          R[ins[1]]=struct.unpack_from('<I',img,R[ins[2]])[0]
+        elif op=='str':
+            if len(ins)>3 and ins[3]=='x': struct.pack_into('<Q',img,R[ins[2]],R[ins[1]]&0xFFFFFFFFFFFFFFFF)
+            else:                          struct.pack_into('<I',img,R[ins[2]],R[ins[1]]&0xFFFFFFFF)
         elif op=='bl': R[30]=o+4; i=idx(ins[1]); continue
         elif op=='blr': R[30]=o+4; i=idx(R[ins[1]]); continue
         elif op=='br': i=idx(R[ins[1]]); continue

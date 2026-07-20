@@ -1,0 +1,150 @@
+name: stage0-as-ldrx-demo
+
+# SPIKE (invariants suspended). Verifies 64-bit load/store added to stage0-as:
+#   ldr x<t> x<n>   = 0xF9400000|(n<<5)|t
+#   str x<t> x<n>   = 0xF9000000|(n<<5)|t
+# The first operand's register width selects the size: w<t> keeps the existing
+# 32-bit forms (0xB94/0xB90), x<t> sets size bit30 for the 64-bit forms. This is
+# the enabler for a real software call stack (a word str truncates a 64-bit value;
+# saving/restoring x30 or a frame pointer needs the full 64 bits).
+#
+# Byte-compared against real aarch64-linux-gnu-as (both w and x forms), plus
+# runtime checks: a 64-bit value survives str x + ldr x round-trip (a word store
+# would drop the high word), and a 64-bit frame value survives being saved to a
+# brk/data slot across a nested bl and restored.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage0-as/**'
+      - 'spikes/elf/**'
+      - '.github/workflows/stage0-as-ldrx-demo.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: stage0-as-ldrx-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user binutils-aarch64-linux-gnu
+      - name: Build stage0-as + elf, byte-check ldr/str x, run 64-bit round-trips
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+
+          # ---- byte-compare ldr/str, both widths, against real `as` ----
+          printf 'ldr x0 x1\nstr x0 x1\nldr x5 x3\nstr x5 x3\nldr w0 x1\nstr w0 x1\n' > ls.s0
+          printf '.text\n.global _start\n_start:\n\tldr x0,[x1]\n\tstr x0,[x1]\n\tldr x5,[x3]\n\tstr x5,[x3]\n\tldr w0,[x1]\n\tstr w0,[x1]\n' > ls_ref.s
+          aarch64-linux-gnu-as -o ls_ref.o ls_ref.s
+          aarch64-linux-gnu-objcopy -O binary --only-section=.text ls_ref.o ls_ref.bin
+          cat ls.s0 | qemu-aarch64 ./stage0-as > ls.bin
+          ls_ok=no; cmp -s ls.bin ls_ref.bin && ls_ok=yes
+          echo "ldr/str ours: $(od -An -v -tx1 ls.bin | tr -d ' \n')"
+          echo "ldr/str ref : $(od -An -v -tx1 ls_ref.bin | tr -d ' \n')"
+
+          run() {   # assemble+wrap+run a .s0 program, echo exit code into $rc
+            printf '%s' "$1" | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf prog.elf
+            set +e; qemu-aarch64 ./prog.elf; rc=$?; set -e
+          }
+
+          # ---- 64-bit round-trip: store 7<<32, load it back, shift down -> 7 ----
+          # A word store would write only the low 32 bits (0), so exit would be 0.
+          run 'mov x0 0
+movk x0 7 32
+adr x1 d
+str x0 x1
+mov x0 0
+ldr x0 x1
+mov x2 32
+lsr x0 x0 x2
+mov x8 93
+svc
+:d
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+'
+          rt_rc=$rc
+
+          # ---- control: the SAME program with word str/ldr truncates -> 0 ----
+          run 'mov x0 0
+movk x0 7 32
+adr x1 d
+str w0 x1
+mov x0 0
+ldr w0 x1
+mov x2 32
+lsr x0 x0 x2
+mov x8 93
+svc
+:d
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+'
+          wtrunc_rc=$rc
+
+          # ---- call-stack enabler: save a 64-bit frame value (5<<32|3) to a slot,
+          # make a nested bl (clobbers x0), restore, take the high word -> 5 ----
+          run 'mov x0 0
+movk x0 5 32
+movk x0 3 0
+adr x19 d
+str x0 x19
+mov x0 0
+bl f
+ldr x0 x19
+mov x2 32
+lsr x0 x0 x2
+mov x8 93
+svc
+:f
+mov x0 999
+ret
+:d
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+'
+          cs_rc=$rc
+
+          {
+            echo "## stage0-as — 64-bit ldr x / str x (call-stack enabler)"
+            echo '```'
+            echo "ldr/str x + w byte-identical to as  : $ls_ok"
+            echo "str x/ldr x round-trip 7<<32        : $rt_rc  (expect 7)"
+            echo "word str/ldr truncates high word    : $wtrunc_rc  (expect 0)"
+            echo "save/restore 64-bit across bl       : $cs_rc  (expect 5)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$ls_ok" = yes ] && [ "$rt_rc" = 7 ] && [ "$wtrunc_rc" = 0 ] && [ "$cs_rc" = 5 ]; then
+            echo "PASS: ldr x/str x byte-correct (w forms intact); 64-bit values survive store+load and a save/restore across bl; word store truncates as expected."
+          else
+            echo "FAIL: ls=$ls_ok rt=$rt_rc wtrunc=$wtrunc_rc cs=$cs_rc"; exit 1
+          fi
