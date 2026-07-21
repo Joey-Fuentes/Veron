@@ -472,8 +472,22 @@ h_bl_or_blr:
     add     x20, x20, #2            // skip "bl"
     bl      skip_ws
     ldrb    w0, [x19, x20]
+    cmp     w0, #'@'               // '@'+digit = numeric pos; else label (incl. label '@')
+    b.ne    hbl_lab
+    add     x2, x20, #1
+    ldrb    w2, [x19, x2]
+    cmp     w2, #'0'
+    b.lt    hbl_lab
+    cmp     w2, #'9'
+    b.gt    hbl_lab
+    add     x20, x20, #1           // skip '@'
+    bl      parse_dec              // w0 = absolute target byte-position
+    mov     w1, w0
+    b       hbl_enc
+hbl_lab:
     add     x20, x20, #1
     ldr     w1, [x27, w0, uxtw #2]
+hbl_enc:
     sub     w1, w1, w22
     asr     w1, w1, #2
     and     w1, w1, #0x3FFFFFF

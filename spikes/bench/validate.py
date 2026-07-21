@@ -87,6 +87,17 @@ check("numeric-branch loop counts to 5", asm_run(_loop)[0], 5)
 # the pool label '@' must STILL work (bare '@' is a label, only '@'+digit is numeric)
 _at = "mov x0 0\nmov x1 5\n:@\nadd x0 x0 1\ncmp x0 x1\nb.ne @\nmov x8 93\nsvc\n"
 check("pool label '@' still resolves (not numeric)", asm_run(_at)[0], 5)
+# bl @<pos> too: the resolver rewrites 'bl <label>' (helper calls) to numeric, so
+# stage0-as must encode bl @<pos> exactly like the label form (base 0x94000000).
+for filler, note in ((0, "adjacent"), (40, "far")):
+    pad = "".join("mov x0 0\n" for _ in range(filler // 4))
+    lab = f"mov x0 0\n{pad}bl T\nmov x8 93\nsvc\n:T\nadd x0 x0 2\nret\n"
+    lb, _, ll = assemble(lab); tp = ll['T']
+    nb, _, _ = assemble(lab.replace("bl T", f"bl @{tp}"))
+    check(f"numeric @pos bl == label bl ({note})", nb.hex(), lb.hex())
+# behavioural: a call wired with a numeric bl returns and runs
+_blp = "mov x0 5\nbl @16\nmov x8 93\nsvc\nmov x9 0\nadd x0 x0 2\nret\n"
+check("numeric-bl call+return runs", asm_run(_blp)[0], 7)
 
 print("== stage0-as numeric PC-relative adr  adr xR @<pos> ==")
 # adr xR @<pos> computes a PC-relative address to an absolute output byte-position,

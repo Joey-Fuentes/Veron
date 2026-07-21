@@ -67,11 +67,12 @@ so they need no load address.
   software call stack (saving/restoring a 64-bit `x30` or frame pointer in memory,
   which a 32-bit store would truncate).
 - Branches accept either a **label** (`b X`) or a **numeric absolute output
-  position** (`b @<pos>` / `b.eq @<pos>`), where `<pos>` is a byte offset into the
+  position** (`b @<pos>` / `bl @<pos>` / `b.eq @<pos>`), where `<pos>` is a byte offset into the
   assembled output and the assembler encodes `(pos - here)` itself. This lets a
   stage above emit control flow by **backpatched offset** instead of a label —
   removing the per-branch label so an emitted program can exceed the 128-label
-  symtab cap. Only `@` followed by a digit is numeric; a bare `@` remains the
+  symtab cap. `bl @<pos>` works identically (base `0x94000000`), which is what lets
+  the stage-1 resolver rewrite helper *calls* numerically too. Only `@` followed by a digit is numeric; a bare `@` remains the
   ordinary pool label `@`, so stage 1's label output is unaffected.
 - **`adr`** likewise accepts a label (`adr xR X`) or a **numeric position**
   (`adr xR @<pos>`), encoding the PC-relative offset `(pos - here)`. Same `@`+digit

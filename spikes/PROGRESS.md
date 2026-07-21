@@ -422,6 +422,28 @@ and a 200-label program (no pool). Limits noted: `@<pos>` is 6 digits (positions
 off the table, **functions** (design already validated) and the rest of the floor
 can land unconstrained.
 
+**Milestone 33 — stage 0: numeric `bl @<pos>` (completes the resolver's numeric set).**
+Shipping m32 surfaced a real bench-honesty miss. The stage-1 resolver rewrites
+*every* reference numerically, including the 46 helper **calls** in the stage-2
+source (`bl compile_expr`, `bl emitstr`, …) which become `bl @<pos>`. But the
+numeric-branch milestone (m27) had only added the `@<pos>` path to `b` and
+`b.cond`, and m31 to `adr` — **`bl` was never given one.** Worse, the bench's
+`s0as.py` modeled `bl @<pos>` as numeric all along (its `bl` shared the generic
+branch encoder), so the resolver's output assembled to a byte-identical binary *in
+the bench* while real stage0-as read the `@` as a label and mis-encoded all 46
+calls — the stage-2 compiler built through the new stage 1 emitted nothing, and
+`stage2-mini-c-demo` / `stage1-as-demo` went red. The bench was more capable than
+reality, exactly the failure the bench-honesty rule exists to prevent; the gap was
+that `bl @<pos>` had a model but **no CI anchor against real `as`**. Fix: add the
+`@`+digit path to `h_bl_or_blr` (identical to the m27 branch, base `0x94000000`),
+and close the honesty gap by anchoring `bl @<pos>` against real `as` in the
+`stage0-as-brnum-demo` (byte-identical forward/back, label form vs `as`, and a
+numeric-`bl` call that returns → exit 7) plus a `validate.py` guard. With `b`,
+`bl`, `b.cond`, and `adr` all numeric, the resolver's output is fully assemblable
+and the stage-2 pipeline is byte-identical to the pool path again — this time in
+reality, not just the bench. Lesson recorded: a bench capability with no CI anchor
+is a latent lie; every numeric form now has one.
+
 ---
 
 ## 6. What's next
