@@ -188,7 +188,11 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     def _emit(csrc):
         _, out = run(s2prog, stdin=csrc.encode()); return out.decode()
     def _exit(csrc):
-        rc, _ = run(assemble(_emit(csrc))[1]); return rc
+        # A2 emits :func labels (calls/recursion) mixed with numeric @ if/while
+        # branches, so the compiled program is resolved through the REAL stage1
+        # before assembling: prog.c | stage2 | stage1 | stage0-as.
+        _, resolved = run(s1prog, stdin=_emit(csrc).encode())
+        rc, _ = run(assemble(resolved.decode())[1]); return rc
     em = _emit("int main(){int a=5;int b=a+2;return b;}")
     check("stage2 var load is word (ldr w0 x1)",  "ldr w0 x1" in em, True)
     check("stage2 var store is word (str w0 x1)", "str w0 x1" in em, True)
@@ -205,17 +209,21 @@ if os.path.exists(s1p) and os.path.exists(s2p):
         check(f"stage2 exit {cs[:34]}", _exit(cs), want)
 
     print("== stage 2 control flow: if / while / reassignment ==")
-    # Structural: if/while emit a zero-test and a numeric backpatched branch. Since
-    # both variables (frame-relative) and control flow (backpatched) are label-free,
-    # the emitted program contains no labels at all.
+    # A2: functions carry :name labels (resolved by stage1) and every program is
+    # entered via 'bl main'. if/while control flow stays NUMERIC (backpatched
+    # b.eq/b @<pos>), which stage1 passes through untouched. So a labelled entry
+    # coexists with label-free intra-function branches.
     emif = _emit("int main(){int a=1;if(a){a=a+1;}return a;}")
     check("stage2 if emits zero-test",              "cmp x0 0" in emif, True)
     check("stage2 if skips on false (b.eq @)",      "b.eq @" in emif, True)
-    check("stage2 if emits no label",               any(l.startswith(":") for l in emif.split("\n")), False)
+    check("stage2 program entered via bl main",     "bl main" in emif, True)
+    check("stage2 main is a resolvable label (:main)", ":main" in emif, True)
     emwh = _emit("int main(){int a=3;while(a){a=a-1;}return a;}")
     check("stage2 while branches back (b @)",        "\nb @" in emwh, True)
     check("stage2 while exits on false (b.eq @)",    "b.eq @" in emwh, True)
-    check("stage2 while emits no label",             any(l.startswith(":") for l in emwh.split("\n")), False)
+    # the only labels are function definitions; the loop's own branches are numeric
+    check("stage2 while loop branches are numeric (only :func labels)",
+          [l for l in emwh.split("\n") if l.startswith(":")] == [":main"], True)
     # Behavioural: exit codes through the real assembled ladder. These DO exercise
     # loop counting + reassignment + nesting, so they are genuine end-to-end checks.
     for cs, want in [
@@ -289,26 +297,28 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 eq exit -> {want}", _exit(cs), want)
 
-    print("== stage 2 frame-relative variables (no per-variable labels) ==")
-    # Variables now live at x10+off in a brk frame (off=(c-'a')*4), emitted via an
-    # offset table — so the emitted program carries NO :a..:z slot labels and the
-    # prologue sets up the frame base. This removes the per-variable label cost
-    # (control flow is backpatched too, so the emitted program is fully label-free).
+    print("== stage 2 frame-relative variables (declaration-order slots) ==")
+    # Variables live at x10+off in a per-call frame on the frame stack (x11). The
+    # allocator is DECLARATION-ORDER now (params first, then locals): the i-th name
+    # declared gets off=i*4, resolved by a live symbol table (multi-char names work).
+    # The prologue opens the frame and points x10 past the 16-byte save area.
     emfr = _emit("int main(){int a=5;int b=7;return a+b;}")
-    check("stage2 prologue sets frame base (mov x10 x0)", "mov x10 x0" in emfr, True)
+    check("stage2 prologue opens frame base (add x10 x11 16)", "add x10 x11 16" in emfr, True)
     check("stage2 var access is frame-relative (add x1 x10)", "add x1 x10 " in emfr, True)
     check("stage2 no :a slot label", ":a\n" in emfr, False)
-    check("stage2 no :z slot label", ":z\n" in emfr, False)
     check("stage2 no adr-to-var (adr x1 a)", "adr x1 a" in emfr, False)
-    check("stage2 var 'a' -> offset 000", "add x1 x10 000" in emfr, True)
-    check("stage2 var 'b' -> offset 004", "add x1 x10 004" in emfr, True)
-    # 'z' is index 25 -> offset 100 (the largest); exercises the 3-digit path.
+    check("stage2 1st decl 'a' -> offset 000", "add x1 x10 000" in emfr, True)
+    check("stage2 2nd decl 'b' -> offset 004", "add x1 x10 004" in emfr, True)
+    # Declaration order, not name: a lone var (whatever its letter) is index 0 -> 000.
     emz = _emit("int main(){int z=25;return z*4;}")
-    check("stage2 var 'z' -> offset 100", "add x1 x10 100" in emz, True)
-    # if/while are backpatched, so they emit no labels either — the emitted program
-    # is now entirely label-free (this is verified in the backpatch section below).
+    check("stage2 lone var 'z' -> offset 000 (decl order, not c-'a')", "add x1 x10 000" in emz, True)
+    check("stage2 lone var 'z' has no 100 offset (retired letter map)", "add x1 x10 100" in emz, False)
+    # multi-char names resolve by the symbol table, still declaration-order
+    emmc = _emit("int main(){int count=6;int total=0;return count+total;}")
+    check("stage2 multi-char 'count'@000 'total'@004", ("add x1 x10 000" in emmc) and ("add x1 x10 004" in emmc), True)
+    # Every emitted program is entered via 'bl main' and carries a :main label.
     emcf = _emit("int main(){int a=1;if(a){a=a+1;}return a;}")
-    check("stage2 emitted program has no labels", any(l.startswith(":") for l in emcf.split("\n")), False)
+    check("stage2 entry is bl main + :main label", ("bl main" in emcf) and (":main" in emcf), True)
     # Behavioural: exit codes through the real assembled ladder. A program that
     # uses MANY distinct variables would have needed many labels before; now it
     # needs none. Plus the full existing behaviour set as a regression sweep.
@@ -326,18 +336,20 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 frame-rel exit -> {want}", _exit(cs), want)
 
-    print("== stage 2 backpatched control flow (label-free emitted output) ==")
-    # if/while branches are now emitted as numeric b.eq @<pos> / b @<pos> with the
-    # target position backpatched when the block closes, so the emitted program has
-    # NO labels at all (frame-relative vars + backpatched branches). This lifts the
-    # per-if/while label cost; a program's control flow is bounded by nothing but memory.
+    print("== stage 2 backpatched control flow (numeric if/while, labelled funcs) ==")
+    # if/while branches are emitted as numeric b.eq @<pos> / b @<pos>, backpatched
+    # when the block closes; stage1 passes these through. Function boundaries DO use
+    # labels (:name / bl name) which stage1 resolves. So the only labels an emitted
+    # program contains are function names — never per-if/while or per-variable labels.
     emif = _emit("int main(){int a=0;if(a){return 7;}return 9;}")
-    check("stage2 emitted output has NO labels", any(l.startswith(":") for l in emif.split("\n")), False)
+    check("stage2 only-labels-are-funcs (:main)",
+          [l for l in emif.split("\n") if l.startswith(":")] == [":main"], True)
     check("stage2 if uses numeric branch (b.eq @)", "b.eq @" in emif, True)
     check("stage2 no label-based branch (b.eq A)", "b.eq A" in emif, False)
     emwh = _emit("int main(){int i=0;int s=0;while(i<3){s=s+1;i=i+1;}return s;}")
     check("stage2 while uses backward numeric branch (b @)", "\nb @" in emwh, True)
-    check("stage2 while emitted output has NO labels", any(l.startswith(":") for l in emwh.split("\n")), False)
+    check("stage2 while's only label is :main (loop branches numeric)",
+          [l for l in emwh.split("\n") if l.startswith(":")] == [":main"], True)
     # forward branch backpatched to the instruction AFTER the if-body (byte pos = idx*4)
     lines = [l for l in emif.split("\n") if l.strip()]
     br = next(l for l in lines if l.startswith("b.eq @"))
@@ -361,6 +373,50 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 backpatch exit -> {want}", _exit(cs), want)
 
+    print("== stage 2 functions + call stack + recursion (A2) ==")
+    # A2 adds real functions: the program is one-or-more int name(params){body};
+    # a call f(a,b) is a primary in any expression. Emitted output carries :name /
+    # bl name (resolved by stage1) plus a runtime calling convention: x9 value
+    # stack, x10 frame base, x11 frame stack (frames nest -> recursion). Structural
+    # checks pin the convention; behavioural checks run the whole ladder incl. stage1.
+    emfn = _emit("int add(int a,int b){return a+b;} int main(){return add(2,3);}")
+    check("stage2 defines :add function label",        ":add" in emfn, True)
+    check("stage2 call emits bl add",                  "bl add" in emfn, True)
+    check("stage2 prologue saves caller frame (str x10 x11)", "str x10 x11" in emfn, True)
+    check("stage2 prologue saves return addr (str x30 x1)",   "str x30 x1" in emfn, True)
+    check("stage2 opens a frame (add x11 x11)",        "add x11 x11 " in emfn, True)
+    check("stage2 epilogue restores + returns (ldr x30 x1 .. ret)",
+          ("ldr x30 x1" in emfn) and ("\nret\n" in emfn), True)
+    check("stage2 pops args into param slots (str w0 x1 after ldr w0 x9)",
+          "ldr w0 x9\nadd x1 x10 004\nstr w0 x1" in emfn, True)
+    # nested call as an argument -> two bl's, inner evaluated before outer's bl
+    emnest = _emit("int f(int x){return x;} int main(){return f(f(3));}")
+    check("stage2 nested call emits two bl f", emnest.count("bl f") == 2, True)
+    # Behavioural: exit codes through prog.c | stage2 | stage1 | stage0-as.
+    for cs, want in [
+        ("int add(int a,int b){return a+b;} int main(){return add(2,3);}", 5),
+        ("int sq(int x){int y=x*x;return y;} int main(){return sq(9);}", 81),
+        ("int inc(int a){return a+1;} int dbl(int a){return a*2;} int main(){return dbl(inc(4));}", 10),
+        ("int add(int a,int b){return a+b;} int main(){return add(add(1,2),add(3,4));}", 10),
+        ("int f(int aa,int bb,int cc){return aa*100+bb*10+cc;} int main(){return f(1,2,3);}", 123),
+        ("int f(int n){n=n+5;return n*2;} int main(){return f(10);}", 30),
+    ]:
+        check(f"stage2 fn exit -> {want}", _exit(cs), want)
+    # Recursion: linear, tree, tail-with-accumulator, mutual, and Ackermann.
+    for cs, want in [
+        ("int fact(int n){if(n){return n*fact(n-1);}return 1;} int main(){return fact(5);}", 120),
+        ("int sum(int n){if(n){return n+sum(n-1);}return 0;} int main(){return sum(10);}", 55),
+        ("int fib(int n){if(n<2){return n;}return fib(n-1)+fib(n-2);} int main(){return fib(10);}", 55),
+        ("int pw(int b,int e){if(e){return b*pw(b,e-1);}return 1;} int main(){return pw(2,7);}", 128),
+        ("int tri(int n){int s=0;int i=1;while(i<=n){s=s+i;i=i+1;}return s;} int main(){return tri(10);}", 55),
+        ("int ev(int n){if(n){return od(n-1);}return 1;}int od(int n){if(n){return ev(n-1);}return 0;}int main(){return ev(10);}", 1),
+        ("int ack(int m,int n){if(m){if(n){return ack(m-1,ack(m,n-1));}return ack(m-1,1);}return n+1;} int main(){return ack(2,3);}", 9),
+    ]:
+        check(f"stage2 recursion exit -> {want}", _exit(cs), want)
+    # multi-char names across params + locals (declaration-order symbol table)
+    check("stage2 multi-char params/locals",
+          _exit("int compute(int count,int step){int total=count*step;return total+count;} int main(){return compute(6,4);}"), 30)
+
     print("== stage 2 large programs (enlarged input/output/stack buffers) ==")
     # The compiler's buffers were raised (input 64KB, output 256KB, bigger stacks),
     # so large programs no longer overflow the old ~4.4KB output buffer. Combined
@@ -370,7 +426,8 @@ if os.path.exists(s1p) and os.path.exists(s2p):
         return "int main(){int a=0;" + "".join("if(a<10000){a=a+1;}" for _ in range(n)) + "return a;}"
     big80 = _emit(_many_ifs(80))
     check("stage2 80-block program emits >30KB", len(big80) > 30000, True)
-    check("stage2 80-block program still label-free", any(l.startswith(":") for l in big80.split("\n")), False)
+    check("stage2 80-block program: only label is :main (if-blocks numeric)",
+          [l for l in big80.split("\n") if l.startswith(":")] == [":main"], True)
     for n in (20, 40, 80, 150):
         check(f"stage2 {n} sequential if-blocks -> exit {n & 0xFF}", _exit(_many_ifs(n)), n & 0xFF)
     # a long-running loop with a big body (stresses output size a different way)

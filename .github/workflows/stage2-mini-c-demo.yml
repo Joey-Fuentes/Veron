@@ -1,30 +1,37 @@
 name: stage2-mini-c-demo
 
 # SPIKE (invariants suspended). Stage 2 = mini-c. Supports:
-#   int main(){ int a=<expr>; a=<expr>; if(<expr>){...} while(<expr>){...} return <expr>; }
-# single-char var names -> FRAME-RELATIVE WORD (4-byte) slots at x10+off
-# (off=(c-'a')*4), emitted via an offset table + word ldr/str; a factor may be a
-# number, a variable (load), or ( expr ).
-# Expressions support + - * and comparisons < > <= >= == != (branchless,
+#   one-or-more  int name(params){ ... }  functions; a body has
+#   int a=<expr>; a=<expr>; if(<expr>){...} while(<expr>){...} return <expr>;
+# MULTI-CHAR names -> FRAME-RELATIVE WORD (4-byte) slots at x10+off in DECLARATION
+# order (params first, then locals; off=i*4), resolved by a live symbol table +
+# word ldr/str; a factor may be a number, a variable (load), ( expr ), or a CALL
+# f(a,b). Expressions support + - * and comparisons < > <= >= == != (branchless,
 # unsigned-32, yielding 0/1) so conditions can be relations. Precedence, low->high:
 # == !=  <  < > <= >=  <  + -  <  * . <= is '>' flipped, >= is '<' flipped,
 # != is (d|-d)>>63, == is != flipped (all reuse the existing sign-bit recipe).
 # Control flow (if/while, nested) tests the condition for nonzero; codegen is
 # iterative with a block stack and BACKPATCHED numeric branches (b.eq @<pos> /
-# b @<pos>): the target position is filled in when the block closes. Because both
-# variables (frame-relative) and control flow (backpatched) are label-free, the
-# emitted program contains NO labels at all, so control-flow count is not
-# label-bounded (and with the enlarged 64KB input / 256KB output buffers, large
-# multi-block programs compile and run — see the 80-block test below).
-# Compiler uses shunting-yard; emitted code
-# uses a brk value stack. Written in stage-1's language.
+# b @<pos>): the target position is filled in when the block closes, and stage1
+# passes these through. FUNCTIONS use :name / bl name (resolved by stage1) plus a
+# runtime calling convention: x9 value stack, x10 frame base, x11 frame stack
+# (frames nest -> recursion). A call evaluates args L->R onto the value stack then
+# bl f; the callee saves x10/x30, opens a frame, pops params, and 'return e'
+# restores and rets with the result on the value stack. Program is entered via
+# 'bl main'; main's return is the exit code. So the pipeline is now
+#   prog.c | stage2 | stage1 | stage0-as | elf
+# and the only labels an emitted program carries are function names (never
+# per-if/while or per-variable). With the enlarged 64KB input / 256KB output
+# buffers, large multi-block programs compile and run — see the 80-block test.
+# Compiler uses shunting-yard (re-entrant, for call arguments) + a value stack.
+# Written in stage-1's language.
 #
 # NB: with only + - * and a mod-256 exit, byte vs word storage is
 # indistinguishable by exit code, so this demo also STRUCTURALLY checks the
 # emitted program (word ldr/str + frame-relative vars, no slot labels; if/while
-# zero-test + branches)
+# zero-test + numeric branches; :func labels + prologue/epilogue for calls)
 # and byte-compares the word ldr/str forms against real `as`. Exit codes for the
-# loop/if programs are genuine end-to-end checks (loop counting + reassignment).
+# loop/if/function/recursion programs are genuine end-to-end checks.
 
 on:
   push:
@@ -77,27 +84,28 @@ jobs:
           grep -q 'str w0 x1' word.s || { echo "MISSING word var store"; struct_ok=no; }
           grep -q 'ldrb w0 x1' word.s && { echo "REGRESSION: byte var load present"; struct_ok=no; }
           grep -q 'strb w0 x1' word.s && { echo "REGRESSION: byte var store present"; struct_ok=no; }
-          # variables are frame-relative (x10 base, offset per var), NOT labeled slots
-          grep -q 'mov x10 x0'    word.s || { echo "MISSING frame-base setup (mov x10 x0)"; struct_ok=no; }
+          # variables are frame-relative (x10 base, decl-order offset per var), NOT labeled slots
+          grep -q 'add x10 x11 16' word.s || { echo "MISSING frame-base setup (add x10 x11 16)"; struct_ok=no; }
           grep -q 'add x1 x10 '   word.s || { echo "MISSING frame-relative var access"; struct_ok=no; }
-          grep -q 'add x1 x10 000' word.s || { echo "MISSING var 'a' offset 000"; struct_ok=no; }
-          grep -q 'add x1 x10 004' word.s || { echo "MISSING var 'b' offset 004"; struct_ok=no; }
+          grep -q 'add x1 x10 000' word.s || { echo "MISSING 1st-decl var offset 000"; struct_ok=no; }
+          grep -q 'add x1 x10 004' word.s || { echo "MISSING 2nd-decl var offset 004"; struct_ok=no; }
           grep -q '^:a$'          word.s && { echo "REGRESSION: labeled :a slot present"; struct_ok=no; }
           grep -q '^:z$'          word.s && { echo "REGRESSION: labeled :z slot present"; struct_ok=no; }
           grep -q '^\.byte 0$'    word.s && { echo "REGRESSION: .byte 0 slot table present"; struct_ok=no; }
 
           # ---- structural: if/while emit a zero-test + BACKPATCHED numeric branch ----
-          # Control flow is now emitted as b.eq @<pos> / b @<pos> with the target
-          # position backpatched at '}', so the emitted program contains NO labels.
+          # if/while control flow is emitted as b.eq @<pos> / b @<pos> with the target
+          # position backpatched at '}', which stage1 passes through. The only labels
+          # in an emitted program are function names (here just :main) — never per-if/while.
           cf_ok=yes
           printf '%s' 'int main(){int a=1; if(a){ a=a+1; } return a;}' | qemu-aarch64 ./stage2 > if.s
           grep -q 'cmp x0 0'  if.s || { echo "if: MISSING zero-test"; cf_ok=no; }
           grep -q 'b.eq @'    if.s || { echo "if: MISSING numeric skip branch b.eq @"; cf_ok=no; }
-          grep -q '^:'        if.s && { echo "if: REGRESSION label present in emitted output"; cf_ok=no; }
+          [ "$(grep '^:' if.s)" = ':main' ] || { echo "if: unexpected label (only :main allowed)"; cf_ok=no; }
           printf '%s' 'int main(){int a=3; while(a){ a=a-1; } return a;}' | qemu-aarch64 ./stage2 > wh.s
           grep -q '^b @'      wh.s || { echo "while: MISSING numeric back branch b @"; cf_ok=no; }
           grep -q 'b.eq @'    wh.s || { echo "while: MISSING numeric exit branch b.eq @"; cf_ok=no; }
-          grep -q '^:'        wh.s && { echo "while: REGRESSION label present in emitted output"; cf_ok=no; }
+          [ "$(grep '^:' wh.s)" = ':main' ] || { echo "while: unexpected label (only :main allowed)"; cf_ok=no; }
           # the backpatched target must be a 6-digit position that lands in-range
           bt=$(grep -m1 -oE 'b.eq @[0-9]{6}' if.s | grep -oE '[0-9]{6}')
           ninstr=$(grep -c . if.s)
@@ -132,8 +140,11 @@ jobs:
 
           fail=0
           try() {
+            # A2: emitted programs carry :func labels (calls/recursion) alongside
+            # numeric @ if/while branches, so resolve through stage1 before stage0-as:
+            #   prog.c | stage2 | stage1 | stage0-as | elf
             printf '%s' "$1" | qemu-aarch64 ./stage2 > out.s
-            cat out.s | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf a.out
+            cat out.s | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf a.out
             set +e; qemu-aarch64 ./a.out; rc=$?; set -e
             printf '  %-64s exit=%-4s want=%-4s %s\n' "$1" "$rc" "$2" "$([ "$rc" = "$2" ] && echo OK || { echo DIFF; fail=1; })"
           }
@@ -165,9 +176,9 @@ jobs:
           try 'int main(){int i=3; int t=0; while(i){ int j=2; while(j){ t=t+1; j=j-1; } i=i-1; } return t;}'  6
           try 'int main(){int a=6; int c=0; while(a){ if(a){ c=c+2; } a=a-1; } return c;}'                     12
           try 'int main(){int a=1; int b=1; int r=0; if(a){ if(b){ r=5; } } return r;}'                        5
-          # 80 sequential if-blocks: label-free backpatched branches + enlarged
-          # buffers (input 64KB, output 256KB) let this compile and run — far beyond
-          # both the old ~63-label ceiling and the old ~4.4KB output buffer.
+          # 80 sequential if-blocks: numeric backpatched branches (no per-if label)
+          # + enlarged buffers (input 64KB, output 256KB) let this compile and run —
+          # far beyond both the old ~63-label ceiling and the old ~4.4KB output buffer.
           many='int main(){int a=0;'; for k in $(seq 1 80); do many="$many if(a<10000){a=a+1;}"; done; many="$many return a;}"
           try "$many"  80
 
@@ -199,14 +210,43 @@ jobs:
           try 'int main(){int a=7; if(a!=7){ return 3; } return 9;}'                  9
           try 'int main(){int a=8; int b=8; int c=0; if(a==b){ if(a>=b){ c=42; } } return c;}'  42
 
+          echo "== stage-2: functions + call stack + recursion (A2) =="
+          # structural: a call carries a :func label + bl, a real prologue/epilogue,
+          # and the caller enters via bl main. These are resolved by stage1 (above).
+          fn_ok=yes
+          printf '%s' 'int add(int a,int b){return a+b;} int main(){return add(2,3);}' | qemu-aarch64 ./stage2 > fn.s
+          grep -q '^:add'        fn.s || { echo "fn: MISSING :add label"; fn_ok=no; }
+          grep -q 'bl add'       fn.s || { echo "fn: MISSING bl add"; fn_ok=no; }
+          grep -q 'bl main'      fn.s || { echo "fn: MISSING bl main entry"; fn_ok=no; }
+          grep -q 'str x10 x11'  fn.s || { echo "fn: MISSING frame save (str x10 x11)"; fn_ok=no; }
+          grep -q 'str x30 x1'   fn.s || { echo "fn: MISSING return-addr save (str x30 x1)"; fn_ok=no; }
+          grep -q 'ldr x30 x1'   fn.s || { echo "fn: MISSING epilogue restore (ldr x30 x1)"; fn_ok=no; }
+          # calls + argument passing
+          try 'int add(int a,int b){return a+b;} int main(){return add(2,3);}'                    5
+          try 'int sq(int x){int y=x*x; return y;} int main(){return sq(9);}'                      81
+          try 'int inc(int a){return a+1;} int dbl(int a){return a*2;} int main(){return dbl(inc(4));}'  10
+          try 'int add(int a,int b){return a+b;} int main(){return add(add(1,2),add(3,4));}'       10
+          try 'int f(int aa,int bb,int cc){return aa*100+bb*10+cc;} int main(){return f(1,2,3);}'  123
+          try 'int f(int n){n=n+5; return n*2;} int main(){return f(10);}'                         30
+          # recursion: linear, tree, tail-with-accumulator, mutual, Ackermann
+          try 'int fact(int n){if(n){return n*fact(n-1);} return 1;} int main(){return fact(5);}'  120
+          try 'int sum(int n){if(n){return n+sum(n-1);} return 0;} int main(){return sum(10);}'    55
+          try 'int fib(int n){if(n<2){return n;} return fib(n-1)+fib(n-2);} int main(){return fib(10);}'  55
+          try 'int pw(int b,int e){if(e){return b*pw(b,e-1);} return 1;} int main(){return pw(2,7);}'  128
+          try 'int tri(int n){int s=0; int i=1; while(i<=n){ s=s+i; i=i+1; } return s;} int main(){return tri(10);}'  55
+          try 'int ev(int n){if(n){return od(n-1);} return 1;} int od(int n){if(n){return ev(n-1);} return 0;} int main(){return ev(10);}'  1
+          try 'int ack(int m,int n){if(m){if(n){return ack(m-1,ack(m,n-1));} return ack(m-1,1);} return n+1;} int main(){return ack(2,3);}'  9
+          try 'int compute(int count,int step){int total=count*step; return total+count;} int main(){return compute(6,4);}'  30
+
           {
-            echo "## stage2-mini-c — variables, if/while, reassignment"
+            echo "## stage2-mini-c — variables, if/while, reassignment, functions + recursion"
             echo '```'
             echo "word ldr/str byte-identical to as   : $ld_ok"
             echo "emitted word forms + frame-rel vars : $struct_ok"
             echo "if/while zero-test + backpatched @pos: $cf_ok"
             echo "relational < > branchless (sub+lsr)  : $rel_ok"
             echo "equality == != <= >= branchless      : $eq_ok"
+            echo "functions + call stack + recursion   : $fn_ok"
             echo "while(n){s=s+n;n=n-1;} sum 1..10     -> 55"
             echo "while(i<10) count-up sum            -> 45"
             echo "while(i<=5) count-up sum            -> 15"
@@ -216,8 +256,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ]; then
-            echo "PASS: stage-2 compiles variables (frame-relative), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32); emitted output is label-free; word ldr/str byte-correct."
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$fn_ok" = yes ]; then
+            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok fn=$fn_ok"; exit 1
           fi

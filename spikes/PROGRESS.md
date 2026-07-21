@@ -479,6 +479,54 @@ table live, on the m25 64-bit load/store.
 
 ---
 
+**Milestone 35 — stage 2: functions + a real call stack + recursion (floor backbone A2).**
+Building on the A1 tokenizer, the compiler gains real functions. A program is now
+one-or-more `int name(params){body}`, and a call `f(a,b)` is a primary usable in any
+expression. Three A1 seams that were latent become live at once: the **frame
+allocator flips to declaration order** (params first, then locals; the i-th name
+declared gets `off=i*4`), a **live symbol table** resolves multi-char names to those
+offsets (the `(name-'a')*4` letter-map is retired — `emitoff` now emits a computed
+3-digit offset), and `compile_expr` is made **re-entrant** so a call's argument
+expressions can nest (each invocation parks its return address + opstack base on a
+small compiler-side stack; `,`/`)` terminate an argument by scanning the opstack for
+a pending `(`). Emitted programs now carry `:name`/`bl name` at function boundaries
+(resolved by stage1) **mixed with** the numeric backpatched `b.eq @<pos>` if/while
+branches (which stage1 passes through), so the pipeline becomes `prog.c | stage2 |
+stage1 | stage0-as | elf`. The runtime calling convention uses three regions in one
+brk block: `x9` value stack (temporaries, argument passing, and return value), `x10`
+current frame base, `x11` frame stack top (frames nest → recursion). A call evaluates
+args left-to-right onto the value stack then `bl f`; the callee prologue saves the
+caller's `x10`/`x30` (64-bit `str x`, from m25), opens a 16-aligned frame, and pops
+its params (reverse) into slots; `return e` leaves the result on the value stack,
+restores `x10`/`x30`/`x11`, and `ret`s. The program is entered via `bl main`, and
+`main`'s return is the exit code. Designed and proven in `stage2_ref_a2.py` (a
+declaration-order allocator + live symtab + a recursive interpreter oracle) against
+12 function/recursion programs plus 17 legacy single-`main` programs, then the `.s1`
+port was verified through the **real assembled ladder** (`stage2 → stage1 →
+stage0-as → run`) on 37 programs total — argument passing, frame-slot reuse across
+calls, calls in loop bodies and `if` conditions, nested-call arguments (3-level),
+mutual recursion, tree recursion (`fib`), tail-with-accumulator, deep linear
+recursion (`cnt(200)`), and Ackermann (`ack(2,5)=13`). Five real bugs were found and
+fixed in the port, each a register-discipline or tokenizer gap the reference could
+not surface: `prescan` clobbering `x30`/counters across `next_token`; the param-pop
+loop counter clobbered by `emitoff`'s digit register; `compile_call` overwriting the
+scan cursor with the saved callee-name span (re-emitting args); and — the subtle one
+— the A1 tokenizer silently **skipping `,` as whitespace** (it treats any
+unrecognized char as space), which collapsed every argument list into one run-on
+expression until `,` was added as a punct token. `validate.py` now resolves stage-2
+output **through stage1** before assembling (retiring the "emitted output is
+label-free" assertions — the only labels are function names, verified explicitly),
+checks declaration-order offsets, and gains a functions+recursion section (145→169
+checks). The `stage2-mini-c-demo` workflow inserts stage1 into the compiled-program
+pipeline and adds structural (`:func` label, prologue/epilogue, `bl`) + behavioural
+(add/sq/nested/fact/fib/pw/tri/mutual/ack) anchors on real aarch64; because the
+emitted saves/restores use only the m25 64-bit `str x`/`ldr x` forms already
+byte-anchored against real `as`, no new stage0-as capability or byte-anchor is
+needed. Next: **A3 — pointers, `char`, and arrays** (typed loads/stores and address-of),
+the first step toward the memory model M2-Planet's source needs.
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
@@ -497,10 +545,13 @@ stage in the language of the stage below.
   functions + a real call stack, pointers/`char`/arrays, `struct`, a small heap,
   multi-char labels/identifiers, and I/O. Floor progress: **64-bit `ldr x`/`str x`**
   (m25), **frame-relative variables** (m26), the **numeric PC-relative branch**
-  (m27), and **backpatched control flow** (m29) are in — the emitted program is now
-  entirely **label-free** — and the pipeline buffers were raised (m30: 64 KB input /
-  256 KB output; stage0-as + elf to 256 KB), so large multi-block programs compile
-  end-to-end. Next: **functions + a real call stack** on the m25 64-bit load/store.
+  (m27), and **backpatched control flow** (m29) are in, the pipeline buffers were
+  raised (m30: 64 KB input / 256 KB output; stage0-as + elf to 256 KB), and the
+  front end became a real **tokenizer** (m34, A1) that then enabled **functions +
+  a real call stack + recursion** (m35, A2: declaration-order frames, a live
+  multi-char symbol table, and a re-entrant expression compiler — emitted programs
+  now carry `:func` labels resolved by stage1 alongside numeric if/while). Next:
+  **A3 — pointers, `char`, and arrays** (typed loads/stores + address-of).
   See **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**

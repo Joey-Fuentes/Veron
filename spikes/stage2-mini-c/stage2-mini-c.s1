@@ -1,24 +1,27 @@
-# stage2 (mini-c) — A1: tokenizer (lexer) front end + frame-offset seam.
-# SAME emitted bytes as before. The 2nd-char statement dispatch AND the inline
-# expression char-scanner are replaced by ONE tokenizer (next_token) that both
-# the statement loop and compile_expr consume. Keyword recognition is a real
-# full-word match (int/if/while/return); identifiers are scanned as runs (only
-# single-char names are USED today, but nothing assumes it). Frame offsets keep
-# the letter-map policy in emitoff ((name-'a')*4) — the A1 Frame policy; A2 swaps
-# that policy (declaration-order) and makes the symbol table live.
-# expr operators: + - *  and comparisons < > <= >= == != (unsigned-32, yield 0/1).
-# precedence (low->high): == !=  <  < > <= >=  <  + -  <  *  (left-assoc, parens).
-# opstack sentinels: <= >= == != -> 1 2 3 4 ; < > + - * ( -> 60 62 43 45 42 40.
-# control flow (if/while) backpatched numeric: 'b.eq @<pos>' / 'b @<pos>' -> the
-#   emitted program has NO labels (frame-relative vars + backpatched branches).
-#   emitted regs: x10 frame base, x9 val stack.
-# compiler regs: x19 inbuf, x21 inlen, x22 outbuf, x23 outpos, x6 scan-pos,
-#   x24 opstk-base, x25 opstk-top, x26 cur-op, x11 op-to-apply, x14 store-target,
-#   x15 blockstk-base, x16 blockstk-top, x17 emitted-instr count (PC/4),
-#   x12/x13 patch temps, x28 compile_expr ret, x27 emit-helper ret.
-#   TOKEN regs (next_token): x20 kind (0 eof,1 num,2 id,3 kw,4 op,5 punct),
-#   x18 tok-start, x29 tok-aux (kw code 1..4 | op/punct char | id first char).
-#   block stack = 3 words/block: [type(0=if,1=while), v1, v2].
+# stage2 (mini-c) — A2: functions + a real call stack + recursion.
+# Builds on the m34 tokenizer. The symbol table and frame allocator are now LIVE:
+#   * declaration-order frame allocator (params first, then locals), consulted by
+#     name via a symbol table -> MULTI-CHAR variable names work; no letter-map.
+#   * functions: program is one-or-more int name(params){body}; a call f(a,b) is a
+#     primary in any expression.
+# Emitted runtime (three regions in one brk block):
+#   x9 value stack (temps AND args/return), x10 frame base (params+locals at
+#   x10+off, decl order, word slots), x11 frame stack (frames nest -> recursion).
+#   frame = [saved caller x10 (8) | saved x30 (8) | params+locals], 16-aligned;
+#   x10 points past the 16-byte save area. call: eval args L->R onto value stack,
+#   bl f; callee saves x10/x30, opens a frame, pops P args (reverse) into params;
+#   return e leaves the result on the value stack, restores x10/x30/x11, ret.
+#   program starts bl main; main's return is the exit code. Functions emit :name /
+#   bl name (resolved by stage1); if/while stay NUMERIC backpatched (b.eq @<pos>),
+#   which stage1 passes through -> pipeline prog.c | stage2 | stage1 | stage0-as.
+# compiler regs: x19 inbuf, x21 inlen, x22 outbuf, x23 outpos, x6 scan, x17 emitted
+#   instr count (labels are 0 bytes, emitted via emitlabel so x17 is unaffected),
+#   x24 opstk base, x25 opstk top, x26 cur-op, x11 op-to-apply, x14 store-offset,
+#   x15/x16 blockstk, x12 cexpr opstk base / patch temp, x13 patch/offset temp,
+#   x10 symtab base, x8 symtab count (this function), x28 cexpr save-stack ptr,
+#   x18/x20/x29 token start/kind/aux. cexpr save-stack holds (x30,x12) so the
+#   expression compiler is re-entrant across call arguments; compile_call also
+#   parks the callee name span there.
 mov x0 0
 mov x8 214
 svc
@@ -32,10 +35,17 @@ add x24 x19 x1
 mov x1 4096
 movk x1 5 16
 add x15 x19 x1
-mov x16 0
-mov x17 0
+mov x1 8192
+movk x1 5 16
+add x10 x19 x1
 mov x1 12288
 movk x1 5 16
+add x28 x19 x1
+mov x16 0
+mov x17 0
+mov x25 0
+mov x1 0
+movk x1 6 16
 add x0 x19 x1
 mov x8 214
 svc
@@ -47,19 +57,73 @@ svc
 mov x21 x0
 mov x23 0
 mov x6 0
-:findbrace
-cmp x6 x21
-b.ge doneall
-ldrb w5 x19 x6
-add x6 x6 1
-cmp x5 123
-b.ne findbrace
-adr x9 spre
+adr x9 smainpre
 bl emitstr
+:funcloop
+bl next_token
+cmp x20 0
+b.eq alldone
+bl next_token
+bl emitlabel
+mov x8 0
+bl next_token
+:paramloop
+bl next_token
+cmp x20 5
+b.ne pl_int
+cmp x29 41
+b.eq paramdone
+b paramloop
+:pl_int
+cmp x20 3
+b.ne paramloop
+bl next_token
+bl symdecl
+b paramloop
+:paramdone
+bl next_token
+bl prescan
+add x2 x8 x0
+mov x5 2
+lsl x2 x2 x5
+add x2 x2 15
+mov x5 4
+lsr x2 x2 x5
+lsl x2 x2 x5
+add x13 x2 16
+adr x9 sfpro
+bl emitstr
+bl emitoff
+adr x9 snl
+bl emitstr
+sub x12 x8 1
+:poploop
+cmp x12 0
+b.lt popdone
+adr x9 spop
+bl emitstr
+mov x5 2
+lsl x13 x12 x5
+bl emitoff
+adr x9 sstore
+bl emitstr
+sub x12 x12 1
+b poploop
+:popdone
+b stmtloop
+:alldone
+mov x0 1
+mov x1 x22
+mov x2 x23
+mov x8 64
+svc
+mov x0 0
+mov x8 93
+svc
 :stmtloop
 bl next_token
 cmp x20 0
-b.eq doneall
+b.eq alldone
 cmp x20 3
 b.eq stmtkw
 cmp x20 2
@@ -81,7 +145,8 @@ b.eq doreturn
 b stmtloop
 :doint
 bl next_token
-mov x14 x29
+bl symdecl
+mov x14 x0
 bl next_token
 bl compile_expr
 adr x9 spop
@@ -93,7 +158,8 @@ bl emitstr
 add x6 x6 1
 b stmtloop
 :doreassign
-mov x14 x29
+bl symlookup
+mov x14 x0
 bl next_token
 bl compile_expr
 adr x9 spop
@@ -106,7 +172,7 @@ add x6 x6 1
 b stmtloop
 :doreturn
 bl compile_expr
-adr x9 sret
+adr x9 sepi
 bl emitstr
 add x6 x6 1
 b stmtloop
@@ -164,7 +230,7 @@ add x6 x6 1
 b stmtloop
 :doclose
 cmp x16 0
-b.eq doneall
+b.eq funcdone
 sub x16 x16 12
 add x2 x15 x16
 ldr w4 x2
@@ -195,18 +261,18 @@ lsl x3 x17 x5
 add x4 x22 x12
 bl pos6
 b stmtloop
-:doneall
-mov x0 1
-mov x1 x22
-mov x2 x23
-mov x8 64
-svc
-mov x0 0
-mov x8 93
-svc
+:funcdone
+adr x9 spush0
+bl emitstr
+adr x9 sepi
+bl emitstr
+b funcloop
 :compile_expr
-mov x28 x30
-mov x25 0
+str x30 x28
+add x28 x28 8
+str x12 x28
+add x28 x28 8
+mov x12 x25
 :celoop
 bl next_token
 cmp x20 0
@@ -224,7 +290,31 @@ b celoop
 bl emitnum
 b celoop
 :ce_id
+mov x3 x6
+:ceid_ws
+cmp x3 x21
+b.ge ceid_var
+ldrb w5 x19 x3
+cmp x5 32
+b.eq ceid_wsadv
+cmp x5 9
+b.eq ceid_wsadv
+cmp x5 10
+b.eq ceid_wsadv
+cmp x5 13
+b.eq ceid_wsadv
+b ceid_chk
+:ceid_wsadv
+add x3 x3 1
+b ceid_ws
+:ceid_chk
+cmp x5 40
+b.eq ceid_call
+:ceid_var
 bl emitvar
+b celoop
+:ceid_call
+bl compile_call
 b celoop
 :ce_op
 mov x26 x29
@@ -237,7 +327,7 @@ b.eq ceclose
 mov x6 x18
 b ceflush
 :cewhile
-cmp x25 0
+cmp x25 x12
 b.eq cepushop
 sub x0 x25 1
 ldrb w4 x24 x0
@@ -285,8 +375,19 @@ strb w5 x24 x25
 add x25 x25 1
 b celoop
 :ceclose
-cmp x25 0
-b.eq cecldone
+mov x3 x25
+:cc_scan
+cmp x3 x12
+b.eq cc_term
+sub x3 x3 1
+ldrb w4 x24 x3
+cmp x4 40
+b.eq ceclose2
+b cc_scan
+:cc_term
+mov x6 x18
+b ceflush
+:ceclose2
 sub x0 x25 1
 ldrb w4 x24 x0
 cmp x4 40
@@ -294,13 +395,12 @@ b.eq ceclparen
 sub x25 x25 1
 ldrb w11 x24 x25
 bl emitapply
-b ceclose
+b ceclose2
 :ceclparen
 sub x25 x25 1
-:cecldone
 b celoop
 :ceflush
-cmp x25 0
+cmp x25 x12
 b.eq cedone
 sub x25 x25 1
 ldrb w11 x24 x25
@@ -309,7 +409,45 @@ b.eq ceflush
 bl emitapply
 b ceflush
 :cedone
-mov x30 x28
+sub x28 x28 8
+ldr x12 x28
+sub x28 x28 8
+ldr x30 x28
+ret
+:compile_call
+str x30 x28
+add x28 x28 8
+str x18 x28
+add x28 x28 8
+str x6 x28
+add x28 x28 8
+bl next_token
+bl next_token
+cmp x20 5
+b.ne cc_firstarg
+cmp x29 41
+b.eq cc_emit
+:cc_firstarg
+mov x6 x18
+:cc_arg
+bl compile_expr
+bl next_token
+cmp x29 44
+b.eq cc_arg
+:cc_emit
+adr x9 sbl
+bl emitstr
+mov x13 x6
+sub x28 x28 8
+ldr x6 x28
+sub x28 x28 8
+ldr x18 x28
+bl copyspan
+adr x9 snl
+bl emitstr
+mov x6 x13
+sub x28 x28 8
+ldr x30 x28
 ret
 :emitnum
 mov x27 x30
@@ -322,13 +460,135 @@ mov x30 x27
 ret
 :emitvar
 mov x27 x30
-mov w13 x29
+bl symlookup
+mov x13 x0
 adr x9 svaradr
 bl emitstr
 bl emitoff
 adr x9 svarload
 bl emitstr
 mov x30 x27
+ret
+:emitoff
+mov x3 x13
+mov x5 0
+:eo_h
+cmp x3 100
+b.lt eo_hd
+sub x3 x3 100
+add x5 x5 1
+b eo_h
+:eo_hd
+add x5 x5 48
+strb w5 x22 x23
+add x23 x23 1
+mov x5 0
+:eo_t
+cmp x3 10
+b.lt eo_td
+sub x3 x3 10
+add x5 x5 1
+b eo_t
+:eo_td
+add x5 x5 48
+strb w5 x22 x23
+add x23 x23 1
+add x5 x3 48
+strb w5 x22 x23
+add x23 x23 1
+ret
+:emitlabel
+mov x14 x30
+mov w5 58
+strb w5 x22 x23
+add x23 x23 1
+bl copyspan
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+mov x30 x14
+ret
+:symdecl
+mov x3 x8
+mov x5 3
+lsl x4 x3 x5
+add x4 x10 x4
+str w18 x4
+add x2 x4 4
+sub x5 x6 x18
+str w5 x2
+add x8 x8 1
+mov x5 2
+lsl x0 x3 x5
+ret
+:symlookup
+sub x1 x6 x18
+mov x3 0
+:sl_loop
+cmp x3 x8
+b.ge sl_nf
+mov x5 3
+lsl x4 x3 x5
+add x4 x10 x4
+ldr w2 x4
+add x4 x4 4
+ldr w4 x4
+cmp x4 x1
+b.ne sl_next
+mov x5 0
+:sl_cmp
+cmp x5 x1
+b.ge sl_found
+add x7 x2 x5
+ldrb w7 x19 x7
+add x0 x18 x5
+ldrb w0 x19 x0
+cmp x7 x0
+b.ne sl_next
+add x5 x5 1
+b sl_cmp
+:sl_found
+mov x5 2
+lsl x0 x3 x5
+ret
+:sl_next
+add x3 x3 1
+b sl_loop
+:sl_nf
+mov x0 0
+ret
+:prescan
+mov x14 x30
+mov x7 x6
+mov x12 0
+mov x13 1
+:ps_l
+bl next_token
+cmp x20 0
+b.eq ps_done
+cmp x20 3
+b.ne ps_np
+cmp x29 1
+b.ne ps_l
+add x12 x12 1
+b ps_l
+:ps_np
+cmp x20 5
+b.ne ps_l
+cmp x29 123
+b.ne ps_ncb
+add x13 x13 1
+b ps_l
+:ps_ncb
+cmp x29 125
+b.ne ps_l
+sub x13 x13 1
+cmp x13 0
+b.ne ps_l
+:ps_done
+mov x0 x12
+mov x6 x7
+mov x30 x14
 ret
 :emitapply
 mov x27 x30
@@ -594,6 +854,8 @@ cmp x5 125
 b.eq nt_punct1
 cmp x5 59
 b.eq nt_punct1
+cmp x5 44
+b.eq nt_punct1
 add x6 x6 1
 b nt_ws
 :nt_op1
@@ -672,25 +934,6 @@ add x2 x2 1
 b cspl
 :cspdone
 ret
-:emitoff
-sub x13 x13 97
-mov x2 2
-lsl x13 x13 x2
-adr x2 offtab
-add x2 x2 x13
-mov x3 0
-ldrb w5 x2 x3
-strb w5 x22 x23
-add x23 x23 1
-mov x3 1
-ldrb w5 x2 x3
-strb w5 x22 x23
-add x23 x23 1
-mov x3 2
-ldrb w5 x2 x3
-strb w5 x22 x23
-add x23 x23 1
-ret
 :pos6
 mov x2 6
 add x4 x4 6
@@ -712,8 +955,20 @@ sub x2 x2 1
 cmp x2 0
 b.ne p6l
 ret
-:spre
-.ascii "mov x0 0\nmov x8 214\nsvc\nmov x10 x0\nadd x9 x10 104\nadd x0 x9 1000\nmov x8 214\nsvc\n"
+:smainpre
+.ascii "mov x0 0\nmov x8 214\nsvc\nmov x2 x0\nmov x9 x2\nmov x1 32768\nadd x11 x2 x1\nmov x1 0\nmovk x1 1 16\nadd x0 x2 x1\nmov x8 214\nsvc\nbl main\nsub x9 x9 4\nldr w0 x9\nmov x8 93\nsvc\n"
+.byte 0
+:sfpro
+.ascii "str x10 x11\nadd x1 x11 8\nstr x30 x1\nadd x10 x11 16\nadd x11 x11 "
+.byte 0
+:sepi
+.ascii "sub x11 x10 16\nadd x1 x11 8\nldr x30 x1\nldr x10 x11\nret\n"
+.byte 0
+:spush0
+.ascii "mov x0 0\nstr w0 x9\nadd x9 x9 4\n"
+.byte 0
+:sbl
+.ascii "bl "
 .byte 0
 :smovx0
 .ascii "mov x0 "
@@ -757,9 +1012,6 @@ ret
 :sstore
 .ascii "\nstr w0 x1\n"
 .byte 0
-:sret
-.ascii "sub x9 x9 4\nldr w0 x9\nmov x8 93\nsvc\n"
-.byte 0
 :scondtest
 .ascii "sub x9 x9 4\nldr w0 x9\ncmp x0 0\nb.eq @"
 .byte 0
@@ -769,7 +1021,3 @@ ret
 :sbback
 .ascii "b @"
 .byte 0
-:offtab
-.ascii "000 004 008 012 016 020 024 028 032 036 040 044 048 052 056 060 064 068 072 076 080 084 088 092 096 100 "
-.byte 0
-
