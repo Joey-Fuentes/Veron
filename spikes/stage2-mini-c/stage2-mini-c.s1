@@ -1,24 +1,24 @@
-# stage2 (mini-c): variables, assignment, reassignment, if, while, comparisons.
-# int main(){ int a=<expr>; a=<expr>; if(<expr>){...} while(<expr>){...} return <expr>; }
+# stage2 (mini-c) — A1: tokenizer (lexer) front end + frame-offset seam.
+# SAME emitted bytes as before. The 2nd-char statement dispatch AND the inline
+# expression char-scanner are replaced by ONE tokenizer (next_token) that both
+# the statement loop and compile_expr consume. Keyword recognition is a real
+# full-word match (int/if/while/return); identifiers are scanned as runs (only
+# single-char names are USED today, but nothing assumes it). Frame offsets keep
+# the letter-map policy in emitoff ((name-'a')*4) — the A1 Frame policy; A2 swaps
+# that policy (declaration-order) and makes the symbol table live.
 # expr operators: + - *  and comparisons < > <= >= == != (unsigned-32, yield 0/1).
-# precedence (low->high): == !=  <  < > <= >=  <  + -  <  *  (all left-assoc, parens).
-# 2-char ops (<= >= == !=) carry internal opstack sentinels 1,2,3,4 respectively.
-# control flow (if/while) is emitted with BACKPATCHED numeric offsets: branches
-#   are 'b.eq @<pos>' / 'b @<pos>' (stage0-as numeric PC-rel), so NO labels are
-#   emitted at all (frame-relative vars + backpatched branches => label-free output).
+# precedence (low->high): == !=  <  < > <= >=  <  + -  <  *  (left-assoc, parens).
+# opstack sentinels: <= >= == != -> 1 2 3 4 ; < > + - * ( -> 60 62 43 45 42 40.
+# control flow (if/while) backpatched numeric: 'b.eq @<pos>' / 'b @<pos>' -> the
+#   emitted program has NO labels (frame-relative vars + backpatched branches).
 #   emitted regs: x10 frame base, x9 val stack.
 # compiler regs: x19 inbuf, x21 inlen, x22 outbuf, x23 outpos, x6 scan-pos,
-#   buffers in brk: input [x19+0, 64KB), output [x19+0x10000, 256KB),
-#   opstk x24=x19+0x50000, blockstk x15=x19+0x51000, brk end x19+0x53000.
 #   x24 opstk-base, x25 opstk-top, x26 cur-op, x11 op-to-apply, x14 store-target,
-#   x15 blockstk-base, x16 blockstk-top, x17 emitted-instruction count (PC/4),
+#   x15 blockstk-base, x16 blockstk-top, x17 emitted-instr count (PC/4),
 #   x12/x13 patch temps, x28 compile_expr ret, x27 emit-helper ret.
-#   block stack = 3 words/block: [type(0=if,1=while), v1, v2]; if:[0,patchpos,0],
-#   while:[1,toppos,exitpatchpos]. emitstr counts '\n' into x17; pos6 writes a
-#   6-digit decimal position; forward branches use a placeholder patched at '}'.
-# NOTE: statement dispatch keys on the 2nd char: a keyword's 2nd char is a letter
-#   (in/if/wh/re); a single-char var reassignment's is space or '=' -> no collision,
-#   so vars may be named i/w/r freely.
+#   TOKEN regs (next_token): x20 kind (0 eof,1 num,2 id,3 kw,4 op,5 punct),
+#   x18 tok-start, x29 tok-aux (kw code 1..4 | op/punct char | id first char).
+#   block stack = 3 words/block: [type(0=if,1=while), v1, v2].
 mov x0 0
 mov x8 214
 svc
@@ -57,32 +57,32 @@ b.ne findbrace
 adr x9 spre
 bl emitstr
 :stmtloop
-bl skipsp
-cmp x6 x21
-b.ge doneall
-ldrb w5 x19 x6
-cmp x5 125
+bl next_token
+cmp x20 0
+b.eq doneall
+cmp x20 3
+b.eq stmtkw
+cmp x20 2
+b.eq doreassign
+cmp x20 5
+b.ne stmtloop
+cmp x29 125
 b.eq doclose
-add x2 x6 1
-ldrb w4 x19 x2
-cmp x4 97
-b.lt doreassign
-cmp x4 123
-b.ge doreassign
-cmp x5 119
-b.eq dowhile
-cmp x5 114
-b.eq doreturn
-cmp x4 110
+b stmtloop
+:stmtkw
+cmp x29 1
 b.eq doint
-b doif
+cmp x29 2
+b.eq doif
+cmp x29 3
+b.eq dowhile
+cmp x29 4
+b.eq doreturn
+b stmtloop
 :doint
-add x6 x6 3
-bl skipsp
-ldrb w14 x19 x6
-add x6 x6 1
-bl skipsp
-add x6 x6 1
+bl next_token
+mov x14 x29
+bl next_token
 bl compile_expr
 adr x9 spop
 bl emitstr
@@ -93,10 +93,8 @@ bl emitstr
 add x6 x6 1
 b stmtloop
 :doreassign
-ldrb w14 x19 x6
-add x6 x6 1
-bl skipsp
-add x6 x6 1
+mov x14 x29
+bl next_token
 bl compile_expr
 adr x9 spop
 bl emitstr
@@ -107,14 +105,12 @@ bl emitstr
 add x6 x6 1
 b stmtloop
 :doreturn
-add x6 x6 6
 bl compile_expr
 adr x9 sret
 bl emitstr
 add x6 x6 1
 b stmtloop
 :doif
-add x6 x6 2
 bl compile_expr
 adr x9 scondtest
 bl emitstr
@@ -140,7 +136,6 @@ add x16 x16 4
 add x6 x6 1
 b stmtloop
 :dowhile
-add x6 x6 5
 mov x5 2
 lsl x12 x17 x5
 bl compile_expr
@@ -193,14 +188,12 @@ mov x5 2
 lsl x3 x17 x5
 add x4 x22 x13
 bl pos6
-add x6 x6 1
 b stmtloop
 :docloseif
 mov x5 2
 lsl x3 x17 x5
 add x4 x22 x12
 bl pos6
-add x6 x6 1
 b stmtloop
 :doneall
 mov x0 1
@@ -215,81 +208,34 @@ svc
 mov x28 x30
 mov x25 0
 :celoop
-bl skipsp
-cmp x6 x21
-b.ge ceflush
-ldrb w5 x19 x6
-cmp x5 59
+bl next_token
+cmp x20 0
 b.eq ceflush
-cmp x5 125
-b.eq ceflush
-cmp x5 123
-b.eq ceflush
-cmp x5 48
-b.lt cenotdig
-cmp x5 58
-b.ge cenotdig
+cmp x20 1
+b.eq ce_num
+cmp x20 2
+b.eq ce_id
+cmp x20 4
+b.eq ce_op
+cmp x20 5
+b.eq ce_punct
+b celoop
+:ce_num
 bl emitnum
 b celoop
-:cenotdig
-cmp x5 97
-b.lt cechkup
-cmp x5 123
-b.ge cechkup
-b cevar
-:cechkup
-cmp x5 65
-b.lt ceop
-cmp x5 91
-b.ge ceop
-:cevar
+:ce_id
 bl emitvar
 b celoop
-:ceop
-cmp x5 40
+:ce_op
+mov x26 x29
+b cewhile
+:ce_punct
+cmp x29 40
 b.eq ceopen
-cmp x5 41
+cmp x29 41
 b.eq ceclose
-cmp x5 60
-b.eq celt
-cmp x5 62
-b.eq cegt
-cmp x5 61
-b.eq ceeq
-cmp x5 33
-b.eq cene
-mov x26 x5
-b cewhile
-:celt
-add x2 x6 1
-ldrb w4 x19 x2
-cmp x4 61
-b.eq celte
-mov x26 60
-b cewhile
-:celte
-mov x26 1
-add x6 x6 1
-b cewhile
-:cegt
-add x2 x6 1
-ldrb w4 x19 x2
-cmp x4 61
-b.eq cegte
-mov x26 62
-b cewhile
-:cegte
-mov x26 2
-add x6 x6 1
-b cewhile
-:ceeq
-mov x26 3
-add x6 x6 1
-b cewhile
-:cene
-mov x26 4
-add x6 x6 1
-b cewhile
+mov x6 x18
+b ceflush
 :cewhile
 cmp x25 0
 b.eq cepushop
@@ -332,13 +278,11 @@ b cewhile
 :cepushop
 strb w26 x24 x25
 add x25 x25 1
-add x6 x6 1
 b celoop
 :ceopen
 mov w5 40
 strb w5 x24 x25
 add x25 x25 1
-add x6 x6 1
 b celoop
 :ceclose
 cmp x25 0
@@ -354,7 +298,6 @@ b ceclose
 :ceclparen
 sub x25 x25 1
 :cecldone
-add x6 x6 1
 b celoop
 :ceflush
 cmp x25 0
@@ -372,15 +315,14 @@ ret
 mov x27 x30
 adr x9 smovx0
 bl emitstr
-bl copydig
+bl copyspan
 adr x9 spush
 bl emitstr
 mov x30 x27
 ret
 :emitvar
 mov x27 x30
-ldrb w13 x19 x6
-add x6 x6 1
+mov w13 x29
 adr x9 svaradr
 bl emitstr
 bl emitoff
@@ -461,44 +403,274 @@ add x7 x7 1
 b esloop
 :esdone
 ret
-:skipsp
+:next_token
+:nt_ws
 cmp x6 x21
-b.ge skdone
+b.ge nt_eof
 ldrb w5 x19 x6
 cmp x5 32
-b.eq skadv
+b.eq nt_wsadv
 cmp x5 9
-b.eq skadv
+b.eq nt_wsadv
 cmp x5 10
-b.eq skadv
-b skdone
-:skadv
+b.eq nt_wsadv
+cmp x5 13
+b.eq nt_wsadv
+b nt_class
+:nt_wsadv
 add x6 x6 1
-b skipsp
-:skdone
+b nt_ws
+:nt_eof
+mov x20 0
 ret
-:copydig
-mov x10 0
-:cdloop
+:nt_class
+mov x18 x6
+cmp x5 48
+b.lt nt_notdig
+cmp x5 58
+b.ge nt_notdig
+:nt_dig
 cmp x6 x21
-b.ge cddone
+b.ge nt_digdone
 ldrb w5 x19 x6
 cmp x5 48
-b.lt cddone
+b.lt nt_digdone
 cmp x5 58
-b.ge cddone
-strb w5 x22 x23
-add x23 x23 1
+b.ge nt_digdone
 add x6 x6 1
-mov x10 1
-b cdloop
-:cddone
-cmp x10 0
-b.ne cdret
-mov w5 48
+b nt_dig
+:nt_digdone
+mov x20 1
+ret
+:nt_notdig
+cmp x5 95
+b.eq nt_id
+cmp x5 65
+b.lt nt_op
+cmp x5 91
+b.lt nt_id
+cmp x5 97
+b.lt nt_op
+cmp x5 123
+b.lt nt_id
+b nt_op
+:nt_id
+add x6 x6 1
+:nt_idl
+cmp x6 x21
+b.ge nt_idend
+ldrb w5 x19 x6
+cmp x5 95
+b.eq nt_idadv
+cmp x5 48
+b.lt nt_idend
+cmp x5 58
+b.lt nt_idadv
+cmp x5 65
+b.lt nt_idend
+cmp x5 91
+b.lt nt_idadv
+cmp x5 97
+b.lt nt_idend
+cmp x5 123
+b.lt nt_idadv
+b nt_idend
+:nt_idadv
+add x6 x6 1
+b nt_idl
+:nt_idend
+sub x1 x6 x18
+cmp x1 2
+b.eq nt_kw2
+cmp x1 3
+b.eq nt_kw3
+cmp x1 5
+b.eq nt_kw5
+cmp x1 6
+b.eq nt_kw6
+b nt_plainid
+:nt_kw2
+ldrb w5 x19 x18
+cmp x5 105
+b.ne nt_plainid
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 102
+b.ne nt_plainid
+mov x29 2
+mov x20 3
+ret
+:nt_kw3
+ldrb w5 x19 x18
+cmp x5 105
+b.ne nt_plainid
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 110
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 116
+b.ne nt_plainid
+mov x29 1
+mov x20 3
+ret
+:nt_kw5
+ldrb w5 x19 x18
+cmp x5 119
+b.ne nt_plainid
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 104
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 105
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 108
+b.ne nt_plainid
+add x2 x18 4
+ldrb w5 x19 x2
+cmp x5 101
+b.ne nt_plainid
+mov x29 3
+mov x20 3
+ret
+:nt_kw6
+ldrb w5 x19 x18
+cmp x5 114
+b.ne nt_plainid
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 101
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 116
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 117
+b.ne nt_plainid
+add x2 x18 4
+ldrb w5 x19 x2
+cmp x5 114
+b.ne nt_plainid
+add x2 x18 5
+ldrb w5 x19 x2
+cmp x5 110
+b.ne nt_plainid
+mov x29 4
+mov x20 3
+ret
+:nt_plainid
+ldrb w29 x19 x18
+mov x20 2
+ret
+:nt_op
+cmp x5 60
+b.eq nt_lt
+cmp x5 62
+b.eq nt_gt
+cmp x5 61
+b.eq nt_eq
+cmp x5 33
+b.eq nt_ne
+cmp x5 43
+b.eq nt_op1
+cmp x5 45
+b.eq nt_op1
+cmp x5 42
+b.eq nt_op1
+cmp x5 40
+b.eq nt_punct1
+cmp x5 41
+b.eq nt_punct1
+cmp x5 123
+b.eq nt_punct1
+cmp x5 125
+b.eq nt_punct1
+cmp x5 59
+b.eq nt_punct1
+add x6 x6 1
+b nt_ws
+:nt_op1
+mov x29 x5
+add x6 x6 1
+mov x20 4
+ret
+:nt_lt
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 61
+b.eq nt_lte
+mov x29 60
+add x6 x6 1
+mov x20 4
+ret
+:nt_lte
+mov x29 1
+add x6 x6 2
+mov x20 4
+ret
+:nt_gt
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 61
+b.eq nt_gte
+mov x29 62
+add x6 x6 1
+mov x20 4
+ret
+:nt_gte
+mov x29 2
+add x6 x6 2
+mov x20 4
+ret
+:nt_eq
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 61
+b.eq nt_eqeq
+mov x29 61
+add x6 x6 1
+mov x20 5
+ret
+:nt_eqeq
+mov x29 3
+add x6 x6 2
+mov x20 4
+ret
+:nt_ne
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 61
+b.eq nt_nene
+add x6 x6 1
+b nt_ws
+:nt_nene
+mov x29 4
+add x6 x6 2
+mov x20 4
+ret
+:nt_punct1
+mov x29 x5
+add x6 x6 1
+mov x20 5
+ret
+:copyspan
+mov x2 x18
+:cspl
+cmp x2 x6
+b.ge cspdone
+ldrb w5 x19 x2
 strb w5 x22 x23
 add x23 x23 1
-:cdret
+add x2 x2 1
+b cspl
+:cspdone
 ret
 :emitoff
 sub x13 x13 97
@@ -600,3 +772,4 @@ ret
 :offtab
 .ascii "000 004 008 012 016 020 024 028 032 036 040 044 048 052 056 060 064 068 072 076 080 084 088 092 096 100 "
 .byte 0
+

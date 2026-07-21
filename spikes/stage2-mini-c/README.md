@@ -60,9 +60,11 @@ The position field is written by `pos6`, a division-free 6-digit itoa. Because b
 variables (frame-relative) and control flow (backpatched) are label-free, **the
 emitted program contains no labels** — control-flow count is no longer bounded by
 the pool/symtab (program *size* is bounded only by the compiler's buffers, raised
-in m30 to 64 KB input / 256 KB output). Statement dispatch keys on the **second**
-character: a keyword's is a letter (`in`/`if`/`wh`/`re`), a single-char
-reassignment's is a space or `=`, so variables may be named `i`, `w`, or `r`.
+in m30 to 64 KB input / 256 KB output). Statement and expression scanning share a
+single **tokenizer** (`next_token`, added in m34): it skips whitespace and returns
+a token kind (num/id/kw/op/punct) with its value, matching keywords by **whole
+word** (`int`/`if`/`while`/`return`) and scanning identifiers as runs — so a
+single-char variable named `i`, `w`, or `r` is an identifier, never a keyword.
 
 ## Notes / limits (what later increments lift)
 
@@ -107,11 +109,10 @@ Developed and tested through the **real assembled ladder** on the dev bench
 interpreter used as a test oracle, and `validate.py` pins structure and exit
 codes (including nested loops, reassignment, and all six comparisons — precedence,
 `<=`/`>=` loop guards, and `==`/`!=` guards). CI (real `as` + QEMU) is ground
-truth. The compiler is written in stage-1's language and now uses **81** of the
-88 pool slots; backpatched control flow (m29) added an instruction counter, a
-6-digit itoa (`pos6`), and branch strings while dropping the label emitter (net
-+6 over m26's 75), which is why the stage-1 pool was expanded to 88 first (m28).
-Further growth that needs more labels should expand the pool again (a cheap
-stage-1 change) rather than cram. Program *size* is bounded by the compiler's buffers, raised in m30 to 64 KB input
+truth. The compiler is written in stage-1's language with **~100 multi-char
+labels**, which stage 1 now resolves **numerically** (m32 — the single-char pool
+is retired), so no pool cap applies and the source can keep growing; the m34
+tokenizer added `next_token` and a number-span copier while dropping the old
+`skipsp`/`copydig` scanners. Program *size* is bounded by the compiler's buffers, raised in m30 to 64 KB input
 and 256 KB output (with stage0-as INBUF and elf CODEBUF raised to 256 KB to match),
 so large multi-block programs compile end-to-end.

@@ -446,6 +446,39 @@ is a latent lie; every numeric form now has one.
 
 ---
 
+**Milestone 34 — stage 2: tokenizer front end (lexer), byte-identical (floor backbone A1).**
+The stage-2 floor ahead (functions, pointers/`char`/arrays, `struct`, a heap, I/O)
+all need real name resolution and multi-char identifiers, so before adding any
+capability this rebuilds the front end into the seam they share — and proves the
+swap changes nothing. The old front end had two ad-hoc scanners: a **2nd-char
+statement dispatch** (`in`/`if`/`wh`/`re`) and an inline character classifier inside
+`compile_expr`. Both are replaced by ONE tokenizer, `next_token`, consumed by both
+the statement loop and `compile_expr`: it skips whitespace, then returns a token
+kind (num/id/kw/op/punct) with its value, doing a real **full-word keyword match**
+(`int`/`if`/`while`/`return`) and scanning identifiers as runs (multi-char capable
+— only single-char names are *used* today, but nothing assumes it). Frame offsets
+keep the letter-map policy in `emitoff` (`(name-'a')*4`) — the A1 frame policy; the
+declaration-order allocator and the live symbol table arrive in A2, where offsets
+first depend on them (so they are behavior-tested, not latent). The whole point is
+byte-identity: the emitted machine code is **unchanged**. Designed in
+`stage2_ref.py` as three seams (lexer + symbol table + frame allocator), proven
+byte-identical to the pre-refactor reference (117 differential checks: asm text,
+assembled bytes, oracle value, end-to-end exit) and to the current `.s1` through
+the assembled ladder; the `.s1` port was then verified byte-identical through the
+**real assembled ladder** (`stage1` resolves it, `stage0-as` assembles it) on the
+corpus plus a tokenizer-stress sweep — whitespace/newlines, multi-digit literals,
+deep nesting, and single-char vars named `i`/`w`/`r` that must NOT be read as
+keywords — with `validate.py` gaining end-to-end tokenizer anchors and staying
+green (140→145 checks). Because output is byte-identical and the new front end uses
+only instruction forms the compiler already emitted, there is **no new stage0-as
+capability and no new byte-anchor needed** — the existing `stage2-mini-c-demo`
+(which rebuilds the compiler and checks its emitted output + exit codes across the
+whole sweep) is the CI witness. Next: **A2 — functions + a real call stack**,
+flipping the frame policy to a declaration-order allocator and making the symbol
+table live, on the m25 64-bit load/store.
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each

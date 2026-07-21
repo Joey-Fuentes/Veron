@@ -377,6 +377,23 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     bigbody = "int main(){int s=0;int i=0;while(i<200){" + "s=s+1;"*20 + "i=i+1;}return s;}"
     check("stage2 big-body loop (200x20) -> 160", _exit(bigbody), 4000 & 0xFF)
 
+    print("== stage 2 tokenizer (A1): keywords vs identifiers, whitespace ==")
+    # A1 rebuilt the front end into ONE tokenizer (next_token) consumed by both the
+    # statement loop and compile_expr, replacing the old 2nd-char statement dispatch
+    # and the inline expression char-scanner. Keyword recognition is now a real
+    # full-word match. Emitted bytes are UNCHANGED (this milestone is byte-identical
+    # to the pre-A1 compiler), so these lock the tokenizer's behavior end-to-end:
+    #  - a single-char var whose name starts like a keyword (i/w/r) must tokenize as
+    #    an IDENTIFIER (reassignment), never as if/int/while/return;
+    #  - arbitrary whitespace/newlines between tokens must not change the result.
+    check("stage2 var 'w' is identifier not 'while'",  _exit("int main(){int w=1;w=w+4;return w;}"), 5)
+    check("stage2 var 'r' is identifier not 'return'", _exit("int main(){int r=2;r=r*3;return r;}"), 6)
+    check("stage2 var 'i' is identifier not 'if'/'int'", _exit("int main(){int i=9;i=i-1;return i;}"), 8)
+    check("stage2 tokenizer ignores whitespace/newlines",
+          _exit("int main(){\n  int a = 5 ;\n  int b = a + 2 ;\n  return b ;\n}"), 7)
+    check("stage2 tokenizer: spaced keywords and parens",
+          _exit("int main(){int n=3;int s=0;while ( n ) { s = s + n ; n = n - 1 ; } return s ;}"), 6)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)
