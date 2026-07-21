@@ -67,6 +67,27 @@ _cs = ("mov x0 0\nmovk x0 5 32\nmovk x0 3 0\nadr x19 d\nstr x0 x19\n"
        ":f\nmov x0 999\nret\n") + _slot
 check("save/restore 64-bit across bl -> 5", asm_run(_cs)[0], 5)
 
+print("== stage0-as numeric PC-relative branch  b/b.cond @<pos> ==")
+# @<digits> assembles a branch to an absolute output byte-position; stage0-as
+# computes the relative offset itself (no label). This is the enabler for stage-2
+# branch-offset backpatching (removes the per-if/while label). It must encode
+# BYTE-IDENTICALLY to the equivalent label branch, forward and backward.
+for lab, num, note in [
+    (":X\nmov x0 5\nb X\n",                 "mov x0 5\nb @0\n",                 "b backward"),
+    ("b Y\nmov x0 5\n:Y\nmov x0 7\n",       "b @8\nmov x0 5\nmov x0 7\n",       "b forward"),
+    ("b.eq Y\nmov x0 5\n:Y\nmov x0 7\n",    "b.eq @8\nmov x0 5\nmov x0 7\n",    "b.eq forward"),
+    (":X\nmov x0 5\nmov x0 6\nb.ne X\n",    "mov x0 5\nmov x0 6\nb.ne @0\n",    "b.ne backward"),
+]:
+    lb,_,_ = assemble(lab); nb,_,_ = assemble(num)
+    check(f"numeric @pos == label branch ({note})", nb.hex(), lb.hex())
+# behavioural: a countdown loop wired entirely with numeric branches
+_loop = ("mov x0 5\nmov x1 0\nsub x0 x0 1\nadd x1 x1 1\ncmp x0 0\nb.ne @8\n"
+         "mov x0 x1\nmov x8 93\nsvc\n")
+check("numeric-branch loop counts to 5", asm_run(_loop)[0], 5)
+# the pool label '@' must STILL work (bare '@' is a label, only '@'+digit is numeric)
+_at = "mov x0 0\nmov x1 5\n:@\nadd x0 x0 1\ncmp x0 x1\nb.ne @\nmov x8 93\nsvc\n"
+check("pool label '@' still resolves (not numeric)", asm_run(_at)[0], 5)
+
 print("== faithfulness guards (bench must model stage0-as's limits) ==")
 # stage0-as labels are single-char: multi-char defs must be REJECTED
 try:

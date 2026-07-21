@@ -1,0 +1,98 @@
+name: stage0-as-brnum-demo
+
+# SPIKE (invariants suspended). Verifies the numeric PC-relative branch added to
+# stage0-as: b/b.eq/b.ne @<pos>, where <pos> is an absolute OUTPUT byte-position
+# and stage0-as encodes the offset (pos - here) itself — no label consumed. This
+# is the enabler for stage-2 branch-offset backpatching (removes the per-if/while
+# label so an emitted program keeps only function-entry labels).
+#
+# Disambiguation: only '@' followed by a digit is numeric; a bare '@' stays the
+# pool label '@' (stage 1 uses '@' as a label slot), so stage 1's output is
+# unaffected. Checks: numeric @<pos> assembles BYTE-IDENTICALLY to the equivalent
+# label branch (forward + backward, b and b.cond); the label form is itself
+# byte-checked against real `as`; a loop wired only with numeric branches runs;
+# and a program that branches to the label '@' still works.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage0-as/**'
+      - 'spikes/elf/**'
+      - '.github/workflows/stage0-as-brnum-demo.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: stage0-as-brnum-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user binutils-aarch64-linux-gnu
+      - name: Build stage0-as + elf, byte-check numeric branches, run loops
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+
+          brnum_ok=yes
+          same() { # $1=label-form program, $2=numeric-form program, $3=note
+            printf '%b' "$1" | qemu-aarch64 ./stage0-as > lab.bin
+            printf '%b' "$2" | qemu-aarch64 ./stage0-as > num.bin
+            if cmp -s lab.bin num.bin; then
+              echo "  ok   $3  $(od -An -v -tx1 num.bin | tr -d ' \n')"
+            else
+              echo "  FAIL $3  label=$(od -An -v -tx1 lab.bin|tr -d ' \n') numeric=$(od -An -v -tx1 num.bin|tr -d ' \n')"
+              brnum_ok=no
+            fi
+          }
+          # forward + backward, unconditional and conditional
+          same 'b Y\nmov x0 5\n:Y\nmov x0 7\n'            'b @8\nmov x0 5\nmov x0 7\n'          'b forward'
+          same ':X\nmov x0 5\nb X\n'                       'mov x0 5\nb @0\n'                    'b backward'
+          same 'b.eq Y\nmov x0 5\n:Y\nmov x0 7\n'          'b.eq @8\nmov x0 5\nmov x0 7\n'        'b.eq forward'
+          same ':X\nmov x0 5\nmov x0 6\nb.ne X\n'          'mov x0 5\nmov x0 6\nb.ne @0\n'        'b.ne backward'
+
+          # anchor the label form against real `as` (so numeric is anchored too)
+          printf 'b Y\nmov x0 5\n:Y\nmov x0 7\n' | qemu-aarch64 ./stage0-as > lref_ours.bin
+          printf '.text\n.global _start\n_start:\n\tb Ly\n\tmov x0, #5\nLy:\n\tmov x0, #7\n' > lref.s
+          aarch64-linux-gnu-as -o lref.o lref.s
+          aarch64-linux-gnu-objcopy -O binary --only-section=.text lref.o lref_as.bin
+          las_ok=no; cmp -s lref_ours.bin lref_as.bin && las_ok=yes
+
+          run() {
+            printf '%b' "$1" | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf prog.elf
+            set +e; qemu-aarch64 ./prog.elf; rc=$?; set -e
+          }
+          # loop wired entirely with a numeric backward branch -> counts to 5
+          run 'mov x0 5\nmov x1 0\nsub x0 x0 1\nadd x1 x1 1\ncmp x0 0\nb.ne @8\nmov x0 x1\nmov x8 93\nsvc\n'
+          loop_rc=$rc
+          # forward numeric skip: if x1==7, skip 'mov x0 99' -> exit 0
+          run 'mov x0 0\nmov x1 7\ncmp x1 7\nb.eq @20\nmov x0 99\nmov x0 x0\nmov x8 93\nsvc\n'
+          skip_rc=$rc
+          # the pool label '@' must still work (bare '@' is a label, not numeric)
+          run 'mov x0 0\nmov x1 5\n:@\nadd x0 x0 1\ncmp x0 x1\nb.ne @\nmov x8 93\nsvc\n'
+          at_rc=$rc
+
+          {
+            echo "## stage0-as — numeric PC-relative branch (backpatch enabler)"
+            echo '```'
+            echo "numeric @pos == label branch (fwd/back, b/b.cond) : $brnum_ok"
+            echo "label form byte-identical to real as              : $las_ok"
+            echo "numeric-branch countdown loop                     : $loop_rc  (expect 5)"
+            echo "numeric forward skip                              : $skip_rc  (expect 0)"
+            echo "pool label '@' still resolves                     : $at_rc  (expect 5)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$brnum_ok" = yes ] && [ "$las_ok" = yes ] && [ "$loop_rc" = 5 ] && [ "$skip_rc" = 0 ] && [ "$at_rc" = 5 ]; then
+            echo "PASS: numeric @<pos> branches byte-identical to label branches (and to real as); loops/skips run; pool label '@' intact."
+          else
+            echo "FAIL: brnum=$brnum_ok las=$las_ok loop=$loop_rc skip=$skip_rc at=$at_rc"; exit 1
+          fi

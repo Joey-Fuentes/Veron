@@ -25,6 +25,7 @@ One item per line. Leading whitespace is fine. Register operands are one letter
 | `cmp x<n> <imm>` | compare with immediate |
 | `b <L>` | unconditional branch to label |
 | `b.eq / b.ne / b.lt / b.ge <L>` | conditional branch |
+| `b <@pos>` / `b.cond <@pos>` | branch to absolute output byte-`pos` (offset computed; no label) |
 | `bl <L>` | branch-and-link to label (sets x30) |
 | `ret` | return via x30 |
 | `br x<n>` | branch to register |
@@ -65,6 +66,13 @@ so they need no load address.
   selects the size. The 64-bit forms are what let a stage above build a real
   software call stack (saving/restoring a 64-bit `x30` or frame pointer in memory,
   which a 32-bit store would truncate).
+- Branches accept either a **label** (`b X`) or a **numeric absolute output
+  position** (`b @<pos>` / `b.eq @<pos>`), where `<pos>` is a byte offset into the
+  assembled output and the assembler encodes `(pos - here)` itself. This lets a
+  stage above emit control flow by **backpatched offset** instead of a label —
+  removing the per-branch label so an emitted program can exceed the 128-label
+  symtab cap. Only `@` followed by a digit is numeric; a bare `@` remains the
+  ordinary pool label `@`, so stage 1's label output is unaffected.
 - Well-formed input assumed — minimal error checking (it's a spike).
 
 ## See it run

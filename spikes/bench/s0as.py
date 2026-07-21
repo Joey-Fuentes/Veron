@@ -49,8 +49,12 @@ def assemble(text):
 def encode(l, at, labels):
     p = l.split()
     op = p[0]
+    def _pos(o):   # branch target: @<digits> = absolute byte-pos; else a label
+        if o[0]=='@' and len(o)>1 and o[1:].isdigit():   # '@' alone stays label '@'
+            return int(o[1:])
+        return labels[o]
     def rel(lbl, sh, mask):
-        return ((labels[lbl]-at) >> sh) & mask
+        return ((_pos(lbl)-at) >> sh) & mask
     if op == 'mov':
         d = _reg(p[1])
         if p[2][0] in 'xw':
@@ -109,9 +113,9 @@ def encode(l, at, labels):
     if op=='ret': return (0xD65F03C0,('ret',))
     if op=='br':  n=_reg(p[1]); return (0xD61F0000|(n<<5),('br',n))
     if op=='blr': n=_reg(p[1]); return (0xD63F0000|(n<<5),('blr',n))
-    if op=='bl':  return (0x94000000|rel(p[1],2,0x3FFFFFF),('bl',labels[p[1]]))
-    if op=='b':   return (0x14000000|rel(p[1],2,0x3FFFFFF),('b',labels[p[1]]))
+    if op=='bl':  return (0x94000000|rel(p[1],2,0x3FFFFFF),('bl',_pos(p[1])))
+    if op=='b':   return (0x14000000|rel(p[1],2,0x3FFFFFF),('b',_pos(p[1])))
     if op in ('b.eq','b.ne','b.lt','b.ge'):
         cond={'b.eq':0,'b.ne':1,'b.lt':11,'b.ge':10}[op]
-        return (0x54000000|(rel(p[1],2,0x7FFFF)<<5)|cond,('bcc',op,labels[p[1]]))
+        return (0x54000000|(rel(p[1],2,0x7FFFF)<<5)|cond,('bcc',op,_pos(p[1])))
     raise ValueError("unknown: "+l)

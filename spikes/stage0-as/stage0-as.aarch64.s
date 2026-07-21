@@ -12,6 +12,9 @@
 //   mov  x<d> <imm>            mov  x<d> x<n>          add x<d> x<n> <imm>
 //   sub  x<d> x<n> <imm>       cmp  x<n> x<m>          cmp x<n> <imm>
 //   b / b.eq/ne/lt/ge <L>      svc                     :<L>
+//   b / b.eq/ne/lt/ge @<pos>   (numeric PC-rel: <pos>=absolute output byte-pos;
+//                               offset = (pos - here); '@'+digit only, so the
+//                               pool label '@' — '@' then non-digit — still works)
 //   bl <L>  ret  br x<n>  blr x<n>   (subroutines; base for stage 1)
 //   orr/and/lsl/lsr/asr x<d> x<n> x<m>    movk x<d> <imm> <shift>
 //   add/sub x<d> x<n> x<m> (register)     mul x<d> x<n> x<m>
@@ -417,12 +420,26 @@ h_branch:
     b.eq    h_bl_or_blr
     cmp     w10, #'r'               // 'br'
     b.eq    h_br
-    // plain unconditional  b <L>
+    // plain unconditional  b <L>   or   b @<pos>  (numeric output byte-position)
     add     x20, x20, #1
     bl      skip_ws
     ldrb    w0, [x19, x20]
+    cmp     w0, #'@'               // '@'+digit = numeric pos; else label (incl. label '@')
+    b.ne    hb_lab
+    add     x2, x20, #1
+    ldrb    w2, [x19, x2]
+    cmp     w2, #'0'
+    b.lt    hb_lab
+    cmp     w2, #'9'
+    b.gt    hb_lab
+    add     x20, x20, #1           // skip '@'
+    bl      parse_dec              // w0 = absolute target byte-position
+    mov     w1, w0
+    b       hb_enc
+hb_lab:
     add     x20, x20, #1
     ldr     w1, [x27, w0, uxtw #2]
+hb_enc:
     sub     w1, w1, w22
     asr     w1, w1, #2
     and     w1, w1, #0x3FFFFFF
@@ -595,8 +612,22 @@ bc_g:
 bc_go:
     bl      skip_ws
     ldrb    w0, [x19, x20]
+    cmp     w0, #'@'               // '@'+digit = numeric pos; else label (incl. label '@')
+    b.ne    bc_lab
+    add     x2, x20, #1
+    ldrb    w2, [x19, x2]
+    cmp     w2, #'0'
+    b.lt    bc_lab
+    cmp     w2, #'9'
+    b.gt    bc_lab
+    add     x20, x20, #1           // skip '@'
+    bl      parse_dec              // w0 = absolute target byte-position
+    mov     w1, w0
+    b       bc_enc
+bc_lab:
     add     x20, x20, #1
     ldr     w1, [x27, w0, uxtw #2]
+bc_enc:
     sub     w1, w1, w22
     asr     w1, w1, #2
     and     w1, w1, #0x7FFFF

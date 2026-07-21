@@ -287,6 +287,24 @@ no `:a`/`:z`/`.byte 0`; behavioural: many-variable programs) and **CI-confirmed*
 backpatching**, which removes the last emitted-label class (control flow), leaving
 only function-entry labels; then functions on the m25 call stack.
 
+**Milestone 27 — stage 0: numeric PC-relative branch `b/b.cond @<pos>` (floor 2b-i).**
+The enabler for stage-2 branch-offset backpatching. A branch operand may now be a
+**numeric absolute output byte-position** (`b @<pos>`, `b.eq @<pos>`, etc.) instead
+of a label; stage0-as encodes the relative offset `(pos - here)` itself, exactly as
+it does for a label, so it consumes no symtab entry. Byte-verified to be
+**identical** to the equivalent label branch (forward and backward, `b` and
+`b.cond`), which is itself byte-checked against real `as`. The one subtlety: `@` is
+already a stage-1 pool label char, so stage 1's output legitimately contains
+`b @` (branch to label `@`). Disambiguation is by the next character — only `@`
+followed by a **digit** is numeric; a bare `@` stays the label — so stage 1's
+≥63-label output is unaffected (guarded in `validate.py`). Mirrored in the bench
+(`s0as.py` resolves `@<digits>` to a position) and pinned in `validate.py`
+(byte-identity fwd/back for `b`/`b.cond`, a numeric-branch loop, and the label-`@`
+preservation). **CI-confirmed** (real `as` + QEMU) via `stage0-as-brnum-demo`.
+Next — **floor 2b-ii**: stage 2 tracks an instruction counter and emits `if`/`while`
+branches as `@<pos>` with a fixed-width placeholder it backpatches when the block
+closes, removing the last per-emit label class (control flow). Then functions.
+
 ---
 
 ## 6. What's next
@@ -306,10 +324,11 @@ stage in the language of the stage below.
   increment, but the **critical path to stage 3 is the stage-2 "floor"**:
   functions + a real call stack, pointers/`char`/arrays, `struct`, a small heap,
   multi-char labels/identifiers, and I/O. Floor progress: **64-bit `ldr x`/`str x`**
-  (m25, the call-stack enabler) and **frame-relative variables** (m26, no per-var
-  labels) are in. Next: **branch-offset backpatching** (removes the last emitted
-  label class), then functions on the call stack. See
-  **`stage2-mini-c/TARGET-SUBSET.md`**.
+  (m25, the call-stack enabler), **frame-relative variables** (m26, no per-var
+  labels), and the **numeric PC-relative branch** `b @<pos>` (m27, the backpatch
+  enabler) are in. Next: stage 2 emits `if`/`while` branches as backpatched
+  offsets (removes the last emit-label class), then functions on the call stack.
+  See **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**
   (pinned at `34fbd5c…`, vendored read-only at `spikes/reference/`) into a working
