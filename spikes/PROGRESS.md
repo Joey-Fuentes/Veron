@@ -651,6 +651,35 @@ access + char literals), the last A3 rung before revisiting the M2-Planet subset
 
 ---
 
+**Milestone 40 — stage 2: `char` + byte access — `char* p`, `char s[N]`, `ldrb`/`strb` (A3d).**
+This completes the A3 memory model. `char c` is a scalar (word-stored, since a char
+promotes to int in expressions), but a `char*` dereference and a `char[]` subscript
+use **byte-width** access — `ldrb`/`strb` with no ×8 scaling — and `char s[N]` is
+**byte-packed** (N bytes, rounded up to 8-alignment). Single-character literals `'x'`
+tokenize to their ASCII value (a new token kind emitted as `mov x0 <value>`). The
+enabling structural change is in the **symbol table**: a small `char[N≤8]` rounds up
+to size 8, which collides with a scalar's size, so the old "size > 8 means array"
+heuristic no longer works. Each symbol-table entry therefore grows to carry an
+explicit **flags word** (is_char, is_array), and the code generator branches on those
+flags to choose word vs byte access and frame-base vs load-base. The frame prescan
+became char-aware too (a `char[N]` reserves ⌈N/8⌉ words, not N). With byte pointers
+and byte arrays, real string code works: the milestone's headline demo is **`strlen`
+written in the language itself** — `int len(char* p){ int n; n=0; while(p[n]){ n=n+1; }
+return n; }` — compiled through the self-hosting ladder and returning 3 on `"abc\0"`.
+Byte-value wraparound (250+250 → 244 in a `char[]`), byte fill loops, `char*`
+store-through, and `&s[i]` all verified end-to-end; the entire int-array, pointer,
+A2, and division corpus is unchanged. **No stage0-as change** — `ldrb`/`strb` already
+existed. One bench-side note: the larger self-hosting compiler needs more interpreter
+steps than the old 5M runaway guard allowed, so the Python model's guard was raised
+(the real CI runs native under qemu, with no such limit). `validate.py` gains a char
+section (211→222 checks) and the `stage2-mini-c-demo` workflow gains `ldrb`/`strb`
+and char-literal structural greps plus char behavioural runs. **A3 is complete**
+(pointers, arrays, char, byte access on the uniform word model); the next work
+revisits the M2-Planet C subset toward stage 3 — string literals (a data section),
+general pointer arithmetic scaling, multi-level pointers, and structs/globals.
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
@@ -683,8 +712,11 @@ stage in the language of the stage below.
   reference — unary `*` disambiguated from multiply by operand position), then
   **int arrays** (m39, A3c: `int a[N]`, subscript `a[i]` rvalue+lvalue, array-name
   decay — variable-size frame slots forced the symbol table to store each variable's
-  frame offset explicitly). Next: **A3d — `char`** (byte `ldrb`/`strb` access + char
-  literals).
+  frame offset explicitly), then **char + byte access** (m40, A3d: `char c`, `char* p`,
+  byte-packed `char s[N]`, `ldrb`/`strb`, char literals — the symbol table gained an
+  explicit is_char/is_array flags word, since a small `char[N]` collides in size with a
+  scalar). **A3 is complete.** Next: revisit the M2-Planet C subset toward stage 3
+  (string literals, general pointer arithmetic, multi-level pointers, structs/globals).
   See **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**

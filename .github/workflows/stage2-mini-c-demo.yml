@@ -116,6 +116,13 @@ jobs:
           grep -q 'lsl x2 x2 x3' arr.s || { echo "MISSING subscript index scaling (lsl x2 x2 x3)"; struct_ok=no; }
           grep -q 'add x1 x1 x2'  arr.s || { echo "MISSING subscript base+index (add x1 x1 x2)"; struct_ok=no; }
 
+          # ---- structural: char access uses byte load/store (ldrb/strb) + char literal ----
+          printf '%s' "int main(){char s[4]; char* p; p=s; s[0]=65; return p[0];}" | qemu-aarch64 ./stage2 > byte.s
+          grep -q 'ldrb w0 x1' byte.s || { echo "MISSING char byte load (ldrb w0 x1)"; struct_ok=no; }
+          grep -q 'strb w0 x1' byte.s || { echo "MISSING char byte store (strb w0 x1)"; struct_ok=no; }
+          printf '%s' "int main(){char c; c='A'; return c;}" | qemu-aarch64 ./stage2 > clit.s
+          grep -q 'mov x0 0065' clit.s || { echo "MISSING char literal value (mov x0 0065)"; struct_ok=no; }
+
           # ---- structural: if/while emit a zero-test + BACKPATCHED numeric branch ----
           # if/while control flow is emitted as b.eq @<pos> / b @<pos> with the target
           # position backpatched at '}', which stage1 passes through. The only labels
@@ -176,6 +183,15 @@ jobs:
           # correct exit proves the value stack + frame slots are genuinely 64-bit.
           try 'int main(){int a=2000; return a*a*a/1000;}'        0
           try 'int main(){int a=3000; int b=3000; return a*b/7;}' 82
+          echo "== stage-2: char + byte access (char c, char* p, char s[N], ldrb/strb) (A3d) =="
+          # char scalars are word-stored (char promotes to int); char* deref and
+          # char[] subscript use BYTE access (ldrb/strb). char[N] is byte-packed.
+          try "int main(){char c; c='A'; return c;}"                                                                    65
+          try "int main(){char s[4]; s[0]=72; s[1]=105; return s[0]+s[1];}"                                             177
+          try "int main(){char s[4]; char* p; s[0]=88; p=s; return *p;}"                                               88
+          try "int main(){char s[8]; int i; i=0; while(i<8){s[i]=i+65; i=i+1;} return s[3];}"                          68
+          try "int main(){char a[3]; a[0]=250; a[1]=250; return a[0]+a[1];}"                                          244
+          try "int len(char* p){int n; n=0; while(p[n]){n=n+1;} return n;} int main(){char s[8]; s[0]=97; s[1]=98; s[2]=99; s[3]=0; return len(s);}" 3
           echo "== stage-2: arrays (int a[N], subscript a[i], decay) (A3c) =="
           # int arrays on the word model: indexed load/store + decay to a pointer.
           try 'int main(){int a[3]; a[0]=5; a[1]=7; return a[0]+a[1];}'                                                  12
@@ -321,7 +337,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ]; then
-            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
+            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
           else
             echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok fn=$fn_ok div=$div_ok"; exit 1
           fi

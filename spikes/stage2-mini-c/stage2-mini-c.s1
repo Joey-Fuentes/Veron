@@ -77,11 +77,17 @@ b paramloop
 :pl_int
 cmp x20 3
 b.ne paramloop
+mov x12 0
+cmp x29 5
+b.ne pl_notchar
+mov x12 1
+:pl_notchar
 bl next_token
 cmp x29 42
 b.ne pl_decl
 bl next_token
 :pl_decl
+mov x2 x12
 mov x13 8
 bl symdecl
 b paramloop
@@ -142,7 +148,9 @@ b.eq doclose
 b stmtloop
 :stmtkw
 cmp x29 1
-b.eq doint
+b.eq doint_int
+cmp x29 5
+b.eq doint_char
 cmp x29 2
 b.eq doif
 cmp x29 3
@@ -158,16 +166,35 @@ b stmtloop
 bl next_token
 bl symlookup
 mov x14 x0
+str x1 x28
+add x28 x28 8
 bl next_token
 bl compile_expr
+sub x28 x28 8
+ldr x1 x28
 adr x9 svaradr
 bl emitstr
 mov w13 x14
 bl emitoff
+mov x3 1
+and x5 x1 x3
+cmp x5 0
+b.ne dostar_b
 adr x9 sstoreind
 bl emitstr
 add x6 x6 1
 b stmtloop
+:dostar_b
+adr x9 sstoreindb
+bl emitstr
+add x6 x6 1
+b stmtloop
+:doint_int
+mov x12 0
+b doint
+:doint_char
+mov x12 1
+b doint
 :doint
 bl next_token
 cmp x29 42
@@ -195,6 +222,7 @@ b di_ws0
 cmp x5 91
 b.eq di_array
 :di_scalar
+mov x2 x12
 mov x13 8
 bl symdecl
 mov x14 x0
@@ -233,17 +261,28 @@ bl emitstr
 add x6 x6 1
 b stmtloop
 :di_array
-mov x12 x18
+mov x7 x18
 mov x14 x6
 bl next_token
 bl parsenum
-mov x7 x6
+mov x1 x6
+cmp x12 0
+b.ne di_arr_char
 mov x5 3
 lsl x13 x0 x5
-mov x18 x12
+b di_arr_sz
+:di_arr_char
+add x0 x0 7
+mov x5 3
+lsr x0 x0 x5
+lsl x13 x0 x5
+:di_arr_sz
+mov x2 x12
+add x2 x2 2
+mov x18 x7
 mov x6 x14
 bl symdecl
-mov x6 x7
+mov x6 x1
 bl next_token
 bl next_token
 b stmtloop
@@ -416,6 +455,8 @@ mov x3 1
 bl next_token
 cmp x20 0
 b.eq ceflush
+cmp x20 6
+b.eq ce_charlit
 cmp x20 1
 b.eq ce_num
 cmp x20 2
@@ -424,6 +465,10 @@ cmp x20 4
 b.eq ce_op
 cmp x20 5
 b.eq ce_punct
+b celoop
+:ce_charlit
+bl emitcharlit
+mov x3 0
 b celoop
 :ce_num
 bl emitnum
@@ -687,11 +732,23 @@ adr x9 spush
 bl emitstr
 mov x30 x27
 ret
+:emitcharlit
+mov x27 x30
+mov x13 x29
+adr x9 smovx0
+bl emitstr
+bl emitoff
+adr x9 spush
+bl emitstr
+mov x30 x27
+ret
 :emitvar
 mov x27 x30
 bl symlookup
 mov x13 x0
-cmp x1 8
+mov x3 2
+and x4 x1 x3
+cmp x4 0
 b.ne emitvar_arr
 adr x9 svaradr
 bl emitstr
@@ -710,49 +767,93 @@ mov x30 x27
 ret
 :emitsub
 mov x27 x30
+mov x4 x2
 adr x9 spopidx
 bl emitstr
 adr x9 svaradr
 bl emitstr
 bl emitoff
-cmp x2 8
+mov x3 2
+and x5 x4 x3
+cmp x5 0
 b.ne esub_arr
 adr x9 sldrx1
 bl emitstr
 :esub_arr
-adr x9 sitail_load
+mov x3 1
+and x5 x4 x3
+cmp x5 0
+b.ne esub_byte
+adr x9 sscale
+bl emitstr
+adr x9 saddidx
+bl emitstr
+adr x9 sldrw
+bl emitstr
+mov x30 x27
+ret
+:esub_byte
+adr x9 sldrbidx
 bl emitstr
 mov x30 x27
 ret
 :emiteladdr
 mov x27 x30
+mov x4 x2
 adr x9 spopidx
 bl emitstr
 adr x9 svaradr
 bl emitstr
 bl emitoff
-cmp x2 8
+mov x3 2
+and x5 x4 x3
+cmp x5 0
 b.ne eela_arr
 adr x9 sldrx1
 bl emitstr
 :eela_arr
-adr x9 sitail_addr
+mov x3 1
+and x5 x4 x3
+cmp x5 0
+b.ne eela_byte
+adr x9 sscale
+bl emitstr
+:eela_byte
+adr x9 saddidx
+bl emitstr
+adr x9 spushx1
 bl emitstr
 mov x30 x27
 ret
 :emitsubstore
 mov x27 x30
+mov x4 x2
 adr x9 spopval2
 bl emitstr
 adr x9 svaradr
 bl emitstr
 bl emitoff
-cmp x2 8
+mov x3 2
+and x5 x4 x3
+cmp x5 0
 b.ne esst_arr
 adr x9 sldrx1
 bl emitstr
 :esst_arr
-adr x9 sitail_store
+mov x3 1
+and x5 x4 x3
+cmp x5 0
+b.ne esst_byte
+adr x9 sscale
+bl emitstr
+adr x9 saddidx
+bl emitstr
+adr x9 sstrw
+bl emitstr
+mov x30 x27
+ret
+:esst_byte
+adr x9 sstrbidx
 bl emitstr
 mov x30 x27
 ret
@@ -774,7 +875,16 @@ mov x13 x0
 adr x9 svaradr
 bl emitstr
 bl emitoff
+mov x3 1
+and x5 x1 x3
+cmp x5 0
+b.ne emitderef_b
 adr x9 sderef
+bl emitstr
+mov x30 x27
+ret
+:emitderef_b
+adr x9 sderefb
 bl emitstr
 mov x30 x27
 ret
@@ -829,14 +939,13 @@ add x23 x23 1
 mov x30 x14
 ret
 :symdecl
-mov x2 x13
 cmp x8 0
 b.ne sd_prev
 mov x0 0
 b sd_store
 :sd_prev
 sub x3 x8 1
-mov x5 4
+mov x5 5
 lsl x3 x3 x5
 add x3 x10 x3
 add x4 x3 8
@@ -845,7 +954,7 @@ add x4 x3 12
 ldr w4 x4
 add x0 x0 x4
 :sd_store
-mov x5 4
+mov x5 5
 lsl x3 x8 x5
 add x3 x10 x3
 str w18 x3
@@ -855,6 +964,8 @@ str w5 x4
 add x4 x3 8
 str w0 x4
 add x4 x3 12
+str w13 x4
+add x4 x3 16
 str w2 x4
 add x8 x8 1
 ret
@@ -864,7 +975,7 @@ mov x3 0
 :sl_loop
 cmp x3 x8
 b.ge sl_nf
-mov x5 4
+mov x5 5
 lsl x4 x3 x5
 add x4 x10 x4
 ldr w2 x4
@@ -885,17 +996,17 @@ b.ne sl_next
 add x5 x5 1
 b sl_cmp
 :sl_found
-add x4 x4 8
-ldr w0 x4
-add x4 x4 4
-ldr w1 x4
+add x0 x4 8
+ldr w0 x0
+add x1 x4 16
+ldr w1 x1
 ret
 :sl_next
 add x3 x3 1
 b sl_loop
 :sl_nf
 mov x0 0
-mov x1 8
+mov x1 0
 ret
 :parsenum
 str x30 x28
@@ -928,8 +1039,12 @@ cmp x20 0
 b.eq ps_done
 cmp x20 3
 b.ne ps_np
+mov x27 x29
 cmp x29 1
+b.eq ps_isdecl
+cmp x29 5
 b.ne ps_l
+:ps_isdecl
 bl next_token
 cmp x29 42
 b.ne ps_havename
@@ -941,6 +1056,12 @@ b.ne ps_scalar
 cmp x29 91
 b.ne ps_scalar
 bl parsenum
+cmp x27 5
+b.ne ps_addint
+add x0 x0 7
+mov x5 3
+lsr x0 x0 x5
+:ps_addint
 add x12 x12 x0
 b ps_l
 :ps_scalar
@@ -1067,8 +1188,16 @@ b nt_ws
 :nt_eof
 mov x20 0
 ret
+:nt_charlit
+add x2 x6 1
+ldrb w29 x19 x2
+add x6 x6 3
+mov x20 6
+ret
 :nt_class
 mov x18 x6
+cmp x5 39
+b.eq nt_charlit
 cmp x5 48
 b.lt nt_notdig
 cmp x5 58
@@ -1128,6 +1257,8 @@ cmp x1 2
 b.eq nt_kw2
 cmp x1 3
 b.eq nt_kw3
+cmp x1 4
+b.eq nt_kw4
 cmp x1 5
 b.eq nt_kw5
 cmp x1 6
@@ -1207,6 +1338,25 @@ ldrb w5 x19 x2
 cmp x5 110
 b.ne nt_plainid
 mov x29 4
+mov x20 3
+ret
+:nt_kw4
+ldrb w5 x19 x18
+cmp x5 99
+b.ne nt_plainid
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 104
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 97
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 114
+b.ne nt_plainid
+mov x29 5
 mov x20 3
 ret
 :nt_plainid
@@ -1386,22 +1536,40 @@ ret
 .ascii "sub x9 x9 8\n"
 .byte 0
 :spopidx
-.ascii "sub x9 x9 8\nldr x2 x9\nmov x3 3\nlsl x2 x2 x3\n"
+.ascii "sub x9 x9 8\nldr x2 x9\n"
 .byte 0
 :spopval2
-.ascii "sub x9 x9 8\nldr x0 x9\nsub x9 x9 8\nldr x2 x9\nmov x3 3\nlsl x2 x2 x3\n"
+.ascii "sub x9 x9 8\nldr x0 x9\nsub x9 x9 8\nldr x2 x9\n"
 .byte 0
 :sldrx1
 .ascii "\nldr x1 x1"
 .byte 0
-:sitail_load
-.ascii "\nadd x1 x1 x2\nldr x0 x1\nstr x0 x9\nadd x9 x9 8\n"
+:sscale
+.ascii "\nmov x3 3\nlsl x2 x2 x3"
 .byte 0
-:sitail_addr
-.ascii "\nadd x1 x1 x2\nstr x1 x9\nadd x9 x9 8\n"
+:saddidx
+.ascii "\nadd x1 x1 x2"
 .byte 0
-:sitail_store
-.ascii "\nadd x1 x1 x2\nstr x0 x1\n"
+:sldrw
+.ascii "\nldr x0 x1\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:sldrbidx
+.ascii "\nldrb w0 x1 x2\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:sstrw
+.ascii "\nstr x0 x1\n"
+.byte 0
+:sstrbidx
+.ascii "\nstrb w0 x1 x2\n"
+.byte 0
+:spushx1
+.ascii "\nstr x1 x9\nadd x9 x9 8\n"
+.byte 0
+:sderefb
+.ascii "\nldr x1 x1\nmov x2 0\nldrb w0 x1 x2\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:sstoreindb
+.ascii "\nldr x1 x1\nsub x9 x9 8\nldr x0 x9\nmov x2 0\nstrb w0 x1 x2\n"
 .byte 0
 :svarload
 .ascii "\nldr x0 x1\nstr x0 x9\nadd x9 x9 8\n"

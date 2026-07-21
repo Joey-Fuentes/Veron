@@ -510,6 +510,31 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 array exit -> {want}", _exit(cs), want)
 
+    print("== stage 2 char: byte access (ldrb/strb), char* / char[] , char literals (A3d) ==")
+    # A3d adds `char`. A char scalar is word-stored like int (char promotes to int),
+    # but a char* deref and a char[] subscript use BYTE access (ldrb/strb, no ×8
+    # scale). char[N] is byte-packed (N bytes, 8-aligned). Because a small char[N]
+    # rounds up to size 8 and collides with a scalar's size, the symbol table now
+    # carries an explicit flags word (is_char, is_array) rather than inferring array
+    # from size. Single-char literals 'x' tokenize to their ASCII value.
+    emb = _emit("int main(){char s[4];char* p;p=s;s[0]=88;return p[0];}")
+    check("stage2 char subscript loads a byte (ldrb w0 x1 x2)", "ldrb w0 x1 x2" in emb, True)
+    ems = _emit("int main(){char s[4];s[0]=65;return s[0];}")
+    check("stage2 char store is a byte (strb w0 x1 x2)", "strb w0 x1 x2" in ems, True)
+    eml = _emit("int main(){char c;c='A';return c;}")
+    check("stage2 char literal 'A' emits its value (mov x0 0065)", "mov x0 0065" in eml, True)
+    for cs, want in [
+        ("int main(){char c;c=65;return c;}", 65),                                        # char scalar (word)
+        ("int main(){char c;c='A';return c;}", 65),                                       # char literal
+        ("int main(){char s[4];s[0]=72;s[1]=105;return s[0]+s[1];}", 177),                # byte array
+        ("int main(){char s[4];char* p;s[0]=88;p=s;return *p;}", 88),                     # char* deref (byte)
+        ("int main(){char s[4];char* p;p=s;*p=90;return s[0];}", 90),                     # char* store-through
+        ("int main(){char s[8];int i;i=0;while(i<8){s[i]=i+65;i=i+1;}return s[3];}", 68),  # byte fill loop
+        ("int main(){char a[3];a[0]=250;a[1]=250;return a[0]+a[1];}", 244),               # byte value wrap
+        ("int len(char* p){int n;n=0;while(p[n]){n=n+1;}return n;} int main(){char s[8];s[0]=97;s[1]=98;s[2]=99;s[3]=0;return len(s);}", 3),  # strlen via char* param
+    ]:
+        check(f"stage2 char exit -> {want}", _exit(cs), want)
+
     print("== stage 2 large programs (enlarged input/output/stack buffers) ==")
     # The compiler's buffers were raised (input 64KB, output 256KB, bigger stacks),
     # so large programs no longer overflow the old ~4.4KB output buffer. Combined

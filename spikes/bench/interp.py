@@ -20,7 +20,7 @@ def run(prog, stdin=b'', mem_size=0x40000, trace=False):
     i=idx(0)
     while 0<=i<len(seq):
         steps+=1
-        if steps>5_000_000: raise RuntimeError("runaway")
+        if steps>200_000_000: raise RuntimeError("runaway")
         o,ins=seq[i]; op=ins[0]
         nxt=i+1
         if op=='.byte': i=nxt; continue

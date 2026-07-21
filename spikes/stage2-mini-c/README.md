@@ -65,6 +65,14 @@ int main(){ return name(2,3); }   // program is entered via bl main
   (a four-word entry `[name_start, name_len, offset, size]`) rather than deriving it
   from the declaration index, and the frame **prescan** to sum array sizes so the
   prologue reserves enough — the guard against a call clobbering an under-sized array.
+- **char + byte access (A3d)**: `char c` is a word-stored scalar (char promotes to int),
+  but `char* p` deref and `char s[N]` subscript use **byte** access (`ldrb`/`strb`, no ×8
+  scale), and `char s[N]` is byte-packed (N bytes, 8-aligned). Single-char literals `'x'`
+  are their ASCII value. Because a small `char[N]` rounds up to size 8 and collides with a
+  scalar, the symbol-table entry gained an explicit **flags word** (is_char, is_array) the
+  code generator branches on for word-vs-byte and frame-base-vs-load-base. Real string code
+  works: `strlen` as `int len(char* p){ int n; n=0; while(p[n]){ n=n+1; } return n; }`.
+  No stage0-as change (`ldrb`/`strb` already existed). This completes the A3 memory model.
 - **control flow**: `if` and `while`, arbitrarily nested. The condition is any
   expression, tested for **nonzero = true** (C truthiness). if/while codegen is
   iterative with an explicit *block stack*; the **expression** compiler, by
