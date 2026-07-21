@@ -774,6 +774,30 @@ arithmetic (scaling `p + n` by the pointee size) and structs.
 
 ---
 
+**Milestone 44 — stage 2: the `else` clause (A6a).** The compiler had `if` and `while`
+but no `else`, which every real branch needs. The whole thing rides the existing
+block-stack backpatch machinery — no new state, no stage0-as change. When a `{...}` block
+closes, its record on the block stack says whether it was an `if`, a `while`, or (new)
+an `else`. At an `if`-block's closing brace the compiler now peeks one token ahead: if it
+sees `else`, it emits an unconditional branch to jump *over* the else-body (a forward
+slot to be backpatched later), retargets the `if`-condition's false-branch to the
+else-body's start rather than the end, and pushes an `else` record whose own closing
+brace backpatches that skip branch. If there's no `else`, it un-consumes the peeked token
+and behaves exactly as before. Because an else-block's close is just "backpatch one
+forward branch", `else if` chains fall out for free — `else { if (…) {…} else {…} }`
+nests to any depth with no special case, since each level is an ordinary block record.
+`else` became the sixth keyword (a four-char match sharing the length-4 lexer arm with
+`char`). Verified through the ladder: `if/else` returning different values, a two-arm
+`max`, a three-way `sign` built from nested else, `else` inside a `while` body, and the
+full arithmetic/pointer/array/global/operator/recursion corpus unchanged. `validate.py`
+260→267; the demo workflow gains a `b @`/`b.eq @` structural check and five behavioural
+runs. Next: the type-system work — general pointer arithmetic (scaling `p + n` by the
+pointee size) and structs.
+
+---
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
@@ -816,8 +840,9 @@ stage in the language of the stage below.
   data section with `g_`-labels and frame-first name resolution — the capability
   M2-Planet leans on hardest). Then the **operator set** (m43, A5a: unary `!`/`-`/`~`,
   bitwise `&`/`|`, shifts `<<`/`>>`, with a `prec` table placing all fifteen operators at
-  their correct C precedence). Next: general pointer arithmetic (scaling by pointee
-  size) and structs — the M2-Planet subset.
+  their correct C precedence). Then **`if`/`else`** (m44, A6a: the else clause via the
+  block-stack backpatch machinery, `else if` chains falling out for free). Next: general
+  pointer arithmetic (scaling by pointee size) and structs — the M2-Planet subset.
   See **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**

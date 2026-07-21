@@ -93,6 +93,11 @@ int main(){ return name(2,3); }   // program is entered via bl main
   hand-coded precedence ladder, so all fifteen operators sit at their correct C levels
   (`| < & < == < relational < shift < + < *`). Binary bitwise/shift lower straight onto
   stage0-as `and`/`orr`/`lsl`/`lsr`; no stage0-as change.
+- **if / else (A6a)**: the `else` clause, built on the block-stack backpatch machinery. A
+  then-block's closing brace peeks for `else`; if present it emits a branch over the
+  else-body, retargets the condition's false-branch to the else-body start, and pushes an
+  `else` block whose close backpatches the skip branch. `else if` chains (`else { if …
+  else … }`) nest to any depth with no special case. Braces required, like `if`/`while`.
 - **control flow**: `if` and `while`, arbitrarily nested. The condition is any
   expression, tested for **nonzero = true** (C truthiness). if/while codegen is
   iterative with an explicit *block stack*; the **expression** compiler, by

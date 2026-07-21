@@ -610,6 +610,25 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 operator exit -> {want}", _exit(cs), want)
 
+    print("== stage 2 control flow: if / else (A6a) ==")
+    # A6a adds the else clause. The then-block's closing brace peeks for `else`: if present,
+    # it emits an unconditional branch to skip the else-body, retargets the if-condition
+    # branch to the else-body start, and pushes an `else` block record (type 2) whose own
+    # closing brace backpatches the skip branch. Nested and while-embedded else both work;
+    # braces are required (same as if/while). No stage0-as change.
+    eie = _emit("int main(){if(0){return 1;}else{return 2;}return 3;}")
+    check("stage2 else emits a skip branch (b @) after the then-block",
+          eie.count("b @") >= 1 and "b.eq @" in eie, True)
+    for cs, want in [
+        ("int main(){if(0){return 5;}else{return 7;}return 9;}", 7),
+        ("int main(){if(1){return 5;}else{return 7;}return 9;}", 5),
+        ("int max(int a,int b){if(a>b){return a;}else{return b;}} int main(){return max(3,8);}", 8),
+        ("int max(int a,int b){if(a>b){return a;}else{return b;}} int main(){return max(9,2);}", 9),
+        ("int sign(int x){if(x>0){return 1;}else{if(x<0){return 2;}else{return 0;}}} int main(){return sign(0)*100+sign(5)*10+sign(-3);}", 12),  # nested else
+        ("int main(){int i; int s; s=0; i=0; while(i<5){if(i>2){s=s+i;}else{s=s+1;} i=i+1;} return s;}", 10),  # else inside while
+    ]:
+        check(f"stage2 if/else exit -> {want}", _exit(cs), want)
+
     print("== stage 2 large programs (enlarged input/output/stack buffers) ==")
     # The compiler's buffers were raised (input 64KB, output 256KB, bigger stacks),
     # so large programs no longer overflow the old ~4.4KB output buffer. Combined
