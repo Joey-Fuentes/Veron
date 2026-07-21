@@ -34,12 +34,13 @@ int main(){ return name(2,3); }   // program is entered via bl main
   call evaluates args left-to-right onto the value stack then `bl f`; the callee saves
   the caller's `x10`/`x30` (64-bit `str x`), opens a 16-aligned frame, pops its params
   into slots, and `return e` restores and `ret`s with the result on the value stack.
-- **variables + assignment**: **multi-char names** → **frame-relative word (4-byte)
-  slots** at `x10 + off` in a per-call `brk` frame. The allocator is **declaration
-  order** (params first, then locals; the i-th name declared gets `off = i*4`),
-  resolved by a **live symbol table** — the old `(c-'a')*4` letter-map is retired.
-  The offset is emitted as a computed 3-digit decimal, so the emitted program needs
-  **no per-variable labels**. Declared with `int c=…;`, updated with `c=…;`.
+- **variables + assignment**: **multi-char names** → **frame-relative 64-bit word
+  (8-byte) slots** at `x10 + off` in a per-call `brk` frame. `int` is the machine
+  word (`int == pointer` width). The allocator is **declaration order** (params
+  first, then locals; the i-th name declared gets `off = i*8`), resolved by a **live
+  symbol table** — the old `(c-'a')*4` letter-map is retired. The offset is emitted
+  as a computed 4-digit decimal, so the emitted program needs **no per-variable
+  labels**. Declared with `int c=…;`, updated with `c=…;`.
 - **expressions**: integers, variables, `+ - *`, unsigned `/` `%`, the full **comparison** set
   `< > <= >= == !=`, precedence, and parentheses, via shunting-yard; emitted code
   uses a `brk` value stack. Four precedence levels (low→high): `== !=` `<`
@@ -88,22 +89,22 @@ runs, and treating `( ) { } ; ,` as punctuation — so a variable named `i`, `w`
   a live symbol table. The frame policy is now the addressing shape a call stack
   needs: `x10` is a moving frame pointer (per call), and the saved-`x10`/`x30`
   frame links use the m25 64-bit `str x`/`ldr x` — already byte-anchored against `as`.
-- Variables are **word-sized** (32-bit) and **frame-relative**: each name maps to
-  `x10 + i*4` (declaration order) in a per-call `brk` frame, loaded/stored with word
-  `ldr`/`str`, matching the 32-bit value stack — **no labeled slot table**. NB: with
-  only `+ - *` and a mod-256 exit code, byte vs word storage isn't distinguishable by
-  exit code, so the word/frame guards are structural; the width matters for
-  out-of-byte-range values and once `/` lands.
+- Variables are **64-bit machine words** and **frame-relative**: each name maps to
+  `x10 + i*8` (declaration order) in a per-call `brk` frame, pushed/popped and
+  loaded/stored with `str x`/`ldr x` (8-byte). This is A3's foundation: `int` and a
+  pointer are the same width, which the pointer/char/array work (A3b) needs. Small
+  values exit as before, so the width is proven by a distinguisher — a product that
+  overflows 32 bits then divides (`a*a*a/1000`) gives a different low byte in 32- vs
+  64-bit, and the ladder gives the 64-bit answer.
 - Names are **multi-char** now (resolved by the symbol table); the old single-char
   `(c-'a')*4` letter-map is gone.
-- **All six comparisons are branchless and unsigned-32.** A comparison emits no
-  branch and no label, using only `sub`/`orr`/`lsr` that stage0-as already has.
-  The recipes all reduce to the sign bit of a 64-bit difference of two zero-extended
-  32-bit words: `a<b` is `(a-b) >> 63`, `a>b` is `(b-a) >> 63`, `a!=b` is
+- **All six comparisons are branchless.** A comparison emits no branch and no label,
+  using only `sub`/`orr`/`lsr` that stage0-as already has. The recipes all reduce to
+  the sign bit of a 64-bit difference: `a<b` is `(a-b) >> 63`, `a>b` is `(b-a) >> 63`, `a!=b` is
   `(d | -d) >> 63` with `d = a-b`, and `a==b`, `a<=b`, `a>=b` are the `1 - x`
-  flip of `!=`, `>`, `<` respectively (a reversed-operand `sub x0 x2 x0`). Because
-  the loads zero-extend, ordering is **unsigned** 32-bit; signed ordering would
-  need sign-extension (`ldrsw`, not in stage0-as) and is a later refinement —
+  flip of `!=`, `>`, `<` respectively (a reversed-operand `sub x0 x2 x0`). Under the
+  64-bit word model this is a **signed-64** ordering (bit 63 of the difference),
+  correct for values within `±2^63` — the whole working range of the bootstrap —
   equality is sign-agnostic. The two-char operators carry internal operator-stack
   sentinels (`1 2 3 4` for `<= >= == !=`) so the shunting-yard opstack stays
   one byte per entry.

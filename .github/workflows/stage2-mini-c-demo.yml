@@ -3,8 +3,9 @@ name: stage2-mini-c-demo
 # SPIKE (invariants suspended). Stage 2 = mini-c. Supports:
 #   one-or-more  int name(params){ ... }  functions; a body has
 #   int a=<expr>; a=<expr>; if(<expr>){...} while(<expr>){...} return <expr>;
-# MULTI-CHAR names -> FRAME-RELATIVE WORD (4-byte) slots at x10+off in DECLARATION
-# order (params first, then locals; off=i*4), resolved by a live symbol table +
+# MULTI-CHAR names -> FRAME-RELATIVE 64-bit WORD (8-byte) slots at x10+off in
+# DECLARATION order (params first, then locals; off=i*8) — int is the machine word
+# (int == pointer width), resolved by a live symbol table +
 # word ldr/str; a factor may be a number, a variable (load), ( expr ), or a CALL
 # f(a,b). Expressions support + - * and unsigned / % (udiv; % = a-(a/b)*b) and
 # comparisons < > <= >= == != (branchless,
@@ -91,15 +92,16 @@ jobs:
           # ---- structural: emitted program uses WORD forms + FRAME-RELATIVE vars ----
           printf '%s' 'int main(){int a=5; int b=a+2; return b;}' | qemu-aarch64 ./stage2 > word.s
           struct_ok=yes
-          grep -q 'ldr w0 x1' word.s || { echo "MISSING word var load"; struct_ok=no; }
-          grep -q 'str w0 x1' word.s || { echo "MISSING word var store"; struct_ok=no; }
+          grep -q 'ldr x0 x1' word.s || { echo "MISSING 64-bit word var load"; struct_ok=no; }
+          grep -q 'str x0 x1' word.s || { echo "MISSING 64-bit word var store"; struct_ok=no; }
+          grep -q 'str x0 x9' word.s || { echo "MISSING 64-bit value push"; struct_ok=no; }
           grep -q 'ldrb w0 x1' word.s && { echo "REGRESSION: byte var load present"; struct_ok=no; }
           grep -q 'strb w0 x1' word.s && { echo "REGRESSION: byte var store present"; struct_ok=no; }
-          # variables are frame-relative (x10 base, decl-order offset per var), NOT labeled slots
+          # variables are frame-relative (x10 base, decl-order 8-byte slots, 4-digit off)
           grep -q 'add x10 x11 16' word.s || { echo "MISSING frame-base setup (add x10 x11 16)"; struct_ok=no; }
           grep -q 'add x1 x10 '   word.s || { echo "MISSING frame-relative var access"; struct_ok=no; }
-          grep -q 'add x1 x10 000' word.s || { echo "MISSING 1st-decl var offset 000"; struct_ok=no; }
-          grep -q 'add x1 x10 004' word.s || { echo "MISSING 2nd-decl var offset 004"; struct_ok=no; }
+          grep -q 'add x1 x10 0000' word.s || { echo "MISSING 1st-decl var offset 0000"; struct_ok=no; }
+          grep -q 'add x1 x10 0008' word.s || { echo "MISSING 2nd-decl var offset 0008"; struct_ok=no; }
           grep -q '^:a$'          word.s && { echo "REGRESSION: labeled :a slot present"; struct_ok=no; }
           grep -q '^:z$'          word.s && { echo "REGRESSION: labeled :z slot present"; struct_ok=no; }
           grep -q '^\.byte 0$'    word.s && { echo "REGRESSION: .byte 0 slot table present"; struct_ok=no; }
@@ -159,6 +161,11 @@ jobs:
             set +e; qemu-aarch64 ./a.out; rc=$?; set -e
             printf '  %-64s exit=%-4s want=%-4s %s\n' "$1" "$rc" "$2" "$([ "$rc" = "$2" ] && echo OK || { echo DIFF; fail=1; })"
           }
+          echo "== stage-2: 64-bit machine-word model (int == pointer width) =="
+          # small values exit as before; these overflow 32 bits then divide, so a
+          # correct exit proves the value stack + frame slots are genuinely 64-bit.
+          try 'int main(){int a=2000; return a*a*a/1000;}'        0
+          try 'int main(){int a=3000; int b=3000; return a*b/7;}' 82
           echo "== stage-2: word-sized variables (frame-relative) =="
           try 'int main(){int a=2; int b=3; return a+b;}'             5
           try 'int main(){int a=10; return a*a;}'                     100
@@ -290,7 +297,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ]; then
-            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, a NEW stage0-as instruction byte-identical to as), and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
+            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
           else
             echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok fn=$fn_ok div=$div_ok"; exit 1
           fi

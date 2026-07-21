@@ -557,6 +557,37 @@ and arrays**.
 
 ---
 
+**Milestone 37 — stage 2: a 64-bit uniform machine-word model (A3a).** A3 is
+pointers/`char`/arrays, and its prerequisite is the memory model: a pointer is a
+64-bit address and cannot fit the old 32-bit value stack, so this milestone widens
+stage 2 to the **machine-word model M2-Planet itself uses** — `int == pointer`
+width. The value stack and every frame slot go from 4-byte to 8-byte: pushes/pops
+become `str x`/`ldr x`, variable load/store become `ldr x0 x1`/`str x0 x1`, the
+frame allocator hands out `off = i*8` (declaration order, unchanged), the param-pop
+stores each arg into an 8-byte slot (`i*8`, a latent off-by-scale the port had to
+fix), and `emitoff` widens from a 3- to a 4-digit decimal so bigger frames (arrays,
+next) still address cleanly. Crucially the change is **surgical**: the four
+frame-offset shifts scale `×4→×8`, but the *code-position* shifts (`x17×4`, the byte
+address of a branch target) stay `×4` because instructions are still 4 bytes — the
+two uses of the same `lsl` idiom are kept distinct. The arithmetic and comparison
+op-strings are untouched (they already operate on `x` registers); the comparisons
+keep their exact bytes but now mean a **signed-64** ordering (bit 63 of the
+difference), correct across the whole bootstrap range. Small values exit exactly as
+before, so the width is proven by a **distinguisher**: a product that overflows 32
+bits and is then divided — `int a=2000; a*a*a/1000` — gives `200` under 32-bit
+arithmetic but `0` under 64-bit, and the assembled ladder returns `0`. The oracle
+(`stage2_ref_a3.py`, forked from the a2 reference) widens its frame and codegen and
+lifts its word mask to `2^64-1` so it agrees; verification runs the **full A2 + div
+corpus** (functions, recursion, `ack(2,3)`, `gcd`, `/`, `%` — all identical) plus
+the new distinguishers through the real `stage2 | stage1 | stage0-as` ladder.
+`validate.py` gains a word-model section (184→190 checks) and the
+`stage2-mini-c-demo` workflow gains the 64-bit structural greps (`ldr x0 x1`,
+`str x0 x9`, `off 0000/0008`) and the distinguisher runs in its pass/fail gate. No
+stage0-as change — the ISA already had 64-bit `str x`/`ldr x` (byte-anchored since
+m25). Next: **A3b — `char`, `&`, `*`, and arrays `[]`** on top of this word model.
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
@@ -581,8 +612,11 @@ stage in the language of the stage below.
   front end became a real **tokenizer** (m34, A1) that then enabled **functions +
   a real call stack + recursion** (m35, A2: declaration-order frames, a live
   multi-char symbol table, and a re-entrant expression compiler — emitted programs
-  now carry `:func` labels resolved by stage1 alongside numeric if/while). Next:
-  **A3 — pointers, `char`, and arrays** (typed loads/stores + address-of).
+  now carry `:func` labels resolved by stage1 alongside numeric if/while), then
+  **unsigned `/` `%`** (m36, a new stage0-as `udiv` leaf) and a **64-bit uniform
+  machine-word model** (m37, A3a: `int == pointer` width, 8-byte value stack + frame
+  slots — the foundation pointers need). Next: **A3b — `char`, `&`, `*`, and arrays
+  `[]`** (typed byte/word loads, address-of, subscript) on top of the word model.
   See **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**

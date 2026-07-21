@@ -194,15 +194,15 @@ if os.path.exists(s1p) and os.path.exists(s2p):
         _, resolved = run(s1prog, stdin=_emit(csrc).encode())
         rc, _ = run(assemble(resolved.decode())[1]); return rc
     em = _emit("int main(){int a=5;int b=a+2;return b;}")
-    check("stage2 var load is word (ldr w0 x1)",  "ldr w0 x1" in em, True)
-    check("stage2 var store is word (str w0 x1)", "str w0 x1" in em, True)
-    check("stage2 no byte var load (no ldrb x1)", "ldrb w0 x1" in em, False)
-    check("stage2 no byte var store (no strb x1)","strb w0 x1" in em, False)
+    check("stage2 var load is 64-bit word (ldr x0 x1)",  "ldr x0 x1" in em, True)
+    check("stage2 var store is 64-bit word (str x0 x1)", "str x0 x1" in em, True)
+    check("stage2 value push is 64-bit (str x0 x9)", "str x0 x9" in em, True)
+    check("stage2 value pop is 64-bit (ldr x0 x9)", "ldr x0 x9" in em, True)
     # Variables are word-sized and 4 bytes apart in the frame: var 'b' (index 1)
     # sits at offset 4 after 'a' (index 0). (The old labeled 4x.byte slot table is
     # gone — variables are frame-relative now; see the frame-relative section.)
-    check("stage2 frame stride is 4 (a@000, b@004)",
-          ("add x1 x10 000" in em) and ("add x1 x10 004" in em), True)
+    check("stage2 frame stride is 8 (a@0000, b@0008)",
+          ("add x1 x10 0000" in em) and ("add x1 x10 0008" in em), True)
     for cs, want in [("int main(){int a=5;int b=a+2;return b;}", 7),
                      ("int main(){int a=10;return a*a;}", 100),
                      ("int main(){int x=7;return (x+1)*2;}", 16)]:
@@ -307,15 +307,15 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     check("stage2 var access is frame-relative (add x1 x10)", "add x1 x10 " in emfr, True)
     check("stage2 no :a slot label", ":a\n" in emfr, False)
     check("stage2 no adr-to-var (adr x1 a)", "adr x1 a" in emfr, False)
-    check("stage2 1st decl 'a' -> offset 000", "add x1 x10 000" in emfr, True)
-    check("stage2 2nd decl 'b' -> offset 004", "add x1 x10 004" in emfr, True)
+    check("stage2 1st decl 'a' -> offset 0000", "add x1 x10 0000" in emfr, True)
+    check("stage2 2nd decl 'b' -> offset 0008", "add x1 x10 0008" in emfr, True)
     # Declaration order, not name: a lone var (whatever its letter) is index 0 -> 000.
     emz = _emit("int main(){int z=25;return z*4;}")
-    check("stage2 lone var 'z' -> offset 000 (decl order, not c-'a')", "add x1 x10 000" in emz, True)
-    check("stage2 lone var 'z' has no 100 offset (retired letter map)", "add x1 x10 100" in emz, False)
+    check("stage2 lone var 'z' -> offset 0000 (decl order, not c-'a')", "add x1 x10 0000" in emz, True)
+    check("stage2 lone var 'z' has no 0100 offset (retired letter map)", "add x1 x10 0100" in emz, False)
     # multi-char names resolve by the symbol table, still declaration-order
     emmc = _emit("int main(){int count=6;int total=0;return count+total;}")
-    check("stage2 multi-char 'count'@000 'total'@004", ("add x1 x10 000" in emmc) and ("add x1 x10 004" in emmc), True)
+    check("stage2 multi-char 'count'@0000 'total'@0008", ("add x1 x10 0000" in emmc) and ("add x1 x10 0008" in emmc), True)
     # Every emitted program is entered via 'bl main' and carries a :main label.
     emcf = _emit("int main(){int a=1;if(a){a=a+1;}return a;}")
     check("stage2 entry is bl main + :main label", ("bl main" in emcf) and (":main" in emcf), True)
@@ -373,6 +373,25 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 backpatch exit -> {want}", _exit(cs), want)
 
+    print("== stage 2 is a 64-bit machine-word model (int == pointer width) ==")
+    # A3 widens the value stack and frame slots to 64-bit words: push/pop use
+    # str x/ldr x (8-byte), frame slots are 8 bytes apart, int is the full machine
+    # word. This is the foundation the pointer/char/array work (A3b) needs. Small
+    # values exit identically to the old 32-bit compiler, so the guard below is the
+    # distinguisher: a product that overflows 32 bits then divides — 32-bit vs
+    # 64-bit give different low bytes, so a correct exit proves the width.
+    emw = _emit("int main(){int a=2000;return a*a*a/1000;}")
+    check("stage2 push/pop are 64-bit (str x0 x9 / ldr x0 x9)",
+          ("str x0 x9" in emw) and ("ldr x0 x9" in emw), True)
+    check("stage2 no 32-bit value push (no str w0 x9)", "str w0 x9" in emw, False)
+    for cs, want in [
+        ("int main(){int a=2000;return a*a*a/1000;}", 0),      # 8e9/1000; 32-bit would give 200
+        ("int main(){int a=3000;int b=3000;return a*b/7;}", (9000000 // 7) & 0xFF),
+        ("int main(){int a=5;int b=7;return a+b;}", 12),        # small values unchanged
+        ("int f(int n){if(n){return n*f(n-1);}return 1;} int main(){return f(5);}", 120),
+    ]:
+        check(f"stage2 word-model exit -> {want}", _exit(cs), want)
+
     print("== stage 2 unsigned division: / and % (udiv) ==")
     # '/' lowers to a single udiv; '%' to udiv;mul;sub (a - (a/b)*b). Both bind at
     # the multiplicative level (with '*'), left-associative. Unsigned-32, matching
@@ -414,8 +433,8 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     check("stage2 opens a frame (add x11 x11)",        "add x11 x11 " in emfn, True)
     check("stage2 epilogue restores + returns (ldr x30 x1 .. ret)",
           ("ldr x30 x1" in emfn) and ("\nret\n" in emfn), True)
-    check("stage2 pops args into param slots (str w0 x1 after ldr w0 x9)",
-          "ldr w0 x9\nadd x1 x10 004\nstr w0 x1" in emfn, True)
+    check("stage2 pops args into param slots (str x0 x1 after ldr x0 x9)",
+          "ldr x0 x9\nadd x1 x10 0008\nstr x0 x1" in emfn, True)
     # nested call as an argument -> two bl's, inner evaluated before outer's bl
     emnest = _emit("int f(int x){return x;} int main(){return f(f(3));}")
     check("stage2 nested call emits two bl f", emnest.count("bl f") == 2, True)
