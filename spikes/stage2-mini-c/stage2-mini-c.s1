@@ -3,7 +3,9 @@
 # expr operators: + - *  and comparisons < > <= >= == != (unsigned-32, yield 0/1).
 # precedence (low->high): == !=  <  < > <= >=  <  + -  <  *  (all left-assoc, parens).
 # 2-char ops (<= >= == !=) carry internal opstack sentinels 1,2,3,4 respectively.
-# single-char WORD vars -> :a..:z (4-byte slots). control-flow labels A.. (uppercase).
+# single-char WORD vars -> FRAME-RELATIVE 4-byte slots at x10+off (off=(c-'a')*4),
+#   emitted via emitoff + the offtab decimal-offset table (NO :a..:z labels).
+#   control-flow labels A.. (uppercase). emitted regs: x10 frame base, x9 val stack.
 # compiler regs: x19 inbuf, x21 inlen, x22 outbuf, x23 outpos, x6 scan-pos,
 #   x24 opstk-base, x25 opstk-top, x26 cur-op, x11 op-to-apply, x14 store-target,
 #   x15 blockstk-base, x16 blockstk-top, x17 next-label-char, x12/x13 label temps,
@@ -73,9 +75,8 @@ add x6 x6 1
 bl compile_expr
 adr x9 spop
 bl emitstr
-mov w5 x14
-strb w5 x22 x23
-add x23 x23 1
+mov w13 x14
+bl emitoff
 adr x9 sstore
 bl emitstr
 add x6 x6 1
@@ -88,9 +89,8 @@ add x6 x6 1
 bl compile_expr
 adr x9 spop
 bl emitstr
-mov w5 x14
-strb w5 x22 x23
-add x23 x23 1
+mov w13 x14
+bl emitoff
 adr x9 sstore
 bl emitstr
 add x6 x6 1
@@ -186,8 +186,6 @@ bl emitlbl
 add x6 x6 1
 b stmtloop
 :doneall
-adr x9 sslots
-bl emitstr
 mov x0 1
 mov x1 x22
 mov x2 x23
@@ -368,9 +366,7 @@ ldrb w13 x19 x6
 add x6 x6 1
 adr x9 svaradr
 bl emitstr
-mov w5 x13
-strb w5 x22 x23
-add x23 x23 1
+bl emitoff
 adr x9 svarload
 bl emitstr
 mov x30 x27
@@ -493,8 +489,27 @@ strb w5 x22 x23
 add x23 x23 1
 :cdret
 ret
+:emitoff
+sub x13 x13 97
+mov x2 2
+lsl x13 x13 x2
+adr x2 offtab
+add x2 x2 x13
+mov x3 0
+ldrb w5 x2 x3
+strb w5 x22 x23
+add x23 x23 1
+mov x3 1
+ldrb w5 x2 x3
+strb w5 x22 x23
+add x23 x23 1
+mov x3 2
+ldrb w5 x2 x3
+strb w5 x22 x23
+add x23 x23 1
+ret
 :spre
-.ascii "mov x0 0\nmov x8 214\nsvc\nmov x9 x0\nadd x0 x9 1000\nmov x8 214\nsvc\n"
+.ascii "mov x0 0\nmov x8 214\nsvc\nmov x10 x0\nadd x9 x10 104\nadd x0 x9 1000\nmov x8 214\nsvc\n"
 .byte 0
 :smovx0
 .ascii "mov x0 "
@@ -503,7 +518,7 @@ ret
 .ascii "\nstr w0 x9\nadd x9 x9 4\n"
 .byte 0
 :svaradr
-.ascii "adr x1 "
+.ascii "add x1 x10 "
 .byte 0
 :svarload
 .ascii "\nldr w0 x1\nstr w0 x9\nadd x9 x9 4\n"
@@ -533,7 +548,7 @@ ret
 .ascii "\nmov x2 1\nsub x0 x2 x0"
 .byte 0
 :spop
-.ascii "sub x9 x9 4\nldr w0 x9\nadr x1 "
+.ascii "sub x9 x9 4\nldr w0 x9\nadd x1 x10 "
 .byte 0
 :sstore
 .ascii "\nstr w0 x1\n"
@@ -544,6 +559,6 @@ ret
 :scondtest
 .ascii "sub x9 x9 4\nldr w0 x9\ncmp x0 0\nb.eq "
 .byte 0
-:sslots
-.ascii ":a\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:b\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:c\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:d\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:e\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:f\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:g\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:h\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:i\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:j\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:k\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:l\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:m\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:n\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:o\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:p\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:q\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:r\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:s\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:t\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:u\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:v\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:w\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:x\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:y\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n:z\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n"
+:offtab
+.ascii "000 004 008 012 016 020 024 028 032 036 040 044 048 052 056 060 064 068 072 076 080 084 088 092 096 100 "
 .byte 0

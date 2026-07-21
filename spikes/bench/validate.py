@@ -137,7 +137,11 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     check("stage2 var store is word (str w0 x1)", "str w0 x1" in em, True)
     check("stage2 no byte var load (no ldrb x1)", "ldrb w0 x1" in em, False)
     check("stage2 no byte var store (no strb x1)","strb w0 x1" in em, False)
-    check("stage2 slots are 4-byte", ".byte 0\n.byte 0\n.byte 0\n.byte 0" in em, True)
+    # Variables are word-sized and 4 bytes apart in the frame: var 'b' (index 1)
+    # sits at offset 4 after 'a' (index 0). (The old labeled 4x.byte slot table is
+    # gone — variables are frame-relative now; see the frame-relative section.)
+    check("stage2 frame stride is 4 (a@000, b@004)",
+          ("add x1 x10 000" in em) and ("add x1 x10 004" in em), True)
     for cs, want in [("int main(){int a=5;int b=a+2;return b;}", 7),
                      ("int main(){int a=10;return a*a;}", 100),
                      ("int main(){int x=7;return (x+1)*2;}", 16)]:
@@ -226,6 +230,43 @@ if os.path.exists(s1p) and os.path.exists(s2p):
         ("int main(){int a=8;int b=8;int c=0;if(a==b){if(a>=b){c=42;}}return c;}", 42),
     ]:
         check(f"stage2 eq exit -> {want}", _exit(cs), want)
+
+    print("== stage 2 frame-relative variables (no per-variable labels) ==")
+    # Variables now live at x10+off in a brk frame (off=(c-'a')*4), emitted via an
+    # offset table — so the emitted program carries NO :a..:z slot labels and the
+    # prologue sets up the frame base. This removes the per-variable label cost
+    # (the emitted program keeps only its uppercase control-flow labels).
+    emfr = _emit("int main(){int a=5;int b=7;return a+b;}")
+    check("stage2 prologue sets frame base (mov x10 x0)", "mov x10 x0" in emfr, True)
+    check("stage2 var access is frame-relative (add x1 x10)", "add x1 x10 " in emfr, True)
+    check("stage2 no :a slot label", ":a\n" in emfr, False)
+    check("stage2 no :z slot label", ":z\n" in emfr, False)
+    check("stage2 no adr-to-var (adr x1 a)", "adr x1 a" in emfr, False)
+    check("stage2 var 'a' -> offset 000", "add x1 x10 000" in emfr, True)
+    check("stage2 var 'b' -> offset 004", "add x1 x10 004" in emfr, True)
+    # 'z' is index 25 -> offset 100 (the largest); exercises the 3-digit path.
+    emz = _emit("int main(){int z=25;return z*4;}")
+    check("stage2 var 'z' -> offset 100", "add x1 x10 100" in emz, True)
+    # if/while still emit their uppercase control-flow labels (only those remain).
+    emcf = _emit("int main(){int a=1;if(a){a=a+1;}return a;}")
+    check("stage2 control-flow label kept (:A)", ":A\n" in emcf, True)
+    check("stage2 control-flow label is not a var slot", ":a\n" in emcf, False)
+    # Behavioural: exit codes through the real assembled ladder. A program that
+    # uses MANY distinct variables would have needed many labels before; now it
+    # needs none. Plus the full existing behaviour set as a regression sweep.
+    for cs, want in [
+        ("int main(){int a=1;int b=2;int c=3;int d=4;int e=5;return a+b+c+d+e;}", 15),
+        ("int main(){int z=9;int y=8;return z*y;}", 72),
+        ("int main(){int z=25;return z*4;}", 100),
+        ("int main(){int a=5;int b=a+2;return b;}", 7),
+        ("int main(){int a=5;a=a+3;return a;}", 8),
+        ("int main(){int n=10;int s=0;while(n){s=s+n;n=n-1;}return s;}", 55),
+        ("int main(){int i=0;int s=0;while(i<10){s=s+i;i=i+1;}return s;}", 45),
+        ("int main(){int i=1;int s=0;while(i<=5){s=s+i;i=i+1;}return s;}", 15),
+        ("int main(){int a=8;int b=8;int c=0;if(a==b){if(a>=b){c=42;}}return c;}", 42),
+        ("int main(){int i=0;int t=0;while(i<3){int j=0;while(j<=2){t=t+1;j=j+1;}i=i+1;}return t;}", 9),
+    ]:
+        check(f"stage2 frame-rel exit -> {want}", _exit(cs), want)
 
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")

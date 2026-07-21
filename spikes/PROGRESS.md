@@ -264,6 +264,29 @@ expected. Next on the floor: a stage-2 label/codegen strategy (backpatch branch
 offsets, frame-relative variable addressing) so a compiler can emit far more than
 ~128 labels, then functions on this call stack. See `TARGET-SUBSET.md`.
 
+**Milestone 26 — stage 2: frame-relative variables (floor item 2a).** The first
+half of the label/codegen strategy. Variables were labeled `:a`..`:z` word slots
+— 26 labels emitted in *every* program, addressed with `adr`. They now live at
+`x10 + (c-'a')*4` in a `brk` frame: the prologue sets `x10` to the frame base
+(value stack starts at `x10+104`, past the 26 word slots), and each access emits
+`add x1 x10 <off>` + word `ldr`/`str`. The offset is a 3-digit decimal pulled from
+a compile-time table (`offtab`) by a new leaf helper (`emitoff`), so **the emitted
+program carries no per-variable labels** — only its uppercase control-flow labels
+remain (≤26, and those go next). This is exactly the addressing shape a real call
+stack needs: once functions land, `x10` becomes a moving frame pointer set per
+call, and locals are automatically per-frame (which recursion requires) rather
+than global slots. Designed in `stage2_ref.py` against the oracle first (the ref
+matches the real `.s1` byte-for-byte), then verified through the real assembled
+ladder: emitted programs contain zero labels for variable-only code, a 5-variable
+program and the offset-100 case (`z`) run correctly, and `x10` is written only in
+the prologue. Compiler label budget 74→**75** of 76 (net +1: added `offtab` +
+`emitoff`, removed the slot table); source actually shrank (the big slot-table
+string is gone). Pinned in `validate.py` (structural: frame base, per-var offsets,
+no `:a`/`:z`/`.byte 0`; behavioural: many-variable programs) and **CI-confirmed**
+(real `as` + QEMU) via `stage2-mini-c-demo`. Next: **floor item 2b — branch-offset
+backpatching**, which removes the last emitted-label class (control flow), leaving
+only function-entry labels; then functions on the m25 call stack.
+
 ---
 
 ## 6. What's next
@@ -282,9 +305,10 @@ stage in the language of the stage below.
   nonzero-tests. `/` (needs `udiv` in stage0-as) is the one remaining small leaf
   increment, but the **critical path to stage 3 is the stage-2 "floor"**:
   functions + a real call stack, pointers/`char`/arrays, `struct`, a small heap,
-  multi-char labels/identifiers, and I/O. The first floor brick is in place —
-  stage-0 **64-bit `ldr x`/`str x`** (m25), the call-stack enabler. Next: the
-  stage-2 label/codegen strategy, then functions on the call stack. See
+  multi-char labels/identifiers, and I/O. Floor progress: **64-bit `ldr x`/`str x`**
+  (m25, the call-stack enabler) and **frame-relative variables** (m26, no per-var
+  labels) are in. Next: **branch-offset backpatching** (removes the last emitted
+  label class), then functions on the call stack. See
   **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**

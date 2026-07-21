@@ -21,9 +21,13 @@ int main(){
 }
 ```
 
-- **variables + assignment**: single-char names (`a`..`z`) → labeled **4-byte
-  (word) slots** (`:a`..`:z`) in the emitted program, accessed via `adr` +
-  `ldr`/`str`. Declared with `int c=…;`, updated with `c=…;` (reassignment).
+- **variables + assignment**: single-char names (`a`..`z`) → **frame-relative
+  word (4-byte) slots** at `x10 + off` (`off = (c-'a')*4`) in a `brk` region,
+  accessed via `add x1 x10 <off>` + word `ldr`/`str`. The offset is emitted as a
+  3-digit decimal from a compile-time offset table (`offtab`), so the emitted
+  program needs **no per-variable labels** — a strategy change that removes the
+  26-label variable cost (see notes). Declared with `int c=…;`, updated with
+  `c=…;` (reassignment).
 - **expressions**: integers, variables, `+ - *`, the full **comparison** set
   `< > <= >= == !=`, precedence, and parentheses, via shunting-yard; emitted code
   uses a `brk` value stack. Four precedence levels (low→high): `== !=` `<`
@@ -44,22 +48,28 @@ int i=0; int s=0; while(i<10){ s=s+i; i=i+1; } return s; ->  exits 45  (count-up
 ## How control flow is emitted
 
 Jump targets use **uppercase** labels `A`, `B`, … drawn from a compile-time
-counter; variable slots use lowercase `a`..`z`, so the two never collide (up to
-26 control-flow labels per program). For `if (c) { body }` the compiler emits the
-condition, pops it, `cmp x0 0`, `b.eq L`, the body, then `:L`. For
-`while (c) { body }` it emits `:A`, the condition, `b.eq B`, the body, `b A`,
-then `:B`. Statement dispatch keys on the **second** character: a keyword's is a
-letter (`in`/`if`/`wh`/`re`), a single-char reassignment's is a space or `=`, so
-variables may be named `i`, `w`, or `r` without ambiguity.
+counter. Since variables are now **frame-relative** (no per-variable labels),
+these control-flow labels are the *only* labels the emitted program contains (up
+to 26 per program). For `if (c) { body }` the compiler emits the condition, pops
+it, `cmp x0 0`, `b.eq L`, the body, then `:L`. For `while (c) { body }` it emits
+`:A`, the condition, `b.eq B`, the body, `b A`, then `:B`. Statement dispatch keys
+on the **second** character: a keyword's is a letter (`in`/`if`/`wh`/`re`), a
+single-char reassignment's is a space or `=`, so variables may be named `i`, `w`,
+or `r` without ambiguity.
 
 ## Notes / limits (what later increments lift)
 
-- Variables are **word-sized** (32-bit): 4-byte slots via word `ldr`/`str`,
-  matching the 32-bit value stack. Slots are aligned by construction (the emitted
-  program is all 4-byte instructions up to the slot table). NB: with only
-  `+ - *` and a mod-256 exit code, byte vs word storage was not distinguishable by
-  exit code — so the word-slot guard is structural; the width matters for
-  out-of-byte-range values and once `/` lands.
+- Variables are **word-sized** (32-bit) and **frame-relative**: each single-char
+  name maps to `x10 + (c-'a')*4` in a `brk` frame, loaded/stored with word
+  `ldr`/`str`, matching the 32-bit value stack. The emitted program sets `x10` to
+  the frame base in its prologue and addresses each variable with `add x1 x10
+  <off>` — **no labeled slot table**. This is floor item 2a (of the "label/codegen
+  strategy"): it removes the per-variable label so the emitted program's label
+  budget is spent only on control flow, and it's the addressing shape a real call
+  stack needs (once functions land, `x10` becomes a moving frame pointer). NB:
+  with only `+ - *` and a mod-256 exit code, byte vs word storage isn't
+  distinguishable by exit code, so the word/frame guards are structural; the width
+  matters for out-of-byte-range values and once `/` lands.
 - **All six comparisons are branchless and unsigned-32.** A comparison emits no
   branch and no label, using only `sub`/`orr`/`lsr` that stage0-as already has,
   so it costs **zero** of the emitted program's 26 uppercase labels. The recipes
@@ -90,7 +100,7 @@ Developed and tested through the **real assembled ladder** on the dev bench
 interpreter used as a test oracle, and `validate.py` pins structure and exit
 codes (including nested loops, reassignment, and all six comparisons — precedence,
 `<=`/`>=` loop guards, and `==`/`!=` guards). CI (real `as` + QEMU) is ground
-truth. The compiler is written in stage-1's language and now uses **74** of the
-76 pool slots; adding equality took it from 61 to 74, so further stage-2 growth
-that needs more labels should economise or expand the pool (a cheap stage-1
-change) rather than cram.
+truth. The compiler is written in stage-1's language and now uses **75** of the
+76 pool slots; frame-relative variables (m26) netted +1 over the equality build
+(74), so any further stage-2 growth that needs more labels should expand the
+stage-1 pool (a cheap stage-1 change) rather than cram.

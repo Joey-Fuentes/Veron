@@ -5,7 +5,8 @@ Program: int main(){ <stmt>* }
         | return <expr> ;
         | if ( <expr> ) { <stmt>* }
         | while ( <expr> ) { <stmt>* }
-Single-char var names -> labeled 4-byte (word) slots :a..:z in the emitted program.
+Single-char var names -> frame-relative WORD (4-byte) slots at x10+off (off=(c-'a')*4)
+in a brk region; the emitted program needs no labeled :a..:z slot table.
 Expressions: number | var | ( expr ), with + - * and comparisons
 < > <= >= == != (C precedence, parens), shunting-yard.
 Truth test: nonzero (C semantics). Comparisons are unsigned-32, yield 0/1.
@@ -43,7 +44,9 @@ def _compile_expr(expr):
     """shunting-yard -> emitted code that pushes the result on the value stack"""
     toks=_tokens(expr); out=[]; ops=[]
     def push_num(n): out.extend([f"mov x0 {n}","str w0 x9","add x9 x9 4"])
-    def push_var(c): out.extend([f"adr x1 {c}","ldr w0 x1","str w0 x9","add x9 x9 4"])
+    def push_var(c):
+        off=(ord(c)-97)*4
+        out.extend([f"add x1 x10 {off:03d}","ldr w0 x1","str w0 x9","add x9 x9 4"])
     def apply(o):
         out.extend(["sub x9 x9 4","ldr w0 x9","sub x9 x9 4","ldr w1 x9"])
         if o=='<':      # a<b (unsigned32) = (a-b)>>63
@@ -80,12 +83,14 @@ def _compile_expr(expr):
 def compile_program(src):
     lb=src.find('{')
     body=src[lb+1:] if lb>=0 else src   # includes nested braces + final }
-    code=["mov x0 0","mov x8 214","svc","mov x9 x0","add x0 x9 1000","mov x8 214","svc"]
+    code=["mov x0 0","mov x8 214","svc","mov x10 x0","add x9 x10 104","add x0 x9 1000","mov x8 214","svc"]
     labelctr=[0]
     def newlabel():
         c=chr(ord('A')+labelctr[0]); labelctr[0]+=1; return c
     blockstack=[]
-    def store_to(c): return ["sub x9 x9 4","ldr w0 x9",f"adr x1 {c}","str w0 x1"]
+    def store_to(c):
+        off=(ord(c)-97)*4
+        return ["sub x9 x9 4","ldr w0 x9",f"add x1 x10 {off:03d}","str w0 x1"]
     def cond_test(L): return ["sub x9 x9 4","ldr w0 x9","cmp x0 0",f"b.eq {L}"]
     def skipws(i):
         while i<len(body) and body[i] in ' \t\n': i+=1
@@ -134,8 +139,8 @@ def compile_program(src):
         else:                            # reassignment  <c> = <expr> ;
             c2=body[i]; i=skipws(i+1); i+=1  # '='
             expr,i=until_semi(i); code+=_compile_expr(expr); code+=store_to(c2); i+=1
-    for ch in "abcdefghijklmnopqrstuvwxyz":
-        code+=[f":{ch}",".byte 0",".byte 0",".byte 0",".byte 0"]
+    # variables live in a frame-relative brk region (x10 base), so the emitted
+    # program no longer needs a labeled :a..:z slot table.
     return "\n".join(code)+"\n"
 
 

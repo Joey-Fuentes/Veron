@@ -2,20 +2,23 @@ name: stage2-mini-c-demo
 
 # SPIKE (invariants suspended). Stage 2 = mini-c. Supports:
 #   int main(){ int a=<expr>; a=<expr>; if(<expr>){...} while(<expr>){...} return <expr>; }
-# single-char var names -> labeled WORD (4-byte) slots (:a..:z), accessed via
-# adr + ldr/str; a factor may be a number, a variable (load), or ( expr ).
+# single-char var names -> FRAME-RELATIVE WORD (4-byte) slots at x10+off
+# (off=(c-'a')*4), emitted via an offset table + word ldr/str; a factor may be a
+# number, a variable (load), or ( expr ).
 # Expressions support + - * and comparisons < > <= >= == != (branchless,
 # unsigned-32, yielding 0/1) so conditions can be relations. Precedence, low->high:
 # == !=  <  < > <= >=  <  + -  <  * . <= is '>' flipped, >= is '<' flipped,
 # != is (d|-d)>>63, == is != flipped (all reuse the existing sign-bit recipe).
 # Control flow (if/while, nested) tests the condition for nonzero; codegen is
-# iterative with a block stack and uppercase jump labels A.. (vars are lowercase,
-# no collision). Compiler uses shunting-yard; emitted code uses a brk value
-# stack. Written in stage-1's language.
+# iterative with a block stack and uppercase jump labels A.. . Because variables
+# are frame-relative, the emitted program carries NO per-variable labels — only
+# its uppercase control-flow labels. Compiler uses shunting-yard; emitted code
+# uses a brk value stack. Written in stage-1's language.
 #
 # NB: with only + - * and a mod-256 exit, byte vs word storage is
 # indistinguishable by exit code, so this demo also STRUCTURALLY checks the
-# emitted program (word ldr/str + 4-byte slots; if/while zero-test + branches)
+# emitted program (word ldr/str + frame-relative vars, no slot labels; if/while
+# zero-test + branches)
 # and byte-compares the word ldr/str forms against real `as`. Exit codes for the
 # loop/if programs are genuine end-to-end checks (loop counting + reassignment).
 
@@ -63,15 +66,21 @@ jobs:
           echo "word ldr/str ours: $(od -An -v -tx1 ld.bin | tr -d ' \n')"
           echo "word ldr/str ref : $(od -An -v -tx1 ld_ref.bin | tr -d ' \n')"
 
-          # ---- structural: emitted program must use WORD forms, not byte forms ----
+          # ---- structural: emitted program uses WORD forms + FRAME-RELATIVE vars ----
           printf '%s' 'int main(){int a=5; int b=a+2; return b;}' | qemu-aarch64 ./stage2 > word.s
           struct_ok=yes
           grep -q 'ldr w0 x1' word.s || { echo "MISSING word var load"; struct_ok=no; }
           grep -q 'str w0 x1' word.s || { echo "MISSING word var store"; struct_ok=no; }
           grep -q 'ldrb w0 x1' word.s && { echo "REGRESSION: byte var load present"; struct_ok=no; }
           grep -q 'strb w0 x1' word.s && { echo "REGRESSION: byte var store present"; struct_ok=no; }
-          nbyte=$(grep -c '^\.byte 0$' word.s || true)   # 26 slots x 4 bytes = 104
-          [ "$nbyte" = 104 ] || { echo "slots not 4-byte word (got $nbyte '.byte 0' lines, want 104)"; struct_ok=no; }
+          # variables are frame-relative (x10 base, offset per var), NOT labeled slots
+          grep -q 'mov x10 x0'    word.s || { echo "MISSING frame-base setup (mov x10 x0)"; struct_ok=no; }
+          grep -q 'add x1 x10 '   word.s || { echo "MISSING frame-relative var access"; struct_ok=no; }
+          grep -q 'add x1 x10 000' word.s || { echo "MISSING var 'a' offset 000"; struct_ok=no; }
+          grep -q 'add x1 x10 004' word.s || { echo "MISSING var 'b' offset 004"; struct_ok=no; }
+          grep -q '^:a$'          word.s && { echo "REGRESSION: labeled :a slot present"; struct_ok=no; }
+          grep -q '^:z$'          word.s && { echo "REGRESSION: labeled :z slot present"; struct_ok=no; }
+          grep -q '^\.byte 0$'    word.s && { echo "REGRESSION: .byte 0 slot table present"; struct_ok=no; }
 
           # ---- structural: if/while emit a zero-test and branch to UPPERCASE labels ----
           cf_ok=yes
@@ -118,12 +127,15 @@ jobs:
             set +e; qemu-aarch64 ./a.out; rc=$?; set -e
             printf '  %-64s exit=%-4s want=%-4s %s\n' "$1" "$rc" "$2" "$([ "$rc" = "$2" ] && echo OK || { echo DIFF; fail=1; })"
           }
-          echo "== stage-2: word-sized variables =="
+          echo "== stage-2: word-sized variables (frame-relative) =="
           try 'int main(){int a=2; int b=3; return a+b;}'             5
           try 'int main(){int a=10; return a*a;}'                     100
           try 'int main(){int a=5; int b=a+1; return a*b;}'           30
           try 'int main(){int x=7; return (x+1)*2;}'                  16
           try 'int main(){int a=2; int b=3; int c=4; return a+b*c;}'  14
+          # many distinct variables — no per-variable labels needed anymore
+          try 'int main(){int a=1; int b=2; int c=3; int d=4; int e=5; return a+b+c+d+e;}'  15
+          try 'int main(){int z=25; return z*4;}'                     100
 
           echo "== stage-2: reassignment =="
           try 'int main(){int a=5; a=a+3; return a;}'                 8
@@ -176,7 +188,7 @@ jobs:
             echo "## stage2-mini-c — variables, if/while, reassignment"
             echo '```'
             echo "word ldr/str byte-identical to as   : $ld_ok"
-            echo "emitted word forms + 4B slots       : $struct_ok"
+            echo "emitted word forms + frame-rel vars : $struct_ok"
             echo "if/while zero-test + A.. jump labels : $cf_ok"
             echo "relational < > branchless (sub+lsr)  : $rel_ok"
             echo "equality == != <= >= branchless      : $eq_ok"
