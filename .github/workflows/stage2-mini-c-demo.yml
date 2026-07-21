@@ -190,6 +190,19 @@ jobs:
           grep -q 'sub x0 x1 x0' ge.s || { echo "'>=': MISSING '<' sub a-b";    eq_ok=no; }
           grep -q 'sub x0 x2 x0' ge.s || { echo "'>=': MISSING flip (1-x)";     eq_ok=no; }
 
+          # ---- structural: pointer arithmetic scales the int operand by pointee size (A7a) ----
+          # `int* p; p=p+2;` scales the integer operand (x0) by the element size before the
+          # add: `mov x3 3; lsl x0 x0 x3`. No other codegen shape emits `lsl x0 x0 x3`
+          # (comparisons shift x0 by x2=63; subscripts scale x2, not x0). char* must NOT
+          # scale (element size 1); a pointer-minus-pointer difference divides by 8 (lsr x0 x0 x3).
+          ptr_ok=yes
+          printf '%s' 'int main(){int a[3]; int* p; p=a; p=p+2; return *p;}' | qemu-aarch64 ./stage2 > psc.s
+          grep -q 'lsl x0 x0 x3' psc.s || { echo "ptr+int: MISSING pointee scaling (lsl x0 x0 x3)"; ptr_ok=no; }
+          printf '%s' 'int main(){char s[3]; char* p; p=s; p=p+2; return *p;}' | qemu-aarch64 ./stage2 > pscc.s
+          grep -q 'lsl x0 x0 x3' pscc.s && { echo "char*+int: UNEXPECTED scaling (char* element size is 1)"; ptr_ok=no; }
+          printf '%s' 'int main(){int a[4]; int* p; int* q; p=a; q=a+3; return q-p;}' | qemu-aarch64 ./stage2 > psd.s
+          grep -q 'lsr x0 x0 x3' psd.s || { echo "ptr-ptr: MISSING element-size divide (lsr x0 x0 x3)"; ptr_ok=no; }
+
           fail=0
           try() {
             # A2: emitted programs carry :func labels (calls/recursion) alongside
@@ -205,6 +218,23 @@ jobs:
           # correct exit proves the value stack + frame slots are genuinely 64-bit.
           try 'int main(){int a=2000; return a*a*a/1000;}'        0
           try 'int main(){int a=3000; int b=3000; return a*b/7;}' 82
+          echo "== stage-2: pointer-arithmetic scaling — p+n / n+p / p-n / p-q by pointee size (A7a) =="
+          # the int operand of pointer +/- is scaled by sizeof(*p) (8 for int*, 1 for char*);
+          # p-q divides the byte difference by the element size. This makes bare pointer
+          # arithmetic consistent with a[i] subscripting (which already scaled). These are
+          # the cases that were WRONG before scaling (p+1 added 1 byte, not sizeof(*p)).
+          try 'int main(){int a[3]; a[0]=10; a[1]=20; a[2]=30; int* p; p=a; p=p+2; return *p;}'        30
+          try 'int main(){int a[3]; a[0]=10; a[1]=20; a[2]=30; int* p; p=a; p=p+1; return *p;}'        20
+          try 'int main(){int a[3]; a[0]=10; a[1]=20; a[2]=30; int* p; p=a; p=2+p; return *p;}'        30
+          try 'int main(){int a[3]; a[0]=10; a[1]=20; a[2]=30; int* p; p=a; p=p+2; p=p-1; return *p;}' 20
+          try 'int main(){char s[3]; s[0]=65; s[1]=66; s[2]=67; char* q; q=s; q=q+2; return *q;}'      67
+          try 'int main(){int a[5]; int* p; p=a; int* q; q=a; q=q+3; return q-p;}'                     3
+          try 'int main(){char s[8]; char* p; p=s; char* q; q=s; q=q+5; return q-p;}'                  5
+          try 'int main(){int a[4]; a[0]=1; a[1]=2; a[2]=3; a[3]=4; int* p; p=a; int s; s=0; int i; i=0; while(i<4){ s=s+*p; p=p+1; i=i+1; } return s;}'  10
+          try 'int slen(char* s){int n; n=0; while(*s){ n=n+1; s=s+1; } return n;} int main(){return slen("hello");}'  5
+          try 'int g[3]; int main(){g[0]=4; g[1]=9; g[2]=13; int* p; p=g; p=p+2; return *p;}'          13
+          try 'int* gp; int a[3]; int main(){a[0]=1; a[1]=2; a[2]=3; gp=a; gp=gp+1; return *gp;}'      2
+          try 'int at(int* p,int i){p=p+i; return *p;} int main(){int a[4]; a[0]=5; a[1]=6; a[2]=7; a[3]=8; return at(a,3);}'  8
           echo "== stage-2: control flow — if / else (A6a) =="
           # the then-block's closing brace peeks for else; nested + while-embedded else work.
           try 'int main(){if(0){return 5;}else{return 7;}return 9;}'                                       7
@@ -379,6 +409,7 @@ jobs:
             echo "if/while zero-test + backpatched @pos: $cf_ok"
             echo "relational < > branchless (sub+lsr)  : $rel_ok"
             echo "equality == != <= >= branchless      : $eq_ok"
+            echo "pointer arithmetic scaled by pointee : $ptr_ok"
             echo "functions + call stack + recursion   : $fn_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
@@ -391,8 +422,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ]; then
-            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), IF/ELSE control flow, and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ]; then
+            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok fn=$fn_ok div=$div_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok"; exit 1
           fi

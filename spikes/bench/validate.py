@@ -663,6 +663,55 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     check("stage2 tokenizer: spaced keywords and parens",
           _exit("int main(){int n=3;int s=0;while ( n ) { s = s + n ; n = n - 1 ; } return s ;}"), 6)
 
+    print("== stage 2 pointer-arithmetic scaling (A7a) ==")
+    # A7a threads a per-operand TYPE through the expression compiler (a compile-time
+    # type stack mirroring the runtime value stack). Symtab entries gained an is_ptr
+    # flag (bit2 of the flags word), recorded at all three decl sites (globals/params/
+    # locals). In `p + n` / `n + p` / `p - n`, the integer operand is now scaled by the
+    # pointee size (8 for int*, 1 for char*) before the add/sub; `p - q` between two
+    # pointers subtracts then divides by the element size. `p[n]` on a pointer already
+    # scaled (m39), and this makes bare pointer arithmetic consistent with it.
+    #
+    # Structural: `int* p; p=p+2;` must emit the pointee scaling of the int operand
+    # (x0) — `lsl x0 x0 x3` — which no other codegen shape emits (comparisons shift by
+    # x2=63; subscripts scale x2, not x0). char* must NOT emit it (scale 1).
+    eptr = _emit("int main(){int a[3];int* p;p=a;p=p+2;return *p;}")
+    check("stage2 int* arithmetic scales the int operand (lsl x0 x0 x3)",
+          "lsl x0 x0 x3" in eptr, True)
+    echar = _emit("int main(){char s[3];char* p;p=s;p=p+2;return *p;}")
+    check("stage2 char* arithmetic does NOT scale (no lsl x0 x0 x3)",
+          "lsl x0 x0 x3" in echar, False)
+    ediff = _emit("int main(){int a[4];int* p;int* q;p=a;q=a+3;return q-p;}")
+    check("stage2 int* difference divides by element size (lsr x0 x0 x3)",
+          "lsr x0 x0 x3" in ediff, True)
+    # Behavioural: exit codes on the real assembled ladder. These are the cases that
+    # were WRONG before scaling (p+1 added 1 byte, not sizeof(*p)).
+    for cs, want in [
+        ("int main(){int a[3];a[0]=10;a[1]=20;a[2]=30;int* p;p=a;p=p+2;return *p;}", 30),   # p+2 -> a[2]
+        ("int main(){int a[3];a[0]=10;a[1]=20;a[2]=30;int* p;p=a;p=p+1;return *p;}", 20),   # p+1 -> a[1]
+        ("int main(){int a[3];a[0]=10;a[1]=20;a[2]=30;int* p;p=a;p=2+p;return *p;}", 30),   # n+p commutes
+        ("int main(){int a[3];a[0]=10;a[1]=20;a[2]=30;int* p;p=a;p=p+2;p=p-1;return *p;}", 20),  # p-1
+        ("int main(){char s[3];s[0]=65;s[1]=66;s[2]=67;char* q;q=s;q=q+2;return *q;}", 67),  # char* scale 1
+        ("int main(){int a[5];int* p;p=a;int* q;q=a;q=q+3;return q-p;}", 3),                 # int* diff -> 3
+        ("int main(){char s[8];char* p;p=s;char* q;q=s;q=q+5;return q-p;}", 5),              # char* diff -> 5
+        ("int main(){int a[4];a[0]=1;a[1]=2;a[2]=3;a[3]=4;int* p;p=a;int s;s=0;int i;i=0;while(i<4){s=s+*p;p=p+1;i=i+1;}return s;}", 10),  # walk+sum
+        ("int slen(char* s){int n;n=0;while(*s){n=n+1;s=s+1;}return n;} int main(){return slen(\"hello\");}", 5),  # real strlen
+        ("int g[3];int main(){g[0]=4;g[1]=9;g[2]=13;int* p;p=g;p=p+2;return *p;}", 13),      # global array
+        ("int* gp;int a[3];int main(){a[0]=1;a[1]=2;a[2]=3;gp=a;gp=gp+1;return *gp;}", 2),    # global pointer
+        ("int at(int* p,int i){p=p+i;return *p;} int main(){int a[4];a[0]=5;a[1]=6;a[2]=7;a[3]=8;return at(a,3);}", 8),  # pointer param
+    ]:
+        check(f"stage2 ptr-scaling exit -> {want}", _exit(cs), want)
+    # Regression: plain integer arithmetic (both operands non-pointer) is unchanged —
+    # no stray scaling — and a local decl whose initializer contains an operator still
+    # stores correctly (the type stack must not clobber the store-offset register).
+    for cs, want in [
+        ("int main(){int a=5;int b=a+2;return b;}", 7),
+        ("int gcd(int a,int b){while(b){int t=a%b;a=b;b=t;}return a;} int main(){return gcd(48,36);}", 12),
+        ("int main(){return 3+4*2;}", 11),
+        ("int main(){int x=100;x=x-58;return x;}", 42),
+    ]:
+        check(f"stage2 non-pointer arithmetic unaffected -> {want}", _exit(cs), want)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)

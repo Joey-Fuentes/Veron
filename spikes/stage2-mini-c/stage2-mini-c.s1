@@ -66,6 +66,11 @@ svc
 mov x21 x0
 mov x23 0
 mov x6 0
+mov x1 32768
+movk x1 5 16
+add x1 x19 x1
+mov x2 0
+str x2 x1
 adr x9 smainpre
 bl emitstr
 :funcloop
@@ -80,6 +85,8 @@ mov x12 1
 bl next_token
 cmp x29 42
 b.ne fl_hn
+mov x3 4
+orr x12 x12 x3
 bl next_token
 :fl_hn
 mov x3 x6
@@ -125,6 +132,8 @@ mov x12 1
 bl next_token
 cmp x29 42
 b.ne pl_decl
+mov x3 4
+orr x12 x12 x3
 bl next_token
 :pl_decl
 mov x2 x12
@@ -320,6 +329,8 @@ b doint
 bl next_token
 cmp x29 42
 b.ne di_name
+mov x3 4
+orr x12 x12 x3
 bl next_token
 :di_name
 mov x3 x6
@@ -626,6 +637,12 @@ str x30 x28
 add x28 x28 8
 str x12 x28
 add x28 x28 8
+mov x2 32768
+movk x2 5 16
+add x2 x19 x2
+ldr x4 x2
+str x4 x28
+add x28 x28 8
 mov x12 x25
 mov x3 1
 :celoop
@@ -918,6 +935,12 @@ b.eq ceflush
 bl emitapply
 b ceflush
 :cedone
+mov x2 32768
+movk x2 5 16
+add x2 x19 x2
+sub x28 x28 8
+ldr x4 x28
+str x4 x2
 sub x28 x28 8
 ldr x12 x28
 sub x28 x28 8
@@ -955,6 +978,8 @@ bl copyspan
 adr x9 snl
 bl emitstr
 mov x6 x13
+mov x2 0
+bl tpush
 sub x28 x28 8
 ldr x30 x28
 ret
@@ -965,6 +990,8 @@ bl emitstr
 bl copyspan
 adr x9 spush
 bl emitstr
+mov x2 0
+bl tpush
 mov x30 x27
 ret
 :emitstrlit
@@ -1028,6 +1055,8 @@ add x2 x1 24
 ldr x23 x2
 add x2 x1 32
 ldr x17 x2
+mov x2 1
+bl tpush
 mov x30 x27
 ret
 :emitcharlit
@@ -1038,6 +1067,8 @@ bl emitstr
 bl emitoff
 adr x9 spush
 bl emitstr
+mov x2 0
+bl tpush
 mov x30 x27
 ret
 :emitbase1
@@ -1126,6 +1157,23 @@ mov x27 x30
 bl resolve
 mov x3 2
 and x4 x1 x3
+mov x3 6
+and x5 x1 x3
+cmp x5 0
+b.eq ev_p0
+mov x3 1
+and x5 x1 x3
+cmp x5 0
+b.eq ev_p8
+mov x2 1
+b ev_pd
+:ev_p8
+mov x2 8
+b ev_pd
+:ev_p0
+mov x2 0
+:ev_pd
+bl tpush
 cmp x4 0
 b.ne emitvar_arr
 bl emitbase1
@@ -1162,11 +1210,15 @@ adr x9 saddidx
 bl emitstr
 adr x9 sldrw
 bl emitstr
+mov x2 0
+bl tpush
 mov x30 x27
 ret
 :esub_byte
 adr x9 sldrbidx
 bl emitstr
+mov x2 0
+bl tpush
 mov x30 x27
 ret
 :emiteladdr
@@ -1193,6 +1245,16 @@ adr x9 saddidx
 bl emitstr
 adr x9 spushx1
 bl emitstr
+mov x3 1
+and x5 x4 x3
+cmp x5 0
+b.eq eela_p8
+mov x2 1
+b eela_pd
+:eela_p8
+mov x2 8
+:eela_pd
+bl tpush
 mov x30 x27
 ret
 :emitsubstore
@@ -1227,6 +1289,17 @@ mov x30 x27
 ret
 :emitaddr
 mov x27 x30
+bl resolve
+mov x3 7
+and x4 x1 x3
+cmp x4 1
+b.ne emitaddr_p8
+mov x2 1
+b emitaddr_pd
+:emitaddr_p8
+mov x2 8
+:emitaddr_pd
+bl tpush
 bl emitbase0
 adr x9 spush
 bl emitstr
@@ -1241,11 +1314,15 @@ cmp x5 0
 b.ne emitderef_b
 adr x9 sderef
 bl emitstr
+mov x2 0
+bl tpush
 mov x30 x27
 ret
 :emitderef_b
 adr x9 sderefb
 bl emitstr
+mov x2 0
+bl tpush
 mov x30 x27
 ret
 :emitoff
@@ -1461,6 +1538,26 @@ mov x0 0
 mov x1 0
 mov x7 0
 ret
+:tpush
+mov x1 32768
+movk x1 5 16
+add x1 x19 x1
+ldr x0 x1
+add x3 x1 8
+strb w2 x3 x0
+add x0 x0 1
+str x0 x1
+ret
+:tpop
+mov x1 32768
+movk x1 5 16
+add x1 x19 x1
+ldr x3 x1
+sub x3 x3 1
+str x3 x1
+add x0 x1 8
+ldrb w0 x0 x3
+ret
 :parsenum
 str x30 x28
 add x28 x28 8
@@ -1546,6 +1643,10 @@ cmp x11 8
 b.eq eauneg
 cmp x11 9
 b.eq eaubnot
+bl tpop
+mov x13 x0
+bl tpop
+mov x4 x0
 adr x9 spoppop
 bl emitstr
 cmp x11 60
@@ -1576,8 +1677,7 @@ cmp x11 5
 b.eq eashl
 cmp x11 6
 b.eq eashr
-adr x9 saddr
-b eaop
+b ea_add
 :eaclt
 adr x9 scmplt
 b eaop
@@ -1588,8 +1688,7 @@ b eaop
 adr x9 smulr
 b eaop
 :easub
-adr x9 ssubr
-b eaop
+b ea_sub
 :eadiv
 adr x9 sdivr
 b eaop
@@ -1617,6 +1716,8 @@ adr x9 scmpne
 bl emitstr
 adr x9 spush
 bl emitstr
+mov x2 0
+bl tpush
 mov x30 x27
 ret
 :eaand
@@ -1632,24 +1733,117 @@ b eaop
 adr x9 slsrr
 b eaop
 :eaunot
+bl tpop
 adr x9 spop1
 bl emitstr
 adr x9 sunot
 bl emitstr
+mov x2 0
+bl tpush
 mov x30 x27
 ret
 :eauneg
+bl tpop
 adr x9 spop1
 bl emitstr
 adr x9 suneg
 bl emitstr
+mov x2 0
+bl tpush
 mov x30 x27
 ret
 :eaubnot
+bl tpop
 adr x9 spop1
 bl emitstr
 adr x9 subnot
 bl emitstr
+mov x2 0
+bl tpush
+mov x30 x27
+ret
+:ea_add
+cmp x4 0
+b.ne ea_add_lp
+cmp x13 0
+b.eq ea_add_plain
+cmp x13 8
+b.ne ea_add_lsc
+adr x9 sscllf
+bl emitstr
+:ea_add_lsc
+adr x9 saddr
+bl emitstr
+adr x9 spush
+bl emitstr
+mov x2 x13
+bl tpush
+mov x30 x27
+ret
+:ea_add_lp
+cmp x13 0
+b.ne ea_add_plain
+cmp x4 8
+b.ne ea_add_rsc
+adr x9 ssclrf
+bl emitstr
+:ea_add_rsc
+adr x9 saddr
+bl emitstr
+adr x9 spush
+bl emitstr
+mov x2 x4
+bl tpush
+mov x30 x27
+ret
+:ea_add_plain
+adr x9 saddr
+bl emitstr
+adr x9 spush
+bl emitstr
+mov x2 0
+bl tpush
+mov x30 x27
+ret
+:ea_sub
+cmp x4 0
+b.eq ea_sub_plain
+cmp x13 0
+b.ne ea_sub_pp
+cmp x4 8
+b.ne ea_sub_rsc
+adr x9 ssclrf
+bl emitstr
+:ea_sub_rsc
+adr x9 ssubr
+bl emitstr
+adr x9 spush
+bl emitstr
+mov x2 x4
+bl tpush
+mov x30 x27
+ret
+:ea_sub_pp
+adr x9 ssubr
+bl emitstr
+cmp x4 8
+b.ne ea_sub_ppnd
+adr x9 sdiv8f
+bl emitstr
+:ea_sub_ppnd
+adr x9 spush
+bl emitstr
+mov x2 0
+bl tpush
+mov x30 x27
+ret
+:ea_sub_plain
+adr x9 ssubr
+bl emitstr
+adr x9 spush
+bl emitstr
+mov x2 0
+bl tpush
 mov x30 x27
 ret
 :emitstr
@@ -2126,6 +2320,15 @@ ret
 .byte 0
 :sscale
 .ascii "\nmov x3 3\nlsl x2 x2 x3"
+.byte 0
+:ssclrf
+.ascii "mov x3 3\nlsl x0 x0 x3\n"
+.byte 0
+:sscllf
+.ascii "mov x3 3\nlsl x1 x1 x3\n"
+.byte 0
+:sdiv8f
+.ascii "\nmov x3 3\nlsr x0 x0 x3"
 .byte 0
 :saddidx
 .ascii "\nadd x1 x1 x2"

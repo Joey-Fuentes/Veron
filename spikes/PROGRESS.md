@@ -794,6 +794,46 @@ full arithmetic/pointer/array/global/operator/recursion corpus unchanged. `valid
 runs. Next: the type-system work — general pointer arithmetic (scaling `p + n` by the
 pointee size) and structs.
 
+**Milestone 45 — stage 2: general pointer-arithmetic scaling (A7a).** Bare pointer
+arithmetic did not scale by the pointee size: `int* p; p = p + 1;` added **1**, not
+`sizeof(*p) = 8`, so `*(p+1)` read the wrong bytes. `a[i]` already scaled (m39), but
+`p + n` / `p - n` / `p[n]`-via-a-pointer were untyped — every value on the expression
+compiler's stack was a raw machine word with no notion of what it pointed at. This is
+the first milestone that **threads a per-operand type through the expression compiler**,
+the seed of the real type descriptor the floor's remaining type-work needs. Two parts:
+(1) the symbol table's flags word gained an **`is_ptr` bit** (bit 2, beside is_char and
+is_array), recorded at all **three** declaration sites (file-scope globals, function
+parameters, and locals) — each previously discarded the `*` in `int* p`; now it sets the
+bit. (2) `compile_expr` carries a **compile-time type stack** that mirrors the runtime
+value stack: every operand push also pushes its *ptype* (0 = plain integer, else the
+pointee size — 8 for `int*`, 1 for `char*`), computed from the flags for variables
+(array/pointer decay), `&name`, and `&a[i]`, and 0 for numbers, literals, derefs,
+subscript rvalues, and call results. When `emitapply` lowers `+`/`-` it pops the two
+operand ptypes and, at **compile time**, decides the scaling: `ptr + int` / `int + ptr`
+emits a shift of the integer operand by 3 (× 8) before the add when the pointee size is
+8 (char pointers, size 1, emit nothing); `ptr - int` scales the same way; `ptr - ptr`
+subtracts then divides the byte distance by the element size (a `>> 3`). The result
+ptype propagates (pointer ± int stays a pointer; pointer − pointer becomes a plain int),
+so chained arithmetic and `*(p + n)` land on the right element. Because the whole
+mechanism is compile-time and keys off ptype, **plain integer arithmetic is byte-for-byte
+unchanged** (both operands ptype 0 → no scaling). The one register hazard worth noting:
+`emitapply` must hold the operand types in scratch registers that survive the emit calls
+**without clobbering `x14`** (the store-offset a local declaration's initializer needs
+after its expression is compiled) — the types live in `x4`/`x13` instead. The reference
+(`stage2_ref_a7a.py`) models the identical type-stack design and is the new design of
+record. Verified through the assembled ladder: `p + 2` / `p + 1` / `2 + p` (commuted) /
+`p - 1`, `char*` walks (scale 1), `int*`/`char*` pointer differences, `&a[i] ± n`,
+string-literal arithmetic, pointer parameters, a real `strlen` over a `char*`, and
+globals — plus the full pre-existing corpus (including local decls whose initializers
+contain operators, e.g. `int b = a + 2;` and `gcd`'s `int t = a % b;`) unchanged.
+`validate.py` 267→286 (a new pointer-scaling section: structural `lsl x0 x0 x3` /
+`lsr x0 x0 x3` presence-and-absence checks + behavioural exits + non-pointer
+regressions); the demo workflow gains the same structural block and a twelve-program
+behavioural sweep. Known limits kept honest: function return values are typed plain
+(a function returning a pointer won't scale in later arithmetic), and `*(expr)` deref
+(vs `*name`) is still outside the subset — both wait for the fuller type descriptor.
+Next: `struct` — the gate to self-hosting.
+
 ---
 
 ---
@@ -841,8 +881,11 @@ stage in the language of the stage below.
   M2-Planet leans on hardest). Then the **operator set** (m43, A5a: unary `!`/`-`/`~`,
   bitwise `&`/`|`, shifts `<<`/`>>`, with a `prec` table placing all fifteen operators at
   their correct C precedence). Then **`if`/`else`** (m44, A6a: the else clause via the
-  block-stack backpatch machinery, `else if` chains falling out for free). Next: general
-  pointer arithmetic (scaling by pointee size) and structs — the M2-Planet subset.
+  block-stack backpatch machinery, `else if` chains falling out for free). Then **general
+  pointer arithmetic** (m45, A7a: `p + n` / `n + p` / `p - n` scale the int operand by the
+  pointee size and `p - q` divides by the element size — the first per-operand type
+  threaded through the expression compiler, via an `is_ptr` symtab flag + a compile-time
+  type stack). Next: `struct` — the M2-Planet subset and the gate to self-hosting.
   See **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**

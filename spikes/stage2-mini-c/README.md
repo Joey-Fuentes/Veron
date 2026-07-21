@@ -178,18 +178,21 @@ self-host, vendored at `spikes/reference/`).
 ## Verified
 
 Developed and tested through the **real assembled ladder** on the dev bench
-(`spikes/bench/`): `stage2_ref_a2.py` carries the codegen design (declaration-order
-allocator + live symbol table) plus an independent recursive interpreter used as a
-test oracle, and `validate.py` pins structure and exit codes — nested loops,
-reassignment, all six comparisons, and now the A2 **functions + call stack +
-recursion** set (argument passing, nested-call args, `fact`/`fib`/`pw`/`tri`, mutual
-recursion, Ackermann; 169 checks). CI (real `as` + QEMU) is ground truth: the
+(`spikes/bench/`): the newest `stage2_ref_*.py` (currently **`stage2_ref_a7a.py`**,
+the pointer-scaling milestone) carries the codegen design plus an independent
+interpreter used as a test oracle, and `validate.py` pins structure and exit codes —
+nested loops, reassignment, all six comparisons, functions + call stack + recursion
+(argument passing, nested-call args, `fact`/`fib`/`pw`/`tri`, mutual recursion,
+Ackermann), pointers/`char`/arrays, string literals + a data section, globals, the
+full operator set, `if`/`else`, and now **general pointer-arithmetic scaling** (A7a:
+`p + n` / `p - n` scaled by the pointee size, `p - q` by the element size; **286 checks**). CI (real `as` + QEMU) is ground truth: the
 `stage2-mini-c-demo` workflow rebuilds the compiler and runs compiled programs
 through `stage2 | stage1 | stage0-as | elf`, checking both the emitted instruction
-forms (`:func` labels, prologue/epilogue, frame-relative vars, numeric if/while) and
-exit codes across the whole sweep. The compiler is written in stage-1's language with
-**~135 multi-char labels**, which stage 1 resolves **numerically** (m32 — the
-single-char pool is retired), so no pool cap applies and the source can keep growing.
+forms (`:func` labels, prologue/epilogue, frame-relative vars, numeric if/while,
+pointer scaling `lsl x0 x0 x3`) and exit codes across the whole sweep. The compiler is
+written in stage-1's language with **~300 multi-char labels**, which stage 1 resolves
+**numerically** (m32 — the single-char pool is retired), so no pool cap applies (only
+stage 1's *own* source is byte-symtab-bound) and the source can keep growing.
 Program *size* is bounded by the compiler's buffers, raised in m30 to 64 KB input and
 256 KB output (with stage0-as INBUF and elf CODEBUF raised to 256 KB to match), so
 large multi-block programs compile end-to-end.
