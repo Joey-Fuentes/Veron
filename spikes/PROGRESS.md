@@ -388,6 +388,40 @@ to real `as`, numeric adr loads data, bare `@` label intact). Next: **stage 1 �
 numeric resolver**, retiring the pool for good; then functions and the rest of the
 floor land with label count off the table.
 
+**Milestone 32 — stage 1 becomes a NUMERIC label resolver (the pool is retired).**
+This is the architectural payoff the last two milestones set up. stage 1 was a
+one-pass **pool mapper**: it renamed each multi-character label to a single-char
+slot in stage0-as's 128-entry byte symtab (~91 safe printable). That cap is a dead
+end for a growing compiler. stage 1 is now a **two-pass numeric resolver**: pass 1
+walks the program tracking assembled position and records every `:name`
+definition's position in a dynamic symbol table (names in a name buffer, positions
+in a parallel word array); pass 2 re-walks, **drops** the `:name` definitions, and
+rewrites every branch/`adr` reference to a numeric `@<pos>` — which stage0-as
+encodes directly (numeric branch from m27, numeric `adr` from m31). The output is
+**label-free**, so stage0-as's symtab is never in the path for stage-2/3 code and
+the number of labels a program may use is **bounded only by memory**. stage 1's
+*own* source still uses single-char labels (it is assembled by stage0-as) — ~53 of
+them, well within 128 — but that constrains only stage 1's source, not the programs
+it resolves. The resolver is authored with readable label names and mechanically
+mapped to distinct single chars (`author_stage1.py`) so the 53-label single-char
+source stays maintainable. One subtlety cost a debugging loop: `emitnl` does an
+internal `bl`, so it must save/restore the link register (every other helper is a
+leaf); a leaf-only assumption made its `ret` branch to itself. Validated on the
+bench through the assembled ladder: the new stage 1 assembles (315 instrs, 53
+labels); the real stage-2 compiler source resolves to a binary **byte-identical to
+the old pool path** (2481 bytes, zero labels remaining) and the resolved compiler
+compiles+runs correctly; numeric `adr`-to-data resolves; and the **ceiling is
+gone** — 89/150/300/600-label programs resolve to label-free numeric output and run
+to the right exit codes (300+ merely slow in the Python interp's O(n^2) lookup,
+native-fast on hardware). `stage1_ref.py` is now the resolver model; `validate.py`
+replaces the pool tests with resolver tests (label-free output + correct exit for
+62/88/89/150 labels, numeric branch/adr refs present, a 120-label backward-branch
+loop); the `stage1-as-demo` workflow proves byte-identity to real `as`, adr+mem,
+and a 200-label program (no pool). Limits noted: `@<pos>` is 6 digits (positions
+< 1,000,000 bytes) and lookup is linear (a hash table can come later). With labels
+off the table, **functions** (design already validated) and the rest of the floor
+can land unconstrained.
+
 ---
 
 ## 6. What's next

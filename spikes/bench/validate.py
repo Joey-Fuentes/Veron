@@ -127,35 +127,41 @@ if os.path.exists(s1p):
     # resolved output should be about as long as input (not truncated to ~500)
     check("stage1 not truncating ~10KB input", len(out) > 9000, True)
 
-print("== stage 1 label pool holds >62 distinct labels (expanded pool) ==")
-# stage1 maps each multi-char label to a single-char pool slot; the pool is the
-# hard cap on distinct labels per program. It was expanded past the original 62
-# (A-Za-z0-9) with punctuation chars, which stage0-as accepts as labels (symtab
-# is indexed by the raw byte). Guard: a program with N distinct labels must
-# resolve AND assemble AND run through the real ladder, exercising the new chars.
+print("== stage 1 is a NUMERIC label resolver (no pool, no ceiling) ==")
+# stage 1 is now a two-pass resolver: it computes each label's assembled position
+# and rewrites every branch/adr reference to a numeric @<pos>, DROPPING the ':label'
+# definitions. Output is label-free, so stage-0-as's 128-symtab is never in the path
+# and label count is bounded only by memory. Guard: an N-distinct-label program must
+# resolve to LABEL-FREE output and assemble+run to the right exit code, for N well
+# past the old 88-slot pool cap.
 if os.path.exists(s1p):
     _, s1prog, _ = assemble(open(s1p).read())
     def _chain(n):                       # fall-through chain: exit code == n iff
         L = ["mov x0 0"]                 # every label resolved to the right offset
         for i in range(n):
-            L += [f"b L{i:03}", f":L{i:03}", "add x0 x0 1"]
+            L += [f"b LBL{i:04}", f":LBL{i:04}", "add x0 x0 1"]
         return "\n".join(L + ["mov x8 93", "svc"]) + "\n"
-    for n in (62, 63, 70, 76, 80, 88):   # 63+ forces punctuation pool slots; 77+ uses the m28 chars
+    for n in (62, 88, 89, 150):          # 89+ was IMPOSSIBLE with the 88-slot pool (300+ verified too, slow in interp)
         _, res = run(s1prog, stdin=_chain(n).encode())
-        rc, _ = run(assemble(res.decode())[1])
-        check(f"stage1 resolves {n} labels -> ladder exit {n}", rc, n & 0xFF)
-    # the pool slots at/after index 62 must be non-alphanumeric (the new chars)
-    _, res = run(s1prog, stdin=_chain(88).encode())
-    defs = [ln[1] for ln in res.decode().split("\n") if ln.startswith(":") and len(ln) == 2]
-    check("stage1 pool slot 63 is a new (punct) char", defs[63].isalnum(), False)
-    check("stage1 pool slot 87 is a new (punct) char", defs[87].isalnum(), False)
-    check("stage1 pool holds 88 distinct slots", len(defs) >= 88, True)
-    # backward branch + adr to a high-index (punctuation) label must resolve too
-    fill = "\n".join(f"b F{i:03}\n:F{i:03}" for i in range(80))
+        out = res.decode()
+        check(f"stage1 resolves {n} labels: output is label-free",
+              any(l.strip().startswith(":") for l in out.split("\n")), False)
+        rc, _ = run(assemble(out)[1])
+        check(f"stage1 resolves {n} labels -> ladder exit {n & 0xFF}", rc, n & 0xFF)
+    # references become numeric @<pos>
+    _, res = run(s1prog, stdin=_chain(4).encode())
+    check("stage1 emits numeric branch refs (b @<pos>)", "b @" in res.decode(), True)
+    # adr-to-data resolves numerically too (uses the m31 numeric adr)
+    _, res = run(s1prog, stdin="mov x9 0\nadr x1 dat\nldrb w0 x1 x9\nmov x8 93\nsvc\n:dat\n.byte 42\n".encode())
+    out = res.decode()
+    check("stage1 resolves adr-to-data numerically (adr @<pos>)", "adr x1 @" in out, True)
+    check("stage1 numeric adr program runs", run(assemble(out)[1])[0], 42)
+    # backward branch through a big-label program (way past the old pool)
+    fill = "\n".join(f"b FWD{i:04}\n:FWD{i:04}" for i in range(120))
     loop = fill + "\nmov x0 0\nmov x1 5\n:LOOP\nadd x0 x0 1\ncmp x0 x1\nb.ne LOOP\nmov x8 93\nsvc\n"
     _, res = run(s1prog, stdin=loop.encode())
     rc, _ = run(assemble(res.decode())[1])
-    check("stage1 backward-branch to punct label (80-label prog) -> 5", rc, 5)
+    check("stage1 backward branch through 120-label program -> 5", rc, 5)
 
 print("== stage 2 uses WORD variable slots (through the real assembled ladder) ==")
 # Regression guard for the byte->word slot upgrade. Variables are 4-byte slots

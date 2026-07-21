@@ -1,17 +1,20 @@
 name: stage1-as-demo
 
-# SPIKE (invariants suspended). Stage 1 = macro-as, capability #1: MULTI-CHARACTER
-# LABELS. stage1-as.s0 is written in stage0-as's OWN language (subroutines +
-# shifts + brk) and assembled by stage0-as. It reads assembly with multi-char
-# labels and emits stage0-as-compatible single-char-label assembly:
+# SPIKE (invariants suspended). Stage 1 = macro-as: a TWO-PASS NUMERIC LABEL
+# RESOLVER, written in stage0-as's OWN language (subroutines + shifts + brk) and
+# assembled by stage0-as. It reads assembly with multi-char labels, computes each
+# label's assembled position, and emits LABEL-FREE stage0-as assembly with every
+# branch/adr reference rewritten to a numeric @<pos> (definitions dropped). This
+# RETIRES the single-char pool: label count is bounded only by memory, not the
+# 128-entry symtab, so stage 2/3 can grow without a ceiling.
 #
 #   prog.s1 | stage1 | stage0-as | elf out && ./out
 #
-# Checks: (1) a program using multi-char labels, resolved through stage1 and
-# assembled, is BYTE-IDENTICAL to real `as` of the equivalent; (2) it RUNS to
-# the right exit code; (3) an adr + memory program with a multi-char DATA label
-# also runs correctly; (4) the expanded 88-slot label pool (A-Za-z0-9 + punct)
-# resolves an 88-label program through the real ladder to the right exit code.
+# Checks: (1) a multi-char-label program resolved through stage1 + stage0-as is
+# BYTE-IDENTICAL to real `as` of the equivalent (numeric refs encode the same
+# offsets); (2) it RUNS correctly; (3) an adr+memory program with a multi-char
+# DATA label resolves numerically and runs; (4) a program with FAR more labels
+# than the old 88-slot pool (200) resolves to label-free numeric output and runs.
 
 on:
   push:
@@ -73,36 +76,37 @@ jobs:
           out_bytes=$(cat big.s1 | qemu-aarch64 ./stage1 | wc -c)
           big_ok=no; [ "$out_bytes" -ge $((in_bytes - 200)) ] && big_ok=yes
 
-          # --- 4) label-pool expansion: 88 distinct labels force the new (punct) slots ---
-          # A fall-through chain of N labels; exit code == N iff every label (incl.
-          # punctuation-slot ones, indices 62+ and the m28 chars at 76+) resolves.
-          : > pool.s1
-          echo 'mov x0 0' >> pool.s1
-          for i in $(seq 0 87); do printf 'b L%03d\n:L%03d\nadd x0 x0 1\n' "$i" "$i" >> pool.s1; done
-          printf 'mov x8 93\nsvc\n' >> pool.s1
-          cat pool.s1 | qemu-aarch64 ./stage1 > pool.resolved
-          # once >62 labels are used, punctuation slots appear as labels (e.g. ':_')
-          pool_punct=no; grep -q '^:_$' pool.resolved && pool_punct=yes
-          cat pool.resolved | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf pool.elf
-          set +e; qemu-aarch64 ./pool.elf; pool_rc=$?; set -e
-          pool_ok=no; [ "$pool_rc" = 88 ] && [ "$pool_punct" = yes ] && pool_ok=yes
+          # --- 4) NO CEILING: 200 distinct labels (far past the old 88-slot pool) ---
+          # A fall-through chain of 200 labels; exit code == 200 iff every label
+          # resolved to the right position. The resolved output must be LABEL-FREE
+          # (definitions dropped) and use numeric @<pos> references.
+          : > res.s1
+          echo 'mov x0 0' >> res.s1
+          for i in $(seq 0 199); do printf 'b R%04d\n:R%04d\nadd x0 x0 1\n' "$i" "$i" >> res.s1; done
+          printf 'mov x8 93\nsvc\n' >> res.s1
+          cat res.s1 | qemu-aarch64 ./stage1 > res.resolved
+          labelfree=no; grep -q '^:' res.resolved || labelfree=yes
+          numeric=no; grep -q 'b @' res.resolved && numeric=yes
+          cat res.resolved | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf res.elf
+          set +e; qemu-aarch64 ./res.elf; res_rc=$?; set -e
+          pool_ok=no; [ "$res_rc" = 200 ] && [ "$labelfree" = yes ] && [ "$numeric" = yes ] && pool_ok=yes
 
           echo "loop ours: $(hex loop.bin)"
           echo "loop ref : $(hex loop_ref.bin)"
           {
-            echo "## stage1-as — multi-character labels"
+            echo "## stage1-as — numeric label resolver (pool retired)"
             echo '```'
             echo "resolved == real as (byte-identical) : $loop_ok"
             echo "loop w/ multi-char labels exit       : $loop_rc  (expect 7)"
             echo "adr+mem w/ multi-char data label exit: $mem_rc  (expect 9)"
             echo "large input (~${in_bytes}B) not truncated : $big_ok  (out=${out_bytes}B)"
-            echo "88-label pool (punct slots) exit     : $pool_rc  (expect 88, punct=$pool_punct)"
+            echo "200-label program (no pool) exit     : $res_rc  (expect 200, label-free=$labelfree numeric=$numeric)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$loop_ok" = yes ] && [ "$loop_rc" = 7 ] && [ "$mem_rc" = 9 ] && [ "$big_ok" = yes ] && [ "$pool_ok" = yes ]; then
-            echo "PASS: stage1 resolves multi-char labels (byte-identical to as), runs, handles large inputs, and the expanded 88-slot label pool resolves through the real ladder."
+            echo "PASS: stage1 resolves multi-char labels to LABEL-FREE numeric output (byte-identical to as), runs, handles large inputs, and resolves a 200-label program (no pool, no ceiling)."
           else
-            echo "FAIL: loop_ok=$loop_ok loop_rc=$loop_rc mem_rc=$mem_rc big_ok=$big_ok pool_ok=$pool_ok"
+            echo "FAIL: loop_ok=$loop_ok loop_rc=$loop_rc mem_rc=$mem_rc big_ok=$big_ok res_ok=$pool_ok (res_rc=$res_rc labelfree=$labelfree numeric=$numeric)"
             exit 1
           fi

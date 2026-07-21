@@ -1,4 +1,10 @@
+#!/usr/bin/env python3
+# Author the new stage-1 (two-pass numeric label resolver) with READABLE labels,
+# then map each label to a distinct single character (stage-0-as symtab is per-byte,
+# so stage-1's own labels must be single-char). Emits the final stage1-as.s0.
+import re, sys
 
+SRC = r"""
 # stage1 (macro-as): TWO-PASS NUMERIC LABEL RESOLVER.  Retires the single-char pool.
 # Reads stdin (asm with multi-char labels); writes stdout: label-free stage-0-as
 # assembly with every branch/adr reference rewritten to a numeric @<pos> and every
@@ -25,166 +31,166 @@ add x0 x19 x1
 mov x8 214
 svc
 mov x21 0
-:A
+:rdloop
 mov x2 0
 movk x2 4 16
 sub x2 x2 x21
 cmp x2 1
-b.lt B
+b.lt rddone
 mov x0 0
 add x1 x19 x21
 mov x8 63
 svc
 cmp x0 1
-b.lt B
+b.lt rddone
 add x21 x21 x0
-b A
-:B
+b rdloop
+:rddone
 # ===== PASS 1: compute positions, record label definitions =====
 mov x20 0
 mov x28 0
 mov x25 0
 mov x26 0
-:C
+:p1
 cmp x20 x21
-b.ge I
-bl W
+b.ge p1done
+bl sksp
 cmp x20 x21
-b.ge I
+b.ge p1done
 ldrb w0 x19 x20
 cmp w0 10
-b.eq D
+b.eq p1nl
 cmp w0 35
-b.eq E
+b.eq p1skip
 cmp w0 58
-b.eq F
+b.eq p1label
 cmp w0 46
-b.eq G
+b.eq p1dir
 add x28 x28 4
-bl Z
-b C
-:D
+bl skipnl
+b p1
+:p1nl
 add x20 x20 1
-b C
-:E
-bl Z
-b C
-:F
+b p1
+:p1skip
+bl skipnl
+b p1
+:p1label
 add x20 x20 1
-bl g
-bl Z
-b C
-:G
+bl addlabel
+bl skipnl
+b p1
+:p1dir
 add x2 x20 1
 ldrb w1 x19 x2
 cmp w1 98
-b.eq H
-bl s
+b.eq p1byte
+bl asciilen
 add x28 x28 x0
-bl Z
-b C
-:H
+bl skipnl
+b p1
+:p1byte
 add x28 x28 1
-bl Z
-b C
-:I
+bl skipnl
+b p1
+:p1done
 # ===== PASS 2: emit resolved output =====
 mov x20 0
 mov x23 0
-:J
+:p2
 cmp x20 x21
-b.ge V
-bl W
+b.ge p2done
+bl sksp
 cmp x20 x21
-b.ge V
+b.ge p2done
 ldrb w0 x19 x20
 cmp w0 10
-b.eq K
+b.eq p2nl
 cmp w0 58
-b.eq L
+b.eq p2drop
 cmp w0 35
-b.eq U
+b.eq p2copy
 cmp w0 97
-b.eq M
+b.eq p2a
 cmp w0 98
-b.eq N
-b U
-:K
+b.eq p2b
+b p2copy
+:p2nl
 add x20 x20 1
-b J
-:L
-bl Z
-b J
-:M
+b p2
+:p2drop
+bl skipnl
+b p2
+:p2a
 add x2 x20 1
 ldrb w1 x19 x2
 cmp w1 100
-b.ne U
+b.ne p2copy
 add x3 x20 2
 ldrb w2 x19 x3
 cmp w2 114
-b.eq P
-b U
-:N
+b.eq p2ref
+b p2copy
+:p2b
 add x2 x20 1
 ldrb w1 x19 x2
 cmp w1 32
-b.eq P
+b.eq p2ref
 cmp w1 46
-b.eq P
+b.eq p2ref
 cmp w1 108
-b.eq O
-b U
-:O
+b.eq p2bl
+b p2copy
+:p2bl
 add x3 x20 2
 ldrb w2 x19 x3
 cmp w2 114
-b.eq U
-b P
-:P
-bl b
+b.eq p2copy
+b p2ref
+:p2ref
+bl cptok
 mov w0 32
 strb w0 x22 x23
 add x23 x23 1
-bl W
+bl sksp
 cmp x20 x21
-b.ge R
+b.ge p2reflab
 ldrb w0 x19 x20
 cmp w0 120
-b.eq Q
+b.eq p2reg
 cmp w0 119
-b.eq Q
-b R
-:Q
-bl b
+b.eq p2reg
+b p2reflab
+:p2reg
+bl cptok
 mov w0 32
 strb w0 x22 x23
 add x23 x23 1
-bl W
-:R
+bl sksp
+:p2reflab
 ldrb w0 x19 x20
 cmp w0 64
-b.eq T
+b.eq p2asis
 cmp w0 48
-b.lt S
+b.lt p2resolve
 cmp w0 58
-b.lt T
-:S
-bl j
+b.lt p2asis
+:p2resolve
+bl findlabel
 mov w1 64
 strb w1 x22 x23
 add x23 x23 1
-bl z
-bl f
-b J
-:T
-bl b
-bl f
-b J
-:U
-bl d
-b J
-:V
+bl emitpos
+bl emitnl
+b p2
+:p2asis
+bl cptok
+bl emitnl
+b p2
+:p2copy
+bl cpline
+b p2
+:p2done
 mov x0 1
 mov x1 x22
 mov x2 x23
@@ -194,88 +200,88 @@ mov x0 0
 mov x8 93
 svc
 # ---- sksp: skip spaces/tabs in input ----
-:W
+:sksp
 cmp x20 x21
-b.ge Y
+b.ge skspx
 ldrb w10 x19 x20
 cmp w10 32
-b.eq X
+b.eq skspa
 cmp w10 9
-b.eq X
-b Y
-:X
+b.eq skspa
+b skspx
+:skspa
 add x20 x20 1
-b W
-:Y
+b sksp
+:skspx
 ret
 # ---- skipnl: advance input past next newline ----
-:Z
+:skipnl
 cmp x20 x21
-b.ge a
+b.ge skipnlx
 ldrb w0 x19 x20
 add x20 x20 1
 cmp w0 10
-b.ne Z
-:a
+b.ne skipnl
+:skipnlx
 ret
 # ---- cptok: copy a token (until space/tab/newline) input->output ----
-:b
+:cptok
 cmp x20 x21
-b.ge c
+b.ge cptokx
 ldrb w0 x19 x20
 cmp w0 32
-b.eq c
+b.eq cptokx
 cmp w0 9
-b.eq c
+b.eq cptokx
 cmp w0 10
-b.eq c
+b.eq cptokx
 strb w0 x22 x23
 add x23 x23 1
 add x20 x20 1
-b b
-:c
+b cptok
+:cptokx
 ret
 # ---- cpline: copy until newline inclusive input->output ----
-:d
+:cpline
 cmp x20 x21
-b.ge e
+b.ge cplinex
 ldrb w0 x19 x20
 strb w0 x22 x23
 add x23 x23 1
 add x20 x20 1
 cmp w0 10
-b.eq e
-b d
-:e
+b.eq cplinex
+b cpline
+:cplinex
 ret
 # ---- emitnl: emit newline to output, skip rest of input line ----
 # NOTE: does an internal 'bl', so it must save/restore x30 (else 'ret' loops).
-:f
+:emitnl
 mov x17 x30
 mov w0 10
 strb w0 x22 x23
 add x23 x23 1
-bl Z
+bl skipnl
 mov x30 x17
 ret
 # ---- addlabel: pass1 - append name at x20 to nametbl, postbl[count]=x28, count++ ----
-:g
+:addlabel
 mov x6 x20
-:h
+:addla
 cmp x6 x21
-b.ge i
+b.ge addlb
 ldrb w4 x19 x6
 cmp w4 32
-b.eq i
+b.eq addlb
 cmp w4 9
-b.eq i
+b.eq addlb
 cmp w4 10
-b.eq i
+b.eq addlb
 strb w4 x24 x25
 add x25 x25 1
 add x6 x6 1
-b h
-:i
+b addla
+:addlb
 mov w4 0
 strb w4 x24 x25
 add x25 x25 1
@@ -286,106 +292,138 @@ str w28 x9
 add x26 x26 1
 ret
 # ---- findlabel: pass2 - name at x20 -> w0=position; advance x20 past name ----
-:j
+:findlabel
 mov x11 0
 mov x12 0
-:k
+:finda
 cmp x11 x26
-b.ge r
+b.ge findfail
 mov x6 x20
 mov x7 x12
-:l
+:findb
 ldrb w4 x24 x7
 mov w8 0
 cmp x6 x21
-b.ge m
+b.ge finddelim
 ldrb w5 x19 x6
 cmp w5 32
-b.eq m
+b.eq finddelim
 cmp w5 9
-b.eq m
+b.eq finddelim
 cmp w5 10
-b.eq m
-b n
-:m
+b.eq finddelim
+b findcmp
+:finddelim
 mov w8 1
-:n
+:findcmp
 cmp w4 0
-b.eq o
+b.eq findsend
 cmp w8 1
-b.eq p
+b.eq findnext
 cmp x4 x5
-b.ne p
+b.ne findnext
 add x6 x6 1
 add x7 x7 1
-b l
-:o
+b findb
+:findsend
 cmp w8 1
-b.eq q
-:p
+b.eq findhit
+:findnext
 ldrb w4 x24 x12
 add x12 x12 1
 cmp w4 0
-b.ne p
+b.ne findnext
 add x11 x11 1
-b k
-:q
+b finda
+:findhit
 mov x8 2
 lsl x7 x11 x8
 add x9 x27 x7
 ldr w0 x9
 mov x20 x6
 ret
-:r
+:findfail
 mov x0 0
 mov x20 x6
 ret
 # ---- asciilen: w0 = decoded byte length of the .ascii string on this line ----
-:s
+:asciilen
 mov x6 x20
-:t
+:alenq
 cmp x6 x21
-b.ge y
+b.ge alenx
 ldrb w4 x19 x6
 add x6 x6 1
 cmp w4 34
-b.ne t
+b.ne alenq
 mov x0 0
-:u
+:alenc
 cmp x6 x21
-b.ge y
+b.ge alenx
 ldrb w4 x19 x6
 cmp w4 34
-b.eq y
+b.eq alenx
 cmp w4 92
-b.ne v
+b.ne alenn
 add x6 x6 1
-:v
+:alenn
 add x0 x0 1
 add x6 x6 1
-b u
-:y
+b alenc
+:alenx
 ret
 # ---- emitpos: emit x0 as 6-digit decimal to output tail ----
-:z
+:emitpos
 mov x2 6
 add x4 x23 6
-:0
+:emitposa
 mov x5 0
-:1
+:emitposb
 cmp x0 10
-b.lt 2
+b.lt emitposc
 sub x0 x0 10
 add x5 x5 1
-b 1
-:2
+b emitposb
+:emitposc
 add x0 x0 48
 sub x4 x4 1
 strb w0 x22 x4
 mov x0 x5
 sub x2 x2 1
 cmp x2 0
-b.ne 0
+b.ne emitposa
 add x23 x23 6
 ret
+"""
 
+# --- map readable labels to distinct single chars (avoid lowercase w/x, ':' , '#') ---
+defs = re.findall(r'^:(\w+)', SRC, re.M)
+seen=[]
+for d in defs:
+    if d not in seen: seen.append(d)
+# candidate single-char label bytes: A-Z, a-z (minus w,x), 0-9, safe punct
+cands = [chr(c) for c in range(ord('A'),ord('Z')+1)]
+cands += [chr(c) for c in range(ord('a'),ord('z')+1) if chr(c) not in 'wx']
+cands += [chr(c) for c in range(ord('0'),ord('9')+1)]
+cands += list("_$?!%^&~|=<>+()*-./;[]{}")
+assert len(seen) <= len(cands), f"need {len(seen)} labels, have {len(cands)}"
+m = {name: cands[i] for i,name in enumerate(seen)}
+
+out=[]
+for line in SRC.split('\n'):
+    st=line.strip()
+    if st.startswith('#') or st=='':
+        out.append(line); continue
+    if st.startswith(':'):
+        nm=st[1:]
+        out.append(':'+m[nm]); continue
+    toks=st.split()
+    # rewrite branch/adr label operands (last token) if it's a known label
+    if toks[0] in ('b','bl','b.eq','b.ne','b.lt','b.ge','b.gt','b.le','adr') and toks[-1] in m:
+        toks[-1]=m[toks[-1]]
+        out.append(' '.join(toks)); continue
+    out.append(line)
+open('spikes/stage1-as/stage1-as.s0','w').write('\n'.join(out)+'\n')
+print(f"wrote stage1-as.s0 with {len(seen)} labels mapped to single chars")
+print("label map (readable -> char):")
+for k,v in m.items(): print(f"   {k:10} -> {v!r}")

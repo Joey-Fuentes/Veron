@@ -20,8 +20,9 @@ a red CI.
 - `interp.py` — a small ARM64 interpreter for the exact instruction subset in
   play (mov/add/sub/cmp/branches/ldrb/strb/ldr/str/adr/bl/ret/br/blr/orr/and/
   shifts/movk/svc), plus the syscalls used (`read`/`write`/`exit`/`brk`).
-- `stage1_ref.py` — a plain-Python reference of stage 1 (multi-char label
-  resolver), used to develop and cross-check `stage1-as.s0`.
+- `stage1_ref.py` — a plain-Python reference of stage 1 (two-pass **numeric label
+  resolver**: labels -> positions -> `@<pos>`, pool retired), used to develop and
+  cross-check `stage1-as.s0`.
 - `validate.py` — pins the bench to CI-confirmed results (byte output, exit
   codes) and to faithfulness guards. **Run this whenever stage0-as changes.**
 
