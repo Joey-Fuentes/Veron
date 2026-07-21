@@ -488,6 +488,28 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 pointer exit -> {want}", _exit(cs), want)
 
+    print("== stage 2 arrays: int a[N], subscript a[i] (rvalue+lvalue), decay (A3c) ==")
+    # A3c adds int arrays on the word model. Frame slots become variable-size (an
+    # int a[N] reserves N words, not 1), which forces the symbol table to store each
+    # variable's frame offset explicitly rather than deriving it from its index.
+    # a[i] scales the index by 8 (lsl x2 x2 x3) and loads/stores at base+i*8; a bare
+    # array name decays to &a[0]; a[i] on a pointer loads the pointer first.
+    ema = _emit("int main(){int a[3];int i;i=0;while(i<3){a[i]=i;i=i+1;}return a[2];}")
+    check("stage2 subscript scales index by 8 (lsl x2 x2 x3)", "lsl x2 x2 x3" in ema, True)
+    check("stage2 subscript adds scaled index to base (add x1 x1 x2)", "add x1 x1 x2" in ema, True)
+    emd = _emit("int main(){int a[2];a[0]=7;int* p;p=a;return p[0];}")
+    check("stage2 bare array name decays to address (add x0 x10)", "add x0 x10" in emd, True)
+    for cs, want in [
+        ("int main(){int a[3];a[0]=5;a[1]=7;return a[0]+a[1];}", 12),                    # store + load
+        ("int main(){int a[5];int i;i=0;while(i<5){a[i]=i*i;i=i+1;}return a[3];}", 9),    # indexed loop
+        ("int main(){int a[3];a[2]=99;int* p;p=a;return p[2];}", 99),                    # decay -> pointer subscript
+        ("int main(){int a[3];a[0]=10;a[1]=20;a[2]=30;int* p;p=&a[1];return *p;}", 20),  # &a[i]
+        ("int sum(int* p,int n){int s;int i;s=0;i=0;while(i<n){s=s+p[i];i=i+1;}return s;} int main(){int a[4];a[0]=1;a[1]=2;a[2]=3;a[3]=4;return sum(a,4);}", 10),
+        ("int dot(int* a,int* b,int n){int s;int i;s=0;i=0;while(i<n){s=s+a[i]*b[i];i=i+1;}return s;} int main(){int x[3];int y[3];x[0]=1;x[1]=2;x[2]=3;y[0]=4;y[1]=5;y[2]=6;return dot(x,y,3);}", 32),
+        ("int main(){int a[6];int i;i=0;while(i<6){a[i]=i;i=i+1;}return a[a[2]]+a[5];}", 7),  # nested subscript
+    ]:
+        check(f"stage2 array exit -> {want}", _exit(cs), want)
+
     print("== stage 2 large programs (enlarged input/output/stack buffers) ==")
     # The compiler's buffers were raised (input 64KB, output 256KB, bigger stacks),
     # so large programs no longer overflow the old ~4.4KB output buffer. Combined

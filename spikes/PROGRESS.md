@@ -620,6 +620,37 @@ and subscript `a[i]`** (per-var frame sizing + scaled indexing), then **A3d —
 
 ---
 
+**Milestone 39 — stage 2: arrays — `int a[N]` and subscript `a[i]` (A3c).** This
+adds indexable memory. `int a[N]` reserves N words in the frame, `a[i]` reads and
+writes the i-th element (rvalue and lvalue), and a bare array name **decays** to
+`&a[0]` so arrays pass to functions as pointers (`sum(a, n)` with `int* p`). The
+structural change under the hood is that **frame slots are now variable-size** — an
+`int a[N]` takes N words, not one — which breaks the old shortcut of deriving a
+variable's frame offset from its symbol-table index. The **symbol table is
+reworked**: each entry grows to four words `[name_start, name_len, frame_offset,
+size]`, `symdecl` computes a **running byte offset** (previous entry's offset + its
+size) and stores it explicitly, and `symlookup` returns the stored offset plus the
+size (so the code generator can tell an array from a pointer: an array's base is its
+frame address `add x0 x10 off`, a pointer's base is loaded first with `ldr x1 x1`).
+The frame **prescan** becomes size-aware — it now measures each declaration
+(consuming `[N]` via a new `parsenum` digit-folder) and sums N words per array, so
+the prologue reserves a frame big enough; without this an array silently overruns
+its frame and a later call corrupts it. Subscripting scales the index by the word
+size (`lsl x2 x2 x3`, ×8) and addresses `base + i*8`; `a[i]` reuses the **re-entrant
+expression compiler** to parse the index (stopping at `]`), so nested subscripts
+like `a[a[2]]` and expressions like `a[i]*b[i]` work. `&a[i]` yields an element
+address. No stage0-as change — subscripting is adds, a shift, and word loads/stores
+that already exist. Designed against the oracle (`stage2_ref_a3c.py`) and verified
+through the **real assembled ladder** on element load/store, an indexed fill loop,
+array→pointer decay, a two-array dot product (`dot(x,y,3)` → 32), nested subscript
+`a[a[2]]`, and `&a[i]` — plus the **entire pointer + A2 + division corpus**
+unchanged. `validate.py` gains an array section (201→211 checks) and the
+`stage2-mini-c-demo` workflow gains subscript-scaling structural greps and array
+behavioural runs in its pass/fail gate. Next: **A3d — `char`** (byte `ldrb`/`strb`
+access + char literals), the last A3 rung before revisiting the M2-Planet subset.
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
@@ -649,9 +680,11 @@ stage in the language of the stage below.
   machine-word model** (m37, A3a: `int == pointer` width, 8-byte value stack + frame
   slots — the foundation pointers need), then **single-level pointers** (m38, A3b:
   `int* p`, `&` address-of, `*` dereference, `*p = e` store-through, pass-by-
-  reference — unary `*` disambiguated from multiply by operand position). Next:
-  **A3c — arrays `int a[N]` + subscript `a[i]`**, then **A3d — `char`** (byte
-  `ldrb`/`strb` access + char literals).
+  reference — unary `*` disambiguated from multiply by operand position), then
+  **int arrays** (m39, A3c: `int a[N]`, subscript `a[i]` rvalue+lvalue, array-name
+  decay — variable-size frame slots forced the symbol table to store each variable's
+  frame offset explicitly). Next: **A3d — `char`** (byte `ldrb`/`strb` access + char
+  literals).
   See **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**

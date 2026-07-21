@@ -55,6 +55,16 @@ int main(){ return name(2,3); }   // program is entered via bl main
   **operand position**, so `a*b` and `*p` — and `*p*b` — all compile correctly.
   A3b also enables **uninitialised decls** (`int* p;`) and **bare call statements**
   (`f(args);`, result discarded). Arrays `[]` and `char` are the next two rungs.
+- **arrays (A3c)**: `int a[N]` reserves N words in the frame; `a[i]` reads/writes the
+  i-th element (rvalue and lvalue); a bare array name **decays** to `&a[0]`, so
+  `sum(a, n)` passes the array to an `int* p` param; `&a[i]` is an element address.
+  Indexing scales by the word size (`lsl x2 x2 x3`, ×8) and addresses `base + i*8`
+  (an array's base is `add x0 x10 off`; a pointer's is loaded first). The index is a
+  full re-entrant expression, so `a[a[2]]` and `a[i]*b[i]` work. Variable-size frame
+  slots forced the **symbol table** to store each variable's frame offset explicitly
+  (a four-word entry `[name_start, name_len, offset, size]`) rather than deriving it
+  from the declaration index, and the frame **prescan** to sum array sizes so the
+  prologue reserves enough — the guard against a call clobbering an under-sized array.
 - **control flow**: `if` and `while`, arbitrarily nested. The condition is any
   expression, tested for **nonzero = true** (C truthiness). if/while codegen is
   iterative with an explicit *block stack*; the **expression** compiler, by

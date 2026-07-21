@@ -111,6 +111,11 @@ jobs:
           grep -q 'add x0 x10' ptr.s || { echo "MISSING &name address-of (add x0 x10)"; struct_ok=no; }
           grep -q 'ldr x1 x1'  ptr.s || { echo "MISSING *name deref (ldr x1 x1)"; struct_ok=no; }
 
+          # ---- structural: arrays scale the index by 8 (lsl x2 x2 x3) + base+index ----
+          printf '%s' 'int main(){int a[3]; int i; i=0; while(i<3){a[i]=i; i=i+1;} return a[2];}' | qemu-aarch64 ./stage2 > arr.s
+          grep -q 'lsl x2 x2 x3' arr.s || { echo "MISSING subscript index scaling (lsl x2 x2 x3)"; struct_ok=no; }
+          grep -q 'add x1 x1 x2'  arr.s || { echo "MISSING subscript base+index (add x1 x1 x2)"; struct_ok=no; }
+
           # ---- structural: if/while emit a zero-test + BACKPATCHED numeric branch ----
           # if/while control flow is emitted as b.eq @<pos> / b @<pos> with the target
           # position backpatched at '}', which stage1 passes through. The only labels
@@ -171,6 +176,13 @@ jobs:
           # correct exit proves the value stack + frame slots are genuinely 64-bit.
           try 'int main(){int a=2000; return a*a*a/1000;}'        0
           try 'int main(){int a=3000; int b=3000; return a*b/7;}' 82
+          echo "== stage-2: arrays (int a[N], subscript a[i], decay) (A3c) =="
+          # int arrays on the word model: indexed load/store + decay to a pointer.
+          try 'int main(){int a[3]; a[0]=5; a[1]=7; return a[0]+a[1];}'                                                  12
+          try 'int main(){int a[5]; int i; i=0; while(i<5){a[i]=i*i; i=i+1;} return a[3];}'                              9
+          try 'int main(){int a[3]; a[2]=99; int* p; p=a; return p[2];}'                                                99
+          try 'int sum(int* p,int n){int s; int i; s=0; i=0; while(i<n){s=s+p[i]; i=i+1;} return s;} int main(){int a[4]; a[0]=1; a[1]=2; a[2]=3; a[3]=4; return sum(a,4);}' 10
+          try 'int dot(int* a,int* b,int n){int s; int i; s=0; i=0; while(i<n){s=s+a[i]*b[i]; i=i+1;} return s;} int main(){int x[3]; int y[3]; x[0]=1; x[1]=2; x[2]=3; y[0]=4; y[1]=5; y[2]=6; return dot(x,y,3);}' 32
           echo "== stage-2: pointers (& address-of, * deref, *p = e store-through) (A3b) =="
           # single-level pointers on the word model: indirection + pass-by-reference.
           try 'int main(){int x=5; int* p; p=&x; return *p;}'                                                    5
@@ -309,7 +321,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ]; then
-            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
+            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
           else
             echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok fn=$fn_ok div=$div_ok"; exit 1
           fi
