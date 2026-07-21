@@ -74,6 +74,8 @@ so they need no load address.
   symtab cap. Only `@` followed by a digit is numeric; a bare `@` remains the
   ordinary pool label `@`, so stage 1's label output is unaffected.
 - Well-formed input assumed — minimal error checking (it's a spike).
+- Input buffer is 256 KB (`.bss`, raised in m30 from 16 KB) so it can assemble the
+  large label-free outputs stage 2 now produces; output is streamed (unbounded).
 
 ## See it run
 

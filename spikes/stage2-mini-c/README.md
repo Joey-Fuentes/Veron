@@ -59,8 +59,8 @@ the condition and `b.eq @<placeholder>`, emits the body, then at `}` emits
 The position field is written by `pos6`, a division-free 6-digit itoa. Because both
 variables (frame-relative) and control flow (backpatched) are label-free, **the
 emitted program contains no labels** — control-flow count is no longer bounded by
-the pool/symtab (program *size* is still bounded by the compiler's output buffer,
-which a later increment raises). Statement dispatch keys on the **second**
+the pool/symtab (program *size* is bounded only by the compiler's buffers, raised
+in m30 to 64 KB input / 256 KB output). Statement dispatch keys on the **second**
 character: a keyword's is a letter (`in`/`if`/`wh`/`re`), a single-char
 reassignment's is a space or `=`, so variables may be named `i`, `w`, or `r`.
 
@@ -112,5 +112,6 @@ truth. The compiler is written in stage-1's language and now uses **81** of the
 6-digit itoa (`pos6`), and branch strings while dropping the label emitter (net
 +6 over m26's 75), which is why the stage-1 pool was expanded to 88 first (m28).
 Further growth that needs more labels should expand the pool again (a cheap
-stage-1 change) rather than cram. Program *size* is currently bounded by the
-compiler's ~4.4 KB output buffer; raising the buffers is the next increment.
+stage-1 change) rather than cram. Program *size* is bounded by the compiler's buffers, raised in m30 to 64 KB input
+and 256 KB output (with stage0-as INBUF and elf CODEBUF raised to 256 KB to match),
+so large multi-block programs compile end-to-end.

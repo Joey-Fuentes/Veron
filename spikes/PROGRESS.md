@@ -348,6 +348,25 @@ sweep), and **CI-confirmed** via `stage2-mini-c-demo`. Next: **larger compiler
 buffers** (input/output/stacks) to cash in the label-free codegen, then functions
 on the m25 call stack.
 
+**Milestone 30 — larger pipeline buffers (cashing in the label-free codegen).**
+The m29 backpatch made control flow label-free, but the compiler's fixed buffers
+capped real programs at ~10 blocks. This raises them across the whole pipeline:
+stage 2's input to **64 KB**, output to **256 KB**, with the operator/block stacks
+moved out accordingly (offsets built with `movk`, since they exceed a 16-bit
+immediate); stage0-as's input buffer **16 KB → 256 KB** and elf's code buffer
+**32 KB → 256 KB** (both `.bss`, so zero file bloat) so the *whole* `stage2 |
+stage0-as | elf` pipeline handles large `.s`/binaries — otherwise stage 2 could
+emit programs stage0-as would truncate (a bench-vs-reality gap the bench would
+have hidden, since the Python assembler has no input cap). The change is entirely
+compiler-internal: emitted output for any program is **byte-identical** to m29.
+Result: a program with **150 sequential if-blocks** (~65 KB of emitted assembly)
+compiles and runs to the right exit code — far beyond both the old ~63-label
+ceiling and the old ~4.4 KB output buffer. Pinned in `validate.py` (20/40/80/150
+sequential blocks, a big-body loop, and an >30 KB label-free emission) and
+**CI-confirmed** via `stage2-mini-c-demo` (an 80-block program end-to-end).
+Next: **functions + a real call stack** on the m25 64-bit `ldr x`/`str x`, the
+first genuinely new language capability of the floor.
+
 ---
 
 ## 6. What's next
@@ -369,10 +388,10 @@ stage in the language of the stage below.
   multi-char labels/identifiers, and I/O. Floor progress: **64-bit `ldr x`/`str x`**
   (m25), **frame-relative variables** (m26), the **numeric PC-relative branch**
   (m27), and **backpatched control flow** (m29) are in — the emitted program is now
-  entirely **label-free**. The compiler's fixed input/output/stack buffers (~4.4 KB
-  output) now cap program size; **raising those buffers is next**, which cashes in
-  the label-free codegen, then functions land on the m25 call stack. See
-  **`stage2-mini-c/TARGET-SUBSET.md`**.
+  entirely **label-free** — and the pipeline buffers were raised (m30: 64 KB input /
+  256 KB output; stage0-as + elf to 256 KB), so large multi-block programs compile
+  end-to-end. Next: **functions + a real call stack** on the m25 64-bit load/store.
+  See **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**
   (pinned at `34fbd5c…`, vendored read-only at `spikes/reference/`) into a working

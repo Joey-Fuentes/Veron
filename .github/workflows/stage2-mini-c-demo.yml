@@ -14,7 +14,8 @@ name: stage2-mini-c-demo
 # b @<pos>): the target position is filled in when the block closes. Because both
 # variables (frame-relative) and control flow (backpatched) are label-free, the
 # emitted program contains NO labels at all, so control-flow count is not
-# label-bounded (program size is still bounded by the compiler's output buffer).
+# label-bounded (and with the enlarged 64KB input / 256KB output buffers, large
+# multi-block programs compile and run — see the 80-block test below).
 # Compiler uses shunting-yard; emitted code
 # uses a brk value stack. Written in stage-1's language.
 #
@@ -164,12 +165,11 @@ jobs:
           try 'int main(){int i=3; int t=0; while(i){ int j=2; while(j){ t=t+1; j=j-1; } i=i-1; } return t;}'  6
           try 'int main(){int a=6; int c=0; while(a){ if(a){ c=c+2; } a=a-1; } return c;}'                     12
           try 'int main(){int a=1; int b=1; int r=0; if(a){ if(b){ r=5; } } return r;}'                        5
-          # Several sequential if-blocks: emitted with backpatched numeric branches
-          # and NO labels (proven structurally above), so control-flow count is not
-          # label-bounded. (Program SIZE is still capped by the compiler's output
-          # buffer ~4.4KB — raising those buffers is the next increment.)
-          many='int main(){int a=0;'; for k in $(seq 1 6); do many="$many if(a<100){a=a+1;}"; done; many="$many return a;}"
-          try "$many"  6
+          # 80 sequential if-blocks: label-free backpatched branches + enlarged
+          # buffers (input 64KB, output 256KB) let this compile and run — far beyond
+          # both the old ~63-label ceiling and the old ~4.4KB output buffer.
+          many='int main(){int a=0;'; for k in $(seq 1 80); do many="$many if(a<10000){a=a+1;}"; done; many="$many return a;}"
+          try "$many"  80
 
           echo "== stage-2: relational < > (unsigned-32, count-up loops) =="
           try 'int main(){int i=0; int s=0; while(i<10){ s=s+i; i=i+1; } return s;}'   45

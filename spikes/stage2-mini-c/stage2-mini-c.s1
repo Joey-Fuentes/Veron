@@ -8,6 +8,8 @@
 #   emitted at all (frame-relative vars + backpatched branches => label-free output).
 #   emitted regs: x10 frame base, x9 val stack.
 # compiler regs: x19 inbuf, x21 inlen, x22 outbuf, x23 outpos, x6 scan-pos,
+#   buffers in brk: input [x19+0, 64KB), output [x19+0x10000, 256KB),
+#   opstk x24=x19+0x50000, blockstk x15=x19+0x51000, brk end x19+0x53000.
 #   x24 opstk-base, x25 opstk-top, x26 cur-op, x11 op-to-apply, x14 store-target,
 #   x15 blockstk-base, x16 blockstk-top, x17 emitted-instruction count (PC/4),
 #   x12/x13 patch temps, x28 compile_expr ret, x27 emit-helper ret.
@@ -21,20 +23,25 @@ mov x0 0
 mov x8 214
 svc
 mov x19 x0
-add x22 x19 600
-mov x1 5000
+mov x1 0
+movk x1 1 16
+add x22 x19 x1
+mov x1 0
+movk x1 5 16
 add x24 x19 x1
-mov x1 5200
+mov x1 4096
+movk x1 5 16
 add x15 x19 x1
 mov x16 0
 mov x17 0
-mov x1 5600
+mov x1 12288
+movk x1 5 16
 add x0 x19 x1
 mov x8 214
 svc
 mov x0 0
 mov x1 x19
-mov x2 500
+mov x2 65000
 mov x8 63
 svc
 mov x21 x0

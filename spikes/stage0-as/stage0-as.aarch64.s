@@ -34,7 +34,7 @@
 //   cond: eq0 ne1 ge10 lt11
 // ============================================================================
 
-    .equ INBUF_SZ, 0x4000
+    .equ INBUF_SZ, 0x40000        // 256 KiB (raised for large stage-2/3 outputs)
 
     .text
     .global _start

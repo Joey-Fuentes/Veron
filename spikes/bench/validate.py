@@ -327,6 +327,22 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 backpatch exit -> {want}", _exit(cs), want)
 
+    print("== stage 2 large programs (enlarged input/output/stack buffers) ==")
+    # The compiler's buffers were raised (input 64KB, output 256KB, bigger stacks),
+    # so large programs no longer overflow the old ~4.4KB output buffer. Combined
+    # with label-free codegen, control-flow count is now bounded only by memory.
+    # A program with 150 sequential if-blocks emits ~65KB and must still run.
+    def _many_ifs(n):
+        return "int main(){int a=0;" + "".join("if(a<10000){a=a+1;}" for _ in range(n)) + "return a;}"
+    big80 = _emit(_many_ifs(80))
+    check("stage2 80-block program emits >30KB", len(big80) > 30000, True)
+    check("stage2 80-block program still label-free", any(l.startswith(":") for l in big80.split("\n")), False)
+    for n in (20, 40, 80, 150):
+        check(f"stage2 {n} sequential if-blocks -> exit {n & 0xFF}", _exit(_many_ifs(n)), n & 0xFF)
+    # a long-running loop with a big body (stresses output size a different way)
+    bigbody = "int main(){int s=0;int i=0;while(i<200){" + "s=s+1;"*20 + "i=i+1;}return s;}"
+    check("stage2 big-body loop (200x20) -> 160", _exit(bigbody), 4000 & 0xFF)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)

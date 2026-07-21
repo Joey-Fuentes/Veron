@@ -27,7 +27,7 @@
 //     x21 = output fd               x22 = code buffer base   x23 = header base
 // ============================================================================
 
-    .equ CODEBUF_SZ, 0x8000        // 32 KiB is plenty for spike programs
+    .equ CODEBUF_SZ, 0x40000       // 256 KiB (raised for large stage-2/3 binaries)
     .equ HDR_LEN,    120
 
     .text
