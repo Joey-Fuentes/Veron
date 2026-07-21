@@ -3,13 +3,17 @@
 # expr operators: + - *  and comparisons < > <= >= == != (unsigned-32, yield 0/1).
 # precedence (low->high): == !=  <  < > <= >=  <  + -  <  *  (all left-assoc, parens).
 # 2-char ops (<= >= == !=) carry internal opstack sentinels 1,2,3,4 respectively.
-# single-char WORD vars -> FRAME-RELATIVE 4-byte slots at x10+off (off=(c-'a')*4),
-#   emitted via emitoff + the offtab decimal-offset table (NO :a..:z labels).
-#   control-flow labels A.. (uppercase). emitted regs: x10 frame base, x9 val stack.
+# control flow (if/while) is emitted with BACKPATCHED numeric offsets: branches
+#   are 'b.eq @<pos>' / 'b @<pos>' (stage0-as numeric PC-rel), so NO labels are
+#   emitted at all (frame-relative vars + backpatched branches => label-free output).
+#   emitted regs: x10 frame base, x9 val stack.
 # compiler regs: x19 inbuf, x21 inlen, x22 outbuf, x23 outpos, x6 scan-pos,
 #   x24 opstk-base, x25 opstk-top, x26 cur-op, x11 op-to-apply, x14 store-target,
-#   x15 blockstk-base, x16 blockstk-top, x17 next-label-char, x12/x13 label temps,
-#   x28 compile_expr ret, x27 emit-helper ret.  emitted value stack = brk (x9).
+#   x15 blockstk-base, x16 blockstk-top, x17 emitted-instruction count (PC/4),
+#   x12/x13 patch temps, x28 compile_expr ret, x27 emit-helper ret.
+#   block stack = 3 words/block: [type(0=if,1=while), v1, v2]; if:[0,patchpos,0],
+#   while:[1,toppos,exitpatchpos]. emitstr counts '\n' into x17; pos6 writes a
+#   6-digit decimal position; forward branches use a placeholder patched at '}'.
 # NOTE: statement dispatch keys on the 2nd char: a keyword's 2nd char is a letter
 #   (in/if/wh/re); a single-char var reassignment's is space or '=' -> no collision,
 #   so vars may be named i/w/r freely.
@@ -23,7 +27,7 @@ add x24 x19 x1
 mov x1 5200
 add x15 x19 x1
 mov x16 0
-mov x17 65
+mov x17 0
 mov x1 5600
 add x0 x19 x1
 mov x8 214
@@ -105,84 +109,90 @@ b stmtloop
 :doif
 add x6 x6 2
 bl compile_expr
-mov x12 x17
-add x17 x17 1
 adr x9 scondtest
 bl emitstr
-mov w5 x12
-strb w5 x22 x23
-add x23 x23 1
-mov w5 10
-strb w5 x22 x23
-add x23 x23 1
+mov x12 x23
+mov x3 0
+add x4 x22 x23
+bl pos6
+add x23 x23 6
+adr x9 snl
+bl emitstr
 mov w4 0
-strb w4 x15 x16
-add x16 x16 1
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 mov w4 x12
-strb w4 x15 x16
-add x16 x16 1
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 mov w4 0
-strb w4 x15 x16
-add x16 x16 1
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 add x6 x6 1
 b stmtloop
 :dowhile
 add x6 x6 5
-mov x12 x17
-add x17 x17 1
-mov w0 x12
-bl emitlbl
+mov x5 2
+lsl x12 x17 x5
 bl compile_expr
-mov x13 x17
-add x17 x17 1
 adr x9 scondtest
 bl emitstr
-mov w5 x13
-strb w5 x22 x23
-add x23 x23 1
-mov w5 10
-strb w5 x22 x23
-add x23 x23 1
+mov x13 x23
+mov x3 0
+add x4 x22 x23
+bl pos6
+add x23 x23 6
+adr x9 snl
+bl emitstr
 mov w4 1
-strb w4 x15 x16
-add x16 x16 1
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 mov w4 x12
-strb w4 x15 x16
-add x16 x16 1
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 mov w4 x13
-strb w4 x15 x16
-add x16 x16 1
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 add x6 x6 1
 b stmtloop
 :doclose
 cmp x16 0
 b.eq doneall
-sub x16 x16 3
-ldrb w4 x15 x16
-add x2 x16 1
-ldrb w12 x15 x2
+sub x16 x16 12
+add x2 x15 x16
+ldr w4 x2
+add x2 x16 4
+add x2 x15 x2
+ldr w12 x2
+add x2 x16 8
+add x2 x15 x2
+ldr w13 x2
 cmp x4 1
 b.ne docloseif
-mov w5 98
-strb w5 x22 x23
-add x23 x23 1
-mov w5 32
-strb w5 x22 x23
-add x23 x23 1
-mov w5 x12
-strb w5 x22 x23
-add x23 x23 1
-mov w5 10
-strb w5 x22 x23
-add x23 x23 1
-add x2 x16 2
-ldrb w0 x15 x2
-bl emitlbl
+adr x9 sbback
+bl emitstr
+mov x3 x12
+add x4 x22 x23
+bl pos6
+add x23 x23 6
+adr x9 snl
+bl emitstr
+mov x5 2
+lsl x3 x17 x5
+add x4 x22 x13
+bl pos6
 add x6 x6 1
 b stmtloop
 :docloseif
-mov w0 x12
-bl emitlbl
+mov x5 2
+lsl x3 x17 x5
+add x4 x22 x12
+bl pos6
 add x6 x6 1
 b stmtloop
 :doneall
@@ -428,16 +438,6 @@ adr x9 spush
 bl emitstr
 mov x30 x27
 ret
-:emitlbl
-mov w5 58
-strb w5 x22 x23
-add x23 x23 1
-strb w0 x22 x23
-add x23 x23 1
-mov w5 10
-strb w5 x22 x23
-add x23 x23 1
-ret
 :emitstr
 mov x7 0
 :esloop
@@ -446,6 +446,10 @@ cmp x5 0
 b.eq esdone
 strb w5 x22 x23
 add x23 x23 1
+cmp x5 10
+b.ne esnl
+add x17 x17 1
+:esnl
 add x7 x7 1
 b esloop
 :esdone
@@ -508,6 +512,27 @@ ldrb w5 x2 x3
 strb w5 x22 x23
 add x23 x23 1
 ret
+:pos6
+mov x2 6
+add x4 x4 6
+:p6l
+mov x5 0
+:p6q
+cmp x3 10
+b.lt p6w
+sub x3 x3 10
+add x5 x5 1
+b p6q
+:p6w
+add x3 x3 48
+sub x4 x4 1
+mov x7 0
+strb w3 x4 x7
+mov x3 x5
+sub x2 x2 1
+cmp x2 0
+b.ne p6l
+ret
 :spre
 .ascii "mov x0 0\nmov x8 214\nsvc\nmov x10 x0\nadd x9 x10 104\nadd x0 x9 1000\nmov x8 214\nsvc\n"
 .byte 0
@@ -557,7 +582,13 @@ ret
 .ascii "sub x9 x9 4\nldr w0 x9\nmov x8 93\nsvc\n"
 .byte 0
 :scondtest
-.ascii "sub x9 x9 4\nldr w0 x9\ncmp x0 0\nb.eq "
+.ascii "sub x9 x9 4\nldr w0 x9\ncmp x0 0\nb.eq @"
+.byte 0
+:snl
+.ascii "\n"
+.byte 0
+:sbback
+.ascii "b @"
 .byte 0
 :offtab
 .ascii "000 004 008 012 016 020 024 028 032 036 040 044 048 052 056 060 064 068 072 076 080 084 088 092 096 100 "

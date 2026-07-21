@@ -171,16 +171,17 @@ if os.path.exists(s1p) and os.path.exists(s2p):
         check(f"stage2 exit {cs[:34]}", _exit(cs), want)
 
     print("== stage 2 control flow: if / while / reassignment ==")
-    # Structural: if/while emit a zero-test and branch to UPPERCASE labels (var
-    # slots are lowercase a..z, so control-flow targets can't collide).
+    # Structural: if/while emit a zero-test and a numeric backpatched branch. Since
+    # both variables (frame-relative) and control flow (backpatched) are label-free,
+    # the emitted program contains no labels at all.
     emif = _emit("int main(){int a=1;if(a){a=a+1;}return a;}")
-    check("stage2 if emits zero-test",         "cmp x0 0" in emif, True)
-    check("stage2 if skips on false (b.eq A)", "b.eq A" in emif, True)
-    check("stage2 if defines skip label (:A)", ":A\n" in emif, True)
+    check("stage2 if emits zero-test",              "cmp x0 0" in emif, True)
+    check("stage2 if skips on false (b.eq @)",      "b.eq @" in emif, True)
+    check("stage2 if emits no label",               any(l.startswith(":") for l in emif.split("\n")), False)
     emwh = _emit("int main(){int a=3;while(a){a=a-1;}return a;}")
-    check("stage2 while defines top label (:A)",  ":A\n" in emwh, True)
-    check("stage2 while branches back (b A)",     "\nb A\n" in emwh, True)
-    check("stage2 while exits on false (b.eq B)", "b.eq B" in emwh, True)
+    check("stage2 while branches back (b @)",        "\nb @" in emwh, True)
+    check("stage2 while exits on false (b.eq @)",    "b.eq @" in emwh, True)
+    check("stage2 while emits no label",             any(l.startswith(":") for l in emwh.split("\n")), False)
     # Behavioural: exit codes through the real assembled ladder. These DO exercise
     # loop counting + reassignment + nesting, so they are genuine end-to-end checks.
     for cs, want in [
@@ -258,7 +259,7 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     # Variables now live at x10+off in a brk frame (off=(c-'a')*4), emitted via an
     # offset table — so the emitted program carries NO :a..:z slot labels and the
     # prologue sets up the frame base. This removes the per-variable label cost
-    # (the emitted program keeps only its uppercase control-flow labels).
+    # (control flow is backpatched too, so the emitted program is fully label-free).
     emfr = _emit("int main(){int a=5;int b=7;return a+b;}")
     check("stage2 prologue sets frame base (mov x10 x0)", "mov x10 x0" in emfr, True)
     check("stage2 var access is frame-relative (add x1 x10)", "add x1 x10 " in emfr, True)
@@ -270,10 +271,10 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     # 'z' is index 25 -> offset 100 (the largest); exercises the 3-digit path.
     emz = _emit("int main(){int z=25;return z*4;}")
     check("stage2 var 'z' -> offset 100", "add x1 x10 100" in emz, True)
-    # if/while still emit their uppercase control-flow labels (only those remain).
+    # if/while are backpatched, so they emit no labels either — the emitted program
+    # is now entirely label-free (this is verified in the backpatch section below).
     emcf = _emit("int main(){int a=1;if(a){a=a+1;}return a;}")
-    check("stage2 control-flow label kept (:A)", ":A\n" in emcf, True)
-    check("stage2 control-flow label is not a var slot", ":a\n" in emcf, False)
+    check("stage2 emitted program has no labels", any(l.startswith(":") for l in emcf.split("\n")), False)
     # Behavioural: exit codes through the real assembled ladder. A program that
     # uses MANY distinct variables would have needed many labels before; now it
     # needs none. Plus the full existing behaviour set as a regression sweep.
@@ -290,6 +291,41 @@ if os.path.exists(s1p) and os.path.exists(s2p):
         ("int main(){int i=0;int t=0;while(i<3){int j=0;while(j<=2){t=t+1;j=j+1;}i=i+1;}return t;}", 9),
     ]:
         check(f"stage2 frame-rel exit -> {want}", _exit(cs), want)
+
+    print("== stage 2 backpatched control flow (label-free emitted output) ==")
+    # if/while branches are now emitted as numeric b.eq @<pos> / b @<pos> with the
+    # target position backpatched when the block closes, so the emitted program has
+    # NO labels at all (frame-relative vars + backpatched branches). This lifts the
+    # per-if/while label cost; a program's control flow is bounded by nothing but memory.
+    emif = _emit("int main(){int a=0;if(a){return 7;}return 9;}")
+    check("stage2 emitted output has NO labels", any(l.startswith(":") for l in emif.split("\n")), False)
+    check("stage2 if uses numeric branch (b.eq @)", "b.eq @" in emif, True)
+    check("stage2 no label-based branch (b.eq A)", "b.eq A" in emif, False)
+    emwh = _emit("int main(){int i=0;int s=0;while(i<3){s=s+1;i=i+1;}return s;}")
+    check("stage2 while uses backward numeric branch (b @)", "\nb @" in emwh, True)
+    check("stage2 while emitted output has NO labels", any(l.startswith(":") for l in emwh.split("\n")), False)
+    # forward branch backpatched to the instruction AFTER the if-body (byte pos = idx*4)
+    lines = [l for l in emif.split("\n") if l.strip()]
+    br = next(l for l in lines if l.startswith("b.eq @"))
+    tgt = int(br.split("@")[1])
+    check("stage2 backpatch target is 4-aligned", tgt % 4, 0)
+    check("stage2 backpatch target in range", 0 < tgt <= len(lines)*4, True)
+    # behavioural: control flow through the real assembled ladder, incl. deep nesting,
+    # if-in-while, sequential blocks, and a long loop that stresses the position counter.
+    for cs, want in [
+        ("int main(){int a=7;if(a==7){return 3;}return 9;}", 3),
+        ("int main(){int a=7;if(a!=7){return 3;}return 9;}", 9),
+        ("int main(){int i=0;int s=0;while(i<10){s=s+i;i=i+1;}return s;}", 45),
+        ("int main(){int i=1;int s=0;while(i<=5){s=s+i;i=i+1;}return s;}", 15),
+        ("int main(){int i=10;int s=0;while(i>=1){s=s+i;i=i-1;}return s;}", 55),
+        ("int main(){int i=0;int t=0;while(i<3){int j=0;while(j<=2){t=t+1;j=j+1;}i=i+1;}return t;}", 9),
+        ("int main(){int a=8;int b=8;int c=0;if(a==b){if(a>=b){c=42;}}return c;}", 42),
+        ("int main(){int i=0;int s=0;while(i<10){if(i==5){s=s+100;}s=s+1;i=i+1;}return s;}", 110),
+        ("int main(){int a=1;if(a){a=a+1;}if(a){a=a+1;}if(a){a=a+1;}return a;}", 4),
+        ("int main(){int s=0;int i=0;while(i<3){s=s+1;i=i+1;}int j=0;while(j<4){s=s+1;j=j+1;}return s;}", 7),
+        ("int main(){int i=0;int s=0;while(i<20){int j=0;while(j<i){s=s+1;j=j+1;}i=i+1;}return s;}", 190),
+    ]:
+        check(f"stage2 backpatch exit -> {want}", _exit(cs), want)
 
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")

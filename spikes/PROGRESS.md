@@ -321,6 +321,33 @@ punctuation; backward branch through an 80-label program). **CI-confirmed** (rea
 2b-ii** proper — stage 2 emits `if`/`while` control flow as backpatched `@<pos>`
 offsets, using this headroom, leaving only function-entry labels.
 
+**Milestone 29 — stage 2: backpatched control flow (floor item 2b-ii).** The last
+per-emit label class is gone: `if`/`while` are now emitted with **backpatched
+numeric branches** (`b.eq @<pos>` / `b @<pos>`, the m27 form), so — combined with
+m26's frame-relative variables — **the emitted program contains no labels at all**.
+Mechanism: the compiler keeps an emitted-**instruction counter** (`emitstr` counts
+the `\n` bytes it writes, so a target's byte position is count×4); a forward branch
+(if-skip, while-exit) emits a 6-digit `@000000` placeholder and records its output
+buffer offset on the block stack, then backpatches the real target position at `}`;
+a backward branch (while loop-back) is emitted directly since its target is known.
+The block stack moved from 3 bytes to 3 words per entry (positions don't fit a
+byte). The position field is written by `pos6`, a division-free 6-digit itoa
+(repeated subtraction). Two real snags, both caught by testing through the real
+ladder: (1) stage 1 parses any token starting with `w`/`x` as a register, so the
+first-cut helper labels `wr6/w6l/...` weren't resolved — renamed to `pos6/p6l/...`;
+(2) the compiler's fixed output buffer (~4.4 KB, between the output base and the
+operand stack) overflows for programs with more than ~10 control-flow blocks — the
+backpatch is correct, but program *size* is capped until the buffers are raised
+(the next increment). Compiler grew 75→**81** of the now-88 pool slots (added the
+counter, `pos6`, and branch strings; dropped the label emitter). Designed in
+`stage2_ref.py` (byte-identical to the real `.s1`), verified through the assembled
+ladder (deep nesting, if-in-while, sequential blocks, a 190-iteration loop; branch
+targets hand-checked to land on the right instruction), pinned in `validate.py`
+(no labels emitted; numeric branches; 4-aligned in-range targets; behavioural
+sweep), and **CI-confirmed** via `stage2-mini-c-demo`. Next: **larger compiler
+buffers** (input/output/stacks) to cash in the label-free codegen, then functions
+on the m25 call stack.
+
 ---
 
 ## 6. What's next
@@ -340,11 +367,12 @@ stage in the language of the stage below.
   increment, but the **critical path to stage 3 is the stage-2 "floor"**:
   functions + a real call stack, pointers/`char`/arrays, `struct`, a small heap,
   multi-char labels/identifiers, and I/O. Floor progress: **64-bit `ldr x`/`str x`**
-  (m25, the call-stack enabler), **frame-relative variables** (m26, no per-var
-  labels), and the **numeric PC-relative branch** `b @<pos>` (m27, the backpatch
-  enabler) are in. Next: stage 2 emits `if`/`while` branches as backpatched
-  offsets (removes the last emit-label class), then functions on the call stack.
-  See **`stage2-mini-c/TARGET-SUBSET.md`**.
+  (m25), **frame-relative variables** (m26), the **numeric PC-relative branch**
+  (m27), and **backpatched control flow** (m29) are in — the emitted program is now
+  entirely **label-free**. The compiler's fixed input/output/stack buffers (~4.4 KB
+  output) now cap program size; **raising those buffers is next**, which cashes in
+  the label-free codegen, then functions land on the m25 call stack. See
+  **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**
   (pinned at `34fbd5c…`, vendored read-only at `spikes/reference/`) into a working

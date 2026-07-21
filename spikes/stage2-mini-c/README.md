@@ -47,15 +47,22 @@ int i=0; int s=0; while(i<10){ s=s+i; i=i+1; } return s; ->  exits 45  (count-up
 
 ## How control flow is emitted
 
-Jump targets use **uppercase** labels `A`, `B`, … drawn from a compile-time
-counter. Since variables are now **frame-relative** (no per-variable labels),
-these control-flow labels are the *only* labels the emitted program contains (up
-to 26 per program). For `if (c) { body }` the compiler emits the condition, pops
-it, `cmp x0 0`, `b.eq L`, the body, then `:L`. For `while (c) { body }` it emits
-`:A`, the condition, `b.eq B`, the body, `b A`, then `:B`. Statement dispatch keys
-on the **second** character: a keyword's is a letter (`in`/`if`/`wh`/`re`), a
-single-char reassignment's is a space or `=`, so variables may be named `i`, `w`,
-or `r` without ambiguity.
+Control flow is emitted with **backpatched numeric branches** — no labels at all.
+The compiler keeps an emitted-**instruction counter** (`emitstr` counts the `\n`
+it writes, so byte position = count × 4). For `if (c) { body }` it emits the
+condition, pops it, `cmp x0 0`, then `b.eq @<pos>` with a 6-digit placeholder,
+records the placeholder's buffer position on the block stack, emits the body, and
+at `}` backpatches the placeholder with the current position (the instruction
+after the body). For `while (c) { body }` it records the loop-top position, emits
+the condition and `b.eq @<placeholder>`, emits the body, then at `}` emits
+`b @<top>` (a backward branch, target known) and backpatches the exit placeholder.
+The position field is written by `pos6`, a division-free 6-digit itoa. Because both
+variables (frame-relative) and control flow (backpatched) are label-free, **the
+emitted program contains no labels** — control-flow count is no longer bounded by
+the pool/symtab (program *size* is still bounded by the compiler's output buffer,
+which a later increment raises). Statement dispatch keys on the **second**
+character: a keyword's is a letter (`in`/`if`/`wh`/`re`), a single-char
+reassignment's is a space or `=`, so variables may be named `i`, `w`, or `r`.
 
 ## Notes / limits (what later increments lift)
 
@@ -100,7 +107,10 @@ Developed and tested through the **real assembled ladder** on the dev bench
 interpreter used as a test oracle, and `validate.py` pins structure and exit
 codes (including nested loops, reassignment, and all six comparisons — precedence,
 `<=`/`>=` loop guards, and `==`/`!=` guards). CI (real `as` + QEMU) is ground
-truth. The compiler is written in stage-1's language and now uses **75** of the
-76 pool slots; frame-relative variables (m26) netted +1 over the equality build
-(74), so any further stage-2 growth that needs more labels should expand the
-stage-1 pool (a cheap stage-1 change) rather than cram.
+truth. The compiler is written in stage-1's language and now uses **81** of the
+88 pool slots; backpatched control flow (m29) added an instruction counter, a
+6-digit itoa (`pos6`), and branch strings while dropping the label emitter (net
++6 over m26's 75), which is why the stage-1 pool was expanded to 88 first (m28).
+Further growth that needs more labels should expand the pool again (a cheap
+stage-1 change) rather than cram. Program *size* is currently bounded by the
+compiler's ~4.4 KB output buffer; raising the buffers is the next increment.

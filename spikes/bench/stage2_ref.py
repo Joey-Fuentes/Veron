@@ -84,14 +84,14 @@ def compile_program(src):
     lb=src.find('{')
     body=src[lb+1:] if lb>=0 else src   # includes nested braces + final }
     code=["mov x0 0","mov x8 214","svc","mov x10 x0","add x9 x10 104","add x0 x9 1000","mov x8 214","svc"]
-    labelctr=[0]
-    def newlabel():
-        c=chr(ord('A')+labelctr[0]); labelctr[0]+=1; return c
     blockstack=[]
     def store_to(c):
         off=(ord(c)-97)*4
         return ["sub x9 x9 4","ldr w0 x9",f"add x1 x10 {off:03d}","str w0 x1"]
-    def cond_test(L): return ["sub x9 x9 4","ldr w0 x9","cmp x0 0",f"b.eq {L}"]
+    def cond_branch():   # emit the pop+cmp then a placeholder b.eq @<pos>; return branch index
+        code.extend(["sub x9 x9 4","ldr w0 x9","cmp x0 0"])
+        bi=len(code); code.append("b.eq @000000")   # 6-digit placeholder, backpatched at '}'
+        return bi
     def skipws(i):
         while i<len(body) and body[i] in ' \t\n': i+=1
         return i
@@ -111,11 +111,11 @@ def compile_program(src):
         if c=='}':
             if not blockstack: break     # end of function
             blk=blockstack.pop()
-            if blk[0]=='if':
-                code.append(f":{blk[1]}")
-            else:                        # while
-                code.append(f"b {blk[1]}")
-                code.append(f":{blk[2]}")
+            if blk[0]=='if':             # patch skip target = position after the body
+                code[blk[1]]=f"b.eq @{len(code)*4:06d}"
+            else:                        # while: (type, top_idx, exit_branch_idx)
+                code.append(f"b @{blk[1]*4:06d}")            # backward branch to loop top
+                code[blk[2]]=f"b.eq @{len(code)*4:06d}"      # exit target = after that branch
             i+=1; continue
         if body.startswith('int',i):
             i=skipws(i+3); c2=body[i]; i=skipws(i+1); i+=1  # '='
@@ -123,15 +123,15 @@ def compile_program(src):
         elif body.startswith('if',i):
             i=skipws(i+2)
             cond,i=read_cond(i); code+=_compile_expr(cond)
-            L=newlabel(); code+=cond_test(L)
-            blockstack.append(('if',L))
+            bi=cond_branch()
+            blockstack.append(('if',bi))
             i=skipws(i); i+=1            # skip '{'
         elif body.startswith('while',i):
             i=skipws(i+5)
-            Ltop=newlabel(); code.append(f":{Ltop}")
+            top=len(code)               # index of first condition instruction (loop top)
             cond,i=read_cond(i); code+=_compile_expr(cond)
-            Lexit=newlabel(); code+=cond_test(Lexit)
-            blockstack.append(('while',Ltop,Lexit))
+            bi=cond_branch()
+            blockstack.append(('while',top,bi))
             i=skipws(i); i+=1            # skip '{'
         elif body.startswith('return',i):
             expr,i=until_semi(i+6); code+=_compile_expr(expr)
@@ -139,8 +139,8 @@ def compile_program(src):
         else:                            # reassignment  <c> = <expr> ;
             c2=body[i]; i=skipws(i+1); i+=1  # '='
             expr,i=until_semi(i); code+=_compile_expr(expr); code+=store_to(c2); i+=1
-    # variables live in a frame-relative brk region (x10 base), so the emitted
-    # program no longer needs a labeled :a..:z slot table.
+    # variables are frame-relative and control flow is backpatched, so the emitted
+    # program contains NO labels at all.
     return "\n".join(code)+"\n"
 
 
