@@ -680,6 +680,37 @@ general pointer arithmetic scaling, multi-level pointers, and structs/globals.
 
 ---
 
+**Milestone 41 — stage 2: string literals + a static data section (A4a).** This is
+the first piece past the A3 memory model and the start of the road toward a real
+self-hosting C subset. A `"..."` literal becomes a `char*` into a **static data
+section**: the compiler now carries a *second* output buffer, filled during
+compilation with the literal's bytes under a generated label (`__d0`, `__d1`, …) and
+a null terminator, and appended after all code at the end so `adr x0 __dN` reaches it
+PC-relative (stage1 resolves the forward data-label reference like any other). Because
+a string literal is just a `char*`, it flows straight into the byte-access machinery
+from m40 — `s[i]`, `*s`, and `strlen` all work on literals — so the headline demo is
+`strlen("hello") → 5` with the string living in the data section, plus string literals
+passed as function arguments (`f("MN","XY")`). The design point, and the reason this
+milestone matters more than its size suggests: the second-buffer data section is
+**general infrastructure, not a string hack** — the same `add_data(bytes, label)`
+primitive (anonymous `__dN` for strings, named `g_`-labels for globals) is what the
+next milestone reuses for global variables, and it's the machinery every compiler
+above us in the bootstrap chain (Mes, tcc) assumes exists. The `.s1` port surfaced one
+sharp bug worth recording: `compile_call` rewinds the scan cursor to the first
+argument's token start (`x18`) to re-read it, but the string tokenizer had moved `x18`
+*past* the opening quote to the content start, so a literal used as a call argument
+rewound *inside* the string and the compiler parsed `hi")` as code — fixed by keeping
+`x18` on the opening quote (the true token start) and reading content from `x18+1`.
+No stage0-as change. One bench note: `adr` is PC-relative with a bounded range
+(fine for M2-Planet-scale programs; `adrp`+`add` for full range is a later refinement,
+exactly the kind of thing tcc/gcc handle once the chain hands off to them).
+`validate.py` gains a string-literal section (222→232 checks) and the
+`stage2-mini-c-demo` workflow gains `adr`/`:__d`/`.byte` structural greps plus string
+behavioural runs. Next: **globals** (reusing this data section), then general pointer
+arithmetic and structs — the pieces M2-Planet's own source leans on.
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
@@ -715,8 +746,10 @@ stage in the language of the stage below.
   frame offset explicitly), then **char + byte access** (m40, A3d: `char c`, `char* p`,
   byte-packed `char s[N]`, `ldrb`/`strb`, char literals — the symbol table gained an
   explicit is_char/is_array flags word, since a small `char[N]` collides in size with a
-  scalar). **A3 is complete.** Next: revisit the M2-Planet C subset toward stage 3
-  (string literals, general pointer arithmetic, multi-level pointers, structs/globals).
+  scalar). **A3 is complete.** Then **string literals + a static data section** (m41,
+  A4a: `"..."` as a `char*` into a second output buffer emitted after the code,
+  `adr`-addressed — the globals-ready data infrastructure). Next: **globals** (reusing
+  the data section), then general pointer arithmetic and structs — the M2-Planet subset.
   See **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**

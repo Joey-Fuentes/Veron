@@ -73,6 +73,12 @@ int main(){ return name(2,3); }   // program is entered via bl main
   code generator branches on for word-vs-byte and frame-base-vs-load-base. Real string code
   works: `strlen` as `int len(char* p){ int n; n=0; while(p[n]){ n=n+1; } return n; }`.
   No stage0-as change (`ldrb`/`strb` already existed). This completes the A3 memory model.
+- **string literals + data section (A4a)**: a `"..."` literal is a `char*` into a **static
+  data section** — a second output buffer the compiler fills with the literal's bytes under
+  a generated `__dN` label (null-terminated), appended after all code so `adr x0 __dN` reaches
+  it PC-relative. Literals flow into the byte machinery: `s[i]`, `*s`, `strlen("hello")`, and
+  string arguments (`f("MN","XY")`) all work. The data section is general infrastructure —
+  the same primitive serves globals next (named `g_`-labels vs anonymous `__dN`).
 - **control flow**: `if` and `while`, arbitrarily nested. The condition is any
   expression, tested for **nonzero = true** (C truthiness). if/while codegen is
   iterative with an explicit *block stack*; the **expression** compiler, by

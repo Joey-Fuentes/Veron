@@ -123,6 +123,12 @@ jobs:
           printf '%s' "int main(){char c; c='A'; return c;}" | qemu-aarch64 ./stage2 > clit.s
           grep -q 'mov x0 0065' clit.s || { echo "MISSING char literal value (mov x0 0065)"; struct_ok=no; }
 
+          # ---- structural: string literal -> adr into a data section (:__d + .byte) ----
+          printf '%s' 'int main(){char* s; s="hi"; return s[0];}' | qemu-aarch64 ./stage2 > str.s
+          grep -q 'adr x0 __d' str.s || { echo "MISSING string literal address (adr x0 __d)"; struct_ok=no; }
+          grep -q ':__d'       str.s || { echo "MISSING data-section label (:__d)"; struct_ok=no; }
+          grep -q '.byte'      str.s || { echo "MISSING data-section bytes (.byte)"; struct_ok=no; }
+
           # ---- structural: if/while emit a zero-test + BACKPATCHED numeric branch ----
           # if/while control flow is emitted as b.eq @<pos> / b @<pos> with the target
           # position backpatched at '}', which stage1 passes through. The only labels
@@ -183,6 +189,13 @@ jobs:
           # correct exit proves the value stack + frame slots are genuinely 64-bit.
           try 'int main(){int a=2000; return a*a*a/1000;}'        0
           try 'int main(){int a=3000; int b=3000; return a*b/7;}' 82
+          echo "== stage-2: string literals + static data section (A4a) =="
+          # "..." is a char* into a data section emitted after the code (adr-addressed).
+          try 'int main(){char* s; s="A"; return s[0];}'                                                                65
+          try 'int main(){char* s; s="abc"; return s[2];}'                                                             99
+          try 'int len(char* p){int n; n=0; while(p[n]){n=n+1;} return n;} int main(){return len("hello");}'          5
+          try 'int sum(char* p){int s; int i; s=0; i=0; while(p[i]){s=s+p[i]; i=i+1;} return s;} int main(){return sum("AB");}' 131
+          try 'int f(char* a,char* b){return a[0]+b[0];} int main(){return f("MN","XY");}'                            165
           echo "== stage-2: char + byte access (char c, char* p, char s[N], ldrb/strb) (A3d) =="
           # char scalars are word-stored (char promotes to int); char* deref and
           # char[] subscript use BYTE access (ldrb/strb). char[N] is byte-packed.
@@ -337,7 +350,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ]; then
-            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
+            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
           else
             echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok fn=$fn_ok div=$div_ok"; exit 1
           fi

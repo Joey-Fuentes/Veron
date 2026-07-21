@@ -535,6 +535,27 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 char exit -> {want}", _exit(cs), want)
 
+    print("== stage 2 string literals + static data section (A4a) ==")
+    # A4a adds a real static data section: the compiler now carries a second output
+    # buffer, emitted AFTER all code, holding string-literal bytes under generated
+    # labels (__dN) reached by `adr`. A "..." literal is a char* into that section,
+    # so it flows straight into the byte-access machinery (p[i], strlen). This is
+    # the same data-section infrastructure globals will reuse.
+    emq = _emit('int main(){char* s;s="hi";return s[0];}')
+    check("stage2 string literal takes its address (adr x0 __d)", "adr x0 __d" in emq, True)
+    check("stage2 string literal emits a data section (:__d label)", ":__d" in emq, True)
+    check("stage2 data section stores bytes (.byte)", ".byte" in emq.split(":__d",1)[1], True)
+    for cs, want in [
+        ('int main(){char* s;s="A";return s[0];}', 65),                                          # "A"[0]
+        ('int main(){char* s;s="abc";return s[2];}', 99),                                         # "abc"[2]
+        ('int main(){char* s;s="hi";char* t;t="yz";return s[0]+t[1];}', 226),                     # two literals
+        ('int len(char* p){int n;n=0;while(p[n]){n=n+1;}return n;} int main(){return len("hello");}', 5),  # strlen literal via param
+        ('int len(char* p){int n;n=0;while(p[n]){n=n+1;}return n;} int main(){return len("");}', 0),        # empty string
+        ('int sum(char* p){int s;int i;s=0;i=0;while(p[i]){s=s+p[i];i=i+1;}return s;} int main(){return sum("AB");}', 131),  # 65+66
+        ('int f(char* a,char* b){return a[0]+b[0];} int main(){return f("MN","XY");}', 165),       # two string args
+    ]:
+        check(f"stage2 string-literal exit -> {want}", _exit(cs), want)
+
     print("== stage 2 large programs (enlarged input/output/stack buffers) ==")
     # The compiler's buffers were raised (input 64KB, output 256KB, bigger stacks),
     # so large programs no longer overflow the old ~4.4KB output buffer. Combined

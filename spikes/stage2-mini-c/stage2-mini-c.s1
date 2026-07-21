@@ -45,10 +45,17 @@ mov x16 0
 mov x17 0
 mov x25 0
 mov x1 0
-movk x1 6 16
+movk x1 8 16
 add x0 x19 x1
 mov x8 214
 svc
+mov x1 61440
+movk x1 7 16
+add x1 x19 x1
+mov x2 0
+str x2 x1
+add x3 x1 8
+str x2 x3
 mov x0 0
 mov x1 x19
 mov x2 65000
@@ -123,6 +130,23 @@ b poploop
 :popdone
 b stmtloop
 :alldone
+mov x1 61440
+movk x1 7 16
+add x1 x19 x1
+ldr x4 x1
+mov x5 0
+movk x5 6 16
+add x5 x19 x5
+mov x7 0
+:aloop
+cmp x7 x4
+b.ge adone
+ldrb w2 x5 x7
+strb w2 x22 x23
+add x23 x23 1
+add x7 x7 1
+b aloop
+:adone
 mov x0 1
 mov x1 x22
 mov x2 x23
@@ -455,6 +479,8 @@ mov x3 1
 bl next_token
 cmp x20 0
 b.eq ceflush
+cmp x20 7
+b.eq ce_str
 cmp x20 6
 b.eq ce_charlit
 cmp x20 1
@@ -468,6 +494,10 @@ b.eq ce_punct
 b celoop
 :ce_charlit
 bl emitcharlit
+mov x3 0
+b celoop
+:ce_str
+bl emitstrlit
 mov x3 0
 b celoop
 :ce_num
@@ -730,6 +760,69 @@ bl emitstr
 bl copyspan
 adr x9 spush
 bl emitstr
+mov x30 x27
+ret
+:emitstrlit
+mov x27 x30
+mov x1 61440
+movk x1 7 16
+add x1 x19 x1
+add x2 x1 8
+ldr x13 x2
+adr x9 sadrx0d
+bl emitstr
+bl emitoff
+adr x9 spush
+bl emitstr
+mov x1 61440
+movk x1 7 16
+add x1 x19 x1
+add x2 x1 16
+str x22 x2
+add x2 x1 24
+str x23 x2
+add x2 x1 32
+str x17 x2
+mov x22 0
+movk x22 6 16
+add x22 x19 x22
+ldr x23 x1
+add x2 x1 8
+ldr x13 x2
+adr x9 sdlabel
+bl emitstr
+bl emitoff
+adr x9 snlonly
+bl emitstr
+add x4 x18 1
+:esl_loop
+cmp x4 x29
+b.ge esl_done
+adr x9 sbyte
+bl emitstr
+ldrb w13 x19 x4
+bl emitoff
+adr x9 snlonly
+bl emitstr
+add x4 x4 1
+b esl_loop
+:esl_done
+adr x9 sbyte0
+bl emitstr
+mov x1 61440
+movk x1 7 16
+add x1 x19 x1
+str x23 x1
+add x2 x1 8
+ldr x13 x2
+add x13 x13 1
+str x13 x2
+add x2 x1 16
+ldr x22 x2
+add x2 x1 24
+ldr x23 x2
+add x2 x1 32
+ldr x17 x2
 mov x30 x27
 ret
 :emitcharlit
@@ -1194,8 +1287,23 @@ ldrb w29 x19 x2
 add x6 x6 3
 mov x20 6
 ret
+:nt_strlit
+add x6 x6 1
+:nt_ssc
+ldrb w5 x19 x6
+cmp x5 34
+b.eq nt_ssend
+add x6 x6 1
+b nt_ssc
+:nt_ssend
+mov x29 x6
+add x6 x6 1
+mov x20 7
+ret
 :nt_class
 mov x18 x6
+cmp x5 34
+b.eq nt_strlit
 cmp x5 39
 b.eq nt_charlit
 cmp x5 48
@@ -1516,6 +1624,21 @@ ret
 .byte 0
 :smovx0
 .ascii "mov x0 "
+.byte 0
+:sadrx0d
+.ascii "adr x0 __d"
+.byte 0
+:sdlabel
+.ascii ":__d"
+.byte 0
+:sbyte
+.ascii ".byte "
+.byte 0
+:sbyte0
+.ascii ".byte 0\n"
+.byte 0
+:snlonly
+.ascii "\n"
 .byte 0
 :spush
 .ascii "\nstr x0 x9\nadd x9 x9 8\n"
