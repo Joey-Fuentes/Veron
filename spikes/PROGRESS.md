@@ -305,6 +305,22 @@ Next — **floor 2b-ii**: stage 2 tracks an instruction counter and emits `if`/`
 branches as `@<pos>` with a fixed-width placeholder it backpatches when the block
 closes, removing the last per-emit label class (control flow). Then functions.
 
+**Milestone 28 — stage 1: label pool 76 → 88 (headroom for the backpatch).** A
+pure headroom step, same shape as m21 (62→76), setting up floor 2b-ii. The
+backpatch codegen needs several more stage-2 source labels than the pool allowed
+(the compiler was at 75/76): it adds a fixed-width integer→decimal routine for the
+branch position field and a newline-based instruction counter. Rather than cram,
+the pool gained 12 punctuation slots — `()*,-./;[]{}` — appended after the m21
+set. stage0-as accepts any byte 0–127 as a label (symtab indexed by raw byte), so
+this is a stage-1-only change; programs with ≤62 labels still resolve
+byte-identically, and each new char was checked as a real label (def + backward
+branch) through the assembled ladder. Mirrored in `stage1_ref.POOL` and pinned in
+`validate.py` (resolves 62/76/80/88-label programs end-to-end; slots 63 and 87 are
+punctuation; backward branch through an 80-label program). **CI-confirmed** (real
+`as` + QEMU) via `stage1-as-demo` (now an 88-label pool program). Next: **floor
+2b-ii** proper — stage 2 emits `if`/`while` control flow as backpatched `@<pos>`
+offsets, using this headroom, leaving only function-entry labels.
+
 ---
 
 ## 6. What's next
@@ -313,7 +329,7 @@ The plan is a **capability-jump ladder**: keep each rung minimal, and write each
 stage in the language of the stage below.
 
 - **Stage 1** — DONE (multi-character labels) and upgraded to `brk` buffers so it
-  can process large stage-2/3 sources; label pool expanded to **76** single-char
+  can process large stage-2/3 sources; label pool expanded to **88** single-char
   slots (`A-Za-z0-9` + punctuation) so stage 2 can keep growing. See
   `spikes/stage1-as/`.
 - **Stage 2** — in progress. Compiles `int main(){ … }` with **word-sized**

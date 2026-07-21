@@ -123,20 +123,22 @@ if os.path.exists(s1p):
         for i in range(n):
             L += [f"b L{i:03}", f":L{i:03}", "add x0 x0 1"]
         return "\n".join(L + ["mov x8 93", "svc"]) + "\n"
-    for n in (62, 63, 70, 76):           # 63+ forces punctuation pool slots
+    for n in (62, 63, 70, 76, 80, 88):   # 63+ forces punctuation pool slots; 77+ uses the m28 chars
         _, res = run(s1prog, stdin=_chain(n).encode())
         rc, _ = run(assemble(res.decode())[1])
         check(f"stage1 resolves {n} labels -> ladder exit {n}", rc, n & 0xFF)
     # the pool slots at/after index 62 must be non-alphanumeric (the new chars)
-    _, res = run(s1prog, stdin=_chain(76).encode())
+    _, res = run(s1prog, stdin=_chain(88).encode())
     defs = [ln[1] for ln in res.decode().split("\n") if ln.startswith(":") and len(ln) == 2]
     check("stage1 pool slot 63 is a new (punct) char", defs[63].isalnum(), False)
+    check("stage1 pool slot 87 is a new (punct) char", defs[87].isalnum(), False)
+    check("stage1 pool holds 88 distinct slots", len(defs) >= 88, True)
     # backward branch + adr to a high-index (punctuation) label must resolve too
-    fill = "\n".join(f"b F{i:03}\n:F{i:03}" for i in range(63))
+    fill = "\n".join(f"b F{i:03}\n:F{i:03}" for i in range(80))
     loop = fill + "\nmov x0 0\nmov x1 5\n:LOOP\nadd x0 x0 1\ncmp x0 x1\nb.ne LOOP\nmov x8 93\nsvc\n"
     _, res = run(s1prog, stdin=loop.encode())
     rc, _ = run(assemble(res.decode())[1])
-    check("stage1 backward-branch to punct label -> 5", rc, 5)
+    check("stage1 backward-branch to punct label (80-label prog) -> 5", rc, 5)
 
 print("== stage 2 uses WORD variable slots (through the real assembled ladder) ==")
 # Regression guard for the byte->word slot upgrade. Variables are 4-byte slots
