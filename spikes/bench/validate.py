@@ -463,6 +463,31 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     check("stage2 multi-char params/locals",
           _exit("int compute(int count,int step){int total=count*step;return total+count;} int main(){return compute(6,4);}"), 30)
 
+    print("== stage 2 pointers: & (address-of), * (deref), *p = e (store-through) (A3b) ==")
+    # A3b adds single-level pointers on the 64-bit word model: &name pushes a
+    # variable's address (add x0 x10 off, no load), *name loads through a pointer
+    # (ldr x1 x1 then ldr x0 x1), and *name = e stores through it. Unary * is
+    # disambiguated from binary multiply by operand position, so a*b and *p coexist.
+    emp = _emit("int main(){int x=5;int* p;p=&x;return *p;}")
+    check("stage2 &name emits address-of (add x0 x10)", "add x0 x10" in emp, True)
+    check("stage2 *name deref emits pointer load (ldr x1 x1)", "ldr x1 x1" in emp, True)
+    emst = _emit("int main(){int x=0;int* p;p=&x;*p=42;return x;}")
+    check("stage2 *p = e stores through pointer (str x0 x1 after ldr x1 x1)",
+          "ldr x1 x1\nsub x9 x9 8\nldr x0 x9\nstr x0 x1" in emst, True)
+    emmul = _emit("int main(){int a=3;int b=4;int* p;p=&a;return *p*b;}")
+    check("stage2 unary * and binary * coexist (deref + mul both present)",
+          ("ldr x1 x1" in emmul) and ("mul x0 x1 x0" in emmul), True)
+    for cs, want in [
+        ("int main(){int x=5;int* p;p=&x;return *p;}", 5),                              # deref
+        ("int main(){int x=0;int* p;p=&x;*p=42;return x;}", 42),                         # store-through
+        ("int main(){int x=3;int y=4;int* p;p=&x;*p=*p+y;return x;}", 7),                # read+write via ptr
+        ("int set(int* q){*q=9;return 0;} int main(){int x=0;set(&x);return x;}", 9),    # pass-by-reference
+        ("int swap(int* a,int* b){int t=*a;*a=*b;*b=t;return 0;} int main(){int x=3;int y=8;swap(&x,&y);return x*10+y;}", 83),
+        ("int inc(int* q){*q=*q+1;return 0;} int main(){int c=41;inc(&c);inc(&c);return c;}", 43),
+        ("int main(){int x=8;int* p;int* q;p=&x;q=p;*q=99;return x;}", 99),              # pointer copy
+    ]:
+        check(f"stage2 pointer exit -> {want}", _exit(cs), want)
+
     print("== stage 2 large programs (enlarged input/output/stack buffers) ==")
     # The compiler's buffers were raised (input 64KB, output 256KB, bigger stacks),
     # so large programs no longer overflow the old ~4.4KB output buffer. Combined

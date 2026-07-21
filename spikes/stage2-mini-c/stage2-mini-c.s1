@@ -78,6 +78,10 @@ b paramloop
 cmp x20 3
 b.ne paramloop
 bl next_token
+cmp x29 42
+b.ne pl_decl
+bl next_token
+:pl_decl
 bl symdecl
 b paramloop
 :paramdone
@@ -126,6 +130,8 @@ cmp x20 0
 b.eq alldone
 cmp x20 3
 b.eq stmtkw
+cmp x20 4
+b.eq stmtop
 cmp x20 2
 b.eq doreassign
 cmp x20 5
@@ -143,10 +149,56 @@ b.eq dowhile
 cmp x29 4
 b.eq doreturn
 b stmtloop
+:stmtop
+cmp x29 42
+b.eq dostar
+b stmtloop
+:dostar
+bl next_token
+bl symlookup
+mov x14 x0
+bl next_token
+bl compile_expr
+adr x9 svaradr
+bl emitstr
+mov w13 x14
+bl emitoff
+adr x9 sstoreind
+bl emitstr
+add x6 x6 1
+b stmtloop
 :doint
 bl next_token
+cmp x29 42
+b.ne di_name
+bl next_token
+:di_name
 bl symdecl
 mov x14 x0
+mov x3 x6
+:di_ws
+cmp x3 x21
+b.ge di_uninit
+ldrb w5 x19 x3
+cmp x5 32
+b.eq di_wsadv
+cmp x5 9
+b.eq di_wsadv
+cmp x5 10
+b.eq di_wsadv
+cmp x5 13
+b.eq di_wsadv
+b di_chk
+:di_wsadv
+add x3 x3 1
+b di_ws
+:di_chk
+cmp x5 61
+b.eq di_init
+:di_uninit
+bl next_token
+b stmtloop
+:di_init
 bl next_token
 bl compile_expr
 adr x9 spop
@@ -158,6 +210,27 @@ bl emitstr
 add x6 x6 1
 b stmtloop
 :doreassign
+mov x3 x6
+:dra_ws
+cmp x3 x21
+b.ge dra_asg
+ldrb w5 x19 x3
+cmp x5 32
+b.eq dra_wsadv
+cmp x5 9
+b.eq dra_wsadv
+cmp x5 10
+b.eq dra_wsadv
+cmp x5 13
+b.eq dra_wsadv
+b dra_chk
+:dra_wsadv
+add x3 x3 1
+b dra_ws
+:dra_chk
+cmp x5 40
+b.eq dra_call
+:dra_asg
 bl symlookup
 mov x14 x0
 bl next_token
@@ -167,6 +240,13 @@ bl emitstr
 mov w13 x14
 bl emitoff
 adr x9 sstore
+bl emitstr
+add x6 x6 1
+b stmtloop
+:dra_call
+mov x6 x18
+bl compile_expr
+adr x9 sdiscard
 bl emitstr
 add x6 x6 1
 b stmtloop
@@ -273,6 +353,7 @@ add x28 x28 8
 str x12 x28
 add x28 x28 8
 mov x12 x25
+mov x3 1
 :celoop
 bl next_token
 cmp x20 0
@@ -288,6 +369,7 @@ b.eq ce_punct
 b celoop
 :ce_num
 bl emitnum
+mov x3 0
 b celoop
 :ce_id
 mov x3 x6
@@ -312,13 +394,32 @@ cmp x5 40
 b.eq ceid_call
 :ceid_var
 bl emitvar
+mov x3 0
 b celoop
 :ceid_call
 bl compile_call
+mov x3 0
 b celoop
 :ce_op
+cmp x29 38
+b.eq ceuaddr
+cmp x29 42
+b.ne ceobin
+cmp x3 1
+b.eq ceuderef
+:ceobin
 mov x26 x29
 b cewhile
+:ceuaddr
+bl next_token
+bl emitaddr
+mov x3 0
+b celoop
+:ceuderef
+bl next_token
+bl emitderef
+mov x3 0
+b celoop
 :ce_punct
 cmp x29 40
 b.eq ceopen
@@ -380,11 +481,13 @@ b cewhile
 :cepushop
 strb w26 x24 x25
 add x25 x25 1
+mov x3 1
 b celoop
 :ceopen
 mov w5 40
 strb w5 x24 x25
 add x25 x25 1
+mov x3 1
 b celoop
 :ceclose
 mov x3 x25
@@ -410,6 +513,7 @@ bl emitapply
 b ceclose2
 :ceclparen
 sub x25 x25 1
+mov x3 0
 b celoop
 :ceflush
 cmp x25 x12
@@ -478,6 +582,28 @@ adr x9 svaradr
 bl emitstr
 bl emitoff
 adr x9 svarload
+bl emitstr
+mov x30 x27
+ret
+:emitaddr
+mov x27 x30
+bl symlookup
+mov x13 x0
+adr x9 svaraddr
+bl emitstr
+bl emitoff
+adr x9 spush
+bl emitstr
+mov x30 x27
+ret
+:emitderef
+mov x27 x30
+bl symlookup
+mov x13 x0
+adr x9 svaradr
+bl emitstr
+bl emitoff
+adr x9 sderef
 bl emitstr
 mov x30 x27
 ret
@@ -881,6 +1007,8 @@ cmp x5 47
 b.eq nt_op1
 cmp x5 37
 b.eq nt_op1
+cmp x5 38
+b.eq nt_op1
 cmp x5 40
 b.eq nt_punct1
 cmp x5 41
@@ -1015,6 +1143,18 @@ ret
 .byte 0
 :svaradr
 .ascii "add x1 x10 "
+.byte 0
+:svaraddr
+.ascii "add x0 x10 "
+.byte 0
+:sderef
+.ascii "\nldr x1 x1\nldr x0 x1\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:sstoreind
+.ascii "\nldr x1 x1\nsub x9 x9 8\nldr x0 x9\nstr x0 x1\n"
+.byte 0
+:sdiscard
+.ascii "sub x9 x9 8\n"
 .byte 0
 :svarload
 .ascii "\nldr x0 x1\nstr x0 x9\nadd x9 x9 8\n"

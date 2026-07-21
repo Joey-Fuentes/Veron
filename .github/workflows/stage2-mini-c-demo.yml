@@ -106,6 +106,11 @@ jobs:
           grep -q '^:z$'          word.s && { echo "REGRESSION: labeled :z slot present"; struct_ok=no; }
           grep -q '^\.byte 0$'    word.s && { echo "REGRESSION: .byte 0 slot table present"; struct_ok=no; }
 
+          # ---- structural: pointers emit address-of (add x0 x10) + deref (ldr x1 x1) ----
+          printf '%s' 'int main(){int x=5; int* p; p=&x; *p=*p+1; return *p;}' | qemu-aarch64 ./stage2 > ptr.s
+          grep -q 'add x0 x10' ptr.s || { echo "MISSING &name address-of (add x0 x10)"; struct_ok=no; }
+          grep -q 'ldr x1 x1'  ptr.s || { echo "MISSING *name deref (ldr x1 x1)"; struct_ok=no; }
+
           # ---- structural: if/while emit a zero-test + BACKPATCHED numeric branch ----
           # if/while control flow is emitted as b.eq @<pos> / b @<pos> with the target
           # position backpatched at '}', which stage1 passes through. The only labels
@@ -166,6 +171,13 @@ jobs:
           # correct exit proves the value stack + frame slots are genuinely 64-bit.
           try 'int main(){int a=2000; return a*a*a/1000;}'        0
           try 'int main(){int a=3000; int b=3000; return a*b/7;}' 82
+          echo "== stage-2: pointers (& address-of, * deref, *p = e store-through) (A3b) =="
+          # single-level pointers on the word model: indirection + pass-by-reference.
+          try 'int main(){int x=5; int* p; p=&x; return *p;}'                                                    5
+          try 'int main(){int x=0; int* p; p=&x; *p=42; return x;}'                                              42
+          try 'int set(int* q){*q=9; return 0;} int main(){int x=0; set(&x); return x;}'                         9
+          try 'int swap(int* a,int* b){int t=*a; *a=*b; *b=t; return 0;} int main(){int x=3; int y=8; swap(&x,&y); return x*10+y;}' 83
+          try 'int inc(int* q){*q=*q+1; return 0;} int main(){int c=41; inc(&c); inc(&c); return c;}'            43
           echo "== stage-2: word-sized variables (frame-relative) =="
           try 'int main(){int a=2; int b=3; return a+b;}'             5
           try 'int main(){int a=10; return a*a;}'                     100
@@ -297,7 +309,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ]; then
-            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
+            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
           else
             echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok fn=$fn_ok div=$div_ok"; exit 1
           fi

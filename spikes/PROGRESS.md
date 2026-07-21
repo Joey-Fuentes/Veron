@@ -588,6 +588,38 @@ m25). Next: **A3b — `char`, `&`, `*`, and arrays `[]`** on top of this word mo
 
 ---
 
+**Milestone 38 — stage 2: pointers — `&`, `*`, and store-through (A3b).** With the
+64-bit word model in place, this adds the capability it was built for:
+**indirection**. A3b is scoped to single-level pointers — `int* p` declarations
+(and pointer params), `&name` (address-of), `*name` (dereference as an rvalue), and
+`*name = e` (store-through) — which is the smallest coherent rung that delivers
+**pass-by-reference**. Because a pointer is exactly one machine word, every pointer
+operation is a plain 8-byte load/store, so **no element-size or type machinery is
+needed yet** (that arrives with arrays and `char`): `&x` pushes a frame address
+(`add x0 x10 off`, no load), `*p` loads the pointer then loads through it
+(`ldr x1 x1; ldr x0 x1`), and `*p = e` evaluates `e`, recomputes the address, and
+stores (`str x0 x1`). The one real parser subtlety is that `*` is now **overloaded**
+— binary multiply (`a*b`) vs unary dereference (`*p`) — resolved by an
+**operand-position flag** threaded through the expression compiler in `x3` (set at
+entry and after every operand/operator, read when a `*` token arrives); `a*b` and
+`*p` compile correctly side by side, as does `*p*b`. Two smaller gaps the pointer
+work exposed are filled: **uninitialised declarations** (`int* p;` with no
+initialiser) and **bare call statements** (`set(&x);` — a call evaluated for its
+side effect, its result discarded), both of which pass-by-reference needs. No
+stage0-as change — `&`/`*`/store-through are all existing loads, stores, and adds;
+the tokenizer gains only the `&` character. Designed against the oracle
+(`stage2_ref_a3b.py`) and verified through the **real assembled ladder** on
+dereference (`*p` → 5), store-through (`*p=42` → 42), read-modify-write via a
+pointer (`*p=*p+y`), pointer copy (`q=p; *q=99`), `inc(&c)` twice → 43, and the
+classic `swap(&x,&y)` → 83 — plus the **entire A2 + division + word-model corpus**
+unchanged. `validate.py` gains a pointer section (190→201 checks) and the
+`stage2-mini-c-demo` workflow gains the `&`/`*` structural greps and pass-by-
+reference behavioural runs in its pass/fail gate. Next: **A3c — arrays `int a[N]`
+and subscript `a[i]`** (per-var frame sizing + scaled indexing), then **A3d —
+`char`** (byte `ldrb`/`strb` access + char literals).
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
@@ -615,8 +647,11 @@ stage in the language of the stage below.
   now carry `:func` labels resolved by stage1 alongside numeric if/while), then
   **unsigned `/` `%`** (m36, a new stage0-as `udiv` leaf) and a **64-bit uniform
   machine-word model** (m37, A3a: `int == pointer` width, 8-byte value stack + frame
-  slots — the foundation pointers need). Next: **A3b — `char`, `&`, `*`, and arrays
-  `[]`** (typed byte/word loads, address-of, subscript) on top of the word model.
+  slots — the foundation pointers need), then **single-level pointers** (m38, A3b:
+  `int* p`, `&` address-of, `*` dereference, `*p = e` store-through, pass-by-
+  reference — unary `*` disambiguated from multiply by operand position). Next:
+  **A3c — arrays `int a[N]` + subscript `a[i]`**, then **A3d — `char`** (byte
+  `ldrb`/`strb` access + char literals).
   See **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**

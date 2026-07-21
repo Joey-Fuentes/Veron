@@ -46,6 +46,15 @@ int main(){ return name(2,3); }   // program is entered via bl main
   uses a `brk` value stack. Four precedence levels (low→high): `== !=` `<`
   `< > <= >=` `<` `+ -` `<` `*`, all left-associative. Comparisons yield `0`/`1`,
   so `while(i<=n)`, `if(a==b)`, and `a==b<c` compose naturally with arithmetic.
+- **pointers (A3b)**: single-level `int* p` (and pointer params), `&name`
+  (address-of), `*name` (dereference), and `*name = e` (store-through) — enough for
+  **pass-by-reference** (`int set(int* q){*q=9;} … set(&x);`). Everything is one
+  machine word, so a pointer op is a plain 8-byte load/store; `&x` is `add x0 x10 off`
+  (no load), `*p` is `ldr x1 x1; ldr x0 x1`, `*p = e` recomputes the address and
+  `str`s. `*` is disambiguated (unary dereference vs binary multiply) by
+  **operand position**, so `a*b` and `*p` — and `*p*b` — all compile correctly.
+  A3b also enables **uninitialised decls** (`int* p;`) and **bare call statements**
+  (`f(args);`, result discarded). Arrays `[]` and `char` are the next two rungs.
 - **control flow**: `if` and `while`, arbitrarily nested. The condition is any
   expression, tested for **nonzero = true** (C truthiness). if/while codegen is
   iterative with an explicit *block stack*; the **expression** compiler, by
