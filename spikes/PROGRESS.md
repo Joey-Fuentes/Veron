@@ -711,6 +711,40 @@ arithmetic and structs — the pieces M2-Planet's own source leans on.
 
 ---
 
+**Milestone 42 — stage 2: global variables (A4b).** File-scope variables — `int g;`,
+`int* p;`, `int a[N];`, `char s[N];`, `char* msg;` — shared across every function.
+This is the capability M2-Planet's own source leans on hardest (its token buffer,
+output pointer, and counters are all globals), and it landed on the m41 data section
+with **no new data infrastructure**: a global is just a named `g_<name>` entry in the
+same output buffer that holds string literals, emitted via the same primitive. Two
+things were added. First, a **globals table** — a persistent name→flags map in its own
+memory region, populated by `gsymdecl` as the top-level loop parses each file-scope
+declaration (distinguishing a global `name ;` / `[N]` from a function `name (` by a
+lookahead). Second, **two-level name resolution**: every variable reference now tries
+the per-function frame first (`symlookup`), then the globals table (`gsymlookup`), and
+the address it emits is `add xN x10 <off>` for a local or `adr xN g_<name>` for a
+global. That routing was centralized into `emitbase0`/`emitbase1` so the ~seven
+address-emitting helpers just call one of them, and the subscript/store callers now
+save the variable's *name span* across sub-expression compilation (re-resolving after)
+rather than a frame offset — which is what makes `g[i]`, `&g`, and `*g = e` work on
+globals uniformly. No stage0-as change. The port surfaced two classic hand-assembly
+bugs, both worth recording: `resolve`/`emitbase` are non-leaf (they call other
+routines) yet initially saved their return address in `x27` — the same register their
+callers use — so a variable reference returned into itself and span forever; and
+`gsymlookup` used `x12` as a compare temporary, but `x12` is `compile_expr`'s operator-
+stack base, so *global* references (locals never hit `gsymlookup`) corrupted the
+expression compiler. Both fixed by saving through the `x28` spill stack. Verified
+through the ladder: global scalars, arrays (int and byte-packed char), a `char*` global
+holding a string literal, a counter mutated across calls, `&g`/`*p`, and accumulation
+into a global — plus the whole local/pointer/array/char/string/function corpus
+unchanged. `.s1` scope note: uninitialised globals only (initialise in code); data-
+initialised globals (`int g = 5;`) stay reference-only for now. `validate.py` gains a
+globals section (232→241) and the demo workflow gains `adr g_`/`:g_` structural greps
+plus behavioural runs. Next: general pointer arithmetic (scaling by pointee size —
+the first real exercise of a widened type descriptor) and structs.
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
@@ -748,8 +782,11 @@ stage in the language of the stage below.
   explicit is_char/is_array flags word, since a small `char[N]` collides in size with a
   scalar). **A3 is complete.** Then **string literals + a static data section** (m41,
   A4a: `"..."` as a `char*` into a second output buffer emitted after the code,
-  `adr`-addressed — the globals-ready data infrastructure). Next: **globals** (reusing
-  the data section), then general pointer arithmetic and structs — the M2-Planet subset.
+  `adr`-addressed — the globals-ready data infrastructure). Then **globals** (m42, A4b:
+  file-scope `int g;` / `int a[N];` / `char* p;`, shared across functions, reusing the
+  data section with `g_`-labels and frame-first name resolution — the capability
+  M2-Planet leans on hardest). Next: general pointer arithmetic (scaling by pointee
+  size) and structs — the M2-Planet subset.
   See **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**

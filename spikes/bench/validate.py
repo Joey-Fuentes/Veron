@@ -556,6 +556,26 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 string-literal exit -> {want}", _exit(cs), want)
 
+    print("== stage 2 globals: file-scope variables in the data section (A4b) ==")
+    # A4b adds global variables, reusing the A4a data section (named g_<name> labels
+    # instead of anonymous __dN). Name resolution is frame-first, then globals; an
+    # address is emitted as `add xN x10 off` for a local or `adr xN g_name` for a
+    # global. Globals are shared across all functions — the thing M2-Planet's own
+    # source leans on hardest. (.s1 supports uninitialised globals; initialise in code.)
+    emg = _emit("int g; int main(){g=5;return g;}")
+    check("stage2 global takes its address (adr x1 g_)", "adr x1 g_" in emg, True)
+    check("stage2 global emits a data-section label (:g_)", ":g_" in emg, True)
+    for cs, want in [
+        ("int g; int main(){g=5;return g;}", 5),                                                              # global scalar
+        ("int g; int set(){g=9;return 0;} int main(){set();return g;}", 9),                                    # shared across functions
+        ("int a[3]; int main(){a[0]=4;a[1]=6;return a[0]+a[1];}", 10),                                         # global int array
+        ("char buf[4]; int main(){buf[0]=65;buf[1]=66;return buf[0]+buf[1];}", 131),                          # global char array (byte)
+        ("int counter; int inc(){counter=counter+1;return 0;} int main(){inc();inc();inc();return counter;}", 3),  # global counter
+        ("int g; int main(){int* p; p=&g; *p=42; return g;}", 42),                                            # address-of global
+        ("int total; int addto(int x){total=total+x;return 0;} int main(){addto(10);addto(20);addto(5);return total;}", 35),  # accumulate via global
+    ]:
+        check(f"stage2 global exit -> {want}", _exit(cs), want)
+
     print("== stage 2 large programs (enlarged input/output/stack buffers) ==")
     # The compiler's buffers were raised (input 64KB, output 256KB, bigger stacks),
     # so large programs no longer overflow the old ~4.4KB output buffer. Combined

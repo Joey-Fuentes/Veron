@@ -79,6 +79,12 @@ int main(){ return name(2,3); }   // program is entered via bl main
   it PC-relative. Literals flow into the byte machinery: `s[i]`, `*s`, `strlen("hello")`, and
   string arguments (`f("MN","XY")`) all work. The data section is general infrastructure —
   the same primitive serves globals next (named `g_`-labels vs anonymous `__dN`).
+- **globals (A4b)**: file-scope variables — `int g;`, `int* p;`, `int a[N];`, `char s[N];`,
+  `char* msg;` — shared across every function (what M2-Planet leans on hardest). They live
+  in the same data section as string literals under `g_<name>` labels. Name resolution is
+  **frame-first, then globals**: a reference emits `add xN x10 off` for a local or
+  `adr xN g_name` for a global, routed through `emitbase0`/`emitbase1`. `g[i]`, `&g`, and
+  `*g = e` all work. No stage0-as change. (Uninitialised globals; initialise in code.)
 - **control flow**: `if` and `while`, arbitrarily nested. The condition is any
   expression, tested for **nonzero = true** (C truthiness). if/while codegen is
   iterative with an explicit *block stack*; the **expression** compiler, by

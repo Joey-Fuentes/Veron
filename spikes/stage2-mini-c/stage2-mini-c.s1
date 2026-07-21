@@ -45,7 +45,7 @@ mov x16 0
 mov x17 0
 mov x25 0
 mov x1 0
-movk x1 8 16
+movk x1 9 16
 add x0 x19 x1
 mov x8 214
 svc
@@ -55,6 +55,8 @@ add x1 x19 x1
 mov x2 0
 str x2 x1
 add x3 x1 8
+str x2 x3
+add x3 x1 40
 str x2 x3
 mov x0 0
 mov x1 x19
@@ -70,7 +72,38 @@ bl emitstr
 bl next_token
 cmp x20 0
 b.eq alldone
+mov x12 0
+cmp x29 5
+b.ne fl_nc
+mov x12 1
+:fl_nc
 bl next_token
+cmp x29 42
+b.ne fl_hn
+bl next_token
+:fl_hn
+mov x3 x6
+:fl_pk
+cmp x3 x21
+b.ge fl_global
+ldrb w5 x19 x3
+cmp x5 32
+b.eq fl_pka
+cmp x5 9
+b.eq fl_pka
+cmp x5 10
+b.eq fl_pka
+cmp x5 13
+b.eq fl_pka
+b fl_pkc
+:fl_pka
+add x3 x3 1
+b fl_pk
+:fl_pkc
+cmp x5 40
+b.eq fl_func
+b fl_global
+:fl_func
 bl emitlabel
 mov x8 0
 bl next_token
@@ -155,6 +188,68 @@ svc
 mov x0 0
 mov x8 93
 svc
+:fl_global
+mov x3 x6
+:flg_pk
+cmp x3 x21
+b.ge flg_scalar
+ldrb w5 x19 x3
+cmp x5 32
+b.eq flg_pka
+cmp x5 9
+b.eq flg_pka
+cmp x5 10
+b.eq flg_pka
+cmp x5 13
+b.eq flg_pka
+b flg_pkc
+:flg_pka
+add x3 x3 1
+b flg_pk
+:flg_pkc
+cmp x5 91
+b.eq flg_array
+:flg_scalar
+mov x2 x12
+bl gsymdecl
+mov x13 8
+bl emit_gdata
+:flg_ssk
+bl next_token
+cmp x29 59
+b.ne flg_ssk
+b funcloop
+:flg_array
+mov x7 x18
+mov x14 x6
+bl next_token
+bl parsenum
+str x6 x28
+add x28 x28 8
+cmp x12 0
+b.ne flg_ac
+mov x5 3
+lsl x13 x0 x5
+b flg_asz
+:flg_ac
+add x0 x0 7
+mov x5 3
+lsr x0 x0 x5
+lsl x13 x0 x5
+:flg_asz
+mov x2 x12
+add x2 x2 2
+mov x18 x7
+mov x6 x14
+bl gsymdecl
+bl emit_gdata
+sub x28 x28 8
+ldr x6 x28
+:flg_ask
+bl next_token
+cmp x29 59
+b.ne flg_ask
+b funcloop
 :stmtloop
 bl next_token
 cmp x20 0
@@ -188,29 +283,31 @@ b.eq dostar
 b stmtloop
 :dostar
 bl next_token
-bl symlookup
-mov x14 x0
-str x1 x28
+str x18 x28
+add x28 x28 8
+str x6 x28
 add x28 x28 8
 bl next_token
 bl compile_expr
+mov x14 x6
 sub x28 x28 8
-ldr x1 x28
-adr x9 svaradr
-bl emitstr
-mov w13 x14
-bl emitoff
+ldr x6 x28
+sub x28 x28 8
+ldr x18 x28
+bl emitbase1
 mov x3 1
 and x5 x1 x3
 cmp x5 0
 b.ne dostar_b
 adr x9 sstoreind
 bl emitstr
+mov x6 x14
 add x6 x6 1
 b stmtloop
 :dostar_b
 adr x9 sstoreindb
 bl emitstr
+mov x6 x14
 add x6 x6 1
 b stmtloop
 :doint_int
@@ -334,16 +431,23 @@ b.eq dra_call
 cmp x5 91
 b.eq dra_sub
 :dra_asg
-bl symlookup
-mov x14 x0
+str x18 x28
+add x28 x28 8
+str x6 x28
+add x28 x28 8
 bl next_token
 bl compile_expr
-adr x9 spop
+adr x9 spopv
 bl emitstr
-mov w13 x14
-bl emitoff
+mov x14 x6
+sub x28 x28 8
+ldr x6 x28
+sub x28 x28 8
+ldr x18 x28
+bl emitbase1
 adr x9 sstore
 bl emitstr
+mov x6 x14
 add x6 x6 1
 b stmtloop
 :dra_call
@@ -354,21 +458,22 @@ bl emitstr
 add x6 x6 1
 b stmtloop
 :dra_sub
-bl symlookup
-str x0 x28
+str x18 x28
 add x28 x28 8
-str x1 x28
+str x6 x28
 add x28 x28 8
 bl next_token
 bl compile_expr
 bl next_token
 bl next_token
 bl compile_expr
+mov x14 x6
 sub x28 x28 8
-ldr x2 x28
+ldr x6 x28
 sub x28 x28 8
-ldr x13 x28
+ldr x18 x28
 bl emitsubstore
+mov x6 x14
 add x6 x6 1
 b stmtloop
 :doreturn
@@ -536,19 +641,20 @@ bl compile_call
 mov x3 0
 b celoop
 :ceid_sub
-bl symlookup
-str x0 x28
+str x18 x28
 add x28 x28 8
-str x1 x28
+str x6 x28
 add x28 x28 8
 bl next_token
 bl compile_expr
 bl next_token
+mov x14 x6
 sub x28 x28 8
-ldr x2 x28
+ldr x6 x28
 sub x28 x28 8
-ldr x13 x28
+ldr x18 x28
 bl emitsub
+mov x6 x14
 mov x3 0
 b celoop
 :ce_op
@@ -588,19 +694,20 @@ bl emitaddr
 mov x3 0
 b celoop
 :cua_sub
-bl symlookup
-str x0 x28
+str x18 x28
 add x28 x28 8
-str x1 x28
+str x6 x28
 add x28 x28 8
 bl next_token
 bl compile_expr
 bl next_token
+mov x14 x6
 sub x28 x28 8
-ldr x2 x28
+ldr x6 x28
 sub x28 x28 8
-ldr x13 x28
+ldr x18 x28
 bl emiteladdr
+mov x6 x14
 mov x3 0
 b celoop
 :ceuderef
@@ -835,37 +942,111 @@ adr x9 spush
 bl emitstr
 mov x30 x27
 ret
+:emitbase1
+str x30 x28
+add x28 x28 8
+bl resolve
+cmp x7 0
+b.eq eb1_g
+mov x13 x0
+adr x9 svaradr
+bl emitstr
+bl emitoff
+sub x28 x28 8
+ldr x30 x28
+ret
+:eb1_g
+adr x9 sadrg1
+bl emitstr
+bl copyspan
+sub x28 x28 8
+ldr x30 x28
+ret
+:emitbase0
+str x30 x28
+add x28 x28 8
+bl resolve
+cmp x7 0
+b.eq eb0_g
+mov x13 x0
+adr x9 svaraddr
+bl emitstr
+bl emitoff
+sub x28 x28 8
+ldr x30 x28
+ret
+:eb0_g
+adr x9 sadrg0
+bl emitstr
+bl copyspan
+sub x28 x28 8
+ldr x30 x28
+ret
+:emit_gdata
+mov x27 x30
+mov x1 61440
+movk x1 7 16
+add x1 x19 x1
+add x2 x1 16
+str x22 x2
+add x2 x1 24
+str x23 x2
+add x2 x1 32
+str x17 x2
+mov x22 0
+movk x22 6 16
+add x22 x19 x22
+ldr x23 x1
+adr x9 sglabel
+bl emitstr
+bl copyspan
+adr x9 snlonly
+bl emitstr
+mov x4 0
+:egd_loop
+cmp x4 x13
+b.ge egd_done
+adr x9 sbyte0
+bl emitstr
+add x4 x4 1
+b egd_loop
+:egd_done
+mov x1 61440
+movk x1 7 16
+add x1 x19 x1
+str x23 x1
+add x2 x1 16
+ldr x22 x2
+add x2 x1 24
+ldr x23 x2
+add x2 x1 32
+ldr x17 x2
+mov x30 x27
+ret
 :emitvar
 mov x27 x30
-bl symlookup
-mov x13 x0
+bl resolve
 mov x3 2
 and x4 x1 x3
 cmp x4 0
 b.ne emitvar_arr
-adr x9 svaradr
-bl emitstr
-bl emitoff
+bl emitbase1
 adr x9 svarload
 bl emitstr
 mov x30 x27
 ret
 :emitvar_arr
-adr x9 svaraddr
-bl emitstr
-bl emitoff
+bl emitbase0
 adr x9 spush
 bl emitstr
 mov x30 x27
 ret
 :emitsub
 mov x27 x30
-mov x4 x2
 adr x9 spopidx
 bl emitstr
-adr x9 svaradr
-bl emitstr
-bl emitoff
+bl emitbase1
+mov x4 x1
 mov x3 2
 and x5 x4 x3
 cmp x5 0
@@ -892,12 +1073,10 @@ mov x30 x27
 ret
 :emiteladdr
 mov x27 x30
-mov x4 x2
 adr x9 spopidx
 bl emitstr
-adr x9 svaradr
-bl emitstr
-bl emitoff
+bl emitbase1
+mov x4 x1
 mov x3 2
 and x5 x4 x3
 cmp x5 0
@@ -920,12 +1099,10 @@ mov x30 x27
 ret
 :emitsubstore
 mov x27 x30
-mov x4 x2
 adr x9 spopval2
 bl emitstr
-adr x9 svaradr
-bl emitstr
-bl emitoff
+bl emitbase1
+mov x4 x1
 mov x3 2
 and x5 x4 x3
 cmp x5 0
@@ -952,22 +1129,14 @@ mov x30 x27
 ret
 :emitaddr
 mov x27 x30
-bl symlookup
-mov x13 x0
-adr x9 svaraddr
-bl emitstr
-bl emitoff
+bl emitbase0
 adr x9 spush
 bl emitstr
 mov x30 x27
 ret
 :emitderef
 mov x27 x30
-bl symlookup
-mov x13 x0
-adr x9 svaradr
-bl emitstr
-bl emitoff
+bl emitbase1
 mov x3 1
 and x5 x1 x3
 cmp x5 0
@@ -1031,6 +1200,97 @@ strb w5 x22 x23
 add x23 x23 1
 mov x30 x14
 ret
+:resolve
+str x30 x28
+add x28 x28 8
+bl symlookup
+cmp x7 0
+b.ne resolve_l
+bl gsymlookup
+mov x7 0
+:resolve_l
+sub x28 x28 8
+ldr x30 x28
+ret
+:gsymdecl
+mov x1 61440
+movk x1 7 16
+add x1 x19 x1
+add x3 x1 40
+ldr x4 x3
+mov x5 4
+lsl x5 x4 x5
+mov x0 0
+movk x0 8 16
+add x0 x19 x0
+add x0 x0 x5
+str w18 x0
+add x5 x0 4
+sub x7 x6 x18
+str w7 x5
+add x5 x0 8
+str w2 x5
+add x4 x4 1
+str x4 x3
+ret
+:gsymlookup
+str x12 x28
+add x28 x28 8
+str x13 x28
+add x28 x28 8
+sub x1 x6 x18
+mov x2 61440
+movk x2 7 16
+add x2 x19 x2
+add x2 x2 40
+ldr x3 x2
+mov x4 0
+mov x7 0
+movk x7 8 16
+add x7 x19 x7
+:gsl_loop
+cmp x4 x3
+b.ge gsl_nf
+mov x5 4
+lsl x5 x4 x5
+add x5 x7 x5
+add x0 x5 4
+ldr w0 x0
+cmp x0 x1
+b.ne gsl_next
+ldr w2 x5
+mov x0 0
+:gsl_cmp
+cmp x0 x1
+b.ge gsl_found
+add x13 x2 x0
+ldrb w13 x19 x13
+add x12 x18 x0
+ldrb w12 x19 x12
+cmp x13 x12
+b.ne gsl_next
+add x0 x0 1
+b gsl_cmp
+:gsl_found
+add x5 x5 8
+ldr w1 x5
+sub x28 x28 8
+ldr x13 x28
+sub x28 x28 8
+ldr x12 x28
+mov x0 1
+ret
+:gsl_next
+add x4 x4 1
+b gsl_loop
+:gsl_nf
+sub x28 x28 8
+ldr x13 x28
+sub x28 x28 8
+ldr x12 x28
+mov x0 0
+mov x1 0
+ret
 :symdecl
 cmp x8 0
 b.ne sd_prev
@@ -1093,6 +1353,7 @@ add x0 x4 8
 ldr w0 x0
 add x1 x4 16
 ldr w1 x1
+mov x7 1
 ret
 :sl_next
 add x3 x3 1
@@ -1100,6 +1361,7 @@ b sl_loop
 :sl_nf
 mov x0 0
 mov x1 0
+mov x7 0
 ret
 :parsenum
 str x30 x28
@@ -1627,6 +1889,18 @@ ret
 .byte 0
 :sadrx0d
 .ascii "adr x0 __d"
+.byte 0
+:sadrg0
+.ascii "adr x0 g_"
+.byte 0
+:sadrg1
+.ascii "adr x1 g_"
+.byte 0
+:sglabel
+.ascii ":g_"
+.byte 0
+:spopv
+.ascii "sub x9 x9 8\nldr x0 x9\n"
 .byte 0
 :sdlabel
 .ascii ":__d"
