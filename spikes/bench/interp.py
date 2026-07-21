@@ -33,6 +33,7 @@ def run(prog, stdin=b'', mem_size=0x40000, trace=False):
         elif op=='addr': R[ins[1]]=(R[ins[2]]+R[ins[3]])&0xFFFFFFFFFFFFFFFF
         elif op=='subr': R[ins[1]]=(R[ins[2]]-R[ins[3]])&0xFFFFFFFFFFFFFFFF
         elif op=='mul':  R[ins[1]]=(R[ins[2]]*R[ins[3]])&0xFFFFFFFFFFFFFFFF
+        elif op=='udiv': R[ins[1]]=(R[ins[2]]//R[ins[3]]) if R[ins[3]] else 0   # aarch64: /0 -> 0
         elif op in('orr','and'):
             a,b=R[ins[2]],R[ins[3]]; R[ins[1]]=(a|b) if op=='orr' else (a&b)
         elif op=='lsl': R[ins[1]]=(R[ins[2]]<<(R[ins[3]]&63))&0xFFFFFFFFFFFFFFFF

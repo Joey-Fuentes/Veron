@@ -29,7 +29,7 @@ Per-call frame on the frame stack: [ saved caller x10 (8) | saved x30 (8) |
 
 KEYWORDS = {'int', 'return', 'if', 'while'}
 TWO_OPS  = {'<=', '>=', '==', '!='}
-PREC = {'==':0, '!=':0, '<':1, '>':1, '<=':1, '>=':1, '+':2, '-':2, '*':3}
+PREC = {'==':0, '!=':0, '<':1, '>':1, '<=':1, '>=':1, '+':2, '-':2, '*':3, '/':3, '%':3}
 
 
 # ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ def lex(src):
             toks.append(('kw', w) if w in KEYWORDS else ('id', w)); i = j; continue
         if src[i:i+2] in TWO_OPS:
             toks.append(('op', src[i:i+2])); i += 2; continue
-        if c in '+-*<>':
+        if c in '+-*/%<>':
             toks.append(('op', c)); i += 1; continue
         if c in '(){};=,':
             toks.append(('punct', c)); i += 1; continue
@@ -176,6 +176,8 @@ def compile_expr(toks, pos, frame, funcs, em, stops):
         elif o == '>=': [em.i(s) for s in ("sub x0 x1 x0", "mov x2 63", "lsr x0 x0 x2", "mov x2 1", "sub x0 x2 x0")]
         elif o == '!=': [em.i(s) for s in ("sub x0 x1 x0", "mov x2 0", "sub x2 x2 x0", "orr x0 x0 x2", "mov x2 63", "lsr x0 x0 x2")]
         elif o == '==': [em.i(s) for s in ("sub x0 x1 x0", "mov x2 0", "sub x2 x2 x0", "orr x0 x0 x2", "mov x2 63", "lsr x0 x0 x2", "mov x2 1", "sub x0 x2 x0")]
+        elif o == '/':  em.i("udiv x0 x1 x0")
+        elif o == '%':  [em.i(t) for t in ("udiv x2 x1 x0", "mul x2 x2 x0", "sub x0 x1 x2")]
         else:           em.i({'+':"add x0 x1 x0", '-':"sub x0 x1 x0", '*':"mul x0 x1 x0"}[o])
         em.i("str w0 x9"); em.i("add x9 x9 4")
 
@@ -328,6 +330,8 @@ def evaluate(src):
         elif o == '!=': return 1 if a != b else 0
         elif o == '+':  return (a + b) & M
         elif o == '-':  return (a - b) & M
+        elif o == '/':  return (a // b) & M if b else 0   # unsigned; aarch64 /0 -> 0
+        elif o == '%':  return (a - (a // b) * b) & M if b else 0
         else:           return (a * b) & M
 
     def ev_expr(t, pos, env, stops):

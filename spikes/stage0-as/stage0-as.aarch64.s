@@ -17,7 +17,7 @@
 //                               pool label '@' — '@' then non-digit — still works)
 //   bl <L>  ret  br x<n>  blr x<n>   (subroutines; base for stage 1)
 //   orr/and/lsl/lsr/asr x<d> x<n> x<m>    movk x<d> <imm> <shift>
-//   add/sub x<d> x<n> x<m> (register)     mul x<d> x<n> x<m>
+//   add/sub x<d> x<n> x<m> (register)     mul/udiv x<d> x<n> x<m>
 //   adr  x<d> <L> | @<pos>     ldrb/strb w<t> x<n> x<m>   ldr/str w<t> x<n>
 //   ldr/str x<t> x<n>          (64-bit load/store; first reg's width selects size)
 //   .byte <imm>                .ascii "text"           (\n supported)
@@ -88,6 +88,8 @@ parse_loop:
     b.eq    h_ret
     cmp     w0, #'o'
     b.eq    h_orr
+    cmp     w0, #'u'
+    b.eq    h_udiv
     b       skip_line
 pass_end:
     cmp     x23, #2
@@ -558,6 +560,10 @@ h_lsl:
 h_lsr:
     add     x20, x20, #3            // skip "lsr"
     movz    w26, #0x2400
+    b       shift_common
+h_udiv:
+    add     x20, x20, #4            // skip "udiv"
+    movz    w26, #0x0800            // UDIV: 0x9AC00800 | m<<16 | n<<5 | d
     b       shift_common
 h_asr:
     add     x20, x20, #3            // skip "asr"

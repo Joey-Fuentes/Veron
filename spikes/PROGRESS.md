@@ -527,6 +527,36 @@ the first step toward the memory model M2-Planet's source needs.
 
 ---
 
+**Milestone 36 — stage 2: unsigned `/` and `%`, via a new stage0-as `udiv` (leaf).**
+The one remaining arithmetic operator that can't be synthesized from a short fixed
+sequence (unlike the comparisons) is division, so this adds it as a self-contained
+leaf. stage0-as gains **one instruction**, `udiv x<d> x<n> x<m>` — it's a
+DP-2-source sibling of the existing `lsr`/`asr` (same `0x9AC00000` base, selector
+`0x0800`), so the hand-written assembler reuses its `shift_common` path: a first-char
+`'u'` dispatch plus a 3-line handler. The bench model (`s0as.py`) and interpreter
+(`interp.py`) mirror it, and the demo **byte-anchors `udiv` against real `as`**
+(`udiv x0,x1,x0` → `20 08 c0 9a`, i.e. `0x9AC00820`), the same discipline every
+stage-0 opcode gets. In stage 2, `/` lowers to a single `udiv x0 x1 x0` and `%` to
+`udiv x2 x1 x0; mul x2 x2 x0; sub x0 x1 x2` (`a - (a/b)*b`) — so `%` needs **no**
+capability beyond `udiv`. Both are added to the tokenizer (`/`=47, `%`=37 as
+operator tokens), bind at the **multiplicative** level with `*` (left-associative)
+in the shunting-yard precedence machine, and emit through the existing `emitapply`
+seam (two new operation strings `sdivr`/`smodr`). Semantics are **unsigned-32**,
+matching the value stack and the existing unsigned comparisons; aarch64's divide-by-
+zero → 0 is preserved end-to-end. Signed `/` is deliberately **not** added: the
+value stack is zero-extended, so `sdiv` would be latent/untestable until signed
+types land (it arrives with `sdiv` + sign-extension then). Designed against the
+oracle (`stage2_ref_a2.py` gains `/`/`%` in its tokenizer, precedence, evaluator,
+and codegen) and verified through the **real assembled ladder** on precedence
+(`2+10/2=7`), left-associativity (`20/4/5=1`, `3*4/2=6`), the identity
+`(n/d)*d + n%d == n`, divide-by-zero, and Euclid's `gcd(48,36)=12`; `validate.py`
+gains a division section (169→184 checks) including the model's `udiv` encoding, and
+the `stage2-mini-c-demo` workflow gains the `udiv` byte-anchor + `/`/`%` structural
+and behavioural checks wired into its pass/fail gate. Next: **A3 — pointers, `char`,
+and arrays**.
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
@@ -540,8 +570,9 @@ stage in the language of the stage below.
   variables, declaration + **reassignment**, `+ - *` expressions plus the full
   **comparison** set `< > <= >= == !=` (four precedence levels, parentheses), and
   **control flow** (`if`/`while`, nested). Conditions can be comparisons or
-  nonzero-tests. `/` (needs `udiv` in stage0-as) is the one remaining small leaf
-  increment, but the **critical path to stage 3 is the stage-2 "floor"**:
+  nonzero-tests. Unsigned `/` and `%` are now in too (m36 — via a new stage0-as
+  `udiv`), so no arithmetic leaf remains; the **critical path to stage 3 is the
+  stage-2 "floor"**:
   functions + a real call stack, pointers/`char`/arrays, `struct`, a small heap,
   multi-char labels/identifiers, and I/O. Floor progress: **64-bit `ldr x`/`str x`**
   (m25), **frame-relative variables** (m26), the **numeric PC-relative branch**

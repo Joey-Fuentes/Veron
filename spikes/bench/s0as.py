@@ -76,6 +76,9 @@ def encode(l, at, labels):
     if op=='mul':
         d=_reg(p[1]);n=_reg(p[2]);m=_reg(p[3])
         return (0x9B007C00|(m<<16)|(n<<5)|d,('mul',d,n,m))
+    if op=='udiv':                                # unsigned divide (DP-2-source, sibling of lsr/asr)
+        d=_reg(p[1]);n=_reg(p[2]);m=_reg(p[3])
+        return (0x9AC00800|(m<<16)|(n<<5)|d,('udiv',d,n,m))
     if op=='cmp':
         n=_reg(p[1])
         if p[2][0]=='x':                      # stage0-as: reg-compare ONLY for x-regs

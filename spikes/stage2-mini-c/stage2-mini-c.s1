@@ -335,6 +335,10 @@ cmp x4 40
 b.eq cepushop
 cmp x26 42
 b.eq cecurmul
+cmp x26 47
+b.eq cecurmul
+cmp x26 37
+b.eq cecurmul
 cmp x26 43
 b.eq ceadd
 cmp x26 45
@@ -351,6 +355,10 @@ b cepop
 :ceadd
 cmp x4 42
 b.eq cepop
+cmp x4 47
+b.eq cepop
+cmp x4 37
+b.eq cepop
 cmp x4 43
 b.eq cepop
 cmp x4 45
@@ -358,6 +366,10 @@ b.eq cepop
 b cepushop
 :cecurmul
 cmp x4 42
+b.eq cepop
+cmp x4 47
+b.eq cepop
+cmp x4 37
 b.eq cepop
 b cepushop
 :cepop
@@ -610,6 +622,10 @@ cmp x11 3
 b.eq eaceq
 cmp x11 4
 b.eq eacne
+cmp x11 47
+b.eq eadiv
+cmp x11 37
+b.eq eamod
 adr x9 saddr
 b eaop
 :eaclt
@@ -623,6 +639,12 @@ adr x9 smulr
 b eaop
 :easub
 adr x9 ssubr
+b eaop
+:eadiv
+adr x9 sdivr
+b eaop
+:eamod
+adr x9 smodr
 b eaop
 :eacle
 adr x9 scmpgt
@@ -844,6 +866,10 @@ cmp x5 45
 b.eq nt_op1
 cmp x5 42
 b.eq nt_op1
+cmp x5 47
+b.eq nt_op1
+cmp x5 37
+b.eq nt_op1
 cmp x5 40
 b.eq nt_punct1
 cmp x5 41
@@ -993,6 +1019,12 @@ ret
 .byte 0
 :smulr
 .ascii "mul x0 x1 x0"
+.byte 0
+:sdivr
+.ascii "udiv x0 x1 x0"
+.byte 0
+:smodr
+.ascii "udiv x2 x1 x0\nmul x2 x2 x0\nsub x0 x1 x2"
 .byte 0
 :scmplt
 .ascii "sub x0 x1 x0\nmov x2 63\nlsr x0 x0 x2"

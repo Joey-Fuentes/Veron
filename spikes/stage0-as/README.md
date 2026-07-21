@@ -36,6 +36,7 @@ One item per line. Leading whitespace is fine. Register operands are one letter
 | `movk x<d> <imm> <shift>` | insert 16-bit imm at shift 0/16/32/48 |
 | `add/sub x<d> x<n> x<m>` | register add/sub (3rd operand `x..`) |
 | `mul x<d> x<n> x<m>` | multiply (= madd with xzr) |
+| `udiv x<d> x<n> x<m>` | unsigned divide (`Xn / Xm`, `/0` → 0) |
 | `adr x<d> <L>` \| `@<pos>` | address of label / numeric position into register |
 | `ldrb w<t> x<n> x<m>` | load byte `[Xn + Xm]` |
 | `strb w<t> x<n> x<m>` | store byte `[Xn + Xm]` |

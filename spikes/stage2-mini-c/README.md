@@ -40,7 +40,7 @@ int main(){ return name(2,3); }   // program is entered via bl main
   resolved by a **live symbol table** — the old `(c-'a')*4` letter-map is retired.
   The offset is emitted as a computed 3-digit decimal, so the emitted program needs
   **no per-variable labels**. Declared with `int c=…;`, updated with `c=…;`.
-- **expressions**: integers, variables, `+ - *`, the full **comparison** set
+- **expressions**: integers, variables, `+ - *`, unsigned `/` `%`, the full **comparison** set
   `< > <= >= == !=`, precedence, and parentheses, via shunting-yard; emitted code
   uses a `brk` value stack. Four precedence levels (low→high): `== !=` `<`
   `< > <= >=` `<` `+ -` `<` `*`, all left-associative. Comparisons yield `0`/`1`,
@@ -107,7 +107,11 @@ runs, and treating `( ) { } ; ,` as punctuation — so a variable named `i`, `w`
   equality is sign-agnostic. The two-char operators carry internal operator-stack
   sentinels (`1 2 3 4` for `<= >= == !=`) so the shunting-yard opstack stays
   one byte per entry.
-- Still no `/` (needs `udiv` in stage0-as).
+- **Unsigned `/` and `%`** are in: `/` lowers to a single `udiv` (a small new
+  stage0-as instruction, byte-identical to `as`), and `%` to `udiv;mul;sub`
+  (`a - (a/b)*b`) — no extra stage0-as capability beyond `udiv`. Both bind at the
+  multiplicative level with `*`, left-associative, and are **unsigned-32** like the
+  comparisons; signed `/` waits on signed types (an `sdiv`/sign-extension refinement).
 
 Equality and `/` are small, self-contained increments that are available to pick
 up any time, but they are **not the critical path** to stage 3. With functions +

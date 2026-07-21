@@ -6,7 +6,8 @@ name: stage2-mini-c-demo
 # MULTI-CHAR names -> FRAME-RELATIVE WORD (4-byte) slots at x10+off in DECLARATION
 # order (params first, then locals; off=i*4), resolved by a live symbol table +
 # word ldr/str; a factor may be a number, a variable (load), ( expr ), or a CALL
-# f(a,b). Expressions support + - * and comparisons < > <= >= == != (branchless,
+# f(a,b). Expressions support + - * and unsigned / % (udiv; % = a-(a/b)*b) and
+# comparisons < > <= >= == != (branchless,
 # unsigned-32, yielding 0/1) so conditions can be relations. Precedence, low->high:
 # == !=  <  < > <= >=  <  + -  <  * . <= is '>' flipped, >= is '<' flipped,
 # != is (d|-d)>>63, == is != flipped (all reuse the existing sign-bit recipe).
@@ -76,6 +77,16 @@ jobs:
           ld_ok=no; cmp -s ld.bin ld_ref.bin && ld_ok=yes
           echo "word ldr/str ours: $(od -An -v -tx1 ld.bin | tr -d ' \n')"
           echo "word ldr/str ref : $(od -An -v -tx1 ld_ref.bin | tr -d ' \n')"
+
+          # ---- byte-compare the NEW udiv instruction against real `as` ----
+          printf 'udiv x0 x1 x0\nudiv x5 x3 x2\n' > udiv.s0
+          printf '.text\n.global _start\n_start:\n\tudiv x0,x1,x0\n\tudiv x5,x3,x2\n' > udiv_ref.s
+          aarch64-linux-gnu-as -o udiv_ref.o udiv_ref.s
+          aarch64-linux-gnu-objcopy -O binary --only-section=.text udiv_ref.o udiv_ref.bin
+          cat udiv.s0 | qemu-aarch64 ./stage0-as > udiv.bin
+          udiv_ok=no; cmp -s udiv.bin udiv_ref.bin && udiv_ok=yes
+          echo "udiv ours: $(od -An -v -tx1 udiv.bin | tr -d ' \n')"
+          echo "udiv ref : $(od -An -v -tx1 udiv_ref.bin | tr -d ' \n')"
 
           # ---- structural: emitted program uses WORD forms + FRAME-RELATIVE vars ----
           printf '%s' 'int main(){int a=5; int b=a+2; return b;}' | qemu-aarch64 ./stage2 > word.s
@@ -210,6 +221,26 @@ jobs:
           try 'int main(){int a=7; if(a!=7){ return 3; } return 9;}'                  9
           try 'int main(){int a=8; int b=8; int c=0; if(a==b){ if(a>=b){ c=42; } } return c;}'  42
 
+          echo "== stage-2: unsigned division / and % (udiv) =="
+          # structural: '/' lowers to a single udiv, '%' to udiv;mul;sub.
+          div_ok=yes
+          printf '%s' 'int main(){return 17/5;}' | qemu-aarch64 ./stage2 > dv.s
+          grep -q 'udiv x0 x1 x0' dv.s || { echo "'/': MISSING udiv"; div_ok=no; }
+          printf '%s' 'int main(){return 17%5;}' | qemu-aarch64 ./stage2 > md.s
+          grep -q 'udiv x2 x1 x0' md.s || { echo "'%': MISSING udiv"; div_ok=no; }
+          grep -q 'mul x2 x2 x0'  md.s || { echo "'%': MISSING mul";  div_ok=no; }
+          grep -q 'sub x0 x1 x2'  md.s || { echo "'%': MISSING sub";  div_ok=no; }
+          try 'int main(){return 17/5;}'                        3
+          try 'int main(){return 17%5;}'                        2
+          try 'int main(){return 100/7;}'                       14
+          try 'int main(){return 100%7;}'                       2
+          try 'int main(){int a=84; int b=4; return a/b;}'      21
+          try 'int main(){return 2+10/2;}'                      7
+          try 'int main(){return 20/4/5;}'                      1
+          try 'int main(){return 3*4/2;}'                       6
+          try 'int main(){int n=20; int d=6; return n/d*d+n%d;}'  20
+          try 'int gcd(int a,int b){while(b){ int t=a%b; a=b; b=t; } return a;} int main(){return gcd(48,36);}'  12
+
           echo "== stage-2: functions + call stack + recursion (A2) =="
           # structural: a call carries a :func label + bl, a real prologue/epilogue,
           # and the caller enters via bl main. These are resolved by stage1 (above).
@@ -247,6 +278,8 @@ jobs:
             echo "relational < > branchless (sub+lsr)  : $rel_ok"
             echo "equality == != <= >= branchless      : $eq_ok"
             echo "functions + call stack + recursion   : $fn_ok"
+            echo "udiv byte-identical to as            : $udiv_ok"
+            echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
             echo "while(n){s=s+n;n=n-1;} sum 1..10     -> 55"
             echo "while(i<10) count-up sum            -> 45"
             echo "while(i<=5) count-up sum            -> 15"
@@ -256,8 +289,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$fn_ok" = yes ]; then
-            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ]; then
+            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, a NEW stage0-as instruction byte-identical to as), and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok fn=$fn_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok fn=$fn_ok div=$div_ok"; exit 1
           fi

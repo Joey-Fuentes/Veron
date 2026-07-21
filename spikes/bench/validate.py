@@ -373,6 +373,33 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 backpatch exit -> {want}", _exit(cs), want)
 
+    print("== stage 2 unsigned division: / and % (udiv) ==")
+    # '/' lowers to a single udiv; '%' to udiv;mul;sub (a - (a/b)*b). Both bind at
+    # the multiplicative level (with '*'), left-associative. Unsigned-32, matching
+    # the value stack; udiv is a NEW stage0-as instruction (0x9AC00800 family) — the
+    # bench model encodes it and the demo byte-anchors it against real `as`.
+    check("stage0-as encodes udiv x0 x1 x0 -> 9AC00820",
+          assemble("udiv x0 x1 x0\n")[0].hex(), "2008c09a")
+    emdiv = _emit("int main(){return 17/5;}")
+    check("stage2 '/' emits udiv (udiv x0 x1 x0)", "udiv x0 x1 x0" in emdiv, True)
+    emmod = _emit("int main(){return 17%5;}")
+    check("stage2 '%' emits udiv;mul;sub", ("udiv x2 x1 x0" in emmod) and ("mul x2 x2 x0" in emmod) and ("sub x0 x1 x2" in emmod), True)
+    for cs, want in [
+        ("int main(){return 17/5;}", 3),
+        ("int main(){return 17%5;}", 2),
+        ("int main(){return 100/7;}", 14),
+        ("int main(){return 100%7;}", 2),
+        ("int main(){int a=84;int b=4;return a/b;}", 21),
+        ("int main(){return 2+10/2;}", 7),               # * / bind above + -
+        ("int main(){return 20/4/5;}", 1),               # left-associative
+        ("int main(){return 3*4/2;}", 6),                # * and / same level
+        ("int main(){return 17%5+1;}", 3),
+        ("int main(){int n=20;int d=6;return n/d*d+n%d;}", 20),   # (n/d)*d + n%d == n
+        ("int gcd(int a,int b){while(b){int t=a%b;a=b;b=t;}return a;} int main(){return gcd(48,36);}", 12),
+        ("int main(){int x=9;return x/0;}", 0),          # aarch64: divide-by-zero -> 0
+    ]:
+        check(f"stage2 div exit -> {want}", _exit(cs), want)
+
     print("== stage 2 functions + call stack + recursion (A2) ==")
     # A2 adds real functions: the program is one-or-more int name(params){body};
     # a call f(a,b) is a primary in any expression. Emitted output carries :name /
