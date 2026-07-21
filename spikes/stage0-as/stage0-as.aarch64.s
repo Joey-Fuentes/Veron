@@ -18,7 +18,7 @@
 //   bl <L>  ret  br x<n>  blr x<n>   (subroutines; base for stage 1)
 //   orr/and/lsl/lsr/asr x<d> x<n> x<m>    movk x<d> <imm> <shift>
 //   add/sub x<d> x<n> x<m> (register)     mul x<d> x<n> x<m>
-//   adr  x<d> <L>              ldrb/strb w<t> x<n> x<m>   ldr/str w<t> x<n>
+//   adr  x<d> <L> | @<pos>     ldrb/strb w<t> x<n> x<m>   ldr/str w<t> x<n>
 //   ldr/str x<t> x<n>          (64-bit load/store; first reg's width selects size)
 //   .byte <imm>                .ascii "text"           (\n supported)
 //
@@ -242,8 +242,22 @@ h_adr:
     mov     w24, w0
     bl      skip_ws
     ldrb    w0, [x19, x20]
+    cmp     w0, #'@'               // '@'+digit = numeric pos; else label (incl. label '@')
+    b.ne    ha_lab
+    add     x2, x20, #1
+    ldrb    w2, [x19, x2]
+    cmp     w2, #'0'
+    b.lt    ha_lab
+    cmp     w2, #'9'
+    b.gt    ha_lab
+    add     x20, x20, #1           // skip '@'
+    bl      parse_dec              // w0 = absolute target byte-position
+    mov     w1, w0
+    b       ha_enc
+ha_lab:
     add     x20, x20, #1
     ldr     w1, [x27, w0, uxtw #2]
+ha_enc:
     sub     w1, w1, w22
     and     w2, w1, #3
     asr     w3, w1, #2

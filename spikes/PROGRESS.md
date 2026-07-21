@@ -367,6 +367,27 @@ sequential blocks, a big-body loop, and an >30 KB label-free emission) and
 Next: **functions + a real call stack** on the m25 64-bit `ldr x`/`str x`, the
 first genuinely new language capability of the floor.
 
+**Milestone 31 — stage 0: numeric PC-relative `adr xR @<pos>` (pool-retirement enabler).**
+A small mirror of m27's numeric branch, for `adr`: it now accepts an absolute
+output position (`adr xR @<pos>`) and encodes the PC-relative offset `(pos - here)`
+itself, with the same `@`+digit disambiguation (a bare `@` stays the pool label).
+Why now: **the single-char label pool is a dead end.** It maps stage-2 names onto
+stage-0-as's 128-entry byte symtab (~91 safe printable), and as stage 2 grows into
+a real compiler (functions, pointers, char/byte load-store, arrays, globals,
+struct, a calloc/free heap, I/O, string literals) its *source* needs far more
+labels than that — a self-hosting stage 3 needs hundreds. No pool expansion
+reaches that. The fix is to make **stage 1 a two-pass numeric resolver**: compute
+each label's position and rewrite every reference to `@<pos>`, dropping label
+definitions, so its output is label-free and the symtab is never in the path.
+Branches already had a numeric form (m27); the missing piece was `adr` (stage-2
+source has 31 `adr`-to-data refs among 183 label refs), which this milestone adds.
+Validated on the bench: numeric `adr` is **byte-identical** to the label form at
+adjacent/near/far distances and loads the right data; mirrored in `s0as.py` and
+pinned in `validate.py`; **CI** via the new `stage0-as-adrnum-demo` (byte-identical
+to real `as`, numeric adr loads data, bare `@` label intact). Next: **stage 1 →
+numeric resolver**, retiring the pool for good; then functions and the rest of the
+floor land with label count off the table.
+
 ---
 
 ## 6. What's next

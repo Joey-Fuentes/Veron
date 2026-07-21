@@ -36,7 +36,7 @@ One item per line. Leading whitespace is fine. Register operands are one letter
 | `movk x<d> <imm> <shift>` | insert 16-bit imm at shift 0/16/32/48 |
 | `add/sub x<d> x<n> x<m>` | register add/sub (3rd operand `x..`) |
 | `mul x<d> x<n> x<m>` | multiply (= madd with xzr) |
-| `adr x<d> <L>` | address of label into register |
+| `adr x<d> <L>` \| `@<pos>` | address of label / numeric position into register |
 | `ldrb w<t> x<n> x<m>` | load byte `[Xn + Xm]` |
 | `strb w<t> x<n> x<m>` | store byte `[Xn + Xm]` |
 | `ldr w<t> x<n>` | load word (32-bit) `[Xn]` |
@@ -73,6 +73,13 @@ so they need no load address.
   removing the per-branch label so an emitted program can exceed the 128-label
   symtab cap. Only `@` followed by a digit is numeric; a bare `@` remains the
   ordinary pool label `@`, so stage 1's label output is unaffected.
+- **`adr`** likewise accepts a label (`adr xR X`) or a **numeric position**
+  (`adr xR @<pos>`), encoding the PC-relative offset `(pos - here)`. Same `@`+digit
+  disambiguation. This is what lets stage 1 resolve `adr`-to-data references
+  numerically as well, so stage 1 can become a full **two-pass numeric resolver**
+  (labels → positions → `@<pos>` for both branches and `adr`) and retire the
+  single-char pool entirely — after which stage-2/3 label count is bounded only by
+  memory, not the 128-entry symtab.
 - Well-formed input assumed — minimal error checking (it's a spike).
 - Input buffer is 256 KB (`.bss`, raised in m30 from 16 KB) so it can assemble the
   large label-free outputs stage 2 now produces; output is streamed (unbounded).

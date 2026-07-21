@@ -1,0 +1,95 @@
+name: stage0-as-adrnum-demo
+
+# SPIKE (invariants suspended). Verifies the numeric PC-relative adr added to
+# stage0-as: adr xR @<pos>, where <pos> is an absolute OUTPUT byte-position and
+# stage0-as encodes the PC-relative offset (pos - here) itself — no label consumed.
+# This mirrors the numeric branch (brnum) and is the enabler for stage 1 becoming
+# a two-pass NUMERIC label resolver: with both branches and adr resolvable to
+# positions, stage 1 can rewrite every stage-2 label reference numerically and
+# drop label definitions, retiring the single-char pool (and its 128-symtab cap)
+# so stage-2/3 label count is bounded only by memory.
+#
+# Disambiguation matches the branch: only '@' followed by a digit is numeric; a
+# bare '@' stays the pool label '@'. Checks: numeric @<pos> adr assembles
+# BYTE-IDENTICALLY to the equivalent label adr (adjacent/near/far); the label
+# form is anchored against real `as`; a program using numeric adr to load data
+# runs; and adr to the label '@' still works.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage0-as/**'
+      - 'spikes/elf/**'
+      - '.github/workflows/stage0-as-adrnum-demo.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: stage0-as-adrnum-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  demo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user binutils-aarch64-linux-gnu
+      - name: Build stage0-as + elf, byte-check numeric adr, run a load
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+
+          adr_ok=yes
+          same() { # $1=label-form, $2=numeric-form, $3=note
+            printf '%b' "$1" | qemu-aarch64 ./stage0-as > lab.bin
+            printf '%b' "$2" | qemu-aarch64 ./stage0-as > num.bin
+            if cmp -s lab.bin num.bin; then
+              echo "  ok   $3  $(od -An -v -tx1 num.bin | tr -d ' \n')"
+            else
+              echo "  FAIL $3  label=$(od -An -v -tx1 lab.bin|tr -d ' \n') numeric=$(od -An -v -tx1 num.bin|tr -d ' \n')"
+              adr_ok=no
+            fi
+          }
+          # T sits right after 'adr;mov x8;svc' (pos 12); numeric form drops :T (0 bytes)
+          same 'adr x1 T\nmov x8 93\nsvc\n:T\n.byte 7\n'                 'adr x1 @12\nmov x8 93\nsvc\n.byte 7\n'                 'adr adjacent'
+          # near: 4 filler instrs before the data (T at pos 28)
+          same 'adr x1 T\nmov x0 0\nmov x0 0\nmov x0 0\nmov x8 93\nsvc\n:T\n.byte 7\n' 'adr x1 @24\nmov x0 0\nmov x0 0\nmov x0 0\nmov x8 93\nsvc\n.byte 7\n' 'adr near'
+
+          # anchor the label form against real `as`
+          printf 'adr x1 Y\nmov x0 5\n:Y\nmov x0 7\n' | qemu-aarch64 ./stage0-as > aref_ours.bin
+          printf '.text\n.global _start\n_start:\n\tadr x1, Ly\n\tmov x0, #5\nLy:\n\tmov x0, #7\n' > aref.s
+          aarch64-linux-gnu-as -o aref.o aref.s
+          aarch64-linux-gnu-objcopy -O binary --only-section=.text aref.o aref_as.bin
+          aas_ok=no; cmp -s aref_ours.bin aref_as.bin && aas_ok=yes
+
+          run() {
+            printf '%b' "$1" | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf prog.elf
+            set +e; qemu-aarch64 ./prog.elf; rc=$?; set -e
+          }
+          # numeric adr to a data byte (T at pos 20) -> load 42 -> exit 42
+          run 'mov x9 0\nadr x1 @20\nldrb w0 x1 x9\nmov x8 93\nsvc\n.byte 42\n'
+          load_rc=$rc
+          # adr to the pool label '@' still works (bare '@' = label) -> load 5
+          run 'mov x9 0\nadr x1 @\nldrb w0 x1 x9\nmov x8 93\nsvc\n:@\n.byte 5\n'
+          at_rc=$rc
+
+          {
+            echo "## stage0-as — numeric PC-relative adr (pool-retirement enabler)"
+            echo '```'
+            echo "numeric @pos adr == label adr (adjacent/near) : $adr_ok"
+            echo "label form byte-identical to real as          : $aas_ok"
+            echo "numeric adr loads data                        : $load_rc  (expect 42)"
+            echo "adr to pool label '@' still resolves          : $at_rc  (expect 5)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$adr_ok" = yes ] && [ "$aas_ok" = yes ] && [ "$load_rc" = 42 ] && [ "$at_rc" = 5 ]; then
+            echo "PASS: numeric @<pos> adr byte-identical to label adr (and to real as); numeric adr loads data; pool label '@' intact."
+          else
+            echo "FAIL: adr=$adr_ok aas=$aas_ok load=$load_rc at=$at_rc"; exit 1
+          fi

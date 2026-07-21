@@ -95,8 +95,8 @@ def encode(l, at, labels):
         sel={'lsl':0x2000,'lsr':0x2400,'asr':0x2800}[op]
         return (0x9AC00000|sel|(m<<16)|(n<<5)|d,(op,d,n,m))
     if op=='adr':
-        d=_reg(p[1]); v=(labels[p[2]]-at)
-        return (0x10000000|((v&3)<<29)|(((v>>2)&0x7FFFF)<<5)|d,('adr',d,labels[p[2]]))
+        d=_reg(p[1]); tgt=_pos(p[2]); v=(tgt-at)   # accepts @<pos> (numeric) or a label
+        return (0x10000000|((v&3)<<29)|(((v>>2)&0x7FFFF)<<5)|d,('adr',d,tgt))
     if op=='ldrb':
         t=_reg(p[1]);n=_reg(p[2]);m=_reg(p[3]); return (0x38606800|(m<<16)|(n<<5)|t,('ldrb',t,n,m))
     if op=='strb':

@@ -88,6 +88,23 @@ check("numeric-branch loop counts to 5", asm_run(_loop)[0], 5)
 _at = "mov x0 0\nmov x1 5\n:@\nadd x0 x0 1\ncmp x0 x1\nb.ne @\nmov x8 93\nsvc\n"
 check("pool label '@' still resolves (not numeric)", asm_run(_at)[0], 5)
 
+print("== stage0-as numeric PC-relative adr  adr xR @<pos> ==")
+# adr xR @<pos> computes a PC-relative address to an absolute output byte-position,
+# exactly like the numeric branch. This lets stage 1 resolve adr-to-data references
+# numerically (retiring the pool). @<pos> must be byte-identical to the label form.
+for filler, note in ((0, "adjacent"), (40, "near"), (400, "far")):
+    pad = "\n".join(["mov x0 0"] * (filler // 4))
+    lab = f"mov x9 0\n{pad}\nadr x1 T\nldrb w0 x1 x9\nmov x8 93\nsvc\n:T\n.byte 7\n" if pad \
+          else "mov x9 0\nadr x1 T\nldrb w0 x1 x9\nmov x8 93\nsvc\n:T\n.byte 7\n"
+    lb, _, ll = assemble(lab); tp = ll['T']
+    num = lab.replace("adr x1 T", f"adr x1 @{tp}")
+    nb, npg, _ = assemble(num)
+    check(f"numeric @pos adr == label adr ({note})", nb.hex(), lb.hex())
+    check(f"numeric adr loads right data ({note})", run(npg)[0], 7)
+# the pool label '@' must still work for adr too (bare '@' = label, '@'+digit = numeric)
+_ata = "mov x9 0\nadr x1 @\nldrb w0 x1 x9\nmov x8 93\nsvc\n:@\n.byte 5\n"
+check("adr to pool label '@' still resolves (not numeric)", run(assemble(_ata)[1])[0], 5)
+
 print("== faithfulness guards (bench must model stage0-as's limits) ==")
 # stage0-as labels are single-char: multi-char defs must be REJECTED
 try:
