@@ -576,6 +576,40 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 global exit -> {want}", _exit(cs), want)
 
+    print("== stage 2 operators: unary !/-/~ and bitwise &/| and shifts <<,>> (A5a) ==")
+    # A5a rounds out the expression compiler. Unary prefix operators (! - ~) are pushed
+    # as highest-precedence markers on the operator stack and applied by emitapply with a
+    # pop-one/push-one codegen (u- = 0-x, u~ = -x-1, u! = (x==0)); binary bitwise & | and
+    # shifts << >> map straight onto stage0-as and, orr, lsl, lsr. Binary & is disambiguated
+    # from unary address-of by operand position (like * / deref). The old hand-coded
+    # precedence ladder was replaced by a small `prec` table so all fifteen operators sit
+    # at their correct C precedence levels (| < & < == < relational < shift < + < *).
+    emu = _emit("int main(){int x;x=5;return -x;}")
+    check("stage2 unary minus emits pop-one negate (sub x0 x2 x0)", "sub x0 x2 x0" in emu, True)
+    emb = _emit("int main(){return 12&10;}")
+    check("stage2 bitwise-and emits and x0 x1 x0", "and x0 x1 x0" in emb, True)
+    ems = _emit("int main(){return 1<<4;}")
+    check("stage2 left-shift emits lsl x0 x1 x0", "lsl x0 x1 x0" in ems, True)
+    for cs, want in [
+        ("int main(){int x;x=5;return -x+8;}", 3),        # unary minus binds tighter than +
+        ("int main(){return !0;}", 1),                    # logical not
+        ("int main(){return !5;}", 0),
+        ("int main(){int x;x=0;return !!x;}", 0),          # double not
+        ("int main(){return ~0;}", 255),                  # ~0 = -1 (low byte)
+        ("int main(){return ~5;}", 250),
+        ("int main(){return 12&10;}", 8),                 # bitwise and
+        ("int main(){return 12|3;}", 15),                 # bitwise or
+        ("int main(){return 1<<4;}", 16),                 # left shift
+        ("int main(){return 64>>2;}", 16),                # right shift
+        ("int main(){int a;a=6;return a&3|8;}", 10),       # (a&3)|8, & tighter than |
+        ("int main(){int x;x=3;return -x*-2;}", 6),        # unary minus on both factors
+        ("int main(){return !(3>5);}", 1),                # ! applied to a comparison
+        ("int main(){return 2+3<<1;}", 10),               # (2+3)<<1, shift below additive
+        ("int g;int main(){int* p;p=&g;*p=42;return g;}", 42),  # & still means address-of
+        ("int main(){int i;int s;s=0;i=0;while(i<8){s=s|1<<i;i=i+1;}return s;}", 255),  # or/shift loop
+    ]:
+        check(f"stage2 operator exit -> {want}", _exit(cs), want)
+
     print("== stage 2 large programs (enlarged input/output/stack buffers) ==")
     # The compiler's buffers were raised (input 64KB, output 256KB, bigger stacks),
     # so large programs no longer overflow the old ~4.4KB output buffer. Combined

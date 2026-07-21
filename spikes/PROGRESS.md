@@ -745,6 +745,35 @@ the first real exercise of a widened type descriptor) and structs.
 
 ---
 
+**Milestone 43 — stage 2: unary and bitwise operators (A5a).** The expression compiler
+had `+ - * / % < > <= >= == !=`; this rounds it out with the operators real C conditions
+and bit-twiddling lean on: **unary** `!` (logical not), `-` (negation), `~` (bitwise
+not), and **binary** `&`, `|` (bitwise), `<<`, `>>` (shifts). Three things made it fit.
+First, the unary prefixes are handled through the existing operator stack: in operand
+position (the same `expect-operand` flag that tells unary `*`/`&` from binary) a `!`/`-`/`~`
+pushes a marker at the highest precedence, and `emitapply` grew a pop-one/push-one path
+for them (`u-` = `0-x`, `u~` = `-x-1`, `u!` = `(x==0)`, all branchless). Second, binary
+`&` is disambiguated from address-of by that same position flag — `&` after a value is
+bitwise-and, `&` where an operand is expected is address-of — so `p=&g` and `a&3` both
+do the right thing. Third, and most usefully for the future, the compiler's old
+hand-coded precedence ladder (a chain of `cmp`s that only knew four levels) was replaced
+by a small **`prec` table**: one leaf routine mapping an operator byte to its C
+precedence, with the shunting-yard loop reduced to "pop while `prec(top) >= prec(cur)`".
+That means the fifteen operators now sit at genuinely correct C levels — `| < & < == <
+relational < shift < additive < multiplicative < unary` — and adding another operator
+later is a one-line table entry rather than a surgery on branch logic. The binary
+bitwise/shift ops map straight onto stage0-as (`and`, `orr`, `lsl`, `lsr`); no stage0-as
+change. Verified through the ladder: every operator in isolation, precedence
+interactions (`2+3<<1` = 10 with shift below additive, `a&3|8` = 10 with `&` above `|`),
+`!` applied to a comparison, unary minus on both factors of a product, and a
+`s = s | 1<<i` loop that builds `0xFF` bit by bit — plus the full arithmetic / pointer /
+array / char / string / global / function corpus unchanged. `validate.py` 241→260; the
+demo workflow gains `and`/`lsl` structural greps and nine behavioural operator runs.
+Next: the type-system work these operators were the warm-up for — general pointer
+arithmetic (scaling `p + n` by the pointee size) and structs.
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
@@ -785,7 +814,9 @@ stage in the language of the stage below.
   `adr`-addressed — the globals-ready data infrastructure). Then **globals** (m42, A4b:
   file-scope `int g;` / `int a[N];` / `char* p;`, shared across functions, reusing the
   data section with `g_`-labels and frame-first name resolution — the capability
-  M2-Planet leans on hardest). Next: general pointer arithmetic (scaling by pointee
+  M2-Planet leans on hardest). Then the **operator set** (m43, A5a: unary `!`/`-`/`~`,
+  bitwise `&`/`|`, shifts `<<`/`>>`, with a `prec` table placing all fifteen operators at
+  their correct C precedence). Next: general pointer arithmetic (scaling by pointee
   size) and structs — the M2-Planet subset.
   See **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.

@@ -659,14 +659,41 @@ mov x3 0
 b celoop
 :ce_op
 cmp x29 38
+b.ne ceo_star
+cmp x3 1
 b.eq ceuaddr
+b ceobin
+:ceo_star
 cmp x29 42
-b.ne ceobin
+b.ne ceo_un
 cmp x3 1
 b.eq ceuderef
+b ceobin
+:ceo_un
+cmp x3 1
+b.ne ceobin
+cmp x29 45
+b.eq ceu_neg
+cmp x29 33
+b.eq ceu_not
+cmp x29 126
+b.eq ceu_bnot
 :ceobin
 mov x26 x29
 b cewhile
+:ceu_neg
+mov x26 8
+b ceu_push
+:ceu_not
+mov x26 7
+b ceu_push
+:ceu_bnot
+mov x26 9
+:ceu_push
+strb w26 x24 x25
+add x25 x25 1
+mov x3 1
+b celoop
 :ceuaddr
 bl next_token
 mov x3 x6
@@ -729,44 +756,13 @@ sub x0 x25 1
 ldrb w4 x24 x0
 cmp x4 40
 b.eq cepushop
-cmp x26 42
-b.eq cecurmul
-cmp x26 47
-b.eq cecurmul
-cmp x26 37
-b.eq cecurmul
-cmp x26 43
-b.eq ceadd
-cmp x26 45
-b.eq ceadd
-cmp x26 3
-b.eq cepop
-cmp x26 4
-b.eq cepop
-cmp x4 3
-b.eq cepushop
-cmp x4 4
-b.eq cepushop
-b cepop
-:ceadd
-cmp x4 42
-b.eq cepop
-cmp x4 47
-b.eq cepop
-cmp x4 37
-b.eq cepop
-cmp x4 43
-b.eq cepop
-cmp x4 45
-b.eq cepop
-b cepushop
-:cecurmul
-cmp x4 42
-b.eq cepop
-cmp x4 47
-b.eq cepop
-cmp x4 37
-b.eq cepop
+mov x0 x4
+bl prec
+mov x7 x0
+mov x0 x26
+bl prec
+cmp x7 x0
+b.ge cepop
 b cepushop
 :cepop
 sub x25 x25 1
@@ -778,6 +774,60 @@ strb w26 x24 x25
 add x25 x25 1
 mov x3 1
 b celoop
+:prec
+cmp x0 124
+b.eq prec_4
+cmp x0 38
+b.eq prec_6
+cmp x0 3
+b.eq prec_7
+cmp x0 4
+b.eq prec_7
+cmp x0 60
+b.eq prec_8
+cmp x0 62
+b.eq prec_8
+cmp x0 1
+b.eq prec_8
+cmp x0 2
+b.eq prec_8
+cmp x0 5
+b.eq prec_9
+cmp x0 6
+b.eq prec_9
+cmp x0 43
+b.eq prec_10
+cmp x0 45
+b.eq prec_10
+cmp x0 42
+b.eq prec_11
+cmp x0 47
+b.eq prec_11
+cmp x0 37
+b.eq prec_11
+mov x0 12
+ret
+:prec_4
+mov x0 4
+ret
+:prec_6
+mov x0 6
+ret
+:prec_7
+mov x0 7
+ret
+:prec_8
+mov x0 8
+ret
+:prec_9
+mov x0 9
+ret
+:prec_10
+mov x0 10
+ret
+:prec_11
+mov x0 11
+ret
 :ceopen
 mov w5 40
 strb w5 x24 x25
@@ -1442,6 +1492,12 @@ mov x30 x14
 ret
 :emitapply
 mov x27 x30
+cmp x11 7
+b.eq eaunot
+cmp x11 8
+b.eq eauneg
+cmp x11 9
+b.eq eaubnot
 adr x9 spoppop
 bl emitstr
 cmp x11 60
@@ -1464,6 +1520,14 @@ cmp x11 47
 b.eq eadiv
 cmp x11 37
 b.eq eamod
+cmp x11 38
+b.eq eaand
+cmp x11 124
+b.eq eaor
+cmp x11 5
+b.eq eashl
+cmp x11 6
+b.eq eashr
 adr x9 saddr
 b eaop
 :eaclt
@@ -1507,6 +1571,39 @@ adr x9 spush
 bl emitstr
 mov x30 x27
 ret
+:eaand
+adr x9 sandr
+b eaop
+:eaor
+adr x9 sorrr
+b eaop
+:eashl
+adr x9 slslr
+b eaop
+:eashr
+adr x9 slsrr
+b eaop
+:eaunot
+adr x9 spop1
+bl emitstr
+adr x9 sunot
+bl emitstr
+mov x30 x27
+ret
+:eauneg
+adr x9 spop1
+bl emitstr
+adr x9 suneg
+bl emitstr
+mov x30 x27
+ret
+:eaubnot
+adr x9 spop1
+bl emitstr
+adr x9 subnot
+bl emitstr
+mov x30 x27
+ret
 :emitstr
 mov x7 0
 :esloop
@@ -1542,6 +1639,16 @@ add x6 x6 1
 b nt_ws
 :nt_eof
 mov x20 0
+ret
+:nt_lshift
+mov x29 5
+add x6 x6 2
+mov x20 4
+ret
+:nt_rshift
+mov x29 6
+add x6 x6 2
+mov x20 4
 ret
 :nt_charlit
 add x2 x6 1
@@ -1754,6 +1861,10 @@ cmp x5 37
 b.eq nt_op1
 cmp x5 38
 b.eq nt_op1
+cmp x5 126
+b.eq nt_op1
+cmp x5 124
+b.eq nt_op1
 cmp x5 40
 b.eq nt_punct1
 cmp x5 41
@@ -1782,6 +1893,8 @@ add x2 x6 1
 ldrb w4 x19 x2
 cmp x4 61
 b.eq nt_lte
+cmp x4 60
+b.eq nt_lshift
 mov x29 60
 add x6 x6 1
 mov x20 4
@@ -1796,6 +1909,8 @@ add x2 x6 1
 ldrb w4 x19 x2
 cmp x4 61
 b.eq nt_gte
+cmp x4 62
+b.eq nt_rshift
 mov x29 62
 add x6 x6 1
 mov x20 4
@@ -1824,8 +1939,10 @@ add x2 x6 1
 ldrb w4 x19 x2
 cmp x4 61
 b.eq nt_nene
+mov x29 33
 add x6 x6 1
-b nt_ws
+mov x20 4
+ret
 :nt_nene
 mov x29 4
 add x6 x6 2
@@ -1976,6 +2093,30 @@ ret
 .byte 0
 :saddr
 .ascii "add x0 x1 x0"
+.byte 0
+:sandr
+.ascii "and x0 x1 x0"
+.byte 0
+:sorrr
+.ascii "orr x0 x1 x0"
+.byte 0
+:slslr
+.ascii "lsl x0 x1 x0"
+.byte 0
+:slsrr
+.ascii "lsr x0 x1 x0"
+.byte 0
+:spop1
+.ascii "sub x9 x9 8\nldr x0 x9\n"
+.byte 0
+:suneg
+.ascii "mov x2 0\nsub x0 x2 x0\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:subnot
+.ascii "mov x2 0\nsub x0 x2 x0\nmov x2 1\nsub x0 x0 x2\nstr x0 x9\nadd x9 x9 8\n"
+.byte 0
+:sunot
+.ascii "mov x2 0\nsub x2 x2 x0\norr x0 x0 x2\nmov x2 63\nlsr x0 x0 x2\nmov x2 1\nsub x0 x2 x0\nstr x0 x9\nadd x9 x9 8\n"
 .byte 0
 :ssubr
 .ascii "sub x0 x1 x0"

@@ -134,6 +134,12 @@ jobs:
           grep -q 'adr x1 g_' glob.s || { echo "MISSING global address (adr x1 g_)"; struct_ok=no; }
           grep -q ':g_'       glob.s || { echo "MISSING global data label (:g_)"; struct_ok=no; }
 
+          # ---- structural: bitwise-and lowers to `and`, left-shift to `lsl` ----
+          printf '%s' 'int main(){return 12&10;}' | qemu-aarch64 ./stage2 > band.s
+          grep -q 'and x0 x1 x0' band.s || { echo "MISSING bitwise-and codegen (and x0 x1 x0)"; struct_ok=no; }
+          printf '%s' 'int main(){return 1<<4;}' | qemu-aarch64 ./stage2 > bshl.s
+          grep -q 'lsl x0 x1 x0' bshl.s || { echo "MISSING shift codegen (lsl x0 x1 x0)"; struct_ok=no; }
+
           # ---- structural: if/while emit a zero-test + BACKPATCHED numeric branch ----
           # if/while control flow is emitted as b.eq @<pos> / b @<pos> with the target
           # position backpatched at '}', which stage1 passes through. The only labels
@@ -194,6 +200,18 @@ jobs:
           # correct exit proves the value stack + frame slots are genuinely 64-bit.
           try 'int main(){int a=2000; return a*a*a/1000;}'        0
           try 'int main(){int a=3000; int b=3000; return a*b/7;}' 82
+          echo "== stage-2: operators — unary !/-/~ + bitwise &/| + shifts <<,>> (A5a) =="
+          # unary markers are pushed at highest precedence; a `prec` table places all
+          # fifteen operators at their correct C levels; binary & vs address-of by position.
+          try 'int main(){int x; x=5; return -x+8;}'                                    3
+          try 'int main(){return !0;}'                                                  1
+          try 'int main(){return ~5;}'                                                  250
+          try 'int main(){return 12&10;}'                                               8
+          try 'int main(){return 12|3;}'                                                15
+          try 'int main(){return 1<<4;}'                                                16
+          try 'int main(){int a; a=6; return a&3|8;}'                                   10
+          try 'int main(){return !(3>5);}'                                              1
+          try 'int main(){int i; int s; s=0; i=0; while(i<8){s=s|1<<i; i=i+1;} return s;}'  255
           echo "== stage-2: globals — file-scope vars in the data section (A4b) =="
           # globals reuse the data section (g_<name> labels); resolution is frame-first.
           try 'int g; int main(){g=5; return g;}'                                                                       5
@@ -362,7 +380,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ]; then
-            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
+            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
           else
             echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok fn=$fn_ok div=$div_ok"; exit 1
           fi

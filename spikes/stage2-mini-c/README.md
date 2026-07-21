@@ -85,6 +85,14 @@ int main(){ return name(2,3); }   // program is entered via bl main
   **frame-first, then globals**: a reference emits `add xN x10 off` for a local or
   `adr xN g_name` for a global, routed through `emitbase0`/`emitbase1`. `g[i]`, `&g`, and
   `*g = e` all work. No stage0-as change. (Uninitialised globals; initialise in code.)
+- **operators (A5a)**: the expression compiler covers unary `!` (logical not), `-`
+  (negation), `~` (bitwise not); binary bitwise `&`, `|`; and shifts `<<`, `>>` — on top
+  of the existing `+ - * / % < > <= >= == !=`. Unary prefixes ride the operator stack as
+  highest-precedence markers (`emitapply` gained a pop-one/push-one path); binary `&` is
+  told from address-of by operand position. A small `prec` table replaced the old
+  hand-coded precedence ladder, so all fifteen operators sit at their correct C levels
+  (`| < & < == < relational < shift < + < *`). Binary bitwise/shift lower straight onto
+  stage0-as `and`/`orr`/`lsl`/`lsr`; no stage0-as change.
 - **control flow**: `if` and `while`, arbitrarily nested. The condition is any
   expression, tested for **nonzero = true** (C truthiness). if/while codegen is
   iterative with an explicit *block stack*; the **expression** compiler, by
