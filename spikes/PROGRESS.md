@@ -975,9 +975,15 @@ and `&p.y` (offset ≠ 0) read back correctly, `*(&p.x)=v` writes through, chain
 whole-struct `&p`, plain `&var`, `&a[i]`, function pointers, and the full arithmetic
 corpus all unchanged; the emitted code for `&p.x` is now `add x1 x10 …; add x1 x1 <off>;
 str x1 x9` with no `adr x0 x` and no scale. Reference unchanged (it was already correct);
-this is a `.s1`-only codegen fix. The bench still can't *witness* this class behaviourally
-(the interp doesn't fault on wild addresses) — a structural guard + an interp
-wild-address trap follow next so the model stops being more capable than reality.
+this is a `.s1`-only codegen fix. **CI-confirmed GREEN on real `aarch64-linux-gnu-as`
++ qemu-user** (`stage2-mini-c-demo`, run #43): the checkpoint case
+`struct P{int x;int y;};int main(){struct P p; p.x=8; int* q; q=&p.x; return *q;}`
+exits **8** on real qemu (it previously segfaulted, exit 139), and all 152 behavioural
+exit-code checks are OK with the honest gate (the `$(...)`-subshell false-pass, which had
+masked this bug, is fixed). This closes the checkpoint — real qemu was the only witness,
+since the bench interp doesn't fault on wild addresses. Still queued to stop the model
+from being more capable than reality: a **structural guard** (assert `&p.x` emits a
+member-offset `add` with no `adr x0 x` and no scale) and an **interp wild-address trap**.
 
 ---
 
@@ -987,8 +993,11 @@ The plan is a **capability-jump ladder**: keep each rung minimal, and write each
 stage in the language of the stage below.
 
 - **Stage 1** — DONE (multi-character labels) and upgraded to `brk` buffers so it
-  can process large stage-2/3 sources; label pool expanded to **88** single-char
-  slots (`A-Za-z0-9` + punctuation) so stage 2 can keep growing. See
+  can process large stage-2/3 sources. Now a **two-pass numeric label resolver**
+  (m32): labels of any count resolve to numeric `@<pos>` positions and the
+  single-char pool is **retired entirely** — **no pool, no ceiling**, so stage 2
+  can keep growing without a label cap. (m47 also made resolution grammar-driven,
+  so function/label names may start with any character, including `w`/`x`.) See
   `spikes/stage1-as/`.
 - **Stage 2** — in progress. Compiles `int main(){ … }` with **word-sized**
   variables, declaration + **reassignment**, `+ - *` expressions plus the full
