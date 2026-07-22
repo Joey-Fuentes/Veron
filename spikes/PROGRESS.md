@@ -1100,9 +1100,28 @@ stage in the language of the stage below.
   idiom were fixed alongside: `compile_expr` clobbered the decl slot-offset `x14` across the
   initializer (so `T r = <subscript/arrow>` stored to a garbage offset), and the struct-ptr
   decl path over-consumed one token (so `struct X* p = <expr>` mis-parsed the initializer).)
-  **What remains of the floor is file I/O** (`open`/`read`/`write`/`close`) so a compiled
-  program can run as a compiler. *(Known deeper bug, cleanly characterized as the next
-  codegen rung: a function with **several struct-typed locals** mis-sizes its frame — e.g.
+  Then **file I/O** (m53, A12: `open`/`read`/`write`/`close`/`exit` lower to a direct `bl`,
+  and a thin syscall wrapper is appended **once** per used builtin — the same
+  appended-once, user-overridable mechanism as the heap. Each pops its args off the value
+  stack (last arg on top), loads the aarch64 syscall registers `x0..x3`, `svc`s, and pushes
+  the kernel return value. The numbers and shapes match `m2libc/aarch64` exactly, so real
+  M2libc — which defines its own `read`/`write`/`_open`/`close`/`_exit` — overrides them
+  transparently: `open(name,flag,mode)` → **openat** (56) with dirfd `AT_FDCWD` (`-100`,
+  built as `mov x0 0; sub x0 x0 100` since `mov` is a 16-bit MOVZ — aarch64 has no bare
+  `open`); `read`→63, `write`→64, `close`→57, `exit`→93. Named labels resolved by stage1
+  keep the wrappers size-independent. The dev interp gained a tiny in-memory filesystem +
+  fd table so the bench **witnesses** the behaviour — files are created/read/written, an
+  `open` of a missing file returns `< 0`, and a read past EOF returns 0 — rather than
+  outrunning reality (the m50/m51 lesson); on real CI a compiled program copies a source
+  file to an output file on qemu's own filesystem. **With heap + I/O in, the stage-2 floor —
+  a program that reads bytes and writes text — is complete.** A pre-existing string-literal
+  escape gap surfaced alongside but is a *separate* lexer rung, deliberately not folded in:
+  the `.s1` lexer does not yet decode `\n`/`\t`/`\0` inside `"..."` (the a12a reference does),
+  so a string emitted with `write(1,"a\nb",3)` carries a literal backslash — M2-Planet's own
+  `"\n# Core program\n"` output strings and `fputc('\n', …)` char-literal escapes will need
+  it before the self-host, but it is orthogonal to the I/O primitives.) *(Known deeper bug,
+  cleanly characterized as the next codegen rung: a function with **several struct-typed
+  locals** mis-sizes its frame — e.g.
   `struct N* p = a; … while(p){ s = s + p->v; p = p->nx; }` inside `main` with `a,b,c,s,p`
   locals — so locals collide; the same traversal via a **helper taking `struct N* p`** is
   correct. Minimal repro: a stack `while(p){ s=s+p->v; p=p->nx; }` in a many-local `main`

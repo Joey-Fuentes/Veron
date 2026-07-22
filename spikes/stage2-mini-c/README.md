@@ -156,6 +156,23 @@ int main(){ return name(2,3); }   // program is entered via bl main
   carrying the full value in its decoded op. `s0as` now **rejects** an out-of-range `mov` so
   the bench faults like hardware, and a `qemu-mmap-probe` workflow byte-checks stage0-as
   encodings against `as`. No stage-0 change was needed.
+- **file I/O: `open`/`read`/`write`/`close`/`exit` (A12)** — the last floor rung, so a
+  compiled program can read source bytes and write assembly text. Each lowers to a direct
+  `bl`, and a thin syscall wrapper is appended **once** per used builtin, unless the user
+  defines their own (then their definition wins — exactly the calloc/free contract). Each
+  wrapper pops its arguments off the value stack (the last argument is on top), loads the
+  aarch64 syscall registers `x0..x3`, `svc`s, and pushes the kernel's return value. The
+  numbers and shapes match `m2libc/aarch64` exactly, so real M2libc (which defines its own
+  `read`/`write`/`_open`/`close`/`_exit`) overrides them transparently:
+  `open(name,flag,mode)` → **openat** (syscall **56**) with dirfd = `AT_FDCWD` (`-100`,
+  built as `mov x0 0; sub x0 x0 100` since `mov` is a 16-bit MOVZ — aarch64 has no bare
+  `open`); `read`→**63**, `write`→**64**, `close`→**57**, `exit`→**93** (never returns, so
+  no push/ret). Named labels (`:open`, `:read`, …) are resolved by stage1, so the wrappers
+  are size-independent (`bl read` reaches via ±128 MB). The dev bench interp gained a tiny
+  in-memory filesystem + fd table so it **witnesses** the real behaviour — files are
+  created, read and written; an `open` of a missing file returns `< 0`; a read past EOF
+  returns 0 — rather than being more capable than reality (the m50/m51 lesson). On real CI a
+  compiled program copies a source file to an output file on qemu's own filesystem.
 
 ```
 int a=5; int b=a+1; return a*b;                         ->  exits 30
@@ -221,10 +238,11 @@ runs, and treating `( ) { } ; ,` as punctuation — so a variable named `i`, `w`
 
 Equality and `/` are small, self-contained increments that are available to pick
 up any time, but they are **not the critical path**. With functions +
-recursion, pointers/`char`/arrays, `struct`, **function pointers** (A9), and now the
-**`calloc`/`free` heap** (A10) in, the floor's **type system is complete**; what remains
-of the stage-2 **"floor"** is **file I/O** (`open`/`read`/`write`/`close`), so a
-compiled program can run as a compiler. **Plan (revised):** after the floor, run a
+recursion, pointers/`char`/arrays, `struct`, **function pointers** (A9), the
+**`calloc`/`free` heap** (A10), large integer literals (A11), and now **file I/O**
+(A12: `open`/`read`/`write`/`close`/`exit`) in, the **stage-2 floor is complete** — a
+compiled program can read source bytes and write assembly text, which is what a compiler
+does. **Plan (revised):** next, run a
 self-host **test** to de-risk the ladder, then — rather than writing a throwaway stage-3
 compiler in Veron's C — keep growing **stage 2 (in asm)** to cover M2-Planet's full
 subset, and compile **M2-Planet's own source** so that **M2-Planet becomes the de-facto
@@ -235,8 +253,8 @@ self-host, vendored at `spikes/reference/`).
 ## Verified
 
 Developed and tested through the **real assembled ladder** on the dev bench
-(`spikes/bench/`): the newest `stage2_ref_*.py` (currently **`stage2_ref_a10a.py`**,
-the calloc/free heap milestone) carries the codegen design plus an independent
+(`spikes/bench/`): the newest `stage2_ref_*.py` (currently **`stage2_ref_a12a.py`**,
+the file-I/O milestone) carries the codegen design plus an independent
 interpreter used as a test oracle, and `validate.py` pins structure and exit codes —
 nested loops, reassignment, all six comparisons, functions + call stack + recursion
 (argument passing, nested-call args, `fact`/`fib`/`pw`/`tri`, mutual recursion,
@@ -246,7 +264,12 @@ full operator set, `if`/`else`, **general pointer-arithmetic scaling** (A7a:
 **`struct`** (A8a: definitions, `sizeof`, value/pointer structs at every scope, `.`/`->`
 member get/set incl. chains, `&member`, linked lists), and **function pointers** (A9:
 `int (*f)(...)` at every scope, function-name decay, and call-through `ldr x16`/`blr` with
-the `bl`-vs-`blr` split read off the symbol tables). As of **m50** the bench interp
+the `bl`-vs-`blr` split read off the symbol tables), the **`calloc`/`free` heap** (A10:
+mmap-arena bump allocator, appended-once-per-used-builtin, user-overridable), and **file
+I/O** (A12: `open`/`read`/`write`/`close`/`exit` lowered the same way — direct `bl` +
+appended syscall wrappers, structural checks for the openat/read/write/close/exit numbers
+and `AT_FDCWD`, and behavioural witnesses that copy a file through an in-memory filesystem,
+send bytes to stdout, and exit with a chosen code). As of **m50** the bench interp
 also **faults on wild addresses** like hardware — a load/store outside `[NULLFLOOR, brk)`
 raises instead of silently reading 0 — so the `&member` address-of checks (`add x1 x1
 <off>` + address push, **no** `adr x0 x`, **no** scale, and five behavioural witnesses

@@ -943,6 +943,72 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 heap exit -> {want}", _exit(cs), want)
 
+    # ---- stage 2 file I/O: open / read / write / close / exit (A12) ----------
+    # The last floor rung: a compiled program can read source bytes and write
+    # assembly text. open/read/write/close/exit lower to direct `bl` calls, and
+    # a thin syscall wrapper is appended ONCE at program end per used builtin,
+    # unless the user defines their own (then the builtin steps aside). Each pops
+    # its args off the value stack (last arg on top), loads x0..x3, `svc`s, and
+    # pushes the kernel return value. Syscall numbers and the openat(AT_FDCWD)
+    # shape match M2libc/aarch64 exactly, so real M2libc overrides them cleanly.
+    # The interp models a tiny in-memory FS + fd table so the bench WITNESSES the
+    # real behaviour (files created/read/written, missing-file open fails) rather
+    # than being more capable than reality (the m50/m51 lesson).
+    print("== stage 2 file I/O: open / read / write / close / exit (A12) ==")
+    def _io(csrc, stdin=b'', files=None):
+        # prog.c | stage2 | stage1 | stage0-as, then run against an in-memory FS
+        _, resolved = run(s1prog, stdin=_emit(csrc).encode())
+        prog = assemble(resolved.decode())[1]
+        fs = {} if files is None else dict(files)
+        rc, out = run(prog, stdin=stdin, files=fs)
+        return rc, out, fs
+    # structural: each builtin is a direct `bl`, appended once, with the right svc
+    emio = _emit('int main(){char b[8];int fd;fd=open("f",0,0);read(fd,b,8);'
+                 'write(1,b,8);close(fd);exit(0);return 0;}')
+    check("stage2 open is a direct call (bl open)",  "bl open" in emio, True)
+    check("stage2 read is a direct call (bl read)",  "bl read" in emio, True)
+    check("stage2 write is a direct call (bl write)","bl write" in emio, True)
+    check("stage2 close is a direct call (bl close)","bl close" in emio, True)
+    check("stage2 exit is a direct call (bl exit)",  "bl exit" in emio, True)
+    check("stage2 open routine appended (:open)",   ":open" in emio, True)
+    check("stage2 open uses openat (mov x8 56)",    "mov x8 56" in emio, True)
+    check("stage2 open sets AT_FDCWD (sub x0 x0 100)", "sub x0 x0 100" in emio, True)
+    check("stage2 read uses __NR_read (mov x8 63)", "mov x8 63" in emio, True)
+    check("stage2 write uses __NR_write (mov x8 64)","mov x8 64" in emio, True)
+    check("stage2 close uses __NR_close (mov x8 57)","mov x8 57" in emio, True)
+    check("stage2 exit uses __NR_exit (mov x8 93)", "mov x8 93" in emio, True)
+    # only-when-used: an I/O-free program appends none of them
+    emnio = _emit("int main(){int a=5; return a;}")
+    for nm in ("open","read","write","close","exit"):
+        check(f"stage2 I/O emitted ONLY when used (no :{nm})", f":{nm}" in emnio, False)
+    # a program that uses only write appends only write
+    emw = _emit('int main(){write(1,"x",1); return 0;}')
+    check("stage2 lone write appends :write", ":write" in emw, True)
+    check("stage2 lone write does NOT append :read", ":read" in emw, False)
+    # user override: a user-defined write is used and the builtin steps aside
+    emovw = _emit("int write(int a,int b,int c){return 9;} int main(){return write(1,2,3);}")
+    check("stage2 user write overrides builtin (one :write)", emovw.count(":write"), 1)
+    # behavioural (through the real assembled ladder, against an in-memory FS):
+    rc, out, fs = _io('int main(){write(1,"HELLO",5); return 0;}')
+    check("stage2 write(1,...) reaches stdout", out, b"HELLO")
+    rc, out, fs = _io('int main(){int fd;char b[16];int n;fd=open("in",0,0);'
+                      'n=read(fd,b,16);close(fd);return n;}', files={"in": b"12345"})
+    check("stage2 read returns the byte count", rc, 5)
+    fs0 = {"in": b"copy this text"}
+    rc, out, fs = _io('int main(){int fd;char b[64];int n;fd=open("in",0,0);'
+                      'n=read(fd,b,64);close(fd);fd=open("out",577,0);'
+                      'write(fd,b,n);close(fd);return n;}', files=fs0)
+    check("stage2 file copy exit = bytes copied", rc, 14)
+    check("stage2 file copy produced the out file", fs.get("out"), b"copy this text")
+    rc, out, fs = _io('int main(){exit(42); return 7;}')
+    check("stage2 exit(42) builtin (overrides fallthrough)", rc, 42)
+    rc, out, fs = _io('int main(){int fd;fd=open("missing",0,0);'
+                      'if(fd<0){return 5;} return 0;}', files={})
+    check("stage2 open of a missing file returns < 0", rc, 5)
+    rc, out, fs = _io('int main(){int fd;char b[3];fd=open("in",0,0);read(fd,b,3);'
+                      'close(fd);return b[0];}', files={"in": b"ABC"})
+    check("stage2 read fills the buffer (b[0]=='A')", rc, 65)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)

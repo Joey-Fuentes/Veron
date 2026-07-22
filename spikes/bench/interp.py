@@ -24,7 +24,35 @@ NULLFLOOR = 16
 class OOBAccess(RuntimeError):
     """A load/store outside [NULLFLOOR, brk) — a fault the real hardware would take."""
 
-def run(prog, stdin=b'', mem_size=0x40000, trace=False, oob_trap=True):
+def run(prog, stdin=b'', mem_size=0x40000, trace=False, oob_trap=True, files=None):
+    # --- file I/O model (A12, m53) -------------------------------------------
+    # The real ladder does file I/O through raw syscalls: openat(56)/read(63)/
+    # write(64)/close(57) (there is no bare `open` on aarch64 — M2libc's `_open`
+    # is openat(AT_FDCWD, ...)). To witness a compiled program that reads a source
+    # file and writes an output file, the interp models a tiny in-memory
+    # filesystem plus a per-fd table. `files` is a {path: bytes} dict standing in
+    # for the on-disk tree; it is updated IN PLACE as the program creates/writes
+    # files, so a caller can inspect what a compiled program produced. fds 0/1/2
+    # keep their console meaning (stdin/stdout/stderr) exactly as before — the
+    # existing pipeline writes only fd 1 and reads only fd 0, so it is unaffected.
+    # This mirrors the m51 lesson (model the syscall so the bench witnesses the
+    # real behaviour) without becoming MORE capable than reality: an open of a
+    # missing file for reading fails (-1), a read past EOF returns 0, and a write
+    # to a bad fd returns -1 — the same failures hardware would take.
+    fs = {} if files is None else files          # {path(str): bytes} — mutated in place
+    openf = {}                                    # fd -> {'path','data','pos','w'}
+    nextfd = [3]
+    stderr = bytearray()
+    def rd_cstr(a):                               # read a NUL-terminated path from memory
+        e = a
+        while e < len(img) and img[e] != 0: e += 1
+        return bytes(img[a:e]).decode('latin-1')
+    def back(a, n):                               # lazily back a valid syscall buffer
+        if a + n > len(img) and a + n <= brk[0]:
+            img.extend(b'\x00' * (a + n - len(img)))
+    def flush(fd):
+        f = openf.get(fd)
+        if f and f['w']: fs[f['path']] = bytes(f['data'])
     # layout: build byte image + offset->index map
     img = bytearray(mem_size); off=0; idx_at={}
     seq=[]
@@ -99,11 +127,44 @@ def run(prog, stdin=b'', mem_size=0x40000, trace=False, oob_trap=True):
             if take: i=idx(ins[2]); continue
         elif op=='svc':
             num=R[8]
-            if num==93: return R[0]&0xff, bytes(out)          # exit
-            elif num==64:  # write(fd,buf,len)
-                out+=img[R[1]:R[1]+R[2]]; R[0]=R[2]
-            elif num==63:  # read(fd,buf,len)
-                n=min(R[2],len(inbuf)); img[R[1]:R[1]+n]=inbuf[:n]; del inbuf[:n]; R[0]=n
+            if num==93:                                        # exit(code)
+                for fd in list(openf): flush(fd)
+                return R[0]&0xff, bytes(out)
+            elif num==64:  # write(fd,buf,len) -> fd 1 stdout, fd 2 stderr, else a file
+                fd,buf,n=R[0],R[1],R[2]; back(buf,n); data=img[buf:buf+n]
+                if fd==1:   out+=data;    R[0]=n
+                elif fd==2: stderr+=data; R[0]=n
+                elif fd in openf and openf[fd]['w']:
+                    openf[fd]['data']+=data; R[0]=n
+                else: R[0]=(-1)&0xFFFFFFFFFFFFFFFF          # EBADF
+            elif num==63:  # read(fd,buf,len) -> fd 0 stdin, else an open file
+                fd,buf,cnt=R[0],R[1],R[2]
+                if fd==0:
+                    n=min(cnt,len(inbuf)); back(buf,n)
+                    img[buf:buf+n]=inbuf[:n]; del inbuf[:n]; R[0]=n
+                elif fd in openf:
+                    f=openf[fd]; n=min(cnt,len(f['data'])-f['pos']); back(buf,n)
+                    img[buf:buf+n]=f['data'][f['pos']:f['pos']+n]; f['pos']+=n; R[0]=n
+                else: R[0]=(-1)&0xFFFFFFFFFFFFFFFF          # EBADF
+            elif num==56:  # openat(dirfd, name, flags, mode) -> fd, or -1
+                name=rd_cstr(R[1]); flags=R[2]; acc=flags&3
+                writ=(acc==1 or acc==2); creat=bool(flags&0o100); trunc=bool(flags&0o1000)
+                if name in fs and not (trunc and writ):
+                    data=bytearray(fs[name])
+                elif writ and (creat or trunc):
+                    data=bytearray(); fs[name]=b''            # create/truncate
+                elif name in fs:
+                    data=bytearray(fs[name])
+                else:
+                    R[0]=(-1)&0xFFFFFFFFFFFFFFFF; i=nxt; continue   # ENOENT
+                fd=nextfd[0]; nextfd[0]+=1
+                openf[fd]={'path':name,'data':data,'pos':0,'w':writ}
+                R[0]=fd
+            elif num==57:  # close(fd)
+                fd=R[0]
+                if fd in openf: flush(fd); del openf[fd]; R[0]=0
+                elif fd in (0,1,2): R[0]=0
+                else: R[0]=(-1)&0xFFFFFFFFFFFFFFFF
             elif num==214:  # brk(addr)
                 if R[0]==0: R[0]=brk[0]
                 else:
@@ -119,6 +180,7 @@ def run(prog, stdin=b'', mem_size=0x40000, trace=False, oob_trap=True):
                 length=R[1]; base=brk[0]; brk[0]=brk[0]+length; R[0]=base
             else: R[0]=0
         i=nxt
+    for fd in list(openf): flush(fd)
     return None, bytes(out)
 
 def asm_run(text, stdin=b''):

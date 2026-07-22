@@ -140,9 +140,54 @@ b flf_ckd
 adr x3 sfree
 bl nameq
 cmp x0 0
-b.eq flf_ckd
+b.eq flf_cko
 mov x0 1
 adr x3 udef_free
+str x0 x3
+b flf_ckd
+:flf_cko
+adr x3 sopen
+bl nameq
+cmp x0 0
+b.eq flf_ckr
+mov x0 1
+adr x3 udef_open
+str x0 x3
+b flf_ckd
+:flf_ckr
+adr x3 sread
+bl nameq
+cmp x0 0
+b.eq flf_ckw
+mov x0 1
+adr x3 udef_read
+str x0 x3
+b flf_ckd
+:flf_ckw
+adr x3 swrite
+bl nameq
+cmp x0 0
+b.eq flf_ckc
+mov x0 1
+adr x3 udef_write
+str x0 x3
+b flf_ckd
+:flf_ckc
+adr x3 sclose
+bl nameq
+cmp x0 0
+b.eq flf_cke
+mov x0 1
+adr x3 udef_close
+str x0 x3
+b flf_ckd
+:flf_cke
+adr x3 sexit
+bl nameq
+cmp x0 0
+b.eq flf_ckd
+mov x0 1
+adr x3 udef_exit
 str x0 x3
 :flf_ckd
 bl emitlabel
@@ -1578,9 +1623,54 @@ b cc_after
 adr x3 sfree
 bl nameq
 cmp x0 0
-b.eq cc_after
+b.eq ccu_cko
 mov x0 1
 adr x3 used_free
+str x0 x3
+b cc_after
+:ccu_cko
+adr x3 sopen
+bl nameq
+cmp x0 0
+b.eq ccu_ckr
+mov x0 1
+adr x3 used_open
+str x0 x3
+b cc_after
+:ccu_ckr
+adr x3 sread
+bl nameq
+cmp x0 0
+b.eq ccu_ckw
+mov x0 1
+adr x3 used_read
+str x0 x3
+b cc_after
+:ccu_ckw
+adr x3 swrite
+bl nameq
+cmp x0 0
+b.eq ccu_ckc
+mov x0 1
+adr x3 used_write
+str x0 x3
+b cc_after
+:ccu_ckc
+adr x3 sclose
+bl nameq
+cmp x0 0
+b.eq ccu_cke
+mov x0 1
+adr x3 used_close
+str x0 x3
+b cc_after
+:ccu_cke
+adr x3 sexit
+bl nameq
+cmp x0 0
+b.eq cc_after
+mov x0 1
+adr x3 used_exit
 str x0 x3
 b cc_after
 :cc_blr
@@ -3361,12 +3451,67 @@ bl emitstr
 adr x3 used_free
 ldr x0 x3
 cmp x0 0
-b.eq ert_done
+b.eq ert_open
 adr x3 udef_free
 ldr x0 x3
 cmp x0 0
-b.ne ert_done
+b.ne ert_open
 adr x9 sfree_rt
+bl emitstr
+:ert_open
+adr x3 used_open
+ldr x0 x3
+cmp x0 0
+b.eq ert_read
+adr x3 udef_open
+ldr x0 x3
+cmp x0 0
+b.ne ert_read
+adr x9 sopen_rt
+bl emitstr
+:ert_read
+adr x3 used_read
+ldr x0 x3
+cmp x0 0
+b.eq ert_write
+adr x3 udef_read
+ldr x0 x3
+cmp x0 0
+b.ne ert_write
+adr x9 sread_rt
+bl emitstr
+:ert_write
+adr x3 used_write
+ldr x0 x3
+cmp x0 0
+b.eq ert_close
+adr x3 udef_write
+ldr x0 x3
+cmp x0 0
+b.ne ert_close
+adr x9 swrite_rt
+bl emitstr
+:ert_close
+adr x3 used_close
+ldr x0 x3
+cmp x0 0
+b.eq ert_exit
+adr x3 udef_close
+ldr x0 x3
+cmp x0 0
+b.ne ert_exit
+adr x9 sclose_rt
+bl emitstr
+:ert_exit
+adr x3 used_exit
+ldr x0 x3
+cmp x0 0
+b.eq ert_done
+adr x3 udef_exit
+ldr x0 x3
+cmp x0 0
+b.ne ert_done
+adr x9 sexit_rt
 bl emitstr
 :ert_done
 sub x28 x28 8
@@ -3530,17 +3675,137 @@ b ps_l
 .byte 0
 .byte 0
 .byte 0
+:used_open
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_open
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:used_read
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_read
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:used_write
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_write
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:used_close
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_close
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:used_exit
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_exit
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
 :scalloc
 .ascii "calloc"
 .byte 0
 :sfree
 .ascii "free"
 .byte 0
+:sopen
+.ascii "open"
+.byte 0
+:sread
+.ascii "read"
+.byte 0
+:swrite
+.ascii "write"
+.byte 0
+:sclose
+.ascii "close"
+.byte 0
+:sexit
+.ascii "exit"
+.byte 0
 :scalloc_rt
 .ascii ":calloc\nsub x9 x9 8\nldr x5 x9\nsub x9 x9 8\nldr x4 x9\nmul x6 x4 x5\nadd x6 x6 7\nmov x2 3\nlsr x6 x6 x2\nlsl x6 x6 x2\nadr x1 __mp\nldr x3 x1\ncmp x3 0\nb.ne __cc_have\nmov x0 0\nmov x1 0\nmovk x1 4096 16\nmov x2 3\nmov x3 34\nmov x4 0\nsub x4 x4 1\nmov x5 0\nmov x8 222\nsvc\nmov x3 x0\n:__cc_have\nadd x4 x3 x6\nadr x1 __mp\nstr x4 x1\nstr x3 x9\nadd x9 x9 8\nret\n:__mp\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n"
 .byte 0
 :sfree_rt
 .ascii ":free\nsub x9 x9 8\nldr x0 x9\nmov x0 0\nstr x0 x9\nadd x9 x9 8\nret\n"
+.byte 0
+:sopen_rt
+.ascii ":open\nsub x9 x9 8\nldr x3 x9\nsub x9 x9 8\nldr x2 x9\nsub x9 x9 8\nldr x1 x9\nmov x0 0\nsub x0 x0 100\nmov x8 56\nsvc\nstr x0 x9\nadd x9 x9 8\nret\n"
+.byte 0
+:sread_rt
+.ascii ":read\nsub x9 x9 8\nldr x2 x9\nsub x9 x9 8\nldr x1 x9\nsub x9 x9 8\nldr x0 x9\nmov x8 63\nsvc\nstr x0 x9\nadd x9 x9 8\nret\n"
+.byte 0
+:swrite_rt
+.ascii ":write\nsub x9 x9 8\nldr x2 x9\nsub x9 x9 8\nldr x1 x9\nsub x9 x9 8\nldr x0 x9\nmov x8 64\nsvc\nstr x0 x9\nadd x9 x9 8\nret\n"
+.byte 0
+:sclose_rt
+.ascii ":close\nsub x9 x9 8\nldr x0 x9\nmov x8 57\nsvc\nstr x0 x9\nadd x9 x9 8\nret\n"
+.byte 0
+:sexit_rt
+.ascii ":exit\nsub x9 x9 8\nldr x0 x9\nmov x8 93\nsvc\n"
 .byte 0
 :smovkx0
 .ascii "movk x0 "
