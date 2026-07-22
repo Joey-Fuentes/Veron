@@ -421,6 +421,16 @@ jobs:
           printf '%s' 'struct P{int x;int y;};struct P g;int main(){g.x=1;return g.x;}' | qemu-aarch64 ./stage2 > gsr.s
           grep -q ':g_g' gsr.s || { echo "struct global: MISSING :g_ data label"; sm_ok=no; }
           grep -q 'adr x1 g_g' gsr.s || { echo "struct global: MISSING adr g_ base address"; sm_ok=no; }
+          # ---- structural: &member — address-of a struct field computes the MEMBER address
+          # (base + field byte offset) and pushes it; it must NOT leak the field name as a
+          # stray primary (adr x0 <field>) nor scale the address. This is the exact m49
+          # regression shape: the bad `&p.y` emitted `adr x0 y` (a wild address) which real
+          # qemu SIGSEGVs on — the bench used to tolerate it, so this greps for the shape. ----
+          printf '%s' 'struct P{int x;int y;};int main(){struct P p;int* q;q=&p.y;return *q;}' | qemu-aarch64 ./stage2 > amp.s
+          grep -q 'add x1 x1 0008' amp.s || { echo "&member: MISSING field-offset add (add x1 x1 0008)"; sm_ok=no; }
+          grep -q 'str x1 x9'      amp.s || { echo "&member: MISSING address push (str x1 x9)"; sm_ok=no; }
+          grep -q 'adr x0 x'       amp.s && { echo "&member REGRESSION: field leaked as a primary (adr x0 x)"; sm_ok=no; }
+          grep -q 'lsl'            amp.s && { echo "&member REGRESSION: address was scaled (lsl on address-of path)"; sm_ok=no; }
 
           # ---- structural: function pointers — a function name decays to its entry address
           # (adr x0 <fn>), a call through the variable loads the code address then branches
@@ -458,8 +468,15 @@ jobs:
           try 'struct N{int v;struct N* nx;};int main(){struct N b; b.v=99; struct N a; a.nx=&b; return a.nx->v;}'  99
           try 'struct N{int v;struct N* nx;};int main(){struct N b; struct N a; a.nx=&b; a.nx->v=77; return b.v;}'  77
           try 'struct N{int v;struct N* nx;};int main(){struct N c; c.v=3; struct N b; b.nx=&c; struct N a; a.nx=&b; return a.nx->nx->v;}'  3
-          # &member: the address of a field is an ordinary lvalue address.
+          # &member: the address of a field is an ordinary lvalue address. These four
+          # broaden the coverage the m49 fix earned — offset 0, a nonzero offset, a
+          # write THROUGH &member, a char field (ptype 1), and &(ptr->field). Until m49
+          # this whole class was effectively untested on hardware (it segfaulted).
           try 'struct P{int x;int y;};int main(){struct P p; p.x=8; int* q; q=&p.x; return *q;}'               8
+          try 'struct P{int x;int y;};int main(){struct P p; p.y=7; int* q; q=&p.y; return *q;}'               7
+          try 'struct P{int x;int y;};int main(){struct P p; int* q; q=&p.x; *q=42; return p.x;}'             42
+          try 'struct C{char a;int b;};int main(){struct C c; c.a=65; char* q; q=&c.a; return *q;}'           65
+          try 'struct P{int x;int y;};int main(){struct P p; p.y=9; struct P* r; r=&p; int* q; q=&r->y; return *q;}'  9
           # struct-pointer parameters + a real linked-list traversal with a while loop.
           try 'struct P{int x;int y;};int gv(struct P* p){return p->x+p->y;} int main(){struct P p; p.x=10; p.y=20; return gv(&p);}'  30
           try 'struct N{int v;struct N* nx;};int sm(struct N* p){int s; s=0; while(p){ s=s+p->v; p=p->nx; } return s;} int main(){struct N c; c.v=3; c.nx=0; struct N b; b.v=2; b.nx=&c; struct N a; a.v=1; a.nx=&b; return sm(&a);}'  6

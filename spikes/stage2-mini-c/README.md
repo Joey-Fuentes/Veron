@@ -217,7 +217,12 @@ full operator set, `if`/`else`, **general pointer-arithmetic scaling** (A7a:
 **`struct`** (A8a: definitions, `sizeof`, value/pointer structs at every scope, `.`/`->`
 member get/set incl. chains, `&member`, linked lists), and **function pointers** (A9:
 `int (*f)(...)` at every scope, function-name decay, and call-through `ldr x16`/`blr` with
-the `bl`-vs-`blr` split read off the symbol tables). Pinned in `validate.py`; CI
+the `bl`-vs-`blr` split read off the symbol tables). As of **m50** the bench interp
+also **faults on wild addresses** like hardware — a load/store outside `[NULLFLOOR, brk)`
+raises instead of silently reading 0 — so the `&member` address-of checks (`add x1 x1
+<off>` + address push, **no** `adr x0 x`, **no** scale, and five behavioural witnesses
+incl. char-field and `&(ptr->field)`) are real witnesses, closing the m49 gap where only
+qemu could see the bug. Pinned in `validate.py`; CI
 (real `as` + QEMU) is ground truth — the
 `stage2-mini-c-demo` workflow rebuilds the compiler and runs compiled programs
 through `stage2 | stage1 | stage0-as | elf`, checking both the emitted instruction

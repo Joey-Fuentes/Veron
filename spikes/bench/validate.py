@@ -16,7 +16,7 @@ Known-good facts (all confirmed green in CI):
 """
 import sys
 from s0as import assemble
-from interp import run, asm_run
+from interp import run, asm_run, OOBAccess
 
 FAILS = []
 def check(name, got, want):
@@ -794,6 +794,32 @@ if os.path.exists(s1p) and os.path.exists(s2p):
         ("struct N{int v;struct N* nx;};struct N a;struct N b;int main(){b.v=5;a.v=10;a.nx=&b;return a.nx->v;}", 5),
     ]:
         check(f"stage2 struct exit -> {want}", _exit(cs), want)
+
+    print("== stage 2 &member: address-of a struct field (m49 fix + m50 guard) ==")
+    # m49 fixed a latent `.s1` bug: `&p.x` / `&p->f` used to leak the field name as a
+    # stray primary (`adr x0 <field>`) instead of computing the member address, which
+    # m45 scaling / m48 decay then turned into a WILD address. The bench interp used to
+    # tolerate that address (read 0), so only real qemu witnessed the SIGSEGV. With the
+    # m50 OOB trap the bench faults on it too, so the behavioural checks below are now
+    # genuine witnesses — a regression raises OOBAccess here instead of a lucky read.
+    # The correct shape: base -> x1, add the field's byte offset, push the address
+    # (str x1 x9); NO `adr x0 <field>`, and NO index scaling on the address-of path.
+    def _exit_amp(cs):                       # report a trap as a clean check value, not a traceback
+        try: return _exit(cs)
+        except OOBAccess as e: return f"OOB-FAULT({e})"
+    emam = _emit("struct P{int x;int y;};int main(){struct P p;int* q;q=&p.y;return *q;}")
+    check("stage2 &member adds the field byte offset (add x1 x1 0008)", "add x1 x1 0008" in emam, True)
+    check("stage2 &member pushes the address (str x1 x9)",              "str x1 x9" in emam, True)
+    check("stage2 &member does NOT leak the field as a primary (no adr x0 x)", "adr x0 x" in emam, False)
+    check("stage2 &member does NOT scale the address (no lsl on this path)",    "lsl" in emam, False)
+    for cs, want in [
+        ("struct P{int x;int y;};int main(){struct P p;p.x=8;int* q;q=&p.x;return *q;}", 8),        # offset 0
+        ("struct P{int x;int y;};int main(){struct P p;p.y=7;int* q;q=&p.y;return *q;}", 7),        # nonzero offset
+        ("struct P{int x;int y;};int main(){struct P p;int* q;q=&p.x;*q=42;return p.x;}", 42),      # write through &member
+        ("struct C{char a;int b;};int main(){struct C c;c.a=65;char* q;q=&c.a;return *q;}", 65),    # char member (ptype 1)
+        ("struct P{int x;int y;};int main(){struct P p;p.y=9;struct P* r;r=&p;int* q;q=&r->y;return *q;}", 9),  # &(ptr->field)
+    ]:
+        check(f"stage2 &member exit -> {want}", _exit_amp(cs), want)
 
     print("== stage 2 function pointers: int (*f)(...), decay, call-through blr (m48) ==")
     # Three mechanisms, all exercised through the real assembled ladder:

@@ -19,7 +19,11 @@ a red CI.
   single-character; register-`cmp` is x-registers only.
 - `interp.py` — a small ARM64 interpreter for the exact instruction subset in
   play (mov/add/sub/cmp/branches/ldrb/strb/ldr/str/adr/bl/ret/br/blr/orr/and/
-  shifts/movk/svc), plus the syscalls used (`read`/`write`/`exit`/`brk`).
+  shifts/movk/svc), plus the syscalls used (`read`/`write`/`exit`/`brk`). Since
+  **m50** it also **faults on wild addresses like hardware**: a load/store outside
+  `[NULLFLOOR, brk)` raises `OOBAccess` instead of silently reading 0 (default-on;
+  `run(..., oob_trap=False)` restores the old tolerant behaviour). This is what lets
+  the bench witness the `&member`-class bug that previously only qemu could catch.
 - `stage1_ref.py` — a plain-Python reference of stage 1 (two-pass **numeric label
   resolver**: labels -> positions -> `@<pos>`, pool retired), used to develop and
   cross-check `stage1-as.s0`.

@@ -989,6 +989,44 @@ member-offset `add` with no `adr x0 x` and no scale) and an **interp wild-addres
 
 ---
 
+**Milestone 50 — bench faithfulness: an interp OOB/near-null trap so the model faults
+like hardware.** No compiler change; this closes the m49 lesson that *the bench must not
+be more capable than reality*. m49's `&member` bug went unwitnessed by the bench because
+a wild address just indexed the flat `img` and read 0 — only real qemu SIGSEGV'd. The
+interp now traps any load/store outside the region a correct program can legitimately
+touch: the valid data window is **`[NULLFLOOR, brk)`** (`NULLFLOOR = 16`; `brk` = the
+program's current break). Emitted code + data labels live in `[0, code_end)` and the
+runtime value stack / frames / heap live in the brk-grown block `[code_end, brk)`, so
+everything a well-formed program addresses is inside that window; a near-null deref (the
+`adr x0 <undef>` → `@0` shape) faults below `NULLFLOOR`, and a junk-scaled / past-the-break
+address faults at/above `brk`. Bounding by the *dynamic* `brk` (not `len(img)`, which the
+bench over-allocates) is what makes the model fault like hardware — and it self-adjusts to
+whatever a program brk'd, so both emitted a.outs and the compiler's own 0x90000 working
+set stay valid. The trap is default-on (`run(..., oob_trap=True)`); disabling it reproduces
+the old silently-tolerant read-0 behaviour exactly. Proven both ways: a hand-built null
+load and a far load both raise `OOBAccess`, while the whole existing corpus stays green
+(no false positives), including the compiler self-runs and every emitted program.
+
+On top of the trap, `validate.py` gained an **`&member` guard section** (`add x1 x1 <off>`
+present, `str x1 x9` address-push present, **no `adr x0 x`** leaked primary, **no scale**
+on the address-of path) plus **five behavioural witnesses that now genuinely fault** if the
+m49 shape regresses: `&p.x` (offset 0 → 8), `&p.y` (nonzero offset → 7), a write *through*
+`&p.x` (→ 42), a **char** member `&c.a` (ptype 1 → 65), and `&(r->y)` (→ 9). The
+`stage2-mini-c-demo` gained the matching **structural greps** (`amp.s`: field-offset add +
+address push present, `adr x0 x` + `lsl` absent) and **four more behavioural `try` runs on
+real `as`+QEMU** (7 / 42 / 65 / 9) — the class was effectively untested on hardware before
+m49 because it segfaulted. `validate.py` 342 → **351**. Housekeeping: the harmless
+**duplicate `:spushx1` template** in `stage2-mini-c.s1` (two byte-identical definitions) is
+**de-duped** to one; the compiler binary's byte positions shift but its emitted output is
+**byte-identical** across the corpus (verified by fingerprint), and all three
+`adr x9 spushx1` references resolve to the surviving definition. No stage-0/1 change, no
+reference change (`stage2_ref_a9a.py` was already correct). With the floor's type system
+complete and the bench now honest about wild addresses, the next rung is the remaining
+floor: a **`calloc`/`free` heap** and **file I/O** so a compiled program can run as a
+compiler (see §6).
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each

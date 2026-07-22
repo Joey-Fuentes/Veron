@@ -1,7 +1,30 @@
 import struct
 from s0as import assemble
 
-def run(prog, stdin=b'', mem_size=0x40000, trace=False):
+# --- memory-fault model (m50) ------------------------------------------------
+# The real ladder runs under qemu-user on an ELF with one R+W+X segment: a load
+# or store to an address the program never mapped SIGSEGVs. The bench used to be
+# *more capable than reality* here — a wild address just indexed the flat `img`
+# and read 0 (or some nearby byte) without faulting. That is exactly what masked
+# the m49 `&member` bug (a bad `&p.x` produced address 0 / a junk-scaled address
+# that the model tolerated but hardware killed). So the interp now traps accesses
+# outside the region a correct program can legitimately touch:
+#   valid data window = [NULLFLOOR, brk)   (brk = the current program break)
+# Everything a well-formed program addresses lives there: emitted code+data
+# labels sit in [0, code_end) and the runtime value stack / frames / heap live in
+# the brk-grown block [code_end, brk). Accesses below NULLFLOOR catch near-null
+# derefs (the `adr x0 <undef>` -> @0 shape); accesses at/above brk catch the
+# junk-scaled / over-allocated-image shape (the bench's `img` may be far larger
+# than what the program actually brk'd, so bounding by `brk` — not len(img) — is
+# what makes the model fault like hardware). NULLFLOOR is small (a couple words):
+# the interp is base-0, so real data labels can sit at low offsets and must not be
+# rejected — we only guard the genuine near-null band.
+NULLFLOOR = 16
+
+class OOBAccess(RuntimeError):
+    """A load/store outside [NULLFLOOR, brk) — a fault the real hardware would take."""
+
+def run(prog, stdin=b'', mem_size=0x40000, trace=False, oob_trap=True):
     # layout: build byte image + offset->index map
     img = bytearray(mem_size); off=0; idx_at={}
     seq=[]
@@ -13,6 +36,13 @@ def run(prog, stdin=b'', mem_size=0x40000, trace=False):
     brk=[code_end]
     R=[0]*31   # x0..x30
     def M(a): return a  # identity address space (base 0)
+    def chk(addr, n, store):
+        # fault on anything a correct program could never legitimately reach
+        if not oob_trap: return
+        if addr < NULLFLOOR or addr + n > brk[0]:
+            raise OOBAccess(
+                f"{'store' if store else 'load'} of {n}B at 0x{addr:x} "
+                f"outside [0x{NULLFLOOR:x}, 0x{brk[0]:x}) (brk={brk[0]:#x})")
     pc=0; out=bytearray(); inbuf=bytearray(stdin); steps=0
     # find instruction index for a byte offset
     def idx(o):
@@ -43,14 +73,16 @@ def run(prog, stdin=b'', mem_size=0x40000, trace=False):
         elif op=='cmp_i': cmpflags=(R[ins[1]],ins[2])
         elif op=='cmp_r': cmpflags=(R[ins[1]],R[ins[2]])
         elif op=='adr': R[ins[1]]=ins[2]
-        elif op=='ldrb': R[ins[1]]=img[R[ins[2]]+R[ins[3]]]
-        elif op=='strb': img[R[ins[2]]+R[ins[3]]]=R[ins[1]]&0xff
+        elif op=='ldrb': a=R[ins[2]]+R[ins[3]]; chk(a,1,False); R[ins[1]]=img[a]
+        elif op=='strb': a=R[ins[2]]+R[ins[3]]; chk(a,1,True);  img[a]=R[ins[1]]&0xff
         elif op=='ldr':
-            if len(ins)>3 and ins[3]=='x': R[ins[1]]=struct.unpack_from('<Q',img,R[ins[2]])[0]
-            else:                          R[ins[1]]=struct.unpack_from('<I',img,R[ins[2]])[0]
+            a=R[ins[2]]
+            if len(ins)>3 and ins[3]=='x': chk(a,8,False); R[ins[1]]=struct.unpack_from('<Q',img,a)[0]
+            else:                          chk(a,4,False); R[ins[1]]=struct.unpack_from('<I',img,a)[0]
         elif op=='str':
-            if len(ins)>3 and ins[3]=='x': struct.pack_into('<Q',img,R[ins[2]],R[ins[1]]&0xFFFFFFFFFFFFFFFF)
-            else:                          struct.pack_into('<I',img,R[ins[2]],R[ins[1]]&0xFFFFFFFF)
+            a=R[ins[2]]
+            if len(ins)>3 and ins[3]=='x': chk(a,8,True); struct.pack_into('<Q',img,a,R[ins[1]]&0xFFFFFFFFFFFFFFFF)
+            else:                          chk(a,4,True); struct.pack_into('<I',img,a,R[ins[1]]&0xFFFFFFFF)
         elif op=='bl': R[30]=o+4; i=idx(ins[1]); continue
         elif op=='blr': R[30]=o+4; i=idx(R[ins[1]]); continue
         elif op=='br': i=idx(R[ins[1]]); continue
