@@ -795,6 +795,51 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 struct exit -> {want}", _exit(cs), want)
 
+    print("== stage 2 function pointers: int (*f)(...), decay, call-through blr (m48) ==")
+    # Three mechanisms, all exercised through the real assembled ladder:
+    #   (1) declarator  int (*f)(...)  -> a one-word pointer variable (local/param/global)
+    #   (2) a bare function name used as a value decays to its entry address (adr x0 <fn>)
+    #   (3) f(args): a known function -> direct `bl f`; a fnptr variable -> `ldr x16 &f; blr x16`
+    # The bl-vs-blr split keys off the symbol tables: a called name found by resolve is a
+    # variable (fnptr) -> blr; a name absent from every table is a function -> direct bl.
+    emfp = _emit("int inc(int n){return n+1;}"
+                 "int main(){int (*fp)(int); fp = inc; return fp(41);}")
+    check("stage2 fnptr decays a function name (adr x0 inc)", "adr x0 inc" in emfp, True)
+    check("stage2 fnptr call loads the code address (ldr x16 x1)", "ldr x16 x1" in emfp, True)
+    check("stage2 fnptr call branches through a register (blr x16)", "blr x16" in emfp, True)
+    emap = _emit("int inc(int n){return n+1;}"
+                 "int apply(int (*f)(int), int x){return f(x);}"
+                 "int main(){return apply(inc, 41);}")
+    check("stage2 direct call still uses bl (bl apply)", "bl apply" in emap, True)
+    check("stage2 fnptr param is called through blr (blr x16)", "blr x16" in emap, True)
+    check("stage2 fnptr argument decays (adr x0 inc)", "adr x0 inc" in emap, True)
+    emfpg = _emit("int inc(int n){return n+1;}int (*gp)(int);"
+                  "int main(){gp = inc; return gp(99);}")
+    check("stage2 global fnptr gets a data label (:g_gp)", ":g_gp" in emfpg, True)
+    check("stage2 global fnptr is called through blr (blr x16)", "blr x16" in emfpg, True)
+    for cs, want in [
+        ("int inc(int n){return n+1;}"
+         "int main(){int (*fp)(int); fp = inc; return fp(41);}", 42),                 # local, 1 arg
+        ("int inc(int n){return n+1;}"
+         "int apply(int (*f)(int), int x){return f(x);}"
+         "int main(){return apply(inc, 41);}", 42),                                    # param + decay arg
+        ("int seven(){return 7;}"
+         "int callit(int (*f)()){return f();}"
+         "int main(){return callit(seven);}", 7),                                      # param, zero-arg call
+        ("int add(int a, int b){return a+b;}"
+         "int main(){int (*fp)(int,int); fp = add; return fp(30,12);}", 42),           # local, two args
+        ("int inc(int n){return n+1;}int (*gp)(int);"
+         "int main(){gp = inc; return gp(99);}", 100),                                 # global fnptr
+        ("int add1(int n){return n+1;}int dbl(int n){return n*2;}"
+         "int main(){int (*fp)(int); int acc; int i; acc=0; i=0;"
+         "while(i<5){fp=add1; acc=fp(acc); fp=dbl; acc=fp(acc); i=i+1;} return acc;}", 62),  # loop dispatch
+        ("int counter;"
+         "int bump(){counter = counter + 1; return counter;}"
+         "int twice(int (*f)()){f(); f(); return counter;}"
+         "int main(){counter = 0; return twice(bump);}", 2),                           # fnptr param + global mutate
+    ]:
+        check(f"stage2 fnptr exit -> {want}", _exit(cs), want)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)

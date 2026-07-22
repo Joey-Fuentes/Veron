@@ -95,6 +95,11 @@ b.ne fl_nc
 mov x12 1
 :fl_nc
 bl next_token
+cmp x20 5
+b.ne fl_starchk
+cmp x29 40
+b.eq fl_gfnptr
+:fl_starchk
 cmp x29 42
 b.ne fl_hn
 mov x3 4
@@ -144,6 +149,11 @@ b.ne pl_notchar
 mov x12 1
 :pl_notchar
 bl next_token
+cmp x20 5
+b.ne pl_starchk
+cmp x29 40
+b.eq pl_fnptr
+:pl_starchk
 cmp x29 42
 b.ne pl_decl
 mov x3 4
@@ -550,6 +560,11 @@ mov x12 1
 b doint
 :doint
 bl next_token
+cmp x20 5
+b.ne doint_star
+cmp x29 40
+b.eq doint_fnptr
+:doint_star
 cmp x29 42
 b.ne di_name
 mov x3 4
@@ -1061,6 +1076,21 @@ b.eq ceid_member
 cmp x5 45
 b.eq ceid_arrowq
 :ceid_var
+bl resolve
+cmp x7 0
+b.ne ceid_realvar
+cmp x0 0
+b.ne ceid_realvar
+adr x9 sadrx0f
+bl emitstr
+bl copyspan
+adr x9 spush
+bl emitstr
+mov x2 0
+bl tpush
+mov x3 0
+b celoop
+:ceid_realvar
 bl emitvar
 mov x3 0
 b celoop
@@ -1464,17 +1494,31 @@ bl next_token
 cmp x29 44
 b.eq cc_arg
 :cc_emit
-adr x9 sbl
-bl emitstr
-mov x13 x6
 sub x28 x28 8
-ldr x6 x28
+ldr x1 x28
 sub x28 x28 8
 ldr x18 x28
+str x6 x28
+add x28 x28 8
+mov x6 x1
+bl resolve
+cmp x7 0
+b.ne cc_blr
+cmp x0 0
+b.ne cc_blr
+adr x9 sbl
+bl emitstr
 bl copyspan
 adr x9 snl
 bl emitstr
-mov x6 x13
+b cc_after
+:cc_blr
+bl emitbase1
+adr x9 sldrx16blr
+bl emitstr
+:cc_after
+sub x28 x28 8
+ldr x6 x28
 mov x2 0
 bl tpush
 sub x28 x28 8
@@ -2329,6 +2373,11 @@ cmp x29 5
 b.ne ps_l
 :ps_isdecl
 bl next_token
+cmp x20 5
+b.ne ps_star
+cmp x29 40
+b.eq ps_fnptr
+:ps_star
 cmp x29 42
 b.ne ps_havename
 bl next_token
@@ -3065,6 +3114,107 @@ sub x2 x2 1
 cmp x2 0
 b.ne p6l
 ret
+:doint_fnptr
+bl next_token
+bl next_token
+mov x12 4
+mov x3 8
+orr x12 x12 x3
+mov x2 x12
+mov x13 8
+bl symdecl
+mov x14 x0
+bl next_token
+bl next_token
+mov x3 1
+:doint_fp_skip
+bl next_token
+cmp x20 5
+b.ne doint_fp_skip
+cmp x29 40
+b.ne doint_fp_nlp
+add x3 x3 1
+b doint_fp_skip
+:doint_fp_nlp
+cmp x29 41
+b.ne doint_fp_skip
+sub x3 x3 1
+cmp x3 0
+b.ne doint_fp_skip
+bl next_token
+cmp x29 61
+b.eq doint_fp_init
+b stmtloop
+:doint_fp_init
+bl compile_expr
+adr x9 spop
+bl emitstr
+mov w13 x14
+bl emitoff
+adr x9 sstore
+bl emitstr
+add x6 x6 1
+b stmtloop
+:pl_fnptr
+bl next_token
+bl next_token
+mov x12 4
+mov x3 8
+orr x12 x12 x3
+mov x2 x12
+mov x13 8
+bl symdecl
+bl next_token
+bl next_token
+mov x3 1
+:pl_fp_skip
+bl next_token
+cmp x20 5
+b.ne pl_fp_skip
+cmp x29 40
+b.ne pl_fp_nlp
+add x3 x3 1
+b pl_fp_skip
+:pl_fp_nlp
+cmp x29 41
+b.ne pl_fp_skip
+sub x3 x3 1
+cmp x3 0
+b.ne pl_fp_skip
+b paramloop
+:fl_gfnptr
+bl next_token
+bl next_token
+mov x12 4
+mov x3 8
+orr x12 x12 x3
+mov x2 x12
+bl gsymdecl
+mov x13 8
+bl emit_gdata
+b flg_ssk
+:ps_fnptr
+bl next_token
+bl next_token
+bl next_token
+bl next_token
+mov x3 1
+:ps_fp_skip
+bl next_token
+cmp x20 5
+b.ne ps_fp_skip
+cmp x29 40
+b.ne ps_fp_nlp
+add x3 x3 1
+b ps_fp_skip
+:ps_fp_nlp
+cmp x29 41
+b.ne ps_fp_skip
+sub x3 x3 1
+cmp x3 0
+b.ne ps_fp_skip
+add x12 x12 1
+b ps_l
 :smainpre
 .ascii "mov x0 0\nmov x8 214\nsvc\nmov x2 x0\nmov x9 x2\nmov x1 32768\nadd x11 x2 x1\nmov x1 0\nmovk x1 1 16\nadd x0 x2 x1\nmov x8 214\nsvc\nbl main\nsub x9 x9 8\nldr x0 x9\nmov x8 93\nsvc\n"
 .byte 0
@@ -3079,6 +3229,12 @@ ret
 .byte 0
 :sbl
 .ascii "bl "
+.byte 0
+:sadrx0f
+.ascii "adr x0 "
+.byte 0
+:sldrx16blr
+.ascii "\nldr x16 x1\nblr x16\n"
 .byte 0
 :smovx0
 .ascii "mov x0 "

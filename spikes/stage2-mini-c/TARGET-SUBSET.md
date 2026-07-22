@@ -158,6 +158,12 @@ than the current "compute an exit code" target. In rough dependency order:
 8. **I/O primitives + string literals** (`read`/`write`/`open`/`exit`, emit
    `.ascii`), so a compiled program can read source and write assembly text.
 
+**Status (m48):** items 1–6 are in, and of item 7 the `struct` half is done (m46).
+With **function pointers** landed (m48 — `int (*f)(...)` at every scope, function-name
+decay, and call-through `blr`), the floor's **type system is complete**. What remains is
+the **`calloc`/`free` heap** (rest of 7) and the **I/O primitives** (8: `read`/`write`/
+`open`/`exit`), after which stage 2 is at the self-hosting floor.
+
 After (8), stage 2 is at the self-hosting floor. Stop growing it.
 
 ### Grow in C — stage 3 and up

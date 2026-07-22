@@ -421,6 +421,22 @@ jobs:
           grep -q ':g_g' gsr.s || { echo "struct global: MISSING :g_ data label"; sm_ok=no; }
           grep -q 'adr x1 g_g' gsr.s || { echo "struct global: MISSING adr g_ base address"; sm_ok=no; }
 
+          # ---- structural: function pointers — a function name decays to its entry address
+          # (adr x0 <fn>), a call through the variable loads the code address then branches
+          # (ldr x16 + blr x16), a direct call still uses bl, and a global fnptr gets a
+          # :g_<name> data label (A9). The bl-vs-blr split is read off the symbol tables. ----
+          printf '%s' 'int inc(int n){return n+1;} int main(){int (*fp)(int); fp=inc; return fp(41);}' | qemu-aarch64 ./stage2 > fp.s
+          fp_ok=yes
+          grep -q 'adr x0 inc' fp.s || { echo "fnptr: MISSING function-name decay (adr x0 inc)"; fp_ok=no; }
+          grep -q 'ldr x16 x1' fp.s || { echo "fnptr: MISSING code-address load (ldr x16 x1)"; fp_ok=no; }
+          grep -q 'blr x16'    fp.s || { echo "fnptr: MISSING call-through (blr x16)"; fp_ok=no; }
+          printf '%s' 'int inc(int n){return n+1;} int apply(int (*f)(int),int x){return f(x);} int main(){return apply(inc,41);}' | qemu-aarch64 ./stage2 > fpa.s
+          grep -q 'bl apply' fpa.s || { echo "fnptr: MISSING direct call still uses bl (bl apply)"; fp_ok=no; }
+          grep -q 'blr x16'  fpa.s || { echo "fnptr: MISSING param call-through (blr x16)"; fp_ok=no; }
+          printf '%s' 'int inc(int n){return n+1;} int (*gp)(int); int main(){gp=inc; return gp(99);}' | qemu-aarch64 ./stage2 > fpg.s
+          grep -q ':g_gp'  fpg.s || { echo "fnptr global: MISSING :g_ data label"; fp_ok=no; }
+          grep -q 'blr x16' fpg.s || { echo "fnptr global: MISSING call-through (blr x16)"; fp_ok=no; }
+
           echo "== stage-2: structs — behavioural (sizeof, . / -> get+set, char fields, chains, params, globals) =="
           # sizeof folds to the packed word size; one 8-byte slot per field (int/char/ptr).
           try 'struct P{int x;int y;};int main(){return sizeof(struct P);}'                                     16
@@ -454,6 +470,16 @@ jobs:
           try 'struct N{int v;struct N* nx;};struct N n; struct N* gp; int main(){n.v=42; gp=&n; return gp->v;}'  42
           try 'struct N{int v;struct N* nx;};struct N a; struct N b; int main(){b.v=5; a.v=10; a.nx=&b; return a.nx->v;}'  5
 
+          echo "== stage-2: function pointers — int (*f)(...), decay, call-through blr (A9) =="
+          # exit codes through prog.c | stage2 | stage1 | stage0-as | elf
+          try 'int inc(int n){return n+1;} int main(){int (*fp)(int); fp=inc; return fp(41);}'                              42
+          try 'int inc(int n){return n+1;} int apply(int (*f)(int),int x){return f(x);} int main(){return apply(inc,41);}'  42
+          try 'int seven(){return 7;} int callit(int (*f)()){return f();} int main(){return callit(seven);}'               7
+          try 'int add(int a,int b){return a+b;} int main(){int (*fp)(int,int); fp=add; return fp(30,12);}'                 42
+          try 'int inc(int n){return n+1;} int (*gp)(int); int main(){gp=inc; return gp(99);}'                             100
+          try 'int add1(int n){return n+1;} int dbl(int n){return n*2;} int main(){int (*fp)(int); int acc; int i; acc=0; i=0; while(i<5){fp=add1; acc=fp(acc); fp=dbl; acc=fp(acc); i=i+1;} return acc;}'  62
+          try 'int counter; int bump(){counter=counter+1; return counter;} int twice(int (*f)()){f(); f(); return counter;} int main(){counter=0; return twice(bump);}'  2
+
           {
             echo "## stage2-mini-c — variables, if/while, reassignment, functions + recursion"
             echo '```'
@@ -465,6 +491,7 @@ jobs:
             echo "pointer arithmetic scaled by pointee : $ptr_ok"
             echo "functions + call stack + recursion   : $fn_ok"
             echo "structs: sizeof + . / -> + chains    : $sm_ok"
+            echo "function pointers: decay + blr call  : $fp_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
             echo "while(n){s=s+n;n=n-1;} sum 1..10     -> 55"

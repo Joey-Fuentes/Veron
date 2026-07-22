@@ -919,6 +919,42 @@ its C subset; self-hosted code (and M2-Planet's source) may use any C function n
 
 ---
 
+**Milestone 48 — stage 2: function pointers (floor backbone A9).** The last purely
+type-system rung before self-hosting: a variable can now hold the address of a function
+and a call can go through it. Three mechanisms, ported from the a9a reference of record
+into `stage2-mini-c.s1` as a direct assembly-text patch (`patch_a9a_direct.py`). **(1)
+Declarator parsing** — `int (*f)(...)` is recognised at all three declaration sites
+(local, parameter, file-scope global) plus the frame **prescan**: after the type, a `(`
+whose next token is `*` opens a function-pointer declarator, so `f` is declared as a
+**one-word pointer** (the param list is depth-skipped — only the name matters, a code
+address is one machine word) and carries a new `is_fnptr` flag (symtab bit 3). **(2)
+Function-name decay** — a bare function name used as a *value* (`fp = inc`, or `inc`
+passed as an argument) emits `adr x0 <name>` and pushes it, exactly like a small
+integer literal; the reference's `tpush(0)` is mirrored so the type stack stays
+balanced. **(3) The call split** — `f(args)` stays a direct `bl f` when `f` is a known
+function, but becomes a call *through the variable* when `f` is a function pointer:
+`add x1 x10 <off>` (or `adr x1 g_<f>`) then `ldr x16 x1` then **`blr x16`** (IP0 is free
+under the runtime convention; stage0-as has emitted `blr` since m24). The single-pass
+compiler has no `funcs` table, so the discriminator is **flipped** off the symbol
+tables: after `bl resolve`, a called name found as a frame local (`x7`) or a global
+(`x0`) is a variable → `blr`; a name absent from every table is a function → direct
+`bl`. The same not-a-variable test drives decay, so both mechanisms share one rule.
+This works for every well-formed program in the subset and needs no forward
+declarations. Verified **through the real assembled ladder** (bench models `blr`/`br`):
+a local fnptr assigned then called (→42), a fnptr **parameter** with a decayed argument
+(`apply(inc,41)`→42), a **zero-argument** call through a parameter (`callit(seven)`→7),
+a **two-argument** call (→42), a **global** fnptr (`gp(99)`→100), a fnptr **reassigned
+inside a loop** (dispatch add1/dbl →62), and a fnptr parameter whose callee mutates a
+**global** across two zero-arg calls (→2). `validate.py` 801→846 (a function-pointer
+section: decay/`ldr x16`/`blr` instruction forms, the `bl`-vs-`blr` coexistence in
+`apply`, a `:g_gp` global-fnptr data label, and seven ladder exit-code runs); the whole
+prior stage-2 corpus is unchanged. `.s1` 412→432 labels. The stage2-mini-c demo gains a
+function-pointer program built and run on real `as` + QEMU. **A8→A9 done — the floor's
+type system is complete;** next is **self-hosting**: retarget stage 2's own sources onto
+this subset.
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
@@ -969,8 +1005,12 @@ stage in the language of the stage below.
   type stack). Then **`struct`** (m46, A8a: `struct Tag{...}` definitions + a struct
   table, `sizeof(struct T)`, value/pointer structs at all scopes, `.`/`->` member
   get/set incl. chains, `&member`, linked-list traversal — one 8-byte word per field,
-  field names in the table never as labels). Next: begin **self-hosting** — retarget
-  stage 2's own sources onto this subset. See **`stage2-mini-c/TARGET-SUBSET.md`**.
+  field names in the table never as labels). Then **function pointers** (m48, A9:
+  `int (*f)(...)` at every scope, a bare function name decaying to its entry address, and
+  a call through the variable via `ldr x16`/`blr` — the `bl`-vs-`blr` split read off the
+  symbol tables, no `funcs` table needed). **The floor's type system is complete.** Next:
+  begin **self-hosting** — retarget stage 2's own sources onto this subset. See
+  **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**
   (pinned at `34fbd5c…`, vendored read-only at `spikes/reference/`) into a working
