@@ -598,7 +598,7 @@ jobs:
           if [ "$ioout" = "IO-OK" ]; then st=OK; else st=DIFF; io_ok=no; fi
           printf '  %-64s out=%-8s want=%-8s %s\n' 'write(1,"IO-OK",5)' "$ioout" "IO-OK" "$st"
           printf 'copy-this-source-text' > io_in
-          printf '%s' 'int main(){int fd;char b[64];int n;fd=open("io_in",0,0);n=read(fd,b,64);close(fd);fd=open("io_out",577,0);write(fd,b,n);close(fd);return n;}' | qemu-aarch64 ./stage2 > iocopy.s
+          printf '%s' 'int main(){int fd;char b[64];int n;fd=open("io_in",0,0);n=read(fd,b,64);close(fd);fd=open("io_out",577,420);write(fd,b,n);close(fd);return n;}' | qemu-aarch64 ./stage2 > iocopy.s
           cat iocopy.s | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf a.out
           set +e; qemu-aarch64 ./a.out; rc=$?; set -e
           if [ "$rc" = 21 ] && [ "$(cat io_out)" = "copy-this-source-text" ]; then st=OK; else st=DIFF; io_ok=no; fi
