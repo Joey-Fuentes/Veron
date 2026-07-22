@@ -996,7 +996,7 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     check("stage2 read returns the byte count", rc, 5)
     fs0 = {"in": b"copy this text"}
     rc, out, fs = _io('int main(){int fd;char b[64];int n;fd=open("in",0,0);'
-                      'n=read(fd,b,64);close(fd);fd=open("out",577,0);'
+                      'n=read(fd,b,64);close(fd);fd=open("out",577,420);'
                       'write(fd,b,n);close(fd);return n;}', files=fs0)
     check("stage2 file copy exit = bytes copied", rc, 14)
     check("stage2 file copy produced the out file", fs.get("out"), b"copy this text")
