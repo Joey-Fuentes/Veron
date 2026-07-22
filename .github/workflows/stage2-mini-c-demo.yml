@@ -211,7 +211,8 @@ jobs:
             printf '%s' "$1" | qemu-aarch64 ./stage2 > out.s
             cat out.s | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf a.out
             set +e; qemu-aarch64 ./a.out; rc=$?; set -e
-            printf '  %-64s exit=%-4s want=%-4s %s\n' "$1" "$rc" "$2" "$([ "$rc" = "$2" ] && echo OK || { echo DIFF; fail=1; })"
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; fail=1; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$1" "$rc" "$2" "$st"
           }
           echo "== stage-2: 64-bit machine-word model (int == pointer width) =="
           # small values exit as before; these overflow 32 bits then divide, so a
