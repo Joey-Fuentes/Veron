@@ -1,0 +1,124 @@
+# Probe: can GitHub's arm64 runners execute 32-bit ARM (armhf / AArch32 EL0) NATIVELY?
+#
+# Why this matters: the "armhf-Mes detour" to reach a native-ish aarch64 GCC only
+# works if the runner CPU (Azure Cobalt 100 = Neoverse N2) actually runs 32-bit ARM
+# code AND the kernel has 32-bit compat enabled. The Neoverse N2 TRM says AArch32
+# EL0 is present; this settles empirically whether the real runner image exposes it.
+#
+# It builds a freestanding, statically-linked armhf binary that just does exit(42)
+# (no libc, no dynamic loader), then tries to run it NATIVELY before any qemu/binfmt
+# is installed, then proves the qemu-user fallback. Drop this file in
+# .github/workflows/ and run it (Actions tab -> "armhf-probe" -> Run workflow).
+
+name: armhf-probe
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/armhf-probe.yml'
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04-arm, ubuntu-22.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Host / CPU info
+        run: |
+          echo "runner label: ${{ matrix.runner }}"
+          uname -a
+          echo "--- CPU identity (implementer 0x41=ARM, part 0xd49=Neoverse-N2) ---"
+          grep -Ei 'implementer|architecture|variant|part|model name' /proc/cpuinfo | sort -u || true
+
+      - name: Install cross binutils (runs as arm64, emits armhf)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends binutils-arm-linux-gnueabihf
+
+      - name: Build a freestanding STATIC armhf binary -> exit(42), no libc
+        run: |
+          # ARM (A32) EABI: syscall number in r7, args in r0.., svc #0.  __NR_exit = 1.
+          printf '%s\n' \
+            '.text' \
+            '.global _start' \
+            '_start:' \
+            '    mov r7, #1        @ __NR_exit' \
+            '    mov r0, #42       @ status = 42' \
+            '    svc #0' > probe.s
+          arm-linux-gnueabihf-as   -o probe.o probe.s
+          arm-linux-gnueabihf-ld -static -o probe probe.o
+
+          echo "--- file ---"
+          file probe
+          echo "--- readelf header ---"
+          arm-linux-gnueabihf-readelf -h probe | grep -Ei 'class|machine|type'
+
+          # SAFETY: refuse to proceed unless this is genuinely 32-bit ARM, else a
+          # stray arm64 build would exit 42 and give a FALSE positive.
+          hdr=$(arm-linux-gnueabihf-readelf -h probe)
+          echo "$hdr" | grep -qi 'Class:[[:space:]]*ELF32'      || { echo "FAIL: not ELF32"; exit 1; }
+          echo "$hdr" | grep -qi 'Machine:[[:space:]]*ARM'      || { echo "FAIL: machine is not EM_ARM"; exit 1; }
+          echo "$hdr" | grep -qi 'AArch64'                      && { echo "FAIL: binary is arm64, probe invalid"; exit 1; }
+          echo "OK: verified freestanding 32-bit ARM (EM_ARM, ELF32)"
+
+      - name: Make sure NO binfmt handler will fake a native pass
+        run: |
+          # If qemu-user-static + binfmt is preinstalled, ./probe would be silently
+          # routed through the emulator -> false "native works". Unregister any ARM
+          # handler so the next step is a TRUE native exec attempt.
+          if [ -d /proc/sys/fs/binfmt_misc ]; then
+            echo "binfmt handlers present:"; ls -1 /proc/sys/fs/binfmt_misc/ | grep -vi '^status$' || echo "(none)"
+            for h in qemu-arm qemu-armeb qemu-arm-static arm; do
+              if [ -e "/proc/sys/fs/binfmt_misc/$h" ]; then
+                echo "Unregistering interfering handler: $h"
+                echo -1 | sudo tee "/proc/sys/fs/binfmt_misc/$h" >/dev/null || true
+              fi
+            done
+            echo "remaining after cleanup:"; ls -1 /proc/sys/fs/binfmt_misc/ | grep -vi '^status$' || echo "(none)"
+          else
+            echo "binfmt_misc not mounted (good — nothing can intercept)"
+          fi
+
+      - name: NATIVE execution test (the real question)
+        id: native
+        run: |
+          set +e
+          ./probe
+          rc=$?
+          set -e
+          echo "native_rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "raw exit code: $rc"
+          case "$rc" in
+            42)      echo "NATIVE = YES  -> 32-bit ARM runs natively (AArch32 EL0 + kernel compat present)";;
+            126|127) echo "NATIVE = NO   -> Exec format error / ENOEXEC (kernel has no 32-bit compat, or refused the binary)";;
+            132)     echo "NATIVE = NO   -> SIGILL (CPU trapped the A32 instructions; AArch32 EL0 unavailable)";;
+            139)     echo "NATIVE = ??   -> SIGSEGV (loaded but crashed; inspect the binary)";;
+            *)       echo "NATIVE = ??   -> unexpected exit $rc (see logs above)";;
+          esac
+
+      - name: qemu-user fallback (should always pass; proves the emulated route)
+        run: |
+          sudo apt-get install -y --no-install-recommends qemu-user
+          set +e
+          qemu-arm ./probe
+          rc=$?
+          set -e
+          echo "qemu exit code: $rc"
+          [ "$rc" = 42 ] && echo "QEMU = YES -> armhf runs under qemu-user (emulated fallback works)" \
+                         || echo "QEMU = UNEXPECTED ($rc)"
+
+      - name: VERDICT
+        run: |
+          n="${{ steps.native.outputs.native_rc }}"
+          echo "=================  ${{ matrix.runner }}  ================="
+          if [ "$n" = "42" ]; then
+            echo "RESULT: NATIVE armhf WORKS on this runner."
+            echo "        -> the armhf-Mes detour could run WITHOUT emulation (on today's CPU)."
+            echo "        Caveat: fragile — breaks if GitHub moves to Cobalt 200 (Neoverse V3, no AArch32)."
+          else
+            echo "RESULT: NATIVE armhf does NOT work here (native_rc=$n)."
+            echo "        -> the armhf-Mes detour would need qemu-user emulation."
+          fi
