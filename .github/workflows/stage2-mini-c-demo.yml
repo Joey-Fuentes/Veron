@@ -562,6 +562,48 @@ jobs:
           try 'struct N{int v; struct N* nx;};int cnt(struct N* p){int n; n=0; while(p){n=n+1; p=p->nx;} return n;} int main(){struct N* a=calloc(1,sizeof(struct N)); struct N* b=calloc(1,sizeof(struct N)); struct N* c=calloc(1,sizeof(struct N)); a->nx=b; b->nx=c; c->nx=0; return cnt(a);}'  3
           try 'int calloc(int a, int b){return 77;} int main(){return calloc(1,2);}'                   77
 
+          # ---- structural: file I/O — open/read/write/close/exit lower to a direct
+          # `bl`, and a thin syscall wrapper is appended ONCE per used builtin (unless
+          # the user defines their own). open is openat(56) with AT_FDCWD (-100, built
+          # as 0-100 since mov is a 16-bit MOVZ); read=63, write=64, close=57, exit=93.
+          # Numbers + the openat shape match M2libc/aarch64 exactly, so real M2libc
+          # (which defines its own read/write/_open/close/_exit) overrides them.
+          echo "== stage-2: file I/O structural — open/read/write/close/exit (A12) =="
+          io_ok=yes
+          printf '%s' 'int main(){char b[8];int fd;fd=open("f",0,0);read(fd,b,8);write(1,b,8);close(fd);exit(0);return 0;}' | qemu-aarch64 ./stage2 > io.s
+          grep -q 'bl open'    io.s || { echo "io: MISSING direct call (bl open)";  io_ok=no; }
+          grep -q 'bl read'    io.s || { echo "io: MISSING direct call (bl read)";  io_ok=no; }
+          grep -q 'bl write'   io.s || { echo "io: MISSING direct call (bl write)"; io_ok=no; }
+          grep -q 'bl close'   io.s || { echo "io: MISSING direct call (bl close)"; io_ok=no; }
+          grep -q 'bl exit'    io.s || { echo "io: MISSING direct call (bl exit)";  io_ok=no; }
+          grep -q '^:open'     io.s || { echo "io: MISSING open runtime (:open)";   io_ok=no; }
+          grep -q 'mov x8 56'  io.s || { echo "io: open is not openat (mov x8 56)"; io_ok=no; }
+          grep -q 'sub x0 x0 100' io.s || { echo "io: open MISSING AT_FDCWD (sub x0 x0 100)"; io_ok=no; }
+          grep -q 'mov x8 63'  io.s || { echo "io: read not __NR_read (mov x8 63)"; io_ok=no; }
+          grep -q 'mov x8 64'  io.s || { echo "io: write not __NR_write (mov x8 64)"; io_ok=no; }
+          grep -q 'mov x8 57'  io.s || { echo "io: close not __NR_close (mov x8 57)"; io_ok=no; }
+          printf '%s' 'int main(){int a=5; return a;}' | qemu-aarch64 ./stage2 > noio.s
+          grep -q '^:open'     noio.s && { echo "io: runtime emitted when unused"; io_ok=no; }
+          printf '%s' 'int write(int a,int b,int c){return 9;} int main(){return write(1,2,3);}' | qemu-aarch64 ./stage2 > iow.s
+          [ "$(grep -c '^:write' iow.s)" = 1 ] || { echo "io: user write override did not suppress the builtin"; io_ok=no; }
+
+          echo "== stage-2: file I/O behavioural — a compiled program reads a file and writes one (A12) =="
+          # exit(code) reaches the exit builtin (not the prologue fallthrough); write(1,...)
+          # reaches stdout; and a real open/read/write/close round-trip on qemu's own
+          # filesystem copies a source file to an output file.
+          try 'int main(){exit(9); return 0;}'   9
+          printf '%s' 'int main(){write(1,"IO-OK",5); return 0;}' | qemu-aarch64 ./stage2 > iostdout.s
+          cat iostdout.s | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf a.out
+          set +e; ioout=$(qemu-aarch64 ./a.out); set -e
+          if [ "$ioout" = "IO-OK" ]; then st=OK; else st=DIFF; io_ok=no; fi
+          printf '  %-64s out=%-8s want=%-8s %s\n' 'write(1,"IO-OK",5)' "$ioout" "IO-OK" "$st"
+          printf 'copy-this-source-text' > io_in
+          printf '%s' 'int main(){int fd;char b[64];int n;fd=open("io_in",0,0);n=read(fd,b,64);close(fd);fd=open("io_out",577,0);write(fd,b,n);close(fd);return n;}' | qemu-aarch64 ./stage2 > iocopy.s
+          cat iocopy.s | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf a.out
+          set +e; qemu-aarch64 ./a.out; rc=$?; set -e
+          if [ "$rc" = 21 ] && [ "$(cat io_out)" = "copy-this-source-text" ]; then st=OK; else st=DIFF; io_ok=no; fi
+          printf '  %-64s exit=%-4s want=%-4s out=%s %s\n' 'open/read/write/close file copy' "$rc" 21 "$(cat io_out 2>/dev/null)" "$st"
+
           {
             echo "## stage2-mini-c — variables, if/while, reassignment, functions + recursion"
             echo '```'
@@ -576,6 +618,7 @@ jobs:
             echo "function pointers: decay + blr call  : $fp_ok"
             echo "large literals: movz + movk (>=2^16)  : $lit_ok"
             echo "heap: calloc/free bump alloc (mmap)  : $heap_ok"
+            echo "file I/O: open/read/write/close/exit : $io_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
             echo "while(n){s=s+n;n=n-1;} sum 1..10     -> 55"
@@ -587,8 +630,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$lit_ok" = yes ]; then
-            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct."
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ]; then
+            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok lit=$lit_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok"; exit 1
           fi
