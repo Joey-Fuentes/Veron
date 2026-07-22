@@ -955,6 +955,32 @@ this subset.
 
 ---
 
+**Milestone 49 — stage 2: fix `&member` address-of in the `.s1` (a8a regression, latent
+since m46).** `&p.x` / `&p->f` (address of a struct member) was mis-compiled by the
+compiler binary — a bug that had been present since the m46 struct rung but masked twice
+over: the demo's behavioural gate false-passed (a `fail=1` trapped inside a `$(...)`
+subshell never reached the parent, since fixed), and the bench interp tolerated the wild
+address the bad code produced (an undefined-symbol load reads as 0, so `&p + 0` landed on
+the right slot by luck). On real QEMU it **segfaulted**. Root cause: the address-of path
+(`:ceuaddr`) peeked the token after the name for `[` (subscript) but **not** for `.` /
+`->`, so `&p.x` emitted `&p` and let the member name `x` leak out as a stray primary —
+which the m45 pointer-scaling and (post-m48) the function-name-decay path then turned into
+`&p + <junk>·8` / `adr x0 x`. The reference (`stage2_ref_a9a.py`) always handled this
+correctly (`&(name.chain)` → `push_member_addr`); only the `.s1` port had ever been
+missing the branch. Fix: `:ceuaddr` now routes a trailing `.`/`->` into the existing
+`emit_maddr` member-address walk (the same one `.`/`->` rvalue/lvalue already use), pushes
+the resulting address (`str x1 x9`), and pushes the member's address ptype (`1` for a
+non-pointer `char` field, else `8`). Verified through the real assembled ladder: `&p.x`
+and `&p.y` (offset ≠ 0) read back correctly, `*(&p.x)=v` writes through, chained bases,
+whole-struct `&p`, plain `&var`, `&a[i]`, function pointers, and the full arithmetic
+corpus all unchanged; the emitted code for `&p.x` is now `add x1 x10 …; add x1 x1 <off>;
+str x1 x9` with no `adr x0 x` and no scale. Reference unchanged (it was already correct);
+this is a `.s1`-only codegen fix. The bench still can't *witness* this class behaviourally
+(the interp doesn't fault on wild addresses) — a structural guard + an interp
+wild-address trap follow next so the model stops being more capable than reality.
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each

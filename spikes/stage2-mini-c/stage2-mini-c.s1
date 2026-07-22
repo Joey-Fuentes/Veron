@@ -1308,6 +1308,10 @@ b cua_ws
 :cua_chk
 cmp x5 91
 b.eq cua_sub
+cmp x5 46
+b.eq cua_member
+cmp x5 45
+b.eq cua_arrowq
 :cua_addr
 bl emitaddr
 mov x3 0
@@ -1327,6 +1331,32 @@ sub x28 x28 8
 ldr x18 x28
 bl emiteladdr
 mov x6 x14
+mov x3 0
+b celoop
+:cua_arrowq
+add x2 x3 1
+ldrb w5 x19 x2
+cmp x5 62
+b.eq cua_member
+b cua_addr
+:cua_member
+bl emit_maddr
+adr x9 spushx1
+bl emitstr
+mov x3 1
+and x5 x14 x3
+cmp x5 0
+b.eq cua_mpt8
+mov x3 2
+and x5 x14 x3
+cmp x5 0
+b.ne cua_mpt8
+mov x2 1
+b cua_mptp
+:cua_mpt8
+mov x2 8
+:cua_mptp
+bl tpush
 mov x3 0
 b celoop
 :ceuderef
