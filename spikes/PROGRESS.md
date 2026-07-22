@@ -950,8 +950,10 @@ section: decay/`ldr x16`/`blr` instruction forms, the `bl`-vs-`blr` coexistence 
 `apply`, a `:g_gp` global-fnptr data label, and seven ladder exit-code runs); the whole
 prior stage-2 corpus is unchanged. `.s1` 412→432 labels. The stage2-mini-c demo gains a
 function-pointer program built and run on real `as` + QEMU. **A8→A9 done — the floor's
-type system is complete;** next is **self-hosting**: retarget stage 2's own sources onto
-this subset.
+type system is complete.** (Forward pointer since revised — see §6: finish the floor
+(heap + I/O), run a self-host *test*, then grow **stage 2** to M2-Planet's full subset so
+**M2-Planet becomes stage 3**; the earlier "retarget stage 2's own sources into a stage-3
+C compiler" plan is retired.)
 
 ---
 
@@ -1043,15 +1045,38 @@ stage in the language of the stage below.
   field names in the table never as labels). Then **function pointers** (m48, A9:
   `int (*f)(...)` at every scope, a bare function name decaying to its entry address, and
   a call through the variable via `ldr x16`/`blr` — the `bl`-vs-`blr` split read off the
-  symbol tables, no `funcs` table needed). **The floor's type system is complete.** Next:
-  begin **self-hosting** — retarget stage 2's own sources onto this subset. See
-  **`stage2-mini-c/TARGET-SUBSET.md`**.
-- **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
+  symbol tables, no `funcs` table needed). **The floor's type system is complete.** What
+  remains of the floor is the **`calloc`/`free` heap** and **file I/O** (`open`/`read`/
+  `write`/`close`) so a compiled program can run as a compiler. Then the plan (revised —
+  see below and `TARGET-SUBSET.md`): **(1) run a self-host TEST** to prove the mechanism
+  (compile a compiler-shaped, file-reading program; ideally a toy fixpoint), **not** as a
+  permanent rung; **(2) do NOT pivot to a stage-3-in-C** — instead keep growing **stage 2
+  (in asm)** to cover M2-Planet's remaining subset (preprocessor, `&&`/`||`, `goto`,
+  multi-level pointers, `for`/`break`/`continue`, compound assign, forward decls, `^` via a
+  stage-0 `eor`, hex, `enum`); **(3)** compile **M2-Planet's own source** with stage 2, so
+  **M2-Planet becomes the de-facto "stage 3."** No throwaway compiler; the artifact we
+  build is the hand-off node. Cost accepted: those features land in `.s1` asm, not C.
+- **Stage 3** — **M2-Planet's own source, compiled by stage 2** (no separately-written
+  Veron-C stage 3; earlier plan retired). A self-host *test* precedes this to de-risk the
+  ladder, but the permanent path is stage 2 → M2-Planet-as-stage-3.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**
   (pinned at `34fbd5c…`, vendored read-only at `spikes/reference/`) into a working
   M2-Planet, which drives the borrowed live-bootstrap chain (see
   `spikes/borrow-m2/`, `spikes/livebootstrap/`). The target C subset is spelled
   out in `stage2-mini-c/TARGET-SUBSET.md`.
+- **Cross-arch reality (mapped; deferred behind M2-Planet).** Our M2-Planet is **native
+  aarch64** (M2-Planet targets aarch64 directly — verified in `borrow-m2`). The seam is
+  one rung up: **MesCC has no _native_ aarch64 backend** (x86 + armhf only, confirmed vs
+  GNU Mes 0.27); Guix reaches aarch64 by running the **armhf Mes** and lifting to 64-bit,
+  and live-bootstrap's upper half ships no aarch64 config — so a native arm64 gcc is a
+  **porting** effort, not a config flip. Two routes: (1) the **armhf-Mes detour**, which
+  is **hardware-viable on our CI** — GitHub's arm64 runners are Cobalt 100 / Neoverse N2,
+  which keeps AArch32 EL0, and a static armhf binary runs natively on both
+  `ubuntu-24.04-arm`/`22.04-arm` (verified; `.github/workflows/armhf-probe.yml`), but it's
+  a build-out and **fragile** (breaks on a Cobalt 200 / Neoverse V3 fleet move — the probe
+  is the canary); or (2) **cross-compile from the amd64 gcc** (durable). Current lean: (2),
+  with (1) a legitimate option. Earlier "amd64-only" wording was imprecise; corrected in
+  `TARGET-SUBSET.md` §8 and `borrow-tcc/README.md`.
 
 Scope rule: add the smallest capability per rung that makes the next rung
 writable. If a stage feels unwieldy to write, that's the signal to add one small

@@ -164,16 +164,33 @@ decay, and call-through `blr`), the floor's **type system is complete**. What re
 the **`calloc`/`free` heap** (rest of 7) and the **I/O primitives** (8: `read`/`write`/
 `open`/`exit`), after which stage 2 is at the self-hosting floor.
 
-After (8), stage 2 is at the self-hosting floor. Stop growing it.
+After (8), stage 2 is at the self-hosting floor. **Two things happen there — and the
+second is a deliberate change of plan from earlier drafts of this section.**
 
-### Grow in C — stage 3 and up
+**(a) Run a self-host TEST — but don't make it a permanent rung.** Once heap + I/O
+land, do a *proof-of-pivot* before investing in anything else: confirm the ladder can
+compile a real, **compiler-shaped** program that reads a file and writes output (deep
+recursion, structs, function pointers, nested control flow), and ideally a **toy
+fixpoint** — a tiny compiler written in stage-2's C subset that compiles its own source,
+byte-compared across a second generation. This de-risks the single scariest unknown —
+that a compiler compiling compiler-shaped input actually works through this ladder — and
+it does so **cheaply, first**. It is a test/canary, not a stage we keep.
 
-Everything remaining in §3 that stage 2's floor didn't cover gets added in C, in
-whatever rung split the scope rule dictates (add the smallest thing that makes
-the next rung comfortable; if a stage feels unwieldy, add a convenience to the
-stage below). Likely shape: **stage 2 (floor, asm) → stage 3 (heavy C-subset lift
-in C) → maybe stage 4 to finish → hand off.** Favor few large C-on-C jumps over
-many tiny ones — the many-small-rungs discipline was there to survive assembly.
+**(b) Do NOT pivot to a stage-3 compiler written in Veron's own C.** Earlier drafts said
+"stop growing stage 2 and add the rest in C as stage 3." **We are dropping that.** A
+throwaway stage-3-in-C has no independent value — **M2-Planet is the actual target.** So
+instead: keep growing **stage 2 (in asm)** until it accepts M2-Planet's *entire* source
+subset — the §3 features stage 2 still lacks: a modest preprocessor (`#include`/guards/
+object `#define`), `&&`/`||`, `goto`+labels, multi-level pointers, `for`/`break`/
+`continue`, compound assign `+=`/`++`/`--`, forward declarations, `^` (via a stage-0
+`eor`), hex literals, and `enum`. Then compile **M2-Planet's own source** with stage 2.
+**M2-Planet effectively becomes "stage 3."** No disposable intermediate compiler; the
+artifact we build is exactly the hand-off node.
+
+The cost, stated honestly: those remaining features land in **`.s1` assembly**, not in
+comfortable C — the expensive side of the asymmetry above. We accept that in exchange for
+a clean M2-as-stage-3 endgame and no throwaway rung. The scope rule still applies: if a
+feature is genuinely nicer to add one stage down (e.g. `^` needs a stage-0 `eor`), do that.
 
 ## 7. Open design decisions (resolve on the bench/refs first)
 
@@ -188,9 +205,29 @@ many tiny ones — the many-small-rungs discipline was there to survive assembly
 
 ## 8. Caveats
 
-- **Cross-arch handoff (deferred).** The borrowed chain has no Mes/tcc backend for
-  arm64, so gcc lands on amd64. Our ladder is aarch64, so compiling M2-Planet's
-  source with our aarch64 compiler yields an aarch64 M2-Planet; bridging to the
-  amd64 chain is a later concern and does not change the C subset above.
+- **Cross-arch handoff (deferred — but the seam is now mapped, and probed).** Veron
+  produces a **native aarch64 M2-Planet**: M2-Planet targets aarch64 directly
+  (`--architecture aarch64`; exercised green in `borrow-m2`). The seam is one rung *up*:
+  **MesCC has no _native_ aarch64 backend** — its code generators are x86 (i386) and
+  **armhf** (32-bit ARM) only (confirmed against GNU Mes 0.27 and the current manual:
+  "aarch64-linux uses mes for armhf-linux"). aarch64 is reached, in Guix, by running the
+  **armhf Mes on aarch64 hardware** and lifting to 64-bit — not by a native aarch64
+  compiler. live-bootstrap's Mes→tcc→gcc upper half is x86-framed and ships no aarch64
+  config, so **reaching a native arm64 gcc is a porting effort, not a config flip.** The
+  earlier note ("no Mes/tcc backend … gcc lands on amd64") was directionally right but
+  imprecise: the non-x86 MesCC backend is armhf, and "amd64-only" overstated it. Two
+  routes forward:
+  1. **armhf-Mes detour** — *hardware-viable on our CI, verified.* GitHub's
+     `ubuntu-24.04-arm` / `ubuntu-22.04-arm` runners use Cobalt 100 (Neoverse N2), which
+     retains **AArch32 EL0**; a freestanding static armhf binary runs **natively** (exit
+     42, no emulation, no interfering binfmt) on both images — see
+     `.github/workflows/armhf-probe.yml`. But it's a build-out, and it's **fragile**: it
+     breaks the day GitHub's fleet moves to Cobalt 200 (Neoverse V3, no AArch32). Keep the
+     probe as a **canary** (its CPU-identity dump flags the change immediately).
+  2. **Cross-compile from the amd64 gcc** the chain already lands (build an
+     aarch64-targeting cross-gcc, then a native arm64 gcc, then self-rebuild) — more steps
+     but durable against any CPU refresh.
+  **Current lean: (2) as the durable endgame; (1) is now a legitimate option, not a dead
+  end.** None of this changes the C subset above, and it stays deferred behind M2-Planet.
 - **This is a spec of the pinned commit**, not of "M2-Planet in general." If the
   pins in §1 move, re-derive §3–§5 from the new source.

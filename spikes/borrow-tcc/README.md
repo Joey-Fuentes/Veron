@@ -29,8 +29,23 @@ The probe reached Mes's build and stopped at `Unable to open ... include/mes/
 config.h`: that header is **generated** (by Mes's `configure.sh`; live-bootstrap
 creates it plus `@VERSION@` substitution and `catm` preprocessing before the
 compile). So the base tools are fine — the Mes→tcc rung needs live-bootstrap's
-mes-step driver, and it is **amd64-only** (Mes/tcc have no aarch64 backend).
-That heavier follow-on is intentionally out of scope for this tracer.
+mes-step driver. That heavier follow-on is intentionally out of scope for this tracer.
+
+**Precise cross-arch status (corrected — the earlier "amd64-only, Mes/tcc have no
+aarch64 backend" was directionally right but imprecise).** M2-Planet *does* target
+aarch64 (that's what this spike runs). The gap is one rung up: **MesCC has no _native_
+aarch64 backend** — its code generators are x86 (i386) and **armhf** (32-bit ARM) only
+(GNU Mes 0.27 / current manual: "aarch64-linux uses mes for armhf-linux"). Guix reaches
+aarch64 by running the **armhf Mes** on aarch64 hardware and lifting to 64-bit;
+live-bootstrap's Mes→tcc→gcc upper half is x86-framed with no aarch64 config. So a native
+arm64 gcc is a **porting** effort, and two routes exist: (1) the **armhf-Mes detour**,
+which is **hardware-viable on our CI** — GitHub's `ubuntu-24.04-arm`/`22.04-arm` runners
+are Cobalt 100 / Neoverse N2, which keeps **AArch32 EL0**; a freestanding static armhf
+binary runs **natively** (verified, exit 42, no emulation — see
+`.github/workflows/armhf-probe.yml`) — but it's a build-out and is **fragile** (breaks if
+the fleet moves to Cobalt 200 / Neoverse V3, which drops AArch32; keep the probe as a
+canary); or (2) **cross-compile from the amd64 gcc** the chain lands (durable). Current
+lean: (2). Deferred behind reaching M2-Planet either way.
 
 ## Honesty note
 

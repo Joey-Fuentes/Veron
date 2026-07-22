@@ -191,12 +191,15 @@ runs, and treating `( ) { } ; ,` as punctuation — so a variable named `i`, `w`
   comparisons; signed `/` waits on signed types (an `sdiv`/sign-extension refinement).
 
 Equality and `/` are small, self-contained increments that are available to pick
-up any time, but they are **not the critical path** to stage 3. With functions +
+up any time, but they are **not the critical path**. With functions +
 recursion, pointers/`char`/arrays, `struct`, and **function pointers** (A9) now in,
 the floor's **type system is complete**; what remains of the stage-2 **"floor"** is a
-small heap and I/O — because stage 3 is a
-*compiler* written in stage-2's C. That floor, and the full target C subset it
-builds toward, are laid out in
+small **heap** (`calloc`/`free`) and **file I/O** (`open`/`read`/`write`/`close`), so a
+compiled program can run as a compiler. **Plan (revised):** after the floor, run a
+self-host **test** to de-risk the ladder, then — rather than writing a throwaway stage-3
+compiler in Veron's C — keep growing **stage 2 (in asm)** to cover M2-Planet's full
+subset, and compile **M2-Planet's own source** so that **M2-Planet becomes the de-facto
+"stage 3."** That floor, the full target C subset, and the revised plan are laid out in
 [`TARGET-SUBSET.md`](./TARGET-SUBSET.md) (derived from the pinned M2-Planet
 self-host, vendored at `spikes/reference/`).
 
