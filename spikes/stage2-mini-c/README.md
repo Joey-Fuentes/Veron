@@ -127,6 +127,23 @@ int main(){ return name(2,3); }   // program is entered via bl main
   (`blr`); a name in no table is a function → direct `bl`. The same not-a-variable test
   drives decay. Out of subset: fnptr **arithmetic** (a code address is never scaled) and
   fnptr-returning functions.
+- **heap: `calloc`/`free` (A10)**: `calloc`/`free` lower to a direct `bl calloc`/`bl free`,
+  and a **bump allocator over `brk`** — faithful to M2libc's `_malloc_brk` — is appended
+  **once** at program end for each builtin actually used, unless the user defines their own
+  (then their definition wins and the builtin steps aside). `calloc(count,size)` rounds
+  `count*size` up to 8 bytes, lazily inits a persistent bump pointer via `brk(0)`, grows the
+  OS break (syscall **214**), zero-fills the block, and returns it; distinct calls return
+  distinct, persistent blocks. `free` is a no-op (correct for a batch compiler). The runtime
+  uses **named labels** (`:calloc`, `:__cc_*`, `:__mp`, `:free`) resolved by stage1 like any
+  function, so it is size-independent (`bl calloc` reaches via ±128 MB; `adr __mp` is always
+  adjacent to the routine, which lives inline in the R+W+X image, never executed). This is
+  the shape M2-Planet allocates with (`struct X* p = calloc(1, sizeof(struct X))`, walked via
+  struct-pointer-parameter helpers). Two pre-existing `.s1` decl-initializer bugs on that
+  critical path were fixed alongside (an `x14` slot-offset clobber across `compile_expr`, and
+  an over-consumed token in the struct-pointer decl path). Out of subset (next codegen rung):
+  a function with **several struct-typed locals** still mis-sizes its frame, so a
+  `struct N* p = a; while(p){ … p = p->nx; }` loop *inside a many-local `main`* corrupts —
+  the same traversal via a helper taking `struct N* p` is correct.
 
 ```
 int a=5; int b=a+1; return a*b;                         ->  exits 30
@@ -192,9 +209,9 @@ runs, and treating `( ) { } ; ,` as punctuation — so a variable named `i`, `w`
 
 Equality and `/` are small, self-contained increments that are available to pick
 up any time, but they are **not the critical path**. With functions +
-recursion, pointers/`char`/arrays, `struct`, and **function pointers** (A9) now in,
-the floor's **type system is complete**; what remains of the stage-2 **"floor"** is a
-small **heap** (`calloc`/`free`) and **file I/O** (`open`/`read`/`write`/`close`), so a
+recursion, pointers/`char`/arrays, `struct`, **function pointers** (A9), and now the
+**`calloc`/`free` heap** (A10) in, the floor's **type system is complete**; what remains
+of the stage-2 **"floor"** is **file I/O** (`open`/`read`/`write`/`close`), so a
 compiled program can run as a compiler. **Plan (revised):** after the floor, run a
 self-host **test** to de-risk the ladder, then — rather than writing a throwaway stage-3
 compiler in Veron's C — keep growing **stage 2 (in asm)** to cover M2-Planet's full
@@ -206,8 +223,8 @@ self-host, vendored at `spikes/reference/`).
 ## Verified
 
 Developed and tested through the **real assembled ladder** on the dev bench
-(`spikes/bench/`): the newest `stage2_ref_*.py` (currently **`stage2_ref_a9a.py`**,
-the function-pointer milestone) carries the codegen design plus an independent
+(`spikes/bench/`): the newest `stage2_ref_*.py` (currently **`stage2_ref_a10a.py`**,
+the calloc/free heap milestone) carries the codegen design plus an independent
 interpreter used as a test oracle, and `validate.py` pins structure and exit codes —
 nested loops, reassignment, all six comparisons, functions + call stack + recursion
 (argument passing, nested-call args, `fact`/`fib`/`pw`/`tri`, mutual recursion,

@@ -1083,9 +1083,28 @@ stage in the language of the stage below.
   field names in the table never as labels). Then **function pointers** (m48, A9:
   `int (*f)(...)` at every scope, a bare function name decaying to its entry address, and
   a call through the variable via `ldr x16`/`blr` — the `bl`-vs-`blr` split read off the
-  symbol tables, no `funcs` table needed). **The floor's type system is complete.** What
-  remains of the floor is the **`calloc`/`free` heap** and **file I/O** (`open`/`read`/
-  `write`/`close`) so a compiled program can run as a compiler. Then the plan (revised —
+  symbol tables, no `funcs` table needed). **The floor's type system is complete.** Then the
+  **`calloc`/`free` heap** (m51, A10: `calloc`/`free` lower to a direct `bl`, and a **bump
+  allocator over `brk`** — faithful to M2libc's `_malloc_brk` — is appended once at program
+  end for each builtin actually used, unless the user defines their own. `calloc(count,size)`
+  rounds the request up to 8 bytes, grows the OS break via syscall 214, and zero-fills;
+  `free` is a no-op for a batch compiler; the bump pointer `__mp` lives inline after the
+  routine in the R+W+X image. Emitted with **named labels** resolved by stage1, so the whole
+  runtime is size-independent — `bl calloc` reaches via ±128 MB and `adr __mp` is always
+  adjacent. Heap-allocated linked lists build and traverse correctly through struct-pointer-
+  parameter helpers — the shape M2-Planet uses for its token/AST lists. Two pre-existing
+  `.s1` decl-initializer bugs on the critical path to M2's `struct X* p = calloc(1,sizeof(…))`
+  idiom were fixed alongside: `compile_expr` clobbered the decl slot-offset `x14` across the
+  initializer (so `T r = <subscript/arrow>` stored to a garbage offset), and the struct-ptr
+  decl path over-consumed one token (so `struct X* p = <expr>` mis-parsed the initializer).)
+  **What remains of the floor is file I/O** (`open`/`read`/`write`/`close`) so a compiled
+  program can run as a compiler. *(Known deeper bug, cleanly characterized as the next
+  codegen rung: a function with **several struct-typed locals** mis-sizes its frame — e.g.
+  `struct N* p = a; … while(p){ s = s + p->v; p = p->nx; }` inside `main` with `a,b,c,s,p`
+  locals — so locals collide; the same traversal via a **helper taking `struct N* p`** is
+  correct. Minimal repro: a stack `while(p){ s=s+p->v; p=p->nx; }` in a many-local `main`
+  returns 0 instead of the sum. Present in the original `.s1`; unrelated to the heap.)* Then
+  the plan (revised —
   see below and `TARGET-SUBSET.md`): **(1) run a self-host TEST** to prove the mechanism
   (compile a compiler-shaped, file-reading program; ideally a toy fixpoint), **not** as a
   permanent rung; **(2) do NOT pivot to a stage-3-in-C** — instead keep growing **stage 2

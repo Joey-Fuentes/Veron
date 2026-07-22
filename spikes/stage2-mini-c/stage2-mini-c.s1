@@ -128,6 +128,23 @@ cmp x5 40
 b.eq fl_func
 b fl_global
 :fl_func
+adr x3 scalloc
+bl nameq
+cmp x0 0
+b.eq flf_ckf
+mov x0 1
+adr x3 udef_calloc
+str x0 x3
+b flf_ckd
+:flf_ckf
+adr x3 sfree
+bl nameq
+cmp x0 0
+b.eq flf_ckd
+mov x0 1
+adr x3 udef_free
+str x0 x3
+:flf_ckd
 bl emitlabel
 mov x8 0
 bl next_token
@@ -228,6 +245,7 @@ b poploop
 :popdone
 b stmtloop
 :alldone
+bl emit_runtime
 mov x1 61440
 movk x1 7 16
 add x1 x19 x1
@@ -621,7 +639,11 @@ bl next_token
 b stmtloop
 :di_init
 bl next_token
+str x14 x28
+add x28 x28 8
 bl compile_expr
+sub x28 x28 8
+ldr x14 x28
 adr x9 spop
 bl emitstr
 mov w13 x14
@@ -707,8 +729,11 @@ bl next_token
 b stmtloop
 :ds_init
 bl next_token
-bl next_token
+str x14 x28
+add x28 x28 8
 bl compile_expr
+sub x28 x28 8
+ldr x14 x28
 adr x9 spop
 bl emitstr
 mov w13 x14
@@ -1541,6 +1566,22 @@ bl emitstr
 bl copyspan
 adr x9 snl
 bl emitstr
+adr x3 scalloc
+bl nameq
+cmp x0 0
+b.eq ccu_ckf
+mov x0 1
+adr x3 used_calloc
+str x0 x3
+b cc_after
+:ccu_ckf
+adr x3 sfree
+bl nameq
+cmp x0 0
+b.eq cc_after
+mov x0 1
+adr x3 used_free
+str x0 x3
 b cc_after
 :cc_blr
 bl emitbase1
@@ -3123,6 +3164,57 @@ add x2 x2 1
 b cspl
 :cspdone
 ret
+:nameq
+mov x2 x18
+mov x4 0
+:nameq_l
+ldrb w5 x3 x4
+cmp x2 x6
+b.ge nameq_inend
+cmp x5 0
+b.eq nameq_no
+ldrb w7 x19 x2
+cmp x5 x7
+b.ne nameq_no
+add x2 x2 1
+add x4 x4 1
+b nameq_l
+:nameq_inend
+cmp x5 0
+b.ne nameq_no
+mov x0 1
+ret
+:nameq_no
+mov x0 0
+ret
+:emit_runtime
+str x30 x28
+add x28 x28 8
+adr x3 used_calloc
+ldr x0 x3
+cmp x0 0
+b.eq ert_free
+adr x3 udef_calloc
+ldr x0 x3
+cmp x0 0
+b.ne ert_free
+adr x9 scalloc_rt
+bl emitstr
+:ert_free
+adr x3 used_free
+ldr x0 x3
+cmp x0 0
+b.eq ert_done
+adr x3 udef_free
+ldr x0 x3
+cmp x0 0
+b.ne ert_done
+adr x9 sfree_rt
+bl emitstr
+:ert_done
+sub x28 x28 8
+ldr x30 x28
+ret
 :pos6
 mov x2 6
 add x4 x4 6
@@ -3245,6 +3337,54 @@ cmp x3 0
 b.ne ps_fp_skip
 add x12 x12 1
 b ps_l
+:used_calloc
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:used_free
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_calloc
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_free
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:scalloc
+.ascii "calloc"
+.byte 0
+:sfree
+.ascii "free"
+.byte 0
+:scalloc_rt
+.ascii ":calloc\nsub x9 x9 8\nldr x5 x9\nsub x9 x9 8\nldr x4 x9\nmul x4 x4 x5\nadd x4 x4 7\nmov x2 3\nlsr x4 x4 x2\nlsl x4 x4 x2\nadr x1 __mp\nldr x3 x1\ncmp x3 0\nb.ne __cc_have\nmov x0 0\nmov x8 214\nsvc\nmov x3 x0\n:__cc_have\nadd x4 x3 x4\nmov x0 x4\nmov x8 214\nsvc\nadr x1 __mp\nstr x4 x1\nmov x6 x3\n:__cc_zl\ncmp x6 x4\nb.ge __cc_zd\nmov x0 0\nstr x0 x6\nadd x6 x6 8\nb __cc_zl\n:__cc_zd\nstr x3 x9\nadd x9 x9 8\nret\n:__mp\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n"
+.byte 0
+:sfree_rt
+.ascii ":free\nsub x9 x9 8\nldr x0 x9\nmov x0 0\nstr x0 x9\nadd x9 x9 8\nret\n"
+.byte 0
 :smainpre
 .ascii "mov x0 0\nmov x8 214\nsvc\nmov x2 x0\nmov x9 x2\nmov x1 32768\nadd x11 x2 x1\nmov x1 0\nmovk x1 1 16\nadd x0 x2 x1\nmov x8 214\nsvc\nbl main\nsub x9 x9 8\nldr x0 x9\nmov x8 93\nsvc\n"
 .byte 0

@@ -866,6 +866,54 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 fnptr exit -> {want}", _exit(cs), want)
 
+    # ---- stage 2: heap — calloc / free (A10) ----------------------------------
+    # calloc/free are compiled as direct `bl calloc` / `bl free`; a bump allocator
+    # over brk is appended ONCE at program end, but only for the builtins actually
+    # used, and only when the user has not defined their own. calloc zero-fills and
+    # rounds the request up to 8 bytes; free is a no-op for a batch compiler. The
+    # bump pointer __mp lives inline after the routine (never executed). A user
+    # definition of calloc/free overrides the builtin (the builtin steps aside).
+    print("== stage 2 heap: calloc / free bump allocator over brk (A10) ==")
+    emcal = _emit("int main(){int* p=calloc(1,8); return 0;}")
+    check("stage2 calloc emits a direct call (bl calloc)", "bl calloc" in emcal, True)
+    check("stage2 calloc runtime routine is appended (:calloc)", ":calloc" in emcal, True)
+    check("stage2 calloc uses brk to grow the heap (mov x8 214)", "mov x8 214" in emcal, True)
+    check("stage2 bump pointer is emitted inline (:__mp)", ":__mp" in emcal, True)
+    check("stage2 unused free is NOT emitted (no :free)", ":free" in emcal, False)
+    emfree = _emit("int main(){int* p=calloc(1,8); free(p); return 0;}")
+    check("stage2 free runtime routine is appended (:free)", ":free" in emfree, True)
+    emnoheap = _emit("int main(){int a=5; return a;}")
+    check("stage2 heap runtime emitted ONLY when used (no :calloc)", ":calloc" in emnoheap, False)
+    emovr = _emit("int calloc(int a,int b){return 77;} int main(){return calloc(1,2);}")
+    check("stage2 user calloc overrides the builtin (one :calloc)", emovr.count(":calloc"), 1)
+    check("stage2 overridden builtin steps aside (no :__mp)", ":__mp" in emovr, False)
+    # behavioural exit codes: calloc returns distinct, zero-filled, 8-byte-rounded
+    # blocks that persist and grow the break; free is a safe no-op. The linked-list
+    # cases build nodes on the heap and traverse them through a helper that takes a
+    # struct-pointer parameter — the shape M2-Planet uses for its token/AST lists.
+    _P = "struct N{int v; struct N* nx;};"
+    _AL = (" struct N* a=calloc(1,sizeof(struct N)); struct N* b=calloc(1,sizeof(struct N));"
+           " struct N* c=calloc(1,sizeof(struct N)); a->v=1; a->nx=b; b->v=2; b->nx=c;"
+           " c->v=3; c->nx=0;")
+    for cs, want in [
+        ("int main(){int* p=calloc(4,8); p[0]=10; p[1]=20; return p[0]+p[1];}", 30),      # words persist
+        ("int main(){int* p=calloc(3,8); return p[0]+p[1]+p[2];}", 0),                     # zero-filled
+        ("int main(){char* s=calloc(10,1); s[0]=65; s[1]=66; return s[0]+s[1];}", 131),    # char buffer
+        ("int main(){int* a=calloc(2,8); int* b=calloc(2,8); a[0]=5; b[0]=7; return a[0]+b[0];}", 12),  # distinct blocks
+        ("int main(){int* p=calloc(3,8); p[2]=55; return p[2];}", 55),                     # count*size
+        ("int main(){int* p=calloc(1000,8); p[999]=123; return p[999];}", 123),            # large, far access
+        ("int main(){char* b=calloc(65536,1); b[65535]=7; return b[65535];}", 7),          # 64KB buffer
+        ("struct T{int k; int t; struct T* nx;}; int main(){struct T* t=calloc(1,sizeof(struct T)); t->k=40; t->t=2; return t->k+t->t;}", 42),  # M2 idiom: struct* p=calloc(1,sizeof)
+        ("int main(){int* p=calloc(2,8); p[0]=40; p[1]=2; int r=p[0]; int q=p[1]; return r+q;}", 42),  # decl-init from a heap read
+        ("int main(){int* p=calloc(1,8); p[0]=9; int r=p[0]; free(p); return r;}", 9),     # free is a safe no-op
+        ("int main(){int i=0; int last=0; while(i<50){int* p=calloc(1,8); p[0]=i+1; last=p[0]; i=i+1;} return last;}", 50),  # alloc in a loop
+        (_P+"int sm(struct N* p){int s; s=0; while(p){s=s+p->v; p=p->nx;} return s;} int main(){"+_AL+" return sm(a);}", 6),   # heap list, sum via helper
+        (_P+"int cnt(struct N* p){int n; n=0; while(p){n=n+1; p=p->nx;} return n;} int main(){"+_AL+" return cnt(a);}", 3),    # heap list, count via helper
+        (_P+"int lst(struct N* p){while(p->nx){p=p->nx;} return p->v;} int main(){"+_AL+" return lst(a);}", 3),                # heap list, last via helper
+        ("int calloc(int a, int b){return 77;} int main(){return calloc(1,2);}", 77),      # user override wins
+    ]:
+        check(f"stage2 heap exit -> {want}", _exit(cs), want)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)
