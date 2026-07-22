@@ -174,6 +174,50 @@ if os.path.exists(s1p):
     rc, _ = run(assemble(res.decode())[1])
     check("stage1 backward branch through 120-label program -> 5", rc, 5)
 
+print("== stage 1 resolves register-lookalike label/function names (m47) ==")
+# Pass 2 is MNEMONIC-DRIVEN, not spelling-driven. It already knows the mnemonic, so:
+#   b / bl / b.cond  -> the single operand is ALWAYS a label -> resolve it
+#   adr xR name      -> slot 1 is ALWAYS a register (copied verbatim), slot 2 a label
+#   br / blr         -> whole line passes through (register operand, never resolved)
+# So a function/label name is resolved by POSITION regardless of how it is spelled --
+# 'walk', 'w0helper', 'x9foo', even a label literally named 'x0' all resolve in a
+# branch's label slot, while 'x0' in a register slot stays untouched. This is how a
+# real assembler disambiguates (grammar + exact-match register set), and it means
+# stage 2 / M2-Planet may use the full C identifier space for function names.
+# (Pre-m47 the resolver sniffed the operand's first letters and misread any x/w-initial
+# name as a register, emitting e.g. 'bl walk @000000' which stage0-as rejects.)
+if os.path.exists(s1p):
+    _, s1prog, _ = assemble(open(s1p).read())
+    def _resolve(src):
+        _, r = run(s1prog, stdin=src.encode()); return r.decode()
+    def _rc(src):
+        rc, _ = run(assemble(_resolve(src))[1]); return rc
+    # register-lookalike function names must resolve to numeric refs and run.
+    for nm, val in (("walk", 41), ("w0helper", 42), ("x9foo", 43), ("write", 44), ("w1", 45)):
+        src = f"mov x0 0\nbl {nm}\nmov x8 93\nsvc\n:{nm}\nmov x0 {val}\nret\n"
+        r = _resolve(src)
+        check(f"stage1 resolves 'bl {nm}' (numeric, no unresolved 'bl {nm}')",
+              ("bl @" in r) and (f"bl {nm}" not in r), True)
+        check(f"stage1 '{nm}()' runs -> {val}", _rc(src), val)
+    # a label literally named 'x0' still resolves in a branch's LABEL slot,
+    # while 'x0' in a register slot (mov/adr-slot1) is untouched.
+    x0src = "mov x0 0\nbl x0\nmov x8 93\nsvc\n:x0\nmov x0 17\nret\n"
+    x0r = _resolve(x0src)
+    check("stage1 'bl x0' resolves (label slot), not left literal", "bl x0" in x0r, False)
+    check("stage1 'bl x0' -> numeric, runs -> 17", _rc(x0src), 17)
+    # adr: register slot kept verbatim, label slot resolved -- even a register-lookalike
+    # LABEL ('w0lbl') in the label slot resolves; the register 'x0' is untouched.
+    adr = "mov x9 0\nadr x0 w0lbl\nldrb w1 x0 x9\nmov x0 x1\nmov x8 93\nsvc\n:w0lbl\n.byte 33\n"
+    ar = _resolve(adr)
+    check("stage1 adr keeps register x0 verbatim", "adr x0 " in ar, True)
+    check("stage1 adr resolves register-lookalike label 'w0lbl'", "w0lbl" in ar, False)
+    check("stage1 'adr x0 w0lbl' runs -> 33", _rc(adr), 33)
+    # REGRESSION: plain data adr still resolves; blr register passes through untouched.
+    dadr = "mov x9 0\nadr x1 dat\nldrb w0 x1 x9\nmov x8 93\nsvc\n:dat\n.byte 42\n"
+    check("stage1 adr x1 dat still resolves+runs -> 42", _rc(dadr), 42)
+    blrp = "mov x0 0\nadr x5 tgt\nblr x5\nmov x8 93\nsvc\n:tgt\nmov x0 3\nret\n"
+    check("stage1 blr x5 passes through unchanged", "blr x5" in _resolve(blrp), True)
+
 print("== stage 2 uses WORD variable slots (through the real assembled ladder) ==")
 # Regression guard for the byte->word slot upgrade. Variables are 4-byte slots
 # loaded/stored with word ldr/str (not ldrb/strb). NOTE: with only + - * and a

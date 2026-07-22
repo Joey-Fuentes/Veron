@@ -879,6 +879,46 @@ sources onto this subset (self-hosting).
 
 ---
 
+**Milestone 47 — stage 1: resolve register-lookalike label/function names (grammar,
+not spelling).** A prerequisite for self-hosting, parked since m46. Stage 2 emits a
+user function verbatim as `:name` / `bl name`, and stage 1's pass-2 tokenizer decided
+whether a branch/`adr` operand was a register or a label by **sniffing its leading
+characters** — anything starting with `x`/`w` was taken for a register. That is right
+for `adr`'s real register operand but also caught ordinary names: `bl walk` was copied
+as if `walk` were a `w`-register and then a (missing) label resolved to position 0, so
+the output became `bl walk @000000`, which stage0-as rejects. Any function whose name
+began with `w`/`x` failed to link. The first cut narrowed the sniff to "`x`/`w` followed
+by a digit," but that is still a spelling heuristic and still has a hole — `w0helper`
+(a legal C identifier) would break exactly the same way. **Real assemblers never guess
+register-vs-identifier from spelling**; they use the instruction grammar (each operand
+slot accepts either a register or a symbol, not both) plus an exact-match register set.
+So m47 makes pass 2 **mnemonic-driven**: it already knows the mnemonic, so `b` / `bl` /
+`b.cond` treat their single operand as *always a label* and resolve it; `adr xR name`
+copies slot 1 *always as a register* (verbatim, whatever the token) and resolves slot 2
+as the label; `br` / `blr` pass through untouched. The register peek is deleted
+outright. Now a name is classified by **position**, so the full C identifier space
+works: `walk`, `w0helper`, `x9foo`, even a label literally named `x0` resolve in a
+branch's label slot, while `x0` in a register slot stays a register — the same spelling
+handled correctly in both roles. The change is two sites in `author_stage1.py`: route
+`adr` to a new `:p2adr` (copy-register-then-resolve-label) path, and reduce `:p2ref`
+(the `b`/`bl`/`b.cond` path) to copy-mnemonic-then-resolve; `p2reg`/the peek are gone,
+net one label (`p2adr` replaces `p2reg`). Regenerated to `stage1-as.s0` — not
+hand-edited. Because the Python reference resolves operands structurally it never had
+the bug (it was *more capable than reality* — the exact bench hazard the rules warn
+about), so this was verified **through the real assembled stage 1**: `bl walk` /
+`bl w0helper` / `bl x9foo` / `bl write` / `bl x0` all resolve to numeric refs and run;
+`adr x0 w0lbl` keeps the register and resolves the register-lookalike label (→33);
+`adr`-to-data (→42) and `blr` passthrough unchanged; and the whole stage-2 corpus,
+rebuilt through the fixed stage 1, is unchanged. `validate.py` 310→327 (a
+register-lookalike section: five function names, an `x0` label, `adr` register/label
+split, and adr/blr regressions). The stage1-as demo gains check (5): resolve
+`bl w0helper`, **byte-compare the assembled result against real `as`**, run to 42, and
+confirm `adr x0 w0lbl` keeps its register — a hardware anchor, not just a bench model.
+This clears the last cross-stage blocker before retargeting stage 2's own sources onto
+its C subset; self-hosted code (and M2-Planet's source) may use any C function names.
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each

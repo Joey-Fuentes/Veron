@@ -14,7 +14,10 @@ name: stage1-as-demo
 # BYTE-IDENTICAL to real `as` of the equivalent (numeric refs encode the same
 # offsets); (2) it RUNS correctly; (3) an adr+memory program with a multi-char
 # DATA label resolves numerically and runs; (4) a program with FAR more labels
-# than the old 88-slot pool (200) resolves to label-free numeric output and runs.
+# than the old 88-slot pool (200) resolves to label-free numeric output and runs;
+# (5) operand classification is by MNEMONIC not spelling: a register-lookalike
+# function name (bl w0helper) resolves as a label (byte-identical to real `as`) and
+# runs, and adr keeps its register operand verbatim while resolving its label. [m47]
 
 on:
   push:
@@ -91,6 +94,32 @@ jobs:
           set +e; qemu-aarch64 ./res.elf; res_rc=$?; set -e
           pool_ok=no; [ "$res_rc" = 200 ] && [ "$labelfree" = yes ] && [ "$numeric" = yes ] && pool_ok=yes
 
+          # --- 5) REGISTER-LOOKALIKE NAMES (m47): operand classification is by
+          # MNEMONIC, not spelling. 'bl w0helper' -> the operand is a LABEL (bl always
+          # takes a label), so it resolves; it is NOT misread as register 'w0'. (A
+          # spelling heuristic like "x/w + digit" would still break 'w0helper' -- the
+          # fix is grammar.) Resolve, byte-compare the assembled output against real
+          # `as` of the equivalent, and run (expect exit 42). Also check 'adr x0 lbl'
+          # still keeps its register operand verbatim.
+          printf 'mov x0 0\nbl w0helper\nmov x8 93\nsvc\n:w0helper\nmov x0 41\nadd x0 x0 1\nret\n' > wx.s1
+          cat wx.s1 | qemu-aarch64 ./stage1 > wx.resolved
+          echo "wx resolved:"; cat wx.resolved
+          wx_res_ok=no; { ! grep -q 'w0helper' wx.resolved && grep -q 'bl @' wx.resolved; } && wx_res_ok=yes
+          cat wx.resolved | qemu-aarch64 ./stage0-as > wx.bin
+          printf '.text\n.global _start\n_start:\n\tmov x0,#0\n\tbl w0helper\n\tmov x8,#93\n\tsvc #0\nw0helper:\n\tmov x0,#41\n\tadd x0,x0,#1\n\tret\n' > wx_ref.s
+          aarch64-linux-gnu-as -o wx_ref.o wx_ref.s
+          aarch64-linux-gnu-objcopy -O binary --only-section=.text wx_ref.o wx_ref.bin
+          wx_byte_ok=no; cmp -s wx.bin wx_ref.bin && wx_byte_ok=yes
+          cat wx.resolved | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf wx.elf
+          set +e; qemu-aarch64 ./wx.elf; wx_rc=$?; set -e
+          # adr keeps its register slot verbatim while resolving the label slot
+          printf 'mov x9 0\nadr x0 w0lbl\nldrb w1 x0 x9\nmov x0 x1\nmov x8 93\nsvc\n:w0lbl\n.byte 33\n' > wxadr.s1
+          cat wxadr.s1 | qemu-aarch64 ./stage1 > wxadr.resolved
+          wx_adr_ok=no; { grep -q 'adr x0 @' wxadr.resolved && ! grep -q 'w0lbl' wxadr.resolved; } && wx_adr_ok=yes
+          cat wxadr.resolved | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf wxadr.elf
+          set +e; qemu-aarch64 ./wxadr.elf; wxadr_rc=$?; set -e
+          wx_ok=no; [ "$wx_res_ok" = yes ] && [ "$wx_byte_ok" = yes ] && [ "$wx_rc" = 42 ] && [ "$wx_adr_ok" = yes ] && [ "$wxadr_rc" = 33 ] && wx_ok=yes
+
           echo "loop ours: $(hex loop.bin)"
           echo "loop ref : $(hex loop_ref.bin)"
           {
@@ -101,12 +130,13 @@ jobs:
             echo "adr+mem w/ multi-char data label exit: $mem_rc  (expect 9)"
             echo "large input (~${in_bytes}B) not truncated : $big_ok  (out=${out_bytes}B)"
             echo "200-label program (no pool) exit     : $res_rc  (expect 200, label-free=$labelfree numeric=$numeric)"
+            echo "register-lookalike name (bl w0helper): $wx_ok  (rc=$wx_rc/42 byte==as=$wx_byte_ok; adr x0 w0lbl rc=$wxadr_rc/33)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$loop_ok" = yes ] && [ "$loop_rc" = 7 ] && [ "$mem_rc" = 9 ] && [ "$big_ok" = yes ] && [ "$pool_ok" = yes ]; then
-            echo "PASS: stage1 resolves multi-char labels to LABEL-FREE numeric output (byte-identical to as), runs, handles large inputs, and resolves a 200-label program (no pool, no ceiling)."
+          if [ "$loop_ok" = yes ] && [ "$loop_rc" = 7 ] && [ "$mem_rc" = 9 ] && [ "$big_ok" = yes ] && [ "$pool_ok" = yes ] && [ "$wx_ok" = yes ]; then
+            echo "PASS: stage1 resolves multi-char labels to LABEL-FREE numeric output (byte-identical to as), runs, handles large inputs, resolves a 200-label program (no pool, no ceiling), and resolves register-lookalike function/label names by grammar (bl w0helper, adr x0 w0lbl)."
           else
-            echo "FAIL: loop_ok=$loop_ok loop_rc=$loop_rc mem_rc=$mem_rc big_ok=$big_ok res_ok=$pool_ok (res_rc=$res_rc labelfree=$labelfree numeric=$numeric)"
+            echo "FAIL: loop_ok=$loop_ok loop_rc=$loop_rc mem_rc=$mem_rc big_ok=$big_ok res_ok=$pool_ok (res_rc=$res_rc labelfree=$labelfree numeric=$numeric) wx_ok=$wx_ok (wx_rc=$wx_rc byte=$wx_byte_ok res=$wx_res_ok adr_ok=$wx_adr_ok adr_rc=$wxadr_rc)"
             exit 1
           fi

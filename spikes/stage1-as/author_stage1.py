@@ -129,7 +129,7 @@ b.ne p2copy
 add x3 x20 2
 ldrb w2 x19 x3
 cmp w2 114
-b.eq p2ref
+b.eq p2adr
 b p2copy
 :p2b
 add x2 x20 1
@@ -153,15 +153,13 @@ mov w0 32
 strb w0 x22 x23
 add x23 x23 1
 bl sksp
-cmp x20 x21
-b.ge p2reflab
-ldrb w0 x19 x20
-cmp w0 120
-b.eq p2reg
-cmp w0 119
-b.eq p2reg
 b p2reflab
-:p2reg
+:p2adr
+bl cptok
+mov w0 32
+strb w0 x22 x23
+add x23 x23 1
+bl sksp
 bl cptok
 mov w0 32
 strb w0 x22 x23

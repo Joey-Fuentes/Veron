@@ -34,6 +34,17 @@ number of labels a program may use is bounded only by memory.
   `read` loop fills inbuf until EOF. Buffers are large (input/output room plus
   name and position tables) so stage 1 can process big stage-2/3 sources while
   its own source stays small.
+- **Operand classification is by mnemonic, not spelling.** Pass 2 already knows the
+  mnemonic, so it never guesses register-vs-label from an operand's letters: `b` /
+  `bl` / `b.cond` have a single operand that is always a **label** (resolved); `adr xR
+  name` has a **register** in slot 1 (copied verbatim, whatever the token) and a
+  **label** in slot 2; `br` / `blr` (register operands) pass through untouched. So a
+  label or function name is resolved by its *position*, and may be spelled any way a C
+  identifier can — `walk`, `w0helper`, `x9foo`, even a label literally named `x0` all
+  resolve in a branch's label slot, while `x0` in a register slot stays a register.
+  This mirrors how a real assembler disambiguates (instruction grammar + an exact-match
+  register set), and it lets stage 2 / M2-Planet use the full C identifier space for
+  function names.
 - **Symbol table**: `:name` definitions are appended to a name buffer
   (null-terminated) with their positions in a parallel word array; lookups are a
   linear scan with an inline string compare. Definitions are recorded in pass 1,

@@ -16,6 +16,18 @@ stage-0-as's 128-entry symtab), stage 1 becomes a real assembler pass:
 
 Output is fully label-free stage-0-as assembly, so the 128-symtab is never in the
 path for stage-2/3 code.  Label count is bounded only by memory: no ceiling, ever.
+
+Operand classification is by MNEMONIC (grammar), not by spelling.  This reference
+resolves any 'BR name' whose name is a known label, and treats adr's slot-1 as a
+register and slot-2 as a label -- so names like 'walk' or 'w0helper' resolve
+correctly here.  The real stage-1 .s0 must match that grammar: b/bl/b.cond have a
+single operand that is ALWAYS a label; adr's first operand is ALWAYS a register
+(copied verbatim) and its second is a label; br/blr pass through.  It must NOT
+guess register-vs-label from the operand's leading characters.  (Pre-m47 it sniffed
+the first letters and misread any x/w-initial name as a register -- 'bl walk' became
+'bl walk @000000', rejected by stage0-as.  A spelling heuristic always has a hole:
+'w0helper' would still break a "first char x/w + digit" test.  The fix is grammar.)
+Test the real assembled .s0, not this reference, to catch that class of divergence.
 """
 BR = ('b','bl','b.eq','b.ne','b.lt','b.ge','b.gt','b.le','adr')
 
