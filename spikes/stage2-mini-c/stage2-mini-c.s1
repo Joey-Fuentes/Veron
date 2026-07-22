@@ -1599,12 +1599,169 @@ ret
 mov x27 x30
 adr x9 smovx0
 bl emitstr
-bl copyspan
-adr x9 spush
+bl parseval
+mov x2 65535
+and x0 x0 x2
+bl emitdec
+adr x9 snlonly
+bl emitstr
+bl parseval
+mov x7 16
+lsr x0 x0 x7
+mov x2 65535
+and x0 x0 x2
+cmp x0 0
+b.eq en_hw2
+adr x9 smovkx0
+bl emitstr
+bl parseval
+mov x7 16
+lsr x0 x0 x7
+mov x2 65535
+and x0 x0 x2
+bl emitdec
+adr x9 ss16
+bl emitstr
+:en_hw2
+bl parseval
+mov x7 32
+lsr x0 x0 x7
+mov x2 65535
+and x0 x0 x2
+cmp x0 0
+b.eq en_hw3
+adr x9 smovkx0
+bl emitstr
+bl parseval
+mov x7 32
+lsr x0 x0 x7
+mov x2 65535
+and x0 x0 x2
+bl emitdec
+adr x9 ss32
+bl emitstr
+:en_hw3
+bl parseval
+mov x7 48
+lsr x0 x0 x7
+mov x2 65535
+and x0 x0 x2
+cmp x0 0
+b.eq en_push
+adr x9 smovkx0
+bl emitstr
+bl parseval
+mov x7 48
+lsr x0 x0 x7
+mov x2 65535
+and x0 x0 x2
+bl emitdec
+adr x9 ss48
+bl emitstr
+:en_push
+adr x9 spushnl
 bl emitstr
 mov x2 0
 bl tpush
 mov x30 x27
+ret
+:parseval
+mov x0 0
+mov x3 x18
+:pv_l
+cmp x3 x6
+b.ge pv_d
+ldrb w4 x19 x3
+sub x4 x4 48
+mov x2 10
+mul x0 x0 x2
+add x0 x0 x4
+add x3 x3 1
+b pv_l
+:pv_d
+ret
+:emitdec
+mov x3 x0
+mov x4 0
+mov x5 0
+mov x2 10000
+:ed1_l
+cmp x3 x2
+b.lt ed1_d
+sub x3 x3 x2
+add x5 x5 1
+b ed1_l
+:ed1_d
+cmp x5 0
+b.ne ed1_e
+cmp x4 0
+b.eq ed1_s
+:ed1_e
+mov x4 1
+add x7 x5 48
+strb w7 x22 x23
+add x23 x23 1
+:ed1_s
+mov x5 0
+mov x2 1000
+:ed2_l
+cmp x3 x2
+b.lt ed2_d
+sub x3 x3 x2
+add x5 x5 1
+b ed2_l
+:ed2_d
+cmp x5 0
+b.ne ed2_e
+cmp x4 0
+b.eq ed2_s
+:ed2_e
+mov x4 1
+add x7 x5 48
+strb w7 x22 x23
+add x23 x23 1
+:ed2_s
+mov x5 0
+mov x2 100
+:ed3_l
+cmp x3 x2
+b.lt ed3_d
+sub x3 x3 x2
+add x5 x5 1
+b ed3_l
+:ed3_d
+cmp x5 0
+b.ne ed3_e
+cmp x4 0
+b.eq ed3_s
+:ed3_e
+mov x4 1
+add x7 x5 48
+strb w7 x22 x23
+add x23 x23 1
+:ed3_s
+mov x5 0
+mov x2 10
+:ed4_l
+cmp x3 x2
+b.lt ed4_d
+sub x3 x3 x2
+add x5 x5 1
+b ed4_l
+:ed4_d
+cmp x5 0
+b.ne ed4_e
+cmp x4 0
+b.eq ed4_s
+:ed4_e
+mov x4 1
+add x7 x5 48
+strb w7 x22 x23
+add x23 x23 1
+:ed4_s
+add x7 x3 48
+strb w7 x22 x23
+add x23 x23 1
 ret
 :emitstrlit
 mov x27 x30
@@ -3384,6 +3541,21 @@ b ps_l
 .byte 0
 :sfree_rt
 .ascii ":free\nsub x9 x9 8\nldr x0 x9\nmov x0 0\nstr x0 x9\nadd x9 x9 8\nret\n"
+.byte 0
+:smovkx0
+.ascii "movk x0 "
+.byte 0
+:ss16
+.ascii " 16\n"
+.byte 0
+:ss32
+.ascii " 32\n"
+.byte 0
+:ss48
+.ascii " 48\n"
+.byte 0
+:spushnl
+.ascii "str x0 x9\nadd x9 x9 8\n"
 .byte 0
 :smainpre
 .ascii "mov x0 0\nmov x8 214\nsvc\nmov x2 x0\nmov x9 x2\nmov x1 32768\nadd x11 x2 x1\nmov x1 0\nmovk x1 1 16\nadd x0 x2 x1\nmov x8 214\nsvc\nbl main\nsub x9 x9 8\nldr x0 x9\nmov x8 93\nsvc\n"

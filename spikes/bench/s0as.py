@@ -59,7 +59,17 @@ def encode(l, at, labels):
         d = _reg(p[1])
         if p[2][0] in 'xw':
             n=_reg(p[2]); return (0xAA0003E0|(n<<16)|d, ('mov_r',d,n))
-        imm=int(p[2]); return (0xD2800000|(imm<<5)|d, ('mov_i',d,imm))
+        imm=int(p[2])
+        # MOVZ carries a 16-bit immediate. Real stage0-as encodes `mov` the same way
+        # (0xD2800000|(imm<<5)|d), so an imm >= 2**16 silently overflows into the
+        # shift/opcode bits on hardware. Reject it here so the bench faults like
+        # reality instead of masking it — the compiler must materialise large
+        # constants as movz + movk halfwords.
+        if not 0 <= imm < 0x10000:
+            raise ValueError(
+                f'mov immediate {imm} does not fit a 16-bit MOVZ; '
+                f'emit `mov`+`movk` halfwords instead')
+        return (0xD2800000|(imm<<5)|d, ('mov_i',d,imm))
     if op=='movk':
         d=_reg(p[1]); imm=int(p[2]); hw=int(p[3])//16
         return (0xF2800000|(hw<<21)|((imm&0xffff)<<5)|d, ('movk',d,imm,hw*16))

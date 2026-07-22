@@ -498,6 +498,26 @@ jobs:
           try 'int add1(int n){return n+1;} int dbl(int n){return n*2;} int main(){int (*fp)(int); int acc; int i; acc=0; i=0; while(i<5){fp=add1; acc=fp(acc); fp=dbl; acc=fp(acc); i=i+1;} return acc;}'  62
           try 'int counter; int bump(){counter=counter+1; return counter;} int twice(int (*f)()){f(); f(); return counter;} int main(){counter=0; return twice(bump);}'  2
 
+          # ---- structural: large integer literals (>= 2^16) via movz + movk ----
+          # a bare `mov` is a 16-bit MOVZ; a literal >= 65536 is materialised as
+          # `mov x0 <lo16>` + a `movk x0 <hw> <shift>` per nonzero higher halfword.
+          # (This is the fix for the 256KB SIGSEGV: `mov x0 262143` overflowed the
+          # immediate into the shift field, giving movz #0xffff,lsl#48 -> wild addr.)
+          lit_ok=yes
+          printf '%s' 'int main(){return 262143;}' | qemu-aarch64 ./stage2 > big.s
+          grep -q 'mov x0 65535' big.s || { echo "biglit: MISSING low half (mov x0 65535)"; lit_ok=no; }
+          grep -q 'movk x0 3 16' big.s || { echo "biglit: MISSING high half (movk x0 3 16)"; lit_ok=no; }
+          printf '%s' 'int main(){return 999;}' | qemu-aarch64 ./stage2 > small.s
+          grep -q 'movk x0' small.s && { echo "biglit: small literal must NOT emit movk x0"; lit_ok=no; }
+
+          echo "== stage-2: large integer literals (>= 2^16) via movz + movk =="
+          try 'int main(){return 262143;}'                                 255
+          try 'int main(){return 262144;}'                                 0
+          try 'int main(){return 1000000;}'                                64
+          try 'int main(){return 70000 - 65536;}'                          112
+          try 'int main(){int a=100000; int b=3; return a*b/1000;}'        44
+          try 'int main(){int* p=calloc(100000,8); p[99999]=42; return p[99999];}'  42
+
           # ---- structural: heap — calloc/free lower to a direct `bl`, and a bump
           # allocator over a large anonymous `mmap` arena is appended ONCE at program
           # end for the builtins actually used (and only if the user did not define
@@ -554,7 +574,8 @@ jobs:
             echo "functions + call stack + recursion   : $fn_ok"
             echo "structs: sizeof + . / -> + chains    : $sm_ok"
             echo "function pointers: decay + blr call  : $fp_ok"
-            echo "heap: calloc/free bump alloc (brk)   : $heap_ok"
+            echo "large literals: movz + movk (>=2^16)  : $lit_ok"
+            echo "heap: calloc/free bump alloc (mmap)  : $heap_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
             echo "while(n){s=s+n;n=n-1;} sum 1..10     -> 55"
@@ -566,8 +587,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ]; then
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$lit_ok" = yes ]; then
             echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok lit=$lit_ok"; exit 1
           fi

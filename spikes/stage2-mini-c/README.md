@@ -147,6 +147,15 @@ int main(){ return name(2,3); }   // program is entered via bl main
   a function with **several struct-typed locals** still mis-sizes its frame, so a
   `struct N* p = a; while(p){ … p = p->nx; }` loop *inside a many-local `main`* corrupts —
   the same traversal via a helper taking `struct N* p` is correct.
+- **large integer literals (A11)**: a constant `>= 2^16` is materialised as `mov x<d> <lo16>`
+  plus a `movk x<d> <hw> <shift>` for each nonzero higher halfword (a bare `mov` is only a
+  16-bit MOVZ). Small literals still emit a single `mov`. This fixes a pre-existing bug the
+  heap's 64 KB/256 KB buffers exposed — the compiler emitted `mov x0 <n>` for any literal,
+  and on real hardware the immediate overflowed into the shift/opcode bits (`mov x0 262143`
+  became `movz #0xffff, lsl #48`, a wild address -> SIGSEGV); the Python bench hid it by
+  carrying the full value in its decoded op. `s0as` now **rejects** an out-of-range `mov` so
+  the bench faults like hardware, and a `qemu-mmap-probe` workflow byte-checks stage0-as
+  encodings against `as`. No stage-0 change was needed.
 
 ```
 int a=5; int b=a+1; return a*b;                         ->  exits 30

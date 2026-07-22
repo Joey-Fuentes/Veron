@@ -1107,7 +1107,17 @@ stage in the language of the stage below.
   locals — so locals collide; the same traversal via a **helper taking `struct N* p`** is
   correct. Minimal repro: a stack `while(p){ s=s+p->v; p=p->nx; }` in a many-local `main`
   returns 0 instead of the sum. Present in the original `.s1`; unrelated to the heap.)* Then
-  the plan (revised —
+  **large integer literals** (m52, A11: a constant `>= 2^16` is materialised as
+  `mov x<d> <lo16>` + a `movk x<d> <hw> <shift>` per nonzero higher halfword, since a bare
+  `mov` is only a 16-bit MOVZ). The heap's 64 KB/256 KB buffer tests surfaced this
+  pre-existing bug: the compiler emitted a single `mov x0 <n>` whose immediate overflowed
+  into the shift/opcode bits on real hardware (`mov x0 262143` became `movz #0xffff,lsl#48`
+  -> a wild address -> SIGSEGV), while the Python bench masked it by carrying the full value
+  in its decoded op. Fixed in the compiler (no stage-0 change): the literal emitter now
+  lowers each halfword; `s0as` was made faithful (it now **rejects** a `mov` immediate
+  `>= 2^16` so the bench faults like hardware), and the interp gained an `mmap` model. A
+  standalone `qemu-mmap-probe` workflow (raw brk/mmap syscalls + a stage0-as-vs-`as`
+  encoding byte-check) pinpointed this on the real CI host. Then the plan (revised —
   see below and `TARGET-SUBSET.md`): **(1) run a self-host TEST** to prove the mechanism
   (compile a compiler-shaped, file-reading program; ideally a toy fixpoint), **not** as a
   permanent rung; **(2) do NOT pivot to a stage-3-in-C** — instead keep growing **stage 2

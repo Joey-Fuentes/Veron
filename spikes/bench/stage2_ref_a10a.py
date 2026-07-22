@@ -450,8 +450,19 @@ def compile_expr(toks, pos, frame, funcs, em, stops):
                                                 # value's ptype (0=plain, else pointee size).
     def tpush(t): tstack.append(t)
 
+    def emit_imm(nstr):
+        # materialise a constant into x0 with a 16-bit MOVZ + MOVK halfwords, since a
+        # bare `mov` only carries 16 bits. `mov x0 <lo16>` zeroes the upper bits, then
+        # a `movk` per NONZERO higher halfword fills it in (zero halfwords are already
+        # cleared by the movz, so they're skipped).
+        v = int(nstr) & 0xFFFFFFFFFFFFFFFF
+        em.i(f"mov x0 {v & 0xffff}")
+        for hw in (1, 2, 3):
+            h = (v >> (16 * hw)) & 0xffff
+            if h: em.i(f"movk x0 {h} {16 * hw}")
+
     def push_num(nstr):
-        em.i(f"mov x0 {nstr}"); em.i("str x0 x9"); em.i("add x9 x9 8"); tpush(0)
+        emit_imm(nstr); em.i("str x0 x9"); em.i("add x9 x9 8"); tpush(0)
 
     def push_var(name):
         if _is_array(frame, name):              # array name decays to &a[0]

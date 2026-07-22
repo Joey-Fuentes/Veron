@@ -866,6 +866,31 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 fnptr exit -> {want}", _exit(cs), want)
 
+    # ---- stage 2: large integer literals (>= 2^16) via movz + movk halfwords ----
+    # a bare `mov` is a 16-bit MOVZ, so a literal >= 65536 must be materialised as
+    # `mov x0 <lo16>` + `movk x0 <hw> <shift>` per nonzero higher halfword. Before this
+    # fix the compiler emitted a single `mov x0 <n>` whose immediate overflowed into
+    # the shift/opcode bits on real hardware (the bench masked it by carrying the full
+    # value in its decoded op); s0as now rejects an out-of-range mov, so the class is
+    # caught, and these check the halfword lowering and the values it produces.
+    print("== stage 2 large integer literals: movz + movk materialisation ==")
+    embig = _emit("int main(){return 262143;}")
+    check("stage2 large literal low half (mov x0 65535)", "mov x0 65535" in embig, True)
+    check("stage2 large literal high half (movk x0 3 16)", "movk x0 3 16" in embig, True)
+    check("stage2 262144 high half (movk x0 4 16)", "movk x0 4 16" in _emit("int main(){return 262144;}"), True)
+    emsmall = _emit("int main(){return 999;}")
+    check("stage2 small literal stays one mov (mov x0 999)", "mov x0 999" in emsmall, True)
+    check("stage2 small literal emits no movk", "movk x0" in emsmall, False)
+    for cs, want in [
+        ("int main(){return 262143;}", 262143 & 255),
+        ("int main(){return 262144;}", 262144 & 255),
+        ("int main(){return 1000000;}", 1000000 & 255),
+        ("int main(){return 70000 - 65536;}", (70000 - 65536) & 255),
+        ("int main(){int a=100000; int b=3; return a*b/1000;}", (100000 * 3 // 1000) & 255),
+        ("int main(){int* p=calloc(100000,8); p[99999]=42; return p[99999];}", 42),
+    ]:
+        check(f"stage2 large-literal exit -> {want}", _exit(cs), want)
+
     # ---- stage 2: heap — calloc / free (A10) ----------------------------------
     # calloc/free are compiled as direct `bl calloc` / `bl free`; a bump allocator
     # over a large anonymous `mmap` arena is appended ONCE at program end, but only
