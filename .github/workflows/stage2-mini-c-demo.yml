@@ -401,6 +401,59 @@ jobs:
           try 'int ack(int m,int n){if(m){if(n){return ack(m-1,ack(m,n-1));} return ack(m-1,1);} return n+1;} int main(){return ack(2,3);}'  9
           try 'int compute(int count,int step){int total=count*step; return total+count;} int main(){return compute(6,4);}'  30
 
+          echo "== stage-2: structs — definitions, sizeof, . / -> member access, chains, params, globals (A8a) =="
+          # structural: sizeof(struct T) folds to the total byte size (one 8-byte word per
+          # field); a member access adds the field's byte offset to a base address then
+          # word/byte loads or stores; `->` (and a value base) reach the struct via the
+          # same offset add, with a pointer base derefed first (ldr x1 x1); struct globals
+          # get a :g_<name> data label sized to the struct. Field names live in a struct
+          # table (never emitted as labels) — the only labels are still :func names.
+          sm_ok=yes
+          printf '%s' 'struct P{int x;int y;};int main(){return sizeof(struct P);}' | qemu-aarch64 ./stage2 > sz.s
+          grep -q 'mov x0 0016' sz.s || { echo "sizeof(struct): MISSING size fold (mov x0 0016)"; sm_ok=no; }
+          printf '%s' 'struct P{int x;int y;};int main(){struct P p;p.x=3;p.y=5;return p.x;}' | qemu-aarch64 ./stage2 > mem.s
+          grep -q 'add x1 x1 0008' mem.s || { echo "member: MISSING 2nd-field offset add (add x1 x1 0008)"; sm_ok=no; }
+          grep -q 'add x1 x1 0000' mem.s || { echo "member: MISSING 1st-field offset add (add x1 x1 0000)"; sm_ok=no; }
+          [ "$(grep '^:' mem.s)" = ':main' ] || { echo "member: unexpected label (field names must not be labels)"; sm_ok=no; }
+          printf '%s' 'struct N{int v;struct N* nx;};int main(){struct N a;struct N* q;q=&a;q->v=7;return q->v;}' | qemu-aarch64 ./stage2 > arw.s
+          grep -q 'ldr x1 x1' arw.s || { echo "->: MISSING pointer-base deref (ldr x1 x1)"; sm_ok=no; }
+          printf '%s' 'struct P{int x;int y;};struct P g;int main(){g.x=1;return g.x;}' | qemu-aarch64 ./stage2 > gsr.s
+          grep -q ':g_g' gsr.s || { echo "struct global: MISSING :g_ data label"; sm_ok=no; }
+          grep -q 'adr x1 g_g' gsr.s || { echo "struct global: MISSING adr g_ base address"; sm_ok=no; }
+
+          echo "== stage-2: structs — behavioural (sizeof, . / -> get+set, char fields, chains, params, globals) =="
+          # sizeof folds to the packed word size; one 8-byte slot per field (int/char/ptr).
+          try 'struct P{int x;int y;};int main(){return sizeof(struct P);}'                                     16
+          try 'struct P{int x;int y;int z;};int main(){return sizeof(struct P);}'                               24
+          try 'struct C{char a;int b;};int main(){return sizeof(struct C);}'                                    16
+          try 'struct N{int v;struct N* nx;};int main(){return sizeof(struct N);}'                              16
+          try 'struct P{int x;int y;int z;};int main(){int n; n=sizeof(struct P)/sizeof(int); return n;}'       3
+          # value structs: '.' get/set, multiple fields, char fields, field-from-field, two locals.
+          try 'struct P{int x;int y;};int main(){struct P p; p.x=7; p.y=9; return p.x+p.y;}'                    16
+          try 'struct P{int x;int y;int z;};int main(){struct P p; p.x=1; p.y=2; p.z=3; return p.x+p.y+p.z;}'  6
+          try 'struct C{char a;int b;};int main(){struct C c; c.a=65; c.b=100; return c.a+c.b;}'               165
+          try 'struct P{int x;int y;};int main(){struct P p; p.x=5; p.y=p.x+10; return p.y;}'                  15
+          try 'struct P{int x;int y;};int main(){struct P p; p.x=10; struct P q; q.x=20; return p.x+q.x;}'     30
+          # pointers to structs: '->' get/set (a value base and a pointer base share codegen).
+          try 'struct P{int x;int y;};int main(){struct P p; struct P* q; q=&p; q->x=17; q->y=25; return p.x+p.y;}'  42
+          try 'struct P{int x;int y;};int main(){struct P p; p.y=7; struct P* q; q=&p; return q->y;}'          7
+          # chains: follow a pointer field, then read/write the next field (get and set).
+          try 'struct N{int v;struct N* nx;};int main(){struct N b; b.v=99; struct N a; a.nx=&b; return a.nx->v;}'  99
+          try 'struct N{int v;struct N* nx;};int main(){struct N b; struct N a; a.nx=&b; a.nx->v=77; return b.v;}'  77
+          try 'struct N{int v;struct N* nx;};int main(){struct N c; c.v=3; struct N b; b.nx=&c; struct N a; a.nx=&b; return a.nx->nx->v;}'  3
+          # &member: the address of a field is an ordinary lvalue address.
+          try 'struct P{int x;int y;};int main(){struct P p; p.x=8; int* q; q=&p.x; return *q;}'               8
+          # struct-pointer parameters + a real linked-list traversal with a while loop.
+          try 'struct P{int x;int y;};int gv(struct P* p){return p->x+p->y;} int main(){struct P p; p.x=10; p.y=20; return gv(&p);}'  30
+          try 'struct N{int v;struct N* nx;};int sm(struct N* p){int s; s=0; while(p){ s=s+p->v; p=p->nx; } return s;} int main(){struct N c; c.v=3; c.nx=0; struct N b; b.v=2; b.nx=&c; struct N a; a.v=1; a.nx=&b; return sm(&a);}'  6
+          try 'struct N{int v;struct N* nx;};int cnt(struct N* p){int n; n=0; while(p){ n=n+1; p=p->nx; } return n;} int main(){struct N c; c.nx=0; struct N b; b.nx=&c; struct N a; a.nx=&b; return cnt(&a);}'  3
+          try 'struct N{int v;struct N* nx;};int last(struct N* p){while(p->nx){ p=p->nx; } return p->v;} int main(){struct N c; c.v=7; c.nx=0; struct N b; b.nx=&c; struct N a; a.nx=&b; return last(&a);}'  7
+          # struct globals: value + pointer, member get/set, and a chain through globals.
+          try 'struct P{int x;int y;};struct P g; int main(){g.x=13; g.y=4; return g.x+g.y;}'                  17
+          try 'struct C{char a;int b;};struct C gc; int main(){gc.a=9; gc.b=33; return gc.a+gc.b;}'            42
+          try 'struct N{int v;struct N* nx;};struct N n; struct N* gp; int main(){n.v=42; gp=&n; return gp->v;}'  42
+          try 'struct N{int v;struct N* nx;};struct N a; struct N b; int main(){b.v=5; a.v=10; a.nx=&b; return a.nx->v;}'  5
+
           {
             echo "## stage2-mini-c — variables, if/while, reassignment, functions + recursion"
             echo '```'
@@ -411,6 +464,7 @@ jobs:
             echo "equality == != <= >= branchless      : $eq_ok"
             echo "pointer arithmetic scaled by pointee : $ptr_ok"
             echo "functions + call stack + recursion   : $fn_ok"
+            echo "structs: sizeof + . / -> + chains    : $sm_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
             echo "while(n){s=s+n;n=n-1;} sum 1..10     -> 55"
@@ -422,8 +476,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ]; then
-            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, and FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1); if/while branches are numeric; word ldr/str byte-correct."
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ]; then
+            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok"; exit 1
           fi

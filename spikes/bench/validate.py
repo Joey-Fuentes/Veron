@@ -712,6 +712,45 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 non-pointer arithmetic unaffected -> {want}", _exit(cs), want)
 
+    # ---- structs (m46 / A8a): definitions in a struct table, sizeof(struct T),
+    # value + pointer locals/params/globals, . and -> member get/set incl. chains ----
+    # Structural: sizeof folds to the packed word size; a member access adds the field
+    # byte offset to a base then word/byte loads/stores; struct field names live in the
+    # struct table and are NEVER emitted as labels (only :func names are).
+    emsz = _emit("struct P{int x;int y;};int main(){return sizeof(struct P);}")
+    check("stage2 sizeof(struct P) folds to 16 (mov x0 0016)", "mov x0 0016" in emsz, True)
+    emmm = _emit("struct P{int x;int y;};int main(){struct P p;p.x=3;p.y=5;return p.x;}")
+    check("stage2 member add 1st-field offset (add x1 x1 0000)", "add x1 x1 0000" in emmm, True)
+    check("stage2 member add 2nd-field offset (add x1 x1 0008)", "add x1 x1 0008" in emmm, True)
+    check("stage2 struct field names are not labels (only :main)",
+          [l for l in emmm.splitlines() if l.startswith(":")], [":main"])
+    emar = _emit("struct N{int v;struct N* nx;};int main(){struct N a;struct N* q;q=&a;q->v=7;return q->v;}")
+    check("stage2 -> derefs a pointer base (ldr x1 x1)", "ldr x1 x1" in emar, True)
+    emgs = _emit("struct P{int x;int y;};struct P g;int main(){g.x=1;return g.x;}")
+    check("stage2 struct global gets a :g_ data label", ":g_g" in emgs, True)
+    # Behavioural: real assembled ladder (prog.c | stage2 | stage1 | stage0-as).
+    for cs, want in [
+        ("struct P{int x;int y;};int main(){return sizeof(struct P);}", 16),
+        ("struct P{int x;int y;int z;};int main(){return sizeof(struct P);}", 24),
+        ("struct C{char a;int b;};int main(){return sizeof(struct C);}", 16),
+        ("struct P{int x;int y;int z;};int main(){int n;n=sizeof(struct P)/sizeof(int);return n;}", 3),
+        ("struct P{int x;int y;};int main(){struct P p;p.x=7;p.y=9;return p.x+p.y;}", 16),
+        ("struct C{char a;int b;};int main(){struct C c;c.a=65;c.b=100;return c.a+c.b;}", 165),
+        ("struct P{int x;int y;};int main(){struct P p;p.x=5;p.y=p.x+10;return p.y;}", 15),
+        ("struct P{int x;int y;};int main(){struct P p;struct P* q;q=&p;q->x=17;q->y=25;return p.x+p.y;}", 42),
+        ("struct N{int v;struct N* nx;};int main(){struct N b;b.v=99;struct N a;a.nx=&b;return a.nx->v;}", 99),
+        ("struct N{int v;struct N* nx;};int main(){struct N b;struct N a;a.nx=&b;a.nx->v=77;return b.v;}", 77),
+        ("struct N{int v;struct N* nx;};int main(){struct N c;c.v=3;struct N b;b.nx=&c;struct N a;a.nx=&b;return a.nx->nx->v;}", 3),
+        ("struct P{int x;int y;};int main(){struct P p;p.x=8;int* q;q=&p.x;return *q;}", 8),
+        ("struct P{int x;int y;};int gv(struct P* p){return p->x+p->y;} int main(){struct P p;p.x=10;p.y=20;return gv(&p);}", 30),
+        ("struct N{int v;struct N* nx;};int sm(struct N* p){int s;s=0;while(p){s=s+p->v;p=p->nx;}return s;} int main(){struct N c;c.v=3;c.nx=0;struct N b;b.v=2;b.nx=&c;struct N a;a.v=1;a.nx=&b;return sm(&a);}", 6),
+        ("struct N{int v;struct N* nx;};int last(struct N* p){while(p->nx){p=p->nx;}return p->v;} int main(){struct N c;c.v=7;c.nx=0;struct N b;b.nx=&c;struct N a;a.nx=&b;return last(&a);}", 7),
+        ("struct P{int x;int y;};struct P g;int main(){g.x=13;g.y=4;return g.x+g.y;}", 17),
+        ("struct N{int v;struct N* nx;};struct N n;struct N* gp;int main(){n.v=42;gp=&n;return gp->v;}", 42),
+        ("struct N{int v;struct N* nx;};struct N a;struct N b;int main(){b.v=5;a.v=10;a.nx=&b;return a.nx->v;}", 5),
+    ]:
+        check(f"stage2 struct exit -> {want}", _exit(cs), want)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)

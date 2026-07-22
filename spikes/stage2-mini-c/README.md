@@ -103,6 +103,18 @@ int main(){ return name(2,3); }   // program is entered via bl main
   iterative with an explicit *block stack*; the **expression** compiler, by
   contrast, is now **re-entrant** (it parks its return address + opstack base on a
   small compiler-side stack) so a call's argument expressions can nest and recurse.
+- **structs (A8a)**: `struct Tag { ... };` definitions, `sizeof(struct Tag)`, struct
+  value and pointer variables as locals, parameters, and file-scope globals, and `.` /
+  `->` member access as rvalue **and** lvalue — including multi-link chains
+  (`a.nx->nx->v`), `&member`, and linked-list traversal. Layout is flat: **one 8-byte
+  word per field** (int / char / `T*` / `struct Tag*`), offset `field_index*8`, so
+  `sizeof` is `nfields*8` and a member is `base + offset` — reusing the array-subscript
+  address machinery. A **struct table** (tags + fields, kept in stage-1 memory beside the
+  symbol table) resolves field names, so **field names are never emitted as labels** —
+  the only labels a program carries are still `:func` names. `.` and `->` share codegen;
+  the base *kind* decides deref (value → `&name`; pointer → `ldr x1 x1` first) and chain
+  links follow pointers. Out of subset: nested struct-value fields, struct arrays,
+  struct-pointer arithmetic scaling, member-subscript, and pass-by-value struct args.
 
 ```
 int a=5; int b=a+1; return a*b;                         ->  exits 30
@@ -184,8 +196,11 @@ interpreter used as a test oracle, and `validate.py` pins structure and exit cod
 nested loops, reassignment, all six comparisons, functions + call stack + recursion
 (argument passing, nested-call args, `fact`/`fib`/`pw`/`tri`, mutual recursion,
 Ackermann), pointers/`char`/arrays, string literals + a data section, globals, the
-full operator set, `if`/`else`, and now **general pointer-arithmetic scaling** (A7a:
-`p + n` / `p - n` scaled by the pointee size, `p - q` by the element size; **286 checks**). CI (real `as` + QEMU) is ground truth: the
+full operator set, `if`/`else`, **general pointer-arithmetic scaling** (A7a:
+`p + n` / `p - n` scaled by the pointee size, `p - q` by the element size), and now
+**`struct`** (A8a: definitions, `sizeof`, value/pointer structs at every scope, `.`/`->`
+member get/set incl. chains, `&member`, linked lists). Pinned in `validate.py`; CI
+(real `as` + QEMU) is ground truth — the
 `stage2-mini-c-demo` workflow rebuilds the compiler and runs compiled programs
 through `stage2 | stage1 | stage0-as | elf`, checking both the emitted instruction
 forms (`:func` labels, prologue/epilogue, frame-relative vars, numeric if/while,

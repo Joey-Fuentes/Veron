@@ -836,6 +836,47 @@ Next: `struct` — the gate to self-hosting.
 
 ---
 
+**Milestone 46 — stage 2: `struct` (A8a).** The self-hosting gate. Stage 2 now
+compiles `struct Tag { ... };` definitions, `sizeof(struct Tag)`, struct value and
+pointer variables at all three scopes (locals, parameters, file-scope globals), and
+`.` / `->` member access as both rvalue and lvalue — including multi-link chains
+(`a.nx->nx->v`), `&member`, and the linked-list traversal that motivates the whole
+feature. The layout is deliberately flat: **one 8-byte word per field** (int, char,
+`T*`, or `struct Tag*`), offset `= field_index * 8`, so `sizeof` is `nfields * 8` and
+a member address is `base + offset` — the same shape as an array subscript, reusing
+the value-stack and address-emit machinery already in place. A **struct table** (tags
++ fields, each with name, offset, and a `stag` back-reference for pointer fields) lives
+in stage-1 memory alongside the symbol table; **field names are looked up in that table
+and never emitted as labels**, so the only labels an emitted program carries are still
+`:func` names. `.` and `->` are treated identically at codegen — correctness comes from
+the *base kind* (a value base takes `&name`; a pointer base is derefed first) plus
+following pointer links along a chain — so `p.f` and `p->f` differ only in whether the
+first `ldr x1 x1` is emitted. The shared `emit_maddr` walk leaves the field address in
+`x1`; the rvalue path loads+pushes (word or `ldrb` for char fields) and pushes the
+member ptype, while the lvalue path pushes the address, compiles the RHS, then pops
+value+address and stores. Four register hazards paid for this: `prescan` saves the scan
+cursor in `x7`, so `struct_findtag`/`field_find` had to grow `x7` to their spill sets
+(they used it as the table base); `prescan`'s dormant `ps_struct` hook needed a real
+definition (it had resolved to position 0 and jumped wild the moment `struct` became a
+keyword); byte stores need the 3-operand `strb w0 x1 x2` form; and `emit_gdata` reuses
+`x27` as its return-save, so a struct global's `stag` must be stored *before* the data
+section is emitted. The reference (`stage2_ref_a8a.py`) models the identical struct
+table + flat layout and is the design of record. Verified through the assembled ladder:
+`sizeof` (folds, and `sizeof(struct P)/sizeof(int)`), value `.` get/set (int + char
+fields, multiple locals, field-from-field), pointer `->` get/set, two- and three-link
+chains (get and set), `&p.x`, struct-pointer parameters, a `while(p)` linked-list sum /
+count / find-last, and struct value/pointer/char globals with member access and chains
+— plus the full pre-existing corpus unchanged. `validate.py` grew a struct section
+(structural offset/`sizeof`/`:g_`/no-field-labels checks + a behavioural exit sweep) and
+the demo workflow gains the matching structural block, a 24-program behavioural sweep,
+and an `sm_ok` gate. Known limits kept honest: nested struct-*value* fields, struct
+arrays, struct-pointer arithmetic scaling, member-subscript (`s.arr[i]`), and pass-by-
+value struct arguments are all outside the subset; and a pre-existing **stage-1**
+lexical quirk (labels beginning with a register prefix, e.g. a function named `walk`,
+are misread as `w`-registers) means self-hosting code must avoid such names — a stage-1
+fix for a later rung, not a struct concern. Next: begin retargeting stage 2's own
+sources onto this subset (self-hosting).
+
 ---
 
 ## 6. What's next
@@ -885,8 +926,11 @@ stage in the language of the stage below.
   pointer arithmetic** (m45, A7a: `p + n` / `n + p` / `p - n` scale the int operand by the
   pointee size and `p - q` divides by the element size — the first per-operand type
   threaded through the expression compiler, via an `is_ptr` symtab flag + a compile-time
-  type stack). Next: `struct` — the M2-Planet subset and the gate to self-hosting.
-  See **`stage2-mini-c/TARGET-SUBSET.md`**.
+  type stack). Then **`struct`** (m46, A8a: `struct Tag{...}` definitions + a struct
+  table, `sizeof(struct T)`, value/pointer structs at all scopes, `.`/`->` member
+  get/set incl. chains, `&member`, linked-list traversal — one 8-byte word per field,
+  field names in the table never as labels). Next: begin **self-hosting** — retarget
+  stage 2's own sources onto this subset. See **`stage2-mini-c/TARGET-SUBSET.md`**.
 - **Stage 3** — a compiler written in stage-2's C, once stage 2 clears the floor.
 - **Hand-off**: the concrete finish line is compiling **M2-Planet's own source**
   (pinned at `34fbd5c…`, vendored read-only at `spikes/reference/`) into a working
