@@ -128,13 +128,16 @@ int main(){ return name(2,3); }   // program is entered via bl main
   drives decay. Out of subset: fnptr **arithmetic** (a code address is never scaled) and
   fnptr-returning functions.
 - **heap: `calloc`/`free` (A10)**: `calloc`/`free` lower to a direct `bl calloc`/`bl free`,
-  and a **bump allocator over `brk`** — faithful to M2libc's `_malloc_brk` — is appended
-  **once** at program end for each builtin actually used, unless the user defines their own
-  (then their definition wins and the builtin steps aside). `calloc(count,size)` rounds
-  `count*size` up to 8 bytes, lazily inits a persistent bump pointer via `brk(0)`, grows the
-  OS break (syscall **214**), zero-fills the block, and returns it; distinct calls return
-  distinct, persistent blocks. `free` is a no-op (correct for a batch compiler). The runtime
-  uses **named labels** (`:calloc`, `:__cc_*`, `:__mp`, `:free`) resolved by stage1 like any
+  and a **bump allocator over a large anonymous `mmap` arena** is appended **once** at program
+  end for each builtin actually used, unless the user defines their own (then their definition
+  wins and the builtin steps aside). `calloc(count,size)` rounds `count*size` up to 8 bytes,
+  lazily `mmap`s the arena on first use (syscall **222**, `MAP_ANONYMOUS` → kernel-zeroed), and
+  bump-allocates from it; distinct calls return distinct, persistent blocks, and because
+  allocation is bump-only and never reused, every block is still pristine zero (no zero-fill
+  loop). `mmap` — not `brk` — because qemu-user's brk region is small (a 64 KB `brk`-grown
+  `calloc` segfaults on real hardware; the dev bench gained an `mmap`/lazy-paging model so it
+  witnesses the difference). `free` is a no-op (correct for a batch compiler). The runtime
+  uses **named labels** (`:calloc`, `:__cc_have`, `:__mp`, `:free`) resolved by stage1 like any
   function, so it is size-independent (`bl calloc` reaches via ±128 MB; `adr __mp` is always
   adjacent to the routine, which lives inline in the R+W+X image, never executed). This is
   the shape M2-Planet allocates with (`struct X* p = calloc(1, sizeof(struct X))`, walked via

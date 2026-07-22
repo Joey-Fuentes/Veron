@@ -1085,13 +1085,16 @@ stage in the language of the stage below.
   a call through the variable via `ldr x16`/`blr` — the `bl`-vs-`blr` split read off the
   symbol tables, no `funcs` table needed). **The floor's type system is complete.** Then the
   **`calloc`/`free` heap** (m51, A10: `calloc`/`free` lower to a direct `bl`, and a **bump
-  allocator over `brk`** — faithful to M2libc's `_malloc_brk` — is appended once at program
-  end for each builtin actually used, unless the user defines their own. `calloc(count,size)`
-  rounds the request up to 8 bytes, grows the OS break via syscall 214, and zero-fills;
-  `free` is a no-op for a batch compiler; the bump pointer `__mp` lives inline after the
-  routine in the R+W+X image. Emitted with **named labels** resolved by stage1, so the whole
-  runtime is size-independent — `bl calloc` reaches via ±128 MB and `adr __mp` is always
-  adjacent. Heap-allocated linked lists build and traverse correctly through struct-pointer-
+  allocator over a large anonymous `mmap` arena** is appended once at program end for each
+  builtin actually used, unless the user defines their own. `calloc(count,size)` rounds the
+  request up to 8 bytes and bump-allocates from the arena; the arena is `MAP_ANONYMOUS`, so
+  the kernel zero-fills it and bump-only allocation (never reused) keeps every block pristine
+  zero — no explicit zero-fill, and no dependence on qemu-user's small `brk` region (which
+  segfaulted a 64 KB `calloc` — the interp gained an `mmap`/lazy-paging model so the bench
+  witnesses this). `free` is a no-op for a batch compiler; the bump pointer `__mp` lives
+  inline after the routine in the R+W+X image. Emitted with **named labels** resolved by
+  stage1, so the whole runtime is size-independent — `bl calloc` reaches via ±128 MB and
+  `adr __mp` is always adjacent. Heap-allocated linked lists build and traverse correctly through struct-pointer-
   parameter helpers — the shape M2-Planet uses for its token/AST lists. Two pre-existing
   `.s1` decl-initializer bugs on the critical path to M2's `struct X* p = calloc(1,sizeof(…))`
   idiom were fixed alongside: `compile_expr` clobbered the decl slot-offset `x14` across the

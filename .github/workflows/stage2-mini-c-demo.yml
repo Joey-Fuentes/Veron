@@ -499,15 +499,17 @@ jobs:
           try 'int counter; int bump(){counter=counter+1; return counter;} int twice(int (*f)()){f(); f(); return counter;} int main(){counter=0; return twice(bump);}'  2
 
           # ---- structural: heap — calloc/free lower to a direct `bl`, and a bump
-          # allocator over brk is appended ONCE at program end for the builtins that
-          # are actually used (and only if the user did not define their own). calloc
-          # grows the OS break (syscall 214) and zero-fills; the bump pointer __mp is
-          # emitted inline after the routine. A user definition overrides the builtin. ----
+          # allocator over a large anonymous `mmap` arena is appended ONCE at program
+          # end for the builtins actually used (and only if the user did not define
+          # their own). calloc maps the arena via mmap (syscall 222; MAP_ANONYMOUS, so
+          # kernel-zeroed) and bump-allocates; the bump pointer __mp is emitted inline
+          # after the routine. mmap (not brk) because qemu-user's brk region is small.
+          # A user definition overrides the builtin. ----
           heap_ok=yes
           printf '%s' 'int main(){int* p=calloc(1,8); return 0;}' | qemu-aarch64 ./stage2 > heap.s
           grep -q 'bl calloc'  heap.s || { echo "heap: MISSING direct call (bl calloc)"; heap_ok=no; }
           grep -q '^:calloc'   heap.s || { echo "heap: MISSING calloc runtime routine (:calloc)"; heap_ok=no; }
-          grep -q 'mov x8 214' heap.s || { echo "heap: MISSING brk syscall (mov x8 214)"; heap_ok=no; }
+          grep -q 'mov x8 222' heap.s || { echo "heap: MISSING mmap syscall (mov x8 222)"; heap_ok=no; }
           grep -q '^:__mp'     heap.s || { echo "heap: MISSING inline bump pointer (:__mp)"; heap_ok=no; }
           grep -q '^:free'     heap.s && { echo "heap: UNEXPECTED :free (free unused here)"; heap_ok=no; }
           printf '%s' 'int main(){int* p=calloc(1,8); free(p); return 0;}' | qemu-aarch64 ./stage2 > heapf.s
@@ -518,11 +520,12 @@ jobs:
           [ "$(grep -c '^:calloc' heapo.s)" = 1 ] || { echo "heap: user override did not suppress the builtin"; heap_ok=no; }
           grep -q '^:__mp'     heapo.s && { echo "heap: overridden builtin still emitted __mp"; heap_ok=no; }
 
-          echo "== stage-2: heap — calloc / free bump allocator over brk (A10) =="
-          # calloc(count,size) returns a distinct, zero-filled, 8-byte-rounded block
-          # that persists and grows the break; free is a safe no-op (batch compiler).
-          # The linked-list cases build nodes on the heap and walk them through a helper
-          # taking a struct-pointer parameter — the shape M2-Planet uses for its lists.
+          echo "== stage-2: heap — calloc / free bump allocator over an mmap arena (A10) =="
+          # calloc(count,size) returns a distinct, zero-filled, 8-byte-rounded block from
+          # a large anonymous mmap arena that persists; free is a safe no-op. The 64KB and
+          # 256KB buffers exceed qemu-user's small brk region — they prove the arena is
+          # mmap-backed, not brk-grown. The linked-list cases build nodes on the heap and
+          # walk them through a helper taking a struct-pointer parameter (the M2 shape).
           try 'int main(){int* p=calloc(4,8); p[0]=10; p[1]=20; return p[0]+p[1];}'                    30
           try 'int main(){int* p=calloc(3,8); return p[0]+p[1]+p[2];}'                                 0
           try 'int main(){char* s=calloc(10,1); s[0]=65; s[1]=66; return s[0]+s[1];}'                  131
@@ -530,6 +533,7 @@ jobs:
           try 'int main(){int* p=calloc(3,8); p[2]=55; return p[2];}'                                  55
           try 'int main(){int* p=calloc(1000,8); p[999]=123; return p[999];}'                          123
           try 'int main(){char* b=calloc(65536,1); b[65535]=7; return b[65535];}'                      7
+          try 'int main(){char* b=calloc(262144,1); b[262143]=9; return b[262143];}'                   9
           try 'struct T{int k; int t; struct T* nx;}; int main(){struct T* t=calloc(1,sizeof(struct T)); t->k=40; t->t=2; return t->k+t->t;}'  42
           try 'int main(){int* p=calloc(2,8); p[0]=40; p[1]=2; int r=p[0]; int q=p[1]; return r+q;}'   42
           try 'int main(){int* p=calloc(1,8); p[0]=9; int r=p[0]; free(p); return r;}'                 9
@@ -563,7 +567,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ]; then
-            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over brk appended once per used builtin: calloc returns distinct zero-filled 8-byte-rounded blocks that persist and grow the break, free is a no-op, a user definition overrides the builtin, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct."
+            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct."
           else
             echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok"; exit 1
           fi

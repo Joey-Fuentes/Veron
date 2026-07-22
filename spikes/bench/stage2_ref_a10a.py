@@ -829,40 +829,43 @@ def compile_function(em, fname, params, body, funcs):
 # preserved, matching what any `bl`-called function is allowed to clobber.
 # ---------------------------------------------------------------------------
 def emit_calloc(em):
-    # bump allocator over brk, faithful to M2libc's `_malloc_brk` + `calloc`:
-    #   bytes = round8(count*size); if __mp==0: __mp = brk(0);  (lazy init)
-    #   result = __mp; __mp = brk(result + bytes);  zero-fill [result,__mp);  return result
-    # __mp is a persistent single-word bump pointer, emitted inline after the routine
-    # (never executed; the R+W+X segment makes in-image data writable). Internal
-    # control flow uses NAMED labels (resolved by stage1, exactly like function
-    # labels), `__cc*`-prefixed to avoid clashing with user function names. Only
-    # x0..x6,x8 are touched; x9/x10/x11 (value stack / frame / frame-top) preserved.
+    # bump allocator over a single large anonymous mmap arena. The FIRST calloc
+    # lazily maps the arena (MAP_ANONYMOUS, so it is zero-filled by the kernel);
+    # every calloc then bumps a pointer through it and returns the old top. Because
+    # allocation is bump-only and never reuses memory, each block is still pristine
+    # zero — no explicit zero-fill needed, and no dependence on the (small, in
+    # qemu-user) brk region. bytes are rounded up to 8. __mp is the bump pointer,
+    # emitted inline after the routine (never executed). Only x0..x6,x8 are touched
+    # (x6 carries the rounded size across the mmap call); x9/x10/x11 preserved.
+    # Named labels are resolved by stage1, so the .s1 port is byte-identical.
     em.lbl("calloc")
     for s in (
         "sub x9 x9 8", "ldr x5 x9",                 # x5 = size (top)
         "sub x9 x9 8", "ldr x4 x9",                 # x4 = count
-        "mul x4 x4 x5",                             # x4 = count*size (bytes)
-        "add x4 x4 7", "mov x2 3", "lsr x4 x4 x2", "lsl x4 x4 x2",  # round up to 8
-        "adr x1 __mp", "ldr x3 x1",                 # x3 = __mp
-        "cmp x3 0", "b.ne __cc_have",               # lazy-init the bump pointer once
-        "mov x0 0", "mov x8 214", "svc",            # brk(0) -> current break
-        "mov x3 x0"):
+        "mul x6 x4 x5",                             # x6 = count*size (bytes) — survives mmap
+        "add x6 x6 7", "mov x2 3", "lsr x6 x6 x2", "lsl x6 x6 x2",  # round up to 8
+        "adr x1 __mp", "ldr x3 x1",                 # x3 = __mp (0 until the arena is mapped)
+        "cmp x3 0", "b.ne __cc_have"):              # arena already mapped -> just bump
+        em.i(s)
+    # lazy: mmap(0, 256 MB, PROT_READ|PROT_WRITE=3, MAP_PRIVATE|MAP_ANONYMOUS=0x22, -1, 0)
+    for s in (
+        "mov x0 0",                                 # addr = 0 (kernel chooses)
+        "mov x1 0", "movk x1 4096 16",              # length = 4096<<16 = 0x10000000 (256 MB)
+        "mov x2 3",                                 # prot  = READ|WRITE
+        "mov x3 34",                                # flags = MAP_PRIVATE|MAP_ANONYMOUS (0x22)
+        "mov x4 0", "sub x4 x4 1",                  # fd    = -1
+        "mov x5 0",                                 # offset= 0
+        "mov x8 222", "svc",                        # __NR_mmap -> x0 = arena base
+        "mov x3 x0"):                               # x3 = arena base = initial __mp
         em.i(s)
     em.lbl("__cc_have")
     for s in (
-        "add x4 x3 x4",                             # x4 = newbrk = result + bytes
-        "mov x0 x4", "mov x8 214", "svc",           # brk(newbrk) -> grow the OS break
-        "adr x1 __mp", "str x4 x1",                 # __mp = newbrk
-        "mov x6 x3"):                               # cur = result
+        "add x4 x3 x6",                             # x4 = new bump = __mp + bytes
+        "adr x1 __mp", "str x4 x1",                 # __mp = new bump
+        "str x3 x9", "add x9 x9 8",                 # push result (old __mp)
+        "ret"):
         em.i(s)
-    em.lbl("__cc_zl")
-    for s in ("cmp x6 x4", "b.ge __cc_zd",          # while cur < newbrk:
-              "mov x0 0", "str x0 x6", "add x6 x6 8", "b __cc_zl"):   # *cur = 0; cur += 8
-        em.i(s)
-    em.lbl("__cc_zd")
-    for s in ("str x3 x9", "add x9 x9 8", "ret"):   # push result, return
-        em.i(s)
-    em.lbl("__mp")                                  # bump pointer (0 = uninitialised)
+    em.lbl("__mp")                                  # bump pointer (0 = arena not yet mapped)
     for _ in range(8): em.i(".byte 0")
 
 def emit_free(em):

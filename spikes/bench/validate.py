@@ -868,16 +868,19 @@ if os.path.exists(s1p) and os.path.exists(s2p):
 
     # ---- stage 2: heap — calloc / free (A10) ----------------------------------
     # calloc/free are compiled as direct `bl calloc` / `bl free`; a bump allocator
-    # over brk is appended ONCE at program end, but only for the builtins actually
-    # used, and only when the user has not defined their own. calloc zero-fills and
-    # rounds the request up to 8 bytes; free is a no-op for a batch compiler. The
-    # bump pointer __mp lives inline after the routine (never executed). A user
-    # definition of calloc/free overrides the builtin (the builtin steps aside).
+    # over a large anonymous `mmap` arena is appended ONCE at program end, but only
+    # for the builtins actually used, and only when the user has not defined their
+    # own. calloc rounds the request up to 8 bytes; the arena is MAP_ANONYMOUS so it
+    # is kernel-zeroed and bump-only allocation never reuses memory, so every block
+    # is pristine zero (no zero-fill loop needed). `mmap` (not `brk`) is used because
+    # qemu-user's brk region is small, while an anonymous mapping of any size is fine.
+    # free is a no-op for a batch compiler. The bump pointer __mp lives inline after
+    # the routine (never executed). A user definition of calloc/free overrides it.
     print("== stage 2 heap: calloc / free bump allocator over brk (A10) ==")
     emcal = _emit("int main(){int* p=calloc(1,8); return 0;}")
     check("stage2 calloc emits a direct call (bl calloc)", "bl calloc" in emcal, True)
     check("stage2 calloc runtime routine is appended (:calloc)", ":calloc" in emcal, True)
-    check("stage2 calloc uses brk to grow the heap (mov x8 214)", "mov x8 214" in emcal, True)
+    check("stage2 calloc maps the heap via mmap (mov x8 222)", "mov x8 222" in emcal, True)
     check("stage2 bump pointer is emitted inline (:__mp)", ":__mp" in emcal, True)
     check("stage2 unused free is NOT emitted (no :free)", ":free" in emcal, False)
     emfree = _emit("int main(){int* p=calloc(1,8); free(p); return 0;}")
@@ -903,6 +906,7 @@ if os.path.exists(s1p) and os.path.exists(s2p):
         ("int main(){int* p=calloc(3,8); p[2]=55; return p[2];}", 55),                     # count*size
         ("int main(){int* p=calloc(1000,8); p[999]=123; return p[999];}", 123),            # large, far access
         ("int main(){char* b=calloc(65536,1); b[65535]=7; return b[65535];}", 7),          # 64KB buffer
+        ("int main(){char* b=calloc(262144,1); b[262143]=9; return b[262143];}", 9),        # 256KB — beyond the old brk region
         ("struct T{int k; int t; struct T* nx;}; int main(){struct T* t=calloc(1,sizeof(struct T)); t->k=40; t->t=2; return t->k+t->t;}", 42),  # M2 idiom: struct* p=calloc(1,sizeof)
         ("int main(){int* p=calloc(2,8); p[0]=40; p[1]=2; int r=p[0]; int q=p[1]; return r+q;}", 42),  # decl-init from a heap read
         ("int main(){int* p=calloc(1,8); p[0]=9; int r=p[0]; free(p); return r;}", 9),     # free is a safe no-op

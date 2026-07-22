@@ -38,11 +38,14 @@ def run(prog, stdin=b'', mem_size=0x40000, trace=False, oob_trap=True):
     def M(a): return a  # identity address space (base 0)
     def chk(addr, n, store):
         # fault on anything a correct program could never legitimately reach
-        if not oob_trap: return
-        if addr < NULLFLOOR or addr + n > brk[0]:
+        if oob_trap and (addr < NULLFLOOR or addr + n > brk[0]):
             raise OOBAccess(
                 f"{'store' if store else 'load'} of {n}B at 0x{addr:x} "
                 f"outside [0x{NULLFLOOR:x}, 0x{brk[0]:x}) (brk={brk[0]:#x})")
+        # lazily back a valid address that lies in a mapped-but-untouched page
+        # (mmap/brk raised the ceiling; physical img grows only as pages are used)
+        if addr + n <= brk[0] and addr + n > len(img):
+            img.extend(b'\x00' * (addr + n - len(img)))
     pc=0; out=bytearray(); inbuf=bytearray(stdin); steps=0
     # find instruction index for a byte offset
     def idx(o):
@@ -106,6 +109,14 @@ def run(prog, stdin=b'', mem_size=0x40000, trace=False, oob_trap=True):
                 else:
                     brk[0]=R[0]
                     if R[0]>len(img): img.extend(b'\x00'*(R[0]-len(img)))
+            elif num==222:  # mmap(addr,length,prot,flags,fd,offset) -> anon, zero-filled
+                # model a successful anonymous mapping: hand back a fresh region at
+                # the current ceiling and raise the ceiling by its length. Pages are
+                # zero and lazily backed (chk grows img on first touch), so a bump
+                # allocator over mmap never faults inside its arena — matching real
+                # MAP_ANONYMOUS. This is why calloc uses mmap, not brk: qemu-user's
+                # brk region is small, but an anonymous mapping of any size is fine.
+                length=R[1]; base=brk[0]; brk[0]=brk[0]+length; R[0]=base
             else: R[0]=0
         i=nxt
     return None, bytes(out)

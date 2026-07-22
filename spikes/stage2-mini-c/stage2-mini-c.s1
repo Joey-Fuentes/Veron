@@ -3380,7 +3380,7 @@ b ps_l
 .ascii "free"
 .byte 0
 :scalloc_rt
-.ascii ":calloc\nsub x9 x9 8\nldr x5 x9\nsub x9 x9 8\nldr x4 x9\nmul x4 x4 x5\nadd x4 x4 7\nmov x2 3\nlsr x4 x4 x2\nlsl x4 x4 x2\nadr x1 __mp\nldr x3 x1\ncmp x3 0\nb.ne __cc_have\nmov x0 0\nmov x8 214\nsvc\nmov x3 x0\n:__cc_have\nadd x4 x3 x4\nmov x0 x4\nmov x8 214\nsvc\nadr x1 __mp\nstr x4 x1\nmov x6 x3\n:__cc_zl\ncmp x6 x4\nb.ge __cc_zd\nmov x0 0\nstr x0 x6\nadd x6 x6 8\nb __cc_zl\n:__cc_zd\nstr x3 x9\nadd x9 x9 8\nret\n:__mp\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n"
+.ascii ":calloc\nsub x9 x9 8\nldr x5 x9\nsub x9 x9 8\nldr x4 x9\nmul x6 x4 x5\nadd x6 x6 7\nmov x2 3\nlsr x6 x6 x2\nlsl x6 x6 x2\nadr x1 __mp\nldr x3 x1\ncmp x3 0\nb.ne __cc_have\nmov x0 0\nmov x1 0\nmovk x1 4096 16\nmov x2 3\nmov x3 34\nmov x4 0\nsub x4 x4 1\nmov x5 0\nmov x8 222\nsvc\nmov x3 x0\n:__cc_have\nadd x4 x3 x6\nadr x1 __mp\nstr x4 x1\nstr x3 x9\nadd x9 x9 8\nret\n:__mp\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n.byte 0\n"
 .byte 0
 :sfree_rt
 .ascii ":free\nsub x9 x9 8\nldr x0 x9\nmov x0 0\nstr x0 x9\nadd x9 x9 8\nret\n"
