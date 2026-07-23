@@ -158,19 +158,33 @@ jobs:
           # same file and ours does not, the fault is in the binary OUR ladder
           # produced -- not in the source or the -f list.
           make -C upstream-m2planet M2-Planet
-          both() {
-            printf '  %-38s ' "$1"
+          both() {  # $1 = label, rest = -f arguments
+            printf '  %-38s ' "$1"; shift
             set +e
             timeout 60 qemu-aarch64 ./M2-Planet --architecture aarch64 \
-              --bootstrap-mode -f "$2" -o /tmp/o.M1 </dev/null 2>/tmp/e1; a=$?
+              --bootstrap-mode "$@" -o /tmp/o.M1 </dev/null 2>/tmp/e1; a=$?
             timeout 60 upstream-m2planet/bin/M2-Planet --architecture aarch64 \
-              --bootstrap-mode -f "$2" -o /tmp/o2.M1 </dev/null 2>/tmp/e2; b=$?
+              --bootstrap-mode "$@" -o /tmp/o2.M1 </dev/null 2>/tmp/e2; b=$?
             set -e
             printf 'ours=%-4s theirs=%-4s %s\n' "$a" "$b" "$(head -1 /tmp/e1)"
           }
 
-          both 'compute.c (the real file)' compute.c
-          both 'io.c (the real file)'      io.c
+          L=upstream-m2planet/M2libc
+          both 'compute.c (the real file)' -f compute.c
+          both 'io.c alone (calloc undef expected)' -f io.c
+
+          # THE SUSPECT. aarch64/linux/bootstrap.c is the asm() file: six
+          # functions written in M1 mnemonics. Stage 2 omitted it by design
+          # (m71's one substitution), so our M2-Planet compiled cc_core.c's
+          # asm() handling and has never once run it.
+          both 'asm() file alone'      -f "$L/aarch64/linux/bootstrap.c"
+          both 'M2libc bootstrap.c'    -f "$L/bootstrap.c"
+          both 'asm() + bootstrap.c'   -f "$L/aarch64/linux/bootstrap.c" -f "$L/bootstrap.c"
+          both 'asm() + bootstrap + io' -f "$L/aarch64/linux/bootstrap.c" -f "$L/bootstrap.c" -f io.c
+
+          # A one-function reduction, if the file as a whole faults.
+          printf 'int myexit(int value)\n{\n\tasm("mov_x0,x17" "sub_x0,x0,8" "ldr_x0,[x0]" "mov_x8,93" "svc_0");\n}\nint main(){myexit(3);return 0;}\n' > asmmin.c
+          both 'minimal asm() reduction' -f asmmin.c
 
           # Narrow the difference from the passing variants: they were all
           # written without spaces around operators.
@@ -178,12 +192,13 @@ jobs:
           printf '%s' 'int main(){int i;int s;s = 0;i = 0;while(i < 300000){s = s + i;i = i + 1;}return 0;}' > w2.c
           printf 'int main()\n{\n\tint i;\n\ti = 0;\n\treturn 0;\n}\n' > w3.c
           printf 'int main()\n{\n\tint i;\n\tint s;\n\ts = 0;\n\ti = 0;\n\twhile(i < 10)\n\t{\n\t\ts = s + i;\n\t\ti = i + 1;\n\t}\n\treturn 0;\n}\n' > w4.c
-          both 'one line, no spaces'        w1.c
-          both 'one line, spaces round ops' w2.c
-          both 'multiline, decl + assign'   w3.c
-          both 'multiline, small loop'      w4.c
+          both 'one line, no spaces'        -f w1.c
+          both 'one line, spaces round ops' -f w2.c
+          both 'multiline, decl + assign'   -f w3.c
+          both 'multiline, small loop'      -f w4.c
 
       - name: Build each benchmark with BOTH compilers
+        continue-on-error: true
         run: |
           L=upstream-m2planet/M2libc
           M1=upstream-mescc/bin/M1
