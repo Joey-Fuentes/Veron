@@ -1,0 +1,114 @@
+name: m1-loop
+
+# SPIKE. Correcting the previous diagnostic.
+#
+# WHAT WE KNOW. Our M1 opens tiny.M1, reads its six bytes one at a time, and
+# then issues NO further syscalls -- no seventh read to see EOF, no write of
+# output. It hangs AFTER tokenizing, in processing. The gcc-built M1 handles the
+# same file in milliseconds (rc=0, 6 bytes out), so the input is fine.
+#
+# WHAT WAS WRONG. The previous job histogrammed `-d in_asm`, which logs a block
+# when it is TRANSLATED, not when it runs. An infinite loop in already-translated
+# code produces almost no in_asm output, so the "top blocks" list was measuring
+# translation order and told us nothing. `-d exec,nochain` logs every block
+# ENTRY, which is what hotness actually means.
+#
+# Three seconds of a spinning loop is millions of entries -- more than enough.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage2-mini-c/**'
+      - '.github/workflows/m1-loop.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: m1-loop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  loop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      M2PLANET_SHA: 34fbd5c2a9b6eb634a4f6ad95158dcd1efcf19e0
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu
+
+      - name: Fetch upstreams
+        run: |
+          git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git -C upstream-m2planet checkout "$M2PLANET_SHA"
+          git -C upstream-m2planet submodule update --init --recursive
+          git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
+
+      - name: Build ladder and M1
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+          cat spikes/stage1-as/stage1-as.s0 \
+            | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
+          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+            | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+          L=upstream-m2planet/M2libc; S=upstream-mescc
+          cat $L/bootstrap.c $L/bootstrappable.c $S/stringify.c $S/M1-macro.c > m1src.c
+          qemu-aarch64 ./stage2 < m1src.c > m1.s1
+          cat m1.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf M1
+
+      - name: 'THE LOOP: block entry counts over 3 seconds'
+        run: |
+          printf ':main\n' > tiny.M1
+          set +e
+          timeout 3 qemu-aarch64 -d exec,nochain -D exec.log ./M1 -f tiny.M1 \
+            --little-endian --architecture aarch64 -o /tmp/o.hex2 \
+            </dev/null >/dev/null 2>&1
+          set -e
+          echo "  trace lines: $(wc -l < exec.log)"
+          echo "  --- blocks by ENTRY count (this is the real hot loop) ---"
+          grep -oE '0x[0-9a-f]+' exec.log | sort | uniq -c | sort -rn | head -12 > top.txt
+          while read n addr; do
+            printf '  %10s  ' "$n"
+            python3 tools/pcmap.py m1.s1 "$addr" | tail -1
+          done < top.txt
+
+      - name: 'The distinct functions in the cycle'
+        run: |
+          # A loop that spans several blocks shows up as a repeating cycle.
+          # Collapse to function names so the cycle is readable.
+          echo "  --- last 40 block entries, as function names ---"
+          grep -oE '0x[0-9a-f]+' exec.log | tail -40 > tail.txt
+          prev=""
+          while read addr; do
+            f=$(python3 tools/pcmap.py m1.s1 "$addr" | tail -1 \
+                 | sed -E 's/.*\(in ([A-Za-z0-9_]+) \+.*/\1/; t; s/^  0x[0-9a-f]+ +([A-Za-z0-9_]+) \+.*/\1/')
+            [ "$f" = "$prev" ] || echo "    $f"
+            prev="$f"
+          done < tail.txt
+
+      - name: 'Print the C for every function in the cycle'
+        continue-on-error: true
+        run: |
+          fns=$(while read n addr; do
+                  python3 tools/pcmap.py m1.s1 "$addr" | tail -1 \
+                    | sed -E 's/.*\(in ([A-Za-z0-9_]+) \+.*/\1/; t; s/^  0x[0-9a-f]+ +([A-Za-z0-9_]+) \+.*/\1/'
+                done < top.txt | sort -u)
+          echo "functions in the hot set: $fns"
+          for fn in $fns; do
+            for f in upstream-mescc/M1-macro.c upstream-mescc/stringify.c \
+                     upstream-m2planet/M2libc/bootstrap.c \
+                     upstream-m2planet/M2libc/bootstrappable.c; do
+              if grep -qE "^[a-zA-Z].*[ *]$fn\(" "$f"; then
+                echo "=== $fn  ($f) ==="
+                awk -v fn="$fn" '$0 ~ "^[a-zA-Z].*[ *]"fn"\\(" {p=1} p {print} p && /^}/ {exit}' "$f"
+                break
+              fi
+            done
+          done
