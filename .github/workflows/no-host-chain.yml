@@ -1,0 +1,199 @@
+name: no-host-chain
+
+# SPIKE (invariants suspended). THE FIRST NO-HOST-GCC ROUND TRIP.
+#
+# borrow-m2 built M2-Planet, M1 and hex2 with the HOST gcc; it only ever proved
+# the borrowed mechanism runs here. stage3-m2-demo removed gcc from the
+# M2-Planet step but stopped at emitted .M1, never linking it. This workflow
+# closes both gaps at once:
+#
+#   M1.c   --[ stage2 | stage1 | stage0-as | elf ]--> M1     (ours)
+#   hex2.c --[ stage2 | stage1 | stage0-as | elf ]--> hex2   (ours)
+#   M2.c   --[ stage2 | stage1 | stage0-as | elf ]--> M2-Planet  (m71, ours)
+#
+#   prog.c --[ our M2-Planet ]--> .M1 --[ our M1 ]--> .hex2
+#          --[ our hex2 ]--> static ELF --[ qemu ]--> exit code
+#
+# GNU `as`/`ld` still assemble the stage-0 seed. That is the ONE deliberate
+# remaining host dependency, allowed for now; ARCHITECTURE.md's position is that
+# the assembler is untrusted and its output is confirmed by round-trip
+# disassembly. Nothing else on the target path touches a host compiler.
+#
+# X86 IS THE POINT OF STEP 5. M2-Planet, M1 and hex2 all take --architecture at
+# RUNTIME, so our aarch64 binaries can emit x86 and we run the result under
+# qemu-i386. That matters because MesCC has no native aarch64 backend (x86 +
+# armhf only), so the Mes -> tcc rung is only reachable on an x86 target. This
+# workflow gets the toolchain to that doorstep; it does NOT attempt Mes itself.
+#
+# STAGING: steps 1-3 are PROBES (continue-on-error, they report ground truth
+# about whether our subset covers mescc-tools). Steps 4-5 are GATES.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage2-mini-c/**'
+      - 'spikes/stage1-as/**'
+      - 'spikes/stage0-as/**'
+      - 'spikes/elf/**'
+      - '.github/workflows/no-host-chain.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: no-host-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      M2PLANET_SHA: 34fbd5c2a9b6eb634a4f6ad95158dcd1efcf19e0
+      # TODO pin once this graduates; mescc-tools is not part of the C-subset
+      # spec, so it has been left at branch tip like borrow-m2 does.
+      MESCC_REF: main
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu
+          # NOTE: no gcc installed for the target path. The runner ships one;
+          # this workflow never invokes it.
+
+      - name: Fetch upstreams
+        run: |
+          git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git -C upstream-m2planet checkout "$M2PLANET_SHA"
+          git -C upstream-m2planet submodule update --init --recursive
+          git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
+          git -C upstream-mescc checkout "$MESCC_REF"
+          echo "M2-Planet : $(git -C upstream-m2planet rev-parse HEAD)"
+          echo "M2libc    : $(git -C upstream-m2planet/M2libc rev-parse HEAD)"
+          echo "mescc-tools: $(git -C upstream-mescc rev-parse HEAD)"
+
+      - name: Build the ladder (GNU as for the seed only)
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+          cat spikes/stage1-as/stage1-as.s0 \
+            | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
+          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+            | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+          test -x stage2 || { echo "stage2 not built"; exit 1; }
+
+      # --- 1. PROBE: what does mescc-tools actually want compiled? -----------
+      # Do not guess the -f list. Print ground truth on the first run and read
+      # it off the log, the way the m50/m51 rule says to.
+      - name: 'PROBE: mescc-tools inventory'
+        continue-on-error: true
+        run: |
+          echo "--- top-level .c/.h ---"
+          ls -1 upstream-mescc/*.c upstream-mescc/*.h 2>/dev/null || true
+          echo "--- any kaem / bootstrap recipes (these carry the real -f lists) ---"
+          find upstream-mescc -maxdepth 2 \
+            \( -name 'kaem*' -o -name '*.kaem' -o -name 'bootstrap*' -o -name 'makefile' -o -name 'Makefile' \) \
+            -print 2>/dev/null || true
+          echo "--- M2-Planet invocations found in those recipes ---"
+          grep -rn -- '-f ' upstream-mescc --include='kaem*' --include='*.kaem' 2>/dev/null | head -40 || true
+
+      # --- 2. PROBE: can OUR stage 2 compile M1? -----------------------------
+      # The real unknown is not M1.c but its M2libc dependencies. M2-Planet's
+      # -f list needed only bootstrap.c + bootstrappable.c; if M1/hex2 pull in
+      # stdio.c / stdlib.c / string.c then our stage 2 is compiling files it has
+      # never seen. Adjust the list below from step 1's output.
+      - name: 'PROBE: stage2 builds M1'
+        continue-on-error: true
+        run: |
+          L=upstream-m2planet/M2libc
+          S=upstream-mescc
+          cat \
+            $L/bootstrap.c \
+            $L/bootstrappable.c \
+            $S/M1-macro.c \
+            > m1src.c 2>/dev/null || { echo "adjust the -f list from step 1"; exit 1; }
+          echo "M1 translation unit: $(wc -c < m1src.c) bytes"
+          qemu-aarch64 ./stage2 < m1src.c > m1.s1
+          echo "stage2 emitted: $(wc -c < m1.s1) bytes"
+          cat m1.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf M1
+          test -x M1 && echo "M1 binary: $(wc -c < M1) bytes"
+
+      # --- 3. PROBE: can OUR stage 2 compile hex2? ---------------------------
+      - name: 'PROBE: stage2 builds hex2'
+        continue-on-error: true
+        run: |
+          L=upstream-m2planet/M2libc
+          S=upstream-mescc
+          cat \
+            $L/bootstrap.c \
+            $L/bootstrappable.c \
+            $S/hex2_linker.c \
+            > hex2src.c 2>/dev/null || { echo "adjust the -f list from step 1"; exit 1; }
+          echo "hex2 translation unit: $(wc -c < hex2src.c) bytes"
+          qemu-aarch64 ./stage2 < hex2src.c > hex2.s1
+          echo "stage2 emitted: $(wc -c < hex2.s1) bytes"
+          cat hex2.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf hex2
+          test -x hex2 && echo "hex2 binary: $(wc -c < hex2) bytes"
+
+      # --- 4. Build M2-Planet with stage 2 (the m71 result, re-run here) -----
+      - name: Build M2-Planet with stage 2
+        run: |
+          M=upstream-m2planet
+          cat \
+            $M/M2libc/bootstrap.c \
+            $M/M2libc/bootstrappable.c \
+            $M/cc.h $M/cc_globals.c $M/cc_reader.c $M/cc_strings.c \
+            $M/cc_types.c $M/cc_emit.c $M/cc_core.c $M/cc_macro.c $M/cc.c \
+            > m2.c
+          qemu-aarch64 ./stage2 < m2.c > m2.s1
+          cat m2.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf M2-Planet
+          test -x M2-Planet || { echo "M2-Planet not built"; exit 1; }
+          echo "M2-Planet: $(wc -c < M2-Planet) bytes"
+
+      # --- 5. GATE: full round trip, NO host compiler on the path ------------
+      # Skips cleanly (rather than lying) if the probes above did not produce
+      # M1/hex2 yet.
+      - name: 'GATE: no-host round trip (aarch64 + x86)'
+        run: |
+          if [ ! -x M1 ] || [ ! -x hex2 ]; then
+            echo "SKIP: our M1/hex2 not built yet -- read steps 1-3 and fix the -f lists."
+            echo "This gate is the whole point; it is not green until they exist."
+            exit 1
+          fi
+          L=upstream-m2planet/M2libc
+
+          # A tiny program needing no libc: libc-core.M1's _start calls main()
+          # and uses the return value as the exit code.
+          printf 'int main(){int i;int s;s=0;for(i=1;i<10;i=i+1){s=s+i;}return s;}' > t.c
+
+          run_for() {
+            arch="$1"; emu="$2"; want="$3"
+            qemu-aarch64 ./M2-Planet --architecture "$arch" --bootstrap-mode -f t.c -o t.M1
+            qemu-aarch64 ./M1 \
+              -f "$L/$arch/${arch}_defs.M1" \
+              -f "$L/$arch/libc-core.M1" \
+              -f t.M1 \
+              --little-endian --architecture "$arch" -o t.hex2
+            qemu-aarch64 ./hex2 \
+              -f "$L/$arch/ELF-$arch.hex2" \
+              -f t.hex2 \
+              --little-endian --architecture "$arch" \
+              --base-address 0x400000 -o "t.$arch.elf"
+            set +e
+            "$emu" "./t.$arch.elf"; rc=$?
+            set -e
+            echo "  $arch exit: $rc (expect $want)"
+            [ "$rc" = "$want" ]
+          }
+
+          ok=yes
+          run_for aarch64 qemu-aarch64 45 || ok=no
+          run_for x86     qemu-i386    45 || ok=no
+
+          [ "$ok" = yes ] || { echo "FAIL"; exit 1; }
+          echo "PASS: M2-Planet, M1 and hex2 were all built by our ladder, and"
+          echo "together they turned C into a running binary for two targets."
+          echo "No host C compiler on the target path."
