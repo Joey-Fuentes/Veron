@@ -197,6 +197,40 @@ jobs:
           both 'multiline, decl + assign'   -f w3.c
           both 'multiline, small loop'      -f w4.c
 
+      - name: 'BISECT: where in M2libc/bootstrap.c do we segfault?'
+        continue-on-error: true
+        run: |
+          # asm() is fine alone; bootstrap.c alone stops at line 55 on BOTH
+          # compilers (read undefined). With the asm file in front, read
+          # resolves and compilation runs the whole file -- and only ours dies.
+          # Prefixes cut at top-level '}'. rc=1 is an expected diagnostic for a
+          # truncated file (later symbols undefined); only rc=139 is the bug.
+          L=upstream-m2planet/M2libc
+          SRC=$L/bootstrap.c
+          A=$L/aarch64/linux/bootstrap.c
+          echo "bootstrap.c: $(wc -l < $SRC) lines"
+          last=0
+          for n in $(grep -n '^}' "$SRC" | cut -d: -f1); do
+            head -n "$n" "$SRC" > body.c
+            set +e
+            timeout 60 qemu-aarch64 ./M2-Planet --architecture aarch64 \
+              --bootstrap-mode -f "$A" -f body.c -o /tmp/b.M1 </dev/null 2>/dev/null
+            a=$?
+            timeout 60 upstream-m2planet/bin/M2-Planet --architecture aarch64 \
+              --bootstrap-mode -f "$A" -f body.c -o /tmp/b2.M1 </dev/null 2>/dev/null
+            b=$?
+            set -e
+            printf '  line %-4s ours=%-4s theirs=%s\n' "$n" "$a" "$b"
+            if [ "$a" = 139 ]; then
+              echo
+              echo "=== FIRST SEGV -- the function at lines $((last+1))-$n ==="
+              sed -n "$((last+1)),${n}p" "$SRC"
+              exit 0
+            fi
+            last="$n"
+          done
+          echo "no prefix segfaulted; the fault needs the whole file"
+
       - name: Build each benchmark with BOTH compilers
         continue-on-error: true
         run: |
