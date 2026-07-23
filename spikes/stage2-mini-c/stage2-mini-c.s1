@@ -297,7 +297,7 @@ b.eq paramdone
 b paramloop
 :pl_int
 cmp x20 3
-b.ne paramloop
+b.ne pl_ident
 cmp x29 7
 b.eq pl_struct
 mov x12 0
@@ -353,6 +353,41 @@ add x3 x10 x3
 add x4 x3 20
 str w27 x4
 b paramloop
+:pl_ident
+mov x3 x6
+:pl_tpk
+cmp x3 x21
+b.ge paramloop
+ldrb w5 x19 x3
+cmp x5 32
+b.eq pl_tpa
+cmp x5 9
+b.eq pl_tpa
+cmp x5 10
+b.eq pl_tpa
+cmp x5 13
+b.eq pl_tpa
+b pl_tpc
+:pl_tpa
+add x3 x3 1
+b pl_tpk
+:pl_tpc
+cmp x5 42
+b.eq pl_tname
+cmp x5 95
+b.eq pl_tname
+cmp x5 65
+b.lt paramloop
+cmp x5 91
+b.lt pl_tname
+cmp x5 97
+b.lt paramloop
+cmp x5 123
+b.lt pl_tname
+b paramloop
+:pl_tname
+mov x12 0
+b pl_notchar
 :paramdone
 bl next_token
 bl prescan
@@ -995,6 +1030,44 @@ cmp x5 45
 b.eq dra_arrowq
 cmp x5 58
 b.eq dra_label
+cmp x5 42
+b.eq dra_td_star
+b dra_td_id
+:dra_td_star
+add x3 x3 1
+:dra_td_sws
+cmp x3 x21
+b.ge dra_asg
+ldrb w5 x19 x3
+cmp x5 32
+b.eq dra_td_sa
+cmp x5 9
+b.eq dra_td_sa
+cmp x5 10
+b.eq dra_td_sa
+cmp x5 13
+b.eq dra_td_sa
+cmp x5 42
+b.eq dra_td_star
+b dra_td_id
+:dra_td_sa
+add x3 x3 1
+b dra_td_sws
+:dra_td_id
+cmp x5 95
+b.eq dra_decl
+cmp x5 65
+b.lt dra_asg
+cmp x5 91
+b.lt dra_decl
+cmp x5 97
+b.lt dra_asg
+cmp x5 123
+b.lt dra_decl
+b dra_asg
+:dra_decl
+mov x12 0
+b doint
 :dra_asg
 str x18 x28
 add x28 x28 8
@@ -3719,10 +3792,25 @@ mov x14 x30
 mov x7 x6
 mov x12 0
 mov x13 1
+mov x11 1
 :ps_l
 bl next_token
 cmp x20 0
 b.eq ps_done
+mov x3 x11
+mov x11 0
+cmp x20 5
+b.ne ps_nfl
+cmp x29 59
+b.eq ps_setfl
+cmp x29 123
+b.eq ps_setfl
+cmp x29 125
+b.eq ps_setfl
+b ps_nfl
+:ps_setfl
+mov x11 1
+:ps_nfl
 cmp x20 3
 b.ne ps_np
 mov x27 x29
@@ -3759,6 +3847,11 @@ add x12 x12 x0
 b ps_l
 :ps_scalar
 add x12 x12 1
+cmp x20 5
+b.ne ps_l
+cmp x29 59
+b.ne ps_l
+mov x11 1
 b ps_l
 :ps_struct
 bl next_token
@@ -3779,6 +3872,45 @@ lsr x0 x0 x5
 add x12 x12 x0
 b ps_l
 :ps_np
+cmp x20 2
+b.ne ps_punct
+cmp x3 0
+b.eq ps_l
+mov x2 x6
+:ps_ipk
+cmp x2 x21
+b.ge ps_l
+ldrb w5 x19 x2
+cmp x5 32
+b.eq ps_ipa
+cmp x5 9
+b.eq ps_ipa
+cmp x5 10
+b.eq ps_ipa
+cmp x5 13
+b.eq ps_ipa
+cmp x5 42
+b.eq ps_ipa
+b ps_ipc
+:ps_ipa
+add x2 x2 1
+b ps_ipk
+:ps_ipc
+cmp x5 95
+b.eq ps_idecl
+cmp x5 65
+b.lt ps_l
+cmp x5 91
+b.lt ps_idecl
+cmp x5 97
+b.lt ps_l
+cmp x5 123
+b.lt ps_idecl
+b ps_l
+:ps_idecl
+mov x27 1
+b ps_isdecl
+:ps_punct
 cmp x20 5
 b.ne ps_l
 cmp x29 123

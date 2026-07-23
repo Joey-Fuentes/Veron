@@ -1764,6 +1764,82 @@ it is not this rung's bug.
 
 ---
 
+### m68 (A28) — identifier type names: `FILE`, `FUNCTION`, `size_t`
+
+**The list this rung was supposed to implement was wrong in both directions**, which is
+the more useful half of the entry. Item 8 said `FILE`/`size_t`/`ssize_t`, read off the
+`BOOTSTRAP_MODE` block in `cc_types.c`. Re-derived mechanically against the pinned tree,
+in the translation unit the makefile actually builds: `FILE` 15 uses, **`FUNCTION` 6**,
+`size_t` **zero** (its 41 uses are all in `stdio.c`/`stdlib.c`/`string.c`), `ssize_t`
+**zero anywhere** — it is registered for *mes.c*, per the comment above it. `FUNCTION`
+was missed because it is registered *above* the `BOOTSTRAP_MODE` block, unconditionally;
+it is a plain value parameter in `common_recursion`, `general_recursion` and
+`arithmetic_recursion`. §3 already named `common_recursion(FUNCTION f)` under "Function
+pointers" — the item just never inherited it. The same pass showed `long` has zero real
+uses in the TU (all 10 are in the M2libc C sources), which is recorded in the new
+`TARGET-SUBSET.md` §2b along with the TU-vs-wider-set distinction that caused it.
+
+**Nothing is hardcoded.** These are type *names*, not keywords — M2-Planet keeps them in
+a table, so four recognizer arms would have been the wrong shape and would not have
+covered a typedef later. Instead the two positions that still required a keyword to start
+a declaration accept an identifier in type position, which is what the other two positions
+have always done: `funcloop` treats an unknown leading word as `int` (the accident that
+also makes `void` work) and `fl_global` follows it. The inconsistency *was* the bug. One
+positional rule now covers `FILE`, `FUNCTION`, `size_t`, `ssize_t`, `va_list` and any
+future typedef.
+
+- **Parameter position is free.** After `(` or `,` an identifier can only be a type, and
+  `paramloop` is already always at a type start when it dispatches, because the
+  declaration path consumes `TYPE * NAME` whole. A peek for `*`-or-letter distinguishes a
+  type from `(void)`, whose `)` must not be consumed.
+- **Statement position needs the peek**, since a statement-initial identifier may also
+  begin an assignment, call, subscript, member store, arrow store or label. The rule is
+  `IDENT` → stars → `IDENT`, which in valid C is a declaration and nothing else. It is
+  checked *after* the existing `( [ . -> :` tests, so every one of those forms reaches its
+  old path unchanged.
+
+**The second half was `prescan`, and it is the part that would have shipped broken.**
+prescan sums declaration sizes so the prologue reserves a big enough frame; it also only
+counted *keyword* declarations. So `size_t a[3]` parsed and allocated correctly but was
+never reserved, the frame came up three words short, and the next call clobbered the
+array — the exact m39 failure the prescan exists to prevent, surfacing as a wrong sum
+rather than a crash. Caught by a behavioural test, not by reading the code. **prescan and
+the statement parser must apply the identical rule**, or the reserved frame stops matching
+what was declared, so prescan gained the same peek — plus a **statement-start flag**,
+which the parser does not need: prescan scans the whole body, where `a * b` in an
+expression is otherwise indistinguishable from a declaration. One sharp edge inside that:
+`ps_scalar` swallows the `;` that terminates a scalar declaration, so the flag has to be
+re-armed there or `int a; FILE* f;` loses the second declaration. The guard is therefore
+emitted-code equality against the `int` spelling — array, scalar, pointer, parameter,
+decl-after-decl, array-after-scalar — not merely a right answer.
+
+**Why the old behaviour hid.** A dropped parameter emitted code byte-identical to omitting
+it, and *later* parameters still landed correctly because pops come off the top of the
+value stack. So `int use(FILE* out, int n){return n;}` returned the right answer while
+leaking a value-stack slot per call, and only a *use* of the dropped name went wrong —
+`FUNCTION f` then `f(v)` resolves through no symbol table entry, becomes a direct `bl f`
+to an undefined label, and runs away. Three failure modes, one root cause, which is why it
+never presented as a single bug.
+
+**Verified** through the real assembled ladder on the shapes the pinned source writes:
+`common_recursion`/`general_recursion`'s `FUNCTION` parameters called through (the
+`bl`-vs-`blr` split is read off the symbol tables, so the call lowers to `ldr x16`/`blr`
+for free once the parameter is genuinely declared), `FILE*` as parameter/local/global/
+return/dereferenced across `cc.c:45`, `cc_core.c:62,73`, `cc_reader.c:24`,
+`cc_macro.c:642`, and every disambiguation form that shares the entry point. 35 programs
+spanning every construct through A27 — deliberately frame-shaped, since prescan runs for
+every function — are byte-identical to the pre-rung compiler. `validate.py` +37 checks.
+
+**`gcc_req.h` becomes a substitution, and is recorded as one.** Its whole content is
+`typedef void (*FUNCTION) (void);` plus a comment saying it exists only because gcc lacks
+naked function pointers. M2-Planet compiling itself does not need it — it pre-registers
+`FUNCTION` unconditionally — and neither do we. Omitting that one file from the `-f` list
+is the same *kind* of move as the `asm()` omission in item 12: a substitution, not a
+capability. `typedef` itself remains unimplemented, and `char**` subscripting (item 9) is
+untouched — a type-model gap, not a naming one.
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
@@ -1899,7 +1975,11 @@ stage in the language of the stage below.
   like `unsigned int` / `long long` collapse to one token by re-entering `next_token`).
   Still open are `char**`
   subscripting (faults), `argc`/`argv` (compiles, but `argc` reads 0 — never wired to the
-  stack), `FILE`/`size_t`/`ssize_t` as pre-registered primitives, and `brk`/inline `asm`. Unnamed prototype parameters were on this list and are
+  stack), and `brk`/inline `asm`. **`FILE`/`FUNCTION`/`size_t` landed in m68** — not as
+  keywords but as a positional rule (an identifier in type position starts a declaration,
+  which is what the top-level loop and `fl_global` already did), so it covers any
+  pre-registered primitive or typedef; the re-derivation behind it corrected item 8, which
+  had omitted `FUNCTION` and listed `ssize_t`, a name with zero uses in the pinned tree. Unnamed prototype parameters were on this list and are
   **not** a gap: `int f(int);`, `int f(int,int);` and `int f(char*);` all compile and run (compound assign and
   `++`/`--` are **not** needed — zero uses in the self-host); **(3)** compile
   **M2-Planet's own source** with stage 2, so

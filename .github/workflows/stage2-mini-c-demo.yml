@@ -1977,6 +1977,132 @@ jobs:
           fi
 
 
+          echo "== stage-2: identifier type names FILE / FUNCTION / size_t (A28) =="
+          # These are NOT keywords -- they are type NAMES M2-Planet pre-registers as
+          # primitives in cc_types.c, so hardcoding them would be the wrong shape and
+          # would not cover a typedef later. Instead the two positions that still
+          # required a keyword (a parameter, and a local at statement level) now accept
+          # an identifier in type position -- which is what the other two positions have
+          # always done: funcloop treats an unknown leading word as int (the accident
+          # that also makes `void` work) and fl_global follows it. The rule is
+          # positional, so no name is hardcoded anywhere in the compiler.
+          #
+          # Derived against the pinned tree, NOT the old doc list, which was wrong in
+          # both directions. In the translation unit the makefile actually builds
+          # (bootstrappable.c + cc_*.c + gcc_req.h): FILE 15 uses, FUNCTION 6, size_t
+          # ZERO (its 41 uses are all in stdio/stdlib/string), ssize_t zero anywhere --
+          # ssize_t is registered for mes.c, not for M2-Planet's self-host.
+          #
+          # Previously a parameter of one of these types was SILENTLY DROPPED: the
+          # emitted code was byte-identical to omitting it, so a value-stack slot leaked
+          # per call and any use of the name resolved as a function address -- which is
+          # why `FUNCTION f` then `f(v)` branched to an undefined label rather than
+          # merely computing the wrong number.
+          tn_ok=yes
+          ttry() {
+            set +e
+            printf '%s' "$1" | timeout 30 qemu-aarch64 ./stage2 > tn.s
+            if [ $? -ne 0 ] || [ ! -s tn.s ]; then
+              tn_ok=no
+              printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'
+              set -e; return
+            fi
+            cat tn.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
+            set -e
+            set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; tn_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          # cc_core.c:988,1000,1025 -- FUNCTION as a plain value parameter, then called
+          # through. The bl-vs-blr split is read off the symbol tables, so once the
+          # parameter is really declared the call lowers to ldr x16 / blr for free.
+          ttry 'int inc(int x){return x+1;}int apply(FUNCTION f,int v){return f(v);}int main(){return apply(inc,41);}' 42 'cc_core.c common_recursion: FUNCTION param, called through'
+          ttry 'int inc(int x){return x+1;}int dbl(int x){return x*2;}int g(FUNCTION f,char* s,char* nm,FUNCTION it){return f(20)+it(21);}int main(){return g(inc,0,0,inc);}' 43 'cc_core.c general_recursion: two FUNCTION params of four'
+          ttry 'int inc(int x){return x+1;}int main(){FUNCTION f;f=inc;return f(41);}' 42 'FUNCTION local'
+          ttry 'int inc(int x){return x+1;}FUNCTION h;int main(){h=inc;return h(41);}' 42 'FUNCTION global'
+          # cc.c:45, cc_core.c:62,73, cc_reader.c:24, cc_macro.c:642 -- always FILE*
+          ttry 'int wr(FILE* out,int n){return n;}int main(){return wr(0,42);}' 42 'cc_core.c flush_output_buffer: FILE* param'
+          ttry 'int rat(FILE* a,char* c,char* fn){return a[0]+42;}int main(){char b[2];b[0]=0;return rat(b,0,0);}' 42 'cc_reader.c read_all_tokens: FILE* first of three'
+          ttry 'char* g;int main(){FILE* in=g;return 42;}' 42 'cc.c:45 FILE* local with an initialiser'
+          ttry 'int main(){FILE* f;f=0;if(f){return 9;}return 42;}' 42 'cc_macro.c:642 FILE* local, uninitialised then assigned'
+          ttry 'FILE* input;int main(){input=0;return 42;}' 42 'cc_reader.c:24 FILE* global'
+          ttry 'int rd(FILE* f){return f[0];}int main(){char b[2];b[0]=42;return rd(b);}' 42 'FILE* param actually dereferenced'
+          # size_t / ssize_t / va_list / anything else: the rule is positional
+          ttry 'int f(size_t n,int v){return n+v;}int main(){return f(40,2);}' 42 'size_t param'
+          ttry 'int main(){size_t n;n=42;return n;}' 42 'size_t local'
+          ttry 'int main(){size_t n=42;return n;}' 42 'size_t local with an initialiser'
+          ttry 'int f(ssize_t n){return n;}int main(){return f(42);}' 42 'ssize_t param (zero uses upstream; free with the rule)'
+          ttry 'int f(va_list ap,int n){return n;}int main(){return f(0,42);}' 42 'va_list param (a stdarg.h typedef, not a primitive)'
+          ttry 'int inc(int x){return x+1;}int g(FILE* out,FUNCTION f,int v){return f(v);}int main(){return g(0,inc,41);}' 42 'FILE* and FUNCTION in one parameter list'
+          ttry 'struct S{FILE* f;size_t n;};int main(){struct S s;s.n=42;return s.n;}' 42 'identifier type names as struct fields'
+          # the array case needs prescan as well as the parser
+          ttry 'int sum(size_t* p,int n){int i;int s;i=0;s=0;while(i<n){s=s+p[i];i=i+1;}return s;}int main(){size_t a[3];a[0]=1;a[1]=2;a[2]=39;return sum(a,3);}' 42 'identifier-typed ARRAY + decay + call (needs the prescan rule)'
+          ttry 'int f(FILE* o,int n){int a;int b;int c;a=1;b=2;c=n;return a+b+c;}int main(){return f(0,39);}' 42 'FILE* param in a function with several locals'
+          # THE DISAMBIGUATION -- forms sharing the entry point that must not change
+          ttry 'int f(void){return 42;}int main(){return f();}' 42 'a (void) parameter list stays empty'
+          ttry 'void g(void){return;}int main(){g();return 42;}' 42 'void return type + (void) params'
+          ttry 'int s;int f(int n){s=n;return 0;}int main(){f(42);return s;}' 42 'a call statement is still a call'
+          ttry 'int main(){int a[2];a[1]=42;return a[1];}' 42 'a subscript store is still a store'
+          ttry 'struct S{int v;};int main(){struct S s;struct S* p;p=&s;p->v=42;return p->v;}' 42 'an arrow store is still a store'
+          ttry 'int main(){int i;i=0;lp:i=i+1;if(i<42){goto lp;}return i;}' 42 'a label definition is still a label'
+          ttry 'int main(){int x;int* p;p=&x;*p=42;return x;}' 42 'a deref store is still a store'
+          ttry 'int main(){int a;int b;int c;b=6;c=7;a=b*c;return a;}' 42 'a = b * c is a multiply, not a declaration'
+          ttry 'int main(){int b;int c;b=6;c=7;int a=b*c;return a;}' 42 'multiply after a decl-with-initialiser'
+          ttry 'int main(int argc,char** argv){return 42;}' 42 'char** argv unchanged (still item 9)'
+
+          # --- structural: prescan and the parser must apply the SAME rule ----------
+          # prescan sums declaration sizes to reserve the frame and only counted
+          # KEYWORD declarations, so an identifier-typed array under-sized the frame and
+          # a call clobbered it -- the m39 failure the prescan exists to prevent, which
+          # surfaced here as a wrong sum rather than a crash. If the two rules ever
+          # diverge the reserved frame stops matching what was declared, so the check is
+          # emitted-code equality against the int spelling, not merely a right answer.
+          tsame() {
+            printf '%s' "$1" | qemu-aarch64 ./stage2 > ta.s
+            printf '%s' "$2" | qemu-aarch64 ./stage2 > tb.s
+            cmp -s ta.s tb.s || { tn_ok=no; echo "  FRAME DIFFERS from the int spelling: $2"; }
+          }
+          tsame 'int main(){int a[3];a[0]=1;return a[0];}'          'int main(){size_t a[3];a[0]=1;return a[0];}'
+          tsame 'int main(){int n;n=42;return n;}'                  'int main(){size_t n;n=42;return n;}'
+          tsame 'int main(){char* p;p=0;return 42;}'                'int main(){FILE* p;p=0;return 42;}'
+          tsame 'int f(char* p,int n){return n;}int main(){return f(0,42);}' 'int f(FILE* p,int n){return n;}int main(){return f(0,42);}'
+          tsame 'int main(){int a;int b;a=1;b=41;return a+b;}'      'int main(){int a;size_t b;a=1;b=41;return a+b;}'
+          tsame 'int main(){int n;int a[3];n=1;a[0]=41;return n+a[0];}' 'int main(){int n;size_t a[3];n=1;a[0]=41;return n+a[0];}'
+          printf '  %-64s %s\n' 'structural: prescan frame matches the int spelling' \
+                 "$([ "$tn_ok" = yes ] && echo OK || echo DIFF)"
+
+          # --- byte-identity against the PRE-RUNG compiler ---------------------------
+          # prescan runs for EVERY function, so this rung put every frame size in every
+          # program on new code. The corpus is therefore frame-shaped on purpose.
+          if git show HEAD~1:spikes/stage2-mini-c/stage2-mini-c.s1 > oldt.s1 2>/dev/null && ! grep -q '^:ps_idecl$' oldt.s1; then
+            cat oldt.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2oldt
+            tid=yes
+            tcmp() {
+              printf '%s' "$1" | qemu-aarch64 ./stage2      > tnew.s
+              printf '%s' "$1" | qemu-aarch64 ./stage2oldt  > told.s
+              cmp -s tnew.s told.s || { tid=no; echo "  DIFFERS: $1"; }
+            }
+            tcmp 'int main(){int a=5;int b=a+2;return b;}'
+            tcmp 'int f(int* p,int n){int i;int s;i=0;s=0;while(i<n){s=s+p[i];i=i+1;}return s;}int main(){int a[3];a[0]=1;a[1]=2;a[2]=39;return f(a,3);}'
+            tcmp 'int main(){int a[4];int b[2];char s[9];int n;n=1;a[0]=1;b[0]=2;s[0]=3;return n;}'
+            tcmp 'int main(){int a;int b;int c;a=1;b=2;c=3;return a*b*c;}'
+            tcmp 'int f(int n){int a;int b;a=n;b=a*a;return b;}int main(){return f(6);}'
+            tcmp 'int main(){int i;int s;s=0;i=0;while(i<3){int t;t=i*2;s=s+t;i=i+1;}return s;}'
+            tcmp 'int g(int a,int b,int c,int d){return a+b+c+d;}int main(){int w;int x;int y;int z;w=1;x=2;y=3;z=36;return g(w,x,y,z);}'
+            tcmp 'int main(){int a;a=2;{int b;b=3;a=a*b;}return a;}'
+            tcmp 'struct N{int v;struct N* nx;};int main(){struct N a;struct N* p;int q[3];p=&a;a.v=7;q[0]=1;return p->v;}'
+            tcmp 'int inc(int x){return x+1;}int main(){int (*f)(int);int n;f=inc;n=41;return f(n);}'
+            tcmp 'int main(){char* p;char q[4];p=q;q[0]=42;return p[0];}'
+            tcmp 'int fib(int n){if(n<2){return n;}return fib(n-1)+fib(n-2);}int main(){return fib(10);}'
+            tcmp 'int main(int argc,char** argv){return 42;}'
+            [ "$tid" = yes ] || tn_ok=no
+            printf '  %-64s %s\n' 'byte-identical to HEAD~1 on programs with no type names' \
+                   "$([ "$tid" = yes ] && echo OK || echo DIFF)"
+          else
+            printf '  %-64s %s\n' 'byte-identical to HEAD~1 on programs with no type names' 'SKIP (HEAD~1 already has the rung)'
+          fi
+
+
           {
             echo "## stage2-mini-c — variables, if/while, reassignment, functions + recursion"
             echo '```'
@@ -2008,6 +2134,7 @@ jobs:
             echo "for loops (A25)                         : $for_ok"
             echo "enum constants (A26)                    : $enum_ok"
             echo "word-typed keywords unsigned/long (A27) : $wt_ok"
+            echo "identifier type names FILE/FUNCTION (A28): $tn_ok"
             echo "eor byte-identical to as             : $eor_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
@@ -2020,8 +2147,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ] && [ "$cap23_ok" = yes ] && [ "$dw_ok" = yes ] && [ "$for_ok" = yes ] && [ "$enum_ok" = yes ] && [ "$wt_ok" = yes ]; then
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ] && [ "$cap23_ok" = yes ] && [ "$dw_ok" = yes ] && [ "$for_ok" = yes ] && [ "$enum_ok" = yes ] && [ "$wt_ok" = yes ] && [ "$tn_ok" = yes ]; then
             echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct; and the single-pass @-target accounting invariant holds (every emitted line assembles to exactly 4 bytes, so the emitted-instruction counter stays equal to the true instruction count and a function's meaning does not depend on what was defined before it)."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok cap23=$cap23_ok dowhile=$dw_ok for=$for_ok enum=$enum_ok wordtype=$wt_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok cap23=$cap23_ok dowhile=$dw_ok for=$for_ok enum=$enum_ok wordtype=$wt_ok typenames=$tn_ok"; exit 1
           fi

@@ -277,6 +277,35 @@ lexer, the string scanner and the data emitter. **Landed (m62/A21):** preprocess
 directives — a `#` token discards the line, matching M2-Planet's own `--bootstrap-mode`.
 **Landed (m63/A22):** label-based control flow, streaming output, and capacity work.
 **Landed (m67/A27):** `unsigned` and `long` as word-typed keywords — see item 8 below.
+**Landed (m68/A28):** `FILE`, `FUNCTION`, `size_t` and any other non-keyword type name.
+
+### 2b. Correction: which files are actually the translation unit
+
+§2 says this subset was derived from M2-Planet's `cc_*.c` "plus the M2libc C sources it
+links (`bootstrappable.c`, `stdio.c`, `stdlib.c`, `string.c`, `ctype.c`)". The makefile
+is narrower. The self-host translation unit is:
+
+```
+M2libc/bootstrappable.c cc_reader.c cc_strings.c cc_types.c cc_emit.c
+cc_core.c cc_macro.c cc.c cc.h cc_globals.c gcc_req.h
+```
+
+`stdio.c`, `stdlib.c`, `string.c` and `ctype.c` are **not** in it — under
+`--bootstrap-mode` M2-Planet links `M2libc`'s `libc-core.M1` assembly instead. The
+distinction is not academic: it is the difference between a feature being **required** and
+being merely **nice to have**, and three §6 entries turn on it.
+
+- `long` has **zero** real uses in the TU; all 10 are in `stdio.c`/`stdlib.c`. (Item 8's
+  old "`long` (4)" matches neither set and looks like string-literal noise — `cc_core.c`
+  has `match("long", s)` and `cc_types.c` registers `"long"`, `"long long"` etc. as
+  primitive *names*.) `unsigned` (9 in `cc_core.c`, 1 in `bootstrappable.c`) was right.
+- `size_t`'s 41 uses are likewise all outside the TU.
+- Whether the wider set is in scope **at all** is an open question, not a settled one.
+  Both were implemented anyway — each is small, and the cost of being wrong about scope
+  later is higher than the cost of the code now — but the justification should be recorded
+  honestly rather than implied.
+
+Re-derive against the makefile list, and state which set a count refers to.
 
 ### Still open — the actual remaining list
 
@@ -309,13 +338,42 @@ directives — a `#` token discards the line, matching M2-Planet's own `--bootst
    needed: the clauses are emitted in source order with a branch over the step, and the
    init/step clauses ride the ordinary statement machinery via phase records. **The loop
    family is now complete.**
-8. **Word-typed keywords** — ~~`unsigned` (9), `long` (4)~~ **DONE (m67)**: both accepted
-   as spellings of the machine word (the tokenizer returns the `int` keyword id for each,
-   so no consumer site changed), with multi-word runs — `unsigned int`, `long long`,
-   `unsigned long long int` — collapsing to one token, and `unsigned char` reaching the
-   byte path. Still open here: `FILE`/`size_t`/`ssize_t`, which M2-Planet pre-registers as
-   primitives in bootstrap mode (`cc_types.c:177`) — a typedef-table question, not a
-   keyword one. `signed`/`short` remain unimplemented; zero uses in the pinned source.
+8. **Type names that are not keywords** — ~~`unsigned` (9), `long` (4)~~ **DONE (m67)**;
+   ~~`FILE`/`size_t`/`ssize_t`~~ **DONE (m68)**, together with `FUNCTION`, which this
+   entry omitted. Re-derived mechanically against the pinned tree (§2b) rather than read
+   off `cc_types.c`'s `BOOTSTRAP_MODE` block, which is where the old list came from and
+   why it was wrong in both directions:
+
+   | name | uses in the self-host TU | uses in the wider set | registered |
+   |------|--------------------------|-----------------------|------------|
+   | `FILE`     | **15** | 43 | `BOOTSTRAP_MODE` block |
+   | `FUNCTION` | **6**  | 8  | **unconditional**, `cc_types.c:168` |
+   | `size_t`   | 0      | 41 (stdio/stdlib/string only) | `BOOTSTRAP_MODE` block |
+   | `ssize_t`  | **0**  | **0** | `BOOTSTRAP_MODE` block |
+   | `_Bool`, `__va_list` | 0 | 0 | unconditional |
+
+   `ssize_t` appears nowhere in the pinned tree outside its own registration string —
+   the comment above it says it is a primitive *mes.c* wanted. `FUNCTION` was missed
+   because it is registered *above* the `BOOTSTRAP_MODE` block: it is used as a plain
+   value parameter in `common_recursion`, `general_recursion` and `arithmetic_recursion`
+   (`cc_core.c:988,1000,1025`), all in the TU. §3 already named
+   `common_recursion(FUNCTION f)` under "Function pointers"; this entry simply did not
+   inherit it.
+
+   m68 does not hardcode any of these names. The two positions that still required a
+   *keyword* — a parameter, and a local at statement level — now accept an identifier in
+   type position, which is what the other two positions have always done (`funcloop`
+   treats an unknown leading word as `int`, the accident that also makes `void` work;
+   `fl_global` follows it). So the rule is positional and covers `FILE`, `FUNCTION`,
+   `size_t`, `ssize_t`, `va_list` and any future typedef alike. Still genuinely open
+   here: nothing — but see item 9, which is a *type-model* gap rather than a naming one.
+
+   **`gcc_req.h` is a substitution, and is recorded as one.** Its entire content is
+   `typedef void (*FUNCTION) (void);` plus a comment saying it "exists only because gcc
+   doesn't support naked Function pointers". M2-Planet compiling *itself* does not need
+   it, because it pre-registers `FUNCTION` unconditionally — and neither do we, for the
+   same reason. Omitting that one file from the `-f` list is therefore the same *kind* of
+   move as the `asm()` omission in item 12: a substitution, not a capability.
 9. **`char**` subscripting** — `argv[i]`, 28 uses, needs an 8-byte stride. Our subscript
    scaling keys off `is_char`/`is_array` with no pointer-to-pointer notion, so it would
    emit *byte* access. A type-model gap, distinct from the argv plumbing below.

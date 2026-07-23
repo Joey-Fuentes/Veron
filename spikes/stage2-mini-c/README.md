@@ -267,6 +267,32 @@ int main(){ return name(2,3); }   // program is entered via bl main
   `int`/`char` emits at every position. Out of subset: `signed` and `short` (zero uses in
   the pinned source), and `FILE`/`size_t`/`ssize_t`, which are pre-registered primitives
   rather than keywords.
+- **identifier type names: `FILE` / `FUNCTION` / `size_t` (A28)**: type names that are
+  **not keywords** — the primitives M2-Planet pre-registers in `cc_types.c`. Nothing is
+  hardcoded: the two positions that still required a *keyword* to start a declaration — a
+  **parameter**, and a **local** at statement level — now accept an identifier in type
+  position, which is what the other two positions have always done (`funcloop` treats an
+  unknown leading word as `int` — the accident that also makes `void` work — and
+  `fl_global` follows it). So the rule is positional and covers `FILE`, `FUNCTION`,
+  `size_t`, `ssize_t`, `va_list` and any future typedef alike, in one change rather than
+  four recognizer arms. In a parameter list the decision is free (after `(` or `,` an
+  identifier can only be a type); at statement level it needs a peek, since a
+  statement-initial identifier may also begin an assignment, call, subscript, member
+  store, or label. The rule is **`IDENT` then stars then `IDENT`** — which in valid C is
+  a declaration and nothing else. Previously such a parameter was **silently dropped**:
+  the emitted code was byte-identical to omitting it, so a value-stack slot leaked per
+  call and any use of the name resolved as a function address — which is why `FUNCTION f`
+  followed by `f(v)` branched to an undefined label rather than merely computing a wrong
+  number, while `FILE* out` in a function that ignored it looked like it worked. The
+  second half of the rung is **`prescan`**, which sums declaration sizes to reserve the
+  frame and also only counted keyword declarations: an identifier-typed *array*
+  under-sized the frame and the next call clobbered it. prescan and the statement parser
+  must apply the *same* rule or the reserved frame stops matching what was declared, so
+  prescan gained the identical peek plus a statement-start flag — needed because prescan
+  scans the whole body, where `a * b` inside an expression is otherwise indistinguishable
+  from a declaration. Guarded as emitted-code equality against the `int` spelling, not
+  merely a correct exit code. Out of subset: `char**` subscripting (item 9 — a type-model
+  gap, not a naming one) and `typedef` declarations themselves.
 ```
 int a=5; int b=a+1; return a*b;                         ->  exits 30
 int n=10; int s=0; while(n){ s=s+n; n=n-1; } return s;  ->  exits 55  (sum 1..10)

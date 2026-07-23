@@ -2398,6 +2398,109 @@ if os.path.exists(s1p) and os.path.exists(s2p):
           _exit_safe("int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){"
                      "if(i==3){continue;}s=s+i;}return s;}"), 7)
 
+    print("== stage 2 identifier type names: FILE / FUNCTION / size_t (A28, m68) ==")
+    # These are NOT keywords -- they are type NAMES M2-Planet pre-registers as
+    # primitives (cc_types.c), so hardcoding them would be the wrong shape and would
+    # not cover a typedef later. Instead the two positions that still REQUIRED a
+    # keyword now accept an identifier in type position, which is what the other two
+    # positions have always done: funcloop treats an unknown leading word as `int`
+    # (the accident that makes `void` work) and fl_global follows it.
+    #
+    # Derived against the pinned tree rather than the doc's list, which was wrong in
+    # both directions: in the translation unit the makefile actually builds
+    # (bootstrappable.c + cc_*.c + gcc_req.h) FILE has 15 uses and FUNCTION has 6,
+    # while size_t has ZERO (its 41 uses are all in stdio/stdlib/string) and ssize_t
+    # has zero anywhere -- it is registered for mes.c, not for the self-host.
+    for cs, want in [
+        # cc_core.c:988,1000,1025 -- FUNCTION is a plain VALUE parameter, then called.
+        # The bl-vs-blr split is read off the symbol tables, so once the parameter is
+        # actually declared the call through it lowers to ldr x16 / blr with no
+        # further work -- which is the whole reason this is a parser fix, not codegen.
+        ("int inc(int x){return x+1;}int apply(FUNCTION f,int v){return f(v);}"
+         "int main(){return apply(inc,41);}", 42),
+        ("int inc(int x){return x+1;}int dbl(int x){return x*2;}"
+         "int g(FUNCTION f,char* s,char* nm,FUNCTION it){return f(20)+it(21);}"
+         "int main(){return g(inc,0,0,inc);}", 43),
+        ("int inc(int x){return x+1;}int main(){FUNCTION f;f=inc;return f(41);}", 42),
+        ("int inc(int x){return x+1;}FUNCTION h;int main(){h=inc;return h(41);}", 42),
+        # cc_core.c:62,73 / cc.c:45 / cc_reader.c:24 / cc_macro.c:642 -- FILE is
+        # always FILE*, at every scope.
+        ("int wr(FILE* out,int n){return n;}int main(){return wr(0,42);}", 42),
+        ("int rat(FILE* a,char* c,char* fn){return a[0]+42;}"
+         "int main(){char b[2];b[0]=0;return rat(b,0,0);}", 42),
+        ("char* g;int main(){FILE* in=g;return 42;}", 42),
+        ("int main(){FILE* f;f=0;if(f){return 9;}return 42;}", 42),
+        ("FILE* input;int main(){input=0;return 42;}", 42),
+        ("int rd(FILE* f){return f[0];}int main(){char b[2];b[0]=42;return rd(b);}", 42),
+        # size_t / ssize_t / va_list / any future pre-registered or typedef'd name --
+        # the rule is positional, so none of them is named anywhere in the compiler.
+        ("int f(size_t n,int v){return n+v;}int main(){return f(40,2);}", 42),
+        ("int main(){size_t n;n=42;return n;}", 42),
+        ("int main(){size_t n=42;return n;}", 42),
+        ("int f(ssize_t n){return n;}int main(){return f(42);}", 42),
+        ("int f(va_list ap,int n){return n;}int main(){return f(0,42);}", 42),
+        ("int inc(int x){return x+1;}int g(FILE* out,FUNCTION f,int v){return f(v);}"
+         "int main(){return g(0,inc,41);}", 42),
+        # An identifier-typed ARRAY is the case that needs `prescan` as well as the
+        # parser -- see the frame-size check below.
+        ("int sum(size_t* p,int n){int i;int s;i=0;s=0;while(i<n){s=s+p[i];i=i+1;}"
+         "return s;}int main(){size_t a[3];a[0]=1;a[1]=2;a[2]=39;return sum(a,3);}", 42),
+        ("int f(FILE* o,int n){int a;int b;int c;a=1;b=2;c=n;return a+b+c;}"
+         "int main(){return f(0,39);}", 42),
+    ]:
+        check(f"stage2 identifier type name exit -> {want}", _exit_safe(cs), want)
+
+    # THE DISAMBIGUATION. A statement-initial identifier is a declaration only when
+    # it is followed by (stars and) another identifier; everything else must stay
+    # exactly what it was. These are the forms that share the entry point.
+    for nm, cs, want in [
+        ("(void) param list stays empty", "int f(void){return 42;}int main(){return f();}", 42),
+        ("void return + (void) params",   "void g(void){return;}int main(){g();return 42;}", 42),
+        ("call statement",   "int s;int f(int n){s=n;return 0;}int main(){f(42);return s;}", 42),
+        ("assignment",       "int main(){int a;a=42;return a;}", 42),
+        ("subscript store",  "int main(){int a[2];a[1]=42;return a[1];}", 42),
+        ("member store",     "struct S{int v;};int main(){struct S s;s.v=42;return s.v;}", 42),
+        ("arrow store",      "struct S{int v;};int main(){struct S s;struct S* p;p=&s;"
+                             "p->v=42;return p->v;}", 42),
+        ("label definition", "int main(){int i;i=0;lp:i=i+1;if(i<42){goto lp;}return i;}", 42),
+        ("multiply",         "int main(){int a;int b;a=6;b=7;return a*b;}", 42),
+        ("deref store",      "int main(){int x;int* p;p=&x;*p=42;return x;}", 42),
+        ("char** argv",      "int main(int argc,char** argv){return 42;}", 42),
+    ]:
+        check(f"stage2 identifier type name: {nm} is unchanged", _exit_safe(cs), want)
+
+    # `prescan` sums declaration sizes to reserve the frame, and it only counted
+    # KEYWORD-introduced declarations -- so an identifier-typed array under-sized the
+    # frame and a call clobbered it (exactly the m39 failure the prescan exists to
+    # prevent; it surfaced here as a wrong sum, not a crash). prescan and the
+    # statement parser must apply the SAME rule or the reserved frame will not match
+    # what was declared, so the check is emitted-code equality against the `int`
+    # spelling rather than merely a correct exit code.
+    for nm, a, b in [
+        ("array",        "int main(){int a[3];a[0]=1;return a[0];}",
+                         "int main(){size_t a[3];a[0]=1;return a[0];}"),
+        ("scalar",       "int main(){int n;n=42;return n;}",
+                         "int main(){size_t n;n=42;return n;}"),
+        ("pointer",      "int main(){char* p;p=0;return 42;}",
+                         "int main(){FILE* p;p=0;return 42;}"),
+        ("param",        "int f(char* p,int n){return n;}int main(){return f(0,42);}",
+                         "int f(FILE* p,int n){return n;}int main(){return f(0,42);}"),
+        ("decl after decl", "int main(){int a;int b;a=1;b=41;return a+b;}",
+                            "int main(){int a;size_t b;a=1;b=41;return a+b;}"),
+        ("array after scalar", "int main(){int n;int a[3];n=1;a[0]=41;return n+a[0];}",
+                               "int main(){int n;size_t a[3];n=1;a[0]=41;return n+a[0];}"),
+    ]:
+        check(f"stage2 identifier type name {nm}: frame matches the int spelling",
+              _emit(a) == _emit(b), True)
+
+    # The one shape that must NOT be swallowed by the prescan rule: a multiplication
+    # whose left operand starts a statement-initial expression. `a = b * c;` has the
+    # pair AFTER an `=`, so the statement-start flag keeps it out.
+    check("stage2 identifier type name: 'a = b * c;' is not a declaration",
+          _exit_safe("int main(){int a;int b;int c;b=6;c=7;a=b*c;return a;}"), 42)
+    check("stage2 identifier type name: multiply after a decl-with-init",
+          _exit_safe("int main(){int b;int c;b=6;c=7;int a=b*c;return a;}"), 42)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)
