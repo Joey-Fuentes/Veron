@@ -411,6 +411,61 @@ jobs:
           c 'the emit_load shape'     7 "$G int f(int a,int b,char* s){if(s[0]==108){return b;}return 0;} int main(){return f(0,g(),\"load sizeof\");}"
           c 'call arg with expr'     13 "$G $F int main(){return f(1,g()+2,3);}"
 
+      - name: 'CONTROL: build a REFERENCE aarch64 M2-Planet (upstream tooling)'
+        continue-on-error: true
+        run: |
+          # Every "theirs" so far has been the gcc-built x86 binary running
+          # natively. That does not isolate stage 2's codegen from M2-Planet's
+          # own aarch64 output. Build the same source for aarch64 using ONLY
+          # upstream tools (borrow-tcc proved this works), so we can compare
+          # like with like: same source, same target, different compiler.
+          M=upstream-m2planet
+          L=$M/M2libc
+          $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode \
+            -f $L/aarch64/linux/bootstrap.c \
+            -f $L/bootstrap.c \
+            -f $M/cc.h \
+            -f $L/bootstrappable.c \
+            -f $M/cc_globals.c -f $M/cc_reader.c -f $M/cc_strings.c \
+            -f $M/cc_types.c -f $M/cc_emit.c -f $M/cc_core.c \
+            -f $M/cc_macro.c -f $M/cc.c \
+            -o ref.M1
+          upstream-mescc/bin/M1 -f $L/aarch64/aarch64_defs.M1 \
+            -f $L/aarch64/libc-core.M1 -f ref.M1 \
+            --little-endian --architecture aarch64 -o ref.hex2
+          upstream-mescc/bin/hex2 -f $L/aarch64/ELF-aarch64.hex2 -f ref.hex2 \
+            --little-endian --architecture aarch64 \
+            --base-address 0x400000 -o M2-ref
+          chmod +x M2-ref
+          ls -l M2-ref M2-Planet
+          echo "ours: $(wc -c < M2-Planet)  reference: $(wc -c < M2-ref)"
+
+      - name: 'THREE-WAY: ours vs upstream-aarch64 vs upstream-x86'
+        continue-on-error: true
+        run: |
+          w() {
+            printf '%s' "$2" > w.c
+            printf '  %-38s ' "$1"
+            set +e
+            timeout 60 qemu-aarch64 ./M2-Planet --architecture aarch64 \
+              --bootstrap-mode -f w.c -o /tmp/a.M1 </dev/null 2>/dev/null; a=$?
+            timeout 60 qemu-aarch64 ./M2-ref --architecture aarch64 \
+              --bootstrap-mode -f w.c -o /tmp/b.M1 </dev/null 2>/dev/null; b=$?
+            timeout 60 upstream-m2planet/bin/M2-Planet --architecture aarch64 \
+              --bootstrap-mode -f w.c -o /tmp/c.M1 </dev/null 2>/dev/null; c=$?
+            set -e
+            printf 'ours=%-5s ref-arm64=%-5s x86=%-5s\n' "$a" "$b" "$c"
+          }
+          echo "  (ref-arm64 = same source, aarch64 target, compiled by upstream M2-Planet)"
+          w 'return 8 (baseline)'        'int main(){return 8;}'
+          w 'return sizeof(int)'         'int main(){return sizeof(int);}'
+          w 'local, then return sizeof'  'int main(){int x;x=0;return sizeof(int);}'
+          w 'x = sizeof, return x'       'int main(){int x;x=sizeof(int);return x;}'
+          w 'sizeof in expression'       'int main(){return 1+sizeof(int);}'
+          w 'sizeof in a callee'         'int f(){return sizeof(int);}int main(){return f();}'
+          w 'no locals, return call'     'int f(){return 5;}int main(){return f();}'
+          w 'undefined symbol'           'int main(){return nosuch();}'
+
       - name: Build each benchmark with BOTH compilers
         continue-on-error: true
         run: |
