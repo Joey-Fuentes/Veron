@@ -27,6 +27,20 @@ def check(name, got, want):
 def hexb(text):
     b,_,_ = assemble(text); return b.hex()
 
+print("== GNU-as source lint (the bench does NOT model real `as`) ==")
+# s0as.py models stage0-as's OWN language, not GNU as, so edits to the .s files
+# real `as` assembles are unguarded until CI -- and there is no aarch64 assembler
+# on the dev box. A pushed commit failed with "attempt to store non-empty string
+# in section `.bss'" for exactly this reason. Mechanical classes get a lint.
+import os as _os, glob as _glob, subprocess as _sp
+_here = _os.path.dirname(_os.path.abspath(__file__))
+_srcs = sorted(_glob.glob(_os.path.join(_here, "..", "*", "*.s")))
+_r = _sp.run([sys.executable, _os.path.join(_here, "lint_asm.py")] + _srcs,
+             capture_output=True, text=True)
+check("GNU-as sources lint clean", _r.returncode, 0)
+if _r.returncode:
+    print(_r.stdout)
+
 print("== byte-level (vs real `as`, confirmed in CI) ==")
 check("subroutines bl/ret/br/blr",
       hexb("bl f\nret\nbr x16\nblr x17\n:f\nret\n"),

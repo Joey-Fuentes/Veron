@@ -809,10 +809,11 @@ eb_adv:
     add     x22, x22, #1
     ret
 
+    .balign 8
+inover:  .ascii  "stage0-as: input exceeds INBUF_SZ\n"
+
     .bss
     .align  4
-inover:  .ascii  "stage0-as: input exceeds INBUF_SZ\n"
-        .balign 8
 inbuf:   .space INBUF_SZ
 symtab:  .space 512
 outword: .space 4

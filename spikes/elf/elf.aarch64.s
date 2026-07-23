@@ -153,8 +153,9 @@ header:
     .byte 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00    // p_memsz   (PATCHED, offset 104)
     .byte 0x00,0x00,0x01,0x00, 0x00,0x00,0x00,0x00    // p_align=0x10000
 
+    .balign 8
+cbover:  .ascii  "elf: code exceeds CODEBUF_SZ\n"
+
     .bss
     .align  4
-cbover:  .ascii  "elf: code exceeds CODEBUF_SZ\n"
-        .balign 8
 codebuf: .space CODEBUF_SZ
