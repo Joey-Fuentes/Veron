@@ -1,0 +1,183 @@
+name: bench-codegen
+
+# SPIKE (invariants suspended). WHERE IS THE 1000x GOING?
+#
+# Our stage2-built M1 processes ~50 input bytes/sec: 768 read syscalls in 15s,
+# offset advancing, no loop. That is ~19ms per character, i.e. tens of millions
+# of emulated instructions per byte. Two candidate layers:
+#
+#   (a) stage 2's CODEGEN -- the compiler we wrote emits pathological code
+#   (b) the RUNTIME PATH  -- M2libc fgetc does one read(2) per byte, over our
+#                            m53 syscall builtins, with M2libc's brk allocator
+#                            (item 11) on top
+#
+# Same two sources, compiled by BOTH compilers, run under the same qemu:
+#
+#   stage 2      : src.c | stage2 | stage1 | stage0-as | elf   -> binary
+#   our M2-Planet: src.c | M2-Planet | M1 | hex2               -> binary
+#
+# The second path is borrow-m2's recipe, already green, using UPSTREAM M1/hex2
+# so this measurement does not depend on our M1 (slow) or our hex2 (SIGILLs on
+# exit). If compute is comparable but I/O is not, it is (b). If both are slow,
+# it is (a).
+
+on:
+  push:
+    paths:
+      - 'spikes/stage2-mini-c/**'
+      - '.github/workflows/bench-codegen.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: bench-codegen-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      M2PLANET_SHA: 34fbd5c2a9b6eb634a4f6ad95158dcd1efcf19e0
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu gcc make
+
+      - name: Fetch upstreams
+        run: |
+          git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git -C upstream-m2planet checkout "$M2PLANET_SHA"
+          git -C upstream-m2planet submodule update --init --recursive
+          git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
+
+      - name: Build the ladder and our M2-Planet
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+          cat spikes/stage1-as/stage1-as.s0 \
+            | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
+          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+            | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+          M=upstream-m2planet
+          cat $M/M2libc/bootstrap.c $M/M2libc/bootstrappable.c \
+              $M/cc.h $M/cc_globals.c $M/cc_reader.c $M/cc_strings.c \
+              $M/cc_types.c $M/cc_emit.c $M/cc_core.c $M/cc_macro.c $M/cc.c > m2.c
+          qemu-aarch64 ./stage2 < m2.c > m2.s1
+          cat m2.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf M2-Planet
+          # upstream M1/hex2 as ASSEMBLER+LINKER only -- this measurement must
+          # not depend on our M1 (slow) or our hex2 (SIGILL on exit).
+          make -C upstream-mescc M1 hex2
+
+      - name: Write the two benchmarks
+        run: |
+          # 1. Pure compute: no syscalls in the loop at all.
+          cat > compute.c <<'EOF'
+          int main()
+          {
+          	int i;
+          	int s;
+          	s = 0;
+          	i = 0;
+          	while(i < 300000)
+          	{
+          		s = s + i;
+          		i = i + 1;
+          	}
+          	return s & 255;
+          }
+          EOF
+          # 2. I/O: one getchar-shaped read per byte, minimal work per byte.
+          cat > io.c <<'EOF'
+          int main()
+          {
+          	int fd;
+          	int n;
+          	int r;
+          	char buf[2];
+          	fd = open("bench.dat", 0, 0);
+          	if(fd < 0) { return 1; }
+          	n = 0;
+          	r = read(fd, buf, 1);
+          	while(r > 0)
+          	{
+          		n = n + 1;
+          		r = read(fd, buf, 1);
+          	}
+          	close(fd);
+          	return n & 255;
+          }
+          EOF
+          head -c 20000 /dev/urandom | tr -dc 'a-z' > bench.dat || true
+          head -c 20000 /dev/zero | tr '\0' 'x' > bench.dat
+          echo "bench.dat: $(wc -c < bench.dat) bytes"
+
+      - name: Build each benchmark with BOTH compilers
+        run: |
+          L=upstream-m2planet/M2libc
+          M1=upstream-mescc/bin/M1
+          HEX2=upstream-mescc/bin/hex2
+
+          by_stage2() {   # $1 = source, $2 = out
+            qemu-aarch64 ./stage2 < "$1" > "$2.s1"
+            cat "$2.s1" | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as \
+              | qemu-aarch64 ./elf "$2"
+          }
+          by_m2planet() { # $1 = source, $2 = out  (borrow-m2's green recipe)
+            qemu-aarch64 ./M2-Planet --architecture aarch64 -f "$1" -o "$2.M1"
+            "$M1" -f "$L/aarch64/aarch64_defs.M1" -f "$L/aarch64/libc-core.M1" \
+                  -f "$2.M1" --little-endian --architecture aarch64 -o "$2.hex2"
+            "$HEX2" -f "$L/aarch64/ELF-aarch64.hex2" -f "$2.hex2" \
+                    --little-endian --architecture aarch64 \
+                    --base-address 0x400000 -o "$2"
+          }
+
+          by_stage2   compute.c compute_s2
+          by_m2planet compute.c compute_m2
+          by_stage2   io.c      io_s2
+          by_m2planet io.c      io_m2
+          ls -l compute_s2 compute_m2 io_s2 io_m2
+
+      - name: Measure
+        run: |
+          bench() {  # $1 = label, $2 = binary
+            set +e
+            local start end rc
+            start=$(date +%s%N)
+            timeout 300 qemu-aarch64 "./$2" </dev/null >/dev/null 2>&1
+            rc=$?
+            end=$(date +%s%N)
+            set -e
+            printf '  %-28s rc=%-4s %s ms\n' "$1" "$rc" "$(( (end-start)/1000000 ))"
+          }
+          echo "--- pure compute: 300k iterations, no syscalls ---"
+          bench "compute / stage2"     compute_s2
+          bench "compute / M2-Planet"  compute_m2
+          echo "--- I/O: 20000 one-byte reads ---"
+          bench "io / stage2"          io_s2
+          bench "io / M2-Planet"       io_m2
+
+          echo
+          echo "READING THIS:"
+          echo "  compute similar, io wildly different -> the runtime/syscall path"
+          echo "  compute also wildly different        -> stage 2's codegen"
+          echo "  both fast                            -> neither; the cost is"
+          echo "    something M1 does per byte (allocation, or an O(n) scan)"
+
+      - name: 'If compute is slow: count instructions per iteration'
+        continue-on-error: true
+        run: |
+          # qemu can report the emitted TB count; a huge ratio here localises
+          # the blowup to the loop body rather than to startup.
+          for b in compute_s2 compute_m2; do
+            echo "--- $b ---"
+            set +e
+            timeout 120 qemu-aarch64 -d nochain -D "$b.qlog" "./$b" >/dev/null 2>&1
+            set -e
+            echo "  trace lines: $(wc -l < "$b.qlog" 2>/dev/null || echo n/a)"
+          done
