@@ -53,6 +53,62 @@ jobs:
           make -C upstream-m2planet M2-Planet
           make -C upstream-mescc M1 hex2
 
+      - name: 'Q0: what does stage 2 think sizeof(struct T*) is?'
+        continue-on-error: true
+        run: |
+          # M1's first statement is calloc(65537, sizeof(struct blob*)).
+          # If stage 2 returns the STRUCT size instead of the pointer size,
+          # that allocation and its memset are several times larger than they
+          # should be -- slow rather than infinite, which fits the evidence
+          # better than the loop bug I guessed at (all ten reducers passed).
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+          cat spikes/stage1-as/stage1-as.s0 \
+            | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
+          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+            | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+
+          z() {
+            printf '%s' "$2" > z.c
+            printf '  %-34s ' "$1"
+            set +e
+            qemu-aarch64 ./stage2 < z.c > z.s1 2>/dev/null
+            cat z.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as \
+              | qemu-aarch64 ./elf z.elf 2>/dev/null
+            timeout 20 qemu-aarch64 ./z.elf; v=$?
+            set -e
+            printf 'got=%-5s want=%s\n' "$v" "$3"
+          }
+          B='struct blob { char* Text; struct blob* next; int type; char* Expression; };'
+          z 'sizeof(struct blob*)'  "$B int main(){return sizeof(struct blob*);}"  8
+          z 'sizeof(struct blob)'   "$B int main(){return sizeof(struct blob);}"   32
+          z 'sizeof(char*)'         "int main(){return sizeof(char*);}"            8
+          z 'sizeof(int)'           "int main(){return sizeof(int);}"              8
+
+      - name: 'Q0b: UNINSTRUMENTED timing of the real allocation'
+        continue-on-error: true
+        run: |
+          # No -strace, no -d. Every timing I have quoted so far was measured
+          # under instrumentation that slows qemu by orders of magnitude.
+          B='struct blob { char* Text; struct blob* next; int type; char* Expression; };'
+          w() {
+            printf '%s' "$2" > w.c
+            printf '  %-40s ' "$1"
+            set +e
+            qemu-aarch64 ./stage2 < w.c > w.s1 2>/dev/null
+            cat w.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as \
+              | qemu-aarch64 ./elf w.elf 2>/dev/null
+            s=$(date +%s); timeout 180 qemu-aarch64 ./w.elf; v=$?; e=$(date +%s)
+            set -e
+            printf 'rc=%-5s %ss %s\n' "$v" "$((e-s))" \
+              "$([ "$v" = 124 ] && echo '  <-- HUNG')"
+          }
+          w 'calloc(65537,8) then return 7'      'int main(){char* p;p=calloc(65537,8);return 7;}'
+          w 'calloc(65537,sizeof(struct blob*))' "$B int main(){char* p;p=calloc(65537,sizeof(struct blob*));return 7;}"
+          w 'calloc(1000000,1)'                  'int main(){char* p;p=calloc(1000000,1);return 7;}'
+
       - name: 'Q1: does M2libc calloc+memset work on aarch64 under qemu AT ALL?'
         run: |
           # The narrowest possible version of M1's first statement. Upstream
