@@ -1025,6 +1025,48 @@ complete and the bench now honest about wild addresses, the next rung is the rem
 floor: a **`calloc`/`free` heap** and **file I/O** so a compiled program can run as a
 compiler (see §6).
 
+### m54 (A13) — the single-pass `@`-target accounting bug: member stores emitted a blank line
+
+A **latent codegen state-leak** in the original `.s1`, unrelated to any one rung, that
+made a function's compiled meaning depend on **what was defined before it**.
+
+stage 2 is single-pass, so `if`/`while` targets are **absolute** `@<byte-pos>` values the
+compiler computes itself from **`x17`**, its count of emitted instructions. `emitstr`
+bumps `x17` once per `\n`, so the whole scheme rests on one invariant: *every emitted line
+assembles to exactly 4 bytes.* The member-store templates **`smst2`/`smst2b` carried a
+leading `\n`**. They are emitted right after `compile_expr`, which already ends at a fresh
+line — so every `p->f = v;` emitted a **blank line**: `+1` to `x17`, **0 bytes** assembled.
+Because `x17` is **monotonic across the whole program**, the drift never hurts the function
+that caused it; it corrupts the `@`-targets of every function emitted **afterwards**.
+
+An append-shaped function (`calloc` + three member stores + an if/else linking two global
+struct pointers) drifted **12 bytes = 3 instructions**, so the *next* function's branch
+targets landed three instructions past their intent. The symptoms looked unrelated to the
+cause and were maddeningly order-dependent: the victim silently returned `0`/garbage, or —
+when the mis-aimed target skipped a loop bound wrapped around an allocating call — **never
+terminated**. That last shape is why a program combining a recursive emit path, a separator
+predicate, and an allocating builder ran away: each half was green alone, and only the
+combination put enough emitted code after `append` for the drift to land somewhere fatal.
+
+**Fixed** by dropping the leading `\n` from both templates — which is also the convention
+the working array-store path already used (`emitsubstore` → `spopval2` starts mid-line
+precisely because `compile_expr` left the cursor at a fresh line). One-line class of fix,
+no design change, no reference change. Verified: emitted code-region drift is now **0**
+across a 24-construct corpus (member/chained/byte stores, arrays, globals, deref, if,
+if/else, while, nested while, recursion, calls, arithmetic, comparisons, unary, bitops,
+`calloc`); victims of every control-flow shape return the same value in **all definition
+orders**; and the three-way emit+predicate+builder program now returns correct counts
+instead of running away. Guarded so the class cannot return silently: `validate.py` gained
+an **x17 emit-accounting section** (no blank line in the code region, `x17` == true
+instruction count, order-independence witnesses, and the three-way shape), 412 → **429**,
+and `stage2-mini-c-demo` gained a matching **`emit_ok`** section wired into the pass gate,
+with `timeout` bounding the runaway case so a regression fails fast instead of hanging CI.
+Confirmed the guards actually catch it: reverting the one-line fix turns 12 of them red,
+including the nested-while victim, which reports `<runaway>`.
+
+**Not** the separately-tracked frame-sizing bug below — that one is still open and
+independent.
+
 ---
 
 ## 6. What's next

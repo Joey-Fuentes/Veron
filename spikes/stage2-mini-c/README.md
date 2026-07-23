@@ -236,6 +236,27 @@ runs, and treating `( ) { } ; ,` as punctuation — so a variable named `i`, `w`
   multiplicative level with `*`, left-associative, and are **unsigned-32** like the
   comparisons; signed `/` waits on signed types (an `sdiv`/sign-extension refinement).
 
+- **Single-pass `@`-target accounting is an invariant, not an accident** (A13, m54).
+  Because the compiler is single-pass, `if`/`while` targets are **absolute**
+  `@<byte-pos>` values it computes itself from `x17`, its count of emitted
+  instructions. `emitstr` bumps `x17` once per `\n`, so the model is *"every emitted
+  line is exactly 4 bytes."* Any emitted line that assembles to a different size
+  desynchronises `x17` from the true instruction count — and because `x17` is
+  **monotonic across the whole program**, the drift corrupts the `@`-targets of every
+  function emitted **afterwards**, not the one that caused it.
+  The member-store templates `smst2`/`smst2b` carried a **leading `\n`**. They are
+  emitted after `compile_expr`, which already ends at a fresh line, so every
+  `p->f = v;` emitted a **blank line**: `+1` to `x17`, **0 bytes** assembled. An
+  append-shaped function (three member stores) drifted **12 bytes**, so the next
+  function's branch targets landed three instructions past their intent. Symptoms
+  were order-dependent and looked unrelated to the cause: a later function silently
+  returning `0`/garbage, or — when the mis-aimed target skipped a loop bound around
+  an allocating call — **looping forever**. Fixed by dropping the leading `\n`, which
+  is also the convention the working array-store path (`emitsubstore` → `spopval2`)
+  already used. Guarded directly in `validate.py` and in CI: no emitted line in the
+  code region may be blank, `x17` must equal the true instruction count, and a
+  function's meaning must not depend on what was defined before it.
+
 Equality and `/` are small, self-contained increments that are available to pick
 up any time, but they are **not the critical path**. With functions +
 recursion, pointers/`char`/arrays, `struct`, **function pointers** (A9), the

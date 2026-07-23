@@ -1009,6 +1009,93 @@ if os.path.exists(s1p) and os.path.exists(s2p):
                       'close(fd);return b[0];}', files={"in": b"ABC"})
     check("stage2 read fills the buffer (b[0]=='A')", rc, 65)
 
+    # ---------------------------------------------------------------- m54 / A13
+    # x17 EMIT ACCOUNTING.  stage2 is single-pass: `if`/`while` targets are
+    # ABSOLUTE `@<byte-pos>` values the compiler computes itself from x17, its
+    # count of emitted instructions.  x17 is bumped once per '\n' seen by
+    # emitstr, so the model is "every emitted line is exactly 4 bytes".  Any
+    # emitted line that is NOT 4 bytes desynchronises x17 from the true
+    # instruction count -- and because x17 is monotonic across the whole
+    # program, the drift corrupts the @-targets of every function emitted
+    # AFTERWARDS, not the function that caused it.
+    #
+    # The member-store templates smst2/smst2b used to carry a LEADING '\n'.
+    # They are emitted after compile_expr, which already ends at a fresh line,
+    # so each `p->f = v;` emitted a BLANK line: +1 to x17, 0 bytes assembled.
+    # An append-shaped function (3 member stores) drifted 12 bytes, so the next
+    # function's loop/branch targets landed 3 instructions past their intent.
+    # Symptom: a later function silently returns 0/garbage, or -- when the
+    # skipped target is a loop bound around an allocating call -- never
+    # terminates.  Guard the invariant directly, not just its symptoms.
+    print("== stage 2 x17 emit accounting: no 0-byte lines in code (A13) ==")
+    import stage1_ref
+    def _drift(csrc):
+        """(#blank lines, x17-model bytes - real bytes) over the CODE region."""
+        model = actual = blanks = 0
+        for line in _emit(csrc).split("\n"):
+            s = line.strip()
+            if s.startswith(".byte") or s.startswith(".ascii"):
+                break                       # data section: emitted after all code
+            if s.startswith(":"):
+                continue                    # labels are 0 bytes and bypass x17
+            if s == "":
+                blanks += 1; model += 4; continue
+            model += 4; actual += stage1_ref._size(s)
+        return blanks, model - actual
+
+    _S = "struct N{int v;int w;struct N* nx;};struct N* HEAD;struct N* TAIL;"
+    _APPEND = (_S + "int append(int v){struct N* n=calloc(1,sizeof(struct N));"
+               "n->v=v;n->nx=0;if(HEAD==0){HEAD=n;TAIL=n;}"
+               "else{TAIL->nx=n;TAIL=n;}return 0;}")
+    for nm, cs in [
+        ("member store",   _S + "int f(struct N* n){n->v=5;return 0;}int main(){return 0;}"),
+        ("member store x3",_S + "int f(struct N* n){n->v=1;n->w=2;n->nx=0;return 0;}int main(){return 0;}"),
+        ("chained store",  _S + "int f(struct N* n){n->nx->v=7;return 0;}int main(){return 0;}"),
+        ("byte store",     _S + "int f(char* p){p[0]=65;return 0;}int main(){return 0;}"),
+        ("append shape",   _APPEND + "int main(){return 0;}"),
+    ]:
+        b, d = _drift(cs)
+        check(f"stage2 no blank emitted line: {nm}", b, 0)
+        check(f"stage2 x17 == real instr count: {nm}", d, 0)
+
+    # Behavioural: definition ORDER must not change a function's meaning.  Each
+    # victim returns 3 alone; it must still return 3 when defined after append.
+    # A mis-aimed @-target can send a loop back past its own increment, so the
+    # compiled program never terminates -- report that as a value, don't let it
+    # take down the whole validation run.
+    def _exit_safe(csrc):
+        try:
+            return _exit(csrc)
+        except RuntimeError as e:
+            return f"<{e}>"
+        except OOBAccess:
+            return "<oob>"
+
+    for nm, victim in [
+        ("if/else", "int g(){int a;if(0){a=9;}else{a=3;}return a;}"),
+        ("while",   "int g(){int i;int s;i=0;s=0;while(i<3){s=s+1;i=i+1;}return s;}"),
+        ("nested",  "int g(){int i;int j;int c;i=0;c=0;while(i<3){j=0;"
+                    "while(j<1){c=c+1;j=j+1;}i=i+1;}return c;}"),
+    ]:
+        check(f"stage2 victim after append still returns 3: {nm}",
+              _exit_safe(_APPEND + victim + "int main(){return g();}"), 3)
+
+    # The three-way shape that used to miscompile into a runaway: a recursive
+    # emit path + a separator predicate + an allocating builder, all in one
+    # program.  Each half was green alone; only the combination broke.
+    _ISSEP = "int issep(int c){if(c==32){return 1;}if(c==44){return 1;}return 0;}"
+    _EMITL = ("int emit_span(struct N* p,int n){if(p==0){return n;}"
+              "if(issep(p->v)){return n;}p->w=n;return emit_span(p->nx,n+1);}"
+              "int emit_list(struct N* p){if(p==0){return 0;}"
+              "if(issep(p->v)){return emit_list(p->nx);}"
+              "return emit_span(p,0)+emit_list(p->nx);}")
+    _BUILD = "int build(int n){if(n==0){return 0;}append(65+n);return 1+build(n-1);}"
+    _THREE = _S + _ISSEP + _EMITL + _BUILD + _APPEND[len(_S):]
+    check("stage2 emit+issep+builder: builder count correct",
+          _exit_safe(_THREE + "int main(){return build(3);}"), 3)
+    check("stage2 emit+issep+builder: emit path correct",
+          _exit_safe(_THREE + "int main(){build(3);return emit_list(HEAD);}"), 6)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)

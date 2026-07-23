@@ -604,6 +604,44 @@ jobs:
           if [ "$rc" = 21 ] && [ "$(cat io_out)" = "copy-this-source-text" ]; then st=OK; else st=DIFF; io_ok=no; fi
           printf '  %-64s exit=%-4s want=%-4s out=%s %s\n' 'open/read/write/close file copy' "$rc" 21 "$(cat io_out 2>/dev/null)" "$st"
 
+          echo "== stage-2: single-pass @-target accounting (definition order) =="
+          # stage2 is single-pass: if/while targets are ABSOLUTE @<byte-pos> values
+          # it computes from its own emitted-instruction counter, which advances
+          # once per emitted line ("every line is 4 bytes"). A 0-byte emitted line
+          # (a blank) therefore desynchronises the counter from the real
+          # instruction count -- and since the counter is monotonic across the
+          # whole program, the drift corrupts the @-targets of every function
+          # emitted AFTERWARDS, not the one that caused it. Symptom: a later
+          # function silently returns garbage, or loops forever when the mis-aimed
+          # target skips a loop bound. Guard the invariant AND the symptom.
+          emit_ok=yes
+          DECLS='struct N{int v;int w;struct N* nx;};struct N* HEAD;struct N* TAIL;'
+          APPENDF='int append(int v){struct N* n=calloc(1,sizeof(struct N));n->v=v;n->nx=0;if(HEAD==0){HEAD=n;TAIL=n;}else{TAIL->nx=n;TAIL=n;}return 0;}'
+          printf '%s' "$DECLS$APPENDF"'int main(){return 0;}' | qemu-aarch64 ./stage2 > acct.s
+          # structural: no blank line anywhere in the CODE region (the trailing
+          # data section is emitted after all code and cannot move a @-target).
+          awk '/^\.byte/||/^\.ascii/{exit} {print}' acct.s > acct_code.s
+          blanks=$(grep -c '^[[:space:]]*$' acct_code.s || true)
+          if [ "$blanks" = 0 ]; then st=OK; else st=DIFF; emit_ok=no; fi
+          printf '  %-64s blanks=%-4s want=%-4s %s\n' 'no 0-byte (blank) line emitted in code region' "$blanks" 0 "$st"
+          # behavioural: definition ORDER must not change a function's meaning.
+          # timeout bounds a runaway so a regression fails fast instead of hanging.
+          vtry() {
+            printf '%s' "$1" | qemu-aarch64 ./stage2 > vout.s
+            cat vout.s | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf a.out
+            set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; emit_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          vtry "$DECLS$APPENDF"'int g(){int a;if(0){a=9;}else{a=3;}return a;}int main(){return g();}' 3 'if/else victim defined after append'
+          vtry "$DECLS$APPENDF"'int g(){int i;int s;i=0;s=0;while(i<3){s=s+1;i=i+1;}return s;}int main(){return g();}' 3 'while victim defined after append'
+          vtry "$DECLS$APPENDF"'int g(){int i;int j;int c;i=0;c=0;while(i<3){j=0;while(j<1){c=c+1;j=j+1;}i=i+1;}return c;}int main(){return g();}' 3 'nested-while victim after append (runaway guard)'
+          # the three-way shape that used to miscompile into a runaway: a recursive
+          # emit path + a separator predicate + an allocating builder in one program
+          THREE="$DECLS"'int issep(int c){if(c==32){return 1;}if(c==44){return 1;}return 0;}int emit_span(struct N* p,int n){if(p==0){return n;}if(issep(p->v)){return n;}p->w=n;return emit_span(p->nx,n+1);}int emit_list(struct N* p){if(p==0){return 0;}if(issep(p->v)){return emit_list(p->nx);}return emit_span(p,0)+emit_list(p->nx);}int build(int n){if(n==0){return 0;}append(65+n);return 1+build(n-1);}'"$APPENDF"
+          vtry "$THREE"'int main(){return build(3);}' 3 'emit path + issep + allocating builder: builder count'
+          vtry "$THREE"'int main(){build(3);return emit_list(HEAD);}' 6 'emit path + issep + allocating builder: traversal'
+
           {
             echo "## stage2-mini-c — variables, if/while, reassignment, functions + recursion"
             echo '```'
@@ -619,6 +657,7 @@ jobs:
             echo "large literals: movz + movk (>=2^16)  : $lit_ok"
             echo "heap: calloc/free bump alloc (mmap)  : $heap_ok"
             echo "file I/O: open/read/write/close/exit : $io_ok"
+            echo "single-pass @-target accounting (order): $emit_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
             echo "while(n){s=s+n;n=n-1;} sum 1..10     -> 55"
@@ -630,8 +669,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ]; then
-            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct."
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ]; then
+            echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct; and the single-pass @-target accounting invariant holds (every emitted line assembles to exactly 4 bytes, so the emitted-instruction counter stays equal to the true instruction count and a function's meaning does not depend on what was defined before it)."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok"; exit 1
           fi
