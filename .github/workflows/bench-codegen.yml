@@ -96,20 +96,16 @@ jobs:
           cat > io.c <<'EOF'
           int main()
           {
-          	int fd;
           	int n;
           	int r;
           	char buf[2];
-          	fd = open("bench.dat", 0, 0);
-          	if(fd < 0) { return 1; }
           	n = 0;
-          	r = read(fd, buf, 1);
+          	r = read(0, buf, 1);
           	while(r > 0)
           	{
           		n = n + 1;
-          		r = read(fd, buf, 1);
+          		r = read(0, buf, 1);
           	}
-          	close(fd);
           	return n & 255;
           }
           EOF
@@ -128,8 +124,12 @@ jobs:
             cat "$2.s1" | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as \
               | qemu-aarch64 ./elf "$2"
           }
-          by_m2planet() { # $1 = source, $2 = out  (borrow-m2's green recipe)
-            qemu-aarch64 ./M2-Planet --architecture aarch64 -f "$1" -o "$2.M1"
+          by_m2planet() { # $1 = source, $2 = out, $3 = optional extra -f
+            # --bootstrap-mode: the ONLY mode our M2-Planet has been exercised
+            # in (it was built from the --bootstrap-mode -f list). Without it we
+            # segfault, which is what the previous run hit.
+            qemu-aarch64 ./M2-Planet --architecture aarch64 --bootstrap-mode \
+              $3 -f "$1" -o "$2.M1"
             "$M1" -f "$L/aarch64/aarch64_defs.M1" -f "$L/aarch64/libc-core.M1" \
                   -f "$2.M1" --little-endian --architecture aarch64 -o "$2.hex2"
             "$HEX2" -f "$L/aarch64/ELF-aarch64.hex2" -f "$2.hex2" \
@@ -140,7 +140,12 @@ jobs:
           by_stage2   compute.c compute_s2
           by_m2planet compute.c compute_m2
           by_stage2   io.c      io_s2
-          by_m2planet io.c      io_m2
+          # 'read' may come from libc-core.M1; if not, pull in M2libc's asm
+          # definitions (our M2-Planet is upstream's code, so asm() is fine).
+          if ! by_m2planet io.c io_m2 2>/dev/null; then
+            echo "  (io: libc-core.M1 did not supply read; adding M2libc bootstrap)"
+            by_m2planet io.c io_m2 "-f $L/aarch64/linux/bootstrap.c"
+          fi
           ls -l compute_s2 compute_m2 io_s2 io_m2
 
       - name: Measure
@@ -149,7 +154,7 @@ jobs:
             set +e
             local start end rc
             start=$(date +%s%N)
-            timeout 300 qemu-aarch64 "./$2" </dev/null >/dev/null 2>&1
+            timeout 300 qemu-aarch64 "./$2" <bench.dat >/dev/null 2>&1
             rc=$?
             end=$(date +%s%N)
             set -e
