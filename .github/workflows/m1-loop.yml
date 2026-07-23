@@ -31,7 +31,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      M2PLANET_SHA: 34fbd5c2a9b6eb634a4f6ad95158dcd1efcf19e0
+      M2PLANET_SHA: bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d
+      M2LIBC_SHA: 68a23cfd05d5a355ba7a30c770d684cbe86fcc4e
+      MESCC_SHA: 5adfbf3
     steps:
       - uses: actions/checkout@v5
 
@@ -46,7 +48,15 @@ jobs:
           git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
           git -C upstream-m2planet checkout "$M2PLANET_SHA"
           git -C upstream-m2planet submodule update --init --recursive
+          git -C upstream-m2planet/M2libc fetch --depth 50 origin "$M2LIBC_SHA" 2>/dev/null || true
+          git -C upstream-m2planet/M2libc checkout -q "$M2LIBC_SHA" 2>/dev/null \
+            || echo "  NOTE: M2libc already at the gitlink for this M2-Planet commit"
           git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
+          git -C upstream-mescc checkout -q "$MESCC_SHA"
+          echo "  PINS RESOLVED:"
+          echo "    M2-Planet   $(git -C upstream-m2planet rev-parse HEAD)"
+          echo "    M2libc      $(git -C upstream-m2planet/M2libc rev-parse HEAD)"
+          [ -d upstream-mescc ] && echo "    mescc-tools $(git -C upstream-mescc rev-parse HEAD)"
 
       - name: Build ladder and M1
         run: |

@@ -51,13 +51,18 @@ M2-Planet." Everything below is scoped to that single replacement.
 
 ## 1. Pinned spec sources
 
+> **Repinned.** These moved off `master` to M2-Planet Release 1.13.1 and the
+> stage0-posix set; `master` carried an unreleased output-buffering change that
+> breaks the aarch64 self-host. See `../UPSTREAM-PINS.md`. §2's mechanical
+> re-derivation has NOT been re-run against the new pin.
+
 Because we now treat this source as our spec, it must not drift under us. The
 `borrow-m2-demo` workflow pins the upstreams:
 
 | upstream   | commit                                     | role                         |
 |------------|--------------------------------------------|------------------------------|
-| M2-Planet  | `34fbd5c2a9b6eb634a4f6ad95158dcd1efcf19e0` | defines the C subset (spec)  |
-| M2libc     | `ca023d8dc855171fd0618951add5817e0e568fca` | runtime we must provide      |
+| M2-Planet  | `bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d` | defines the C subset (spec)  |
+| M2libc     | `68a23cfd05d5a355ba7a30c770d684cbe86fcc4e` | runtime we must provide      |
 
 M2libc is pinned transitively via M2-Planet's submodule gitlink at that commit.
 (`mescc-tools` — the M1/hex2 assembler+linker — is not part of the C-subset spec
