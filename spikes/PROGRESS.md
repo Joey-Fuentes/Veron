@@ -1775,9 +1775,18 @@ in the translation unit the makefile actually builds: `FILE` 15 uses, **`FUNCTIO
 was missed because it is registered *above* the `BOOTSTRAP_MODE` block, unconditionally;
 it is a plain value parameter in `common_recursion`, `general_recursion` and
 `arithmetic_recursion`. §3 already named `common_recursion(FUNCTION f)` under "Function
-pointers" — the item just never inherited it. The same pass showed `long` has zero real
-uses in the TU (all 10 are in the M2libc C sources), which is recorded in the new
-`TARGET-SUBSET.md` §2b along with the TU-vs-wider-set distinction that caused it.
+pointers" — the item just never inherited it.
+
+*(Correction, added at m71: the counts above were taken against the **makefile's** file
+list, which is the gcc build. The real translation unit is the `--bootstrap-mode` `-f`
+list in M2-Planet's `test/test1000/hello-aarch64.sh`, on which `FILE` has 23 uses and
+`FUNCTION` 5. The conclusions about `size_t` and `ssize_t` survive the correction — both
+are still zero — and `FUNCTION` was still the real omission. What does **not** survive is
+the claim this entry originally made next, that "`long` has zero real uses in the TU": on
+the correct list `long` has **4**, all in `M2libc/bootstrap.c`'s brk allocator, so item 8's
+original count of 4 was right all along. Corrected in `TARGET-SUBSET.md` §2b, which now
+also names the right file. The lesson is the one m66 already recorded and this rung
+repeated: check a claim against the source, and say which source.)*
 
 **Nothing is hardcoded.** These are type *names*, not keywords — M2-Planet keeps them in
 a table, so four recognizer arms would have been the wrong shape and would not have
@@ -1837,6 +1846,122 @@ naked function pointers. M2-Planet compiling itself does not need it — it pre-
 is the same *kind* of move as the `asm()` omission in item 12: a substitution, not a
 capability. `typedef` itself remains unimplemented, and `char**` subscripting (item 9) is
 untouched — a type-model gap, not a naming one.
+
+---
+
+### m69 (A29+A30) — the `brk` builtin, and the pointer-to-pointer type model
+
+**`brk` is small and its importance is structural.** `M2libc/aarch64/linux/bootstrap.c`
+defines exactly six functions in `asm()` — `read`, `write`, `open`, `close`, `brk`,
+`exit` — and m53 supplied five of them with matching syscall numbers *and argument order*,
+deliberately, so that omitting that file would stay possible. `brk` was the sixth. With it,
+item 12 costs one ten-line wrapper on syscall 214 instead of embedding an M1 assembler for
+a syntax whose bodies read the *caller's* frame through `x17` in M2-Planet's own calling
+convention. The predicted side effect is real: M2libc's `malloc` is a brk bump allocator
+and it defines `calloc`/`free` too, so under user-definition-wins those override ours and
+the compiled M2-Planet runs on brk rather than the m51 mmap arena.
+
+**Pointer-to-pointer was documented as a stride constant and was neither.** The doc said
+`argv[i]` needs an 8-byte stride. Probing first showed it was not argv-specific: `char*
+a[2]` as a plain local returned 0 and `int* a[2]` returned 73, with no `char**` anywhere.
+Three defects were stacked:
+
+- **The declarator consumed one star.** All four sites took the second `*` as the variable
+  *name*, so `char** argv` declared something called `*` and skipped `argv`. This is why
+  the parameter looked fine in a function that ignored it.
+- **`di_array`/`flg_array` tested `flags != 0` instead of the char bit**, so `int* a[N]`
+  took the byte-packing path and came out three words short.
+- **Then** the type-model gap proper: no notion of an element that is itself a pointer. A
+  fourth bit records it and every byte-vs-word decision became `(flags & 17) == 1`.
+
+`prescan` needed the star run too — it and the declarators must agree or the reserved frame
+stops matching what was declared.
+
+---
+
+### m70 (A31) — `argc`/`argv` from `_start`
+
+Deliberately after m69: argv is useless if `argv[i]` has the wrong stride, and `cc.c`'s
+option loop is 29 uses of `argv[i]` / `argv[i+1]`. The preamble copies SP into an ordinary
+register and pushes `argc` then `argv`, left to right, because the callee pops in reverse.
+
+Two encoding facts were settled by the real assembler rather than derived, both byte-checked
+in CI: **ADD (immediate) treats `Rn=31` as SP** where the *register* form treats `Rm=31` as
+XZR — "31 means SP" is a property of the instruction form, not the number — and `mov x3, sp`
+*is* `add x3, sp, #0`. The preamble copies SP out and never uses it as a load base, because
+an SP-based access faults unless SP is 16-byte aligned and nothing in this ladder maintains
+that invariant.
+
+The pushes are **unconditional**: the compiler is single-pass and emits the preamble long
+before it has seen `main`'s declarator, so `int main()` simply never pops the two values —
+a two-slot leak on a 32 KB value stack, once per program, which is the right trade against
+carrying a lookahead. This rung changes every program's first seven instructions, so plain
+byte-identity is the wrong guard; the guard is that the change is **confined to the
+preamble** — identical from `bl main` onward, and exactly 7 lines longer.
+
+**The bench had no `x31` at all** (`R` was `x0..x30`), so none of this was testable there.
+`interp.py` now models the initial process stack — argc, the argv pointers, NULL, envp NULL,
+and the strings — and `run()` takes an `argv=` list. Same rule as m50/m51: model it so the
+bench *witnesses* the behaviour instead of being less capable than reality. The stack block
+sits between the code and the start of brk, so a wild pointer in those ~80 bytes no longer
+faults — that is faithful, not a regression, since on real hardware the initial stack is
+mapped readable memory too.
+
+---
+
+### m71 (A32) — `char*` struct members, member subscript, and **the handoff**
+
+**Stage 2 builds M2-Planet from M2-Planet's own source, and that binary compiles C.** On CI
+with real `as` + qemu: 220,415 bytes of upstream source in, 1,303,180 bytes of assembly out,
+81,893 instructions linked, exit 0, and five sample programs — arithmetic, recursion, a
+`while` loop, strings through a `char*` parameter, `for`+`break` — each emitting real M1. A
+sixth using `.` member access is **rejected by our M2-Planet with M2-Planet's own
+diagnostic**, because upstream does not support `.` in `--bootstrap-mode`; that is the
+binary behaving faithfully, not a defect of ours.
+
+**The one substitution** is `M2libc/aarch64/linux/bootstrap.c` — see the m69 entry and
+`TARGET-SUBSET.md` item 12. Every other file of the upstream `-f` list is compiled
+**unpatched**.
+
+**The bug in the way was two lines, and it was found by bisection rather than by reading.**
+The first full run got all the way to *running* M2-Planet — it parsed its own command line,
+found `-o`, created the output file, read and tokenized the input — and then exited 1 with
+`Unknown type int`. A debug interp reported the faulting PC; mapping it back gave a `strb`
+through a null base inside `copy_string`, reached from `emit_to_string` where `emit_string`
+was NULL. Probing down from there produced a one-line reproducer: **a `char*` parameter
+stored into a struct member**. Struct fields carry their own two-bit flag word, separate
+from the symbol table's — bit 0 char, bit 1 pointer — and the member get/set width tested
+only bit 0, so a `char* name;` member was stored and loaded as a **single byte**.
+`struct type`'s `char* name` is exactly that, so `match(i->name, s)` compared a truncated
+pointer and every primitive lookup missed. The fix is m69's rule one level down:
+`(flags & 3) == 1`. Notably the `&member` path **already** used the correct two-bit test,
+which is what identified the intent instead of me guessing it.
+
+Then 125 sites of `token->s[i]` needed **member subscript**, which had never existed: a
+member load pushes a *value*, and the subscript machinery only ever worked from a named
+symbol. `cem_ltp` now peeks for `[`, compiles the index, and pops base and index off the
+value stack — one new emitted form (`spopbase`) — byte or word by the field's char bit,
+which is the *pointee* width here, the mirror of the width rule above.
+
+**Still open:** the emitted `.M1` is not yet driven through M1/hex2 into an executable. That
+is `spikes/borrow-m2/`'s half, already green on its own; joining the two is the next rung,
+and until it exists "M2-Planet is stage 3" is proven at the compiler level only.
+
+---
+
+### Tooling debt: `validate.py` is now too slow to run
+
+The bench suite has grown past the point of being a fast inner loop — a full run is
+dominated by a few pathological cases (the 600-function capacity test compiles 36 KB of
+input and emits ~585 KB through a Python interpreter roughly 1e4x slower than native, and
+stage 1's `findlabel` is a linear scan, so it is O(n^2) in label count). Rungs m67–m71 were
+therefore developed against **targeted per-rung scripts** and each new `validate.py` section
+was replay-verified standalone, rather than by running the file end to end. That is a real
+gap: the sections are individually green but have never been run together.
+
+**This is a known, deliberate debt, not an oversight.** Optimizing the suite — sampling or
+tiering the capacity tests, memoizing the assembled ladder across sections, or moving the
+big-input cases to CI only — is its own task and is being picked up separately.
 
 ---
 
@@ -1973,9 +2098,13 @@ stage in the language of the stage below.
   and `long` landed in m67** (accepted as spellings of the machine word — the tokenizer
   returns the `int` keyword id for both, so no consumer site changed, and multi-word runs
   like `unsigned int` / `long long` collapse to one token by re-entering `next_token`).
-  Still open are `char**`
-  subscripting (faults), `argc`/`argv` (compiles, but `argc` reads 0 — never wired to the
-  stack), and `brk`/inline `asm`. **`FILE`/`FUNCTION`/`size_t` landed in m68** — not as
+  **`char**` subscripting landed in m69** (a type-model bit plus two declarator bugs, not a
+  stride constant), **`brk` in m69**, **`argc`/`argv` in m70**, and **`char*` struct members
+  plus member subscript in m71** — at which point **stage 2 built M2-Planet from its own
+  source and that binary compiled C to M1**, which is the handoff this whole section was
+  working toward. Inline `asm` is **not needed**: all six of its uses are in one M2libc file
+  defining exactly the six syscall functions our builtins already supply, so that file is
+  omitted. **`FILE`/`FUNCTION`/`size_t` landed in m68** — not as
   keywords but as a positional rule (an identifier in type position starts a declaration,
   which is what the top-level loop and `fl_global` already did), so it covers any
   pre-registered primitive or typedef; the re-derivation behind it corrected item 8, which

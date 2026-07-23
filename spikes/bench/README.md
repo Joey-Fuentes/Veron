@@ -11,6 +11,26 @@ bench (multi-char labels; `cmp w4 w5`). The lesson is baked in: run `validate.py
 after any change to `stage0-as` or the bench, and never trust a green bench over
 a red CI.
 
+> ### `validate.py` is currently too slow to use as an inner loop — KNOWN DEBT
+>
+> A full run is dominated by a handful of pathological cases: the capacity section
+> compiles a 600-function, 36 KB input and emits ~585 KB through a Python
+> interpreter roughly 1e4x slower than native, and stage 1's `findlabel` is a
+> linear scan, so resolution is O(n^2) in label count. Several sections also
+> rebuild the whole ladder from source independently.
+>
+> **Consequence, stated plainly:** rungs m67–m71 were developed against *targeted
+> per-rung scripts*, and each new `validate.py` section was replay-verified
+> standalone (extracted and executed on its own against the real assembled ladder)
+> rather than by running the file end to end. Those sections are individually
+> green but **have never been run together**. CI carries the equivalent gates, so
+> the ladder itself is covered; what is missing is the fast local check.
+>
+> Optimizing this — sampling or tiering the capacity tests, memoizing the
+> assembled ladder across sections, moving big-input cases to CI only — is its own
+> task and is being picked up separately. Until then, prefer a targeted script for
+> the rung you are writing, and lean on CI.
+
 ## Files
 
 - `s0as.py` — models `stage0-as`: assembles its language to bytes **and** a
@@ -24,6 +44,15 @@ a red CI.
   `[NULLFLOOR, brk)` raises `OOBAccess` instead of silently reading 0 (default-on;
   `run(..., oob_trap=False)` restores the old tolerant behaviour). This is what lets
   the bench witness the `&member`-class bug that previously only qemu could catch.
+  Since **m70** it also models the **initial process stack**: `R` covers `x0..x31`
+  with `x31` = SP pointing at a block laid out as the AArch64 Linux kernel lays it
+  out — `argc`, the `argv` pointers, a NULL, envp NULL, then the strings — and
+  `run(..., argv=["prog","-o","out"])` sets it. Before this there was no `x31` at
+  all, so nothing that reads the initial stack could be tested here. The block sits
+  between the code and the start of brk, which means a wild pointer in those ~80
+  bytes no longer faults; that is faithful rather than a regression, since the real
+  initial stack is mapped readable memory too, and what the m50 trap exists for
+  (below `NULLFLOOR`, above the break) is unchanged.
 - `stage1_ref.py` — a plain-Python reference of stage 1 (two-pass **numeric label
   resolver**: labels -> positions -> `@<pos>`, pool retired), used to develop and
   cross-check `stage1-as.s0`.

@@ -19,6 +19,14 @@ program.s ──[stage0-as]──► code bytes ──[elf out]──► runnabl
   reference in `stage0-as/README.md`.
 - `elf/` — wraps code bytes into a runnable, self-executable-marking ELF.
 
+**Milestone (m71): the ladder reaches its handoff.** `stage2-mini-c` builds **M2-Planet
+from M2-Planet's own source**, and that binary compiles C to M1 — so M2-Planet becomes the
+de-facto "stage 3", with no throwaway intermediate compiler. Demonstrated on CI in
+`.github/workflows/stage3-m2-demo.yml`. One substitution (an M2libc file whose only content
+is six `asm()` syscall functions our builtins already supply) and one remaining join (the
+emitted `.M1` is not yet driven through M1/hex2). Details in
+`stage2-mini-c/TARGET-SUBSET.md`.
+
 Full progress log, spike inventory, and what's next: **`PROGRESS.md`**.
 
 ## Design & reference docs

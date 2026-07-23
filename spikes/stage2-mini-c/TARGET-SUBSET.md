@@ -5,6 +5,28 @@
 line* for the self-hosted compiler ladder and the C subset each rung is working
 toward, grounded in the actual upstream source rather than guesswork.
 
+> ## STATUS: the finish line below has been REACHED (m71).
+>
+> Stage 2 builds **M2-Planet from M2-Planet's own source**, and the resulting
+> binary compiles C to M1. On CI (`.github/workflows/stage3-m2-demo.yml`, real
+> `as` + qemu, not the bench): 220,415 bytes of upstream source in, 1,303,180
+> bytes of assembly out, 81,893 instructions linked, exit 0, and five sample
+> programs — arithmetic, recursion, a `while` loop, strings through a `char*`
+> parameter, and `for`+`break` — each emitting real M1.
+>
+> **One substitution**, and it is the one this doc reserved: `M2libc/aarch64/
+> linux/bootstrap.c` is not passed to our compiler. Its entire content is six
+> functions written in M1 mnemonics inside `asm()` — `read`, `write`, `open`,
+> `close`, `brk`, `exit` — and our builtins supply all six with matching syscall
+> numbers and argument order (m53 for five, m69 for `brk`). Every other file of
+> the upstream `-f` list is compiled **unpatched**. See §6 item 12.
+>
+> What is **not** done: the emitted `.M1` is not yet driven through M1/hex2 into
+> an executable. That is `spikes/borrow-m2/`'s half of the chain, already green
+> on its own, and joining the two is the next rung. Until that join exists, "M2-
+> Planet is stage 3" is proven at the *compiler* level, not yet end-to-end.
+
+
 ## 0. The finish line (why this doc exists)
 
 The near-term plan (see `HANDOFF` / `PROGRESS.md`) is: grow the self-hosted
@@ -278,34 +300,52 @@ directives — a `#` token discards the line, matching M2-Planet's own `--bootst
 **Landed (m63/A22):** label-based control flow, streaming output, and capacity work.
 **Landed (m67/A27):** `unsigned` and `long` as word-typed keywords — see item 8 below.
 **Landed (m68/A28):** `FILE`, `FUNCTION`, `size_t` and any other non-keyword type name.
+**Landed (m69/A29-A30):** the `brk` builtin, and the pointer-to-pointer type model.
+**Landed (m70/A31):** `argc`/`argv` handed to `main` from the kernel's initial stack.
+**Landed (m71/A32):** `char*` struct members, and member subscript `p->s[i]`.
 
-### 2b. Correction: which files are actually the translation unit
+### 2b. The translation unit is the `-f` list, not the makefile
 
-§2 says this subset was derived from M2-Planet's `cc_*.c` "plus the M2libc C sources it
-links (`bootstrappable.c`, `stdio.c`, `stdlib.c`, `string.c`, `ctype.c`)". The makefile
-is narrower. The self-host translation unit is:
+**This section replaces an earlier version that was wrong, and the correction
+matters more than the original claim.** §2 above says the subset was derived from
+`cc_*.c` "plus the M2libc C sources it links (`bootstrappable.c`, `stdio.c`,
+`stdlib.c`, `string.c`, `ctype.c`)". A later pass "corrected" that to the
+**makefile's** file list — which is also wrong: the makefile is the *gcc* build,
+so it passes `gcc_req.h` and none of M2libc's bootstrap files.
+
+The real translation unit is the `--bootstrap-mode` `-f` list in M2-Planet's own
+**`test/test1000/hello-aarch64.sh`**:
 
 ```
-M2libc/bootstrappable.c cc_reader.c cc_strings.c cc_types.c cc_emit.c
-cc_core.c cc_macro.c cc.c cc.h cc_globals.c gcc_req.h
+M2libc/aarch64/linux/bootstrap.c     <- the six asm() functions; we substitute
+M2libc/bootstrap.c                   <- the enums, fopen/fgetc, malloc/calloc/free
+cc.h
+M2libc/bootstrappable.c
+cc_globals.c
+cc_reader.c  cc_strings.c  cc_types.c  cc_emit.c  cc_core.c  cc_macro.c  cc.c
 ```
 
-`stdio.c`, `stdlib.c`, `string.c` and `ctype.c` are **not** in it — under
-`--bootstrap-mode` M2-Planet links `M2libc`'s `libc-core.M1` assembly instead. The
-distinction is not academic: it is the difference between a feature being **required** and
-being merely **nice to have**, and three §6 entries turn on it.
+Three consequences, each of which had a doc claim riding on it:
 
-- `long` has **zero** real uses in the TU; all 10 are in `stdio.c`/`stdlib.c`. (Item 8's
-  old "`long` (4)" matches neither set and looks like string-literal noise — `cc_core.c`
-  has `match("long", s)` and `cc_types.c` registers `"long"`, `"long long"` etc. as
-  primitive *names*.) `unsigned` (9 in `cc_core.c`, 1 in `bootstrappable.c`) was right.
-- `size_t`'s 41 uses are likewise all outside the TU.
-- Whether the wider set is in scope **at all** is an open question, not a settled one.
-  Both were implemented anyway — each is small, and the cost of being wrong about scope
-  later is higher than the cost of the code now — but the justification should be recorded
-  honestly rather than implied.
+- **`gcc_req.h` is absent from it.** That is what licenses treating its lone
+  `typedef void (*FUNCTION)(void);` as a substitution rather than a capability:
+  M2-Planet self-hosting does not use the file either, because it pre-registers
+  `FUNCTION` unconditionally in `cc_types.c`.
+- **`stdio.c`/`stdlib.c`/`string.c`/`ctype.c` are absent.** Under
+  `--bootstrap-mode` M2-Planet links `M2libc/aarch64/libc-core.M1` instead. So
+  `size_t` (41 uses, all in those files) and `va_list` (10, all in `stdio.c`) are
+  **not required**, and were implemented only because the m68 rule gives them for
+  free.
+- **`long` has 4 real uses and they are all in `M2libc/bootstrap.c`** —
+  `long _malloc_ptr;` and `long _brk_ptr;` at file scope, and `long old_brk` /
+  `long old_malloc` as locals, all four in the `brk` allocator. Item 8's original
+  count of 4 was therefore **exactly right**; the intermediate claim that it was
+  "string-literal noise" came from counting against the makefile list and is
+  retracted.
 
-Re-derive against the makefile list, and state which set a count refers to.
+**Rule for anyone re-deriving this: count against `hello-aarch64.sh`, and say
+which list a number refers to.** Two successive drafts of this doc got a feature's
+justification wrong by not doing that.
 
 ### Still open — the actual remaining list
 
@@ -374,26 +414,70 @@ Re-derive against the makefile list, and state which set a count refers to.
    it, because it pre-registers `FUNCTION` unconditionally — and neither do we, for the
    same reason. Omitting that one file from the `-f` list is therefore the same *kind* of
    move as the `asm()` omission in item 12: a substitution, not a capability.
-9. **`char**` subscripting** — `argv[i]`, 28 uses, needs an 8-byte stride. Our subscript
-   scaling keys off `is_char`/`is_array` with no pointer-to-pointer notion, so it would
-   emit *byte* access. A type-model gap, distinct from the argv plumbing below.
+9. ~~**`char**` subscripting**~~ — **DONE (m69/A30)**. The doc framed this as `argv[i]`
+   needing an 8-byte stride; it was neither argv-specific nor one bug. The flags word had
+   `is_char`/`is_array`/`is_ptr` and no notion of an element that is *itself* a pointer,
+   so `char* a[N]` and `int* a[N]` were broken as plain locals too. A fourth bit records
+   it and every byte-vs-word decision became `(flags & 17) == 1`. Two declarator bugs sat
+   in front of it: only **one** star was ever consumed at any of the four declarator
+   sites, so `char** argv` declared a variable literally named `*`; and
+   `di_array`/`flg_array` tested `flags != 0` instead of the char bit, so `int* a[N]` was
+   byte-*sized*. Out of subset, and not needed: chained subscript on a temporary
+   (`v[i][j]`) — zero uses in the TU.
 
 **C. Runtime.**
-10. **`argc`/`argv`** — `_start` must read the kernel's initial stack and hand them to
-    `main`; today it does `bl main` with an empty value stack.
-11. **`brk`** — `M2libc/bootstrap.c`'s `malloc` is a `brk` bump allocator, and its
-    `calloc`/`free` would **override ours** under the user-definition-wins contract,
-    putting the chain back on qemu's small brk region — the thing m51 moved *off*.
-12. **`asm("...")`** — 6 uses in `m2libc/aarch64/linux/bootstrap.c`, in M1 mnemonic
-    syntax (`"mov_x0,x17"`). Supporting it means embedding an M1 assembler in stage 2.
-    Avoidable only by omitting that one file and letting our m53 builtins supply those
-    five functions — a substitution, i.e. patching by omission. m53 matched m2libc's
-    syscall numbers *and* argument order precisely so that this remains possible.
+10. ~~**`argc`/`argv`**~~ — **DONE (m70/A31)**. The entry preamble copies SP into an
+    ordinary register (`add x3 x31 0`, i.e. `mov x3, sp` — ADD-*immediate* treats `Rn=31`
+    as SP where the *register* form treats `Rm=31` as XZR, so the encoding is byte-checked
+    against real `as`) and pushes `argc` then `argv`, left to right, because the callee
+    pops in reverse. The pushes are unconditional: the compiler is single-pass and emits
+    the preamble long before it sees `main`'s declarator, so `int main()` simply never
+    pops them — a two-slot leak on a 32 KB value stack, once per program. SP is copied out
+    and never used as a load base, since an SP-based access faults unless SP is 16-byte
+    aligned and nothing in this ladder maintains that. This deliberately waited on item 9:
+    argv is useless if `argv[i]` has the wrong stride.
+11. ~~**`brk`**~~ — **DONE (m69/A29)**. A ten-line wrapper on syscall 214, same contract as
+    the rest of the m53 family. The predicted consequence **did materialise and is fine**:
+    `M2libc/bootstrap.c` defines `malloc` as a brk bump allocator *and* defines
+    `calloc`/`free` on top of it, so under user-definition-wins those override ours and
+    the compiled M2-Planet runs on brk rather than our mmap arena. It works — that is what
+    the stage-3 demo exercises — but it does put the chain back on the region m51 moved
+    off, so if a large input ever exhausts qemu's brk this is the first thing to look at.
+12. ~~**`asm("...")`**~~ — **NOT NEEDED, and now provably so.** All 6 uses are in
+    `M2libc/aarch64/linux/bootstrap.c`, and that file defines exactly six functions:
+    `read`, `write`, `open`, `close`, `brk`, `exit`. m53 supplied five of them with
+    matching syscall numbers and argument order precisely so this omission would stay
+    available; m69 supplied the sixth. So the file is dropped from the `-f` list and
+    nothing else changes. Two further reasons not to revisit it: the syntax is M1
+    mnemonics (`"mov_x0,x17"`), and the bodies read the **caller's** frame through `x17`
+    in M2-Planet's own calling convention — supporting them faithfully would mean adopting
+    that frame layout. Recorded honestly as a **substitution**, in the same category as
+    any patch-by-omission.
 
-**D. Unknown — never attempted.** Whether `M2libc/bootstrap.c` and `bootstrappable.c`
-compile in our subset at all. Once (1) lands, concatenating the `-f` list and feeding it
-to stage 2 is a cheap, high-information experiment: unlike any amount of grepping, it
-reports ground truth.
+**D. ~~Unknown — never attempted.~~ ANSWERED (m71).** Yes: `M2libc/bootstrap.c` and
+`bootstrappable.c` compile in our subset, and so does the rest of the list. The cheap
+experiment this entry called for was run and it did report ground truth — the two M2libc
+files compiled in seconds, and the full 220 KB unit compiled at the first attempt once
+item 9 and the m71 member fixes were in. What it found was **not** a front-end gap but a
+codegen one: struct fields carry their own two-bit flag word and the member get/set width
+tested only the char bit, so a `char* name;` member was stored and loaded as a **single
+byte**. `struct type`'s `char* name` is exactly that, so `match(i->name, s)` compared a
+truncated pointer, every primitive lookup missed, and the binary died on its own first
+token with `Unknown type int`. Two lines, plus member subscript `p->s[i]` (125 sites),
+which had never existed because the subscript machinery only ever worked from a *named*
+symbol.
+
+### Still open after the handoff
+
+- **Drive the emitted `.M1` through M1/hex2** into a running executable, joining this to
+  the already-green `spikes/borrow-m2/` chain. Until then the handoff is proven at the
+  compiler level only.
+- **`.` member access** is rejected by our M2-Planet with M2-Planet's *own* diagnostic —
+  upstream does not support it in `--bootstrap-mode`, only `->`. Not our defect, and
+  consistent with §3 (496 `->` uses, zero `.`).
+- **`typedef`** declarations, and **chained subscript on a temporary** (`v[i][j]`,
+  `f(x)[i]`, and the m55 note about member access on a call result). Zero uses in the TU.
+- **`signed`/`short`** — zero uses in the pinned source.
 
 Compound assignment and `++`/`--` are **not** on this list — see §4. Then compile
 **M2-Planet's own source** with stage 2.

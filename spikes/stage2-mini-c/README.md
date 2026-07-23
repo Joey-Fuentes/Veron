@@ -1,7 +1,14 @@
 # spikes/stage2-mini-c — SPIKE stage 2 (mini-c)
 
 **Invariants SUSPENDED.** A compiler our own seed produces: C-ish source in,
-working aarch64 machine code out. Written **in stage-1's language** (multi-char
+working aarch64 machine code out.
+
+> **As of m71 this compiler builds M2-Planet from M2-Planet's own source**, and that
+> binary compiles C to M1 — the handoff the whole ladder was aimed at. 220 KB of
+> upstream source in, 81,893 instructions out, five sample programs emitting real M1 on
+> CI (`.github/workflows/stage3-m2-demo.yml`). One substitution: the M2libc file whose
+> only content is six `asm()` functions is omitted, because our builtins supply all six.
+> The emitted `.M1` is not yet driven through M1/hex2 — see `TARGET-SUBSET.md`. Written **in stage-1's language** (multi-char
 labels), so it exercises the whole ladder:
 
 ```
@@ -293,6 +300,36 @@ int main(){ return name(2,3); }   // program is entered via bl main
   from a declaration. Guarded as emitted-code equality against the `int` spelling, not
   merely a correct exit code. Out of subset: `char**` subscripting (item 9 — a type-model
   gap, not a naming one) and `typedef` declarations themselves.
+- **`brk` builtin (A29)**: the last of the m53 syscall family — a ten-line wrapper on
+  syscall 214, lowered to a direct `bl` and appended once if used, user definition wins.
+  It is what makes `asm()` unnecessary rather than merely deferred: the M2libc file that
+  needs `asm()` defines exactly `read`/`write`/`open`/`close`/`brk`/`exit`, and m53 already
+  matched the first five.
+- **pointer-to-pointer type model (A30)**: `char**`, `char* a[N]`, `int* a[N]` at every
+  scope. The flags word gained a fourth bit for "the element is itself a pointer", and
+  every byte-vs-word decision became `(flags & 17) == 1` — byte only when the element
+  really is a char. Two declarator bugs went with it: only **one** star was ever consumed,
+  so `char** argv` declared a variable named `*`, and the array declarators tested
+  `flags != 0` rather than the char bit, so `int* a[N]` was byte-*sized*. Out of subset:
+  chained subscript on a temporary (`v[i][j]`).
+- **`argc`/`argv` (A31)**: the entry preamble reads the kernel's initial stack — `add x3
+  x31 0` is `mov x3, sp`, since ADD-*immediate* treats `Rn=31` as SP where the register
+  form treats `Rm=31` as XZR — and pushes `argc` then `argv` left-to-right, because the
+  callee pops in reverse. Unconditional, since the compiler is single-pass and emits the
+  preamble before it has seen `main`'s declarator; `int main()` just never pops them. SP is
+  copied out and never used as a load base (an SP-based access faults unless SP is 16-byte
+  aligned, and nothing here maintains that). This waited on A30 deliberately — argv is
+  useless if `argv[i]` has the wrong stride.
+- **`char*` struct members + member subscript (A32)**: struct fields carry their own
+  two-bit flag word (bit 0 char, bit 1 pointer) and the member get/set width tested only
+  bit 0 — so a `char* name;` member was stored and loaded as a **single byte**. The rule is
+  A30's, one level down: byte only when the field is a char that is *not* a pointer,
+  `(flags & 3) == 1`. The `&member` path already used the correct two-bit test, which is
+  what identified the intent. Then `p->s[i]` — member **subscript** — which had never
+  existed, because the subscript machinery only ever worked from a *named* symbol: the
+  member load pushes a value, so `cem_ltp` peeks for `[`, compiles the index, and pops
+  base and index off the value stack, byte or word by the field's char bit (the *pointee*
+  width here, mirroring the rule above).
 ```
 int a=5; int b=a+1; return a*b;                         ->  exits 30
 int n=10; int s=0; while(n){ s=s+n; n=n-1; } return s;  ->  exits 55  (sum 1..10)
