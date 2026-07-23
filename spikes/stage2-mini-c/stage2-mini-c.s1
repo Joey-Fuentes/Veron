@@ -597,8 +597,11 @@ ldr w7 x1
 bl next_token
 cmp x29 42
 b.ne flg_st_val
-mov x2 4
+:flg_st_stars
 bl next_token
+cmp x29 42
+b.eq flg_st_stars
+mov x2 4
 mov x3 x6
 :flg_sfpk
 cmp x3 x21
@@ -1176,6 +1179,59 @@ b.eq dra_member
 b dra_asg
 :dra_member
 bl emit_maddr
+mov x3 x6
+:dram_pws
+cmp x3 x21
+b.ge dram_plain
+ldrb w5 x19 x3
+cmp x5 32
+b.eq dram_pwsa
+cmp x5 9
+b.eq dram_pwsa
+cmp x5 10
+b.eq dram_pwsa
+cmp x5 13
+b.eq dram_pwsa
+b dram_pchk
+:dram_pwsa
+add x3 x3 1
+b dram_pws
+:dram_pchk
+cmp x5 91
+b.ne dram_plain
+adr x9 sldrw
+bl emitstr
+str x14 x28
+add x28 x28 8
+bl next_token
+bl compile_expr
+bl next_token
+bl next_token
+bl compile_expr
+sub x28 x28 8
+ldr x14 x28
+adr x9 spopval2
+bl emitstr
+adr x9 spopbase
+bl emitstr
+mov x3 1
+and x5 x14 x3
+cmp x5 0
+b.ne dram_sbyte
+adr x9 sscale
+bl emitstr
+adr x9 saddidx
+bl emitstr
+adr x9 sstrw
+bl emitstr
+b dram_sdn
+:dram_sbyte
+adr x9 sstrbidx
+bl emitstr
+:dram_sdn
+add x6 x6 1
+b stmtend
+:dram_plain
 adr x9 spushx1
 bl emitstr
 str x14 x28

@@ -1,122 +1,142 @@
-# m72 candidate — redeclared locals bind to the wrong frame slot
+# m73 / m74 — two stage-2 bugs on M1's critical path
 
-**Status: diagnosed and reproduced, fix PROPOSED and UNTESTED.** The patch below
-touches `symlookup`, which every variable reference in stage 2 goes through, so
-it must not land without the bench behind it.
+Both found and fixed **in the bench**, not in CI: `spikes/bench/` models the whole
+ladder, so `stage2 | stage1 | stage0-as` and the resulting binary all run locally
+in Python. Reproducing M1's failure took 19 seconds there against roughly two
+hours of CI round trips.
 
-## Symptom
+**These are ours.** The control that settles it: `refM1`, built from the same
+`M1-macro.c` by upstream's gcc-built M2-Planet for the same target, runs the same
+input under the same qemu in 0 seconds. Upstream's code is fine.
 
-Our stage-2-built M2-Planet segfaults on `int main(){return sizeof(int);}` and on
-`M2libc/bootstrap.c` past line 55 (`malloc`). Both faults are at the *same*
-address, `0x42c0cc`, which `tools/pcmap.py` places inside `unary_expr_sizeof`.
+---
 
-## The faulting code
+## m73 — a file-scope `struct T**` gets no storage
 
-```
-ldr x0,[x9]          ; the value type_name() just returned
-add x1,x10,#0x28
-str x0,[x1]          ; store it into the local at +0x28
-add x1,x10,#0x20
-ldr x1,[x1]          ; load a DIFFERENT local, at +0x20
-add x1,x1,#8
-ldr x0,[x1]          ; dereference -> SIGSEGV, that slot is still zero
-```
-
-The store and the use disagree about which frame slot holds `a`.
-
-## Why
-
-`cc_core.c`'s `unary_expr_sizeof` declares the same name twice, in sibling
-blocks:
+`fl_gstruct` consumed exactly one `*` after the struct tag, so
 
 ```c
-if(t != NULL) {
-    struct type* a = t->type;      /* first  'a' */
-    ...
-} else {
-    struct type* a = type_name();  /* second 'a' */
-    size = a->size;
-}
+struct blob** hash_table;      /* M1-macro.c:92 */
 ```
 
-Stage 2 has no block scoping:
+declared a global literally named `*`, and `hash_table` was never allocated.
+Every later reference emitted `adr x1 g_hash_table`, stage 1 could not resolve
+it, and the label became **0** — so M1's first statement,
+`hash_table = calloc(65537, sizeof(struct blob*))`, stored a valid pointer to
+address zero.
 
-- `symdecl` **always appends** a record and hands back a fresh offset, computed
-  from the previous record's offset plus its size. It never checks whether the
-  name already exists.
-- `symlookup` scans **forward from index 0** and returns the **first** match.
+This is the m69 defect exactly ("only ONE star was ever consumed at any of the
+four declarator sites"), at the fifth site m69 did not reach. Only the struct
+path is affected: `char** g`, `int** g` and `int*** g` were already correct.
 
-So the second declaration allocates slot 2 and its initializer stores there,
-while `a->size` looks the name up and gets slot 1 — never written, still zero.
-
-It only fires when the *second* branch runs, which is why simple programs work
-and anything that reaches a failed type lookup does not.
-
-## Reproducer
-
-```c
-struct ty { int pad; int size; };
-struct ty* mk(){struct ty* p;p=calloc(1,16);p->size=42;return p;}
-int f(int flag){
-  int r; r=0;
-  if(flag){ struct ty* a = mk(); r=a->size; }
-  else    { struct ty* a = mk(); r=a->size+1; }
-  return r;
-}
-int main(){return f(0);}   /* want 43, gets SIGSEGV */
-```
-
-Confirmed against variants: separate declaration and assignment
-(`struct ty* a; a = mk();`) is **fine**, distinct names are **fine**, taking the
-first branch is **fine**. Only declaration-*with-initializer* on a redeclared
-name breaks, and only on the branch that redeclares.
-
-## Proposed fix
-
-Make `symlookup` walk the table from newest to oldest, so a name binds to its
-most recent declaration.
+### Fix
 
 ```diff
- :symlookup
- sub x1 x6 x18
--mov x3 0
-+sub x3 x8 1
- :sl_loop
--cmp x3 x8
--b.ge sl_nf
-+cmp x3 0
-+b.lt sl_nf
- ...
- :sl_next
--add x3 x3 1
-+sub x3 x3 1
- b sl_loop
+ b.ne flg_st_val
+-mov x2 4
++:flg_st_stars
+ bl next_token
++cmp x29 42
++b.eq flg_st_stars
++mov x2 4
+ mov x3 x6
 ```
 
-With `x8 == 0` the index starts at -1 and `b.lt` takes the not-found path
-immediately, so the empty-table case is unchanged.
+`mov x2 4` moves **after** the loop because `next_token` clobbers x1/x2/x4 (m67),
+so setting the pointer flag before an extra call would lose it.
 
-### Why this shape rather than the alternatives
+### Reproducer
 
-- **Reusing the existing slot in `symdecl`** would desynchronise prescan, which
-  counts declarations to reserve the frame. prescan and the declaration parser
-  disagreeing is the m39 failure this design exists to prevent, and m68 already
-  paid for that mistake once.
-- **Adding real block scoping** is the correct long-term answer and a much
-  larger rung. Backward lookup gets the same observable behaviour for textual
-  C — every use is textually after its declaration — at the cost of the outer
-  binding staying shadowed to end of function rather than end of block.
+```c
+struct b{int x;}; struct b** g;
+int main(){g=calloc(4,8); if(g==0){return 1;} return 7;}
+```
 
-### What to check before trusting it
+---
 
-Backward lookup changes name resolution for **every** variable reference, so:
+## m74 — `a->M[i] = v` stores the subscript into the member
 
-1. Parameters are declared before locals. A local shadowing a parameter now
-   resolves to the local, which is correct C but is a behaviour change.
-2. Globals live in a separate table (`gsymlookup`), so they are unaffected.
-3. Byte-identity across the existing corpus is the real gate: any program
-   without a redeclared name must emit **identical** bytes, since first-match
-   and last-match agree when names are unique.
+`dra_member` emitted the member's address, then called `next_token` expecting
+`=`. On `a->Text[0] = 65` that token is `[`, so `compile_expr` compiled the
+**index** as if it were the right-hand side, the member store fired, and
+`stmtend` discarded `] = 65`. Emitted code:
 
-That last point is the cheap strong check — if a duplicate-name-free corpus is
-byte-identical to HEAD~1 and the reproducer returns 43, the change is contained.
+```
+add x1 x10 0000      ; &a
+ldr x1 x1            ; a
+add x1 x1 0000       ; &a->Text
+str x1 x9            ; push the member's ADDRESS
+mov x0 0             ; the SUBSCRIPT INDEX
+str x0 x9
+ldr x0 x9            ; pop index
+ldr x1 x9            ; pop address
+str x0 x1            ; *(&a->Text) = index      <-- 65 never compiled
+```
+
+So `a->Text` became 0 (and 2 when `i` was 2, which is why the following read
+faulted at address 4). `NewBlob`'s copy loop is
+`while(i <= size){ a->Text[i] = SCRATCH[i]; i = i + 1; }`, so M1 destroyed its
+own buffer pointer on the first iteration and never terminated.
+
+m71 taught the **load** path member subscript (`cem_ltp`, `spopbase`) for the 125
+`token->s[i]` sites — all reads. The store path never learned it.
+
+### Fix
+
+`dra_member` peeks past whitespace for `[` before emitting anything, exactly as
+`cem_ltp` does. When present it takes a subscript-store path: push the member's
+**value** (`sldrw` rather than `spushx1`), compile the index, consume `]` and
+`=`, compile the value, then `spopval2` + `spopbase` to land value in x0, index
+in x2 and base in x1, and emit the same tail `emitsubstore` uses — `sstrbidx`
+for a byte, `sscale`/`saddidx`/`sstrw` for a word. Width is the field's char bit,
+the pointee width, which is the rule m71 established for the load side. When
+there is no `[`, control falls through to `dram_plain` and the original code is
+reached unchanged.
+
+### Reproducers
+
+```c
+struct b{char* Text;int type;};
+int main(){struct b* a;a=calloc(1,16);a->Text=calloc(8,1);a->Text[0]=65;return a->Text[0];}
+/* want 65 */
+
+struct w{int* v;int t;};
+int main(){struct w* a;a=calloc(1,16);a->v=calloc(4,8);a->v[2]=77;return a->v[2];}
+/* want 77 -- the word case */
+```
+
+---
+
+## Containment
+
+Both fixes are +56 lines net in two hunks. A duplicate-name-free, subscript-free
+corpus of nine programs spanning every construct compiles to **byte-identical**
+output before and after, which is the meaningful check: the new code is only
+reachable through a second `*` at file scope, or a `[` after a member in
+assignment position.
+
+## Verified end to end, locally
+
+With both fixes, stage 2 builds M1 from the upstream `-f` list with **every
+global resolved**, and that M1 processes input correctly:
+
+| input | our M1 | vs upstream M1 |
+|---|---|---|
+| `:main` (6 bytes) | rc=0, 6 bytes | **identical** |
+| `aarch64_defs.M1` (72,791 bytes) | rc=0 | **identical** |
+
+Before the fixes the same binary never terminated.
+
+## What this says about the method
+
+Three conclusions drawn from instrumented qemu traces did not survive a real
+measurement: "infinite loop in memset", "~50 bytes/sec", and a per-iteration
+value-stack leak. `-d exec,nochain` and `-strace` slow qemu by orders of
+magnitude, so a short window shows whatever loop happens to be running, not the
+bug. All seven `memset` calls turned out to have correct arguments
+(524296, 40, 40, 4097, 32, 40, 6).
+
+The bench answers these questions directly and cheaply, and should be the first
+stop, not the last. `tools/pcmap.py` (PC to function via stage 1's own label
+positions) and `tools/ab.sh` (size + sha for every artifact, rc and wall time for
+every run) exist so neither the guessing nor the unreadable output recurs.

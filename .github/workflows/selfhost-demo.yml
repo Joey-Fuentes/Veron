@@ -1,0 +1,262 @@
+name: selfhost-demo
+
+# SPIKE (invariants suspended). THE CHAIN, WITH A REFERENCE AT EVERY STEP.
+#
+# Two stage-2 bugs were found in the bench and fixed (see SLOT-BUG.md):
+#   m73  file-scope `struct T** g;` emitted no storage  (fl_gstruct ate one star)
+#   m74  `a->M[i] = v` stored the SUBSCRIPT INTO the member, dropping the value
+#        (m71 taught the member-subscript LOAD path; the store path never learned)
+# M1's first statement writes a `struct blob**` global; its copy loop is
+# `a->Text[i] = SCRATCH[i]`. Both bugs sat directly on that path.
+#
+# Every artifact below is reported with SIZE and SHA256, and every one of our
+# tools is compared against a REFERENCE built from the same source by upstream's
+# gcc-built M2-Planet for the same target. Where a reference cannot exist (our
+# ladder's own output format) the comparison is behavioural.
+#
+# Gates escalate:
+#   A  our M1   vs reference M1    -- same source, same target, different compiler
+#   B  our hex2 vs reference hex2
+#   C  a C program through OUR M2-Planet | OUR M1 | OUR hex2, run  (no host)
+#   D  SELF-COMPILATION: our M2-Planet rebuilds M2-Planet through our M1/hex2,
+#      and generation 2 must emit byte-identical output to generation 1.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage2-mini-c/**'
+      - 'spikes/stage1-as/**'
+      - 'spikes/stage0-as/**'
+      - 'spikes/elf/**'
+      - '.github/workflows/selfhost-demo.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: selfhost-demo-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  selfhost:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      M2PLANET_SHA: 34fbd5c2a9b6eb634a4f6ad95158dcd1efcf19e0
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu gcc make
+
+      - name: Fetch upstreams and build the host oracles
+        run: |
+          . tools/ab.sh
+          git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git -C upstream-m2planet checkout "$M2PLANET_SHA"
+          git -C upstream-m2planet submodule update --init --recursive
+          git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
+          # host gcc builds the ORACLES only -- they never enter the target path
+          make -C upstream-m2planet M2-Planet
+          make -C upstream-mescc M1 hex2
+          ab_rule 'HOST ORACLES (gcc, x86 -- comparison only)'
+          ab_art 'M2-Planet (host)' upstream-m2planet/bin/M2-Planet
+          ab_art 'M1 (host)'        upstream-mescc/bin/M1
+          ab_art 'hex2 (host)'      upstream-mescc/bin/hex2
+          echo "  M2-Planet   $(git -C upstream-m2planet rev-parse HEAD)"
+          echo "  M2libc      $(git -C upstream-m2planet/M2libc rev-parse HEAD)"
+          echo "  mescc-tools $(git -C upstream-mescc rev-parse HEAD)"
+
+      - name: Build our ladder
+        run: |
+          . tools/ab.sh
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+          cat spikes/stage1-as/stage1-as.s0 \
+            | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
+          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+            | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+          ab_rule 'OUR LADDER'
+          ab_art 'stage0-as.aarch64.s' spikes/stage0-as/stage0-as.aarch64.s
+          ab_art 'stage1-as.s0'        spikes/stage1-as/stage1-as.s0
+          ab_art 'stage2-mini-c.s1'    spikes/stage2-mini-c/stage2-mini-c.s1
+          ab_art 'stage0-as'           stage0-as
+          ab_art 'stage1'              stage1
+          ab_art 'stage2'              stage2
+
+      - name: 'REGRESSION: the two bugs this fixes'
+        run: |
+          . tools/ab.sh
+          g() {
+            printf '%s' "$3" > g.c
+            qemu-aarch64 ./stage2 < g.c > g.s1
+            cat g.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as \
+              | qemu-aarch64 ./elf g.elf
+            set +e; timeout 30 qemu-aarch64 ./g.elf; v=$?; set -e
+            printf '  %-40s got=%-5s want=%-5s %s\n' "$1" "$v" "$2" \
+              "$([ "$v" = "$2" ] && echo OK || echo '<<< FAIL')"
+            [ "$v" = "$2" ]
+          }
+          B='struct b{char* Text;int type;};'
+          g 'm73 struct** global has storage' 7 \
+            'struct b{int x;}; struct b** g; int main(){g=calloc(4,8);if(g==0){return 1;}return 7;}'
+          g 'm74 member[i] store keeps value' 65 \
+            "$B"'int main(){struct b* a;a=calloc(1,16);a->Text=calloc(8,1);a->Text[0]=65;return a->Text[0];}'
+          g 'm74 word member subscript' 77 \
+            'struct w{int* v;int t;};int main(){struct w* a;a=calloc(1,16);a->v=calloc(4,8);a->v[2]=77;return a->v[2];}'
+          NB='char* S;int cp(struct b* a,int n){int i;i=0;while(i<=n){a->Text[i]=S[i];i=i+1;}return i;}int main(){struct b* a;a=calloc(1,16);a->Text=calloc(16,1);S=calloc(16,1);S[3]=9;cp(a,5);return a->Text[3];}'
+          g 'm74 the NewBlob copy loop' 9 "$B$NB"
+          RD='struct t{int p;int s;};struct t* mk(){struct t* q;q=calloc(1,16);q->s=42;return q;}int f(int fl){int r;r=0;if(fl){struct t* a=mk();r=a->s;}else{struct t* a=mk();r=a->s+1;}return r;}int main(){return f(0);}'
+          g 'm72 redeclared local (earlier fix)' 43 "$RD"
+
+      - name: Build M2-Planet, M1 and hex2 with stage 2
+        run: |
+          . tools/ab.sh
+          M=upstream-m2planet; L=$M/M2libc; S=upstream-mescc
+          mk() { out="$1"; shift; cat "$@" > "$out.c"
+                 qemu-aarch64 ./stage2 < "$out.c" > "$out.s1"
+                 grep -q '^:main' "$out.s1" || { echo "$out: no :main"; exit 1; }
+                 cat "$out.s1" | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as \
+                   | qemu-aarch64 ./elf "$out"; }
+          mk M2-Planet $L/bootstrap.c $L/bootstrappable.c $M/cc.h $M/cc_globals.c \
+                       $M/cc_reader.c $M/cc_strings.c $M/cc_types.c $M/cc_emit.c \
+                       $M/cc_core.c $M/cc_macro.c $M/cc.c
+          mk M1        $L/bootstrap.c $L/bootstrappable.c $S/stringify.c $S/M1-macro.c
+          mk hex2      $L/bootstrap.c $L/bootstrappable.c $S/hex2.h $S/hex2_globals.h \
+                       $S/hex2_linker.c $S/hex2_word.c $S/hex2.c
+          ab_rule 'BUILT BY OUR STAGE 2'
+          for t in M2-Planet M1 hex2; do
+            ab_art "$t.c (translation unit)" "$t.c"; ab_art "$t"  "$t"
+          done
+          echo "  every global resolved:"
+          for t in M2-Planet M1 hex2; do
+            miss=$(comm -23 <(grep -oE '^adr x[0-9]+ (g_\w+)$' "$t.s1" | awk '{print $3}' | sort -u) \
+                            <(grep -oE '^:g_\w+$' "$t.s1" | sed 's/^://' | sort -u) | tr '\n' ' ')
+            printf '    %-12s missing=%s\n' "$t" "${miss:-NONE}"
+          done
+
+      - name: Build the REFERENCE tools with upstream's compiler
+        run: |
+          . tools/ab.sh
+          M=upstream-m2planet; L=$M/M2libc; S=upstream-mescc
+          ref() { out="$1"; shift
+                  $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode \
+                    -f $L/aarch64/linux/bootstrap.c -f $L/bootstrap.c "$@" -o "$out.M1"
+                  $S/bin/M1 -f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 \
+                    -f "$out.M1" --little-endian --architecture aarch64 -o "$out.hex2"
+                  $S/bin/hex2 -f $L/aarch64/ELF-aarch64.hex2 -f "$out.hex2" \
+                    --little-endian --architecture aarch64 \
+                    --base-address 0x400000 -o "$out"
+                  chmod +x "$out"; }
+          ref refM1   -f $L/bootstrappable.c -f $S/stringify.c -f $S/M1-macro.c
+          ref refhex2 -f $L/bootstrappable.c -f $S/hex2.h -f $S/hex2_globals.h \
+                      -f $S/hex2_linker.c -f $S/hex2_word.c -f $S/hex2.c
+          ab_rule 'REFERENCE (upstream compiler, aarch64 target)'
+          ab_art 'refM1'   refM1
+          ab_art 'refhex2' refhex2
+
+      - name: 'GATE A: our M1 vs the reference M1'
+        run: |
+          . tools/ab.sh
+          L=upstream-m2planet/M2libc
+          printf ':main\n' > tiny.M1
+          cp $L/aarch64/aarch64_defs.M1 defs.M1
+          ab_rule 'GATE A INPUTS'
+          ab_inputs tiny.M1 defs.M1
+          echo
+          for inp in tiny.M1 defs.M1; do
+            ab_run "ours   on $inp"  300 "a_$inp.out" \
+              qemu-aarch64 ./M1  -f $inp --little-endian --architecture aarch64 -o "a_$inp.out"
+            ab_run "ref    on $inp"  300 "b_$inp.out" \
+              qemu-aarch64 ./refM1 -f $inp --little-endian --architecture aarch64 -o "b_$inp.out"
+            ab_cmp "  -> $inp" "a_$inp.out" "b_$inp.out"
+          done
+          cmp -s a_tiny.M1.out b_tiny.M1.out || { echo "FAIL: M1 output differs"; exit 1; }
+          echo "  PASS"
+
+      - name: 'GATE B: our hex2 vs the reference hex2'
+        run: |
+          . tools/ab.sh
+          L=upstream-m2planet/M2libc
+          printf 'int main(){return 42;}' > t.c
+          qemu-aarch64 ./M2-Planet --architecture aarch64 --bootstrap-mode -f t.c -o t.M1
+          qemu-aarch64 ./M1 -f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 \
+            -f t.M1 --little-endian --architecture aarch64 -o t.hex2
+          ab_rule 'GATE B INPUT'
+          ab_inputs t.c t.M1 t.hex2
+          echo
+          ab_run 'ours'  300 ours.elf   qemu-aarch64 ./hex2    -f $L/aarch64/ELF-aarch64.hex2 -f t.hex2 --little-endian --architecture aarch64 --base-address 0x400000 -o ours.elf
+          ab_run 'ref'   300 theirs.elf qemu-aarch64 ./refhex2 -f $L/aarch64/ELF-aarch64.hex2 -f t.hex2 --little-endian --architecture aarch64 --base-address 0x400000 -o theirs.elf
+          ab_cmp '  -> linked ELF' ours.elf theirs.elf
+          cmp -s ours.elf theirs.elf || { echo "FAIL: hex2 output differs"; exit 1; }
+          echo "  PASS"
+
+      - name: 'GATE C: a C program through OUR tools only, two targets'
+        run: |
+          . tools/ab.sh
+          L=upstream-m2planet/M2libc
+          printf 'int main(){int i;int s;s=0;for(i=1;i<10;i=i+1){s=s+i;}return s;}' > c.c
+          ab_rule 'GATE C'
+          ab_inputs c.c
+          echo
+          ok=yes
+          for pair in "aarch64 qemu-aarch64" "x86 qemu-i386"; do
+            set -- $pair; arch=$1; emu=$2
+            ab_run "$arch M2-Planet" 300 "c.$arch.M1" \
+              qemu-aarch64 ./M2-Planet --architecture $arch --bootstrap-mode -f c.c -o "c.$arch.M1"
+            ab_run "$arch M1" 300 "c.$arch.hex2" \
+              qemu-aarch64 ./M1 -f "$L/$arch/${arch}_defs.M1" -f "$L/$arch/libc-core.M1" \
+                -f "c.$arch.M1" --little-endian --architecture $arch -o "c.$arch.hex2"
+            ab_run "$arch hex2" 300 "c.$arch.elf" \
+              qemu-aarch64 ./hex2 -f "$L/$arch/ELF-$arch.hex2" -f "c.$arch.hex2" \
+                --little-endian --architecture $arch --base-address 0x400000 -o "c.$arch.elf"
+            chmod +x "c.$arch.elf" 2>/dev/null || true
+            ab_run "$arch RUN (want rc=45)" 120 - $emu "./c.$arch.elf"
+            set +e; timeout 120 $emu "./c.$arch.elf" </dev/null; r=$?; set -e
+            [ "$r" = 45 ] || ok=no
+          done
+          [ "$ok" = yes ] || { echo "FAIL"; exit 1; }
+          echo "  PASS: no host compiler anywhere on this path."
+
+      - name: 'GATE D: SELF-COMPILATION -- M2-Planet rebuilds itself through our tools'
+        run: |
+          . tools/ab.sh
+          M=upstream-m2planet; L=$M/M2libc
+          ab_rule 'GATE D: generation 1 (built by stage 2)'
+          ab_art 'M2-Planet gen1' M2-Planet
+
+          # gen1 compiles M2-Planet's own source; OUR M1 and OUR hex2 link it.
+          ab_run 'gen1 compiles M2-Planet' 900 gen2.M1 \
+            qemu-aarch64 ./M2-Planet --architecture aarch64 --bootstrap-mode \
+              -f $L/aarch64/linux/bootstrap.c -f $L/bootstrap.c -f $M/cc.h \
+              -f $L/bootstrappable.c -f $M/cc_globals.c -f $M/cc_reader.c \
+              -f $M/cc_strings.c -f $M/cc_types.c -f $M/cc_emit.c -f $M/cc_core.c \
+              -f $M/cc_macro.c -f $M/cc.c -o gen2.M1
+          ab_run 'our M1 assembles it' 900 gen2.hex2 \
+            qemu-aarch64 ./M1 -f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 \
+              -f gen2.M1 --little-endian --architecture aarch64 -o gen2.hex2
+          ab_run 'our hex2 links it' 900 M2-gen2 \
+            qemu-aarch64 ./hex2 -f $L/aarch64/ELF-aarch64.hex2 -f gen2.hex2 \
+              --little-endian --architecture aarch64 --base-address 0x400000 -o M2-gen2
+          chmod +x M2-gen2 2>/dev/null || true
+          ab_rule 'GATE D: generation 2'
+          ab_art 'M2-Planet gen2' M2-gen2
+
+          # behavioural equivalence: both generations must emit the same M1
+          printf 'int f(int n){if(n<2){return n;}return f(n-1)+f(n-2);}int main(){return f(10);}' > d.c
+          ab_run 'gen1 on d.c' 300 d1.M1 \
+            qemu-aarch64 ./M2-Planet --architecture aarch64 --bootstrap-mode -f d.c -o d1.M1
+          ab_run 'gen2 on d.c' 300 d2.M1 \
+            qemu-aarch64 ./M2-gen2   --architecture aarch64 --bootstrap-mode -f d.c -o d2.M1
+          ab_cmp 'gen1 vs gen2 output' d1.M1 d2.M1
+          if [ -s d2.M1 ] && cmp -s d1.M1 d2.M1; then
+            echo
+            echo "  PASS: M2-Planet compiled by our ladder rebuilt ITSELF through our"
+            echo "  own M1 and hex2, and both generations emit identical code."
+          else
+            echo "  gate D not yet green -- see the sizes and shas above."
+            exit 1
+          fi
