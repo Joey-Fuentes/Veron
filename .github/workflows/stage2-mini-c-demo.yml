@@ -1141,7 +1141,11 @@ jobs:
           #            is O(literal size) rather than O(program size).
           cap23_ok=yes
           c23() {
-            printf '%s' "$1" > c23.c
+            # printf expands \042 etc. only in its FORMAT string, never in a %s
+            # ARGUMENT. Using '%s' here fed the compiler a literal backslash-042
+            # instead of a quote, so every literal test compiled garbage and
+            # segfaulted -- the same trap the escape section already documents.
+            printf "$1" > c23.c
             set +e
             timeout 120 qemu-aarch64 ./stage2 < c23.c > c23.s
             if [ $? -ne 0 ] || [ ! -s c23.s ]; then
