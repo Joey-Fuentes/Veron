@@ -98,6 +98,39 @@ jobs:
           echo "--- M2-Planet invocations found in those recipes ---"
           grep -rn -- '-f ' upstream-mescc --include='kaem*' --include='*.kaem' 2>/dev/null | head -40 || true
 
+      - name: Derive -f lists from upstream's makefile
+        run: |
+          # Stop hand-writing these. The makefile is authoritative: its M1
+          # recipe is "M1-macro.c stringify.c bootstrappable.c" -- stringify.c
+          # is what three hand-written lists all missed, and its absence hung
+          # M1 at runtime while --help still worked.
+          MK=upstream-mescc/makefile
+          echo "--- makefile recipes ---"
+          grep -A6 -E '^(M1|hex2):' "$MK" || true
+
+          srcs() {
+            awk -v t="^$1:" '$0 ~ t {i=1; next} i && /^[^\t ]/ {exit} i {print}' "$MK" \
+              | grep -o '[A-Za-z0-9_./-]*\.c' | awk '!seen[$0]++' \
+              | grep -v 'bootstrappable\.c'
+          }
+          # M2-Planet is single-pass; put the main-bearing file last.
+          order() {
+            local m="" r=""
+            for f in $1; do
+              if grep -q '^int main(' "upstream-mescc/$f" 2>/dev/null; then m="$f"; else r="$r $f"; fi
+            done
+            echo "$r $m"
+          }
+
+          M1S=$(order "$(srcs M1)")
+          H2S=$(order "$(srcs hex2)")
+          [ -n "$(echo $M1S)" ] || { echo "could not derive M1 sources"; exit 1; }
+          [ -n "$(echo $H2S)" ] || { echo "could not derive hex2 sources"; exit 1; }
+          echo "M1 sources  : $M1S"
+          echo "hex2 sources: $H2S"
+          echo "M1_SRCS=$M1S" >> "$GITHUB_ENV"
+          echo "HEX2_SRCS=$H2S" >> "$GITHUB_ENV"
+
       # --- 2. PROBE: can OUR stage 2 compile M1? -----------------------------
       # The real unknown is not M1.c but its M2libc dependencies. M2-Planet's
       # -f list needed only bootstrap.c + bootstrappable.c; if M1/hex2 pull in
@@ -126,7 +159,9 @@ jobs:
           }
 
           SEEN=""
-          list="$L/bootstrap.c $L/bootstrappable.c $(resolve $S/M1-macro.c)"
+          list="$L/bootstrap.c $L/bootstrappable.c"
+          for r in $M1_SRCS; do list="$list $(resolve $S/$r)"; done
+          list=$(printf '%s\n' $list | awk '!seen[$0]++' | tr '\n' ' ')
           echo "resolved -f list: $list"
           cat $list > m1src.c
           echo "M1 translation unit: $(wc -c < m1src.c) bytes  (was 28252 with headers dropped)"
@@ -164,9 +199,7 @@ jobs:
           # which is what upstream's oracle complained about). Order mirrors
           # M2-Planet's own -f list: headers, then bodies, main-bearing last.
           list="$L/bootstrap.c $L/bootstrappable.c"
-          for r in $S/hex2_linker.c $S/hex2_word.c $S/hex2.c; do
-            list="$list $(resolve $r)"
-          done
+          for r in $HEX2_SRCS; do list="$list $(resolve $S/$r)"; done
           # resolve() runs in a subshell so SEEN never propagates back; dedupe
           # here instead, preserving first-seen order.
           list=$(printf '%s\n' $list | awk '!seen[$0]++' | tr '\n' ' ')
