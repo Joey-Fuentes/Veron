@@ -50,7 +50,6 @@ jobs:
       M2PLANET_SHA: 34fbd5c2a9b6eb634a4f6ad95158dcd1efcf19e0
       # TODO pin once this graduates; mescc-tools is not part of the C-subset
       # spec, so it has been left at branch tip like borrow-m2 does.
-      MESCC_REF: main
     steps:
       - uses: actions/checkout@v5
 
@@ -68,7 +67,6 @@ jobs:
           git -C upstream-m2planet checkout "$M2PLANET_SHA"
           git -C upstream-m2planet submodule update --init --recursive
           git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
-          git -C upstream-mescc checkout "$MESCC_REF"
           echo "M2-Planet : $(git -C upstream-m2planet rev-parse HEAD)"
           echo "M2libc    : $(git -C upstream-m2planet/M2libc rev-parse HEAD)"
           echo "mescc-tools: $(git -C upstream-mescc rev-parse HEAD)"
