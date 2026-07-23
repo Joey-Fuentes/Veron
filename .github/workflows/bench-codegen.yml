@@ -501,6 +501,52 @@ jobs:
           w 'no locals, return call'     'int f(){return 5;}int main(){return f();}'
           w 'undefined symbol'           'int main(){return nosuch();}'
 
+      - name: 'STAGE 2: same variable name declared in sibling blocks'
+        continue-on-error: true
+        run: |
+          # The faulting block stores type_name()'s result to local +0x28 and
+          # reads it back from +0x20. unary_expr_sizeof declares 'struct type* a'
+          # TWICE -- once in the if branch, once in the else. Stage 2 has no
+          # block scoping, so prescan reserves two slots while the symbol table
+          # binds the name to one. Store goes to one slot, use reads the other.
+          d() {  # $1 label, $2 expected, $3 source
+            printf '%s' "$3" > d.c
+            printf '  %-46s ' "$1"
+            set +e
+            qemu-aarch64 ./stage2 < d.c > d.s1 2>/dev/null; k=$?
+            if [ "$k" != 0 ]; then printf 'stage2 rc=%s\n' "$k"; set -e; return; fi
+            cat d.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as \
+              | qemu-aarch64 ./elf d.elf 2>/dev/null
+            timeout 30 qemu-aarch64 ./d.elf; r=$?
+            set -e
+            if [ "$r" = "$2" ]; then printf 'OK  (%s)\n' "$r"
+            else printf 'BAD got=%s want=%s\n' "$r" "$2"; fi
+          }
+
+          S='struct ty { int pad; int size; };'
+          M='struct ty* mk(){struct ty* p;p=calloc(1,16);p->size=42;return p;}'
+
+          d 'same name, sibling if/else blocks' 43 \
+            "$S $M int f(int flag){int r;r=0;if(flag){struct ty* a;a=mk();r=a->size;}else{struct ty* a;a=mk();r=a->size+1;}return r;} int main(){return f(0);}"
+
+          d 'same name, WITH initialisers' 43 \
+            "$S $M int f(int flag){int r;r=0;if(flag){struct ty* a = mk();r=a->size;}else{struct ty* a = mk();r=a->size+1;}return r;} int main(){return f(0);}"
+
+          d 'take the FIRST branch instead' 42 \
+            "$S $M int f(int flag){int r;r=0;if(flag){struct ty* a = mk();r=a->size;}else{struct ty* a = mk();r=a->size+1;}return r;} int main(){return f(1);}"
+
+          d 'same name, two sequential blocks' 42 \
+            "$S $M int f(){int r;r=0;{struct ty* a = mk();r=a->size;}{struct ty* a = mk();r=a->size;}return r;} int main(){return f();}"
+
+          d 'distinct names, same shape (control)' 43 \
+            "$S $M int f(int flag){int r;r=0;if(flag){struct ty* a = mk();r=a->size;}else{struct ty* b = mk();r=b->size+1;}return r;} int main(){return f(0);}"
+
+          d 'int, same name, sibling blocks' 8 \
+            "int f(int flag){int r;r=0;if(flag){int a;a=3;r=a;}else{int a;a=8;r=a;}return r;} int main(){return f(0);}"
+
+          d 'the unary_expr_sizeof shape' 42 \
+            "$S $M struct ty* look(int hit){if(hit){return mk();}return 0;} int f(int hit){int size;size=0;struct ty* t;t=look(hit);if(t != 0){struct ty* a;a=t;size=a->size;}else{struct ty* a;a=mk();size=a->size;}return size;} int main(){return f(0);}"
+
       - name: Build each benchmark with BOTH compilers
         continue-on-error: true
         run: |
