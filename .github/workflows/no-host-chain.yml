@@ -45,7 +45,7 @@ concurrency:
 jobs:
   chain:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
     env:
       M2PLANET_SHA: 34fbd5c2a9b6eb634a4f6ad95158dcd1efcf19e0
       # TODO pin once this graduates; mescc-tools is not part of the C-subset
@@ -167,6 +167,9 @@ jobs:
           for r in $S/hex2_linker.c $S/hex2_word.c $S/hex2.c; do
             list="$list $(resolve $r)"
           done
+          # resolve() runs in a subshell so SEEN never propagates back; dedupe
+          # here instead, preserving first-seen order.
+          list=$(printf '%s\n' $list | awk '!seen[$0]++' | tr '\n' ' ')
           echo "resolved -f list: $list"
           cat $list > hex2src.c
           echo "hex2 translation unit: $(wc -c < hex2src.c) bytes  (was 21751, missing hex2_globals.h)"
@@ -194,37 +197,75 @@ jobs:
       # --- 5. GATE: full round trip, NO host compiler on the path ------------
       # Skips cleanly (rather than lying) if the probes above did not produce
       # M1/hex2 yet.
+      - name: 'PROBE: do our M1 and hex2 respond to argv at all?'
+        continue-on-error: true
+        run: |
+          # m70 gave stage 2 argc/argv, but this is the first program that has
+          # ever really parsed options with it. A tool that mis-parses and
+          # falls through to reading stdin looks exactly like a hang, so every
+          # invocation below is timeout-bounded with stdin closed.
+          for t in M1 hex2; do
+            set +e
+            timeout 20 qemu-aarch64 "./$t" --help </dev/null >"$t.help" 2>&1
+            echo "  $t --help  rc=$? (124=HUNG)  $(head -c 120 "$t.help" | tr -d '\n')"
+            timeout 20 qemu-aarch64 "./$t" </dev/null >/dev/null 2>&1
+            echo "  $t (no args) rc=$? (124=HUNG)"
+            set -e
+          done
+
+      - name: 'PROBE: differential — our M1 vs a gcc-built M1'
+        continue-on-error: true
+        run: |
+          # Host gcc DELIBERATELY, as an oracle only. If the .hex2 bytes match,
+          # our M1 is correct and any hang is downstream of it.
+          make -C upstream-mescc M1 hex2
+          L=upstream-m2planet/M2libc
+          printf 'int main(){return 42;}' > t.c
+          timeout 60 qemu-aarch64 ./M2-Planet --architecture aarch64 \
+            --bootstrap-mode -f t.c -o t.M1 </dev/null
+          args="-f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 -f t.M1
+                --little-endian --architecture aarch64"
+          set +e
+          timeout 60 qemu-aarch64 ./M1 $args -o ours.hex2 </dev/null; echo "our M1 rc=$? (124=HUNG)"
+          set -e
+          upstream-mescc/bin/M1 $args -o theirs.hex2
+          if cmp -s ours.hex2 theirs.hex2; then
+            echo "IDENTICAL: our M1 matches the gcc-built M1 byte for byte."
+          else
+            echo "DIFFER:"; ls -l ours.hex2 theirs.hex2
+            diff <(head -40 ours.hex2) <(head -40 theirs.hex2) | head -20
+          fi
+
       - name: 'GATE: no-host round trip (aarch64 + x86)'
         run: |
           if [ ! -x M1 ] || [ ! -x hex2 ]; then
-            echo "SKIP: our M1/hex2 not built yet -- read steps 1-3 and fix the -f lists."
-            echo "This gate is the whole point; it is not green until they exist."
+            echo "SKIP: our M1/hex2 not built yet."
             exit 1
           fi
           L=upstream-m2planet/M2libc
-
-          # A tiny program needing no libc: libc-core.M1's _start calls main()
-          # and uses the return value as the exit code.
           printf 'int main(){int i;int s;s=0;for(i=1;i<10;i=i+1){s=s+i;}return s;}' > t.c
+
+          step() {  # step <label> <expected-rc> <cmd...>
+            local label="$1" want="$2"; shift 2
+            set +e
+            timeout 60 "$@" </dev/null; local rc=$?
+            set -e
+            echo "  $label rc=$rc (want $want; 124=HUNG)"
+            [ "$rc" = "$want" ]
+          }
 
           run_for() {
             arch="$1"; emu="$2"; want="$3"
-            qemu-aarch64 ./M2-Planet --architecture "$arch" --bootstrap-mode -f t.c -o t.M1
-            qemu-aarch64 ./M1 \
-              -f "$L/$arch/${arch}_defs.M1" \
-              -f "$L/$arch/libc-core.M1" \
-              -f t.M1 \
-              --little-endian --architecture "$arch" -o t.hex2
-            qemu-aarch64 ./hex2 \
-              -f "$L/$arch/ELF-$arch.hex2" \
-              -f t.hex2 \
+            step "$arch M2-Planet" 0 qemu-aarch64 ./M2-Planet \
+              --architecture "$arch" --bootstrap-mode -f t.c -o t.M1 || return 1
+            step "$arch M1" 0 qemu-aarch64 ./M1 \
+              -f "$L/$arch/${arch}_defs.M1" -f "$L/$arch/libc-core.M1" -f t.M1 \
+              --little-endian --architecture "$arch" -o t.hex2 || return 1
+            step "$arch hex2" 0 qemu-aarch64 ./hex2 \
+              -f "$L/$arch/ELF-$arch.hex2" -f t.hex2 \
               --little-endian --architecture "$arch" \
-              --base-address 0x400000 -o "t.$arch.elf"
-            set +e
-            "$emu" "./t.$arch.elf"; rc=$?
-            set -e
-            echo "  $arch exit: $rc (expect $want)"
-            [ "$rc" = "$want" ]
+              --base-address 0x400000 -o "t.$arch.elf" || return 1
+            step "$arch run" "$want" "$emu" "./t.$arch.elf" || return 1
           }
 
           ok=yes
@@ -232,6 +273,5 @@ jobs:
           run_for x86     qemu-i386    45 || ok=no
 
           [ "$ok" = yes ] || { echo "FAIL"; exit 1; }
-          echo "PASS: M2-Planet, M1 and hex2 were all built by our ladder, and"
-          echo "together they turned C into a running binary for two targets."
-          echo "No host C compiler on the target path."
+          echo "PASS: M2-Planet, M1 and hex2 all built by our ladder turned C"
+          echo "into a running binary for two targets. No host compiler on the path."
