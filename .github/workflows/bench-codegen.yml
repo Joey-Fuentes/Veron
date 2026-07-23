@@ -358,22 +358,50 @@ jobs:
           n 'sizeof(struct s)'  'struct s{int a;};int main(){return sizeof(struct s);}'
           n 'assigned not ret'  'int main(){int x;x = sizeof(char*);return 0;}'
 
-      - name: 'FAULT: PC and registers at the segfault'
+      - name: 'FAULT: map the PC back to a function'
         continue-on-error: true
         run: |
-          printf '%s' 'int main(){return sizeof(char*);}' > f.c
+          # tools/pcmap.py turns a bare PC into a function name using stage 1's
+          # own label positions plus the fixed 0x400078 code base. No more
+          # guessing which construct broke -- read the function that faulted.
+          printf '%s' 'int main(){return sizeof(int);}' > f.c
           set +e
           timeout 60 qemu-aarch64 -d in_asm,cpu -D fault.log \
             ./M2-Planet --architecture aarch64 --bootstrap-mode \
             -f f.c -o /tmp/f.M1 </dev/null >/dev/null 2>&1
           echo "rc=$?"
           set -e
-          echo "log: $(wc -l < fault.log) lines"
-          echo "--- final CPU state (PC + registers at the fault) ---"
-          tail -45 fault.log
+
+          PC=$(grep -o 'PC=[0-9a-f]\{8,\}' fault.log | tail -1 | cut -d= -f2)
+          LR=$(grep -o 'X30=[0-9a-f]\{8,\}' fault.log | tail -1 | cut -d= -f2)
+          echo "faulting PC=0x$PC  link register X30=0x$LR"
           echo
-          echo "--- our M2-Planet label map, for mapping that PC ---"
-          echo "labels in m2.s1: $(grep -c '^:' m2.s1 2>/dev/null || echo 'm2.s1 not in this job')"
+          echo "--- where those land in m2.s1 ---"
+          python3 tools/pcmap.py m2.s1 "0x$PC" "0x$LR"
+          echo
+          echo "--- the last few distinct PCs, as a call trail ---"
+          for p in $(grep -o 'PC=[0-9a-f]\{8,\}' fault.log | cut -d= -f2 | uniq | tail -6); do
+            python3 tools/pcmap.py m2.s1 "0x$p" | tail -1
+          done
+          echo
+          echo "--- faulting instruction block ---"
+          tail -8 fault.log
+
+      - name: 'FAULT: same for the malloc case'
+        continue-on-error: true
+        run: |
+          L=upstream-m2planet/M2libc
+          set +e
+          timeout 60 qemu-aarch64 -d cpu -D m.log \
+            ./M2-Planet --architecture aarch64 --bootstrap-mode \
+            -f "$L/aarch64/linux/bootstrap.c" -f "$L/bootstrap.c" \
+            -o /tmp/m.M1 </dev/null >/dev/null 2>&1
+          echo "rc=$?"
+          set -e
+          PC=$(grep -o 'PC=[0-9a-f]\{8,\}' m.log | tail -1 | cut -d= -f2)
+          LR=$(grep -o 'X30=[0-9a-f]\{8,\}' m.log | tail -1 | cut -d= -f2)
+          echo "faulting PC=0x$PC  X30=0x$LR"
+          python3 tools/pcmap.py m2.s1 "0x$PC" "0x$LR"
 
       - name: 'STAGE 2: nested calls in argument position'
         continue-on-error: true
