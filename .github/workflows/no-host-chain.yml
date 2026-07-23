@@ -271,46 +271,79 @@ jobs:
             diff <(head -40 ours.hex2) <(head -40 theirs.hex2) | head -20
           fi
 
-      - name: 'PROBE: strace our M1 — where is it stuck?'
+      - name: 'PROBE: control — how fast does ANY of our compiled code read?'
+        continue-on-error: true
+        run: |
+          # M1 does ~50 bytes/sec. Our M2-Planet has only ever read 40-byte
+          # inputs, so we do not know if this is M1's problem or every binary
+          # our ladder produces. Give M2-Planet a few KB and count.
+          L=upstream-m2planet/M2libc
+          for i in $(seq 1 60); do
+            echo "int f$i(int n){int s;s=0;while(n>0){s=s+n;n=n-1;}return s;}"
+          done > big.c
+          echo "int main(){return f1(3);}" >> big.c
+          echo "input: $(wc -c < big.c) bytes"
+          set +e
+          start=$(date +%s)
+          timeout 300 qemu-aarch64 ./M2-Planet --architecture aarch64 \
+            --bootstrap-mode -f big.c -o big.M1 </dev/null
+          rc=$?; end=$(date +%s)
+          set -e
+          echo "M2-Planet rc=$rc in $((end-start))s -> $(wc -c < big.M1 2>/dev/null || echo 0) bytes of M1"
+          echo "rate: $(( $(wc -c < big.c) / ((end-start)+1) )) input bytes/sec"
+
+      - name: 'PROBE: let M1 actually finish (10 min budget)'
         continue-on-error: true
         run: |
           L=upstream-m2planet/M2libc
           printf 'int main(){return 42;}' > t.c
           timeout 60 qemu-aarch64 ./M2-Planet --architecture aarch64 \
             --bootstrap-mode -f t.c -o t.M1 </dev/null || true
+          for f in "$L/aarch64/aarch64_defs.M1" "$L/aarch64/libc-core.M1" t.M1; do
+            echo "  input $f: $(wc -c < $f) bytes"
+          done
+          args="-f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 -f t.M1
+                --little-endian --architecture aarch64"
           set +e
-          timeout 15 qemu-aarch64 -strace ./M1 \
-            -f "$L/aarch64/aarch64_defs.M1" -f "$L/aarch64/libc-core.M1" -f t.M1 \
-            --little-endian --architecture aarch64 -o /dev/null \
-            </dev/null > strace.log 2>&1
-          echo "rc=$? (124=still hung after 15s)"
+          start=$(date +%s)
+          timeout 600 qemu-aarch64 ./M1 $args -o ours.hex2 </dev/null
+          rc=$?; end=$(date +%s)
           set -e
-          echo "syscall lines: $(wc -l < strace.log)"
-          echo "--- histogram (a spin shows up as one call dominating) ---"
-          grep -oE '[a-z_0-9]+\(' strace.log | tr -d '(' | sort | uniq -c | sort -rn | head -12
-          echo "--- first 30 ---"; head -30 strace.log
-          echo "--- last 30 ---";  tail -30 strace.log
+          echo "our M1 rc=$rc after $((end-start))s (124=still going at 10min)"
+          upstream-mescc/bin/M1 $args -o theirs.hex2 || true
+          if [ -f ours.hex2 ] && cmp -s ours.hex2 theirs.hex2; then
+            echo "IDENTICAL: our M1 is CORRECT, just slow. This is a perf bug, not a codegen bug."
+          elif [ -f ours.hex2 ]; then
+            echo "DIFFER: $(wc -c < ours.hex2) vs $(wc -c < theirs.hex2) bytes"
+            cmp ours.hex2 theirs.hex2 | head -3
+          else
+            echo "no output produced"
+          fi
 
-      - name: 'PROBE: is our hex2 independently OK?'
+      - name: 'PROBE: where does hex2 hit SIGILL?'
         continue-on-error: true
         run: |
-          # Decouple the two tools. Feed our hex2 a .hex2 produced by the
-          # gcc-built M1, so a failure here is hex2's alone.
+          # hex2 emits a byte-identical ELF and THEN dies with signal 4, so the
+          # fault is on the exit path, after the work. Get the faulting PC and
+          # the last syscalls before it.
           L=upstream-m2planet/M2libc
           upstream-mescc/bin/M1 \
             -f "$L/aarch64/aarch64_defs.M1" -f "$L/aarch64/libc-core.M1" -f t.M1 \
             --little-endian --architecture aarch64 -o good.hex2 || true
           set +e
-          timeout 60 qemu-aarch64 ./hex2 -f "$L/aarch64/ELF-aarch64.hex2" -f good.hex2 \
+          timeout 120 qemu-aarch64 -strace ./hex2 \
+            -f "$L/aarch64/ELF-aarch64.hex2" -f good.hex2 \
             --little-endian --architecture aarch64 --base-address 0x400000 \
-            -o ours.elf </dev/null
-          echo "our hex2 rc=$? (124=HUNG)"
+            -o ours.elf </dev/null > h2.log 2>&1
+          echo "rc=$? (132=SIGILL)"
           set -e
+          echo "--- last 25 syscalls before the fault ---"
+          tail -25 h2.log
           upstream-mescc/bin/hex2 -f "$L/aarch64/ELF-aarch64.hex2" -f good.hex2 \
             --little-endian --architecture aarch64 --base-address 0x400000 \
             -o theirs.elf || true
           if [ -f ours.elf ] && cmp -s ours.elf theirs.elf; then
-            echo "IDENTICAL: our hex2 matches the gcc-built hex2. Only M1 is broken."
+            echo "CONFIRMED: output byte-identical to gcc-built hex2; the SIGILL is post-work."
           else
             ls -l ours.elf theirs.elf 2>/dev/null || true
           fi
