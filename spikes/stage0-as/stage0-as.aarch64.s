@@ -814,6 +814,10 @@ inover:  .ascii  "stage0-as: input exceeds INBUF_SZ\n"
 
     .bss
     .align  4
-inbuf:   .space INBUF_SZ
+    // ORDER MATTERS: adr reaches +-1 MiB, so every adr-referenced symbol must sit
+    // NEAR the start of .bss. INBUF_SZ is a 64 MiB demand-zero reserve, so it goes
+    // LAST -- anything after it would be unreachable by adr. (Adding a symbol below
+    // inbuf will fail to link; lint_asm.py checks for this.)
 symtab:  .space 512
 outword: .space 4
+inbuf:   .space INBUF_SZ

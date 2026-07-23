@@ -158,4 +158,7 @@ cbover:  .ascii  "elf: code exceeds CODEBUF_SZ\n"
 
     .bss
     .align  4
+    // codebuf is a 64 MiB demand-zero reserve and MUST stay the last symbol in
+    // .bss: adr reaches only +-1 MiB, so anything placed after it would be
+    // unreachable by adr. (lint_asm.py checks for this.)
 codebuf: .space CODEBUF_SZ
