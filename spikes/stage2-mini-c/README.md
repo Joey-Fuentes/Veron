@@ -257,6 +257,44 @@ runs, and treating `( ) { } ; ,` as punctuation — so a variable named `i`, `w`
   code region may be blank, `x17` must equal the true instruction count, and a
   function's meaning must not depend on what was defined before it.
 
+- **Front-end gaps: comments, bare blocks, `struct*` return types** (A14, m55).
+  Four independent front-end holes, each of which presented as a **hang or a wild
+  address** rather than a wrong answer, which is why they read as codegen bugs.
+  - **Comments.** The tokenizer's whitespace loop (`nt_ws`) had no comment rule, so
+    `/` fell straight through to the operator path and the comment body was lexed
+    as source. Added a `/`-peek dispatching to a `//`-to-newline skip and a
+    `/* */` skip; `x5` is restored before falling through, so a lone `/` still
+    lexes as division.
+  - **Bare blocks.** `doif`/`dowhile` push a record onto the block stack
+    (`x15`/`x16`); a **bare `{` pushed nothing**, so its `}` popped the *enclosing*
+    record — or hit `x16 == 0` and ended the function early. Note that
+    `compile_expr` resets the cursor to the token start on unrecognised
+    punctuation, so the `{` after `if`/`while` is always consumed by
+    `add x6 x6 1`: **any `{` that reaches `stmtloop` is a bare block**, with no
+    ambiguity. Added a plain-block record (kind `3`) popped by `dclose_plain`,
+    which emits nothing. Locals declared in a bare block keep their frame slot for
+    the rest of the function — the block delimits *parsing*, not *scope*.
+  - **`struct*` return types.** `struct T *f()` was routed to `fl_gstruct`, the
+    **global**-struct path, which declares a global and then skips to the first
+    `;` — which lands *inside the function body*, resuming top-level parsing
+    mid-function. Added the same `(`-peek the `int` path already uses at `fl_hn`,
+    branching to `fl_func`.
+  - **Global data is now bounded.** Each global array byte emits `.byte 0\n`
+    (8 chars) into the fixed data region at `x19+0x60000`; ~24 KB of globals
+    reached `0x90000` (brk), having silently clobbered the save area at `0x7F000`
+    on the way. `egd_loop` now stops with a diagnostic on stderr and exit `2`.
+    This **bounds** the failure, it does not lift the limit: `.byte`/`.ascii` are
+    the only directives `stage0-as` has, so compact zero-fill is a lower-stage
+    change, and the code buffer (`0x10000`–`0x50000`) caps total output anyway.
+    Large buffers should still be `calloc`ed and held in global `char*`s.
+
+  None of these four adds an emitted line, so the A13 `x17` invariant is
+  untouched — guarded directly, with drift re-checked for each new construct.
+  **Newly surfaced by the `struct*` fix:** member access *directly on a call
+  result* (`id(n)->v`) returns garbage; via a local (`q=id(n); q->v`) it is
+  correct. That is a pre-existing expression-parser gap that was simply
+  unreachable while `struct*`-returning functions did not work at all.
+
 Equality and `/` are small, self-contained increments that are available to pick
 up any time, but they are **not the critical path**. With functions +
 recursion, pointers/`char`/arrays, `struct`, **function pointers** (A9), the

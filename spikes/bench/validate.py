@@ -1096,6 +1096,102 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     check("stage2 emit+issep+builder: emit path correct",
           _exit_safe(_THREE + "int main(){build(3);return emit_list(HEAD);}"), 6)
 
+    # ---- m55: comments, bare blocks, struct* returns, bounded global data ----
+    # Four independent front-end gaps.  Each previously presented as a HANG or a
+    # wild-address fault, so every check goes through _exit_safe.
+
+    print("== stage 2 comment stripping (m55) ==")
+    # The tokenizer had no comment rule, so '/' fell through to the operator
+    # path and the comment body was lexed as source -- a wild address.
+    for nm, cs, want in [
+        ("block comment",      "int main(){/* hi */ return 7;}", 7),
+        ("line comment",       "int main(){// hi\nreturn 7;}", 7),
+        ("multi-line block",   "int main(){/* a\nb\nc */return 3;}", 3),
+        ("stars inside block", "int main(){/** a ** b */return 4;}", 4),
+        ("comment at top level","/* h */int f(){return 5;}// t\nint main(){return f();}", 5),
+        ("comment then decl",  "int main(){/*x*/int i;i=6;return i;}", 6),
+    ]:
+        check(f"stage2 comment: {nm}", _exit_safe(cs), want)
+    # '/' must still tokenize as division -- the comment rule only fires on // and /*.
+    check("stage2 division still lexes (12/3)", _exit_safe("int main(){return 12/3;}"), 4)
+    check("stage2 division no spaces (20/4)", _exit_safe("int main(){return 20/4;}"), 5)
+
+    print("== stage 2 bare block statements (m55) ==")
+    # if/while push a block record; a BARE '{' pushed none, so its '}' popped the
+    # enclosing record -- or ended the function early -- and the program ran away.
+    for nm, cs, want in [
+        ("bare block",          "int main(){{return 7;}}", 7),
+        ("block with decl",     "int main(){int i;i=0;while(i<3){i=i+1;}"
+                                "{int fd;fd=7;return fd+i;}}", 10),
+        ("double nested",       "int main(){{{return 9;}}}", 9),
+        ("block then block",    "int main(){int a;{a=2;}{int b;b=3;return a+b;}}", 5),
+        ("block inside while",  "int main(){int i;int s;i=0;s=0;"
+                                "while(i<3){{s=s+1;}i=i+1;}return s;}", 3),
+        ("block inside if",     "int main(){if(1){{return 8;}}return 4;}", 8),
+        ("block inside else",   "int main(){if(0){return 1;}else{{return 6;}}}", 6),
+    ]:
+        check(f"stage2 bare block: {nm}", _exit_safe(cs), want)
+
+    print("== stage 2 struct* return types (m55) ==")
+    # 'struct T *f()' was routed to the GLOBAL-struct path, which skipped to the
+    # first ';' (inside the body) and resumed top-level parsing mid-function.
+    _T = "struct T{int v;struct T* nx;};"
+    check("stage2 struct* fn: trivial body",
+          _exit_safe(_T + "struct T* f(){return 0;}int main(){return 5;}"), 5)
+    check("stage2 struct* fn: returns a real node",
+          _exit_safe(_T + "struct T* mk(int v){struct T* n=calloc(1,sizeof(struct T));"
+                     "n->v=v;n->nx=0;return n;}"
+                     "int main(){struct T* p;p=mk(9);return p->v;}"), 9)
+    check("stage2 struct* fn: pointer param passthrough",
+          _exit_safe(_T + "struct T* id(struct T* p){return p;}"
+                     "int main(){struct T* n=calloc(1,sizeof(struct T));n->v=7;"
+                     "struct T* q;q=id(n);return q->v;}"), 7)
+    check("stage2 struct* fn: chained through a list",
+          _exit_safe(_T + "struct T* mk(int v){struct T* n=calloc(1,sizeof(struct T));"
+                     "n->v=v;n->nx=0;return n;}"
+                     "int main(){struct T* a;struct T* b;a=mk(4);b=mk(6);a->nx=b;"
+                     "return a->nx->v;}"), 6)
+    # REGRESSION: a genuine global struct pointer / value must still be a global.
+    check("stage2 global struct* still a global",
+          _exit_safe(_T + "struct T* HEAD;int main(){HEAD=0;return 4;}"), 4)
+    check("stage2 global struct value still a global",
+          _exit_safe(_T + "struct T G;int main(){G.v=6;return G.v;}"), 6)
+
+    print("== stage 2 global data is bounded, not silently overrun (m55) ==")
+    # Each global array byte emits '.byte 0\n' (8 chars) into a fixed data region.
+    # Oversized globals used to store past the region -- clobbering the save area
+    # and then brk.  It must now stop cleanly instead of corrupting memory.
+    check("stage2 small global array still works",
+          _exit_safe("char A[16];int main(){A[0]=65;return A[0];}"), 65)
+    check("stage2 mid global array still works",
+          _exit_safe("char A[1024];int main(){A[1000]=42;return A[1000];}"), 42)
+    def _emit_safe(csrc):
+        # The oversized case stops the COMPILER, so there is no program to run:
+        # assert on the emitted output, never on an exit code.
+        try:
+            return _emit(csrc)
+        except OOBAccess:
+            return "<oob>"
+        except RuntimeError as e:
+            return f"<{e}>"
+    _huge = "char A[8192];char B[16384];int main(){return 3;}"
+    check("stage2 oversized globals do not fault", _emit_safe(_huge), "")
+    check("stage2 oversized globals emit no partial code",
+          len(_emit_safe(_huge)), 0)
+
+    # x17 accounting must survive all four fixes: none of them may add an
+    # emitted line, or bug class #2 (drifting @-targets) comes straight back.
+    for nm, cs in [
+        ("bare block",     _S + "int f(){int i;i=0;{int fd;fd=7;}return i;}int main(){return 0;}"),
+        ("block in while", _S + "int f(){int i;i=0;while(i<3){{i=i+1;}}return i;}int main(){return 0;}"),
+        ("comments",       _S + "int f(){/*a*/int i;// b\ni=0;return i;}int main(){return 0;}"),
+        ("struct* fn",     _S + "struct N* mk(int v){struct N* n=calloc(1,sizeof(struct N));"
+                                "n->v=v;return n;}int main(){return 0;}"),
+    ]:
+        b, d = _drift(cs)
+        check(f"stage2 no blank emitted line: {nm}", b, 0)
+        check(f"stage2 x17 == real instr count: {nm}", d, 0)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)

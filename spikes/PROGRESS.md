@@ -1067,6 +1067,50 @@ including the nested-while victim, which reports `<runaway>`.
 **Not** the separately-tracked frame-sizing bug below — that one is still open and
 independent.
 
+### m55 (A14) — four front-end gaps: comments, bare blocks, `struct*` returns, bounded global data
+
+Four independent **front-end** holes, each of which presented as a **hang or a wild
+address** rather than a wrong answer — which is exactly why they were mistaken for
+codegen bugs.
+
+**Comments** — the tokenizer's whitespace loop had no comment rule, so `/` fell through
+to the operator path and the comment body was lexed as source. Added a `/`-peek in
+`nt_ws` dispatching to a `//`-to-newline skip and a `/* */` skip, restoring the char
+register before falling through so a lone `/` still lexes as division.
+
+**Bare blocks** — `if`/`while` push a record onto the block stack; a bare `{` pushed
+none, so its `}` popped the *enclosing* record, or ended the function early. Because
+`compile_expr` resets the cursor to the token start on unrecognised punctuation, the
+`{` after `if`/`while` is always consumed by `add x6 x6 1` — so **any `{` reaching
+`stmtloop` is a bare block**, unambiguously. Added a plain-block record (kind 3) popped
+by `dclose_plain`, emitting nothing. The block delimits *parsing*, not *scope*: locals
+declared inside keep their frame slot for the rest of the function.
+
+**`struct*` return types** — `struct T *f()` was routed to the **global**-struct path,
+which declares a global then skips to the first `;` — which lands *inside the body*,
+resuming top-level parsing mid-function. Added the same `(`-peek the `int` path already
+uses, branching to the function path.
+
+**Global data is bounded** — each global array byte emits `.byte 0\n` (8 chars) into the
+fixed data region; ~24 KB of globals reached brk, having silently clobbered the save area
+en route. The emission loop now stops with a diagnostic and exit `2`. This **bounds** the
+failure rather than lifting the limit — `.byte`/`.ascii` are the only directives
+`stage0-as` has, so compact zero-fill would be a lower-stage change.
+
+None of the four adds an emitted line, so the **A13 `x17` invariant is untouched** —
+re-verified per new construct (0 blanks, 0 drift). `validate.py` 429 → **462**;
+`stage2-mini-c-demo` gained a matching **`fe_ok`** section wired into the pass gate, all
+cases `timeout`-bounded so a regression fails fast instead of hanging CI.
+
+Two notes for whoever picks this up. **Newly surfaced:** member access directly on a call
+result (`id(n)->v`) returns garbage, while `q=id(n); q->v` is correct — a pre-existing
+expression-parser gap that was unreachable while `struct*` returns did not work at all.
+**And the frame-sizing rung did not reproduce:** three struct-pointer locals with a
+`calloc` build loop, and the documented 5-locals-in-`main` + chained `mk()` shape, both
+now return correct values on the bench. That suggests it may have been a symptom of the
+A13 drift rather than a separate bug — but the bench is a model, so treat this as
+*unconfirmed* until CI says otherwise, and do not cross the rung off on bench evidence.
+
 ---
 
 ## 6. What's next

@@ -642,6 +642,49 @@ jobs:
           vtry "$THREE"'int main(){return build(3);}' 3 'emit path + issep + allocating builder: builder count'
           vtry "$THREE"'int main(){build(3);return emit_list(HEAD);}' 6 'emit path + issep + allocating builder: traversal'
 
+          echo "== stage-2: front end — comments, bare blocks, struct* return types =="
+          # Four independent front-end gaps, each of which used to present as a
+          # HANG or a wild-address fault rather than a wrong answer, so every
+          # case here is timeout-bounded: a regression must fail fast, not hang
+          # the runner.
+          fe_ok=yes
+          ftry() {
+            printf '%s' "$1" | qemu-aarch64 ./stage2 > fout.s
+            cat fout.s | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf a.out
+            set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; fe_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          # comments: the tokenizer had no comment rule, so '/' fell through to
+          # the operator path and the comment body was lexed as source.
+          ftry 'int main(){/* hi */ return 7;}' 7 'block comment stripped'
+          ftry $'int main(){/* a\nb */return 3;}' 3 'multi-line block comment stripped'
+          ftry $'int main(){// hi\nreturn 7;}' 7 'line comment stripped'
+          ftry 'int main(){return 12/3;}' 4 'division still lexes (comment rule needs // or /*)'
+          # bare blocks: if/while push a block record; a bare '{' pushed none, so
+          # its '}' popped the enclosing record or ended the function early.
+          ftry 'int main(){{return 7;}}' 7 'bare block statement'
+          ftry 'int main(){int i;i=0;while(i<3){i=i+1;}{int fd;fd=7;return fd+i;}}' 10 'block-scoped declaration'
+          ftry 'int main(){int a;{a=2;}{int b;b=3;return a+b;}}' 5 'consecutive bare blocks'
+          ftry 'int main(){int i;int s;i=0;s=0;while(i<3){{s=s+1;}i=i+1;}return s;}' 3 'bare block nested inside while'
+          # struct* returns: 'struct T *f()' was routed to the global-struct path,
+          # which skipped to the first ';' -- inside the body -- and resumed
+          # top-level parsing mid-function.
+          FT_T='struct T{int v;struct T* nx;};'
+          ftry "$FT_T"'struct T* f(){return 0;}int main(){return 5;}' 5 'struct* return type (trivial body)'
+          ftry "$FT_T"'struct T* mk(int v){struct T* n=calloc(1,sizeof(struct T));n->v=v;n->nx=0;return n;}int main(){struct T* p;p=mk(9);return p->v;}' 9 'struct* return type (returns a real node)'
+          ftry "$FT_T"'struct T* HEAD;int main(){HEAD=0;return 4;}' 4 'global struct pointer is still a global'
+          # global data: each array byte emits '.byte 0\n' into a fixed region.
+          # Oversized globals used to store past it, clobbering saved state and
+          # then brk. It must stop cleanly instead of corrupting itself.
+          ftry 'char A[16];int main(){A[0]=65;return A[0];}' 65 'small global array still works'
+          set +e
+          printf '%s' 'char A[8192];char B[16384];int main(){return 3;}' | timeout 30 qemu-aarch64 ./stage2 > big.s 2> big.err; brc=$?
+          set -e
+          bsz=$(wc -c < big.s | tr -d ' ')
+          if [ "$brc" = 2 ] && [ "$bsz" = 0 ]; then st=OK; else st=DIFF; fe_ok=no; fi
+          printf '  %-64s rc=%-4s bytes=%-4s %s\n' 'oversized globals stop cleanly (no buffer overrun)' "$brc" "$bsz" "$st"
+
           {
             echo "## stage2-mini-c — variables, if/while, reassignment, functions + recursion"
             echo '```'
@@ -658,6 +701,7 @@ jobs:
             echo "heap: calloc/free bump alloc (mmap)  : $heap_ok"
             echo "file I/O: open/read/write/close/exit : $io_ok"
             echo "single-pass @-target accounting (order): $emit_ok"
+            echo "front end: comments/blocks/struct* ret: $fe_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
             echo "while(n){s=s+n;n=n-1;} sum 1..10     -> 55"
@@ -669,8 +713,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ]; then
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ]; then
             echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct; and the single-pass @-target accounting invariant holds (every emitted line assembles to exactly 4 bytes, so the emitted-instruction counter stays equal to the true instruction count and a function's meaning does not depend on what was defined before it)."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok"; exit 1
           fi
