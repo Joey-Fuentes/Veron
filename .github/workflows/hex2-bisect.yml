@@ -1,0 +1,125 @@
+name: hex2-bisect
+
+# SPIKE (invariants suspended). Isolate the construct in mescc-tools'
+# hex2_linker.c that segfaults stage 2.
+#
+# Ground truth from no-host-chain: stage 2 compiled M1's 28,252-byte TU fine and
+# died on hex2's 21,751-byte TU, so this is NOT capacity. bootstrap.c and
+# bootstrappable.c are already proven (they sit in the M2-Planet TU that builds),
+# so the culprit is inside hex2_linker.c alone.
+#
+# Method (m71's, not code-reading): compile prefixes of hex2_linker.c cut at
+# top-level '}' lines, each prepended with the known-good M2libc pair. The first
+# prefix that dies names the function. Then print it.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: hex2-bisect-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bisect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      M2PLANET_SHA: 34fbd5c2a9b6eb634a4f6ad95158dcd1efcf19e0
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu
+
+      - name: Fetch upstreams
+        run: |
+          git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git -C upstream-m2planet checkout "$M2PLANET_SHA"
+          git -C upstream-m2planet submodule update --init --recursive
+          git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
+          echo "mescc-tools: $(git -C upstream-mescc rev-parse HEAD)"
+
+      - name: Build the ladder
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+          cat spikes/stage1-as/stage1-as.s0 \
+            | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
+          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+            | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+
+      - name: Bisect hex2_linker.c
+        run: |
+          L=upstream-m2planet/M2libc
+          SRC=upstream-mescc/hex2_linker.c
+          cat $L/bootstrap.c $L/bootstrappable.c > prefix.c
+          wc -l "$SRC"
+
+          # Sanity: the known-good pair alone must compile. If this fails the
+          # problem is the M2libc mismatch (mescc-tools ships its own submodule
+          # at a different SHA), not hex2_linker.c.
+          if ! timeout 120 qemu-aarch64 ./stage2 < prefix.c > /dev/null 2>&1; then
+            echo "STOP: bootstrap.c + bootstrappable.c alone do not compile."
+            echo "Try L=upstream-mescc/M2libc instead."
+            exit 1
+          fi
+          echo "baseline OK: M2libc pair compiles alone"
+
+          # Every line that is exactly '}' ends a top-level function in this
+          # style of C, so a prefix cut there is a valid translation unit.
+          cuts=$(grep -n '^}' "$SRC" | cut -d: -f1)
+          echo "candidate cut points: $(echo "$cuts" | wc -w)"
+
+          last_ok=0
+          first_bad=0
+          for n in $cuts; do
+            head -n "$n" "$SRC" > body.c
+            cat prefix.c body.c > try.c
+            set +e
+            timeout 120 qemu-aarch64 ./stage2 < try.c > /dev/null 2>&1
+            rc=$?
+            set -e
+            if [ "$rc" = 0 ]; then
+              last_ok=$n
+            else
+              first_bad=$n
+              echo "FIRST FAILURE at line $n (rc=$rc, 124=timeout, 139=segv)"
+              break
+            fi
+          done
+
+          if [ "$first_bad" = 0 ]; then
+            echo "No prefix failed. The fault needs the whole file --"
+            echo "suspect a capacity or cross-function effect, not one construct."
+            exit 0
+          fi
+
+          echo
+          echo "=== the function that broke it (lines $((last_ok+1))-$first_bad) ==="
+          sed -n "$((last_ok+1)),${first_bad}p" "$SRC"
+
+          {
+            echo "## hex2-bisect"
+            echo '```'
+            echo "last good prefix : line $last_ok"
+            echo "first bad prefix : line $first_bad"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 'Cross-check: does the borrowed M2-Planet accept it?'
+        continue-on-error: true
+        run: |
+          # If upstream M2-Planet also rejects the file, our -f list is wrong
+          # rather than our compiler being at fault. Built here with the host
+          # compiler DELIBERATELY -- this step is a test oracle, not a rung.
+          make -C upstream-m2planet M2-Planet
+          upstream-m2planet/bin/M2-Planet --architecture aarch64 --bootstrap-mode \
+            -f upstream-m2planet/M2libc/bootstrap.c \
+            -f upstream-m2planet/M2libc/bootstrappable.c \
+            -f upstream-mescc/hex2_linker.c \
+            -o /dev/null && echo "upstream accepts it -- the gap is ours"
