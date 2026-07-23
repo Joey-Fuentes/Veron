@@ -151,6 +151,38 @@ jobs:
           try 'accumulate + and'    'int main(){int i;int s;s=0;i=0;while(i<10){s=s+i;i=i+1;}return s & 255;}'
           echo "  ok=$ok bad=$bad"
 
+      - name: 'PROBE: compute.c through BOTH M2-Planets'
+        continue-on-error: true
+        run: |
+          # The missing control. If upstream's gcc-built M2-Planet compiles the
+          # same file and ours does not, the fault is in the binary OUR ladder
+          # produced -- not in the source or the -f list.
+          make -C upstream-m2planet M2-Planet
+          both() {
+            printf '  %-38s ' "$1"
+            set +e
+            timeout 60 qemu-aarch64 ./M2-Planet --architecture aarch64 \
+              --bootstrap-mode -f "$2" -o /tmp/o.M1 </dev/null 2>/tmp/e1; a=$?
+            timeout 60 upstream-m2planet/bin/M2-Planet --architecture aarch64 \
+              --bootstrap-mode -f "$2" -o /tmp/o2.M1 </dev/null 2>/tmp/e2; b=$?
+            set -e
+            printf 'ours=%-4s theirs=%-4s %s\n' "$a" "$b" "$(head -1 /tmp/e1)"
+          }
+
+          both 'compute.c (the real file)' compute.c
+          both 'io.c (the real file)'      io.c
+
+          # Narrow the difference from the passing variants: they were all
+          # written without spaces around operators.
+          printf '%s' 'int main(){int i;int s;s=0;i=0;while(i<300000){s=s+i;i=i+1;}return 0;}' > w1.c
+          printf '%s' 'int main(){int i;int s;s = 0;i = 0;while(i < 300000){s = s + i;i = i + 1;}return 0;}' > w2.c
+          printf 'int main()\n{\n\tint i;\n\ti = 0;\n\treturn 0;\n}\n' > w3.c
+          printf 'int main()\n{\n\tint i;\n\tint s;\n\ts = 0;\n\ti = 0;\n\twhile(i < 10)\n\t{\n\t\ts = s + i;\n\t\ti = i + 1;\n\t}\n\treturn 0;\n}\n' > w4.c
+          both 'one line, no spaces'        w1.c
+          both 'one line, spaces round ops' w2.c
+          both 'multiline, decl + assign'   w3.c
+          both 'multiline, small loop'      w4.c
+
       - name: Build each benchmark with BOTH compilers
         run: |
           L=upstream-m2planet/M2libc
