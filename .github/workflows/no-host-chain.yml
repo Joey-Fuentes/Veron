@@ -108,12 +108,28 @@ jobs:
         run: |
           L=upstream-m2planet/M2libc
           S=upstream-mescc
-          cat \
-            $L/bootstrap.c \
-            $L/bootstrappable.c \
-            $S/M1-macro.c \
-            > m1src.c 2>/dev/null || { echo "adjust the -f list from step 1"; exit 1; }
-          echo "M1 translation unit: $(wc -c < m1src.c) bytes"
+          ls -1 $S/M1*.c $S/M1*.h 2>/dev/null || true
+          # M2-Planet-style C passes headers on the -f list; '#' lines are
+          # DISCARDED by our m62 rule. So a #include'd local header must be
+          # concatenated in, or its declarations simply do not exist. Resolve
+          # them depth-first instead of guessing.
+          SEEN=""
+          resolve() {
+            local f="$1" d h
+            d=$(dirname "$f")
+            case " $SEEN " in *" $f "*) return;; esac
+            SEEN="$SEEN $f"
+            for h in $(sed -n 's/^#include[[:space:]]*"\([^"]*\)".*/\1/p' "$f"); do
+              [ -f "$d/$h" ] && resolve "$d/$h"
+            done
+            echo "$f"
+          }
+
+          SEEN=""
+          list="$L/bootstrap.c $L/bootstrappable.c $(resolve $S/M1-macro.c)"
+          echo "resolved -f list: $list"
+          cat $list > m1src.c
+          echo "M1 translation unit: $(wc -c < m1src.c) bytes  (was 28252 with headers dropped)"
           qemu-aarch64 ./stage2 < m1src.c > m1.s1
           echo "stage2 emitted: $(wc -c < m1.s1) bytes"
           cat m1.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf M1
@@ -125,12 +141,28 @@ jobs:
         run: |
           L=upstream-m2planet/M2libc
           S=upstream-mescc
-          cat \
-            $L/bootstrap.c \
-            $L/bootstrappable.c \
-            $S/hex2_linker.c \
-            > hex2src.c 2>/dev/null || { echo "adjust the -f list from step 1"; exit 1; }
-          echo "hex2 translation unit: $(wc -c < hex2src.c) bytes"
+          ls -1 $S/hex2*.c $S/hex2*.h 2>/dev/null || true
+          # M2-Planet-style C passes headers on the -f list; '#' lines are
+          # DISCARDED by our m62 rule. So a #include'd local header must be
+          # concatenated in, or its declarations simply do not exist. Resolve
+          # them depth-first instead of guessing.
+          SEEN=""
+          resolve() {
+            local f="$1" d h
+            d=$(dirname "$f")
+            case " $SEEN " in *" $f "*) return;; esac
+            SEEN="$SEEN $f"
+            for h in $(sed -n 's/^#include[[:space:]]*"\([^"]*\)".*/\1/p' "$f"); do
+              [ -f "$d/$h" ] && resolve "$d/$h"
+            done
+            echo "$f"
+          }
+
+          SEEN=""
+          list="$L/bootstrap.c $L/bootstrappable.c $(resolve $S/hex2_linker.c)"
+          echo "resolved -f list: $list"
+          cat $list > hex2src.c
+          echo "hex2 translation unit: $(wc -c < hex2src.c) bytes  (was 21751, missing hex2_globals.h)"
           qemu-aarch64 ./stage2 < hex2src.c > hex2.s1
           echo "stage2 emitted: $(wc -c < hex2.s1) bytes"
           cat hex2.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf hex2

@@ -13,6 +13,12 @@ name: hex2-bisect
 # prefix that dies names the function. Then print it.
 
 on:
+  push:
+    paths:
+      - 'spikes/stage2-mini-c/**'
+      - 'spikes/stage1-as/**'
+      - 'spikes/stage0-as/**'
+      - '.github/workflows/hex2-bisect.yml'
   workflow_dispatch:
 
 concurrency:
@@ -57,7 +63,11 @@ jobs:
         run: |
           L=upstream-m2planet/M2libc
           SRC=upstream-mescc/hex2_linker.c
-          cat $L/bootstrap.c $L/bootstrappable.c > prefix.c
+          # hex2_globals.h must be concatenated: '#' lines are discarded, so
+          # without it 'struct entry' is undefined and stage 2 faults at the
+          # first global. That was the ORIGINAL failure; re-run to find any
+          # gap that remains once the header is actually present.
+          cat $L/bootstrap.c $L/bootstrappable.c upstream-mescc/hex2_globals.h > prefix.c
           wc -l "$SRC"
 
           # Sanity: the known-good pair alone must compile. If this fails the
@@ -119,7 +129,9 @@ jobs:
           # compiler DELIBERATELY -- this step is a test oracle, not a rung.
           make -C upstream-m2planet M2-Planet
           upstream-m2planet/bin/M2-Planet --architecture aarch64 --bootstrap-mode \
+            -f upstream-m2planet/M2libc/aarch64/linux/bootstrap.c \
             -f upstream-m2planet/M2libc/bootstrap.c \
             -f upstream-m2planet/M2libc/bootstrappable.c \
+            -f upstream-mescc/hex2_globals.h \
             -f upstream-mescc/hex2_linker.c \
             -o /dev/null && echo "upstream accepts it -- the gap is ours"
