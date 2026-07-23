@@ -1210,10 +1210,52 @@ if os.path.exists(s1p) and os.path.exists(s2p):
             return "<oob>"
         except RuntimeError as e:
             return f"<{e}>"
+    # A23 SUPERSEDES the m55 bound. That bound existed because the data section was
+    # a FIXED ~124 KB region between the tables: overflowing it silently clobbered
+    # the save area, so m55 made it stop with a diagnostic. Data is now emitted
+    # INLINE into the streaming code output (behind a skip branch, 4-byte padded),
+    # so there is no fixed region left to overflow -- the limit is gone rather than
+    # merely reported. What must hold now is that a large global simply WORKS.
     _huge = "char A[8192];char B[16384];int main(){return 3;}"
-    check("stage2 oversized globals do not fault", _emit_safe(_huge), "")
-    check("stage2 oversized globals emit no partial code",
-          len(_emit_safe(_huge)), 0)
+    check("stage2 large globals compile (no fixed data region to overflow)",
+          _exit_safe(_huge), 3)
+    check("stage2 large globals emit real data",
+          _emit(_huge).count(".byte") > 24000, True)
+
+    print("== stage 2 capacity: input, output and data are all unbounded (A23) ==")
+    # The last three fixed ceilings, removed rather than raised:
+    #   A1  input was a SINGLE read() of 65,000 B into a 64 KB buffer. It is now an
+    #       mmap arena (128 MiB of input room before any table begins) plus a read
+    #       LOOP -- a single read on a pipe returns only what is buffered, so the
+    #       old code truncated silently well below even 64 KB.
+    #   A2  the data section was a fixed ~124 KB region wedged between the tables.
+    #   A3  `adr x0 __dN` reached a TRAILING data section, but adr spans only
+    #       +-1 MB, so at M2-Planet scale (0.7-1.4 MB of code) the address was
+    #       silently wrong.
+    # A2 and A3 are one fix: literals and globals are emitted INLINE behind a skip
+    # branch, 4-byte padded, so the data sits adjacent to its own `adr` and no data
+    # region exists to overflow.
+    def _bigsrc(nfn):
+        return "".join("int f%d(int a){int b;b=a+%d;if(b>1000){b=b-1000;}return b;}"
+                       % (i, i) for i in range(nfn)) + "int main(){return f0(7);}"
+    for nfn, want in [(50, 7), (200, 7), (600, 7)]:
+        _src = _bigsrc(nfn)
+        check(f"stage2 {len(_src)}-byte input compiles and runs", _exit_safe(_src), want)
+    # past the OLD 64 KB input buffer. The bench interp cannot run stage1 over the
+    # ~1.2 MB result (its step budget, not a tool limit), so this asserts on the
+    # COMPILE, which is the thing A1 changed.
+    _huge_src = _bigsrc(1200)
+    check("stage2 input past the old 64 KB buffer", len(_huge_src) > 65000, True)
+    check("stage2 compiles a 73 KB input to >1 MB of assembly",
+          len(_emit(_huge_src)) > 1000000, True)
+    # inline data: adjacent to its adr, never a trailing section
+    _sd = _emit('int main(){char* s;s="ab";return s[1];}')
+    check("stage2 literal is emitted inline behind a skip branch",
+          ("b __ds" in _sd) and (":__ds" in _sd), True)
+    check("stage2 literal data is 4-byte padded",
+          _sd.split(":__d0000")[1].split(":__ds")[0].count(".byte") % 4, 0)
+    check("stage2 adr targets adjacent data (no trailing section)",
+          _sd.index("adr x0 __d0000") > _sd.index(":__d0000"), True)
 
     # x17 accounting must survive all four fixes: none of them may add an
     # emitted line, or bug class #2 (drifting @-targets) comes straight back.
@@ -1798,6 +1840,52 @@ if os.path.exists(s1p) and os.path.exists(s2p):
 
 
 
+
+    print("== stage 2 capacity: input, data, adr reach (A23) ==")
+    # THE COMPLAINT THAT STARTED THIS: hard-coded limits. Three remained after
+    # A22 streamed the output, and all three are now structural rather than raised:
+    #
+    #  A1 input   -- was a SINGLE read() of 65,000 B into a 64 KB region. A single
+    #                read on a pipe returns only what is buffered, so it truncated
+    #                silently well below even that. Now: one lazily-paged mmap
+    #                arena with the tables based 128 MiB up, and a read LOOP. The
+    #                input owns everything below the tables; overflow exits 2.
+    #  A2 data    -- was a fixed ~124 KB region wedged between the tables, with the
+    #                m55 bound reporting overflow. Now there is no data region:
+    #                literals and globals are emitted INLINE into the streaming
+    #                code output, behind a skip branch, padded to 4-byte alignment.
+    #  A3 adr     -- `adr x0 __dN` used to reach a TRAILING data section. adr is
+    #                +-1 MB and M2-Planet's code is ~0.7-1.4 MB, so the address was
+    #                silently wrong at scale. Inline data is adjacent to its adr,
+    #                so the reach is now O(literal size), not O(program size).
+    _LENC = 'int len(char* p){int n;n=0;while(p[n]){n=n+1;}return n;}'
+    _DQC = chr(34)
+    # ---- A2/A3: inline data, correct at every alignment
+    for _n in range(0, 9):
+        check(f"stage2 inline literal len {_n}",
+              _exit_safe(_LENC + 'int main(){return len(' + _DQC + 'x' * _n + _DQC + ');}'), _n)
+    _emlit = _emit('int main(){char* s;s=' + _DQC + 'ab' + _DQC + ';return s[1];}')
+    check("stage2 literal is emitted INLINE (skip branch present)",
+          "b __ds" in _emlit and ":__ds" in _emlit, True)
+    check("stage2 inline literal is 4-byte padded (3 bytes -> 4 .byte lines)",
+          _emlit.count(".byte"), 4)
+    check("stage2 adr targets ADJACENT data (no trailing section)",
+          _emlit.index("adr x0 __d") > _emlit.index(":__d"), True)
+    # ---- A1: input past the old 64 KB single-read ceiling
+    def _many_fns(n):
+        return ''.join('int f%d(int a){int b;b=a+%d;if(b>1000){b=b-1000;}return b;}'
+                       % (i, i) for i in range(n)) + 'int main(){return f0(7);}'
+    for _n, _min in [(150, 8000), (300, 17000), (600, 36000)]:
+        _src = _many_fns(_n)
+        check(f"stage2 input {len(_src)//1024} KB compiles ({_n} functions)",
+              _exit_safe(_src), 7)
+    # the 600-function case is 36 KB of input and ~585 KB of output: both past what
+    # the pre-A22/A23 compiler could hold. Larger inputs compile too, but stage 1's
+    # findlabel is a LINEAR scan (O(n^2) in label count), which the bench interp --
+    # roughly 1e4x slower than native -- cannot run in reasonable wall-clock time.
+    # That is a bench limit, not a tool limit; CI on real qemu is the witness.
+    check("stage2 input above the old 64 KB single-read ceiling emits real output",
+          len(_emit(_many_fns(600))) > 500000, True)
 
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")

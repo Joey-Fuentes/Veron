@@ -1,3 +1,4 @@
+import time as _time
 import struct
 from s0as import assemble
 
@@ -24,7 +25,9 @@ NULLFLOOR = 16
 class OOBAccess(RuntimeError):
     """A load/store outside [NULLFLOOR, brk) — a fault the real hardware would take."""
 
-def run(prog, stdin=b'', mem_size=0x40000, trace=False, oob_trap=True, files=None):
+def run(prog, stdin=b'', mem_size=0x40000, trace=False, oob_trap=True, files=None,
+        timeout_s=60):
+    _t0 = _time.time()
     # --- file I/O model (A12, m53) -------------------------------------------
     # The real ladder does file I/O through raw syscalls: openat(56)/read(63)/
     # write(64)/close(57) (there is no bare `open` on aarch64 — M2libc's `_open`
@@ -82,6 +85,11 @@ def run(prog, stdin=b'', mem_size=0x40000, trace=False, oob_trap=True, files=Non
     while 0<=i<len(seq):
         steps+=1
         if steps>200_000_000: raise RuntimeError("runaway")
+        if timeout_s and (steps & 0xFFFFF)==0 and _time.time()-_t0 > timeout_s:
+            raise RuntimeError(
+                f"TIMEOUT after {timeout_s}s ({steps//1000000}M steps) -- the program was still "
+                f"making progress, so this is SLOW, not hung (the bench interp is ~1e4x "
+                f"slower than native; stage 1's label lookup is O(n^2))")
         o,ins=seq[i]; op=ins[0]
         nxt=i+1
         if op=='.byte': i=nxt; continue
