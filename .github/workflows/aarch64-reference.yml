@@ -1,0 +1,147 @@
+name: aarch64-reference
+
+# SPIKE. ARE WE CHASING A GHOST?
+#
+# Everything we have blamed on stage 2 assumes the setup underneath works. That
+# has never been established for the path M1 actually uses:
+#
+#   borrow-m2's green tests deliberately need NO C library -- libc-core.M1's
+#   _start calls main() and returns its value. So M2libc's brk allocator,
+#   memset, and fgetc have never been run on aarch64 under qemu-user in this
+#   repo, by ANY compiler, ours or upstream's.
+#
+# This job builds the same programs with UPSTREAM's gcc-built M2-Planet,
+# targeting aarch64, linked with upstream M1/hex2, and runs them under the same
+# qemu. If they hang or crash too, the problem is the setup and every reducer we
+# have written since is noise. If they work, stage 2 is genuinely at fault and
+# we have a differential oracle to bisect against.
+#
+# Ordered smallest-first so the cheapest question is answered first.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage2-mini-c/**'
+      - '.github/workflows/aarch64-reference.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: aarch64-reference-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      M2PLANET_SHA: 34fbd5c2a9b6eb634a4f6ad95158dcd1efcf19e0
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu gcc make
+
+      - name: Fetch upstreams and build the host tools
+        run: |
+          git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git -C upstream-m2planet checkout "$M2PLANET_SHA"
+          git -C upstream-m2planet submodule update --init --recursive
+          git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
+          make -C upstream-m2planet M2-Planet
+          make -C upstream-mescc M1 hex2
+
+      - name: 'Q1: does M2libc calloc+memset work on aarch64 under qemu AT ALL?'
+        run: |
+          # The narrowest possible version of M1's first statement. Upstream
+          # compiler, upstream assembler, upstream linker. Nothing of ours.
+          M=upstream-m2planet; L=$M/M2libc
+          build() {  # $1 = out, $2 = source
+            $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode \
+              -f $L/aarch64/linux/bootstrap.c -f $L/bootstrap.c -f "$2" -o "$1.M1"
+            upstream-mescc/bin/M1 -f $L/aarch64/aarch64_defs.M1 \
+              -f $L/aarch64/libc-core.M1 -f "$1.M1" \
+              --little-endian --architecture aarch64 -o "$1.hex2"
+            upstream-mescc/bin/hex2 -f $L/aarch64/ELF-aarch64.hex2 -f "$1.hex2" \
+              --little-endian --architecture aarch64 \
+              --base-address 0x400000 -o "$1"
+            chmod +x "$1"
+          }
+          run() {
+            printf '  %-38s ' "$1"
+            set +e
+            s=$(date +%s)
+            timeout "${3:-60}" qemu-aarch64 "./$2" </dev/null >/dev/null 2>&1
+            r=$?; e=$(date +%s)
+            set -e
+            printf 'rc=%-5s %ss %s\n' "$r" "$((e-s))" \
+              "$([ "$r" = 124 ] && echo '  <-- HUNG')"
+          }
+
+          printf 'int main(){char* p;p=calloc(16,1);p[0]=42;return p[0];}' > c1.c
+          printf 'int main(){char* p;p=calloc(65537,8);return 7;}' > c2.c
+          printf 'int main(){char* p;p=calloc(65537,8);p[500000]=9;return p[500000];}' > c3.c
+          printf 'void* m(void* ptr,int value,int num){char* s;for(s=ptr;0<num;num=num-1){s[0]=value;s=s+1;}return ptr;}int main(){char* p;p=calloc(16,1);m(p,65,10);return p[9];}' > c4.c
+
+          build ref_small c1.c;  run 'calloc(16,1), write, read'      ref_small 30
+          build ref_big   c2.c;  run 'calloc(65537,8) = 524296 bytes' ref_big   120
+          build ref_touch c3.c;  run 'same, touch the far end'        ref_touch 120
+          build ref_memset c4.c; run 'memset loop, upstream-compiled' ref_memset 60
+          echo
+          echo "  expect 42, 7, 9, 65. A 124 here means the SETUP is broken,"
+          echo "  not stage 2, and the memset reducers are chasing a ghost."
+
+      - name: 'Q2: build the REAL M1 for aarch64 with upstream tooling'
+        continue-on-error: true
+        run: |
+          M=upstream-m2planet; L=$M/M2libc; S=upstream-mescc
+          $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode \
+            -f $L/aarch64/linux/bootstrap.c -f $L/bootstrap.c \
+            -f $L/bootstrappable.c -f $S/stringify.c -f $S/M1-macro.c \
+            -o refM1.M1
+          $S/bin/M1 -f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 \
+            -f refM1.M1 --little-endian --architecture aarch64 -o refM1.hex2
+          $S/bin/hex2 -f $L/aarch64/ELF-aarch64.hex2 -f refM1.hex2 \
+            --little-endian --architecture aarch64 \
+            --base-address 0x400000 -o refM1
+          chmod +x refM1
+          echo "  reference aarch64 M1: $(wc -c < refM1) bytes"
+          printf ':main\n' > tiny.M1
+          set +e
+          s=$(date +%s)
+          timeout 120 qemu-aarch64 ./refM1 -f tiny.M1 \
+            --little-endian --architecture aarch64 -o ref.out </dev/null
+          r=$?; e=$(date +%s)
+          set -e
+          echo "  reference M1 on tiny.M1: rc=$r in $((e-s))s -> $(wc -c < ref.out 2>/dev/null || echo 0) bytes"
+          echo "  (this is THE control: same source, same target, same qemu,"
+          echo "   different compiler. If it hangs too, it is not our bug.)"
+
+      - name: 'Q3: and does OUR M1 differ?'
+        continue-on-error: true
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+          cat spikes/stage1-as/stage1-as.s0 \
+            | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
+          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+            | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+          L=upstream-m2planet/M2libc; S=upstream-mescc
+          cat $L/bootstrap.c $L/bootstrappable.c $S/stringify.c $S/M1-macro.c > m1src.c
+          qemu-aarch64 ./stage2 < m1src.c > m1.s1
+          cat m1.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf M1
+          printf ':main\n' > tiny.M1
+          set +e
+          s=$(date +%s)
+          timeout 120 qemu-aarch64 ./M1 -f tiny.M1 \
+            --little-endian --architecture aarch64 -o ours.out </dev/null
+          r=$?; e=$(date +%s)
+          set -e
+          echo "  our M1 on tiny.M1: rc=$r in $((e-s))s -> $(wc -c < ours.out 2>/dev/null || echo 0) bytes"
+          if [ -f ref.out ] && [ -f ours.out ] && cmp -s ref.out ours.out; then
+            echo "  IDENTICAL output"
+          fi
