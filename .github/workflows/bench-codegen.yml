@@ -331,6 +331,50 @@ jobs:
           t 'self-referential null tail' 0 \
             "$H int main(){struct ty* a;a=calloc(1,sizeof(struct ty));if(a->indirect==0){return 0;}return 1;}"
 
+      - name: 'NARROW: which sizeof forms break our M2-Planet?'
+        continue-on-error: true
+        run: |
+          # In bootstrap mode sizeof(X) is: fallible_type_name() walks the type
+          # name, then the star loop does ret = ret->indirect per '*', then
+          # unary_expr_sizeof does a->size. If the no-star forms work and the
+          # starred ones do not, the fault is the ->indirect walk specifically.
+          n() {
+            printf '%s' "$2" > n.c
+            printf '  %-30s ' "$1"
+            set +e
+            timeout 60 qemu-aarch64 ./M2-Planet --architecture aarch64 \
+              --bootstrap-mode -f n.c -o /tmp/n.M1 </dev/null 2>/tmp/ne; a=$?
+            timeout 60 upstream-m2planet/bin/M2-Planet --architecture aarch64 \
+              --bootstrap-mode -f n.c -o /tmp/n2.M1 </dev/null 2>/dev/null; b=$?
+            set -e
+            printf 'ours=%-5s theirs=%-5s %s\n' "$a" "$b" "$(head -1 /tmp/ne)"
+          }
+          n 'sizeof(int)'       'int main(){return sizeof(int);}'
+          n 'sizeof(char)'      'int main(){return sizeof(char);}'
+          n 'sizeof(int*)'      'int main(){return sizeof(int*);}'
+          n 'sizeof(char*)'     'int main(){return sizeof(char*);}'
+          n 'sizeof(char**)'    'int main(){return sizeof(char**);}'
+          n 'sizeof(struct s*)' 'struct s{int a;};int main(){return sizeof(struct s*);}'
+          n 'sizeof(struct s)'  'struct s{int a;};int main(){return sizeof(struct s);}'
+          n 'assigned not ret'  'int main(){int x;x = sizeof(char*);return 0;}'
+
+      - name: 'FAULT: PC and registers at the segfault'
+        continue-on-error: true
+        run: |
+          printf '%s' 'int main(){return sizeof(char*);}' > f.c
+          set +e
+          timeout 60 qemu-aarch64 -d in_asm,cpu -D fault.log \
+            ./M2-Planet --architecture aarch64 --bootstrap-mode \
+            -f f.c -o /tmp/f.M1 </dev/null >/dev/null 2>&1
+          echo "rc=$?"
+          set -e
+          echo "log: $(wc -l < fault.log) lines"
+          echo "--- final CPU state (PC + registers at the fault) ---"
+          tail -45 fault.log
+          echo
+          echo "--- our M2-Planet label map, for mapping that PC ---"
+          echo "labels in m2.s1: $(grep -c '^:' m2.s1 2>/dev/null || echo 'm2.s1 not in this job')"
+
       - name: Build each benchmark with BOTH compilers
         continue-on-error: true
         run: |
