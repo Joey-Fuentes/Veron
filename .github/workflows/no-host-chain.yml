@@ -263,12 +263,56 @@ jobs:
           set +e
           timeout 60 qemu-aarch64 ./M1 $args -o ours.hex2 </dev/null; echo "our M1 rc=$? (124=HUNG)"
           set -e
-          upstream-mescc/bin/M1 $args -o theirs.hex2
+          upstream-mescc/bin/M1 $args -o theirs.hex2 || true
           if cmp -s ours.hex2 theirs.hex2; then
             echo "IDENTICAL: our M1 matches the gcc-built M1 byte for byte."
           else
             echo "DIFFER:"; ls -l ours.hex2 theirs.hex2
             diff <(head -40 ours.hex2) <(head -40 theirs.hex2) | head -20
+          fi
+
+      - name: 'PROBE: strace our M1 — where is it stuck?'
+        continue-on-error: true
+        run: |
+          L=upstream-m2planet/M2libc
+          printf 'int main(){return 42;}' > t.c
+          timeout 60 qemu-aarch64 ./M2-Planet --architecture aarch64 \
+            --bootstrap-mode -f t.c -o t.M1 </dev/null || true
+          set +e
+          timeout 15 qemu-aarch64 -strace ./M1 \
+            -f "$L/aarch64/aarch64_defs.M1" -f "$L/aarch64/libc-core.M1" -f t.M1 \
+            --little-endian --architecture aarch64 -o /dev/null \
+            </dev/null > strace.log 2>&1
+          echo "rc=$? (124=still hung after 15s)"
+          set -e
+          echo "syscall lines: $(wc -l < strace.log)"
+          echo "--- histogram (a spin shows up as one call dominating) ---"
+          grep -oE '[a-z_0-9]+\(' strace.log | tr -d '(' | sort | uniq -c | sort -rn | head -12
+          echo "--- first 30 ---"; head -30 strace.log
+          echo "--- last 30 ---";  tail -30 strace.log
+
+      - name: 'PROBE: is our hex2 independently OK?'
+        continue-on-error: true
+        run: |
+          # Decouple the two tools. Feed our hex2 a .hex2 produced by the
+          # gcc-built M1, so a failure here is hex2's alone.
+          L=upstream-m2planet/M2libc
+          upstream-mescc/bin/M1 \
+            -f "$L/aarch64/aarch64_defs.M1" -f "$L/aarch64/libc-core.M1" -f t.M1 \
+            --little-endian --architecture aarch64 -o good.hex2 || true
+          set +e
+          timeout 60 qemu-aarch64 ./hex2 -f "$L/aarch64/ELF-aarch64.hex2" -f good.hex2 \
+            --little-endian --architecture aarch64 --base-address 0x400000 \
+            -o ours.elf </dev/null
+          echo "our hex2 rc=$? (124=HUNG)"
+          set -e
+          upstream-mescc/bin/hex2 -f "$L/aarch64/ELF-aarch64.hex2" -f good.hex2 \
+            --little-endian --architecture aarch64 --base-address 0x400000 \
+            -o theirs.elf || true
+          if [ -f ours.elf ] && cmp -s ours.elf theirs.elf; then
+            echo "IDENTICAL: our hex2 matches the gcc-built hex2. Only M1 is broken."
+          else
+            ls -l ours.elf theirs.elf 2>/dev/null || true
           fi
 
       - name: 'GATE: no-host round trip (aarch64 + x86)'
