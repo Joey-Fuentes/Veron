@@ -1184,10 +1184,10 @@ bl next_token
 bl compile_expr
 sub x28 x28 8
 ldr x14 x28
-mov x3 1
+mov x3 3
 and x5 x14 x3
-cmp x5 0
-b.ne dram_byte
+cmp x5 1
+b.eq dram_byte
 adr x9 smst2
 bl emitstr
 b dram_done
@@ -2162,10 +2162,10 @@ mov x3 0
 b celoop
 :ceid_member
 bl emit_maddr
-mov x3 1
+mov x3 3
 and x5 x14 x3
-cmp x5 0
-b.ne cem_lbyte
+cmp x5 1
+b.eq cem_lbyte
 adr x9 sldrw
 bl emitstr
 b cem_lpt
@@ -2190,6 +2190,60 @@ b cem_ltp
 mov x2 0
 :cem_ltp
 bl tpush
+mov x3 x6
+:cem_sws
+cmp x3 x21
+b.ge cem_nosub
+ldrb w5 x19 x3
+cmp x5 32
+b.eq cem_swsa
+cmp x5 9
+b.eq cem_swsa
+cmp x5 10
+b.eq cem_swsa
+cmp x5 13
+b.eq cem_swsa
+b cem_schk
+:cem_swsa
+add x3 x3 1
+b cem_sws
+:cem_schk
+cmp x5 91
+b.ne cem_nosub
+str x14 x28
+add x28 x28 8
+bl next_token
+bl compile_expr
+bl next_token
+sub x28 x28 8
+ldr x14 x28
+adr x9 spopidx
+bl emitstr
+adr x9 spopbase
+bl emitstr
+mov x3 1
+and x5 x14 x3
+cmp x5 0
+b.ne cem_sbyte
+adr x9 sscale
+bl emitstr
+adr x9 saddidx
+bl emitstr
+adr x9 sldrw
+bl emitstr
+b cem_sdn
+:cem_sbyte
+adr x9 saddidx
+bl emitstr
+adr x9 smldrb
+bl emitstr
+:cem_sdn
+bl tpop
+mov x2 0
+bl tpush
+mov x3 0
+b celoop
+:cem_nosub
 mov x3 0
 b celoop
 :emit_maddr
@@ -5629,6 +5683,9 @@ b ps_l
 .byte 0
 :spopidx
 .ascii "sub x9 x9 8\nldr x2 x9\n"
+.byte 0
+:spopbase
+.ascii "sub x9 x9 8\nldr x1 x9\n"
 .byte 0
 :spopval2
 .ascii "sub x9 x9 8\nldr x0 x9\nsub x9 x9 8\nldr x2 x9\n"
