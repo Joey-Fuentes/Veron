@@ -1110,6 +1110,122 @@ jobs:
           printf '  %-64s %s\n' 'structural: directives emit nothing' \
                  "$([ "$pp_ok" = yes ] && echo OK || echo DIFF)"
 
+          echo "== stage-2: label-based control flow, streaming, dynamic buffers (A22) =="
+          # THREE changes that are really one: backpatching existed for exactly one
+          # reason (TARGET-SUBSET floor item 2) -- stage0-as's 128-entry symtab capped
+          # a program's label count, so stage 2 could not emit one per branch. m32
+          # retired that: stage 1 became a two-pass NUMERIC RESOLVER, so labels are
+          # "bounded only by memory" and the symtab is never in the path. The
+          # backpatcher outlived its reason by six milestones.
+          #
+          # So if/while/else and &&/|| now emit NAMED labels (:__L<id> / b.eq __L<id>)
+          # exactly as goto does. Consequences, none of which are new machinery:
+          #   * the compiler never seeks backwards -> output STREAMS to stdout, so the
+          #     old 256 KB output buffer stops being a ceiling at all
+          #   * absolute @<pos> arithmetic is gone -> so is the A13 x17 invariant and
+          #     the entire m54 drift bug class (silent, deferred, order-dependent)
+          #   * the &&/|| patch array holds label ids instead of buffer offsets, keyed
+          #     by the same opstack slot, so m57's re-entrancy property is preserved
+          #
+          # Backpatching gave label integrity BY CONSTRUCTION. Labels do not, so it is
+          # checked directly here: every referenced label defined exactly once, every
+          # definition referenced.
+          lbl_ok=yes
+          ltry() {
+            printf '%s' "$1" > lbl.c
+            set +e
+            timeout 60 qemu-aarch64 ./stage2 < lbl.c > lbl.s
+            if [ $? -ne 0 ] || [ ! -s lbl.s ]; then
+              lbl_ok=no
+              printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'
+              set -e; return
+            fi
+            cat lbl.s | timeout 60 qemu-aarch64 ./stage1 | timeout 60 qemu-aarch64 ./stage0-as | timeout 60 qemu-aarch64 ./elf a.out
+            set -e
+            set +e; timeout 60 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; lbl_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          ltry 'int main(){int i;i=0;while(i<3){i=i+1;}return i;}' 3 'while via named labels'
+          ltry 'int main(){int i;int s;i=0;s=0;while(i<10){s=s+i;i=i+1;}return s;}' 45 'loop accumulate'
+          ltry 'int main(){int a;a=1;if(a){a=2;}else{a=3;}return a;}' 2 'if/else via named labels'
+          ltry 'int main(){int i;int t;i=0;t=0;while(i<3){int j;j=0;while(j<2){t=t+1;j=j+1;}i=i+1;}return t;}' 6 'nested loops'
+          ltry 'int f(int n){if(n<2){return 1;}return n*f(n-1);}int main(){return f(5);}' 120 'recursion'
+          ltry 'int main(){int a;int b;a=1;b=0;if(a&&!b) return 5;return 0;}' 5 'short-circuit via named labels'
+          ltry 'int main(){int i;i=0;top: i=i+1;if(i<4) goto top;return i;}' 4 'goto coexists (A17)'
+          ltry 'int f(int n){if(n<1) return 10;else if(n<2) return 20;else return 30;}int main(){return f(1);}' 20 'braceless else chain (A19)'
+          # structural: no absolute positions anywhere, and label integrity
+          printf '%s' 'int main(){int i;i=0;while(i<3){i=i+1;}return i;}' | qemu-aarch64 ./stage2 > lblw.s
+          grep -q '@' lblw.s && { echo "  REGRESSION: an absolute @<pos> survived"; lbl_ok=no; }
+          grep -q '^b\.eq __L' lblw.s || { echo "  MISSING named conditional branch"; lbl_ok=no; }
+          grep -q '^b __L'     lblw.s || { echo "  MISSING named back branch"; lbl_ok=no; }
+          [ "$(grep -c '^:__L' lblw.s)" = 2 ] || { echo "  while must define exactly 2 labels (top, exit)"; lbl_ok=no; }
+          # every referenced label defined exactly once; every definition referenced
+          for prog in 'int main(){int a;a=0;if(a){return 7;}return 9;}' \
+                      'int main(){int i;i=0;while(i<3){i=i+1;}return i;}' \
+                      'int main(){int a;a=1;if(a){a=2;}else{a=3;}return a;}' \
+                      'int main(){int a;int b;a=1;b=0;if(a&&!b){return 5;}return 0;}'; do
+            printf '%s' "$prog" | qemu-aarch64 ./stage2 > li.s
+            grep -o '^:__L[0-9]*'                li.s | sed 's/^://' | sort    > li_def.txt
+            grep -oE '^b(\.eq|\.ne)? +__L[0-9]*' li.s | awk '{print $2}' | sort -u > li_ref.txt
+            sort -u li_def.txt > li_defu.txt
+            cmp -s li_def.txt li_defu.txt || { echo "  DUPLICATE label definition"; lbl_ok=no; }
+            comm -23 li_ref.txt li_defu.txt | grep -q . && { echo "  branch to an UNDEFINED label"; lbl_ok=no; }
+            comm -13 li_ref.txt li_defu.txt | grep -q . && { echo "  UNREFERENCED label definition"; lbl_ok=no; }
+          done
+          printf '  %-64s %s\n' 'structural: no @<pos> left; label defs/refs consistent' \
+                 "$([ "$lbl_ok" = yes ] && echo OK || echo DIFF)"
+
+          # ---- capacity: the whole point of the change ------------------------------
+          # Emit a program whose assembly EXCEEDS the old 256 KB output buffer, and one
+          # past the old stage0-as/elf 256 KB input buffers. Before A22 these could not
+          # be compiled at all; the failure was silent truncation, not an error.
+          cap_ok=yes
+          gen_blocks() {   # $1 = block count -> a program with that many sequential ifs
+            printf 'int main(){int a;a=0;' > cap.c
+            i=1
+            while [ "$i" -le "$1" ]; do printf 'if(a<%d){a=a+1;}' "$i" >> cap.c; i=$((i+1)); done
+            printf 'return a;}' >> cap.c
+          }
+          for n in 200 600 1200; do
+            gen_blocks "$n"
+            set +e
+            timeout 120 qemu-aarch64 ./stage2 < cap.c > cap.s
+            crc=$?
+            set -e
+            sz=$(wc -c < cap.s)
+            if [ "$crc" -ne 0 ] || [ ! -s cap.s ]; then
+              echo "  $n blocks: stage2 FAILED (rc=$crc)"; cap_ok=no; continue
+            fi
+            cat cap.s | timeout 120 qemu-aarch64 ./stage1 | timeout 120 qemu-aarch64 ./stage0-as | timeout 120 qemu-aarch64 ./elf a.out
+            set +e; timeout 120 qemu-aarch64 ./a.out; rc=$?; set -e
+            want=$((n % 256))
+            if [ "$rc" = "$want" ]; then st=OK; else st=DIFF; cap_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$n blocks -> $((sz/1024)) KB of assembly" "$rc" "$want" "$st"
+          done
+          # the 600- and 1200-block programs are past the OLD 256 KB buffers; assert it
+          gen_blocks 1200
+          qemu-aarch64 ./stage2 < cap.c > cap.s
+          sz=$(wc -c < cap.s)
+          [ "$sz" -gt 262144 ] || { echo "  test is too small to prove the ceiling moved ($sz B)"; cap_ok=no; }
+          printf '  %-64s %s\n' "capacity: $((sz/1024)) KB emitted, old ceiling was 256 KB" \
+                 "$([ "$cap_ok" = yes ] && echo OK || echo DIFF)"
+
+          # ---- loud failure, not silent truncation ---------------------------------
+          # Every remaining bound reports and exits non-zero rather than quietly
+          # producing a wrong program. Proven by feeding stage0-as more than it can
+          # hold is impractical here (64 MiB), so the guards are checked structurally.
+          grep -q 'input exceeds INBUF_SZ' spikes/stage0-as/stage0-as.aarch64.s \
+            || { echo "  stage0-as lost its overflow diagnostic"; cap_ok=no; }
+          grep -q 'code exceeds CODEBUF_SZ' spikes/elf/elf.aarch64.s \
+            || { echo "  elf lost its overflow diagnostic"; cap_ok=no; }
+          grep -q 'input exceeds arena' spikes/stage1-as/stage1-as.s0 \
+            || { echo "  stage1 lost its overflow diagnostic"; cap_ok=no; }
+          grep -q 'exceeds @<pos> field width' spikes/stage2-mini-c/stage2-mini-c.s1 \
+            || { echo "  stage2 lost its position-overflow guard"; cap_ok=no; }
+          printf '  %-64s %s\n' 'all remaining bounds fail LOUDLY (diagnostic + exit 2)' \
+                 "$([ "$cap_ok" = yes ] && echo OK || echo DIFF)"
+
           echo "== stage-2: self-host canary — a compiler-shaped program through the ladder (A15) =="
           # The proof-of-pivot from TARGET-SUBSET.md: compile a real COMPILER-SHAPED
           # program -- one that reads a file, builds a heap-allocated linked list of
@@ -1226,6 +1342,8 @@ jobs:
             echo "braceless statement bodies (A19)        : $bl_ok"
             echo "string/char escapes (A20)               : $esc_ok"
             echo "preprocessor directives (A21)           : $pp_ok"
+            echo "label control flow + streaming (A22)    : $lbl_ok"
+            echo "capacity / loud bounds (A22)            : $cap_ok"
             echo "eor byte-identical to as             : $eor_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
@@ -1238,8 +1356,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ]; then
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ]; then
             echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct; and the single-pass @-target accounting invariant holds (every emitted line assembles to exactly 4 bytes, so the emitted-instruction counter stays equal to the true instruction count and a function's meaning does not depend on what was defined before it)."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok"; exit 1
           fi

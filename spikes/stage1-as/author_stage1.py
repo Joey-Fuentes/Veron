@@ -12,31 +12,30 @@ SRC = r"""
 # count is bounded only by memory (no pool, no 128-symtab cap for stage-2/3 code).
 # regs: x19 inbuf x20 inpos x21 inlen x22 outbuf x23 outpos
 #       x24 nametbl x25 nametbl_wpos x26 namecount x27 postbl x28 pos-accumulator
+# Arena: one 256 MB anonymous mmap. MAP_ANONYMOUS is lazily paged, so this
+# reserves ADDRESS SPACE, not memory -- an unused reserve costs nothing. Same
+# call the emitted calloc runtime already uses (m51); brk is deliberately NOT
+# used here because qemu-user's brk region is small.
 mov x0 0
-mov x8 214
+mov x1 0
+movk x1 4096 16
+mov x2 3
+mov x3 34
+mov x4 0
+sub x4 x4 1
+mov x5 0
+mov x8 222
 svc
 mov x19 x0
-mov x1 0
-movk x1 4 16
-add x22 x19 x1
-mov x1 0
-movk x1 8 16
-add x24 x19 x1
-mov x1 0
-movk x1 9 16
-add x27 x19 x1
-mov x1 32768
-movk x1 9 16
-add x0 x19 x1
-mov x8 214
-svc
+# Read the whole input -- two passes means it MUST be buffered. The bound is the
+# arena, and exhausting it is a LOUD failure rather than a silent truncation.
 mov x21 0
 :rdloop
 mov x2 0
-movk x2 4 16
+movk x2 512 16
 sub x2 x2 x21
 cmp x2 1
-b.lt rddone
+b.lt rdfull
 mov x0 0
 add x1 x19 x21
 mov x8 63
@@ -45,7 +44,33 @@ cmp x0 1
 b.lt rddone
 add x21 x21 x0
 b rdloop
+:rdfull
+mov x0 2
+adr x1 sinover
+mov x2 28
+mov x8 64
+svc
+mov x0 2
+mov x8 93
+svc
 :rddone
+# Region bases DERIVED from the actual input length N (x21) -- no fixed offsets.
+# N_r = max(roundup(N,4096), 64K); outbuf gets 4*N_r, nametbl N_r, postbl N_r.
+add x1 x21 4095
+mov x2 12
+lsr x1 x1 x2
+lsl x1 x1 x2
+mov x2 0
+movk x2 1 16
+cmp x1 x2
+b.ge s1_nok
+mov x1 x2
+:s1_nok
+add x22 x19 x1
+mov x2 2
+lsl x3 x1 x2
+add x24 x22 x3
+add x27 x24 x1
 # ===== PASS 1: compute positions, record label definitions =====
 mov x20 0
 mov x28 0
@@ -370,10 +395,10 @@ add x6 x6 1
 b alenc
 :alenx
 ret
-# ---- emitpos: emit x0 as 6-digit decimal to output tail ----
+# ---- emitpos: emit x0 as 9-digit decimal to output tail ----
 :emitpos
-mov x2 6
-add x4 x23 6
+mov x2 9
+add x4 x23 9
 :emitposa
 mov x5 0
 :emitposb
@@ -390,8 +415,11 @@ mov x0 x5
 sub x2 x2 1
 cmp x2 0
 b.ne emitposa
-add x23 x23 6
+add x23 x23 9
 ret
+:sinover
+.ascii "stage1: input exceeds arena\n"
+.byte 0
 """
 
 # --- map readable labels to distinct single chars (avoid lowercase w/x, ':' , '#') ---

@@ -6,28 +6,27 @@
 # count is bounded only by memory (no pool, no 128-symtab cap for stage-2/3 code).
 # regs: x19 inbuf x20 inpos x21 inlen x22 outbuf x23 outpos
 #       x24 nametbl x25 nametbl_wpos x26 namecount x27 postbl x28 pos-accumulator
+# Arena: one 256 MB anonymous mmap. MAP_ANONYMOUS is lazily paged, so this
+# reserves ADDRESS SPACE, not memory -- an unused reserve costs nothing. Same
+# call the emitted calloc runtime already uses (m51); brk is deliberately NOT
+# used here because qemu-user's brk region is small.
 mov x0 0
-mov x8 214
+mov x1 0
+movk x1 4096 16
+mov x2 3
+mov x3 34
+mov x4 0
+sub x4 x4 1
+mov x5 0
+mov x8 222
 svc
 mov x19 x0
-mov x1 0
-movk x1 4 16
-add x22 x19 x1
-mov x1 0
-movk x1 8 16
-add x24 x19 x1
-mov x1 0
-movk x1 9 16
-add x27 x19 x1
-mov x1 32768
-movk x1 9 16
-add x0 x19 x1
-mov x8 214
-svc
+# Read the whole input -- two passes means it MUST be buffered. The bound is the
+# arena, and exhausting it is a LOUD failure rather than a silent truncation.
 mov x21 0
 :A
 mov x2 0
-movk x2 4 16
+movk x2 512 16
 sub x2 x2 x21
 cmp x2 1
 b.lt B
@@ -36,153 +35,179 @@ add x1 x19 x21
 mov x8 63
 svc
 cmp x0 1
-b.lt B
+b.lt C
 add x21 x21 x0
 b A
 :B
+mov x0 2
+adr x1 5
+mov x2 28
+mov x8 64
+svc
+mov x0 2
+mov x8 93
+svc
+:C
+# Region bases DERIVED from the actual input length N (x21) -- no fixed offsets.
+# N_r = max(roundup(N,4096), 64K); outbuf gets 4*N_r, nametbl N_r, postbl N_r.
+add x1 x21 4095
+mov x2 12
+lsr x1 x1 x2
+lsl x1 x1 x2
+mov x2 0
+movk x2 1 16
+cmp x1 x2
+b.ge D
+mov x1 x2
+:D
+add x22 x19 x1
+mov x2 2
+lsl x3 x1 x2
+add x24 x22 x3
+add x27 x24 x1
 # ===== PASS 1: compute positions, record label definitions =====
 mov x20 0
 mov x28 0
 mov x25 0
 mov x26 0
-:C
+:E
 cmp x20 x21
-b.ge I
-bl W
+b.ge K
+bl Y
 cmp x20 x21
-b.ge I
+b.ge K
 ldrb w0 x19 x20
 cmp w0 10
-b.eq D
-cmp w0 35
-b.eq E
-cmp w0 58
 b.eq F
-cmp w0 46
+cmp w0 35
 b.eq G
+cmp w0 58
+b.eq H
+cmp w0 46
+b.eq I
 add x28 x28 4
-bl Z
-b C
-:D
-add x20 x20 1
-b C
-:E
-bl Z
-b C
+bl b
+b E
 :F
 add x20 x20 1
-bl g
-bl Z
-b C
+b E
 :G
+bl b
+b E
+:H
+add x20 x20 1
+bl i
+bl b
+b E
+:I
 add x2 x20 1
 ldrb w1 x19 x2
 cmp w1 98
-b.eq H
-bl s
+b.eq J
+bl u
 add x28 x28 x0
-bl Z
-b C
-:H
+bl b
+b E
+:J
 add x28 x28 1
-bl Z
-b C
-:I
+bl b
+b E
+:K
 # ===== PASS 2: emit resolved output =====
 mov x20 0
 mov x23 0
-:J
+:L
 cmp x20 x21
-b.ge V
-bl W
+b.ge X
+bl Y
 cmp x20 x21
-b.ge V
+b.ge X
 ldrb w0 x19 x20
 cmp w0 10
-b.eq K
-cmp w0 58
-b.eq L
-cmp w0 35
-b.eq U
-cmp w0 97
 b.eq M
-cmp w0 98
+cmp w0 58
 b.eq N
-b U
-:K
-add x20 x20 1
-b J
-:L
-bl Z
-b J
+cmp w0 35
+b.eq W
+cmp w0 97
+b.eq O
+cmp w0 98
+b.eq P
+b W
 :M
+add x20 x20 1
+b L
+:N
+bl b
+b L
+:O
 add x2 x20 1
 ldrb w1 x19 x2
 cmp w1 100
-b.ne U
+b.ne W
 add x3 x20 2
 ldrb w2 x19 x3
 cmp w2 114
-b.eq Q
-b U
-:N
+b.eq S
+b W
+:P
 add x2 x20 1
 ldrb w1 x19 x2
 cmp w1 32
-b.eq P
+b.eq R
 cmp w1 46
-b.eq P
+b.eq R
 cmp w1 108
-b.eq O
-b U
-:O
+b.eq Q
+b W
+:Q
 add x3 x20 2
 ldrb w2 x19 x3
 cmp w2 114
-b.eq U
-b P
-:P
-bl b
-mov w0 32
-strb w0 x22 x23
-add x23 x23 1
-bl W
+b.eq W
 b R
-:Q
-bl b
-mov w0 32
-strb w0 x22 x23
-add x23 x23 1
-bl W
-bl b
-mov w0 32
-strb w0 x22 x23
-add x23 x23 1
-bl W
 :R
+bl d
+mov w0 32
+strb w0 x22 x23
+add x23 x23 1
+bl Y
+b T
+:S
+bl d
+mov w0 32
+strb w0 x22 x23
+add x23 x23 1
+bl Y
+bl d
+mov w0 32
+strb w0 x22 x23
+add x23 x23 1
+bl Y
+:T
 ldrb w0 x19 x20
 cmp w0 64
-b.eq T
+b.eq V
 cmp w0 48
-b.lt S
+b.lt U
 cmp w0 58
-b.lt T
-:S
-bl j
+b.lt V
+:U
+bl l
 mov w1 64
 strb w1 x22 x23
 add x23 x23 1
-bl z
-bl f
-b J
-:T
-bl b
-bl f
-b J
-:U
-bl d
-b J
+bl 1
+bl h
+b L
 :V
+bl d
+bl h
+b L
+:W
+bl f
+b L
+:X
 mov x0 1
 mov x1 x22
 mov x2 x23
@@ -192,88 +217,88 @@ mov x0 0
 mov x8 93
 svc
 # ---- sksp: skip spaces/tabs in input ----
-:W
-cmp x20 x21
-b.ge Y
-ldrb w10 x19 x20
-cmp w10 32
-b.eq X
-cmp w10 9
-b.eq X
-b Y
-:X
-add x20 x20 1
-b W
 :Y
-ret
-# ---- skipnl: advance input past next newline ----
-:Z
 cmp x20 x21
 b.ge a
-ldrb w0 x19 x20
+ldrb w10 x19 x20
+cmp w10 32
+b.eq Z
+cmp w10 9
+b.eq Z
+b a
+:Z
 add x20 x20 1
-cmp w0 10
-b.ne Z
+b Y
 :a
 ret
-# ---- cptok: copy a token (until space/tab/newline) input->output ----
+# ---- skipnl: advance input past next newline ----
 :b
 cmp x20 x21
 b.ge c
 ldrb w0 x19 x20
-cmp w0 32
-b.eq c
-cmp w0 9
-b.eq c
-cmp w0 10
-b.eq c
-strb w0 x22 x23
-add x23 x23 1
 add x20 x20 1
-b b
+cmp w0 10
+b.ne b
 :c
 ret
-# ---- cpline: copy until newline inclusive input->output ----
+# ---- cptok: copy a token (until space/tab/newline) input->output ----
 :d
 cmp x20 x21
 b.ge e
+ldrb w0 x19 x20
+cmp w0 32
+b.eq e
+cmp w0 9
+b.eq e
+cmp w0 10
+b.eq e
+strb w0 x22 x23
+add x23 x23 1
+add x20 x20 1
+b d
+:e
+ret
+# ---- cpline: copy until newline inclusive input->output ----
+:f
+cmp x20 x21
+b.ge g
 ldrb w0 x19 x20
 strb w0 x22 x23
 add x23 x23 1
 add x20 x20 1
 cmp w0 10
-b.eq e
-b d
-:e
+b.eq g
+b f
+:g
 ret
 # ---- emitnl: emit newline to output, skip rest of input line ----
 # NOTE: does an internal 'bl', so it must save/restore x30 (else 'ret' loops).
-:f
+:h
 mov x17 x30
 mov w0 10
 strb w0 x22 x23
 add x23 x23 1
-bl Z
+bl b
 mov x30 x17
 ret
 # ---- addlabel: pass1 - append name at x20 to nametbl, postbl[count]=x28, count++ ----
-:g
+:i
 mov x6 x20
-:h
+:j
 cmp x6 x21
-b.ge i
+b.ge k
 ldrb w4 x19 x6
 cmp w4 32
-b.eq i
+b.eq k
 cmp w4 9
-b.eq i
+b.eq k
 cmp w4 10
-b.eq i
+b.eq k
 strb w4 x24 x25
 add x25 x25 1
 add x6 x6 1
-b h
-:i
+b j
+:k
 mov w4 0
 strb w4 x24 x25
 add x25 x25 1
@@ -284,106 +309,109 @@ str w28 x9
 add x26 x26 1
 ret
 # ---- findlabel: pass2 - name at x20 -> w0=position; advance x20 past name ----
-:j
+:l
 mov x11 0
 mov x12 0
-:k
+:m
 cmp x11 x26
-b.ge r
+b.ge t
 mov x6 x20
 mov x7 x12
-:l
+:n
 ldrb w4 x24 x7
 mov w8 0
 cmp x6 x21
-b.ge m
+b.ge o
 ldrb w5 x19 x6
 cmp w5 32
-b.eq m
-cmp w5 9
-b.eq m
-cmp w5 10
-b.eq m
-b n
-:m
-mov w8 1
-:n
-cmp w4 0
 b.eq o
+cmp w5 9
+b.eq o
+cmp w5 10
+b.eq o
+b p
+:o
+mov w8 1
+:p
+cmp w4 0
+b.eq q
 cmp w8 1
-b.eq p
+b.eq r
 cmp x4 x5
-b.ne p
+b.ne r
 add x6 x6 1
 add x7 x7 1
-b l
-:o
+b n
+:q
 cmp w8 1
-b.eq q
-:p
+b.eq s
+:r
 ldrb w4 x24 x12
 add x12 x12 1
 cmp w4 0
-b.ne p
+b.ne r
 add x11 x11 1
-b k
-:q
+b m
+:s
 mov x8 2
 lsl x7 x11 x8
 add x9 x27 x7
 ldr w0 x9
 mov x20 x6
 ret
-:r
+:t
 mov x0 0
 mov x20 x6
 ret
 # ---- asciilen: w0 = decoded byte length of the .ascii string on this line ----
-:s
-mov x6 x20
-:t
-cmp x6 x21
-b.ge y
-ldrb w4 x19 x6
-add x6 x6 1
-cmp w4 34
-b.ne t
-mov x0 0
 :u
+mov x6 x20
+:v
 cmp x6 x21
-b.ge y
+b.ge 0
+ldrb w4 x19 x6
+add x6 x6 1
+cmp w4 34
+b.ne v
+mov x0 0
+:y
+cmp x6 x21
+b.ge 0
 ldrb w4 x19 x6
 cmp w4 34
-b.eq y
+b.eq 0
 cmp w4 92
-b.ne v
+b.ne z
 add x6 x6 1
-:v
+:z
 add x0 x0 1
 add x6 x6 1
-b u
-:y
-ret
-# ---- emitpos: emit x0 as 6-digit decimal to output tail ----
-:z
-mov x2 6
-add x4 x23 6
+b y
 :0
-mov x5 0
+ret
+# ---- emitpos: emit x0 as 9-digit decimal to output tail ----
 :1
+mov x2 9
+add x4 x23 9
+:2
+mov x5 0
+:3
 cmp x0 10
-b.lt 2
+b.lt 4
 sub x0 x0 10
 add x5 x5 1
-b 1
-:2
+b 3
+:4
 add x0 x0 48
 sub x4 x4 1
 strb w0 x22 x4
 mov x0 x5
 sub x2 x2 1
 cmp x2 0
-b.ne 0
-add x23 x23 6
+b.ne 2
+add x23 x23 9
 ret
+:5
+.ascii "stage1: input exceeds arena\n"
+.byte 0
 

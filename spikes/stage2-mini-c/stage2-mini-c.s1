@@ -60,6 +60,8 @@ add x3 x1 40
 str x2 x3
 add x3 x1 48
 str x2 x3
+add x3 x1 56
+str x2 x3
 mov x0 0
 mov x1 x19
 mov x2 65000
@@ -351,19 +353,15 @@ ldr x4 x1
 mov x5 0
 movk x5 6 16
 add x5 x19 x5
-mov x7 0
-:aloop
-cmp x7 x4
-b.ge adone
-ldrb w2 x5 x7
-strb w2 x22 x23
-add x23 x23 1
-add x7 x7 1
-b aloop
-:adone
 mov x0 1
 mov x1 x22
 mov x2 x23
+mov x8 64
+svc
+mov x23 0
+mov x0 1
+mov x1 x5
+mov x2 x4
 mov x8 64
 svc
 mov x0 0
@@ -1133,6 +1131,40 @@ ret
 :pkb_n
 mov x7 1
 ret
+:newlbl
+mov x1 61440
+movk x1 7 16
+add x1 x19 x1
+add x1 x1 56
+ldr x3 x1
+add x2 x3 1
+str x2 x1
+ret
+:emitlid
+str x30 x28
+add x28 x28 8
+add x4 x22 x23
+bl pos6
+add x23 x23 9
+sub x28 x28 8
+ldr x30 x28
+ret
+:emitdef
+str x30 x28
+add x28 x28 8
+str x3 x28
+add x28 x28 8
+adr x9 sdeflab
+bl emitstr
+sub x28 x28 8
+ldr x3 x28
+bl emitlid
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+sub x28 x28 8
+ldr x30 x28
+ret
 :doif
 bl scancond
 str x21 x28
@@ -1143,12 +1175,10 @@ sub x28 x28 8
 ldr x21 x28
 adr x9 scondtest
 bl emitstr
-mov x12 x23
-mov x3 0
-add x4 x22 x23
-bl pos6
-add x23 x23 6
-adr x9 snl
+bl newlbl
+mov x12 x3
+bl emitlid
+adr x9 snlonly
 bl emitstr
 mov w4 0
 add x2 x15 x16
@@ -1170,8 +1200,9 @@ add x2 x15 x2
 str w7 x2
 b stmtloop
 :dowhile
-mov x5 2
-lsl x12 x17 x5
+bl newlbl
+mov x12 x3
+bl emitdef
 bl scancond
 str x21 x28
 add x28 x28 8
@@ -1181,12 +1212,10 @@ sub x28 x28 8
 ldr x21 x28
 adr x9 scondtest
 bl emitstr
-mov x13 x23
-mov x3 0
-add x4 x22 x23
-bl pos6
-add x23 x23 6
-adr x9 snl
+bl newlbl
+mov x13 x3
+bl emitlid
+adr x9 snlonly
 bl emitstr
 mov w4 1
 add x2 x15 x16
@@ -1233,15 +1262,11 @@ b stmtend
 adr x9 sbback
 bl emitstr
 mov x3 x12
-add x4 x22 x23
-bl pos6
-add x23 x23 6
-adr x9 snl
+bl emitlid
+adr x9 snlonly
 bl emitstr
-mov x5 2
-lsl x3 x17 x5
-add x4 x22 x13
-bl pos6
+mov x3 x13
+bl emitdef
 b stmtend
 :docloseif
 str x6 x28
@@ -1255,17 +1280,13 @@ cmp x29 6
 b.ne dci_noelse
 adr x9 sbback
 bl emitstr
-mov x14 x23
-mov x3 0
-add x4 x22 x23
-bl pos6
-add x23 x23 6
-adr x9 snl
+bl newlbl
+mov x14 x3
+bl emitlid
+adr x9 snlonly
 bl emitstr
-mov x5 2
-lsl x3 x17 x5
-add x4 x22 x12
-bl pos6
+mov x3 x12
+bl emitdef
 mov w4 2
 add x2 x15 x16
 str w4 x2
@@ -1288,16 +1309,12 @@ str w7 x2
 b stmtloop
 :dci_noelse
 mov x6 x5
-mov x5 2
-lsl x3 x17 x5
-add x4 x22 x12
-bl pos6
+mov x3 x12
+bl emitdef
 b stmtend
 :docloseelse
-mov x5 2
-lsl x3 x17 x5
-add x4 x22 x12
-bl pos6
+mov x3 x12
+bl emitdef
 b stmtend
 :funcdone
 adr x9 spush0
@@ -1738,19 +1755,17 @@ b.eq cepush_sce
 adr x9 sscor
 :cepush_sce
 bl emitstr
+bl newlbl
 mov x1 16384
 movk x1 5 16
 add x1 x19 x1
 mov x2 2
 lsl x2 x25 x2
 add x1 x1 x2
-mov w4 x23
+mov w4 x3
 str w4 x1
-mov x3 0
-add x4 x22 x23
-bl pos6
-add x23 x23 6
-adr x9 snl
+bl emitlid
+adr x9 snlonly
 bl emitstr
 adr x9 sdiscard
 bl emitstr
@@ -3259,11 +3274,8 @@ add x1 x19 x1
 mov x2 2
 lsl x2 x25 x2
 add x1 x1 x2
-ldr w4 x1
-add x4 x22 x4
-mov x5 2
-lsl x3 x17 x5
-bl pos6
+ldr w3 x1
+bl emitdef
 mov x30 x27
 ret
 :eaunot
@@ -3380,7 +3392,45 @@ mov x2 0
 bl tpush
 mov x30 x27
 ret
+:emflush
+str x0 x28
+add x28 x28 8
+str x1 x28
+add x28 x28 8
+str x2 x28
+add x28 x28 8
+str x8 x28
+add x28 x28 8
+mov x0 1
+mov x1 x22
+mov x2 x23
+mov x8 64
+svc
+mov x23 0
+sub x28 x28 8
+ldr x8 x28
+sub x28 x28 8
+ldr x2 x28
+sub x28 x28 8
+ldr x1 x28
+sub x28 x28 8
+ldr x0 x28
+ret
 :emitstr
+mov x7 0
+movk x7 1 16
+add x7 x19 x7
+cmp x22 x7
+b.ne es_go
+mov x7 32768
+cmp x23 x7
+b.lt es_go
+str x30 x28
+add x28 x28 8
+bl emflush
+sub x28 x28 8
+ldr x30 x28
+:es_go
 mov x7 0
 :esloop
 ldrb w5 x9 x7
@@ -4084,8 +4134,22 @@ sub x28 x28 8
 ldr x30 x28
 ret
 :pos6
-mov x2 6
-add x4 x4 6
+mov x2 51712
+movk x2 15258 16
+cmp x3 x2
+b.ge p6_over
+mov x2 9
+add x4 x4 9
+b p6l
+:p6_over
+mov x0 2
+adr x1 sposover
+mov x2 48
+mov x8 64
+svc
+mov x0 2
+mov x8 93
+svc
 :p6l
 mov x5 0
 :p6q
@@ -4442,8 +4506,14 @@ b ps_l
 :sbyte0
 .ascii ".byte 0\n"
 .byte 0
+:sdeflab
+.ascii ":__L"
+.byte 0
 :sgdover
 .ascii "stage2: global data too large\n"
+.byte 0
+:sposover
+.ascii "stage2: emitted code exceeds @<pos> field width\n"
 .byte 0
 :snlonly
 .ascii "\n"
@@ -4578,7 +4648,7 @@ b ps_l
 .ascii "\nstr x0 x1\n"
 .byte 0
 :scondtest
-.ascii "sub x9 x9 8\nldr x0 x9\ncmp x0 0\nb.eq @"
+.ascii "sub x9 x9 8\nldr x0 x9\ncmp x0 0\nb.eq __L"
 .byte 0
 :snl
 .ascii "\n"
@@ -4605,13 +4675,13 @@ b ps_l
 .ascii "\nsub x9 x9 8\nldr x0 x9\nmov x2 0\nstrb w0 x1 x2\n"
 .byte 0
 :sbback
-.ascii "b @"
+.ascii "b __L"
 .byte 0
 :sscand
-.ascii "sub x9 x9 8\nldr x0 x9\nmov x1 0\nstr x1 x9\nadd x9 x9 8\ncmp x0 0\nb.eq @"
+.ascii "sub x9 x9 8\nldr x0 x9\nmov x1 0\nstr x1 x9\nadd x9 x9 8\ncmp x0 0\nb.eq __L"
 .byte 0
 :sscor
-.ascii "sub x9 x9 8\nldr x0 x9\nmov x1 1\nstr x1 x9\nadd x9 x9 8\ncmp x0 0\nb.ne @"
+.ascii "sub x9 x9 8\nldr x0 x9\nmov x1 1\nstr x1 x9\nadd x9 x9 8\ncmp x0 0\nb.ne __L"
 .byte 0
 :sscnorm
 .ascii "sub x9 x9 8\nldr x0 x9\nmov x2 0\nsub x2 x2 x0\norr x0 x0 x2\nmov x2 63\nlsr x0 x0 x2\nstr x0 x9\nadd x9 x9 8\n"

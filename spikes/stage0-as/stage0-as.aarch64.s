@@ -34,7 +34,9 @@
 //   cond: eq0 ne1 ge10 lt11
 // ============================================================================
 
-    .equ INBUF_SZ, 0x40000        // 256 KiB (raised for large stage-2/3 outputs)
+    .equ INBUF_SZ, 0x4000000      // 64 MiB reserve. .bss is demand-zero-paged,
+                                  // so an unused reserve costs nothing; overflow
+                                  // is reported (see slurp_done), never truncated.
 
     .text
     .global _start
@@ -56,6 +58,20 @@ slurp:
     add     x21, x21, x0
     b       slurp
 slurp_done:
+    // a full buffer means the input was almost certainly truncated: fail loudly
+    // rather than assembling a silently incomplete program.
+    mov     x2, #INBUF_SZ
+    cmp     x21, x2
+    b.lt    slurp_ok
+    mov     x0, #2
+    adr     x1, inover
+    mov     x2, #34
+    mov     x8, #64
+    svc     #0
+    mov     x0, #2
+    mov     x8, #93
+    svc     #0
+slurp_ok:
     adr     x27, symtab
     mov     x23, #1
 pass_start:
@@ -795,6 +811,8 @@ eb_adv:
 
     .bss
     .align  4
+inover:  .ascii  "stage0-as: input exceeds INBUF_SZ\n"
+        .balign 8
 inbuf:   .space INBUF_SZ
 symtab:  .space 512
 outword: .space 4

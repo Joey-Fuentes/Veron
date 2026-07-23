@@ -259,15 +259,16 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     # coexists with label-free intra-function branches.
     emif = _emit("int main(){int a=1;if(a){a=a+1;}return a;}")
     check("stage2 if emits zero-test",              "cmp x0 0" in emif, True)
-    check("stage2 if skips on false (b.eq @)",      "b.eq @" in emif, True)
+    check("stage2 if skips on false (b.eq __L)",     "b.eq __L" in emif, True)
     check("stage2 program entered via bl main",     "bl main" in emif, True)
     check("stage2 main is a resolvable label (:main)", ":main" in emif, True)
     emwh = _emit("int main(){int a=3;while(a){a=a-1;}return a;}")
-    check("stage2 while branches back (b @)",        "\nb @" in emwh, True)
-    check("stage2 while exits on false (b.eq @)",    "b.eq @" in emwh, True)
+    check("stage2 while branches back (b __L)",       "\nb __L" in emwh, True)
+    check("stage2 while exits on false (b.eq __L)",   "b.eq __L" in emwh, True)
     # the only labels are function definitions; the loop's own branches are numeric
-    check("stage2 while loop branches are numeric (only :func labels)",
-          [l for l in emwh.split("\n") if l.startswith(":")] == [":main"], True)
+    check("stage2 while labels are compiler-generated (:main + :__L*)",
+          all(l == ":main" or l.startswith(":__L")
+              for l in emwh.split("\n") if l.startswith(":")), True)
     # Behavioural: exit codes through the real assembled ladder. These DO exercise
     # loop counting + reassignment + nesting, so they are genuine end-to-end checks.
     for cs, want in [
@@ -380,26 +381,39 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 frame-rel exit -> {want}", _exit(cs), want)
 
-    print("== stage 2 backpatched control flow (numeric if/while, labelled funcs) ==")
-    # if/while branches are emitted as numeric b.eq @<pos> / b @<pos>, backpatched
-    # when the block closes; stage1 passes these through. Function boundaries DO use
-    # labels (:name / bl name) which stage1 resolves. So the only labels an emitted
-    # program contains are function names — never per-if/while or per-variable labels.
+    print("== stage 2 label-based control flow (A22 — backpatching retired) ==")
+    # SUPERSEDES the m29 backpatched-numeric design. Backpatching existed for one
+    # reason (TARGET-SUBSET floor item 2): stage0-as's 128-entry symtab capped a
+    # program's labels, so stage 2 could not emit one per branch. m32 retired that
+    # -- stage 1 became a two-pass NUMERIC RESOLVER, so label count is "bounded only
+    # by memory" and the symtab is never in the path. m58's goto proved the
+    # replacement end to end. So if/while/else and &&/|| now emit named labels
+    # (:__L<id> / b.eq __L<id>) exactly as goto does, and the compiler never seeks
+    # backwards -- which is what makes streaming output possible, and which deletes
+    # the x17 absolute-position invariant (the m54 bug class) outright.
     emif = _emit("int main(){int a=0;if(a){return 7;}return 9;}")
-    check("stage2 only-labels-are-funcs (:main)",
-          [l for l in emif.split("\n") if l.startswith(":")] == [":main"], True)
-    check("stage2 if uses numeric branch (b.eq @)", "b.eq @" in emif, True)
-    check("stage2 no label-based branch (b.eq A)", "b.eq A" in emif, False)
+    check("stage2 if branches to a named label (b.eq __L)", "b.eq __L" in emif, True)
+    check("stage2 no numeric @ positions remain", "@" in emif, False)
+    check("stage2 the if target is DEFINED in the program",
+          any(l.startswith(":__L") for l in emif.split("\n")), True)
     emwh = _emit("int main(){int i=0;int s=0;while(i<3){s=s+1;i=i+1;}return s;}")
-    check("stage2 while uses backward numeric branch (b @)", "\nb @" in emwh, True)
-    check("stage2 while's only label is :main (loop branches numeric)",
-          [l for l in emwh.split("\n") if l.startswith(":")] == [":main"], True)
-    # forward branch backpatched to the instruction AFTER the if-body (byte pos = idx*4)
-    lines = [l for l in emif.split("\n") if l.strip()]
-    br = next(l for l in lines if l.startswith("b.eq @"))
-    tgt = int(br.split("@")[1])
-    check("stage2 backpatch target is 4-aligned", tgt % 4, 0)
-    check("stage2 backpatch target in range", 0 < tgt <= len(lines)*4, True)
+    check("stage2 while branches back to a named label", "\nb __L" in emwh, True)
+    check("stage2 while defines both top and exit labels",
+          len([l for l in emwh.split("\n") if l.startswith(":__L")]), 2)
+    # every label a branch references must be defined exactly once, and every
+    # definition must be referenced -- the property backpatching used to give by
+    # construction, now checked directly.
+    import re as _re
+    for _src in ["int main(){int a=0;if(a){return 7;}return 9;}",
+                 "int main(){int i=0;int s=0;while(i<3){s=s+1;i=i+1;}return s;}",
+                 "int main(){int a=1;if(a){a=2;}else{a=3;}return a;}",
+                 "int main(){int a=1;int b=0;if(a&&!b){return 5;}return 0;}"]:
+        _o = _emit(_src)
+        _defs = [l[1:] for l in _o.split("\n") if l.startswith(":__L")]
+        _refs = _re.findall(r"\b(?:b|b\.eq|b\.ne)\s+(__L\d+)", _o)
+        check("stage2 label defs are unique", len(_defs) == len(set(_defs)), True)
+        check("stage2 every branch target is defined", set(_refs) <= set(_defs), True)
+        check("stage2 every label is referenced", set(_defs) <= set(_refs), True)
     # behavioural: control flow through the real assembled ladder, incl. deep nesting,
     # if-in-while, sequential blocks, and a long loop that stresses the position counter.
     for cs, want in [
@@ -661,8 +675,8 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     # closing brace backpatches the skip branch. Nested and while-embedded else both work;
     # braces are required (same as if/while). No stage0-as change.
     eie = _emit("int main(){if(0){return 1;}else{return 2;}return 3;}")
-    check("stage2 else emits a skip branch (b @) after the then-block",
-          eie.count("b @") >= 1 and "b.eq @" in eie, True)
+    check("stage2 else emits a skip branch (b __L) after the then-block",
+          eie.count("b __L") >= 1 and "b.eq __L" in eie, True)
     for cs, want in [
         ("int main(){if(0){return 5;}else{return 7;}return 9;}", 7),
         ("int main(){if(1){return 5;}else{return 7;}return 9;}", 5),
@@ -682,8 +696,13 @@ if os.path.exists(s1p) and os.path.exists(s2p):
         return "int main(){int a=0;" + "".join("if(a<10000){a=a+1;}" for _ in range(n)) + "return a;}"
     big80 = _emit(_many_ifs(80))
     check("stage2 80-block program emits >30KB", len(big80) > 30000, True)
-    check("stage2 80-block program: only label is :main (if-blocks numeric)",
-          [l for l in big80.split("\n") if l.startswith(":")] == [":main"], True)
+    # A22: if-blocks are labelled now, so the assertion is that every label is
+    # compiler-generated and self-consistent, not that there are none.
+    check("stage2 80-block program: labels are :main + generated :__L*",
+          all(l == ":main" or l.startswith(":__L")
+              for l in big80.split("\n") if l.startswith(":")), True)
+    check("stage2 80-block program: one label def per if-block",
+          len([l for l in big80.split("\n") if l.startswith(":__L")]), 80)
     for n in (20, 40, 80, 150):
         check(f"stage2 {n} sequential if-blocks -> exit {n & 0xFF}", _exit(_many_ifs(n)), n & 0xFF)
     # a long-running loop with a big body (stresses output size a different way)
@@ -1333,9 +1352,9 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     # the branch really is there and really is inverted for `||`.
     _emAnd = _emit("int f(int a,int b){return a&&b;}int main(){return 0;}")
     _emOr  = _emit("int f(int a,int b){return a||b;}int main(){return 0;}")
-    check("stage2 && emits forward b.eq @",   "b.eq @" in _emAnd, True)
-    check("stage2 && emits no b.ne @",        "b.ne @" in _emAnd, False)
-    check("stage2 || emits inverted b.ne @",  "b.ne @" in _emOr,  True)
+    check("stage2 && emits forward b.eq __L", "b.eq __L" in _emAnd, True)
+    check("stage2 && emits no b.ne",          "b.ne " in _emAnd, False)
+    check("stage2 || emits inverted b.ne __L","b.ne __L" in _emOr,  True)
     check("stage2 sc normalises result to 0/1",
           ("sub x2 x2 x0" in _emAnd) and ("orr x0 x0 x2" in _emAnd)
           and ("lsr x0 x0 x2" in _emAnd), True)
@@ -1431,34 +1450,24 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     check("stage2 goto label carries the source name", "_top" in emg, True)
     check("stage2 goto label is function-indexed (fn 1 -> 0001)",
           ":__Lg0001_top" in emg, True)
-    # The only labels in an emitted program are function names + goto labels; the
-    # if/while branches must STILL be numeric backpatched (m29), not labelled.
-    check("stage2 goto: if/while stay numeric alongside the label",
-          ("b.eq @" in emg) and ([l for l in emg.split("\n") if l.startswith(":")]
-                                 == [":main", ":__Lg0001_top"]), True)
-    # A13 x17 invariant: a label line assembles to 0 bytes and must NOT bump the
-    # emitted-instruction counter, while the `b` line must. If either were wrong the
-    # numeric @-targets of every function emitted AFTERWARDS would drift. Guarded
-    # directly (no blank lines, targets 4-aligned and in range) AND behaviourally
-    # via the order-independence witness below.
-    _code = [l for l in emg.split("\n") if l]
-    check("stage2 goto: no blank emitted line (x17 accounting)",
+    # A22: if/while are labelled too now, so a goto label coexists with generated
+    # ones. Every label must still be compiler-generated and the goto label present.
+    check("stage2 goto: goto label coexists with generated if/while labels",
+          (":__Lg0001_top" in emg) and ("b.eq __L" in emg)
+          and all(l == ":main" or l.startswith(":__L")
+                  for l in emg.split("\n") if l.startswith(":")), True)
+    # A22 retires the A13 x17 invariant for control flow: there are no absolute
+    # @-positions left to drift, because every branch names its target and stage 1
+    # resolves it. What must hold instead is label INTEGRITY -- each referenced
+    # label defined exactly once, each definition referenced -- which is checked
+    # structurally here and behaviourally by the order-independence witness below.
+    import re as _re2
+    _defs = [l[1:] for l in emg.split("\n") if l.startswith(":__L")]
+    _refs = _re2.findall(r"\b(?:b|b\.eq|b\.ne)\s+(__L\w+)", emg)
+    check("stage2 goto: no blank emitted line", 
           any(l.strip() == "" for l in emg.split("\n")[:-1]), False)
-    _ni = len([l for l in _code if not l.startswith(":") and not l.startswith(".")])
-    _tg = [int(l[6:]) for l in _code if l.startswith("b.eq @")]
-    check("stage2 goto: @-targets still 4-aligned and in range",
-          all(t % 4 == 0 and t // 4 <= _ni for t in _tg) and len(_tg) > 0, True)
-    # EXACT witness that a label costs 0 bytes AND 0 x17 ticks: the same program
-    # with and without a label definition must produce the IDENTICAL numeric
-    # @-target. If the label line ever bumped x17 (e.g. by emitting its newline
-    # through emitstr, which counts '\n'), the labelled version's target would be
-    # 4 bytes higher -- still 4-aligned and still in range, so the checks above
-    # would NOT see it, and every function emitted afterwards would drift (m54).
-    def _tgts(csrc):
-        return [l for l in _emit(csrc).split("\n") if l.startswith("b.eq @")]
-    check("stage2 goto: a label definition shifts no @-target (0 bytes, 0 ticks)",
-          _tgts("int main(){int i;i=0;if(i<3){i=i+1;}return i;}")
-          == _tgts("int main(){int i;i=0;top: if(i<3){i=i+1;}return i;}"), True)
+    check("stage2 goto: label defs unique", len(_defs) == len(set(_defs)), True)
+    check("stage2 goto: every branch target defined", set(_refs) <= set(_defs), True)
     # Two functions each defining `lp:` -> distinct emitted labels (function scope).
     emg2 = _emit("int a(){int i;i=0;lp: i=i+1;if(i<3){goto lp;}return i;}"
                  "int b(){int j;j=0;lp: j=j+2;if(j<8){goto lp;}return j;}"

@@ -27,7 +27,9 @@
 //     x21 = output fd               x22 = code buffer base   x23 = header base
 // ============================================================================
 
-    .equ CODEBUF_SZ, 0x40000       // 256 KiB (raised for large stage-2/3 binaries)
+    .equ CODEBUF_SZ, 0x4000000     // 64 MiB reserve. .bss is demand-zero-paged,
+                                   // so an unused reserve costs nothing; overflow
+                                   // is reported (see read_done), never truncated.
     .equ HDR_LEN,    120
 
     .text
@@ -56,6 +58,18 @@ read_loop:
     add     x20, x20, x0
     b       read_loop
 read_done:
+    mov     x2, #CODEBUF_SZ
+    cmp     x20, x2
+    b.lt    read_ok
+    mov     x0, #2
+    adr     x1, cbover
+    mov     x2, #29
+    mov     x8, #64
+    svc     #0
+    mov     x0, #2
+    mov     x8, #93
+    svc     #0
+read_ok:
 
     // ---- patch p_filesz / p_memsz = 120 + code length ----
     adr     x23, header
@@ -141,4 +155,6 @@ header:
 
     .bss
     .align  4
+cbover:  .ascii  "elf: code exceeds CODEBUF_SZ\n"
+        .balign 8
 codebuf: .space CODEBUF_SZ
