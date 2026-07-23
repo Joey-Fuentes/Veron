@@ -459,6 +459,26 @@ cmp x29 42
 b.ne flg_st_val
 mov x2 4
 bl next_token
+mov x3 x6
+:flg_sfpk
+cmp x3 x21
+b.ge flg_sfno
+ldrb w5 x19 x3
+cmp x5 32
+b.eq flg_sfpa
+cmp x5 9
+b.eq flg_sfpa
+cmp x5 10
+b.eq flg_sfpa
+cmp x5 13
+b.eq flg_sfpa
+cmp x5 40
+b.eq fl_func
+b flg_sfno
+:flg_sfpa
+add x3 x3 1
+b flg_sfpk
+:flg_sfno
 bl gsymdecl
 mov x13 8
 bl flg_ststag
@@ -567,6 +587,22 @@ cmp x20 5
 b.ne stmtloop
 cmp x29 125
 b.eq doclose
+cmp x29 123
+b.eq doblock
+b stmtloop
+:doblock
+mov w4 3
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 b stmtloop
 :stmtkw
 cmp x29 1
@@ -972,9 +1008,13 @@ add x2 x15 x2
 ldr w13 x2
 cmp x4 1
 b.eq dclose_while
+cmp x4 3
+b.eq dclose_plain
 cmp x4 2
 b.eq docloseelse
 b docloseif
+:dclose_plain
+b stmtloop
 :dclose_while
 adr x9 sbback
 bl emitstr
@@ -1994,10 +2034,23 @@ mov x4 0
 :egd_loop
 cmp x4 x13
 b.ge egd_done
+mov x5 57344
+movk x5 1 16
+cmp x23 x5
+b.ge egd_over
 adr x9 sbyte0
 bl emitstr
 add x4 x4 1
 b egd_loop
+:egd_over
+mov x0 2
+adr x1 sgdover
+mov x2 30
+mov x8 64
+svc
+mov x0 2
+mov x8 93
+svc
 :egd_done
 mov x1 61440
 movk x1 7 16
@@ -2993,9 +3046,52 @@ cmp x5 10
 b.eq nt_wsadv
 cmp x5 13
 b.eq nt_wsadv
+cmp x5 47
+b.eq nt_cmt
 b nt_class
 :nt_wsadv
 add x6 x6 1
+b nt_ws
+:nt_cmt
+add x2 x6 1
+cmp x2 x21
+b.ge nt_class
+ldrb w5 x19 x2
+cmp x5 42
+b.eq nt_bcmt
+cmp x5 47
+b.eq nt_lcmt
+ldrb w5 x19 x6
+b nt_class
+:nt_lcmt
+add x6 x6 2
+:nt_lcl
+cmp x6 x21
+b.ge nt_ws
+ldrb w5 x19 x6
+cmp x5 10
+b.eq nt_ws
+add x6 x6 1
+b nt_lcl
+:nt_bcmt
+add x6 x6 2
+:nt_bcl
+cmp x6 x21
+b.ge nt_ws
+ldrb w5 x19 x6
+cmp x5 42
+b.ne nt_bcadv
+add x2 x6 1
+cmp x2 x21
+b.ge nt_ws
+ldrb w5 x19 x2
+cmp x5 47
+b.eq nt_bcend
+:nt_bcadv
+add x6 x6 1
+b nt_bcl
+:nt_bcend
+add x6 x6 2
 b nt_ws
 :nt_eof
 mov x20 0
@@ -3869,6 +3965,9 @@ b ps_l
 .byte 0
 :sbyte0
 .ascii ".byte 0\n"
+.byte 0
+:sgdover
+.ascii "stage2: global data too large\n"
 .byte 0
 :snlonly
 .ascii "\n"

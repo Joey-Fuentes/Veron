@@ -649,8 +649,18 @@ jobs:
           # the runner.
           fe_ok=yes
           ftry() {
-            printf '%s' "$1" | qemu-aarch64 ./stage2 > fout.s
-            cat fout.s | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf a.out
+            # EVERY stage is timeout-bounded, not just the run: a front-end
+            # regression can hang the COMPILER, and an unbounded compile step
+            # hangs the runner until the job is cancelled instead of failing.
+            set +e
+            printf '%s' "$1" | timeout 30 qemu-aarch64 ./stage2 > fout.s
+            if [ $? -ne 0 ] || [ ! -s fout.s ]; then
+              fe_ok=no
+              printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'
+              set -e; return
+            fi
+            cat fout.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
+            set -e
             set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
             if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; fe_ok=no; fi
             printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
