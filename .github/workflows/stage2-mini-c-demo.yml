@@ -644,9 +644,11 @@ jobs:
           DECLS='struct N{int v;int w;struct N* nx;};struct N* HEAD;struct N* TAIL;'
           APPENDF='int append(int v){struct N* n=calloc(1,sizeof(struct N));n->v=v;n->nx=0;if(HEAD==0){HEAD=n;TAIL=n;}else{TAIL->nx=n;TAIL=n;}return 0;}'
           printf '%s' "$DECLS$APPENDF"'int main(){return 0;}' | qemu-aarch64 ./stage2 > acct.s
-          # structural: no blank line anywhere in the CODE region (the trailing
-          # data section is emitted after all code and cannot move a @-target).
-          awk '/^\.byte/||/^\.ascii/{exit} {print}' acct.s > acct_code.s
+          # structural: no blank line anywhere in the CODE region. A23 emits data
+          # INLINE (behind a skip branch), so the old 'stop at the first .byte'
+          # split truncated the region to ~19 of 232 lines and checked almost
+          # nothing while still reporting OK. SKIP data lines instead of halting.
+          grep -v '^\.byte' acct.s | grep -v '^\.ascii' > acct_code.s
           blanks=$(grep -c '^[[:space:]]*$' acct_code.s || true)
           if [ "$blanks" = 0 ]; then st=OK; else st=DIFF; emit_ok=no; fi
           printf '  %-64s blanks=%-4s want=%-4s %s\n' 'no 0-byte (blank) line emitted in code region' "$blanks" 0 "$st"
@@ -710,16 +712,13 @@ jobs:
           ftry "$FT_T"'struct T* f(){return 0;}int main(){return 5;}' 5 'struct* return type (trivial body)'
           ftry "$FT_T"'struct T* mk(int v){struct T* n=calloc(1,sizeof(struct T));n->v=v;n->nx=0;return n;}int main(){struct T* p;p=mk(9);return p->v;}' 9 'struct* return type (returns a real node)'
           ftry "$FT_T"'struct T* HEAD;int main(){HEAD=0;return 4;}' 4 'global struct pointer is still a global'
-          # global data: each array byte emits '.byte 0\n' into a fixed region.
-          # Oversized globals used to store past it, clobbering saved state and
-          # then brk. It must stop cleanly instead of corrupting itself.
+          # global data. The m55 bound existed because data went into a FIXED region
+          # wedged between the tables: overflowing it clobbered saved state, so m55
+          # made it stop cleanly. A23 emits data INLINE into the streaming output,
+          # so there is no region left to overflow -- the limit is GONE, not merely
+          # reported, and a large global must now simply compile and run.
           ftry 'char A[16];int main(){A[0]=65;return A[0];}' 65 'small global array still works'
-          set +e
-          printf '%s' 'char A[8192];char B[16384];int main(){return 3;}' | timeout 30 qemu-aarch64 ./stage2 > big.s 2> big.err; brc=$?
-          set -e
-          bsz=$(wc -c < big.s | tr -d ' ')
-          if [ "$brc" = 2 ] && [ "$bsz" = 0 ]; then st=OK; else st=DIFF; fe_ok=no; fi
-          printf '  %-64s rc=%-4s bytes=%-4s %s\n' 'oversized globals stop cleanly (no buffer overrun)' "$brc" "$bsz" "$st"
+          ftry 'char A[8192];char B[16384];int main(){return 3;}' 3 'large globals compile (no fixed data region)'
 
           echo "== stage-2: short-circuit &&/||, hex literals, ^ (A16) =="
           # Short-circuiting cannot be emitted like an ordinary binary operator: a
@@ -1126,6 +1125,93 @@ jobs:
           printf '  %-64s %s\n' 'structural: directives emit nothing' \
                  "$([ "$pp_ok" = yes ] && echo OK || echo DIFF)"
 
+          echo "== stage-2: capacity — input, inline data, adr reach (A23) =="
+          # The three hard-coded limits that survived A22's streaming output, all now
+          # structural rather than raised:
+          #   input -- was a SINGLE read() of 65,000 B into a 64 KB region. One read on
+          #            a pipe returns only what is buffered, so it truncated silently
+          #            well below even that. Now one lazily-paged mmap arena with the
+          #            tables based 128 MiB up, plus a read LOOP; overflow exits 2.
+          #   data  -- was a fixed ~124 KB region between the tables, with the m55 bound
+          #            reporting overflow. There is no data region now: literals and
+          #            globals emit INLINE behind a skip branch, 4-byte padded.
+          #   adr   -- 'adr x0 __dN' reached a TRAILING data section. adr is +-1 MB and
+          #            M2-Planet's code is ~0.7-1.4 MB, so the address was silently
+          #            wrong at scale. Inline data sits adjacent to its adr, so reach
+          #            is O(literal size) rather than O(program size).
+          cap23_ok=yes
+          c23() {
+            printf '%s' "$1" > c23.c
+            set +e
+            timeout 120 qemu-aarch64 ./stage2 < c23.c > c23.s
+            if [ $? -ne 0 ] || [ ! -s c23.s ]; then
+              cap23_ok=no
+              printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'
+              set -e; return
+            fi
+            cat c23.s | timeout 120 qemu-aarch64 ./stage1 | timeout 120 qemu-aarch64 ./stage0-as | timeout 120 qemu-aarch64 ./elf a.out
+            set -e
+            set +e; timeout 120 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; cap23_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          L23='int len(char* p){int n;n=0;while(p[n]){n=n+1;}return n;}'
+          # inline data must be correct at EVERY alignment: the bytes sit in the
+          # instruction stream, so a padding error misaligns everything after it.
+          c23 "$L23"'int main(){return len(\042\042);}'          0 'inline literal, length 0'
+          c23 "$L23"'int main(){return len(\042x\042);}'         1 'inline literal, length 1'
+          c23 "$L23"'int main(){return len(\042xx\042);}'        2 'inline literal, length 2'
+          c23 "$L23"'int main(){return len(\042xxx\042);}'       3 'inline literal, length 3'
+          c23 "$L23"'int main(){return len(\042xxxx\042);}'      4 'inline literal, length 4 (exact boundary)'
+          c23 "$L23"'int main(){return len(\042xxxxx\042);}'     5 'inline literal, length 5'
+          c23 "$L23"'int main(){return len(\042xxxxxxxx\042);}'  8 'inline literal, length 8'
+          c23 'char A[8192];char B[16384];int main(){return 3;}' 3 'large globals (no fixed data region left)'
+          # structural: the skip branch, the padding, and adr ADJACENCY
+          printf 'int main(){char* s;s=\042ab\042;return s[1];}' > c23b.c
+          qemu-aarch64 ./stage2 < c23b.c > c23b.s
+          grep -q '^b __ds'  c23b.s || { echo "  MISSING inline-data skip branch (b __ds)"; cap23_ok=no; }
+          grep -q '^:__ds'   c23b.s || { echo "  MISSING inline-data skip label (:__ds)"; cap23_ok=no; }
+          nb23=$(grep -c '^\.byte' c23b.s)
+          [ "$nb23" = 4 ] || { echo "  \"ab\" emitted $nb23 data bytes, want 4 (2 + NUL + 1 pad)"; cap23_ok=no; }
+          # adr must come AFTER its data label, i.e. the data is adjacent, not trailing
+          dl=$(grep -n '^:__d0000$'    c23b.s | cut -d: -f1)
+          al=$(grep -n '^adr x0 __d0000$' c23b.s | cut -d: -f1)
+          [ -n "$dl" ] && [ -n "$al" ] && [ "$al" -gt "$dl" ] \
+            || { echo "  adr does not follow its data (data is not adjacent: dl=$dl al=$al)"; cap23_ok=no; }
+          # INPUT capacity: build a source past the old 64 KB single-read ceiling.
+          # Note the old code could not even reach 64 KB reliably -- one read() on a
+          # pipe returns only what is buffered, typically far less.
+          gen_fns() {
+            printf '' > c23big.c
+            i=0
+            while [ "$i" -lt "$1" ]; do
+              printf 'int f%d(int a){int b;b=a+%d;if(b>1000){b=b-1000;}return b;}' "$i" "$i" >> c23big.c
+              i=$((i+1))
+            done
+            printf 'int main(){return f0(7);}' >> c23big.c
+          }
+          for nf in 600 1200; do
+            gen_fns "$nf"
+            insz=$(wc -c < c23big.c | tr -d ' ')
+            set +e
+            timeout 180 qemu-aarch64 ./stage2 < c23big.c > c23big.s; crc=$?
+            set -e
+            outsz=$(wc -c < c23big.s | tr -d ' ')
+            if [ "$crc" -ne 0 ] || [ ! -s c23big.s ]; then
+              echo "  ${nf} functions (${insz} B input): stage2 FAILED rc=$crc"; cap23_ok=no; continue
+            fi
+            cat c23big.s | timeout 180 qemu-aarch64 ./stage1 | timeout 180 qemu-aarch64 ./stage0-as | timeout 180 qemu-aarch64 ./elf a.out
+            set +e; timeout 180 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = 7 ]; then st=OK; else st=DIFF; cap23_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "input ${insz} B -> ${outsz} B asm (${nf} functions)" "$rc" 7 "$st"
+          done
+          # the 1200-function case is ~73 KB of input: past the old ceiling by design.
+          gen_fns 1200
+          insz=$(wc -c < c23big.c | tr -d ' ')
+          [ "$insz" -gt 65000 ] || { echo "  input test is too small to prove the ceiling moved ($insz B)"; cap23_ok=no; }
+          printf '  %-64s %s\n' "structural: inline data padded+adjacent; input ${insz} B > old 64 KB" \
+                 "$([ "$cap23_ok" = yes ] && echo OK || echo DIFF)"
+
           echo "== stage-2: label-based control flow, streaming, dynamic buffers (A22) =="
           # THREE changes that are really one: backpatching existed for exactly one
           # reason (TARGET-SUBSET floor item 2) -- stage0-as's 128-entry symtab capped
@@ -1360,6 +1446,7 @@ jobs:
             echo "preprocessor directives (A21)           : $pp_ok"
             echo "label control flow + streaming (A22)    : $lbl_ok"
             echo "capacity / loud bounds (A22)            : $cap_ok"
+            echo "capacity: input/inline data/adr (A23)   : $cap23_ok"
             echo "eor byte-identical to as             : $eor_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
@@ -1372,8 +1459,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ]; then
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ] && [ "$cap23_ok" = yes ]; then
             echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct; and the single-pass @-target accounting invariant holds (every emitted line assembles to exactly 4 bytes, so the emitted-instruction counter stays equal to the true instruction count and a function's meaning does not depend on what was defined before it)."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok cap23=$cap23_ok"; exit 1
           fi
