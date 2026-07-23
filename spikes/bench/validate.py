@@ -1192,6 +1192,58 @@ if os.path.exists(s1p) and os.path.exists(s2p):
         check(f"stage2 no blank emitted line: {nm}", b, 0)
         check(f"stage2 x17 == real instr count: {nm}", d, 0)
 
+
+# ---------------------------------------------------------------------------
+# m56 (A15) — self-host canary: a compiler-shaped program through the ladder.
+#
+# selfhost/canon.c reads a file, tokenizes it into a heap linked list of token
+# records via a function-pointer classifier, walks that list recursively, and
+# writes a file. Its canonical output (one token per line) is IDEMPOTENT, so
+# re-running it over its own output must reproduce it byte for byte.
+#
+# This pins the canary on the bench. CI runs the same program through the real
+# ladder; per AGENTS.md a green bench never overrides a red CI.
+_canon = os.path.join(os.path.dirname(__file__), "..", "stage2-mini-c",
+                      "selfhost", "canon.c")
+if os.path.exists(s1p) and os.path.exists(s2p) and os.path.exists(_canon):
+    print("\n== stage-2 self-host canary (m56/A15) ==")
+    _csrc = open(_canon).read()
+    _, _cres = run(s1prog, stdin=_emit(_csrc).encode())
+    _cprog = assemble(_cres.decode())[1]
+
+    def _canon_run(data):
+        fs = {"in": bytes(data)}
+        run(_cprog, files=fs, mem_size=0x800000)
+        return fs.get("out", b"")
+
+    # compiler-shaped: the emitted program must really use the hard features.
+    _cem = _emit(_csrc)
+    check("selfhost emits heap alloc (bl calloc)", "bl calloc" in _cem, True)
+    check("selfhost emits indirect call (blr)",    "blr" in _cem, True)
+    check("selfhost emits file I/O (bl open)",     "bl open" in _cem, True)
+    check("selfhost emits recursive walk (:emit_list)", ":emit_list" in _cem, True)
+
+    # behavioural: messy input -> one canonical token per line.
+    _g1 = _canon_run(b"  int  main( ) {\n\t int   x =\t42 ;\n}\n")
+    check("selfhost tokenizes to one token per line",
+          _g1, b"int\nmain(\n)\n{\nint\nx\n=\n42\n;\n}\n")
+
+    # the fixpoint: canon(canon(x)) == canon(x), byte for byte.
+    check("selfhost fixpoint canon(canon(x))==canon(x)",
+          _canon_run(_g1) == _g1, True)
+
+    # and over its own source text, which is what makes it a self-host canary.
+    _s1o = _canon_run(open(_canon, "rb").read())
+    check("selfhost own-source token count",
+          len(_s1o.split(b"\n")[:-1]), len(open(_canon, "rb").read().split()))
+    check("selfhost fixpoint on own source",
+          _canon_run(_s1o) == _s1o and len(_s1o) > 0, True)
+
+    # scale: emit_list recurses once per token, so this is a depth-500 walk.
+    _big = b" ".join(b"tok%d" % i for i in range(500))
+    check("selfhost 500-token scale (recursion depth 500)",
+          len(_canon_run(_big).split(b"\n")[:-1]), 500)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)

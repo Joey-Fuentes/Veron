@@ -695,6 +695,98 @@ jobs:
           if [ "$brc" = 2 ] && [ "$bsz" = 0 ]; then st=OK; else st=DIFF; fe_ok=no; fi
           printf '  %-64s rc=%-4s bytes=%-4s %s\n' 'oversized globals stop cleanly (no buffer overrun)' "$brc" "$bsz" "$st"
 
+          echo "== stage-2: self-host canary — a compiler-shaped program through the ladder (A15) =="
+          # The proof-of-pivot from TARGET-SUBSET.md: compile a real COMPILER-SHAPED
+          # program -- one that reads a file, builds a heap-allocated linked list of
+          # token records through a function-pointer classifier, walks it with deep
+          # recursion, and writes a file -- and check its output is a byte-stable
+          # FIXPOINT across a second generation. This is a canary, not a rung: it is
+          # the cheap de-risk that a compiler compiling compiler-shaped input works
+          # through this ladder at all.
+          #
+          # NB canon returns the output LENGTH as its exit status, so a successful run
+          # exits NONZERO (and the status is the low byte of the length -- exit codes
+          # are one byte). Every invocation is therefore `set +e`-wrapped and judged on
+          # its OUTPUT FILE, not on its exit status.
+          selfhost_ok=yes
+          CANON=spikes/stage2-mini-c/selfhost/canon.c
+
+          # --- build canon through the full ladder; every stage timeout-bounded -------
+          set +e
+          timeout 60 qemu-aarch64 ./stage2 < "$CANON" > canon.s; crc=$?
+          set -e
+          if [ "$crc" != 0 ] || [ ! -s canon.s ]; then
+            echo "  selfhost: canon.c FAILED TO COMPILE (rc=$crc)"; selfhost_ok=no
+          else
+            cat canon.s | timeout 60 qemu-aarch64 ./stage1 \
+                        | timeout 60 qemu-aarch64 ./stage0-as \
+                        | timeout 60 qemu-aarch64 ./elf canon
+          fi
+          if [ ! -x canon ]; then
+            echo "  selfhost: canon did not build"; selfhost_ok=no
+          fi
+
+          # run canon over a file: $1 = input path, output always lands in ./out
+          run_canon() {
+            rm -f in out
+            cp "$1" in
+            set +e; timeout 60 qemu-aarch64 ./canon >/dev/null 2>&1; set -e
+          }
+
+          if [ "$selfhost_ok" = yes ]; then
+            # --- (1) compiler-shaped run: messy input -> one canonical token per line --
+            printf '  int  main( ) {\n\t int   x =\t42 ;\n   return   x+x ;\n}\n' > sh_sample
+            printf 'int\nmain(\n)\n{\nint\nx\n=\n42\n;\nreturn\nx+x\n;\n}\n' > sh_want
+            run_canon sh_sample
+            if cmp -s out sh_want; then st=OK; else st=DIFF; selfhost_ok=no; fi
+            printf '  %-64s lines=%-5s want=%-5s %s\n' 'tokenizes messy input to one token per line' \
+                   "$(wc -l < out | tr -d ' ')" "$(wc -l < sh_want | tr -d ' ')" "$st"
+
+            # --- (2) fixpoint: canon(canon(x)) == canon(x), byte for byte -------------
+            cp out sh_gen1
+            run_canon sh_gen1
+            cp out sh_gen2
+            if cmp -s sh_gen1 sh_gen2; then st=OK; else st=DIFF; selfhost_ok=no; fi
+            printf '  %-64s gen1=%-5s gen2=%-5s %s\n' 'FIXPOINT canon(canon(x)) == canon(x)' \
+                   "$(wc -c < sh_gen1 | tr -d ' ')" "$(wc -c < sh_gen2 | tr -d ' ')" "$st"
+
+            # --- (3) fixpoint over canon's OWN source text ----------------------------
+            run_canon "$CANON"
+            cp out sh_self1
+            run_canon sh_self1
+            cp out sh_self2
+            if cmp -s sh_self1 sh_self2 && [ -s sh_self1 ]; then st=OK; else st=DIFF; selfhost_ok=no; fi
+            printf '  %-64s bytes=%-5s %s\n' 'FIXPOINT on its own source: canon(canon(src)) == canon(src)' \
+                   "$(wc -c < sh_self1 | tr -d ' ')" "$st"
+
+            # one line out per whitespace-separated token in the source
+            ntok=$(wc -w < "$CANON" | tr -d ' ')
+            nline=$(wc -l < sh_self1 | tr -d ' ')
+            if [ "$ntok" = "$nline" ]; then st=OK; else st=DIFF; selfhost_ok=no; fi
+            printf '  %-64s lines=%-5s want=%-5s %s\n' 'own-source token count matches a whitespace split' \
+                   "$nline" "$ntok" "$st"
+
+            # --- (4) scale: the emit walk recurses once per token ---------------------
+            # 500 tokens => 500-deep recursion through the ladder's frame stack.
+            awk 'BEGIN{for(i=0;i<500;i++) printf "tok%d ", i; print ""}' > sh_big
+            run_canon sh_big
+            nline=$(wc -l < out | tr -d ' ')
+            if [ "$nline" = 500 ]; then st=OK; else st=DIFF; selfhost_ok=no; fi
+            printf '  %-64s lines=%-5s want=%-5s %s\n' 'scale: 500 tokens (emit recursion depth 500)' \
+                   "$nline" 500 "$st"
+
+            # --- (5) structural: the emitted program really is compiler-shaped --------
+            # guards against the test silently degrading into something trivial.
+            grep -q 'bl calloc' canon.s || { echo "  selfhost: MISSING heap allocation (bl calloc)"; selfhost_ok=no; }
+            grep -q 'blr'       canon.s || { echo "  selfhost: MISSING indirect call (blr) — no function pointer"; selfhost_ok=no; }
+            grep -q 'bl open'   canon.s || { echo "  selfhost: MISSING file open (bl open)"; selfhost_ok=no; }
+            grep -q 'bl read'   canon.s || { echo "  selfhost: MISSING file read (bl read)"; selfhost_ok=no; }
+            grep -q 'bl write'  canon.s || { echo "  selfhost: MISSING file write (bl write)"; selfhost_ok=no; }
+            grep -q ':emit_list' canon.s || { echo "  selfhost: MISSING recursive emit walk (:emit_list)"; selfhost_ok=no; }
+            printf '  %-64s %s\n' 'emitted program uses calloc + blr + file I/O + recursion' \
+                   "$([ "$selfhost_ok" = yes ] && echo OK || echo DIFF)"
+          fi
+
           {
             echo "## stage2-mini-c — variables, if/while, reassignment, functions + recursion"
             echo '```'
@@ -712,6 +804,7 @@ jobs:
             echo "file I/O: open/read/write/close/exit : $io_ok"
             echo "single-pass @-target accounting (order): $emit_ok"
             echo "front end: comments/blocks/struct* ret: $fe_ok"
+            echo "self-host canary: compiler-shaped + fixpoint: $selfhost_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
             echo "while(n){s=s+n;n=n-1;} sum 1..10     -> 55"
@@ -723,8 +816,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ]; then
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ]; then
             echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct; and the single-pass @-target accounting invariant holds (every emitted line assembles to exactly 4 bytes, so the emitted-instruction counter stays equal to the true instruction count and a function's meaning does not depend on what was defined before it)."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok"; exit 1
           fi

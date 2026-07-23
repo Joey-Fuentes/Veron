@@ -1111,6 +1111,53 @@ now return correct values on the bench. That suggests it may have been a symptom
 A13 drift rather than a separate bug — but the bench is a model, so treat this as
 *unconfirmed* until CI says otherwise, and do not cross the rung off on bench evidence.
 
+### m56 (A15) — the self-host canary: a compiler-shaped program, and a fixpoint
+
+The **proof-of-pivot** from `TARGET-SUBSET.md` §(a). With heap (m51) and I/O (m53)
+landed, the question worth answering *before* investing in anything else was the
+scariest unknown on the road to M2-Planet: **does a compiler-shaped program actually
+survive this ladder?** Not "does a rung work" — the rungs each have their own guard —
+but does a program with the *shape* of a compiler front end, exercising all of them at
+once, compile and run correctly end to end.
+
+`spikes/stage2-mini-c/selfhost/canon.c` is that program: a **lexical canonicalizer**.
+It reads a file, tokenizes it into a **heap-allocated linked list of token records**
+(`struct Tok{off,len,nx}` — M2-Planet's own token-list data model) driven by a
+**function-pointer classifier** forwarded through two scanner helpers, walks that list
+with **recursion one frame deep per token**, and writes a file. Structs, `calloc`,
+`blr`, nested control flow, deep recursion and file I/O, in one program, through
+`canon.c | stage2 | stage1 | stage0-as | elf`.
+
+**The fixpoint.** Canonical form is one maximal run of non-separator bytes per line, so
+the transform is **idempotent**: `canon(canon(x)) == canon(x)`. That gives the
+"byte-compared across a second generation" property the spec asks for without needing a
+full toy compiler — the program is run over **its own output** and must reproduce it
+exactly. It is also run over **`canon.c` itself**, the very text it was compiled from:
+3271 bytes in, 569 tokens out, stable across a second generation. A 500-token case
+pins a **depth-500** recursive walk.
+
+Two things it cost, neither a bug:
+
+- **`main` returns the output length, but an exit status is one byte** — a 2833-byte
+  output exits `17`. The harness compares against `len & 0xFF`, and the CI section
+  judges every run on its **output file**, never its exit status (a *successful* run of
+  `canon` exits **nonzero**, so each invocation is `set +e`-wrapped).
+- **Buffers are `calloc`'d, not global arrays.** m55 *bounded* global data rather than
+  lifting it, so `IN`/`OUT` are heap blocks held in global `char*` pointers. Input is
+  capped at the 8192-byte buffer. `append` also binds `mk_tok`'s result to a local
+  before `->`, avoiding the call-result member access m55 flagged as still open.
+
+`validate.py` 462 → **471**. `stage2-mini-c-demo` gained a **`selfhost_ok`** section
+wired into the pass gate: it builds `canon` through the real ladder, checks the
+tokenization, both fixpoints, the 500-token scale case, and **structurally** greps the
+emitted assembly for `bl calloc` / `blr` / `bl open` / `:emit_list` so the canary cannot
+silently degrade into something trivial. Every stage is `timeout`-bounded, so a
+regression fails fast rather than hanging the runner.
+
+**This is a canary, not a rung — it is not kept and nothing depends on it.** Per §(b)
+the plan does *not* pivot to a stage-3-in-C: stage 2 keeps growing in asm until it
+accepts M2-Planet's entire source subset. What m56 buys is the knowledge that when that
+day comes, the ladder underneath will hold.
 ---
 
 ## 6. What's next
