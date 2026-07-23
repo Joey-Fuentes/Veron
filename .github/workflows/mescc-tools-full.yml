@@ -1,0 +1,167 @@
+name: mescc-tools-full
+
+# SPIKE (invariants suspended). RUNG B: our three tools work as a TOOLCHAIN.
+#
+# no-host-chain proved stage 2 can build M1 and hex2. This goes one further and
+# uses OUR M2-Planet + OUR M1 + OUR hex2 together to build the rest of
+# mescc-tools -- the first time the chain we produced compiles, assembles and
+# links something without any of upstream's binaries in the path:
+#
+#   stage 2  ---------------> M2-Planet, M1, hex2      (bootstrap the toolchain)
+#   our M2-Planet | our M1 | our hex2 --> blood-elf, catm, get_machine, kaem
+#
+# WHY THESE FOUR. kaem is the shell that drives Mes's build scripts, and catm
+# is what assembles Mes's generated include/mes/config.h -- the exact thing
+# borrow-tcc's Part B probe died on. blood-elf and get_machine complete the set.
+# Without them there is no Mes rung to attempt.
+#
+# -f lists are DERIVED from upstream's makefiles, never hand-written. Three
+# hand-written lists in a row were wrong (missing headers, missing stringify.c,
+# missing hex2.c) and each cost a CI round trip.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage2-mini-c/**'
+      - '.github/workflows/mescc-tools-full.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: mescc-tools-full-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  toolchain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      M2PLANET_SHA: 34fbd5c2a9b6eb634a4f6ad95158dcd1efcf19e0
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu
+
+      - name: Fetch upstreams
+        run: |
+          git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git -C upstream-m2planet checkout "$M2PLANET_SHA"
+          git -C upstream-m2planet submodule update --init --recursive
+          git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
+          echo "mescc-tools: $(git -C upstream-mescc rev-parse HEAD)"
+
+      - name: Build the ladder
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+          cat spikes/stage1-as/stage1-as.s0 \
+            | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
+          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+            | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+
+      - name: Bootstrap the toolchain with stage 2
+        run: |
+          M=upstream-m2planet
+          L=$M/M2libc
+          S=upstream-mescc
+
+          s2build() {  # $1 = output name, rest = source files
+            local out="$1"; shift
+            cat "$@" > "$out.c"
+            qemu-aarch64 ./stage2 < "$out.c" > "$out.s1"
+            grep -q '^:main' "$out.s1" || { echo "$out: no :main, -f list incomplete"; exit 1; }
+            cat "$out.s1" | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as \
+              | qemu-aarch64 ./elf "$out"
+            echo "  $out: $(wc -c < "$out.c") bytes in -> $(wc -c < "$out") bytes"
+          }
+
+          s2build M2-Planet \
+            $L/bootstrap.c $L/bootstrappable.c \
+            $M/cc.h $M/cc_globals.c $M/cc_reader.c $M/cc_strings.c \
+            $M/cc_types.c $M/cc_emit.c $M/cc_core.c $M/cc_macro.c $M/cc.c
+          s2build M1   $L/bootstrap.c $L/bootstrappable.c $S/stringify.c $S/M1-macro.c
+          s2build hex2 $L/bootstrap.c $L/bootstrappable.c \
+            $S/hex2.h $S/hex2_globals.h $S/hex2_linker.c $S/hex2_word.c $S/hex2.c
+
+      - name: 'Derive the remaining -f lists from upstream makefiles'
+        run: |
+          S=upstream-mescc
+          srcs() {  # $1 = target, $2 = makefile, $3 = source dir prefix
+            grep -E "^bin/$1:" "$2" | sed 's/|.*//' \
+              | grep -o '[A-Za-z0-9_./-]*\.c' | awk '!seen[$0]++' \
+              | grep -v 'bootstrappable\.c' | sed "s|^|$3|"
+          }
+          order() {  # main-bearing file last; M2-Planet is single pass
+            local m="" r=""
+            for f in $1; do
+              if grep -q '^int main(' "$f" 2>/dev/null; then m="$f"; else r="$r $f"; fi
+            done
+            echo "$r $m"
+          }
+          for t in blood-elf catm get_machine; do
+            v=$(order "$(srcs $t $S/makefile $S/)")
+            echo "$t: $v"
+            echo "SRC_$(echo $t | tr '-' '_')=$v" >> "$GITHUB_ENV"
+          done
+          k=$(order "$(srcs kaem $S/Kaem/makefile $S/Kaem/)")
+          echo "kaem: $k"
+          echo "SRC_kaem=$k" >> "$GITHUB_ENV"
+
+      - name: 'RUNG B: build the rest with OUR M2-Planet, M1 and hex2'
+        run: |
+          L=upstream-m2planet/M2libc
+          ok=yes
+          ours() {  # $1 = output, rest = sources
+            local out="$1"; shift
+            local args=""
+            for f in "$@"; do args="$args -f $f"; done
+            set +e
+            # asm() in the arch bootstrap.c is fine here: our M2-Planet is
+            # upstream's code, and m72 unblocked M2libc/bootstrap.c.
+            timeout 300 qemu-aarch64 ./M2-Planet --architecture aarch64 \
+              --bootstrap-mode \
+              -f $L/aarch64/linux/bootstrap.c -f $L/bootstrap.c $args \
+              -o "$out.M1" </dev/null 2>"$out.err"; a=$?
+            timeout 300 qemu-aarch64 ./M1 \
+              -f "$L/aarch64/aarch64_defs.M1" -f "$L/aarch64/libc-core.M1" \
+              -f "$out.M1" --little-endian --architecture aarch64 \
+              -o "$out.hex2" </dev/null 2>>"$out.err"; b=$?
+            timeout 300 qemu-aarch64 ./hex2 \
+              -f "$L/aarch64/ELF-aarch64.hex2" -f "$out.hex2" \
+              --little-endian --architecture aarch64 \
+              --base-address 0x400000 -o "$out" </dev/null 2>>"$out.err"; c=$?
+            set -e
+            if [ -s "$out" ]; then
+              printf '  [OK ] %-12s M2P=%s M1=%s hex2=%s  %s bytes\n' \
+                "$out" "$a" "$b" "$c" "$(wc -c < "$out")"
+            else
+              ok=no
+              printf '  [XX ] %-12s M2P=%s M1=%s hex2=%s\n' "$out" "$a" "$b" "$c"
+              head -3 "$out.err" | sed 's/^/         /'
+            fi
+          }
+          ours catm        $SRC_catm
+          ours get_machine $SRC_get_machine
+          ours blood-elf   $SRC_blood_elf
+          ours kaem        $SRC_kaem
+
+          echo
+          echo "--- smoke tests ---"
+          set +e
+          printf 'alpha\n' > a.txt; printf 'beta\n' > b.txt
+          timeout 60 qemu-aarch64 ./catm out.txt a.txt b.txt </dev/null
+          echo "  catm rc=$? -> $(tr '\n' ' ' < out.txt 2>/dev/null)"
+          timeout 60 qemu-aarch64 ./get_machine </dev/null; echo "  get_machine rc=$?"
+          printf 'echo hello\n' > t.kaem
+          timeout 60 qemu-aarch64 ./kaem --version </dev/null; echo "  kaem rc=$?"
+          set -e
+
+          [ "$ok" = yes ] || { echo "FAIL: a tool did not build"; exit 1; }
+          echo
+          echo "PASS: our M2-Planet, M1 and hex2 built the rest of mescc-tools."
+          echo "kaem and catm are the two Mes's build driver needs."
