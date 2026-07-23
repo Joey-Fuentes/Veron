@@ -89,7 +89,7 @@ jobs:
           		s = s + i;
           		i = i + 1;
           	}
-          	return s & 255;
+          	return 0;
           }
           EOF
           # 2. I/O: one getchar-shaped read per byte, minimal work per byte.
@@ -111,12 +111,45 @@ jobs:
           		n = n + 1;
           		r = read(0, buf, 1);
           	}
-          	return n & 255;
+          	return 0;
           }
           EOF
           head -c 20000 /dev/urandom | tr -dc 'a-z' > bench.dat || true
           head -c 20000 /dev/zero | tr '\0' 'x' > bench.dat
           echo "bench.dat: $(wc -c < bench.dat) bytes"
+
+      - name: 'PROBE: what does our M2-Planet actually accept?'
+        continue-on-error: true
+        run: |
+          # stage3-m2-demo's five samples used multiply, recursion, while,
+          # char* indexing and for+break. No bitwise ops, no literal above 100,
+          # everything on one line. compute.c segfaults it, so ladder up from
+          # a known-good program and find the first construct that breaks.
+          ok=0; bad=0
+          try() {
+            printf '%s' "$2" > v.c
+            set +e
+            timeout 60 qemu-aarch64 ./M2-Planet --architecture aarch64 \
+              --bootstrap-mode -f v.c -o v.M1 </dev/null 2>v.err
+            rc=$?
+            set -e
+            if [ "$rc" = 0 ]; then ok=$((ok+1)); printf '  [OK ] %s\n' "$1"
+            else bad=$((bad+1)); printf '  [XX ] %-34s rc=%s %s\n' "$1" "$rc" "$(head -1 v.err)"
+            fi
+          }
+          try 'baseline'            'int main(){return 42;}'
+          try 'multi-line + tabs'   'int main()
+          {
+          	return 42;
+          }'
+          try 'while, small bound'  'int main(){int i;i=0;while(i<10){i=i+1;}return i;}'
+          try 'literal 300000'      'int main(){int i;i=300000;return i;}'
+          try 'while to 300000'     'int main(){int i;i=0;while(i<300000){i=i+1;}return 0;}'
+          try 'bitwise and'         'int main(){int s;s=7;return s & 255;}'
+          try 'bitwise or'          'int main(){int s;s=7;return s | 8;}'
+          try 'shift'               'int main(){int s;s=7;return s << 2;}'
+          try 'accumulate + and'    'int main(){int i;int s;s=0;i=0;while(i<10){s=s+i;i=i+1;}return s & 255;}'
+          echo "  ok=$ok bad=$bad"
 
       - name: Build each benchmark with BOTH compilers
         run: |
