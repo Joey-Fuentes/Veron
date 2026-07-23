@@ -1225,8 +1225,9 @@ than returning something wrong.
 
 **Still open from the §6(b) list:** string/char escapes (~995 uses — the largest single
 count), `for`, `break`/`continue`, `do {} while`, `unsigned` as a word-typed keyword,
-`enum`, and the preprocessor (escapes landed in m61, the preprocessor in m62, and
-`do {} while` + `break`/`continue` in m64) — plus the gaps the m58 census surfaced (below), of which
+`enum`, and the preprocessor (escapes landed in m61, the preprocessor in m62,
+`do {} while` + `break`/`continue` in m64, and `for` in m65 — the loop family is
+complete) — plus the gaps the m58 census surfaced (below), of which
 **forward prototypes landed in m59** and **braceless bodies in m60**.
 ---
 
@@ -1557,6 +1558,82 @@ the record again, and it sits on top of this rung's loop stack.
 
 ---
 
+### m65 (A25) — `for`
+
+The step clause appears **before** the body in the source but must run **after** it, and
+m63 deleted backpatching — so the obvious single-pass answer is to stash the step's source
+span in the block record and re-lex it at close time. This rung takes the other option:
+**emit everything in source order and jump over the step on the way in.**
+
+```
+    init
+:__L<top>
+    cond; b.eq __L<exit>
+    b __L<body>
+:__L<step>          <- continue target
+    step
+    b __L<top>
+:__L<body>
+    body
+    b __L<step>     <- emitted at the closing brace
+:__L<exit>
+```
+
+Two extra unconditional branches per iteration, and **no replay machinery at all**. Every
+label is referenced by construction, so unlike `do`'s continue label none of them needs
+lazy allocation. Better still, the **close is `dclose_while` unchanged** — a for record is
+just `[a=step, b=exit, c=step+1]`, so "back-branch to a, define b" is already exactly
+right. There is no `dclose_for`; kind 5 routes to the while closer, and `break`/`continue`
+needed one line each (`findloop` learning that kind 5 is a loop).
+
+**The init and step clauses are compiled by the ordinary statement machinery**, not by
+bespoke clause code. The header pushes a *phase* record (14 = init, 15 = step) and returns
+to `stmtloop`; when that statement completes, `stmtend` pops the phase record and resumes
+the header. This works with no input-length juggling because `compile_expr` already
+terminates cleanly at `;` **and** at an unmatched `)` (`ceclose` → `cc_term`) — precisely
+the two clause terminators. The payoff is that a for clause can hold whatever a statement
+can: `for(int i = 0; …)`, `for(p->n = x; …)`, `for(f(x); …)` all work without a line of
+extra code. Empty clauses are peeked for explicitly; an empty condition emits a pushed `1`
+so the exit label stays referenced and the layout stays uniform.
+
+**The block record grew 16 → 24 bytes.** The step-phase record has to hold four labels at
+once (top/exit/step/body) before the body record replaces it in place. That is the second
+widening in two rungs, and it produced the only two bugs of this milestone — both stride
+errors, both invisible until a program nested the constructs:
+
+- **`doif` pushed 5 words instead of 6.** Every record stacked above an `if` was misaligned
+  by 4 bytes, so the `if`'s own end label read back as 0 and a `break` inside a `for`
+  branched to `__L0`. The emitted code looked *plausible* — right shape, wrong ids.
+- **`findloop` still walked the stack in 16-byte steps**, so `break`/`continue` inside a
+  `for` read a label id out of the middle of a record and branched to a label that was
+  never defined.
+
+Neither is subtle once seen; the lesson is that a stride change has no single point of
+truth in this codebase — the record width is spelled out at eight separate sites — and the
+only thing that catches a missed one is a test that actually nests the constructs. Both
+were found by the behavioural suite within minutes, but a structural-only guard would have
+passed the first one.
+
+**Verified** through the real assembled ladder: M2-Planet's own shape
+(`for(i = list; NULL != i; i = i->next)` walking a struct-pointer chain), zero-trip loops,
+the loop variable's value surviving the loop, nesting, braceless bodies, `break`/`continue`
+(including a `continue`-only body, which spins forever if continue targets the top instead
+of the step), `goto` out of a `for`, a `for` as a braceless `if` body, declaration inits,
+all three empty clauses including `for(;;)`, and break binding to the innermost loop across
+all three loop forms. `validate.py` 725 → **757**; the for-free corpus is byte-identical to
+the pre-rung compiler, and `stage2-mini-c-demo` gained a `for_ok` section whose structural
+witness pins the whole jump-over layout in one assertion: the four labels are *allocated*
+top, exit, step, body but *defined* top, step, body, exit, so the definition order is ids
+0, 2, 3, 1. Any other layout changes it.
+
+**All four of M2-Planet's `for` sites now compile.** With this rung the loop family is
+complete — `while`, `do{}while`, `for`, `break`, `continue`, `goto` — and **`enum` is the
+last large language gap** (287 `NULL`s depend on it), followed by `unsigned`/`long` as
+word-typed keywords, `char**` subscripting, and `argc`/`argv`.
+
+
+---
+
 And three entries can be **struck** — verified working, not merely assumed: **`void`
 return types and `(void)` parameter lists** (all 244 uses, free: the top-level loop
 treats an unknown leading type-word like `int`, the param loop skips non-keyword tokens,
@@ -1689,9 +1766,12 @@ stage in the language of the stage below.
   m57, escapes in m61, the preprocessor in m62, and **`do {} while` + `break`/`continue`
   in m64** (one rung: a do-loop emits the same label pair a while-loop does, so `break` is
   one mechanism for both; the block record widened 12 -> 16 bytes and the braceless flag
-  moved to bit 3 to make room for a `do` kind); still open are `for`, `unsigned` as a
-  word-typed keyword, `enum` (now the largest gap, 287 `NULL`s depend on it), `char**`
-  subscripting, and `argc`/`argv` (compound assign and
+  moved to bit 3 to make room for a `do` kind), and **`for` in m65** (emitted in source
+  order with a jump over the step, so no span replay; its close is `dclose_while`
+  unchanged, and its init/step clauses are compiled by the ordinary statement machinery
+  via phase records on the block stack). **The loop family is complete.** Still open are
+  `enum` (now the largest gap, 287 `NULL`s depend on it), `unsigned`/`long` as word-typed
+  keywords, `char**` subscripting, and `argc`/`argv` (compound assign and
   `++`/`--` are **not** needed — zero uses in the self-host); **(3)** compile
   **M2-Planet's own source** with stage 2, so
   **M2-Planet becomes the de-facto "stage 3."** No throwaway compiler; the artifact we

@@ -300,9 +300,10 @@ directives — a `#` token discards the line, matching M2-Planet's own `--bootst
    in braceless `if` bodies need.
 6. ~~**`do { } while`**~~ — **DONE (m64)**, all 7 uses' shapes covered, including the
    `while` on the line after the `}` and char literals (`'}'`, `'\n'`) in the condition.
-   7. **`for`** — 4 uses, all the same linked-list walk. Now the only loop form missing;
-   needs the step clause re-lexed from a saved source span at close time, since m63
-   retired backpatching.
+   7. ~~**`for`**~~ — **DONE (m65)**, all 4 linked-list-walk uses. No span replay was
+   needed: the clauses are emitted in source order with a branch over the step, and the
+   init/step clauses ride the ordinary statement machinery via phase records. **The loop
+   family is now complete.**
 8. **Word-typed keywords** — `unsigned` (9), `long` (4), plus `FILE`/`size_t`/`ssize_t`,
    which M2-Planet pre-registers as primitives in bootstrap mode (`cc_types.c:177`).
 9. **`char**` subscripting** — `argv[i]`, 28 uses, needs an 8-byte stride. Our subscript

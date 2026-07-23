@@ -18,12 +18,16 @@
 #   instr count (labels are 0 bytes, emitted via emitlabel so x17 is unaffected),
 #   x24 opstk base, x25 opstk top, x26 cur-op, x11 op-to-apply, x14 store-offset,
 #   x15/x16 blockstk, x12 cexpr opstk base / patch temp, x13 patch/offset temp,
-# block record = 16 bytes [kind | a | b | c]; kind 0=if 1=while 2=else 3=plain
-#   4=do, +8 = braceless variant (peekbrace). a = end/else label (if/else) or
-#   loop top (while/do); b = loop exit label (break target); c = continue target
-#   label id PLUS ONE, 0 = none yet (label id 0 is a real label, so the +1 is the
-#   sentinel). while sets c at push; do allocates it lazily on first continue and
-#   defines it at close, immediately before the condition.
+# block record = 24 bytes [kind | a | b | c | d | e]; kind 0=if 1=while 2=else
+#   3=plain 4=do 5=for, +8 = braceless variant (peekbrace); 14/15 are the for
+#   header phases (init/step), which are not blocks but ride the same stack so the
+#   ordinary statement machinery can compile those clauses. a = end/else label
+#   (if/else) or the back-branch target (while/do top, for step); b = loop exit
+#   label (break target); c = continue target label id PLUS ONE, 0 = none yet
+#   (label id 0 is a real label, so the +1 is the sentinel). while sets c at push;
+#   do allocates it lazily on first continue and defines it at close, immediately
+#   before the condition; for sets it to its step label. d/e are scratch for the
+#   for-step phase record (d = body label).
 #   x10 symtab base, x8 symtab count (this function), x28 cexpr save-stack ptr,
 #   x18/x20/x29 token start/kind/aux. cexpr save-stack holds (x30,x12) so the
 #   expression compiler is re-entrant across call arguments; compile_call also
@@ -641,12 +645,12 @@ b funcloop
 :stmtend
 cmp x16 0
 b.eq stmtloop
-sub x2 x16 16
+sub x2 x16 24
 add x2 x15 x2
 ldr w4 x2
 cmp x4 8
 b.lt stmtloop
-sub x16 x16 16
+sub x16 x16 24
 add x2 x15 x16
 ldr w4 x2
 add x2 x16 4
@@ -661,6 +665,12 @@ cmp x4 10
 b.eq docloseelse
 cmp x4 12
 b.eq dclose_do
+cmp x4 13
+b.eq dclose_while
+cmp x4 14
+b.eq forp2
+cmp x4 15
+b.eq forp4
 b docloseif
 :stmtloop
 bl next_token
@@ -698,6 +708,14 @@ mov w4 0
 add x2 x15 x16
 str w4 x2
 add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 b stmtloop
 :stmtkw
 cmp x29 1
@@ -720,6 +738,8 @@ cmp x29 11
 b.eq dobreak
 cmp x29 12
 b.eq docontinue
+cmp x29 13
+b.eq dofor
 b stmtloop
 :stmtop
 cmp x29 42
@@ -1222,10 +1242,18 @@ mov w4 0
 add x2 x15 x16
 str w4 x2
 add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 bl peekbrace
 mov x5 3
 lsl x7 x7 x5
-sub x2 x16 16
+sub x2 x16 24
 add x2 x15 x2
 str w7 x2
 b stmtloop
@@ -1264,11 +1292,19 @@ mov w4 x14
 add x2 x15 x16
 str w4 x2
 add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 bl peekbrace
 mov x5 3
 lsl x7 x7 x5
 add x7 x7 1
-sub x2 x16 16
+sub x2 x16 24
 add x2 x15 x2
 str w7 x2
 b stmtloop
@@ -1294,18 +1330,26 @@ mov w4 0
 add x2 x15 x16
 str w4 x2
 add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 bl peekbrace
 mov x5 3
 lsl x7 x7 x5
 add x7 x7 4
-sub x2 x16 16
+sub x2 x16 24
 add x2 x15 x2
 str w7 x2
 b stmtloop
 :doclose
 cmp x16 0
 b.eq funcdone
-sub x16 x16 16
+sub x16 x16 24
 add x2 x15 x16
 ldr w4 x2
 add x2 x16 4
@@ -1322,6 +1366,8 @@ cmp x4 2
 b.eq docloseelse
 cmp x4 4
 b.eq dclose_do
+cmp x4 5
+b.eq dclose_while
 b docloseif
 :dclose_plain
 b stmtend
@@ -1416,11 +1462,19 @@ mov w4 0
 add x2 x15 x16
 str w4 x2
 add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 bl peekbrace
 mov x5 3
 lsl x7 x7 x5
 add x7 x7 2
-sub x2 x16 16
+sub x2 x16 24
 add x2 x15 x2
 str w7 x2
 b stmtloop
@@ -1433,12 +1487,201 @@ b stmtend
 mov x3 x12
 bl emitdef
 b stmtend
+:peeknws
+mov x3 x6
+:pnw_l
+cmp x3 x21
+b.ge pnw_e
+ldrb w5 x19 x3
+cmp x5 32
+b.eq pnw_a
+cmp x5 9
+b.eq pnw_a
+cmp x5 10
+b.eq pnw_a
+cmp x5 13
+b.eq pnw_a
+ret
+:pnw_a
+add x3 x3 1
+b pnw_l
+:pnw_e
+mov x5 0
+ret
+:dofor
+bl next_token
+mov w4 14
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+bl peeknws
+cmp x5 59
+b.ne dofor_go
+add x6 x3 1
+b stmtend
+:dofor_go
+b stmtloop
+:forp2
+mov w4 15
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+bl newlbl
+sub x2 x16 20
+add x2 x15 x2
+str w3 x2
+bl newlbl
+sub x2 x16 16
+add x2 x15 x2
+str w3 x2
+bl newlbl
+sub x2 x16 12
+add x2 x15 x2
+str w3 x2
+bl newlbl
+sub x2 x16 8
+add x2 x15 x2
+str w3 x2
+sub x2 x16 20
+add x2 x15 x2
+ldr w3 x2
+bl emitdef
+bl peeknws
+cmp x5 59
+b.ne forp2_c
+add x6 x3 1
+adr x9 spush1
+bl emitstr
+b forp2_t
+:forp2_c
+bl compile_expr
+add x6 x6 1
+:forp2_t
+adr x9 scondtest
+bl emitstr
+sub x2 x16 16
+add x2 x15 x2
+ldr w3 x2
+bl emitlid
+adr x9 snlonly
+bl emitstr
+adr x9 sbback
+bl emitstr
+sub x2 x16 8
+add x2 x15 x2
+ldr w3 x2
+bl emitlid
+adr x9 snlonly
+bl emitstr
+sub x2 x16 12
+add x2 x15 x2
+ldr w3 x2
+bl emitdef
+bl peeknws
+cmp x5 41
+b.ne forp3_go
+add x6 x3 1
+b stmtend
+:forp3_go
+b stmtloop
+:forp4
+adr x9 sbback
+bl emitstr
+add x2 x16 4
+add x2 x15 x2
+ldr w3 x2
+bl emitlid
+adr x9 snlonly
+bl emitstr
+add x2 x16 16
+add x2 x15 x2
+ldr w3 x2
+bl emitdef
+add x2 x16 12
+add x2 x15 x2
+ldr w12 x2
+add x2 x16 8
+add x2 x15 x2
+ldr w13 x2
+mov w4 5
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 x12
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 x13
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+add x14 x12 1
+mov w4 x14
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+bl peekbrace
+mov x5 3
+lsl x7 x7 x5
+add x7 x7 5
+sub x2 x16 24
+add x2 x15 x2
+str w7 x2
+b stmtloop
 :findloop
 mov x2 x16
 :fdl_l
 cmp x2 0
 b.eq fdl_none
-sub x2 x2 16
+sub x2 x2 24
 add x3 x15 x2
 ldr w4 x3
 mov x5 7
@@ -1446,6 +1689,8 @@ and x4 x4 x5
 cmp x4 1
 b.eq fdl_hit
 cmp x4 4
+b.eq fdl_hit
+cmp x4 5
 b.ne fdl_l
 :fdl_hit
 mov x7 1
@@ -3915,6 +4160,8 @@ mov x20 3
 ret
 :nt_kw3
 ldrb w5 x19 x18
+cmp x5 102
+b.eq nt_kw3_for
 cmp x5 105
 b.ne nt_plainid
 add x2 x18 1
@@ -3926,6 +4173,18 @@ ldrb w5 x19 x2
 cmp x5 116
 b.ne nt_plainid
 mov x29 1
+mov x20 3
+ret
+:nt_kw3_for
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 111
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 114
+b.ne nt_plainid
+mov x29 13
 mov x20 3
 ret
 :nt_kw5
@@ -4750,6 +5009,9 @@ b ps_l
 .byte 0
 :sepi
 .ascii "sub x11 x10 16\nadd x1 x11 8\nldr x30 x1\nldr x10 x11\nret\n"
+.byte 0
+:spush1
+.ascii "mov x0 1\nstr x0 x9\nadd x9 x9 8\n"
 .byte 0
 :spush0
 .ascii "mov x0 0\nstr x0 x9\nadd x9 x9 8\n"

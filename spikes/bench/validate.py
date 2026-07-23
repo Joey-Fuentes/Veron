@@ -1987,6 +1987,135 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 do rung: prior control flow unchanged -> {want}", _exit_safe(cs), want)
 
+    print("== stage 2 for loops (A25) ==")
+    # `for(init; cond; step) body`. The step appears BEFORE the body in the source
+    # but must run AFTER it, and m63 deleted backpatching -- so the usual trick of
+    # re-lexing the step from a saved source span is not the only option here. This
+    # rung takes the other one: emit everything in SOURCE order and jump over the
+    # step on the way in, which costs two extra unconditional branches per iteration
+    # and no replay machinery at all:
+    #
+    #     init
+    #   :__L<top>
+    #     cond; b.eq __L<exit>
+    #     b __L<body>
+    #   :__L<step>          <- continue target
+    #     step
+    #     b __L<top>
+    #   :__L<body>
+    #     body
+    #     b __L<step>       <- emitted at the closing brace
+    #   :__L<exit>
+    #
+    # Every label is referenced by construction, so no lazy allocation is needed
+    # (unlike do's continue label), and the CLOSE is byte-for-byte the same routine
+    # `while` uses -- back-branch to slot a, define slot b -- because a for record is
+    # just [a=step, b=exit, c=step+1]. dclose_for does not exist; kind 5 routes to
+    # dclose_while.
+    #
+    # The init and step CLAUSES are compiled by the ordinary statement machinery
+    # rather than by bespoke code: the header pushes a phase record (14=init,
+    # 15=step) and returns to stmtloop, and stmtend resumes the header when that
+    # statement completes. This works with no input-length juggling because
+    # compile_expr already terminates cleanly at `;` AND at an unmatched `)` (ceclose
+    # -> cc_term), which are exactly the two clause terminators. It is also why an
+    # init like `int i = 0` or `p->n = x` or `f(x)` works: whatever the statement
+    # machinery can compile, a for clause can hold.
+    #
+    # The block record grew 16 -> 24 bytes for the step-phase record, which must
+    # carry four labels at once (top/exit/step/body) before the body record replaces
+    # it. Two stride bugs during development, both caught by these tests and worth
+    # recording: doif pushed 5 words instead of 6 (so every record above an `if` was
+    # misaligned -- the if's own end label read back as 0), and findloop still walked
+    # the stack in 16-byte steps (so break/continue inside a for read a label id out
+    # of the middle of a record). Neither is subtle once seen; both were invisible
+    # until a program actually nested the constructs.
+    def _exit_safe(csrc):
+        try:
+            return _exit(csrc)
+        except Exception as e:
+            return f"<{type(e).__name__}>"
+
+    for cs, want in [
+        ("int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){s=s+i;}return s;}", 10),
+        # the loop variable survives the loop with its final value
+        ("int main(){int i;int n;n=0;for(i=0;i<3;i=i+1){n=n+1;}return n*10+i;}", 33),
+        # zero-trip: a for tests BEFORE the first body run (unlike do)
+        ("int main(){int i;int s;s=0;for(i=0;i<0;i=i+1){s=s+9;}return s;}", 0),
+        # M2-Planet's only shape -- all 4 uses are this linked-list walk
+        ("struct N{int v;struct N* nx;};int main(){struct N a;struct N b;a.v=3;a.nx=&b;b.v=4;b.nx=0;"
+         "struct N* i;int s;s=0;for(i=&a;0 != i;i=i->nx){s=s+i->v;}return s;}", 7),
+        ("int main(){int i;int s;s=0;for(i=0;i<4;i=i+1) s=s+i;return s;}", 6),
+        ("int main(){int i;int j;int t;t=0;for(i=0;i<3;i=i+1){for(j=0;j<2;j=j+1){t=t+1;}}return t;}", 6),
+        ("int main(){int i;int s;s=0;for(i=0;i<9;i=i+1){if(i==4){break;}s=s+1;}return s;}", 4),
+        ("int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){if(i==2){continue;}s=s+i;}return s;}", 8),
+        # continue must reach the STEP, not the top -- if it jumped to the top this
+        # would spin forever rather than returning a wrong answer
+        ("int main(){int i;int s;s=0;for(i=0;i<4;i=i+1){continue;}return i;}", 4),
+        # a declaration as the init clause, free from reusing the statement machinery
+        ("int main(){int s;s=0;for(int i=0;i<4;i=i+1){s=s+i;}return s;}", 6),
+        # empty clauses
+        ("int main(){int i;i=0;for(;i<5;i=i+1){}return i;}", 5),
+        ("int main(){int i;for(i=0;i<5;){i=i+1;}return i;}", 5),
+        ("int main(){int i;i=0;for(;;){i=i+1;if(i>6){break;}}return i;}", 7),
+        ("int f(int x){return x*2;}int main(){int i;int s;s=0;for(i=1;i<4;i=i+1){s=s+f(i);}return s;}", 12),
+        ("int main(){int i;for(i=0;i<9;i=i+1){if(i==3){goto out;}}out:\nreturn i;}", 3),
+        ("int main(){int a;int i;int s;a=1;s=0;if(a) for(i=0;i<3;i=i+1) s=s+1; return s;}", 3),
+        # break binds to the innermost loop across all three loop forms
+        ("int main(){int i;int j;int t;t=0;for(i=0;i<3;i=i+1){j=0;while(1){j=j+1;if(j>1){break;}t=t+1;}}return t;}", 3),
+        ("int main(){int i;int t;t=0;for(i=0;i<3;i=i+1){int k;k=0;do{k=k+1;t=t+1;}while(k<2);}return t;}", 6),
+    ]:
+        check(f"stage2 for exit -> {want}", _exit_safe(cs), want)
+
+    # Structural: the four-label layout, in order.
+    import re as _re4
+    _emf = _emit("int main(){int i;int s;s=0;for(i=0;i<3;i=i+1){s=s+i;}return s;}")
+    _fdefs = [l[1:] for l in _emf.split("\n") if l.startswith(":__L")]
+    _frefs = _re4.findall(r"\b(?:b|b\.eq|b\.ne)\s+(__L\w+)", _emf)
+    check("stage2 for: four labels", len(_fdefs), 4)
+    check("stage2 for: label defs unique", len(_fdefs) == len(set(_fdefs)), True)
+    check("stage2 for: every branch target defined", set(_frefs) <= set(_fdefs), True)
+    check("stage2 for: every definition referenced", set(_fdefs) <= set(_frefs), True)
+    check("stage2 for: no blank emitted line",
+          any(l.strip() == "" for l in _emf.split("\n")[:-1]), False)
+    # Labels are allocated top, exit, step, body -- so a layout that emits them in
+    # the order top, step, body, exit is exactly ids 0, 2, 3, 1. That single
+    # assertion pins the whole jump-over shape: if the step were emitted after the
+    # body (or the body branch removed) the order would change.
+    check("stage2 for: layout order is top, step, body, exit",
+          [d[3:] for d in _fdefs],
+          ["000000000", "000000002", "000000003", "000000001"])
+    # continue targets the STEP label (2nd defined), break targets the EXIT (last).
+    _emfc = _emit("int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){if(i==2){continue;}s=s+i;}return s;}")
+    _cdefs = [l[1:] for l in _emfc.split("\n") if l.startswith(":__L")]
+    check("stage2 for: continue branches to the step label",
+          f"b {_cdefs[1]}" in _emfc.split("\n"), True)
+    _emfb = _emit("int main(){int i;int s;s=0;for(i=0;i<9;i=i+1){if(i==4){break;}s=s+1;}return s;}")
+    _bdefs = [l[1:] for l in _emfb.split("\n") if l.startswith(":__L")]
+    # the exit label is the LAST definition emitted (the if inside the body defines
+    # one of its own in between, which is why this indexes from the end)
+    check("stage2 for: break branches to the exit label",
+          f"b {_bdefs[-1]}" in _emfb.split("\n"), True)
+    # a for record closes through dclose_while: back branch, then the exit label
+    _ftail = [l for l in _emf.split("\n") if l.startswith("b __L") or l.startswith(":__L")][-2:]
+    check("stage2 for: closes with a back branch then the exit label",
+          [_ftail[0].split()[0], _ftail[1][:4]], ["b", ":__L"])
+    # order-independence: appending a for-using function must not perturb what
+    # precedes it (the m54 class, and the way a record-width change goes wrong)
+    _pre2 = "int g(){int i;i=0;while(i<3){i=i+1;}return i;}int main(){return g();}"
+    check("stage2 for: appended for leaves earlier bytes untouched",
+          _emit(_pre2 + "int later(){int j;int s;s=0;for(j=0;j<3;j=j+1){s=s+j;}return s;}")
+          .startswith(_emit(_pre2)), True)
+    # for-free programs must be byte-identical to the pre-rung compiler (CI diffs
+    # against HEAD~1); here the behavioural half of that guarantee is pinned.
+    for cs, want in [
+        ("int main(){int i;i=0;do{i=i+1;}while(i<5);return i;}", 5),
+        ("int main(){int n;int s;n=10;s=0;while(n){s=s+n;n=n-1;}return s;}", 55),
+        ("int main(){int a;int b;a=1;b=0;if(a) if(b) return 1; else return 2; return 3;}", 2),
+        ("int f(int n){if(n<2){return n;}return f(n-1)+f(n-2);}int main(){return f(10);}", 55),
+    ]:
+        check(f"stage2 for rung: prior control flow unchanged -> {want}", _exit_safe(cs), want)
+
     print("== stage 2 capacity: input, data, adr reach (A23) ==")
     # THE COMPLAINT THAT STARTED THIS: hard-coded limits. Three remained after
     # A22 streamed the output, and all three are now structural rather than raised:

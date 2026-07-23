@@ -1579,6 +1579,127 @@ jobs:
           fi
 
 
+          echo "== stage-2: for loops (A25) =="
+          # The step clause appears BEFORE the body in the source but must run AFTER
+          # it, and m63 deleted backpatching. Rather than stash the step's source span
+          # and re-lex it at close time, this rung emits everything in SOURCE order and
+          # jumps over the step on the way in:
+          #
+          #     init
+          #   :__L<top>
+          #     cond; b.eq __L<exit>
+          #     b __L<body>
+          #   :__L<step>          <- continue target
+          #     step
+          #     b __L<top>
+          #   :__L<body>
+          #     body
+          #     b __L<step>       <- emitted at the closing brace
+          #   :__L<exit>
+          #
+          # Two extra unconditional branches per iteration, no replay machinery, every
+          # label referenced by construction. The CLOSE is dclose_while unchanged: a for
+          # record is just [a=step, b=exit, c=step+1], so "back-branch to a, define b"
+          # is already right. break/continue needed one line (findloop learning kind 5).
+          #
+          # The init and step CLAUSES ride the ordinary statement machinery via phase
+          # records (14=init, 15=step) on the block stack, which works because
+          # compile_expr already terminates at `;` and at an unmatched `)` -- exactly the
+          # two clause terminators. So `for(int i=0; ...)` and `for(p->n=x; ...)` work
+          # for free. The block record grew 16 -> 24 bytes to hold the step phase's four
+          # labels; two stride bugs during development (doif pushing 5 words not 6,
+          # findloop still stepping 16) are why the nesting tests below exist.
+          for_ok=yes
+          ftry() {
+            set +e
+            printf '%s' "$1" | timeout 30 qemu-aarch64 ./stage2 > ft.s
+            if [ $? -ne 0 ] || [ ! -s ft.s ]; then
+              for_ok=no
+              printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'
+              set -e; return
+            fi
+            cat ft.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
+            set -e
+            set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; for_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          ftry 'int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){s=s+i;}return s;}' 10 'for sums 0..4'
+          ftry 'int main(){int i;int n;n=0;for(i=0;i<3;i=i+1){n=n+1;}return n*10+i;}' 33 'loop variable survives with its final value'
+          ftry 'int main(){int i;int s;s=0;for(i=0;i<0;i=i+1){s=s+9;}return s;}' 0 'zero-trip: for tests before the first body run'
+          # M2-Planet's only shape -- all 4 of its uses are this linked-list walk
+          ftry 'struct N{int v;struct N* nx;};int main(){struct N a;struct N b;a.v=3;a.nx=&b;b.v=4;b.nx=0;struct N* i;int s;s=0;for(i=&a;0 != i;i=i->nx){s=s+i->v;}return s;}' 7 'struct-pointer list walk (M2-Planet shape)'
+          ftry 'int main(){int i;int s;s=0;for(i=0;i<4;i=i+1) s=s+i;return s;}' 6 'braceless for body'
+          ftry 'int main(){int i;int j;int t;t=0;for(i=0;i<3;i=i+1){for(j=0;j<2;j=j+1){t=t+1;}}return t;}' 6 'nested for'
+          ftry 'int main(){int i;int s;s=0;for(i=0;i<9;i=i+1){if(i==4){break;}s=s+1;}return s;}' 4 'break out of a for'
+          ftry 'int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){if(i==2){continue;}s=s+i;}return s;}' 8 'continue in a for'
+          # if continue jumped to the top instead of the step this SPINS rather than
+          # returning a wrong answer -- hence the timeout bound on every stage
+          ftry 'int main(){int i;int s;s=0;for(i=0;i<4;i=i+1){continue;}return i;}' 4 'continue reaches the step (else infinite)'
+          ftry 'int main(){int s;s=0;for(int i=0;i<4;i=i+1){s=s+i;}return s;}' 6 'declaration as the init clause'
+          ftry 'int main(){int i;i=0;for(;i<5;i=i+1){}return i;}' 5 'empty init clause'
+          ftry 'int main(){int i;for(i=0;i<5;){i=i+1;}return i;}' 5 'empty step clause'
+          ftry 'int main(){int i;i=0;for(;;){i=i+1;if(i>6){break;}}return i;}' 7 'for(;;) with break'
+          ftry 'int f(int x){return x*2;}int main(){int i;int s;s=0;for(i=1;i<4;i=i+1){s=s+f(i);}return s;}' 12 'call in a for body'
+          ftry 'int main(){int i;for(i=0;i<9;i=i+1){if(i==3){goto out;}}out: return i;}' 3 'goto out of a for'
+          ftry 'int main(){int a;int i;int s;a=1;s=0;if(a) for(i=0;i<3;i=i+1) s=s+1; return s;}' 3 'for as a braceless if body'
+          # break binds to the innermost loop across all three loop forms
+          ftry 'int main(){int i;int j;int t;t=0;for(i=0;i<3;i=i+1){j=0;while(1){j=j+1;if(j>1){break;}t=t+1;}}return t;}' 3 'for containing a while, break binds inner'
+          ftry 'int main(){int i;int t;t=0;for(i=0;i<3;i=i+1){int k;k=0;do{k=k+1;t=t+1;}while(k<2);}return t;}' 6 'for containing a do{}while'
+
+          # --- structural -----------------------------------------------------------
+          printf '%s' 'int main(){int i;int s;s=0;for(i=0;i<3;i=i+1){s=s+i;}return s;}' | qemu-aarch64 ./stage2 > f.s
+          printf '%s' 'int main(){int i;int s;s=0;for(i=0;i<9;i=i+1){if(i==4){break;}s=s+1;}return s;}' | qemu-aarch64 ./stage2 > fb.s
+          printf '%s' 'int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){if(i==2){continue;}s=s+i;}return s;}' | qemu-aarch64 ./stage2 > fc.s
+          [ "$(grep -c '^:__L' f.s)" = 4 ] || { echo "  WRONG label count for a plain for"; for_ok=no; }
+          [ "$(grep -c '^$'    f.s)" = 0 ] || { echo "  REGRESSION: blank emitted line"; for_ok=no; }
+          # THE layout witness. The four labels are ALLOCATED top, exit, step, body but
+          # DEFINED top, step, body, exit -- so the definition order is ids 0, 2, 3, 1.
+          # That single line pins the whole jump-over shape: emit the step after the
+          # body, or drop the branch over it, and this order changes.
+          fdo=$(grep '^:__L' f.s | tr -d ':_L' | tr '\n' ' ')
+          [ "$fdo" = "000000000 000000002 000000003 000000001 " ] || {
+            echo "  WRONG label layout order: $fdo"; for_ok=no; }
+          # continue targets the STEP (2nd definition); break targets the EXIT, which is
+          # always the LAST definition -- it is emitted at the closing brace, after every
+          # label the body itself allocated (the if here adds a 5th).
+          fstep=$(grep '^:__L' fc.s | sed -n 2p | tr -d ':')
+          grep -q "^b $fstep\$" fc.s || { echo "  continue does not branch to the step label"; for_ok=no; }
+          fexit=$(grep '^:__L' fb.s | tail -1 | tr -d ':')
+          grep -q "^b $fexit\$" fb.s || { echo "  break does not branch to the exit label"; for_ok=no; }
+          [ "$fexit" = "__L000000001" ] || { echo "  exit label is not defined last: $fexit"; for_ok=no; }
+          printf '  %-64s %s\n' 'structural: 4-label jump-over layout, continue->step, break->exit' \
+                 "$([ "$for_ok" = yes ] && echo OK || echo DIFF)"
+
+          # --- byte-identity against the PRE-RUNG compiler ---------------------------
+          # Second record widening in two rungs (16 -> 24 bytes), so the constructs
+          # sharing that stack must emit byte-identical output to before. Runs only on
+          # the commit that introduces the rung; reports SKIP afterwards.
+          if git show HEAD~1:spikes/stage2-mini-c/stage2-mini-c.s1 > oldf.s1 2>/dev/null && ! grep -q '^:dofor$' oldf.s1; then
+            cat oldf.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2oldf
+            fid=yes
+            fcmp() {
+              printf '%s' "$1" | qemu-aarch64 ./stage2     > fnew.s
+              printf '%s' "$1" | qemu-aarch64 ./stage2oldf > fold.s
+              cmp -s fnew.s fold.s || { fid=no; echo "  DIFFERS: $1"; }
+            }
+            fcmp 'int main(){int n;int s;n=10;s=0;while(n){s=s+n;n=n-1;}return s;}'
+            fcmp 'int main(){int a;a=0;if(a){a=1;}else{a=2;}return a;}'
+            fcmp 'int main(){int i;int t;i=3;t=0;while(i){int j;j=2;while(j){t=t+1;j=j-1;}i=i-1;}return t;}'
+            fcmp 'int main(){int a;a=1;if(a) return 7; return 3;}'
+            fcmp 'int f(int n){if(n<2){return n;}return f(n-1)+f(n-2);}int main(){return f(10);}'
+            fcmp 'int main(){int i;i=0;do{i=i+1;if(i==3){break;}}while(i<9);return i;}'
+            fcmp 'int main(){int i;int s;i=0;s=0;while(i<5){i=i+1;if(i==2){continue;}s=s+i;}return s;}'
+            fcmp 'int main(){int i;i=0;while(i<9){i=i+1;if(i==4){goto out;}}out: return i;}'
+            fcmp 'int main(){int a[4];a[0]=7;a[1]=9;return a[0]+a[1];}'
+            [ "$fid" = yes ] || for_ok=no
+            printf '  %-64s %s\n' 'byte-identical to HEAD~1 on for-free programs' \
+                   "$([ "$fid" = yes ] && echo OK || echo DIFF)"
+          else
+            printf '  %-64s %s\n' 'byte-identical to HEAD~1 on for-free programs' 'SKIP (HEAD~1 already has the rung)'
+          fi
+
+
           {
             echo "## stage2-mini-c — variables, if/while, reassignment, functions + recursion"
             echo '```'
@@ -1607,6 +1728,7 @@ jobs:
             echo "capacity / loud bounds (A22)            : $cap_ok"
             echo "capacity: input/inline data/adr (A23)   : $cap23_ok"
             echo "do{}while + break + continue (A24)     : $dw_ok"
+            echo "for loops (A25)                         : $for_ok"
             echo "eor byte-identical to as             : $eor_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
@@ -1619,8 +1741,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ] && [ "$cap23_ok" = yes ] && [ "$dw_ok" = yes ]; then
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ] && [ "$cap23_ok" = yes ] && [ "$dw_ok" = yes ] && [ "$for_ok" = yes ]; then
             echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct; and the single-pass @-target accounting invariant holds (every emitted line assembles to exactly 4 bytes, so the emitted-instruction counter stays equal to the true instruction count and a function's meaning does not depend on what was defined before it)."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok cap23=$cap23_ok dowhile=$dw_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok cap23=$cap23_ok dowhile=$dw_ok for=$for_ok"; exit 1
           fi
