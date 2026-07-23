@@ -2103,6 +2103,134 @@ jobs:
           fi
 
 
+          echo "== stage-2: brk builtin (A29) =="
+          # The LAST of the m53 syscall family. M2libc/aarch64/linux/bootstrap.c defines
+          # exactly six functions in asm(): read, write, open, close, brk, exit -- and m53
+          # already supplies five with matching syscall numbers AND argument order,
+          # deliberately, so omitting that one file stays possible. brk is the sixth, so
+          # this rung is what makes asm() unnecessary rather than merely deferred: with it
+          # we can drop the arch bootstrap.c instead of embedding an M1 assembler for a
+          # syntax (mov_x0,x17) that reads the CALLER frame in M2-Planet's own convention.
+          brk_ok=yes
+          btry() {
+            set +e
+            printf '%s' "$1" | timeout 30 qemu-aarch64 ./stage2 > bk.s
+            if [ $? -ne 0 ] || [ ! -s bk.s ]; then
+              brk_ok=no; printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'; set -e; return
+            fi
+            cat bk.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
+            set -e
+            set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; brk_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          btry 'int main(){int p;p=brk(0);if(p){return 42;}return 9;}' 42 'brk(0) returns a break'
+          btry 'int main(){int a;int b;a=brk(0);b=brk(a+4096);if(b>a){return 42;}return 9;}' 42 'brk grows and returns the new break'
+          # M2libc/bootstrap.c's malloc verbatim in shape -- the allocator whose
+          # calloc/free would override ours under the user-definition-wins contract.
+          btry 'long _brk_ptr;long _malloc_ptr;int mymalloc(int size){if(_brk_ptr==0){_brk_ptr=brk(0);_malloc_ptr=_brk_ptr;}if(_brk_ptr<_malloc_ptr+size){_brk_ptr=brk(_malloc_ptr+size+4096);}int old;old=_malloc_ptr;_malloc_ptr=_malloc_ptr+size;return old;}int main(){char* p;p=mymalloc(64);p[0]=42;return p[0];}' 42 'm2libc malloc shape allocates usable memory'
+          btry 'long _brk_ptr;long _malloc_ptr;int mymalloc(int size){if(_brk_ptr==0){_brk_ptr=brk(0);_malloc_ptr=_brk_ptr;}if(_brk_ptr<_malloc_ptr+size){_brk_ptr=brk(_malloc_ptr+size+4096);}int old;old=_malloc_ptr;_malloc_ptr=_malloc_ptr+size;return old;}int main(){char* a;char* b;a=mymalloc(32);b=mymalloc(32);a[0]=2;b[0]=40;return a[0]+b[0];}' 42 'two brk blocks are distinct and persist'
+          # smainpre already reserves the value/frame stacks with brk 214; a program that
+          # also calls brk must not disturb them (the stacks live below brk(0)).
+          btry 'int f(int n){if(n==0){return 0;}return n+f(n-1);}int main(){int p;p=brk(0);brk(p+8192);return f(8)+6;}' 42 'growing the break leaves the value/frame stacks intact'
+          btry 'int brk(int a){return 42;}int main(){return brk(0);}' 42 'a user brk definition wins'
+          printf '%s' 'int main(){return 42;}' | qemu-aarch64 ./stage2 > bk0.s
+          grep -q ':brk' bk0.s && { echo "  unused brk still emitted a wrapper"; brk_ok=no; }
+          printf '%s' 'int main(){return brk(0);}' | qemu-aarch64 ./stage2 > bk1.s
+          [ "$(grep -c '^:brk$' bk1.s)" = 1 ] || { echo "  brk wrapper not emitted exactly once"; brk_ok=no; }
+          grep -q '^mov x8 214$' bk1.s || { echo "  brk wrapper missing syscall 214"; brk_ok=no; }
+          grep -q '^bl brk$'     bk1.s || { echo "  brk call did not lower to a direct bl"; brk_ok=no; }
+          printf '%s' 'int brk(int a){return 42;}int main(){return brk(0);}' | qemu-aarch64 ./stage2 > bk2.s
+          [ "$(grep -c '^:brk$' bk2.s)" = 1 ] || { echo "  user brk definition did not suppress the builtin"; brk_ok=no; }
+          printf '  %-64s %s\n' 'structural: appended once, 214, user definition wins' \
+                 "$([ "$brk_ok" = yes ] && echo OK || echo DIFF)"
+
+
+          echo "== stage-2: pointer-to-pointer type model (A30) =="
+          # argv[i] (29 uses in cc.c) needs an 8-byte stride, but the gap was never
+          # argv-specific: the flags word had is_char/is_array/is_ptr and NO notion of an
+          # element that is itself a pointer, so char* a[N] and int* a[N] were broken as
+          # plain locals too. A fourth bit (16) records it and every byte-vs-word decision
+          # becomes (flags & 17) == 1 -- byte only when the element really is a char.
+          # Two declarator bugs sat in front of it: only ONE star was ever consumed, so
+          # `char** argv` declared a variable literally named `*`; and di_array/flg_array
+          # tested `flags != 0` instead of the char bit, so int* a[N] was byte-SIZED.
+          pp_ok=yes
+          ptry() {
+            set +e
+            printf '%s' "$1" | timeout 30 qemu-aarch64 ./stage2 > pp.s
+            if [ $? -ne 0 ] || [ ! -s pp.s ]; then
+              pp_ok=no; printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'; set -e; return
+            fi
+            cat pp.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
+            set -e
+            set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; pp_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          ptry 'int main(){char* a[2];char x[2];char y[2];x[0]=1;y[0]=41;a[0]=x;a[1]=y;char* p;char* q;p=a[0];q=a[1];return p[0]+q[0];}' 42 'char* a[N], two distinct elements'
+          ptry 'int main(){int* a[2];int x;int y;x=1;y=41;a[0]=&x;a[1]=&y;int* p;int* q;p=a[0];q=a[1];return *p+*q;}' 42 'int* a[N], two elements (was byte-SIZED)'
+          ptry 'int main(){char* a[3];char x[2];x[0]=42;a[2]=x;int i;i=2;char* p;p=a[i];return p[0];}' 42 'char* a[N] indexed by a variable'
+          ptry 'int f(char** v,int i){char* p;p=v[i];return p[0];}int main(){char* a[2];char x[2];char y[2];x[0]=9;y[0]=42;a[0]=x;a[1]=y;return f(a,1);}' 42 'cc.c argv[i]: char** param, subscript read'
+          ptry 'int f(char** v,int i){char* p;p=v[i+1];return p[0];}int main(){char* a[2];char x[2];char y[2];x[0]=9;y[0]=42;a[0]=x;a[1]=y;return f(a,0);}' 42 'cc.c argv[i+1] (lines 91,103,164,214)'
+          ptry 'int f(char** v,int i){if(v[i]==0){return 42;}return 9;}int main(){char* a[2];a[0]=0;return f(a,0);}' 42 'cc.c:85 NULL == argv[i]'
+          ptry 'int g(char* s){return s[0];}int f(char** v,int i){return g(v[i]);}int main(){char* a[2];char x[2];x[0]=42;a[1]=x;return f(a,1);}' 42 'cc.c match(argv[i],..): element passed as char*'
+          ptry 'int f(char** v,char* s){v[1]=s;return 0;}int main(){char* a[2];char x[2];x[0]=42;f(a,x);char* p;p=a[1];return p[0];}' 42 'store through a char** parameter'
+          ptry 'int main(){char* a[2];char x[2];x[0]=42;a[1]=x;char** v;v=a;char* p;p=v[1];return p[0];}' 42 'char** local'
+          ptry 'char** g;int main(){char* a[2];char x[2];x[0]=42;a[1]=x;g=a;char* p;p=g[1];return p[0];}' 42 'char** global'
+          ptry 'char* g[2];int main(){char x[2];x[0]=42;g[1]=x;char* p;p=g[1];return p[0];}' 42 'char* a[N] global'
+          ptry 'int main(){char* a[2];char x[2];x[0]=42;a[0]=x;char** v;v=a;char* p;p=*v;return p[0];}' 42 '*v on a char** is a word load'
+          ptry 'int main(){char* a[3];char x[2];x[0]=42;a[2]=x;char** e;e=&a[2];char* p;p=*e;return p[0];}' 42 '&a[i] on a pointer array is word-strided'
+          ptry 'int main(int argc,char** argv){return 42;}' 42 'char** argv is named argv, not *'
+          # REGRESSION: a real char array/pointer must stay BYTE-accessed -- the whole A3d
+          # memory model is what the new bit has to leave alone.
+          ptry 'int main(){char s[4];s[0]=65;s[1]=42;return s[1];}' 42 'char s[N] still byte-packed and byte-indexed'
+          ptry 'int main(){char s[2];s[0]=42;char* p;p=s;return *p;}' 42 'char* p deref still a byte load'
+          ptry 'int main(){char s[3];s[2]=42;char* p;p=s;return p[2];}' 42 'char* p subscript still byte'
+          ptry 'int len(char* p){int n;n=0;while(p[n]){n=n+1;}return n;}int main(){return len("hello")+37;}' 42 'strlen shape still works'
+          ptry 'int main(){int a[3];a[2]=42;return a[2];}' 42 'int a[N] unchanged'
+          ptry 'int main(){int x;x=42;int* p;p=&x;return *p;}' 42 'int* p deref unchanged'
+
+          # --- structural: the stride actually changed, and only where it should --------
+          # char* a[N] must scale by 8 (lsl x2 x2 x3) where char s[N] must not scale at
+          # all (ldrb with a raw index). Checking the emitted forms, not just the answer,
+          # because a wrong stride can still give a right answer for index 0.
+          printf '%s' 'int main(){char* a[2];char* p;p=a[1];return 0;}' | qemu-aarch64 ./stage2 > ppa.s
+          grep -q 'lsl x2 x2 x3' ppa.s || { echo "  char* a[N] subscript did not scale by 8"; pp_ok=no; }
+          printf '%s' 'int main(){char s[2];int c;c=s[1];return 0;}' | qemu-aarch64 ./stage2 > ppb.s
+          grep -q 'lsl x2 x2 x3' ppb.s && { echo "  char s[N] subscript wrongly scaled"; pp_ok=no; }
+          grep -q 'ldrb w0 x1 x2' ppb.s || { echo "  char s[N] subscript is no longer a byte load"; pp_ok=no; }
+          printf '  %-64s %s\n' 'structural: pointer arrays scale, char arrays do not' \
+                 "$([ "$pp_ok" = yes ] && echo OK || echo DIFF)"
+
+          # --- byte-identity against the PRE-RUNG compiler ---------------------------
+          # Programs with no pointer-array and no double pointer must be untouched.
+          if git show HEAD~1:spikes/stage2-mini-c/stage2-mini-c.s1 > oldp.s1 2>/dev/null && ! grep -q '^:di_stars$' oldp.s1; then
+            cat oldp.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2oldp
+            pid=yes
+            pcmp() {
+              printf '%s' "$1" | qemu-aarch64 ./stage2      > pnew.s
+              printf '%s' "$1" | qemu-aarch64 ./stage2oldp  > pold.s
+              cmp -s pnew.s pold.s || { pid=no; echo "  DIFFERS: $1"; }
+            }
+            pcmp 'int main(){int a=5;int b=a+2;return b;}'
+            pcmp 'int main(){char s[4];s[0]=65;s[1]=2;return s[0]+s[1];}'
+            pcmp 'int len(char* p){int n;n=0;while(p[n]){n=n+1;}return n;}int main(){return len("hello");}'
+            pcmp 'int main(){int a[4];a[2]=7;int* p;p=&a[2];return *p;}'
+            pcmp 'int main(){char* p;p="hi";return p[0];}'
+            pcmp 'int g;int arr[3];char s[8];int main(){g=1;arr[1]=2;s[0]=3;return g+arr[1]+s[0];}'
+            pcmp 'struct N{int v;struct N* nx;};int main(){struct N a;struct N* p;p=&a;a.v=7;return p->v;}'
+            pcmp 'int main(int argc,char** argv){return 42;}'
+            pcmp 'int f(int* p,int n){int i;int s;i=0;s=0;while(i<n){s=s+p[i];i=i+1;}return s;}int main(){int a[3];a[0]=1;a[1]=2;a[2]=39;return f(a,3);}'
+            pcmp 'int main(){char* p;p=calloc(4,8);p[0]=42;return p[0];}'
+            [ "$pid" = yes ] || pp_ok=no
+            printf '  %-64s %s\n' 'byte-identical to HEAD~1 on single-pointer programs' \
+                   "$([ "$pid" = yes ] && echo OK || echo DIFF)"
+          else
+            printf '  %-64s %s\n' 'byte-identical to HEAD~1 on single-pointer programs' 'SKIP (HEAD~1 already has the rung)'
+          fi
+
+
           {
             echo "## stage2-mini-c — variables, if/while, reassignment, functions + recursion"
             echo '```'
@@ -2135,6 +2263,8 @@ jobs:
             echo "enum constants (A26)                    : $enum_ok"
             echo "word-typed keywords unsigned/long (A27) : $wt_ok"
             echo "identifier type names FILE/FUNCTION (A28): $tn_ok"
+            echo "brk builtin (A29)                       : $brk_ok"
+            echo "pointer-to-pointer / char** (A30)       : $pp_ok"
             echo "eor byte-identical to as             : $eor_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
@@ -2147,8 +2277,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ] && [ "$cap23_ok" = yes ] && [ "$dw_ok" = yes ] && [ "$for_ok" = yes ] && [ "$enum_ok" = yes ] && [ "$wt_ok" = yes ] && [ "$tn_ok" = yes ]; then
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ] && [ "$cap23_ok" = yes ] && [ "$dw_ok" = yes ] && [ "$for_ok" = yes ] && [ "$enum_ok" = yes ] && [ "$wt_ok" = yes ] && [ "$tn_ok" = yes ] && [ "$brk_ok" = yes ] && [ "$pp_ok" = yes ]; then
             echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct; and the single-pass @-target accounting invariant holds (every emitted line assembles to exactly 4 bytes, so the emitted-instruction counter stays equal to the true instruction count and a function's meaning does not depend on what was defined before it)."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok cap23=$cap23_ok dowhile=$dw_ok for=$for_ok enum=$enum_ok wordtype=$wt_ok typenames=$tn_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok cap23=$cap23_ok dowhile=$dw_ok for=$for_ok enum=$enum_ok wordtype=$wt_ok typenames=$tn_ok brk=$brk_ok ptrptr=$pp_ok"; exit 1
           fi

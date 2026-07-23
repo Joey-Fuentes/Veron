@@ -2501,6 +2501,134 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     check("stage2 identifier type name: multiply after a decl-with-init",
           _exit_safe("int main(){int b;int c;b=6;c=7;int a=b*c;return a;}"), 42)
 
+    print("== stage 2 brk builtin (A29, m69) ==")
+    # The LAST of the m53 syscall family. M2libc/aarch64/linux/bootstrap.c defines
+    # exactly six functions in asm(): read, write, open, close, brk, exit -- and m53
+    # already supplies five of them with matching syscall numbers and argument order,
+    # deliberately, so that omitting that one file stays possible. brk is the sixth,
+    # so this rung is what makes asm() unnecessary rather than merely deferred.
+    # Same contract as every other builtin: lowered to a direct bl, wrapper appended
+    # once if used, and a user definition wins.
+    for nm, cs, want in [
+        ("brk(0) returns a break", "int main(){int p;p=brk(0);if(p){return 42;}return 9;}", 42),
+        ("brk grows and returns the new break",
+         "int main(){int a;int b;a=brk(0);b=brk(a+4096);if(b>a){return 42;}return 9;}", 42),
+        # M2libc/bootstrap.c's malloc verbatim in shape: brk(0) to find the break,
+        # then grow it. This is the allocator that would override our calloc/free.
+        ("m2libc malloc shape allocates usable memory",
+         "long _brk_ptr;long _malloc_ptr;"
+         "int mymalloc(int size){if(_brk_ptr==0){_brk_ptr=brk(0);_malloc_ptr=_brk_ptr;}"
+         "if(_brk_ptr<_malloc_ptr+size){_brk_ptr=brk(_malloc_ptr+size+4096);}"
+         "int old;old=_malloc_ptr;_malloc_ptr=_malloc_ptr+size;return old;}"
+         "int main(){char* p;p=mymalloc(64);p[0]=42;return p[0];}", 42),
+        ("two brk blocks are distinct and persist",
+         "long _brk_ptr;long _malloc_ptr;"
+         "int mymalloc(int size){if(_brk_ptr==0){_brk_ptr=brk(0);_malloc_ptr=_brk_ptr;}"
+         "if(_brk_ptr<_malloc_ptr+size){_brk_ptr=brk(_malloc_ptr+size+4096);}"
+         "int old;old=_malloc_ptr;_malloc_ptr=_malloc_ptr+size;return old;}"
+         "int main(){char* a;char* b;a=mymalloc(32);b=mymalloc(32);a[0]=2;b[0]=40;"
+         "return a[0]+b[0];}", 42),
+        # smainpre already reserves the value/frame stacks with brk 214, so a program
+        # that ALSO calls brk must not disturb them -- the stacks live below brk(0).
+        ("growing the break does not disturb the value/frame stacks",
+         "int f(int n){if(n==0){return 0;}return n+f(n-1);}"
+         "int main(){int p;p=brk(0);brk(p+8192);return f(8)+6;}", 42),
+        ("a user brk definition wins", "int brk(int a){return 42;}int main(){return brk(0);}", 42),
+    ]:
+        check(f"stage2 brk: {nm}", _exit_safe(cs), want)
+    check("stage2 brk: unused emits no wrapper", ":brk" in _emit("int main(){return 42;}"), False)
+    check("stage2 brk: used emits the wrapper exactly once",
+          _emit("int main(){return brk(0);}").count(":brk\n"), 1)
+    check("stage2 brk: wrapper uses syscall 214",
+          "mov x8 214" in _emit("int main(){return brk(0);}"), True)
+    check("stage2 brk: user definition suppresses the builtin wrapper",
+          _emit("int brk(int a){return 42;}int main(){return brk(0);}").count(":brk\n"), 1)
+    check("stage2 brk: call lowers to a direct bl",
+          "bl brk" in _emit("int main(){return brk(0);}"), True)
+
+    print("== stage 2 pointer-to-pointer type model (A30, m69) ==")
+    # `argv[i]` (29 uses in cc.c) needs an 8-byte stride, but the gap was never
+    # argv-specific: the flags word had is_char / is_array / is_ptr and no notion of
+    # an element that is ITSELF a pointer, so `char* a[N]` and `int* a[N]` were broken
+    # as locals too. A fourth bit (16) records it, and every byte-vs-word decision
+    # becomes (flags & 17) == 1 -- byte only when the element really is a char.
+    # Two declarator bugs fell out of the same place: only ONE star was ever consumed,
+    # so `char** argv` declared a variable literally named `*`; and di_array/flg_array
+    # tested `flags != 0` rather than the char bit, so `int* a[N]` was byte-SIZED.
+    for nm, cs, want in [
+        ("char* a[N], two distinct elements",
+         "int main(){char* a[2];char x[2];char y[2];x[0]=1;y[0]=41;a[0]=x;a[1]=y;"
+         "char* p;char* q;p=a[0];q=a[1];return p[0]+q[0];}", 42),
+        ("int* a[N], two elements",
+         "int main(){int* a[2];int x;int y;x=1;y=41;a[0]=&x;a[1]=&y;"
+         "int* p;int* q;p=a[0];q=a[1];return *p+*q;}", 42),
+        ("char* a[N] indexed by a variable",
+         "int main(){char* a[3];char x[2];x[0]=42;a[2]=x;int i;i=2;"
+         "char* p;p=a[i];return p[0];}", 42),
+        # the argv shapes, from cc.c
+        ("char** param, v[i] read",
+         "int f(char** v,int i){char* p;p=v[i];return p[0];}"
+         "int main(){char* a[2];char x[2];char y[2];x[0]=9;y[0]=42;a[0]=x;a[1]=y;"
+         "return f(a,1);}", 42),
+        ("char** param, v[i+1] (cc.c:91,103,164,214)",
+         "int f(char** v,int i){char* p;p=v[i+1];return p[0];}"
+         "int main(){char* a[2];char x[2];char y[2];x[0]=9;y[0]=42;a[0]=x;a[1]=y;"
+         "return f(a,0);}", 42),
+        ("char** element compared against NULL (cc.c:85)",
+         "int f(char** v,int i){if(v[i]==0){return 42;}return 9;}"
+         "int main(){char* a[2];a[0]=0;return f(a,0);}", 42),
+        ("char** element passed to a char* param (match(argv[i],..))",
+         "int g(char* s){return s[0];}int f(char** v,int i){return g(v[i]);}"
+         "int main(){char* a[2];char x[2];x[0]=42;a[1]=x;return f(a,1);}", 42),
+        ("store through a char** parameter",
+         "int f(char** v,char* s){v[1]=s;return 0;}"
+         "int main(){char* a[2];char x[2];x[0]=42;f(a,x);char* p;p=a[1];return p[0];}", 42),
+        ("char** local", "int main(){char* a[2];char x[2];x[0]=42;a[1]=x;char** v;v=a;"
+                          "char* p;p=v[1];return p[0];}", 42),
+        ("char** global", "char** g;int main(){char* a[2];char x[2];x[0]=42;a[1]=x;g=a;"
+                           "char* p;p=g[1];return p[0];}", 42),
+        ("char* a[N] global", "char* g[2];int main(){char x[2];x[0]=42;g[1]=x;"
+                               "char* p;p=g[1];return p[0];}", 42),
+        ("*v on a char** is a word load",
+         "int main(){char* a[2];char x[2];x[0]=42;a[0]=x;char** v;v=a;"
+         "char* p;p=*v;return p[0];}", 42),
+        ("&a[i] on a pointer array is word-strided",
+         "int main(){char* a[3];char x[2];x[0]=42;a[2]=x;char** e;e=&a[2];"
+         "char* p;p=*e;return p[0];}", 42),
+    ]:
+        check(f"stage2 pointer-to-pointer: {nm}", _exit_safe(cs), want)
+
+    # REGRESSION: a real char array/pointer must stay BYTE-accessed. These are the
+    # cases the new bit has to leave alone, and they are the whole A3d memory model.
+    for nm, cs, want in [
+        ("char s[N] byte-packed and byte-indexed",
+         "int main(){char s[4];s[0]=65;s[1]=42;return s[1];}", 42),
+        ("char* p deref is a byte load",
+         "int main(){char s[2];s[0]=42;char* p;p=s;return *p;}", 42),
+        ("char* p subscript is byte",
+         "int main(){char s[3];s[2]=42;char* p;p=s;return p[2];}", 42),
+        ("string literal indexing is byte", 'int main(){char* m;m="*";return m[0];}', 42),
+        ("strlen shape",
+         "int len(char* p){int n;n=0;while(p[n]){n=n+1;}return n;}"
+         'int main(){return len("hello")+37;}', 42),
+        ("int a[N]", "int main(){int a[3];a[2]=42;return a[2];}", 42),
+        ("int* p deref", "int main(){int x;x=42;int* p;p=&x;return *p;}", 42),
+    ]:
+        check(f"stage2 pointer-to-pointer: {nm} unchanged", _exit_safe(cs), want)
+
+    # The declarator now consumes a RUN of stars, so `char** argv` names argv rather
+    # than `*`. The param COUNT is unchanged (the old code declared a junk second
+    # param), which is why the emitted code for main is byte-identical -- the fix is
+    # visible only when the name is used.
+    check("stage2 pointer-to-pointer: char** argv is named, not '*'",
+          _exit_safe("int main(int argc,char** argv){return 42;}"), 42)
+    # Out of subset, and NOT needed: chained subscript on a temporary (v[i][j]).
+    # Zero uses in the self-host TU -- cc.c only ever writes argv[i] and argv[i+1].
+    check("stage2 pointer-to-pointer: v[i][j] is still out of subset",
+          _exit_safe("int f(char** v){return v[1][0];}"
+                     "int main(){char* a[2];char y[2];y[0]=42;a[1]=y;return f(a);}") == 42,
+          False)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)
