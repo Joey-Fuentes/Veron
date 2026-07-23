@@ -108,8 +108,10 @@ jobs:
           echo "--- makefile recipes ---"
           grep -A6 -E '^(M1|hex2):' "$MK" || true
 
+          # 'M1:' is a phony alias for 'bin/M1'; the real rule's prerequisite
+          # line already lists every source, so read that and skip the recipe.
           srcs() {
-            awk -v t="^$1:" '$0 ~ t {i=1; next} i && /^[^\t ]/ {exit} i {print}' "$MK" \
+            grep -E "^bin/$1:" "$MK" | sed 's/|.*//' \
               | grep -o '[A-Za-z0-9_./-]*\.c' | awk '!seen[$0]++' \
               | grep -v 'bootstrappable\.c'
           }
