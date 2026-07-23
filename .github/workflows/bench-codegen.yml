@@ -547,6 +547,33 @@ jobs:
           d 'the unary_expr_sizeof shape' 42 \
             "$S $M struct ty* look(int hit){if(hit){return mk();}return 0;} int f(int hit){int size;size=0;struct ty* t;t=look(hit);if(t != 0){struct ty* a;a=t;size=a->size;}else{struct ty* a;a=mk();size=a->size;}return size;} int main(){return f(0);}"
 
+      - name: 'GATE: the redeclared-local reproducer (m72)'
+        run: |
+          # See spikes/stage2-mini-c/SLOT-BUG.md. Fails until symlookup binds a
+          # name to its most recent declaration. This is the gate for that fix.
+          cat > slot.c <<'EOF'
+          struct ty { int pad; int size; };
+          struct ty* mk(){struct ty* p;p=calloc(1,16);p->size=42;return p;}
+          int f(int flag)
+          {
+          	int r;
+          	r = 0;
+          	if(flag){ struct ty* a = mk(); r = a->size; }
+          	else { struct ty* a = mk(); r = a->size + 1; }
+          	return r;
+          }
+          int main(){return f(0);}
+          EOF
+          qemu-aarch64 ./stage2 < slot.c > slot.s1
+          cat slot.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as \
+            | qemu-aarch64 ./elf slot.elf
+          set +e
+          timeout 30 qemu-aarch64 ./slot.elf; r=$?
+          set -e
+          echo "redeclared local: got=$r want=43 (139 = the slot bug)"
+          [ "$r" = 43 ] || { echo "FAIL: still binding to the stale slot"; exit 1; }
+          echo "PASS"
+
       - name: Build each benchmark with BOTH compilers
         continue-on-error: true
         run: |
