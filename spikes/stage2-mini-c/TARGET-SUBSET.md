@@ -294,8 +294,15 @@ directives — a `#` token discards the line, matching M2-Planet's own `--bootst
 4. **`enum`** — 9 blocks, ~40 constants, and the largest gap: `NULL` (287 uses), `TRUE`,
    `FALSE`, `EOF`, `stdin/stdout/stderr` and `EXIT_*` are all enum constants in
    `M2libc/bootstrap.c`. That is precisely *why* stripping every directive (m62) works.
-5. **`break` (13) / `continue` (2)** — currently *silently miscompiled*, not rejected.
-6. **`do { } while`** — 7 uses.  7. **`for`** — 4 uses, all the same linked-list walk.
+5. ~~**`break` (13) / `continue` (2)**~~ — **DONE (m64)**. Was silently miscompiled;
+   outside a loop it is now a diagnostic + exit 2. `break`/`continue` scan the block stack
+   for the nearest loop record, skipping `if`/`else` — which is what the 11 breaks sitting
+   in braceless `if` bodies need.
+6. ~~**`do { } while`**~~ — **DONE (m64)**, all 7 uses' shapes covered, including the
+   `while` on the line after the `}` and char literals (`'}'`, `'\n'`) in the condition.
+   7. **`for`** — 4 uses, all the same linked-list walk. Now the only loop form missing;
+   needs the step clause re-lexed from a saved source span at close time, since m63
+   retired backpatching.
 8. **Word-typed keywords** — `unsigned` (9), `long` (4), plus `FILE`/`size_t`/`ssize_t`,
    which M2-Planet pre-registers as primitives in bootstrap mode (`cc_types.c:177`).
 9. **`char**` subscripting** — `argv[i]`, 28 uses, needs an 8-byte stride. Our subscript

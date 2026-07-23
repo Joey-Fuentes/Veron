@@ -18,6 +18,12 @@
 #   instr count (labels are 0 bytes, emitted via emitlabel so x17 is unaffected),
 #   x24 opstk base, x25 opstk top, x26 cur-op, x11 op-to-apply, x14 store-offset,
 #   x15/x16 blockstk, x12 cexpr opstk base / patch temp, x13 patch/offset temp,
+# block record = 16 bytes [kind | a | b | c]; kind 0=if 1=while 2=else 3=plain
+#   4=do, +8 = braceless variant (peekbrace). a = end/else label (if/else) or
+#   loop top (while/do); b = loop exit label (break target); c = continue target
+#   label id PLUS ONE, 0 = none yet (label id 0 is a real label, so the +1 is the
+#   sentinel). while sets c at push; do allocates it lazily on first continue and
+#   defines it at close, immediately before the condition.
 #   x10 symtab base, x8 symtab count (this function), x28 cexpr save-stack ptr,
 #   x18/x20/x29 token start/kind/aux. cexpr save-stack holds (x30,x12) so the
 #   expression compiler is re-entrant across call arguments; compile_call also
@@ -635,12 +641,12 @@ b funcloop
 :stmtend
 cmp x16 0
 b.eq stmtloop
-sub x2 x16 12
+sub x2 x16 16
 add x2 x15 x2
 ldr w4 x2
-cmp x4 4
+cmp x4 8
 b.lt stmtloop
-sub x16 x16 12
+sub x16 x16 16
 add x2 x15 x16
 ldr w4 x2
 add x2 x16 4
@@ -649,10 +655,12 @@ ldr w12 x2
 add x2 x16 8
 add x2 x15 x2
 ldr w13 x2
-cmp x4 5
+cmp x4 9
 b.eq dclose_while
-cmp x4 6
+cmp x4 10
 b.eq docloseelse
+cmp x4 12
+b.eq dclose_do
 b docloseif
 :stmtloop
 bl next_token
@@ -686,6 +694,10 @@ mov w4 0
 add x2 x15 x16
 str w4 x2
 add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 b stmtloop
 :stmtkw
 cmp x29 1
@@ -702,6 +714,12 @@ cmp x29 4
 b.eq doreturn
 cmp x29 9
 b.eq dogoto
+cmp x29 10
+b.eq dodo
+cmp x29 11
+b.eq dobreak
+cmp x29 12
+b.eq docontinue
 b stmtloop
 :stmtop
 cmp x29 42
@@ -1200,10 +1218,14 @@ mov w4 0
 add x2 x15 x16
 str w4 x2
 add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 bl peekbrace
-mov x5 2
+mov x5 3
 lsl x7 x7 x5
-sub x2 x16 12
+sub x2 x16 16
 add x2 x15 x2
 str w7 x2
 b stmtloop
@@ -1237,18 +1259,53 @@ mov w4 x13
 add x2 x15 x16
 str w4 x2
 add x16 x16 4
+add x14 x12 1
+mov w4 x14
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 bl peekbrace
-mov x5 2
+mov x5 3
 lsl x7 x7 x5
 add x7 x7 1
-sub x2 x16 12
+sub x2 x16 16
+add x2 x15 x2
+str w7 x2
+b stmtloop
+:dodo
+bl newlbl
+mov x12 x3
+bl emitdef
+bl newlbl
+mov x13 x3
+mov w4 4
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 x12
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 x13
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
+bl peekbrace
+mov x5 3
+lsl x7 x7 x5
+add x7 x7 4
+sub x2 x16 16
 add x2 x15 x2
 str w7 x2
 b stmtloop
 :doclose
 cmp x16 0
 b.eq funcdone
-sub x16 x16 12
+sub x16 x16 16
 add x2 x15 x16
 ldr w4 x2
 add x2 x16 4
@@ -1263,6 +1320,8 @@ cmp x4 3
 b.eq dclose_plain
 cmp x4 2
 b.eq docloseelse
+cmp x4 4
+b.eq dclose_do
 b docloseif
 :dclose_plain
 b stmtend
@@ -1276,6 +1335,52 @@ bl emitstr
 mov x3 x13
 bl emitdef
 b stmtend
+:dclose_do
+bl next_token
+add x2 x16 4
+add x2 x15 x2
+ldr w12 x2
+add x2 x16 8
+add x2 x15 x2
+ldr w13 x2
+add x2 x16 12
+add x2 x15 x2
+ldr w7 x2
+cmp x7 0
+b.eq dcdo_nc
+sub x3 x7 1
+bl emitdef
+:dcdo_nc
+bl scancond
+str x21 x28
+add x28 x28 8
+str x12 x28
+add x28 x28 8
+str x13 x28
+add x28 x28 8
+mov x21 x2
+bl compile_expr
+sub x28 x28 8
+ldr x13 x28
+sub x28 x28 8
+ldr x12 x28
+sub x28 x28 8
+ldr x21 x28
+adr x9 scondtest
+bl emitstr
+mov x3 x13
+bl emitlid
+adr x9 snlonly
+bl emitstr
+adr x9 sbback
+bl emitstr
+mov x3 x12
+bl emitlid
+adr x9 snlonly
+bl emitstr
+mov x3 x13
+bl emitdef
+b stmtloop
 :docloseif
 str x6 x28
 add x28 x28 8
@@ -1307,11 +1412,15 @@ mov w4 0
 add x2 x15 x16
 str w4 x2
 add x16 x16 4
+mov w4 0
+add x2 x15 x16
+str w4 x2
+add x16 x16 4
 bl peekbrace
-mov x5 2
+mov x5 3
 lsl x7 x7 x5
 add x7 x7 2
-sub x2 x16 12
+sub x2 x16 16
 add x2 x15 x2
 str w7 x2
 b stmtloop
@@ -1324,6 +1433,72 @@ b stmtend
 mov x3 x12
 bl emitdef
 b stmtend
+:findloop
+mov x2 x16
+:fdl_l
+cmp x2 0
+b.eq fdl_none
+sub x2 x2 16
+add x3 x15 x2
+ldr w4 x3
+mov x5 7
+and x4 x4 x5
+cmp x4 1
+b.eq fdl_hit
+cmp x4 4
+b.ne fdl_l
+:fdl_hit
+mov x7 1
+ret
+:fdl_none
+mov x7 0
+ret
+:dobreak
+bl findloop
+cmp x7 0
+b.eq brkerr
+add x3 x2 8
+add x3 x15 x3
+ldr w13 x3
+adr x9 sbback
+bl emitstr
+mov x3 x13
+bl emitlid
+adr x9 snlonly
+bl emitstr
+b stmtend
+:docontinue
+bl findloop
+cmp x7 0
+b.eq brkerr
+mov x14 x2
+add x3 x14 12
+add x3 x15 x3
+ldr w13 x3
+cmp x13 0
+b.ne dct_have
+bl newlbl
+add x13 x3 1
+add x3 x14 12
+add x3 x15 x3
+str w13 x3
+:dct_have
+adr x9 sbback
+bl emitstr
+sub x3 x13 1
+bl emitlid
+adr x9 snlonly
+bl emitstr
+b stmtend
+:brkerr
+mov x0 2
+adr x1 sbrkerr
+mov x2 38
+mov x8 64
+svc
+mov x0 2
+mov x8 93
+svc
 :funcdone
 adr x9 spush0
 bl emitstr
@@ -3714,9 +3889,13 @@ cmp x1 5
 b.eq nt_kw5
 cmp x1 6
 b.eq nt_kw6
+cmp x1 8
+b.eq nt_kw8
 b nt_plainid
 :nt_kw2
 ldrb w5 x19 x18
+cmp x5 100
+b.eq nt_kw2_do
 cmp x5 105
 b.ne nt_plainid
 add x2 x18 1
@@ -3724,6 +3903,14 @@ ldrb w5 x19 x2
 cmp x5 102
 b.ne nt_plainid
 mov x29 2
+mov x20 3
+ret
+:nt_kw2_do
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 111
+b.ne nt_plainid
+mov x29 10
 mov x20 3
 ret
 :nt_kw3
@@ -3743,6 +3930,8 @@ mov x20 3
 ret
 :nt_kw5
 ldrb w5 x19 x18
+cmp x5 98
+b.eq nt_kw5_brk
 cmp x5 119
 b.ne nt_plainid
 add x2 x18 1
@@ -3762,6 +3951,61 @@ ldrb w5 x19 x2
 cmp x5 101
 b.ne nt_plainid
 mov x29 3
+mov x20 3
+ret
+:nt_kw5_brk
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 114
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 101
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 97
+b.ne nt_plainid
+add x2 x18 4
+ldrb w5 x19 x2
+cmp x5 107
+b.ne nt_plainid
+mov x29 11
+mov x20 3
+ret
+:nt_kw8
+ldrb w5 x19 x18
+cmp x5 99
+b.ne nt_plainid
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 111
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 110
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 116
+b.ne nt_plainid
+add x2 x18 4
+ldrb w5 x19 x2
+cmp x5 105
+b.ne nt_plainid
+add x2 x18 5
+ldrb w5 x19 x2
+cmp x5 110
+b.ne nt_plainid
+add x2 x18 6
+ldrb w5 x19 x2
+cmp x5 117
+b.ne nt_plainid
+add x2 x18 7
+ldrb w5 x19 x2
+cmp x5 101
+b.ne nt_plainid
+mov x29 12
 mov x20 3
 ret
 :nt_kw6
@@ -4569,6 +4813,9 @@ b ps_l
 .byte 0
 :sgdover
 .ascii "stage2: global data too large\n"
+.byte 0
+:sbrkerr
+.ascii "stage2: break/continue outside a loop\n"
 .byte 0
 :sinover
 .ascii "stage2: input exceeds arena\n"

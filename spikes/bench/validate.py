@@ -1841,6 +1841,152 @@ if os.path.exists(s1p) and os.path.exists(s2p):
 
 
 
+    print("== stage 2 do{}while + break + continue (A24) ==")
+    # A do-loop emits the SAME label pair a while-loop does -- top defined at the
+    # `do`, exit referenced by the condition's b.eq and defined after the back
+    # branch -- so `break` is one mechanism for both:
+    #
+    #     :__L<top>          <- emitted at `do`
+    #       <body>
+    #     [:__L<cont>]       <- only if a `continue` was seen (see below)
+    #       <cond>; b.eq __L<exit>
+    #       b __L<top>
+    #     :__L<exit>
+    #
+    # `break`/`continue` scan the block stack DOWNWARD for the nearest record whose
+    # base kind is a loop (1=while, 4=do), skipping if/else/plain records -- which
+    # is the whole point, since 11 of M2-Planet's 14 breaks sit in a braceless `if`
+    # body inside a loop. The scan masks off the braceless flag, so `while(c) break;`
+    # finds its loop too.
+    #
+    # The block record grew 12 -> 16 bytes for this rung, and the braceless flag
+    # moved from bit 2 to bit 3. That was FORCED, not cosmetic: `stmtend` tests
+    # `kind >= 4` to mean braceless, so a braced `do` numbered 4 would have been
+    # closed by the first `;` inside its own body. The freed field also carries the
+    # continue target in slot c.
+    #
+    # Slot c holds the continue label id PLUS ONE, 0 meaning "none allocated".
+    # The +1 is load-bearing: newlbl's first id is 0, so a bare 0 could not be
+    # distinguished from label __L0. A `do` allocates its continue label LAZILY, on
+    # the first `continue` inside it, because C says continue-in-do jumps to the
+    # condition rather than the body top -- a third label that most do-loops (and
+    # all 7 of M2-Planet's) never need. Eager allocation would emit a definition
+    # nothing references, which is exactly what the A22 label-integrity checks
+    # forbid. A `while` needs no laziness: its continue target IS its top label.
+    def _exit_safe(csrc):
+        try:
+            return _exit(csrc)
+        except Exception as e:
+            return f"<{type(e).__name__}>"
+
+    # Behavioural, through the real assembled ladder.
+    for cs, want in [
+        # the defining property: the body runs BEFORE the first test
+        ("int main(){int i=0;do{i=i+1;}while(i>99);return i;}", 1),
+        ("int main(){int i=9;do{i=i+1;}while(0);return i;}", 10),
+        ("int main(){int i=0;do{i=i+1;}while(i<5);return i;}", 5),
+        ("int main(){int n=4;int f=1;do{f=f*n;n=n-1;}while(n);return f;}", 24),
+        # `while` on the line AFTER the closing brace -- 4 of M2-Planet's 7 sites
+        ("int main(){int i=0;\ndo\n{\ni=i+1;\n}\nwhile(i<6);\nreturn i;}", 6),
+        # braceless body: `do stmt; while(cond);`  (unused by M2-Planet, free here)
+        ("int main(){int i=0;do i=i+1; while(i<7);return i;}", 7),
+        # nesting, recursion, and interaction with the other control flow
+        ("int main(){int a=0;int i=0;do{int j=0;do{j=j+1;a=a+1;}while(j<3);i=i+1;}while(i<2);return a;}", 6),
+        ("int f(int n){int s=0;do{s=s+n;n=n-1;}while(n);return s;}int main(){return f(4);}", 10),
+        ("int main(){int i=0;do{i=i+1;if(i==3){goto out;}}while(i<9);out:\nreturn i;}", 3),
+        ("int main(){int a=1;int i=0;if(a) do{i=i+1;}while(i<4); else i=99;return i;}", 4),
+        # break / continue
+        ("int main(){int i=0;do{i=i+1;if(i==3){break;}}while(i<9);return i;}", 3),
+        ("int main(){int i=0;while(1){i=i+1;if(i>6){break;}}return i;}", 7),
+        ("int main(){int i=0;int s=0;while(i<5){i=i+1;if(i==2){continue;}s=s+i;}return s;}", 13),
+        ("int main(){int i=0;int s=0;while(i<4){i=i+1;if(i==2)continue;s=s+i;}return s;}", 8),
+        # break in a BRACELESS if inside a do -- cc_macro.c:912's shape exactly
+        ("int main(){int i=0;do{i=i+1;if(i==4) break;}while(1);return i;}", 4),
+        # break binds to the INNERMOST loop, and skips intervening if records
+        ("int main(){int o=0;int t=0;while(o<3){o=o+1;int i=0;do{i=i+1;if(i==2){break;}t=t+1;}while(i<9);}return t;}", 3),
+        ("int main(){int i=0;while(1){i=i+1;if(i>2){if(i>3){break;}}}return i;}", 4),
+        # continue in a do jumps to the CONDITION, not the body top: i still
+        # advances to 5 (so the loop terminates) while s counts only i>=3.
+        ("int main(){int i=0;int s=0;do{i=i+1;if(i<3){continue;}s=s+1;}while(i<5);return s+i*10;}", 53),
+        # conditions of the shapes M2-Planet actually writes
+        ("int main(){int e=0;int c=0;int f=5;do{c=c+1;}while(e || (c != f));return c;}", 5),
+        ("int main(){int c=0;do{c=c+1;}while((32 != c) && (9 != c) && (10 != c));return c;}", 9),
+        # scancond bounds the condition by counting parens, so a ')' or '}' or an
+        # ESCAPE inside a char literal there must be skipped, not counted.
+        # cc_core.c:3165/2203 test against '}'; cc_reader.c:403 against '\n'.
+        ("int main(){char c;c=48;int i=0;do{i=i+1;c=c+1;}while(c != ')' && i<3);return i;}", 3),
+        ("int main(){char c;c=48;int i=0;do{i=i+1;c=c+1;}while(c != '}' && i<4);return i;}", 4),
+        ("int main(){char c;c=5;int i=0;do{i=i+1;c=c+1;}while('\\n' != c);return i;}", 5),
+        ("int main(){char c;c=5;int i=0;do{i=i+1;c=c+1;}while((32 != c) && (9 != c) && ('\\n' != c));return i;}", 4),
+    ]:
+        check(f"stage2 do/break exit -> {want}", _exit_safe(cs), want)
+
+    # Structural: label integrity, the A22 property, on the new construct.
+    import re as _re3
+    _emdo = _emit("int main(){int i=0;do{i=i+1;}while(i<5);return i;}")
+    _ddefs = [l[1:] for l in _emdo.split("\n") if l.startswith(":__L")]
+    _drefs = _re3.findall(r"\b(?:b|b\.eq|b\.ne)\s+(__L\w+)", _emdo)
+    check("stage2 do: label defs unique", len(_ddefs) == len(set(_ddefs)), True)
+    check("stage2 do: every branch target defined", set(_drefs) <= set(_ddefs), True)
+    check("stage2 do: every definition referenced", set(_ddefs) <= set(_drefs), True)
+    check("stage2 do: no blank emitted line",
+          any(l.strip() == "" for l in _emdo.split("\n")[:-1]), False)
+    check("stage2 do: branches back to the top (b __L)", "\nb __L" in _emdo, True)
+    check("stage2 do: exits on false (b.eq __L)", "b.eq __L" in _emdo, True)
+    # A do-loop with no `continue` emits exactly two labels (top, exit) -- the
+    # lazily-allocated continue label must not appear.
+    check("stage2 do: 2 labels when no continue", len(set(_ddefs)), 2)
+    _emdc = _emit("int main(){int i=0;do{i=i+1;if(i<3){continue;}}while(i<5);return i;}")
+    check("stage2 do: 3rd label appears when continue is used",
+          len(set(l for l in _emdc.split("\n") if l.startswith(":__L"))), 4)
+    # break/continue outside any loop is a LOUD failure (diagnostic + exit 2),
+    # not a silently discarded identifier -- which is what they were before this
+    # rung, and the reason m58's census called them the dangerous failure mode.
+    check("stage2 break outside a loop exits 2", run(s2prog, stdin=b"int main(){break;return 1;}")[0], 2)
+    check("stage2 continue outside a loop exits 2",
+          run(s2prog, stdin=b"int main(){continue;return 1;}")[0], 2)
+    check("stage2 break outside a loop emits nothing",
+          len(run(s2prog, stdin=b"int main(){break;return 1;}")[1]), 0)
+    # `do`, `break` and `continue` are keywords only as whole words: identifiers
+    # that merely start with them must still tokenize as identifiers.
+    check("stage2 do/break/continue are whole-word keywords",
+          _exit_safe("int main(){int done=2;int breaker=3;int continues=4;return done+breaker+continues;}"), 9)
+
+    # THE LOAD-BEARING GUARD. This rung moved the braceless flag from bit 2 to bit 3
+    # and widened every block record 12 -> 16 bytes, which is exactly the kind of
+    # change that silently perturbs the constructs sharing that stack. Two things
+    # are checked, and it is worth being precise about which is which:
+    #
+    #  (1) BYTE-IDENTITY vs the PRE-RUNG COMPILER, on a corpus using none of
+    #      do/break/continue (if/else/while/braceless/nested/recursion/arrays/
+    #      structs/strings/goto/short-circuit). Verified during development by
+    #      building both compilers through the real ladder and comparing emissions;
+    #      it cannot be pinned here because validate.py has only the current
+    #      source. CI carries it: stage2-mini-c-demo diffs against git HEAD~1.
+    #  (2) What IS pinned here: the behavioural invariance of those same
+    #      constructs, plus a byte-level ORDER-INDEPENDENCE witness -- appending a
+    #      do-using function must not change one byte of what precedes it. That is
+    #      the m54 failure class (a construct silently corrupting only the
+    #      functions emitted AFTER it), which is the specific way a block-record
+    #      change would go wrong.
+    _pre = "int g(){int i=0;while(i<3){i=i+1;}return i;}int main(){return g();}"
+    for _tail, _lbl in [
+        ("int later(){int j=0;do{j=j+1;}while(j<2);return j;}", "do"),
+        ("int later(){int j=0;while(1){j=j+1;if(j>1){break;}}return j;}", "break"),
+        ("int later(){int j=0;int s=0;while(j<3){j=j+1;if(j==2){continue;}s=s+j;}return s;}", "continue"),
+    ]:
+        check(f"stage2 do rung: appended {_lbl} leaves earlier bytes untouched",
+              _emit(_pre + _tail).startswith(_emit(_pre)), True)
+    for cs, want in [
+        ("int main(){int n=10;int s=0;while(n){s=s+n;n=n-1;}return s;}", 55),
+        ("int main(){int a=0;if(a){a=1;}else{a=2;}return a;}", 2),
+        ("int main(){int i=3;int t=0;while(i){int j=2;while(j){t=t+1;j=j-1;}i=i-1;}return t;}", 6),
+        ("int main(){int a=1;if(a) return 7; return 3;}", 7),
+        ("int main(){int a=1;int b=0;if(a) if(b) return 1; else return 2; return 3;}", 2),
+        ("int f(int n){if(n<2){return n;}return f(n-1)+f(n-2);}int main(){return f(10);}", 55),
+    ]:
+        check(f"stage2 do rung: prior control flow unchanged -> {want}", _exit_safe(cs), want)
+
     print("== stage 2 capacity: input, data, adr reach (A23) ==")
     # THE COMPLAINT THAT STARTED THIS: hard-coded limits. Three remained after
     # A22 streamed the output, and all three are now structural rather than raised:

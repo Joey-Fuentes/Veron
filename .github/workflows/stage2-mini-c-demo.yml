@@ -55,6 +55,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2   # A24 byte-compares stage 2 against HEAD~1
       - name: Install toolchain
         run: |
           sudo apt-get update
@@ -1424,6 +1426,159 @@ jobs:
                    "$([ "$selfhost_ok" = yes ] && echo OK || echo DIFF)"
           fi
 
+          echo "== stage-2: do{}while + break + continue (A24) =="
+          # A do-loop emits the SAME label pair a while-loop does -- top defined at
+          # the `do`, exit referenced by the condition's b.eq and defined after the
+          # back branch -- which is what lets `break` be one mechanism for both:
+          #
+          #     :__L<top>          <- emitted at `do`
+          #       <body>
+          #     [:__L<cont>]       <- only if a `continue` was seen
+          #       <cond>; b.eq __L<exit>
+          #       b __L<top>
+          #     :__L<exit>
+          #
+          # `break`/`continue` scan the block stack DOWNWARD for the nearest loop
+          # record (kind 1=while, 4=do), skipping if/else/plain -- which is the whole
+          # point: 11 of M2-Planet's 14 breaks sit in a BRACELESS `if` body inside a
+          # loop. The scan masks the braceless flag, so `while(c) break;` finds it too.
+          #
+          # The block record grew 12 -> 16 bytes and the braceless flag moved from bit
+          # 2 to bit 3. That was FORCED: stmtend reads `kind >= 4` as braceless, so a
+          # braced `do` numbered 4 would have been closed by the first `;` inside its
+          # own body. Everything sharing that stack (if/else/while/braceless/nested)
+          # is therefore re-checked below, and byte-compared against HEAD~1.
+          #
+          # Timeout-bounded throughout: the failure mode of a mis-aimed loop branch is
+          # to spin forever, not to return something wrong.
+          dw_ok=yes
+          dwtry() {
+            set +e
+            printf '%s' "$1" | timeout 30 qemu-aarch64 ./stage2 > dwt.s
+            if [ $? -ne 0 ] || [ ! -s dwt.s ]; then
+              dw_ok=no
+              printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'
+              set -e; return
+            fi
+            cat dwt.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
+            set -e
+            set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; dw_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          # the defining property: the body runs BEFORE the first test
+          dwtry 'int main(){int i;i=0;do{i=i+1;}while(i>99);return i;}' 1 'body runs once when the condition is false'
+          dwtry 'int main(){int i;i=9;do{i=i+1;}while(0);return i;}' 10 'while(0) still runs the body once'
+          dwtry 'int main(){int i;i=0;do{i=i+1;}while(i<5);return i;}' 5 'do{}while counts to 5'
+          dwtry 'int main(){int n;int f;n=4;f=1;do{f=f*n;n=n-1;}while(n);return f;}' 24 'do{}while factorial'
+          # 4 of M2-Planet's 7 sites put `while` on the line AFTER the closing brace
+          dwtry 'int main(){int i;i=0;
+          do
+          {
+          i=i+1;
+          }
+          while(i<6);
+          return i;}' 6 'while on the line after the closing brace (cc_core.c layout)'
+          # braceless body -- unused by M2-Planet, free once the record widened
+          dwtry 'int main(){int i;i=0;do i=i+1; while(i<7);return i;}' 7 'braceless do body'
+          dwtry 'int main(){int a;int i;a=0;i=0;do{int j;j=0;do{j=j+1;a=a+1;}while(j<3);i=i+1;}while(i<2);return a;}' 6 'nested do inside do'
+          dwtry 'int f(int n){int s;s=0;do{s=s+n;n=n-1;}while(n);return s;}int main(){return f(4);}' 10 'do inside a called function'
+          dwtry 'int main(){int i;i=0;do{i=i+1;if(i==3){goto out;}}while(i<9);out: return i;}' 3 'goto out of a do loop'
+          dwtry 'int main(){int a;int i;a=1;i=0;if(a) do{i=i+1;}while(i<4); else i=99;return i;}' 4 'do-while as a braceless if body, with else'
+          # break / continue
+          dwtry 'int main(){int i;i=0;do{i=i+1;if(i==3){break;}}while(i<9);return i;}' 3 'break out of a do loop'
+          dwtry 'int main(){int i;i=0;while(1){i=i+1;if(i>6){break;}}return i;}' 7 'break out of a while(1)'
+          dwtry 'int main(){int i;int s;i=0;s=0;while(i<5){i=i+1;if(i==2){continue;}s=s+i;}return s;}' 13 'continue in a while loop'
+          dwtry 'int main(){int i;int s;i=0;s=0;while(i<4){i=i+1;if(i==2)continue;s=s+i;}return s;}' 8 'continue as a braceless if body'
+          # cc_macro.c:912's exact shape: `if(match(...)) break;` inside a do{}while
+          dwtry 'int main(){int i;i=0;do{i=i+1;if(i==4) break;}while(1);return i;}' 4 'braceless if break inside do (cc_macro.c shape)'
+          # break binds to the INNERMOST loop and skips intervening if records
+          dwtry 'int main(){int o;int t;o=0;t=0;while(o<3){o=o+1;int i;i=0;do{i=i+1;if(i==2){break;}t=t+1;}while(i<9);}return t;}' 3 'break binds to the innermost loop'
+          dwtry 'int main(){int i;i=0;while(1){i=i+1;if(i>2){if(i>3){break;}}}return i;}' 4 'break scans past nested if records'
+          # continue in a do jumps to the CONDITION, not the body top: i still
+          # advances to 5 so the loop terminates, while s counts only i>=3
+          dwtry 'int main(){int i;int s;i=0;s=0;do{i=i+1;if(i<3){continue;}s=s+1;}while(i<5);return s+i*10;}' 53 'continue in a do tests the condition'
+          # conditions of the shapes M2-Planet actually writes
+          dwtry 'int main(){int e;int c;int f;e=0;c=0;f=5;do{c=c+1;}while(e || (c != f));return c;}' 5 'short-circuit || condition (cc_reader.c:84)'
+          # scancond bounds the condition by counting parens, so a ")" or "}" or an
+          # escape inside a CHAR LITERAL there must be skipped, not counted.
+          # cc_core.c:3165/2203 test against '}'; cc_reader.c:403 against '\n'.
+          dwtry "int main(){char c;c=48;int i;i=0;do{i=i+1;c=c+1;}while(c != ')' && i<3);return i;}" 3 "')' in a char literal in the condition"
+          dwtry "int main(){char c;c=48;int i;i=0;do{i=i+1;c=c+1;}while(c != '}' && i<4);return i;}" 4 "'}' in a char literal in the condition"
+          dwtry "int main(){char c;c=5;int i;i=0;do{i=i+1;c=c+1;}while((32 != c) && (9 != c) && ('\\n' != c));return i;}" 4 "cc_reader.c:403 shape (escape in a char literal)"
+
+          # --- structural -----------------------------------------------------------
+          printf '%s' 'int main(){int i;i=0;do{i=i+1;}while(i<5);return i;}' | qemu-aarch64 ./stage2 > dw.s
+          printf '%s' 'int main(){int i;i=0;while(i<3){i=i+1;}return i;}'    | qemu-aarch64 ./stage2 > dwn.s
+          printf '%s' 'int main(){int i;int s;i=0;s=0;do{i=i+1;if(i<3){continue;}s=s+1;}while(i<5);return s;}' | qemu-aarch64 ./stage2 > dwc.s
+          printf '%s' 'int main(){int i;i=0;do{i=i+1;if(i==3){break;}}while(i<9);return i;}' | qemu-aarch64 ./stage2 > dwb.s
+          grep -q '^b __L'     dw.s || { echo "  MISSING back branch (b __L)"; dw_ok=no; }
+          grep -q '^b\.eq __L' dw.s || { echo "  MISSING exit test (b.eq __L)"; dw_ok=no; }
+          [ "$(grep -c '^:__L' dw.s)" = 2 ] || { echo "  WRONG label count for a do with no continue"; dw_ok=no; }
+          [ "$(grep -c '^$'    dw.s)" = 0 ] || { echo "  REGRESSION: blank emitted line"; dw_ok=no; }
+          # The discriminating witness. do and while emit the SAME instructions and the
+          # SAME label pair -- only the ORDER differs. So check the order directly: in
+          # a do the body precedes the test, in the otherwise-identical while it follows.
+          # (Verified to go red when handed a while emission in place of the do one.)
+          set +e
+          dwa=$(grep -n '^add x0 x1 x0$' dw.s  | head -1 | cut -d: -f1)
+          dwb=$(grep -n '^b\.eq __L'     dw.s  | head -1 | cut -d: -f1)
+          wha=$(grep -n '^add x0 x1 x0$' dwn.s | head -1 | cut -d: -f1)
+          whb=$(grep -n '^b\.eq __L'     dwn.s | head -1 | cut -d: -f1)
+          set -e
+          if [ -z "$dwa" ] || [ -z "$dwb" ] || [ -z "$wha" ] || [ -z "$whb" ]; then
+            echo "  MISSING body/test anchors (do=$dwa/$dwb while=$wha/$whb)"; dw_ok=no
+          else
+            [ "$dwa" -lt "$dwb" ] || { echo "  WRONG: do tests before its body ($dwa/$dwb)"; dw_ok=no; }
+            [ "$whb" -lt "$wha" ] || { echo "  WRONG: while runs its body before the test ($wha/$whb)"; dw_ok=no; }
+          fi
+          # The continue label is allocated LAZILY, on the first continue inside a do,
+          # because continue-in-do targets the condition rather than the body top -- a
+          # third label most do-loops never need. Eager allocation would emit a
+          # definition nothing references, which the A22 label-integrity rule forbids.
+          [ "$(grep -c '^:__L' dwc.s)" = 4 ] || { echo "  WRONG label count with a continue"; dw_ok=no; }
+          [ "$(grep -c '^:__L' dwb.s)" = 3 ] || { echo "  WRONG label count with a break"; dw_ok=no; }
+          # break/continue outside any loop is a LOUD failure (diagnostic + exit 2),
+          # not a silently discarded identifier -- which is what they were before this
+          # rung, and why m58's census called them the dangerous failure mode.
+          set +e
+          printf '%s' 'int main(){break;return 1;}' | timeout 30 qemu-aarch64 ./stage2 > dwe.s 2> dwe.err; rce=$?
+          set -e
+          [ "$rce" = 2 ] || { echo "  WRONG: break outside a loop exited $rce, want 2"; dw_ok=no; }
+          if [ -s dwe.s ]; then echo "  WRONG: break outside a loop still emitted code"; dw_ok=no; fi
+          grep -q 'outside a loop' dwe.err || { echo "  MISSING diagnostic on stderr"; dw_ok=no; }
+          printf '  %-64s %s\n' 'structural: label pair, body-before-test, lazy continue label' \
+                 "$([ "$dw_ok" = yes ] && echo OK || echo DIFF)"
+
+          # --- byte-identity against the PRE-RUNG compiler ---------------------------
+          # This rung moved the braceless flag and widened every block record, so the
+          # constructs sharing that stack must emit BYTE-IDENTICAL output to before.
+          # Runs only on the commit that introduces the rung (HEAD~1 has no :dodo);
+          # afterwards it reports SKIP rather than comparing against itself.
+          if git show HEAD~1:spikes/stage2-mini-c/stage2-mini-c.s1 > old.s1 2>/dev/null && ! grep -q '^:dodo$' old.s1; then
+            cat old.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2old
+            dwid=yes
+            dwcmp() {
+              printf '%s' "$1" | qemu-aarch64 ./stage2    > dwnew.s
+              printf '%s' "$1" | qemu-aarch64 ./stage2old > dwold.s
+              cmp -s dwnew.s dwold.s || { dwid=no; echo "  DIFFERS: $1"; }
+            }
+            dwcmp 'int main(){int n;int s;n=10;s=0;while(n){s=s+n;n=n-1;}return s;}'
+            dwcmp 'int main(){int a;a=0;if(a){a=1;}else{a=2;}return a;}'
+            dwcmp 'int main(){int i;int t;i=3;t=0;while(i){int j;j=2;while(j){t=t+1;j=j-1;}i=i-1;}return t;}'
+            dwcmp 'int main(){int a;a=1;if(a) return 7; return 3;}'
+            dwcmp 'int main(){int a;int b;a=1;b=0;if(a) if(b) return 1; else return 2; return 3;}'
+            dwcmp 'int f(int n){if(n<2){return n;}return f(n-1)+f(n-2);}int main(){return f(10);}'
+            dwcmp 'int main(){int a[4];a[0]=7;a[1]=9;return a[0]+a[1];}'
+            dwcmp 'int main(){int i;i=0;while(i<9){i=i+1;if(i==4){goto out;}}out: return i;}'
+            [ "$dwid" = yes ] || dw_ok=no
+            printf '  %-64s %s\n' 'byte-identical to HEAD~1 on do-free programs' \
+                   "$([ "$dwid" = yes ] && echo OK || echo DIFF)"
+          else
+            printf '  %-64s %s\n' 'byte-identical to HEAD~1 on do-free programs' 'SKIP (HEAD~1 already has the rung)'
+          fi
+
+
           {
             echo "## stage2-mini-c — variables, if/while, reassignment, functions + recursion"
             echo '```'
@@ -1451,6 +1606,7 @@ jobs:
             echo "label control flow + streaming (A22)    : $lbl_ok"
             echo "capacity / loud bounds (A22)            : $cap_ok"
             echo "capacity: input/inline data/adr (A23)   : $cap23_ok"
+            echo "do{}while + break + continue (A24)     : $dw_ok"
             echo "eor byte-identical to as             : $eor_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
@@ -1463,8 +1619,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ] && [ "$cap23_ok" = yes ]; then
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ] && [ "$cap23_ok" = yes ] && [ "$dw_ok" = yes ]; then
             echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct; and the single-pass @-target accounting invariant holds (every emitted line assembles to exactly 4 bytes, so the emitted-instruction counter stays equal to the true instruction count and a function's meaning does not depend on what was defined before it)."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok cap23=$cap23_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok cap23=$cap23_ok dowhile=$dw_ok"; exit 1
           fi

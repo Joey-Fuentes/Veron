@@ -1224,8 +1224,9 @@ every stage is `timeout`-bounded, since a mis-aimed backpatch loops forever rath
 than returning something wrong.
 
 **Still open from the §6(b) list:** string/char escapes (~995 uses — the largest single
-count), `for`/`break`/`continue`, `do {} while`, `unsigned` as a word-typed keyword,
-`enum`, and the preprocessor — plus the gaps the m58 census surfaced (below), of which
+count), `for`, `break`/`continue`, `do {} while`, `unsigned` as a word-typed keyword,
+`enum`, and the preprocessor (escapes landed in m61, the preprocessor in m62, and
+`do {} while` + `break`/`continue` in m64) — plus the gaps the m58 census surfaced (below), of which
 **forward prototypes landed in m59** and **braceless bodies in m60**.
 ---
 
@@ -1472,6 +1473,90 @@ before pushing.
 
 ---
 
+### m64 (A24) — `do {} while`, `break`, `continue`
+
+Three statements, one rung, because they are one mechanism. A do-loop emits the **same
+label pair a while-loop does** — top defined at the `do`, exit referenced by the
+condition's `b.eq` and defined after the back branch — so `break` is a single routine
+serving both:
+
+```
+:__L<top>            <- emitted at `do`
+  <body>
+[:__L<cont>]         <- only if a `continue` was seen
+  <cond>; b.eq __L<exit>
+  b __L<top>
+:__L<exit>
+```
+
+The alternative for `do` was one label and a `b.ne` straight back to the top — tighter
+emitted code, and wrong for this ladder: it has no exit label, so `break` would have
+rewritten the rung a milestone later. Shape was chosen for what comes next, not for the
+instruction count.
+
+**The block record forced the rest.** `break`/`continue` scan the block stack **downward**
+for the nearest loop record, skipping `if`/`else`/plain — which is the entire point, since
+**11 of M2-Planet's 14 breaks sit in a braceless `if` body inside a loop**. The scan masks
+the braceless flag off the kind, so `while(c) break;` finds its loop too. But `do` needed a
+kind value, and 0–3 were taken (`if`/`while`/`else`/plain) with **+4 meaning braceless** —
+and `stmtend` reads `kind >= 4` as braceless, so a braced `do` numbered 4 would have been
+closed by the first `;` **inside its own body**. So the braceless flag moved from bit 2 to
+bit 3 and the record grew **12 → 16 bytes**, the fourth slot carrying the continue target.
+Mechanical, but it perturbs every construct sharing that stack, which is what the
+byte-identity guard below is for.
+
+**Slot c holds the continue label id PLUS ONE**, 0 meaning none allocated. The +1 is
+load-bearing: `newlbl`'s first id is **0**, so a bare 0 could not be told apart from
+`__L0`. A `do` allocates that label **lazily**, on the first `continue` inside it, because
+C says continue-in-`do` jumps to the **condition** rather than the body top — a third label
+that most do-loops, and all 7 of M2-Planet's, never need. Eager allocation would emit a
+definition nothing references, which is exactly what m63's label-integrity rule forbids. A
+`while` needs no laziness: its continue target *is* its top label. (Both of M2-Planet's
+two `continue`s are in `while` loops; zero in do-loops. The do path is ours, not the
+target's.)
+
+**`break`/`continue` outside any loop now fails loudly** — diagnostic plus exit 2. Before
+this rung they lexed as plain identifiers and were silently discarded, which is what m58's
+census flagged as the dangerous failure mode.
+
+**One real bug, found by the loop never terminating.** The first draft compiled the
+condition with the cursor still sitting after the `}`, so `compile_expr` swallowed the
+`while` keyword itself — and since m60, `ce_kw` treats *any* keyword in operand position as
+`sizeof`. Every do-loop spun forever. `dclose_do` now consumes the `while` token first and
+re-reads its labels from the record afterwards rather than trusting registers across the
+call. Worth recording because the symptom (hang) was three steps from the cause (a
+tokenizer rule about `sizeof`).
+
+**Verified** through the real assembled ladder on the shapes M2-Planet actually writes: the
+`while` on the line *after* the `}` (4 of its 7 sites), `} while(escape || (c != frequent));`,
+`while((32 != c) && (9 != c) && ('\n' != c));`, and `if(match(…)) break;` inside a
+`do{}while` (cc_macro.c:912). Conditions containing `')'`, `'}'` or `'\n'` **inside char
+literals** are covered specifically, since `scancond` bounds the condition by counting
+parens and an unskipped literal would truncate it — cc_core.c:3165 and :2203 test against
+`'}'`. Braceless `do` bodies work too; M2-Planet has none, but the widened record made them
+nearly free, the same call m58 made on function-scoped labels.
+
+**The guard that matters** is not the new construct but the old ones: a corpus using none of
+`do`/`break`/`continue` emits **byte-identical** output to the pre-rung compiler
+(if/else/while/braceless/nested/recursion/arrays/goto). CI diffs against `HEAD~1` directly
+and skips once HEAD~1 already has the rung; `validate.py` pins the behavioural half plus a
+byte-level **order-independence** witness — appending a do-using function must not change
+one byte of what precedes it, which is the m54 failure class and the specific way a
+block-record change goes wrong. `validate.py` 680 → **725**; `stage2-mini-c-demo` gained a
+`dw_ok` section wired into the pass gate, with a structural witness that **discriminates
+`do` from `while`**: the two emit the same instructions and the same label pair, differing
+only in order, so the check is that the body precedes the test in one and follows it in the
+other. It was verified to go red when handed a while-shaped emission.
+
+**Not unlocked:** `cc_macro.c` still needs `enum` for its `while(TRUE)`. `for` (4 uses) was
+deliberately left out — its step clause appears before the body but must be emitted after
+it, and m63 deleted backpatching, so the single-pass answer is to stash the step's *source
+span* in the record and re-lex it at close time. That is a different mechanism, it widens
+the record again, and it sits on top of this rung's loop stack.
+
+
+---
+
 And three entries can be **struck** — verified working, not merely assumed: **`void`
 return types and `(void)` parameter lists** (all 244 uses, free: the top-level loop
 treats an unknown leading type-word like `int`, the param loop skips non-keyword tokens,
@@ -1601,10 +1686,12 @@ stage in the language of the stage below.
   (compile a compiler-shaped, file-reading program; ideally a toy fixpoint), **not** as a
   permanent rung; **(2) do NOT pivot to a stage-3-in-C** — instead keep growing **stage 2
   (in asm)** to cover M2-Planet's remaining subset — `&&`/`||`, hex and `^` landed in
-  m57; still open are string/char **escapes** (~995 uses, the largest single count),
-  `goto`+labels, `for`/`break`/`continue`, `do {} while`, `void` return types and
-  `(void)` parameter lists, `unsigned` as a word-typed keyword, `enum`, `char**`
-  parameters, unnamed prototype parameters, and the preprocessor (compound assign and
+  m57, escapes in m61, the preprocessor in m62, and **`do {} while` + `break`/`continue`
+  in m64** (one rung: a do-loop emits the same label pair a while-loop does, so `break` is
+  one mechanism for both; the block record widened 12 -> 16 bytes and the braceless flag
+  moved to bit 3 to make room for a `do` kind); still open are `for`, `unsigned` as a
+  word-typed keyword, `enum` (now the largest gap, 287 `NULL`s depend on it), `char**`
+  subscripting, and `argc`/`argv` (compound assign and
   `++`/`--` are **not** needed — zero uses in the self-host); **(3)** compile
   **M2-Planet's own source** with stage 2, so
   **M2-Planet becomes the de-facto "stage 3."** No throwaway compiler; the artifact we
