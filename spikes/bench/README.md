@@ -27,6 +27,13 @@ a red CI.
 - `stage1_ref.py` — a plain-Python reference of stage 1 (two-pass **numeric label
   resolver**: labels -> positions -> `@<pos>`, pool retired), used to develop and
   cross-check `stage1-as.s0`.
+- `lint_asm.py` — lints the hand-written **GNU-as** sources. The bench models *our*
+  assembler (`s0as.py` covers stage0-as's own language) and **not GNU `as`**, and there is
+  no aarch64 assembler on the dev box — so every `.s` edit was unguarded until CI. Two
+  pushed commits failed there: `.ascii` placed in `.bss` (NOBITS cannot hold initialised
+  data), and, after a buffer was raised to 64 MiB, symbols following it falling outside
+  `adr`'s ±1 MiB reach. The lint catches both classes plus MOV immediates that are not a
+  shifted imm16. Run it (or `validate.py`, which runs it first) before pushing any `.s`.
 - `validate.py` — pins the bench to CI-confirmed results (byte output, exit
   codes) and to faithfulness guards. **Run this whenever stage0-as changes.**
 

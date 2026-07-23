@@ -212,6 +212,15 @@ int main(){ return name(2,3); }   // program is entered via bl main
   the `@`-targets of every function emitted *afterwards* would drift. Guarded exactly:
   adding a label must shift no `@`-target.
 
+- **string/char escapes (A20)**: `\n \t \r \\ \" \' \0` decoded in char literals, string
+  literals and the data-section emitter — ~993 sites in M2-Planet, and the one gap no
+  source rewrite could paper over, since the escapes live inside the assembly text
+  M2-Planet *emits*. An escaped quote no longer terminates a string literal.
+- **preprocessor directives (A21)**: a token starting with `#` discards the rest of the
+  line — which is M2-Planet's *entire* preprocessor under `--bootstrap-mode`, the mode its
+  own self-host uses. Its `-f` file list makes `#include` redundant and it has no
+  object-like `#define` constants; `NULL`/`TRUE`/`FALSE`/`EOF` are `enum` constants
+  instead. Our `-f` equivalent is concatenated stdin.
 - **braceless statement bodies (A19)**: `if(cond) return x;` with no braces — plus bare
   `else`, braceless `while`, nested braceless `if`, and correct **dangling-`else`** binding
   (it attaches to the inner `if`). The hard part was not the block bookkeeping but the
@@ -243,7 +252,25 @@ int i=0; int s=0; while(i<10){ s=s+i; i=i+1; } return s; ->  exits 45  (count-up
 
 ## How control flow is emitted
 
-Control flow is emitted with **backpatched numeric branches** — no labels at all.
+**Since m63 (A22): named labels.** `if`/`while`/`else` and `&&`/`||` emit
+`:__L<id>` definitions and `b.eq __L<id>` / `b __L<id>` references, which **stage 1
+resolves** — exactly the mechanism `goto` uses (m58). Because nothing is patched after
+the fact, the compiler never seeks backwards, so it **streams its output** to stdout
+rather than holding the whole program in a buffer. Two ceilings and one bug class went
+away with the backpatcher: the 256 KB output buffer, the absolute `@<pos>` field, and the
+`x17` accounting invariant whose failure mode (m54) was a silent, deferred, order-dependent
+corruption of every function emitted *afterwards*.
+
+The rung was possible because the constraint that forced backpatching had already been
+removed: stage0-as's 128-entry symtab capped a program's labels, and **m32** replaced
+stage 1's pool mapper with a numeric resolver bounded only by memory. Backpatching gave
+label integrity by construction; labels do not, so it is now checked directly (every
+referenced label defined exactly once, every definition referenced).
+
+<details>
+<summary>The retired design (m26–m29), kept for context</summary>
+
+Control flow was emitted with **backpatched numeric branches** — no labels at all.
 The compiler keeps an emitted-**instruction counter** (`emitstr` counts the `\n`
 it writes, so byte position = count × 4). For `if (c) { body }` it emits the
 condition, pops it, `cmp x0 0`, then `b.eq @<pos>` with a 6-digit placeholder,
@@ -263,6 +290,8 @@ returns a token kind (num/id/kw/op/punct) with its value, matching keywords by
 **whole word** (`int`/`if`/`while`/`return`), scanning identifiers as multi-char
 runs, and treating `( ) { } ; ,` as punctuation — so a variable named `i`, `w`, or
 `r` is an identifier, never a keyword, and `,` separates call arguments.
+
+</details>
 
 ## Notes / limits (what later increments lift)
 

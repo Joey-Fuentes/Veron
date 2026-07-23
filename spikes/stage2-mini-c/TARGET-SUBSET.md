@@ -209,11 +209,20 @@ than the current "compute an exit code" target. In rough dependency order:
    `s0as.py`/`interp.py` + a `validate.py` guard). Word `str` truncates a 64-bit
    return address, so this is the enabler for a real software call stack — which
    recursion + function pointers require.
-2. **stage 2 label/codegen strategy.** The whole chain caps an assembled program
-   at ~128 distinct labels (stage0-as's 128-entry symtab; stage 1 just maps
-   multi-char names into it). A compiler emits far more, so stage 2 must stop
-   emitting a label per variable/branch: **backpatch branch offsets** and use
+2. **stage 2 label/codegen strategy.** *(Half superseded — see the note.)* The chain
+   once capped an assembled program at ~128 distinct labels (stage0-as's 128-entry
+   symtab; stage 1 then only mapped multi-char names into it), so stage 2 had to stop
+   emitting a label per variable/branch: **backpatch branch offsets** plus
    **frame-relative variable addressing**, leaving only function-entry labels.
+
+   > **The label cap no longer exists.** **m32** made stage 1 a two-pass *numeric
+   > resolver*: label count is "bounded only by memory" and stage0-as's symtab is never
+   > in the path. The backpatcher outlived its justification by six milestones.
+   > **m63 (A22)** retired it — `if`/`while`/`else` and `&&`/`||` now emit named
+   > `:__L<id>` labels exactly as `goto` does, which is what lets stage 2 **stream** its
+   > output, and which deleted the absolute-position (`x17`) invariant along with its
+   > entire silent-drift bug class (m54). Frame-relative variable addressing (m26) is
+   > unaffected and still stands.
 3. **Multi-char identifiers** (lifts the 26-name wall; makes the source legible).
 4. **`if`/`else` + full comparisons** (`== != <= >=`).
 5. **Functions**: params, returns, recursion, on the software call stack from (1).
@@ -263,11 +272,55 @@ from any remaining-work list: `void` return types and `(void)` parameter lists (
 244 uses), `char**` parameters, `sizeof(int)`/`sizeof(char)`, and the fact that the
 source has **zero initialised globals** (so the uninitialised-only limit is fine).
 
-**Still open**, roughly in descending order of cost: **string/char escapes** in the
-lexer (~995, the largest single count); the preprocessor (`#include`/guards/object `#define`, plus `NULL`); `enum`;
-`break`/`continue` (currently *silently miscompiled*); `do { } while` (7);
-`for` (4); `unsigned` (9); and `argc`/`argv` plumbing in `_start`. Compound assignment and `++`/`--` are **not** on this list — see
-§4. Then compile **M2-Planet's own source** with stage 2.
+**Landed (m61/A20):** string/char escapes — `\n \t \r \\ \" \' \0` decoded in the char
+lexer, the string scanner and the data emitter. **Landed (m62/A21):** preprocessor
+directives — a `#` token discards the line, matching M2-Planet's own `--bootstrap-mode`.
+**Landed (m63/A22):** label-based control flow, streaming output, and capacity work.
+
+### Still open — the actual remaining list
+
+**A. Capacity — do first; nothing else can be tested at scale until it lands.**
+1. **stage 2's input** is still a *single* `read()` of 65,000 bytes into a 64 KB buffer.
+   The self-host translation unit is **222 KB**, and a single read on a pipe returns only
+   what is buffered, so even 64 KB is not reliably filled. Needs what stage 1 got in m63:
+   an `mmap` arena plus a read loop.
+2. **stage 2's data section** is a ~124 KB region under the m55 bound. M2's 1,942 string
+   literals decode to 30,676 bytes, emitted as `.byte NNNN\n` — about **337 KB of text**.
+3. **`adr` reach.** `adr x0 __dN` targets a *trailing* data section, but `adr` is ±1 MB
+   while M2's compiled code is ~0.7–1.4 MB, so the address is silently wrong at scale.
+   Emitting each literal **inline behind a skip branch** fixes this *and* deletes (2).
+
+**B. Language.**
+4. **`enum`** — 9 blocks, ~40 constants, and the largest gap: `NULL` (287 uses), `TRUE`,
+   `FALSE`, `EOF`, `stdin/stdout/stderr` and `EXIT_*` are all enum constants in
+   `M2libc/bootstrap.c`. That is precisely *why* stripping every directive (m62) works.
+5. **`break` (13) / `continue` (2)** — currently *silently miscompiled*, not rejected.
+6. **`do { } while`** — 7 uses.  7. **`for`** — 4 uses, all the same linked-list walk.
+8. **Word-typed keywords** — `unsigned` (9), `long` (4), plus `FILE`/`size_t`/`ssize_t`,
+   which M2-Planet pre-registers as primitives in bootstrap mode (`cc_types.c:177`).
+9. **`char**` subscripting** — `argv[i]`, 28 uses, needs an 8-byte stride. Our subscript
+   scaling keys off `is_char`/`is_array` with no pointer-to-pointer notion, so it would
+   emit *byte* access. A type-model gap, distinct from the argv plumbing below.
+
+**C. Runtime.**
+10. **`argc`/`argv`** — `_start` must read the kernel's initial stack and hand them to
+    `main`; today it does `bl main` with an empty value stack.
+11. **`brk`** — `M2libc/bootstrap.c`'s `malloc` is a `brk` bump allocator, and its
+    `calloc`/`free` would **override ours** under the user-definition-wins contract,
+    putting the chain back on qemu's small brk region — the thing m51 moved *off*.
+12. **`asm("...")`** — 6 uses in `m2libc/aarch64/linux/bootstrap.c`, in M1 mnemonic
+    syntax (`"mov_x0,x17"`). Supporting it means embedding an M1 assembler in stage 2.
+    Avoidable only by omitting that one file and letting our m53 builtins supply those
+    five functions — a substitution, i.e. patching by omission. m53 matched m2libc's
+    syscall numbers *and* argument order precisely so that this remains possible.
+
+**D. Unknown — never attempted.** Whether `M2libc/bootstrap.c` and `bootstrappable.c`
+compile in our subset at all. Once (1) lands, concatenating the `-f` list and feeding it
+to stage 2 is a cheap, high-information experiment: unlike any amount of grepping, it
+reports ground truth.
+
+Compound assignment and `++`/`--` are **not** on this list — see §4. Then compile
+**M2-Planet's own source** with stage 2.
 **M2-Planet effectively becomes "stage 3."** No disposable intermediate compiler; the
 artifact we build is exactly the hand-off node.
 

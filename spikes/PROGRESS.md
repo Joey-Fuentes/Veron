@@ -1369,6 +1369,109 @@ the M2-shaped program) wired into the pass gate, timeout-bounded throughout.
 
 ---
 
+### m61 (A20) — string/char escapes
+
+`\n \t \r \\ \" \' \0` decoded in char literals, string literals and the data-section
+emitter. ~993 sites in M2-Planet's self-host — the largest single count, and the one gap
+**no source rewrite could paper over**: the escapes live inside the assembly text
+M2-Planet *emits* (`"\n# Core program\n"`), so a lexer storing `\n` as two bytes yields a
+compiler whose **output** is textually wrong everywhere. Distribution: `\n` 964, `\\` 10,
+`\'` 7, `\"` 7, `\t` 4, `\r` 1; `\0` is implemented too (zero uses, but free).
+
+Three sites had to agree: the char-literal lexer (it assumed a 3-character `'X'`), the
+string scanner (it stopped at the first `"`, **including an escaped one**), and the
+data-section emitter (it copied source bytes verbatim). The A19 condition scanner needed
+it as well, since it skips literals to keep its paren count honest. A shared `escval`
+table decodes; anything unrecognised yields the character itself, which is exactly right
+for `\\ \" \'`. Escape-free programs emit **byte-identical** output. The load-bearing
+guard is not structural — it `cmp`s the actual **bytes reaching stdout** against a
+printf-built expectation, with `od -c` on mismatch.
+
+### m62 (A21) — preprocessor directives
+
+Nine lines, and the reason is the interesting part. Scoped by reading how M2-Planet's
+self-host is *actually built* rather than by implementing C's preprocessor: its own
+`hello-aarch64.sh` passes every translation unit as an ordered **`-f` list** and runs with
+`--bootstrap-mode`, in which the entire preprocessor is `remove_preprocessor_directives`
+— a token starting with `#` discards the rest of the line. No include expansion, no macro
+substitution, no conditionals.
+
+That works because the `-f` list makes `#include` redundant, and because there are **no
+object-like `#define` constants** in the source; the only `#define` among its 23
+directives is the `CC_H` include guard. Our equivalent of the `-f` list is concatenated
+stdin, which already worked. `#` is a directive only at **token position** — a rule that
+fired inside string literals would eat M2-Planet's own `"\n# Core program\n"`, so that is
+guarded explicitly.
+
+**What this uncovered:** `NULL` (287 uses), `TRUE`, `FALSE`, `EOF`, `stdin/stdout/stderr`
+and `EXIT_SUCCESS/FAILURE` are **`enum` constants** in `M2libc/bootstrap.c` — which is
+*why* stripping every directive works. So those 287 `NULL`s never depended on the
+preprocessor at all; they depend on `enum`, which we do not have. `enum` is now the
+largest remaining language gap.
+
+---
+
+### m63 (A22) — backpatching retired; label-based control flow, streaming output, real capacity
+
+A capacity complaint ("don't hard-code artificial limits") turned into a design deletion,
+because the constraint that justified the design had already been removed.
+
+**The finding.** `TARGET-SUBSET.md` floor item 2 said why backpatching exists: *"the whole
+chain caps an assembled program at ~128 distinct labels (stage0-as's 128-entry symtab),
+so stage 2 must stop emitting a label per variable/branch."* Then **m32** made stage 1 a
+two-pass numeric resolver — *"the number of labels a program may use is bounded only by
+memory... the symtab is never in the path."* The backpatcher outlived its reason by six
+milestones and nobody went back. m58's `goto` had already proved the replacement in CI.
+
+**The change.** `if`/`while`/`else` and `&&`/`||` now emit named labels
+(`:__L<id>` / `b.eq __L<id>`) exactly as `goto` does. Consequences, all deletions:
+
+- **Streaming output.** No backward seeks, so `emitstr` flushes to stdout once the buffer
+  is half full. The 256 KB output buffer stops being a ceiling: a 1200-block program emits
+  **530 KB**. The flush test is stateless — `emitstrlit`/`emit_gdata` point `x22` at the
+  data buffer, so "am I streaming?" is simply "is `x22` the code buffer?".
+- **`bl pos6` went from 10 call sites to 1**, and that one writes *forward*.
+- **The A13 `x17` invariant is gone**, and with it the entire **m54 bug class** — a 0-byte
+  emitted line desynchronising the counter and silently corrupting every function emitted
+  *afterwards*. Structurally impossible now: there are no absolute positions to drift.
+- The `&&`/`||` patch array holds label ids instead of buffer offsets, keyed by the same
+  opstack slot, so m57's re-entrancy property survives untouched.
+
+**Capacity, properly.** The `@<pos>` field widened 6 → 9 digits — a **wire format**, not a
+buffer, shared by all three stages, which would have *silently truncated* past 999,999
+bytes (M2 lands at 0.7–1.4 MB). `stage0-as`'s `parse_dec` needed no change. A position
+≥ 10⁹ now writes a diagnostic and exits 2; proved by temporarily lowering the threshold.
+**stage 1** moved from `brk` to one 256 MB lazily-paged `mmap` (address-space reservation,
+not memory — the same call the m51 calloc runtime already proves under qemu) with region
+bases **derived from the actual input length**, not fixed offsets. `stage0-as` and `elf`
+got 64 MiB demand-zero reserves. **Every remaining bound now fails loudly** — diagnostic
+plus exit 2 — instead of truncating.
+
+**Guards changed shape, not strength.** Backpatching gave label integrity *by
+construction*; labels do not. So it is now checked directly: every referenced label
+defined exactly once, every definition referenced, across if/while/else/short-circuit and
+goto programs. Eight `validate.py` assertions and a dozen CI greps that asserted the old
+numeric design were **rewritten, not relaxed**. `validate.py` 644 → **656**.
+
+**Three CI failures, all mine, all instructive.** (1) `.ascii` placed in `.bss`, which is
+NOBITS and cannot hold initialised data. (2) After raising `INBUF_SZ` to 64 MiB, `symtab`
+and `outword` — which followed the reserve in `.bss` — went out of **`adr`'s ±1 MiB
+reach**; the large `.space` must be *last*. (3) The workflow keeps a parallel copy of many
+`validate.py` structural checks, so updating one did not update the other; the job also
+*aborted* rather than reporting, because `bt=$(grep 'b.eq @...')` matching nothing fails
+under `set -e`.
+
+The root cause of (1) and (2) is that **the bench models our own assembler, not GNU `as`**
+— `s0as.py` covers stage0-as's language, and there is no aarch64 assembler on the dev box.
+Every `.s` edit was unguarded until CI. Hence **`spikes/bench/lint_asm.py`**, wired in as
+`validate.py`'s first check: it flags initialised data in NOBITS sections, `adr`-referenced
+symbols beyond 1 MiB (resolving `.equ` and running section offsets), and MOV immediates
+that are not a shifted imm16. It was verified to fail on both broken files. For (3) the fix
+was procedural: all 24 workflow greps are now dry-run against **real compiler output**
+before pushing.
+
+---
+
 And three entries can be **struck** — verified working, not merely assumed: **`void`
 return types and `(void)` parameter lists** (all 244 uses, free: the top-level loop
 treats an unknown leading type-word like `int`, the param loop skips non-keyword tokens,
