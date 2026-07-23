@@ -1,0 +1,152 @@
+name: m1-timing
+
+# SPIKE. Is M1 SLOW, SUPERLINEAR, or STUCK?
+#
+# A 15s strace showed 768 one-byte reads with the offset advancing -- about 50
+# bytes/sec. At a CONSTANT rate the inputs finish in ~2 minutes, but a 10 minute
+# budget was not enough. So the constant-rate reading is wrong. Three candidates:
+#
+#   SLOW        constant rate, just small -> total time predictable from size
+#   SUPERLINEAR rate decays with position -> O(n^2) somewhere per byte
+#   STUCK       progress stops entirely   -> a loop that no longer consumes input
+#
+# Distinguished by measuring reads per 10s window and by feeding inputs of
+# increasing size, smallest first. A tiny input that does NOT complete rules out
+# scaling entirely and means M1 is broken, not slow.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage2-mini-c/**'
+      - '.github/workflows/m1-timing.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: m1-timing-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  timing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      M2PLANET_SHA: 34fbd5c2a9b6eb634a4f6ad95158dcd1efcf19e0
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu
+
+      - name: Fetch upstreams
+        run: |
+          git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git -C upstream-m2planet checkout "$M2PLANET_SHA"
+          git -C upstream-m2planet submodule update --init --recursive
+          git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
+
+      - name: Build ladder, M2-Planet and M1
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+          cat spikes/stage1-as/stage1-as.s0 \
+            | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
+          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+            | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+          M=upstream-m2planet; L=$M/M2libc; S=upstream-mescc
+          cat $L/bootstrap.c $L/bootstrappable.c $S/stringify.c $S/M1-macro.c > m1src.c
+          qemu-aarch64 ./stage2 < m1src.c > m1.s1
+          cat m1.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf M1
+          cat $L/bootstrap.c $L/bootstrappable.c $M/cc.h $M/cc_globals.c \
+              $M/cc_reader.c $M/cc_strings.c $M/cc_types.c $M/cc_emit.c \
+              $M/cc_core.c $M/cc_macro.c $M/cc.c > m2.c
+          qemu-aarch64 ./stage2 < m2.c > m2.s1
+          cat m2.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf M2-Planet
+          make -C upstream-mescc M1 hex2
+          echo "our M1: $(wc -c < M1) bytes"
+
+      - name: 'SIZE LADDER: smallest possible input first'
+        continue-on-error: true
+        run: |
+          # If a 3-line .M1 does not complete, this is not a scaling problem.
+          L=upstream-m2planet/M2libc
+          mk() { head -c "$1" "$L/aarch64/aarch64_defs.M1" > "in$1.M1"; }
+          for n in 64 256 1024 4096; do mk $n; done
+          printf ':main\n' > tiny.M1
+
+          run1() {  # $1 = label, $2 = file, $3 = budget seconds
+            printf '  %-22s ' "$1"
+            set +e
+            s=$(date +%s)
+            timeout "$3" qemu-aarch64 ./M1 -f "$2" \
+              --little-endian --architecture aarch64 -o /tmp/o.hex2 \
+              </dev/null >/dev/null 2>&1
+            r=$?; e=$(date +%s)
+            set -e
+            printf 'rc=%-4s %4ss  (%s bytes in)\n' "$r" "$((e-s))" "$(wc -c < "$2")"
+          }
+          run1 'tiny (:main only)' tiny.M1   60
+          run1 '64 bytes'          in64.M1   60
+          run1 '256 bytes'         in256.M1  120
+          run1 '1024 bytes'        in1024.M1 240
+          run1 '4096 bytes'        in4096.M1 480
+
+      - name: 'RATE OVER TIME: is progress decaying or stopping?'
+        continue-on-error: true
+        run: |
+          L=upstream-m2planet/M2libc
+          set +e
+          timeout 180 qemu-aarch64 -strace ./M1 \
+            -f "$L/aarch64/aarch64_defs.M1" \
+            --little-endian --architecture aarch64 -o /tmp/o.hex2 \
+            </dev/null > s.log 2>&1 &
+          pid=$!
+          for w in 1 2 3 4 5 6; do
+            sleep 30
+            printf '  t=%3ss  reads so far: %s\n' "$((w*30))" "$(grep -c 'read(' s.log)"
+          done
+          wait $pid; echo "  rc=$? after 180s"
+          set -e
+          echo "  input size: $(wc -c < "$L/aarch64/aarch64_defs.M1") bytes"
+          echo "  A FLAT count between windows means STUCK, not slow."
+
+      - name: 'CONTROL: does our M2-Planet read a big file fine?'
+        continue-on-error: true
+        run: |
+          # M2-Planet was built by the same stage 2 and reads files the same way.
+          # If it handles 30 KB quickly, the problem is specific to M1.
+          for i in $(seq 1 400); do
+            echo "int f$i(int n){return n;}"
+          done > big.c
+          echo "int main(){return f1(3);}" >> big.c
+          echo "  input: $(wc -c < big.c) bytes"
+          set +e
+          s=$(date +%s)
+          timeout 300 qemu-aarch64 ./M2-Planet --architecture aarch64 \
+            --bootstrap-mode -f big.c -o big.M1 </dev/null
+          r=$?; e=$(date +%s)
+          set -e
+          echo "  M2-Planet rc=$r in $((e-s))s -> $(wc -c < big.M1 2>/dev/null || echo 0) bytes out"
+
+      - name: 'WHERE: sample the PC while M1 is running'
+        continue-on-error: true
+        run: |
+          # If it is stuck, the hot PC says where. pcmap turns it into a name.
+          L=upstream-m2planet/M2libc
+          set +e
+          timeout 90 qemu-aarch64 -d in_asm -D hot.log ./M1 \
+            -f "$L/aarch64/aarch64_defs.M1" \
+            --little-endian --architecture aarch64 -o /tmp/o.hex2 \
+            </dev/null >/dev/null 2>&1
+          set -e
+          echo "  trace lines: $(wc -l < hot.log)"
+          echo "  --- most frequently entered blocks (the hot loop) ---"
+          grep -o '^0x[0-9a-f]*' hot.log | sort | uniq -c | sort -rn | head -8 \
+            | while read n addr; do
+                printf '  %8s x  ' "$n"
+                python3 tools/pcmap.py m1.s1 "$addr" | tail -1
+              done
