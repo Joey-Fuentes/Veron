@@ -231,6 +231,62 @@ jobs:
           done
           echo "no prefix segfaulted; the fault needs the whole file"
 
+      - name: 'REDUCE: which construct in malloc?'
+        continue-on-error: true
+        run: |
+          # The bisect landed on M2libc/bootstrap.c lines 110-134 (malloc).
+          # That function stacks several untested constructs; test each alone.
+          # ours=139 theirs=0 on a line names the bug.
+          red() {
+            printf '%s' "$2" > r.c
+            printf '  %-34s ' "$1"
+            set +e
+            timeout 60 qemu-aarch64 ./M2-Planet --architecture aarch64 \
+              --bootstrap-mode -f r.c -o /tmp/r.M1 </dev/null 2>/tmp/re1; a=$?
+            timeout 60 upstream-m2planet/bin/M2-Planet --architecture aarch64 \
+              --bootstrap-mode -f r.c -o /tmp/r2.M1 </dev/null 2>/tmp/re2; b=$?
+            set -e
+            printf 'ours=%-5s theirs=%-5s %s\n' "$a" "$b" "$(head -1 /tmp/re1)"
+          }
+
+          red 'file-scope long'        'long gp;
+          int main(){gp = 5;return 0;}'
+          red 'long local, top of body' 'int main(){long a;a = 3;return 0;}'
+          red 'long local inside if'    'int main(){int s;s=1;if(s){long a;a = 3;s = s + a;}return 0;}'
+          red 'long local WITH init'    'int main(){int s;s=1;if(s){long a = 3;s = s + a;}return 0;}'
+          red 'sizeof(char*)'           'int main(){return sizeof(char*);}'
+          red 'unary ~ no space'        'int main(){int s;s=8;s = s & ~7;return 0;}'
+          red 'unary ~ WITH space'      'int main(){int s;s=8;s = s & ~ 7;return 0;}'
+          red 'the rounding expression' 'int main(){int s;s=9;s = (s + sizeof(char*) - 1) & ~ (sizeof(char*) - 1);return 0;}'
+          red 'void* returning 0'       'void* f(){return 0;}
+          int main(){f();return 0;}'
+          red 'negative literal =='     'int main(){int x;x=1;if(-4 == x){return 1;}return 0;}'
+          red 'three-way ||'            'int main(){int a;a=1;if(a == 1 || a == 2 || a == 3){return 1;}return 0;}'
+          red 'NULL == global'          'long gp;
+          int main(){if(NULL == gp){return 1;}return 0;}'
+          red 'malloc, brk stubbed'     'long brk2(long a){return a;}
+          long _malloc_ptr;
+          long _brk_ptr;
+          void* malloc2(int size)
+          {
+          	size = (size + sizeof(char*) - 1) & ~ (sizeof(char*) - 1);
+          	if(NULL == _brk_ptr)
+          	{
+          		_brk_ptr = brk2(0);
+          		_malloc_ptr = _brk_ptr;
+          	}
+          	if(_brk_ptr < _malloc_ptr + size)
+          	{
+          		long old_brk = _brk_ptr;
+          		_brk_ptr = brk2(_malloc_ptr + size);
+          		if(-4 == _brk_ptr || _brk_ptr == old_brk || _brk_ptr < _malloc_ptr + size) return 0;
+          	}
+          	long old_malloc = _malloc_ptr;
+          	_malloc_ptr = _malloc_ptr + size;
+          	return old_malloc;
+          }
+          int main(){malloc2(8);return 0;}'
+
       - name: Build each benchmark with BOTH compilers
         continue-on-error: true
         run: |
