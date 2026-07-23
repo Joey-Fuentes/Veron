@@ -2293,6 +2293,111 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     check("stage2 input above the old 64 KB single-read ceiling emits real output",
           len(_emit(_many_fns(600))) > 500000, True)
 
+    print("== stage 2 word-typed keywords: unsigned / long (A27, m67) ==")
+    # `unsigned` and `long` are accepted as SPELLINGS OF THE MACHINE WORD -- the
+    # tokenizer returns keyword id 1 (`int`) for both, so every consumer site
+    # (funcloop, paramloop, stmtkw/doint, struct fields, fl_global, sizeof) needs
+    # no change and cannot drift out of agreement with `int`. TARGET-SUBSET S3
+    # licenses exactly this: `/` and `%` are already unsigned and `ceil_div` --
+    # `(a + b - 1) / b` -- is the only arithmetic in the self-host that cares.
+    # The strongest form of that claim is byte identity, so it is what we check:
+    # if the two spellings ever diverge in emitted bytes, they have stopped being
+    # the same type and the reasoning above no longer holds.
+    for nm, a, b in [
+        ("local decl",     "int main(){int a=5;return a;}",
+                           "int main(){unsigned a=5;return a;}"),
+        ("local decl long","int main(){int a=5;return a;}",
+                           "int main(){long a=5;return a;}"),
+        ("param + return", "int f(int a,int b){return a*b;}int main(){return f(6,7);}",
+                           "unsigned f(unsigned a,long b){return a*b;}int main(){return f(6,7);}"),
+        ("global",         "int g;int main(){g=1;return g;}",
+                           "long g;int main(){g=1;return g;}"),
+        ("pointer param",  "int f(int* p){return *p;}int main(){int x;x=4;return f(&x);}",
+                           "int f(unsigned* p){return *p;}int main(){int x;x=4;return f(&x);}"),
+        ("array",          "int main(){int a[3];a[1]=4;return a[1];}",
+                           "int main(){long a[3];a[1]=4;return a[1];}"),
+        ("struct field",   "struct S{int n;};int main(){struct S s;s.n=4;return s.n;}",
+                           "struct S{unsigned n;};int main(){struct S s;s.n=4;return s.n;}"),
+        ("prototype",      "int f(int,int);int main(){return f(6,7);}int f(int a,int b){return a*b;}",
+                           "int f(unsigned,long);int main(){return f(6,7);}"
+                           "int f(unsigned a,long b){return a*b;}"),
+        # `unsigned char` must reach the BYTE path, not the word path: our `char`
+        # is already the unsigned one (ldrb zero-extends), so the C meaning and
+        # our lowering coincide exactly.
+        ("unsigned char",  "int main(){char s[4];s[0]=65;return s[0];}",
+                           "int main(){unsigned char s[4];s[0]=65;return s[0];}"),
+        # multi-word runs collapse to ONE type token, so the declarator that
+        # follows is the name -- not the second type word.
+        ("unsigned int",   "int main(){int a=5;return a;}",
+                           "int main(){unsigned int a=5;return a;}"),
+        ("long long",      "int main(){int a=5;return a;}",
+                           "int main(){unsigned long long a=5;return a;}"),
+        # absorption re-enters next_token rather than scanning the input itself,
+        # so comment and directive skipping come along for free.
+        ("across comment", "int main(){int a=5;return a;}",
+                           "int main(){unsigned /* t */ int a=5;return a;}"),
+        ("sizeof",         "int main(){return sizeof(int);}",
+                           "int main(){return sizeof(unsigned long);}"),
+    ]:
+        check(f"stage2 word-type '{nm}' emits exactly what int/char emits",
+              _emit(a) == _emit(b), True)
+
+    # Behavioural witnesses on the SHAPES THE PINNED SOURCE ACTUALLY WRITES, not
+    # invented ones: cc_core.c's ceil_div + global_variable_zero_initialize, and
+    # M2libc's long-typed ftell/fseek and file-scope _malloc_ptr.
+    for cs, want in [
+        # cc_core.c:2059 -- the only arithmetic that cares about unsignedness
+        ("unsigned ceil_div(unsigned a,unsigned b){return (a+b-1)/b;}"
+         "int main(){return ceil_div(10,4);}", 3),
+        # cc_core.c:2988 -- `unsigned i = ceil_div(...)` driving a != 0 loop
+        ("unsigned ceil_div(unsigned a,unsigned b){return (a+b-1)/b;}"
+         "int gz(int size){unsigned i;int n;i=ceil_div(size,8);n=0;"
+         "while(i!=0){n=n+1;i=i-1;}return n;}int main(){return gz(60);}", 8),
+        # cc_core.c:2091 -- an uninitialised unsigned local among other locals
+        ("int main(){unsigned d;int n;n=6;d=7;return d*n;}", 42),
+        # M2libc/stdio.c:412,426 -- long return type, long parameter
+        ("long ftell(long off){return off+1;}"
+         "int fseek(char* f,long offset,int whence){return ftell(offset)+whence;}"
+         "int main(){return fseek(0,40,1);}", 42),
+        # M2libc/stdlib.c:47 -- file-scope `long`
+        ("long _malloc_ptr;int main(){_malloc_ptr=7;_malloc_ptr=_malloc_ptr*6;"
+         "return _malloc_ptr;}", 42),
+        # M2libc/stdio.c:469,556 -- the two-word `unsigned int` parameter
+        ("int f(unsigned int value,int base){return value*base;}"
+         "int main(){return f(7,6);}", 42),
+        # M2libc/stdio.c:80,332 -- prototype with a named unsigned parameter
+        ("int rd(int fd,char* buf,unsigned count);int main(){return rd(0,0,42);}"
+         "int rd(int fd,char* buf,unsigned count){return count;}", 42),
+        ("int main(){int s;s=0;for(unsigned i=0;i<4;i=i+1){s=s+i;}return s;}", 6),
+    ]:
+        check(f"stage2 word-type exit -> {want}", _exit_safe(cs), want)
+
+    # WHOLE-WORD matching. The recognizers are length-dispatched, so a prefix can
+    # never match, but an identifier that merely BEGINS with the keyword shares
+    # the dispatch arm and is the case that would break first.
+    for cs, want in [
+        ("int main(){int longitude;int unsignedly;longitude=40;unsignedly=2;"
+         "return longitude+unsignedly;}", 42),
+        ("int main(){int lon;lon=42;return lon;}", 42),
+        ("int main(){int unsigne;unsigne=42;return unsigne;}", 42),
+        # bootstrappable.c:163 -- `signed_p` is a parameter name, not a type
+        ("int int2str(int x,int signed_p){return x+signed_p;}"
+         "int main(){return int2str(40,2);}", 42),
+    ]:
+        check("stage2 word-type: identifiers sharing the prefix are identifiers",
+              _exit_safe(cs), want)
+
+    # The `int` path is untouched, so a keyword-free program must be byte-identical
+    # to what the pre-A27 compiler emitted. Checked here as a self-consistency
+    # property: the constructs below all route through the same tokenizer arms the
+    # new keywords were added to (nt_kw4: else/enum/goto/char; nt_kw8: continue).
+    check("stage2 word-type: nt_kw4 arms (char/else/enum/goto) still lex",
+          _exit_safe("enum{A=1};int main(){char c;c=2;int i;i=0;lp:i=i+1;"
+                     "if(i<3){goto lp;}else{c=c+A;}return c+i;}"), 6)
+    check("stage2 word-type: nt_kw8 arm (continue) still lexes",
+          _exit_safe("int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){"
+                     "if(i==3){continue;}s=s+i;}return s;}"), 7)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)

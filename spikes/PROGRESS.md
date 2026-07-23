@@ -1703,6 +1703,67 @@ The source also has **zero initialised globals**, so the uninitialised-only limi
 
 ---
 
+### m67 (A27) — word-typed keywords: `unsigned` / `long`
+
+Both are accepted as **spellings of the machine word**. The tokenizer returns keyword id
+**1 (`int`)** for each, so *not one consumer site changed*: `funcloop`, `paramloop`,
+`stmtkw`/`doint`, the struct-field loop, `fl_global` and `sizeof` all already handle
+`int`, and by construction they cannot drift out of agreement with it. `TARGET-SUBSET.md`
+§3 licenses exactly this — our `/` and `%` are already unsigned, and `ceil_div`
+(`(a + b - 1) / b`, `cc_core.c:2059`) is the only arithmetic in the self-host that cares
+about unsignedness. `unsigned char` is the one run that ends somewhere else: it lowers to
+our `char`, which is *already* the unsigned one, since `ldrb` zero-extends.
+
+**What was actually broken.** Both words previously lexed as plain identifiers, and the
+three positions failed differently, which is why "it half worked" was the wrong reading:
+a **return type** was fine (the top-level loop treats an unknown leading word as `int` —
+the same accident that makes `void` work); a **parameter** was silently *dropped*, because
+`paramloop` only starts a declaration on a keyword token, so the frame allocator lost a
+slot and every later argument landed at the wrong offset; and a **local** was parsed as an
+assignment to an undeclared variable. Only the second is the interesting one — it produced
+no diagnostic and no wrong answer at the declaration, only corrupted values later.
+
+**Multi-word runs** (`unsigned int` at `stdio.c:469,556`, and the `long long` family) are
+absorbed by a small loop, `nt_wtype`, entered *only* from the two new recognizer arms. It
+parks `x18`/`x29`/`x6` on the `x28` stack and **re-enters `next_token`**: if the trial
+token is `int`-like it keeps the advanced cursor and loops, if it is `char` it adopts the
+byte type and stops, and otherwise it restores the cursor and returns. Recursion rather
+than a bespoke lookahead scanner is the whole economy of the rung — whitespace, comment
+and `#`-directive skipping and the keyword recognizer are all reused, so
+`unsigned /* t */ int` works with no code of its own, and the loop self-terminates because
+an inner `long` has already absorbed its own tail. A hand-rolled scanner would have needed
+a second comparator, four new string constants, and its own copy of the comment skipper —
+the last of which is where the silent-misparse risk lived.
+
+**Register discipline.** The absorption runs *inside* `next_token`, so it may only touch
+that routine's established clobber set. It uses `x1`/`x2`/`x4` and saves `x30`. That rules
+out reusing `nameq`, which writes `x7` — and `x7` must survive `next_token`, as
+`pl_struct` reads it back across the call to size a struct parameter. Reaching for the
+obvious helper would have been a silent miscompile of struct-by-pointer parameters.
+
+**Guarded by byte identity, twice.** The `int` path is untouched, so a keyword-free corpus
+of 25 programs spanning every construct through A26 — recursion, structs, fnptrs,
+`calloc`, `enum`, `goto`, the whole loop family, escapes, hex, shifts, `argv` — emits
+bytes identical to the pre-rung compiler. And in the other direction, 13 paired programs
+check that each new spelling emits *exactly* what `int`/`char` emits at every position
+(local, param, return, global, pointer, array, struct field, prototype, `sizeof`): if the
+two ever diverge they have stopped being the same type, and the reasoning above no longer
+holds. Behavioural witnesses use the shapes the pinned source actually writes rather than
+invented ones — `ceil_div`, `global_variable_zero_initialize`'s `unsigned i` driving a
+`!= 0` loop, `collect_local`'s uninitialised `unsigned` among other locals, M2libc's
+`long ftell` / `int fseek(FILE*, long, int)` and file-scope `long _malloc_ptr`.
+`validate.py` +27 checks.
+
+**Newly characterised, NOT introduced here:** a bare type word as the *entire* translation
+unit (`unsigned`, `long`, and equally `int`, `char`, `void`, or any identifier) spins
+rather than exiting — `funcloop` commits to reading a name and then a `(`, and truncated
+input never satisfies it. Confirmed against the pre-rung compiler, which hangs identically
+on `int`. Well-formed programs are unaffected, and `int main(){unsigned` — EOF *mid*
+declaration — terminates cleanly. Worth a diagnostic when the front end next gets one;
+it is not this rung's bug.
+
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
@@ -1832,10 +1893,13 @@ stage in the language of the stage below.
   via phase records on the block stack). **The loop family is complete.** **`enum` landed in m66**
   (anonymous file-scope blocks, looked up after variables and before the function-address
   fallback; the real risk was splitting `emitnum` into `emitval` so a value in a register
-  could be lowered, which put every integer literal in the program on new code). Still open
-  are `unsigned`/`long` as word-typed keywords (probed: both fail today), `char**`
+  could be lowered, which put every integer literal in the program on new code). **`unsigned`
+  and `long` landed in m67** (accepted as spellings of the machine word — the tokenizer
+  returns the `int` keyword id for both, so no consumer site changed, and multi-word runs
+  like `unsigned int` / `long long` collapse to one token by re-entering `next_token`).
+  Still open are `char**`
   subscripting (faults), `argc`/`argv` (compiles, but `argc` reads 0 — never wired to the
-  stack), and `brk`/inline `asm`. Unnamed prototype parameters were on this list and are
+  stack), `FILE`/`size_t`/`ssize_t` as pre-registered primitives, and `brk`/inline `asm`. Unnamed prototype parameters were on this list and are
   **not** a gap: `int f(int);`, `int f(int,int);` and `int f(char*);` all compile and run (compound assign and
   `++`/`--` are **not** needed — zero uses in the self-host); **(3)** compile
   **M2-Planet's own source** with stage 2, so

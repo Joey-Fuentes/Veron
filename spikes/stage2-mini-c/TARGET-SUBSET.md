@@ -276,6 +276,7 @@ source has **zero initialised globals** (so the uninitialised-only limit is fine
 lexer, the string scanner and the data emitter. **Landed (m62/A21):** preprocessor
 directives — a `#` token discards the line, matching M2-Planet's own `--bootstrap-mode`.
 **Landed (m63/A22):** label-based control flow, streaming output, and capacity work.
+**Landed (m67/A27):** `unsigned` and `long` as word-typed keywords — see item 8 below.
 
 ### Still open — the actual remaining list
 
@@ -308,8 +309,13 @@ directives — a `#` token discards the line, matching M2-Planet's own `--bootst
    needed: the clauses are emitted in source order with a branch over the step, and the
    init/step clauses ride the ordinary statement machinery via phase records. **The loop
    family is now complete.**
-8. **Word-typed keywords** — `unsigned` (9), `long` (4), plus `FILE`/`size_t`/`ssize_t`,
-   which M2-Planet pre-registers as primitives in bootstrap mode (`cc_types.c:177`).
+8. **Word-typed keywords** — ~~`unsigned` (9), `long` (4)~~ **DONE (m67)**: both accepted
+   as spellings of the machine word (the tokenizer returns the `int` keyword id for each,
+   so no consumer site changed), with multi-word runs — `unsigned int`, `long long`,
+   `unsigned long long int` — collapsing to one token, and `unsigned char` reaching the
+   byte path. Still open here: `FILE`/`size_t`/`ssize_t`, which M2-Planet pre-registers as
+   primitives in bootstrap mode (`cc_types.c:177`) — a typedef-table question, not a
+   keyword one. `signed`/`short` remain unimplemented; zero uses in the pinned source.
 9. **`char**` subscripting** — `argv[i]`, 28 uses, needs an 8-byte stride. Our subscript
    scaling keys off `is_char`/`is_array` with no pointer-to-pointer notion, so it would
    emit *byte* access. A type-model gap, distinct from the argv plumbing below.

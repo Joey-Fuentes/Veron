@@ -243,6 +243,30 @@ int main(){ return name(2,3); }   // program is entered via bl main
   number of prototypes — and **unnamed parameters** (`int f(struct type*, char*);`) work for
   free, because the declarator is never parsed.
 
+- **word-typed keywords: `unsigned` / `long` (A27)**: both accepted as **spellings of the
+  machine word**. The tokenizer returns the `int` keyword id for each, so no consumer site
+  changed — `funcloop`, `paramloop`, `stmtkw`/`doint`, struct fields, `fl_global` and
+  `sizeof` all already handle `int` and cannot drift out of agreement with it. This is what
+  `TARGET-SUBSET.md` §3 licenses: `/` and `%` are already unsigned, and `ceil_div`
+  (`(a+b-1)/b`) is the only arithmetic in the self-host that cares. `unsigned char` lowers
+  to our `char`, which is already the unsigned one (`ldrb` zero-extends). Previously both
+  words lexed as plain identifiers, which failed *differently* by position: a return type
+  worked (the top-level loop treats an unknown leading word as `int` — the same accident
+  that makes `void` work), a **parameter was silently dropped** (only a keyword token
+  starts a declaration in `paramloop`, so the frame allocator lost a slot and later
+  arguments landed at the wrong offset), and a local parsed as an assignment to an
+  undeclared variable. Multi-word runs (`unsigned int`, `long long`, `unsigned long long
+  int`) collapse to one token via `nt_wtype`, which parks its state on the compiler stack
+  and **re-enters `next_token`** rather than scanning the input itself — so whitespace,
+  comment and `#`-directive skipping come along for free (`unsigned /* t */ int` works),
+  and the loop self-terminates because an inner `long` has already absorbed its own tail.
+  The absorption runs inside `next_token` and so touches only that routine's clobber set,
+  which is why it does not reuse `nameq`: `nameq` writes `x7`, and `x7` must survive
+  `next_token` for `pl_struct` to size a struct parameter. Keyword-free programs are
+  **byte-identical** to the pre-rung compiler, and each new spelling emits **exactly** what
+  `int`/`char` emits at every position. Out of subset: `signed` and `short` (zero uses in
+  the pinned source), and `FILE`/`size_t`/`ssize_t`, which are pre-registered primitives
+  rather than keywords.
 ```
 int a=5; int b=a+1; return a*b;                         ->  exits 30
 int n=10; int s=0; while(n){ s=s+n; n=n-1; } return s;  ->  exits 55  (sum 1..10)

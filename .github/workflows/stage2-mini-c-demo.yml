@@ -1848,6 +1848,135 @@ jobs:
           fi
 
 
+          echo "== stage-2: word-typed keywords unsigned / long (A27) =="
+          # Both are accepted as SPELLINGS OF THE MACHINE WORD: the tokenizer returns the
+          # `int` keyword id for each, so no consumer site (funcloop, paramloop, stmtkw/
+          # doint, struct fields, fl_global, sizeof) changed and none can drift out of
+          # agreement with int. TARGET-SUBSET S3 licenses exactly this -- / and % are
+          # already unsigned, and ceil_div is the only arithmetic in the self-host that
+          # cares. `unsigned char` lowers to our char, which is already the unsigned one
+          # (ldrb zero-extends).
+          #
+          # Previously both lexed as plain identifiers, which failed DIFFERENTLY by
+          # position: a return type worked (the top-level loop treats an unknown leading
+          # word as int -- the same accident that makes void work), a PARAMETER was
+          # silently dropped (paramloop only starts a declaration on a keyword token, so
+          # the frame allocator lost a slot and later arguments landed at the wrong
+          # offset), and a local parsed as an assignment to an undeclared variable.
+          wt_ok=yes
+          wtry() {
+            set +e
+            printf '%s' "$1" | timeout 30 qemu-aarch64 ./stage2 > wt.s
+            if [ $? -ne 0 ] || [ ! -s wt.s ]; then
+              wt_ok=no
+              printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'
+              set -e; return
+            fi
+            cat wt.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
+            set -e
+            set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; wt_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          # The shapes the PINNED source actually writes, not invented ones.
+          # cc_core.c:2059 -- the only arithmetic in the self-host that cares
+          wtry 'unsigned ceil_div(unsigned a,unsigned b){return (a+b-1)/b;}int main(){return ceil_div(10,4);}' 3 'cc_core.c ceil_div: unsigned return + unsigned params'
+          # cc_core.c:2988 -- unsigned i = ceil_div(...) driving a != 0 loop
+          wtry 'unsigned ceil_div(unsigned a,unsigned b){return (a+b-1)/b;}int gz(int size){unsigned i;int n;i=ceil_div(size,8);n=0;while(i!=0){n=n+1;i=i-1;}return n;}int main(){return gz(60);}' 8 'cc_core.c global_variable_zero_initialize shape'
+          # cc_core.c:2091 -- an uninitialised unsigned local among other locals
+          wtry 'int main(){unsigned d;int n;n=6;d=7;return d*n;}' 42 'cc_core.c collect_local: uninitialised unsigned local'
+          # cc_core.c:444,486,529,535 -- unsigned as a parameter of a char*-returning fn
+          wtry 'char* lv(unsigned size){if(size==8){return "x";}return "y";}int main(){char* p;p=lv(8);return p[0];}' 120 'cc_core.c load_value: unsigned param, char* return'
+          # M2libc/stdio.c:412,426 -- long return type and long parameter
+          wtry 'long ftell(long off){return off+1;}int fseek(char* f,long offset,int whence){return ftell(offset)+whence;}int main(){return fseek(0,40,1);}' 42 'M2libc stdio.c ftell/fseek: long return + long param'
+          # M2libc/stdlib.c:47,48 -- file-scope long
+          wtry 'long _malloc_ptr;int main(){_malloc_ptr=7;_malloc_ptr=_malloc_ptr*6;return _malloc_ptr;}' 42 'M2libc stdlib.c: file-scope long _malloc_ptr'
+          # M2libc/stdio.c:80,332 -- prototype with a named unsigned parameter
+          wtry 'int rd(int fd,char* buf,unsigned count);int main(){return rd(0,0,42);}int rd(int fd,char* buf,unsigned count){return count;}' 42 'M2libc stdio.c: prototype with an unsigned param'
+          # multi-word runs collapse to ONE token, so the declarator that follows is the
+          # NAME -- not the second type word. unsigned int is stdio.c:469,556.
+          wtry 'int f(unsigned int value,int base){return value*base;}int main(){return f(7,6);}' 42 'M2libc stdio.c: two-word unsigned int parameter'
+          wtry 'int main(){unsigned int v=20;return v+2;}' 22 'two-word unsigned int local'
+          wtry 'int main(){long long n=41;return n+1;}' 42 'two-word long long local'
+          wtry 'int main(){unsigned long long int n=42;return n;}' 42 'four-word unsigned long long int local'
+          wtry 'int f(long int a){return a;}int main(){return f(42);}' 42 'two-word long int parameter'
+          # absorption re-enters next_token rather than scanning the input itself, so
+          # comment skipping comes along for free.
+          wtry 'int main(){unsigned /* t */ int a=42;return a;}' 42 'a comment between the two words of a type'
+          # unsigned char must reach the BYTE path, not the word path
+          wtry 'int main(){unsigned char s[4];s[0]=65;s[1]=0;return s[0];}' 65 'unsigned char is a byte type'
+          # every other position int already supports
+          wtry 'unsigned g;int main(){g=99;return g;}' 99 'unsigned global'
+          wtry 'int set(unsigned* q){*q=9;return 0;}int main(){unsigned x;set(&x);return x;}' 9 'unsigned pointer param (pass by reference)'
+          wtry 'int sum(long* p,int n){int i;int s;i=0;s=0;while(i<n){s=s+p[i];i=i+1;}return s;}int main(){long a[3];a[0]=1;a[1]=2;a[2]=39;return sum(a,3);}' 42 'long array + decay to a long* param'
+          wtry 'struct S{unsigned n;long m;};int main(){struct S s;s.n=6;s.m=7;return s.n*s.m;}' 42 'unsigned / long struct fields'
+          wtry 'int f(unsigned,long);int main(){return f(6,7);}int f(unsigned a,long b){return a*b;}' 42 'forward prototype with unnamed word-typed params'
+          wtry 'int main(){return sizeof(unsigned);}' 8 'sizeof(unsigned) is the machine word'
+          wtry 'int main(){return sizeof(unsigned char);}' 1 'sizeof(unsigned char) is 1'
+          wtry 'int main(){int s;s=0;for(unsigned i=0;i<4;i=i+1){s=s+i;}return s;}' 6 'unsigned in a for init clause'
+          # WHOLE-WORD matching: the recognizers are length-dispatched so a prefix can
+          # never match, but an identifier that merely BEGINS with a keyword shares the
+          # dispatch arm and is what would break first.
+          wtry 'int main(){int longitude;int unsignedly;longitude=40;unsignedly=2;return longitude+unsignedly;}' 42 'identifiers beginning with the keywords are identifiers'
+          wtry 'int int2str(int x,int signed_p){return x+signed_p;}int main(){return int2str(40,2);}' 42 'bootstrappable.c: signed_p is a parameter name'
+          # the arms the new keywords were added to must still lex their old members
+          wtry 'enum{A=1};int main(){char c;c=2;int i;i=0;lp:i=i+1;if(i<3){goto lp;}else{c=c+A;}return c+i;}' 6 'nt_kw4 arms (char/else/enum/goto) still lex'
+          wtry 'int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){if(i==3){continue;}s=s+i;}return s;}' 7 'nt_kw8 arm (continue) still lexes'
+
+          # --- structural: the new spellings ARE int ---------------------------------
+          # The strongest form of the claim above is byte identity. If the two spellings
+          # ever diverge in emitted bytes they have stopped being the same type, and the
+          # reasoning that licenses this rung no longer holds.
+          wsame() {
+            printf '%s' "$1" | qemu-aarch64 ./stage2 > wa.s
+            printf '%s' "$2" | qemu-aarch64 ./stage2 > wb.s
+            cmp -s wa.s wb.s || { wt_ok=no; echo "  DIFFERS from the int spelling: $2"; }
+          }
+          wsame 'int main(){int a=5;return a;}'                    'int main(){unsigned a=5;return a;}'
+          wsame 'int main(){int a=5;return a;}'                    'int main(){long a=5;return a;}'
+          wsame 'int main(){int a=5;return a;}'                    'int main(){unsigned int a=5;return a;}'
+          wsame 'int main(){int a=5;return a;}'                    'int main(){unsigned long long a=5;return a;}'
+          wsame 'int f(int a,int b){return a*b;}int main(){return f(6,7);}' 'unsigned f(unsigned a,long b){return a*b;}int main(){return f(6,7);}'
+          wsame 'int g;int main(){g=1;return g;}'                  'long g;int main(){g=1;return g;}'
+          wsame 'int main(){int a[3];a[1]=4;return a[1];}'         'int main(){long a[3];a[1]=4;return a[1];}'
+          wsame 'struct S{int n;};int main(){struct S s;s.n=4;return s.n;}' 'struct S{unsigned n;};int main(){struct S s;s.n=4;return s.n;}'
+          wsame 'int main(){char s[4];s[0]=65;return s[0];}'       'int main(){unsigned char s[4];s[0]=65;return s[0];}'
+          wsame 'int main(){return sizeof(int);}'                  'int main(){return sizeof(unsigned long);}'
+          printf '  %-64s %s\n' 'structural: unsigned/long emit exactly what int/char emits' \
+                 "$([ "$wt_ok" = yes ] && echo OK || echo DIFF)"
+
+          # --- byte-identity against the PRE-RUNG compiler ---------------------------
+          # The int path is untouched, so a keyword-free program must compile to the same
+          # bytes as before the rung. Runs only on the commit that introduces it.
+          if git show HEAD~1:spikes/stage2-mini-c/stage2-mini-c.s1 > oldw.s1 2>/dev/null && ! grep -q '^:nt_wtype$' oldw.s1; then
+            cat oldw.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2oldw
+            wid=yes
+            wcmp() {
+              printf '%s' "$1" | qemu-aarch64 ./stage2      > wnew.s
+              printf '%s' "$1" | qemu-aarch64 ./stage2oldw  > wold.s
+              cmp -s wnew.s wold.s || { wid=no; echo "  DIFFERS: $1"; }
+            }
+            wcmp 'int main(){int a=5;int b=a+2;return b;}'
+            wcmp 'int fib(int n){if(n<2){return n;}return fib(n-1)+fib(n-2);}int main(){return fib(10);}'
+            wcmp 'int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){if(i==3){continue;}s=s+i;}return s;}'
+            wcmp 'int main(){int i;i=0;do{i=i+1;if(i==3)break;}while(i<9);return i;}'
+            wcmp 'struct N{int v;struct N* nx;};int main(){struct N a;a.v=3;a.nx=0;return a.v;}'
+            wcmp 'int inc(int x){return x+1;}int main(){int (*f)(int);f=inc;return f(41);}'
+            wcmp 'enum{A=1,B=41};int main(){return A+B;}'
+            wcmp 'int g;int arr[3];char s[8];int main(){g=1;arr[1]=2;s[0]=3;return g+arr[1]+s[0];}'
+            wcmp 'int main(){int i;i=0;lp:i=i+1;if(i<5){goto lp;}return i;}'
+            wcmp 'int main(){char* p;p=calloc(4,8);p[0]=42;return p[0];}'
+            wcmp 'int main(){return sizeof(int)+sizeof(char);}'
+            wcmp 'int f(void);int main(){return f();}int f(void){return 42;}'
+            wcmp 'int main(int argc,char** argv){return 42;}'
+            [ "$wid" = yes ] || wt_ok=no
+            printf '  %-64s %s\n' 'byte-identical to HEAD~1 on keyword-free programs' \
+                   "$([ "$wid" = yes ] && echo OK || echo DIFF)"
+          else
+            printf '  %-64s %s\n' 'byte-identical to HEAD~1 on keyword-free programs' 'SKIP (HEAD~1 already has the rung)'
+          fi
+
+
           {
             echo "## stage2-mini-c — variables, if/while, reassignment, functions + recursion"
             echo '```'
@@ -1878,6 +2007,7 @@ jobs:
             echo "do{}while + break + continue (A24)     : $dw_ok"
             echo "for loops (A25)                         : $for_ok"
             echo "enum constants (A26)                    : $enum_ok"
+            echo "word-typed keywords unsigned/long (A27) : $wt_ok"
             echo "eor byte-identical to as             : $eor_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
@@ -1890,8 +2020,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ] && [ "$cap23_ok" = yes ] && [ "$dw_ok" = yes ] && [ "$for_ok" = yes ] && [ "$enum_ok" = yes ]; then
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ] && [ "$cap23_ok" = yes ] && [ "$dw_ok" = yes ] && [ "$for_ok" = yes ] && [ "$enum_ok" = yes ] && [ "$wt_ok" = yes ]; then
             echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct; and the single-pass @-target accounting invariant holds (every emitted line assembles to exactly 4 bytes, so the emitted-instruction counter stays equal to the true instruction count and a function's meaning does not depend on what was defined before it)."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok cap23=$cap23_ok dowhile=$dw_ok for=$for_ok enum=$enum_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok cap23=$cap23_ok dowhile=$dw_ok for=$for_ok enum=$enum_ok wordtype=$wt_ok"; exit 1
           fi

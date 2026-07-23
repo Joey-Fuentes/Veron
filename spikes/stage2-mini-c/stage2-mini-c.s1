@@ -4407,6 +4407,8 @@ mov x20 3
 ret
 :nt_kw8
 ldrb w5 x19 x18
+cmp x5 117
+b.eq nt_kw8u
 cmp x5 99
 b.ne nt_plainid
 add x2 x18 1
@@ -4440,6 +4442,38 @@ b.ne nt_plainid
 mov x29 12
 mov x20 3
 ret
+:nt_kw8u
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 110
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 115
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 105
+b.ne nt_plainid
+add x2 x18 4
+ldrb w5 x19 x2
+cmp x5 103
+b.ne nt_plainid
+add x2 x18 5
+ldrb w5 x19 x2
+cmp x5 110
+b.ne nt_plainid
+add x2 x18 6
+ldrb w5 x19 x2
+cmp x5 101
+b.ne nt_plainid
+add x2 x18 7
+ldrb w5 x19 x2
+cmp x5 100
+b.ne nt_plainid
+mov x29 1
+mov x20 3
+b nt_wtype
 :nt_kw6
 ldrb w5 x19 x18
 cmp x5 114
@@ -4525,6 +4559,8 @@ cmp x5 101
 b.eq nt_kw4e
 cmp x5 103
 b.eq nt_kw4g
+cmp x5 108
+b.eq nt_kw4l
 cmp x5 99
 b.ne nt_plainid
 add x2 x18 1
@@ -4587,6 +4623,56 @@ cmp x5 111
 b.ne nt_plainid
 mov x29 9
 mov x20 3
+ret
+:nt_kw4l
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 111
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 110
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 103
+b.ne nt_plainid
+mov x29 1
+mov x20 3
+b nt_wtype
+:nt_wtype
+str x30 x28
+add x28 x28 8
+:nt_wt_l
+str x18 x28
+add x28 x28 8
+str x29 x28
+add x28 x28 8
+str x6 x28
+add x28 x28 8
+bl next_token
+sub x28 x28 8
+ldr x4 x28
+sub x28 x28 8
+ldr x2 x28
+sub x28 x28 8
+ldr x1 x28
+mov x18 x1
+cmp x20 3
+b.ne nt_wt_no
+cmp x29 5
+b.eq nt_wt_done
+cmp x29 1
+b.ne nt_wt_no
+mov x29 x2
+b nt_wt_l
+:nt_wt_no
+mov x6 x4
+mov x29 x2
+:nt_wt_done
+mov x20 3
+sub x28 x28 8
+ldr x30 x28
 ret
 :nt_plainid
 ldrb w29 x19 x18
