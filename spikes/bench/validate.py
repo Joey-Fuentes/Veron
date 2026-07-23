@@ -1645,6 +1645,137 @@ if os.path.exists(s1p) and os.path.exists(s2p):
             '\tif(in_set(122, "abcde")) return 4;\n'
             '\treturn 42;\n}\n'), 42)
 
+    print("== stage 2 string/char escapes (A20) ==")
+    # ~993 escapes in M2-Planet's self-host -- the largest single count in the
+    # source, and the one gap no source rewrite could paper over: the escapes sit
+    # inside the assembly text M2-Planet EMITS ("\n# Core program\n"), so a lexer
+    # that stores \n as two literal bytes produces a compiler whose OUTPUT is
+    # textually wrong everywhere. Distribution: \n 964, \\ 10, \' 7, \" 7, \t 4,
+    # \r 1. \0 is implemented too -- zero uses today, but it falls out of the table.
+    #
+    # Three sites had to agree: the char-literal lexer (which assumed a 3-character
+    # 'X'), the string scanner (which stopped at the first '"', including an escaped
+    # one), and the data-section emitter (which copied source bytes verbatim). The
+    # A19 condition scanner needed it too, since it skips literals to keep its paren
+    # count honest.
+    _LEN = 'int len(char* p){int n;n=0;while(p[n]){n=n+1;}return n;}'
+    _BS = chr(92)          # a single backslash, spelled without nesting escapes
+    _SQ = chr(39)
+    _DQ = chr(34)
+    for nm, cs, want in [
+        # ---- char literals: the decoded value IS the observable
+        ("char \\n",  "int main(){char c;c=" + _SQ + _BS + "n" + _SQ + ";return c;}", 10),
+        ("char \\t",  "int main(){char c;c=" + _SQ + _BS + "t" + _SQ + ";return c;}", 9),
+        ("char \\r",  "int main(){char c;c=" + _SQ + _BS + "r" + _SQ + ";return c;}", 13),
+        ("char \\\\", "int main(){char c;c=" + _SQ + _BS + _BS + _SQ + ";return c;}", 92),
+        ("char \\'",  "int main(){char c;c=" + _SQ + _BS + _SQ + _SQ + ";return c;}", 39),
+        ("char \\\"", "int main(){char c;c=" + _SQ + _BS + _DQ + _SQ + ";return c;}", 34),
+        ("char \\0",  "int main(){char c;c=" + _SQ + _BS + "0" + _SQ + ";return c+7;}", 7),
+        ("plain char unchanged", "int main(){char c;c=" + _SQ + "A" + _SQ + ";return c;}", 65),
+        # ---- strings: an escape must occupy exactly ONE byte in the data section
+        ("\\n is one byte", _LEN + "int main(){return len(" + _DQ + "a" + _BS + "nb" + _DQ + ");}", 3),
+        ("\\n byte value",  "int main(){char* s;s=" + _DQ + "a" + _BS + "nb" + _DQ + ";return s[1];}", 10),
+        ("\\t byte value",  "int main(){char* s;s=" + _DQ + "a" + _BS + "tb" + _DQ + ";return s[1];}", 9),
+        ("\\r byte value",  "int main(){char* s;s=" + _DQ + "a" + _BS + "rb" + _DQ + ";return s[1];}", 13),
+        ("\\\\ byte value", "int main(){char* s;s=" + _DQ + "a" + _BS + _BS + "b" + _DQ + ";return s[1];}", 92),
+        # an escaped quote must NOT terminate the literal -- the scanner bug
+        ("\\\" does not end the string",
+                           "int main(){char* s;s=" + _DQ + "a" + _BS + _DQ + "b" + _DQ + ";return s[1];}", 34),
+        ("\\\" length is 3", _LEN + "int main(){return len(" + _DQ + "a" + _BS + _DQ + "b" + _DQ + ");}", 3),
+        ("escape at start", "int main(){char* s;s=" + _DQ + _BS + "nx" + _DQ + ";return s[0];}", 10),
+        ("escape at end",   "int main(){char* s;s=" + _DQ + "x" + _BS + "n" + _DQ + ";return s[1];}", 10),
+        ("all-escape string", _LEN + "int main(){return len(" + _DQ + (_BS + "n") * 5 + _DQ + ");}", 5),
+        ("M2 output-string shape",
+                           _LEN + "int main(){return len(" + _DQ + _BS + "n# Core program" + _BS + "n" + _DQ + ");}", 16),
+        ("escaped strings as call args",
+                           _LEN + "int f(char* a,char* b){return len(a)*10+len(b);}"
+                           "int main(){return f(" + _DQ + "a" + _BS + "nb" + _DQ + ","
+                           + _DQ + "c" + _BS + "td" + _DQ + ");}", 33),
+        ("plain string unchanged", _LEN + "int main(){return len(" + _DQ + "hello" + _DQ + ");}", 5),
+        # ---- A19 interop: the condition scanner skips literals to keep parens
+        # balanced, so an escaped quote inside a condition must not confuse it.
+        ("escaped quote inside a condition",
+                           _LEN + "int main(){if(len(" + _DQ + "a" + _BS + _DQ + "b" + _DQ + ")==3) return 8;return 0;}", 8),
+        ("escaped char literal in a condition",
+                           "int main(){char c;c=" + _SQ + _BS + "n" + _SQ + ";if(c==" + _SQ + _BS + "n" + _SQ + ") return 6;return 0;}", 6),
+    ]:
+        check("stage2 escape: " + nm, _exit_safe(cs), want)
+    # The property that actually matters: the BYTES reaching stdout. M2-Planet's
+    # emitted assembly is textually wrong everywhere if these are not real bytes.
+    def _stdout(csrc):
+        _, resolved = run(s1prog, stdin=_emit(csrc).encode())
+        _, out = run(assemble(resolved.decode())[1])
+        return out
+    _prog = (_LEN + "int puts(char* s){write(1,s,len(s));return 0;}int main(){"
+             "puts(" + _DQ + _BS + "n# Core program" + _BS + "n" + _DQ + ");"
+             "puts(" + _DQ + "a" + _BS + "tb" + _BS + "n" + _DQ + ");"
+             "puts(" + _DQ + "q" + _BS + _DQ + "q" + _BS + "n" + _DQ + ");"
+             "puts(" + _DQ + "back" + _BS + _BS + "slash" + _BS + "n" + _DQ + ");return 0;}")
+    check("stage2 escape: emitted bytes reach stdout exactly",
+          _stdout(_prog),
+          b'\n# Core program\na\tb\nq"q\nback\\slash\n')
+
+    print("== stage 2 preprocessor directives (A21) ==")
+    # Scoped by reading how M2-Planet's self-host is ACTUALLY built, not by
+    # implementing C's preprocessor. Its own bootstrap passes every translation
+    # unit as an ordered `-f` list and runs with `--bootstrap-mode`, in which its
+    # entire preprocessor is `remove_preprocessor_directives`: any token starting
+    # with '#' discards the rest of the line. No include expansion, no macro
+    # substitution, no conditionals.
+    #
+    # That works because the -f list makes `#include` redundant, and because there
+    # are NO object-like #define constants in the source -- the only #define is the
+    # `CC_H` include guard. NULL, TRUE, FALSE, EOF, stdin/stdout/stderr and
+    # EXIT_SUCCESS/FAILURE are `enum` constants in M2libc/bootstrap.c, which is
+    # itself in the -f list. So `enum`, not the preprocessor, is what these 287
+    # NULL uses actually depend on.
+    #
+    # Our equivalent of the -f list is concatenated stdin (`cat a.c b.c | stage2`),
+    # which already worked. So this rung is one lexer rule, in the same place as
+    # the comment skip.
+    _LEN2 = 'int len(char* p){int n;n=0;while(p[n]){n=n+1;}return n;}'
+    _DQ2 = chr(34)
+    _BS2 = chr(92)
+    for nm, cs, want in [
+        ("#include is skipped",
+         '#include <stdio.h>\n#include "cc.h"\nint main(){return 7;}', 7),
+        ("include-guard trio is skipped",
+         '#ifndef CC_H\n#define CC_H\nint main(){return 9;}\n#endif\n', 9),
+        ("directive between functions",
+         'int a(){return 3;}\n#include "x.h"\nint main(){return a()+1;}', 4),
+        ("directive inside a function body",
+         'int main(){int a;a=1;\n#ifdef FOO\n a=a+4;\nreturn a;}', 5),
+        ("indented directive",
+         '   #include <stdlib.h>\nint main(){return 6;}', 6),
+        # '#' only starts a directive at token position -- inside a string literal
+        # it is an ordinary byte, which matters because M2-Planet EMITS "\n# Core
+        # program\n". A directive rule that fired inside strings would eat it.
+        ("# inside a string is not a directive",
+         _LEN2 + 'int main(){return len(' + _DQ2 + '#not a directive' + _DQ2 + ');}', 16),
+        ("# inside a string with an escape (A20 interop)",
+         _LEN2 + 'int main(){return len(' + _DQ2 + _BS2 + 'n# Core program'
+         + _BS2 + 'n' + _DQ2 + ');}', 16),
+        # the -f list equivalent: several translation units concatenated, with
+        # directives interleaved exactly as they appear in the real source.
+        ("concatenated translation units with directives",
+         'int in_set(int c,char* s);\n'
+         '#include "cc.h"\n'
+         'int in_set(int c,char* s){while(0 != s[0]){if(c == s[0]) return 1;'
+         's = s + 1;}return 0;}\n'
+         '#include <stdio.h>\n'
+         'int main(){if(!in_set(101,' + _DQ2 + 'abcde' + _DQ2 + ')) return 1;return 21;}', 21),
+    ]:
+        check("stage2 preprocessor: " + nm, _exit_safe(cs), want)
+    # A directive contributes nothing: a program with directives must emit exactly
+    # what the same program without them emits.
+    check("stage2 preprocessor: directives emit nothing",
+          _emit('int main(){return 7;}')
+          == _emit('#include <stdio.h>\n#define X 1\nint main(){return 7;}\n#endif\n'),
+          True)
+
+
+
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)

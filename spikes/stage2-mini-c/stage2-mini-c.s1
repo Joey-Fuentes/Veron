@@ -1075,7 +1075,13 @@ b.eq scc_c
 add x2 x2 1
 b scc_l
 :scc_ch
-add x2 x2 3
+add x2 x2 1
+ldrb w5 x19 x2
+cmp x5 92
+b.ne scc_ch1
+add x2 x2 1
+:scc_ch1
+add x2 x2 2
 b scc_l
 :scc_st
 add x2 x2 1
@@ -1083,9 +1089,14 @@ add x2 x2 1
 cmp x2 x21
 b.ge scc_x
 ldrb w5 x19 x2
+cmp x5 92
+b.eq scc_sesc
 cmp x5 34
 b.eq scc_se
 add x2 x2 1
+b scc_sl
+:scc_sesc
+add x2 x2 2
 b scc_sl
 :scc_se
 add x2 x2 1
@@ -2181,6 +2192,29 @@ add x7 x3 48
 strb w7 x22 x23
 add x23 x23 1
 ret
+:escval
+cmp x5 110
+b.ne ev_t
+mov x0 10
+ret
+:ev_t
+cmp x5 116
+b.ne ev_r
+mov x0 9
+ret
+:ev_r
+cmp x5 114
+b.ne ev_0
+mov x0 13
+ret
+:ev_0
+cmp x5 48
+b.ne ev_d
+mov x0 0
+ret
+:ev_d
+mov x0 x5
+ret
 :emitstrlit
 mov x27 x30
 mov x1 61440
@@ -2217,9 +2251,19 @@ add x4 x18 1
 :esl_loop
 cmp x4 x29
 b.ge esl_done
+ldrb w5 x19 x4
+cmp x5 92
+b.ne esl_plain
+add x4 x4 1
+ldrb w5 x19 x4
+bl escval
+mov x13 x0
+b esl_emit
+:esl_plain
+mov x13 x5
+:esl_emit
 adr x9 sbyte
 bl emitstr
-ldrb w13 x19 x4
 bl emitoff
 adr x9 snlonly
 bl emitstr
@@ -3367,10 +3411,20 @@ cmp x5 13
 b.eq nt_wsadv
 cmp x5 47
 b.eq nt_cmt
+cmp x5 35
+b.eq nt_hash
 b nt_class
 :nt_wsadv
 add x6 x6 1
 b nt_ws
+:nt_hash
+cmp x6 x21
+b.ge nt_ws
+ldrb w5 x19 x6
+cmp x5 10
+b.eq nt_ws
+add x6 x6 1
+b nt_hash
 :nt_cmt
 add x2 x6 1
 cmp x2 x21
@@ -3428,6 +3482,20 @@ ret
 :nt_charlit
 add x2 x6 1
 ldrb w29 x19 x2
+cmp x29 92
+b.ne nt_cl_plain
+add x2 x6 2
+ldrb w5 x19 x2
+str x30 x28
+add x28 x28 8
+bl escval
+sub x28 x28 8
+ldr x30 x28
+mov x29 x0
+add x6 x6 4
+mov x20 6
+ret
+:nt_cl_plain
 add x6 x6 3
 mov x20 6
 ret
@@ -3435,9 +3503,14 @@ ret
 add x6 x6 1
 :nt_ssc
 ldrb w5 x19 x6
+cmp x5 92
+b.eq nt_ssesc
 cmp x5 34
 b.eq nt_ssend
 add x6 x6 1
+b nt_ssc
+:nt_ssesc
+add x6 x6 2
 b nt_ssc
 :nt_ssend
 mov x29 x6

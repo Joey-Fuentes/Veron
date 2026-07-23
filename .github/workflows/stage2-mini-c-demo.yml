@@ -988,6 +988,128 @@ jobs:
           fi
           set -e
 
+          echo "== stage-2: string/char escapes (A20) =="
+          # ~993 escapes in M2-Planet's self-host -- the largest single count, and the
+          # one gap no source rewrite could paper over: the escapes are inside the
+          # assembly text M2-Planet EMITS ("\n# Core program\n"), so a lexer that
+          # stores \n as two literal bytes yields a compiler whose OUTPUT is textually
+          # wrong everywhere. Distribution: \n 964, \\ 10, \' 7, \" 7, \t 4, \r 1.
+          # Three sites had to agree: the char-literal lexer (it assumed a 3-char 'X'),
+          # the string scanner (it stopped at the first '"', even an escaped one), and
+          # the data-section emitter (it copied source bytes verbatim). The A19
+          # condition scanner needed it too, since it skips literals to keep its paren
+          # count honest.
+          #
+          # Sources are built with printf OCTAL escapes -- \047 ' , \042 " , \134 \ --
+          # so no shell or YAML quoting layer can silently alter the test input.
+          esc_ok=yes
+          LEN='int len(char* p){int n;n=0;while(p[n]){n=n+1;}return n;}'
+          etry() {
+            printf "$1" > esc.c
+            set +e
+            timeout 30 qemu-aarch64 ./stage2 < esc.c > esc.s
+            if [ $? -ne 0 ] || [ ! -s esc.s ]; then
+              esc_ok=no
+              printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'
+              set -e; return
+            fi
+            cat esc.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
+            set -e
+            set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; esc_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          # char literals: the decoded value IS the observable
+          etry 'int main(){char c;c=\047\134n\047;return c;}'    10 'char backslash-n -> 10'
+          etry 'int main(){char c;c=\047\134t\047;return c;}'     9 'char backslash-t -> 9'
+          etry 'int main(){char c;c=\047\134r\047;return c;}'    13 'char backslash-r -> 13'
+          etry 'int main(){char c;c=\047\134\134\047;return c;}' 92 'char escaped backslash -> 92'
+          etry 'int main(){char c;c=\047\134\047\047;return c;}' 39 'char escaped single quote -> 39'
+          etry 'int main(){char c;c=\047\134\042\047;return c;}' 34 'char escaped double quote -> 34'
+          etry 'int main(){char c;c=\047\1340\047;return c+7;}'   7 'char backslash-0 -> 0'
+          etry 'int main(){char c;c=\047A\047;return c;}'        65 'plain char unchanged'
+          # strings: an escape must occupy exactly ONE byte in the data section
+          etry "$LEN"'int main(){return len(\042a\134nb\042);}'           3 'backslash-n is one byte'
+          etry 'int main(){char* s;s=\042a\134nb\042;return s[1];}'      10 'string backslash-n value'
+          etry 'int main(){char* s;s=\042a\134tb\042;return s[1];}'       9 'string backslash-t value'
+          etry 'int main(){char* s;s=\042a\134rb\042;return s[1];}'      13 'string backslash-r value'
+          etry 'int main(){char* s;s=\042a\134\134b\042;return s[1];}'   92 'string escaped backslash value'
+          # an escaped quote must NOT terminate the literal -- the scanner bug
+          etry 'int main(){char* s;s=\042a\134\042b\042;return s[1];}'   34 'escaped quote does not end the string'
+          etry "$LEN"'int main(){return len(\042a\134\042b\042);}'        3 'escaped-quote string length is 3'
+          etry 'int main(){char* s;s=\042\134nx\042;return s[0];}'       10 'escape at string start'
+          etry 'int main(){char* s;s=\042x\134n\042;return s[1];}'       10 'escape at string end'
+          etry "$LEN"'int main(){return len(\042\134n\134n\134n\134n\134n\042);}' 5 'all-escape string length'
+          etry "$LEN"'int main(){return len(\042\134n# Core program\134n\042);}' 16 'M2 output-string shape'
+          etry "$LEN"'int main(){return len(\042hello\042);}'             5 'plain string unchanged'
+          # A19 interop: the condition scanner skips literals to keep parens balanced
+          etry "$LEN"'int main(){if(len(\042a\134\042b\042)==3) return 8;return 0;}' 8 'escaped quote inside a condition'
+          etry 'int main(){char c;c=\047\134n\047;if(c==\047\134n\047) return 6;return 0;}' 6 'escaped char literal in a condition'
+          # structural: "a\nb" must lay down exactly 4 data bytes (3 + terminator),
+          # i.e. the escape collapsed rather than being stored as two source bytes.
+          printf 'int main(){char* s;s=\042a\134nb\042;return s[0];}' > escb.c
+          qemu-aarch64 ./stage2 < escb.c > escb.s
+          nb=$(grep -c '^\.byte' escb.s)
+          [ "$nb" = 4 ] || { echo "  REGRESSION: escaped string emitted $nb data bytes, want 4 (escape not collapsed)"; esc_ok=no; }
+          # THE property that matters: the bytes actually reaching stdout. If these
+          # are not real bytes, every line M2-Planet emits is textually wrong.
+          printf "$LEN"'int puts(char* s){write(1,s,len(s));return 0;}int main(){puts(\042\134n# Core program\134n\042);puts(\042a\134tb\134n\042);puts(\042q\134\042q\134n\042);puts(\042back\134\134slash\134n\042);return 0;}' > escout.c
+          qemu-aarch64 ./stage2 < escout.c > escout.s
+          cat escout.s | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf a.out
+          set +e; timeout 30 qemu-aarch64 ./a.out > escout.txt; set -e
+          printf '\n# Core program\na\tb\nq\042q\nback\134slash\n' > escwant.txt
+          if cmp -s escout.txt escwant.txt; then st=OK; else st=DIFF; esc_ok=no; echo "  emitted bytes differ; got:"; od -c escout.txt | head -4; echo "  want:"; od -c escwant.txt | head -4; fi
+          printf '  %-64s %s\n' 'emitted bytes reach stdout exactly (od/cmp)' "$st"
+          printf '  %-64s %s\n' 'structural: escapes collapse to one data byte' \
+                 "$([ "$esc_ok" = yes ] && echo OK || echo DIFF)"
+
+          echo "== stage-2: preprocessor directives (A21) =="
+          # Scoped by reading how M2-Planet's self-host is ACTUALLY built. Its own
+          # bootstrap passes every translation unit as an ordered `-f` list and runs
+          # with --bootstrap-mode, in which the entire preprocessor is
+          # remove_preprocessor_directives: a token starting with '#' discards the
+          # rest of the line. No include expansion, no macros, no conditionals.
+          # That works because the -f list makes #include redundant and there are NO
+          # object-like #define constants -- the only #define is the CC_H include
+          # guard. NULL/TRUE/FALSE/EOF/stdin/stdout/stderr are `enum` constants in
+          # M2libc/bootstrap.c, itself in the -f list. Our -f equivalent is
+          # concatenated stdin, which already worked, so this is one lexer rule.
+          pp_ok=yes
+          pptry() {
+            printf "$1" > pp.c
+            set +e
+            timeout 30 qemu-aarch64 ./stage2 < pp.c > pp.s
+            if [ $? -ne 0 ] || [ ! -s pp.s ]; then
+              pp_ok=no
+              printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'
+              set -e; return
+            fi
+            cat pp.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
+            set -e
+            set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; pp_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          pptry '#include <stdio.h>\n#include \042cc.h\042\nint main(){return 7;}' 7 '#include is skipped'
+          pptry '#ifndef CC_H\n#define CC_H\nint main(){return 9;}\n#endif\n' 9 'include-guard trio is skipped'
+          pptry 'int a(){return 3;}\n#include \042x.h\042\nint main(){return a()+1;}' 4 'directive between functions'
+          pptry 'int main(){int a;a=1;\n#ifdef FOO\n a=a+4;\nreturn a;}' 5 'directive inside a function body'
+          pptry '   #include <stdlib.h>\nint main(){return 6;}' 6 'indented directive'
+          # '#' is only a directive at TOKEN position. M2-Planet emits "\n# Core
+          # program\n", so a rule that fired inside string literals would eat it.
+          pptry "$LEN"'int main(){return len(\042#not a directive\042);}' 16 'hash inside a string is not a directive'
+          pptry "$LEN"'int main(){return len(\042\134n# Core program\134n\042);}' 16 'hash in a string with an escape (A20 interop)'
+          # the -f list equivalent: translation units concatenated, directives interleaved
+          pptry 'int in_set(int c,char* s);\n#include \042cc.h\042\nint in_set(int c,char* s){while(0 != s[0]){if(c == s[0]) return 1;s = s + 1;}return 0;}\n#include <stdio.h>\nint main(){if(!in_set(101,\042abcde\042)) return 1;return 21;}' 21 'concatenated translation units with directives'
+          # a directive must contribute nothing to the emitted program
+          printf 'int main(){return 7;}' > ppa.c
+          printf '#include <stdio.h>\n#define X 1\nint main(){return 7;}\n#endif\n' > ppb.c
+          qemu-aarch64 ./stage2 < ppa.c > ppa.s
+          qemu-aarch64 ./stage2 < ppb.c > ppb.s
+          cmp -s ppa.s ppb.s || { echo "  REGRESSION: directives changed the emitted program"; pp_ok=no; }
+          printf '  %-64s %s\n' 'structural: directives emit nothing' \
+                 "$([ "$pp_ok" = yes ] && echo OK || echo DIFF)"
+
           echo "== stage-2: self-host canary — a compiler-shaped program through the ladder (A15) =="
           # The proof-of-pivot from TARGET-SUBSET.md: compile a real COMPILER-SHAPED
           # program -- one that reads a file, builds a heap-allocated linked list of
@@ -1102,6 +1224,8 @@ jobs:
             echo "goto + labels (A17)                     : $goto_ok"
             echo "forward prototypes (A18)                : $proto_ok"
             echo "braceless statement bodies (A19)        : $bl_ok"
+            echo "string/char escapes (A20)               : $esc_ok"
+            echo "preprocessor directives (A21)           : $pp_ok"
             echo "eor byte-identical to as             : $eor_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
@@ -1114,8 +1238,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ]; then
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ]; then
             echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct; and the single-pass @-target accounting invariant holds (every emitted line assembles to exactly 4 bytes, so the emitted-instruction counter stays equal to the true instruction count and a function's meaning does not depend on what was defined before it)."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok"; exit 1
           fi
