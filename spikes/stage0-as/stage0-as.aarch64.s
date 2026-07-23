@@ -90,6 +90,8 @@ parse_loop:
     b.eq    h_orr
     cmp     w0, #'u'
     b.eq    h_udiv
+    cmp     w0, #'e'
+    b.eq    h_eor
     b       skip_line
 pass_end:
     cmp     x23, #2
@@ -546,6 +548,20 @@ h_and:
     mov     w25, w0
     bl      next_reg
     movz    w9, #0x8A00, lsl #16
+    orr     w9, w9, w0, lsl #16
+    orr     w9, w9, w25, lsl #5
+    orr     w9, w9, w24
+    bl      emit
+    b       parse_loop
+
+h_eor:
+    add     x20, x20, #3            // skip "eor"
+    bl      next_reg
+    mov     w24, w0
+    bl      next_reg
+    mov     w25, w0
+    bl      next_reg
+    movz    w9, #0xCA00, lsl #16
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24

@@ -99,9 +99,9 @@ def encode(l, at, labels):
             else: break
         imm=int(d) if d else 0
         return (0xF1000000|(imm<<10)|(n<<5)|31,('cmp_i',n,imm))
-    if op in ('orr','and'):
+    if op in ('orr','and','eor'):
         d=_reg(p[1]);n=_reg(p[2]);m=_reg(p[3])
-        base=0xAA000000 if op=='orr' else 0x8A000000
+        base={'orr':0xAA000000,'and':0x8A000000,'eor':0xCA000000}[op]
         return (base|(m<<16)|(n<<5)|d,(op,d,n,m))
     if op in ('lsl','lsr','asr'):
         d=_reg(p[1]);n=_reg(p[2]);m=_reg(p[3])

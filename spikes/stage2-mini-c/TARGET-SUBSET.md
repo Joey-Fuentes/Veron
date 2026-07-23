@@ -54,6 +54,13 @@ By reading the pinned compiler sources (`cc.c`, `cc.h`, `cc_core.c`, `cc_emit.c`
 `gcc_req.h`, and the M2libc C sources it links (`bootstrappable.c`, `stdio.c`,
 `stdlib.c`, `string.c`, `ctype.c`).
 
+§3–§4 were **re-derived mechanically** against the pinned tree (comments, string
+literals and char literals stripped first, then each construct counted per file),
+which is where the per-feature counts below come from. That pass corrected three
+entries the original hand-reading got wrong — `do { } while`, compound
+assignment/`++`, and the omission of `void`/`unsigned` — each flagged in place
+below. Re-run that pass, don't hand-read, if the pins in §1 ever move.
+
 The important distinction is **used vs. recognized**: M2-Planet, being a compiler,
 *recognizes* many constructs in its input (there are string literals like
 `"switch"`, `"union"`, `"typedef"` and code that parses them). What constrains
@@ -64,10 +71,25 @@ literals.
 ## 3. MUST accept (used by the self-host)
 
 **Types**
-- `int`, `char`, and pointers — including multi-level and `struct*`.
-- `struct`: self-referential, multiple members, member access `.` and `->`,
-  including chained `a->b->c` (used pervasively — the token/type/list data model
-  is entirely linked structs).
+- `int`, `char`, and pointers — including multi-level and `struct*`. Multi-level
+  is **one** site (`int main(int argc, char** argv)` in `cc.c`), so `char**` as a
+  parameter is the whole requirement, not general `T**` arithmetic.
+- `void` — **167 uses**, and the most-overlooked entry in this list. It appears
+  as a return type (`void require(int bool, char* error);`) and as an empty
+  parameter list (`void program(void);`), both pervasively. Neither needs a
+  `void` *value* type: a `void` function is one whose result is never consumed,
+  and `(void)` is a spelling of "no parameters". Cheap, but the compiler must
+  **accept the keyword in both positions** or it cannot parse the source at all.
+- `unsigned` as a type keyword — 4 uses in `cc_core.c` (`unsigned size`,
+  `unsigned ceil_div(unsigned a, unsigned b)`, `unsigned struct_depth_adjustment`).
+  It can be accepted as a synonym for the machine word: our `/` and `%` are
+  already unsigned, and `ceil_div` is the only arithmetic that cares.
+- `struct`: self-referential, multiple members, and chained member access
+  `a->b->c` (used pervasively — the token/type/list data model is entirely linked
+  structs). Access is **`->` only**: 496 uses, against **zero** uses of `.` on a
+  struct value anywhere in the self-host. Every struct M2-Planet touches is
+  reached through a pointer, which means struct *values* — locals, parameters,
+  copies — are never needed, only `struct T*`.
 - `enum` with explicit integer values (used for all the option/flag constants).
 - **Function pointers** — passed and called (e.g. `common_recursion(FUNCTION f)`).
   `gcc_req.h` exists solely to give gcc the naked-function-pointer support that
@@ -75,20 +97,38 @@ literals.
 
 **Statements**
 - `if` / `else` (nested, heavily), `while` (the workhorse loop), `for` (rare but
-  present), `return`, `break`, `continue`, `goto` + labels, and `{ }` blocks.
+  present — 3 uses), `return`, `break` (5), `continue` (2), `goto` + labels
+  (8 gotos, 4 label definitions), and `{ }` blocks.
+- `do { } while` — **2 uses**, both in `cc_reader.c` (the escape-tracking scan at
+  line 84 and the `#FILENAME` consume loop at line 403). An earlier draft of this
+  doc listed it under §4 as "zero uses"; that was wrong, and it is the one entry
+  §4 got backwards. It is small — the same block-stack record as `while` with the
+  condition test emitted after the body instead of before — but it is **required**.
 - Multiple functions with parameters and return values, forward declarations,
   and **recursion** (the parser recurses). This is what forces a real call/return
   discipline, not a fixed-depth scheme.
+- Forward declarations may carry **unnamed parameters** — abstract declarators
+  such as `int global_static_array(struct type*, char*);` in `cc_core.c`. The
+  declarator parser must accept a parameter that is a type with no name, since a
+  prototype's parameters are never entered into a symbol table anyway.
 
 **Operators**
 - Arithmetic `+ - * / %`; bitwise `& | ^ ~ << >>`; logical `&& || !`; all six
   comparisons `== != < > <= >=`.
+  `&&` and `||` must **short-circuit** (37 and 53 uses); they guard null-pointer
+  derefs like `NULL != a && a->s`, so evaluating both sides is not merely
+  wasteful, it faults.
 - Address-of `&`, dereference `*`, member `.`/`->`, **array indexing `a[i]`**
-  (used everywhere), `sizeof`, assignment plus compound forms (`+=` etc.), and
-  `++`/`--`.
+  (used everywhere), `sizeof` (40 uses), and plain `=` assignment.
+- **Not** compound assignment, and **not** `++`/`--` — see §4. An earlier draft
+  listed both here; the self-host uses neither.
 
-**Literals**: `int` (incl. hex/char-code), `char` `'c'` (used constantly for the
-byte-level scanner), and string `"..."`.
+**Literals**: `int` (incl. hex — one use, `0xFF` in `cc_strings.c` — and
+char-code), `char` `'c'` (used constantly for the byte-level scanner), and string
+`"..."`. **Escapes are not optional**: `\n`, `\t`, `\0`, `\\`, `\"` appear ~995
+times across the source, overwhelmingly in the assembly-text strings M2-Planet
+emits. A lexer that stores `\n` as two literal bytes produces a compiler whose
+output is textually wrong everywhere.
 
 **Preprocessor (modest)**: `#include`, include guards (`#ifndef`/`#define`/
 `#endif`), and simple object-like `#define` constants. The self-host does **not**
@@ -101,13 +141,25 @@ compiler does **not** need them to compile M2-Planet. This is a real scope win:
 
 - `switch` / `case` — zero uses in its own source (switch handling is written
   with `goto`).
-- `do { } while` — zero uses (`while` and `for` suffice).
+- **Compound assignment** (`+= -= *= /= %= &= |= ^= <<= >>=`) — **zero uses**, and
+  `++`/`--` likewise **zero**. M2-Planet is written in bootstrappable style and
+  spells every update out as `i = i + 1`. An earlier draft of this doc listed
+  these under §3 as required; they are not, and dropping them is a real scope win
+  (compound assignment in particular would have forced an lvalue to be evaluated
+  once and reused, which the current single-pass expression compiler has no shape
+  for).
 - `union`, `typedef` — zero uses in the self-host (the one `typedef` is the
   gcc-only shim in `gcc_req.h`).
 - Ternary `?:` — zero uses.
 - Floating point (`float`/`double`), and the `long`/`short` size qualifiers.
+- `static`, `const` — zero uses as declarations; they appear only as strings
+  inside M2-Planet's own keyword matcher.
 
 Don't spend rungs implementing these; the target doesn't require them.
+
+**Note on `do { } while`:** it was listed here in an earlier draft. It is used —
+twice — and has moved to §3. Every other entry above was re-checked against the
+pinned source at the same time and holds.
 
 ## 5. Runtime / libc surface we must provide
 
@@ -180,10 +232,14 @@ it does so **cheaply, first**. It is a test/canary, not a stage we keep.
 "stop growing stage 2 and add the rest in C as stage 3." **We are dropping that.** A
 throwaway stage-3-in-C has no independent value — **M2-Planet is the actual target.** So
 instead: keep growing **stage 2 (in asm)** until it accepts M2-Planet's *entire* source
-subset — the §3 features stage 2 still lacks: a modest preprocessor (`#include`/guards/
-object `#define`), `&&`/`||`, `goto`+labels, multi-level pointers, `for`/`break`/
-`continue`, compound assign `+=`/`++`/`--`, forward declarations, `^` (via a stage-0
-`eor`), hex literals, and `enum`. Then compile **M2-Planet's own source** with stage 2.
+subset. **Landed (m57/A16):** short-circuiting `&&`/`||`, hex literals, and `^` (via a
+small stage-0 `eor` leaf). **Still open**, roughly in descending order of cost:
+**string/char escapes** in the lexer (the largest single count in the source, ~995),
+the preprocessor (`#include`/guards/object `#define`), `goto`+labels,
+`for`/`break`/`continue`, `do { } while`, `void` return types and `(void)` parameter
+lists, `unsigned` as a word-typed keyword, `enum`, `char**` parameters, and unnamed
+prototype parameters. Compound assignment and `++`/`--` are **not** on this list — see
+§4. Then compile **M2-Planet's own source** with stage 2.
 **M2-Planet effectively becomes "stage 3."** No disposable intermediate compiler; the
 artifact we build is exactly the hand-off node.
 

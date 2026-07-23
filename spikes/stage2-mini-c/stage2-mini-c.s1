@@ -1502,13 +1502,48 @@ ldrb w11 x24 x25
 bl emitapply
 b cewhile
 :cepushop
+cmp x26 11
+b.eq cepush_sc
+cmp x26 12
+b.eq cepush_sc
+:cepush_st
 strb w26 x24 x25
 add x25 x25 1
 mov x3 1
 b celoop
+:cepush_sc
+adr x9 sscand
+cmp x26 11
+b.eq cepush_sce
+adr x9 sscor
+:cepush_sce
+bl emitstr
+mov x1 16384
+movk x1 5 16
+add x1 x19 x1
+mov x2 2
+lsl x2 x25 x2
+add x1 x1 x2
+mov w4 x23
+str w4 x1
+mov x3 0
+add x4 x22 x23
+bl pos6
+add x23 x23 6
+adr x9 snl
+bl emitstr
+adr x9 sdiscard
+bl emitstr
+b cepush_st
 :prec
+cmp x0 12
+b.eq prec_2
+cmp x0 11
+b.eq prec_3
 cmp x0 124
 b.eq prec_4
+cmp x0 94
+b.eq prec_5
 cmp x0 38
 b.eq prec_6
 cmp x0 3
@@ -1539,8 +1574,17 @@ cmp x0 37
 b.eq prec_11
 mov x0 12
 ret
+:prec_2
+mov x0 2
+ret
+:prec_3
+mov x0 3
+ret
 :prec_4
 mov x0 4
+ret
+:prec_5
+mov x0 5
 ret
 :prec_6
 mov x0 6
@@ -1798,6 +1842,41 @@ ret
 :parseval
 mov x0 0
 mov x3 x18
+add x2 x18 1
+cmp x2 x6
+b.ge pv_l
+ldrb w4 x19 x18
+cmp x4 48
+b.ne pv_l
+ldrb w4 x19 x2
+cmp x4 120
+b.eq pv_hex
+cmp x4 88
+b.eq pv_hex
+b pv_l
+:pv_hex
+add x3 x18 2
+:pvh_l
+cmp x3 x6
+b.ge pv_d
+ldrb w4 x19 x3
+cmp x4 58
+b.lt pvh_dec
+cmp x4 71
+b.lt pvh_up
+sub x4 x4 87
+b pvh_add
+:pvh_up
+sub x4 x4 55
+b pvh_add
+:pvh_dec
+sub x4 x4 48
+:pvh_add
+mov x2 16
+mul x0 x0 x2
+add x0 x0 x4
+add x3 x3 1
+b pvh_l
 :pv_l
 cmp x3 x6
 b.ge pv_d
@@ -2708,19 +2787,7 @@ ret
 str x30 x28
 add x28 x28 8
 bl next_token
-mov x0 0
-mov x3 x18
-:pn_l
-cmp x3 x6
-b.ge pn_done
-ldrb w4 x19 x3
-sub x4 x4 48
-mov x2 10
-mul x0 x0 x2
-add x0 x0 x4
-add x3 x3 1
-b pn_l
-:pn_done
+bl parseval
 sub x28 x28 8
 ldr x30 x28
 ret
@@ -2818,6 +2885,10 @@ bl tpop
 mov x13 x0
 bl tpop
 mov x4 x0
+cmp x11 11
+b.eq easc
+cmp x11 12
+b.eq easc
 adr x9 spoppop
 bl emitstr
 cmp x11 60
@@ -2844,6 +2915,8 @@ cmp x11 38
 b.eq eaand
 cmp x11 124
 b.eq eaor
+cmp x11 94
+b.eq eaxor
 cmp x11 5
 b.eq eashl
 cmp x11 6
@@ -2897,12 +2970,33 @@ b eaop
 :eaor
 adr x9 sorrr
 b eaop
+:eaxor
+adr x9 seorr
+b eaop
 :eashl
 adr x9 slslr
 b eaop
 :eashr
 adr x9 slsrr
 b eaop
+:easc
+adr x9 sscnorm
+bl emitstr
+mov x2 0
+bl tpush
+mov x1 16384
+movk x1 5 16
+add x1 x19 x1
+mov x2 2
+lsl x2 x25 x2
+add x1 x1 x2
+ldr w4 x1
+add x4 x22 x4
+mov x5 2
+lsl x3 x17 x5
+bl pos6
+mov x30 x27
+ret
 :eaunot
 bl tpop
 adr x9 spop1
@@ -3135,6 +3229,36 @@ cmp x5 48
 b.lt nt_notdig
 cmp x5 58
 b.ge nt_notdig
+cmp x5 48
+b.ne nt_dig
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 120
+b.eq nt_hex
+cmp x4 88
+b.eq nt_hex
+b nt_dig
+:nt_hex
+add x6 x6 2
+:nt_hexl
+cmp x6 x21
+b.ge nt_digdone
+ldrb w5 x19 x6
+cmp x5 48
+b.lt nt_digdone
+cmp x5 58
+b.lt nt_hexadv
+cmp x5 65
+b.lt nt_digdone
+cmp x5 71
+b.lt nt_hexadv
+cmp x5 97
+b.lt nt_digdone
+cmp x5 103
+b.ge nt_digdone
+:nt_hexadv
+add x6 x6 1
+b nt_hexl
 :nt_dig
 cmp x6 x21
 b.ge nt_digdone
@@ -3388,11 +3512,13 @@ b.eq nt_op1
 cmp x5 37
 b.eq nt_op1
 cmp x5 38
-b.eq nt_op1
+b.eq nt_amp
 cmp x5 126
 b.eq nt_op1
-cmp x5 124
+cmp x5 94
 b.eq nt_op1
+cmp x5 124
+b.eq nt_pipe
 cmp x5 40
 b.eq nt_punct1
 cmp x5 41
@@ -3487,6 +3613,34 @@ mov x20 4
 ret
 :nt_nene
 mov x29 4
+add x6 x6 2
+mov x20 4
+ret
+:nt_amp
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 38
+b.eq nt_andand
+mov x29 38
+add x6 x6 1
+mov x20 4
+ret
+:nt_andand
+mov x29 11
+add x6 x6 2
+mov x20 4
+ret
+:nt_pipe
+add x2 x6 1
+ldrb w4 x19 x2
+cmp x4 124
+b.eq nt_oror
+mov x29 124
+add x6 x6 1
+mov x20 4
+ret
+:nt_oror
+mov x29 12
 add x6 x6 2
 mov x20 4
 ret
@@ -4050,6 +4204,9 @@ b ps_l
 :sorrr
 .ascii "orr x0 x1 x0"
 .byte 0
+:seorr
+.ascii "eor x0 x1 x0"
+.byte 0
 :slslr
 .ascii "lsl x0 x1 x0"
 .byte 0
@@ -4127,4 +4284,13 @@ b ps_l
 .byte 0
 :sbback
 .ascii "b @"
+.byte 0
+:sscand
+.ascii "sub x9 x9 8\nldr x0 x9\nmov x1 0\nstr x1 x9\nadd x9 x9 8\ncmp x0 0\nb.eq @"
+.byte 0
+:sscor
+.ascii "sub x9 x9 8\nldr x0 x9\nmov x1 1\nstr x1 x9\nadd x9 x9 8\ncmp x0 0\nb.ne @"
+.byte 0
+:sscnorm
+.ascii "sub x9 x9 8\nldr x0 x9\nmov x2 0\nsub x2 x2 x0\norr x0 x0 x2\nmov x2 63\nlsr x0 x0 x2\nstr x0 x9\nadd x9 x9 8\n"
 .byte 0

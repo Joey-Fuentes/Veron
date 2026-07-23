@@ -1032,7 +1032,10 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     def _drift(csrc):
         """(#blank lines, x17-model bytes - real bytes) over the CODE region."""
         model = actual = blanks = 0
-        for line in _emit(csrc).split("\n"):
+        _lines = _emit(csrc).split("\n")
+        if _lines and _lines[-1] == "":
+            _lines.pop()            # trailing newline of the last line, not a blank line
+        for line in _lines:
             s = line.strip()
             if s.startswith(".byte") or s.startswith(".ascii"):
                 break                       # data section: emitted after all code
@@ -1243,6 +1246,177 @@ if os.path.exists(s1p) and os.path.exists(s2p) and os.path.exists(_canon):
     _big = b" ".join(b"tok%d" % i for i in range(500))
     check("selfhost 500-token scale (recursion depth 500)",
           len(_canon_run(_big).split(b"\n")[:-1]), 500)
+
+if os.path.exists(s1p) and os.path.exists(s2p):
+    # -----------------------------------------------------------------------
+    # m57 (A16) — short-circuit `&&`/`||`, hex literals, and `^`.
+    #
+    # SHORT-CIRCUIT is not an ordinary binary operator and cannot be emitted
+    # like one.  A shunting-yard emits code when it POPS an operator, by which
+    # point both operands are already on the value stack — too late to skip the
+    # right one.  So `&&`/`||` emit at PUSH time instead: `cewhile` has already
+    # applied every higher-precedence pending operator by the time it reaches
+    # `cepushop`, so the left operand's value is final exactly there.  The
+    # prologue pops it, pushes a provisional result (0 for `&&`, 1 for `||`),
+    # and emits `b.eq`/`b.ne @<placeholder>`; the placeholder's buffer position
+    # is recorded in a parallel array at x19+0x54000 INDEXED BY THE OPERATOR'S
+    # OPSTACK SLOT.  That indexing is what makes it re-entrancy-safe for free:
+    # opstack slots are unique per nesting level, so `f(a&&b, c||d)` and
+    # `a && g(c||d)` need no save/restore.  `emitapply` sees the operator at
+    # that same index, normalises the right operand to 0/1, and backpatches.
+    #
+    # Why this must be SHORT-CIRCUIT and not `and`/`orr` of both sides: M2-Planet
+    # guards null derefs with it (`NULL != a && a->s`), so evaluating the right
+    # operand is not merely wasteful, it FAULTS.  The witnesses below are
+    # therefore behavioural, not structural — a side effect that must not happen,
+    # and a null deref that must not be reached.  Since m50 the interp faults on
+    # wild addresses like hardware, so the null-guard case is a real witness.
+    print("\n== stage 2: short-circuit &&/||, hex literals, ^ (m57/A16) ==")
+
+    # ---- eor: the stage-0 leaf `^` lowers onto (same shape as the udiv rung).
+    # Derived from the ARM ARM and its ORR/AND siblings: logical shifted-register
+    # differs only in opc, so AND=0x8A.., ORR=0xAA.., EOR=0xCA...  CI's byte-check
+    # against real `as` is the ground truth that confirms it; this pins the model.
+    check("eor x9 x9 x1 encodes as EOR-shifted-reg",
+          hexb("eor x9 x9 x1\n"), "290101ca")
+
+    # ---- truth table + C's 0/1 normalisation (NOT the operand's own value).
+    for cs, want in [("int main(){return 1&&1;}", 1),
+                     ("int main(){return 1&&0;}", 0),
+                     ("int main(){return 0&&1;}", 0),
+                     ("int main(){return 5&&3;}", 1),   # normalises, not 3
+                     ("int main(){return 0||0;}", 0),
+                     ("int main(){return 0||7;}", 1),   # normalises, not 7
+                     ("int main(){return 9||0;}", 1),
+                     ("int main(){return 1&&1&&1;}", 1),
+                     ("int main(){return 1&&0&&1;}", 0),
+                     ("int main(){return 0||0||3;}", 1)]:
+        check(f"stage2 sc value: {cs[13:-1]}", _exit(cs), want)
+
+    # ---- THE point of the feature: the right operand must not be evaluated.
+    _B = "int g;int bump(){g=g+1;return 1;}"
+    check("stage2 && skips RHS (no side effect)",
+          _exit(_B + "int main(){int r;g=0;r=0&&bump();return g;}"), 0)
+    check("stage2 && runs RHS when LHS true",
+          _exit(_B + "int main(){int r;g=0;r=1&&bump();return g;}"), 1)
+    check("stage2 || skips RHS (no side effect)",
+          _exit(_B + "int main(){int r;g=0;r=1||bump();return g;}"), 0)
+    check("stage2 || runs RHS when LHS false",
+          _exit(_B + "int main(){int r;g=0;r=0||bump();return g;}"), 1)
+
+    # The M2-Planet shape: a null guard.  Without short-circuiting `p->v` derefs
+    # NULL and the m50 wild-address trap fires, so a PASS here is a real witness.
+    _N = "struct N{int v;struct N* nx;};"
+    check("stage2 null guard p&&p->v does not deref",
+          _exit_safe(_N + "int main(){struct N* p;p=0;if(p&&p->v){return 9;}return 3;}"), 3)
+    check("stage2 null guard 0!=p&&p->v does not deref",
+          _exit_safe(_N + "int main(){struct N* p;p=0;if(0!=p&&p->v){return 9;}return 3;}"), 3)
+    check("stage2 guard still passes when non-null",
+          _exit_safe(_N + "int main(){struct N* p;p=calloc(1,16);p->v=7;"
+                          "if(p&&p->v){return 9;}return 3;}"), 9)
+
+    # ---- precedence: || < && < | < ^ < & < == < relational.  Each case below
+    # gives a DIFFERENT answer under naive left-to-right, so they discriminate.
+    for cs, want in [("int main(){return 1||0&&0;}", 1),   # not (1||0)&&0 == 0
+                     ("int main(){return 0||1&&1;}", 1),
+                     ("int main(){return 0&&0||1;}", 1),
+                     ("int main(){return (1||0)&&0;}", 0),
+                     ("int main(){return 1|2&&1;}", 1),
+                     ("int main(){return 2&3&&0;}", 0),
+                     ("int main(){return 1|2^3;}", 1),     # ^ tighter than |
+                     ("int main(){return 6^3&1;}", 7),     # & tighter than ^
+                     ("int main(){return 1^1==1;}", 0)]:   # == tighter than ^
+        check(f"stage2 precedence: {cs[13:-1]}", _exit(cs), want)
+
+    # ---- structural: `||` is the only thing that emits `b.ne @` (if/while and
+    # `&&` use `b.eq @`, back-branches use `b @`), so this is a sharp check that
+    # the branch really is there and really is inverted for `||`.
+    _emAnd = _emit("int f(int a,int b){return a&&b;}int main(){return 0;}")
+    _emOr  = _emit("int f(int a,int b){return a||b;}int main(){return 0;}")
+    check("stage2 && emits forward b.eq @",   "b.eq @" in _emAnd, True)
+    check("stage2 && emits no b.ne @",        "b.ne @" in _emAnd, False)
+    check("stage2 || emits inverted b.ne @",  "b.ne @" in _emOr,  True)
+    check("stage2 sc normalises result to 0/1",
+          ("sub x2 x2 x0" in _emAnd) and ("orr x0 x0 x2" in _emAnd)
+          and ("lsr x0 x0 x2" in _emAnd), True)
+
+    # ---- A13 x17 accounting.  The prologue is 8 emitted lines and the epilogue
+    # 9, all real 4-byte instructions and none with a leading '\n'.  Drift here
+    # would corrupt the @-targets of every function emitted AFTERWARDS (m54).
+    for nm, cs in [
+        ("plain &&",      "int f(int a,int b){return a&&b;}int main(){return 0;}"),
+        ("plain ||",      "int f(int a,int b){return a||b;}int main(){return 0;}"),
+        ("chained &&",    "int f(int a,int b,int c){return a&&b&&c;}int main(){return 0;}"),
+        ("mixed ||/&&",   "int f(int a,int b,int c){return a||b&&c;}int main(){return 0;}"),
+        ("&& in if",      "int f(int a){if(a>0&&a<9){return 1;}return 0;}int main(){return 0;}"),
+        ("&& in while",   "int f(int a){int i;i=0;while(i<3&&a){i=i+1;}return i;}int main(){return 0;}"),
+        ("&& over calls", "int g(){return 1;}int f(){return g()&&g();}int main(){return 0;}"),
+        ("&& null guard", _N + "int f(struct N* p){if(p&&p->v){return 1;}return 0;}"
+                               "int main(){return 0;}"),
+        ("^ operand",     "int f(int a,int b){return a^b;}int main(){return 0;}"),
+        ("hex literal",   "int f(){return 0x1234;}int main(){return 0;}"),
+    ]:
+        b, d = _drift(cs)
+        check(f"stage2 no blank emitted line: {nm}", b, 0)
+        check(f"stage2 x17 == real instr count: {nm}", d, 0)
+
+    # ---- order dependence: a victim defined AFTER a short-circuiting function
+    # must still mean what it meant alone.  This is the m54 symptom, not its cause.
+    _SC = "int chk(int a,int b){if(a>0&&b>0){return 1;}return 0;}"
+    for nm, victim in [
+        ("if/else", "int g(){int a;if(0){a=9;}else{a=3;}return a;}"),
+        ("while",   "int g(){int i;int s;i=0;s=0;while(i<3){s=s+1;i=i+1;}return s;}"),
+        ("nested",  "int g(){int i;int j;int c;i=0;c=0;while(i<3){j=0;"
+                    "while(j<1){c=c+1;j=j+1;}i=i+1;}return c;}"),
+    ]:
+        check(f"stage2 victim after && still returns 3: {nm}",
+              _exit_safe(_SC + victim + "int main(){return g();}"), 3)
+
+    # ---- re-entrancy: the patch slot is keyed by opstack index, so short-circuits
+    # nested inside call arguments (and calls inside short-circuit operands) need
+    # no save/restore.  These are the cases a single global patch stack would break.
+    check("stage2 && inside call arguments",
+          _exit("int f(int a,int b){return a+b*10;}int main(){return f(1&&1,0||5);}"), 11)
+    check("stage2 calls inside && operands",
+          _exit("int one(){return 1;}int zero(){return 0;}"
+                "int main(){return one()&&zero()||one();}"), 1)
+    check("stage2 nested (a&&b)||(c&&d)",
+          _exit("int main(){int a;int b;int c;int d;a=1;b=0;c=1;d=1;"
+                "return (a&&b)||(c&&d);}"), 1)
+
+    # ---- hex literals.  One lexer rule (0x/0X prefix + hex-digit scan) and one
+    # value rule; `parsenum` was a duplicate decimal loop and now calls `parseval`,
+    # so array sizes accept hex as a side effect.  Decimal must be untouched.
+    for cs, want in [("int main(){return 0x2A;}", 42),
+                     ("int main(){return 0xff;}", 255),
+                     ("int main(){return 0XFF;}", 255),
+                     ("int main(){return 0x0;}", 0),
+                     ("int main(){return 0;}", 0),
+                     ("int main(){return 10;}", 10),
+                     ("int main(){return 42;}", 42),
+                     ("int main(){return 0x10+6;}", 22),
+                     ("int main(){return 0xFF&0x0F;}", 15),
+                     ("int main(){int c;c=321;return c&0xFF;}", 65)]:
+        check(f"stage2 hex: {cs[13:-1]}", _exit(cs), want)
+    # >= 2^16 must still go through the A11 movk halfword path.
+    check("stage2 hex large literal uses movk path",
+          _exit("int main(){return 0x12345&0xFF;}"), 69)
+    check("stage2 hex 0x10000>>16", _exit("int main(){return 0x10000>>16;}"), 1)
+    check("stage2 hex array size a[0x10]",
+          _exit("int main(){int a[0x10];a[15]=7;return a[15];}"), 7)
+    check("stage2 decimal array size unchanged",
+          _exit("int main(){int a[16];a[15]=7;return a[15];}"), 7)
+
+    # ---- `^` itself, and the neighbours it must not have disturbed.
+    for cs, want in [("int main(){return 12^10;}", 6),
+                     ("int main(){return 0xFF^0x0F;}", 240),
+                     ("int main(){int x;x=93;return x^x;}", 0),
+                     ("int main(){int x;x=93;return x^0;}", 93),
+                     ("int main(){return (5^3)&&1;}", 1),
+                     ("int main(){return (12|3)+(12&8);}", 23)]:
+        check(f"stage2 xor: {cs[13:-1]}", _exit(cs), want)
+    check("stage2 ^ lowers to a single eor",
+          _emit("int f(int a,int b){return a^b;}int main(){return 0;}").count("eor x0 x1 x0"), 1)
 
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")

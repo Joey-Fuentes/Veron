@@ -1160,6 +1160,75 @@ accepts M2-Planet's entire source subset. What m56 buys is the knowledge that wh
 day comes, the ladder underneath will hold.
 ---
 
+### m57 (A16) — short-circuit `&&`/`||`, hex literals, and `^`
+
+The first three rungs of the post-canary push from `TARGET-SUBSET.md` §6(b): keep
+growing stage 2 in asm until it accepts M2-Planet's whole subset. These three were
+picked together because they are independent and the second and third are small.
+
+**`&&`/`||` are not ordinary binary operators**, and that is the whole difficulty. A
+shunting-yard emits code when it **pops** an operator — by which point both operands
+have already been evaluated onto the value stack, which is exactly too late to skip
+the right one. Emitting `and`/`orr` of both sides would produce the right *answer* for
+the cases that don't fault and a **SIGSEGV** for the cases that do: M2-Planet guards
+its null derefs this way (`NULL != a && a->s`), so the right operand is not merely
+wasteful to evaluate, it is unsafe.
+
+The fix is to emit at **push** time instead. `cewhile` has already applied every
+higher-precedence pending operator by the time control reaches `cepushop`, so the left
+operand's value is final exactly there. The prologue pops it, pushes a provisional
+result (`0` for `&&`, `1` for `||`), and emits `b.eq`/`b.ne @<placeholder>`; if the
+branch is taken the provisional value *is* the answer, and if it is not, the
+provisional is discarded and the right operand is evaluated normally. `emitapply` then
+normalises the right operand to `0`/`1` and backpatches the placeholder to the
+instruction after itself.
+
+**The patch slot is keyed by the operator's opstack index**, not held on a separate
+stack. That is the detail that makes re-entrancy free: opstack slots are unique per
+nesting level, and `emitapply` is entered with `x25` already decremented to the
+operator's own slot, so `f(a&&b, c||d)`, `a && g(c||d)` and arbitrarily nested
+short-circuits all resolve to distinct slots with no save/restore and no LIFO
+reasoning. The array lives in the previously-unused 16 KB gap at `x19+0x54000`, sized
+to one word per opstack entry.
+
+`b.ne @<pos>` turned out to **already exist** in stage0-as (`b / b.eq/ne/lt/ge @<pos>`),
+so `||` is the exact mirror of `&&` and no stage-0 change was needed for either.
+
+**Hex literals** are one lexer rule (a `0x`/`0X` prefix peek plus a hex-digit scan in
+`nt_class`) and one value rule in `parseval`. `parsenum` was a duplicate decimal loop
+and now simply calls `parseval`, so array sizes accept hex as a side effect and the
+two parsers can no longer drift apart. Literals `>= 2^16` still go through the A11
+`movz`+`movk` halfword path unchanged.
+
+**`^`** is the one that needed a stage-0 rung, and it is the smallest possible one —
+the same shape as the `udiv` leaf (m36). EOR is the logical shifted-register sibling of
+AND and ORR, differing only in `opc`, so the encoder is `h_and` with `0x8A00` replaced
+by `0xCA00`, and dispatch is two lines because no mnemonic previously started with `e`.
+Mirrored in `s0as.py` and `interp.py` by folding `eor` into the existing `orr`/`and`
+cases rather than bolting on a fourth. Precedence now runs
+`|| < && < | < ^ < & < == < relational < shift < + < *`.
+
+Neither `&&`/`||` nor `^` adds an emitted line that is not exactly 4 bytes, so the A13
+`x17` invariant is untouched — and because that invariant's failure mode is silent and
+*deferred* (drift corrupts the `@`-targets of every function emitted **afterwards**),
+it is guarded directly for each new construct rather than inferred: zero blank emitted
+lines, `x17` equal to the true instruction count, and victim functions defined after a
+short-circuiting function still returning what they return alone.
+
+`validate.py` 471 → **549**. The new guards are deliberately behavioural where the
+feature is behavioural — a `bump()` side effect that must **not** happen, and a null
+deref that must **not** be reached (a real witness since m50, when the interp began
+faulting on wild addresses like hardware). `stage2-mini-c-demo` gained an `sc_ok`
+section and an `eor_ok` byte-check against real `as`, both wired into the pass gate;
+every stage is `timeout`-bounded, since a mis-aimed backpatch loops forever rather
+than returning something wrong.
+
+**Still open from the §6(b) list:** string/char escapes (~995 uses — the largest single
+count), `goto`+labels, `for`/`break`/`continue`, `do {} while`, `void` return types and
+`(void)` parameter lists, `unsigned` as a word-typed keyword, `enum`, `char**`
+parameters, unnamed prototype parameters, and the preprocessor.
+---
+
 ## 6. What's next
 
 The plan is a **capability-jump ladder**: keep each rung minimal, and write each
@@ -1269,13 +1338,23 @@ stage in the language of the stage below.
   lowers each halfword; `s0as` was made faithful (it now **rejects** a `mov` immediate
   `>= 2^16` so the bench faults like hardware), and the interp gained an `mmap` model. A
   standalone `qemu-mmap-probe` workflow (raw brk/mmap syscalls + a stage0-as-vs-`as`
-  encoding byte-check) pinpointed this on the real CI host. Then the plan (revised —
+  encoding byte-check) pinpointed this on the real CI host. Then the **self-host canary**
+  (m56, A15) and, with the pivot decided, the first three rungs of M2-Planet's remaining
+  subset: **short-circuit `&&`/`||`, hex literals, and `^`** (m57, A16 — `&&`/`||` emit
+  their test+branch at *push* time, where the left operand is final, and backpatch at
+  apply time with the patch slot keyed by the operator's **opstack index**, which makes
+  them re-entrancy-safe inside call arguments for free; `^` needed one small stage-0
+  `eor` leaf, the `udiv` rung's shape). Then the plan (revised —
   see below and `TARGET-SUBSET.md`): **(1) run a self-host TEST** to prove the mechanism
   (compile a compiler-shaped, file-reading program; ideally a toy fixpoint), **not** as a
   permanent rung; **(2) do NOT pivot to a stage-3-in-C** — instead keep growing **stage 2
-  (in asm)** to cover M2-Planet's remaining subset (preprocessor, `&&`/`||`, `goto`,
-  multi-level pointers, `for`/`break`/`continue`, compound assign, forward decls, `^` via a
-  stage-0 `eor`, hex, `enum`); **(3)** compile **M2-Planet's own source** with stage 2, so
+  (in asm)** to cover M2-Planet's remaining subset — `&&`/`||`, hex and `^` landed in
+  m57; still open are string/char **escapes** (~995 uses, the largest single count),
+  `goto`+labels, `for`/`break`/`continue`, `do {} while`, `void` return types and
+  `(void)` parameter lists, `unsigned` as a word-typed keyword, `enum`, `char**`
+  parameters, unnamed prototype parameters, and the preprocessor (compound assign and
+  `++`/`--` are **not** needed — zero uses in the self-host); **(3)** compile
+  **M2-Planet's own source** with stage 2, so
   **M2-Planet becomes the de-facto "stage 3."** No throwaway compiler; the artifact we
   build is the hand-off node. Cost accepted: those features land in `.s1` asm, not C.
 - **Stage 3** — **M2-Planet's own source, compiled by stage 2** (no separately-written

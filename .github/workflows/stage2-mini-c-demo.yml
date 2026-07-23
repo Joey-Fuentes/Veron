@@ -89,6 +89,20 @@ jobs:
           echo "udiv ours: $(od -An -v -tx1 udiv.bin | tr -d ' \n')"
           echo "udiv ref : $(od -An -v -tx1 udiv_ref.bin | tr -d ' \n')"
 
+          # ---- byte-compare the NEW eor instruction against real `as` ----
+          # `^` lowers onto this stage-0 leaf. EOR is the logical shifted-register
+          # sibling of AND (0x8A..) and ORR (0xAA..), differing only in opc, so it
+          # is 0xCA.. -- but "differs only in opc" is exactly the kind of claim that
+          # must be settled by the real assembler, not by derivation.
+          printf 'eor x0 x1 x0\neor x9 x9 x1\neor x5 x3 x2\n' > eor.s0
+          printf '.text\n.global _start\n_start:\n\teor x0,x1,x0\n\teor x9,x9,x1\n\teor x5,x3,x2\n' > eor_ref.s
+          aarch64-linux-gnu-as -o eor_ref.o eor_ref.s
+          aarch64-linux-gnu-objcopy -O binary --only-section=.text eor_ref.o eor_ref.bin
+          cat eor.s0 | qemu-aarch64 ./stage0-as > eor.bin
+          eor_ok=no; cmp -s eor.bin eor_ref.bin && eor_ok=yes
+          echo "eor ours: $(od -An -v -tx1 eor.bin | tr -d ' \n')"
+          echo "eor ref : $(od -An -v -tx1 eor_ref.bin | tr -d ' \n')"
+
           # ---- structural: emitted program uses WORD forms + FRAME-RELATIVE vars ----
           printf '%s' 'int main(){int a=5; int b=a+2; return b;}' | qemu-aarch64 ./stage2 > word.s
           struct_ok=yes
@@ -695,6 +709,98 @@ jobs:
           if [ "$brc" = 2 ] && [ "$bsz" = 0 ]; then st=OK; else st=DIFF; fe_ok=no; fi
           printf '  %-64s rc=%-4s bytes=%-4s %s\n' 'oversized globals stop cleanly (no buffer overrun)' "$brc" "$bsz" "$st"
 
+          echo "== stage-2: short-circuit &&/||, hex literals, ^ (A16) =="
+          # Short-circuiting cannot be emitted like an ordinary binary operator: a
+          # shunting-yard emits when it POPS an operator, by which point both
+          # operands are already evaluated. So &&/|| emit their test+branch at PUSH
+          # time (where the left operand is final) and backpatch at apply time, with
+          # the patch slot keyed by the operator's OPSTACK INDEX -- which is what
+          # makes it re-entrancy-safe inside call arguments for free.
+          #
+          # The point of the feature is the branch, so the load-bearing cases here
+          # are BEHAVIOURAL: a side effect that must NOT happen, and a null deref
+          # that must NOT be reached. M2-Planet guards its null derefs this way
+          # (`NULL != a && a->s`), so getting this wrong is a SIGSEGV, not a wrong
+          # answer. Timeout-bounded like the front-end section: a mis-aimed
+          # backpatch can loop forever rather than return something wrong.
+          sc_ok=yes
+          stry() {
+            set +e
+            printf '%s' "$1" | timeout 30 qemu-aarch64 ./stage2 > sc.s
+            if [ $? -ne 0 ] || [ ! -s sc.s ]; then
+              sc_ok=no
+              printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'
+              set -e; return
+            fi
+            cat sc.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
+            set -e
+            set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; sc_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          # truth table + C's 0/1 normalisation (the result is 1, not the operand)
+          stry 'int main(){return 1&&1;}' 1 '&& true'
+          stry 'int main(){return 1&&0;}' 0 '&& false'
+          stry 'int main(){return 5&&3;}' 1 '&& normalises to 1 (not 3)'
+          stry 'int main(){return 0||0;}' 0 '|| false'
+          stry 'int main(){return 0||7;}' 1 '|| normalises to 1 (not 7)'
+          stry 'int main(){return 1&&1&&1;}' 1 '&& chain'
+          stry 'int main(){return 0||0||3;}' 1 '|| chain'
+          # THE point: the right operand must not be evaluated.
+          SCB='int g;int bump(){g=g+1;return 1;}'
+          stry "$SCB"'int main(){int r;g=0;r=0&&bump();return g;}' 0 '&& skips RHS (no side effect)'
+          stry "$SCB"'int main(){int r;g=0;r=1&&bump();return g;}' 1 '&& runs RHS when LHS true'
+          stry "$SCB"'int main(){int r;g=0;r=1||bump();return g;}' 0 '|| skips RHS (no side effect)'
+          stry "$SCB"'int main(){int r;g=0;r=0||bump();return g;}' 1 '|| runs RHS when LHS false'
+          # the M2-Planet shape: a null guard. Without short-circuiting this SIGSEGVs.
+          SCN='struct N{int v;struct N* nx;};'
+          stry "$SCN"'int main(){struct N* p;p=0;if(p&&p->v){return 9;}return 3;}' 3 'null guard p&&p->v does not deref'
+          stry "$SCN"'int main(){struct N* p;p=0;if(0!=p&&p->v){return 9;}return 3;}' 3 'null guard 0!=p&&p->v does not deref'
+          stry "$SCN"'int main(){struct N* p;p=calloc(1,16);p->v=7;if(p&&p->v){return 9;}return 3;}' 9 'guard still passes when non-null'
+          # precedence: || < && < | < ^ < & < == < relational. Each case differs
+          # from the naive left-to-right answer, so they actually discriminate.
+          stry 'int main(){return 1||0&&0;}' 1 'precedence 1||0&&0 (not (1||0)&&0)'
+          stry 'int main(){return (1||0)&&0;}' 0 'precedence parenthesised'
+          stry 'int main(){return 1|2&&1;}' 1 'precedence | tighter than &&'
+          stry 'int main(){return 1|2^3;}' 1 'precedence ^ tighter than |'
+          stry 'int main(){return 6^3&1;}' 7 'precedence & tighter than ^'
+          stry 'int main(){return 1^1==1;}' 0 'precedence == tighter than ^'
+          # re-entrancy: patch slots are keyed by opstack index, so short-circuits
+          # nested in call arguments (and calls inside operands) need no save/restore.
+          stry 'int f(int a,int b){return a+b*10;}int main(){return f(1&&1,0||5);}' 11 '&& inside call arguments'
+          stry 'int one(){return 1;}int zero(){return 0;}int main(){return one()&&zero()||one();}' 1 'calls inside && operands'
+          # order dependence (the m54 symptom): a victim defined AFTER a
+          # short-circuiting function must still mean what it meant alone.
+          SCC='int chk(int a,int b){if(a>0&&b>0){return 1;}return 0;}'
+          stry "$SCC"'int g(){int a;if(0){a=9;}else{a=3;}return a;}int main(){return g();}' 3 'victim if/else after &&'
+          stry "$SCC"'int g(){int i;int s;i=0;s=0;while(i<3){s=s+1;i=i+1;}return s;}int main(){return g();}' 3 'victim while after &&'
+          # hex literals -- and decimal must be untouched by the new lexer rule.
+          stry 'int main(){return 0x2A;}' 42 'hex 0x2A'
+          stry 'int main(){return 0xff;}' 255 'hex lowercase 0xff'
+          stry 'int main(){return 0XFF;}' 255 'hex uppercase 0XFF'
+          stry 'int main(){return 0x0;}' 0 'hex zero'
+          stry 'int main(){return 0;}' 0 'bare 0 still decimal'
+          stry 'int main(){return 10;}' 10 'decimal unchanged'
+          stry 'int main(){int c;c=321;return c&0xFF;}' 65 'hex mask (M2 shape: & 0xFF)'
+          stry 'int main(){return 0x12345&0xFF;}' 69 'hex >=2^16 goes through movk path'
+          stry 'int main(){int a[0x10];a[15]=7;return a[15];}' 7 'hex array size a[0x10]'
+          stry 'int main(){int a[16];a[15]=7;return a[15];}' 7 'decimal array size unchanged'
+          # ^ itself, and the neighbours it must not have disturbed.
+          stry 'int main(){return 12^10;}' 6 'xor 12^10'
+          stry 'int main(){int x;x=93;return x^x;}' 0 'xor x^x == 0'
+          stry 'int main(){return (12|3)+(12&8);}' 23 'orr/and unchanged by ^'
+          # structural: || is the ONLY thing that emits `b.ne @` (if/while and &&
+          # use `b.eq @`, back-branches use `b @`), so this pins the inversion.
+          printf '%s' 'int f(int a,int b){return a&&b;}int main(){return 0;}' | qemu-aarch64 ./stage2 > scand.s
+          printf '%s' 'int f(int a,int b){return a||b;}int main(){return 0;}' | qemu-aarch64 ./stage2 > scor.s
+          printf '%s' 'int f(int a,int b){return a^b;}int main(){return 0;}'  | qemu-aarch64 ./stage2 > scxor.s
+          grep -q 'b.eq @' scand.s || { echo "  MISSING && forward branch (b.eq @)"; sc_ok=no; }
+          grep -q 'b.ne @' scand.s && { echo "  REGRESSION: && emitted an inverted branch"; sc_ok=no; }
+          grep -q 'b.ne @' scor.s  || { echo "  MISSING || inverted branch (b.ne @)"; sc_ok=no; }
+          grep -q 'eor x0 x1 x0' scxor.s || { echo "  MISSING ^ lowering (eor x0 x1 x0)"; sc_ok=no; }
+          printf '  %-64s %s\n' 'emitted branch forms: && b.eq / || b.ne / ^ eor' \
+                 "$([ "$sc_ok" = yes ] && echo OK || echo DIFF)"
+
           echo "== stage-2: self-host canary — a compiler-shaped program through the ladder (A15) =="
           # The proof-of-pivot from TARGET-SUBSET.md: compile a real COMPILER-SHAPED
           # program -- one that reads a file, builds a heap-allocated linked list of
@@ -805,6 +911,8 @@ jobs:
             echo "single-pass @-target accounting (order): $emit_ok"
             echo "front end: comments/blocks/struct* ret: $fe_ok"
             echo "self-host canary: compiler-shaped + fixpoint: $selfhost_ok"
+            echo "short-circuit &&/||, hex literals, ^   : $sc_ok"
+            echo "eor byte-identical to as             : $eor_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
             echo "while(n){s=s+n;n=n-1;} sum 1..10     -> 55"
@@ -816,8 +924,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ]; then
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ]; then
             echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct; and the single-pass @-target accounting invariant holds (every emitted line assembles to exactly 4 bytes, so the emitted-instruction counter stays equal to the true instruction count and a function's meaning does not depend on what was defined before it)."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok"; exit 1
           fi

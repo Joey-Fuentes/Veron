@@ -174,6 +174,32 @@ int main(){ return name(2,3); }   // program is entered via bl main
   returns 0 — rather than being more capable than reality (the m50/m51 lesson). On real CI a
   compiled program copies a source file to an output file on qemu's own filesystem.
 
+- **short-circuit `&&`/`||`, hex literals, `^` (A16)** — three of the remaining
+  M2-Planet subset rungs. **`&&`/`||` short-circuit properly**, which is not something
+  an ordinary binary operator path can do: a shunting-yard emits code when it *pops* an
+  operator, by which point both operands are already on the value stack — too late to
+  skip the right one. So these emit at **push** time instead. `cewhile` has already
+  applied every higher-precedence pending operator by the time it reaches `cepushop`, so
+  the left operand's value is final exactly there: the prologue pops it, pushes a
+  provisional result (`0` for `&&`, `1` for `||`), and emits `b.eq`/`b.ne @<placeholder>`.
+  The placeholder's buffer position is recorded in a parallel array indexed by the
+  operator's **opstack slot** — and because opstack slots are unique per nesting level,
+  that indexing makes the whole thing re-entrancy-safe for free: `f(a&&b, c||d)` and
+  `a && g(c||d)` need no save/restore. `emitapply` finds the operator at that same index,
+  normalises the right operand to `0`/`1`, and backpatches. This is required, not an
+  optimisation: M2-Planet guards its null derefs with it (`NULL != a && a->s`), so
+  evaluating the right operand is not merely wasteful, it faults — the guards are
+  therefore behavioural (a side effect that must not happen, a null deref that must not
+  be reached), not just structural. **Hex literals** are one lexer rule (`0x`/`0X` prefix
+  plus a hex-digit scan) and one value rule; `parsenum` was a duplicate decimal loop and
+  now calls `parseval`, so array sizes accept hex as a side effect. **`^`** lowers onto a
+  new stage-0 `eor` leaf — the logical shifted-register sibling of `and`/`orr`, differing
+  only in `opc` (`0x8A`/`0xAA`/`0xCA`), byte-checked against real `as` in CI exactly like
+  the `udiv` rung. Precedence now runs `|| < && < | < ^ < & < == < relational < shift <
+  + < *`, all fifteen-plus operators at their correct C levels. Neither `&&`/`||` nor `^`
+  adds a non-4-byte emitted line, so the A13 `x17` invariant is untouched — re-checked
+  for each new construct, including order-dependence of functions defined afterwards.
+
 ```
 int a=5; int b=a+1; return a*b;                         ->  exits 30
 int n=10; int s=0; while(n){ s=s+n; n=n-1; } return s;  ->  exits 55  (sum 1..10)
