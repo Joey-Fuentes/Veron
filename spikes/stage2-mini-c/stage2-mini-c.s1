@@ -28,6 +28,13 @@
 #   do allocates it lazily on first continue and defines it at close, immediately
 #   before the condition; for sets it to its step label. d/e are scratch for the
 #   for-step phase record (d = body label).
+# enum constants live in their own table at x19+(2058<<16): 16-byte records
+#   [name_start | name_len | value | pad], count at the counter page +72. Names are
+#   compared against the input buffer exactly as gsymlookup does, so nothing is
+#   copied. Looked up in ceid_var only AFTER local and global variables miss, and
+#   before the `adr x0 <name>` function-address fallback -- so a variable or
+#   function of the same name still wins, and an enum constant costs nothing until
+#   an identifier would otherwise have become an address.
 #   x10 symtab base, x8 symtab count (this function), x28 cexpr save-stack ptr,
 #   x18/x20/x29 token start/kind/aux. cexpr save-stack holds (x30,x12) so the
 #   expression compiler is re-entrant across call arguments; compile_call also
@@ -122,6 +129,8 @@ bl emitstr
 bl next_token
 cmp x20 0
 b.eq alldone
+cmp x29 14
+b.eq doenum
 cmp x29 7
 b.eq fl_struct
 mov x12 0
@@ -1744,6 +1753,143 @@ svc
 mov x0 2
 mov x8 93
 svc
+:doenum
+bl next_token
+cmp x20 5
+b.ne de_tag
+cmp x29 123
+b.eq de_body
+:de_tag
+bl next_token
+:de_body
+mov x14 0
+:de_loop
+bl next_token
+cmp x20 0
+b.eq alldone
+cmp x20 2
+b.eq de_name
+cmp x20 5
+b.ne de_err
+cmp x29 125
+b.eq de_end
+cmp x29 44
+b.eq de_loop
+b de_err
+:de_name
+mov x0 0
+movk x0 2058 16
+add x0 x19 x0
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x1 x1 72
+ldr x4 x1
+mov x5 4
+lsl x5 x4 x5
+add x0 x0 x5
+str w18 x0
+add x5 x0 4
+sub x7 x6 x18
+str w7 x5
+bl next_token
+cmp x29 61
+b.eq de_eq
+mov x13 x29
+b de_store
+:de_eq
+bl next_token
+cmp x20 1
+b.ne de_err
+bl parseval
+mov x14 x0
+mov x13 0
+:de_store
+mov x0 0
+movk x0 2058 16
+add x0 x19 x0
+mov x1 61440
+movk x1 2055 16
+add x1 x19 x1
+add x1 x1 72
+ldr x4 x1
+mov x5 4
+lsl x5 x4 x5
+add x0 x0 x5
+add x0 x0 8
+str w14 x0
+add x4 x4 1
+str x4 x1
+add x14 x14 1
+cmp x13 125
+b.eq de_end
+b de_loop
+:de_end
+bl next_token
+b funcloop
+:de_err
+mov x0 2
+adr x1 senumerr
+mov x2 43
+mov x8 64
+svc
+mov x0 2
+mov x8 93
+svc
+:enumlookup
+str x12 x28
+add x28 x28 8
+str x13 x28
+add x28 x28 8
+sub x1 x6 x18
+mov x2 61440
+movk x2 2055 16
+add x2 x19 x2
+add x2 x2 72
+ldr x3 x2
+mov x4 0
+mov x7 0
+movk x7 2058 16
+add x7 x19 x7
+:enl_loop
+cmp x4 x3
+b.ge enl_nf
+mov x5 4
+lsl x5 x4 x5
+add x5 x7 x5
+add x0 x5 4
+ldr w0 x0
+cmp x0 x1
+b.ne enl_next
+ldr w2 x5
+mov x0 0
+:enl_cmp
+cmp x0 x1
+b.ge enl_found
+add x13 x2 x0
+ldrb w13 x19 x13
+add x12 x18 x0
+ldrb w12 x19 x12
+cmp x13 x12
+b.ne enl_next
+add x0 x0 1
+b enl_cmp
+:enl_next
+add x4 x4 1
+b enl_loop
+:enl_found
+add x5 x5 8
+ldr w0 x5
+mov x7 1
+b enl_ret
+:enl_nf
+mov x7 0
+:enl_ret
+sub x28 x28 8
+ldr x13 x28
+sub x28 x28 8
+ldr x12 x28
+ret
 :funcdone
 adr x9 spush0
 bl emitstr
@@ -1856,6 +2002,14 @@ cmp x7 0
 b.ne ceid_realvar
 cmp x0 0
 b.ne ceid_realvar
+bl enumlookup
+cmp x7 0
+b.eq ceid_adr
+mov x1 x0
+bl emitval
+mov x3 0
+b celoop
+:ceid_adr
 adr x9 sadrx0f
 bl emitstr
 bl copyspan
@@ -2433,25 +2587,39 @@ sub x28 x28 8
 ldr x30 x28
 ret
 :emitnum
+str x30 x28
+add x28 x28 8
+bl parseval
+mov x1 x0
+bl emitval
+sub x28 x28 8
+ldr x30 x28
+ret
+:emitval
 mov x27 x30
+str x1 x28
+add x28 x28 8
 adr x9 smovx0
 bl emitstr
-bl parseval
+sub x2 x28 8
+ldr x0 x2
 mov x2 65535
 and x0 x0 x2
 bl emitdec
 adr x9 snlonly
 bl emitstr
-bl parseval
+sub x2 x28 8
+ldr x0 x2
 mov x7 16
 lsr x0 x0 x7
 mov x2 65535
 and x0 x0 x2
 cmp x0 0
-b.eq en_hw2
+b.eq ev_hw2
 adr x9 smovkx0
 bl emitstr
-bl parseval
+sub x2 x28 8
+ldr x0 x2
 mov x7 16
 lsr x0 x0 x7
 mov x2 65535
@@ -2459,17 +2627,19 @@ and x0 x0 x2
 bl emitdec
 adr x9 ss16
 bl emitstr
-:en_hw2
-bl parseval
+:ev_hw2
+sub x2 x28 8
+ldr x0 x2
 mov x7 32
 lsr x0 x0 x7
 mov x2 65535
 and x0 x0 x2
 cmp x0 0
-b.eq en_hw3
+b.eq ev_hw3
 adr x9 smovkx0
 bl emitstr
-bl parseval
+sub x2 x28 8
+ldr x0 x2
 mov x7 32
 lsr x0 x0 x7
 mov x2 65535
@@ -2477,17 +2647,19 @@ and x0 x0 x2
 bl emitdec
 adr x9 ss32
 bl emitstr
-:en_hw3
-bl parseval
+:ev_hw3
+sub x2 x28 8
+ldr x0 x2
 mov x7 48
 lsr x0 x0 x7
 mov x2 65535
 and x0 x0 x2
 cmp x0 0
-b.eq en_push
+b.eq ev_push
 adr x9 smovkx0
 bl emitstr
-bl parseval
+sub x2 x28 8
+ldr x0 x2
 mov x7 48
 lsr x0 x0 x7
 mov x2 65535
@@ -2495,11 +2667,12 @@ and x0 x0 x2
 bl emitdec
 adr x9 ss48
 bl emitstr
-:en_push
+:ev_push
 adr x9 spushnl
 bl emitstr
 mov x2 0
 bl tpush
+sub x28 x28 8
 mov x30 x27
 ret
 :parseval
@@ -4372,6 +4545,8 @@ ret
 :nt_kw4e
 add x2 x18 1
 ldrb w5 x19 x2
+cmp x5 110
+b.eq nt_kw4en
 cmp x5 108
 b.ne nt_plainid
 add x2 x18 2
@@ -4383,6 +4558,18 @@ ldrb w5 x19 x2
 cmp x5 101
 b.ne nt_plainid
 mov x29 6
+mov x20 3
+ret
+:nt_kw4en
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 117
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 109
+b.ne nt_plainid
+mov x29 14
 mov x20 3
 ret
 :nt_kw4g
@@ -5075,6 +5262,9 @@ b ps_l
 .byte 0
 :sgdover
 .ascii "stage2: global data too large\n"
+.byte 0
+:senumerr
+.ascii "stage2: enum member needs an integer value\n"
 .byte 0
 :sbrkerr
 .ascii "stage2: break/continue outside a loop\n"

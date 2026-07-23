@@ -291,9 +291,13 @@ directives — a `#` token discards the line, matching M2-Planet's own `--bootst
    Emitting each literal **inline behind a skip branch** fixes this *and* deletes (2).
 
 **B. Language.**
-4. **`enum`** — 9 blocks, ~40 constants, and the largest gap: `NULL` (287 uses), `TRUE`,
+4. ~~**`enum`**~~ — **DONE (m66)**. 10 blocks, all anonymous and file-scope, every member
+   with an explicit integer value. This was the largest gap: `NULL` (287 uses), `TRUE`,
    `FALSE`, `EOF`, `stdin/stdout/stderr` and `EXIT_*` are all enum constants in
-   `M2libc/bootstrap.c`. That is precisely *why* stripping every directive (m62) works.
+   `M2libc/bootstrap.c` — which is precisely *why* stripping every directive (m62) works.
+   Constants are looked up after locals and globals and before the `adr x0 <name>`
+   function-address fallback, so variables still shadow them and function names still
+   become addresses.
 5. ~~**`break` (13) / `continue` (2)**~~ — **DONE (m64)**. Was silently miscompiled;
    outside a loop it is now a diagnostic + exit 2. `break`/`continue` scan the block stack
    for the nearest loop record, skipping `if`/`else` — which is what the 11 breaks sitting

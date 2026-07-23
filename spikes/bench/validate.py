@@ -2116,6 +2116,137 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     ]:
         check(f"stage2 for rung: prior control flow unchanged -> {want}", _exit_safe(cs), want)
 
+    print("== stage 2 enum constants (A26) ==")
+    # M2-Planet's 10 enum blocks are ALL anonymous, all file-scope, and every member
+    # has an explicit integer value -- verified against the vendored source, not
+    # assumed. They carry NULL (287 uses), TRUE/FALSE, EOF, stdin/stdout/stderr and
+    # EXIT_*, which is precisely why m62 could strip every preprocessor directive and
+    # still have those names resolve: they were never macros to begin with.
+    #
+    # Constants live in their own 16-byte-record table [name_start | name_len | value
+    # | pad], names compared against the input buffer exactly as gsymlookup does, so
+    # nothing is copied. The lookup sits in ceid_var AFTER local and global variables
+    # miss and BEFORE the `adr x0 <name>` function-address fallback. That ordering is
+    # the whole design:
+    #   - a local or global variable of the same name still shadows the constant
+    #   - a function name still becomes an address
+    #   - and an identifier that would previously have silently become `adr x0 <undef>`
+    #     -- the m55 "faults below NULLFLOOR" shape -- now resolves if it is a constant
+    #
+    # Implicit values (`enum{A,B,C}`) are supported even though M2-Planet never uses
+    # them, because the alternative is not "unsupported" but "silently wrong": without
+    # a running counter, `enum{A,B}` would parse as a member followed by junk.
+    # Anything else after `=` (an expression, a negative literal, another constant) is
+    # a diagnostic plus exit 2 rather than a guess.
+    #
+    # THE RISK IN THIS RUNG IS NOT enum. To emit a constant's value the compiler needs
+    # to emit an integer whose value is in a REGISTER, while emitnum could only emit
+    # one whose text was in the input. emitnum was therefore split: emitval does the
+    # halfword lowering from a value, emitnum is now a four-line wrapper that parses
+    # the token and calls it. Every integer literal in every program flows through the
+    # new code, so the byte-identity corpus below spans literals of all four halfword
+    # widths -- that is what actually guards this change.
+    def _exit_safe(csrc):
+        try:
+            return _exit(csrc)
+        except Exception as e:
+            return f"<{type(e).__name__}>"
+
+    for cs, want in [
+        ("enum{FALSE=0,TRUE=1,};int main(){return TRUE;}", 1),
+        ("enum{FALSE=0,TRUE=1,};int main(){if(FALSE){return 9;}return 5;}", 5),
+        ("enum{A=3,B=4};int main(){return A+B;}", 7),
+        # trailing comma, as every one of M2-Planet's blocks has
+        ("enum{A=3,B=4,};int main(){return A*B;}", 12),
+        # implicit values: unused by the target, supported so they cannot be silently wrong
+        ("enum{A,B,C};int main(){return C*10+B;}", 21),
+        ("enum{A=5,B,C};int main(){return C;}", 7),
+        # hex, including the width EOF uses
+        ("enum{X=0x10,};int main(){return X;}", 16),
+        ("enum{NULLV=0,};int main(){int* p;p=NULLV;if(NULLV==p){return 4;}return 9;}", 4),
+        # cc.h's actual layout: blank lines, tabs, comments inside the block
+        ("enum\n{\n\tFALSE = 0,\n\tTRUE = 1,\n};\n\nenum\n{\n\t/* c */\n\tKNIGHT = 1,\n\tX86 = 4,\n};\n"
+         "int main(){return TRUE+X86;}", 5),
+        # a variable of the same name still wins -- the constant is looked up only
+        # after locals and globals miss
+        ("enum{V=7};int main(){int V;V=2;return V;}", 2),
+        # every expression position
+        ("enum{N=3};int f(int x){return x*2;}int main(){int a[4];a[N]=N;return a[N]+f(N);}", 9),
+        ("enum{LIM=4};int main(){int i;int s;s=0;for(i=0;i<LIM;i=i+1){s=s+i;}return s;}", 6),
+        ("enum{STOP=3};int main(){int i;i=0;do{i=i+1;if(i==STOP){break;}}while(i<9);return i;}", 3),
+        # a named tag is accepted and its constants still register (M2-Planet has none,
+        # but a tag must not be mistaken for the first member)
+        ("enum Color{RED=2,BLUE=5};int main(){return RED+BLUE;}", 7),
+        # M2libc bootstrap.c's four blocks, verbatim, including EOF = 0xFFFFFFFF
+        ("enum\n{\n\tstdin = 0,\n\tstdout = 1,\n\tstderr = 2,\n};\n\nenum\n{\n\tEOF = 0xFFFFFFFF,\n"
+         "\tNULL = 0,\n};\n\nenum\n{\n\tEXIT_FAILURE = 1,\n\tEXIT_SUCCESS = 0,\n};\n\nenum\n{\n"
+         "\tTRUE = 1,\n\tFALSE = 0,\n};\nint main(){int* p;p = NULL;if(NULL == p){if(TRUE){"
+         "return stderr + EXIT_FAILURE;}}return FALSE;}", 3),
+    ]:
+        check(f"stage2 enum exit -> {want}", _exit_safe(cs), want)
+
+    # A malformed member is a diagnostic plus exit 2, not a guess.
+    check("stage2 enum: '=' without an integer exits 2",
+          run(s2prog, stdin=b"enum{A=};int main(){return 1;}")[0], 2)
+    check("stage2 enum: '=' without an integer emits nothing",
+          len(run(s2prog, stdin=b"enum{A=};int main(){return 1;}")[1]), 0)
+    check("stage2 enum: an expression value exits 2",
+          run(s2prog, stdin=b"enum{A=1+2};int main(){return A;}")[0], 2)
+    # An enum block emits no code of its own -- it is a compile-time table only.
+    check("stage2 enum: declaration emits nothing",
+          _emit("int main(){return 7;}")
+          == _emit("enum{A=1,B=2};enum{C=3};int main(){return 7;}"), True)
+    # `enum` must not be confused with `else` -- both are 4 characters starting 'e'
+    check("stage2 enum: else still works alongside enum",
+          _exit_safe("enum{A=1};int main(){int x;x=0;if(x){return 9;}else{return A+1;}}"), 2)
+    # identifiers that merely start with a keyword are still identifiers
+    check("stage2 enum: 'enumerate' is an identifier",
+          _exit_safe("int main(){int enumerate;enumerate=4;return enumerate;}"), 4)
+
+    # THE LOAD-BEARING GUARD for this rung: emitnum was split so that emitval can emit
+    # an integer held in a register. EVERY integer literal in every program now flows
+    # through that code, so enum-free programs -- spanning literals of all four
+    # halfword widths -- must be byte-identical to the pre-rung compiler. CI diffs
+    # against HEAD~1; the behavioural half is pinned here.
+    for cs, want in [
+        ("int main(){return 0x10+2;}", 18),
+        ("int main(){return 1+2*3;}", 7),
+        ("int main(){return 255;}", 255),
+        ("int main(){int a;a=65535;int b;b=65536;if(a<b){return 11;}return 0;}", 11),
+        ("int main(){int a;a=4294967295;if(a>0){return 12;}return 0;}", 12),
+        ("int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){s=s+i;}return s;}", 10),
+        ("int f(int n){if(n<2){return n;}return f(n-1)+f(n-2);}int main(){return f(10);}", 55),
+    ]:
+        check(f"stage2 enum rung: literal emission unchanged -> {want}", _exit_safe(cs), want)
+    # order-independence: an enum block between two functions must not perturb the
+    # bytes of the one before it
+    _pre3 = "int g(){int i;i=0;while(i<3){i=i+1;}return i;}int main(){return g();}"
+    check("stage2 enum: appended enum leaves earlier bytes untouched",
+          _emit(_pre3 + "enum{Z=9};int later(){return Z;}").startswith(_emit(_pre3)), True)
+
+    # CROSS-RUNG COMPOSITION (m64 do/break/continue, m65 for, m66 enum). These three
+    # landed together and each has its own section above, but nothing yet checked that
+    # a constant can drive the new loop forms -- which is the only reason M2-Planet
+    # needs them at once: `while(TRUE)` in cc_macro.c is an enum constant driving a
+    # do-loop whose body holds three braceless-if breaks.
+    for cs, want in [
+        # an enum constant as the loop bound of each form
+        ("enum{LIM=6};int main(){int i;int s;s=0;for(i=0;i<LIM;i=i+1){s=s+1;}return s;}", 6),
+        ("enum{LIM=4};int main(){int i;i=0;while(i<LIM){i=i+1;}return i;}", 4),
+        ("enum{T=1};int main(){int n;n=0;do{n=n+1;}while(n<T+3);return n;}", 4),
+        # cc_macro.c:912's actual shape: `do { ... if(...) break; } while(TRUE);`
+        ("enum{TRUE=1,FALSE=0};int main(){int n;n=0;do{n=n+1;if(n>4) break;}while(TRUE);return n;}", 5),
+        # a constant as the guard of a braceless continue, and as the break test
+        ("enum{SKIP=2};int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){if(i==SKIP)continue;s=s+i;}return s;}", 8),
+        ("enum{STOP=4};int main(){int i;i=0;while(1){i=i+1;if(i==STOP){break;}}return i;}", 4),
+        # a constant in the init and step clauses, not just the condition
+        ("enum{START=2,STEP=3,LIM=9};int main(){int i;int n;n=0;for(i=START;i<LIM;i=i+STEP){n=n+1;}return n;}", 3),
+        # FALSE as a zero-trip condition for each form
+        ("enum{FALSE=0};int main(){int i;int s;s=0;for(i=0;i<FALSE;i=i+1){s=9;}return s;}", 0),
+        ("enum{FALSE=0};int main(){int n;n=0;do{n=n+1;}while(FALSE);return n;}", 1),
+    ]:
+        check(f"stage2 enum x loops -> {want}", _exit_safe(cs), want)
+
     print("== stage 2 capacity: input, data, adr reach (A23) ==")
     # THE COMPLAINT THAT STARTED THIS: hard-coded limits. Three remained after
     # A22 streamed the output, and all three are now structural rather than raised:

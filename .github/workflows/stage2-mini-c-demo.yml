@@ -1700,6 +1700,154 @@ jobs:
           fi
 
 
+          echo "== stage-2: enum constants (A26) =="
+          # M2-Planet's 10 enum blocks are all anonymous, all file-scope, and every
+          # member has an explicit integer value (checked against the vendored source).
+          # They carry NULL (287 uses), TRUE/FALSE, EOF, stdin/stdout/stderr and EXIT_*
+          # -- which is exactly why m62 could strip every preprocessor directive and
+          # still have those names resolve: they were never macros.
+          #
+          # Constants live in a 16-byte-record table [name_start|name_len|value|pad],
+          # names compared against the input buffer as gsymlookup does. The lookup sits
+          # in ceid_var AFTER locals and globals miss and BEFORE the `adr x0 <name>`
+          # function-address fallback, so a variable of the same name still shadows the
+          # constant, a function name still becomes an address, and an identifier that
+          # would previously have become `adr x0 <undef>` (the m55 fault-below-NULLFLOOR
+          # shape) now resolves if it is a constant.
+          #
+          # THE RISK HERE IS NOT enum. Emitting a constant needs an integer whose value
+          # is in a REGISTER, while emitnum could only emit one whose text was in the
+          # input -- so emitnum was split into emitval (lowers a value) plus a wrapper.
+          # Every integer literal in every program now flows through that code, which is
+          # what the byte-identity corpus at the end of this section actually guards.
+          enum_ok=yes
+          etry() {
+            set +e
+            printf '%s' "$1" | timeout 30 qemu-aarch64 ./stage2 > et.s
+            if [ $? -ne 0 ] || [ ! -s et.s ]; then
+              enum_ok=no
+              printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'
+              set -e; return
+            fi
+            cat et.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
+            set -e
+            set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; enum_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          etry 'enum{FALSE=0,TRUE=1,};int main(){return TRUE;}' 1 'enum constant in an expression'
+          etry 'enum{FALSE=0,TRUE=1,};int main(){if(FALSE){return 9;}return 5;}' 5 'enum constant as a condition'
+          etry 'enum{A=3,B=4,};int main(){return A*B;}' 12 'trailing comma (every M2-Planet block has one)'
+          etry 'enum{A,B,C};int main(){return C*10+B;}' 21 'implicit values'
+          etry 'enum{A=5,B,C};int main(){return C;}' 7 'implicit values continue from an explicit one'
+          etry 'enum{X=0x10,};int main(){return X;}' 16 'hex value'
+          etry 'enum{NULLV=0,};int main(){int* p;p=NULLV;if(NULLV==p){return 4;}return 9;}' 4 'zero constant compared against a pointer'
+          etry 'enum{V=7};int main(){int V;V=2;return V;}' 2 'a variable of the same name shadows the constant'
+          etry 'enum{N=3};int f(int x){return x*2;}int main(){int a[4];a[N]=N;return a[N]+f(N);}' 9 'constant as subscript, value and argument'
+          etry 'enum{LIM=4};int main(){int i;int s;s=0;for(i=0;i<LIM;i=i+1){s=s+i;}return s;}' 6 'constant as a for bound'
+          etry 'enum{STOP=3};int main(){int i;i=0;do{i=i+1;if(i==STOP){break;}}while(i<9);return i;}' 3 'constant compared inside a do loop'
+          etry 'enum Color{RED=2,BLUE=5};int main(){return RED+BLUE;}' 7 'named tag is not mistaken for the first member'
+          etry 'int main(){int enumerate;enumerate=4;return enumerate;}' 4 'identifiers starting with a keyword are identifiers'
+          etry 'enum{A=1};int main(){int x;x=0;if(x){return 9;}else{return A+1;}}' 2 'else still works alongside enum'
+          # cc.h's real layout: blank lines, tabs and comments inside the block
+          etry 'enum
+          {
+          	FALSE = 0,
+          	TRUE = 1,
+          };
+
+          enum
+          {
+          	/* a comment */
+          	KNIGHT = 1,
+          	X86 = 4,
+          };
+          int main(){return TRUE+X86;}' 5 'cc.h layout: comments and blank lines in the block'
+          # M2libc bootstrap.c's four blocks verbatim, including EOF = 0xFFFFFFFF
+          etry 'enum
+          {
+          	stdin = 0,
+          	stdout = 1,
+          	stderr = 2,
+          };
+
+          enum
+          {
+          	EOF = 0xFFFFFFFF,
+          	NULL = 0,
+          };
+
+          enum
+          {
+          	EXIT_FAILURE = 1,
+          	EXIT_SUCCESS = 0,
+          };
+
+          enum
+          {
+          	TRUE = 1,
+          	FALSE = 0,
+          };
+          int main(){int* p;p = NULL;if(NULL == p){if(TRUE){return stderr + EXIT_FAILURE;}}return FALSE;}' 3 'M2libc bootstrap.c enum blocks verbatim'
+
+          # --- cross-rung composition (m64 do/break/continue, m65 for, m66 enum) ----
+          # cc_macro.c:912 is the reason all three are needed at once: a do-loop whose
+          # condition is the enum constant TRUE and whose body holds braceless-if breaks.
+          etry 'enum{TRUE=1,FALSE=0};int main(){int n;n=0;do{n=n+1;if(n>4) break;}while(TRUE);return n;}' 5 'do{...if(..) break;}while(TRUE) -- cc_macro.c shape'
+          etry 'enum{LIM=6};int main(){int i;int s;s=0;for(i=0;i<LIM;i=i+1){s=s+1;}return s;}' 6 'enum constant as a for bound'
+          etry 'enum{SKIP=2};int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){if(i==SKIP)continue;s=s+i;}return s;}' 8 'enum constant guarding a braceless continue'
+          etry 'enum{START=2,STEP=3,LIM=9};int main(){int i;int n;n=0;for(i=START;i<LIM;i=i+STEP){n=n+1;}return n;}' 3 'enum constants in the init and step clauses'
+
+          # --- structural -----------------------------------------------------------
+          # An enum block is a compile-time table: it must emit no code at all.
+          printf '%s' 'int main(){return 7;}' | qemu-aarch64 ./stage2 > eplain.s
+          printf '%s' 'enum{A=1,B=2};enum{C=3};int main(){return 7;}' | qemu-aarch64 ./stage2 > eenum.s
+          cmp -s eplain.s eenum.s || { echo "  enum declaration emitted code"; enum_ok=no; }
+          # A malformed member is a diagnostic plus exit 2, not a guess.
+          set +e
+          printf '%s' 'enum{A=};int main(){return 1;}' | timeout 30 qemu-aarch64 ./stage2 > ee.s 2> ee.err; rce=$?
+          set -e
+          [ "$rce" = 2 ] || { echo "  WRONG: enum{A=} exited $rce, want 2"; enum_ok=no; }
+          if [ -s ee.s ]; then echo "  WRONG: malformed enum still emitted code"; enum_ok=no; fi
+          grep -q 'enum member' ee.err || { echo "  MISSING enum diagnostic on stderr"; enum_ok=no; }
+          set +e
+          printf '%s' 'enum{A=1+2};int main(){return A;}' | timeout 30 qemu-aarch64 ./stage2 > ee2.s 2>/dev/null; rce2=$?
+          set -e
+          [ "$rce2" = 2 ] || { echo "  WRONG: an expression enum value exited $rce2, want 2"; enum_ok=no; }
+          printf '  %-64s %s\n' 'structural: emits nothing, malformed members exit 2' \
+                 "$([ "$enum_ok" = yes ] && echo OK || echo DIFF)"
+
+          # --- byte-identity against the PRE-RUNG compiler ---------------------------
+          # emitnum was split so emitval can lower a value held in a register, so EVERY
+          # integer literal now flows through new code. The corpus spans literals of all
+          # four halfword widths. Runs only on the commit that introduces the rung.
+          if git show HEAD~1:spikes/stage2-mini-c/stage2-mini-c.s1 > olde.s1 2>/dev/null && ! grep -q '^:doenum$' olde.s1; then
+            cat olde.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2olde
+            eid=yes
+            ecmp() {
+              printf '%s' "$1" | qemu-aarch64 ./stage2     > enew.s
+              printf '%s' "$1" | qemu-aarch64 ./stage2olde > eold.s
+              cmp -s enew.s eold.s || { eid=no; echo "  DIFFERS: $1"; }
+            }
+            ecmp 'int main(){return 0x10+2;}'
+            ecmp 'int main(){return 1+2*3;}'
+            ecmp 'int main(){return 255;}'
+            ecmp 'int main(){return 65535;}'
+            ecmp 'int main(){return 65536;}'
+            ecmp 'int main(){int a;a=4294967295;return 0;}'
+            ecmp 'int main(){int i;int s;s=0;for(i=0;i<5;i=i+1){s=s+i;}return s;}'
+            ecmp 'int main(){int i;i=0;do{i=i+1;}while(i<5);return i;}'
+            ecmp 'int f(int n){if(n<2){return n;}return f(n-1)+f(n-2);}int main(){return f(10);}'
+            ecmp 'int main(){int a[4];a[0]=7;a[1]=9;return a[0]+a[1];}'
+            ecmp 'struct N{int v;};int main(){struct N n;n.v=5;return n.v;}'
+            [ "$eid" = yes ] || enum_ok=no
+            printf '  %-64s %s\n' 'byte-identical to HEAD~1 on enum-free programs' \
+                   "$([ "$eid" = yes ] && echo OK || echo DIFF)"
+          else
+            printf '  %-64s %s\n' 'byte-identical to HEAD~1 on enum-free programs' 'SKIP (HEAD~1 already has the rung)'
+          fi
+
+
           {
             echo "## stage2-mini-c — variables, if/while, reassignment, functions + recursion"
             echo '```'
@@ -1729,6 +1877,7 @@ jobs:
             echo "capacity: input/inline data/adr (A23)   : $cap23_ok"
             echo "do{}while + break + continue (A24)     : $dw_ok"
             echo "for loops (A25)                         : $for_ok"
+            echo "enum constants (A26)                    : $enum_ok"
             echo "eor byte-identical to as             : $eor_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
@@ -1741,8 +1890,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ] && [ "$cap23_ok" = yes ] && [ "$dw_ok" = yes ] && [ "$for_ok" = yes ]; then
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ] && [ "$cap23_ok" = yes ] && [ "$dw_ok" = yes ] && [ "$for_ok" = yes ] && [ "$enum_ok" = yes ]; then
             echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct; and the single-pass @-target accounting invariant holds (every emitted line assembles to exactly 4 bytes, so the emitted-instruction counter stays equal to the true instruction count and a function's meaning does not depend on what was defined before it)."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok cap23=$cap23_ok dowhile=$dw_ok for=$for_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok cap23=$cap23_ok dowhile=$dw_ok for=$for_ok enum=$enum_ok"; exit 1
           fi

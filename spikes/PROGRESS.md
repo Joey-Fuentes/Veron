@@ -1226,8 +1226,9 @@ than returning something wrong.
 **Still open from the §6(b) list:** string/char escapes (~995 uses — the largest single
 count), `for`, `break`/`continue`, `do {} while`, `unsigned` as a word-typed keyword,
 `enum`, and the preprocessor (escapes landed in m61, the preprocessor in m62,
-`do {} while` + `break`/`continue` in m64, and `for` in m65 — the loop family is
-complete) — plus the gaps the m58 census surfaced (below), of which
+`do {} while` + `break`/`continue` in m64, `for` in m65 — the loop family is
+complete — and `enum` in m66, which is what actually made the m62 directive-stripping
+sound, since `NULL`/`TRUE`/`FALSE`/`EOF` were enum constants all along) — plus the gaps the m58 census surfaced (below), of which
 **forward prototypes landed in m59** and **braceless bodies in m60**.
 ---
 
@@ -1549,7 +1550,8 @@ block-record change goes wrong. `validate.py` 680 → **725**; `stage2-mini-c-de
 only in order, so the check is that the body precedes the test in one and follows it in the
 other. It was verified to go red when handed a while-shaped emission.
 
-**Not unlocked:** `cc_macro.c` still needs `enum` for its `while(TRUE)`. `for` (4 uses) was
+**Not unlocked by this rung alone:** `cc_macro.c`'s do-loop is `while(TRUE)`, which also
+needs `enum` — landed separately in m66. `for` (4 uses) was
 deliberately left out — its step clause appears before the body but must be emitted after
 it, and m63 deleted backpatching, so the single-pass answer is to stash the step's *source
 span* in the record and re-lex it at close time. That is a different mechanism, it widens
@@ -1626,10 +1628,68 @@ witness pins the whole jump-over layout in one assertion: the four labels are *a
 top, exit, step, body but *defined* top, step, body, exit, so the definition order is ids
 0, 2, 3, 1. Any other layout changes it.
 
-**All four of M2-Planet's `for` sites now compile.** With this rung the loop family is
-complete — `while`, `do{}while`, `for`, `break`, `continue`, `goto` — and **`enum` is the
-last large language gap** (287 `NULL`s depend on it), followed by `unsigned`/`long` as
-word-typed keywords, `char**` subscripting, and `argc`/`argv`.
+**All four of M2-Planet's `for` sites now compile**, and with this rung the loop family is
+complete — `while`, `do{}while`, `for`, `break`, `continue`, `goto`.
+
+*(Correction, added at m66: this entry originally called `enum` the last large gap, and the
+m64 entry above said `cc_macro.c` was still blocked on it. Both were copied from §6's list
+rather than checked against the compiler; `enum` landed in m66. The lesson is the same one
+m58's re-census recorded — the remaining-work list is documentation, not evidence, and a
+one-line grep for `:doenum` would have settled it either time.)*
+
+
+---
+
+### m66 (A26) — `enum` constants
+
+M2-Planet's **10 enum blocks are all anonymous, all file-scope, and every member has an
+explicit integer value** — checked against the vendored source rather than assumed. They
+carry `NULL` (287 uses), `TRUE`/`FALSE`, `EOF`, `stdin`/`stdout`/`stderr` and `EXIT_*`,
+which is precisely *why* m62 could strip every preprocessor directive and still have those
+names resolve: **they were never macros**. `NULL` is an enum constant in
+`M2libc/bootstrap.c`, not a `#define`.
+
+Constants live in their own 16-byte-record table — `[name_start | name_len | value | pad]`
+— with names compared against the input buffer exactly as `gsymlookup` does, so nothing is
+copied. The interesting decision is *where the lookup sits*: in `ceid_var`, **after** local
+and global variables miss and **before** the `adr x0 <name>` function-address fallback.
+That ordering is the whole design:
+
+- a local or global variable of the same name still shadows the constant;
+- a function name still becomes an address;
+- and an identifier that would previously have silently become `adr x0 <undef>` — the m55
+  "faults below `NULLFLOOR`" shape — now resolves if it is a constant.
+
+Implicit values (`enum{A,B,C}`) are supported although M2-Planet never uses them, because
+the alternative is not "unsupported" but "silently wrong": without a running counter,
+`enum{A,B}` parses as a member followed by junk. Anything else after `=` — an expression, a
+negative literal, another constant — is a **diagnostic plus exit 2** rather than a guess.
+
+**The risk in this rung was not `enum`.** Emitting a constant requires emitting an integer
+whose value is in a **register**, whereas `emitnum` could only emit one whose *text* was in
+the input buffer — it re-called `parseval` four times, once per halfword. So `emitnum` was
+split: `emitval` does the halfword lowering from a value parked on the spill stack, and
+`emitnum` is now a four-line wrapper that parses the token and calls it. **Every integer
+literal in every program now flows through that new code.** The guard is therefore not the
+enum tests but a byte-identity corpus spanning literals of all four halfword widths (255,
+65535, 65536, 4294967295), which must match the pre-rung compiler exactly. It does.
+
+**Verified** through the real assembled ladder on the target's own text: `cc.h`'s layout
+(blank lines, tabs, comments inside the block, trailing commas) and **M2libc
+`bootstrap.c`'s four blocks verbatim**, including `EOF = 0xFFFFFFFF`. Also: constants as
+subscripts, arguments, `for` bounds and loop conditions; a named tag not being mistaken for
+the first member; `else` still tokenizing correctly now that a second four-letter keyword
+starts with `e`; and `enumerate` remaining an identifier. `validate.py` 757 → **~790**.
+
+**One semantic nuance worth recording.** Values are stored in a 32-bit field, so
+`EOF = 0xFFFFFFFF` becomes 4294967295, not −1. This is consistent as long as both sides of
+a comparison come from the same constant — which is the case here, since we compile M2libc
+too, so `fgetc`'s `return EOF` and the caller's `== EOF` are the same value. It would only
+bite if a *host* libc supplied a sign-extended `-1`, which never happens in this ladder.
+
+**With this rung the largest remaining gap is gone.** What is left for the M2-Planet
+handoff: `unsigned`/`long` as word-typed keywords, `char**` subscripting, unnamed prototype
+parameters, `argc`/`argv`, and `brk`/inline `asm`.
 
 
 ---
@@ -1769,9 +1829,14 @@ stage in the language of the stage below.
   moved to bit 3 to make room for a `do` kind), and **`for` in m65** (emitted in source
   order with a jump over the step, so no span replay; its close is `dclose_while`
   unchanged, and its init/step clauses are compiled by the ordinary statement machinery
-  via phase records on the block stack). **The loop family is complete.** Still open are
-  `enum` (now the largest gap, 287 `NULL`s depend on it), `unsigned`/`long` as word-typed
-  keywords, `char**` subscripting, and `argc`/`argv` (compound assign and
+  via phase records on the block stack). **The loop family is complete.** **`enum` landed in m66**
+  (anonymous file-scope blocks, looked up after variables and before the function-address
+  fallback; the real risk was splitting `emitnum` into `emitval` so a value in a register
+  could be lowered, which put every integer literal in the program on new code). Still open
+  are `unsigned`/`long` as word-typed keywords (probed: both fail today), `char**`
+  subscripting (faults), `argc`/`argv` (compiles, but `argc` reads 0 — never wired to the
+  stack), and `brk`/inline `asm`. Unnamed prototype parameters were on this list and are
+  **not** a gap: `int f(int);`, `int f(int,int);` and `int f(char*);` all compile and run (compound assign and
   `++`/`--` are **not** needed — zero uses in the self-host); **(3)** compile
   **M2-Planet's own source** with stage 2, so
   **M2-Planet becomes the de-facto "stage 3."** No throwaway compiler; the artifact we
