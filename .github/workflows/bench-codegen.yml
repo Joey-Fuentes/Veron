@@ -94,11 +94,12 @@ jobs:
           EOF
           # 2. I/O: one getchar-shaped read per byte, minimal work per byte.
           cat > io.c <<'EOF'
+          char buf[8];
+
           int main()
           {
           	int n;
           	int r;
-          	char buf[2];
           	n = 0;
           	r = read(0, buf, 1);
           	while(r > 0)
@@ -142,8 +143,8 @@ jobs:
           by_stage2   io.c      io_s2
           # 'read' may come from libc-core.M1; if not, pull in M2libc's asm
           # definitions (our M2-Planet is upstream's code, so asm() is fine).
-          if ! by_m2planet io.c io_m2 2>/dev/null; then
-            echo "  (io: libc-core.M1 did not supply read; adding M2libc bootstrap)"
+          if ! by_m2planet io.c io_m2; then
+            echo "  (io: retrying with M2libc's read)"
             by_m2planet io.c io_m2 "-f $L/aarch64/linux/bootstrap.c"
           fi
           ls -l compute_s2 compute_m2 io_s2 io_m2
