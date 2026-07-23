@@ -1224,9 +1224,158 @@ every stage is `timeout`-bounded, since a mis-aimed backpatch loops forever rath
 than returning something wrong.
 
 **Still open from the §6(b) list:** string/char escapes (~995 uses — the largest single
-count), `goto`+labels, `for`/`break`/`continue`, `do {} while`, `void` return types and
-`(void)` parameter lists, `unsigned` as a word-typed keyword, `enum`, `char**`
-parameters, unnamed prototype parameters, and the preprocessor.
+count), `for`/`break`/`continue`, `do {} while`, `unsigned` as a word-typed keyword,
+`enum`, and the preprocessor — plus the gaps the m58 census surfaced (below), of which
+**forward prototypes landed in m59** and **braceless bodies in m60**.
+---
+
+### m58 (A17) — `goto` + labels, and a re-census of the target subset
+
+`goto L;` and `L:` label definitions, function-scoped. The rung is small because of a
+decision two milestones back: since **m32 stage 1 is a two-pass numeric resolver**, an
+emitted label can be *named* and stage 1 will resolve it — including a **forward**
+reference. So a `goto` needs no backpatching in this single-pass compiler at all, unlike
+`if`/`while` (m29), which must compute absolute `@<pos>` targets because their forward
+target is not a name. A label emits `:__Lg<fnidx>_<name>`; a `goto` emits
+`b __Lg<fnidx>_<name>`; stage 1 does the rest.
+
+**Labels are function-scoped**, via a per-function index kept in a new save-area slot
+(`0x7F000+48`), bumped once per function definition and read by both the label and the
+goto emitter — so the two agree without a table, which is what makes it work in one pass.
+Two functions may each define `lp:`. Worth recording: **M2-Planet's own compiler does
+not do this** — it emits the bare source name into one flat assembler namespace (hence
+the `/* because of how M2-Planet treats labels */` comment in its switch code), and
+relies on every label in its source being globally unique. Ours is stricter than the
+target requires, at no cost.
+
+The load-bearing risk was the **A13 `x17` invariant**, not the codegen. A label line
+assembles to **0 bytes**, so it must bump neither `x17` nor the byte position; if it did,
+the `@`-targets of every function emitted *afterwards* would drift — the silent,
+deferred, order-dependent corruption of m54. The label's trailing newline is therefore
+written with a raw `strb`, never through `emitstr` (which counts `\n`), while the goto's
+newline *does* go through `emitstr` because a `b` line is a real 4-byte instruction.
+Guarded **exactly**: the same program with and without a label definition must emit the
+**identical** `@`-target. That check matters more than it looks — when the bug was
+deliberately re-injected, "no blank line" and "targets 4-aligned and in range" both still
+passed (the drifted target is still aligned and still in range), and only the exact
+witness plus the behavioural runs went red. Nine checks turn red on the injected bug,
+including the order-independence witness. `validate.py` 549 → **569**;
+`stage2-mini-c-demo` gained a `goto_ok` section wired into the pass gate, every stage
+`timeout`-bounded since a mis-aimed branch loops forever rather than returning wrong.
+
+Verified through the real assembled ladder on the shapes M2-Planet actually uses:
+backward jump to a label at body top (its `reset:` loop idiom), forward jump near the end
+(`goto exit_success;`), jumps out of nested `if`/`if`/`while`, out of a `while`, from an
+`else` arm, two labels in one function, a label before a declaration, and the same label
+name in two functions. The whole prior corpus is unchanged, and a program with no `goto`
+emits no `__Lg` at all.
+
+**Re-census of the target subset (see `TARGET-SUBSET.md` §3/§6b).** Checking goto against
+the pinned source meant re-deriving the counts, and the doc was wrong in several places —
+its stripper mis-handles the `/*` and `;` *inside M2-Planet's own string literals*, which
+silently drops `cc_core.c`. Corrected: **13 gotos / 8 labels** (not 8/4), **7 `do {} while`**
+(not 2). More importantly, four gaps were **missing from the list entirely**, all
+confirmed against the current compiler rather than read off the source:
+
+- **Braceless statement bodies — ~370 sites.** `if(cond) return x;` with no braces.
+  Compiles to nonsense today. Breakdown: 199 `return …;`, 120 call/assign, 34 bare
+  `else`, 11 `break;`, 2 `goto`. Zero of them nest, so there is no dangling-`else`
+  problem — the controlled statement always ends at the first `;` at paren depth 0.
+- **Forward prototypes — 73 sites.** `int f(int, int);` at file scope. **Hangs the
+  compiler**: `funcloop` commits to a definition on seeing `(` and never expects `;`.
+  This is the single biggest blocker — M2-Planet declares nearly every function ahead
+  of use, so it affects all eight self-host files.
+- **`break` (13) / `continue` (2).** Silently miscompiled today (parsed as a bare
+  identifier expression and discarded), which is the dangerous failure mode.
+- **`argc`/`argv` — 29 uses.** `int main(int argc, char** argv)`. This is a *runtime*
+  gap, not a parser one: `smainpre` does `bl main` with an empty value stack, so
+  `_start` needs to read the kernel's initial stack and push them.
+
+### m59 (A18) — forward prototypes
+
+`int f(int, int);` at file scope. This was the **largest blocker on real M2-Planet code**
+and the one that failed worst: `funcloop` committed to a *definition* the instant it saw
+`(` after the name, so the `;` where `{` should be derailed top-level parsing and the
+compiler **hung**. M2-Planet declares nearly every function ahead of use — 73 sites
+across all eight self-host files — so nothing of substance parsed before this.
+
+The fix is a paren-matching lookahead at the two places that peek for `(`: the `int`/`char`
+path (`fl_pkc`) and the `struct*`-return path added in m55 (`flg_sfpk`). Both now route
+through `fl_pchk`, which scans from `(` to its partner, skips whitespace, and branches on
+`;` (prototype — skip past it and resume) versus anything else (definition). Raw character
+scanning, not the tokenizer, matching the existing peeks around it.
+
+**A prototype declares nothing and emits nothing**, which is correct here rather than a
+shortcut: since m48 the `bl`-vs-`blr` split is read off the *symbol tables* — a called
+name found in no table is a function, so it gets a direct `bl` — meaning a function was
+never required to be declared before being called. Two things fall out for free:
+**unnamed parameters** (`int global_static_array(struct type*, char*);`) work because the
+declarator is never parsed at all, so that separate entry on the open list is now moot;
+and the emitted output is **byte-identical** with and without any number of prototypes,
+which is the strongest possible form of the A13 `x17` guarantee — no drift is even
+representable. Both are guarded (`cmp -s` of the two emissions; a prototype-only program's
+only label is `:main`).
+
+Verified through the real assembled ladder on all eight shapes that previously hung: named
+and unnamed parameters, a `struct*` return type, `void`, prototype + recursion, a prototype
+enabling mutual recursion, a prototype spanning several lines, and the no-prototype
+regression. `validate.py` 569 → **579**; `stage2-mini-c-demo` gained a `proto_ok` section
+wired into the pass gate, timeout-bounded since the old failure mode was a hang.
+
+---
+
+### m60 (A19) — braceless statement bodies
+
+`if(cond) return x;` with no braces — ~370 sites in M2-Planet's self-host (199 `return`,
+120 call/assign, 34 bare `else`, 11 `break`, 2 `goto`), silently miscompiled until now.
+Two parts, and the first was the one that mattered.
+
+**(1) The condition had to be bounded.** `compile_expr` never stopped at the condition's
+closing `)` — it relied on the body's `{` to terminate it, since `{` is punctuation it
+does not recognise. Worse, `ce_kw` treats **any** keyword in operand position as `sizeof`.
+So `if(a) return 5;` swallowed `return` into the condition and mangled it, and
+`if(a) f(b);` emitted the *call* as part of the condition and then tested **its** result.
+The fix keeps `compile_expr` untouched: scan to the matching `)` and temporarily lower
+**`x21`, the input length**, so the tokenizer reports EOF exactly there — a case
+`compile_expr` already terminates on cleanly (`cmp x20 0 / b.eq ceflush`). `x21` is saved
+and restored around the call on the `x28` spill stack. The scanner skips char and string
+literals exactly as the lexer does, so `if(c=='(')` cannot unbalance it — deliberately
+mirroring the lexer's current (escape-free) behaviour rather than being more capable than
+it, so both get fixed together in the escapes rung.
+
+**(2) A braceless body closes after one statement.** Block records now carry **kind+4**
+for a braceless variant (4=if, 5=while, 6=else), and every statement-completion exit —
+16 of them — routes through a new **`stmtend`**, which pops and closes while the top
+record is braceless. The close routines re-enter `stmtend` rather than `stmtloop`, so
+`if(a) if(b) x;` unwinds through both levels, and a **dangling `else` binds to the inner
+`if`** (verified: `if(a) if(b) return 1; else return 2;` with `a=1,b=0` returns 2). The
+`{`-consumption in `doif`/`dowhile`/the `else` arm became a shared `peekbrace` helper:
+`{` present → consume it and push the braced kind; absent → push the braceless kind and
+leave the cursor alone. A stray `;` at statement level now also completes a statement,
+which makes C's empty statement (`if(a) ;`) terminate instead of hanging.
+
+**This is a pure superset**, and that is checked rather than asserted: a corpus of braced
+programs (if, while, else, recursion, structs, arrays, goto, short-circuit) emits
+**byte-identical** output to the pre-rung compiler. The A13 `x17` invariant is re-verified
+per new construct (0 blank lines, 0 drift for braceless if/while/else/nested).
+
+The payoff witness is **M2-Planet-shaped code exercising m58+m59+m60 at once** —
+forward prototypes, a `goto` loop, braceless `if` bodies, `char*` parameters, subscripts,
+string literals, calls inside conditions, and unary `!`. `in_set` and `match` are the
+shape of M2-Planet's own helpers, with `match` written as its goto-loop idiom; the program
+returns 42 only if every assertion holds. It does. `validate.py` 579 → **611**;
+`stage2-mini-c-demo` gained a `bl_ok` section (19 behavioural runs + structural checks +
+the M2-shaped program) wired into the pass gate, timeout-bounded throughout.
+
+---
+
+And three entries can be **struck** — verified working, not merely assumed: **`void`
+return types and `(void)` parameter lists** (all 244 uses, free: the top-level loop
+treats an unknown leading type-word like `int`, the param loop skips non-keyword tokens,
+and `funcdone` already emits push-0 + epilogue so a function falling off the end returns
+0 with a balanced value stack), **`char**` parameters**, and **`sizeof(int)`/`sizeof(char)`**.
+The source also has **zero initialised globals**, so the uninitialised-only limit is fine.
+
 ---
 
 ## 6. What's next

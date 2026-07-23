@@ -200,6 +200,40 @@ int main(){ return name(2,3); }   // program is entered via bl main
   adds a non-4-byte emitted line, so the A13 `x17` invariant is untouched — re-checked
   for each new construct, including order-dependence of functions defined afterwards.
 
+- **goto + labels (A17)**: `goto L;` and `L:` definitions, **function-scoped**. Cheap
+  because stage 1 has been a two-pass *numeric resolver* since m32: an emitted label can
+  be a real name and stage 1 resolves it, **including a forward reference** — so unlike
+  `if`/`while` (which must backpatch absolute `@<pos>` targets) a `goto` needs no
+  backpatching at all. A label emits `:__Lg<fnidx>_<name>`, a goto emits
+  `b __Lg<fnidx>_<name>`, and the per-function index (a save-area slot bumped once per
+  definition) lets two functions each define `lp:` without colliding. The care is all in
+  the A13 `x17` invariant: a label line assembles to **0 bytes**, so its newline is
+  written with a raw `strb` rather than through `emitstr` (which counts `\n`) — otherwise
+  the `@`-targets of every function emitted *afterwards* would drift. Guarded exactly:
+  adding a label must shift no `@`-target.
+
+- **braceless statement bodies (A19)**: `if(cond) return x;` with no braces — plus bare
+  `else`, braceless `while`, nested braceless `if`, and correct **dangling-`else`** binding
+  (it attaches to the inner `if`). The hard part was not the block bookkeeping but the
+  **condition**: `compile_expr` never stopped at the condition's `)`, relying on the body's
+  `{` to terminate it, and `ce_kw` reads *any* keyword in operand position as `sizeof` — so
+  `if(a) return 5;` swallowed `return`, and `if(a) f(b);` emitted the call *as the condition*
+  and tested its result. Fixed without touching `compile_expr`: scan to the matching `)` and
+  temporarily lower `x21` (input length) so the tokenizer reports EOF there, which it already
+  handles cleanly. Block records gained a braceless variant (kind+4) closed by a new
+  `stmtend` that every statement-completion exit routes through, and which the close routines
+  re-enter so nesting unwinds. Braced programs emit **byte-identical** output — a pure
+  superset. ~370 sites in M2-Planet's self-host depend on this.
+- **forward prototypes (A18)**: `int f(int, int);` at file scope. Previously the compiler
+  **hung** on these — `funcloop` committed to a definition on seeing `(` and never expected
+  a `;` — which blocked essentially all real M2-Planet code (73 declaration sites). A
+  paren-matching lookahead now tells `f(...);` from `f(...){...}` at both peek sites (the
+  `int`/`char` path and the `struct*`-return path). A prototype **emits nothing**: since the
+  `bl`-vs-`blr` split is read off the symbol tables, a function never needed a prior
+  declaration to be callable, so the emitted output is byte-identical with and without any
+  number of prototypes — and **unnamed parameters** (`int f(struct type*, char*);`) work for
+  free, because the declarator is never parsed.
+
 ```
 int a=5; int b=a+1; return a*b;                         ->  exits 30
 int n=10; int s=0; while(n){ s=s+n; n=n-1; } return s;  ->  exits 55  (sum 1..10)

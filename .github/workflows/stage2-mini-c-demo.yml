@@ -801,6 +801,193 @@ jobs:
           printf '  %-64s %s\n' 'emitted branch forms: && b.eq / || b.ne / ^ eor' \
                  "$([ "$sc_ok" = yes ] && echo OK || echo DIFF)"
 
+          echo "== stage-2: goto + labels (A17) =="
+          # A label definition emits a NAMED label and `goto L` emits `b <label>`,
+          # both resolved by stage1 (a two-pass numeric resolver since m32) -- which
+          # is why a FORWARD goto needs no backpatching in this single-pass compiler.
+          # The name carries a per-function index (__Lg<idx>_<name>) so labels are
+          # FUNCTION-scoped as C requires; M2-Planet's own compiler emits the bare
+          # name into one flat namespace, so this is stricter than the target needs.
+          #
+          # The load-bearing risk is the A13 x17 invariant: a label line assembles to
+          # 0 bytes, so if it ever bumped the emitted-instruction counter, the numeric
+          # @-targets of every function emitted AFTERWARDS would drift -- a silent,
+          # deferred, order-dependent corruption. Guarded exactly (a label must shift
+          # no @-target) and behaviourally (a function defined after a goto-using one
+          # must still return what it returns alone). Timeout-bounded: a mis-aimed
+          # branch loops forever rather than returning something wrong.
+          goto_ok=yes
+          gtry() {
+            set +e
+            printf '%s' "$1" | timeout 30 qemu-aarch64 ./stage2 > gt.s
+            if [ $? -ne 0 ] || [ ! -s gt.s ]; then
+              goto_ok=no
+              printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'
+              set -e; return
+            fi
+            cat gt.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
+            set -e
+            set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; goto_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          # the shapes M2-Planet actually uses: a backward jump to a label at body top
+          # (its `reset:` loop idiom, 12 of its 13 gotos), one forward jump to a label
+          # near the end (`goto exit_success;`), and jumps out of several open blocks.
+          gtry 'int main(){int i;int s;i=0;s=0;top: i=i+1;s=s+i;if(i<4){goto top;}return s;}' 10 'backward goto (loop idiom)'
+          gtry 'int main(){int a;a=1;goto done;a=99;done: return a+4;}' 5 'forward goto skips code'
+          gtry 'int f(int n){int s;s=0;again: s=s+n;n=n-1;if(n>0){goto again;}return s;}int main(){return f(4);}' 10 'label at top of a function body'
+          gtry 'int main(){int i;i=0;top: i=i+1;if(i<20){if(i<10){while(i<50){i=i+3;goto top;}}}return i;}' 13 'goto out of if/if/while'
+          gtry 'int main(){int i;i=0;while(1){i=i+1;if(i>5){goto out;}}out: return i;}' 6 'goto out of a while loop'
+          gtry 'int main(){int a;a=0;top: a=a+1;if(a>3){return a;}else{goto top;}return 99;}' 4 'goto from an else arm'
+          gtry 'int main(){int a;a=0;one: a=a+1;if(a<2){goto one;}two: a=a+10;if(a<30){goto two;}return a;}' 32 'two labels in one function'
+          gtry 'int a(){int i;i=0;lp: i=i+1;if(i<3){goto lp;}return i;}int b(){int j;j=0;lp: j=j+2;if(j<8){goto lp;}return j;}int main(){return a()+b();}' 11 'same label name in two functions'
+          gtry 'int g(){int i;i=0;lp: i=i+1;if(i<3){goto lp;}return i;}int later(){int k;k=0;while(k<7){k=k+1;}return k;}int main(){return g()*10+later();}' 37 'function after a goto-using one is unaffected'
+          # structural
+          printf '%s' 'int main(){int i;i=0;top: i=i+1;if(i<3){goto top;}return i;}' | qemu-aarch64 ./stage2 > gto.s
+          grep -q '^b __Lg' gto.s || { echo "  MISSING goto branch (b __Lg)"; goto_ok=no; }
+          grep -q '^:__Lg0001_top$' gto.s || { echo "  MISSING function-indexed label (:__Lg0001_top)"; goto_ok=no; }
+          grep -q 'b.eq @' gto.s || { echo "  MISSING numeric if branch alongside the label"; goto_ok=no; }
+          [ "$(grep -c '^$' gto.s)" = 0 ] || { echo "  REGRESSION: blank emitted line (x17 accounting)"; goto_ok=no; }
+          # exact 0-byte/0-tick witness: adding a label must shift no @-target
+          printf '%s' 'int main(){int i;i=0;if(i<3){i=i+1;}return i;}'       | qemu-aarch64 ./stage2 | grep 'b.eq @' > gnolab.txt
+          printf '%s' 'int main(){int i;i=0;top: if(i<3){i=i+1;}return i;}'  | qemu-aarch64 ./stage2 | grep 'b.eq @' > glab.txt
+          cmp -s gnolab.txt glab.txt || { echo "  REGRESSION: a label definition shifted an @-target (label is not 0 bytes / 0 ticks)"; goto_ok=no; }
+          # a program with no goto must carry no goto machinery at all
+          printf '%s' 'int main(){int i;i=0;while(i<3){i=i+1;}return i;}' | qemu-aarch64 ./stage2 > gnone.s
+          grep -q '__Lg' gnone.s && { echo "  REGRESSION: non-goto program emitted __Lg"; goto_ok=no; }
+          printf '  %-64s %s\n' 'structural: b __Lg / :__Lg<idx>_ / label costs 0 bytes' \
+                 "$([ "$goto_ok" = yes ] && echo OK || echo DIFF)"
+
+          echo "== stage-2: forward prototypes (A18) =="
+          # `int f(int, int);` at file scope. Before this rung funcloop committed to a
+          # DEFINITION the moment it saw `(` after the name, so the `;` where `{` should
+          # be derailed it and the compiler HUNG. That made it the biggest single
+          # blocker on real M2-Planet code, which declares nearly every function ahead
+          # of use (73 sites across its eight self-host files). Fixed with a
+          # paren-matching lookahead: scan from `(` to its partner, skip whitespace,
+          # branch on `;` (prototype) vs anything else (definition).
+          #
+          # A prototype declares nothing and emits nothing -- correct here, not a
+          # shortcut: the bl-vs-blr split is read off the symbol tables (a called name
+          # in NO table is a function -> direct `bl`), so a function is callable without
+          # a prior declaration. Unnamed parameters fall out for free, since the
+          # declarator is never parsed. Timeout-bounded: the old failure was a HANG.
+          proto_ok=yes
+          ptry() {
+            set +e
+            printf '%s' "$1" | timeout 30 qemu-aarch64 ./stage2 > pt.s
+            if [ $? -ne 0 ] || [ ! -s pt.s ]; then
+              proto_ok=no
+              printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'
+              set -e; return
+            fi
+            cat pt.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
+            set -e
+            set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; proto_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          ptry 'int add(int a,int b);int main(){return add(3,4);}int add(int a,int b){return a+b;}' 7 'prototype with named params'
+          ptry 'int add(int,int);int main(){return add(20,22);}int add(int a,int b){return a+b;}' 42 'prototype with UNNAMED params'
+          ptry 'struct N{int v;struct N* nx;};struct N* mk(int v);int main(){struct N* p;p=mk(9);return p->v;}struct N* mk(int v){struct N* n;n=calloc(1,sizeof(struct N));n->v=v;return n;}' 9 'struct* return-type prototype'
+          ptry 'void bump(void);int G;int main(){bump();bump();return G;}void bump(void){G=G+3;}' 6 'void prototype'
+          ptry 'int fact(int n);int main(){return fact(5);}int fact(int n){if(n<2){return 1;}return n*fact(n-1);}' 120 'prototype + recursion'
+          ptry 'int odd(int n);int even(int n){if(n==0){return 1;}return odd(n-1);}int odd(int n){if(n==0){return 0;}return even(n-1);}int main(){return even(10)+odd(7);}' 2 'prototype enabling mutual recursion'
+          ptry "$(printf 'int add(int a,\n  int b);\nint main(){return add(6,6);}\nint add(int a,int b){return a+b;}')" 12 'prototype spanning lines'
+          ptry 'int add(int a,int b){return a+b;}int main(){return add(1,2);}' 3 'no prototype (regression)'
+          # structural: a prototype must emit ZERO bytes -- the strongest form of the
+          # A13 x17 guarantee, since output is byte-identical with and without it.
+          printf '%s' 'int add(int a,int b){return a+b;}int main(){return add(1,2);}' | qemu-aarch64 ./stage2 > pnop.s
+          printf '%s' 'int add(int,int);int add(int a,int b){return a+b;}int main(){return add(1,2);}' | qemu-aarch64 ./stage2 > pwip.s
+          cmp -s pnop.s pwip.s || { echo "  REGRESSION: a prototype changed the emitted output"; proto_ok=no; }
+          printf '%s' 'int f(int);int g(int);int h(int);int main(){return 1;}' | qemu-aarch64 ./stage2 > ponly.s
+          [ "$(grep '^:' ponly.s)" = ':main' ] || { echo "  REGRESSION: a prototype emitted a label"; proto_ok=no; }
+          printf '  %-64s %s\n' 'structural: prototypes emit zero bytes and no label' \
+                 "$([ "$proto_ok" = yes ] && echo OK || echo DIFF)"
+
+          echo "== stage-2: braceless statement bodies (A19) =="
+          # `if(cond) return x;` with no braces -- ~370 sites in M2-Planet's self-host
+          # (199 return, 120 call/assign, 34 bare else, 11 break, 2 goto), silently
+          # miscompiled until now. Two parts, and the first is the subtle one:
+          #
+          # (1) The CONDITION had to be bounded. compile_expr did not stop at the
+          #     condition's ')' -- it relied on the body's '{' to terminate it, and
+          #     ce_kw treats ANY keyword in operand position as `sizeof`. So
+          #     `if(a) return 5;` swallowed `return` into the condition, and
+          #     `if(a) f(b);` emitted the call as part of the condition and then
+          #     tested ITS result. Fixed by scanning to the matching ')' and
+          #     temporarily lowering x21 (input length) so the tokenizer reports EOF
+          #     there, which compile_expr already terminates on cleanly. The scanner
+          #     skips char/string literals as the lexer does, so `if(c=='(')` is safe.
+          # (2) A braceless body closes after ONE statement: block records carry
+          #     kind+4, and statement-completion exits route through `stmtend`, which
+          #     pops while the top record is braceless. Close routines re-enter it, so
+          #     `if(a) if(b) x;` unwinds and a dangling `else` binds to the inner `if`.
+          bl_ok=yes
+          btry() {
+            set +e
+            printf '%s' "$1" | timeout 30 qemu-aarch64 ./stage2 > bl.s
+            if [ $? -ne 0 ] || [ ! -s bl.s ]; then
+              bl_ok=no
+              printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'
+              set -e; return
+            fi
+            cat bl.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
+            set -e
+            set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; bl_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
+          }
+          btry 'int main(){int a;a=1;if(a) return 5;return 9;}' 5 'braceless if + return'
+          btry 'int main(){int a;a=0;if(a) return 5;return 9;}' 9 'braceless if, false, falls through'
+          btry 'int main(){int a;a=0;if(1) a=7;return a;}' 7 'braceless if + assignment'
+          btry 'int G;int bump(){G=G+4;return 0;}int main(){if(1) bump();return G;}' 4 'braceless if + call statement'
+          btry 'int main(){int i;i=0;while(i<5) i=i+1;return i;}' 5 'braceless while'
+          btry 'int main(){int a;a=0;if(a) return 1;else return 8;}' 8 'bare else'
+          btry 'int f(int n){if(n<1) return 10;else if(n<2) return 20;else return 30;}int main(){return f(1);}' 20 'braceless else-if chain'
+          btry 'int main(){int a;a=0;if(a){a=1;}else a=6;return a;}' 6 'braced then + bare else'
+          btry 'int main(){int a;a=1;if(a) a=3;else{a=9;}return a;}' 3 'bare then + braced else'
+          btry 'int main(){int a;int b;a=1;b=1;if(a) if(b) return 7;return 2;}' 7 'nested braceless if'
+          btry 'int f(int a,int b){if(a) if(b) return 1;else return 2;return 3;}int main(){return f(1,0);}' 2 'dangling else binds to the INNER if'
+          btry 'int main(){int i;i=0;if(1) while(i<6){i=i+1;}return i;}' 6 'braceless if whose body is a braced while'
+          btry 'int main(){int a;a=0;if(1) {a=4;}return a;}' 4 'braceless if whose body is a block'
+          btry 'int main(){int i;i=0;top: i=i+1;if(i<4) goto top;return i;}' 4 'braceless if + goto (A17 interop)'
+          btry 'int main(){int a;a=5;if(a) ;return a;}' 5 'empty statement as the body'
+          # condition-bounding regressions
+          btry 'int f(int c){if(c==40) return 3;return 9;}int main(){return f(40);}' 3 'condition compares a paren char code'
+          btry 'int p(int n){return n;}int main(){if(p(1)) return 6;return 0;}' 6 'call inside the condition'
+          btry 'int main(){int a;a=2;if(((a+1)*2)==6) return 4;return 0;}' 4 'nested parens in the condition'
+          btry 'int main(){int a;int b;a=1;b=0;if(a&&!b) return 5;return 0;}' 5 'short-circuit operators in the condition'
+          # structural: a BRACED program must be byte-identical to the braced-only era,
+          # i.e. this rung is a pure superset. Checked against the same program's
+          # emission being stable and label-shaped as before.
+          printf '%s' 'int main(){int a;a=5;if(a){a=a+1;}return a;}' | qemu-aarch64 ./stage2 > blbr.s
+          grep -q 'b.eq @' blbr.s || { echo "  REGRESSION: braced if lost its numeric branch"; bl_ok=no; }
+          [ "$(grep '^:' blbr.s)" = ':main' ] || { echo "  REGRESSION: braced if emitted an unexpected label"; bl_ok=no; }
+          [ "$(grep -c '^$' blbr.s)" = 0 ] || { echo "  REGRESSION: blank emitted line (x17 accounting)"; bl_ok=no; }
+          printf '%s' 'int main(){int a;a=1;if(a) return 5;return 9;}' | qemu-aarch64 ./stage2 > blbl.s
+          [ "$(grep -c '^$' blbl.s)" = 0 ] || { echo "  REGRESSION: braceless body emitted a blank line (x17)"; bl_ok=no; }
+          grep -q 'b.eq @' blbl.s || { echo "  MISSING numeric branch for a braceless if"; bl_ok=no; }
+          printf '  %-64s %s\n' 'structural: braced unchanged, braceless drift-free' \
+                 "$([ "$bl_ok" = yes ] && echo OK || echo DIFF)"
+
+          # The payoff witness: M2-Planet-SHAPED code exercising A17+A18+A19 at once.
+          # `in_set` and `match` are the shape of M2-Planet's own helpers (`match`
+          # written as its goto-loop idiom). Exit 42 only if every assertion holds.
+          printf "int match(char* a, char* b);\nint in_set(int c, char* s);\nint in_set(int c, char* s)\n{\n\twhile(0 != s[0])\n\t{\n\t\tif(c == s[0]) return 1;\n\t\ts = s + 1;\n\t}\n\treturn 0;\n}\nint match(char* a, char* b)\n{\n\tint i = 0;\nmloop:\n\tif(a[i] != b[i]) return 0;\n\tif(a[i] == 0) return 1;\n\ti = i + 1;\n\tgoto mloop;\n}\nint main()\n{\n\tif(!match(\"hello\",\"hello\")) return 1;\n\tif(match(\"hello\",\"world\")) return 2;\n\tif(!in_set(101, \"abcde\")) return 3;\n\tif(in_set(122, \"abcde\")) return 4;\n\treturn 42;\n}\n" > m2shape.c
+          set +e
+          timeout 30 qemu-aarch64 ./stage2 < m2shape.c > m2shape.s
+          if [ $? -ne 0 ] || [ ! -s m2shape.s ]; then
+            echo "  m2-shaped program: COMPILE FAILED/HUNG"; bl_ok=no
+          else
+            cat m2shape.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
+            timeout 30 qemu-aarch64 ./a.out; rc=$?
+            if [ "$rc" = 42 ]; then st=OK; else st=DIFF; bl_ok=no; fi
+            printf '  %-64s exit=%-4s want=%-4s %s\n' 'M2-shaped: prototypes + goto + braceless + strings' "$rc" 42 "$st"
+          fi
+          set -e
+
           echo "== stage-2: self-host canary — a compiler-shaped program through the ladder (A15) =="
           # The proof-of-pivot from TARGET-SUBSET.md: compile a real COMPILER-SHAPED
           # program -- one that reads a file, builds a heap-allocated linked list of
@@ -912,6 +1099,9 @@ jobs:
             echo "front end: comments/blocks/struct* ret: $fe_ok"
             echo "self-host canary: compiler-shaped + fixpoint: $selfhost_ok"
             echo "short-circuit &&/||, hex literals, ^   : $sc_ok"
+            echo "goto + labels (A17)                     : $goto_ok"
+            echo "forward prototypes (A18)                : $proto_ok"
+            echo "braceless statement bodies (A19)        : $bl_ok"
             echo "eor byte-identical to as             : $eor_ok"
             echo "udiv byte-identical to as            : $udiv_ok"
             echo "unsigned / and % (udiv;mul;sub)      : $div_ok"
@@ -924,8 +1114,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ]; then
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ]; then
             echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct; and the single-pass @-target accounting invariant holds (every emitted line assembles to exactly 4 bytes, so the emitted-instruction counter stays equal to the true instruction count and a function's meaning does not depend on what was defined before it)."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok"; exit 1
           fi

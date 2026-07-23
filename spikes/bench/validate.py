@@ -1418,6 +1418,233 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     check("stage2 ^ lowers to a single eor",
           _emit("int f(int a,int b){return a^b;}int main(){return 0;}").count("eor x0 x1 x0"), 1)
 
+    print("== stage 2 goto + labels (A17) ==")
+    # A label definition emits a NAMED label; `goto L` emits `b <label>`. Both are
+    # resolved by stage1 (a two-pass numeric resolver since m32), so a FORWARD goto
+    # needs no backpatching in the single-pass compiler — that is the whole reason
+    # this rung is cheap. The name is prefixed with a per-function index
+    # (__Lg<idx>_<name>) so labels are FUNCTION-scoped, as C requires: two functions
+    # may each define `lp:` without colliding in the flat assembler namespace.
+    emg = _emit("int main(){int i;i=0;top: i=i+1;if(i<3){goto top;}return i;}")
+    check("stage2 goto emits a named branch (b __Lg)", "\nb __Lg" in emg, True)
+    check("stage2 label emits a definition (:__Lg)",   "\n:__Lg" in emg, True)
+    check("stage2 goto label carries the source name", "_top" in emg, True)
+    check("stage2 goto label is function-indexed (fn 1 -> 0001)",
+          ":__Lg0001_top" in emg, True)
+    # The only labels in an emitted program are function names + goto labels; the
+    # if/while branches must STILL be numeric backpatched (m29), not labelled.
+    check("stage2 goto: if/while stay numeric alongside the label",
+          ("b.eq @" in emg) and ([l for l in emg.split("\n") if l.startswith(":")]
+                                 == [":main", ":__Lg0001_top"]), True)
+    # A13 x17 invariant: a label line assembles to 0 bytes and must NOT bump the
+    # emitted-instruction counter, while the `b` line must. If either were wrong the
+    # numeric @-targets of every function emitted AFTERWARDS would drift. Guarded
+    # directly (no blank lines, targets 4-aligned and in range) AND behaviourally
+    # via the order-independence witness below.
+    _code = [l for l in emg.split("\n") if l]
+    check("stage2 goto: no blank emitted line (x17 accounting)",
+          any(l.strip() == "" for l in emg.split("\n")[:-1]), False)
+    _ni = len([l for l in _code if not l.startswith(":") and not l.startswith(".")])
+    _tg = [int(l[6:]) for l in _code if l.startswith("b.eq @")]
+    check("stage2 goto: @-targets still 4-aligned and in range",
+          all(t % 4 == 0 and t // 4 <= _ni for t in _tg) and len(_tg) > 0, True)
+    # EXACT witness that a label costs 0 bytes AND 0 x17 ticks: the same program
+    # with and without a label definition must produce the IDENTICAL numeric
+    # @-target. If the label line ever bumped x17 (e.g. by emitting its newline
+    # through emitstr, which counts '\n'), the labelled version's target would be
+    # 4 bytes higher -- still 4-aligned and still in range, so the checks above
+    # would NOT see it, and every function emitted afterwards would drift (m54).
+    def _tgts(csrc):
+        return [l for l in _emit(csrc).split("\n") if l.startswith("b.eq @")]
+    check("stage2 goto: a label definition shifts no @-target (0 bytes, 0 ticks)",
+          _tgts("int main(){int i;i=0;if(i<3){i=i+1;}return i;}")
+          == _tgts("int main(){int i;i=0;top: if(i<3){i=i+1;}return i;}"), True)
+    # Two functions each defining `lp:` -> distinct emitted labels (function scope).
+    emg2 = _emit("int a(){int i;i=0;lp: i=i+1;if(i<3){goto lp;}return i;}"
+                 "int b(){int j;j=0;lp: j=j+2;if(j<8){goto lp;}return j;}"
+                 "int main(){return a()+b();}")
+    check("stage2 goto: same label name in 2 functions -> 2 distinct labels",
+          (":__Lg0001_lp" in emg2) and (":__Lg0002_lp" in emg2), True)
+    # Behavioural, through the real assembled ladder. Covers the shapes M2-Planet
+    # actually uses: a backward jump to a label at body top (its `reset:` loop
+    # idiom), a forward jump to a label near the end (`goto exit_success;`), and
+    # jumps out of arbitrarily many open blocks (`goto reset;` from inside nested
+    # else-if chains wrapped around while loops).
+    # A drifted @-target jumps into the middle of nowhere, which since m50 the
+    # interp faults on rather than tolerating -- so these are caught, but as an
+    # exception. Report that as a failed check instead of aborting the run.
+    def _exit_safe(csrc):
+        try:
+            return _exit(csrc)
+        except Exception as e:
+            return f"<{type(e).__name__}>"
+    for cs, want in [
+        ("int main(){int i;int s;i=0;s=0;top: i=i+1;s=s+i;if(i<4){goto top;}return s;}", 10),
+        ("int main(){int a;a=1;goto done;a=99;done: return a+4;}", 5),
+        ("int f(int n){int s;s=0;again: s=s+n;n=n-1;if(n>0){goto again;}return s;}int main(){return f(4);}", 10),
+        ("int main(){int i;i=0;top: i=i+1;if(i<20){if(i<10){while(i<50){i=i+3;goto top;}}}return i;}", 13),
+        ("int main(){int i;i=0;while(1){i=i+1;if(i>5){goto out;}}out: return i;}", 6),
+        ("int main(){int a;a=0;top: a=a+1;if(a>3){return a;}else{goto top;}return 99;}", 4),
+        ("int main(){int a;a=0;one: a=a+1;if(a<2){goto one;}two: a=a+10;if(a<30){goto two;}return a;}", 32),
+        ("int main(){int a;a=0;top: int b;b=a+1;a=b;if(a<5){goto top;}return a;}", 5),
+        ("int a(){int i;i=0;lp: i=i+1;if(i<3){goto lp;}return i;}"
+         "int b(){int j;j=0;lp: j=j+2;if(j<8){goto lp;}return j;}int main(){return a()+b();}", 11),
+    ]:
+        check(f"stage2 goto exit -> {want}", _exit_safe(cs), want)
+    # Order-independence: a function defined AFTER a goto-using one must be
+    # unaffected. This is the behavioural witness for the x17 invariant — the m54
+    # drift bug corrupted only the functions emitted afterwards, never the culprit.
+    check("stage2 goto: later function unaffected (x17 order-independence)",
+          _exit_safe("int g(){int i;i=0;lp: i=i+1;if(i<3){goto lp;}return i;}"
+                "int later(){int k;k=0;while(k<7){k=k+1;}return k;}"
+                "int main(){return g()*10+later();}"), 37)
+    # A program with no goto must be byte-identical to before the rung.
+    check("stage2 goto: non-goto programs emit no __Lg",
+          "__Lg" in _emit("int main(){int i;i=0;while(i<3){i=i+1;}return i;}"), False)
+
+    print("== stage 2 forward prototypes (A18) ==")
+    # `int f(int, int);` at file scope. Before this rung funcloop committed to a
+    # DEFINITION the moment it saw `(` after the name, so the `;` where `{` should
+    # be derailed it and the compiler HUNG -- the biggest single blocker on real
+    # M2-Planet code, which declares nearly every function ahead of use (73 sites).
+    # The fix is a paren-matching lookahead: scan from `(` to its partner, skip
+    # whitespace, and branch on `;` (prototype) vs anything else (definition).
+    #
+    # A prototype declares nothing and emits nothing. That is not a shortcut, it is
+    # correct for this compiler: the bl-vs-blr split is read off the symbol tables
+    # (a called name found in NO table is a function -> direct `bl`), so a function
+    # needs no prior declaration to be callable. Unnamed parameters
+    # (`int f(struct type*, char*);`) therefore fall out for free -- the declarator
+    # is never parsed at all.
+    check("stage2 prototype emits nothing (output byte-identical without it)",
+          _emit("int add(int a,int b){return a+b;}int main(){return add(1,2);}")
+          == _emit("int add(int,int);int add(int a,int b){return a+b;}int main(){return add(1,2);}"),
+          True)
+    check("stage2 prototype emits no label of its own",
+          [l for l in _emit("int f(int);int g(int);int h(int);int main(){return 1;}")
+           .split("\n") if l.startswith(":")], [":main"])
+    # Behavioural, through the real assembled ladder. Each of these HUNG the
+    # compiler before this rung.
+    for nm, cs, want in [
+        ("named params",  "int add(int a,int b);int main(){return add(3,4);}"
+                          "int add(int a,int b){return a+b;}", 7),
+        ("unnamed params","int add(int,int);int main(){return add(20,22);}"
+                          "int add(int a,int b){return a+b;}", 42),
+        ("struct* return","struct N{int v;struct N* nx;};struct N* mk(int v);"
+                          "int main(){struct N* p;p=mk(9);return p->v;}"
+                          "struct N* mk(int v){struct N* n;n=calloc(1,sizeof(struct N));"
+                          "n->v=v;return n;}", 9),
+        ("void proto",    "void bump(void);int G;int main(){bump();bump();return G;}"
+                          "void bump(void){G=G+3;}", 6),
+        ("recursion",     "int fact(int n);int main(){return fact(5);}"
+                          "int fact(int n){if(n<2){return 1;}return n*fact(n-1);}", 120),
+        ("mutual recursion",
+                          "int odd(int n);int even(int n){if(n==0){return 1;}return odd(n-1);}"
+                          "int odd(int n){if(n==0){return 0;}return even(n-1);}"
+                          "int main(){return even(10)+odd(7);}", 2),
+        ("multi-line proto",
+                          "int add(int a,\n  int b);\nint main(){return add(6,6);}\n"
+                          "int add(int a,int b){return a+b;}", 12),
+        ("no proto (regression)",
+                          "int add(int a,int b){return a+b;}int main(){return add(1,2);}", 3),
+    ]:
+        check(f"stage2 prototype: {nm}", _exit_safe(cs), want)
+
+    print("== stage 2 braceless statement bodies (A19) ==")
+    # `if(cond) return x;` with no braces -- ~370 sites in M2-Planet's self-host
+    # (199 return, 120 call/assign, 34 bare else, 11 break, 2 goto), and until now
+    # silently miscompiled. Two parts:
+    #
+    # (1) The CONDITION had to be bounded. compile_expr did not stop at the
+    #     condition's closing paren -- it relied on the body's `{` to terminate it,
+    #     and worse, ce_kw treats ANY keyword in operand position as `sizeof`. So
+    #     `if(a) return 5;` swallowed `return` into the condition, and
+    #     `if(a) f(b);` emitted the call as part of the condition and then tested
+    #     ITS result. Fixed by scanning to the matching `)` and temporarily
+    #     lowering x21 (the input length) so the tokenizer reports EOF there --
+    #     which compile_expr already terminates on cleanly. The scanner skips char
+    #     and string literals exactly as the lexer does, so `if(c=='(')` cannot
+    #     unbalance it.
+    #
+    # (2) A braceless body closes after ONE statement. Block records carry kind+4
+    #     for a braceless variant; every statement-completion exit now routes
+    #     through `stmtend`, which pops and closes while the top record is
+    #     braceless. The close routines re-enter stmtend, so `if(a) if(b) x;`
+    #     unwinds correctly and a dangling `else` binds to the inner `if`.
+    #
+    # The strongest guarantee first: a BRACED program must be unchanged.
+    for cs in ["int main(){int a;a=5;if(a){a=a+1;}return a;}",
+               "int main(){int i;int s;i=0;s=0;while(i<10){s=s+i;i=i+1;}return s;}",
+               "int main(){int a;a=1;if(a){a=2;}else{a=3;}return a;}"]:
+        b, d = _drift(cs)
+        check(f"stage2 braceless: braced program still drift-free", (b, d), (0, 0))
+    # x17 accounting for each NEW construct: a braceless body must not add or lose
+    # an emitted line (A13 -- drift here would corrupt every later function).
+    for nm, cs in [
+        ("braceless if",     "int main(){int a;a=1;if(a) return 5;return 9;}"),
+        ("braceless while",  "int main(){int i;i=0;while(i<5) i=i+1;return i;}"),
+        ("bare else",        "int main(){int a;a=0;if(a) return 1;else return 8;}"),
+        ("nested braceless", "int main(){int a;int b;a=1;b=1;if(a) if(b) return 7;return 2;}"),
+    ]:
+        b, d = _drift(cs)
+        check(f"stage2 braceless no blank line: {nm}", b, 0)
+        check(f"stage2 braceless x17 == real instr count: {nm}", d, 0)
+    # Behavioural, through the real assembled ladder: every shape M2-Planet uses.
+    for nm, cs, want in [
+        ("if + return",        "int main(){int a;a=1;if(a) return 5;return 9;}", 5),
+        ("if false falls through","int main(){int a;a=0;if(a) return 5;return 9;}", 9),
+        ("if + assign",        "int main(){int a;a=0;if(1) a=7;return a;}", 7),
+        ("if + call",          "int G;int bump(){G=G+4;return 0;}int main(){if(1) bump();return G;}", 4),
+        ("braceless while",    "int main(){int i;i=0;while(i<5) i=i+1;return i;}", 5),
+        ("bare else",          "int main(){int a;a=0;if(a) return 1;else return 8;}", 8),
+        ("else-if chain",      "int f(int n){if(n<1) return 10;else if(n<2) return 20;"
+                               "else return 30;}int main(){return f(1);}", 20),
+        ("braced then, bare else","int main(){int a;a=0;if(a){a=1;}else a=6;return a;}", 6),
+        ("bare then, braced else","int main(){int a;a=1;if(a) a=3;else{a=9;}return a;}", 3),
+        ("nested braceless",   "int main(){int a;int b;a=1;b=1;if(a) if(b) return 7;return 2;}", 7),
+        ("dangling else binds inner",
+                               "int f(int a,int b){if(a) if(b) return 1;else return 2;return 3;}"
+                               "int main(){return f(1,0);}", 2),
+        ("braceless if + braced while",
+                               "int main(){int i;i=0;if(1) while(i<6){i=i+1;}return i;}", 6),
+        ("braceless if + block","int main(){int a;a=0;if(1) {a=4;}return a;}", 4),
+        ("braceless + goto",   "int main(){int i;i=0;top: i=i+1;if(i<4) goto top;return i;}", 4),
+        ("empty statement body","int main(){int a;a=5;if(a) ;return a;}", 5),
+        # condition-bounding regressions: a paren inside a literal, a call in the
+        # condition, nested parens, and short-circuit operators must all still work.
+        ("cond has char-literal paren",
+                               "int f(int c){if(c==40) return 3;return 9;}int main(){return f(40);}", 3),
+        ("cond has a call",    "int p(int n){return n;}int main(){if(p(1)) return 6;return 0;}", 6),
+        ("cond nested parens", "int main(){int a;a=2;if(((a+1)*2)==6) return 4;return 0;}", 4),
+        ("cond with && and !", "int main(){int a;int b;a=1;b=0;if(a&&!b) return 5;return 0;}", 5),
+        ("deep braceless chain","int f(int n){if(n==0) return 1;if(n==1) return 2;"
+                               "if(n==2) return 3;return 9;}int main(){return f(2);}", 3),
+    ]:
+        check(f"stage2 braceless: {nm}", _exit_safe(cs), want)
+
+    # The payoff witness: M2-Planet-SHAPED code exercising A17+A18+A19 at once --
+    # forward prototypes, a goto loop, braceless if bodies, char* parameters,
+    # subscripts, string literals, calls inside conditions, and unary !.
+    # `in_set` and `match` are the shape of M2-Planet's own helpers (`match` here
+    # written as its goto-loop idiom rather than a while, which is how several of
+    # its scanners are actually written). Returns 42 only if every assertion holds.
+    check("stage2 M2-shaped: prototypes + goto + braceless together",
+          _exit_safe(
+            'int match(char* a, char* b);\n'
+            'int in_set(int c, char* s);\n'
+            'int in_set(int c, char* s)\n'
+            '{\n\twhile(0 != s[0])\n\t{\n\t\tif(c == s[0]) return 1;\n'
+            '\t\ts = s + 1;\n\t}\n\treturn 0;\n}\n'
+            'int match(char* a, char* b)\n'
+            '{\n\tint i = 0;\nmloop:\n\tif(a[i] != b[i]) return 0;\n'
+            '\tif(a[i] == 0) return 1;\n\ti = i + 1;\n\tgoto mloop;\n}\n'
+            'int main()\n{\n'
+            '\tif(!match("hello","hello")) return 1;\n'
+            '\tif(match("hello","world")) return 2;\n'
+            '\tif(!in_set(101, "abcde")) return 3;\n'
+            '\tif(in_set(122, "abcde")) return 4;\n'
+            '\treturn 42;\n}\n'), 42)
+
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")
     sys.exit(1)

@@ -58,6 +58,8 @@ add x3 x1 8
 str x2 x3
 add x3 x1 40
 str x2 x3
+add x3 x1 48
+str x2 x3
 mov x0 0
 mov x1 x19
 mov x2 65000
@@ -125,8 +127,52 @@ add x3 x3 1
 b fl_pk
 :fl_pkc
 cmp x5 40
-b.eq fl_func
+b.eq fl_pchk
 b fl_global
+:fl_pchk
+mov x4 0
+:fpc_l
+cmp x3 x21
+b.ge fl_func
+ldrb w5 x19 x3
+cmp x5 40
+b.ne fpc_nc
+add x4 x4 1
+:fpc_nc
+cmp x5 41
+b.ne fpc_adv
+sub x4 x4 1
+cmp x4 0
+b.eq fpc_close
+:fpc_adv
+add x3 x3 1
+b fpc_l
+:fpc_close
+add x3 x3 1
+:fpc_ws
+cmp x3 x21
+b.ge fl_func
+ldrb w5 x19 x3
+cmp x5 32
+b.eq fpc_wsa
+cmp x5 9
+b.eq fpc_wsa
+cmp x5 10
+b.eq fpc_wsa
+cmp x5 13
+b.eq fpc_wsa
+b fpc_chk
+:fpc_wsa
+add x3 x3 1
+b fpc_ws
+:fpc_chk
+cmp x5 59
+b.eq fl_proto
+b fl_func
+:fl_proto
+add x3 x3 1
+mov x6 x3
+b funcloop
 :fl_func
 adr x3 scalloc
 bl nameq
@@ -190,6 +236,13 @@ mov x0 1
 adr x3 udef_exit
 str x0 x3
 :flf_ckd
+mov x1 61440
+movk x1 7 16
+add x1 x19 x1
+add x1 x1 48
+ldr x2 x1
+add x2 x2 1
+str x2 x1
 bl emitlabel
 mov x8 0
 bl next_token
@@ -473,7 +526,7 @@ b.eq flg_sfpa
 cmp x5 13
 b.eq flg_sfpa
 cmp x5 40
-b.eq fl_func
+b.eq fl_pchk
 b flg_sfno
 :flg_sfpa
 add x3 x3 1
@@ -573,6 +626,28 @@ bl next_token
 cmp x29 59
 b.ne flg_ask
 b funcloop
+:stmtend
+cmp x16 0
+b.eq stmtloop
+sub x2 x16 12
+add x2 x15 x2
+ldr w4 x2
+cmp x4 4
+b.lt stmtloop
+sub x16 x16 12
+add x2 x15 x16
+ldr w4 x2
+add x2 x16 4
+add x2 x15 x2
+ldr w12 x2
+add x2 x16 8
+add x2 x15 x2
+ldr w13 x2
+cmp x4 5
+b.eq dclose_while
+cmp x4 6
+b.eq docloseelse
+b docloseif
 :stmtloop
 bl next_token
 cmp x20 0
@@ -589,6 +664,8 @@ cmp x29 125
 b.eq doclose
 cmp x29 123
 b.eq doblock
+cmp x29 59
+b.eq stmtend
 b stmtloop
 :doblock
 mov w4 3
@@ -617,6 +694,8 @@ cmp x29 3
 b.eq dowhile
 cmp x29 4
 b.eq doreturn
+cmp x29 9
+b.eq dogoto
 b stmtloop
 :stmtop
 cmp x29 42
@@ -644,13 +723,13 @@ adr x9 sstoreind
 bl emitstr
 mov x6 x14
 add x6 x6 1
-b stmtloop
+b stmtend
 :dostar_b
 adr x9 sstoreindb
 bl emitstr
 mov x6 x14
 add x6 x6 1
-b stmtloop
+b stmtend
 :doint_int
 mov x12 0
 b doint
@@ -717,7 +796,7 @@ cmp x5 61
 b.eq di_init
 :di_uninit
 bl next_token
-b stmtloop
+b stmtend
 :di_init
 bl next_token
 str x14 x28
@@ -732,7 +811,7 @@ bl emitoff
 adr x9 sstore
 bl emitstr
 add x6 x6 1
-b stmtloop
+b stmtend
 :di_array
 mov x7 x18
 mov x14 x6
@@ -758,7 +837,7 @@ bl symdecl
 mov x6 x1
 bl next_token
 bl next_token
-b stmtloop
+b stmtend
 :dostruct
 bl next_token
 bl struct_findtag
@@ -807,7 +886,7 @@ cmp x5 61
 b.eq ds_init
 :ds_uninit
 bl next_token
-b stmtloop
+b stmtend
 :ds_init
 bl next_token
 str x14 x28
@@ -822,7 +901,7 @@ bl emitoff
 adr x9 sstore
 bl emitstr
 add x6 x6 1
-b stmtloop
+b stmtend
 :ds_value
 mov x2 0
 bl symdecl
@@ -833,7 +912,7 @@ add x3 x10 x3
 add x4 x3 20
 str w27 x4
 bl next_token
-b stmtloop
+b stmtend
 :doreassign
 mov x3 x6
 :dra_ws
@@ -861,6 +940,8 @@ cmp x5 46
 b.eq dra_member
 cmp x5 45
 b.eq dra_arrowq
+cmp x5 58
+b.eq dra_label
 :dra_asg
 str x18 x28
 add x28 x28 8
@@ -880,14 +961,14 @@ adr x9 sstore
 bl emitstr
 mov x6 x14
 add x6 x6 1
-b stmtloop
+b stmtend
 :dra_call
 mov x6 x18
 bl compile_expr
 adr x9 sdiscard
 bl emitstr
 add x6 x6 1
-b stmtloop
+b stmtend
 :dra_sub
 str x18 x28
 add x28 x28 8
@@ -906,7 +987,7 @@ ldr x18 x28
 bl emitsubstore
 mov x6 x14
 add x6 x6 1
-b stmtloop
+b stmtend
 :dra_arrowq
 add x2 x3 1
 ldrb w5 x19 x2
@@ -935,15 +1016,120 @@ adr x9 smst2b
 bl emitstr
 :dram_done
 add x6 x6 1
-b stmtloop
+b stmtend
 :doreturn
 bl compile_expr
 adr x9 sepi
 bl emitstr
 add x6 x6 1
+b stmtend
+:dogoto
+bl next_token
+adr x9 sgotob
+bl emitstr
+bl emitglname
+adr x9 snlonly
+bl emitstr
+b stmtend
+:dra_label
+mov x14 x3
+adr x9 slgpfx
+bl emitstr
+bl emitglname
+mov w5 10
+strb w5 x22 x23
+add x23 x23 1
+mov x6 x14
+add x6 x6 1
 b stmtloop
+:scancond
+mov x2 x6
+:scc_f
+cmp x2 x21
+b.ge scc_x
+ldrb w5 x19 x2
+cmp x5 40
+b.eq scc_s
+add x2 x2 1
+b scc_f
+:scc_s
+mov x4 0
+:scc_l
+cmp x2 x21
+b.ge scc_x
+ldrb w5 x19 x2
+cmp x5 39
+b.eq scc_ch
+cmp x5 34
+b.eq scc_st
+cmp x5 40
+b.ne scc_nc
+add x4 x4 1
+:scc_nc
+cmp x5 41
+b.ne scc_a
+sub x4 x4 1
+cmp x4 0
+b.eq scc_c
+:scc_a
+add x2 x2 1
+b scc_l
+:scc_ch
+add x2 x2 3
+b scc_l
+:scc_st
+add x2 x2 1
+:scc_sl
+cmp x2 x21
+b.ge scc_x
+ldrb w5 x19 x2
+cmp x5 34
+b.eq scc_se
+add x2 x2 1
+b scc_sl
+:scc_se
+add x2 x2 1
+b scc_l
+:scc_c
+add x2 x2 1
+:scc_x
+ret
+:peekbrace
+mov x3 x6
+:pkb_w
+cmp x3 x21
+b.ge pkb_n
+ldrb w5 x19 x3
+cmp x5 32
+b.eq pkb_a
+cmp x5 9
+b.eq pkb_a
+cmp x5 10
+b.eq pkb_a
+cmp x5 13
+b.eq pkb_a
+b pkb_c
+:pkb_a
+add x3 x3 1
+b pkb_w
+:pkb_c
+cmp x5 123
+b.ne pkb_n
+add x3 x3 1
+mov x6 x3
+mov x7 0
+ret
+:pkb_n
+mov x7 1
+ret
 :doif
+bl scancond
+str x21 x28
+add x28 x28 8
+mov x21 x2
 bl compile_expr
+sub x28 x28 8
+ldr x21 x28
 adr x9 scondtest
 bl emitstr
 mov x12 x23
@@ -965,12 +1151,23 @@ mov w4 0
 add x2 x15 x16
 str w4 x2
 add x16 x16 4
-add x6 x6 1
+bl peekbrace
+mov x5 2
+lsl x7 x7 x5
+sub x2 x16 12
+add x2 x15 x2
+str w7 x2
 b stmtloop
 :dowhile
 mov x5 2
 lsl x12 x17 x5
+bl scancond
+str x21 x28
+add x28 x28 8
+mov x21 x2
 bl compile_expr
+sub x28 x28 8
+ldr x21 x28
 adr x9 scondtest
 bl emitstr
 mov x13 x23
@@ -992,7 +1189,13 @@ mov w4 x13
 add x2 x15 x16
 str w4 x2
 add x16 x16 4
-add x6 x6 1
+bl peekbrace
+mov x5 2
+lsl x7 x7 x5
+add x7 x7 1
+sub x2 x16 12
+add x2 x15 x2
+str w7 x2
 b stmtloop
 :doclose
 cmp x16 0
@@ -1014,7 +1217,7 @@ cmp x4 2
 b.eq docloseelse
 b docloseif
 :dclose_plain
-b stmtloop
+b stmtend
 :dclose_while
 adr x9 sbback
 bl emitstr
@@ -1028,7 +1231,7 @@ mov x5 2
 lsl x3 x17 x5
 add x4 x22 x13
 bl pos6
-b stmtloop
+b stmtend
 :docloseif
 str x6 x28
 add x28 x28 8
@@ -1064,7 +1267,13 @@ mov w4 0
 add x2 x15 x16
 str w4 x2
 add x16 x16 4
-bl next_token
+bl peekbrace
+mov x5 2
+lsl x7 x7 x5
+add x7 x7 2
+sub x2 x16 12
+add x2 x15 x2
+str w7 x2
 b stmtloop
 :dci_noelse
 mov x6 x5
@@ -1072,13 +1281,13 @@ mov x5 2
 lsl x3 x17 x5
 add x4 x22 x12
 bl pos6
-b stmtloop
+b stmtend
 :docloseelse
 mov x5 2
 lsl x3 x17 x5
 add x4 x22 x12
 bl pos6
-b stmtloop
+b stmtend
 :funcdone
 adr x9 spush0
 bl emitstr
@@ -2366,6 +2575,22 @@ strb w5 x22 x23
 add x23 x23 1
 mov x30 x14
 ret
+:emitglname
+str x30 x28
+add x28 x28 8
+mov x1 61440
+movk x1 7 16
+add x1 x19 x1
+add x1 x1 48
+ldr x13 x1
+bl emitoff
+mov w5 95
+strb w5 x22 x23
+add x23 x23 1
+bl copyspan
+sub x28 x28 8
+ldr x30 x28
+ret
 :resolve
 str x30 x28
 add x28 x28 8
@@ -3453,6 +3678,8 @@ ret
 ldrb w5 x19 x18
 cmp x5 101
 b.eq nt_kw4e
+cmp x5 103
+b.eq nt_kw4g
 cmp x5 99
 b.ne nt_plainid
 add x2 x18 1
@@ -3484,6 +3711,22 @@ ldrb w5 x19 x2
 cmp x5 101
 b.ne nt_plainid
 mov x29 6
+mov x20 3
+ret
+:nt_kw4g
+add x2 x18 1
+ldrb w5 x19 x2
+cmp x5 111
+b.ne nt_plainid
+add x2 x18 2
+ldrb w5 x19 x2
+cmp x5 116
+b.ne nt_plainid
+add x2 x18 3
+ldrb w5 x19 x2
+cmp x5 111
+b.ne nt_plainid
+mov x29 9
 mov x20 3
 ret
 :nt_plainid
@@ -3818,7 +4061,7 @@ b.ne doint_fp_skip
 bl next_token
 cmp x29 61
 b.eq doint_fp_init
-b stmtloop
+b stmtend
 :doint_fp_init
 bl compile_expr
 adr x9 spop
@@ -3828,7 +4071,7 @@ bl emitoff
 adr x9 sstore
 bl emitstr
 add x6 x6 1
-b stmtloop
+b stmtend
 :pl_fnptr
 bl next_token
 bl next_token
@@ -4113,6 +4356,12 @@ b ps_l
 .byte 0
 :sdlabel
 .ascii ":__d"
+.byte 0
+:sgotob
+.ascii "b __Lg"
+.byte 0
+:slgpfx
+.ascii ":__Lg"
 .byte 0
 :sbyte
 .ascii ".byte "

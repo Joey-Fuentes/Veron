@@ -97,10 +97,23 @@ literals.
 
 **Statements**
 - `if` / `else` (nested, heavily), `while` (the workhorse loop), `for` (rare but
-  present — 3 uses), `return`, `break` (5), `continue` (2), `goto` + labels
-  (8 gotos, 4 label definitions), and `{ }` blocks.
-- `do { } while` — **2 uses**, both in `cc_reader.c` (the escape-tracking scan at
-  line 84 and the `#FILENAME` consume loop at line 403). An earlier draft of this
+  present — 4 uses), `return`, `break` (13), `continue` (2), `goto` + labels
+  (**13 gotos, 8 label definitions** — an earlier draft said 8/4, which came from a
+  stripper that mis-handles the `/*` inside M2-Planet's own string literals and so
+  dropped `cc_core.c` entirely), and `{ }` blocks.
+- **Braces are frequently ABSENT** — ~370 statement bodies are braceless
+  (`if(cond) return x;`), split 199 `return …;`, 120 call/assign, 34 bare `else`,
+  11 `break;`, 2 `goto`. None of them nest, so the controlled statement always ends
+  at the first `;` at paren depth 0 and there is no dangling-`else` case. This was
+  omitted from earlier drafts and is the second-largest gap after escapes.
+- **Forward prototypes** — 73 file-scope declarations `int f(int, int);`. Omitted
+  from earlier drafts; it is the single biggest *blocker*, since M2-Planet declares
+  nearly every function ahead of use.
+- `int main(int argc, char** argv)` with **29 `argv` uses** — a runtime requirement
+  as much as a syntactic one: `_start` must read the kernel's initial stack and hand
+  `argc`/`argv` to `main`.
+- `do { } while` — **7 uses** (`cc_core.c` ×4, `cc_reader.c` ×2, `cc_macro.c` ×1).
+  An earlier draft said 2, from the same faulty strip pass as the goto count. An earlier draft of this
   doc listed it under §4 as "zero uses"; that was wrong, and it is the one entry
   §4 got backwards. It is small — the same block-stack record as `while` with the
   condition test emitted after the body instead of before — but it is **required**.
@@ -108,9 +121,9 @@ literals.
   and **recursion** (the parser recurses). This is what forces a real call/return
   discipline, not a fixed-depth scheme.
 - Forward declarations may carry **unnamed parameters** — abstract declarators
-  such as `int global_static_array(struct type*, char*);` in `cc_core.c`. The
-  declarator parser must accept a parameter that is a type with no name, since a
-  prototype's parameters are never entered into a symbol table anyway.
+  such as `int global_static_array(struct type*, char*);` in `cc_core.c`. A
+  prototype's parameters are never entered into a symbol table anyway, so (as of
+  m59) our compiler skips the whole declarator and this needs no separate support.
 
 **Operators**
 - Arithmetic `+ - * / %`; bitwise `& | ^ ~ << >>`; logical `&& || !`; all six
@@ -233,12 +246,27 @@ it does so **cheaply, first**. It is a test/canary, not a stage we keep.
 throwaway stage-3-in-C has no independent value — **M2-Planet is the actual target.** So
 instead: keep growing **stage 2 (in asm)** until it accepts M2-Planet's *entire* source
 subset. **Landed (m57/A16):** short-circuiting `&&`/`||`, hex literals, and `^` (via a
-small stage-0 `eor` leaf). **Still open**, roughly in descending order of cost:
-**string/char escapes** in the lexer (the largest single count in the source, ~995),
-the preprocessor (`#include`/guards/object `#define`), `goto`+labels,
-`for`/`break`/`continue`, `do { } while`, `void` return types and `(void)` parameter
-lists, `unsigned` as a word-typed keyword, `enum`, `char**` parameters, and unnamed
-prototype parameters. Compound assignment and `++`/`--` are **not** on this list — see
+small stage-0 `eor` leaf). **Landed (m58/A17):** `goto` + labels (function-scoped;
+a named label resolved by stage 1, so a forward `goto` needs no backpatching).
+**Landed (m60/A19):** **braceless statement bodies** — `if(cond) stmt;` with no
+braces, including bare `else`, braceless `while`, nested braceless `if`, and correct
+dangling-`else` binding. Required bounding the condition expression at its closing
+paren (it previously relied on the body's `{` to terminate, and read any keyword as
+`sizeof`). Braced programs emit byte-identical output, so it is a pure superset.
+**Landed (m59/A18):** **forward prototypes** — a paren-matching lookahead tells
+`f(...);` from `f(...){...}`. A prototype emits nothing (a function never needed a
+prior declaration, since the `bl`-vs-`blr` split is read off the symbol tables), so
+**unnamed prototype parameters** are covered too and drop off this list.
+
+**Already working, verified against the compiler rather than assumed** — strike these
+from any remaining-work list: `void` return types and `(void)` parameter lists (all
+244 uses), `char**` parameters, `sizeof(int)`/`sizeof(char)`, and the fact that the
+source has **zero initialised globals** (so the uninitialised-only limit is fine).
+
+**Still open**, roughly in descending order of cost: **string/char escapes** in the
+lexer (~995, the largest single count); the preprocessor (`#include`/guards/object `#define`, plus `NULL`); `enum`;
+`break`/`continue` (currently *silently miscompiled*); `do { } while` (7);
+`for` (4); `unsigned` (9); and `argc`/`argv` plumbing in `_start`. Compound assignment and `++`/`--` are **not** on this list — see
 §4. Then compile **M2-Planet's own source** with stage 2.
 **M2-Planet effectively becomes "stage 3."** No disposable intermediate compiler; the
 artifact we build is exactly the hand-off node.
