@@ -93,13 +93,17 @@ jobs:
           }
           EOF
           # 2. I/O: one getchar-shaped read per byte, minimal work per byte.
+          # No arrays at all in --bootstrap-mode, stack or global. M2-Planet's
+          # own cc.c allocates every buffer with calloc(1, N); do the same.
+          # stage 2 has a calloc builtin (m51); M2-Planet gets it from
+          # M2libc/bootstrap.c.
           cat > io.c <<'EOF'
-          char buf[8];
-
           int main()
           {
           	int n;
           	int r;
+          	char* buf;
+          	buf = calloc(8, 1);
           	n = 0;
           	r = read(0, buf, 1);
           	while(r > 0)
@@ -141,12 +145,9 @@ jobs:
           by_stage2   compute.c compute_s2
           by_m2planet compute.c compute_m2
           by_stage2   io.c      io_s2
-          # 'read' may come from libc-core.M1; if not, pull in M2libc's asm
-          # definitions (our M2-Planet is upstream's code, so asm() is fine).
-          if ! by_m2planet io.c io_m2; then
-            echo "  (io: retrying with M2libc's read)"
-            by_m2planet io.c io_m2 "-f $L/aarch64/linux/bootstrap.c"
-          fi
+          # Order and file set taken from M2-Planet's own
+          # test/test1000/hello-aarch64.sh: arch bootstrap.c, then bootstrap.c.
+          by_m2planet io.c io_m2 "-f $L/aarch64/linux/bootstrap.c -f $L/bootstrap.c"
           ls -l compute_s2 compute_m2 io_s2 io_m2
 
       - name: Measure
