@@ -62,6 +62,16 @@ def label_map(text):
     return out, pos
 
 
+def is_generated(name):
+    """Labels stage 2 invents (control flow, data, runtime) rather than
+    function names carried over from the C source."""
+    if name.startswith('__L') or name.startswith('__ds'):
+        return True
+    if name.startswith('__') and name[2:].isdigit():
+        return True
+    return name in ('__mp',)
+
+
 def locate(labels, total, off):
     if off < 0:
         return None, None, 'PC is below the code base'
@@ -80,7 +90,16 @@ def locate(labels, total, off):
         return None, None, 'before the first label'
     pos, name = labels[best]
     nxt = labels[best + 1][0] if best + 1 < len(labels) else total
-    return name, off - pos, 'spans %d bytes' % (nxt - pos)
+    note = 'spans %d bytes' % (nxt - pos)
+    if is_generated(name):
+        # walk back to the nearest real function label -- a generated control
+        # flow label tells you nothing about WHICH function you are in.
+        j = best
+        while j >= 0 and is_generated(labels[j][1]):
+            j -= 1
+        if j >= 0:
+            note = 'in %s + %d, %s' % (labels[j][1], off - labels[j][0], note)
+    return name, off - pos, note
 
 
 def main(argv):

@@ -384,8 +384,15 @@ jobs:
             python3 tools/pcmap.py m2.s1 "0x$p" | tail -1
           done
           echo
-          echo "--- faulting instruction block ---"
-          tail -8 fault.log
+          echo "--- labels bracketing the fault, so we can see the function ---"
+          python3 tools/pcmap.py m2.s1 --list \
+            | awk -v pc=$((0x$PC)) '{a=strtonum($1); if(a<=pc) last[NR]=$0; if(a>pc && !done){print "  >>> " $0; done=1}}
+                                     END{}' | head -3
+          python3 tools/pcmap.py m2.s1 --list | awk -v pc=$((0x$PC)) \
+            'strtonum($1)<=pc {l3=l2; l2=l1; l1=$0} END{print "  " l3; print "  " l2; print "  " l1}'
+          echo
+          echo "--- was type_name reached with a NULL result? check its callers ---"
+          python3 tools/pcmap.py m2.s1 --list | grep -E 'type_name|unary_expr_sizeof|fallible' || true
 
       - name: 'FAULT: same for the malloc case'
         continue-on-error: true
