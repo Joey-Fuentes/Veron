@@ -3614,10 +3614,10 @@ add x8 x8 1
 ret
 :symlookup
 sub x1 x6 x18
-mov x3 0
+sub x3 x8 1
 :sl_loop
-cmp x3 x8
-b.ge sl_nf
+cmp x3 0
+b.lt sl_nf
 mov x5 5
 lsl x4 x3 x5
 add x4 x10 x4
@@ -3646,7 +3646,7 @@ ldr w1 x1
 mov x7 1
 ret
 :sl_next
-add x3 x3 1
+sub x3 x3 1
 b sl_loop
 :sl_nf
 mov x0 0
