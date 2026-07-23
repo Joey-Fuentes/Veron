@@ -287,6 +287,50 @@ jobs:
           }
           int main(){malloc2(8);return 0;}'
 
+      - name: 'STAGE 2: the shapes fallible_type_name uses'
+        continue-on-error: true
+        run: |
+          # sizeof(char*) reduces to cc_types.c fallible_type_name:
+          #     while(global_token->s[0] == '*') { ret = ret->indirect; }
+          # then unary_expr_sizeof does a->size. Three stacked constructs:
+          # member subscript (m71), a self-referential struct* member, and a
+          # load through the result. The fix is in STAGE 2, so test stage 2
+          # directly with known expected exit codes.
+          t() {  # $1 = label, $2 = expected rc, $3 = source
+            printf '%s' "$3" > p.c
+            printf '  %-40s ' "$1"
+            set +e
+            qemu-aarch64 ./stage2 < p.c > p.s1 2>/dev/null
+            c=$?
+            if [ "$c" != 0 ]; then printf 'stage2 rc=%s (compile failed)\n' "$c"; set -e; return; fi
+            cat p.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as \
+              | qemu-aarch64 ./elf p.elf 2>/dev/null
+            timeout 30 qemu-aarch64 ./p.elf; r=$?
+            set -e
+            if [ "$r" = "$2" ]; then printf 'OK  (%s)\n' "$r"
+            else printf 'BAD got=%s want=%s\n' "$r" "$2"; fi
+          }
+
+          H='struct ty { char* name; struct ty* indirect; int size; };'
+
+          t 'struct* member store+load' 42 \
+            "$H int main(){struct ty* a;struct ty* b;a=calloc(1,sizeof(struct ty));b=calloc(1,sizeof(struct ty));a->indirect=b;b->size=42;a=a->indirect;return a->size;}"
+
+          t 'chained a->indirect->size' 42 \
+            "$H int main(){struct ty* a;struct ty* b;a=calloc(1,sizeof(struct ty));b=calloc(1,sizeof(struct ty));a->indirect=b;b->size=42;return a->indirect->size;}"
+
+          t 'char* member then subscript' 105 \
+            "$H int main(){struct ty* a;a=calloc(1,sizeof(struct ty));a->name=\"hi\";return a->name[1];}"
+
+          t 'subscript + ptr member both' 7 \
+            "$H int main(){struct ty* a;struct ty* b;a=calloc(1,sizeof(struct ty));b=calloc(1,sizeof(struct ty));a->name=\"*x\";a->indirect=b;b->size=7;if(a->name[0]==42){return a->indirect->size;}return 0;}"
+
+          t 'the while loop shape' 3 \
+            "$H int main(){struct ty* r;struct ty* n;int i;r=calloc(1,sizeof(struct ty));n=calloc(1,sizeof(struct ty));r->indirect=n;n->indirect=n;n->size=3;r->name=\"*\";i=0;while(r->name[0]==42){r=r->indirect;i=i+1;if(i>0){r->name=\"z\";}}return r->size;}"
+
+          t 'self-referential null tail' 0 \
+            "$H int main(){struct ty* a;a=calloc(1,sizeof(struct ty));if(a->indirect==0){return 0;}return 1;}"
+
       - name: Build each benchmark with BOTH compilers
         continue-on-error: true
         run: |
