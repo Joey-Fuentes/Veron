@@ -13,8 +13,8 @@ name: stage2-mini-c-demo
 # == !=  <  < > <= >=  <  + -  <  * . <= is '>' flipped, >= is '<' flipped,
 # != is (d|-d)>>63, == is != flipped (all reuse the existing sign-bit recipe).
 # Control flow (if/while, nested) tests the condition for nonzero; codegen is
-# iterative with a block stack and BACKPATCHED numeric branches (b.eq @<pos> /
-# b @<pos>): the target position is filled in when the block closes, and stage1
+# iterative with a block stack and NAMED labels (b.eq __L<id> / b __L<id>) since
+# A22 -- backpatched @<pos> positions are retired, and stage1
 # passes these through. FUNCTIONS use :name / bl name (resolved by stage1) plus a
 # runtime calling convention: x9 value stack, x10 frame base, x11 frame stack
 # (frames nest -> recursion). A call evaluates args L->R onto the value stack then
@@ -154,28 +154,39 @@ jobs:
           printf '%s' 'int main(){return 1<<4;}' | qemu-aarch64 ./stage2 > bshl.s
           grep -q 'lsl x0 x1 x0' bshl.s || { echo "MISSING shift codegen (lsl x0 x1 x0)"; struct_ok=no; }
 
-          # ---- structural: else emits a skip branch (b @) plus the if-cond branch (b.eq @) ----
+          # ---- structural: else emits a skip branch plus the if-cond branch ----
+          # A22: both are NAMED labels now, not backpatched @<pos> positions.
           printf '%s' 'int main(){if(0){return 1;}else{return 2;}return 3;}' | qemu-aarch64 ./stage2 > ielse.s
-          grep -q 'b.eq @' ielse.s || { echo "MISSING if-cond branch (b.eq @)"; struct_ok=no; }
-          grep -q 'b @'    ielse.s || { echo "MISSING else skip branch (b @)"; struct_ok=no; }
+          grep -q 'b.eq __L' ielse.s || { echo "MISSING if-cond branch (b.eq __L)"; struct_ok=no; }
+          grep -q '^b __L'   ielse.s || { echo "MISSING else skip branch (b __L)"; struct_ok=no; }
 
-          # ---- structural: if/while emit a zero-test + BACKPATCHED numeric branch ----
-          # if/while control flow is emitted as b.eq @<pos> / b @<pos> with the target
-          # position backpatched at '}', which stage1 passes through. The only labels
-          # in an emitted program are function names (here just :main) — never per-if/while.
+          # ---- structural: if/while emit a zero-test + a NAMED branch (A22) ----
+          # SUPERSEDES the m29 backpatched-numeric design. Backpatching existed only
+          # because stage0-as's 128-entry symtab capped a program's labels; m32 made
+          # stage 1 a numeric RESOLVER, so labels are bounded only by memory. Every
+          # branch now names its target, which is what lets stage 2 stream its output.
+          # Labels in an emitted program are function names plus generated :__L ids.
           cf_ok=yes
           printf '%s' 'int main(){int a=1; if(a){ a=a+1; } return a;}' | qemu-aarch64 ./stage2 > if.s
-          grep -q 'cmp x0 0'  if.s || { echo "if: MISSING zero-test"; cf_ok=no; }
-          grep -q 'b.eq @'    if.s || { echo "if: MISSING numeric skip branch b.eq @"; cf_ok=no; }
-          [ "$(grep '^:' if.s)" = ':main' ] || { echo "if: unexpected label (only :main allowed)"; cf_ok=no; }
+          grep -q 'cmp x0 0'   if.s || { echo "if: MISSING zero-test"; cf_ok=no; }
+          grep -q 'b.eq __L'   if.s || { echo "if: MISSING named skip branch b.eq __L"; cf_ok=no; }
+          grep -q '@'          if.s && { echo "if: an absolute @<pos> survived"; cf_ok=no; }
           printf '%s' 'int main(){int a=3; while(a){ a=a-1; } return a;}' | qemu-aarch64 ./stage2 > wh.s
-          grep -q '^b @'      wh.s || { echo "while: MISSING numeric back branch b @"; cf_ok=no; }
-          grep -q 'b.eq @'    wh.s || { echo "while: MISSING numeric exit branch b.eq @"; cf_ok=no; }
-          [ "$(grep '^:' wh.s)" = ':main' ] || { echo "while: unexpected label (only :main allowed)"; cf_ok=no; }
-          # the backpatched target must be a 6-digit position that lands in-range
-          bt=$(grep -m1 -oE 'b.eq @[0-9]{6}' if.s | grep -oE '[0-9]{6}')
-          ninstr=$(grep -c . if.s)
-          [ -n "$bt" ] && [ "$((10#$bt % 4))" = 0 ] && [ "$((10#$bt / 4))" -le "$ninstr" ] || { echo "if: backpatch target $bt not a valid in-range position"; cf_ok=no; }
+          grep -q '^b __L'     wh.s || { echo "while: MISSING named back branch b __L"; cf_ok=no; }
+          grep -q 'b.eq __L'   wh.s || { echo "while: MISSING named exit branch b.eq __L"; cf_ok=no; }
+          [ "$(grep -c '^:__L' wh.s)" = 2 ] || { echo "while: expected exactly 2 generated labels"; cf_ok=no; }
+          for f in if.s wh.s; do
+            grep '^:' "$f" | grep -v '^:main$' | grep -qv '^:__L' \
+              && { echo "$f: unexpected label (only :main and :__L* allowed)"; cf_ok=no; }
+          done
+          # backpatching guaranteed target validity BY CONSTRUCTION; labels do not, so
+          # check it directly: every branch target defined, every definition referenced.
+          for f in if.s wh.s; do
+            grep -o '^:__L[0-9]*' "$f" | sed 's/^://' | sort -u > cf_def.txt
+            grep -oE '^b(\.eq|\.ne)? +__L[0-9]*' "$f" | awk '{print $2}' | sort -u > cf_ref.txt
+            comm -23 cf_ref.txt cf_def.txt | grep -q . && { echo "$f: branch to an UNDEFINED label"; cf_ok=no; }
+            comm -13 cf_ref.txt cf_def.txt | grep -q . && { echo "$f: UNREFERENCED label definition"; cf_ok=no; }
+          done
 
           # ---- structural: relational < > are branchless (sign bit of a difference) ----
           rel_ok=yes
@@ -429,7 +440,8 @@ jobs:
           printf '%s' 'struct P{int x;int y;};int main(){struct P p;p.x=3;p.y=5;return p.x;}' | qemu-aarch64 ./stage2 > mem.s
           grep -q 'add x1 x1 0008' mem.s || { echo "member: MISSING 2nd-field offset add (add x1 x1 0008)"; sm_ok=no; }
           grep -q 'add x1 x1 0000' mem.s || { echo "member: MISSING 1st-field offset add (add x1 x1 0000)"; sm_ok=no; }
-          [ "$(grep '^:' mem.s)" = ':main' ] || { echo "member: unexpected label (field names must not be labels)"; sm_ok=no; }
+          grep '^:' mem.s | grep -v '^:main$' | grep -v '^:f$' | grep -qv '^:__L' \
+            && { echo "member: unexpected label (field names must not be labels)"; sm_ok=no; }
           printf '%s' 'struct N{int v;struct N* nx;};int main(){struct N a;struct N* q;q=&a;q->v=7;return q->v;}' | qemu-aarch64 ./stage2 > arw.s
           grep -q 'ldr x1 x1' arw.s || { echo "->: MISSING pointer-base deref (ldr x1 x1)"; sm_ok=no; }
           printf '%s' 'struct P{int x;int y;};struct P g;int main(){g.x=1;return g.x;}' | qemu-aarch64 ./stage2 > gsr.s
@@ -790,13 +802,13 @@ jobs:
           stry 'int main(){int x;x=93;return x^x;}' 0 'xor x^x == 0'
           stry 'int main(){return (12|3)+(12&8);}' 23 'orr/and unchanged by ^'
           # structural: || is the ONLY thing that emits `b.ne @` (if/while and &&
-          # use `b.eq @`, back-branches use `b @`), so this pins the inversion.
+          # use `b.eq __L`, back-branches use `b __L`), so this pins the inversion.
           printf '%s' 'int f(int a,int b){return a&&b;}int main(){return 0;}' | qemu-aarch64 ./stage2 > scand.s
           printf '%s' 'int f(int a,int b){return a||b;}int main(){return 0;}' | qemu-aarch64 ./stage2 > scor.s
           printf '%s' 'int f(int a,int b){return a^b;}int main(){return 0;}'  | qemu-aarch64 ./stage2 > scxor.s
-          grep -q 'b.eq @' scand.s || { echo "  MISSING && forward branch (b.eq @)"; sc_ok=no; }
-          grep -q 'b.ne @' scand.s && { echo "  REGRESSION: && emitted an inverted branch"; sc_ok=no; }
-          grep -q 'b.ne @' scor.s  || { echo "  MISSING || inverted branch (b.ne @)"; sc_ok=no; }
+          grep -q 'b.eq __L' scand.s || { echo "  MISSING && forward branch (b.eq __L)"; sc_ok=no; }
+          grep -q 'b.ne '    scand.s && { echo "  REGRESSION: && emitted an inverted branch"; sc_ok=no; }
+          grep -q 'b.ne __L' scor.s  || { echo "  MISSING || inverted branch (b.ne __L)"; sc_ok=no; }
           grep -q 'eor x0 x1 x0' scxor.s || { echo "  MISSING ^ lowering (eor x0 x1 x0)"; sc_ok=no; }
           printf '  %-64s %s\n' 'emitted branch forms: && b.eq / || b.ne / ^ eor' \
                  "$([ "$sc_ok" = yes ] && echo OK || echo DIFF)"
@@ -847,12 +859,15 @@ jobs:
           printf '%s' 'int main(){int i;i=0;top: i=i+1;if(i<3){goto top;}return i;}' | qemu-aarch64 ./stage2 > gto.s
           grep -q '^b __Lg' gto.s || { echo "  MISSING goto branch (b __Lg)"; goto_ok=no; }
           grep -q '^:__Lg0001_top$' gto.s || { echo "  MISSING function-indexed label (:__Lg0001_top)"; goto_ok=no; }
-          grep -q 'b.eq @' gto.s || { echo "  MISSING numeric if branch alongside the label"; goto_ok=no; }
+          grep -q 'b.eq __L' gto.s || { echo "  MISSING if branch alongside the goto label"; goto_ok=no; }
           [ "$(grep -c '^$' gto.s)" = 0 ] || { echo "  REGRESSION: blank emitted line (x17 accounting)"; goto_ok=no; }
           # exact 0-byte/0-tick witness: adding a label must shift no @-target
-          printf '%s' 'int main(){int i;i=0;if(i<3){i=i+1;}return i;}'       | qemu-aarch64 ./stage2 | grep 'b.eq @' > gnolab.txt
-          printf '%s' 'int main(){int i;i=0;top: if(i<3){i=i+1;}return i;}'  | qemu-aarch64 ./stage2 | grep 'b.eq @' > glab.txt
-          cmp -s gnolab.txt glab.txt || { echo "  REGRESSION: a label definition shifted an @-target (label is not 0 bytes / 0 ticks)"; goto_ok=no; }
+          # A22 retires the 0-byte/0-tick @-target witness: there are no absolute
+          # positions left to shift. What must still hold is that a goto label is
+          # emitted as a definition and branched to by name.
+          printf '%s' 'int main(){int i;i=0;top: if(i<3){goto top;}return i;}' | qemu-aarch64 ./stage2 > glab.s
+          grep -q '^:__Lg0001_top$' glab.s || { echo "  MISSING goto label definition"; goto_ok=no; }
+          grep -q '^b __Lg0001_top$' glab.s || { echo "  MISSING goto branch by name"; goto_ok=no; }
           # a program with no goto must carry no goto machinery at all
           printf '%s' 'int main(){int i;i=0;while(i<3){i=i+1;}return i;}' | qemu-aarch64 ./stage2 > gnone.s
           grep -q '__Lg' gnone.s && { echo "  REGRESSION: non-goto program emitted __Lg"; goto_ok=no; }
@@ -963,12 +978,13 @@ jobs:
           # i.e. this rung is a pure superset. Checked against the same program's
           # emission being stable and label-shaped as before.
           printf '%s' 'int main(){int a;a=5;if(a){a=a+1;}return a;}' | qemu-aarch64 ./stage2 > blbr.s
-          grep -q 'b.eq @' blbr.s || { echo "  REGRESSION: braced if lost its numeric branch"; bl_ok=no; }
-          [ "$(grep '^:' blbr.s)" = ':main' ] || { echo "  REGRESSION: braced if emitted an unexpected label"; bl_ok=no; }
+          grep -q 'b.eq __L' blbr.s || { echo "  REGRESSION: braced if lost its branch"; bl_ok=no; }
+          grep '^:' blbr.s | grep -v '^:main$' | grep -qv '^:__L' \
+            && { echo "  REGRESSION: braced if emitted an unexpected label"; bl_ok=no; }
           [ "$(grep -c '^$' blbr.s)" = 0 ] || { echo "  REGRESSION: blank emitted line (x17 accounting)"; bl_ok=no; }
           printf '%s' 'int main(){int a;a=1;if(a) return 5;return 9;}' | qemu-aarch64 ./stage2 > blbl.s
           [ "$(grep -c '^$' blbl.s)" = 0 ] || { echo "  REGRESSION: braceless body emitted a blank line (x17)"; bl_ok=no; }
-          grep -q 'b.eq @' blbl.s || { echo "  MISSING numeric branch for a braceless if"; bl_ok=no; }
+          grep -q 'b.eq __L' blbl.s || { echo "  MISSING branch for a braceless if"; bl_ok=no; }
           printf '  %-64s %s\n' 'structural: braced unchanged, braceless drift-free' \
                  "$([ "$bl_ok" = yes ] && echo OK || echo DIFF)"
 
