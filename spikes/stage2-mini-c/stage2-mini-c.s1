@@ -5520,7 +5520,7 @@ b ps_l
 .ascii "str x0 x9\nadd x9 x9 8\n"
 .byte 0
 :smainpre
-.ascii "mov x0 0\nmov x8 214\nsvc\nmov x2 x0\nmov x9 x2\nmov x1 32768\nadd x11 x2 x1\nmov x1 0\nmovk x1 1 16\nadd x0 x2 x1\nmov x8 214\nsvc\nbl main\nsub x9 x9 8\nldr x0 x9\nmov x8 93\nsvc\n"
+.ascii "mov x0 0\nmov x8 214\nsvc\nmov x2 x0\nmov x9 x2\nmov x1 32768\nadd x11 x2 x1\nmov x1 0\nmovk x1 1 16\nadd x0 x2 x1\nmov x8 214\nsvc\nadd x3 x31 0\nldr x0 x3\nstr x0 x9\nadd x9 x9 8\nadd x0 x3 8\nstr x0 x9\nadd x9 x9 8\nbl main\nsub x9 x9 8\nldr x0 x9\nmov x8 93\nsvc\n"
 .byte 0
 :sfpro
 .ascii "str x10 x11\nadd x1 x11 8\nstr x30 x1\nadd x10 x11 16\nadd x11 x11 "

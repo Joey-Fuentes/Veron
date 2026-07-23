@@ -2355,13 +2355,30 @@ if os.path.exists(s1p) and os.path.exists(s2p):
          "while(i!=0){n=n+1;i=i-1;}return n;}int main(){return gz(60);}", 8),
         # cc_core.c:2091 -- an uninitialised unsigned local among other locals
         ("int main(){unsigned d;int n;n=6;d=7;return d*n;}", 42),
-        # M2libc/stdio.c:412,426 -- long return type, long parameter
-        ("long ftell(long off){return off+1;}"
-         "int fseek(char* f,long offset,int whence){return ftell(offset)+whence;}"
-         "int main(){return fseek(0,40,1);}", 42),
-        # M2libc/stdlib.c:47 -- file-scope `long`
-        ("long _malloc_ptr;int main(){_malloc_ptr=7;_malloc_ptr=_malloc_ptr*6;"
+        # THE FOUR REAL `long` SITES. All of them are in M2libc/bootstrap.c, which IS
+        # in the --bootstrap-mode -f list, and all four are the brk allocator:
+        # `long _malloc_ptr;` / `long _brk_ptr;` at file scope (95,96) and
+        # `long old_brk = _brk_ptr;` / `long old_malloc = _malloc_ptr;` as locals
+        # (110,115), the first of which is declared INSIDE an if block after
+        # statements. An earlier draft anchored these to stdio.c's ftell/fseek, which
+        # the self-host never compiles -- see the -f list note in the A28 section.
+        ("long _malloc_ptr;long _brk_ptr;int main(){_brk_ptr=7;_malloc_ptr=_brk_ptr*6;"
          "return _malloc_ptr;}", 42),
+        ("int f(int n){if(n>0){long old_brk=n;return old_brk+41;}return 0;}"
+         "int main(){return f(1);}", 42),
+        ("int main(){int n;n=1;long old_malloc;old_malloc=41;return old_malloc+n;}", 42),
+        # and, now that m69 supplies brk, the allocator those four sites are FOR --
+        # M2libc/bootstrap.c's malloc in as close to verbatim shape as the subset
+        # allows. This is the real witness: `long` exists in the TU to hold a break.
+        ("long _malloc_ptr;long _brk_ptr;"
+         "int malloc(int size){"
+         "if(0==_brk_ptr){_brk_ptr=brk(0);_malloc_ptr=_brk_ptr;}"
+         "if(_brk_ptr<_malloc_ptr+size){"
+         "long old_brk;old_brk=_brk_ptr;_brk_ptr=brk(_malloc_ptr+size);"
+         "if(_brk_ptr==old_brk){return 0;}}"
+         "long old_malloc;old_malloc=_malloc_ptr;_malloc_ptr=_malloc_ptr+size;"
+         "return old_malloc;}"
+         "int main(){char* p;p=malloc(64);p[0]=42;return p[0];}", 42),
         # M2libc/stdio.c:469,556 -- the two-word `unsigned int` parameter
         ("int f(unsigned int value,int base){return value*base;}"
          "int main(){return f(7,6);}", 42),
@@ -2407,10 +2424,13 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     # (the accident that makes `void` work) and fl_global follows it.
     #
     # Derived against the pinned tree rather than the doc's list, which was wrong in
-    # both directions: in the translation unit the makefile actually builds
-    # (bootstrappable.c + cc_*.c + gcc_req.h) FILE has 15 uses and FUNCTION has 6,
-    # while size_t has ZERO (its 41 uses are all in stdio/stdlib/string) and ssize_t
-    # has zero anywhere -- it is registered for mes.c, not for the self-host.
+    # both directions. The translation unit is the --bootstrap-mode -f list in
+    # m2-planet/test/test1000/hello-aarch64.sh -- NOT the makefile, which is the gcc
+    # build (it passes gcc_req.h and no M2libc bootstrap files). On that real list:
+    # FILE 23 uses, FUNCTION 5, size_t ZERO (its 41 uses are all in stdio/stdlib/
+    # string, none of which the self-host compiles) and ssize_t zero anywhere -- it is
+    # registered for mes.c. gcc_req.h is genuinely absent from the -f list, which is
+    # what licenses treating it as a substitution rather than a capability.
     for cs, want in [
         # cc_core.c:988,1000,1025 -- FUNCTION is a plain VALUE parameter, then called.
         # The bl-vs-blr split is read off the symbol tables, so once the parameter is
@@ -2628,6 +2648,87 @@ if os.path.exists(s1p) and os.path.exists(s2p):
           _exit_safe("int f(char** v){return v[1][0];}"
                      "int main(){char* a[2];char y[2];y[0]=42;a[1]=y;return f(a);}") == 42,
           False)
+
+    print("== stage 2 argc/argv from _start (A31, m70) ==")
+    # cc.c's option loop is 29 argv uses, and until m69 there was nothing to index it
+    # with -- argv is useless if argv[i] has the wrong stride -- which is why this
+    # waited on the pointer-to-pointer model rather than landing earlier.
+    #
+    # At _start the kernel hands the process a stack whose top word is argc, followed
+    # by argc pointers, a NULL, then envp. The preamble copies SP into an ordinary
+    # register (`add x3 x31 0`, which IS `mov x3, sp` -- ADD-immediate treats Rn=31 as
+    # SP, byte-checked against real `as` in CI because the REGISTER form treats Rm=31
+    # as XZR instead) and pushes argc then argv, in that order, because a call
+    # evaluates arguments left-to-right and the callee pops them in reverse.
+    #
+    # The pushes are UNCONDITIONAL: the compiler is single-pass and emits the preamble
+    # long before it has seen main's declarator. For `int main()` the two values are
+    # simply never popped -- a two-slot leak on a 32 KB value stack, once per program.
+    #
+    # The bench had no x31 at all before this (R was x0..x30), so none of this could be
+    # tested here; interp.py now models the initial process stack and run() takes an
+    # argv= list. That is the m50/m51 rule again: model it so the bench WITNESSES the
+    # behaviour instead of being less capable than reality.
+    def _exit_argv(csrc, args):
+        try:
+            _, resolved = run(s1prog, stdin=_emit(csrc).encode())
+            rc, _ = run(assemble(resolved.decode())[1], argv=args)
+            return rc
+        except RuntimeError as e:
+            return f"<{e}>"
+        except OOBAccess:
+            return "<oob>"
+    _A = ["prog", "-o", "out"]
+    for nm, cs, args, want in [
+        ("argc with no arguments", "int main(int argc,char** argv){return argc;}", None, 1),
+        ("argc with two arguments", "int main(int argc,char** argv){return argc;}", _A, 3),
+        ("argv[0][0]", "int main(int argc,char** argv){char* p;p=argv[0];return p[0];}", _A, 112),
+        ("argv[1][0] is the dash of -o",
+         "int main(int argc,char** argv){char* p;p=argv[1];return p[0];}", _A, 45),
+        ("argv[1][1] is the o of -o",
+         "int main(int argc,char** argv){char* p;p=argv[1];return p[1];}", _A, 111),
+        ("argv[i] with a variable index",
+         "int main(int argc,char** argv){int i;i=2;char* p;p=argv[i];return p[0];}", _A, 111),
+        ("argv[i+1] -- the cc.c option-argument shape",
+         "int main(int argc,char** argv){int i;i=1;char* p;p=argv[i+1];return p[0];}", _A, 111),
+        ("argv[argc] is the NULL terminator",
+         "int main(int argc,char** argv){if(argv[argc]==0){return 42;}return 9;}", _A, 42),
+        # cc.c's option loop in miniature, over a real argv
+        ("cc.c option loop: match(argv[i],\"-o\")",
+         "int eq(char* a,char* b){int i;i=0;while(a[i]){if(a[i]!=b[i]){return 0;}i=i+1;}"
+         "if(b[i]){return 0;}return 1;}"
+         "int main(int argc,char** argv){int i;i=1;while(i<argc){"
+         "if(eq(argv[i],\"-o\")){return 42;}i=i+1;}return 9;}", _A, 42),
+        ("argv passed on to a char** parameter",
+         "int f(char** v,int i){char* p;p=v[i];return p[0];}"
+         "int main(int argc,char** argv){return f(argv,1);}", _A, 45),
+        # main WITHOUT parameters: the two pushed values are never popped, and the
+        # return value is still the top of the value stack.
+        ("int main() with no parameters", "int main(){return 42;}", _A, 42),
+        ("int main(void)", "int main(void){return 42;}", _A, 42),
+        ("recursion under the new preamble",
+         "int f(int n){if(n<2){return n;}return f(n-1)+f(n-2);}"
+         "int main(int argc,char** argv){return f(10);}", _A, 55),
+        ("calloc under the new preamble",
+         "int main(int argc,char** argv){char* p;p=calloc(4,8);p[0]=42;return p[0];}", _A, 42),
+    ]:
+        check(f"stage2 argv: {nm}", _exit_argv(cs, args), want)
+
+    _av = _emit("int main(int argc,char** argv){return argc;}")
+    _pre = _av[:_av.index("bl main")]
+    check("stage2 argv: preamble reads sp (add x3 x31 0)", "add x3 x31 0" in _pre, True)
+    check("stage2 argv: argc loaded from [sp]", "ldr x0 x3" in _pre, True)
+    check("stage2 argv: argv is sp+8", "add x0 x3 8" in _pre, True)
+    check("stage2 argv: exactly two pushes before bl main", _pre.count("str x0 x9"), 2)
+    # SP is copied out and never used as a load/store base: an SP-based access faults
+    # unless SP is 16-byte aligned, and nothing in this ladder maintains that.
+    check("stage2 argv: SP is never a load base", "ldr x0 x31" in _av, False)
+    check("stage2 argv: SP is never a store base", "str x0 x31" in _av, False)
+    # This rung changes every program's first 7 instructions, so plain byte-identity
+    # is the wrong guard; the right one is that the change is CONFINED to the preamble.
+    check("stage2 argv: the preamble is exactly 7 lines longer",
+          _pre.count("\n") - _emit("int main(){return 42;}")[
+              :_emit("int main(){return 42;}").index("bl main")].count("\n"), 0)
 
 if FAILS:
     print(f"\nFAILED: {FAILS}\nThe bench no longer matches CI ground truth — fix before trusting it.")

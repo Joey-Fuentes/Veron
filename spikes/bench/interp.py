@@ -26,7 +26,7 @@ class OOBAccess(RuntimeError):
     """A load/store outside [NULLFLOOR, brk) — a fault the real hardware would take."""
 
 def run(prog, stdin=b'', mem_size=0x40000, trace=False, oob_trap=True, files=None,
-        timeout_s=60):
+        timeout_s=60, argv=None):
     _t0 = _time.time()
     # --- file I/O model (A12, m53) -------------------------------------------
     # The real ladder does file I/O through raw syscalls: openat(56)/read(63)/
@@ -64,8 +64,46 @@ def run(prog, stdin=b'', mem_size=0x40000, trace=False, oob_trap=True, files=Non
         if ins[0]=='.byte': img[off]=ins[1]; off+=1
         else: off+=4
     code_end=off
-    brk=[code_end]
-    R=[0]*31   # x0..x30
+    # --- initial process stack (A31) -----------------------------------------
+    # At _start the AArch64 Linux kernel hands the process a stack whose top word
+    # is argc, followed by argc argv pointers, a NULL, then envp (also NULL here),
+    # with the argument strings above. Nothing below SP is ours. Without this the
+    # bench simply had no x31 at all (R was x0..x30), so a compiler that reads argv
+    # could not be tested here -- the m50/m51 lesson: model the thing so the bench
+    # WITNESSES it rather than being less capable than reality.
+    #
+    # The block is laid out immediately above the code and brk starts ABOVE it, so
+    # it sits inside the valid [NULLFLOOR, brk) window with no change to the OOB
+    # trap, and brk growth can never collide with it. Real hardware puts the stack
+    # far above the heap and grows it down; the program only ever computes
+    # addresses from SP, so the direction is unobservable to it. (Placing it high
+    # is not an option here: img is a flat bytearray indexed by address, so a
+    # high stack would force a contiguous multi-hundred-MB allocation.)
+    #
+    # This does mean a wild pointer landing in those ~80 bytes above the code no
+    # longer faults. That is FAITHFUL rather than a regression: on real hardware
+    # the initial stack is mapped, readable memory, and an access into it does not
+    # fault there either. What the m50 trap is for -- addresses below NULLFLOOR and
+    # above the break -- is unchanged.
+    _args = [b"a.out"] if argv is None else [
+        a.encode() if isinstance(a, str) else a for a in argv]
+    sp = (code_end + 15) & ~15
+    _ptrs = sp + 8 + 8*(len(_args)+1) + 8      # argc | argv[] | NULL | envp NULL
+    _need = _ptrs + sum(len(a)+1 for a in _args)
+    stack_end = (_need + 15) & ~15
+    if len(img) < stack_end: img.extend(b'\x00'*(stack_end-len(img)))
+    def _w64(a, v): struct.pack_into('<Q', img, a, v & 0xFFFFFFFFFFFFFFFF)
+    _w64(sp, len(_args))
+    _p = _ptrs
+    for _k, _a in enumerate(_args):
+        _w64(sp + 8 + 8*_k, _p)
+        img[_p:_p+len(_a)] = _a; img[_p+len(_a)] = 0
+        _p += len(_a) + 1
+    _w64(sp + 8 + 8*len(_args), 0)             # argv NULL terminator
+    _w64(sp + 8 + 8*(len(_args)+1), 0)         # envp NULL
+    brk=[stack_end]
+    R=[0]*32   # x0..x30, plus x31 = SP (only ever READ, via add xD x31 0 / ldr)
+    R[31]=sp
     def M(a): return a  # identity address space (base 0)
     def chk(addr, n, store):
         # fault on anything a correct program could never legitimately reach
