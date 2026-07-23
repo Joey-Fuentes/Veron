@@ -1,0 +1,150 @@
+name: reference-m2p-fault
+
+# SPIKE. WHY DOES THE REFERENCE aarch64 M2-Planet SEGFAULT?
+#
+# Established by reference-first:
+#   p1.1  host tools compile/assemble/link/run, both targets   OK
+#   p1.2  reference aarch64 M1 (51,346 B) runs and its output is byte-identical
+#         to the host M1's                                      OK
+#   p1.4  host self-compilation                                 OK
+#   p1.3  reference aarch64 M2-Planet, BOTH recipes             SEGV
+#
+# So the setup is fine and an upstream-built aarch64 binary CAN run under qemu.
+# Only M2-Planet does not. Its ELF header checks out (verified offline: one
+# PT_LOAD at 0x400000, entry 0x400078 inside the image, filesz=memsz=366726),
+# and _start is the same libc-core.M1 code refM1 uses, so the fault is inside
+# M2-Planet's own code.
+#
+# Note our OWN stage-2-built M2-Planet (327,692 B) runs fine on the same inputs,
+# which is the odd part: same C source, different toolchain, and the UPSTREAM
+# one is the broken one.
+#
+# Everything here is bounded at 120s.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/reference-m2p-fault.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: reference-m2p-fault-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fault:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      M2PLANET_SHA: 34fbd5c2a9b6eb634a4f6ad95158dcd1efcf19e0
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu gcc make
+
+      - name: Fetch and build oracles
+        run: |
+          git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git -C upstream-m2planet checkout "$M2PLANET_SHA"
+          git -C upstream-m2planet submodule update --init --recursive
+          git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
+          make -C upstream-m2planet M2-Planet
+          make -C upstream-mescc M1 hex2 blood-elf
+
+      - name: Build both variants
+        run: |
+          . tools/ab.sh
+          M=upstream-m2planet; L=$M/M2libc; S=upstream-mescc
+          FL="-f $L/aarch64/linux/bootstrap.c -f $L/bootstrap.c -f $M/cc.h \
+              -f $L/bootstrappable.c -f $M/cc_globals.c -f $M/cc_reader.c \
+              -f $M/cc_strings.c -f $M/cc_types.c -f $M/cc_emit.c -f $M/cc_core.c \
+              -f $M/cc_macro.c -f $M/cc.c"
+          $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode $FL -o A.M1
+          $S/bin/M1 -f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 \
+            -f A.M1 --little-endian --architecture aarch64 -o A.hex2
+          $S/bin/hex2 -f $L/aarch64/ELF-aarch64.hex2 -f A.hex2 --little-endian \
+            --architecture aarch64 --base-address 0x400000 -o M2-A
+          $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode --debug $FL -o B.M1
+          $S/bin/blood-elf --64 -f B.M1 --little-endian --entry _start -o B-footer.M1
+          $S/bin/M1 -f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 \
+            -f B.M1 -f B-footer.M1 --little-endian --architecture aarch64 -o B.hex2
+          $S/bin/hex2 -f $L/aarch64/ELF-aarch64-debug.hex2 -f B.hex2 --little-endian \
+            --architecture aarch64 --base-address 0x400000 -o M2-B
+          chmod +x M2-A M2-B
+          ab_rule 'BINARIES'
+          ab_art 'M2-A (plain)' M2-A
+          ab_art 'M2-B (debug + blood-elf)' M2-B
+          echo "  symbols visible in M2-B:"
+          aarch64-linux-gnu-nm M2-B 2>/dev/null | wc -l
+          aarch64-linux-gnu-nm M2-B 2>/dev/null | head -5
+
+      - name: 'HOW FAR does it get? (syscall trace)'
+        continue-on-error: true
+        run: |
+          printf 'int main(){return 42;}' > t.c
+          for b in M2-A M2-B; do
+            echo "  === $b ==="
+            set +e
+            timeout 60 qemu-aarch64 -strace ./$b --architecture aarch64 \
+              --bootstrap-mode -f t.c -o /tmp/o.M1 </dev/null > s.$b 2>&1
+            echo "    rc=$?  syscalls=$(grep -c '(' s.$b)"
+            set -e
+            echo "    --- all syscalls ---"
+            head -30 s.$b | sed 's/^/    /'
+          done
+          echo
+          echo "  Reading this: if openat of t.c never appears, it dies during"
+          echo "  startup, before it reads anything -- which points at the"
+          echo "  initial allocations rather than at parsing."
+
+      - name: 'WHERE does it fault? (PC + registers, mapped through nm)'
+        continue-on-error: true
+        run: |
+          printf 'int main(){return 42;}' > t.c
+          for b in M2-A M2-B; do
+            echo "  === $b ==="
+            set +e
+            timeout 60 qemu-aarch64 -d cpu -D f.$b ./$b --architecture aarch64 \
+              --bootstrap-mode -f t.c -o /tmp/o.M1 </dev/null >/dev/null 2>&1
+            echo "    rc=$?"
+            set -e
+            PC=$(grep -o 'PC=[0-9a-f]\{8,\}' f.$b | tail -1 | cut -d= -f2)
+            LR=$(grep -o 'X30=[0-9a-f]\{8,\}' f.$b | tail -1 | cut -d= -f2)
+            echo "    faulting PC=0x$PC   X30=0x$LR"
+            echo "    --- final register state ---"
+            tail -20 f.$b | sed 's/^/    /'
+            if aarch64-linux-gnu-nm "./$b" >/dev/null 2>&1; then
+              echo "    --- nearest symbols ---"
+              aarch64-linux-gnu-nm -n "./$b" 2>/dev/null | awk -v pc=$((16#$PC)) '
+                { a=strtonum("0x" $1); if (a<=pc) { l=$0 } else if (!done) { print "    NEXT: " $0; done=1 } }
+                END { print "    AT  : " l }' || true
+            fi
+          done
+
+      - name: 'IS IT SIZE? grow a working program until it breaks'
+        continue-on-error: true
+        run: |
+          . tools/ab.sh
+          M=upstream-m2planet; L=$M/M2libc; S=upstream-mescc
+          # refM1 (51 KB) runs. M2-Planet (367 KB) does not. If a synthetic
+          # program breaks somewhere in between, the cause is size/layout, not
+          # anything specific to M2-Planet's source.
+          for n in 200 800 3200 12800; do
+            { for i in $(seq 1 $n); do echo "int f$i(int n){return n+$i;}"; done
+              echo "int main(){return f1(1);}"; } > big.c
+            $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode \
+              -f $L/aarch64/linux/bootstrap.c -f $L/bootstrap.c -f big.c -o big.M1 2>/dev/null
+            $S/bin/M1 -f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 \
+              -f big.M1 --little-endian --architecture aarch64 -o big.hex2 2>/dev/null
+            $S/bin/hex2 -f $L/aarch64/ELF-aarch64.hex2 -f big.hex2 --little-endian \
+              --architecture aarch64 --base-address 0x400000 -o big.elf 2>/dev/null
+            chmod +x big.elf 2>/dev/null || true
+            set +e; timeout 60 qemu-aarch64 ./big.elf </dev/null >/dev/null 2>&1; r=$?; set -e
+            printf '  %5d functions -> %7s byte binary, rc=%-5s %s\n' \
+              "$n" "$(wc -c < big.elf 2>/dev/null || echo 0)" "$r" \
+              "$([ "$r" = 2 ] && echo 'OK (f1(1)=2)' || echo '<<<')"
+          done
