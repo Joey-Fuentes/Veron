@@ -72,40 +72,49 @@ jobs:
             </dev/null >/dev/null 2>&1
           set -e
           echo "  trace lines: $(wc -l < exec.log)"
-          echo "  --- blocks by ENTRY count (this is the real hot loop) ---"
-          grep -oE '0x[0-9a-f]+' exec.log | sort | uniq -c | sort -rn | head -12 > top.txt
+          echo "  --- raw format, so the parse can be checked ---"
+          head -3 exec.log | sed 's/^/    /'
+
+          # qemu logs: Trace N: <HOST ptr> [<cs_base>/<GUEST pc>/<flags>]
+          # The first hex on the line is the HOST translation buffer pointer.
+          # Pull every 16-digit field and keep those in our image's range.
+          guest() {
+            grep -oE '[0-9a-f]{16}' "$1" \
+              | sed -E 's/^0+//' | grep -E '^4[0-9a-f]{5}$' | sed 's/^/0x/'
+          }
+          guest exec.log > pcs.txt
+          echo "  guest PCs extracted: $(wc -l < pcs.txt)"
+          echo "  --- blocks by ENTRY count (the real hot loop) ---"
+          sort pcs.txt | uniq -c | sort -rn | head -12 > top.txt
           while read n addr; do
             printf '  %10s  ' "$n"
             python3 tools/pcmap.py m1.s1 "$addr" | tail -1
           done < top.txt
 
-      - name: 'The distinct functions in the cycle'
+      - name: 'The cycle, as function names'
         run: |
-          # A loop that spans several blocks shows up as a repeating cycle.
-          # Collapse to function names so the cycle is readable.
-          echo "  --- last 40 block entries, as function names ---"
-          grep -oE '0x[0-9a-f]+' exec.log | tail -40 > tail.txt
+          echo "  --- the repeating cycle ---"
+          tail -40 pcs.txt > tail.txt
           prev=""
           while read addr; do
-            f=$(python3 tools/pcmap.py m1.s1 "$addr" | tail -1 \
-                 | sed -E 's/.*\(in ([A-Za-z0-9_]+) \+.*/\1/; t; s/^  0x[0-9a-f]+ +([A-Za-z0-9_]+) \+.*/\1/')
+            f=$(python3 tools/pcmap.py m1.s1 "$addr" | tail -1)
             [ "$f" = "$prev" ] || echo "    $f"
             prev="$f"
           done < tail.txt
 
-      - name: 'Print the C for every function in the cycle'
+      - name: 'Print the C for the functions in the cycle'
         continue-on-error: true
         run: |
           fns=$(while read n addr; do
                   python3 tools/pcmap.py m1.s1 "$addr" | tail -1 \
-                    | sed -E 's/.*\(in ([A-Za-z0-9_]+) \+.*/\1/; t; s/^  0x[0-9a-f]+ +([A-Za-z0-9_]+) \+.*/\1/'
-                done < top.txt | sort -u)
+                    | sed -nE 's/.*\(in ([A-Za-z0-9_]+) \+.*/\1/p; s/^ *0x[0-9a-f]+ +([A-Za-z0-9_]+) \+.*/\1/p'
+                done < top.txt | sort -u | grep -E '^[A-Za-z_][A-Za-z0-9_]*$')
           echo "functions in the hot set: $fns"
           for fn in $fns; do
             for f in upstream-mescc/M1-macro.c upstream-mescc/stringify.c \
                      upstream-m2planet/M2libc/bootstrap.c \
                      upstream-m2planet/M2libc/bootstrappable.c; do
-              if grep -qE "^[a-zA-Z].*[ *]$fn\(" "$f"; then
+              if grep -qE "^[a-zA-Z].*[ *]${fn}\(" "$f"; then
                 echo "=== $fn  ($f) ==="
                 awk -v fn="$fn" '$0 ~ "^[a-zA-Z].*[ *]"fn"\\(" {p=1} p {print} p && /^}/ {exit}' "$f"
                 break
