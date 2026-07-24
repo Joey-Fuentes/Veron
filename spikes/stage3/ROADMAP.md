@@ -149,11 +149,36 @@ the build system around it; keep the step.
 > lines of fixes to a port that was one release old. **Backport 4.8.5's
 > `gcc/config/aarch64/`, not 4.8.0's.**
 >
-> *Not yet established:* how many of the 21 target hooks new in 4.8 the backend
-> needs. Run 1 reported 0, but it searched for the lowercase `target.def` name
-> (`add_stmt_cost`) while a backend spells it `TARGET_VECTORIZE_ADD_STMT_COST` —
-> a 0 that grep would return either way. Re-measured with a case-insensitive
-> substring search and a positive control.
+> **MEASURED, run #2 — the interface dependency is nil.**
+>
+> ```
+> target hooks new in 4.8 : 21
+> used by the aarch64 backend : 0
+> positive control        : legitimate_address_p 4 files, function_value 1,
+>                           rtx_costs 2   <- the search finds hooks when present
+> ```
+>
+> Run 1's 0 was unsafe — it searched the lowercase `target.def` spelling
+> (`add_stmt_cost`) while a backend writes `TARGET_VECTORIZE_ADD_STMT_COST`, so
+> the grep would return 0 either way. Re-measured case-insensitively with a
+> control that proves the search works. **The answer really is 0.**
+>
+> The 40 symbols the backend references that 4.7 lacks also classify away
+> entirely:
+>
+> | count | kind |
+> |---|---|
+> | 30 | `gen_*` — emitted by `genemit` from the backend's **own** `.md` files |
+> | 1 | `ggc_alloc_cleared_machine_function` — emitted by `gengtype` from its own GTY markers |
+> | 9 | backend-local statics that simply lack the `aarch64_` prefix (`emit_set_insn`, `sizetochar`, `offset_9bit_signed_unscaled_p`, …) |
+>
+> **Not one is a middle-end feature 4.7 lacks.** Every one is supplied by the
+> backend itself or generated from it — which is also a nice confirmation of
+> this file's own point that gcc's generator programs are real structure.
+>
+> `gcc47-aarch64-backport.yml` now attempts the transplant for real and prints
+> the failure inventory. It builds with the **host gcc** — one variable at a
+> time; whether *tcc* builds the result is the question after.
 
 **What can go:** autotools. One target, one language, one configuration — a
 hand-written driver replaces `configure` entirely.

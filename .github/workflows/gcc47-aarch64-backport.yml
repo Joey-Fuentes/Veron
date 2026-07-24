@@ -1,0 +1,145 @@
+name: gcc47-aarch64-backport
+
+# SPIKE. ACTUALLY MOVE gcc 4.8.5's AARCH64 BACKEND INTO gcc 4.7.4.
+#
+# WHY THIS IS WORTH ATTEMPTING. gcc-backend-backport-probe measured the cost and
+# every number came back small:
+#
+#   vax 4.7.4 -> 4.8.0    15 files, 76 +, 72 -    a whole untouched backend
+#   vax 4.7.4 -> 4.8.5    IDENTICAL               the interface did not move
+#                                                 WITHIN the 4.8 series at all
+#   new target hooks      21, of which aarch64 uses 0
+#                         positive control: legitimate_address_p 4 files,
+#                         function_value 1, rtx_costs 2 -- the search works
+#   foreign symbols       40, ALL self-supplied: 30 gen_* from the backend's own
+#                         .md files, 1 gengtype, 9 backend-local statics
+#
+# The backend depends on nothing 4.8 added. If that holds in practice, the gcc
+# leg on aarch64 changes shape entirely:
+#
+#     tcc -> gcc 4.7 + this backend -> g++ 4.7 -> gcc 4.8 -> modern gcc
+#
+# native AND C-only end to end: no borrowed C++ rung, no cross-architecture
+# detour. Every gcc up to 4.7 is written in C, so 4.7 hands us a full C++98
+# compiler for free, which is exactly what 4.8 asks for.
+#
+# WHAT THIS SPIKE IS FOR. Not to succeed first run. To produce the FAILURE
+# INVENTORY -- what a mechanical transplant leaves broken, classified by layer.
+# Every unmeasured estimate in this repo has turned out wrong, so the number
+# that matters is the one this prints.
+#
+# ONE VARIABLE AT A TIME: this builds with the HOST gcc. Whether tcc can build
+# the same tree is the next question, and gcc-entrypoint-probe already cleared
+# its previous blocker by building gmp, mpfr and mpc under tcc.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/gcc47-aarch64-backport.yml'
+      - 'spikes/stage3/probes/backport-aarch64.sh'
+  workflow_dispatch:
+
+concurrency:
+  group: gcc47-backport-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GNU: 'https://mirrors.kernel.org/gnu'
+
+jobs:
+  backport:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl bzip2 xz-utils gcc g++ make bison flex texinfo \
+            libgmp-dev libmpfr-dev libmpc-dev
+
+      - name: Fetch 4.7.4 and 4.8.5
+        run: |
+          set -eu
+          mkdir -p g47 g485
+          curl -fsSL --retry 3 --connect-timeout 15 -o g47.tar.bz2  "$GNU/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2"
+          curl -fsSL --retry 3 --connect-timeout 15 -o g485.tar.bz2 "$GNU/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2"
+          tar xf g47.tar.bz2  -C g47  --strip-components=1
+          tar xf g485.tar.bz2 -C g485 --strip-components=1
+
+      - name: 'THE TRANSPLANT'
+        run: |
+          set -eu
+          bash spikes/stage3/probes/backport-aarch64.sh g47 g485
+
+      - name: 'Does 4.7.4 recognise the target now?'
+        run: |
+          set -u
+          cd g47
+          echo "  config.sub aarch64-unknown-linux-gnu -> $(./config.sub aarch64-unknown-linux-gnu 2>&1)"
+          echo "  config.guess                         -> $(./config.guess 2>&1)"
+          echo "  gcc/config/aarch64 files             : $(ls -1 gcc/config/aarch64 | wc -l)"
+
+      - name: 'CONFIGURE'
+        continue-on-error: true
+        run: |
+          set -u
+          mkdir -p build && cd build
+          set +e
+          ../g47/configure \
+            --build=aarch64-unknown-linux-gnu \
+            --host=aarch64-unknown-linux-gnu \
+            --target=aarch64-unknown-linux-gnu \
+            --prefix="$PWD/../out47" --enable-languages=c \
+            --disable-multilib --disable-bootstrap --disable-libsanitizer \
+            --disable-libgomp --disable-libquadmath --disable-libssp \
+            > conf.log 2>&1
+          echo "  configure rc=$?"
+          tail -25 conf.log | sed 's/^/    /'
+
+      - name: 'BUILD, and inventory whatever breaks'
+        continue-on-error: true
+        run: |
+          set -u
+          cd build
+          set +e
+          timeout 5400 make -k -j"$(nproc)" all-gcc > build.log 2>&1
+          echo "  make rc=$? (124 = timed out)"
+          echo
+          echo "  === error classes -- THIS IS THE MEASUREMENT ==="
+          grep -oE 'error: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
+            | sort | uniq -c | sort -rn | head -30 | sed 's/^/    /'
+          echo
+          echo "  === distinct files that failed ==="
+          grep -oE '^[^ :]+\.(c|h|md):' build.log | sort -u | head -25 | sed 's/^/    /'
+          echo "    distinct: $(grep -oE '^[^ :]+\.(c|h|md):' build.log | sort -u | wc -l)"
+          echo
+          echo "  === did the GENERATOR programs run? ==="
+          echo "    They read the .md files and emit C. If these fail it is the"
+          echo "    MACHINE DESCRIPTION that did not port, which is a different"
+          echo "    and more bounded problem than the C not porting."
+          for g in genemit genattrtab genrecog genextract genoutput genpreds; do
+            printf '    %-12s %s\n' "$g" "$( [ -x gcc/build/$g ] && echo built || echo 'NOT BUILT')"
+          done
+          echo "    insn-*.c generated: $(ls gcc/insn-*.c 2>/dev/null | wc -l)"
+          echo
+          echo "  objects built: $(find . -name '*.o' | wc -l)"
+          echo "  cc1 present  : $( [ -x gcc/cc1 ] && echo YES || echo no)"
+
+      - name: VERDICT
+        run: |
+          cd build 2>/dev/null || exit 0
+          echo "  cc1 built: $( [ -x gcc/cc1 ] && echo YES || echo no)"
+          echo
+          echo "  READ THE INVENTORY BY LAYER:"
+          echo "    configure failed          -> the config.gcc / config.host splice"
+          echo "                                 is wrong. Mechanical."
+          echo "    generators did not build  -> the .md files need porting. Real"
+          echo "                                 work, but bounded and knowable."
+          echo "    generators ran, C failed  -> middle-end interface drift, which"
+          echo "                                 the vax control put at ~148 lines."
+          echo
+          echo "  If cc1 builds, the leg's shape is settled and the next question"
+          echo "  is whether tcc builds this same tree."
