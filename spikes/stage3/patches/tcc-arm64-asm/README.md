@@ -227,3 +227,30 @@ in history. Keying on the wrong one finds nothing.
 The script scores all nine files against the chosen base and prints match/drift
 per file, so a partial match is visible before the first `git apply` rather than
 surfacing as a conflict three patches in.
+
+---
+
+## Testing the series without an arm64 machine
+
+`fetch-base.sh` packages the two things needed to settle the assembler question
+off-CI: tinycc at the series' base commit (found by blob hash, not by date), and
+every aarch64 `.s`/`.S` file in musl 1.2.5 plus the arch headers — about 3 MB
+total.
+
+An arm64 host is **not** required. tcc's integrated assembler is target code,
+not host code, so on any machine:
+
+```sh
+tar xzf tcc-arm64-asm-base.tar.gz
+cd tinycc && bash ../apply-series.sh .
+./configure --enable-cross && make -j"$(nproc)"      # builds arm64-tcc
+./arm64-tcc -c ../musl-asm/src/string/aarch64/memcpy.S -o /tmp/o.o
+```
+
+`arm64-tcc` assembles arm64 input exactly as a native tcc would. Only *running*
+the resulting objects needs aarch64, and nothing about the assembler question
+requires running them — the 20 missing mnemonics are all assemble-time failures.
+
+This is the cheap way to iterate: a CI round trip is minutes and a runner slot,
+whereas the loop above is seconds and can be repeated against every musl asm
+file at once.
