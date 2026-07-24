@@ -93,16 +93,25 @@ j += len('case ${target} in\n')
 dst = dst[:j] + "".join(cpu) + dst[j:]
 print(f"    cpu_type table  : spliced {len(cpu)} arm(s)")
 
-# --- insertion point 2: before the main dispatch's catch-all -------------
+# --- insertion point 2: the case statement that OWNS the catch-all -------
+# Run 2 looked for the literal '\n*)\n' before the catch-all message and did
+# not find it -- real config.gcc indents that arm. Rather than guess the
+# indentation, anchor on the case statement itself: the LAST
+# 'case ${target} in' before the "not supported" message is by construction the
+# main dispatch, and inserting at its head puts the arms ahead of every other
+# arm including the catch-all. Order inside a case only matters for overlapping
+# patterns, and aarch64*-* overlaps nothing else.
 m = re.search(r'\*\*\* Configuration \$\{target\} not supported', dst)
 if not m:
     sys.exit("    FATAL: catch-all '*** Configuration ... not supported' not found")
-k = dst.rfind('\n*)\n', 0, m.start())
+head = 'case ${target} in\n'
+k = dst.rfind(head, 0, m.start())
 if k == -1:
-    sys.exit("    FATAL: could not find the catch-all's '*)' arm")
-k += 1
+    sys.exit("    FATAL: no 'case ${target} in' owns the catch-all")
+k += len(head)
 dst = dst[:k] + "".join(main) + dst[k:]
-print(f"    main dispatch   : spliced {len(main)} arm(s) before the catch-all")
+print(f"    main dispatch   : spliced {len(main)} arm(s) at the head of the "
+      f"case that owns the catch-all")
 
 open(dstf, 'w').write(dst)
 PY
@@ -116,19 +125,15 @@ src, dst = open(srcf).read(), open(dstf).read()
 arms = re.findall(r'^(aarch64[^\n]*\)\n(?:.*?\n)*?\t;;\n)', src, re.M)
 if not arms:
     print("    libgcc/config.host: no aarch64 arms in 4.8.5"); sys.exit(0)
+head = 'case ${host} in\n'
 m = re.search(r'\*\*\* Configuration \$\{host\} not supported', dst)
-if m:
-    k = dst.rfind('\n*)\n', 0, m.start())
-    if k != -1:
-        k += 1
-        open(dstf,'w').write(dst[:k] + "".join(arms) + dst[k:])
-        print(f"    libgcc/config.host: spliced {len(arms)} arm(s) before the catch-all")
-        sys.exit(0)
-i = dst.find('case ${host} in\n')
-if i != -1:
-    j = i + len('case ${host} in\n')
-    open(dstf,'w').write(dst[:j] + "".join(arms) + dst[j:])
-    print(f"    libgcc/config.host: spliced {len(arms)} arm(s) at the case head")
+k = dst.rfind(head, 0, m.start()) if m else dst.find(head)
+if k == -1:
+    print("    libgcc/config.host: no 'case ${host} in' found -- not spliced")
+    sys.exit(0)
+k += len(head)
+open(dstf,'w').write(dst[:k] + "".join(arms) + dst[k:])
+print(f"    libgcc/config.host: spliced {len(arms)} arm(s)")
 PY
 }
 

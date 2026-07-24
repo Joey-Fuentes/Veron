@@ -98,6 +98,10 @@ jobs:
       - name: 'Prepare the tree'
         run: |
           set -eu
+          # A FATAL here aborts the job by design -- run 2 stopped arm C at
+          # exactly this point with "could not find the catch-all's '*)' arm",
+          # which is the guard working. Better than a 40-minute build that
+          # fails at configure-gcc for an unexplained reason.
           case "${{ matrix.arm }}" in
             A-485-vanilla)
               echo "SRC=g485" >> "$GITHUB_ENV"
@@ -154,7 +158,15 @@ jobs:
           set -u
           cd build
           set +e
-          timeout 7200 make -k -j"$(nproc)" all-gcc > build.log 2>&1
+          # MAKEINFO=true: arm B built cc1 and still reported failure, because
+          # doc/gccint.info died on "sourcebuild.texi:679: @itemx should not
+          # begin @table" -- 2026's makeinfo rejecting 2012's texinfo. That is
+          # documentation, not a compiler, and it must not mask the result.
+          #
+          # -Otarget: with -j the output of parallel compiles INTERLEAVES, so
+          # run 2's "first failure in context" showed warnings from resource.c
+          # next to a reload1.o failure. -Otarget groups each target's output.
+          timeout 7200 make -k -j"$(nproc)" -Otarget MAKEINFO=true all-gcc > build.log 2>&1
           rc=$?
           # Run 1 printed "(124 = timed out)" next to rc=2, which reads as a
           # claim rather than a legend. Say what actually happened.
@@ -184,6 +196,21 @@ jobs:
             sed -n "${start},${n}p" build.log | tail -30 | sed 's/^/    /'
           else
             echo "    (make reported no *** failure)"
+          fi
+          echo
+          echo "  === the failing target, rebuilt SERIALLY for a clean error ==="
+          # Even with -Otarget, the surest way to see what actually broke is to
+          # rebuild just that target with -j1.
+          TGT_OBJ=$(grep -oE '\*\*\* \[[^]:]+:[0-9]+: [^]]+\]' build.log \
+                    | sed 's/.*: //; s/\]//' | grep -vE '^all-|^\.' | head -1)
+          if [ -n "${TGT_OBJ:-}" ]; then
+            echo "    target: $TGT_OBJ"
+            timeout 900 make -j1 MAKEINFO=true "$TGT_OBJ" > serial.log 2>&1
+            echo "    serial rc=$?"
+            grep -E 'error:|Error ' serial.log | head -15 | sed 's/^/      /'
+            [ -s serial.log ] && tail -15 serial.log | sed 's/^/      /'
+          else
+            echo "    (could not parse a failing target)"
           fi
           echo
           echo "  === compiler ERRORS only (not warnings) ==="
