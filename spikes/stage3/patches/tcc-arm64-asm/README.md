@@ -508,3 +508,33 @@ and tcc has no transparent unions, which produces
 *cannot convert 'struct sockaddr *' to 'union <anonymous>'* at every socket
 call. glibc's `limits.h` and `floatn.h` also change behaviour. If the glibc
 flavor is ever built with tcc, this flag does not carry over.
+
+### busybox link: `--start-group`
+
+Every busybox object compiled; only the final link failed:
+
+```
+tcc: error: unsupported linker option '--start-group'
+```
+
+`scripts/trylink` wraps all 28 archives in `-Wl,--start-group ...
+-Wl,--end-group` so the linker re-scans them until symbols stop resolving. tcc
+has no such option, and it does **not** re-scan -- an archive listed before the
+object needing it is simply missed. Measured with a three-deep chain:
+
+```
+liba.a libb.a libc.a                 -> links (dependency order)
+libc.a libb.a liba.a                 -> undefined symbol 'bar'
+libc.a libb.a liba.a (repeated once) -> undefined symbol 'baz'
+```
+
+so repeating the list buys one extra pass, not N.
+
+tcc **does** support `--whole-archive`, which loads every member regardless of
+demand and makes ordering irrelevant; the same chain links in either order with
+it. The shim translates `--start-group`/`--end-group` to
+`--whole-archive`/`--no-whole-archive`.
+
+For busybox this is close to semantically neutral: the archives hold the objects
+for the applets the config selected, and the final binary is meant to contain
+all of them. The change can make the binary larger; it cannot make it wrong.

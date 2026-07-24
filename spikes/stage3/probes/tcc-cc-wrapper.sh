@@ -36,6 +36,22 @@ while [ "$i" -lt "$n" ]; do
     case "$a" in
         -Wp,-MD,*)  set -- "$@" -MD -MF "${a#-Wp,-MD,}" ;;
         -Wp,-MMD,*) set -- "$@" -MD -MF "${a#-Wp,-MMD,}" ;;
+
+        # busybox's scripts/trylink wraps its 28 archives in
+        #   -Wl,--start-group ... -Wl,--end-group
+        # so the linker re-scans them until symbols stop resolving. tcc has no
+        # --start-group ("unsupported linker option") and does NOT re-scan: an
+        # archive listed before the object that needs it is simply missed.
+        # Verified with a 3-deep chain -- reverse order gives "undefined symbol",
+        # and repeating the list only buys one extra pass, not N.
+        #
+        # tcc DOES support --whole-archive, which loads every member regardless
+        # of demand and so makes ordering irrelevant. For busybox that is close
+        # to a no-op semantically: its archives hold the objects for the applets
+        # the config selected, and the final binary is meant to contain them all.
+        # It can only make the binary larger, never wrong.
+        -Wl,--start-group) set -- "$@" -Wl,--whole-archive ;;
+        -Wl,--end-group)   set -- "$@" -Wl,--no-whole-archive ;;
         # Other -Wp, pass-throughs are preprocessor flags tcc does not take.
         # Dropping them is safe here; anything load-bearing would show up as a
         # compile error rather than silently wrong code.
