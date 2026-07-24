@@ -435,7 +435,7 @@ jobs:
           # (attributes, __restrict, always_inline) and none that it does not.
           # Verified by preprocessing platform.h at 4.1 and 4.0 and checking
           # which constructs come out.
-          sed -i "s|^CONFIG_EXTRA_CFLAGS=.*|CONFIG_EXTRA_CFLAGS=\"-I$MR/include -D__GNUC__=4 -D__GNUC_MINOR__=0\"|" .config
+          sed -i "s|^CONFIG_EXTRA_CFLAGS=.*|CONFIG_EXTRA_CFLAGS=\"-D__GNUC__=4 -D__GNUC_MINOR__=0\"|" .config
           # DISABLE tc. Not a tcc limitation -- verified: GCC fails on the same
           # file with the same error. TCA_CBQ_MAX and TCA_CBQ_RATE were removed
           # from the Linux uapi headers when the CBQ qdisc was dropped, and
@@ -452,6 +452,13 @@ jobs:
           # translates it to tcc's own -MD -MF spelling. See the script header.
           CCW="$GITHUB_WORKSPACE/spikes/stage3/probes/tcc-cc-wrapper.sh"
           chmod +x "$CCW"
+          # MUSLROOT makes the shim behave as musl-gcc would: -nostdinc and
+          # musl's headers on every compile, and -nostdlib + musl's crt objects
+          # + -L<muslroot>/lib -lc on every link. Without it busybox's own link
+          # line (which has no -L and no -nostdlib) silently resolved -lm,
+          # -lresolv and the implicit -lc against the SYSTEM glibc -- musl
+          # headers over gcc-built glibc libraries.
+          export MUSLROOT="$MR"
           # -k, like the musl step: without it make stops at the first error and
           # a run reports 2 failures when there may be twenty. The point of this
           # step is the failure INVENTORY, not the first casualty.
@@ -495,6 +502,11 @@ jobs:
           fi
           if [ -x busybox ]; then
             echo "  BUILT busybox: $(wc -c < busybox) bytes"
+            echo "  --- is it really musl, not the system libc? ---"
+            if command -v readelf >/dev/null 2>&1; then
+              readelf -p .comment busybox 2>/dev/null | head -5 | sed 's/^/    /' || true
+            fi
+            strings busybox 2>/dev/null | grep -im2 "musl\|GCC:" | sed 's/^/    /' || true
             file busybox | sed 's/^/    /'
             ./busybox | head -3 | sed 's/^/    /'
             echo "    applets: $(./busybox --list 2>/dev/null | wc -l)"

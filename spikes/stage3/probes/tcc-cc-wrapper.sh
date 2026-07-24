@@ -37,6 +37,13 @@ in_group=0
 group_objs=""
 group_archives=""
 
+# Is this a link or just a compile? Decides whether crt objects and -lc are
+# added below. Set before the rewrite loop consumes "$@".
+linking=1
+for a in "$@"; do
+    case "$a" in -c|-E|-S) linking=0 ;; esac
+done
+
 n=$#
 i=0
 while [ "$i" -lt "$n" ]; do
@@ -88,8 +95,46 @@ while [ "$i" -lt "$n" ]; do
     esac
 done
 
+# ---------------------------------------------------------------- musl driver
+# WHY THIS EXISTS. busybox builds its own link line and it contains no -L and
+# no -nostdlib:
+#
+#   ... -I<muslroot>/include -static -o busybox_unstripped -Wl,--start-group
+#       applets/built-in.o ... -Wl,--end-group -Wl,--start-group -lm -lresolv ...
+#
+# musl supplies the HEADERS and the system supplies the LIBRARIES, so -lm,
+# -lresolv and the implicit -lc resolve against /usr/lib/<triple> -- glibc's
+# gcc-built static libc.a. That produced every symbol in the failing link:
+# __aarch64_cas4_acq and friends are gcc's outline LSE atomics from libgcc.a,
+# _Unwind_Resume / __gcc_personality_v0 are glibc's cancellation path needing
+# libgcc_eh, __unordtf2 is libgcc soft-float, __ehdr_start is glibc csu -- plus
+# thousands of "Unknown relocation type for got" from TLS relocations tcc never
+# emits and its arm64 linker does not enumerate.
+#
+# This is exactly the job musl-gcc does. musl only generates that wrapper when
+# it detects a gcc-like CC, so building musl with tcc leaves us without one;
+# this section is it. Set MUSLROOT to enable.
+pre=""
+post=""
+if [ -n "${MUSLROOT:-}" ]; then
+    # Compiling and linking both need musl's headers and NOTHING from /usr.
+    pre="-nostdinc -I$MUSLROOT/include"
+    if [ "$linking" = 1 ]; then
+        LIBTCC1=""
+        for c in "${TCCDIR:-}/libtcc1.a" "${TCCDIR:-}/arm64-libtcc1.a"; do
+            [ -f "$c" ] && LIBTCC1="$c" && break
+        done
+        pre="$pre -nostdlib $MUSLROOT/lib/crt1.o $MUSLROOT/lib/crti.o"
+        post="-L$MUSLROOT/lib -lc $LIBTCC1 $MUSLROOT/lib/crtn.o"
+    fi
+fi
+
+if [ -n "${TCC_SHIM_DEBUG:-}" ]; then
+    printf 'shim: %s -B%s %s %s %s\n' "$TCC" "${TCCDIR:-}" "$pre" "$*" "$post" >&2
+fi
+
 if [ -n "${TCCDIR:-}" ]; then
-    exec "$TCC" -B"$TCCDIR" "$@"
+    exec "$TCC" -B"$TCCDIR" $pre "$@" $post
 else
-    exec "$TCC" "$@"
+    exec "$TCC" $pre "$@" $post
 fi
