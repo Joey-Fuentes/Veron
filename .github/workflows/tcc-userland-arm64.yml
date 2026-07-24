@@ -59,6 +59,13 @@ env:
   MUSL_VER: '1.2.5'
   BUSYBOX_VER: '1.36.1'
   VARIANT: ${{ github.event.inputs.variant || 'mob-plus-series' }}
+  # A version string is asserted after the fact; a hash makes the FETCH itself
+  # verifiable, which is what sources/ and TRUST-BOUNDARY.md are about.
+  # busybox's is computed from the 1.36.1 tarball. musl's is '-' because it has
+  # not been verified here -- the fetcher prints the hash it gets so it can be
+  # pinned, and inventing one would be worse than admitting it is missing.
+  BUSYBOX_SHA256: 'b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314'
+  MUSL_SHA256: '-'
 
 jobs:
   userland:
@@ -72,6 +79,12 @@ jobs:
           echo "  uname -m : $(uname -m)"
           echo "  gcc      : $(gcc -dumpmachine)"
           [ "$(uname -m)" = aarch64 ] || { echo "NOT aarch64"; exit 1; }
+
+      - name: Cache upstream tarballs
+        uses: actions/cache@v4
+        with:
+          path: dl
+          key: upstream-musl${{ env.MUSL_VER }}-busybox${{ env.BUSYBOX_VER }}-v1
 
       - name: Install host tools
         run: |
@@ -150,24 +163,18 @@ jobs:
           set -u
           # Run 2 died on curl(35) from musl.libc.org -- transient, not a build
           # problem. Retry, then fall back to git mirrors at the matching tag.
-          mkdir -p musl
-          got=no
-          for u in "https://musl.libc.org/releases/musl-$MUSL_VER.tar.gz" \
-                   "https://ftp.barfooze.de/pub/sabotage/tarballs/musl-$MUSL_VER.tar.gz"; do
-            echo "  trying $u"
-            if curl -fsSL --retry 4 --retry-delay 3 --retry-connrefused \
-                 --connect-timeout 20 -o musl.tar.gz "$u"; then
-              tar xf musl.tar.gz -C musl --strip-components=1 && got=yes && break
-            fi
-          done
-          if [ "$got" = no ]; then
-            echo "  tarballs unreachable -- cloning the git mirror at v$MUSL_VER"
-            rm -rf musl
-            git clone -q --depth 1 --branch "v$MUSL_VER" \
-              https://git.musl-libc.org/git/musl musl \
-              || git clone -q --depth 1 --branch "v$MUSL_VER" \
-                   https://github.com/bminor/musl musl
-          fi
+          # Bounded, cached, hash-checked. The chain this replaces spent
+          # ~250s failing: unbounded curl retries, a dead barfooze mirror
+          # (404), a 135s git stall, and a github clone that hit a credential
+          # prompt -- then killed the job with exit 128 under bash -e.
+          F="$GITHUB_WORKSPACE/spikes/stage3/probes/fetch-pinned.sh"
+          chmod +x "$F"
+          bash "$F" musl "dl/musl-$MUSL_VER.tar.gz" "$MUSL_SHA256" \
+            "https://musl.libc.org/releases/musl-$MUSL_VER.tar.gz
+             https://github.com/bminor/musl/archive/refs/tags/v$MUSL_VER.tar.gz" \
+            "https://git.musl-libc.org/git/musl
+             https://github.com/bminor/musl" \
+            "v$MUSL_VER" || { echo "  musl unavailable"; exit 1; }
           [ -f musl/configure ] || { echo "  could not obtain musl source"; exit 1; }
           # Assert the pin here too -- musl's git tags are v1.2.5 so the branch
           # name happens to be right, but "happens to be" is not a guarantee.
@@ -380,24 +387,13 @@ jobs:
           # master-only code. In a project whose thesis is hermetic pinned
           # builds, a pin that can quietly drift is worse than no pin.
           BB_TAG=$(echo "$BUSYBOX_VER" | tr . _)     # 1.36.1 -> 1_36_1
-          mkdir -p bb
-          got=no
-          for u in "https://busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2" \
-                   "https://github.com/mirror/busybox/archive/refs/tags/$BB_TAG.tar.gz"; do
-            echo "  trying $u"
-            if curl -fsSL --retry 4 --retry-delay 3 --retry-connrefused \
-                 --connect-timeout 20 -o bb.tar "$u"; then
-              tar xf bb.tar -C bb --strip-components=1 && got=yes && break
-            fi
-          done
-          if [ "$got" = no ]; then
-            echo "  tarballs unreachable -- cloning at tag $BB_TAG"
-            rm -rf bb
-            git clone -q --depth 1 --branch "$BB_TAG" \
-              https://git.busybox.net/busybox bb \
-              || git clone -q --depth 1 --branch "$BB_TAG" \
-                   https://github.com/mirror/busybox bb
-          fi
+          F="$GITHUB_WORKSPACE/spikes/stage3/probes/fetch-pinned.sh"
+          chmod +x "$F"
+          bash "$F" bb "dl/busybox-$BUSYBOX_VER.tar.bz2" "$BUSYBOX_SHA256" \
+            "https://busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2" \
+            "https://git.busybox.net/busybox
+             https://github.com/mirror/busybox" \
+            "$BB_TAG" || { echo "  busybox unavailable"; exit 1; }
           [ -f bb/Makefile ] || { echo "  could not obtain busybox source"; exit 1; }
 
           # ASSERT THE PIN. Every fetch path above can succeed with the wrong
