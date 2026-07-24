@@ -377,3 +377,53 @@ identically, `0004` fixes it, and the result still assembles 16/16.
 The check that would have caught this is not "did it build" but "did it build
 **both ways**" — the amalgamated unit and the separate object are different
 compilations of the same file, and only one of them is what the runner does.
+
+---
+
+## 0005 — why the tcc-built musl SIGILLs (2026-07-24)
+
+musl built (1277 members), tcc linked a static aarch64 ELF, and it died with
+SIGILL. The ladder localised it to rung B — crt + libc, `main` returning
+immediately — and gdb named the instruction:
+
+```
+Program received signal SIGILL
+=> 0x400dac:  udf  #0
+   0x400db0:  add  x3, x3, #0x40
+   0x400db4:  dc   zva, x3
+#1 __init_libc   #2 __libc_start_main   #3 _start_c
+```
+
+`udf #0` is a **zero word**. tcc pads `.align`/`.p2align` with zero bytes
+unconditionally (`v = 0; memset(ptr, v, size)`), which on x86 is inert filler
+and on arm64 is a permanently-undefined instruction. musl's `memset.S` puts
+`.p2align 4` directly in a fall-through path:
+
+```
+    sub     count, count, 128
+    .p2align 4
+.Lzva_loop:
+    add     dst, dst, 64
+```
+
+so the padding executes. `0005` fills implicit alignment padding in
+`SHF_EXECINSTR` sections with `NOP` (0xd503201f), as GNU as does, only when
+offset and size are whole instructions, and leaves an explicit `,fill`
+argument alone.
+
+**This is a tcc bug, not a bug in the series** — `asm_parse_directive` is
+generic code, untouched by the arm64 patches.
+
+### Why "enough to compile musl 1.2.5" was true and still produced a broken libc
+
+The `.Lzva_loop` path is guarded by `mrs zva_val, dczid_el0; cmp zva_val, 4`,
+so it only executes on CPUs whose ZVA block size is 64 bytes. Compiling musl
+never touches it. Running it on this hardware does. Compiling and running were
+never the same claim, and only one of them had been tested upstream.
+
+### Verified from a clean tree
+
+Fresh extract, all five patches applied by `apply-series.sh`, native build
+path (`--cpu=arm64`), then reassembled: `memset.o` has **no** UDF words, its
+`.text` is unchanged in length, and all 16 musl aarch64 asm files still
+assemble.
