@@ -733,3 +733,29 @@ definition.
 
 Only the first row is about what tcc *can do*. That is the useful output of this
 spike: the compiler gap is one item, and everything else was plumbing.
+
+### The boot step's remaining problems are all qemu/host, not tcc
+
+Three in a row, none of them about the compiler or the userland:
+
+| symptom | cause | fix |
+|---|---|---|
+| `regular file, no read permission` | `/boot/vmlinuz-*` is mode 0600 root-only on Azure images | `sudo cp` it out, don't run qemu as root |
+| `failed to find romfile "efi-virtio.rom"` | the virtio NIC's option ROM ships in `ipxe-qemu`, not `qemu-system-arm` | `-nic none` -- an initramfs that prints a marker has no use for a NIC |
+| `regime_is_user: code should not be reached` | qemu's own assertion; `-cpu max` enables every optional ARM feature and Linux 6.17 uses ones this qemu mishandles | ladder of CPU models, `cortex-a72` first |
+
+`cortex-a72` is plain ARMv8.0 and by far the most exercised model for `virt`
+boots. The kernel does not need anything newer to run an initramfs.
+
+### The kernel is still borrowed
+
+This step boots **Ubuntu's** kernel, which is the right call for proving the
+syscall-ABI claim -- a gcc-built kernel is the point. But it is a distro
+artifact: EFI-signed, 65 MB decompressed, and version-coupled to whatever the
+runner image ships, which is where all three problems above came from.
+
+Building `arch/arm64/configs/defconfig` from a pinned kernel tree with the host
+gcc would replace all of it with something known: unsigned, minimal, pinned, and
+identical run to run. That is also leg 3's first spike in `ROADMAP.md`, and it
+would supply the UAPI headers currently borrowed from `linux-libc-dev` via
+`make headers_install`. Two open items, one build.

@@ -635,14 +635,34 @@ jobs:
           # -nic none: without it qemu wants the virtio network option ROM
           # ("failed to find romfile efi-virtio.rom", shipped in ipxe-qemu) and
           # refuses to start. An initramfs that mounts /proc and prints a marker
-          # has no use for a NIC, so removing the device is better than
-          # installing a ROM to satisfy a device we do not want.
-          timeout 180 qemu-system-aarch64 \
-            -machine virt -cpu max -m 512 -nographic -no-reboot -nic none \
-            -kernel "$KIMG" -initrd initramfs.cpio.gz \
-            -append "console=ttyAMA0 rdinit=/init panic=1" \
-            > boot.log 2>&1
-          echo "  qemu rc=$?"
+          # has no use for a NIC.
+          qemu-system-aarch64 --version | head -1 | sed 's/^/  /'
+
+          # CPU MODEL LADDER. `-cpu max` turns on every optional ARM feature
+          # this qemu knows about, and Linux 6.17 is new enough to use ones it
+          # mishandles -- run 26 aborted inside qemu itself:
+          #
+          #   ERROR:target/arm/internals.h:767:regime_is_user:
+          #   code should not be reached
+          #
+          # That is a qemu assertion, not a kernel or userland fault. cortex-a72
+          # is plain ARMv8.0 and the most heavily exercised model for `virt`
+          # boots, so it is tried first; the others follow only if it fails.
+          booted=no
+          for cpu in cortex-a72 neoverse-n1 max; do
+            echo "  --- trying -cpu $cpu ---"
+            timeout 180 qemu-system-aarch64 \
+              -machine virt -cpu "$cpu" -m 512 -nographic -no-reboot -nic none \
+              -kernel "$KIMG" -initrd initramfs.cpio.gz \
+              -append "console=ttyAMA0 rdinit=/init panic=1" \
+              > boot.log 2>&1
+            rc=$?
+            echo "    qemu rc=$rc"
+            if grep -q 'VERON BOOT OK' boot.log; then booted=yes; break; fi
+            echo "    --- tail ---"
+            tail -12 boot.log | sed 's/^/      /'
+          done
+          echo
           echo "  --- boot log tail ---"
           tail -40 boot.log | sed 's/^/    /'
           echo
