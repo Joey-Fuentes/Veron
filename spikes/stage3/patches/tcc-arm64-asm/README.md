@@ -632,3 +632,43 @@ the host distro's `linux-libc-dev`. The principled source is
 `make headers_install` from the pinned kernel tree, which leg 3 of the roadmap
 will have; until then the dependency is real and should be named rather than
 absorbed.
+
+### busybox assumes a dead-code-eliminating compiler
+
+Three symbols stayed undefined through every link attempt --
+`delete_eth_table`, `sun_write_table`, `run_nofork_applet` -- and they are not a
+linker-ordering problem. busybox deliberately writes a runtime `if` on a
+compile-time constant instead of `#if`, and relies on the optimiser to remove
+the branch:
+
+```c
+#if ENABLE_FEATURE_CLEAN_UP
+static void delete_eth_table(...) { ... }
+#else
+void delete_eth_table(...);          /* declared, NEVER defined */
+#endif
+...
+    if (ENABLE_FEATURE_CLEAN_UP)     /* constant 0 */
+            delete_eth_table(ch);    /* gcc deletes this call */
+```
+
+gcc folds the branch away, so the call never reaches the linker. **tcc performs
+no such optimisation**, so the reference survives and the link fails on a
+function that genuinely does not exist. `sun_write_table` is the same idiom via
+`STATIC_SUN` (which becomes `extern` when `FEATURE_SUN_LABEL` is off), and
+`run_nofork_applet` via `FEATURE_PREFER_APPLETS`.
+
+This is a **genuine capability difference**, not an invocation artefact, and it
+is the first one this spike has turned up that is about the compiler rather
+than the build plumbing. Everything else so far -- `-Wp,-MD`, `__GNUC__`,
+`--start-group`, the missing `-L`, the UAPI headers -- was how tcc is invoked.
+This one is what tcc *does*.
+
+Fixed by enabling the three features, so the functions are real and nothing
+depends on the optimiser. Enabling capability is the honest direction; disabling
+the applets would hide the finding.
+
+Worth remembering for the Linux leg: the kernel uses the same
+`if (IS_ENABLED(CONFIG_FOO))` idiom pervasively, for exactly the same reason.
+A compiler with no dead-code elimination will hit this again, and far more
+often.

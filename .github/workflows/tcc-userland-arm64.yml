@@ -470,8 +470,49 @@ jobs:
           # busybox-vs-kernel-headers version mismatch and belongs in the
           # ledger as a CONFIG CHOICE, not as a compiler capability gap.
           sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config
+
+          # BUSYBOX ASSUMES A DEAD-CODE-ELIMINATING COMPILER. tcc is not one.
+          #
+          # busybox deliberately writes runtime `if` on a compile-time constant
+          # rather than #if, and lets the optimizer drop the branch:
+          #
+          #     #if ENABLE_FEATURE_CLEAN_UP
+          #     static void delete_eth_table(...) { ... }
+          #     #else
+          #     void delete_eth_table(...);        <- declared, NEVER defined
+          #     #endif
+          #     ...
+          #     if (ENABLE_FEATURE_CLEAN_UP)      <- constant 0
+          #             delete_eth_table(ch);     <- gcc deletes this call
+          #
+          # gcc folds the branch away so the call never reaches the linker. tcc
+          # does no such optimisation, so the reference survives and the link
+          # fails on a function that genuinely does not exist. Same idiom
+          # produced 'sun_write_table' (STATIC_SUN becomes `extern` when
+          # FEATURE_SUN_LABEL is off) and 'run_nofork_applet'.
+          #
+          # Enabling the three features makes the functions real, so nothing
+          # depends on the optimiser. That is the honest fix: this is a genuine
+          # capability difference, and it belongs in the ledger as one rather
+          # than being worked around by disabling the applets that expose it.
+          for c in FEATURE_CLEAN_UP FEATURE_SUN_LABEL FEATURE_PREFER_APPLETS; do
+            sed -i "s/^# CONFIG_$c is not set/CONFIG_$c=y/" .config
+          done
           yes '' | make oldconfig > /dev/null 2>&1
           echo "  tc applet: $(grep -c '^# CONFIG_TC is not set' .config) (1 = disabled)"
+          for c in FEATURE_CLEAN_UP FEATURE_SUN_LABEL FEATURE_PREFER_APPLETS; do
+            echo "  CONFIG_$c: $(grep -E "^(# )?CONFIG_$c[= ]" .config | head -1)"
+          done
+
+          # crt duplication diagnostic. Run 22 failed with '_start', '_start_c',
+          # '_init' and '_fini' each "defined twice" -- all four are crt
+          # symbols and busybox defines none of them, so something is supplying
+          # them twice. These three lines say which.
+          echo "  --- crt objects the shim injects ---"
+          for o in crt1.o crti.o crtn.o; do
+            echo "    $o: $(nm -g --defined-only "$MR/lib/$o" 2>/dev/null | awk '{print $3}' | tr '\n' ' ')"
+          done
+          echo "    libc.a crt-like members: $(ar t "$MR/lib/libc.a" 2>/dev/null | grep -cE 'crt|Scrt|rcrt')"
           # CC is a SHIM, not tcc directly: kbuild passes -Wp,-MD,<depfile>,
           # which tcc splits on commas so <depfile> becomes a second input file
           # ("cannot specify output file with -c many files"). The shim
@@ -485,6 +526,7 @@ jobs:
           # -lresolv and the implicit -lc against the SYSTEM glibc -- musl
           # headers over gcc-built glibc libraries.
           export MUSLROOT="$MR"
+          export TCC_SHIM_DEBUG=1     # link invocations only; see the shim
           # -k, like the musl step: without it make stops at the first error and
           # a run reports 2 failures when there may be twenty. The point of this
           # step is the failure INVENTORY, not the first casualty.

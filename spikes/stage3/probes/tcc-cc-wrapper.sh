@@ -129,7 +129,9 @@ if [ -n "${MUSLROOT:-}" ]; then
     fi
 fi
 
-if [ -n "${TCC_SHIM_DEBUG:-}" ]; then
+# Log LINK invocations only: a compile-time log would be hundreds of lines and
+# the question ("what exactly does the linker receive?") is a link question.
+if [ -n "${TCC_SHIM_DEBUG:-}" ] && [ "$linking" = 1 ]; then
     printf 'shim: %s -B%s %s %s %s\n' "$TCC" "${TCCDIR:-}" "$pre" "$*" "$post" >&2
 fi
 
