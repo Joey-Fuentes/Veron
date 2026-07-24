@@ -1,27 +1,35 @@
 name: reference-first
 
-# SPIKE. PHASE 1: PROVE THE REFERENCE, THEN OURS.
+# SPIKE. THE REFERENCE IS PROVEN -- now build ours against the same pin.
 #
-# Repinned to M2-Planet 1.13.1 (bd2fe4b) + M2libc 68a23cf + mescc-tools 5adfbf3,
-# the set stage0-posix pins. See spikes/UPSTREAM-PINS.md.
+# Phase 1 result at M2-Planet 1.13.1 (bd2fe4b) + M2libc 68a23cf:
+#   upstream's own test/test1000/hello-aarch64.sh, run with binfmt registered
+#   and GET_MACHINE_OVERRIDE_ALWAYS_RUN=1, PASSES. The 643,257-byte aarch64
+#   M2-Planet it builds runs, compiles M2-Planet's whole source for x86, and the
+#   output matches upstream's published sha256 in proof.answer. rc=0.
 #
-# LESSON APPLIED: this workflow does not hand-write a single -f list. Every one
-# of my hand-written lists has been wrong -- most recently against 1.13.1, whose
-# M2libc has no bootstrap.c at all. Upstream ships its own self-build recipe at
-# test/test1000/hello-aarch64.sh, versioned with the source. We read the list
-# out of that file and use it.
+# So: aarch64 self-hosting works at 1.13.1, and the segfault we chased for hours
+# was the unreleased 1.13.2 output-buffering change on master. See
+# spikes/UPSTREAM-PINS.md.
 #
-# Better still: that script already knows how to run its own artifact, gated on
-# get_machine. Registering qemu binfmt handlers and setting the documented
-# GET_MACHINE_OVERRIDE_ALWAYS_RUN escape hatch makes upstream's own test execute
-# the aarch64 binary -- the most authoritative reference check available.
+# DO NOT reconstruct upstream's recipe. Run their script and take the binary it
+# produces -- it is verified against their own checksum. My reconstruction
+# attempts have been wrong four times running.
 #
-# Nothing here exceeds a 120s timeout.
+# WHAT THIS ADDS: at 1.13.1 the -f list is
+#     M2libc/aarch64/linux/bootstrap.c   <- asm(), stage 2 cannot compile it
+#     M2libc/bootstrappable.c
+#     cc.h cc_globals.c ... cc.c
+# There is NO generic M2libc/bootstrap.c at this pin, so whatever supplied
+# malloc/calloc/memset/fgetc/fopen for our build no longer exists under that
+# name. Before guessing a replacement list, PRINT what the arch bootstrap.c
+# actually defines and probe candidate lists, reporting unresolved symbols.
 
 on:
   push:
     paths:
       - '.github/workflows/reference-first.yml'
+      - 'spikes/stage2-mini-c/**'
   workflow_dispatch:
 
 concurrency:
@@ -31,7 +39,7 @@ concurrency:
 jobs:
   reference:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     env:
       M2PLANET_SHA: bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d
       M2LIBC_SHA: 68a23cfd05d5a355ba7a30c770d684cbe86fcc4e
@@ -39,13 +47,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install toolchain (with binfmt so aarch64 binaries just run)
+      - name: Install toolchain (binfmt so aarch64 binaries run directly)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             qemu-user qemu-user-static binfmt-support \
             binutils-aarch64-linux-gnu gcc make
-          sudo update-binfmts --display 2>/dev/null | grep -i aarch64 || true
 
       - name: Fetch upstreams at the pinned set
         run: |
@@ -61,85 +68,77 @@ jobs:
           echo "    M2-Planet   $(git -C upstream-m2planet rev-parse HEAD)"
           echo "    M2libc      $(git -C upstream-m2planet/M2libc rev-parse HEAD)"
           echo "    mescc-tools $(git -C upstream-mescc rev-parse HEAD)"
-          echo "  M2-Planet version: $(grep -m2 -A2 '^# 1\.' upstream-m2planet/CHANGELOG.org 2>/dev/null | head -3 | tr '\n' ' ')"
-          ab_rule 'HOST ORACLES'
-          ab_art 'M2-Planet' upstream-m2planet/bin/M2-Planet
-          ab_art 'M1'        upstream-mescc/bin/M1
-          ab_art 'hex2'      upstream-mescc/bin/hex2
 
-      - name: 'P1.0 what does THIS M2libc actually contain?'
+      - name: 'REFERENCE: run upstream test1000, keep the binary it makes'
         run: |
-          echo "  --- M2libc top level ---"
-          ls -1 upstream-m2planet/M2libc/*.c upstream-m2planet/M2libc/*.h 2>/dev/null | sed 's|.*/|    |'
-          echo "  --- M2libc/aarch64 ---"
-          ls -1 upstream-m2planet/M2libc/aarch64/ 2>/dev/null | sed 's|^|    |'
-          echo "  --- M2libc/aarch64/linux ---"
-          ls -1 upstream-m2planet/M2libc/aarch64/linux/ 2>/dev/null | sed 's|^|    |'
-
-      - name: "P1.0b upstream's OWN aarch64 self-build recipe"
-        run: |
-          S=upstream-m2planet/test/test1000/hello-aarch64.sh
-          if [ ! -f "$S" ]; then echo "  MISSING: $S"; ls upstream-m2planet/test/ | head; exit 1; fi
-          echo "  --- $S ---"
-          sed 's/^/    /' "$S"
-          echo
-          # Pull the -f list straight out of it. This is the authoritative,
-          # version-correct file list; do not hand-write one.
-          grep -oE '^[[:space:]]*-f [A-Za-z0-9_./-]+' "$S" | awk '{printf "-f %s ", $2}' > /tmp/flist
-          echo "  extracted -f list:"
-          tr ' ' '\n' < /tmp/flist | paste - - | sed 's/^/    /'
-          echo "  uses --debug: $(grep -c -- '--debug' "$S")"
-          echo "  uses blood-elf: $(grep -c 'blood-elf' "$S")"
-          echo "  ELF header: $(grep -oE 'ELF-aarch64[A-Za-z-]*\.hex2' "$S" | head -1)"
-          echo "  base address: $(grep -oE '0x[0-9A-Fa-f]+' "$S" | tail -1)"
-
-      - name: "P1.1 RUN upstream's own aarch64 test, execution forced on"
-        continue-on-error: true
-        run: |
-          # hello-aarch64.sh gates running its artifact on get_machine; the
-          # script itself documents GET_MACHINE_OVERRIDE_ALWAYS_RUN as the
-          # escape hatch. With binfmt registered the aarch64 binary executes.
+          . tools/ab.sh
           cd upstream-m2planet
           export PATH="$PWD/bin:$PWD/../upstream-mescc/bin:$PATH"
           export GET_MACHINE_OVERRIDE_ALWAYS_RUN=1
-          set +e
-          timeout 120 sh test/test1000/hello-aarch64.sh
-          echo "  upstream test rc=$?"
-          set -e
-          ls -l test/results/ 2>/dev/null | sed 's/^/    /' || true
+          timeout 300 sh test/test1000/hello-aarch64.sh
+          cd ..
+          cp upstream-m2planet/test/results/test1000-aarch64-binary refM2P
+          chmod +x refM2P
+          ab_rule 'REFERENCE aarch64 M2-Planet (verified by upstream sha256)'
+          ab_art 'refM2P' refM2P
+          printf 'int main(){int i;int s;s=0;for(i=1;i<10;i=i+1){s=s+i;}return s;}' > c.c
+          ab_run 'refM2P compiles c.c' 120 ref.M1 \
+            qemu-aarch64 ./refM2P --architecture aarch64 --bootstrap-mode -f c.c -o ref.M1
+          ab_run 'host   compiles c.c' 120 host.M1 \
+            upstream-m2planet/bin/M2-Planet --architecture aarch64 --bootstrap-mode -f c.c -o host.M1
+          ab_cmp '  aarch64-built vs host' ref.M1 host.M1
 
-      - name: 'P1.2 build the aarch64 M2-Planet from the EXTRACTED list'
+      - name: 'WHAT DOES 1.13.1 M2libc PROVIDE, AND WHERE?'
+        run: |
+          L=upstream-m2planet/M2libc
+          echo "  --- functions defined in aarch64/linux/bootstrap.c (asm-only?) ---"
+          grep -nE '^[a-zA-Z_].*\(' $L/aarch64/linux/bootstrap.c | sed 's/^/    /'
+          echo "    asm() blocks: $(grep -c 'asm(' $L/aarch64/linux/bootstrap.c)"
+          echo
+          echo "  --- where do the C-library functions live at this pin? ---"
+          for fn in malloc calloc free memset memcpy strlen fgetc fopen fputs fclose strcmp in_set match numerate_number file_print; do
+            hit=$(grep -ln "^[a-zA-Z_].*[ *]$fn(" $L/*.c $L/aarch64/linux/*.c 2>/dev/null | tr '\n' ' ')
+            printf '    %-16s %s\n' "$fn" "${hit:-NOT FOUND}"
+          done
+          echo
+          echo "  --- what M2-Planet's own -f list pulls in ---"
+          grep -oE '\-f [A-Za-z0-9_./-]+' upstream-m2planet/test/test1000/hello-aarch64.sh \
+            | head -12 | sed 's/^/    /'
+
+      - name: 'PROBE: can our stage 2 build M2-Planet at THIS pin?'
         continue-on-error: true
         run: |
           . tools/ab.sh
-          M=upstream-m2planet; L=$M/M2libc; S=upstream-mescc
-          FL=$(cat /tmp/flist)
-          echo "  using: $FL"
-          # paths in the script are relative to the M2-Planet root
-          cd $M
-          FL2=$(echo "$FL" | sed 's#-f #-f #g')
-          set +e
-          timeout 120 bin/M2-Planet --architecture aarch64 --bootstrap-mode $FL2 -o ../A.M1
-          echo "  compile rc=$?"
-          set -e
-          cd ..
-          ab_art 'A.M1' A.M1
-          [ -s A.M1 ] || { echo "  no .M1 -- see the extracted list above"; exit 0; }
-          ab_run 'assemble' 120 A.hex2 \
-            $S/bin/M1 -f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 \
-              -f A.M1 --little-endian --architecture aarch64 -o A.hex2
-          ab_run 'link' 120 M2-A \
-            $S/bin/hex2 -f $L/aarch64/ELF-aarch64.hex2 -f A.hex2 \
-              --little-endian --architecture aarch64 --base-address 0x00600000 -o M2-A
-          chmod +x M2-A 2>/dev/null || true
-          printf 'int main(){return 42;}' > t.c
-          ab_run 'RUN it on t.c' 120 A.out \
-            qemu-aarch64 ./M2-A --architecture aarch64 --bootstrap-mode -f t.c -o A.out
-          $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode -f t.c -o host.out || true
-          ab_cmp '  vs host output' A.out host.out
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+          cat spikes/stage1-as/stage1-as.s0 \
+            | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
+          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+            | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+          M=upstream-m2planet; L=$M/M2libc
 
-      - name: 'PHASE 1 VERDICT'
-        run: |
-          echo "  Read P1.0b for upstream's real recipe and P1.1 for whether"
-          echo "  upstream's own test passes when its artifact is actually run."
-          echo "  P1.2 repeats it with the extracted list and reports the bytes."
+          # Candidate lists. Ours cannot compile asm(), so the arch bootstrap.c
+          # is omitted and our m53/m69 syscall builtins stand in -- the m71
+          # substitution. The open question is what replaces the C-library half
+          # that the (now absent) generic bootstrap.c used to provide.
+          try() {
+            name="$1"; shift
+            cat "$@" > "cand_$name.c" 2>/dev/null || { echo "  $name: a file is missing"; return 0; }
+            qemu-aarch64 ./stage2 < "cand_$name.c" > "cand_$name.s1" 2>/dev/null
+            { grep -oE '^adr x[0-9]+ [A-Za-z_][A-Za-z0-9_]*$' "cand_$name.s1" | awk '{print $3}'
+              grep -oE '^bl [A-Za-z_][A-Za-z0-9_]*$' "cand_$name.s1" | awk '{print $2}'; } \
+              | sort -u > /tmp/r
+            grep -oE '^:[A-Za-z_][A-Za-z0-9_]*$' "cand_$name.s1" | sed 's/^://' | sort -u > /tmp/d
+            miss=$(comm -23 /tmp/r /tmp/d | tr '\n' ' ')
+            printf '  %-22s TU=%-8s emitted=%-9s unresolved: %s\n' \
+              "$name" "$(wc -c < cand_$name.c)" "$(wc -c < cand_$name.s1)" "${miss:-NONE}"
+          }
+          MSRC="$M/cc.h $M/cc_globals.c $M/cc_reader.c $M/cc_strings.c $M/cc_types.c \
+                $M/cc_emit.c $M/cc_core.c $M/cc_macro.c $M/cc.c"
+          try 'bootstrappable-only' $L/bootstrappable.c $MSRC
+          try 'plus-stdlib-stdio'   $L/stdlib.c $L/stdio.c $L/string.c $L/bootstrappable.c $MSRC
+          echo
+          echo "  Any name listed as unresolved is something our builtins must"
+          echo "  supply or that needs another M2libc file in the list."
