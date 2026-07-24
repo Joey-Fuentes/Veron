@@ -211,10 +211,10 @@ jobs:
               >/dev/null 2>&1
             r=$?
             set -e
-            [ "$r" = 139 ]
+            [ "$r" -ge 128 ]        # any fatal signal: 139 SEGV, 132 SIGILL, ...
           }
           if ! faults "$N"; then
-            echo "    full list does not segfault in isolation -- not reproducible here."
+            echo "    full list does not fault in isolation -- not reproducible here."
           else
             lo=1; hi=$N
             while [ "$lo" -lt "$hi" ]; do
@@ -228,11 +228,16 @@ jobs:
           fi
 
           # ---- 4. MAP THE FAULT PC through our own label map ----------------
-          [ -s minfault.n ] || { echo "  no minimal case; skipping PC map."; exit 0; }
           echo
           echo "  --- faulting PC, mapped through m2.s1 (tools/pcmap.py) ---"
           pre=''
-          for f in $(head -n "$(cat minfault.n)" proof.files); do pre="$pre -f $M/$f"; done
+          if [ -s minfault.n ]; then
+            NF=$(cat minfault.n)
+          else
+            echo "    no minimal prefix; tracing the FULL input instead"
+            NF=$(wc -l < proof.files)
+          fi
+          for f in $(head -n "$NF" proof.files); do pre="$pre -f $M/$f"; done
           set +e
           timeout 300 qemu-aarch64 -d cpu -D fault.log ./M2-ours \
             --architecture x86 $pre -o /tmp/b.M1 >/dev/null 2>&1
@@ -241,7 +246,10 @@ jobs:
           PC=$(grep -o 'PC=[0-9a-f]\{8,\}' fault.log | tail -1 | cut -d= -f2)
           LR=$(grep -o 'X30=[0-9a-f]\{8,\}' fault.log | tail -1 | cut -d= -f2)
           echo "    PC=0x$PC  X30=0x$LR"
+          echo "    image: $(wc -c < M2-ours) bytes at base 0x400000 -> ends 0x$(printf '%x' $((0x400000 + $(wc -c < M2-ours)))) "
           [ -n "$PC" ] && python3 tools/pcmap.py m2.s1 "0x$PC" "0x$LR" | sed 's/^/    /'
+          echo "    --- last 3 labels in the emitted image ---"
+          python3 tools/pcmap.py m2.s1 --list 2>/dev/null | tail -3 | sed 's/^/      /'
           rm -f fault.log
 
       - name: 'Q1 where do the constants come from at 1.13.1?'
