@@ -1,0 +1,180 @@
+name: mes-rung
+
+# THE MES RUNG -- REFERENCE ARM FIRST.
+#
+# Recon (mes-rung-recon) established all of this, so nothing below is guessed:
+#
+#   PINS      live-bootstrap 9a268c4 -> stage0-posix 45d90f59 -> M2-Planet
+#             bd2fe4b, M2libc 68a23cf, mescc-tools 5adfbf3. Those are EXACTLY
+#             our three pins, so we are already on the one coherent set. Its
+#             matching upper half is Mes 0.27.1 / tcc 0.9.27.
+#
+#   RECIPE    kaem.x86 sets cc_cpu/mes_cpu/stage0_cpu then runs bare `kaem`,
+#             which reads kaem.run. kaem.run is the same shape as M2-Planet's
+#             own build:  M2-Planet -> .M1 -> blood-elf -> M1 -> hex2 -> mes-m2
+#
+#   GATE      live-bootstrap publishes expected checksums for the x86 build.
+#             /usr/bin/mes-m2 = 62895fcf68b21961e018c797b3144fc86f9dbd5a535776e9e68a01b3fd33de08
+#             That is this rung's proof.answer: upstream's number, not ours.
+#
+#   CONFIG.H  shipped as steps/mes-0.27.1/files/config.h -- NOT generated. The
+#             configure.sh/@VERSION@/catm scaffolding that stopped borrow-tcc
+#             Part B is simply not needed here.
+#
+# THIS WORKFLOW BUILDS ONLY PHASE A: mes-m2, the artifact the gate names.
+# Phase B (mes-m2 running MesCC to rebuild Mes's libc, which needs nyacc) is a
+# separate rung and is deliberately not attempted yet.
+#
+# WHY x86. MesCC has no native aarch64 backend (x86 + armhf only, GNU Mes 0.27),
+# so the chain targets x86 at the M2-Planet level and runs the result under
+# qemu-i386 -- exactly what no-host-chain.yml was designed around.
+#
+# SCAFFOLDING IS LABELLED, NOT HIDDEN. Unpacking tarballs, copying headers and
+# substituting a base address are done with ordinary shell tools here. Upstream
+# does them with mescc-tools-extra (ungz/untar/replace/simple-patch), which we
+# have never built. Those utilities are not part of the trust chain -- they move
+# bytes around -- but the substitution must be stated, so it is stated.
+#
+# The ACTUAL BUILD is driven by upstream's own kaem.run via kaem. We do not
+# reconstruct it: four hand-written recipes in a row were wrong (UPSTREAM-PINS).
+
+on:
+  push:
+    paths:
+      - '.github/workflows/mes-rung.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: mes-rung-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      M2PLANET_SHA: bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d
+      MESCC_SHA: 5adfbf3364261a77109878a56b100aeeb6ef9ac4
+      LB_SHA: 9a268c4c39cae952b268bc86da342be2175f03d4
+      MES_VER: '0.27.1'
+      MES_M2_SHA256: 62895fcf68b21961e018c797b3144fc86f9dbd5a535776e9e68a01b3fd33de08
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user qemu-user-static binfmt-support gcc make curl
+
+      - name: Fetch upstreams at the confirmed pin set
+        run: |
+          git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git -C upstream-m2planet checkout -q "$M2PLANET_SHA"
+          git -C upstream-m2planet submodule update --init --recursive
+          git clone https://git.savannah.nongnu.org/git/mescc-tools.git upstream-mescc \
+            || git clone https://github.com/oriansj/mescc-tools.git upstream-mescc
+          git -C upstream-mescc checkout -q "$MESCC_SHA"
+          git -C upstream-mescc submodule update --init --recursive
+          git clone https://github.com/fosslinux/live-bootstrap.git lb
+          git -C lb checkout -q "$LB_SHA"
+          echo "  M2-Planet   $(git -C upstream-m2planet rev-parse --short HEAD)"
+          echo "  mescc-tools $(git -C upstream-mescc rev-parse --short HEAD)"
+          echo "  lb          $(git -C lb rev-parse --short HEAD)"
+
+      - name: Build the borrowed tools (host gcc) -- labelled as borrowed
+        run: |
+          make -C upstream-m2planet M2-Planet
+          make -C upstream-mescc M1 hex2 blood-elf kaem catm get_machine
+          ls -l upstream-mescc/bin | sed 's/^/    /'
+
+      - name: 'Fetch Mes 0.27.1 (checksum-verified) and prepare the tree'
+        run: |
+          set -eu
+          D=lb/steps/mes-$MES_VER
+          URL=$(awk '/mes-0.27.1.tar.gz/{print $2}' "$D/sources")
+          SUM=$(awk '/mes-0.27.1.tar.gz/{print $3}' "$D/sources")
+          curl -sSL -o mes.tar.gz "$URL"
+          echo "$SUM  mes.tar.gz" | sha256sum -c - || { echo "CHECKSUM FAIL"; exit 1; }
+          tar xzf mes.tar.gz
+          MP="$PWD/mes-$MES_VER"
+          echo "MES_PREFIX=$MP" >> "$GITHUB_ENV"
+
+          # --- scaffolding, done with ordinary tools (upstream uses mescc-tools-extra) ---
+          cp "$D/files/config.h" "$MP/include/mes/config.h"
+          echo "  config.h installed (shipped by live-bootstrap, not generated)"
+
+          # the wait4 patch, upstreamed after 0.27.1 (upstream uses simple-patch)
+          if [ -f "$D/simple-patches/wait4.before" ]; then
+            python3 -c 'import sys; t,b,a=sys.argv[1:4]; s=open(t).read(); B=open(b).read(); A=open(a).read(); open(t,"w").write(s.replace(B,A,1)) if B in s else None; print("  wait4 patch: " + ("applied" if B in s else "pattern not found, may already be applied"))' \
+              "$MP/lib/linux/wait4.c" "$D/simple-patches/wait4.before" "$D/simple-patches/wait4.after"
+          fi
+
+          # arch headers, as pass1.kaem does
+          mkdir -p "$MP/include/arch"
+          for h in kernel-stat.h signal.h syscall.h; do
+            cp "$MP/include/linux/x86/$h" "$MP/include/arch/$h"
+          done
+          echo "  arch headers installed for x86"
+
+          # live-bootstrap rebases the x86 load address
+          sed -i 's/0x1000000/0x8048000/g' "$MP/kaem.run"
+          echo "  kaem.run rebased 0x1000000 -> 0x8048000"
+
+          # symlinked-in-repo files pass1.kaem copies
+          cp "$MP/mes/module/srfi/srfi-9-struct.mes" "$MP/mes/module/srfi/srfi-9.mes" 2>/dev/null || true
+          cp "$MP/mes/module/srfi/srfi-9/gnu-struct.mes" "$MP/mes/module/srfi/srfi-9/gnu.mes" 2>/dev/null || true
+
+      - name: 'REFERENCE: build mes-m2 with upstream M2-Planet via kaem.run'
+        continue-on-error: true
+        run: |
+          set -u
+          ROOT="$PWD"
+          export PATH="$ROOT/upstream-m2planet/bin:$ROOT/upstream-mescc/bin:$PATH"
+          echo "  PATH tools:"
+          for t in M2-Planet kaem M1 hex2 blood-elf catm; do
+            printf '    %-12s %s\n' "$t" "$(command -v $t || echo MISSING)"
+          done
+          cd "$MES_PREFIX"
+          echo
+          echo "  --- kaem.run head (upstream's recipe, unmodified apart from the rebase) ---"
+          head -40 kaem.run | sed 's/^/    /'
+          echo
+          set +e
+          timeout 1800 kaem --verbose --strict --file kaem.x86 > "$ROOT/kaem.log" 2>&1
+          rc=$?
+          set -e
+          echo "  kaem rc=$rc"
+          echo "  --- last 40 lines of the build ---"
+          tail -40 "$ROOT/kaem.log" | sed 's/^/    /'
+          echo
+          if [ -s bin/mes-m2 ]; then
+            echo "  BUILT: bin/mes-m2  $(wc -c < bin/mes-m2) bytes"
+            echo "    sha256 $(sha256sum bin/mes-m2 | cut -d' ' -f1)"
+          else
+            echo "  no bin/mes-m2 produced"
+            ls -la bin 2>/dev/null | sed 's/^/    /' || true
+          fi
+
+      - name: 'GATE: mes-m2 matches the checksum live-bootstrap publishes'
+        run: |
+          set -u
+          F="$MES_PREFIX/bin/mes-m2"
+          if [ ! -s "$F" ]; then
+            echo "FAIL: mes-m2 was not built -- see the REFERENCE step above."
+            exit 1
+          fi
+          GOT=$(sha256sum "$F" | cut -d' ' -f1)
+          echo "  upstream published : $MES_M2_SHA256"
+          echo "  ours               : $GOT"
+          if [ "$GOT" = "$MES_M2_SHA256" ]; then
+            echo "PASS: the Mes rung's reference arm reproduces upstream's"
+            echo "      published mes-m2 byte for byte on this setup."
+            echo "      Next: swap M2-Planet for G1 (--architecture x86)."
+          else
+            echo "FAIL: mes-m2 differs from upstream's published checksum."
+            echo "      The recipe runs but the result is not bit-identical;"
+            echo "      that is a real finding and needs diagnosing before"
+            echo "      substituting our compiler in."
+            exit 1
+          fi
