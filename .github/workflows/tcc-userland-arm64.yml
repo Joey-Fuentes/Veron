@@ -1,0 +1,208 @@
+name: tcc-userland-arm64
+
+# SPIKE. CAN OUR tcc PRODUCE A REAL, BOOTABLE arm64 USERLAND?
+#
+# THE INSIGHT THIS RESTS ON. The kernel and the userland are INDEPENDENT
+# artifacts. Linux's syscall ABI is the contract and it is deliberately stable,
+# so a GCC-built kernel neither knows nor cares which compiler produced the
+# static binaries issuing svc #0 against it. A tcc-built musl+busybox userland
+# on a GCC-built modern arm64 kernel is ordinary, not a compatibility hack.
+#
+# WHY THAT MATTERS. Research (see spikes/stage3/ROADMAP.md) says a MODERN Linux
+# kernel is out of tcc's reach: asm goto with outputs (arm64 get_user() needs
+# it), jump labels, linker scripts, and an arm64 inline assembler that only
+# became partially functional in a Feb 2026 tcc patch. But that is the KERNEL
+# half. The USERLAND half -- a static init and shell -- needs only ordinary C
+# plus a libc, which is squarely in tcc's range.
+#
+# So this spike proves the half we can have, and does it end to end:
+#   1. tcc (mob) builds musl
+#   2. tcc + musl build busybox, statically
+#   3. the result RUNS natively on aarch64
+#   4. it boots as PID 1 under a GCC-built kernel in qemu-system-aarch64
+#
+# Step 4 is the real claim. Everything before it is plumbing.
+#
+# NATIVE aarch64 THROUGHOUT -- ubuntu-24.04-arm, no cross-compiling, no x86.
+#
+# KNOWN RISK, stated up front so a failure is read correctly: musl ships .s/.S
+# sources for aarch64, so this exercises tcc's arm64 INTEGRATED ASSEMBLER --
+# historically a stub that errored "ARM asm not implemented", with a partial
+# implementation only submitted Feb 2026 and described as "enough to compile
+# musl 1.2.5". If musl fails on an .s file, that is the assembler, not the
+# codegen, and the fix is upstream tcc rather than anything of ours.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/tcc-userland-arm64.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: tcc-userland-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MUSL_VER: '1.2.5'
+  BUSYBOX_VER: '1.36.1'
+
+jobs:
+  userland:
+    runs-on: ubuntu-24.04-arm          # NATIVE aarch64
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Confirm native aarch64
+        run: |
+          echo "  uname -m : $(uname -m)"
+          echo "  gcc      : $(gcc -dumpmachine)"
+          [ "$(uname -m)" = aarch64 ] || { echo "NOT aarch64"; exit 1; }
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git curl gcc make bzip2 xz-utils cpio file \
+            qemu-system-arm qemu-utils
+
+      - name: 'Build tcc (mob) natively'
+        run: |
+          git clone -q git://repo.or.cz/tinycc.git tccsrc \
+            || git clone -q https://repo.or.cz/tinycc.git tccsrc
+          echo "  mob HEAD: $(git -C tccsrc rev-parse HEAD)"
+          echo "  date    : $(git -C tccsrc log -1 --format=%ci)"
+          cd tccsrc && ./configure --cc=gcc >/dev/null && make -j"$(nproc)" >/dev/null
+          ./tcc -v
+          echo "  arm64 assembler present: $( [ -f arm64-asm.c ] && echo yes || echo NO )"
+          echo "TCC=$PWD/tcc"  >> "$GITHUB_ENV"
+          echo "TCCDIR=$PWD"   >> "$GITHUB_ENV"
+
+      - name: '1. tcc builds musl'
+        continue-on-error: true
+        run: |
+          set -u
+          curl -sSL -o musl.tar.gz "https://musl.libc.org/releases/musl-$MUSL_VER.tar.gz"
+          mkdir -p musl && tar xf musl.tar.gz -C musl --strip-components=1
+          cd musl
+          set +e
+          ./configure CC="$TCC -B$TCCDIR" --disable-shared \
+            --prefix="$PWD/../muslroot" > conf.log 2>&1
+          echo "  configure rc=$?"; tail -8 conf.log | sed 's/^/    /'
+          timeout 1800 make -j"$(nproc)" > build.log 2>&1
+          echo "  make rc=$?"
+          tail -20 build.log | sed 's/^/    /'
+          echo "  --- error classes ---"
+          grep -oE 'error: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
+            | sort | uniq -c | sort -rn | head -20 | sed 's/^/    /'
+          echo "  --- did any .s/.S source fail? (that is the arm64 assembler) ---"
+          grep -iE '\.[sS][: ]|asm not implemented|assembler' build.log \
+            | head -10 | sed 's/^/    /'
+          make install > /dev/null 2>&1
+          echo "  installed: $(ls ../muslroot/lib 2>/dev/null | tr '\n' ' ')"
+          set -e
+
+      - name: '2. Does the tcc-built musl actually work?'
+        continue-on-error: true
+        run: |
+          set -u
+          MR="$PWD/muslroot"
+          [ -f "$MR/lib/libc.a" ] || { echo "  no libc.a -- musl did not build"; exit 0; }
+          printf '#include <stdio.h>\n#include <string.h>\n#include <stdlib.h>\nint main(void){char*p=malloc(32);strcpy(p,"musl works");printf("%%s\\n",p);free(p);return 7;}\n' > t.c
+          set +e
+          "$MR/bin/musl-gcc" -static -o t t.c 2>&1 | sed 's/^/    /' \
+            || "$TCC" -B"$TCCDIR" -static -I"$MR/include" -L"$MR/lib" -o t t.c 2>&1 | sed 's/^/    /'
+          file t | sed 's/^/    /'
+          ./t; echo "    exit=$? (expect 7)"
+          set -e
+
+      - name: '3. tcc + musl build busybox, static'
+        continue-on-error: true
+        run: |
+          set -u
+          MR="$PWD/muslroot"
+          curl -sSL -o bb.tar.bz2 "https://busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2"
+          mkdir -p bb && tar xf bb.tar.bz2 -C bb --strip-components=1
+          cd bb
+          set +e
+          make defconfig > /dev/null 2>&1
+          # static, and point at musl rather than glibc
+          sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+          sed -i 's/^CONFIG_STATIC=.*/CONFIG_STATIC=y/' .config
+          # tcc chokes on a few hardening flags busybox enables by default
+          sed -i 's/^CONFIG_EXTRA_CFLAGS=.*/CONFIG_EXTRA_CFLAGS="-I..\\/muslroot\\/include"/' .config
+          yes '' | make oldconfig > /dev/null 2>&1
+          timeout 2400 make -j"$(nproc)" \
+            CC="$TCC -B$TCCDIR" \
+            HOSTCC=gcc \
+            SKIP_STRIP=y > build.log 2>&1
+          echo "  make rc=$?"
+          tail -25 build.log | sed 's/^/    /'
+          echo "  --- error classes ---"
+          grep -oE 'error: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
+            | sort | uniq -c | sort -rn | head -20 | sed 's/^/    /'
+          if [ -x busybox ]; then
+            echo "  BUILT busybox: $(wc -c < busybox) bytes"
+            file busybox | sed 's/^/    /'
+            ./busybox | head -3 | sed 's/^/    /'
+            echo "    applets: $(./busybox --list 2>/dev/null | wc -l)"
+          fi
+          set -e
+
+      - name: '4. THE CLAIM: boot it as PID 1 under a GCC-built kernel'
+        continue-on-error: true
+        run: |
+          set -u
+          BB="$PWD/bb/busybox"
+          [ -x "$BB" ] || { echo "  no busybox -- cannot boot"; exit 0; }
+
+          # The kernel here is Ubuntu's, built by GCC. That is the POINT: the
+          # syscall ABI is the contract, so a tcc-built userland runs on it
+          # unmodified. Nothing about the kernel needs to come from our chain
+          # for this half of the Linux leg to be proven.
+          KERNEL=$(ls /boot/vmlinuz-* 2>/dev/null | head -1)
+          if [ -z "$KERNEL" ]; then
+            sudo apt-get install -y --no-install-recommends linux-image-generic >/dev/null 2>&1
+            KERNEL=$(ls /boot/vmlinuz-* 2>/dev/null | head -1)
+          fi
+          [ -n "$KERNEL" ] || { echo "  no kernel image available"; exit 0; }
+          echo "  kernel: $KERNEL"
+          file "$KERNEL" | sed 's/^/    /'
+
+          rm -rf initramfs && mkdir -p initramfs/bin initramfs/proc initramfs/sys
+          cp "$BB" initramfs/bin/busybox
+          ( cd initramfs && ./bin/busybox --install -s bin 2>/dev/null || true )
+          cp "$GITHUB_WORKSPACE/spikes/stage3/probes/init.sh" initramfs/init
+          chmod +x initramfs/init initramfs/bin/busybox
+          ( cd initramfs && find . | cpio -o -H newc 2>/dev/null | gzip > ../initramfs.cpio.gz )
+          echo "  initramfs: $(wc -c < initramfs.cpio.gz) bytes"
+
+          set +e
+          timeout 180 qemu-system-aarch64 \
+            -machine virt -cpu max -m 512 -nographic -no-reboot \
+            -kernel "$KERNEL" -initrd initramfs.cpio.gz \
+            -append "console=ttyAMA0 rdinit=/init panic=1" \
+            > boot.log 2>&1
+          echo "  qemu rc=$?"
+          echo "  --- boot log tail ---"
+          tail -40 boot.log | sed 's/^/    /'
+          echo
+          if grep -q 'VERON BOOT OK' boot.log; then
+            echo "  PASS: a tcc-built userland booted as PID 1 on a gcc-built"
+            echo "        arm64 kernel. The userland half of the Linux leg is done."
+          else
+            echo "  did not reach the marker -- see the log above"
+          fi
+          set -e
+
+      - name: VERDICT
+        run: |
+          echo "  musl built by tcc     : $( [ -f muslroot/lib/libc.a ] && echo yes || echo NO )"
+          echo "  busybox built by tcc  : $( [ -x bb/busybox ] && echo yes || echo NO )"
+          echo "  booted as PID 1       : $( grep -q 'VERON BOOT OK' boot.log 2>/dev/null && echo yes || echo NO )"
+          echo
+          echo "  This spike deliberately does NOT attempt to build a kernel with"
+          echo "  tcc. Research says a modern arm64 kernel needs asm goto WITH"
+          echo "  OUTPUTS (for get_user()), jump labels and linker scripts, none of"
+          echo "  which tcc has. Splitting the Linux leg at the syscall ABI lets us"
+          echo "  bank the half that is actually reachable today."
