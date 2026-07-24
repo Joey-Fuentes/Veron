@@ -89,15 +89,50 @@ jobs:
           ./configure CC="$TCC -B$TCCDIR" --disable-shared \
             --prefix="$PWD/../muslroot" > conf.log 2>&1
           echo "  configure rc=$?"; tail -8 conf.log | sed 's/^/    /'
-          timeout 1800 make -j"$(nproc)" > build.log 2>&1
-          echo "  make rc=$?"
-          tail -20 build.log | sed 's/^/    /'
-          echo "  --- error classes ---"
-          grep -oE 'error: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
-            | sort | uniq -c | sort -rn | head -20 | sed 's/^/    /'
-          echo "  --- did any .s/.S source fail? (that is the arm64 assembler) ---"
-          grep -iE '\.[sS][: ]|asm not implemented|assembler' build.log \
-            | head -10 | sed 's/^/    /'
+          # PASS 1: -k so it does NOT stop at the first missing instruction.
+          # Run 1 died on ONE opcode (bic) and told us nothing about the rest;
+          # the complete list is what sizes the work.
+          timeout 1800 make -k -j"$(nproc)" > build.log 2>&1
+          echo "  make -k rc=$?"
+          echo
+          echo "  === EVERY arm64 opcode tcc's assembler is missing ==="
+          grep -oE "instruction '[^']+' not implemented" build.log \
+            | sort -u | sed 's/^/    /'
+          echo "    distinct missing opcodes: $(grep -oE "instruction '[^']+' not implemented" build.log | sort -u | wc -l)"
+          echo
+          echo "  === which .s files failed, and do C fallbacks exist? ==="
+          for f in $(grep -oE '^src/[^:]+\.s' build.log | sort -u); do
+            base=$(basename "$f" .s); dir=$(dirname "$(dirname "$f")")
+            alt="$dir/$base.c"
+            printf '    %-34s C fallback %s\n' "$f" \
+              "$( [ -f "$alt" ] && echo "YES ($alt)" || echo no )"
+          done
+          echo
+          echo "  === other (non-assembler) error classes ==="
+          grep -oE 'error: [^,;]*' build.log | grep -v 'not implemented' \
+            | sed 's/[0-9]\+/N/g' | sort | uniq -c | sort -rn | head -15 | sed 's/^/    /'
+          echo
+          echo "  objects built despite -k: $(find obj -name '*.o' 2>/dev/null | wc -l)"
+
+          # PASS 2: musl ships portable C fallbacks for several arch files.
+          # Drop the .s sources that tcc cannot assemble and let the generic C
+          # versions be used -- a legitimate substitution, and one we NAME.
+          echo
+          echo "  === PASS 2: drop unassemblable .s, use musl's own C fallbacks ==="
+          dropped=0
+          for f in $(grep -oE '^src/[^:]+\.s' build.log | sort -u); do
+            base=$(basename "$f" .s); dir=$(dirname "$(dirname "$f")")
+            if [ -f "$dir/$base.c" ]; then
+              rm -f "$f"; dropped=$((dropped+1)); echo "    dropped $f"
+            fi
+          done
+          echo "    dropped $dropped file(s)"
+          if [ "$dropped" -gt 0 ]; then
+            timeout 1800 make -j"$(nproc)" > build2.log 2>&1
+            echo "    rebuild rc=$?"
+            tail -12 build2.log | sed 's/^/      /'
+            grep -oE "instruction '[^']+' not implemented" build2.log | sort -u | sed 's/^/      still missing: /'
+          fi
           make install > /dev/null 2>&1
           echo "  installed: $(ls ../muslroot/lib 2>/dev/null | tr '\n' ' ')"
           set -e
