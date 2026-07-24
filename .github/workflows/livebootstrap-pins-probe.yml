@@ -64,114 +64,114 @@ jobs:
           echo "  HEAD: $(git -C lb rev-parse HEAD)"
           echo "  HEAD date: $(git -C lb log -1 --format=%ci)"
 
-      - name: 'What versions does live-bootstrap carry, and where?'
+      - name: 'Resolve the chain: live-bootstrap -> stage0-posix -> M2-Planet'
         run: |
           set -u
-          # Read a step's version straight out of the tree at a commit. This
-          # avoids depending on the manifest's format, which has changed before.
-          ver_of() {   # ver_of <sha> <step-prefix>
-            git -C lb ls-tree -r --name-only "$1" -- steps/ 2>/dev/null \
-              | sed -n "s|^steps/$2-\([0-9][0-9.]*\)/.*|\1|p;s|^steps/$2-\([0-9][0-9.]*\)$|\1|p" \
-              | sort -V -u | tail -1
-          }
-          ver_ge() {   # ver_ge A B  -> true if A >= B
-            [ -n "$1" ] && [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]
-          }
-          set_at() {   # print the whole coordinated set at a commit
-            local sha="$1"
-            printf '    %-16s %s\n' 'commit'      "$sha"
-            printf '    %-16s %s\n' 'date'        "$(git -C lb log -1 --format=%ci "$sha")"
-            for st in M2-Planet mescc-tools mescc-tools-seed mes tcc; do
-              printf '    %-16s %s\n' "$st" "$(ver_of "$sha" "$st")"
-            done
-          }
+          OURS="$OUR_M2PLANET_SHA"
 
-          HEAD_SHA=$(git -C lb rev-parse HEAD)
-          HEAD_M2=$(ver_of "$HEAD_SHA" M2-Planet)
-          echo "=== live-bootstrap HEAD ==="
-          set_at "$HEAD_SHA"
+          # --- clone the two levels below live-bootstrap ---
+          S0_URL=$(git -C lb config -f .gitmodules --get submodule.seed/stage0-posix.url)
+          echo "  stage0-posix url: $S0_URL"
+          git clone -q "$S0_URL" s0
+          S0_HEAD=$(git -C lb ls-tree HEAD -- seed/stage0-posix | awk '{print $3}')
+          echo "  stage0-posix pinned by lb HEAD: $S0_HEAD"
+          echo
+          echo "  --- stage0-posix's own submodules at that pin ---"
+          git -C s0 show "$S0_HEAD:.gitmodules" 2>/dev/null | sed 's/^/    /' || \
+            echo "    (no .gitmodules -- M2-Planet may be vendored, listing tree)"
+          git -C s0 ls-tree -r "$S0_HEAD" | awk '$2=="commit"{printf "    %-30s %s\n",$4,$3}'
           echo
 
-          if [ -z "$HEAD_M2" ]; then
-            echo "M2-Planet is not a steps/ entry -- LOCATING IT."
-            echo
-            echo "  --- submodules declared at HEAD (.gitmodules) ---"
-            git -C lb show HEAD:.gitmodules 2>/dev/null | sed 's/^/    /' || echo "    (none)"
-            echo
-            echo "  --- gitlinks (submodule pins) in the tree ---"
-            git -C lb ls-tree -r HEAD | awk '$2=="commit"{printf "    %-44s %s\n",$4,$3}' | sed 's/^/  /'
-            echo
-            echo "  --- anything named M2-Planet or mescc-tools anywhere in the tree ---"
-            git -C lb ls-tree -r --name-only HEAD \
-              | grep -iE 'm2-planet|mescc-tools|stage0' | head -30 | sed 's/^/    /'
-            echo
-            echo "  --- where is the version actually written down? ---"
-            for f in steps/manifest steps/SHA256SUMS.sources sources; do
-              if git -C lb cat-file -e "HEAD:$f" 2>/dev/null; then
-                echo "    ===== $f (M2-Planet / mescc-tools lines) ====="
-                git -C lb show "HEAD:$f" | grep -inE 'm2-planet|mescc-tools|stage0' \
-                  | head -12 | sed 's/^/      /'
-              fi
-            done
-            echo
-            echo "  --- steps that DO carry a version, for the record ---"
-            for st in mes tcc mes-m2 nyacc; do
-              v=$(ver_of "$HEAD_SHA" "$st"); [ -n "$v" ] && printf '    %-12s %s\n' "$st" "$v"
-            done
-            echo
-            echo "NEXT: the stage0-posix pin above is our pin's counterpart. The"
-            echo "      following pass should resolve M2-Planet's version THROUGH"
-            echo "      that submodule, then bisect on it as originally planned."
+          M2_URL=$(git -C s0 config -f <(git -C s0 show "$S0_HEAD:.gitmodules") \
+                   --get submodule.M2-Planet.url 2>/dev/null || true)
+          [ -n "$M2_URL" ] || M2_URL=https://github.com/oriansj/M2-Planet
+          echo "  M2-Planet url: $M2_URL"
+          git clone -q "$M2_URL" m2
+          git -C m2 fetch -q --tags 2>/dev/null || true
+
+          # m2_of_lb <lb-sha> -> the M2-Planet commit that lb pins, via stage0-posix
+          m2_of_lb() {
+            local s0sha m2sha
+            s0sha=$(git -C lb ls-tree "$1" -- seed/stage0-posix 2>/dev/null | awk '{print $3}')
+            [ -n "$s0sha" ] || return 1
+            git -C s0 cat-file -e "$s0sha^{commit}" 2>/dev/null || return 1
+            m2sha=$(git -C s0 ls-tree -r "$s0sha" 2>/dev/null \
+                    | awk '$2=="commit" && $4 ~ /M2-Planet/ {print $3; exit}')
+            [ -n "$m2sha" ] || return 1
+            printf '%s' "$m2sha"
+          }
+          describe() {  # a readable name for an M2-Planet commit
+            git -C m2 describe --tags "$1" 2>/dev/null \
+              || git -C m2 log -1 --format='%cs %h' "$1" 2>/dev/null \
+              || echo '<unknown>'
+          }
+
+          echo "=== THE CHAIN AT live-bootstrap HEAD ==="
+          HEAD_M2=$(m2_of_lb HEAD || true)
+          printf '    %-22s %s\n' 'lb HEAD'        "$(git -C lb rev-parse HEAD)"
+          printf '    %-22s %s\n' 'stage0-posix'   "$S0_HEAD"
+          printf '    %-22s %s  %s\n' 'M2-Planet (theirs)' "${HEAD_M2:-<not found>}" "$(describe "${HEAD_M2:-HEAD}")"
+          printf '    %-22s %s  %s\n' 'M2-Planet (OURS)'   "$OURS" "$(describe "$OURS")"
+          echo
+
+          if [ -z "${HEAD_M2:-}" ]; then
+            echo "OUTCOME 3: could not resolve M2-Planet through stage0-posix."
+            git -C s0 ls-tree -r --name-only "$S0_HEAD" | head -30 | sed 's/^/    /'
+            exit 0
+          fi
+          if [ "$HEAD_M2" = "$OURS" ]; then
+            echo "OUTCOME 1: live-bootstrap HEAD pins EXACTLY our M2-Planet."
+            echo "  Mes 0.27.1 / tcc 0.9.27 at this commit are the matching set."
             exit 0
           fi
 
-          echo "  ours : M2-Planet $OUR_M2PLANET_VER  ($OUR_M2PLANET_SHA)"
-          echo "  theirs at HEAD: M2-Planet $HEAD_M2"
-          echo
-
-          if ! ver_ge "$HEAD_M2" "$OUR_M2PLANET_VER"; then
-            echo "OUTCOME 2: NO live-bootstrap commit pairs with M2-Planet $OUR_M2PLANET_VER."
-            echo "  Even HEAD still pins $HEAD_M2, and the version only goes up."
+          # THE PREDICATE. Version strings are fragile; ancestry is exact and
+          # monotonic: if our commit is an ancestor of theirs, theirs is
+          # newer-or-equal. That is precisely what the bisect needs.
+          if git -C m2 merge-base --is-ancestor "$OURS" "$HEAD_M2" 2>/dev/null; then
+            echo "  Their M2-Planet is NEWER than ours (ours is an ancestor)."
+            echo "  Bisecting live-bootstrap for the FIRST commit at or past our pin..."
+            newer=yes
+          elif git -C m2 merge-base --is-ancestor "$HEAD_M2" "$OURS" 2>/dev/null; then
+            echo "OUTCOME 2: NO live-bootstrap commit reaches our M2-Planet pin."
+            echo "  Even HEAD pins an OLDER M2-Planet than ours."
             echo
-            echo "  CLOSEST AVAILABLE SET (live-bootstrap HEAD) -- this is what a"
-            echo "  Mes rung would actually be built against today:"
-            set_at "$HEAD_SHA"
+            echo "  CLOSEST AVAILABLE SET (live-bootstrap HEAD):"
+            printf '    %-14s %s  %s\n' 'M2-Planet' "$HEAD_M2" "$(describe "$HEAD_M2")"
+            printf '    %-14s %s\n' 'stage0-posix' "$S0_HEAD"
+            printf '    %-14s %s\n' 'mes' '0.27.1'
+            printf '    %-14s %s\n' 'tcc' '0.9.27'
+            echo "    behind ours by: $(git -C m2 rev-list --count "$HEAD_M2".."$OURS") commits"
             echo
-            echo "  DECISION REQUIRED: either move our M2-Planet pin to $HEAD_M2 so the"
-            echo "  whole set is coherent, or keep $OUR_M2PLANET_VER and accept that Mes is"
-            echo "  being built by a NEWER compiler than upstream tests together."
+            echo "  DECISION: move our M2-Planet pin back to theirs so the set is"
+            echo "  coherent, or keep ours and accept Mes built by a newer compiler"
+            echo "  than upstream tests together."
+            exit 0
+          else
+            echo "OUTCOME 3: our pin and theirs are on DIVERGENT branches (neither"
+            echo "  is an ancestor of the other). That needs a human decision."
             exit 0
           fi
 
-          # --- OUTCOME 1: bisect for the FIRST commit that adopted our version ---
-          echo "  HEAD is >= our pin, so a pairing exists. Bisecting for the FIRST"
-          echo "  commit that adopted M2-Planet $OUR_M2PLANET_VER..."
-          echo
           mapfile -t C < <(git -C lb rev-list --first-parent --reverse HEAD)
-          lo=0; hi=$(( ${#C[@]} - 1 )); probes=0
+          lo=0; hi=$(( ${#C[@]} - 1 )); n=0
           while [ "$lo" -lt "$hi" ]; do
-            mid=$(( (lo + hi) / 2 ))
-            v=$(ver_of "${C[$mid]}" M2-Planet)
-            probes=$(( probes + 1 ))
-            if [ -n "$v" ] && ver_ge "$v" "$OUR_M2PLANET_VER"; then hi=$mid; else lo=$(( mid + 1 )); fi
-            printf '    probe %-2s  %s  M2-Planet=%-8s -> window %s..%s\n' \
-              "$probes" "$(git -C lb log -1 --format=%cs "${C[$mid]}")" "${v:-none}" "$lo" "$hi"
+            mid=$(( (lo + hi) / 2 )); n=$(( n + 1 ))
+            v=$(m2_of_lb "${C[$mid]}" || true)
+            if [ -n "$v" ] && git -C m2 merge-base --is-ancestor "$OURS" "$v" 2>/dev/null
+            then hi=$mid; else lo=$(( mid + 1 )); fi
+            printf '    probe %-2s %s  M2=%s -> %s..%s\n' "$n" \
+              "$(git -C lb log -1 --format=%cs "${C[$mid]}")" "$(describe "${v:-HEAD}")" "$lo" "$hi"
           done
-          FIRST="${C[$lo]}"
+          F="${C[$lo]}"
           echo
-          echo "OUTCOME 1: first commit pinning M2-Planet >= $OUR_M2PLANET_VER"
-          set_at "$FIRST"
+          echo "OUTCOME 1: first live-bootstrap commit at or past our M2-Planet pin"
+          printf '    %-14s %s  (%s)\n' 'lb commit' "$F" "$(git -C lb log -1 --format=%cs "$F")"
+          printf '    %-14s %s\n' 'stage0-posix' "$(git -C lb ls-tree "$F" -- seed/stage0-posix | awk '{print $3}')"
+          printf '    %-14s %s  %s\n' 'M2-Planet' "$(m2_of_lb "$F")" "$(describe "$(m2_of_lb "$F")")"
+          for st in mes tcc; do
+            printf '    %-14s %s\n' "$st" "$(git -C lb ls-tree -r --name-only "$F" -- steps/ \
+              | sed -n "s|^steps/$st-\([0-9][0-9.]*\)/.*|\1|p" | sort -V -u | tail -1)"
+          done
           echo
-          echo "  --- the set at HEAD, for comparison ---"
-          set_at "$HEAD_SHA"
-          echo
-          echo "  --- does its mescc-tools match ours ($OUR_MESCC_SHA)? ---"
-          echo "    live-bootstrap pins mescc-tools by VERSION, we pin by SHA;"
-          echo "    the versions above are the thing to reconcile by hand."
-          echo
-          echo "  --- Mes step contents at that commit (what the rung must drive) ---"
-          MESV=$(ver_of "$FIRST" mes)
-          git -C lb ls-tree -r --name-only "$FIRST" -- "steps/mes-$MESV/" 2>/dev/null \
-            | head -30 | sed 's/^/      /'
-          echo
-          echo "  USE THIS COMMIT for the Mes rung: $FIRST"
+          echo "  USE THIS live-bootstrap COMMIT for the Mes rung: $F"
