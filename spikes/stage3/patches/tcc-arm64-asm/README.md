@@ -427,3 +427,30 @@ Fresh extract, all five patches applied by `apply-series.sh`, native build
 path (`--cpu=arm64`), then reassembled: `memset.o` has **no** UDF words, its
 `.text` is unchanged in length, and all 16 musl aarch64 asm files still
 assemble.
+
+---
+
+## A tcc-built musl runs (2026-07-24)
+
+With 0001-0005 applied, the runtime ladder is clean:
+
+```
+A nolibc   ok (exit 7)     raw _start + exit syscall -- codegen and ELF
+B startup  ok (exit 7)     crt1 + libc -- __libc_start_main, TLS, auxv
+C malloc   ok (exit 7)     + malloc/free, string.h
+D stdio    ok (exit 7)     + printf
+ALL RUNGS PASS
+```
+
+`libc.a` is 2,794,560 bytes across 1,277 members, built by tcc, running on a
+gcc-built kernel. The five patches that got there:
+
+| | |
+|---|---|
+| 0001-0003 | the Feb-2026 series, unwrapped from the mailing-list archive |
+| 0004 | `#include <assert.h>` -- the series does not build natively without it |
+| 0005 | NOP-fill executable alignment padding -- without it musl SIGILLs in memset |
+
+0004 and 0005 are ours. Neither is an arm64-assembler bug: one is a missing
+include, the other a generic tcc directive-handling bug that only shows on an
+architecture where a zero word is an illegal instruction.

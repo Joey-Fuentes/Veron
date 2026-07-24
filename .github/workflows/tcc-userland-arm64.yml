@@ -394,8 +394,14 @@ jobs:
           # "unknown option to `s'" -- so this flag was never actually set.
           sed -i "s|^CONFIG_EXTRA_CFLAGS=.*|CONFIG_EXTRA_CFLAGS=\"-I$MR/include\"|" .config
           yes '' | make oldconfig > /dev/null 2>&1
+          # CC is a SHIM, not tcc directly: kbuild passes -Wp,-MD,<depfile>,
+          # which tcc splits on commas so <depfile> becomes a second input file
+          # ("cannot specify output file with -c many files"). The shim
+          # translates it to tcc's own -MD -MF spelling. See the script header.
+          CCW="$GITHUB_WORKSPACE/spikes/stage3/probes/tcc-cc-wrapper.sh"
+          chmod +x "$CCW"
           timeout 2400 make -j"$(nproc)" \
-            CC="$TCC -B$TCCDIR" \
+            CC="$CCW" \
             HOSTCC=gcc \
             SKIP_STRIP=y > build.log 2>&1
           echo "  make rc=$?"
@@ -405,7 +411,7 @@ jobs:
             | sort | uniq -c | sort -rn | head -20 | sed 's/^/    /'
           if ! [ -x busybox ]; then
             echo "  --- re-running the first failing target with V=1 ---"
-            timeout 300 make V=1 CC="$TCC -B$TCCDIR" HOSTCC=gcc SKIP_STRIP=y \
+            timeout 300 make V=1 CC="$CCW" HOSTCC=gcc SKIP_STRIP=y \
               applets/applets.o 2>&1 | tail -12 | sed 's/^/    /'
           fi
           if [ -x busybox ]; then
