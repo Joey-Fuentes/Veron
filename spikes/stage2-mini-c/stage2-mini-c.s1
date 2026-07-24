@@ -312,6 +312,9 @@ cmp x20 5
 b.ne pl_int
 cmp x29 41
 b.eq paramdone
+mov x3 1
+cmp x29 40
+b.eq pl_fp_skip
 b paramloop
 :pl_int
 cmp x20 3
