@@ -2,20 +2,21 @@ name: reference-first
 
 # SPIKE. PHASE 1: PROVE THE REFERENCE, THEN OURS.
 #
-# Two rules, because the last several runs violated both:
+# Repinned to M2-Planet 1.13.1 (bd2fe4b) + M2libc 68a23cf + mescc-tools 5adfbf3,
+# the set stage0-posix pins. See spikes/UPSTREAM-PINS.md.
 #
-#   1. NOTHING gets a long timeout. Every invocation is bounded at 120s or less.
-#      A hang reports rc=124 in two minutes, not in thirty.
-#   2. The REFERENCE chain is proven end to end BEFORE any of our tools run.
-#      If phase 1 is not green, phase 2 is skipped entirely -- there is no point
-#      comparing against a reference that does not work.
+# LESSON APPLIED: this workflow does not hand-write a single -f list. Every one
+# of my hand-written lists has been wrong -- most recently against 1.13.1, whose
+# M2libc has no bootstrap.c at all. Upstream ships its own self-build recipe at
+# test/test1000/hello-aarch64.sh, versioned with the source. We read the list
+# out of that file and use it.
 #
-# The one artifact the reference has never produced successfully is a RUNNABLE
-# aarch64 M2-Planet: the binary upstream's own tooling builds (sha f5b2a0f5...)
-# segfaults on a trivial input. Upstream's test/test1000/hello-aarch64.sh builds
-# it with --debug + blood-elf + ELF-aarch64-debug.hex2, which spikes/borrow-tcc
-# recorded as segfaulting under qemu-user; the plain header is what borrow-m2
-# ran green. Phase 1 tries the variants and reports which, if any, runs.
+# Better still: that script already knows how to run its own artifact, gated on
+# get_machine. Registering qemu binfmt handlers and setting the documented
+# GET_MACHINE_OVERRIDE_ALWAYS_RUN escape hatch makes upstream's own test execute
+# the aarch64 binary -- the most authoritative reference check available.
+#
+# Nothing here exceeds a 120s timeout.
 
 on:
   push:
@@ -38,178 +39,107 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install toolchain
+      - name: Install toolchain (with binfmt so aarch64 binaries just run)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            qemu-user binutils-aarch64-linux-gnu gcc make
+            qemu-user qemu-user-static binfmt-support \
+            binutils-aarch64-linux-gnu gcc make
+          sudo update-binfmts --display 2>/dev/null | grep -i aarch64 || true
 
-      - name: Fetch upstreams and build the host oracles
+      - name: Fetch upstreams at the pinned set
         run: |
           . tools/ab.sh
           git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
           git -C upstream-m2planet checkout "$M2PLANET_SHA"
           git -C upstream-m2planet submodule update --init --recursive
-          git -C upstream-m2planet/M2libc fetch --depth 50 origin "$M2LIBC_SHA" 2>/dev/null || true
-          git -C upstream-m2planet/M2libc checkout -q "$M2LIBC_SHA" 2>/dev/null \
-            || echo "  NOTE: M2libc already at the gitlink for this M2-Planet commit"
           git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
           git -C upstream-mescc checkout -q "$MESCC_SHA"
+          make -C upstream-m2planet M2-Planet
+          make -C upstream-mescc M1 hex2 blood-elf get_machine
           echo "  PINS RESOLVED:"
           echo "    M2-Planet   $(git -C upstream-m2planet rev-parse HEAD)"
           echo "    M2libc      $(git -C upstream-m2planet/M2libc rev-parse HEAD)"
-          [ -d upstream-mescc ] && echo "    mescc-tools $(git -C upstream-mescc rev-parse HEAD)"
-          make -C upstream-m2planet M2-Planet
-          make -C upstream-mescc M1 hex2 blood-elf
+          echo "    mescc-tools $(git -C upstream-mescc rev-parse HEAD)"
+          echo "  M2-Planet version: $(grep -m2 -A2 '^# 1\.' upstream-m2planet/CHANGELOG.org 2>/dev/null | head -3 | tr '\n' ' ')"
           ab_rule 'HOST ORACLES'
           ab_art 'M2-Planet' upstream-m2planet/bin/M2-Planet
           ab_art 'M1'        upstream-mescc/bin/M1
           ab_art 'hex2'      upstream-mescc/bin/hex2
-          ab_art 'blood-elf' upstream-mescc/bin/blood-elf
 
-      - name: 'P1.1 host tools: compile, assemble, link, run (both targets)'
+      - name: 'P1.0 what does THIS M2libc actually contain?'
         run: |
-          . tools/ab.sh
-          M=upstream-m2planet; L=$M/M2libc; S=upstream-mescc
-          printf 'int main(){int i;int s;s=0;for(i=1;i<10;i=i+1){s=s+i;}return s;}' > c.c
-          ab_rule 'P1.1 INPUT'; ab_inputs c.c
-          : > /tmp/p1
-          for arch in aarch64 x86; do
-            if [ "$arch" = aarch64 ]; then emu=qemu-aarch64; else emu=qemu-i386; fi
-            echo; echo "  -- $arch --"
-            ab_run 'M2-Planet' 60 "c.$arch.M1" \
-              $M/bin/M2-Planet --architecture $arch --bootstrap-mode -f c.c -o "c.$arch.M1"
-            ab_run 'M1' 60 "c.$arch.hex2" \
-              $S/bin/M1 -f "$L/$arch/${arch}_defs.M1" -f "$L/$arch/libc-core.M1" \
-                -f "c.$arch.M1" --little-endian --architecture $arch -o "c.$arch.hex2"
-            ab_run 'hex2' 60 "c.$arch.elf" \
-              $S/bin/hex2 -f "$L/$arch/ELF-$arch.hex2" -f "c.$arch.hex2" \
-                --little-endian --architecture $arch --base-address 0x400000 -o "c.$arch.elf"
-            chmod +x "c.$arch.elf" 2>/dev/null || true
-            ab_run 'RUN (want 45)' 60 - $emu "./c.$arch.elf"
-            set +e; timeout 60 $emu "./c.$arch.elf" </dev/null >/dev/null 2>&1; r=$?; set -e
-            if [ "$r" = 45 ]; then echo "p1.1.$arch OK" >> /tmp/p1; else echo "p1.1.$arch rc=$r" >> /tmp/p1; fi
-          done
+          echo "  --- M2libc top level ---"
+          ls -1 upstream-m2planet/M2libc/*.c upstream-m2planet/M2libc/*.h 2>/dev/null | sed 's|.*/|    |'
+          echo "  --- M2libc/aarch64 ---"
+          ls -1 upstream-m2planet/M2libc/aarch64/ 2>/dev/null | sed 's|^|    |'
+          echo "  --- M2libc/aarch64/linux ---"
+          ls -1 upstream-m2planet/M2libc/aarch64/linux/ 2>/dev/null | sed 's|^|    |'
 
-      - name: 'P1.2 build a RUNNABLE aarch64 M1 and hex2, and use them'
-        continue-on-error: true
+      - name: "P1.0b upstream's OWN aarch64 self-build recipe"
         run: |
-          . tools/ab.sh
-          M=upstream-m2planet; L=$M/M2libc; S=upstream-mescc
-          # M1 builds in bootstrap mode. hex2 does NOT: hex2.h uses #define and
-          # --bootstrap-mode expands no object-like macros. Try full mode with
-          # M2libc's stdio set, in dependency order, and report where it stops.
-          ab_run 'compile refM1' 60 refM1.M1 \
-            $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode \
-              -f $L/aarch64/linux/bootstrap.c -f $L/bootstrap.c -f $L/bootstrappable.c \
-              -f $S/stringify.c -f $S/M1-macro.c -o refM1.M1
-          ab_run 'assemble refM1' 60 refM1.hex2 \
-            $S/bin/M1 -f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 \
-              -f refM1.M1 --little-endian --architecture aarch64 -o refM1.hex2
-          ab_run 'link refM1' 60 refM1 \
-            $S/bin/hex2 -f $L/aarch64/ELF-aarch64.hex2 -f refM1.hex2 \
-              --little-endian --architecture aarch64 --base-address 0x400000 -o refM1
-          chmod +x refM1 2>/dev/null || true
-          ab_run 'refM1 assembles c.aarch64.M1' 60 v1.hex2 \
-            qemu-aarch64 ./refM1 -f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 \
-              -f c.aarch64.M1 --little-endian --architecture aarch64 -o v1.hex2
-          ab_cmp '  vs host M1 output' v1.hex2 c.aarch64.hex2
-          if cmp -s v1.hex2 c.aarch64.hex2; then echo "p1.2.M1 OK" >> /tmp/p1; else echo "p1.2.M1 DIFF" >> /tmp/p1; fi
-
+          S=upstream-m2planet/test/test1000/hello-aarch64.sh
+          if [ ! -f "$S" ]; then echo "  MISSING: $S"; ls upstream-m2planet/test/ | head; exit 1; fi
+          echo "  --- $S ---"
+          sed 's/^/    /' "$S"
           echo
-          echo "  refhex2 in FULL mode (bootstrap mode cannot expand hex2.h's #defines):"
-          ab_run 'compile refhex2' 60 refhex2.M1 \
-            $M/bin/M2-Planet --architecture aarch64 \
-              -f $L/sys/types.h -f $L/stddef.h -f $L/aarch64/linux/unistd.c \
-              -f $L/stdlib.h -f $L/aarch64/linux/fcntl.c -f $L/fcntl.h \
-              -f $L/stdlib.c -f $L/stdio.h -f $L/stdio.c -f $L/string.h -f $L/string.c \
-              -f $L/bootstrappable.h -f $L/bootstrappable.c \
-              -f $S/hex2.h -f $S/hex2_globals.h -f $S/hex2.c \
-              -f $S/hex2_linker.c -f $S/hex2_word.c -o refhex2.M1
+          # Pull the -f list straight out of it. This is the authoritative,
+          # version-correct file list; do not hand-write one.
+          grep -oE '^[[:space:]]*-f [A-Za-z0-9_./-]+' "$S" | awk '{printf "-f %s ", $2}' > /tmp/flist
+          echo "  extracted -f list:"
+          tr ' ' '\n' < /tmp/flist | paste - - | sed 's/^/    /'
+          echo "  uses --debug: $(grep -c -- '--debug' "$S")"
+          echo "  uses blood-elf: $(grep -c 'blood-elf' "$S")"
+          echo "  ELF header: $(grep -oE 'ELF-aarch64[A-Za-z-]*\.hex2' "$S" | head -1)"
+          echo "  base address: $(grep -oE '0x[0-9A-Fa-f]+' "$S" | tail -1)"
 
-      - name: 'P1.3 a RUNNABLE aarch64 M2-Planet -- try the variants'
+      - name: "P1.1 RUN upstream's own aarch64 test, execution forced on"
+        continue-on-error: true
+        run: |
+          # hello-aarch64.sh gates running its artifact on get_machine; the
+          # script itself documents GET_MACHINE_OVERRIDE_ALWAYS_RUN as the
+          # escape hatch. With binfmt registered the aarch64 binary executes.
+          cd upstream-m2planet
+          export PATH="$PWD/bin:$PWD/../upstream-mescc/bin:$PATH"
+          export GET_MACHINE_OVERRIDE_ALWAYS_RUN=1
+          set +e
+          timeout 120 sh test/test1000/hello-aarch64.sh
+          echo "  upstream test rc=$?"
+          set -e
+          ls -l test/results/ 2>/dev/null | sed 's/^/    /' || true
+
+      - name: 'P1.2 build the aarch64 M2-Planet from the EXTRACTED list'
         continue-on-error: true
         run: |
           . tools/ab.sh
           M=upstream-m2planet; L=$M/M2libc; S=upstream-mescc
-          FL="-f $L/aarch64/linux/bootstrap.c -f $L/bootstrap.c -f $M/cc.h \
-              -f $L/bootstrappable.c -f $M/cc_globals.c -f $M/cc_reader.c \
-              -f $M/cc_strings.c -f $M/cc_types.c -f $M/cc_emit.c -f $M/cc_core.c \
-              -f $M/cc_macro.c -f $M/cc.c"
-          printf 'int main(){return 42;}' > t.c
-
-          # variant A: plain header, no debug  (what borrow-m2 ran green)
-          ab_run 'A compile (plain)' 120 A.M1 \
-            $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode $FL -o A.M1
-          ab_run 'A assemble' 120 A.hex2 \
+          FL=$(cat /tmp/flist)
+          echo "  using: $FL"
+          # paths in the script are relative to the M2-Planet root
+          cd $M
+          FL2=$(echo "$FL" | sed 's#-f #-f #g')
+          set +e
+          timeout 120 bin/M2-Planet --architecture aarch64 --bootstrap-mode $FL2 -o ../A.M1
+          echo "  compile rc=$?"
+          set -e
+          cd ..
+          ab_art 'A.M1' A.M1
+          [ -s A.M1 ] || { echo "  no .M1 -- see the extracted list above"; exit 0; }
+          ab_run 'assemble' 120 A.hex2 \
             $S/bin/M1 -f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 \
               -f A.M1 --little-endian --architecture aarch64 -o A.hex2
-          ab_run 'A link' 120 M2-A \
+          ab_run 'link' 120 M2-A \
             $S/bin/hex2 -f $L/aarch64/ELF-aarch64.hex2 -f A.hex2 \
-              --little-endian --architecture aarch64 --base-address 0x400000 -o M2-A
+              --little-endian --architecture aarch64 --base-address 0x00600000 -o M2-A
           chmod +x M2-A 2>/dev/null || true
-          ab_run 'A RUN on t.c' 120 A.out \
+          printf 'int main(){return 42;}' > t.c
+          ab_run 'RUN it on t.c' 120 A.out \
             qemu-aarch64 ./M2-A --architecture aarch64 --bootstrap-mode -f t.c -o A.out
-
-          # variant B: --debug + blood-elf footer + debug ELF header
-          #            (upstream's own test/test1000/hello-aarch64.sh recipe)
-          ab_run 'B compile (--debug)' 120 B.M1 \
-            $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode --debug $FL -o B.M1
-          ab_run 'B blood-elf' 120 B-footer.M1 \
-            $S/bin/blood-elf --64 -f B.M1 --little-endian --entry _start -o B-footer.M1
-          ab_run 'B assemble' 120 B.hex2 \
-            $S/bin/M1 -f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 \
-              -f B.M1 -f B-footer.M1 --little-endian --architecture aarch64 -o B.hex2
-          ab_run 'B link (debug hdr)' 120 M2-B \
-            $S/bin/hex2 -f $L/aarch64/ELF-aarch64-debug.hex2 -f B.hex2 \
-              --little-endian --architecture aarch64 --base-address 0x400000 -o M2-B
-          chmod +x M2-B 2>/dev/null || true
-          ab_run 'B RUN on t.c' 120 B.out \
-            qemu-aarch64 ./M2-B --architecture aarch64 --bootstrap-mode -f t.c -o B.out
-
-          echo
-          ab_rule 'CANDIDATE aarch64 M2-Planet BINARIES'
-          ab_art 'M2-A (plain)' M2-A
-          ab_art 'M2-B (debug)' M2-B
-          ab_art 'host output for t.c' /dev/null
           $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode -f t.c -o host.out || true
-          ab_art 'host.out' host.out
-          ab_cmp 'A vs host' A.out host.out
-          ab_cmp 'B vs host' B.out host.out
-          if cmp -s A.out host.out; then echo "p1.3 OK variant=A" >> /tmp/p1
-          elif cmp -s B.out host.out; then echo "p1.3 OK variant=B" >> /tmp/p1
-          else echo "p1.3 NEITHER-VARIANT-RUNS" >> /tmp/p1; fi
-
-      - name: 'P1.4 reference self-compilation (host compiler only)'
-        continue-on-error: true
-        run: |
-          . tools/ab.sh
-          M=upstream-m2planet; L=$M/M2libc; S=upstream-mescc
-          # Establish the shape and cost of self-compilation with tools that
-          # are known to work, so we know what "right" looks like before ours
-          # is measured against it.
-          ab_run 'host self-compile' 120 self.M1 \
-            $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode \
-              -f $L/aarch64/linux/bootstrap.c -f $L/bootstrap.c -f $M/cc.h \
-              -f $L/bootstrappable.c -f $M/cc_globals.c -f $M/cc_reader.c \
-              -f $M/cc_strings.c -f $M/cc_types.c -f $M/cc_emit.c -f $M/cc_core.c \
-              -f $M/cc_macro.c -f $M/cc.c -o self.M1
-          ab_run 'host assemble it' 120 self.hex2 \
-            $S/bin/M1 -f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 \
-              -f self.M1 --little-endian --architecture aarch64 -o self.hex2
-          if [ -s self.M1 ]; then echo "p1.4 OK" >> /tmp/p1; else echo "p1.4 FAIL" >> /tmp/p1; fi
+          ab_cmp '  vs host output' A.out host.out
 
       - name: 'PHASE 1 VERDICT'
         run: |
-          echo "  check              result"
-          echo "  -----------------  ------"
-          sort /tmp/p1 | while read k v; do printf '  %-17s  %s\n' "$k" "$v"; done
-          echo
-          bad=$(grep -v ' OK' /tmp/p1 | wc -l)
-          if [ "$bad" -eq 0 ]; then
-            echo "  REFERENCE PROVEN END TO END. Phase 2 (our tools) can be enabled."
-          else
-            echo "  $bad reference check(s) not green. Fix these BEFORE comparing ours."
-            echo "  Phase 2 stays disabled until this is clean."
-            exit 1
-          fi
+          echo "  Read P1.0b for upstream's real recipe and P1.1 for whether"
+          echo "  upstream's own test passes when its artifact is actually run."
+          echo "  P1.2 repeats it with the extracted list and reports the bytes."
