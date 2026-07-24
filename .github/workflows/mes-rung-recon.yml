@@ -122,3 +122,44 @@ jobs:
           echo "      GNU Mes 0.27). Our rung therefore targets x86 at the"
           echo "      M2-Planet level -- G1 --architecture x86 -- exactly as"
           echo "      no-host-chain.yml was designed to do."
+
+      - name: 'THE SUBSTITUTION POINT: Mes own kaem.x86, where M2-Planet is invoked'
+        run: |
+          set -u
+          URL=$(awk '/mes-0.27.1.tar.gz/{print $2}' "lb/steps/mes-$MES_VER/sources")
+          SUM=$(awk '/mes-0.27.1.tar.gz/{print $3}' "lb/steps/mes-$MES_VER/sources")
+          echo "  fetching $URL"
+          curl -sSL -o mes.tar.gz "$URL"
+          echo "  expected sha256: $SUM"
+          echo "  actual   sha256: $(sha256sum mes.tar.gz | cut -d' ' -f1)"
+          sha256sum mes.tar.gz | grep -q "^$SUM " \
+            && echo "  CHECKSUM OK" || { echo "  CHECKSUM MISMATCH"; exit 1; }
+          tar xzf mes.tar.gz
+          D=mes-$MES_VER
+          echo
+          echo "=== kaem scripts shipped with Mes ==="
+          ls "$D" | grep -i kaem | sed 's/^/    /' || true
+          echo
+          echo "############################################################"
+          echo "### kaem.x86 -- THIS is where M2-Planet builds mes-m2"
+          echo "############################################################"
+          sed 's/^/    /' "$D/kaem.x86"
+          echo
+          echo "=== every M2-Planet / M1 / hex2 / blood-elf invocation in it ==="
+          grep -nE 'M2-Planet|M1 |hex2|blood-elf|catm' "$D/kaem.x86" | sed 's/^/    /' || true
+          echo
+          echo "=== kaem.run (the arena/base-address settings live-bootstrap patches) ==="
+          [ -f "$D/kaem.run" ] && sed 's/^/    /' "$D/kaem.run" || echo "    (none)"
+          echo
+          echo "SUBSTITUTION POINT: wherever kaem.x86 calls M2-Planet, our rung"
+          echo "  puts G1 (--architecture x86). G1 IS refM2P byte for byte, so the"
+          echo "  reference arm and our arm share a compiler and differ only in"
+          echo "  provenance -- which is the cleanest possible A/B for this rung."
+          echo
+          echo "GATE for this rung: /usr/bin/mes-m2 sha256"
+          echo "  62895fcf68b21961e018c797b3144fc86f9dbd5a535776e9e68a01b3fd33de08"
+          echo
+          echo "TOOLS the recipe needs beyond mescc-tools (kaem, catm, M1, hex2,"
+          echo "  blood-elf): replace, ungz, untar, simple-patch,"
+          echo "  checksum-transcriber, match -- several from MESCC-TOOLS-EXTRA,"
+          echo "  which stage0-posix pins at a151c245 and which we have never built."
