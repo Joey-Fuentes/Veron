@@ -138,47 +138,111 @@ jobs:
             | qemu-aarch64 ./elf M2-ours 2>/dev/null || true
           chmod +x M2-ours 2>/dev/null || true
           ab_art 'M2-Planet (ours)' M2-ours
-      - name: 'THE PROOF: both self-compile M2-Planet, checked against upstream sha256'
+      - name: 'SELF-COMPILE: both compilers build M2-Planet from its own source'
         run: |
           . tools/ab.sh
           ROOT="$PWD"
-          if [ ! -s M2-ours ]; then
-            echo "FAIL: our arm produced no M2-Planet -- see the OURS step above."
-            exit 1
-          fi
+          echo 'fail' > selfcompile.status
+          [ -s M2-ours ] || { echo "our arm produced no M2-Planet -- see OURS above."; exit 0; }
 
           # Lift the proof invocation verbatim from upstream's own trace.
           CMD=$(grep -m1 -- '--architecture x86' test1000.log | sed 's/^+ *//')
-          [ -n "$CMD" ] || { echo "FAIL: no proof invocation in test1000.log"; exit 1; }
+          [ -n "$CMD" ] || { echo "no proof invocation in test1000.log"; exit 0; }
           ARGS=${CMD#*test1000-aarch64-binary }
-          echo "  upstream's proof invocation (args reused verbatim):"
-          printf '    %s\n' "$ARGS" | fold -w 100 | sed '2,$s/^/      /'
+          printf '%s\n' "$ARGS" > proof.args
+          printf '%s\n' $ARGS | awk '$0=="-f"{getline; print}' > proof.files
+          echo "  upstream's -f list: $(wc -l < proof.files) files, reused verbatim"
 
           cd upstream-m2planet
-          OURS_ARGS=$(printf '%s' "$ARGS" | sed 's|-o test/test1000/proof|-o ours_proof|')
+          OURS_ARGS=$(sed 's|-o test/test1000/proof|-o ours_proof|' "$ROOT/proof.args")
           ab_rule 'SELF-COMPILATION: M2-Planet compiles its own entire source'
           ab_run 'ours self-compiles' 900 ours_proof \
             qemu-aarch64 "$ROOT/M2-ours" $OURS_ARGS
-
-          EXPECT=$(awk '{print $1}' test/test1000/proof.answer)
           ab_art 'reference proof' test/test1000/proof
           ab_art 'ours_proof'      ours_proof
           ab_cmp '  ours vs reference' ours_proof test/test1000/proof
+          [ -s ours_proof ] && echo 'ok' > "$ROOT/selfcompile.status"
+          exit 0
 
-          if [ ! -s ours_proof ]; then
-            echo "FAIL: our M2-Planet produced no output."
-            exit 1
+      - name: 'DIAGNOSE: only if the self-compile failed'
+        continue-on-error: true
+        run: |
+          . tools/ab.sh
+          ROOT="$PWD"
+          if [ "$(cat selfcompile.status 2>/dev/null)" = ok ]; then
+            echo "  self-compile produced output; nothing to diagnose."
+            exit 0
           fi
-          GOT=$(sha256sum ours_proof | awk '{print $1}')
-          echo "  upstream proof.answer : $EXPECT"
-          echo "  ours                  : $GOT"
-          if [ "$GOT" = "$EXPECT" ]; then
-            echo "PASS: our stage-2-built M2-Planet compiled M2-Planet's entire source"
-            echo "      and the result matches upstream's own published sha256."
+          [ -s M2-ours ] || { echo "  no M2-ours to diagnose."; exit 0; }
+          M=upstream-m2planet
+
+          # ---- 1. CANARY: is M2-ours broken outright, or only at scale? ------
+          ab_rule 'CANARY: a small input through both compilers'
+          printf 'int main(){int i;int s;s=0;for(i=1;i<10;i=i+1){s=s+i;}return s;}' > c.c
+          ab_run 'ours  compiles c.c' 120 ours.M1 \
+            qemu-aarch64 ./M2-ours --architecture aarch64 --bootstrap-mode -f c.c -o ours.M1
+          ab_run 'host  compiles c.c' 120 host.M1 \
+            $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode -f c.c -o host.M1
+          ab_cmp '  ours vs host' ours.M1 host.M1
+
+          # ---- 2. HOW FAR DID IT GET? syscalls are cheap and bounded --------
+          echo
+          echo "  --- last syscalls before the fault (full proof input) ---"
+          cd $M
+          OURS_ARGS=$(sed 's|-o test/test1000/proof|-o strace_out|' "$ROOT/proof.args")
+          set +e
+          timeout 300 qemu-aarch64 -strace "$ROOT/M2-ours" $OURS_ARGS \
+            > /dev/null 2> "$ROOT/strace.log"
+          set -e
+          cd "$ROOT"
+          echo "    opens seen : $(grep -c 'open' strace.log || true)"
+          echo "    writes seen: $(grep -c 'write(' strace.log || true)"
+          tail -12 strace.log | sed 's/^/    /'
+
+          # ---- 3. SMALLEST FAULTING PREFIX of upstream's -f list ------------
+          echo
+          echo "  --- bisecting upstream's -f list for the smallest faulting prefix ---"
+          N=$(wc -l < proof.files)
+          faults() {   # faults <n>  -> 0 if that prefix segfaults
+            pre=''
+            for f in $(head -n "$1" proof.files); do pre="$pre -f $M/$f"; done
+            set +e
+            timeout 200 qemu-aarch64 ./M2-ours --architecture x86 $pre -o /tmp/b.M1 \
+              >/dev/null 2>&1
+            r=$?
+            set -e
+            [ "$r" = 139 ]
+          }
+          if ! faults "$N"; then
+            echo "    full list does not segfault in isolation -- not reproducible here."
           else
-            echo "FAIL: self-compilation output does not match upstream's answer file."
-            exit 1
+            lo=1; hi=$N
+            while [ "$lo" -lt "$hi" ]; do
+              mid=$(( (lo + hi) / 2 ))
+              if faults "$mid"; then hi=$mid; else lo=$(( mid + 1 )); fi
+              echo "    ... narrowed to $lo..$hi"
+            done
+            echo "    SMALLEST FAULTING PREFIX: $lo file(s)"
+            head -n "$lo" proof.files | sed 's/^/      /'
+            echo "$lo" > minfault.n
           fi
+
+          # ---- 4. MAP THE FAULT PC through our own label map ----------------
+          [ -s minfault.n ] || { echo "  no minimal case; skipping PC map."; exit 0; }
+          echo
+          echo "  --- faulting PC, mapped through m2.s1 (tools/pcmap.py) ---"
+          pre=''
+          for f in $(head -n "$(cat minfault.n)" proof.files); do pre="$pre -f $M/$f"; done
+          set +e
+          timeout 300 qemu-aarch64 -d cpu -D fault.log ./M2-ours \
+            --architecture x86 $pre -o /tmp/b.M1 >/dev/null 2>&1
+          set -e
+          echo "    trace size: $(du -h fault.log 2>/dev/null | cut -f1)"
+          PC=$(grep -o 'PC=[0-9a-f]\{8,\}' fault.log | tail -1 | cut -d= -f2)
+          LR=$(grep -o 'X30=[0-9a-f]\{8,\}' fault.log | tail -1 | cut -d= -f2)
+          echo "    PC=0x$PC  X30=0x$LR"
+          [ -n "$PC" ] && python3 tools/pcmap.py m2.s1 "0x$PC" "0x$LR" | sed 's/^/    /'
+          rm -f fault.log
 
       - name: 'Q1 where do the constants come from at 1.13.1?'
         run: |
@@ -241,4 +305,24 @@ jobs:
               last="$n"
             done
           done
+
+      - name: 'GATE: ours_proof matches upstream published sha256'
+        run: |
+          . tools/ab.sh
+          if [ "$(cat selfcompile.status 2>/dev/null)" != ok ]; then
+            echo "FAIL: our M2-Planet did not self-compile -- see DIAGNOSE above."
+            exit 1
+          fi
+          cd upstream-m2planet
+          EXPECT=$(awk '{print $1}' test/test1000/proof.answer)
+          GOT=$(sha256sum ours_proof | awk '{print $1}')
+          echo "  upstream proof.answer : $EXPECT"
+          echo "  ours                  : $GOT"
+          if [ "$GOT" = "$EXPECT" ]; then
+            echo "PASS: our stage-2-built M2-Planet compiled M2-Planet's entire source"
+            echo "      and the result matches upstream's own published sha256."
+          else
+            echo "FAIL: self-compilation output does not match upstream's answer file."
+            exit 1
+          fi
 
