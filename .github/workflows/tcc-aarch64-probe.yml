@@ -38,6 +38,11 @@ name: tcc-aarch64-probe
 # pervasively, so that is a direct hit on the Linux leg -- a limitation of this
 # pin, not of tcc in general (later versions add it).
 #
+# RUN 2 FINDING. mob HEAD DOES ship arm64-asm.c -- the inline assembler 0.9.27
+# lacks. Both variants pass `make test` natively on arm64. The self-host result
+# from run 2 was a harness bug (missing -B, and `make clean` running before the
+# other probes), not a tcc limitation.
+#
 # Pins come from live-bootstrap 9a268c4 -- the same commit whose stage0-posix
 # pins ARE our three pins (see spikes/UPSTREAM-PINS.md), so tcc 0.9.27 is the
 # version that set is built around.
@@ -139,47 +144,6 @@ jobs:
           set +e; /tmp/h; rc=$?; set -e
           echo "    ran, exit=$rc (expect 42)"
 
-      - name: '4. THE BAR: does tcc self-host on aarch64, to a fixpoint?'
-        continue-on-error: true
-        run: |
-          cd tccsrc
-          # USE THEIR BUILD, NOT A RECONSTRUCTED COMMAND. configure bakes a pile
-          # of -DCONFIG_TCC_* macros into config.mak -- sysinclude paths, CRT
-          # prefix, the triplet. A hand-written `tcc -o tcc2 tcc.c` produces a
-          # compiler that cannot find crt1.o or the system headers, which is a
-          # harness bug and not a tcc finding. `make CC=<compiler>` reuses the
-          # whole config, so each generation is built exactly as gen1 was.
-          set +e
-          cp tcc tcc-gen1
-          echo "  gen1 (built by gcc): $(wc -c < tcc-gen1) bytes"
-          for g in 2 3; do
-            prev=$((g-1))
-            make clean >/dev/null 2>&1
-            echo "  --- building gen$g with tcc-gen$prev ---"
-            make -j"$(nproc)" CC="$PWD/tcc-gen$prev" 2>&1 | tail -12 | sed 's/^/    /'
-            rc=$?
-            if [ -x tcc ]; then
-              cp tcc "tcc-gen$g"
-              printf '    gen%s: rc=%s  %s bytes  %s\n' "$g" "$rc" \
-                "$(wc -c < tcc-gen$g)" "$(sha256sum tcc-gen$g | cut -c1-16)"
-            else
-              echo "    gen$g: FAILED (rc=$rc, no binary)"; break
-            fi
-          done
-          echo
-          if [ -x tcc-gen2 ] && [ -x tcc-gen3 ]; then
-            if cmp -s tcc-gen2 tcc-gen3; then
-              echo "  FIXPOINT: gen2 == gen3 byte for byte"
-            else
-              echo "  gen2 != gen3  ($(cmp tcc-gen2 tcc-gen3 2>&1 | head -1))"
-              echo "    (gen1 differing from gen2 is EXPECTED -- different compilers."
-              echo "     gen2 == gen3 is the property that matters.)"
-            fi
-            echo "  --- does gen3 actually work? ---"
-            ./tcc-gen3 -B. -o /tmp/h3 /tmp/h.c && { /tmp/h3; echo "    gen3-built program exit=$?"; }
-          fi
-          set -e
-
       - name: '5. tcc own test suite on aarch64'
         continue-on-error: true
         run: |
@@ -210,11 +174,60 @@ jobs:
           gcc -o /tmp/kerng "$P/kern.c" 2>/dev/null && { /tmp/kerng; echo "    gcc kern exit=$?"; }
           set -e
 
+      - name: '7. THE BAR: does tcc self-host on aarch64, to a fixpoint?'
+        continue-on-error: true
+        run: |
+          cd tccsrc
+          # RUNS LAST: `make clean` destroys tcc and libtcc1.a, which the
+          # earlier steps need. Run 2 had this step first and every later probe
+          # reported exit=127 -- "binary not found", not a real failure.
+          #
+          # -B$PWD IS MANDATORY: tcc locates its own bundled headers (stdarg.h,
+          # stddef.h) and libtcc1.a relative to its base dir, and we never
+          # `make install`. Without it gen2 dies on "include file not found".
+          #
+          # USE THEIR BUILD, NOT A RECONSTRUCTED COMMAND. configure bakes a pile
+          # of -DCONFIG_TCC_* macros into config.mak -- sysinclude paths, CRT
+          # prefix, the triplet. A hand-written `tcc -o tcc2 tcc.c` produces a
+          # compiler that cannot find crt1.o or the system headers, which is a
+          # harness bug and not a tcc finding. `make CC=<compiler>` reuses the
+          # whole config, so each generation is built exactly as gen1 was.
+          set +e
+          cp tcc tcc-gen1
+          echo "  gen1 (built by gcc): $(wc -c < tcc-gen1) bytes"
+          for g in 2 3; do
+            prev=$((g-1))
+            make clean >/dev/null 2>&1
+            echo "  --- building gen$g with tcc-gen$prev ---"
+            make -j"$(nproc)" CC="$PWD/tcc-gen$prev -B$PWD" 2>&1 | tail -12 | sed 's/^/    /'
+            rc=$?
+            if [ -x tcc ]; then
+              cp tcc "tcc-gen$g"
+              printf '    gen%s: rc=%s  %s bytes  %s\n' "$g" "$rc" \
+                "$(wc -c < tcc-gen$g)" "$(sha256sum tcc-gen$g | cut -c1-16)"
+            else
+              echo "    gen$g: FAILED (rc=$rc, no binary)"; break
+            fi
+          done
+          echo
+          if [ -x tcc-gen2 ] && [ -x tcc-gen3 ]; then
+            if cmp -s tcc-gen2 tcc-gen3; then
+              echo "  FIXPOINT: gen2 == gen3 byte for byte"
+            else
+              echo "  gen2 != gen3  ($(cmp tcc-gen2 tcc-gen3 2>&1 | head -1))"
+              echo "    (gen1 differing from gen2 is EXPECTED -- different compilers."
+              echo "     gen2 == gen3 is the property that matters.)"
+            fi
+            echo "  --- does gen3 actually work? ---"
+            ./tcc-gen3 -B. -o /tmp/h3 /tmp/h.c && { /tmp/h3; echo "    gen3-built program exit=$?"; }
+          fi
+          set -e
+
       - name: 'VERDICT'
         run: |
           cd tccsrc
           echo "  arm64 backend present : $( [ -f arm64-gen.c ] && echo yes || echo NO )"
-          echo "  builds with gcc       : $( [ -x tcc ] && echo yes || echo NO )"
+          echo "  builds with gcc       : $( [ -x tcc-gen1 ] && echo yes || echo NO )"
           echo "  self-hosts (gen2)     : $( [ -s tcc-gen2 ] && echo yes || echo NO )"
           echo "  fixpoint (gen2==gen3) : $( [ -s tcc-gen3 ] && cmp -s tcc-gen2 tcc-gen3 && echo yes || echo 'no/na' )"
           echo "  inline asm on arm64   : $( [ -f arm64-asm.c ] && echo yes || echo 'NO -- arm64-asm.c absent' )"
