@@ -268,3 +268,47 @@ plumbing is genuinely disposable. Layer count mostly is not — each rung is sma
 enough to audit, and that is the point of a bootstrap. Where this track removes
 a layer, it must replace the lost gate with a self-validating one (self-compile
 fixpoint, 3-stage compare) rather than with an assurance.
+
+
+---
+
+## Leg 2, measured — the gcc arms (2026-07-24)
+
+Three arms, run identically, host gcc throughout
+(`.github/workflows/gcc47-aarch64-backport.yml`):
+
+| arm | what | configure | build | cc1 |
+|---|---|---|---|---|
+| A | 4.8.5 vanilla, target aarch64 | rc=0 | rc=2 | **no** |
+| B | 4.7.4 + config.sub/guess only, target arm-none-eabi | rc=0 | **rc=0** | **BUILT** |
+| C | 4.7.4 + aarch64 transplant, target aarch64 | **rc=0** | rc=2 | no |
+
+**B is the result that matters so far: gcc 4.7.4 builds a working `cc1` on
+aarch64 in 2026.** The C-era compiler builds *more easily* than the C++-era
+one, which is the opposite of the intuition and is precisely why the control
+arm exists. Its earlier apparent failure was `doc/gccint.info` —
+`sourcebuild.texi:679: @itemx should not begin @table`, 2026's makeinfo
+rejecting 2012's texinfo — documentation, not a compiler. With `MAKEINFO=true`
+it is a clean pass.
+
+**A's failure is the language moving, not the architecture.** gcc 4.8.5's
+`reload1.c` does `spill_indirect_levels++` where that expands to a `bool`:
+
+```
+error: use of an operand of type 'bool' in 'operator++' is forbidden in C++17
+```
+
+Modern g++ defaults to `gnu++17`. Building 4.8.5 needs
+`CXX="g++ -std=gnu++98"`. Worth recording independently of this leg: **any**
+attempt to build a 4.8-era gcc in 2026 hits this.
+
+**C got through configure**, which means the `config.gcc` transplant is
+structurally right — 4.7.4 accepted `--target=aarch64-unknown-linux-gnu` and
+ran the gcc subdirectory configure. It then failed inside that configure, and
+the reason was not captured: a failing `configure` writes to `config.log`, and
+the inventory step was aborting early anyway because it lacked `set +e` while
+deliberately re-running a failing command under `bash -e`.
+
+Nothing here yet contradicts the backport thesis. What it does show is that
+**the C-only route's foundation is real** — 4.7.4 builds — and that A's
+obstacle is a two-word configure flag rather than anything structural.

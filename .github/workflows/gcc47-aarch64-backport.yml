@@ -135,7 +135,14 @@ jobs:
           # --disable-werror is not optional here: a 2012-era gcc compiled by
           # gcc 13 trips warnings that did not exist when it was written, and
           # without this every arm fails for the same uninteresting reason.
+          # -std=gnu++98 is REQUIRED for 4.8.5. Modern g++ defaults to gnu++17,
+          # and gcc 4.8.5's reload1.c does `spill_indirect_levels++` on a bool:
+          #   error: use of an operand of type 'bool' in 'operator++'
+          #          is forbidden in C++17
+          # That is the language moving under a 2012 codebase, not anything
+          # about aarch64. Inert for the 4.7.4 arms, which build as C.
           "../$SRC/configure" \
+            CXX="g++ -std=gnu++98" \
             --build=aarch64-unknown-linux-gnu \
             --host=aarch64-unknown-linux-gnu \
             --target="$TGT" \
@@ -182,6 +189,11 @@ jobs:
         continue-on-error: true
         run: |
           set -u
+          # set +e is load-bearing: this step deliberately re-runs a command it
+          # EXPECTS to fail. GitHub runs `bash -e`, so without this the serial
+          # rebuild aborts the step and the inventory prints nothing -- which is
+          # exactly what happened to arm C in run 3.
+          set +e
           cd build
           # Run 1 showed an EMPTY error-class list beside 24 "failing files".
           # Both cannot be right: the file list grepped any 'file.c:' line, which
@@ -209,6 +221,20 @@ jobs:
             echo "    serial rc=$?"
             grep -E 'error:|Error ' serial.log | head -15 | sed 's/^/      /'
             [ -s serial.log ] && tail -15 serial.log | sed 's/^/      /'
+            # A failing *configure* writes its reason to config.log, not to the
+            # make output -- run 3's arm C died at configure-gcc right after
+            # "checking if mkdir takes one argument" with no message anywhere.
+            case "$TGT_OBJ" in
+              configure-*)
+                sub=${TGT_OBJ#configure-}
+                for cl in "$sub/config.log" "config.log"; do
+                  if [ -f "$cl" ]; then
+                    echo "    --- $cl (tail) ---"
+                    tail -30 "$cl" | sed 's/^/      /'
+                    break
+                  fi
+                done ;;
+            esac
           else
             echo "    (could not parse a failing target)"
           fi
