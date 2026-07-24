@@ -29,6 +29,15 @@ name: tcc-aarch64-probe
 # can build Linux, are downstream questions gated on this one. This spike reports
 # the evidence relevant to them but does not attempt either.
 #
+# RUN 1 FINDING. arm64-gen.c (1837 lines) and arm64-link.c (256) are present and
+# real: tcc builds, self-identifies as "0.9.27 (AArch64 Linux)", passes `make
+# test` natively, and handles every C construct gcc 4.7's source needs (struct
+# return by value, varargs, function pointers, 64-bit ints, floats, aggregate
+# initialisers -- feat.c returns 6). BUT arm64-asm.c is ABSENT: tcc 0.9.27 has
+# no INLINE ASSEMBLER for arm64, so kernel-style C fails. Linux uses inline asm
+# pervasively, so that is a direct hit on the Linux leg -- a limitation of this
+# pin, not of tcc in general (later versions add it).
+#
 # Pins come from live-bootstrap 9a268c4 -- the same commit whose stage0-posix
 # pins ARE our three pins (see spikes/UPSTREAM-PINS.md), so tcc 0.9.27 is the
 # version that set is built around.
@@ -46,7 +55,17 @@ concurrency:
 jobs:
   probe:
     runs-on: ubuntu-24.04-arm      # NATIVE aarch64 -- no qemu in the way
-    timeout-minutes: 40
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # WHY BOTH. live-bootstrap's pin (0.9.27, released 2017) mattered only
+        # while their published checksums were our independent check. The direct
+        # path self-validates -- tcc reaching a self-compile fixpoint is a
+        # stronger gate than matching someone else's bytes -- so for OUR chain we
+        # pick our own pin. mob is where arm64-asm.c lives, i.e. the inline
+        # assembler 0.9.27 lacks and Linux needs.
+        tcc: [pinned-0.9.27, mob-head]
     env:
       LB_SHA: 9a268c4c39cae952b268bc86da342be2175f03d4
     steps:
@@ -63,28 +82,28 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gcc make curl git
 
-      - name: 'Fetch tcc at live-bootstrap''s pin (URL + checksum from their sources file)'
+      - name: 'Fetch tcc (${{ matrix.tcc }})'
         run: |
-          git clone -q https://github.com/fosslinux/live-bootstrap.git lb
-          git -C lb checkout -q "$LB_SHA"
-          echo "  tcc steps live-bootstrap carries:"
-          ls lb/steps | grep -i '^tcc' | sed 's/^/    /'
-          echo
-          for d in lb/steps/tcc-*/; do
-            [ -f "$d/sources" ] && { echo "  --- $d sources ---"; sed 's/^/    /' "$d/sources"; }
-          done
-          # take the newest tcc step that has a tarball
-          SRC=$(ls -d lb/steps/tcc-*/ | sort -V | tail -1)
-          echo "  using: $SRC"
-          URL=$(awk 'NR==1{print $2}' "$SRC/sources")
-          SUM=$(awk 'NR==1{print $3}' "$SRC/sources")
-          echo "  url: $URL"
-          curl -sSL -o tcc.tar.bz2 "$URL" || curl -sSL -o tcc.tar.bz2 "$URL"
-          if [ -n "$SUM" ]; then
-            echo "$SUM  tcc.tar.bz2" | sha256sum -c - && echo "  CHECKSUM OK" || echo "  CHECKSUM MISMATCH (continuing, noted)"
+          if [ "${{ matrix.tcc }}" = mob-head ]; then
+            # OUR pin, recorded so the result is reproducible.
+            git clone -q git://repo.or.cz/tinycc.git tccsrc \
+              || git clone -q https://repo.or.cz/tinycc.git tccsrc
+            echo "  mob HEAD: $(git -C tccsrc rev-parse HEAD)"
+            echo "  date    : $(git -C tccsrc log -1 --format=%ci)"
+            echo "  RECORD THIS SHA if we adopt mob."
+          else
+            git clone -q https://github.com/fosslinux/live-bootstrap.git lb
+            git -C lb checkout -q "$LB_SHA"
+            SRC=$(ls -d lb/steps/tcc-*/ | sort -V | tail -1)
+            echo "  using live-bootstrap's $SRC"
+            URL=$(awk 'NR==1{print $2}' "$SRC/sources")
+            SUM=$(awk 'NR==1{print $3}' "$SRC/sources")
+            curl -sSL -o tcc.tar.bz2 "$URL"
+            [ -n "$SUM" ] && { echo "$SUM  tcc.tar.bz2" | sha256sum -c - \
+              && echo "  CHECKSUM OK" || echo "  CHECKSUM MISMATCH (noted)"; }
+            mkdir -p tccsrc && tar xf tcc.tar.bz2 -C tccsrc --strip-components=1
           fi
-          mkdir -p tccsrc && tar xf tcc.tar.bz2 -C tccsrc --strip-components=1
-          echo "  extracted $(du -sh tccsrc | cut -f1)"
+          echo "  source: $(du -sh tccsrc | cut -f1)"
 
       - name: '1. Does the arm64 backend actually exist in this source?'
         run: |
@@ -124,23 +143,40 @@ jobs:
         continue-on-error: true
         run: |
           cd tccsrc
+          # USE THEIR BUILD, NOT A RECONSTRUCTED COMMAND. configure bakes a pile
+          # of -DCONFIG_TCC_* macros into config.mak -- sysinclude paths, CRT
+          # prefix, the triplet. A hand-written `tcc -o tcc2 tcc.c` produces a
+          # compiler that cannot find crt1.o or the system headers, which is a
+          # harness bug and not a tcc finding. `make CC=<compiler>` reuses the
+          # whole config, so each generation is built exactly as gen1 was.
           set +e
-          echo "  --- gen2: tcc compiles tcc ---"
-          ./tcc -B. -o tcc2 tcc.c -I. -DTCC_TARGET_ARM64 -lm -ldl -lpthread 2>&1 | tail -15 | sed 's/^/    /'
-          rc2=$?; echo "    rc=$rc2  $( [ -s tcc2 ] && echo "$(wc -c < tcc2) bytes" || echo 'no binary' )"
-          if [ -s tcc2 ]; then
-            echo "  --- gen3: tcc2 compiles tcc ---"
-            ./tcc2 -B. -o tcc3 tcc.c -I. -DTCC_TARGET_ARM64 -lm -ldl -lpthread 2>&1 | tail -15 | sed 's/^/    /'
-            rc3=$?; echo "    rc=$rc3  $( [ -s tcc3 ] && echo "$(wc -c < tcc3) bytes" || echo 'no binary' )"
-            if [ -s tcc3 ]; then
-              if cmp -s tcc2 tcc3; then
-                echo "    FIXPOINT: tcc2 == tcc3 byte for byte"
-              else
-                echo "    tcc2 != tcc3  ($(cmp tcc2 tcc3 2>&1 | head -1))"
-              fi
-              echo "  --- does gen3 work? ---"
-              ./tcc3 -B. -o /tmp/h3 /tmp/h.c && { /tmp/h3; echo "    gen3-built program exit=$?"; }
+          cp tcc tcc-gen1
+          echo "  gen1 (built by gcc): $(wc -c < tcc-gen1) bytes"
+          for g in 2 3; do
+            prev=$((g-1))
+            make clean >/dev/null 2>&1
+            echo "  --- building gen$g with tcc-gen$prev ---"
+            make -j"$(nproc)" CC="$PWD/tcc-gen$prev" 2>&1 | tail -12 | sed 's/^/    /'
+            rc=$?
+            if [ -x tcc ]; then
+              cp tcc "tcc-gen$g"
+              printf '    gen%s: rc=%s  %s bytes  %s\n' "$g" "$rc" \
+                "$(wc -c < tcc-gen$g)" "$(sha256sum tcc-gen$g | cut -c1-16)"
+            else
+              echo "    gen$g: FAILED (rc=$rc, no binary)"; break
             fi
+          done
+          echo
+          if [ -x tcc-gen2 ] && [ -x tcc-gen3 ]; then
+            if cmp -s tcc-gen2 tcc-gen3; then
+              echo "  FIXPOINT: gen2 == gen3 byte for byte"
+            else
+              echo "  gen2 != gen3  ($(cmp tcc-gen2 tcc-gen3 2>&1 | head -1))"
+              echo "    (gen1 differing from gen2 is EXPECTED -- different compilers."
+              echo "     gen2 == gen3 is the property that matters.)"
+            fi
+            echo "  --- does gen3 actually work? ---"
+            ./tcc-gen3 -B. -o /tmp/h3 /tmp/h.c && { /tmp/h3; echo "    gen3-built program exit=$?"; }
           fi
           set -e
 
@@ -179,8 +215,16 @@ jobs:
           cd tccsrc
           echo "  arm64 backend present : $( [ -f arm64-gen.c ] && echo yes || echo NO )"
           echo "  builds with gcc       : $( [ -x tcc ] && echo yes || echo NO )"
-          echo "  self-hosts (gen2)     : $( [ -s tcc2 ] && echo yes || echo NO )"
-          echo "  fixpoint (gen2==gen3) : $( [ -s tcc3 ] && cmp -s tcc2 tcc3 && echo yes || echo 'no/na' )"
+          echo "  self-hosts (gen2)     : $( [ -s tcc-gen2 ] && echo yes || echo NO )"
+          echo "  fixpoint (gen2==gen3) : $( [ -s tcc-gen3 ] && cmp -s tcc-gen2 tcc-gen3 && echo yes || echo 'no/na' )"
+          echo "  inline asm on arm64   : $( [ -f arm64-asm.c ] && echo yes || echo 'NO -- arm64-asm.c absent' )"
+          echo
+          echo
+          echo "  VARIANT: ${{ matrix.tcc }}"
+          echo "  Compare the two matrix legs. If mob-head fixes inline asm AND"
+          echo "  still reaches a fixpoint, adopt mob and record its SHA -- there"
+          echo "  is no reason to inherit a 2017 release once the borrowed"
+          echo "  checksums stop being our validation."
           echo
           echo "  If the arm64 backend self-hosts to a fixpoint and passes the test"
           echo "  suite, the direct path is viable and the ENTIRE x86 detour --"
