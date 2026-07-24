@@ -1,0 +1,257 @@
+name: gcc-chain-probe
+
+# SPIKE. HOW MANY gcc STEPS DOES THE CHAIN ACTUALLY NEED?
+#
+# WHAT IS ALREADY SETTLED (tcc-aarch64-probe):
+#   mob HEAD self-hosts on aarch64 to a fixpoint -- gen2 == gen3 == 563785
+#   bytes, sha ade8158b -- passes its own test suite natively, handles every C
+#   construct gcc 4.7 needs, AND has the arm64 inline assembler 0.9.27 lacks.
+#   So mob is the tcc target. This spike asks what comes after it.
+#
+# THE ONE GENUINELY FORCED STEP. gcc 4.8 switched its own implementation
+# language to C++. Everything <= 4.7 builds with a C compiler; >= 4.8 needs a
+# C++ compiler. So tcc cannot build a modern gcc no matter how good tcc is --
+# something must produce a C++ compiler first, and gcc 4.7 is the candidate.
+# That step is real and cannot be collapsed away.
+#
+# WHAT IS *NOT* SETTLED, AND IS THE POINT OF THIS SPIKE. The received answer is
+# a long ladder of gcc versions. But the actual constraint is only C++ standard
+# support: modern gcc requires C++11, and 4.7's g++ has partial C++11. Nobody in
+# the bootstrap ecosystem has had a reason to find the MINIMUM chain, because
+# they inherited the ladder. It might be 4.7 -> latest. It might be
+# 4.7 -> 4.8 -> latest. Measure it.
+#
+# THIS SPIKE IS EXPECTED TO FAIL SOMEWHERE. The value is in WHERE. Every step
+# reports rather than gates, and the cheap questions (what do these things
+# declare they require?) are answered BEFORE any expensive build starts --
+# reading configure and INSTALL costs seconds and may make a 40-minute build
+# unnecessary.
+#
+# KNOWN HAZARD, called out so a failure here is not misread: gcc 4.7.4 is from
+# 2013 and frequently does NOT build against a modern glibc/gcc without patches.
+# So the CONTROL (host gcc builds 4.7.4) may fail for reasons that have nothing
+# to do with tcc. That is why the control exists.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/gcc-chain-probe.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: gcc-chain-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OLD_GCC: '4.7.4'
+  NEW_GCC: '14.2.0'
+  GNU: 'https://mirrors.kernel.org/gnu'
+
+jobs:
+
+  # ---------------------------------------------------------------- cheap ----
+  requirements:
+    name: 'What do these actually declare they require?'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl xz-utils bzip2 gcc make
+
+      - name: 'Fetch both gcc sources (headers/docs only reading, no build)'
+        run: |
+          set -eu
+          curl -sSL -o old.tar.bz2 "$GNU/gcc/gcc-$OLD_GCC/gcc-$OLD_GCC.tar.bz2"
+          curl -sSL -o new.tar.xz  "$GNU/gcc/gcc-$NEW_GCC/gcc-$NEW_GCC.tar.xz"
+          mkdir -p old new
+          tar xf old.tar.bz2 -C old --strip-components=1
+          tar xf new.tar.xz  -C new --strip-components=1
+          echo "  old: gcc $OLD_GCC  $(du -sh old | cut -f1)"
+          echo "  new: gcc $NEW_GCC  $(du -sh new | cut -f1)"
+
+      - name: 'THE DECIDING QUESTION: what C++ level does the new gcc demand?'
+        run: |
+          echo "=== gcc $NEW_GCC -- prerequisites it documents ==="
+          sed -n '/ISO C++/,+6p' new/gcc/doc/install.texi 2>/dev/null | head -30 | sed 's/^/    /' || true
+          echo
+          echo "  --- configure's own C++ standard probe ---"
+          grep -oE 'cxx_compat|CXX_DIALECT|c\+\+[0-9]+|C\+\+ 11|C\+\+11|C\+\+14|C\+\+17' new/configure \
+            | sort | uniq -c | sort -rn | head -12 | sed 's/^/    /' || true
+          echo
+          echo "  --- minimum versions the new gcc names for its own prerequisites ---"
+          grep -iE 'GMP|MPFR|MPC|ISL|version .* or later|at least' new/gcc/doc/install.texi 2>/dev/null \
+            | grep -iE 'gmp|mpfr|mpc|isl|c\+\+' | head -14 | sed 's/^/    /' || true
+
+      - name: 'What does the OLD gcc need, and can a C compiler alone build it?'
+        run: |
+          echo "=== gcc $OLD_GCC -- is it C-buildable? ==="
+          echo "  --- does its configure mention needing a C++ compiler? ---"
+          grep -icE 'c\+\+ compiler|CXX' old/configure | sed 's/^/    matches: /'
+          echo "  --- prerequisites ---"
+          grep -iE 'GMP|MPFR|MPC' old/gcc/doc/install.texi 2>/dev/null \
+            | grep -iE 'version|required|newer' | head -10 | sed 's/^/    /' || true
+          echo
+          echo "  NOTE: gmp/mpfr/mpc are C libraries, so tcc must build those too."
+          echo "        They are part of the tcc -> old-gcc leg, not a footnote."
+
+  # ------------------------------------------------- leg 1: tcc -> old gcc ----
+  tcc-to-old-gcc:
+    name: 'LEG 1: mob tcc builds gcc ${{ env.OLD_GCC }}'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git curl bzip2 xz-utils gcc make m4 texinfo
+
+      - name: 'Build tcc (mob) -- the known-good recipe from tcc-aarch64-probe'
+        run: |
+          git clone -q git://repo.or.cz/tinycc.git tccsrc \
+            || git clone -q https://repo.or.cz/tinycc.git tccsrc
+          echo "  mob HEAD: $(git -C tccsrc rev-parse HEAD)"
+          cd tccsrc && ./configure --cc=gcc >/dev/null && make -j"$(nproc)" >/dev/null
+          ./tcc -v
+          echo "TCC=$PWD/tcc" >> "$GITHUB_ENV"
+          echo "TCCDIR=$PWD" >> "$GITHUB_ENV"
+
+      - name: 'Prerequisites: can tcc build gmp / mpfr / mpc?'
+        continue-on-error: true
+        run: |
+          set -u
+          for p in gmp-6.2.1 mpfr-4.1.0 mpc-1.2.1; do
+            case $p in
+              gmp*)  url="$GNU/gmp/$p.tar.xz" ;;
+              mpfr*) url="$GNU/mpfr/$p.tar.xz" ;;
+              mpc*)  url="$GNU/mpc/$p.tar.gz" ;;
+            esac
+            echo "############ $p ############"
+            curl -sSL -o "$p.tar" "$url" || { echo "  fetch failed"; continue; }
+            mkdir -p "$p" && tar xf "$p.tar" -C "$p" --strip-components=1 2>/dev/null
+            ( cd "$p"
+              set +e
+              ./configure CC="$TCC -B$TCCDIR" --disable-shared --prefix="$PWD/../prefix" \
+                > conf.log 2>&1
+              echo "  configure rc=$?"
+              tail -6 conf.log | sed 's/^/    /'
+              timeout 900 make -j"$(nproc)" > build.log 2>&1
+              echo "  make rc=$?"
+              tail -8 build.log | sed 's/^/    /'
+              make install > /dev/null 2>&1 && echo "  installed"
+              set -e )
+          done
+
+      - name: 'Configure gcc ${{ env.OLD_GCC }} with tcc as CC'
+        continue-on-error: true
+        run: |
+          set -u
+          curl -sSL -o old.tar.bz2 "$GNU/gcc/gcc-$OLD_GCC/gcc-$OLD_GCC.tar.bz2"
+          mkdir -p old && tar xf old.tar.bz2 -C old --strip-components=1
+          mkdir -p oldbuild && cd oldbuild
+          set +e
+          ../old/configure CC="$TCC -B$TCCDIR" \
+            --prefix="$PWD/../gcc47" \
+            --enable-languages=c,c++ \
+            --disable-multilib --disable-bootstrap \
+            --disable-libsanitizer --disable-libgomp --disable-libmudflap \
+            --with-gmp="$PWD/../prefix" --with-mpfr="$PWD/../prefix" \
+            --with-mpc="$PWD/../prefix" \
+            > conf.log 2>&1
+          echo "  configure rc=$?"
+          tail -25 conf.log | sed 's/^/    /'
+          set -e
+
+      - name: 'Build gcc ${{ env.OLD_GCC }} with tcc -- how far does it get?'
+        continue-on-error: true
+        run: |
+          set -u
+          cd oldbuild
+          set +e
+          timeout 4800 make -j"$(nproc)" > build.log 2>&1
+          rc=$?
+          echo "  make rc=$rc (124 = timed out)"
+          echo "  --- last 40 lines ---"
+          tail -40 build.log | sed 's/^/    /'
+          echo
+          echo "  --- error classes, most frequent first ---"
+          grep -oE 'error: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
+            | sort | uniq -c | sort -rn | head -25 | sed 's/^/    /'
+          echo
+          echo "  --- did any gcc executable appear? ---"
+          find . -name 'cc1*' -o -name 'xgcc' 2>/dev/null | head | sed 's/^/    /'
+          set -e
+
+  # ------------------------------------------ leg 2: old gcc -> latest gcc ----
+  oldgcc-to-newgcc:
+    name: 'LEG 2: gcc ${{ env.OLD_GCC }} builds gcc ${{ env.NEW_GCC }}'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl bzip2 xz-utils gcc g++ make m4 texinfo flex bison libgmp-dev libmpfr-dev libmpc-dev
+
+      - name: 'CONTROL: does gcc ${{ env.OLD_GCC }} even build with a MODERN host gcc?'
+        continue-on-error: true
+        run: |
+          set -u
+          echo "  host gcc: $(gcc -dumpversion)"
+          echo "  gcc 4.7.4 is from 2013 and often fails against modern glibc/gcc."
+          echo "  If THIS fails, a tcc failure on the same source means nothing."
+          curl -sSL -o old.tar.bz2 "$GNU/gcc/gcc-$OLD_GCC/gcc-$OLD_GCC.tar.bz2"
+          mkdir -p old && tar xf old.tar.bz2 -C old --strip-components=1
+          mkdir -p b47 && cd b47
+          set +e
+          ../old/configure --prefix="$PWD/../gcc47" --enable-languages=c,c++ \
+            --disable-multilib --disable-bootstrap --disable-libsanitizer \
+            > conf.log 2>&1
+          echo "  configure rc=$?"; tail -10 conf.log | sed 's/^/    /'
+          timeout 5400 make -j"$(nproc)" > build.log 2>&1
+          echo "  make rc=$? (124 = timed out)"
+          tail -30 build.log | sed 's/^/    /'
+          echo "  --- error classes ---"
+          grep -oE 'error: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
+            | sort | uniq -c | sort -rn | head -20 | sed 's/^/    /'
+          make install > /dev/null 2>&1 && echo "  INSTALLED to ../gcc47"
+          set -e
+
+      - name: 'THE QUESTION: can gcc ${{ env.OLD_GCC }}''s g++ configure gcc ${{ env.NEW_GCC }}?'
+        continue-on-error: true
+        run: |
+          set -u
+          G="$PWD/gcc47/bin"
+          if [ ! -x "$G/g++" ]; then
+            echo "  gcc $OLD_GCC did not install -- cannot test the jump."
+            echo "  That itself is the finding: the 4.7 rung needs work before"
+            echo "  the chain length can be measured."
+            exit 0
+          fi
+          "$G/g++" --version | head -2 | sed 's/^/    /'
+          curl -sSL -o new.tar.xz "$GNU/gcc/gcc-$NEW_GCC/gcc-$NEW_GCC.tar.xz"
+          mkdir -p new && tar xf new.tar.xz -C new --strip-components=1
+          mkdir -p bnew && cd bnew
+          set +e
+          ../new/configure CC="$G/gcc" CXX="$G/g++" \
+            --prefix="$PWD/../gccnew" --enable-languages=c,c++ \
+            --disable-multilib --disable-bootstrap > conf.log 2>&1
+          echo "  configure rc=$?"
+          tail -25 conf.log | sed 's/^/    /'
+          echo
+          echo "  --- if it rejected the compiler, the message says which C++ level ---"
+          grep -iE 'C\+\+|dialect|not support|too old' conf.log | head -12 | sed 's/^/    /'
+          set -e
+
+      - name: 'VERDICT: how long is the chain?'
+        run: |
+          echo "  This spike answers: is it  tcc -> 4.7 -> latest,"
+          echo "  or does it need intermediate gcc versions?"
+          echo
+          echo "  If 4.7's g++ CONFIGURES latest gcc, the chain is 3 steps and the"
+          echo "  received long ladder is inherited, not required."
+          echo "  If it is rejected for C++ level, the rejection message names the"
+          echo "  minimum -- and the next probe targets THAT version, not a guess."
