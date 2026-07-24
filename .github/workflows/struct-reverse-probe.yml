@@ -464,6 +464,81 @@ jobs:
                    + last->members->members->offset;}"
 
           echo
+          echo "== MINIMISE: the three ingredients, with structs removed entirely =="
+          # The ablation says removing ANY ONE of {global, 2nd local, loop} fixes
+          # it, and A7 says user calls are irrelevant (builtins alone still
+          # SEGV). So drop structs, members, chains and helper calls completely
+          # and keep only those three. If MIN still faults, this has nothing to
+          # do with struct handling and the whole earlier framing was wrong.
+          MIN="int member_size;
+          int* build(int* last, int off){int* i; int* mt;
+          i=calloc(1,8); mt=calloc(1,8); i[0]=off; mt[0]=2;
+          member_size=6; return i;}"
+
+          probe 'MIN  2 ptr locals + global + loop (no structs)' 18 \
+            "$MIN
+            int main(){int* last; int n; int off; last=NULL; n=0; off=0;
+            while(n<3){last=build(last,off); off=off+member_size; n=n+1;}
+            return off;}"
+
+          probe 'MINa same but ONE local' 18 \
+            "int member_size;
+            int* build1(int* last, int off){int* i;
+            i=calloc(1,8); i[0]=off; member_size=6; return i;}
+            int main(){int* last; int n; int off; last=NULL; n=0; off=0;
+            while(n<3){last=build1(last,off); off=off+member_size; n=n+1;}
+            return off;}"
+
+          probe 'MINb same but global never read in the loop' 18 \
+            "$MIN
+            int main(){int* last; int n; int off; last=NULL; n=0; off=0;
+            while(n<3){last=build(last,off); off=off+6; n=n+1;}
+            return off;}"
+
+          probe 'MINc same but no loop' 6 \
+            "$MIN
+            int main(){int* a; int* b; a=build(NULL,0); b=build(a,6);
+            return b[0];}"
+
+          echo
+          echo "== EVIDENCE: emitted code for the minimal failing case =="
+          # Keep the assembly for MIN and for its nearest PASSING neighbour
+          # (MINa, one local) and diff them. Whatever stage 2 does differently
+          # for the second local is visible right there.
+          printf 'enum {NULL = 0};\n%s\nint main(){int* last; int n; int off; last=NULL; n=0; off=0;\nwhile(n<3){last=build(last,off); off=off+member_size; n=n+1;}\nreturn off;}\n' "$MIN" > min_bad.c
+          printf 'enum {NULL = 0};\nint member_size;\nint* build1(int* last, int off){int* i;\ni=calloc(1,8); i[0]=off; member_size=6; return i;}\nint main(){int* last; int n; int off; last=NULL; n=0; off=0;\nwhile(n<3){last=build1(last,off); off=off+member_size; n=n+1;}\nreturn off;}\n' > min_ok.c
+          set +e
+          timeout 60 qemu-aarch64 ./stage2 < min_bad.c > min_bad.s1 2>/dev/null
+          timeout 60 qemu-aarch64 ./stage2 < min_ok.c  > min_ok.s1  2>/dev/null
+          set -e
+          echo "  emitted: bad=$(wc -l < min_bad.s1) lines, ok=$(wc -l < min_ok.s1) lines"
+          echo
+          echo "  --- the whole :build function as stage 2 emitted it ---"
+          awk '/^:build$/,/^ret$/' min_bad.s1 | head -70 | sed 's/^/    /'
+          echo
+          echo "  --- frame setup lines, bad vs ok ---"
+          echo "    BAD:"; grep -nE 'add x10 x11|add x11 x11|sub x11 x11' min_bad.s1 | head -8 | sed 's/^/      /'
+          echo "    OK :"; grep -nE 'add x10 x11|add x11 x11|sub x11 x11' min_ok.s1  | head -8 | sed 's/^/      /'
+          echo
+          echo "  --- where the global lands in each ---"
+          grep -n 'member_size\|g_member_size' min_bad.s1 | head -6 | sed 's/^/      BAD  /'
+          grep -n 'member_size\|g_member_size' min_ok.s1  | head -6 | sed 's/^/      OK   /'
+
+          echo
+          echo "  --- faulting PC in the minimal case, via tools/pcmap.py ---"
+          cat min_bad.s1 | timeout 60 qemu-aarch64 ./stage1 \
+            | timeout 60 qemu-aarch64 ./stage0-as \
+            | timeout 60 qemu-aarch64 ./elf min_bad 2>/dev/null
+          set +e
+          timeout 60 qemu-aarch64 -d cpu -D minfault.log ./min_bad >/dev/null 2>&1
+          set -e
+          PC=$(grep -o 'PC=[0-9a-f]\{8,\}' minfault.log | tail -1 | cut -d= -f2)
+          LR=$(grep -o 'X30=[0-9a-f]\{8,\}' minfault.log | tail -1 | cut -d= -f2)
+          echo "    PC=0x$PC  X30=0x$LR   (trace $(du -h minfault.log | cut -f1))"
+          [ -n "$PC" ] && python3 tools/pcmap.py min_bad.s1 "0x$PC" "0x$LR" | sed 's/^/    /'
+          rm -f minfault.log
+
+          echo
           if [ "$fail" = 0 ]; then
             echo "PASS: every reducer agrees with the control."
             echo "      The fault is NOT in these operations in isolation --"
