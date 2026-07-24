@@ -24,7 +24,11 @@ name: m2libc-113-bisect
 # Only our stage 2 needs this -- M2-Planet itself compiles asm() fine, so the
 # reference arm and the self-compilation input are upstream's source unpatched.
 #
-# Q1-Q3 below are the original diagnostics and stay non-gating.
+# Q1-Q3 (constant lookup, per-file segfault bisect, in-file bisect) have been
+# REMOVED. Their findings are recorded in spikes/UPSTREAM-PINS.md -- stage 2
+# hangs on M2libc/stdlib.c and segfaults on stdio.c, neither of which is on the
+# critical path since the patched bootstrap.c supplies the libc -- and re-deriving
+# them cost minutes on every run. Restore from git history if they are needed.
 
 on:
   push:
@@ -74,6 +78,14 @@ jobs:
             | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
           cat spikes/stage2-mini-c/stage2-mini-c.s1 \
             | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+          echo "  LADDER BUILT FROM:"
+          printf '    %-26s %8s  %s\n' stage2-mini-c.s1 \
+            "$(wc -c < spikes/stage2-mini-c/stage2-mini-c.s1)" \
+            "$(sha256sum spikes/stage2-mini-c/stage2-mini-c.s1 | cut -c1-16)"
+          printf '    %-26s %8s  %s\n' stage1-as.s0 \
+            "$(wc -c < spikes/stage1-as/stage1-as.s0)" \
+            "$(sha256sum spikes/stage1-as/stage1-as.s0 | cut -c1-16)"
+          printf '    %-26s %8s\n' 'stage2 binary' "$(wc -c < stage2)"
 
       - name: 'REFERENCE: upstream test1000 builds the aarch64 M2-Planet'
         run: |
@@ -164,7 +176,7 @@ jobs:
           [ -s ours_proof ] && echo 'ok' > "$ROOT/selfcompile.status"
           exit 0
 
-      - name: 'DIAGNOSE: only if the self-compile failed'
+      - name: 'DIAGNOSE: why the self-compile crashed, or why its output differs'
         continue-on-error: true
         run: |
           . tools/ab.sh
@@ -201,6 +213,16 @@ jobs:
             grep '^>' /tmp/pd.diff | sed 's/^> //' | sort | uniq -c | sort -rn | head -20 | sed 's/^/      /'
             echo "    --- the 20 most common lines present ONLY in ours ---"
             grep '^<' /tmp/pd.diff | sed 's/^< //' | sort | uniq -c | sort -rn | head -20 | sed 's/^/      /'
+            echo
+            echo "    --- which emitted FUNCTION does the first difference fall in? ---"
+            head -n "$FIRST" test/test1000/proof | grep -E '^:FUNCTION_' | tail -1 | sed 's/^/      /'
+            echo
+            echo "    --- upstream 1.13.1 source of the emitters that differ ---"
+            # The diff is a codegen CHOICE, so print the branch that makes it.
+            for fn in write_add_immediate write_load_immediate emit_add_immediate; do
+              echo "      ===== $fn ====="
+              awk "/^[a-z].*[ *]$fn\\(/,/^}\$/" cc_emit.c | head -46 | sed 's/^/        /'
+            done
             exit 0
           fi
           [ -s M2-ours ] || { echo "  no M2-ours to diagnose."; exit 0; }
@@ -307,68 +329,6 @@ jobs:
             --adjust-vma=$((0x400000 + $(wc -c < M2-ours) - 48)) tail.bin \
             2>/dev/null | tail -14 | sed 's/^/      /'
           rm -f fault.log tail.bin
-
-      - name: 'Q1 where do the constants come from at 1.13.1?'
-        run: |
-          L=upstream-m2planet/M2libc
-          echo "  --- head of aarch64/linux/bootstrap.c (before the functions) ---"
-          sed -n '1,44p' $L/aarch64/linux/bootstrap.c | sed 's/^/    /'
-          echo
-          echo "  --- who defines each constant, and how ---"
-          for c in NULL TRUE FALSE EOF EXIT_FAILURE EXIT_SUCCESS stdin stdout stderr; do
-            printf '    %-14s ' "$c"
-            grep -ln "^\s*$c\s*=\|#define $c" $L/*.h $L/*.c $L/aarch64/linux/*.c 2>/dev/null \
-              | sed 's|.*/M2libc/||' | tr '\n' ' '
-            echo
-          done
-
-      - name: 'Q2 bisect the stage 2 segfault, one file at a time'
-        continue-on-error: true
-        run: |
-          L=upstream-m2planet/M2libc
-          one() {
-            cat "$@" > b.c
-            set +e
-            timeout 120 qemu-aarch64 ./stage2 < b.c > b.s1 2>/dev/null
-            rc=$?
-            set -e
-            printf '  %-46s TU=%-8s rc=%-5s %s\n' "$1" "$(wc -c < b.c)" "$rc" \
-              "$([ "$rc" = 139 ] && echo '<<< SEGV' || echo "emitted=$(wc -c < b.s1)")"
-          }
-          echo "  each M2libc file ALONE:"
-          one $L/bootstrappable.c
-          one $L/string.c
-          one $L/stdlib.c
-          one $L/stdio.c
-          one $L/ctype.c
-          one $L/fcntl.c
-
-      - name: 'Q3 bisect INSIDE whichever file faults'
-        continue-on-error: true
-        run: |
-          L=upstream-m2planet/M2libc
-          for SRC in $L/string.c $L/stdlib.c $L/stdio.c; do
-            set +e
-            timeout 120 qemu-aarch64 ./stage2 < $SRC > /dev/null 2>&1
-            rc=$?
-            set -e
-            [ "$rc" = 139 ] || { echo "  $(basename $SRC): compiles (rc=$rc), skipping"; continue; }
-            echo "  === bisecting $(basename $SRC) ==="
-            last=0
-            for n in $(grep -n '^}' "$SRC" | cut -d: -f1); do
-              head -n "$n" "$SRC" > body.c
-              set +e
-              timeout 60 qemu-aarch64 ./stage2 < body.c > /dev/null 2>&1
-              r=$?
-              set -e
-              if [ "$r" = 139 ]; then
-                echo "    FIRST SEGV at line $n -- the function at $((last+1))-$n:"
-                sed -n "$((last+1)),${n}p" "$SRC" | sed 's/^/      /'
-                break
-              fi
-              last="$n"
-            done
-          done
 
       - name: 'GATE: ours_proof matches upstream published sha256'
         run: |
