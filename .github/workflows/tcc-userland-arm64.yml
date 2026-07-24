@@ -276,54 +276,89 @@ jobs:
           set -u
           MR="$PWD/muslroot"
           echo "  muslroot/lib: $(ls "$MR/lib" 2>/dev/null | tr '\n' ' ')"
-          echo "  muslroot/bin: $(ls "$MR/bin" 2>/dev/null | tr '\n' ' ')"
           [ -f "$MR/lib/libc.a" ] || { echo "  no libc.a -- musl did not build"; exit 0; }
           echo "  libc.a: $(wc -c < "$MR/lib/libc.a") bytes, $(ar t "$MR/lib/libc.a" 2>/dev/null | wc -l) members"
+          sudo apt-get install -y --no-install-recommends gdb >/dev/null 2>&1 || true
 
-          printf '#include <stdio.h>\n#include <string.h>\n#include <stdlib.h>\nint main(void){char*p=malloc(32);strcpy(p,"musl works");printf("%%s\\n",p);free(p);return 7;}\n' > t.c
+          LIBTCC1=""
+          for c in "$TCCDIR/libtcc1.a" "$TCCDIR/arm64-libtcc1.a"; do
+            [ -f "$c" ] && LIBTCC1="$c" && break
+          done
 
-          # Do NOT write `cmd | sed` and test the result: a pipeline reports the
-          # LAST command's status, so a missing musl-gcc looked like success and
-          # the fallback never ran. Capture, then print.
-          built=no
-          if [ -x "$MR/bin/musl-gcc" ]; then
-            echo "  --- attempt 1: musl-gcc wrapper ---"
-            if out=$("$MR/bin/musl-gcc" -static -o t t.c 2>&1); then
-              built=musl-gcc
+          # A LADDER, not one test. Run 1 linked a static aarch64 ELF that died
+          # with SIGILL (exit 132), and a single failing testcase cannot say
+          # whether the fault is in tcc's codegen, in musl's startup, or in one
+          # libc routine. Each rung below adds exactly one thing.
+          #
+          #   A  no libc at all -- raw _start and an exit syscall. Tests tcc's
+          #      code generation and ELF output and nothing else.
+          #   B  crt1.o + libc, main returns immediately. Adds musl's startup:
+          #      __libc_start_main, TLS setup, auxv parsing.
+          #   C  adds malloc/free and string.h.
+          #   D  adds stdio -- the original testcase.
+          #
+          # The first rung that fails names the layer.
+          mkdir -p lad && cd lad
+          printf 'void _start(void){__asm__ volatile("mov x8,#93\\n mov x0,#7\\n svc #0");}\n' > a.c
+          printf 'int main(void){return 7;}\n' > b.c
+          printf '#include <stdlib.h>\n#include <string.h>\nint main(void){char*p=malloc(32);strcpy(p,"ok");free(p);return 7;}\n' > c.c
+          printf '#include <stdio.h>\nint main(void){printf("musl works\\n");return 7;}\n' > d.c
+
+          link_libc() {   # $1 = source, $2 = output
+            "$TCC" -B"$TCCDIR" -g -static -nostdinc -nostdlib -I"$MR/include" \
+              "$MR/lib/crt1.o" "$MR/lib/crti.o" "$1" \
+              -L"$MR/lib" -lc $LIBTCC1 "$MR/lib/crtn.o" -o "$2" 2>&1
+          }
+
+          FIRSTFAIL=""
+          for r in "A nolibc a.c" "B startup b.c" "C malloc c.c" "D stdio d.c"; do
+            set -- $r; tag=$1; what=$2; src=$3
+            if [ "$tag" = A ]; then
+              out=$("$TCC" -B"$TCCDIR" -g -static -nostdlib -nostdinc -o "$tag" "$src" 2>&1) || true
+            else
+              out=$(link_libc "$src" "$tag") || true
             fi
-            [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/    /'
-          else
-            echo "  --- musl-gcc not installed; linking against musl by hand ---"
-          fi
-
-          # The manual link is the honest test anyway: it uses musl's own crt
-          # objects and libc.a with nothing of the host's in the way.
-          if [ "$built" = no ]; then
-            echo "  --- attempt 2: tcc + musl crt objects directly ---"
-            LIBTCC1=""
-            for c in "$TCCDIR/libtcc1.a" "$TCCDIR/arm64-libtcc1.a"; do
-              [ -f "$c" ] && LIBTCC1="$c" && break
-            done
-            echo "    libtcc1: ${LIBTCC1:-<none found>}"
-            if out=$("$TCC" -B"$TCCDIR" -static -nostdinc -nostdlib \
-                       -I"$MR/include" \
-                       "$MR/lib/crt1.o" "$MR/lib/crti.o" t.c \
-                       -L"$MR/lib" -lc $LIBTCC1 "$MR/lib/crtn.o" \
-                       -o t 2>&1); then
-              built=tcc-manual
+            if [ ! -x "$tag" ]; then
+              printf '  %s %-8s LINK FAILED  %s\n' "$tag" "$what" "$(printf '%s' "$out" | head -1)"
+              [ -z "$FIRSTFAIL" ] && FIRSTFAIL="$tag"
+              continue
             fi
-            [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/    /'
+            rc=0; ./"$tag" >/dev/null 2>&1 || rc=$?
+            case $rc in
+              7)   printf '  %s %-8s ok (exit 7)\n' "$tag" "$what" ;;
+              132) printf '  %s %-8s SIGILL\n'  "$tag" "$what"; [ -z "$FIRSTFAIL" ] && FIRSTFAIL="$tag" ;;
+              139) printf '  %s %-8s SIGSEGV\n' "$tag" "$what"; [ -z "$FIRSTFAIL" ] && FIRSTFAIL="$tag" ;;
+              135) printf '  %s %-8s SIGBUS\n'  "$tag" "$what"; [ -z "$FIRSTFAIL" ] && FIRSTFAIL="$tag" ;;
+              *)   printf '  %s %-8s exit=%s\n' "$tag" "$what" "$rc"; [ -z "$FIRSTFAIL" ] && FIRSTFAIL="$tag" ;;
+            esac
+          done
+
+          echo
+          if [ -z "$FIRSTFAIL" ]; then
+            echo "  ALL RUNGS PASS -- a tcc-built musl works"
+            exit 0
           fi
 
-          echo "  linked by: $built"
-          if [ -x ./t ]; then
-            file t | sed 's/^/    /'
-            rc=0; ./t || rc=$?
-            echo "    exit=$rc (expect 7)"
-            [ "$rc" = 7 ] && echo "    PASS: a tcc-built musl runs correctly"
+          # WATCH THE MACHINE. spikes/stage3/README.md's method note is explicit
+          # that differential source-mutation produced four confident wrong
+          # answers for one bug, and that trapping the fault and reading the
+          # emitted instruction is what worked. Same rule here.
+          echo "  === first failing rung: $FIRSTFAIL -- where exactly? ==="
+          if command -v gdb >/dev/null 2>&1; then
+            gdb -batch -q \
+              -ex 'run' \
+              -ex 'echo \n--- faulting pc ---\n' -ex 'info registers pc' \
+              -ex 'echo \n--- instructions around it ---\n' -ex 'x/10i $pc-16' \
+              -ex 'echo \n--- backtrace ---\n' -ex 'bt' \
+              ./"$FIRSTFAIL" 2>&1 | tail -40 | sed 's/^/    /'
           else
-            echo "    no binary produced"
+            echo "    gdb unavailable; dmesg tail:"
+            sudo dmesg 2>/dev/null | tail -5 | sed 's/^/    /' || true
           fi
+          echo
+          echo "  === objdump of the entry path ==="
+          objdump -d --start-address=0x400000 ./"$FIRSTFAIL" 2>/dev/null \
+            | grep -A12 '<_start>:' | head -16 | sed 's/^/    /' || true
 
       - name: '3. tcc + musl build busybox, static'
         continue-on-error: true
