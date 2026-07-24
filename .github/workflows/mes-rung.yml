@@ -156,6 +156,72 @@ jobs:
             ls -la bin 2>/dev/null | sed 's/^/    /' || true
           fi
 
+      - name: 'DIAGNOSE: the recipe ran but the bytes differ -- why?'
+        continue-on-error: true
+        run: |
+          set -u
+          ROOT="$PWD"; D=lb/steps/mes-$MES_VER; MP="$MES_PREFIX"
+          CK="$D/mes-0.27.1.x86.checksums"
+
+          echo "=== 1. did our scaffolding actually apply? ==="
+          echo "  kaem.run rebase (expect 0x8048000 present, 0x1000000 absent):"
+          printf '    0x8048000 hits: %s\n' "$(grep -c 0x8048000 "$MP/kaem.run" || echo 0)"
+          printf '    0x1000000 hits: %s\n' "$(grep -c 0x1000000 "$MP/kaem.run" || echo 0)"
+          echo "  config.h in place: $([ -f "$MP/include/mes/config.h" ] && echo yes || echo NO)"
+          echo "  arch headers:      $(ls "$MP/include/arch" 2>/dev/null | tr '\n' ' ')"
+          echo "  wait4 patched:     $(grep -c 'wait4' "$MP/lib/linux/wait4.c" 2>/dev/null || echo '?')"
+
+          echo
+          echo "=== 2. do our INPUTS match the published checksums? ==="
+          # Several of the 13 published sums are SOURCE files from the tarball.
+          # If these match, the inputs are right and the difference is in the build.
+          while read -r sum path; do
+            case "$path" in
+              */x86.M1|*/elf32-header.hex2|*/elf32-footer-single-main.hex2) ;;
+              *) continue ;;
+            esac
+            base=$(basename "$path")
+            f=$(find "$MP/lib" -name "$base" 2>/dev/null | head -1)
+            if [ -n "$f" ]; then
+              got=$(sha256sum "$f" | cut -d' ' -f1)
+              [ "$got" = "$sum" ] && st=MATCH || st=DIFFER
+              printf '    %-34s %s\n' "$base" "$st"
+              [ "$st" = DIFFER ] && printf '      want %s\n      got  %s\n' "$sum" "$got"
+            else
+              printf '    %-34s NOT FOUND\n' "$base"
+            fi
+          done < "$CK"
+
+          echo
+          echo "=== 3. intermediate artifacts the build produced ==="
+          for f in m2/mes.M1 m2/mes.blood-elf-M1 m2/mes.hex2 bin/mes-m2; do
+            [ -f "$MP/$f" ] && printf '    %-24s %9s bytes  %s\n' "$f" \
+              "$(wc -c < "$MP/$f")" "$(sha256sum "$MP/$f" | cut -c1-16)"
+          done
+
+          echo
+          echo "=== 4. the ACTUAL commands kaem ran (M2-Planet / blood-elf / M1 / hex2) ==="
+          grep -E '^\+? *(M2-Planet|blood-elf|M1|hex2)' "$ROOT/kaem.log" 2>/dev/null \
+            | head -20 | sed 's/^/    /' || \
+            grep -nE 'M2-Planet|blood-elf|hex2' "$ROOT/kaem.log" | head -20 | sed 's/^/    /' || true
+
+          echo
+          echo "=== 5. DOES IT WORK? bytes differing and being broken are different problems ==="
+          set +e
+          timeout 60 qemu-i386 "$MP/bin/mes-m2" --version 2>&1 | head -5 | sed 's/^/    /'
+          echo "    (--version rc=$?)"
+          printf '(display "hello from mes")\n(newline)\n' > /tmp/t.scm
+          MES_ARENA=20000000 MES_MAX_ARENA=20000000 MES_STACK=6000000 \
+            timeout 60 qemu-i386 "$MP/bin/mes-m2" /tmp/t.scm 2>&1 | head -5 | sed 's/^/    /'
+          echo "    (script rc=$?)"
+          set -e
+
+          echo
+          echo "  If it RUNS, the recipe is sound and the delta is something small and"
+          echo "  mechanical -- a build path baked into the binary, a flag, or a step of"
+          echo "  pass1.kaem we skipped (psyntax.pp removal, srfi copies). If it does"
+          echo "  NOT run, the delta is real and the scaffolding is wrong."
+
       - name: 'GATE: mes-m2 matches the checksum live-bootstrap publishes'
         run: |
           set -u
