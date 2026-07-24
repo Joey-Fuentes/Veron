@@ -2183,17 +2183,17 @@ jobs:
           # Two declarator bugs sat in front of it: only ONE star was ever consumed, so
           # `char** argv` declared a variable literally named `*`; and di_array/flg_array
           # tested `flags != 0` instead of the char bit, so int* a[N] was byte-SIZED.
-          pp_ok=yes
+          ptrptr_ok=yes
           ptry() {
             set +e
             printf '%s' "$1" | timeout 30 qemu-aarch64 ./stage2 > pp.s
             if [ $? -ne 0 ] || [ ! -s pp.s ]; then
-              pp_ok=no; printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'; set -e; return
+              ptrptr_ok=no; printf '  %-64s %s\n' "$3" 'COMPILE FAILED/HUNG'; set -e; return
             fi
             cat pp.s | timeout 30 qemu-aarch64 ./stage1 | timeout 30 qemu-aarch64 ./stage0-as | timeout 30 qemu-aarch64 ./elf a.out
             set -e
             set +e; timeout 30 qemu-aarch64 ./a.out; rc=$?; set -e
-            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; pp_ok=no; fi
+            if [ "$rc" = "$2" ]; then st=OK; else st=DIFF; ptrptr_ok=no; fi
             printf '  %-64s exit=%-4s want=%-4s %s\n' "$3" "$rc" "$2" "$st"
           }
           ptry 'int main(){char* a[2];char x[2];char y[2];x[0]=1;y[0]=41;a[0]=x;a[1]=y;char* p;char* q;p=a[0];q=a[1];return p[0]+q[0];}' 42 'char* a[N], two distinct elements'
@@ -2224,12 +2224,12 @@ jobs:
           # all (ldrb with a raw index). Checking the emitted forms, not just the answer,
           # because a wrong stride can still give a right answer for index 0.
           printf '%s' 'int main(){char* a[2];char* p;p=a[1];return 0;}' | qemu-aarch64 ./stage2 > ppa.s
-          grep -q 'lsl x2 x2 x3' ppa.s || { echo "  char* a[N] subscript did not scale by 8"; pp_ok=no; }
+          grep -q 'lsl x2 x2 x3' ppa.s || { echo "  char* a[N] subscript did not scale by 8"; ptrptr_ok=no; }
           printf '%s' 'int main(){char s[2];int c;c=s[1];return 0;}' | qemu-aarch64 ./stage2 > ppb.s
-          grep -q 'lsl x2 x2 x3' ppb.s && { echo "  char s[N] subscript wrongly scaled"; pp_ok=no; }
-          grep -q 'ldrb w0 x1 x2' ppb.s || { echo "  char s[N] subscript is no longer a byte load"; pp_ok=no; }
+          grep -q 'lsl x2 x2 x3' ppb.s && { echo "  char s[N] subscript wrongly scaled"; ptrptr_ok=no; }
+          grep -q 'ldrb w0 x1 x2' ppb.s || { echo "  char s[N] subscript is no longer a byte load"; ptrptr_ok=no; }
           printf '  %-64s %s\n' 'structural: pointer arrays scale, char arrays do not' \
-                 "$([ "$pp_ok" = yes ] && echo OK || echo DIFF)"
+                 "$([ "$ptrptr_ok" = yes ] && echo OK || echo DIFF)"
 
           # --- byte-identity against the PRE-RUNG compiler ---------------------------
           # Programs with no pointer-array and no double pointer must be untouched.
@@ -2251,7 +2251,7 @@ jobs:
             pcmp 'int main(int argc,char** argv){return 42;}'
             pcmp 'int f(int* p,int n){int i;int s;i=0;s=0;while(i<n){s=s+p[i];i=i+1;}return s;}int main(){int a[3];a[0]=1;a[1]=2;a[2]=39;return f(a,3);}'
             pcmp 'int main(){char* p;p=calloc(4,8);p[0]=42;return p[0];}'
-            [ "$pid" = yes ] || pp_ok=no
+            [ "$pid" = yes ] || ptrptr_ok=no
             printf '  %-64s %s\n' 'byte-identical to HEAD~1 on single-pointer programs' \
                    "$([ "$pid" = yes ] && echo OK || echo DIFF)"
           else
@@ -2384,7 +2384,7 @@ jobs:
             echo "word-typed keywords unsigned/long (A27) : $wt_ok"
             echo "identifier type names FILE/FUNCTION (A28): $tn_ok"
             echo "brk builtin (A29)                       : $brk_ok"
-            echo "pointer-to-pointer / char** (A30)       : $pp_ok"
+            echo "pointer-to-pointer / char** (A30)       : $ptrptr_ok"
             echo "argc/argv from _start (A31)             : $av_ok"
             echo "sp encoding byte-identical to as        : $sp_ok"
             echo "eor byte-identical to as             : $eor_ok"
@@ -2399,8 +2399,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ] && [ "$cap23_ok" = yes ] && [ "$dw_ok" = yes ] && [ "$for_ok" = yes ] && [ "$enum_ok" = yes ] && [ "$wt_ok" = yes ] && [ "$tn_ok" = yes ] && [ "$brk_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$av_ok" = yes ] && [ "$sp_ok" = yes ]; then
+          if [ "$fail" = 0 ] && [ "$ld_ok" = yes ] && [ "$udiv_ok" = yes ] && [ "$struct_ok" = yes ] && [ "$cf_ok" = yes ] && [ "$rel_ok" = yes ] && [ "$eq_ok" = yes ] && [ "$ptr_ok" = yes ] && [ "$fn_ok" = yes ] && [ "$fp_ok" = yes ] && [ "$div_ok" = yes ] && [ "$sm_ok" = yes ] && [ "$heap_ok" = yes ] && [ "$io_ok" = yes ] && [ "$lit_ok" = yes ] && [ "$emit_ok" = yes ] && [ "$fe_ok" = yes ] && [ "$selfhost_ok" = yes ] && [ "$sc_ok" = yes ] && [ "$eor_ok" = yes ] && [ "$goto_ok" = yes ] && [ "$proto_ok" = yes ] && [ "$bl_ok" = yes ] && [ "$esc_ok" = yes ] && [ "$pp_ok" = yes ] && [ "$lbl_ok" = yes ] && [ "$cap_ok" = yes ] && [ "$cap23_ok" = yes ] && [ "$dw_ok" = yes ] && [ "$for_ok" = yes ] && [ "$enum_ok" = yes ] && [ "$wt_ok" = yes ] && [ "$tn_ok" = yes ] && [ "$brk_ok" = yes ] && [ "$ptrptr_ok" = yes ] && [ "$av_ok" = yes ] && [ "$sp_ok" = yes ]; then
             echo "PASS: stage-2 compiles variables (frame-relative, declaration-order), reassignment, if/while (nested) as backpatched numeric branches, comparisons < > <= >= == != (branchless, unsigned-32), unsigned / and % (udiv, byte-identical to as), a 64-bit machine-word model (int == pointer width), single-level POINTERS (& address-of, * dereference, *p = e store-through, pass-by-reference), int ARRAYS (int a[N], subscript a[i] rvalue+lvalue, array-name decay), CHAR + byte access (char c, char* p, char s[N], ldrb/strb, char literals), STRING LITERALS in a static data section ("..." as char*, adr-addressed), GLOBAL variables (file-scope, frame-first resolution, adr g_name), the full OPERATOR set (unary !/-/~, bitwise &/|, shifts <<,>>, C-precedence table), general POINTER ARITHMETIC scaling (p+n / n+p / p-n scale the int operand by the pointee size; p-q divides by the element size; consistent with a[i]), IF/ELSE control flow, FUNCTIONS with a real call stack + recursion (:func labels resolved by stage1), and STRUCTS (struct T{...} definitions in a struct table, sizeof(struct T), struct value + pointer locals/params/globals, . and -> member get/set including multi-link chains, &member, and linked-list traversal), and a HEAP (calloc/free lowered to a direct bl + a bump allocator over a large anonymous mmap arena appended once per used builtin: calloc returns distinct kernel-zeroed 8-byte-rounded blocks that persist, free is a no-op, a user definition overrides the builtin, mmap is used because qemu-user's brk region is small, and heap-allocated linked lists are built and traversed via struct-pointer-parameter helpers — the M2-Planet shape), and file I/O (open/read/write/close/exit lowered to a direct bl + a thin syscall wrapper appended once per used builtin: open is openat with AT_FDCWD, read/write/close/exit map to their syscalls, a user definition overrides the builtin, and a compiled program reads a source file and writes an output file on qemu's own filesystem — the compiler shape); struct field names live in the struct table and are never emitted as labels; if/while branches are numeric; word ldr/str byte-correct; and the single-pass @-target accounting invariant holds (every emitted line assembles to exactly 4 bytes, so the emitted-instruction counter stays equal to the true instruction count and a function's meaning does not depend on what was defined before it)."
           else
-            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok cap23=$cap23_ok dowhile=$dw_ok for=$for_ok enum=$enum_ok wordtype=$wt_ok typenames=$tn_ok brk=$brk_ok ptrptr=$pp_ok argv=$av_ok sp=$sp_ok"; exit 1
+            echo "FAIL: run=$fail ldr/str=$ld_ok udiv=$udiv_ok struct=$struct_ok cf=$cf_ok rel=$rel_ok eq=$eq_ok ptr=$ptr_ok fn=$fn_ok fnptr=$fp_ok div=$div_ok sm=$sm_ok heap=$heap_ok io=$io_ok lit=$lit_ok emit=$emit_ok fe=$fe_ok selfhost=$selfhost_ok sc=$sc_ok eor=$eor_ok goto=$goto_ok proto=$proto_ok braceless=$bl_ok esc=$esc_ok pp=$pp_ok lbl=$lbl_ok cap=$cap_ok cap23=$cap23_ok dowhile=$dw_ok for=$for_ok enum=$enum_ok wordtype=$wt_ok typenames=$tn_ok brk=$brk_ok ptrptr=$ptrptr_ok argv=$av_ok sp=$sp_ok"; exit 1
           fi
