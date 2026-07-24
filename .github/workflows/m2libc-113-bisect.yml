@@ -170,7 +170,37 @@ jobs:
           . tools/ab.sh
           ROOT="$PWD"
           if [ "$(cat selfcompile.status 2>/dev/null)" = ok ]; then
-            echo "  self-compile produced output; nothing to diagnose."
+            # It produced output. If that output is WRONG, that needs its own
+            # diagnosis -- a crash and a byte-diff are different problems.
+            cd upstream-m2planet
+            if cmp -s ours_proof test/test1000/proof; then
+              echo "  self-compile matched the reference; nothing to diagnose."
+              exit 0
+            fi
+            echo "  === OUTPUT DIFFERS -- where and how ==="
+            printf '    ours %s bytes, reference %s bytes (ours is %s shorter)\n' \
+              "$(wc -c < ours_proof)" "$(wc -c < test/test1000/proof)" \
+              "$(( $(wc -c < test/test1000/proof) - $(wc -c < ours_proof) ))"
+            printf '    lines: ours %s, reference %s\n' \
+              "$(wc -l < ours_proof)" "$(wc -l < test/test1000/proof)"
+            FIRST=$(cmp ours_proof test/test1000/proof 2>&1 | grep -oE 'line [0-9]+' | head -1 | cut -d' ' -f2)
+            echo "    first difference at line ${FIRST:-?}"
+            echo
+            echo "    --- reference, lines $((FIRST-8))..$((FIRST+8)) ---"
+            sed -n "$((FIRST-8)),$((FIRST+8))p" test/test1000/proof | sed 's/^/      /'
+            echo "    --- ours, same range ---"
+            sed -n "$((FIRST-8)),$((FIRST+8))p" ours_proof | sed 's/^/      /'
+            echo
+            echo "    --- how many lines differ in total ---"
+            diff <(cat ours_proof) <(cat test/test1000/proof) > /tmp/pd.diff 2>&1 || true
+            echo "      diff hunks : $(grep -c '^[0-9]' /tmp/pd.diff || echo 0)"
+            echo "      only in ref: $(grep -c '^>' /tmp/pd.diff || echo 0) lines"
+            echo "      only in ours: $(grep -c '^<' /tmp/pd.diff || echo 0) lines"
+            echo
+            echo "    --- the 20 most common lines present ONLY in the reference ---"
+            grep '^>' /tmp/pd.diff | sed 's/^> //' | sort | uniq -c | sort -rn | head -20 | sed 's/^/      /'
+            echo "    --- the 20 most common lines present ONLY in ours ---"
+            grep '^<' /tmp/pd.diff | sed 's/^< //' | sort | uniq -c | sort -rn | head -20 | sed 's/^/      /'
             exit 0
           fi
           [ -s M2-ours ] || { echo "  no M2-ours to diagnose."; exit 0; }
