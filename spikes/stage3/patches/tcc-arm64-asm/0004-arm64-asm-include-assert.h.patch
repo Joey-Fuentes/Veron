@@ -1,0 +1,41 @@
+Subject: [PATCH 4/3] arm64-asm: include <assert.h>
+
+Not part of the posted series -- ours, and required to BUILD it.
+
+arm64-asm.c calls assert(0) at two sites (asm_fp_binary_opcode and
+asm_memory_opcode) without including <assert.h>. Whether that breaks depends
+entirely on how tcc is being built:
+
+  cross targets   tcc.c is compiled as ONE translation unit and something in
+                  that include chain already pulls in <assert.h>, so assert
+                  expands to its macro and resolves to __assert_fail. Builds
+                  and links fine -- which is how this went unnoticed.
+
+  native build    arm64-asm.c is compiled SEPARATELY into libtcc.a. No macro,
+                  so `assert(0)` is an implicit function declaration and the
+                  link fails:
+
+                      libtcc.a(arm64-asm.o): in function `asm_opcode':
+                      arm64-asm.c: undefined reference to `assert'
+
+The native path is the one that matters here: it is what a native aarch64
+build does, and it is what tcc-userland-arm64 runs.
+
+Verified by configuring with --cpu=arm64 (which selects the libtcc.a
+structure), reproducing the exact link error, applying this, and getting a
+working tcc that still assembles all 16 of musl 1.2.5's aarch64 asm files.
+---
+ arm64-asm.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/arm64-asm.c b/arm64-asm.c
+--- a/arm64-asm.c
++++ b/arm64-asm.c
+@@ -23,6 +23,7 @@
+ /*************************************************************/
+ #define USING_GLOBALS
+ #include "tcc.h"
++#include <assert.h>
+ 
+ #define OPT_REG    (1U << 0)
+ #define OPT_WREG   (1U << 1)

@@ -344,3 +344,36 @@ musl 1.2.5 aarch64 asm: PASS=16 FAIL=0
 The three drifted files apply anyway. In a full clone `--3way` has the real
 blobs; in a shallow or synthetic tree it falls back to direct application, and
 both routes succeed.
+
+---
+
+## 0004 — the series does not build natively without it (2026-07-24)
+
+The series applied 3/3 in CI and then failed to **compile**:
+
+```
+libtcc.a(arm64-asm.o): in function `asm_opcode':
+arm64-asm.c:(.text+0xff4): undefined reference to `assert'
+```
+
+`arm64-asm.c` calls `assert(0)` at two sites and never includes `<assert.h>`.
+Whether that is fatal depends on the build shape:
+
+| build | how arm64-asm.c is compiled | result |
+|---|---|---|
+| cross target (`make arm64-tcc`) | inside the single `tcc.c` translation unit, whose include chain already pulls in `<assert.h>` | links; resolves `__assert_fail` |
+| native (`make tcc`) | separately, into `libtcc.a` | implicit declaration, `undefined reference to 'assert'` |
+
+**This is why the local verification missed it.** The off-CI test built only
+`arm64-tcc`, the cross target — enough to prove the assembler assembles, and
+structurally incapable of exposing a native-link problem. "Applies and
+assembles" was verified; "builds the way CI builds it" was not, and the two were
+reported as if they were the same thing.
+
+Reproducing it off-CI needs `./configure --cpu=arm64`, which selects the
+`libtcc.a` structure even on an x86_64 host. With that, the failure appears
+identically, `0004` fixes it, and the result still assembles 16/16.
+
+The check that would have caught this is not "did it build" but "did it build
+**both ways**" — the amalgamated unit and the separate object are different
+compilations of the same file, and only one of them is what the runner does.
