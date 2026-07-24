@@ -113,6 +113,11 @@ the emitted instruction, then read the compiler's own branch. Reach for
   perfect and G0 is used exactly once, so this blocks nothing. Non-gating REPORT
   in the bisect workflow.
 - **Mes rung** — `mes-rung.yml` reference arm; see `MES-RUNG.md` when it lands.
+- **The gcc leg.** On aarch64 the old-gcc/new-gcc ladder is broken: 4.7 has no
+  aarch64 backend and 4.8 requires C++, and they are the same version. The
+  candidate that keeps the chain native and C-only is **backporting 4.8's
+  aarch64 backend into 4.7**, which then yields `g++` 4.7 — itself built from C
+  — to build 4.8. `gcc-backend-backport-probe.yml` sizes it; see ROADMAP leg 2.
 - **The kernel is still borrowed.** `tcc-userland-arm64` boots Ubuntu's kernel,
   which is correct for the ABI claim but is a distro artifact. Building
   `arch/arm64/configs/defconfig` from a pinned tree with the host gcc replaces

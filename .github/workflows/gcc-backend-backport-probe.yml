@@ -1,0 +1,200 @@
+name: gcc-backend-backport-probe
+
+# SPIKE. CAN gcc 4.8's AARCH64 BACKEND BE MOVED BACK INTO gcc 4.7?
+#
+# WHAT gcc-entrypoint-probe SETTLED. On aarch64 the two boundaries coincide:
+#
+#     oldest gcc with an aarch64 backend  = 4.8   (4.7 has ZERO aarch64:
+#                                                  config.guess 0, config.sub 0,
+#                                                  config.gcc 0, config/ has arm only)
+#     oldest gcc requiring a C++ compiler = 4.8   (top-level configure is lenient,
+#                                                  gcc/ SUBDIR configure enforces CXX)
+#
+# so there is no version that both targets our architecture and builds with a C
+# compiler. That probe listed four escapes: cross-compile the entry point, find
+# a C-buildable C++ compiler, patch 4.8 to build with C, or accept a borrowed
+# rung.
+#
+# THIS SPIKE MEASURES A FIFTH, and the only one that closes the circle natively.
+#
+# EVERY gcc UP TO 4.7 IS WRITTEN IN C -- that is what the 4.8 boundary means. So
+# gcc 4.7 does not merely give us a C compiler, it gives us a C++ COMPILER
+# (g++ 4.7, full C++98) that was itself built from C. 4.8 asks for "an ISO C++98
+# compiler"; g++ 4.7 is one. The only thing wrong with 4.7 here is the missing
+# backend, and a gcc backend is a self-contained directory plus config entries:
+#
+#     tcc -> gcc 4.7 + backported aarch64 backend -> g++ 4.7 -> gcc 4.8 -> modern
+#
+# HOW TO MEASURE IT WITHOUT DOING IT. The cost of a backport is the cost of
+# bridging whatever the backend↔middle-end interface changed between the two
+# releases. That is measurable with a CONTROL:
+#
+#     How much did the EXISTING arm backend have to change from 4.7 to 4.8?
+#
+# arm is the right control: it is a live backend present in both releases,
+# maintained by the same people who contributed aarch64, and it absorbs exactly
+# the interface churn that a backported aarch64 would have to absorb. A small
+# arm delta means the interface was stable across that release and the backport
+# is mostly mechanical. A large one means the interface moved underneath it and
+# this route is not cheap.
+#
+# Nothing here builds gcc. It is inventory and diff -- minutes, not hours.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/gcc-backend-backport-probe.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: gcc-backend-backport-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GNU: 'https://mirrors.kernel.org/gnu'
+
+jobs:
+  backport-size:
+    name: 'How big is the aarch64 backport into 4.7?'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl bzip2 xz-utils diffstat
+
+      - name: 'Fetch 4.7.4 and 4.8.5'
+        run: |
+          set -eu
+          mkdir -p g47 g48
+          curl -fsSL --retry 3 --connect-timeout 15 -o g47.tar.bz2 "$GNU/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2"
+          curl -fsSL --retry 3 --connect-timeout 15 -o g48.tar.bz2 "$GNU/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2"
+          tar xf g47.tar.bz2 -C g47 --strip-components=1
+          tar xf g48.tar.bz2 -C g48 --strip-components=1
+          echo "  4.7.4 $(du -sh g47 | cut -f1)   4.8.5 $(du -sh g48 | cut -f1)"
+
+      - name: '1. INVENTORY: what exactly would be moved?'
+        run: |
+          set -u
+          echo "  === gcc/config/aarch64 in 4.8.5 ==="
+          ls -1 g48/gcc/config/aarch64/ | sed 's/^/    /'
+          echo
+          echo "    files : $(ls -1 g48/gcc/config/aarch64/ | wc -l)"
+          echo "    C/H   : $(cat g48/gcc/config/aarch64/*.c g48/gcc/config/aarch64/*.h 2>/dev/null | wc -l) lines"
+          echo "    .md   : $(cat g48/gcc/config/aarch64/*.md 2>/dev/null | wc -l) lines (machine description)"
+          echo "    total : $(cat g48/gcc/config/aarch64/* 2>/dev/null | wc -l) lines"
+          echo
+          echo "  The .md files are read by gcc's generator programs (genemit,"
+          echo "  genattrtab, ...) which emit C that is then compiled. ROADMAP.md"
+          echo "  already flags those generators as real structure that any"
+          echo "  hand-rolled build must reproduce -- they are also what makes a"
+          echo "  backend portable between releases."
+          echo
+          echo "  === config entries outside that directory ==="
+          for f in gcc/config.gcc config.sub config.guess gcc/configure.ac; do
+            echo "    $f: $(grep -c aarch64 "g48/$f" 2>/dev/null || echo 0) mentions"
+          done
+
+      - name: '2. THE CONTROL: how much did the arm backend change 4.7 -> 4.8?'
+        run: |
+          set -u
+          # arm is present in BOTH releases, maintained by the same people who
+          # contributed aarch64, and absorbs exactly the interface churn a
+          # backported aarch64 would have to absorb. Its delta is the proxy for
+          # the backport's difficulty.
+          echo "  === gcc/config/arm, 4.7.4 vs 4.8.5 ==="
+          diff -ru g47/gcc/config/arm g48/gcc/config/arm > arm.diff 2>/dev/null || true
+          diffstat -s arm.diff | sed 's/^/    /'
+          echo "    diff lines: $(wc -l < arm.diff)"
+          echo
+          echo "  --- per-file ---"
+          diffstat arm.diff 2>/dev/null | tail -20 | sed 's/^/    /'
+          echo
+          # A second control from the other direction: a backend that is NOT
+          # under active development should change even less. If arm churned and
+          # this did not, the churn is arm's own development rather than
+          # interface change -- which would be good news for the backport.
+          echo "  === CONTROL FOR THE CONTROL: a quiet backend (config/vax) ==="
+          diff -ru g47/gcc/config/vax g48/gcc/config/vax > vax.diff 2>/dev/null || true
+          diffstat -s vax.diff | sed 's/^/    /'
+          echo
+          echo "  READ IT THIS WAY: arm's delta is (interface churn + arm's own"
+          echo "  development). vax's delta is ~pure interface churn, because"
+          echo "  nobody was developing vax. vax small => the interface held =>"
+          echo "  a backported aarch64 mostly just works. vax large => the"
+          echo "  middle-end moved and every backend had to be dragged along."
+
+      - name: '3. THE INTERFACE ITSELF: target hooks 4.7 vs 4.8'
+        run: |
+          set -u
+          # target.def is the machine-readable list of every hook a backend may
+          # implement. Its delta is the interface delta, directly.
+          # target.def entries look like:  DEFHOOK\n(hook_name,\n "doc" ...
+          # so the name is the first token of the line after a DEFHOOK*.
+          for v in 47 48; do
+            grep -A1 -E '^DEFHOOK' "g$v/gcc/target.def" 2>/dev/null \
+              | grep -oE '^\([a-z_][a-z0-9_]*' | tr -d '(' | sort -u > "hooks$v.txt" || true
+            n=$(wc -l < "hooks$v.txt")
+            echo "  target.def hooks in 4.${v#4}: $n"
+            if [ "$n" -lt 50 ]; then
+              echo "    *** PARSE LOOKS WRONG (expected hundreds). Raw sample:"
+              head -12 "g$v/gcc/target.def" | sed 's/^/      /'
+            fi
+          done
+          echo
+          echo "  --- hooks that exist in 4.8 but NOT in 4.7 ---"
+          comm -13 hooks47.txt hooks48.txt | head -30 | sed 's/^/    /'
+          echo "    count: $(comm -13 hooks47.txt hooks48.txt | wc -l)"
+          echo
+          echo "  --- of those, how many does the aarch64 backend actually use? ---"
+          used=0
+          : > needed.txt
+          while IFS= read -r h; do
+            [ -z "$h" ] && continue
+            if grep -rqw "$h" g48/gcc/config/aarch64/ 2>/dev/null; then
+              echo "$h" >> needed.txt; used=$((used+1))
+            fi
+          done < <(comm -13 hooks47.txt hooks48.txt)
+          sed 's/^/    /' needed.txt
+          echo "    THE NUMBER THAT MATTERS: $used hooks the backend needs that 4.7 lacks"
+
+      - name: '4. What else does the backend reach for that 4.7 may not have?'
+        run: |
+          set -u
+          # Crude but sizing: identifiers the aarch64 backend calls that appear
+          # nowhere in 4.7's gcc/ tree are things the backport would have to
+          # bring with it or work around.
+          cat g48/gcc/config/aarch64/*.c 2>/dev/null \
+            | grep -oE '\b[a-z_][a-z0-9_]{6,}\b *\(' | tr -d ' (' \
+            | sort -u > syms.txt
+          echo "  distinct long identifiers used by the backend: $(wc -l < syms.txt)"
+          : > missing.txt
+          while IFS= read -r s; do
+            grep -rqw "$s" g47/gcc/*.h g47/gcc/*.c 2>/dev/null || echo "$s" >> missing.txt
+          done < syms.txt
+          echo "  of those, absent from 4.7's gcc/: $(wc -l < missing.txt 2>/dev/null || echo 0)"
+          head -40 missing.txt 2>/dev/null | sed 's/^/    /'
+          echo
+          echo "  Many will be aarch64's own statics -- this is an upper bound,"
+          echo "  not a work item count. It is here to catch a nasty surprise"
+          echo "  (a whole new middle-end subsystem), not to be precise."
+
+      - name: VERDICT
+        run: |
+          echo "  TWO ROUTES, TWO COSTS, BOTH NOW MEASURED:"
+          echo
+          echo "    backport aarch64 into 4.7   cost = interface delta (steps 2+3)"
+          echo "      -> keeps the chain native AND C-only end to end,"
+          echo "         and yields g++ 4.7 for free, which is what 4.8 wants."
+          echo
+          echo "    patch 4.8 to build with C   cost = its C++ surface"
+          echo "      -> measured by gcc-entrypoint-probe job B."
+          echo
+          echo "  The backport wins on principle if its cost is comparable: it"
+          echo "  needs no C++ anywhere, where patching 4.8 leaves us maintaining"
+          echo "  a fork of a compiler against its own build system."
+          echo
+          echo "  If the arm delta is large but the vax delta is small, the churn"
+          echo "  is arm's own development and the backport is cheaper than the"
+          echo "  arm number suggests. Read step 2 before concluding."

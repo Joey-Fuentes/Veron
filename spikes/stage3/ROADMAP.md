@@ -86,6 +86,39 @@ builds with a C compiler; ≥ 4.8 needs a C++ compiler. The old-gcc/new-gcc danc
 is not plumbing — it is the reason you can reach a C++-capable gcc at all. Gut
 the build system around it; keep the step.
 
+> **Update 2026-07-24 — on aarch64 the dance does not work as written.**
+> `gcc-entrypoint-probe` measured both boundaries and they are the *same
+> version*: 4.7 has no aarch64 anywhere (config.guess 0, config.sub 0,
+> config.gcc 0, `config/` has arm only), and 4.8 — which does have it — enforces
+> CXX in its `gcc/` subdirectory configure. There is no release that both
+> targets our architecture and builds with a C compiler.
+>
+> **A fifth escape, not in the probe's original list of four.** Every gcc up to
+> 4.7 is written in C, which is exactly what the 4.8 boundary means — so 4.7
+> yields not just a C compiler but **`g++` 4.7, a full C++98 compiler built from
+> C**. And 4.8 asks only for "an ISO C++98 compiler". The single thing wrong
+> with 4.7 here is a missing backend, and a gcc backend is a self-contained
+> directory plus `config.gcc`/`config.sub` entries:
+>
+> ```
+> tcc -> gcc 4.7 + backported aarch64 backend -> g++ 4.7 -> gcc 4.8 -> modern
+> ```
+>
+> This is the only route that stays native **and** C-only end to end. Every
+> other option either reintroduces the cross-architecture detour the direct path
+> exists to delete, or leaves us maintaining a C fork of gcc 4.8 against its own
+> build system.
+>
+> **Its cost is the backend↔middle-end interface delta between the two
+> releases**, and that is measurable without doing the work:
+> `gcc-backend-backport-probe.yml` diffs the *existing* arm backend across
+> 4.7→4.8 as a control — arm absorbs exactly the churn a backported aarch64
+> would — with `vax` as a control for the control, since nobody was developing
+> vax, so its delta is close to pure interface change. It then counts how many
+> target hooks new in 4.8 the aarch64 backend actually uses.
+>
+> Measure before picking, per this file's own rule.
+
 **What can go:** autotools. One target, one language, one configuration — a
 hand-written driver replaces `configure` entirely.
 
