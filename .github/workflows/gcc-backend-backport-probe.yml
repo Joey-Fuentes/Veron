@@ -38,6 +38,14 @@ name: gcc-backend-backport-probe
 # is mostly mechanical. A large one means the interface moved underneath it and
 # this route is not cheap.
 #
+# WHICH 4.8? BOTH. 4.8.0 is the release the aarch64 port LANDED in, so it is the
+# minimum interface distance from 4.7 and the honest subject for a backport
+# measurement -- diffing against 4.8.5 conflates the port with four point
+# releases of unrelated 4.8 development. But 4.8.5 is the last and most
+# bug-fixed of the series and is the likelier BUILD target. Different questions,
+# possibly different answers, so measure both and also diff the aarch64 backend
+# 4.8.0 -> 4.8.5 to see how much the young port had to be fixed.
+#
 # Nothing here builds gcc. It is inventory and diff -- minutes, not hours.
 
 on:
@@ -67,23 +75,40 @@ jobs:
       - name: 'Fetch 4.7.4 and 4.8.5'
         run: |
           set -eu
-          mkdir -p g47 g48
-          curl -fsSL --retry 3 --connect-timeout 15 -o g47.tar.bz2 "$GNU/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2"
-          curl -fsSL --retry 3 --connect-timeout 15 -o g48.tar.bz2 "$GNU/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2"
-          tar xf g47.tar.bz2 -C g47 --strip-components=1
-          tar xf g48.tar.bz2 -C g48 --strip-components=1
-          echo "  4.7.4 $(du -sh g47 | cut -f1)   4.8.5 $(du -sh g48 | cut -f1)"
+          # g47 = last C-buildable. g480 = first with aarch64. g485 = last 4.8.
+          for pair in "g47 4.7.4" "g480 4.8.0" "g485 4.8.5"; do
+            set -- $pair
+            mkdir -p "$1"
+            curl -fsSL --retry 3 --connect-timeout 15 \
+              -o "$1.tar.bz2" "$GNU/gcc/gcc-$2/gcc-$2.tar.bz2"
+            tar xf "$1.tar.bz2" -C "$1" --strip-components=1
+            echo "  $2 -> $1  $(du -sh "$1" | cut -f1)"
+          done
+          # Confirm the boundary rather than trusting it: 4.8.0 must have
+          # aarch64 and 4.7.4 must not.
+          for d in g47 g480 g485; do
+            echo "  $d: aarch64 in config.gcc = $(grep -c aarch64 "$d/gcc/config.gcc" || true), config/aarch64 dir = $( [ -d "$d/gcc/config/aarch64" ] && echo yes || echo NO)"
+          done
 
       - name: '1. INVENTORY: what exactly would be moved?'
         run: |
           set -u
-          echo "  === gcc/config/aarch64 in 4.8.5 ==="
-          ls -1 g48/gcc/config/aarch64/ | sed 's/^/    /'
+          for d in g480 g485; do
+            echo "  === gcc/config/aarch64 in $d ==="
+            echo "    files : $(ls -1 $d/gcc/config/aarch64/ | wc -l)"
+            echo "    C/H   : $(cat $d/gcc/config/aarch64/*.c $d/gcc/config/aarch64/*.h 2>/dev/null | wc -l) lines"
+            echo "    .md   : $(cat $d/gcc/config/aarch64/*.md 2>/dev/null | wc -l) lines (machine description)"
+            echo "    total : $(cat $d/gcc/config/aarch64/* 2>/dev/null | wc -l) lines"
+          done
           echo
-          echo "    files : $(ls -1 g48/gcc/config/aarch64/ | wc -l)"
-          echo "    C/H   : $(cat g48/gcc/config/aarch64/*.c g48/gcc/config/aarch64/*.h 2>/dev/null | wc -l) lines"
-          echo "    .md   : $(cat g48/gcc/config/aarch64/*.md 2>/dev/null | wc -l) lines (machine description)"
-          echo "    total : $(cat g48/gcc/config/aarch64/* 2>/dev/null | wc -l) lines"
+          echo "  === how much did the YOUNG port get fixed, 4.8.0 -> 4.8.5? ==="
+          diff -ru g480/gcc/config/aarch64 g485/gcc/config/aarch64 > a64.diff 2>/dev/null || true
+          diffstat -s a64.diff | sed 's/^/    /'
+          echo "    A large delta here means backporting 4.8.0's backend inherits"
+          echo "    bugs that 4.8.5 fixed -- in which case backport 4.8.5's version"
+          echo "    and bridge the wider interface gap deliberately."
+          echo
+          ls -1 g480/gcc/config/aarch64/ | sed 's/^/    /'
           echo
           echo "  The .md files are read by gcc's generator programs (genemit,"
           echo "  genattrtab, ...) which emit C that is then compiled. ROADMAP.md"
@@ -93,7 +118,7 @@ jobs:
           echo
           echo "  === config entries outside that directory ==="
           for f in gcc/config.gcc config.sub config.guess gcc/configure.ac; do
-            echo "    $f: $(grep -c aarch64 "g48/$f" 2>/dev/null || echo 0) mentions"
+            echo "    $f: $(grep -c aarch64 "g480/$f" 2>/dev/null || echo 0) mentions"
           done
 
       - name: '2. THE CONTROL: how much did the arm backend change 4.7 -> 4.8?'
@@ -103,21 +128,26 @@ jobs:
           # contributed aarch64, and absorbs exactly the interface churn a
           # backported aarch64 would have to absorb. Its delta is the proxy for
           # the backport's difficulty.
-          echo "  === gcc/config/arm, 4.7.4 vs 4.8.5 ==="
-          diff -ru g47/gcc/config/arm g48/gcc/config/arm > arm.diff 2>/dev/null || true
-          diffstat -s arm.diff | sed 's/^/    /'
-          echo "    diff lines: $(wc -l < arm.diff)"
+          # BOTH distances. 4.7.4 -> 4.8.0 is the real backport distance; the
+          # 4.8.5 column shows how much of any delta is later 4.8 development
+          # rather than the C-to-C++ release boundary itself.
+          for tgt in arm vax; do
+            for v in g480 g485; do
+              diff -ru "g47/gcc/config/$tgt" "$v/gcc/config/$tgt" > "$tgt-$v.diff" 2>/dev/null || true
+              printf '  %-4s 4.7.4 -> %-5s : %s\n' "$tgt" "${v#g}" \
+                "$(diffstat -s "$tgt-$v.diff" | tr '\n' ' ')"
+            done
+          done
           echo
-          echo "  --- per-file ---"
-          diffstat arm.diff 2>/dev/null | tail -20 | sed 's/^/    /'
+          echo "  --- arm, per-file, at the backport distance (4.7.4 -> 4.8.0) ---"
+          diffstat arm-g480.diff 2>/dev/null | tail -20 | sed 's/^/    /'
           echo
           # A second control from the other direction: a backend that is NOT
           # under active development should change even less. If arm churned and
           # this did not, the churn is arm's own development rather than
           # interface change -- which would be good news for the backport.
-          echo "  === CONTROL FOR THE CONTROL: a quiet backend (config/vax) ==="
-          diff -ru g47/gcc/config/vax g48/gcc/config/vax > vax.diff 2>/dev/null || true
-          diffstat -s vax.diff | sed 's/^/    /'
+          echo "  vax is the CONTROL FOR THE CONTROL: nobody was developing it,"
+          echo "  so its delta is close to pure interface change."
           echo
           echo "  READ IT THIS WAY: arm's delta is (interface churn + arm's own"
           echo "  development). vax's delta is ~pure interface churn, because"
@@ -132,30 +162,31 @@ jobs:
           # implement. Its delta is the interface delta, directly.
           # target.def entries look like:  DEFHOOK\n(hook_name,\n "doc" ...
           # so the name is the first token of the line after a DEFHOOK*.
-          for v in 47 48; do
+          for v in 47 480 485; do
             grep -A1 -E '^DEFHOOK' "g$v/gcc/target.def" 2>/dev/null \
               | grep -oE '^\([a-z_][a-z0-9_]*' | tr -d '(' | sort -u > "hooks$v.txt" || true
             n=$(wc -l < "hooks$v.txt")
-            echo "  target.def hooks in 4.${v#4}: $n"
+            echo "  target.def hooks in $v: $n"
             if [ "$n" -lt 50 ]; then
               echo "    *** PARSE LOOKS WRONG (expected hundreds). Raw sample:"
               head -12 "g$v/gcc/target.def" | sed 's/^/      /'
             fi
           done
           echo
-          echo "  --- hooks that exist in 4.8 but NOT in 4.7 ---"
-          comm -13 hooks47.txt hooks48.txt | head -30 | sed 's/^/    /'
-          echo "    count: $(comm -13 hooks47.txt hooks48.txt | wc -l)"
+          echo "  --- hooks in 4.8.0 but NOT in 4.7.4 (the backport distance) ---"
+          comm -13 hooks47.txt hooks480.txt | head -30 | sed 's/^/    /'
+          echo "    count: $(comm -13 hooks47.txt hooks480.txt | wc -l)"
+          echo "    (for reference, 4.8.5 vs 4.7.4: $(comm -13 hooks47.txt hooks485.txt | wc -l))"
           echo
           echo "  --- of those, how many does the aarch64 backend actually use? ---"
           used=0
           : > needed.txt
           while IFS= read -r h; do
             [ -z "$h" ] && continue
-            if grep -rqw "$h" g48/gcc/config/aarch64/ 2>/dev/null; then
+            if grep -rqw "$h" g480/gcc/config/aarch64/ 2>/dev/null; then
               echo "$h" >> needed.txt; used=$((used+1))
             fi
-          done < <(comm -13 hooks47.txt hooks48.txt)
+          done < <(comm -13 hooks47.txt hooks480.txt)
           sed 's/^/    /' needed.txt
           echo "    THE NUMBER THAT MATTERS: $used hooks the backend needs that 4.7 lacks"
 
@@ -165,7 +196,7 @@ jobs:
           # Crude but sizing: identifiers the aarch64 backend calls that appear
           # nowhere in 4.7's gcc/ tree are things the backport would have to
           # bring with it or work around.
-          cat g48/gcc/config/aarch64/*.c 2>/dev/null \
+          cat g480/gcc/config/aarch64/*.c 2>/dev/null \
             | grep -oE '\b[a-z_][a-z0-9_]{6,}\b *\(' | tr -d ' (' \
             | sort -u > syms.txt
           echo "  distinct long identifiers used by the backend: $(wc -l < syms.txt)"
@@ -198,3 +229,10 @@ jobs:
           echo "  If the arm delta is large but the vax delta is small, the churn"
           echo "  is arm's own development and the backport is cheaper than the"
           echo "  arm number suggests. Read step 2 before concluding."
+          echo
+          echo "  WHICH 4.8 TO BACKPORT FROM, decided by step 1's last diff:"
+          echo "    aarch64 4.8.0 -> 4.8.5 small  = take 4.8.0's backend, shortest"
+          echo "                                    interface distance to 4.7."
+          echo "    aarch64 4.8.0 -> 4.8.5 large  = the initial port was buggy;"
+          echo "                                    take 4.8.5's backend and pay"
+          echo "                                    the wider gap deliberately."

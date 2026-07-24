@@ -117,6 +117,15 @@ the build system around it; keep the step.
 > vax, so its delta is close to pure interface change. It then counts how many
 > target hooks new in 4.8 the aarch64 backend actually uses.
 >
+> **It measures 4.8.0 and 4.8.5, not one of them.** 4.8.0 is the release the
+> aarch64 port landed in and therefore the minimum interface distance from 4.7 —
+> diffing against 4.8.5 would conflate the port with four point releases of
+> unrelated 4.8 development. But 4.8.5 is the last and most bug-fixed of the
+> series and the likelier eventual build target. The probe also diffs the
+> aarch64 backend 4.8.0→4.8.5, which decides *which* version to backport: a
+> small delta means take 4.8.0's backend for the shorter distance, a large one
+> means the initial port was buggy and 4.8.5's is worth the wider gap.
+>
 > Measure before picking, per this file's own rule.
 
 **What can go:** autotools. One target, one language, one configuration — a
