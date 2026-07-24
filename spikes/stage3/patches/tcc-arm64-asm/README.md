@@ -254,3 +254,67 @@ requires running them — the 20 missing mnemonics are all assemble-time failure
 This is the cheap way to iterate: a CI round trip is minutes and a runner slot,
 whereas the loop above is seconds and can be repeated against every musl asm
 file at once.
+
+---
+
+## Resolved — the archive expanded tabs (verified locally, 2026-07-24)
+
+The blob search found the right base first try:
+
+```
+base: 5ec0e6f84b47ebd8c269b581712666313f5edaef  2025-12-21  "some reverts & fixes"
+      6 of 9 blobs match; i386-asm.c, riscv64-asm.c and tcctok.h drifted
+```
+
+and 0003 **still** failed at `tccasm.c:1178`. The base was not the problem. The
+file has tab-indented continuation lines:
+
+```
+\t\t*str == 'q' || *str == 'l' ||
+#ifdef TCC_TARGET_RISCV64
+\t\t*str == 'z' ||
+```
+
+and the patch's context for the same lines is spaces. **The patch files contain
+zero tab characters; `tccasm.c` alone contains 163.** The mailing-list archive
+expanded tabs along with wrapping long lines. Added lines are unharmed — C does
+not care about indentation — but context lines must match byte for byte, and
+tab-indented context never can.
+
+`git apply --ignore-whitespace` is therefore required, not defensive, and
+`apply-series.sh` now passes it.
+
+### Verified end to end, off-CI
+
+Applied to the base above on an **x86_64** host, then built as a cross
+assembler (`./configure --enable-cross && make arm64-tcc`):
+
+```
+series applies                    3 of 3 patches, clean
+musl 1.2.5 aarch64 asm files     16 of 16 assemble
+  crti crtn fenv dlsym tlsdesc vfork longjmp setjmp restore
+  sigsetjmp memcpy memset __set_thread_area __unmapself clone syscall_cp
+the 20 mnemonics mob rejects     19 of 20 direct, 20 of 20 in real musl forms
+adrp via arch/aarch64/crt_arch.h      ok
+svc  via arch/aarch64/syscall_arch.h  ok
+```
+
+No arm64 hardware was involved. tcc's integrated assembler is target code, so a
+cross `arm64-tcc` assembles arm64 input identically; only running the objects
+needs aarch64.
+
+### One real limitation found
+
+Vector arrangement specifiers are **case-sensitive, uppercase only**:
+
+```
+dup v0.16B, w1    ok
+dup v0.16b, w1    error: vector operand with arrangement expected
+dup v0.8H, w1     ok
+```
+
+musl's `memset.S` writes `v0.16B`, so musl is unaffected — which is exactly how
+a gap like this survives in something "enough to compile musl 1.2.5". Lowercase
+is the more common style in hand-written arm64 asm, so anything beyond musl is
+likely to hit it. Worth a one-line fix in the arrangement parser if this series
+becomes ours rather than a borrowed rung.

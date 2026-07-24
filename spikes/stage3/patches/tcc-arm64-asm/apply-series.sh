@@ -78,6 +78,10 @@ fi
 [ -n "$BASE" ] || { say "  could not determine a base commit"; exit 1; }
 
 say "  base: $(git -C "$T" log -1 --format='%h %ad %s' --date=short "$BASE")"
+case "$BASE" in
+    "$VERIFIED_BASE") say "  (this is the verified base -- series applies 3/3, musl asm 16/16)" ;;
+    *) say "  WARNING: expected $VERIFIED_BASE; this base is unverified" ;;
+esac
 
 # How good is this base? Score every file, so a partial match is visible up
 # front rather than as a mystery conflict three patches in.
@@ -98,15 +102,21 @@ git -C "$T" checkout -q "$BASE"
 for p in "$P"/000*.patch; do
     say "  applying $(basename "$p")"
     # Capture rather than pipe: `git apply | sed` would report sed's status.
-    if out=$(git -C "$T" apply --3way "$p" 2>&1); then
+    # --ignore-whitespace is REQUIRED, not defensive. The mailing-list archive
+    # expanded every tab to spaces: the patch files contain zero tab characters
+    # while tccasm.c alone has 163. Added lines are unaffected (C does not care),
+    # but CONTEXT lines must match the file byte for byte, and tab-indented
+    # context cannot. This is what "patch failed: tccasm.c:1178" was -- not
+    # source drift, which is why a correct base did not fix it.
+    if out=$(git -C "$T" apply --3way --ignore-whitespace "$p" 2>&1); then
         printf '%s\n' "$out" | sed 's/^/      /'
-    elif out2=$(git -C "$T" apply "$p" 2>&1); then
+    elif out2=$(git -C "$T" apply --ignore-whitespace "$p" 2>&1); then
         printf '%s\n' "$out2" | sed 's/^/      /'
     else
         printf '%s\n' "$out"  | sed 's/^/      /'
         say "  FAILED on $(basename "$p")"
         say "  --- the tree where the patch expected something else ---"
-        git -C "$T" apply --check -v "$p" 2>&1 | tail -20 | sed 's/^/      /' || true
+        git -C "$T" apply --check -v --ignore-whitespace "$p" 2>&1 | tail -20 | sed 's/^/      /' || true
         exit 1
     fi
 done
