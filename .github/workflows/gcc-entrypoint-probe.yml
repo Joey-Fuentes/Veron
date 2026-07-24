@@ -31,6 +31,20 @@ name: gcc-entrypoint-probe
 #          retries GMP with --disable-assembly, which is the obvious reason it
 #          failed under tcc last time (hand-written asm paths).
 #
+# RUN 1 RESULT -- ONE CLAIM CONFIRMED, ONE REFUTED.
+#   CONFIRMED: gcc 4.7.4 has NO aarch64 anywhere (config/ has arm only;
+#     config.guess 0, config.sub 0, config.gcc 0). 4.8.5 has it everywhere
+#     (25 hits in config.gcc). No --build= rescues 4.7 -- it is a dead end here.
+#   REFUTED: 4.8.5 does NOT demand C++11 or hard-require CXX. install.texi says
+#     "ISO C++98 compiler", configure has zero hard CXX requirements, gcc/ is
+#     360 .c files and 0 .cc, and it CONFIGURED CLEANLY with CC=tcc and
+#     CXX=/bin/false (rc=0, merely noting "using the GNU C++ compiler... no").
+#   Also: tcc built GMP (--disable-assembly), MPFR and MPC -- all three
+#     prerequisites installed.
+#   So the entry point may be gcc 4.8 built directly by tcc, with no C++ rung
+#   and no cross-arch detour. Configure passing is not building, so run 2 makes
+#   it and reports where it lands.
+#
 # FOUR ROADMAPS HANG ON THE ANSWER: cross-compile the entry point (reintroduces
 # the arch detour we just deleted), find a C-buildable C++ compiler, patch 4.8
 # to build with C, or accept one labelled borrowed rung. Do not pick before
@@ -184,6 +198,31 @@ jobs:
           grep -inE 'C\+\+|CXX|acceptable' conf.log | head -15 | sed 's/^/    /'
           echo "  --- tail ---"
           tail -20 conf.log | sed 's/^/    /'
+          set -e
+
+      - name: 'THE REAL TEST: make it. configure passing is not building.'
+        continue-on-error: true
+        run: |
+          set -u
+          cd b48
+          set +e
+          timeout 4500 make -j"$(nproc)" > build.log 2>&1
+          rc=$?
+          echo "  make rc=$rc  (124 = timed out)"
+          echo "  --- last 40 lines ---"
+          tail -40 build.log | sed 's/^/    /'
+          echo
+          echo "  --- error classes, most frequent first ---"
+          grep -oE 'error: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
+            | sort | uniq -c | sort -rn | head -25 | sed 's/^/    /'
+          echo
+          echo "  --- did it ever reach for a C++ compiler? ---"
+          grep -inE '/bin/false|C\+\+|\.cc |g\+\+' build.log | head -12 | sed 's/^/    /'
+          echo
+          echo "  --- what got built? ---"
+          find . \( -name 'cc1' -o -name 'xgcc' -o -name 'genmodes' \) 2>/dev/null \
+            | head | sed 's/^/    /'
+          echo "    objects: $(find . -name '*.o' | wc -l)"
           set -e
 
       - name: 'VERDICT'
