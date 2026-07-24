@@ -68,3 +68,18 @@ job summary. Note: because the generic **spike** matrix triggers on all of
 `spikes/**`, a push to any spike re-runs that matrix over the existing spikes
 (harmless). Tool-specific demos (`stage0-as-demo`, `elf-demo`, …) trigger on
 their own paths.
+
+---
+
+## Where to start
+
+| you are working on | read |
+|---|---|
+| **anything above M2-Planet** (Mes, tcc, gcc) | `stage3/README.md` — short, current |
+| the forward plan / direct-path track | `stage3/ROADMAP.md` |
+| the pin set and what is open at it | `UPSTREAM-PINS.md` |
+| stage 0–2 history | `PROGRESS.md` — 150 KB, reference only |
+
+**The ladder is complete.** Stage 2 builds M2-Planet; that M2-Planet reproduces
+upstream's reference compiler byte for byte, and is a stable fixpoint over five
+generations. Stage 3 is M2-Planet itself — there is no separately-written stage 3.

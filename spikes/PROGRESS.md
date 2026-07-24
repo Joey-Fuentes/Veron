@@ -1,7 +1,16 @@
 # Bootstrap Spike — Progress
 
-*Status record for the feasibility-spike track. Last updated at: stage 0
-assembler-complete.*
+*Status record for the feasibility-spike track — **stages 0–2, now COMPLETE**.*
+
+> ## ⇒ Working above the hand-off? Read `spikes/stage3/README.md` instead.
+>
+> This file is 150 KB of stage 0–2 history and is **reference only** now. The
+> ladder is finished: our stage 2 builds M2-Planet, and that M2-Planet
+> reproduces upstream's reference compiler **byte for byte** (see §5b). All
+> current work — Mes, tcc, gcc — is stage 3 and starts from the short
+> `spikes/stage3/README.md`, with the forward plan in
+> `spikes/stage3/ROADMAP.md`. Do not load this file for context unless you
+> specifically need stage 0–2 detail.
 
 > **Scope: invariants SUSPENDED.** Everything described here lives under
 > `spikes/` and is a *feasibility tracer*, not Veron proper. It deliberately
