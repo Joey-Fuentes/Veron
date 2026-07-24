@@ -69,7 +69,8 @@ jobs:
       - name: 'Build tcc (mob) natively'
         run: |
           git clone -q git://repo.or.cz/tinycc.git tccsrc \
-            || git clone -q https://repo.or.cz/tinycc.git tccsrc
+            || git clone -q https://repo.or.cz/tinycc.git tccsrc \
+            || git clone -q https://github.com/TinyCC/tinycc.git tccsrc
           echo "  mob HEAD: $(git -C tccsrc rev-parse HEAD)"
           echo "  date    : $(git -C tccsrc log -1 --format=%ci)"
           cd tccsrc && ./configure --cc=gcc >/dev/null && make -j"$(nproc)" >/dev/null
@@ -82,8 +83,28 @@ jobs:
         continue-on-error: true
         run: |
           set -u
-          curl -sSL -o musl.tar.gz "https://musl.libc.org/releases/musl-$MUSL_VER.tar.gz"
-          mkdir -p musl && tar xf musl.tar.gz -C musl --strip-components=1
+          # Run 2 died on curl(35) from musl.libc.org -- transient, not a build
+          # problem. Retry, then fall back to git mirrors at the matching tag.
+          mkdir -p musl
+          got=no
+          for u in "https://musl.libc.org/releases/musl-$MUSL_VER.tar.gz" \
+                   "https://ftp.barfooze.de/pub/sabotage/tarballs/musl-$MUSL_VER.tar.gz"; do
+            echo "  trying $u"
+            if curl -fsSL --retry 4 --retry-delay 3 --retry-connrefused \
+                 --connect-timeout 20 -o musl.tar.gz "$u"; then
+              tar xf musl.tar.gz -C musl --strip-components=1 && got=yes && break
+            fi
+          done
+          if [ "$got" = no ]; then
+            echo "  tarballs unreachable -- cloning the git mirror at v$MUSL_VER"
+            rm -rf musl
+            git clone -q --depth 1 --branch "v$MUSL_VER" \
+              https://git.musl-libc.org/git/musl musl \
+              || git clone -q --depth 1 --branch "v$MUSL_VER" \
+                   https://github.com/bminor/musl musl
+          fi
+          [ -f musl/configure ] || { echo "  could not obtain musl source"; exit 1; }
+          echo "  musl source: $(du -sh musl | cut -f1)"
           cd musl
           set +e
           ./configure CC="$TCC -B$TCCDIR" --disable-shared \
@@ -156,8 +177,24 @@ jobs:
         run: |
           set -u
           MR="$PWD/muslroot"
-          curl -sSL -o bb.tar.bz2 "https://busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2"
-          mkdir -p bb && tar xf bb.tar.bz2 -C bb --strip-components=1
+          mkdir -p bb
+          got=no
+          for u in "https://busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2" \
+                   "https://mirrors.kernel.org/gentoo/distfiles/busybox-$BUSYBOX_VER.tar.bz2"; do
+            echo "  trying $u"
+            if curl -fsSL --retry 4 --retry-delay 3 --retry-connrefused \
+                 --connect-timeout 20 -o bb.tar.bz2 "$u"; then
+              tar xf bb.tar.bz2 -C bb --strip-components=1 && got=yes && break
+            fi
+          done
+          if [ "$got" = no ]; then
+            echo "  tarballs unreachable -- cloning the git mirror"
+            rm -rf bb
+            git clone -q --depth 1 --branch "${BUSYBOX_VER}" \
+              https://git.busybox.net/busybox bb \
+              || git clone -q --depth 1 https://github.com/mirror/busybox bb
+          fi
+          [ -f bb/Makefile ] || { echo "  could not obtain busybox source"; exit 1; }
           cd bb
           set +e
           make defconfig > /dev/null 2>&1
