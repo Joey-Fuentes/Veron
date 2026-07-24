@@ -1,0 +1,265 @@
+name: struct-reverse-probe
+
+# SPIKE. REDUCER for the fault m2libc-113-bisect located.
+#
+# Our stage-2-built M2-Planet compiles a small program byte-identically to
+# upstream's (canary: 2813 bytes, sha 5ead19ee, three compilers agree), but
+# segfaults on the FIRST struct any input defines. The prefix bisect narrowed
+# the trigger to M2libc/sys/utsname.h -- files 1-4 of upstream's -f list define
+# no struct at all -- and the PC mapped through tools/pcmap.py to:
+#
+#     PC 0x40e664 -> reverse_members_type_list + 156      (cc_types.c:572)
+#     si_addr     =  0x120f9400048   <- a WILD pointer, not null, not truncated
+#     0 writes    -- it dies parsing, long before emitting anything
+#
+# That function is twelve lines and does exactly three things this compiler has
+# a documented history with:
+#
+#     struct type* root = NULL;      <- struct-pointer local WITH initialiser
+#     struct type* next;             <- struct-pointer local, UNINITIALISED
+#     next = head->members;          <- member LOAD  of a struct-pointer field
+#     head->members = root;          <- member STORE of a struct-pointer field
+#
+# m71 fixed member get/set width for a `char*` field; `struct type*` is a
+# different flag combination. m68 fixed prescan frame reservation for
+# identifier-typed declarations; `struct T* x;` at statement position is its own
+# case. m73 fixed a one-star-only declarator at file scope. This probe separates
+# those so the next fix is aimed, not guessed.
+#
+# `members` is the SIXTH field of struct type (offset 40, all fields 8 bytes) --
+# the struct is reproduced verbatim from cc.h so the offsets match the real one.
+#
+# EVERY probe runs TWICE: through our ladder, and through upstream's
+# M2-Planet|M1|hex2. Upstream is the control. If upstream also misbehaves the
+# probe program is out of subset and the probe is wrong, not the compiler.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage2-mini-c/**'
+      - '.github/workflows/struct-reverse-probe.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: struct-reverse-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      M2PLANET_SHA: bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d
+      MESCC_SHA: 5adfbf3
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu gcc make
+
+      - name: Fetch upstream (the control arm)
+        run: |
+          git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git -C upstream-m2planet checkout "$M2PLANET_SHA"
+          git -C upstream-m2planet submodule update --init --recursive
+          git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
+          git -C upstream-mescc checkout -q "$MESCC_SHA"
+          git -C upstream-mescc submodule update --init --recursive
+          make -C upstream-m2planet M2-Planet
+          make -C upstream-mescc M1 hex2
+
+      - name: Build the ladder
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+          cat spikes/stage1-as/stage1-as.s0 \
+            | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
+          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+            | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+          test -x stage2
+
+      - name: 'REDUCERS: isolate each operation in those twelve lines'
+        run: |
+          M=upstream-m2planet
+          LIB=$M/M2libc/aarch64
+          fail=0
+
+          # struct type, verbatim from cc.h -- members is field 6, offset 40.
+          TYPE='struct type {
+          struct type* next;
+          int size;
+          int offset;
+          int is_signed;
+          struct type* indirect;
+          struct type* members;
+          struct type* type;
+          char* name;
+          int options;
+          };'
+
+          # probe <label> <expected-rc> <c-source>
+          probe() {
+            lbl="$1"; want="$2"; src="$3"
+            printf '%s\n' "$src" > p.c
+
+            # --- ours: prog.c | stage2 | stage1 | stage0-as | elf ---
+            set +e
+            timeout 60 qemu-aarch64 ./stage2 < p.c > p.s1 2>/dev/null
+            crc=$?
+            cat p.s1 | timeout 60 qemu-aarch64 ./stage1 \
+              | timeout 60 qemu-aarch64 ./stage0-as \
+              | timeout 60 qemu-aarch64 ./elf p.ours 2>/dev/null
+            timeout 60 qemu-aarch64 ./p.ours >/dev/null 2>&1
+            ours=$?
+            set -e
+
+            # --- control: upstream M2-Planet | M1 | hex2 ---
+            set +e
+            timeout 60 $M/bin/M2-Planet --architecture aarch64 -f p.c -o p.M1 2>/dev/null
+            timeout 60 upstream-mescc/bin/M1 -f "$LIB/aarch64_defs.M1" \
+              -f "$LIB/libc-core.M1" -f p.M1 --little-endian \
+              --architecture aarch64 -o p.hex2 2>/dev/null
+            timeout 60 upstream-mescc/bin/hex2 -f "$LIB/ELF-aarch64.hex2" \
+              -f p.hex2 --little-endian --architecture aarch64 \
+              --base-address 0x400000 -o p.ref 2>/dev/null
+            timeout 60 qemu-aarch64 ./p.ref >/dev/null 2>&1
+            ref=$?
+            set -e
+
+            note=''
+            [ "$ours" = 139 ] && note='OURS-SEGV'
+            [ "$ours" = 124 ] && note='OURS-HUNG'
+            [ "$ref"  = 139 ] && note="$note REF-SEGV"
+            if [ "$ours" = "$want" ] && [ "$ref" = "$want" ]; then
+              st='OK  '
+            elif [ "$ref" != "$want" ]; then
+              st='SKIP'; note="$note (control disagrees -- probe out of subset)"
+            else
+              st='XX  '; fail=1
+            fi
+            printf '  [%s] %-46s ours=%-4s ref=%-4s want=%-4s %s\n' \
+              "$st" "$lbl" "$ours" "$ref" "$want" "$note"
+          }
+
+          echo "== declarations: does a struct-pointer local get a frame slot? =="
+          probe 'struct-ptr local, assigned then compared' 7 \
+            "$TYPE
+            int main(){struct type* root; root=0; if(0==root){return 7;} return 1;}"
+
+          probe 'struct-ptr local WITH initialiser' 7 \
+            "$TYPE
+            int main(){struct type* root=0; if(0==root){return 7;} return 1;}"
+
+          probe 'two struct-ptr locals, 2nd uninitialised' 9 \
+            "$TYPE
+            int main(){struct type* root; struct type* next; root=0; next=0;
+            if(0==root){if(0==next){return 9;}} return 1;}"
+
+          probe 'struct-ptr local after a non-ptr local' 9 \
+            "$TYPE
+            int main(){int pad; struct type* root; struct type* next;
+            pad=1; root=0; next=0;
+            if(0==root){if(0==next){return 9;}} return 1;}"
+
+          echo
+          echo "== the member at offset 40 (field 6 of struct type) =="
+          probe 'member STORE of literal 0, then load' 11 \
+            "$TYPE
+            int main(){struct type* a; a=calloc(1,sizeof(struct type));
+            a->members=0; if(0==a->members){return 11;} return 1;}"
+
+          probe 'member STORE of a pointer variable' 42 \
+            "$TYPE
+            int main(){struct type* a; struct type* b;
+            a=calloc(1,sizeof(struct type)); b=calloc(1,sizeof(struct type));
+            b->size=42; a->members=b; return a->members->size;}"
+
+          probe 'member LOAD into a struct-ptr local' 42 \
+            "$TYPE
+            int main(){struct type* a; struct type* b; struct type* n;
+            a=calloc(1,sizeof(struct type)); b=calloc(1,sizeof(struct type));
+            b->size=42; a->members=b; n=a->members; return n->size;}"
+
+          probe 'member chain a->members->members->size' 42 \
+            "$TYPE
+            int main(){struct type* a; struct type* b; struct type* c;
+            a=calloc(1,sizeof(struct type)); b=calloc(1,sizeof(struct type));
+            c=calloc(1,sizeof(struct type)); c->size=42;
+            a->members=b; b->members=c; return a->members->members->size;}"
+
+          echo
+          echo "== the function itself =="
+          REV="$TYPE
+          struct type* reverse_members_type_list(struct type* head)
+          {
+            struct type* root; struct type* next;
+            root=0;
+            while(0!=head){next=head->members; head->members=root; root=head; head=next;}
+            return root;
+          }"
+
+          probe 'reverse a 1-node list, head survives' 42 \
+            "$REV
+            int main(){struct type* a; struct type* r;
+            a=calloc(1,sizeof(struct type)); a->size=42; a->members=0;
+            r=reverse_members_type_list(a); return r->size;}"
+
+          probe 'reverse a 3-node list, packed 3/2/1' 57 \
+            "$REV
+            int main(){struct type* a; struct type* b; struct type* c; struct type* r;
+            a=calloc(1,sizeof(struct type)); b=calloc(1,sizeof(struct type));
+            c=calloc(1,sizeof(struct type));
+            a->size=1; b->size=2; c->size=3;
+            a->members=b; b->members=c; c->members=0;
+            r=reverse_members_type_list(a);
+            return r->size*16 + r->members->size*4 + r->members->members->size;}"
+
+          probe 'reverse, tail is NULL after reversal' 7 \
+            "$REV
+            int main(){struct type* a; struct type* b; struct type* r;
+            a=calloc(1,sizeof(struct type)); b=calloc(1,sizeof(struct type));
+            a->members=b; b->members=0;
+            r=reverse_members_type_list(a);
+            if(0==r->members->members){return 7;} return 1;}"
+
+          echo
+          echo "== verbatim source form: enum NULL + '= NULL' initialiser =="
+          probe 'verbatim: enum NULL, = NULL init, NULL != head' 57 \
+            "enum {NULL = 0};
+            $TYPE
+            struct type* reverse_members_type_list(struct type* head)
+            {
+              struct type* root = NULL;
+              struct type* next;
+              while(NULL != head)
+              {
+                next = head->members;
+                head->members = root;
+                root = head;
+                head = next;
+              }
+              return root;
+            }
+            int main(){struct type* a; struct type* b; struct type* c; struct type* r;
+            a=calloc(1,sizeof(struct type)); b=calloc(1,sizeof(struct type));
+            c=calloc(1,sizeof(struct type));
+            a->size=1; b->size=2; c->size=3;
+            a->members=b; b->members=c; c->members=NULL;
+            r=reverse_members_type_list(a);
+            return r->size*16 + r->members->size*4 + r->members->members->size;}"
+
+          echo
+          if [ "$fail" = 0 ]; then
+            echo "PASS: every reducer agrees with the control."
+            echo "      The fault is NOT in these operations in isolation --"
+            echo "      widen the reducer toward cc_types.c's real caller."
+          else
+            echo "FAIL: a reducer diverged from the control. The first XX line is"
+            echo "      the smallest program that miscompiles. That is the bug."
+            exit 1
+          fi
