@@ -672,3 +672,30 @@ Worth remembering for the Linux leg: the kernel uses the same
 `if (IS_ENABLED(CONFIG_FOO))` idiom pervasively, for exactly the same reason.
 A compiler with no dead-code elimination will hit this again, and far more
 often.
+
+### The `defined twice` errors were a cascade
+
+Run 23's diagnostics settled it: `crt1.o` defines exactly `_start _start_c`,
+`crti.o` exactly `_fini _init`, `crtn.o` nothing, and the shim emits each once.
+Nothing was defining them twice.
+
+They disappeared in run 24 with no crt-related change at all -- only the three
+`CONFIG_FEATURE_*` options that fixed the undefined symbols. `tcc_error_noabort`
+continues after an error with a partly-populated symbol table, so once the first
+undefined-symbol error fired, the subsequent "defined twice" diagnostics were
+downstream noise attributed to whatever file tcc happened to be loading.
+
+Worth remembering as a reading rule: with `tcc_error_noabort`, only the FIRST
+error in a link is reliable. The rest may be consequences of it.
+
+### Diagnostic-only linker options
+
+The final link then failed on `-Wl,--warn-common`. busybox emits that,
+`-Wl,-Map,$EXE.map` and `-Wl,--verbose` together from a function named
+`INFO_OPTS()`, and nothing in busybox ever reads the map file. The shim drops
+those three, plus `--sort-common`, `--sort-section` and `--gc-sections` which
+trylink already probes and reports as unsupported.
+
+The drop list is **explicit, not a blanket `-Wl,* -> discard`**: an option that
+actually affects the link and is not recognised should reach tcc and fail
+loudly rather than vanish.

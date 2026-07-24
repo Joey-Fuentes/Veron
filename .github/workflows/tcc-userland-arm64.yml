@@ -512,7 +512,13 @@ jobs:
           for o in crt1.o crti.o crtn.o; do
             echo "    $o: $(nm -g --defined-only "$MR/lib/$o" 2>/dev/null | awk '{print $3}' | tr '\n' ' ')"
           done
-          echo "    libc.a crt-like members: $(ar t "$MR/lib/libc.a" 2>/dev/null | grep -cE 'crt|Scrt|rcrt')"
+          # NAME the member rather than count it. Run 23 reported "1" here while
+          # also reporting _start/_start_c/_init/_fini "defined twice"; those
+          # errors vanished once the undefined-symbol errors were fixed, which
+          # points at a cascade (tcc_error_noabort keeps going with a partly
+          # populated symbol table) rather than a real second definition. If it
+          # ever returns, this line says whether libc.a is the second source.
+          echo "    libc.a crt-like members: $(ar t "$MR/lib/libc.a" 2>/dev/null | grep -E 'crt' | tr '\n' ' ')"
           # CC is a SHIM, not tcc directly: kbuild passes -Wp,-MD,<depfile>,
           # which tcc splits on commas so <depfile> becomes a second input file
           # ("cannot specify output file with -c many files"). The shim

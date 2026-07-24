@@ -72,6 +72,19 @@ while [ "$i" -lt "$n" ]; do
         # of cross-archive reference. Measured on a 3-deep chain in reverse
         # order: 1 pass fails on the first symbol, 2 on the second, 3 links.
         # GROUP_PASSES is set above 3 for headroom.
+        # DIAGNOSTIC-ONLY LINKER OPTIONS tcc has no equivalent for. busybox's
+        # trylink emits the first three together on one line, and nothing in
+        # busybox ever reads the .map file -- it is for a human. Dropping them
+        # changes no output. The other three are ones trylink probes for and
+        # already reports as unsupported ("Your linker does not support ...").
+        #
+        # This is an EXPLICIT list, not a blanket "-Wl,* -> drop". An option
+        # that actually affects the link and that we do not recognise should
+        # still reach tcc and fail loudly rather than vanish silently.
+        -Wl,--warn-common|-Wl,--verbose|-Wl,--sort-common) ;;
+        -Wl,--sort-section*|-Wl,--gc-sections) ;;
+        -Wl,-Map,*|-Wl,-Map=*) ;;
+
         -Wl,--start-group) in_group=1 ;;
         -Wl,--end-group)
             in_group=0
