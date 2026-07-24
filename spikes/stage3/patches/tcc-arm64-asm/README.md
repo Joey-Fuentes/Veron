@@ -609,3 +609,26 @@ reference. Measured on a 3-deep chain in reverse order:
 
 `GROUP_PASSES` defaults to 5 for headroom; a re-pass over an archive whose
 members are already linked contributes nothing.
+
+### The musl sysroot needs kernel UAPI headers
+
+Once the CC shim started passing `-nostdinc` (correctly, to keep glibc's headers
+out of a musl build), busybox failed on ~40 missing headers: `linux/types.h`,
+`asm/types.h`, `linux/fs.h`, `linux/netlink.h`, `mtd/mtd-user.h` and so on.
+
+musl ships the **libc** headers and nothing else. The kernel's user-facing
+headers live in `/usr/include/linux`, `/usr/include/<triple>/asm` and
+`/usr/include/mtd`, and were previously being picked up incidentally from the
+host because nothing excluded them. Excluding glibc correctly also excluded
+these.
+
+They are now copied into `muslroot/include` after `make install`, which is what
+a real musl sysroot looks like -- musl-cross-make installs kernel headers into
+the sysroot the same way. Verified that all 17 distinct headers the failing
+build asked for resolve after the copy.
+
+**This is a borrowed input and belongs in the ledger as one.** They come from
+the host distro's `linux-libc-dev`. The principled source is
+`make headers_install` from the pinned kernel tree, which leg 3 of the roadmap
+will have; until then the dependency is real and should be named rather than
+absorbed.

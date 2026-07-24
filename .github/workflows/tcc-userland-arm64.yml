@@ -65,7 +65,9 @@ env:
   # not been verified here -- the fetcher prints the hash it gets so it can be
   # pinned, and inventing one would be worse than admitting it is missing.
   BUSYBOX_SHA256: 'b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314'
-  MUSL_SHA256: '-'
+  # Measured by fetch-pinned.sh in run #21 from musl.libc.org, then pinned.
+  # A mismatch from here on is a real signal rather than a shrug.
+  MUSL_SHA256: 'a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4'
 
 jobs:
   userland:
@@ -90,7 +92,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            git curl gcc make bzip2 xz-utils cpio file \
+            git curl gcc make bzip2 xz-utils cpio file linux-libc-dev \
             qemu-system-arm qemu-utils
 
       - name: 'Build tcc (variant: mob / mob-plus-series)'
@@ -281,6 +283,34 @@ jobs:
           echo "    lib: $(ls ../muslroot/lib 2>/dev/null | tr '\n' ' ')"
           echo "    bin: $(ls ../muslroot/bin 2>/dev/null | tr '\n' ' ')"
           echo "    crt: $(ls ../muslroot/lib/*.o 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
+
+          # KERNEL UAPI HEADERS INTO THE SYSROOT.
+          # musl ships the libc headers and nothing else. busybox also needs the
+          # kernel's user-facing headers -- linux/fs.h, linux/netlink.h,
+          # asm/types.h, mtd/mtd-user.h and friends -- which live in
+          # /usr/include and are NOT part of musl. Before the shim passed
+          # -nostdinc they were picked up incidentally from the host; now that
+          # glibc's headers are correctly excluded, these have to be placed in
+          # the sysroot deliberately. That is what a real musl sysroot looks
+          # like: musl-cross-make installs kernel headers into it the same way.
+          #
+          # DECLARE THIS: they come from the host distro's linux-libc-dev. The
+          # principled source is `make headers_install` from the pinned kernel
+          # tree, which leg 3 of the roadmap will have; until then this is a
+          # borrowed input and belongs in the ledger as one.
+          MI="$PWD/../muslroot/include"
+          TRIPLE=$(gcc -dumpmachine)
+          copied=""
+          for d in linux asm-generic mtd; do
+            [ -d "/usr/include/$d" ] && cp -a "/usr/include/$d" "$MI/" && copied="$copied $d"
+          done
+          if [ -d "/usr/include/$TRIPLE/asm" ]; then
+            cp -a "/usr/include/$TRIPLE/asm" "$MI/" && copied="$copied asm($TRIPLE)"
+          elif [ -d "/usr/include/asm" ]; then
+            cp -a "/usr/include/asm" "$MI/" && copied="$copied asm"
+          fi
+          echo "    uapi headers copied:$copied"
+          echo "    linux/*.h: $(ls "$MI/linux" 2>/dev/null | wc -l)  asm/*.h: $(ls "$MI/asm" 2>/dev/null | wc -l)"
           set -e
 
       - name: '2. Does the tcc-built musl actually work?'
