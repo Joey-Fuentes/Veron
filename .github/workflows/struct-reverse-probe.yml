@@ -358,6 +358,112 @@ jobs:
                    + last->members->members->offset;}"
 
           echo
+          echo "== ABLATION: strip one ingredient from the failing case at a time =="
+          # Every ingredient passes alone; only the composition segfaults. So
+          # remove them one at a time -- the first variant that PASSES names
+          # the ingredient that cannot coexist with the others.
+          #
+          # What is unique to the failing program: build() is the first FUNCTION
+          # that has a struct-pointer PARAMETER, declares struct-pointer LOCALS,
+          # AND makes calls from inside its own body -- then is called in a loop
+          # with its own result fed back in as that parameter. rev() has the
+          # params and locals but makes no calls; the passing prepend-loop had
+          # the loop but no helper function.
+          ABL="$TYPE
+          int member_size;
+          struct type* mk(int v){struct type* p; p=calloc(1,sizeof(struct type));
+          p->size=v; p->type=p; return p;}
+          int three(){return 3;}
+          struct type* rev(struct type* h){struct type* r; struct type* n; r=NULL;
+          while(NULL!=h){n=h->members; h->members=r; r=h; h=n;} return r;}"
+
+          probe 'A1 base minus rev() at the end' 216 \
+            "$ABL
+            struct type* build(struct type* last, int off){
+            struct type* i; struct type* mt;
+            i=calloc(1,sizeof(struct type)); i->members=last; i->offset=off;
+            mt=mk(2); i->type=mt; i->size=three()*mt->type->size;
+            member_size=i->size; return i;}
+            int main(){struct type* last; int n; int off; last=NULL; n=0; off=0;
+            while(n<3){last=build(last,off); off=off+member_size; n=n+1;}
+            return last->offset*16 + last->members->offset*4
+                   + last->members->members->offset;}"
+
+          probe 'A2 base minus the global (off computed inline)' 36 \
+            "$ABL
+            struct type* build(struct type* last, int off){
+            struct type* i; struct type* mt;
+            i=calloc(1,sizeof(struct type)); i->members=last; i->offset=off;
+            mt=mk(2); i->type=mt; i->size=three()*mt->type->size; return i;}
+            int main(){struct type* last; int n; int off; last=NULL; n=0; off=0;
+            while(n<3){last=build(last,off); off=off+6; n=n+1;}
+            last=rev(last);
+            return last->offset*16 + last->members->offset*4
+                   + last->members->members->offset;}"
+
+          probe 'A3 base minus call*chain (constant size)' 36 \
+            "$ABL
+            struct type* build(struct type* last, int off){
+            struct type* i; struct type* mt;
+            i=calloc(1,sizeof(struct type)); i->members=last; i->offset=off;
+            mt=mk(2); i->type=mt; i->size=6;
+            member_size=i->size; return i;}
+            int main(){struct type* last; int n; int off; last=NULL; n=0; off=0;
+            while(n<3){last=build(last,off); off=off+member_size; n=n+1;}
+            last=rev(last);
+            return last->offset*16 + last->members->offset*4
+                   + last->members->members->offset;}"
+
+          probe 'A4 base minus the second local mt' 36 \
+            "$ABL
+            struct type* build(struct type* last, int off){
+            struct type* i;
+            i=calloc(1,sizeof(struct type)); i->members=last; i->offset=off;
+            i->size=three()*2; member_size=i->size; return i;}
+            int main(){struct type* last; int n; int off; last=NULL; n=0; off=0;
+            while(n<3){last=build(last,off); off=off+member_size; n=n+1;}
+            last=rev(last);
+            return last->offset*16 + last->members->offset*4
+                   + last->members->members->offset;}"
+
+          probe 'A5 base minus the loop (two explicit calls)' 24 \
+            "$ABL
+            struct type* build(struct type* last, int off){
+            struct type* i; struct type* mt;
+            i=calloc(1,sizeof(struct type)); i->members=last; i->offset=off;
+            mt=mk(2); i->type=mt; i->size=three()*mt->type->size;
+            member_size=i->size; return i;}
+            int main(){struct type* a; struct type* b;
+            a=build(NULL,0); b=build(a,6);
+            return b->offset*4 + b->members->offset;}"
+
+          probe 'A6 base with two iterations, not three' 6 \
+            "$ABL
+            struct type* build(struct type* last, int off){
+            struct type* i; struct type* mt;
+            i=calloc(1,sizeof(struct type)); i->members=last; i->offset=off;
+            mt=mk(2); i->type=mt; i->size=three()*mt->type->size;
+            member_size=i->size; return i;}
+            int main(){struct type* last; int n; int off; last=NULL; n=0; off=0;
+            while(n<2){last=build(last,off); off=off+member_size; n=n+1;}
+            last=rev(last);
+            return last->offset*16 + last->members->offset;}"
+
+          probe 'A7 base with NO user calls inside build (builtins only)' 36 \
+            "$ABL
+            struct type* build(struct type* last, int off){
+            struct type* i; struct type* mt;
+            i=calloc(1,sizeof(struct type)); mt=calloc(1,sizeof(struct type));
+            mt->size=2; mt->type=mt;
+            i->members=last; i->offset=off; i->type=mt;
+            i->size=3*mt->type->size; member_size=i->size; return i;}
+            int main(){struct type* last; int n; int off; last=NULL; n=0; off=0;
+            while(n<3){last=build(last,off); off=off+member_size; n=n+1;}
+            last=rev(last);
+            return last->offset*16 + last->members->offset*4
+                   + last->members->members->offset;}"
+
+          echo
           if [ "$fail" = 0 ]; then
             echo "PASS: every reducer agrees with the control."
             echo "      The fault is NOT in these operations in isolation --"
