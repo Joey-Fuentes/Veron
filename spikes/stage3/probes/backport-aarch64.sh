@@ -55,37 +55,93 @@ for f in config.sub config.guess; do
 done
 
 # ------------------------------------------------------------- case arms
-# Extracted from 4.8.5 rather than hand-written, so what lands is exactly what
-# upstream says. A hand-written stanza is a place to introduce a difference
-# nobody reviews.
-splice() {   # $1 = relative path, $2 = "case ${x} in" anchor
-    python3 - "$G48/$1" "$G47/$1" "$2" <<'PY'
+# config.gcc has SEVERAL `case ${target} in` statements and a port needs arms in
+# two of them:
+#
+#   1. the cpu_type table   -- sets cpu_type=aarch64, extra_objs, target_gtfiles
+#   2. the main dispatch    -- sets tm_file, tmake_file, ...
+#
+# Run 1 spliced into whichever came first and the build died much later with
+#     *** Configuration aarch64-unknown-linux-gnu not supported
+# which is the main dispatch's catch-all `*)`. Both insertion points are found
+# by CONTENT here, not by position:
+#   - cpu_type table: the last `case ${target} in` before the first `cpu_type=`
+#   - main dispatch : immediately before the `*)` whose body prints
+#                     "*** Configuration ... not supported"
+splice_config_gcc() {
+    python3 - "$G48/gcc/config.gcc" "$G47/gcc/config.gcc" <<'PY'
 import re, sys
-srcf, dstf, anchor = sys.argv[1], sys.argv[2], sys.argv[3]
+srcf, dstf = sys.argv[1], sys.argv[2]
 src, dst = open(srcf).read(), open(dstf).read()
-# ^-anchored with re.M, NOT r'\n(aarch64...)'. A leading \n gets CONSUMED by
-# the previous match -- it is the same newline that terminates the previous
-# arm's ";;" -- so consecutive arms are silently missed and only the first is
-# found. Caught by testing against a tree with two adjacent aarch64 arms.
+
 arms = re.findall(r'^(aarch64[^\n]*\)\n(?:.*?\n)*?\t;;\n)', src, re.M)
 if not arms:
-    print(f"    {dstf}: NO aarch64 case arms found in 4.8.5 -- check the pattern")
-    sys.exit(0)
-i = dst.find(anchor)
+    sys.exit("    FATAL: no aarch64 case arms found in 4.8.5 config.gcc")
+
+cpu  = [a for a in arms if re.search(r'^\s*cpu_type=', a, re.M)]
+main = [a for a in arms if a not in cpu]
+print(f"    extracted {len(arms)} arm(s): {len(cpu)} cpu_type, {len(main)} dispatch")
+
+# --- insertion point 1: the cpu_type table -------------------------------
+i = dst.find('cpu_type=')
 if i == -1:
-    print(f"    {dstf}: anchor {anchor!r} not found -- not spliced")
-    sys.exit(0)
-j = i + len(anchor)
-open(dstf, 'w').write(dst[:j] + "".join(arms) + dst[j:])
-print(f"    {dstf}: spliced {len(arms)} aarch64 case arm(s)")
+    sys.exit("    FATAL: no cpu_type= in 4.7 config.gcc")
+j = dst.rfind('case ${target} in\n', 0, i)
+if j == -1:
+    sys.exit("    FATAL: no 'case ${target} in' before the first cpu_type=")
+j += len('case ${target} in\n')
+dst = dst[:j] + "".join(cpu) + dst[j:]
+print(f"    cpu_type table  : spliced {len(cpu)} arm(s)")
+
+# --- insertion point 2: before the main dispatch's catch-all -------------
+m = re.search(r'\*\*\* Configuration \$\{target\} not supported', dst)
+if not m:
+    sys.exit("    FATAL: catch-all '*** Configuration ... not supported' not found")
+k = dst.rfind('\n*)\n', 0, m.start())
+if k == -1:
+    sys.exit("    FATAL: could not find the catch-all's '*)' arm")
+k += 1
+dst = dst[:k] + "".join(main) + dst[k:]
+print(f"    main dispatch   : spliced {len(main)} arm(s) before the catch-all")
+
+open(dstf, 'w').write(dst)
 PY
 }
-splice gcc/config.gcc     '
-case ${target} in
-'
-splice libgcc/config.host '
-case ${host} in
-'
+
+splice_config_host() {
+    python3 - "$G48/libgcc/config.host" "$G47/libgcc/config.host" <<'PY'
+import re, sys
+srcf, dstf = sys.argv[1], sys.argv[2]
+src, dst = open(srcf).read(), open(dstf).read()
+arms = re.findall(r'^(aarch64[^\n]*\)\n(?:.*?\n)*?\t;;\n)', src, re.M)
+if not arms:
+    print("    libgcc/config.host: no aarch64 arms in 4.8.5"); sys.exit(0)
+m = re.search(r'\*\*\* Configuration \$\{host\} not supported', dst)
+if m:
+    k = dst.rfind('\n*)\n', 0, m.start())
+    if k != -1:
+        k += 1
+        open(dstf,'w').write(dst[:k] + "".join(arms) + dst[k:])
+        print(f"    libgcc/config.host: spliced {len(arms)} arm(s) before the catch-all")
+        sys.exit(0)
+i = dst.find('case ${host} in\n')
+if i != -1:
+    j = i + len('case ${host} in\n')
+    open(dstf,'w').write(dst[:j] + "".join(arms) + dst[j:])
+    print(f"    libgcc/config.host: spliced {len(arms)} arm(s) at the case head")
+PY
+}
+
+splice_config_gcc
+splice_config_host
+
+# FAIL HERE, NOT 20 MINUTES LATER. Run 1 spliced into the wrong case statement
+# and the only symptom was a configure-gcc failure deep into the build.
+n_arms=$(grep -c '^aarch64.*)$' "$G47/gcc/config.gcc" || true)
+[ "$n_arms" -ge 2 ] || { say "  FATAL: only $n_arms aarch64 case arms in config.gcc"; exit 1; }
+grep -q '^\s*cpu_type=aarch64' "$G47/gcc/config.gcc" || {
+    say "  FATAL: cpu_type=aarch64 never set -- the cpu_type table was not patched"; exit 1; }
+say "    verified: $n_arms aarch64 arms, cpu_type=aarch64 present"
 
 say "  after : 4.7.4 has $(grep -c aarch64 "$G47/gcc/config.gcc" || true) aarch64 mentions in config.gcc"
 say "  target recognised: $(cd "$G47" && ./config.sub aarch64-unknown-linux-gnu 2>&1)"
