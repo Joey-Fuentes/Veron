@@ -188,3 +188,42 @@ corrects an earlier note here that `setjmp`/`clone`/`syscall_cp` had none. After
 PASS 2 dropped those nine, only `adrp` (in `crt_arch.h`, so no crt links) and
 `svc` (in `syscall_arch.h`, so no syscall compiles) remained. Both are in the
 series.
+
+---
+
+## Base selection (2026-07-24, second attempt)
+
+`variant: mob-plus-series` rewound to `FIRST^` — the commit before mob's own
+assembler landed — and 0003 failed:
+
+```
+error: patch failed: tccasm.c:1178
+error: tccasm.c: patch does not apply
+```
+
+`FIRST^` is not the author's tree. Mob's assembler landed months after the
+series was posted, so `tccasm.c` had already drifted past the two-line hunk
+0003 adds there. Guessing a commit by ancestry was the mistake, not the
+specific guess.
+
+`apply-series.sh` replaces the guess. Every `index <pre>..<post>` line in a
+git-formatted patch records the blob hash of the file the author had, so the
+correct base is the commit whose blobs equal those pre-images — findable, not
+estimated. The series' base blobs are:
+
+```
+arm-asm.c 2f9cca46   arm64-asm.c a97fd642   arm64-link.c cfdd95ea
+i386-asm.c 64e44ce9  riscv64-asm.c 63aa468e tcc.h 1c2f6949
+tccasm.c 523cbab0    tccpp.c e19e8504       tcctok.h b7cc9d40
+```
+
+Two things to notice. `arm64-tok.h` has no entry — it is created by 0003, so
+its pre-image is all zeroes and there is nothing to match. And `arm64-asm.c` is
+`a97fd642`, not the `e95de34f` in 0003's header: a file touched by more than one
+patch in a series has a different pre-image in each, and only the **first** is a
+real repository blob. The later ones are intermediate states that exist nowhere
+in history. Keying on the wrong one finds nothing.
+
+The script scores all nine files against the chosen base and prints match/drift
+per file, so a partial match is visible before the first `git apply` rather than
+surfacing as a conflict three patches in.

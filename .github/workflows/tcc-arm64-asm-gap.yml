@@ -91,18 +91,11 @@ jobs:
           fi
 
           if [ "$VARIANT" = mob-plus-series ]; then
-            P="$GITHUB_WORKSPACE/spikes/stage3/patches/tcc-arm64-asm"
-            FIRST=$(git -C tccsrc log --reverse --format=%H -- arm64-tok.h | head -1)
-            if [ -n "$FIRST" ]; then
-              echo "  rewinding to ${FIRST}^ -- just before mob's own assembler landed"
-              git -C tccsrc checkout -q "${FIRST}^"
-            fi
-            for p in "$P"/000*.patch; do
-              echo "    applying $(basename "$p")"
-              git -C tccsrc apply --3way "$p" || git -C tccsrc apply "$p" || {
-                echo "  PATCH FAILED -- report and stop; do not measure a half-patched tree"
-                exit 1; }
-            done
+            # Base selection is blob-exact, not date- or ancestry-guessed; see
+            # the header of apply-series.sh for why "just before mob's own
+            # assembler landed" was the wrong tree and broke tccasm.c:1178.
+            bash "$GITHUB_WORKSPACE/spikes/stage3/patches/tcc-arm64-asm/apply-series.sh" \
+                 tccsrc || { echo "  PATCH FAILED -- refusing to measure a half-patched tree"; exit 1; }
           fi
 
           cd tccsrc && ./configure --cc=gcc >/dev/null && make -j"$(nproc)" >/dev/null
