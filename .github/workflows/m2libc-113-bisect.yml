@@ -217,6 +217,24 @@ jobs:
             echo "    --- which emitted FUNCTION does the first difference fall in? ---"
             head -n "$FIRST" test/test1000/proof | grep -E '^:FUNCTION_' | tail -1 | sed 's/^/      /'
             echo
+            echo "    --- X86 CANARY: do they differ on a TINY x86 input? ---"
+            # The existing canary is aarch64-only; the divergence is x86 codegen.
+            cd "$ROOT"
+            printf 'struct T{int a; int b; int c;};\nint f(struct T* p){return p->c;}\nint main(){struct T* q; q=0; return f(q);}\n' > x86c.c
+            for A in x86 aarch64; do
+              qemu-aarch64 ./M2-ours --architecture $A --bootstrap-mode -f x86c.c -o o.$A.M1 2>/dev/null || true
+              upstream-m2planet/bin/M2-Planet --architecture $A --bootstrap-mode -f x86c.c -o h.$A.M1 2>/dev/null || true
+              if cmp -s o.$A.M1 h.$A.M1; then
+                printf '      %-8s IDENTICAL (%s bytes)\n' "$A" "$(wc -c < o.$A.M1)"
+              else
+                printf '      %-8s DIFFER  ours=%s host=%s\n' "$A" \
+                  "$(wc -c < o.$A.M1)" "$(wc -c < h.$A.M1)"
+                echo "        --- first differing lines ---"
+                diff o.$A.M1 h.$A.M1 | head -12 | sed 's/^/          /'
+              fi
+            done
+            cd upstream-m2planet
+            echo
             echo "    --- upstream 1.13.1 source of the emitters that differ ---"
             # The diff is a codegen CHOICE, so print the branch that makes it.
             for fn in write_add_immediate write_load_immediate emit_add_immediate; do
@@ -329,6 +347,67 @@ jobs:
             --adjust-vma=$((0x400000 + $(wc -c < M2-ours) - 48)) tail.bin \
             2>/dev/null | tail -14 | sed 's/^/      /'
           rm -f fault.log tail.bin
+
+      - name: 'CONTROL: is the PATCH behaviour-preserving? (upstream compiler, our patched source)'
+        continue-on-error: true
+        run: |
+          . tools/ab.sh
+          ROOT="$PWD"; M=upstream-m2planet; L=$M/M2libc
+          # THE CONFOUND WE HAVE NEVER SEPARATED. Two things differ between our
+          # M2-Planet and the reference: (a) the source is patched (drop_asm +
+          # shim), (b) it is compiled by OUR stage 2. Build the SAME patched
+          # source with UPSTREAM's compiler and self-compile that.
+          #
+          #   matches proof.answer -> the patch is behaviour-preserving,
+          #                           the defect is our stage 2's codegen
+          #   diverges the same way -> the patch is the cause
+          #
+          # The shim calls read/write, which are m53 builtins in our stage 2 but
+          # do not exist for upstream's compiler, so aarch64/linux/unistd.c is
+          # added to supply them. Anything still unresolved is reported.
+          ab_rule 'PATCHED SOURCE, BUILT BY UPSTREAMS COMPILER'
+          EXTRA=''
+          [ -f "$L/aarch64/linux/unistd.c" ] && EXTRA="-f $L/aarch64/linux/unistd.c"
+          echo "  extra file for read/write: ${EXTRA:-<none found>}"
+          set +e
+          $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode \
+            $EXTRA -f m2.c -o patched.M1 2> perr.log
+          rc=$?
+          set -e
+          echo "  M2-Planet on our patched TU: rc=$rc"
+          head -3 perr.log | sed 's/^/    ! /'
+          [ "$rc" = 0 ] || { echo "  cannot build the control -- see above"; exit 0; }
+          upstream-mescc/bin/M1 -f "$L/aarch64/aarch64_defs.M1" \
+            -f "$L/aarch64/libc-core.M1" -f patched.M1 \
+            --little-endian --architecture aarch64 -o patched.hex2
+          upstream-mescc/bin/hex2 -f "$L/aarch64/ELF-aarch64.hex2" -f patched.hex2 \
+            --little-endian --architecture aarch64 --base-address 0x400000 \
+            -o M2-patched
+          chmod +x M2-patched
+          ab_art 'M2-patched (upstream compiler, patched source)' M2-patched
+          ab_art 'M2-ours    (our ladder,       patched source)' M2-ours
+          ab_art 'refM2P     (upstream compiler, UNpatched source)' refM2P
+
+          cd $M
+          PARGS=$(sed 's|-o test/test1000/proof|-o patched_proof|' "$ROOT/proof.args")
+          ab_run 'M2-patched self-compiles' 900 patched_proof \
+            qemu-aarch64 "$ROOT/M2-patched" $PARGS
+          EXPECT=$(awk '{print $1}' test/test1000/proof.answer)
+          GOT=$(sha256sum patched_proof 2>/dev/null | awk '{print $1}')
+          echo "  upstream proof.answer : $EXPECT"
+          echo "  patched-source build  : ${GOT:-<no output>}"
+          if [ "$GOT" = "$EXPECT" ]; then
+            echo "  VERDICT: the PATCH is behaviour-preserving."
+            echo "           The divergence is our stage 2's codegen, not the substitution."
+          else
+            echo "  VERDICT: the patched source ALSO diverges under upstreams compiler."
+            echo "           The substitution itself changes behaviour -- suspect drop_asm/shim."
+            cmp patched_proof test/test1000/proof 2>&1 | head -2 | sed 's/^/    /'
+            echo "    --- does it diverge the SAME way as ours? ---"
+            cmp patched_proof "$ROOT/upstream-m2planet/ours_proof" >/dev/null 2>&1 \
+              && echo "      IDENTICAL to ours -- the patch fully explains the difference" \
+              || echo "      differs from ours too -- both the patch and our codegen contribute"
+          fi
 
       - name: 'GATE: ours_proof matches upstream published sha256'
         run: |
