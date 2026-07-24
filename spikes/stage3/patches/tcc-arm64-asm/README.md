@@ -573,3 +573,39 @@ Fixed three ways, and the third is the one that matters:
    run on mismatch.** Every fetch path can succeed with the wrong thing; only
    the assertion catches it. Verified against a real 1.36.1 tree (passes) and a
    simulated 1.37.0 one (fails).
+
+### Correction: `--whole-archive` was the wrong translation
+
+The first attempt at busybox's `-Wl,--start-group` mapped it to
+`--whole-archive`, on the reasoning that busybox's archives hold exactly the
+applets the config selected so loading all of them "can make the binary larger,
+it cannot make it wrong."
+
+That was wrong. Forcing every member in produced:
+
+```
+4020 error: Unknown relocation type for got: N
+  ~20 error: undefined symbol '__aarch64_cas4_acq', '_Unwind_Resume',
+             '__gcc_personality_v0', 'sun_write_table', 'delete_eth_table',
+             'run_nofork_applet', '__ehdr_start', '__unordtf2', ...
+```
+
+Two separate consequences. Objects for excluded features reference symbols that
+genuinely are not in the link. And objects that had never been linked before
+carry relocation types `gotplt_entry_type()` does not enumerate, so
+`build_got_entries` fails on each one. Loading more than the link needs is not
+harmless.
+
+The faithful emulation is **objects first, then archives repeated**. Objects
+link unconditionally, so moving them earlier changes nothing; archives are
+demand-loaded, so each repeated pass resolves one more level of cross-archive
+reference. Measured on a 3-deep chain in reverse order:
+
+```
+1 pass  -> undefined symbol 'bar'
+2 passes-> undefined symbol 'baz'
+3 passes-> links
+```
+
+`GROUP_PASSES` defaults to 5 for headroom; a re-pass over an archive whose
+members are already linked contributes nothing.

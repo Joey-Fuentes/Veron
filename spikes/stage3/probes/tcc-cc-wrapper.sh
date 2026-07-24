@@ -29,6 +29,14 @@
 
 : "${TCC:?tcc-cc-wrapper: TCC not set}"
 
+# How many times to re-scan a --start-group archive list. 3 was the measured
+# minimum for a 3-deep chain; 5 gives headroom without meaningful cost, since
+# an archive whose members are already linked contributes nothing on a re-pass.
+GROUP_PASSES=${GROUP_PASSES:-5}
+in_group=0
+group_objs=""
+group_archives=""
+
 n=$#
 i=0
 while [ "$i" -lt "$n" ]; do
@@ -37,26 +45,46 @@ while [ "$i" -lt "$n" ]; do
         -Wp,-MD,*)  set -- "$@" -MD -MF "${a#-Wp,-MD,}" ;;
         -Wp,-MMD,*) set -- "$@" -MD -MF "${a#-Wp,-MMD,}" ;;
 
-        # busybox's scripts/trylink wraps its 28 archives in
+        # GROUP MARKERS. busybox's scripts/trylink wraps its 28 archives in
         #   -Wl,--start-group ... -Wl,--end-group
         # so the linker re-scans them until symbols stop resolving. tcc has no
-        # --start-group ("unsupported linker option") and does NOT re-scan: an
-        # archive listed before the object that needs it is simply missed.
-        # Verified with a 3-deep chain -- reverse order gives "undefined symbol",
-        # and repeating the list only buys one extra pass, not N.
+        # --start-group and does NOT re-scan, so an archive listed before the
+        # object that needs it is simply missed.
         #
-        # tcc DOES support --whole-archive, which loads every member regardless
-        # of demand and so makes ordering irrelevant. For busybox that is close
-        # to a no-op semantically: its archives hold the objects for the applets
-        # the config selected, and the final binary is meant to contain them all.
-        # It can only make the binary larger, never wrong.
-        -Wl,--start-group) set -- "$@" -Wl,--whole-archive ;;
-        -Wl,--end-group)   set -- "$@" -Wl,--no-whole-archive ;;
+        # A FIRST ATTEMPT USED --whole-archive, which tcc does support. That was
+        # wrong. It force-loads EVERY member of every archive, including objects
+        # for applets the config excluded, which produced ~20 undefined symbols
+        # that are genuinely absent (sun_write_table, delete_eth_table,
+        # run_nofork_applet) plus 4020 "Unknown relocation type for got" from
+        # object files that had never been linked before. Loading more than the
+        # link needs is not harmless.
+        #
+        # What is faithful: OBJECTS FIRST, THEN ARCHIVES REPEATED. Objects are
+        # linked unconditionally so moving them earlier changes nothing, and
+        # archives are demand-loaded so a repeated pass resolves one more level
+        # of cross-archive reference. Measured on a 3-deep chain in reverse
+        # order: 1 pass fails on the first symbol, 2 on the second, 3 links.
+        # GROUP_PASSES is set above 3 for headroom.
+        -Wl,--start-group) in_group=1 ;;
+        -Wl,--end-group)
+            in_group=0
+            set -- "$@" $group_objs
+            gp=0
+            while [ "$gp" -lt "$GROUP_PASSES" ]; do
+                set -- "$@" $group_archives
+                gp=$((gp + 1))
+            done
+            group_objs=""; group_archives="" ;;
         # Other -Wp, pass-throughs are preprocessor flags tcc does not take.
         # Dropping them is safe here; anything load-bearing would show up as a
         # compile error rather than silently wrong code.
         -Wp,*)      ;;
-        *)          set -- "$@" "$a" ;;
+        *.a)
+            if [ "$in_group" = 1 ]; then group_archives="$group_archives $a"
+            else set -- "$@" "$a"; fi ;;
+        *)
+            if [ "$in_group" = 1 ]; then group_objs="$group_objs $a"
+            else set -- "$@" "$a"; fi ;;
     esac
 done
 
