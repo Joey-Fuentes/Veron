@@ -348,66 +348,77 @@ jobs:
             2>/dev/null | tail -14 | sed 's/^/      /'
           rm -f fault.log tail.bin
 
-      - name: 'CONTROL: is the PATCH behaviour-preserving? (upstream compiler, our patched source)'
+      - name: 'GENERATIONS: our M2-Planet rebuilds itself five times'
         continue-on-error: true
         run: |
           . tools/ab.sh
-          ROOT="$PWD"; M=upstream-m2planet; L=$M/M2libc
-          # THE CONFOUND WE HAVE NEVER SEPARATED. Two things differ between our
-          # M2-Planet and the reference: (a) the source is patched (drop_asm +
-          # shim), (b) it is compiled by OUR stage 2. Build the SAME patched
-          # source with UPSTREAM's compiler and self-compile that.
+          ROOT="$PWD"; M=upstream-m2planet; L=$M/M2libc; S=upstream-mescc/bin
+          # THE FIXPOINT TEST. G0 = M2-ours, built by our stage 2 from the
+          # PATCHED source. Every generation after that is built by the previous
+          # generation from upstream's UNPATCHED -f list -- our M2-Planet handles
+          # asm() perfectly well, so the substitution applies to G0 ONLY and
+          # drops out of the chain immediately.
           #
-          #   matches proof.answer -> the patch is behaviour-preserving,
-          #                           the defect is our stage 2's codegen
-          #   diverges the same way -> the patch is the cause
+          #   G2 == refM2P            -> the chain self-corrects; the patch was
+          #                              the whole difference
+          #   Gn == G(n-1) != refM2P  -> a STABLE but wrong fixpoint; the defect
+          #                              is reproduced faithfully by our codegen
+          #   Gn drifts or dies       -> the error compounds each generation
           #
-          # The shim calls read/write, which are m53 builtins in our stage 2 but
-          # do not exist for upstream's compiler, so aarch64/linux/unistd.c is
-          # added to supply them. Anything still unresolved is reported.
-          ab_rule 'PATCHED SOURCE, BUILT BY UPSTREAMS COMPILER'
-          EXTRA=''
-          [ -f "$L/aarch64/linux/unistd.c" ] && EXTRA="-f $L/aarch64/linux/unistd.c"
-          echo "  extra file for read/write: ${EXTRA:-<none found>}"
-          set +e
-          $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode \
-            $EXTRA -f m2.c -o patched.M1 2> perr.log
-          rc=$?
-          set -e
-          echo "  M2-Planet on our patched TU: rc=$rc"
-          head -3 perr.log | sed 's/^/    ! /'
-          [ "$rc" = 0 ] || { echo "  cannot build the control -- see above"; exit 0; }
-          upstream-mescc/bin/M1 -f "$L/aarch64/aarch64_defs.M1" \
-            -f "$L/aarch64/libc-core.M1" -f patched.M1 \
-            --little-endian --architecture aarch64 -o patched.hex2
-          upstream-mescc/bin/hex2 -f "$L/aarch64/ELF-aarch64.hex2" -f patched.hex2 \
-            --little-endian --architecture aarch64 --base-address 0x400000 \
-            -o M2-patched
-          chmod +x M2-patched
-          ab_art 'M2-patched (upstream compiler, patched source)' M2-patched
-          ab_art 'M2-ours    (our ladder,       patched source)' M2-ours
-          ab_art 'refM2P     (upstream compiler, UNpatched source)' refM2P
+          # The recipe is lifted from upstream's own test1000 trace, not written
+          # by hand -- only the compiler binary is substituted each round.
+          BARGS=$(grep -m1 -- '--architecture aarch64 -f' test1000.log | sed 's/^+ *//')
+          BARGS=${BARGS#*bin/M2-Planet }
+          BARGS=$(printf '%s' "$BARGS" | sed 's|-o .*$||')
+          echo "  build args lifted from upstream's trace:"
+          printf '    %s\n' "$BARGS" | fold -w 100 | sed '2,$s/^/      /'
+          echo
 
           cd $M
-          PARGS=$(sed 's|-o test/test1000/proof|-o patched_proof|' "$ROOT/proof.args")
-          ab_run 'M2-patched self-compiles' 900 patched_proof \
-            qemu-aarch64 "$ROOT/M2-patched" $PARGS
-          EXPECT=$(awk '{print $1}' test/test1000/proof.answer)
-          GOT=$(sha256sum patched_proof 2>/dev/null | awk '{print $1}')
-          echo "  upstream proof.answer : $EXPECT"
-          echo "  patched-source build  : ${GOT:-<no output>}"
-          if [ "$GOT" = "$EXPECT" ]; then
-            echo "  VERDICT: the PATCH is behaviour-preserving."
-            echo "           The divergence is our stage 2's codegen, not the substitution."
-          else
-            echo "  VERDICT: the patched source ALSO diverges under upstreams compiler."
-            echo "           The substitution itself changes behaviour -- suspect drop_asm/shim."
-            cmp patched_proof test/test1000/proof 2>&1 | head -2 | sed 's/^/    /'
-            echo "    --- does it diverge the SAME way as ours? ---"
-            cmp patched_proof "$ROOT/upstream-m2planet/ours_proof" >/dev/null 2>&1 \
-              && echo "      IDENTICAL to ours -- the patch fully explains the difference" \
-              || echo "      differs from ours too -- both the patch and our codegen contribute"
-          fi
+          cp "$ROOT/M2-ours" gen0
+          ab_rule 'GENERATIONS (G0 = our ladder + patched source; G1.. = unpatched)'
+          ab_art 'refM2P (the reference)' "$ROOT/refM2P"
+          ab_art 'G0     (ours)'          gen0
+          prev=gen0
+          for n in 1 2 3 4 5; do
+            set +e
+            timeout 900 qemu-aarch64 "./$prev" $BARGS -o g$n.M1 2> g$n.err
+            rc=$?
+            set -e
+            if [ "$rc" != 0 ] || [ ! -s g$n.M1 ]; then
+              echo "  G$n: COMPILE FAILED rc=$rc"
+              head -3 g$n.err | sed 's/^/      ! /'
+              break
+            fi
+            $S/blood-elf --64 -f g$n.M1 --little-endian --entry _start -o g$n-footer.M1 2>/dev/null
+            $S/M1 -f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 \
+              -f g$n.M1 -f g$n-footer.M1 --little-endian --architecture aarch64 \
+              -o g$n.hex2 2>/dev/null
+            $S/hex2 -f $L/aarch64/ELF-aarch64-debug.hex2 -f g$n.hex2 \
+              --little-endian --architecture aarch64 --base-address 0x400000 \
+              -o gen$n 2>/dev/null
+            chmod +x gen$n 2>/dev/null || true
+            if [ ! -s gen$n ]; then echo "  G$n: LINK FAILED"; break; fi
+            printf '  G%-2s rc=%-3s .M1=%-9s binary=%-9s sha=%s\n' \
+              "$n" "$rc" "$(wc -c < g$n.M1)" "$(wc -c < gen$n)" \
+              "$(sha256sum gen$n | cut -c1-16)"
+            if cmp -s gen$n "$prev"; then
+              echo "      == G$((n-1))  -- FIXPOINT REACHED"
+            else
+              echo "      != G$((n-1))  ($(cmp gen$n $prev 2>&1 | head -1 | sed 's/.*differ: //'))"
+            fi
+            if cmp -s gen$n "$ROOT/refM2P"; then
+              echo "      == refM2P -- MATCHES THE REFERENCE"
+            else
+              echo "      != refM2P (ours $(wc -c < gen$n) vs ref $(wc -c < $ROOT/refM2P) bytes)"
+            fi
+            prev=gen$n
+          done
+          echo
+          echo "  If G1 or G2 matches refM2P, the substitution was the whole story."
+          echo "  If the chain settles on a stable non-matching binary, our codegen"
+          echo "  reproduces its own defect exactly -- which is a much better place"
+          echo "  to be than drifting, and makes the diff the thing to chase."
 
       - name: 'GATE: ours_proof matches upstream published sha256'
         run: |
