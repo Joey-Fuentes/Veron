@@ -1,0 +1,200 @@
+name: gcc-entrypoint-probe
+
+# SPIKE. WHERE CAN OUR CHAIN ENTER gcc ON AARCH64?
+#
+# WHAT gcc-chain-probe TURNED UP. Building gcc 4.7.4 on aarch64 dies at
+# configure with "cannot guess build type" -- UNAME_MACHINE = aarch64, and its
+# 2013 config.guess does not know the architecture. The likely reason is that
+# AArch64 support landed in GCC 4.8, contributed by ARM in March 2013.
+#
+# AND 4.8 IS ALSO THE RELEASE THAT SWITCHED TO C++. If both are true then on
+# aarch64:
+#
+#     oldest gcc with an aarch64 backend  = 4.8
+#     oldest gcc requiring a C++ compiler = 4.8      <- the same version
+#
+# ...which is a genuine gap: the last C-buildable gcc cannot target our
+# architecture, and the first gcc that can needs a C++ compiler nothing below it
+# provides. tcc does not do C++.
+#
+# BUT BOTH HALVES ARE INFERENCE, NOT MEASUREMENT, and today has been a long
+# argument for not acting on inference. "4.7 has no aarch64 backend" is read off
+# a config.guess failure that an explicit --build= might sidestep. "4.8 needs
+# C++" is read off release notes. This probe settles both by looking.
+#
+#   JOB A  Does gcc 4.7.4 ship an aarch64 backend at all? Does 4.8.5? What does
+#          each declare about C++? Cheap -- extract and grep, no building.
+#
+#   JOB B  If the gap is real, can tcc get gcc 4.8 configured anyway? gcc's
+#          CORE being C++ means CXX is required even for --enable-languages=c,
+#          but that is exactly the kind of received claim worth testing. Also
+#          retries GMP with --disable-assembly, which is the obvious reason it
+#          failed under tcc last time (hand-written asm paths).
+#
+# FOUR ROADMAPS HANG ON THE ANSWER: cross-compile the entry point (reintroduces
+# the arch detour we just deleted), find a C-buildable C++ compiler, patch 4.8
+# to build with C, or accept one labelled borrowed rung. Do not pick before
+# measuring.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/gcc-entrypoint-probe.yml'
+  workflow_dispatch:
+
+env:
+  GNU: 'https://mirrors.kernel.org/gnu'
+
+jobs:
+
+  backend-boundary:
+    name: 'A: which gcc versions have aarch64, and which demand C++'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl bzip2 xz-utils
+
+      - name: 'Fetch 4.7.4 and 4.8.5 (the suspected boundary)'
+        run: |
+          set -eu
+          curl -sSL -o g47.tar.bz2 "$GNU/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2"
+          curl -sSL -o g48.tar.bz2 "$GNU/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2"
+          mkdir -p g47 g48
+          tar xf g47.tar.bz2 -C g47 --strip-components=1
+          tar xf g48.tar.bz2 -C g48 --strip-components=1
+          echo "  4.7.4 $(du -sh g47 | cut -f1)   4.8.5 $(du -sh g48 | cut -f1)"
+
+      - name: 'THE FIRST CLAIM: does 4.7 have an aarch64 backend?'
+        run: |
+          for v in 47 48; do
+            echo "=== gcc $v ==="
+            echo "  --- gcc/config entries mentioning aarch64/arm ---"
+            ls "g$v/gcc/config" | grep -iE 'aarch64|^arm$' | sed 's/^/    /' || echo "    (none)"
+            echo "  --- does config.guess know aarch64? ---"
+            grep -c aarch64 "g$v/config.guess" | sed 's/^/    matches: /'
+            echo "  --- is aarch64 a recognised target in config.sub? ---"
+            grep -c aarch64 "g$v/config.sub" | sed 's/^/    matches: /'
+            echo "  --- listed in gcc/config.gcc? ---"
+            grep -c 'aarch64' "g$v/gcc/config.gcc" | sed 's/^/    matches: /'
+            echo
+          done
+          echo "  If 4.7 shows zero across the board and 4.8 shows nonzero, the"
+          echo "  boundary is confirmed and no --build= flag can rescue 4.7."
+
+      - name: 'THE SECOND CLAIM: does 4.8 require a C++ compiler?'
+        run: |
+          for v in 47 48; do
+            echo "=== gcc $v ==="
+            echo "  --- what install.texi says about the build compiler ---"
+            grep -iE 'ISO C\+\+|C\+\+ compiler|written in C\+\+|bootstrap.*C\+\+' \
+              "g$v/gcc/doc/install.texi" | head -8 | sed 's/^/    /' || echo "    (nothing)"
+            echo "  --- does configure hard-require CXX? ---"
+            grep -cE 'no acceptable C\+\+ compiler|CXX.*required|AC_PROG_CXX' \
+              "g$v/configure" | sed 's/^/    matches: /'
+            echo "  --- how much of gcc/ is actually C++ source? ---"
+            printf '    .c files:  %s\n' "$(find g$v/gcc -maxdepth 1 -name '*.c' | wc -l)"
+            printf '    .cc files: %s\n' "$(find g$v/gcc -maxdepth 1 -name '*.cc' | wc -l)"
+            echo
+          done
+
+  tcc-reaches-gcc48:
+    name: 'B: can tcc configure gcc 4.8 on aarch64?'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git curl bzip2 xz-utils gcc make m4 texinfo
+
+      - name: 'Build tcc (mob) -- our pin d9d02c56'
+        run: |
+          git clone -q git://repo.or.cz/tinycc.git tccsrc \
+            || git clone -q https://repo.or.cz/tinycc.git tccsrc
+          echo "  mob HEAD: $(git -C tccsrc rev-parse HEAD)"
+          cd tccsrc && ./configure --cc=gcc >/dev/null && make -j"$(nproc)" >/dev/null
+          ./tcc -v
+          echo "TCC=$PWD/tcc"    >> "$GITHUB_ENV"
+          echo "TCCDIR=$PWD"     >> "$GITHUB_ENV"
+
+      - name: 'GMP again, this time with --disable-assembly'
+        continue-on-error: true
+        run: |
+          set -u
+          # Last run GMP configured fine under tcc and then failed to build.
+          # GMP ships hand-written assembly per micro-architecture, which is the
+          # obvious suspect -- --disable-assembly forces the portable C paths.
+          curl -sSL -o gmp.tar.xz "$GNU/gmp/gmp-6.2.1.tar.xz"
+          mkdir -p gmp && tar xf gmp.tar.xz -C gmp --strip-components=1
+          cd gmp
+          set +e
+          ./configure CC="$TCC -B$TCCDIR" --disable-shared --disable-assembly \
+            --prefix="$PWD/../prefix" > conf.log 2>&1
+          echo "  configure rc=$?"; tail -6 conf.log | sed 's/^/    /'
+          timeout 1800 make -j"$(nproc)" > build.log 2>&1
+          echo "  make rc=$?"; tail -12 build.log | sed 's/^/    /'
+          echo "  --- error classes ---"
+          grep -oE 'error: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
+            | sort | uniq -c | sort -rn | head -12 | sed 's/^/    /'
+          make install >/dev/null 2>&1 && echo "  INSTALLED"
+          set -e
+
+      - name: 'MPFR + MPC on top (MPFR already worked under tcc)'
+        continue-on-error: true
+        run: |
+          set -u
+          for p in mpfr-4.1.0 mpc-1.2.1; do
+            case $p in mpfr*) u="$GNU/mpfr/$p.tar.xz";; mpc*) u="$GNU/mpc/$p.tar.gz";; esac
+            echo "############ $p ############"
+            curl -sSL -o "$p.tar" "$u" && mkdir -p "$p" \
+              && tar xf "$p.tar" -C "$p" --strip-components=1 2>/dev/null
+            ( cd "$p"; set +e
+              ./configure CC="$TCC -B$TCCDIR" --disable-shared \
+                --with-gmp="$PWD/../prefix" --prefix="$PWD/../prefix" > conf.log 2>&1
+              echo "  configure rc=$?"; tail -5 conf.log | sed 's/^/    /'
+              timeout 1200 make -j"$(nproc)" > build.log 2>&1
+              echo "  make rc=$?"; tail -6 build.log | sed 's/^/    /'
+              make install >/dev/null 2>&1 && echo "  INSTALLED"; set -e )
+          done
+          ls prefix/lib 2>/dev/null | sed 's/^/    /' || echo "    (no prefix/lib)"
+
+      - name: 'THE TEST: configure gcc 4.8.5 with tcc and NO C++ compiler'
+        continue-on-error: true
+        run: |
+          set -u
+          curl -sSL -o g48.tar.bz2 "$GNU/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2"
+          mkdir -p g48 && tar xf g48.tar.bz2 -C g48 --strip-components=1
+          mkdir -p b48 && cd b48
+          set +e
+          # CXX deliberately pointed at nothing: if gcc 4.8 truly needs a C++
+          # compiler, configure must say so plainly. That message is the finding.
+          ../g48/configure CC="$TCC -B$TCCDIR" CXX=/bin/false \
+            --build=aarch64-unknown-linux-gnu \
+            --prefix="$PWD/../gcc48" --enable-languages=c \
+            --disable-multilib --disable-bootstrap --disable-libsanitizer \
+            --disable-libgomp --disable-libquadmath \
+            --with-gmp="$PWD/../prefix" --with-mpfr="$PWD/../prefix" \
+            --with-mpc="$PWD/../prefix" > conf.log 2>&1
+          echo "  configure rc=$?"
+          echo "  --- what did it say about C++? ---"
+          grep -inE 'C\+\+|CXX|acceptable' conf.log | head -15 | sed 's/^/    /'
+          echo "  --- tail ---"
+          tail -20 conf.log | sed 's/^/    /'
+          set -e
+
+      - name: 'VERDICT'
+        run: |
+          echo "  Job A settles whether 4.7 can target aarch64 at all."
+          echo "  Job B settles whether 4.8 can be configured without C++."
+          echo
+          echo "  BOTH NEGATIVE -> the gap is real, and the roadmap must pick one:"
+          echo "    cross-compile the entry point (reintroduces the arch detour)"
+          echo "    find a C-buildable C++ compiler for aarch64"
+          echo "    patch 4.8 to build with C"
+          echo "    accept one labelled borrowed rung, as we do for as/objdump"
+          echo
+          echo "  EITHER POSITIVE -> the gap closes and the direct path stays native."
