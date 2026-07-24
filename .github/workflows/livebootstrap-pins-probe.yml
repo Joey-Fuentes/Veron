@@ -1,0 +1,142 @@
+name: livebootstrap-pins-probe
+
+# SPIKE. WHICH live-bootstrap commit pairs with OUR M2-Planet pin?
+#
+# We pinned M2-Planet to 1.13.1 (bd2fe4b) and mescc-tools to 5adfbf3 for the
+# hand-off. live-bootstrap moves as a COORDINATED SET -- its M2-Planet, mes,
+# tcc and mescc-tools versions are chosen to work together -- and
+# livebootstrap-pass1.yml currently clones its `main` with no pin at all. Taking
+# a Mes version from a floating main while feeding it our separately-pinned
+# M2-Planet is two independently-drifting pin sets in one chain, which is the
+# same class of mistake as e2c63c3 (repinned M2-Planet, left nine workflows
+# pointing at a file that no longer existed).
+#
+# So: DERIVE the pairing, do not guess it.
+#
+# HOW. live-bootstrap records each step as a directory `steps/<name>-<version>/`,
+# so the question "which commit uses M2-Planet 1.13.1" is answerable by reading
+# the tree at a commit -- no manifest-format assumptions, just `git ls-tree`.
+# The version is non-decreasing over history, so the search is a BISECT: find
+# the FIRST commit whose M2-Planet is >= our pin, in ~log2(N) reads.
+#
+# THREE OUTCOMES, all first-class:
+#   1. a commit pins >= 1.13.1  -> print its whole set (mescc-tools/mes/tcc)
+#   2. HEAD is still older      -> NO pairing exists; print the CLOSEST set
+#                                  (the newest live-bootstrap has ever pinned)
+#   3. the tree shape changed   -> report it rather than silently finding nothing
+#
+# Nothing here builds anything. It answers one question cheaply so the Mes rung
+# starts from a known-consistent set instead of a hopeful one.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: livebootstrap-pins-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # our pins, from the hand-off
+      OUR_M2PLANET_VER: '1.13.1'
+      OUR_M2PLANET_SHA: bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d
+      OUR_MESCC_SHA: 5adfbf3
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch live-bootstrap (FULL history -- the bisect needs it)
+        run: |
+          git clone https://github.com/fosslinux/live-bootstrap.git lb
+          echo "  commits on first-parent history: $(git -C lb rev-list --count --first-parent HEAD)"
+          echo "  HEAD: $(git -C lb rev-parse HEAD)"
+          echo "  HEAD date: $(git -C lb log -1 --format=%ci)"
+
+      - name: 'What versions does live-bootstrap carry, and where?'
+        run: |
+          set -u
+          # Read a step's version straight out of the tree at a commit. This
+          # avoids depending on the manifest's format, which has changed before.
+          ver_of() {   # ver_of <sha> <step-prefix>
+            git -C lb ls-tree -r --name-only "$1" -- steps/ 2>/dev/null \
+              | sed -n "s|^steps/$2-\([0-9][0-9.]*\)/.*|\1|p;s|^steps/$2-\([0-9][0-9.]*\)$|\1|p" \
+              | sort -V -u | tail -1
+          }
+          ver_ge() {   # ver_ge A B  -> true if A >= B
+            [ -n "$1" ] && [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]
+          }
+          set_at() {   # print the whole coordinated set at a commit
+            local sha="$1"
+            printf '    %-16s %s\n' 'commit'      "$sha"
+            printf '    %-16s %s\n' 'date'        "$(git -C lb log -1 --format=%ci "$sha")"
+            for st in M2-Planet mescc-tools mescc-tools-seed mes tcc; do
+              printf '    %-16s %s\n' "$st" "$(ver_of "$sha" "$st")"
+            done
+          }
+
+          HEAD_SHA=$(git -C lb rev-parse HEAD)
+          HEAD_M2=$(ver_of "$HEAD_SHA" M2-Planet)
+          echo "=== live-bootstrap HEAD ==="
+          set_at "$HEAD_SHA"
+          echo
+
+          if [ -z "$HEAD_M2" ]; then
+            echo "OUTCOME 3: no steps/M2-Planet-<version>/ found at HEAD."
+            echo "  The tree layout has changed; the probe needs updating before"
+            echo "  any conclusion is drawn. Listing what IS under steps/:"
+            git -C lb ls-tree --name-only HEAD -- steps/ | head -40 | sed 's/^/    /'
+            exit 0
+          fi
+
+          echo "  ours : M2-Planet $OUR_M2PLANET_VER  ($OUR_M2PLANET_SHA)"
+          echo "  theirs at HEAD: M2-Planet $HEAD_M2"
+          echo
+
+          if ! ver_ge "$HEAD_M2" "$OUR_M2PLANET_VER"; then
+            echo "OUTCOME 2: NO live-bootstrap commit pairs with M2-Planet $OUR_M2PLANET_VER."
+            echo "  Even HEAD still pins $HEAD_M2, and the version only goes up."
+            echo
+            echo "  CLOSEST AVAILABLE SET (live-bootstrap HEAD) -- this is what a"
+            echo "  Mes rung would actually be built against today:"
+            set_at "$HEAD_SHA"
+            echo
+            echo "  DECISION REQUIRED: either move our M2-Planet pin to $HEAD_M2 so the"
+            echo "  whole set is coherent, or keep $OUR_M2PLANET_VER and accept that Mes is"
+            echo "  being built by a NEWER compiler than upstream tests together."
+            exit 0
+          fi
+
+          # --- OUTCOME 1: bisect for the FIRST commit that adopted our version ---
+          echo "  HEAD is >= our pin, so a pairing exists. Bisecting for the FIRST"
+          echo "  commit that adopted M2-Planet $OUR_M2PLANET_VER..."
+          echo
+          mapfile -t C < <(git -C lb rev-list --first-parent --reverse HEAD)
+          lo=0; hi=$(( ${#C[@]} - 1 )); probes=0
+          while [ "$lo" -lt "$hi" ]; do
+            mid=$(( (lo + hi) / 2 ))
+            v=$(ver_of "${C[$mid]}" M2-Planet)
+            probes=$(( probes + 1 ))
+            if [ -n "$v" ] && ver_ge "$v" "$OUR_M2PLANET_VER"; then hi=$mid; else lo=$(( mid + 1 )); fi
+            printf '    probe %-2s  %s  M2-Planet=%-8s -> window %s..%s\n' \
+              "$probes" "$(git -C lb log -1 --format=%cs "${C[$mid]}")" "${v:-none}" "$lo" "$hi"
+          done
+          FIRST="${C[$lo]}"
+          echo
+          echo "OUTCOME 1: first commit pinning M2-Planet >= $OUR_M2PLANET_VER"
+          set_at "$FIRST"
+          echo
+          echo "  --- the set at HEAD, for comparison ---"
+          set_at "$HEAD_SHA"
+          echo
+          echo "  --- does its mescc-tools match ours ($OUR_MESCC_SHA)? ---"
+          echo "    live-bootstrap pins mescc-tools by VERSION, we pin by SHA;"
+          echo "    the versions above are the thing to reconcile by hand."
+          echo
+          echo "  --- Mes step contents at that commit (what the rung must drive) ---"
+          MESV=$(ver_of "$FIRST" mes)
+          git -C lb ls-tree -r --name-only "$FIRST" -- "steps/mes-$MESV/" 2>/dev/null \
+            | head -30 | sed 's/^/      /'
+          echo
+          echo "  USE THIS COMMIT for the Mes rung: $FIRST"
