@@ -352,7 +352,10 @@ jobs:
         continue-on-error: true
         run: |
           . tools/ab.sh
-          ROOT="$PWD"; M=upstream-m2planet; L=$M/M2libc; S=upstream-mescc/bin
+          ROOT="$PWD"; M=upstream-m2planet
+          # ABSOLUTE paths: this step cd's into $M, so anything relative to the
+          # repo root stops resolving after that (exit 127, command not found).
+          L="$ROOT/$M/M2libc"; S="$ROOT/upstream-mescc/bin"
           # THE FIXPOINT TEST. G0 = M2-ours, built by our stage 2 from the
           # PATCHED source. Every generation after that is built by the previous
           # generation from upstream's UNPATCHED -f list -- our M2-Planet handles
@@ -374,8 +377,12 @@ jobs:
           printf '    %s\n' "$BARGS" | fold -w 100 | sed '2,$s/^/      /'
           echo
 
-          cd $M
+          for t in blood-elf M1 hex2; do
+            [ -x "$S/$t" ] || { echo "  MISSING TOOL: $S/$t"; exit 0; }
+          done
+          cd "$ROOT/$M"
           cp "$ROOT/M2-ours" gen0
+          chmod +x gen0
           ab_rule 'GENERATIONS (G0 = our ladder + patched source; G1.. = unpatched)'
           ab_art 'refM2P (the reference)' "$ROOT/refM2P"
           ab_art 'G0     (ours)'          gen0
@@ -390,11 +397,12 @@ jobs:
               head -3 g$n.err | sed 's/^/      ! /'
               break
             fi
-            $S/blood-elf --64 -f g$n.M1 --little-endian --entry _start -o g$n-footer.M1 2>/dev/null
-            $S/M1 -f $L/aarch64/aarch64_defs.M1 -f $L/aarch64/libc-core.M1 \
+            "$S/blood-elf" --64 -f g$n.M1 --little-endian --entry _start \
+              -o g$n-footer.M1 2>/dev/null
+            "$S/M1" -f "$L/aarch64/aarch64_defs.M1" -f "$L/aarch64/libc-core.M1" \
               -f g$n.M1 -f g$n-footer.M1 --little-endian --architecture aarch64 \
               -o g$n.hex2 2>/dev/null
-            $S/hex2 -f $L/aarch64/ELF-aarch64-debug.hex2 -f g$n.hex2 \
+            "$S/hex2" -f "$L/aarch64/ELF-aarch64-debug.hex2" -f g$n.hex2 \
               --little-endian --architecture aarch64 --base-address 0x400000 \
               -o gen$n 2>/dev/null
             chmod +x gen$n 2>/dev/null || true
