@@ -43,6 +43,18 @@ name: tcc-aarch64-probe
 # from run 2 was a harness bug (missing -B, and `make clean` running before the
 # other probes), not a tcc limitation.
 #
+# RUN 3 FINDING -- THIS SETTLES THE VERSION QUESTION.
+#   mob HEAD : inline asm WORKS (kern.c exit=0) and every C construct gcc 4.7
+#              needs works (feat.c exit=6). arm64-asm.c present.
+#   0.9.27   : CANNOT SELF-HOST on aarch64. Linking gen2 fails on undefined
+#              __addtf3/__subtf3/__multf3/__divtf3/__eqtf2/__netf2/__trunctfsf2/
+#              __floatunditf/__fixunstfdi/__clear_cache -- the 128-bit
+#              long-double soft-float runtime its arm64 libtcc1.a does not
+#              provide. Plus no inline assembler. That is a real property of the
+#              2017 release, not a harness artefact.
+# So live-bootstrap's pin is unusable for an aarch64 direct path, and mob is the
+# candidate. Adopt mob's SHA as OUR pin once it self-hosts to a fixpoint.
+#
 # Pins come from live-bootstrap 9a268c4 -- the same commit whose stage0-posix
 # pins ARE our three pins (see spikes/UPSTREAM-PINS.md), so tcc 0.9.27 is the
 # version that set is built around.
@@ -195,11 +207,17 @@ jobs:
           set +e
           cp tcc tcc-gen1
           echo "  gen1 (built by gcc): $(wc -c < tcc-gen1) bytes"
+          # libtcc1.a is tcc's own runtime support. `make clean` deletes it, and
+          # a parallel build reaches c2str.exe before it is rebuilt -> "file
+          # 'libtcc1.a' not found". Keep gen1's copy across the clean and build
+          # SERIALLY so make's dependency order is actually respected.
+          cp libtcc1.a libtcc1.a.keep 2>/dev/null || true
           for g in 2 3; do
             prev=$((g-1))
             make clean >/dev/null 2>&1
+            cp libtcc1.a.keep libtcc1.a 2>/dev/null || true
             echo "  --- building gen$g with tcc-gen$prev ---"
-            make -j"$(nproc)" CC="$PWD/tcc-gen$prev -B$PWD" 2>&1 | tail -12 | sed 's/^/    /'
+            make CC="$PWD/tcc-gen$prev -B$PWD" 2>&1 | tail -14 | sed 's/^/    /'
             rc=$?
             if [ -x tcc ]; then
               cp tcc "tcc-gen$g"
