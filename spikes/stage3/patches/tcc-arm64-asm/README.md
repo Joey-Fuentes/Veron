@@ -699,3 +699,37 @@ trylink already probes and reports as unsupported.
 The drop list is **explicit, not a blanket `-Wl,* -> discard`**: an option that
 actually affects the link and is not recognised should reach tcc and fail
 loudly rather than vanish.
+
+---
+
+## busybox builds (2026-07-24, run #25)
+
+```
+make rc=0        -- no errors of any class
+BUILT busybox    2,908,400 bytes
+                 ELF 64-bit LSB executable, ARM aarch64, statically linked
+                 BusyBox v1.36.1 multi-call binary
+applets          401
+```
+
+Compiled and linked entirely by tcc against a tcc-built musl. `Final link with:
+<none>` -- trylink found every library unnecessary, meaning tcc resolved all
+symbols from musl and busybox's own archives.
+
+`libc.a crt-like members: wcrtomb.o` is the grep matching "crt" inside
+*wcrtomb*. musl's libc.a contains no crt objects at all, which independently
+confirms the `defined twice` errors were a cascade rather than a real second
+definition.
+
+### What it took, by category
+
+| category | items |
+|---|---|
+| **compiler capability** (real gaps) | no dead-code elimination -- busybox relies on gcc folding `if (ENABLE_FEATURE_X)` and leaves the called function undefined |
+| **invocation** | `-Wp,-MD` splitting; `__GNUC__` undefined so `__attribute__` was nulled; `--start-group`; no `-L`/`-nostdlib` so the link used system glibc; `INFO_OPTS()` linker diagnostics |
+| **sysroot** | kernel UAPI headers, which musl does not ship |
+| **version skew** | `tc` needs CBQ enums removed from the uapi headers -- gcc fails identically |
+| **our own bugs** | assembler patch missing `<assert.h>`; tcc zero-filling executable alignment padding |
+
+Only the first row is about what tcc *can do*. That is the useful output of this
+spike: the compiler gap is one item, and everything else was plumbing.

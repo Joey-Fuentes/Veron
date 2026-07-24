@@ -605,7 +605,23 @@ jobs:
           fi
           [ -n "$KERNEL" ] || { echo "  no kernel image available"; exit 0; }
           echo "  kernel: $KERNEL"
-          file "$KERNEL" | sed 's/^/    /'
+
+          # /boot/vmlinuz-* is mode 0600 root-only on Azure images, so the
+          # runner user cannot read it: "regular file, no read permission".
+          # Copy it out with sudo rather than running qemu as root.
+          sudo cp "$KERNEL" kernel.img && sudo chmod a+r kernel.img
+          file kernel.img | sed 's/^/    /'
+
+          # Ubuntu ships the arm64 kernel gzip-compressed. qemu can load that,
+          # but decompressing removes a variable from a step that is already
+          # the least deterministic in the job.
+          if file kernel.img | grep -qi gzip; then
+            gunzip -c kernel.img > Image 2>/dev/null || zcat kernel.img > Image
+            KIMG=Image
+            echo "    decompressed: $(wc -c < Image) bytes"
+          else
+            KIMG=kernel.img
+          fi
 
           rm -rf initramfs && mkdir -p initramfs/bin initramfs/proc initramfs/sys
           cp "$BB" initramfs/bin/busybox
@@ -616,9 +632,14 @@ jobs:
           echo "  initramfs: $(wc -c < initramfs.cpio.gz) bytes"
 
           set +e
+          # -nic none: without it qemu wants the virtio network option ROM
+          # ("failed to find romfile efi-virtio.rom", shipped in ipxe-qemu) and
+          # refuses to start. An initramfs that mounts /proc and prints a marker
+          # has no use for a NIC, so removing the device is better than
+          # installing a ROM to satisfy a device we do not want.
           timeout 180 qemu-system-aarch64 \
-            -machine virt -cpu max -m 512 -nographic -no-reboot \
-            -kernel "$KERNEL" -initrd initramfs.cpio.gz \
+            -machine virt -cpu max -m 512 -nographic -no-reboot -nic none \
+            -kernel "$KIMG" -initrd initramfs.cpio.gz \
             -append "console=ttyAMA0 rdinit=/init panic=1" \
             > boot.log 2>&1
           echo "  qemu rc=$?"
