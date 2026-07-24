@@ -294,3 +294,97 @@ jobs:
           echo "    accept one labelled borrowed rung, as we do for as/objdump"
           echo
           echo "  EITHER POSITIVE -> the gap closes and the direct path stays native."
+
+  diff-4748:
+    name: 'C: what actually changed between 4.7 and 4.8, and is 4.8 still C?'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends curl bzip2 xz-utils gcc diffutils
+
+      - name: Fetch 4.7.4, 4.8.0 and 4.8.5
+        run: |
+          set -eu
+          for v in 4.7.4 4.8.0 4.8.5; do
+            curl -sSL -o "g$v.tar.bz2" "$GNU/gcc/gcc-$v/gcc-$v.tar.bz2"
+            mkdir -p "g$v" && tar xf "g$v.tar.bz2" -C "g$v" --strip-components=1
+            echo "  $v extracted"
+          done
+
+      - name: '1. The two changes are DISJOINT: backend vs build language'
+        run: |
+          echo "=== files ONLY in 4.8.5's gcc/, i.e. what the release added ==="
+          ( cd g4.7.4/gcc && find . -type f | sort ) > /tmp/f47
+          ( cd g4.8.5/gcc && find . -type f | sort ) > /tmp/f48
+          echo "  4.7.4 gcc/ files : $(wc -l < /tmp/f47)"
+          echo "  4.8.5 gcc/ files : $(wc -l < /tmp/f48)"
+          echo "  added in 4.8     : $(comm -13 /tmp/f47 /tmp/f48 | wc -l)"
+          echo "  of those, under config/aarch64/: $(comm -13 /tmp/f47 /tmp/f48 | grep -c 'config/aarch64' || echo 0)"
+          echo
+          echo "  --- the aarch64 backend is self-contained: ---"
+          comm -13 /tmp/f47 /tmp/f48 | grep 'config/aarch64' | sed 's/^/    /'
+
+      - name: '2. Did 4.7 have a C build path that 4.8 deleted?'
+        run: |
+          for v in 4.7.4 4.8.0 4.8.5; do
+            echo "=== $v ==="
+            printf '    enable-build-with-cxx in configure.ac : %s\n' \
+              "$(grep -c 'build-with-cxx' g$v/gcc/configure.ac 2>/dev/null || echo 0)"
+            printf '    enable-build-with-cxx in configure    : %s\n' \
+              "$(grep -c 'build-with-cxx' g$v/gcc/configure 2>/dev/null || echo 0)"
+            printf '    ENABLE_BUILD_WITH_CXX in Makefile.in  : %s\n' \
+              "$(grep -c 'ENABLE_BUILD_WITH_CXX' g$v/gcc/Makefile.in 2>/dev/null || echo 0)"
+            grep -m3 -A2 'build-with-cxx' "g$v/gcc/configure.ac" 2>/dev/null | sed 's/^/      /' || true
+            echo
+          done
+          echo "  4.7 shipped the C++ build as an OPT-IN alongside a working C path."
+          echo "  If 4.8 merely removed the switch, restoring it is small. If the"
+          echo "  sources drifted C++-only, that is a different size of job."
+
+      - name: '3. THE NUMBER: how many of 4.8 .c files still compile AS C?'
+        run: |
+          set +e
+          for v in 4.8.0 4.8.5; do
+            echo "=== gcc-$v/gcc/*.c syntax-checked as C ==="
+            tot=0; bad=0
+            for f in g$v/gcc/*.c; do
+              tot=$((tot+1))
+              gcc -fsyntax-only -x c -I"g$v/gcc" -I"g$v/include" -I"g$v/libcpp/include" \
+                 "$f" >/dev/null 2>>/tmp/cerr_$v || bad=$((bad+1))
+            done
+            echo "    total .c files      : $tot"
+            echo "    fail a C syntax check: $bad"
+            echo "    (many failures will be MISSING HEADERS, not C++-isms --"
+            echo "     the classes below separate them)"
+            echo "    --- error classes ---"
+            grep -oE 'error: [^,;]*' /tmp/cerr_$v | sed 's/[0-9]\+/N/g' \
+              | sort | uniq -c | sort -rn | head -20 | sed 's/^/      /'
+            echo
+          done
+          echo "  Real C++-isms look like: 'new' as identifier, invalid conversion"
+          echo "  from void*, 'class' as identifier, template/namespace keywords."
+          echo "  Missing-header noise is an artefact of checking out of tree."
+          set -e
+
+      - name: '4. Did the backend exist anywhere in a 4.7.x tree?'
+        run: |
+          echo "  4.7.4 config/ arm-family dirs:"
+          ls g4.7.4/gcc/config | grep -iE 'arm|aarch' | sed 's/^/    /' || echo "    none"
+          echo "  4.8.0 config/ arm-family dirs:"
+          ls g4.8.0/gcc/config | grep -iE 'arm|aarch' | sed 's/^/    /' || echo "    none"
+          echo
+          echo "  aarch64 backend file count, 4.8.0 vs 4.8.5:"
+          printf '    4.8.0: %s files, %s lines\n' \
+            "$(find g4.8.0/gcc/config/aarch64 -type f 2>/dev/null | wc -l)" \
+            "$(cat g4.8.0/gcc/config/aarch64/* 2>/dev/null | wc -l)"
+          printf '    4.8.5: %s files, %s lines\n' \
+            "$(find g4.8.5/gcc/config/aarch64 -type f 2>/dev/null | wc -l)" \
+            "$(cat g4.8.5/gcc/config/aarch64/* 2>/dev/null | wc -l)"
+          echo
+          echo "  If the backend is a few thousand lines in a self-contained dir,"
+          echo "  BACKPORTING IT ONTO 4.7 is a real option -- 4.7 keeps its C build"
+          echo "  path and gains the target, and the chain stays native with no"
+          echo "  C++ rung at all."
