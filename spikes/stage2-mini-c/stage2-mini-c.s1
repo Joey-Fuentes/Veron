@@ -1257,7 +1257,33 @@ bl emitstr
 add x6 x6 1
 b stmtend
 :doreturn
+mov x3 x6
+:dr_peek
+cmp x3 x21
+b.ge dr_expr
+ldrb w5 x19 x3
+cmp x5 32
+b.eq dr_padv
+cmp x5 9
+b.eq dr_padv
+cmp x5 10
+b.eq dr_padv
+cmp x5 13
+b.eq dr_padv
+b dr_pchk
+:dr_padv
+add x3 x3 1
+b dr_peek
+:dr_pchk
+cmp x5 59
+b.ne dr_expr
+mov x6 x3
+adr x9 spush0
+bl emitstr
+b dr_epi
+:dr_expr
 bl compile_expr
+:dr_epi
 adr x9 sepi
 bl emitstr
 add x6 x6 1
