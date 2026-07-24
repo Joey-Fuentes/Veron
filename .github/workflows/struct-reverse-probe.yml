@@ -464,79 +464,120 @@ jobs:
                    + last->members->members->offset;}"
 
           echo
-          echo "== MINIMISE: the three ingredients, with structs removed entirely =="
-          # The ablation says removing ANY ONE of {global, 2nd local, loop} fixes
-          # it, and A7 says user calls are irrelevant (builtins alone still
-          # SEGV). So drop structs, members, chains and helper calls completely
-          # and keep only those three. If MIN still faults, this has nothing to
-          # do with struct handling and the whole earlier framing was wrong.
-          MIN="int member_size;
-          int* build(int* last, int off){int* i; int* mt;
-          i=calloc(1,8); mt=calloc(1,8); i[0]=off; mt[0]=2;
-          member_size=6; return i;}"
+          echo "== BRACKET: A4 passes with ONE local, A3 fails with TWO =="
+          # A4 and A3 differ in nothing but the second struct-pointer local, so
+          # add it back one step at a time. The first B that SEGVs is the exact
+          # construct. NOTE the earlier MIN result was a FALSE PASS: its main
+          # returned `off` and never dereferenced `last`, so a corrupted pointer
+          # went unseen. MIN2 below repeats it with a dereference.
+          BR="$TYPE
+          int member_size;
+          int three(){return 3;}
+          struct type* rev(struct type* h){struct type* r; struct type* n; r=NULL;
+          while(NULL!=h){n=h->members; h->members=r; r=h; h=n;} return r;}"
+          RUN="int main(){struct type* last; int n; int off; last=NULL; n=0; off=0;
+          while(n<3){last=build(last,off); off=off+member_size; n=n+1;}
+          last=rev(last);
+          return last->offset*16 + last->members->offset*4
+                 + last->members->members->offset;}"
 
-          probe 'MIN  2 ptr locals + global + loop (no structs)' 18 \
-            "$MIN
+          probe 'B0 one local (this is A4, known good)' 36 \
+            "$BR
+            struct type* build(struct type* last, int off){struct type* i;
+            i=calloc(1,sizeof(struct type)); i->members=last; i->offset=off;
+            i->size=three()*2; member_size=i->size; return i;}
+            $RUN"
+
+          probe 'B1 + second ptr local DECLARED, never used' 36 \
+            "$BR
+            struct type* build(struct type* last, int off){struct type* i;
+            struct type* mt;
+            i=calloc(1,sizeof(struct type)); i->members=last; i->offset=off;
+            i->size=three()*2; member_size=i->size; return i;}
+            $RUN"
+
+          probe 'B2 + second ptr local = NULL' 36 \
+            "$BR
+            struct type* build(struct type* last, int off){struct type* i;
+            struct type* mt;
+            i=calloc(1,sizeof(struct type)); mt=NULL; i->members=last;
+            i->offset=off; i->size=three()*2; member_size=i->size; return i;}
+            $RUN"
+
+          probe 'B3 + second ptr local = i' 36 \
+            "$BR
+            struct type* build(struct type* last, int off){struct type* i;
+            struct type* mt;
+            i=calloc(1,sizeof(struct type)); mt=i; i->members=last;
+            i->offset=off; i->size=three()*2; member_size=i->size; return i;}
+            $RUN"
+
+          probe 'B4 + second ptr local = calloc(...)' 36 \
+            "$BR
+            struct type* build(struct type* last, int off){struct type* i;
+            struct type* mt;
+            i=calloc(1,sizeof(struct type)); mt=calloc(1,sizeof(struct type));
+            i->members=last; i->offset=off; i->size=three()*2;
+            member_size=i->size; return i;}
+            $RUN"
+
+          probe 'B5 + second local is an int, not a pointer' 36 \
+            "$BR
+            struct type* build(struct type* last, int off){struct type* i;
+            int mt;
+            i=calloc(1,sizeof(struct type)); mt=2; i->members=last;
+            i->offset=off; i->size=three()*2; member_size=i->size; return i;}
+            $RUN"
+
+          probe 'MIN2 struct-free, but DEREFERENCING the result' 12 \
+            "int member_size;
+            int* build(int* last, int off){int* i; int* mt;
+            i=calloc(1,8); mt=calloc(1,8); i[0]=off; mt[0]=2;
+            member_size=6; return i;}
             int main(){int* last; int n; int off; last=NULL; n=0; off=0;
             while(n<3){last=build(last,off); off=off+member_size; n=n+1;}
-            return off;}"
-
-          probe 'MINa same but ONE local' 18 \
-            "int member_size;
-            int* build1(int* last, int off){int* i;
-            i=calloc(1,8); i[0]=off; member_size=6; return i;}
-            int main(){int* last; int n; int off; last=NULL; n=0; off=0;
-            while(n<3){last=build1(last,off); off=off+member_size; n=n+1;}
-            return off;}"
-
-          probe 'MINb same but global never read in the loop' 18 \
-            "$MIN
-            int main(){int* last; int n; int off; last=NULL; n=0; off=0;
-            while(n<3){last=build(last,off); off=off+6; n=n+1;}
-            return off;}"
-
-          probe 'MINc same but no loop' 6 \
-            "$MIN
-            int main(){int* a; int* b; a=build(NULL,0); b=build(a,6);
-            return b[0];}"
+            return last[0];}"
 
           echo
-          echo "== EVIDENCE: emitted code for the minimal failing case =="
-          # Keep the assembly for MIN and for its nearest PASSING neighbour
-          # (MINa, one local) and diff them. Whatever stage 2 does differently
-          # for the second local is visible right there.
-          printf 'enum {NULL = 0};\n%s\nint main(){int* last; int n; int off; last=NULL; n=0; off=0;\nwhile(n<3){last=build(last,off); off=off+member_size; n=n+1;}\nreturn off;}\n' "$MIN" > min_bad.c
-          printf 'enum {NULL = 0};\nint member_size;\nint* build1(int* last, int off){int* i;\ni=calloc(1,8); i[0]=off; member_size=6; return i;}\nint main(){int* last; int n; int off; last=NULL; n=0; off=0;\nwhile(n<3){last=build1(last,off); off=off+member_size; n=n+1;}\nreturn off;}\n' > min_ok.c
+          echo "== EVIDENCE: the emitted frame for one local vs two =="
+          # Compile B0 (good) and B4 (the two-local form) and show what stage 2
+          # reserved and which offsets it handed out. prescan and the declarator
+          # must agree on the frame or the callee's locals land on top of
+          # something the caller still needs -- the m68 failure mode.
+          mkbad() { printf 'enum {NULL = 0};\n%s\n%s\n%s\n' "$BR" "$1" "$RUN"; }
+          mkbad "struct type* build(struct type* last, int off){struct type* i;
+          struct type* mt;
+          i=calloc(1,sizeof(struct type)); mt=calloc(1,sizeof(struct type));
+          i->members=last; i->offset=off; i->size=three()*2;
+          member_size=i->size; return i;}" > two.c
+          mkbad "struct type* build(struct type* last, int off){struct type* i;
+          i=calloc(1,sizeof(struct type)); i->members=last; i->offset=off;
+          i->size=three()*2; member_size=i->size; return i;}" > one.c
           set +e
-          timeout 60 qemu-aarch64 ./stage2 < min_bad.c > min_bad.s1 2>/dev/null
-          timeout 60 qemu-aarch64 ./stage2 < min_ok.c  > min_ok.s1  2>/dev/null
+          timeout 60 qemu-aarch64 ./stage2 < two.c > two.s1 2>/dev/null
+          timeout 60 qemu-aarch64 ./stage2 < one.c > one.s1 2>/dev/null
           set -e
-          echo "  emitted: bad=$(wc -l < min_bad.s1) lines, ok=$(wc -l < min_ok.s1) lines"
+          for v in one two; do
+            echo "  --- $v local(s): :build as emitted ---"
+            awk '/^:build$/,/^ret$/' $v.s1 | sed 's/^/      /'
+            echo "      frame reserve : $(awk '/^:build$/,/^ret$/' $v.s1 | grep -m1 'add x11 x11')"
+            echo "      slot offsets  : $(awk '/^:build$/,/^ret$/' $v.s1 | grep -oE 'add x1 x10 [0-9]+' | sort -u | tr '\n' ' ')"
+          done
           echo
-          echo "  --- the whole :build function as stage 2 emitted it ---"
-          awk '/^:build$/,/^ret$/' min_bad.s1 | head -70 | sed 's/^/    /'
-          echo
-          echo "  --- frame setup lines, bad vs ok ---"
-          echo "    BAD:"; grep -nE 'add x10 x11|add x11 x11|sub x11 x11' min_bad.s1 | head -8 | sed 's/^/      /'
-          echo "    OK :"; grep -nE 'add x10 x11|add x11 x11|sub x11 x11' min_ok.s1  | head -8 | sed 's/^/      /'
-          echo
-          echo "  --- where the global lands in each ---"
-          grep -n 'member_size\|g_member_size' min_bad.s1 | head -6 | sed 's/^/      BAD  /'
-          grep -n 'member_size\|g_member_size' min_ok.s1  | head -6 | sed 's/^/      OK   /'
-
-          echo
-          echo "  --- faulting PC in the minimal case, via tools/pcmap.py ---"
-          cat min_bad.s1 | timeout 60 qemu-aarch64 ./stage1 \
+          echo "  --- fault PC for the two-local build ---"
+          cat two.s1 | timeout 60 qemu-aarch64 ./stage1 \
             | timeout 60 qemu-aarch64 ./stage0-as \
-            | timeout 60 qemu-aarch64 ./elf min_bad 2>/dev/null
+            | timeout 60 qemu-aarch64 ./elf two.bin 2>/dev/null
           set +e
-          timeout 60 qemu-aarch64 -d cpu -D minfault.log ./min_bad >/dev/null 2>&1
+          timeout 60 qemu-aarch64 -d cpu -D f2.log ./two.bin >/dev/null 2>&1
+          rc=$?
           set -e
-          PC=$(grep -o 'PC=[0-9a-f]\{8,\}' minfault.log | tail -1 | cut -d= -f2)
-          LR=$(grep -o 'X30=[0-9a-f]\{8,\}' minfault.log | tail -1 | cut -d= -f2)
-          echo "    PC=0x$PC  X30=0x$LR   (trace $(du -h minfault.log | cut -f1))"
-          [ -n "$PC" ] && python3 tools/pcmap.py min_bad.s1 "0x$PC" "0x$LR" | sed 's/^/    /'
-          rm -f minfault.log
+          echo "      run rc=$rc"
+          PC=$(grep -o 'PC=[0-9a-f]\{8,\}' f2.log | tail -1 | cut -d= -f2)
+          LR=$(grep -o 'X30=[0-9a-f]\{8,\}' f2.log | tail -1 | cut -d= -f2)
+          echo "      PC=0x$PC X30=0x$LR"
+          [ -n "$PC" ] && python3 tools/pcmap.py two.s1 "0x$PC" "0x$LR" | sed 's/^/      /'
+          rm -f f2.log
 
           echo
           if [ "$fail" = 0 ]; then
