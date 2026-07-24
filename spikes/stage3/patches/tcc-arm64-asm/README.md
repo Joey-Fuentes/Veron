@@ -146,3 +146,45 @@ backends plus `tcc.h`/`tccasm.c` (7), `tccasm.c` (26), `tccpp.c` (4),
 `tcctok.h` (6). Mob's own assembler will already have made equivalent hook
 changes, so a forward port is mostly a question of which `arm64-asm.c` you
 want, not a merge.
+
+---
+
+## Measured — the series covers 20 of 20 (2026-07-24, runs 81636079843 / 81636079908)
+
+`tcc-userland-arm64` at `variant: mob` ran musl's own build with `make -k` and
+enumerated every mnemonic mob's assembler rejects. Twenty:
+
+```
+adrp   bic    cmp    dup    fabs   fcvtas fmadd  fmaxnm fminnm frinta
+frinti frintm frintp frintx frintz fsqrt  ldaxr  rbit   svc    uxtw
+```
+
+**All twenty are in `SERIES-COVERAGE.txt`.** Not most — all. Mob's assembler
+also produced 50 `unsupported system register` errors, and the series is the
+thing that adds `fpsr`, `fpcr`, `tpidr_el0` and `dczid_el0`, along with `zva`
+for `dc zva`. That combination — `dc zva` plus `dczid_el0` — appears in musl's
+`memset` and essentially nowhere else, which is what "enough to compile musl
+1.2.5" looks like from the inside: the series was developed against this exact
+build.
+
+So the musl version was never the problem. `MUSL_VER` is `1.2.5`, the version
+the series names. What had not happened was applying the series.
+
+### A second blocker, unrelated to the assembler
+
+The same run turned up **66 `_Complex is not yet supported` errors**. That is
+tcc's **C front end**, not its assembler, so no amount of assembler work touches
+it. The errors are confined to `src/complex/`, which nothing in busybox or a
+PID-1 shell references, so `tcc-userland-arm64` now drops that directory as a
+named PASS 3 substitution. The resulting `libc.a` is not a complete musl and
+must not be described as one.
+
+### And one that is not a compiler problem at all
+
+`make -k` still got **917 objects** built. The `.s` files that failed all have
+C fallbacks in musl's own tree — `fenv`, `tlsdesc`, `vfork`, `longjmp`,
+`restore`, `__set_thread_area`, `__unmapself`, `clone`, `syscall_cp` — which
+corrects an earlier note here that `setjmp`/`clone`/`syscall_cp` had none. After
+PASS 2 dropped those nine, only `adrp` (in `crt_arch.h`, so no crt links) and
+`svc` (in `syscall_arch.h`, so no syscall compiles) remained. Both are in the
+series.

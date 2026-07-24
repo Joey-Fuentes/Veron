@@ -156,28 +156,50 @@ jobs:
       - name: 'THE ENUMERATION: every instruction form musl uses, one at a time'
         run: |
           set -u
-          # Pull instruction lines out of musl's aarch64 asm: drop comments,
-          # directives, labels and blanks; keep up to 4 DISTINCT real forms per
-          # mnemonic so every mnemonic gets a fair test without thousands of
-          # near-duplicate probes.
-          find musl -path '*aarch64*' \( -name '*.s' -o -name '*.S' \) -print0 \
-            | xargs -0 cat \
-            | sed 's,//.*,,; s,/\*.*\*/,,' \
-            | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
-            | grep -vE '^$|^[.#]|^[A-Za-z0-9_.$]+:' \
-            | grep -E '^[a-z][a-z0-9._]*([[:space:]]|$)' \
-            | sort -u > forms-all.txt
-          awk '{ m=$1; if (++c[m] <= 4) print }' forms-all.txt > forms.txt
+          # Run 1 of this step produced 15 false positives out of 36, from two
+          # bugs worth naming:
+          #   * musl's memcpy.S/memset.S alias registers with .req (dst .req x0,
+          #     A_l .req x6). Probing a line ALONE loses the aliases, so tcc
+          #     said "invalid operand 'dst'" about instructions it implements.
+          #   * a sed that stripped only single-line /* */ let the BODY of
+          #     multi-line comments through, so "check", "copies" and
+          #     "sequences" were probed as if they were mnemonics.
+          # Both are fixed below by extracting with a real parser and by
+          # prepending every .req in the tree to each probe.
+          python3 - <<'PY'
+          import re, pathlib
+          files = [p for p in pathlib.Path('musl').rglob('*')
+                   if p.suffix in ('.s', '.S') and 'aarch64' in str(p)]
+          reqs, forms = [], []
+          for f in files:
+              t = f.read_text(errors='replace')
+              t = re.sub(r'/\*.*?\*/', '', t, flags=re.S)      # real block comments
+              for ln in t.splitlines():
+                  ln = re.sub(r'//.*', '', ln).strip()
+                  if not ln or ln.startswith('#'):
+                      continue
+                  if '.req' in ln:
+                      reqs.append(ln); continue
+                  if ln.startswith('.') or re.match(r'^[\w.$]+:', ln):
+                      continue
+                  if re.match(r'^[a-z][a-z0-9._]*(\s|$)', ln):
+                      forms.append(ln)
+          pathlib.Path('reqs.txt').write_text('\n'.join(sorted(set(reqs))) + '\n')
+          pathlib.Path('forms-all.txt').write_text('\n'.join(sorted(set(forms))) + '\n')
+          PY
+          awk '{ if (++c[$1] <= 6) print }' forms-all.txt > forms.txt
+          echo "  .req aliases found        : $(wc -l < reqs.txt)"
           echo "  distinct instruction lines: $(wc -l < forms-all.txt)"
           echo "  distinct mnemonics        : $(awk '{print $1}' forms-all.txt | sort -u | wc -l)"
           echo "  probing                   : $(wc -l < forms.txt) forms"
           echo
 
-          : > pass.txt; : > fail.txt
+          : > pass.txt; : > fail.txt; : > fail-forms.txt
           while IFS= read -r line; do
-            printf '.text\n.globl _p\n_p:\n%s\n.Lx:\n    ret\n' "$line" > /tmp/one.s
+            { echo '.text'; cat reqs.txt; echo '.globl _p'; echo '_p:';
+              echo "$line"; echo '.Lx:'; echo '    ret'; } > /tmp/one.s
             if "$TCC" -B"$TCCDIR" -c /tmp/one.s -o /tmp/one.o 2>/tmp/one.err; then
-              echo "$line" >> pass.txt
+              printf '%s\t%s\n' "$(echo "$line" | awk '{print $1}')" "$line" >> pass.txt
             else
               printf '%s\t%s\n' "$(echo "$line" | awk '{print $1}')" \
                 "$(head -1 /tmp/one.err | sed 's/.*error: //')" >> fail.txt
@@ -189,10 +211,17 @@ jobs:
           echo
           echo "  === REJECTED, grouped by mnemonic and reason ==="
           sort -u fail.txt | awk -F'\t' '{printf "    %-10s %s\n", $1, $2}' | sort -u
-          awk '{print $1}' fail-forms.txt 2>/dev/null | sort -u > missing.txt || true
+          # A mnemonic counts as MISSING only when NO form of it assembled.
+          # Run 1 called this "no working form" while computing "any form
+          # failed", which is why add/mov/ldr appeared in the gap list.
+          cut -f1 fail.txt | sort -u > f.m; cut -f1 pass.txt | sort -u > p.m
+          comm -23 f.m p.m > missing.txt
           echo
           echo "  mnemonics with NO working form: $(wc -l < missing.txt)"
           sed 's/^/    /' missing.txt
+          echo
+          echo "  partially working (some forms ok, some not): $(comm -12 f.m p.m | wc -l)"
+          comm -12 f.m p.m | sed 's/^/    /'
 
       - name: 'THE ANSWER: what do we need out of the patch?'
         run: |
@@ -225,6 +254,7 @@ jobs:
           name: arm64-asm-gap-${{ github.event.inputs.variant || 'mob' }}
           path: |
             forms-all.txt
+            reqs.txt
             forms.txt
             pass.txt
             fail.txt

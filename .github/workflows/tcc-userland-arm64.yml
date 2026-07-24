@@ -49,7 +49,7 @@ on:
         description: 'mob as-is, or mob rewound + the Feb-2026 arm64 asm series'
         type: choice
         options: [mob, mob-plus-series]
-        default: mob
+        default: mob-plus-series
 
 concurrency:
   group: tcc-userland-arm64-${{ github.ref }}
@@ -58,7 +58,7 @@ concurrency:
 env:
   MUSL_VER: '1.2.5'
   BUSYBOX_VER: '1.36.1'
-  VARIANT: ${{ github.event.inputs.variant || 'mob' }}
+  VARIANT: ${{ github.event.inputs.variant || 'mob-plus-series' }}
 
 jobs:
   userland:
@@ -240,6 +240,28 @@ jobs:
             tail -12 build2.log | sed 's/^/      /'
             missing build2.log | sed 's/^/      still missing: /'
           fi
+
+          # PASS 3: _Complex. Run 1 turned up 66 "_Complex is not yet supported"
+          # errors -- a limit of tcc's C FRONT END, not of its assembler, so no
+          # amount of assembler patching touches them. They are confined to
+          # src/complex/, which a static init and shell never reference, so
+          # dropping that directory is a legitimate substitution -- and one we
+          # NAME rather than quietly succeed around.
+          if grep -q '_Complex is not yet supported' build.log build2.log 2>/dev/null; then
+            echo
+            echo "  === PASS 3: drop src/complex (tcc has no _Complex) ==="
+            n=$(ls src/complex/*.c 2>/dev/null | wc -l)
+            rm -f src/complex/*.c
+            echo "    dropped $n complex-math source file(s)"
+            echo "    NOTE: the resulting libc.a has no cacos/csqrt/etc. Nothing in"
+            echo "    busybox or a PID-1 shell references them, but this libc is"
+            echo "    NOT a complete musl and must not be described as one."
+            timeout 1800 make -j"$(nproc)" > build3.log 2>&1
+            echo "    rebuild rc=$?"
+            tail -12 build3.log | sed 's/^/      /'
+            missing build3.log | sed 's/^/      still missing: /'
+          fi
+
           make install > /dev/null 2>&1
           echo "  installed: $(ls ../muslroot/lib 2>/dev/null | tr '\n' ' ')"
           set -e
@@ -288,7 +310,9 @@ jobs:
           sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
           sed -i 's/^CONFIG_STATIC=.*/CONFIG_STATIC=y/' .config
           # tcc chokes on a few hardening flags busybox enables by default
-          sed -i 's/^CONFIG_EXTRA_CFLAGS=.*/CONFIG_EXTRA_CFLAGS="-I..\\/muslroot\\/include"/' .config
+          # Was: an s/// with backslash-escaped slashes, which sed rejected with
+          # "unknown option to `s'" -- so this flag was never actually set.
+          sed -i "s|^CONFIG_EXTRA_CFLAGS=.*|CONFIG_EXTRA_CFLAGS=\"-I$MR/include\"|" .config
           yes '' | make oldconfig > /dev/null 2>&1
           timeout 2400 make -j"$(nproc)" \
             CC="$TCC -B$TCCDIR" \
@@ -299,6 +323,11 @@ jobs:
           echo "  --- error classes ---"
           grep -oE 'error: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
             | sort | uniq -c | sort -rn | head -20 | sed 's/^/    /'
+          if ! [ -x busybox ]; then
+            echo "  --- re-running the first failing target with V=1 ---"
+            timeout 300 make V=1 CC="$TCC -B$TCCDIR" HOSTCC=gcc SKIP_STRIP=y \
+              applets/applets.o 2>&1 | tail -12 | sed 's/^/    /'
+          fi
           if [ -x busybox ]; then
             echo "  BUILT busybox: $(wc -c < busybox) bytes"
             file busybox | sed 's/^/    /'
