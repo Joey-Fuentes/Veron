@@ -1963,6 +1963,66 @@ gap: the sections are individually green but have never been run together.
 tiering the capacity tests, memoizing the assembled ladder across sections, or moving the
 big-input cases to CI only — is its own task and is being picked up separately.
 
+
+---
+
+## 5b. HAND-OFF REACHED — our ladder reproduces upstream's M2-Planet byte for byte
+
+The finish line described in §6 has been crossed. At the 1.13.1 pin
+(M2-Planet `bd2fe4b`, M2libc `68a23cf`, mescc-tools `5adfbf3`),
+`.github/workflows/m2libc-113-bisect.yml` now gates on:
+
+```
+=== HANDOFF ===
+refM2P (upstream tooling)        643257  d80317fc92ff4889
+G1     (our ladder)              643257  d80317fc92ff4889
+PASS: our seed-built compiler reproduces upstream's reference
+      M2-Planet byte for byte. The handoff is proven.
+      G2, G3, G4, G5 also identical (stable fixpoint)
+```
+
+**How to read the generations.** `G0` is our M2-Planet, built by stage 2 from the
+*patched* source (`tools/drop_asm.py` + `spikes/stage2-mini-c/m2libc-shim.c`).
+Every generation after that is built by the previous generation from upstream's
+**unpatched** `-f` list, because our M2-Planet compiles `asm()` perfectly well —
+so **the substitution applies to G0 only and drops out of the chain at once**.
+That G1 lands exactly on upstream's bytes is the strongest available evidence
+that the substitution is behaviour-preserving: not an argument, a checksum. And
+five generations without drift means the compiler is a fixpoint of itself.
+
+`G0` is *not* byte-identical to `refM2P` and never will be — different source,
+different compiler, different linker, and upstream's is built `--debug` with
+`blood-elf`. Binary identity was never the claim; **output** identity is.
+
+**Three stage-2 defects were found and fixed getting here**, each measured rather
+than argued:
+
+| | defect |
+|---|---|
+| **m75** | struct-pointer declarators (`pl_struct`, `dostruct`) held the flags word in `x2` across `next_token`, which m67 documents as clobbering `x1/x2/x4`. Any identifier entering a keyword-comparison arm destroyed the flags. Fix: set flags *after* the call. |
+| **m76** | a function-declarator parameter (`int f(int)`) declared a phantom extra param, so the callee popped one slot more than the caller pushed. Fix: route a top-level `(` into the existing `pl_fp_skip`. |
+| **m77** | a bare `return;` called `compile_expr` unconditionally and pushed nothing, while the caller still popped a result — one value-stack slot lost per execution. Fix: emit `spush0`, as `funcdone` already did. |
+
+m77 was the one that turned a SIGILL into a byte-identical reference compiler.
+The value stack is based at `brk(0)`, i.e. immediately after the image with **no
+guard band**, so a single slot of underflow silently overwrites the program's own
+last instruction instead of faulting. Worth a guard page.
+
+**Method note, recorded because it cost most of the session.** Differential
+testing — mutate the source, diff the exit code — produced four confident root
+causes for m75 (alignment, a second local, a global write, scalar-vs-array
+emission) and every one dissolved on the next run, because changing the source
+changes emitted layout and symbol-table state together. What worked was watching
+the machine: trap the store, map the PC through `tools/pcmap.py`, read the
+emitted instruction, then read the compiler's own branch. `tools/backtrace.py`
+and `tools/vstack.py` package that loop.
+
+**Still open, non-blocking.** `G0`'s **x86** codegen differs from upstream:
+compiling for x86 it takes the short-immediate branch in `write_add_immediate`
+where upstream emits the register form (~1350 sites, 31,698 bytes). `G1` proves
+`G0`'s aarch64 codegen is perfect, and `G0` is used exactly once to produce `G1`,
+so this does not block the hand-off. Recorded as a non-gating REPORT step.
+
 ---
 
 ## 6. What's next

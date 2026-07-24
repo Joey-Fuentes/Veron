@@ -167,7 +167,24 @@ supplies both in ten lines of C over our `read`/`write` builtins. That is a
 smaller substitution than m71's and it states its own rule rather than relying
 on a coincidence of upstream's file layout.
 
+## HAND-OFF PROVEN AT THIS PIN
+
+Our ladder's M2-Planet (`G0`), compiling upstream's **unpatched** source, produces
+`G1` = **643,257 bytes, sha256 `d80317fc92ff4889…`** — byte-identical to `refM2P`,
+the binary upstream's own `test/test1000/hello-aarch64.sh` builds and checksums.
+`G2`–`G5` are identical to `G1`: a stable fixpoint.
+
+The substitution (`drop_asm` + shim) therefore applies to `G0` alone and leaves
+the chain at the first generation. Behaviour-preserving, by checksum.
+
 ## Still open at this pin
+
+- **`G0`'s x86 codegen differs from upstream.** Compiling for `--architecture
+  x86` it emits the short immediate form in `write_add_immediate`
+  (`add_eax,BYTE '0C'`) where upstream emits `mov_ecx, %12` + `add_eax,ecx`,
+  at ~1350 sites — 31,698 bytes short. `G1` proves the aarch64 path is perfect,
+  so this is an x86-only defect in a binary used once. Non-blocking; kept as a
+  non-gating REPORT in the bisect workflow.
 
 - **Stage 2 hangs on `M2libc/stdlib.c`** (rc=124) and **segfaults on
   `M2libc/stdio.c`** (rc=139, faulting within the first 62 lines — the
