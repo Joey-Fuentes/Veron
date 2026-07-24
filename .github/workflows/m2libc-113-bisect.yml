@@ -1,19 +1,30 @@
 name: m2libc-113-bisect
 
-# SPIKE. Our stage 2 at the 1.13.1 pin.
+# SPIKE. Our stage 2 at the 1.13.1 pin -- BOTH ARMS, on the same artifact.
 #
-# REFERENCE IS PROVEN (reference-first): upstream's aarch64 M2-Planet, 643,257
-# bytes, produces byte-identical output to the gcc-built one. The old segfault
-# was master's unreleased 1.13.2 buffering change. See spikes/UPSTREAM-PINS.md.
+# THE COMPARISON IS SELF-COMPILATION, not a sample program. Upstream's
+# test/test1000/hello-aarch64.sh builds an aarch64 M2-Planet and then has that
+# binary compile M2-Planet's ENTIRE source for x86, checking the result against
+# a published sha256 in test/test1000/proof.answer. That answer file is the
+# gold standard: it is upstream's number, not ours.
 #
-# 1.13.1's M2libc splits differently: aarch64/linux/bootstrap.c is the WHOLE
-# mini-libc (fgetc fputc fputs fwrite open fopen close fclose brk malloc strlen
-# memset calloc free exit) with only 6 asm() blocks inside it. There is no
-# generic bootstrap.c to substitute, which is what m71's omission relied on.
+#   REFERENCE : test1000 builds refM2P, refM2P self-compiles -> proof
+#   OURS      : our ladder builds M2-ours, M2-ours self-compiles -> ours_proof
+#   GATE      : ours_proof == proof, byte for byte, AND == proof.answer's sha256
 #
-# Two things to establish here, both by measurement:
-#   1. WHERE the constants live (NULL TRUE FALSE EOF EXIT_* stdin stdout stderr)
-#   2. WHY stage 2 segfaults on stdlib.c / stdio.c / string.c
+# The -f list for the proof is never hand-written. It is lifted from the trace
+# of upstream's own script, because four reconstructed lists in a row were wrong.
+#
+# THE SUBSTITUTION (ours arm only). 1.13.1's aarch64/linux/bootstrap.c is the
+# WHOLE mini-libc (fgetc fputc fputs fwrite open fopen close fclose brk malloc
+# strlen memset calloc free exit) with asm() in only 6 of them, and there is no
+# generic bootstrap.c to omit the way m71 did. tools/drop_asm.py cuts at
+# FUNCTION granularity; m53/m69 builtins supply open/close/brk/exit; and
+# spikes/stage2-mini-c/m2libc-shim.c supplies fgetc/fputc, the two left over.
+# Only our stage 2 needs this -- M2-Planet itself compiles asm() fine, so the
+# reference arm and the self-compilation input are upstream's source unpatched.
+#
+# Q1-Q3 below are the original diagnostics and stay non-gating.
 
 on:
   push:
@@ -29,7 +40,7 @@ concurrency:
 jobs:
   bisect:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     env:
       M2PLANET_SHA: bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d
       M2LIBC_SHA: 68a23cfd05d5a355ba7a30c770d684cbe86fcc4e
@@ -40,7 +51,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            qemu-user binutils-aarch64-linux-gnu gcc make
+            qemu-user qemu-user-static binfmt-support \
+            binutils-aarch64-linux-gnu gcc make
       - name: Fetch upstreams
         run: |
           git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
@@ -49,6 +61,7 @@ jobs:
           git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
           git -C upstream-mescc checkout -q "$MESCC_SHA"
           make -C upstream-m2planet M2-Planet
+          make -C upstream-mescc M1 hex2 blood-elf get_machine
           echo "  PINS: M2-Planet $(git -C upstream-m2planet rev-parse --short HEAD)  M2libc $(git -C upstream-m2planet/M2libc rev-parse --short HEAD)"
 
       - name: Build the ladder
@@ -61,6 +74,111 @@ jobs:
             | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
           cat spikes/stage2-mini-c/stage2-mini-c.s1 \
             | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+
+      - name: 'REFERENCE: upstream test1000 builds the aarch64 M2-Planet'
+        run: |
+          . tools/ab.sh
+          cd upstream-m2planet
+          export PATH="$PWD/bin:$PWD/../upstream-mescc/bin:$PATH"
+          export GET_MACHINE_OVERRIDE_ALWAYS_RUN=1
+          # Run THEIR script and keep what it makes. Capture the trace: the
+          # proof invocation in it is the -f list we must not hand-write.
+          set +e
+          timeout 600 sh test/test1000/hello-aarch64.sh > "$GITHUB_WORKSPACE/test1000.log" 2>&1
+          rc=$?
+          set -e
+          tail -25 "$GITHUB_WORKSPACE/test1000.log" | sed 's/^/    /'
+          [ "$rc" = 0 ] || { echo "REFERENCE FAILED rc=$rc"; exit 1; }
+          cd ..
+          cp upstream-m2planet/test/results/test1000-aarch64-binary refM2P
+          chmod +x refM2P
+          ab_rule 'REFERENCE aarch64 M2-Planet (verified by upstream sha256)'
+          ab_art 'refM2P'                 refM2P
+          ab_art 'proof (its self-compile)' upstream-m2planet/test/test1000/proof
+
+      - name: 'OURS: patch only the asm() functions, build M2-Planet with our ladder'
+        continue-on-error: true
+        run: |
+          . tools/ab.sh
+          M=upstream-m2planet; L=$M/M2libc
+          # m71 omitted a whole file. At 1.13.1 that file is the entire
+          # mini-libc, so omit at FUNCTION granularity instead: drop the
+          # asm()-bodied syscall wrappers our m53/m69 builtins already supply,
+          # compile every other function unpatched.
+          echo "  what drop_asm removes from aarch64/linux/bootstrap.c:"
+          python3 tools/drop_asm.py --list $L/aarch64/linux/bootstrap.c | sed 's/^/    /'
+          python3 tools/drop_asm.py $L/aarch64/linux/bootstrap.c > patched_bootstrap.c
+          ab_rule 'THE SUBSTITUTION'
+          ab_art 'bootstrap.c (upstream)' $L/aarch64/linux/bootstrap.c
+          ab_art 'bootstrap.c (patched)'  patched_bootstrap.c
+          echo "    asm() blocks remaining: $(grep -c 'asm(' patched_bootstrap.c)"
+
+          # upstream's own 1.13.1 -f list, with only that one file patched
+          # The shim supplies fgetc/fputc, the only two dropped functions our
+          # builtins do not already cover -- open/close come from m53, brk from
+          # m69, exit from m53. It goes AFTER the patched bootstrap.c so that
+          # file's enums (NULL EOF TRUE FALSE stdin/stdout/stderr EXIT_*) are in
+          # scope, and before M2-Planet's own sources.
+          cat patched_bootstrap.c spikes/stage2-mini-c/m2libc-shim.c \
+              $L/bootstrappable.c \
+              $M/cc.h $M/cc_globals.c $M/cc_reader.c $M/cc_strings.c \
+              $M/cc_types.c $M/cc_emit.c $M/cc_core.c $M/cc_macro.c $M/cc.c > m2.c
+          ab_art 'm2libc-shim.c' spikes/stage2-mini-c/m2libc-shim.c
+          ab_art 'm2.c (our translation unit)' m2.c
+          set +e
+          timeout 300 qemu-aarch64 ./stage2 < m2.c > m2.s1
+          echo "  stage2 rc=$? emitted=$(wc -c < m2.s1) bytes"
+          set -e
+          { grep -oE '^adr x[0-9]+ [A-Za-z_][A-Za-z0-9_]*$' m2.s1 | awk '{print $3}'
+            grep -oE '^bl [A-Za-z_][A-Za-z0-9_]*$' m2.s1 | awk '{print $2}'; } | sort -u > /tmp/r
+          grep -oE '^:[A-Za-z_][A-Za-z0-9_]*$' m2.s1 | sed 's/^://' | sort -u > /tmp/d
+          echo "  unresolved: $(comm -23 /tmp/r /tmp/d | tr '\n' ' ' | sed 's/^ *$/NONE/')"
+          [ -s m2.s1 ] || exit 0
+          cat m2.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as \
+            | qemu-aarch64 ./elf M2-ours 2>/dev/null || true
+          chmod +x M2-ours 2>/dev/null || true
+          ab_art 'M2-Planet (ours)' M2-ours
+      - name: 'THE PROOF: both self-compile M2-Planet, checked against upstream sha256'
+        run: |
+          . tools/ab.sh
+          ROOT="$PWD"
+          if [ ! -s M2-ours ]; then
+            echo "FAIL: our arm produced no M2-Planet -- see the OURS step above."
+            exit 1
+          fi
+
+          # Lift the proof invocation verbatim from upstream's own trace.
+          CMD=$(grep -m1 -- '--architecture x86' test1000.log | sed 's/^+ *//')
+          [ -n "$CMD" ] || { echo "FAIL: no proof invocation in test1000.log"; exit 1; }
+          ARGS=${CMD#*test1000-aarch64-binary }
+          echo "  upstream's proof invocation (args reused verbatim):"
+          printf '    %s\n' "$ARGS" | fold -w 100 | sed '2,$s/^/      /'
+
+          cd upstream-m2planet
+          OURS_ARGS=$(printf '%s' "$ARGS" | sed 's|-o test/test1000/proof|-o ours_proof|')
+          ab_rule 'SELF-COMPILATION: M2-Planet compiles its own entire source'
+          ab_run 'ours self-compiles' 900 ours_proof \
+            qemu-aarch64 "$ROOT/M2-ours" $OURS_ARGS
+
+          EXPECT=$(awk '{print $1}' test/test1000/proof.answer)
+          ab_art 'reference proof' test/test1000/proof
+          ab_art 'ours_proof'      ours_proof
+          ab_cmp '  ours vs reference' ours_proof test/test1000/proof
+
+          if [ ! -s ours_proof ]; then
+            echo "FAIL: our M2-Planet produced no output."
+            exit 1
+          fi
+          GOT=$(sha256sum ours_proof | awk '{print $1}')
+          echo "  upstream proof.answer : $EXPECT"
+          echo "  ours                  : $GOT"
+          if [ "$GOT" = "$EXPECT" ]; then
+            echo "PASS: our stage-2-built M2-Planet compiled M2-Planet's entire source"
+            echo "      and the result matches upstream's own published sha256."
+          else
+            echo "FAIL: self-compilation output does not match upstream's answer file."
+            exit 1
+          fi
 
       - name: 'Q1 where do the constants come from at 1.13.1?'
         run: |
@@ -124,50 +242,3 @@ jobs:
             done
           done
 
-      - name: 'Q4 PATCH IT: drop only the asm() functions, build with our ladder'
-        continue-on-error: true
-        run: |
-          . tools/ab.sh
-          M=upstream-m2planet; L=$M/M2libc
-          # m71 omitted a whole file. At 1.13.1 that file is the entire
-          # mini-libc, so omit at FUNCTION granularity instead: drop the
-          # asm()-bodied syscall wrappers our m53/m69 builtins already supply,
-          # compile every other function unpatched.
-          echo "  what drop_asm removes from aarch64/linux/bootstrap.c:"
-          python3 tools/drop_asm.py --list $L/aarch64/linux/bootstrap.c | sed 's/^/    /'
-          python3 tools/drop_asm.py $L/aarch64/linux/bootstrap.c > patched_bootstrap.c
-          ab_rule 'THE SUBSTITUTION'
-          ab_art 'bootstrap.c (upstream)' $L/aarch64/linux/bootstrap.c
-          ab_art 'bootstrap.c (patched)'  patched_bootstrap.c
-          echo "    asm() blocks remaining: $(grep -c 'asm(' patched_bootstrap.c)"
-
-          # upstream's own 1.13.1 -f list, with only that one file patched
-          # The shim supplies fgetc/fputc, the only two dropped functions our
-          # builtins do not already cover -- open/close come from m53, brk from
-          # m69, exit from m53. It goes AFTER the patched bootstrap.c so that
-          # file's enums (NULL EOF TRUE FALSE stdin/stdout/stderr EXIT_*) are in
-          # scope, and before M2-Planet's own sources.
-          cat patched_bootstrap.c spikes/stage2-mini-c/m2libc-shim.c \
-              $L/bootstrappable.c \
-              $M/cc.h $M/cc_globals.c $M/cc_reader.c $M/cc_strings.c \
-              $M/cc_types.c $M/cc_emit.c $M/cc_core.c $M/cc_macro.c $M/cc.c > m2.c
-          ab_art 'm2libc-shim.c' spikes/stage2-mini-c/m2libc-shim.c
-          ab_art 'm2.c (our translation unit)' m2.c
-          set +e
-          timeout 300 qemu-aarch64 ./stage2 < m2.c > m2.s1
-          echo "  stage2 rc=$? emitted=$(wc -c < m2.s1) bytes"
-          set -e
-          { grep -oE '^adr x[0-9]+ [A-Za-z_][A-Za-z0-9_]*$' m2.s1 | awk '{print $3}'
-            grep -oE '^bl [A-Za-z_][A-Za-z0-9_]*$' m2.s1 | awk '{print $2}'; } | sort -u > /tmp/r
-          grep -oE '^:[A-Za-z_][A-Za-z0-9_]*$' m2.s1 | sed 's/^://' | sort -u > /tmp/d
-          echo "  unresolved: $(comm -23 /tmp/r /tmp/d | tr '\n' ' ' | sed 's/^ *$/NONE/')"
-          [ -s m2.s1 ] || exit 0
-          cat m2.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as \
-            | qemu-aarch64 ./elf M2-ours 2>/dev/null || true
-          ab_art 'M2-Planet (ours)' M2-ours
-          printf 'int main(){int i;int s;s=0;for(i=1;i<10;i=i+1){s=s+i;}return s;}' > c.c
-          ab_run 'ours compiles c.c' 120 ours.M1 \
-            qemu-aarch64 ./M2-ours --architecture aarch64 --bootstrap-mode -f c.c -o ours.M1
-          ab_run 'host compiles c.c' 120 host.M1 \
-            $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode -f c.c -o host.M1
-          ab_cmp '  ours vs host' ours.M1 host.M1
