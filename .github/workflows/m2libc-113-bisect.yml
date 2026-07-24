@@ -250,7 +250,23 @@ jobs:
           [ -n "$PC" ] && python3 tools/pcmap.py m2.s1 "0x$PC" "0x$LR" | sed 's/^/    /'
           echo "    --- last 3 labels in the emitted image ---"
           python3 tools/pcmap.py m2.s1 --list 2>/dev/null | tail -3 | sed 's/^/      /'
-          rm -f fault.log
+
+          # DIRECT CHECK: are the bytes actually in the image the instructions
+          # m2.s1 says should be there? The fault is inside an emitted builtin
+          # runtime, so compare the tail byte-for-byte instead of assuming.
+          echo
+          echo "    --- what m2.s1 says the tail should be (from :brk on) ---"
+          awk '/^:brk$/,0' m2.s1 | head -12 | sed 's/^/      /'
+          echo "    --- how many times each builtin runtime was emitted ---"
+          for b in calloc free open read write close exit brk; do
+            printf '      %-8s %s\n' "$b" "$(grep -c "^:$b\$" m2.s1)"
+          done
+          echo "    --- last 48 bytes of the image, disassembled ---"
+          tail -c 48 M2-ours > tail.bin
+          aarch64-linux-gnu-objdump -D -b binary -m aarch64 \
+            --adjust-vma=$((0x400000 + $(wc -c < M2-ours) - 48)) tail.bin \
+            2>/dev/null | tail -14 | sed 's/^/      /'
+          rm -f fault.log tail.bin
 
       - name: 'Q1 where do the constants come from at 1.13.1?'
         run: |
