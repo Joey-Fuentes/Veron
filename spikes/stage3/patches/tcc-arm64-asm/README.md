@@ -318,3 +318,29 @@ a gap like this survives in something "enough to compile musl 1.2.5". Lowercase
 is the more common style in hand-written arm64 asm, so anything beyond musl is
 likely to hit it. Worth a one-line fix in the arrangement parser if this series
 becomes ours rather than a borrowed rung.
+
+---
+
+## Script verified end to end (2026-07-24)
+
+`apply-series.sh` shipped once with `VERIFIED_BASE` referenced but never
+assigned — the edit that added the assignment targeted a line that exists in
+`fetch-base.sh`, not this one, and nothing checked that the replacement matched.
+Under `set -u` that is a fatal `unbound variable` after the base search has
+already succeeded, which makes it look like a base-finding failure when it is
+not.
+
+The script is now run end to end before shipping, against the real base tree:
+
+```
+tccasm.c blob 523cbab0 -> base located
+6 of 9 blobs match (i386-asm.c, riscv64-asm.c, tcctok.h drifted; all applied)
+0001, 0002, 0003 applied
+arm64-tok.h 247 lines, arm64-asm.c 2651 lines
+./configure --enable-cross && make arm64-tcc
+musl 1.2.5 aarch64 asm: PASS=16 FAIL=0
+```
+
+The three drifted files apply anyway. In a full clone `--3way` has the real
+blobs; in a shallow or synthetic tree it falls back to direct application, and
+both routes succeed.

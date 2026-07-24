@@ -30,6 +30,10 @@ set -euo pipefail
 T=${1:?usage: apply-series.sh <tinycc-dir> [<patch-dir>]}
 P=${2:-$(cd "$(dirname "$0")" && pwd)}
 
+# The base this series has been verified against: applies 3/3 clean, and the
+# resulting cross arm64-tcc assembles all 16 of musl 1.2.5's aarch64 asm files.
+VERIFIED_BASE=5ec0e6f84b47ebd8c269b581712666313f5edaef   # 2025-12-21 "some reverts & fixes"
+
 say() { printf '%s\n' "$*"; }
 
 # ---------------------------------------------------------------- pre-images
