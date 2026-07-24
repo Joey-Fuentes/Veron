@@ -538,3 +538,38 @@ it. The shim translates `--start-group`/`--end-group` to
 For busybox this is close to semantically neutral: the archives hold the objects
 for the applets the config selected, and the final binary is meant to contain
 all of them. The change can make the binary larger; it cannot make it wrong.
+
+---
+
+## A pin that could drift silently (2026-07-24)
+
+One run built **busybox 1.37.0.git instead of the pinned 1.36.1**, and nothing
+said so. The fetch chain degraded step by step:
+
+```
+1. busybox.net tarball        -> SSL connection timeout (transient)
+2. mirrors.kernel.org/gentoo  -> 404 (wrong path)
+3. git clone --branch 1.36.1  -> "Remote branch not found"
+                                 busybox git tags use UNDERSCORES: 1_36_1
+4. git clone <no branch>      -> master == 1.37.0.git
+```
+
+The last fallback had no branch argument at all. The compile error it produced,
+`'sha1_process_block64_shaNI' undeclared`, was master-only code -- 1.36.1 keeps
+both the declaration and its use inside
+`#if defined(__GNUC__) && (defined(__i386__) || defined(__x86_64__))`, and had
+compiled cleanly in the previous run.
+
+That error was a symptom. The bug was that a run could measure a different
+source tree than the one recorded and report it as if it were the pinned one --
+in a project whose stated thesis is hermetic, reproducible, pinned builds.
+
+Fixed three ways, and the third is the one that matters:
+
+1. the git tag is derived correctly (`tr . _`), so path 3 works;
+2. the unpinned bare clone is gone -- the GitHub fallback now takes the same
+   tag, and a GitHub tag tarball replaces the dead gentoo mirror;
+3. **both musl and busybox now assert their version after fetch and fail the
+   run on mismatch.** Every fetch path can succeed with the wrong thing; only
+   the assertion catches it. Verified against a real 1.36.1 tree (passes) and a
+   simulated 1.37.0 one (fails).

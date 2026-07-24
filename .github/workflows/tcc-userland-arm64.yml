@@ -169,6 +169,12 @@ jobs:
                    https://github.com/bminor/musl musl
           fi
           [ -f musl/configure ] || { echo "  could not obtain musl source"; exit 1; }
+          # Assert the pin here too -- musl's git tags are v1.2.5 so the branch
+          # name happens to be right, but "happens to be" is not a guarantee.
+          MUSL_GOT=$(cat musl/VERSION 2>/dev/null | tr -d '[:space:]')
+          echo "  musl version: ${MUSL_GOT:-<unknown>} (pinned: $MUSL_VER)"
+          [ "$MUSL_GOT" = "$MUSL_VER" ] || {
+            echo "  PIN VIOLATION: got ${MUSL_GOT:-<unknown>}, expected $MUSL_VER"; exit 1; }
           echo "  musl source: $(du -sh musl | cut -f1)"
           cd musl
           set +e
@@ -365,24 +371,42 @@ jobs:
         run: |
           set -u
           MR="$PWD/muslroot"
+          # THE LAST FALLBACK USED TO BE UNPINNED, and it fired. Run 1 of this
+          # step went: busybox.net SSL timeout -> gentoo mirror 404 -> git
+          # clone --branch 1.36.1 "Remote branch not found" (busybox git tags
+          # use UNDERSCORES, 1_36_1) -> and then a bare clone of master, which
+          # is 1.37.0.git. The whole run silently measured a different busybox,
+          # and the compile error it produced (sha1_process_block64_shaNI) was
+          # master-only code. In a project whose thesis is hermetic pinned
+          # builds, a pin that can quietly drift is worse than no pin.
+          BB_TAG=$(echo "$BUSYBOX_VER" | tr . _)     # 1.36.1 -> 1_36_1
           mkdir -p bb
           got=no
           for u in "https://busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2" \
-                   "https://mirrors.kernel.org/gentoo/distfiles/busybox-$BUSYBOX_VER.tar.bz2"; do
+                   "https://github.com/mirror/busybox/archive/refs/tags/$BB_TAG.tar.gz"; do
             echo "  trying $u"
             if curl -fsSL --retry 4 --retry-delay 3 --retry-connrefused \
-                 --connect-timeout 20 -o bb.tar.bz2 "$u"; then
-              tar xf bb.tar.bz2 -C bb --strip-components=1 && got=yes && break
+                 --connect-timeout 20 -o bb.tar "$u"; then
+              tar xf bb.tar -C bb --strip-components=1 && got=yes && break
             fi
           done
           if [ "$got" = no ]; then
-            echo "  tarballs unreachable -- cloning the git mirror"
+            echo "  tarballs unreachable -- cloning at tag $BB_TAG"
             rm -rf bb
-            git clone -q --depth 1 --branch "${BUSYBOX_VER}" \
+            git clone -q --depth 1 --branch "$BB_TAG" \
               https://git.busybox.net/busybox bb \
-              || git clone -q --depth 1 https://github.com/mirror/busybox bb
+              || git clone -q --depth 1 --branch "$BB_TAG" \
+                   https://github.com/mirror/busybox bb
           fi
           [ -f bb/Makefile ] || { echo "  could not obtain busybox source"; exit 1; }
+
+          # ASSERT THE PIN. Every fetch path above can succeed with the wrong
+          # thing; only this catches it.
+          BB_GOT=$(awk -F'= *' '/^VERSION =/{V=$2} /^PATCHLEVEL =/{P=$2} /^SUBLEVEL =/{S=$2}
+                                END{gsub(/ /,"",V);gsub(/ /,"",P);gsub(/ /,"",S);print V"."P"."S}' bb/Makefile)
+          echo "  busybox version: $BB_GOT (pinned: $BUSYBOX_VER)"
+          [ "$BB_GOT" = "$BUSYBOX_VER" ] || {
+            echo "  PIN VIOLATION: got $BB_GOT, expected $BUSYBOX_VER"; exit 1; }
           cd bb
           set +e
           make defconfig > /dev/null 2>&1
