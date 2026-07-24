@@ -303,7 +303,11 @@ jobs:
       - name: Install
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends curl bzip2 xz-utils gcc diffutils
+          sudo apt-get install -y --no-install-recommends curl bzip2 xz-utils gcc diffutils \
+            libgmp-dev libmpfr-dev libmpc-dev
+          # gcc's configure hard-requires GMP/MPFR/MPC. Without them it exits
+          # before generating config.h, and the C-compatibility measurement
+          # silently measures nothing (run 1 of this step did exactly that).
 
       - name: Fetch 4.7.4, 4.8.0 and 4.8.5
         run: |
@@ -367,9 +371,14 @@ jobs:
             )
             GD="cfg$v/gcc"
             if [ ! -f "$GD/config.h" ]; then
-              echo "  config.h still absent -- cannot measure; the C++ question stays open."
+              echo "  config.h still absent -- CANNOT MEASURE. Reason:"
+              grep -iE 'error|required|missing|not found' "cfg$v/cfg.log" 2>/dev/null \
+                | head -8 | sed 's/^/      /'
+              echo "  The C++ question stays open; do not read anything into this run."
+              MEASURED=no
               continue
             fi
+            MEASURED=yes
             echo
             echo "=== gcc-$v/gcc/*.c syntax-checked AS C, with generated headers ==="
             tot=0; bad=0; : > /tmp/cerr
@@ -394,11 +403,15 @@ jobs:
             grep -iE "$CXXISM" /tmp/cerr | head -10 | sed 's/^/      /' || true
           done
           echo
-          echo "  ZERO genuine C++-isms + 4.7's deleted --enable-build-with-cxx"
-          echo "  together mean: gcc 4.8's sources are still C, and the C++"
-          echo "  requirement is BUILD-SYSTEM POLICY, not a language change."
-          echo "  Restoring a C build path is then editing configure/Makefile,"
-          echo "  not porting a compiler."
+          if [ "${MEASURED:-no}" = yes ]; then
+            echo "  READ THE COUNT ABOVE. Zero genuine C++-isms, combined with"
+            echo "  4.7's deleted --enable-build-with-cxx, would mean gcc 4.8's"
+            echo "  sources are still C and the C++ requirement is BUILD-SYSTEM"
+            echo "  POLICY, not a language change -- i.e. restoring a C build path"
+            echo "  is editing configure/Makefile, not porting a compiler."
+          else
+            echo "  NOTHING WAS MEASURED this run -- see the reason above."
+          fi
           set -e
 
       - name: '4. Did the backend exist anywhere in a 4.7.x tree?'
