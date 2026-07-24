@@ -1,36 +1,49 @@
 name: gcc47-aarch64-backport
 
-# SPIKE. ACTUALLY MOVE gcc 4.8.5's AARCH64 BACKEND INTO gcc 4.7.4.
+# SPIKE. CAN gcc 4.8.5's AARCH64 BACKEND LIVE IN gcc 4.7.4?
 #
-# WHY THIS IS WORTH ATTEMPTING. gcc-backend-backport-probe measured the cost and
-# every number came back small:
+# THREE ARMS, RUN IDENTICALLY. Run 1 of this spike had only the experimental
+# arm and its failure was uninterpretable: 24 "failing files" that were all
+# libiberty, libcpp and libdecnumber -- nothing to do with aarch64. A result
+# with no baseline says nothing about the thing under test.
 #
-#   vax 4.7.4 -> 4.8.0    15 files, 76 +, 72 -    a whole untouched backend
-#   vax 4.7.4 -> 4.8.5    IDENTICAL               the interface did not move
-#                                                 WITHIN the 4.8 series at all
-#   new target hooks      21, of which aarch64 uses 0
-#                         positive control: legitimate_address_p 4 files,
-#                         function_value 1, rtx_costs 2 -- the search works
-#   foreign symbols       40, ALL self-supplied: 30 gen_* from the backend's own
-#                         .md files, 1 gengtype, 9 backend-local statics
+#   A  4.8.5 VANILLA, native aarch64
+#      Does this environment build a gcc at all? gcc 4.8.5 under gcc 13 is not
+#      a given: old gcc against a modern host compiler and glibc is its own
+#      problem. If A fails, nothing below it means anything.
 #
-# The backend depends on nothing 4.8 added. If that holds in practice, the gcc
-# leg on aarch64 changes shape entirely:
+#   B  4.7.4, config.sub/config.guess ONLY, --target=arm-none-eabi
+#      Does 4.7.4's source build here? This is the control that separates
+#      "4.7.4 does not build in 2026" from "the backport is wrong".
+#      NOT strictly vanilla: 4.7.4's config.sub does not know the string
+#      aarch64, so it cannot even be told what host it is on. Swapping the two
+#      standalone data files is the minimum that lets it configure, and it
+#      touches no compiler source. The target is arm-none-eabi -- something
+#      4.7 genuinely supports -- so no backend question is involved.
+#
+#   C  4.7.4 + the full transplant, --target=aarch64
+#      The experiment. Only interpretable against A and B.
+#
+# READ THE RESULT AS A TABLE:
+#   A fail                  -> the environment, not gcc. Fix that first.
+#   A pass, B fail          -> 4.7.4 does not build here. The backport is not
+#                              the problem and may not be the next question.
+#   A pass, B pass, C fail  -> the transplant. NOW the failure inventory means
+#                              something, and the layer it lands in tells us
+#                              whether it is config, machine description, or
+#                              middle-end drift.
+#   all pass                -> the gcc leg's shape is settled.
+#
+# WHY IT IS WORTH THE RUNTIME. gcc-backend-backport-probe measured the cost:
+# the vax control needed 15 files / 76+ / 72- across the whole 4.7->4.8
+# boundary, the aarch64 backend uses 0 of the 21 target hooks new in 4.8
+# (positive control confirms the search works), and all 40 symbols it uses that
+# 4.7 lacks are self-supplied -- 30 gen_* from its own .md files. If that holds,
+# the gcc leg becomes native and C-only end to end:
 #
 #     tcc -> gcc 4.7 + this backend -> g++ 4.7 -> gcc 4.8 -> modern gcc
 #
-# native AND C-only end to end: no borrowed C++ rung, no cross-architecture
-# detour. Every gcc up to 4.7 is written in C, so 4.7 hands us a full C++98
-# compiler for free, which is exactly what 4.8 asks for.
-#
-# WHAT THIS SPIKE IS FOR. Not to succeed first run. To produce the FAILURE
-# INVENTORY -- what a mechanical transplant leaves broken, classified by layer.
-# Every unmeasured estimate in this repo has turned out wrong, so the number
-# that matters is the one this prints.
-#
-# ONE VARIABLE AT A TIME: this builds with the HOST gcc. Whether tcc can build
-# the same tree is the next question, and gcc-entrypoint-probe already cleared
-# its previous blocker by building gmp, mpfr and mpc under tcc.
+# Host gcc throughout. One variable at a time; tcc is the question after.
 
 on:
   push:
@@ -47,9 +60,14 @@ env:
   GNU: 'https://mirrors.kernel.org/gnu'
 
 jobs:
-  backport:
+  arm:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 120
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [A-485-vanilla, B-474-control, C-474-backport]
+    name: '${{ matrix.arm }}'
     steps:
       - uses: actions/checkout@v5
 
@@ -60,27 +78,49 @@ jobs:
             curl bzip2 xz-utils gcc g++ make bison flex texinfo \
             libgmp-dev libmpfr-dev libmpc-dev
 
-      - name: Fetch 4.7.4 and 4.8.5
+      - name: 'Fetch sources for this arm'
         run: |
           set -eu
-          mkdir -p g47 g485
-          curl -fsSL --retry 3 --connect-timeout 15 -o g47.tar.bz2  "$GNU/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2"
-          curl -fsSL --retry 3 --connect-timeout 15 -o g485.tar.bz2 "$GNU/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2"
-          tar xf g47.tar.bz2  -C g47  --strip-components=1
-          tar xf g485.tar.bz2 -C g485 --strip-components=1
+          case "${{ matrix.arm }}" in
+            A-485-vanilla)  need="4.8.5" ;;
+            B-474-control)  need="4.7.4 4.8.5" ;;   # 4.8.5 only for config.sub
+            C-474-backport) need="4.7.4 4.8.5" ;;
+          esac
+          for v in $need; do
+            d="g${v//./}"
+            mkdir -p "$d"
+            curl -fsSL --retry 3 --connect-timeout 15 -o "$d.tar.bz2" \
+              "$GNU/gcc/gcc-$v/gcc-$v.tar.bz2"
+            tar xf "$d.tar.bz2" -C "$d" --strip-components=1
+            echo "  $v -> $d"
+          done
 
-      - name: 'THE TRANSPLANT'
+      - name: 'Prepare the tree'
         run: |
           set -eu
-          bash spikes/stage3/probes/backport-aarch64.sh g47 g485
-
-      - name: 'Does 4.7.4 recognise the target now?'
-        run: |
-          set -u
-          cd g47
-          echo "  config.sub aarch64-unknown-linux-gnu -> $(./config.sub aarch64-unknown-linux-gnu 2>&1)"
-          echo "  config.guess                         -> $(./config.guess 2>&1)"
-          echo "  gcc/config/aarch64 files             : $(ls -1 gcc/config/aarch64 | wc -l)"
+          case "${{ matrix.arm }}" in
+            A-485-vanilla)
+              echo "SRC=g485" >> "$GITHUB_ENV"
+              echo "TGT=aarch64-unknown-linux-gnu" >> "$GITHUB_ENV"
+              echo "  4.8.5 vanilla, untouched"
+              ;;
+            B-474-control)
+              # The MINIMUM that lets 4.7.4 name its own host. No compiler
+              # source is touched; these two are standalone data files.
+              for f in config.sub config.guess; do
+                cp "g485/$f" "g474/$f"; chmod +x "g474/$f"
+              done
+              echo "SRC=g474" >> "$GITHUB_ENV"
+              echo "TGT=arm-none-eabi" >> "$GITHUB_ENV"
+              echo "  4.7.4 + config.sub/config.guess only; target arm-none-eabi"
+              echo "  aarch64 in gcc/config.gcc: $(grep -c aarch64 g474/gcc/config.gcc || true) (expect 0)"
+              ;;
+            C-474-backport)
+              bash spikes/stage3/probes/backport-aarch64.sh g474 g485
+              echo "SRC=g474" >> "$GITHUB_ENV"
+              echo "TGT=aarch64-unknown-linux-gnu" >> "$GITHUB_ENV"
+              ;;
+          esac
 
       - name: 'CONFIGURE'
         continue-on-error: true
@@ -88,58 +128,93 @@ jobs:
           set -u
           mkdir -p build && cd build
           set +e
-          ../g47/configure \
+          # --disable-werror is not optional here: a 2012-era gcc compiled by
+          # gcc 13 trips warnings that did not exist when it was written, and
+          # without this every arm fails for the same uninteresting reason.
+          "../$SRC/configure" \
             --build=aarch64-unknown-linux-gnu \
             --host=aarch64-unknown-linux-gnu \
-            --target=aarch64-unknown-linux-gnu \
-            --prefix="$PWD/../out47" --enable-languages=c \
-            --disable-multilib --disable-bootstrap --disable-libsanitizer \
-            --disable-libgomp --disable-libquadmath --disable-libssp \
+            --target="$TGT" \
+            --prefix="$PWD/../out" --enable-languages=c \
+            --disable-multilib --disable-bootstrap --disable-werror \
+            --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+            --disable-libssp --disable-libatomic \
             > conf.log 2>&1
-          echo "  configure rc=$?"
-          tail -25 conf.log | sed 's/^/    /'
+          rc=$?
+          echo "  configure rc=$rc"
+          echo "CONF_RC=$rc" >> "$GITHUB_ENV"
+          if [ "$rc" -ne 0 ]; then
+            echo "  --- configure tail ---"
+            tail -30 conf.log | sed 's/^/    /'
+          fi
 
-      - name: 'BUILD, and inventory whatever breaks'
+      - name: 'BUILD'
         continue-on-error: true
         run: |
           set -u
           cd build
           set +e
-          timeout 5400 make -k -j"$(nproc)" all-gcc > build.log 2>&1
-          echo "  make rc=$? (124 = timed out)"
+          timeout 7200 make -k -j"$(nproc)" all-gcc > build.log 2>&1
+          rc=$?
+          # Run 1 printed "(124 = timed out)" next to rc=2, which reads as a
+          # claim rather than a legend. Say what actually happened.
+          case "$rc" in
+            0)   echo "  make rc=0 -- completed" ;;
+            124) echo "  make rc=124 -- TIMED OUT after 7200s" ;;
+            *)   echo "  make rc=$rc -- failed" ;;
+          esac
+          echo "BUILD_RC=$rc" >> "$GITHUB_ENV"
+          echo "  build.log: $(wc -l < build.log) lines"
+
+      - name: 'INVENTORY'
+        continue-on-error: true
+        run: |
+          set -u
+          cd build
+          # Run 1 showed an EMPTY error-class list beside 24 "failing files".
+          # Both cannot be right: the file list grepped any 'file.c:' line, which
+          # matches WARNINGS too, and the actual failure was never printed.
+          echo "  === what make itself said failed ==="
+          grep -nE '^\s*make(\[[0-9]+\])?: \*\*\* ' build.log | head -10 | sed 's/^/    /'
           echo
-          echo "  === error classes -- THIS IS THE MEASUREMENT ==="
-          grep -oE 'error: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
-            | sort | uniq -c | sort -rn | head -30 | sed 's/^/    /'
+          echo "  === the first failure, in context ==="
+          n=$(grep -nE '^\s*make(\[[0-9]+\])?: \*\*\* ' build.log | head -1 | cut -d: -f1)
+          if [ -n "${n:-}" ]; then
+            start=$(( n > 40 ? n - 40 : 1 ))
+            sed -n "${start},${n}p" build.log | tail -30 | sed 's/^/    /'
+          else
+            echo "    (make reported no *** failure)"
+          fi
           echo
-          echo "  === distinct files that failed ==="
-          grep -oE '^[^ :]+\.(c|h|md):' build.log | sort -u | head -25 | sed 's/^/    /'
-          echo "    distinct: $(grep -oE '^[^ :]+\.(c|h|md):' build.log | sort -u | wc -l)"
+          echo "  === compiler ERRORS only (not warnings) ==="
+          grep -oE '\berror: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
+            | sort | uniq -c | sort -rn | head -20 | sed 's/^/    /'
+          echo "    total error lines  : $(grep -cE '\berror:' build.log || true)"
+          echo "    total warning lines: $(grep -cE '\bwarning:' build.log || true)"
           echo
-          echo "  === did the GENERATOR programs run? ==="
-          echo "    They read the .md files and emit C. If these fail it is the"
-          echo "    MACHINE DESCRIPTION that did not port, which is a different"
-          echo "    and more bounded problem than the C not porting."
+          echo "  === files with an ERROR (not merely a diagnostic) ==="
+          grep -oE '^[^ :]+\.(c|h|md):[0-9]+:[0-9]*:? *error:' build.log \
+            | cut -d: -f1 | sort -u | head -20 | sed 's/^/    /'
+          echo
+          echo "  === generators (they turn .md into C) ==="
           for g in genemit genattrtab genrecog genextract genoutput genpreds; do
-            printf '    %-12s %s\n' "$g" "$( [ -x gcc/build/$g ] && echo built || echo 'NOT BUILT')"
+            printf '    %-12s %s\n' "$g" "$( [ -x gcc/build/$g ] && echo built || echo 'not built')"
           done
           echo "    insn-*.c generated: $(ls gcc/insn-*.c 2>/dev/null | wc -l)"
           echo
           echo "  objects built: $(find . -name '*.o' | wc -l)"
-          echo "  cc1 present  : $( [ -x gcc/cc1 ] && echo YES || echo no)"
+          echo "  cc1          : $( [ -x gcc/cc1 ] && echo BUILT || echo no)"
 
-      - name: VERDICT
+      - name: 'ARM RESULT'
         run: |
           cd build 2>/dev/null || exit 0
-          echo "  cc1 built: $( [ -x gcc/cc1 ] && echo YES || echo no)"
+          echo "  arm        : ${{ matrix.arm }}"
+          echo "  target     : ${TGT:-?}"
+          echo "  configure  : rc=${CONF_RC:-?}"
+          echo "  build      : rc=${BUILD_RC:-?}"
+          echo "  cc1        : $( [ -x gcc/cc1 ] && echo BUILT || echo no)"
           echo
-          echo "  READ THE INVENTORY BY LAYER:"
-          echo "    configure failed          -> the config.gcc / config.host splice"
-          echo "                                 is wrong. Mechanical."
-          echo "    generators did not build  -> the .md files need porting. Real"
-          echo "                                 work, but bounded and knowable."
-          echo "    generators ran, C failed  -> middle-end interface drift, which"
-          echo "                                 the vax control put at ~148 lines."
-          echo
-          echo "  If cc1 builds, the leg's shape is settled and the next question"
-          echo "  is whether tcc builds this same tree."
+          echo "  Compare the three arms before drawing any conclusion:"
+          echo "    A fails               -> the environment. Nothing else is readable."
+          echo "    A ok, B fails         -> 4.7.4 does not build here at all."
+          echo "    A ok, B ok, C fails   -> the transplant, and the inventory means something."
