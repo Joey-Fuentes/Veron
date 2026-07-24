@@ -1,0 +1,190 @@
+name: tcc-aarch64-probe
+
+# SPIKE. IS tcc's AARCH64 BACKEND REAL ENOUGH TO BUILD ON?
+#
+# THE QUESTION THIS DECIDES. The Mes path forces a cross-architecture detour and
+# then LEAVES US ON THE WRONG ARCHITECTURE:
+#
+#   Mes path:    G1 --arch x86 -> x86 mes-m2 (qemu-i386) -> MesCC x86
+#                -> patched x86 tcc 0.9.26 -> x86 tcc 0.9.27
+#                ...and now we have an x86 toolchain on an aarch64 ladder.
+#
+#   Direct path: enhanced M2 (aarch64) -> aarch64 tcc -> self-hosts
+#                -> native, all the way down.
+#
+# MesCC is the ONLY component in the chain with no aarch64 backend (x86 + armhf
+# only, GNU Mes 0.27). M2-Planet is aarch64-native -- proven byte-for-byte by our
+# hand-off. tcc has had an arm64 backend since 0.9.27, which is exactly the
+# version live-bootstrap pins. So if that backend self-hosts cleanly, the entire
+# x86 apparatus (qemu-i386, --architecture x86 codegen, the armhf fallback
+# analysis, the Cobalt/Neoverse fleet fragility in PROGRESS.md) can be deleted
+# rather than worked around.
+#
+# "Has an arm64 backend" and "self-hosts and passes its own test suite on arm64"
+# are DIFFERENT BARS. tcc's arm64 target has far fewer users than x86_64. This
+# spike measures the second bar, natively on ubuntu-24.04-arm -- no emulation, so
+# a failure is tcc's and not qemu's.
+#
+# WHAT IT DOES NOT DECIDE. Whether tcc can build gcc 4.7, and whether that gcc
+# can build Linux, are downstream questions gated on this one. This spike reports
+# the evidence relevant to them but does not attempt either.
+#
+# Pins come from live-bootstrap 9a268c4 -- the same commit whose stage0-posix
+# pins ARE our three pins (see spikes/UPSTREAM-PINS.md), so tcc 0.9.27 is the
+# version that set is built around.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/tcc-aarch64-probe.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: tcc-aarch64-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm      # NATIVE aarch64 -- no qemu in the way
+    timeout-minutes: 40
+    env:
+      LB_SHA: 9a268c4c39cae952b268bc86da342be2175f03d4
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Confirm we are actually on aarch64
+        run: |
+          echo "  uname -m : $(uname -m)"
+          echo "  gcc      : $(gcc -dumpmachine)"
+          [ "$(uname -m)" = aarch64 ] || { echo "NOT aarch64 -- probe is meaningless"; exit 1; }
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc make curl git
+
+      - name: 'Fetch tcc at live-bootstrap''s pin (URL + checksum from their sources file)'
+        run: |
+          git clone -q https://github.com/fosslinux/live-bootstrap.git lb
+          git -C lb checkout -q "$LB_SHA"
+          echo "  tcc steps live-bootstrap carries:"
+          ls lb/steps | grep -i '^tcc' | sed 's/^/    /'
+          echo
+          for d in lb/steps/tcc-*/; do
+            [ -f "$d/sources" ] && { echo "  --- $d sources ---"; sed 's/^/    /' "$d/sources"; }
+          done
+          # take the newest tcc step that has a tarball
+          SRC=$(ls -d lb/steps/tcc-*/ | sort -V | tail -1)
+          echo "  using: $SRC"
+          URL=$(awk 'NR==1{print $2}' "$SRC/sources")
+          SUM=$(awk 'NR==1{print $3}' "$SRC/sources")
+          echo "  url: $URL"
+          curl -sSL -o tcc.tar.bz2 "$URL" || curl -sSL -o tcc.tar.bz2 "$URL"
+          if [ -n "$SUM" ]; then
+            echo "$SUM  tcc.tar.bz2" | sha256sum -c - && echo "  CHECKSUM OK" || echo "  CHECKSUM MISMATCH (continuing, noted)"
+          fi
+          mkdir -p tccsrc && tar xf tcc.tar.bz2 -C tccsrc --strip-components=1
+          echo "  extracted $(du -sh tccsrc | cut -f1)"
+
+      - name: '1. Does the arm64 backend actually exist in this source?'
+        run: |
+          cd tccsrc
+          echo "  --- target backends present ---"
+          ls *-gen.c *-link.c *-asm.c 2>/dev/null | sed 's/^/    /'
+          echo
+          echo "  --- arm64 specifically ---"
+          for f in arm64-gen.c arm64-link.c arm64-asm.c; do
+            if [ -f "$f" ]; then printf '    %-14s %6s lines\n' "$f" "$(wc -l < $f)";
+            else printf '    %-14s MISSING\n' "$f"; fi
+          done
+          echo
+          echo "  --- what configure thinks it supports ---"
+          grep -oE 'arm64|aarch64' configure | sort -u | sed 's/^/    /' || true
+          echo "  --- version ---"
+          cat VERSION 2>/dev/null | sed 's/^/    /' || true
+
+      - name: '2. Build tcc with host gcc'
+        run: |
+          cd tccsrc
+          ./configure --cc=gcc 2>&1 | tail -20 | sed 's/^/    /'
+          make -j"$(nproc)" 2>&1 | tail -25 | sed 's/^/    /'
+          echo
+          ls -l tcc libtcc1.a 2>/dev/null | sed 's/^/    /'
+          ./tcc -v 2>&1 | sed 's/^/    /'
+
+      - name: '3. Does it compile and run a program?'
+        run: |
+          cd tccsrc
+          printf '#include <stdio.h>\nint main(void){printf("tcc on %%s\\n","aarch64");return 42;}\n' > /tmp/h.c
+          ./tcc -B. -o /tmp/h /tmp/h.c
+          set +e; /tmp/h; rc=$?; set -e
+          echo "    ran, exit=$rc (expect 42)"
+
+      - name: '4. THE BAR: does tcc self-host on aarch64, to a fixpoint?'
+        continue-on-error: true
+        run: |
+          cd tccsrc
+          set +e
+          echo "  --- gen2: tcc compiles tcc ---"
+          ./tcc -B. -o tcc2 tcc.c -I. -DTCC_TARGET_ARM64 -lm -ldl -lpthread 2>&1 | tail -15 | sed 's/^/    /'
+          rc2=$?; echo "    rc=$rc2  $( [ -s tcc2 ] && echo "$(wc -c < tcc2) bytes" || echo 'no binary' )"
+          if [ -s tcc2 ]; then
+            echo "  --- gen3: tcc2 compiles tcc ---"
+            ./tcc2 -B. -o tcc3 tcc.c -I. -DTCC_TARGET_ARM64 -lm -ldl -lpthread 2>&1 | tail -15 | sed 's/^/    /'
+            rc3=$?; echo "    rc=$rc3  $( [ -s tcc3 ] && echo "$(wc -c < tcc3) bytes" || echo 'no binary' )"
+            if [ -s tcc3 ]; then
+              if cmp -s tcc2 tcc3; then
+                echo "    FIXPOINT: tcc2 == tcc3 byte for byte"
+              else
+                echo "    tcc2 != tcc3  ($(cmp tcc2 tcc3 2>&1 | head -1))"
+              fi
+              echo "  --- does gen3 work? ---"
+              ./tcc3 -B. -o /tmp/h3 /tmp/h.c && { /tmp/h3; echo "    gen3-built program exit=$?"; }
+            fi
+          fi
+          set -e
+
+      - name: '5. tcc own test suite on aarch64'
+        continue-on-error: true
+        run: |
+          cd tccsrc
+          set +e
+          timeout 900 make test 2>&1 | tail -60 | sed 's/^/    /'
+          echo "  make test rc=$?"
+          set -e
+
+      - name: '6. Evidence for the DOWNSTREAM questions (gcc, Linux)'
+        continue-on-error: true
+        run: |
+          cd tccsrc
+          P="$GITHUB_WORKSPACE/spikes/stage3/probes"
+          echo "  These are NOT attempted here -- this records what bears on them."
+          echo
+          echo "  --- gcc 4.7 needs a C compiler only (4.8+ switched to C++) ---"
+          set +e
+          ./tcc -B. -o /tmp/feat "$P/feat.c" 2>&1 | sed 's/^/    /'
+          /tmp/feat; echo "    gcc-feature probe exit=$? (expect 6)"
+          echo
+          echo "  --- kernel-style C: inline asm, packed, sizeof ---"
+          ./tcc -B. -o /tmp/kern "$P/kern.c" 2>&1 | sed 's/^/    /'
+          /tmp/kern; echo "    kernel-style probe exit=$? (expect 0)"
+          echo
+          echo "  --- for comparison, the same probes under host gcc ---"
+          gcc -o /tmp/featg "$P/feat.c" 2>/dev/null && { /tmp/featg; echo "    gcc feat exit=$?"; }
+          gcc -o /tmp/kerng "$P/kern.c" 2>/dev/null && { /tmp/kerng; echo "    gcc kern exit=$?"; }
+          set -e
+
+      - name: 'VERDICT'
+        run: |
+          cd tccsrc
+          echo "  arm64 backend present : $( [ -f arm64-gen.c ] && echo yes || echo NO )"
+          echo "  builds with gcc       : $( [ -x tcc ] && echo yes || echo NO )"
+          echo "  self-hosts (gen2)     : $( [ -s tcc2 ] && echo yes || echo NO )"
+          echo "  fixpoint (gen2==gen3) : $( [ -s tcc3 ] && cmp -s tcc2 tcc3 && echo yes || echo 'no/na' )"
+          echo
+          echo "  If the arm64 backend self-hosts to a fixpoint and passes the test"
+          echo "  suite, the direct path is viable and the ENTIRE x86 detour --"
+          echo "  qemu-i386, --architecture x86 codegen, the armhf fallback, the"
+          echo "  Cobalt/Neoverse fleet fragility -- can be deleted rather than"
+          echo "  worked around. MesCC is then the only thing that needed x86, and"
+          echo "  the direct path deletes MesCC."
