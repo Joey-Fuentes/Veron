@@ -167,6 +167,24 @@ supplies both in ten lines of C over our `read`/`write` builtins. That is a
 smaller substitution than m71's and it states its own rule rather than relying
 on a coincidence of upstream's file layout.
 
+## PIN SET CONFIRMED AGAINST live-bootstrap
+
+`livebootstrap-pins-probe` resolved the chain
+`live-bootstrap -> seed/stage0-posix -> M2-Planet` and returned outcome 1:
+live-bootstrap **9a268c4** (2026-04-20) pins stage0-posix **45d90f59**, whose
+gitlinks are *exactly* our three pins.
+
+| | ours | live-bootstrap HEAD |
+|---|---|---|
+| M2-Planet   | `bd2fe4b` (Release_1.13.1) | `bd2fe4b` |
+| M2libc      | `68a23cf`                  | `68a23cf` |
+| mescc-tools | `5adfbf3`                  | `5adfbf3` |
+
+So there is one coherent set and we are already on it — no pin decision is
+required for the rungs above. **The matching upper half is Mes 0.27.1 and
+tcc 0.9.27.** `stage0-posix-aarch64` is `9015b9e` if their aarch64 seed is ever
+wanted for comparison.
+
 ## HAND-OFF PROVEN AT THIS PIN
 
 Our ladder's M2-Planet (`G0`), compiling upstream's **unpatched** source, produces

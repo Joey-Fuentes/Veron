@@ -1,0 +1,105 @@
+name: mes-rung-recon
+
+# SPIKE. WHAT DOES BUILDING MES ACTUALLY REQUIRE?
+#
+# The pins are settled (livebootstrap-pins-probe, outcome 1): live-bootstrap
+# 9a268c4 pins stage0-posix 45d90f59, which pins EXACTLY our three commits --
+# M2-Planet bd2fe4b (1.13.1), M2libc 68a23cf, mescc-tools 5adfbf3. Its matching
+# upper half is Mes 0.27.1 and tcc 0.9.27. So there is one coherent set and we
+# are already on it.
+#
+# THIS WORKFLOW BUILDS NOTHING. It reads live-bootstrap's own Mes step and
+# prints the recipe, because the last time we guessed at an upstream recipe we
+# were wrong four times in a row (see UPSTREAM-PINS.md: "do not reconstruct
+# upstream's recipe -- run their script and take the binary"). The Mes rung is
+# the first one where we cannot simply run their script end to end, since ours
+# has to substitute G1 as the compiler -- so we need to know precisely which
+# commands they run, in what order, with what inputs.
+#
+# WHAT WE ALREADY KNOW GOES WRONG HERE. borrow-tcc's Part B stopped because Mes
+# needs a GENERATED include/mes/config.h -- configure.sh plus @VERSION@
+# substitution plus catm preprocessing -- i.e. live-bootstrap's mes-step driver,
+# which needs kaem and catm from mescc-tools. So the questions this must answer:
+#
+#   1. what files does steps/mes-0.27.1/ contain, and what does its script do?
+#   2. where does Mes's source come from (tarball? url? checksum?)
+#   3. exactly how is include/mes/config.h produced?
+#   4. which mescc-tools binaries does the step need (kaem, catm, blood-elf)?
+#   5. what -f list / architecture flags does it pass to M2-Planet?
+#
+# Once those are on the page, the reference arm can be written against fact.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/mes-rung-recon.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: mes-rung-recon-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      LB_SHA: 9a268c4c39cae952b268bc86da342be2175f03d4
+      MES_VER: '0.27.1'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch live-bootstrap at the confirmed pin
+        run: |
+          git clone https://github.com/fosslinux/live-bootstrap.git lb
+          git -C lb checkout -q "$LB_SHA"
+          echo "  lb pinned at: $(git -C lb rev-parse HEAD)  $(git -C lb log -1 --format=%cs)"
+          echo "  confirming the chain still resolves to our pins:"
+          S0=$(git -C lb ls-tree HEAD -- seed/stage0-posix | awk '{print $3}')
+          echo "    stage0-posix $S0"
+
+      - name: '1-2. The Mes step: what is in it, and where does the source come from?'
+        run: |
+          D=lb/steps/mes-$MES_VER
+          [ -d "$D" ] || { echo "NO SUCH STEP: $D"; ls lb/steps | grep -i mes; exit 1; }
+          echo "=== files in steps/mes-$MES_VER ==="
+          find "$D" -type f | sed "s|^$D/|    |" | sort
+          echo
+          echo "=== sources (where the tarball comes from, and its checksum) ==="
+          for f in "$D/sources" "$D/../SHA256SUMS.sources"; do
+            [ -f "$f" ] && { echo "  --- $f ---"; grep -i mes "$f" | sed 's/^/    /'; }
+          done
+
+      - name: '3-5. The recipe itself'
+        run: |
+          D=lb/steps/mes-$MES_VER
+          for f in $(find "$D" -type f \( -name '*.sh' -o -name '*.kaem' -o -name 'pass*' \) | sort); do
+            echo "############################################################"
+            echo "### $f"
+            echo "############################################################"
+            sed 's/^/    /' "$f"
+            echo
+          done
+
+      - name: 'What the recipe needs: config.h, kaem/catm, and the M2-Planet flags'
+        run: |
+          D=lb/steps/mes-$MES_VER
+          echo "=== how is include/mes/config.h produced? ==="
+          grep -rniE 'config\.h|configure|@VERSION@|version' "$D" | head -25 | sed 's/^/    /'
+          echo
+          echo "=== which mescc-tools binaries does it invoke? ==="
+          for t in kaem catm blood-elf M1 hex2 get_machine mescc-tools-extra sha256sum; do
+            n=$(grep -rc --include='*' -w "$t" "$D" 2>/dev/null | awk -F: '{s+=$2} END{print s+0}')
+            [ "$n" != 0 ] && printf '    %-16s %s reference(s)\n' "$t" "$n"
+          done
+          echo
+          echo "=== M2-Planet invocations (architecture + -f list) ==="
+          grep -rhoE 'M2-Planet[^|;&]*' "$D" | head -20 | sed 's/^/    /'
+          echo
+          echo "=== architecture assumptions in this step ==="
+          grep -rniE 'x86|amd64|aarch64|arm|riscv|ARCH' "$D" | head -20 | sed 's/^/    /'
+          echo
+          echo "NOTE: MesCC has no native aarch64 backend (x86 + armhf only,"
+          echo "      GNU Mes 0.27). Our rung therefore targets x86 at the"
+          echo "      M2-Planet level -- G1 --architecture x86 -- exactly as"
+          echo "      no-host-chain.yml was designed to do."
