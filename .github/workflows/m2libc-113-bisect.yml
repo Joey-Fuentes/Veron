@@ -246,6 +246,16 @@ jobs:
           PC=$(grep -o 'PC=[0-9a-f]\{8,\}' fault.log | tail -1 | cut -d= -f2)
           LR=$(grep -o 'X30=[0-9a-f]\{8,\}' fault.log | tail -1 | cut -d= -f2)
           echo "    PC=0x$PC  X30=0x$LR"
+          # The value stack x9 is based at brk(0), i.e. just ABOVE the image. If
+          # x9 has UNDERFLOWED it points INTO the code, and `str x0 x9` inside a
+          # builtin overwrites the program's own instructions -- which is what a
+          # UDEF at a byte that disassembles cleanly on disk means.
+          X9=$(grep -o 'X09=[0-9a-f]\{8,\}' fault.log | tail -1 | cut -d= -f2)
+          X11=$(grep -o 'X11=[0-9a-f]\{8,\}' fault.log | tail -1 | cut -d= -f2)
+          IMGEND=$((0x400000 + $(wc -c < M2-ours)))
+          echo "    x9 (value stack)=0x$X9   x11 (frame stack)=0x$X11"
+          printf '    image ends 0x%x  --  x9 is %s the image\n' "$IMGEND" \
+            "$([ -n "$X9" ] && [ $((0x$X9)) -lt "$IMGEND" ] && echo 'INSIDE (UNDERFLOWED -- it is overwriting code)' || echo 'above (ok)')"
           echo "    image: $(wc -c < M2-ours) bytes at base 0x400000 -> ends 0x$(printf '%x' $((0x400000 + $(wc -c < M2-ours)))) "
           [ -n "$PC" ] && python3 tools/pcmap.py m2.s1 "0x$PC" "0x$LR" | sed 's/^/    /'
           echo "    --- last 3 labels in the emitted image ---"
