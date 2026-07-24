@@ -1,0 +1,95 @@
+Subject: [PATCH] asm: Pass ASMOperand to asm_subst_operand backend
+
+Recovered from the tinycc-devel archive (Aleksi Hannula, 5 Feb 2026).
+The archive hard-wraps long lines, so the posted text does not apply.
+Unwrapped and verified: every hunk's line counts match its @@ header with
+no unclaimed lines, and the series diffstat matches the cover letter
+exactly -- +2868 / -26 across 10 files.
+---
+diff --git a/arm-asm.c b/arm-asm.c
+index 2f9cca46..eef42cc0 100644
+--- a/arm-asm.c
++++ b/arm-asm.c
+@@ -2602,7 +2602,7 @@ ST_FUNC void asm_opcode(TCCState *s1, int token)
+     }
+ }
+ 
+-ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier)
++ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier, ASMOperand *op)
+ {
+     int r, reg, size, val;
+ 
+diff --git a/arm64-asm.c b/arm64-asm.c
+index a97fd642..e95de34f 100644
+--- a/arm64-asm.c
++++ b/arm64-asm.c
+@@ -59,7 +59,7 @@ ST_FUNC void asm_opcode(TCCState *s1, int opcode)
+     asm_error();
+ }
+ 
+-ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier)
++ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier, ASMOperand *op)
+ {
+     asm_error();
+ }
+diff --git a/i386-asm.c b/i386-asm.c
+index 64e44ce9..93d952ac 100644
+--- a/i386-asm.c
++++ b/i386-asm.c
+@@ -1514,7 +1514,7 @@ ST_FUNC void asm_compute_constraints(ASMOperand *operands,
+ }
+ 
+ ST_FUNC void subst_asm_operand(CString *add_str,
+-                              SValue *sv, int modifier)
++                              SValue *sv, int modifier, ASMOperand *op)
+ {
+     int r, reg, size, val;
+ 
+diff --git a/riscv64-asm.c b/riscv64-asm.c
+index 63aa468e..b7fda20e 100644
+--- a/riscv64-asm.c
++++ b/riscv64-asm.c
+@@ -79,7 +79,7 @@ static void parse_operand(TCCState *s1, Operand *op);
+ static void parse_branch_offset_operand(TCCState *s1, Operand *op);
+ static void parse_operands(TCCState *s1, Operand *ops, int count);
+ static void parse_mem_access_operands(TCCState *s1, Operand* ops);
+-ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier);
++ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier, ASMOperand *op);
+ /* C extension */
+ static void asm_emit_ca(int token, uint16_t opcode, const Operand *rd, const Operand *rs2);
+ static void asm_emit_cb(int token, uint16_t opcode, const Operand *rs1, const Operand *imm);
+@@ -1694,7 +1694,7 @@ static int asm_parse_csrvar(int t)
+     }
+ }
+ 
+-ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier)
++ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier, ASMOperand *op)
+ {
+     int r, reg, val;
+ 
+diff --git a/tcc.h b/tcc.h
+index 1c2f6949..fdc89aa4 100644
+--- a/tcc.h
++++ b/tcc.h
+@@ -1749,7 +1749,7 @@ ST_FUNC void gen_expr64(ExprValue *pe);
+ ST_FUNC void asm_opcode(TCCState *s1, int opcode);
+ ST_FUNC int asm_parse_regvar(int t);
+ ST_FUNC void asm_compute_constraints(ASMOperand *operands, int nb_operands, int nb_outputs, const uint8_t *clobber_regs, int *pout_reg);
+-ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier);
++ST_FUNC void subst_asm_operand(CString *add_str, SValue *sv, int modifier, ASMOperand *op);
+ ST_FUNC void asm_gen_code(ASMOperand *operands, int nb_operands, int nb_outputs, int is_output, uint8_t *clobber_regs, int out_reg);
+ ST_FUNC void asm_clobber(uint8_t *clobber_regs, const char *str);
+ #endif
+diff --git a/tccasm.c b/tccasm.c
+index 523cbab0..4bb2e278 100644
+--- a/tccasm.c
++++ b/tccasm.c
+@@ -1199,7 +1199,7 @@ static void subst_asm_operands(ASMOperand *operands, int nb_operands,
+                     if ((op->vt->r & VT_VALMASK) == VT_LLOCAL && op->is_memory)
+                       sv.r |= VT_LVAL;
+                 }
+-                subst_asm_operand(out_str, &sv, modifier);
++                subst_asm_operand(out_str, &sv, modifier, op);
+             }
+         } else {
+         add_char:

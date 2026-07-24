@@ -1,0 +1,51 @@
+Subject: [PATCH] arm64-link: Implement TSTBR and CONDBR relocs
+
+Recovered from the tinycc-devel archive (Aleksi Hannula, 5 Feb 2026).
+The archive hard-wraps long lines, so the posted text does not apply.
+Unwrapped and verified: every hunk's line counts match its @@ header with
+no unclaimed lines, and the series diffstat matches the cover letter
+exactly -- +2868 / -26 across 10 files.
+---
+diff --git a/arm64-link.c b/arm64-link.c
+index cfdd95ea..ba970384 100644
+--- a/arm64-link.c
++++ b/arm64-link.c
+@@ -47,6 +47,8 @@ ST_FUNC int code_reloc (int reloc_type)
+         case R_AARCH64_COPY:
+             return 0;
+ 
++        case R_AARCH64_TSTBR14:
++        case R_AARCH64_CONDBR19:
+         case R_AARCH64_JUMP26:
+         case R_AARCH64_CALL26:
+         case R_AARCH64_JUMP_SLOT:
+@@ -76,6 +78,8 @@ ST_FUNC int gotplt_entry_type (int reloc_type)
+         case R_AARCH64_GLOB_DAT:
+         case R_AARCH64_JUMP_SLOT:
+         case R_AARCH64_COPY:
++        case R_AARCH64_TSTBR14:
++        case R_AARCH64_CONDBR19:
+             return NO_GOTPLT_ENTRY;
+ 
+         case R_AARCH64_ABS32:
+@@ -278,6 +282,20 @@ ST_FUNC void relocate(TCCState *s1, ElfW_Rel *rel, int type, unsigned char *ptr,
+                             (uint32_t)(type == R_AARCH64_CALL26) << 31 |
+                             ((val - addr) >> 2 & 0x3ffffff)));
+             return;
++        case R_AARCH64_TSTBR14:
++            if (((val - addr) + ((uint64_t)1 << 15)) & ~(uint64_t)0xffffffc)
++                tcc_error_noabort("R_AARCH64_TSTBR14 relocation failed"
++                          " (val=%lx, addr=%lx)", (long)val, (long)addr);
++            write32le(ptr, ((read32le(ptr) & 0xfff8001f) |
++                            (((val - addr) >> 2 & 0x3fff) << 5)));
++            return;
++        case R_AARCH64_CONDBR19:
++            if (((val - addr) + ((uint64_t)1 << 20)) & ~(uint64_t)0xffffffc)
++                tcc_error_noabort("R_AARCH64_CONDBR19 relocation failed"
++                          " (val=%lx, addr=%lx)", (long)val, (long)addr);
++            write32le(ptr, ((read32le(ptr) & 0xff00001f) |
++                            (((val - addr) >> 2 & 0x7ffff) << 5)));
++            return;
+         case R_AARCH64_ADR_GOT_PAGE: {
+             uint64_t off =
+                 (((s1->got->sh_addr +
