@@ -1,0 +1,166 @@
+name: m2libc-113-bisect
+
+# SPIKE. Our stage 2 at the 1.13.1 pin.
+#
+# REFERENCE IS PROVEN (reference-first): upstream's aarch64 M2-Planet, 643,257
+# bytes, produces byte-identical output to the gcc-built one. The old segfault
+# was master's unreleased 1.13.2 buffering change. See spikes/UPSTREAM-PINS.md.
+#
+# 1.13.1's M2libc splits differently: aarch64/linux/bootstrap.c is the WHOLE
+# mini-libc (fgetc fputc fputs fwrite open fopen close fclose brk malloc strlen
+# memset calloc free exit) with only 6 asm() blocks inside it. There is no
+# generic bootstrap.c to substitute, which is what m71's omission relied on.
+#
+# Two things to establish here, both by measurement:
+#   1. WHERE the constants live (NULL TRUE FALSE EOF EXIT_* stdin stdout stderr)
+#   2. WHY stage 2 segfaults on stdlib.c / stdio.c / string.c
+
+on:
+  push:
+    paths:
+      - 'spikes/stage2-mini-c/**'
+      - '.github/workflows/m2libc-113-bisect.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: m2libc-113-bisect-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bisect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      M2PLANET_SHA: bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d
+      M2LIBC_SHA: 68a23cfd05d5a355ba7a30c770d684cbe86fcc4e
+      MESCC_SHA: 5adfbf3
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            qemu-user binutils-aarch64-linux-gnu gcc make
+      - name: Fetch upstreams
+        run: |
+          git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
+          git -C upstream-m2planet checkout "$M2PLANET_SHA"
+          git -C upstream-m2planet submodule update --init --recursive
+          git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
+          git -C upstream-mescc checkout -q "$MESCC_SHA"
+          make -C upstream-m2planet M2-Planet
+          echo "  PINS: M2-Planet $(git -C upstream-m2planet rev-parse --short HEAD)  M2libc $(git -C upstream-m2planet/M2libc rev-parse --short HEAD)"
+
+      - name: Build the ladder
+        run: |
+          aarch64-linux-gnu-as -o s0.o spikes/stage0-as/stage0-as.aarch64.s
+          aarch64-linux-gnu-ld -static -o stage0-as s0.o
+          aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
+          aarch64-linux-gnu-ld -static -o elf elf.o
+          cat spikes/stage1-as/stage1-as.s0 \
+            | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
+          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+            | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+
+      - name: 'Q1 where do the constants come from at 1.13.1?'
+        run: |
+          L=upstream-m2planet/M2libc
+          echo "  --- head of aarch64/linux/bootstrap.c (before the functions) ---"
+          sed -n '1,44p' $L/aarch64/linux/bootstrap.c | sed 's/^/    /'
+          echo
+          echo "  --- who defines each constant, and how ---"
+          for c in NULL TRUE FALSE EOF EXIT_FAILURE EXIT_SUCCESS stdin stdout stderr; do
+            printf '    %-14s ' "$c"
+            grep -ln "^\s*$c\s*=\|#define $c" $L/*.h $L/*.c $L/aarch64/linux/*.c 2>/dev/null \
+              | sed 's|.*/M2libc/||' | tr '\n' ' '
+            echo
+          done
+
+      - name: 'Q2 bisect the stage 2 segfault, one file at a time'
+        continue-on-error: true
+        run: |
+          L=upstream-m2planet/M2libc
+          one() {
+            cat "$@" > b.c
+            set +e
+            timeout 120 qemu-aarch64 ./stage2 < b.c > b.s1 2>/dev/null
+            rc=$?
+            set -e
+            printf '  %-46s TU=%-8s rc=%-5s %s\n' "$1" "$(wc -c < b.c)" "$rc" \
+              "$([ "$rc" = 139 ] && echo '<<< SEGV' || echo "emitted=$(wc -c < b.s1)")"
+          }
+          echo "  each M2libc file ALONE:"
+          one $L/bootstrappable.c
+          one $L/string.c
+          one $L/stdlib.c
+          one $L/stdio.c
+          one $L/ctype.c
+          one $L/fcntl.c
+
+      - name: 'Q3 bisect INSIDE whichever file faults'
+        continue-on-error: true
+        run: |
+          L=upstream-m2planet/M2libc
+          for SRC in $L/string.c $L/stdlib.c $L/stdio.c; do
+            set +e
+            timeout 120 qemu-aarch64 ./stage2 < $SRC > /dev/null 2>&1
+            rc=$?
+            set -e
+            [ "$rc" = 139 ] || { echo "  $(basename $SRC): compiles (rc=$rc), skipping"; continue; }
+            echo "  === bisecting $(basename $SRC) ==="
+            last=0
+            for n in $(grep -n '^}' "$SRC" | cut -d: -f1); do
+              head -n "$n" "$SRC" > body.c
+              set +e
+              timeout 60 qemu-aarch64 ./stage2 < body.c > /dev/null 2>&1
+              r=$?
+              set -e
+              if [ "$r" = 139 ]; then
+                echo "    FIRST SEGV at line $n -- the function at $((last+1))-$n:"
+                sed -n "$((last+1)),${n}p" "$SRC" | sed 's/^/      /'
+                break
+              fi
+              last="$n"
+            done
+          done
+
+      - name: 'Q4 PATCH IT: drop only the asm() functions, build with our ladder'
+        continue-on-error: true
+        run: |
+          . tools/ab.sh
+          M=upstream-m2planet; L=$M/M2libc
+          # m71 omitted a whole file. At 1.13.1 that file is the entire
+          # mini-libc, so omit at FUNCTION granularity instead: drop the
+          # asm()-bodied syscall wrappers our m53/m69 builtins already supply,
+          # compile every other function unpatched.
+          echo "  what drop_asm removes from aarch64/linux/bootstrap.c:"
+          python3 tools/drop_asm.py --list $L/aarch64/linux/bootstrap.c | sed 's/^/    /'
+          python3 tools/drop_asm.py $L/aarch64/linux/bootstrap.c > patched_bootstrap.c
+          ab_rule 'THE SUBSTITUTION'
+          ab_art 'bootstrap.c (upstream)' $L/aarch64/linux/bootstrap.c
+          ab_art 'bootstrap.c (patched)'  patched_bootstrap.c
+          echo "    asm() blocks remaining: $(grep -c 'asm(' patched_bootstrap.c)"
+
+          # upstream's own 1.13.1 -f list, with only that one file patched
+          cat patched_bootstrap.c $L/bootstrappable.c \
+              $M/cc.h $M/cc_globals.c $M/cc_reader.c $M/cc_strings.c \
+              $M/cc_types.c $M/cc_emit.c $M/cc_core.c $M/cc_macro.c $M/cc.c > m2.c
+          ab_art 'm2.c (our translation unit)' m2.c
+          set +e
+          timeout 300 qemu-aarch64 ./stage2 < m2.c > m2.s1
+          echo "  stage2 rc=$? emitted=$(wc -c < m2.s1) bytes"
+          set -e
+          { grep -oE '^adr x[0-9]+ [A-Za-z_][A-Za-z0-9_]*$' m2.s1 | awk '{print $3}'
+            grep -oE '^bl [A-Za-z_][A-Za-z0-9_]*$' m2.s1 | awk '{print $2}'; } | sort -u > /tmp/r
+          grep -oE '^:[A-Za-z_][A-Za-z0-9_]*$' m2.s1 | sed 's/^://' | sort -u > /tmp/d
+          echo "  unresolved: $(comm -23 /tmp/r /tmp/d | tr '\n' ' ' | sed 's/^ *$/NONE/')"
+          [ -s m2.s1 ] || exit 0
+          cat m2.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as \
+            | qemu-aarch64 ./elf M2-ours 2>/dev/null || true
+          ab_art 'M2-Planet (ours)' M2-ours
+          printf 'int main(){int i;int s;s=0;for(i=1;i<10;i=i+1){s=s+i;}return s;}' > c.c
+          ab_run 'ours compiles c.c' 120 ours.M1 \
+            qemu-aarch64 ./M2-ours --architecture aarch64 --bootstrap-mode -f c.c -o ours.M1
+          ab_run 'host compiles c.c' 120 host.M1 \
+            $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode -f c.c -o host.M1
+          ab_cmp '  ours vs host' ours.M1 host.M1
