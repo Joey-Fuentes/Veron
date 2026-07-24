@@ -179,16 +179,36 @@ jobs:
           echo "    (for reference, 4.8.5 vs 4.7.4: $(comm -13 hooks47.txt hooks485.txt | wc -l))"
           echo
           echo "  --- of those, how many does the aarch64 backend actually use? ---"
+          # SPELLING MATTERS HERE. target.def names hooks in lowercase
+          # (add_stmt_cost), but a backend implements one as an UPPERCASE macro
+          # carrying its group prefix:
+          #     HOOK_VECTOR (TARGET_VECTORIZE, vectorize)
+          #     DEFHOOK (add_stmt_cost, ...)  ->  TARGET_VECTORIZE_ADD_STMT_COST
+          # Run 1 searched with `grep -w add_stmt_cost`, which matches neither
+          # the case nor the word boundary, and returned 0 -- the same 0 it
+          # would return if the answer were 21. Case-insensitive SUBSTRING is
+          # the search that can actually find a hit.
           used=0
           : > needed.txt
           while IFS= read -r h; do
             [ -z "$h" ] && continue
-            if grep -rqw "$h" g480/gcc/config/aarch64/ 2>/dev/null; then
-              echo "$h" >> needed.txt; used=$((used+1))
-            fi
+            for d in g480 g485; do
+              if grep -riq "$h" "$d/gcc/config/aarch64/" 2>/dev/null; then
+                printf '%s (%s)\n' "$h" "$d" >> needed.txt; used=$((used+1)); break
+              fi
+            done
           done < <(comm -13 hooks47.txt hooks480.txt)
           sed 's/^/    /' needed.txt
-          echo "    THE NUMBER THAT MATTERS: $used hooks the backend needs that 4.7 lacks"
+          echo "    THE NUMBER THAT MATTERS: $used of the new hooks are referenced"
+          echo "    by the backend and would have to be added to 4.7."
+          echo
+          # Positive control: a hook that certainly IS used proves the search works.
+          echo "  --- search sanity check (must be non-zero) ---"
+          for known in legitimate_address_p function_value rtx_costs; do
+            printf '    %-24s %s\n' "$known" \
+              "$(grep -ril "$known" g480/gcc/config/aarch64/ 2>/dev/null | wc -l) file(s)"
+          done
+          echo "    If those are all 0 the search is broken, not the answer."
 
       - name: '4. What else does the backend reach for that 4.7 may not have?'
         run: |
@@ -201,15 +221,24 @@ jobs:
             | sort -u > syms.txt
           echo "  distinct long identifiers used by the backend: $(wc -l < syms.txt)"
           : > missing.txt
-          while IFS= read -r s; do
-            grep -rqw "$s" g47/gcc/*.h g47/gcc/*.c 2>/dev/null || echo "$s" >> missing.txt
+          while IFS= read -r sym; do
+            grep -rqw "$sym" g47/gcc/*.h g47/gcc/*.c 2>/dev/null || echo "$sym" >> missing.txt
           done < syms.txt
-          echo "  of those, absent from 4.7's gcc/: $(wc -l < missing.txt 2>/dev/null || echo 0)"
-          head -40 missing.txt 2>/dev/null | sed 's/^/    /'
+          tot=$(wc -l < missing.txt 2>/dev/null || echo 0)
+          # Run 1 reported 223 absent and every visible one was the backend's
+          # OWN static. Filtering the backend's own namespace is what turns this
+          # from an upper bound into something worth reading.
+          grep -vE '^(aarch64|aapcs)_' missing.txt > foreign.txt 2>/dev/null || true
+          echo "  absent from 4.7's gcc/          : $tot"
+          echo "  ... after removing aarch64_/aapcs_ (the backend's own): $(wc -l < foreign.txt)"
           echo
-          echo "  Many will be aarch64's own statics -- this is an upper bound,"
-          echo "  not a work item count. It is here to catch a nasty surprise"
-          echo "  (a whole new middle-end subsystem), not to be precise."
+          echo "  --- the ones that are NOT the backend's own ---"
+          sed 's/^/    /' foreign.txt
+          echo
+          echo "  These are the genuine middle-end dependencies. Some will still"
+          echo "  be false positives (macros, or names defined in 4.7 headers this"
+          echo "  grep does not read). The point is to catch a nasty surprise --"
+          echo "  a whole subsystem absent from 4.7 -- not to be precise."
 
       - name: VERDICT
         run: |

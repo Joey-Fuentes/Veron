@@ -117,7 +117,12 @@ the emitted instruction, then read the compiler's own branch. Reach for
   aarch64 backend and 4.8 requires C++, and they are the same version. The
   candidate that keeps the chain native and C-only is **backporting 4.8's
   aarch64 backend into 4.7**, which then yields `g++` 4.7 — itself built from C
-  — to build 4.8. `gcc-backend-backport-probe.yml` sizes it; see ROADMAP leg 2.
+  — to build 4.8. **First measurement says this is cheap**: the whole `vax`
+  backend needed only ~148 lines of change across the 4.7→4.8 boundary, so the
+  interface barely moved, and it moved *not at all* within the 4.8 series — take
+  4.8.5's backend, which is ~1,800 lines more fixed than 4.8.0's at no extra
+  interface distance. See ROADMAP leg 2 and
+  `gcc-backend-backport-probe.yml`.
 - **The kernel is still borrowed.** `tcc-userland-arm64` boots Ubuntu's kernel,
   which is correct for the ABI claim but is a distro artifact. Building
   `arch/arm64/configs/defconfig` from a pinned tree with the host gcc replaces

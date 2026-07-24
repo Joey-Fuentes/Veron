@@ -127,6 +127,33 @@ the build system around it; keep the step.
 > means the initial port was buggy and 4.8.5's is worth the wider gap.
 >
 > Measure before picking, per this file's own rule.
+>
+> **MEASURED, run #1 (2026-07-24).** The control answers clearly:
+>
+> ```
+> vax  4.7.4 -> 4.8.0 :  15 files,   76 +,   72 -      ~148 lines, whole backend
+> vax  4.7.4 -> 4.8.5 :  15 files,   76 +,   72 -      IDENTICAL
+> arm  4.7.4 -> 4.8.0 :  97 files, 8796 +, 5050 -      thumb2.md, vfp.md, unspecs.md
+> aarch64 backend     :  28 files, 46,073 lines (36k C/H + 9.3k .md)
+> aarch64 4.8.0->4.8.5:  14 files, 1035 +,  774 -
+> ```
+>
+> **The backend↔middle-end interface barely moved across the C-to-C++ boundary.**
+> An entire backend nobody was developing needed ~148 lines of adaptation. arm's
+> 14,000-line delta is arm's own development — thumb2, VFP, a new `unspecs.md` —
+> which is exactly what the vax control exists to separate out.
+>
+> **And it decides which 4.8 to take.** vax's delta is *identical* at 4.8.0 and
+> 4.8.5, so the interface did not move at all within the 4.8 series. 4.8.5's
+> backend is therefore no further from 4.7 than 4.8.0's, and it carries ~1,800
+> lines of fixes to a port that was one release old. **Backport 4.8.5's
+> `gcc/config/aarch64/`, not 4.8.0's.**
+>
+> *Not yet established:* how many of the 21 target hooks new in 4.8 the backend
+> needs. Run 1 reported 0, but it searched for the lowercase `target.def` name
+> (`add_stmt_cost`) while a backend spells it `TARGET_VECTORIZE_ADD_STMT_COST` —
+> a 0 that grep would return either way. Re-measured with a case-insensitive
+> substring search and a positive control.
 
 **What can go:** autotools. One target, one language, one configuration — a
 hand-written driver replaces `configure` entirely.
