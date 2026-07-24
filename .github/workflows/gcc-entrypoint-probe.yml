@@ -45,6 +45,17 @@ name: gcc-entrypoint-probe
 #   and no cross-arch detour. Configure passing is not building, so run 2 makes
 #   it and reports where it lands.
 #
+# RUN 2 RESULT -- THE "REFUTED" WAS WRONG. Building gcc 4.8 with CXX=/bin/false
+# fails: "error: C++ compiler missing or inoperational". The TOP-LEVEL configure
+# is lenient and passes; the gcc/ SUBDIRECTORY configure enforces CXX, and that
+# is where it dies. So gcc 4.8 does require a working C++ compiler and the gap
+# on aarch64 is real: 4.7 has no backend, 4.8 needs C++.
+#   BUT gcc 4.8's gcc/ is 360 .c files and 0 .cc -- the same sources 4.7 built
+#   with a C compiler. Run 3 satisfies configure with the host g++ and then
+#   overrides CXX with tcc at BUILD time, so every resulting error is a genuine
+#   C++-ism. The count of error classes is the size of the "patch 4.8 to build
+#   with C" option -- the only escape that keeps the chain native aarch64.
+#
 # FOUR ROADMAPS HANG ON THE ANSWER: cross-compile the entry point (reintroduces
 # the arch detour we just deleted), find a C-buildable C++ compiler, patch 4.8
 # to build with C, or accept one labelled borrowed rung. Do not pick before
@@ -223,6 +234,52 @@ jobs:
           find . \( -name 'cc1' -o -name 'xgcc' -o -name 'genmodes' \) 2>/dev/null \
             | head | sed 's/^/    /'
           echo "    objects: $(find . -name '*.o' | wc -l)"
+          set -e
+
+      - name: 'HOW MUCH C++ IS ACTUALLY IN THERE? (configure with g++, BUILD with tcc)'
+        continue-on-error: true
+        run: |
+          set -u
+          # THE REAL QUESTION. gcc 4.8's gcc/ is 360 .c files and 0 .cc -- the
+          # same sources 4.7 built with a C COMPILER, now merely compiled BY a
+          # C++ compiler. So "tcc cannot build gcc 4.8" may be a build-system
+          # requirement rather than a language one.
+          #
+          # Satisfy configure with the host g++ (so the CXX probe passes), then
+          # OVERRIDE CXX at build time with tcc. Every error tcc then emits is a
+          # genuine C++-ism in the source. Count them by class: that number is
+          # the size of the "patch 4.8 to build with C" option, which is the only
+          # escape that keeps the chain native aarch64.
+          sudo apt-get install -y --no-install-recommends g++ >/dev/null 2>&1 || true
+          mkdir -p b48c && cd b48c
+          set +e
+          ../g48/configure CC="$TCC -B$TCCDIR" \
+            --build=aarch64-unknown-linux-gnu \
+            --prefix="$PWD/../gcc48c" --enable-languages=c \
+            --disable-multilib --disable-bootstrap --disable-libsanitizer \
+            --disable-libgomp --disable-libquadmath \
+            --with-gmp="$PWD/../prefix" --with-mpfr="$PWD/../prefix" \
+            --with-mpc="$PWD/../prefix" > conf.log 2>&1
+          echo "  configure (with real g++) rc=$?"
+          tail -6 conf.log | sed 's/^/    /'
+          echo
+          echo "  --- now BUILD with tcc standing in for the C++ compiler ---"
+          timeout 3600 make -j"$(nproc)" CXX="$TCC -B$TCCDIR" > build.log 2>&1
+          echo "  make rc=$? (124 = timed out)"
+          echo
+          echo "  --- error classes: THIS IS THE MEASUREMENT ---"
+          grep -oE 'error: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
+            | sort | uniq -c | sort -rn | head -30 | sed 's/^/    /'
+          echo
+          echo "  --- distinct files that failed ---"
+          grep -oE '^[^ :]+\.c(c)?:' build.log | sort -u | head -25 | sed 's/^/    /'
+          echo "    distinct failing files: $(grep -oE '^[^ :]+\.c(c)?:' build.log | sort -u | wc -l)"
+          echo "    objects built anyway   : $(find . -name '*.o' | wc -l)"
+          echo
+          echo "  A SHORT list of error classes over FEW files means patching 4.8"
+          echo "  to build with C is tractable, and the chain stays native."
+          echo "  A long tail means the C++ dependency is real and the roadmap"
+          echo "  must take a borrowed C++ rung or a cross-compiled entry point."
           set -e
 
       - name: 'VERDICT'
