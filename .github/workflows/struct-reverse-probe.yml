@@ -539,45 +539,64 @@ jobs:
             return last[0];}"
 
           echo
-          echo "== EVIDENCE: the emitted frame for one local vs two =="
-          # Compile B0 (good) and B4 (the two-local form) and show what stage 2
-          # reserved and which offsets it handed out. prescan and the declarator
-          # must agree on the frame or the callee's locals land on top of
-          # something the caller still needs -- the m68 failure mode.
-          mkbad() { printf 'enum {NULL = 0};\n%s\n%s\n%s\n' "$BR" "$1" "$RUN"; }
-          mkbad "struct type* build(struct type* last, int off){struct type* i;
-          struct type* mt;
-          i=calloc(1,sizeof(struct type)); mt=calloc(1,sizeof(struct type));
-          i->members=last; i->offset=off; i->size=three()*2;
-          member_size=i->size; return i;}" > two.c
-          mkbad "struct type* build(struct type* last, int off){struct type* i;
+          echo "== PADDING: hold the program constant, vary ONLY the code size =="
+          # A4 and B0 are the SAME construct. A4 additionally defines mk(), which
+          # it never calls, and A4 passes while B0 SEGVs. Dead code changes the
+          # outcome, so this is a LAYOUT bug, not a construct bug -- and every
+          # earlier conclusion (second local, global, loop) was really measuring
+          # emitted size.
+          #
+          # Two things in the emitted program are DATA sitting in the instruction
+          # stream: each global (b __gs<name> / :g_<name> / eight .byte 0) and
+          # calloc's bump pointer :__mp (eight .byte 0). Both are 8-byte objects
+          # reached with `ldr x`, but instructions are 4 bytes, so whether they
+          # land 8-ALIGNED depends on how much code precedes them.
+          #
+          # Add one dead function at a time. If pass/fail alternates with a
+          # period of two instructions, that is the alignment of those objects.
+          PADBASE="$BR
+          struct type* build(struct type* last, int off){struct type* i;
           i=calloc(1,sizeof(struct type)); i->members=last; i->offset=off;
-          i->size=three()*2; member_size=i->size; return i;}" > one.c
-          set +e
-          timeout 60 qemu-aarch64 ./stage2 < two.c > two.s1 2>/dev/null
-          timeout 60 qemu-aarch64 ./stage2 < one.c > one.s1 2>/dev/null
-          set -e
-          for v in one two; do
-            echo "  --- $v local(s): :build as emitted ---"
-            awk '/^:build$/,/^ret$/' $v.s1 | sed 's/^/      /'
-            echo "      frame reserve : $(awk '/^:build$/,/^ret$/' $v.s1 | grep -m1 'add x11 x11')"
-            echo "      slot offsets  : $(awk '/^:build$/,/^ret$/' $v.s1 | grep -oE 'add x1 x10 [0-9]+' | sort -u | tr '\n' ' ')"
+          i->size=three()*2; member_size=i->size; return i;}"
+
+          addr() { python3 tools/pcmap.py "$1" --list 2>/dev/null \
+                   | awk -v n="$2" '$2==n{print $1; exit}'; }
+
+          printf '  %-4s %-9s %-8s %-12s %-12s %s\n' \
+                 PAD BYTES RC 'g_member_size' '__mp' VERDICT
+          for n in 0 1 2 3 4 5 6 7; do
+            pad=''
+            k=0
+            while [ "$k" -lt "$n" ]; do
+              pad="$pad
+              int dead$k(int q){return q+$k;}"
+              k=$((k+1))
+            done
+            printf 'enum {NULL = 0};\n%s\n%s\n%s\n' "$pad" "$PADBASE" "$RUN" > pad.c
+            set +e
+            timeout 60 qemu-aarch64 ./stage2 < pad.c > pad.s1 2>/dev/null
+            rm -f pad.bin
+            cat pad.s1 | timeout 60 qemu-aarch64 ./stage1 \
+              | timeout 60 qemu-aarch64 ./stage0-as \
+              | timeout 60 qemu-aarch64 ./elf pad.bin 2>/dev/null
+            timeout 60 qemu-aarch64 ./pad.bin >/dev/null 2>&1
+            rc=$?
+            set -e
+            gm=$(addr pad.s1 g_member_size)
+            mp=$(addr pad.s1 __mp)
+            gmod='-'; mmod='-'
+            [ -n "$gm" ] && gmod=$(( $(printf '%d' "$gm") % 8 ))
+            [ -n "$mp" ] && mmod=$(( $(printf '%d' "$mp") % 8 ))
+            v=ok; [ "$rc" = 139 ] && v=SEGV; [ "$rc" = 36 ] || [ "$rc" = 139 ] || v="rc=$rc"
+            printf '  %-4s %-9s %-8s %-12s %-12s %s\n' \
+              "$n" "$(wc -c < pad.bin 2>/dev/null || echo 0)" "$rc" \
+              "$gm (mod8=$gmod)" "$mp (mod8=$mmod)" "$v"
           done
           echo
-          echo "  --- fault PC for the two-local build ---"
-          cat two.s1 | timeout 60 qemu-aarch64 ./stage1 \
-            | timeout 60 qemu-aarch64 ./stage0-as \
-            | timeout 60 qemu-aarch64 ./elf two.bin 2>/dev/null
-          set +e
-          timeout 60 qemu-aarch64 -d cpu -D f2.log ./two.bin >/dev/null 2>&1
-          rc=$?
-          set -e
-          echo "      run rc=$rc"
-          PC=$(grep -o 'PC=[0-9a-f]\{8,\}' f2.log | tail -1 | cut -d= -f2)
-          LR=$(grep -o 'X30=[0-9a-f]\{8,\}' f2.log | tail -1 | cut -d= -f2)
-          echo "      PC=0x$PC X30=0x$LR"
-          [ -n "$PC" ] && python3 tools/pcmap.py two.s1 "0x$PC" "0x$LR" | sed 's/^/      /'
-          rm -f f2.log
+          echo "  If SEGV tracks mod8=4 and ok tracks mod8=0, the bug is that an"
+          echo "  8-byte object embedded in the code stream is only 4-byte aligned."
+          echo "  If pass/fail is unrelated to those columns, layout still matters"
+          echo "  but through something else -- compare two adjacent pad values."
 
           echo
           if [ "$fail" = 0 ]; then
