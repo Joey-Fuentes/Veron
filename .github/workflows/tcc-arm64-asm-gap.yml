@@ -1,0 +1,234 @@
+name: tcc-arm64-asm-gap
+
+# SPIKE. WHICH INSTRUCTIONS DOES musl NEED THAT tcc's arm64 ASSEMBLER LACKS?
+#
+# WHY THIS EXISTS. tcc-userland-arm64 run 3 established that mob HEAD
+# (85ba3ae8, 2026-07-24) HAS an arm64 assembler -- arm64-tok.h is present -- and
+# that it fails on `bic x1, x0, #1` with:
+#
+#     ARM64 instruction 'bic' not implemented
+#
+# The Feb-2026 series we vendored at spikes/stage3/patches/tcc-arm64-asm/ DOES
+# implement that form (asm_opcode_imm_sh inverts the operand and encodes it as
+# an AND-bitmask), and it never emits the string "not implemented". So mob's
+# assembler is NOT that series -- it is a different implementation that knows
+# the mnemonic well enough to name it and has no handler behind it.
+#
+# THE QUESTION THAT ACTUALLY MATTERS is not "series vs mob". It is: of the
+# instruction forms musl 1.2.5 really contains, which does mob's tcc reject?
+# That set is finite, it is sitting in musl's source, and nothing about it needs
+# to be inferred. This job enumerates it.
+#
+# METHOD. For every aarch64 .s/.S file in musl, pull out the instruction lines,
+# group them by mnemonic, keep a few distinct REAL forms of each, and try to
+# assemble each one on its own. Real operands, so a failure is a real gap and
+# not an artefact of a synthesised probe. Then bucket the results against the
+# series' coverage list:
+#
+#   works in mob                      -> nothing to do
+#   fails in mob, mnemonic in series  -> CANDIDATE PORT, the answer to
+#                                        "what do we need out of the patch"
+#   fails in mob, absent from series  -> genuinely new work, in nobody's tree
+#
+# The middle bucket is a candidate list, not a promise: the series having a
+# handler for a mnemonic does not mean it handles the operand form musl uses.
+# Confirming a candidate means applying the series and re-running this job --
+# which is why it is cheap and takes a variant input.
+#
+# Runs in minutes. Builds nothing but tcc.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/tcc-arm64-asm-gap.yml'
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: 'mob as-is, or mob rewound + the Feb-2026 series applied'
+        type: choice
+        options: [mob, mob-plus-series]
+        default: mob
+
+concurrency:
+  group: tcc-arm64-asm-gap-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MUSL_VER: '1.2.5'
+  VARIANT: ${{ github.event.inputs.variant || 'mob' }}
+
+jobs:
+  gap:
+    runs-on: ubuntu-24.04-arm          # NATIVE aarch64
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git curl gcc make xz-utils
+
+      - name: 'Build tcc (variant: mob / mob-plus-series)'
+        run: |
+          set -eu
+          git clone -q git://repo.or.cz/tinycc.git tccsrc \
+            || git clone -q https://repo.or.cz/tinycc.git tccsrc \
+            || git clone -q https://github.com/TinyCC/tinycc.git tccsrc
+          echo "  mob HEAD : $(git -C tccsrc rev-parse HEAD)"
+          echo "  date     : $(git -C tccsrc log -1 --format=%ci)"
+
+          echo "  --- what arm64 assembler is in this tree? ---"
+          if [ -f tccsrc/arm64-tok.h ]; then
+            echo "    arm64-tok.h  : present"
+            git -C tccsrc log --reverse --format='    added by    : %h %ad %s' \
+              --date=short -- arm64-tok.h | head -1
+            echo "    arm64-asm.c  : $(wc -l < tccsrc/arm64-asm.c) lines"
+            echo "    'not implemented' sites: $(grep -c 'not implemented' tccsrc/arm64-asm.c || true)"
+            echo "    has encode_bitmask (a series marker): $(grep -qc encode_bitmask tccsrc/arm64-asm.c 2>/dev/null && echo yes || echo no)"
+          else
+            echo "    arm64-tok.h  : ABSENT -- this tree has only the dummy"
+          fi
+
+          if [ "$VARIANT" = mob-plus-series ]; then
+            P="$GITHUB_WORKSPACE/spikes/stage3/patches/tcc-arm64-asm"
+            FIRST=$(git -C tccsrc log --reverse --format=%H -- arm64-tok.h | head -1)
+            if [ -n "$FIRST" ]; then
+              echo "  rewinding to ${FIRST}^ -- just before mob's own assembler landed"
+              git -C tccsrc checkout -q "${FIRST}^"
+            fi
+            for p in "$P"/000*.patch; do
+              echo "    applying $(basename "$p")"
+              git -C tccsrc apply --3way "$p" || git -C tccsrc apply "$p" || {
+                echo "  PATCH FAILED -- report and stop; do not measure a half-patched tree"
+                exit 1; }
+            done
+          fi
+
+          cd tccsrc && ./configure --cc=gcc >/dev/null && make -j"$(nproc)" >/dev/null
+          ./tcc -v
+          echo "TCC=$PWD/tcc" >> "$GITHUB_ENV"
+          echo "TCCDIR=$PWD"  >> "$GITHUB_ENV"
+
+      - name: 'Fetch musl'
+        run: |
+          set -eu
+          mkdir -p musl
+          for u in "https://musl.libc.org/releases/musl-$MUSL_VER.tar.gz" \
+                   "https://ftp.barfooze.de/pub/sabotage/tarballs/musl-$MUSL_VER.tar.gz"; do
+            curl -fsSL --retry 4 --retry-delay 3 --retry-connrefused \
+              --connect-timeout 20 -o musl.tar.gz "$u" && break || true
+          done
+          if [ -s musl.tar.gz ]; then
+            tar xf musl.tar.gz -C musl --strip-components=1
+          else
+            rm -rf musl
+            git clone -q --depth 1 --branch "v$MUSL_VER" \
+              https://git.musl-libc.org/git/musl musl \
+              || git clone -q --depth 1 --branch "v$MUSL_VER" \
+                   https://github.com/bminor/musl musl
+          fi
+          echo "  aarch64 asm files: $(find musl -path '*aarch64*' \( -name '*.s' -o -name '*.S' \) | wc -l)"
+          find musl -path '*aarch64*' \( -name '*.s' -o -name '*.S' \) | sort | sed 's/^/    /'
+
+      - name: 'Which of those files does tcc assemble at all?'
+        run: |
+          set -u
+          : > files-ok.txt; : > files-bad.txt
+          for f in $(find musl -path '*aarch64*' \( -name '*.s' -o -name '*.S' \) | sort); do
+            if "$TCC" -B"$TCCDIR" -c "$f" -o /tmp/o.o \
+                 -Imusl/arch/aarch64 -Imusl/arch/generic -Imusl/include \
+                 -Imusl/src/internal 2>/tmp/e.txt; then
+              echo "$f" >> files-ok.txt
+              printf '    %-46s ok\n' "${f#musl/}"
+            else
+              echo "$f" >> files-bad.txt
+              printf '    %-46s FAIL  %s\n' "${f#musl/}" \
+                "$(head -1 /tmp/e.txt | sed 's/.*error: //' | cut -c1-60)"
+            fi
+          done
+          echo
+          echo "  assembles: $(wc -l < files-ok.txt)   fails: $(wc -l < files-bad.txt)"
+          echo
+          echo "  NOTE: tcc stops at the FIRST error in a file, so this undercounts."
+          echo "  The per-instruction pass below is the complete enumeration."
+
+      - name: 'THE ENUMERATION: every instruction form musl uses, one at a time'
+        run: |
+          set -u
+          # Pull instruction lines out of musl's aarch64 asm: drop comments,
+          # directives, labels and blanks; keep up to 4 DISTINCT real forms per
+          # mnemonic so every mnemonic gets a fair test without thousands of
+          # near-duplicate probes.
+          find musl -path '*aarch64*' \( -name '*.s' -o -name '*.S' \) -print0 \
+            | xargs -0 cat \
+            | sed 's,//.*,,; s,/\*.*\*/,,' \
+            | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+            | grep -vE '^$|^[.#]|^[A-Za-z0-9_.$]+:' \
+            | grep -E '^[a-z][a-z0-9._]*([[:space:]]|$)' \
+            | sort -u > forms-all.txt
+          awk '{ m=$1; if (++c[m] <= 4) print }' forms-all.txt > forms.txt
+          echo "  distinct instruction lines: $(wc -l < forms-all.txt)"
+          echo "  distinct mnemonics        : $(awk '{print $1}' forms-all.txt | sort -u | wc -l)"
+          echo "  probing                   : $(wc -l < forms.txt) forms"
+          echo
+
+          : > pass.txt; : > fail.txt
+          while IFS= read -r line; do
+            printf '.text\n.globl _p\n_p:\n%s\n.Lx:\n    ret\n' "$line" > /tmp/one.s
+            if "$TCC" -B"$TCCDIR" -c /tmp/one.s -o /tmp/one.o 2>/tmp/one.err; then
+              echo "$line" >> pass.txt
+            else
+              printf '%s\t%s\n' "$(echo "$line" | awk '{print $1}')" \
+                "$(head -1 /tmp/one.err | sed 's/.*error: //')" >> fail.txt
+              echo "$line" >> fail-forms.txt
+            fi
+          done < forms.txt
+
+          echo "  forms accepted: $(wc -l < pass.txt)   rejected: $(wc -l < fail.txt)"
+          echo
+          echo "  === REJECTED, grouped by mnemonic and reason ==="
+          sort -u fail.txt | awk -F'\t' '{printf "    %-10s %s\n", $1, $2}' | sort -u
+          awk '{print $1}' fail-forms.txt 2>/dev/null | sort -u > missing.txt || true
+          echo
+          echo "  mnemonics with NO working form: $(wc -l < missing.txt)"
+          sed 's/^/    /' missing.txt
+
+      - name: 'THE ANSWER: what do we need out of the patch?'
+        run: |
+          set -u
+          COV="$GITHUB_WORKSPACE/spikes/stage3/patches/tcc-arm64-asm/SERIES-COVERAGE.txt"
+          grep -v '^#' "$COV" | grep -v '^$' | sort -u > series.txt
+          echo "  variant measured        : $VARIANT"
+          echo "  series implements       : $(wc -l < series.txt) mnemonics"
+          echo "  musl needs but tcc lacks: $(wc -l < missing.txt)"
+          echo
+          echo "  === BUCKET 1: CANDIDATE PORTS -- in the series, missing here ==="
+          comm -12 missing.txt series.txt | sed 's/^/    /'
+          echo "    count: $(comm -12 missing.txt series.txt | wc -l)"
+          echo
+          echo "  === BUCKET 2: IN NOBODY'S TREE -- genuinely new work ==="
+          comm -23 missing.txt series.txt | sed 's/^/    /'
+          echo "    count: $(comm -23 missing.txt series.txt | wc -l)"
+          echo
+          echo "  Bucket 1 is the answer to 'what do we need out of the patch'."
+          echo "  It is a CANDIDATE list: the series having a handler for a"
+          echo "  mnemonic does not mean it handles the form musl uses. Confirm by"
+          echo "  re-running this job with variant=mob-plus-series -- any mnemonic"
+          echo "  that leaves bucket 1 is confirmed, any that stays is a form gap."
+          echo
+          echo "  Bucket 2 sizes the work no existing patch does for you."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: arm64-asm-gap-${{ github.event.inputs.variant || 'mob' }}
+          path: |
+            forms-all.txt
+            forms.txt
+            pass.txt
+            fail.txt
+            missing.txt
+            files-ok.txt
+            files-bad.txt
+          if-no-files-found: warn

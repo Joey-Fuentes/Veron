@@ -44,6 +44,12 @@ on:
     paths:
       - '.github/workflows/tcc-userland-arm64.yml'
   workflow_dispatch:
+    inputs:
+      variant:
+        description: 'mob as-is, or mob rewound + the Feb-2026 arm64 asm series'
+        type: choice
+        options: [mob, mob-plus-series]
+        default: mob
 
 concurrency:
   group: tcc-userland-arm64-${{ github.ref }}
@@ -52,6 +58,7 @@ concurrency:
 env:
   MUSL_VER: '1.2.5'
   BUSYBOX_VER: '1.36.1'
+  VARIANT: ${{ github.event.inputs.variant || 'mob' }}
 
 jobs:
   userland:
@@ -73,7 +80,7 @@ jobs:
             git curl gcc make bzip2 xz-utils cpio file \
             qemu-system-arm qemu-utils
 
-      - name: 'Build tcc (mob) natively, with the arm64 assembler patched in'
+      - name: 'Build tcc (variant: mob / mob-plus-series)'
         run: |
           set -eu
           git clone -q git://repo.or.cz/tinycc.git tccsrc \
@@ -81,65 +88,67 @@ jobs:
             || git clone -q https://github.com/TinyCC/tinycc.git tccsrc
           echo "  mob HEAD: $(git -C tccsrc rev-parse HEAD)"
           echo "  date    : $(git -C tccsrc log -1 --format=%ci)"
+          echo "  variant : $VARIANT"
 
-          # THE DECISIVE CHECK. arm64-tok.h is CREATED by the Feb-2026 assembler
-          # series, so its presence is what says whether mob already carries it.
-          # Do NOT test for arm64-asm.c: that file exists in mob either way, and
-          # unpatched it is titled "ARM64 dummy assembler for TCC" with an
-          # asm_opcode that is one tcc_error("ARM asm not implemented.").
-          # tcc-aarch64-probe tests for the file and so reported "inline asm on
-          # arm64: yes" against a tree with no assembler in it at all.
-          P="$GITHUB_WORKSPACE/spikes/stage3/patches/tcc-arm64-asm"
-          if [ -f tccsrc/arm64-tok.h ]; then
-            echo "  arm64-tok.h PRESENT -- the series is already upstream; not patching"
-            echo "TCC_ASM=upstream" >> "$GITHUB_ENV"
-          else
-            echo "  arm64-tok.h ABSENT -- mob ships the dummy; applying the series"
-            head -5 tccsrc/arm64-asm.c | sed 's/^/    /'
-            # Order matters: 0003 carries 0002's subst_asm_operand signature as
-            # CONTEXT, so it cannot apply to a tree without 0002.
+          # NO AUTO-DETECT. An earlier version of this step skipped the series
+          # when arm64-tok.h was present, on the theory that its presence meant
+          # the series was already upstream. It does not: mob has its OWN arm64
+          # assembler with its own token header, and on `bic x1, x0, #1` that
+          # assembler fails where the series succeeds. Which tree to measure is
+          # a choice, so it is an input, not a guess.
+          if [ "$VARIANT" = mob-plus-series ]; then
+            P="$GITHUB_WORKSPACE/spikes/stage3/patches/tcc-arm64-asm"
+            FIRST=$(git -C tccsrc log --reverse --format=%H -- arm64-tok.h | head -1)
+            if [ -n "$FIRST" ]; then
+              echo "  rewinding to ${FIRST}^ -- just before mob's own assembler landed"
+              git -C tccsrc checkout -q "${FIRST}^"
+            fi
             for p in "$P"/000*.patch; do
               echo "    applying $(basename "$p")"
               git -C tccsrc apply --3way "$p" || git -C tccsrc apply "$p" || {
-                echo "  PATCH FAILED. Refusing to build an unpatched tcc -- a musl"
-                echo "  failure from a dummy assembler would be unreadable."
-                exit 1; }
+                echo "  PATCH FAILED -- refusing to measure a half-patched tree"; exit 1; }
             done
-            echo "TCC_ASM=patched" >> "$GITHUB_ENV"
           fi
-          [ -f tccsrc/arm64-tok.h ] || { echo "  no arm64-tok.h after patching"; exit 1; }
 
           cd tccsrc && ./configure --cc=gcc >/dev/null && make -j"$(nproc)" >/dev/null
           ./tcc -v
           echo "TCC=$PWD/tcc"  >> "$GITHUB_ENV"
           echo "TCCDIR=$PWD"   >> "$GITHUB_ENV"
 
-      - name: 'GATE: the integrated arm64 assembler is real'
+      - name: 'Assembler smoke test (REPORTING ONLY -- never fails the run)'
+        continue-on-error: true
         run: |
-          set -eu
+          set -u
           cd tccsrc
-          echo "  assembler source: $TCC_ASM"
-          # Cheap and decisive: if these fail, musl will fail 25 minutes from now
-          # for the same reason, so fail here instead.
-          cat > /tmp/probe.s <<'ASMEOF'
-          .text
-          .globl probe
-          probe:
-              mov  x0, #7
-              bic  x1, x0, #1
-              orr  x2, x1, x0
-              cbz  x2, 1f
-              tbz  x0, #0, 1f
-          1:  ret
-          ASMEOF
-          ./tcc -B. -c /tmp/probe.s -o /tmp/probe.o \
-            && echo "  .s file assembles     : yes (incl. bic, cbz, tbz)" \
-            || { echo "  .s file assembles     : NO"; exit 1; }
-          ./tcc -B. -run "$GITHUB_WORKSPACE/spikes/stage3/probes/kern.c" \
-            && echo "  inline asm from C     : yes (kern.c exit=0)" \
-            || { echo "  inline asm from C     : NO (kern.c exit=$?)"; exit 1; }
+          # This step used to exit 1 on a rejected instruction, which stopped the
+          # run before the musl enumeration -- the thing actually worth having.
+          # The assembler is PARTIAL by construction; a rejection here is data.
+          probe() {
+            printf '.text\n.globl _p\n_p:\n%s\n.Lx:\n    ret\n' "$1" > /tmp/one.s
+            if ./tcc -B. -c /tmp/one.s -o /tmp/one.o 2>/tmp/one.err; then
+              printf '    %-24s ok\n' "$1"
+            else
+              printf '    %-24s FAIL  %s\n' "$1" \
+                "$(head -1 /tmp/one.err | sed 's/.*error: //')"
+            fi
+          }
+          echo "  --- forms musl leans on ---"
+          probe "mov x0, #7"
+          probe "bic x1, x0, x2"
+          probe "bic x1, x0, #1"
+          probe "orr x2, x1, x0"
+          probe "and x3, x0, #15"
+          probe "cbz x2, .Lx"
+          probe "tbz x0, #0, .Lx"
+          probe "ldr x0, [x1, #8]"
+          probe "stp x29, x30, [sp, #-16]!"
+          probe "adrp x0, _p"
+          echo
+          echo "  --- C-level probes ---"
+          rc=0; ./tcc -B. -run "$GITHUB_WORKSPACE/spikes/stage3/probes/kern.c" || rc=$?
+          echo "    kern.c (inline asm)     exit=$rc (expect 0)"
           rc=0; ./tcc -B. -run "$GITHUB_WORKSPACE/spikes/stage3/probes/feat.c" || rc=$?
-          echo "  C feature probe       : feat.c exit=$rc (expect 6)"
+          echo "    feat.c (C constructs)   exit=$rc (expect 6)"
 
       - name: '1. tcc builds musl'
         continue-on-error: true
@@ -178,19 +187,21 @@ jobs:
           timeout 1800 make -k -j"$(nproc)" > build.log 2>&1
           echo "  make -k rc=$?"
           echo
-          # THE PATTERN MATTERS. The old grep looked for "instruction 'X' not
-          # implemented", a string NEITHER tcc emits -- which is why run 1
-          # reported a single opcode instead of a list. The patched assembler
-          # says "unrecognized opcode X" / "unrecognized unary opcode X" /
-          # "unrecognized nullaryopcode X"; an unpatched mob says "ARM asm not
-          # implemented." and names nothing at all.
-          RX="unrecognized (nullaryopcode|unary opcode|opcode) [^ ,]+"
-          echo "  === EVERY arm64 mnemonic the assembler does not know ==="
-          grep -oE "$RX" build.log | awk '{print $NF}' | sort -u | sed 's/^/    /'
-          echo "    distinct unknown mnemonics: $(grep -oE "$RX" build.log | awk '{print $NF}' | sort -u | wc -l)"
-          if grep -q 'ARM asm not implemented' build.log; then
-            echo "    *** UNPATCHED assembler -- the gate step should have caught this"
-          fi
+          # TWO WORDINGS, because the two assemblers word it differently:
+          #   mob    : ARM64 instruction 'bic' not implemented
+          #   series : unrecognized opcode X / unary opcode X / nullaryopcode X
+          # A previous edit replaced the first pattern with the second on the
+          # mistaken belief that mob did not emit it. mob emits exactly that.
+          missing() {
+            { grep -oE "instruction '[^']+' not implemented" "$1" \
+                | sed "s/instruction '//; s/' not implemented//"
+              grep -oE "unrecognized (nullaryopcode|unary opcode|opcode) [^ ,]+" "$1" \
+                | awk '{print $NF}'
+            } 2>/dev/null | sort -u
+          }
+          echo "  === EVERY arm64 mnemonic the assembler does not implement ==="
+          missing build.log | sed 's/^/    /'
+          echo "    distinct: $(missing build.log | wc -l)"
           echo
           echo "  === partial-implementation misses (mnemonic known, form not) ==="
           grep -oE "(unsupported extend/shift specifier|unexpected operand|immediate [-0-9]+ out of range|immediate out of range|invalid bitmask[^,]*|shift amount out of range|bitmask too large[^,]*)" build.log \
@@ -227,7 +238,7 @@ jobs:
             timeout 1800 make -j"$(nproc)" > build2.log 2>&1
             echo "    rebuild rc=$?"
             tail -12 build2.log | sed 's/^/      /'
-            grep -oE "$RX" build2.log | awk '{print $NF}' | sort -u | sed 's/^/      still missing: /'
+            missing build2.log | sed 's/^/      still missing: /'
           fi
           make install > /dev/null 2>&1
           echo "  installed: $(ls ../muslroot/lib 2>/dev/null | tr '\n' ' ')"
@@ -344,7 +355,7 @@ jobs:
 
       - name: VERDICT
         run: |
-          echo "  arm64 assembler       : $TCC_ASM"
+          echo "  tcc variant           : $VARIANT"
           echo "  musl built by tcc     : $( [ -f muslroot/lib/libc.a ] && echo yes || echo NO )"
           echo "  busybox built by tcc  : $( [ -x bb/busybox ] && echo yes || echo NO )"
           echo "  booted as PID 1       : $( grep -q 'VERON BOOT OK' boot.log 2>/dev/null && echo yes || echo NO )"

@@ -89,3 +89,60 @@ and `expect()` diagnostics such as `vector operand with arrangement`.
 
 `bic` **is** implemented by `0003` (`TOK_ASM_bic`, both the register and
 bitmask-immediate forms), which is the single opcode run 1 died on.
+
+---
+
+## Correction — mob has its OWN arm64 assembler (2026-07-24)
+
+The first attempt to use this series skipped it, on the reasoning that
+`arm64-tok.h` being present in mob meant the series was already upstream. That
+reasoning was wrong, and the run that exposed it is worth recording:
+
+```
+mob HEAD: 85ba3ae8f1e22044255d54c28be04e5fc3e88ae0   2026-07-24 19:27:21 +0200
+arm64-tok.h PRESENT -- the series is already upstream; not patching
+tcc version 0.9.28rc 2026-07-24 mob@85ba3ae8 (AArch64 Linux)
+/tmp/probe.s:5: error: ARM64 instruction 'bic' not implemented
+```
+
+Two things follow. **`ARM64 instruction '%s' not implemented` is mob's wording**
+— the string appears nowhere in this series, whose unknown-opcode path says
+`unrecognized opcode %s`. And this series **does** implement `bic` with an
+immediate: `asm_opcode_imm_sh` inverts the operand (`op3.e.v = ~op3.e.v`) and
+encodes it as an AND-bitmask, and `~1` is a valid bitmask immediate.
+
+So mob carries a *different* arm64 assembler, which knows the mnemonic well
+enough to name it in an error and has no handler behind it. On this instruction
+the vendored series is stronger than upstream. `arm64-tok.h` does not
+discriminate between them; nothing short of measurement does, which is what
+`.github/workflows/tcc-arm64-asm-gap.yml` is for.
+
+The series cannot simply be applied on top of mob — 0003 creates `arm64-tok.h`,
+which now exists. To measure it, rewind to the commit before mob's own
+assembler landed and apply there:
+
+```sh
+FIRST=$(git -C tccsrc log --reverse --format=%H -- arm64-tok.h | head -1)
+git -C tccsrc checkout "${FIRST}^"
+for p in spikes/stage3/patches/tcc-arm64-asm/000*.patch; do
+    git -C tccsrc apply --3way "$p" || exit 1
+done
+```
+
+## Files here
+
+| | |
+|---|---|
+| `000{1,2,3}-*.patch` | the unwrapped series |
+| `SERIES-COVERAGE.txt` | the 67 instruction mnemonics 0003 implements, one per line — the input to the gap job's bucketing |
+| `arm64-tok.h` | 0003's new file, extracted whole; useful if the series is ported forward as files rather than as a diff |
+
+## If the series is ported forward rather than rewound to
+
+`arm64-asm.c` (+2579) and `arm64-tok.h` (+247) are effectively whole new files;
+everything else in the series is ~50 lines of hooks —
+`arm64-link.c` relocs (18), the `subst_asm_operand` signature across five
+backends plus `tcc.h`/`tccasm.c` (7), `tccasm.c` (26), `tccpp.c` (4),
+`tcctok.h` (6). Mob's own assembler will already have made equivalent hook
+changes, so a forward port is mostly a question of which `arm64-asm.c` you
+want, not a merge.
