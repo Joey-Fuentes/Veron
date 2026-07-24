@@ -409,10 +409,34 @@ jobs:
           echo "  --- error classes ---"
           grep -oE 'error: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
             | sort | uniq -c | sort -rn | head -20 | sed 's/^/    /'
+          echo
+          # A CLASS IS NOT A LOCATION. Run 2 reported "2 error: invalid array
+          # size" and nothing else, which is unactionable: tcc raises that only
+          # for a NEGATIVE constant array size, i.e. a BUILD_BUG_ON-style
+          # compile-time assertion that is actually FAILING. Which assertion is
+          # the whole question, so print the file, the line, and the source.
+          echo "  --- every error, with its location ---"
+          grep -oE '^[^ :]+:[0-9]+: error: .*' build.log | sort -u | head -20 | sed 's/^/    /'
+          echo
+          echo "  --- the offending source lines ---"
+          grep -oE '^[^ :]+:[0-9]+: error:' build.log | sort -u | head -10 | while IFS= read -r loc; do
+            f=${loc%%:*}; rest=${loc#*:}; ln=${rest%%:*}
+            [ -f "$f" ] || continue
+            echo "    == $f:$ln =="
+            start=$(( ln > 4 ? ln - 4 : 1 ))
+            sed -n "${start},$((ln + 1))p" "$f" | sed "s/^/        /"
+          done
           if ! [ -x busybox ]; then
-            echo "  --- re-running the first failing target with V=1 ---"
-            timeout 300 make V=1 CC="$CCW" HOSTCC=gcc SKIP_STRIP=y \
-              applets/applets.o 2>&1 | tail -12 | sed 's/^/    /'
+            # Re-run the target that ACTUALLY failed, not a hardcoded one:
+            # applets/applets.o was the run-1 failure and now succeeds, so the
+            # V=1 retry was showing a passing build.
+            TGT=$(grep -oE '\*\*\* \[[^]:]+:[0-9]+: [^]]+\] Error' build.log \
+                   | sed 's/.*: //; s/\] Error//' | grep -v '^$' | head -1)
+            echo "  --- first failing target: ${TGT:-<none parsed>} ---"
+            if [ -n "$TGT" ]; then
+              timeout 300 make V=1 CC="$CCW" HOSTCC=gcc SKIP_STRIP=y \
+                "$TGT" 2>&1 | tail -20 | sed 's/^/    /'
+            fi
           fi
           if [ -x busybox ]; then
             echo "  BUILT busybox: $(wc -c < busybox) bytes"
