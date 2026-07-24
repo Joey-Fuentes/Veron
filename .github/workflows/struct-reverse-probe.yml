@@ -280,6 +280,84 @@ jobs:
             return r->size*16 + r->members->size*4 + r->members->members->size;}"
 
           echo
+          echo "== WIDENED: what actually BUILDS the list (cc_types.c build_member) =="
+          # The twelve lines above are clean, so the pointer was already garbage
+          # when reverse_members_type_list received it. create_struct builds the
+          # member list by PREPENDING in a loop (build_member returns i with
+          # i->members = last), and utsname's members are `char sysname[65]` --
+          # the ARRAY branch, whose size line is
+          #     i->size = constant_expression() * member_type->type->size;
+          # a CALL RESULT multiplied by a two-level member chain off a local.
+          # On a value-stack machine that is exactly where call and chain
+          # evaluation can misorder, so each piece gets its own reducer.
+          HELP="$TYPE
+          int member_size;
+          struct type* mk(int v){struct type* p; p=calloc(1,sizeof(struct type));
+          p->size=v; p->type=p; return p;}
+          int three(){return 3;}
+          struct type* rev(struct type* head){struct type* root; struct type* next;
+          root=NULL;
+          while(NULL!=head){next=head->members; head->members=root; root=head; head=next;}
+          return root;}"
+
+          probe 'call result -> struct-ptr local, member store' 7 \
+            "$HELP
+            int main(){struct type* i; struct type* m;
+            i=calloc(1,sizeof(struct type)); m=mk(7); i->type=m;
+            return i->type->size;}"
+
+          probe 'member store of a call result directly' 9 \
+            "$HELP
+            int main(){struct type* i; i=calloc(1,sizeof(struct type));
+            i->type=mk(9); return i->type->size;}"
+
+          probe 'member chain inside arithmetic' 14 \
+            "$HELP
+            int main(){struct type* i; struct type* m;
+            i=calloc(1,sizeof(struct type)); m=mk(7); i->type=m;
+            return 2 * i->type->size;}"
+
+          probe 'CALL RESULT * member chain (the array size line)' 21 \
+            "$HELP
+            int main(){struct type* mt; mt=mk(7);
+            return three() * mt->type->size;}"
+
+          probe 'that product STORED into a member' 21 \
+            "$HELP
+            int main(){struct type* i; struct type* mt;
+            i=calloc(1,sizeof(struct type)); mt=mk(7);
+            i->size = three() * mt->type->size; return i->size;}"
+
+          probe 'global set in callee, read in caller' 5 \
+            "$HELP
+            int setms(){member_size=5; return 1;}
+            int main(){member_size=0; setms(); return member_size;}"
+
+          probe 'prepend in a loop, then reverse (3 nodes)' 27 \
+            "$HELP
+            int main(){struct type* L; struct type* q; int k;
+            L=NULL; k=0;
+            while(k<3){q=calloc(1,sizeof(struct type)); q->members=L;
+            q->offset=k; q->size=k+1; L=q; k=k+1;}
+            L=rev(L);
+            return L->size*16 + L->members->size*4 + L->members->members->size;}"
+
+          probe 'build_member + create_struct shape combined' 36 \
+            "$HELP
+            struct type* build(struct type* last, int off){
+            struct type* i; struct type* mt;
+            i=calloc(1,sizeof(struct type)); i->members=last; i->offset=off;
+            mt=mk(2); i->type=mt;
+            i->size = three() * mt->type->size;
+            member_size = i->size; return i;}
+            int main(){struct type* last; int n; int off;
+            last=NULL; n=0; off=0;
+            while(n<3){last=build(last,off); off=off+member_size; n=n+1;}
+            last=rev(last);
+            return last->offset*16 + last->members->offset*4
+                   + last->members->members->offset;}"
+
+          echo
           if [ "$fail" = 0 ]; then
             echo "PASS: every reducer agrees with the control."
             echo "      The fault is NOT in these operations in isolation --"
