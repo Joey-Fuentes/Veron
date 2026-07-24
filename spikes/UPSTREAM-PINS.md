@@ -95,3 +95,91 @@ version, not the architecture.
   The subset itself is unlikely to have moved between 1.13.1 and `master`, but
   the table should be updated and §2's derivation re-run against `bd2fe4b`
   before it is relied on again.
+
+---
+
+# Results at the new pin
+
+## The reference is proven
+
+Upstream's own `test/test1000/hello-aarch64.sh`, run with qemu binfmt registered
+and `GET_MACHINE_OVERRIDE_ALWAYS_RUN=1`, **passes**:
+
+```
+./test/results/test1000-aarch64-binary --architecture x86 -f ... -o proof
+sha256_check test/test1000/proof.answer
+out=test/test1000/proof: OK
+exit 0
+```
+
+The 643,257-byte aarch64 M2-Planet it builds runs, compiles M2-Planet's entire
+source for x86, and matches upstream's published checksum. Compiling a small
+program with it gives output **byte-identical** to the gcc-built host compiler:
+
+| compiler                       | output for `c.c` |
+|--------------------------------|------------------|
+| refM2P (aarch64, 643,257 B)    | 2813 B, `5ead19ee…` |
+| host M2-Planet (x86, gcc)      | 2813 B, `5ead19ee…` |
+
+That confirms the diagnosis: **aarch64 self-hosting works at 1.13.1**, and the
+segfault we chased was the unreleased 1.13.2 buffering change on `master`.
+
+`--architecture x86` also works on this pin, at every level: the full x86 chain
+runs a program to `rc=45`, and test1000's proof step *is* the aarch64 binary
+invoked with `--architecture x86`.
+
+**Rule going forward: do not reconstruct upstream's recipe.** Run their script
+and take the binary it produces — it is verified against their own checksum.
+Four hand-written `-f` lists in a row were wrong.
+
+## 1.13.1's M2libc is laid out differently
+
+`aarch64/linux/bootstrap.c` at this pin is the **entire mini-libc** — `fgetc`,
+`fputc`, `fputs`, `fwrite`, `open`, `fopen`, `close`, `fclose`, `brk`, `malloc`,
+`strlen`, `memset`, `calloc`, `free`, `exit` — with `asm()` in only six of them.
+There is no generic `M2libc/bootstrap.c`; that split is newer. The constants
+M2-Planet needs (`NULL`, `TRUE`, `FALSE`, `EOF`, `EXIT_*`, `stdin`/`stdout`/
+`stderr`) are enums at the top of that same file.
+
+So m71's substitution — omit the whole arch file — cannot apply here: it would
+discard the plain-C half we need.
+
+## The substitution, redone at function granularity
+
+`tools/drop_asm.py` removes exactly the `asm()`-bodied functions and compiles
+everything else unpatched. Structural scanning runs on a copy with comments and
+strings masked, so a `;` inside the licence header cannot mis-slice the file.
+
+Measured at this pin: 6 dropped of 19 top-level blocks, `asm()` blocks
+remaining 0, and stage 2 compiles the result cleanly —
+
+```
+bootstrap.c upstream 3463 B -> patched 2402 B
+m2.c (translation unit)      213,297 B
+stage2 rc=0, emitted         1,259,524 B
+unresolved                   fgetc fputc
+M2-Planet (ours)             313,608 B
+```
+
+`open`/`close`/`exit` come from m53 and `brk` from m69, so only `fgetc` and
+`fputc` were left — they sit a level above the raw syscalls. `spikes/stage2-mini-c/m2libc-shim.c`
+supplies both in ten lines of C over our `read`/`write` builtins. That is a
+smaller substitution than m71's and it states its own rule rather than relying
+on a coincidence of upstream's file layout.
+
+## Still open at this pin
+
+- **Stage 2 hangs on `M2libc/stdlib.c`** (rc=124) and **segfaults on
+  `M2libc/stdio.c`** (rc=139, faulting within the first 62 lines — the
+  `#include`/`#define` preamble). Neither file is needed once the patched
+  `bootstrap.c` supplies the libc, so this is not blocking, but both are real
+  stage-2 defects worth their own rungs. `string.c`, `ctype.c`, `fcntl.c` and
+  `bootstrappable.c` all compile fine.
+- **`#define` object-like macros** are still unsupported (m75). `stdio.c` and
+  `hex2.h` both need them; `--bootstrap-mode` does not expand them either, so
+  hex2 cannot be built in bootstrap mode by anyone.
+- **Our M1 segfaults on `--architecture x86`** where upstream's returns rc=0 and
+  632 bytes.
+- **Our hex2 writes byte-identical output and then crashes on exit.**
+- `spikes/reference/` still vendors the OLD sources; `TARGET-SUBSET.md` §2's
+  mechanical derivation has not been re-run against `bd2fe4b`.

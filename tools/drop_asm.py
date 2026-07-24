@@ -108,9 +108,17 @@ def functions(text):
             blank = m.rfind('\n\n', prev_end, i)
             if blank != -1:
                 start = max(start, blank + 1)
-            head = m[start:i]
-            mo = NAME.search(head.strip())
-            yield (start, end, mo.group(1) if mo else '?')
+            head = m[start:i].strip()
+            mo = NAME.search(head)
+            if mo:
+                name = mo.group(1)
+            elif head.startswith('enum') or ' enum' in head:
+                name = '(enum block)'
+            elif head.startswith('struct') or ' struct' in head:
+                name = '(struct block)'
+            else:
+                name = '(non-function block)'
+            yield (start, end, name)
             prev_end = end
             i = end
             continue

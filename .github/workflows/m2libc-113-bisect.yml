@@ -142,9 +142,16 @@ jobs:
           echo "    asm() blocks remaining: $(grep -c 'asm(' patched_bootstrap.c)"
 
           # upstream's own 1.13.1 -f list, with only that one file patched
-          cat patched_bootstrap.c $L/bootstrappable.c \
+          # The shim supplies fgetc/fputc, the only two dropped functions our
+          # builtins do not already cover -- open/close come from m53, brk from
+          # m69, exit from m53. It goes AFTER the patched bootstrap.c so that
+          # file's enums (NULL EOF TRUE FALSE stdin/stdout/stderr EXIT_*) are in
+          # scope, and before M2-Planet's own sources.
+          cat patched_bootstrap.c spikes/stage2-mini-c/m2libc-shim.c \
+              $L/bootstrappable.c \
               $M/cc.h $M/cc_globals.c $M/cc_reader.c $M/cc_strings.c \
               $M/cc_types.c $M/cc_emit.c $M/cc_core.c $M/cc_macro.c $M/cc.c > m2.c
+          ab_art 'm2libc-shim.c' spikes/stage2-mini-c/m2libc-shim.c
           ab_art 'm2.c (our translation unit)' m2.c
           set +e
           timeout 300 qemu-aarch64 ./stage2 < m2.c > m2.s1

@@ -54,19 +54,12 @@ jobs:
           git clone https://github.com/oriansj/M2-Planet.git upstream-m2planet
           git -C upstream-m2planet checkout "$M2PLANET_SHA"
           git -C upstream-m2planet submodule update --init --recursive
-          git -C upstream-m2planet/M2libc fetch --depth 50 origin "$M2LIBC_SHA" 2>/dev/null || true
-          git -C upstream-m2planet/M2libc checkout -q "$M2LIBC_SHA" 2>/dev/null \
-            || echo "  NOTE: M2libc already at the gitlink for this M2-Planet commit"
           echo "M2-Planet pinned at: $(git -C upstream-m2planet rev-parse HEAD)"
           echo "M2libc submodule at: $(git -C upstream-m2planet/M2libc rev-parse HEAD)"
 
       - name: Fetch mescc-tools (+ M2libc submodule)
-        run: git clone --recursive --depth 1 https://github.com/oriansj/mescc-tools.git upstream-mescc
-          git -C upstream-mescc checkout -q "$MESCC_SHA"
-          echo "  PINS RESOLVED:"
-          echo "    M2-Planet   $(git -C upstream-m2planet rev-parse HEAD)"
-          echo "    M2libc      $(git -C upstream-m2planet/M2libc rev-parse HEAD)"
-          [ -d upstream-mescc ] && echo "    mescc-tools $(git -C upstream-mescc rev-parse HEAD)"
+        run: git clone --recursive https://github.com/oriansj/mescc-tools.git upstream-mescc
+          git -C upstream-mescc checkout -q 5adfbf3
 
       # --- build the borrowed toolchain with the host compiler ---
       - name: Build M2-Planet, M1, hex2 (host gcc)
