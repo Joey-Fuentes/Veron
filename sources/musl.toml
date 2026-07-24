@@ -1,0 +1,27 @@
+[source]
+name     = "musl"
+version  = "1.2.5"
+url      = "https://musl.libc.org/releases/musl-1.2.5.tar.gz"
+mirrors  = ["https://github.com/bminor/musl/archive/refs/tags/v1.2.5.tar.gz"]
+sha256   = "a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4"
+license  = "MIT"
+
+# Measured by spikes/stage3/probes/fetch-pinned.sh, then pinned. A mismatch
+# from here on is a signal, not a shrug.
+
+[substitutions]
+# Both are DECLARED, not silent. See spikes/stage3/patches/tcc-arm64-asm/README.md.
+dropped_asm = [
+  # tcc's arm64 assembler cannot assemble these; musl ships portable C for each,
+  # so the C fallback is used. Named because the result is not stock musl.
+  "src/fenv/aarch64/fenv.s", "src/ldso/aarch64/tlsdesc.s",
+  "src/process/aarch64/vfork.s", "src/setjmp/aarch64/longjmp.s",
+  "src/signal/aarch64/restore.s", "src/thread/aarch64/__set_thread_area.s",
+  "src/thread/aarch64/__unmapself.s", "src/thread/aarch64/clone.s",
+  "src/thread/aarch64/syscall_cp.s",
+]
+dropped_c = ["src/complex/*.c"]   # tcc: "_Complex is not yet supported" (66 sites)
+
+[verification]
+runtime = "4-rung ladder passes: raw _start syscall, crt+libc startup, malloc, stdio"
+note    = "libc.a lacks complex math. This is NOT a complete musl and must not be described as one."

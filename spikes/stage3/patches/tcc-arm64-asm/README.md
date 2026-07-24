@@ -759,3 +759,26 @@ gcc would replace all of it with something known: unsigned, minimal, pinned, and
 identical run to run. That is also leg 3's first spike in `ROADMAP.md`, and it
 would supply the UAPI headers currently borrowed from `linux-libc-dev` via
 `make headers_install`. Two open items, one build.
+
+---
+
+## PROVEN (2026-07-24, run #27)
+
+```
+==== VERON USERLAND ALIVE ====
+uname : Linux (none) 6.17.0-1020-azure ... aarch64 GNU/Linux
+pid1  : /bin/busybox
+shell and busybox: compiled by tcc
+kernel under them: compiled by gcc
+arithmetic check: 42
+==== VERON BOOT OK ====
+[    1.974041] reboot: Power down
+```
+
+The boot needed `-cpu cortex-a72`: `-cpu max` enables every optional ARM feature
+this qemu knows and Linux 6.17 uses ones it mishandles, aborting inside qemu
+with `regime_is_user: code should not be reached`.
+
+The result document is `spikes/stage3/TCC-USERLAND.md`; pins and declared
+substitutions are in `sources/{tcc,musl,busybox}.toml`. This file stays as the
+working record of how the patch series was recovered, corrected and verified.

@@ -218,3 +218,57 @@ the chain at the first generation. Behaviour-preserving, by checksum.
 - **Our hex2 writes byte-identical output and then crashes on exit.**
 - `spikes/reference/` still vendors the OLD sources; `TARGET-SUBSET.md` §2's
   mechanical derivation has not been re-run against `bd2fe4b`.
+
+
+---
+
+# The direct path's own pins (2026-07-24)
+
+The set above is live-bootstrap's, for the Mes route. The direct path
+(`spikes/stage3/TCC-USERLAND.md`) pins its own upper half, because
+live-bootstrap's tcc **0.9.27 cannot be used on aarch64**: `tcc-aarch64-probe`
+found it fails to link its own second generation on the 128-bit long-double
+soft-float runtime its arm64 `libtcc1.a` does not provide, and it ships no
+inline assembler for arm64 at all.
+
+| | pin | manifest |
+|---|---|---|
+| tcc | `5ec0e6f84b47ebd8c269b581712666313f5edaef` + 5 patches | `sources/tcc.toml` |
+| musl | 1.2.5, sha256 `a9a118bbe84d8764…` | `sources/musl.toml` |
+| BusyBox | 1.36.1, sha256 `b8cc24c9574d809e…` | `sources/busybox.toml` |
+
+## Why that tcc commit
+
+Not mob HEAD: mob moves hourly (one run built a commit dated the same
+afternoon), and mob's *own* arm64 assembler rejects 20 mnemonics musl needs,
+including `svc`. `5ec0e6f8` is the tree the Feb-2026 tinycc-devel assembler
+series was written against.
+
+**It was located by blob hash, not by date or ancestry.** Every `index
+<pre>..<post>` line in a git-formatted patch records the blob the author had, so
+the correct base is findable rather than estimated. Two traps worth knowing:
+
+- A file touched by more than one patch in a series has a **different**
+  pre-image in each, and only the **first** is a real repository blob — the
+  later ones are intermediate states that exist nowhere in history.
+- The mailing-list archive **expands tabs and wraps long lines**, so the posted
+  text does not apply at all until it is unwrapped, and then only with
+  `--ignore-whitespace`.
+
+`spikes/stage3/patches/tcc-arm64-asm/apply-series.sh` does all of this and warns
+if the base it finds is not the verified one.
+
+## Still open at these pins
+
+- **Two of the five tcc patches are ours**, not upstream: `0004` adds a missing
+  `#include <assert.h>` without which the series does not build natively, and
+  `0005` makes `.align` padding in executable sections NOP rather than zero —
+  without it a zero word is `UDF #0` on arm64 and musl's `memset` faults. Both
+  are candidates to send upstream.
+- **The arrangement parser is uppercase-only**: `dup v0.16B` assembles,
+  `dup v0.16b` does not. musl writes `16B`, so musl is unaffected; anything
+  else is likely to trip on it.
+- **`gotplt_entry_type()` does not enumerate every arm64 relocation type.**
+  Never hit by tcc's own output, but a link that pulls in foreign objects
+  produces thousands of `Unknown relocation type for got: N`. The numbers were
+  not captured; if this recurs, capture them.

@@ -1,0 +1,31 @@
+[source]
+name     = "busybox"
+version  = "1.36.1"
+url      = "https://busybox.net/downloads/busybox-1.36.1.tar.bz2"
+mirrors  = ["https://github.com/mirror/busybox/archive/refs/tags/1_36_1.tar.gz"]
+sha256   = "b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314"
+license  = "GPL-2.0-only"
+
+# Git tags use UNDERSCORES (1_36_1). A fallback that cloned without a tag once
+# built master (1.37.0.git) and reported it as the pinned version; the fetcher
+# now asserts the version from the Makefile and fails on mismatch.
+
+[config_deltas]
+# Config choices, each with a reason. None of these is a tcc capability gap
+# except the last group.
+"CONFIG_TC"                     = "n"  # tc.c needs TCA_CBQ_* enums removed from the uapi headers when CBQ was dropped. GCC fails identically.
+"CONFIG_FEATURE_CLEAN_UP"       = "y"  # otherwise delete_eth_table is declared and never defined
+"CONFIG_FEATURE_SUN_LABEL"      = "y"  # otherwise sun_write_table likewise
+"CONFIG_FEATURE_PREFER_APPLETS" = "y"  # otherwise run_nofork_applet likewise
+# The last three exist because busybox writes `if (ENABLE_FEATURE_X)` on a
+# compile-time constant and relies on the optimiser to delete the call. tcc has
+# no dead-code elimination, so the reference survives to link time. Enabling the
+# features makes the functions real. THIS IS THE ONE REAL COMPILER GAP.
+
+[build]
+cc_shim = "spikes/stage3/probes/tcc-cc-wrapper.sh"   # musl driver + kbuild flag translation
+cflags  = "-D__GNUC__=4 -D__GNUC_MINOR__=0"          # 4.0 exactly; 4.1 enables a _Pragma tcc cannot parse
+
+[verification]
+built   = "2908400 bytes, ELF 64-bit LSB executable, ARM aarch64, statically linked"
+applets = 401

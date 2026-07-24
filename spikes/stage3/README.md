@@ -30,6 +30,24 @@ compiles `asm()` fine — so the patch applies to G0 only and leaves the chain
 immediately. That G1 lands exactly on upstream's bytes is the proof the
 substitution is behaviour-preserving: a checksum, not an argument.
 
+**The userland half of the Linux leg.** A musl + BusyBox userland compiled
+entirely by tcc boots as PID 1 under a GCC-built arm64 kernel.
+
+```
+==== VERON USERLAND ALIVE ====
+pid1  : /bin/busybox        shell and busybox: compiled by tcc
+                            kernel under them: compiled by gcc
+==== VERON BOOT OK ====
+```
+
+Gated by `.github/workflows/tcc-userland-arm64.yml`. Full record, evidence chain
+and named substitutions in **[`TCC-USERLAND.md`](./TCC-USERLAND.md)**.
+
+The single real compiler gap it found: **tcc has no dead-code elimination**, so
+BusyBox's `if (ENABLE_FEATURE_X)` idiom leaves references to functions that were
+never defined. Everything else was build plumbing. The kernel uses the same
+idiom via `IS_ENABLED()`, so leg 3 will meet this again.
+
 ## The pin set (confirmed, do not drift)
 
 `livebootstrap-pins-probe` resolved `live-bootstrap -> stage0-posix -> M2-Planet`
@@ -44,6 +62,20 @@ and found our pins **are** live-bootstrap's:
 | matching upper half | Mes **0.27.1**, tcc **0.9.27** |
 
 One coherent set, already adopted. No pin decision is outstanding.
+
+**The direct path pins its own tcc**, because live-bootstrap's 0.9.27 cannot
+self-host on aarch64 and has no inline assembler at all:
+
+| | pin | |
+|---|---|---|
+| tcc | `5ec0e6f8` + 5 patches | `sources/tcc.toml` |
+| musl | 1.2.5 `a9a118bb…` | `sources/musl.toml` |
+| BusyBox | 1.36.1 `b8cc24c9…` | `sources/busybox.toml` |
+
+tcc's base commit was located by matching the **pre-image blob hashes** in the
+patch series rather than by date or ancestry — `apply-series.sh` does this, and
+it is the reliable way to find the tree a mailing-list patch was written
+against.
 
 ## The substitution, in one paragraph
 
@@ -81,6 +113,13 @@ the emitted instruction, then read the compiler's own branch. Reach for
   perfect and G0 is used exactly once, so this blocks nothing. Non-gating REPORT
   in the bisect workflow.
 - **Mes rung** — `mes-rung.yml` reference arm; see `MES-RUNG.md` when it lands.
+- **The kernel is still borrowed.** `tcc-userland-arm64` boots Ubuntu's kernel,
+  which is correct for the ABI claim but is a distro artifact. Building
+  `arch/arm64/configs/defconfig` from a pinned tree with the host gcc replaces
+  it and supplies the UAPI headers currently taken from `linux-libc-dev` —
+  two open items, one build. Leg 3's first spike.
+- **The userland has not been rebuilt twice.** It is pinned and hashed but not
+  yet shown byte-identical across two runs. Cheap to add, and the natural gate.
 - **`mescc-tools-full` / `no-host-chain` / `stage3-m2-demo`** are still red from
   the stale generic `bootstrap.c` (they reference a file that does not exist at
   1.13.1). One fix, several workflows: replace `$L/bootstrap.c` with either the
@@ -91,6 +130,10 @@ the emitted instruction, then read the compiler's own branch. Reach for
 
 ```
 spikes/stage3/          this folder -- current state, roadmap
+spikes/stage3/TCC-USERLAND.md   the tcc userland result, in full
+spikes/stage3/patches/  the tcc arm64 assembler series + our two fixes
+spikes/stage3/probes/   the CC shim, the pinned fetcher, the C probes
+sources/*.toml          url + hash + license + declared substitutions
 spikes/UPSTREAM-PINS.md the pin set and what is open at it
 spikes/PROGRESS.md      stages 0-2 history; reference only
 spikes/bench/           the local ladder model

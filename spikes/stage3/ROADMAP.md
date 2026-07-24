@@ -30,6 +30,16 @@ real failures, not an opinion about difficulty.
 
 ## Leg 1 — enhanced M2-Planet builds REAL tcc
 
+> **Update 2026-07-24.** The *upper* end of this leg is now proven independently
+> of how tcc is reached: a tcc-built musl + BusyBox userland boots as PID 1
+> (see `TCC-USERLAND.md`). That does not build tcc from M2-Planet — it assumes
+> a tcc — but it settles what a real tcc is worth once you have one, and it
+> retires the guesswork about tcc's aarch64 backend: it self-hosts, assembles
+> all of musl's aarch64 asm, and compiles 401 BusyBox applets.
+>
+> It also supplies the **known-good tcc binary** this leg's validation section
+> below asks for, ahead of schedule.
+
 **Goal.** Skip Mes entirely. Grow M2-Planet until it compiles unmodified
 tcc, not live-bootstrap's patched-and-reduced 0.9.26.
 
@@ -123,12 +133,35 @@ live-bootstrap's step count suggests.
 minimal `defconfig`, build against a deliberately bare environment, and let the
 failures enumerate themselves.
 
+> **Update 2026-07-24 — the userland half is DONE.** `tcc-userland-arm64` proves
+> the second caveat above ("compiling Linux is not running Linux") can be split
+> from the first: a tcc-built musl + BusyBox userland boots as PID 1 on a
+> GCC-built kernel, because the syscall ABI is the contract. See
+> `TCC-USERLAND.md`.
+>
+> **What that leaves for this leg**, now sharper than when it was written:
+>
+> - **The kernel build itself is still not attempted.** Ubuntu's kernel is
+>   borrowed. Building `arch/arm64/configs/defconfig` from a pinned tree with
+>   the host gcc is the next step, and it also replaces the UAPI headers
+>   currently borrowed from `linux-libc-dev` via `make headers_install`.
+> - **`IS_ENABLED()` will be the wall.** The userland leg found exactly one real
+>   tcc capability gap — **no dead-code elimination** — and the kernel leans on
+>   `if (IS_ENABLED(CONFIG_FOO))` far more heavily than BusyBox does. Expect
+>   this to dominate, not the header/plumbing issues.
+> - **`asm goto` with outputs, jump labels, linker scripts** remain untested
+>   claims. They gate a tcc-built kernel, not a gcc-built one, so they do not
+>   block the pinned-kernel step above.
+
 ---
 
 ## Sequencing
 
-1. **Finish the Mes path to a green tcc.** Three rungs out, and it yields a
-   known-good tcc binary to validate leg 1 against.
+0. ~~Get a working tcc userland~~ **done** — `TCC-USERLAND.md`. Yields the
+   known-good tcc binary that step 1 was wanted for.
+1. **Finish the Mes path to a green tcc.** Three rungs out. Its value is now
+   narrower: the userland result already supplies a reference tcc, so this is
+   about reaching tcc *from the seed*, not about having one.
 2. **Leg 1 measurement spike** — M2-Planet over real tcc, failure classes with
    counts. Check M2-Mesoplanet first.
 3. **Leg 2** — gut the gcc build, keep the 4.7→4.8 step.

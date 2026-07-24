@@ -1,0 +1,30 @@
+# tcc — the C compiler the userland is built with.
+# See sources/README.md: url + hash + license, nothing enters a build unnamed.
+
+[source]
+name       = "tinycc"
+upstream   = "git://repo.or.cz/tinycc.git"
+mirrors    = ["https://repo.or.cz/tinycc.git", "https://github.com/TinyCC/tinycc.git"]
+commit     = "5ec0e6f84b47ebd8c269b581712666313f5edaef"   # 2025-12-21 "some reverts & fixes"
+version    = "0.9.28rc"
+license    = "LGPL-2.1-or-later"
+
+# WHY THIS COMMIT AND NOT mob HEAD. mob is a moving target -- one run built
+# 85ba3ae8 dated the same afternoon -- and its own arm64 assembler rejects
+# instructions musl needs (`bic`, `svc`, `adrp` and 17 others). 5ec0e6f8 is the
+# tree the Feb-2026 assembler series was written against, located by matching
+# the pre-image blob hashes in the patches rather than by date or ancestry.
+[patches]
+dir   = "spikes/stage3/patches/tcc-arm64-asm"
+apply = "apply-series.sh"                 # needs --ignore-whitespace; see its header
+series = [
+  "0001-arm64-link-Implement-TSTBR-and-CONDBR-relocs.patch",   # upstream, tinycc-devel 2026-02-05
+  "0002-asm-Pass-ASMOperand-to-asm_subst_operand-backend.patch",
+  "0003-Implement-ARM64-assembler.patch",
+  "0004-arm64-asm-include-assert.h.patch",                     # ours
+  "0005-tccasm-nop-pad-exec-alignment.patch",                  # ours
+]
+
+[verification]
+musl_aarch64_asm = "16 of 16 files assemble"
+mnemonics        = "20 of 20 that mob rejects are covered by the series"
