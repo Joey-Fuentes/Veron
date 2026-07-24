@@ -27,8 +27,18 @@ name: livebootstrap-pins-probe
 #
 # Nothing here builds anything. It answers one question cheaply so the Mes rung
 # starts from a known-consistent set instead of a hopeful one.
+#
+# RUN 1 FINDING (lb HEAD 9a268c4, 2026-04-20). steps/ yields mes 0.27.1 and
+# tcc 0.9.27, but NO M2-Planet and NO mescc-tools. That is not a layout change:
+# live-bootstrap's steps/ BEGINS at Mes. Everything below it -- hex0, M1, hex2,
+# M2-Planet, mescc-tools -- comes from the stage0-posix SUBMODULE, so our pin's
+# counterpart is one level down. This pass LOCATES it rather than assuming a
+# second time.
 
 on:
+  push:
+    paths:
+      - '.github/workflows/livebootstrap-pins-probe.yml'
   workflow_dispatch:
 
 concurrency:
@@ -83,10 +93,35 @@ jobs:
           echo
 
           if [ -z "$HEAD_M2" ]; then
-            echo "OUTCOME 3: no steps/M2-Planet-<version>/ found at HEAD."
-            echo "  The tree layout has changed; the probe needs updating before"
-            echo "  any conclusion is drawn. Listing what IS under steps/:"
-            git -C lb ls-tree --name-only HEAD -- steps/ | head -40 | sed 's/^/    /'
+            echo "M2-Planet is not a steps/ entry -- LOCATING IT."
+            echo
+            echo "  --- submodules declared at HEAD (.gitmodules) ---"
+            git -C lb show HEAD:.gitmodules 2>/dev/null | sed 's/^/    /' || echo "    (none)"
+            echo
+            echo "  --- gitlinks (submodule pins) in the tree ---"
+            git -C lb ls-tree -r HEAD | awk '$2=="commit"{printf "    %-44s %s\n",$4,$3}' | sed 's/^/  /'
+            echo
+            echo "  --- anything named M2-Planet or mescc-tools anywhere in the tree ---"
+            git -C lb ls-tree -r --name-only HEAD \
+              | grep -iE 'm2-planet|mescc-tools|stage0' | head -30 | sed 's/^/    /'
+            echo
+            echo "  --- where is the version actually written down? ---"
+            for f in steps/manifest steps/SHA256SUMS.sources sources; do
+              if git -C lb cat-file -e "HEAD:$f" 2>/dev/null; then
+                echo "    ===== $f (M2-Planet / mescc-tools lines) ====="
+                git -C lb show "HEAD:$f" | grep -inE 'm2-planet|mescc-tools|stage0' \
+                  | head -12 | sed 's/^/      /'
+              fi
+            done
+            echo
+            echo "  --- steps that DO carry a version, for the record ---"
+            for st in mes tcc mes-m2 nyacc; do
+              v=$(ver_of "$HEAD_SHA" "$st"); [ -n "$v" ] && printf '    %-12s %s\n' "$st" "$v"
+            done
+            echo
+            echo "NEXT: the stage0-posix pin above is our pin's counterpart. The"
+            echo "      following pass should resolve M2-Planet's version THROUGH"
+            echo "      that submodule, then bisect on it as originally planned."
             exit 0
           fi
 
