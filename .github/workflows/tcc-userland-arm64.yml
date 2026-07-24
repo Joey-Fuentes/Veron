@@ -256,8 +256,18 @@ jobs:
             missing build3.log | sed 's/^/      still missing: /'
           fi
 
-          make install > /dev/null 2>&1
-          echo "  installed: $(ls ../muslroot/lib 2>/dev/null | tr '\n' ' ')"
+          # Was: make install >/dev/null 2>&1 -- which hid a partial install.
+          echo
+          echo "  === make install ==="
+          if make install > install.log 2>&1; then
+            echo "    install rc=0"
+          else
+            echo "    install rc=$? -- tail follows"
+            tail -12 install.log | sed 's/^/      /'
+          fi
+          echo "    lib: $(ls ../muslroot/lib 2>/dev/null | tr '\n' ' ')"
+          echo "    bin: $(ls ../muslroot/bin 2>/dev/null | tr '\n' ' ')"
+          echo "    crt: $(ls ../muslroot/lib/*.o 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
           set -e
 
       - name: '2. Does the tcc-built musl actually work?'
@@ -265,14 +275,55 @@ jobs:
         run: |
           set -u
           MR="$PWD/muslroot"
+          echo "  muslroot/lib: $(ls "$MR/lib" 2>/dev/null | tr '\n' ' ')"
+          echo "  muslroot/bin: $(ls "$MR/bin" 2>/dev/null | tr '\n' ' ')"
           [ -f "$MR/lib/libc.a" ] || { echo "  no libc.a -- musl did not build"; exit 0; }
+          echo "  libc.a: $(wc -c < "$MR/lib/libc.a") bytes, $(ar t "$MR/lib/libc.a" 2>/dev/null | wc -l) members"
+
           printf '#include <stdio.h>\n#include <string.h>\n#include <stdlib.h>\nint main(void){char*p=malloc(32);strcpy(p,"musl works");printf("%%s\\n",p);free(p);return 7;}\n' > t.c
-          set +e
-          "$MR/bin/musl-gcc" -static -o t t.c 2>&1 | sed 's/^/    /' \
-            || "$TCC" -B"$TCCDIR" -static -I"$MR/include" -L"$MR/lib" -o t t.c 2>&1 | sed 's/^/    /'
-          file t | sed 's/^/    /'
-          ./t; echo "    exit=$? (expect 7)"
-          set -e
+
+          # Do NOT write `cmd | sed` and test the result: a pipeline reports the
+          # LAST command's status, so a missing musl-gcc looked like success and
+          # the fallback never ran. Capture, then print.
+          built=no
+          if [ -x "$MR/bin/musl-gcc" ]; then
+            echo "  --- attempt 1: musl-gcc wrapper ---"
+            if out=$("$MR/bin/musl-gcc" -static -o t t.c 2>&1); then
+              built=musl-gcc
+            fi
+            [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/    /'
+          else
+            echo "  --- musl-gcc not installed; linking against musl by hand ---"
+          fi
+
+          # The manual link is the honest test anyway: it uses musl's own crt
+          # objects and libc.a with nothing of the host's in the way.
+          if [ "$built" = no ]; then
+            echo "  --- attempt 2: tcc + musl crt objects directly ---"
+            LIBTCC1=""
+            for c in "$TCCDIR/libtcc1.a" "$TCCDIR/arm64-libtcc1.a"; do
+              [ -f "$c" ] && LIBTCC1="$c" && break
+            done
+            echo "    libtcc1: ${LIBTCC1:-<none found>}"
+            if out=$("$TCC" -B"$TCCDIR" -static -nostdinc -nostdlib \
+                       -I"$MR/include" \
+                       "$MR/lib/crt1.o" "$MR/lib/crti.o" t.c \
+                       -L"$MR/lib" -lc $LIBTCC1 "$MR/lib/crtn.o" \
+                       -o t 2>&1); then
+              built=tcc-manual
+            fi
+            [ -n "$out" ] && printf '%s\n' "$out" | sed 's/^/    /'
+          fi
+
+          echo "  linked by: $built"
+          if [ -x ./t ]; then
+            file t | sed 's/^/    /'
+            rc=0; ./t || rc=$?
+            echo "    exit=$rc (expect 7)"
+            [ "$rc" = 7 ] && echo "    PASS: a tcc-built musl runs correctly"
+          else
+            echo "    no binary produced"
+          fi
 
       - name: '3. tcc + musl build busybox, static'
         continue-on-error: true
