@@ -454,3 +454,57 @@ gcc-built kernel. The five patches that got there:
 0004 and 0005 are ours. Neither is an arm64-assembler bug: one is a missing
 include, the other a generic tcc directive-handling bug that only shows on an
 architecture where a zero word is an illegal instruction.
+
+---
+
+## busybox: two invocation fixes and one config choice
+
+Neither of the busybox blockers was an assembler or codegen problem.
+
+**`-Wp,-MD,<depfile>`** — kbuild's dependency-generation flag. tcc's
+`TCC_OPTION_Wp` calls `insert_args(..., ',')`, splitting on commas and
+re-parsing each piece as its own argv entry, so the depfile lands as a second
+INPUT FILE: *cannot specify output file with -c many files*. tcc spells the
+same request `-MD -MF <file>`. Handled by
+`spikes/stage3/probes/tcc-cc-wrapper.sh`, a CC shim, so busybox itself is
+unmodified.
+
+**`__GNUC__` undefined** — `include/platform.h` does:
+
+```c
+#if !__GNUC_PREREQ(2,7)
+#  define __attribute__(x)
+#endif
+```
+
+tcc does not define `__GNUC__`, so every attribute in busybox was silently
+discarded, `PACKED` structs got natural alignment, and busybox's own size
+assertions failed as *invalid array size*. Fixed with
+`-D__GNUC__=4 -D__GNUC_MINOR__=0`.
+
+**4.0 exactly.** At `__GNUC_PREREQ(4,1)` busybox enables
+`_Pragma("GCC visibility push(hidden)")`, which tcc rejects with *identifier
+expected* and which the libiproute headers use. Verified by preprocessing
+platform.h at each version and checking which constructs survive:
+
+| claim | `PACKED` | visibility pragma |
+|---|---|---|
+| undefined | discarded | not emitted |
+| 4.1 | works | emitted -- tcc cannot parse |
+| **4.0** | works | not emitted |
+
+**`tc` disabled** — a config choice, not a compiler gap. `networking/tc.c`
+references `TCA_CBQ_MAX` and `TCA_CBQ_RATE`, removed from the Linux uapi when
+the CBQ qdisc was dropped; busybox 1.36.1 predates that. **GCC fails on the
+same file with the same error**, which is what makes this a
+busybox-vs-kernel-headers version mismatch rather than anything about tcc.
+
+### Caveat for the glibc flavor
+
+`-D__GNUC__` is safe against musl and **is not against glibc**. glibc gates
+transparent unions on it -- `__SOCKADDR_ARG` becomes
+`union { struct sockaddr *...; } __attribute__((__transparent_union__))` --
+and tcc has no transparent unions, which produces
+*cannot convert 'struct sockaddr *' to 'union <anonymous>'* at every socket
+call. glibc's `limits.h` and `floatn.h` also change behaviour. If the glibc
+flavor is ever built with tcc, this flag does not carry over.

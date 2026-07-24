@@ -412,7 +412,16 @@ jobs:
           # Verified by preprocessing platform.h at 4.1 and 4.0 and checking
           # which constructs come out.
           sed -i "s|^CONFIG_EXTRA_CFLAGS=.*|CONFIG_EXTRA_CFLAGS=\"-I$MR/include -D__GNUC__=4 -D__GNUC_MINOR__=0\"|" .config
+          # DISABLE tc. Not a tcc limitation -- verified: GCC fails on the same
+          # file with the same error. TCA_CBQ_MAX and TCA_CBQ_RATE were removed
+          # from the Linux uapi headers when the CBQ qdisc was dropped, and
+          # busybox 1.36.1 predates that, so networking/tc.c references enum
+          # members the runner's kernel headers no longer define. It is a
+          # busybox-vs-kernel-headers version mismatch and belongs in the
+          # ledger as a CONFIG CHOICE, not as a compiler capability gap.
+          sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config
           yes '' | make oldconfig > /dev/null 2>&1
+          echo "  tc applet: $(grep -c '^# CONFIG_TC is not set' .config) (1 = disabled)"
           # CC is a SHIM, not tcc directly: kbuild passes -Wp,-MD,<depfile>,
           # which tcc splits on commas so <depfile> becomes a second input file
           # ("cannot specify output file with -c many files"). The shim
