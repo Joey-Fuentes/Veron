@@ -392,7 +392,26 @@ jobs:
           # tcc chokes on a few hardening flags busybox enables by default
           # Was: an s/// with backslash-escaped slashes, which sed rejected with
           # "unknown option to `s'" -- so this flag was never actually set.
-          sed -i "s|^CONFIG_EXTRA_CFLAGS=.*|CONFIG_EXTRA_CFLAGS=\"-I$MR/include\"|" .config
+          # -D__GNUC__=4 -D__GNUC_MINOR__=0 IS THE FIX FOR "invalid array size".
+          # busybox's include/platform.h does:
+          #     #if !__GNUC_PREREQ(2,7)
+          #     #  define __attribute__(x)      <-- ALL attributes become no-ops
+          #     #endif
+          # tcc does not define __GNUC__, so __GNUC_PREREQ is always 0 and every
+          # attribute in busybox is silently discarded -- including __packed__.
+          # The PACKED structs then get natural alignment, their sizes change,
+          # and busybox's own compile-time size assertions fail as
+          # "invalid array size" (tcc's wording for a negative array bound).
+          # The __restrict redefinition warnings came from the guard above it.
+          #
+          # 4.0 EXACTLY, not higher: __GNUC_PREREQ(4,1) enables
+          #     _Pragma("GCC visibility push(hidden)")
+          # which tcc cannot parse ("identifier expected"), and which the
+          # libiproute headers do use. 4.0 clears every gate tcc satisfies
+          # (attributes, __restrict, always_inline) and none that it does not.
+          # Verified by preprocessing platform.h at 4.1 and 4.0 and checking
+          # which constructs come out.
+          sed -i "s|^CONFIG_EXTRA_CFLAGS=.*|CONFIG_EXTRA_CFLAGS=\"-I$MR/include -D__GNUC__=4 -D__GNUC_MINOR__=0\"|" .config
           yes '' | make oldconfig > /dev/null 2>&1
           # CC is a SHIM, not tcc directly: kbuild passes -Wp,-MD,<depfile>,
           # which tcc splits on commas so <depfile> becomes a second input file
@@ -400,7 +419,10 @@ jobs:
           # translates it to tcc's own -MD -MF spelling. See the script header.
           CCW="$GITHUB_WORKSPACE/spikes/stage3/probes/tcc-cc-wrapper.sh"
           chmod +x "$CCW"
-          timeout 2400 make -j"$(nproc)" \
+          # -k, like the musl step: without it make stops at the first error and
+          # a run reports 2 failures when there may be twenty. The point of this
+          # step is the failure INVENTORY, not the first casualty.
+          timeout 2400 make -k -j"$(nproc)" \
             CC="$CCW" \
             HOSTCC=gcc \
             SKIP_STRIP=y > build.log 2>&1
