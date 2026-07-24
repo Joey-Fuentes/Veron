@@ -66,14 +66,33 @@ jobs:
           find "$D" -type f | sed "s|^$D/|    |" | sort
           echo
           echo "=== sources (where the tarball comes from, and its checksum) ==="
-          for f in "$D/sources" "$D/../SHA256SUMS.sources"; do
-            [ -f "$f" ] && { echo "  --- $f ---"; grep -i mes "$f" | sed 's/^/    /'; }
+          for f in "$D/sources" lb/steps/SHA256SUMS.sources lb/SHA256SUMS.sources; do
+            if [ -f "$f" ]; then
+              echo "  --- $f ---"
+              grep -i mes "$f" | sed 's/^/    /' || true
+            fi
           done
+          echo
+          echo "=== the SHIPPED config.h (this is what borrow-tcc Part B was missing) ==="
+          sed -n '1,60p' "$D/files/config.h" | sed 's/^/    /'
+          echo
+          echo "=== published checksums for the x86 build -- this rung's proof.answer ==="
+          head -20 "$D/mes-0.27.1.x86.checksums" | sed 's/^/    /'
+          echo "    ... $(wc -l < "$D/mes-0.27.1.x86.checksums") entries total"
 
       - name: '3-5. The recipe itself'
         run: |
           D=lb/steps/mes-$MES_VER
-          for f in $(find "$D" -type f \( -name '*.sh' -o -name '*.kaem' -o -name 'pass*' \) | sort); do
+          echo "############################################################"
+          echo "### pass1.kaem -- THE BUILD RECIPE"
+          echo "############################################################"
+          sed 's/^/    /' "$D/pass1.kaem"
+          echo
+          echo "### the wait4 patch it applies"
+          diff -u "$D/simple-patches/wait4.before" "$D/simple-patches/wait4.after" \
+            | sed 's/^/    /' || true
+          echo
+          for f in $(find "$D" -type f \( -name '*.sh' -o -name 'pass*' \) ! -name 'pass1.kaem' | sort); do
             echo "############################################################"
             echo "### $f"
             echo "############################################################"
@@ -85,19 +104,19 @@ jobs:
         run: |
           D=lb/steps/mes-$MES_VER
           echo "=== how is include/mes/config.h produced? ==="
-          grep -rniE 'config\.h|configure|@VERSION@|version' "$D" | head -25 | sed 's/^/    /'
+          grep -rniE 'config\.h|configure|@VERSION@|version' "$D" | head -25 | sed 's/^/    /' || true
           echo
           echo "=== which mescc-tools binaries does it invoke? ==="
           for t in kaem catm blood-elf M1 hex2 get_machine mescc-tools-extra sha256sum; do
             n=$(grep -rc --include='*' -w "$t" "$D" 2>/dev/null | awk -F: '{s+=$2} END{print s+0}')
-            [ "$n" != 0 ] && printf '    %-16s %s reference(s)\n' "$t" "$n"
+            if [ "$n" != 0 ]; then printf '    %-16s %s reference(s)\n' "$t" "$n"; fi
           done
           echo
           echo "=== M2-Planet invocations (architecture + -f list) ==="
-          grep -rhoE 'M2-Planet[^|;&]*' "$D" | head -20 | sed 's/^/    /'
+          grep -rhoE 'M2-Planet[^|;&]*' "$D" | head -20 | sed 's/^/    /' || true
           echo
           echo "=== architecture assumptions in this step ==="
-          grep -rniE 'x86|amd64|aarch64|arm|riscv|ARCH' "$D" | head -20 | sed 's/^/    /'
+          grep -rniE 'x86|amd64|aarch64|arm|riscv|ARCH' "$D" | head -20 | sed 's/^/    /' || true
           echo
           echo "NOTE: MesCC has no native aarch64 backend (x86 + armhf only,"
           echo "      GNU Mes 0.27). Our rung therefore targets x86 at the"
