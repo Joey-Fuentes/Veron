@@ -32,6 +32,13 @@ name: struct-reverse-probe
 # EVERY probe runs TWICE: through our ladder, and through upstream's
 # M2-Planet|M1|hex2. Upstream is the control. If upstream also misbehaves the
 # probe program is out of subset and the probe is wrong, not the compiler.
+#
+# THE CONTROL NEEDS TWO THINGS AND BOTH ARE EASY TO FORGET. It needs a real
+# libc -- libc-core.M1 is only _start/exit/__exit, so calloc goes unresolved --
+# which means M2libc/aarch64/linux/bootstrap.c in the -f list. And that file's
+# signatures are full of FILE*, a primitive M2-Planet registers ONLY inside
+# if(BOOTSTRAP_MODE) (cc_types.c:177), so --bootstrap-mode is mandatory too.
+# Upstream's own test1000 passes it for exactly this reason.
 
 on:
   push:
@@ -133,7 +140,7 @@ jobs:
             # --- control: upstream M2-Planet | M1 | hex2, WITH a real libc ---
             printf '%s\n' "$src" > pc.c
             set +e
-            timeout 60 $M/bin/M2-Planet --architecture aarch64 \
+            timeout 60 $M/bin/M2-Planet --architecture aarch64 --bootstrap-mode \
               -f "$L/aarch64/linux/bootstrap.c" -f pc.c -o p.M1 2>/tmp/ref.err
             m2rc=$?
             timeout 60 upstream-mescc/bin/M1 -f "$LIB/aarch64_defs.M1" \
