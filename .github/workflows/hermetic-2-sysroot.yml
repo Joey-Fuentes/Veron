@@ -72,12 +72,19 @@ concurrency:
 env:
   GNU: 'https://mirrors.kernel.org/gnu'
   LFS_TGT: 'aarch64-veron-linux-gnu'
-  BINUTILS: '2.42'
-  GCCVER: '13.2.0'
-  GLIBC: '2.39'
-  KERNEL: '6.6.30'
+  # THE BOOK'S TESTED SET, from LFS 13.0 chapter 3. Run 1 used gcc 13.2 with
+  # glibc 2.39 -- a pairing I chose from memory, not from the book -- and glibc
+  # died on `wctomb.c:57:1: error: 'artificial' attribute ignored
+  # [-Werror=attributes]`. glibc builds itself with -Werror, so a compiler that
+  # diagnoses one construct differently from the one it was released against
+  # stops the build outright. These versions are a combination somebody has
+  # already run end to end; ours was not.
+  BINUTILS: '2.46.0'
+  GCCVER: '15.2.0'
+  GLIBC: '2.43'
+  KERNEL: '6.18.10'
   GMP: '6.3.0'
-  MPFR: '4.2.1'
+  MPFR: '4.2.2'
   MPC: '1.3.1'
 
 jobs:
