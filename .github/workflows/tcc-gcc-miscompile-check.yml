@@ -225,39 +225,65 @@ jobs:
         run: |
           set -eu
           set +e
-          # H vs H. One binary, one input, run twice. If the output differs, the
-          # generator is nondeterministic and comparing it ACROSS trees measures
-          # the allocator, not the compiler. Run 2 reported 7 files differing
-          # with no way to tell those two apart.
+          # H vs H: regenerate each file IN THE SAME TREE and compare against
+          # what is already there. If it changes, the generator is not
+          # reproducible and comparing its output ACROSS trees measures the
+          # allocator rather than the compiler.
+          #
+          # RUN 3 FAILED HERE BY PARSING THE MAKEFILE. `md_file` is literally
+          #     md_file = $(srcdir)/config/aarch64/aarch64.md
+          # and sed does not expand make variables, so the path never existed
+          # and the control reported "not run". Guessing each generator's
+          # argument list was the wrong approach anyway -- genattrtab and
+          # genrecog do not all take the same arguments.
+          #
+          # ASK make INSTEAD. Delete the stamp file and request the target: the
+          # build system then runs the generator exactly as it did the first
+          # time, with whatever arguments that takes. gcc pipes the output
+          # through move-if-change, so the file on disk is REPLACED only if the
+          # content actually differs -- which is precisely the comparison we
+          # want, performed by gcc's own machinery.
           cd "$W/bH/gcc"
-          md=$(sed -n 's/^md_file *= *//p' Makefile | head -1)
-          echo "  md_file: ${md:-<not found>}"
-          if [ -z "${md:-}" ] || [ ! -f "$md" ]; then
-            echo "  cannot locate the machine description -- control not run"
-            echo "G1A=n/a" >> "$GITHUB_ENV"; exit 0
-          fi
           nd=0; det=0; miss=0
           : > "$W/man/nondeterministic.txt"
-          for g in genemit genrecog genextract genoutput genattrtab gencodes genflags; do
-            b=""
-            [ -x "build/$g" ] && b="build/$g"
-            [ -z "$b" ] && [ -x "$g" ] && b="$g"
-            if [ -z "$b" ]; then miss=$((miss+1)); printf '    %-12s not found\n' "$g"; continue; fi
-            "./$b" "$md" > /tmp/g1.out 2>/dev/null
-            "./$b" "$md" > /tmp/g2.out 2>/dev/null
-            if cmp -s /tmp/g1.out /tmp/g2.out; then
-              det=$((det+1)); printf '    %-12s deterministic\n' "$g"
+          for pair in insn-emit.c:s-emit insn-recog.c:s-recog \
+                      insn-extract.c:s-extract insn-output.c:s-output \
+                      insn-attrtab.c:s-attrtab insn-codes.h:s-codes \
+                      insn-flags.h:s-flags; do
+            f=${pair%%:*}; s=${pair##*:}
+            if [ ! -f "$f" ]; then miss=$((miss+1)); printf '    %-16s absent\n' "$f"; continue; fi
+            cp "$f" "/tmp/first-$f"
+            rm -f "$s"
+            timeout 900 make -s MAKEINFO=true "$f" > "/tmp/regen-$f.log" 2>&1
+            rc=$?
+            if [ "$rc" -ne 0 ] || [ ! -s "$f" ]; then
+              miss=$((miss+1))
+              printf '    %-16s could not regenerate (rc=%s)\n' "$f" "$rc"
+              head -3 "/tmp/regen-$f.log" | sed 's/^/        /'
+              continue
+            fi
+            if cmp -s "/tmp/first-$f" "$f"; then
+              det=$((det+1)); printf '    %-16s reproducible\n' "$f"
             else
-              nd=$((nd+1)); printf '    %-12s NONDETERMINISTIC (one binary, two runs)\n' "$g"
-              echo "$g" >> "$W/man/nondeterministic.txt"
+              nd=$((nd+1)); printf '    %-16s NOT REPRODUCIBLE (same tree, regenerated)\n' "$f"
+              echo "$f" >> "$W/man/nondeterministic.txt"
+              diff "/tmp/first-$f" "$f" > "$W/diffs/regen-$f.diff" 2>&1
+              echo "        diff lines: $(wc -l < "$W/diffs/regen-$f.diff")"
+              head -6 "$W/diffs/regen-$f.diff" | sed 's/^/          /'
             fi
           done
-          echo "  deterministic: $det   nondeterministic: $nd   not found: $miss"
+          echo "  reproducible: $det   not reproducible: $nd   not measured: $miss"
+          # Two empty files compare equal. A control that can report "clean"
+          # because it measured nothing is the exact failure this gate exists to
+          # prevent, so not-measured is its own state and never counts as pass.
           if [ "$nd" -gt 0 ]; then
-            echo "  -> gate 1b is UNINTERPRETABLE for those generators."
+            echo "  -> gate 1b is UNINTERPRETABLE for those files."
             echo "G1A=nondeterministic" >> "$GITHUB_ENV"
+          elif [ "$det" -eq 0 ]; then
+            echo "  -> nothing was measured; gate 1b has no control."
+            echo "G1A=n/a" >> "$GITHUB_ENV"
           else
-            echo "  -> the generators reproduce, so a gate 1b difference is real."
+            echo "  -> $det files reproduce, so a gate 1b difference in them is real."
             echo "G1A=deterministic" >> "$GITHUB_ENV"
           fi
 
@@ -285,6 +311,70 @@ jobs:
           if [ "$n" -eq 0 ]; then echo "G1=n/a" >> "$GITHUB_ENV"
           elif [ "$d" -eq 0 ]; then echo "  IDENTICAL"; echo "G1=identical" >> "$GITHUB_ENV"
           else echo "G1=DIFFER" >> "$GITHUB_ENV"; fi
+
+      - name: 'GATE 1c: WHY the generated sources differ -- the pattern set'
+        if: always()
+        continue-on-error: true
+        run: |
+          set -eu
+          set +e
+          # RUN 3 ANSWERED GATE 1b's QUESTION IN ITS OWN DIFF, and the answer is
+          # not a miscompilation:
+          #
+          #   insn-codes.h   H: #define CODE_FOR_loadwb_pairsi_si CODE_FOR_nothing
+          #                  T:         CODE_FOR_loadwb_pairsi_si = <a real number>
+          #   insn-emit.c    T has gen_loadwb_pairsi_si; H does not
+          #   everything else  case 603 -> case 607, output_51 -> output_55,
+          #                  gen_split_1872 -> gen_split_1876   (a +4 shift)
+          #
+          # CODE_FOR_nothing is how gcc records a pattern it DROPPED because its
+          # condition is constant-false at compile time. The H build proved four
+          # conditions false and deleted those patterns; the T build did not, so
+          # every insn code after them shifts by four and six files change
+          # without a single instruction changing.
+          #
+          # The mechanism is gcc's own: genconditions writes gencondmd.c, which
+          # folds insn conditions at compile time -- and it can only do that when
+          # the compiler building it is GCC. Built by anything else, no condition
+          # is known false and no pattern is dropped. Same family as the missing
+          # dead-code elimination in TCC-USERLAND.md, and benign in the same way:
+          # the extra patterns carry conditions that are false at run time too,
+          # so they never match. Gates 2 and 3 are what confirm that.
+          #
+          # This gate stops it being a story. Count it.
+          for arm in H T; do
+            f="b$arm/gcc/insn-codes.h"
+            [ -f "$f" ] || { echo "  $arm: no insn-codes.h"; continue; }
+            printf '  %s  patterns dropped as constant-false: %s   live: %s\n' \
+              "$arm" \
+              "$(grep -c 'CODE_FOR_nothing$' "$f" || true)" \
+              "$(grep -cE '^  CODE_FOR_[A-Za-z0-9_]+ = [0-9]+,' "$f" || true)"
+          done
+          echo "  --- patterns H dropped and T kept ---"
+          grep -oE 'CODE_FOR_[A-Za-z0-9_]+' bH/gcc/insn-codes.h 2>/dev/null \
+            | sort -u > /tmp/hc.txt
+          grep -E 'CODE_FOR_nothing$' bH/gcc/insn-codes.h 2>/dev/null \
+            | grep -oE 'CODE_FOR_[A-Za-z0-9_]+' | grep -v 'CODE_FOR_nothing' \
+            | sort -u > /tmp/h-dropped.txt
+          grep -E 'CODE_FOR_nothing$' bT/gcc/insn-codes.h 2>/dev/null \
+            | grep -oE 'CODE_FOR_[A-Za-z0-9_]+' | grep -v 'CODE_FOR_nothing' \
+            | sort -u > /tmp/t-dropped.txt
+          echo "    dropped only by H: $(comm -23 /tmp/h-dropped.txt /tmp/t-dropped.txt | wc -l)"
+          comm -23 /tmp/h-dropped.txt /tmp/t-dropped.txt | head -12 | sed 's/^/      /'
+          echo "    dropped only by T: $(comm -13 /tmp/h-dropped.txt /tmp/t-dropped.txt | wc -l)"
+          comm -13 /tmp/h-dropped.txt /tmp/t-dropped.txt | head -12 | sed 's/^/      /'
+          # If the ONLY difference is patterns H dropped and T kept, the T
+          # compiler is a superset that carries dead entries -- not a different
+          # compiler. If T dropped something H kept, that is the opposite and
+          # would be serious.
+          onlyT=$(comm -13 /tmp/h-dropped.txt /tmp/t-dropped.txt | wc -l)
+          if [ "$onlyT" -eq 0 ]; then
+            echo "  T drops nothing H keeps -- T is a superset, carrying dead patterns."
+            echo "G1C=superset" >> "$GITHUB_ENV"
+          else
+            echo "  T DROPPED patterns H KEPT. That is not the benign direction."
+            echo "G1C=asymmetric" >> "$GITHUB_ENV"
+          fi
 
       - name: 'GATE 2: same directory, same headers, only the compiler differs'
         if: always()
@@ -373,36 +463,46 @@ jobs:
         run: |
           set -eu
           set +e
-          # Run 2's full make died here, in the HOST-GCC arm:
-          #   unwind-dw2.c:1490:44: internal compiler error: Segmentation fault
-          # A transplant bug, nothing to do with tcc. The only question worth a
-          # minute is whether the tcc-built compiler fails the SAME way.
-          FLAGS=$(cat "$W/flags.txt")
-          SRC="$W/g474/libgcc/unwind-dw2.c"
-          cd "$W/bH/gcc"
+          # RUN 3 GOT THIS WRONG TWICE.
+          #
+          #   1. It compiled unwind-dw2.c with GCC's OWN build flags, and libgcc
+          #      needs libgcc's: both arms died on `libgcc_tm.h: No such file or
+          #      directory`, which is a missing include path, not an ICE. The
+          #      flags for libgcc live in the libgcc build directory, which
+          #      all-gcc never creates.
+          #
+          #   2. Its comparison then printed "ASYMMETRIC: one compiled it and
+          #      the other did not" when NEITHER had. Both failed identically
+          #      and the harness called that a divergence -- the same class of
+          #      bug as reporting a missing file as a difference.
+          #
+          # Ask the build system instead. `make all-target-libgcc` configures
+          # libgcc, generates libgcc_tm.h, and compiles with the right flags --
+          # and stops exactly where run 2's full make stopped.
           for arm in H T; do
-            X="$W/b$arm/gcc/xgcc -B$W/b$arm/gcc/"
             echo "  ----- $arm -----"
-            $X -S $FLAGS -O2 -fexceptions -DIN_LIBGCC2 -fbuilding-libgcc \
-               "$SRC" -o "/tmp/uw-$arm.s" > "/tmp/uw-$arm.log" 2>&1
-            echo "    rc=$?"
-            grep -E 'internal compiler error|Segmentation|error:' "/tmp/uw-$arm.log" \
+            ( cd "$W/b$arm" && timeout 3600 make -k -j"$(nproc)" MAKEINFO=true \
+                all-target-libgcc > "$W/libgcc-$arm.log" 2>&1 )
+            echo "    make rc=$?"
+            echo "    objects built: $(find "$W/b$arm" -path '*libgcc*' -name '*.o' 2>/dev/null | wc -l)"
+            echo "    libgcc.a     : $(find "$W/b$arm" -name libgcc.a 2>/dev/null | head -1 || echo 'NOT BUILT')"
+            grep -E 'internal compiler error|fatal error|error:' "$W/libgcc-$arm.log" \
               | head -4 | sed 's/^/      /'
-            [ -s "/tmp/uw-$arm.s" ] && echo "    produced $(wc -l < "/tmp/uw-$arm.s") lines of assembly"
+            # Normalise the arm's own build path out so the two are comparable.
+            grep -oE '[^ ]*\.c:[0-9]+:[0-9]+: (internal compiler error|fatal error|error):.*' \
+              "$W/libgcc-$arm.log" | sed "s|$W/b$arm|<build>|g" | sort -u \
+              > "$W/man/libgcc-fail-$arm.txt"
           done
           echo "  ----- comparison -----"
-          if grep -q 'internal compiler error' /tmp/uw-H.log 2>/dev/null \
-             && grep -q 'internal compiler error' /tmp/uw-T.log 2>/dev/null; then
-            lh=$(grep -oE 'unwind-dw2\.c:[0-9]+:[0-9]+' /tmp/uw-H.log | head -1)
-            lt=$(grep -oE 'unwind-dw2\.c:[0-9]+:[0-9]+' /tmp/uw-T.log | head -1)
-            echo "    both ICE.  H at ${lh:-?}   T at ${lt:-?}"
-            [ "$lh" = "$lt" ] && echo "    SAME LOCATION -- the compilers agree, including in failure."
-          elif [ -s /tmp/uw-H.s ] && [ -s /tmp/uw-T.s ]; then
-            cmp -s /tmp/uw-H.s /tmp/uw-T.s \
-              && echo "    both compiled it, identically (the ICE did not reproduce here)" \
-              || echo "    both compiled it, DIFFERENTLY"
+          if [ ! -s "$W/man/libgcc-fail-H.txt" ] && [ ! -s "$W/man/libgcc-fail-T.txt" ]; then
+            echo "    NEITHER failed -- libgcc built under both compilers."
+          elif diff -q "$W/man/libgcc-fail-H.txt" "$W/man/libgcc-fail-T.txt" > /dev/null 2>&1; then
+            echo "    BOTH failed, identically:"
+            head -3 "$W/man/libgcc-fail-H.txt" | sed 's/^/      /'
+            echo "    Agreement in failure is still agreement -- the compilers match."
           else
-            echo "    ASYMMETRIC: one compiled it, the other did not. That is a divergence."
+            echo "    THE TWO FAIL DIFFERENTLY. That is a real divergence:"
+            diff "$W/man/libgcc-fail-H.txt" "$W/man/libgcc-fail-T.txt" | head -10 | sed 's/^/      /'
           fi
 
       - name: 'VERDICT'
@@ -410,8 +510,9 @@ jobs:
         run: |
           set -eu
           printf '  %-40s %s\n' 'gate 0   comparison can fail'       "${G0:-not reached}"
-          printf '  %-40s %s\n' 'gate 1a  generators deterministic?' "${G1A:-not reached}"
+          printf '  %-40s %s\n' 'gate 1a  generators reproducible?'  "${G1A:-not reached}"
           printf '  %-40s %s\n' 'gate 1b  generated sources H vs T'  "${G1:-not reached}"
+          printf '  %-40s %s\n' 'gate 1c  pattern set'               "${G1C:-not reached}"
           printf '  %-40s %s\n' 'gate 2   gcc TUs, same headers'     "${G2:-not reached}"
           printf '  %-40s %s\n' 'gate 3   libgcc TUs, same headers'  "${G3:-not reached}"
           echo
@@ -419,25 +520,27 @@ jobs:
             echo "  The control did not pass. Nothing above it is evidence."
             exit 1
           fi
-          # Gates 2 and 3 are the test. Gate 1b counts as evidence only if gate
-          # 1a says the generators reproduce in the first place.
           if [ "${G2:-}" = identical ] && [ "${G3:-}" = identical ]; then
             echo "  NO MISCOMPILATION DETECTED IN CODEGEN."
             echo "  Given identical input, the tcc-built cc1 and the gcc-built cc1"
             echo "  emit identical assembly for every translation unit in gcc and"
             echo "  in libgcc."
-            if [ "${G1:-}" = DIFFER ] && [ "${G1A:-}" = nondeterministic ]; then
-              echo
-              echo "  Gate 1b is explained: the generators do not reproduce run to"
-              echo "  run, so their output cannot be compared across trees. That is"
-              echo "  a property of gcc 4.7's generators, not of tcc."
-            elif [ "${G1:-}" = DIFFER ]; then
-              echo
-              echo "  BUT gate 1b differs while the generators DO reproduce. That"
-              echo "  combination needs explaining before this is called clean:"
-              echo "  the generated C differs, yet both compilers agree on every"
-              echo "  translation unit. Read diffs/gen-*.diff."
-            fi
+            echo
+            case "${G1C:-}" in
+              superset)
+                echo "  Gate 1b's differing files are accounted for: the tcc-built"
+                echo "  tree keeps patterns the gcc-built tree proved constant-false"
+                echo "  and dropped, which shifts every insn code after them. Dead"
+                echo "  entries in a table, not different code -- and gates 2 and 3"
+                echo "  are what make that a measurement rather than a claim." ;;
+              asymmetric)
+                echo "  BUT gate 1c found patterns the tcc-built tree DROPPED and the"
+                echo "  gcc-built tree kept. That is the dangerous direction: a"
+                echo "  missing pattern is a compiler that cannot emit an"
+                echo "  instruction. Investigate before trusting this." ;;
+              *)
+                echo "  Gate 1c did not run, so gate 1b's differences are unexplained." ;;
+            esac
           else
             echo "  Not clean. Before concluding anything: check whether ALL units"
             echo "  differ. All differing is a harness signature -- runs 1 and 2"
@@ -445,8 +548,8 @@ jobs:
           fi
           echo
           echo "  Separately, and not a tcc question: the backported compiler ICEs"
-          echo "  on libgcc/unwind-dw2.c under the host gcc too. libgcc cannot be"
-          echo "  built until that is fixed."
+          echo "  on libgcc/unwind-dw2.c at uw_init_context_1 under the host gcc"
+          echo "  too. libgcc cannot be built until that is fixed."
 
       - uses: actions/upload-artifact@v4
         if: always()
