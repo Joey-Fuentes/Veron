@@ -379,3 +379,40 @@ reasons since fixed: the inventory greps for `error:` and generators report
 that target does not exist (it is a `gcc/` subdirectory target); and the
 config.gcc source-proof died on `gas_flag: unbound variable` because the
 subshell inherited `set -u` and config.gcc is not written to be `-u` clean.
+
+### The blocker, named: `define_int_iterator`
+
+Run 7 got the generators to run and they said exactly one thing:
+
+```
+config/aarch64/iterators.md:664: unknown rtx code `define_int_iterator'
+  following context is `MAXMINV [UNSPEC_UMAXV UNSPEC_UMINV'
+```
+
+`define_int_iterator` and `define_int_attr` are **machine-description language
+features added in gcc 4.8**. They let one `.md` pattern stand for a family of
+UNSPEC codes, and aarch64's `iterators.md` leans on them heavily for NEON.
+
+This is a precise and encouraging place to be stuck:
+
+| layer | status |
+|---|---|
+| `config.gcc` / target recognition | **works** — configure rc=0 |
+| target hooks | **works** — the backend uses 0 of the 21 new in 4.8 |
+| backend C | **works** — 0 compiler errors across 264 objects |
+| generator programs | **build** — all six |
+| **machine-description language** | **the gap** — 4.7's reader lacks one construct |
+
+The interface measurement was right: nothing about the backend's *code* needs
+4.8. What needs 4.8 is the `.md` **dialect**.
+
+**Two ways past it, and `SIZE THE NEXT FIX` measures both:**
+
+1. **Teach 4.7's generators the construct** — `read-rtl.c`, `rtl.def`,
+   `gensupport.c`. Principled, fixes it for any backend, and bounded by the
+   4.7→4.8 delta of those three files.
+2. **Expand the iterators in our copy of aarch64's `.md`** — mechanical text
+   expansion, touches nothing outside the backend we already vendor.
+
+Do not pick before the numbers land. Option 1 is the honest one if it is small;
+option 2 keeps the change inside a directory we already treat as ours.

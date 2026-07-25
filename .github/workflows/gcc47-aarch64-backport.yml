@@ -292,6 +292,50 @@ jobs:
           echo "  objects built: $(find . -name '*.o' | wc -l)"
           echo "  cc1          : $( [ -x gcc/cc1 ] && echo BUILT || echo no)"
 
+      - name: 'SIZE THE NEXT FIX'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # Run 7 found the transplant's real blocker, and it is one construct:
+          #   config/aarch64/iterators.md:664:
+          #     unknown rtx code `define_int_iterator'
+          # define_int_iterator / define_int_attr are machine-description
+          # features ADDED IN 4.8. The backend's C compiles clean and uses no
+          # 4.8 target hooks; what it uses is a newer .md LANGUAGE.
+          #
+          # Two ways out, and the cost of each is measurable right here:
+          #   1. teach 4.7's generators the construct (read-rtl.c, rtl.def,
+          #      gensupport.c) -- principled, and fixes it for any backend
+          #   2. expand the iterators in aarch64's .md by hand/script --
+          #      touches only our copy, but is mechanical text expansion
+          echo "  === how much of 4.7 -> 4.8 is the RTL reader? ==="
+          for f in gcc/read-rtl.c gcc/gensupport.c gcc/rtl.def gcc/read-md.c gcc/read-md.h; do
+            if [ -f "g474/$f" ] && [ -f "g485/$f" ]; then
+              d=$(diff -u "g474/$f" "g485/$f" | diffstat -s 2>/dev/null | tr -d '\n')
+              printf '    %-20s %s\n' "$(basename $f)" "${d:-identical}"
+            fi
+          done
+          echo
+          echo "  === how much of that is int-iterator specific? ==="
+          for f in gcc/read-rtl.c gcc/gensupport.c gcc/rtl.def; do
+            [ -f "g485/$f" ] || continue
+            printf '    %-20s 4.8 mentions int_iterator/int_attr: %s\n' \
+              "$(basename $f)" "$(grep -ciE 'int_iterator|int_attr' "g485/$f" || true)"
+          done
+          echo
+          echo "  === how much would option 2 have to expand? ==="
+          echo "    aarch64 .md files using the construct:"
+          grep -rlE 'define_int_iterator|define_int_attr' g474/gcc/config/aarch64/ 2>/dev/null \
+            | sed 's/^/      /'
+          echo "    define_int_iterator uses : $(grep -rc 'define_int_iterator' g474/gcc/config/aarch64/*.md 2>/dev/null | awk -F: '{s+=$2} END{print s+0}')"
+          echo "    define_int_attr uses     : $(grep -rc 'define_int_attr' g474/gcc/config/aarch64/*.md 2>/dev/null | awk -F: '{s+=$2} END{print s+0}')"
+          echo "    <ITERATOR> references    : $(grep -roE '<[A-Za-z_]+>' g474/gcc/config/aarch64/*.md 2>/dev/null | wc -l)"
+          echo
+          echo "  Option 1 is bounded by the read-rtl.c/rtl.def delta above and"
+          echo "  fixes every backend. Option 2 is bounded by the expansion count"
+          echo "  and touches nothing outside our own copy of the backend."
+
       - name: 'ARM RESULT'
         run: |
           cd build 2>/dev/null || exit 0
