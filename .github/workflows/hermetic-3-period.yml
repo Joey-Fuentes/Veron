@@ -89,6 +89,19 @@ jobs:
           # find it, because it was looking in /tools/include.
           sudo ln -sfn "$S/tools" /tools
           echo "  /tools -> $(readlink -f /tools)"
+          # AND THE SYSROOT-RELATIVE PATHS MUST LEAD SOMEWHERE. gcc pass 1 is
+          # configured --with-sysroot="$S", so its startfile search becomes
+          # $S/lib and $S/usr/lib -- while LFS 7.5 installs glibc to /tools/lib.
+          # In a real LFS run those directories exist as part of the target
+          # layout; here they did not, so the linker reported
+          #   ld: cannot find crt1.o
+          # with crt1.o sitting in $S/tools/lib the whole time. Point the paths
+          # gcc already searches at the place the libc actually is.
+          mkdir -p "$S/usr"
+          ln -sfn tools/lib "$S/lib"
+          ln -sfn ../tools/lib "$S/usr/lib"
+          echo "  \$S/lib     -> $(readlink "$S/lib")"
+          echo "  \$S/usr/lib -> $(readlink "$S/usr/lib")"
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
           echo "  LFS_TGT: $LFS_TGT   host: $(gcc -dumpmachine)"
 
