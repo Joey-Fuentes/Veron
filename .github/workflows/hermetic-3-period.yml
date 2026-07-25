@@ -146,6 +146,23 @@ jobs:
           tar xf "gcc-$GCCVER.tar.bz2"
           cd "gcc-$GCCVER"
           sed -i '/k prot/agcc_cv_libc_provides_ssp=yes' gcc/configure
+          # LFS 7.5 APPLIES THIS TO BOTH GCC PASSES AND I APPLIED IT TO
+          # NEITHER. It redirects gcc's built-in idea of where the dynamic
+          # linker and the startfiles live, from /lib and /usr to /tools:
+          #   STANDARD_STARTFILE_PREFIX_1 "/tools/lib/"
+          # Without it, pass 1 could not find crt1.o (worked around with
+          # sysroot symlinks, which pass 2 does not use) and pass 2 went
+          # looking in /tools/aarch64-unknown-linux-gnu/lib -- the HOST triplet,
+          # because gcc pass 2 is a native build and nothing had told it
+          # otherwise. This is the real fix for both.
+          for file in $(find gcc/config -name linux64.h -o -name linux.h -o -name sysv4.h); do
+            cp -u "$file" "$file.orig"
+            sed -e 's@/lib\(64\)\?\(32\)\?/ld@/tools&@g' \
+                -e 's@/usr@/tools@g' "$file.orig" > "$file"
+            printf '\n#undef STANDARD_STARTFILE_PREFIX_1\n#undef STANDARD_STARTFILE_PREFIX_2\n#define STANDARD_STARTFILE_PREFIX_1 "/tools/lib/"\n#define STANDARD_STARTFILE_PREFIX_2 ""\n' >> "$file"
+            touch "$file.orig"
+          done
+          echo "  startfile prefix redirected to /tools/lib in $(find gcc/config -name '*.orig' | wc -l) headers"
           tar xf "../mpfr-$MPFR.tar.xz" && mv "mpfr-$MPFR" mpfr
           tar xf "../gmp-$GMP.tar.xz"   && mv "gmp-$GMP" gmp
           tar xf "../mpc-$MPC.tar.gz"   && mv "mpc-$MPC" mpc
@@ -307,13 +324,25 @@ jobs:
           make DESTDIR="$S" install > i.log 2>&1 || die "binutils2 install" i.log
           echo "  binutils pass 2 ok"
 
+          # gcc pass 2 needs the full internal limits.h -- pass 1 installed a
+          # partial, self-contained one because /tools/include/limits.h did not
+          # exist yet. LFS says so in as many words.
+          cd "$W/gcc-$GCCVER"
+          cat gcc/limitx.h gcc/glimits.h gcc/limity.h \
+            > "$(dirname "$("$LFS_TGT-gcc" -print-libgcc-file-name)")/include-fixed/limits.h"
           cd "$W" && mkdir -p b-gcc2 && cd b-gcc2
+          # The options LFS 7.5 passes here and I had dropped: clocale, shared,
+          # threads, __cxa_atexit, and the in-tree mpfr paths.
           CC="$LFS_TGT-gcc" CXX="$LFS_TGT-g++" \
           AR="$LFS_TGT-ar" RANLIB="$LFS_TGT-ranlib" \
             "../gcc-$GCCVER/configure" --prefix=/tools \
             --with-local-prefix=/tools --with-native-system-header-dir=/tools/include \
+            --enable-clocale=gnu --enable-shared --enable-threads=posix \
+            --enable-__cxa_atexit \
             --enable-languages=c,c++ --disable-libstdcxx-pch \
             --disable-multilib --disable-bootstrap --disable-libgomp \
+            --with-mpfr-include="$W/gcc-$GCCVER/mpfr/src" \
+            --with-mpfr-lib="$W/b-gcc2/mpfr/src/.libs" \
             > c.log 2>&1 || die "gcc2 configure" c.log
           make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || die "gcc2 build" b.log
           make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || die "gcc2 install" i.log
