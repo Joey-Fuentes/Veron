@@ -116,6 +116,20 @@ jobs:
           # per-step: a missing cross compiler does not announce itself, it is
           # silently replaced by the host's.
           echo "$S/tools/bin" >> "$GITHUB_PATH"
+          # LFS 7.5 chapter 4: `ln -sv $LFS/tools /`. This is not decoration.
+          # Chapter 5 configures everything with ABSOLUTE /tools paths --
+          # --prefix=/tools, --with-headers=/tools/include,
+          # --with-native-system-header-dir=/tools/include -- and those have to
+          # resolve on the HOST while chapter 5 runs, because that is where the
+          # cross compiler is being invoked from.
+          #
+          # Skipping it cost a run: DESTDIR="$S" put the files in the right
+          # place, the check confirmed asm/unistd.h was present at
+          # $S/tools/include/asm/unistd.h, and glibc still could not find it --
+          # because it was looking in /tools/include, which did not exist.
+          sudo ln -sfn "$S/tools" /tools
+          echo "  /tools -> $(readlink -f /tools)"
+          [ -d /tools/bin ] || echo "  (empty for now; populated by binutils pass 1)"
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
           echo "  LFS_TGT: $LFS_TGT   host: $(gcc -dumpmachine)"
 

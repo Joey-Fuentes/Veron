@@ -314,6 +314,14 @@ jobs:
           tar xf busybox-1.36.1.tar.bz2 && cd busybox-1.36.1
           make defconfig > /dev/null 2>&1
           sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config
+          # glibc guards LONG_BIT behind __USE_XOPEN, and BusyBox 1.36.1's
+          # tls_aesgcm.c reaches for it without the feature macro:
+          #   networking/tls_aesgcm.c:78: error: 'LONG_BIT' undeclared
+          # A build sysroot has no use for HTTPS, so drop the TLS code rather
+          # than patch around a feature-test mismatch. Fewer applets is also
+          # the right direction for something we are trying to keep enumerable.
+          sed -i 's/^CONFIG_TLS=y/# CONFIG_TLS is not set/' .config
+          sed -i 's/^CONFIG_FEATURE_WGET_HTTPS=y/# CONFIG_FEATURE_WGET_HTTPS is not set/' .config
           yes '' | make oldconfig > /dev/null 2>&1
           # gcc 14 PROMOTED -Wimplicit-function-declaration and
           # -Wincompatible-pointer-types FROM WARNINGS TO ERRORS by default.
