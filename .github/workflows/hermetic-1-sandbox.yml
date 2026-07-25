@@ -139,6 +139,7 @@ jobs:
           # line is for and why the kernel is deliberately not isolated.
           set -eu
           W=${W:?box.sh: W (work dir) not set}
+          REPO=${REPO:?box.sh: REPO (checkout) not set}
           LIB64=""
           # aarch64 has no /lib64; x86_64 does. Emit the symlink only if the
           # host actually has one, so this script is portable across both.
@@ -153,6 +154,7 @@ jobs:
             --setenv SOURCE_DATE_EPOCH 0 \
             --ro-bind /usr /usr \
             --ro-bind /etc /etc \
+            --ro-bind "$REPO" /repo \
             --symlink usr/bin /bin \
             --symlink usr/sbin /sbin \
             --symlink usr/lib /lib \
@@ -171,6 +173,10 @@ jobs:
             /usr        host toolchain: gcc, g++, binutils, make, perl, python3,
                         bison, flex, m4, glibc and its headers
             /etc        ld.so.cache, ld.so.conf*, passwd, group, alternatives
+            /repo       OUR OWN SOURCE -- backport-aarch64.sh, the two adapter
+                        tools, the tcc patch series. Bound at its real relative
+                        layout because the transplant locates its tools with
+                        dirname($0)/../../.., which needs the repo shape.
           writable:
             /work       sources, build trees, outputs -- nothing else
           synthetic:
@@ -196,7 +202,7 @@ jobs:
           # invocation is sound. Checks the three things run 1 got wrong:
           # a dynamically linked binary runs (the loader resolves), the binds
           # are present, and there is genuinely no network.
-          W="$PWD/work" ./box.sh /bin/sh -c '
+          W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh -c '
             echo "  arch    : $(uname -m)"
             echo "  loader  : $(ls /lib/ld-linux-* 2>/dev/null || echo MISSING)"
             echo "  gcc     : $(gcc -dumpversion)"
@@ -288,7 +294,20 @@ jobs:
           case "$ARM" in
             C-474-backport|D-474-tcc)
               say "=== transplant ==="
-              sh /work/backport-aarch64.sh g474 g485 | tail -4 ;;
+              # bash, NOT sh. The script is #!/usr/bin/env bash and line 21 is
+              # `set -euo pipefail`; dash has no pipefail and run 1 died there
+              # before copying a single file, which is why arms C and D reached
+              # `make` with a 4.7.4 that had never heard of aarch64.
+              #
+              # From /repo, not a flattened copy: the script finds its two
+              # adapter tools at dirname($0)/../../../tools, which resolves to
+              # the repo root only if the repo shape is intact. Copied to
+              # /work it resolved to / and the tools were silently skipped --
+              # the script says NOTE and carries on, so the .md kept its
+              # 4.8-only constructs and the failure surfaced 40 lines later.
+              bash /repo/spikes/stage3/probes/backport-aarch64.sh g474 g485 | tail -4
+              [ "$(grep -c aarch64 g474/gcc/config.gcc)" -gt 0 ] \
+                || { say "  transplant did not take -- config.gcc has no aarch64"; exit 1; } ;;
           esac
 
           # Prerequisites. 4.7.4 and 4.8.5 both want gmp/mpfr/mpc.
@@ -327,9 +346,13 @@ jobs:
 
           say "=== make all-gcc ==="
           timeout 7200 make -k -j"$(nproc)" -Otarget MAKEINFO=true all-gcc > build.log 2>&1
-          say "  make rc=$?"
+          MRC=$?
+          say "  make rc=$MRC"
           say "  errors : $(grep -cE '\berror:' build.log || true)"
           grep -E '\berror:' build.log | head -5 | sed 's/^/    /'
+          # `*** Configuration ... not supported` is not an `error:` line, so a
+          # tree with no backend reports zero errors. Show what make itself said.
+          grep -E '^\s*make(\[[0-9]+\])?: \*\*\* ' build.log | head -3 | sed 's/^/    /'
           say "  cc1    : $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo MISSING)"
 
           # The claim, for the arms that target aarch64.
@@ -345,11 +368,20 @@ jobs:
               fi
             fi
           fi
-          exit 0
+
+          # RUN 1 REPORTED rc=0 FOR ARMS THAT BUILT NOTHING. `set +e` is in
+          # effect from the configure step onward and the script ended in
+          # `exit 0`, so the status could not express failure -- the third time
+          # in this leg that a harness has reported success it could not have
+          # known. Say what actually happened.
+          FAIL=0
+          [ "$MRC" -eq 0 ]  || FAIL=1
+          [ -x gcc/cc1 ]    || FAIL=1
+          say "=== arm exit: $FAIL (0 = cc1 built and make succeeded) ==="
+          exit "$FAIL"
           EOS
-          cp spikes/stage3/probes/backport-aarch64.sh work/
-          # The transplant shells out to these two.
-          mkdir -p work/tools && cp tools/expand_int_iterators.py tools/port_gcc47_api.py work/tools/
+          # Nothing is copied into /work any more: the transplant and its two
+          # adapter tools are read from /repo, at their real paths.
           echo "  build.sh: $(wc -l < work/build.sh) lines"
 
       - name: 'BUILD INSIDE THE BOX'
@@ -357,7 +389,7 @@ jobs:
         run: |
           set -u
           set +e
-          W="$PWD/work" ./box.sh /bin/sh /work/build.sh '${{ matrix.arm }}'
+          W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh /work/build.sh '${{ matrix.arm }}'
           rc=$?
           echo "  sandboxed build rc=$rc"
           echo "BOX_RC=$rc" >> "$GITHUB_ENV"
@@ -373,7 +405,7 @@ jobs:
           # that does the probing: a configure run. That is where a build system
           # goes looking for the host, and the distinct paths it opens outside
           # /work are the real declared set.
-          W="$W" ./box.sh /usr/bin/strace -f -qq -e trace=openat,execve \
+          W="$W" REPO="$PWD" ./box.sh /usr/bin/strace -f -qq -e trace=openat,execve \
               -o /work/trace.log \
               /bin/sh -c 'mkdir -p /work/tracebuild && cd /work/tracebuild && /work/gmp-6.2.1/configure --disable-shared --disable-assembly >/dev/null 2>&1' \
             > /dev/null 2>&1
