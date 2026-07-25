@@ -1,9 +1,13 @@
 # Roadmap — the direct path (separate investigation track)
 
-**Status: proposed, not started.** The Mes → tcc → gcc route continues in
-parallel; nothing here replaces it yet. This file records the plan and, more
-importantly, *which parts of the received wisdom we intend to test rather than
-accept*.
+**Status: leg 2's entry point is proven; the rest is proposed.** As of
+2026-07-25 an arm64 tcc builds a gcc 4.7.4 that targets aarch64
+(`GCC-BACKPORT.md`), and a tcc-built userland boots as PID 1
+(`TCC-USERLAND.md`). Everything above those two results — g++ 4.7, gcc 4.8, the
+climb to a modern gcc, and the kernel — is still plan. The Mes → tcc → gcc route
+continues in parallel; nothing here replaces it yet. This file records the plan
+and, more importantly, *which parts of the received wisdom we intend to test
+rather than accept*.
 
 The destination:
 
@@ -701,8 +705,36 @@ result runs and returns the right answer. Full record in `GCC-BACKPORT.md`.
 - **libgcc.** The arms run `make all-gcc`, which stops before the runtime, so
   `gcc/xgcc` cannot link: `cannot find crtbegin.o`, `cannot find -lgcc`. `cc1`
   is exercised directly instead. A full `make` is the next step.
-- **That tcc can build this tree.** The arms build with the host gcc, one
-  variable at a time. `gcc-entrypoint-probe` already cleared the previous
-  blocker by building gmp, mpfr and mpc under tcc.
 - **That g++ 4.7 then builds 4.8.** The next rung, and the reason for choosing
-  4.7 at all.
+  4.7 at all. Both arms are `--enable-languages=c`, so g++ 4.7 has not been
+  built by anything yet.
+
+### That tcc can build this tree — ANSWERED, 2026-07-25
+
+`tcc-builds-gcc-arm64`, native on `ubuntu-24.04-arm`:
+
+```
+tcc 0.9.28rc HEAD@5ec0e6f8 (AArch64 Linux), pin + 5-patch series, applied 5/5
+gmp/mpfr/mpc under tcc      all rc=0
+gcc configure rc=0   build rc=0   0 error lines   626 objects   6/6 generators
+cc1 80,016,473 B -> 44 lines of aarch64 -> assembled -> ran -> exit 55
+140 s wall clock, of which all-gcc was 56
+```
+
+Reached in two steps rather than one, because the obvious single experiment was
+not yet runnable. `tcc-builds-gcc-x86` first asked whether tcc can compile gcc
+4.7.4's *source* at all — on x86, since until this backport existed there was no
+arm64 4.7.4 to try — and it could. This run then changed the architecture back.
+Each result differs from its predecessor by exactly one variable, so neither
+needed a control of its own.
+
+Worth recording for the ladder above: **the transplant needed nothing for tcc.**
+The `.md` expansion, the three API adaptations and the `config.gcc` splice are
+compiler-agnostic, which is what a delta made of dialect and signatures ought to
+be, but was not guaranteed in advance.
+
+That also settles the question `tcc-builds-gcc-x86` was written to ask about
+live-bootstrap's `gcc 4.0.4` rung: **it is not a compiler requirement.** tcc
+reaches the last C-written gcc directly, so no 4.0.4-with-an-aarch64-backend is
+needed — which would have meant crossing the 4.0→4.8 interface distance instead
+of the ~148 lines the vax control measured for 4.7→4.8.

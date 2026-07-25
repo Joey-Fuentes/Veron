@@ -2204,6 +2204,13 @@ stage in the language of the stage below.
   is the canary); or (2) **cross-compile from the amd64 gcc** (durable). Current lean: (2),
   with (1) a legitimate option. Earlier "amd64-only" wording was imprecise; corrected in
   `TARGET-SUBSET.md` §8 and `borrow-tcc/README.md`.
+  **Update 2026-07-25 — a third route exists and is now proven, but it does not
+  run through Mes.** `stage3/GCC-BACKPORT.md`: an arm64 tcc builds gcc 4.7.4
+  carrying gcc 4.8.5's aarch64 backend, natively, and that compiler emits
+  working aarch64. So *a native arm64 gcc* no longer requires either the
+  armhf-Mes detour or a cross-compile — it requires a tcc. The paragraph above
+  remains accurate about **MesCC**, which still has no native aarch64 backend;
+  what changed is that reaching gcc no longer depends on MesCC reaching it.
 
 Scope rule: add the smallest capability per rung that makes the next rung
 writable. If a stage feels unwieldy to write, that's the signal to add one small

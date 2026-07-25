@@ -1,0 +1,56 @@
+# gcc — the entry point to the compiler leg.
+# See sources/README.md: url + hash + license, nothing enters a build unnamed.
+#
+# TWO VERSIONS, ONE BUILD. 4.7.4 is the tree that is built; 4.8.5 contributes
+# its aarch64 backend and its config.sub/config.guess and is never built itself.
+# Both are fetched, so both are pinned.
+
+[[source]]
+name     = "gcc"
+version  = "4.7.4"
+url      = "https://mirrors.kernel.org/gnu/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2"
+mirrors  = ["https://ftpmirror.gnu.org/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2"]
+sha256   = "92e61c6dc3a0a449e62d72a38185fda550168a86702dea07125ebd3ec3996282"
+license  = "GPL-3.0-or-later"
+role     = "the tree that is built -- the last gcc written in C"
+
+[[source]]
+name     = "gcc"
+version  = "4.8.5"
+url      = "https://mirrors.kernel.org/gnu/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2"
+mirrors  = ["https://ftpmirror.gnu.org/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2"]
+sha256   = "22fb1e7e0f68a63cee631d85b20461d1ea6bda162f03096350e38c8d427ecf23"
+license  = "GPL-3.0-or-later"
+role     = "donor -- gcc/config/aarch64, gcc/common/config/aarch64, libgcc/config/aarch64, config.sub, config.guess"
+
+# LICENSE NOTE. The compiler proper is GPL-3.0-or-later. libgcc and the other
+# runtime libraries additionally carry the GCC Runtime Library Exception
+# (SPDX: GCC-exception-3.1). Nothing in this leg builds libgcc yet, but the
+# distinction has to be recorded before anything ships a runtime.
+
+# WHERE THESE HASHES COME FROM. Both were measured, not transcribed:
+# spikes/stage3/probes/fetch-pinned.sh was invoked with "-" for the expected
+# hash, which makes it PRINT the sha256 of what it fetched rather than verify
+# one. The two values above are what tcc-builds-gcc-arm64 read off
+# mirrors.kernel.org on 2026-07-25. Inventing a plausible hash would have been
+# worse than leaving the field empty, so the workflow was written to produce
+# one instead.
+#
+# To re-verify from scratch, pass "-" again and compare what it prints.
+
+[verification]
+measured_by = ".github/workflows/tcc-builds-gcc-arm64.yml"
+measured_on = "2026-07-25"
+built_by    = "gcc 13 (host) and tcc 0.9.28rc HEAD@5ec0e6f8, both configure rc=0 build rc=0"
+
+# WHY 4.8.5 AND NOT 4.8.0 for the donor: gcc-backend-backport-probe measured the
+# backend<->middle-end interface delta with the vax backend as a control, and it
+# is IDENTICAL across 4.7.4->4.8.0 and 4.7.4->4.8.5 (15 files, 76+, 72-). The
+# interface did not move within the 4.8 series, so 4.8.5's backend is no further
+# from 4.7 than 4.8.0's while carrying ~1,800 lines of fixes to a port that was
+# one release old.
+
+[transplant]
+tool     = "spikes/stage3/probes/backport-aarch64.sh"
+adapters = ["tools/expand_int_iterators.py", "tools/port_gcc47_api.py"]
+record   = "spikes/stage3/GCC-BACKPORT.md"

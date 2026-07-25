@@ -108,8 +108,11 @@ closes the first two at once, and is leg 3's first spike.
 ## What this does not show
 
 - tcc building a **kernel**. Not attempted; the research reasons are above.
-- Anything about **gcc**. `gcc-entrypoint-probe` left that gap open: 4.7 has no
-  aarch64 backend, 4.8 has one but its `gcc/` subdirectory configure hard-requires
-  a C++ compiler. Unchanged by this result.
+- Anything about **gcc** — *unchanged by this result, but no longer open.*
+  `gcc-entrypoint-probe` found the gap: 4.7 has no aarch64 backend, 4.8 has one
+  but its `gcc/` subdirectory configure hard-requires a C++ compiler. It was
+  closed separately by backporting 4.8.5's backend into 4.7.4 and building that
+  with this same tcc — see `GCC-BACKPORT.md`. The userland result below is
+  independent of it.
 - **Reproducibility.** The build is pinned and hashed but has not been rebuilt
   byte-for-byte twice. That is the natural next gate, and cheap now.

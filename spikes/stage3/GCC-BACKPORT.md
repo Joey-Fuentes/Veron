@@ -1,18 +1,35 @@
 # gcc 4.7 + gcc 4.8's aarch64 backend — the entry point to the gcc leg
 
-**Status: the compiler builds and produces correct aarch64 code, 2026-07-24.**
+**Status: the compiler builds and produces correct aarch64 code, and tcc builds
+it. 2026-07-25.**
 
 ```
-configure rc=0    build rc=0    cc1 BUILT (55,044,256 bytes)
+                      host gcc 13        OUR arm64 tcc
+configure                  rc=0                  rc=0
+build (all-gcc)            rc=0                  rc=0
+error lines                   0                     0
+objects                     ---                   626
+cc1                  55,044,256 B          80,016,473 B
 
-cc1 emits:   stp  x29, x30, [sp, -48]!
+cc1 emits:   stp  x29, x30, [sp, -48]!        <- both, 44 lines each
              cmp  w0, 1
              ble  .L4
 assembled:   ELF 64-bit LSB relocatable, ARM aarch64
 ran:         exit=55            (fib(10) = 55)
 ```
 
-Gated by `.github/workflows/gcc47-aarch64-backport.yml`, arm `C-474-backport`.
+Gated by two workflows, one variable apart:
+
+- `.github/workflows/gcc47-aarch64-backport.yml`, arm `C-474-backport` — host gcc
+- `.github/workflows/tcc-builds-gcc-arm64.yml` — our arm64 tcc
+
+**The entry point is now closed end to end.** A C compiler small enough to be
+reached from a seed builds a gcc that targets aarch64:
+
+```
+tcc (arm64)  ->  gcc 4.7 + 4.8's aarch64 backend  ->  [g++ 4.7]  ->  gcc 4.8  ->  modern
+   PROVEN                    PROVEN (cc1)                next
+```
 
 ## The problem this solves
 
@@ -145,18 +162,66 @@ the case arms extracted from 4.8.5 rather than hand-written.
 It then **proves** the result by sourcing `config.gcc` the way `gcc/configure`
 does, which turns a 40-minute build into an answer in seconds.
 
+## Built by tcc
+
+The host-gcc arms answered *does this transplant work*. They deliberately did
+not answer *can our own compiler build it* — one variable at a time. That second
+question was split in half and each half answered separately:
+
+| | |
+|---|---|
+| tcc compiles gcc 4.7.4's source | `tcc-builds-gcc-x86`, arm `D-474-tcc`. Had to be x86: until this backport existed there was no arm64 4.7.4 to try. |
+| gcc 4.7.4 targets arm64 | this document, arm `C-474-backport`, host gcc |
+| **both at once** | `tcc-builds-gcc-arm64`, native `ubuntu-24.04-arm` |
+
+**The conjunction holds.** 140 seconds wall clock, of which `all-gcc` was 56.
+
+```
+tcc            0.9.28rc HEAD@5ec0e6f8 (AArch64 Linux)
+               sources/tcc.toml pin + the 5-patch arm64 series, applied 5/5
+precondition   feat.c -> 6      the C constructs gcc 4.7's source uses
+               kern.c -> 0      inline asm (not needed by cc1, reported anyway)
+prerequisites  gmp 6.2.1 --disable-assembly, mpfr 4.1.0, mpc 1.2.1
+               all configure rc=0, make rc=0, INSTALLED -- under tcc
+gcc            configure rc=0   build rc=0
+               0 error lines, 178 warnings, 626 objects
+               6 of 6 generators built, 11 insn-*.c generated
+               cc1 80,016,473 bytes
+claim          44 lines of aarch64, assembled, ran, exit=55
+```
+
+Nothing in the transplant needed changing for tcc. The `.md` expansion, the
+three API adaptations and the `config.gcc` splice are all compiler-agnostic —
+which is what you would expect of a delta that is dialect and signatures rather
+than code, but it was not guaranteed.
+
+**Two independently built cc1 binaries emit the same code.** The host-gcc-built
+cc1 (55,044,256 B) and the tcc-built one (80,016,473 B) each produced 44 lines
+from the same input, identical across every line captured in both logs. That is
+diverse double compilation in miniature — two unrelated compilers, one source,
+one output — and it is the strongest correctness signal here, because a cc1 that
+merely *links* proves nothing about whether tcc miscompiled it. The size gap is
+tcc's lack of an optimiser, not a difference in the compiler's behaviour.
+
+It is not yet a *proof*: the two `.s` files were produced in different jobs and
+have never been byte-compared in one place. Doing that is cheap and is the
+obvious next gate.
+
 ## What this does NOT show
 
 - **libgcc is not built.** The arms run `make all-gcc`, which stops before the
   runtime, so `gcc/xgcc` cannot link a program: `cannot find crtbegin.o`,
   `cannot find -lgcc`. `cc1` is exercised directly instead — emit assembly,
   assemble with the system `as`, link, run. A full `make` is the next step.
-- **tcc has not built this tree.** Every arm uses the host gcc: one variable at
-  a time. `gcc-entrypoint-probe` already cleared the previous blocker by
-  building gmp, mpfr and mpc under tcc.
-- **g++ 4.7 has not built 4.8.** That is the next rung, and the entire reason
-  for choosing 4.7.
-- **No reproducibility gate.** Pinned but not yet rebuilt byte-identically
+- **Only `cc1`, and only C.** Both arms configure `--enable-languages=c`, so
+  **g++ 4.7 has never been built by anything** — and g++ 4.7 is the entire
+  reason 4.7 was chosen over 4.8. All of gcc 4.7 is C, including its C++ front
+  end, so this should follow; "should" is not "does". This is the next rung.
+- **The two `.s` files have not been byte-compared.** Identical across every
+  line both logs captured, but produced in different jobs. One job emitting both
+  and running `cmp` would turn a strong signal into a result.
+- **No reproducibility gate.** The gcc tarballs are now pinned by hash
+  (`sources/gcc.toml`), but nothing here has been rebuilt byte-identically
   twice.
 
 ## Method notes worth keeping
