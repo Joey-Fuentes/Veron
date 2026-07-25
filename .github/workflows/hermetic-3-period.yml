@@ -231,10 +231,36 @@ jobs:
             libc_cv_forced_unwind=yes libc_cv_ctors_header=yes \
             libc_cv_c_cleanup=yes \
             > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 c.log | sed "s/^/    /"; exit 1; }
-          cc=$(grep -m1 '^CC = ' Makefile 2>/dev/null | sed 's/.*= *//')
-          echo "  configure selected CC: ${cc:-?}"
-          case "$cc" in *"$LFS_TGT"*) echo "  cross confirmed" ;;
-            *) echo "  NOT the cross compiler -- host build in disguise"; exit 1 ;; esac
+          # WHERE glibc RECORDS ITS COMPILER. Run 3 of this workflow looked in
+          # Makefile, found nothing, and declared "host build in disguise" --
+          # but glibc writes CC into **config.make**, not Makefile. The guard
+          # reported "wrong" when it meant "could not tell", which is the exact
+          # confusion it was built to catch. Look in every plausible place, say
+          # which one answered, and keep "undetermined" as its own outcome.
+          cc=""; src=""
+          for f in config.make Makefile; do
+            [ -f "$f" ] || continue
+            v=$(sed -n 's/^CC *= *//p' "$f" | head -1)
+            [ -n "$v" ] && { cc="$v"; src="$f"; break; }
+          done
+          if [ -z "$cc" ] && [ -f config.log ]; then
+            cc=$(sed -n "s/^ac_cv_prog_CC='\{0,1\}//p" config.log | head -1 | tr -d "'")
+            [ -n "$cc" ] && src=config.log
+          fi
+          echo "  CC recorded in ${src:-<nothing found>}: ${cc:-<undetermined>}"
+          case "$cc" in
+            *"$LFS_TGT"*)
+              echo "  cross compiler confirmed" ;;
+            "")
+              echo "  UNDETERMINED -- files present:"
+              ls config.make Makefile config.log 2>/dev/null | sed 's/^/    /'
+              echo "  Not proceeding on an unverified toolchain."
+              exit 1 ;;
+            *)
+              echo "  NOT the cross compiler: a host build wearing a cross"
+              echo "  build's name. This is what the guard is for."
+              exit 1 ;;
+          esac
           make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -30 b.log | sed "s/^/    /"; exit 1; }
           make DESTDIR="$S" install > i.log 2>&1
           echo "  loader: $(ls "$S"/tools/lib/ld-linux-* 2>/dev/null || echo MISSING)"

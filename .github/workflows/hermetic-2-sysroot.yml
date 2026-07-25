@@ -243,8 +243,12 @@ jobs:
           # ELF interpreter name and the readelf check below cannot tell them
           # apart. Only the recorded CC can.
           crosscheck() {  # $1 = build dir
-            cc=$(grep -m1 '^CC = \|^CC=' "$1/config.log" "$1/Makefile" 2>/dev/null \
-                 | head -1 | sed 's/.*= *//')
+            # glibc records CC in config.make, autotools in Makefile, and
+            # configure's own answer lands in config.log. Check all three:
+            # hermetic-3 lost a run to looking in only one and calling the
+            # silence a failure.
+            cc=$(sed -n 's/^CC *= *//p' "$1/config.make" "$1/Makefile" 2>/dev/null | head -1)
+            [ -n "$cc" ] || cc=$(sed -n "s/^ac_cv_prog_CC='\\{0,1\\}//p" "$1/config.log" 2>/dev/null | head -1 | tr -d "'")
             echo "  configure selected CC: ${cc:-<unknown>}"
             case "$cc" in
               *"$LFS_TGT"*) echo "  cross compiler confirmed" ;;
