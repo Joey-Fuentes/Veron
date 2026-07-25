@@ -141,15 +141,35 @@ jobs:
           # "as: not found" and then "C compiler cannot create executables".
           # Ubuntu also defaults to PIE and -static -pie is not a combination
           # gcc honours, so -no-pie must be explicit. Pass both, twice.
+          # RUN 2: -no-pie took effect and -static did not -- the tools went
+          # from "pie executable" to "executable", still dynamically linked.
+          # binutils links through LIBTOOL, and libtool reads a plain -static as
+          # "link the libtool LIBRARIES statically" while leaving libc dynamic.
+          # -all-static is libtool's flag for a fully static executable, and it
+          # has to arrive at make time.
+          #
+          # --disable-gprofng drops gp-archive, gp-collect-app, gp-display-* and
+          # gprofng, which run 2 also reported as dynamic. They need shared
+          # objects by design, nothing here uses them, and a tool we do not need
+          # should not be in a sysroot we are trying to keep enumerable.
           ../bu/configure --prefix="$S" --disable-nls --disable-werror \
-            --disable-gdb --disable-sim --disable-shared \
+            --disable-gdb --disable-sim --disable-shared --disable-gprofng \
             CFLAGS="-O2 -fno-pie" LDFLAGS="-static -no-pie" \
             > c.log 2>&1 || { tail -20 c.log; exit 1; }
-          make -j"$(nproc)" LDFLAGS="-static -no-pie" > b.log 2>&1 || { tail -25 b.log; exit 1; }
+          make -j"$(nproc)" LDFLAGS="-all-static" > b.log 2>&1 || { tail -25 b.log; exit 1; }
           make install > /dev/null 2>&1
-          for t in as ld ar ranlib; do
-            printf '  %-8s %s\n' "$t" "$(file "$S/bin/$t" 2>/dev/null | cut -d, -f1-3)"
+          # VERIFY HERE, not four steps later. Run 2 printed
+          # `file ... | cut -d, -f1-3`, which truncates immediately BEFORE the
+          # only field that matters -- so this step looked healthy while the
+          # audit disagreed with it. Print the whole line and fail on the spot.
+          bad=0
+          for t in as ld ar ranlib nm objdump strip; do
+            [ -e "$S/bin/$t" ] || { printf '  %-8s MISSING\n' "$t"; bad=1; continue; }
+            d=$(file "$S/bin/$t")
+            printf '  %-8s %s\n' "$t" "$(printf '%s' "$d" | cut -c1-96)"
+            printf '%s' "$d" | grep -q 'statically linked' || bad=1
           done
+          [ "$bad" -eq 0 ] || { echo "  NOT STATIC -- these cannot run in a box with no loader"; exit 1; }
 
       # ---------------------------------------------------------------- make
       - name: 'sysroot: GNU make (static)'
