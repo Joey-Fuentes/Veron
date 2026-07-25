@@ -148,12 +148,18 @@ jobs:
           "../binutils-$BINUTILS/configure" \
             --prefix=/tools --with-sysroot="$S" --with-lib-path=/tools/lib \
             --target="$LFS_TGT" --disable-nls --disable-werror \
-            > c.log 2>&1 || { tail -20 c.log; exit 1; }
-          make -j"$(nproc)" > b.log 2>&1 || { tail -25 b.log; exit 1; }
+            > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -20 c.log | sed "s/^/    /"; exit 1; }
+          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 b.log | sed "s/^/    /"; exit 1; }
           # LFS installs into $LFS/tools; DESTDIR gets us there without root.
-          make DESTDIR="$S" install > /dev/null 2>&1
+          make DESTDIR="$S" MAKEINFO=true install > /dev/null 2>&1
           ls "$S/tools/bin" | tr '\n' ' ' | sed 's/^/  /'
 
+      # A 2014 BOOK ON A 2026 HOST. LFS 7.5 assumed period tooling for the
+      # things it does NOT build: perl, texinfo, makeinfo, bison. Those come
+      # from the runner here, so doc generation is the likely casualty --
+      # texi2pod.pl and pod2man are 2013 code meeting perl 5.42. MAKEINFO=true
+      # covers texinfo; if man pages are the problem the error will now say so
+      # instead of being buried under warnings.
       - name: '5.5 gcc 4.8.2 pass 1'
         run: |
           set -eu
@@ -177,9 +183,9 @@ jobs:
             --disable-libgomp --disable-libitm --disable-libmudflap \
             --disable-libquadmath --disable-libsanitizer --disable-libssp \
             --disable-libstdc++-v3 --enable-languages=c,c++ \
-            > c.log 2>&1 || { tail -25 c.log; exit 1; }
-          make -j"$(nproc)" > b.log 2>&1 || { tail -30 b.log; exit 1; }
-          make DESTDIR="$S" install > /dev/null 2>&1
+            > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 c.log | sed "s/^/    /"; exit 1; }
+          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -30 b.log | sed "s/^/    /"; exit 1; }
+          make DESTDIR="$S" MAKEINFO=true install > /dev/null 2>&1
           "$S/tools/bin/$LFS_TGT-gcc" --version | head -1 | sed 's/^/  /'
 
       - name: '5.6 linux 3.13.3 API headers'
@@ -210,12 +216,12 @@ jobs:
             --with-headers=/tools/include \
             libc_cv_forced_unwind=yes libc_cv_ctors_header=yes \
             libc_cv_c_cleanup=yes \
-            > c.log 2>&1 || { tail -25 c.log; exit 1; }
+            > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 c.log | sed "s/^/    /"; exit 1; }
           cc=$(grep -m1 '^CC = ' Makefile 2>/dev/null | sed 's/.*= *//')
           echo "  configure selected CC: ${cc:-?}"
           case "$cc" in *"$LFS_TGT"*) echo "  cross confirmed" ;;
             *) echo "  NOT the cross compiler -- host build in disguise"; exit 1 ;; esac
-          make -j"$(nproc)" > b.log 2>&1 || { tail -30 b.log; exit 1; }
+          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -30 b.log | sed "s/^/    /"; exit 1; }
           make DESTDIR="$S" install > i.log 2>&1
           echo "  loader: $(ls "$S"/tools/lib/ld-linux-* 2>/dev/null || echo MISSING)"
           # The period claim, stated as a check: does struct ucontext exist?
@@ -232,17 +238,17 @@ jobs:
             --host="$LFS_TGT" --prefix=/tools --disable-multilib --disable-shared \
             --disable-nls --disable-libstdcxx-threads --disable-libstdcxx-pch \
             --with-gxx-include-dir="/tools/$LFS_TGT/include/c++/$GCCVER" \
-            > c.log 2>&1 || { tail -20 c.log; exit 1; }
-          make -j"$(nproc)" > b.log 2>&1 || { tail -25 b.log; exit 1; }
-          make DESTDIR="$S" install > /dev/null 2>&1
+            > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -20 c.log | sed "s/^/    /"; exit 1; }
+          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 b.log | sed "s/^/    /"; exit 1; }
+          make DESTDIR="$S" MAKEINFO=true install > /dev/null 2>&1
           cd "$W"
           mkdir -p b-bu2 && cd b-bu2
           CC="$LFS_TGT-gcc" AR="$LFS_TGT-ar" RANLIB="$LFS_TGT-ranlib" \
             "../binutils-$BINUTILS/configure" --prefix=/tools --disable-nls \
             --disable-werror --with-lib-path=/tools/lib --with-sysroot \
-            > c.log 2>&1 || { tail -20 c.log; exit 1; }
-          make -j"$(nproc)" > b.log 2>&1 || { tail -25 b.log; exit 1; }
-          make DESTDIR="$S" install > /dev/null 2>&1
+            > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -20 c.log | sed "s/^/    /"; exit 1; }
+          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 b.log | sed "s/^/    /"; exit 1; }
+          make DESTDIR="$S" MAKEINFO=true install > /dev/null 2>&1
           cd "$W"
           mkdir -p b-gcc2 && cd b-gcc2
           CC="$LFS_TGT-gcc" CXX="$LFS_TGT-g++" \
@@ -251,9 +257,9 @@ jobs:
             --with-local-prefix=/tools --with-native-system-header-dir=/tools/include \
             --enable-languages=c,c++ --disable-libstdcxx-pch \
             --disable-multilib --disable-bootstrap --disable-libgomp \
-            > c.log 2>&1 || { tail -25 c.log; exit 1; }
-          make -j"$(nproc)" > b.log 2>&1 || { tail -30 b.log; exit 1; }
-          make DESTDIR="$S" install > /dev/null 2>&1
+            > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 c.log | sed "s/^/    /"; exit 1; }
+          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -30 b.log | sed "s/^/    /"; exit 1; }
+          make DESTDIR="$S" MAKEINFO=true install > /dev/null 2>&1
           ln -sfv gcc "$S/tools/bin/cc" 2>/dev/null || true
           echo "  native /tools gcc: $("$S/tools/bin/gcc" --version 2>&1 | head -1)"
 
@@ -264,14 +270,14 @@ jobs:
           make defconfig > /dev/null 2>&1
           sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config
           yes '' | make oldconfig > /dev/null 2>&1
-          make -j"$(nproc)" CROSS_COMPILE="$LFS_TGT-" > b.log 2>&1 || { tail -20 b.log; exit 1; }
+          make -j"$(nproc)" CROSS_COMPILE="$LFS_TGT-" > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -20 b.log | sed "s/^/    /"; exit 1; }
           cp busybox "$S/tools/bin/"
           ( cd "$S/tools/bin" && for a in $(./busybox --list); do [ -e "$a" ] || ln -sf busybox "$a"; done )
           cd "$W" && tar xf make-4.0.tar.bz2 && mkdir -p b-make && cd b-make
           ../make-4.0/configure --prefix=/tools --host="$LFS_TGT" \
             --build="$(../make-4.0/config.guess)" --disable-nls \
-            > c.log 2>&1 || { tail -20 c.log; exit 1; }
-          make -j"$(nproc)" > b.log 2>&1 && make DESTDIR="$S" install > /dev/null 2>&1
+            > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -20 c.log | sed "s/^/    /"; exit 1; }
+          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 && make DESTDIR="$S" MAKEINFO=true install > /dev/null 2>&1
           echo "  busybox applets: $(ls "$S/tools/bin" | wc -l)"
 
       - name: 'THE BOX (period)'
