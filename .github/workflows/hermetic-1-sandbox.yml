@@ -375,11 +375,21 @@ jobs:
           cp build/gcc/cc1 /work/cc1-s1
 
           # The claim, for the arms that target this machine.
+          #
+          # RUN 2 DIED HERE, IN ALL THREE aarch64 ARMS, WITH rc=55. The test
+          # program returns 55 on SUCCESS -- fib(10) -- and this script runs
+          # under `set -e`, which sees a non-zero status and terminates. The
+          # success condition was killing the run: stage 1 finished, the fib
+          # check passed, and the script exited before phase 2 ever started.
+          # Arm B survived only because it targets arm-none-eabi and skips this
+          # block. A test whose passing value is non-zero has to be run in a
+          # context `set -e` does not police.
           if [ "$TGT" = aarch64-unknown-linux-gnu ]; then
             printf 'int fib(int n){return n<2?n:fib(n-1)+fib(n-2);}\nint main(void){return fib(10);}\n' > /work/t.c
             build/gcc/cc1 -quiet -O2 /work/t.c -o /work/t.s 2>&1 | head -3 | sed 's/^/    /'
             if [ -s /work/t.s ] && as /work/t.s -o /work/t.o 2>/dev/null && gcc /work/t.o -o /work/t 2>/dev/null; then
-              /work/t; say "  ran: exit=$? (expect 55)"
+              if /work/t; then FRC=0; else FRC=$?; fi
+              say "  ran: exit=$FRC (expect 55)"
             fi
           fi
 
@@ -390,14 +400,29 @@ jobs:
           # timestamp. Same path both times, since the build directory is
           # recorded in the output; that is why the first tree is deleted rather
           # than built alongside.
-          say "=== phase 2: the same build, twice ==="
+          say "=== phase 2: BUILD 1 vs BUILD 2 ==="
+          # Run 2 printed one line here -- "REPRODUCIBLE" -- and no numbers, so
+          # there was no way to see whether a second build had happened at all.
+          # Print both, always, pass or fail.
+          say "  BUILD 1  size $(wc -c < /work/cc1-s1)  sha256 $(sha256sum /work/cc1-s1 | cut -d' ' -f1)"
+          say "  ---- rebuilding, same source, same flags, same path ----"
           rm -rf build
-          conf build "$CCCMD" && mk build; :
-          if [ -x build/gcc/cc1 ] && cmp -s /work/cc1-s1 build/gcc/cc1; then
-            REPRO=yes; say "  REPRODUCIBLE: byte-identical cc1"
+          if conf build "$CCCMD"; then C2=0; else C2=$?; fi
+          say "    configure rc=$C2"
+          mk build; M2RC=$?
+          say "    make rc=$M2RC"
+          if [ -x build/gcc/cc1 ]; then
+            say "  BUILD 2  size $(wc -c < build/gcc/cc1)  sha256 $(sha256sum build/gcc/cc1 | cut -d' ' -f1)"
+            if cmp -s /work/cc1-s1 build/gcc/cc1; then
+              REPRO=yes; say "  -> IDENTICAL. The build is reproducible."
+            else
+              REPRO=no
+              say "  -> DIFFER by $(cmp -l /work/cc1-s1 build/gcc/cc1 2>/dev/null | wc -l) bytes"
+              say "     $(cmp /work/cc1-s1 build/gcc/cc1 2>&1 | head -1)"
+            fi
           else
-            REPRO=no
-            say "  NOT reproducible: $(sha256sum /work/cc1-s1 build/gcc/cc1 2>/dev/null | cut -c1-16 | tr '\n' ' ')"
+            REPRO=no; say "  BUILD 2  FAILED -- no cc1"
+            tail -8 build/build.log 2>/dev/null | sed 's/^/      /'
           fi
 
           # ============================================ PHASE 3: libgcc
@@ -443,35 +468,55 @@ jobs:
           else
             say "=== phase 4: stage 2, then stage 3 ==="
             X1="/work/build/gcc/xgcc -B/work/build/gcc/ $BORROW"
+            say "  ---- STAGE 2: gcc rebuilt by stage 1's own compiler ----"
             rm -rf sN
-            if conf sN "$X1" && mk sN && [ -x sN/gcc/cc1 ]; then
-              say "  stage2 cc1: $(wc -c < sN/gcc/cc1) bytes  $(sha256sum sN/gcc/cc1 | cut -c1-16)"
+            if conf sN "$X1"; then say "    configure rc=0"; else
+              SELF=stage2-failed; say "    configure FAILED"
+              tail -10 sN/conf.log 2>/dev/null | sed 's/^/      /'; fi
+            if [ "${SELF:-}" != stage2-failed ]; then
+              mk sN; say "    make rc=$?"
+            fi
+            if [ -x sN/gcc/cc1 ]; then
+              say "  STAGE 2  size $(wc -c < sN/gcc/cc1)  sha256 $(sha256sum sN/gcc/cc1 | cut -d' ' -f1)"
               cp sN/gcc/cc1 /work/cc1-s2
               rm -rf /work/c2 && cp -a sN/gcc /work/c2
               X2="/work/c2/xgcc -B/work/c2/ $BORROW"
+              say "  ---- STAGE 3: gcc rebuilt by STAGE 2's compiler ----"
               rm -rf sN
-              if conf sN "$X2" && mk sN && [ -x sN/gcc/cc1 ]; then
-                say "  stage3 cc1: $(wc -c < sN/gcc/cc1) bytes  $(sha256sum sN/gcc/cc1 | cut -c1-16)"
+              if conf sN "$X2"; then say "    configure rc=0"; else
+                say "    configure FAILED"; tail -10 sN/conf.log 2>/dev/null | sed 's/^/      /'; fi
+              mk sN; say "    make rc=$?"
+              if [ -x sN/gcc/cc1 ]; then
+                say "  STAGE 3  size $(wc -c < sN/gcc/cc1)  sha256 $(sha256sum sN/gcc/cc1 | cut -d' ' -f1)"
                 if cmp -s /work/cc1-s2 sN/gcc/cc1; then
-                  SELF=yes; say "  FIXPOINT: stage2 == stage3, byte for byte"
+                  SELF=yes
+                  say "  -> FIXPOINT: stage2 == stage3, byte for byte."
                 else
-                  SELF=no;  say "  stage2 != stage3 -- $(cmp /work/cc1-s2 sN/gcc/cc1 2>&1 | head -1)"
+                  SELF=no
+                  say "  -> DIFFER by $(cmp -l /work/cc1-s2 sN/gcc/cc1 2>/dev/null | wc -l) bytes"
+                  say "     $(cmp /work/cc1-s2 sN/gcc/cc1 2>&1 | head -1)"
                 fi
               else
-                SELF=stage3-failed
-                say "  stage 3 did not build:"; tail -8 sN/conf.log 2>/dev/null | sed 's/^/    /'
+                SELF=stage3-failed; say "  STAGE 3  FAILED -- no cc1"
+                tail -8 sN/build.log 2>/dev/null | sed 's/^/      /'
               fi
             else
-              SELF=stage2-failed
-              say "  stage 2 did not build:"; tail -8 sN/conf.log 2>/dev/null | sed 's/^/    /'
+              SELF=stage2-failed; say "  STAGE 2  FAILED -- no cc1"
+              tail -8 sN/build.log 2>/dev/null | sed 's/^/      /'
             fi
           fi
 
           say "=== SUMMARY $ARM ==="
-          say "  stage1 cc1     : $(sha256sum /work/cc1-s1 | cut -c1-16)"
-          say "  reproducible   : $REPRO"
-          say "  self-build     : $SELF"
-          say "  borrowed runtime: ${BORROW:-none}"
+          say "  every cc1 this arm produced, in order:"
+          for f in /work/cc1-s1 /work/cc1-s2; do
+            [ -f "$f" ] || continue
+            say "    $(basename $f)  $(wc -c < $f) bytes  $(sha256sum $f | cut -d' ' -f1)"
+          done
+          [ -x sN/gcc/cc1 ] && \
+            say "    cc1-s3      $(wc -c < sN/gcc/cc1) bytes  $(sha256sum sN/gcc/cc1 | cut -d' ' -f1)"
+          say "  reproducible (build1 == build2) : $REPRO"
+          say "  fixpoint     (stage2 == stage3) : $SELF"
+          say "  borrowed runtime                : ${BORROW:-none}"
 
           FAIL=0
           [ "$REPRO" = yes ] || FAIL=1
