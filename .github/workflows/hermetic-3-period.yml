@@ -165,7 +165,7 @@ jobs:
             > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -20 c.log | sed "s/^/    /"; exit 1; }
           make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 b.log | sed "s/^/    /"; exit 1; }
           # LFS installs into $LFS/tools; DESTDIR gets us there without root.
-          make DESTDIR="$S" MAKEINFO=true install > /dev/null 2>&1
+          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           ls "$S/tools/bin" | tr '\n' ' ' | sed 's/^/  /'
 
       # A 2014 BOOK ON A 2026 HOST. LFS 7.5 assumed period tooling for the
@@ -213,7 +213,7 @@ jobs:
             --disable-libstdc++-v3 --enable-languages=c,c++ \
             > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 c.log | sed "s/^/    /"; exit 1; }
           make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -30 b.log | sed "s/^/    /"; exit 1; }
-          make DESTDIR="$S" MAKEINFO=true install > /dev/null 2>&1
+          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           "$S/tools/bin/$LFS_TGT-gcc" --version | head -1 | sed 's/^/  /'
 
       - name: '5.6 linux 3.13.3 API headers'
@@ -293,7 +293,7 @@ jobs:
               exit 1 ;;
           esac
           make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -30 b.log | sed "s/^/    /"; exit 1; }
-          make DESTDIR="$S" install > i.log 2>&1
+          make DESTDIR="$S" install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           echo "  loader: $(ls "$S"/tools/lib/ld-linux-* 2>/dev/null || echo MISSING)"
           # The period claim, stated as a check: does struct ucontext exist?
           echo "  --- struct ucontext in glibc $GLIBC ---"
@@ -311,7 +311,7 @@ jobs:
             --with-gxx-include-dir="/tools/$LFS_TGT/include/c++/$GCCVER" \
             > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -20 c.log | sed "s/^/    /"; exit 1; }
           make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 b.log | sed "s/^/    /"; exit 1; }
-          make DESTDIR="$S" MAKEINFO=true install > /dev/null 2>&1
+          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           cd "$W"
           mkdir -p b-bu2 && cd b-bu2
           CC="$LFS_TGT-gcc" AR="$LFS_TGT-ar" RANLIB="$LFS_TGT-ranlib" \
@@ -319,7 +319,7 @@ jobs:
             --disable-werror --with-lib-path=/tools/lib --with-sysroot \
             > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -20 c.log | sed "s/^/    /"; exit 1; }
           make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 b.log | sed "s/^/    /"; exit 1; }
-          make DESTDIR="$S" MAKEINFO=true install > /dev/null 2>&1
+          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           cd "$W"
           mkdir -p b-gcc2 && cd b-gcc2
           CC="$LFS_TGT-gcc" CXX="$LFS_TGT-g++" \
@@ -330,7 +330,7 @@ jobs:
             --disable-multilib --disable-bootstrap --disable-libgomp \
             > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 c.log | sed "s/^/    /"; exit 1; }
           make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -30 b.log | sed "s/^/    /"; exit 1; }
-          make DESTDIR="$S" MAKEINFO=true install > /dev/null 2>&1
+          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           ln -sfv gcc "$S/tools/bin/cc" 2>/dev/null || true
           echo "  native /tools gcc: $("$S/tools/bin/gcc" --version 2>&1 | head -1)"
 
@@ -348,7 +348,7 @@ jobs:
           ../make-4.0/configure --prefix=/tools --host="$LFS_TGT" \
             --build="$(../make-4.0/config.guess)" --disable-nls \
             > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -20 c.log | sed "s/^/    /"; exit 1; }
-          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 && make DESTDIR="$S" MAKEINFO=true install > /dev/null 2>&1
+          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 && make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           echo "  busybox applets: $(ls "$S/tools/bin" | wc -l)"
 
       - name: 'THE BOX (period)'
