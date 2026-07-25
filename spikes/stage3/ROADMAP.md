@@ -446,3 +446,44 @@ changed lines mention int iterators.
 The `<ITERATOR>` reference count was also misleading — 1,938 counts `<mode>`,
 `<MODE>` and every code iterator, which 4.7 already supports. Only references to
 the 34 int-iterator names matter for option 2, and those are now counted by name.
+
+### Both fixes sized (2026-07-24)
+
+```
+OPTION 2  expand the int iterators in our vendored .md
+  files affected        iterators.md, one
+  definitions           34   (20 define_int_iterator + 14 define_int_attr)
+  references            81
+  touches upstream      nothing
+
+OPTION 1  teach 4.7's generators the construct
+  read-rtl.c    +514 -300  29 hunks
+  gensupport.c  +964   -9  21 hunks
+  rtl.def        +14  -13   7 hunks
+  read-md.c      +27  -17   3 hunks
+  read-md.h       +3   -3   2 hunks
+```
+
+**Option 2 is the smaller and better-bounded change**, and it lands inside a
+directory this project already vendors and reviews. 34 definitions, 81
+references, one file.
+
+**Option 1's number is not trustworthy and should not be quoted.** Only 4 of
+~1,500 changed lines literally mention int iterators, which does not mean the
+feature is four lines — it means 4.8 implements it through a generic
+`iterator_group` abstraction whose names the grep cannot see. The true cost sits
+somewhere between 4 and 514 lines of `read-rtl.c` and this measurement cannot
+narrow it. Saying so is the honest reading; picking option 1 on the strength of
+"4 lines" would be exactly the kind of unmeasured estimate this track exists to
+avoid.
+
+**Recommendation: option 2, via a reviewable expander.** `define_int_iterator`
+expansion is mechanical — a pattern using an iterator with N values becomes N
+patterns, with `define_int_attr` supplying the per-value substitutions. That is
+precisely what `read-rtl.c` does internally, and writing it as a small tool
+matches what `tools/drop_asm.py` already does for the stage-2 substitution: a
+named, reviewable delta rather than a fork of upstream.
+
+The result would be a `.md` in 4.7's dialect, produced by a tool whose output
+can be diffed against the original, with the substitution declared in the
+ledger like every other.
