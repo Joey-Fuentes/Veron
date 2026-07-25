@@ -322,24 +322,59 @@ jobs:
             # different compilers. gen2 == gen3 is the property that matters.
             # libtcc1.a must survive `make clean`: it is tcc's own runtime, and
             # without it gen2 cannot link.
-            say "=== tcc fixpoint ==="
+            # OUR CUSTOM tcc MUST SELF-HOST TOO, and this is the first time
+            # that is asked of the PINNED tree: tcc-aarch64-probe proved the
+            # fixpoint for mob@d9d02c56 unpatched, not for 5ec0e6f8 plus the
+            # five-patch arm64 series, which is the tcc that actually builds gcc
+            # here.
+            #
+            # gen1 comes from gcc 13, gen2 from gen1, gen3 from gen2. gen1 != gen2
+            # is EXPECTED -- different compilers. gen2 == gen3 is the property.
+            #
+            # -B IS NOT OPTIONAL. Run 3 built gen2 and gen3 with
+            # `--cc=/work/tccsrc/tcc-gen1` and both FAILED, because without -B
+            # tcc cannot find its own stddef.h or libtcc1.a. tcc-aarch64-probe
+            # recorded exactly this as a harness bug once already; this is the
+            # second time, so the flag is spelled out here rather than assumed.
+            say "=== tcc fixpoint (5ec0e6f8 + arm64 series) ==="
+            TCCFIX=no
             ( cd tccsrc
-              cp tcc tcc-gen1; cp libtcc1.a libtcc1.a.keep
+              cp tcc tcc-gen1
+              cp libtcc1.a libtcc1.a.keep
+              say "  gen1 (by gcc 13): $(wc -c < tcc-gen1) bytes  $(sha256sum tcc-gen1 | cut -d' ' -f1)"
               for g in 2 3; do
-                p=$((g - 1))
+                pr=$((g - 1))
                 make clean > /dev/null 2>&1 || true
+                # libtcc1.a is tcc's own runtime and `make clean` deletes it;
+                # gen$pr cannot LINK gen$g without it.
                 cp libtcc1.a.keep libtcc1.a
-                ./configure --cc="/work/tccsrc/tcc-gen$p" > /dev/null 2>&1
-                make -j"$NP" > /dev/null 2>&1 || true
-                [ -x tcc ] && cp tcc "tcc-gen$g"
-                say "  gen$g: $( [ -f tcc-gen$g ] && wc -c < tcc-gen$g || echo FAILED)"
+                ./configure --cc="/work/tccsrc/tcc-gen$pr -B/work/tccsrc" \
+                  > "cfg-gen$g.log" 2>&1
+                make -j"$NP" > "mk-gen$g.log" 2>&1 || true
+                if [ -x tcc ]; then
+                  cp tcc "tcc-gen$g"
+                  say "  gen$g: $(wc -c < tcc-gen$g) bytes  $(sha256sum tcc-gen$g | cut -d' ' -f1)"
+                else
+                  say "  gen$g: FAILED"
+                  tail -6 "mk-gen$g.log" | sed 's/^/      /'
+                fi
               done
-              if [ -f tcc-gen2 ] && [ -f tcc-gen3 ] && cmp -s tcc-gen2 tcc-gen3; then
-                say "  TCC FIXPOINT: gen2 == gen3  ($(sha256sum tcc-gen2 | cut -c1-16))"
+              if [ -x tcc-gen2 ] && [ -x tcc-gen3 ] && cmp -s tcc-gen2 tcc-gen3; then
+                say "  -> TCC FIXPOINT: gen2 == gen3, byte for byte."
+                echo yes > /work/.tccfix
+              elif [ -x tcc-gen2 ] && [ -x tcc-gen3 ]; then
+                say "  -> gen2 != gen3: $(cmp tcc-gen2 tcc-gen3 2>&1 | head -1)"
+                echo no > /work/.tccfix
               else
-                say "  tcc gen2 != gen3 -- or a generation failed to build"
+                say "  -> a generation did not build; no fixpoint measured"
+                echo failed > /work/.tccfix
               fi
-              cp tcc-gen1 tcc ) || say "  (tcc fixpoint inconclusive)"
+              # gen1 is the compiler the rest of this arm uses: it is the one
+              # every earlier gcc result was produced with, so swapping in gen3
+              # here would quietly change what is being measured.
+              cp tcc-gen1 tcc
+              cp libtcc1.a.keep libtcc1.a )
+            TCCFIX=$(cat /work/.tccfix 2>/dev/null || echo unmeasured)
           else
             CCCMD="gcc"
           fi
@@ -565,11 +600,15 @@ jobs:
             say "    cc1-s3      $(wc -c < sN/gcc/cc1) bytes  $(sha256sum sN/gcc/cc1 | cut -d' ' -f1)"
           say "  reproducible (build1 == build2) : $REPRO"
           say "  fixpoint     (stage2 == stage3) : $SELF"
+          say "  tcc fixpoint (gen2  == gen3)    : ${TCCFIX:-n/a (this arm has no tcc)}"
           say "  borrowed runtime                : ${BORROW:-none}"
 
           FAIL=0
           [ "$REPRO" = yes ] || FAIL=1
           case "$SELF" in yes|n/a) ;; *) FAIL=1 ;; esac
+          # Run 3 let the tcc fixpoint fail in silence: it printed FAILED, was
+          # left out of the summary, and the arm still reported success.
+          case "${TCCFIX:-}" in yes|"") ;; *) FAIL=1 ;; esac
           say "=== arm exit: $FAIL ==="
           exit "$FAIL"
           EOS
