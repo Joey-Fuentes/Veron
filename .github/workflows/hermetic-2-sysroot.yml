@@ -114,6 +114,15 @@ jobs:
           mkdir -pv "$S"/{etc,var,tools,work} "$S"/usr/{bin,lib,sbin,include}
           for i in bin lib sbin; do ln -sv usr/$i "$S/$i"; done
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          # LFS chapter 4 sets PATH ONCE for the whole session. Run 2 set it in
+          # two build steps out of six, so libstdc++'s configure could not find
+          # aarch64-veron-linux-gnu-g++, autoconf FELL BACK TO THE HOST g++
+          # without complaint, and gcc 13.3 was handed gcc 15.2's headers --
+          # "explicit template argument list not allowed". A missing cross
+          # compiler does not announce itself; it is silently replaced by the
+          # host's, which is the exact failure this whole workflow exists to
+          # prevent.
+          echo "$S/tools/bin" >> "$GITHUB_PATH"
           echo "  LFS_TGT: $LFS_TGT   (host is $(gcc -dumpmachine))"
           echo "  the two triplets differ, which is the isolation"
 
@@ -199,6 +208,20 @@ jobs:
       - name: '5.5 glibc (cross-compiled INTO the sysroot)'
         run: |
           set -eu
+          # WHICH COMPILER DID configure ACTUALLY PICK? Host and target are both
+          # aarch64 here, so a native build and a cross build produce the same
+          # ELF interpreter name and the readelf check below cannot tell them
+          # apart. Only the recorded CC can.
+          crosscheck() {  # $1 = build dir
+            cc=$(grep -m1 '^CC = \|^CC=' "$1/config.log" "$1/Makefile" 2>/dev/null \
+                 | head -1 | sed 's/.*= *//')
+            echo "  configure selected CC: ${cc:-<unknown>}"
+            case "$cc" in
+              *"$LFS_TGT"*) echo "  cross compiler confirmed" ;;
+              *) echo "  NOT THE CROSS COMPILER -- this is a host build wearing"
+                 echo "  a cross build's name. Stopping."; return 1 ;;
+            esac
+          }
           tar xf "glibc-$GLIBC.tar.xz"
           mkdir -p b-glibc && cd b-glibc
           echo "rootsbindir=/usr/sbin" > configparms
@@ -213,6 +236,7 @@ jobs:
             --disable-nscd \
             libc_cv_slibdir=/usr/lib \
             > c.log 2>&1 || { tail -25 c.log; exit 1; }
+          cd "$W"; crosscheck b-glibc || exit 1; cd b-glibc
           make -j"$(nproc)" > b.log 2>&1 || { tail -30 b.log; exit 1; }
           make DESTDIR="$S" install > i.log 2>&1
           echo "  loader: $(ls "$S"/usr/lib/ld-linux-* 2>/dev/null || echo MISSING)"
@@ -228,6 +252,10 @@ jobs:
       - name: '5.6 libstdc++ (needs the libc that now exists)'
         run: |
           set -eu
+          echo "  PATH has tools/bin: $(command -v "$LFS_TGT-g++" || echo NO)"
+          command -v "$LFS_TGT-g++" > /dev/null \
+            || { echo "  the cross g++ is not on PATH -- configure would"; \
+                 echo "  silently use the host's instead"; exit 1; }
           mkdir -p b-libstdcxx && cd b-libstdcxx
           "../gcc-$GCCVER/libstdc++-v3/configure" \
             --host="$LFS_TGT" --build="$(../gcc-$GCCVER/config.guess)" \
