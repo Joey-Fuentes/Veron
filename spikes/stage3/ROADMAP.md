@@ -344,3 +344,38 @@ Two lessons worth keeping, both already in this repo's method note:
   there: `$( . file )` runs in a subshell so every variable it sets is lost, and
   `exit` inside a sourced file kills the shell, so the check must read a
   captured file from the parent.
+
+### The transplant configures. The failure moved to the machine description.
+
+Run 6 of `gcc47-aarch64-backport`:
+
+```
+configure  rc=0            <- 4.7.4 accepts --target=aarch64-unknown-linux-gnu
+generators genemit genattrtab genrecog genextract genoutput genpreds  ALL BUILT
+compiler   0 errors, 471 warnings
+objects    264
+failures   s-preds  s-conditions  s-preds-h  s-constrs-h
+```
+
+Three things follow.
+
+**The `config.gcc` transplant is correct.** Configure passing means the dispatch
+arms are in the right block and 4.7.4 knows the target. That question is closed.
+
+**No C failed to compile.** Zero compiler errors across 264 objects. Whatever
+the middle-end interface drift is, it is not showing up as broken C — which is
+what the vax control (~148 lines) predicted.
+
+**The failing targets are generator RUNS, not generator builds.** `s-preds` is
+`genpreds` reading `predicates.md`; `s-conditions`, `s-preds-h`, `s-constrs-h`
+are the same shape. Every generator compiled and linked; they fail on aarch64's
+machine description. That is the layer this spike's verdict table called "the
+.md files need porting -- real work, but bounded and knowable", and it is the
+most informative place the failure could have landed.
+
+What the run could not say is *what* the generators objected to, for three
+reasons since fixed: the inventory greps for `error:` and generators report
+`file.md:LINE:`; the serial rebuild ran `make s-preds` at the top level where
+that target does not exist (it is a `gcc/` subdirectory target); and the
+config.gcc source-proof died on `gas_flag: unbound variable` because the
+subshell inherited `set -u` and config.gcc is not written to be `-u` clean.

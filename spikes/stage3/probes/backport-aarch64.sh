@@ -194,6 +194,12 @@ PROOF=$(mktemp)
 prc=0
 if ! (
     cd "$G47/gcc" || exit 1
+    # config.gcc reads dozens of optional variables (gas_flag, tm_defines,
+    # with_* ...) and the parent script runs with `set -u`, which the subshell
+    # inherits. Run 6 died on "gas_flag: unbound variable" before config.gcc
+    # reached a single case arm. config.gcc is not written to be -u clean and
+    # gcc/configure does not run it that way either.
+    set +u
     target=aarch64-unknown-linux-gnu
     target_cpu=aarch64 target_vendor=unknown target_os=linux-gnu
     host=aarch64-unknown-linux-gnu build=aarch64-unknown-linux-gnu

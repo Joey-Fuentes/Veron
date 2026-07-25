@@ -224,8 +224,17 @@ jobs:
                     | sed 's/.*: //; s/\]//' | grep -vE '^all-|^\.' | head -1)
           if [ -n "${TGT_OBJ:-}" ]; then
             echo "    target: $TGT_OBJ"
+            # Targets reported by make[1] live in a SUBDIRECTORY. Run 6 tried
+            # `make -j1 s-preds` at the top level and got "No rule to make
+            # target 's-preds'", learning nothing. Try the top level, then gcc/.
             timeout 900 make -j1 MAKEINFO=true "$TGT_OBJ" > serial.log 2>&1
-            echo "    serial rc=$?"
+            src=$?
+            if grep -q "No rule to make target" serial.log; then
+              echo "    (not a top-level target; retrying in gcc/)"
+              timeout 900 make -C gcc -j1 MAKEINFO=true "$TGT_OBJ" > serial.log 2>&1
+              src=$?
+            fi
+            echo "    serial rc=$src"
             grep -E 'error:|Error ' serial.log | head -15 | sed 's/^/      /'
             [ -s serial.log ] && tail -15 serial.log | sed 's/^/      /'
             # A failing *configure* writes its reason to config.log, not to the
@@ -245,6 +254,24 @@ jobs:
           else
             echo "    (could not parse a failing target)"
           fi
+          echo
+          echo "  === MACHINE DESCRIPTION errors ==="
+          # The generators read .md files and report problems with a
+          # "file.md:LINE:" prefix, not "error:" -- run 6 reported 0 errors and
+          # 471 warnings while four generator RUNS were failing. A backport that
+          # gets this far fails in the .md, so look there explicitly.
+          grep -nE '\.md:[0-9]+' build.log | head -20 | sed 's/^/    /'
+          echo "    .md diagnostics: $(grep -cE '\.md:[0-9]+' build.log || true)"
+          echo
+          echo "  === context for EACH failing target, not just the first ==="
+          # With -Otarget each target's output is grouped, so the lines just
+          # before its *** line are that target's own output.
+          for n in $(grep -nE '^\s*make(\[[0-9]+\])?: \*\*\* ' build.log \
+                     | cut -d: -f1 | head -4); do
+            echo "    ---- around line $n ----"
+            start=$(( n > 15 ? n - 15 : 1 ))
+            sed -n "${start},${n}p" build.log | sed 's/^/      /'
+          done
           echo
           echo "  === compiler ERRORS only (not warnings) ==="
           grep -oE '\berror: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
