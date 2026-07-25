@@ -48,26 +48,31 @@ BusyBox's `if (ENABLE_FEATURE_X)` idiom leaves references to functions that were
 never defined. Everything else was build plumbing. The kernel uses the same
 idiom via `IS_ENABLED()`, so leg 3 will meet this again.
 
-**gcc 4.7 can carry gcc 4.8's aarch64 backend.** The transplant builds:
+**gcc 4.7 can carry gcc 4.8's aarch64 backend, and the result compiles.**
 
 ```
-arm C-474-backport    configure rc=0    build rc=0    cc1 BUILT
+configure rc=0   build rc=0   cc1 BUILT
+cc1 emits   stp x29, x30, [sp, -48]! / cmp w0, 1 / ble .L4
+assembled   ELF 64-bit LSB relocatable, ARM aarch64
+ran         exit=55                (fib(10) = 55)
 ```
 
-gcc 4.7.4 — the last release written in C — with `gcc/config/aarch64` from
-4.8.5 spliced in, compiles clean and produces a `cc1` targeting aarch64. That
-was the leg's whole question, because it makes the gcc route native **and**
-C-only:
+gcc 4.7.4 — the last release written in C — with `gcc/config/aarch64` from 4.8.5
+spliced in, builds a `cc1` that emits correct aarch64 code. That was the leg's
+whole question, because it makes the gcc route native **and** C-only:
 
 ```
 tcc -> gcc 4.7 + this backend -> g++ 4.7 -> gcc 4.8 -> modern gcc
 ```
 
 4.7 yields a full C++98 compiler built from C, which is exactly what 4.8 asks
-for. Gated by `.github/workflows/gcc47-aarch64-backport.yml`; the adaptation is
-`tools/expand_int_iterators.py`, `tools/port_gcc47_api.py` and
-`spikes/stage3/probes/backport-aarch64.sh`. Details and the running cost table
-are in ROADMAP leg 2.
+for. Total adaptation: **0 target hooks, 3 config case arms, 34 `.md`
+definitions expanded, 7 qualified attribute refs, 3 functions at 24 call
+sites** — nothing structural, and within the ~148 lines the vax control
+predicted.
+
+Full record in **[`GCC-BACKPORT.md`](./GCC-BACKPORT.md)**. Gated by
+`.github/workflows/gcc47-aarch64-backport.yml`.
 
 ## The pin set (confirmed, do not drift)
 
@@ -134,16 +139,12 @@ the emitted instruction, then read the compiler's own branch. Reach for
   perfect and G0 is used exactly once, so this blocks nothing. Non-gating REPORT
   in the bisect workflow.
 - **Mes rung** — `mes-rung.yml` reference arm; see `MES-RUNG.md` when it lands.
-- **The gcc leg.** On aarch64 the old-gcc/new-gcc ladder is broken: 4.7 has no
-  aarch64 backend and 4.8 requires C++, and they are the same version. The
-  candidate that keeps the chain native and C-only is **backporting 4.8's
-  aarch64 backend into 4.7**, which then yields `g++` 4.7 — itself built from C
-  — to build 4.8. **First measurement says this is cheap**: the whole `vax`
-  backend needed only ~148 lines of change across the 4.7→4.8 boundary, so the
-  interface barely moved, and it moved *not at all* within the 4.8 series — take
-  4.8.5's backend, which is ~1,800 lines more fixed than 4.8.0's at no extra
-  interface distance. See ROADMAP leg 2 and
-  `gcc-backend-backport-probe.yml`.
+- **The gcc leg, past the entry point.** The backport builds and compiles
+  correct aarch64 code (`GCC-BACKPORT.md`). What is not yet shown: **libgcc**
+  (the arms run `make all-gcc`, so `xgcc` cannot link — `cannot find
+  crtbegin.o`); **tcc building this tree** (every arm uses the host gcc, one
+  variable at a time); and **g++ 4.7 building 4.8**, which is the entire reason
+  for choosing 4.7.
 - **The kernel is still borrowed.** `tcc-userland-arm64` boots Ubuntu's kernel,
   which is correct for the ABI claim but is a distro artifact. Building
   `arch/arm64/configs/defconfig` from a pinned tree with the host gcc replaces
@@ -162,6 +163,7 @@ the emitted instruction, then read the compiler's own branch. Reach for
 ```
 spikes/stage3/          this folder -- current state, roadmap
 spikes/stage3/TCC-USERLAND.md   the tcc userland result, in full
+spikes/stage3/GCC-BACKPORT.md   the gcc 4.7 + 4.8-aarch64 result, in full
 spikes/stage3/patches/  the tcc arm64 assembler series + our two fixes
 spikes/stage3/probes/   the CC shim, the pinned fetcher, the C probes
 sources/*.toml          url + hash + license + declared substitutions

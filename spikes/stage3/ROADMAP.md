@@ -685,11 +685,22 @@ missing subsystem, no hook the backend needed, no C that would not compile.
 Every obstacle was either a *dialect* change in the machine description or a
 *signature* change in three functions.
 
+### The compiler works
+
+```
+cc1 emits   stp x29, x30, [sp, -48]! / cmp w0, 1 / ble .L4
+assembled   ELF 64-bit LSB relocatable, ARM aarch64
+ran         exit=55                (fib(10) = 55)
+```
+
+Not just built — it emits aarch64, the system assembler accepts it, and the
+result runs and returns the right answer. Full record in `GCC-BACKPORT.md`.
+
 ### What this does NOT yet show
 
-- **That the compiler works.** `cc1` exists; whether it emits correct aarch64
-  code is a separate claim, now tested by the "THE CLAIM" step (compile, emit
-  assembly, assemble, link, run — `fib(10)` must return 55).
+- **libgcc.** The arms run `make all-gcc`, which stops before the runtime, so
+  `gcc/xgcc` cannot link: `cannot find crtbegin.o`, `cannot find -lgcc`. `cc1`
+  is exercised directly instead. A full `make` is the next step.
 - **That tcc can build this tree.** The arms build with the host gcc, one
   variable at a time. `gcc-entrypoint-probe` already cleared the previous
   blocker by building gmp, mpfr and mpc under tcc.
