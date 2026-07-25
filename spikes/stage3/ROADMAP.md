@@ -604,3 +604,41 @@ catch `<PERMUTE:perm_insn>` also catches `<GPI:mode>`, and rewriting those would
 break a file that was previously fine. The tool substitutes only names it knows
 to be int iterators, and raises rather than guessing if a qualified reference
 names an attribute no `define_int_attr` covers.
+
+### Down to two API calls
+
+The generators are fully through — no `.md` diagnostics at all — and the build
+now compiles the backend's own C. `insn-*.c` generated: 11. Objects: 624, up
+from 264. Two errors remain, both single call sites in `aarch64.c`:
+
+```
+1 error: 'struct rtl_data' has no member named 'is_leaf'
+1 error: too few arguments to function 'assign_stack_temp'
+```
+
+```
+aarch64.c:1500   !crtl->is_leaf                  4.7 spells it current_function_is_leaf
+aarch64.c:6862   assign_stack_temp (mode, size)  4.7 also takes `int keep`
+```
+
+Note the second drifts the *other way*: 4.8 **removed** a parameter that 4.7
+still requires, so the adaptation adds one back. `port_gcc47_api.py`'s rule
+table now covers three kinds — drop an argument, add one, rename a token —
+because 4.8 moved in all three directions.
+
+**One assumption, stated rather than buried.** The `keep` argument controls
+whether a stack temp slot may be reused after `free_temp_slots()`. The tool
+passes 0, which is the behaviour 4.8 made unconditional when it removed the
+parameter. The single call site builds a vector in memory and immediately loads
+it, which is the case where that is safe. The tool prints `added \`0\`` so the
+choice appears in the log rather than only in a diff.
+
+Total adaptation so far, across the whole backport:
+
+| | |
+|---|---|
+| target hooks | 0 |
+| `config.gcc` / `config.host` | 3 case arms, spliced |
+| `.md` dialect | 34 definitions expanded, 30 forms → 109 patterns |
+| qualified `<ITER:attr>` refs | 7 |
+| middle-end API | 3 functions, 24 sites |
