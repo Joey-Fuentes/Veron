@@ -338,7 +338,16 @@ jobs:
           # A build sysroot has no use for HTTPS, so drop the TLS code rather
           # than patch around a feature-test mismatch. Fewer applets is also
           # the right direction for something we are trying to keep enumerable.
-          for sym in CONFIG_TC CONFIG_TLS CONFIG_FEATURE_WGET_HTTPS; do
+          # CONFIG_SSL_CLIENT IS THE ONE. The diagnostic above printed it --
+          # CONFIG_SSL_CLIENT=y and CONFIG_FEATURE_WGET_OPENSSL=y -- and I spent
+          # a run adding -D_GNU_SOURCE instead of reading it. ssl_client is the
+          # applet that drags in networking/tls*.c; CONFIG_TLS was never set in
+          # the first place, which is why disabling it changed nothing three
+          # times running. The flag did eventually reach the compiler and the
+          # error was identical, which is the proof that the flag was never the
+          # answer.
+          for sym in CONFIG_TC CONFIG_TLS CONFIG_SSL_CLIENT \
+                     CONFIG_FEATURE_WGET_HTTPS CONFIG_FEATURE_WGET_OPENSSL; do
             sed -i "s/^$sym=y/# $sym is not set/" .config
           done
           # THE CHECK BELOW PASSED VACUOUSLY LAST RUN. `grep -q "^CONFIG_TLS=y"`
@@ -360,7 +369,8 @@ jobs:
             || { echo "  could not set CONFIG_EXTRA_CFLAGS"; \
                  grep -n 'EXTRA_CFLAGS' .config | sed 's/^/    /'; exit 1; }
           echo "  disabled applets:"
-          for sym in CONFIG_TC CONFIG_TLS CONFIG_FEATURE_WGET_HTTPS; do
+          for sym in CONFIG_TC CONFIG_TLS CONFIG_SSL_CLIENT \
+                     CONFIG_FEATURE_WGET_HTTPS CONFIG_FEATURE_WGET_OPENSSL; do
             if grep -q "^$sym=y" .config; then
               echo "    $sym STILL ENABLED -- the sed did not match"; exit 1
             fi
@@ -380,9 +390,8 @@ jobs:
           if grep -q '\-D_GNU_SOURCE' v.log; then
             echo "  -D_GNU_SOURCE confirmed on the compile line"
           else
-            echo "  -D_GNU_SOURCE IS NOT REACHING THE COMPILER. Command line was:"
-            grep -m1 'tls_aesgcm' v.log | fold -w 100 | head -4 | sed 's/^/    /'
-            exit 1
+            echo "  (flag not seen -- expected once ssl_client is disabled,"
+            echo "   since the file it was for is no longer built)"
           fi
           make -j"$(nproc)" CROSS_COMPILE="$LFS_TGT-" \
             > b.log 2>&1 || {

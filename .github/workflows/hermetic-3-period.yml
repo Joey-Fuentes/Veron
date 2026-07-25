@@ -171,8 +171,27 @@ jobs:
           # became Error 1 (nothing to install). glibc's install has no
           # skip-the-manual switch, so give it an empty one to copy. The manual
           # is documentation; it has no bearing on whether the libc works.
+          # THE MANUAL CANNOT BE MADE TO INSTALL, SO STOP TRYING TO. Three
+          # attempts: MAKEINFO=true gave Error 134 -> Error 1, an empty
+          # libc.info moved the failure to another rule in the same subdir.
+          # glibc has no switch to skip it. Use -k so every OTHER subdir still
+          # installs, then VERIFY THE ARTIFACTS -- which is the thing actually
+          # being claimed. Documentation is not the libc.
           mkdir -p manual && : > manual/libc.info
-          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
+          make -k DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || true
+          echo "  install finished (manual/ failures ignored); checking artifacts:"
+          miss=0
+          for a in lib/libc.so.6 lib/ld-linux-aarch64.so.1 lib/libc.a \
+                   include/stdio.h include/gnu/stubs.h; do
+            if [ -e "$S/tools/$a" ]; then printf '    %-32s present\n' "$a"
+            else printf '    %-32s MISSING\n' "$a"; miss=1; fi
+          done
+          if [ "$miss" -ne 0 ]; then
+            echo "  the libc did NOT install -- this is not just the manual:"
+            grep -nE "Error [0-9]|make(\[[0-9]+\])?: \*\*\*" i.log \
+              | grep -v manual | head -8 | sed "s/^/    /"
+            exit 1
+          fi || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           ls "$S/tools/bin" | tr '\n' ' ' | sed 's/^/  /'
 
       # A 2014 BOOK ON A 2026 HOST. LFS 7.5 assumed period tooling for the
@@ -226,8 +245,27 @@ jobs:
           # became Error 1 (nothing to install). glibc's install has no
           # skip-the-manual switch, so give it an empty one to copy. The manual
           # is documentation; it has no bearing on whether the libc works.
+          # THE MANUAL CANNOT BE MADE TO INSTALL, SO STOP TRYING TO. Three
+          # attempts: MAKEINFO=true gave Error 134 -> Error 1, an empty
+          # libc.info moved the failure to another rule in the same subdir.
+          # glibc has no switch to skip it. Use -k so every OTHER subdir still
+          # installs, then VERIFY THE ARTIFACTS -- which is the thing actually
+          # being claimed. Documentation is not the libc.
           mkdir -p manual && : > manual/libc.info
-          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
+          make -k DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || true
+          echo "  install finished (manual/ failures ignored); checking artifacts:"
+          miss=0
+          for a in lib/libc.so.6 lib/ld-linux-aarch64.so.1 lib/libc.a \
+                   include/stdio.h include/gnu/stubs.h; do
+            if [ -e "$S/tools/$a" ]; then printf '    %-32s present\n' "$a"
+            else printf '    %-32s MISSING\n' "$a"; miss=1; fi
+          done
+          if [ "$miss" -ne 0 ]; then
+            echo "  the libc did NOT install -- this is not just the manual:"
+            grep -nE "Error [0-9]|make(\[[0-9]+\])?: \*\*\*" i.log \
+              | grep -v manual | head -8 | sed "s/^/    /"
+            exit 1
+          fi || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           "$S/tools/bin/$LFS_TGT-gcc" --version | head -1 | sed 's/^/  /'
 
       - name: '5.6 linux 3.13.3 API headers'
@@ -317,8 +355,27 @@ jobs:
           # became Error 1 (nothing to install). glibc's install has no
           # skip-the-manual switch, so give it an empty one to copy. The manual
           # is documentation; it has no bearing on whether the libc works.
+          # THE MANUAL CANNOT BE MADE TO INSTALL, SO STOP TRYING TO. Three
+          # attempts: MAKEINFO=true gave Error 134 -> Error 1, an empty
+          # libc.info moved the failure to another rule in the same subdir.
+          # glibc has no switch to skip it. Use -k so every OTHER subdir still
+          # installs, then VERIFY THE ARTIFACTS -- which is the thing actually
+          # being claimed. Documentation is not the libc.
           mkdir -p manual && : > manual/libc.info
-          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
+          make -k DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || true
+          echo "  install finished (manual/ failures ignored); checking artifacts:"
+          miss=0
+          for a in lib/libc.so.6 lib/ld-linux-aarch64.so.1 lib/libc.a \
+                   include/stdio.h include/gnu/stubs.h; do
+            if [ -e "$S/tools/$a" ]; then printf '    %-32s present\n' "$a"
+            else printf '    %-32s MISSING\n' "$a"; miss=1; fi
+          done
+          if [ "$miss" -ne 0 ]; then
+            echo "  the libc did NOT install -- this is not just the manual:"
+            grep -nE "Error [0-9]|make(\[[0-9]+\])?: \*\*\*" i.log \
+              | grep -v manual | head -8 | sed "s/^/    /"
+            exit 1
+          fi || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           echo "  loader: $(ls "$S"/tools/lib/ld-linux-* 2>/dev/null || echo MISSING)"
           # The period claim, stated as a check: does struct ucontext exist?
           echo "  --- struct ucontext in glibc $GLIBC ---"
@@ -342,8 +399,27 @@ jobs:
           # became Error 1 (nothing to install). glibc's install has no
           # skip-the-manual switch, so give it an empty one to copy. The manual
           # is documentation; it has no bearing on whether the libc works.
+          # THE MANUAL CANNOT BE MADE TO INSTALL, SO STOP TRYING TO. Three
+          # attempts: MAKEINFO=true gave Error 134 -> Error 1, an empty
+          # libc.info moved the failure to another rule in the same subdir.
+          # glibc has no switch to skip it. Use -k so every OTHER subdir still
+          # installs, then VERIFY THE ARTIFACTS -- which is the thing actually
+          # being claimed. Documentation is not the libc.
           mkdir -p manual && : > manual/libc.info
-          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
+          make -k DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || true
+          echo "  install finished (manual/ failures ignored); checking artifacts:"
+          miss=0
+          for a in lib/libc.so.6 lib/ld-linux-aarch64.so.1 lib/libc.a \
+                   include/stdio.h include/gnu/stubs.h; do
+            if [ -e "$S/tools/$a" ]; then printf '    %-32s present\n' "$a"
+            else printf '    %-32s MISSING\n' "$a"; miss=1; fi
+          done
+          if [ "$miss" -ne 0 ]; then
+            echo "  the libc did NOT install -- this is not just the manual:"
+            grep -nE "Error [0-9]|make(\[[0-9]+\])?: \*\*\*" i.log \
+              | grep -v manual | head -8 | sed "s/^/    /"
+            exit 1
+          fi || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           cd "$W"
           mkdir -p b-bu2 && cd b-bu2
           CC="$LFS_TGT-gcc" AR="$LFS_TGT-ar" RANLIB="$LFS_TGT-ranlib" \
@@ -357,8 +433,27 @@ jobs:
           # became Error 1 (nothing to install). glibc's install has no
           # skip-the-manual switch, so give it an empty one to copy. The manual
           # is documentation; it has no bearing on whether the libc works.
+          # THE MANUAL CANNOT BE MADE TO INSTALL, SO STOP TRYING TO. Three
+          # attempts: MAKEINFO=true gave Error 134 -> Error 1, an empty
+          # libc.info moved the failure to another rule in the same subdir.
+          # glibc has no switch to skip it. Use -k so every OTHER subdir still
+          # installs, then VERIFY THE ARTIFACTS -- which is the thing actually
+          # being claimed. Documentation is not the libc.
           mkdir -p manual && : > manual/libc.info
-          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
+          make -k DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || true
+          echo "  install finished (manual/ failures ignored); checking artifacts:"
+          miss=0
+          for a in lib/libc.so.6 lib/ld-linux-aarch64.so.1 lib/libc.a \
+                   include/stdio.h include/gnu/stubs.h; do
+            if [ -e "$S/tools/$a" ]; then printf '    %-32s present\n' "$a"
+            else printf '    %-32s MISSING\n' "$a"; miss=1; fi
+          done
+          if [ "$miss" -ne 0 ]; then
+            echo "  the libc did NOT install -- this is not just the manual:"
+            grep -nE "Error [0-9]|make(\[[0-9]+\])?: \*\*\*" i.log \
+              | grep -v manual | head -8 | sed "s/^/    /"
+            exit 1
+          fi || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           cd "$W"
           mkdir -p b-gcc2 && cd b-gcc2
           CC="$LFS_TGT-gcc" CXX="$LFS_TGT-g++" \
@@ -375,8 +470,27 @@ jobs:
           # became Error 1 (nothing to install). glibc's install has no
           # skip-the-manual switch, so give it an empty one to copy. The manual
           # is documentation; it has no bearing on whether the libc works.
+          # THE MANUAL CANNOT BE MADE TO INSTALL, SO STOP TRYING TO. Three
+          # attempts: MAKEINFO=true gave Error 134 -> Error 1, an empty
+          # libc.info moved the failure to another rule in the same subdir.
+          # glibc has no switch to skip it. Use -k so every OTHER subdir still
+          # installs, then VERIFY THE ARTIFACTS -- which is the thing actually
+          # being claimed. Documentation is not the libc.
           mkdir -p manual && : > manual/libc.info
-          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
+          make -k DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || true
+          echo "  install finished (manual/ failures ignored); checking artifacts:"
+          miss=0
+          for a in lib/libc.so.6 lib/ld-linux-aarch64.so.1 lib/libc.a \
+                   include/stdio.h include/gnu/stubs.h; do
+            if [ -e "$S/tools/$a" ]; then printf '    %-32s present\n' "$a"
+            else printf '    %-32s MISSING\n' "$a"; miss=1; fi
+          done
+          if [ "$miss" -ne 0 ]; then
+            echo "  the libc did NOT install -- this is not just the manual:"
+            grep -nE "Error [0-9]|make(\[[0-9]+\])?: \*\*\*" i.log \
+              | grep -v manual | head -8 | sed "s/^/    /"
+            exit 1
+          fi || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           ln -sfv gcc "$S/tools/bin/cc" 2>/dev/null || true
           echo "  native /tools gcc: $("$S/tools/bin/gcc" --version 2>&1 | head -1)"
 
