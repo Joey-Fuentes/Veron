@@ -536,3 +536,45 @@ files rather than assumed:
   documents instruction naming; 4.7's reader never sees it. Verification strips
   comments first — a leftover in code is fatal, in a comment it is cosmetic,
   and conflating them fails a correct run.
+
+### The middle-end drift is one function
+
+With `expand_int_iterators.py` in place the generators read the description and
+the build reached generated C. The remaining errors:
+
+```
+16 error: too many arguments to function 'plus_constant'
+   in config/aarch64/aarch64.md
+```
+
+**One error class, one function, one file.** `plus_constant` gained a leading
+mode parameter in 4.8:
+
+```
+4.7   extern rtx plus_constant (rtx, HOST_WIDE_INT);
+4.8   extern rtx plus_constant (enum machine_mode, rtx, HOST_WIDE_INT);
+```
+
+4.7 takes the mode from the rtx operand, so the adaptation is to drop the
+explicit one. `tools/port_gcc47_api.py` does it — 22 call sites across
+`aarch64.c` and `aarch64.md`, 21 passing `Pmode` with a pointer rtx and one
+passing `mode` alongside a `reg` of that mode, so the assumption holds at every
+site. The tool prints each dropped argument so that stays visible in review.
+
+The rule table is written to grow: one row per upstream signature change, with
+an arity check proving the rewrite hit the right call. If another drifted call
+turns up, it is a row rather than a special case.
+
+**How the vax control is holding up.** It predicted the whole 4.7→4.8 backend
+interface delta at ~148 lines for an untouched backend. What has actually been
+needed:
+
+| | |
+|---|---|
+| target hooks | 0 |
+| `config.gcc` / `config.host` | mechanical splice, 3 case arms |
+| `.md` dialect | 34 definitions expanded, 30 forms → 109 patterns |
+| middle-end API | 1 function, 22 call sites |
+
+Nothing so far has been structural. That is the measurement the whole leg rested
+on, and it has survived contact.

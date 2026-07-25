@@ -194,6 +194,21 @@ else
     say "  NOTE: $EXP not found -- .md left with 4.8-only constructs"
 fi
 
+# ------------------------------------------------ 4.8 middle-end API drift
+# With the .md dialect handled, the generators read the description and the
+# build reaches generated C. What remains is genuine API drift, and it is one
+# function: plus_constant gained a leading mode parameter in 4.8 (16 errors,
+# one file). 4.7 infers the mode from the rtx, so the adaptation is to drop it.
+API="$(cd "$(dirname "$0")/../../.." && pwd)/tools/port_gcc47_api.py"
+if [ -f "$API" ]; then
+    say ""
+    say "  === adapting 4.8 middle-end API calls to 4.7 signatures ==="
+    python3 "$API" "$G47/gcc/config/aarch64" -q 2>&1 | sed 's/^/  /' || {
+        say "  FATAL: API adaptation failed"; exit 1; }
+else
+    say "  NOTE: $API not found -- 4.8-only API calls left in place"
+fi
+
 say ""
 say "  === config.gcc structure (line numbers) ==="
 say "    case \${target} in    : $(grep -n '^case ${target} in' "$G47/gcc/config.gcc" | cut -d: -f1 | tr '\n' ' ')"
