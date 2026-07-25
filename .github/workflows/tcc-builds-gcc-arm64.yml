@@ -1,0 +1,418 @@
+name: tcc-builds-gcc-arm64
+
+# THE CONJUNCTION. Both halves are already proven. This joins them.
+#
+#   half 1  OUR arm64 tcc works.
+#           tcc-aarch64-probe: self-hosts to a byte-identical FIXPOINT on
+#           aarch64 (gen2 == gen3), make test passes, feat.c returns 6, kern.c
+#           returns 0. tcc-userland-arm64: it built a musl + BusyBox userland
+#           that boots as PID 1.
+#
+#   half 2  gcc 4.7.4 CAN target arm64, once transplanted.
+#           gcc47-aarch64-backport arm C: 4.7.4 carrying 4.8.5's aarch64
+#           backend, built by the HOST gcc, configure rc=0, build rc=0,
+#           cc1 55,044,256 bytes, emits `stp x29, x30, [sp, -48]!`, runs,
+#           exit 55.
+#
+#   half 3  tcc CAN compile gcc 4.7.4's source.
+#           tcc-builds-gcc-x86 arm D: tcc built gmp, mpfr, mpc and then cc1 --
+#           0 error lines, 631 objects, all six generators -- and that cc1
+#           emitted -O2 x86-64 that ran and returned 55. It had to be x86:
+#           until the backport existed there was no arm64 4.7.4 to try.
+#
+# So: tcc compiles this gcc, and this gcc targets arm64. Nobody has yet run
+# BOTH AT ONCE, natively. That is the entire content of this workflow.
+#
+# WHY ONE ARM AND NO CONTROLS. The controls have already been run and are named
+# above. Host gcc + backported 4.7.4 on aarch64 passed; tcc + 4.7.4 on x86
+# passed. This arm changes exactly one thing against each of them -- the
+# compiler in the first case, the architecture in the second -- so a failure is
+# already bracketed. Re-running either here would cost 40 minutes to reproduce
+# a known answer.
+#
+# READ A FAILURE BY WHERE IT LANDS. The inventory prints the files that carry a
+# real `error:`, and that list is the diagnosis:
+#
+#   errors in gcc/config/aarch64/*.c   -> the TRANSPLANT. Something in the
+#                                         backend's C that the host gcc accepted
+#                                         and tcc does not.
+#   errors in generic gcc/*.c          -> TCC's ARM64 CODEGEN, or a construct
+#                                         its x86 path handles and arm64 does
+#                                         not. Cross-check against the x86 run:
+#                                         those same files compiled clean there.
+#   errors in insn-*.c                 -> the GENERATORS ran but emitted C tcc
+#                                         cannot take. Note the generators are
+#                                         themselves tcc-built here.
+#   cc1 builds, fib != 55              -> the dangerous one. tcc miscompiled a
+#                                         compiler. Nothing above catches that;
+#                                         only running the output does.
+#
+# WHICH tcc. Default is OUR pinned tcc: sources/tcc.toml commit 5ec0e6f8 plus
+# the five-patch arm64 series, applied by its own apply-series.sh. That is the
+# tree the musl/BusyBox userland was built with, so "our arm64 tcc" means this
+# one. `tcc_source: mob` switches to mob HEAD instead -- worth a second run,
+# since mob has since absorbed the assembler and would tell us whether the
+# series matters for gcc at all, but it is NOT the default and is not a matrix.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/tcc-builds-gcc-arm64.yml'
+  workflow_dispatch:
+    inputs:
+      tcc_source:
+        description: 'pinned-series (sources/tcc.toml + arm64 patches) or mob'
+        required: false
+        default: 'pinned-series'
+
+concurrency:
+  group: tcc-builds-gcc-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GNU: 'https://mirrors.kernel.org/gnu'
+  GNU2: 'https://ftpmirror.gnu.org'
+  TCC_SOURCE: ${{ github.event.inputs.tcc_source || 'pinned-series' }}
+
+jobs:
+  conjunction:
+    name: 'arm64 tcc -> arm64 gcc 4.7.4'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Confirm this is really aarch64'
+        run: |
+          set -eu
+          # Native throughout. If this is not aarch64 the whole run means
+          # nothing, and that must stop the job rather than colour a summary.
+          echo "  uname -m : $(uname -m)"
+          echo "  host gcc : $(gcc -dumpmachine)"
+          [ "$(uname -m)" = aarch64 ] || { echo "  NOT aarch64 -- aborting"; exit 1; }
+
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl git bzip2 xz-utils gcc make bison flex texinfo m4 perl \
+            file binutils
+
+      - name: 'Build OUR arm64 tcc'
+        run: |
+          set -eu
+          # FULL CLONE, not --depth 1. apply-series.sh locates its base by
+          # matching the patches' index pre-image blobs against history, so a
+          # shallow clone leaves it nothing to search and it falls back to a
+          # date guess -- which is the wrong tree and fails on tccasm.c:1178.
+          git clone -q git://repo.or.cz/tinycc.git tccsrc \
+            || git clone -q https://repo.or.cz/tinycc.git tccsrc
+
+          if [ "$TCC_SOURCE" = "pinned-series" ]; then
+            echo "  --- applying the arm64 series (sources/tcc.toml pin) ---"
+            bash spikes/stage3/patches/tcc-arm64-asm/apply-series.sh tccsrc \
+              | sed 's/^/  /'
+          else
+            echo "  --- mob HEAD, series NOT applied ---"
+          fi
+
+          cd tccsrc
+          echo "  tcc tree : $(git rev-parse HEAD)"
+          echo "  tcc date : $(git log -1 --format=%cd --date=short)"
+          ./configure --cc=gcc > /dev/null
+          make -j"$(nproc)" > /dev/null
+          ./tcc -v
+          ./tcc -v 2>&1 | grep -q AArch64 || { echo "  tcc is not an AArch64 build"; exit 1; }
+          echo "TCC=$PWD/tcc"  >> "$GITHUB_ENV"
+          echo "TCCDIR=$PWD"   >> "$GITHUB_ENV"
+
+      - name: 'Precondition: does this tcc handle what gcc 4.7 needs?'
+        run: |
+          set -eu
+          # FATAL ON PURPOSE. feat.c exercises the C constructs gcc 4.7's source
+          # uses -- struct return by value, varargs, function pointers, 64-bit
+          # ints, floats, aggregate initialisers -- and returns 6. Finding out
+          # it does not 40 minutes into a gcc build would waste the run and
+          # produce an inventory nobody could read.
+          P=spikes/stage3/probes
+          "$TCC" -B"$TCCDIR" -o /tmp/feat "$P/feat.c"
+          set +e; /tmp/feat; rc=$?; set -e
+          echo "  gcc-feature probe exit=$rc (expect 6)"
+          [ "$rc" = 6 ] || { echo "  FATAL: this tcc does not cover gcc 4.7's C"; exit 1; }
+
+          # NOT fatal. kern.c is inline asm, which cc1's own sources barely use;
+          # it matters for musl and the kernel, not for building a compiler.
+          # Reported so the log says which tcc this was.
+          set +e
+          "$TCC" -B"$TCCDIR" -o /tmp/kern "$P/kern.c" 2>&1 | sed 's/^/    /'
+          /tmp/kern; echo "  kernel-style probe exit=$? (0 = inline asm works)"
+          set -e
+
+      - name: 'Fetch gcc 4.7.4 and 4.8.5'
+        run: |
+          set -eu
+          # fetch-pinned.sh with "-" for the hash PRINTS the sha256 it got
+          # instead of verifying one. That is the honest intermediate state:
+          # invariant #6 wants these pinned in sources/, there is no
+          # sources/gcc.toml yet, and inventing a hash would be worse than not
+          # having one. Read the two hashes out of this step's log and pin them.
+          F=spikes/stage3/probes/fetch-pinned.sh
+          for v in 4.7.4 4.8.5; do
+            d="g${v//./}"
+            echo "  --- gcc $v -> $d ---"
+            bash "$F" "$d" "$HOME/.cache/veron/gcc-$v.tar.bz2" - \
+              "$GNU/gcc/gcc-$v/gcc-$v.tar.bz2 $GNU2/gcc/gcc-$v/gcc-$v.tar.bz2" \
+              "" "" | sed 's/^/  /'
+          done
+          echo "  4.7.4 aarch64 mentions in config.gcc (expect 0): $(grep -c aarch64 g474/gcc/config.gcc || true)"
+
+      - name: 'Transplant 4.8.5''s aarch64 backend into 4.7.4'
+        run: |
+          set -eu
+          # Same script the host-gcc arm used, unchanged. If the transplant
+          # itself has drifted, this fails in seconds by sourcing config.gcc
+          # rather than 40 minutes later at configure-gcc.
+          bash spikes/stage3/probes/backport-aarch64.sh g474 g485
+
+      - name: 'Prerequisites, built by tcc'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # Already done once under tcc on aarch64 (gcc-entrypoint-probe) and
+          # once on x86 (tcc-builds-gcc-x86 arm D, all three rc=0). Repeated
+          # here because cc1 links them: a host-built libgmp.a inside a
+          # tcc-built cc1 would make the claim smaller than it looks.
+          mkdir -p prefix
+          echo "  --- gmp 6.2.1 (--disable-assembly: gmp ships per-uarch asm) ---"
+          curl -sSL -o gmp.tar.xz "$GNU/gmp/gmp-6.2.1.tar.xz"
+          mkdir -p gmp && tar xf gmp.tar.xz -C gmp --strip-components=1
+          ( cd gmp
+            ./configure CC="$TCC -B$TCCDIR" --disable-shared --disable-assembly \
+              --prefix="$PWD/../prefix" > conf.log 2>&1
+            echo "    configure rc=$?"
+            timeout 1800 make -j"$(nproc)" > build.log 2>&1
+            echo "    make rc=$?"
+            make install > /dev/null 2>&1 && echo "    INSTALLED" \
+              || { echo "    NOT INSTALLED -- tail:"; tail -8 build.log | sed 's/^/      /'; } )
+
+          for p in mpfr-4.1.0 mpc-1.2.1; do
+            case $p in
+              mpfr*) u="$GNU/mpfr/$p.tar.xz" ;;
+              mpc*)  u="$GNU/mpc/$p.tar.gz"  ;;
+            esac
+            echo "  --- $p ---"
+            curl -sSL -o "$p.tar" "$u"
+            mkdir -p "$p" && tar xf "$p.tar" -C "$p" --strip-components=1 2>/dev/null
+            ( cd "$p"
+              ./configure CC="$TCC -B$TCCDIR" --disable-shared \
+                --with-gmp="$PWD/../prefix" --prefix="$PWD/../prefix" > conf.log 2>&1
+              echo "    configure rc=$?"
+              timeout 1200 make -j"$(nproc)" > build.log 2>&1
+              echo "    make rc=$?"
+              make install > /dev/null 2>&1 && echo "    INSTALLED" \
+                || { echo "    NOT INSTALLED -- tail:"; tail -8 build.log | sed 's/^/      /'; } )
+          done
+          echo "  prefix/lib:"
+          ls prefix/lib 2>/dev/null | sed 's/^/    /' || echo "    (empty)"
+
+      - name: 'CONFIGURE'
+        continue-on-error: true
+        run: |
+          set -u
+          mkdir -p build && cd build
+          set +e
+          # No CXX here, unlike the host-gcc arm. 4.7.4 is C, tcc is a C
+          # compiler, and the -std=gnu++98 workaround that arm needed exists
+          # only because 4.8.5 is built by a modern g++. Nothing in this arm
+          # touches C++.
+          #
+          # --disable-bootstrap: with it on, stage2 would be built by the
+          # stage1 xgcc and tcc's contribution would be discarded.
+          # --enable-languages=c: c,c++ is the follow-on question. If C fails
+          # there is nothing to ask about C++.
+          "../g474/configure" \
+            CC="$TCC -B$TCCDIR" \
+            --build=aarch64-unknown-linux-gnu \
+            --host=aarch64-unknown-linux-gnu \
+            --target=aarch64-unknown-linux-gnu \
+            --prefix="$PWD/../out" --enable-languages=c \
+            --disable-multilib --disable-bootstrap --disable-werror \
+            --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+            --disable-libssp --disable-libatomic --disable-shared \
+            --with-gmp="$PWD/../prefix" \
+            --with-mpfr="$PWD/../prefix" \
+            --with-mpc="$PWD/../prefix" \
+            > conf.log 2>&1
+          rc=$?
+          echo "  configure rc=$rc"
+          echo "CONF_RC=$rc" >> "$GITHUB_ENV"
+          if [ "$rc" -ne 0 ]; then
+            echo "  --- configure tail ---"
+            tail -30 conf.log | sed 's/^/    /'
+            for cl in gcc/config.log config.log; do
+              [ -f "$cl" ] && { echo "  --- $cl (tail) ---"; tail -25 "$cl" | sed 's/^/    /'; break; }
+            done
+          fi
+
+      - name: 'BUILD'
+        continue-on-error: true
+        run: |
+          set -u
+          cd build
+          set +e
+          # MAKEINFO=true: 2026's makeinfo rejects 2012's texinfo and would
+          # report failure over documentation. -Otarget: with -j the output of
+          # parallel compiles interleaves and the first error lands next to
+          # another target's warnings. -k: gather the whole inventory, not the
+          # first stop.
+          timeout 7200 make -k -j"$(nproc)" -Otarget MAKEINFO=true all-gcc > build.log 2>&1
+          rc=$?
+          case "$rc" in
+            0)   echo "  make rc=0 -- completed" ;;
+            124) echo "  make rc=124 -- TIMED OUT after 7200s" ;;
+            *)   echo "  make rc=$rc -- failed" ;;
+          esac
+          echo "BUILD_RC=$rc" >> "$GITHUB_ENV"
+          echo "  build.log: $(wc -l < build.log) lines"
+
+      - name: 'INVENTORY'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          cd build
+          echo "  === what make itself said failed ==="
+          grep -nE '^\s*make(\[[0-9]+\])?: \*\*\* ' build.log | head -10 | sed 's/^/    /'
+          echo
+          echo "  === the first failure, in context ==="
+          n=$(grep -nE '^\s*make(\[[0-9]+\])?: \*\*\* ' build.log | head -1 | cut -d: -f1)
+          if [ -n "${n:-}" ]; then
+            start=$(( n > 40 ? n - 40 : 1 ))
+            sed -n "${start},${n}p" build.log | tail -30 | sed 's/^/    /'
+          else
+            echo "    (make reported no *** failure)"
+          fi
+          echo
+          echo "  === the failing target, rebuilt SERIALLY ==="
+          TGT_OBJ=$(grep -oE '\*\*\* \[[^]:]+:[0-9]+: [^]]+\]' build.log \
+                    | sed 's/.*: //; s/\]//' | grep -vE '^all-|^\.' | head -1)
+          if [ -n "${TGT_OBJ:-}" ]; then
+            echo "    target: $TGT_OBJ"
+            timeout 900 make -j1 MAKEINFO=true "$TGT_OBJ" > serial.log 2>&1
+            src=$?
+            if grep -q "No rule to make target" serial.log; then
+              echo "    (not a top-level target; retrying in gcc/)"
+              timeout 900 make -C gcc -j1 MAKEINFO=true "$TGT_OBJ" > serial.log 2>&1
+              src=$?
+            fi
+            echo "    serial rc=$src"
+            grep -E 'error:|Error ' serial.log | head -15 | sed 's/^/      /'
+            [ -s serial.log ] && tail -15 serial.log | sed 's/^/      /'
+          else
+            echo "    (could not parse a failing target)"
+          fi
+          echo
+          echo "  === compiler ERRORS only (not warnings) ==="
+          grep -oE '\berror: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
+            | sort | uniq -c | sort -rn | head -25 | sed 's/^/    /'
+          echo "    total error lines  : $(grep -cE '\berror:' build.log || true)"
+          echo "    total warning lines: $(grep -cE '\bwarning:' build.log || true)"
+          echo
+          echo "  === WHERE the errors are -- THIS IS THE DIAGNOSIS ==="
+          # config/aarch64 -> the transplant. generic gcc/*.c -> tcc's arm64
+          # codegen, and those same files compiled clean under tcc on x86.
+          # insn-*.c -> generated C the tcc-built generators emitted.
+          grep -oE '^[^ :]+\.(c|h):[0-9]+:[0-9]*:? *error:' build.log \
+            | cut -d: -f1 | sort -u | head -25 | sed 's/^/    /'
+          echo "    distinct files with errors: $(grep -oE '^[^ :]+\.(c|h):[0-9]+:[0-9]*:? *error:' build.log | cut -d: -f1 | sort -u | wc -l)"
+          echo "    of those, in config/aarch64: $(grep -oE '^[^ :]+\.(c|h):[0-9]+:[0-9]*:? *error:' build.log | cut -d: -f1 | sort -u | grep -c 'config/aarch64' || true)"
+          echo "    of those, insn-*.c         : $(grep -oE '^[^ :]+\.(c|h):[0-9]+:[0-9]*:? *error:' build.log | cut -d: -f1 | sort -u | grep -c 'insn-' || true)"
+          echo
+          echo "  === generators (tcc-built, and they turn .md into C) ==="
+          for g in genemit genattrtab genrecog genextract genoutput genpreds; do
+            printf '    %-12s %s\n' "$g" \
+              "$( { [ -x gcc/build/$g ] || [ -x gcc/$g ]; } && echo built || echo 'not built')"
+          done
+          echo "    insn-*.c generated: $(ls gcc/insn-*.c 2>/dev/null | wc -l)"
+          echo
+          echo "  objects built: $(find . -name '*.o' | wc -l)"
+          echo "  cc1          : $( [ -x gcc/cc1 ] && echo BUILT || echo no)"
+          exit 0
+
+      - name: 'THE CLAIM: tcc-built cc1 emits working aarch64'
+        if: always()
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          cd build
+          # A BUILT cc1 IS NOT A WORKING COMPILER, and here that is the whole
+          # risk: tcc miscompiling gcc yields a cc1 that links, runs, and emits
+          # subtly wrong code. Only running its output catches that.
+          [ -x gcc/cc1 ] || { echo "  no cc1 -- nothing to test"; exit 0; }
+          echo "  cc1 size: $(wc -c < gcc/cc1) bytes"
+          echo "    (host-gcc-built was 55,044,256 -- a large difference is worth a look,"
+          echo "     though -g/-O2 defaults alone move this number)"
+          echo
+
+          cat > /tmp/t.c <<'CEOF'
+          int fib(int n) { return n < 2 ? n : fib(n-1) + fib(n-2); }
+          int main(void) { return fib(10); }
+          CEOF
+
+          echo "  --- 1. cc1 emits assembly ---"
+          gcc/cc1 -quiet -O2 /tmp/t.c -o /tmp/t.s 2>&1 | head -5 | sed 's/^/    /'
+          if [ -s /tmp/t.s ]; then
+            echo "    produced $(wc -l < /tmp/t.s) lines"
+            grep -qE '\b(stp|ldp|w[0-9]+|x[0-9]+)\b' /tmp/t.s \
+              && echo "    YES: aarch64 mnemonics/registers present" \
+              || echo "    NO: does not look like aarch64"
+            head -18 /tmp/t.s | sed 's/^/      /'
+          else
+            echo "    cc1 produced no assembly"
+          fi
+          echo
+          echo "  --- 2. assemble, link and RUN it ---"
+          if [ -s /tmp/t.s ]; then
+            as /tmp/t.s -o /tmp/t.o 2>&1 | head -5 | sed 's/^/    /'
+            if [ -f /tmp/t.o ]; then
+              echo "    assembled: $(file /tmp/t.o | cut -d, -f1-2)"
+              gcc /tmp/t.o -o /tmp/t 2>&1 | head -3 | sed 's/^/    /'
+              if [ -x /tmp/t ]; then
+                /tmp/t; rc=$?
+                echo "    ran: exit=$rc (fib(10)=55, so 55 expected)"
+                if [ "$rc" = 55 ]; then
+                  echo
+                  echo "    PASS. A gcc 4.7 carrying 4.8's aarch64 backend,"
+                  echo "          COMPILED BY tcc, produced correct aarch64 code."
+                fi
+              fi
+            fi
+          fi
+          # Trailing exit 0 on purpose. Under `set +e` a step's status is its
+          # last command's, and the aarch64 host-gcc arm reported
+          # "Process completed with exit code 1" purely because its final
+          # `[ -x /tmp/t2 ]` test was false. A passing arm must not read red.
+          exit 0
+
+      - name: 'RESULT'
+        if: always()
+        run: |
+          echo "  tcc source : ${TCC_SOURCE}"
+          echo "  configure  : rc=${CONF_RC:-?}"
+          echo "  build      : rc=${BUILD_RC:-?}"
+          echo "  cc1        : $( [ -x build/gcc/cc1 ] && echo BUILT || echo no)"
+          echo
+          echo "  This arm changes ONE thing against each prior result:"
+          echo "    vs gcc47-aarch64-backport arm C : the compiler (host gcc -> tcc)"
+          echo "    vs tcc-builds-gcc-x86 arm D     : the architecture (x86 -> arm64)"
+          echo
+          echo "  If it failed, the inventory's file list says which layer:"
+          echo "    config/aarch64/*.c -> the transplant"
+          echo "    generic gcc/*.c    -> tcc's arm64 codegen (clean on x86)"
+          echo "    insn-*.c           -> generated C from tcc-built generators"
+          echo
+          echo "  Still open either way: --enable-languages=c only, so g++ 4.7 --"
+          echo "  the reason 4.7 was chosen -- is untested. And all-gcc stops"
+          echo "  before libgcc, so xgcc still cannot link a program."
