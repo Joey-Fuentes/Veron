@@ -460,11 +460,21 @@ jobs:
           # applets. Copy first, list from the installed binary, and let a
           # failure be a failure.
           cp busybox "$S/usr/bin/"
-          n=$( cd "$S/usr/bin" && ./busybox --list | wc -l )
-          [ "$n" -gt 100 ] || { echo "  busybox --list returned $n applets"; exit 1; }
-          ( cd "$S/usr/bin" && for a in $(./busybox --list); do
-              [ -e "$a" ] || ln -sf busybox "$a"; done )
-          echo "  applets linked: $(ls "$S/usr/bin" | wc -l)"
+          # RUN IT INSIDE THE BOX, NOT ON THE HOST. This busybox is linked
+          # against the sysroot's glibc 2.43 and the runner has 2.39, so asking
+          # the host to execute it gives
+          #   version `GLIBC_2.42' not found (required by ./busybox)
+          # That is the isolation working, not a build fault -- and it only
+          # bites in this direction: the period sysroot's glibc 2.19 binaries
+          # run on a newer host quite happily, which is why the same code there
+          # produced 468 applets and this produced 0.
+          #
+          # --install -s is busybox's own symlink farm, so there is no applet
+          # list to parse and nothing to get wrong.
+          S="$S" ./box2.sh /usr/bin/busybox --install -s /usr/bin
+          n=$(ls "$S/usr/bin" | wc -l)
+          echo "  applets linked: $n"
+          [ "$n" -gt 100 ] || { echo "  too few applets -- --install did not run"; exit 1; }
           echo "  busybox: $(file "$S/usr/bin/busybox" | cut -c1-90)"
           cd "$W"
 
