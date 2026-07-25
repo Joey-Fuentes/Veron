@@ -36,6 +36,10 @@ on:
       - '.github/workflows/hermetic-3-period.yml'
   workflow_dispatch:
     inputs:
+      max_rung:
+        description: 'how far up the ladder: 4.7 | 10.4 | 15.2'
+        required: false
+        default: '4.7'
       ucontext_patch:
         description: 'patch ucontext in our 4.7 tree (no = test the prediction)'
         required: false
@@ -100,10 +104,27 @@ jobs:
           mkdir -p "$S/usr"
           ln -sfn tools/lib "$S/lib"
           ln -sfn ../tools/lib "$S/usr/lib"
+          # AND /bin, FOR THE SAME REASON ONE STEP LATER. Everything in this
+          # sysroot lives under /tools, and the box's PATH says so -- but
+          # `#!/bin/sh` does not read PATH. gcc's configure, and every script it
+          # invokes, names /bin/sh literally, so with no /bin the kernel cannot
+          # load the interpreter and the shell reports 127. The experiment ran,
+          # the transplant was fine, and configure returned "command not found"
+          # about itself.
+          ln -sfn tools/bin "$S/bin"
+          ln -sfn ../tools/bin "$S/usr/bin"
+          ln -sfn tools/sbin "$S/sbin" 2>/dev/null || true
           echo "  \$S/lib     -> $(readlink "$S/lib")"
           echo "  \$S/usr/lib -> $(readlink "$S/usr/lib")"
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
           echo "  LFS_TGT: $LFS_TGT   host: $(gcc -dumpmachine)"
+
+      - name: 'Cache the sysroot'
+        id: sysrootcache
+        uses: actions/cache@v4
+        with:
+          path: sysroot
+          key: period-${{ env.BINUTILS }}-${{ env.GCCVER }}-${{ env.GLIBC }}-${{ env.KERNEL }}-v1
 
       - name: 'Fetch (LFS 7.5 versions)'
         run: |
@@ -429,7 +450,9 @@ jobs:
           bash spikes/stage3/probes/backport-aarch64.sh g474 g485 2>&1 | tail -3
           [ "$(grep -c aarch64 g474/gcc/config.gcc)" -gt 0 ] \
             || { echo "  transplant did not take"; exit 1; }
-          cp -r g474 "$S/work/" 2>/dev/null
+          rm -rf "$S/work/g474"
+          cp -r g474 "$S/work/" || { echo "  could not stage the tree"; exit 1; }
+          echo "  staged: $(ls "$S/work/g474/configure" 2>/dev/null || echo 'NO configure')"
           if [ "${{ github.event.inputs.ucontext_patch }}" = "yes" ]; then
             echo "  applying the ucontext patch (prediction NOT under test)"
             sed -i 's/\bstruct ucontext\b/ucontext_t/g' \
@@ -437,23 +460,122 @@ jobs:
           else
             echo "  NOT applying the ucontext patch -- this is the experiment"
           fi
+          echo "  --- does /bin/sh resolve inside the box? ---"
+          S="$S" ./box3.sh /bin/sh -c 'echo "    /bin/sh works: $(uname -m)"' \
+            || { echo "    /bin/sh does not resolve -- shebangs will fail"; exit 1; }
           S="$S" ./box3.sh /tools/bin/sh -c '
             cd /work
             mkdir -p b && cd b
-            /work/g474/configure --prefix=/work/out --enable-languages=c \
+            /work/g474/configure --prefix=/work/out47 --enable-languages=c,c++ \
               --build=aarch64-unknown-linux-gnu --host=aarch64-unknown-linux-gnu \
               --target=aarch64-unknown-linux-gnu --disable-multilib \
               --disable-bootstrap --disable-werror --disable-libsanitizer \
               --disable-libgomp --disable-libquadmath --disable-libssp \
               --disable-libatomic --disable-shared > c.log 2>&1
             echo "configure rc=$?"
-            make -k -j4 MAKEINFO=true > b.log 2>&1
+            make -j4 MAKEINFO=true > b.log 2>&1
             echo "make rc=$?"
             echo "cc1: $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo MISSING)"
+            echo "cc1plus: $( [ -x gcc/cc1plus ] && wc -c < gcc/cc1plus || echo MISSING)"
             echo "libgcc.a: $(find . -name libgcc.a | head -1 || echo NOT-BUILT)"
             grep -E "internal compiler error|error:" b.log | head -5
+            # rung 2 needs this installed, and needs g++ specifically
+            make install > i.log 2>&1; echo "install rc=$?"
+            echo "g++ 4.7: $(/work/out47/bin/g++ --version 2>&1 | head -1)"
           ' 2>&1 | sed 's/^/    /'
           echo
           echo "  VERDICT ON THE PREDICTION:"
           echo "    libgcc.a built -> the ICE was the glibc era, not the transplant"
           echo "    still ICEs     -> the transplant is at fault; run gcc47-libgcc-ice"
+
+      - name: 'Fetch the upper rungs (outside; the box has no network)'
+        if: ${{ github.event.inputs.max_rung == '10.4' || github.event.inputs.max_rung == '15.2' }}
+        run: |
+          set -eu
+          # 10.4.0 IS THE CEILING FOR A C++98 COMPILER, not 10.5. GCC's
+          # prerequisites: "versions prior to 10.5 allow bootstrapping with an
+          # ISO C++98 compiler". So g++ 4.7 reaches 10.4 and no further, which
+          # is the same rung live-bootstrap picked, for the same reason.
+          for v in 10.4.0 15.2.0; do
+            [ "$v" = 15.2.0 ] && [ "${{ github.event.inputs.max_rung }}" != "15.2" ] && continue
+            echo "  gcc-$v"
+            curl -fsSL --retry 3 -O "$GNU/gcc/gcc-$v/gcc-$v.tar.xz"
+            mkdir -p "src-$v" && tar xf "gcc-$v.tar.xz" -C "src-$v" --strip-components=1
+            # gmp/mpfr/mpc in-tree, as LFS does -- no separate prefix to get wrong
+            ( cd "src-$v" && tar xf "$W/gmp-$GMP.tar.xz" && mv "gmp-$GMP" gmp \
+                          && tar xf "$W/mpfr-$MPFR.tar.xz" && mv "mpfr-$MPFR" mpfr \
+                          && tar xf "$W/mpc-$MPC.tar.gz" && mv "mpc-$MPC" mpc )
+            cp -r "src-$v" "$S/work/"
+          done
+
+      - name: 'RUNG 2: g++ 4.7 builds gcc 10.4.0, inside the box'
+        if: ${{ github.event.inputs.max_rung == '10.4' || github.event.inputs.max_rung == '15.2' }}
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # THE RUNG THE WHOLE CHOICE OF 4.7 EXISTS FOR. 4.7 is the last gcc
+          # written in C, so tcc can reach it; its C++ front end is built FROM
+          # that C, and the g++ it yields is what carries the chain upward.
+          # Nothing above this point involves tcc at all -- by here it is long
+          # gone, which is why this rung is testable without it.
+          S="$S" ./box3.sh /tools/bin/sh -c '
+            export PATH=/work/out47/bin:$PATH
+            gxx=$(command -v g++ || echo NONE)
+            echo "compiler for this rung: $gxx"
+            g++ --version 2>&1 | head -1
+            mkdir -p /work/b104 && cd /work/b104
+            /work/src-10.4.0/configure --prefix=/work/out104 \
+              --enable-languages=c,c++ --disable-multilib --disable-bootstrap \
+              --disable-libsanitizer --disable-libvtv --disable-libgomp \
+              --disable-libquadmath --disable-werror > c.log 2>&1
+            echo "configure rc=$?"
+            tail -3 c.log
+            make -j4 MAKEINFO=true > b.log 2>&1
+            echo "make rc=$?"
+            grep -E "error:|Error [0-9]" b.log | head -6
+            make install > i.log 2>&1; echo "install rc=$?"
+            /work/out104/bin/gcc --version 2>&1 | head -1
+          ' 2>&1 | sed 's/^/    /'
+
+      - name: 'RUNG 3: gcc 10.4.0 builds gcc 15.2.0, inside the box'
+        if: ${{ github.event.inputs.max_rung == '15.2' }}
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # 10.4 provides C++14, which is what gcc 15 requires ("versions prior
+          # to 15 allow bootstrapping with an ISO C++11 compiler"; 5.4+ has the
+          # C++14 gcc 15 needs). The open question is not the compiler but the
+          # LIBC: this box is glibc 2.19, and a 2026 libstdc++ may want more
+          # than a 2014 libc provides. That is the thing this rung measures.
+          S="$S" ./box3.sh /tools/bin/sh -c '
+            export PATH=/work/out104/bin:$PATH
+            gcc --version 2>&1 | head -1
+            mkdir -p /work/b152 && cd /work/b152
+            /work/src-15.2.0/configure --prefix=/work/out152 \
+              --enable-languages=c,c++ --disable-multilib --disable-bootstrap \
+              --disable-libsanitizer --disable-libvtv --disable-libgomp \
+              --disable-libquadmath --disable-werror > c.log 2>&1
+            echo "configure rc=$?"
+            tail -5 c.log
+            make -j4 MAKEINFO=true > b.log 2>&1
+            echo "make rc=$?"
+            grep -E "error:|Error [0-9]" b.log | head -8
+            make install > i.log 2>&1; echo "install rc=$?"
+            /work/out152/bin/gcc --version 2>&1 | head -1
+          ' 2>&1 | sed 's/^/    /'
+
+      - name: 'LADDER SUMMARY'
+        if: always()
+        run: |
+          echo "  rung 1  gcc 4.7.4 + aarch64 backend   (stands in for tcc's output)"
+          echo "  rung 2  g++ 4.7 -> gcc 10.4.0         C++98 ceiling, per GCC's own docs"
+          echo "  rung 3  gcc 10.4.0 -> gcc 15.2.0      C++14, which 10.4 has"
+          echo
+          echo "  Everything above rung 1 is independent of tcc: by then it has"
+          echo "  produced 4.7 and dropped out of the chain. What this spike"
+          echo "  cannot tell us is whether glibc 2.19 is enough for a 2026"
+          echo "  libstdc++ -- if rung 3 fails on the libc rather than the"
+          echo "  compiler, the answer is a glibc rebuild partway up, which is"
+          echo "  what LFS chapter 8 does anyway."
