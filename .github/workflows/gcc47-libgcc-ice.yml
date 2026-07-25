@@ -1,0 +1,295 @@
+name: gcc47-libgcc-ice
+
+# THE ICE THAT BLOCKS THE gcc LEG
+#
+#   g474/libgcc/unwind-dw2.c: In function 'uw_init_context_1':
+#   g474/libgcc/unwind-dw2.c:1490:44: internal compiler error: Segmentation fault
+#
+# 104 libgcc objects compile, then the backported compiler segfaults. No
+# libgcc.a means xgcc cannot link, which means: no stage 2, no fixpoint without
+# borrowing gcc 13's runtime, no g++ 4.7, and no rung above. Three separate
+# results are queued behind this one file.
+#
+# WHAT IS ALREADY KNOWN, so this spike does not re-measure it:
+#   - It is NOT tcc. The ICE reproduces identically under the host gcc 13 and
+#     under our tcc -- same file, same line 1490, same column 44, after the same
+#     104 objects. Two compilers agreeing on where to crash means the fault is
+#     in the source they both compiled, and that source is the transplant.
+#   - It is a SEGFAULT, not an assertion. gcc 4.7 is full of gcc_assert and
+#     internal_error; reaching neither and taking SIGSEGV points at an
+#     out-of-bounds access rather than a check the middle-end knows how to make.
+#
+# WHERE uw_init_context_1 SITS, and why the transplant is the suspect. That
+# function is almost entirely target-driven builtins --
+# __builtin_dwarf_cfa, __builtin_init_dwarf_reg_size_table,
+# __builtin_unwind_init, __builtin_extract_return_addr. Expanding the second
+# walks the TARGET's description of its DWARF frame registers:
+# DWARF_FRAME_REGISTERS, DWARF_FRAME_REGNUM, the return-column macros. A 4.8
+# backend describing its registers one way, against a 4.7 middle-end sizing an
+# array another way, writes past the end of that array. That is a hypothesis
+# with a named mechanism, not a diagnosis, and this spike exists to replace it
+# with a backtrace.
+#
+# WHAT THIS RUN PRODUCES, cheapest first:
+#
+#   1. THE CONTROL NOBODY HAS READ. Arm A of hermetic-1-sandbox -- vanilla
+#      4.8.5, native aarch64 backend, no transplant -- also failed to build
+#      libgcc, at 129 objects, and its error was never captured because the grep
+#      matched nothing. Until that message exists, "the transplant is at fault"
+#      is unsupported: 4.8.5 failing the same way would mean the cause is the
+#      environment, not the backport. This runs it and prints it.
+#
+#   2. A STANDALONE REPRODUCER. Preprocess unwind-dw2.c with libgcc's own flags
+#      and check the ICE survives on the .i. A self-contained file that crashes
+#      the compiler can be shrunk, attached to a report, and re-tested in
+#      seconds instead of after a 20-minute libgcc build.
+#
+#   3. A BACKTRACE. cc1 is rebuilt with -g for this -- the sandboxed arms use
+#      CFLAGS=-O2 with no debug info, so gdb currently has nothing to say. The
+#      frame that faults names the pass, and the pass names the fix.
+#
+#   4. A FLAG BISECT. -O0/-O1/-O2, -fexceptions on and off, -g on and off. If it
+#      survives -O0 the fault is in an optimiser; if it needs -fexceptions the
+#      unwinder path is implicated directly.
+#
+#   5. THE REWRITE LOG. tools/port_gcc47_api.py changed 24 call sites and 22 of
+#      them are plus_constant losing its leading mode argument. Prologue and CFA
+#      code is exactly where those live, so the rewritten sites in
+#      aarch64.c are printed next to 4.8.5's originals.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/gcc47-libgcc-ice.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: gcc47-libgcc-ice-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GNU: 'https://mirrors.kernel.org/gnu'
+  GNU2: 'https://ftpmirror.gnu.org'
+  SHA474: '92e61c6dc3a0a449e62d72a38185fda550168a86702dea07125ebd3ec3996282'
+  SHA485: '22fb1e7e0f68a63cee631d85b20461d1ea6bda162f03096350e38c8d427ecf23'
+
+jobs:
+  ice:
+    name: 'diagnose unwind-dw2.c:1490'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl git bzip2 xz-utils gcc g++ make bison flex texinfo m4 perl \
+            file binutils gdb python3
+
+      - name: 'Fetch gcc and transplant'
+        run: |
+          set -eu
+          F=spikes/stage3/probes/fetch-pinned.sh
+          bash "$F" g474 "$HOME/.cache/veron/gcc-4.7.4.tar.bz2" "$SHA474" \
+            "$GNU/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2 $GNU2/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2" "" "" | sed 's/^/  /'
+          bash "$F" g485 "$HOME/.cache/veron/gcc-4.8.5.tar.bz2" "$SHA485" \
+            "$GNU/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2 $GNU2/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2" "" "" | sed 's/^/  /'
+          # Keep a pristine copy of the 4.8.5 backend for the diff in step 5.
+          cp -a g485/gcc/config/aarch64 pristine-aarch64
+          bash spikes/stage3/probes/backport-aarch64.sh g474 g485 2>&1 | tee transplant.log | tail -6
+          echo "W=$PWD" >> "$GITHUB_ENV"
+
+      - name: 'Prerequisites'
+        run: |
+          set -eu
+          mkdir -p prefix
+          curl -sSL -o gmp.tar.xz "$GNU/gmp/gmp-6.2.1.tar.xz"
+          mkdir -p gmp && tar xf gmp.tar.xz -C gmp --strip-components=1
+          ( cd gmp && ./configure --disable-shared --disable-assembly \
+              --prefix="$W/prefix" > c.log 2>&1 && make -j"$(nproc)" > b.log 2>&1 \
+            && make install > /dev/null 2>&1 ) && echo "  gmp ok"
+          for p in mpfr-4.1.0 mpc-1.2.1; do
+            case $p in mpfr*) u="$GNU/mpfr/$p.tar.xz" ;; mpc*) u="$GNU/mpc/$p.tar.gz" ;; esac
+            curl -sSL -o "$p.tar" "$u"; mkdir -p "$p"
+            tar xf "$p.tar" -C "$p" --strip-components=1 2>/dev/null
+            ( cd "$p" && ./configure --disable-shared --with-gmp="$W/prefix" \
+                --prefix="$W/prefix" > c.log 2>&1 && make -j"$(nproc)" > b.log 2>&1 \
+              && make install > /dev/null 2>&1 ) && echo "  $p ok"
+          done
+
+      - name: 'Build BOTH compilers, with -g so gdb has something to say'
+        run: |
+          set -eu
+          # The sandboxed arms build with CFLAGS=-O2 and no -g, which is right
+          # for comparing binaries and useless for debugging one. -g here.
+          for pair in "g474 c474" "g485 c485"; do
+            set -- $pair
+            src=$1; out=$2
+            echo "  ===== $src ====="
+            mkdir -p "$out" && cd "$out"
+            "$W/$src/configure" CFLAGS="-g -O2" CXX="g++ -std=gnu++98" \
+              --build=aarch64-unknown-linux-gnu --host=aarch64-unknown-linux-gnu \
+              --target=aarch64-unknown-linux-gnu \
+              --prefix="$W/out-$out" --enable-languages=c \
+              --disable-multilib --disable-bootstrap --disable-werror \
+              --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+              --disable-libssp --disable-libatomic --disable-shared \
+              --with-gmp="$W/prefix" --with-mpfr="$W/prefix" --with-mpc="$W/prefix" \
+              > conf.log 2>&1 || { tail -20 conf.log; exit 1; }
+            timeout 7200 make -j"$(nproc)" -Otarget MAKEINFO=true all-gcc > build.log 2>&1 || true
+            echo "    cc1: $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo MISSING)"
+            cd "$W"
+          done
+
+      - name: '1. THE CONTROL: does vanilla 4.8.5 build its own libgcc?'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # This is the question that decides whether the transplant is the
+          # suspect at all, and it has been sitting unanswered because a grep
+          # matched nothing. Print whatever it says, in full.
+          cd "$W/c485"
+          timeout 3600 make -k -j"$(nproc)" MAKEINFO=true all-target-libgcc > libgcc.log 2>&1
+          echo "  make rc=$?"
+          echo "  objects: $(find . -path '*libgcc*' -name '*.o' | wc -l)"
+          echo "  libgcc.a: $(find . -name libgcc.a | head -1 || echo 'NOT BUILT')"
+          echo "  --- every error, whatever kind ---"
+          grep -nE 'internal compiler error|error:|Error [0-9]|fatal|\*\*\*' libgcc.log \
+            | head -20 | sed 's/^/    /'
+          echo
+          echo "  VERDICT:"
+          if find . -name libgcc.a | grep -q .; then
+            echo "    4.8.5 BUILDS libgcc here. The environment is fine and the"
+            echo "    transplant is the suspect."
+          elif grep -q 'unwind-dw2.c.*internal compiler error' libgcc.log; then
+            echo "    4.8.5 FAILS THE SAME WAY. This is NOT the transplant --"
+            echo "    it is 4.8's aarch64 backend, or this environment, and the"
+            echo "    whole line of enquiry changes."
+          else
+            echo "    4.8.5 fails DIFFERENTLY. Read the errors above before"
+            echo "    assuming either story."
+          fi
+
+      - name: '2. A standalone reproducer'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          cd "$W/c474"
+          # Run libgcc far enough to fail, then lift the EXACT command line the
+          # build used. Reconstructing those flags by hand is how the earlier
+          # attempt ended up with "libgcc_tm.h: No such file or directory" and
+          # measured nothing.
+          timeout 3600 make -k -j"$(nproc)" MAKEINFO=true all-target-libgcc > libgcc.log 2>&1
+          echo "  make rc=$?  objects: $(find . -path '*libgcc*' -name '*.o' | wc -l)"
+          CMD=$(grep -oE '[^ ]*xgcc [^&|]*unwind-dw2\.c' libgcc.log | tail -1)
+          if [ -z "$CMD" ]; then
+            echo "  could not lift the compile line; showing what libgcc said:"
+            grep -nE 'unwind-dw2|internal compiler error' libgcc.log | head -10 | sed 's/^/    /'
+            exit 0
+          fi
+          echo "  --- the failing command ---"
+          echo "$CMD" | fold -w 110 | sed 's/^/    /'
+          echo "$CMD" > "$W/ice-cmd.txt"
+
+          echo
+          echo "  --- reproduce it ---"
+          eval "$CMD" 2>&1 | head -6 | sed 's/^/    /'
+
+          echo
+          echo "  --- preprocess to a standalone .i ---"
+          PP=$(printf '%s' "$CMD" | sed 's/ -o [^ ]*//; s/ -c / -E /; s/ -MT [^ ]*//; s/ -MD//; s/ -MP//; s/ -MF [^ ]*//')
+          eval "$PP" > "$W/unwind-dw2.i" 2>/dev/null
+          echo "    $(wc -l < "$W/unwind-dw2.i") lines"
+          # Does the ICE survive preprocessing? If it does we have a file that
+          # can be shrunk and attached; if it does not, the trigger involves the
+          # include path rather than the code.
+          CC1=$(grep -oE '^[^ ]*xgcc' "$W/ice-cmd.txt" | head -1)
+          echo "    recompiling the .i:"
+          $CC1 -S -O2 -fexceptions -fPIC "$W/unwind-dw2.i" -o /tmp/uw.s 2>&1 \
+            | head -4 | sed 's/^/      /'
+          [ -s /tmp/uw.s ] && echo "      NO ICE on the .i -- the trigger is not in the code alone" \
+                           || echo "      ICE REPRODUCES on the standalone .i"
+
+      - name: '3. The backtrace'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          cd "$W/c474"
+          [ -s "$W/ice-cmd.txt" ] || { echo "  no reproducer command"; exit 0; }
+          CMD=$(cat "$W/ice-cmd.txt")
+          # Ask the driver for the real cc1 invocation rather than guessing it.
+          CC1LINE=$(eval "${CMD} -v" 2>&1 | grep -oE '[^ ]*cc1 .*' | tail -1)
+          if [ -z "$CC1LINE" ]; then
+            echo "  could not extract the cc1 line; running the driver under gdb instead"
+            CC1LINE=$CMD
+          fi
+          echo "  --- cc1 invocation ---"
+          echo "$CC1LINE" | fold -w 110 | sed 's/^/    /'
+          echo
+          echo "  --- backtrace ---"
+          # shellcheck disable=SC2086
+          gdb --batch -ex run -ex 'bt 30' -ex 'info registers pc' \
+              --args $CC1LINE 2>&1 | tail -45 | sed 's/^/    /'
+
+      - name: '4. Which flag brings it on?'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          cd "$W/c474"
+          [ -s "$W/unwind-dw2.i" ] || { echo "  no .i to test"; exit 0; }
+          CC1=$(grep -oE '^[^ ]*xgcc' "$W/ice-cmd.txt" | head -1)
+          [ -n "$CC1" ] || { echo "  no compiler"; exit 0; }
+          # A pass that only crashes at -O2 is a different bug from one that
+          # crashes at -O0, and -fexceptions is what pulls in the unwinder.
+          for f in "-O0" "-O1" "-O2" "-O2 -fexceptions" "-O0 -fexceptions" \
+                   "-O2 -fexceptions -fPIC" "-O2 -g -fexceptions"; do
+            rm -f /tmp/x.s
+            out=$($CC1 -S $f "$W/unwind-dw2.i" -o /tmp/x.s 2>&1 | head -1)
+            if [ -s /tmp/x.s ]; then
+              printf '    %-28s ok\n' "$f"
+            else
+              printf '    %-28s ICE   %s\n' "$f" "$(printf '%s' "$out" | cut -c1-60)"
+            fi
+          done
+
+      - name: '5. What the transplant rewrote near the prologue'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          echo "  --- what port_gcc47_api.py changed ---"
+          grep -iE 'plus_constant|assign_stack_temp|is_leaf|rewrote|call site' \
+            "$W/transplant.log" | head -25 | sed 's/^/    /'
+          echo
+          echo "  --- rewritten sites in aarch64.c vs 4.8.5's originals ---"
+          # 22 of the 24 rewrites are plus_constant losing its leading mode
+          # argument, and prologue/CFA code is where those live.
+          diff -u "$W/pristine-aarch64/aarch64.c" "$W/g474/gcc/config/aarch64/aarch64.c" \
+            > "$W/aarch64-c.diff" 2>&1
+          echo "    total diff lines: $(wc -l < "$W/aarch64-c.diff")"
+          echo "    hunks touching prologue/CFA/frame:"
+          grep -nE '^@@|prologue|cfa|frame_|RTX_FRAME_RELATED' "$W/aarch64-c.diff" \
+            | grep -iE 'prologue|cfa|frame' | head -15 | sed 's/^/      /'
+          echo
+          echo "  --- unwind-dw2.c around the fault ---"
+          sed -n '1470,1500p' "$W/g474/libgcc/unwind-dw2.c" | cat -n \
+            | awk '{printf "    %d\t%s\n", $1+1469, substr($0, index($0,$2))}' | head -32
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ice-evidence
+          path: |
+            unwind-dw2.i
+            ice-cmd.txt
+            aarch64-c.diff
+            transplant.log
+            c474/libgcc.log
+            c485/libgcc.log
+          if-no-files-found: warn
