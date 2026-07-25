@@ -96,14 +96,22 @@ env:
   GCCVER: '15.2.0'
   GLIBC: '2.43'
   KERNEL: '6.18.10'
-  GMP: '6.3.0'
-  MPFR: '4.2.2'
-  MPC: '1.3.1'
+  GMP_VER: '6.3.0'
+  MPFR_VER: '4.2.2'
+  MPC_VER: '1.3.1'
   KVER: '7.1.5'
-  M4: '1.4.20'
-  BISON: '3.8.2'
-  FLEX: '2.6.4'
-  PERL: '5.42.0'
+  # *_VER, NOT THE BARE NAMES. M4, BISON, FLEX and PERL are the variables
+  # autoconf uses to OVERRIDE THE PROGRAMS, so setting FLEX=2.6.4 in the job
+  # environment told every configure in the tree that flex lives at "2.6.4".
+  # binutils pass 1 -- the first build in the workflow, nowhere near the kernel
+  # steps that introduced these -- died on
+  #   checking lex output file root... cannot find output from flex; giving up
+  # A version string in a variable a build system already owns does not look
+  # like a mistake anywhere except at the failure.
+  M4_VER: '1.4.20'
+  BISON_VER: '3.8.2'
+  FLEX_VER: '2.6.4'
+  PERL_VER: '5.42.0'
 
 jobs:
   sysroot:
@@ -170,9 +178,9 @@ jobs:
           get "$GNU/binutils/binutils-$BINUTILS.tar.xz"
           get "$GNU/gcc/gcc-$GCCVER/gcc-$GCCVER.tar.xz"
           get "$GNU/glibc/glibc-$GLIBC.tar.xz"
-          get "$GNU/gmp/gmp-$GMP.tar.xz"
-          get "$GNU/mpfr/mpfr-$MPFR.tar.xz"
-          get "$GNU/mpc/mpc-$MPC.tar.gz"
+          get "$GNU/gmp/gmp-$GMP_VER.tar.xz"
+          get "$GNU/mpfr/mpfr-$MPFR_VER.tar.xz"
+          get "$GNU/mpc/mpc-$MPC_VER.tar.gz"
           get "$GNU/make/make-4.4.1.tar.gz"
           get "https://busybox.net/downloads/busybox-1.36.1.tar.bz2"
           # v6.x vs v7.x: the directory follows the version, and the dev book
@@ -206,9 +214,9 @@ jobs:
           # LFS extracts gmp/mpfr/mpc INTO the gcc tree so they are built
           # in-tree. That is simpler and more reliable than a separate prefix,
           # and it is what the book does.
-          tar xf "../gmp-$GMP.tar.xz"   && mv "gmp-$GMP" gmp
-          tar xf "../mpfr-$MPFR.tar.xz" && mv "mpfr-$MPFR" mpfr
-          tar xf "../mpc-$MPC.tar.gz"   && mv "mpc-$MPC" mpc
+          tar xf "../gmp-$GMP_VER.tar.xz"   && mv "gmp-$GMP_VER" gmp
+          tar xf "../mpfr-$MPFR_VER.tar.xz" && mv "mpfr-$MPFR_VER" mpfr
+          tar xf "../mpc-$MPC_VER.tar.gz"   && mv "mpc-$MPC_VER" mpc
           cd "$W"
           mkdir -p b-gcc1 && cd b-gcc1
           # --without-headers/--with-newlib: there is no libc yet. c,c++ because
@@ -624,14 +632,14 @@ jobs:
           # by flex and bison, and the kernel's scripts want perl. None of the
           # three are in the sysroot, and pretending otherwise would just move
           # the failure later. m4 comes first because bison and flex need it.
-          for u in "$GNU/m4/m4-$M4.tar.xz" \
-                   "$GNU/bison/bison-$BISON.tar.xz" \
-                   "https://github.com/westes/flex/releases/download/v$FLEX/flex-$FLEX.tar.gz" \
-                   "https://www.cpan.org/src/5.0/perl-$PERL.tar.xz" \
+          for u in "$GNU/m4/m4-$M4_VER.tar.xz" \
+                   "$GNU/bison/bison-$BISON_VER.tar.xz" \
+                   "https://github.com/westes/flex/releases/download/v$FLEX_VER/flex-$FLEX_VER.tar.gz" \
+                   "https://www.cpan.org/src/5.0/perl-$PERL_VER.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KVER%%.*}.x/linux-$KVER.tar.xz"; do
             echo "  $(basename "$u")"; curl -fsSL --retry 3 -O "$u"
           done
-          for t in m4-$M4 bison-$BISON flex-$FLEX perl-$PERL linux-$KVER; do
+          for t in m4-$M4_VER bison-$BISON_VER flex-$FLEX_VER perl-$PERL_VER linux-$KVER; do
             d="$S/work/$t"; mkdir -p "$d"
             tar xf "$(ls ${t}.tar.*)" -C "$d" --strip-components=1
           done
@@ -646,7 +654,7 @@ jobs:
           # sysroot can produce software rather than merely run it.
           S="$S" ./box2.sh /bin/sh -c '
             set -e
-            for p in m4-'"$M4"' bison-'"$BISON"' flex-'"$FLEX"'; do
+            for p in m4-'"$M4_VER"' bison-'"$BISON_VER"' flex-'"$FLEX_VER"'; do
               echo "=== $p ==="
               cd /work/$p
               ./configure --prefix=/usr > c.log 2>&1 || { tail -8 c.log; exit 1; }
@@ -655,7 +663,7 @@ jobs:
               echo "  installed"
             done
             echo "=== perl ==="
-            cd /work/perl-'"$PERL"'
+            cd /work/perl-'"$PERL_VER"'
             ./Configure -des -Dprefix=/usr -Dcc=gcc > c.log 2>&1 || { tail -12 c.log; exit 1; }
             make -j4 > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -5; exit 1; }
             make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
