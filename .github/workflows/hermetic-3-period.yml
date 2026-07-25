@@ -244,6 +244,10 @@ jobs:
           done
           [ -z "${bad:-}" ] || { echo "  arch headers absent -- glibc cannot build"; exit 1; }
 
+      # MAKEINFO=true BELONGS ON THE INSTALL, NOT ONLY THE BUILD. glibc's
+      # `make install` builds manual/libc.info, and 2026's texinfo ABORTS on
+      # 2014's manual -- make reported Error 134, which is 128+SIGABRT. The
+      # library itself had compiled cleanly; documentation stopped the install.
       - name: '5.7 glibc 2.19 (the period libc -- no ucontext rename)'
         run: |
           set -eu
@@ -293,7 +297,7 @@ jobs:
               exit 1 ;;
           esac
           make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -30 b.log | sed "s/^/    /"; exit 1; }
-          make DESTDIR="$S" install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
+          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           echo "  loader: $(ls "$S"/tools/lib/ld-linux-* 2>/dev/null || echo MISSING)"
           # The period claim, stated as a check: does struct ucontext exist?
           echo "  --- struct ucontext in glibc $GLIBC ---"

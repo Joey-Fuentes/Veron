@@ -319,6 +319,11 @@ jobs:
           # first, disable second, and then VERIFY, because a sed that matches
           # nothing is silent.
           yes '' | make oldconfig > /dev/null 2>&1
+          # -D_GNU_SOURCE is the direct fix for the LONG_BIT failure: glibc
+          # defines LONG_BIT in bits/xopen_lim.h, included from limits.h only
+          # when __USE_XOPEN is set, and _GNU_SOURCE implies _XOPEN_SOURCE 700.
+          # Disabling the applet was the indirect fix and it did not land.
+          #
           # glibc guards LONG_BIT behind __USE_XOPEN, and BusyBox 1.36.1's
           # tls_aesgcm.c reaches for it without the feature macro:
           #   networking/tls_aesgcm.c:78: error: 'LONG_BIT' undeclared
@@ -328,6 +333,13 @@ jobs:
           for sym in CONFIG_TC CONFIG_TLS CONFIG_FEATURE_WGET_HTTPS; do
             sed -i "s/^$sym=y/# $sym is not set/" .config
           done
+          # THE CHECK BELOW PASSED VACUOUSLY LAST RUN. `grep -q "^CONFIG_TLS=y"`
+          # found nothing, reported "off", and BusyBox compiled tls_aesgcm.c
+          # regardless -- so the symbol that gates that file is not the one we
+          # were disabling. Print what is actually set rather than asserting
+          # about names we guessed.
+          echo "  TLS-related config, as it really is:"
+          grep -iE '^(#? ?CONFIG_)?[A-Z_]*(TLS|SSL|HTTPS)' .config | head -8 | sed 's/^/    /'
           echo "  disabled applets:"
           for sym in CONFIG_TC CONFIG_TLS CONFIG_FEATURE_WGET_HTTPS; do
             if grep -q "^$sym=y" .config; then
@@ -342,7 +354,7 @@ jobs:
           # substitution for those seventeen packages, so it is the one thing
           # here that nobody has tested against this compiler. Demote them.
           make -j"$(nproc)" CROSS_COMPILE="$LFS_TGT-" \
-            EXTRA_CFLAGS="-Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=int-conversion" \
+            EXTRA_CFLAGS="-D_GNU_SOURCE -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=int-conversion" \
             > b.log 2>&1 || {
               # RUN 4 PRINTED `tail -20` AND IT CONTAINED NO ERROR AT ALL --
               # with -j4 the last lines of the log are whatever finished last,
