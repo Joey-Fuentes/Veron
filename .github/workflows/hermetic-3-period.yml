@@ -396,7 +396,7 @@ jobs:
           EOS
           chmod +x box3.sh
           echo "  sysroot: $(du -sh "$S" | cut -f1)"
-          for c in "/tools/bin/sh -c echo_alive" "/tools/bin/gcc --version" \
+          for c in "/tools/bin/sh -c true" "/tools/bin/gcc --version" \
                    "/tools/bin/as --version" "/tools/bin/make --version"; do
             set -- $c
             printf '  %-14s %s\n' "$(basename "$1")" \
@@ -408,7 +408,28 @@ jobs:
         run: |
           set -u
           set +e
-          cp -r g474 g485 spikes tools "$S/work/" 2>/dev/null
+          # THE TRANSPLANT RUNS OUTSIDE THE BOX, AND THAT IS A FINDING, NOT A
+          # CONVENIENCE. backport-aarch64.sh shells out to python3 for
+          # expand_int_iterators.py and port_gcc47_api.py, and the sysroot has
+          # no python -- so run 1 of this experiment died at
+          #   backport-aarch64.sh: line 72: python3: not found
+          #
+          # That is worth recording against the real chain: a bootstrap has no
+          # python until very late, so two of the three transplant deltas are
+          # currently expressed in a language that does not exist where they
+          # would need to run. Rewriting them, or freezing their output as
+          # reviewed patch files, is the eventual answer (audit criterion 4).
+          #
+          # For THIS experiment it does not weaken the claim. The transplant is
+          # a source-to-source edit whose output is text that can be diffed and
+          # reviewed; the question under test is whether the resulting compiler
+          # builds libgcc against a period glibc, and that build still happens
+          # entirely inside the box.
+          echo "  --- transplant, on the host (see comment) ---"
+          bash spikes/stage3/probes/backport-aarch64.sh g474 g485 2>&1 | tail -3
+          [ "$(grep -c aarch64 g474/gcc/config.gcc)" -gt 0 ] \
+            || { echo "  transplant did not take"; exit 1; }
+          cp -r g474 "$S/work/" 2>/dev/null
           if [ "${{ github.event.inputs.ucontext_patch }}" = "yes" ]; then
             echo "  applying the ucontext patch (prediction NOT under test)"
             sed -i 's/\bstruct ucontext\b/ucontext_t/g' \
@@ -418,7 +439,6 @@ jobs:
           fi
           S="$S" ./box3.sh /tools/bin/sh -c '
             cd /work
-            sh spikes/stage3/probes/backport-aarch64.sh g474 g485 2>&1 | tail -3
             mkdir -p b && cd b
             /work/g474/configure --prefix=/work/out --enable-languages=c \
               --build=aarch64-unknown-linux-gnu --host=aarch64-unknown-linux-gnu \
