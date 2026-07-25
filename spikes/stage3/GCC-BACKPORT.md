@@ -1,7 +1,8 @@
 # gcc 4.7 + gcc 4.8's aarch64 backend — the entry point to the gcc leg
 
-**Status: the compiler builds and produces correct aarch64 code, and tcc builds
-it. 2026-07-25.**
+**Status: the compiler builds under both gcc and tcc, produces correct aarch64
+code, and shows no miscompilation across 349 translation units. libgcc does not
+build. 2026-07-25.**
 
 ```
                       host gcc 13        OUR arm64 tcc
@@ -195,17 +196,86 @@ three API adaptations and the `config.gcc` splice are all compiler-agnostic —
 which is what you would expect of a delta that is dialect and signatures rather
 than code, but it was not guaranteed.
 
-**Two independently built cc1 binaries emit the same code.** The host-gcc-built
-cc1 (55,044,256 B) and the tcc-built one (80,016,473 B) each produced 44 lines
-from the same input, identical across every line captured in both logs. That is
-diverse double compilation in miniature — two unrelated compilers, one source,
-one output — and it is the strongest correctness signal here, because a cc1 that
-merely *links* proves nothing about whether tcc miscompiled it. The size gap is
-tcc's lack of an optimiser, not a difference in the compiler's behaviour.
+## Not miscompiled — measured
 
-It is not yet a *proof*: the two `.s` files were produced in different jobs and
-have never been byte-compared in one place. Doing that is cheap and is the
-obvious next gate.
+A `cc1` that links and returns 55 from `fib(10)` has exercised a conditional, a
+subtraction and a recursive call. A `cc1` miscompiled in register allocation, or
+in a mode that toy never reaches, passes that test unchanged. Running is not
+being right.
+
+`.github/workflows/tcc-gcc-miscompile-check.yml` asks the diagnostic question
+instead. `cc1` is deterministic, so two compilers built from one source by two
+unrelated compilers must **behave** identically — their own bytes differ and
+should. Both are pointed at a corpus that needs no inventing, gcc's own source,
+with the build system supplying every flag.
+
+```
+gate 0   the comparison can fail (-O2 vs -O1)          ok
+gate 1a  the generators reproduce (regenerate in tree) 7 of 7
+gate 1b  generated sources, H vs T                     7 of 21 differ
+gate 1c  pattern set                                   T is a superset
+gate 2   gcc's own translation units                   333 of 333 IDENTICAL
+gate 3   libgcc's translation units                    16 of 16 IDENTICAL
+```
+
+**Given identical input, the two compilers emit identical assembly for all 349
+translation units.** No miscompilation.
+
+`-S` rather than object files, and both compilers run from one directory. Both
+choices were paid for: comparing `.o` across two build trees reported 87 of 87
+libgcc objects differing, which is not a miscompilation signature but the build
+path in `DW_AT_comp_dir`; and letting each compiler read its own generated
+headers reported 233 of 333 translation units differing, because the flags begin
+`-I. -I.` Assembly text carries no build path, and one working directory means
+the compiler binary is the only variable.
+
+### The generated sources differ, and why that is not a defect
+
+Seven generated files differ between the trees, and gate 1c names the cause in
+one line of `insn-codes.h`:
+
+```
+H:  #define CODE_FOR_loadwb_pairsi_si CODE_FOR_nothing
+T:          CODE_FOR_loadwb_pairsi_si = <a real number>
+```
+
+`CODE_FOR_nothing` is how gcc records a pattern **dropped** because its condition
+is constant-false at compile time. The host-gcc tree proved four false and
+deleted them; the tcc tree did not:
+
+| | dropped | live |
+|---|---|---|
+| H (host gcc) | 5 | 2078 |
+| T (tcc) | 1 | 2082 |
+
+The four are `loadwb_pair{si,di}_si` and `storewb_pair{si,di}_si`. Every insn
+code after them shifts by four — `case 603` → `case 607`, `output_51` →
+`output_55`, `gen_split_1872` → `gen_split_1876` — so six files change without a
+single instruction changing.
+
+**A third tcc capability gap, in the same family as the other two.** gcc's
+`genconditions` writes `gencondmd.c`, which folds insn conditions at compile
+time, and takes that path only when the compiler building it is GCC. Built by
+anything else, nothing is known false and nothing is dropped. It joins the
+missing dead-code elimination in `TCC-USERLAND.md` — and like it, the fallback is
+the safe direction: the extra patterns carry conditions that are false at run
+time too, so they never match.
+
+**The direction is what matters, and it is checked rather than assumed.** T
+dropping a pattern H kept would be a compiler that cannot emit an instruction.
+Gate 1c reports zero in that direction, and gates 2 and 3 are what turn the
+argument into a measurement.
+
+### They agree in failure too
+
+Both trees fail to build libgcc, at the same file, the same line, the same
+column, after the same 104 objects:
+
+```
+g474/libgcc/unwind-dw2.c:1490:44: internal compiler error: Segmentation fault
+```
+
+Agreement in failure is still agreement. It is also a real bug — see below.
 
 ## What this does NOT show
 
@@ -213,16 +283,30 @@ obvious next gate.
   runtime, so `gcc/xgcc` cannot link a program: `cannot find crtbegin.o`,
   `cannot find -lgcc`. `cc1` is exercised directly instead — emit assembly,
   assemble with the system `as`, link, run. A full `make` is the next step.
+- **THE BACKPORTED COMPILER ICEs, AND libgcc CANNOT BE BUILT.**
+
+  ```
+  g474/libgcc/unwind-dw2.c: In function 'uw_init_context_1':
+  g474/libgcc/unwind-dw2.c:1490:44: internal compiler error: Segmentation fault
+  ```
+
+  104 libgcc objects compile, then this. Reproduced under **both** compilers,
+  identically, so tcc is not involved — it is a transplant bug, and
+  `uw_init_context_1` is dwarf2 unwinder setup, exactly the backend↔middle-end
+  surface the backport crossed. Without libgcc there is no `libgcc.a` and no
+  `crtbegin.o`, so `xgcc` cannot link a program, which is why every result here
+  exercises `cc1` directly. **This is the next thing to fix in this leg.**
 - **Only `cc1`, and only C.** Both arms configure `--enable-languages=c`, so
   **g++ 4.7 has never been built by anything** — and g++ 4.7 is the entire
   reason 4.7 was chosen over 4.8. All of gcc 4.7 is C, including its C++ front
-  end, so this should follow; "should" is not "does". This is the next rung.
-- **The two `.s` files have not been byte-compared.** Identical across every
-  line both logs captured, but produced in different jobs. One job emitting both
-  and running `cmp` would turn a strong signal into a result.
-- **No reproducibility gate.** The gcc tarballs are now pinned by hash
+  end, so this should follow; "should" is not "does".
+- **No reproducibility gate.** The gcc tarballs are pinned by hash
   (`sources/gcc.toml`), but nothing here has been rebuilt byte-identically
   twice.
+- **No testsuite.** The differential test compares two compilers against each
+  other, so a fault common to tcc and gcc 13 is invisible to it — they share no
+  code, which makes that a coincidence rather than a risk, but it is not
+  nothing. gcc's own DejaGnu suite is the next and much longer step.
 
 ## Method notes worth keeping
 

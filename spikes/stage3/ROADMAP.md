@@ -704,10 +704,47 @@ result runs and returns the right answer. Full record in `GCC-BACKPORT.md`.
 
 - **libgcc.** The arms run `make all-gcc`, which stops before the runtime, so
   `gcc/xgcc` cannot link: `cannot find crtbegin.o`, `cannot find -lgcc`. `cc1`
-  is exercised directly instead. A full `make` is the next step.
+  is exercised directly instead.
+
+  **A full `make` does not work, and now we know why.** 104 libgcc objects
+  compile and then the backported compiler ICEs:
+
+  ```
+  g474/libgcc/unwind-dw2.c:1490:44: internal compiler error: Segmentation fault
+  ```
+
+  in `uw_init_context_1` — dwarf2 unwinder setup, the backend↔middle-end surface
+  the transplant crossed. Reproduced identically under the host gcc and under
+  tcc, so it is the transplant, not the compiler building it. **This is the gcc
+  leg's blocker.**
 - **That g++ 4.7 then builds 4.8.** The next rung, and the reason for choosing
   4.7 at all. Both arms are `--enable-languages=c`, so g++ 4.7 has not been
   built by anything yet.
+
+### tcc did not miscompile it — measured, 2026-07-25
+
+`tcc-gcc-miscompile-check` builds gcc 4.7.4 twice from one transplanted tree, by
+host gcc and by tcc, and compares what the two compilers emit:
+
+```
+gate 2   gcc's own translation units      333 of 333 IDENTICAL
+gate 3   libgcc's translation units        16 of  16 IDENTICAL
+```
+
+Seven generated files do differ, and the cause is named rather than waved at:
+the host-gcc tree proves four insn conditions constant-false and drops those
+patterns, the tcc tree does not, and every insn code after them shifts by four.
+That is a third tcc capability gap in the same family as the missing dead-code
+elimination — gcc's `genconditions` folds conditions only when built by GCC —
+and it fails in the safe direction, since the extra patterns' conditions are
+false at run time too.
+
+**Three runs were lost to harness faults before this number meant anything**:
+comparing object files across two build directories (the build path lives in
+`DW_AT_comp_dir`), letting each compiler read its own generated headers (the
+flags begin `-I. -I.`), and reporting a missing manifest as a difference. Each
+produced a clean-looking number that was wrong. The controls that now sit in
+front of every gate exist because of that.
 
 ### That tcc can build this tree — ANSWERED, 2026-07-25
 

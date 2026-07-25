@@ -75,6 +75,14 @@ disabling the applets that expose it.
 **This matters for leg 3.** The kernel uses `if (IS_ENABLED(CONFIG_FOO))`
 pervasively for exactly the same reason, and will hit this far harder.
 
+**A second gap of the same kind, found later on the gcc leg.** gcc's
+`genconditions` folds machine-description conditions at compile time and only
+takes that path when the compiler building it is GCC, so a tcc-built gcc keeps
+patterns a gcc-built one drops as constant-false — 2,082 live patterns against
+2,078. Harmless, and in the safe direction, but it is the same shape as the
+above: gcc's source expects the compiler to fold a compile-time constant, and
+tcc does not. See `GCC-BACKPORT.md`.
+
 ## Everything else was plumbing
 
 Worth separating, because the roadmap's thesis is precisely that incidental and
