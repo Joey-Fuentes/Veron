@@ -167,6 +167,22 @@ jobs:
             > c.log 2>&1 || die "configure" c.log
           make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || die "build" b.log
           make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || die "install" i.log
+          # LFS 13.0 GCC PASS 1 ENDS WITH THIS AND I OMITTED IT. A gcc built
+          # --without-headers installs a self-contained limits.h that knows
+          # nothing of the system one, so PATH_MAX, and anything else living in
+          # the libc's limits.h, simply is not there. binutils pass 2 then dies
+          # on
+          #   ld/ldmain.c:646: error: 'PATH_MAX' undeclared
+          # which names a macro rather than the include chain that lost it.
+          # Concatenating the three fragments produces the full header, which
+          # #include_next's through to glibc's once that exists.
+          LIMH=$(dirname "$("$LFS_TGT-gcc" -print-libgcc-file-name)")
+          for d in include include-fixed; do
+            [ -d "$LIMH/$d" ] || continue
+            cat "../gcc-$GCCVER/gcc/limitx.h" "../gcc-$GCCVER/gcc/glimits.h" \
+                "../gcc-$GCCVER/gcc/limity.h" > "$LIMH/$d/limits.h"
+            echo "  full limits.h written to $d/ ($(wc -l < "$LIMH/$d/limits.h") lines)"
+          done
           "$S/tools/bin/$LFS_TGT-gcc" --version | head -1 | sed 's/^/  /'
 
       - name: '5.6 linux 3.13.3 API headers'
