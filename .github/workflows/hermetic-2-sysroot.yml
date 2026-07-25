@@ -64,6 +64,11 @@ on:
     paths:
       - '.github/workflows/hermetic-2-sysroot.yml'
   workflow_dispatch:
+    inputs:
+      lfs_set:
+        description: 'which tested set: 13.0 (gcc 15.2) or dev (gcc 16.1)'
+        required: false
+        default: '13.0'
 
 concurrency:
   group: hermetic-2-${{ github.ref }}
@@ -72,7 +77,11 @@ concurrency:
 env:
   GNU: 'https://mirrors.kernel.org/gnu'
   LFS_TGT: 'aarch64-veron-linux-gnu'
-  # THE BOOK'S TESTED SET, from LFS 13.0 chapter 3. Run 1 used gcc 13.2 with
+  # THE BOOK'S TESTED SET. Defaults are LFS 13.0; `lfs_set: dev` switches to
+  # the development book (r13.0-156), which pins gcc 16.1. TWO SETS, ONE
+  # RECIPE: the books' configure lines differ in exactly two places, so this is
+  # a switch rather than a second file. (The PERIOD book is a separate
+  # workflow, because there the OPTIONS differ too, not just the pins.) Run 1 used gcc 13.2 with
   # glibc 2.39 -- a pairing I chose from memory, not from the book -- and glibc
   # died on `wctomb.c:57:1: error: 'artificial' attribute ignored
   # [-Werror=attributes]`. glibc builds itself with -Werror, so a compiler that
@@ -123,6 +132,25 @@ jobs:
           # host's, which is the exact failure this whole workflow exists to
           # prevent.
           echo "$S/tools/bin" >> "$GITHUB_PATH"
+          # The two tested sets. Nothing here is chosen by us: each row is a
+          # combination one of the books has run end to end. hermetic-2 already
+          # lost a run to a pairing picked from memory (gcc 13.2 + glibc 2.39,
+          # dead on -Werror=attributes), which is the whole reason these are
+          # copied rather than composed.
+          if [ "${{ github.event.inputs.lfs_set }}" = "dev" ]; then
+            {
+              echo "BINUTILS=2.46.1"; echo "GCCVER=16.1.0"; echo "GLIBC=2.43"
+              echo "KERNEL=7.1.3";    echo "MPC=1.4.1"
+              echo "ENABLE_KERNEL=5.10"
+              echo "EXTRA_GCC=--disable-fixincludes"
+            } >> "$GITHUB_ENV"
+            echo "  set: LFS dev (r13.0-156) -- gcc 16.1.0"
+          else
+            {
+              echo "ENABLE_KERNEL=5.4"; echo "EXTRA_GCC="
+            } >> "$GITHUB_ENV"
+            echo "  set: LFS 13.0 -- gcc 15.2.0"
+          fi
           echo "  LFS_TGT: $LFS_TGT   (host is $(gcc -dumpmachine))"
           echo "  the two triplets differ, which is the isolation"
 
@@ -138,7 +166,9 @@ jobs:
           get "$GNU/mpc/mpc-$MPC.tar.gz"
           get "$GNU/make/make-4.4.1.tar.gz"
           get "https://busybox.net/downloads/busybox-1.36.1.tar.bz2"
-          get "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KERNEL.tar.xz"
+          # v6.x vs v7.x: the directory follows the version, and the dev book
+          # pins linux 7.1.3.
+          get "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL%%.*}.x/linux-$KERNEL.tar.xz"
           ls -la *.tar.* | awk '{print "    "$5"  "$9}'
 
       # ---------------------------------------------------- LFS 5.2
@@ -154,7 +184,7 @@ jobs:
             --disable-nls --enable-gprofng=no --disable-werror \
             --enable-new-dtags --enable-default-hash-style=gnu \
             > c.log 2>&1 || { tail -20 c.log; exit 1; }
-          make -j"$(nproc)" > b.log 2>&1 || { tail -25 b.log; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|configure: error" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 b.log | sed "s/^/    /"; exit 1; }
           make install > /dev/null 2>&1
           ls "$S/tools/bin" | sed 's/^/    /'
 
@@ -185,9 +215,9 @@ jobs:
             --disable-nls --disable-shared --disable-multilib \
             --disable-threads --disable-libatomic --disable-libgomp \
             --disable-libquadmath --disable-libssp --disable-libvtv \
-            --disable-libstdcxx --enable-languages=c,c++ \
+            --disable-libstdcxx --enable-languages=c,c++ $EXTRA_GCC \
             > c.log 2>&1 || { tail -25 c.log; exit 1; }
-          make -j"$(nproc)" > b.log 2>&1 || { tail -30 b.log; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|configure: error" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -30 b.log | sed "s/^/    /"; exit 1; }
           make install > /dev/null 2>&1
           "$S/tools/bin/$LFS_TGT-gcc" --version | head -1 | sed 's/^/    /'
           "$S/tools/bin/$LFS_TGT-gcc" -dumpmachine | sed 's/^/    targets: /'
@@ -231,13 +261,13 @@ jobs:
             --prefix=/usr \
             --host="$LFS_TGT" \
             --build="$(../glibc-$GLIBC/scripts/config.guess)" \
-            --enable-kernel=5.4 \
+            --enable-kernel="$ENABLE_KERNEL" \
             --with-headers="$S/usr/include" \
             --disable-nscd \
             libc_cv_slibdir=/usr/lib \
             > c.log 2>&1 || { tail -25 c.log; exit 1; }
           cd "$W"; crosscheck b-glibc || exit 1; cd b-glibc
-          make -j"$(nproc)" > b.log 2>&1 || { tail -30 b.log; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|configure: error" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -30 b.log | sed "s/^/    /"; exit 1; }
           make DESTDIR="$S" install > i.log 2>&1
           echo "  loader: $(ls "$S"/usr/lib/ld-linux-* 2>/dev/null || echo MISSING)"
           echo "  libc  : $(ls "$S"/usr/lib/libc.so.* 2>/dev/null | head -1 || echo MISSING)"
@@ -263,7 +293,7 @@ jobs:
             --disable-libstdcxx-pch \
             --with-gxx-include-dir="/tools/$LFS_TGT/include/c++/$GCCVER" \
             > c.log 2>&1 || { tail -25 c.log; exit 1; }
-          make -j"$(nproc)" > b.log 2>&1 || { tail -25 b.log; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|configure: error" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 b.log | sed "s/^/    /"; exit 1; }
           make DESTDIR="$S" install > /dev/null 2>&1
           rm -fv "$S"/usr/lib/lib{stdc++{,exp,fs},supc++}.la 2>/dev/null || true
           echo "  libstdc++: $(ls "$S"/usr/lib/libstdc++.so.* 2>/dev/null | head -1 || echo MISSING)"
@@ -281,7 +311,24 @@ jobs:
           make defconfig > /dev/null 2>&1
           sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config
           yes '' | make oldconfig > /dev/null 2>&1
-          make -j"$(nproc)" CROSS_COMPILE="$LFS_TGT-" > b.log 2>&1 || { tail -20 b.log; exit 1; }
+          # gcc 14 PROMOTED -Wimplicit-function-declaration and
+          # -Wincompatible-pointer-types FROM WARNINGS TO ERRORS by default.
+          # BusyBox 1.36.1 is from 2023 and predates that. LFS's own chapter 6
+          # packages are version-matched to gcc 15.2; BusyBox is our
+          # substitution for those seventeen packages, so it is the one thing
+          # here that nobody has tested against this compiler. Demote them.
+          make -j"$(nproc)" CROSS_COMPILE="$LFS_TGT-" \
+            EXTRA_CFLAGS="-Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=int-conversion" \
+            > b.log 2>&1 || {
+              # RUN 4 PRINTED `tail -20` AND IT CONTAINED NO ERROR AT ALL --
+              # with -j4 the last lines of the log are whatever finished last,
+              # not what failed. Grep for the failure; show the tail only as
+              # context.
+              echo "  --- errors ---"
+              grep -nE "error:|Error [0-9]|\*\*\*" b.log | head -15 | sed "s/^/    /"
+              echo "  --- last lines ---"
+              tail -6 b.log | sed "s/^/    /"
+              exit 1; }
           cp busybox "$S/usr/bin/"
           ( cd "$S/usr/bin" && for a in $(../../../busybox-1.36.1/busybox --list 2>/dev/null || echo sh ls cat sed grep awk tar gzip); do
               [ -e "$a" ] || ln -sf busybox "$a"; done )
@@ -303,7 +350,7 @@ jobs:
             --disable-werror --enable-64-bit-bfd --enable-new-dtags \
             --enable-default-hash-style=gnu \
             > c.log 2>&1 || { tail -20 c.log; exit 1; }
-          make -j"$(nproc)" > b.log 2>&1 || { tail -25 b.log; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|configure: error" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 b.log | sed "s/^/    /"; exit 1; }
           make DESTDIR="$S" install > /dev/null 2>&1
           echo "  as: $(file "$S/usr/bin/as" | cut -c1-90)"
 
@@ -323,9 +370,9 @@ jobs:
             --enable-default-pie --enable-default-ssp \
             --disable-nls --disable-multilib --disable-libatomic \
             --disable-libgomp --disable-libquadmath --disable-libsanitizer \
-            --disable-libssp --disable-libvtv --enable-languages=c,c++ \
+            --disable-libssp --disable-libvtv --enable-languages=c,c++ $EXTRA_GCC \
             > c.log 2>&1 || { tail -25 c.log; exit 1; }
-          make -j"$(nproc)" > b.log 2>&1 || { tail -30 b.log; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|configure: error" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -30 b.log | sed "s/^/    /"; exit 1; }
           make DESTDIR="$S" install > /dev/null 2>&1
           ln -sfv gcc "$S/usr/bin/cc"
           echo "  gcc: $(file "$S/usr/bin/gcc" | cut -c1-90)"
