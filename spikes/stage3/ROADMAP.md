@@ -578,3 +578,29 @@ needed:
 
 Nothing so far has been structural. That is the measurement the whole leg rested
 on, and it has survived contact.
+
+### Qualified attribute references
+
+The expanded `.md` reached the generators and they reported `unresolved
+iterator` at three sites. The cause: `.md` lets an attribute be **qualified by
+the iterator it belongs to** —
+
+```
+"<PERMUTE:perm_insn><PERMUTE:perm_hilo>\\t%0.<Vtype>, ..."
+```
+
+— to disambiguate when two iterators define an attribute of the same name. The
+expander substituted only the bare `<perm_insn>` form, so the qualified ones
+survived and the generators could not resolve them.
+
+Seven such references exist, all in `aarch64-simd.md`: `<PERMUTE:perm_insn>` x3,
+`<PERMUTE:perm_hilo>` x2, `<VSLRI:offsetlr>` x2. After the fix: zero.
+
+**The care needed here is not substituting too much.** 242 qualified references
+remain in the expanded output and every one of them is a *mode* or *code*
+iterator — `<GPI:mode>`, `<SHIFT:optab>`, `<ANY_EXTEND:su>` — which 4.7 reads
+natively and which must be left exactly as they are. A regex broad enough to
+catch `<PERMUTE:perm_insn>` also catches `<GPI:mode>`, and rewriting those would
+break a file that was previously fine. The tool substitutes only names it knows
+to be int iterators, and raises rather than guessing if a qualified reference
+names an attribute no `define_int_attr` covers.

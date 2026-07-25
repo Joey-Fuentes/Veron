@@ -191,7 +191,21 @@ def expand_form(form, iterators, attrs):
                       value, form)
         for attr_name, table in attrs.items():
             if value in table:
+                # BOTH SPELLINGS. .md lets an attribute be QUALIFIED by the
+                # iterator it belongs to -- <PERMUTE:perm_insn> as well as
+                # <perm_insn> -- to disambiguate when two iterators define an
+                # attribute of the same name. Substituting only the bare form
+                # leaves the qualified ones behind, and the generators then
+                # report "unresolved iterator" with no clue which name it was.
+                copy = copy.replace('<%s:%s>' % (name, attr_name), table[value])
                 copy = copy.replace('<%s>' % attr_name, table[value])
+        # A qualified reference to THIS iterator that names no known attribute
+        # would silently survive; catch it here rather than in the generators.
+        leftover = re.findall(r'<%s:(\w+)>' % re.escape(name), copy)
+        if leftover:
+            raise SystemExit(
+                f"    <{name}:{leftover[0]}> unresolved: no define_int_attr "
+                f"named {leftover[0]} covers {value}")
         out.append(copy)
     return out
 
@@ -275,6 +289,9 @@ def main():
             for at in attrs:
                 if '<%s>' % at in t:
                     bad.append(f"{name}: <{at}> still present")
+            for it in iterators:
+                for mm in re.finditer(r'<%s:(\w+)>' % re.escape(it), t):
+                    bad.append(f"{name}: qualified <{it}:{mm.group(1)}> still present")
             if 'define_int_iterator' in t or 'define_int_attr' in t:
                 bad.append(f"{name}: a define_int_* survived")
         if bad:
