@@ -1,0 +1,450 @@
+name: tcc-builds-gcc-x86
+
+# SPIKE. CAN LATEST tcc COMPILE gcc's SOURCE AT ALL?
+#
+# WHY THIS QUESTION, AND WHY IT IS SEPARATE FROM EVERY OTHER OPEN ONE.
+# gcc47-aarch64-backport settled that gcc 4.7.4 carrying 4.8.5's aarch64 backend
+# builds and emits correct aarch64 code -- with the HOST gcc, deliberately, one
+# variable at a time. The next variable is tcc, and it has never been measured
+# against gcc's source at any version, on any architecture.
+#
+# THE ESTABLISHED BOOTSTRAP DOES NOT ANSWER IT. live-bootstrap has tcc build
+# gcc 4.0.4, not 4.7.4; 4.7.4 is then built by 4.0.4. Two readings of that rung,
+# and they have opposite consequences for us:
+#
+#   the rung is a COMPILER limit  -> tcc cannot do 4.7's source, and on aarch64
+#                                    we would need a 4.0.4 carrying an aarch64
+#                                    backend. 4.0.4 predates aarch64 by six
+#                                    years, and the vax control only measured
+#                                    4.7 -> 4.8 at ~148 lines. 4.0 is unmeasured
+#                                    and much further.
+#   the rung is ENVIRONMENTAL     -> it exists because 4.0.4 predates gcc's
+#                                    gmp/mpfr/mpc requirement (4.3+) and because
+#                                    a hermetic climb must supply period make,
+#                                    perl, bash and autotools. Both reasons are
+#                                    already cleared for us: gcc-entrypoint-probe
+#                                    built gmp, mpfr and mpc under tcc, and our
+#                                    arms use the runner's make/bison/flex/perl
+#                                    by choice.
+#
+# Nothing about that fork is architecture-specific, so it is answerable on x86 --
+# where BOTH versions have a native backend and no transplant is involved. That
+# is the whole reason to run it here first: on x86 the only thing under test is
+# tcc against gcc's C.
+#
+# ALSO: the pinned tcc is not the tcc under test. live-bootstrap pins 0.9.27
+# (2017). tcc-aarch64-probe run 3 measured that release failing to self-host on
+# aarch64 at all -- undefined __addtf3/__subtf3/__multf3/__divtf3, the 128-bit
+# long-double soft-float its arm64 libtcc1.a does not ship, plus no arm64
+# inline assembler. "tcc could not do X in 2017" is not "tcc cannot do X".
+# This spike uses mob HEAD.
+#
+# FOUR ARMS, RUN IDENTICALLY. 2x2: {4.0.4, 4.7.4} x {host gcc, tcc}.
+#
+#   A  4.0.4, host gcc     Does a 2007 gcc tree build on a 2026 runner?
+#   B  4.0.4, tcc          The rung live-bootstrap actually uses.
+#   C  4.7.4, host gcc     Does 4.7.4 build here? (aarch64 arm B said yes;
+#                          this is the x86 restatement, and it is cheap.)
+#   D  4.7.4, tcc          THE ONE THAT MATTERS. A pass here deletes the 4.0.4
+#                          rung from our plan entirely.
+#
+# READ THE RESULT AS A TABLE:
+#   A fail                 -> the environment cannot build 2007 gcc. B says
+#                             nothing, and "we need period tooling" is itself
+#                             the finding.
+#   A pass, B fail         -> tcc cannot compile 4.0.4. Since live-bootstrap
+#                             does exactly that with a 2017 tcc, suspect the
+#                             harness before suspecting tcc, and read the
+#                             inventory.
+#   C pass, D pass         -> THE STRONG RESULT. tcc compiles the last C gcc
+#                             directly. The 4.0.4 rung is not a compiler
+#                             requirement, and the aarch64 plan reduces to
+#                             tcc -> backported 4.7 with the compiler variable
+#                             already cleared once on x86.
+#   B pass, D fail         -> the rung is real. The failure classes from D are
+#                             the risk list, and the aarch64 route needs a
+#                             different answer than "do the same thing on arm".
+#
+# WHAT A GREEN x86 RESULT DOES **NOT** CLEAR. x86_64 is tcc's best-tested
+# backend and it happens to supply, natively, three things aarch64 does not:
+# 80-bit long double, alloca, and an inline assembler. 0.9.27 died on aarch64 at
+# precisely the first of those. So D passing narrows the aarch64 question to the
+# backend rather than the source -- it does not answer it. Say so in whatever
+# this run produces.
+#
+# INVARIANT #6 IS NOT MET HERE. The gcc, gmp, mpfr and mpc tarballs are fetched
+# by URL with no hash, and there is no sources/gcc.toml. Every other upstream in
+# this leg is pinned (sources/{tcc,musl,busybox}.toml). This is a spike, and the
+# gap is recorded rather than hidden -- but it must close before any of this
+# becomes a stage.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/tcc-builds-gcc-x86.yml'
+  workflow_dispatch:
+    inputs:
+      tcc_rev:
+        description: 'tcc revision to test (mob HEAD by default; 5ec0e6f8 is our aarch64 pin)'
+        required: false
+        default: 'mob'
+
+concurrency:
+  group: tcc-builds-gcc-x86-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GNU: 'https://mirrors.kernel.org/gnu'
+  TCC_REV: ${{ github.event.inputs.tcc_rev || 'mob' }}
+
+jobs:
+  x86:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [A-404-hostcc, B-404-tcc, C-474-hostcc, D-474-tcc]
+    name: '${{ matrix.arm }}'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl git bzip2 xz-utils gcc make bison flex texinfo m4 perl \
+            file binutils
+
+      - name: 'Build tcc from mob'
+        run: |
+          set -eu
+          # Built on EVERY arm, including the host-gcc controls that never
+          # invoke it. A minute of runtime keeps the arms identical up to the
+          # single variable under test, and puts the tcc revision in all four
+          # logs so no result is ever read without it.
+          # THE ARM64 PATCH SERIES IS NOT APPLIED, and that is correct: all five
+          # patches in sources/tcc.toml are arm64 assembler work (TSTBR/CONDBR
+          # relocs, arm64-asm.c, an assert.h include, exec-alignment padding).
+          # None of them touch x86_64 codegen, so applying them here would add a
+          # variable without adding capability.
+          git clone -q git://repo.or.cz/tinycc.git tccsrc \
+            || git clone -q https://repo.or.cz/tinycc.git tccsrc
+          cd tccsrc
+          git checkout -q "$TCC_REV" 2>/dev/null || echo "  (staying on default branch)"
+          echo "  tcc revision : $(git rev-parse HEAD)"
+          echo "  tcc date     : $(git log -1 --format=%cd --date=short)"
+          ./configure --cc=gcc > /dev/null
+          make -j"$(nproc)" > /dev/null
+          ./tcc -v
+          echo "TCC=$PWD/tcc"    >> "$GITHUB_ENV"
+          echo "TCCDIR=$PWD"     >> "$GITHUB_ENV"
+
+      - name: 'Select the arm'
+        run: |
+          set -eu
+          # Compatibility flags are ASYMMETRIC BETWEEN THE ARMS and that cannot
+          # be fixed, only stated. gcc 13 compiling a 2007 codebase needs
+          # -std=gnu89 (gnu11 changed extern-inline semantics into duplicate
+          # symbols) and -fcommon (gcc 10 made -fno-common the default, and
+          # pre-C99 trees are full of tentative definitions). tcc needs neither
+          # -- its defaults already behave that way -- and passing it flags it
+          # merely ignores would add noise, not fairness.
+          #
+          # So the arms are NOT flag-identical. Each gets the minimum that lets
+          # it run, both are printed below, and if a tcc arm fails on multiple
+          # definitions the honest next step is to re-run it WITH the same flags
+          # rather than to conclude anything.
+          case "${{ matrix.arm }}" in
+            A-404-hostcc)
+              echo "VER=4.0.4" >> "$GITHUB_ENV"
+              echo "USE_TCC=0" >> "$GITHUB_ENV" ;;
+            B-404-tcc)
+              echo "VER=4.0.4" >> "$GITHUB_ENV"
+              echo "USE_TCC=1" >> "$GITHUB_ENV" ;;
+            C-474-hostcc)
+              echo "VER=4.7.4" >> "$GITHUB_ENV"
+              echo "USE_TCC=0" >> "$GITHUB_ENV" ;;
+            D-474-tcc)
+              echo "VER=4.7.4" >> "$GITHUB_ENV"
+              echo "USE_TCC=1" >> "$GITHUB_ENV" ;;
+            *)
+              echo "  FATAL: unknown arm ${{ matrix.arm }}"; exit 1 ;;
+          esac
+
+      - name: 'Set CC for this arm'
+        run: |
+          set -eu
+          if [ "$USE_TCC" = 1 ]; then
+            echo "ARM_CC=$TCC -B$TCCDIR"          >> "$GITHUB_ENV"
+            echo "ARM_CFLAGS="                    >> "$GITHUB_ENV"
+            echo "  CC     : tcc -B$TCCDIR"
+            echo "  CFLAGS : (none)"
+          else
+            echo "ARM_CC=gcc"                          >> "$GITHUB_ENV"
+            echo "ARM_CFLAGS=-std=gnu89 -fcommon -w -O2" >> "$GITHUB_ENV"
+            echo "  CC     : gcc $(gcc -dumpversion)"
+            echo "  CFLAGS : -std=gnu89 -fcommon -w -O2  (2026 gcc over 2007 source)"
+          fi
+
+      - name: 'Fetch gcc'
+        run: |
+          set -eu
+          curl -fsSL --retry 3 --connect-timeout 15 -o gcc.tar.bz2 \
+            "$GNU/gcc/gcc-$VER/gcc-$VER.tar.bz2"
+          mkdir -p src && tar xf gcc.tar.bz2 -C src --strip-components=1
+          echo "  gcc $VER: $(find src -name '*.c' | wc -l) .c files"
+          echo "  x86 backend present: $(ls src/gcc/config/i386/*.md 2>/dev/null | wc -l) .md files"
+
+      - name: 'Prerequisites (4.7.4 only), built by THIS arm''s compiler'
+        if: ${{ startsWith(matrix.arm, 'C-') || startsWith(matrix.arm, 'D-') }}
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # 4.0.4 DOES NOT NEED THESE. gcc required gmp/mpfr from 4.3 and mpc
+          # from 4.5, which is one of the two plausible reasons live-bootstrap's
+          # rung sits at 4.0.4 -- there is nothing to build first. Skipping them
+          # on the 4.0.4 arms is not a shortcut, it is the actual difference
+          # between the versions, and half of what this spike is measuring.
+          #
+          # Each arm builds its own with its own CC, so the 4.7.4/tcc arm links
+          # a cc1 that is tcc output all the way down. Versions are the set
+          # gcc-entrypoint-probe already built under tcc on aarch64, which is
+          # also the set a known bootstrap uses with 4.7.4.
+          mkdir -p prefix
+          echo "  --- gmp 6.2.1 (--disable-assembly: gmp ships per-uarch asm) ---"
+          curl -sSL -o gmp.tar.xz "$GNU/gmp/gmp-6.2.1.tar.xz"
+          mkdir -p gmp && tar xf gmp.tar.xz -C gmp --strip-components=1
+          ( cd gmp
+            ./configure CC="$ARM_CC" CFLAGS="$ARM_CFLAGS" --disable-shared \
+              --disable-assembly --prefix="$PWD/../prefix" > conf.log 2>&1
+            echo "    configure rc=$?"
+            timeout 1800 make -j"$(nproc)" > build.log 2>&1
+            echo "    make rc=$?"
+            make install > /dev/null 2>&1 && echo "    INSTALLED" \
+              || { echo "    NOT INSTALLED -- tail:"; tail -8 build.log | sed 's/^/      /'; } )
+
+          for p in mpfr-4.1.0 mpc-1.2.1; do
+            case $p in
+              mpfr*) u="$GNU/mpfr/$p.tar.xz" ;;
+              mpc*)  u="$GNU/mpc/$p.tar.gz"  ;;
+            esac
+            echo "  --- $p ---"
+            curl -sSL -o "$p.tar" "$u"
+            mkdir -p "$p" && tar xf "$p.tar" -C "$p" --strip-components=1 2>/dev/null
+            ( cd "$p"
+              ./configure CC="$ARM_CC" CFLAGS="$ARM_CFLAGS" --disable-shared \
+                --with-gmp="$PWD/../prefix" --prefix="$PWD/../prefix" > conf.log 2>&1
+              echo "    configure rc=$?"
+              timeout 1200 make -j"$(nproc)" > build.log 2>&1
+              echo "    make rc=$?"
+              make install > /dev/null 2>&1 && echo "    INSTALLED" \
+                || { echo "    NOT INSTALLED -- tail:"; tail -8 build.log | sed 's/^/      /'; } )
+          done
+          echo "  prefix/lib:"
+          ls prefix/lib 2>/dev/null | sed 's/^/    /' || echo "    (empty)"
+
+      - name: 'CONFIGURE'
+        continue-on-error: true
+        run: |
+          set -u
+          mkdir -p build && cd build
+          set +e
+          # --disable-bootstrap IS LOAD-BEARING, not hygiene. With bootstrap on,
+          # gcc builds stage1 with $CC and then stage2 with the stage1 xgcc --
+          # so a green result would be measuring gcc compiling gcc, and tcc's
+          # only contribution would be a compiler we then threw away. Off, tcc
+          # (or host gcc) compiles the whole thing exactly once.
+          #
+          # --enable-languages=c on purpose. The 4.7 leg ultimately needs c,c++,
+          # because g++ 4.7 built from C is the entire reason 4.7 was chosen --
+          # but if C fails there is nothing to ask about C++. c,c++ is the
+          # follow-on arm, not a flag to change here.
+          PRE=""
+          if [ -d "$PWD/../prefix/lib" ]; then
+            PRE="--with-gmp=$PWD/../prefix --with-mpfr=$PWD/../prefix --with-mpc=$PWD/../prefix"
+          fi
+          # shellcheck disable=SC2086
+          "../src/configure" \
+            CC="$ARM_CC" CFLAGS="$ARM_CFLAGS" \
+            --build=x86_64-pc-linux-gnu \
+            --host=x86_64-pc-linux-gnu \
+            --target=x86_64-pc-linux-gnu \
+            --prefix="$PWD/../out" --enable-languages=c \
+            --disable-multilib --disable-bootstrap --disable-werror \
+            --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+            --disable-libssp --disable-libatomic --disable-shared \
+            $PRE > conf.log 2>&1
+          rc=$?
+          echo "  configure rc=$rc"
+          echo "CONF_RC=$rc" >> "$GITHUB_ENV"
+          if [ "$rc" -ne 0 ]; then
+            echo "  --- configure tail ---"
+            tail -30 conf.log | sed 's/^/    /'
+          fi
+
+      - name: 'BUILD'
+        continue-on-error: true
+        run: |
+          set -u
+          cd build
+          set +e
+          # all-gcc, NOT all. libgcc is compiled by the freshly built xgcc, not
+          # by $CC, so building it would test the wrong compiler and cost 20
+          # minutes doing it. cc1 is the artifact this spike is about.
+          #
+          # MAKEINFO=true because 2026's makeinfo rejects 2012's texinfo
+          # ("@itemx should not begin @table") and documentation must not mask a
+          # compiler result -- aarch64 arm B built cc1 and still reported
+          # failure for exactly that reason. -Otarget because with -j the output
+          # of parallel compiles interleaves and the first failure ends up
+          # printed next to another target's warnings.
+          timeout 7200 make -k -j"$(nproc)" -Otarget MAKEINFO=true all-gcc > build.log 2>&1
+          rc=$?
+          case "$rc" in
+            0)   echo "  make rc=0 -- completed" ;;
+            124) echo "  make rc=124 -- TIMED OUT after 7200s" ;;
+            *)   echo "  make rc=$rc -- failed" ;;
+          esac
+          echo "BUILD_RC=$rc" >> "$GITHUB_ENV"
+          echo "  build.log: $(wc -l < build.log) lines"
+
+      - name: 'INVENTORY'
+        continue-on-error: true
+        run: |
+          set -u
+          # set +e is load-bearing: this step re-runs a command it EXPECTS to
+          # fail, and GitHub runs bash -e.
+          set +e
+          cd build
+          echo "  === what make itself said failed ==="
+          grep -nE '^\s*make(\[[0-9]+\])?: \*\*\* ' build.log | head -10 | sed 's/^/    /'
+          echo
+          echo "  === the first failure, in context ==="
+          n=$(grep -nE '^\s*make(\[[0-9]+\])?: \*\*\* ' build.log | head -1 | cut -d: -f1)
+          if [ -n "${n:-}" ]; then
+            start=$(( n > 40 ? n - 40 : 1 ))
+            sed -n "${start},${n}p" build.log | tail -30 | sed 's/^/    /'
+          else
+            echo "    (make reported no *** failure)"
+          fi
+          echo
+          echo "  === the failing target, rebuilt SERIALLY for a clean error ==="
+          TGT_OBJ=$(grep -oE '\*\*\* \[[^]:]+:[0-9]+: [^]]+\]' build.log \
+                    | sed 's/.*: //; s/\]//' | grep -vE '^all-|^\.' | head -1)
+          if [ -n "${TGT_OBJ:-}" ]; then
+            echo "    target: $TGT_OBJ"
+            timeout 900 make -j1 MAKEINFO=true "$TGT_OBJ" > serial.log 2>&1
+            src=$?
+            if grep -q "No rule to make target" serial.log; then
+              echo "    (not a top-level target; retrying in gcc/)"
+              timeout 900 make -C gcc -j1 MAKEINFO=true "$TGT_OBJ" > serial.log 2>&1
+              src=$?
+            fi
+            echo "    serial rc=$src"
+            grep -E 'error:|Error ' serial.log | head -15 | sed 's/^/      /'
+            [ -s serial.log ] && tail -15 serial.log | sed 's/^/      /'
+          else
+            echo "    (could not parse a failing target)"
+          fi
+          echo
+          echo "  === compiler ERRORS only (not warnings) -- THIS IS THE MEASUREMENT ==="
+          # A SHORT list of classes over FEW files means the gap is patchable
+          # and the rung is skippable. A long tail means it is not.
+          grep -oE '\berror: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
+            | sort | uniq -c | sort -rn | head -25 | sed 's/^/    /'
+          echo "    total error lines  : $(grep -cE '\berror:' build.log || true)"
+          echo "    total warning lines: $(grep -cE '\bwarning:' build.log || true)"
+          echo
+          echo "  === files with an ERROR (not merely a diagnostic) ==="
+          # Grepping any 'file.c:' line matches WARNINGS too and inflates this
+          # list into meaninglessness -- aarch64 run 1 reported 24 "failing
+          # files" that were all libiberty/libcpp noise. Anchor on error:.
+          grep -oE '^[^ :]+\.(c|h):[0-9]+:[0-9]*:? *error:' build.log \
+            | cut -d: -f1 | sort -u | head -25 | sed 's/^/    /'
+          echo "    distinct files with errors: $(grep -oE '^[^ :]+\.(c|h):[0-9]+:[0-9]*:? *error:' build.log | cut -d: -f1 | sort -u | wc -l)"
+          echo
+          echo "  === generators (they turn .md into C) ==="
+          for g in genemit genattrtab genrecog genextract genoutput genpreds; do
+            printf '    %-12s %s\n' "$g" \
+              "$( { [ -x gcc/build/$g ] || [ -x gcc/$g ]; } && echo built || echo 'not built')"
+          done
+          echo "    insn-*.c generated: $(ls gcc/insn-*.c 2>/dev/null | wc -l)"
+          echo
+          echo "  objects built: $(find . -name '*.o' | wc -l)"
+          echo "  cc1          : $( [ -x gcc/cc1 ] && echo BUILT || echo no)"
+
+      - name: 'THE CLAIM: does the resulting compiler actually compile?'
+        if: always()
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          cd build
+          # A BUILT cc1 IS NOT A WORKING COMPILER, and for the tcc arms that
+          # distinction is the entire risk: tcc miscompiling gcc yields a cc1
+          # that links, runs, and emits subtly wrong code. Exercising it is the
+          # cheapest guard available here; a self-host fixpoint is the real one
+          # and is the follow-on.
+          [ -x gcc/cc1 ] || { echo "  no cc1 -- nothing to test"; exit 0; }
+          echo "  cc1: $(gcc/cc1 --version 2>&1 | head -1)"
+          echo "  size: $(wc -c < gcc/cc1) bytes"
+          echo
+
+          cat > /tmp/t.c <<'CEOF'
+          int fib(int n) { return n < 2 ? n : fib(n-1) + fib(n-2); }
+          int main(void) { return fib(10); }
+          CEOF
+
+          echo "  --- 1. cc1 emits assembly ---"
+          gcc/cc1 -quiet -O2 /tmp/t.c -o /tmp/t.s 2>&1 | head -5 | sed 's/^/    /'
+          if [ -s /tmp/t.s ]; then
+            echo "    produced $(wc -l < /tmp/t.s) lines"
+            grep -qE '\b(rsp|rbp|movq|%r[a-z0-9]+)\b' /tmp/t.s \
+              && echo "    looks like x86-64" \
+              || echo "    does NOT look like x86-64"
+            head -15 /tmp/t.s | sed 's/^/      /'
+          else
+            echo "    cc1 produced no assembly"
+          fi
+          echo
+          echo "  --- 2. assemble, link and RUN it (system as/ld, our cc1) ---"
+          if [ -s /tmp/t.s ]; then
+            as /tmp/t.s -o /tmp/t.o 2>&1 | head -5 | sed 's/^/    /'
+            if [ -f /tmp/t.o ]; then
+              echo "    assembled: $(file /tmp/t.o | cut -d, -f1-2)"
+              gcc /tmp/t.o -o /tmp/t 2>&1 | head -3 | sed 's/^/    /'
+              if [ -x /tmp/t ]; then
+                /tmp/t; rc=$?
+                echo "    ran: exit=$rc (fib(10)=55, so 55 expected)"
+                [ "$rc" = 55 ] && echo "    PASS: this cc1 compiles and runs correct code."
+              fi
+            fi
+          fi
+
+      - name: 'ARM RESULT'
+        if: always()
+        run: |
+          echo "  arm        : ${{ matrix.arm }}"
+          echo "  gcc        : ${VER:-?}"
+          echo "  CC         : ${ARM_CC:-?}"
+          echo "  CFLAGS     : ${ARM_CFLAGS:-<none>}"
+          echo "  configure  : rc=${CONF_RC:-?}"
+          echo "  build      : rc=${BUILD_RC:-?}"
+          echo "  cc1        : $( [ -x build/gcc/cc1 ] && echo BUILT || echo no)"
+          echo
+          echo "  Compare arms before concluding anything:"
+          echo "    A fails            -> a 2007 tree does not build here. B is unreadable."
+          echo "    A ok, B fails      -> suspect the harness first: live-bootstrap does"
+          echo "                          this with a 2017 tcc."
+          echo "    C ok, D ok         -> tcc compiles the last C gcc. The 4.0.4 rung is"
+          echo "                          not a compiler requirement, and the aarch64 plan"
+          echo "                          is tcc -> backported 4.7 directly."
+          echo "    B ok, D fails      -> the rung is real, and D's error classes are the"
+          echo "                          risk list for aarch64."
+          echo
+          echo "  x86_64 supplies natively what aarch64 does not: 80-bit long double,"
+          echo "  alloca, an inline assembler. 0.9.27 died on aarch64 at the first."
+          echo "  A green result here narrows the aarch64 question to the BACKEND."
+          echo "  It does not answer it."
