@@ -487,3 +487,52 @@ named, reviewable delta rather than a fork of upstream.
 The result would be a `.md` in 4.7's dialect, produced by a tool whose output
 can be diffed against the original, with the substitution declared in the
 ledger like every other.
+
+### Option 1 is not small — it is C++. Option 2 is written and tested.
+
+Reading both `read-rtl.c` files settles what the grep could not.
+
+**4.7 already has the generic `iterator_group` abstraction** (`modes`, `codes`),
+so adding an `ints` group looks like a handful of lines. It is not. The two
+versions record iterator *uses* completely differently:
+
+```
+4.7   struct map_value ... htab_t attrs, iterators;
+4.8   static vec<mapping_ptr>  current_iterators;
+      static vec<iterator_use> iterator_uses;
+      current_iterators.safe_push (iterator);
+      FOR_EACH_VEC_ELT (attribute_uses, i, ause)
+```
+
+**4.8's replacement is C++.** Backporting it would drag the C++ boundary
+backwards into the one release that does not need it — which is the entire
+reason for choosing 4.7. Option 1 is off the table for this route.
+
+**Option 2 is implemented: `tools/expand_int_iterators.py`.** Run against the
+real 4.8.5 backend:
+
+```
+int iterators : 20 (75 values)
+int attrs     : 14
+aarch64-simd.md   28 form(s) ->  99 pattern(s)
+aarch64.md         2 form(s) ->  10 pattern(s)
+expanded 30 form(s) into 109 pattern(s)
+verified: no int iterator, int attr or define_int_* remains
+```
+
+`reduc_s<fmaxminv>_v4sf` becomes `reduc_smax_v4sf` and `reduc_smin_v4sf`;
+`aarch64-simd.md` grows 3,871 → 4,632 lines. Output re-parses as balanced forms,
+and all 34 definitions are removed with a marker comment where each stood.
+
+Three things the tool had to get right, each found by testing against the real
+files rather than assumed:
+
+- **Top-level `;;` comments contain parens.** `;;   a = (b < c) ? b : c;`
+  starts a form that never closes; a first version stopped at 36% of
+  aarch64-simd.md on it.
+- **`{ ... }` C blocks and escaped strings** inside insn templates must be
+  opaque to the scanner.
+- **Comments legitimately keep the old references.** `;; <su><r>h<addsub>.`
+  documents instruction naming; 4.7's reader never sees it. Verification strips
+  comments first — a leftover in code is fatal, in a comment it is cosmetic,
+  and conflating them fails a correct run.

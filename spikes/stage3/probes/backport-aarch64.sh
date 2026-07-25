@@ -173,6 +173,27 @@ say "    verified: $n_arms aarch64 arms, cpu_type=aarch64 present"
 # so the arms are landing somewhere the dispatch does not read. Counting arms
 # proves nothing about WHERE they are. Print the map, then prove it by sourcing
 # the file the way gcc/configure does.
+# ------------------------------------------------- 4.8-only .md constructs
+# gcc 4.7's generators cannot read define_int_iterator / define_int_attr; they
+# were added in 4.8. Everything else about the backend ports -- configure
+# succeeds, all six generators build, 264 objects compile with zero errors --
+# so this is the last gap, and it is in the machine-description DIALECT rather
+# than in any code.
+#
+# Expanded rather than backported: 4.7 records iterator uses with map_value and
+# htab_t, while 4.8 replaced that with vec<iterator_use> and safe_push -- C++.
+# Backporting it would pull the C++ boundary into the one release that does not
+# need it, which is the whole reason for choosing 4.7.
+EXP="$(cd "$(dirname "$0")/../../.." && pwd)/tools/expand_int_iterators.py"
+if [ -f "$EXP" ]; then
+    say ""
+    say "  === expanding 4.8-only int iterators for 4.7's reader ==="
+    python3 "$EXP" "$G47/gcc/config/aarch64" 2>&1 | sed 's/^/  /' || {
+        say "  FATAL: int iterator expansion failed"; exit 1; }
+else
+    say "  NOTE: $EXP not found -- .md left with 4.8-only constructs"
+fi
+
 say ""
 say "  === config.gcc structure (line numbers) ==="
 say "    case \${target} in    : $(grep -n '^case ${target} in' "$G47/gcc/config.gcc" | cut -d: -f1 | tr '\n' ' ')"
