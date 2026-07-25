@@ -358,8 +358,13 @@ jobs:
           # ssl_client is what drags in networking/tls*.c, which does not build
           # against a modern glibc. Disable AFTER oldconfig -- before it, the
           # symbols are re-derived and the seds are undone.
+          # CONFIG_SEEDRNG needs <sys/random.h>, which arrived in glibc 2.25.
+          # This sysroot is glibc 2.19 on purpose, so the applet cannot build
+          # and should not be asked to. Expect more of these: BusyBox 1.36.1 is
+          # 2023 code and the libc under it is 2014.
           for sym in CONFIG_TC CONFIG_TLS CONFIG_SSL_CLIENT \
-                     CONFIG_FEATURE_WGET_HTTPS CONFIG_FEATURE_WGET_OPENSSL; do
+                     CONFIG_FEATURE_WGET_HTTPS CONFIG_FEATURE_WGET_OPENSSL \
+                     CONFIG_SEEDRNG CONFIG_FEATURE_UTMP CONFIG_FEATURE_WTMP; do
             sed -i "s/^$sym=y/# $sym is not set/" .config
             grep -q "^$sym=y" .config && { echo "  $sym still on"; exit 1; }
             printf '    %-32s off\n' "$sym"

@@ -548,9 +548,15 @@ jobs:
           fi
           echo
           echo "  --- 9. a configure script, the real test of the userland ---"
-          cp -r "make-4.4.1" "$S/work/mk" 2>/dev/null
+          # rc=127 is "command not found", and the most likely missing command
+          # was /work/mk/configure itself -- this copy discarded its own error.
+          rm -rf "$S/work/mk"
+          if cp -r "make-4.4.1" "$S/work/mk"; then
+            echo "    corpus copied: $(ls "$S/work/mk/configure" 2>/dev/null || echo 'NO configure')"
+          else
+            echo "    could not stage a configure script to test with"; fi
           S="$S" ./box2.sh /bin/sh -c \
-            'mkdir -p /work/cm && cd /work/cm && /work/mk/configure --disable-nls >cfg.log 2>&1; echo "configure rc=$?"; tail -4 cfg.log' \
+            'mkdir -p /work/cm && cd /work/cm && /work/mk/configure --disable-nls >cfg.log 2>&1; echo "configure rc=$?"; echo "--- last lines ---"; tail -12 cfg.log; echo "--- missing commands ---"; grep -oE "[a-z_-]+: not found" cfg.log | sort -u | head' \
             2>&1 | head -10 | sed 's/^/    /'
 
       - name: 'WHAT THIS DID AND DID NOT REMOVE'
