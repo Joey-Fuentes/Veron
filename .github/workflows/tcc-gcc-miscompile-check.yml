@@ -2,74 +2,62 @@ name: tcc-gcc-miscompile-check
 
 # DID tcc MISCOMPILE THE COMPILER?
 #
-# fib(10) returning 55 says a tcc-built cc1 runs. It exercises a conditional, a
-# subtraction and a recursive call. A cc1 miscompiled in register allocation, in
-# a mode that toy never reaches, or in any of the 626 objects it never touches,
-# passes that test unchanged. Running is not being right.
+# RUN 2 RESULT, AND WHY IT IS NOT YET AN ANSWER.
 #
-# THE DIAGNOSTIC TEST. cc1 is deterministic. Build gcc 4.7.4 twice from ONE
-# transplanted tree --
+#   gate 0  control (-O2 vs -O1)             ok
+#   gate 1  generated sources                7 of 21 DIFFER
+#   gate 2  gcc's own translation units      233 of 333 DIFFER
+#   gate 3  libgcc's translation units       16 of 16 identical
 #
-#     H   compiled by the host gcc 13
-#     T   compiled by our arm64 tcc
+# Two of those numbers are probably the harness again, and this run is built to
+# settle that rather than argue about it.
 #
-# -- and the two compilers, built from identical source, must BEHAVE
-# identically. Their own bytes differ, and should: different compilers made
-# them. Their OUTPUT must not.
+#   GATE 2 WAS CONFOUNDED. The flags are scraped from the build log and they
+#   begin `-I. -I.`, which is relative to the working directory. Run 2 invoked
+#   xgcc_H from bH/gcc and xgcc_T from bT/gcc, so each compiler read ITS OWN
+#   generated headers -- including insn-codes.h and insn-flags.h, which gate 1
+#   had just reported as differing, and which most of gcc's sources include.
+#   Different input, different output. That says nothing about codegen.
 #
-# RUN 1 FAILED, AND TWO OF THE THREE REASONS WERE THIS FILE'S FAULT.
+#   FIX: run BOTH compilers from the SAME directory, so the compiler binary is
+#   the only variable. That is what gate 2 was supposed to be.
 #
-#   1. IT COMPARED OBJECT FILES ACROSS DIFFERENT BUILD DIRECTORIES. Stage 1 was
-#      built in bH/ and bT/, and object files carry the build path in their
-#      debug info. GATE 1 duly reported 87 of 87 libgcc objects differing --
-#      which is not a miscompilation signature at all. A real one hits a few
-#      translation units; ALL of them differing means something systematic, and
-#      the systematic thing was the harness. v1 defended stage 2 against exactly
-#      this by forcing one path, and then left stage 1 exposed.
+#   GATE 1 HAD NO CONTROL. Seven files differ; the obvious reading is that tcc
+#   miscompiled a generator. But gcc 4.7's generators hash and sort their way
+#   through the machine description, and hashing on pointer values gives an
+#   order that depends on heap layout -- which differs between two binaries
+#   built by different compilers, and can differ between two RUNS of one binary
+#   under ASLR. If the generators are not reproducible, comparing their output
+#   across trees measures the allocator.
 #
-#      FIX: compare ASSEMBLY TEXT from `xgcc -S`, not object bytes. Assembly
-#      carries no build path, is human-diffable, and a difference in it is by
-#      construction a difference in codegen.
+#   FIX: run each generator TWICE in the SAME tree and compare. H vs H. If that
+#   differs, the file is nondeterministic and H vs T tells us nothing about it.
+#   This is the control gate 1 should have had, and its absence is the same
+#   mistake as run 1's: a verdict with no evidence the comparison could tell
+#   "same" from "different".
 #
-#   2. IT REPORTED MISSING DATA AS A DIFFERENCE. GATE 2 and GATE 3 never ran,
-#      and the verdict printed "DIFFER" for both, because `diff -q` on files
-#      that do not exist returns non-zero. A test that cannot tell "different"
-#      from "never measured" is worse than no test.
+# GATE 3 IS THE ONE CLEAN RESULT SO FAR, and it is clean in a way that supports
+# the confound theory: libgcc's sources do not include insn-codes.h or
+# insn-flags.h, so its 16 translation units were the only ones both compilers
+# saw identical input for -- and they agreed.
 #
-#      FIX: every gate checks its inputs exist and says n/a when they do not.
+# ---------------------------------------------------------------------------
+# A REAL BUG, FOUND BY THE STEP THAT WAS NOT PART OF THE TEST.
 #
-#   3. THE FULL `make` FAILS -- FOR BOTH COMPILERS. Stage 1 got 87 libgcc
-#      objects in and stopped: make rc=2, one error, no libgcc.a. Stage 2's
-#      configure then died with "C compiler cannot create executables", because
-#      xgcc cannot link without libgcc. THIS IS NOT A tcc PROBLEM: the host-gcc
-#      arm failed identically, at the same point, with the same count. It is
-#      real and it is the next thing to fix, but it is orthogonal to
-#      miscompilation -- and v1 could not say what the error WAS, because it
-#      printed a count instead of the message. The last step here does nothing
-#      but reproduce it and print it.
+#   g474/libgcc/unwind-dw2.c: In function 'uw_init_context_1':
+#   g474/libgcc/unwind-dw2.c:1490:44: internal compiler error: Segmentation fault
 #
-# WHAT IS COMPARED NOW, AND WHY IT NEEDS NO libgcc. `xgcc -S` stops at assembly.
-# No linking, so no libgcc, no crt files, no working driver required. That
-# removes the blocker from the critical path entirely and makes the test both
-# stronger and cheaper.
+# THE BACKPORTED COMPILER ICEs, in the arm built by the HOST gcc. tcc is not
+# involved. This is why libgcc never finishes, why libgcc.a does not exist, and
+# why run 1's stage 2 could not configure. It is a transplant bug --
+# uw_init_context_1 is dwarf2 unwinder setup, exactly the kind of
+# backend<->middle-end interface the backport crossed.
 #
-#   GATE 0  control      one compiler, -O2 vs -O1, same file. MUST DIFFER, or
-#                        the comparison is not comparing.
-#   GATE 1  generators   the .c and .h that genemit/genattrtab/genrecog wrote,
-#                        H vs T. These are TEXT, produced by tcc-built programs
-#                        against gcc-built ones. If tcc miscompiled a generator,
-#                        the machine description turns into different C and it
-#                        shows here, before a single object is compiled.
-#   GATE 2  gcc's own    every .c in gcc/, through xgcc_H -S and xgcc_T -S.
-#                        ~250 real translation units, flags taken from the build
-#                        log rather than written by hand.
-#   GATE 3  libgcc's     the same again over libgcc's sources. Reaches the
-#                        target-side code paths without needing libgcc to link.
-#
-# WHAT THIS STILL WOULD NOT CATCH. A fault common to tcc and gcc 13 -- they
-# share no code, so that is a coincidence rather than a risk -- and any path
-# neither corpus exercises. That gap is much smaller than fib(10)'s, and closing
-# it further means the gcc testsuite, which is a different and far longer job.
+# Fixing it is not this workflow's job, but one cheap question is worth asking:
+# does the tcc-built compiler ICE in the SAME place? Two compilers failing
+# identically is still agreement; a different failure would be a real
+# divergence. The last step asks that and nothing else, replacing the
+# ten-minute full `make` that has already told us all it can.
 
 on:
   push:
@@ -84,7 +72,6 @@ concurrency:
 env:
   GNU: 'https://mirrors.kernel.org/gnu'
   GNU2: 'https://ftpmirror.gnu.org'
-  # Pinned in sources/gcc.toml, measured by tcc-builds-gcc-arm64 on 2026-07-25.
   SHA474: '92e61c6dc3a0a449e62d72a38185fda550168a86702dea07125ebd3ec3996282'
   SHA485: '22fb1e7e0f68a63cee631d85b20461d1ea6bda162f03096350e38c8d427ecf23'
 
@@ -131,8 +118,6 @@ jobs:
             "$GNU/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2 $GNU2/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2" "" "" | sed 's/^/  /'
           bash "$F" g485 "$HOME/.cache/veron/gcc-4.8.5.tar.bz2" "$SHA485" \
             "$GNU/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2 $GNU2/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2" "" "" | sed 's/^/  /'
-          # ONE transplanted tree, built twice. Two transplants would add a
-          # second variable for nothing.
           bash spikes/stage3/probes/backport-aarch64.sh g474 g485 | tail -4
           echo "W=$PWD" >> "$GITHUB_ENV"
           mkdir -p man diffs
@@ -170,10 +155,6 @@ jobs:
       - name: 'Build gcc twice: all-gcc only'
         run: |
           set -eu
-          # all-gcc, NOT a full make. The corpus is compiled with `xgcc -S`,
-          # which stops before linking, so libgcc is not on the critical path
-          # for any gate. Run 1 spent its whole budget failing to build a
-          # runtime that this test does not need.
           for arm in H T; do
             case $arm in
               H) CC="gcc" ;;
@@ -195,34 +176,25 @@ jobs:
             rc=$?; echo "    configure rc=$rc"
             [ "$rc" -eq 0 ] || { tail -20 conf.log | sed 's/^/      /'; exit 1; }
             timeout 7200 make -j"$(nproc)" -Otarget MAKEINFO=true all-gcc > build.log 2>&1
-            echo "    make rc=$?"
-            echo "    errors: $(grep -cE '\berror:' build.log || true)"
-            # Print them, do not just count them. Run 1 reported "errors: 1" and
-            # nobody could act on it.
+            echo "    make rc=$?  errors: $(grep -cE '\berror:' build.log || true)"
             grep -E '\berror:' build.log | head -5 | sed 's/^/      /'
             echo "    cc1 : $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo MISSING)"
-            echo "    xgcc: $( [ -x gcc/xgcc ] && echo built || echo MISSING)"
             set -e
-            [ -x gcc/cc1 ] && [ -x gcc/xgcc ] || { echo "    cannot continue without cc1+xgcc"; exit 1; }
+            [ -x gcc/cc1 ] && [ -x gcc/xgcc ] || { echo "    cannot continue"; exit 1; }
             cd "$W"
           done
 
       - name: 'Extract the compile flags from the build itself'
         run: |
           set -eu
-          # NOT a hand-written flag list. The build already compiled every one of
-          # these files with the right -I and -D; take them from the log and the
-          # corpus is compiled exactly as gcc compiles it. A hand-made list is a
-          # second source of truth and would drift.
           L=$(grep -m1 -E ' -c .*[/ ]tree\.c' bH/build.log || true)
-          if [ -z "$L" ]; then
-            L=$(grep -m1 -E ' -c .*\.c( |$)' bH/build.log || true)
-          fi
-          [ -n "$L" ] || { echo "  could not find a compile line in bH/build.log"; exit 1; }
-          echo "  sample line:"
-          echo "$L" | fold -w 100 | head -6 | sed 's/^/    /'
+          [ -n "$L" ] || L=$(grep -m1 -E ' -c .*\.c( |$)' bH/build.log || true)
+          [ -n "$L" ] || { echo "  no compile line found"; exit 1; }
           FLAGS=$(for t in $L; do case "$t" in -I*|-D*) printf '%s ' "$t";; esac; done)
           echo "  extracted: $(printf '%s' "$FLAGS" | wc -w) -I/-D flags"
+          # The leading `-I. -I.` is why run 2's gate 2 meant nothing. It stays,
+          # because it is what the build really uses. What changes is that both
+          # compilers now run from the SAME directory, so `.` is one place.
           printf '%s\n' "$FLAGS" > "$W/flags.txt"
 
       - name: 'GATE 0 (control): the comparison must be able to fail'
@@ -230,208 +202,251 @@ jobs:
         continue-on-error: true
         run: |
           set -eu
-          # This repository has twice been handed a clean number by a broken
-          # measurement -- "0 hooks used" from a grep for the wrong spelling,
-          # "all five files identical" from a diff killed by SIGPIPE. So before
-          # believing any "identical" below, make the same machinery report a
-          # difference it is guaranteed to see.
           cd "$W/bH/gcc"
           FLAGS=$(cat "$W/flags.txt")
-          SRC="$W/g474/gcc/tree.c"
           set +e
-          ./xgcc -B./ -S $FLAGS -O2 "$SRC" -o /tmp/c-O2.s 2>/dev/null
-          ./xgcc -B./ -S $FLAGS -O1 "$SRC" -o /tmp/c-O1.s 2>/dev/null
+          ./xgcc -B./ -S $FLAGS -O2 "$W/g474/gcc/tree.c" -o /tmp/c-O2.s 2>/dev/null
+          ./xgcc -B./ -S $FLAGS -O1 "$W/g474/gcc/tree.c" -o /tmp/c-O1.s 2>/dev/null
           set -e
           if [ ! -s /tmp/c-O2.s ] || [ ! -s /tmp/c-O1.s ]; then
             echo "  CONTROL INCONCLUSIVE: could not compile the control file."
-            echo "  Every 'identical' below is therefore unverified."
             echo "G0=inconclusive" >> "$GITHUB_ENV"; exit 0
           fi
           if cmp -s /tmp/c-O2.s /tmp/c-O1.s; then
-            echo "  CONTROL FAILED: -O2 and -O1 produced identical assembly."
-            echo "  The comparison is not comparing. Ignore every gate below."
+            echo "  CONTROL FAILED: -O2 and -O1 gave identical assembly."
             echo "G0=BROKEN" >> "$GITHUB_ENV"; exit 1
           fi
           echo "  CONTROL OK: same compiler, -O2 vs -O1, assembly differs as it must."
           echo "G0=ok" >> "$GITHUB_ENV"
 
-      - name: 'GATE 1: the generated sources -- did tcc break a generator?'
+      - name: 'GATE 1a (control): are the generators even deterministic?'
         if: always()
         continue-on-error: true
         run: |
           set -eu
           set +e
-          # genemit, genattrtab, genrecog and the rest are C programs compiled by
-          # tcc in the T tree and by gcc in the H tree, and they WRITE C. If tcc
-          # miscompiled one, the machine description turns into different C --
-          # visible here as text, before anything is compiled from it.
-          n=0; d=0; miss=0
+          # H vs H. One binary, one input, run twice. If the output differs, the
+          # generator is nondeterministic and comparing it ACROSS trees measures
+          # the allocator, not the compiler. Run 2 reported 7 files differing
+          # with no way to tell those two apart.
+          cd "$W/bH/gcc"
+          md=$(sed -n 's/^md_file *= *//p' Makefile | head -1)
+          echo "  md_file: ${md:-<not found>}"
+          if [ -z "${md:-}" ] || [ ! -f "$md" ]; then
+            echo "  cannot locate the machine description -- control not run"
+            echo "G1A=n/a" >> "$GITHUB_ENV"; exit 0
+          fi
+          nd=0; det=0; miss=0
+          : > "$W/man/nondeterministic.txt"
+          for g in genemit genrecog genextract genoutput genattrtab gencodes genflags; do
+            b=""
+            [ -x "build/$g" ] && b="build/$g"
+            [ -z "$b" ] && [ -x "$g" ] && b="$g"
+            if [ -z "$b" ]; then miss=$((miss+1)); printf '    %-12s not found\n' "$g"; continue; fi
+            "./$b" "$md" > /tmp/g1.out 2>/dev/null
+            "./$b" "$md" > /tmp/g2.out 2>/dev/null
+            if cmp -s /tmp/g1.out /tmp/g2.out; then
+              det=$((det+1)); printf '    %-12s deterministic\n' "$g"
+            else
+              nd=$((nd+1)); printf '    %-12s NONDETERMINISTIC (one binary, two runs)\n' "$g"
+              echo "$g" >> "$W/man/nondeterministic.txt"
+            fi
+          done
+          echo "  deterministic: $det   nondeterministic: $nd   not found: $miss"
+          if [ "$nd" -gt 0 ]; then
+            echo "  -> gate 1b is UNINTERPRETABLE for those generators."
+            echo "G1A=nondeterministic" >> "$GITHUB_ENV"
+          else
+            echo "  -> the generators reproduce, so a gate 1b difference is real."
+            echo "G1A=deterministic" >> "$GITHUB_ENV"
+          fi
+
+      - name: 'GATE 1b: the generated sources, H vs T'
+        if: always()
+        continue-on-error: true
+        run: |
+          set -eu
+          set +e
+          n=0; d=0
           for f in $(cd bH/gcc && ls insn-*.c insn-*.h tm.h tm_p.h gtype-desc.c 2>/dev/null); do
-            if [ ! -f "bT/gcc/$f" ]; then miss=$((miss+1)); continue; fi
+            [ -f "bT/gcc/$f" ] || continue
             n=$((n+1))
             if ! cmp -s "bH/gcc/$f" "bT/gcc/$f"; then
               d=$((d+1))
               echo "    DIFFERS: $f"
               diff "bH/gcc/$f" "bT/gcc/$f" > "diffs/gen-$f.diff" 2>&1
+              # PRINT the difference. Run 2 printed names only, and a name
+              # cannot distinguish a reordered table from a wrong one.
+              echo "      diff lines: $(wc -l < "diffs/gen-$f.diff")   first few:"
+              head -10 "diffs/gen-$f.diff" | sed 's/^/        /'
             fi
           done
-          echo "  generated files compared: $n   differing: $d   missing in T: $miss"
-          if [ "$n" -eq 0 ]; then
-            echo "  n/a -- no generated files found to compare"
-            echo "G1=n/a" >> "$GITHUB_ENV"
-          elif [ "$d" -eq 0 ]; then
-            echo "  IDENTICAL: the tcc-built generators emit the same C as the gcc-built ones."
-            echo "G1=identical" >> "$GITHUB_ENV"
-          else
-            echo "G1=DIFFER" >> "$GITHUB_ENV"
-          fi
+          echo "  compared: $n   differing: $d"
+          if [ "$n" -eq 0 ]; then echo "G1=n/a" >> "$GITHUB_ENV"
+          elif [ "$d" -eq 0 ]; then echo "  IDENTICAL"; echo "G1=identical" >> "$GITHUB_ENV"
+          else echo "G1=DIFFER" >> "$GITHUB_ENV"; fi
 
-      - name: 'GATE 2: gcc''s own sources through both compilers'
+      - name: 'GATE 2: same directory, same headers, only the compiler differs'
         if: always()
         continue-on-error: true
         run: |
           set -eu
           set +e
-          # ~250 real translation units. -S stops at assembly: no linking, no
-          # libgcc, and no build path in the output to be mistaken for a
-          # miscompilation.
+          # BOTH compilers run from bH/gcc, so `-I.` resolves to one place and
+          # both read the SAME generated headers. Whatever gate 1b says about
+          # those headers is now irrelevant here: the only difference between
+          # the two invocations is which cc1 runs.
           FLAGS=$(cat "$W/flags.txt")
+          XH="$W/bH/gcc/xgcc -B$W/bH/gcc/"
+          XT="$W/bT/gcc/xgcc -B$W/bT/gcc/"
+          cd "$W/bH/gcc"
           same=0; diff_n=0; skip=0
-          : > man/gate2-differing.txt
+          : > "$W/man/gate2-differing.txt"
           for src in "$W"/g474/gcc/*.c; do
             b=$(basename "$src" .c)
-            ( cd "$W/bH/gcc" && ./xgcc -B./ -S $FLAGS -O2 "$src" -o /tmp/H.s ) 2>/dev/null
-            rcH=$?
-            ( cd "$W/bT/gcc" && ./xgcc -B./ -S $FLAGS -O2 "$src" -o /tmp/T.s ) 2>/dev/null
-            rcT=$?
-            # A file that fails to compile in BOTH is not part of this build --
-            # gcc/ holds sources for targets and languages we did not configure.
-            # Failing in only ONE is itself a difference and is counted as such.
+            $XH -S $FLAGS -O2 "$src" -o /tmp/H.s 2>/dev/null; rcH=$?
+            $XT -S $FLAGS -O2 "$src" -o /tmp/T.s 2>/dev/null; rcT=$?
             if [ $rcH -ne 0 ] && [ $rcT -ne 0 ]; then skip=$((skip+1)); continue; fi
             if [ $rcH -ne $rcT ]; then
               diff_n=$((diff_n+1))
-              echo "$b (compiled under one compiler only: H rc=$rcH T rc=$rcT)" >> man/gate2-differing.txt
+              echo "$b (H rc=$rcH T rc=$rcT -- one compiler failed)" >> "$W/man/gate2-differing.txt"
               continue
             fi
             if cmp -s /tmp/H.s /tmp/T.s; then
               same=$((same+1))
             else
-              diff_n=$((diff_n+1))
-              echo "$b" >> man/gate2-differing.txt
-              [ -s "diffs/gate2-$b.diff" ] || diff /tmp/H.s /tmp/T.s > "diffs/gate2-$b.diff" 2>&1
+              diff_n=$((diff_n+1)); echo "$b" >> "$W/man/gate2-differing.txt"
+              diff /tmp/H.s /tmp/T.s > "$W/diffs/gate2-$b.diff" 2>&1
             fi
           done
           echo "  translation units: identical=$same  differing=$diff_n  not in this build=$skip"
-          if [ $((same + diff_n)) -eq 0 ]; then
-            echo "  n/a -- nothing compiled; check the flags step"
-            echo "G2=n/a" >> "$GITHUB_ENV"
+          if [ $((same + diff_n)) -eq 0 ]; then echo "G2=n/a" >> "$GITHUB_ENV"
           elif [ "$diff_n" -eq 0 ]; then
             echo "  IDENTICAL across all $same translation units."
             echo "G2=identical" >> "$GITHUB_ENV"
           else
-            echo "  differing:"; head -25 man/gate2-differing.txt | sed 's/^/    /'
+            echo "  differing:"; head -20 "$W/man/gate2-differing.txt" | sed 's/^/    /'
+            echo "  --- the smallest difference, in full ---"
+            f=$(ls -S "$W"/diffs/gate2-*.diff 2>/dev/null | tail -1)
+            [ -n "${f:-}" ] && { echo "    $f"; head -25 "$f" | sed 's/^/    /'; }
             echo "G2=DIFFER" >> "$GITHUB_ENV"
           fi
 
-      - name: 'GATE 3: libgcc''s sources -- target-side code, still no linking'
+      - name: 'GATE 3: libgcc''s sources, same directory'
         if: always()
         continue-on-error: true
         run: |
           set -eu
           set +e
           FLAGS=$(cat "$W/flags.txt")
+          XH="$W/bH/gcc/xgcc -B$W/bH/gcc/"
+          XT="$W/bT/gcc/xgcc -B$W/bT/gcc/"
+          cd "$W/bH/gcc"
           same=0; diff_n=0; skip=0
-          : > man/gate3-differing.txt
+          : > "$W/man/gate3-differing.txt"
           for src in "$W"/g474/libgcc/*.c "$W"/g474/libgcc/config/aarch64/*.c; do
             [ -f "$src" ] || continue
             b=$(basename "$src" .c)
-            ( cd "$W/bH/gcc" && ./xgcc -B./ -S $FLAGS -O2 "$src" -o /tmp/H.s ) 2>/dev/null
-            rcH=$?
-            ( cd "$W/bT/gcc" && ./xgcc -B./ -S $FLAGS -O2 "$src" -o /tmp/T.s ) 2>/dev/null
-            rcT=$?
+            $XH -S $FLAGS -O2 "$src" -o /tmp/H.s 2>/dev/null; rcH=$?
+            $XT -S $FLAGS -O2 "$src" -o /tmp/T.s 2>/dev/null; rcT=$?
             if [ $rcH -ne 0 ] && [ $rcT -ne 0 ]; then skip=$((skip+1)); continue; fi
             if [ $rcH -ne $rcT ] || ! cmp -s /tmp/H.s /tmp/T.s; then
-              diff_n=$((diff_n+1)); echo "$b" >> man/gate3-differing.txt
-              [ -s "diffs/gate3-$b.diff" ] || diff /tmp/H.s /tmp/T.s > "diffs/gate3-$b.diff" 2>&1
+              diff_n=$((diff_n+1)); echo "$b" >> "$W/man/gate3-differing.txt"
+              diff /tmp/H.s /tmp/T.s > "$W/diffs/gate3-$b.diff" 2>&1
             else
               same=$((same+1))
             fi
           done
           echo "  translation units: identical=$same  differing=$diff_n  skipped=$skip"
-          if [ $((same + diff_n)) -eq 0 ]; then
-            echo "G3=n/a" >> "$GITHUB_ENV"
+          if [ $((same + diff_n)) -eq 0 ]; then echo "G3=n/a" >> "$GITHUB_ENV"
           elif [ "$diff_n" -eq 0 ]; then
             echo "  IDENTICAL across all $same translation units."
             echo "G3=identical" >> "$GITHUB_ENV"
           else
-            head -25 man/gate3-differing.txt | sed 's/^/    /'
+            head -20 "$W/man/gate3-differing.txt" | sed 's/^/    /'
             echo "G3=DIFFER" >> "$GITHUB_ENV"
           fi
 
-      - name: 'SEPARATE QUESTION: why does the full make fail?'
+      - name: 'THE ICE: does the tcc-built compiler fail the same way?'
         if: always()
         continue-on-error: true
         run: |
           set -eu
           set +e
-          # NOT part of the miscompilation test -- deliberately last, and it
-          # cannot block a gate. Run 1 showed the full `make` failing at libgcc
-          # for BOTH compilers, identically: rc=2, one error, no libgcc.a. That
-          # rules tcc out as the cause and leaves a real open item, because
-          # without libgcc the driver cannot link a program. Run 1 printed a
-          # COUNT of errors and no message, so this reproduces it on the H tree
-          # only -- host gcc, the simplest case -- and prints what it says.
-          cd "$W/bH"
-          timeout 3600 make -k -j"$(nproc)" -Otarget MAKEINFO=true > full.log 2>&1
-          echo "  make rc=$?"
-          echo "  --- what make said failed ---"
-          grep -nE '^\s*make(\[[0-9]+\])?: \*\*\* ' full.log | head -8 | sed 's/^/    /'
-          echo "  --- the first error, in context ---"
-          n=$(grep -nE '\berror:' full.log | head -1 | cut -d: -f1)
-          if [ -n "${n:-}" ]; then
-            start=$(( n > 25 ? n - 25 : 1 ))
-            sed -n "${start},$((n + 5))p" full.log | sed 's/^/    /'
+          # Run 2's full make died here, in the HOST-GCC arm:
+          #   unwind-dw2.c:1490:44: internal compiler error: Segmentation fault
+          # A transplant bug, nothing to do with tcc. The only question worth a
+          # minute is whether the tcc-built compiler fails the SAME way.
+          FLAGS=$(cat "$W/flags.txt")
+          SRC="$W/g474/libgcc/unwind-dw2.c"
+          cd "$W/bH/gcc"
+          for arm in H T; do
+            X="$W/b$arm/gcc/xgcc -B$W/b$arm/gcc/"
+            echo "  ----- $arm -----"
+            $X -S $FLAGS -O2 -fexceptions -DIN_LIBGCC2 -fbuilding-libgcc \
+               "$SRC" -o "/tmp/uw-$arm.s" > "/tmp/uw-$arm.log" 2>&1
+            echo "    rc=$?"
+            grep -E 'internal compiler error|Segmentation|error:' "/tmp/uw-$arm.log" \
+              | head -4 | sed 's/^/      /'
+            [ -s "/tmp/uw-$arm.s" ] && echo "    produced $(wc -l < "/tmp/uw-$arm.s") lines of assembly"
+          done
+          echo "  ----- comparison -----"
+          if grep -q 'internal compiler error' /tmp/uw-H.log 2>/dev/null \
+             && grep -q 'internal compiler error' /tmp/uw-T.log 2>/dev/null; then
+            lh=$(grep -oE 'unwind-dw2\.c:[0-9]+:[0-9]+' /tmp/uw-H.log | head -1)
+            lt=$(grep -oE 'unwind-dw2\.c:[0-9]+:[0-9]+' /tmp/uw-T.log | head -1)
+            echo "    both ICE.  H at ${lh:-?}   T at ${lt:-?}"
+            [ "$lh" = "$lt" ] && echo "    SAME LOCATION -- the compilers agree, including in failure."
+          elif [ -s /tmp/uw-H.s ] && [ -s /tmp/uw-T.s ]; then
+            cmp -s /tmp/uw-H.s /tmp/uw-T.s \
+              && echo "    both compiled it, identically (the ICE did not reproduce here)" \
+              || echo "    both compiled it, DIFFERENTLY"
           else
-            echo "    (no 'error:' line; showing the first *** and its context)"
-            m=$(grep -nE '^\s*make(\[[0-9]+\])?: \*\*\* ' full.log | head -1 | cut -d: -f1)
-            [ -n "${m:-}" ] && sed -n "$(( m > 30 ? m - 30 : 1 )),${m}p" full.log | sed 's/^/    /'
+            echo "    ASYMMETRIC: one compiled it, the other did not. That is a divergence."
           fi
-          echo "  --- error classes ---"
-          grep -oE '\berror: [^,;]*' full.log | sed 's/[0-9]\+/N/g' \
-            | sort | uniq -c | sort -rn | head -10 | sed 's/^/    /'
-          echo "  libgcc.a: $(find . -name 'libgcc.a' | head -1 || echo 'NOT BUILT')"
 
       - name: 'VERDICT'
         if: always()
         run: |
           set -eu
-          # n/a is a THIRD state and must never be printed as DIFFER. Run 1's
-          # verdict said gates 2 and 3 differed when neither had run, because
-          # `diff -q` on a missing file returns non-zero like any mismatch.
-          printf '  %-38s %s\n' 'gate 0  control (-O2 vs -O1)'      "${G0:-not reached}"
-          printf '  %-38s %s\n' 'gate 1  generated sources'          "${G1:-not reached}"
-          printf '  %-38s %s\n' "gate 2  gcc's own translation units" "${G2:-not reached}"
-          printf '  %-38s %s\n' "gate 3  libgcc's translation units"  "${G3:-not reached}"
+          printf '  %-40s %s\n' 'gate 0   comparison can fail'       "${G0:-not reached}"
+          printf '  %-40s %s\n' 'gate 1a  generators deterministic?' "${G1A:-not reached}"
+          printf '  %-40s %s\n' 'gate 1b  generated sources H vs T'  "${G1:-not reached}"
+          printf '  %-40s %s\n' 'gate 2   gcc TUs, same headers'     "${G2:-not reached}"
+          printf '  %-40s %s\n' 'gate 3   libgcc TUs, same headers'  "${G3:-not reached}"
           echo
           if [ "${G0:-}" != ok ]; then
             echo "  The control did not pass. Nothing above it is evidence."
             exit 1
           fi
-          if [ "${G1:-}" = identical ] && [ "${G2:-}" = identical ] && [ "${G3:-}" = identical ]; then
-            echo "  NO MISCOMPILATION DETECTED."
-            echo "  The tcc-built generators emit the same C as the gcc-built ones,"
-            echo "  and the two compilers emit the same assembly for every"
-            echo "  translation unit in gcc and libgcc."
-            echo
-            echo "  Not covered: a fault common to tcc and gcc 13 (they share no"
-            echo "  code), and any path neither corpus reaches. The gcc testsuite"
-            echo "  is the next and much longer step."
+          # Gates 2 and 3 are the test. Gate 1b counts as evidence only if gate
+          # 1a says the generators reproduce in the first place.
+          if [ "${G2:-}" = identical ] && [ "${G3:-}" = identical ]; then
+            echo "  NO MISCOMPILATION DETECTED IN CODEGEN."
+            echo "  Given identical input, the tcc-built cc1 and the gcc-built cc1"
+            echo "  emit identical assembly for every translation unit in gcc and"
+            echo "  in libgcc."
+            if [ "${G1:-}" = DIFFER ] && [ "${G1A:-}" = nondeterministic ]; then
+              echo
+              echo "  Gate 1b is explained: the generators do not reproduce run to"
+              echo "  run, so their output cannot be compared across trees. That is"
+              echo "  a property of gcc 4.7's generators, not of tcc."
+            elif [ "${G1:-}" = DIFFER ]; then
+              echo
+              echo "  BUT gate 1b differs while the generators DO reproduce. That"
+              echo "  combination needs explaining before this is called clean:"
+              echo "  the generated C differs, yet both compilers agree on every"
+              echo "  translation unit. Read diffs/gen-*.diff."
+            fi
           else
-            echo "  Not clean. Read the gate that failed, and remember what run 1"
-            echo "  cost: check whether ALL units differ before concluding anything."
-            echo "  All of them differing is a harness signature, not a compiler bug."
-            echo "  Per-file diffs are in the artifact."
+            echo "  Not clean. Before concluding anything: check whether ALL units"
+            echo "  differ. All differing is a harness signature -- runs 1 and 2"
+            echo "  were both lost to exactly that."
           fi
+          echo
+          echo "  Separately, and not a tcc question: the backported compiler ICEs"
+          echo "  on libgcc/unwind-dw2.c under the host gcc too. libgcc cannot be"
+          echo "  built until that is fixed."
 
       - uses: actions/upload-artifact@v4
         if: always()
