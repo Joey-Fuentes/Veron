@@ -148,5 +148,65 @@ grep -q '^\s*cpu_type=aarch64' "$G47/gcc/config.gcc" || {
     say "  FATAL: cpu_type=aarch64 never set -- the cpu_type table was not patched"; exit 1; }
 say "    verified: $n_arms aarch64 arms, cpu_type=aarch64 present"
 
+# ------------------------------------------------------- structure + proof
+# TWO RUNS HAVE NOW REPORTED A SUCCESSFUL SPLICE AND STILL HIT
+#     *** Configuration aarch64-unknown-linux-gnu not supported
+# so the arms are landing somewhere the dispatch does not read. Counting arms
+# proves nothing about WHERE they are. Print the map, then prove it by sourcing
+# the file the way gcc/configure does.
+say ""
+say "  === config.gcc structure (line numbers) ==="
+say "    case \${target} in    : $(grep -n '^case ${target} in' "$G47/gcc/config.gcc" | cut -d: -f1 | tr '\n' ' ')"
+say "    *** Configuration    : $(grep -n '\*\*\* Configuration' "$G47/gcc/config.gcc" | cut -d: -f1 | tr '\n' ' ')"
+say "    our aarch64 arms     : $(grep -n '^aarch64.*)$' "$G47/gcc/config.gcc" | cut -d: -f1 | tr '\n' ' ')"
+say "    esac                 : $(grep -n '^esac' "$G47/gcc/config.gcc" | cut -d: -f1 | tr '\n' ' ')"
+
+say ""
+say "  === PROOF: source config.gcc as gcc/configure does ==="
+# config.gcc is a plain shell fragment. Sourcing it with the variables it reads
+# is exactly what gcc/configure does: it either sets cpu_type/tm_file or prints
+# "not supported" and exits 1. This turns a 40-minute build into an answer now.
+#
+# THE CHECK MUST HAPPEN IN THE PARENT. `exit 1` inside a SOURCED file
+# terminates the shell running it, so any grep written after the `.` never
+# executes -- the subshell is already gone. Everything the test learns has to
+# be written to a file first and read back out here.
+PROOF=$(mktemp)
+(
+    cd "$G47/gcc" || exit 1
+    target=aarch64-unknown-linux-gnu
+    target_cpu=aarch64 target_vendor=unknown target_os=linux-gnu
+    host=aarch64-unknown-linux-gnu build=aarch64-unknown-linux-gnu
+    srcdir=. enable_threads= enable_shared=yes enable_multilib=
+    gcc_cv_as= gcc_cv_ld= with_cpu= with_arch= with_tune= with_abi=
+    cpu_type= tm_file= tm_p_file= xm_file= extra_objs= extra_headers=
+    tmake_file= target_gtfiles= extra_options= md_file=
+    # shellcheck disable=SC1091
+    . ./config.gcc > "$PROOF" 2>&1
+    # Only reached if config.gcc did NOT exit.
+    { echo "RESULT_cpu_type=${cpu_type:-}"
+      echo "RESULT_tm_file=${tm_file:-}"; } >> "$PROOF"
+)
+prc=$?
+head -4 "$PROOF" | sed 's/^/    /'
+cpu=$(sed -n 's/^RESULT_cpu_type=//p' "$PROOF")
+tmf=$(sed -n 's/^RESULT_tm_file=//p' "$PROOF")
+
+if grep -q 'not supported' "$PROOF"; then
+    say "    config.gcc REJECTED the target."
+    say "    -> the arms are in the wrong case statement; the map above says which."
+    rm -f "$PROOF"
+    exit 1
+fi
+if [ -n "$cpu" ]; then
+    say "    SOURCED OK  cpu_type=$cpu  tm_file=${tmf:-<unset>}"
+    [ "$cpu" = aarch64 ] || { say "    FATAL: cpu_type is $cpu, not aarch64"; rm -f "$PROOF"; exit 1; }
+else
+    say "    sourcing ended rc=$prc without saying 'not supported' and without"
+    say "    setting cpu_type -- most likely this harness lacks a variable"
+    say "    config.gcc wants, rather than a bad splice. Proceeding."
+fi
+rm -f "$PROOF"
+
 say "  after : 4.7.4 has $(grep -c aarch64 "$G47/gcc/config.gcc" || true) aarch64 mentions in config.gcc"
 say "  target recognised: $(cd "$G47" && ./config.sub aarch64-unknown-linux-gnu 2>&1)"
