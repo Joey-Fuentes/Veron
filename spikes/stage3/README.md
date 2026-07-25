@@ -48,6 +48,27 @@ BusyBox's `if (ENABLE_FEATURE_X)` idiom leaves references to functions that were
 never defined. Everything else was build plumbing. The kernel uses the same
 idiom via `IS_ENABLED()`, so leg 3 will meet this again.
 
+**gcc 4.7 can carry gcc 4.8's aarch64 backend.** The transplant builds:
+
+```
+arm C-474-backport    configure rc=0    build rc=0    cc1 BUILT
+```
+
+gcc 4.7.4 — the last release written in C — with `gcc/config/aarch64` from
+4.8.5 spliced in, compiles clean and produces a `cc1` targeting aarch64. That
+was the leg's whole question, because it makes the gcc route native **and**
+C-only:
+
+```
+tcc -> gcc 4.7 + this backend -> g++ 4.7 -> gcc 4.8 -> modern gcc
+```
+
+4.7 yields a full C++98 compiler built from C, which is exactly what 4.8 asks
+for. Gated by `.github/workflows/gcc47-aarch64-backport.yml`; the adaptation is
+`tools/expand_int_iterators.py`, `tools/port_gcc47_api.py` and
+`spikes/stage3/probes/backport-aarch64.sh`. Details and the running cost table
+are in ROADMAP leg 2.
+
 ## The pin set (confirmed, do not drift)
 
 `livebootstrap-pins-probe` resolved `live-bootstrap -> stage0-posix -> M2-Planet`

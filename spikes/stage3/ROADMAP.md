@@ -642,3 +642,56 @@ Total adaptation so far, across the whole backport:
 | `.md` dialect | 34 definitions expanded, 30 forms → 109 patterns |
 | qualified `<ITER:attr>` refs | 7 |
 | middle-end API | 3 functions, 24 sites |
+
+---
+
+## Leg 2 — the backport BUILDS (2026-07-24)
+
+```
+arm C-474-backport    configure rc=0    build rc=0    cc1 BUILT
+```
+
+gcc 4.7.4 carrying gcc 4.8.5's `gcc/config/aarch64` builds a `cc1` that targets
+aarch64. The gap that opened this leg — *4.7 has no aarch64 backend, 4.8 needs
+C++, and they are the same release* — is closed without a C++ rung and without
+a cross-architecture detour.
+
+### What it cost, end to end
+
+| layer | adaptation |
+|---|---|
+| target hooks | **0** — the backend uses none of the 21 new in 4.8 |
+| `config.gcc` / `libgcc/config.host` | 3 case arms, spliced by block structure |
+| `config.sub` / `config.guess` | taken from 4.8.5 wholesale (standalone data files) |
+| `.md` dialect | 34 `define_int_*` expanded: 30 forms → 109 patterns |
+| qualified `<ITER:attr>` refs | 7 |
+| middle-end API | 3 functions, 24 call sites |
+
+Three tools, each a named and reviewable delta in the spirit of
+`tools/drop_asm.py`:
+
+- `tools/expand_int_iterators.py` — 4.8-only `.md` constructs into 4.7's dialect
+- `tools/port_gcc47_api.py` — `plus_constant`, `assign_stack_temp`,
+  `crtl->is_leaf`
+- `spikes/stage3/probes/backport-aarch64.sh` — the transplant, with a
+  source-proof of `config.gcc` that fails in seconds rather than after a
+  40-minute build
+
+### The vax control was right
+
+It predicted the entire 4.7→4.8 backend interface delta at **~148 lines**, from
+diffing a backend nobody was developing. Nothing encountered was structural: no
+missing subsystem, no hook the backend needed, no C that would not compile.
+Every obstacle was either a *dialect* change in the machine description or a
+*signature* change in three functions.
+
+### What this does NOT yet show
+
+- **That the compiler works.** `cc1` exists; whether it emits correct aarch64
+  code is a separate claim, now tested by the "THE CLAIM" step (compile, emit
+  assembly, assemble, link, run — `fib(10)` must return 55).
+- **That tcc can build this tree.** The arms build with the host gcc, one
+  variable at a time. `gcc-entrypoint-probe` already cleared the previous
+  blocker by building gmp, mpfr and mpc under tcc.
+- **That g++ 4.7 then builds 4.8.** The next rung, and the reason for choosing
+  4.7 at all.

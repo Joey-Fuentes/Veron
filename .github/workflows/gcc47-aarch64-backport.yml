@@ -292,6 +292,62 @@ jobs:
           echo "  objects built: $(find . -name '*.o' | wc -l)"
           echo "  cc1          : $( [ -x gcc/cc1 ] && echo BUILT || echo no)"
 
+      - name: 'THE CLAIM: does the backported compiler actually compile?'
+        if: always()
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          cd build
+          # A BUILT cc1 IS NOT A WORKING COMPILER. The whole point of the leg is
+          # a gcc that targets aarch64, so make it emit aarch64 code and run it.
+          [ -x gcc/cc1 ] || { echo "  no cc1 -- nothing to test"; exit 0; }
+          echo "  cc1: $(gcc/cc1 --version 2>&1 | head -1)"
+          echo "  size: $(wc -c < gcc/cc1) bytes"
+          echo
+
+          cat > /tmp/t.c <<'CEOF'
+          int fib(int n) { return n < 2 ? n : fib(n-1) + fib(n-2); }
+          int main(void) { return fib(10); }
+          CEOF
+
+          echo "  --- 1. cc1 emits assembly ---"
+          gcc/cc1 -quiet -O2 /tmp/t.c -o /tmp/t.s 2>&1 | head -5 | sed 's/^/    /'
+          if [ -s /tmp/t.s ]; then
+            echo "    produced $(wc -l < /tmp/t.s) lines"
+            echo "    --- is it aarch64? ---"
+            grep -qE '\b(stp|ldp|w[0-9]+|x[0-9]+)\b' /tmp/t.s \
+              && echo "    YES: aarch64 mnemonics/registers present" \
+              || echo "    NO: does not look like aarch64"
+            head -18 /tmp/t.s | sed 's/^/      /'
+          else
+            echo "    cc1 produced no assembly"
+          fi
+          echo
+
+          echo "  --- 2. assemble and run it (system as/ld, our compiler) ---"
+          if [ -s /tmp/t.s ]; then
+            as /tmp/t.s -o /tmp/t.o 2>&1 | head -5 | sed 's/^/    /'
+            if [ -f /tmp/t.o ]; then
+              echo "    assembled: $(file /tmp/t.o | cut -d, -f1-2)"
+              gcc /tmp/t.o -o /tmp/t 2>&1 | head -3 | sed 's/^/    /'
+              if [ -x /tmp/t ]; then
+                /tmp/t; rc=$?
+                echo "    ran: exit=$rc (fib(10)=55, so 55 expected)"
+                [ "$rc" = 55 ] && echo "    PASS: a gcc 4.7 carrying 4.8's aarch64 backend" \
+                              && echo "          compiled and ran correct aarch64 code."
+              fi
+            fi
+          fi
+          echo
+          echo "  --- 3. the full driver, if it was built ---"
+          if [ -x gcc/xgcc ]; then
+            gcc/xgcc -B gcc/ -O2 /tmp/t.c -o /tmp/t2 2>&1 | head -5 | sed 's/^/    /'
+            [ -x /tmp/t2 ] && { /tmp/t2; echo "    xgcc end-to-end: exit=$? (expect 55)"; }
+          else
+            echo "    xgcc not built (all-gcc stops short of the driver)"
+          fi
+
       - name: 'SIZE THE NEXT FIX'
         continue-on-error: true
         run: |
