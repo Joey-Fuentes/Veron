@@ -301,6 +301,14 @@ jobs:
             ( cd "$1" && timeout 7200 make -k -j"$NP" -Otarget MAKEINFO=true \
                 all-gcc > build.log 2>&1 )
           }
+          # `mk X; rc=$?` DIES under set -e before rc is ever assigned, because a
+          # failing simple command terminates the shell. Arm A's stage 2 make
+          # returned 2 and the run ended right there, printing nothing -- the
+          # same shape as the fib test returning 55. Any command whose failure is
+          # a RESULT rather than an accident has to run in a condition context.
+          mkrc() {   # $1 = build dir; echoes the status instead of dying
+            if mk "$1"; then echo 0; else echo $?; fi
+          }
 
           # -------------------------------------------------- tcc, for arm D
           if [ "$CC" = tcc ]; then
@@ -367,7 +375,7 @@ jobs:
           say "=== stage 1: built by $CC ==="
           conf build "$CCCMD" && say "  configure rc=0" \
             || { say "  configure FAILED"; tail -20 build/conf.log | sed 's/^/    /'; exit 1; }
-          mk build; MRC=$?
+          MRC=$(mkrc build)
           say "  make rc=$MRC"
           grep -E '^\s*make(\[[0-9]+\])?: \*\*\* ' build/build.log | head -3 | sed 's/^/    /'
           [ -x build/gcc/cc1 ] || { say "  no cc1 -- nothing further is possible"; exit 1; }
@@ -409,7 +417,7 @@ jobs:
           rm -rf build
           if conf build "$CCCMD"; then C2=0; else C2=$?; fi
           say "    configure rc=$C2"
-          mk build; M2RC=$?
+          M2RC=$(mkrc build)
           say "    make rc=$M2RC"
           if [ -x build/gcc/cc1 ]; then
             say "  BUILD 2  size $(wc -c < build/gcc/cc1)  sha256 $(sha256sum build/gcc/cc1 | cut -d' ' -f1)"
@@ -467,25 +475,61 @@ jobs:
             SELF=n/a
           else
             say "=== phase 4: stage 2, then stage 3 ==="
-            X1="/work/build/gcc/xgcc -B/work/build/gcc/ $BORROW"
+            # THE COMPILER LIVES AT ONE FIXED PATH FOR BOTH STAGES.
+            #
+            # Run 3 built stage 2 with /work/build/gcc/xgcc and stage 3 with
+            # /work/c2/xgcc, and the two cc1s differed: 10,959,480 vs 10,959,144
+            # bytes, differing from char 41 -- which is e_shoff, the section
+            # header offset, i.e. the whole file shifted rather than one
+            # instruction changing.
+            #
+            # gcc records its own configure command line in configargs.h, which
+            # is compiled into toplev.o and linked into cc1 so that --version can
+            # print it. That command line contains CC=..., so two different
+            # compiler paths put two different-length strings inside the binary
+            # and everything after them moves. The comparison was measuring my
+            # directory names.
+            #
+            # Copying each stage's compiler to ONE path makes the CC= string
+            # byte-identical, which is the only way stage2 == stage3 can mean
+            # what it is supposed to mean. If they still differ after this, the
+            # difference is real.
+            rm -rf /work/ccprev && cp -a build/gcc /work/ccprev
+            XP="/work/ccprev/xgcc -B/work/ccprev/ $BORROW"
+            say "  compiler path for BOTH stages: /work/ccprev/xgcc"
+
             say "  ---- STAGE 2: gcc rebuilt by stage 1's own compiler ----"
             rm -rf sN
-            if conf sN "$X1"; then say "    configure rc=0"; else
-              SELF=stage2-failed; say "    configure FAILED"
-              tail -10 sN/conf.log 2>/dev/null | sed 's/^/      /'; fi
-            if [ "${SELF:-}" != stage2-failed ]; then
-              mk sN; say "    make rc=$?"
+            if conf sN "$XP"; then
+              say "    configure rc=0"
+              say "    make rc=$(mkrc sN)"
+            else
+              SELF=stage2-failed
+              say "    configure FAILED"
+              tail -6 sN/conf.log 2>/dev/null | sed 's/^/      /'
+              # conf.log carries autoconf's SUMMARY. config.log carries the test
+              # that actually failed, and run 3's arm D reported only "requires
+              # GMP 4.2+" with no way to see why the check did not pass.
+              for cl in sN/config.log sN/gcc/config.log; do
+                [ -f "$cl" ] && { say "    --- $cl (last failing test) ---"
+                  grep -B6 'configure:.*error\|failed program was' "$cl" 2>/dev/null \
+                    | tail -20 | sed 's/^/      /'; break; }
+              done
             fi
+
             if [ -x sN/gcc/cc1 ]; then
               say "  STAGE 2  size $(wc -c < sN/gcc/cc1)  sha256 $(sha256sum sN/gcc/cc1 | cut -d' ' -f1)"
               cp sN/gcc/cc1 /work/cc1-s2
-              rm -rf /work/c2 && cp -a sN/gcc /work/c2
-              X2="/work/c2/xgcc -B/work/c2/ $BORROW"
+              # Same fixed path, now holding stage 2's compiler.
+              rm -rf /work/ccprev && cp -a sN/gcc /work/ccprev
               say "  ---- STAGE 3: gcc rebuilt by STAGE 2's compiler ----"
               rm -rf sN
-              if conf sN "$X2"; then say "    configure rc=0"; else
-                say "    configure FAILED"; tail -10 sN/conf.log 2>/dev/null | sed 's/^/      /'; fi
-              mk sN; say "    make rc=$?"
+              if conf sN "$XP"; then
+                say "    configure rc=0"
+                say "    make rc=$(mkrc sN)"
+              else
+                say "    configure FAILED"; tail -6 sN/conf.log 2>/dev/null | sed 's/^/      /'
+              fi
               if [ -x sN/gcc/cc1 ]; then
                 say "  STAGE 3  size $(wc -c < sN/gcc/cc1)  sha256 $(sha256sum sN/gcc/cc1 | cut -d' ' -f1)"
                 if cmp -s /work/cc1-s2 sN/gcc/cc1; then
@@ -493,15 +537,20 @@ jobs:
                   say "  -> FIXPOINT: stage2 == stage3, byte for byte."
                 else
                   SELF=no
-                  say "  -> DIFFER by $(cmp -l /work/cc1-s2 sN/gcc/cc1 2>/dev/null | wc -l) bytes"
+                  say "  -> DIFFER by $(cmp -l /work/cc1-s2 sN/gcc/cc1 2>/dev/null | wc -l) byte positions"
                   say "     $(cmp /work/cc1-s2 sN/gcc/cc1 2>&1 | head -1)"
+                  say "     size delta: $(( $(wc -c < sN/gcc/cc1) - $(wc -c < /work/cc1-s2) )) bytes"
+                  # A shifted file and an embedded string are different faults.
+                  say "     --version strings, stage2 then stage3:"
+                  strings /work/cc1-s2 2>/dev/null | grep -m1 -i 'configured with' | cut -c1-100 | sed 's/^/       /'
+                  strings sN/gcc/cc1 2>/dev/null | grep -m1 -i 'configured with' | cut -c1-100 | sed 's/^/       /'
                 fi
               else
                 SELF=stage3-failed; say "  STAGE 3  FAILED -- no cc1"
                 tail -8 sN/build.log 2>/dev/null | sed 's/^/      /'
               fi
             else
-              SELF=stage2-failed; say "  STAGE 2  FAILED -- no cc1"
+              SELF=${SELF:-stage2-failed}; say "  STAGE 2  FAILED -- no cc1"
               tail -8 sN/build.log 2>/dev/null | sed 's/^/      /'
             fi
           fi
