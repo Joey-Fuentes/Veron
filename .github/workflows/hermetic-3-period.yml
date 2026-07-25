@@ -1,61 +1,34 @@
 name: hermetic-3-period
 
-# A PERIOD SYSROOT, AND THE ICE PREDICTION IT SETTLES.
+# A PERIOD SYSROOT (LFS 7.5), AND THE ICE PREDICTION IT SETTLES.
 #
-# hermetic-2-sysroot builds a MODERN environment -- gcc 15.2, glibc 2.43 -- and
-# that is the right home for the top of the ladder. It is the wrong home for
-# gcc 4.7. Every workaround this leg has accumulated is a 2013 compiler meeting
-# a 2026 system:
+# hermetic-2-sysroot builds a MODERN environment. It is the right home for the
+# top of the ladder and the wrong home for gcc 4.7: every workaround this leg
+# has accumulated is a 2013 compiler meeting a 2026 system --
+# `sed struct ucontext -> ucontext_t`, `-std=gnu89`, `-fcommon`, MAKEINFO=true.
 #
-#   sed 's/struct ucontext/ucontext_t/'   glibc 2.26 renamed the type
-#   CFLAGS=-std=gnu89                     gcc 5 changed inline semantics
-#   CFLAGS=-fcommon                       gcc 10 made -fno-common the default
-#   MAKEINFO=true                         2026 texinfo rejects 2012 markup
+# THE PREDICTION, stated before the run. The ICE blocking the gcc leg is libgcc
+# dying at unwind-dw2.c, and gcc47-libgcc-ice's control showed vanilla 4.8.5
+# failing at the same object with a clean diagnostic:
+#     md-unwind-support.h:42:21: error: field 'uc' has incomplete type
+# That is `struct ucontext uc;` meeting a glibc that renamed the type in 2.26.
+# **glibc 2.19 predates the rename.** So:
+#     libgcc builds unpatched -> the ICE was environmental, transplant clean
+#     it still ICEs at :1490  -> the transplant is at fault, get the backtrace
 #
-# THE PREDICTION THIS RUN EXISTS TO TEST. The ICE blocking the whole gcc leg is
-# libgcc failing at unwind-dw2.c, and the CONTROL run of gcc47-libgcc-ice showed
-# vanilla 4.8.5 failing at the same object with a clean diagnostic:
+# WHY LFS 7.5 AND NOT 7.3, when 4.7 is the rung we care about: gcc 4.7.2 has no
+# aarch64 backend, so it cannot be the cross compiler in a sysroot targeting
+# aarch64. That absence is why the backport exists. 7.5's gcc 4.8.2, glibc 2.19
+# and binutils 2.24 all have aarch64; our 4.7.4 is built INSIDE the result,
+# which is where it belongs -- the sysroot is the environment, not a rung.
 #
-#   md-unwind-support.h:42:21: error: field 'uc' has incomplete type
-#
-# That is `struct ucontext uc;` in libgcc/config/aarch64/linux-unwind.h meeting
-# a glibc that renamed the type in 2.26. **glibc 2.19 predates the rename.**
-# So, stated before the run rather than after:
-#
-#   IF libgcc builds in this sysroot WITHOUT the ucontext patch, the ICE was
-#   environmental all along and the aarch64 transplant is clean.
-#   IF it still ICEs at unwind-dw2.c:1490, the transplant is genuinely at fault
-#   and gcc47-libgcc-ice's backtrace is the next step.
-#
-# Either answer is worth the run. The first retires a blocker that currently
-# sits under libgcc, the borrowed gcc-13 runtime, the stage2/stage3 fixpoint,
-# and g++ 4.7.
-#
-# WHY LFS 7.5 AND NOT 7.3, given that 4.7 is the rung we care about. **gcc 4.7.2
-# has no aarch64 backend.** It cannot be the cross compiler in a sysroot
-# targeting aarch64-veron-linux-gnu -- that absence is the entire reason the
-# backport exists. LFS 7.3 remains a useful reference for what a 4.7-era system
-# looked like, but on this architecture the earliest sysroot that can actually
-# be built is 7.5's: gcc 4.8.2, glibc 2.19, binutils 2.24, all of which have
-# aarch64. Our 4.7.4 then gets built INSIDE it, which is where it belongs
-# anyway -- the sysroot is the environment, not a rung in the chain.
-#
-# WHERE THIS SITS IN THE LADDER. GCC 11 raised the host requirement from C++98
-# to C++11, so g++ 4.7 can build anything up to gcc 10.5, and GCC's own
-# prerequisites suggest 9.5 as an intermediate. The climb is therefore:
-#
-#   tcc -> gcc 4.7.4 +backend -> g++ 4.7 -> gcc 10.5 -> gcc 15.2
-#
-# three builds above 4.7, not the six an earlier estimate here assumed.
-#
-# LFS 7.x DIFFERS STRUCTURALLY FROM 13.0 and the differences are not cosmetic:
-#   - everything installs into /tools, not into $LFS/usr
-#   - glibc takes --prefix=/tools
-#   - glibc 2.19 needs libc_cv_forced_unwind=yes and friends, because the cross
-#     compiler cannot RUN test programs and the checks would otherwise fail
-#   - gcc 4.8 has --disable-libmudflap and --disable-libitm, which do not exist
-#     in gcc 15; gcc 15 has --enable-default-pie, which does not exist in 4.8
-# which is why this is a separate file rather than an `era:` input.
+# SEVEN RUNS OF FIXES ARE BAKED IN HERE, each a 2026 host being unrecognisable
+# to 2014 software. They are noted at the point they apply:
+#   * CXX="g++ -std=gnu++98"   reload1.c does bool++, removed in C++17
+#   * ARCH=arm64              linux 3.13's uname table predates aarch64
+#   * ln -s $S/tools /tools   chapter 5 uses absolute /tools paths
+#   * MAKEINFO=: at CONFIGURE glibc compares against the literal ":"
+#   * verify, do not assume   every check here failed vacuously at least once
 
 on:
   push:
@@ -64,7 +37,7 @@ on:
   workflow_dispatch:
     inputs:
       ucontext_patch:
-        description: 'apply the ucontext_t patch to our 4.7 tree (no = test the prediction)'
+        description: 'patch ucontext in our 4.7 tree (no = test the prediction)'
         required: false
         default: 'no'
 
@@ -75,7 +48,6 @@ concurrency:
 env:
   GNU: 'https://mirrors.kernel.org/gnu'
   LFS_TGT: 'aarch64-veron-linux-gnu'
-  # LFS 7.5's tested set, from its chapter 3.
   BINUTILS: '2.24'
   GCCVER: '4.8.2'
   GLIBC: '2.19'
@@ -83,7 +55,6 @@ env:
   GMP: '5.1.3'
   MPFR: '3.1.2'
   MPC: '1.0.2'
-  # what we build INSIDE the box
   SHA474: '92e61c6dc3a0a449e62d72a38185fda550168a86702dea07125ebd3ec3996282'
   SHA485: '22fb1e7e0f68a63cee631d85b20461d1ea6bda162f03096350e38c8d427ecf23'
 
@@ -109,27 +80,15 @@ jobs:
           echo "S=$S" >> "$GITHUB_ENV"
           echo "W=$PWD" >> "$GITHUB_ENV"
           mkdir -pv "$S"/tools "$S"/work
-          # LFS 7.x puts the whole temporary toolchain in /tools and nothing
-          # else. Inside the box we bind the sysroot as /, so /tools resolves.
-          ln -sv tools "$S/usr" 2>/dev/null || mkdir -p "$S/usr"
-          # PATH once, for every later step. hermetic-2 lost a run to setting it
-          # per-step: a missing cross compiler does not announce itself, it is
-          # silently replaced by the host's.
           echo "$S/tools/bin" >> "$GITHUB_PATH"
-          # LFS 7.5 chapter 4: `ln -sv $LFS/tools /`. This is not decoration.
-          # Chapter 5 configures everything with ABSOLUTE /tools paths --
-          # --prefix=/tools, --with-headers=/tools/include,
-          # --with-native-system-header-dir=/tools/include -- and those have to
-          # resolve on the HOST while chapter 5 runs, because that is where the
-          # cross compiler is being invoked from.
-          #
-          # Skipping it cost a run: DESTDIR="$S" put the files in the right
-          # place, the check confirmed asm/unistd.h was present at
-          # $S/tools/include/asm/unistd.h, and glibc still could not find it --
-          # because it was looking in /tools/include, which did not exist.
+          # `ln -sv $LFS/tools /` is LFS 7.5 chapter 4 and it is load-bearing:
+          # chapter 5 configures with ABSOLUTE /tools paths, and those must
+          # resolve on the HOST while the cross compiler is driven from outside
+          # the sysroot. Skipping it cost a run in which asm/unistd.h was
+          # verifiably present at $S/tools/include and glibc still could not
+          # find it, because it was looking in /tools/include.
           sudo ln -sfn "$S/tools" /tools
           echo "  /tools -> $(readlink -f /tools)"
-          [ -d /tools/bin ] || echo "  (empty for now; populated by binutils pass 1)"
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
           echo "  LFS_TGT: $LFS_TGT   host: $(gcc -dumpmachine)"
 
@@ -147,7 +106,6 @@ jobs:
                    "https://cdn.kernel.org/pub/linux/kernel/v3.x/linux-$KERNEL.tar.xz"; do
             echo "  $(basename "$u")"; curl -fsSL --retry 3 -O "$u"
           done
-          # our own trees, for later, inside the box
           F=spikes/stage3/probes/fetch-pinned.sh
           bash "$F" g474 "$HOME/.cache/veron/gcc-4.7.4.tar.bz2" "$SHA474" \
             "$GNU/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2" "" "" | sed 's/^/  /'
@@ -157,76 +115,32 @@ jobs:
       - name: '5.4 binutils 2.24 pass 1'
         run: |
           set -eu
+          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|internal compiler|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
           tar xf "binutils-$BINUTILS.tar.bz2"
           mkdir -p b-bu1 && cd b-bu1
           "../binutils-$BINUTILS/configure" \
             --prefix=/tools --with-sysroot="$S" --with-lib-path=/tools/lib \
             --target="$LFS_TGT" --disable-nls --disable-werror \
-            > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -20 c.log | sed "s/^/    /"; exit 1; }
-          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 b.log | sed "s/^/    /"; exit 1; }
-          # LFS installs into $LFS/tools; DESTDIR gets us there without root.
-          # MAKEINFO=true TRADED ONE FAILURE FOR ANOTHER. With it, `true` runs
-          # in place of makeinfo, produces no manual/libc.info, and the install
-          # rule then fails on a missing file -- Error 134 (texinfo aborting)
-          # became Error 1 (nothing to install). glibc's install has no
-          # skip-the-manual switch, so give it an empty one to copy. The manual
-          # is documentation; it has no bearing on whether the libc works.
-          # THE MANUAL CANNOT BE MADE TO INSTALL, SO STOP TRYING TO. Three
-          # attempts: MAKEINFO=true gave Error 134 -> Error 1, an empty
-          # libc.info moved the failure to another rule in the same subdir.
-          # glibc has no switch to skip it. Use -k so every OTHER subdir still
-          # installs, then VERIFY THE ARTIFACTS -- which is the thing actually
-          # being claimed. Documentation is not the libc.
-          mkdir -p manual && : > manual/libc.info
-          make -k DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || true
-          echo "  install finished (manual/ failures ignored); checking artifacts:"
-          miss=0
-          for a in lib/libc.so.6 lib/ld-linux-aarch64.so.1 lib/libc.a \
-                   include/stdio.h include/gnu/stubs.h; do
-            if [ -e "$S/tools/$a" ]; then printf '    %-32s present\n' "$a"
-            else printf '    %-32s MISSING\n' "$a"; miss=1; fi
-          done
-          if [ "$miss" -ne 0 ]; then
-            echo "  the libc did NOT install -- this is not just the manual:"
-            grep -nE "Error [0-9]|make(\[[0-9]+\])?: \*\*\*" i.log \
-              | grep -v manual | head -8 | sed "s/^/    /"
-            exit 1
-          fi || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
-          ls "$S/tools/bin" | tr '\n' ' ' | sed 's/^/  /'
+            > c.log 2>&1 || die "configure" c.log
+          make -j"$(nproc)" > b.log 2>&1 || die "build" b.log
+          make DESTDIR="$S" install > i.log 2>&1 || die "install" i.log
+          echo "  tools: $(ls "$S/tools/bin" | wc -l) cross binaries"
 
-      # A 2014 BOOK ON A 2026 HOST. LFS 7.5 assumed period tooling for the
-      # things it does NOT build: perl, texinfo, makeinfo, bison. Those come
-      # from the runner here, so doc generation is the likely casualty --
-      # texi2pod.pl and pod2man are 2013 code meeting perl 5.42. MAKEINFO=true
-      # covers texinfo; if man pages are the problem the error will now say so
-      # instead of being buried under warnings.
       - name: '5.5 gcc 4.8.2 pass 1'
         run: |
           set -eu
+          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|internal compiler|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
           tar xf "gcc-$GCCVER.tar.bz2"
           cd "gcc-$GCCVER"
-          # LFS 7.5's ssp workaround: the check cannot run under a cross
-          # compiler, so its answer is supplied.
           sed -i '/k prot/agcc_cv_libc_provides_ssp=yes' gcc/configure
           tar xf "../mpfr-$MPFR.tar.xz" && mv "mpfr-$MPFR" mpfr
           tar xf "../gmp-$GMP.tar.xz"   && mv "gmp-$GMP" gmp
           tar xf "../mpc-$MPC.tar.gz"   && mv "mpc-$MPC" mpc
           cd "$W" && mkdir -p b-gcc1 && cd b-gcc1
-          # 4.8-era options: --disable-libmudflap and --disable-libitm exist
-          # here and not in gcc 15; --enable-default-pie is the reverse.
-          # CXX="g++ -std=gnu++98" IS REQUIRED, and this repository already knew
-          # it. gcc 4.8.2's reload1.c line 89 does `bool++`, which C++98 allows
-          # and C++17 removed:
-          #
-          #   error: use of an operand of type 'bool' in 'operator++'
-          #          is forbidden in C++17
-          #
-          # gcc 6.1 made C++14 the default and gcc 11 C++17, so a modern host g++
-          # rejects it. gcc47-aarch64-backport's arm A records this exact line
-          # and this exact fix, and hermetic-1-sandbox carries the flag with a
-          # comment -- it simply was not carried across to this file. Only pass 1
-          # needs it: every later stage is built by 4.8.2's own g++, whose
-          # default is already gnu++98.
+          # CXX="g++ -std=gnu++98": reload1.c:89 does `bool++`, legal in C++98
+          # and removed in C++17, which is what a 2026 host g++ defaults to.
+          # gcc47-aarch64-backport recorded this exact line and fix already.
+          # Only pass 1 needs it; later stages use 4.8.2's own g++.
           "../gcc-$GCCVER/configure" \
             CXX="g++ -std=gnu++98" \
             --target="$LFS_TGT" --prefix=/tools --with-sysroot="$S" \
@@ -237,35 +151,9 @@ jobs:
             --disable-libgomp --disable-libitm --disable-libmudflap \
             --disable-libquadmath --disable-libsanitizer --disable-libssp \
             --disable-libstdc++-v3 --enable-languages=c,c++ \
-            > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 c.log | sed "s/^/    /"; exit 1; }
-          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -30 b.log | sed "s/^/    /"; exit 1; }
-          # MAKEINFO=true TRADED ONE FAILURE FOR ANOTHER. With it, `true` runs
-          # in place of makeinfo, produces no manual/libc.info, and the install
-          # rule then fails on a missing file -- Error 134 (texinfo aborting)
-          # became Error 1 (nothing to install). glibc's install has no
-          # skip-the-manual switch, so give it an empty one to copy. The manual
-          # is documentation; it has no bearing on whether the libc works.
-          # THE MANUAL CANNOT BE MADE TO INSTALL, SO STOP TRYING TO. Three
-          # attempts: MAKEINFO=true gave Error 134 -> Error 1, an empty
-          # libc.info moved the failure to another rule in the same subdir.
-          # glibc has no switch to skip it. Use -k so every OTHER subdir still
-          # installs, then VERIFY THE ARTIFACTS -- which is the thing actually
-          # being claimed. Documentation is not the libc.
-          mkdir -p manual && : > manual/libc.info
-          make -k DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || true
-          echo "  install finished (manual/ failures ignored); checking artifacts:"
-          miss=0
-          for a in lib/libc.so.6 lib/ld-linux-aarch64.so.1 lib/libc.a \
-                   include/stdio.h include/gnu/stubs.h; do
-            if [ -e "$S/tools/$a" ]; then printf '    %-32s present\n' "$a"
-            else printf '    %-32s MISSING\n' "$a"; miss=1; fi
-          done
-          if [ "$miss" -ne 0 ]; then
-            echo "  the libc did NOT install -- this is not just the manual:"
-            grep -nE "Error [0-9]|make(\[[0-9]+\])?: \*\*\*" i.log \
-              | grep -v manual | head -8 | sed "s/^/    /"
-            exit 1
-          fi || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
+            > c.log 2>&1 || die "configure" c.log
+          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || die "build" b.log
+          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || die "install" i.log
           "$S/tools/bin/$LFS_TGT-gcc" --version | head -1 | sed 's/^/  /'
 
       - name: '5.6 linux 3.13.3 API headers'
@@ -274,223 +162,110 @@ jobs:
           tar xf "linux-$KERNEL.tar.xz"
           cd "linux-$KERNEL"
           make mrproper > /dev/null 2>&1
-          # ARCH=arm64 IS NOT OPTIONAL HERE. Linux derives SUBARCH from
-          # `uname -m` through a list of sed rules, and 3.13's list predates
-          # aarch64 -- so on this runner it resolved to "aarch64", found no
-          # arch/aarch64/ directory, and installed ONLY the generic headers.
-          # 689 files, no asm/, and glibc then died on
-          #   sys/syscall.h: fatal error: asm/unistd.h: No such file
-          # A 2014 kernel that does not recognise the machine it is running on.
+          # ARCH=arm64 is required: linux 3.13 derives SUBARCH from `uname -m`
+          # and its sed table predates aarch64, so it found no arch/aarch64/ and
+          # installed only the generic headers -- glibc then died on
+          # "sys/syscall.h: fatal error: asm/unistd.h: No such file".
           make ARCH=arm64 INSTALL_HDR_PATH=dest headers_install > hi.log 2>&1 \
-            || { echo "  headers_install failed:"; tail -10 hi.log | sed "s/^/    /"; exit 1; }
+            || { echo "  headers_install failed:"; tail -10 hi.log | sed 's/^/    /'; exit 1; }
           mkdir -p "$S/tools/include"
           cp -r dest/include/* "$S/tools/include"
           echo "  headers: $(find "$S/tools/include" -name '*.h' | wc -l)"
-          # Check the one that actually failed, in the step that installs it.
+          # A count is not a check. Name the files that actually mattered.
+          bad=0
           for h in asm/unistd.h asm-generic/unistd.h linux/version.h; do
-            if [ -f "$S/tools/include/$h" ]; then
-              printf '    %-24s present\n' "$h"
-            else
-              printf '    %-24s MISSING\n' "$h"; bad=1
-            fi
+            if [ -f "$S/tools/include/$h" ]; then printf '    %-24s present\n' "$h"
+            else printf '    %-24s MISSING\n' "$h"; bad=1; fi
           done
-          [ -z "${bad:-}" ] || { echo "  arch headers absent -- glibc cannot build"; exit 1; }
+          [ "$bad" -eq 0 ] || { echo "  arch headers absent -- glibc cannot build"; exit 1; }
 
-      # MAKEINFO=true BELONGS ON THE INSTALL, NOT ONLY THE BUILD. glibc's
-      # `make install` builds manual/libc.info, and 2026's texinfo ABORTS on
-      # 2014's manual -- make reported Error 134, which is 128+SIGABRT. The
-      # library itself had compiled cleanly; documentation stopped the install.
-      - name: '5.7 glibc 2.19 (the period libc -- no ucontext rename)'
+      - name: '5.7 glibc 2.19 -- the period libc, no ucontext rename'
         run: |
           set -eu
-          command -v "$LFS_TGT-gcc" > /dev/null \
-            || { echo "  cross gcc not on PATH"; exit 1; }
+          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          command -v "$LFS_TGT-gcc" > /dev/null || { echo "  cross gcc not on PATH"; exit 1; }
           tar xf "glibc-$GLIBC.tar.xz"
           mkdir -p b-glibc && cd b-glibc
-          # The libc_cv_* answers are LFS 7.5's, and they are required: a cross
-          # compiler cannot RUN the test programs these checks compile, so
-          # without them configure draws the wrong conclusion.
+          # MAKEINFO=: AT CONFIGURE TIME. glibc's manual/Makefile guards its
+          # rules with a comparison against the LITERAL string ":", so
+          # MAKEINFO=true at make time is not a no-op to it -- it is just
+          # another program that fails to produce libc.info. Three runs went
+          # into that distinction: Error 134 (texinfo aborting), then Error 1
+          # (nothing to install), then `make -k install` which reported no
+          # errors outside manual and installed NOTHING, because glibc installs
+          # the libraries in a top-level rule that needs every subdir to pass.
+          #
+          # The libc_cv_* answers are LFS 7.5's and are required: a cross
+          # compiler cannot RUN the programs those checks compile.
           "../glibc-$GLIBC/configure" \
             --prefix=/tools --host="$LFS_TGT" \
             --build="$(../glibc-$GLIBC/scripts/config.guess)" \
             --disable-profile --enable-kernel=2.6.32 \
             --with-headers=/tools/include \
             libc_cv_forced_unwind=yes libc_cv_ctors_header=yes \
-            libc_cv_c_cleanup=yes \
-            > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 c.log | sed "s/^/    /"; exit 1; }
-          # WHERE glibc RECORDS ITS COMPILER. Run 3 of this workflow looked in
-          # Makefile, found nothing, and declared "host build in disguise" --
-          # but glibc writes CC into **config.make**, not Makefile. The guard
-          # reported "wrong" when it meant "could not tell", which is the exact
-          # confusion it was built to catch. Look in every plausible place, say
-          # which one answered, and keep "undetermined" as its own outcome.
-          cc=""; src=""
-          for f in config.make Makefile; do
-            [ -f "$f" ] || continue
-            v=$(sed -n 's/^CC *= *//p' "$f" | head -1)
-            [ -n "$v" ] && { cc="$v"; src="$f"; break; }
-          done
-          if [ -z "$cc" ] && [ -f config.log ]; then
-            cc=$(sed -n "s/^ac_cv_prog_CC='\{0,1\}//p" config.log | head -1 | tr -d "'")
-            [ -n "$cc" ] && src=config.log
-          fi
-          echo "  CC recorded in ${src:-<nothing found>}: ${cc:-<undetermined>}"
+            libc_cv_c_cleanup=yes MAKEINFO=: \
+            > c.log 2>&1 || die "configure" c.log
+          # glibc records CC in config.make, not Makefile. Looking in the wrong
+          # file once produced "host build in disguise" about a perfectly good
+          # cross build -- undetermined is not the same as wrong.
+          cc=$(sed -n 's/^CC *= *//p' config.make Makefile 2>/dev/null | head -1)
+          echo "  CC: ${cc:-<undetermined>}"
           case "$cc" in
-            *"$LFS_TGT"*)
-              echo "  cross compiler confirmed" ;;
-            "")
-              echo "  UNDETERMINED -- files present:"
-              ls config.make Makefile config.log 2>/dev/null | sed 's/^/    /'
-              echo "  Not proceeding on an unverified toolchain."
-              exit 1 ;;
-            *)
-              echo "  NOT the cross compiler: a host build wearing a cross"
-              echo "  build's name. This is what the guard is for."
-              exit 1 ;;
+            *"$LFS_TGT"*) echo "  cross compiler confirmed" ;;
+            "")  echo "  UNDETERMINED -- not proceeding"; exit 1 ;;
+            *)   echo "  NOT the cross compiler"; exit 1 ;;
           esac
-          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -30 b.log | sed "s/^/    /"; exit 1; }
-          # MAKEINFO=true TRADED ONE FAILURE FOR ANOTHER. With it, `true` runs
-          # in place of makeinfo, produces no manual/libc.info, and the install
-          # rule then fails on a missing file -- Error 134 (texinfo aborting)
-          # became Error 1 (nothing to install). glibc's install has no
-          # skip-the-manual switch, so give it an empty one to copy. The manual
-          # is documentation; it has no bearing on whether the libc works.
-          # THE MANUAL CANNOT BE MADE TO INSTALL, SO STOP TRYING TO. Three
-          # attempts: MAKEINFO=true gave Error 134 -> Error 1, an empty
-          # libc.info moved the failure to another rule in the same subdir.
-          # glibc has no switch to skip it. Use -k so every OTHER subdir still
-          # installs, then VERIFY THE ARTIFACTS -- which is the thing actually
-          # being claimed. Documentation is not the libc.
-          mkdir -p manual && : > manual/libc.info
-          make -k DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || true
-          echo "  install finished (manual/ failures ignored); checking artifacts:"
+          grep -q '^MAKEINFO = :' config.make \
+            && echo "  MAKEINFO=: recorded -- the manual subdir is off" \
+            || echo "  WARNING: MAKEINFO not recorded as ':' -- manual may build"
+          make -j"$(nproc)" > b.log 2>&1 || die "build" b.log
+          make DESTDIR="$S" install > i.log 2>&1 || die "install" i.log
+          echo "  artifacts:"
           miss=0
           for a in lib/libc.so.6 lib/ld-linux-aarch64.so.1 lib/libc.a \
                    include/stdio.h include/gnu/stubs.h; do
             if [ -e "$S/tools/$a" ]; then printf '    %-32s present\n' "$a"
             else printf '    %-32s MISSING\n' "$a"; miss=1; fi
           done
-          if [ "$miss" -ne 0 ]; then
-            echo "  the libc did NOT install -- this is not just the manual:"
-            grep -nE "Error [0-9]|make(\[[0-9]+\])?: \*\*\*" i.log \
-              | grep -v manual | head -8 | sed "s/^/    /"
-            exit 1
-          fi || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
-          echo "  loader: $(ls "$S"/tools/lib/ld-linux-* 2>/dev/null || echo MISSING)"
-          # The period claim, stated as a check: does struct ucontext exist?
-          echo "  --- struct ucontext in glibc $GLIBC ---"
+          [ "$miss" -eq 0 ] || { echo "  the libc did not land"; exit 1; }
+          echo "  --- struct ucontext in glibc $GLIBC (the prediction) ---"
           grep -rn 'struct ucontext' "$S/tools/include/sys/ucontext.h" 2>/dev/null \
-            | head -3 | sed 's/^/    /' \
-            || echo "    (not found -- the prediction may be wrong)"
+            | head -3 | sed 's/^/    /' || echo "    (tag not found)"
 
-      - name: '5.9/5.10 gcc pass 2 -- a compiler that RUNS in the box'
+      - name: '5.9-5.11 libstdc++, binutils pass 2, gcc pass 2'
         run: |
           set -eu
+          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+
           mkdir -p b-libstdcxx && cd b-libstdcxx
           "../gcc-$GCCVER/libstdc++-v3/configure" \
             --host="$LFS_TGT" --prefix=/tools --disable-multilib --disable-shared \
             --disable-nls --disable-libstdcxx-threads --disable-libstdcxx-pch \
             --with-gxx-include-dir="/tools/$LFS_TGT/include/c++/$GCCVER" \
-            > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -20 c.log | sed "s/^/    /"; exit 1; }
-          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 b.log | sed "s/^/    /"; exit 1; }
-          # MAKEINFO=true TRADED ONE FAILURE FOR ANOTHER. With it, `true` runs
-          # in place of makeinfo, produces no manual/libc.info, and the install
-          # rule then fails on a missing file -- Error 134 (texinfo aborting)
-          # became Error 1 (nothing to install). glibc's install has no
-          # skip-the-manual switch, so give it an empty one to copy. The manual
-          # is documentation; it has no bearing on whether the libc works.
-          # THE MANUAL CANNOT BE MADE TO INSTALL, SO STOP TRYING TO. Three
-          # attempts: MAKEINFO=true gave Error 134 -> Error 1, an empty
-          # libc.info moved the failure to another rule in the same subdir.
-          # glibc has no switch to skip it. Use -k so every OTHER subdir still
-          # installs, then VERIFY THE ARTIFACTS -- which is the thing actually
-          # being claimed. Documentation is not the libc.
-          mkdir -p manual && : > manual/libc.info
-          make -k DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || true
-          echo "  install finished (manual/ failures ignored); checking artifacts:"
-          miss=0
-          for a in lib/libc.so.6 lib/ld-linux-aarch64.so.1 lib/libc.a \
-                   include/stdio.h include/gnu/stubs.h; do
-            if [ -e "$S/tools/$a" ]; then printf '    %-32s present\n' "$a"
-            else printf '    %-32s MISSING\n' "$a"; miss=1; fi
-          done
-          if [ "$miss" -ne 0 ]; then
-            echo "  the libc did NOT install -- this is not just the manual:"
-            grep -nE "Error [0-9]|make(\[[0-9]+\])?: \*\*\*" i.log \
-              | grep -v manual | head -8 | sed "s/^/    /"
-            exit 1
-          fi || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
-          cd "$W"
-          mkdir -p b-bu2 && cd b-bu2
+            > c.log 2>&1 || die "libstdc++ configure" c.log
+          make -j"$(nproc)" > b.log 2>&1 || die "libstdc++ build" b.log
+          make DESTDIR="$S" install > i.log 2>&1 || die "libstdc++ install" i.log
+          echo "  libstdc++ ok"
+
+          cd "$W" && mkdir -p b-bu2 && cd b-bu2
           CC="$LFS_TGT-gcc" AR="$LFS_TGT-ar" RANLIB="$LFS_TGT-ranlib" \
             "../binutils-$BINUTILS/configure" --prefix=/tools --disable-nls \
             --disable-werror --with-lib-path=/tools/lib --with-sysroot \
-            > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -20 c.log | sed "s/^/    /"; exit 1; }
-          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 b.log | sed "s/^/    /"; exit 1; }
-          # MAKEINFO=true TRADED ONE FAILURE FOR ANOTHER. With it, `true` runs
-          # in place of makeinfo, produces no manual/libc.info, and the install
-          # rule then fails on a missing file -- Error 134 (texinfo aborting)
-          # became Error 1 (nothing to install). glibc's install has no
-          # skip-the-manual switch, so give it an empty one to copy. The manual
-          # is documentation; it has no bearing on whether the libc works.
-          # THE MANUAL CANNOT BE MADE TO INSTALL, SO STOP TRYING TO. Three
-          # attempts: MAKEINFO=true gave Error 134 -> Error 1, an empty
-          # libc.info moved the failure to another rule in the same subdir.
-          # glibc has no switch to skip it. Use -k so every OTHER subdir still
-          # installs, then VERIFY THE ARTIFACTS -- which is the thing actually
-          # being claimed. Documentation is not the libc.
-          mkdir -p manual && : > manual/libc.info
-          make -k DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || true
-          echo "  install finished (manual/ failures ignored); checking artifacts:"
-          miss=0
-          for a in lib/libc.so.6 lib/ld-linux-aarch64.so.1 lib/libc.a \
-                   include/stdio.h include/gnu/stubs.h; do
-            if [ -e "$S/tools/$a" ]; then printf '    %-32s present\n' "$a"
-            else printf '    %-32s MISSING\n' "$a"; miss=1; fi
-          done
-          if [ "$miss" -ne 0 ]; then
-            echo "  the libc did NOT install -- this is not just the manual:"
-            grep -nE "Error [0-9]|make(\[[0-9]+\])?: \*\*\*" i.log \
-              | grep -v manual | head -8 | sed "s/^/    /"
-            exit 1
-          fi || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
-          cd "$W"
-          mkdir -p b-gcc2 && cd b-gcc2
+            > c.log 2>&1 || die "binutils2 configure" c.log
+          make -j"$(nproc)" > b.log 2>&1 || die "binutils2 build" b.log
+          make DESTDIR="$S" install > i.log 2>&1 || die "binutils2 install" i.log
+          echo "  binutils pass 2 ok"
+
+          cd "$W" && mkdir -p b-gcc2 && cd b-gcc2
           CC="$LFS_TGT-gcc" CXX="$LFS_TGT-g++" \
           AR="$LFS_TGT-ar" RANLIB="$LFS_TGT-ranlib" \
             "../gcc-$GCCVER/configure" --prefix=/tools \
             --with-local-prefix=/tools --with-native-system-header-dir=/tools/include \
             --enable-languages=c,c++ --disable-libstdcxx-pch \
             --disable-multilib --disable-bootstrap --disable-libgomp \
-            > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 c.log | sed "s/^/    /"; exit 1; }
-          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -30 b.log | sed "s/^/    /"; exit 1; }
-          # MAKEINFO=true TRADED ONE FAILURE FOR ANOTHER. With it, `true` runs
-          # in place of makeinfo, produces no manual/libc.info, and the install
-          # rule then fails on a missing file -- Error 134 (texinfo aborting)
-          # became Error 1 (nothing to install). glibc's install has no
-          # skip-the-manual switch, so give it an empty one to copy. The manual
-          # is documentation; it has no bearing on whether the libc works.
-          # THE MANUAL CANNOT BE MADE TO INSTALL, SO STOP TRYING TO. Three
-          # attempts: MAKEINFO=true gave Error 134 -> Error 1, an empty
-          # libc.info moved the failure to another rule in the same subdir.
-          # glibc has no switch to skip it. Use -k so every OTHER subdir still
-          # installs, then VERIFY THE ARTIFACTS -- which is the thing actually
-          # being claimed. Documentation is not the libc.
-          mkdir -p manual && : > manual/libc.info
-          make -k DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || true
-          echo "  install finished (manual/ failures ignored); checking artifacts:"
-          miss=0
-          for a in lib/libc.so.6 lib/ld-linux-aarch64.so.1 lib/libc.a \
-                   include/stdio.h include/gnu/stubs.h; do
-            if [ -e "$S/tools/$a" ]; then printf '    %-32s present\n' "$a"
-            else printf '    %-32s MISSING\n' "$a"; miss=1; fi
-          done
-          if [ "$miss" -ne 0 ]; then
-            echo "  the libc did NOT install -- this is not just the manual:"
-            grep -nE "Error [0-9]|make(\[[0-9]+\])?: \*\*\*" i.log \
-              | grep -v manual | head -8 | sed "s/^/    /"
-            exit 1
-          fi || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
+            > c.log 2>&1 || die "gcc2 configure" c.log
+          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || die "gcc2 build" b.log
+          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || die "gcc2 install" i.log
           ln -sfv gcc "$S/tools/bin/cc" 2>/dev/null || true
           echo "  native /tools gcc: $("$S/tools/bin/gcc" --version 2>&1 | head -1)"
 
@@ -499,17 +274,27 @@ jobs:
           set -eu
           tar xf busybox-1.36.1.tar.bz2 && cd busybox-1.36.1
           make defconfig > /dev/null 2>&1
-          sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config
           yes '' | make oldconfig > /dev/null 2>&1
-          make -j"$(nproc)" CROSS_COMPILE="$LFS_TGT-" > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -20 b.log | sed "s/^/    /"; exit 1; }
+          # ssl_client is what drags in networking/tls*.c, which does not build
+          # against a modern glibc. Disable AFTER oldconfig -- before it, the
+          # symbols are re-derived and the seds are undone.
+          for sym in CONFIG_TC CONFIG_TLS CONFIG_SSL_CLIENT \
+                     CONFIG_FEATURE_WGET_HTTPS CONFIG_FEATURE_WGET_OPENSSL; do
+            sed -i "s/^$sym=y/# $sym is not set/" .config
+            grep -q "^$sym=y" .config && { echo "  $sym still on"; exit 1; }
+            printf '    %-32s off\n' "$sym"
+          done
+          make -j"$(nproc)" CROSS_COMPILE="$LFS_TGT-" > b.log 2>&1 || {
+            echo "  --- busybox ---"
+            grep -nE "error:|Error [0-9]" b.log | head -10 | sed 's/^/    /'; exit 1; }
           cp busybox "$S/tools/bin/"
           ( cd "$S/tools/bin" && for a in $(./busybox --list); do [ -e "$a" ] || ln -sf busybox "$a"; done )
           cd "$W" && tar xf make-4.0.tar.bz2 && mkdir -p b-make && cd b-make
           ../make-4.0/configure --prefix=/tools --host="$LFS_TGT" \
-            --build="$(../make-4.0/config.guess)" --disable-nls \
-            > c.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|internal compiler|configure: error|No rule" c.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -20 c.log | sed "s/^/    /"; exit 1; }
-          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 && make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
-          echo "  busybox applets: $(ls "$S/tools/bin" | wc -l)"
+            --build="$(../make-4.0/config.guess)" --disable-nls > c.log 2>&1 \
+            || { tail -15 c.log | sed 's/^/    /'; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 && make DESTDIR="$S" install > i.log 2>&1
+          echo "  applets: $(ls "$S/tools/bin" | wc -l)"
 
       - name: 'THE BOX (period)'
         run: |
@@ -518,30 +303,27 @@ jobs:
           #!/bin/sh
           set -eu
           S=${S:?}
-          exec bwrap \
-            --unshare-all --die-with-parent --new-session --clearenv \
-            --setenv PATH /tools/bin \
-            --setenv HOME /work --setenv LC_ALL POSIX --setenv TERM dumb \
-            --setenv SOURCE_DATE_EPOCH 0 \
+          exec bwrap --unshare-all --die-with-parent --new-session --clearenv \
+            --setenv PATH /tools/bin --setenv HOME /work \
+            --setenv LC_ALL POSIX --setenv TERM dumb --setenv SOURCE_DATE_EPOCH 0 \
             --bind "$S" / --proc /proc --dev /dev --tmpfs /tmp \
             --chdir /work "$@"
           EOS
           chmod +x box3.sh
           echo "  sysroot: $(du -sh "$S" | cut -f1)"
-          for r in "/tools/bin/sh -c echo\ alive" "/tools/bin/gcc --version" \
+          for c in "/tools/bin/sh -c echo_alive" "/tools/bin/gcc --version" \
                    "/tools/bin/as --version" "/tools/bin/make --version"; do
-            set -- $r
-            out=$(S="$S" ./box3.sh "$@" 2>&1 | head -1)
-            printf '  %-26s %s\n' "$(basename "$1")" "$out"
+            set -- $c
+            printf '  %-14s %s\n' "$(basename "$1")" \
+              "$(S="$S" ./box3.sh "$@" 2>&1 | head -1 | cut -c1-60)"
           done
 
-      - name: 'THE EXPERIMENT: build our 4.7.4 + transplant, INSIDE, unpatched'
+      - name: 'THE EXPERIMENT: our 4.7.4 + transplant, inside, unpatched'
         continue-on-error: true
         run: |
           set -u
           set +e
-          cp -r g474 g485 "$S/work/"
-          cp -r spikes tools "$S/work/" 2>/dev/null
+          cp -r g474 g485 spikes tools "$S/work/" 2>/dev/null
           if [ "${{ github.event.inputs.ucontext_patch }}" = "yes" ]; then
             echo "  applying the ucontext patch (prediction NOT under test)"
             sed -i 's/\bstruct ucontext\b/ucontext_t/g' \
@@ -555,20 +337,18 @@ jobs:
             mkdir -p b && cd b
             /work/g474/configure --prefix=/work/out --enable-languages=c \
               --build=aarch64-unknown-linux-gnu --host=aarch64-unknown-linux-gnu \
-              --target=aarch64-unknown-linux-gnu \
-              --disable-multilib --disable-bootstrap --disable-werror \
-              --disable-libsanitizer --disable-libgomp --disable-libquadmath \
-              --disable-libssp --disable-libatomic --disable-shared \
-              > c.log 2>&1
+              --target=aarch64-unknown-linux-gnu --disable-multilib \
+              --disable-bootstrap --disable-werror --disable-libsanitizer \
+              --disable-libgomp --disable-libquadmath --disable-libssp \
+              --disable-libatomic --disable-shared > c.log 2>&1
             echo "configure rc=$?"
             make -k -j4 MAKEINFO=true > b.log 2>&1
-            echo "make all rc=$?"
+            echo "make rc=$?"
             echo "cc1: $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo MISSING)"
             echo "libgcc.a: $(find . -name libgcc.a | head -1 || echo NOT-BUILT)"
             grep -E "internal compiler error|error:" b.log | head -5
           ' 2>&1 | sed 's/^/    /'
           echo
           echo "  VERDICT ON THE PREDICTION:"
-          echo "    libgcc.a built  -> the ICE was the glibc era, not the transplant"
-          echo "    still ICEs      -> the transplant is at fault; run"
-          echo "                       gcc47-libgcc-ice for the backtrace"
+          echo "    libgcc.a built -> the ICE was the glibc era, not the transplant"
+          echo "    still ICEs     -> the transplant is at fault; run gcc47-libgcc-ice"
