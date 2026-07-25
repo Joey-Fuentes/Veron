@@ -1,55 +1,63 @@
 name: hermetic-2-sysroot
 
-# HERMETIC LADDER, STEP 2: A BOX WITH NO /usr IN IT.
+# HERMETIC LADDER, STEP 2: THE LFS METHOD, NOT STATIC LINKING.
 #
-# Step 1 bound /usr read-only and enumerated what that let through. Every tool
-# in those builds was a host binary; the sandbox proved there was no network and
-# no ambient environment, and nothing more. This step removes the bind.
+# THREE RUNS WERE SPENT ON THE WRONG TECHNIQUE. The first version of this file
+# tried to make every binary in the sysroot statically linked, so it would run
+# in a box that binds nothing. That failed three times, each time differently,
+# and the reasons are worth keeping because they are all libtool:
 #
-# THE LFS STRUCTURE, AND THE PART THAT ACTUALLY DOES THE WORK. Linux From
-# Scratch chapter 5 builds a toolchain with host tools, chapter 6 rebuilds the
-# userland with that toolchain, and chapter 7 chroots into an environment
-# containing nothing else. The isolation is not the chroot -- a chroot with
-# Ubuntu's /usr copied in is perfectly isolated and entirely host-dependent. It
-# is that the tools cannot REACH the host: a distinct target triplet whose
-# search paths do not overlap the host's, and binaries that carry their own
-# dependencies.
+#   run 2  LDFLAGS="-static"      tools came out dynamic. libtool INTERCEPTS a
+#                                 bare -static and reads it as "prefer static
+#                                 libtool libraries", removing it from the real
+#                                 link. The flag never reached the linker.
+#   run 3  LDFLAGS="-all-static"  libtool's actual flag -- but the top-level
+#                                 make re-runs sub-configures, so it landed on
+#                                 `gcc -all-static conftest.c`, which gcc
+#                                 rejects. Every later test then died with
+#                                 "Link tests are not allowed after
+#                                 GCC_NO_EXECUTABLES."
+#   run 4  CC="gcc -static"       dynamic again: libtool strips -static from
+#                                 ANYWHERE in the command, including from CC.
 #
-# WE TAKE THE SECOND HALF DIRECTLY: every binary placed in the sysroot is
-# STATICALLY LINKED. A static gcc, as, ld and make need no /usr/lib, no loader,
-# and no ld.so.cache, so they run in a box that binds nothing. That turns the
-# open question from "what is leaking in from /usr" into "what is MISSING from
-# the sysroot", which is a list the run can produce rather than a property we
-# have to argue about.
+# LFS 13.0 DOES NOT LINK ANYTHING STATICALLY. Its isolation comes from three
+# things acting together, and the book states the principle outright: cross
+# compilation is not needed for a same-machine build, but it has one great
+# advantage -- anything that is cross-compiled cannot depend on the host
+# environment.
 #
-# WHAT IS STILL BORROWED, AND MUST BE. The sysroot is BUILT by the host gcc,
-# exactly as LFS chapter 5 is. That cannot be removed here: invariant #1 forbids
-# a committed binary, so the first compiler has to come from somewhere, and on
-# aarch64 the only alternative is seed -> tcc, which is leg 1. What changes is
-# that the host contributes nothing at RUN time -- the difference between
-# scaffolding that comes down and scaffolding that stays up.
+#   1. A TRIPLET THE HOST DOES NOT HAVE.  LFS_TGT=$(uname -m)-lfs-linux-gnu.
+#      Ours is aarch64-veron-linux-gnu. The host is aarch64-unknown-linux-gnu,
+#      so the two search-path trees do not overlap at any point. There is
+#      nothing to leak through, by construction rather than by policy.
+#   2. --with-sysroot=$LFS, so the compiler looks for target libraries inside
+#      the sysroot instead of /usr.
+#   3. A LIBC BUILT INTO THE SYSROOT, cross-compiled with --host=$LFS_TGT. The
+#      tools stay dynamically linked; they simply find their loader and their
+#      libc inside the sysroot, at the paths they were told to expect.
 #
-# THE SYSROOT, and why each piece is in it:
+# WHY glibc AND NOT musl. musl appears elsewhere in this repository because
+# tcc-userland-arm64 needed a libc tcc could build; that was a spike about tcc,
+# not a decision about this. LFS uses glibc, gcc knows how to cross-compile it,
+# and musl would need a triplet (…-linux-musl) that gcc's config.sub does not
+# recognise without patching -- the same class of problem the aarch64 backport
+# already solved once. glibc is the lower-risk choice here.
 #
-#   musl 1.2.5      the libc the box compiles against. Chosen over glibc because
-#                   it builds in one step and tcc-userland-arm64 already proved
-#                   it works with a compiler that knows nothing about musl.
-#   kernel headers  musl does not ship them. Copied in as CONTENT, declared,
-#                   the same deferral TCC-USERLAND.md already records.
-#   binutils        as, ld, ar, ranlib -- the largest unexamined component in
-#                   every result this repository has produced so far.
-#   GNU make        BusyBox has no make, and gcc's build system is make.
-#   BusyBox         sh, sed, grep, awk, tar and the rest of the shell userland.
-#   gcc 4.8.5       the temporary compiler, vanilla and native, no transplant.
-#                   4.7 and tcc are what get built INSIDE the box later.
+# WHY THE TEMPORARY COMPILER IS NOT 4.8.5. It cannot be: glibc 2.39 requires
+# gcc 6.2 or newer to build, so a 2013 compiler cannot produce the libc that
+# makes the sysroot self-sufficient. The temporary toolchain is therefore a
+# current gcc, and **4.8.5 becomes the first thing built INSIDE the box** --
+# which is still a hermetically built 4.8.5, one layer later than asked.
 #
-# RUN 1 IS EXPECTED TO STOP SOMEWHERE, AND THAT IS THE DELIVERABLE. A box with
-# no /usr will be missing things nobody predicted -- a shell builtin BusyBox
-# spells differently, a header musl puts elsewhere, a tool gcc's configure
-# probes for. The ladder below climbs one rung at a time and reports the rung it
-# fell off, which is the same method every other measurement here has used.
-# Guessing the list in advance and building for it is how the last four harness
-# bugs happened.
+# WHAT THIS RUN PROVES IF IT PASSES: a compiler, an assembler, a linker and a
+# shell userland that were all cross-compiled against a libc in the sysroot,
+# running with no /usr, no /etc, no host loader and no network -- and able to
+# compile and run a program. That is LFS chapters 5-7 in one job, with BusyBox
+# standing in for chapter 6's seventeen packages.
+#
+# STILL BORROWED, and unavoidably at this rung: the host gcc builds the cross
+# toolchain, exactly as LFS chapter 5 does. Removing that means reaching a
+# compiler from the seed, which is leg 1.
 
 on:
   push:
@@ -63,13 +71,20 @@ concurrency:
 
 env:
   GNU: 'https://mirrors.kernel.org/gnu'
-  SHA485: '22fb1e7e0f68a63cee631d85b20461d1ea6bda162f03096350e38c8d427ecf23'
+  LFS_TGT: 'aarch64-veron-linux-gnu'
+  BINUTILS: '2.42'
+  GCCVER: '13.2.0'
+  GLIBC: '2.39'
+  KERNEL: '6.6.30'
+  GMP: '6.3.0'
+  MPFR: '4.2.1'
+  MPC: '1.3.1'
 
 jobs:
   sysroot:
-    name: 'a toolchain that needs nothing'
+    name: 'cross toolchain -> sysroot -> a box with no /usr'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 300
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v5
 
@@ -78,306 +93,294 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bubblewrap curl git bzip2 xz-utils gcc g++ make bison flex \
-            texinfo m4 perl file binutils python3 linux-libc-dev
+            texinfo m4 perl python3 file gawk
 
-      - name: 'Let bwrap create a user namespace'
+      - name: 'Layout and environment (LFS ch. 4)'
         run: |
           set -eu
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null \
-            || echo "  sysctl unavailable"
-          echo "S=$PWD/sysroot" >> "$GITHUB_ENV"
-          echo "W=$PWD"         >> "$GITHUB_ENV"
-          mkdir -p sysroot/bin sysroot/lib sysroot/include sysroot/work
+          S="$PWD/sysroot"
+          echo "S=$S"   >> "$GITHUB_ENV"
+          echo "W=$PWD" >> "$GITHUB_ENV"
+          # LFS's minimal layout, including the /bin -> usr/bin symlinks. The
+          # loader ends up at /usr/lib and is reached through /lib, which is
+          # what every binary's PT_INTERP will name.
+          mkdir -pv "$S"/{etc,var,tools,work} "$S"/usr/{bin,lib,sbin,include}
+          for i in bin lib sbin; do ln -sv usr/$i "$S/$i"; done
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          echo "  LFS_TGT: $LFS_TGT   (host is $(gcc -dumpmachine))"
+          echo "  the two triplets differ, which is the isolation"
 
-      # ---------------------------------------------------------------- musl
-      - name: 'sysroot: musl + kernel headers'
+      - name: 'Fetch everything (no network exists past this point)'
         run: |
           set -eu
-          curl -sSL -o musl.tar.gz https://musl.libc.org/releases/musl-1.2.5.tar.gz
-          mkdir -p musl && tar xf musl.tar.gz -C musl --strip-components=1
-          ( cd musl && ./configure --prefix="$S" --disable-shared > c.log 2>&1 \
-            && make -j"$(nproc)" > b.log 2>&1 && make install > /dev/null 2>&1 )
-          echo "  libc.a: $(wc -c < "$S/lib/libc.a") bytes"
-          # DECLARED BORROW, same one TCC-USERLAND.md already records: musl does
-          # not ship kernel UAPI headers. The principled source is
-          # `make headers_install` from a pinned kernel tree; this is the
-          # distro's copy, taken as CONTENT rather than as a live bind.
-          cp -r /usr/include/linux    "$S/include/" 2>/dev/null || true
-          cp -r /usr/include/asm-generic "$S/include/" 2>/dev/null || true
-          cp -r /usr/include/aarch64-linux-gnu/asm "$S/include/" 2>/dev/null || true
-          echo "  kernel headers: $(find "$S/include/linux" -name '*.h' 2>/dev/null | wc -l) files"
+          get() { echo "  $1"; curl -fsSL --retry 3 -O "$1"; }
+          get "$GNU/binutils/binutils-$BINUTILS.tar.xz"
+          get "$GNU/gcc/gcc-$GCCVER/gcc-$GCCVER.tar.xz"
+          get "$GNU/glibc/glibc-$GLIBC.tar.xz"
+          get "$GNU/gmp/gmp-$GMP.tar.xz"
+          get "$GNU/mpfr/mpfr-$MPFR.tar.xz"
+          get "$GNU/mpc/mpc-$MPC.tar.gz"
+          get "$GNU/make/make-4.4.1.tar.gz"
+          get "https://busybox.net/downloads/busybox-1.36.1.tar.bz2"
+          get "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KERNEL.tar.xz"
+          ls -la *.tar.* | awk '{print "    "$5"  "$9}'
 
-      # ------------------------------------------------------------- busybox
-      - name: 'sysroot: BusyBox (static) -- the shell userland'
+      # ---------------------------------------------------- LFS 5.2
+      - name: '5.2 binutils pass 1 (cross)'
         run: |
           set -eu
-          curl -sSL -o bb.tar.bz2 https://busybox.net/downloads/busybox-1.36.1.tar.bz2
-          mkdir -p bb && tar xf bb.tar.bz2 -C bb --strip-components=1
-          cd bb
-          make defconfig > /dev/null 2>&1
-          sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
-          sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config
-          yes '' | make oldconfig > /dev/null 2>&1
-          make -j"$(nproc)" > b.log 2>&1 || { tail -20 b.log; exit 1; }
-          cp busybox "$S/bin/"
-          # Every applet as a symlink, so `sh`, `sed`, `grep` and friends resolve
-          # by name inside a box where nothing else exists.
-          ( cd "$S/bin" && for a in $(./busybox --list); do ln -sf busybox "$a"; done )
-          echo "  applets: $(ls "$S/bin" | wc -l)"
-          file "$S/bin/busybox" | cut -d, -f1-3 | sed 's/^/  /'
-
-      # ------------------------------------------------------------ binutils
-      - name: 'sysroot: binutils (static)'
-        run: |
-          set -eu
-          curl -sSL -o bu.tar.xz "$GNU/binutils/binutils-2.42.tar.xz"
-          mkdir -p bu && tar xf bu.tar.xz -C bu --strip-components=1
-          mkdir -p bbu && cd bbu
-          # -static so as/ld/ar carry their own dependencies and run with no
-          # /usr/lib present.
-          # RUN 1 PRODUCED PIE EXECUTABLES HERE. LDFLAGS reached configure but
-          # not the final links, so as/ld/ar came out dynamically linked -- and
-          # in a box with no loader execve returns ENOENT, which reads as
-          # "as: not found" and then "C compiler cannot create executables".
-          # Ubuntu also defaults to PIE and -static -pie is not a combination
-          # gcc honours, so -no-pie must be explicit. Pass both, twice.
-          # RUN 2: -no-pie took effect and -static did not -- the tools went
-          # from "pie executable" to "executable", still dynamically linked.
-          # binutils links through LIBTOOL, and libtool reads a plain -static as
-          # "link the libtool LIBRARIES statically" while leaving libc dynamic.
-          # -all-static is libtool's flag for a fully static executable, and it
-          # has to arrive at make time.
-          #
-          # --disable-gprofng drops gp-archive, gp-collect-app, gp-display-* and
-          # gprofng, which run 2 also reported as dynamic. They need shared
-          # objects by design, nothing here uses them, and a tool we do not need
-          # should not be in a sysroot we are trying to keep enumerable.
-          # PUT IT IN CC, NOT IN LDFLAGS. Two runs failed on this and each
-          # taught a different half of why:
-          #
-          #   run 2  LDFLAGS="-static" -> tools still dynamic. binutils links
-          #          through libtool, and libtool INTERCEPTS a plain -static as
-          #          "prefer static libtool libraries", removing it from the
-          #          real link. The flag never reached the linker.
-          #   run 3  LDFLAGS="-all-static" -> libtool's actual flag, but the
-          #          top-level make re-runs sub-configures, so it landed on
-          #          `gcc -all-static conftest.c`. gcc has no such option, the
-          #          link test failed, and every later test died with
-          #          "Link tests are not allowed after GCC_NO_EXECUTABLES."
-          #
-          # CC="gcc -static -no-pie" sidesteps both. It is a flag gcc
-          # understands, so configure's link tests still work; it is part of the
-          # compiler rather than the link line, so libtool cannot strip it; and
-          # it applies to every link the build performs, including the ones in
-          # sub-configures we do not control.
-          ../bu/configure --prefix="$S" --disable-nls --disable-werror \
-            --disable-gdb --disable-sim --disable-shared --disable-gprofng \
-            CC="gcc -static -no-pie" CFLAGS="-O2" \
+          tar xf "binutils-$BINUTILS.tar.xz"
+          mkdir -p b-binutils1 && cd b-binutils1
+          "../binutils-$BINUTILS/configure" \
+            --prefix="$S/tools" \
+            --with-sysroot="$S" \
+            --target="$LFS_TGT" \
+            --disable-nls --enable-gprofng=no --disable-werror \
+            --enable-new-dtags --enable-default-hash-style=gnu \
             > c.log 2>&1 || { tail -20 c.log; exit 1; }
           make -j"$(nproc)" > b.log 2>&1 || { tail -25 b.log; exit 1; }
           make install > /dev/null 2>&1
-          # VERIFY HERE, not four steps later. Run 2 printed
-          # `file ... | cut -d, -f1-3`, which truncates immediately BEFORE the
-          # only field that matters -- so this step looked healthy while the
-          # audit disagreed with it. Print the whole line and fail on the spot.
-          bad=0
-          for t in as ld ar ranlib nm objdump strip; do
-            [ -e "$S/bin/$t" ] || { printf '  %-8s MISSING\n' "$t"; bad=1; continue; }
-            d=$(file "$S/bin/$t")
-            printf '  %-8s %s\n' "$t" "$(printf '%s' "$d" | cut -c1-96)"
-            printf '%s' "$d" | grep -q 'statically linked' || bad=1
-          done
-          [ "$bad" -eq 0 ] || { echo "  NOT STATIC -- these cannot run in a box with no loader"; exit 1; }
+          ls "$S/tools/bin" | sed 's/^/    /'
 
-      # ---------------------------------------------------------------- make
-      - name: 'sysroot: GNU make (static)'
+      # ---------------------------------------------------- LFS 5.3
+      - name: '5.3 gcc pass 1 (cross, no headers, no libc)'
         run: |
           set -eu
-          curl -sSL -o mk.tar.gz "$GNU/make/make-4.4.1.tar.gz"
-          mkdir -p mk && tar xf mk.tar.gz -C mk --strip-components=1
-          mkdir -p bmk && cd bmk
-          # Same reasoning as binutils: the flag belongs in CC.
-          ../mk/configure --prefix="$S" --disable-nls CC="gcc -static -no-pie" \
-            > c.log 2>&1 || { tail -20 c.log; exit 1; }
-          make -j"$(nproc)" > b.log 2>&1 && make install > /dev/null 2>&1
-          d=$(file "$S/bin/make"); echo "  $(printf '%s' "$d" | cut -c1-96)"
-          printf '%s' "$d" | grep -q 'statically linked' \
-            || { echo "  make is NOT static"; exit 1; }
-
-      # ----------------------------------------------------------- gcc 4.8.5
-      - name: 'sysroot: gcc 4.8.5 (static) -- the temporary compiler'
-        run: |
-          set -eu
-          F=spikes/stage3/probes/fetch-pinned.sh
-          bash "$F" g485 "$HOME/.cache/veron/gcc-4.8.5.tar.bz2" "$SHA485" \
-            "$GNU/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2" "" "" | sed 's/^/  /'
-          # The ucontext rename: glibc 2.26 dropped `struct ucontext` and musl
-          # never had it, so a 2013 libgcc cannot compile its own signal-frame
-          # unwinder without this. gcc47-libgcc-ice is measuring whether this is
-          # also the cause of the 4.7 ICE; here it is simply required.
-          sed -i 's/\bstruct ucontext\b/ucontext_t/g' \
-            g485/libgcc/config/aarch64/linux-unwind.h 2>/dev/null || true
-          for p in gmp-6.2.1 mpfr-4.1.0 mpc-1.2.1; do
-            case $p in
-              gmp*)  u="$GNU/gmp/$p.tar.xz" ;;
-              mpfr*) u="$GNU/mpfr/$p.tar.xz" ;;
-              mpc*)  u="$GNU/mpc/$p.tar.gz" ;;
-            esac
-            curl -sSL -o "$p.tar" "$u"; mkdir -p "$p"
-            tar xf "$p.tar" -C "$p" --strip-components=1 2>/dev/null
-            ( cd "$p" && ./configure --disable-shared --disable-assembly \
-                --with-gmp="$W/prefix" --prefix="$W/prefix" > c.log 2>&1 \
-              && make -j"$(nproc)" > b.log 2>&1 && make install > /dev/null 2>&1 ) \
-              && echo "  $p ok"
-          done
-          mkdir -p b485 && cd b485
-          # LDFLAGS=-static is the whole point: xgcc and cc1 must run in a box
-          # with no loader and no /usr/lib.
-          ../g485/configure CXX="g++ -std=gnu++98" \
-            --prefix="$S" --enable-languages=c \
-            --build=aarch64-unknown-linux-gnu --host=aarch64-unknown-linux-gnu \
-            --target=aarch64-unknown-linux-gnu \
-            --disable-multilib --disable-bootstrap --disable-werror \
-            --disable-libsanitizer --disable-libgomp --disable-libquadmath \
-            --disable-libssp --disable-libatomic --disable-shared --disable-nls \
-            --with-gmp="$W/prefix" --with-mpfr="$W/prefix" --with-mpc="$W/prefix" \
-            CC="gcc -static -no-pie" CFLAGS="-O2" \
+          tar xf "gcc-$GCCVER.tar.xz"
+          cd "gcc-$GCCVER"
+          # LFS extracts gmp/mpfr/mpc INTO the gcc tree so they are built
+          # in-tree. That is simpler and more reliable than a separate prefix,
+          # and it is what the book does.
+          tar xf "../gmp-$GMP.tar.xz"   && mv "gmp-$GMP" gmp
+          tar xf "../mpfr-$MPFR.tar.xz" && mv "mpfr-$MPFR" mpfr
+          tar xf "../mpc-$MPC.tar.gz"   && mv "mpc-$MPC" mpc
+          cd "$W"
+          mkdir -p b-gcc1 && cd b-gcc1
+          # --without-headers/--with-newlib: there is no libc yet. c,c++ because
+          # binutils pass 2 and much else needs a C++ compiler, and libstdc++
+          # comes next.
+          "../gcc-$GCCVER/configure" \
+            --target="$LFS_TGT" \
+            --prefix="$S/tools" \
+            --with-glibc-version="$GLIBC" \
+            --with-sysroot="$S" \
+            --with-newlib --without-headers \
+            --enable-default-pie --enable-default-ssp \
+            --disable-nls --disable-shared --disable-multilib \
+            --disable-threads --disable-libatomic --disable-libgomp \
+            --disable-libquadmath --disable-libssp --disable-libvtv \
+            --disable-libstdcxx --enable-languages=c,c++ \
             > c.log 2>&1 || { tail -25 c.log; exit 1; }
-          timeout 7200 make -j"$(nproc)" -Otarget MAKEINFO=true > b.log 2>&1 || true
-          echo "  cc1     : $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo MISSING)"
-          echo "  libgcc.a: $(find . -name libgcc.a | head -1 || echo 'NOT BUILT')"
-          grep -E 'internal compiler error|error:' b.log | head -4 | sed 's/^/    /'
-          make install > i.log 2>&1 || true
-          echo "  installed: $(ls "$S/bin" | grep -c gcc || true) gcc binaries"
-          file "$S/bin/gcc" 2>/dev/null | cut -d, -f1-3 | sed 's/^/  /'
+          make -j"$(nproc)" > b.log 2>&1 || { tail -30 b.log; exit 1; }
+          make install > /dev/null 2>&1
+          "$S/tools/bin/$LFS_TGT-gcc" --version | head -1 | sed 's/^/    /'
+          "$S/tools/bin/$LFS_TGT-gcc" -dumpmachine | sed 's/^/    targets: /'
 
-      - name: 'THE DECLARATION: what is in the box, and what is not'
+      # ---------------------------------------------------- LFS 5.4
+      - name: '5.4 linux API headers'
+        run: |
+          set -eu
+          tar xf "linux-$KERNEL.tar.xz"
+          cd "linux-$KERNEL"
+          make mrproper > /dev/null 2>&1
+          make headers > /dev/null 2>&1
+          find usr/include -type f ! -name '*.h' -delete
+          cp -r usr/include "$S/usr"
+          echo "  headers: $(find "$S/usr/include" -name '*.h' | wc -l) files"
+
+      # ---------------------------------------------------- LFS 5.5
+      - name: '5.5 glibc (cross-compiled INTO the sysroot)'
+        run: |
+          set -eu
+          tar xf "glibc-$GLIBC.tar.xz"
+          mkdir -p b-glibc && cd b-glibc
+          echo "rootsbindir=/usr/sbin" > configparms
+          # --host=$LFS_TGT with --build=config.guess is what makes glibc
+          # configure itself as a cross build, using the tools in $S/tools.
+          "../glibc-$GLIBC/configure" \
+            --prefix=/usr \
+            --host="$LFS_TGT" \
+            --build="$(../glibc-$GLIBC/scripts/config.guess)" \
+            --enable-kernel=5.4 \
+            --with-headers="$S/usr/include" \
+            --disable-nscd \
+            libc_cv_slibdir=/usr/lib \
+            > c.log 2>&1 || { tail -25 c.log; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 || { tail -30 b.log; exit 1; }
+          make DESTDIR="$S" install > i.log 2>&1
+          echo "  loader: $(ls "$S"/usr/lib/ld-linux-* 2>/dev/null || echo MISSING)"
+          echo "  libc  : $(ls "$S"/usr/lib/libc.so.* 2>/dev/null | head -1 || echo MISSING)"
+          # LFS's sanity check: the cross compiler must produce something whose
+          # interpreter lives in the SYSROOT, not on the host.
+          echo 'int main(){return 42;}' > /tmp/s.c
+          "$S/tools/bin/$LFS_TGT-gcc" /tmp/s.c -o /tmp/s
+          echo "  --- interpreter of a cross-built binary ---"
+          readelf -l /tmp/s | grep -A1 'program interpreter' | sed 's/^/    /'
+
+      # ---------------------------------------------------- LFS 5.6
+      - name: '5.6 libstdc++ (needs the libc that now exists)'
+        run: |
+          set -eu
+          mkdir -p b-libstdcxx && cd b-libstdcxx
+          "../gcc-$GCCVER/libstdc++-v3/configure" \
+            --host="$LFS_TGT" --build="$(../gcc-$GCCVER/config.guess)" \
+            --prefix=/usr --disable-multilib --disable-nls \
+            --disable-libstdcxx-pch \
+            --with-gxx-include-dir="/tools/$LFS_TGT/include/c++/$GCCVER" \
+            > c.log 2>&1 || { tail -25 c.log; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 || { tail -25 b.log; exit 1; }
+          make DESTDIR="$S" install > /dev/null 2>&1
+          rm -fv "$S"/usr/lib/lib{stdc++{,exp,fs},supc++}.la 2>/dev/null || true
+          echo "  libstdc++: $(ls "$S"/usr/lib/libstdc++.so.* 2>/dev/null | head -1 || echo MISSING)"
+
+      # ------------------------------------------- LFS ch.6, abridged
+      - name: '6.x userland: BusyBox, make, binutils pass 2 (all cross)'
+        run: |
+          set -eu
+          export PATH="$S/tools/bin:$PATH"
+          # LFS chapter 6 builds seventeen packages to get a shell and the text
+          # tools. BusyBox is one package that supplies sh, sed, grep, awk, tar
+          # and the coreutils, and tcc-userland-arm64 already proved it builds
+          # and boots. A declared substitution, not an oversight.
+          tar xf busybox-1.36.1.tar.bz2 && cd busybox-1.36.1
+          make defconfig > /dev/null 2>&1
+          sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config
+          yes '' | make oldconfig > /dev/null 2>&1
+          make -j"$(nproc)" CROSS_COMPILE="$LFS_TGT-" > b.log 2>&1 || { tail -20 b.log; exit 1; }
+          cp busybox "$S/usr/bin/"
+          ( cd "$S/usr/bin" && for a in $(../../../busybox-1.36.1/busybox --list 2>/dev/null || echo sh ls cat sed grep awk tar gzip); do
+              [ -e "$a" ] || ln -sf busybox "$a"; done )
+          echo "  busybox: $(file "$S/usr/bin/busybox" | cut -c1-90)"
+          cd "$W"
+
+          tar xf make-4.4.1.tar.gz
+          mkdir -p b-make && cd b-make
+          ../make-4.4.1/configure --prefix=/usr --host="$LFS_TGT" \
+            --build="$(../make-4.4.1/build-aux/config.guess)" --disable-nls \
+            > c.log 2>&1 || { tail -20 c.log; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 && make DESTDIR="$S" install > /dev/null 2>&1
+          cd "$W"
+
+          mkdir -p b-binutils2 && cd b-binutils2
+          ../binutils-$BINUTILS/configure --prefix=/usr \
+            --build="$(../binutils-$BINUTILS/config.guess)" --host="$LFS_TGT" \
+            --disable-nls --enable-shared --enable-gprofng=no \
+            --disable-werror --enable-64-bit-bfd --enable-new-dtags \
+            --enable-default-hash-style=gnu \
+            > c.log 2>&1 || { tail -20 c.log; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 || { tail -25 b.log; exit 1; }
+          make DESTDIR="$S" install > /dev/null 2>&1
+          echo "  as: $(file "$S/usr/bin/as" | cut -c1-90)"
+
+      - name: '6.x gcc pass 2 (a compiler that RUNS in the sysroot)'
+        run: |
+          set -eu
+          export PATH="$S/tools/bin:$PATH"
+          # Canadian cross: built on the host, runs on LFS_TGT, targets
+          # LFS_TGT. Pass 1's compiler runs on the HOST and is linked against
+          # the host libc; this one runs inside the box.
+          mkdir -p b-gcc2 && cd b-gcc2
+          "../gcc-$GCCVER/configure" \
+            --build="$(../gcc-$GCCVER/config.guess)" \
+            --host="$LFS_TGT" --target="$LFS_TGT" \
+            LDFLAGS_FOR_TARGET=-L"$PWD/$LFS_TGT/libgcc" \
+            --prefix=/usr --with-build-sysroot="$S" \
+            --enable-default-pie --enable-default-ssp \
+            --disable-nls --disable-multilib --disable-libatomic \
+            --disable-libgomp --disable-libquadmath --disable-libsanitizer \
+            --disable-libssp --disable-libvtv --enable-languages=c,c++ \
+            > c.log 2>&1 || { tail -25 c.log; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 || { tail -30 b.log; exit 1; }
+          make DESTDIR="$S" install > /dev/null 2>&1
+          ln -sfv gcc "$S/usr/bin/cc"
+          echo "  gcc: $(file "$S/usr/bin/gcc" | cut -c1-90)"
+
+      - name: 'THE BOX: bind the sysroot as / and nothing else'
         run: |
           set -eu
           cat > box2.sh <<'EOS'
           #!/bin/sh
-          # NO --ro-bind /usr. NO --ro-bind /etc. The sysroot is the entire
-          # filesystem the build can see, plus /proc, /dev and a tmpfs.
+          # No /usr bind. No /etc bind. The sysroot IS the filesystem.
+          # PATH mirrors LFS's chroot: /usr/bin:/usr/sbin, plus /tools/bin.
           set -eu
-          S=${S:?box2.sh: S (sysroot) not set}
+          S=${S:?box2.sh: S not set}
           exec bwrap \
             --unshare-all --die-with-parent --new-session \
             --clearenv \
-            --setenv PATH /bin \
+            --setenv PATH /usr/bin:/usr/sbin:/tools/bin \
             --setenv HOME /work \
-            --setenv LC_ALL C \
+            --setenv LC_ALL POSIX \
             --setenv TERM dumb \
             --setenv SOURCE_DATE_EPOCH 0 \
             --bind "$S" / \
             --proc /proc --dev /dev \
-            --tmpfs /tmp \
+            --tmpfs /tmp --tmpfs /run \
             --chdir /work \
             "$@"
           EOS
           chmod +x box2.sh
-          echo "  sysroot contents:"
+          echo "  sysroot: $(du -sh "$S" | cut -f1)"
           du -sh "$S"/* 2>/dev/null | sed 's/^/    /'
-          echo "  total: $(du -sh "$S" | cut -f1)"
-          echo
-          echo "  dynamically linked binaries in the sysroot (these will NOT run):"
-          # RUN 1 PRINTED THIS LIST AND CLIMBED THE LADDER ANYWAY. It named as,
-          # ld and ar as dynamic before a single rung ran, which is precisely
-          # the failure the ladder then reported four rungs later in a far less
-          # legible form. A precondition that is observed and ignored is not a
-          # precondition.
-          n=0
-          for f in "$S"/bin/* "$S"/libexec/gcc/*/*/* "$S"/aarch64-unknown-linux-gnu/bin/*; do
-            [ -f "$f" ] && [ -x "$f" ] || continue
-            if file "$f" 2>/dev/null | grep -q 'dynamically linked'; then
-              echo "    $(basename "$f")   in $(dirname "$f" | sed "s|$S||")"
-              n=$((n+1))
-            fi
-          done
-          echo "    count: $n"
-          if [ "$n" -gt 0 ]; then
-            echo
-            echo "  STOPPING HERE. A box with no /usr has no dynamic loader, so"
-            echo "  every binary above fails with ENOENT -- and ENOENT on a"
-            echo "  missing INTERPRETER is indistinguishable from a missing"
-            echo "  file, which is how run 1 spent four rungs reporting"
-            echo "  'as: not found' about a file that was present."
-            exit 1
-          fi
-          echo "    every binary is self-contained"
 
-      - name: 'THE LADDER: how far does a box with no /usr get?'
+      - name: 'THE LADDER'
         continue-on-error: true
         run: |
           set -u
           set +e
-          rung() {  # $1 = name, rest = command
+          rung() {
             name=$1; shift
-            out=$(S="$S" ./box2.sh "$@" 2>&1)
-            rc=$?
-            # RUN 1's RUNG 5 PRINTED "OK   /bin/sh: /bin/as: not found". The
-            # command was `sh -c '/bin/as --version | head -1'`, and a
-            # pipeline's status is its LAST element's, so head's 0 masked as's
-            # failure. Fifth time in this leg a check has claimed a success it
-            # could not have known about. No pipelines in a rung, and a command
-            # that says it failed counts as failed.
-            case "$out" in
-              *"not found"*|*"No such file"*|*"cannot execute"*) rc=127 ;;
-            esac
-            if [ $rc -eq 0 ]; then
-              printf '  %-34s OK    %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-46)"
-            else
-              printf '  %-34s FAIL  %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-46)"
-            fi
-            return $rc
+            out=$(S="$S" ./box2.sh "$@" 2>&1); rc=$?
+            case "$out" in *"not found"*|*"No such file"*|*"cannot execute"*) rc=127 ;; esac
+            [ $rc -eq 0 ] && printf '  %-30s OK    %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-46)" \
+                          || printf '  %-30s FAIL  %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-52)"
           }
-          rung "1. a shell runs"          /bin/sh -c 'echo alive'
-          rung "2. coreutils"             /bin/sh -c 'ls / && echo ok'
-          rung "3. sed / grep / awk"      /bin/sh -c 'echo x | sed s/x/y/ | grep y | awk "{print \$1}"'
-          rung "4. make exists"           /bin/make --version
-          rung "5. as runs"               /bin/as --version
-          rung "5b. ld runs"              /bin/ld --version
-          rung "6. gcc exists"            /bin/gcc --version
+          rung "1. shell"          /bin/sh -c 'echo alive'
+          rung "2. coreutils"      /bin/ls /
+          rung "3. sed/grep/awk"   /bin/sh -c 'echo x | sed s/x/y/ | grep -q y && echo ok'
+          rung "4. make"           /usr/bin/make --version
+          rung "5. as"             /usr/bin/as --version
+          rung "6. ld"             /usr/bin/ld --version
+          rung "7. gcc"            /usr/bin/gcc --version
           echo
-          echo "  --- 7. compile and run a program, entirely inside ---"
+          echo "  --- 8. compile and run, entirely inside ---"
           mkdir -p "$S/work"
           printf 'int main(void){return 42;}\n' > "$S/work/t.c"
-          S="$S" ./box2.sh /bin/gcc -static -o /work/t /work/t.c 2>&1 | head -8 | sed 's/^/    /'
+          S="$S" ./box2.sh /usr/bin/gcc -o /work/t /work/t.c 2>&1 | head -6 | sed 's/^/    /'
           if [ -x "$S/work/t" ]; then
             S="$S" ./box2.sh /work/t; echo "    ran: exit=$? (expect 42)"
           else
             echo "    no binary produced"
           fi
           echo
-          echo "  --- 8. can a configure script run in here? ---"
-          # The real test of the userland: autoconf leans on the shell, sed,
-          # grep, awk and tr far harder than any hand-written check does.
-          cp -r bu "$S/work/bu" 2>/dev/null
+          echo "  --- 9. a configure script, the real test of the userland ---"
+          cp -r "make-4.4.1" "$S/work/mk" 2>/dev/null
           S="$S" ./box2.sh /bin/sh -c \
-            'mkdir -p /work/cbu && cd /work/cbu && /work/bu/configure --disable-nls --disable-werror > cfg.log 2>&1; echo "configure rc=$?"; tail -6 cfg.log' \
-            2>&1 | head -14 | sed 's/^/    /'
+            'mkdir -p /work/cm && cd /work/cm && /work/mk/configure --disable-nls >cfg.log 2>&1; echo "configure rc=$?"; tail -4 cfg.log' \
+            2>&1 | head -10 | sed 's/^/    /'
 
-      - name: 'WHAT IS MISSING'
+      - name: 'WHAT THIS DID AND DID NOT REMOVE'
         if: always()
         run: |
-          set -u
-          echo "  Step 2 succeeds when the ladder reaches rung 8 with nothing"
-          echo "  bound but the sysroot. Whatever rung it fell off names the"
-          echo "  next thing to put in, and that list is the deliverable --"
-          echo "  step 1 produced a bind list, this step produces its inverse."
+          echo "  Removed vs step 1: /usr, /etc, the host loader, ld.so.cache,"
+          echo "  and every host binary. The box binds the sysroot and nothing."
           echo
-          echo "  Still borrowed, unavoidably at this rung:"
-          echo "    - the host gcc BUILT this sysroot (LFS chapter 5 does the same)"
-          echo "    - kernel UAPI headers, copied in as content"
-          echo "    - the kernel and the hardware (TRUST-BOUNDARY.md)"
+          echo "  The isolation is NOT static linking -- three runs were lost to"
+          echo "  that. It is LFS's method: a triplet the host does not have"
+          echo "  ($LFS_TGT vs $(gcc -dumpmachine)), --with-sysroot, and a glibc"
+          echo "  cross-compiled into the sysroot so the tools find their loader"
+          echo "  and libc inside it."
           echo
-          echo "  Removed compared to step 1: /usr, /etc, the host loader,"
-          echo "  ld.so.cache, and every dynamically linked host binary."
+          echo "  Still borrowed: the host gcc built the cross toolchain, as LFS"
+          echo "  chapter 5 does. Removing that is leg 1 (seed -> tcc)."
+          echo "  Substituted: BusyBox for LFS chapter 6's seventeen packages."
+          echo "  Next: build gcc 4.8.5 INSIDE this box."
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: sysroot-manifest
+          name: sysroot-logs
           path: |
             box2.sh
-            b485/b.log
+            b-*/c.log
+            b-*/b.log
           if-no-files-found: warn
