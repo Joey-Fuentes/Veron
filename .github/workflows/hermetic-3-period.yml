@@ -208,10 +208,27 @@ jobs:
           tar xf "linux-$KERNEL.tar.xz"
           cd "linux-$KERNEL"
           make mrproper > /dev/null 2>&1
-          make INSTALL_HDR_PATH=dest headers_install > /dev/null 2>&1
+          # ARCH=arm64 IS NOT OPTIONAL HERE. Linux derives SUBARCH from
+          # `uname -m` through a list of sed rules, and 3.13's list predates
+          # aarch64 -- so on this runner it resolved to "aarch64", found no
+          # arch/aarch64/ directory, and installed ONLY the generic headers.
+          # 689 files, no asm/, and glibc then died on
+          #   sys/syscall.h: fatal error: asm/unistd.h: No such file
+          # A 2014 kernel that does not recognise the machine it is running on.
+          make ARCH=arm64 INSTALL_HDR_PATH=dest headers_install > hi.log 2>&1 \
+            || { echo "  headers_install failed:"; tail -10 hi.log | sed "s/^/    /"; exit 1; }
           mkdir -p "$S/tools/include"
           cp -r dest/include/* "$S/tools/include"
           echo "  headers: $(find "$S/tools/include" -name '*.h' | wc -l)"
+          # Check the one that actually failed, in the step that installs it.
+          for h in asm/unistd.h asm-generic/unistd.h linux/version.h; do
+            if [ -f "$S/tools/include/$h" ]; then
+              printf '    %-24s present\n' "$h"
+            else
+              printf '    %-24s MISSING\n' "$h"; bad=1
+            fi
+          done
+          [ -z "${bad:-}" ] || { echo "  arch headers absent -- glibc cannot build"; exit 1; }
 
       - name: '5.7 glibc 2.19 (the period libc -- no ucontext rename)'
         run: |
