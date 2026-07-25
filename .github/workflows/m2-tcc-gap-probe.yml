@@ -1,0 +1,297 @@
+name: m2-tcc-gap-probe
+
+# WHAT C DOES tcc NEED THAT M2-PLANET DOES NOT HAVE?
+#
+# This is leg 1's measurement spike, and it exists because the roadmap's own
+# rule says so: TARGET-SUBSET.md §2 derived stage 2's feature set MECHANICALLY
+# from pinned source instead of guessing, "which is why it was right", and it
+# records three entries the original hand-reading got wrong -- do/while,
+# compound assignment, and the omission of void/unsigned. Hand-reading a 60k
+# line compiler would be worse, not better.
+#
+# WHAT WE ALREADY KNOW, BY READING THE PINNED M2-PLANET SOURCE (1.13.1, vendored
+# read-only at spikes/reference/m2-planet). This is the "what we have" side and
+# it is NOT the same list as TARGET-SUBSET.md §3-§4, which documents what
+# M2-Planet's SELF-HOST USES. What the compiler IMPLEMENTS is a larger set, and
+# the difference matters: several features that doc lists under "not needed" are
+# in fact supported, so the gap to tcc is smaller than a reading of §4 suggests.
+#
+#   PRESENT (cc_types.c type table + cc_core.c token handling):
+#     void, char, signed/unsigned char, _Bool, short, int, long, long long,
+#     unsigned variants, int8_t..int64_t, size_t, ssize_t, FILE, FUNCTION,
+#     __va_list, SCM
+#     struct, union, enum, typedef; struct locals and stack struct arrays
+#     switch/case/default, do/while, for, goto/labels, break, continue
+#     compound assignment (+= -= *= /= %= &= |= ^= <<= >>=), ++ and --
+#     sizeof, casts, array indexing, ->, ., function pointers
+#     __va_start/__va_arg/__va_end/__va_copy, asm, global struct initializers
+#
+#   ABSENT, by direct reading rather than inference:
+#     float / double   accepted as KEYWORDS (is_keyword returns TRUE) but there
+#                      is no new_primitive() for either, so no such type exists.
+#                      The roadmap already called this the likely-hardest item:
+#                      tcc constant-folds floats, so its OWN source does double
+#                      arithmetic.
+#     ternary ?:       zero occurrences of "?" in cc_core.c
+#     bitfields        zero occurrences anywhere
+#     stack array init cc_core.c refuses it outright:
+#                      "Stack arrays can not be initialized."
+#
+# THE MEASUREMENT. Two jobs, because a static count and a real compiler answer
+# different questions and each is weak alone.
+#
+#   static     Strip comments and literals from tcc's pinned source, then count
+#              every construct. Gives COMPLETE coverage -- it sees the feature
+#              on line 40,000 that no single compiler run will ever reach --
+#              but it cannot tell which failure comes first or which are fatal.
+#
+#   empirical  Preprocess each of tcc's .c files and hand it to M2-Planet.
+#              Gives the REAL failure, in M2-Planet's own words, ranked by what
+#              actually stops it. Blind to everything past the first error in
+#              each file, which is why it does not replace the static pass.
+#
+# PREPROCESS FIRST, AND WHY. M2-Planet has its own small preprocessor and reads
+# M2libc headers; tcc's sources include <stdio.h> and friends. Feeding them raw
+# would measure header availability, not language features. cpp turns each file
+# into standalone C, and its `# LINE "FILE"` markers let the report attribute
+# each failure to the file it really came from -- so a construct that arrived
+# from a glibc header is not charged to tcc.
+#
+# WHAT THIS SPIKE DOES NOT DO: decide anything. It produces the ranked list that
+# the enhancement work is scoped from. Writing the conclusions before the
+# measurement is the failure mode this repository keeps naming.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/m2-tcc-gap-probe.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: m2-tcc-gap-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TCC_PIN: '5ec0e6f84b47ebd8c269b581712666313f5edaef'
+  M2_PIN:  'bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d'
+
+jobs:
+  static:
+    name: 'static: what constructs does tcc use?'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends git python3
+
+      - name: 'Fetch tcc at our pin'
+        run: |
+          set -eu
+          git clone -q git://repo.or.cz/tinycc.git tccsrc \
+            || git clone -q https://repo.or.cz/tinycc.git tccsrc
+          git -C tccsrc checkout -q "$TCC_PIN"
+          echo "  tcc: $(git -C tccsrc rev-parse --short HEAD)"
+          echo "  .c files: $(ls tccsrc/*.c | wc -l)   lines: $(cat tccsrc/*.c tccsrc/*.h | wc -l)"
+
+      - name: 'Count every construct, comments and literals stripped'
+        run: |
+          set -eu
+          cat > count.py <<'PY'
+          import re, sys, os, collections
+
+          # STRINGS BEFORE COMMENTS. TARGET-SUBSET.md records a stripper that
+          # got this backwards: it mis-handled a /* inside a string literal and
+          # silently dropped a whole file, which is where the wrong goto and
+          # do/while counts came from. One pass, character by character, with a
+          # state machine -- not two regex substitutions.
+          def strip(src):
+              out, i, n = [], 0, len(src)
+              state = 'code'
+              while i < n:
+                  c, nx = src[i], src[i+1] if i+1 < n else ''
+                  if state == 'code':
+                      if c == '/' and nx == '*':   state, i = 'block', i+2; continue
+                      if c == '/' and nx == '/':   state, i = 'line',  i+2; continue
+                      if c == '"':                 state, i = 'str',   i+1; out.append('""'); continue
+                      if c == "'":                 state, i = 'chr',   i+1; out.append("''"); continue
+                      out.append(c); i += 1
+                  elif state == 'block':
+                      if c == '*' and nx == '/': state, i = 'code', i+2; out.append(' '); continue
+                      if c == '\n': out.append('\n')
+                      i += 1
+                  elif state == 'line':
+                      if c == '\n': state = 'code'; out.append('\n')
+                      i += 1
+                  else:  # str / chr, honouring backslash escapes
+                      q = '"' if state == 'str' else "'"
+                      if c == '\\': i += 2; continue
+                      if c == q: state = 'code'
+                      i += 1
+              return ''.join(out)
+
+          # Each probe is (name, regex, note). Where a construct cannot be seen
+          # without a real parser the note says so -- an honest lower bound beats
+          # a confident wrong number.
+          PROBES = [
+            ("ternary ?:",            r'\?[^:]{0,200}?:',        "M2-Planet: ABSENT"),
+            ("float/double decl",     r'\b(float|double)\b',     "M2-Planet: keyword only, no type"),
+            ("floating literal",      r'\b\d+\.\d|\b\d+[eE][-+]?\d', "needs FP constant folding"),
+            ("bitfield",              r':\s*\d+\s*[;,]',         "M2-Planet: ABSENT"),
+            ("designated init",       r'\.\w+\s*=|\[\s*\d+\s*\]\s*=', "M2-Planet: ABSENT"),
+            ("aggregate init  = {",   r'=\s*\{',                 "globals ok; STACK arrays refused"),
+            ("long long",             r'\blong\s+long\b',        "M2-Planet: present"),
+            ("union",                 r'\bunion\b',              "M2-Planet: present"),
+            ("switch",                r'\bswitch\s*\(',          "M2-Planet: present"),
+            ("goto",                  r'\bgoto\b',               "M2-Planet: present"),
+            ("computed goto",         r'goto\s*\*|&&\w+\s*[;,\]]', "M2-Planet: ABSENT"),
+            ("varargs (...)",         r'\.\.\.',                 "M2-Planet: __va_* present"),
+            ("inline asm",            r'\b__asm__\b|\basm\s*\(', "M2-Planet: asm present"),
+            ("typedef",               r'\btypedef\b',            "M2-Planet: present"),
+            ("compound assign",       r'[-+*/%&|^]=|<<=|>>=',    "M2-Planet: present"),
+            ("++ / --",               r'\+\+|--',                "M2-Planet: present"),
+            ("struct value param",    r'\(\s*(?:const\s+)?struct\s+\w+\s+\w+\s*[,)]', "HEURISTIC, lower bound"),
+            ("struct value return",   r'^\s*(?:static\s+)?struct\s+\w+\s+\w+\s*\(',   "HEURISTIC, lower bound"),
+            ("nested func / block",   r'\)\s*\{\s*\w[\w\s*]*\(\w*\)\s*\{', "HEURISTIC"),
+            ("#pragma",               r'#\s*pragma',             "preprocessor"),
+            ("_Generic",              r'\b_Generic\b',           "C11, M2-Planet: ABSENT"),
+            ("_Atomic / atomic",      r'\b_Atomic\b',            "C11, M2-Planet: ABSENT"),
+          ]
+
+          files = sorted(f for f in os.listdir('tccsrc') if f.endswith(('.c', '.h')))
+          totals = collections.OrderedDict((n, 0) for n, _, _ in PROBES)
+          where  = collections.defaultdict(list)
+          for f in files:
+              src = strip(open('tccsrc/'+f, encoding='utf-8', errors='replace').read())
+              for name, rx, _ in PROBES:
+                  c = len(re.findall(rx, src, re.M))
+                  if c:
+                      totals[name] += c
+                      where[name].append((f, c))
+
+          print("  %-22s %8s  %s" % ("construct", "uses", "status"))
+          print("  " + "-"*72)
+          for name, _, note in PROBES:
+              print("  %-22s %8d  %s" % (name, totals[name], note))
+          print()
+          print("  === where the ABSENT ones live ===")
+          for name, _, note in PROBES:
+              if "ABSENT" not in note and "no type" not in note and "refused" not in note:
+                  continue
+              top = sorted(where[name], key=lambda t: -t[1])[:6]
+              if top:
+                  print("  %-22s %s" % (name, "  ".join("%s:%d" % t for t in top)))
+          PY
+          python3 count.py
+
+      - name: 'The four known gaps, sized individually'
+        run: |
+          set -eu
+          # A total is not a work estimate. For each thing M2-Planet lacks, show
+          # how concentrated it is: a construct in 3 files is a different job
+          # from the same count spread over 40.
+          for pat in '\bfloat\b|\bdouble\b' '\?' ':\s*[0-9]+\s*[;,]' '=\s*\{'; do
+            echo "  --- /$pat/ ---"
+            grep -lE "$pat" tccsrc/*.c 2>/dev/null | wc -l | sed 's/^/    files: /'
+            grep -cE "$pat" tccsrc/*.c 2>/dev/null | sort -t: -k2 -rn | head -6 | sed 's/^/    /'
+          done
+
+  empirical:
+    name: 'empirical: what does M2-Planet actually say?'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends git gcc make python3
+
+      - name: 'Build M2-Planet (native aarch64, our pin)'
+        run: |
+          set -eu
+          git clone -q https://github.com/oriansj/M2-Planet.git m2
+          git -C m2 checkout -q "$M2_PIN"
+          make -C m2 M2-Planet > /dev/null 2>&1 || make -C m2 > /dev/null 2>&1
+          find m2 -name 'M2-Planet' -type f -perm -u+x | head -1 | sed 's/^/  built: /'
+          echo "M2=$(find m2 -name 'M2-Planet' -type f -perm -u+x | head -1)" >> "$GITHUB_ENV"
+
+      - name: 'Fetch tcc and preprocess it into standalone C'
+        run: |
+          set -eu
+          git clone -q git://repo.or.cz/tinycc.git tccsrc \
+            || git clone -q https://repo.or.cz/tinycc.git tccsrc
+          git -C tccsrc checkout -q "$TCC_PIN"
+          ( cd tccsrc && ./configure > /dev/null 2>&1 || true )
+          mkdir -p pp
+          n=0
+          for f in tccsrc/*.c; do
+            b=$(basename "$f" .c)
+            # -P would drop the line markers, and those markers are what let the
+            # report say whether a failure came from tcc's code or from a glibc
+            # header. Keep them.
+            cpp -I tccsrc "$f" -o "pp/$b.i" 2>/dev/null && n=$((n+1))
+          done
+          echo "  preprocessed: $n of $(ls tccsrc/*.c | wc -l) files"
+          echo "  total lines : $(cat pp/*.i 2>/dev/null | wc -l)"
+
+      - name: 'Run M2-Planet over each file and collect what it says'
+        run: |
+          set -eu
+          set +e
+          : > errors.txt
+          ok=0; bad=0
+          for f in pp/*.i; do
+            b=$(basename "$f" .i)
+            out=$("$M2" --architecture aarch64 -f "$f" -o /tmp/out.M1 2>&1)
+            if [ $? -eq 0 ]; then
+              ok=$((ok+1)); continue
+            fi
+            bad=$((bad+1))
+            # First two lines is where M2-Planet puts the diagnosis; the rest is
+            # the token dump.
+            printf '%s\t%s\n' "$b" "$(printf '%s' "$out" | head -2 | tr '\n' ' ' | cut -c1-160)" >> errors.txt
+          done
+          echo "  compiled: $ok   failed: $bad"
+          echo
+          echo "  === failure classes, most common first ==="
+          # Strip the file/line noise so identical diagnoses group together.
+          cut -f2 errors.txt \
+            | sed 's/[0-9]\+/N/g; s|/[^ ]*/||g' \
+            | sort | uniq -c | sort -rn | head -20 | sed 's/^/    /'
+          echo
+          echo "  === first failure per file ==="
+          sort errors.txt | head -30 | sed 's/^/    /'
+
+      - name: 'Attribute each failure to the file it really came from'
+        continue-on-error: true
+        run: |
+          set -eu
+          set +e
+          # A preprocessed file is mostly glibc. If M2-Planet dies at .i line
+          # 900 and that line came from /usr/include/stdio.h, the requirement is
+          # the HEADER's, not tcc's -- and in a real bootstrap tcc would be built
+          # against M2libc or musl headers instead. Only failures attributed to
+          # tcc's own sources are this spike's business.
+          python3 - <<'PY'
+          import re, os, collections
+          src = collections.Counter()
+          if not os.path.exists('errors.txt'):
+              print("  no errors.txt"); raise SystemExit
+          for line in open('errors.txt'):
+              b, msg = (line.rstrip('\n').split('\t') + [''])[:2]
+              m = re.search(r'line (\d+)', msg)
+              f = 'pp/%s.i' % b
+              if not m or not os.path.exists(f):
+                  src['(no line number)'] += 1; continue
+              target = int(m.group(1))
+              cur = '?'
+              for i, l in enumerate(open(f, encoding='utf-8', errors='replace'), 1):
+                  if i > target: break
+                  mm = re.match(r'#\s+\d+\s+"([^"]+)"', l)
+                  if mm: cur = mm.group(1)
+              src['tcc' if 'tccsrc' in cur or cur.endswith('.c') and '/usr' not in cur else cur] += 1
+          print("  where the failures originate:")
+          for k, v in src.most_common(15):
+              print("    %-50s %d" % (k[:50], v))
+          PY
