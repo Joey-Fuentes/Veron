@@ -135,10 +135,17 @@ jobs:
           mkdir -p bbu && cd bbu
           # -static so as/ld/ar carry their own dependencies and run with no
           # /usr/lib present.
+          # RUN 1 PRODUCED PIE EXECUTABLES HERE. LDFLAGS reached configure but
+          # not the final links, so as/ld/ar came out dynamically linked -- and
+          # in a box with no loader execve returns ENOENT, which reads as
+          # "as: not found" and then "C compiler cannot create executables".
+          # Ubuntu also defaults to PIE and -static -pie is not a combination
+          # gcc honours, so -no-pie must be explicit. Pass both, twice.
           ../bu/configure --prefix="$S" --disable-nls --disable-werror \
             --disable-gdb --disable-sim --disable-shared \
-            LDFLAGS="-static" > c.log 2>&1 || { tail -20 c.log; exit 1; }
-          make -j"$(nproc)" > b.log 2>&1 || { tail -25 b.log; exit 1; }
+            CFLAGS="-O2 -fno-pie" LDFLAGS="-static -no-pie" \
+            > c.log 2>&1 || { tail -20 c.log; exit 1; }
+          make -j"$(nproc)" LDFLAGS="-static -no-pie" > b.log 2>&1 || { tail -25 b.log; exit 1; }
           make install > /dev/null 2>&1
           for t in as ld ar ranlib; do
             printf '  %-8s %s\n' "$t" "$(file "$S/bin/$t" 2>/dev/null | cut -d, -f1-3)"
@@ -193,8 +200,10 @@ jobs:
             --disable-libsanitizer --disable-libgomp --disable-libquadmath \
             --disable-libssp --disable-libatomic --disable-shared --disable-nls \
             --with-gmp="$W/prefix" --with-mpfr="$W/prefix" --with-mpc="$W/prefix" \
-            LDFLAGS="-static" > c.log 2>&1 || { tail -25 c.log; exit 1; }
-          timeout 7200 make -j"$(nproc)" -Otarget MAKEINFO=true > b.log 2>&1 || true
+            CFLAGS="-O2 -fno-pie" LDFLAGS="-static -no-pie" \
+            > c.log 2>&1 || { tail -25 c.log; exit 1; }
+          timeout 7200 make -j"$(nproc)" -Otarget MAKEINFO=true \
+            LDFLAGS="-static -no-pie" > b.log 2>&1 || true
           echo "  cc1     : $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo MISSING)"
           echo "  libgcc.a: $(find . -name libgcc.a | head -1 || echo 'NOT BUILT')"
           grep -E 'internal compiler error|error:' b.log | head -4 | sed 's/^/    /'
@@ -231,14 +240,30 @@ jobs:
           echo "  total: $(du -sh "$S" | cut -f1)"
           echo
           echo "  dynamically linked binaries in the sysroot (these will NOT run):"
+          # RUN 1 PRINTED THIS LIST AND CLIMBED THE LADDER ANYWAY. It named as,
+          # ld and ar as dynamic before a single rung ran, which is precisely
+          # the failure the ladder then reported four rungs later in a far less
+          # legible form. A precondition that is observed and ignored is not a
+          # precondition.
           n=0
-          for f in "$S"/bin/* "$S"/libexec/gcc/*/*/* ; do
+          for f in "$S"/bin/* "$S"/libexec/gcc/*/*/* "$S"/aarch64-unknown-linux-gnu/bin/*; do
             [ -f "$f" ] && [ -x "$f" ] || continue
             if file "$f" 2>/dev/null | grep -q 'dynamically linked'; then
-              echo "    $(basename "$f")"; n=$((n+1))
+              echo "    $(basename "$f")   in $(dirname "$f" | sed "s|$S||")"
+              n=$((n+1))
             fi
           done
-          echo "    count: $n   (0 is the goal -- anything here needs /usr/lib)"
+          echo "    count: $n"
+          if [ "$n" -gt 0 ]; then
+            echo
+            echo "  STOPPING HERE. A box with no /usr has no dynamic loader, so"
+            echo "  every binary above fails with ENOENT -- and ENOENT on a"
+            echo "  missing INTERPRETER is indistinguishable from a missing"
+            echo "  file, which is how run 1 spent four rungs reporting"
+            echo "  'as: not found' about a file that was present."
+            exit 1
+          fi
+          echo "    every binary is self-contained"
 
       - name: 'THE LADDER: how far does a box with no /usr get?'
         continue-on-error: true
@@ -249,6 +274,15 @@ jobs:
             name=$1; shift
             out=$(S="$S" ./box2.sh "$@" 2>&1)
             rc=$?
+            # RUN 1's RUNG 5 PRINTED "OK   /bin/sh: /bin/as: not found". The
+            # command was `sh -c '/bin/as --version | head -1'`, and a
+            # pipeline's status is its LAST element's, so head's 0 masked as's
+            # failure. Fifth time in this leg a check has claimed a success it
+            # could not have known about. No pipelines in a rung, and a command
+            # that says it failed counts as failed.
+            case "$out" in
+              *"not found"*|*"No such file"*|*"cannot execute"*) rc=127 ;;
+            esac
             if [ $rc -eq 0 ]; then
               printf '  %-34s OK    %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-46)"
             else
@@ -260,7 +294,8 @@ jobs:
           rung "2. coreutils"             /bin/sh -c 'ls / && echo ok'
           rung "3. sed / grep / awk"      /bin/sh -c 'echo x | sed s/x/y/ | grep y | awk "{print \$1}"'
           rung "4. make exists"           /bin/make --version
-          rung "5. as / ld exist"         /bin/sh -c '/bin/as --version | head -1'
+          rung "5. as runs"               /bin/as --version
+          rung "5b. ld runs"              /bin/ld --version
           rung "6. gcc exists"            /bin/gcc --version
           echo
           echo "  --- 7. compile and run a program, entirely inside ---"
