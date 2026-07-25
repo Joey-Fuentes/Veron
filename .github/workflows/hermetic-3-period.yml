@@ -174,7 +174,21 @@ jobs:
           cd "$W" && mkdir -p b-gcc1 && cd b-gcc1
           # 4.8-era options: --disable-libmudflap and --disable-libitm exist
           # here and not in gcc 15; --enable-default-pie is the reverse.
+          # CXX="g++ -std=gnu++98" IS REQUIRED, and this repository already knew
+          # it. gcc 4.8.2's reload1.c line 89 does `bool++`, which C++98 allows
+          # and C++17 removed:
+          #
+          #   error: use of an operand of type 'bool' in 'operator++'
+          #          is forbidden in C++17
+          #
+          # gcc 6.1 made C++14 the default and gcc 11 C++17, so a modern host g++
+          # rejects it. gcc47-aarch64-backport's arm A records this exact line
+          # and this exact fix, and hermetic-1-sandbox carries the flag with a
+          # comment -- it simply was not carried across to this file. Only pass 1
+          # needs it: every later stage is built by 4.8.2's own g++, whose
+          # default is already gnu++98.
           "../gcc-$GCCVER/configure" \
+            CXX="g++ -std=gnu++98" \
             --target="$LFS_TGT" --prefix=/tools --with-sysroot="$S" \
             --with-newlib --without-headers \
             --with-local-prefix=/tools --with-native-system-header-dir=/tools/include \
