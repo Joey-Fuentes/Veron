@@ -143,120 +143,133 @@ jobs:
             cd "$W"
           done
 
-      - name: '1. THE CONTROL: does vanilla 4.8.5 build its own libgcc?'
+      - name: '1. libgcc UNPATCHED, both compilers -- where does each stop?'
         continue-on-error: true
         run: |
           set -u
           set +e
-          # This is the question that decides whether the transplant is the
-          # suspect at all, and it has been sitting unanswered because a grep
-          # matched nothing. Print whatever it says, in full.
-          cd "$W/c485"
-          timeout 3600 make -k -j"$(nproc)" MAKEINFO=true all-target-libgcc > libgcc.log 2>&1
-          echo "  make rc=$?"
-          echo "  objects: $(find . -path '*libgcc*' -name '*.o' | wc -l)"
-          echo "  libgcc.a: $(find . -name libgcc.a | head -1 || echo 'NOT BUILT')"
-          echo "  --- every error, whatever kind ---"
-          grep -nE 'internal compiler error|error:|Error [0-9]|fatal|\*\*\*' libgcc.log \
-            | head -20 | sed 's/^/    /'
+          # Run 1 of this spike answered the control question and the answer was
+          # neither of the two I offered. VANILLA 4.8.5 also fails, at the SAME
+          # object, but cleanly:
+          #
+          #   md-unwind-support.h:42:21: error: field 'uc' has incomplete type
+          #
+          # md-unwind-support.h is libgcc's build-time copy of the target's
+          # md_unwind_header -- for us config/aarch64/linux-unwind.h -- which
+          # declares `struct ucontext uc;` inside struct rt_sigframe. glibc 2.26
+          # renamed that type to ucontext_t and dropped the struct tag, so on any
+          # current system the field has no type. It is the standard blocker for
+          # building any pre-9 gcc today and has nothing to do with the backport.
+          #
+          # The transplant copied that header into 4.7.4 as well. So both trees
+          # meet the same broken declaration and 4.8.5 DIAGNOSES it while 4.7.4
+          # SEGFAULTS on it. This step records both, unpatched, as the baseline.
+          for t in c474 c485; do
+            echo "  ===== $t ====="
+            ( cd "$W/$t" && timeout 3600 make -k -j"$(nproc)" MAKEINFO=true \
+                all-target-libgcc > libgcc-unpatched.log 2>&1 )
+            echo "    objects : $(find "$W/$t" -path '*libgcc*' -name '*.o' | wc -l)"
+            echo "    libgcc.a: $(find "$W/$t" -name libgcc.a | head -1 || echo 'NOT BUILT')"
+            grep -nE 'internal compiler error|error:|Error [0-9]' "$W/$t/libgcc-unpatched.log" \
+              | head -4 | sed 's/^/      /'
+          done
+
+      - name: '2. THE HYPOTHESIS: ucontext_t. Patch both trees and rebuild.'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # One substitution, in one header, declared. If both trees then get
+          # past unwind-dw2.o, the ICE was a 2026 glibc meeting a 2012 header
+          # and the backport is exonerated. If 4.8.5 proceeds and 4.7.4 still
+          # segfaults, the transplant is back in the frame and step 4 has a
+          # backtrace to offer.
+          for g in g474 g485; do
+            h="$W/$g/libgcc/config/aarch64/linux-unwind.h"
+            [ -f "$h" ] || { echo "  $g: no linux-unwind.h"; continue; }
+            echo "  --- $g before ---"
+            grep -n 'ucontext' "$h" | head -4 | sed 's/^/    /'
+            sed -i 's/\bstruct ucontext\b/ucontext_t/g' "$h"
+            echo "  --- $g after ---"
+            grep -n 'ucontext' "$h" | head -4 | sed 's/^/    /'
+          done
+          for t in c474 c485; do
+            echo "  ===== rebuilding libgcc in $t ====="
+            # The generated copy is stale; libgcc remakes it from the source
+            # header, but delete it so there is no doubt which one was used.
+            find "$W/$t" -name md-unwind-support.h -delete
+            find "$W/$t" -path '*libgcc*' -name 'unwind-dw2.o' -delete
+            ( cd "$W/$t" && timeout 3600 make -k -j"$(nproc)" MAKEINFO=true \
+                all-target-libgcc > libgcc-patched.log 2>&1 )
+            echo "    objects : $(find "$W/$t" -path '*libgcc*' -name '*.o' | wc -l)"
+            LA=$(find "$W/$t" -name libgcc.a | head -1)
+            echo "    libgcc.a: ${LA:-NOT BUILT}"
+            [ -n "$LA" ] && echo "    size    : $(wc -c < "$LA") bytes"
+            grep -nE 'internal compiler error|error:|Error [0-9]' "$W/$t/libgcc-patched.log" \
+              | head -4 | sed 's/^/      /'
+          done
           echo
           echo "  VERDICT:"
-          if find . -name libgcc.a | grep -q .; then
-            echo "    4.8.5 BUILDS libgcc here. The environment is fine and the"
-            echo "    transplant is the suspect."
-          elif grep -q 'unwind-dw2.c.*internal compiler error' libgcc.log; then
-            echo "    4.8.5 FAILS THE SAME WAY. This is NOT the transplant --"
-            echo "    it is 4.8's aarch64 backend, or this environment, and the"
-            echo "    whole line of enquiry changes."
+          A=$(find "$W/c485" -name libgcc.a | head -1)
+          B=$(find "$W/c474" -name libgcc.a | head -1)
+          if [ -n "$B" ]; then
+            echo "    4.7.4 + transplant now BUILDS libgcc. The ICE was the"
+            echo "    ucontext rename, not the backport. The borrowed gcc-13"
+            echo "    runtime can go, and stage 2 is unblocked."
+          elif [ -n "$A" ]; then
+            echo "    4.8.5 builds, 4.7.4 still does not. The header was A bug"
+            echo "    but not THE bug -- see the backtrace below."
           else
-            echo "    4.8.5 fails DIFFERENTLY. Read the errors above before"
-            echo "    assuming either story."
+            echo "    Neither builds. The patch was necessary but not sufficient."
           fi
 
-      - name: '2. A standalone reproducer'
+      - name: '3. If it still fails: reproduce it from the RIGHT directory'
         continue-on-error: true
         run: |
           set -u
           set +e
-          cd "$W/c474"
-          # Run libgcc far enough to fail, then lift the EXACT command line the
-          # build used. Reconstructing those flags by hand is how the earlier
-          # attempt ended up with "libgcc_tm.h: No such file or directory" and
-          # measured nothing.
-          timeout 3600 make -k -j"$(nproc)" MAKEINFO=true all-target-libgcc > libgcc.log 2>&1
-          echo "  make rc=$?  objects: $(find . -path '*libgcc*' -name '*.o' | wc -l)"
-          CMD=$(grep -oE '[^ ]*xgcc [^&|]*unwind-dw2\.c' libgcc.log | tail -1)
-          if [ -z "$CMD" ]; then
-            echo "  could not lift the compile line; showing what libgcc said:"
-            grep -nE 'unwind-dw2|internal compiler error' libgcc.log | head -10 | sed 's/^/    /'
-            exit 0
+          # RUN 1 RE-RAN THE COMPILE FROM $W/c474. Its flags are `-I .` and
+          # `-I ../.././gcc`, both relative to the LIBGCC BUILD DIRECTORY, so
+          # every downstream step died on `tconfig.h: No such file or directory`
+          # -- not an ICE, a wrong cwd. The .i was 4 lines, gdb reported "No
+          # stack", and the flag bisect printed ICE seven times for a cc1 it
+          # could not exec. cd first.
+          LG=$(find "$W/c474" -type d -path '*aarch64*/libgcc' | head -1)
+          [ -n "$LG" ] || { echo "  no libgcc build dir"; exit 0; }
+          echo "  libgcc build dir: $LG"
+          CMD=$(grep -oE '[^ ]*xgcc [^&|]*unwind-dw2\.c' "$W/c474/libgcc-patched.log" \
+                "$W/c474/libgcc-unpatched.log" 2>/dev/null | sed 's/^[^:]*://' | tail -1)
+          [ -n "$CMD" ] || { echo "  no compile line found -- it may have succeeded"; exit 0; }
+          cd "$LG"
+          echo "  --- reproduce ---"
+          eval "$CMD" 2>&1 | head -5 | sed 's/^/    /'
+          # Keep the -B flags: without them xgcc cannot find cc1, which is what
+          # produced run 1's "error trying to exec 'cc1'".
+          DRV=$(printf '%s' "$CMD" | grep -oE '^[^ ]*xgcc( -B[^ ]*)*')
+          echo "  --- preprocess, from here ---"
+          PP=$(printf '%s' "$CMD" | sed 's/ -o [^ ]*//; s/ -c / -E /; s/ -M[TDPF][^ ]*//g; s/ [^ ]*\.dep//')
+          eval "$PP" > "$W/unwind-dw2.i" 2>"$W/pp.err"
+          echo "    $(wc -l < "$W/unwind-dw2.i") lines  (stderr: $(head -c 120 "$W/pp.err"))"
+          if [ "$(wc -l < "$W/unwind-dw2.i")" -gt 100 ]; then
+            echo "  --- flag bisect on the standalone .i ---"
+            for f in "-O0" "-O1" "-O2" "-O2 -fexceptions" "-O0 -fexceptions" "-O2 -g -fexceptions -fPIC"; do
+              rm -f /tmp/x.s
+              out=$($DRV -S $f "$W/unwind-dw2.i" -o /tmp/x.s 2>&1 | head -1)
+              # Classify on the MESSAGE. Run 1 called a missing cc1 an ICE
+              # because it only checked whether the output file existed.
+              case "$out" in
+                *"internal compiler error"*) r="ICE" ;;
+                "")                          r="ok"  ;;
+                *)                           r="other: $(printf '%s' "$out" | cut -c1-60)" ;;
+              esac
+              printf '    %-26s %s\n' "$f" "$r"
+            done
+            echo "  --- backtrace ---"
+            CC1LINE=$(eval "$CMD -v" 2>&1 | grep -oE '[^ ]*cc1 .*' | tail -1)
+            # shellcheck disable=SC2086
+            [ -n "$CC1LINE" ] && gdb --batch -ex run -ex 'bt 25' --args $CC1LINE 2>&1 \
+              | grep -E '^#|Program received|signal' | head -30 | sed 's/^/    /'
           fi
-          echo "  --- the failing command ---"
-          echo "$CMD" | fold -w 110 | sed 's/^/    /'
-          echo "$CMD" > "$W/ice-cmd.txt"
-
-          echo
-          echo "  --- reproduce it ---"
-          eval "$CMD" 2>&1 | head -6 | sed 's/^/    /'
-
-          echo
-          echo "  --- preprocess to a standalone .i ---"
-          PP=$(printf '%s' "$CMD" | sed 's/ -o [^ ]*//; s/ -c / -E /; s/ -MT [^ ]*//; s/ -MD//; s/ -MP//; s/ -MF [^ ]*//')
-          eval "$PP" > "$W/unwind-dw2.i" 2>/dev/null
-          echo "    $(wc -l < "$W/unwind-dw2.i") lines"
-          # Does the ICE survive preprocessing? If it does we have a file that
-          # can be shrunk and attached; if it does not, the trigger involves the
-          # include path rather than the code.
-          CC1=$(grep -oE '^[^ ]*xgcc' "$W/ice-cmd.txt" | head -1)
-          echo "    recompiling the .i:"
-          $CC1 -S -O2 -fexceptions -fPIC "$W/unwind-dw2.i" -o /tmp/uw.s 2>&1 \
-            | head -4 | sed 's/^/      /'
-          [ -s /tmp/uw.s ] && echo "      NO ICE on the .i -- the trigger is not in the code alone" \
-                           || echo "      ICE REPRODUCES on the standalone .i"
-
-      - name: '3. The backtrace'
-        continue-on-error: true
-        run: |
-          set -u
-          set +e
-          cd "$W/c474"
-          [ -s "$W/ice-cmd.txt" ] || { echo "  no reproducer command"; exit 0; }
-          CMD=$(cat "$W/ice-cmd.txt")
-          # Ask the driver for the real cc1 invocation rather than guessing it.
-          CC1LINE=$(eval "${CMD} -v" 2>&1 | grep -oE '[^ ]*cc1 .*' | tail -1)
-          if [ -z "$CC1LINE" ]; then
-            echo "  could not extract the cc1 line; running the driver under gdb instead"
-            CC1LINE=$CMD
-          fi
-          echo "  --- cc1 invocation ---"
-          echo "$CC1LINE" | fold -w 110 | sed 's/^/    /'
-          echo
-          echo "  --- backtrace ---"
-          # shellcheck disable=SC2086
-          gdb --batch -ex run -ex 'bt 30' -ex 'info registers pc' \
-              --args $CC1LINE 2>&1 | tail -45 | sed 's/^/    /'
-
-      - name: '4. Which flag brings it on?'
-        continue-on-error: true
-        run: |
-          set -u
-          set +e
-          cd "$W/c474"
-          [ -s "$W/unwind-dw2.i" ] || { echo "  no .i to test"; exit 0; }
-          CC1=$(grep -oE '^[^ ]*xgcc' "$W/ice-cmd.txt" | head -1)
-          [ -n "$CC1" ] || { echo "  no compiler"; exit 0; }
-          # A pass that only crashes at -O2 is a different bug from one that
-          # crashes at -O0, and -fexceptions is what pulls in the unwinder.
-          for f in "-O0" "-O1" "-O2" "-O2 -fexceptions" "-O0 -fexceptions" \
-                   "-O2 -fexceptions -fPIC" "-O2 -g -fexceptions"; do
-            rm -f /tmp/x.s
-            out=$($CC1 -S $f "$W/unwind-dw2.i" -o /tmp/x.s 2>&1 | head -1)
-            if [ -s /tmp/x.s ]; then
-              printf '    %-28s ok\n' "$f"
-            else
-              printf '    %-28s ICE   %s\n' "$f" "$(printf '%s' "$out" | cut -c1-60)"
-            fi
-          done
 
       - name: '5. What the transplant rewrote near the prologue'
         continue-on-error: true
