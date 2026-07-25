@@ -348,6 +348,17 @@ jobs:
           # about names we guessed.
           echo "  TLS-related config, as it really is:"
           grep -iE '^(#? ?CONFIG_)?[A-Z_]*(TLS|SSL|HTTPS)' .config | head -8 | sed 's/^/    /'
+          # THE FLAG GOES IN .config, NOT ON THE COMMAND LINE. BusyBox takes
+          # extra compiler flags as a CONFIG STRING -- Makefile.flags does
+          # CFLAGS += $(strip $(subst ",,$(CONFIG_EXTRA_CFLAGS))) -- so both
+          # EXTRA_CFLAGS= and CFLAGS_EXTRA= on the make line were ignored, and
+          # the same LONG_BIT error came back three runs running. Each time it
+          # looked like the fix had failed; each time the fix had never been
+          # applied.
+          sed -i 's|^CONFIG_EXTRA_CFLAGS=.*|CONFIG_EXTRA_CFLAGS="-D_GNU_SOURCE"|' .config
+          grep -q '^CONFIG_EXTRA_CFLAGS="-D_GNU_SOURCE"' .config \
+            || { echo "  could not set CONFIG_EXTRA_CFLAGS"; \
+                 grep -n 'EXTRA_CFLAGS' .config | sed 's/^/    /'; exit 1; }
           echo "  disabled applets:"
           for sym in CONFIG_TC CONFIG_TLS CONFIG_FEATURE_WGET_HTTPS; do
             if grep -q "^$sym=y" .config; then
@@ -361,8 +372,19 @@ jobs:
           # packages are version-matched to gcc 15.2; BusyBox is our
           # substitution for those seventeen packages, so it is the one thing
           # here that nobody has tested against this compiler. Demote them.
+          # PROVE THE FLAG ARRIVES BEFORE SPENDING A BUILD ON IT. Compile one
+          # object verbosely and look for it on the actual command line. Three
+          # runs were lost to flags that were silently dropped, which is
+          # indistinguishable from flags that did not work.
+          make V=1 CROSS_COMPILE="$LFS_TGT-" networking/tls_aesgcm.o > v.log 2>&1 || true
+          if grep -q '\-D_GNU_SOURCE' v.log; then
+            echo "  -D_GNU_SOURCE confirmed on the compile line"
+          else
+            echo "  -D_GNU_SOURCE IS NOT REACHING THE COMPILER. Command line was:"
+            grep -m1 'tls_aesgcm' v.log | fold -w 100 | head -4 | sed 's/^/    /'
+            exit 1
+          fi
           make -j"$(nproc)" CROSS_COMPILE="$LFS_TGT-" \
-            CFLAGS_EXTRA="-D_GNU_SOURCE -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=int-conversion" \
             > b.log 2>&1 || {
               # RUN 4 PRINTED `tail -20` AND IT CONTAINED NO ERROR AT ALL --
               # with -j4 the last lines of the log are whatever finished last,

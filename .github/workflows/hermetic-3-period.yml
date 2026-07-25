@@ -171,7 +171,7 @@ jobs:
           # became Error 1 (nothing to install). glibc's install has no
           # skip-the-manual switch, so give it an empty one to copy. The manual
           # is documentation; it has no bearing on whether the libc works.
-          : > manual/libc.info
+          mkdir -p manual && : > manual/libc.info
           make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           ls "$S/tools/bin" | tr '\n' ' ' | sed 's/^/  /'
 
@@ -226,7 +226,7 @@ jobs:
           # became Error 1 (nothing to install). glibc's install has no
           # skip-the-manual switch, so give it an empty one to copy. The manual
           # is documentation; it has no bearing on whether the libc works.
-          : > manual/libc.info
+          mkdir -p manual && : > manual/libc.info
           make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           "$S/tools/bin/$LFS_TGT-gcc" --version | head -1 | sed 's/^/  /'
 
@@ -317,7 +317,7 @@ jobs:
           # became Error 1 (nothing to install). glibc's install has no
           # skip-the-manual switch, so give it an empty one to copy. The manual
           # is documentation; it has no bearing on whether the libc works.
-          : > manual/libc.info
+          mkdir -p manual && : > manual/libc.info
           make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           echo "  loader: $(ls "$S"/tools/lib/ld-linux-* 2>/dev/null || echo MISSING)"
           # The period claim, stated as a check: does struct ucontext exist?
@@ -342,7 +342,7 @@ jobs:
           # became Error 1 (nothing to install). glibc's install has no
           # skip-the-manual switch, so give it an empty one to copy. The manual
           # is documentation; it has no bearing on whether the libc works.
-          : > manual/libc.info
+          mkdir -p manual && : > manual/libc.info
           make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           cd "$W"
           mkdir -p b-bu2 && cd b-bu2
@@ -357,7 +357,7 @@ jobs:
           # became Error 1 (nothing to install). glibc's install has no
           # skip-the-manual switch, so give it an empty one to copy. The manual
           # is documentation; it has no bearing on whether the libc works.
-          : > manual/libc.info
+          mkdir -p manual && : > manual/libc.info
           make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           cd "$W"
           mkdir -p b-gcc2 && cd b-gcc2
@@ -375,7 +375,7 @@ jobs:
           # became Error 1 (nothing to install). glibc's install has no
           # skip-the-manual switch, so give it an empty one to copy. The manual
           # is documentation; it has no bearing on whether the libc works.
-          : > manual/libc.info
+          mkdir -p manual && : > manual/libc.info
           make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           ln -sfv gcc "$S/tools/bin/cc" 2>/dev/null || true
           echo "  native /tools gcc: $("$S/tools/bin/gcc" --version 2>&1 | head -1)"
