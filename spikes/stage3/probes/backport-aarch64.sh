@@ -191,7 +191,8 @@ say "  === PROOF: source config.gcc as gcc/configure does ==="
 # executes -- the subshell is already gone. Everything the test learns has to
 # be written to a file first and read back out here.
 PROOF=$(mktemp)
-(
+prc=0
+if ! (
     cd "$G47/gcc" || exit 1
     target=aarch64-unknown-linux-gnu
     target_cpu=aarch64 target_vendor=unknown target_os=linux-gnu
@@ -206,7 +207,12 @@ PROOF=$(mktemp)
     { echo "RESULT_cpu_type=${cpu_type:-}"
       echo "RESULT_tm_file=${tm_file:-}"; } >> "$PROOF"
 )
-prc=$?
+# `( ... )` is a compound command: when config.gcc exits 1 the subshell returns
+# 1, and under `set -e` that kills the script HERE -- before prc is assigned and
+# before a single line of the verdict is printed. Every run so far ended at the
+# "=== PROOF ===" header for this reason, so the verdict has never been seen.
+# The status must be captured in a context set -e exempts.
+then prc=1; fi
 head -4 "$PROOF" | sed 's/^/    /'
 cpu=$(sed -n 's/^RESULT_cpu_type=//p' "$PROOF")
 tmf=$(sed -n 's/^RESULT_tm_file=//p' "$PROOF")
