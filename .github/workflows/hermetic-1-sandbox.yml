@@ -100,9 +100,11 @@ jobs:
       - name: 'Let bwrap create a user namespace'
         run: |
           set -eu
-          # Smallest fix first. If the sysctl is absent or refused, fall back to
-          # an AppArmor profile granting userns to bwrap -- written inline
-          # rather than cloned from an upstream repository.
+          # Ubuntu 24.04 blocks unprivileged user namespaces via AppArmor, so
+          # bwrap fails with "setting up uid map: Permission denied". The sysctl
+          # is the smallest fix; an inline AppArmor profile granting `userns` is
+          # the fallback. spikes/livebootstrap gets this by cloning an entire
+          # upstream repository for one file, which is not worth the dependency.
           if sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null; then
             echo "  sysctl: unprivileged userns permitted"
           else
@@ -117,10 +119,99 @@ jobs:
           EOF
             sudo systemctl reload apparmor || sudo service apparmor reload || true
           fi
-          # PROVE IT WORKS before spending 15 minutes finding out it does not.
-          bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin \
-                --proc /proc --dev /dev --tmpfs /tmp \
-                /bin/echo "  bwrap: user namespace OK"
+
+      - name: 'THE DECLARATION: one sandbox definition, used by every invocation'
+        run: |
+          set -eu
+          mkdir -p work
+          # ONE DEFINITION. Run 1 failed because the smoke test and the real
+          # build each carried their own copy of the bind list, and the test's
+          # copy was missing `--symlink usr/lib /lib`. /bin/echo then failed
+          # with "No such file or directory" -- not because echo was absent, but
+          # because its ELF interpreter /lib/ld-linux-aarch64.so.1 could not be
+          # resolved, and execve reports a missing INTERPRETER as ENOENT too.
+          #
+          # A smoke test that does not exercise the same box the build runs in
+          # is not a smoke test. Everything below goes through this script.
+          cat > box.sh <<'EOS'
+          #!/bin/sh
+          # The canonical sandbox. See hermetic-1-sandbox.yml for what each
+          # line is for and why the kernel is deliberately not isolated.
+          set -eu
+          W=${W:?box.sh: W (work dir) not set}
+          LIB64=""
+          # aarch64 has no /lib64; x86_64 does. Emit the symlink only if the
+          # host actually has one, so this script is portable across both.
+          [ -d /lib64 ] && LIB64="--symlink usr/lib64 /lib64"
+          exec bwrap \
+            --unshare-all --die-with-parent --new-session \
+            --clearenv \
+            --setenv PATH /usr/bin:/bin:/usr/sbin:/sbin \
+            --setenv HOME /work \
+            --setenv LC_ALL C \
+            --setenv TERM dumb \
+            --setenv SOURCE_DATE_EPOCH 0 \
+            --ro-bind /usr /usr \
+            --ro-bind /etc /etc \
+            --symlink usr/bin /bin \
+            --symlink usr/sbin /sbin \
+            --symlink usr/lib /lib \
+            $LIB64 \
+            --proc /proc --dev /dev \
+            --tmpfs /tmp --tmpfs /run \
+            --bind "$W" /work \
+            --chdir /work \
+            "$@"
+          EOS
+          chmod +x box.sh
+          # The bind list as prose, for the artifact. Kept next to box.sh so a
+          # change to one without the other is visible in review.
+          cat > bind-list.txt <<'EOF'
+          read-only:
+            /usr        host toolchain: gcc, g++, binutils, make, perl, python3,
+                        bison, flex, m4, glibc and its headers
+            /etc        ld.so.cache, ld.so.conf*, passwd, group, alternatives
+          writable:
+            /work       sources, build trees, outputs -- nothing else
+          synthetic:
+            /proc /dev  minimal, from bwrap
+            /tmp /run   tmpfs, empty
+          symlinks:
+            /bin /sbin /lib [/lib64] -> usr/*   (Ubuntu's layout; the /lib one
+                                                 is load-bearing -- it is where
+                                                 the ELF interpreter lives)
+          namespaces:
+            all unshared -- NO NETWORK, no host pid/ipc/uts
+          environment:
+            PATH HOME LC_ALL TERM SOURCE_DATE_EPOCH  (and nothing inherited)
+          NOT isolated, by design:
+            the kernel and the hardware -- see TRUST-BOUNDARY.md
+          EOF
+          sed 's/^/  /' bind-list.txt
+
+      - name: 'Prove the box works before spending an hour in it'
+        run: |
+          set -eu
+          # Same script the build uses, so a pass here means the build's
+          # invocation is sound. Checks the three things run 1 got wrong:
+          # a dynamically linked binary runs (the loader resolves), the binds
+          # are present, and there is genuinely no network.
+          W="$PWD/work" ./box.sh /bin/sh -c '
+            echo "  arch    : $(uname -m)"
+            echo "  loader  : $(ls /lib/ld-linux-* 2>/dev/null || echo MISSING)"
+            echo "  gcc     : $(gcc -dumpversion)"
+            for d in /usr /etc /work /proc /dev /tmp; do
+              [ -e "$d" ] || { echo "  MISSING BIND: $d"; exit 1; }
+            done
+            echo "  binds   : all present"
+            [ -w /work ] || { echo "  /work is not writable"; exit 1; }
+            touch /work/.boxtest && rm -f /work/.boxtest
+            echo "  /work   : writable"
+            if [ -e /usr/bin/curl ] && curl -s --max-time 3 https://example.com >/dev/null 2>&1; then
+              echo "  NETWORK REACHABLE -- the box is not sealed"; exit 1
+            fi
+            echo "  network : unreachable, as intended"
+          '
 
       - name: 'Fetch sources OUTSIDE the box (network is not a build dependency)'
         run: |
@@ -261,61 +352,12 @@ jobs:
           mkdir -p work/tools && cp tools/expand_int_iterators.py tools/port_gcc47_api.py work/tools/
           echo "  build.sh: $(wc -l < work/build.sh) lines"
 
-      - name: 'THE DECLARATION: what this build is allowed to see'
-        run: |
-          set -eu
-          W="$PWD/work"
-          # Written to a file AND printed. This list is the deliverable of step
-          # 1 -- steps 2 through 5 are deletions from it, and a diff of this
-          # file across runs is the record of the ladder making progress.
-          cat > bind-list.txt <<EOF
-          read-only:
-            /usr        host toolchain: gcc, g++, binutils, make, perl, python3,
-                        bison, flex, m4, glibc and its headers
-            /etc        ld.so.cache, ld.so.conf*, passwd, group, alternatives
-          writable:
-            /work       sources, build trees, outputs -- nothing else
-          synthetic:
-            /proc /dev  minimal, from bwrap
-            /tmp /run    tmpfs, empty
-          symlinks:
-            /bin /sbin /lib [/lib64] -> usr/*   (Ubuntu's layout)
-          namespaces:
-            all unshared -- NO NETWORK, no host pid/ipc/uts
-          environment:
-            PATH HOME LC_ALL TERM SOURCE_DATE_EPOCH  (and nothing inherited)
-          NOT isolated, by design:
-            the kernel and the hardware -- see TRUST-BOUNDARY.md
-          EOF
-          sed 's/^/  /' bind-list.txt
-
       - name: 'BUILD INSIDE THE BOX'
         continue-on-error: true
         run: |
           set -u
-          W="$PWD/work"
-          ARGS=""
-          [ -d /lib64 ] && ARGS="--symlink usr/lib64 /lib64"
           set +e
-          bwrap \
-            --unshare-all --die-with-parent --new-session \
-            --clearenv \
-            --setenv PATH /usr/bin:/bin:/usr/sbin:/sbin \
-            --setenv HOME /work \
-            --setenv LC_ALL C \
-            --setenv TERM dumb \
-            --setenv SOURCE_DATE_EPOCH 0 \
-            --ro-bind /usr /usr \
-            --ro-bind /etc /etc \
-            --symlink usr/bin /bin \
-            --symlink usr/sbin /sbin \
-            --symlink usr/lib /lib \
-            $ARGS \
-            --proc /proc --dev /dev \
-            --tmpfs /tmp --tmpfs /run \
-            --bind "$W" /work \
-            --chdir /work \
-            /bin/sh /work/build.sh '${{ matrix.arm }}'
+          W="$PWD/work" ./box.sh /bin/sh /work/build.sh '${{ matrix.arm }}'
           rc=$?
           echo "  sandboxed build rc=$rc"
           echo "BOX_RC=$rc" >> "$GITHUB_ENV"
@@ -331,15 +373,8 @@ jobs:
           # that does the probing: a configure run. That is where a build system
           # goes looking for the host, and the distinct paths it opens outside
           # /work are the real declared set.
-          bwrap \
-            --unshare-all --die-with-parent --new-session --clearenv \
-            --setenv PATH /usr/bin:/bin:/usr/sbin:/sbin \
-            --setenv HOME /work --setenv LC_ALL C --setenv TERM dumb \
-            --ro-bind /usr /usr --ro-bind /etc /etc \
-            --symlink usr/bin /bin --symlink usr/sbin /sbin --symlink usr/lib /lib \
-            --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
-            --bind "$W" /work --chdir /work \
-            /usr/bin/strace -f -qq -e trace=openat,execve -o /work/trace.log \
+          W="$W" ./box.sh /usr/bin/strace -f -qq -e trace=openat,execve \
+              -o /work/trace.log \
               /bin/sh -c 'mkdir -p /work/tracebuild && cd /work/tracebuild && /work/gmp-6.2.1/configure --disable-shared --disable-assembly >/dev/null 2>&1' \
             > /dev/null 2>&1
           if [ ! -s "$W/trace.log" ]; then
