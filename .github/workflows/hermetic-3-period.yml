@@ -228,6 +228,28 @@ jobs:
             else printf '    %-32s MISSING\n' "$a"; miss=1; fi
           done
           [ "$miss" -eq 0 ] || { echo "  the libc did not land"; exit 1; }
+          LIBDIR="$S/tools/lib"
+          # LFS's OWN SANITY CHECK, at the exact seam where both sysroots
+          # stopped. After glibc is installed the cross compiler must be able
+          # to LINK; if it cannot, the next configure reports
+          #   "Link tests are not allowed after GCC_NO_EXECUTABLES"
+          # which names the consequence and not the cause. Do the link here and
+          # print the compiler's own -v output when it fails, so the missing
+          # piece (crt1.o, libc, libgcc) says its own name.
+          echo "  --- can the cross compiler link? ---"
+          echo 'int main(void){return 0;}' > /tmp/lt.c
+          if "$LFS_TGT-gcc" /tmp/lt.c -o /tmp/lt 2> /tmp/lt.err; then
+            echo "    links OK"
+            readelf -l /tmp/lt | grep -A1 'program interpreter' | sed 's/^/    /'
+          else
+            echo "    CANNOT LINK. Error:"
+            head -8 /tmp/lt.err | sed 's/^/      /'
+            echo "    --- search paths the driver is actually using ---"
+            "$LFS_TGT-gcc" -print-search-dirs | head -4 | sed 's/^/      /'
+            echo "    --- what is in the lib dir ---"
+            ls "$LIBDIR" 2>/dev/null | head -12 | sed 's/^/      /'
+            exit 1
+          fi
           echo "  --- struct ucontext in glibc $GLIBC (the prediction) ---"
           grep -rn 'struct ucontext' "$S/tools/include/sys/ucontext.h" 2>/dev/null \
             | head -3 | sed 's/^/    /' || echo "    (tag not found)"
