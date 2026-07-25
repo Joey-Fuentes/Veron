@@ -362,6 +362,61 @@ jobs:
           echo "  fixes every backend. Option 2 is bounded by the expansion count"
           echo "  and touches nothing outside our own copy of the backend."
 
+      - name: 'Package the sources needed to write the expander'
+        if: always()
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # Arm C already fetches 4.8.5 for the transplant, so no arm needs
+          # re-enabling to get these. Everything here is what it takes to write
+          # and TEST an int-iterator expander off-CI, plus what it takes to size
+          # option 1 honestly (the read-rtl.c delta, which the grep could not).
+          mkdir -p pkg/aarch64-md pkg/rtl-reader-47 pkg/rtl-reader-485 pkg/diffs
+
+          # 1. The machine descriptions the expander has to consume, and the
+          #    backend they belong to.
+          cp -r g485/gcc/config/aarch64/. pkg/aarch64-md/ 2>/dev/null
+
+          # 2. Both versions of the RTL reader. 4.8 implements define_int_iterator
+          #    through a generic iterator_group abstraction, which is why
+          #    grepping for the literal name found only 4 lines in a 514-line
+          #    diff. Reading both files is the only way to size option 1.
+          for f in read-rtl.c gensupport.c rtl.def read-md.c read-md.h; do
+            cp "g474/gcc/$f" "pkg/rtl-reader-47/$f"  2>/dev/null
+            cp "g485/gcc/$f" "pkg/rtl-reader-485/$f" 2>/dev/null
+          done
+
+          # 3. The diffs already computed, so they need not be recomputed.
+          cp build/d-*.diff pkg/diffs/ 2>/dev/null
+          cp d-*.diff pkg/diffs/ 2>/dev/null
+
+          {
+            echo "gcc 4.8.5 aarch64 backend + both RTL readers"
+            echo
+            echo "aarch64-md/     gcc/config/aarch64 from 4.8.5 (the transplant source)"
+            echo "rtl-reader-47/  4.7.4's read-rtl.c, gensupport.c, rtl.def, read-md.[ch]"
+            echo "rtl-reader-485/ 4.8.5's same five files"
+            echo "diffs/          precomputed 4.7 -> 4.8 diffs of those files"
+            echo
+            echo "The blocker: config/aarch64/iterators.md uses define_int_iterator"
+            echo "and define_int_attr, machine-description constructs added in 4.8."
+            echo "34 definitions, 81 references, all in iterators.md."
+          } > pkg/README.txt
+
+          echo "  --- package contents ---"
+          find pkg -maxdepth 2 -type d | sed 's/^/    /'
+          echo "    .md files      : $(find pkg/aarch64-md -name '*.md' | wc -l)"
+          echo "    total files    : $(find pkg -type f | wc -l)"
+          echo "    size           : $(du -sh pkg | cut -f1)"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gcc-aarch64-md-and-rtl-reader
+          path: pkg
+          if-no-files-found: warn
+
       - name: 'ARM RESULT'
         run: |
           cd build 2>/dev/null || exit 0
