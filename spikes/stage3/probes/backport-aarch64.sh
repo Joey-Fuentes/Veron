@@ -72,48 +72,62 @@ splice_config_gcc() {
     python3 - "$G48/gcc/config.gcc" "$G47/gcc/config.gcc" <<'PY'
 import re, sys
 srcf, dstf = sys.argv[1], sys.argv[2]
-src, dst = open(srcf).read(), open(dstf).read()
+src = open(srcf).read()
+dst_lines = open(dstf).read().splitlines(keepends=True)
 
 arms = re.findall(r'^(aarch64[^\n]*\)\n(?:.*?\n)*?\t;;\n)', src, re.M)
 if not arms:
     sys.exit("    FATAL: no aarch64 case arms found in 4.8.5 config.gcc")
-
 cpu  = [a for a in arms if re.search(r'^\s*cpu_type=', a, re.M)]
 main = [a for a in arms if a not in cpu]
 print(f"    extracted {len(arms)} arm(s): {len(cpu)} cpu_type, {len(main)} dispatch")
 
-# --- insertion point 1: the cpu_type table -------------------------------
-i = dst.find('cpu_type=')
-if i == -1:
-    sys.exit("    FATAL: no cpu_type= in 4.7 config.gcc")
-j = dst.rfind('case ${target} in\n', 0, i)
-if j == -1:
-    sys.exit("    FATAL: no 'case ${target} in' before the first cpu_type=")
-j += len('case ${target} in\n')
-dst = dst[:j] + "".join(cpu) + dst[j:]
-print(f"    cpu_type table  : spliced {len(cpu)} arm(s)")
+# --- find every `case ${target} in` ... `esac` block --------------------
+# THE REAL config.gcc HAS TEN OF THEM and FIVE "*** Configuration ... not
+# supported" messages. Runs 3 and 4 used re.search for the FIRST message and
+# put the dispatch arms in the cpu_type table (lines 281..334) while the actual
+# per-target dispatch is lines 805..2665. Counting arms cannot detect that;
+# only the block structure can.
+blocks = []
+open_at = None
+for i, ln in enumerate(dst_lines):
+    if ln.rstrip('\n') == 'case ${target} in':
+        open_at = i
+    elif ln.rstrip('\n') == 'esac' and open_at is not None:
+        blocks.append((open_at, i))
+        open_at = None
+if not blocks:
+    sys.exit("    FATAL: no 'case ${target} in' ... 'esac' blocks found")
+for st, en in blocks:
+    print(f"      block {st+1:>5}..{en+1:<5} {en-st:>5} lines")
 
-# --- insertion point 2: the case statement that OWNS the catch-all -------
-# Run 2 looked for the literal '\n*)\n' before the catch-all message and did
-# not find it -- real config.gcc indents that arm. Rather than guess the
-# indentation, anchor on the case statement itself: the LAST
-# 'case ${target} in' before the "not supported" message is by construction the
-# main dispatch, and inserting at its head puts the arms ahead of every other
-# arm including the catch-all. Order inside a case only matters for overlapping
-# patterns, and aarch64*-* overlaps nothing else.
-m = re.search(r'\*\*\* Configuration \$\{target\} not supported', dst)
-if not m:
-    sys.exit("    FATAL: catch-all '*** Configuration ... not supported' not found")
-head = 'case ${target} in\n'
-k = dst.rfind(head, 0, m.start())
-if k == -1:
-    sys.exit("    FATAL: no 'case ${target} in' owns the catch-all")
-k += len(head)
-dst = dst[:k] + "".join(main) + dst[k:]
-print(f"    main dispatch   : spliced {len(main)} arm(s) at the head of the "
-      f"case that owns the catch-all")
+# The per-target dispatch is by a wide margin the LARGEST block -- it carries
+# an arm for every target gcc supports. That is unambiguous where "the case
+# before the first catch-all message" was not.
+dispatch = max(blocks, key=lambda b: b[1] - b[0])
+print(f"    dispatch block  : lines {dispatch[0]+1}..{dispatch[1]+1} "
+      f"({dispatch[1]-dispatch[0]} lines)")
 
-open(dstf, 'w').write(dst)
+# The cpu_type table is the block that assigns cpu_type.
+cpu_block = None
+for st, en in blocks:
+    if any(re.match(r'\s*cpu_type=', l) for l in dst_lines[st:en]):
+        cpu_block = (st, en); break
+if cpu_block is None:
+    sys.exit("    FATAL: no block assigns cpu_type=")
+print(f"    cpu_type block  : lines {cpu_block[0]+1}..{cpu_block[1]+1}")
+if cpu_block == dispatch:
+    print("    NOTE: same block sets cpu_type and dispatches; inserting all arms once")
+    ins = {dispatch[0]: cpu + main}
+else:
+    ins = {dispatch[0]: main, cpu_block[0]: cpu}
+
+# Insert at each block head, later positions first so indices stay valid.
+for at in sorted(ins, reverse=True):
+    dst_lines[at+1:at+1] = ins[at]
+    print(f"    spliced {len(ins[at])} arm(s) after line {at+1}")
+
+open(dstf, 'w').write("".join(dst_lines))
 PY
 }
 
@@ -121,19 +135,24 @@ splice_config_host() {
     python3 - "$G48/libgcc/config.host" "$G47/libgcc/config.host" <<'PY'
 import re, sys
 srcf, dstf = sys.argv[1], sys.argv[2]
-src, dst = open(srcf).read(), open(dstf).read()
+src = open(srcf).read()
+dst_lines = open(dstf).read().splitlines(keepends=True)
 arms = re.findall(r'^(aarch64[^\n]*\)\n(?:.*?\n)*?\t;;\n)', src, re.M)
 if not arms:
     print("    libgcc/config.host: no aarch64 arms in 4.8.5"); sys.exit(0)
-head = 'case ${host} in\n'
-m = re.search(r'\*\*\* Configuration \$\{host\} not supported', dst)
-k = dst.rfind(head, 0, m.start()) if m else dst.find(head)
-if k == -1:
-    print("    libgcc/config.host: no 'case ${host} in' found -- not spliced")
-    sys.exit(0)
-k += len(head)
-open(dstf,'w').write(dst[:k] + "".join(arms) + dst[k:])
-print(f"    libgcc/config.host: spliced {len(arms)} arm(s)")
+blocks, open_at = [], None
+for i, ln in enumerate(dst_lines):
+    if ln.rstrip('\n') == 'case ${host} in':
+        open_at = i
+    elif ln.rstrip('\n') == 'esac' and open_at is not None:
+        blocks.append((open_at, i)); open_at = None
+if not blocks:
+    print("    libgcc/config.host: no 'case ${host} in' block found"); sys.exit(0)
+st, en = max(blocks, key=lambda b: b[1] - b[0])
+dst_lines[st+1:st+1] = arms
+open(dstf, 'w').write("".join(dst_lines))
+print(f"    libgcc/config.host: spliced {len(arms)} arm(s) into the largest block "
+      f"(lines {st+1}..{en+1})")
 PY
 }
 

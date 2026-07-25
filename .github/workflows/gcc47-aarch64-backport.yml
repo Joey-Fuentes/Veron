@@ -66,7 +66,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arm: [A-485-vanilla, B-474-control, C-474-backport]
+        # A and B are PARKED, not deleted. Both passed on 2026-07-24:
+        #   A 4.8.5 vanilla  cc1 BUILT (needs CXX="g++ -std=gnu++98")
+        #   B 4.7.4 control  cc1 BUILT (needs MAKEINFO=true)
+        # so the environment builds a gcc and 4.7.4 builds here. Re-add either
+        # to the list below the moment a C result needs something to compare
+        # against -- the arms are written to run identically for that reason.
+        #   arm: [A-485-vanilla, B-474-control, C-474-backport]
+        arm: [C-474-backport]
     name: '${{ matrix.arm }}'
     steps:
       - uses: actions/checkout@v5

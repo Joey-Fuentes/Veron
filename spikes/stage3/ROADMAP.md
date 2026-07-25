@@ -312,3 +312,35 @@ deliberately re-running a failing command under `bash -e`.
 Nothing here yet contradicts the backport thesis. What it does show is that
 **the C-only route's foundation is real** — 4.7.4 builds — and that A's
 obstacle is a two-word configure flag rather than anything structural.
+
+### config.gcc's real shape (2026-07-24)
+
+Three attempts put the aarch64 dispatch arms in the wrong place because I
+reasoned about `config.gcc`'s structure instead of printing it. The map:
+
+```
+case ${target} in : 250 281 342 523 546 556 805 2667 2706 3559
+*** Configuration : 270 331 2086 2662 3148
+esac              : 276 334 506 543 550 803 2665 2676 2698 2900 2974 3555 3684
+```
+
+**Ten `case ${target} in` blocks and five "not supported" messages.** Anchoring
+on the *first* message put the arms in the block at 281..334 — which is the
+`cpu_type` table, right for that one arm and wrong for the other two. The real
+per-target dispatch is **805..2665, 1860 lines**, owning the catch-all at 2662.
+
+The rule that works is structural: parse every `case ... esac` block and take
+the **largest** — the dispatch carries an arm for every target gcc supports, so
+it is bigger than the rest by more than an order of magnitude. The `cpu_type`
+table is identified by the block that assigns `cpu_type=`.
+
+Two lessons worth keeping, both already in this repo's method note:
+
+- *Counting proved nothing.* "3 arms spliced, cpu_type present" was true in
+  every failing run. Only the block structure could distinguish right from wrong.
+- *A shell fragment can be tested directly.* `config.gcc` is sourced by
+  `gcc/configure`; sourcing it in the transplant step with the same variables
+  gives the answer in seconds instead of after a 40-minute build. Two traps
+  there: `$( . file )` runs in a subshell so every variable it sets is lost, and
+  `exit` inside a sourced file kills the shell, so the check must read a
+  captured file from the parent.
