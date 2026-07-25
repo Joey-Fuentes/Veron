@@ -81,7 +81,7 @@ env:
 jobs:
   boxed:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 180
+    timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
@@ -268,6 +268,7 @@ jobs:
           cd /work
           ARM="$1"
           say() { printf '  %s\n' "$*"; }
+          NP=$(nproc)
 
           case "$ARM" in
             A-485-vanilla)  SRC=g485; TGT=aarch64-unknown-linux-gnu; CC=gcc ;;
@@ -279,105 +280,203 @@ jobs:
             *) say "unknown arm $ARM"; exit 1 ;;
           esac
 
-          # tcc first, if this arm needs it. Built by the host gcc inside the
-          # box -- a declared dependency, not a removed one.
+          # ONE configure, used by every stage. Four hand-written copies of this
+          # argument list would be four chances for the stages to differ for a
+          # reason that is not the compiler.
+          conf() {   # $1 = build dir   $2 = CC
+            mkdir -p "$1" && cd "$1"
+            "/work/$SRC/configure" CC="$2" CXX="g++ -std=gnu++98" CFLAGS="-O2" \
+              --build=aarch64-unknown-linux-gnu \
+              --host=aarch64-unknown-linux-gnu \
+              --target="$TGT" \
+              --prefix=/work/out --enable-languages=c \
+              --disable-multilib --disable-bootstrap --disable-werror \
+              --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+              --disable-libssp --disable-libatomic --disable-shared \
+              --with-gmp=/work/prefix --with-mpfr=/work/prefix \
+              --with-mpc=/work/prefix > conf.log 2>&1
+            rc=$?; cd /work; return $rc
+          }
+          mk() {     # $1 = build dir
+            ( cd "$1" && timeout 7200 make -k -j"$NP" -Otarget MAKEINFO=true \
+                all-gcc > build.log 2>&1 )
+          }
+
+          # -------------------------------------------------- tcc, for arm D
           if [ "$CC" = tcc ]; then
             say "=== building tcc ==="
-            ( cd tccsrc && ./configure --cc=gcc > /dev/null && make -j"$(nproc)" > /dev/null )
+            ( cd tccsrc && ./configure --cc=gcc > /dev/null && make -j"$NP" > /dev/null )
             tccsrc/tcc -v
             CCCMD="/work/tccsrc/tcc -B/work/tccsrc"
+
+            # tcc's OWN fixpoint, now inside the box. gen1 was built by gcc 13,
+            # gen2 by gen1, gen3 by gen2. gen1 differing from gen2 is expected --
+            # different compilers. gen2 == gen3 is the property that matters.
+            # libtcc1.a must survive `make clean`: it is tcc's own runtime, and
+            # without it gen2 cannot link.
+            say "=== tcc fixpoint ==="
+            ( cd tccsrc
+              cp tcc tcc-gen1; cp libtcc1.a libtcc1.a.keep
+              for g in 2 3; do
+                p=$((g - 1))
+                make clean > /dev/null 2>&1 || true
+                cp libtcc1.a.keep libtcc1.a
+                ./configure --cc="/work/tccsrc/tcc-gen$p" > /dev/null 2>&1
+                make -j"$NP" > /dev/null 2>&1 || true
+                [ -x tcc ] && cp tcc "tcc-gen$g"
+                say "  gen$g: $( [ -f tcc-gen$g ] && wc -c < tcc-gen$g || echo FAILED)"
+              done
+              if [ -f tcc-gen2 ] && [ -f tcc-gen3 ] && cmp -s tcc-gen2 tcc-gen3; then
+                say "  TCC FIXPOINT: gen2 == gen3  ($(sha256sum tcc-gen2 | cut -c1-16))"
+              else
+                say "  tcc gen2 != gen3 -- or a generation failed to build"
+              fi
+              cp tcc-gen1 tcc ) || say "  (tcc fixpoint inconclusive)"
           else
             CCCMD="gcc"
           fi
 
-          # The transplant, for the arms that carry it.
+          # ------------------------------------------------------- transplant
           case "$ARM" in
             C-474-backport|D-474-tcc)
               say "=== transplant ==="
               # bash, NOT sh. The script is #!/usr/bin/env bash and line 21 is
               # `set -euo pipefail`; dash has no pipefail and run 1 died there
-              # before copying a single file, which is why arms C and D reached
-              # `make` with a 4.7.4 that had never heard of aarch64.
-              #
-              # From /repo, not a flattened copy: the script finds its two
-              # adapter tools at dirname($0)/../../../tools, which resolves to
-              # the repo root only if the repo shape is intact. Copied to
-              # /work it resolved to / and the tools were silently skipped --
-              # the script says NOTE and carries on, so the .md kept its
-              # 4.8-only constructs and the failure surfaced 40 lines later.
+              # before copying a single file. From /repo, not a flattened copy:
+              # it finds its adapter tools at dirname($0)/../../../tools.
               bash /repo/spikes/stage3/probes/backport-aarch64.sh g474 g485 | tail -4
               [ "$(grep -c aarch64 g474/gcc/config.gcc)" -gt 0 ] \
-                || { say "  transplant did not take -- config.gcc has no aarch64"; exit 1; } ;;
+                || { say "  transplant did not take"; exit 1; } ;;
           esac
 
-          # Prerequisites. 4.7.4 and 4.8.5 both want gmp/mpfr/mpc.
+          # ---------------------------------------------------- prerequisites
           say "=== gmp/mpfr/mpc ==="
           mkdir -p prefix
           ( cd gmp-6.2.1 && ./configure CC="$CCCMD" --disable-shared \
               --disable-assembly --prefix=/work/prefix > c.log 2>&1 \
-            && make -j"$(nproc)" > b.log 2>&1 && make install > /dev/null 2>&1 ) \
-            && say "  gmp ok" || { say "  gmp FAILED"; tail -5 gmp-6.2.1/b.log; exit 1; }
+            && make -j"$NP" > b.log 2>&1 && make install > /dev/null 2>&1 ) \
+            && say "  gmp ok" || { say "  gmp FAILED"; exit 1; }
           for p in mpfr-4.1.0 mpc-1.2.1; do
             ( cd "$p" && ./configure CC="$CCCMD" --disable-shared \
                 --with-gmp=/work/prefix --prefix=/work/prefix > c.log 2>&1 \
-              && make -j"$(nproc)" > b.log 2>&1 && make install > /dev/null 2>&1 ) \
-              && say "  $p ok" || { say "  $p FAILED"; tail -5 "$p/b.log"; exit 1; }
+              && make -j"$NP" > b.log 2>&1 && make install > /dev/null 2>&1 ) \
+              && say "  $p ok" || { say "  $p FAILED"; exit 1; }
           done
 
-          say "=== configure ==="
-          mkdir -p build && cd build
-          set +e
-          # CXX is only meaningful for arm A: 4.8.5's reload1.c does bool++,
-          # which C++17 forbids. Inert for the 4.7.4 arms, which build as C.
-          "/work/$SRC/configure" \
-            CC="$CCCMD" CXX="g++ -std=gnu++98" \
-            --build=aarch64-unknown-linux-gnu \
-            --host=aarch64-unknown-linux-gnu \
-            --target="$TGT" \
-            --prefix=/work/out --enable-languages=c \
-            --disable-multilib --disable-bootstrap --disable-werror \
-            --disable-libsanitizer --disable-libgomp --disable-libquadmath \
-            --disable-libssp --disable-libatomic --disable-shared \
-            --with-gmp=/work/prefix --with-mpfr=/work/prefix \
-            --with-mpc=/work/prefix > conf.log 2>&1
-          rc=$?
-          say "  configure rc=$rc"
-          [ "$rc" -eq 0 ] || { tail -25 conf.log | sed 's/^/    /'; exit 1; }
-
-          say "=== make all-gcc ==="
-          timeout 7200 make -k -j"$(nproc)" -Otarget MAKEINFO=true all-gcc > build.log 2>&1
-          MRC=$?
+          # ============================================ STAGE 1
+          say "=== stage 1: built by $CC ==="
+          conf build "$CCCMD" && say "  configure rc=0" \
+            || { say "  configure FAILED"; tail -20 build/conf.log | sed 's/^/    /'; exit 1; }
+          mk build; MRC=$?
           say "  make rc=$MRC"
-          say "  errors : $(grep -cE '\berror:' build.log || true)"
-          grep -E '\berror:' build.log | head -5 | sed 's/^/    /'
-          # `*** Configuration ... not supported` is not an `error:` line, so a
-          # tree with no backend reports zero errors. Show what make itself said.
-          grep -E '^\s*make(\[[0-9]+\])?: \*\*\* ' build.log | head -3 | sed 's/^/    /'
-          say "  cc1    : $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo MISSING)"
+          grep -E '^\s*make(\[[0-9]+\])?: \*\*\* ' build/build.log | head -3 | sed 's/^/    /'
+          [ -x build/gcc/cc1 ] || { say "  no cc1 -- nothing further is possible"; exit 1; }
+          say "  cc1 : $(wc -c < build/gcc/cc1) bytes  $(sha256sum build/gcc/cc1 | cut -c1-16)"
+          cp build/gcc/cc1 /work/cc1-s1
 
-          # The claim, for the arms that target aarch64.
-          if [ -x gcc/cc1 ] && [ "$TGT" = aarch64-unknown-linux-gnu ]; then
+          # The claim, for the arms that target this machine.
+          if [ "$TGT" = aarch64-unknown-linux-gnu ]; then
             printf 'int fib(int n){return n<2?n:fib(n-1)+fib(n-2);}\nint main(void){return fib(10);}\n' > /work/t.c
-            gcc/cc1 -quiet -O2 /work/t.c -o /work/t.s 2>&1 | head -3 | sed 's/^/    /'
-            if [ -s /work/t.s ]; then
-              say "  assembly: $(wc -l < /work/t.s) lines"
-              as /work/t.s -o /work/t.o 2>&1 | head -3 | sed 's/^/    /'
-              gcc /work/t.o -o /work/t 2>&1 | head -3 | sed 's/^/    /'
-              if [ -x /work/t ]; then
-                /work/t; say "  ran: exit=$? (expect 55)"
-              fi
+            build/gcc/cc1 -quiet -O2 /work/t.c -o /work/t.s 2>&1 | head -3 | sed 's/^/    /'
+            if [ -s /work/t.s ] && as /work/t.s -o /work/t.o 2>/dev/null && gcc /work/t.o -o /work/t 2>/dev/null; then
+              /work/t; say "  ran: exit=$? (expect 55)"
             fi
           fi
 
-          # RUN 1 REPORTED rc=0 FOR ARMS THAT BUILT NOTHING. `set +e` is in
-          # effect from the configure step onward and the script ended in
-          # `exit 0`, so the status could not express failure -- the third time
-          # in this leg that a harness has reported success it could not have
-          # known. Say what actually happened.
+          # ============================================ PHASE 2: REPRODUCIBLE?
+          # THE CONTROL FOR EVERYTHING BELOW. If one compiler built twice from
+          # one source does not produce one binary, then stage2 != stage3 would
+          # be uninterpretable -- it could mean a miscompile or it could mean a
+          # timestamp. Same path both times, since the build directory is
+          # recorded in the output; that is why the first tree is deleted rather
+          # than built alongside.
+          say "=== phase 2: the same build, twice ==="
+          rm -rf build
+          conf build "$CCCMD" && mk build; :
+          if [ -x build/gcc/cc1 ] && cmp -s /work/cc1-s1 build/gcc/cc1; then
+            REPRO=yes; say "  REPRODUCIBLE: byte-identical cc1"
+          else
+            REPRO=no
+            say "  NOT reproducible: $(sha256sum /work/cc1-s1 build/gcc/cc1 2>/dev/null | cut -c1-16 | tr '\n' ' ')"
+          fi
+
+          # ============================================ PHASE 3: libgcc
+          # Needed because xgcc cannot LINK without it, and stage 2's configure
+          # begins by linking a test program. Arm A is vanilla 4.8.5 with its own
+          # native backend; C and D carry the transplant. If A builds libgcc and
+          # they do not, that localises the unwind-dw2 ICE to the transplant --
+          # which is worth knowing on its own.
+          say "=== phase 3: libgcc ==="
+          BORROW=""
+          if [ "$TGT" = aarch64-unknown-linux-gnu ]; then
+            ( cd build && timeout 3600 make -k -j"$NP" MAKEINFO=true \
+                all-target-libgcc > libgcc.log 2>&1 ) || true
+            say "  objects: $(find build -path '*libgcc*' -name '*.o' | wc -l)"
+            if find build -name libgcc.a | grep -q .; then
+              say "  libgcc.a BUILT -- self-build uses our own runtime"
+            else
+              say "  libgcc.a not built:"
+              grep -E 'internal compiler error|fatal error' build/libgcc.log \
+                | head -2 | sed 's/^/    /'
+              # DECLARED BORROW. The host's runtime, so stage 2 can link at all.
+              # Ugly and named: the alternative is not measuring the fixpoint
+              # until the ICE is fixed. Everything else here is already borrowed
+              # from /usr; this makes one more of it explicit.
+              HG=$(dirname "$(gcc -print-libgcc-file-name)")
+              BORROW="-B$HG"
+              say "  BORROWING the host runtime for stage 2: $HG"
+            fi
+          fi
+
+          # ============================================ PHASE 4: SELF-BUILD
+          # gcc's own bootstrap gate, run by hand: stage2 is built by stage1's
+          # compiler, stage3 by stage2's, and stage2 == stage3 is required. It is
+          # NOT stage1 == stage2 -- stage1 came from gcc 13 or from tcc, so it
+          # legitimately differs. Both stage 2 and stage 3 are built at the SAME
+          # path, one after the other, for the same reason phase 2 was.
+          if [ "$TGT" != aarch64-unknown-linux-gnu ]; then
+            say "=== phase 4: SKIPPED ==="
+            say "  $ARM targets $TGT. Its compiler emits code this machine cannot"
+            say "  run and we have no $TGT assembler, so it cannot build itself."
+            say "  Not a failure -- a cross compiler has no fixpoint to have."
+            SELF=n/a
+          else
+            say "=== phase 4: stage 2, then stage 3 ==="
+            X1="/work/build/gcc/xgcc -B/work/build/gcc/ $BORROW"
+            rm -rf sN
+            if conf sN "$X1" && mk sN && [ -x sN/gcc/cc1 ]; then
+              say "  stage2 cc1: $(wc -c < sN/gcc/cc1) bytes  $(sha256sum sN/gcc/cc1 | cut -c1-16)"
+              cp sN/gcc/cc1 /work/cc1-s2
+              rm -rf /work/c2 && cp -a sN/gcc /work/c2
+              X2="/work/c2/xgcc -B/work/c2/ $BORROW"
+              rm -rf sN
+              if conf sN "$X2" && mk sN && [ -x sN/gcc/cc1 ]; then
+                say "  stage3 cc1: $(wc -c < sN/gcc/cc1) bytes  $(sha256sum sN/gcc/cc1 | cut -c1-16)"
+                if cmp -s /work/cc1-s2 sN/gcc/cc1; then
+                  SELF=yes; say "  FIXPOINT: stage2 == stage3, byte for byte"
+                else
+                  SELF=no;  say "  stage2 != stage3 -- $(cmp /work/cc1-s2 sN/gcc/cc1 2>&1 | head -1)"
+                fi
+              else
+                SELF=stage3-failed
+                say "  stage 3 did not build:"; tail -8 sN/conf.log 2>/dev/null | sed 's/^/    /'
+              fi
+            else
+              SELF=stage2-failed
+              say "  stage 2 did not build:"; tail -8 sN/conf.log 2>/dev/null | sed 's/^/    /'
+            fi
+          fi
+
+          say "=== SUMMARY $ARM ==="
+          say "  stage1 cc1     : $(sha256sum /work/cc1-s1 | cut -c1-16)"
+          say "  reproducible   : $REPRO"
+          say "  self-build     : $SELF"
+          say "  borrowed runtime: ${BORROW:-none}"
+
           FAIL=0
-          [ "$MRC" -eq 0 ]  || FAIL=1
-          [ -x gcc/cc1 ]    || FAIL=1
-          say "=== arm exit: $FAIL (0 = cc1 built and make succeeded) ==="
+          [ "$REPRO" = yes ] || FAIL=1
+          case "$SELF" in yes|n/a) ;; *) FAIL=1 ;; esac
+          say "=== arm exit: $FAIL ==="
           exit "$FAIL"
           EOS
           # Nothing is copied into /work any more: the transplant and its two
@@ -389,7 +488,7 @@ jobs:
         run: |
           set -u
           set +e
-          W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh /work/build.sh '${{ matrix.arm }}'
+          W="$PWD/work" REPO="$PWD" ./box.sh /bin/bash /work/build.sh '${{ matrix.arm }}'
           rc=$?
           echo "  sandboxed build rc=$rc"
           echo "BOX_RC=$rc" >> "$GITHUB_ENV"
@@ -429,15 +528,19 @@ jobs:
           set -eu
           echo "  arm            : ${{ matrix.arm }}"
           echo "  sandboxed build: rc=${BOX_RC:-?}"
-          echo "  cc1            : $( [ -x work/build/gcc/cc1 ] && wc -c < work/build/gcc/cc1 || echo no)"
           echo
-          echo "  Expected: identical to the unsandboxed result."
-          echo "    A  cc1 BUILT              C  cc1 55,044,256 B, fib 55"
-          echo "    B  cc1 BUILT              D  cc1 80,016,473 B, fib 55"
+          echo "  What each answer means:"
+          echo "    reproducible = no   the build embeds something that varies."
+          echo "                        Fix that BEFORE reading the fixpoint --"
+          echo "                        stage2 != stage3 would be ambiguous."
+          echo "    self-build   = yes  stage2 == stage3 byte for byte. This is"
+          echo "                        gcc's own bootstrap gate, run by hand."
+          echo "    self-build   = n/a  a cross target has no fixpoint to have."
           echo
-          echo "  A DIFFERENCE HERE IS THE POINT OF THE RUN: it means the build"
-          echo "  was using something the bind list does not name. Nothing was"
-          echo "  removed in this step, so nothing should have changed."
+          echo "  Arms are NOT comparable to each other: A is 4.8.5, B targets"
+          echo "  arm-none-eabi, and C and D share source but were built by"
+          echo "  different compilers, so their bytes MUST differ. Each arm is"
+          echo "  compared only against itself."
 
       - uses: actions/upload-artifact@v4
         if: always()
