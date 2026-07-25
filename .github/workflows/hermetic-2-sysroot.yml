@@ -319,6 +319,14 @@ jobs:
           # first, disable second, and then VERIFY, because a sed that matches
           # nothing is silent.
           yes '' | make oldconfig > /dev/null 2>&1
+          # CFLAGS_EXTRA, NOT EXTRA_CFLAGS. BusyBox's Makefile.flags does
+          # `CFLAGS += $(CFLAGS_EXTRA)`; there is no EXTRA_CFLAGS anywhere in
+          # its build system. Two consecutive "fixes" therefore did nothing at
+          # all -- the -Wno-error flags in one run and -D_GNU_SOURCE in the
+          # next were both spelled into a variable nothing reads, and the same
+          # error came back verbatim each time. A flag that is silently ignored
+          # looks exactly like a flag that did not help.
+          #
           # -D_GNU_SOURCE is the direct fix for the LONG_BIT failure: glibc
           # defines LONG_BIT in bits/xopen_lim.h, included from limits.h only
           # when __USE_XOPEN is set, and _GNU_SOURCE implies _XOPEN_SOURCE 700.
@@ -354,7 +362,7 @@ jobs:
           # substitution for those seventeen packages, so it is the one thing
           # here that nobody has tested against this compiler. Demote them.
           make -j"$(nproc)" CROSS_COMPILE="$LFS_TGT-" \
-            EXTRA_CFLAGS="-D_GNU_SOURCE -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=int-conversion" \
+            CFLAGS_EXTRA="-D_GNU_SOURCE -Wno-error=implicit-function-declaration -Wno-error=incompatible-pointer-types -Wno-error=int-conversion" \
             > b.log 2>&1 || {
               # RUN 4 PRINTED `tail -20` AND IT CONTAINED NO ERROR AT ALL --
               # with -j4 the last lines of the log are whatever finished last,
