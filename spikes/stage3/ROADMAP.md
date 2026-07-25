@@ -416,3 +416,33 @@ The interface measurement was right: nothing about the backend's *code* needs
 
 Do not pick before the numbers land. Option 1 is the honest one if it is small;
 option 2 keeps the change inside a directory we already treat as ours.
+
+### Sizing the two fixes — run 8's numbers, and one that was wrong
+
+What run 8 did establish, from the `.md` side:
+
+```
+aarch64 files using the construct : iterators.md only
+define_int_iterator uses          : 20
+define_int_attr uses              : 14
+```
+
+So the whole 4.8-only dialect surface in this backend is **34 definitions in one
+file** — a much smaller target than the backend's 46,000 lines.
+
+What it did **not** establish: the RTL reader delta. It reported `read-rtl.c`,
+`gensupport.c`, `rtl.def`, `read-md.c` and `read-md.h` all "identical", which
+cannot be true of a release that introduced a new `.md` construct. The command
+was `diff -u a b | diffstat -s`: `diffstat -s` closes the pipe early, `diff`
+dies on SIGPIPE, and `${d:-identical}` turned the resulting empty string into a
+confident claim. **The Broken pipe messages were right there in the log next to
+each "identical".**
+
+Same failure shape as the earlier "0 hooks" reading: a measurement that cannot
+distinguish *no difference* from *no measurement*. It now diffs to a file,
+reports `cmp -s` byte-identity separately from a real delta, and counts how many
+changed lines mention int iterators.
+
+The `<ITERATOR>` reference count was also misleading — 1,938 counts `<mode>`,
+`<MODE>` and every code iterator, which 4.7 already supports. Only references to
+the 34 int-iterator names matter for option 2, and those are now counted by name.

@@ -310,11 +310,25 @@ jobs:
           #   2. expand the iterators in aarch64's .md by hand/script --
           #      touches only our copy, but is mechanical text expansion
           echo "  === how much of 4.7 -> 4.8 is the RTL reader? ==="
+          # NOT `diff | diffstat -s`. diffstat closes the pipe early, diff dies
+          # on SIGPIPE, and the empty result gets reported as "identical" --
+          # run 8 claimed all five files were identical when the measurement had
+          # simply failed. Diff to a FILE, then distinguish empty-because-same
+          # from empty-because-broken.
           for f in gcc/read-rtl.c gcc/gensupport.c gcc/rtl.def gcc/read-md.c gcc/read-md.h; do
-            if [ -f "g474/$f" ] && [ -f "g485/$f" ]; then
-              d=$(diff -u "g474/$f" "g485/$f" | diffstat -s 2>/dev/null | tr -d '\n')
-              printf '    %-20s %s\n' "$(basename $f)" "${d:-identical}"
+            b=$(basename "$f")
+            if [ ! -f "g474/$f" ]; then printf '    %-20s absent in 4.7.4\n' "$b"; continue; fi
+            if [ ! -f "g485/$f" ]; then printf '    %-20s absent in 4.8.5\n' "$b"; continue; fi
+            if cmp -s "g474/$f" "g485/$f"; then
+              printf '    %-20s byte-identical\n' "$b"; continue
             fi
+            diff -u "g474/$f" "g485/$f" > "d-$b.diff" 2>/dev/null
+            add=$(grep -c '^+[^+]' "d-$b.diff" || true)
+            del=$(grep -c '^-[^-]' "d-$b.diff" || true)
+            hunks=$(grep -c '^@@' "d-$b.diff" || true)
+            ii=$(grep -c '^[+-].*\(int_iterator\|int_attr\|INT_ITERATOR\)' "d-$b.diff" || true)
+            printf '    %-20s +%-5s -%-5s %-3s hunks, %s of those lines mention int iterators\n' \
+              "$b" "$add" "$del" "$hunks" "$ii"
           done
           echo
           echo "  === how much of that is int-iterator specific? ==="
@@ -330,7 +344,19 @@ jobs:
             | sed 's/^/      /'
           echo "    define_int_iterator uses : $(grep -rc 'define_int_iterator' g474/gcc/config/aarch64/*.md 2>/dev/null | awk -F: '{s+=$2} END{print s+0}')"
           echo "    define_int_attr uses     : $(grep -rc 'define_int_attr' g474/gcc/config/aarch64/*.md 2>/dev/null | awk -F: '{s+=$2} END{print s+0}')"
-          echo "    <ITERATOR> references    : $(grep -roE '<[A-Za-z_]+>' g474/gcc/config/aarch64/*.md 2>/dev/null | wc -l)"
+          # Count only the iterators that are actually INT iterators. The raw
+          # <FOO> count includes mode and code iterators, which 4.7 already
+          # supports, so it wildly overstates option 2's work.
+          ints=$(grep -hoE '^\(define_int_(iterator|attr) +[A-Za-z_0-9]+' \
+                 g474/gcc/config/aarch64/*.md 2>/dev/null | awk '{print $2}' | sort -u)
+          echo "    distinct int iterator/attr names: $(printf '%s\n' "$ints" | grep -c . || true)"
+          n=0
+          for i in $ints; do
+            c=$(grep -roE "<$i>" g474/gcc/config/aarch64/*.md 2>/dev/null | wc -l)
+            n=$((n + c))
+          done
+          echo "    references to THOSE names        : $n"
+          echo "    (raw <FOO> count, incl. mode/code iterators 4.7 already has: $(grep -roE '<[A-Za-z_]+>' g474/gcc/config/aarch64/*.md 2>/dev/null | wc -l))"
           echo
           echo "  Option 1 is bounded by the read-rtl.c/rtl.def delta above and"
           echo "  fixes every backend. Option 2 is bounded by the expansion count"
