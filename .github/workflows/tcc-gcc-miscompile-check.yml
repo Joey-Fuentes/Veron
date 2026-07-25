@@ -1,0 +1,380 @@
+name: tcc-gcc-miscompile-check
+
+# DID tcc MISCOMPILE THE COMPILER?
+#
+# WHAT WE HAVE IS NOT EVIDENCE OF CORRECTNESS. tcc-builds-gcc-arm64 showed a
+# tcc-built cc1 emitting 44 lines of aarch64 that ran and returned 55. fib(10)
+# exercises a conditional, a subtraction and a recursive call. A cc1 miscompiled
+# anywhere else -- in register allocation, in a mode the test never reaches, in
+# one of the 626 objects the toy never touches -- passes that test unchanged.
+# A compiler that links and runs is not a compiler that is right.
+#
+# THE TEST THAT IS ACTUALLY DIAGNOSTIC. cc1 is deterministic: same source, same
+# flags, same output. So build gcc 4.7.4 TWICE from one transplanted tree --
+#
+#     H   compiled by the host gcc 13
+#     T   compiled by our arm64 tcc
+#
+# -- and the two resulting compilers, being built from identical source, must
+# BEHAVE identically. Not be identical: their own bytes differ (different
+# compilers made them). Their OUTPUT must be identical, on every input.
+#
+# So point both of them at a large corpus and compare what they emit. The corpus
+# does not need inventing -- gcc's own source is right there, and the build
+# system already knows every flag:
+#
+#   GATE 1  libgcc. Built by each tree's own xgcc, so xgcc_H and xgcc_T compile
+#           the same ~100 files. First differential result available, and it
+#           arrives before stage 2 has to be built at all.
+#
+#   GATE 2  stage 2. Configure and build gcc 4.7.4 AGAIN, once with xgcc_H as
+#           the compiler and once with xgcc_T. That is ~600 real translation
+#           units -- the whole of gcc, including the generated insn-*.c -- put
+#           through both compilers with flags neither we nor they chose.
+#           Every .o is compared.
+#
+#   GATE 3  the stage-2 cc1 binaries themselves. If every object matched, the
+#           linked binaries must too. This is exactly the comparison gcc's own
+#           3-stage bootstrap performs between stage2 and stage3, run across the
+#           H/T boundary instead of within one chain.
+#
+# A POSITIVE CONTROL, BECAUSE A COMPARISON THAT CANNOT FAIL IS NOT A COMPARISON.
+# This repository has been burned twice by measurements that returned a clean
+# number because they were broken -- "0 hooks used" from a grep for the wrong
+# spelling, "all five files identical" from a diff killed by SIGPIPE. So gate 0
+# compares the STAGE 1 objects, which were compiled by host gcc and by tcc
+# respectively and MUST DIFFER. If gate 0 reports a match, the comparison is
+# broken and gates 1-3 mean nothing, whatever they say.
+#
+#   gate 0  stage1 .o      H vs T   MUST DIFFER      (else the harness is lying)
+#   gate 1  libgcc .o      H vs T   must be IDENTICAL
+#   gate 2  stage2 .o      H vs T   must be IDENTICAL
+#   gate 3  stage2 cc1     H vs T   must be BYTE-IDENTICAL
+#
+# WHY THE PATHS ARE FORCED TO MATCH. Object files carry the build directory in
+# their debug info (DW_AT_comp_dir), so building H in one directory and T in
+# another produces different bytes for reasons that have nothing to do with
+# codegen. Two defences: stage 2 is built at the SAME absolute path both times
+# (the first is hashed, then deleted), and -g is dropped throughout. Either
+# alone would do; a false difference here would be read as a miscompile.
+#
+# WHAT THIS STILL WOULD NOT CATCH. A miscompilation that affects both compilers
+# identically is invisible to any comparison of the two -- but tcc and gcc 13
+# share no code, so a common-mode bug would have to be a coincidence. And a bug
+# in a path neither the whole of gcc nor libgcc exercises is not reached. That
+# is a much smaller gap than fib(10), and closing it further means the gcc
+# testsuite, which is a different and much longer job.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/tcc-gcc-miscompile-check.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: tcc-gcc-miscompile-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GNU: 'https://mirrors.kernel.org/gnu'
+  GNU2: 'https://ftpmirror.gnu.org'
+  # Pinned in sources/gcc.toml, measured by tcc-builds-gcc-arm64 on 2026-07-25.
+  SHA474: '92e61c6dc3a0a449e62d72a38185fda550168a86702dea07125ebd3ec3996282'
+  SHA485: '22fb1e7e0f68a63cee631d85b20461d1ea6bda162f03096350e38c8d427ecf23'
+  # No -g anywhere: debug info embeds the build path and the producer string,
+  # neither of which is codegen.
+  CF: '-O2'
+
+jobs:
+  ddc:
+    name: 'differential: host-gcc-built cc1 vs tcc-built cc1'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Confirm this is really aarch64'
+        run: |
+          set -eu
+          echo "  uname -m : $(uname -m)"
+          [ "$(uname -m)" = aarch64 ] || { echo "  NOT aarch64 -- aborting"; exit 1; }
+
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl git bzip2 xz-utils gcc make bison flex texinfo m4 perl \
+            file binutils
+
+      - name: 'Build OUR arm64 tcc'
+        run: |
+          set -eu
+          # Full clone: apply-series.sh finds its base by matching the patches'
+          # index pre-image blobs against history.
+          git clone -q git://repo.or.cz/tinycc.git tccsrc \
+            || git clone -q https://repo.or.cz/tinycc.git tccsrc
+          bash spikes/stage3/patches/tcc-arm64-asm/apply-series.sh tccsrc | sed 's/^/  /'
+          cd tccsrc
+          ./configure --cc=gcc > /dev/null
+          make -j"$(nproc)" > /dev/null
+          ./tcc -v
+          ./tcc -v 2>&1 | grep -q AArch64 || { echo "  tcc is not an AArch64 build"; exit 1; }
+          echo "TCC=$PWD/tcc"  >> "$GITHUB_ENV"
+          echo "TCCDIR=$PWD"   >> "$GITHUB_ENV"
+
+      - name: 'Fetch gcc (pinned) and transplant the backend'
+        run: |
+          set -eu
+          # Hashes are now VERIFIED, not printed: sources/gcc.toml carries the
+          # values tcc-builds-gcc-arm64 measured. A mismatch here is a supply
+          # problem and must stop the job, not be noted in passing.
+          F=spikes/stage3/probes/fetch-pinned.sh
+          bash "$F" g474 "$HOME/.cache/veron/gcc-4.7.4.tar.bz2" "$SHA474" \
+            "$GNU/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2 $GNU2/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2" "" "" | sed 's/^/  /'
+          bash "$F" g485 "$HOME/.cache/veron/gcc-4.8.5.tar.bz2" "$SHA485" \
+            "$GNU/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2 $GNU2/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2" "" "" | sed 's/^/  /'
+          # ONE transplanted tree, built twice. Two transplants would introduce
+          # a second variable for no reason.
+          bash spikes/stage3/probes/backport-aarch64.sh g474 g485 | tail -5
+          echo "W=$PWD" >> "$GITHUB_ENV"
+
+      - name: 'Prerequisites (host gcc and tcc, into separate prefixes)'
+        run: |
+          set -eu
+          # Each tree links its own. A shared, host-built libgmp.a inside the
+          # tcc tree's cc1 would shrink the claim without saying so.
+          for arm in H T; do
+            case $arm in
+              H) CC="gcc" ;;
+              T) CC="$TCC -B$TCCDIR" ;;
+            esac
+            mkdir -p "prefix-$arm"
+            echo "  ===== $arm ====="
+            curl -sSL -o gmp.tar.xz "$GNU/gmp/gmp-6.2.1.tar.xz"
+            rm -rf gmp && mkdir -p gmp && tar xf gmp.tar.xz -C gmp --strip-components=1
+            ( cd gmp && ./configure CC="$CC" CFLAGS="$CF" --disable-shared \
+                --disable-assembly --prefix="$W/prefix-$arm" > c.log 2>&1 \
+              && make -j"$(nproc)" > b.log 2>&1 && make install > /dev/null 2>&1 \
+              && echo "    gmp ok" ) || { echo "    gmp FAILED for $arm"; exit 1; }
+            for p in mpfr-4.1.0 mpc-1.2.1; do
+              case $p in
+                mpfr*) u="$GNU/mpfr/$p.tar.xz" ;;
+                mpc*)  u="$GNU/mpc/$p.tar.gz"  ;;
+              esac
+              curl -sSL -o "$p.tar" "$u"
+              rm -rf "$p" && mkdir -p "$p" && tar xf "$p.tar" -C "$p" --strip-components=1 2>/dev/null
+              ( cd "$p" && ./configure CC="$CC" CFLAGS="$CF" --disable-shared \
+                  --with-gmp="$W/prefix-$arm" --prefix="$W/prefix-$arm" > c.log 2>&1 \
+                && make -j"$(nproc)" > b.log 2>&1 && make install > /dev/null 2>&1 \
+                && echo "    $p ok" ) || { echo "    $p FAILED for $arm"; exit 1; }
+            done
+          done
+
+      - name: 'STAGE 1: build gcc twice -- by host gcc, and by tcc'
+        run: |
+          set -eu
+          # FULL make, not all-gcc. libgcc is the point: it is compiled by each
+          # tree's own xgcc, which makes it the first differential measurement
+          # available -- and without it xgcc cannot link, so stage 2 could not
+          # be configured at all.
+          for arm in H T; do
+            case $arm in
+              H) CC="gcc" ;;
+              T) CC="$TCC -B$TCCDIR" ;;
+            esac
+            echo "  ===== stage1 $arm ====="
+            mkdir -p "b$arm" && cd "b$arm"
+            set +e
+            "$W/g474/configure" CC="$CC" CFLAGS="$CF" \
+              --build=aarch64-unknown-linux-gnu \
+              --host=aarch64-unknown-linux-gnu \
+              --target=aarch64-unknown-linux-gnu \
+              --prefix="$W/out-$arm" --enable-languages=c \
+              --disable-multilib --disable-bootstrap --disable-werror \
+              --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+              --disable-libssp --disable-libatomic --disable-shared \
+              --with-gmp="$W/prefix-$arm" --with-mpfr="$W/prefix-$arm" \
+              --with-mpc="$W/prefix-$arm" > conf.log 2>&1
+            rc=$?; echo "    configure rc=$rc"
+            [ "$rc" -eq 0 ] || { tail -20 conf.log | sed 's/^/      /'; exit 1; }
+            timeout 10800 make -j"$(nproc)" -Otarget MAKEINFO=true \
+              CFLAGS_FOR_TARGET="$CF" > build.log 2>&1
+            rc=$?; echo "    make rc=$rc"
+            echo "    errors: $(grep -cE '\berror:' build.log || true)"
+            echo "    cc1   : $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo missing)"
+            echo "    xgcc  : $( [ -x gcc/xgcc ] && echo built || echo missing)"
+            echo "    libgcc: $(find . -name 'libgcc.a' | head -1)"
+            set -e
+            [ -x gcc/xgcc ] || { echo "    no xgcc -- stage 2 impossible"; exit 1; }
+            cd "$W"
+          done
+
+      - name: 'GATE 0 (positive control): stage1 objects MUST differ'
+        run: |
+          set -eu
+          mkdir -p man
+          # These were compiled by gcc 13 and by tcc. If they match, the
+          # comparison method is broken and every later gate is meaningless.
+          for arm in H T; do
+            ( cd "b$arm/gcc" && find . -name '*.o' | sort | xargs sha256sum ) \
+              | sed "s|  \./|  |" > "man/stage1-$arm.txt"
+            echo "  stage1 $arm: $(wc -l < man/stage1-$arm.txt) objects"
+          done
+          same=$(comm -12 <(sort man/stage1-H.txt) <(sort man/stage1-T.txt) | wc -l)
+          tot=$(wc -l < man/stage1-H.txt)
+          echo "  identical objects: $same of $tot"
+          if [ "$same" -eq "$tot" ]; then
+            echo "  CONTROL FAILED: two different compilers produced identical objects."
+            echo "  That is not possible. The comparison is measuring nothing."
+            exit 1
+          fi
+          echo "  CONTROL OK: the comparison can detect a difference."
+
+      - name: 'GATE 1: libgcc -- compiled by xgcc_H vs xgcc_T'
+        continue-on-error: true
+        run: |
+          set -eu
+          # The first real differential result. Same source, same flags, two
+          # compilers that were themselves built by different compilers.
+          for arm in H T; do
+            d=$(find "b$arm" -type d -name libgcc | head -1)
+            ( cd "$d" && find . -name '*.o' | sort | xargs sha256sum ) \
+              | sed "s|  \./|  |" > "man/libgcc-$arm.txt"
+            echo "  libgcc $arm: $(wc -l < man/libgcc-$arm.txt) objects  ($d)"
+          done
+          if diff -q man/libgcc-H.txt man/libgcc-T.txt > /dev/null; then
+            echo "  IDENTICAL: every libgcc object matches."
+          else
+            echo "  DIFFER -- these files:"
+            diff man/libgcc-H.txt man/libgcc-T.txt | grep '^[<>]' \
+              | awk '{print $3}' | sort -u | head -20 | sed 's/^/    /'
+            echo "    differing: $(diff man/libgcc-H.txt man/libgcc-T.txt | grep -c '^<' || true) of $(wc -l < man/libgcc-H.txt)"
+          fi
+
+      - name: 'STAGE 2: rebuild gcc with each stage-1 compiler, at the SAME path'
+        run: |
+          set -eu
+          # Same absolute path both times, so DW_AT_comp_dir and anything else
+          # path-derived cannot differ. The first build is hashed and deleted
+          # before the second starts.
+          for arm in H T; do
+            XG="$W/b$arm/gcc/xgcc -B$W/b$arm/gcc/"
+            echo "  ===== stage2 $arm ====="
+            rm -rf "$W/s2" && mkdir -p "$W/s2" && cd "$W/s2"
+            set +e
+            "$W/g474/configure" CC="$XG" CFLAGS="$CF" \
+              --build=aarch64-unknown-linux-gnu \
+              --host=aarch64-unknown-linux-gnu \
+              --target=aarch64-unknown-linux-gnu \
+              --prefix="$W/s2out" --enable-languages=c \
+              --disable-multilib --disable-bootstrap --disable-werror \
+              --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+              --disable-libssp --disable-libatomic --disable-shared \
+              --with-gmp="$W/prefix-$arm" --with-mpfr="$W/prefix-$arm" \
+              --with-mpc="$W/prefix-$arm" > conf.log 2>&1
+            rc=$?; echo "    configure rc=$rc"
+            [ "$rc" -eq 0 ] || { tail -20 conf.log | sed 's/^/      /'; exit 1; }
+            timeout 10800 make -j"$(nproc)" -Otarget MAKEINFO=true all-gcc > build.log 2>&1
+            echo "    make rc=$?  errors: $(grep -cE '\berror:' build.log || true)"
+            set -e
+            ( cd gcc && find . -name '*.o' | sort | xargs sha256sum ) \
+              | sed "s|  \./|  |" > "$W/man/stage2-$arm.txt"
+            echo "    objects: $(wc -l < "$W/man/stage2-$arm.txt")"
+            if [ -x gcc/cc1 ]; then
+              cp gcc/cc1 "$W/cc1-stage2-$arm"
+              echo "    cc1: $(wc -c < gcc/cc1) bytes  $(sha256sum gcc/cc1 | cut -c1-16)"
+            else
+              echo "    cc1: NOT BUILT"
+            fi
+            cd "$W"
+          done
+          rm -rf "$W/s2"
+
+      - name: 'GATE 2: stage-2 objects -- the whole of gcc, through both compilers'
+        run: |
+          set -eu
+          set +e
+          a=$(wc -l < man/stage2-H.txt); b=$(wc -l < man/stage2-T.txt)
+          echo "  objects: H=$a  T=$b"
+          if [ "$a" -ne "$b" ]; then
+            echo "  DIFFERENT OBJECT COUNTS -- one build did not get as far as the other."
+            echo "  Compare build logs before reading anything into the hashes."
+          fi
+          if diff -q man/stage2-H.txt man/stage2-T.txt > /dev/null; then
+            echo
+            echo "  IDENTICAL. All $a objects match."
+            echo "  The tcc-built compiler and the gcc-built compiler emit the same"
+            echo "  code for every translation unit in gcc 4.7.4."
+          else
+            n=$(diff man/stage2-H.txt man/stage2-T.txt | grep -c '^<')
+            echo
+            echo "  $n of $a objects DIFFER:"
+            diff man/stage2-H.txt man/stage2-T.txt | grep '^<' \
+              | awk '{print $2}' | sort -u | head -30 | sed 's/^/    /'
+            echo
+            echo "  Each name is a translation unit where the two compilers disagree."
+            echo "  That is a miscompilation in one of them -- and since H's compiler"
+            echo "  was built by a gcc that builds itself, T is the suspect."
+          fi
+
+      - name: 'GATE 3: the stage-2 cc1 binaries'
+        run: |
+          set -eu
+          set +e
+          # gcc's own 3-stage bootstrap gate, across the H/T boundary. If every
+          # object matched, this must too -- and if it does not, the difference
+          # is in linking rather than in codegen, which is worth knowing.
+          if [ ! -f cc1-stage2-H ] || [ ! -f cc1-stage2-T ]; then
+            echo "  one or both stage-2 cc1 binaries missing -- see the stage-2 step"
+            exit 0
+          fi
+          ls -l cc1-stage2-H cc1-stage2-T | awk '{print "    "$5"  "$9}'
+          if cmp -s cc1-stage2-H cc1-stage2-T; then
+            echo
+            echo "  BYTE-IDENTICAL."
+            echo "  A cc1 built by tcc and a cc1 built by gcc 13, each used to compile"
+            echo "  gcc 4.7.4, produced the same compiler down to the byte."
+          else
+            echo "  DIFFER: $(cmp cc1-stage2-H cc1-stage2-T 2>&1 | head -1)"
+            echo "  If GATE 2 was identical, this is the link step, not codegen."
+          fi
+
+      - name: 'VERDICT'
+        if: always()
+        run: |
+          set -eu
+          say() { printf '  %s\n' "$*"; }
+          g0=$( [ -s man/stage1-H.txt ] && ! diff -q man/stage1-H.txt man/stage1-T.txt >/dev/null && echo 'DIFFER (correct)' || echo 'BROKEN' )
+          g1=$( diff -q man/libgcc-H.txt man/libgcc-T.txt >/dev/null 2>&1 && echo identical || echo DIFFER )
+          g2=$( diff -q man/stage2-H.txt man/stage2-T.txt >/dev/null 2>&1 && echo identical || echo DIFFER )
+          g3=$( cmp -s cc1-stage2-H cc1-stage2-T 2>/dev/null && echo identical || echo DIFFER )
+          say "gate 0  stage1 objects (control) : $g0"
+          say "gate 1  libgcc objects           : $g1"
+          say "gate 2  stage2 objects           : $g2"
+          say "gate 3  stage2 cc1 binary        : $g3"
+          say ""
+          if [ "$g0" = BROKEN ]; then
+            say "The control failed. Nothing below it is evidence of anything."
+            exit 1
+          fi
+          if [ "$g1" = identical ] && [ "$g2" = identical ] && [ "$g3" = identical ]; then
+            say "NO MISCOMPILATION DETECTED."
+            say "Two compilers built from one source by two unrelated compilers"
+            say "agree on every object in libgcc and in the whole of gcc 4.7.4,"
+            say "and the compilers they produce are byte-identical."
+            say ""
+            say "Not caught by this: a fault common to tcc and gcc 13 (they share"
+            say "no code), and any path neither gcc nor libgcc exercises. The gcc"
+            say "testsuite is the next and much longer step."
+          else
+            say "A DIFFERENCE WAS FOUND. The file lists above name it."
+            say "Next: compile one differing translation unit with each cc1 using"
+            say "-S and diff the assembly. That turns a hash mismatch into a bug."
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: object-manifests
+          path: man
+          if-no-files-found: warn
