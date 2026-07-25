@@ -152,11 +152,29 @@ jobs:
           # gprofng, which run 2 also reported as dynamic. They need shared
           # objects by design, nothing here uses them, and a tool we do not need
           # should not be in a sysroot we are trying to keep enumerable.
+          # PUT IT IN CC, NOT IN LDFLAGS. Two runs failed on this and each
+          # taught a different half of why:
+          #
+          #   run 2  LDFLAGS="-static" -> tools still dynamic. binutils links
+          #          through libtool, and libtool INTERCEPTS a plain -static as
+          #          "prefer static libtool libraries", removing it from the
+          #          real link. The flag never reached the linker.
+          #   run 3  LDFLAGS="-all-static" -> libtool's actual flag, but the
+          #          top-level make re-runs sub-configures, so it landed on
+          #          `gcc -all-static conftest.c`. gcc has no such option, the
+          #          link test failed, and every later test died with
+          #          "Link tests are not allowed after GCC_NO_EXECUTABLES."
+          #
+          # CC="gcc -static -no-pie" sidesteps both. It is a flag gcc
+          # understands, so configure's link tests still work; it is part of the
+          # compiler rather than the link line, so libtool cannot strip it; and
+          # it applies to every link the build performs, including the ones in
+          # sub-configures we do not control.
           ../bu/configure --prefix="$S" --disable-nls --disable-werror \
             --disable-gdb --disable-sim --disable-shared --disable-gprofng \
-            CFLAGS="-O2 -fno-pie" LDFLAGS="-static -no-pie" \
+            CC="gcc -static -no-pie" CFLAGS="-O2" \
             > c.log 2>&1 || { tail -20 c.log; exit 1; }
-          make -j"$(nproc)" LDFLAGS="-all-static" > b.log 2>&1 || { tail -25 b.log; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 || { tail -25 b.log; exit 1; }
           make install > /dev/null 2>&1
           # VERIFY HERE, not four steps later. Run 2 printed
           # `file ... | cut -d, -f1-3`, which truncates immediately BEFORE the
@@ -178,10 +196,13 @@ jobs:
           curl -sSL -o mk.tar.gz "$GNU/make/make-4.4.1.tar.gz"
           mkdir -p mk && tar xf mk.tar.gz -C mk --strip-components=1
           mkdir -p bmk && cd bmk
-          ../mk/configure --prefix="$S" --disable-nls LDFLAGS="-static" \
+          # Same reasoning as binutils: the flag belongs in CC.
+          ../mk/configure --prefix="$S" --disable-nls CC="gcc -static -no-pie" \
             > c.log 2>&1 || { tail -20 c.log; exit 1; }
           make -j"$(nproc)" > b.log 2>&1 && make install > /dev/null 2>&1
-          file "$S/bin/make" | cut -d, -f1-3 | sed 's/^/  /'
+          d=$(file "$S/bin/make"); echo "  $(printf '%s' "$d" | cut -c1-96)"
+          printf '%s' "$d" | grep -q 'statically linked' \
+            || { echo "  make is NOT static"; exit 1; }
 
       # ----------------------------------------------------------- gcc 4.8.5
       - name: 'sysroot: gcc 4.8.5 (static) -- the temporary compiler'
@@ -220,10 +241,9 @@ jobs:
             --disable-libsanitizer --disable-libgomp --disable-libquadmath \
             --disable-libssp --disable-libatomic --disable-shared --disable-nls \
             --with-gmp="$W/prefix" --with-mpfr="$W/prefix" --with-mpc="$W/prefix" \
-            CFLAGS="-O2 -fno-pie" LDFLAGS="-static -no-pie" \
+            CC="gcc -static -no-pie" CFLAGS="-O2" \
             > c.log 2>&1 || { tail -25 c.log; exit 1; }
-          timeout 7200 make -j"$(nproc)" -Otarget MAKEINFO=true \
-            LDFLAGS="-static -no-pie" > b.log 2>&1 || true
+          timeout 7200 make -j"$(nproc)" -Otarget MAKEINFO=true > b.log 2>&1 || true
           echo "  cc1     : $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo MISSING)"
           echo "  libgcc.a: $(find . -name libgcc.a | head -1 || echo 'NOT BUILT')"
           grep -E 'internal compiler error|error:' b.log | head -4 | sed 's/^/    /'
