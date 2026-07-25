@@ -65,6 +65,10 @@ on:
       - '.github/workflows/hermetic-2-sysroot.yml'
   workflow_dispatch:
     inputs:
+      build_kernel:
+        description: 'also build linux + initramfs and boot it in QEMU (yes/no)'
+        required: false
+        default: 'yes'
       lfs_set:
         description: 'which tested set: 13.0 (gcc 15.2) or dev (gcc 16.1)'
         required: false
@@ -95,12 +99,17 @@ env:
   GMP: '6.3.0'
   MPFR: '4.2.2'
   MPC: '1.3.1'
+  KVER: '7.1.5'
+  M4: '1.4.20'
+  BISON: '3.8.2'
+  FLEX: '2.6.4'
+  PERL: '5.42.0'
 
 jobs:
   sysroot:
     name: 'cross toolchain -> sysroot -> a box with no /usr'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 330
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v5
 
@@ -595,4 +604,139 @@ jobs:
             box2.sh
             b-*/c.log
             b-*/b.log
+          if-no-files-found: warn
+
+      - name: 'Fetch what the kernel build needs (outside; no network inside)'
+        if: ${{ github.event.inputs.build_kernel != 'no' }}
+        run: |
+          set -eu
+          # THE TOOLCHAIN IS NOT ENOUGH TO BUILD A KERNEL. kconfig is generated
+          # by flex and bison, and the kernel's scripts want perl. None of the
+          # three are in the sysroot, and pretending otherwise would just move
+          # the failure later. m4 comes first because bison and flex need it.
+          for u in "$GNU/m4/m4-$M4.tar.xz" \
+                   "$GNU/bison/bison-$BISON.tar.xz" \
+                   "https://github.com/westes/flex/releases/download/v$FLEX/flex-$FLEX.tar.gz" \
+                   "https://www.cpan.org/src/5.0/perl-$PERL.tar.xz" \
+                   "https://cdn.kernel.org/pub/linux/kernel/v${KVER%%.*}.x/linux-$KVER.tar.xz"; do
+            echo "  $(basename "$u")"; curl -fsSL --retry 3 -O "$u"
+          done
+          for t in m4-$M4 bison-$BISON flex-$FLEX perl-$PERL linux-$KVER; do
+            d="$S/work/$t"; mkdir -p "$d"
+            tar xf "$(ls ${t}.tar.*)" -C "$d" --strip-components=1
+          done
+          echo "  staged into the box: $(ls "$S/work" | tr '\n' ' ')"
+
+      - name: 'Build m4, bison, flex, perl INSIDE the box'
+        if: ${{ github.event.inputs.build_kernel != 'no' }}
+        run: |
+          set -eu
+          # Built natively, in the box, by the toolchain the box already has.
+          # This is LFS chapter 7's shape -- and it is the first real proof the
+          # sysroot can produce software rather than merely run it.
+          S="$S" ./box2.sh /bin/sh -c '
+            set -e
+            for p in m4-'"$M4"' bison-'"$BISON"' flex-'"$FLEX"'; do
+              echo "=== $p ==="
+              cd /work/$p
+              ./configure --prefix=/usr > c.log 2>&1 || { tail -8 c.log; exit 1; }
+              make -j4 > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -5; exit 1; }
+              make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
+              echo "  installed"
+            done
+            echo "=== perl ==="
+            cd /work/perl-'"$PERL"'
+            ./Configure -des -Dprefix=/usr -Dcc=gcc > c.log 2>&1 || { tail -12 c.log; exit 1; }
+            make -j4 > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -5; exit 1; }
+            make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
+            echo "  perl: $(perl -v 2>&1 | grep -o "v5[.0-9]*" | head -1)"
+          ' 2>&1 | sed 's/^/    /'
+
+      - name: 'Build linux ${{ env.KVER }} INSIDE the box'
+        if: ${{ github.event.inputs.build_kernel != 'no' }}
+        run: |
+          set -eu
+          S="$S" ./box2.sh /bin/sh -c '
+            set -e
+            cd /work/linux-'"$KVER"'
+            make ARCH=arm64 defconfig > /dev/null 2>&1
+            # Trim what a hermetic box cannot supply: BTF needs pahole, module
+            # signing needs openssl, and neither is in here. Both are optional
+            # for booting.
+            for sym in CONFIG_DEBUG_INFO_BTF CONFIG_MODULE_SIG CONFIG_SYSTEM_TRUSTED_KEYRING; do
+              sed -i "s/^$sym=y/# $sym is not set/" .config
+            done
+            yes "" | make ARCH=arm64 olddefconfig > /dev/null 2>&1
+            echo "kernel config ready"
+            make ARCH=arm64 -j4 Image > b.log 2>&1 || {
+              grep -E "error:|Error [0-9]|No rule" b.log | head -12; exit 1; }
+            ls -l arch/arm64/boot/Image | awk "{print \"  Image: \" \$5 \" bytes\"}"
+            cp arch/arm64/boot/Image /work/Image
+          ' 2>&1 | sed 's/^/    /'
+
+      - name: 'Assemble an initramfs INSIDE the box'
+        if: ${{ github.event.inputs.build_kernel != 'no' }}
+        run: |
+          set -eu
+          S="$S" ./box2.sh /bin/sh -c '
+            set -e
+            rm -rf /work/ir && mkdir -p /work/ir/bin /work/ir/dev /work/ir/proc /work/ir/sys
+            cp /usr/bin/busybox /work/ir/bin/
+            cd /work/ir/bin && for a in sh mount umount uname echo cat ls poweroff; do
+              ln -sf busybox $a; done
+            cd /work/ir
+            cat > init <<"EOF"
+          #!/bin/sh
+          mount -t proc none /proc
+          mount -t sysfs none /sys
+          echo "VERON-BOOT-OK $(uname -srm)"
+          echo "VERON-COMPILER $(cat /proc/version)"
+          poweroff -f
+          EOF
+            chmod +x init
+            find . | cpio -o -H newc 2>/dev/null | gzip -9 > /work/initramfs.cpio.gz
+            ls -l /work/initramfs.cpio.gz | awk "{print \"  initramfs: \" \$5 \" bytes\"}"
+          ' 2>&1 | sed 's/^/    /'
+
+      - name: 'BOOT IT: QEMU, outside the box'
+        if: ${{ github.event.inputs.build_kernel != 'no' }}
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # QEMU runs on the HOST, deliberately. It is a test harness, not part
+          # of the build -- the Image and the initramfs inside it were produced
+          # entirely by the sysroot's own toolchain, with no /usr bound.
+          sudo apt-get install -y --no-install-recommends qemu-system-arm > /dev/null 2>&1
+          echo "  booting linux $KVER on qemu-system-aarch64 -M virt ..."
+          timeout 180 qemu-system-aarch64 \
+            -M virt -cpu cortex-a57 -m 1024 -nographic -no-reboot \
+            -kernel "$S/work/Image" \
+            -initrd "$S/work/initramfs.cpio.gz" \
+            -append "console=ttyAMA0 rdinit=/init panic=1 loglevel=4" \
+            > qemu.log 2>&1
+          echo "  qemu rc=$?"
+          echo "  --- console, last 25 lines ---"
+          tail -25 qemu.log | sed 's/^/    /'
+          echo
+          if grep -q 'VERON-BOOT-OK' qemu.log; then
+            echo "  ================================================"
+            grep -h 'VERON-' qemu.log | sed 's/^/    /'
+            echo "  ================================================"
+            echo "  END TO END: a kernel and userland built by a toolchain that"
+            echo "  itself was built in a box with no /usr, booted and ran."
+          else
+            echo "  DID NOT REACH USERSPACE. The console above is the evidence;"
+            echo "  a kernel that builds and does not boot is a different"
+            echo "  problem from one that does not build."
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kernel-and-image
+          path: |
+            qemu.log
+            sysroot/work/Image
+            sysroot/work/initramfs.cpio.gz
           if-no-files-found: warn
