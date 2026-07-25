@@ -308,6 +308,79 @@ Agreement in failure is still agreement. It is also a real bug — see below.
   code, which makes that a coincidence rather than a risk, but it is not
   nothing. gcc's own DejaGnu suite is the next and much longer step.
 
+## What the host supplies
+
+Every result above was built with borrowed tools, and the chain diagram at the
+top says PROVEN over arrows that all rest on them. Named, in the order they
+matter:
+
+| borrowed | used for |
+|---|---|
+| **gcc 13** | builds tcc. Our arm64 tcc is an Ubuntu-gcc artifact. |
+| binutils | `as` assembles cc1's output, `ld` links cc1 itself |
+| glibc + headers | everything links against the runner's libc |
+| make, bash, perl, python3, bison, flex, m4 | the build machinery, and every `configure` |
+| the kernel | declared trusted, per `TRUST-BOUNDARY.md` |
+
+**The sharpest consequence: the differential test does not close trusting
+trust.** `cc1_H` was built by gcc 13 and `cc1_T` by tcc, which was built by
+gcc 13. Both descend from one compiler, so a Thompson-style attack in it could
+infect both identically and the comparison would report 349 of 349 clean,
+exactly as it did. What that test establishes is that *tcc as a compiler* did
+not corrupt cc1. It says nothing about provenance.
+
+This is the same order LFS and Gentoo work in — chapter 5 uses the host
+toolchain — with one difference that is not in our favour: **they sever the
+lineage and we do not yet.** LFS chroots and rebuilds everything with the
+temporary toolchain, Gentoo goes stage1 → stage2 → stage3, and the shipped
+system contains no bytes produced by host binaries. We build gcc 4.7 with gcc 13
+and stop. Phase 4 of `hermetic-1-sandbox` is exactly that rebuild pass, which is
+why it exists.
+
+### The hermetic ladder
+
+`.github/workflows/hermetic-1-sandbox.yml`. Isolation is not the absence of
+dependencies — a chroot with Ubuntu's `/usr` copied in is perfectly isolated and
+entirely host-dependent. What a sandbox buys is **enforcement**: an undeclared
+dependency stops being silently satisfied and becomes a visible error, so the
+bind list *is* the declaration and each step is a deletion from it.
+
+```
+step 1  bwrap, host toolchain still bound      DONE
+step 2  musl sysroot, static, instead of glibc
+step 3  our own binutils instead of host as/ld
+step 4  our own make/shell/coreutils
+step 5  a tcc not built by gcc 13   -- blocked on seed -> tcc
+```
+
+Step 5 is last because invariant #1 forbids a committed binary, so a tcc must be
+*derived*, and today the only thing that can derive one is gcc 13. The
+alternative is reaching it from the seed, which is leg 1.
+
+**Step 1 result.** All four arms confirmed the box: the loader resolves, every
+bind is present, `/work` is the only writable path, and `curl` cannot reach the
+network. Arm A built gcc 4.8.5 end to end inside it and ran correct aarch64.
+
+```
+A  4.8.5 vanilla, host gcc   cc1 69,481,120 B   bbbc1eef83493def
+B  4.7.4 control, host gcc   cc1 14,947,952 B   f1124f574c70fb48   REPRODUCIBLE
+C  4.7.4 backport, host gcc  cc1 12,807,640 B   092daecfc3065ff6
+D  4.7.4 backport, tcc       cc1 18,488,473 B   ace0418a5c58b8cb
+```
+
+Smaller than the numbers elsewhere in this document because the sandboxed arms
+build with `CFLAGS=-O2` and no `-g`; debug info is not codegen.
+
+**Arm B is the repository's first reproducibility result** — two builds, same
+source, same flags, same path, byte-identical cc1. That matters beyond itself:
+it is the control that makes a stage2/stage3 comparison readable, since without
+it a difference could mean a miscompile or merely a timestamp.
+
+A, C and D did not reach that phase. All three exited with **rc=55** — the fib
+test returns 55 on success, the script runs under `set -e`, and a non-zero status
+terminates it. The success condition was ending the run. B survived only because
+it targets `arm-none-eabi` and skips the block. Fixed; not yet re-run.
+
 ## Method notes worth keeping
 
 Three of these cost real runs and are worth remembering:

@@ -52,17 +52,75 @@ deliberately tiny; tcc needs far more C than that. MesCC — a C99 front end in
 Scheme, running on an interpreter small enough for M2-Planet to compile — is the
 bridge. Removing it means writing a compiler that spans the whole gap.
 
-**Expected gap, to be confirmed by measurement:**
+### MEASURED, 2026-07-25 — the gap is four features, not a rewrite
 
-| feature | why tcc needs it |
-|---|---|
-| varargs | `printf`/`fprintf`-style calls throughout |
-| floating point | tcc parses and constant-folds floats, so its *own source* does double arithmetic — likely the hardest item |
-| real preprocessor | `#define`/`#if`; ours is minimal and `--bootstrap-mode` does not expand object-like macros (open as m75) |
-| aggregate initializers, struct-by-value | tcc's tables and node structures |
+`m2-tcc-gap-probe`, static half: tcc at pin `5ec0e6f8`, comments and literals
+stripped by a character-level state machine, every construct counted.
 
-**First spike:** run M2-Planet over real tcc's source and report failure classes
-with counts. Cheap, decisive, useful even if the leg is never built.
+| construct | uses in tcc | M2-Planet 1.13.1 |
+|---|---|---|
+| ternary `?:` | 405 | **ABSENT** |
+| `float`/`double` declarations | 38 | **keyword only — no `new_primitive`, so no type** |
+| floating literals | 17 | needs constant folding |
+| bitfields | ~84 | **ABSENT** |
+| stack aggregate init `= {` | 89 | globals fine; **stack arrays refused outright** |
+| `long long` | 39 | present |
+| `union` | 27 | present |
+| `switch` | 196 | present |
+| `goto` | 509 | present |
+| varargs `...` | 18 | present (`__va_start`/`__va_arg`/`__va_end`/`__va_copy`) |
+| `typedef` | 126 | present |
+| compound assignment | 970 | present |
+| `++` / `--` | 1122 | present |
+| inline `asm` | 1 | present |
+| computed `goto` | **0** | absent — and not needed |
+| `_Generic` | **0** | absent — and not needed |
+| `_Atomic` | **0** | absent — and not needed |
+
+**The expected-gap table above was wrong in three places, and the corrections
+all point the same way.**
+
+- **varargs is not a gap.** M2-Planet 1.13.1 implements `__va_start`, `__va_arg`,
+  `__va_end` and `__va_copy`. tcc uses `...` 18 times.
+- **Floating point is far smaller than feared.** This file called it "likely the
+  hardest item". It is **38 declarations and 17 literals**, concentrated in
+  `tccgen.c` (15), `tccpp.c` (12) and `tcc.h` (8). The worry was that tcc
+  constant-folds floats so its own source does double arithmetic — 17 literals
+  suggests a much narrower requirement than implementing IEEE 754. Confirm what
+  those 17 actually do before scoping it.
+- **Two gaps were missing from the list**: the ternary operator (405 uses, zero
+  support — `cc_core.c` contains no `"?"` at all) and bitfields (~84, clustered
+  in `tcc.h`).
+
+**What M2-Planet actually implements is much larger than `TARGET-SUBSET.md`
+§3–§4 suggests**, because that section documents what its *self-host uses*. Read
+from the pinned source, the type table alone carries `void`, `char`,
+signed/unsigned `char`, `_Bool`, `short`, `int`, `long`, `long long`, the
+`intN_t` family, `size_t`, `ssize_t`, `FILE`, `FUNCTION` and `__va_list`, plus
+`struct`, `union`, `enum`, `typedef`, stack struct arrays, `switch`/`case`,
+`do`/`while`, and global struct initializer lists.
+
+**Two things this measurement does NOT support, stated so nobody builds on
+them.**
+
+- **The 1,149 "designated initializers" figure is wrong** and has been dropped
+  from the table above. The probe matched `\.\w+\s*=` and `\[\d+\]\s*=`, which
+  also match every ordinary `s.field = x` and `arr[0] = y` in the codebase.
+  Counting real designated initializers needs a parser, not a regex. The same
+  caveat applies to the struct-by-value probes, which returned 0 from a
+  deliberately weak heuristic and should be read as "unmeasured", not "absent".
+- **The empirical half measured nothing.** All 26 files reported
+  `line 7: : command not found` — `$M2` was empty because the preceding `find`
+  did not locate the binary, so every command line began with a bare `:`.
+  M2-Planet never ran. Until that is fixed there is no compiler-side
+  corroboration of any number above.
+
+**Read as a scope estimate:** four features, three of them small (ternary is one
+grammar rule and one branch emission; stack array initialization is a stack
+write loop; float/double may be narrow), one fiddly (bitfields), against a
+compiler that already has everything else. That reads as weeks rather than
+months — but it rests on one uncorroborated static pass and one broken probe, so
+it is a hypothesis with numbers attached, not a plan.
 
 **Look at M2-Mesoplanet first.** stage0-posix pins it at `4b011a85`. It is
 M2-Planet plus a real preprocessor and driver — if it closes half the gap, the

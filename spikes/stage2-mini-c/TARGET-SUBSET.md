@@ -176,6 +176,15 @@ lean on function-like macros or conditional-compilation gymnastics.
 
 ## 4. NOT needed (the self-host deliberately avoids these)
 
+> **Read this section in one direction only.** It answers "what must OUR compiler
+> accept to build M2-Planet", and the answer is a floor. It does **not** describe
+> what M2-Planet itself implements, which is a much larger set — the pinned
+> `cc_types.c` type table alone carries `long long`, the `intN_t` family,
+> `size_t`, `FILE` and `__va_list`, and `cc_core.c` handles `switch`/`case`,
+> `do`/`while`, compound assignment and `++`/`--`. Anyone scoping **leg 1**
+> (enhanced M2-Planet builds tcc) needs that upward list, not this one; it is
+> tabulated in `stage3/ROADMAP.md` alongside the measured tcc gap.
+
 These appear only as things M2-Planet *parses*, not as things it *uses* — so our
 compiler does **not** need them to compile M2-Planet. This is a real scope win:
 
