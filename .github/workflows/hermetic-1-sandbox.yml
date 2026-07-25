@@ -1,0 +1,382 @@
+name: hermetic-1-sandbox
+
+# HERMETIC LADDER, STEP 1: PUT THE EXISTING RESULTS IN A BOX.
+#
+# Nothing is removed in this step. That is the point.
+#
+# Every gcc result so far was built on a bare runner, where a dependency we
+# never thought about is silently satisfied and we never learn it was there.
+# The issue is not that the builds use host tools -- they do, and at this stage
+# they must, since tcc itself is built by gcc 13 and seed -> tcc does not exist
+# on aarch64 yet. The issue is that the host set is UNENUMERATED. We cannot
+# currently write down what these builds depend on; we would be reciting it from
+# memory.
+#
+# A sandbox does not make dependencies go away. It makes an UNDECLARED one fail
+# loudly instead of being quietly satisfied. The bind list below IS the
+# declaration, and every later step in this ladder is a deletion from it:
+#
+#   step 1  bwrap, host toolchain still bound      <- this file
+#   step 2  musl sysroot, static, in place of glibc
+#   step 3  our own binutils in place of the host as/ld
+#   step 4  our own make/shell/coreutils
+#   step 5  a tcc not built by gcc 13   (blocked: seed -> tcc needs MesCC
+#                                        aarch64, see spikes/PROGRESS.md)
+#
+# SO THE EXPECTED RESULT OF THIS RUN IS "NOTHING CHANGED". All four arms should
+# behave exactly as they already do. If one does not, the sandbox has found a
+# dependency we did not know we had -- which is the whole reason to run it
+# before starting to remove things rather than after.
+#
+# FOUR ARMS, the four results this leg has established:
+#
+#   A  4.8.5 vanilla, host gcc      needs CXX="g++ -std=gnu++98"
+#   B  4.7.4 control, host gcc      target arm-none-eabi, no backend question
+#   C  4.7.4 + transplant, host gcc cc1 55,044,256 B, fib = 55
+#   D  4.7.4 + transplant, OUR tcc  cc1 80,016,473 B, fib = 55
+#
+# WHAT THE BOX ACTUALLY ENFORCES
+#
+#   --unshare-all   no network, no host PID/IPC/UTS namespace. The build cannot
+#                   fetch anything. Sources are fetched OUTSIDE, hash-verified
+#                   against sources/gcc.toml, and handed in -- provenance and
+#                   hermeticity are different criteria and are kept separate.
+#   --clearenv      no ambient environment. Every variable the build gets is
+#                   listed below, so an inherited CFLAGS or LD_LIBRARY_PATH
+#                   cannot silently change a result.
+#   ro-bind /usr    the host toolchain, read-only. Declared, not hidden.
+#   ro-bind /etc    ld.so.cache, passwd, alternatives. Narrowing this is a
+#                   later step; today it is named rather than assumed.
+#   one writable    /work. Nothing else in the filesystem can be modified,
+#                   which is the property that makes "it only used what we
+#                   gave it" checkable rather than asserted.
+#
+#   NOT enforced, and deliberately: the KERNEL. bwrap cannot isolate it and
+#   should not pretend to. TRUST-BOUNDARY.md already declares kernel and
+#   hardware as trusted inputs, so the sandbox boundary and the declared trust
+#   boundary land in the same place.
+#
+# UBUNTU 24.04 RESTRICTS UNPRIVILEGED USER NAMESPACES via AppArmor, so bwrap
+# fails with "setting up uid map: Permission denied" out of the box. The sysctl
+# is the smallest fix; an AppArmor profile granting `userns` is the fallback.
+# spikes/livebootstrap copies live-bootstrap's profile for this, which works but
+# means cloning a whole upstream repository to get one file.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/hermetic-1-sandbox.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: hermetic-1-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GNU: 'https://mirrors.kernel.org/gnu'
+  GNU2: 'https://ftpmirror.gnu.org'
+  SHA474: '92e61c6dc3a0a449e62d72a38185fda550168a86702dea07125ebd3ec3996282'
+  SHA485: '22fb1e7e0f68a63cee631d85b20461d1ea6bda162f03096350e38c8d427ecf23'
+
+jobs:
+  boxed:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: [A-485-vanilla, B-474-control, C-474-backport, D-474-tcc]
+    name: '${{ matrix.arm }}'
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bubblewrap strace curl git bzip2 xz-utils gcc g++ make bison flex \
+            texinfo m4 perl file binutils python3
+
+      - name: 'Let bwrap create a user namespace'
+        run: |
+          set -eu
+          # Smallest fix first. If the sysctl is absent or refused, fall back to
+          # an AppArmor profile granting userns to bwrap -- written inline
+          # rather than cloned from an upstream repository.
+          if sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null; then
+            echo "  sysctl: unprivileged userns permitted"
+          else
+            echo "  sysctl unavailable -- installing an AppArmor profile"
+            sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+            include if exists <local/bwrap>
+          }
+          EOF
+            sudo systemctl reload apparmor || sudo service apparmor reload || true
+          fi
+          # PROVE IT WORKS before spending 15 minutes finding out it does not.
+          bwrap --unshare-all --ro-bind /usr /usr --symlink usr/bin /bin \
+                --proc /proc --dev /dev --tmpfs /tmp \
+                /bin/echo "  bwrap: user namespace OK"
+
+      - name: 'Fetch sources OUTSIDE the box (network is not a build dependency)'
+        run: |
+          set -eu
+          # Provenance and hermeticity are separate criteria. The fetch is made
+          # verifiable by the hashes in sources/gcc.toml; the BUILD is made
+          # verifiable by having no network at all. Conflating them would mean
+          # either a sandbox with a hole in it or a build that cannot start.
+          mkdir -p work && cd work
+          F=../spikes/stage3/probes/fetch-pinned.sh
+          case "${{ matrix.arm }}" in
+            A-485-vanilla) need="4.8.5" ;;
+            *)             need="4.7.4 4.8.5" ;;
+          esac
+          for v in $need; do
+            d="g${v//./}"
+            case $v in
+              4.7.4) sha="$SHA474" ;;
+              4.8.5) sha="$SHA485" ;;
+            esac
+            bash "$F" "$d" "$HOME/.cache/veron/gcc-$v.tar.bz2" "$sha" \
+              "$GNU/gcc/gcc-$v/gcc-$v.tar.bz2 $GNU2/gcc/gcc-$v/gcc-$v.tar.bz2" "" "" \
+              | sed 's/^/  /'
+          done
+          if [ "${{ matrix.arm }}" = D-474-tcc ]; then
+            # Full clone: apply-series.sh locates its base by matching the
+            # patches' index pre-image blobs against history.
+            git clone -q git://repo.or.cz/tinycc.git tccsrc \
+              || git clone -q https://repo.or.cz/tinycc.git tccsrc
+            bash ../spikes/stage3/patches/tcc-arm64-asm/apply-series.sh tccsrc | tail -3
+          fi
+          # gmp/mpfr/mpc for the arms that need them, also fetched outside.
+          for u in "$GNU/gmp/gmp-6.2.1.tar.xz" "$GNU/mpfr/mpfr-4.1.0.tar.xz" "$GNU/mpc/mpc-1.2.1.tar.gz"; do
+            n=$(basename "$u"); curl -sSL -o "$n" "$u"
+            d=$(echo "$n" | sed 's/\.tar\..*//')
+            mkdir -p "$d" && tar xf "$n" -C "$d" --strip-components=1
+          done
+          echo "  fetched: $(ls -d */ | tr -d / | tr '\n' ' ')"
+
+      - name: 'Write the build script that will run inside the box'
+        run: |
+          set -eu
+          # Everything the arm does lives in one script, so the sandbox
+          # invocation stays readable and the script is the same shape for all
+          # four arms. It runs with /work as the only writable path.
+          cat > work/build.sh <<'EOS'
+          set -eu
+          cd /work
+          ARM="$1"
+          say() { printf '  %s\n' "$*"; }
+
+          case "$ARM" in
+            A-485-vanilla)  SRC=g485; TGT=aarch64-unknown-linux-gnu; CC=gcc ;;
+            B-474-control)  cp g485/config.sub g485/config.guess g474/
+                            chmod +x g474/config.sub g474/config.guess
+                            SRC=g474; TGT=arm-none-eabi; CC=gcc ;;
+            C-474-backport) SRC=g474; TGT=aarch64-unknown-linux-gnu; CC=gcc ;;
+            D-474-tcc)      SRC=g474; TGT=aarch64-unknown-linux-gnu; CC=tcc ;;
+            *) say "unknown arm $ARM"; exit 1 ;;
+          esac
+
+          # tcc first, if this arm needs it. Built by the host gcc inside the
+          # box -- a declared dependency, not a removed one.
+          if [ "$CC" = tcc ]; then
+            say "=== building tcc ==="
+            ( cd tccsrc && ./configure --cc=gcc > /dev/null && make -j"$(nproc)" > /dev/null )
+            tccsrc/tcc -v
+            CCCMD="/work/tccsrc/tcc -B/work/tccsrc"
+          else
+            CCCMD="gcc"
+          fi
+
+          # The transplant, for the arms that carry it.
+          case "$ARM" in
+            C-474-backport|D-474-tcc)
+              say "=== transplant ==="
+              sh /work/backport-aarch64.sh g474 g485 | tail -4 ;;
+          esac
+
+          # Prerequisites. 4.7.4 and 4.8.5 both want gmp/mpfr/mpc.
+          say "=== gmp/mpfr/mpc ==="
+          mkdir -p prefix
+          ( cd gmp-6.2.1 && ./configure CC="$CCCMD" --disable-shared \
+              --disable-assembly --prefix=/work/prefix > c.log 2>&1 \
+            && make -j"$(nproc)" > b.log 2>&1 && make install > /dev/null 2>&1 ) \
+            && say "  gmp ok" || { say "  gmp FAILED"; tail -5 gmp-6.2.1/b.log; exit 1; }
+          for p in mpfr-4.1.0 mpc-1.2.1; do
+            ( cd "$p" && ./configure CC="$CCCMD" --disable-shared \
+                --with-gmp=/work/prefix --prefix=/work/prefix > c.log 2>&1 \
+              && make -j"$(nproc)" > b.log 2>&1 && make install > /dev/null 2>&1 ) \
+              && say "  $p ok" || { say "  $p FAILED"; tail -5 "$p/b.log"; exit 1; }
+          done
+
+          say "=== configure ==="
+          mkdir -p build && cd build
+          set +e
+          # CXX is only meaningful for arm A: 4.8.5's reload1.c does bool++,
+          # which C++17 forbids. Inert for the 4.7.4 arms, which build as C.
+          "/work/$SRC/configure" \
+            CC="$CCCMD" CXX="g++ -std=gnu++98" \
+            --build=aarch64-unknown-linux-gnu \
+            --host=aarch64-unknown-linux-gnu \
+            --target="$TGT" \
+            --prefix=/work/out --enable-languages=c \
+            --disable-multilib --disable-bootstrap --disable-werror \
+            --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+            --disable-libssp --disable-libatomic --disable-shared \
+            --with-gmp=/work/prefix --with-mpfr=/work/prefix \
+            --with-mpc=/work/prefix > conf.log 2>&1
+          rc=$?
+          say "  configure rc=$rc"
+          [ "$rc" -eq 0 ] || { tail -25 conf.log | sed 's/^/    /'; exit 1; }
+
+          say "=== make all-gcc ==="
+          timeout 7200 make -k -j"$(nproc)" -Otarget MAKEINFO=true all-gcc > build.log 2>&1
+          say "  make rc=$?"
+          say "  errors : $(grep -cE '\berror:' build.log || true)"
+          grep -E '\berror:' build.log | head -5 | sed 's/^/    /'
+          say "  cc1    : $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo MISSING)"
+
+          # The claim, for the arms that target aarch64.
+          if [ -x gcc/cc1 ] && [ "$TGT" = aarch64-unknown-linux-gnu ]; then
+            printf 'int fib(int n){return n<2?n:fib(n-1)+fib(n-2);}\nint main(void){return fib(10);}\n' > /work/t.c
+            gcc/cc1 -quiet -O2 /work/t.c -o /work/t.s 2>&1 | head -3 | sed 's/^/    /'
+            if [ -s /work/t.s ]; then
+              say "  assembly: $(wc -l < /work/t.s) lines"
+              as /work/t.s -o /work/t.o 2>&1 | head -3 | sed 's/^/    /'
+              gcc /work/t.o -o /work/t 2>&1 | head -3 | sed 's/^/    /'
+              if [ -x /work/t ]; then
+                /work/t; say "  ran: exit=$? (expect 55)"
+              fi
+            fi
+          fi
+          exit 0
+          EOS
+          cp spikes/stage3/probes/backport-aarch64.sh work/
+          # The transplant shells out to these two.
+          mkdir -p work/tools && cp tools/expand_int_iterators.py tools/port_gcc47_api.py work/tools/
+          echo "  build.sh: $(wc -l < work/build.sh) lines"
+
+      - name: 'THE DECLARATION: what this build is allowed to see'
+        run: |
+          set -eu
+          W="$PWD/work"
+          # Written to a file AND printed. This list is the deliverable of step
+          # 1 -- steps 2 through 5 are deletions from it, and a diff of this
+          # file across runs is the record of the ladder making progress.
+          cat > bind-list.txt <<EOF
+          read-only:
+            /usr        host toolchain: gcc, g++, binutils, make, perl, python3,
+                        bison, flex, m4, glibc and its headers
+            /etc        ld.so.cache, ld.so.conf*, passwd, group, alternatives
+          writable:
+            /work       sources, build trees, outputs -- nothing else
+          synthetic:
+            /proc /dev  minimal, from bwrap
+            /tmp /run    tmpfs, empty
+          symlinks:
+            /bin /sbin /lib [/lib64] -> usr/*   (Ubuntu's layout)
+          namespaces:
+            all unshared -- NO NETWORK, no host pid/ipc/uts
+          environment:
+            PATH HOME LC_ALL TERM SOURCE_DATE_EPOCH  (and nothing inherited)
+          NOT isolated, by design:
+            the kernel and the hardware -- see TRUST-BOUNDARY.md
+          EOF
+          sed 's/^/  /' bind-list.txt
+
+      - name: 'BUILD INSIDE THE BOX'
+        continue-on-error: true
+        run: |
+          set -u
+          W="$PWD/work"
+          ARGS=""
+          [ -d /lib64 ] && ARGS="--symlink usr/lib64 /lib64"
+          set +e
+          bwrap \
+            --unshare-all --die-with-parent --new-session \
+            --clearenv \
+            --setenv PATH /usr/bin:/bin:/usr/sbin:/sbin \
+            --setenv HOME /work \
+            --setenv LC_ALL C \
+            --setenv TERM dumb \
+            --setenv SOURCE_DATE_EPOCH 0 \
+            --ro-bind /usr /usr \
+            --ro-bind /etc /etc \
+            --symlink usr/bin /bin \
+            --symlink usr/sbin /sbin \
+            --symlink usr/lib /lib \
+            $ARGS \
+            --proc /proc --dev /dev \
+            --tmpfs /tmp --tmpfs /run \
+            --bind "$W" /work \
+            --chdir /work \
+            /bin/sh /work/build.sh '${{ matrix.arm }}'
+          rc=$?
+          echo "  sandboxed build rc=$rc"
+          echo "BOX_RC=$rc" >> "$GITHUB_ENV"
+
+      - name: 'ENUMERATE: which host paths did it actually touch?'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          W="$PWD/work"
+          # "We bound /usr" is a permission, not a dependency list. Tracing the
+          # whole build would produce hundreds of megabytes, so trace the part
+          # that does the probing: a configure run. That is where a build system
+          # goes looking for the host, and the distinct paths it opens outside
+          # /work are the real declared set.
+          bwrap \
+            --unshare-all --die-with-parent --new-session --clearenv \
+            --setenv PATH /usr/bin:/bin:/usr/sbin:/sbin \
+            --setenv HOME /work --setenv LC_ALL C --setenv TERM dumb \
+            --ro-bind /usr /usr --ro-bind /etc /etc \
+            --symlink usr/bin /bin --symlink usr/sbin /sbin --symlink usr/lib /lib \
+            --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
+            --bind "$W" /work --chdir /work \
+            /usr/bin/strace -f -qq -e trace=openat,execve -o /work/trace.log \
+              /bin/sh -c 'mkdir -p /work/tracebuild && cd /work/tracebuild && /work/gmp-6.2.1/configure --disable-shared --disable-assembly >/dev/null 2>&1' \
+            > /dev/null 2>&1
+          if [ ! -s "$W/trace.log" ]; then
+            echo "  no trace produced (strace may be blocked in this namespace)"
+            exit 0
+          fi
+          echo "  --- executables run from the host ---"
+          grep -oE 'execve\("[^"]+"' "$W/trace.log" | cut -d'"' -f2 \
+            | grep -v '^/work' | sort | uniq -c | sort -rn | head -20 | sed 's/^/    /'
+          echo "  --- host directories opened ---"
+          grep -oE 'openat\([^,]+, "[^"]+"' "$W/trace.log" | cut -d'"' -f2 \
+            | grep -v '^/work' | grep -v '^/proc' | grep -v '^/dev' \
+            | sed 's|\(/usr/lib/[^/]*\)/.*|\1/...|; s|\(/usr/include\)/.*|\1/...|' \
+            | sort -u | head -40 | sed 's/^/    /'
+          echo "    distinct host paths: $(grep -oE 'openat\([^,]+, "[^"]+"' "$W/trace.log" | cut -d'"' -f2 | grep -v '^/work' | sort -u | wc -l)"
+
+      - name: 'ARM RESULT'
+        if: always()
+        run: |
+          set -eu
+          echo "  arm            : ${{ matrix.arm }}"
+          echo "  sandboxed build: rc=${BOX_RC:-?}"
+          echo "  cc1            : $( [ -x work/build/gcc/cc1 ] && wc -c < work/build/gcc/cc1 || echo no)"
+          echo
+          echo "  Expected: identical to the unsandboxed result."
+          echo "    A  cc1 BUILT              C  cc1 55,044,256 B, fib 55"
+          echo "    B  cc1 BUILT              D  cc1 80,016,473 B, fib 55"
+          echo
+          echo "  A DIFFERENCE HERE IS THE POINT OF THE RUN: it means the build"
+          echo "  was using something the bind list does not name. Nothing was"
+          echo "  removed in this step, so nothing should have changed."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: 'declaration-${{ matrix.arm }}'
+          path: |
+            bind-list.txt
+            work/trace.log
+          if-no-files-found: warn
