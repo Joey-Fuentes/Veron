@@ -1,0 +1,308 @@
+name: hermetic-2-sysroot
+
+# HERMETIC LADDER, STEP 2: A BOX WITH NO /usr IN IT.
+#
+# Step 1 bound /usr read-only and enumerated what that let through. Every tool
+# in those builds was a host binary; the sandbox proved there was no network and
+# no ambient environment, and nothing more. This step removes the bind.
+#
+# THE LFS STRUCTURE, AND THE PART THAT ACTUALLY DOES THE WORK. Linux From
+# Scratch chapter 5 builds a toolchain with host tools, chapter 6 rebuilds the
+# userland with that toolchain, and chapter 7 chroots into an environment
+# containing nothing else. The isolation is not the chroot -- a chroot with
+# Ubuntu's /usr copied in is perfectly isolated and entirely host-dependent. It
+# is that the tools cannot REACH the host: a distinct target triplet whose
+# search paths do not overlap the host's, and binaries that carry their own
+# dependencies.
+#
+# WE TAKE THE SECOND HALF DIRECTLY: every binary placed in the sysroot is
+# STATICALLY LINKED. A static gcc, as, ld and make need no /usr/lib, no loader,
+# and no ld.so.cache, so they run in a box that binds nothing. That turns the
+# open question from "what is leaking in from /usr" into "what is MISSING from
+# the sysroot", which is a list the run can produce rather than a property we
+# have to argue about.
+#
+# WHAT IS STILL BORROWED, AND MUST BE. The sysroot is BUILT by the host gcc,
+# exactly as LFS chapter 5 is. That cannot be removed here: invariant #1 forbids
+# a committed binary, so the first compiler has to come from somewhere, and on
+# aarch64 the only alternative is seed -> tcc, which is leg 1. What changes is
+# that the host contributes nothing at RUN time -- the difference between
+# scaffolding that comes down and scaffolding that stays up.
+#
+# THE SYSROOT, and why each piece is in it:
+#
+#   musl 1.2.5      the libc the box compiles against. Chosen over glibc because
+#                   it builds in one step and tcc-userland-arm64 already proved
+#                   it works with a compiler that knows nothing about musl.
+#   kernel headers  musl does not ship them. Copied in as CONTENT, declared,
+#                   the same deferral TCC-USERLAND.md already records.
+#   binutils        as, ld, ar, ranlib -- the largest unexamined component in
+#                   every result this repository has produced so far.
+#   GNU make        BusyBox has no make, and gcc's build system is make.
+#   BusyBox         sh, sed, grep, awk, tar and the rest of the shell userland.
+#   gcc 4.8.5       the temporary compiler, vanilla and native, no transplant.
+#                   4.7 and tcc are what get built INSIDE the box later.
+#
+# RUN 1 IS EXPECTED TO STOP SOMEWHERE, AND THAT IS THE DELIVERABLE. A box with
+# no /usr will be missing things nobody predicted -- a shell builtin BusyBox
+# spells differently, a header musl puts elsewhere, a tool gcc's configure
+# probes for. The ladder below climbs one rung at a time and reports the rung it
+# fell off, which is the same method every other measurement here has used.
+# Guessing the list in advance and building for it is how the last four harness
+# bugs happened.
+
+on:
+  push:
+    paths:
+      - '.github/workflows/hermetic-2-sysroot.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: hermetic-2-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GNU: 'https://mirrors.kernel.org/gnu'
+  SHA485: '22fb1e7e0f68a63cee631d85b20461d1ea6bda162f03096350e38c8d427ecf23'
+
+jobs:
+  sysroot:
+    name: 'a toolchain that needs nothing'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bubblewrap curl git bzip2 xz-utils gcc g++ make bison flex \
+            texinfo m4 perl file binutils python3 linux-libc-dev
+
+      - name: 'Let bwrap create a user namespace'
+        run: |
+          set -eu
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null \
+            || echo "  sysctl unavailable"
+          echo "S=$PWD/sysroot" >> "$GITHUB_ENV"
+          echo "W=$PWD"         >> "$GITHUB_ENV"
+          mkdir -p sysroot/bin sysroot/lib sysroot/include sysroot/work
+
+      # ---------------------------------------------------------------- musl
+      - name: 'sysroot: musl + kernel headers'
+        run: |
+          set -eu
+          curl -sSL -o musl.tar.gz https://musl.libc.org/releases/musl-1.2.5.tar.gz
+          mkdir -p musl && tar xf musl.tar.gz -C musl --strip-components=1
+          ( cd musl && ./configure --prefix="$S" --disable-shared > c.log 2>&1 \
+            && make -j"$(nproc)" > b.log 2>&1 && make install > /dev/null 2>&1 )
+          echo "  libc.a: $(wc -c < "$S/lib/libc.a") bytes"
+          # DECLARED BORROW, same one TCC-USERLAND.md already records: musl does
+          # not ship kernel UAPI headers. The principled source is
+          # `make headers_install` from a pinned kernel tree; this is the
+          # distro's copy, taken as CONTENT rather than as a live bind.
+          cp -r /usr/include/linux    "$S/include/" 2>/dev/null || true
+          cp -r /usr/include/asm-generic "$S/include/" 2>/dev/null || true
+          cp -r /usr/include/aarch64-linux-gnu/asm "$S/include/" 2>/dev/null || true
+          echo "  kernel headers: $(find "$S/include/linux" -name '*.h' 2>/dev/null | wc -l) files"
+
+      # ------------------------------------------------------------- busybox
+      - name: 'sysroot: BusyBox (static) -- the shell userland'
+        run: |
+          set -eu
+          curl -sSL -o bb.tar.bz2 https://busybox.net/downloads/busybox-1.36.1.tar.bz2
+          mkdir -p bb && tar xf bb.tar.bz2 -C bb --strip-components=1
+          cd bb
+          make defconfig > /dev/null 2>&1
+          sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+          sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config
+          yes '' | make oldconfig > /dev/null 2>&1
+          make -j"$(nproc)" > b.log 2>&1 || { tail -20 b.log; exit 1; }
+          cp busybox "$S/bin/"
+          # Every applet as a symlink, so `sh`, `sed`, `grep` and friends resolve
+          # by name inside a box where nothing else exists.
+          ( cd "$S/bin" && for a in $(./busybox --list); do ln -sf busybox "$a"; done )
+          echo "  applets: $(ls "$S/bin" | wc -l)"
+          file "$S/bin/busybox" | cut -d, -f1-3 | sed 's/^/  /'
+
+      # ------------------------------------------------------------ binutils
+      - name: 'sysroot: binutils (static)'
+        run: |
+          set -eu
+          curl -sSL -o bu.tar.xz "$GNU/binutils/binutils-2.42.tar.xz"
+          mkdir -p bu && tar xf bu.tar.xz -C bu --strip-components=1
+          mkdir -p bbu && cd bbu
+          # -static so as/ld/ar carry their own dependencies and run with no
+          # /usr/lib present.
+          ../bu/configure --prefix="$S" --disable-nls --disable-werror \
+            --disable-gdb --disable-sim --disable-shared \
+            LDFLAGS="-static" > c.log 2>&1 || { tail -20 c.log; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 || { tail -25 b.log; exit 1; }
+          make install > /dev/null 2>&1
+          for t in as ld ar ranlib; do
+            printf '  %-8s %s\n' "$t" "$(file "$S/bin/$t" 2>/dev/null | cut -d, -f1-3)"
+          done
+
+      # ---------------------------------------------------------------- make
+      - name: 'sysroot: GNU make (static)'
+        run: |
+          set -eu
+          curl -sSL -o mk.tar.gz "$GNU/make/make-4.4.1.tar.gz"
+          mkdir -p mk && tar xf mk.tar.gz -C mk --strip-components=1
+          mkdir -p bmk && cd bmk
+          ../mk/configure --prefix="$S" --disable-nls LDFLAGS="-static" \
+            > c.log 2>&1 || { tail -20 c.log; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 && make install > /dev/null 2>&1
+          file "$S/bin/make" | cut -d, -f1-3 | sed 's/^/  /'
+
+      # ----------------------------------------------------------- gcc 4.8.5
+      - name: 'sysroot: gcc 4.8.5 (static) -- the temporary compiler'
+        run: |
+          set -eu
+          F=spikes/stage3/probes/fetch-pinned.sh
+          bash "$F" g485 "$HOME/.cache/veron/gcc-4.8.5.tar.bz2" "$SHA485" \
+            "$GNU/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2" "" "" | sed 's/^/  /'
+          # The ucontext rename: glibc 2.26 dropped `struct ucontext` and musl
+          # never had it, so a 2013 libgcc cannot compile its own signal-frame
+          # unwinder without this. gcc47-libgcc-ice is measuring whether this is
+          # also the cause of the 4.7 ICE; here it is simply required.
+          sed -i 's/\bstruct ucontext\b/ucontext_t/g' \
+            g485/libgcc/config/aarch64/linux-unwind.h 2>/dev/null || true
+          for p in gmp-6.2.1 mpfr-4.1.0 mpc-1.2.1; do
+            case $p in
+              gmp*)  u="$GNU/gmp/$p.tar.xz" ;;
+              mpfr*) u="$GNU/mpfr/$p.tar.xz" ;;
+              mpc*)  u="$GNU/mpc/$p.tar.gz" ;;
+            esac
+            curl -sSL -o "$p.tar" "$u"; mkdir -p "$p"
+            tar xf "$p.tar" -C "$p" --strip-components=1 2>/dev/null
+            ( cd "$p" && ./configure --disable-shared --disable-assembly \
+                --with-gmp="$W/prefix" --prefix="$W/prefix" > c.log 2>&1 \
+              && make -j"$(nproc)" > b.log 2>&1 && make install > /dev/null 2>&1 ) \
+              && echo "  $p ok"
+          done
+          mkdir -p b485 && cd b485
+          # LDFLAGS=-static is the whole point: xgcc and cc1 must run in a box
+          # with no loader and no /usr/lib.
+          ../g485/configure CXX="g++ -std=gnu++98" \
+            --prefix="$S" --enable-languages=c \
+            --build=aarch64-unknown-linux-gnu --host=aarch64-unknown-linux-gnu \
+            --target=aarch64-unknown-linux-gnu \
+            --disable-multilib --disable-bootstrap --disable-werror \
+            --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+            --disable-libssp --disable-libatomic --disable-shared --disable-nls \
+            --with-gmp="$W/prefix" --with-mpfr="$W/prefix" --with-mpc="$W/prefix" \
+            LDFLAGS="-static" > c.log 2>&1 || { tail -25 c.log; exit 1; }
+          timeout 7200 make -j"$(nproc)" -Otarget MAKEINFO=true > b.log 2>&1 || true
+          echo "  cc1     : $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo MISSING)"
+          echo "  libgcc.a: $(find . -name libgcc.a | head -1 || echo 'NOT BUILT')"
+          grep -E 'internal compiler error|error:' b.log | head -4 | sed 's/^/    /'
+          make install > i.log 2>&1 || true
+          echo "  installed: $(ls "$S/bin" | grep -c gcc || true) gcc binaries"
+          file "$S/bin/gcc" 2>/dev/null | cut -d, -f1-3 | sed 's/^/  /'
+
+      - name: 'THE DECLARATION: what is in the box, and what is not'
+        run: |
+          set -eu
+          cat > box2.sh <<'EOS'
+          #!/bin/sh
+          # NO --ro-bind /usr. NO --ro-bind /etc. The sysroot is the entire
+          # filesystem the build can see, plus /proc, /dev and a tmpfs.
+          set -eu
+          S=${S:?box2.sh: S (sysroot) not set}
+          exec bwrap \
+            --unshare-all --die-with-parent --new-session \
+            --clearenv \
+            --setenv PATH /bin \
+            --setenv HOME /work \
+            --setenv LC_ALL C \
+            --setenv TERM dumb \
+            --setenv SOURCE_DATE_EPOCH 0 \
+            --bind "$S" / \
+            --proc /proc --dev /dev \
+            --tmpfs /tmp \
+            --chdir /work \
+            "$@"
+          EOS
+          chmod +x box2.sh
+          echo "  sysroot contents:"
+          du -sh "$S"/* 2>/dev/null | sed 's/^/    /'
+          echo "  total: $(du -sh "$S" | cut -f1)"
+          echo
+          echo "  dynamically linked binaries in the sysroot (these will NOT run):"
+          n=0
+          for f in "$S"/bin/* "$S"/libexec/gcc/*/*/* ; do
+            [ -f "$f" ] && [ -x "$f" ] || continue
+            if file "$f" 2>/dev/null | grep -q 'dynamically linked'; then
+              echo "    $(basename "$f")"; n=$((n+1))
+            fi
+          done
+          echo "    count: $n   (0 is the goal -- anything here needs /usr/lib)"
+
+      - name: 'THE LADDER: how far does a box with no /usr get?'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          rung() {  # $1 = name, rest = command
+            name=$1; shift
+            out=$(S="$S" ./box2.sh "$@" 2>&1)
+            rc=$?
+            if [ $rc -eq 0 ]; then
+              printf '  %-34s OK    %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-46)"
+            else
+              printf '  %-34s FAIL  %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-46)"
+            fi
+            return $rc
+          }
+          rung "1. a shell runs"          /bin/sh -c 'echo alive'
+          rung "2. coreutils"             /bin/sh -c 'ls / && echo ok'
+          rung "3. sed / grep / awk"      /bin/sh -c 'echo x | sed s/x/y/ | grep y | awk "{print \$1}"'
+          rung "4. make exists"           /bin/make --version
+          rung "5. as / ld exist"         /bin/sh -c '/bin/as --version | head -1'
+          rung "6. gcc exists"            /bin/gcc --version
+          echo
+          echo "  --- 7. compile and run a program, entirely inside ---"
+          mkdir -p "$S/work"
+          printf 'int main(void){return 42;}\n' > "$S/work/t.c"
+          S="$S" ./box2.sh /bin/gcc -static -o /work/t /work/t.c 2>&1 | head -8 | sed 's/^/    /'
+          if [ -x "$S/work/t" ]; then
+            S="$S" ./box2.sh /work/t; echo "    ran: exit=$? (expect 42)"
+          else
+            echo "    no binary produced"
+          fi
+          echo
+          echo "  --- 8. can a configure script run in here? ---"
+          # The real test of the userland: autoconf leans on the shell, sed,
+          # grep, awk and tr far harder than any hand-written check does.
+          cp -r bu "$S/work/bu" 2>/dev/null
+          S="$S" ./box2.sh /bin/sh -c \
+            'mkdir -p /work/cbu && cd /work/cbu && /work/bu/configure --disable-nls --disable-werror > cfg.log 2>&1; echo "configure rc=$?"; tail -6 cfg.log' \
+            2>&1 | head -14 | sed 's/^/    /'
+
+      - name: 'WHAT IS MISSING'
+        if: always()
+        run: |
+          set -u
+          echo "  Step 2 succeeds when the ladder reaches rung 8 with nothing"
+          echo "  bound but the sysroot. Whatever rung it fell off names the"
+          echo "  next thing to put in, and that list is the deliverable --"
+          echo "  step 1 produced a bind list, this step produces its inverse."
+          echo
+          echo "  Still borrowed, unavoidably at this rung:"
+          echo "    - the host gcc BUILT this sysroot (LFS chapter 5 does the same)"
+          echo "    - kernel UAPI headers, copied in as content"
+          echo "    - the kernel and the hardware (TRUST-BOUNDARY.md)"
+          echo
+          echo "  Removed compared to step 1: /usr, /etc, the host loader,"
+          echo "  ld.so.cache, and every dynamically linked host binary."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sysroot-manifest
+          path: |
+            box2.sh
+            b485/b.log
+          if-no-files-found: warn
