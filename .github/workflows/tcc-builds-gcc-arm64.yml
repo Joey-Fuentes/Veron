@@ -85,7 +85,9 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # 150 -> 240: this now builds the runtime and the C++ front end as well,
     # where before it stopped at all-gcc with C only.
-    timeout-minutes: 240
+    # 240 -> 350. Two full gcc builds now, and stage 2 also builds libstdc++.
+    # 360 is the public-runner ceiling.
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v5
 
@@ -234,16 +236,29 @@ jobs:
           # only because 4.8.5 is built by a modern g++. Nothing in this arm
           # touches C++.
           #
+          # --enable-languages=c, AND THAT IS DELIBERATE. An earlier version
+          # asked tcc for c,c++ in one step, on the reasoning that the libgcc
+          # ICE was fixed so more could be asked for. That was an UNMEASURED
+          # departure from the reference chain: live-bootstrap builds gcc 4.7.4
+          # with gcc 4.0.4, so the C++-capable compiler is always produced BY A
+          # GCC, never by tcc. tcc-builds-gcc-x86 measured that the 4.0.4 rung
+          # is environmental and deleted it -- that departure had evidence.
+          # This one did not.
+          #
+          # So the shape is now two steps, matching the reference:
+          #   tcc  -> gcc 4.7.4, C only      <- this step
+          #   that -> gcc 4.7.4, c,c++       <- STAGE 2 below
+          # tcc's contribution is a C compiler, which is all tcc has ever been
+          # asked to be.
+          #
           # --disable-bootstrap: with it on, stage2 would be built by the
           # stage1 xgcc and tcc's contribution would be discarded.
-          # --enable-languages=c: c,c++ is the follow-on question. If C fails
-          # there is nothing to ask about C++.
           "../g474/configure" \
             CC="$TCC -B$TCCDIR" \
             --build=aarch64-unknown-linux-gnu \
             --host=aarch64-unknown-linux-gnu \
             --target=aarch64-unknown-linux-gnu \
-            --prefix="$PWD/../out" --enable-languages=c,c++ \
+            --prefix="$PWD/../out" --enable-languages=c \
             --disable-multilib --disable-bootstrap --disable-werror \
             --disable-libsanitizer --disable-libgomp --disable-libquadmath \
             --disable-libssp --disable-libatomic --disable-shared \
@@ -301,7 +316,100 @@ jobs:
             *)   echo "  make rc=$rc -- failed" ;;
           esac
           echo "BUILD_RC=$rc" >> "$GITHUB_ENV"
+          # INSTALL IT. Stage 2 needs a usable gcc, not a build tree -- and an
+          # installed tree is also the only place a driver finds its own
+          # headers and libraries without being told where they are. The C++
+          # gate used to run against `-B build/gcc/` on an uninstalled tree and
+          # reported
+          #   fatal error: string: No such file or directory
+          # which said nothing about whether libstdc++ existed.
+          if [ "$rc" -eq 0 ]; then
+            make install > install.log 2>&1
+            echo "  install rc=$?"
+            ls "$PWD/../out/bin" 2>/dev/null | sed 's/^/    /'
+          fi
           echo "  build.log: $(wc -l < build.log) lines"
+
+      - name: 'STAGE 2: the tcc-built gcc rebuilds gcc 4.7.4 with c,c++'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # THIS IS THE RUNG 4.7 EXISTS FOR, AND IT IS A GCC THAT BUILDS IT.
+          #
+          #   tcc  -> gcc 4.7.4, C only          stage 1, above
+          #   that -> gcc 4.7.4, c and c++       HERE
+          #        -> g++ 4.7                    a C++98 compiler built from C
+          #
+          # live-bootstrap has gcc 4.0.4 build gcc 4.7.4 for exactly this reason:
+          # the C++-capable compiler is produced by a gcc. Veron deletes the 4.0.4
+          # rung -- tcc-builds-gcc-x86 measured that as environmental, not a
+          # compiler limit -- but it keeps the shape. What it must NOT do is ask
+          # tcc for the C++ compiler directly, which is an unmeasured departure.
+          #
+          # Note what is and is not tcc's work here. cc1plus is gcc 4.7's C++ FRONT
+          # END and is written in C, so tcc could compile it. libstdc++ is the C++
+          # LIBRARY, written in C++, and is built by the xg++ the build just
+          # produced -- tcc never touches it either way. The reason to use a gcc
+          # for this stage is not that tcc cannot; it is that the reference chain
+          # does not, and we have no measurement saying it is safe to differ.
+          G1="$PWD/out/bin/gcc"
+          if [ ! -x "$G1" ]; then
+            echo "  no stage-1 gcc at $G1 -- stage 1 did not install"
+            ls "$PWD/out/bin" 2>/dev/null | sed 's/^/    /'
+            exit 1
+          fi
+          echo "  builder: $("$G1" --version 2>&1 | head -1)"
+          echo "  (this is the gcc tcc built, not the host gcc)"
+
+          mkdir -p build2 && cd build2
+          "../g474/configure" \
+            CC="$G1" \
+            --build=aarch64-unknown-linux-gnu \
+            --host=aarch64-unknown-linux-gnu \
+            --target=aarch64-unknown-linux-gnu \
+            --prefix="$PWD/../out2" --enable-languages=c,c++ \
+            --disable-multilib --disable-bootstrap --disable-werror \
+            --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+            --disable-libssp --disable-libatomic \
+            --with-gmp="$PWD/../prefix" \
+            --with-mpfr="$PWD/../prefix" \
+            --with-mpc="$PWD/../prefix" \
+            > conf2.log 2>&1
+          echo "  configure rc=$?"
+          [ -f Makefile ] || { echo "  no Makefile -- configure tail:"; tail -20 conf2.log | sed 's/^/    /'; exit 1; }
+
+          # NOT --disable-shared here. Stage 1 uses it because nothing links against
+          # that compiler; stage 2 must produce a libstdc++ a program can actually
+          # use, and the gate below links one.
+          timeout 7200 make -k -j"$(nproc)" -Otarget MAKEINFO=true all > build2.log 2>&1
+          rc=$?
+          case "$rc" in
+            0)   echo "  make rc=0 -- completed" ;;
+            124) echo "  make rc=124 -- TIMED OUT after 7200s" ;;
+            *)   echo "  make rc=$rc -- failed" ;;
+          esac
+          echo "  build2.log: $(wc -l < build2.log) lines"
+          if [ "$rc" -ne 0 ]; then
+            echo "  --- compiler diagnostics ---"
+            grep -nE "error:|internal compiler error" build2.log | grep -v "make\[" | head -12 | sed 's/^/    /'
+            echo "  --- make errors ---"
+            grep -nE "\*\*\* \[" build2.log | head -4 | sed 's/^/    /'
+            echo "  --- tail ---"
+            tail -20 build2.log | sed 's/^/    /'
+          fi
+          make install > install2.log 2>&1
+          echo "  install rc=$?"
+          echo "STAGE2_RC=$rc" >> "$GITHUB_ENV"
+
+          echo "  --- what stage 2 produced ---"
+          for f in bin/gcc bin/g++ bin/cpp; do
+            printf '    %-12s %s\n' "$f" "$( [ -x "$PWD/../out2/$f" ] && echo present || echo missing)"
+          done
+          LS=$(find "$PWD/../out2" -name 'libstdc++.*' 2>/dev/null | head -3)
+          echo "    libstdc++   : ${LS:-NOT INSTALLED}"
+          HDR=$(find "$PWD/../out2" -name string -path '*c++*' 2>/dev/null | head -1)
+          echo "    <string> at : ${HDR:-NOT FOUND}"
 
       - name: 'INVENTORY'
         continue-on-error: true
@@ -456,9 +564,11 @@ jobs:
           echo "    insn-*.c           -> generated C from tcc-built generators"
           echo
 
-          echo "  --- what this run was asked, that earlier ones were not ---"
-          echo "    c,c++ instead of c          -> does tcc yield g++ 4.7 at all"
-          echo "    make all instead of all-gcc -> does the runtime build"
+          echo "  --- the two stages ---"
+          echo "    stage 1  tcc  -> gcc 4.7.4, C only, installed to out/"
+          echo "    stage 2  that -> gcc 4.7.4, c and c++, installed to out2/"
+          echo "    the reference chain builds its C++ gcc with a gcc; so do we"
+          echo "    stage 2 rc : ${STAGE2_RC:-?}"
           LGA=$(find . -name libgcc.a 2>/dev/null | head -1)
           if [ -n "$LGA" ]; then
             echo "    libgcc.a : $(wc -c < "$LGA" | tr -d ' ') bytes"
@@ -494,12 +604,21 @@ jobs:
             fi
           fi
           echo
-          echo "  --- THE C++ GATE: does the tcc-built g++ 4.7 LINK? ---"
+          echo "  --- THE C++ GATE: does STAGE 2's g++ 4.7 LINK? ---"
           # g++ --version proves nothing -- it printed happily on every run where
           # libgcc was missing and nothing could be linked. Compile, link, run, check.
+          # STAGE 2's INSTALLED g++, not stage 1's build tree. The previous
+          # version ran `build/gcc/g++ -B build/gcc/` on an UNINSTALLED tree,
+          # where the C++ headers live in
+          #   build/aarch64-.../libstdc++-v3/include/
+          # which -B does not add to the search path. It reported
+          #   fatal error: string: No such file or directory
+          # and that said nothing about whether libstdc++ had been built --
+          # the test could not tell "missing" from "looked in the wrong place".
+          # An installed prefix has the headers and libraries where the driver
+          # already looks, so the answer means something.
           GXX=""
-          [ -x build/gcc/xg++ ] && GXX=build/gcc/xg++
-          [ -z "$GXX" ] && [ -x build/gcc/g++ ] && GXX=build/gcc/g++
+          [ -x out2/bin/g++ ] && GXX=out2/bin/g++
           if [ -n "$GXX" ]; then
             {
               echo "#include <string>"
@@ -509,7 +628,7 @@ jobs:
               echo "  std::string n(\"ok\"); return s+(int)n.size()+35; }"
             } > /tmp/gate.cpp
             rm -f /tmp/gate
-            "$GXX" -B build/gcc/ /tmp/gate.cpp -o /tmp/gate 2> /tmp/gate.err
+            "$GXX" /tmp/gate.cpp -o /tmp/gate 2> /tmp/gate.err
             GRC=$?
             echo "    compile+link rc=$GRC"
             # Show the driver and what it looked for -- if the tcc-built g++
@@ -526,7 +645,9 @@ jobs:
               echo "    NO BINARY -- the tcc-built g++ 4.7 cannot link."
             fi
           else
-            echo "    no g++ driver found. What IS in build/gcc:"
-            ls build/gcc 2>/dev/null | grep -E "^(xgcc|xg\+\+|g\+\+|cc1|cc1plus)$" \
-              | sed "s/^/      /" || echo "      (build/gcc not readable)"
+            echo "    no g++ at out2/bin -- stage 2 did not install one."
+            echo "    what IS in out2/bin:"
+            ls out2/bin 2>/dev/null | sed "s/^/      /" || echo "      (out2/bin does not exist)"
+            echo "    and in stage 1 out/bin, for contrast:"
+            ls out/bin 2>/dev/null | sed "s/^/      /" || echo "      (out/bin does not exist)"
           fi
