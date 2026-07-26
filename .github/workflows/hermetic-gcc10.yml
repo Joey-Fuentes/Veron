@@ -381,9 +381,28 @@ jobs:
           # binutils pass 2 dies on "'PATH_MAX' undeclared" -- a diagnostic
           # that names a macro rather than the include chain that lost it.
           cd "$W"
-          cat "gcc-$GCCVER/gcc/limitx.h" "gcc-$GCCVER/gcc/glimits.h" \
-              "gcc-$GCCVER/gcc/limity.h" > \
-            "$(dirname "$("$LFS_TGT-gcc" -print-libgcc-file-name)")/install-tools/include/limits.h"
+          # THE BOOK'S PATH, PLUS THE ONES THE COMPILER ACTUALLY SEARCHES.
+          # The book writes install-tools/include/limits.h, which is the input
+          # fixincludes reads from -- correct, and not sufficient on its own
+          # here, because the pass-1 compiler is used to cross-build chapter 6
+          # packages BEFORE anything regenerates include-fixed. When the
+          # freestanding limits.h is still in scope, MB_LEN_MAX is 1 and
+          # glibc's own header refuses:
+          #   bits/stdlib.h:91:3: error: "Assumed value of MB_LEN_MAX wrong"
+          # which is how m4 failed. The gcc15 box already writes both; this one
+          # wrote only the book's path.
+          LIMH=$(dirname "$("$LFS_TGT-gcc" -print-libgcc-file-name)")
+          for d in install-tools/include include include-fixed; do
+            [ -d "$LIMH/$d" ] || continue
+            cat "gcc-$GCCVER/gcc/limitx.h" "gcc-$GCCVER/gcc/glimits.h" \
+                "gcc-$GCCVER/gcc/limity.h" > "$LIMH/$d/limits.h"
+            echo "    full limits.h -> $d/ ($(wc -l < "$LIMH/$d/limits.h") lines)"
+          done
+          # Prove it took, rather than assuming. This is the value that failed.
+          echo "    MB_LEN_MAX as the cross compiler now sees it:"
+          printf '#include <limits.h>\nMBLEN MB_LEN_MAX\n' > /tmp/mb.c
+          "$LFS_TGT-gcc" -E /tmp/mb.c 2>/dev/null | grep MBLEN | sed 's/^/      /' \
+            || echo "      could not preprocess -- headers not in place yet"
           "$S/tools/bin/$LFS_TGT-gcc" --version | head -1 | sed 's/^/    /'
           "$S/tools/bin/$LFS_TGT-gcc" -dumpmachine | sed 's/^/    targets: /'
 
@@ -493,6 +512,29 @@ jobs:
           die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
           export PATH="$S/tools/bin:$PATH"
 
+          # m4 IS FIRST IN CHAPTER 6, and that is where the book puts it:
+          #   m4, ncurses, bash, coreutils, ... make, binutils pass 2, gcc pass 2
+          # It used to be built in the chapter 7 step, AFTER gcc pass 2 -- a
+          # deviation with no support in the book. A fresh build (the first
+          # since the cache guard started discarding half-built sysroots) then
+          # failed on
+          #   bits/stdlib.h:91:3: error: "Assumed value of MB_LEN_MAX wrong"
+          # which is glibc refusing a freestanding limits.h. Ordering it as the
+          # book does puts m4 back where only the pass-1 compiler exists, which
+          # is the state the book's recipe was written against.
+          # THE SED IS THE BOOK'S AND IT IS LOAD-BEARING. m4 1.4.18 predates
+          # glibc 2.28's removal of _IO_ftrylockfile, so its bundled gnulib
+          # fails against this sysroot's glibc 2.32 without it.
+          cd "$W" && tar xf "m4-$M4_VER.tar.xz" && cd "m4-$M4_VER"
+          sed -i 's/IO_ftrylockfile/IO_EOF_SEEN/' lib/*.c
+          echo "#define _IO_IN_BACKUP 0x100" >> lib/stdio-impl.h
+          ./configure --prefix=/usr --host="$LFS_TGT" \
+          --build="$(build-aux/config.guess)" > c.log 2>&1 || die "m4 configure" c.log
+          make -j"$(nproc)" > b.log 2>&1 || die "m4 build" b.log
+          make DESTDIR="$S" install > i.log 2>&1 || die "m4 install" i.log
+          echo "  m4 $M4_VER installed (cross)"
+
+
           # LFS chapter 6 builds seventeen packages to get a shell and the text
           # tools. BusyBox is one package that supplies sh, sed, grep, awk, tar
           # and the coreutils. A declared substitution, not an oversight.
@@ -601,18 +643,6 @@ jobs:
           # Neither is a statement about gcc 10. Both are the box being
           # unfinished.
 
-          # m4 first: bison needs it, and it is chapter 6, cross-built.
-          # THE SED IS THE BOOK'S AND IT IS LOAD-BEARING. m4 1.4.18 predates
-          # glibc 2.28's removal of _IO_ftrylockfile, so its bundled gnulib
-          # fails against this sysroot's glibc 2.32 without it.
-          cd "$W" && tar xf "m4-$M4_VER.tar.xz" && cd "m4-$M4_VER"
-          sed -i 's/IO_ftrylockfile/IO_EOF_SEEN/' lib/*.c
-          echo "#define _IO_IN_BACKUP 0x100" >> lib/stdio-impl.h
-          ./configure --prefix=/usr --host="$LFS_TGT" \
-            --build="$(build-aux/config.guess)" > c.log 2>&1 || die "m4 configure" c.log
-          make -j"$(nproc)" > b.log 2>&1 || die "m4 build" b.log
-          make DESTDIR="$S" install > i.log 2>&1 || die "m4 install" i.log
-          echo "  m4 $M4_VER installed (cross)"
 
           # Stage what the in-box builds need. The box has no network.
           cd "$W"
