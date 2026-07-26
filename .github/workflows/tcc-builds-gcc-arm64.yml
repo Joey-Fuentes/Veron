@@ -83,7 +83,9 @@ jobs:
   conjunction:
     name: 'arm64 tcc -> arm64 gcc 4.7.4'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 150
+    # 150 -> 240: this now builds the runtime and the C++ front end as well,
+    # where before it stopped at all-gcc with C only.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@v5
 
@@ -241,7 +243,7 @@ jobs:
             --build=aarch64-unknown-linux-gnu \
             --host=aarch64-unknown-linux-gnu \
             --target=aarch64-unknown-linux-gnu \
-            --prefix="$PWD/../out" --enable-languages=c \
+            --prefix="$PWD/../out" --enable-languages=c,c++ \
             --disable-multilib --disable-bootstrap --disable-werror \
             --disable-libsanitizer --disable-libgomp --disable-libquadmath \
             --disable-libssp --disable-libatomic --disable-shared \
@@ -271,7 +273,27 @@ jobs:
           # parallel compiles interleaves and the first error lands next to
           # another target's warnings. -k: gather the whole inventory, not the
           # first stop.
-          timeout 7200 make -k -j"$(nproc)" -Otarget MAKEINFO=true all-gcc > build.log 2>&1
+          # all-gcc -> all. THIS WORKFLOW'S OWN CLOSING TEXT NAMED BOTH OF THE
+          # THINGS THIS CHANGES:
+          #   "--enable-languages=c only, so g++ 4.7 -- the reason 4.7 was
+          #    chosen -- is untested. And all-gcc stops before libgcc, so xgcc
+          #    still cannot link a program."
+          # Both were forced, not chosen: the transplanted compiler segfaulted
+          # in libgcc every time, so there was no point asking for the runtime
+          # or for C++. On 2026-07-26 that ICE was diagnosed as a declaration
+          # that moved headers between 4.7 and 4.8 (get_hard_reg_initial_val,
+          # integrate.h -> function.h) and tools/port_gcc47_api.py now adds the
+          # include. The host-gcc arm of gcc47-aarch64-backport then completed a
+          # full build: libgcc.a 648,788 bytes, xgcc linking and running a
+          # program to exit 55.
+          #
+          # So the question here becomes the real one: can OUR tcc build that
+          # same complete compiler -- runtime, driver and C++ front end.
+          #
+          # --disable-bootstrap STAYS, and for the reason already written above:
+          # with bootstrap on, stage2 is built by the stage1 xgcc and tcc's
+          # contribution is discarded. That argument is untouched by any of this.
+          timeout 7200 make -k -j"$(nproc)" -Otarget MAKEINFO=true all > build.log 2>&1
           rc=$?
           case "$rc" in
             0)   echo "  make rc=0 -- completed" ;;
@@ -418,6 +440,60 @@ jobs:
           echo "    generic gcc/*.c    -> tcc's arm64 codegen (clean on x86)"
           echo "    insn-*.c           -> generated C from tcc-built generators"
           echo
-          echo "  Still open either way: --enable-languages=c only, so g++ 4.7 --"
-          echo "  the reason 4.7 was chosen -- is untested. And all-gcc stops"
-          echo "  before libgcc, so xgcc still cannot link a program."
+
+          echo "  --- what this run was asked, that earlier ones were not ---"
+          echo "    c,c++ instead of c          -> does tcc yield g++ 4.7 at all"
+          echo "    make all instead of all-gcc -> does the runtime build"
+          LGA=$(find . -name libgcc.a 2>/dev/null | head -1)
+          if [ -n "$LGA" ]; then
+            echo "    libgcc.a : $(wc -c < "$LGA" | tr -d ' ') bytes"
+          else
+            echo "    libgcc.a : NOT BUILT"
+          fi
+          echo "    xgcc     : $( [ -x gcc/xgcc ] && echo BUILT || echo no)"
+          echo "    cc1plus  : $( [ -x gcc/cc1plus ] && echo BUILT || echo no)"
+          echo
+          echo "  --- IMPLICIT DECLARATIONS ---"
+          # The gate the host-gcc arm carries. A declaration that moved headers is a
+          # WARNING, and on LP64 it truncates the returned pointer to 32 bits -- which
+          # is how the libgcc ICE happened, a hundred objects in, with nothing pointing
+          # at a missing include. grep -c PRINTS the count and EXITS 1 on zero matches,
+          # so `|| true`, not `|| echo 0`, which would append a second zero.
+          IMPL=$(grep -c "implicit declaration" build.log 2>/dev/null || true)
+          [ -n "$IMPL" ] || IMPL=0
+          echo "    in the whole build : $IMPL"
+          if [ "$IMPL" -gt 0 ]; then
+            grep -n "implicit declaration" build.log | head -8 | sed "s/^/      /"
+            BE=$(grep "implicit declaration" build.log | grep -c "config/aarch64" || true)
+            echo "    in config/aarch64  : ${BE:-0}"
+            if [ "${BE:-0}" -gt 0 ]; then
+              echo "    ^^ a truncated pointer waiting to happen -- add a"
+              echo "       kind=include rule to tools/port_gcc47_api.py"
+            fi
+          fi
+          echo
+          echo "  --- THE C++ GATE: does the tcc-built g++ 4.7 LINK? ---"
+          # g++ --version proves nothing -- it printed happily on every run where
+          # libgcc was missing and nothing could be linked. Compile, link, run, check.
+          GXX=""
+          [ -x gcc/xg++ ] && GXX=gcc/xg++
+          [ -z "$GXX" ] && [ -x gcc/g++ ] && GXX=gcc/g++
+          if [ -n "$GXX" ]; then
+            {
+              echo "#include <string>"
+              echo "#include <vector>"
+              echo "int main(){ std::vector<int> v; for(int i=0;i<5;++i) v.push_back(i);"
+              echo "  int s=0; for(unsigned i=0;i<v.size();++i) s+=v[i];"
+              echo "  std::string n(\"ok\"); return s+(int)n.size()+35; }"
+            } > /tmp/gate.cpp
+            "$GXX" -B gcc/ /tmp/gate.cpp -o /tmp/gate 2> /tmp/gate.err
+            echo "    compile+link rc=$?"
+            [ -s /tmp/gate.err ] && head -8 /tmp/gate.err | sed "s/^/      /"
+            if [ -x /tmp/gate ]; then
+              /tmp/gate; echo "    ran: exit=$? (expect 47)"
+            else
+              echo "    NO BINARY -- the tcc-built g++ 4.7 cannot link."
+            fi
+          else
+            echo "    no g++ driver was built"
+          fi
