@@ -35,33 +35,48 @@ This is not a defense against a maliciously backdoored global ecosystem, and it 
 
 The governing rule: **add exactly one new abstraction per stage, and write each stage in the language the stage below just produced.** Readability climbs monotonically; the only cryptic layer is the first one, which is also the smallest.
 
-| Stage | Name | Written in | Adds | Audit regime |
-|-------|------|-----------|------|--------------|
-| 0 | `seed-as` | **readable per-arch assembly** (x86-64 / ARM64 / RV64I) | line-oriented assembly → static ELF; labels, `.byte`/`.ascii` | **A** — source read + round-trip disassembly (assembler untrusted) |
-| 1 | `macro-as` | stage-0 assembly | macros, named constants, integer expressions, `.include` | **A** — full source read |
-| 2 | `mini-c` | stage-1 assembly | C subset: functions, int/char/ptr, if/while, arrays, globals | **A** — full source read |
-| 3 | `full-c` | stage-2 C subset | preprocessor, structs/unions, switch, full types; **self-hosts** | **B** — self-host + diverse double-compilation |
-| — | **← FORK LINE** | | *nothing above this line may reference libc* | |
-| 4 | `libc` + `binutils` | full C | musl **or** glibc; real assembler/linker | **C** — reproduce + review delta + defer |
-| 5 | GCC → userland → kernel | full C | bootstrappable GCC → modern GCC → coreutils/BusyBox → Linux → desktop | **C** |
+| Stage | Name | Written in | Adds | What it proves |
+|-------|------|-----------|------|---|
+| 1 | `seed-as` | **readable per-arch assembly** (x86-64 / ARM64 / RV64I) | line-oriented assembly → static ELF; labels, `.byte`/`.ascii` | Round-trip auditable hand-written root |
+| 2 | `macro-as` | stage-1 assembly | macros, named constants, integer expressions, `.include` | Minimal abstraction in assembly works |
+| 3 | `mini-c` | stage-2 assembly | C subset: functions, int/char/ptr, if/while, arrays, globals | C layer climbs bootstrapped from asm |
+| 4 | `tcc` → `Linux boot` | stage-3 C → full C (tcc) | libc, binutils, GCC 4.7 → 10 → modern, kernel + minimal userland | **Proof:** the chain works end to end; Linux boots from tcc-built tools |
+| 5 | `Full ecosystem` + **verification** | modern GCC | BLFS packages, X11, applications; 3-stage bootstrap; DejaGnu; reproducibility audits | **Solid:** the OS is complete, verified, reproducible, proven by testing at scale |
+| 6 | `release` | — | signed audit ledger; packaged image; distribution metadata | **Shipped:** auditable, reproducible, releasable OS ready for use |
+| 7 | **(end state)** | — | *nothing* | **Done.** The system is intentionally designed to not proceed to stage 7. When stage 6 ships, work stops. |
+
+### Stage 7 is intentionally empty
+
+**The system is designed to complete at stage 6 and stop.** There is no stage 7 technical work. Stage 7 exists only as a boundary marker: when stage 6 ships, the work is finished. No further rungs, no ongoing maintenance cycle, no "next version." The deliberately-empty stage 7 is a design choice that says *"here is where you stop climbing."*
+
+### Key design principle: Verification is built into the build, not added after
+
+**Every stage that ships has already been verified during the build.** There is no separate verification pass.
+
+- **Stages 1–3** are low-level bootstrapping, verified during source review and by fixpoint self-compilation.
+- **Stage 4** proves the method works: tcc's output reaches a booting Linux kernel. The kernel and minimal userland are built, tested, and confirmed working *as part of the build*. The tests run inside QEMU; failure means the stage does not complete. By the time stage 4 is done, the entire chain from assembly seed to Linux boot is proven.
+- **Stage 5** builds the full ecosystem (BLFS packages and applications) and runs all verification: 3-stage bootstrap comparisons, DejaGnu suites, reproducibility audits, rebuild-and-diff checks. Everything is tested during the build. By the time stage 5 is done, the OS is complete, verified, and proven reproducible at scale.
+- **Stage 6** packages what stage 5 has already proven: signs the audit ledger, builds the distributable image, and documents everything for reproduction.
+- **Stage 7** is intentionally empty. No work happens here. It exists only as a boundary: when stage 6 ships, climbing stops.
+
+There are no hidden verifications, no "well it compiled, so it works" assumptions, and no separate testing stage. Each stage proves what it claims as part of its build. Build = verify = emit (or ship, then stop).
 
 ### Two structural facts the seed forces
 
 **Bijective encoding is a discipline, not a freebie.** For the round-trip (assemble → disassemble → compare) to hold, the seed assembly must forbid everything that makes assembly ambiguous: no macros, no pseudo-instructions that expand, no branch relaxation, no optimization, no assembler-chosen encodings. Every line is one real instruction with one encoding *you* pinned. The three targets are not equal at this: **ARM64** (fixed 4-byte instructions) is cleanest; **RISC-V** is clean if the *seed* is restricted to the **RV64I base** — fixed 32-bit width, whereas the compressed (`C`) extension introduces 16-bit instructions and breaks the bijection; **x86-64** is the hard one — variable length with multiple valid encodings per operation, so you must pin one canonical encoding per instruction and keep the instruction subset small. ARM64 is the natural reference arch.
 
-> **RV64I constrains the seed only, not the OS.** General-purpose RISC-V PCs run **RV64GC** (integer + mul/div + atomics + float + compressed), and that is the *target* for stage 5 and up — the kernel and userland are RV64GC, emitted by full-c/GCC like any normal distro. The seed is written in bare RV64I purely so it round-trip-audits; because RV64GC is a strict superset of RV64I, that seed runs natively on any general-purpose RISC-V machine. Each rung targets what it needs; only the *seed* is restricted, and only because it must be hand-auditable. (Likewise ARM64 and x86-64: the seed uses a pinned subset, the OS uses the full ISA.)
+> **RV64I constrains the seed only, not the OS.** General-purpose RISC-V PCs run **RV64GC** (integer + mul/div + atomics + float + compressed), and that is the *target* for stage 6 and up — the kernel and userland are RV64GC, emitted by full-c/GCC like any normal distro. The seed is written in bare RV64I purely so it round-trip-audits; because RV64GC is a strict superset of RV64I, that seed runs natively on any general-purpose RISC-V machine. Each rung targets what it needs; only the *seed* is restricted, and only because it must be hand-auditable. (Likewise ARM64 and x86-64: the seed uses a pinned subset, the OS uses the full ISA.)
 
-**The lower stages are written 3×; race to portable C.** Stage 0's assembly is arch-specific by nature, and so is anything written *in* it (stages 1–2). The convergence point is `full-c`: from stage 3 up, sources are **portable C written once**, and the compiler targets all three arches. So the design pressure is to keep the assembly-language rungs *few and small* — every rung below the C line costs triple.
+**The lower stages are written 3×; race to portable C.** Stages 1–3 are arch-specific by nature: stage 1's assembly is per-architecture, and anything written *in* it (stages 2–3) must also be written three times. The convergence point is stage 4 and beyond: from stage 4 up, sources are **portable C written once**, and the compiler targets all three arches. So the design pressure is to keep the assembly-language rungs *few and small* — every rung below the C line costs triple.
 
 ### The three audit regimes
 
-- **Regime A — read the whole thing (stages 0–3).** Each stage is small enough (hundreds of bytes to low thousands of lines) that "we read all of it" is *literally true*. Stage 0's audit is a read of its commented assembly source, with the produced binary confirmed to match by round-trip disassembly; stages 1–3 are complete source review plus reproducible rebuild.
-- **Regime B — the fixpoint (stage 3).** When `full-c` compiles `full-c` to a byte-identical fixed point, self-hosting proves the C subset was sufficient, and **diverse double-compilation** unlocks: rebuild upper stages with independent existing compilers and diff. Divergence is an automatic flag.
-- **Regime C — reproduce, review the delta, defer the rest (stages 4–5).** Packages now exceed what anyone reads end to end. "Audited" means: pinned provenance + reproducible build + review of *our* patches/flags only + upstream test suites + an explicit recorded deferral of the internals.
+- **Regime A — read the whole thing (stages 1–3).** Each stage is small enough (hundreds of bytes to low thousands of lines) that "we read all of it" is *literally true*. Stage 1's audit is a read of its commented assembly source, with the produced binary confirmed to match by round-trip disassembly; stages 2 and 3 are complete source review plus reproducible rebuild.
+- **Regime B — the fixpoint (stage 3).** When the stage-3 C compiler compiles itself to a byte-identical fixed point (or stage 4's tcc does), self-hosting proves the C subset was sufficient, and **diverse double-compilation** unlocks: rebuild upper stages with independent existing compilers and diff. Divergence is an automatic flag.
+- **Regime C — reproduce, review the delta, test during build (stages 4–6).** Packages now exceed what anyone reads end to end. "Audited" means: pinned provenance + reproducible build + review of *our* patches/flags only + upstream test suites + an explicit recorded deferral of the internals. Stage 4 boots the kernel and proves the chain works. Stage 5 runs full verification (bootstrap comparisons, DejaGnu, reproducibility). Stage 6 packages what stages 4–5 have already proven.
 
-Stage 0 is the only node with no stage beneath it to diverse-*compile* against — but its round-trip check *can* be run with independent disassemblers (a fixed-width clean encoding disassembles by near-lookup-table), so the seed still gets a diversity check of its own. This is precisely why it must be tiny and its encoding clean.
+Stage 1 is the only node with no stage beneath it to diverse-*compile* against — but its round-trip check *can* be run with independent disassemblers (a fixed-width clean encoding disassembles by near-lookup-table), so the seed still gets a diversity check of its own. This is precisely why it must be tiny and its encoding clean.
 
----
 
 ## 3. The seven audit criteria (per-node audit record)
 
