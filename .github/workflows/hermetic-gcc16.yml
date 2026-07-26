@@ -1079,6 +1079,212 @@ jobs:
           rc=${PIPESTATUS[0]}
           [ "$rc" -eq 0 ] || { echo "  the compiler suite reported failures (exit $rc)"; exit 1; }
 
+      - name: 'TEST THE USERLAND INSIDE the box'
+        run: |
+          set -eu
+          # THE BOX'S ENTIRE USERLAND IS ONE BUSYBOX AND ~400 APPLETS, and
+          # until now not one of them was ever tested. Every configure script,
+          # every Makefile and the initramfs builder itself run on those
+          # applets: if busybox's sed -i were subtly wrong, gcc's build would
+          # fail somewhere unrecognisable. THE LADDER checked five things --
+          # shell, make, as, ld, gcc -- and stopped.
+          #
+          # The same script runs again inside QEMU later, so the two
+          # transcripts are directly comparable: one userland, two kernels.
+          cat > "$S/work/utest.sh" <<'UEOF'
+          #!/bin/sh
+          # A SHELL SESSION ON THIS SYSTEM, PRINTED AS ONE.
+          #
+          # WHY THIS EXISTS. Everything above it tested the compiler and the kernel, and
+          # nothing at all tested the userland -- which in this box is one busybox and
+          # roughly 400 applets. Those applets are what every configure script, every
+          # Makefile and the initramfs builder itself run on, and not one of them had
+          # ever been exercised. When one turned out to be missing from the boot image,
+          # the console said `cp: not found` and the reporting layer threw the line away
+          # between a `head -30` and a `tail -40`.
+          #
+          # So this does not just assert. It SHOWS: every command is echoed with a
+          # prompt and its real output follows, the way it would look if you were sat at
+          # the machine. Where there is a known-correct answer it is checked as well, and
+          # the check is what the run stands or falls on -- but the transcript is what
+          # makes the result readable by a person.
+          #
+          # The same script runs in the box under bwrap and in the guest under QEMU. Two
+          # very different environments, one set of expectations.
+
+          P=0; F=0
+          ok() { P=$((P+1)); echo "VERON-TEST PASS $1"; }
+          no() { F=$((F+1)); echo "VERON-TEST FAIL $1${2:+ -- $2}"; }
+
+          # show: run it and display it. For things worth looking at but with no single
+          # correct answer -- a directory listing, free memory, the mount table.
+          show() { echo; echo "  \$ $1"; eval "$1" 2>&1 | sed 's/^/    /'; }
+          # chk: the same, and then hold the output to an expected value.
+          chk() {
+            d=$1; w=$2; c=$3
+            echo; echo "  \$ $c"
+            g=$(eval "$c" 2>&1)
+            echo "$g" | sed 's/^/    /'
+            if [ "$g" = "$w" ]; then ok "$d"; else no "$d" "expected [$w]"; fi
+          }
+          # have: an applet that is absent must say so out loud, not fail obscurely
+          # three lines later. This is the check that was missing.
+          have() {
+            for a in $1; do
+              if command -v "$a" > /dev/null 2>&1; then :; else no "applet '$a' is missing"; fi
+            done
+          }
+
+          T=${T:-/tmp}/utest
+          rm -rf "$T"; mkdir -p "$T"; cd "$T" || exit 1
+
+          echo "==================== who and where ===================="
+          show "uname -a"
+          show "id"
+          show "hostname 2>/dev/null || echo '(no hostname applet)'"
+          show "date -u '+%Y-%m-%d %H:%M:%S UTC'"
+          show "cat /proc/cmdline"
+          show "head -3 /proc/cpuinfo"
+          show "grep -E 'MemTotal|MemFree' /proc/meminfo"
+          show "free 2>/dev/null | head -3"
+          show "uptime 2>/dev/null || cat /proc/uptime"
+
+          echo
+          echo "==================== what is on the disk ===================="
+          show "ls -la /"
+          show "cat /proc/mounts"
+          show "df -h 2>/dev/null | head -6"
+          show "ls -la /usr/lib"
+          show "ls /bin | head -30"
+          show "ls /bin | wc -l"
+
+          echo
+          echo "==================== the userland itself ===================="
+          show "busybox | head -2"
+          show "busybox --list | wc -l"
+          show "busybox --list | head -40 | tr '\\n' ' '"
+          have "sh cat ls cp mv rm mkdir ln find xargs chmod"
+          have "sed grep awk cut tr sort uniq head tail wc tee"
+          have "tar gzip gunzip cpio md5sum sha256sum"
+          have "date env printf expr test seq basename dirname readlink"
+          have "ps kill sleep sync dmesg mount umount"
+
+          echo
+          echo "==================== files ===================="
+          chk "mkdir -p and a write reach the disk" "hello from veron" \
+              "mkdir -p a/b/c && echo 'hello from veron' > a/b/c/f && cat a/b/c/f"
+          chk "cp preserves content" "hello from veron" "cp a/b/c/f copy && cat copy"
+          chk "mv renames" "hello from veron" "mv copy moved && cat moved"
+          chk "ln -s and readlink" "moved" "ln -s moved link && readlink link"
+          chk "rm removes" "gone" "rm -f moved && [ ! -e moved ] && echo gone"
+          chk "chmod is honoured" "executable" \
+              "printf '#!/bin/sh\\necho executable\\n' > s.sh && chmod +x s.sh && ./s.sh"
+          chk "find by name" "./a/b/c/f" "find ./a -type f -name f"
+          chk "find piped through xargs" "hello from veron" "find ./a -type f | xargs cat"
+          show "ls -la a/b/c"
+
+          echo
+          echo "==================== text processing ===================="
+          printf 'pear 4\napple 10\nbanana 7\napple 3\ncherry 7\n' > fruit.txt
+          show "cat fruit.txt"
+          chk "grep matches"            "apple 10"        "grep '^apple 10' fruit.txt"
+          chk "grep -c counts"          "2"               "grep -c apple fruit.txt"
+          chk "grep -v inverts"         "3"               "grep -v apple fruit.txt | wc -l"
+          chk "sed substitutes"         "APPLE 10"        "sed -n '2s/apple/APPLE/p' fruit.txt"
+          chk "sed -i edits in place"   "kiwi 4"          "cp fruit.txt e.txt && sed -i 's/pear/kiwi/' e.txt && head -1 e.txt"
+          chk "sed deletes"             "4"               "sed '1d' fruit.txt | wc -l"
+          chk "awk picks a field"       "10"              "awk '\$1==\"apple\"{print \$2; exit}' fruit.txt"
+          chk "awk sums a column"       "31"              "awk '{s+=\$2} END{print s}' fruit.txt"
+          chk "awk BEGIN/END and NR"    "5 lines"         "awk 'END{print NR\" lines\"}' fruit.txt"
+          chk "sort is alphabetical"    "apple 10"        "sort fruit.txt | head -1"
+          chk "sort -n is numeric"      "10"              "awk '{print \$2}' fruit.txt | sort -n | tail -1"
+          chk "uniq -c counts runs"     "2 apple"         "awk '{print \$1}' fruit.txt | sort | uniq -c | tr -s ' ' | sed 's/^ //' | grep apple"
+          chk "cut by delimiter"        "banana"          "cut -d' ' -f1 fruit.txt | sed -n 3p"
+          chk "cut by character"        "app"             "cut -c1-3 fruit.txt | sed -n 2p"
+          chk "tr translates"           "PEAR 4"          "head -1 fruit.txt | tr 'a-z' 'A-Z'"
+          chk "wc counts"               "5 10 42"         "wc fruit.txt | tr -s ' ' | sed 's/^ //' | cut -d' ' -f1-3"
+          chk "head and tail"           "cherry 7"        "head -5 fruit.txt | tail -1"
+          chk "tee writes and passes"   "pear 4"          "head -1 fruit.txt | tee teed.txt > /dev/null && cat teed.txt"
+
+          echo
+          echo "==================== the shell itself ===================="
+          chk "arithmetic expansion"   "42"      'echo $((6 * 7))'
+          chk "parameter expansion"    "veron"   'v=veron.tar.gz; echo ${v%%.*}'
+          chk "command substitution"   "5"       'echo $(wc -l < fruit.txt)'
+          chk "for loop"               "1 2 3"   'r=""; for i in 1 2 3; do r="$r $i"; done; echo ${r# }'
+          chk "while read"             "5"       'n=0; while read -r l; do n=$((n+1)); done < fruit.txt; echo $n'
+          chk "case"                   "matched" 'case veron in ver*) echo matched;; *) echo no;; esac'
+          chk "functions"              "144"     'sq() { echo $(($1 * $1)); }; sq 12'
+          chk "here-doc"               "inline"  'cat <<EOF
+          inline
+          EOF'
+          chk "exit status"            "0 1"     'true; a=$?; false; b=$?; echo "$a $b"'
+          chk "pipeline"               "3"       'seq 1 3 | wc -l'
+
+          echo
+          echo "==================== archives and checksums ===================="
+          chk "md5sum, known vector"    "900150983cd24fb0d6963f7d28e17f72" \
+              "printf abc | md5sum | cut -d' ' -f1"
+          chk "sha256sum, known vector" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" \
+              "printf abc | sha256sum | cut -d' ' -f1"
+          show "tar czf a.tar.gz a"
+          show "tar tzf a.tar.gz"
+          chk "tar round-trips its content" "hello from veron" \
+              "mkdir -p x && tar xzf a.tar.gz -C x && cat x/a/b/c/f"
+          chk "gzip round-trips"        "hello from veron" \
+              "gzip -c a/b/c/f > g.gz && gunzip -c g.gz"
+          chk "cpio round-trips"        "hello from veron" \
+              "mkdir -p y && (cd a && find . | cpio -o -H newc 2>/dev/null) > a.cpio && (cd y && cpio -i -H newc < ../a.cpio 2>/dev/null) && cat y/b/c/f"
+
+          echo
+          echo "==================== processes and signals ===================="
+          show "ps | head -12"
+          chk "a subshell runs"        "forked"  'sh -c "echo forked"'
+          chk "exit codes propagate"   "7"       'sh -c "exit 7"; echo $?'
+          sleep 30 &
+          bg=$!
+          if kill -TERM "$bg" 2>&1; then
+            wait "$bg" 2>/dev/null
+            [ -d "/proc/$bg" ] && no "SIGTERM did not reap the child" || ok "signals reap a child"
+          else
+            no "kill(2) failed"
+          fi
+          show "sync && echo synced"
+
+          echo "==================== the network stack ===================="
+          # NOT SILENCED. `ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null`
+          # hid the reason the loopback test failed -- the applet was not in the image at
+          # all -- and the run reported "loopback down" as if the kernel were at fault.
+          show "ip link set lo up 2>&1 || ifconfig lo up 2>&1"
+          show "ip addr show lo 2>&1 || ifconfig lo 2>&1"
+          show "cat /sys/class/net/lo/operstate 2>&1 || echo '(no /sys here)'"
+          # SKIPPED, NOT FAILED, WHERE IT CANNOT APPLY. The box is bwrap with --proc but
+          # no /sys at all, so /sys/class/net does not exist there and never will. A test
+          # that reports failure for an environment it was never meant to run in teaches
+          # people to ignore failures.
+          if [ -e /sys/class/net/lo/operstate ]; then
+            st=$(cat /sys/class/net/lo/operstate 2>/dev/null)
+            case "$st" in
+              up|unknown) ok "loopback is up (operstate=$st)" ;;
+              *)          no "loopback is $st" ;;
+            esac
+          else
+            echo "VERON-TEST SKIP loopback state -- no /sys in this environment"
+          fi
+
+          echo
+          echo "==================== $LABEL: $P passed, $F failed ===================="
+          # Hand the tally back to whoever invoked us, so a caller can fold it into its
+          # own verdict instead of re-parsing a console it cannot see.
+          [ -n "$TALLY" ] && echo "$P $F" > "$TALLY"
+          [ "$F" -eq 0 ]
+          UEOF
+          chmod +x "$S/work/utest.sh"
+          LABEL="userland in the box" S="$S" "$W/box16.sh" \
+            /bin/sh -c 'LABEL="userland in the box" T=/tmp exec /bin/sh /work/utest.sh' 2>&1 | sed 's/^/    /'
+          rc=${PIPESTATUS[0]}
+          [ "$rc" -eq 0 ] || { echo "  the userland suite reported failures (exit $rc)"; exit 1; }
+
       - name: 'Stage the kernel and its build tools into the box'
         run: |
           set -eu
@@ -1404,7 +1610,7 @@ jobs:
           # compiler works. This shows the glibc THIS BOX BUILT running as PID 1 under
           # the kernel THIS BOX BUILT, on the real kernel ABI, outside bwrap.
           rm -rf /work/ir
-          mkdir -p /work/ir/bin /work/ir/dev /work/ir/proc /work/ir/sys /work/ir/usr/lib /work/ir/mnt
+          mkdir -p /work/ir/bin /work/ir/dev /work/ir/proc /work/ir/sys /work/ir/usr/lib /work/ir/mnt /work/ir/tmp
           # Mirror the sysroot's own layout, so whichever of the two paths a binary names
           # resolves to the same place.
           ln -s usr/lib /work/ir/lib
@@ -1417,6 +1623,9 @@ jobs:
             cp "$b" /work/ir/bin/
           done
           cp /work/guest-bin/corpus.expected /work/ir/
+          # The same userland tour the box runs, so the two transcripts are comparable.
+          cp /work/utest.sh /work/ir/utest.sh
+          chmod +x /work/ir/utest.sh
 
           # EVERY LIBRARY EVERY BINARY ASKS FOR, read out of the binaries rather than
           # listed by hand. veron-cxx drags in libstdc++ and libgcc_s, which no hand
@@ -1458,22 +1667,46 @@ jobs:
           done
           echo "  image libs: $(ls /work/ir/usr/lib | tr '\n' ' ')"
 
-          # APPLETS: LIST THEM, THEN PROVE EACH ONE IS REAL. A name that busybox does not
-          # implement becomes a dangling symlink and prints "head: not found" from inside
-          # PID 1, where it is easy to miss and silently empties whatever it measured.
-          # Checking against busybox's own applet table turns that into a build error.
-          APPLETS="sh mount umount uname echo cat ls mkdir rm sleep dmesg head tail
-                   grep cut wc tr sed printf date sync dd md5sum kill ps free
-                   chmod ln test true false env poweroff"
-          missing=""
-          for a in $APPLETS; do
-            /work/ir/bin/busybox --list 2>/dev/null | grep -qx "$a" || missing="$missing $a"
-          done
-          [ -z "$missing" ] || { echo "  busybox does not implement:$missing"; exit 1; }
+          # INSTALL EVERY APPLET BUSYBOX HAS, rather than a list someone curated.
+          # The curated list is how the last run failed: `cp` and `ip` were used by the
+          # test script and were not on it, so the image had no `cp`, the console said
+          # "cp: not found", and the harness reported a tmpfs fault and a downed
+          # loopback -- two wrong conclusions from one missing symlink. The list was
+          # verified against busybox, which is backwards; nothing verified the SCRIPTS
+          # against the list. Installing all of them removes the class outright, and
+          # costs about 400 symlinks in a 16 MB image.
+          applets=$(/work/ir/bin/busybox --list 2>/dev/null)
+          n=$(printf '%s\n' "$applets" | grep -c .)
+          # `busybox --list` behind a `||` fallback once gave this project an
+          # eight-applet userland that passed the first three rungs. No fallback: if the
+          # list is implausible, stop.
+          [ "$n" -gt 100 ] || { echo "  busybox --list returned only $n names"; exit 1; }
           cd /work/ir/bin
-          for a in $APPLETS; do ln -sf busybox "$a"; done
+          for a in $applets; do
+            # NEVER symlink busybox onto itself -- `ln -sf busybox busybox` replaces the
+            # one real binary in the image with a link to nothing.
+            [ "$a" = busybox ] && continue
+            ln -sf busybox "$a"
+          done
           cd /work/ir
-          echo "  applets in the image: $(echo $APPLETS | wc -w)"
+          echo "  applets installed: $n"
+
+          # NOW CHECK THE OTHER DIRECTION: everything the scripts in this image invoke
+          # must exist. This is the assertion whose absence cost the last run.
+          need_bin="sh cat ls cp mv rm mkdir ln find xargs chmod sed grep awk cut tr
+                    sort uniq head tail wc tee tar gzip gunzip cpio md5sum sha256sum
+                    date env printf expr seq basename dirname readlink ps kill sleep
+                    sync dmesg mount umount poweroff"
+          absent=""
+          for c in $need_bin; do
+            [ -e "/work/ir/bin/$c" ] || absent="$absent $c"
+          done
+          [ -z "$absent" ] || { echo "  this busybox has no:$absent -- the scripts need them"; exit 1; }
+          # Nice to have, and reported rather than required: the transcript says so
+          # itself if one is missing, instead of a test failing for the wrong reason.
+          for c in ip ifconfig df free id hostname uptime diff od; do
+            [ -e "/work/ir/bin/$c" ] || echo "  note: no '$c' applet in this busybox"
+          done
 
           # bwrap is unprivileged, so mknod is unavailable here -- that is what
           # CONFIG_DEVTMPFS_MOUNT is for. Try anyway, and say which of the two ends up
@@ -1487,11 +1720,13 @@ jobs:
           cat > init <<'INITEOF'
           #!/bin/sh
           # PID 1, AND A TEST HARNESS. Reaching userspace proves the kernel loads and the
-          # loader resolves; it proves nothing about whether the system WORKS. Each check
-          # prints one line the host can parse, and the run ends with a single verdict
-          # line rather than leaving a human to read a console dump.
+          # loader resolves; it proves nothing about whether the system WORKS. Most of
+          # the work is delegated to /utest.sh, which prints an actual shell session --
+          # every command echoed with its output -- because a transcript a person can
+          # read is worth more than a column of PASS lines, and because the one time a
+          # command was missing the reporting threw the evidence away.
           #
-          # No `set -e`: one failure must not hide the other twenty.
+          # No `set -e`: one failure must not hide the other forty.
           mount -t devtmpfs none /dev 2>/dev/null
           # Only redirect if there is something to redirect TO. An exec onto a missing
           # device kills the shell, and a kernel that booted perfectly then prints
@@ -1502,30 +1737,34 @@ jobs:
           mount -t tmpfs none /mnt 2>/dev/null
 
           P=0; F=0
-          ok()  { P=$((P+1)); echo "VERON-TEST PASS $1"; }
-          no()  { F=$((F+1)); echo "VERON-TEST FAIL $1${2:+ -- $2}"; }
+          ok() { P=$((P+1)); echo "VERON-TEST PASS $1"; }
+          no() { F=$((F+1)); echo "VERON-TEST FAIL $1${2:+ -- $2}"; }
           chk() { if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "wanted [$3] got [$2]"; fi; }
 
           echo "VERON-BOOT-OK $(uname -srm)"
           echo "VERON-KERNEL $(cat /proc/version)"
           echo "VERON-LIBC $(/lib/ld-linux-aarch64.so.1 --version 2>&1 | head -1)"
 
-          echo "VERON-SECTION filesystems and devices"
-          # NOT `[ -s /proc/cpuinfo ]`: every procfs file reports st_size 0, so -s is
-          # false on all of them and this "check" failed against a perfectly good /proc.
-          # Found by running this harness on a live system before shipping it.
+          # ---- the visible session -------------------------------------------------
+          LABEL="userland in the guest" T=/tmp TALLY=/tmp/ut.tally sh /utest.sh
+          if [ -r /tmp/ut.tally ]; then
+            read up uf < /tmp/ut.tally
+            P=$((P + up)); F=$((F + uf))
+          else
+            no "the userland tour did not report a tally"
+          fi
+
+          echo
+          echo "==================== devices and storage ===================="
           grep -q . /proc/cpuinfo 2>/dev/null && ok "/proc is mounted and populated" || no "/proc"
-          [ -d /sys/kernel ]    && ok "/sys is mounted"                  || no "/sys"
+          [ -d /sys/kernel ] && ok "/sys is mounted" || no "/sys"
           for d in null zero console urandom; do
             [ -c /dev/$d ] && ok "/dev/$d is a character device" || no "/dev/$d"
           done
-          echo hello > /dev/null 2>&1 && ok "/dev/null accepts writes" || no "/dev/null write"
           z=$(dd if=/dev/zero bs=1 count=4 2>/dev/null | tr -d '\0' | wc -c)
           chk "/dev/zero reads as zeroes" "$z" "0"
           r=$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | wc -c)
           chk "/dev/urandom yields entropy" "$r" "32"
-
-          echo "VERON-SECTION storage"
           mkdir -p /mnt/t
           if dd if=/dev/urandom of=/mnt/t/blob bs=1024 count=4096 2>/dev/null; then
             a=$(md5sum < /mnt/t/blob | cut -d' ' -f1)
@@ -1535,68 +1774,39 @@ jobs:
           else
             no "tmpfs write"
           fi
-          sync && ok "sync(2) returns" || no "sync"
 
-          echo "VERON-SECTION processes"
-          chk "pipes" "$(echo squid | cat)" "squid"
-          chk "subshell fork/exec" "$(sh -c 'echo forked')" "forked"
-          chk "exit status propagates" "$(sh -c 'exit 7'; echo $?)" "7"
-          sleep 30 &
-          bgpid=$!
-          if kill -TERM $bgpid 2>/dev/null; then
-            wait $bgpid 2>/dev/null
-            [ -d /proc/$bgpid ] && no "SIGTERM did not reap the child" || ok "signals reap a child"
-          else
-            no "kill(2)"
-          fi
-          n=$(ps 2>/dev/null | wc -l)
-          [ "$n" -ge 2 ] && ok "ps sees $n processes" || no "ps"
-
-          echo "VERON-SECTION binaries built by this box's gcc"
+          echo
+          echo "==================== binaries this box's gcc produced ===================="
           # THE POINT OF THE WHOLE EXERCISE. These were compiled inside bwrap by the
           # sysroot's own gcc; here they run on the real kernel, on real hardware
           # interfaces, with no bwrap anywhere. A checksum computed in the box and
           # recomputed here has to agree.
-          want=$(cat /corpus.expected 2>/dev/null)
-          got=$(/bin/veron-corpus 2>&1)
-          chk "dynamic C binary reproduces its checksum" "$got" "$want"
-          chk "static C binary runs" "$(/bin/veron-static; echo $?)" "0"
-          chk "C++ binary: STL, RTTI and exceptions" "$(/bin/veron-cxx 2>&1)" "2080 3 2 1 abab"
+          echo "  \$ /bin/veron-corpus"
+          got=$(/bin/veron-corpus 2>&1); echo "    $got"
+          chk "dynamic C binary reproduces its checksum" "$got" "$(cat /corpus.expected 2>/dev/null)"
+          echo "  \$ /bin/veron-cxx"
+          gotx=$(/bin/veron-cxx 2>&1); echo "    $gotx"
+          chk "C++ binary: STL, RTTI and exceptions" "$gotx" "2080 3 2 1 abab"
+          echo "  \$ /bin/veron-static; echo \$?"
+          gots=$(/bin/veron-static; echo $?); echo "    $gots"
+          chk "static C binary runs" "$gots" "0"
 
-          echo "VERON-SECTION time"
-          u1=$(cut -d. -f1 /proc/uptime)
-          sleep 1
-          u2=$(cut -d. -f1 /proc/uptime)
+          echo
+          echo "==================== time and kernel health ===================="
+          u1=$(cut -d. -f1 /proc/uptime); sleep 1; u2=$(cut -d. -f1 /proc/uptime)
           [ "$u2" -ge "$u1" ] && ok "monotonic uptime advances ($u1 -> $u2)" || no "uptime"
-          date > /dev/null 2>&1 && ok "wall clock readable ($(date -u '+%Y-%m-%d %H:%M:%S'))" || no "date"
-
-          echo "VERON-SECTION network stack"
-          ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null
-          [ -d /sys/class/net/lo ] && ok "loopback interface exists" || no "loopback"
-          # The capability worth testing is that the link comes UP. Assigning an
-          # address needs busybox to have been built with the full ip applet and is not
-          # something an initramfs boot requires, so it is reported, not enforced.
-          if grep -q . /sys/class/net/lo/operstate 2>/dev/null; then
-            st=$(cat /sys/class/net/lo/operstate)
-            [ "$st" = up ] || [ "$st" = unknown ] && ok "loopback is up (operstate=$st)" \
-                                                  || no "loopback down (operstate=$st)"
-          else
-            no "loopback operstate unreadable"
-          fi
-          addr=$(ip addr show lo 2>/dev/null | grep -o '127\.0\.0\.1' | head -1)
-          echo "  loopback address: ${addr:-<none configured, not required>}"
-
-          echo "VERON-SECTION kernel health"
-          # A KERNEL CAN BOOT AND STILL BE UNWELL. Anything in this list means a toolchain
-          # or config problem that a "did it boot" check would sail straight past.
+          # A KERNEL CAN BOOT AND STILL BE UNWELL. Anything in this list means a
+          # toolchain or config problem that a "did it boot" check sails straight past.
           noise=$(dmesg 2>/dev/null | grep -E "BUG:|Oops|Call trace:|kernel NULL pointer|unable to handle|WARNING:" | head -5)
           if [ -z "$noise" ]; then
             ok "no BUG/Oops/WARNING/Call trace in dmesg"
           else
-            no "dmesg is not clean"
-            echo "$noise" | sed 's/^/    /'
+            no "dmesg is not clean"; echo "$noise" | sed 's/^/    /'
           fi
+          echo "  \$ dmesg | tail -8"
+          dmesg 2>/dev/null | tail -8 | sed 's/^/    /'
 
+          echo
           echo "VERON-SECTION inventory"
           echo "  kernel:    $(uname -r)"
           echo "  cmdline:   $(cat /proc/cmdline)"
@@ -1613,6 +1823,7 @@ jobs:
           echo "  mounts:"
           cat /proc/mounts | sed 's/^/    /'
 
+          echo
           echo "VERON-RESULT $([ "$F" -eq 0 ] && echo PASS || echo FAIL) $P passed, $F failed"
           echo "VERON-INIT-DONE"
           poweroff -f
@@ -1636,7 +1847,7 @@ jobs:
           # finished archive rather than at the directory it was built from. Matching on
           # a trailing component rather than an exact string because cpio implementations
           # differ on the leading "./" -- busybox's omits it.
-          need="init busybox veron-corpus veron-cxx veron-static corpus.expected"
+          need="init busybox veron-corpus veron-cxx veron-static corpus.expected utest.sh"
           [ -z "$INTERP" ] || need="$need $(basename "$INTERP")"
           for w in $need; do
             grep -qE "(^|/)$w\$" /tmp/ir.list || { echo "  MISSING FROM THE IMAGE: $w"; exit 1; }
@@ -1684,10 +1895,18 @@ jobs:
             > qemu.log 2>&1
           rc=$?
           echo "  qemu rc=$rc"
-          echo "  --- first 30 lines ---"
-          head -30 qemu.log | sed 's/^/    /'
-          echo "  --- last 40 lines ---"
-          tail -40 qemu.log | sed 's/^/    /'
+          echo "  ---- the kernel's own first words ----"
+          head -12 qemu.log | sed 's/^/    /'
+          echo
+          echo "  ---- everything the system said once init took over ----"
+          # NOT A head/tail WINDOW. The one run where a command was missing
+          # from the image, the guest printed "cp: not found" and that line
+          # fell between `head -30` and `tail -40` while `grep VERON-` dropped
+          # it -- so the run reported a tmpfs fault and a downed loopback, two
+          # wrong conclusions drawn from evidence this step had thrown away.
+          # The userspace session is bounded, and it is the entire point of
+          # the test. Print all of it.
+          sed -n '/Run \/init as init process/,$p' qemu.log | sed 's/^/    /'
           echo
           if ! grep -q 'VERON-BOOT-OK' qemu.log; then
             echo "  DID NOT REACH USERSPACE. What the console did say:"
@@ -1702,12 +1921,6 @@ jobs:
           # doing anything, which cannot distinguish a working system from a
           # kernel that merely got as far as exec. init now runs a battery and
           # reports each result; the host requires every one of them.
-          echo "  ---- what the system reported about itself ----"
-          grep -h 'VERON-' qemu.log | sed 's/VERON-/  /' | sed 's/^/  /'
-          echo
-          sed -n '/VERON-SECTION inventory/,/VERON-RESULT/p' qemu.log | sed 's/^/  /'
-          echo
-
           failed=$(grep -c '^VERON-TEST FAIL' qemu.log || true)
           result=$(grep -h '^VERON-RESULT' qemu.log | head -1)
           if [ -z "$result" ]; then
