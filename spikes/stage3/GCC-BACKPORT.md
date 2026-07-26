@@ -296,10 +296,19 @@ Agreement in failure is still agreement. It is also a real bug — see below.
   surface the backport crossed. Without libgcc there is no `libgcc.a` and no
   `crtbegin.o`, so `xgcc` cannot link a program, which is why every result here
   exercises `cc1` directly. **This is the next thing to fix in this leg.**
-- **Only `cc1`, and only C.** Both arms configure `--enable-languages=c`, so
-  **g++ 4.7 has never been built by anything** — and g++ 4.7 is the entire
-  reason 4.7 was chosen over 4.8. All of gcc 4.7 is C, including its C++ front
-  end, so this should follow; "should" is not "does".
+
+  **The period-box experiment has not yet reached it.** `spikes/stage4`'s
+  glibc 2.19 sysroot exists to test whether the ICE is the era rather than the
+  transplant, and the premise checks out — `typedef struct ucontext` is present
+  in that libc, so `md-unwind-support.h` is valid there and there is nothing to
+  patch around. But the build stops earlier, at fixincludes, because that box
+  has no `/usr/include`. The question is set up and still unasked.
+- ~~**Only `cc1`, and only C.**~~ **ANSWERED, 2026-07-26.** g++ 4.7 exists.
+  `spikes/stage4`'s period box built the transplanted 4.7.4 with
+  `--enable-languages=c,c++`: `cc1` 65,938,829 bytes, `cc1plus` 71,662,708,
+  and `g++ (GCC) 4.7.4`. The load-bearing assumption of this leg — that all of
+  gcc 4.7 is C, including its C++ front end, so a C compiler yields a C++98
+  compiler — now has a binary behind it rather than an argument.
 - **No reproducibility gate.** The gcc tarballs are pinned by hash
   (`sources/gcc.toml`), but nothing here has been rebuilt byte-identically
   twice.

@@ -53,14 +53,97 @@ of it.
 | `hermetic-3-period` | gcc 4.8.2 | glibc 2.19 | where a 2013 compiler needs no workarounds |
 | `hermetic-5-bleeding` | gcc 16.1.0 | glibc 2.43 | newest inputs, linux v7.2-rc4 from git |
 
-**Reached so far.** The modern box runs a full toolchain — shell, coreutils,
-make 4.4.1, as/ld 2.46.0, gcc 15.2.0 — with the sysroot bound as `/` and
-nothing else, and compiles and runs a program inside it. The period box built
-**g++ 4.7** (`cc1` 65,938,829 bytes, `cc1plus` 71,662,708), which nothing had
-built before and which is the entire reason 4.7 was chosen over 4.8.
+## Status, 2026-07-26
 
-**Open.** libgcc has not built in the period box, so the `ucontext` prediction
-in `stage3/GCC-BACKPORT.md` is still untested; rungs 2 and 3 have never run.
+### hermetic-2-sysroot (gcc 15.2.0, glibc 2.43) — a kernel, built in the box
+
+The sysroot is complete and the box is self-sufficient. Every ladder rung
+passes: shell, coreutils, sed/grep/awk, make 4.4.1, as and ld 2.46.0,
+gcc 15.2.0, and **compile-and-run inside the box returns 42**.
+
+It then builds software rather than merely running it. Inside, natively:
+
+```
+m4 1.4.21, bison 3.8.2, flex 2.6.4, perl 5.42.0    built and installed
+linux 7.1.5                                        Image built
+initramfs                                          626,575 bytes
+```
+
+**The image did not boot, and not for a reason in the image.** QEMU refused to
+start:
+
+```
+qemu-system-aarch64: failed to find romfile "efi-virtio.rom"
+```
+
+That is the host's QEMU packaging — `qemu-system-arm` on this runner does not
+pull in the option ROMs — so nothing was learned about the kernel. A kernel that
+builds and is never loaded is a different open question from one that builds and
+panics, and the log distinguishes them.
+
+### hermetic-3-period (gcc 4.8.2, glibc 2.19) — g++ 4.7 exists
+
+```
+gcc 4.7.4 + 4.8.5's aarch64 backend, built inside the box:
+  configure   rc=0
+  cc1         65,938,829 bytes
+  cc1plus     71,662,708 bytes
+  g++         g++ (GCC) 4.7.4
+```
+
+**This is the rung the whole choice of 4.7 rests on**, and nothing had built it
+before — every earlier result configured `--enable-languages=c`. All of gcc 4.7
+is C, including its C++ front end, so a C compiler yields a C++98 compiler; that
+was the load-bearing assumption of the leg and it now has a binary behind it.
+
+`make` then stopped at fixincludes:
+
+```
+The directory that should contain system headers does not exist:
+  /usr/include
+Makefile:4204: recipe for target 'stmp-fixinc' failed
+```
+
+The period box puts everything under `/tools`; `/usr/lib` and `/usr/bin` are
+symlinked into it and `/usr/include` is not. So **libgcc was never reached and
+the `ucontext` prediction is still untested.** The premise did hold — the box
+confirms `typedef struct ucontext` present in glibc 2.19 — but the question
+itself remains open.
+
+### hermetic-5-bleeding (gcc 16.1.0) — glibc stops it
+
+binutils 2.46.1 and gcc 16.1.0 pass 1 both build, 1,003 kernel headers install
+from linux 7.1.3, and glibc's configure selects the cross compiler correctly.
+glibc 2.43 then fails:
+
+```
+make[2]: *** [sysd-rules:111: misc/umount.o]  Error 1
+make[2]: *** [sysd-rules:111: misc/umount2.o] Error 1
+```
+
+Worth noting precisely because **the same glibc 2.43 builds cleanly in
+hermetic-2**. Three things differ: `--enable-kernel=5.10` against 5.4, linux
+7.1.3 headers against 6.18.10, and gcc 16.1 against 15.2. Which of the three is
+responsible is not yet known.
+
+The mpc substitution worked — 1.3.1 in place of the dev book's unmirrored 1.4.1.
+
+### Where that leaves the ladder
+
+| rung | state |
+|---|---|
+| tcc → gcc 4.7.4 + backend | proven in stage 3, host tools |
+| gcc 4.7.4 → **g++ 4.7** | **built, in a period box** |
+| g++ 4.7 → gcc 10.2.0 | never run — blocked on libgcc |
+| gcc 10.2.0 → 15.2/16.1 | never run |
+
+**Open, in the order they block things**
+
+1. `/usr/include` absent in the period box, so fixincludes fails and libgcc is
+   never built. Everything above rung 1 waits on this.
+2. The `ucontext` prediction, still untested for the same reason.
+3. glibc 2.43 under gcc 16.1 with 7.1.3 headers — three variables, unbisected.
+4. QEMU's missing option ROMs on the runner — nothing to do with the image.
 
 ## What is still borrowed
 
