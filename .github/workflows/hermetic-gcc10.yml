@@ -837,15 +837,22 @@ jobs:
           rm -rf "$S/work/gccsrc" && cp -a "gcc-$GCCVER" "$S/work/gccsrc"
           tar xf "bison-$BISON_VER.tar.xz"
           rm -rf "$S/work/bison" && cp -a "bison-$BISON_VER" "$S/work/bison"
-          # BELT AND BRACES. -a removes the cause; this makes the outcome
-          # independent of it by stamping every generated autotools file newer
-          # than everything else, which is the state make has to see.
-          for d in "$S/work/gccsrc" "$S/work/bison"; do
-            find "$d" -type f \( -name aclocal.m4 -o -name configure \
-                 -o -name 'Makefile.in' -o -name 'config.h.in' \
-                 -o -name 'config-h.in' -o -name '*.info' \) -exec touch {} +
-          done
-          echo "  sources staged, generated files stamped newest"
+          # THE TOUCH LOOP THAT USED TO LIVE HERE IS GONE, AND IT IS WHY
+          # bison FAILED IN THE RUN BEFORE THIS ONE. It stamped every file
+          # matching a fixed list of names -- aclocal.m4, configure,
+          # Makefile.in, config.h.in -- to the present. bison ships its gnulib
+          # header template as lib/config.in.h, which matches NONE of those, so
+          # aclocal.m4 jumped to now while lib/config.in.h kept its 2020 date,
+          # and automake correctly concluded the template was stale:
+          #   /work/bison/build-aux/missing: line 81: autoheader: not found
+          #   make[2]: *** [Makefile:3555: lib/config.in.h] Error 127
+          # A name list can never be complete, and every name it misses becomes
+          # a file that is now older than its own dependencies. cp -a is the
+          # actual fix: tar preserves upstream mtimes and -a preserves tar's,
+          # so the tree looks exactly as it was shipped, which is a state that
+          # builds everywhere. The safety net is now at the other end -- see
+          # the autotools overrides on the bison make lines.
+          echo "  sources staged with upstream timestamps intact"
 
           # libstdc++ pass 2, native, into /usr -- the book's chapter 7 recipe.
           # --host is the pass-2 gcc's own host triplet, not config.guess's
@@ -1000,7 +1007,18 @@ jobs:
             # bootstrap box that ships no documentation. LFS installs perl at
             # 7.10, one section AFTER bison; if something later turns out to
             # need a real perl, that is the section to add, not this flag.
-            if ! make -j4 MAKEINFO=true PERL=true > b.log 2>&1; then
+            # AUTOHEADER/AUTOCONF/AUTOMAKE/ACLOCAL=true IS THE SAFETY NET THAT
+            # REPLACED THE TOUCH LOOP, and it is robust in the way the touch
+            # loop was not: it does not need to know what any file is called.
+            # If a maintainer rule fires at all, it now runs `true`, succeeds,
+            # and the shipped file is used -- which is the correct outcome,
+            # because nothing in this box has modified a configure.ac. A
+            # command-line assignment overrides the
+            #   AUTOHEADER = ${SHELL} .../missing autoheader
+            # that automake writes into the Makefile, so `missing` is bypassed
+            # rather than asked to apologise for a tool we do not want.
+            AUTOTOOLS="AUTOHEADER=true AUTOCONF=true AUTOMAKE=true ACLOCAL=true"
+            if ! make -j4 MAKEINFO=true PERL=true $AUTOTOOLS > b.log 2>&1; then
               # THE OLD PATTERN HID THE CAUSE. grep "error:|Error [0-9]" piped
               # into head -6 returned two make summary lines and nothing else,
               # so the run reported a bison failure with no reason attached.
@@ -1012,7 +1030,7 @@ jobs:
               echo "  --- tail ---"; tail -20 b.log
               exit 1
             fi
-            make install MAKEINFO=true PERL=true > i.log 2>&1 \
+            make install MAKEINFO=true PERL=true $AUTOTOOLS > i.log 2>&1 \
               || { echo "  --- install tail ---"; tail -12 i.log; exit 1; }
             bison --version | head -1
             # THE ATTEMPTS RESOLVE bison BY PATH, NOT THROUGH THIS SHELL.
@@ -1120,15 +1138,15 @@ jobs:
               tar xf "$W/gmp-$GMP_VER.tar.xz"   && mv "gmp-$GMP_VER" gmp
               tar xf "$W/mpfr-$MPFR_VER.tar.xz" && mv "mpfr-$MPFR_VER" mpfr
               tar xf "$W/mpc-$MPC_VER.tar.gz"   && mv "mpc-$MPC_VER" mpc )
-            # cp -a AND THE SAME TIMESTAMP REPAIR AS CHAPTER 7. These trees
-            # carry gmp, mpfr and mpc unpacked in-tree, each a full autotools
-            # package, so `cp -r` exposes them to exactly the maintainer-mode
+            # cp -a, FOR THE SAME REASON AS CHAPTER 7. These trees carry gmp,
+            # mpfr and mpc unpacked in-tree, each a full autotools package, so
+            # `cp -r` would expose them to exactly the maintainer-mode
             # regeneration that killed bison -- and there is no autoconf in the
-            # box to satisfy it. Same bug, second location.
+            # box to satisfy it. tar preserves upstream mtimes and -a preserves
+            # tar's, so nothing here looks stale to make. No timestamp fixups:
+            # the ones that used to sit in chapter 7 caused a failure of their
+            # own by stamping some generated files and not others.
             rm -rf "$S/work/src-$v" && cp -a "src-$v" "$S/work/"
-            find "$S/work/src-$v" -type f \( -name aclocal.m4 -o -name configure \
-                 -o -name 'Makefile.in' -o -name 'config.h.in' \
-                 -o -name 'config-h.in' -o -name '*.info' \) -exec touch {} +
           done
           echo "  staged: $(ls "$S/work" | tr '\n' ' ')"
 
