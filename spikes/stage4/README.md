@@ -24,7 +24,7 @@ gcc leg; the `hermetic-*` boxes are the climb above it.
 | `tcc-userland-arm64` | can a tcc-built userland boot? | **ANSWERED** — PID 1 under a gcc-built kernel |
 | `hermetic-gcc47` | rung 1 in an LFS 10.0 box, then gcc 10 | in progress |
 | `hermetic-gcc10` | a gcc 10.2.0 box, and can it reach 15 and 16? | **ANSWERED** — builds **gcc 15.2.0 and 16.1.0**, both run |
-| `hermetic-gcc15` | a gcc 15.2.0 system that boots | kernel config rewritten, awaiting a run |
+| `hermetic-gcc15` | a gcc 15.2.0 system that boots | **ANSWERED** — boots linux 7.1.5; gcc runs inside the guest |
 | `hermetic-gcc16` | a gcc 16.1.0 system that boots | **ANSWERED** — boots linux v7.2-rc4, 142 checks green |
 | `hermetic-enumerate-host` | what does the host still supply? | not a rung; enumeration only |
 
@@ -53,6 +53,21 @@ that must all pass before the run goes green:
 
 The whole run, with a warm cache, is **13 minutes** — of which 11 are the kernel.
 See [how the box is tested](#how-the-box-is-tested), below.
+
+**And it is not a single instance.** `hermetic-gcc15` reached the same result
+independently on the same day, from the *stable* book rather than the
+development one — gcc 15.2.0, LFS 13.0, booting **linux 7.1.5**, the latest
+stable kernel. Two boxes, two toolchains, two kernels, two different sets of
+faults on the way. It also carries the claim one step further:
+
+```
+VERON-GCC-IN-GUEST ok compiled and ran, rc=42 (expect 42)
+```
+
+QEMU hands the guest the sysroot over 9p and the guest **chroots in and runs the
+compiler** — so the gcc this box built compiles and runs a program inside the
+kernel that same gcc built. That was TODO item 3, *"the strongest claim
+available"*.
 
 ---
 
@@ -301,7 +316,7 @@ toolchain built by the host gcc, which is scaffolding that tcc replaces.
 |---|---|---|---|---|
 | `hermetic-gcc47` | LFS 10.0 | gcc 4.7.4 + backend, libgcc, libstdc++ | gcc 10.2.0 | no |
 | `hermetic-gcc10` | LFS 10.0 | gcc 10.2.0 | gcc 15.2.0 **and** 16.1.0 | no |
-| `hermetic-gcc15` | LFS 13.0 | gcc 15.2.0 + userland | — | **yes**, linux 7.1.5 |
+| `hermetic-gcc15` | LFS 13.0 | gcc 15.2.0 + userland | — | **YES — linux 7.1.5, 2026-07-26** |
 | `hermetic-gcc16` | LFS dev r13.0-156 | gcc 16.1.0 + userland | — | **YES — linux v7.2-rc4, 2026-07-26** |
 
 Only gcc15 and gcc16 build a kernel. The lower two are about reaching the next
@@ -397,49 +412,182 @@ Two predictions recorded here were wrong, and are worth keeping: BusyBox `awk`
 was expected to break gcc's `opt-gather.awk`/`optc-gen.awk` and did not, and
 the 6-hour cap was expected to bind and is not close.
 
-### hermetic-gcc15 (gcc 15.2.0, glibc 2.43) — kernel config rewritten
+### hermetic-gcc15 (gcc 15.2.0, glibc 2.43) — BOOTS
 
-The sysroot is complete and self-sufficient: shell, coreutils, sed/grep/awk,
-make 4.4.1, as and ld 2.46.0, gcc 15.2.0, and **compile-and-run inside the box
-returns 42**. It builds m4, bison, flex and perl natively, then linux 7.1.5 and
-a 626,575-byte initramfs.
-
-**The kernel config was rewritten to what the book actually says**, after
-several runs spent fighting `CONFIG_SYSTEM_TRUSTED_KEYRING`:
-
-> *"A good starting place for setting up the kernel configuration is to run
-> `make defconfig`."* … *"Be sure to enable/disable/set the following features
-> or the system might not work correctly or boot at all:
-> `[ ] Compile the kernel with warnings as errors [WERROR]`"*
-
-That is the **first** item on the book's list and this workflow never did it.
-`CONFIG_WERROR` defaults to `y`, so any warning from a toolchain the kernel was
-not tested against becomes a hard error.
-
-And what the book never says, searched across all eleven chapters:
+Reached in six runs on 2026-07-26. It boots **linux 7.1.5** — the latest stable
+kernel, deliberately not the 6.18.10 its book pins — and then, over a 9p share,
+**runs its own compiler inside the guest**.
 
 ```
-extract-cert       0 occurrences
-TRUSTED_KEYRING    0
-MODULE_SIG         0
-certs              0
+[    1.13] Run /init as init process
+VERON-BOOT-OK      Linux 7.1.5 aarch64
+VERON-COMPILER     Linux version 7.1.5 (gcc (GCC) 15.2.0,
+                   GNU ld (GNU Binutils) 2.46.0.20260210)
+VERON-LIBC         ld.so (GNU libc) stable release version 2.43.
+GCC-EXERCISE       pass=10 fail=0
+VERON-TESTS        pass=8  fail=0
+VERON-GCC-IN-GUEST ok compiled and ran, rc=42 (expect 42)
+Kernel panic 0 · BUG: 0 · WARNING: 0 · Call trace 0 · Oops 0 · segfault 0
+[    8.39] reboot: Power down                                     qemu rc=0
 ```
 
-LFS builds this kernel from `defconfig` and never touches the certs machinery.
-The openssl justification was inherited from a comment, not from the book, and
-several runs went into satisfying it — a seven-symbol disable list, a four-round
-hunt for whichever symbol selected `SYSTEM_TRUSTED_KEYRING`, an evidence dump
-when the hunt found nothing. **All of it is deleted.** The step is now
-`defconfig`, `WERROR` off, verify, build. If `extract-cert` genuinely needs
-openssl here, the build will say so, and that is worth one run.
+Five things stood between this box and a boot, and **none was visible from where
+the previous one failed** — each had to be removed before the next could be
+seen. That is the shape worth recording, more than any individual fault.
 
-**QEMU has never loaded an image from this box.** Every attempt failed on
-`failed to find romfile "efi-virtio.rom"` — the runner's QEMU packaging, not the
-image. And on one run the kernel step failed while the initramfs and boot steps
-ran anyway, because **any `if:` drops GitHub's implicit `success()`** — so QEMU
-was handed a nonexistent kernel and the log read "DID NOT REACH USERSPACE",
-which sounds like a kernel that boots badly rather than one never built. Both
-fixed.
+- **It was building a kernel from no book.** `KVER` was 7.1.5 while `KERNEL`
+  was 6.18.10 for the API headers. LFS 13.0's `wget-list` pins
+  `linux-6.18.10.tar.xz` and its chapter 10.3 is titled *Linux-6.18.10*;
+  `sources/lfs.toml` records the same against the entry whose `role` names this
+  workflow by filename. 7.1.5 was in neither book — 7.1.x is the *development*
+  book's series, which pins 7.1.3 — and the comment above the fetch still
+  described the dev book's pin, an inherited line above a version it did not
+  describe. This is the defect `lfs.toml` already records once against gcc10:
+  *"an earlier workflow built 10.4.0 while this manifest said 10.2.0"*. It was
+  collapsed to the book's single kernel, and 7.1.5 came back later **as a
+  decision** rather than as drift — see below.
+
+- **`BC_VER` was declared and never used.** The kernel generates
+  `kernel/time/timeconst.h` by piping `CONFIG_HZ` through `bc`, so what had been
+  answering to `bc` was BusyBox's applet, which `defconfig` enables. The build
+  worked; nothing had declared what it was using. LFS 13.0 builds bc at 8.15 and
+  so does this box now, from the book's own URL.
+
+  Removing the applet first is not tidiness. `/usr/bin/bc` was a symlink to
+  busybox, and **installing over a symlink follows it** — a tool writing its
+  output to `/usr/bin/bc` writes *through* the link onto `/usr/bin/busybox`,
+  which is the shell, `ls`, `sed`, `grep` and `tar` this box is made of.
+
+- **openssl, and a misread of the book's silence.** The kernel died at
+  `certs/extract-cert.c:21: fatal error: openssl/bio.h`. This file had recorded
+  that `extract-cert`, `MODULE_SIG` and `TRUSTED_KEYRING` appear **zero times**
+  in all eleven chapters, and concluded that LFS never touches the certs
+  machinery. The count was right and the conclusion was wrong: LFS builds
+  **OpenSSL 3.6.1 at 8.49**, twenty-odd packages before the chapter 10 kernel,
+  so by the time it runs `defconfig` the header is simply there and there is
+  nothing to say. *A book is silent about what it has already solved.* The fix
+  was a missing package, not a wrong config — so the seven-symbol disable list
+  and the selector hunt stayed deleted. `hermetic-gcc16` reached the same
+  conclusion by fighting kconfig to a standstill first.
+
+- **The initramfs contained no C library and could never have booted** —
+  the same fault `hermetic-gcc16` hit, found here independently. `readelf`
+  reported `PT_INTERP: /lib/ld-linux-aarch64.so.1`, which was not in the
+  archive. **The 626,575-byte size was the tell**: that is a busybox and nothing
+  else. It is now 6.4 MB and carries the loader and every `NEEDED` library.
+
+- **And it would have printed nothing even if it had booted.** bwrap is
+  unprivileged, so `mknod` cannot put `/dev/console` in the image; without it
+  `init` starts with no stdio and its `echo` goes nowhere. `CONFIG_DEVTMPFS` and
+  `CONFIG_DEVTMPFS_MOUNT` are the second and third items on the same book list
+  whose first item is `WERROR`, and none of the three was set. **A kernel that
+  booted perfectly would have produced an empty console** and been read as one
+  that never reached userspace.
+
+- **The romfile failure was ours** — `-nic none`, for the reasons recorded under
+  gcc16. Three runs here were attributed to the runner's packaging.
+
+Then the kernel decision was revisited on purpose. **7.1.5 is the latest stable
+kernel and this box is the modern baseline, so it should run it**; the book's
+6.18.10 had already proved the toolchain-to-QEMU path. Building glibc 2.43
+against 7.1.5 headers then failed:
+
+```
+sys/mount.h:268: error: 'OPEN_TREE_CLONE' redefined [-Werror]
+linux/mount.h:64:  note: this is the location of the previous definition
+```
+
+glibc defines it as `1`, the Linux 7 UAPI header as `(1 << 0)`. Different
+bodies, so cpp warns, and glibc builds itself with `-Werror`. The development
+book's answer is `glibc-2.43-upstream_fixes-1.patch`, whose own text reads *"Now
+fix glibc to build against Linux 7"* — but it pairs that patch with **7.1.3**,
+and **no book anywhere pairs glibc 2.43 with 7.1.5**. Rather than bet that a
+point release changed nothing, this box took the split `hermetic-gcc16` already
+boots with: **API headers from 7.1.3, image built and booted at 7.1.5.** A
+kernel is always free to be newer than the headers its libc was compiled
+against — that is what the UAPI guarantee is for. Both glibc patches now go on,
+including LFS 13.0's own `glibc-fhs-1.patch`, which chapter 5 prescribes and
+this workflow had simply never applied.
+
+**libstdc++ was installing to `/usr/lib64`**, exactly as in gcc16 and for the
+same missing aarch64 translation of the book's x86_64 step. Worth recording
+separately only because of *how it presented*: `t_cxx` **failed in the box and
+passed in the guest**, because the guest runs the static build. g++ links fine —
+gcc knows its own lib64 path — and the program dies at exec with
+`error while loading shared libraries: libstdc++.so.6`, which reads as a broken
+C++ runtime rather than a misplaced file. This box has no `ld.so.cache` by
+design, so anything outside `/lib` and `/usr/lib` is invisible at exec.
+
+**Three checks in this file could never fail, and one of them poisoned a
+cache.** All three were `ls … | head -1 || echo MISSING` or the same shape: the
+`||` reads the last pipeline element, not `ls`.
+
+- The libstdc++ check printed an **empty string** on the very run where the
+  library was in the wrong directory — not "MISSING", nothing at all.
+- The libc check never showed, because libc really is in `/usr/lib`. *An
+  unsound check pointed at something that works is still unsound.*
+- The GCC exercise gate was `if box.sh … | sed; then`, which asks sed whether
+  the tests passed. The run printed `GCC-EXERCISE pass=9 fail=1`, then *"the
+  compiler in this box is exercised and sound"*, **marked the sysroot complete
+  and cached it.** A check that cannot fail does not merely fail to catch
+  things; it can hand the broken tree to every run that follows.
+
+Three box invocations still ended in `| sed` with no status check — the reason
+the certs failure produced no `Image` and the *boot* step, several steps later,
+was what finally said so. They now read `${PIPESTATUS[0]}`, which is the fix
+gcc16 arrived at after a blanket `pipefail` broke the box in six seconds.
+
+**The sysroot is cached** behind `$S/etc/.sysroot-complete`, written only after
+the compiler suite passes — "chapter 6 finished" is not the claim worth caching.
+Restore by prefix, save under a run-unique key, and `SYSROOT_EPOCH` as the salt
+to bump when chapter 5 or 6 changes. It has now been exercised in both
+directions: a failed run saved nothing, and the epoch bump retired a tree that
+had been marked complete while `t_cxx` was failing. Cold, the job is 45 minutes;
+the cache is 1.33 GB.
+
+#### How this box is tested
+
+Smaller than gcc16's 142 checks — that suite is the model — but it covers the
+same shape, and one thing gcc16 does not yet do.
+
+- **In the box, 10 checks, gated.** libm; pthreads across four threads and
+  400,000 mutex operations; `fork`/`waitpid`; a 1 MiB `mmap` round trip;
+  `clock_gettime` through the vDSO; long double formatting; libstdc++ with
+  `sort`, `map`, `string`, exceptions and lambdas; **the same source at `-O0`,
+  `-O1`, `-O2`, `-O3` and `-Os` producing one 64-bit answer** — a disagreement
+  there is a miscompile; and a **negative test**, that an implicit declaration
+  is still *rejected*. That last one is the fault class that cost the gcc 4.7
+  leg weeks, and a compiler that has stopped diagnosing it looks exactly like a
+  working compiler until something segfaults a hundred objects in.
+- **In the guest, the same programs again**, built static and staged into the
+  initramfs, so the binaries this box compiled run under the kernel it built.
+  Gated on `fail=0`.
+- **An inventory the guest prints about itself**: kernel identity and cmdline,
+  CPU count and features, memory, supported filesystems, mounts, every device
+  node devtmpfs created, the busybox applet table, libraries in `/lib`, live
+  pipeline/arithmetic/file-io probes, and a **dmesg hygiene scan** counting
+  panics, `BUG:`, `WARNING:`, call traces, oopses and segfaults.
+- **The compiler, inside the kernel it built.** QEMU offers the whole sysroot
+  over 9p read-only; the guest mounts it, mounts a tmpfs over its `/tmp` so
+  there is somewhere to write, `chroot`s in and runs gcc. This is TODO item 3
+  below — *"the strongest claim available"* — and it is answered here:
+  `VERON-GCC-IN-GUEST ok compiled and ran, rc=42`. It is **reported, never
+  gated**: a kernel that boots and runs its userland is a good result whether or
+  not the optional share was available.
+
+One defect survived into a green boot and is worth keeping as an example. The
+initramfs applet symlinks were a hand-written list, `head` was not on it, and
+the one line intended to prove the box's own glibc was running printed empty:
+
+```
+/init: line 11: head: not found
+VERON-LIBC
+```
+
+A missing applet does not stop init; it silently blanks whichever line needed
+it. The list now comes from `busybox --list`, with the `busybox` entry skipped —
+it **is** in its own applet table, and `ln -sf busybox busybox` in that
+directory replaces the binary with a symlink to itself.
 
 ### hermetic-gcc16 (gcc 16.1.0) — BOOTS
 
@@ -745,12 +893,15 @@ first clean transcript.
    prove, using its own machinery. Free, and strong."* It costs roughly 3x a
    gcc build. Both lower boxes already accept `bootstrap: yes` as a dispatch
    input; nothing has ever used it.
-3. **Compile inside QEMU.** The strongest claim available and it needs no disk
-   image: the boot log shows `9pnet: Installing 9P2000 support`, so arm64
-   `defconfig` already has virtio-9p. Pass the whole sysroot through with
-   `-virtfs`, mount it in the guest, and have the system build a program with
-   its own gcc under its own kernel. Today the guest runs binaries the box
-   compiled; this would have the guest do the compiling.
+3. ~~**Compile inside QEMU.**~~ **ANSWERED 2026-07-26, in `hermetic-gcc15`.**
+   QEMU offers the sysroot over 9p read-only, the guest mounts a tmpfs over its
+   `/tmp` so there is somewhere to write, `chroot`s in and runs the compiler:
+   `VERON-GCC-IN-GUEST ok compiled and ran, rc=42`. Two details worth carrying
+   over: the VFS allows a tmpfs mount *inside* a read-only mount, which is what
+   makes the read-only share usable; and `msize=262144` matters, because gcc
+   opens several hundred files and the default transfer unit makes that look
+   like a hang under TCG. **`hermetic-gcc16` has not had this applied**, and it
+   is the box with the fuller test suite, so it is the better home for it.
 4. **Rebuild twice and diff.** Item 5 above, applied to this box specifically.
    The compiler suite already proves one TU compiles byte-identically twice;
    the box has never been shown byte-identical across two runs, which is the
@@ -768,12 +919,14 @@ first clean transcript.
 7. **No hostname is set**, so `uname -a` reads `Linux (none) 7.2.0-rc4`. One
    line in `init`.
 8. **The other boxes still carry the traps this one has had removed.**
-   `scripts/config` cannot run in any of them; `hermetic-gcc15` still has the
-   `| sed` swallowing pattern on its box invocations and does not check the
-   real status. `hermetic-gcc10` no longer does — it sets `pipefail` — and it
-   cost a full run to find out that it mattered. None of that is urgent, and none of it should be
-   changed without a run to confirm, but it is written down here so the next
-   person does not rediscover it.
+   `scripts/config` cannot run in any of them. `hermetic-gcc15` is now clear:
+   its three `| sed` box invocations read `${PIPESTATUS[0]}`, and the three
+   `ls … | head || echo MISSING` checks test the file instead. `hermetic-gcc10`
+   sets `pipefail`, which cost a full run to find out mattered — and is the
+   blunter instrument of the two, for the reasons in the method notes.
+   `hermetic-gcc47` has not been looked at. None of this is urgent and none of
+   it should change without a run to confirm, but it is written down here so
+   the next person does not rediscover it.
 9. **`sources/` has no manifest for the packages this box fetches.** Invariant
    #6 says upstream comes in by pinned hash via a `sources/` manifest; these
    boxes fetch by URL with the version pinned in `env:` and no hash. That gap
@@ -823,8 +976,34 @@ rather than in the thing under test. The recurring shape is worth naming:
   and looks like a broken grep. Hit three times — and then a fourth, where the
   pipeline was `box.sh … | sed 's/^/    /'` around the whole kernel build. The
   step's `exit 1` became sed's `0`, the job went green, and QEMU was handed a
-  kernel that had never been written. **Set `pipefail` on any step that pipes a
-  build into a formatter.**
+  kernel that had never been written. **Read `${PIPESTATUS[0]}` on the pipeline
+  that matters** — not a blanket `pipefail`, for the reasons two notes below.
+
+  Then `hermetic-gcc15` found **three more in one file**, and they are worth
+  recording separately because of what each taught:
+  - one printed an **empty string** where it should have said MISSING, on the
+    very run where the library really was missing;
+  - one had never shown, because it happened to be pointed at something that
+    works — *an unsound check aimed at a healthy target is still unsound*, and
+    it will be believed the day the target stops being healthy;
+  - and one was the gate on a **compiler test suite**. It reported
+    `pass=9 fail=1`, declared the box sound, marked the sysroot complete and
+    **saved it to the cache**. A check that cannot fail does not merely fail to
+    catch things — it can hand the broken tree to every run that follows.
+  **Grep the tree for the pattern whenever one turns up.** All three of these
+  were in a file that had already had the trap written down.
+- **Installing over a symlink writes through it to the target.**
+  `busybox --install -s` leaves `/usr/bin/bc` pointing at busybox; a real bc
+  installing itself to that path lands on the shell, `ls`, `sed`, `grep` and
+  `tar` the whole box is made of. Unlink before installing. The same table has
+  a second edge: `busybox` is itself in `busybox --list`, so linking every name
+  in that list replaces the binary with a symlink to itself.
+- **An unprivileged builder cannot create a device node**, so `mknod` fails
+  under bwrap and no image built there can contain `/dev/console`. Without it
+  `init` starts with no stdio and everything it prints goes nowhere:
+  **a kernel that booted perfectly is indistinguishable from one that never
+  reached userspace.** `CONFIG_DEVTMPFS_MOUNT` is what closes that, and it is
+  on the book's required list next to `WERROR`.
 - **`set -e` does not fire on the left of `&&`.** `make && make install` with no
   `|| exit 1` swallows a failed `make` completely — verified: `set -e; false &&
   true; echo hi` prints `hi`. That is how a failing `bc` would have surfaced an
@@ -943,14 +1122,37 @@ rather than in the thing under test. The recurring shape is worth naming:
 
 ### Upstream and books
 
-- **Take versions from a book, never from memory.** Three runs, three composed
-  sets.
+- **Take versions from a book, never from memory.** Four runs, four composed
+  sets — and the fourth was a *kernel*, easy to miss because the version sat in
+  a second variable that looked like it belonged to a different box. When two
+  workflows are siblings, a variable copied between them arrives with its old
+  comment attached and reads as deliberate.
 - **And take the *steps* from the book too.** The gcc16 glibc failure was not a
   bad version pairing — the pins were exactly the dev book's. Two required
   patches were simply never applied.
-- **Read what the book does not say.** `certs`, `MODULE_SIG` and
-  `TRUSTED_KEYRING` appear zero times in all of LFS 13.0. Several runs went into
-  a problem the book does not have.
+- **Read what the book does not say — then check what it has already built.**
+  `certs`, `MODULE_SIG` and `TRUSTED_KEYRING` appear zero times in all of LFS
+  13.0, and the conclusion drawn from that was that LFS never touches the certs
+  machinery. **The count was right and the inference was wrong.** It builds
+  OpenSSL at 8.49 and so has nothing left to say by chapter 10. A book is
+  silent about what it has already solved, and a box that substitutes packages
+  away inherits the problem without inheriting the sentence describing it. Both
+  gcc15 and gcc16 spent runs on this, from opposite directions.
+- **A patch directory can be a moving target, and pinning its digest is not
+  automatically right.** `/patches/lfs/development/` tracks whatever the
+  development book currently is — a revision series whose patches are revised
+  in place. Pin a digest from one revision and a legitimate upstream update
+  becomes a red build; pin nothing and a substitution goes through unseen.
+  Record what arrived, compare it to the vendored book, say plainly when they
+  differ — and let the real gate be whether `patch` applies, which a corrupt or
+  substituted file will not.
+- **A libc and a kernel are a *pair*, and the books pair them explicitly.**
+  glibc 2.43 against linux 7.1.5 headers dies on `OPEN_TREE_CLONE redefined`;
+  the development book pairs that glibc with 7.1.3 and a patch whose text is
+  *"Now fix glibc to build against Linux 7"*. Where no book has run the pairing
+  you want, take the **headers** from one that has and run the newer kernel on
+  top: a kernel may always be newer than the headers its libc was built
+  against.
 - **The book only covers one architecture, so some of its steps have to be
   translated.** `sed -e '/m64=/s/lib64/lib/' gcc/config/i386/t-linux64` has an
   aarch64 counterpart in `t-aarch64-linux` that no book mentions. Skipping it

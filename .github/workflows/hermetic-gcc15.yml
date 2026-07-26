@@ -1530,6 +1530,20 @@ jobs:
               echo "  libcrypto did not install"; exit 1; }
             echo "  openssl: $(openssl version 2>&1 | head -1)"
           ' 2>&1 | sed 's/^/    /'
+          # PIPESTATUS, NOT pipefail, AND NOT NOTHING. This pipeline ended in
+          # `| sed` with no status check, so the step's result was SED's --
+          # always 0. A failed build inside the box went green and the damage
+          # showed up later somewhere else: the certs failure left no Image and
+          # the BOOT step, several steps on, was what finally said so. A
+          # blanket `set -o pipefail` is the wrong fix here and breaks other
+          # things (`yes '' | make oldconfig` dies on SIGPIPE, and every
+          # `grep | head | sed` diagnostic aborts the step when the grep
+          # matches nothing). Read the status of the one command that matters.
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "  the box exited $rc -- see the output above"
+            exit "$rc"
+          fi
           # Written only after every one of them installed AND bc ran the
           # kernel's own timeconst.bc AND <openssl/bio.h> is on disk. A marker
           # that merely meant "the step ran" would cache a box missing the one
@@ -1671,6 +1685,20 @@ jobs:
             ls -l arch/arm64/boot/Image | awk "{print \"  Image: \" \$5 \" bytes\"}"
             cp arch/arm64/boot/Image /work/Image
           ' 2>&1 | sed 's/^/    /'
+          # PIPESTATUS, NOT pipefail, AND NOT NOTHING. This pipeline ended in
+          # `| sed` with no status check, so the step's result was SED's --
+          # always 0. A failed build inside the box went green and the damage
+          # showed up later somewhere else: the certs failure left no Image and
+          # the BOOT step, several steps on, was what finally said so. A
+          # blanket `set -o pipefail` is the wrong fix here and breaks other
+          # things (`yes '' | make oldconfig` dies on SIGPIPE, and every
+          # `grep | head | sed` diagnostic aborts the step when the grep
+          # matches nothing). Read the status of the one command that matters.
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "  the box exited $rc -- see the output above"
+            exit "$rc"
+          fi
 
       - name: 'Assemble an initramfs INSIDE the box'
         if: ${{ success() && github.event.inputs.build_kernel != 'no' }}
@@ -1871,6 +1899,20 @@ jobs:
           ISH
           chmod +x "$S/work/mkinitramfs.sh"
           S="$S" "$W/box15.sh" /bin/sh /work/mkinitramfs.sh 2>&1 | sed 's/^/    /'
+          # PIPESTATUS, NOT pipefail, AND NOT NOTHING. This pipeline ended in
+          # `| sed` with no status check, so the step's result was SED's --
+          # always 0. A failed build inside the box went green and the damage
+          # showed up later somewhere else: the certs failure left no Image and
+          # the BOOT step, several steps on, was what finally said so. A
+          # blanket `set -o pipefail` is the wrong fix here and breaks other
+          # things (`yes '' | make oldconfig` dies on SIGPIPE, and every
+          # `grep | head | sed` diagnostic aborts the step when the grep
+          # matches nothing). Read the status of the one command that matters.
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            echo "  the box exited $rc -- see the output above"
+            exit "$rc"
+          fi
 
       - name: 'BOOT IT: QEMU, outside the box'
         if: ${{ success() && github.event.inputs.build_kernel != 'no' }}

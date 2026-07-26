@@ -99,6 +99,32 @@ glibc    = "2.43"
 binutils = "2.46.0"
 linux    = "6.18.10"
 role     = "the modern baseline -- .github/workflows/hermetic-gcc15.yml"
+note     = """
+THE KERNEL FIELD DESCRIBES THE BOOK. IT NO LONGER DESCRIBES THE WORKFLOW.
+6.18.10 is what LFS 13.0 pins and what its chapter 10.3 is titled. Since
+2026-07-26 hermetic-gcc15 deliberately runs the latest STABLE kernel instead,
+and it does so as a split:
+
+  API headers   linux 7.1.3   glibc 2.43 is compiled against these
+  image         linux 7.1.5   built in the box, booted in QEMU
+
+That is a departure from this book and it is recorded here rather than left to
+be discovered from a diff -- the failure this manifest already names against
+gcc10 is exactly "the rung named here was not the rung any code built".
+
+WHY THE SPLIT. Building glibc 2.43 against 7.1.5 headers fails:
+    sys/mount.h:268: error: 'OPEN_TREE_CLONE' redefined [-Werror]
+glibc defines it as 1, the Linux 7 UAPI header as (1 << 0). The development
+book's answer is glibc-2.43-upstream_fixes-1.patch -- "Now fix glibc to build
+against Linux 7" -- but it pairs that patch with 7.1.3, and NO book pairs glibc
+2.43 with 7.1.5. Taking headers from a pairing somebody has run, and running
+the newer kernel on top, removes the guess; a kernel is always free to be newer
+than the headers its libc was compiled against. hermetic-gcc16 uses the same
+split to boot v7.2-rc4.
+
+The box also applies both glibc patches, one of which -- glibc-fhs-1.patch --
+is 13.0's own chapter 5 step that this workflow had never applied.
+"""
 
 [[book]]
 version  = "r13.0-156-systemd"
