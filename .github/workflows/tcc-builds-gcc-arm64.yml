@@ -40,12 +40,22 @@ name: tcc-builds-gcc-arm64
 # loudly instead of being quietly satisfied, so the bind list IS the
 # declaration and each future step is a deletion from it.
 #
-# THE TWO STAGES
-#   stage 1   tcc  -> gcc 4.7.4, c and c++, installed to /work/out
-#   stage 2   that -> gcc 4.7.4, c and c++, installed to /work/out2
+# THE THREE STAGES
+#   stage 1   tcc      -> gcc 4.7.4, c and c++, installed to /work/out
+#   stage 2   that     -> gcc 4.7.4, c and c++, installed to /work/out2
+#   stage 3   g++ 4.7  -> gcc 10.2.0,           installed to /work/out10
+#
 # Stage 1 asks whether tcc alone reaches a working g++ 4.7. Stage 2 asks the
-# reference chain's question -- a gcc building the C++-capable gcc -- and is
-# what would hand off to gcc 10. If they disagree, that is the finding.
+# reference chain's question -- a gcc building the C++-capable gcc. Stage 3 is
+# the rung the whole choice of 4.7 exists for: 4.7 is the last gcc written in C,
+# so tcc can reach it, and the C++98 compiler it yields is what carries the
+# chain upward. hermetic-gcc10 builds gcc 10 properly with LFS 10.0's tested set
+# around it; what stage 3 adds is the one thing that box cannot show -- that the
+# compiler doing the building descends from tcc.
+#
+# If stages 1 and 2 disagree, that is the finding. If stage 3 fails, the two
+# causes worth telling apart are gcc 10's own sources refusing a C++98 compiler
+# (errors in gcc/*.c) and 2020 source meeting a 2026 glibc (errors in headers).
 #
 # ============================================================================
 
@@ -59,6 +69,10 @@ on:
         description: 'pinned-series (sources/tcc.toml + arm64 patches) or mob'
         required: false
         default: 'pinned-series'
+      try_gcc10:
+        description: 'stage 3: g++ 4.7 builds gcc 10.2.0 (yes/no)'
+        required: false
+        default: 'yes'
 
 # A NEW PUSH MUST NOT KILL A RUNNING BUILD. Cancelling in flight is right for a
 # fast check and wrong for a multi-hour box: one push to fix a typo cancelled
@@ -71,13 +85,22 @@ env:
   GNU: 'https://mirrors.kernel.org/gnu'
   GNU2: 'https://ftpmirror.gnu.org'
   TCC_SOURCE: ${{ github.event.inputs.tcc_source || 'pinned-series' }}
+  TRY_GCC10: ${{ github.event.inputs.try_gcc10 || 'yes' }}
+  # 10.2.0 AND NOT 10.4.0. gcc's own prerequisites put the ceiling for an ISO
+  # C++98 bootstrap compiler above the whole 10.x series we care about, so the
+  # choice inside that range is free -- and 10.2.0 is the version LFS 10.0
+  # documents, which means a tested set of everything around it. sources/lfs.toml
+  # records this as the only 10.x number in the tree; do not drift it.
+  GCC10: '10.2.0'
 
 jobs:
   boxed:
     name: 'arm64 tcc -> arm64 gcc 4.7.4, boxed'
     runs-on: ubuntu-24.04-arm
-    # Two full gcc builds, stage 2 also builds libstdc++ and rebuilds
-    # gmp/mpfr/mpc. 360 is the public-runner ceiling.
+    # THREE gcc builds now: 4.7.4 twice and 10.2.0 once, plus gmp/mpfr/mpc
+    # rebuilt at each rung that needs its own. Stages 1 and 2 together measured
+    # about 8 minutes; gcc 10 is much the largest of the three. 360 is the
+    # public-runner ceiling.
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v5
@@ -407,6 +430,18 @@ jobs:
               "" "" | sed 's/^/  /'
           done
           echo "  4.7.4 aarch64 mentions in config.gcc (expect 0): $(grep -c aarch64 g474/gcc/config.gcc || true)"
+
+          # Stage 3's source, fetched HERE for the same reason as the others:
+          # the box has no network, so anything the build needs must already be
+          # on disk before it starts.
+          if [ "$TRY_GCC10" != "no" ]; then
+            echo "  --- gcc $GCC10 -> g10 ---"
+            bash "$F" g10 "$HOME/.cache/veron/gcc-$GCC10.tar.xz" - \
+              "$GNU/gcc/gcc-$GCC10/gcc-$GCC10.tar.xz $GNU2/gcc/gcc-$GCC10/gcc-$GCC10.tar.xz" \
+              "" "" | sed 's/^/  /'
+          else
+            echo "  gcc $GCC10 not fetched (try_gcc10=no)"
+          fi
 
           for u in "$GNU/gmp/gmp-6.2.1.tar.xz" "$GNU/mpfr/mpfr-4.1.0.tar.xz" "$GNU/mpc/mpc-1.2.1.tar.gz"; do
             n=$(basename "$u"); curl -sSL -o "$n" "$u"
@@ -772,6 +807,218 @@ jobs:
           EOS
           W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh /work/p2.sh
 
+      - name: 'STAGE 3: g++ 4.7 builds gcc ${{ env.GCC10 }}'
+        if: ${{ github.event.inputs.try_gcc10 != 'no' }}
+        continue-on-error: true
+        run: |
+          set -eu
+          # THE RUNG THE WHOLE CHOICE OF 4.7 EXISTS FOR, and the one thing no
+          # other box can show. hermetic-gcc10 builds gcc 10 properly, with LFS
+          # 10.0's tested set around it -- but the compiler doing the building
+          # there is the HOST gcc. What this step adds is that the compiler
+          # doing the building descends from tcc, with no host compiler
+          # anywhere in the box.
+          #
+          #   tcc -> gcc 4.7.4 (c,c++) -> gcc 4.7.4 again -> gcc 10.2.0
+          #          stage 1              stage 2            HERE
+          #
+          # Nothing above this point involves tcc directly. 4.7 is the last gcc
+          # written in C, so tcc can reach it; its C++ front end is built FROM
+          # that C; and the g++ that yields is what carries the chain upward.
+          cat > work/p3.sh <<'EOS'
+          set -u
+          set +e
+          cd /work
+          NP=$(nproc)
+          say() { printf '%s\n' "$*"; }
+          bail() { echo "$1" > /work/status/stage3.rc; exit 0; }
+
+          GCC=/work/out2/bin/gcc
+          GXX=/work/out2/bin/g++
+          if [ ! -x "$GXX" ]; then
+            say "  no stage-2 g++ at $GXX -- stage 2 did not install one"
+            bail 90
+          fi
+          # THE LOADER HAS TO FIND libstdc++.so.6.0.17. gcc 10's binaries are
+          # linked by our g++ 4.7 against out2's libstdc++, and the build then
+          # RUNS them (xgcc builds libgcc). Nothing puts /work/out2/lib64 on a
+          # default search path, so without this the build fails partway through
+          # with a loader error that looks nothing like a compiler problem.
+          export LD_LIBRARY_PATH=/work/out2/lib64:/work/out2/lib
+          say "  builder: $("$GXX" --version 2>&1 | head -1)"
+          say "  (descended from tcc; there is no host compiler in this box)"
+
+          # PREREQUISITES REBUILT AGAIN, by the compiler about to be used. Same
+          # shape stage 2 proved: the tcc-built archives could not be linked by
+          # GNU ld, the same sources rebuilt by our gcc could. Fresh trees from
+          # the tarballs, so no object built by a different compiler survives
+          # into an archive this rung attributes to stage 2's gcc.
+          say ""
+          say "  --- prerequisites, rebuilt by the stage-2 gcc ---"
+          mkdir -p prefix3
+          for p in gmp mpfr mpc; do
+            t=$(ls /work/$p-*.tar.* 2>/dev/null | head -1)
+            if [ -z "$t" ]; then say "    $p: no tarball on disk"; continue; fi
+            rm -rf "$p-g2" && mkdir -p "$p-g2"
+            tar xf "$t" -C "$p-g2" --strip-components=1
+            ( cd "$p-g2"
+              EXTRA="--with-gmp=/work/prefix3"
+              if [ "$p" = gmp ]; then EXTRA="--disable-assembly"; fi
+              ./configure CC="$GCC" --disable-shared $EXTRA \
+                --prefix=/work/prefix3 > conf.log 2>&1
+              say "    $p configure rc=$?"
+              timeout 1800 make -j"$NP" > build.log 2>&1
+              say "    $p make rc=$?"
+              if make install > /dev/null 2>&1; then
+                say "    $p INSTALLED"
+              else
+                say "    $p NOT INSTALLED -- configure tail:"
+                tail -12 conf.log | sed 's/^/      /'
+                say "    $p build tail:"
+                tail -12 build.log | sed 's/^/      /'
+              fi )
+          done
+
+          if [ ! -d /work/g10 ]; then
+            say "  no gcc 10 source at /work/g10 -- the fetch did not run"
+            bail 92
+          fi
+
+          say ""
+          say "  === configure ==="
+          mkdir -p b10 && cd b10
+          # --disable-bootstrap is what makes this a MEASUREMENT of our g++.
+          # With bootstrap on, gcc 10 rebuilds itself with its own stage1 and
+          # our compiler's contribution is discarded after the first pass --
+          # exactly the argument that keeps it off in stages 1 and 2.
+          #
+          # libsanitizer/libvtv are disabled because they are 2020 code with
+          # deep libc coupling and they are not on the path to a compiler;
+          # letting them fail would say nothing about the rung.
+          "/work/g10/configure" \
+            CC="$GCC" CXX="$GXX" \
+            --build=aarch64-unknown-linux-gnu \
+            --host=aarch64-unknown-linux-gnu \
+            --target=aarch64-unknown-linux-gnu \
+            --prefix=/work/out10 --enable-languages=c,c++ \
+            --disable-multilib --disable-bootstrap --disable-werror \
+            --disable-libsanitizer --disable-libvtv --disable-libgomp \
+            --disable-libquadmath \
+            --with-gmp=/work/prefix3 \
+            --with-mpfr=/work/prefix3 \
+            --with-mpc=/work/prefix3 \
+            > conf3.log 2>&1
+          say "  configure rc=$?"
+          if [ ! -f Makefile ]; then
+            say "  no Makefile -- configure tail:"
+            tail -20 conf3.log | sed 's/^/    /'
+            if [ -f config.log ]; then
+              say "  --- config.log: every compiler and linker complaint ---"
+              grep -nE "error:|cannot find|undefined reference|No such file" config.log \
+                | tail -25 | sed 's/^/    /'
+              say "  --- config.log: last 60 lines ---"
+              tail -60 config.log | sed 's/^/    /'
+            fi
+            bail 93
+          fi
+
+          say ""
+          say "  === build ==="
+          timeout 10800 make -k -j"$NP" -Otarget MAKEINFO=true > build3.log 2>&1
+          rc=$?
+          case "$rc" in
+            0)   say "  make rc=0 -- completed" ;;
+            124) say "  make rc=124 -- TIMED OUT after 10800s" ;;
+            *)   say "  make rc=$rc -- failed" ;;
+          esac
+          say "  build3.log: $(wc -l < build3.log) lines"
+          if [ "$rc" -ne 0 ]; then
+            # THE TWO FAILURES WORTH TELLING APART. If gcc 10's own sources will
+            # not compile under a C++98 compiler, that is the rung failing and
+            # it shows up as errors in gcc/*.c. If a 2020 tree will not meet a
+            # 2026 glibc, that shows up in the headers. They need different
+            # fixes and the message alone does not distinguish them.
+            say "  --- compiler diagnostics ---"
+            grep -nE "error:|internal compiler error" build3.log | grep -v "make\[" | head -15 | sed 's/^/    /'
+            say "  --- where the errors are ---"
+            grep -oE '^[^ :]+\.(c|cc|h|H):[0-9]+:[0-9]*:? *error:' build3.log \
+              | cut -d: -f1 | sort | uniq -c | sort -rn | head -12 | sed 's/^/    /'
+            say "  --- make errors ---"
+            grep -nE "\*\*\* \[" build3.log | head -5 | sed 's/^/    /'
+            say "  --- tail ---"
+            tail -20 build3.log | sed 's/^/    /'
+          fi
+          make install > install3.log 2>&1
+          say "  install rc=$?"
+          echo "$rc" > /work/status/stage3.rc
+
+          say ""
+          say "  === what stage 3 produced ==="
+          for f in bin/gcc bin/g++ bin/cpp; do
+            printf '    %-12s %s\n' "$f" "$( [ -x "/work/out10/$f" ] && echo present || echo missing)"
+          done
+          if [ -x /work/out10/bin/gcc ]; then
+            say "    version   : $(/work/out10/bin/gcc --version 2>&1 | head -1)"
+          fi
+          exit 0
+          EOS
+          W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh /work/p3.sh
+
+      - name: 'STAGE 3 GATE: is the gcc 10 real, and is it a rung UP?'
+        if: ${{ always() && github.event.inputs.try_gcc10 != 'no' }}
+        continue-on-error: true
+        run: |
+          set -eu
+          cat > work/pr.sh <<'EOS'
+          set -u
+          set +e
+          say() { printf '%s\n' "$*"; }
+          if [ ! -x /work/out10/bin/g++ ]; then
+            say "  no gcc 10 to test -- stage 3 did not install one"
+            exit 0
+          fi
+          export LD_LIBRARY_PATH=/work/out10/lib64:/work/out10/lib:/work/out2/lib64
+          # A COMPILER THAT EXISTS IS NOT A COMPILER THAT WORKS, and "it built"
+          # is not "we climbed". This file uses C++14 return-type deduction and
+          # a generic lambda -- things gcc 4.7 CANNOT compile -- so building it
+          # is evidence the new rung has capability the old one lacked, not just
+          # a bigger binary.
+          {
+            echo "#include <string>"
+            echo "#include <vector>"
+            echo "auto add(int a, int b) { return a + b; }"
+            echo "int main(){"
+            echo "  std::vector<int> v{1,2,3,4,5};"
+            echo "  auto sum = [](const std::vector<int>& x){ int s=0; for (auto e : x) s+=e; return s; };"
+            echo "  std::string n(\"ok\");"
+            echo "  return sum(v) + (int)n.size() + add(15,15); }"
+          } > /tmp/c14.cpp
+          say "  --- gcc 10's g++ on C++14 (expect exit 47) ---"
+          rm -f /tmp/c14
+          /work/out10/bin/g++ -std=c++14 /tmp/c14.cpp -o /tmp/c14 2> /tmp/c14.err
+          say "    compile+link rc=$?"
+          [ -s /tmp/c14.err ] && head -10 /tmp/c14.err | sed 's/^/      /'
+          if [ -x /tmp/c14 ]; then
+            /tmp/c14; say "    ran: exit=$? (expect 47)"
+          else
+            say "    NO BINARY -- gcc 10's g++ cannot link."
+          fi
+          # THE CONTROL. If g++ 4.7 compiled this too, the test would prove
+          # nothing about having climbed anything.
+          say "  --- control: the SAME file through g++ 4.7 (expect failure) ---"
+          rm -f /tmp/c14b
+          /work/out2/bin/g++ -std=c++14 /tmp/c14.cpp -o /tmp/c14b 2> /tmp/c14b.err
+          say "    compile+link rc=$?"
+          head -3 /tmp/c14b.err | sed 's/^/      /'
+          if [ -x /tmp/c14b ]; then
+            say "    IT COMPILED -- the control failed, so the C++14 test proves nothing"
+          else
+            say "    rejected, as expected: gcc 10 can compile what gcc 4.7 cannot"
+          fi
+          exit 0
+          EOS
+          W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh /work/pr.sh
+
       - name: 'INVENTORY'
         if: always()
         continue-on-error: true
@@ -893,13 +1140,29 @@ jobs:
           echo "  tcc source : ${TCC_SOURCE}"
           echo "  box        : bwrap, no network, host compilers masked"
           echo
-          echo "  --- the two stages ---"
+          echo "  --- the three stages ---"
           echo "    stage 1  tcc  -> gcc 4.7.4, c and c++, installed to /work/out"
           echo "    stage 2  that -> gcc 4.7.4, c and c++, installed to /work/out2"
+          echo "    stage 3  that -> gcc ${GCC10}, c and c++, installed to /work/out10"
           echo "    stage 1 configure rc : $(rcof stage1-configure.rc)"
           echo "    stage 1 build     rc : $(rcof stage1-build.rc)"
           echo "    stage 2           rc : $(rcof stage2.rc)"
+          echo "    stage 3           rc : $(rcof stage3.rc)"
           echo "    libgcc TF symbols missing of 8 : $(rcof tf-missing.count)"
+          echo
+          echo "  --- the chain, and who built each link ---"
+          echo "    host gcc -> tcc            OUTSIDE the box (stage 3 of the"
+          echo "                               ladder owns closing this; today"
+          echo "                               a tcc must be derived and only"
+          echo "                               the host gcc can derive one)"
+          echo "    tcc      -> gcc 4.7.4      in the box, no host compiler"
+          echo "    gcc 4.7  -> gcc 4.7.4      in the box"
+          echo "    g++ 4.7  -> gcc ${GCC10}      in the box"
+          if [ -x work/out10/bin/gcc ]; then
+            echo "    gcc 10 version : $(work/out10/bin/gcc --version 2>&1 | head -1)"
+          else
+            echo "    gcc 10 : NOT BUILT"
+          fi
           echo
           echo "  --- what is on disk ---"
           echo "    cc1      : $( [ -x work/build/gcc/cc1 ] && echo BUILT || echo no)"
