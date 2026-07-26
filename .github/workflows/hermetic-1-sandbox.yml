@@ -227,7 +227,7 @@ jobs:
           # verifiable by having no network at all. Conflating them would mean
           # either a sandbox with a hole in it or a build that cannot start.
           mkdir -p work && cd work
-          F=../spikes/stage3/probes/fetch-pinned.sh
+          F=../tools/fetch-pinned.sh
           case "${{ matrix.arm }}" in
             A-485-vanilla) need="4.8.5" ;;
             *)             need="4.7.4 4.8.5" ;;
@@ -387,7 +387,7 @@ jobs:
               # `set -euo pipefail`; dash has no pipefail and run 1 died there
               # before copying a single file. From /repo, not a flattened copy:
               # it finds its adapter tools at dirname($0)/../../../tools.
-              bash /repo/spikes/stage3/probes/backport-aarch64.sh g474 g485 | tail -4
+              bash /repo/spikes/stage4/probes/backport-aarch64.sh g474 g485 | tail -4
               [ "$(grep -c aarch64 g474/gcc/config.gcc)" -gt 0 ] \
                 || { say "  transplant did not take"; exit 1; } ;;
           esac

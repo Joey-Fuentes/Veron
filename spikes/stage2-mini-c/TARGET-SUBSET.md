@@ -183,7 +183,7 @@ lean on function-like macros or conditional-compilation gymnastics.
 > `size_t`, `FILE` and `__va_list`, and `cc_core.c` handles `switch`/`case`,
 > `do`/`while`, compound assignment and `++`/`--`. Anyone scoping **leg 1**
 > (enhanced M2-Planet builds tcc) needs that upward list, not this one; it is
-> tabulated in `stage3/ROADMAP.md` alongside the measured tcc gap.
+> tabulated in `../stage3/ROADMAP.md` alongside the measured tcc gap.
 
 These appear only as things M2-Planet *parses*, not as things it *uses* — so our
 compiler does **not** need them to compile M2-Planet. This is a real scope win:

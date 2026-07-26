@@ -49,7 +49,7 @@ on:
   push:
     paths:
       - '.github/workflows/gcc47-aarch64-backport.yml'
-      - 'spikes/stage3/probes/backport-aarch64.sh'
+      - 'spikes/stage4/probes/backport-aarch64.sh'
   workflow_dispatch:
 
 concurrency:
@@ -127,7 +127,7 @@ jobs:
               echo "  aarch64 in gcc/config.gcc: $(grep -c aarch64 g474/gcc/config.gcc || true) (expect 0)"
               ;;
             C-474-backport)
-              bash spikes/stage3/probes/backport-aarch64.sh g474 g485
+              bash spikes/stage4/probes/backport-aarch64.sh g474 g485
               echo "SRC=g474" >> "$GITHUB_ENV"
               echo "TGT=aarch64-unknown-linux-gnu" >> "$GITHUB_ENV"
               ;;

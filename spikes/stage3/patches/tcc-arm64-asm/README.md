@@ -466,7 +466,7 @@ Neither of the busybox blockers was an assembler or codegen problem.
 re-parsing each piece as its own argv entry, so the depfile lands as a second
 INPUT FILE: *cannot specify output file with -c many files*. tcc spells the
 same request `-MD -MF <file>`. Handled by
-`spikes/stage3/probes/tcc-cc-wrapper.sh`, a CC shim, so busybox itself is
+`spikes/stage4/probes/tcc-cc-wrapper.sh`, a CC shim, so busybox itself is
 unmodified.
 
 **`__GNUC__` undefined** — `include/platform.h` does:
@@ -756,7 +756,7 @@ runner image ships, which is where all three problems above came from.
 
 Building `arch/arm64/configs/defconfig` from a pinned kernel tree with the host
 gcc would replace all of it with something known: unsigned, minimal, pinned, and
-identical run to run. That is also leg 3's first spike in `ROADMAP.md`, and it
+identical run to run. That is also leg 3's first spike in `../../../stage4/ROADMAP.md`, and it
 would supply the UAPI headers currently borrowed from `linux-libc-dev` via
 `make headers_install`. Two open items, one build.
 
@@ -779,6 +779,6 @@ The boot needed `-cpu cortex-a72`: `-cpu max` enables every optional ARM feature
 this qemu knows and Linux 6.17 uses ones it mishandles, aborting inside qemu
 with `regime_is_user: code should not be reached`.
 
-The result document is `spikes/stage3/TCC-USERLAND.md`; pins and declared
+The result document is `spikes/stage4/TCC-USERLAND.md`; pins and declared
 substitutions are in `sources/{tcc,musl,busybox}.toml`. This file stays as the
 working record of how the patch series was recovered, corrected and verified.

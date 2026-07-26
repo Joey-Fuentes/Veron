@@ -140,7 +140,7 @@ jobs:
                    "https://cdn.kernel.org/pub/linux/kernel/v3.x/linux-$KERNEL.tar.xz"; do
             echo "  $(basename "$u")"; curl -fsSL --retry 3 -O "$u"
           done
-          F=spikes/stage3/probes/fetch-pinned.sh
+          F=tools/fetch-pinned.sh
           bash "$F" g474 "$HOME/.cache/veron/gcc-4.7.4.tar.bz2" "$SHA474" \
             "$GNU/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2" "" "" | sed 's/^/  /'
           bash "$F" g485 "$HOME/.cache/veron/gcc-4.8.5.tar.bz2" "$SHA485" \
@@ -451,7 +451,7 @@ jobs:
           # builds libgcc against a period glibc, and that build still happens
           # entirely inside the box.
           echo "  --- transplant, on the host (see comment) ---"
-          bash spikes/stage3/probes/backport-aarch64.sh g474 g485 2>&1 | tail -3
+          bash spikes/stage4/probes/backport-aarch64.sh g474 g485 2>&1 | tail -3
           [ "$(grep -c aarch64 g474/gcc/config.gcc)" -gt 0 ] \
             || { echo "  transplant did not take"; exit 1; }
           # gcc 4.7 NEEDS GMP, MPFR AND MPC AND THE BOX HAS NONE. They were

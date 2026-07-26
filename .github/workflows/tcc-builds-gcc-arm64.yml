@@ -134,7 +134,7 @@ jobs:
           # ints, floats, aggregate initialisers -- and returns 6. Finding out
           # it does not 40 minutes into a gcc build would waste the run and
           # produce an inventory nobody could read.
-          P=spikes/stage3/probes
+          P=spikes/stage4/probes
           "$TCC" -B"$TCCDIR" -o /tmp/feat "$P/feat.c"
           set +e; /tmp/feat; rc=$?; set -e
           echo "  gcc-feature probe exit=$rc (expect 6)"
@@ -156,7 +156,7 @@ jobs:
           # invariant #6 wants these pinned in sources/, there is no
           # sources/gcc.toml yet, and inventing a hash would be worse than not
           # having one. Read the two hashes out of this step's log and pin them.
-          F=spikes/stage3/probes/fetch-pinned.sh
+          F=tools/fetch-pinned.sh
           for v in 4.7.4 4.8.5; do
             d="g${v//./}"
             echo "  --- gcc $v -> $d ---"
@@ -172,7 +172,7 @@ jobs:
           # Same script the host-gcc arm used, unchanged. If the transplant
           # itself has drifted, this fails in seconds by sourcing config.gcc
           # rather than 40 minutes later at configure-gcc.
-          bash spikes/stage3/probes/backport-aarch64.sh g474 g485
+          bash spikes/stage4/probes/backport-aarch64.sh g474 g485
 
       - name: 'Prerequisites, built by tcc'
         continue-on-error: true

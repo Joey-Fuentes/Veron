@@ -19,12 +19,12 @@ program.s ──[stage0-as]──► code bytes ──[elf out]──► runnabl
   reference in `stage0-as/README.md`.
 - `elf/` — wraps code bytes into a runnable, self-executable-marking ELF.
 
-**Milestone (m71): the ladder reaches its handoff.** `stage2-mini-c` builds **M2-Planet
-from M2-Planet's own source**, and that binary compiles C to M1 — so M2-Planet becomes the
-de-facto "stage 3", with no throwaway intermediate compiler. Demonstrated on CI in
-`.github/workflows/stage3-m2-demo.yml`. One substitution (an M2libc file whose only content
-is six `asm()` syscall functions our builtins already supply) and one remaining join (the
-emitted `.M1` is not yet driven through M1/hex2). Details in
+**The ladder reaches its hand-off.** `stage2-mini-c` builds **M2-Planet from
+M2-Planet's own source**, and that binary reproduces upstream's reference
+compiler byte for byte over five generations — so M2-Planet becomes the de-facto
+"stage 3", with no throwaway intermediate compiler. One substitution remains (an
+M2libc file whose only content is six `asm()` syscall functions our builtins
+already supply). Details in `stage3/README.md` and
 `stage2-mini-c/TARGET-SUBSET.md`.
 
 Full progress log, spike inventory, and what's next: **`PROGRESS.md`**.
@@ -73,13 +73,21 @@ their own paths.
 
 ## Where to start
 
+The tree is split at **tcc**: stage 3 is everything up to and including reaching
+tcc from the seed; stage 4 is everything tcc is then used to build.
+
 | you are working on | read |
 |---|---|
-| **anything above M2-Planet** (Mes, tcc, gcc) | `stage3/README.md` — short, current |
-| the forward plan / direct-path track | `stage3/ROADMAP.md` |
+| **M2-Planet, or reaching tcc from it** | `stage3/README.md` — short, current |
+| **anything above tcc** (gcc, userland, kernel, boot) | `stage4/README.md` — short, current |
+| the plan for M2-Planet → tcc | `stage3/ROADMAP.md` |
+| the plan for tcc → Linux | `stage4/ROADMAP.md` |
 | the pin set and what is open at it | `UPSTREAM-PINS.md` |
 | stage 0–2 history | `PROGRESS.md` — 150 KB, reference only |
 
-**The ladder is complete.** Stage 2 builds M2-Planet; that M2-Planet reproduces
+**Stages 0–2 are complete.** Stage 2 builds M2-Planet; that M2-Planet reproduces
 upstream's reference compiler byte for byte, and is a stable fixpoint over five
-generations. Stage 3 is M2-Planet itself — there is no separately-written stage 3.
+generations. Stage 3 is M2-Planet itself — there is no separately-written stage 3
+— and its remaining rung is reaching an unmodified tcc from the seed. Stage 4
+already has a pinned tcc and has used it to build a gcc that targets aarch64 and
+a userland that boots as PID 1.

@@ -2205,7 +2205,7 @@ stage in the language of the stage below.
   with (1) a legitimate option. Earlier "amd64-only" wording was imprecise; corrected in
   `TARGET-SUBSET.md` §8 and `borrow-tcc/README.md`.
   **Update 2026-07-25 — a third route exists and is now proven, but it does not
-  run through Mes.** `stage3/GCC-BACKPORT.md`: an arm64 tcc builds gcc 4.7.4
+  run through Mes.** `stage4/GCC-BACKPORT.md`: an arm64 tcc builds gcc 4.7.4
   carrying gcc 4.8.5's aarch64 backend, natively, and that compiler emits
   working aarch64. So *a native arm64 gcc* no longer requires either the
   armhf-Mes detour or a cross-compile — it requires a tcc. The paragraph above

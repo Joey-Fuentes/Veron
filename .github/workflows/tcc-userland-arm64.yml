@@ -154,9 +154,9 @@ jobs:
           probe "adrp x0, _p"
           echo
           echo "  --- C-level probes ---"
-          rc=0; ./tcc -B. -run "$GITHUB_WORKSPACE/spikes/stage3/probes/kern.c" || rc=$?
+          rc=0; ./tcc -B. -run "$GITHUB_WORKSPACE/spikes/stage4/probes/kern.c" || rc=$?
           echo "    kern.c (inline asm)     exit=$rc (expect 0)"
-          rc=0; ./tcc -B. -run "$GITHUB_WORKSPACE/spikes/stage3/probes/feat.c" || rc=$?
+          rc=0; ./tcc -B. -run "$GITHUB_WORKSPACE/spikes/stage4/probes/feat.c" || rc=$?
           echo "    feat.c (C constructs)   exit=$rc (expect 6)"
 
       - name: '1. tcc builds musl'
@@ -169,7 +169,7 @@ jobs:
           # ~250s failing: unbounded curl retries, a dead barfooze mirror
           # (404), a 135s git stall, and a github clone that hit a credential
           # prompt -- then killed the job with exit 128 under bash -e.
-          F="$GITHUB_WORKSPACE/spikes/stage3/probes/fetch-pinned.sh"
+          F="$GITHUB_WORKSPACE/tools/fetch-pinned.sh"
           chmod +x "$F"
           bash "$F" musl "dl/musl-$MUSL_VER.tar.gz" "$MUSL_SHA256" \
             "https://musl.libc.org/releases/musl-$MUSL_VER.tar.gz
@@ -417,7 +417,7 @@ jobs:
           # master-only code. In a project whose thesis is hermetic pinned
           # builds, a pin that can quietly drift is worse than no pin.
           BB_TAG=$(echo "$BUSYBOX_VER" | tr . _)     # 1.36.1 -> 1_36_1
-          F="$GITHUB_WORKSPACE/spikes/stage3/probes/fetch-pinned.sh"
+          F="$GITHUB_WORKSPACE/tools/fetch-pinned.sh"
           chmod +x "$F"
           bash "$F" bb "dl/busybox-$BUSYBOX_VER.tar.bz2" "$BUSYBOX_SHA256" \
             "https://busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2" \
@@ -523,7 +523,7 @@ jobs:
           # which tcc splits on commas so <depfile> becomes a second input file
           # ("cannot specify output file with -c many files"). The shim
           # translates it to tcc's own -MD -MF spelling. See the script header.
-          CCW="$GITHUB_WORKSPACE/spikes/stage3/probes/tcc-cc-wrapper.sh"
+          CCW="$GITHUB_WORKSPACE/spikes/stage4/probes/tcc-cc-wrapper.sh"
           chmod +x "$CCW"
           # MUSLROOT makes the shim behave as musl-gcc would: -nostdinc and
           # musl's headers on every compile, and -nostdlib + musl's crt objects
@@ -626,7 +626,7 @@ jobs:
           rm -rf initramfs && mkdir -p initramfs/bin initramfs/proc initramfs/sys
           cp "$BB" initramfs/bin/busybox
           ( cd initramfs && ./bin/busybox --install -s bin 2>/dev/null || true )
-          cp "$GITHUB_WORKSPACE/spikes/stage3/probes/init.sh" initramfs/init
+          cp "$GITHUB_WORKSPACE/spikes/stage4/probes/init.sh" initramfs/init
           chmod +x initramfs/init initramfs/bin/busybox
           ( cd initramfs && find . | cpio -o -H newc 2>/dev/null | gzip > ../initramfs.cpio.gz )
           echo "  initramfs: $(wc -c < initramfs.cpio.gz) bytes"

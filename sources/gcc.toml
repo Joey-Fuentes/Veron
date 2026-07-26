@@ -29,7 +29,7 @@ role     = "donor -- gcc/config/aarch64, gcc/common/config/aarch64, libgcc/confi
 # distinction has to be recorded before anything ships a runtime.
 
 # WHERE THESE HASHES COME FROM. Both were measured, not transcribed:
-# spikes/stage3/probes/fetch-pinned.sh was invoked with "-" for the expected
+# tools/fetch-pinned.sh was invoked with "-" for the expected
 # hash, which makes it PRINT the sha256 of what it fetched rather than verify
 # one. The two values above are what tcc-builds-gcc-arm64 read off
 # mirrors.kernel.org on 2026-07-25. Inventing a plausible hash would have been
@@ -51,6 +51,6 @@ built_by    = "gcc 13 (host) and tcc 0.9.28rc HEAD@5ec0e6f8, both configure rc=0
 # one release old.
 
 [transplant]
-tool     = "spikes/stage3/probes/backport-aarch64.sh"
+tool     = "spikes/stage4/probes/backport-aarch64.sh"
 adapters = ["tools/expand_int_iterators.py", "tools/port_gcc47_api.py"]
-record   = "spikes/stage3/GCC-BACKPORT.md"
+record   = "spikes/stage4/GCC-BACKPORT.md"

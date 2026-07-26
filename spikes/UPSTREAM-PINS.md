@@ -225,7 +225,7 @@ the chain at the first generation. Behaviour-preserving, by checksum.
 # The direct path's own pins (2026-07-24)
 
 The set above is live-bootstrap's, for the Mes route. The direct path
-(`spikes/stage3/TCC-USERLAND.md`) pins its own upper half, because
+(`spikes/stage4/TCC-USERLAND.md`) pins its own upper half, because
 live-bootstrap's tcc **0.9.27 cannot be used on aarch64**: `tcc-aarch64-probe`
 found it fails to link its own second generation on the 128-bit long-double
 soft-float runtime its arm64 `libtcc1.a` does not provide, and it ships no

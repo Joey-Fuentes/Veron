@@ -153,7 +153,7 @@ parameter; the single call site builds a vector in memory and immediately loads
 it, which is where that is safe. The tool logs every argument it adds or drops
 so the choice appears in the run output.
 
-### The transplant — `spikes/stage3/probes/backport-aarch64.sh`
+### The transplant — `spikes/stage4/probes/backport-aarch64.sh`
 
 Copies three directories (`gcc/config/aarch64`, `gcc/common/config/aarch64`,
 `libgcc/config/aarch64` — missing either of the last two is the classic way a

@@ -1,16 +1,31 @@
-# Stage 3 — M2-Planet and above
+# Stage 3 — M2-Planet, and reaching a real tcc
 
-**Start here for anything above the hand-off.** Stages 0–2 are done; their
-detailed history is in `spikes/PROGRESS.md` (152 KB of it) and you do not need
-to read it to work here. This file is the whole current state.
+**Scope: the hand-off up to tcc, and nothing above it.** Stage 3 owns one
+question — *can our ladder produce an unmodified, self-hosting tcc?* Everything
+tcc is then **used** to build (gcc, a userland, a kernel, a QEMU boot) is
+**stage 4**: see `spikes/stage4/README.md`.
+
+Stages 0–2 are done; their detailed history is in `spikes/PROGRESS.md` (152 KB
+of it) and you do not need to read it to work here.
 
 ---
 
 ## What stage 3 is
 
 There is no separately-written stage 3. **M2-Planet, compiled by our stage 2,
-IS stage 3** — the plan to write our own was retired early. Stage 3 work is
-therefore everything from M2-Planet upward: Mes, tcc, gcc.
+IS stage 3** — the plan to write our own was retired early.
+
+That leaves stage 3 with one rung still to climb: **from M2-Planet to tcc.** Two
+routes are open, and they are not in competition — one proves provenance, the
+other already produced a binary:
+
+| route | state |
+|---|---|
+| M2-Planet → Mes → tcc (live-bootstrap's) | Mes rung in progress, three rungs out |
+| enhanced M2-Planet → tcc directly | measured, not started — `ROADMAP.md` |
+
+Stage 4 already **has** a tcc, pinned and patched, and uses it. What stage 3
+owes is a tcc reached *from the seed*.
 
 ## What is proven
 
@@ -30,49 +45,7 @@ compiles `asm()` fine — so the patch applies to G0 only and leaves the chain
 immediately. That G1 lands exactly on upstream's bytes is the proof the
 substitution is behaviour-preserving: a checksum, not an argument.
 
-**The userland half of the Linux leg.** A musl + BusyBox userland compiled
-entirely by tcc boots as PID 1 under a GCC-built arm64 kernel.
-
-```
-==== VERON USERLAND ALIVE ====
-pid1  : /bin/busybox        shell and busybox: compiled by tcc
-                            kernel under them: compiled by gcc
-==== VERON BOOT OK ====
-```
-
-Gated by `.github/workflows/tcc-userland-arm64.yml`. Full record, evidence chain
-and named substitutions in **[`TCC-USERLAND.md`](./TCC-USERLAND.md)**.
-
-The single real compiler gap it found: **tcc has no dead-code elimination**, so
-BusyBox's `if (ENABLE_FEATURE_X)` idiom leaves references to functions that were
-never defined. Everything else was build plumbing. The kernel uses the same
-idiom via `IS_ENABLED()`, so leg 3 will meet this again.
-
-**gcc 4.7 can carry gcc 4.8's aarch64 backend, and the result compiles.**
-
-```
-configure rc=0   build rc=0   cc1 BUILT
-cc1 emits   stp x29, x30, [sp, -48]! / cmp w0, 1 / ble .L4
-assembled   ELF 64-bit LSB relocatable, ARM aarch64
-ran         exit=55                (fib(10) = 55)
-```
-
-gcc 4.7.4 — the last release written in C — with `gcc/config/aarch64` from 4.8.5
-spliced in, builds a `cc1` that emits correct aarch64 code. That was the leg's
-whole question, because it makes the gcc route native **and** C-only:
-
-```
-tcc -> gcc 4.7 + this backend -> g++ 4.7 -> gcc 4.8 -> modern gcc
-```
-
-4.7 yields a full C++98 compiler built from C, which is exactly what 4.8 asks
-for. Total adaptation: **0 target hooks, 3 config case arms, 34 `.md`
-definitions expanded, 7 qualified attribute refs, 3 functions at 24 call
-sites** — nothing structural, and within the ~148 lines the vax control
-predicted.
-
-Full record in **[`GCC-BACKPORT.md`](./GCC-BACKPORT.md)**. Gated by
-`.github/workflows/gcc47-aarch64-backport.yml`.
+**That is the whole of what stage 3 has proven.** The tcc rung is open.
 
 ## The pin set (confirmed, do not drift)
 
@@ -89,14 +62,16 @@ and found our pins **are** live-bootstrap's:
 
 One coherent set, already adopted. No pin decision is outstanding.
 
-**The direct path pins its own tcc**, because live-bootstrap's 0.9.27 cannot
-self-host on aarch64 and has no inline assembler at all:
+**tcc is pinned separately**, because live-bootstrap's 0.9.27 cannot self-host
+on aarch64 and has no inline assembler at all:
 
 | | pin | |
 |---|---|---|
 | tcc | `5ec0e6f8` + 5 patches | `sources/tcc.toml` |
-| musl | 1.2.5 `a9a118bb…` | `sources/musl.toml` |
-| BusyBox | 1.36.1 `b8cc24c9…` | `sources/busybox.toml` |
+
+The patch series lives in `patches/tcc-arm64-asm/` and stays in stage 3, because
+tcc is stage 3's deliverable. The musl and BusyBox pins moved to stage 4 with
+the userland work that consumes them.
 
 tcc's base commit was located by matching the **pre-image blob hashes** in the
 patch series rather than by date or ancestry — `apply-series.sh` does this, and
@@ -120,6 +95,7 @@ over. Applies to G0 only.
 | `tools/vstack.py` | find value-stack arity mismatches by *reading* emitted assembly — no execution |
 | `tools/pcmap.py` | map a faulting PC back to a function label |
 | `tools/drop_asm.py` | the substitution |
+| `tools/fetch-pinned.sh` | pinned fetch with a cache, a hash check and bounded time (shared with stage 4) |
 | `spikes/bench/` | Python model of the ladder; compiles M2-Planet locally in ~30 s |
 
 ## Method note (this one earned its place)
@@ -133,42 +109,37 @@ the emitted instruction, then read the compiler's own branch. Reach for
 
 ## Open
 
+- **The tcc rung itself** — the one thing this stage exists to close. Neither
+  route has produced a tcc from the seed. `ROADMAP.md` has the measured gap for
+  the direct route; `mes-rung.yml` is the reference arm for the other.
 - **G0's x86 codegen** differs from upstream: compiling for x86 it takes the
   short-immediate branch in `write_add_immediate` where upstream emits the
   register form (~1350 sites, 31,698 bytes). G1 proves the aarch64 path is
   perfect and G0 is used exactly once, so this blocks nothing. Non-gating REPORT
   in the bisect workflow.
-- **Mes rung** — `mes-rung.yml` reference arm; see `MES-RUNG.md` when it lands.
-- **The gcc leg, past the entry point.** The backport builds and compiles
-  correct aarch64 code (`GCC-BACKPORT.md`). What is not yet shown: **libgcc**
-  (the arms run `make all-gcc`, so `xgcc` cannot link — `cannot find
-  crtbegin.o`); **tcc building this tree** (every arm uses the host gcc, one
-  variable at a time); and **g++ 4.7 building 4.8**, which is the entire reason
-  for choosing 4.7.
-- **The kernel is still borrowed.** `tcc-userland-arm64` boots Ubuntu's kernel,
-  which is correct for the ABI claim but is a distro artifact. Building
-  `arch/arm64/configs/defconfig` from a pinned tree with the host gcc replaces
-  it and supplies the UAPI headers currently taken from `linux-libc-dev` —
-  two open items, one build. Leg 3's first spike.
-- **The userland has not been rebuilt twice.** It is pinned and hashed but not
-  yet shown byte-identical across two runs. Cheap to add, and the natural gate.
+- **Stage-2 defects that are real but not on the critical path.** Stage 2 hangs
+  on `M2libc/stdlib.c` (rc=124) and segfaults on `M2libc/stdio.c` (rc=139);
+  object-like `#define` is still unsupported (m75); our M1 segfaults on
+  `--architecture x86`; our hex2 writes byte-identical output and then crashes
+  on exit.
 - **`mescc-tools-full` / `no-host-chain` / `stage3-m2-demo`** are still red from
   the stale generic `bootstrap.c` (they reference a file that does not exist at
   1.13.1). One fix, several workflows: replace `$L/bootstrap.c` with either the
   patched arch file + shim (if fed to *our* stage 2) or the unpatched arch file
   (if fed to *upstream's* M2-Planet).
+- **`spikes/reference/` vendors the OLD pins** and is out of sync with CI.
 
 ## Where things live
 
 ```
-spikes/stage3/          this folder -- current state, roadmap
-spikes/stage3/TCC-USERLAND.md   the tcc userland result, in full
-spikes/stage3/GCC-BACKPORT.md   the gcc 4.7 + 4.8-aarch64 result, in full
+spikes/stage3/          this folder -- the hand-off, and the road to tcc
+spikes/stage3/ROADMAP.md        leg 1: enhanced M2-Planet builds real tcc
 spikes/stage3/patches/  the tcc arm64 assembler series + our two fixes
-spikes/stage3/probes/   the CC shim, the pinned fetcher, the C probes
-sources/*.toml          url + hash + license + declared substitutions
+spikes/stage4/          EVERYTHING ABOVE TCC -- gcc, userland, kernel, boot
+sources/tcc.toml        the tcc pin, hash, license and declared substitutions
 spikes/UPSTREAM-PINS.md the pin set and what is open at it
 spikes/PROGRESS.md      stages 0-2 history; reference only
 spikes/bench/           the local ladder model
 spikes/reference/       vendored upstream sources (NOTE: the OLD pin)
+tools/                  shared tooling, used by both stages
 ```
