@@ -286,12 +286,17 @@ jobs:
             echo "  --- flag bisect on the standalone .i ---"
             for f in "-O0" "-O1" "-O2" "-O2 -fexceptions" "-O0 -fexceptions" "-O2 -g -fexceptions -fPIC"; do
               rm -f /tmp/x.s
-              out=$($DRV -S $f "$W/unwind-dw2.i" -o /tmp/x.s 2>&1 | head -1)
-              case "$out" in
-                *"internal compiler error"*) r="ICE" ;;
-                "")                          r="ok"  ;;
-                *)                           r="other: $(printf '%s' "$out" | cut -c1-60)" ;;
-              esac
+            out=$($DRV -S $f "$W/unwind-dw2.i" -o /tmp/x.s 2>&1)
+            # CLASSIFY ON THE WHOLE OUTPUT, NOT LINE 1. The previous run reported
+            # "other" for all six flag sets because head -1 is
+            #   unwind-dw2.c: In function 'uw_init_context_1':
+            # and the "internal compiler error" line comes after it. Six ICEs read
+            # as six unknowns.
+            case "$out" in
+              *"internal compiler error"*) r="ICE" ;;
+              "")                          r="ok"  ;;
+              *)                           r="other: $(printf '%s' "$out" | grep -m1 -E 'error|warning' | cut -c1-60)" ;;
+            esac
               printf '    %-26s %s\n' "$f" "$r"
             done
           else
@@ -299,7 +304,83 @@ jobs:
             echo "      stderr was: $(head -c 200 "$W/pp.err")"
           fi
 
-      - name: '3. FALSIFIED HYPOTHESIS (kept as a way past): patch ucontext_t'
+      - name: '3. THE FAULT SITE: what expand_builtin_frame_address touches'
+        # BEFORE THE PATCH STEP, for the same reason the backtrace is: this
+        # re-runs the compile under gdb, and a diagnostic must see the tree the
+        # fault was found in. The source files it reads are not touched by the
+        # ucontext patch either way, but the rule is worth keeping intact
+        # rather than relying on that staying true.
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # THE BACKTRACE LANDED, AND IT FALSIFIED THIS FILE'S OWN SUSPECT.
+          # The header guessed __builtin_init_dwarf_reg_size_table and the
+          # DWARF_FRAME_REGISTERS sizing. It is not that:
+          #
+          #   #0  expand_builtin_frame_address (fndecl=..., exp=<optimized out>)
+          #         at gcc/builtins.c:4581
+          #   #1  expand_expr_real_1 ... at gcc/expr.c:10035
+          #
+          # and unwind-dw2.c:1490 col 44 is
+          #   void *ra = __builtin_extract_return_addr (__builtin_return_address (0));
+          #                                             ^ here
+          # so the path is __builtin_return_address(0) -> expand_builtin_frame_address
+          # -> expand_builtin_return_addr -> RETURN_ADDR_RTX -> the BACKEND.
+          #
+          # The differential is now clean: with the ucontext header fixed,
+          # 4.8.5 builds libgcc (1,256,134 bytes) and 4.7.4 + transplant still
+          # segfaults in the same place. Same source, same header fix, one
+          # compiler. This step prints the three places that path passes
+          # through so the next reading is source, not inference.
+          echo "  ===== 1. the fault site, 4.7.4's builtins.c ====="
+          sed -n '4560,4600p' "$W/g474/gcc/builtins.c" | cat -n \
+            | awk '{printf "    %d\t%s\n", $1+4559, substr($0, index($0,$2))}'
+          echo
+          echo "  ===== 2. expand_builtin_return_addr, same file ====="
+          awk '/^expand_builtin_return_addr/,/^}/' "$W/g474/gcc/builtins.c" \
+            | head -45 | sed 's/^/    /'
+          echo
+          echo "  ===== 3. the backend hook it calls ====="
+          echo "  RETURN_ADDR_RTX / frame macros as the TRANSPLANTED aarch64.h defines them:"
+          grep -nE '#define (RETURN_ADDR_RTX|INITIAL_FRAME_ADDRESS_RTX|DYNAMIC_CHAIN_ADDRESS|FRAME_ADDR_RTX|SETUP_FRAME_ADDRESSES)' \
+            "$W/g474/gcc/config/aarch64/aarch64.h" | sed 's/^/    /' || echo "    none defined"
+          echo
+          echo "  aarch64_return_addr, as transplanted:"
+          awk '/^aarch64_return_addr/,/^}/' "$W/g474/gcc/config/aarch64/aarch64.c" | sed 's/^/    /'
+          echo
+          echo "  ===== 4. did the transplant REWRITE that function? ====="
+          # port_gcc47_api.py touched 24 call sites; if one of them is on this
+          # path that is the answer, and if none are the fault is 4.7's own
+          # middle-end meeting a 4.8 backend convention.
+          awk '/^aarch64_return_addr/,/^}/' "$W/pristine-aarch64/aarch64.c" > /tmp/orig.txt 2>/dev/null
+          awk '/^aarch64_return_addr/,/^}/' "$W/g474/gcc/config/aarch64/aarch64.c" > /tmp/now.txt
+          if diff -u /tmp/orig.txt /tmp/now.txt > /tmp/d.txt 2>&1 && [ ! -s /tmp/d.txt ]; then
+            echo "    UNCHANGED by the transplant -- the fault is the 4.7 middle-end"
+            echo "    meeting a 4.8 backend convention, not one of our rewrites."
+          else
+            echo "    REWRITTEN by the transplant:"
+            sed 's/^/      /' /tmp/d.txt | head -20
+          fi
+          echo
+          echo "  ===== 5. richer gdb at the fault ====="
+          LG=$(find "$W/c474" -type d -path '*aarch64*/libgcc' | head -1)
+          CMD=$(grep -oE '[^ ]*xgcc [^&|]*unwind-dw2\.c' "$W/c474/libgcc-unpatched.log" 2>/dev/null \
+                | sed 's/^[^:]*://' | tail -1)
+          if [ -n "$LG" ] && [ -n "$CMD" ]; then
+            cd "$LG"
+            CC1LINE=$(eval "$CMD -v" 2>&1 | grep -oE '[^ ]*cc1 .*' | tail -1)
+            # shellcheck disable=SC2086
+            [ -n "$CC1LINE" ] && gdb --batch \
+              -ex run -ex 'frame 0' -ex 'info locals' -ex 'info args' \
+              -ex 'p count' -ex 'p fndecl_code' \
+              --args $CC1LINE 2>&1 \
+              | grep -vE '^\[|^Reading|^Downloading|warning:' | head -40 | sed 's/^/    /'
+          else
+            echo "    could not rebuild the cc1 line"
+          fi
+
+      - name: '4. FALSIFIED HYPOTHESIS (kept as a way past): patch ucontext_t'
         # RUNS AFTER THE BACKTRACE, DELIBERATELY -- it mutates the build tree,
         # so everything diagnostic has already happened by here.
         continue-on-error: true
@@ -393,11 +474,19 @@ jobs:
         if: always()
         with:
           name: ice-evidence
+          # THESE NAMES MUST MATCH WHAT THE STEPS ACTUALLY WRITE. Three of the
+          # six did not: c474/libgcc.log and c485/libgcc.log have never existed
+          # (the steps write libgcc-unpatched.log and libgcc-patched.log), and
+          # ice-cmd.txt is written by nothing at all. if-no-files-found: warn
+          # meant they vanished quietly -- which is how the libgcc logs came to
+          # be missing from every evidence bundle this workflow has produced.
           path: |
             unwind-dw2.i
-            ice-cmd.txt
+            pp.err
             aarch64-c.diff
             transplant.log
-            c474/libgcc.log
-            c485/libgcc.log
+            c474/libgcc-unpatched.log
+            c474/libgcc-patched.log
+            c485/libgcc-unpatched.log
+            c485/libgcc-patched.log
           if-no-files-found: warn
