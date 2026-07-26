@@ -57,7 +57,12 @@ env:
   KHDR_VER: '7.1.3'
   GMP_VER: '6.3.0'
   MPFR_VER: '4.2.2'
-  MPC_VER: '1.4.1'
+  # THE DEV BOOK PINS 1.4.1 AND THE GNU MIRRORS DO NOT HAVE IT -- not on
+  # mirrors.kernel.org, not on ftp.gnu.org. Tracking a development book means
+  # occasionally pinning something that has not been published yet. 1.3.1 is
+  # LFS 13.0's pin, is definitely mirrored, and is far past gcc's minimum of
+  # mpc 0.8.0, so it changes nothing about whether gcc 16.1 builds.
+  MPC_VER: '1.3.1'
   M4_VER: '1.4.21'
   BISON_VER: '3.8.2'
   FLEX_VER: '2.6.4'
@@ -125,15 +130,21 @@ jobs:
           # name every URL that was attempted before giving up.
           get() {
             base=$(basename "$1"); echo "  $base"
-            for u in "$1" \
-                     "$(printf '%s' "$1" | sed 's|https://mirrors.kernel.org/gnu|https://ftp.gnu.org/gnu|')" \
-                     "$(printf '%s' "$1" | sed 's/\.tar\.gz$/.tar.xz/; s/\.tar\.xz$/.tar.gz/')"; do
+            # The extension flip must be ONE substitution, not two in sequence:
+            # `s/gz/xz/; s/xz/gz/` on the same string flips it and flips it
+            # back, which is why the failure above listed the original URL
+            # twice and never actually tried the other extension.
+            case "$1" in
+              *.tar.gz) alt=$(printf '%s' "$1" | sed 's/\.tar\.gz$/.tar.xz/') ;;
+              *.tar.xz) alt=$(printf '%s' "$1" | sed 's/\.tar\.xz$/.tar.gz/') ;;
+              *)        alt="$1" ;;
+            esac
+            gnu=$(printf '%s' "$1" | sed 's|https://mirrors.kernel.org/gnu|https://ftp.gnu.org/gnu|')
+            for u in "$1" "$gnu" "$alt"; do
               curl -fsSL --retry 3 -O "$u" 2>/dev/null && return 0
             done
             echo "    COULD NOT FETCH. Tried:"
-            printf '      %s\n' "$1"
-            printf '      %s\n' "$(printf '%s' "$1" | sed 's|https://mirrors.kernel.org/gnu|https://ftp.gnu.org/gnu|')"
-            printf '      %s\n' "$(printf '%s' "$1" | sed 's/\.tar\.gz$/.tar.xz/; s/\.tar\.xz$/.tar.gz/')"
+            printf '      %s\n' "$1" "$gnu" "$alt"
             return 1
           }
           get "$GNU/binutils/binutils-$BINUTILS_VER.tar.xz"
