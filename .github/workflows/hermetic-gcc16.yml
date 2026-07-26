@@ -741,9 +741,42 @@ jobs:
           # nothing and the run carried on. The kernel needs bc to generate
           # kernel/time/timeconst.h, so that failure would have surfaced an
           # hour later as a kernel error with no connection to this step.
+          #
+          # CC='gcc -std=c99' IS THE BOOK'S, VERBATIM, AND IT IS THE WHOLE FIX.
+          # Chapter 8.15 writes
+          #     CC='gcc -std=c99' ./configure --prefix=/usr -G -O3 -r
+          # and says of it, in as many words: "This parameter specifies the
+          # compiler and C standard to use." Building without it under gcc 16
+          # gives:
+          #     ./src/data.c:920:29: error: 'falseUL' undeclared here
+          #     ./src/data.c:920:43: error: 'trueUL' undeclared here
+          # gcc 15 changed the default C dialect to -std=gnu23, where `true`
+          # and `false` are KEYWORDS rather than <stdbool.h> macros. bc writes
+          # BC_PARSE_EXPR_ENTRY(false, false, true, ...), whose expansion runs
+          # each argument through UINTMAX_C(), which is `c ## UL`. While false
+          # was a macro it expanded to 0 first and pasted as 0UL; as a keyword
+          # it pastes literally, and `falseUL` is not a thing.
+          #
+          # This is the first place the C23 default has bitten, and it is worth
+          # naming as a class rather than an incident: the box compiler is two
+          # dialects ahead of a lot of what it is asked to build. bc is the
+          # ONLY package the book overrides the standard for -- checked across
+          # all eleven chapters -- so it is fixed here and nowhere else.
+          #
+          # -r IS DROPPED, and that is our deviation, not the book's. -r links
+          # bc against Readline, which LFS has by 8.15 because chapter 8 builds
+          # it earlier. This box has BusyBox, glibc, binutils, gcc, make, m4,
+          # bison and flex, and no Readline at all. Line editing is of no use
+          # to a bc the kernel invokes from a Makefile.
           echo "=== bc ==="; cd /work/bc-$BC_VER
-          PREFIX=/usr CC=gcc ./configure.sh -O3 -r > c.log 2>&1 || { tail -8 c.log; exit 1; }
-          make -j$(nproc) > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -6; exit 1; }
+          # The tarball ships `configure` as a wrapper around `configure.sh`;
+          # the book calls the former. Prefer it, fall back, and never guess.
+          cfg=./configure
+          [ -x "$cfg" ] || cfg=./configure.sh
+          [ -x "$cfg" ] || { echo "  bc has neither configure nor configure.sh"; ls; exit 1; }
+          PREFIX=/usr CC='gcc -std=c99' "$cfg" --prefix=/usr -G -O3 > c.log 2>&1 \
+            || { echo "  bc configure failed ($cfg):"; tail -20 c.log; exit 1; }
+          make -j$(nproc) > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -10; exit 1; }
           make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
           echo "=== perl ==="; cd /work/perl-$PERL_VER
           ./Configure -des -Dprefix=/usr -Dcc=gcc > c.log 2>&1 || { tail -14 c.log; exit 1; }
