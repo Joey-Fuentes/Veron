@@ -23,7 +23,7 @@ gcc leg; the `hermetic-*` boxes are the climb above it.
 | `tcc-gcc-miscompile-check` | did tcc miscompile the gcc it built? | **ANSWERED** — 349 of 349 TUs identical |
 | `tcc-userland-arm64` | can a tcc-built userland boot? | **ANSWERED** — PID 1 under a gcc-built kernel |
 | `hermetic-gcc47` | rung 1 in an LFS 10.0 box, then gcc 10 | in progress |
-| `hermetic-gcc10` | a gcc 10.2.0 box, and can it reach 15 and 16? | in progress, chapter 6 |
+| `hermetic-gcc10` | a gcc 10.2.0 box, and can it reach 15 and 16? | **ANSWERED** — builds **gcc 15.2.0 and 16.1.0**, both run |
 | `hermetic-gcc15` | a gcc 15.2.0 system that boots | kernel config rewritten, awaiting a run |
 | `hermetic-gcc16` | a gcc 16.1.0 system that boots | **ANSWERED** — boots linux v7.2-rc4, 142 checks green |
 | `hermetic-enumerate-host` | what does the host still supply? | not a rung; enumeration only |
@@ -323,7 +323,12 @@ every fix one earns, the other inherits.
 
 ## The boxes in flight
 
-### hermetic-gcc10 (gcc 10.2.0, glibc 2.32) — chapter 6
+### hermetic-gcc10 (gcc 10.2.0, glibc 2.32) — ANSWERED 2026-07-26
+
+**A box whose newest compiler is gcc 10.2.0 builds gcc 15.2.0 and gcc
+16.1.0**, run `81886082847`. Both install, report their own version, and
+compile and run a program. 44 minutes wall clock against a 360-minute cap.
+Five runs, five distinct mechanisms — full record in `GCC10-BOX.md`.
 
 The one doing the most work, and the newest file. It is the only box that must
 support **C++ inside the box**, because its job is to build another compiler:
@@ -337,7 +342,7 @@ against a freestanding `limits.h`, `config.guess` moved into `build-aux/`. And
 **LFS 10.0 has no `/usr` merge**, so every path assumption inherited from the
 13.0-derived code was subtly wrong.
 
-Resolved so far:
+What it cost to get there, one mechanism per run:
 
 - **the cache was poisoning itself.** `actions/cache` saves on failure, so a run
   that died half way published a half-built sysroot under the same key and the
@@ -356,8 +361,41 @@ Resolved so far:
 - **make keeps `config.guess` in `build-aux/`**, as the book says. The top-level
   path failed silently and configure ran with an empty `--build=`.
 
-Open: the m4 block, when it moved, left the shell inside `m4-1.4.18/` and the
-next command could not find its tarball. Contained in a subshell.
+- **the m4 block left the shell inside `m4-1.4.18/`** when it moved, and the
+  next command could not find its tarball. Contained in a subshell.
+- **chapter 7 failed and the step went green.** The in-box script is piped into
+  `sed`, and a pipeline exits with its *last* command's status — `sed`'s, which
+  is 0. bison failed, `.sysroot-complete` was written anyway, and both attempts
+  spent an hour dying on the tool that was never installed. `set -o pipefail`.
+- **`cp -r` destroyed the timestamps upstream shipped**, in three places. It
+  stamps every file with the time of the copy in filesystem order, so
+  `configure.ac` can land newer than `configure`; automake's maintainer rules
+  then fire and want an autoconf this box does not have. `cp -a` preserves
+  what `tar` preserved.
+- **a "belt and braces" `touch` loop then caused a failure of its own** by
+  stamping a fixed list of names — `aclocal.m4`, `configure`, `Makefile.in`,
+  `config.h.in` — while bison ships its template as `lib/config.in.h`, which
+  matches none of them. A name list can never be complete, and every name it
+  misses becomes a file older than its own dependencies. Removed; the net moved
+  to `AUTOHEADER=true AUTOCONF=true AUTOMAKE=true ACLOCAL=true` on the make
+  lines, which needs to know no filenames at all.
+- **C++ linked but could not run.** libstdc++-v3 installs into
+  `toolexeclibdir`, not `libdir`, when configure sees `--host` differ from
+  `config.guess` — so it landed in `/usr/lib64`, which gcc searches at link
+  time and the loader does not at run time. The book never notices because
+  every remaining chapter 7 package is C; this box has to *run* C++, since gcc
+  15 and 16 execute their own generators. A declared deviation: `ld.so.conf` +
+  `ldconfig`, plus symlinks into `/lib`. `ldconfig` appears in LFS chapter 8
+  and nowhere in chapter 7.
+- **bison's doc rules wanted perl** — `$(PERL)` is left *empty* rather than
+  routed through `missing`, so `/bin/sh: -pi.bak: not found`. `PERL=true`.
+- **the C++ gate was killed by its own success value.** It returns 42 to mean
+  pass, under `set -e`, via `cmd; rc=$?` — errexit fires before the assignment.
+  A captured status must sit in an OR list: `rc=0; cmd || rc=$?`.
+
+Two predictions recorded here were wrong, and are worth keeping: BusyBox `awk`
+was expected to break gcc's `opt-gather.awk`/`optc-gen.awk` and did not, and
+the 6-hour cap was expected to bind and is not close.
 
 ### hermetic-gcc15 (gcc 15.2.0, glibc 2.43) — kernel config rewritten
 
@@ -652,20 +690,29 @@ what makes this affordable.
    old failure was the gate looking for C++ headers in an *uninstalled* build
    tree, where `-B` does not add them; against an installed prefix the answer
    means something.
-2. **`hermetic-gcc10` through chapter 7** — libstdc++ pass 2 and bison in the
-   box, then the gcc 15 and gcc 16 attempts, neither of which has ever run with
-   a working box beneath it.
+2. ~~**`hermetic-gcc10` through chapter 7**~~ **ANSWERED 2026-07-26** —
+   chapter 7 completes and the box builds **gcc 15.2.0 and gcc 16.1.0**, both
+   of which then compile and run a program. `GCC10-BOX.md`. What is still not
+   done in that box is `bootstrap: yes`, which is now measured rather than
+   guessed at: see item 5.
 3. **`hermetic-gcc47` on the LFS 10.0 base** — it inherits gcc10's fixes and is
    the rung that hands off to gcc 10 in the real chain.
 4. ~~**g++ 4.7 → gcc 10.2.0 has never been attempted**~~ **ANSWERED
    2026-07-26** — `gcc (GCC) 10.2.0`, built by the g++ 4.7 that tcc produced,
    in a box with no host compiler. The worry was reasonable and did not
    materialise: the floor held, and gcc 10's source needed nothing from 4.7's
-   libstdc++ that it did not have. What remains untested above this rung is
-   gcc 10 → gcc 15/16, which `hermetic-gcc10` owns.
+   libstdc++ that it did not have. gcc 10 → gcc 15/16 is now answered as well
+   (`GCC10-BOX.md`) — but from a host-built cross toolchain, not from *this*
+   4.7. The two halves have never been joined end to end, and that join is the
+   remaining gap in the chain.
 5. **Nothing has been rebuilt twice.** No box has been shown byte-identical
    across two runs — cheap, and the natural gate for a project whose thesis is
-   "rebuild and diff rather than trust".
+   "rebuild and diff rather than trust". `hermetic-gcc10` now has a measurement
+   to put behind the word *cheap*: its whole job, both compilers included, is
+   **44 minutes against a 360-minute cap**. A 3-stage bootstrap is roughly 35
+   minutes per compiler, so the bootstrapped job is about two hours — and the
+   `bootstrap` input already exists, so it costs a `workflow_dispatch` and no
+   code change at all.
 6. **The kernel is still borrowed** in `tcc-userland-arm64`, which boots
    Ubuntu's kernel. Correct for the ABI claim, but a distro artifact.
 7. **QEMU's missing option ROMs** — CLOSED. Not a runner problem: `-M virt`
@@ -721,9 +768,10 @@ first clean transcript.
 7. **No hostname is set**, so `uname -a` reads `Linux (none) 7.2.0-rc4`. One
    line in `init`.
 8. **The other boxes still carry the traps this one has had removed.**
-   `scripts/config` cannot run in any of them; `hermetic-gcc15` has the same
-   `| sed` swallowing pattern on its box invocations; neither gcc10 nor gcc15
-   checks `PIPESTATUS`. None of that is urgent, and none of it should be
+   `scripts/config` cannot run in any of them; `hermetic-gcc15` still has the
+   `| sed` swallowing pattern on its box invocations and does not check the
+   real status. `hermetic-gcc10` no longer does — it sets `pipefail` — and it
+   cost a full run to find out that it mattered. None of that is urgent, and none of it should be
    changed without a run to confirm, but it is written down here so the next
    person does not rediscover it.
 9. **`sources/` has no manifest for the packages this box fetches.** Invariant

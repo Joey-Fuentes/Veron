@@ -8,9 +8,14 @@ gcc, a userland, a kernel, and a QEMU boot.
 are proven.** An arm64 tcc builds a gcc 4.7.4 that targets aarch64
 (`GCC-BACKPORT.md`), a tcc-built userland boots as PID 1 (`TCC-USERLAND.md`),
 and as of 2026-07-26 the chain **tcc → gcc 4.7.4 → gcc 4.7.4 → gcc 10.2.0**
-runs inside a sandbox with every host compiler masked out. What is not proven is
-everything above gcc 10, and nothing anywhere has been bootstrapped, tested with
-DejaGnu, or rebuilt twice.
+runs inside a sandbox with every host compiler masked out.
+
+Rung 2 landed the same day: `hermetic-gcc10` shows a **gcc 10.2.0 box building
+gcc 15.2.0 and gcc 16.1.0**, both of which then compile and run a program
+(`GCC10-BOX.md`). That box reaches gcc 10 by a host-built cross toolchain
+rather than from the tcc-built 4.7, so **the two halves have not been joined
+end to end** — that join, not the individual rungs, is now the gap. And nothing
+anywhere has been bootstrapped, tested with DejaGnu, or rebuilt twice.
 
 > The paragraph this replaced read: *"the entry point and the userland are
 > proven; the climb is not … g++ 4.7 is built but libgcc is not, and no kernel
@@ -248,7 +253,14 @@ failures enumerate themselves.
    worry recorded against this item — that "an ISO C++98 compiler" is a floor
    rather than a compatibility guarantee across thirteen years — was reasonable
    and did not materialise. Full record in `README.md`.
-6. **Leg 3** — minimal kernel config against a bare environment.
+6. ~~**gcc 10.2.0 builds a contemporary gcc**~~ **DONE 2026-07-26** —
+   `hermetic-gcc10` builds `gcc (GCC) 15.2.0` and `gcc (GCC) 16.1.0` in a box
+   with no network and no host toolchain, and runs a program compiled by each.
+   Five runs to get there; the mechanisms are in `GCC10-BOX.md`, and two of
+   them — a pipeline swallowing a failure, and a `touch` loop working from a
+   name list that could never be complete — are the kind that reappear
+   elsewhere in this tree.
+7. **Leg 3** — minimal kernel config against a bare environment.
 
 ## The rule this track runs on
 
