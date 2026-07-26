@@ -318,7 +318,23 @@ jobs:
       - name: '5.2 binutils 2.35 pass 1 (cross)'
         run: |
           set -eu
-          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          # WHAT FAILED, WHY, AND WHERE THE LOG IS. The old one-liner grepped
+          # "Error [0-9]", which matches make's own "*** [target] Error 1"
+          # summary lines -- and make prints several of those per real failure,
+          # so head -10 filled with them and the actual `error:` never appeared.
+          # Compiler diagnostics first, make's summary second, tail last.
+          die() {
+            echo "  --- $1 FAILED ---"
+            echo "  log: $(pwd)/$2"
+            echo "  --- diagnostics ---"
+            grep -nE "error:|Error:|configure: error|undefined reference|cannot find|No such file|command not found" "$2" \
+              | grep -vE "^[0-9]+:make(\[[0-9]+\])?:" | head -12 | sed 's/^/    /'
+            echo "  --- make summary ---"
+            grep -nE "\*\*\* \[" "$2" | head -4 | sed 's/^/    /'
+            echo "  --- tail ---"
+            tail -20 "$2" | sed 's/^/    /'
+            exit 1
+          }
           tar xf "binutils-$BINUTILS.tar.xz"
           mkdir -p b-bu1 && cd b-bu1
           # THE BOOK'S FLAGS, WHICH ARE FEWER THAN 13.0's. --enable-gprofng=no,
@@ -339,7 +355,23 @@ jobs:
       - name: '5.3 gcc 10.2.0 pass 1 (cross, no headers, no libc)'
         run: |
           set -eu
-          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          # WHAT FAILED, WHY, AND WHERE THE LOG IS. The old one-liner grepped
+          # "Error [0-9]", which matches make's own "*** [target] Error 1"
+          # summary lines -- and make prints several of those per real failure,
+          # so head -10 filled with them and the actual `error:` never appeared.
+          # Compiler diagnostics first, make's summary second, tail last.
+          die() {
+            echo "  --- $1 FAILED ---"
+            echo "  log: $(pwd)/$2"
+            echo "  --- diagnostics ---"
+            grep -nE "error:|Error:|configure: error|undefined reference|cannot find|No such file|command not found" "$2" \
+              | grep -vE "^[0-9]+:make(\[[0-9]+\])?:" | head -12 | sed 's/^/    /'
+            echo "  --- make summary ---"
+            grep -nE "\*\*\* \[" "$2" | head -4 | sed 's/^/    /'
+            echo "  --- tail ---"
+            tail -20 "$2" | sed 's/^/    /'
+            exit 1
+          }
           tar xf "gcc-$GCCVER.tar.xz"
           ( cd "gcc-$GCCVER"
             # In-tree, as the book does: no prefix to point at and the versions
@@ -438,11 +470,39 @@ jobs:
       - name: '5.5 glibc 2.32 (cross-compiled INTO the sysroot)'
         run: |
           set -eu
-          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          # WHAT FAILED, WHY, AND WHERE THE LOG IS. The old one-liner grepped
+          # "Error [0-9]", which matches make's own "*** [target] Error 1"
+          # summary lines -- and make prints several of those per real failure,
+          # so head -10 filled with them and the actual `error:` never appeared.
+          # Compiler diagnostics first, make's summary second, tail last.
+          die() {
+            echo "  --- $1 FAILED ---"
+            echo "  log: $(pwd)/$2"
+            echo "  --- diagnostics ---"
+            grep -nE "error:|Error:|configure: error|undefined reference|cannot find|No such file|command not found" "$2" \
+              | grep -vE "^[0-9]+:make(\[[0-9]+\])?:" | head -12 | sed 's/^/    /'
+            echo "  --- make summary ---"
+            grep -nE "\*\*\* \[" "$2" | head -4 | sed 's/^/    /'
+            echo "  --- tail ---"
+            tail -20 "$2" | sed 's/^/    /'
+            exit 1
+          }
           tar xf "glibc-$GLIBC.tar.xz"
           ( cd "glibc-$GLIBC" && patch -Np1 -i "../glibc-$GLIBC-fhs-1.patch" > /dev/null )
           echo "  FHS patch applied"
+          cg() {
+            # DIAGNOSTICS TO stderr, THE TRIPLET TO stdout. cg is always
+            # called inside $( ), which captures stdout -- an echo here would
+            # be swallowed into the variable instead of reaching the log, and
+            # the failure would print nothing at all.
+            [ -f "$1" ] || { echo "  config.guess MISSING: $1" >&2; return 1; }
+            g=$(sh "$1" 2>/dev/null) || { echo "  config.guess FAILED: $1" >&2; return 1; }
+            [ -n "$g" ] || { echo "  config.guess PRINTED NOTHING: $1" >&2; return 1; }
+            printf '%s\n' "$g"
+          }
           mkdir -p b-glibc && cd b-glibc
+          BUILD=$(cg "../glibc-$GLIBC/scripts/config.guess") || exit 1
+          echo "  build triplet: $BUILD"
           # libc_cv_slibdir=/lib, NOT /usr/lib. LFS 10.0 has no /usr merge, so
           # the shared libc belongs in /lib and that is where the loader baked
           # into every binary will look. 13.0 says /usr/lib because 13.0 merged.
@@ -450,7 +510,7 @@ jobs:
           "../glibc-$GLIBC/configure" \
             --prefix=/usr \
             --host="$LFS_TGT" \
-            --build="$(../glibc-$GLIBC/scripts/config.guess)" \
+            --build="$BUILD" \
             --enable-kernel=3.2 \
             --with-headers="$S/usr/include" \
             libc_cv_slibdir=/lib \
@@ -494,14 +554,42 @@ jobs:
       - name: '5.6 libstdc++ pass 1'
         run: |
           set -eu
-          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          # WHAT FAILED, WHY, AND WHERE THE LOG IS. The old one-liner grepped
+          # "Error [0-9]", which matches make's own "*** [target] Error 1"
+          # summary lines -- and make prints several of those per real failure,
+          # so head -10 filled with them and the actual `error:` never appeared.
+          # Compiler diagnostics first, make's summary second, tail last.
+          die() {
+            echo "  --- $1 FAILED ---"
+            echo "  log: $(pwd)/$2"
+            echo "  --- diagnostics ---"
+            grep -nE "error:|Error:|configure: error|undefined reference|cannot find|No such file|command not found" "$2" \
+              | grep -vE "^[0-9]+:make(\[[0-9]+\])?:" | head -12 | sed 's/^/    /'
+            echo "  --- make summary ---"
+            grep -nE "\*\*\* \[" "$2" | head -4 | sed 's/^/    /'
+            echo "  --- tail ---"
+            tail -20 "$2" | sed 's/^/    /'
+            exit 1
+          }
           command -v "$LFS_TGT-g++" > /dev/null \
             || { echo "  the cross g++ is not on PATH -- configure would"; \
                  echo "  silently use the host's instead"; exit 1; }
+          cg() {
+            # DIAGNOSTICS TO stderr, THE TRIPLET TO stdout. cg is always
+            # called inside $( ), which captures stdout -- an echo here would
+            # be swallowed into the variable instead of reaching the log, and
+            # the failure would print nothing at all.
+            [ -f "$1" ] || { echo "  config.guess MISSING: $1" >&2; return 1; }
+            g=$(sh "$1" 2>/dev/null) || { echo "  config.guess FAILED: $1" >&2; return 1; }
+            [ -n "$g" ] || { echo "  config.guess PRINTED NOTHING: $1" >&2; return 1; }
+            printf '%s\n' "$g"
+          }
           mkdir -p b-libstdcxx && cd b-libstdcxx
+          BUILD=$(cg "../gcc-$GCCVER/config.guess") || exit 1
+          echo "  build triplet: $BUILD"
           "../gcc-$GCCVER/libstdc++-v3/configure" \
             --host="$LFS_TGT" \
-            --build="$(../gcc-$GCCVER/config.guess)" \
+            --build="$BUILD" \
             --prefix=/usr \
             --disable-multilib \
             --disable-nls \
@@ -516,8 +604,34 @@ jobs:
       - name: '6.x userland: BusyBox, make, binutils pass 2, gcc pass 2'
         run: |
           set -eu
-          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          # WHAT FAILED, WHY, AND WHERE THE LOG IS. The old one-liner grepped
+          # "Error [0-9]", which matches make's own "*** [target] Error 1"
+          # summary lines -- and make prints several of those per real failure,
+          # so head -10 filled with them and the actual `error:` never appeared.
+          # Compiler diagnostics first, make's summary second, tail last.
+          die() {
+            echo "  --- $1 FAILED ---"
+            echo "  log: $(pwd)/$2"
+            echo "  --- diagnostics ---"
+            grep -nE "error:|Error:|configure: error|undefined reference|cannot find|No such file|command not found" "$2" \
+              | grep -vE "^[0-9]+:make(\[[0-9]+\])?:" | head -12 | sed 's/^/    /'
+            echo "  --- make summary ---"
+            grep -nE "\*\*\* \[" "$2" | head -4 | sed 's/^/    /'
+            echo "  --- tail ---"
+            tail -20 "$2" | sed 's/^/    /'
+            exit 1
+          }
           export PATH="$S/tools/bin:$PATH"
+          cg() {
+            # DIAGNOSTICS TO stderr, THE TRIPLET TO stdout. cg is always
+            # called inside $( ), which captures stdout -- an echo here would
+            # be swallowed into the variable instead of reaching the log, and
+            # the failure would print nothing at all.
+            [ -f "$1" ] || { echo "  config.guess MISSING: $1" >&2; return 1; }
+            g=$(sh "$1" 2>/dev/null) || { echo "  config.guess FAILED: $1" >&2; return 1; }
+            [ -n "$g" ] || { echo "  config.guess PRINTED NOTHING: $1" >&2; return 1; }
+            printf '%s\n' "$g"
+          }
 
           # m4 IS FIRST IN CHAPTER 6, and that is where the book puts it:
           #   m4, ncurses, bash, coreutils, ... make, binutils pass 2, gcc pass 2
@@ -543,8 +657,10 @@ jobs:
           ( cd "$W" && tar xf "m4-$M4_VER.tar.xz" && cd "m4-$M4_VER"
             sed -i 's/IO_ftrylockfile/IO_EOF_SEEN/' lib/*.c
             echo "#define _IO_IN_BACKUP 0x100" >> lib/stdio-impl.h
+            BUILD=$(cg build-aux/config.guess) || exit 1
+            echo "    m4 build triplet: $BUILD"
             ./configure --prefix=/usr --host="$LFS_TGT" \
-              --build="$(build-aux/config.guess)" > c.log 2>&1 || die "m4 configure" c.log
+              --build="$BUILD" > c.log 2>&1 || die "m4 configure" c.log
             make -j"$(nproc)" > b.log 2>&1 || die "m4 build" b.log
             make DESTDIR="$S" install > i.log 2>&1 || die "m4 install" i.log )
           echo "  m4 $M4_VER installed (cross)"
@@ -592,17 +708,21 @@ jobs:
           # this same file already had the right path; make did not.
           # --without-guile is the book's too: guile is optional and its
           # absence should not be discovered by a configure probe.
+          BUILD=$(cg "../make-$MAKE_VER/build-aux/config.guess") || exit 1
+          echo "  make build triplet: $BUILD"
           "../make-$MAKE_VER/configure" --prefix=/usr --host="$LFS_TGT" \
-            --build="$(../make-$MAKE_VER/build-aux/config.guess)" \
+            --build="$BUILD" \
             --without-guile --disable-nls \
             > c.log 2>&1 || die "make configure" c.log
           make -j"$(nproc)" > b.log 2>&1 || die "make build" b.log
           make DESTDIR="$S" install > i.log 2>&1 || die "make install" i.log
 
           cd "$W" && mkdir -p b-bu2 && cd b-bu2
+          BUILD=$(cg "../binutils-$BINUTILS/config.guess") || exit 1
+          echo "  binutils2 build triplet: $BUILD"
           "../binutils-$BINUTILS/configure" \
             --prefix=/usr \
-            --build="$(../binutils-$BINUTILS/config.guess)" \
+            --build="$BUILD" \
             --host="$LFS_TGT" \
             --disable-nls --enable-shared --disable-werror --enable-64-bit-bfd \
             > c.log 2>&1 || die "binutils2 configure" c.log
@@ -616,8 +736,10 @@ jobs:
           # 10.0 creates it by hand before configure runs.
           mkdir -pv "$LFS_TGT/libgcc"
           ln -sf ../../../"gcc-$GCCVER"/libgcc/gthr-posix.h "$LFS_TGT/libgcc/gthr-default.h"
+          BUILD=$(cg "../gcc-$GCCVER/config.guess") || exit 1
+          echo "  gcc2 build triplet: $BUILD"
           "../gcc-$GCCVER/configure" \
-            --build="$(../gcc-$GCCVER/config.guess)" \
+            --build="$BUILD" \
             --host="$LFS_TGT" \
             --prefix=/usr \
             CC_FOR_TARGET="$LFS_TGT-gcc" \
@@ -637,7 +759,23 @@ jobs:
       - name: '7.x libstdc++ pass 2 and bison, INSIDE the box (LFS ch. 7)'
         run: |
           set -eu
-          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          # WHAT FAILED, WHY, AND WHERE THE LOG IS. The old one-liner grepped
+          # "Error [0-9]", which matches make's own "*** [target] Error 1"
+          # summary lines -- and make prints several of those per real failure,
+          # so head -10 filled with them and the actual `error:` never appeared.
+          # Compiler diagnostics first, make's summary second, tail last.
+          die() {
+            echo "  --- $1 FAILED ---"
+            echo "  log: $(pwd)/$2"
+            echo "  --- diagnostics ---"
+            grep -nE "error:|Error:|configure: error|undefined reference|cannot find|No such file|command not found" "$2" \
+              | grep -vE "^[0-9]+:make(\[[0-9]+\])?:" | head -12 | sed 's/^/    /'
+            echo "  --- make summary ---"
+            grep -nE "\*\*\* \[" "$2" | head -4 | sed 's/^/    /'
+            echo "  --- tail ---"
+            tail -20 "$2" | sed 's/^/    /'
+            exit 1
+          }
           export PATH="$S/tools/bin:$PATH"
 
           # CHAPTER 7 IS NOT OPTIONAL AND RUN 1 SKIPPED IT. The box went
@@ -769,7 +907,8 @@ jobs:
           # the ladder does not test is a tool whose failure arrives late.
           rung "7b. ar"          /usr/bin/ar --version
           rung "7c. ranlib"      /usr/bin/ranlib --version
-          rung "8. bison"        /usr/bin/bison --version
+          rung "8. m4"           /usr/bin/m4 --version
+          rung "8b. bison"       /usr/bin/bison --version
           echo
           echo "  --- 9. compile and run C, entirely inside ---"
           mkdir -p "$S/work"
@@ -796,9 +935,9 @@ jobs:
             echo '  std::vector<int> v{1,2,3}; int s=0; for(int x:v) s+=x;'
             echo '  return s + (int)p->size() + 34; }'
           } > "$S/work/t.cpp"
-          S="$S" "$W/box10.sh" /usr/bin/g++ -o /work/tcc /work/t.cpp 2>&1 | head -8 | sed 's/^/    /'
-          if [ -x "$S/work/tcc" ]; then
-            S="$S" "$W/box10.sh" /work/tcc; echo "    ran: exit=$? (expect 42)"
+          S="$S" "$W/box10.sh" /usr/bin/g++ -o /work/tpp /work/t.cpp 2>&1 | head -8 | sed 's/^/    /'
+          if [ -x "$S/work/tpp" ]; then
+            S="$S" "$W/box10.sh" /work/tpp; echo "    ran: exit=$? (expect 42)"
           else
             echo "    NO C++ BINARY -- gcc 15/16 cannot be built from this box."
             echo "    Every modern gcc contains C++ sources; this is the rung"
@@ -829,7 +968,7 @@ jobs:
           echo "  staged: $(ls "$S/work" | tr '\n' ' ')"
 
       - name: 'ATTEMPT 1: gcc 10 builds gcc ${{ env.GCC15 }}'
-        if: ${{ github.event.inputs.try_gcc15 != 'no' }}
+        if: ${{ success() && github.event.inputs.try_gcc15 != 'no' }}
         continue-on-error: true
         run: |
           set -u
@@ -847,24 +986,73 @@ jobs:
           fi
           echo "  MODE: $BOOTTGT"
           S="$S" BOOTFLAG="$BOOTFLAG" BOOTTGT="$BOOTTGT" "$W/box10.sh" /bin/sh -c '
-            gcc --version | head -1
-            mkdir -p /work/b15 && cd /work/b15
-            /work/src-'"$GCC15"'/configure --prefix=/work/out15 \
+            set -u
+            V='"$GCC15"'; B=/work/b15; O=/work/out15
+            echo "builder cc : $(gcc --version | head -1)"
+            echo "builder c++: $(g++ --version | head -1)"
+            echo "builder as : $(as --version | head -1)"
+            mkdir -p $B && cd $B
+            # --disable-nls IS NOT DECORATION. Every other configure in this
+            # file passes it; these two did not. This box installs libstdc++
+            # and bison out of LFS chapter 7 and nothing else -- no gettext,
+            # no perl, no texinfo -- so an enabled NLS looks for msgfmt and
+            # gets "command not found", which is the same Error 127 shape as
+            # the gmp/demos/calc failure chapter 7 already exists to fix.
+            /work/src-$V/configure --prefix=$O \
               --enable-languages=c,c++ --disable-multilib $BOOTFLAG \
+              --disable-nls \
               --disable-libsanitizer --disable-libvtv --disable-libgomp \
               --disable-libquadmath --disable-werror > c.log 2>&1
-            echo "configure rc=$?"; tail -5 c.log
+            rc=$?
+            echo "configure rc=$rc"
+            if [ $rc -ne 0 ]; then
+              # STOP HERE. Running make on a tree configure rejected produces a
+              # second, unrelated failure and buries the first.
+              echo "--- configure said ---"
+              grep -nE "configure: error|error:|command not found|No such file" c.log | head -12
+              echo "--- config.log tail ---"
+              tail -25 config.log 2>/dev/null
+              echo "--- c.log tail ---"
+              tail -15 c.log
+              exit 1
+            fi
             make -j4 MAKEINFO=true $BOOTTGT > b.log 2>&1
-            echo "make ($BOOTTGT) rc=$?"
-            [ "$BOOTTGT" = "bootstrap" ] && grep -E "Comparing stages|Comparison successful|differ" b.log | tail -5
-            grep -E "internal compiler error|error:|Error [0-9]" b.log | head -8
-            echo "--- last lines ---"; tail -12 b.log
+            rc=$?
+            echo "make ($BOOTTGT) rc=$rc"
+            if [ "$BOOTTGT" = bootstrap ]; then
+              grep -E "Comparing stages|Comparison successful|differ" b.log | tail -5
+            fi
+            if [ $rc -ne 0 ]; then
+              # COMPILER DIAGNOSTICS BEFORE make SUMMARY LINES. make prints
+              # several "*** [target] Error 1" per real failure, so a head
+              # limit on a combined grep fills with those and the actual
+              # error: never appears.
+              echo "--- diagnostics ---"
+              grep -nE "internal compiler error|error:|fatal error|undefined reference|cannot find|No such file|command not found" b.log \
+                | grep -vE ":make(\[[0-9]+\])?:" | head -15
+              echo "--- make summary ---"
+              grep -nE "[*][*][*] [[]" b.log | head -4
+              echo "--- last directory entered ---"
+              grep -n "Entering directory" b.log | tail -3
+              echo "--- tail ---"
+              tail -20 b.log
+              exit 1
+            fi
             make install > i.log 2>&1; echo "install rc=$?"
-            /work/out15/bin/gcc --version 2>&1 | head -1
+            $O/bin/gcc --version 2>&1 | head -1
+            # DOES THE COMPILER WE JUST BUILT ACTUALLY WORK? Installing is not
+            # running. One C program, compiled and executed inside the box.
+            echo "--- smoke test ---"
+            printf "int main(void){return 42;}\n" > $B/smoke.c
+            if $O/bin/gcc -o $B/smoke $B/smoke.c 2> $B/smoke.err; then
+              $B/smoke; echo "  smoke: exit=$? (expect 42)"
+            else
+              echo "  smoke: COMPILE FAILED"; head -10 $B/smoke.err
+            fi
           ' 2>&1 | sed 's/^/    /'
 
       - name: 'ATTEMPT 2: gcc 10 builds gcc ${{ env.GCC16 }}'
-        if: ${{ github.event.inputs.try_gcc16 != 'no' }}
+        if: ${{ success() && github.event.inputs.try_gcc16 != 'no' }}
         continue-on-error: true
         run: |
           set -u
@@ -881,20 +1069,69 @@ jobs:
           fi
           echo "  MODE: $BOOTTGT"
           S="$S" BOOTFLAG="$BOOTFLAG" BOOTTGT="$BOOTTGT" "$W/box10.sh" /bin/sh -c '
-            gcc --version | head -1
-            mkdir -p /work/b16 && cd /work/b16
-            /work/src-'"$GCC16"'/configure --prefix=/work/out16 \
+            set -u
+            V='"$GCC16"'; B=/work/b16; O=/work/out16
+            echo "builder cc : $(gcc --version | head -1)"
+            echo "builder c++: $(g++ --version | head -1)"
+            echo "builder as : $(as --version | head -1)"
+            mkdir -p $B && cd $B
+            # --disable-nls IS NOT DECORATION. Every other configure in this
+            # file passes it; these two did not. This box installs libstdc++
+            # and bison out of LFS chapter 7 and nothing else -- no gettext,
+            # no perl, no texinfo -- so an enabled NLS looks for msgfmt and
+            # gets "command not found", which is the same Error 127 shape as
+            # the gmp/demos/calc failure chapter 7 already exists to fix.
+            /work/src-$V/configure --prefix=$O \
               --enable-languages=c,c++ --disable-multilib $BOOTFLAG \
+              --disable-nls \
               --disable-libsanitizer --disable-libvtv --disable-libgomp \
               --disable-libquadmath --disable-werror > c.log 2>&1
-            echo "configure rc=$?"; tail -5 c.log
+            rc=$?
+            echo "configure rc=$rc"
+            if [ $rc -ne 0 ]; then
+              # STOP HERE. Running make on a tree configure rejected produces a
+              # second, unrelated failure and buries the first.
+              echo "--- configure said ---"
+              grep -nE "configure: error|error:|command not found|No such file" c.log | head -12
+              echo "--- config.log tail ---"
+              tail -25 config.log 2>/dev/null
+              echo "--- c.log tail ---"
+              tail -15 c.log
+              exit 1
+            fi
             make -j4 MAKEINFO=true $BOOTTGT > b.log 2>&1
-            echo "make ($BOOTTGT) rc=$?"
-            [ "$BOOTTGT" = "bootstrap" ] && grep -E "Comparing stages|Comparison successful|differ" b.log | tail -5
-            grep -E "internal compiler error|error:|Error [0-9]" b.log | head -8
-            echo "--- last lines ---"; tail -12 b.log
+            rc=$?
+            echo "make ($BOOTTGT) rc=$rc"
+            if [ "$BOOTTGT" = bootstrap ]; then
+              grep -E "Comparing stages|Comparison successful|differ" b.log | tail -5
+            fi
+            if [ $rc -ne 0 ]; then
+              # COMPILER DIAGNOSTICS BEFORE make SUMMARY LINES. make prints
+              # several "*** [target] Error 1" per real failure, so a head
+              # limit on a combined grep fills with those and the actual
+              # error: never appears.
+              echo "--- diagnostics ---"
+              grep -nE "internal compiler error|error:|fatal error|undefined reference|cannot find|No such file|command not found" b.log \
+                | grep -vE ":make(\[[0-9]+\])?:" | head -15
+              echo "--- make summary ---"
+              grep -nE "[*][*][*] [[]" b.log | head -4
+              echo "--- last directory entered ---"
+              grep -n "Entering directory" b.log | tail -3
+              echo "--- tail ---"
+              tail -20 b.log
+              exit 1
+            fi
             make install > i.log 2>&1; echo "install rc=$?"
-            /work/out16/bin/gcc --version 2>&1 | head -1
+            $O/bin/gcc --version 2>&1 | head -1
+            # DOES THE COMPILER WE JUST BUILT ACTUALLY WORK? Installing is not
+            # running. One C program, compiled and executed inside the box.
+            echo "--- smoke test ---"
+            printf "int main(void){return 42;}\n" > $B/smoke.c
+            if $O/bin/gcc -o $B/smoke $B/smoke.c 2> $B/smoke.err; then
+              $B/smoke; echo "  smoke: exit=$? (expect 42)"
+            else
+              echo "  smoke: COMPILE FAILED"; head -10 $B/smoke.err
+            fi
           ' 2>&1 | sed 's/^/    /'
 
       - name: 'RUNG 2 SUMMARY'
@@ -935,7 +1172,7 @@ jobs:
           # box next to two failed attempts -- when in fact the attempts could
           # not have worked and the box was the reason.
           printf '  %-26s %s\n' "box compiles C++  <- decides" \
-            "$(state "$S/work/t.cpp" "$S/work/tcc")"
+            "$(state "$S/work/t.cpp" "$S/work/tpp")"
           printf '  %-26s %s\n' "gcc $GCC15 built" \
             "$(state "$S/work/src-$GCC15" "$S/work/out15/bin/gcc")"
           printf '  %-26s %s\n' "gcc $GCC16 built" \
@@ -957,8 +1194,25 @@ jobs:
             box10.sh
             b-*/c.log
             b-*/b.log
+            b-*/i.log
+            b-*/config.log
+            m4-*/c.log
+            m4-*/b.log
+            m4-*/i.log
+            busybox-*/b.log
+            sysroot/.sysroot-complete
+            sysroot/work/b-libstdcxx2/c.log
+            sysroot/work/b-libstdcxx2/b.log
+            sysroot/work/b-libstdcxx2/i.log
+            sysroot/work/bison/c.log
+            sysroot/work/bison/b.log
+            sysroot/work/bison/i.log
             sysroot/work/b15/c.log
             sysroot/work/b15/b.log
+            sysroot/work/b15/i.log
+            sysroot/work/b15/config.log
             sysroot/work/b16/c.log
             sysroot/work/b16/b.log
+            sysroot/work/b16/i.log
+            sysroot/work/b16/config.log
           if-no-files-found: warn
