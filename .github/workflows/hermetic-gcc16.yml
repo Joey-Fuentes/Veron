@@ -1022,37 +1022,123 @@ jobs:
           cat > "$S/work/mkir.sh" <<'IEOF'
           #!/bin/sh
           set -e
+          # THE INITRAMFS HAD NO C LIBRARY IN IT, AND COULD NEVER HAVE BOOTED.
+          # It carried one file -- a dynamically linked, PIE busybox -- plus
+          # symlinks to it. busybox's PT_INTERP names /lib/ld-linux-aarch64.so.1
+          # and that loader was not in the archive, so the kernel could not exec
+          # /init and panicked:
+          #     Run /init as init process
+          #     Failed to execute /init (error -2)
+          #     Kernel panic - not syncing: No working init found.
+          # -2 is ENOENT, and nothing in that message mentions a library: it
+          # reads as a broken or missing init SCRIPT, which is where several
+          # hours could have gone. The 624,847-byte archive was the tell -- that
+          # is the size of a busybox and nothing else.
+          #
+          # Copying in the sysroot's own loader and libc is also the stronger
+          # claim. A statically linked busybox would boot too, but it would only
+          # show that the compiler works. This shows the glibc THIS BOX BUILT
+          # running as PID 1 under the kernel THIS BOX BUILT, on the real kernel
+          # ABI, outside bwrap.
           rm -rf /work/ir
-          mkdir -p /work/ir/bin /work/ir/dev /work/ir/proc /work/ir/sys
+          mkdir -p /work/ir/bin /work/ir/dev /work/ir/proc /work/ir/sys /work/ir/usr/lib
+          # Mirror the sysroot's own layout, so whichever of the two paths a
+          # binary names resolves to the same place.
+          ln -s usr/lib /work/ir/lib
           cp /usr/bin/busybox /work/ir/bin/
+
+          B=/usr/bin/busybox
+          INTERP=$(readelf -l $B | sed -n "s/.*interpreter: \(.*\)\]/\1/p")
+          echo "  busybox PT_INTERP: ${INTERP:-<none: statically linked>}"
+          if [ -n "$INTERP" ]; then
+            # PUT THE LOADER AT THE PATH THE ELF NAMES, whatever that path is.
+            # Our triplet gives /lib/ld-linux-aarch64.so.1 and /lib is the
+            # symlink made above, so it lands in usr/lib either way -- but
+            # DERIVING the directory instead of assuming it is what makes this
+            # survive a change of architecture. Tested against an x86-64 binary,
+            # whose PT_INTERP is /lib64/..., where assuming /lib fails.
+            mkdir -p "/work/ir$(dirname "$INTERP")"
+            cp -L "$INTERP" "/work/ir$INTERP"
+            for l in $(readelf -d $B | sed -n "s/.*Shared library: \[\(.*\)\]/\1/p"); do
+              if [ -e "/usr/lib/$l" ]; then
+                cp -L "/usr/lib/$l" /work/ir/usr/lib/
+                echo "    + $l"
+              else
+                echo "    ! $l NOT FOUND in /usr/lib"; exit 1
+              fi
+            done
+            # A copy that silently went nowhere looks exactly like no copy, and
+            # this is the check whose absence cost the last run. Assert the
+            # loader is reachable at the path the ELF actually names, and that
+            # every library it asked for is present too.
+            [ -e "/work/ir$INTERP" ] || {
+              echo "  the loader did not land at $INTERP"; exit 1; }
+            for l in $(readelf -d $B | sed -n "s/.*Shared library: \[\(.*\)\]/\1/p"); do
+              [ -e "/work/ir/usr/lib/$l" ] || { echo "  $l did not land"; exit 1; }
+            done
+            echo "  image libs: $(ls /work/ir/usr/lib | tr '\n' ' ')"
+          fi
+
           cd /work/ir/bin
-          for a in sh mount umount uname echo cat ls poweroff dmesg sleep; do
+          # EVERY APPLET init USES MUST BE HERE. A name that is missing prints
+          # "head: not found" from inside PID 1, where it is easy to miss and
+          # silently empties whatever it was measuring.
+          for a in sh mount umount uname echo cat ls mkdir sleep dmesg head poweroff; do
             ln -sf busybox $a
           done
           cd /work/ir
+          # bwrap is unprivileged, so mknod is unavailable here -- that is what
+          # CONFIG_DEVTMPFS_MOUNT is for. Try anyway, and say which of the two
+          # ends up carrying /dev/console.
+          if mknod dev/console c 5 1 2>/dev/null; then
+            echo "  /dev/console created in the image"
+          else
+            echo "  no mknod in the box -- /dev/console comes from CONFIG_DEVTMPFS_MOUNT"
+          fi
           cat > init <<'INITEOF'
           #!/bin/sh
-          # THIS INITRAMFS CARRIES NO /dev/console AND CANNOT. A cpio only holds
-          # a device node if it was built by real root, and this one is built
-          # inside a user namespace where mknod is denied. So init may start
-          # with no stdin, stdout or stderr at all -- in which case every echo
-          # below vanishes and the console shows a kernel that looks like it
-          # never reached userspace. Mount devtmpfs first, then attach stdio by
-          # hand, before assuming anything can be printed.
-          /bin/mount -t devtmpfs none /dev 2>/dev/null || true
-          [ -c /dev/console ] && exec 0</dev/console 1>/dev/console 2>/dev/console
+          mount -t devtmpfs none /dev 2>/dev/null
+          # Only redirect if there is something to redirect TO. An exec onto a
+          # missing device kills the shell, and a kernel that booted perfectly
+          # then prints nothing and reads as a kernel that never started.
+          [ -c /dev/console ] && exec > /dev/console 2>&1 < /dev/console
           mount -t proc none /proc
           mount -t sysfs none /sys
           echo "VERON-BOOT-OK $(uname -srm)"
           echo "VERON-KERNEL $(cat /proc/version)"
+          echo "VERON-LIBC $(/lib/ld-linux-aarch64.so.1 --version 2>&1 | head -1)"
           echo "VERON-INIT-DONE"
           poweroff -f
           INITEOF
           chmod +x init
-          find . | cpio -o -H newc 2>/dev/null | gzip -9 > /work/initramfs.cpio.gz
+          # cpio AND gzip SEPARATELY, AND cpio's STDERR KEPT. As one pipeline
+          # the exit status is gzip's, so a cpio that failed outright still
+          # produced a file -- an empty archive gzips to about 20 bytes, which
+          # is non-empty, so a size check passes and QEMU is handed an image
+          # with no init in it. That is the SAME "Failed to execute /init"
+          # console message as a missing loader, from an unrelated cause.
+          # Reproduced by running this script where cpio was not installed.
+          find . | cpio -o -H newc > /work/initramfs.cpio 2> /tmp/cpio.err || {
+            echo "  cpio failed:"; head -5 /tmp/cpio.err | sed 's/^/    /'; exit 1; }
+          gzip -9 -c /work/initramfs.cpio > /work/initramfs.cpio.gz
+          rm -f /work/initramfs.cpio
           echo "initramfs: $(wc -c < /work/initramfs.cpio.gz) bytes"
-          echo "contents:"
-          gzip -dc /work/initramfs.cpio.gz | cpio -t 2>/dev/null | head -20
+          gzip -dc /work/initramfs.cpio.gz | cpio -t > /tmp/ir.list 2>/dev/null || true
+          echo "contents ($(wc -l < /tmp/ir.list) entries):"
+          sed 's/^/    /' /tmp/ir.list
+          # REQUIRE THE THREE THINGS THE BOOT CANNOT START WITHOUT, by looking
+          # inside the finished archive rather than at the directory it was
+          # built from. Matching on a trailing component rather than an exact
+          # string because cpio implementations differ on the leading "./".
+          need="init busybox"
+          [ -z "$INTERP" ] || need="$need $(basename "$INTERP")"
+          for w in $need; do
+            if grep -qE "(^|/)$w\$" /tmp/ir.list; then
+              echo "  in the image: $w"
+            else
+              echo "  MISSING FROM THE IMAGE: $w"; exit 1
+            fi
+          done
           IEOF
           chmod +x "$S/work/mkir.sh"
           S="$S" "$W/box16.sh" /bin/sh /work/mkir.sh 2>&1 | sed 's/^/    /'
