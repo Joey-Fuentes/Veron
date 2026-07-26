@@ -966,48 +966,63 @@ jobs:
 
       - name: 'STAGE 3 GATE: is the gcc 10 real, and is it a rung UP?'
         if: ${{ always() && github.event.inputs.try_gcc10 != 'no' }}
-        continue-on-error: true
         run: |
           set -eu
+          # NO continue-on-error, AND THE SCRIPT ASSERTS. Until now this step
+          # was named GATE and behaved as a report: it printed "expect exit 55"
+          # beside the real value and then exited 0 regardless, so a gcc 10 that
+          # answered 99 would have gone green. A check that cannot fail is not a
+          # check, and that rule is this repository's own.
           cat > work/pr.sh <<'EOS'
           set -u
           set +e
           say() { printf '%s\n' "$*"; }
-          if [ ! -x /work/out10/bin/g++ ]; then
+          fail=0
+          bad() { say "    ^^ FAIL: $*"; fail=1; }
+
+          if [ ! -x /work/out10/bin/g++ ] || [ ! -x /work/out10/bin/gcc ]; then
             say "  no gcc 10 to test -- stage 3 did not install one"
-            exit 0
+            say "  This step only runs when stage 3 was asked for, so a missing"
+            say "  compiler here is a failure, not a skip."
+            exit 1
           fi
           export LD_LIBRARY_PATH=/work/out10/lib64:/work/out10/lib:/work/out2/lib64
 
-          # 1. THE C COMPILER, WHICH UNTIL NOW WAS ONLY EVER ASKED --version.
-          # Run 81884742896 reported "gcc (GCC) 10.2.0" and nothing else ever
-          # handed it a source file, so the C half of the rung rested on a
-          # version string -- the exact non-proof the C++ gate below is written
-          # to avoid. fib exercises a conditional, a subtraction and recursion,
-          # and RUNNING it is what separates codegen from mere compilation.
+          # 1. THE C COMPILER, WHICH UNTIL RECENTLY WAS ONLY EVER ASKED --version.
+          # fib exercises a conditional, a subtraction and recursion, and RUNNING
+          # it is what separates codegen from mere compilation.
           say "  --- gcc 10's gcc on C (expect exit 55) ---"
           printf 'int fib(int n){return n<2?n:fib(n-1)+fib(n-2);}\n'  > /tmp/c10.c
           printf 'int main(void){return fib(10);}\n'                 >> /tmp/c10.c
           rm -f /tmp/c10
           /work/out10/bin/gcc -O2 /tmp/c10.c -o /tmp/c10 2> /tmp/c10.err
-          say "    compile+link rc=$?"
+          crc=$?
+          say "    compile+link rc=$crc"
           [ -s /tmp/c10.err ] && head -10 /tmp/c10.err | sed 's/^/      /'
           if [ -x /tmp/c10 ]; then
-            /tmp/c10; say "    ran: exit=$? (expect 55)"
+            /tmp/c10; rc=$?
+            say "    ran: exit=$rc (expect 55)"
+            [ "$rc" = 55 ] || bad "gcc 10's C compiler emitted code that computes fib(10) wrong"
           else
-            say "    NO BINARY -- gcc 10's C compiler cannot link."
+            bad "gcc 10's C compiler cannot link"
           fi
 
-          # 2. AND ON REAL C, NOT A TOY. Six lines of fib is the same evidence
-          # cc1 gave at the bottom of this chain, and this file already records
-          # why that is not enough: a compiler miscompiled in register
-          # allocation, or in a mode the toy never reaches, passes it unchanged.
-          # gmp is a few hundred files of dense integer code and it is already
-          # on disk, so this costs about a minute.
-          say "  --- and on real C: gmp 6.2.1 built by gcc 10 ---"
+          # 2. AND ON REAL C, COMPILED **AND RUN**. Six lines of fib is the same
+          # evidence cc1 gave at the bottom of this chain, and this repository
+          # already records why that is not enough: a compiler miscompiled in
+          # register allocation, or in a mode the toy never reaches, passes it
+          # unchanged. Building 515 objects and executing none of them has the
+          # same hole one size larger, so the archive is linked and asked for an
+          # answer with a known value.
+          #
+          # Worth noting what the box gives here for free: PATH is
+          # /usr/bin:/bin:/usr/sbin:/sbin and every host compiler in it is
+          # masked, so a build that succeeds CANNOT have used anything but the
+          # CC named on the command line.
+          say "  --- and on real C: gmp 6.2.1 built by gcc 10, then RUN ---"
           gt=$(ls /work/gmp-*.tar.* 2>/dev/null | head -1)
           if [ -z "$gt" ]; then
-            say "    no gmp tarball on disk -- skipped"
+            bad "no gmp tarball on disk -- the real-C check could not run"
           else
             rm -rf /work/gmp-g10 && mkdir -p /work/gmp-g10
             tar xf "$gt" -C /work/gmp-g10 --strip-components=1
@@ -1021,22 +1036,50 @@ jobs:
               #   $(grep -c '\.o$' build.log || echo '?')
               # and printed "(0\n? objects)" -- grep -c PRINTS the count and
               # EXITS 1 on zero matches, so the fallback appended a second
-              # value. That trap is already in this repo's method notes and I
-              # walked into it anyway. find answers the question directly.
+              # value. find answers the question directly.
               say "    make rc=$rc  ($(find . -name '*.o' | wc -l) objects)"
               if [ "$rc" -ne 0 ]; then
                 say "    --- what failed ---"
                 grep -nE "error:|internal compiler error" build.log | head -8 | sed 's/^/      /'
                 tail -10 build.log | sed 's/^/      /'
-              fi )
+                exit 1
+              fi
+              make install > install.log 2>&1 || exit 1 )
+            grc=$?
+            if [ "$grc" -ne 0 ]; then
+              bad "gcc 10 could not build gmp"
+            else
+              # 2^100 has a known decimal expansion, and reaching it exercises
+              # gmp's limb arithmetic rather than a toy loop.
+              {
+                echo '#include <gmp.h>'
+                echo '#include <string.h>'
+                echo 'int main(void){'
+                echo '  mpz_t a; char buf[64];'
+                echo '  mpz_init(a); mpz_ui_pow_ui(a, 2, 100);'
+                echo '  mpz_get_str(buf, 10, a);'
+                echo '  return strcmp(buf, "1267650600228229401496703205376") == 0 ? 42 : 1; }'
+              } > /tmp/gmpt.c
+              rm -f /tmp/gmpt
+              /work/out10/bin/gcc /tmp/gmpt.c -o /tmp/gmpt \
+                -I/work/prefix10/include -L/work/prefix10/lib -lgmp 2> /tmp/gmpt.err
+              say "    probe compile+link rc=$?"
+              [ -s /tmp/gmpt.err ] && head -8 /tmp/gmpt.err | sed 's/^/      /'
+              if [ -x /tmp/gmpt ]; then
+                /tmp/gmpt; rc=$?
+                say "    2^100 via the gcc10-built gmp: exit=$rc (expect 42)"
+                [ "$rc" = 42 ] || bad "the gmp gcc 10 built computes 2^100 wrong"
+              else
+                bad "could not link against the gmp gcc 10 built"
+              fi
+            fi
           fi
 
           say "  --- gcc 10's g++ on C++14 (expect exit 47) ---"
           # A COMPILER THAT EXISTS IS NOT A COMPILER THAT WORKS, and "it built"
-          # is not "we climbed". This file uses C++14 return-type deduction and
-          # a generic lambda -- things gcc 4.7 CANNOT compile -- so building it
-          # is evidence the new rung has capability the old one lacked, not just
-          # a bigger binary.
+          # is not "we climbed". This file uses C++14 return-type deduction, so
+          # building it is evidence the new rung has capability the old one
+          # lacked rather than just a bigger binary.
           {
             echo "#include <string>"
             echo "#include <vector>"
@@ -1052,36 +1095,40 @@ jobs:
           say "    compile+link rc=$?"
           [ -s /tmp/c14.err ] && head -10 /tmp/c14.err | sed 's/^/      /'
           if [ -x /tmp/c14 ]; then
-            /tmp/c14; say "    ran: exit=$? (expect 47)"
+            /tmp/c14; rc=$?
+            say "    ran: exit=$rc (expect 47)"
+            [ "$rc" = 47 ] || bad "gcc 10's g++ emitted code that computes the wrong answer"
           else
-            say "    NO BINARY -- gcc 10's g++ cannot link."
+            bad "gcc 10's g++ cannot link"
           fi
+
           # THE CONTROL, AND THE FLAG IT USES IS THE POINT. Run 81880728014 ran
           # this with -std=c++14 and g++ 4.7 answered
           #     error: unrecognized command line option '-std=c++14'
           # which fires for the right reason by accident: it shows 4.7 does not
           # know the FLAG, not that it cannot compile the CODE. -std=c++11 is
-          # the newest standard 4.7 accepts (c++14 arrived in gcc 4.9), so using
-          # it forces the compiler to actually read the file and reject the
-          # language:
-          #     error: 'add' function uses 'auto' type specifier without
-          #            trailing return type
-          # A control that fails for a reason unrelated to the claim is not a
-          # control.
+          # the newest standard 4.7 accepts (c++14 arrived in gcc 4.9), so it
+          # forces the compiler to read the file and reject the language.
           say "  --- control: the SAME file through g++ 4.7 at its best (-std=c++11) ---"
           rm -f /tmp/c14b
           /work/out2/bin/g++ -std=c++11 /tmp/c14.cpp -o /tmp/c14b 2> /tmp/c14b.err
           say "    compile+link rc=$?"
           head -4 /tmp/c14b.err | sed 's/^/      /'
           if [ -x /tmp/c14b ]; then
-            say "    IT COMPILED -- the control failed, so the C++14 test proves nothing"
+            bad "g++ 4.7 compiled it too -- the C++14 test proves nothing"
           elif grep -q "unrecognized command line option" /tmp/c14b.err; then
-            say "    INCONCLUSIVE -- rejected on the flag, not the language."
-            say "    That says nothing about capability; fix the flag, not the file."
+            bad "rejected on the FLAG, not the language -- the control is broken"
           else
             say "    rejected on the LANGUAGE: gcc 10 compiles what gcc 4.7 cannot"
           fi
-          exit 0
+
+          say ""
+          if [ "$fail" -eq 0 ]; then
+            say "  ALL STAGE 3 CHECKS PASSED"
+          else
+            say "  STAGE 3 CHECKS FAILED -- see the FAIL lines above"
+          fi
+          exit "$fail"
           EOS
           W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh /work/pr.sh
 
