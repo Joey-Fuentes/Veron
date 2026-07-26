@@ -142,6 +142,15 @@ env:
   FLEX_VER: '2.6.4'
   PERL_VER: '5.42.2'
   BC_VER: '7.0.3'
+  # LFS dev book chapter 3. THE BOX NEEDS THIS BECAUSE THE KERNEL DOES:
+  # certs/extract-cert is a hostprog that includes <openssl/bio.h>, and
+  # it is built whenever CONFIG_SYSTEM_TRUSTED_KEYRING is on -- which no
+  # amount of Kconfig disabling reliably prevents, because the symbol is
+  # reached by `select` from a chain that olddefconfig rebuilds. LFS has
+  # openssl by chapter 8 and builds its kernel in chapter 10; this box
+  # stopped at chapter 6, so it was missing a package the book's own
+  # kernel step assumes. That is the actual gap, and this closes it.
+  OPENSSL_VER: '4.0.1'
   # the image itself
   KTAG: 'v7.2-rc4'
   KSHA: '1590cf0'
@@ -261,6 +270,14 @@ jobs:
           # Report what a later step will key off, so the log says it once.
           echo "  skip chapter 5+6: $([ -f "$S/etc/.sysroot-complete" ] && echo yes || echo no)"
           echo "  skip box tools:   $([ -f "$S/etc/.tools-complete" ] && echo yes || echo no)"
+          # If BOTH markers came back, this run will build nothing worth saving
+          # and the cache should be left alone. If either is missing, this run
+          # will produce something the cache does not have -- most importantly
+          # openssl, which is a five-minute build nobody should repeat 20 times.
+          if [ -f "$S/etc/.sysroot-complete" ] && [ -f "$S/etc/.tools-complete" ]; then
+            echo "CACHE_IS_CURRENT=1" >> "$GITHUB_ENV"
+            echo "  the cache is already current; nothing new to save"
+          fi
 
       - name: 'Fetch everything (no network exists inside the box)'
         run: |
@@ -330,6 +347,7 @@ jobs:
             get "https://github.com/westes/flex/releases/download/v$FLEX_VER/flex-$FLEX_VER.tar.gz"
             get "https://www.cpan.org/src/5.0/perl-$PERL_VER.tar.xz"
             get "https://github.com/gavinhoward/bc/releases/download/$BC_VER/bc-$BC_VER.tar.xz"
+            get "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VER/openssl-$OPENSSL_VER.tar.gz"
           fi
 
           echo "  --- linux $KTAG from git ---"
@@ -701,7 +719,8 @@ jobs:
           if [ -f "$S/etc/.tools-complete" ]; then
             echo "  build tools already in the box -- staging the kernel only"
           else
-            for t in m4-$M4_VER bison-$BISON_VER flex-$FLEX_VER perl-$PERL_VER bc-$BC_VER; do
+            for t in m4-$M4_VER bison-$BISON_VER flex-$FLEX_VER perl-$PERL_VER \
+                     bc-$BC_VER openssl-$OPENSSL_VER; do
               d="$S/work/$t"; rm -rf "$d"; mkdir -p "$d"
               # ls the glob: get() may have fallen back to the other extension.
               f=$(ls ${t}.tar.* 2>/dev/null | head -1)
@@ -716,7 +735,11 @@ jobs:
       - name: 'Build m4, bison, flex, perl, bc INSIDE the box'
         run: |
           set -eu
-          if [ -f "$S/etc/.tools-complete" ]; then echo "  (cached -- skipped)"; exit 0; fi
+          if [ -f "$S/etc/.tools-complete" ]; then
+            echo "  (cached -- skipped)"
+            echo "TOOLS_COMPLETE=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
           # WRITTEN TO A FILE, NOT EMBEDDED. The old form was a single-quoted
           # shell string spliced with '"$VAR"' at five points; a quoted heredoc
           # cannot get that wrong and the script is readable as a script.
@@ -728,6 +751,7 @@ jobs:
           FLEX_VER=$FLEX_VER
           PERL_VER=$PERL_VER
           BC_VER=$BC_VER
+          OPENSSL_VER=$OPENSSL_VER
           TEOF
           cat >> "$S/work/tools.sh" <<'TEOF'
           for p in m4-$M4_VER bison-$BISON_VER flex-$FLEX_VER; do
@@ -768,6 +792,15 @@ jobs:
           # it earlier. This box has BusyBox, glibc, binutils, gcc, make, m4,
           # bison and flex, and no Readline at all. Line editing is of no use
           # to a bc the kernel invokes from a Makefile.
+          # UNLINK THE BUSYBOX APPLETS BEFORE INSTALLING OVER THEM.
+          # `busybox --install -s /usr/bin` left /usr/bin/bc and /usr/bin/dc as
+          # symlinks to /usr/bin/busybox. Installing to a path that is a symlink
+          # FOLLOWS it, so a tool writing its binary to /usr/bin/bc writes
+          # through the link and lands on busybox -- which is the shell, ls,
+          # sed, grep and tar this entire box is made of. There is no more
+          # destructive failure available here, and it would present as
+          # everything breaking at once for no visible reason.
+          rm -f /usr/bin/bc /usr/bin/dc
           echo "=== bc ==="; cd /work/bc-$BC_VER
           # The tarball ships `configure` as a wrapper around `configure.sh`;
           # the book calls the former. Prefer it, fall back, and never guess.
@@ -778,10 +811,41 @@ jobs:
             || { echo "  bc configure failed ($cfg):"; tail -20 c.log; exit 1; }
           make -j$(nproc) > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -10; exit 1; }
           make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
+          # PROVE IT IS THE REAL ONE. `command -v bc` cannot tell the difference
+          # between this bc and a busybox applet symlink -- which is what the
+          # previous run's "bc: /usr/bin/bc" actually proved, i.e. nothing. A
+          # regular file means the install landed; a symlink means busybox is
+          # still answering.
+          [ -f /usr/bin/bc ] && [ ! -L /usr/bin/bc ] || {
+            echo "  /usr/bin/bc is not a regular file -- busybox still owns it"
+            ls -l /usr/bin/bc; exit 1; }
           echo "=== perl ==="; cd /work/perl-$PERL_VER
           ./Configure -des -Dprefix=/usr -Dcc=gcc > c.log 2>&1 || { tail -14 c.log; exit 1; }
           make -j$(nproc) > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -6; exit 1; }
           make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
+          # OPENSSL LAST, because its Configure is a perl script and perl is
+          # built immediately above.
+          #
+          # THE BOOK'S LINE, MINUS ONE THING. Chapter 8.49 says:
+          #   ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib \
+          #            shared zlib-dynamic
+          # zlib-dynamic is DROPPED and that is a declared substitution: it
+          # wants a zlib, which the book builds at 8.5 and this box does not
+          # have. Nothing the kernel asks of libcrypto goes near compression.
+          #
+          # install_sw replaces the book's `make MANSUFFIX=ssl install`, which
+          # also renders man pages through pod2man; install_sw is the headers,
+          # the libraries and the openssl binary, which is exactly what certs/
+          # wants and nothing else. The INSTALL_LIBS edit is the book's own
+          # `INSTALL_LIBS=` -- it keeps the static libraries out.
+          echo "=== openssl $OPENSSL_VER ==="; cd /work/openssl-$OPENSSL_VER
+          ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib shared \
+            > c.log 2>&1 || { echo "  openssl config failed:"; tail -15 c.log; exit 1; }
+          make -j$(nproc) > b.log 2>&1 \
+            || { grep -E "error:|Error [0-9]" b.log | head -10; exit 1; }
+          sed -i "/INSTALL_LIBS/s/libcrypto.a libssl.a//" Makefile
+          make install_sw > i.log 2>&1 || { tail -12 i.log; exit 1; }
+
           echo "=== what the kernel build will actually invoke ==="
           bad=0
           for t in m4 bison flex perl bc; do
@@ -791,6 +855,37 @@ jobs:
               echo "  $t: NOT ON PATH"; bad=1
             fi
           done
+          # TEST WHAT THE KERNEL DOES, NOT WHETHER A FILE EXISTS. Both of the
+          # things below are exact reproductions of a kernel build step, which
+          # is the only check that cannot pass while the real thing fails.
+          #
+          # bc: the kernel generates kernel/time/timeconst.h by piping HZ
+          # through its own timeconst.bc. Run that very script.
+          tc=/work/linux/kernel/time/timeconst.bc
+          if [ -f "$tc" ] && echo 250 | bc -q "$tc" > /tmp/tc.out 2>&1; then
+            echo "  bc: timeconst.bc -> $(head -1 /tmp/tc.out)"
+          else
+            echo "  bc: THE KERNEL'S OWN timeconst.bc FAILED:"
+            head -5 /tmp/tc.out 2>/dev/null | sed 's/^/      /'
+            bad=1
+          fi
+          # openssl: certs/extract-cert.c is a hostprog whose first act is to
+          # include <openssl/bio.h>, and the run before last died on exactly
+          # that line. Compile and link the same thing.
+          cat > /tmp/ossl.c <<'OSSLEOF'
+          #include <openssl/bio.h>
+          #include <openssl/pem.h>
+          #include <openssl/err.h>
+          int main(void) { BIO *b = BIO_new(BIO_s_mem()); BIO_free(b); return 0; }
+          OSSLEOF
+          if gcc /tmp/ossl.c -lcrypto -o /tmp/ossl > /tmp/ossl.log 2>&1 && /tmp/ossl; then
+            echo "  openssl: $(openssl version 2>&1 | head -1)"
+            echo "  openssl: <openssl/bio.h> compiles, -lcrypto links, binary runs"
+          else
+            echo "  openssl: WHAT certs/extract-cert DOES STILL FAILS:"
+            head -10 /tmp/ossl.log | sed 's/^/      /'
+            bad=1
+          fi
           [ $bad -eq 0 ]
           TEOF
           chmod +x "$S/work/tools.sh"
@@ -798,6 +893,7 @@ jobs:
           rc=${PIPESTATUS[0]}
           [ "$rc" -eq 0 ] || { echo "  the tools script exited $rc"; exit 1; }
           date -u +%FT%TZ > "$S/etc/.tools-complete"
+          echo "TOOLS_COMPLETE=1" >> "$GITHUB_ENV"
 
       - name: 'Build linux ${{ env.KTAG }} INSIDE the box'
         run: |
@@ -812,67 +908,47 @@ jobs:
           echo "=== defconfig ==="
           make ARCH=arm64 defconfig > /dev/null 2>&1
 
-          dis() {
-            ./scripts/config --disable "$1" 2>/dev/null || true
-            sed -i "s/^CONFIG_$1=y\$/# CONFIG_$1 is not set/" .config
-            sed -i "s/^CONFIG_$1=m\$/# CONFIG_$1 is not set/" .config
+          # REWRITE THE LINE. DO NOT USE scripts/config.
+          # That script is #!/bin/bash and this box has BusyBox ash and no bash
+          # at all, so every call to it failed silently and the sed after the
+          # `|| true` was doing all the work -- a fallback that was really the
+          # implementation. It also means `--set-str` never once ran. Deleting
+          # whichever form of the line exists and appending the one we want
+          # needs nothing but sed: kconfig takes the last assignment it reads,
+          # and olddefconfig re-derives everything that depends on it.
+          set_cfg() {
+            sed -i "/^CONFIG_$1=/d; /^# CONFIG_$1 is not set\$/d" .config
+            if [ "$2" = y ]; then echo "CONFIG_$1=y" >> .config
+            else echo "# CONFIG_$1 is not set" >> .config; fi
           }
-          en() {
-            ./scripts/config --enable "$1" 2>/dev/null || true
-            grep -q "^CONFIG_$1=y" .config || \
-              sed -i "s/^# CONFIG_$1 is not set\$/CONFIG_$1=y/" .config
-          }
 
-          # ---- WERROR, FIRST, BECAUSE THE BOOK PUTS IT FIRST ----------------
-          # "Be sure to enable/disable/set the following features or the system
-          #  might not work correctly or boot at all:
-          #     [ ] Compile the kernel with warnings as errors [WERROR]"
-          # CONFIG_WERROR defaults to y, and this is the one box in the tree
-          # pairing a compiler released this year with an -rc kernel. Any
-          # warning gcc 16.1 emits that linux v7.2-rc4 was not tested against
-          # becomes a hard error.
-          dis WERROR
-
-          # ---- WHAT AN INITRAMFS BOOT DOES NOT NEED -------------------------
-          # Each of these drags in a host tool the box does not have. That is
-          # the reason they are off; it is not a preference.
-          #   MODULES / MODULE_SIG  -> certs/ -> extract-cert -> openssl
-          #   DEBUG_INFO_BTF        -> pahole
-          #   KEXEC_*               -> SYSTEM_DATA_VERIFICATION, which is the
-          #                            select that turns SYSTEM_TRUSTED_KEYRING
-          #                            back on after every olddefconfig
-          # The previous run disabled SYSTEM_TRUSTED_KEYRING directly, watched
-          # olddefconfig restore it, and stopped. Disabling a symbol that
-          # something else selects can never work; the CONSUMERS have to go,
-          # and each one below is justified by "this boot does not use it"
-          # rather than by a guess about the Kconfig graph.
-          for s in MODULES MODULE_SIG MODULE_SIG_ALL \
-                   DEBUG_INFO DEBUG_INFO_BTF DEBUG_INFO_DWARF5 \
-                   KEXEC KEXEC_FILE KEXEC_SIG \
-                   IMA INTEGRITY INTEGRITY_SIGNATURE \
-                   SIGNED_PE_FILE_VERIFICATION \
-                   SYSTEM_DATA_VERIFICATION \
-                   SYSTEM_TRUSTED_KEYRING SECONDARY_TRUSTED_KEYRING \
-                   SYSTEM_REVOCATION_LIST; do
-            dis "$s"
-          done
-          # And empty the two strings that are what actually make certs/ invoke
-          # extract-cert, in case the keyring survives anyway.
-          ./scripts/config --set-str SYSTEM_TRUSTED_KEYS "" 2>/dev/null || true
-          ./scripts/config --set-str MODULE_SIG_KEY "" 2>/dev/null || true
-
-          # ---- WHAT THIS BOOT CANNOT WORK WITHOUT ---------------------------
-          # DEVTMPFS_MOUNT especially: the initramfs carries no /dev/console,
-          # because a cpio can only carry a device node if it is built as real
-          # root and this one is built inside a user namespace. Without a
-          # console, init runs with no stdio at all and every echo it makes
-          # disappears -- which reads exactly like a kernel that never reached
-          # userspace.
-          for s in BLK_DEV_INITRD RD_GZIP DEVTMPFS DEVTMPFS_MOUNT \
-                   SERIAL_AMBA_PL011 SERIAL_AMBA_PL011_CONSOLE \
-                   BINFMT_ELF PROC_FS SYSFS TTY; do
-            en "$s"
-          done
+          # THREE SETTINGS. THAT IS THE WHOLE LIST, AND THE SHORTNESS IS THE
+          # POINT -- every previous version of this step fought the Kconfig
+          # graph and lost.
+          #
+          # WERROR is the book's FIRST required item, chapter 10.3:
+          #   "[ ] Compile the kernel with warnings as errors [WERROR]"
+          # It defaults to y, and this is the box pairing a compiler released
+          # this year with an -rc kernel.
+          #
+          # DEVTMPFS and DEVTMPFS_MOUNT are further down the same list. Without
+          # them the initramfs has no /dev/console -- a cpio can only carry a
+          # device node if it was built by real root, and this one is built in
+          # a user namespace -- so init starts with no stdin, stdout or stderr
+          # and every echo it makes goes nowhere. The console then looks
+          # IDENTICAL to a kernel that never reached userspace.
+          #
+          # AND NOTHING ABOUT certs/. Previous runs disabled MODULES,
+          # MODULE_SIG, the keyrings, KEXEC and SYSTEM_DATA_VERIFICATION to
+          # keep certs/extract-cert from being built, because it needs openssl.
+          # olddefconfig restored the keyring every time, because it is reached
+          # by `select` and disabling a selected symbol can never work. The box
+          # now HAS openssl, so extract-cert builds the way it does on any
+          # normal system and there is nothing left to fight. `make Image` does
+          # not build modules either way, so MODULES=y costs this build nothing.
+          set_cfg WERROR n
+          set_cfg DEVTMPFS y
+          set_cfg DEVTMPFS_MOUNT y
 
           # olddefconfig re-derives dependent symbols after a hand edit. It
           # answers new symbols with their defaults and reads nothing from
@@ -880,9 +956,17 @@ jobs:
           # "yes: Broken pipe" to the log.
           make ARCH=arm64 olddefconfig > /dev/null 2>&1
 
-          echo "=== required for this boot ==="
+          # VERIFY AFTER olddefconfig, because olddefconfig is what silently
+          # undid the same edit three runs running, and a sed that matches
+          # nothing changes nothing and says nothing.
+          echo "=== config ==="
           bad=0
-          for s in BLK_DEV_INITRD RD_GZIP DEVTMPFS DEVTMPFS_MOUNT \
+          if grep -q "^CONFIG_WERROR=y" .config; then
+            echo "  WERROR came back on after olddefconfig"; bad=1
+          else
+            echo "  WERROR off"
+          fi
+          for s in DEVTMPFS DEVTMPFS_MOUNT BLK_DEV_INITRD RD_GZIP \
                    SERIAL_AMBA_PL011_CONSOLE BINFMT_ELF; do
             if grep -q "^CONFIG_$s=y" .config; then
               echo "  $s=y"
@@ -890,71 +974,18 @@ jobs:
               echo "  $s IS NOT SET -- this boot cannot work without it"; bad=1
             fi
           done
-          [ "$bad" -eq 0 ] || exit 1
-
-          echo "=== should be off (each needs a host tool the box lacks) ==="
-          still=""
-          for s in MODULES DEBUG_INFO_BTF SYSTEM_TRUSTED_KEYRING; do
-            if grep -q "^CONFIG_$s=y" .config; then
-              echo "  $s IS STILL ON"; still="$still $s"
-            else
-              echo "  $s off"
-            fi
-          done
-
-          if [ -n "$still" ]; then
-            echo "=== why? ==="
-            # THIS SEARCH IS BUSYBOX-SAFE, AND THE OLD ONE WAS NOT.
-            # `grep --include=` is a GNU extension. The box runs BusyBox, whose
-            # grep does not implement it, so the previous run's hunt printed
-            # four empty headings and concluded "no ENABLED selector found"
-            # about a search that had never executed. The only line that did
-            # print was the one grep in the block that did not use --include.
-            find . -name 'Kconfig*' -type f > /tmp/kfiles 2>/dev/null || true
-            if [ ! -s /tmp/kfiles ]; then
-              echo "  found NO Kconfig files at all -- the search itself is broken,"
-              echo "  which is the same mistake in a new place. Not reporting a result."
-            else
-            echo "  (searching $(wc -l < /tmp/kfiles) Kconfig files)"
-            for s in $still; do
-              echo "  ---- $s ----"
-              echo "  defined in:"
-              xargs grep -lE "^config $s\$" < /tmp/kfiles 2>/dev/null | head -3 | sed 's/^/      /'
-              echo "  every select/imply of it:"
-              xargs grep -nE "^[[:space:]]*(select|imply)[[:space:]]+$s([[:space:]]|\$)" < /tmp/kfiles 2>/dev/null | head -12 | sed 's/^/      /'
-              echo "  ...and which of those selectors are ON right now:"
-              # `|| true` ON BOTH LOOPS, and it is not decoration. A `while`
-              # returns the status of the last command it ran, so a body
-              # ending in a grep that finds nothing makes the whole pipeline
-              # fail -- and under `set -e` that kills the script in the middle
-              # of the evidence dump, leaving a truncated report that looks
-              # like the search found nothing. Verified: `set -e; printf a |
-              # while read x; do false && echo hi; done; echo REACHED` never
-              # prints REACHED.
-              xargs grep -lE "^[[:space:]]*select[[:space:]]+$s([[:space:]]|\$)" < /tmp/kfiles 2>/dev/null | while read -r kf; do
-                awk -v sym="$s" '
-                  /^[ \t]*config[ \t]+/ { cur = $2 }
-                  $0 ~ ("^[ \t]*select[ \t]+" sym "([ \t]|$)") { if (cur != "") print cur }
-                ' "$kf"
-              done | sort -u | while read -r name; do
-                if grep -q "^CONFIG_$name=y" .config; then
-                  echo "      $name=y  <-- disable THIS"
-                fi
-              done || true
-              echo "  does arch/arm64/configs/defconfig set it?"
-              if grep -q "$s" arch/arm64/configs/defconfig 2>/dev/null; then
-                grep -n "$s" arch/arm64/configs/defconfig | head -3 | sed 's/^/      /'
-              else
-                echo "      no"
-              fi
-            done
-            fi
-            # NOT FATAL. The previous run stopped here and produced nothing.
-            # If certs/extract-cert is genuinely reached the build will say
-            # "openssl/bio.h: No such file" and that is a definitive answer;
-            # if it is never reached, the kernel builds and this was noise.
-            echo "  continuing to the build -- let the compiler settle it"
+          if [ "$bad" -ne 0 ]; then
+            echo "  --- what the config actually says ---"
+            grep -E "^(# )?CONFIG_(WERROR|DEVTMPFS|BLK_DEV_INITRD|RD_GZIP|SERIAL_AMBA_PL011|BINFMT_ELF)" .config || true
+            exit 1
           fi
+          # Reported, not acted on: these are what needed a host tool the box
+          # used to lack, and it is worth seeing their state in the log now
+          # that openssl means they no longer have to be off.
+          echo "=== for the record (not enforced) ==="
+          for s in MODULES SYSTEM_TRUSTED_KEYRING DEBUG_INFO_BTF; do
+            if grep -q "^CONFIG_$s=y" .config; then echo "  $s=y"; else echo "  $s off"; fi
+          done
 
           echo "=== building Image ==="
           make ARCH=arm64 -j$(nproc) Image > b.log 2>&1 || {
@@ -1051,12 +1082,16 @@ jobs:
           # to remove the device rather than to satisfy it. The Install step
           # also fetches the package, so either alone is sufficient.
           #
-          # earlycon gives console output from before the driver probes, which
-          # is the difference between "panicked, here is why" and silence.
+          # earlycon is BARE, with no address. -M virt generates its own DTB and
+          # the kernel takes the PL011 address from it; hardcoding 0x9000000
+          # would be a guess that silently writes nowhere if QEMU ever moves
+          # the UART. earlycon gives console output from before the real driver
+          # probes, which is the difference between "panicked, here is why" and
+          # silence.
           timeout 300 qemu-system-aarch64 -M virt -cpu cortex-a57 -m 1024 \
             -nographic -no-reboot -nic none \
             -kernel "$S/work/Image" -initrd "$S/work/initramfs.cpio.gz" \
-            -append "console=ttyAMA0 earlycon=pl011,0x9000000 rdinit=/init panic=1 loglevel=7" \
+            -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7" \
             > qemu.log 2>&1
           rc=$?
           echo "  qemu rc=$rc"
@@ -1078,14 +1113,17 @@ jobs:
             exit 1
           fi
 
-      # Only ever cache a tree that PROVED it works -- SYSROOT_COMPLETE is set
-      # by THE LADDER and only after compile-and-run returns 42 -- and only
-      # when this run is the one that built it, since re-saving a restored
-      # tree just churns the key. always() is spelled out because any `if:`
-      # drops GitHub's implicit success(), and this must still run when the
-      # kernel or the boot failed: the sysroot is good either way.
-      - name: 'Save the sysroot for the next run'
-        if: always() && env.SYSROOT_COMPLETE == '1' && steps.restore.outputs.cache-matched-key == ''
+      # Only ever cache a tree that PROVED it works: SYSROOT_COMPLETE comes from
+      # THE LADDER and only after compile-and-run returns 42, and TOOLS_COMPLETE
+      # only after bc has run the kernel's own timeconst.bc and <openssl/bio.h>
+      # has compiled and linked. CACHE_IS_CURRENT suppresses a pointless re-save
+      # when the restored tree already had both, so the key is written once per
+      # thing actually built rather than once per run. always() is spelled out
+      # because any `if:` drops GitHub's implicit success(), and this must still
+      # run when the kernel or the boot failed -- the box is good either way,
+      # and that is precisely when not having to rebuild it matters.
+      - name: 'Save the box for the next run'
+        if: always() && env.SYSROOT_COMPLETE == '1' && env.TOOLS_COMPLETE == '1' && env.CACHE_IS_CURRENT != '1'
         uses: actions/cache/save@v4
         with:
           path: |
