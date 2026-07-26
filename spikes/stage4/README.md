@@ -370,6 +370,46 @@ Both fixed: the delete is replaced by an in-place patch (or a no-op when the
 file is an include shim), and **the reproduce-and-backtrace step now runs before
 the patch step**, because a diagnostic has to see the original failing tree.
 
+**The reorder worked — the ICE reproduced cleanly on the next run:**
+
+```
+--- reproduce ---
+unwind-dw2.c: In function 'uw_init_context_1':
+unwind-dw2.c:1490:44: internal compiler error: Segmentation fault
+```
+
+**And the backtrace still did not happen, for a third, different reason.** The
+preprocess step mangles the compile line with a regex:
+
+```
+sed 's/ -M[TDPF][^ ]*//g'
+```
+
+`-MT unwind-dw2.o` is **two tokens**. That pattern matches the flag `-MT` and
+stops, because `[^ ]*` is bounded by the space — so the flag was stripped and
+the filename left behind, xgcc took `unwind-dw2.o` as an *input file*, and the
+run died on `unwind-dw2.o: No such file or directory`. Zero lines of
+preprocessed source, the `>100 lines` guard skipped the bisect, no backtrace.
+
+Two changes, and the second matters more than the first:
+
+- **Token filter instead of a regex.** "Flag plus its separate argument" is not
+  expressible as a substitution over a flat string; it is trivial as a loop with
+  a one-token skip. Verified against a real libgcc compile line: no stray `.o`
+  or `.dep` survives as an input.
+- **The backtrace is no longer gated on the preprocess succeeding.** It sat
+  inside the `>100 lines` guard, so a broken `.i` took it down twice. gdb needs
+  the `cc1` command line and nothing else, and that comes from the original
+  compile — which is already known to reproduce the fault. The flag bisect stays
+  behind the guard, because it genuinely needs the `.i`; when it is skipped it
+  now prints the preprocessor's stderr instead of going quiet.
+
+Three runs, three different faults in the harness rather than the thing under
+test, each one hiding the next. The pattern is consistent enough to name: every
+one was a step that failed *silently in the direction of looking successful* —
+a deleted file assumed regenerable, a diagnostic sequenced after a mutation, a
+regex that matched half of what it was written to match.
+
 The freeze step is still emitting an empty patch, and **my own `2>/dev/null` on
 the diff is why three runs could not say why.** A missing `diffutils` would look
 exactly like this. Stderr is now kept, the exit code printed, and a control diff

@@ -244,16 +244,49 @@ jobs:
           # produced run 1's "error trying to exec 'cc1'".
           DRV=$(printf '%s' "$CMD" | grep -oE '^[^ ]*xgcc( -B[^ ]*)*')
           echo "  --- preprocess, from here ---"
-          PP=$(printf '%s' "$CMD" | sed 's/ -o [^ ]*//; s/ -c / -E /; s/ -M[TDPF][^ ]*//g; s/ [^ ]*\.dep//')
+          # A REGEX CANNOT DO THIS AND THE OLD ONE DID NOT.
+          #   sed 's/ -M[TDPF][^ ]*//g'
+          # matches the FLAG `-MT` and stops, because its argument is a SEPARATE
+          # token. So `-MT unwind-dw2.o` lost the flag and left the filename
+          # behind, xgcc took it as an INPUT file, and the run died on
+          #   xgcc: error: unwind-dw2.o: No such file or directory
+          # -- 0 lines of preprocessed source, the >100 guard skipped, no
+          # backtrace. Filter TOKENS instead, where "flag plus its argument" is
+          # something you can actually express.
+          PP=""
+          skip=0
+          for tok in $CMD; do
+            if [ "$skip" = 1 ]; then skip=0; continue; fi
+            case "$tok" in
+              -o|-MT|-MF|-MQ)   skip=1;      continue ;;
+              -MD|-MP|-MMD|-MG)              continue ;;
+              -c)               PP="$PP -E"; continue ;;
+              *)                PP="$PP $tok" ;;
+            esac
+          done
           eval "$PP" > "$W/unwind-dw2.i" 2>"$W/pp.err"
           echo "    $(wc -l < "$W/unwind-dw2.i") lines  (stderr: $(head -c 120 "$W/pp.err"))"
+
+          # THE BACKTRACE IS NOT GATED ON THE PREPROCESS. It used to sit inside
+          # `if [ lines -gt 100 ]`, so a broken .i took the backtrace down with
+          # it -- twice. gdb needs the cc1 command line and nothing else, and
+          # that comes from the ORIGINAL compile, which already reproduces the ICE.
+          echo "  --- backtrace (independent of the .i above) ---"
+          CC1LINE=$(eval "$CMD -v" 2>&1 | grep -oE '[^ ]*cc1 .*' | tail -1)
+          if [ -n "$CC1LINE" ]; then
+            # shellcheck disable=SC2086
+            gdb --batch -ex run -ex 'bt 30' --args $CC1LINE 2>&1 \
+              | grep -E '^#|Program received|signal|SIGSEGV' | head -34 | sed 's/^/    /'
+          else
+            echo "    could not extract a cc1 line -- CMD was:"
+            printf '      %s\n' "$CMD" | cut -c1-200
+          fi
+
           if [ "$(wc -l < "$W/unwind-dw2.i")" -gt 100 ]; then
             echo "  --- flag bisect on the standalone .i ---"
             for f in "-O0" "-O1" "-O2" "-O2 -fexceptions" "-O0 -fexceptions" "-O2 -g -fexceptions -fPIC"; do
               rm -f /tmp/x.s
               out=$($DRV -S $f "$W/unwind-dw2.i" -o /tmp/x.s 2>&1 | head -1)
-              # Classify on the MESSAGE. Run 1 called a missing cc1 an ICE
-              # because it only checked whether the output file existed.
               case "$out" in
                 *"internal compiler error"*) r="ICE" ;;
                 "")                          r="ok"  ;;
@@ -261,11 +294,9 @@ jobs:
               esac
               printf '    %-26s %s\n' "$f" "$r"
             done
-            echo "  --- backtrace ---"
-            CC1LINE=$(eval "$CMD -v" 2>&1 | grep -oE '[^ ]*cc1 .*' | tail -1)
-            # shellcheck disable=SC2086
-            [ -n "$CC1LINE" ] && gdb --batch -ex run -ex 'bt 25' --args $CC1LINE 2>&1 \
-              | grep -E '^#|Program received|signal' | head -30 | sed 's/^/    /'
+          else
+            echo "  --- flag bisect SKIPPED: .i is $(wc -l < "$W/unwind-dw2.i") lines ---"
+            echo "      stderr was: $(head -c 200 "$W/pp.err")"
           fi
 
       - name: '3. FALSIFIED HYPOTHESIS (kept as a way past): patch ucontext_t'
