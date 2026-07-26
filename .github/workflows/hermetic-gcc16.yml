@@ -55,6 +55,9 @@ concurrency:
 
 env:
   GNU: 'https://mirrors.kernel.org/gnu'
+  # The DEVELOPMENT patch directory -- this box tracks the dev book, so its
+  # patches live under /development, not under a release number.
+  LFS_PATCH: 'https://www.linuxfromscratch.org/patches/lfs/development'
   LFS_TGT: 'aarch64-veron-linux-gnu'
   # LFS development book r13.0-156, chapter 3
   BINUTILS_VER: '2.46.1'
@@ -165,6 +168,21 @@ jobs:
           get "$GNU/binutils/binutils-$BINUTILS_VER.tar.xz"
           get "$GNU/gcc/gcc-$GCC_VER/gcc-$GCC_VER.tar.xz"
           get "$GNU/glibc/glibc-$GLIBC_VER.tar.xz"
+          # THE DEV BOOK REQUIRES TWO GLIBC PATCHES AND THIS WORKFLOW APPLIED NEITHER.
+          # Its chapter 5 says, in as many words:
+          #   "Now fix glibc to build against Linux 7:"
+          #   patch -Np1 -i ../glibc-2.43-upstream_fixes-1.patch
+          # which is exactly the build that was failing here:
+          #   misc/umount.o  misc/umount2.o
+          #   cc1: all warnings being treated as errors
+          # glibc compiles itself with -Werror, so anything a Linux 7 UAPI header
+          # changes becomes a hard error rather than a warning.
+          #
+          # THE VERSION SET WAS NEVER WRONG. gcc 16.1.0, glibc 2.43, binutils 2.46.1
+          # and linux 7.1.3 are precisely what the book pins -- checked against the
+          # vendored copy. What was missing was a STEP, not a pin.
+          get "$LFS_PATCH/glibc-$GLIBC_VER-upstream_fixes-1.patch"
+          get "$LFS_PATCH/glibc-fhs-1.patch"
           get "$GNU/gmp/gmp-$GMP_VER.tar.xz"
           get "$GNU/mpfr/mpfr-$MPFR_VER.tar.xz"
           get "$GNU/mpc/mpc-$MPC_VER.tar.gz"
@@ -255,6 +273,16 @@ jobs:
           set -eu
           die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
           tar xf "glibc-$GLIBC_VER.tar.xz"
+          # The book applies FHS first, then the upstream fixes, both with -Np1.
+          ( cd "glibc-$GLIBC_VER"
+            for pat in "glibc-fhs-1.patch" "glibc-$GLIBC_VER-upstream_fixes-1.patch"; do
+              [ -f "$W/$pat" ] || { echo "  MISSING $pat -- the fetch step did not get it"; exit 1; }
+              if patch -Np1 -i "$W/$pat" > "$W/$pat.log" 2>&1; then
+                echo "  applied $pat"
+              else
+                echo "  FAILED to apply $pat"; tail -12 "$W/$pat.log"; exit 1
+              fi
+            done )
           mkdir -p b-glibc && cd b-glibc
           echo "rootsbindir=/usr/sbin" > configparms
           # --enable-kernel=5.10 is the dev book's value; 13.0 says 5.4.
@@ -271,7 +299,21 @@ jobs:
             *"$LFS_TGT"*) echo "  cross compiler confirmed" ;;
             *) echo "  not the cross compiler, or undetermined"; exit 1 ;;
           esac
-          make -j"$(nproc)" > b.log 2>&1 || die build b.log
+          # PREFER THE COMPILER DIAGNOSTIC. die() greps "Error [0-9]|configure: error",
+          # and make prints several of those per real failure, so the head limit filled
+          # with make summary lines and the actual message never appeared. This build
+          # failed on "cc1: all warnings being treated as errors" and the warning itself
+          # was never shown, which is why the cause took reading the book to find
+          # instead of reading the log.
+          if ! make -j"$(nproc)" > b.log 2>&1; then
+            echo "  --- the warning that became an error ---"
+            grep -nE "error:|warning:" b.log | grep -v "make\[" | head -14 | sed "s/^/    /"
+            echo "  --- make errors ---"
+            grep -nE "\*\*\* \[" b.log | head -4 | sed "s/^/    /"
+            echo "  --- tail ---"
+            tail -15 b.log | sed "s/^/    /"
+            exit 1
+          fi
           make DESTDIR="$S" install > i.log 2>&1 || die install i.log
           # LFS's own sanity check, at the seam where both earlier sysroots stopped
           echo 'int main(void){return 0;}' > /tmp/lt.c
