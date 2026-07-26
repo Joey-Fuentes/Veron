@@ -108,10 +108,16 @@ env:
   #   checking lex output file root... cannot find output from flex; giving up
   # A version string in a variable a build system already owns does not look
   # like a mistake anywhere except at the failure.
-  M4_VER: '1.4.20'
+  # 1.4.21 IS THE BOOK'S PIN. 1.4.20 came from memory and its gnulib emits
+  # _Generic in the replacement headers in a context gcc 15.2 rejects:
+  #   ./string.h:777: error: expected identifier or '(' before '_Generic'
+  # Third time a version chosen from memory has cost a run. The book's set is
+  # a combination somebody has already built end to end; ours is not.
+  M4_VER: '1.4.21'
   BISON_VER: '3.8.2'
   FLEX_VER: '2.6.4'
   PERL_VER: '5.42.0'
+  BC_VER: '7.0.3'
 
 jobs:
   sysroot:
