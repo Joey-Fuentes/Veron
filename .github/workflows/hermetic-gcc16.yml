@@ -713,6 +713,372 @@ jobs:
           echo "SYSROOT_COMPLETE=1" >> "$GITHUB_ENV"
           echo "  marked complete"
 
+      - name: 'TEST THE COMPILER INSIDE the box'
+        run: |
+          set -eu
+          # BEFORE THE KERNEL, DELIBERATELY. A broken compiler should cost one
+          # minute here rather than eleven minutes of kernel build ending in a
+          # confusing error a long way from its cause.
+          cat > "$S/work/gcctest.sh" <<'GEOF'
+          #!/bin/sh
+          # Compiler acceptance, run INSIDE the box by the sysroot's own gcc.
+          #
+          # WHAT THIS IS AND IS NOT. The reference way to test a gcc built from source
+          # is GCC's own DejaGnu suite (`make -k check`, ~100k tests, which LFS runs at
+          # 8.32 after building Tcl, Expect and DejaGnu) and gcc's 3-stage bootstrap
+          # comparison, where stage2 and stage3 must come out byte-identical. Neither is
+          # here yet: the first needs three packages this box does not have, the second
+          # is a recorded deferral (`--disable-bootstrap`).
+          #
+          # What this is instead: the checks that catch a broken toolchain in one minute
+          # rather than in an eleven-minute kernel build with a confusing error. Every
+          # one of them is a thing that has actually gone wrong in a bootstrap somewhere
+          # -- wrong start files, a libgcc without unwinding, a libstdc++ nothing can
+          # link, threads configured to `none`, an optimiser that changes an answer.
+          #
+          # NO `set -e`. A suite that stops at the first failure reports one fact per
+          # run; this one reports all of them and exits non-zero at the end.
+
+          pass=0; fail=0
+          ok()  { pass=$((pass+1)); printf '  PASS  %s\n' "$1"; }
+          bad() { fail=$((fail+1)); printf '  FAIL  %s\n' "$1"
+                  [ -n "$2" ] && printf '        %s\n' "$2"; }
+          # Run a command, pass if it exits 0.
+          try() { n=$1; shift
+                  if "$@" > /tmp/t.log 2>&1; then ok "$n"
+                  else bad "$n" "$(head -3 /tmp/t.log | tr '\n' ' ' | cut -c1-140)"; fi; }
+          # Compile+run, pass if it exits 0 AND prints what we expect.
+          cr() { n=$1; want=$2; src=$3; shift 3
+                 if ! gcc "$src" -o /tmp/a "$@" > /tmp/t.log 2>&1; then
+                   bad "$n" "compile: $(grep -m1 'error:' /tmp/t.log | cut -c1-130)"; return; fi
+                 got=$(/tmp/a 2>&1); rc=$?
+                 if [ $rc -ne 0 ]; then bad "$n" "ran, exit=$rc: $(echo "$got" | head -1)"
+                 elif [ "$got" != "$want" ]; then bad "$n" "wanted [$want] got [$got]"
+                 else ok "$n"; fi; }
+
+          mkdir -p /work/gcctest /work/guest-bin
+          cd /work/gcctest
+
+          echo "=== 0. what is actually installed in this box ==="
+          real=0; links=0
+          for f in /usr/bin/*; do
+            if [ -L "$f" ]; then links=$((links+1)); else real=$((real+1)); fi
+          done
+          echo "  /usr/bin holds $real real programs and $links busybox applet symlinks"
+          echo "  the real programs:"
+          for f in /usr/bin/* /usr/sbin/*; do
+            [ -L "$f" ] && continue
+            [ -f "$f" ] || continue
+            echo "    $(ls -ld "$f" | tr -s ' ' | cut -d' ' -f5) $(basename "$f")"
+          done | sort -k2 | sed 's/^/  /'
+          echo "  shared libraries in /usr/lib:"
+          for f in /usr/lib/*.so*; do
+            [ -f "$f" ] && echo "    $(ls -ld "$f" | tr -s ' ' | cut -d' ' -f5) $(basename "$f")"
+          done
+          echo "  /usr is $(du -sh /usr 2>/dev/null | cut -f1), /tools is $(du -sh /tools 2>/dev/null | cut -f1)"
+
+          echo "=== 1. identity ==="
+          echo "  gcc:      $(gcc --version | head -1)"
+          echo "  g++:      $(g++ --version | head -1)"
+          echo "  target:   $(gcc -dumpmachine)"
+          echo "  version:  $(gcc -dumpversion)"
+          echo "  ld:       $(ld --version | head -1)"
+          echo "  as:       $(as --version | head -1)"
+          echo "  configure line:"
+          gcc -v 2>&1 | tr ' ' '\n' | grep -- '^--' | sed 's/^/      /'
+
+          echo "=== 2. the driver can find its own parts ==="
+          for p in cc1 cc1plus collect2; do
+            f=$(gcc -print-prog-name=$p)
+            case "$f" in
+              /*) [ -x "$f" ] && ok "$p exists ($f)" || bad "$p" "driver names $f, not executable" ;;
+              *)  bad "$p" "driver could not resolve it (said '$f')" ;;
+            esac
+          done
+          for o in crt1.o crti.o crtn.o crtbegin.o libc.so libgcc.a; do
+            f=$(gcc -print-file-name=$o)
+            case "$f" in
+              /*) [ -e "$f" ] && ok "$o found" || bad "$o" "driver names $f, missing" ;;
+              *)  bad "$o" "not found (driver echoed the bare name)" ;;
+            esac
+          done
+
+          echo "=== 3. LFS's own toolchain sanity check, all six parts ==="
+          # The book runs these after glibc and treats any deviation as fatal. This box
+          # only ever ran the first one.
+          echo 'int main(){}' | gcc -x c - -v -Wl,--verbose > dummy.log 2>&1
+          if readelf -l a.out 2>/dev/null | grep -q 'program interpreter'; then
+            ok "links, and has a program interpreter"
+            echo "        $(readelf -l a.out | sed -n 's/.*program interpreter: \(.*\)\]/\1/p')"
+          else
+            bad "link + interpreter" "$(tail -3 dummy.log | tr '\n' ' ')"
+          fi
+          n=$(grep -E -c "/usr/lib.*/S?crt[1in].*succeeded" dummy.log)
+          [ "$n" -ge 3 ] && ok "start files: $n of Scrt1.o/crti.o/crtn.o from /usr/lib" \
+                         || bad "start files" "only $n matched -- wrong crt files would be silent"
+          grep -q "^ /usr/include" dummy.log && ok "header search reaches /usr/include" \
+                                             || bad "header search" "no /usr/include in the include chain"
+          grep -q 'SEARCH_DIR("/usr/lib")\|SEARCH_DIR("=/usr/lib")' dummy.log \
+            && ok "linker searches /usr/lib" || bad "linker search path" "no /usr/lib SEARCH_DIR"
+          grep -q "/lib.*/libc.so.6 " dummy.log && ok "uses the sysroot libc.so.6" \
+                                                || bad "libc" "libc.so.6 not opened from the sysroot"
+          grep -q "found ld-linux" dummy.log && ok "dynamic linker resolved" \
+                                             || bad "dynamic linker" "no 'found ld-linux' line"
+
+          echo "=== 4. codegen: the same answer at every optimisation level ==="
+          # A DIFFERENCE HERE IS A MISCOMPILE, which is the failure mode a bootstrap
+          # most needs to catch and the one a smoke test never will. The program is
+          # deliberately free of undefined behaviour, so every level must agree.
+          cat > corpus.c <<'CEOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <math.h>
+          #include <setjmp.h>
+          #include <stdarg.h>
+          #include <stdint.h>
+          #include <limits.h>
+
+          struct big { long long a; double b; char c[7]; short d; };
+          struct bits { unsigned x:3, y:5, z:17; };
+
+          static struct big by_value(struct big s) { s.a += 1; s.b *= 2.0; s.d ^= 0x5a5a; return s; }
+          static long long va(int n, ...) {
+            va_list ap; long long t = 0; va_start(ap, n);
+            for (int i = 0; i < n; i++) t += va_arg(ap, int);
+            va_end(ap); return t;
+          }
+          static jmp_buf jb;
+          static void thrower(int v) { longjmp(jb, v); }
+          static int cmp(const void *a, const void *b) {
+            int x = *(const int *)a, y = *(const int *)b; return (x > y) - (x < y);
+          }
+          static unsigned long long fib(int n) { return n < 2 ? n : fib(n-1) + fib(n-2); }
+
+          int main(void) {
+            unsigned long long h = 1469598103934665603ULL;
+            #define MIX(v) do { h ^= (unsigned long long)(v); h *= 1099511628211ULL; } while (0)
+
+            for (long long i = 1; i <= 5000; i++) MIX(i * 2654435761LL % 1000003LL);
+
+            struct big s = { 42, 1.5, "abcdef", 0x1234 };
+            struct big r = by_value(s);
+            MIX(r.a); MIX((long long)(r.b * 1000)); MIX(r.d); MIX(strlen(r.c));
+
+            struct bits b = { 5, 17, 100000 };
+            MIX(b.x); MIX(b.y); MIX(b.z);
+
+            MIX(va(5, 1, 2, 3, 4, 5));
+
+            volatile int jv = 0;
+            if ((jv = setjmp(jb)) == 0) thrower(99);
+            MIX(jv);
+
+            int n = 64, *arr = malloc(n * sizeof *arr);
+            for (int i = 0; i < n; i++) arr[i] = (i * 7919) % 251;
+            qsort(arr, n, sizeof *arr, cmp);
+            for (int i = 0; i < n; i++) MIX(arr[i]);
+            free(arr);
+
+            int vn = 17; int vla[vn];
+            for (int i = 0; i < vn; i++) vla[i] = i * i;
+            for (int i = 0; i < vn; i++) MIX(vla[i]);
+
+            double d = 0.0;
+            for (int i = 1; i <= 200; i++) d += sqrt((double)i) / (double)i;
+            MIX((long long)(d * 1e6));
+            MIX((long long)(pow(2.0, 30.0)));
+            long double ld = 1.0L; for (int i = 1; i <= 20; i++) ld *= 1.0000001L;
+            MIX((long long)(ld * 1e9));
+
+            MIX(fib(24));
+
+            uint64_t u = 0xdeadbeefcafebabeULL;
+            MIX(u >> 13); MIX((uint32_t)u * 2654435761u); MIX(__builtin_popcountll(u));
+            MIX(INT_MAX); MIX((int)((unsigned)INT_MAX + 1u));
+
+            char buf[64]; snprintf(buf, sizeof buf, "%lld/%.3f/%s", r.a, r.b, r.c);
+            for (const char *p = buf; *p; p++) MIX(*p);
+
+            printf("%llu\n", h);
+            return 0;
+          }
+          CEOF
+          base=""
+          for opt in -O0 -O1 -O2 -O3 -Os "-O2 -flto" "-O2 -fno-inline" "-O3 -funroll-loops"; do
+            if ! gcc $opt corpus.c -o /tmp/c -lm > /tmp/t.log 2>&1; then
+              bad "corpus $opt" "compile: $(grep -m1 'error:' /tmp/t.log | cut -c1-120)"; continue; fi
+            got=$(/tmp/c); rc=$?
+            if [ $rc -ne 0 ]; then bad "corpus $opt" "exit=$rc"; continue; fi
+            if [ -z "$base" ]; then base=$got; ok "corpus $opt -> $got (reference)"
+            elif [ "$got" = "$base" ]; then ok "corpus $opt agrees"
+            else bad "corpus $opt" "MISCOMPILE: got $got, -O0 said $base"; fi
+          done
+
+          echo "=== 5. runtime libraries ==="
+          cat > thr.c <<'CEOF'
+          #include <stdio.h>
+          #include <pthread.h>
+          #include <stdatomic.h>
+          static atomic_int counter;
+          static pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
+          static long guarded;
+          static void *w(void *p) {
+            (void)p;
+            for (int i = 0; i < 10000; i++) {
+              atomic_fetch_add(&counter, 1);
+              pthread_mutex_lock(&m); guarded++; pthread_mutex_unlock(&m);
+            }
+            return NULL;
+          }
+          int main(void) {
+            pthread_t t[4];
+            for (int i = 0; i < 4; i++) if (pthread_create(&t[i], NULL, w, NULL)) return 2;
+            for (int i = 0; i < 4; i++) pthread_join(t[i], NULL);
+            printf("%d %ld\n", atomic_load(&counter), guarded);
+            return 0;
+          }
+          CEOF
+          # THREADS ARE NOT A FORMALITY HERE. gcc pass 1 is built --disable-threads, and
+          # the target libgcc/libstdc++ inherit that unless the book's
+          # target_configargs=gcc_cv_target_thread_file=posix is passed to pass 2. If
+          # that flag ever goes missing this test is what says so.
+          cr "pthreads + C11 atomics" "40000 40000" thr.c -O2 -pthread
+
+          printf 'int main(void){return 0;}\n' > st.c
+          try "static link (-static)" gcc -O2 -static st.c -o /tmp/st
+          [ -x /tmp/st ] && try "static binary runs" /tmp/st
+
+          cat > lib.c <<'CEOF'
+          int libfn(int x) { return x * 3 + 1; }
+          CEOF
+          cat > usr.c <<'CEOF'
+          #include <stdio.h>
+          extern int libfn(int);
+          int main(void) { printf("%d\n", libfn(13)); return 0; }
+          CEOF
+          if gcc -O2 -fPIC -shared lib.c -o libveron.so > /tmp/t.log 2>&1; then
+            ok "build a shared library"
+            if gcc -O2 usr.c -o /tmp/dyn -L. -lveron -Wl,-rpath,"$PWD" > /tmp/t.log 2>&1; then
+              got=$(/tmp/dyn 2>&1)
+              [ "$got" = "40" ] && ok "link against and call into a .so" \
+                                || bad "call into a .so" "got [$got]"
+            else bad "link against a .so" "$(grep -m1 . /tmp/t.log)"; fi
+          else bad "build a shared library" "$(grep -m1 . /tmp/t.log)"; fi
+
+          cat > dl.c <<'CEOF'
+          #include <stdio.h>
+          #include <dlfcn.h>
+          int main(void) {
+            void *h = dlopen("./libveron.so", RTLD_NOW);
+            if (!h) { printf("dlopen: %s\n", dlerror()); return 1; }
+            int (*f)(int) = (int (*)(int))dlsym(h, "libfn");
+            if (!f) { printf("dlsym failed\n"); return 1; }
+            printf("%d\n", f(13)); dlclose(h); return 0;
+          }
+          CEOF
+          cr "dlopen + dlsym" "40" dl.c -O2 -ldl
+
+          echo "=== 6. C++ ==="
+          cat > cxx.cpp <<'CEOF'
+          #include <iostream>
+          #include <vector>
+          #include <map>
+          #include <string>
+          #include <algorithm>
+          #include <memory>
+          #include <stdexcept>
+          #include <numeric>
+          struct Base { virtual ~Base() = default; virtual int id() const { return 1; } };
+          struct Derived : Base { int id() const override { return 2; } };
+          template <typename T> T twice(T v) { return v + v; }
+          int main() {
+            std::vector<int> v(64);
+            std::iota(v.begin(), v.end(), 1);
+            std::sort(v.begin(), v.end(), [](int a, int b) { return a % 7 < b % 7; });
+            long sum = std::accumulate(v.begin(), v.end(), 0L);
+            std::map<std::string, int> m{{"a", 1}, {"b", 2}};
+            m["c"] = 3;
+            std::unique_ptr<Base> p(new Derived);
+            Derived *d = dynamic_cast<Derived *>(p.get());
+            int caught = 0;
+            try { throw std::runtime_error("x"); } catch (const std::exception &) { caught = 1; }
+            std::cout << sum << " " << m.size() << " " << (d ? d->id() : 0) << " "
+                      << caught << " " << twice(std::string("ab")) << "\n";
+            return 0;
+          }
+          CEOF
+          for std in c++17 c++20 c++23; do
+            if g++ -std=$std -O2 cxx.cpp -o /tmp/x > /tmp/t.log 2>&1; then
+              got=$(/tmp/x 2>&1)
+              [ "$got" = "2080 3 2 1 abab" ] && ok "C++ STL/RTTI/EH at -std=$std" \
+                || bad "C++ at -std=$std" "got [$got]"
+            else
+              bad "C++ at -std=$std" "$(grep -m1 'error:' /tmp/t.log | cut -c1-130)"
+            fi
+          done
+          try "static libstdc++" g++ -O2 -static-libstdc++ cxx.cpp -o /tmp/xs
+          try "fully static C++"  g++ -O2 -static cxx.cpp -o /tmp/xss
+
+          # EXCEPTIONS ACROSS A SHARED LIBRARY BOUNDARY. This is the check that a
+          # libgcc built without unwind support cannot pass, and it is the open question
+          # the gcc 4.7 leg has been carrying: cc1plus existing is not the same as g++
+          # being able to link and unwind.
+          cat > thrower.cpp <<'CEOF'
+          #include <stdexcept>
+          void boom() { throw std::runtime_error("from the .so"); }
+          CEOF
+          cat > catcher.cpp <<'CEOF'
+          #include <iostream>
+          #include <stdexcept>
+          void boom();
+          int main() {
+            try { boom(); }
+            catch (const std::runtime_error &e) { std::cout << e.what() << "\n"; return 0; }
+            std::cout << "NOT CAUGHT\n"; return 1;
+          }
+          CEOF
+          if g++ -O2 -fPIC -shared thrower.cpp -o libboom.so > /tmp/t.log 2>&1 \
+             && g++ -O2 catcher.cpp -o /tmp/eh -L. -lboom -Wl,-rpath,"$PWD" >> /tmp/t.log 2>&1; then
+            got=$(/tmp/eh 2>&1)
+            [ "$got" = "from the .so" ] && ok "C++ exception thrown in a .so, caught in main" \
+              || bad "cross-.so exception" "got [$got]"
+          else
+            bad "cross-.so exception" "$(grep -m1 'error:\|undefined' /tmp/t.log | cut -c1-130)"
+          fi
+
+          echo "=== 7. determinism ==="
+          # Criterion 2 in miniature, and nearly free. The box sets SOURCE_DATE_EPOCH=0,
+          # so two compilations of one file must produce identical bytes. If they do not,
+          # nothing above this rung can be reproducible either.
+          gcc -O2 -c corpus.c -o /tmp/o1.o 2>/dev/null
+          gcc -O2 -c corpus.c -o /tmp/o2.o 2>/dev/null
+          if cmp -s /tmp/o1.o /tmp/o2.o; then ok "same input twice -> byte-identical .o"
+          else bad "determinism" "two compilations of one file differ"; fi
+
+          echo "=== 8. binaries staged for the guest ==="
+          # Built here, executed inside QEMU later. Compiling in the box proves the
+          # compiler works; running the result under our own kernel, outside bwrap,
+          # proves the ABI does.
+          gcc -O2 corpus.c -o /work/guest-bin/veron-corpus -lm 2>/dev/null \
+            && ok "staged veron-corpus (dynamic C)" || bad "staging veron-corpus"
+          gcc -O2 -static st.c -o /work/guest-bin/veron-static 2>/dev/null \
+            && ok "staged veron-static (static C)" || bad "staging veron-static"
+          g++ -O2 cxx.cpp -o /work/guest-bin/veron-cxx 2>/dev/null \
+            && ok "staged veron-cxx (dynamic C++)" || bad "staging veron-cxx"
+          # The expected corpus checksum travels with them, so the guest checks a value
+          # rather than merely checking that something ran.
+          /work/guest-bin/veron-corpus > /work/guest-bin/corpus.expected 2>/dev/null
+          echo "  corpus checksum: $(cat /work/guest-bin/corpus.expected)"
+
+          echo "=== compiler: $pass passed, $fail failed ==="
+          [ "$fail" -eq 0 ]
+          GEOF
+          chmod +x "$S/work/gcctest.sh"
+          S="$S" "$W/box16.sh" /bin/sh /work/gcctest.sh 2>&1 | sed 's/^/    /'
+          rc=${PIPESTATUS[0]}
+          [ "$rc" -eq 0 ] || { echo "  the compiler suite reported failures (exit $rc)"; exit 1; }
+
       - name: 'Stage the kernel and its build tools into the box'
         run: |
           set -eu
@@ -1023,122 +1389,259 @@ jobs:
           #!/bin/sh
           set -e
           # THE INITRAMFS HAD NO C LIBRARY IN IT, AND COULD NEVER HAVE BOOTED.
-          # It carried one file -- a dynamically linked, PIE busybox -- plus
-          # symlinks to it. busybox's PT_INTERP names /lib/ld-linux-aarch64.so.1
-          # and that loader was not in the archive, so the kernel could not exec
-          # /init and panicked:
+          # It carried one file -- a dynamically linked, PIE busybox -- plus symlinks to
+          # it. busybox's PT_INTERP names /lib/ld-linux-aarch64.so.1 and that loader was
+          # not in the archive, so the kernel could not exec /init and panicked:
           #     Run /init as init process
           #     Failed to execute /init (error -2)
           #     Kernel panic - not syncing: No working init found.
-          # -2 is ENOENT, and nothing in that message mentions a library: it
-          # reads as a broken or missing init SCRIPT, which is where several
-          # hours could have gone. The 624,847-byte archive was the tell -- that
-          # is the size of a busybox and nothing else.
+          # -2 is ENOENT, and nothing in that message mentions a library: it reads as a
+          # broken init SCRIPT. The 624,847-byte archive was the tell -- that is the size
+          # of a busybox and nothing else.
           #
-          # Copying in the sysroot's own loader and libc is also the stronger
-          # claim. A statically linked busybox would boot too, but it would only
-          # show that the compiler works. This shows the glibc THIS BOX BUILT
-          # running as PID 1 under the kernel THIS BOX BUILT, on the real kernel
-          # ABI, outside bwrap.
+          # Copying in the sysroot's own loader and libc is also the stronger claim. A
+          # statically linked busybox would boot too, but it would only show that the
+          # compiler works. This shows the glibc THIS BOX BUILT running as PID 1 under
+          # the kernel THIS BOX BUILT, on the real kernel ABI, outside bwrap.
           rm -rf /work/ir
-          mkdir -p /work/ir/bin /work/ir/dev /work/ir/proc /work/ir/sys /work/ir/usr/lib
-          # Mirror the sysroot's own layout, so whichever of the two paths a
-          # binary names resolves to the same place.
+          mkdir -p /work/ir/bin /work/ir/dev /work/ir/proc /work/ir/sys /work/ir/usr/lib /work/ir/mnt
+          # Mirror the sysroot's own layout, so whichever of the two paths a binary names
+          # resolves to the same place.
           ln -s usr/lib /work/ir/lib
           cp /usr/bin/busybox /work/ir/bin/
 
-          B=/usr/bin/busybox
-          INTERP=$(readelf -l $B | sed -n "s/.*interpreter: \(.*\)\]/\1/p")
-          echo "  busybox PT_INTERP: ${INTERP:-<none: statically linked>}"
+          # The compiler suite built these in the box; running them in the guest is what
+          # turns "the compiler works" into "its output runs on our kernel".
+          for b in /work/guest-bin/veron-corpus /work/guest-bin/veron-cxx /work/guest-bin/veron-static; do
+            [ -f "$b" ] || { echo "  $b was not staged by the compiler step"; exit 1; }
+            cp "$b" /work/ir/bin/
+          done
+          cp /work/guest-bin/corpus.expected /work/ir/
+
+          # EVERY LIBRARY EVERY BINARY ASKS FOR, read out of the binaries rather than
+          # listed by hand. veron-cxx drags in libstdc++ and libgcc_s, which no hand
+          # written list would have thought to include until it failed in the guest.
+          INTERP=""
+          libs=""
+          for b in /work/ir/bin/busybox /work/ir/bin/veron-corpus /work/ir/bin/veron-cxx; do
+            i=$(readelf -l "$b" | sed -n "s/.*interpreter: \(.*\)\]/\1/p")
+            [ -n "$i" ] && INTERP=$i
+            for l in $(readelf -d "$b" | sed -n "s/.*Shared library: \[\(.*\)\]/\1/p"); do
+              case " $libs " in *" $l "*) ;; *) libs="$libs $l" ;; esac
+            done
+          done
+          echo "  PT_INTERP: ${INTERP:-<none: statically linked>}"
           if [ -n "$INTERP" ]; then
-            # PUT THE LOADER AT THE PATH THE ELF NAMES, whatever that path is.
-            # Our triplet gives /lib/ld-linux-aarch64.so.1 and /lib is the
-            # symlink made above, so it lands in usr/lib either way -- but
-            # DERIVING the directory instead of assuming it is what makes this
-            # survive a change of architecture. Tested against an x86-64 binary,
-            # whose PT_INTERP is /lib64/..., where assuming /lib fails.
+            # PUT THE LOADER AT THE PATH THE ELF NAMES, whatever that path is. Our
+            # triplet gives /lib/ld-linux-aarch64.so.1 and /lib is the symlink made
+            # above, so it lands in usr/lib either way -- but DERIVING the directory
+            # instead of assuming it is what makes this survive a change of
+            # architecture. Tested against an x86-64 binary, whose PT_INTERP is
+            # /lib64/..., where assuming /lib fails.
             mkdir -p "/work/ir$(dirname "$INTERP")"
             cp -L "$INTERP" "/work/ir$INTERP"
-            for l in $(readelf -d $B | sed -n "s/.*Shared library: \[\(.*\)\]/\1/p"); do
-              if [ -e "/usr/lib/$l" ]; then
-                cp -L "/usr/lib/$l" /work/ir/usr/lib/
-                echo "    + $l"
-              else
-                echo "    ! $l NOT FOUND in /usr/lib"; exit 1
-              fi
-            done
-            # A copy that silently went nowhere looks exactly like no copy, and
-            # this is the check whose absence cost the last run. Assert the
-            # loader is reachable at the path the ELF actually names, and that
-            # every library it asked for is present too.
-            [ -e "/work/ir$INTERP" ] || {
-              echo "  the loader did not land at $INTERP"; exit 1; }
-            for l in $(readelf -d $B | sed -n "s/.*Shared library: \[\(.*\)\]/\1/p"); do
-              [ -e "/work/ir/usr/lib/$l" ] || { echo "  $l did not land"; exit 1; }
-            done
-            echo "  image libs: $(ls /work/ir/usr/lib | tr '\n' ' ')"
           fi
-
-          cd /work/ir/bin
-          # EVERY APPLET init USES MUST BE HERE. A name that is missing prints
-          # "head: not found" from inside PID 1, where it is easy to miss and
-          # silently empties whatever it was measuring.
-          for a in sh mount umount uname echo cat ls mkdir sleep dmesg head poweroff; do
-            ln -sf busybox $a
+          for l in $libs; do
+            if [ -e "/usr/lib/$l" ]; then
+              cp -L "/usr/lib/$l" /work/ir/usr/lib/
+              echo "    + $l"
+            else
+              echo "    ! $l NOT FOUND in /usr/lib"; exit 1
+            fi
           done
+          # A copy that silently went nowhere looks exactly like no copy, and this is the
+          # check whose absence cost a whole run.
+          [ -z "$INTERP" ] || [ -e "/work/ir$INTERP" ] || {
+            echo "  the loader did not land at $INTERP"; exit 1; }
+          for l in $libs; do
+            [ -e "/work/ir/usr/lib/$l" ] || { echo "  $l did not land"; exit 1; }
+          done
+          echo "  image libs: $(ls /work/ir/usr/lib | tr '\n' ' ')"
+
+          # APPLETS: LIST THEM, THEN PROVE EACH ONE IS REAL. A name that busybox does not
+          # implement becomes a dangling symlink and prints "head: not found" from inside
+          # PID 1, where it is easy to miss and silently empties whatever it measured.
+          # Checking against busybox's own applet table turns that into a build error.
+          APPLETS="sh mount umount uname echo cat ls mkdir rm sleep dmesg head tail
+                   grep cut wc tr sed printf date sync dd md5sum kill ps free
+                   chmod ln test true false env poweroff"
+          missing=""
+          for a in $APPLETS; do
+            /work/ir/bin/busybox --list 2>/dev/null | grep -qx "$a" || missing="$missing $a"
+          done
+          [ -z "$missing" ] || { echo "  busybox does not implement:$missing"; exit 1; }
+          cd /work/ir/bin
+          for a in $APPLETS; do ln -sf busybox "$a"; done
           cd /work/ir
+          echo "  applets in the image: $(echo $APPLETS | wc -w)"
+
           # bwrap is unprivileged, so mknod is unavailable here -- that is what
-          # CONFIG_DEVTMPFS_MOUNT is for. Try anyway, and say which of the two
-          # ends up carrying /dev/console.
+          # CONFIG_DEVTMPFS_MOUNT is for. Try anyway, and say which of the two ends up
+          # carrying /dev/console.
           if mknod dev/console c 5 1 2>/dev/null; then
             echo "  /dev/console created in the image"
           else
             echo "  no mknod in the box -- /dev/console comes from CONFIG_DEVTMPFS_MOUNT"
           fi
+
           cat > init <<'INITEOF'
           #!/bin/sh
+          # PID 1, AND A TEST HARNESS. Reaching userspace proves the kernel loads and the
+          # loader resolves; it proves nothing about whether the system WORKS. Each check
+          # prints one line the host can parse, and the run ends with a single verdict
+          # line rather than leaving a human to read a console dump.
+          #
+          # No `set -e`: one failure must not hide the other twenty.
           mount -t devtmpfs none /dev 2>/dev/null
-          # Only redirect if there is something to redirect TO. An exec onto a
-          # missing device kills the shell, and a kernel that booted perfectly
-          # then prints nothing and reads as a kernel that never started.
+          # Only redirect if there is something to redirect TO. An exec onto a missing
+          # device kills the shell, and a kernel that booted perfectly then prints
+          # nothing and reads as a kernel that never started.
           [ -c /dev/console ] && exec > /dev/console 2>&1 < /dev/console
-          mount -t proc none /proc
-          mount -t sysfs none /sys
+          mount -t proc none /proc 2>/dev/null
+          mount -t sysfs none /sys 2>/dev/null
+          mount -t tmpfs none /mnt 2>/dev/null
+
+          P=0; F=0
+          ok()  { P=$((P+1)); echo "VERON-TEST PASS $1"; }
+          no()  { F=$((F+1)); echo "VERON-TEST FAIL $1${2:+ -- $2}"; }
+          chk() { if [ "$2" = "$3" ]; then ok "$1"; else no "$1" "wanted [$3] got [$2]"; fi; }
+
           echo "VERON-BOOT-OK $(uname -srm)"
           echo "VERON-KERNEL $(cat /proc/version)"
           echo "VERON-LIBC $(/lib/ld-linux-aarch64.so.1 --version 2>&1 | head -1)"
+
+          echo "VERON-SECTION filesystems and devices"
+          # NOT `[ -s /proc/cpuinfo ]`: every procfs file reports st_size 0, so -s is
+          # false on all of them and this "check" failed against a perfectly good /proc.
+          # Found by running this harness on a live system before shipping it.
+          grep -q . /proc/cpuinfo 2>/dev/null && ok "/proc is mounted and populated" || no "/proc"
+          [ -d /sys/kernel ]    && ok "/sys is mounted"                  || no "/sys"
+          for d in null zero console urandom; do
+            [ -c /dev/$d ] && ok "/dev/$d is a character device" || no "/dev/$d"
+          done
+          echo hello > /dev/null 2>&1 && ok "/dev/null accepts writes" || no "/dev/null write"
+          z=$(dd if=/dev/zero bs=1 count=4 2>/dev/null | tr -d '\0' | wc -c)
+          chk "/dev/zero reads as zeroes" "$z" "0"
+          r=$(dd if=/dev/urandom bs=32 count=1 2>/dev/null | wc -c)
+          chk "/dev/urandom yields entropy" "$r" "32"
+
+          echo "VERON-SECTION storage"
+          mkdir -p /mnt/t
+          if dd if=/dev/urandom of=/mnt/t/blob bs=1024 count=4096 2>/dev/null; then
+            a=$(md5sum < /mnt/t/blob | cut -d' ' -f1)
+            cp /mnt/t/blob /mnt/t/blob2
+            b=$(md5sum < /mnt/t/blob2 | cut -d' ' -f1)
+            chk "4 MiB write, copy and read back on tmpfs" "$a" "$b"
+          else
+            no "tmpfs write"
+          fi
+          sync && ok "sync(2) returns" || no "sync"
+
+          echo "VERON-SECTION processes"
+          chk "pipes" "$(echo squid | cat)" "squid"
+          chk "subshell fork/exec" "$(sh -c 'echo forked')" "forked"
+          chk "exit status propagates" "$(sh -c 'exit 7'; echo $?)" "7"
+          sleep 30 &
+          bgpid=$!
+          if kill -TERM $bgpid 2>/dev/null; then
+            wait $bgpid 2>/dev/null
+            [ -d /proc/$bgpid ] && no "SIGTERM did not reap the child" || ok "signals reap a child"
+          else
+            no "kill(2)"
+          fi
+          n=$(ps 2>/dev/null | wc -l)
+          [ "$n" -ge 2 ] && ok "ps sees $n processes" || no "ps"
+
+          echo "VERON-SECTION binaries built by this box's gcc"
+          # THE POINT OF THE WHOLE EXERCISE. These were compiled inside bwrap by the
+          # sysroot's own gcc; here they run on the real kernel, on real hardware
+          # interfaces, with no bwrap anywhere. A checksum computed in the box and
+          # recomputed here has to agree.
+          want=$(cat /corpus.expected 2>/dev/null)
+          got=$(/bin/veron-corpus 2>&1)
+          chk "dynamic C binary reproduces its checksum" "$got" "$want"
+          chk "static C binary runs" "$(/bin/veron-static; echo $?)" "0"
+          chk "C++ binary: STL, RTTI and exceptions" "$(/bin/veron-cxx 2>&1)" "2080 3 2 1 abab"
+
+          echo "VERON-SECTION time"
+          u1=$(cut -d. -f1 /proc/uptime)
+          sleep 1
+          u2=$(cut -d. -f1 /proc/uptime)
+          [ "$u2" -ge "$u1" ] && ok "monotonic uptime advances ($u1 -> $u2)" || no "uptime"
+          date > /dev/null 2>&1 && ok "wall clock readable ($(date -u '+%Y-%m-%d %H:%M:%S'))" || no "date"
+
+          echo "VERON-SECTION network stack"
+          ip link set lo up 2>/dev/null || ifconfig lo up 2>/dev/null
+          [ -d /sys/class/net/lo ] && ok "loopback interface exists" || no "loopback"
+          # The capability worth testing is that the link comes UP. Assigning an
+          # address needs busybox to have been built with the full ip applet and is not
+          # something an initramfs boot requires, so it is reported, not enforced.
+          if grep -q . /sys/class/net/lo/operstate 2>/dev/null; then
+            st=$(cat /sys/class/net/lo/operstate)
+            [ "$st" = up ] || [ "$st" = unknown ] && ok "loopback is up (operstate=$st)" \
+                                                  || no "loopback down (operstate=$st)"
+          else
+            no "loopback operstate unreadable"
+          fi
+          addr=$(ip addr show lo 2>/dev/null | grep -o '127\.0\.0\.1' | head -1)
+          echo "  loopback address: ${addr:-<none configured, not required>}"
+
+          echo "VERON-SECTION kernel health"
+          # A KERNEL CAN BOOT AND STILL BE UNWELL. Anything in this list means a toolchain
+          # or config problem that a "did it boot" check would sail straight past.
+          noise=$(dmesg 2>/dev/null | grep -E "BUG:|Oops|Call trace:|kernel NULL pointer|unable to handle|WARNING:" | head -5)
+          if [ -z "$noise" ]; then
+            ok "no BUG/Oops/WARNING/Call trace in dmesg"
+          else
+            no "dmesg is not clean"
+            echo "$noise" | sed 's/^/    /'
+          fi
+
+          echo "VERON-SECTION inventory"
+          echo "  kernel:    $(uname -r)"
+          echo "  cmdline:   $(cat /proc/cmdline)"
+          echo "  cpus:      $(grep -c ^processor /proc/cpuinfo)"
+          echo "  memory:    $(grep MemTotal /proc/meminfo)"
+          echo "  applets:   $(busybox --list | wc -l) available in this busybox"
+          echo "  libraries:"
+          # `ls -l DIR` lists the directory's CONTENTS, not the directory -- which turned
+          # this inventory into a recursive dump the first time it ran. -d, and regular
+          # files only.
+          for f in /usr/lib/*; do
+            [ -f "$f" ] && echo "    $(ls -ld "$f" | tr -s ' ' | cut -d' ' -f5,9)"
+          done
+          echo "  mounts:"
+          cat /proc/mounts | sed 's/^/    /'
+
+          echo "VERON-RESULT $([ "$F" -eq 0 ] && echo PASS || echo FAIL) $P passed, $F failed"
           echo "VERON-INIT-DONE"
           poweroff -f
           INITEOF
           chmod +x init
-          # cpio AND gzip SEPARATELY, AND cpio's STDERR KEPT. As one pipeline
-          # the exit status is gzip's, so a cpio that failed outright still
-          # produced a file -- an empty archive gzips to about 20 bytes, which
-          # is non-empty, so a size check passes and QEMU is handed an image
-          # with no init in it. That is the SAME "Failed to execute /init"
-          # console message as a missing loader, from an unrelated cause.
-          # Reproduced by running this script where cpio was not installed.
+
+          # cpio AND gzip SEPARATELY, AND cpio's STDERR KEPT. As one pipeline the exit
+          # status is gzip's, so a cpio that failed outright still produced a file -- an
+          # empty archive gzips to about 20 bytes, which is non-empty, so a size check
+          # passes and QEMU is handed an image with no init in it. That is the SAME
+          # "Failed to execute /init" console message as a missing loader, from an
+          # unrelated cause. Reproduced by running this script where cpio was absent.
           find . | cpio -o -H newc > /work/initramfs.cpio 2> /tmp/cpio.err || {
             echo "  cpio failed:"; head -5 /tmp/cpio.err | sed 's/^/    /'; exit 1; }
           gzip -9 -c /work/initramfs.cpio > /work/initramfs.cpio.gz
           rm -f /work/initramfs.cpio
           echo "initramfs: $(wc -c < /work/initramfs.cpio.gz) bytes"
           gzip -dc /work/initramfs.cpio.gz | cpio -t > /tmp/ir.list 2>/dev/null || true
-          echo "contents ($(wc -l < /tmp/ir.list) entries):"
-          sed 's/^/    /' /tmp/ir.list
-          # REQUIRE THE THREE THINGS THE BOOT CANNOT START WITHOUT, by looking
-          # inside the finished archive rather than at the directory it was
-          # built from. Matching on a trailing component rather than an exact
-          # string because cpio implementations differ on the leading "./".
-          need="init busybox"
+          echo "contents: $(wc -l < /tmp/ir.list) entries"
+          # REQUIRE THE THINGS THE BOOT CANNOT START WITHOUT, by looking inside the
+          # finished archive rather than at the directory it was built from. Matching on
+          # a trailing component rather than an exact string because cpio implementations
+          # differ on the leading "./" -- busybox's omits it.
+          need="init busybox veron-corpus veron-cxx veron-static corpus.expected"
           [ -z "$INTERP" ] || need="$need $(basename "$INTERP")"
           for w in $need; do
-            if grep -qE "(^|/)$w\$" /tmp/ir.list; then
-              echo "  in the image: $w"
-            else
-              echo "  MISSING FROM THE IMAGE: $w"; exit 1
-            fi
+            grep -qE "(^|/)$w\$" /tmp/ir.list || { echo "  MISSING FROM THE IMAGE: $w"; exit 1; }
           done
+          echo "  verified in the image: $need"
           IEOF
           chmod +x "$S/work/mkir.sh"
           S="$S" "$W/box16.sh" /bin/sh /work/mkir.sh 2>&1 | sed 's/^/    /'
@@ -1186,18 +1689,46 @@ jobs:
           echo "  --- last 40 lines ---"
           tail -40 qemu.log | sed 's/^/    /'
           echo
-          if grep -q 'VERON-BOOT-OK' qemu.log; then
-            grep -h 'VERON-' qemu.log | sed 's/^/    /'
-            echo
-            echo "  gcc $GCC_VER, built in a box with no host filesystem, built"
-            echo "  linux $KTAG, and it booted."
-          else
+          if ! grep -q 'VERON-BOOT-OK' qemu.log; then
             echo "  DID NOT REACH USERSPACE. What the console did say:"
             grep -nE "Kernel panic|Unable to mount|No filesystem|Failed to execute|unable to open an initial console|Attempted to kill init|romfile|Bad magic|Synchronous Exception" \
               qemu.log | head -12 | sed 's/^/    /'
             echo "  (qemu.log is in the artifact in full)"
             exit 1
           fi
+
+          # REACHING USERSPACE IS THE START OF THE TEST, NOT THE RESULT OF IT.
+          # This step used to pass on one grep for a marker init printed before
+          # doing anything, which cannot distinguish a working system from a
+          # kernel that merely got as far as exec. init now runs a battery and
+          # reports each result; the host requires every one of them.
+          echo "  ---- what the system reported about itself ----"
+          grep -h 'VERON-' qemu.log | sed 's/VERON-/  /' | sed 's/^/  /'
+          echo
+          sed -n '/VERON-SECTION inventory/,/VERON-RESULT/p' qemu.log | sed 's/^/  /'
+          echo
+
+          failed=$(grep -c '^VERON-TEST FAIL' qemu.log || true)
+          result=$(grep -h '^VERON-RESULT' qemu.log | head -1)
+          if [ -z "$result" ]; then
+            # init started and did not finish: a test hung, or the kernel took
+            # it out part way. That is not a pass, and it is not the same thing
+            # as never having booted either.
+            echo "  init began but never reported a verdict -- it did not finish."
+            echo "  last thing the console said:"
+            tail -5 qemu.log | sed 's/^/    /'
+            exit 1
+          fi
+          echo "  $result"
+          if [ "${failed:-0}" -ne 0 ] || ! echo "$result" | grep -q PASS; then
+            echo
+            echo "  THE SYSTEM BOOTED AND IS NOT HEALTHY. Failing checks:"
+            grep '^VERON-TEST FAIL' qemu.log | sed 's/^/    /'
+            exit 1
+          fi
+          echo
+          echo "  gcc $GCC_VER, built in a box with no host filesystem, built"
+          echo "  linux $KTAG. It booted, and every check inside it passed."
 
       # Only ever cache a tree that PROVED it works: SYSROOT_COMPLETE comes from
       # THE LADDER and only after compile-and-run returns 42, and TOOLS_COMPLETE
