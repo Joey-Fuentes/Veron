@@ -400,9 +400,16 @@ jobs:
           done
           # Prove it took, rather than assuming. This is the value that failed.
           echo "    MB_LEN_MAX as the cross compiler now sees it:"
+          # NOT `cmd | grep | sed || echo`. A pipeline exits with the status of
+          # its LAST command, so the fallback never fires and a probe that finds
+          # nothing prints nothing -- which is what happened: this reported no
+          # value and no complaint. Capture, then test.
           printf '#include <limits.h>\nMBLEN MB_LEN_MAX\n' > /tmp/mb.c
-          "$LFS_TGT-gcc" -E /tmp/mb.c 2>/dev/null | grep MBLEN | sed 's/^/      /' \
-            || echo "      could not preprocess -- headers not in place yet"
+          if "$LFS_TGT-gcc" -E /tmp/mb.c > /tmp/mb.i 2>/dev/null && grep -q MBLEN /tmp/mb.i; then
+            grep MBLEN /tmp/mb.i | sed 's/^/      /'
+          else
+            echo "      could not preprocess -- headers not in place yet"
+          fi
           "$S/tools/bin/$LFS_TGT-gcc" --version | head -1 | sed 's/^/    /'
           "$S/tools/bin/$LFS_TGT-gcc" -dumpmachine | sed 's/^/    targets: /'
 
@@ -525,14 +532,23 @@ jobs:
           # THE SED IS THE BOOK'S AND IT IS LOAD-BEARING. m4 1.4.18 predates
           # glibc 2.28's removal of _IO_ftrylockfile, so its bundled gnulib
           # fails against this sysroot's glibc 2.32 without it.
-          cd "$W" && tar xf "m4-$M4_VER.tar.xz" && cd "m4-$M4_VER"
-          sed -i 's/IO_ftrylockfile/IO_EOF_SEEN/' lib/*.c
-          echo "#define _IO_IN_BACKUP 0x100" >> lib/stdio-impl.h
-          ./configure --prefix=/usr --host="$LFS_TGT" \
-          --build="$(build-aux/config.guess)" > c.log 2>&1 || die "m4 configure" c.log
-          make -j"$(nproc)" > b.log 2>&1 || die "m4 build" b.log
-          make DESTDIR="$S" install > i.log 2>&1 || die "m4 install" i.log
+          # A SUBSHELL, BECAUSE THIS BLOCK MOVED. When it lived in the chapter 7
+          # step it was the last thing that ran, so leaving the shell inside
+          # m4-1.4.18/ cost nothing. Moved to the head of chapter 6 it broke the
+          # very next command:
+          #   tar: busybox-1.36.1.tar.bz2: Cannot open: No such file or directory
+          # -- the tarball is in $W and the shell was two directories away. A block
+          # that moves inherits the cwd assumptions of wherever it lands, so this
+          # one now cleans up after itself.
+          ( cd "$W" && tar xf "m4-$M4_VER.tar.xz" && cd "m4-$M4_VER"
+            sed -i 's/IO_ftrylockfile/IO_EOF_SEEN/' lib/*.c
+            echo "#define _IO_IN_BACKUP 0x100" >> lib/stdio-impl.h
+            ./configure --prefix=/usr --host="$LFS_TGT" \
+              --build="$(build-aux/config.guess)" > c.log 2>&1 || die "m4 configure" c.log
+            make -j"$(nproc)" > b.log 2>&1 || die "m4 build" b.log
+            make DESTDIR="$S" install > i.log 2>&1 || die "m4 install" i.log )
           echo "  m4 $M4_VER installed (cross)"
+          cd "$W"
 
 
           # LFS chapter 6 builds seventeen packages to get a shell and the text
