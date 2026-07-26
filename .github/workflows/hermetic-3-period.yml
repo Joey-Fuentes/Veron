@@ -472,7 +472,18 @@ jobs:
               --disable-bootstrap --disable-werror --disable-libsanitizer \
               --disable-libgomp --disable-libquadmath --disable-libssp \
               --disable-libatomic --disable-shared > c.log 2>&1
-            echo "configure rc=$?"
+            crc=$?
+            echo "configure rc=$crc"
+            if [ "$crc" -ne 0 ]; then
+              # RUN 2 PRINTED "configure rc=1" AND NOTHING ELSE, so the run
+              # cost an hour and said only that something went wrong. configure
+              # puts the reason in its last few lines and the detail in
+              # config.log; print both.
+              echo "--- configure said ---"; tail -12 c.log
+              echo "--- config.log, last failing test ---"
+              grep -B4 "configure: error" config.log 2>/dev/null | tail -16
+              exit 1
+            fi
             make -j4 MAKEINFO=true > b.log 2>&1
             echo "make rc=$?"
             echo "cc1: $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo MISSING)"
@@ -484,9 +495,21 @@ jobs:
             echo "g++ 4.7: $(/work/out47/bin/g++ --version 2>&1 | head -1)"
           ' 2>&1 | sed 's/^/    /'
           echo
+          # THE VERDICT MUST REFLECT WHAT HAPPENED. It has now printed twice on
+          # runs where the compiler never configured, which reads as an answer
+          # and is not one.
           echo "  VERDICT ON THE PREDICTION:"
-          echo "    libgcc.a built -> the ICE was the glibc era, not the transplant"
-          echo "    still ICEs     -> the transplant is at fault; run gcc47-libgcc-ice"
+          if [ -n "$(find "$S/work/b" -name libgcc.a 2>/dev/null | head -1)" ]; then
+            echo "    libgcc.a BUILT against glibc 2.19, unpatched."
+            echo "    The ICE was the era, not the transplant."
+          elif grep -q 'internal compiler error' "$S/work/b/b.log" 2>/dev/null; then
+            echo "    STILL ICEs. The transplant is implicated; the backtrace"
+            echo "    from gcc47-libgcc-ice is the next step."
+            grep -m2 'internal compiler error' "$S/work/b/b.log" | sed 's/^/      /'
+          else
+            echo "    NOT TESTED -- the compiler did not build, so the question"
+            echo "    was never put. See the configure/make output above."
+          fi
 
       - name: 'Fetch the upper rungs (outside; the box has no network)'
         if: ${{ github.event.inputs.max_rung == '10.4' || github.event.inputs.max_rung == '15.2' }}
