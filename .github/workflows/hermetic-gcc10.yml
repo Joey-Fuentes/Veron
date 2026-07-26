@@ -211,6 +211,35 @@ jobs:
           # prefix is how two workflows quietly hand each other a sysroot.
           key: hermetic-gcc10-${{ env.BINUTILS }}-${{ env.GCCVER }}-${{ env.GLIBC }}-${{ env.KERNEL }}-v1
 
+      - name: 'Reuse the cached sysroot only if it is COMPLETE'
+        run: |
+          set -eu
+          # actions/cache SAVES ON FAILURE. Its post step runs whenever the job was
+          # not cancelled, so a run that dies half way through chapter 5 publishes a
+          # half-built sysroot under the same key, and the next run restores it and
+          # builds on top. That is why two runs of the same commit failed in two
+          # different places: one on an unusable cross ar, the next on
+          #   make: *** No targets specified and no makefile found.
+          # from a stale build directory that configure never rewrote.
+          #
+          # A build tree is only meaningful COMPLETE. The marker is written as the
+          # last act of the sysroot build; without it, start clean.
+          if [ -f "$S/.sysroot-complete" ]; then
+            echo "  complete sysroot restored ($(du -sh "$S" | cut -f1)) -- reusing"
+            sed 's/^/    /' "$S/.sysroot-complete"
+          elif [ -d "$S" ] && [ -n "$(ls -A "$S" 2>/dev/null)" ]; then
+            echo "  restored sysroot has NO completion marker -- it came from a failed"
+            echo "  run. Deleting it and the stale build directories so this run is clean."
+            du -sh "$S" 2>/dev/null | sed 's/^/    was: /'
+            rm -rf "$S"
+            rm -rf b-bu1 b-gcc1 b-glibc b-libstdcxx b-libstdcxx2 b-bu2 b-gcc2 b-make
+            mkdir -p "$S"/bin "$S"/etc "$S"/lib "$S"/sbin "$S"/usr "$S"/var "$S"/tools "$S"/work
+            mkdir -p "$S"/usr/bin "$S"/usr/lib "$S"/usr/include "$S"/usr/sbin
+            echo "    rebuilt empty"
+          else
+            echo "  no cached sysroot -- building from scratch"
+          fi
+
       - name: 'Fetch everything (no network exists inside the box)'
         run: |
           set -eu
@@ -495,8 +524,19 @@ jobs:
           echo "  applets: $(ls "$S/usr/bin" | wc -l)"
 
           cd "$W" && tar xf "make-$MAKE_VER.tar.gz" && mkdir -p b-make && cd b-make
+          # build-aux/config.guess, NOT the top level. GNU make keeps its
+          # autotools aux scripts in build-aux/, and the book says so:
+          #   --build=$(build-aux/config.guess)
+          # The top-level path produced
+          #   ../make-4.3/config.guess: No such file or directory
+          # and, because a failed command substitution does not trip errexit,
+          # configure then ran with an EMPTY --build= and carried on. m4 in
+          # this same file already had the right path; make did not.
+          # --without-guile is the book's too: guile is optional and its
+          # absence should not be discovered by a configure probe.
           "../make-$MAKE_VER/configure" --prefix=/usr --host="$LFS_TGT" \
-            --build="$(../make-$MAKE_VER/config.guess)" --disable-nls \
+            --build="$(../make-$MAKE_VER/build-aux/config.guess)" \
+            --without-guile --disable-nls \
             > c.log 2>&1 || die "make configure" c.log
           make -j"$(nproc)" > b.log 2>&1 || die "make build" b.log
           make DESTDIR="$S" install > i.log 2>&1 || die "make install" i.log
@@ -594,6 +634,16 @@ jobs:
               --prefix=/usr --disable-multilib --disable-nls \
               --host='"$LFS_TGT"' --disable-libstdcxx-pch > c.log 2>&1 \
               || { echo "libstdc++ configure failed"; tail -12 c.log; exit 1; }
+            # A Makefile OR NOTHING. This reported
+            #   configure selected CXX: <undetermined>
+            #   make: *** No targets specified and no makefile found.
+            # i.e. configure returned 0 and left no Makefile, which is not a
+            # state to run make in. Check for it and show what configure said.
+            if [ ! -f Makefile ]; then
+              echo "configure exited 0 but produced no Makefile"
+              echo "--- configure tail ---"; tail -20 c.log
+              exit 1
+            fi
             # WHICH TOOLS DID configure ACTUALLY PICK? This check earned its
             # place on the run after it was added. --host names a triplet whose
             # tools existed TWICE while /tools/bin was on PATH: the pass-1 CROSS
@@ -602,8 +652,8 @@ jobs:
             # resolved correctly -- and `ar` did not, because binutils pass 2
             # installs plain names only, so $LFS_TGT-ar existed nowhere except
             # /tools/bin. Every object compiled and the archive step died on
-            #   ...-ar: /lib/libc.so.6: version `GLIBC_2.33' not found
-            # /tools/bin is off PATH now (the book's chroot never had it), so
+            #   ...-ar: /lib/libc.so.6: version GLIBC_2.33 not found
+            # /tools/bin is off PATH now (the book chroot never had it), so
             # autoconf falls back to plain `ar` as LFS intends. Keep printing
             # the selection: it is what turned that into one run instead of three.
             for v in CXX CC; do
@@ -635,6 +685,17 @@ jobs:
             make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
             bison --version | head -1
           ' 2>&1 | sed 's/^/    /'
+          # THE COMPLETION MARKER, AND IT BELONGS HERE, NOT AFTER gcc PASS 2.
+          # Chapter 7 is the last thing the sysroot needs -- libstdc++ into
+          # /usr and bison -- so a marker written before it would certify a
+          # sysroot that cannot compile C++ or run a yacc grammar, which is
+          # exactly the state two runs got stuck in.
+          {
+            echo "binutils $BINUTILS  gcc $GCCVER  glibc $GLIBC  linux $KERNEL"
+            echo "chapters 5, 6 and 7 complete"
+            echo "completed $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "$S/.sysroot-complete"
+          echo "  sysroot marked complete"
 
       - name: 'THE LADDER: is the box self-sufficient?'
         continue-on-error: true
