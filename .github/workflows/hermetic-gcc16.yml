@@ -9,21 +9,17 @@ name: hermetic-gcc16
 #     tcc -> gcc 4.7 -> gcc 10 -> gcc 16  ->  kernel + userland + boot
 #            gcc47      gcc10     ^^^^^^^^^^ THIS BOX
 #
-# Same shape as hermetic-gcc15, everything pushed forward: the LFS DEVELOPMENT
-# book's pins (r13.0-156 -- gcc 16.1.0, binutils 2.46.1) and linux v7.2-rc4
-# straight from git rather than a tarball.
+# The LFS DEVELOPMENT book's pins (r13.0-156 -- gcc 16.1.0, binutils 2.46.1)
+# and linux v7.2-rc4 straight from git rather than a tarball.
 #
 # SEPARATE FILE, ON PURPOSE. Sharing one workflow with the stable box would
 # mean a failure in 16.1 or in an -rc kernel obscures whether the 13.0 baseline
-# still works. They answer different questions: the baseline asks "is our
-# recipe correct", this asks "does the recipe survive the newest inputs".
-# Keeping them apart is what lets this one fail without costing the other.
+# still works. Keeping them apart is what lets this one fail without costing
+# the other.
 #
-# WHAT THE DEV BOOK CHANGES, and it is only two things:
+# WHAT THE DEV BOOK CHANGES over 13.0, and it is only two things:
 #   --disable-fixincludes   on both gcc passes
 #   --enable-kernel=5.10    for glibc, up from 5.4
-# Everything else is the same recipe, which is itself a small finding: two
-# major gcc releases apart, the chapter-5 procedure is unchanged.
 #
 # WHAT THIS IS NOT
 #
@@ -35,6 +31,55 @@ name: hermetic-gcc16
 #
 #   push        edits to THIS FILE ONLY -- this box never triggers another and
 #               no other box triggers it
+#   dispatch    with rebuild_sysroot=yes to throw away the cached sysroot
+#
+# ----------------------------------------------------------------------------
+# WHAT RUN 30192158996 (2026-07-26) ACTUALLY SAID, and what changed because
+# of it.  That run went green.  It produced no kernel and no boot.
+# ----------------------------------------------------------------------------
+#
+# 1. THE JOB REPORTED SUCCESS WITH NO KERNEL.  The kernel step ends in
+#    `... | sed 's/^/    /'`, and a pipeline exits with its LAST command's
+#    status.  The step ran `exit 1` -- it printed "That is a finding, not
+#    something to retry." -- sed exited 0, and GitHub called the step green.
+#    The initramfs was then assembled, QEMU was handed an Image that had never
+#    been written, and the log read "DID NOT REACH USERSPACE", which sounds
+#    like a kernel that boots badly rather than one that was never built.
+#    The upload step is the tell: "there will be 2 files uploaded", not 3.
+#    Every box step now sets `pipefail`, and every box script is written to a
+#    file and run by path rather than embedded in a quoted one-liner.
+#
+# 2. THE CERTS HUNT NEVER RAN.  Its output was four empty headings:
+#        its Kconfig definition:            <nothing>
+#        every select/imply of it:          <nothing>
+#        does defconfig set it?             <nothing>
+#        what .config says now:  CONFIG_SYSTEM_TRUSTED_KEYRING=y
+#    Only the last one printed, and it is the only one that did not use
+#    `grep --include`.  `--include` is a GNU extension; the box runs BusyBox,
+#    whose grep does not implement it, so every search silently matched
+#    nothing and the run concluded "no ENABLED selector found" about a search
+#    that never happened.  That exact trap is written down in
+#    spikes/stage4/README.md and it was still in this file.
+#
+# 3. libstdc++ WENT TO /usr/lib64.  The book's x86_64 step
+#        sed -e '/m64=/s/lib64/lib/' -i.orig gcc/config/i386/t-linux64
+#    has an aarch64 counterpart this box never applied, so glibc landed in
+#    /usr/lib (forced by libc_cv_slibdir) and libstdc++ landed beside it in a
+#    directory nothing searches.  The step printed the paths and looked fine:
+#    `ls ... | sed ... || echo "NO libstdc++"` can never fire its fallback --
+#    the `||` sees sed's status -- and the `find` on the next line runs
+#    unconditionally.  So the lib64 paths in that output were the FALLBACK
+#    diagnostic printing, not the check passing.
+#
+# 4. QEMU'S romfile ERROR IS OURS TO FIX, not the runner's.  `-M virt` adds a
+#    default virtio-net-pci whose option ROM ships in `ipxe-qemu` -- a
+#    RECOMMENDED package, and this workflow installs with
+#    --no-install-recommends.  This boot needs no network at all, so the NIC
+#    is removed with `-nic none` and the package is installed as well.
+#
+# 5. NOTHING WAS CACHED.  The full sysroot took 36 minutes to reach a kernel
+#    step that then failed in 5 seconds.  The sysroot is now cached behind a
+#    completeness marker, so a kernel-only iteration costs minutes.
 #
 # ============================================================================
 
@@ -43,6 +88,12 @@ on:
     paths:
       - '.github/workflows/hermetic-gcc16.yml'
   workflow_dispatch:
+    inputs:
+      rebuild_sysroot:
+        description: 'Discard the cached sysroot and rebuild chapters 5 and 6'
+        type: choice
+        options: ['no', 'yes']
+        default: 'no'
 
 # A NEW PUSH MUST NOT KILL A RUNNING BUILD. Cancelling in flight is right for a
 # fast check and wrong for a multi-hour box: one push to fix a typo cancelled
@@ -80,6 +131,13 @@ env:
   # the image itself
   KTAG: 'v7.2-rc4'
   KSHA: '1590cf0'
+  # BUMP THIS WHENEVER CHAPTER 5 OR 6 CHANGES. It is the only thing standing
+  # between a recipe edit and a cache full of sysroots built by the old recipe.
+  # A cache key that tracked the file hash would invalidate on every comment,
+  # which is the same as having no cache at all; a key that tracks nothing
+  # silently serves a stale tree. An explicit, reviewable salt is the honest
+  # middle -- and forgetting to bump it is visible in the diff.
+  SYSROOT_EPOCH: '2026-07-26-a'
 
 jobs:
   bleeding:
@@ -91,19 +149,32 @@ jobs:
 
       - name: Install
         run: |
+          set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bubblewrap curl git bzip2 xz-utils gcc g++ make bison flex \
-            texinfo m4 perl python3 file gawk qemu-system-arm
+            texinfo m4 perl python3 file gawk cpio qemu-system-arm
+          # THE OPTION ROMS. Every boot attempt from this box has died on
+          #   qemu-system-aarch64: failed to find romfile "efi-virtio.rom"
+          # which is a packaging fact about the runner, not about the image:
+          # ipxe-qemu is a RECOMMENDED dependency of qemu-system-arm and the
+          # line above deliberately skips recommends. The BOOT step also drops
+          # the NIC entirely, so this is belt and braces on the one thing that
+          # has blocked every single boot -- and it must not be able to fail
+          # the run on its own.
+          sudo apt-get install -y --no-install-recommends ipxe-qemu \
+            || echo "  ipxe-qemu unavailable -- relying on -nic none instead"
 
       - name: 'Layout, environment, and the box itself'
         run: |
-          set -eu
+          set -euo pipefail
           S="$PWD/sysroot"
           echo "S=$S" >> "$GITHUB_ENV"
           echo "W=$PWD" >> "$GITHUB_ENV"
+          # IDEMPOTENT, because a restored cache lands on top of this and a
+          # second run must not fail on "File exists".
           mkdir -pv "$S"/{etc,var,tools,work} "$S"/usr/{bin,lib,sbin,include}
-          for i in bin lib sbin; do ln -sv usr/$i "$S/$i"; done
+          for i in bin lib sbin; do ln -sfnv usr/$i "$S/$i"; done
           # PATH once, for every later step.
           echo "$S/tools/bin" >> "$GITHUB_PATH"
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
@@ -127,10 +198,59 @@ jobs:
           echo "  LFS_TGT: $LFS_TGT   host: $(gcc -dumpmachine)"
           echo "  gcc $GCC_VER / glibc $GLIBC_VER / binutils $BINUTILS_VER"
           echo "  image kernel: $KTAG ($KSHA)"
+          echo "  sysroot epoch: $SYSROOT_EPOCH"
+
+      # ---------------------------------------------------------------- cache
+      # RESTORE AND SAVE ARE SPLIT ON PURPOSE. actions/cache saves at post-job
+      # whatever happened, so a run that dies half way publishes a half-built
+      # sysroot under the same key -- and then never replaces it, because the
+      # key already exists. Restoring by prefix and saving under a run-unique
+      # key means a good tree can always supersede a bad one.
+      - name: 'Restore the sysroot if one was ever finished'
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            sysroot/tools
+            sysroot/usr
+            sysroot/etc
+            sysroot/var
+          key: gcc16-sysroot-${{ env.SYSROOT_EPOCH }}-${{ github.run_id }}
+          restore-keys: |
+            gcc16-sysroot-${{ env.SYSROOT_EPOCH }}-
+
+      - name: 'Accept the restored tree ONLY if it is marked complete'
+        run: |
+          set -euo pipefail
+          matched='${{ steps.restore.outputs.cache-matched-key }}'
+          force='${{ github.event.inputs.rebuild_sysroot }}'
+          echo "  restore key matched: ${matched:-<none>}"
+          drop() {
+            echo "  $1"
+            rm -rf "$S/tools" "$S/usr" "$S/etc" "$S/var"
+            mkdir -p "$S"/{etc,var,tools,work} "$S"/usr/{bin,lib,sbin,include}
+            for i in bin lib sbin; do ln -sfn usr/$i "$S/$i"; done
+          }
+          if [ "$force" = "yes" ]; then
+            drop "rebuild_sysroot=yes -- discarding whatever was restored"
+          elif [ -f "$S/etc/.sysroot-complete" ]; then
+            echo "  COMPLETE sysroot restored: $(du -sh "$S" | cut -f1)"
+            echo "  chapters 5 and 6 will be skipped"
+            if [ -f "$S/etc/.tools-complete" ]; then
+              echo "  m4/bison/flex/perl/bc are present too"
+            else
+              echo "  kernel build tools absent -- they will be rebuilt"
+            fi
+          else
+            drop "no completeness marker -- the restored tree is not trusted"
+          fi
+          # Report what a later step will key off, so the log says it once.
+          echo "  skip chapter 5+6: $([ -f "$S/etc/.sysroot-complete" ] && echo yes || echo no)"
+          echo "  skip box tools:   $([ -f "$S/etc/.tools-complete" ] && echo yes || echo no)"
 
       - name: 'Fetch everything (no network exists inside the box)'
         run: |
-          set -eu
+          set -euo pipefail
           # curl -f EXITS 22 ON A 404 AND SAYS NOTHING ELSE. The run died with
           # "Process completed with exit code 22" and the only clue was which
           # basename had been echoed last -- mpc-1.4.1.tar.gz, pinned by the
@@ -152,8 +272,7 @@ jobs:
             # --http1.1 + --retry-all-errors: hermetic-gcc10 run 1 died on a
             # 110 MB kernel tarball with "curl: (92) HTTP/2 stream ...
             # PROTOCOL_ERROR". Exit 92 is not one of the statuses plain
-            # --retry covers, so the retry budget never applied. Same fetch,
-            # same runners, same fix.
+            # --retry covers, so the retry budget never applied.
             kern=$(printf '%s' "$1" | sed 's|https://cdn.kernel.org|https://mirrors.edge.kernel.org|')
             for u in "$1" "$gnu" "$kern" "$alt"; do
               curl -fsSL --http1.1 --retry 3 --retry-all-errors --retry-delay 3 \
@@ -165,38 +284,45 @@ jobs:
             printf '      %s\n' "$1" "$gnu" "$kern" "$alt"
             return 1
           }
-          get "$GNU/binutils/binutils-$BINUTILS_VER.tar.xz"
-          get "$GNU/gcc/gcc-$GCC_VER/gcc-$GCC_VER.tar.xz"
-          get "$GNU/glibc/glibc-$GLIBC_VER.tar.xz"
-          # THE DEV BOOK REQUIRES TWO GLIBC PATCHES AND THIS WORKFLOW APPLIED NEITHER.
-          # Its chapter 5 says, in as many words:
-          #   "Now fix glibc to build against Linux 7:"
-          #   patch -Np1 -i ../glibc-2.43-upstream_fixes-1.patch
-          # which is exactly the build that was failing here:
-          #   misc/umount.o  misc/umount2.o
-          #   cc1: all warnings being treated as errors
-          # glibc compiles itself with -Werror, so anything a Linux 7 UAPI header
-          # changes becomes a hard error rather than a warning.
-          #
-          # THE VERSION SET WAS NEVER WRONG. gcc 16.1.0, glibc 2.43, binutils 2.46.1
-          # and linux 7.1.3 are precisely what the book pins -- checked against the
-          # vendored copy. What was missing was a STEP, not a pin.
-          get "$LFS_PATCH/glibc-$GLIBC_VER-upstream_fixes-1.patch"
-          get "$LFS_PATCH/glibc-fhs-1.patch"
-          get "$GNU/gmp/gmp-$GMP_VER.tar.xz"
-          get "$GNU/mpfr/mpfr-$MPFR_VER.tar.xz"
-          get "$GNU/mpc/mpc-$MPC_VER.tar.gz"
-          get "$GNU/m4/m4-$M4_VER.tar.xz"
-          get "$GNU/bison/bison-$BISON_VER.tar.xz"
-          get "$GNU/make/make-4.4.1.tar.gz"
-          get "https://github.com/westes/flex/releases/download/v$FLEX_VER/flex-$FLEX_VER.tar.gz"
-          get "https://www.cpan.org/src/5.0/perl-$PERL_VER.tar.xz"
-          get "https://github.com/gavinhoward/bc/releases/download/$BC_VER/bc-$BC_VER.tar.xz"
-          get "https://busybox.net/downloads/busybox-1.36.1.tar.bz2"
-          get "https://cdn.kernel.org/pub/linux/kernel/v${KHDR_VER%%.*}.x/linux-$KHDR_VER.tar.xz"
+
+          if [ -f "$S/etc/.sysroot-complete" ]; then
+            echo "  --- toolchain sources not needed: sysroot came from cache ---"
+          else
+            get "$GNU/binutils/binutils-$BINUTILS_VER.tar.xz"
+            get "$GNU/gcc/gcc-$GCC_VER/gcc-$GCC_VER.tar.xz"
+            get "$GNU/glibc/glibc-$GLIBC_VER.tar.xz"
+            # THE DEV BOOK REQUIRES TWO GLIBC PATCHES. Its chapter 5 says, in
+            # as many words: "Now fix glibc to build against Linux 7:" and then
+            # patches. Without them the build dies on misc/umount.o with
+            # "cc1: all warnings being treated as errors", because glibc
+            # compiles itself with -Werror and a Linux 7 UAPI header changes a
+            # warning into a hard error. The version set was never wrong; a
+            # STEP was missing.
+            get "$LFS_PATCH/glibc-$GLIBC_VER-upstream_fixes-1.patch"
+            get "$LFS_PATCH/glibc-fhs-1.patch"
+            get "$GNU/gmp/gmp-$GMP_VER.tar.xz"
+            get "$GNU/mpfr/mpfr-$MPFR_VER.tar.xz"
+            get "$GNU/mpc/mpc-$MPC_VER.tar.gz"
+            get "$GNU/make/make-4.4.1.tar.gz"
+            get "https://busybox.net/downloads/busybox-1.36.1.tar.bz2"
+            get "https://cdn.kernel.org/pub/linux/kernel/v${KHDR_VER%%.*}.x/linux-$KHDR_VER.tar.xz"
+          fi
+
+          if [ -f "$S/etc/.tools-complete" ]; then
+            echo "  --- m4/bison/flex/perl/bc not needed: already in the box ---"
+          else
+            get "$GNU/m4/m4-$M4_VER.tar.xz"
+            get "$GNU/bison/bison-$BISON_VER.tar.xz"
+            get "https://github.com/westes/flex/releases/download/v$FLEX_VER/flex-$FLEX_VER.tar.gz"
+            get "https://www.cpan.org/src/5.0/perl-$PERL_VER.tar.xz"
+            get "https://github.com/gavinhoward/bc/releases/download/$BC_VER/bc-$BC_VER.tar.xz"
+          fi
+
           echo "  --- linux $KTAG from git ---"
+          rm -rf ksrc
           git clone --depth 1 --branch "$KTAG" \
-            https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git ksrc
+            https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git ksrc 2>&1 \
+            | grep -vE '^(Updating files|remote: (Counting|Compressing|Total))' || true
           got=$(git -C ksrc rev-parse --short HEAD)
           echo "    $KTAG -> $got  (expected $KSHA)"
           # PIN BY COMMIT, NOT BY TAG. rc tags are re-cut more readily than
@@ -208,9 +334,11 @@ jobs:
                echo "    continuing, but the result is about $got, not $KSHA" ;;
           esac
 
+      # ------------------------------------------------------- LFS chapter 5
       - name: '5.2 binutils pass 1'
         run: |
-          set -eu
+          set -euo pipefail
+          if [ -f "$S/etc/.sysroot-complete" ]; then echo "  (cached sysroot -- skipped)"; exit 0; fi
           die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
           tar xf "binutils-$BINUTILS_VER.tar.xz"
           mkdir -p b-bu1 && cd b-bu1
@@ -224,13 +352,39 @@ jobs:
 
       - name: '5.3 gcc 16.1 pass 1'
         run: |
-          set -eu
+          set -euo pipefail
+          if [ -f "$S/etc/.sysroot-complete" ]; then echo "  (cached sysroot -- skipped)"; exit 0; fi
           die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
           tar xf "gcc-$GCC_VER.tar.xz"
           ( cd "gcc-$GCC_VER"
             tar xf "../gmp-$GMP_VER.tar.xz"   && mv "gmp-$GMP_VER" gmp
             tar xf "../mpfr-$MPFR_VER.tar.xz" && mv "mpfr-$MPFR_VER" mpfr
-            tar xf "$(ls ../mpc-$MPC_VER.tar.* | head -1)" && mv "mpc-$MPC_VER" mpc )
+            tar xf "$(ls ../mpc-$MPC_VER.tar.* | head -1)" && mv "mpc-$MPC_VER" mpc
+
+            # THE 64-BIT LIBDIR. The book has this step and writes it for the
+            # only architecture it supports:
+            #     case $(uname -m) in
+            #       x86_64) sed -e '/m64=/s/lib64/lib/' \
+            #                   -i.orig gcc/config/i386/t-linux64 ;;
+            #     esac
+            # The aarch64 file that does the same job is t-aarch64-linux:
+            #     MULTILIB_OSDIRNAMES = mabi.lp64=../lib64
+            # Skipping it is why the last run put glibc in /usr/lib (forced by
+            # libc_cv_slibdir) and libstdc++ in /usr/lib64, which is a
+            # directory this sysroot has no symlink to and nothing searches.
+            # Nothing in the book covers aarch64, so this is OUR delta and it
+            # is recorded here rather than inferred from the diff.
+            #
+            # ASSERT THE ANCHOR. A sed that matches nothing ships an unchanged
+            # file and looks exactly like a sed that did not work.
+            t=gcc/config/aarch64/t-aarch64-linux
+            [ -f "$t" ] || { echo "  $t is missing -- gcc has moved this file"; exit 1; }
+            grep -q 'mabi\.lp64=' "$t" || {
+              echo "  $t has no mabi.lp64= line. It now reads:"
+              sed 's/^/    /' "$t"; exit 1; }
+            sed -e '/mabi\.lp64=/s|lib64|lib|' -i.orig "$t"
+            echo "  64-bit libdir: $(grep 'mabi\.lp64=' "$t")" )
+
           mkdir -p b-gcc1 && cd b-gcc1
           # --disable-fixincludes is the dev book's addition over 13.0.
           "../gcc-$GCC_VER/configure" --target="$LFS_TGT" --prefix="$S/tools" \
@@ -247,16 +401,24 @@ jobs:
           # self-contained one with no PATH_MAX, and binutils pass 2 dies on
           # ld/ldmain.c naming a macro rather than the include chain.
           LIMH=$(dirname "$("$LFS_TGT-gcc" -print-libgcc-file-name)")
+          wrote=0
           for d in include include-fixed; do
             [ -d "$LIMH/$d" ] || continue
             cat "../gcc-$GCC_VER/gcc/limitx.h" "../gcc-$GCC_VER/gcc/glimits.h" \
                 "../gcc-$GCC_VER/gcc/limity.h" > "$LIMH/$d/limits.h"
+            wrote=$((wrote+1))
           done
+          # A LOOP THAT `continue`S PAST EVERY ITERATION IS NOT A STEP. With
+          # --disable-fixincludes there may be no include-fixed at all, and if
+          # `include` ever moves too this would write nothing and say nothing.
+          [ "$wrote" -gt 0 ] || { echo "  limits.h written to NO directory under $LIMH"; ls "$LIMH" | sed 's/^/    /'; exit 1; }
+          echo "  limits.h written to $wrote director(y|ies) under $LIMH"
           "$LFS_TGT-gcc" --version | head -1 | sed 's/^/  /'
 
       - name: '5.4 linux API headers'
         run: |
-          set -eu
+          set -euo pipefail
+          if [ -f "$S/etc/.sysroot-complete" ]; then echo "  (cached sysroot -- skipped)"; exit 0; fi
           tar xf "linux-$KHDR_VER.tar.xz"
           cd "linux-$KHDR_VER"
           make mrproper > /dev/null 2>&1
@@ -270,7 +432,8 @@ jobs:
 
       - name: '5.5 glibc, cross-compiled into the sysroot'
         run: |
-          set -eu
+          set -euo pipefail
+          if [ -f "$S/etc/.sysroot-complete" ]; then echo "  (cached sysroot -- skipped)"; exit 0; fi
           die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
           tar xf "glibc-$GLIBC_VER.tar.xz"
           # The book applies FHS first, then the upstream fixes, both with -Np1.
@@ -301,10 +464,7 @@ jobs:
           esac
           # PREFER THE COMPILER DIAGNOSTIC. die() greps "Error [0-9]|configure: error",
           # and make prints several of those per real failure, so the head limit filled
-          # with make summary lines and the actual message never appeared. This build
-          # failed on "cc1: all warnings being treated as errors" and the warning itself
-          # was never shown, which is why the cause took reading the book to find
-          # instead of reading the log.
+          # with make summary lines and the actual message never appeared.
           if ! make -j"$(nproc)" > b.log 2>&1; then
             echo "  --- the warning that became an error ---"
             grep -nE "error:|warning:" b.log | grep -v "make\[" | head -14 | sed "s/^/    /"
@@ -315,6 +475,9 @@ jobs:
             exit 1
           fi
           make DESTDIR="$S" install > i.log 2>&1 || die install i.log
+          # The book's own follow-up: ldd hard-codes a loader path that is
+          # wrong once /usr is the root of a sysroot rather than a prefix.
+          sed '/RTLDLIST=/s@/usr@@g' -i "$S/usr/bin/ldd"
           # LFS's own sanity check, at the seam where both earlier sysroots stopped
           echo 'int main(void){return 0;}' > /tmp/lt.c
           if "$LFS_TGT-gcc" /tmp/lt.c -o /tmp/lt 2> /tmp/lt.err; then
@@ -327,34 +490,62 @@ jobs:
 
       - name: '5.6 libstdc++'
         run: |
-          set -eu
+          set -euo pipefail
+          if [ -f "$S/etc/.sysroot-complete" ]; then echo "  (cached sysroot -- skipped)"; exit 0; fi
           die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
           command -v "$LFS_TGT-g++" > /dev/null || { echo "  cross g++ not on PATH"; exit 1; }
           mkdir -p b-libstdcxx && cd b-libstdcxx
+          # CXX=$LFS_TGT-gcc IS THE BOOK'S, AND IT IS NOT COSMETIC. It says:
+          # the default $LFS_TGT-g++ "would automatically specify linking
+          # against libstdc++ when invoking the linker, but in our case
+          # libstdc++ is not installed yet so some checks in the configure
+          # script would misbehave".
           "../gcc-$GCC_VER/libstdc++-v3/configure" --host="$LFS_TGT" \
-            --build="$(../gcc-$GCC_VER/config.guess)" --prefix=/usr \
+            --build="$(../gcc-$GCC_VER/config.guess)" \
+            CXX="$LFS_TGT-gcc" --prefix=/usr \
             --disable-multilib --disable-nls --disable-libstdcxx-pch \
             --with-gxx-include-dir="/tools/$LFS_TGT/include/c++/$GCC_VER" \
             > c.log 2>&1 || die configure c.log
           make -j"$(nproc)" > b.log 2>&1 || die build b.log
           make DESTDIR="$S" install > i.log 2>&1 || die install i.log
-          # This has printed empty on every baseline run and was never chased.
-          echo "  installed:"; ls "$S"/usr/lib/libstdc++* 2>/dev/null | sed 's/^/    /' \
-            || echo "    NO libstdc++ IN /usr/lib -- look where it went:"
-          find "$S" -name 'libstdc++*' 2>/dev/null | head -5 | sed 's/^/    /'
+          # "Remove the libtool archive files because they are harmful for
+          # cross-compilation" -- the book, verbatim, and never done here.
+          rm -fv "$S"/usr/lib/lib{stdc++{,exp,fs},supc++}.la 2>/dev/null || true
+          # THE CHECK THAT COULD NOT FAIL. This used to be
+          #     ls .../usr/lib/libstdc++* | sed ... || echo "NO libstdc++"
+          # where the `||` reads sed's status, never the ls's, so the fallback
+          # was unreachable -- and the `find` below it ran unconditionally.
+          # The lib64 paths in the last run's log were that fallback printing,
+          # which read exactly like the check passing.
+          if [ -e "$S/usr/lib/libstdc++.so.6" ]; then
+            echo "  libstdc++ in /usr/lib:"
+            ls "$S"/usr/lib/libstdc++.so.* | sed 's/^/    /'
+          else
+            echo "  NO libstdc++.so.6 IN /usr/lib. Where it went instead:"
+            find "$S" -name 'libstdc++.so*' 2>/dev/null | head -8 | sed 's/^/    /'
+            echo "  If these are under /usr/lib64 the t-aarch64-linux sed in 5.3"
+            echo "  did not take effect on this gcc."
+            exit 1
+          fi
 
+      # ------------------------------------------------------- LFS chapter 6
       - name: '6.x userland: BusyBox, make, binutils pass 2, gcc pass 2'
         run: |
-          set -eu
+          set -euo pipefail
+          if [ -f "$S/etc/.sysroot-complete" ]; then echo "  (cached sysroot -- skipped)"; exit 0; fi
           die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+
           tar xf busybox-1.36.1.tar.bz2 && cd busybox-1.36.1
           make defconfig > /dev/null 2>&1
-          yes '' | make oldconfig > /dev/null 2>&1
+          yes '' 2>/dev/null | make oldconfig > /dev/null 2>&1
           for sym in CONFIG_TC CONFIG_TLS CONFIG_SSL_CLIENT \
                      CONFIG_FEATURE_WGET_HTTPS CONFIG_FEATURE_WGET_OPENSSL; do
             sed -i "s/^$sym=y/# $sym is not set/" .config
           done
+          # BusyBox reads CONFIG_EXTRA_CFLAGS, not EXTRA_CFLAGS.
           sed -i 's|^CONFIG_EXTRA_CFLAGS=.*|CONFIG_EXTRA_CFLAGS="-D_GNU_SOURCE"|' .config
+          grep -q '^CONFIG_EXTRA_CFLAGS="-D_GNU_SOURCE"' .config \
+            || { echo "  CONFIG_EXTRA_CFLAGS did not take"; exit 1; }
           make -j"$(nproc)" CROSS_COMPILE="$LFS_TGT-" > b.log 2>&1 || die busybox b.log
           cp busybox "$S/usr/bin/"
           # From INSIDE: this binary needs the sysroot's glibc, which is newer
@@ -364,13 +555,31 @@ jobs:
           [ "$n" -gt 100 ] || { echo "  --install did not run"; exit 1; }
 
           cd "$W" && tar xf make-4.4.1.tar.gz && mkdir -p b-make && cd b-make
+          # make keeps config.guess in build-aux/, as the book says. The
+          # top-level path fails silently and configure runs with --build=.
           ../make-4.4.1/configure --prefix=/usr --host="$LFS_TGT" \
             --build="$(../make-4.4.1/build-aux/config.guess)" --disable-nls \
             > c.log 2>&1 || die configure c.log
           make -j"$(nproc)" > b.log 2>&1 || die build b.log
           make DESTDIR="$S" install > i.log 2>&1 || die install i.log
 
-          cd "$W" && mkdir -p b-bu2 && cd b-bu2
+          cd "$W"
+          # THE BOOK'S ltmain.sh WORKAROUND, and the reason it exists is
+          # hermeticity: "This inconsistency may cause produced binaries
+          # mistakenly linked against libraries from the host distro."
+          # A bare line number is exactly the anchor that silently edits the
+          # wrong line, so it is checked before it is used and reported when
+          # it does not hold.
+          lt="binutils-$BINUTILS_VER/ltmain.sh"
+          if sed -n '6031p' "$lt" | grep -q 'add_dir'; then
+            sed -i '6031s/\$add_dir//' "$lt"
+            echo "  ltmain.sh:6031 patched (host-libdir contamination guard)"
+          else
+            echo "  ltmain.sh:6031 does not mention \$add_dir -- book patch SKIPPED"
+            echo "    that line reads: $(sed -n '6031p' "$lt")"
+            echo "    (not fatal: it is a workaround, and binutils may have moved it)"
+          fi
+          mkdir -p b-bu2 && cd b-bu2
           "../binutils-$BINUTILS_VER/configure" --prefix=/usr \
             --build="$(../binutils-$BINUTILS_VER/config.guess)" --host="$LFS_TGT" \
             --disable-nls --enable-shared --enable-gprofng=no --disable-werror \
@@ -378,11 +587,17 @@ jobs:
             > c.log 2>&1 || die configure c.log
           make -j"$(nproc)" > b.log 2>&1 || die build b.log
           make DESTDIR="$S" install > i.log 2>&1 || die install i.log
+          # Book: "harmful for cross compilation", plus the static libs.
+          rm -fv "$S"/usr/lib/lib{bfd,ctf,ctf-nobfd,opcodes,sframe}.{a,la} 2>/dev/null || true
 
           cd "$W" && mkdir -p b-gcc2 && cd b-gcc2
+          # target_configargs=... is the book's, and it is what gives the
+          # target libgcc/libstdc++ POSIX threads; without it they inherit
+          # pass 1's --disable-threads.
           "../gcc-$GCC_VER/configure" --build="$(../gcc-$GCC_VER/config.guess)" \
             --host="$LFS_TGT" --target="$LFS_TGT" \
             LDFLAGS_FOR_TARGET=-L"$PWD/$LFS_TGT/libgcc" \
+            target_configargs=gcc_cv_target_thread_file=posix \
             --prefix=/usr --with-build-sysroot="$S" --enable-default-pie \
             --enable-default-ssp --disable-nls --disable-multilib \
             --disable-libatomic --disable-libgomp --disable-libquadmath \
@@ -394,9 +609,9 @@ jobs:
           ln -sfv gcc "$S/usr/bin/cc"
           echo "  sysroot: $(du -sh "$S" | cut -f1)"
 
-      - name: 'THE LADDER'
+      - name: 'THE LADDER: is the box self-sufficient?'
         run: |
-          set -u
+          set -uo pipefail
           set +e
           rung() { name=$1; shift
             out=$(S="$S" "$W/box16.sh" "$@" 2>&1); rc=$?
@@ -411,172 +626,350 @@ jobs:
           mkdir -p "$S/work"
           printf 'int main(void){return 42;}\n' > "$S/work/t.c"
           S="$S" "$W/box16.sh" /usr/bin/gcc -o /work/t /work/t.c 2>&1 | head -5 | sed 's/^/    /'
-          S="$S" "$W/box16.sh" /work/t; echo "  compile+run: exit=$? (expect 42)"
+          S="$S" "$W/box16.sh" /work/t; rc=$?
+          echo "  compile+run: exit=$rc (expect 42)"
+          # A CHECK THAT CANNOT FAIL IS NOT A CHECK. This number was printed
+          # and never read, so a box with a broken compiler would go on to
+          # spend half an hour failing to build a kernel for reasons that had
+          # nothing to do with the kernel.
+          if [ "$rc" -ne 42 ]; then
+            echo "  the box cannot compile and run a C program -- stopping here"
+            exit 1
+          fi
+          # THE MARKER IS THE DEFINITION OF "COMPLETE", and it is written here
+          # rather than at the end of chapter 6 on purpose: a tree that builds
+          # is not the same as a tree that works, and only this proves the
+          # second. Nothing without this file is ever restored from cache.
+          date -u +%FT%TZ > "$S/etc/.sysroot-complete"
+          echo "SYSROOT_COMPLETE=1" >> "$GITHUB_ENV"
+          echo "  marked complete"
 
       - name: 'Stage the kernel and its build tools into the box'
         run: |
-          set -eu
-          for t in m4-$M4_VER bison-$BISON_VER flex-$FLEX_VER perl-$PERL_VER bc-$BC_VER; do
-            d="$S/work/$t"; mkdir -p "$d"
-            # ls the glob: get() may have fallen back to the other extension.
-            f=$(ls ${t}.tar.* 2>/dev/null | head -1)
-            [ -n "$f" ] || { echo "  no tarball for $t"; exit 1; }
-            tar xf "$f" -C "$d" --strip-components=1
-          done
+          set -euo pipefail
+          if [ -f "$S/etc/.tools-complete" ]; then
+            echo "  build tools already in the box -- staging the kernel only"
+          else
+            for t in m4-$M4_VER bison-$BISON_VER flex-$FLEX_VER perl-$PERL_VER bc-$BC_VER; do
+              d="$S/work/$t"; rm -rf "$d"; mkdir -p "$d"
+              # ls the glob: get() may have fallen back to the other extension.
+              f=$(ls ${t}.tar.* 2>/dev/null | head -1)
+              [ -n "$f" ] || { echo "  no tarball for $t"; exit 1; }
+              tar xf "$f" -C "$d" --strip-components=1
+            done
+          fi
+          rm -rf "$S/work/linux"
           cp -r ksrc "$S/work/linux"
           echo "  staged: $(ls "$S/work" | tr '\n' ' ')"
 
       - name: 'Build m4, bison, flex, perl, bc INSIDE the box'
         run: |
-          set -eu
-          S="$S" "$W/box16.sh" /bin/sh -c '
-            set -e
-            for p in m4-'"$M4_VER"' bison-'"$BISON_VER"' flex-'"$FLEX_VER"'; do
-              echo "=== $p ==="; cd /work/$p
-              ./configure --prefix=/usr > c.log 2>&1 || { tail -10 c.log; exit 1; }
-              make -j4 > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -6; exit 1; }
-              make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
-            done
-            echo "=== bc ==="; cd /work/bc-'"$BC_VER"'
-            PREFIX=/usr CC=gcc ./configure.sh -O3 -r > c.log 2>&1 || { tail -8 c.log; exit 1; }
-            make -j4 > b.log 2>&1 && make install > i.log 2>&1
-            echo "=== perl ==="; cd /work/perl-'"$PERL_VER"'
-            ./Configure -des -Dprefix=/usr -Dcc=gcc > c.log 2>&1 || { tail -14 c.log; exit 1; }
-            make -j4 > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -6; exit 1; }
+          set -euo pipefail
+          if [ -f "$S/etc/.tools-complete" ]; then echo "  (cached -- skipped)"; exit 0; fi
+          # WRITTEN TO A FILE, NOT EMBEDDED. The old form was a single-quoted
+          # shell string spliced with '"$VAR"' at five points; a quoted heredoc
+          # cannot get that wrong and the script is readable as a script.
+          cat > "$S/work/tools.sh" <<TEOF
+          #!/bin/sh
+          set -e
+          M4_VER=$M4_VER
+          BISON_VER=$BISON_VER
+          FLEX_VER=$FLEX_VER
+          PERL_VER=$PERL_VER
+          BC_VER=$BC_VER
+          TEOF
+          cat >> "$S/work/tools.sh" <<'TEOF'
+          for p in m4-$M4_VER bison-$BISON_VER flex-$FLEX_VER; do
+            echo "=== $p ==="; cd /work/$p
+            ./configure --prefix=/usr > c.log 2>&1 || { tail -10 c.log; exit 1; }
+            make -j$(nproc) > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -6; exit 1; }
             make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
-            echo "tools: $(m4 --version | head -1), $(bison --version | head -1), $(perl -e "print $^V")"
-          ' 2>&1 | sed 's/^/    /'
+          done
+          # bc USED TO BE `make && make install` WITH NO || exit, and set -e
+          # does not fire on the left-hand side of an &&: a failing bc printed
+          # nothing and the run carried on. The kernel needs bc to generate
+          # kernel/time/timeconst.h, so that failure would have surfaced an
+          # hour later as a kernel error with no connection to this step.
+          echo "=== bc ==="; cd /work/bc-$BC_VER
+          PREFIX=/usr CC=gcc ./configure.sh -O3 -r > c.log 2>&1 || { tail -8 c.log; exit 1; }
+          make -j$(nproc) > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -6; exit 1; }
+          make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
+          echo "=== perl ==="; cd /work/perl-$PERL_VER
+          ./Configure -des -Dprefix=/usr -Dcc=gcc > c.log 2>&1 || { tail -14 c.log; exit 1; }
+          make -j$(nproc) > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -6; exit 1; }
+          make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
+          echo "=== what the kernel build will actually invoke ==="
+          bad=0
+          for t in m4 bison flex perl bc; do
+            if command -v $t > /dev/null 2>&1; then
+              echo "  $t: $(command -v $t)"
+            else
+              echo "  $t: NOT ON PATH"; bad=1
+            fi
+          done
+          [ $bad -eq 0 ]
+          TEOF
+          chmod +x "$S/work/tools.sh"
+          S="$S" "$W/box16.sh" /bin/sh /work/tools.sh 2>&1 | sed 's/^/    /'
+          date -u +%FT%TZ > "$S/etc/.tools-complete"
 
       - name: 'Build linux ${{ env.KTAG }} INSIDE the box'
         run: |
-          set -eu
-          S="$S" "$W/box16.sh" /bin/sh -c '
-            set -e
-            cd /work/linux
-            make ARCH=arm64 defconfig > /dev/null 2>&1
-            # DISABLE, NORMALISE, VERIFY -- AND WHEN VERIFY FAILS, FIND OUT WHY.
-            # The previous run stopped here with
-            #   CONFIG_SYSTEM_TRUSTED_KEYRING came back after olddefconfig
-            # The check was right and the disable was not. That symbol is turned
-            # on by another symbol that `select`s it, and olddefconfig faithfully
-            # puts it back every time; adding it to a longer disable list would
-            # not help either, because the SELECTOR is what has to go.
-            #
-            # So rather than guess which symbol that is, ask the source. Every
-            # selector is a literal `select <SYM>` line in a Kconfig file and the
-            # enclosing `config <NAME>` block names the symbol doing it. That is
-            # mechanical to extract, and it is the difference between a fix and a
-            # guess -- this repo has paid for the guessing version before.
-            #
-            # WHY THESE ARE OFF AT ALL: an initramfs boot needs no modules, and
-            # the certs machinery builds certs/extract-cert, which needs openssl,
-            # which a hermetic box does not have:
-            #   certs/extract-cert.c:21: fatal error: openssl/bio.h: No such file
-            TARGETS="MODULES MODULE_SIG MODULE_SIG_ALL DEBUG_INFO_BTF
-                     SYSTEM_TRUSTED_KEYRING SECONDARY_TRUSTED_KEYRING
-                     SYSTEM_REVOCATION_LIST"
-            round=0
-            while [ "$round" -lt 4 ]; do
-              round=$((round+1))
-              for sym in $TARGETS; do
-                ./scripts/config --disable "$sym" 2>/dev/null || \
-                  sed -i "s/^CONFIG_$sym=y/# CONFIG_$sym is not set/" .config
-              done
-              # olddefconfig answers new symbols with their default and reads
-              # nothing from stdin. The `yes "" |` this used to have contributed
-              # only "yes: Broken pipe" to the log.
-              make ARCH=arm64 olddefconfig > /dev/null 2>&1
-              still=""
-              for sym in $TARGETS; do
-                grep -q "^CONFIG_$sym=y" .config && still="$still $sym"
-              done
-              [ -z "$still" ] && break
-              echo "  round $round -- still on:$still"
-              extra=""
-              for sym in $still; do
-                for kf in $(grep -rl "select $sym" --include="Kconfig*" . 2>/dev/null | head -40); do
-                  for name in $(awk -v s="$sym" '"'"'
-                      /^[ \t]*config[ \t]+/ { cur = $2 }
-                      $0 ~ ("select[ \t]+" s "([ \t]|$)") { if (cur != "") print cur }'"'"' "$kf"); do
-                    if grep -q "^CONFIG_$name=y" .config; then
-                      case " $TARGETS $extra " in *" $name "*) ;; *) extra="$extra $name";; esac
-                    fi
-                  done
-                done
-              done
-              if [ -z "$extra" ]; then
-                echo "  no ENABLED selector found for:$still"
-                # DO NOT STOP WITHOUT THE EVIDENCE. The previous run printed exactly
-                # the line above and nothing else, so the only possible next move was
-                # another guess. If the search cannot see why the symbol is on, print
-                # what the source and the config actually say about it.
-                for sym in $still; do
-                  echo "  ---- $sym ----"
-                  echo "  its Kconfig definition:"
-                  grep -rn -A8 "^config $sym$" --include="Kconfig*" . 2>/dev/null | head -14 | sed "s/^/      /"
-                  echo "  every select/imply of it, enabled or not:"
-                  grep -rnE "(select|imply)[ \t]+$sym([ \t]|$)" --include="Kconfig*" . 2>/dev/null | head -8 | sed "s/^/      /"
-                  echo "  does arch/arm64/configs/defconfig set it?"
-                  grep -n "$sym" arch/arm64/configs/defconfig 2>/dev/null | head -3 | sed "s/^/      /" || echo "      no"
-                  echo "  what .config says now:"
-                  grep -n "CONFIG_$sym[= ]" .config 2>/dev/null | head -3 | sed "s/^/      /"
-                done
-                echo "  That is a finding, not something to retry."
-                exit 1
+          set -euo pipefail
+          cat > "$S/work/kbuild.sh" <<'KEOF'
+          #!/bin/sh
+          set -e
+          cd /work/linux
+          # The book opens with this and says not to trust a freshly untarred
+          # tree. This one came out of git, but the rule costs nothing.
+          make mrproper > /dev/null 2>&1
+          echo "=== defconfig ==="
+          make ARCH=arm64 defconfig > /dev/null 2>&1
+
+          dis() {
+            ./scripts/config --disable "$1" 2>/dev/null || true
+            sed -i "s/^CONFIG_$1=y\$/# CONFIG_$1 is not set/" .config
+            sed -i "s/^CONFIG_$1=m\$/# CONFIG_$1 is not set/" .config
+          }
+          en() {
+            ./scripts/config --enable "$1" 2>/dev/null || true
+            grep -q "^CONFIG_$1=y" .config || \
+              sed -i "s/^# CONFIG_$1 is not set\$/CONFIG_$1=y/" .config
+          }
+
+          # ---- WERROR, FIRST, BECAUSE THE BOOK PUTS IT FIRST ----------------
+          # "Be sure to enable/disable/set the following features or the system
+          #  might not work correctly or boot at all:
+          #     [ ] Compile the kernel with warnings as errors [WERROR]"
+          # CONFIG_WERROR defaults to y, and this is the one box in the tree
+          # pairing a compiler released this year with an -rc kernel. Any
+          # warning gcc 16.1 emits that linux v7.2-rc4 was not tested against
+          # becomes a hard error.
+          dis WERROR
+
+          # ---- WHAT AN INITRAMFS BOOT DOES NOT NEED -------------------------
+          # Each of these drags in a host tool the box does not have. That is
+          # the reason they are off; it is not a preference.
+          #   MODULES / MODULE_SIG  -> certs/ -> extract-cert -> openssl
+          #   DEBUG_INFO_BTF        -> pahole
+          #   KEXEC_*               -> SYSTEM_DATA_VERIFICATION, which is the
+          #                            select that turns SYSTEM_TRUSTED_KEYRING
+          #                            back on after every olddefconfig
+          # The previous run disabled SYSTEM_TRUSTED_KEYRING directly, watched
+          # olddefconfig restore it, and stopped. Disabling a symbol that
+          # something else selects can never work; the CONSUMERS have to go,
+          # and each one below is justified by "this boot does not use it"
+          # rather than by a guess about the Kconfig graph.
+          for s in MODULES MODULE_SIG MODULE_SIG_ALL \
+                   DEBUG_INFO DEBUG_INFO_BTF DEBUG_INFO_DWARF5 \
+                   KEXEC KEXEC_FILE KEXEC_SIG \
+                   IMA INTEGRITY INTEGRITY_SIGNATURE \
+                   SIGNED_PE_FILE_VERIFICATION \
+                   SYSTEM_DATA_VERIFICATION \
+                   SYSTEM_TRUSTED_KEYRING SECONDARY_TRUSTED_KEYRING \
+                   SYSTEM_REVOCATION_LIST; do
+            dis "$s"
+          done
+          # And empty the two strings that are what actually make certs/ invoke
+          # extract-cert, in case the keyring survives anyway.
+          ./scripts/config --set-str SYSTEM_TRUSTED_KEYS "" 2>/dev/null || true
+          ./scripts/config --set-str MODULE_SIG_KEY "" 2>/dev/null || true
+
+          # ---- WHAT THIS BOOT CANNOT WORK WITHOUT ---------------------------
+          # DEVTMPFS_MOUNT especially: the initramfs carries no /dev/console,
+          # because a cpio can only carry a device node if it is built as real
+          # root and this one is built inside a user namespace. Without a
+          # console, init runs with no stdio at all and every echo it makes
+          # disappears -- which reads exactly like a kernel that never reached
+          # userspace.
+          for s in BLK_DEV_INITRD RD_GZIP DEVTMPFS DEVTMPFS_MOUNT \
+                   SERIAL_AMBA_PL011 SERIAL_AMBA_PL011_CONSOLE \
+                   BINFMT_ELF PROC_FS SYSFS TTY; do
+            en "$s"
+          done
+
+          # olddefconfig re-derives dependent symbols after a hand edit. It
+          # answers new symbols with their defaults and reads nothing from
+          # stdin -- the `yes "" |` this used to have contributed only
+          # "yes: Broken pipe" to the log.
+          make ARCH=arm64 olddefconfig > /dev/null 2>&1
+
+          echo "=== required for this boot ==="
+          bad=0
+          for s in BLK_DEV_INITRD RD_GZIP DEVTMPFS DEVTMPFS_MOUNT \
+                   SERIAL_AMBA_PL011_CONSOLE BINFMT_ELF; do
+            if grep -q "^CONFIG_$s=y" .config; then
+              echo "  $s=y"
+            else
+              echo "  $s IS NOT SET -- this boot cannot work without it"; bad=1
+            fi
+          done
+          [ "$bad" -eq 0 ] || exit 1
+
+          echo "=== should be off (each needs a host tool the box lacks) ==="
+          still=""
+          for s in MODULES DEBUG_INFO_BTF SYSTEM_TRUSTED_KEYRING; do
+            if grep -q "^CONFIG_$s=y" .config; then
+              echo "  $s IS STILL ON"; still="$still $s"
+            else
+              echo "  $s off"
+            fi
+          done
+
+          if [ -n "$still" ]; then
+            echo "=== why? ==="
+            # THIS SEARCH IS BUSYBOX-SAFE, AND THE OLD ONE WAS NOT.
+            # `grep --include=` is a GNU extension. The box runs BusyBox, whose
+            # grep does not implement it, so the previous run's hunt printed
+            # four empty headings and concluded "no ENABLED selector found"
+            # about a search that had never executed. The only line that did
+            # print was the one grep in the block that did not use --include.
+            find . -name 'Kconfig*' -type f > /tmp/kfiles 2>/dev/null || true
+            if [ ! -s /tmp/kfiles ]; then
+              echo "  found NO Kconfig files at all -- the search itself is broken,"
+              echo "  which is the same mistake in a new place. Not reporting a result."
+            else
+            echo "  (searching $(wc -l < /tmp/kfiles) Kconfig files)"
+            for s in $still; do
+              echo "  ---- $s ----"
+              echo "  defined in:"
+              xargs grep -lE "^config $s\$" < /tmp/kfiles 2>/dev/null | head -3 | sed 's/^/      /'
+              echo "  every select/imply of it:"
+              xargs grep -nE "^[[:space:]]*(select|imply)[[:space:]]+$s([[:space:]]|\$)" < /tmp/kfiles 2>/dev/null | head -12 | sed 's/^/      /'
+              echo "  ...and which of those selectors are ON right now:"
+              # `|| true` ON BOTH LOOPS, and it is not decoration. A `while`
+              # returns the status of the last command it ran, so a body
+              # ending in a grep that finds nothing makes the whole pipeline
+              # fail -- and under `set -e` that kills the script in the middle
+              # of the evidence dump, leaving a truncated report that looks
+              # like the search found nothing. Verified: `set -e; printf a |
+              # while read x; do false && echo hi; done; echo REACHED` never
+              # prints REACHED.
+              xargs grep -lE "^[[:space:]]*select[[:space:]]+$s([[:space:]]|\$)" < /tmp/kfiles 2>/dev/null | while read -r kf; do
+                awk -v sym="$s" '
+                  /^[ \t]*config[ \t]+/ { cur = $2 }
+                  $0 ~ ("^[ \t]*select[ \t]+" sym "([ \t]|$)") { if (cur != "") print cur }
+                ' "$kf"
+              done | sort -u | while read -r name; do
+                if grep -q "^CONFIG_$name=y" .config; then
+                  echo "      $name=y  <-- disable THIS"
+                fi
+              done || true
+              echo "  does arch/arm64/configs/defconfig set it?"
+              if grep -q "$s" arch/arm64/configs/defconfig 2>/dev/null; then
+                grep -n "$s" arch/arm64/configs/defconfig | head -3 | sed 's/^/      /'
+              else
+                echo "      no"
               fi
-              echo "  selected by (now also disabled):$extra"
-              TARGETS="$TARGETS $extra"
             done
-            bad=0
-            for sym in MODULES MODULE_SIG DEBUG_INFO_BTF SYSTEM_TRUSTED_KEYRING; do
-              if grep -q "^CONFIG_$sym=y" .config; then
-                echo "  CONFIG_$sym still on after $round round(s)"; bad=1; fi
-            done
-            [ "$bad" -eq 0 ] || exit 1
-            echo "kernel config ready (modules and certs off, $round round(s))"
-            make ARCH=arm64 -j4 Image > b.log 2>&1 || {
-              grep -E "error:|Error [0-9]|No rule" b.log | head -15; exit 1; }
-            cp arch/arm64/boot/Image /work/Image
-            echo "Image: $(wc -c < /work/Image) bytes"
-            echo "built by: $(gcc --version | head -1)"
-          ' 2>&1 | sed 's/^/    /'
+            fi
+            # NOT FATAL. The previous run stopped here and produced nothing.
+            # If certs/extract-cert is genuinely reached the build will say
+            # "openssl/bio.h: No such file" and that is a definitive answer;
+            # if it is never reached, the kernel builds and this was noise.
+            echo "  continuing to the build -- let the compiler settle it"
+          fi
+
+          echo "=== building Image ==="
+          make ARCH=arm64 -j$(nproc) Image > b.log 2>&1 || {
+            echo "--- compiler diagnostics ---"
+            grep -E "error:|fatal error|No rule to make target" b.log | grep -v "^make" | head -20
+            echo "--- make errors ---"
+            grep -E "\*\*\* \[" b.log | head -6
+            echo "--- tail (NOT the error: with -j the last lines are whatever finished last) ---"
+            tail -25 b.log
+            cp .config /work/kernel.config 2>/dev/null || true
+            tail -3000 b.log > /work/kernel-build.log 2>/dev/null || true
+            exit 1; }
+          cp arch/arm64/boot/Image /work/Image
+          cp .config /work/kernel.config
+          tail -3000 b.log > /work/kernel-build.log
+          echo "Image: $(wc -c < /work/Image) bytes"
+          echo "built by: $(gcc --version | head -1)"
+          KEOF
+          chmod +x "$S/work/kbuild.sh"
+          # pipefail, because THIS is the step whose exit 1 the last run threw
+          # away: the pipeline reported sed's status, the job went green, and
+          # QEMU was handed an Image that had never been written.
+          S="$S" "$W/box16.sh" /bin/sh /work/kbuild.sh 2>&1 | sed 's/^/    /'
+          [ -f "$S/work/Image" ] || { echo "  no Image on disk after a successful build step"; exit 1; }
 
       - name: 'Assemble the initramfs INSIDE the box'
         run: |
-          set -eu
-          S="$S" "$W/box16.sh" /bin/sh -c '
-            set -e
-            rm -rf /work/ir && mkdir -p /work/ir/bin /work/ir/dev /work/ir/proc /work/ir/sys
-            cp /usr/bin/busybox /work/ir/bin/
-            cd /work/ir/bin && for a in sh mount uname echo cat ls poweroff; do ln -sf busybox $a; done
-            cd /work/ir
-            cat > init <<"EOF"
+          set -euo pipefail
+          cat > "$S/work/mkir.sh" <<'IEOF'
           #!/bin/sh
+          set -e
+          rm -rf /work/ir
+          mkdir -p /work/ir/bin /work/ir/dev /work/ir/proc /work/ir/sys
+          cp /usr/bin/busybox /work/ir/bin/
+          cd /work/ir/bin
+          for a in sh mount umount uname echo cat ls poweroff dmesg sleep; do
+            ln -sf busybox $a
+          done
+          cd /work/ir
+          cat > init <<'INITEOF'
+          #!/bin/sh
+          # THIS INITRAMFS CARRIES NO /dev/console AND CANNOT. A cpio only holds
+          # a device node if it was built by real root, and this one is built
+          # inside a user namespace where mknod is denied. So init may start
+          # with no stdin, stdout or stderr at all -- in which case every echo
+          # below vanishes and the console shows a kernel that looks like it
+          # never reached userspace. Mount devtmpfs first, then attach stdio by
+          # hand, before assuming anything can be printed.
+          /bin/mount -t devtmpfs none /dev 2>/dev/null || true
+          [ -c /dev/console ] && exec 0</dev/console 1>/dev/console 2>/dev/console
           mount -t proc none /proc
           mount -t sysfs none /sys
           echo "VERON-BOOT-OK $(uname -srm)"
           echo "VERON-KERNEL $(cat /proc/version)"
+          echo "VERON-INIT-DONE"
           poweroff -f
-          EOF
-            chmod +x init
-            find . | cpio -o -H newc 2>/dev/null | gzip -9 > /work/initramfs.cpio.gz
-            echo "initramfs: $(wc -c < /work/initramfs.cpio.gz) bytes"
-          ' 2>&1 | sed 's/^/    /'
+          INITEOF
+          chmod +x init
+          find . | cpio -o -H newc 2>/dev/null | gzip -9 > /work/initramfs.cpio.gz
+          echo "initramfs: $(wc -c < /work/initramfs.cpio.gz) bytes"
+          echo "contents:"
+          gzip -dc /work/initramfs.cpio.gz | cpio -t 2>/dev/null | head -20
+          IEOF
+          chmod +x "$S/work/mkir.sh"
+          S="$S" "$W/box16.sh" /bin/sh /work/mkir.sh 2>&1 | sed 's/^/    /'
 
       - name: 'BOOT IT'
-        continue-on-error: true
         run: |
-          set -u
+          set -uo pipefail
+          if [ ! -f "$S/work/Image" ]; then
+            echo "  NO KERNEL IMAGE -- nothing to boot."
+            exit 1
+          fi
+          echo "  Image:     $(wc -c < "$S/work/Image") bytes"
+          echo "  initramfs: $(wc -c < "$S/work/initramfs.cpio.gz") bytes"
           set +e
           # QEMU on the host: a test harness, not part of the build. Everything
           # it loads was produced inside a box with no /usr bound.
-          timeout 240 qemu-system-aarch64 -M virt -cpu cortex-a57 -m 1024 \
-            -nographic -no-reboot -kernel "$S/work/Image" \
-            -initrd "$S/work/initramfs.cpio.gz" \
-            -append "console=ttyAMA0 rdinit=/init panic=1 loglevel=4" \
+          #
+          # -nic none IS THE FIX FOR THE ROMFILE ERROR. Every boot attempt from
+          # this box has died on
+          #     failed to find romfile "efi-virtio.rom"
+          # which is -M virt's default virtio-net-pci wanting an option ROM
+          # from ipxe-qemu, a RECOMMENDED package that --no-install-recommends
+          # skips. Nothing in this boot needs a network, so the right answer is
+          # to remove the device rather than to satisfy it. The Install step
+          # also fetches the package, so either alone is sufficient.
+          #
+          # earlycon gives console output from before the driver probes, which
+          # is the difference between "panicked, here is why" and silence.
+          timeout 300 qemu-system-aarch64 -M virt -cpu cortex-a57 -m 1024 \
+            -nographic -no-reboot -nic none \
+            -kernel "$S/work/Image" -initrd "$S/work/initramfs.cpio.gz" \
+            -append "console=ttyAMA0 earlycon=pl011,0x9000000 rdinit=/init panic=1 loglevel=7" \
             > qemu.log 2>&1
-          echo "  qemu rc=$?"
-          tail -20 qemu.log | sed 's/^/    /'
+          rc=$?
+          echo "  qemu rc=$rc"
+          echo "  --- first 30 lines ---"
+          head -30 qemu.log | sed 's/^/    /'
+          echo "  --- last 40 lines ---"
+          tail -40 qemu.log | sed 's/^/    /'
           echo
           if grep -q 'VERON-BOOT-OK' qemu.log; then
             grep -h 'VERON-' qemu.log | sed 's/^/    /'
@@ -584,8 +977,29 @@ jobs:
             echo "  gcc $GCC_VER, built in a box with no host filesystem, built"
             echo "  linux $KTAG, and it booted."
           else
-            echo "  DID NOT REACH USERSPACE -- the console above is the evidence."
+            echo "  DID NOT REACH USERSPACE. What the console did say:"
+            grep -nE "Kernel panic|Unable to mount|No filesystem|Failed to execute|unable to open an initial console|Attempted to kill init|romfile|Bad magic|Synchronous Exception" \
+              qemu.log | head -12 | sed 's/^/    /'
+            echo "  (qemu.log is in the artifact in full)"
+            exit 1
           fi
+
+      # Only ever cache a tree that PROVED it works -- SYSROOT_COMPLETE is set
+      # by THE LADDER and only after compile-and-run returns 42 -- and only
+      # when this run is the one that built it, since re-saving a restored
+      # tree just churns the key. always() is spelled out because any `if:`
+      # drops GitHub's implicit success(), and this must still run when the
+      # kernel or the boot failed: the sysroot is good either way.
+      - name: 'Save the sysroot for the next run'
+        if: always() && env.SYSROOT_COMPLETE == '1' && steps.restore.outputs.cache-matched-key == ''
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            sysroot/tools
+            sysroot/usr
+            sysroot/etc
+            sysroot/var
+          key: gcc16-sysroot-${{ env.SYSROOT_EPOCH }}-${{ github.run_id }}
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -595,4 +1009,6 @@ jobs:
             qemu.log
             sysroot/work/Image
             sysroot/work/initramfs.cpio.gz
+            sysroot/work/kernel.config
+            sysroot/work/kernel-build.log
           if-no-files-found: warn

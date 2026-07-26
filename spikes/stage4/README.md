@@ -22,7 +22,7 @@ another.
 | `tcc-builds-gcc-arm64` | can *our tcc* build that same compiler? | **nearly** — builds it; g++ link unproven |
 | `hermetic-gcc10` | a gcc 10.2.0 box, and can it reach 15 and 16? | in progress, chapter 6 |
 | `hermetic-gcc15` | a gcc 15.2.0 system that boots | kernel config rewritten, awaiting a run |
-| `hermetic-gcc16` | a gcc 16.1.0 system that boots | glibc patches added, awaiting a run |
+| `hermetic-gcc16` | a gcc 16.1.0 system that boots | **sysroot proven**; kernel + boot awaiting a run |
 | `hermetic-enumerate-host` | what does the host still supply? | not a rung; enumeration only |
 
 ---
@@ -264,21 +264,92 @@ was handed a nonexistent kernel and the log read "DID NOT REACH USERSPACE",
 which sounds like a kernel that boots badly rather than one never built. Both
 fixed.
 
-### hermetic-gcc16 (gcc 16.1.0) — the book required two patches
+### hermetic-gcc16 (gcc 16.1.0) — the sysroot is done; the kernel step was lying
 
-binutils 2.46.1 and gcc 16.1.0 pass 1 both build, 1,003 kernel headers install,
-and glibc's configure selects the cross compiler correctly. glibc 2.43 then
-failed on `misc/umount.o` with `cc1: all warnings being treated as errors`.
+**The box works.** Run `30192158996` (2026-07-26) built the whole ladder in 36
+minutes and the ladder is green all the way down:
 
-**The version set was never wrong.** The dev book pins exactly gcc 16.1.0,
-glibc 2.43, binutils 2.46.1, linux 7.1.3 — checked against the vendored copy.
-What was missing was a *step*. Its chapter 5 says, in as many words:
+```
+glibc         [Requesting program interpreter: /lib/ld-linux-aarch64.so.1]
+applets       418
+shell/make/as/ld/gcc   OK    gcc (GCC) 16.1.0, binutils 2.46.1, make 4.4.1
+compile+run   exit=42
+m4 1.4.21 · bison 3.8.2 · flex 2.6.4 · bc 7.0.3 · perl 5.42.2   built INSIDE
+```
 
-> Now fix glibc to build against Linux 7:
-> `patch -Np1 -i ../glibc-2.43-upstream_fixes-1.patch`
+The two glibc patches were the fix for `misc/umount.o` and they worked first
+time. **The version set was never wrong** — the dev book pins exactly gcc
+16.1.0, glibc 2.43, binutils 2.46.1, linux 7.1.3. What was missing was a
+*step*, and that lesson kept paying out: four more book steps were missing
+below, and one of them is why libstdc++ was in the wrong directory.
 
-The workflow applied **neither** that patch nor `glibc-fhs-1.patch`. Both are
-now fetched from the development patch directory and applied in the book's order.
+**That run reported success and produced no kernel.** This is the finding, and
+it is the same shape as everything else in the method notes: it failed silently
+in the direction of looking successful.
+
+- **`| sed` ate the failure.** The kernel step ends in a pipe, and a pipeline
+  exits with its *last* command's status. The step ran `exit 1` — it printed
+  *"That is a finding, not something to retry."* — `sed` exited 0, and GitHub
+  called the step green. The initramfs was assembled anyway, QEMU was handed an
+  `Image` that had never been written, and the log read `DID NOT REACH
+  USERSPACE`. **The upload step is the tell: *"there will be 2 files
+  uploaded"*, not 3.** Fixed with `pipefail`, and every box script is now
+  written to a file and run by path rather than spliced into a quoted one-liner.
+
+- **The certs hunt never executed.** Its output was four empty headings and one
+  populated line — and the populated one is the only grep in the block that did
+  not use `--include`. `--include` is a GNU extension; the box runs BusyBox.
+  So the run concluded *"no ENABLED selector found"* about a search that never
+  ran. **That exact trap is in the method notes below and was still in the
+  file.** The hunt is now `find | xargs grep`, and it is **not fatal**: it
+  names the enabled selector and lets the build settle the question.
+
+- **The disable could not have worked anyway.** `SYSTEM_TRUSTED_KEYRING` is
+  turned on by `select`, so `olddefconfig` restores it every time; a longer
+  disable list changes nothing because the *selector* is what has to go. The
+  consumers are now disabled instead — modules, kexec, IMA, BTF — each
+  justified by "an initramfs boot does not use it", not by a guess about the
+  Kconfig graph. `CONFIG_WERROR` is off too, which is the **book's first
+  required kernel setting** and had never been applied in the one box pairing a
+  brand-new compiler with an `-rc` kernel.
+
+- **libstdc++ was installing to `/usr/lib64`.** The book's x86_64 step
+  `sed -e '/m64=/s/lib64/lib/' -i.orig gcc/config/i386/t-linux64` has an
+  aarch64 counterpart — `gcc/config/aarch64/t-aarch64-linux`, holding
+  `MULTILIB_OSDIRNAMES = mabi.lp64=../lib64` — and nothing in the book covers
+  aarch64, so it was never applied. glibc went to `/usr/lib` (forced by
+  `libc_cv_slibdir`) and libstdc++ went somewhere nothing searches. **The check
+  said it was fine**, because `ls … | sed … || echo "NO libstdc++"` can never
+  fire its fallback — the `||` reads sed's status — and the `find` beneath it
+  ran unconditionally. The `lib64` paths in that log were the fallback
+  diagnostic printing, which reads exactly like the check passing.
+
+- **The romfile error is ours, not the runner's.** `-M virt` adds a default
+  `virtio-net-pci` whose option ROM ships in `ipxe-qemu`, a *recommended*
+  package that `--no-install-recommends` skips. This boot needs no network, so
+  the NIC is removed with `-nic none`. The package is installed as well.
+
+- **The initramfs has no `/dev/console` and cannot have one** — a cpio carries
+  a device node only if it was built by real root, and this one is built in a
+  user namespace. Without a console, init runs with no stdio and every `echo`
+  vanishes, which is indistinguishable from a kernel that never reached
+  userspace. `CONFIG_DEVTMPFS_MOUNT` is now asserted, and init mounts devtmpfs
+  and attaches its own stdio before assuming anything can be printed.
+
+**The sysroot is now cached behind a completeness marker**, because the last
+run spent 36 minutes reaching a kernel step that failed in 5 seconds. Restore
+and save are split: restore by prefix, save under a run-unique key, and only
+when `THE LADDER` has proved compile-and-run returns 42. A tree with no marker
+is deleted rather than trusted. `SYSROOT_EPOCH` is the salt to bump when
+chapter 5 or 6 changes — a key tracking the file hash would invalidate on every
+comment, and a key tracking nothing would serve a stale recipe forever.
+
+Four more book steps went in with the rest, all of them about hermeticity or
+about cross-compilation correctness: `CXX=$LFS_TGT-gcc` for libstdc++ (the book
+warns its configure misbehaves without it), the two `.la` removals the book
+calls *"harmful for cross compilation"*, binutils' `ltmain.sh` workaround
+against linking to host-distro libraries, `target_configargs=gcc_cv_target_thread_file=posix`,
+and the `ldd` `RTLDLIST` fix.
 
 ---
 
@@ -332,7 +403,9 @@ what makes this affordable.
    "rebuild and diff rather than trust".
 6. **The kernel is still borrowed** in `tcc-userland-arm64`, which boots
    Ubuntu's kernel. Correct for the ABI claim, but a distro artifact.
-7. **QEMU's missing option ROMs** on the runner — nothing to do with any image.
+7. **QEMU's missing option ROMs** — diagnosed, not a runner problem: `-M virt`
+   adds a default NIC whose ROM is in a *recommended* package. `hermetic-gcc16`
+   drops the NIC; the other boxes have not been touched.
 
 ## What is still borrowed
 
@@ -367,13 +440,29 @@ rather than in the thing under test. The recurring shape is worth naming:
   the initramfs and boot steps, against a kernel that did not exist.
 - **A pipeline exits with its LAST command's status.** `grep … | head || echo
   "none"` never fires the fallback, so an absent symbol prints nothing at all
-  and looks like a broken grep. Hit three times.
+  and looks like a broken grep. Hit three times — and then a fourth, where the
+  pipeline was `box.sh … | sed 's/^/    /'` around the whole kernel build. The
+  step's `exit 1` became sed's `0`, the job went green, and QEMU was handed a
+  kernel that had never been written. **Set `pipefail` on any step that pipes a
+  build into a formatter.**
+- **`set -e` does not fire on the left of `&&`.** `make && make install` with no
+  `|| exit 1` swallows a failed `make` completely — verified: `set -e; false &&
+  true; echo hi` prints `hi`. That is how a failing `bc` would have surfaced an
+  hour later as an unrelated kernel error.
+- **A `while` returns its body's last status, so `set -e` can kill a loop that
+  merely found nothing.** `set -e; printf a | while read x; do false && echo hi;
+  done; echo REACHED` never prints REACHED. In an evidence dump this truncates
+  the report at the first empty result, which reads as "the search found
+  nothing".
 - **`grep -c` prints the count AND exits 1 on zero matches.** `$(grep -c … ||
   echo 0)` yields `"0\n0"` and the next comparison is a syntax error.
 - **`--include` is a GNU grep extension.** The box runs BusyBox, whose grep does
   not implement it — so a Kconfig search that had "never found a selector" had
   in fact never run. Every grep in the same block that used `--include` came
-  back blank; the one that did not, worked. That was the tell.
+  back blank; the one that did not, worked. That was the tell. **This was written
+  down and then hit again**, in `hermetic-gcc16`, in the same search, against
+  the same symbol. Writing a trap down does not remove it from the files that
+  already contain it — grep the tree for the pattern, not just the lesson.
 - **A moved block inherits the cwd assumptions of where it lands.** m4 ended
   with `cd m4-1.4.18`; harmless as the last thing in a step, fatal at the head
   of the next one. Wrap in a subshell.
