@@ -46,8 +46,22 @@ name: hermetic-gcc16
 #    been written, and the log read "DID NOT REACH USERSPACE", which sounds
 #    like a kernel that boots badly rather than one that was never built.
 #    The upload step is the tell: "there will be 2 files uploaded", not 3.
-#    Every box step now sets `pipefail`, and every box script is written to a
-#    file and run by path rather than embedded in a quoted one-liner.
+#    Every box invocation now reads ${PIPESTATUS[0]} explicitly, and every box
+#    script is written to a file and run by path rather than embedded in a
+#    quoted one-liner.
+#
+#    NOT with a blanket `set -o pipefail`, which was tried in run 30209118941
+#    and broke the box in a new way within six seconds. Under pipefail,
+#        yes '' | make oldconfig > /dev/null 2>&1
+#    fails: make finishes, closes the pipe, `yes` takes SIGPIPE and exits 141,
+#    and pipefail promotes that to the pipeline's status. Every stream was
+#    redirected, so the step died having printed NOTHING AT ALL. Verified:
+#    `set -euo pipefail; yes | head -1 >/dev/null` exits 141; the same line
+#    under plain `set -eu` exits 0. pipefail would also have turned every
+#    `grep … | head | sed` diagnostic into a step abort whenever the grep
+#    matched nothing -- killing the error report exactly when it is needed.
+#    A blunt global setting was the wrong instrument; check the one status
+#    that matters instead.
 #
 # 2. THE CERTS HUNT NEVER RAN.  Its output was four empty headings:
 #        its Kconfig definition:            <nothing>
@@ -149,7 +163,7 @@ jobs:
 
       - name: Install
         run: |
-          set -euo pipefail
+          set -eu
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             bubblewrap curl git bzip2 xz-utils gcc g++ make bison flex \
@@ -167,7 +181,7 @@ jobs:
 
       - name: 'Layout, environment, and the box itself'
         run: |
-          set -euo pipefail
+          set -eu
           S="$PWD/sysroot"
           echo "S=$S" >> "$GITHUB_ENV"
           echo "W=$PWD" >> "$GITHUB_ENV"
@@ -221,7 +235,7 @@ jobs:
 
       - name: 'Accept the restored tree ONLY if it is marked complete'
         run: |
-          set -euo pipefail
+          set -eu
           matched='${{ steps.restore.outputs.cache-matched-key }}'
           force='${{ github.event.inputs.rebuild_sysroot }}'
           echo "  restore key matched: ${matched:-<none>}"
@@ -250,7 +264,7 @@ jobs:
 
       - name: 'Fetch everything (no network exists inside the box)'
         run: |
-          set -euo pipefail
+          set -eu
           # curl -f EXITS 22 ON A 404 AND SAYS NOTHING ELSE. The run died with
           # "Process completed with exit code 22" and the only clue was which
           # basename had been echoed last -- mpc-1.4.1.tar.gz, pinned by the
@@ -320,9 +334,19 @@ jobs:
 
           echo "  --- linux $KTAG from git ---"
           rm -rf ksrc
-          git clone --depth 1 --branch "$KTAG" \
-            https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git ksrc 2>&1 \
-            | grep -vE '^(Updating files|remote: (Counting|Compressing|Total))' || true
+          # NOT `git clone … | grep -v <progress> || true`. That is how the
+          # 94,843-line "Updating files: 32%" spam gets suppressed, and it also
+          # makes a failed clone exit 0 -- the failure would then surface two
+          # lines later as a confusing rev-parse error about a directory that
+          # was never created. Log to a file instead: same quiet output, and a
+          # clone failure stays a clone failure.
+          if ! git clone --depth 1 --branch "$KTAG" \
+               https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git \
+               ksrc > /tmp/clone.log 2>&1; then
+            echo "    CLONE FAILED:"
+            tail -15 /tmp/clone.log | sed 's/^/      /'
+            exit 1
+          fi
           got=$(git -C ksrc rev-parse --short HEAD)
           echo "    $KTAG -> $got  (expected $KSHA)"
           # PIN BY COMMIT, NOT BY TAG. rc tags are re-cut more readily than
@@ -337,11 +361,12 @@ jobs:
       # ------------------------------------------------------- LFS chapter 5
       - name: '5.2 binutils pass 1'
         run: |
-          set -euo pipefail
+          set -eu
           if [ -f "$S/etc/.sysroot-complete" ]; then echo "  (cached sysroot -- skipped)"; exit 0; fi
           die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
           tar xf "binutils-$BINUTILS_VER.tar.xz"
-          mkdir -p b-bu1 && cd b-bu1
+          mkdir -p b-bu1
+          cd b-bu1
           "../binutils-$BINUTILS_VER/configure" --prefix="$S/tools" \
             --with-sysroot="$S" --target="$LFS_TGT" --disable-nls \
             --enable-gprofng=no --disable-werror --enable-new-dtags \
@@ -352,14 +377,17 @@ jobs:
 
       - name: '5.3 gcc 16.1 pass 1'
         run: |
-          set -euo pipefail
+          set -eu
           if [ -f "$S/etc/.sysroot-complete" ]; then echo "  (cached sysroot -- skipped)"; exit 0; fi
           die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
           tar xf "gcc-$GCC_VER.tar.xz"
           ( cd "gcc-$GCC_VER"
-            tar xf "../gmp-$GMP_VER.tar.xz"   && mv "gmp-$GMP_VER" gmp
-            tar xf "../mpfr-$MPFR_VER.tar.xz" && mv "mpfr-$MPFR_VER" mpfr
-            tar xf "$(ls ../mpc-$MPC_VER.tar.* | head -1)" && mv "mpc-$MPC_VER" mpc
+            tar xf "../gmp-$GMP_VER.tar.xz"
+            mv "gmp-$GMP_VER" gmp
+            tar xf "../mpfr-$MPFR_VER.tar.xz"
+            mv "mpfr-$MPFR_VER" mpfr
+            tar xf "$(ls ../mpc-$MPC_VER.tar.* | head -1)"
+            mv "mpc-$MPC_VER" mpc
 
             # THE 64-BIT LIBDIR. The book has this step and writes it for the
             # only architecture it supports:
@@ -417,7 +445,7 @@ jobs:
 
       - name: '5.4 linux API headers'
         run: |
-          set -euo pipefail
+          set -eu
           if [ -f "$S/etc/.sysroot-complete" ]; then echo "  (cached sysroot -- skipped)"; exit 0; fi
           tar xf "linux-$KHDR_VER.tar.xz"
           cd "linux-$KHDR_VER"
@@ -432,7 +460,7 @@ jobs:
 
       - name: '5.5 glibc, cross-compiled into the sysroot'
         run: |
-          set -euo pipefail
+          set -eu
           if [ -f "$S/etc/.sysroot-complete" ]; then echo "  (cached sysroot -- skipped)"; exit 0; fi
           die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
           tar xf "glibc-$GLIBC_VER.tar.xz"
@@ -490,7 +518,7 @@ jobs:
 
       - name: '5.6 libstdc++'
         run: |
-          set -euo pipefail
+          set -eu
           if [ -f "$S/etc/.sysroot-complete" ]; then echo "  (cached sysroot -- skipped)"; exit 0; fi
           die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
           command -v "$LFS_TGT-g++" > /dev/null || { echo "  cross g++ not on PATH"; exit 1; }
@@ -531,12 +559,29 @@ jobs:
       # ------------------------------------------------------- LFS chapter 6
       - name: '6.x userland: BusyBox, make, binutils pass 2, gcc pass 2'
         run: |
-          set -euo pipefail
+          set -eu
           if [ -f "$S/etc/.sysroot-complete" ]; then echo "  (cached sysroot -- skipped)"; exit 0; fi
           die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
 
-          tar xf busybox-1.36.1.tar.bz2 && cd busybox-1.36.1
+          # SAY WHERE YOU ARE. This step runs four builds over ~18 minutes and
+          # used to print nothing until the very end, so when it died in six
+          # seconds the log was completely empty and the only way to locate the
+          # failure was to count how long the step had taken. One echo per
+          # package makes the last line printed the answer.
+          echo "  --- busybox ---"
+          # SPLIT, NOT `tar … && cd …`. set -e does not fire on the left of
+          # an &&, so a failed tar would fall through to a cd that succeeds
+          # against whatever the previous run left behind, and the build would
+          # run in a stale tree. Same reason every other tar below is on its
+          # own line.
+          tar xf busybox-1.36.1.tar.bz2
+          cd busybox-1.36.1
           make defconfig > /dev/null 2>&1
+          # `yes` ALWAYS DIES OF SIGPIPE HERE -- make closes the pipe when it is
+          # done -- so this line is only safe while the shell is NOT running
+          # under pipefail. It is the line that killed run 30209118941 in six
+          # seconds with no output at all. Left as-is deliberately: the status
+          # that matters is make's, and that is what a plain pipeline reports.
           yes '' 2>/dev/null | make oldconfig > /dev/null 2>&1
           for sym in CONFIG_TC CONFIG_TLS CONFIG_SSL_CLIENT \
                      CONFIG_FEATURE_WGET_HTTPS CONFIG_FEATURE_WGET_OPENSSL; do
@@ -554,7 +599,10 @@ jobs:
           n=$(ls "$S/usr/bin" | wc -l); echo "  applets: $n"
           [ "$n" -gt 100 ] || { echo "  --install did not run"; exit 1; }
 
-          cd "$W" && tar xf make-4.4.1.tar.gz && mkdir -p b-make && cd b-make
+          echo "  --- make ---"
+          cd "$W"
+          tar xf make-4.4.1.tar.gz
+          mkdir -p b-make && cd b-make
           # make keeps config.guess in build-aux/, as the book says. The
           # top-level path fails silently and configure runs with --build=.
           ../make-4.4.1/configure --prefix=/usr --host="$LFS_TGT" \
@@ -563,6 +611,7 @@ jobs:
           make -j"$(nproc)" > b.log 2>&1 || die build b.log
           make DESTDIR="$S" install > i.log 2>&1 || die install i.log
 
+          echo "  --- binutils pass 2 ---"
           cd "$W"
           # THE BOOK'S ltmain.sh WORKAROUND, and the reason it exists is
           # hermeticity: "This inconsistency may cause produced binaries
@@ -590,7 +639,9 @@ jobs:
           # Book: "harmful for cross compilation", plus the static libs.
           rm -fv "$S"/usr/lib/lib{bfd,ctf,ctf-nobfd,opcodes,sframe}.{a,la} 2>/dev/null || true
 
-          cd "$W" && mkdir -p b-gcc2 && cd b-gcc2
+          echo "  --- gcc pass 2 ---"
+          cd "$W"
+          mkdir -p b-gcc2 && cd b-gcc2
           # target_configargs=... is the book's, and it is what gives the
           # target libgcc/libstdc++ POSIX threads; without it they inherit
           # pass 1's --disable-threads.
@@ -611,7 +662,7 @@ jobs:
 
       - name: 'THE LADDER: is the box self-sufficient?'
         run: |
-          set -uo pipefail
+          set -u
           set +e
           rung() { name=$1; shift
             out=$(S="$S" "$W/box16.sh" "$@" 2>&1); rc=$?
@@ -646,7 +697,7 @@ jobs:
 
       - name: 'Stage the kernel and its build tools into the box'
         run: |
-          set -euo pipefail
+          set -eu
           if [ -f "$S/etc/.tools-complete" ]; then
             echo "  build tools already in the box -- staging the kernel only"
           else
@@ -664,7 +715,7 @@ jobs:
 
       - name: 'Build m4, bison, flex, perl, bc INSIDE the box'
         run: |
-          set -euo pipefail
+          set -eu
           if [ -f "$S/etc/.tools-complete" ]; then echo "  (cached -- skipped)"; exit 0; fi
           # WRITTEN TO A FILE, NOT EMBEDDED. The old form was a single-quoted
           # shell string spliced with '"$VAR"' at five points; a quoted heredoc
@@ -711,11 +762,13 @@ jobs:
           TEOF
           chmod +x "$S/work/tools.sh"
           S="$S" "$W/box16.sh" /bin/sh /work/tools.sh 2>&1 | sed 's/^/    /'
+          rc=${PIPESTATUS[0]}
+          [ "$rc" -eq 0 ] || { echo "  the tools script exited $rc"; exit 1; }
           date -u +%FT%TZ > "$S/etc/.tools-complete"
 
       - name: 'Build linux ${{ env.KTAG }} INSIDE the box'
         run: |
-          set -euo pipefail
+          set -eu
           cat > "$S/work/kbuild.sh" <<'KEOF'
           #!/bin/sh
           set -e
@@ -888,15 +941,20 @@ jobs:
           echo "built by: $(gcc --version | head -1)"
           KEOF
           chmod +x "$S/work/kbuild.sh"
-          # pipefail, because THIS is the step whose exit 1 the last run threw
-          # away: the pipeline reported sed's status, the job went green, and
-          # QEMU was handed an Image that had never been written.
+          # THIS IS THE STEP WHOSE exit 1 RUN 30192158996 THREW AWAY. The
+          # pipeline reported sed's status, the job went green, and QEMU was
+          # handed an Image that had never been written. PIPESTATUS[0] is the
+          # box script's own status, read immediately after the pipeline and
+          # before anything else can overwrite it. Piping to sed is kept
+          # because a 25-minute build should stream, not buffer.
           S="$S" "$W/box16.sh" /bin/sh /work/kbuild.sh 2>&1 | sed 's/^/    /'
+          rc=${PIPESTATUS[0]}
+          [ "$rc" -eq 0 ] || { echo "  the kernel build script exited $rc"; exit 1; }
           [ -f "$S/work/Image" ] || { echo "  no Image on disk after a successful build step"; exit 1; }
 
       - name: 'Assemble the initramfs INSIDE the box'
         run: |
-          set -euo pipefail
+          set -eu
           cat > "$S/work/mkir.sh" <<'IEOF'
           #!/bin/sh
           set -e
@@ -934,10 +992,13 @@ jobs:
           IEOF
           chmod +x "$S/work/mkir.sh"
           S="$S" "$W/box16.sh" /bin/sh /work/mkir.sh 2>&1 | sed 's/^/    /'
+          rc=${PIPESTATUS[0]}
+          [ "$rc" -eq 0 ] || { echo "  the initramfs script exited $rc"; exit 1; }
+          [ -s "$S/work/initramfs.cpio.gz" ] || { echo "  no initramfs was produced"; exit 1; }
 
       - name: 'BOOT IT'
         run: |
-          set -uo pipefail
+          set -u
           if [ ! -f "$S/work/Image" ]; then
             echo "  NO KERNEL IMAGE -- nothing to boot."
             exit 1
