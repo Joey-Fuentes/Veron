@@ -1181,15 +1181,27 @@ jobs:
           echo "    cc1      : $( [ -x work/build/gcc/cc1 ] && echo BUILT || echo no)"
           echo "    cc1plus  : $( [ -x work/build/gcc/cc1plus ] && echo BUILT || echo no)"
           echo "    xgcc     : $( [ -x work/build/gcc/xgcc ] && echo BUILT || echo no)"
-          # NAME THE FILE. `find work -name libgcc.a | head -1` picks one of six
-          # -- two build trees and three prefixes now carry one -- and prints a
+          # NAME THE FILE. `find work -name libgcc.a | head -1` picked one of
+          # six -- two build trees and three prefixes carry one -- and printed a
           # size with no indication of which. Run 81880728014 reported 941,510
           # here while stage 1 reported 1,290,110 for the installed one; both
           # were true and the summary looked like it contradicted the step.
-          for lg in out/lib/gcc/*/*/libgcc.a out2/lib/gcc/*/*/libgcc.a out10/lib/gcc/*/*/libgcc.a; do
-            [ -f "work/$lg" ] || continue
-            printf '    %-46s %s bytes\n' "$lg" "$(wc -c < "work/$lg" | tr -d ' ')"
+          #
+          # AND THE FIRST FIX FOR THAT PRINTED NOTHING AT ALL. The glob was
+          # written as `out/lib/...` and tested as `work/$lg`, so it expanded
+          # against the repo root where no `out/` exists, stayed literal, and
+          # every iteration hit `continue`. Silence is worse than an ambiguous
+          # number: it cannot be told apart from a step that never ran. Glob
+          # where the files actually are, and say so when there are none.
+          found_lg=0
+          for lg in work/out/lib/gcc/*/*/libgcc.a \
+                    work/out2/lib/gcc/*/*/libgcc.a \
+                    work/out10/lib/gcc/*/*/libgcc.a; do
+            [ -f "$lg" ] || continue
+            printf '    %-52s %s bytes\n' "${lg#work/}" "$(wc -c < "$lg" | tr -d ' ')"
+            found_lg=$((found_lg+1))
           done
+          [ "$found_lg" -gt 0 ] || echo "    libgcc.a : none installed in any prefix"
           echo
           echo "  --- IMPLICIT DECLARATIONS ---"
           # A declaration that moved headers is a WARNING, and on LP64 it
