@@ -302,6 +302,42 @@ Three things follow.
    If that is it, it is a `port_gcc47_api.py` row rather than anything
    structural.
 
+**The control is now read, and the two arms fail differently** — which is the
+contrast the falsification needed:
+
+```
+c474 (transplant)  104 objects  unwind-dw2.c:1490:44
+                                internal compiler error: Segmentation fault
+c485 (vanilla 4.8.5) 129 objects  md-unwind-support.h:42:21
+                                error: field 'uc' has incomplete type
+```
+
+Vanilla 4.8.5 fails with a **clean diagnostic** — the ordinary
+struct-ucontext-against-a-modern-glibc problem, exactly what the era theory
+predicts. The transplant takes SIGSEGV instead, at a different object count, in
+a different place. Two different faults, so the control's failure does not
+explain the transplant's.
+
+**The backtrace still was not taken, and the reason was self-inflicted.** The
+patch step ran *before* the reproduce step and mutated the same build tree. It
+contained:
+
+```
+# The generated copy is stale; libgcc remakes it from the source
+find "$W/$t" -name md-unwind-support.h -delete
+```
+
+`md-unwind-support.h` is written by libgcc's **configure**, not by make, so
+deleting it leaves no rule to rebuild it. Every later compile then died on
+`md-unwind-support.h: No such file or directory`, the preprocessed file came out
+0 lines, the `>100 lines` guard skipped the flag bisect, and the backtrace was
+never taken. A comment asserting how a generated file is produced, wrong, and
+destructive.
+
+Both fixed: the delete is replaced by an in-place patch (or a no-op when the
+file is an include shim), and **the reproduce-and-backtrace step now runs before
+the patch step**, because a diagnostic has to see the original failing tree.
+
 The freeze step is still emitting an empty patch, and **my own `2>/dev/null` on
 the diff is why three runs could not say why.** A missing `diffutils` would look
 exactly like this. Stderr is now kept, the exit code printed, and a control diff

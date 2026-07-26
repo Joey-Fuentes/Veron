@@ -51,10 +51,25 @@ name: gcc47-libgcc-ice
 #
 # WHAT THIS RUN PRODUCES, cheapest first:
 #
-#   1. THE CONTROL NOBODY HAS READ. Arm A of hermetic-enumerate-host -- vanilla
-#      4.8.5, native aarch64 backend, no transplant -- also failed to build
-#      libgcc, at 129 objects, and its error was never captured because the grep
-#      matched nothing. Until that message exists, "the transplant is at fault"
+#   1. THE CONTROL, NOW READ (2026-07-26). Vanilla 4.8.5 and the transplanted
+#      4.7.4 fail DIFFERENTLY, and that is the point:
+#
+#        c474 (transplant)  104 objects  unwind-dw2.c:1490:44
+#                                        internal compiler error: Segmentation fault
+#        c485 (vanilla)     129 objects  md-unwind-support.h:42:21
+#                                        error: field 'uc' has incomplete type
+#
+#      The control fails with a CLEAN DIAGNOSTIC -- the ordinary
+#      struct-ucontext-against-a-modern-glibc problem, exactly what the era
+#      theory predicted. The transplant takes SIGSEGV instead, at a different
+#      object count, in a different place. Two different faults, so the
+#      control's failure does not explain the transplant's, and "the transplant
+#      is implicated" now has a contrast behind it rather than an assertion.
+#      (The era theory itself was separately falsified at glibc 2.19 -- see
+#      above.)
+#
+#      Historical note: this used to say the control's error "was never captured
+#      because the grep matched nothing". It is captured now. Until it existed,
 #      is unsupported: 4.8.5 failing the same way would mean the cause is the
 #      environment, not the backport. This runs it and prints it.
 #
@@ -198,56 +213,14 @@ jobs:
               | head -4 | sed 's/^/      /'
           done
 
-      - name: '2. FALSIFIED HYPOTHESIS (kept as a way past): patch ucontext_t'
-        continue-on-error: true
-        run: |
-          set -u
-          set +e
-          # One substitution, in one header, declared. If both trees then get
-          # past unwind-dw2.o, the ICE was a 2026 glibc meeting a 2012 header
-          # and the backport is exonerated. If 4.8.5 proceeds and 4.7.4 still
-          # segfaults, the transplant is back in the frame and step 4 has a
-          # backtrace to offer.
-          for g in g474 g485; do
-            h="$W/$g/libgcc/config/aarch64/linux-unwind.h"
-            [ -f "$h" ] || { echo "  $g: no linux-unwind.h"; continue; }
-            echo "  --- $g before ---"
-            grep -n 'ucontext' "$h" | head -4 | sed 's/^/    /'
-            sed -i 's/\bstruct ucontext\b/ucontext_t/g' "$h"
-            echo "  --- $g after ---"
-            grep -n 'ucontext' "$h" | head -4 | sed 's/^/    /'
-          done
-          for t in c474 c485; do
-            echo "  ===== rebuilding libgcc in $t ====="
-            # The generated copy is stale; libgcc remakes it from the source
-            # header, but delete it so there is no doubt which one was used.
-            find "$W/$t" -name md-unwind-support.h -delete
-            find "$W/$t" -path '*libgcc*' -name 'unwind-dw2.o' -delete
-            ( cd "$W/$t" && timeout 3600 make -k -j"$(nproc)" MAKEINFO=true \
-                all-target-libgcc > libgcc-patched.log 2>&1 )
-            echo "    objects : $(find "$W/$t" -path '*libgcc*' -name '*.o' | wc -l)"
-            LA=$(find "$W/$t" -name libgcc.a | head -1)
-            echo "    libgcc.a: ${LA:-NOT BUILT}"
-            [ -n "$LA" ] && echo "    size    : $(wc -c < "$LA") bytes"
-            grep -nE 'internal compiler error|error:|Error [0-9]' "$W/$t/libgcc-patched.log" \
-              | head -4 | sed 's/^/      /'
-          done
-          echo
-          echo "  VERDICT:"
-          A=$(find "$W/c485" -name libgcc.a | head -1)
-          B=$(find "$W/c474" -name libgcc.a | head -1)
-          if [ -n "$B" ]; then
-            echo "    4.7.4 + transplant now BUILDS libgcc. The ICE was the"
-            echo "    ucontext rename, not the backport. The borrowed gcc-13"
-            echo "    runtime can go, and stage 2 is unblocked."
-          elif [ -n "$A" ]; then
-            echo "    4.8.5 builds, 4.7.4 still does not. The header was A bug"
-            echo "    but not THE bug -- see the backtrace below."
-          else
-            echo "    Neither builds. The patch was necessary but not sufficient."
-          fi
-
-      - name: '3. If it still fails: reproduce it from the RIGHT directory'
+      - name: '2. THE PAYLOAD: reproduce the ICE and take a backtrace'
+        # ORDER MATTERS AND IT USED TO BE WRONG. This ran AFTER the ucontext
+        # patch, which mutates the same build tree -- so when that step broke
+        # md-unwind-support.h the reproduction compiled nothing, the
+        # preprocessed file came out 0 lines, the ">100 lines" guard skipped the
+        # flag bisect, and the backtrace this whole workflow exists for was
+        # never taken. A diagnostic must run on the ORIGINAL failing tree,
+        # before any attempt to get past the fault.
         continue-on-error: true
         run: |
           set -u
@@ -293,6 +266,73 @@ jobs:
             # shellcheck disable=SC2086
             [ -n "$CC1LINE" ] && gdb --batch -ex run -ex 'bt 25' --args $CC1LINE 2>&1 \
               | grep -E '^#|Program received|signal' | head -30 | sed 's/^/    /'
+          fi
+
+      - name: '3. FALSIFIED HYPOTHESIS (kept as a way past): patch ucontext_t'
+        # RUNS AFTER THE BACKTRACE, DELIBERATELY -- it mutates the build tree,
+        # so everything diagnostic has already happened by here.
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # One substitution, in one header, declared. If both trees then get
+          # past unwind-dw2.o, the ICE was a 2026 glibc meeting a 2012 header
+          # and the backport is exonerated. If 4.8.5 proceeds and 4.7.4 still
+          # segfaults, the transplant is back in the frame and step 4 has a
+          # backtrace to offer.
+          for g in g474 g485; do
+            h="$W/$g/libgcc/config/aarch64/linux-unwind.h"
+            [ -f "$h" ] || { echo "  $g: no linux-unwind.h"; continue; }
+            echo "  --- $g before ---"
+            grep -n 'ucontext' "$h" | head -4 | sed 's/^/    /'
+            sed -i 's/\bstruct ucontext\b/ucontext_t/g' "$h"
+            echo "  --- $g after ---"
+            grep -n 'ucontext' "$h" | head -4 | sed 's/^/    /'
+          done
+          for t in c474 c485; do
+            echo "  ===== rebuilding libgcc in $t ====="
+            # DO NOT DELETE md-unwind-support.h. This used to, on the belief
+            # that "libgcc remakes it from the source header" -- it does not.
+            # That file is written by libgcc's CONFIGURE, not by make, so
+            # deleting it leaves no rule to rebuild it and the very next compile
+            # dies on
+            #   unwind-dw2.c:376:31: fatal error: md-unwind-support.h: No such file
+            # which is exactly what destroyed the backtrace this workflow exists
+            # to produce. Patch it in place if it is a copy of the source header;
+            # leave it if it is an include shim, since the source patch above
+            # already covers that case.
+            MD=$(find "$W/$t" -name md-unwind-support.h | head -1)
+            if [ -n "$MD" ] && grep -q 'struct ucontext' "$MD"; then
+              sed -i 's/\bstruct ucontext\b/ucontext_t/g' "$MD"
+              echo "    md-unwind-support.h is a COPY -- patched in place"
+            elif [ -n "$MD" ]; then
+              echo "    md-unwind-support.h is an include shim -- source patch covers it"
+            else
+              echo "    md-unwind-support.h absent -- configure never wrote one"
+            fi
+            find "$W/$t" -path '*libgcc*' -name 'unwind-dw2.o' -delete
+            ( cd "$W/$t" && timeout 3600 make -k -j"$(nproc)" MAKEINFO=true \
+                all-target-libgcc > libgcc-patched.log 2>&1 )
+            echo "    objects : $(find "$W/$t" -path '*libgcc*' -name '*.o' | wc -l)"
+            LA=$(find "$W/$t" -name libgcc.a | head -1)
+            echo "    libgcc.a: ${LA:-NOT BUILT}"
+            [ -n "$LA" ] && echo "    size    : $(wc -c < "$LA") bytes"
+            grep -nE 'internal compiler error|error:|Error [0-9]' "$W/$t/libgcc-patched.log" \
+              | head -4 | sed 's/^/      /'
+          done
+          echo
+          echo "  VERDICT:"
+          A=$(find "$W/c485" -name libgcc.a | head -1)
+          B=$(find "$W/c474" -name libgcc.a | head -1)
+          if [ -n "$B" ]; then
+            echo "    4.7.4 + transplant now BUILDS libgcc. The ICE was the"
+            echo "    ucontext rename, not the backport. The borrowed gcc-13"
+            echo "    runtime can go, and stage 2 is unblocked."
+          elif [ -n "$A" ]; then
+            echo "    4.8.5 builds, 4.7.4 still does not. The header was A bug"
+            echo "    but not THE bug -- see the backtrace below."
+          else
+            echo "    Neither builds. The patch was necessary but not sufficient."
           fi
 
       - name: '5. What the transplant rewrote near the prologue'
