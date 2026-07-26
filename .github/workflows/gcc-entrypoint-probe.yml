@@ -67,6 +67,12 @@ on:
       - '.github/workflows/gcc-entrypoint-probe.yml'
   workflow_dispatch:
 
+# A NEW PUSH MUST NOT KILL A RUNNING BUILD. Cancelling in flight is right for a
+# fast check and wrong for a long probe. Long jobs queue instead.
+concurrency:
+  group: gcc-entrypoint-probe-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   GNU: 'https://mirrors.kernel.org/gnu'
 

@@ -10,10 +10,18 @@ on:
       - 'spikes/**'
       - 'tools/spike.sh'
       - '.github/workflows/spike.yml'
+      - '!spikes/*.md'
+      - '!spikes/**/*.md'
+      - '!spikes/*.txt'
+      - '!spikes/**/*.txt'
   pull_request:
     paths:
       - 'spikes/**'
       - 'tools/spike.sh'
+      - '!spikes/*.md'
+      - '!spikes/**/*.md'
+      - '!spikes/*.txt'
+      - '!spikes/**/*.txt'
   workflow_dispatch:
     inputs:
       source:

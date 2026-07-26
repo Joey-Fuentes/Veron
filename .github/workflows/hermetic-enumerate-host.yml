@@ -52,9 +52,14 @@ on:
       - '.github/workflows/hermetic-enumerate-host.yml'
   workflow_dispatch:
 
+# A NEW PUSH MUST NOT KILL A RUNNING BUILD. Cancelling in flight is right for a
+# fast check and wrong for a multi-hour box: one push to fix a typo cancelled
+# four in-flight hermetic runs and restarted them from zero. Long jobs queue
+# instead. (The setting is spelled out below rather than named here, because a
+# key:value written in prose is what a later grep will match first.)
 concurrency:
   group: hermetic-enumerate-host-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   GNU: 'https://mirrors.kernel.org/gnu'

@@ -18,6 +18,10 @@ on:
     paths:
       - '.github/workflows/armhf-probe.yml'
 
+concurrency:
+  group: armhf-probe-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   probe:
     strategy:

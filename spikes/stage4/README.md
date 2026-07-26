@@ -150,7 +150,7 @@ pull in the option ROMs — so nothing was learned about the kernel. A kernel th
 builds and is never loaded is a different open question from one that builds and
 panics, and the log distinguishes them.
 
-### hermetic-gcc47 (gcc 4.7.4 + backend, glibc 2.19) — rewritten, not yet re-run
+### hermetic-gcc47 (gcc 4.7.4 + backend, glibc 2.19) — run 1: cc1plus yes, libgcc no
 
 The previous version of this box built a `cc1plus` and reported "g++ 4.7
 exists". That was `make all-gcc`, which stops before the runtime, so **libgcc
@@ -175,6 +175,44 @@ The rewrite changes what the box is for:
 
 It also emits the transplant as `transplant-4.7.4.patch` in its artifacts —
 the frozen form that removes the python3 dependency, ready to review and commit.
+
+**Run 1 (2026-07-26) got the whole period sysroot up and built both front
+ends**, then died arranging headers:
+
+```
+configure rc=0     cc1 65,939,181     cc1plus 71,663,068
+make rc=2
+The directory that should contain system headers does not exist:
+  /usr/include
+Makefile:4204: recipe for target 'stmp-fixinc' failed
+```
+
+The compiler was fine; the build failed on `fixincludes`. gcc defaults its
+system header directory to `/usr/include`, and this box puts everything under
+`/tools`. **LFS 7.5 passes `--with-local-prefix=/tools` and
+`--with-native-system-header-dir=/tools/include` to both of its own gcc passes,
+this file already carried them on the 4.8.2 steps, and the 4.7.4 step did not.**
+Fixed, plus a `/usr/include -> tools/include` symlink, because the configure
+flag tells the *compiler* where headers are and does not stop a Makefile rule
+from checking that `/usr/include` exists.
+
+Two smaller things run 1 exposed:
+
+- **The gate reported the right answer for the wrong reason.** `g++ 4.7 links a
+  program: no` — but the diagnostic was `fatal error: string: No such file or
+  directory`, i.e. `make install` never ran, so libstdc++ headers were absent.
+  Not a linking failure. The gate was honest that nothing linked; it could not
+  say the cause was upstream of it.
+- **The freeze step emitted an empty patch and shrugged.** `transplant-4.7.4.patch:
+  0 lines, 0 files` immediately after the same step proved `config.gcc` gained
+  11 aarch64 mentions. An empty diff there is impossible, so 0 meant the
+  comparison never happened. It now checks the pristine tree unpacked, and calls
+  a suspiciously small diff what it is.
+
+For the record, the handoff step still ran and got gcc 10.2.0 through
+`configure rc=0` before gmp stopped it on `C++ preprocessor "/lib/cpp" fails
+sanity check` — a missing `/lib/cpp` in the box, not a compiler limit. Moot
+until libgcc exists, but it is the next thing in that path.
 
 ### hermetic-gcc10 (gcc 10.2.0, glibc 2.32) — run 1 died in the fetch
 
@@ -246,6 +284,51 @@ The mpc substitution worked — 1.3.1 in place of the dev book's unmirrored 1.4.
 | libgcc → g++ 4.7 that links | not shown — the old box only built `cc1plus` |
 | g++ 4.7 → gcc 10.2.0 | never run — queued behind libgcc |
 | gcc 10.2.0 → 15.2 / 16.1 | never run — `hermetic-gcc10` is new |
+
+## The verification we are deferring, on purpose
+
+Every box currently builds each compiler in **one pass**, with
+`--disable-bootstrap`. That is a **deferral, recorded as one** — the `deferral`
+field of the audit record exists for exactly this — and not a judgement that the
+checks are unnecessary. There is nothing to fixpoint until a single pass
+completes, and the gate costs ~3x. Both lower boxes take `bootstrap: yes` as a
+dispatch input; turning it on is one click when the rungs are green.
+
+What gets turned on, and why each part is needed:
+
+1. **Fixpoint, per builder.** `make bootstrap` builds stage1 with the incoming
+   compiler, stage2 with stage1, stage3 with stage2, and requires stage2 and
+   stage3 to compare **byte-identical**. The roadmap already calls this out:
+   *"gcc insists on exactly the property we would want to prove, using its own
+   machinery. Free, and strong."* Nothing in this tree has ever run it.
+
+2. **Builder-independence.** The same source built by our tcc and by the LFS gcc
+   will **not** produce identical generation-1 binaries, and never can:
+   `genconditions` folds insn conditions at compile time only when the compiler
+   building it is GCC, so a tcc-built tree keeps 2,082 patterns where a gcc-built
+   one keeps 2,078 and every later insn code shifts by four. Measured in
+   `tcc-gcc-miscompile-check`, understood, and benign — those conditions are
+   false at run time too.
+
+   The claim that *is* available: both legs reach a fixpoint, and the fixpoints
+   **agree on behaviour**. Compile a fixed corpus with each stage3 and diff the
+   emitted assembly — the same shape as the 333/333 result. Behavioural identity
+   is the claim; byte identity of the stage3s is evidence for it, worth
+   reporting and not worth gating on until it has been seen to hold once.
+
+3. **Safety of each handoff is not a separate experiment.** If our 4.7
+   miscompiles gcc 10's stage1 in any way that survives, gcc 10's own
+   stage2/stage3 comparison fails. A green bootstrapped build **is** the proof.
+
+Neither 1 nor 2 is worth much alone — a consistently miscompiling compiler is a
+perfectly stable fixpoint, which is the whole shape of the Thompson attack. It
+is the conjunction that carries the argument: for both legs to be silently
+broken, tcc and gcc 4.8.2 would have to introduce the same defect independently.
+
+**Where the two arms are needed.** tcc enters the chain at 4.7, so 4.7 is the
+only rung that needs building twice. Above it both legs have converged and a
+single bootstrapped build per rung is sufficient — which is what makes this
+affordable at all.
 
 ## Open, in the order they block things
 

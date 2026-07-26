@@ -75,6 +75,45 @@ name: hermetic-gcc47
 #   dispatch    ucontext_patch : no  = test the prediction (default)
 #                                yes = patch it, to get past and reach gcc 10
 #               try_gcc10      : yes = attempt gcc 10.2.0 after the gate
+#               bootstrap      : no  = one pass (default, while the rung is
+#                                      still being made to work at all)
+#                                yes = 3-stage bootstrap + make compare
+#
+# THE DEFERRED GATE, RECORDED RATHER THAN OMITTED
+#
+# `bootstrap: no` is the default ON PURPOSE and it is a DEFERRAL, not a
+# judgement that the check is unnecessary. A 3-stage bootstrap costs roughly 3x
+# the build, and there is nothing to fixpoint until the single pass completes --
+# running it now would only make each failure take three times as long to
+# arrive.
+#
+# What is being deferred, so that it is a switch and not an absence:
+#
+#   1. FIXPOINT, per builder.  make bootstrap builds stage1 with the host
+#      compiler, stage2 with stage1, stage3 with stage2, and requires stage2 and
+#      stage3 to compare BYTE-IDENTICAL. That is exactly the property we want and
+#      gcc enforces it with its own machinery -- free, and strong.
+#
+#   2. BUILDER-INDEPENDENCE.  The same source built by our tcc and by the LFS
+#      gcc will NOT produce identical generation-1 binaries and never can:
+#      gcc's genconditions folds insn conditions at compile time only when the
+#      compiler building it is GCC, so a tcc-built tree keeps four patterns a
+#      gcc-built one drops and every later insn code shifts. Measured, benign --
+#      the extra patterns' conditions are false at run time too.
+#      The claim that IS available is that both legs reach a fixpoint and those
+#      fixpoints agree on BEHAVIOUR: compile a fixed corpus with each stage3 and
+#      diff the emitted assembly. Behavioural identity is the claim; byte
+#      identity is evidence for it, worth reporting and not worth gating on
+#      until it has been seen to hold once.
+#
+#   3. SAFETY OF THE HANDOFF is not a separate experiment. If our 4.7
+#      miscompiles gcc 10's stage1 in any way that survives, gcc 10's own
+#      stage2/stage3 compare fails. A green bootstrapped gcc 10 IS the proof.
+#
+# Neither half of (1)+(2) is worth much alone -- a consistently miscompiling
+# compiler is a perfectly stable fixpoint. Together they are the argument, and
+# for both legs to be silently broken tcc and gcc 4.8.2 would have to introduce
+# the same defect independently.
 #
 # ============================================================================
 
@@ -92,10 +131,19 @@ on:
         description: 'after the gate, attempt gcc 10.2.0 with g++ 4.7'
         required: false
         default: 'yes'
+      bootstrap:
+        description: 'DEFERRED GATE: 3-stage bootstrap + make compare (~3x runtime)'
+        required: false
+        default: 'no'
 
+# A NEW PUSH MUST NOT KILL A RUNNING BUILD. Cancelling in flight is right for a
+# fast check and wrong for a multi-hour box: one push to fix a typo cancelled
+# four in-flight hermetic runs and restarted them from zero. Long jobs queue
+# instead. (The setting is spelled out below rather than named here, because a
+# key:value written in prose is what a later grep will match first.)
 concurrency:
   group: hermetic-gcc47-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   GNU: 'https://mirrors.kernel.org/gnu'
@@ -165,6 +213,11 @@ jobs:
           # and configure reports "command not found" about itself.
           ln -sfn tools/bin "$S/bin"
           ln -sfn ../tools/bin "$S/usr/bin"
+          # AND /usr/include, because gcc's fixincludes names it literally.
+          # --with-native-system-header-dir tells the COMPILER where headers
+          # live; it does not stop a Makefile rule from checking /usr/include
+          # exists. Both are needed and run 1 had neither.
+          ln -sfn ../tools/include "$S/usr/include"
           ln -sfn tools/sbin "$S/sbin" 2>/dev/null || true
           echo "  \$S/lib     -> $(readlink "$S/lib")"
           echo "  \$S/usr/lib -> $(readlink "$S/usr/lib")"
@@ -433,6 +486,7 @@ jobs:
           S=${S:?}
           exec bwrap --unshare-all --die-with-parent --new-session --clearenv \
             --setenv PATH /tools/bin --setenv HOME /work \
+            --setenv BOOTFLAG "${BOOTFLAG:-}" --setenv BOOTTGT "${BOOTTGT:-all}" \
             --setenv LC_ALL POSIX --setenv TERM dumb --setenv SOURCE_DATE_EPOCH 0 \
             --bind "$S" / --proc /proc --dev /dev --tmpfs /tmp \
             --chdir /work "$@"
@@ -468,11 +522,28 @@ jobs:
           [ "$(grep -c aarch64 g474/gcc/config.gcc)" -gt 0 ] \
             || { echo "  transplant did not take"; exit 1; }
           echo "  --- freezing the transplant as a reviewable diff ---"
+          # RUN 1 PRODUCED "0 lines, 0 files" AND CARRIED ON. An empty diff
+          # between a pristine tree and a transplanted one is impossible -- the
+          # step above just proved config.gcc gained 11 aarch64 mentions -- so
+          # 0 meant the comparison never happened, not that nothing changed.
+          # Check the pristine tree extracted before trusting the diff.
           rm -rf g474-pristine && mkdir g474-pristine
-          tar xf "$HOME/.cache/veron/gcc-4.7.4.tar.bz2" -C g474-pristine --strip-components=1
-          diff -ruN --exclude=gmp --exclude=mpfr --exclude=mpc \
-            g474-pristine g474 > transplant-4.7.4.patch 2>/dev/null || true
-          echo "  transplant-4.7.4.patch: $(wc -l < transplant-4.7.4.patch) lines, $(grep -c '^+++ ' transplant-4.7.4.patch) files"
+          if ! tar xf "$HOME/.cache/veron/gcc-4.7.4.tar.bz2" \
+                 -C g474-pristine --strip-components=1 2>/dev/null; then
+            echo "  could not unpack a pristine 4.7.4 from the cache:"
+            ls -la "$HOME/.cache/veron/" 2>/dev/null | sed 's/^/    /'
+            echo "  skipping the freeze -- the transplant itself is unaffected"
+          elif [ ! -f g474-pristine/configure ]; then
+            echo "  pristine tree has no configure -- wrong strip level?"
+            ls g474-pristine | head -5 | sed 's/^/    /'
+          else
+            diff -ruN --exclude=gmp --exclude=mpfr --exclude=mpc \
+              g474-pristine g474 > transplant-4.7.4.patch 2>/dev/null || true
+            L=$(wc -l < transplant-4.7.4.patch)
+            F=$(grep -c '^+++ ' transplant-4.7.4.patch || true)
+            echo "  transplant-4.7.4.patch: $L lines, $F files"
+            [ "$L" -gt 100 ] || echo "  SUSPICIOUS: a transplant this small is almost certainly a broken diff"
+          fi
           rm -rf g474-pristine
           # gcc 4.7 NEEDS GMP, MPFR AND MPC AND THE BOX HAS NONE -- they were
           # only ever unpacked inside 4.8.2's tree, never installed to /tools.
@@ -502,19 +573,40 @@ jobs:
           # `make all-gcc`. all-gcc stops before the runtime, which is why
           # earlier runs produced a cc1plus and called it a C++ compiler. A
           # compiler that cannot link is not a rung, so libgcc is the gate.
-          S="$S" "$W/box47.sh" /tools/bin/sh -c '
+          # The deferred gate, in one place. See the header for what `yes` buys.
+          if [ "${{ github.event.inputs.bootstrap }}" = "yes" ]; then
+            BOOTFLAG=""; BOOTTGT="bootstrap"
+            echo "  MODE: 3-stage bootstrap -- stage2 vs stage3 must compare"
+          else
+            BOOTFLAG="--disable-bootstrap"; BOOTTGT="all"
+            echo "  MODE: single pass (bootstrap DEFERRED, not skipped)"
+          fi
+          export BOOTFLAG BOOTTGT
+          S="$S" BOOTFLAG="$BOOTFLAG" BOOTTGT="$BOOTTGT" "$W/box47.sh" /tools/bin/sh -c '
             cd /work
             mkdir -p b47 && cd b47
             # --with-mpfr-*: the top-level configure accepts in-tree gmp/mpfr/mpc
             # (rc=0) and then the gcc SUBDIRECTORY configure looks for the built
             # library and fails with "libmpfr not found or uses a different ABI".
             # LFS 7.5 passes these to both its gcc passes for exactly this.
+            # --with-native-system-header-dir IS THE FIX FOR fixincludes, and
+            # run 1 died without it. gcc defaults its system header directory to
+            # /usr/include; this box puts everything under /tools, so the
+            # stmp-fixinc target reported
+            #   The directory that should contain system headers does not exist:
+            #     /usr/include
+            # after cc1 and cc1plus had already built -- i.e. the compiler was
+            # fine and the build died arranging headers. LFS 7.5 passes exactly
+            # these two flags to BOTH of its own gcc passes; the 4.8.2 steps in
+            # this file already carry them and the 4.7.4 step did not.
             /work/g474/configure --prefix=/work/out47 \
               --enable-languages=c,c++ \
+              --with-local-prefix=/tools \
+              --with-native-system-header-dir=/tools/include \
               --build=aarch64-unknown-linux-gnu \
               --host=aarch64-unknown-linux-gnu \
               --target=aarch64-unknown-linux-gnu \
-              --disable-multilib --disable-bootstrap --disable-werror \
+              --disable-multilib $BOOTFLAG --disable-werror \
               --disable-libsanitizer --disable-libgomp --disable-libquadmath \
               --disable-libssp --disable-libatomic \
               --with-mpfr-include=/work/g474/mpfr/src \
@@ -527,8 +619,13 @@ jobs:
               grep -B4 "configure: error" config.log 2>/dev/null | tail -16
               exit 1
             fi
-            make -j4 MAKEINFO=true > b.log 2>&1
-            echo "make rc=$?"
+            make -j4 MAKEINFO=true $BOOTTGT > b.log 2>&1
+            echo "make ($BOOTTGT) rc=$?"
+            if [ "$BOOTTGT" = "bootstrap" ]; then
+              # gcc runs the comparison itself as part of bootstrap. Report what
+              # it concluded rather than re-deriving it.
+              grep -E "Comparing stages|Comparison successful|differ" b.log | tail -5
+            fi
             echo "cc1     : $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo MISSING)"
             echo "cc1plus : $( [ -x gcc/cc1plus ] && wc -c < gcc/cc1plus || echo MISSING)"
             echo "libgcc.a: $(find . -name libgcc.a | head -1 || echo NOT-BUILT)"
