@@ -199,7 +199,14 @@ env:
   # which is the same as having no cache; a key that tracks nothing silently
   # serves a stale tree. An explicit salt is the honest middle, and forgetting
   # to bump it shows up in the diff.
-  SYSROOT_EPOCH: '2026-07-26-a'
+  # -b, for BOTH reasons the epoch exists:
+  #   1. chapter 5.3 changed -- the aarch64 multilib sed is new, so every
+  #      cached tree was built by a different recipe.
+  #   2. the -a cache holds a sysroot that was marked complete while t_cxx was
+  #      failing, because the gate could not fail. That tree must not be
+  #      served to anyone.
+  # Bumping retires it without anybody having to remember rebuild_sysroot=yes.
+  SYSROOT_EPOCH: '2026-07-26-b'
 
 jobs:
   sysroot:
@@ -520,6 +527,35 @@ jobs:
             echo "  (cached sysroot -- skipped)"; exit 0
           fi
           tar xf "gcc-$GCCVER.tar.xz"
+          # THE 64-BIT LIBDIR, AND WHY t_cxx COULD LINK BUT NOT RUN.
+          # The book has this step and writes it for the only architecture it
+          # supports:
+          #     case $(uname -m) in
+          #       x86_64) sed -e '/m64=/s/lib64/lib/' \
+          #                   -i.orig gcc/config/i386/t-linux64 ;;
+          #     esac
+          # The aarch64 file that does the same job is t-aarch64-linux:
+          #     MULTILIB_OSDIRNAMES = mabi.lp64=../lib64
+          # Nothing in the book covers aarch64, so this is OUR delta. Without
+          # it glibc lands in /usr/lib (forced by libc_cv_slibdir) and
+          # libstdc++ lands in /usr/lib64 -- a directory this sysroot has no
+          # symlink to and, with no ld.so.cache by design, nothing searches.
+          # g++ still LINKS, because gcc knows its own lib64 path; the program
+          # then dies at exec with
+          #     error while loading shared libraries: libstdc++.so.6
+          # which reads as a broken C++ runtime rather than a misplaced file.
+          # This tree is shared by 5.3, 5.6 and gcc pass 2, so once is enough.
+          #
+          # ASSERT THE ANCHOR. A sed that matches nothing ships an unchanged
+          # file and looks exactly like a sed that worked.
+          ( cd "gcc-$GCCVER"
+            t=gcc/config/aarch64/t-aarch64-linux
+            [ -f "$t" ] || { echo "  $t is missing -- gcc has moved this file"; exit 1; }
+            grep -q 'mabi\.lp64=' "$t" || {
+              echo "  $t has no mabi.lp64= line. It now reads:"
+              sed 's/^/    /' "$t"; exit 1; }
+            sed -e '/mabi\.lp64=/s|lib64|lib|' -i.orig "$t"
+            echo "  64-bit libdir: $(grep 'mabi\.lp64=' "$t")" )
           cd "gcc-$GCCVER"
           # LFS extracts gmp/mpfr/mpc INTO the gcc tree so they are built
           # in-tree. That is simpler and more reliable than a separate prefix,
@@ -705,8 +741,23 @@ jobs:
             fi
             echo "  --- tail ---"; tail -30 b.log | sed "s/^/    /"; exit 1; }
           make DESTDIR="$S" install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
-          echo "  loader: $(ls "$S"/usr/lib/ld-linux-* 2>/dev/null || echo MISSING)"
-          echo "  libc  : $(ls "$S"/usr/lib/libc.so.* 2>/dev/null | head -1 || echo MISSING)"
+          # THE SAME PIPELINE FAULT WAS HERE TOO. `ls ... | head -1 || echo
+          # MISSING` asks head, not ls, so the fallback could never fire. It
+          # never showed because glibc really is in /usr/lib -- an unsound
+          # check that happens to be looking at something that works is still
+          # an unsound check, and this file had three of them.
+          for f in "$S"/usr/lib/ld-linux-*; do
+            [ -e "$f" ] && echo "  loader: $f"
+            break
+          done
+          if [ -e "$S/usr/lib/libc.so.6" ]; then
+            echo "  libc  : $S/usr/lib/libc.so.6"
+          else
+            echo "  libc.so.6 IS NOT IN $S/usr/lib -- nothing linked against"
+            echo "  this sysroot will run. Where it actually landed:"
+            find "$S" -name 'libc.so.6' 2>/dev/null | head -5 | sed 's/^/    /'
+            exit 1
+          fi
           LIBDIR="$S/usr/lib"
           # LFS's OWN SANITY CHECK, at the exact seam where both sysroots
           # stopped. After glibc is installed the cross compiler must be able
@@ -761,7 +812,25 @@ jobs:
           make -j"$(nproc)" > b.log 2>&1 || { echo "  --- errors ---"; grep -nE "error:|Error [0-9]|configure: error" b.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -25 b.log | sed "s/^/    /"; exit 1; }
           make DESTDIR="$S" install > i.log 2>&1 || { echo "  --- install failed ---"; grep -nE "error|Error|No such|Permission|cannot" i.log | head -12 | sed "s/^/    /"; echo "  --- tail ---"; tail -15 i.log | sed "s/^/    /"; exit 1; }
           rm -fv "$S"/usr/lib/lib{stdc++{,exp,fs},supc++}.la 2>/dev/null || true
-          echo "  libstdc++: $(ls "$S"/usr/lib/libstdc++.so.* 2>/dev/null | head -1 || echo MISSING)"
+          # THIS CHECK USED TO BE
+          #   echo "libstdc++: $(ls .../libstdc++.so.* | head -1 || echo MISSING)"
+          # and it printed an empty string on the run where libstdc++ was in
+          # the wrong directory entirely. The `||` sees HEAD's status, not
+          # ls's, so the fallback could never fire -- the same shape as the
+          # GCC EXERCISE gate below, and the same shape the stage 4 notes
+          # already record once. Test the file, then say so.
+          if [ -e "$S/usr/lib/libstdc++.so.6" ]; then
+            echo "  libstdc++: $(ls "$S"/usr/lib/libstdc++.so.6.*)"
+          else
+            echo "  libstdc++.so.6 IS NOT IN $S/usr/lib -- where the runtime"
+            echo "  loader looks. This box has no ld.so.cache by design, so a"
+            echo "  library outside /lib and /usr/lib is invisible at exec."
+            echo "  --- where it actually landed ---"
+            find "$S" -name 'libstdc++.so*' 2>/dev/null | sed "s|^$S|  \$S|" | head -10
+            echo "  If these are under /usr/lib64 then the t-aarch64-linux sed"
+            echo "  in 5.3 did not take."
+            exit 1
+          fi
 
       # ------------------------------------------- LFS ch.6, abridged
       - name: '6.x userland: BusyBox, make, binutils pass 2 (all cross)'
@@ -1265,10 +1334,21 @@ jobs:
           EOF
           chmod +x "$S/work/tests/run.sh"
 
-          if S="$S" "$W/box15.sh" /bin/sh /work/tests/run.sh 2>&1 | sed 's/^/    /'; then
+          # NOT `if cmd | sed ...; then`. A pipeline's status is the status of
+          # its LAST command, so that form asked sed whether the tests passed
+          # and sed always says yes. The 2026-07-26 run printed
+          #     GCC-EXERCISE pass=9 fail=1
+          # and then "the compiler in this box is exercised and sound", marked
+          # the sysroot complete and CACHED IT. A check that cannot fail is
+          # not a check, and this one went on to poison a cache. Run it to a
+          # file, print the file, then read the real status.
+          rc=0
+          S="$S" "$W/box15.sh" /bin/sh /work/tests/run.sh > "$W/gcc-exercise.log" 2>&1 || rc=$?
+          sed 's/^/    /' "$W/gcc-exercise.log"
+          if [ "$rc" -eq 0 ]; then
             echo "  the compiler in this box is exercised and sound"
           else
-            echo "  GCC EXERCISE FAILED -- stopping before the kernel."
+            echo "  GCC EXERCISE FAILED (rc=$rc) -- stopping before the kernel."
             echo "  A box that cannot be trusted to compile correctly will"
             echo "  produce a kernel failure that looks like a kernel problem."
             exit 1
@@ -1992,4 +2072,5 @@ jobs:
             sysroot/work/*/b.log
             sysroot/work/*/i.log
             sysroot/work/tests/*.log
+            gcc-exercise.log
           if-no-files-found: warn
