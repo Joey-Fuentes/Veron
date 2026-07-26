@@ -118,6 +118,10 @@ env:
   MPC_VER: '1.1.0'
   MAKE_VER: '4.3'
   BUSYBOX: '1.36.1'
+  # LFS 10.0 chapter 6 (m4, cross) and chapter 7 (bison, native). Run 1 skipped
+  # chapter 7 entirely and both gcc attempts died on its absence.
+  M4_VER: '1.4.18'
+  BISON_VER: '3.7.1'
   # the two rungs above, each with its own book elsewhere in the tree
   GCC15: '15.2.0'
   GCC16: '16.1.0'
@@ -256,6 +260,8 @@ jobs:
           get "$GNU/mpfr/mpfr-$MPFR_VER.tar.xz"
           get "$GNU/mpc/mpc-$MPC_VER.tar.gz"
           get "$GNU/make/make-$MAKE_VER.tar.gz"
+          get "$GNU/m4/m4-$M4_VER.tar.xz"
+          get "$GNU/bison/bison-$BISON_VER.tar.xz"
           get "https://busybox.net/downloads/busybox-$BUSYBOX.tar.bz2"
           get "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL%%.*}.x/linux-$KERNEL.tar.xz"
           # THE BOOK'S ONE PATCH THAT APPLIES TO THIS SCOPE. LFS 10.0 lists six
@@ -514,6 +520,77 @@ jobs:
           ln -sfv gcc "$S/usr/bin/cc"
           echo "  gcc: $(file "$S/usr/bin/gcc" | cut -c1-90)"
 
+      # ------------------------------------------- LFS 10.0 ch.6 m4 + ch.7
+      - name: '7.x libstdc++ pass 2 and bison, INSIDE the box (LFS ch. 7)'
+        run: |
+          set -eu
+          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          export PATH="$S/tools/bin:$PATH"
+
+          # CHAPTER 7 IS NOT OPTIONAL AND RUN 1 SKIPPED IT. The box went
+          # chapter 5 -> 6 -> "use it", and both gcc attempts died on the two
+          # things chapter 7 exists to install:
+          #
+          #   1. /work/src-15.2.0/libcody/cody.hh:24: fatal error: memory:
+          #      No such file or directory
+          #      -- gcc pass 2 is configured --disable-libstdcxx (the book says
+          #      so) because chapter 7 rebuilds libstdc++ NATIVELY into /usr.
+          #      Skip that and the box has a C++ compiler with no C++ headers,
+          #      which is exactly enough to fail on the first C++ source file
+          #      any modern gcc contains.
+          #
+          #   2. gmp/demos/calc: Error 127 building calc.c
+          #      -- 127 is "command not found": calc.c is a yacc grammar and
+          #      the box has no bison. Chapter 7 installs it.
+          #
+          # Neither is a statement about gcc 10. Both are the box being
+          # unfinished.
+
+          # m4 first: bison needs it, and it is chapter 6, cross-built.
+          # THE SED IS THE BOOK'S AND IT IS LOAD-BEARING. m4 1.4.18 predates
+          # glibc 2.28's removal of _IO_ftrylockfile, so its bundled gnulib
+          # fails against this sysroot's glibc 2.32 without it.
+          cd "$W" && tar xf "m4-$M4_VER.tar.xz" && cd "m4-$M4_VER"
+          sed -i 's/IO_ftrylockfile/IO_EOF_SEEN/' lib/*.c
+          echo "#define _IO_IN_BACKUP 0x100" >> lib/stdio-impl.h
+          ./configure --prefix=/usr --host="$LFS_TGT" \
+            --build="$(build-aux/config.guess)" > c.log 2>&1 || die "m4 configure" c.log
+          make -j"$(nproc)" > b.log 2>&1 || die "m4 build" b.log
+          make DESTDIR="$S" install > i.log 2>&1 || die "m4 install" i.log
+          echo "  m4 $M4_VER installed (cross)"
+
+          # Stage what the in-box builds need. The box has no network.
+          cd "$W"
+          rm -rf "$S/work/gccsrc" && cp -r "gcc-$GCCVER" "$S/work/gccsrc"
+          tar xf "bison-$BISON_VER.tar.xz"
+          rm -rf "$S/work/bison" && cp -r "bison-$BISON_VER" "$S/work/bison"
+
+          # libstdc++ pass 2, native, into /usr -- the book's chapter 7 recipe.
+          # --host is the pass-2 gcc's own host triplet, not config.guess's
+          # answer: gcc pass 2 was built --host=$LFS_TGT and libstdc++ must
+          # match it or the headers land somewhere the driver does not search.
+          S="$S" "$W/box10.sh" /bin/sh -c '
+            set -e
+            cd /work/gccsrc
+            ln -sf gthr-posix.h libgcc/gthr-default.h
+            mkdir -p /work/b-libstdcxx2 && cd /work/b-libstdcxx2
+            /work/gccsrc/libstdc++-v3/configure \
+              CXXFLAGS="-g -O2 -D_GNU_SOURCE" \
+              --prefix=/usr --disable-multilib --disable-nls \
+              --host='"$LFS_TGT"' --disable-libstdcxx-pch > c.log 2>&1 \
+              || { echo "libstdc++ configure failed"; tail -12 c.log; exit 1; }
+            make -j4 > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -6; exit 1; }
+            make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
+            echo "libstdc++ pass 2 installed"
+            echo "=== bison ==="
+            cd /work/bison
+            ./configure --prefix=/usr --docdir=/usr/share/doc/bison-'"$BISON_VER"' \
+              > c.log 2>&1 || { tail -12 c.log; exit 1; }
+            make -j4 > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -6; exit 1; }
+            make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
+            bison --version | head -1
+          ' 2>&1 | sed 's/^/    /'
+
       - name: 'THE LADDER: is the box self-sufficient?'
         continue-on-error: true
         run: |
@@ -533,8 +610,9 @@ jobs:
           rung "5. as"           /usr/bin/as --version
           rung "6. ld"           /usr/bin/ld --version
           rung "7. gcc"          /usr/bin/gcc --version
+          rung "8. bison"        /usr/bin/bison --version
           echo
-          echo "  --- 8. compile and run, entirely inside ---"
+          echo "  --- 9. compile and run C, entirely inside ---"
           mkdir -p "$S/work"
           printf 'int main(void){return 42;}\n' > "$S/work/t.c"
           S="$S" "$W/box10.sh" /usr/bin/gcc -o /work/t /work/t.c 2>&1 | head -6 | sed 's/^/    /'
@@ -542,6 +620,30 @@ jobs:
             S="$S" "$W/box10.sh" /work/t; echo "    ran: exit=$? (expect 42)"
           else
             echo "    no binary produced -- the attempts below cannot work"
+          fi
+          echo
+          echo "  --- 10. compile and run C++, entirely inside ---"
+          # RUN 1 HAD NO RUNG FOR THIS AND PAID FOR IT. The ladder proved the
+          # box could compile C, then both gcc attempts died 40 minutes later on
+          #   libcody/cody.hh:24: fatal error: memory: No such file or directory
+          # A C++ standard header. The cheapest possible check sat one line away
+          # from the C rung and was not written, so a missing libstdc++ was
+          # reported by gcc's build system instead of by the ladder.
+          {
+            echo '#include <memory>'
+            echo '#include <string>'
+            echo '#include <vector>'
+            echo 'int main(){ auto p = std::make_shared<std::string>("ok");'
+            echo '  std::vector<int> v{1,2,3}; int s=0; for(int x:v) s+=x;'
+            echo '  return s + (int)p->size() + 34; }'
+          } > "$S/work/t.cpp"
+          S="$S" "$W/box10.sh" /usr/bin/g++ -o /work/tcc /work/t.cpp 2>&1 | head -8 | sed 's/^/    /'
+          if [ -x "$S/work/tcc" ]; then
+            S="$S" "$W/box10.sh" /work/tcc; echo "    ran: exit=$? (expect 42)"
+          else
+            echo "    NO C++ BINARY -- gcc 15/16 cannot be built from this box."
+            echo "    Every modern gcc contains C++ sources; this is the rung"
+            echo "    that decides whether the attempts below are worth running."
           fi
 
       - name: 'Stage gcc ${{ env.GCC15 }} and gcc ${{ env.GCC16 }} into the box'

@@ -124,7 +124,7 @@ boundary; once 4.7 could target aarch64 and yield g++ 4.7, the next rung became
 
 ## Status, 2026-07-26
 
-### hermetic-gcc15 (gcc 15.2.0, glibc 2.43) — a kernel, built in the box
+### hermetic-gcc15 (gcc 15.2.0, glibc 2.43) — box green, kernel config stopped it
 
 The sysroot is complete and the box is self-sufficient. Every ladder rung
 passes: shell, coreutils, sed/grep/awk, make 4.4.1, as and ld 2.46.0,
@@ -138,8 +138,31 @@ linux 7.1.5                                        Image built
 initramfs                                          626,575 bytes
 ```
 
-**The image did not boot, and not for a reason in the image.** QEMU refused to
-start:
+**The later run did not build a kernel at all.** It stopped in the config step:
+
+```
+CONFIG_SYSTEM_TRUSTED_KEYRING came back after olddefconfig
+```
+
+The check was right and the disable was not. `SYSTEM_TRUSTED_KEYRING` has no
+prompt of its own here — it is turned on by another symbol that `select`s it
+(`INTEGRITY_SIGNATURE`), so `olddefconfig` faithfully puts it back every time.
+Adding it to a longer disable list would not have helped; the **selector** is
+what has to go.
+
+Rather than guess which symbol that is, the step now asks the source: every
+selector is a literal `select <SYM>` line in a `Kconfig` file, and the enclosing
+`config <NAME>` block names the symbol doing it. It disables, normalises,
+verifies, and on failure extracts the *enabled* selectors and disables those
+too, up to four rounds — then fails with the symbol named if no enabled selector
+exists, because at that point the symbol is on for a reason the search cannot
+see and that is a finding rather than something to retry.
+
+Also gone: `yes "" | make olddefconfig`. `olddefconfig` answers new symbols with
+their defaults and reads nothing from stdin, so the pipe contributed only
+`yes: Broken pipe` to the log.
+
+**An earlier run did build the kernel**, and QEMU then refused to start:
 
 ```
 qemu-system-aarch64: failed to find romfile "efi-virtio.rom"
@@ -214,7 +237,7 @@ For the record, the handoff step still ran and got gcc 10.2.0 through
 sanity check` — a missing `/lib/cpp` in the box, not a compiler limit. Moot
 until libgcc exists, but it is the next thing in that path.
 
-### hermetic-gcc10 (gcc 10.2.0, glibc 2.32) — run 1 died in the fetch
+### hermetic-gcc10 (gcc 10.2.0, glibc 2.32) — box green, chapter 7 was missing
 
 Built from the vendored LFS 10.0 book rather than from memory. What that book
 does differently from 13.0, each of which would have cost a run:
@@ -256,6 +279,36 @@ Nothing was learned about gcc 10. Three defects, all in the harness:
 All four fetching boxes got the same hardening, plus mirror fallback for
 `cdn.kernel.org` and the real curl error printed on the way out — the old
 `get()` in the gcc16 box discarded stderr, so a failure there named no cause.
+
+**Run 2 built the entire LFS 10.0 sysroot** — binutils 2.35, gcc 10.2.0,
+glibc 2.32, libstdc++, BusyBox, make, both pass-2 builds — and the ladder passed
+every rung including compile-and-run returning 42. Both gcc attempts then failed
+within a minute, identically, and **neither failure is about gcc 10**:
+
+```
+/work/src-15.2.0/libcody/cody.hh:24:10: fatal error: memory: No such file or directory
+gmp/demos/calc: make[5]: *** [Makefile:456: calc.c] Error 127
+```
+
+Both are the box being unfinished. **The workflow went chapter 5 → 6 → "use
+it", skipping chapter 7 entirely**, and chapter 7 is where LFS installs exactly
+these two things:
+
+- **`gcc-libstdc++-pass2`.** gcc pass 2 is configured `--disable-libstdcxx`
+  *because* chapter 7 rebuilds libstdc++ natively into `/usr`. Skip it and the
+  box has a C++ compiler with no C++ headers — enough to fail on the first C++
+  source file any modern gcc contains, and `<memory>` in libcody is that file.
+- **`bison`.** Error 127 is "command not found": `calc.c` is a yacc grammar.
+  m4 (chapter 6, cross-built, with the book's `_IO_ftrylockfile` sed that glibc
+  2.28+ requires) comes with it.
+
+**The ladder had no C++ rung, and that is why this cost a run.** It proved the
+box could compile and run C, and the cheapest possible C++ check sat one line
+away and was not written — so a missing libstdc++ was reported forty minutes
+later by gcc's build system instead of immediately by the rung designed to
+catch it. There is now a rung 10 that compiles and runs a program using
+`<memory>`, `<string>` and `<vector>`, and it says in as many words that the
+attempts below are not worth running if it fails.
 
 ### hermetic-gcc16 (gcc 16.1.0) — glibc stops it
 

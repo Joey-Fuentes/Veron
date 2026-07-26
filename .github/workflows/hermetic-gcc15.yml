@@ -719,28 +719,72 @@ jobs:
             set -e
             cd /work/linux-'"$KVER"'
             make ARCH=arm64 defconfig > /dev/null 2>&1
-            # DISABLE FIRST, THEN NORMALISE, THEN VERIFY. A sed followed by
-            # olddefconfig is how the busybox applets came back three runs
-            # running; and disabling MODULE_SIG alone is not enough, because
-            # certs/extract-cert is also built for the trusted keyrings and it
-            # needs openssl, which a hermetic box does not have:
+            # DISABLE, NORMALISE, VERIFY -- AND WHEN VERIFY FAILS, FIND OUT WHY.
+            # The previous run stopped here with
+            #   CONFIG_SYSTEM_TRUSTED_KEYRING came back after olddefconfig
+            # The check was right and the disable was not. That symbol is turned
+            # on by another symbol that `select`s it, and olddefconfig faithfully
+            # puts it back every time; adding it to a longer disable list would
+            # not help either, because the SELECTOR is what has to go.
+            #
+            # So rather than guess which symbol that is, ask the source. Every
+            # selector is a literal `select <SYM>` line in a Kconfig file and the
+            # enclosing `config <NAME>` block names the symbol doing it. That is
+            # mechanical to extract, and it is the difference between a fix and a
+            # guess -- this repo has paid for the guessing version before.
+            #
+            # WHY THESE ARE OFF AT ALL: an initramfs boot needs no modules, and
+            # the certs machinery builds certs/extract-cert, which needs openssl,
+            # which a hermetic box does not have:
             #   certs/extract-cert.c:21: fatal error: openssl/bio.h: No such file
-            # An initramfs boot needs no modules at all, so the whole subsystem
-            # goes, which removes signing, keyrings and revocation together.
-            for sym in MODULES MODULE_SIG MODULE_SIG_ALL DEBUG_INFO_BTF \
-                       SYSTEM_TRUSTED_KEYRING SECONDARY_TRUSTED_KEYRING \
-                       SYSTEM_REVOCATION_LIST; do
-              ./scripts/config --disable "$sym" 2>/dev/null || \
-                sed -i "s/^CONFIG_$sym=y/# CONFIG_$sym is not set/" .config
+            TARGETS="MODULES MODULE_SIG MODULE_SIG_ALL DEBUG_INFO_BTF
+                     SYSTEM_TRUSTED_KEYRING SECONDARY_TRUSTED_KEYRING
+                     SYSTEM_REVOCATION_LIST"
+            round=0
+            while [ "$round" -lt 4 ]; do
+              round=$((round+1))
+              for sym in $TARGETS; do
+                ./scripts/config --disable "$sym" 2>/dev/null || \
+                  sed -i "s/^CONFIG_$sym=y/# CONFIG_$sym is not set/" .config
+              done
+              # olddefconfig answers new symbols with their default and reads
+              # nothing from stdin. The `yes "" |` this used to have contributed
+              # only "yes: Broken pipe" to the log.
+              make ARCH=arm64 olddefconfig > /dev/null 2>&1
+              still=""
+              for sym in $TARGETS; do
+                grep -q "^CONFIG_$sym=y" .config && still="$still $sym"
+              done
+              [ -z "$still" ] && break
+              echo "  round $round -- still on:$still"
+              extra=""
+              for sym in $still; do
+                for kf in $(grep -rl "select $sym" --include="Kconfig*" . 2>/dev/null | head -40); do
+                  for name in $(awk -v s="$sym" '"'"'
+                      /^[ \t]*config[ \t]+/ { cur = $2 }
+                      $0 ~ ("select[ \t]+" s "([ \t]|$)") { if (cur != "") print cur }'"'"' "$kf"); do
+                    if grep -q "^CONFIG_$name=y" .config; then
+                      case " $TARGETS $extra " in *" $name "*) ;; *) extra="$extra $name";; esac
+                    fi
+                  done
+                done
+              done
+              if [ -z "$extra" ]; then
+                echo "  no ENABLED selector found for:$still"
+                echo "  the symbol is on for a reason this search cannot see."
+                echo "  That is a finding, not something to retry."
+                exit 1
+              fi
+              echo "  selected by (now also disabled):$extra"
+              TARGETS="$TARGETS $extra"
             done
-            yes "" | make ARCH=arm64 olddefconfig > /dev/null 2>&1
             bad=0
             for sym in MODULES MODULE_SIG DEBUG_INFO_BTF SYSTEM_TRUSTED_KEYRING; do
               if grep -q "^CONFIG_$sym=y" .config; then
-                echo "  CONFIG_$sym came back after olddefconfig"; bad=1; fi
+                echo "  CONFIG_$sym still on after $round round(s)"; bad=1; fi
             done
             [ "$bad" -eq 0 ] || exit 1
-            echo "kernel config ready (modules and certs off)"
+            echo "kernel config ready (modules and certs off, $round round(s))"
             make ARCH=arm64 -j4 Image > b.log 2>&1 || {
               grep -E "error:|Error [0-9]|No rule" b.log | head -12; exit 1; }
             ls -l arch/arm64/boot/Image | awk "{print \"  Image: \" \$5 \" bytes\"}"
