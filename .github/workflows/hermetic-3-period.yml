@@ -519,7 +519,15 @@ jobs:
             echo "cc1: $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo MISSING)"
             echo "cc1plus: $( [ -x gcc/cc1plus ] && wc -c < gcc/cc1plus || echo MISSING)"
             echo "libgcc.a: $(find . -name libgcc.a | head -1 || echo NOT-BUILT)"
-            grep -E "internal compiler error|error:" b.log | head -5
+            # A NARROW GREP FOUND NOTHING WHILE make RETURNED 2. libgcc can
+            # fail on a link ("cannot find -lc"), a missing rule, or a bare
+            # make error, none of which contain "error:". Match what actually
+            # appears, and show the tail so a failure without a diagnostic is
+            # still legible.
+            grep -E "internal compiler error|error:|Error [0-9]|\*\*\*|cannot find|No such file|No rule" \
+              b.log | head -12
+            echo "--- last lines of the build ---"
+            tail -15 b.log
             # rung 2 needs this installed, and needs g++ specifically
             make install > i.log 2>&1; echo "install rc=$?"
             echo "g++ 4.7: $(/work/out47/bin/g++ --version 2>&1 | head -1)"

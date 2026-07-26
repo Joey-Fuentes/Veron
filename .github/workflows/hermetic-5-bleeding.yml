@@ -365,12 +365,28 @@ jobs:
             set -e
             cd /work/linux
             make ARCH=arm64 defconfig > /dev/null 2>&1
-            # BTF wants pahole and module signing wants openssl; neither is in a
-            # hermetic box and neither is needed to boot.
-            for sym in CONFIG_DEBUG_INFO_BTF CONFIG_MODULE_SIG CONFIG_SYSTEM_TRUSTED_KEYRING; do
-              sed -i "s/^$sym=y/# $sym is not set/" .config
+            # DISABLE FIRST, THEN NORMALISE, THEN VERIFY. A sed followed by
+            # olddefconfig is how the busybox applets came back three runs
+            # running; and disabling MODULE_SIG alone is not enough, because
+            # certs/extract-cert is also built for the trusted keyrings and it
+            # needs openssl, which a hermetic box does not have:
+            #   certs/extract-cert.c:21: fatal error: openssl/bio.h: No such file
+            # An initramfs boot needs no modules at all, so the whole subsystem
+            # goes, which removes signing, keyrings and revocation together.
+            for sym in MODULES MODULE_SIG MODULE_SIG_ALL DEBUG_INFO_BTF \
+                       SYSTEM_TRUSTED_KEYRING SECONDARY_TRUSTED_KEYRING \
+                       SYSTEM_REVOCATION_LIST; do
+              ./scripts/config --disable "$sym" 2>/dev/null || \
+                sed -i "s/^CONFIG_$sym=y/# CONFIG_$sym is not set/" .config
             done
             yes "" | make ARCH=arm64 olddefconfig > /dev/null 2>&1
+            bad=0
+            for sym in MODULES MODULE_SIG DEBUG_INFO_BTF SYSTEM_TRUSTED_KEYRING; do
+              if grep -q "^CONFIG_$sym=y" .config; then
+                echo "  CONFIG_$sym came back after olddefconfig"; bad=1; fi
+            done
+            [ "$bad" -eq 0 ] || exit 1
+            echo "kernel config ready (modules and certs off)"
             make ARCH=arm64 -j4 Image > b.log 2>&1 || {
               grep -E "error:|Error [0-9]|No rule" b.log | head -15; exit 1; }
             cp arch/arm64/boot/Image /work/Image
