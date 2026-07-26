@@ -159,6 +159,107 @@ PY
 splice_config_gcc
 splice_config_host
 
+# ------------------------------------------------ libgcc's tmake fragments
+# THE SPLICED ARM NAMES FILES. If one of them does not exist in the 4.7.4 tree,
+# libgcc/configure DOES NOT COMPLAIN -- it walks ${tmake_file} and keeps only
+# the entries it can find:
+#
+#     for f in ${tmake_file}; do
+#       if test -f ${srcdir}/config/$f; then ... fi
+#     done
+#
+# so a fragment named by a 4.8 arm and absent from 4.7 is dropped in silence.
+# The build still reports rc=0 and libgcc.a is still produced; it is simply
+# missing everything that fragment would have built.
+#
+# THAT IS NOT HYPOTHETICAL. tcc-builds-gcc-arm64 run 81825486896 got a clean
+# libgcc and then could not link any program touching `long double`:
+#
+#     undefined reference to `__gttf2'   `__lttf2'   `__eqtf2'
+#                            `__letf2'   `__getf2'
+#
+# aarch64's long double is IEEE binary128 with no hardware for it, so those
+# comparisons are calls into libgcc's soft-fp, which `aarch64/t-softfp` and
+# `t-softfp` are what build. The fib(10) test never touched a long double, so
+# an xgcc that "links and runs" passed while this was missing.
+say ""
+say "  === libgcc tmake fragments named by the spliced arms ==="
+python3 - "$G48" "$G47" <<'PY'
+import os, re, sys
+g48, g47 = sys.argv[1], sys.argv[2]
+
+host = open(os.path.join(g47, "libgcc", "config.host")).read()
+arms = re.findall(r'^(aarch64[^\n]*\)\n(?:.*?\n)*?\t;;\n)', host, re.M)
+if not arms:
+    sys.exit("    FATAL: no aarch64 arms in the patched libgcc/config.host")
+
+names = []
+for a in arms:
+    for m in re.finditer(r'tmake_file="([^"]*)"', a):
+        for tok in m.group(1).split():
+            tok = tok.replace("${tmake_file}", "").replace("${cpu_type}", "aarch64")
+            if tok and "$" not in tok:
+                names.append(tok)
+seen = set()
+names = [n for n in names if not (n in seen or seen.add(n))]
+print("    %d arm(s) name %d fragment(s)" % (len(arms), len(names)))
+
+missing, differing = [], []
+for n in names:
+    p47 = os.path.join(g47, "libgcc", "config", n)
+    p48 = os.path.join(g48, "libgcc", "config", n)
+    if not os.path.exists(p47):
+        print("      %-26s MISSING in 4.7.4 -- configure would SKIP IT SILENTLY" % n)
+        missing.append(n)
+    else:
+        same = (os.path.exists(p48)
+                and open(p47, "rb").read() == open(p48, "rb").read())
+        print("      %-26s present%s" % (n, "" if same else "  (DIFFERS from 4.8.5)"))
+        if not same and os.path.exists(p48):
+            differing.append(n)
+
+# Copy only what is named and absent, and name each one. A fragment is a few
+# lines of make variables, which is why this is a reviewable delta and not a
+# fork -- but it IS a delta, so it prints.
+copied = 0
+for n in missing:
+    src = os.path.join(g48, "libgcc", "config", n)
+    dst = os.path.join(g47, "libgcc", "config", n)
+    if os.path.exists(src):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        open(dst, "wb").write(open(src, "rb").read())
+        print("      COPIED from 4.8.5: %s (%d bytes)" % (n, os.path.getsize(dst)))
+        copied += 1
+    else:
+        print("      NOT IN 4.8.5 EITHER: %s" % n)
+print("    fragments copied: %d" % copied)
+
+# DIFFERING IS REPORTED, NOT OVERWRITTEN. Taking 4.8's copy of a file 4.7
+# already has is a change to the middle-end's own build, not to the backend,
+# and nothing has measured that it is safe. Print the size of the delta so the
+# next run can decide with a number instead of a guess.
+for n in differing:
+    p47 = os.path.join(g47, "libgcc", "config", n)
+    p48 = os.path.join(g48, "libgcc", "config", n)
+    a = open(p47).read().splitlines()
+    b = open(p48).read().splitlines()
+    import difflib
+    d = [l for l in difflib.unified_diff(a, b, lineterm="") if l[:1] in "+-"][2:]
+    print("      DELTA %-22s 4.7.4 %d lines, 4.8.5 %d lines, %d changed"
+          % (n, len(a), len(b), len(d)))
+
+# soft-fp is where the TF routines actually come from. If the directory or the
+# tf sources are absent the fragments have nothing to compile.
+sd = os.path.join(g47, "libgcc", "soft-fp")
+if os.path.isdir(sd):
+    have = sorted(f for f in os.listdir(sd) if f.endswith("tf2.c") or f.endswith("tf3.c"))
+    print("    libgcc/soft-fp : present, %d files, %d of them TFmode"
+          % (len(os.listdir(sd)), len(have)))
+    print("      TF sources   : %s" % (" ".join(have[:12]) if have else "NONE"))
+else:
+    print("    libgcc/soft-fp : ABSENT in 4.7.4 -- soft-fp cannot be built at all")
+PY
+
 # FAIL HERE, NOT 20 MINUTES LATER. Run 1 spliced into the wrong case statement
 # and the only symptom was a configure-gcc failure deep into the build.
 n_arms=$(grep -c '^aarch64.*)$' "$G47/gcc/config.gcc" || true)

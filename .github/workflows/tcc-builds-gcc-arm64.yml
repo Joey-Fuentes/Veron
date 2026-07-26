@@ -192,6 +192,11 @@ jobs:
           # once on x86 (tcc-builds-gcc-x86 arm D, all three rc=0). Repeated
           # here because cc1 links them: a host-built libgmp.a inside a
           # tcc-built cc1 would make the claim smaller than it looks.
+          # WHY STAGE 2 REBUILDS THESE. Run 81825486896 showed the archives tcc
+          # produces link fine under tcc's own linker and not under GNU ld:
+          #   libmpfr.a(add1.o): undefined reference to `alloca'
+          # Not yet chased down or written up anywhere; noted here so the next
+          # reader knows why the rebuild step below exists.
           mkdir -p prefix
           echo "  --- gmp 6.2.1 (--disable-assembly: gmp ships per-uarch asm) ---"
           curl -sSL -o gmp.tar.xz "$GNU/gmp/gmp-6.2.1.tar.xz"
@@ -350,6 +355,44 @@ jobs:
           echo "    libstdc++   : ${LS1:-NOT INSTALLED}"
           H1=$(find "$PWD/../out" -name string -path '*c++*' 2>/dev/null | head -1)
           echo "    <string> at : ${H1:-NOT FOUND}"
+          # ------------------------------------------------------------------
+          # THE SOFT-FLOAT TF ROUTINES, CHECKED BY NAME.
+          #
+          # aarch64's `long double` is IEEE binary128 and the hardware has none,
+          # so every comparison on one is a call into libgcc's soft-fp. Run
+          # 81825486896 produced a clean libgcc.a and then could not link mpfr:
+          #   undefined reference to `__gttf2' `__lttf2' `__eqtf2' `__letf2'
+          # A libgcc missing these still builds, still installs, and still links
+          # anything that avoids long double -- which the fib(10) claim does.
+          # So the claim passed while this was broken, and only a named symbol
+          # check can tell the two apart.
+          # ------------------------------------------------------------------
+          echo "  --- libgcc: the soft-float binary128 routines aarch64 needs ---"
+          LGA=$(find "$PWD/../out" "$PWD" -name libgcc.a 2>/dev/null | head -1)
+          if [ -z "$LGA" ]; then
+            echo "    libgcc.a NOT FOUND -- nothing to check"
+          else
+            echo "    libgcc.a : $LGA ($(wc -c < "$LGA" | tr -d ' ') bytes)"
+            MISS=0
+            for s in __gttf2 __lttf2 __eqtf2 __letf2 __getf2 __addtf3 __multf3 __extenddftf2; do
+              if nm --defined-only "$LGA" 2>/dev/null | grep -qw "$s"; then
+                printf '      %-14s present\n' "$s"
+              else
+                printf '      %-14s MISSING\n' "$s"
+                MISS=$((MISS+1))
+              fi
+            done
+            echo "    missing of 8 : $MISS"
+            if [ "$MISS" -gt 0 ]; then
+              echo "    ^^ soft-fp did not build. The usual cause is a tmake"
+              echo "       fragment named by the spliced libgcc/config.host arm"
+              echo "       that 4.7.4 does not have -- libgcc/configure skips a"
+              echo "       missing fragment SILENTLY. The transplant now reports"
+              echo "       and repairs that; read its output above."
+            fi
+            # ar t, not nm: names the object files soft-fp actually produced.
+            echo "    TFmode objects in the archive: $(ar t "$LGA" 2>/dev/null | grep -cE 'tf2|tf3' || true)"
+          fi
           echo "  build.log: $(wc -l < build.log) lines"
 
       - name: 'STAGE 2: the tcc-built gcc rebuilds gcc 4.7.4 with c,c++'
