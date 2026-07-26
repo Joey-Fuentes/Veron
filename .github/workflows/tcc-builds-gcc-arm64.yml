@@ -384,11 +384,14 @@ jobs:
             done
             echo "    missing of 8 : $MISS"
             if [ "$MISS" -gt 0 ]; then
-              echo "    ^^ soft-fp did not build. The usual cause is a tmake"
-              echo "       fragment named by the spliced libgcc/config.host arm"
-              echo "       that 4.7.4 does not have -- libgcc/configure skips a"
-              echo "       missing fragment SILENTLY. The transplant now reports"
-              echo "       and repairs that; read its output above."
+              echo "    ^^ soft-fp did not build. Run 81866936411 traced this to"
+              echo "       the libgcc/config.host splice: the catch-all arm"
+              echo "       aarch64*-*-*) was inserted ahead of aarch64*-*-linux*)"
+              echo "       and a shell case takes the FIRST match, so the"
+              echo "       dispatch set no tmake_file at all. The transplant now"
+              echo "       classifies the arms and PROVES the result by sourcing"
+              echo "       config.host -- read its output above before looking"
+              echo "       anywhere else."
             fi
             # ar t, not nm: names the object files soft-fp actually produced.
             echo "    TFmode objects in the archive: $(ar t "$LGA" 2>/dev/null | grep -cE 'tf2|tf3' || true)"

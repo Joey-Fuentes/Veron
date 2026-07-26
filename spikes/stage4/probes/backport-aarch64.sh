@@ -140,6 +140,26 @@ dst_lines = open(dstf).read().splitlines(keepends=True)
 arms = re.findall(r'^(aarch64[^\n]*\)\n(?:.*?\n)*?\t;;\n)', src, re.M)
 if not arms:
     print("    libgcc/config.host: no aarch64 arms in 4.8.5"); sys.exit(0)
+
+# THE SAME TRAP config.gcc HAS, AND THIS SPLICER DID NOT DEFEND AGAINST IT.
+# 4.8.5 names aarch64 in two different case statements:
+#     aarch64*-*-*)      cpu_type=aarch64          <- the cpu_type table
+#     aarch64*-*-elf)    tmake_file=... t-softfp   <- the dispatch
+#     aarch64*-*-linux*) tmake_file=... t-softfp   <- the dispatch
+# Putting all three in the dispatch block is worse than putting them in the
+# wrong place: `aarch64*-*-*` MATCHES aarch64-unknown-linux-gnu, a shell case
+# takes the FIRST match and stops, and re.findall returns source order, so the
+# catch-all lands ahead of the real arms and shadows them. The dispatch then
+# sets NOTHING -- no tmake_file, no extra_parts, no md_unwind_header -- and
+# libgcc builds anyway from the generic rules.
+#
+# That is what run 81866936411 was: libgcc.a at 989,540 bytes, rc=0, and all
+# eight soft-float binary128 routines absent, because `aarch64/t-softfp` and
+# `t-softfp` were on disk and named by an arm nothing ever selected.
+cpu  = [a for a in arms if re.search(r'^\s*cpu_type=', a, re.M)]
+main = [a for a in arms if a not in cpu]
+print(f"    libgcc/config.host: {len(arms)} arm(s) -- {len(cpu)} cpu_type, {len(main)} dispatch")
+
 blocks, open_at = [], None
 for i, ln in enumerate(dst_lines):
     if ln.rstrip('\n') == 'case ${host} in':
@@ -148,16 +168,128 @@ for i, ln in enumerate(dst_lines):
         blocks.append((open_at, i)); open_at = None
 if not blocks:
     print("    libgcc/config.host: no 'case ${host} in' block found"); sys.exit(0)
-st, en = max(blocks, key=lambda b: b[1] - b[0])
-dst_lines[st+1:st+1] = arms
+for st, en in blocks:
+    print(f"      block {st+1:>5}..{en+1:<5} {en-st:>5} lines")
+
+dispatch = max(blocks, key=lambda b: b[1] - b[0])
+cpu_block = None
+for st, en in blocks:
+    if any(re.match(r'\s*cpu_type=', l) for l in dst_lines[st:en]):
+        cpu_block = (st, en); break
+print(f"    dispatch block  : lines {dispatch[0]+1}..{dispatch[1]+1}")
+print(f"    cpu_type block  : "
+      + (f"lines {cpu_block[0]+1}..{cpu_block[1]+1}" if cpu_block else "none found"))
+
+if cpu_block is not None and cpu_block != dispatch:
+    ins = {dispatch[0]: main, cpu_block[0]: cpu}
+else:
+    # One block does both. Order is then load-bearing: the specific arms must
+    # precede the catch-all or the catch-all wins.
+    print("    NOTE: one block does both; dispatch arms placed BEFORE the catch-all")
+    ins = {dispatch[0]: main + cpu}
+
+for at in sorted(ins, reverse=True):
+    dst_lines[at+1:at+1] = ins[at]
+    print(f"    spliced {len(ins[at])} arm(s) after line {at+1}")
 open(dstf, 'w').write("".join(dst_lines))
-print(f"    libgcc/config.host: spliced {len(arms)} arm(s) into the largest block "
-      f"(lines {st+1}..{en+1})")
 PY
+}
+
+# FAIL HERE, NOT AFTER A CLEAN BUILD THAT IS QUIETLY MISSING A RUNTIME.
+# config.host is sourced by libgcc/configure, so it can be sourced here with
+# the same variables and the answer arrives in seconds. The same two traps the
+# config.gcc proof records apply: $( . file ) runs in a SUBSHELL so everything
+# it sets is lost, and `exit` inside a sourced file kills the shell -- so the
+# proof writes a file and the parent reads it.
+prove_config_host() {
+    say ""
+    say "  === PROOF: source libgcc/config.host as libgcc/configure does ==="
+    rm -f /tmp/ch-proof.txt /tmp/ch-started.txt /tmp/ch-unsourceable.txt
+    (
+        set +u
+        cd "$G47/libgcc" || exit 0
+        # NOT SOURCEABLE IS NOT THE SAME AS NOT SATISFIED. Without this a file
+        # that will not parse yields empty variables, which reads exactly like a
+        # shadowed dispatch and would fail a build for the wrong reason.
+        bash -n ./config.host 2>/dev/null || { : > /tmp/ch-unsourceable.txt; exit 0; }
+        # A MARKER BEFORE THE SOURCE, because `exit` inside a sourced file kills
+        # the shell -- config.host's catch-all `*)` does exactly that for a host
+        # it does not recognise. Without the marker that case is indistinguish-
+        # able from "the proof never started", and it is the opposite: it is the
+        # loudest possible failure, the host matching nothing at all.
+        : > /tmp/ch-started.txt
+        host=aarch64-unknown-linux-gnu
+        host_address=64
+        cpu_type=aarch64
+        tmake_file=; extra_parts=; md_unwind_header=; sfp_machine_header=
+        # shellcheck disable=SC1091
+        . ./config.host > /dev/null 2>&1
+        {
+            echo "sourced=1"
+            echo "tmake_file=$tmake_file"
+            echo "extra_parts=$extra_parts"
+            echo "md_unwind_header=$md_unwind_header"
+        } > /tmp/ch-proof.txt
+    ) || true
+
+    if [ -f /tmp/ch-unsourceable.txt ] || [ ! -f /tmp/ch-started.txt ]; then
+        say "    PROOF DID NOT RUN -- config.host could not be parsed or entered."
+        say "    That is NOT a failed proof; it is no evidence either way, and"
+        say "    it must not be read as one. Continuing."
+        return 0
+    fi
+    if [ ! -s /tmp/ch-proof.txt ] || ! grep -q '^sourced=1' /tmp/ch-proof.txt; then
+        say ""
+        say "    FATAL: config.host EXITED while being sourced."
+        say "    That is its catch-all \`*)' arm -- aarch64-unknown-linux-gnu"
+        say "    matched no arm at all, so the splice did not land in the"
+        say "    dispatch block. Stopping."
+        exit 1
+    fi
+    grep -v '^sourced=1' /tmp/ch-proof.txt | sed 's/^/    /'
+    if grep -q 't-softfp' /tmp/ch-proof.txt; then
+        say "    OK: the dispatch selects an aarch64 arm and it names t-softfp."
+    else
+        say ""
+        say "    FATAL: the dispatch sets no t-softfp for aarch64."
+        say "    An arm is shadowing the real ones -- almost certainly the"
+        say "    catch-all aarch64*-*-*) sitting ahead of aarch64*-*-linux*)."
+        say "    Stopping here. A build past this point produces a libgcc with"
+        say "    no soft-float binary128 support, silently, and the failure"
+        say "    surfaces much later as: undefined reference to \`__gttf2'."
+        exit 1
+    fi
 }
 
 splice_config_gcc
 splice_config_host
+prove_config_host
+
+# ------------------------------------------------- a 2013 header, a 2026 libc
+# THIS ONLY STARTS TO MATTER NOW. `md_unwind_header=aarch64/linux-unwind.h` is
+# set by the dispatch arm that was being shadowed, so until the splice above was
+# fixed this header was never compiled and its incompatibility never showed.
+# With the arm selected it is compiled, and glibc renamed `struct ucontext` to
+# `ucontext_t` in 2.26 -- so against any modern libc it is:
+#     linux-unwind.h: error: field 'uc' has incomplete type
+#
+# DECLARED COMPATIBILITY PATCH, NOT AN EXPERIMENT. It was once the hypothesis
+# for the libgcc ICE; that was tested at glibc 2.19 and falsified, and the ICE
+# turned out to be a moved declaration. This is now just what makes 2013 source
+# compile against a newer libc. It is guarded by grep, so applying it twice is
+# a no-op and a consumer that patches it separately still reports honestly.
+UNW="$G47/libgcc/config/aarch64/linux-unwind.h"
+say ""
+say "  === ucontext_t compatibility (glibc >= 2.26) ==="
+if [ -f "$UNW" ] && grep -q 'struct ucontext' "$UNW"; then
+    n=$(grep -c 'struct ucontext' "$UNW")
+    sed -i 's/\bstruct ucontext\b/ucontext_t/g' "$UNW"
+    say "    patched $n reference(s) in libgcc/config/aarch64/linux-unwind.h"
+elif [ -f "$UNW" ]; then
+    say "    nothing to patch -- no 'struct ucontext' in linux-unwind.h"
+else
+    say "    linux-unwind.h absent (4.8.5 did not ship one for aarch64)"
+fi
 
 # ------------------------------------------------ libgcc's tmake fragments
 # THE SPLICED ARM NAMES FILES. If one of them does not exist in the 4.7.4 tree,
@@ -247,6 +379,12 @@ for n in differing:
     d = [l for l in difflib.unified_diff(a, b, lineterm="") if l[:1] in "+-"][2:]
     print("      DELTA %-22s 4.7.4 %d lines, 4.8.5 %d lines, %d changed"
           % (n, len(a), len(b), len(d)))
+    # A count is not a delta. If it is small enough to read, print it -- a
+    # two-line difference that nobody ever looked at is exactly the shape of
+    # thing that turns out to matter.
+    if len(d) <= 12:
+        for l in d:
+            print("        %s" % l)
 
 # soft-fp is where the TF routines actually come from. If the directory or the
 # tf sources are absent the fragments have nothing to compile.
