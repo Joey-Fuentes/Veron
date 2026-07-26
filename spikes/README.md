@@ -90,4 +90,9 @@ upstream's reference compiler byte for byte, and is a stable fixpoint over five
 generations. Stage 3 is M2-Planet itself — there is no separately-written stage 3
 — and its remaining rung is reaching an unmodified tcc from the seed. Stage 4
 already has a pinned tcc and has used it to build a gcc that targets aarch64 and
-a userland that boots as PID 1.
+a userland that boots as PID 1. **Its top rung now boots**: `hermetic-gcc16`
+builds gcc 16.1.0 in a box with no host filesystem, builds linux v7.2-rc4 with
+it, and boots that kernel under QEMU with the box's own glibc as PID 1 — gated
+by three test suites. That box is LFS-shaped scaffolding above tcc, not the
+bootstrap chain itself; see `stage4/README.md` for what it does and does not
+claim.

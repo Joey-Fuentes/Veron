@@ -9,6 +9,15 @@ arm64 tcc builds a gcc 4.7.4 that targets aarch64 (`GCC-BACKPORT.md`), and a
 tcc-built userland boots as PID 1 (`TCC-USERLAND.md`). Above those: g++ 4.7 is
 built but libgcc is not, and no kernel has been built by anything in this tree.
 
+> **SUPERSEDED 2026-07-26 on the kernel point.** `hermetic-gcc16` builds gcc
+> 16.1.0 in a box with no host filesystem, builds linux v7.2-rc4 with it, and
+> boots it under QEMU with the box's own glibc 2.43 as PID 1 — 142 checks
+> across three suites, all green. **That is not the ladder**: the box starts
+> from a host-built cross toolchain on purpose, so a failure there is the
+> system's and not the chain's. What it establishes is that the recipe above
+> tcc is correct and testable end to end. `README.md` has the full record and
+> the TODO list.
+
 > **SUPERSEDED 2026-07-26 on the libgcc point.** The ICE was one missing
 > `#include`: `get_hard_reg_initial_val` moved from `integrate.h` to
 > `function.h` between 4.7 and 4.8, so the transplanted backend had no visible
