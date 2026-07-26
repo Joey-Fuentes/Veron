@@ -948,6 +948,7 @@ jobs:
             if [ "$LSDIR" != /lib ]; then
               for so in "$LSDIR"/libstdc++.so*; do
                 [ -e "$so" ] || continue
+                case "$so" in *.py) continue ;; esac
                 ln -sf "$so" /lib/ && echo "  linked $(basename "$so") -> /lib"
               done
             fi
@@ -962,7 +963,17 @@ jobs:
             echo "int main(){ std::vector<int> v{1,2,3}; int s=0; for(int x:v) s+=x;" >> /work/cxxgate.cpp
             echo "  std::string t(\"ok\"); return s + (int)t.size() + 34; }" >> /work/cxxgate.cpp
             g++ -o /work/cxxgate /work/cxxgate.cpp || { echo "  C++ COMPILE FAILED"; exit 1; }
-            /work/cxxgate; rc=$?
+            # rc=0 THEN `|| rc=$?`, NOT `cmd; rc=$?`. This payload runs under
+            # set -e, and the gate program returns 42 ON SUCCESS -- so errexit
+            # fired on the very value that means the test passed, killing the
+            # step before the verdict could be printed:
+            #   === C++ gate ===
+            #   ##[error]Process completed with exit code 42.
+            # A command whose status is being CAPTURED must sit in an OR list,
+            # where POSIX says errexit is suppressed. C++ almost certainly
+            # already works here; nothing had been able to say so.
+            rc=0
+            /work/cxxgate || rc=$?
             echo "  C++ ran: exit=$rc (expect 42)"
             if [ $rc -ne 42 ]; then
               echo "  C++ CANNOT RUN IN THIS BOX. gcc 15 and 16 compile and then"
