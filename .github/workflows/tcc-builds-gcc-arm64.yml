@@ -223,7 +223,13 @@ jobs:
                 || { echo "    NOT INSTALLED -- tail:"; tail -8 build.log | sed 's/^/      /'; } )
           done
           echo "  prefix/lib:"
-          ls prefix/lib 2>/dev/null | sed 's/^/    /' || echo "    (empty)"
+          # NOT `ls | sed || echo`: a pipeline exits with sed's status, so the
+          # fallback never fires and an absent directory prints nothing at all.
+          if [ -d prefix/lib ] && [ -n "$(ls -A prefix/lib 2>/dev/null)" ]; then
+            ls prefix/lib | sed 's/^/    /'
+          else
+            echo "    (empty -- nothing installed here)"
+          fi
 
       - name: 'CONFIGURE'
         continue-on-error: true
@@ -233,23 +239,28 @@ jobs:
           set +e
           # No CXX here, unlike the host-gcc arm. 4.7.4 is C, tcc is a C
           # compiler, and the -std=gnu++98 workaround that arm needed exists
-          # only because 4.8.5 is built by a modern g++. Nothing in this arm
-          # touches C++.
+          # only because 4.8.5 is built by a modern g++. All of gcc 4.7 --
+          # INCLUDING cc1plus, its C++ front end -- is C, which is the whole
+          # reason 4.7 is the entry point.
           #
-          # --enable-languages=c, AND THAT IS DELIBERATE. An earlier version
-          # asked tcc for c,c++ in one step, on the reasoning that the libgcc
-          # ICE was fixed so more could be asked for. That was an UNMEASURED
-          # departure from the reference chain: live-bootstrap builds gcc 4.7.4
-          # with gcc 4.0.4, so the C++-capable compiler is always produced BY A
-          # GCC, never by tcc. tcc-builds-gcc-x86 measured that the 4.0.4 rung
-          # is environmental and deleted it -- that departure had evidence.
-          # This one did not.
+          # --enable-languages=c,c++, AND IT IS NO LONGER AN UNMEASURED ASK.
+          # The previous revision cut this back to `c` on the argument that
+          # live-bootstrap has gcc 4.0.4 (a gcc) produce the C++-capable
+          # compiler, so asking tcc for it directly was a departure with no
+          # evidence behind it. That argument was sound when it was written and
+          # it is now spent: run 81822379198 ASKED tcc for c,c++ and got it --
+          #     make rc=0   cc1plus BUILT   libgcc.a 989,540 bytes
+          # -- and cutting back to `c` threw that measurement away. A departure
+          # with a green run behind it is a result, not a risk.
           #
-          # So the shape is now two steps, matching the reference:
-          #   tcc  -> gcc 4.7.4, C only      <- this step
-          #   that -> gcc 4.7.4, c,c++       <- STAGE 2 below
-          # tcc's contribution is a C compiler, which is all tcc has ever been
-          # asked to be.
+          # So this arm now answers BOTH questions, in one variable each:
+          #   stage 1  tcc  -> gcc 4.7.4, c,c++   <- this step. Does tcc alone
+          #                                          yield a g++ 4.7 that links?
+          #   stage 2  that -> gcc 4.7.4, c,c++   <- STAGE 2 below. The
+          #                                          reference chain's shape,
+          #                                          and what feeds gcc 10.
+          # Neither subsumes the other and both are cheap: stage 1's full c,c++
+          # build was ~100 s of wall clock.
           #
           # --disable-bootstrap: with it on, stage2 would be built by the
           # stage1 xgcc and tcc's contribution would be discarded.
@@ -258,7 +269,7 @@ jobs:
             --build=aarch64-unknown-linux-gnu \
             --host=aarch64-unknown-linux-gnu \
             --target=aarch64-unknown-linux-gnu \
-            --prefix="$PWD/../out" --enable-languages=c \
+            --prefix="$PWD/../out" --enable-languages=c,c++ \
             --disable-multilib --disable-bootstrap --disable-werror \
             --disable-libsanitizer --disable-libgomp --disable-libquadmath \
             --disable-libssp --disable-libatomic --disable-shared \
@@ -323,11 +334,22 @@ jobs:
           # reported
           #   fatal error: string: No such file or directory
           # which said nothing about whether libstdc++ existed.
-          if [ "$rc" -eq 0 ]; then
-            make install > install.log 2>&1
-            echo "  install rc=$?"
-            ls "$PWD/../out/bin" 2>/dev/null | sed 's/^/    /'
-          fi
+          #
+          # INSTALL EVEN ON FAILURE. `make -k` gathers the whole inventory, so a
+          # non-zero rc can mean one late target died with everything the gate
+          # needs already built. Gating only on rc=0 threw a usable compiler
+          # away and reported "did not install", which is a different and wronger
+          # answer than "installed, and here is what is missing".
+          make install > install.log 2>&1
+          echo "  install rc=$?"
+          ls "$PWD/../out/bin" 2>/dev/null | sed 's/^/    /'
+          echo "  --- the C++ pieces stage 1 was asked for ---"
+          echo "    cc1plus     : $( [ -x gcc/cc1plus ] && echo BUILT || echo no)"
+          echo "    out/bin/g++ : $( [ -x "$PWD/../out/bin/g++" ] && echo present || echo missing)"
+          LS1=$(find "$PWD/../out" -name 'libstdc++.*' 2>/dev/null | head -1)
+          echo "    libstdc++   : ${LS1:-NOT INSTALLED}"
+          H1=$(find "$PWD/../out" -name string -path '*c++*' 2>/dev/null | head -1)
+          echo "    <string> at : ${H1:-NOT FOUND}"
           echo "  build.log: $(wc -l < build.log) lines"
 
       - name: 'STAGE 2: the tcc-built gcc rebuilds gcc 4.7.4 with c,c++'
@@ -350,17 +372,175 @@ jobs:
           # Note what is and is not tcc's work here. cc1plus is gcc 4.7's C++ FRONT
           # END and is written in C, so tcc could compile it. libstdc++ is the C++
           # LIBRARY, written in C++, and is built by the xg++ the build just
-          # produced -- tcc never touches it either way. The reason to use a gcc
-          # for this stage is not that tcc cannot; it is that the reference chain
-          # does not, and we have no measurement saying it is safe to differ.
-          G1="$PWD/out/bin/gcc"
+          # produced -- tcc never touches it either way.
+          #
+          # STAGE 1 NOW ASKS TCC FOR c,c++ AS WELL, so this stage is no longer
+          # the only route to a g++ 4.7 and is not a substitute for it. They are
+          # two different questions and the run answers both:
+          #   stage 1  can tcc alone reach a working g++ 4.7?
+          #   stage 2  does the reference chain's shape -- a gcc building the
+          #            C++-capable gcc -- work here, and is it what gcc 10 is
+          #            handed? That is this step.
+          # If the two disagree, that disagreement is itself the finding.
+          ROOT="$PWD"
+          G1="$ROOT/out/bin/gcc"
+          # STAGE2_RC IS WRITTEN ON EVERY PATH OUT OF THIS STEP. The previous
+          # version had two bare `exit 1`s ahead of the line that records it, so
+          # a configure failure left the variable unset and RESULT printed
+          #   stage 2 rc : ?
+          # -- which cannot be told apart from "the step never ran". A summary
+          # must distinguish never-ran from ran-and-failed.
+          bail() { echo "STAGE2_RC=$1" >> "$GITHUB_ENV"; exit 1; }
+
           if [ ! -x "$G1" ]; then
             echo "  no stage-1 gcc at $G1 -- stage 1 did not install"
-            ls "$PWD/out/bin" 2>/dev/null | sed 's/^/    /'
-            exit 1
+            ls "$ROOT/out/bin" 2>/dev/null | sed 's/^/    /'
+            bail 90
           fi
           echo "  builder: $("$G1" --version 2>&1 | head -1)"
           echo "  (this is the gcc tcc built, not the host gcc)"
+
+          # ------------------------------------------------------------------
+          # PREFLIGHT.  Run 81823615754 died here with
+          #   checking for the correct version of the gmp/mpfr/mpc libraries... no
+          #   configure: error: Building GCC requires GMP 4.2+, MPFR 2.3.1+ ...
+          # and the step printed `tail -20 conf2.log`, which is configure's
+          # STDOUT and says nothing about why a link test failed. The evidence
+          # was in build2/config.log and was never read.
+          #
+          # That check is an AC_TRY_LINK. It can fail for two completely
+          # different reasons and the message is identical either way:
+          #   (a) this gcc cannot link an executable AT ALL
+          #   (b) it cannot link THESE archives, which tcc produced
+          # So ask both, separately, before spending forty minutes finding out.
+          # ------------------------------------------------------------------
+          echo
+          echo "  --- preflight 1: can the tcc-built gcc link anything? ---"
+          printf 'int main(void){return 42;}\n' > /tmp/p1.c
+          rm -f /tmp/p1
+          "$G1" /tmp/p1.c -o /tmp/p1 2> /tmp/p1.err
+          echo "    compile+link rc=$?"
+          [ -s /tmp/p1.err ] && sed 's/^/      /' /tmp/p1.err | head -10
+          if [ -x /tmp/p1 ]; then
+            /tmp/p1; echo "    ran: exit=$? (expect 42)"
+          else
+            echo "    NO BINARY -- this gcc cannot link, and (b) below cannot"
+            echo "    be asked until that is fixed."
+          fi
+
+          # configure's own test, reproduced verbatim enough to fail the same
+          # way. If this passes and configure still says no, the fault is in
+          # how configure invokes it, not in the libraries.
+          # echo lines, NOT a heredoc. A heredoc terminator has to sit at column
+          # zero for the shell and at the block indent for YAML, and it cannot
+          # do both -- the file simply stops parsing. The gate below already
+          # writes its C++ this way; match it.
+          {
+            echo "#include <mpc.h>"
+            echo "int main(void){"
+            echo "  mpfr_t n, x; mpc_t c; int t = 0;"
+            echo "  mpfr_init (n); mpfr_init (x);"
+            echo "  mpfr_atan2 (n, n, x, GMP_RNDN);"
+            echo "  mpfr_erfc (n, x, GMP_RNDN);"
+            echo "  mpfr_subnormalize (x, t, GMP_RNDN);"
+            echo "  mpfr_clear (n); mpfr_clear (x);"
+            echo "  mpc_init2 (c, 53);"
+            echo "  mpc_set_ui_ui (c, 1, 1, MPC_RNDNN);"
+            echo "  mpc_cosh (c, c, MPC_RNDNN);"
+            echo "  mpc_pow (c, c, c, MPC_RNDNN);"
+            echo "  mpc_acosh (c, c, MPC_RNDNN);"
+            echo "  mpc_clear (c);"
+            echo "  return 0; }"
+          } > /tmp/p2.c
+          probe_libs() {   # $1 = prefix to test, $2 = label
+            rm -f /tmp/p2
+            "$G1" -I"$1/include" /tmp/p2.c -o /tmp/p2 \
+                  -L"$1/lib" -lmpc -lmpfr -lgmp 2> /tmp/p2.err
+            local rc=$?
+            echo "    $2: rc=$rc  $( [ -x /tmp/p2 ] && echo LINKED || echo 'NO BINARY')"
+            [ -s /tmp/p2.err ] && head -12 /tmp/p2.err | sed 's/^/        /'
+            return $rc
+          }
+          echo
+          echo "  --- preflight 2: gmp/mpfr/mpc, the exact check configure runs ---"
+          probe_libs "$ROOT/prefix" "against prefix/  (built by TCC)"
+
+          # ------------------------------------------------------------------
+          # REBUILD THE PREREQUISITES WITH THE STAGE-1 GCC.
+          #
+          # This is what the reference chain does -- every rung rebuilds its own
+          # gmp/mpfr/mpc -- and it is the honest shape here too: stage 2's cc1
+          # should contain object code from the compiler that stage 2 is testing,
+          # not from the one below it. It is ALSO the leading candidate fix for
+          # the failure above, since the only thing that changed between the
+          # stage-1 configure (which passed this identical check under tcc) and
+          # the stage-2 one (which failed it) is the compiler driving the link.
+          #
+          # Stated plainly: THIS IS NOT A DIAGNOSIS. The cause is still unknown
+          # and preflight 2 runs against BOTH prefixes so the run says which of
+          # them links. If tcc-built archives link fine under gcc, this rebuild
+          # was not the fix and the next place to look is configure itself.
+          # ------------------------------------------------------------------
+          echo
+          echo "  --- prerequisites, rebuilt by the tcc-built gcc ---"
+          # FRESH TREES, NOT `make distclean` ON THE TCC-BUILT ONES. If distclean
+          # fails or misses, make sees up-to-date .o files that TCC produced and
+          # relinks them into an archive this step is meant to attribute to gcc.
+          # A silently mixed archive is exactly the kind of result that looks
+          # clean and is not. The tarballs are still on disk; re-extract.
+          mkdir -p prefix2
+          rm -rf gmp-g1 mpfr-4.1.0-g1 mpc-1.2.1-g1
+          mkdir -p gmp-g1 && tar xf gmp.tar.xz -C gmp-g1 --strip-components=1
+          ( cd gmp-g1
+            ./configure CC="$G1" --disable-shared --disable-assembly \
+              --prefix="$ROOT/prefix2" > conf.log 2>&1
+            echo "    gmp  configure rc=$?"
+            timeout 1800 make -j"$(nproc)" > build.log 2>&1
+            echo "    gmp  make rc=$?"
+            if make install > /dev/null 2>&1; then
+              echo "    gmp  INSTALLED"
+            else
+              echo "    gmp  NOT INSTALLED -- configure tail:"
+              tail -12 conf.log | sed 's/^/      /'
+              echo "    gmp  build tail:"
+              tail -12 build.log | sed 's/^/      /'
+            fi )
+          for p in mpfr-4.1.0 mpc-1.2.1; do
+            mkdir -p "$p-g1" && tar xf "$p.tar" -C "$p-g1" --strip-components=1 2>/dev/null
+            ( cd "$p-g1"
+              ./configure CC="$G1" --disable-shared \
+                --with-gmp="$ROOT/prefix2" --prefix="$ROOT/prefix2" > conf.log 2>&1
+              echo "    $p configure rc=$?"
+              timeout 1200 make -j"$(nproc)" > build.log 2>&1
+              echo "    $p make rc=$?"
+              if make install > /dev/null 2>&1; then
+                echo "    $p INSTALLED"
+              else
+                echo "    $p NOT INSTALLED -- configure tail:"
+                tail -12 conf.log | sed 's/^/      /'
+                echo "    $p build tail:"
+                tail -12 build.log | sed 's/^/      /'
+              fi )
+          done
+          echo "  prefix2/lib:"
+          # NOT `ls | sed || echo`: a pipeline exits with sed's status, so the
+          # fallback never fires and an absent directory prints nothing at all.
+          if [ -d prefix2/lib ] && [ -n "$(ls -A prefix2/lib 2>/dev/null)" ]; then
+            ls prefix2/lib | sed 's/^/    /'
+          else
+            echo "    (empty -- nothing installed here)"
+          fi
+          echo
+          probe_libs "$ROOT/prefix2" "against prefix2/ (built by the tcc-built GCC)"
+          P2RC=$?
+          echo
+          if [ "$P2RC" -eq 0 ]; then
+            echo "  CONTROL: prefix2 links. If prefix did not, the archives were"
+            echo "  the problem and rebuilding them is the fix."
+          else
+            echo "  CONTROL: prefix2 does NOT link either, so this is not about"
+            echo "  which compiler built the archives. Read preflight 1."
+          fi
 
           mkdir -p build2 && cd build2
           "../g474/configure" \
@@ -368,16 +548,37 @@ jobs:
             --build=aarch64-unknown-linux-gnu \
             --host=aarch64-unknown-linux-gnu \
             --target=aarch64-unknown-linux-gnu \
-            --prefix="$PWD/../out2" --enable-languages=c,c++ \
+            --prefix="$ROOT/out2" --enable-languages=c,c++ \
             --disable-multilib --disable-bootstrap --disable-werror \
             --disable-libsanitizer --disable-libgomp --disable-libquadmath \
             --disable-libssp --disable-libatomic \
-            --with-gmp="$PWD/../prefix" \
-            --with-mpfr="$PWD/../prefix" \
-            --with-mpc="$PWD/../prefix" \
+            --with-gmp="$ROOT/prefix2" \
+            --with-mpfr="$ROOT/prefix2" \
+            --with-mpc="$ROOT/prefix2" \
             > conf2.log 2>&1
           echo "  configure rc=$?"
-          [ -f Makefile ] || { echo "  no Makefile -- configure tail:"; tail -20 conf2.log | sed 's/^/    /'; exit 1; }
+          if [ ! -f Makefile ]; then
+            echo "  no Makefile -- configure tail:"
+            tail -20 conf2.log | sed 's/^/    /'
+            # THE FILE THAT ACTUALLY HAS THE ANSWER. config.log records the
+            # command line, the source and the compiler's own words for every
+            # failed test; conf2.log records none of it.
+            #
+            # TWO DUMB GREPS, NOT ONE CLEVER ONE. An awk that walks back from
+            # the last conftest invocation is the sort of thing that prints
+            # nothing when its anchor does not match, and a step that prints
+            # nothing is indistinguishable from a step that did not run.
+            if [ -f config.log ]; then
+              echo "  --- config.log: every compiler and linker complaint ---"
+              grep -nE "error:|cannot find|undefined reference|No such file" config.log \
+                | tail -25 | sed 's/^/    /'
+              echo "  --- config.log: last 60 lines ---"
+              tail -60 config.log | sed 's/^/    /'
+            else
+              echo "  (no config.log -- configure died before writing one)"
+            fi
+            bail 91
+          fi
 
           # NOT --disable-shared here. Stage 1 uses it because nothing links against
           # that compiler; stage 2 must produce a libstdc++ a program can actually
@@ -565,10 +766,11 @@ jobs:
           echo
 
           echo "  --- the two stages ---"
-          echo "    stage 1  tcc  -> gcc 4.7.4, C only, installed to out/"
+          echo "    stage 1  tcc  -> gcc 4.7.4, c and c++, installed to out/"
           echo "    stage 2  that -> gcc 4.7.4, c and c++, installed to out2/"
-          echo "    the reference chain builds its C++ gcc with a gcc; so do we"
-          echo "    stage 2 rc : ${STAGE2_RC:-?}"
+          echo "    stage 1 asks whether tcc alone reaches a g++ 4.7;"
+          echo "    stage 2 asks the reference chain's question, and feeds gcc 10."
+          echo "    stage 2 rc : ${STAGE2_RC:-NEVER RAN}"
           LGA=$(find . -name libgcc.a 2>/dev/null | head -1)
           if [ -n "$LGA" ]; then
             echo "    libgcc.a : $(wc -c < "$LGA" | tr -d ' ') bytes"
@@ -604,7 +806,7 @@ jobs:
             fi
           fi
           echo
-          echo "  --- THE C++ GATE: does STAGE 2's g++ 4.7 LINK? ---"
+          echo "  --- THE C++ GATE: does a g++ 4.7 from this chain LINK? ---"
           # g++ --version proves nothing -- it printed happily on every run where
           # libgcc was missing and nothing could be linked. Compile, link, run, check.
           # STAGE 2's INSTALLED g++, not stage 1's build tree. The previous
@@ -617,37 +819,45 @@ jobs:
           # the test could not tell "missing" from "looked in the wrong place".
           # An installed prefix has the headers and libraries where the driver
           # already looks, so the answer means something.
-          GXX=""
-          [ -x out2/bin/g++ ] && GXX=out2/bin/g++
-          if [ -n "$GXX" ]; then
-            {
-              echo "#include <string>"
-              echo "#include <vector>"
-              echo "int main(){ std::vector<int> v; for(int i=0;i<5;++i) v.push_back(i);"
-              echo "  int s=0; for(unsigned i=0;i<v.size();++i) s+=v[i];"
-              echo "  std::string n(\"ok\"); return s+(int)n.size()+35; }"
-            } > /tmp/gate.cpp
+          #
+          # BOTH PREFIXES, SEPARATELY. They answer different questions and the
+          # previous version could only report on out2/, so a run where stage 2
+          # died at configure said nothing at all about the g++ stage 1 had
+          # already installed.
+          {
+            echo "#include <string>"
+            echo "#include <vector>"
+            echo "int main(){ std::vector<int> v; for(int i=0;i<5;++i) v.push_back(i);"
+            echo "  int s=0; for(unsigned i=0;i<v.size();++i) s+=v[i];"
+            echo "  std::string n(\"ok\"); return s+(int)n.size()+35; }"
+          } > /tmp/gate.cpp
+          cxx_gate() {   # $1 = prefix, $2 = what built it
+            echo "    --- $1/bin/g++  ($2) ---"
+            if [ ! -x "$1/bin/g++" ]; then
+              echo "      no g++ installed here. What IS in $1/bin:"
+              # `ls ... | sed ... || echo` NEVER fires the fallback: a pipeline
+              # exits with its LAST command's status and sed always succeeds, so
+              # a missing directory printed absolutely nothing. This file's own
+              # method notes record that exact trap; test the directory instead.
+              if [ -d "$1/bin" ]; then
+                ls "$1/bin" | sed "s/^/        /"
+              else
+                echo "        ($1/bin does not exist)"
+              fi
+              return
+            fi
             rm -f /tmp/gate
-            "$GXX" /tmp/gate.cpp -o /tmp/gate 2> /tmp/gate.err
-            GRC=$?
-            echo "    compile+link rc=$GRC"
-            # Show the driver and what it looked for -- if the tcc-built g++
-            # cannot find its own C++ headers or libstdc++, that is the answer,
-            # and it is a different finding from a codegen fault.
-            echo "    driver: $GXX"
+            "$1/bin/g++" /tmp/gate.cpp -o /tmp/gate 2> /tmp/gate.err
+            echo "      compile+link rc=$?"
             if [ -s /tmp/gate.err ]; then
-              echo "    --- what it said ---"
-              head -20 /tmp/gate.err | sed "s/^/      /"
+              echo "      --- what it said ---"
+              head -20 /tmp/gate.err | sed "s/^/        /"
             fi
             if [ -x /tmp/gate ]; then
-              /tmp/gate; echo "    ran: exit=$? (expect 47)"
+              /tmp/gate; echo "      ran: exit=$? (expect 47)"
             else
-              echo "    NO BINARY -- the tcc-built g++ 4.7 cannot link."
+              echo "      NO BINARY -- this g++ 4.7 cannot link."
             fi
-          else
-            echo "    no g++ at out2/bin -- stage 2 did not install one."
-            echo "    what IS in out2/bin:"
-            ls out2/bin 2>/dev/null | sed "s/^/      /" || echo "      (out2/bin does not exist)"
-            echo "    and in stage 1 out/bin, for contrast:"
-            ls out/bin 2>/dev/null | sed "s/^/      /" || echo "      (out/bin does not exist)"
-          fi
+          }
+          cxx_gate out  "built by tcc"
+          cxx_gate out2 "built by the tcc-built gcc"
