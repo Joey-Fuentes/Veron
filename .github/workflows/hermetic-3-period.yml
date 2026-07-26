@@ -450,6 +450,22 @@ jobs:
           bash spikes/stage3/probes/backport-aarch64.sh g474 g485 2>&1 | tail -3
           [ "$(grep -c aarch64 g474/gcc/config.gcc)" -gt 0 ] \
             || { echo "  transplant did not take"; exit 1; }
+          # gcc 4.7 NEEDS GMP, MPFR AND MPC AND THE BOX HAS NONE. They were
+          # only ever unpacked inside the 4.8.2 source tree during the sysroot
+          # build, never installed into /tools, so configure inside the box
+          # reported
+          #   checking for the correct version of gmp.h... no
+          #   configure: error: Building GCC requires GMP 4.2+, MPFR 2.3.1+ ...
+          # In-tree is how LFS feeds them to gcc and how rungs 2 and 3 already
+          # do it: no prefix to point at, nothing to install, and the versions
+          # travel with the tree. 4.7 wants GMP 4.2+, MPFR 2.3.1+, MPC 0.8.0+;
+          # the period set (5.1.3 / 3.1.2 / 1.0.2) is comfortably past all three.
+          ( cd g474
+            rm -rf gmp mpfr mpc
+            tar xf "$W/gmp-$GMP_VER.tar.xz"   && mv "gmp-$GMP_VER" gmp
+            tar xf "$W/mpfr-$MPFR_VER.tar.xz" && mv "mpfr-$MPFR_VER" mpfr
+            tar xf "$W/mpc-$MPC_VER.tar.gz"   && mv "mpc-$MPC_VER" mpc )
+          echo "  in-tree prereqs: $(ls -d g474/gmp g474/mpfr g474/mpc | tr '\n' ' ')"
           rm -rf "$S/work/g474"
           cp -r g474 "$S/work/" || { echo "  could not stage the tree"; exit 1; }
           echo "  staged: $(ls "$S/work/g474/configure" 2>/dev/null || echo 'NO configure')"
