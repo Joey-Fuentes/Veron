@@ -363,7 +363,54 @@ jobs:
             sed 's/^/      /' /tmp/d.txt | head -20
           fi
           echo
-          echo "  ===== 5. richer gdb at the fault ====="
+          echo "  ===== 5. THE HYPOTHESIS THIS RUN PRODUCED ====="
+          # WHAT THE BACKTRACE ACTUALLY SHOWED. builtins.c:4581 is
+          #
+          #   4568   if (tem == NULL)          <- passed, so tem is NOT null
+          #   4581   if (!REG_P (tem)          <- SIGSEGV dereferencing tem
+          #
+          # so `tem` is a NON-NULL GARBAGE POINTER, and it came from line 4564,
+          # expand_builtin_return_addr -> RETURN_ADDR_RTX -> aarch64_return_addr,
+          # whose body is
+          #
+          #   return get_hard_reg_initial_val (Pmode, LR_REGNUM);
+          #
+          # and which section 4 just proved the transplant never touched.
+          #
+          # A NON-NULL GARBAGE POINTER OUT OF A FUNCTION RETURNING rtx HAS ONE
+          # CLASSIC CAUSE ON LP64: no visible declaration. C89 then assumes the
+          # function returns `int`, the 64-bit rtx is TRUNCATED TO 32 BITS, and
+          # the result is neither null nor valid -- it passes the null check and
+          # faults on first dereference. Exactly the shape above.
+          #
+          # And it would be a WARNING, not an error, which is why the transplant
+          # built with "0 errors, 471 warnings" and nobody read them.
+          echo "  -- implicit declarations in the c474 compiler build --"
+          if [ -f "$W/c474/build.log" ]; then
+            grep -nE "implicit declaration" "$W/c474/build.log" | head -20 | sed 's/^/    /'
+            n=$(grep -c "implicit declaration" "$W/c474/build.log" 2>/dev/null || echo 0)
+            echo "    total implicit declarations: $n"
+            echo "  -- any of them in the aarch64 backend? --"
+            grep -nE "aarch64.*implicit declaration|implicit declaration.*aarch64" \
+              "$W/c474/build.log" | head -10 | sed 's/^/    /' || echo "    none matched"
+            echo "  -- specifically get_hard_reg_initial_val --"
+            grep -n "get_hard_reg_initial_val" "$W/c474/build.log" | head -6 | sed 's/^/    /' \
+              || echo "    not mentioned in the build log"
+          else
+            echo "    no c474/build.log -- the compiler build step writes it; check the path"
+          fi
+          echo
+          echo "  -- where is get_hard_reg_initial_val DECLARED, in each tree? --"
+          for g in g474 g485; do
+            echo "    $g:"
+            grep -rn "get_hard_reg_initial_val" "$W/$g/gcc"/*.h 2>/dev/null | head -4 | sed 's/^/      /' \
+              || echo "      declared in no top-level header"
+          done
+          echo
+          echo "  -- what does aarch64.c include? --"
+          sed -n '1,60p' "$W/g474/gcc/config/aarch64/aarch64.c" | grep -n '#include' | sed 's/^/    /'
+          echo
+          echo "  ===== 6. richer gdb at the fault ====="
           LG=$(find "$W/c474" -type d -path '*aarch64*/libgcc' | head -1)
           CMD=$(grep -oE '[^ ]*xgcc [^&|]*unwind-dw2\.c' "$W/c474/libgcc-unpatched.log" 2>/dev/null \
                 | sed 's/^[^:]*://' | tail -1)
@@ -371,11 +418,16 @@ jobs:
             cd "$LG"
             CC1LINE=$(eval "$CMD -v" 2>&1 | grep -oE '[^ ]*cc1 .*' | tail -1)
             # shellcheck disable=SC2086
+            # `tem` IS THE VARIABLE THAT MATTERS -- print it, and print the
+            # frame with locals. The include-search dump from the earlier `-v`
+            # used to fill the head limit before anything useful appeared, so
+            # filter it out rather than raising the limit.
             [ -n "$CC1LINE" ] && gdb --batch \
-              -ex run -ex 'frame 0' -ex 'info locals' -ex 'info args' \
-              -ex 'p count' -ex 'p fndecl_code' \
+              -ex run -ex 'frame 0' -ex 'p tem' -ex 'p/x tem' \
+              -ex 'info locals' -ex 'info args' -ex 'bt full 2' \
               --args $CC1LINE 2>&1 \
-              | grep -vE '^\[|^Reading|^Downloading|warning:' | head -40 | sed 's/^/    /'
+              | grep -vE '^\[|^Reading|^Downloading|^ignoring |^ *#include|^ +/|^End of search|^GNU C|^\tcompiled|^GGC|^Compiler exec|search starts here' \
+              | head -45 | sed 's/^/    /'
           else
             echo "    could not rebuild the cc1 line"
           fi
@@ -489,4 +541,6 @@ jobs:
             c474/libgcc-patched.log
             c485/libgcc-unpatched.log
             c485/libgcc-patched.log
+            c474/build.log
+            c485/build.log
           if-no-files-found: warn
