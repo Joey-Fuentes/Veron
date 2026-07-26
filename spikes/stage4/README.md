@@ -173,7 +173,7 @@ pull in the option ROMs — so nothing was learned about the kernel. A kernel th
 builds and is never loaded is a different open question from one that builds and
 panics, and the log distinguishes them.
 
-### hermetic-gcc47 (gcc 4.7.4 + backend, glibc 2.19) — run 1: cc1plus yes, libgcc no
+### hermetic-gcc47 — THE ucontext PREDICTION IS FALSIFIED
 
 The previous version of this box built a `cc1plus` and reported "g++ 4.7
 exists". That was `make all-gcc`, which stops before the runtime, so **libgcc
@@ -236,6 +236,76 @@ For the record, the handoff step still ran and got gcc 10.2.0 through
 `configure rc=0` before gmp stopped it on `C++ preprocessor "/lib/cpp" fails
 sanity check` — a missing `/lib/cpp` in the box, not a compiler limit. Moot
 until libgcc exists, but it is the next thing in that path.
+
+**Run 2 (2026-07-26) reached the question and answered it. The answer is no.**
+
+With the header fix in place the build got past `fixincludes` and into libgcc
+for the first time. The premise was checked before the experiment ran:
+
+```
+47:typedef struct ucontext
+PREMISE HOLDS: the struct tag exists at this glibc.
+```
+
+and the compiler died anyway, unpatched, in exactly the same place:
+
+```
+configure rc=0     cc1 65,939,229     cc1plus 71,663,068
+/work/g474/libgcc/unwind-dw2.c:1490:44: internal compiler error: Segmentation fault
+STILL ICEs at glibc 2.19.  ==> The TRANSPLANT is implicated.
+```
+
+**This is the most useful result the leg has produced, and it is a negative
+one.** The hypothesis was that the ICE was environmental — glibc 2.26 renamed
+`struct ucontext` to `ucontext_t`, so a libc predating the rename should build
+libgcc unpatched. Same file, same line, same column, on a libc where the theory
+cannot apply. The ICE is **not** the era. It is the transplant.
+
+Three things follow.
+
+1. **The period box has spent its reason for existing, and is gone.** LFS 7.5
+   and its gcc 4.8.2 were built to put this one question; the question is
+   answered. `hermetic-gcc47` now uses **the same LFS 10.0 sysroot as
+   `hermetic-gcc10`** — proven green, one era closer to 2013 than LFS 13.0, and
+   a shared recipe so a fix in one box is a fix in both. The gcc 4.8.2 build is
+   deleted.
+
+   Two things moved with it, and both were caught by reading rather than by a
+   run:
+
+   - **`struct ucontext` → `ucontext_t` is now unconditional**, as a declared
+     compatibility patch rather than an experiment. glibc 2.32 is past the
+     rename, so 2013 source needs it to compile at all. It prints the number of
+     references it rewrote, so it appears in review and not only in a diff.
+   - **`--with-native-system-header-dir=/tools/include` had to be dropped.**
+     LFS 7.5 kept everything under `/tools` and gcc's default `/usr/include`
+     did not exist, which is what broke `fixincludes`. **LFS 10.0 is laid out
+     the other way**: the cross toolchain lives in `/tools` and the system
+     headers go to `/usr/include`. Carrying the flag across would have
+     recreated the identical failure with the directories swapped. The step now
+     asserts `/usr/include/stdio.h` and `/usr/include/asm/unistd.h` exist
+     *before* the build, because `fixincludes` reports a missing directory only
+     after `cc1` and `cc1plus` have already been built — an hour in.
+
+   Also inherited from the gcc10 box, and needed here for the same reason:
+   **chapter 7**. gcc 4.7 builds gmp in-tree too, so it would have hit the same
+   `gmp/demos/calc: Error 127` for want of bison.
+2. **`gcc47-libgcc-ice`'s step 2 is no longer a hypothesis**, it is a way to get
+   *past* the fault and reach the rungs above. Its header now says so, and a
+   green step 2 is a workaround, not a diagnosis.
+3. **The next measurement is the backtrace**, which that workflow already
+   builds for: both compilers with `-g`, reproduce from the right directory,
+   `gdb --batch -ex run -ex 'bt 25'`. Its own named suspect is the one to check
+   first — a 4.8 backend describing its DWARF frame registers one way
+   (`DWARF_FRAME_REGISTERS`, `DWARF_FRAME_REGNUM`, the return-column macros)
+   against a 4.7 middle-end sizing an array another way, writing past the end.
+   If that is it, it is a `port_gcc47_api.py` row rather than anything
+   structural.
+
+The freeze step is still emitting an empty patch, and **my own `2>/dev/null` on
+the diff is why three runs could not say why.** A missing `diffutils` would look
+exactly like this. Stderr is now kept, the exit code printed, and a control diff
+run against `config.gcc` — the one file the step above proves changed.
 
 ### hermetic-gcc10 (gcc 10.2.0, glibc 2.32) — box green, chapter 7 was missing
 

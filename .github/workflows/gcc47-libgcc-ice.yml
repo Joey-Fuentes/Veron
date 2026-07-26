@@ -19,6 +19,25 @@ name: gcc47-libgcc-ice
 #     internal_error; reaching neither and taking SIGSEGV points at an
 #     out-of-bounds access rather than a check the middle-end knows how to make.
 #
+# THE ucontext HYPOTHESIS IS DEAD -- FALSIFIED 2026-07-26, INDEPENDENTLY.
+#
+# hermetic-gcc47 built gcc 4.7.4 + the transplant inside an LFS 7.5 box whose
+# libc is glibc 2.19, which PREDATES the 2.26 `struct ucontext` -> `ucontext_t`
+# rename. The box verified the premise before running the experiment --
+#
+#   47:typedef struct ucontext
+#   PREMISE HOLDS: the struct tag exists at this glibc.
+#
+# -- and the compiler still died in the same place, unpatched:
+#
+#   /work/g474/libgcc/unwind-dw2.c:1490:44: internal compiler error: Segmentation fault
+#
+# Same file, same line, same column, on a libc where the renamed-type theory
+# cannot apply. So the ICE is NOT environmental and step 2 below is no longer a
+# hypothesis under test -- keep it only as a way to get PAST the fault and reach
+# the rungs above, and treat a green step 2 as a workaround rather than a
+# diagnosis. THE REAL QUESTION IS NOW STEP 5's BACKTRACE.
+#
 # WHERE uw_init_context_1 SITS, and why the transplant is the suspect. That
 # function is almost entirely target-driven builtins --
 # __builtin_dwarf_cfa, __builtin_init_dwarf_reg_size_table,
@@ -179,7 +198,7 @@ jobs:
               | head -4 | sed 's/^/      /'
           done
 
-      - name: '2. THE HYPOTHESIS: ucontext_t. Patch both trees and rebuild.'
+      - name: '2. FALSIFIED HYPOTHESIS (kept as a way past): patch ucontext_t'
         continue-on-error: true
         run: |
           set -u
