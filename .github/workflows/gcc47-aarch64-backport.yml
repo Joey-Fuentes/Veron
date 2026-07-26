@@ -377,7 +377,16 @@ jobs:
           #
           # Any implicit declaration in the TRANSPLANTED BACKEND is a latent truncated
           # pointer, not a style complaint. Fail on it.
-          IMPL=$(grep -c "implicit declaration" build.log 2>/dev/null || echo 0)
+          # `|| echo 0` IS WRONG HERE AND IT SHOWED. grep -c PRINTS the count and
+          # then EXITS 1 when there are no matches, so the fallback appended a
+          # SECOND zero. IMPL became "0\n0", the log read
+          #   implicit declarations in the whole build: 0
+          #   0
+          # and the next line was
+          #   [: 0\n0: integer expression expected
+          # grep -c always prints a number, so `|| true` is all that is needed.
+          IMPL=$(grep -c "implicit declaration" build.log 2>/dev/null || true)
+          [ -n "$IMPL" ] || IMPL=0
           echo "    implicit declarations in the whole build: $IMPL"
           BACKEND_IMPL=0
           if [ "$IMPL" -gt 0 ]; then
@@ -545,6 +554,19 @@ jobs:
           echo "  configure  : rc=${CONF_RC:-?}"
           echo "  build      : rc=${BUILD_RC:-?}"
           echo "  cc1        : $( [ -x gcc/cc1 ] && echo BUILT || echo no)"
+          # THE RUNTIME AND THE DRIVER NOW BELONG IN THE HEADLINE. Until
+          # 2026-07-26 neither could be built at all -- the transplanted
+          # compiler segfaulted in libgcc every time -- so this summary
+          # stopped at cc1. With the missing include in place a full `make`
+          # completes, and these two lines are what say the transplant is a
+          # USABLE compiler rather than merely a compiling one.
+          LGA=$(find . -name libgcc.a 2>/dev/null | head -1)
+          if [ -n "$LGA" ]; then
+            echo "  libgcc.a   : $(wc -c < "$LGA" | tr -d ' ') bytes"
+          else
+            echo "  libgcc.a   : NOT BUILT"
+          fi
+          echo "  xgcc       : $( [ -x gcc/xgcc ] && echo BUILT || echo no)"
           echo
           echo "  Compare the three arms before drawing any conclusion:"
           echo "    A fails               -> the environment. Nothing else is readable."
