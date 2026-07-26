@@ -978,6 +978,60 @@ jobs:
             exit 0
           fi
           export LD_LIBRARY_PATH=/work/out10/lib64:/work/out10/lib:/work/out2/lib64
+
+          # 1. THE C COMPILER, WHICH UNTIL NOW WAS ONLY EVER ASKED --version.
+          # Run 81884742896 reported "gcc (GCC) 10.2.0" and nothing else ever
+          # handed it a source file, so the C half of the rung rested on a
+          # version string -- the exact non-proof the C++ gate below is written
+          # to avoid. fib exercises a conditional, a subtraction and recursion,
+          # and RUNNING it is what separates codegen from mere compilation.
+          say "  --- gcc 10's gcc on C (expect exit 55) ---"
+          printf 'int fib(int n){return n<2?n:fib(n-1)+fib(n-2);}\n'  > /tmp/c10.c
+          printf 'int main(void){return fib(10);}\n'                 >> /tmp/c10.c
+          rm -f /tmp/c10
+          /work/out10/bin/gcc -O2 /tmp/c10.c -o /tmp/c10 2> /tmp/c10.err
+          say "    compile+link rc=$?"
+          [ -s /tmp/c10.err ] && head -10 /tmp/c10.err | sed 's/^/      /'
+          if [ -x /tmp/c10 ]; then
+            /tmp/c10; say "    ran: exit=$? (expect 55)"
+          else
+            say "    NO BINARY -- gcc 10's C compiler cannot link."
+          fi
+
+          # 2. AND ON REAL C, NOT A TOY. Six lines of fib is the same evidence
+          # cc1 gave at the bottom of this chain, and this file already records
+          # why that is not enough: a compiler miscompiled in register
+          # allocation, or in a mode the toy never reaches, passes it unchanged.
+          # gmp is a few hundred files of dense integer code and it is already
+          # on disk, so this costs about a minute.
+          say "  --- and on real C: gmp 6.2.1 built by gcc 10 ---"
+          gt=$(ls /work/gmp-*.tar.* 2>/dev/null | head -1)
+          if [ -z "$gt" ]; then
+            say "    no gmp tarball on disk -- skipped"
+          else
+            rm -rf /work/gmp-g10 && mkdir -p /work/gmp-g10
+            tar xf "$gt" -C /work/gmp-g10 --strip-components=1
+            ( cd /work/gmp-g10
+              ./configure CC=/work/out10/bin/gcc --disable-shared \
+                --disable-assembly --prefix=/work/prefix10 > conf.log 2>&1
+              say "    configure rc=$?"
+              timeout 1800 make -j"$(nproc)" > build.log 2>&1
+              rc=$?
+              # COUNT THE OBJECTS ON DISK. The first version of this line was
+              #   $(grep -c '\.o$' build.log || echo '?')
+              # and printed "(0\n? objects)" -- grep -c PRINTS the count and
+              # EXITS 1 on zero matches, so the fallback appended a second
+              # value. That trap is already in this repo's method notes and I
+              # walked into it anyway. find answers the question directly.
+              say "    make rc=$rc  ($(find . -name '*.o' | wc -l) objects)"
+              if [ "$rc" -ne 0 ]; then
+                say "    --- what failed ---"
+                grep -nE "error:|internal compiler error" build.log | head -8 | sed 's/^/      /'
+                tail -10 build.log | sed 's/^/      /'
+              fi )
+          fi
+
+          say "  --- gcc 10's g++ on C++14 (expect exit 47) ---"
           # A COMPILER THAT EXISTS IS NOT A COMPILER THAT WORKS, and "it built"
           # is not "we climbed". This file uses C++14 return-type deduction and
           # a generic lambda -- things gcc 4.7 CANNOT compile -- so building it
@@ -993,7 +1047,6 @@ jobs:
             echo "  std::string n(\"ok\");"
             echo "  return sum(v) + (int)n.size() + add(15,15); }"
           } > /tmp/c14.cpp
-          say "  --- gcc 10's g++ on C++14 (expect exit 47) ---"
           rm -f /tmp/c14
           /work/out10/bin/g++ -std=c++14 /tmp/c14.cpp -o /tmp/c14 2> /tmp/c14.err
           say "    compile+link rc=$?"
