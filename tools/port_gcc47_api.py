@@ -39,12 +39,47 @@ import re
 import sys
 
 
-# Each rule is one upstream change. Three kinds, because 4.8 drifted in three
-# directions: it ADDED a parameter, REMOVED one, and RENAMED a field.
+# Each rule is one upstream change. FOUR kinds, because 4.8 drifted in four
+# directions: it ADDED a parameter, REMOVED one, RENAMED a field, and MOVED a
+# declaration between headers.
 #
-#   drop   4.8 has an extra argument 4.7 does not take
-#   add    4.8 removed an argument 4.7 still requires
-#   rename a plain token spelling changed
+#   drop    4.8 has an extra argument 4.7 does not take
+#   add     4.8 removed an argument 4.7 still requires
+#   rename  a plain token spelling changed
+#   include a declaration lives in a different header in 4.7
+#
+# THE `include` KIND WAS ADDED AFTER IT COST THE LEG WEEKS, and it is the most
+# dangerous of the four because it does not fail at compile time. gcc moved
+#
+#   get_hard_reg_initial_val   4.7.4: gcc/integrate.h    4.8.5: gcc/function.h
+#
+# and the aarch64 backend, written for 4.8, includes function.h and not
+# integrate.h. Transplanted into 4.7 nothing declares it, so C89 assumes it
+# returns `int`, and on LP64 the returned rtx is TRUNCATED TO 32 BITS and sign
+# extended back:
+#
+#   tem    = 0xfffffffff6b46500   <- what aarch64_return_addr handed back
+#   fndecl = 0x0000fffff78b6800   <- a valid pointer in the same frame
+#
+# Non-null, so it passes `if (tem == NULL)` in expand_builtin_frame_address,
+# and REG_P(tem) then dereferences it. The result was
+#
+#   libgcc/unwind-dw2.c:1490:44: internal compiler error: Segmentation fault
+#
+# which is a segfault in the COMPILER, a hundred objects into libgcc, with no
+# connection on its face to a missing include. The build reported "0 errors,
+# 471 warnings" and the one warning that mattered was
+#
+#   aarch64.c:3941: warning: implicit declaration of function
+#     'get_hard_reg_initial_val' [-Wimplicit-function-declaration]
+#
+# -- the ONLY implicit declaration in the whole compiler build. Diagnosed and
+# fixed 2026-07-26 in .github/workflows/gcc47-libgcc-ice.yml; libgcc.a then
+# built at 992,532 bytes.
+#
+# LESSON WORTH KEEPING: build the backend with
+# -Werror=implicit-function-declaration. Any other declaration that moved the
+# same way becomes a compile error instead of a garbage pointer.
 RULES = [
     dict(kind="drop", name="plus_constant", argc=3, index=0,
          note="4.8 added a leading mode; 4.7 infers it from the rtx operand"),
@@ -59,7 +94,28 @@ RULES = [
     dict(kind="rename", name="crtl->is_leaf", to="current_function_is_leaf",
          note="4.8 moved the flag into struct rtl_data; 4.7 has it as a "
               "standalone variable"),
+
+    dict(kind="include", name="get_hard_reg_initial_val",
+         header="integrate.h", after="function.h", file="aarch64.c",
+         note="4.8 moved the declaration to function.h, which the backend "
+              "includes; in 4.7 it lives in integrate.h, which it does not. "
+              "Without it C89 assumes an int return and TRUNCATES the rtx on "
+              "LP64 -- a non-null garbage pointer that segfaults the compiler "
+              "in expand_builtin_frame_address. A warning, not an error"),
 ]
+
+
+def apply_include(text, header, after, path, verbose):
+    """Insert #include "header" after the #include "after" line, once."""
+    inc = f'#include "{header}"'
+    if inc in text:
+        return text, 0
+    anchor = f'#include "{after}"'
+    if anchor not in text:
+        return text, 0
+    if verbose:
+        print(f"      {os.path.basename(path)}: adding {inc} after {anchor}")
+    return text.replace(anchor, anchor + "\n" + inc, 1), 1
 
 
 def split_args(text, start):
@@ -169,6 +225,8 @@ def main():
             print(f"  {name}: {rule['argc']} args -> {rule['argc']-1}")
         elif rule["kind"] == "add":
             print(f"  {name}: {rule['argc']} args -> {rule['argc']+1}")
+        elif rule["kind"] == "include":
+            print(f"  {name}: needs #include \"{rule['header']}\" in 4.7")
         else:
             print(f"  {name} -> {rule['to']}")
         print(f"    {rule['note']}")
@@ -183,6 +241,11 @@ def main():
             if rule["kind"] == "rename":
                 new, cnt = apply_rename(text, name, rule["to"], path,
                                         not args.quiet)
+            elif rule["kind"] == "include":
+                if rule.get("file") and fn != rule["file"]:
+                    continue
+                new, cnt = apply_include(text, rule["header"], rule["after"],
+                                         path, not args.quiet)
             else:
                 new, cnt = apply_rule(
                     text, name, rule["argc"], rule["index"], path,
@@ -208,6 +271,13 @@ def main():
                 if rule["kind"] == "rename":
                     if name in text:
                         bad.append(f"{fn}: {name} still present")
+                    continue
+                if rule["kind"] == "include":
+                    # The check is the inverse of the others: the symbol being
+                    # USED without its header present is the fault.
+                    if name in text and f'#include "{rule["header"]}"' not in text:
+                        bad.append(f'{fn}: uses {name} without #include '
+                                   f'"{rule["header"]}"')
                     continue
                 for m in re.finditer(r'\b' + re.escape(name) + r'\b\s*\(', text):
                     try:
