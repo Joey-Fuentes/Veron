@@ -140,6 +140,34 @@ jobs:
           mkdir -pv "$S"/{etc,var,tools,work} "$S"/usr/{bin,lib,sbin,include}
           for i in bin lib sbin; do ln -sv usr/$i "$S/$i"; done
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          # DEFINE THE BOX HERE, NOT LATER. The busybox applets are installed
+          # from inside it during the userland step, which runs well before the
+          # step that used to create this file -- so the run died with
+          #   ./box2.sh: No such file or directory
+          # A helper that only exists after its first use is a sequencing bug
+          # waiting for someone to move a step.
+          cat > box2.sh <<'EOS'
+          #!/bin/sh
+          # No /usr bind. No /etc bind. The sysroot IS the filesystem.
+          # PATH mirrors LFS's chroot: /usr/bin:/usr/sbin, plus /tools/bin.
+          set -eu
+          S=${S:?box2.sh: S not set}
+          exec bwrap \
+            --unshare-all --die-with-parent --new-session \
+            --clearenv \
+            --setenv PATH /usr/bin:/usr/sbin:/tools/bin \
+            --setenv HOME /work \
+            --setenv LC_ALL POSIX \
+            --setenv TERM dumb \
+            --setenv SOURCE_DATE_EPOCH 0 \
+            --bind "$S" / \
+            --proc /proc --dev /dev \
+            --tmpfs /tmp --tmpfs /run \
+            --chdir /work \
+            "$@"
+          EOS
+          chmod +x box2.sh
+
           # LFS chapter 4 sets PATH ONCE for the whole session. Run 2 set it in
           # two build steps out of six, so libstdc++'s configure could not find
           # aarch64-veron-linux-gnu-g++, autoconf FELL BACK TO THE HOST g++
@@ -531,27 +559,7 @@ jobs:
       - name: 'THE BOX: bind the sysroot as / and nothing else'
         run: |
           set -eu
-          cat > box2.sh <<'EOS'
-          #!/bin/sh
-          # No /usr bind. No /etc bind. The sysroot IS the filesystem.
-          # PATH mirrors LFS's chroot: /usr/bin:/usr/sbin, plus /tools/bin.
-          set -eu
-          S=${S:?box2.sh: S not set}
-          exec bwrap \
-            --unshare-all --die-with-parent --new-session \
-            --clearenv \
-            --setenv PATH /usr/bin:/usr/sbin:/tools/bin \
-            --setenv HOME /work \
-            --setenv LC_ALL POSIX \
-            --setenv TERM dumb \
-            --setenv SOURCE_DATE_EPOCH 0 \
-            --bind "$S" / \
-            --proc /proc --dev /dev \
-            --tmpfs /tmp --tmpfs /run \
-            --chdir /work \
-            "$@"
-          EOS
-          chmod +x box2.sh
+          # (box2.sh is written in the layout step, so every step can use it)
           echo "  sysroot: $(du -sh "$S" | cut -f1)"
           du -sh "$S"/* 2>/dev/null | sed 's/^/    /'
 
