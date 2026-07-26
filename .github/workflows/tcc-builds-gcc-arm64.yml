@@ -1,58 +1,53 @@
 name: tcc-builds-gcc-arm64
 
-# THE CONJUNCTION. Both halves are already proven. This joins them.
+# ============================================================================
+# CAN OUR tcc BUILD gcc 4.7.4 + 4.8.5's aarch64 BACKEND -- WITH NO HOST COMPILER?
+# ============================================================================
 #
-#   half 1  OUR arm64 tcc works.
-#           tcc-aarch64-probe: self-hosts to a byte-identical FIXPOINT on
-#           aarch64 (gen2 == gen3), make test passes, feat.c returns 6, kern.c
-#           returns 0. tcc-userland-arm64: it built a musl + BusyBox userland
-#           that boots as PID 1.
+# THIS JOB USED TO RUN ON A BARE RUNNER. It installed gcc, built tcc with it,
+# and then built gcc 4.7.4 in the same environment, where /usr/bin/gcc was on
+# PATH the entire time. Nothing in the run could distinguish "tcc built this"
+# from "something quietly fell back to the host compiler", because the host
+# compiler was always one silent fallback away. `/usr/bin/ld` appearing in the
+# stage-2 link errors is what that looks like from the outside.
 #
-#   half 2  gcc 4.7.4 CAN target arm64, once transplanted.
-#           gcc47-aarch64-backport arm C: 4.7.4 carrying 4.8.5's aarch64
-#           backend, built by the HOST gcc, configure rc=0, build rc=0,
-#           cc1 55,044,256 bytes, emits `stp x29, x30, [sp, -48]!`, runs,
-#           exit 55.
+# It now runs inside bwrap, and THE HOST COMPILERS ARE NOT IN THE BOX. Every
+# gcc/g++/cc/c++/cpp driver on the runner is bind-mounted to /dev/null and
+# /usr/lib/gcc -- where Ubuntu keeps cc1 and libgcc -- is masked with a tmpfs.
+# If anything above tcc reaches for a host compiler it now fails loudly instead
+# of succeeding quietly.
 #
-#   half 3  tcc CAN compile gcc 4.7.4's source.
-#           tcc-builds-gcc-x86 arm D: tcc built gmp, mpfr, mpc and then cc1 --
-#           0 error lines, 631 objects, all six generators -- and that cc1
-#           emitted -O2 x86-64 that ran and returned 55. It had to be x86:
-#           until the backport existed there was no arm64 4.7.4 to try.
+# WHAT IS STILL BORROWED, NAMED RATHER THAN IMPLIED
 #
-# So: tcc compiles this gcc, and this gcc targets arm64. Nobody has yet run
-# BOTH AT ONCE, natively. That is the entire content of this workflow.
+#   tcc itself   built OUTSIDE the box by the host gcc. This is the one hole
+#                and it CANNOT be closed here: invariant #1 forbids committing
+#                a binary, so a tcc must be derived, and the only thing that can
+#                derive one today is the host gcc. Deriving it from the seed is
+#                stage 3's open rung -- spikes/stage3/README.md, "the tcc rung
+#                is open". Until that lands, this job's claim is about
+#                CAPABILITY, not provenance.
+#   binutils     as, ld, ar, ranlib. gcc cannot be built without an assembler
+#                and a linker, and binutils is not known to be tcc-buildable.
+#   glibc        + its headers. Everything links against the runner's libc.
+#                Replacing it with a musl sysroot is step 2 of the ladder in
+#                GCC-BACKPORT.md.
+#   make, perl, m4, bison, flex, sh, coreutils, python3
+#                the build machinery and every configure. python3 is the
+#                transplant's dependency specifically.
+#   the kernel   a declared, trusted input -- TRUST-BOUNDARY.md.
 #
-# WHY ONE ARM AND NO CONTROLS. The controls have already been run and are named
-# above. Host gcc + backported 4.7.4 on aarch64 passed; tcc + 4.7.4 on x86
-# passed. This arm changes exactly one thing against each of them -- the
-# compiler in the first case, the architecture in the second -- so a failure is
-# already bracketed. Re-running either here would cost 40 minutes to reproduce
-# a known answer.
+# A sandbox does not make a dependency go away. It makes an UNDECLARED one fail
+# loudly instead of being quietly satisfied, so the bind list IS the
+# declaration and each future step is a deletion from it.
 #
-# READ A FAILURE BY WHERE IT LANDS. The inventory prints the files that carry a
-# real `error:`, and that list is the diagnosis:
+# THE TWO STAGES
+#   stage 1   tcc  -> gcc 4.7.4, c and c++, installed to /work/out
+#   stage 2   that -> gcc 4.7.4, c and c++, installed to /work/out2
+# Stage 1 asks whether tcc alone reaches a working g++ 4.7. Stage 2 asks the
+# reference chain's question -- a gcc building the C++-capable gcc -- and is
+# what would hand off to gcc 10. If they disagree, that is the finding.
 #
-#   errors in gcc/config/aarch64/*.c   -> the TRANSPLANT. Something in the
-#                                         backend's C that the host gcc accepted
-#                                         and tcc does not.
-#   errors in generic gcc/*.c          -> TCC's ARM64 CODEGEN, or a construct
-#                                         its x86 path handles and arm64 does
-#                                         not. Cross-check against the x86 run:
-#                                         those same files compiled clean there.
-#   errors in insn-*.c                 -> the GENERATORS ran but emitted C tcc
-#                                         cannot take. Note the generators are
-#                                         themselves tcc-built here.
-#   cc1 builds, fib != 55              -> the dangerous one. tcc miscompiled a
-#                                         compiler. Nothing above catches that;
-#                                         only running the output does.
-#
-# WHICH tcc. Default is OUR pinned tcc: sources/tcc.toml commit 5ec0e6f8 plus
-# the five-patch arm64 series, applied by its own apply-series.sh. That is the
-# tree the musl/BusyBox userland was built with, so "our arm64 tcc" means this
-# one. `tcc_source: mob` switches to mob HEAD instead -- worth a second run,
-# since mob has since absorbed the assembler and would tell us whether the
-# series matters for gcc at all, but it is NOT the default and is not a matrix.
+# ============================================================================
 
 on:
   push:
@@ -67,9 +62,7 @@ on:
 
 # A NEW PUSH MUST NOT KILL A RUNNING BUILD. Cancelling in flight is right for a
 # fast check and wrong for a multi-hour box: one push to fix a typo cancelled
-# four in-flight hermetic runs and restarted them from zero. Long jobs queue
-# instead. (The setting is spelled out below rather than named here, because a
-# key:value written in prose is what a later grep will match first.)
+# four in-flight hermetic runs and restarted them from zero. Long jobs queue.
 concurrency:
   group: tcc-builds-gcc-arm64-${{ github.ref }}
   cancel-in-progress: false
@@ -80,13 +73,11 @@ env:
   TCC_SOURCE: ${{ github.event.inputs.tcc_source || 'pinned-series' }}
 
 jobs:
-  conjunction:
-    name: 'arm64 tcc -> arm64 gcc 4.7.4'
+  boxed:
+    name: 'arm64 tcc -> arm64 gcc 4.7.4, boxed'
     runs-on: ubuntu-24.04-arm
-    # 150 -> 240: this now builds the runtime and the C++ front end as well,
-    # where before it stopped at all-gcc with C only.
-    # 240 -> 350. Two full gcc builds now, and stage 2 also builds libstdc++.
-    # 360 is the public-runner ceiling.
+    # Two full gcc builds, stage 2 also builds libstdc++ and rebuilds
+    # gmp/mpfr/mpc. 360 is the public-runner ceiling.
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v5
@@ -103,69 +94,246 @@ jobs:
       - name: Install
         run: |
           sudo apt-get update
+          # These land in the runner's /usr, which the box binds READ-ONLY.
+          # gcc is here to build tcc OUTSIDE the box and for no other purpose --
+          # it is masked inside.
           sudo apt-get install -y --no-install-recommends \
             curl git bzip2 xz-utils gcc make bison flex texinfo m4 perl \
-            file binutils
+            file binutils bubblewrap python3
 
-      - name: 'Build OUR arm64 tcc'
+      - name: 'Let bwrap create a user namespace'
         run: |
           set -eu
+          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor, so
+          # bwrap otherwise fails with "setting up uid map: Permission denied".
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
+            sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+            include if exists <local/bwrap>
+          }
+          EOF
+            sudo systemctl reload apparmor || sudo service apparmor reload || true
+            echo "  apparmor profile installed for bwrap"
+          else
+            echo "  unprivileged userns already permitted"
+          fi
+
+      - name: 'Build OUR arm64 tcc -- OUTSIDE the box, by the host gcc'
+        run: |
+          set -eu
+          # THE ONE DECLARED HOLE. Read the header: a tcc must be derived, the
+          # only thing that can derive one today is the host gcc, and reaching
+          # it from the seed is stage 3's open rung. Everything AFTER this step
+          # happens with no host compiler in scope.
+          #
           # FULL CLONE, not --depth 1. apply-series.sh locates its base by
           # matching the patches' index pre-image blobs against history, so a
           # shallow clone leaves it nothing to search and it falls back to a
-          # date guess -- which is the wrong tree and fails on tccasm.c:1178.
-          git clone -q git://repo.or.cz/tinycc.git tccsrc \
-            || git clone -q https://repo.or.cz/tinycc.git tccsrc
+          # date guess -- the wrong tree, failing on tccasm.c:1178.
+          mkdir -p work
+          git clone -q git://repo.or.cz/tinycc.git work/tccsrc \
+            || git clone -q https://repo.or.cz/tinycc.git work/tccsrc
 
           if [ "$TCC_SOURCE" = "pinned-series" ]; then
             echo "  --- applying the arm64 series (sources/tcc.toml pin) ---"
-            bash spikes/stage3/patches/tcc-arm64-asm/apply-series.sh tccsrc \
+            bash spikes/stage3/patches/tcc-arm64-asm/apply-series.sh work/tccsrc \
               | sed 's/^/  /'
           else
             echo "  --- mob HEAD, series NOT applied ---"
           fi
 
-          cd tccsrc
+          cd work/tccsrc
           echo "  tcc tree : $(git rev-parse HEAD)"
           echo "  tcc date : $(git log -1 --format=%cd --date=short)"
-          ./configure --cc=gcc > /dev/null
+          # --prefix matters now: inside the box this tree lives at
+          # /work/tccsrc, and tcc bakes its configured prefix into its search
+          # paths. Building it with the path it will be USED at avoids a tcc
+          # that looks for its own includes somewhere that does not exist.
+          ./configure --cc=gcc --prefix=/work/tccsrc > /dev/null
           make -j"$(nproc)" > /dev/null
           ./tcc -v
           ./tcc -v 2>&1 | grep -q AArch64 || { echo "  tcc is not an AArch64 build"; exit 1; }
-          echo "TCC=$PWD/tcc"  >> "$GITHUB_ENV"
-          echo "TCCDIR=$PWD"   >> "$GITHUB_ENV"
 
-      - name: 'Precondition: does this tcc handle what gcc 4.7 needs?'
+      - name: 'THE BOX: one definition, and no host compiler in it'
         run: |
           set -eu
-          # FATAL ON PURPOSE. feat.c exercises the C constructs gcc 4.7's source
-          # uses -- struct return by value, varargs, function pointers, 64-bit
-          # ints, floats, aggregate initialisers -- and returns 6. Finding out
-          # it does not 40 minutes into a gcc build would waste the run and
-          # produce an inventory nobody could read.
-          P=spikes/stage4/probes
-          "$TCC" -B"$TCCDIR" -o /tmp/feat "$P/feat.c"
-          set +e; /tmp/feat; rc=$?; set -e
-          echo "  gcc-feature probe exit=$rc (expect 6)"
-          [ "$rc" = 6 ] || { echo "  FATAL: this tcc does not cover gcc 4.7's C"; exit 1; }
+          mkdir -p work/status
+          # ONE DEFINITION, used by every invocation including the smoke test.
+          # hermetic-enumerate-host lost a run to two copies of a bind list that
+          # had drifted apart: the test's copy was missing `--symlink usr/lib
+          # /lib`, /bin/echo failed with "No such file or directory", and the
+          # cause was the ELF interpreter being unresolvable rather than echo
+          # being absent. A smoke test that does not exercise the same box the
+          # build runs in is not a smoke test.
+          cat > box.sh <<'EOS'
+          #!/bin/sh
+          # The canonical sandbox for tcc-builds-gcc-arm64.
+          set -eu
+          W=${W:?box.sh: W (work dir) not set}
+          REPO=${REPO:?box.sh: REPO (checkout) not set}
 
-          # NOT fatal. kern.c is inline asm, which cc1's own sources barely use;
-          # it matters for musl and the kernel, not for building a compiler.
-          # Reported so the log says which tcc this was.
-          set +e
-          "$TCC" -B"$TCCDIR" -o /tmp/kern "$P/kern.c" 2>&1 | sed 's/^/    /'
-          /tmp/kern; echo "  kernel-style probe exit=$? (0 = inline asm works)"
-          set -e
+          LIB64=""
+          # aarch64 has no /lib64; x86_64 does. Emit the symlink only if the
+          # host actually has one, so this script is portable across both.
+          [ -d /lib64 ] && LIB64="--symlink usr/lib64 /lib64"
 
-      - name: 'Fetch gcc 4.7.4 and 4.8.5'
+          # MASK EVERY HOST COMPILER DRIVER. Built by scanning rather than from
+          # a hand-written list, because a hand-written list silently misses
+          # gcc-14 the day the runner image moves and the box then has a
+          # compiler in it that nobody declared.
+          MASK=""
+          for c in $(ls /usr/bin 2>/dev/null | grep -E \
+                     '^(cc|c\+\+|cpp|gcc|g\+\+|clang|clang\+\+)(-[0-9.]+)?$|^[a-z0-9_]+-linux-gnu-(gcc|g\+\+|cpp)(-[0-9.]+)?$'); do
+            MASK="$MASK --ro-bind /dev/null /usr/bin/$c"
+          done
+          # /usr/lib/gcc is where Ubuntu keeps cc1, cc1plus and libgcc. Masking
+          # the drivers without masking this leaves the actual compiler proper
+          # sitting in the box, reachable by anything that knows the path.
+          [ -d /usr/lib/gcc ] && MASK="$MASK --tmpfs /usr/lib/gcc"
+          [ -d /usr/libexec/gcc ] && MASK="$MASK --tmpfs /usr/libexec/gcc"
+
+          exec bwrap \
+            --unshare-all --die-with-parent --new-session \
+            --clearenv \
+            --setenv PATH /usr/bin:/bin:/usr/sbin:/sbin \
+            --setenv HOME /work \
+            --setenv LC_ALL C \
+            --setenv TERM dumb \
+            --setenv SOURCE_DATE_EPOCH 0 \
+            --setenv TCC /work/tccsrc/tcc \
+            --setenv TCCDIR /work/tccsrc \
+            --ro-bind /usr /usr \
+            --ro-bind /etc /etc \
+            --ro-bind "$REPO" /repo \
+            --symlink usr/bin /bin \
+            --symlink usr/sbin /sbin \
+            --symlink usr/lib /lib \
+            $LIB64 \
+            $MASK \
+            --proc /proc --dev /dev \
+            --tmpfs /tmp --tmpfs /run \
+            --bind "$W" /work \
+            --chdir /work \
+            "$@"
+          EOS
+          chmod +x box.sh
+
+          # The bind list as prose, next to the script, so a change to one
+          # without the other is visible in review.
+          cat > bind-list.txt <<'EOF'
+          read-only:
+            /usr      host tools: binutils (as, ld, ar, ranlib), make, perl,
+                      python3, bison, flex, m4, sh, coreutils, glibc + headers
+                      -- MINUS every C/C++ compiler driver, which is masked
+            /etc      ld.so.cache, ld.so.conf*, passwd, group, alternatives
+            /repo     OUR OWN SOURCE: backport-aarch64.sh, expand_int_iterators.py,
+                      port_gcc47_api.py, the probes. Bound at its real relative
+                      layout because the transplant locates its tools with
+                      dirname($0)/../../.., which needs the repo shape.
+          masked (present on the host, deliberately NOT in the box):
+            /usr/bin/{cc,gcc,g++,c++,cpp,clang,...}   -> /dev/null
+            /usr/lib/gcc, /usr/libexec/gcc            -> empty tmpfs
+                      This is the whole point. tcc is the only compiler here.
+          writable:
+            /work     tcc, sources, build trees, outputs -- nothing else
+          synthetic:
+            /proc /dev  minimal, from bwrap
+            /tmp /run   tmpfs, empty
+          symlinks:
+            /bin /sbin /lib [/lib64] -> usr/*   (the /lib one is load-bearing:
+                                                 it is where the ELF interpreter
+                                                 lives)
+          namespaces:
+            all unshared -- NO NETWORK, no host pid/ipc/uts
+          environment:
+            PATH HOME LC_ALL TERM SOURCE_DATE_EPOCH TCC TCCDIR, nothing inherited
+          NOT isolated, by design:
+            the kernel and the hardware -- see TRUST-BOUNDARY.md
+          EOF
+          sed 's/^/  /' bind-list.txt
+
+      - name: 'Prove the box before spending an hour in it'
         run: |
           set -eu
+          # Same script the build uses, so a pass here means the build's
+          # invocation is sound. The last check is the one this whole rewrite
+          # exists for and it is FATAL: if a host compiler can still compile
+          # inside the box, every claim the run goes on to make is unfounded.
+          W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh -c '
+            set -eu
+            echo "  arch    : $(uname -m)"
+            echo "  loader  : $(ls /lib/ld-linux-* 2>/dev/null || echo MISSING)"
+            for d in /usr /etc /work /repo /proc /dev /tmp; do
+              [ -e "$d" ] || { echo "  MISSING BIND: $d"; exit 1; }
+            done
+            echo "  binds   : all present"
+            [ -w /work ] || { echo "  /work is not writable"; exit 1; }
+            touch /work/.boxtest && rm -f /work/.boxtest
+            echo "  /work   : writable"
+            # ACTUALLY TRY IT. `test -w` answers a permission question, not a
+            # mount question, and a read-only BIND is enforced by the kernel at
+            # write time. Only a write attempt distinguishes them.
+            if touch /repo/.wtest 2>/dev/null; then
+              rm -f /repo/.wtest; echo "  /repo IS WRITABLE -- it must not be"; exit 1
+            fi
+            echo "  /repo   : read-only"
+            if [ -e /usr/bin/curl ] && curl -s --max-time 3 https://example.com >/dev/null 2>&1; then
+              echo "  NETWORK REACHABLE -- the box is not sealed"; exit 1
+            fi
+            echo "  network : unreachable, as intended"
+
+            echo "  --- THE POINT: is there a host compiler in here? ---"
+            printf "int main(void){return 0;}\n" > /tmp/hostprobe.c
+            found=""
+            for c in cc gcc g++ c++ cpp clang; do
+              command -v "$c" >/dev/null 2>&1 || continue
+              if "$c" /tmp/hostprobe.c -o /tmp/hostprobe 2>/dev/null && [ -x /tmp/hostprobe ]; then
+                found="$found $c"
+              fi
+              rm -f /tmp/hostprobe
+            done
+            if [ -n "$found" ]; then
+              echo "  HOST COMPILER STILL USABLE:$found"
+              echo "  The mask did not take. Nothing this job claims would mean"
+              echo "  anything, so it stops here."
+              exit 1
+            fi
+            echo "  host cc : masked -- none of cc/gcc/g++/c++/cpp/clang can compile"
+            if [ -d /usr/lib/gcc ]; then
+              echo "  /usr/lib/gcc entries: $(ls /usr/lib/gcc | wc -l) (expect 0)"
+            fi
+
+            echo "  --- and is OURS usable? ---"
+            "$TCC" -B"$TCCDIR" -o /tmp/tccprobe /repo/spikes/stage4/probes/feat.c
+            # feat.c RETURNS 6 ON SUCCESS. Under set -e that terminates the
+            # script and the step fails at its success condition -- the exact
+            # trap that cost three sandboxed arms a run in GCC-BACKPORT.md,
+            # where the fib test returns 55.
+            set +e
+            /tmp/tccprobe; rc=$?
+            set -e
+            echo "  tcc     : compiled, linked and ran, exit=$rc (expect 6)"
+            [ "$rc" = 6 ] || { echo "  FATAL: our tcc cannot cover gcc 4.7'"'"'s C"; exit 1; }
+          '
+
+      - name: 'Fetch sources OUTSIDE the box (network is not a build dependency)'
+        run: |
+          set -eu
+          # Provenance and hermeticity are separate criteria. The fetch is made
+          # verifiable by hashes; the BUILD is made verifiable by having no
+          # network at all. Conflating them means either a sandbox with a hole
+          # in it or a build that cannot start.
+          #
           # fetch-pinned.sh with "-" for the hash PRINTS the sha256 it got
           # instead of verifying one. That is the honest intermediate state:
           # invariant #6 wants these pinned in sources/, there is no
           # sources/gcc.toml yet, and inventing a hash would be worse than not
-          # having one. Read the two hashes out of this step's log and pin them.
-          F=tools/fetch-pinned.sh
+          # having one. Read the two hashes out of this log and pin them.
+          cd work
+          F=../tools/fetch-pinned.sh
           for v in 4.7.4 4.8.5; do
             d="g${v//./}"
             echo "  --- gcc $v -> $d ---"
@@ -175,204 +343,157 @@ jobs:
           done
           echo "  4.7.4 aarch64 mentions in config.gcc (expect 0): $(grep -c aarch64 g474/gcc/config.gcc || true)"
 
+          for u in "$GNU/gmp/gmp-6.2.1.tar.xz" "$GNU/mpfr/mpfr-4.1.0.tar.xz" "$GNU/mpc/mpc-1.2.1.tar.gz"; do
+            n=$(basename "$u"); curl -sSL -o "$n" "$u"
+            d=$(echo "$n" | sed 's/-[0-9].*//')
+            mkdir -p "$d" && tar xf "$n" -C "$d" --strip-components=1
+            echo "  unpacked $n -> $d/"
+          done
+
       - name: 'Transplant 4.8.5''s aarch64 backend into 4.7.4'
         run: |
           set -eu
-          # Same script the host-gcc arm used, unchanged. If the transplant
-          # itself has drifted, this fails in seconds by sourcing config.gcc
-          # rather than 40 minutes later at configure-gcc.
-          bash spikes/stage4/probes/backport-aarch64.sh g474 g485
+          # INSIDE the box. It needs python3, which is bound and declared, and
+          # it locates its own tools relative to the script, which is why /repo
+          # keeps the repository's shape.
+          W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh -c \
+            'cd /work && bash /repo/spikes/stage4/probes/backport-aarch64.sh g474 g485'
 
-      - name: 'Prerequisites, built by tcc'
+      - name: 'PREREQUISITES + STAGE 1: tcc builds gcc 4.7.4, c and c++'
         continue-on-error: true
         run: |
+          set -eu
+          # THE WHOLE PHASE IN ONE SCRIPT, run inside the box. Splitting it
+          # across steps would mean re-entering the sandbox repeatedly with the
+          # bind list restated each time, which is the drift that cost
+          # hermetic-enumerate-host a run.
+          #
+          # STATUS GOES TO FILES, NOT $GITHUB_ENV. The box has --clearenv and no
+          # access to the runner's environment, so the old
+          # `echo RC=$rc >> $GITHUB_ENV` cannot work here. It also could not
+          # distinguish "never ran" from "ran and failed" -- RESULT printed
+          # `stage 2 rc : ?` for a step that had died before writing it. A file
+          # per phase in /work/status is read by RESULT and says which.
+          cat > work/p1.sh <<'EOS'
           set -u
           set +e
-          # Already done once under tcc on aarch64 (gcc-entrypoint-probe) and
-          # once on x86 (tcc-builds-gcc-x86 arm D, all three rc=0). Repeated
-          # here because cc1 links them: a host-built libgmp.a inside a
-          # tcc-built cc1 would make the claim smaller than it looks.
-          # WHY STAGE 2 REBUILDS THESE. Run 81825486896 showed the archives tcc
-          # produces link fine under tcc's own linker and not under GNU ld:
-          #   libmpfr.a(add1.o): undefined reference to `alloca'
-          # Not yet chased down or written up anywhere; noted here so the next
-          # reader knows why the rebuild step below exists.
-          mkdir -p prefix
-          echo "  --- gmp 6.2.1 (--disable-assembly: gmp ships per-uarch asm) ---"
-          curl -sSL -o gmp.tar.xz "$GNU/gmp/gmp-6.2.1.tar.xz"
-          mkdir -p gmp && tar xf gmp.tar.xz -C gmp --strip-components=1
+          cd /work
+          NP=$(nproc)
+          mkdir -p status prefix
+          say() { printf '%s\n' "$*"; }
+
+          say "  --- gmp 6.2.1 (--disable-assembly: gmp ships per-uarch asm) ---"
           ( cd gmp
             ./configure CC="$TCC -B$TCCDIR" --disable-shared --disable-assembly \
-              --prefix="$PWD/../prefix" > conf.log 2>&1
-            echo "    configure rc=$?"
-            timeout 1800 make -j"$(nproc)" > build.log 2>&1
-            echo "    make rc=$?"
-            make install > /dev/null 2>&1 && echo "    INSTALLED" \
-              || { echo "    NOT INSTALLED -- tail:"; tail -8 build.log | sed 's/^/      /'; } )
+              --prefix=/work/prefix > conf.log 2>&1
+            say "    configure rc=$?"
+            timeout 1800 make -j"$NP" > build.log 2>&1
+            say "    make rc=$?"
+            make install > /dev/null 2>&1 && say "    INSTALLED" \
+              || { say "    NOT INSTALLED -- tail:"; tail -8 build.log | sed 's/^/      /'; } )
 
-          for p in mpfr-4.1.0 mpc-1.2.1; do
-            case $p in
-              mpfr*) u="$GNU/mpfr/$p.tar.xz" ;;
-              mpc*)  u="$GNU/mpc/$p.tar.gz"  ;;
-            esac
-            echo "  --- $p ---"
-            curl -sSL -o "$p.tar" "$u"
-            mkdir -p "$p" && tar xf "$p.tar" -C "$p" --strip-components=1 2>/dev/null
+          for p in mpfr mpc; do
+            say "  --- $p ---"
             ( cd "$p"
               ./configure CC="$TCC -B$TCCDIR" --disable-shared \
-                --with-gmp="$PWD/../prefix" --prefix="$PWD/../prefix" > conf.log 2>&1
-              echo "    configure rc=$?"
-              timeout 1200 make -j"$(nproc)" > build.log 2>&1
-              echo "    make rc=$?"
-              make install > /dev/null 2>&1 && echo "    INSTALLED" \
-                || { echo "    NOT INSTALLED -- tail:"; tail -8 build.log | sed 's/^/      /'; } )
+                --with-gmp=/work/prefix --prefix=/work/prefix > conf.log 2>&1
+              say "    configure rc=$?"
+              timeout 1200 make -j"$NP" > build.log 2>&1
+              say "    make rc=$?"
+              make install > /dev/null 2>&1 && say "    INSTALLED" \
+                || { say "    NOT INSTALLED -- tail:"; tail -8 build.log | sed 's/^/      /'; } )
           done
-          echo "  prefix/lib:"
+          say "  prefix/lib:"
           # NOT `ls | sed || echo`: a pipeline exits with sed's status, so the
           # fallback never fires and an absent directory prints nothing at all.
           if [ -d prefix/lib ] && [ -n "$(ls -A prefix/lib 2>/dev/null)" ]; then
             ls prefix/lib | sed 's/^/    /'
           else
-            echo "    (empty -- nothing installed here)"
+            say "    (empty -- nothing installed here)"
           fi
 
-      - name: 'CONFIGURE'
-        continue-on-error: true
-        run: |
-          set -u
+          # ---------------------------------------------------------------- configure
+          # No CXX. All of gcc 4.7 is C, INCLUDING cc1plus, which is the whole
+          # reason 4.7 is the entry point -- so a C compiler yields a C++98
+          # compiler. The -std=gnu++98 workaround the host-gcc arm needs exists
+          # only because 4.8.5 is built by a modern g++.
+          #
+          # --enable-languages=c,c++ has a green run behind it: 81822379198 got
+          # make rc=0, cc1plus BUILT, libgcc.a 989,540. A later revision cut it
+          # back to `c` and threw that away.
+          #
+          # --disable-bootstrap: with it on, stage2 would be built by the stage1
+          # xgcc and tcc's contribution would be discarded.
+          say ""
+          say "  === STAGE 1: configure ==="
           mkdir -p build && cd build
-          set +e
-          # No CXX here, unlike the host-gcc arm. 4.7.4 is C, tcc is a C
-          # compiler, and the -std=gnu++98 workaround that arm needed exists
-          # only because 4.8.5 is built by a modern g++. All of gcc 4.7 --
-          # INCLUDING cc1plus, its C++ front end -- is C, which is the whole
-          # reason 4.7 is the entry point.
-          #
-          # --enable-languages=c,c++, AND IT IS NO LONGER AN UNMEASURED ASK.
-          # The previous revision cut this back to `c` on the argument that
-          # live-bootstrap has gcc 4.0.4 (a gcc) produce the C++-capable
-          # compiler, so asking tcc for it directly was a departure with no
-          # evidence behind it. That argument was sound when it was written and
-          # it is now spent: run 81822379198 ASKED tcc for c,c++ and got it --
-          #     make rc=0   cc1plus BUILT   libgcc.a 989,540 bytes
-          # -- and cutting back to `c` threw that measurement away. A departure
-          # with a green run behind it is a result, not a risk.
-          #
-          # So this arm now answers BOTH questions, in one variable each:
-          #   stage 1  tcc  -> gcc 4.7.4, c,c++   <- this step. Does tcc alone
-          #                                          yield a g++ 4.7 that links?
-          #   stage 2  that -> gcc 4.7.4, c,c++   <- STAGE 2 below. The
-          #                                          reference chain's shape,
-          #                                          and what feeds gcc 10.
-          # Neither subsumes the other and both are cheap: stage 1's full c,c++
-          # build was ~100 s of wall clock.
-          #
-          # --disable-bootstrap: with it on, stage2 would be built by the
-          # stage1 xgcc and tcc's contribution would be discarded.
-          "../g474/configure" \
+          "/work/g474/configure" \
             CC="$TCC -B$TCCDIR" \
             --build=aarch64-unknown-linux-gnu \
             --host=aarch64-unknown-linux-gnu \
             --target=aarch64-unknown-linux-gnu \
-            --prefix="$PWD/../out" --enable-languages=c,c++ \
+            --prefix=/work/out --enable-languages=c,c++ \
             --disable-multilib --disable-bootstrap --disable-werror \
             --disable-libsanitizer --disable-libgomp --disable-libquadmath \
             --disable-libssp --disable-libatomic --disable-shared \
-            --with-gmp="$PWD/../prefix" \
-            --with-mpfr="$PWD/../prefix" \
-            --with-mpc="$PWD/../prefix" \
+            --with-gmp=/work/prefix \
+            --with-mpfr=/work/prefix \
+            --with-mpc=/work/prefix \
             > conf.log 2>&1
           rc=$?
-          echo "  configure rc=$rc"
-          echo "CONF_RC=$rc" >> "$GITHUB_ENV"
+          say "  configure rc=$rc"
+          echo "$rc" > /work/status/stage1-configure.rc
           if [ "$rc" -ne 0 ]; then
-            echo "  --- configure tail ---"
+            say "  --- configure tail ---"
             tail -30 conf.log | sed 's/^/    /'
             for cl in gcc/config.log config.log; do
-              [ -f "$cl" ] && { echo "  --- $cl (tail) ---"; tail -25 "$cl" | sed 's/^/    /'; break; }
+              [ -f "$cl" ] && { say "  --- $cl (tail) ---"; tail -25 "$cl" | sed 's/^/    /'; break; }
             done
+            exit 0
           fi
 
-      - name: 'BUILD'
-        continue-on-error: true
-        run: |
-          set -u
-          cd build
-          set +e
+          # ---------------------------------------------------------------- build
           # MAKEINFO=true: 2026's makeinfo rejects 2012's texinfo and would
           # report failure over documentation. -Otarget: with -j the output of
           # parallel compiles interleaves and the first error lands next to
-          # another target's warnings. -k: gather the whole inventory, not the
-          # first stop.
-          # all-gcc -> all. THIS WORKFLOW'S OWN CLOSING TEXT NAMED BOTH OF THE
-          # THINGS THIS CHANGES:
-          #   "--enable-languages=c only, so g++ 4.7 -- the reason 4.7 was
-          #    chosen -- is untested. And all-gcc stops before libgcc, so xgcc
-          #    still cannot link a program."
-          # Both were forced, not chosen: the transplanted compiler segfaulted
-          # in libgcc every time, so there was no point asking for the runtime
-          # or for C++. On 2026-07-26 that ICE was diagnosed as a declaration
-          # that moved headers between 4.7 and 4.8 (get_hard_reg_initial_val,
-          # integrate.h -> function.h) and tools/port_gcc47_api.py now adds the
-          # include. The host-gcc arm of gcc47-aarch64-backport then completed a
-          # full build: libgcc.a 648,788 bytes, xgcc linking and running a
-          # program to exit 55.
-          #
-          # So the question here becomes the real one: can OUR tcc build that
-          # same complete compiler -- runtime, driver and C++ front end.
-          #
-          # --disable-bootstrap STAYS, and for the reason already written above:
-          # with bootstrap on, stage2 is built by the stage1 xgcc and tcc's
-          # contribution is discarded. That argument is untouched by any of this.
-          timeout 7200 make -k -j"$(nproc)" -Otarget MAKEINFO=true all > build.log 2>&1
+          # another target's warnings. -k: gather the whole inventory.
+          say ""
+          say "  === STAGE 1: build ==="
+          timeout 7200 make -k -j"$NP" -Otarget MAKEINFO=true all > build.log 2>&1
           rc=$?
+          echo "$rc" > /work/status/stage1-build.rc
           case "$rc" in
-            0)   echo "  make rc=0 -- completed" ;;
-            124) echo "  make rc=124 -- TIMED OUT after 7200s" ;;
-            *)   echo "  make rc=$rc -- failed" ;;
+            0)   say "  make rc=0 -- completed" ;;
+            124) say "  make rc=124 -- TIMED OUT after 7200s" ;;
+            *)   say "  make rc=$rc -- failed" ;;
           esac
-          echo "BUILD_RC=$rc" >> "$GITHUB_ENV"
-          # INSTALL IT. Stage 2 needs a usable gcc, not a build tree -- and an
-          # installed tree is also the only place a driver finds its own
-          # headers and libraries without being told where they are. The C++
-          # gate used to run against `-B build/gcc/` on an uninstalled tree and
-          # reported
-          #   fatal error: string: No such file or directory
-          # which said nothing about whether libstdc++ existed.
-          #
           # INSTALL EVEN ON FAILURE. `make -k` gathers the whole inventory, so a
           # non-zero rc can mean one late target died with everything the gate
-          # needs already built. Gating only on rc=0 threw a usable compiler
-          # away and reported "did not install", which is a different and wronger
-          # answer than "installed, and here is what is missing".
+          # needs already built.
           make install > install.log 2>&1
-          echo "  install rc=$?"
-          ls "$PWD/../out/bin" 2>/dev/null | sed 's/^/    /'
-          echo "  --- the C++ pieces stage 1 was asked for ---"
-          echo "    cc1plus     : $( [ -x gcc/cc1plus ] && echo BUILT || echo no)"
-          echo "    out/bin/g++ : $( [ -x "$PWD/../out/bin/g++" ] && echo present || echo missing)"
-          LS1=$(find "$PWD/../out" -name 'libstdc++.*' 2>/dev/null | head -1)
-          echo "    libstdc++   : ${LS1:-NOT INSTALLED}"
-          H1=$(find "$PWD/../out" -name string -path '*c++*' 2>/dev/null | head -1)
-          echo "    <string> at : ${H1:-NOT FOUND}"
-          # ------------------------------------------------------------------
-          # THE SOFT-FLOAT TF ROUTINES, CHECKED BY NAME.
-          #
-          # aarch64's `long double` is IEEE binary128 and the hardware has none,
-          # so every comparison on one is a call into libgcc's soft-fp. Run
-          # 81825486896 produced a clean libgcc.a and then could not link mpfr:
-          #   undefined reference to `__gttf2' `__lttf2' `__eqtf2' `__letf2'
-          # A libgcc missing these still builds, still installs, and still links
-          # anything that avoids long double -- which the fib(10) claim does.
-          # So the claim passed while this was broken, and only a named symbol
-          # check can tell the two apart.
-          # ------------------------------------------------------------------
-          echo "  --- libgcc: the soft-float binary128 routines aarch64 needs ---"
-          LGA=$(find "$PWD/../out" "$PWD" -name libgcc.a 2>/dev/null | head -1)
+          say "  install rc=$?"
+          ls /work/out/bin 2>/dev/null | sed 's/^/    /'
+          say "  --- the C++ pieces stage 1 was asked for ---"
+          say "    cc1plus     : $( [ -x gcc/cc1plus ] && echo BUILT || echo no)"
+          say "    out/bin/g++ : $( [ -x /work/out/bin/g++ ] && echo present || echo missing)"
+          LS1=$(find /work/out -name 'libstdc++.*' 2>/dev/null | head -1)
+          say "    libstdc++   : ${LS1:-NOT INSTALLED}"
+          H1=$(find /work/out -name string -path '*c++*' 2>/dev/null | head -1)
+          say "    <string> at : ${H1:-NOT FOUND}"
+
+          # THE SOFT-FLOAT TF ROUTINES, CHECKED BY NAME. aarch64's long double
+          # is IEEE binary128 with no hardware for it, so every comparison on
+          # one is a call into libgcc's soft-fp. Run 81866936411 produced a
+          # clean libgcc.a that had none of them, because the config.host splice
+          # let a catch-all arm shadow the real dispatch -- and a libgcc missing
+          # these still builds, still installs, and still links anything that
+          # avoids long double, which the fib(10) claim does.
+          say "  --- libgcc: the soft-float binary128 routines aarch64 needs ---"
+          LGA=$(find /work/out /work/build -name libgcc.a 2>/dev/null | head -1)
           if [ -z "$LGA" ]; then
-            echo "    libgcc.a NOT FOUND -- nothing to check"
+            say "    libgcc.a NOT FOUND -- nothing to check"
           else
-            echo "    libgcc.a : $LGA ($(wc -c < "$LGA" | tr -d ' ') bytes)"
+            say "    libgcc.a : $LGA ($(wc -c < "$LGA" | tr -d ' ') bytes)"
             MISS=0
             for s in __gttf2 __lttf2 __eqtf2 __letf2 __getf2 __addtf3 __multf3 __extenddftf2; do
               if nm --defined-only "$LGA" 2>/dev/null | grep -qw "$s"; then
@@ -382,105 +503,63 @@ jobs:
                 MISS=$((MISS+1))
               fi
             done
-            echo "    missing of 8 : $MISS"
+            say "    missing of 8 : $MISS"
+            echo "$MISS" > /work/status/tf-missing.count
             if [ "$MISS" -gt 0 ]; then
-              echo "    ^^ soft-fp did not build. Run 81866936411 traced this to"
-              echo "       the libgcc/config.host splice: the catch-all arm"
-              echo "       aarch64*-*-*) was inserted ahead of aarch64*-*-linux*)"
-              echo "       and a shell case takes the FIRST match, so the"
-              echo "       dispatch set no tmake_file at all. The transplant now"
-              echo "       classifies the arms and PROVES the result by sourcing"
-              echo "       config.host -- read its output above before looking"
-              echo "       anywhere else."
+              say "    ^^ soft-fp did not build. Read the transplant's config.host"
+              say "       proof above before looking anywhere else."
             fi
-            # ar t, not nm: names the object files soft-fp actually produced.
-            echo "    TFmode objects in the archive: $(ar t "$LGA" 2>/dev/null | grep -cE 'tf2|tf3' || true)"
+            say "    TFmode objects in the archive: $(ar t "$LGA" 2>/dev/null | grep -cE 'tf2|tf3' || true)"
           fi
-          echo "  build.log: $(wc -l < build.log) lines"
+          say "  build.log: $(wc -l < build.log) lines"
+          exit 0
+          EOS
+          W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh /work/p1.sh
 
       - name: 'STAGE 2: the tcc-built gcc rebuilds gcc 4.7.4 with c,c++'
         continue-on-error: true
         run: |
+          set -eu
+          cat > work/p2.sh <<'EOS'
           set -u
           set +e
-          # THIS IS THE RUNG 4.7 EXISTS FOR, AND IT IS A GCC THAT BUILDS IT.
-          #
-          #   tcc  -> gcc 4.7.4, C only          stage 1, above
-          #   that -> gcc 4.7.4, c and c++       HERE
-          #        -> g++ 4.7                    a C++98 compiler built from C
-          #
-          # live-bootstrap has gcc 4.0.4 build gcc 4.7.4 for exactly this reason:
-          # the C++-capable compiler is produced by a gcc. Veron deletes the 4.0.4
-          # rung -- tcc-builds-gcc-x86 measured that as environmental, not a
-          # compiler limit -- but it keeps the shape. What it must NOT do is ask
-          # tcc for the C++ compiler directly, which is an unmeasured departure.
-          #
-          # Note what is and is not tcc's work here. cc1plus is gcc 4.7's C++ FRONT
-          # END and is written in C, so tcc could compile it. libstdc++ is the C++
-          # LIBRARY, written in C++, and is built by the xg++ the build just
-          # produced -- tcc never touches it either way.
-          #
-          # STAGE 1 NOW ASKS TCC FOR c,c++ AS WELL, so this stage is no longer
-          # the only route to a g++ 4.7 and is not a substitute for it. They are
-          # two different questions and the run answers both:
-          #   stage 1  can tcc alone reach a working g++ 4.7?
-          #   stage 2  does the reference chain's shape -- a gcc building the
-          #            C++-capable gcc -- work here, and is it what gcc 10 is
-          #            handed? That is this step.
-          # If the two disagree, that disagreement is itself the finding.
-          ROOT="$PWD"
-          G1="$ROOT/out/bin/gcc"
-          # STAGE2_RC IS WRITTEN ON EVERY PATH OUT OF THIS STEP. The previous
-          # version had two bare `exit 1`s ahead of the line that records it, so
-          # a configure failure left the variable unset and RESULT printed
-          #   stage 2 rc : ?
-          # -- which cannot be told apart from "the step never ran". A summary
-          # must distinguish never-ran from ran-and-failed.
-          bail() { echo "STAGE2_RC=$1" >> "$GITHUB_ENV"; exit 1; }
+          cd /work
+          NP=$(nproc)
+          say() { printf '%s\n' "$*"; }
+          # STAGE2 RC IS WRITTEN ON EVERY PATH OUT. An earlier version had bare
+          # `exit 1`s ahead of the line that recorded it, so a configure failure
+          # left it unset and RESULT printed `stage 2 rc : ?`, which cannot be
+          # told apart from "the step never ran".
+          bail() { echo "$1" > /work/status/stage2.rc; exit 0; }
 
+          G1=/work/out/bin/gcc
           if [ ! -x "$G1" ]; then
-            echo "  no stage-1 gcc at $G1 -- stage 1 did not install"
-            ls "$ROOT/out/bin" 2>/dev/null | sed 's/^/    /'
+            say "  no stage-1 gcc at $G1 -- stage 1 did not install"
+            [ -d /work/out/bin ] && ls /work/out/bin | sed 's/^/    /'
             bail 90
           fi
-          echo "  builder: $("$G1" --version 2>&1 | head -1)"
-          echo "  (this is the gcc tcc built, not the host gcc)"
+          say "  builder: $("$G1" --version 2>&1 | head -1)"
+          say "  (this is the gcc tcc built; there is no host gcc in this box)"
 
-          # ------------------------------------------------------------------
-          # PREFLIGHT.  Run 81823615754 died here with
-          #   checking for the correct version of the gmp/mpfr/mpc libraries... no
-          #   configure: error: Building GCC requires GMP 4.2+, MPFR 2.3.1+ ...
-          # and the step printed `tail -20 conf2.log`, which is configure's
-          # STDOUT and says nothing about why a link test failed. The evidence
-          # was in build2/config.log and was never read.
-          #
-          # That check is an AC_TRY_LINK. It can fail for two completely
-          # different reasons and the message is identical either way:
-          #   (a) this gcc cannot link an executable AT ALL
-          #   (b) it cannot link THESE archives, which tcc produced
-          # So ask both, separately, before spending forty minutes finding out.
-          # ------------------------------------------------------------------
-          echo
-          echo "  --- preflight 1: can the tcc-built gcc link anything? ---"
+          # PREFLIGHT. Run 81823615754 died at "checking for the correct version
+          # of the gmp/mpfr/mpc libraries... no" and printed configure's stdout,
+          # which says nothing about why a LINK failed. That check is an
+          # AC_TRY_LINK and it fails identically for two different reasons:
+          #   (a) this gcc cannot link an executable at all
+          #   (b) it cannot link THESE archives
+          say ""
+          say "  --- preflight 1: can the tcc-built gcc link anything? ---"
           printf 'int main(void){return 42;}\n' > /tmp/p1.c
           rm -f /tmp/p1
           "$G1" /tmp/p1.c -o /tmp/p1 2> /tmp/p1.err
-          echo "    compile+link rc=$?"
-          [ -s /tmp/p1.err ] && sed 's/^/      /' /tmp/p1.err | head -10
+          say "    compile+link rc=$?"
+          [ -s /tmp/p1.err ] && head -10 /tmp/p1.err | sed 's/^/      /'
           if [ -x /tmp/p1 ]; then
-            /tmp/p1; echo "    ran: exit=$? (expect 42)"
+            /tmp/p1; say "    ran: exit=$? (expect 42)"
           else
-            echo "    NO BINARY -- this gcc cannot link, and (b) below cannot"
-            echo "    be asked until that is fixed."
+            say "    NO BINARY -- this gcc cannot link."
           fi
 
-          # configure's own test, reproduced verbatim enough to fail the same
-          # way. If this passes and configure still says no, the fault is in
-          # how configure invokes it, not in the libraries.
-          # echo lines, NOT a heredoc. A heredoc terminator has to sit at column
-          # zero for the shell and at the block indent for YAML, and it cannot
-          # do both -- the file simply stops parsing. The gate below already
-          # writes its C++ this way; match it.
           {
             echo "#include <mpc.h>"
             echo "int main(void){"
@@ -498,202 +577,147 @@ jobs:
             echo "  mpc_clear (c);"
             echo "  return 0; }"
           } > /tmp/p2.c
-          probe_libs() {   # $1 = prefix to test, $2 = label
+          probe_libs() {   # $1 = prefix, $2 = label
             rm -f /tmp/p2
             "$G1" -I"$1/include" /tmp/p2.c -o /tmp/p2 \
                   -L"$1/lib" -lmpc -lmpfr -lgmp 2> /tmp/p2.err
             local rc=$?
-            echo "    $2: rc=$rc  $( [ -x /tmp/p2 ] && echo LINKED || echo 'NO BINARY')"
+            say "    $2: rc=$rc  $( [ -x /tmp/p2 ] && echo LINKED || echo 'NO BINARY')"
             [ -s /tmp/p2.err ] && head -12 /tmp/p2.err | sed 's/^/        /'
             return $rc
           }
-          echo
-          echo "  --- preflight 2: gmp/mpfr/mpc, the exact check configure runs ---"
-          probe_libs "$ROOT/prefix" "against prefix/  (built by TCC)"
+          say ""
+          say "  --- preflight 2: gmp/mpfr/mpc, the exact check configure runs ---"
+          probe_libs /work/prefix "against prefix/  (built by TCC)"
 
-          # ------------------------------------------------------------------
-          # REBUILD THE PREREQUISITES WITH THE STAGE-1 GCC.
-          #
-          # This is what the reference chain does -- every rung rebuilds its own
-          # gmp/mpfr/mpc -- and it is the honest shape here too: stage 2's cc1
-          # should contain object code from the compiler that stage 2 is testing,
-          # not from the one below it. It is ALSO the leading candidate fix for
-          # the failure above, since the only thing that changed between the
-          # stage-1 configure (which passed this identical check under tcc) and
-          # the stage-2 one (which failed it) is the compiler driving the link.
-          #
-          # Stated plainly: THIS IS NOT A DIAGNOSIS. The cause is still unknown
-          # and preflight 2 runs against BOTH prefixes so the run says which of
-          # them links. If tcc-built archives link fine under gcc, this rebuild
-          # was not the fix and the next place to look is configure itself.
-          # ------------------------------------------------------------------
-          echo
-          echo "  --- prerequisites, rebuilt by the tcc-built gcc ---"
-          # FRESH TREES, NOT `make distclean` ON THE TCC-BUILT ONES. If distclean
-          # fails or misses, make sees up-to-date .o files that TCC produced and
-          # relinks them into an archive this step is meant to attribute to gcc.
-          # A silently mixed archive is exactly the kind of result that looks
-          # clean and is not. The tarballs are still on disk; re-extract.
+          # REBUILD THE PREREQUISITES WITH THE STAGE-1 GCC. What the reference
+          # chain does -- every rung rebuilds its own gmp/mpfr/mpc -- and the
+          # honest shape here: stage 2's cc1 should contain object code from the
+          # compiler stage 2 is testing. FRESH TREES, not `make distclean` on
+          # the tcc-built ones: if distclean misses, make relinks .o files TCC
+          # produced into an archive this step attributes to gcc.
+          say ""
+          say "  --- prerequisites, rebuilt by the tcc-built gcc ---"
           mkdir -p prefix2
-          rm -rf gmp-g1 mpfr-4.1.0-g1 mpc-1.2.1-g1
-          mkdir -p gmp-g1 && tar xf gmp.tar.xz -C gmp-g1 --strip-components=1
-          ( cd gmp-g1
-            ./configure CC="$G1" --disable-shared --disable-assembly \
-              --prefix="$ROOT/prefix2" > conf.log 2>&1
-            echo "    gmp  configure rc=$?"
-            timeout 1800 make -j"$(nproc)" > build.log 2>&1
-            echo "    gmp  make rc=$?"
-            if make install > /dev/null 2>&1; then
-              echo "    gmp  INSTALLED"
-            else
-              echo "    gmp  NOT INSTALLED -- configure tail:"
-              tail -12 conf.log | sed 's/^/      /'
-              echo "    gmp  build tail:"
-              tail -12 build.log | sed 's/^/      /'
-            fi )
-          for p in mpfr-4.1.0 mpc-1.2.1; do
-            mkdir -p "$p-g1" && tar xf "$p.tar" -C "$p-g1" --strip-components=1 2>/dev/null
+          for p in gmp mpfr mpc; do
+            rm -rf "$p-g1" && cp -a "$p" "$p-g1"
             ( cd "$p-g1"
-              ./configure CC="$G1" --disable-shared \
-                --with-gmp="$ROOT/prefix2" --prefix="$ROOT/prefix2" > conf.log 2>&1
-              echo "    $p configure rc=$?"
-              timeout 1200 make -j"$(nproc)" > build.log 2>&1
-              echo "    $p make rc=$?"
+              make distclean > /dev/null 2>&1
+              EXTRA=""
+              [ "$p" = gmp ] && EXTRA="--disable-assembly"
+              [ "$p" != gmp ] && EXTRA="--with-gmp=/work/prefix2"
+              ./configure CC="$G1" --disable-shared $EXTRA \
+                --prefix=/work/prefix2 > conf.log 2>&1
+              say "    $p configure rc=$?"
+              timeout 1800 make -j"$NP" > build.log 2>&1
+              say "    $p make rc=$?"
               if make install > /dev/null 2>&1; then
-                echo "    $p INSTALLED"
+                say "    $p INSTALLED"
               else
-                echo "    $p NOT INSTALLED -- configure tail:"
+                say "    $p NOT INSTALLED -- configure tail:"
                 tail -12 conf.log | sed 's/^/      /'
-                echo "    $p build tail:"
+                say "    $p build tail:"
                 tail -12 build.log | sed 's/^/      /'
               fi )
           done
-          echo "  prefix2/lib:"
-          # NOT `ls | sed || echo`: a pipeline exits with sed's status, so the
-          # fallback never fires and an absent directory prints nothing at all.
+          say "  prefix2/lib:"
           if [ -d prefix2/lib ] && [ -n "$(ls -A prefix2/lib 2>/dev/null)" ]; then
             ls prefix2/lib | sed 's/^/    /'
           else
-            echo "    (empty -- nothing installed here)"
+            say "    (empty -- nothing installed here)"
           fi
-          echo
-          probe_libs "$ROOT/prefix2" "against prefix2/ (built by the tcc-built GCC)"
+          say ""
+          probe_libs /work/prefix2 "against prefix2/ (built by the tcc-built GCC)"
           P2RC=$?
-          echo
+          say ""
           if [ "$P2RC" -eq 0 ]; then
-            echo "  CONTROL: prefix2 links. If prefix did not, the archives were"
-            echo "  the problem and rebuilding them is the fix."
+            say "  CONTROL: prefix2 links. If prefix did not, the archives were"
+            say "  the problem and rebuilding them is the fix."
           else
-            echo "  CONTROL: prefix2 does NOT link either, so this is not about"
-            echo "  which compiler built the archives. Read preflight 1."
+            say "  CONTROL: prefix2 does NOT link either, so this is not about"
+            say "  which compiler built the archives. Read preflight 1."
           fi
 
           mkdir -p build2 && cd build2
-          "../g474/configure" \
+          "/work/g474/configure" \
             CC="$G1" \
             --build=aarch64-unknown-linux-gnu \
             --host=aarch64-unknown-linux-gnu \
             --target=aarch64-unknown-linux-gnu \
-            --prefix="$ROOT/out2" --enable-languages=c,c++ \
+            --prefix=/work/out2 --enable-languages=c,c++ \
             --disable-multilib --disable-bootstrap --disable-werror \
             --disable-libsanitizer --disable-libgomp --disable-libquadmath \
             --disable-libssp --disable-libatomic \
-            --with-gmp="$ROOT/prefix2" \
-            --with-mpfr="$ROOT/prefix2" \
-            --with-mpc="$ROOT/prefix2" \
+            --with-gmp=/work/prefix2 \
+            --with-mpfr=/work/prefix2 \
+            --with-mpc=/work/prefix2 \
             > conf2.log 2>&1
-          echo "  configure rc=$?"
+          say "  configure rc=$?"
           if [ ! -f Makefile ]; then
-            echo "  no Makefile -- configure tail:"
+            say "  no Makefile -- configure tail:"
             tail -20 conf2.log | sed 's/^/    /'
             # THE FILE THAT ACTUALLY HAS THE ANSWER. config.log records the
             # command line, the source and the compiler's own words for every
-            # failed test; conf2.log records none of it.
-            #
-            # TWO DUMB GREPS, NOT ONE CLEVER ONE. An awk that walks back from
-            # the last conftest invocation is the sort of thing that prints
-            # nothing when its anchor does not match, and a step that prints
-            # nothing is indistinguishable from a step that did not run.
+            # failed test; conf2.log records none of it. Two dumb greps, not one
+            # clever anchor that prints nothing when it does not match.
             if [ -f config.log ]; then
-              echo "  --- config.log: every compiler and linker complaint ---"
+              say "  --- config.log: every compiler and linker complaint ---"
               grep -nE "error:|cannot find|undefined reference|No such file" config.log \
                 | tail -25 | sed 's/^/    /'
-              echo "  --- config.log: last 60 lines ---"
+              say "  --- config.log: last 60 lines ---"
               tail -60 config.log | sed 's/^/    /'
             else
-              echo "  (no config.log -- configure died before writing one)"
+              say "  (no config.log -- configure died before writing one)"
             fi
             bail 91
           fi
 
-          # NOT --disable-shared here. Stage 1 uses it because nothing links against
-          # that compiler; stage 2 must produce a libstdc++ a program can actually
-          # use, and the gate below links one.
-          timeout 7200 make -k -j"$(nproc)" -Otarget MAKEINFO=true all > build2.log 2>&1
+          # NOT --disable-shared here. Stage 1 uses it because nothing links
+          # against that compiler; stage 2 must produce a libstdc++ a program
+          # can actually use, and the gate links one.
+          timeout 7200 make -k -j"$NP" -Otarget MAKEINFO=true all > build2.log 2>&1
           rc=$?
           case "$rc" in
-            0)   echo "  make rc=0 -- completed" ;;
-            124) echo "  make rc=124 -- TIMED OUT after 7200s" ;;
-            *)   echo "  make rc=$rc -- failed" ;;
+            0)   say "  make rc=0 -- completed" ;;
+            124) say "  make rc=124 -- TIMED OUT after 7200s" ;;
+            *)   say "  make rc=$rc -- failed" ;;
           esac
-          echo "  build2.log: $(wc -l < build2.log) lines"
+          say "  build2.log: $(wc -l < build2.log) lines"
           if [ "$rc" -ne 0 ]; then
-            echo "  --- compiler diagnostics ---"
+            say "  --- compiler diagnostics ---"
             grep -nE "error:|internal compiler error" build2.log | grep -v "make\[" | head -12 | sed 's/^/    /'
-            echo "  --- make errors ---"
+            say "  --- make errors ---"
             grep -nE "\*\*\* \[" build2.log | head -4 | sed 's/^/    /'
-            echo "  --- tail ---"
+            say "  --- tail ---"
             tail -20 build2.log | sed 's/^/    /'
           fi
           make install > install2.log 2>&1
-          echo "  install rc=$?"
-          echo "STAGE2_RC=$rc" >> "$GITHUB_ENV"
+          say "  install rc=$?"
+          echo "$rc" > /work/status/stage2.rc
 
-          echo "  --- what stage 2 produced ---"
+          say "  --- what stage 2 produced ---"
           for f in bin/gcc bin/g++ bin/cpp; do
-            printf '    %-12s %s\n' "$f" "$( [ -x "$PWD/../out2/$f" ] && echo present || echo missing)"
+            printf '    %-12s %s\n' "$f" "$( [ -x "/work/out2/$f" ] && echo present || echo missing)"
           done
-          LS=$(find "$PWD/../out2" -name 'libstdc++.*' 2>/dev/null | head -3)
-          echo "    libstdc++   : ${LS:-NOT INSTALLED}"
-          HDR=$(find "$PWD/../out2" -name string -path '*c++*' 2>/dev/null | head -1)
-          echo "    <string> at : ${HDR:-NOT FOUND}"
+          LS=$(find /work/out2 -name 'libstdc++.*' 2>/dev/null | head -3)
+          say "    libstdc++   : ${LS:-NOT INSTALLED}"
+          HDR=$(find /work/out2 -name string -path '*c++*' 2>/dev/null | head -1)
+          say "    <string> at : ${HDR:-NOT FOUND}"
+          exit 0
+          EOS
+          W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh /work/p2.sh
 
       - name: 'INVENTORY'
+        if: always()
         continue-on-error: true
         run: |
+          set -eu
+          cat > work/pi.sh <<'EOS'
           set -u
           set +e
-          cd build
+          cd /work/build 2>/dev/null || { echo "  no build tree"; exit 0; }
           echo "  === what make itself said failed ==="
           grep -nE '^\s*make(\[[0-9]+\])?: \*\*\* ' build.log | head -10 | sed 's/^/    /'
-          echo
-          echo "  === the first failure, in context ==="
-          n=$(grep -nE '^\s*make(\[[0-9]+\])?: \*\*\* ' build.log | head -1 | cut -d: -f1)
-          if [ -n "${n:-}" ]; then
-            start=$(( n > 40 ? n - 40 : 1 ))
-            sed -n "${start},${n}p" build.log | tail -30 | sed 's/^/    /'
-          else
-            echo "    (make reported no *** failure)"
-          fi
-          echo
-          echo "  === the failing target, rebuilt SERIALLY ==="
-          TGT_OBJ=$(grep -oE '\*\*\* \[[^]:]+:[0-9]+: [^]]+\]' build.log \
-                    | sed 's/.*: //; s/\]//' | grep -vE '^all-|^\.' | head -1)
-          if [ -n "${TGT_OBJ:-}" ]; then
-            echo "    target: $TGT_OBJ"
-            timeout 900 make -j1 MAKEINFO=true "$TGT_OBJ" > serial.log 2>&1
-            src=$?
-            if grep -q "No rule to make target" serial.log; then
-              echo "    (not a top-level target; retrying in gcc/)"
-              timeout 900 make -C gcc -j1 MAKEINFO=true "$TGT_OBJ" > serial.log 2>&1
-              src=$?
-            fi
-            echo "    serial rc=$src"
-            grep -E 'error:|Error ' serial.log | head -15 | sed 's/^/      /'
-            [ -s serial.log ] && tail -15 serial.log | sed 's/^/      /'
-          else
-            echo "    (could not parse a failing target)"
-          fi
           echo
           echo "  === compiler ERRORS only (not warnings) ==="
           grep -oE '\berror: [^,;]*' build.log | sed 's/[0-9]\+/N/g' \
@@ -701,10 +725,9 @@ jobs:
           echo "    total error lines  : $(grep -cE '\berror:' build.log || true)"
           echo "    total warning lines: $(grep -cE '\bwarning:' build.log || true)"
           echo
-          echo "  === WHERE the errors are -- THIS IS THE DIAGNOSIS ==="
           # config/aarch64 -> the transplant. generic gcc/*.c -> tcc's arm64
-          # codegen, and those same files compiled clean under tcc on x86.
-          # insn-*.c -> generated C the tcc-built generators emitted.
+          # codegen. insn-*.c -> generated C the tcc-built generators emitted.
+          echo "  === WHERE the errors are -- THIS IS THE DIAGNOSIS ==="
           grep -oE '^[^ :]+\.(c|h):[0-9]+:[0-9]*:? *error:' build.log \
             | cut -d: -f1 | sort -u | head -25 | sed 's/^/    /'
           echo "    distinct files with errors: $(grep -oE '^[^ :]+\.(c|h):[0-9]+:[0-9]*:? *error:' build.log | cut -d: -f1 | sort -u | wc -l)"
@@ -721,27 +744,27 @@ jobs:
           echo "  objects built: $(find . -name '*.o' | wc -l)"
           echo "  cc1          : $( [ -x gcc/cc1 ] && echo BUILT || echo no)"
           exit 0
+          EOS
+          W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh /work/pi.sh
 
       - name: 'THE CLAIM: tcc-built cc1 emits working aarch64'
         if: always()
         continue-on-error: true
         run: |
+          set -eu
+          cat > work/pc.sh <<'EOS'
           set -u
           set +e
-          cd build
+          cd /work/build 2>/dev/null || { echo "  no build tree"; exit 0; }
           # A BUILT cc1 IS NOT A WORKING COMPILER, and here that is the whole
-          # risk: tcc miscompiling gcc yields a cc1 that links, runs, and emits
+          # risk: tcc miscompiling gcc yields a cc1 that links, runs and emits
           # subtly wrong code. Only running its output catches that.
           [ -x gcc/cc1 ] || { echo "  no cc1 -- nothing to test"; exit 0; }
           echo "  cc1 size: $(wc -c < gcc/cc1) bytes"
-          echo "    (host-gcc-built was 55,044,256 -- a large difference is worth a look,"
-          echo "     though -g/-O2 defaults alone move this number)"
           echo
 
-          cat > /tmp/t.c <<'CEOF'
-          int fib(int n) { return n < 2 ? n : fib(n-1) + fib(n-2); }
-          int main(void) { return fib(10); }
-          CEOF
+          printf 'int fib(int n) { return n < 2 ? n : fib(n-1) + fib(n-2); }\n' >  /tmp/t.c
+          printf 'int main(void) { return fib(10); }\n'                        >> /tmp/t.c
 
           echo "  --- 1. cc1 emits assembly ---"
           gcc/cc1 -quiet -O2 /tmp/t.c -o /tmp/t.s 2>&1 | head -5 | sed 's/^/    /'
@@ -756,120 +779,98 @@ jobs:
           fi
           echo
           echo "  --- 2. assemble, link and RUN it ---"
+          # LINKED BY OUR OWN gcc, NOT THE HOST'S. The old version ran
+          #   gcc /tmp/t.o -o /tmp/t
+          # in a step whose conclusion was "COMPILED BY tcc" -- the host
+          # compiler doing the link inside the claim it was meant to support.
+          # There is no host gcc in this box now, so it has to be ours, and
+          # that also exercises the xgcc the runtime made possible.
           if [ -s /tmp/t.s ]; then
             as /tmp/t.s -o /tmp/t.o 2>&1 | head -5 | sed 's/^/    /'
             if [ -f /tmp/t.o ]; then
               echo "    assembled: $(file /tmp/t.o | cut -d, -f1-2)"
-              gcc /tmp/t.o -o /tmp/t 2>&1 | head -3 | sed 's/^/    /'
-              if [ -x /tmp/t ]; then
-                /tmp/t; rc=$?
-                echo "    ran: exit=$rc (fib(10)=55, so 55 expected)"
-                if [ "$rc" = 55 ]; then
-                  echo
-                  echo "    PASS. A gcc 4.7 carrying 4.8's aarch64 backend,"
-                  echo "          COMPILED BY tcc, produced correct aarch64 code."
+              LINKER=""
+              [ -x /work/out/bin/gcc ] && LINKER=/work/out/bin/gcc
+              [ -z "$LINKER" ] && [ -x gcc/xgcc ] && LINKER="gcc/xgcc -B gcc/"
+              if [ -z "$LINKER" ]; then
+                echo "    no gcc of ours to link with -- cannot complete the claim"
+              else
+                echo "    linking with: $LINKER"
+                $LINKER /tmp/t.o -o /tmp/t 2>&1 | head -5 | sed 's/^/    /'
+                if [ -x /tmp/t ]; then
+                  /tmp/t; rc=$?
+                  echo "    ran: exit=$rc (fib(10)=55, so 55 expected)"
+                  if [ "$rc" = 55 ]; then
+                    echo
+                    echo "    PASS. A gcc 4.7 carrying 4.8's aarch64 backend,"
+                    echo "          COMPILED BY tcc, IN A BOX WITH NO HOST"
+                    echo "          COMPILER, produced correct aarch64 code."
+                  fi
                 fi
               fi
             fi
           fi
-          # Trailing exit 0 on purpose. Under `set +e` a step's status is its
-          # last command's, and the aarch64 host-gcc arm reported
-          # "Process completed with exit code 1" purely because its final
-          # `[ -x /tmp/t2 ]` test was false. A passing arm must not read red.
           exit 0
+          EOS
+          W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh /work/pc.sh
 
       - name: 'RESULT'
         if: always()
         run: |
-          # set +e, AND THIS STEP NEVER HAD IT. GitHub runs `run:` blocks with
-          # `bash -e {0}`, so the FIRST command that returns non-zero kills the
-          # step. This is a pure REPORTING step and several of the things it
-          # runs are expected to fail -- that is the point of them.
-          #
-          # It cost a whole run. The C++ gate printed its header and the step
-          # died with exit 1 and nothing else:
-          #   --- THE C++ GATE: does the tcc-built g++ 4.7 LINK? ---
-          #   ##[error]Process completed with exit code 1.
-          # The driver WAS found and WAS invoked; the compile failed, and
-          # errexit threw the diagnostic away before "compile+link rc=" could
-          # print. The one thing the run existed to show was the one thing
-          # errexit deleted.
+          # set +e is load-bearing. GitHub runs `run:` blocks with `bash -e {0}`
+          # and this is a pure REPORTING step in which several things are
+          # EXPECTED to fail. It once cost a whole run: the C++ gate printed its
+          # header and the step died with exit 1 and nothing else, deleting the
+          # one diagnostic the run existed to produce.
           set -u
           set +e
+          rcof() { [ -f "work/status/$1" ] && cat "work/status/$1" || echo "NEVER RAN"; }
           echo "  tcc source : ${TCC_SOURCE}"
-          echo "  configure  : rc=${CONF_RC:-?}"
-          echo "  build      : rc=${BUILD_RC:-?}"
-          echo "  cc1        : $( [ -x build/gcc/cc1 ] && echo BUILT || echo no)"
+          echo "  box        : bwrap, no network, host compilers masked"
           echo
-          echo "  This arm changes ONE thing against each prior result:"
-          echo "    vs gcc47-aarch64-backport arm C : the compiler (host gcc -> tcc)"
-          echo "    vs tcc-builds-gcc-x86 arm D     : the architecture (x86 -> arm64)"
-          echo
-          echo "  If it failed, the inventory's file list says which layer:"
-          echo "    config/aarch64/*.c -> the transplant"
-          echo "    generic gcc/*.c    -> tcc's arm64 codegen (clean on x86)"
-          echo "    insn-*.c           -> generated C from tcc-built generators"
-          echo
-
           echo "  --- the two stages ---"
-          echo "    stage 1  tcc  -> gcc 4.7.4, c and c++, installed to out/"
-          echo "    stage 2  that -> gcc 4.7.4, c and c++, installed to out2/"
-          echo "    stage 1 asks whether tcc alone reaches a g++ 4.7;"
-          echo "    stage 2 asks the reference chain's question, and feeds gcc 10."
-          echo "    stage 2 rc : ${STAGE2_RC:-NEVER RAN}"
-          LGA=$(find . -name libgcc.a 2>/dev/null | head -1)
+          echo "    stage 1  tcc  -> gcc 4.7.4, c and c++, installed to /work/out"
+          echo "    stage 2  that -> gcc 4.7.4, c and c++, installed to /work/out2"
+          echo "    stage 1 configure rc : $(rcof stage1-configure.rc)"
+          echo "    stage 1 build     rc : $(rcof stage1-build.rc)"
+          echo "    stage 2           rc : $(rcof stage2.rc)"
+          echo "    libgcc TF symbols missing of 8 : $(rcof tf-missing.count)"
+          echo
+          echo "  --- what is on disk ---"
+          echo "    cc1      : $( [ -x work/build/gcc/cc1 ] && echo BUILT || echo no)"
+          echo "    cc1plus  : $( [ -x work/build/gcc/cc1plus ] && echo BUILT || echo no)"
+          echo "    xgcc     : $( [ -x work/build/gcc/xgcc ] && echo BUILT || echo no)"
+          LGA=$(find work -name libgcc.a 2>/dev/null | head -1)
           if [ -n "$LGA" ]; then
             echo "    libgcc.a : $(wc -c < "$LGA" | tr -d ' ') bytes"
           else
             echo "    libgcc.a : NOT BUILT"
           fi
-          # THE PATHS BELOW MUST START WITH build/. This step runs from the
-          # repository root -- the line above that reports cc1 already says
-          # build/gcc/cc1 -- and my first version of these said gcc/xgcc and
-          # gcc/cc1plus. They reported "no" for a build that had in fact just
-          # completed with rc=0 and produced a 989,540-byte libgcc.a, which
-          # only xgcc can produce. libgcc.a was found anyway because that line
-          # uses `find .`, which searches recursively and hid the mistake.
-          echo "    xgcc     : $( [ -x build/gcc/xgcc ] && echo BUILT || echo no)"
-          echo "    cc1plus  : $( [ -x build/gcc/cc1plus ] && echo BUILT || echo no)"
           echo
           echo "  --- IMPLICIT DECLARATIONS ---"
-          # The gate the host-gcc arm carries. A declaration that moved headers is a
-          # WARNING, and on LP64 it truncates the returned pointer to 32 bits -- which
-          # is how the libgcc ICE happened, a hundred objects in, with nothing pointing
-          # at a missing include. grep -c PRINTS the count and EXITS 1 on zero matches,
-          # so `|| true`, not `|| echo 0`, which would append a second zero.
-          IMPL=$(grep -c "implicit declaration" build.log 2>/dev/null || true)
+          # A declaration that moved headers is a WARNING, and on LP64 it
+          # truncates the returned pointer to 32 bits -- which is how the libgcc
+          # ICE happened, a hundred objects in, with nothing pointing at a
+          # missing include. grep -c PRINTS the count AND exits 1 on zero
+          # matches, so `|| true`, not `|| echo 0`, which appends a second zero.
+          IMPL=$(grep -c "implicit declaration" work/build/build.log 2>/dev/null || true)
           [ -n "$IMPL" ] || IMPL=0
           echo "    in the whole build : $IMPL"
           if [ "$IMPL" -gt 0 ]; then
-            grep -n "implicit declaration" build.log | head -8 | sed "s/^/      /"
-            BE=$(grep "implicit declaration" build.log | grep -c "config/aarch64" || true)
+            grep -n "implicit declaration" work/build/build.log | head -8 | sed "s/^/      /"
+            BE=$(grep "implicit declaration" work/build/build.log | grep -c "config/aarch64" || true)
             echo "    in config/aarch64  : ${BE:-0}"
-            if [ "${BE:-0}" -gt 0 ]; then
-              echo "    ^^ a truncated pointer waiting to happen -- add a"
-              echo "       kind=include rule to tools/port_gcc47_api.py"
-            fi
           fi
           echo
           echo "  --- THE C++ GATE: does a g++ 4.7 from this chain LINK? ---"
-          # g++ --version proves nothing -- it printed happily on every run where
-          # libgcc was missing and nothing could be linked. Compile, link, run, check.
-          # STAGE 2's INSTALLED g++, not stage 1's build tree. The previous
-          # version ran `build/gcc/g++ -B build/gcc/` on an UNINSTALLED tree,
-          # where the C++ headers live in
-          #   build/aarch64-.../libstdc++-v3/include/
-          # which -B does not add to the search path. It reported
-          #   fatal error: string: No such file or directory
-          # and that said nothing about whether libstdc++ had been built --
-          # the test could not tell "missing" from "looked in the wrong place".
-          # An installed prefix has the headers and libraries where the driver
-          # already looks, so the answer means something.
-          #
-          # BOTH PREFIXES, SEPARATELY. They answer different questions and the
-          # previous version could only report on out2/, so a run where stage 2
-          # died at configure said nothing at all about the g++ stage 1 had
-          # already installed.
+          # g++ --version proves nothing -- it printed happily on every run
+          # where libgcc was missing and nothing could be linked. Compile, link,
+          # run, check. Both prefixes, because they answer different questions
+          # and a run where stage 2 dies at configure still has something to say
+          # about the g++ stage 1 installed.
+          cat > work/pg.sh <<'EOS'
+          set -u
+          set +e
           {
             echo "#include <string>"
             echo "#include <vector>"
@@ -881,10 +882,8 @@ jobs:
             echo "    --- $1/bin/g++  ($2) ---"
             if [ ! -x "$1/bin/g++" ]; then
               echo "      no g++ installed here. What IS in $1/bin:"
-              # `ls ... | sed ... || echo` NEVER fires the fallback: a pipeline
-              # exits with its LAST command's status and sed always succeeds, so
-              # a missing directory printed absolutely nothing. This file's own
-              # method notes record that exact trap; test the directory instead.
+              # `ls | sed || echo` never fires its fallback: a pipeline exits
+              # with sed's status. Test the directory instead.
               if [ -d "$1/bin" ]; then
                 ls "$1/bin" | sed "s/^/        /"
               else
@@ -905,5 +904,12 @@ jobs:
               echo "      NO BINARY -- this g++ 4.7 cannot link."
             fi
           }
-          cxx_gate out  "built by tcc"
-          cxx_gate out2 "built by the tcc-built gcc"
+          cxx_gate /work/out  "built by tcc"
+          cxx_gate /work/out2 "built by the tcc-built gcc"
+          exit 0
+          EOS
+          W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh /work/pg.sh
+          echo
+          echo "  --- what the host still supplied, for the record ---"
+          sed -n '/^masked/,/^writable/p' bind-list.txt | sed 's/^/  /'
+          exit 0
