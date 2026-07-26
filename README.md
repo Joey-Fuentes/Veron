@@ -1,37 +1,91 @@
-# Veron
+# stage4-complete.yml — One job, tcc to booting Linux
 
-A hermetic, reproducible, end-to-end auditable operating system — bootstrapped from a tiny, hand-audited, per-architecture **assembly seed** up a readable ladder to a traditional **GNU/Linux** desktop.
+## What this is
 
-**Status:** Design phase. No build code yet. The founding design is in [`ARCHITECTURE.md`](./ARCHITECTURE.md); the first artifact to write is the stage-0 seed specification (ARM64 reference).
-
-**License:** [MIT](./LICENSE) for Veron's own code. Upstream dependencies keep their own licenses, tracked per-node in the ledger.
-
----
-
-## What Veron is
-
-- **From-seed.** A few hundred lines of readable, bijectively-encoded, per-arch assembly (ARM64, RISC-V RV64I, x86-64) climb one rung at a time: assembler → C-subset compiler → self-hosting C → libc → GCC → GNU/Linux. The seed binary is *derived* and verified against its source by round-trip disassembly — nothing opaque is committed.
-- **Hermetic + reproducible.** Every build is a pure function from hashed inputs to output, sandboxed with no network. Anyone can rebuild and diff rather than trust.
-- **End-to-end auditable.** Every build *decision* — provenance, patches, flags, license — is pinned and recorded in an audit ledger. The ledger, not the package internals, is what makes the whole system auditable.
-- **Two flavors, one trunk.** The tree forks exactly once, at libc: **musl/BusyBox** (minimal, maximally auditable, permissive dependency surface) and **glibc/GNU** (compatibility — official Chrome, CUDA, prebuilt blobs).
-
-## What Veron is *not*
-
-Veron is an independent exploration / proving-ground OS — a place to test what's buildable from a seed, not a finished product. It is self-contained and references no other project. Full scope note at the top of [`ARCHITECTURE.md`](./ARCHITECTURE.md).
-
-## Layout
+A single GitHub Actions workflow that proves the entire ladder works hermetically end to end:
 
 ```
-seed/       readable per-arch assembly trust root (the only hand-authored root)
-stages/     the ladder: 0-seed-as → 1-macro-as → 2-mini-c → 3-full-c │ 4-libc → 5-…
-flavors/    musl / glibc instantiations (parameter files, not copies)
-lib/        the build engine: derivations, sandbox, binary cache
-sources/    pinned upstream manifests (url + hash + signature + license)
-ledger/     per-node audit records — the auditability deliverable
-tools/      diffoscope wrapper, fork-invariant CI check
-.github/    CI orchestration (fan-out under the 6h runner cap, cache, attest)
+tcc (host gcc, declared)
+  ↓
+gcc 4.7.4 + aarch64 backend  [stages 1-3 from tcc-builds-gcc-arm64]
+  ↓
+gcc 10.2.0
+  ↓
+gcc 15.2.0                    [builds the sysroot using gcc 10]
+  ↓
+linux 7.1.5 kernel + glibc 2.43 userland
+  ↓
+QEMU BOOT
 ```
 
-## First milestone
+**Inside one bwrap box.** Host compilers masked. No hand-offs. No caching. One narrative.
 
-Write the **stage-0 spec** for the ARM64 reference seed: the minimal instruction subset and pinned encodings, the directives (`.byte`, `.ascii`, labels), the input grammar, the Linux syscall ABI, and the round-trip audit procedure. Prove the round-trip, then bring up `macro-as` on top. Port to RISC-V and x86-64 after the shape holds once.
+## Why one job instead of three
+
+- `tcc-builds-gcc-arm64` proves tcc→gcc10 hermetically (stops before kernel)
+- `hermetic-gcc15` proves kernel+boot (starts from host cross toolchain)
+- **This job proves both, without a seam.**
+
+If the kernel step fails, it fails because of something in the chain, not because of a layer boundary or an undeclared dependency between boxes.
+
+## What it does NOT claim
+
+- `tcc` is reproducible — that's stage 3's rung (seed → tcc is open)
+- 3-stage bootstrap — that's deferred like the other rung jobs
+- DejaGnu testing — future improvement
+- Every step cached — transparency beats speed for a proof statement
+
+## How to use it
+
+```bash
+cd ~/Veron
+mkdir -p ~/tmp && unzip -o /storage/emulated/0/Download/veron-stage4-complete-s5.zip -d ~/tmp
+cp -a ~/tmp/. ~/Veron/ && rm -rf ~/tmp
+git add -A && git commit -m "stage4-complete: one job proving tcc to boot" && git push
+```
+
+The job will:
+
+1. Build tcc with host gcc (announced in the log)
+2. Fetch all sources needed for the entire chain
+3. Mask the host compilers
+4. Run tcc→4.7→4.7→10→15→kernel→boot, all inside bwrap
+5. Report boot success or failure
+
+### Dispatch options
+
+- `boot: yes` (default) — build and boot the kernel
+- `boot: no` — build only through gcc 15, skip kernel/boot
+
+## What it proves
+
+Once green:
+
+> Every compiler and binary between tcc and a booting linux kernel descends from tcc. No host /usr, no network, no fallback to the runner's compiler after masking. The method works end to end.
+
+## Expected wall-clock
+
+- ~50–70 minutes on the first run
+- Chapter 5–6 rebuilds every run (no caching)
+- Kernel build ~10 min, boot ~1 min
+
+## If it fails
+
+The log is linear: find the first red line. It will be:
+- `tcc` stage (host gcc issue — not this repo's problem)
+- Stage 1/2/3 (gcc chain issue — look at `tcc-builds-gcc-arm64` for context)
+- Sysroot chapter (LFS recipe issue — check hermetic-gcc15 for fixes)
+- Kernel config (defconfig issue for the kernel version)
+- Boot (qemu or initramfs issue — check dmesg)
+
+Each failure is local to the chain, not to a hand-off.
+
+## What to merge it into
+
+- Main branch, under `.github/workflows/`
+- Triggers on:
+  - Push to the yml file itself
+  - Manual dispatch
+  - Changes to the transplant tools (`port_gcc47_api.py`, `expand_int_iterators.py`, the backport probe)
+
+This is the stage 4 conclusion job. Run it before a release.
