@@ -598,7 +598,21 @@ jobs:
             > c.log 2>&1 || die configure c.log
           make -j"$(nproc)" > b.log 2>&1 || die build b.log
           make DESTDIR="$S" install > i.log 2>&1 || die install i.log
-          echo "  libstdc++: $(ls "$S"/usr/lib/libstdc++.* 2>/dev/null | head -1 || echo MISSING)"
+          # A PIPELINE EXITS WITH ITS LAST COMMAND'S STATUS, so
+          #   ls ... | head -1 || echo MISSING
+          # never fires its fallback. This line printed an empty string and read
+          # like a formatting slip, when it was in fact reporting that nothing
+          # had been installed under /usr/lib at all -- pass 1 goes to
+          # /usr/$LFS_TGT/lib, because libstdc++-v3 uses toolexeclibdir when
+          # configure sees host != build. Search, then test the variable.
+          found=$(find "$S/usr" "$S/lib" -name 'libstdc++.so.*' 2>/dev/null | head -5)
+          if [ -n "$found" ]; then
+            echo "  libstdc++ pass 1 installed at:"
+            printf '%s\n' "$found" | sed 's|^|    |'
+          else
+            echo "  libstdc++: MISSING -- nothing named libstdc++.so.* in the sysroot"
+            exit 1
+          fi
 
       # ------------------------------------------- LFS 10.0 ch.6, abridged
       - name: '6.x userland: BusyBox, make, binutils pass 2, gcc pass 2'
@@ -675,7 +689,10 @@ jobs:
           # Disable AFTER oldconfig: it re-derives selected symbols and silently
           # undoes seds applied before it. Then VERIFY, because a sed that
           # matches nothing is silent.
-          yes '' | make oldconfig > /dev/null 2>&1
+          # yes' stderr was not redirected, so every run printed
+          #   yes: standard output: Broken pipe
+          # which reads like a failure and is not one.
+          yes '' 2>/dev/null | make oldconfig > /dev/null 2>&1
           for sym in CONFIG_TC CONFIG_TLS CONFIG_SSL_CLIENT \
                      CONFIG_FEATURE_WGET_HTTPS CONFIG_FEATURE_WGET_OPENSSL; do
             sed -i "s/^$sym=y/# $sym is not set/" .config
@@ -759,6 +776,13 @@ jobs:
       - name: '7.x libstdc++ pass 2 and bison, INSIDE the box (LFS ch. 7)'
         run: |
           set -eu
+          # THE BOX SCRIPT BELOW IS PIPED INTO sed, AND A PIPELINE EXITS WITH
+          # ITS LAST COMMAND'S STATUS -- sed's, which is 0. Without pipefail
+          # run 81866138350 had bison fail inside the box, the step go GREEN,
+          # `.sysroot-complete` written anyway, and both gcc attempts die on
+          # the missing bison an hour later. The marker must be unreachable
+          # when the chapter did not finish.
+          set -o pipefail
           # WHAT FAILED, WHY, AND WHERE THE LOG IS. The old one-liner grepped
           # "Error [0-9]", which matches make's own "*** [target] Error 1"
           # summary lines -- and make prints several of those per real failure,
@@ -800,9 +824,28 @@ jobs:
 
           # Stage what the in-box builds need. The box has no network.
           cd "$W"
-          rm -rf "$S/work/gccsrc" && cp -r "gcc-$GCCVER" "$S/work/gccsrc"
+          # cp -a, NOT cp -r. THIS IS WHAT KILLED BISON. `cp -r` stamps every
+          # copied file with the time of the copy, in whatever order the
+          # filesystem hands them over, so configure.ac can land NEWER than
+          # configure and Makefile.am newer than Makefile.in. automake's
+          # maintainer rules then fire and try to re-run autoconf and automake,
+          # which this box does not have and is not meant to have:
+          #   make: *** [Makefile:3515: Makefile.in] Error 1
+          #   make: *** [Makefile:3542: configure] Error 127
+          # A tarball ships its generated files newer than their sources. -a
+          # preserves that ordering; -r destroys it.
+          rm -rf "$S/work/gccsrc" && cp -a "gcc-$GCCVER" "$S/work/gccsrc"
           tar xf "bison-$BISON_VER.tar.xz"
-          rm -rf "$S/work/bison" && cp -r "bison-$BISON_VER" "$S/work/bison"
+          rm -rf "$S/work/bison" && cp -a "bison-$BISON_VER" "$S/work/bison"
+          # BELT AND BRACES. -a removes the cause; this makes the outcome
+          # independent of it by stamping every generated autotools file newer
+          # than everything else, which is the state make has to see.
+          for d in "$S/work/gccsrc" "$S/work/bison"; do
+            find "$d" -type f \( -name aclocal.m4 -o -name configure \
+                 -o -name 'Makefile.in' -o -name 'config.h.in' \
+                 -o -name 'config-h.in' -o -name '*.info' \) -exec touch {} +
+          done
+          echo "  sources staged, generated files stamped newest"
 
           # libstdc++ pass 2, native, into /usr -- the book's chapter 7 recipe.
           # --host is the pass-2 gcc's own host triplet, not config.guess's
@@ -861,13 +904,95 @@ jobs:
             fi
             make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
             echo "libstdc++ pass 2 installed"
+            # WHERE DID IT LAND, AND CAN THE LOADER SEE IT?
+            # libstdc++-v3 installs into toolexeclibdir rather than libdir
+            # whenever configure decides the build is a cross -- and it does
+            # decide that here, because --host is aarch64-veron-linux-gnu while
+            # config.guess inside the box answers aarch64-unknown-linux-gnu. So
+            # the library goes to /usr/$LFS_TGT/lib, which the pass-2 gcc driver
+            # searches at LINK time and the dynamic loader does not search at
+            # RUN time:
+            #   /work/tpp: error while loading shared libraries:
+            #   libstdc++.so.6: cannot open shared object file
+            # Step 5.6 reported the same fact and it was missed, because
+            #   ls .../libstdc++.* | head -1 || echo MISSING
+            # prints an empty line rather than MISSING.
+            #
+            # THE BOOK NEVER NOTICES, and that is not an oversight in it: every
+            # remaining chapter 7 package -- gettext, bison, perl, Python,
+            # texinfo, util-linux -- is C. We are the ones who have to RUN C++
+            # in here, because gcc 15 and 16 compile and then EXECUTE their own
+            # generator programs. A declared deviation, not a correction to LFS.
+            #
+            # BOTH MECHANISMS, UNCONDITIONALLY. ld.so.conf + ldconfig is the
+            # standard one. The symlink into /lib is the one that cannot fail,
+            # because /lib is demonstrably searched already -- every binary in
+            # this box resolves libc.so.6 out of it. Applying only the standard
+            # one and discovering it was not enough costs a whole run.
+            echo "--- libstdc++.so.6 ---"
+            find /usr /lib -name "libstdc++.so.6*" 2>/dev/null | sed "s|^|  |"
+            LSO=$(find /usr /lib -name libstdc++.so.6 2>/dev/null | head -1)
+            if [ -z "$LSO" ]; then
+              echo "  NO libstdc++.so.6 ANYWHERE -- C++ cannot run in this box"
+              exit 1
+            fi
+            LSDIR=$(dirname "$LSO")
+            echo "  runtime dir: $LSDIR"
+            { echo /lib; echo /usr/lib; echo "$LSDIR"; } | sort -u > /etc/ld.so.conf
+            echo "  /etc/ld.so.conf:"; sed "s|^|    |" /etc/ld.so.conf
+            if command -v ldconfig > /dev/null 2>&1; then
+              ldconfig && echo "  ldconfig ok"
+            else
+              echo "  no ldconfig in this box -- relying on the symlinks below"
+            fi
+            if [ "$LSDIR" != /lib ]; then
+              for so in "$LSDIR"/libstdc++.so*; do
+                [ -e "$so" ] || continue
+                ln -sf "$so" /lib/ && echo "  linked $(basename "$so") -> /lib"
+              done
+            fi
+            # C++ MUST RUN, NOT MERELY LINK, AND THE GATE BELONGS HERE RATHER
+            # THAN IN THE LADDER. The ladder found this one step too late: the
+            # binary existed, so the summary reported that the box compiles C++
+            # while the loader could not start what it had just produced.
+            echo "=== C++ gate ==="
+            : > /work/cxxgate.cpp
+            echo "#include <string>" >> /work/cxxgate.cpp
+            echo "#include <vector>" >> /work/cxxgate.cpp
+            echo "int main(){ std::vector<int> v{1,2,3}; int s=0; for(int x:v) s+=x;" >> /work/cxxgate.cpp
+            echo "  std::string t(\"ok\"); return s + (int)t.size() + 34; }" >> /work/cxxgate.cpp
+            g++ -o /work/cxxgate /work/cxxgate.cpp || { echo "  C++ COMPILE FAILED"; exit 1; }
+            /work/cxxgate; rc=$?
+            echo "  C++ ran: exit=$rc (expect 42)"
+            if [ $rc -ne 42 ]; then
+              echo "  C++ CANNOT RUN IN THIS BOX. gcc 15 and 16 compile and then"
+              echo "  EXECUTE their own generator programs, so neither can work"
+              echo "  from here. Not marking the sysroot complete."
+              ldd /work/cxxgate 2>&1 | head -8
+              exit 1
+            fi
             echo "=== bison ==="
             cd /work/bison
             ./configure --prefix=/usr --docdir=/usr/share/doc/bison-'"$BISON_VER"' \
               > c.log 2>&1 || { tail -12 c.log; exit 1; }
-            make -j4 > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -6; exit 1; }
+            if ! make -j4 MAKEINFO=true > b.log 2>&1; then
+              # THE OLD PATTERN HID THE CAUSE. grep "error:|Error [0-9]" piped
+              # into head -6 returned two make summary lines and nothing else,
+              # so the run reported a bison failure with no reason attached.
+              echo "  --- diagnostics ---"
+              grep -nE "error:|fatal error|No such file|not found|command not found|is missing on your system" b.log \
+                | grep -vE ":make(\[[0-9]+\])?:" | head -12
+              echo "  --- make summary ---"
+              grep -nE "[*][*][*] [[]" b.log | head -4
+              echo "  --- tail ---"; tail -20 b.log
+              exit 1
+            fi
             make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
             bison --version | head -1
+            # THE ATTEMPTS RESOLVE bison BY PATH, NOT THROUGH THIS SHELL.
+            # Assert the file the box will actually execute.
+            [ -x /usr/bin/bison ] || { echo "  bison is NOT at /usr/bin/bison"; exit 1; }
+            echo "bison at /usr/bin/bison"
           ' 2>&1 | sed 's/^/    /'
           # THE COMPLETION MARKER, AND IT BELONGS HERE, NOT AFTER gcc PASS 2.
           # Chapter 7 is the last thing the sysroot needs -- libstdc++ into
@@ -914,8 +1039,11 @@ jobs:
           mkdir -p "$S/work"
           printf 'int main(void){return 42;}\n' > "$S/work/t.c"
           S="$S" "$W/box10.sh" /usr/bin/gcc -o /work/t /work/t.c 2>&1 | head -6 | sed 's/^/    /'
+          rm -f "$S/work/t.ran"
           if [ -x "$S/work/t" ]; then
-            S="$S" "$W/box10.sh" /work/t; echo "    ran: exit=$? (expect 42)"
+            S="$S" "$W/box10.sh" /work/t; rc=$?
+            echo "    ran: exit=$rc (expect 42)"
+            [ "$rc" = 42 ] && : > "$S/work/t.ran"
           else
             echo "    no binary produced -- the attempts below cannot work"
           fi
@@ -936,8 +1064,11 @@ jobs:
             echo '  return s + (int)p->size() + 34; }'
           } > "$S/work/t.cpp"
           S="$S" "$W/box10.sh" /usr/bin/g++ -o /work/tpp /work/t.cpp 2>&1 | head -8 | sed 's/^/    /'
+          rm -f "$S/work/tpp.ran"
           if [ -x "$S/work/tpp" ]; then
-            S="$S" "$W/box10.sh" /work/tpp; echo "    ran: exit=$? (expect 42)"
+            S="$S" "$W/box10.sh" /work/tpp; rc=$?
+            echo "    ran: exit=$rc (expect 42)"
+            [ "$rc" = 42 ] && : > "$S/work/tpp.ran"
           else
             echo "    NO C++ BINARY -- gcc 15/16 cannot be built from this box."
             echo "    Every modern gcc contains C++ sources; this is the rung"
@@ -963,7 +1094,15 @@ jobs:
               tar xf "$W/gmp-$GMP_VER.tar.xz"   && mv "gmp-$GMP_VER" gmp
               tar xf "$W/mpfr-$MPFR_VER.tar.xz" && mv "mpfr-$MPFR_VER" mpfr
               tar xf "$W/mpc-$MPC_VER.tar.gz"   && mv "mpc-$MPC_VER" mpc )
-            rm -rf "$S/work/src-$v" && cp -r "src-$v" "$S/work/"
+            # cp -a AND THE SAME TIMESTAMP REPAIR AS CHAPTER 7. These trees
+            # carry gmp, mpfr and mpc unpacked in-tree, each a full autotools
+            # package, so `cp -r` exposes them to exactly the maintainer-mode
+            # regeneration that killed bison -- and there is no autoconf in the
+            # box to satisfy it. Same bug, second location.
+            rm -rf "$S/work/src-$v" && cp -a "src-$v" "$S/work/"
+            find "$S/work/src-$v" -type f \( -name aclocal.m4 -o -name configure \
+                 -o -name 'Makefile.in' -o -name 'config.h.in' \
+                 -o -name 'config-h.in' -o -name '*.info' \) -exec touch {} +
           done
           echo "  staged: $(ls "$S/work" | tr '\n' ' ')"
 
@@ -1028,7 +1167,7 @@ jobs:
               # limit on a combined grep fills with those and the actual
               # error: never appears.
               echo "--- diagnostics ---"
-              grep -nE "internal compiler error|error:|fatal error|undefined reference|cannot find|No such file|command not found" b.log \
+              grep -nE "internal compiler error|error:|fatal error|undefined reference|cannot find|No such file|not found|Error 127|is missing on your system" b.log \
                 | grep -vE ":make(\[[0-9]+\])?:" | head -15
               echo "--- make summary ---"
               grep -nE "[*][*][*] [[]" b.log | head -4
@@ -1111,7 +1250,7 @@ jobs:
               # limit on a combined grep fills with those and the actual
               # error: never appears.
               echo "--- diagnostics ---"
-              grep -nE "internal compiler error|error:|fatal error|undefined reference|cannot find|No such file|command not found" b.log \
+              grep -nE "internal compiler error|error:|fatal error|undefined reference|cannot find|No such file|not found|Error 127|is missing on your system" b.log \
                 | grep -vE ":make(\[[0-9]+\])?:" | head -15
               echo "--- make summary ---"
               grep -nE "[*][*][*] [[]" b.log | head -4
@@ -1165,14 +1304,14 @@ jobs:
           echo
           printf '  %-26s %s\n' "sysroot built" \
             "$(state "$W/b-gcc2" "$S/usr/bin/gcc")"
-          printf '  %-26s %s\n' "box compiles C" \
-            "$(state "$S/work/t.c" "$S/work/t")"
+          printf '  %-26s %s\n' "box compiles+runs C" \
+            "$(state "$S/work/t.c" "$S/work/t.ran")"
           # C++ IS THE RUNG THAT DECIDES. Run 2 reported "box compiles and runs
           # yes" from the C rung while C++ was broken, which reads as a working
           # box next to two failed attempts -- when in fact the attempts could
           # not have worked and the box was the reason.
-          printf '  %-26s %s\n' "box compiles C++  <- decides" \
-            "$(state "$S/work/t.cpp" "$S/work/tpp")"
+          printf '  %-26s %s\n' "box runs C++     <- decides" \
+            "$(state "$S/work/t.cpp" "$S/work/tpp.ran")"
           printf '  %-26s %s\n' "gcc $GCC15 built" \
             "$(state "$S/work/src-$GCC15" "$S/work/out15/bin/gcc")"
           printf '  %-26s %s\n' "gcc $GCC16 built" \
@@ -1201,6 +1340,7 @@ jobs:
             m4-*/i.log
             busybox-*/b.log
             sysroot/.sysroot-complete
+            sysroot/etc/ld.so.conf
             sysroot/work/b-libstdcxx2/c.log
             sysroot/work/b-libstdcxx2/b.log
             sysroot/work/b-libstdcxx2/i.log
