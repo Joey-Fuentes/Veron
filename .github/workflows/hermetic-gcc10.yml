@@ -1,0 +1,583 @@
+name: hermetic-gcc10
+
+# ============================================================================
+# RUNG 2 OF THE CHAIN.  A gcc 10.2.0 box, which then reaches gcc 15 AND gcc 16.
+# ============================================================================
+#
+# WHAT THIS IS FOR
+#
+#     tcc  ->  gcc 4.7.4 + backend  ->  g++ 4.7  ->  gcc 10   <- hermetic-gcc47
+#          ->  gcc 10  ->  gcc 15                             <- THIS BOX
+#          ->  gcc 10  ->  gcc 16                             <- THIS BOX
+#          ->  gcc 15/16  ->  kernel + userland + boot         <- gcc15 / gcc16
+#
+# This box is the chain's SECOND LINK, standing on its own. It proves:
+#
+#   1. A complete LFS-style sysroot at gcc 10.2.0 builds and is self-sufficient
+#      -- no host /usr, cross toolchain, glibc inside the sysroot.
+#   2. That gcc 10 can build gcc 15.2.0.
+#   3. That gcc 10 can build gcc 16.1.0.
+#
+# Both attempts matter and neither is redundant. 15.2.0 is where the stable
+# system lands (hermetic-gcc15); 16.1.0 is where the bleeding one does
+# (hermetic-gcc16). If gcc 10 reaches one and not the other, that is the single
+# most useful fact this box can produce, and running only one attempt would
+# hide it.
+#
+# WHAT THIS IS NOT
+#
+#   * NOT a QEMU boot. No kernel is built here. Booting belongs to
+#     hermetic-gcc15 and hermetic-gcc16, whose whole job is a running system.
+#   * NOT the proof that OUR gcc 4.7 can build gcc 10 -- that is
+#     hermetic-gcc47's handoff step. This box starts from a host-built cross
+#     toolchain, deliberately, so that a failure here is gcc 10's and not 4.7's.
+#     The two together cover the link from both sides.
+#
+# WHY LFS 10.0, AND WHY 10.2.0 RATHER THAN 10.4.0
+#
+# GCC's own prerequisites: "versions prior to 10.5 allow bootstrapping with an
+# ISO C++98 compiler". So the whole 10.x series up to 10.4 is reachable from
+# g++ 4.7, and the choice inside that range is free. 10.2.0 is LFS 10.0's gcc,
+# which means the ENTIRE surrounding set -- binutils 2.35, glibc 2.32, linux
+# 5.8.3, gmp/mpfr/mpc -- is a combination somebody has already built end to
+# end. 10.4.0 would leave us composing that set ourselves, and composing a set
+# from memory has now cost this project three separate runs.
+#
+# WHAT LFS 10.0 DOES DIFFERENTLY FROM 13.0, read from the vendored book at
+# spikes/stage4/books/LFS-BOOK-10_0_tar.xz rather than from memory:
+#
+#   * NO /usr MERGE. 10.0 chapter 4 creates REAL /bin, /lib, /sbin -- it does
+#     not symlink them into /usr. Copying 13.0's layout here would put the
+#     loader somewhere nothing looks for it.
+#   * glibc wants libc_cv_slibdir=/lib, not /usr/lib, for the same reason.
+#   * --enable-kernel=3.2, not 5.4.
+#   * --with-glibc-version=2.11 on gcc pass 1.
+#   * glibc 2.32 needs the LFS FHS patch.
+#   * gcc pass 1 uses --enable-initfini-array and no PIE/SSP defaults.
+#   * binutils pass 1 takes none of 13.0's gprofng/dtags/hash-style flags --
+#     they postdate 2.35.
+#   * libstdc++ pass 1 wants --with-gxx-include-dir=/tools/$LFS_TGT/include/c++/10.2.0
+#
+# HOW TO RUN IT
+#
+#   push        edits to THIS FILE ONLY -- this box never triggers another and
+#               no other box triggers it
+#   dispatch    try_gcc15 / try_gcc16 : run either attempt independently, so a
+#                                       long run can be split across two
+#
+# ============================================================================
+
+on:
+  push:
+    paths:
+      - '.github/workflows/hermetic-gcc10.yml'
+  workflow_dispatch:
+    inputs:
+      try_gcc15:
+        description: 'attempt gcc 15.2.0 with the gcc 10 in the box'
+        required: false
+        default: 'yes'
+      try_gcc16:
+        description: 'attempt gcc 16.1.0 with the gcc 10 in the box'
+        required: false
+        default: 'yes'
+
+concurrency:
+  group: hermetic-gcc10-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GNU: 'https://mirrors.kernel.org/gnu'
+  LFS_TGT: 'aarch64-veron-linux-gnu'
+  LFS_PATCHES: 'https://www.linuxfromscratch.org/patches/lfs/10.0'
+  # LFS 10.0's tested set, chapter 3. Every version here is the book's.
+  BINUTILS: '2.35'
+  GCCVER: '10.2.0'
+  GLIBC: '2.32'
+  KERNEL: '5.8.3'
+  GMP_VER: '6.2.0'
+  MPFR_VER: '4.1.0'
+  MPC_VER: '1.1.0'
+  MAKE_VER: '4.3'
+  BUSYBOX: '1.36.1'
+  # the two rungs above, each with its own book elsewhere in the tree
+  GCC15: '15.2.0'
+  GCC16: '16.1.0'
+
+jobs:
+  rung2:
+    name: 'LFS 10.0 box at gcc 10.2.0 -> attempts gcc 15 and gcc 16'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bubblewrap curl git bzip2 xz-utils gcc g++ make bison flex \
+            texinfo m4 perl python3 file gawk patch
+
+      - name: 'Layout and environment (LFS 10.0 ch. 4)'
+        run: |
+          set -eu
+          S="$PWD/sysroot"
+          echo "S=$S"   >> "$GITHUB_ENV"
+          echo "W=$PWD" >> "$GITHUB_ENV"
+          # LFS 10.0 CREATES REAL DIRECTORIES, NOT /usr SYMLINKS. 13.0 does the
+          # /usr merge (ln -sv usr/$i $LFS/$i); 10.0 predates it and makes
+          # /bin, /lib, /sbin actual directories. Copying 13.0's layout here
+          # would install the loader to /usr/lib while every binary's PT_INTERP
+          # names /lib.
+          mkdir -pv "$S"/{bin,etc,lib,sbin,usr,var,tools,work}
+          mkdir -pv "$S"/usr/{bin,lib,include,sbin}
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          # DEFINE THE BOX HERE, BEFORE ITS FIRST USE. A helper created later
+          # than the step that calls it is a sequencing bug waiting for someone
+          # to reorder a step; hermetic-gcc15 lost a run to exactly that.
+          cat > box10.sh <<'EOS'
+          #!/bin/sh
+          # No /usr bind, no /etc bind. The sysroot IS the filesystem.
+          # PATH carries BOTH /bin and /usr/bin because 10.0 has no merge.
+          set -eu
+          S=${S:?box10.sh: S not set}
+          exec bwrap \
+            --unshare-all --die-with-parent --new-session --clearenv \
+            --setenv PATH /bin:/usr/bin:/sbin:/usr/sbin:/tools/bin \
+            --setenv HOME /work \
+            --setenv LC_ALL POSIX \
+            --setenv TERM dumb \
+            --setenv SOURCE_DATE_EPOCH 0 \
+            --bind "$S" / \
+            --proc /proc --dev /dev \
+            --tmpfs /tmp --tmpfs /run \
+            --chdir /work \
+            "$@"
+          EOS
+          chmod +x box10.sh
+          # LFS chapter 4 sets PATH ONCE for the whole session. Setting it in
+          # some build steps and not others let a configure fall back to the
+          # HOST g++ without complaining -- a missing cross compiler does not
+          # announce itself, it is silently replaced.
+          echo "$S/tools/bin" >> "$GITHUB_PATH"
+          echo "  layout: $(ls "$S" | tr '\n' ' ')"
+          echo "  LFS_TGT: $LFS_TGT   host: $(gcc -dumpmachine)"
+          echo "  the two triplets differ, which is the isolation"
+
+      - name: 'Cache the LFS 10.0 sysroot'
+        uses: actions/cache@v4
+        with:
+          path: sysroot
+          # Namespaced to THIS box: cache keys are repo-scoped, so a shared
+          # prefix is how two workflows quietly hand each other a sysroot.
+          key: hermetic-gcc10-${{ env.BINUTILS }}-${{ env.GCCVER }}-${{ env.GLIBC }}-${{ env.KERNEL }}-v1
+
+      - name: 'Fetch everything (no network exists inside the box)'
+        run: |
+          set -eu
+          get() { echo "  $(basename "$1")"; curl -fsSL --retry 3 -O "$1"; }
+          get "$GNU/binutils/binutils-$BINUTILS.tar.xz"
+          get "$GNU/gcc/gcc-$GCCVER/gcc-$GCCVER.tar.xz"
+          get "$GNU/glibc/glibc-$GLIBC.tar.xz"
+          get "$GNU/gmp/gmp-$GMP_VER.tar.xz"
+          get "$GNU/mpfr/mpfr-$MPFR_VER.tar.xz"
+          get "$GNU/mpc/mpc-$MPC_VER.tar.gz"
+          get "$GNU/make/make-$MAKE_VER.tar.gz"
+          get "https://busybox.net/downloads/busybox-$BUSYBOX.tar.bz2"
+          get "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL%%.*}.x/linux-$KERNEL.tar.xz"
+          # THE BOOK'S ONE PATCH THAT APPLIES TO THIS SCOPE. LFS 10.0 lists six
+          # patches; five are for bash, bzip2, coreutils, kbd and sysvinit,
+          # which BusyBox substitutes for. The glibc FHS patch is not optional.
+          get "$LFS_PATCHES/glibc-$GLIBC-fhs-1.patch"
+          ls -la *.tar.* | awk '{print "    "$5"  "$9}'
+
+      # ---------------------------------------------------- LFS 10.0  5.2
+      - name: '5.2 binutils 2.35 pass 1 (cross)'
+        run: |
+          set -eu
+          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          tar xf "binutils-$BINUTILS.tar.xz"
+          mkdir -p b-bu1 && cd b-bu1
+          # THE BOOK'S FLAGS, WHICH ARE FEWER THAN 13.0's. --enable-gprofng=no,
+          # --enable-new-dtags and --enable-default-hash-style all postdate
+          # 2.35; passing them here makes configure reject the option outright.
+          "../binutils-$BINUTILS/configure" \
+            --prefix="$S/tools" \
+            --with-sysroot="$S" \
+            --target="$LFS_TGT" \
+            --disable-nls \
+            --disable-werror \
+            > c.log 2>&1 || die configure c.log
+          make -j"$(nproc)" > b.log 2>&1 || die build b.log
+          make install > i.log 2>&1 || die install i.log
+          echo "  $(ls "$S/tools/bin" | wc -l) cross binaries"
+
+      # ---------------------------------------------------- LFS 10.0  5.3
+      - name: '5.3 gcc 10.2.0 pass 1 (cross, no headers, no libc)'
+        run: |
+          set -eu
+          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          tar xf "gcc-$GCCVER.tar.xz"
+          ( cd "gcc-$GCCVER"
+            # In-tree, as the book does: no prefix to point at and the versions
+            # travel with the source.
+            tar xf "../mpfr-$MPFR_VER.tar.xz" && mv "mpfr-$MPFR_VER" mpfr
+            tar xf "../gmp-$GMP_VER.tar.xz"   && mv "gmp-$GMP_VER" gmp
+            tar xf "../mpc-$MPC_VER.tar.gz"   && mv "mpc-$MPC_VER" mpc )
+          mkdir -p b-gcc1 && cd b-gcc1
+          # --with-glibc-version=2.11 IS THE BOOK'S VALUE, not $GLIBC. It tells
+          # gcc the MINIMUM glibc its output must run against, and 10.0 sets it
+          # low deliberately. --enable-initfini-array is 10.0's; the PIE/SSP
+          # defaults 13.0 passes are not in this book.
+          "../gcc-$GCCVER/configure" \
+            --target="$LFS_TGT" \
+            --prefix="$S/tools" \
+            --with-glibc-version=2.11 \
+            --with-sysroot="$S" \
+            --with-newlib \
+            --without-headers \
+            --enable-initfini-array \
+            --disable-nls \
+            --disable-shared \
+            --disable-multilib \
+            --disable-decimal-float \
+            --disable-threads \
+            --disable-libatomic \
+            --disable-libgomp \
+            --disable-libquadmath \
+            --disable-libssp \
+            --disable-libvtv \
+            --disable-libstdcxx \
+            --enable-languages=c,c++ \
+            > c.log 2>&1 || die configure c.log
+          make -j"$(nproc)" > b.log 2>&1 || die build b.log
+          make install > i.log 2>&1 || die install i.log
+          # THE BOOK ENDS PASS 1 WITH THIS AND IT IS NOT OPTIONAL. A gcc built
+          # --without-headers installs a self-contained limits.h that knows
+          # nothing of the system one, so PATH_MAX is simply absent and
+          # binutils pass 2 dies on "'PATH_MAX' undeclared" -- a diagnostic
+          # that names a macro rather than the include chain that lost it.
+          cd "$W"
+          cat "gcc-$GCCVER/gcc/limitx.h" "gcc-$GCCVER/gcc/glimits.h" \
+              "gcc-$GCCVER/gcc/limity.h" > \
+            "$(dirname "$("$LFS_TGT-gcc" -print-libgcc-file-name)")/install-tools/include/limits.h"
+          "$S/tools/bin/$LFS_TGT-gcc" --version | head -1 | sed 's/^/    /'
+          "$S/tools/bin/$LFS_TGT-gcc" -dumpmachine | sed 's/^/    targets: /'
+
+      # ---------------------------------------------------- LFS 10.0  5.4
+      - name: '5.4 linux 5.8.3 API headers'
+        run: |
+          set -eu
+          tar xf "linux-$KERNEL.tar.xz"
+          cd "linux-$KERNEL"
+          make mrproper > /dev/null 2>&1
+          # ARCH=arm64 for the same reason every kernel step in this repo needs
+          # it: SUBARCH is derived from `uname -m` through a sed table.
+          make ARCH=arm64 headers > /dev/null 2>&1
+          find usr/include -name '.*' -delete
+          rm -f usr/include/Makefile
+          cp -r usr/include "$S/usr"
+          echo "  headers: $(find "$S/usr/include" -name '*.h' | wc -l) files"
+          bad=0
+          for h in asm/unistd.h asm-generic/unistd.h linux/version.h; do
+            if [ -f "$S/usr/include/$h" ]; then printf '    %-24s present\n' "$h"
+            else printf '    %-24s MISSING\n' "$h"; bad=1; fi
+          done
+          [ "$bad" -eq 0 ] || { echo "  arch headers absent -- glibc cannot build"; exit 1; }
+
+      # ---------------------------------------------------- LFS 10.0  5.5
+      - name: '5.5 glibc 2.32 (cross-compiled INTO the sysroot)'
+        run: |
+          set -eu
+          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          tar xf "glibc-$GLIBC.tar.xz"
+          ( cd "glibc-$GLIBC" && patch -Np1 -i "../glibc-$GLIBC-fhs-1.patch" > /dev/null )
+          echo "  FHS patch applied"
+          mkdir -p b-glibc && cd b-glibc
+          # libc_cv_slibdir=/lib, NOT /usr/lib. LFS 10.0 has no /usr merge, so
+          # the shared libc belongs in /lib and that is where the loader baked
+          # into every binary will look. 13.0 says /usr/lib because 13.0 merged.
+          # --enable-kernel=3.2 is the book's floor for this glibc.
+          "../glibc-$GLIBC/configure" \
+            --prefix=/usr \
+            --host="$LFS_TGT" \
+            --build="$(../glibc-$GLIBC/scripts/config.guess)" \
+            --enable-kernel=3.2 \
+            --with-headers="$S/usr/include" \
+            libc_cv_slibdir=/lib \
+            > c.log 2>&1 || die configure c.log
+          # WHICH COMPILER DID configure ACTUALLY PICK? Host and target are both
+          # aarch64, so a native build and a cross build produce the same ELF
+          # interpreter name and a readelf check cannot tell them apart. Only
+          # the recorded CC can, and glibc records it in config.make -- checking
+          # only Makefile once produced "host build in disguise" about a
+          # perfectly good cross build.
+          cc=$(sed -n 's/^CC *= *//p' config.make Makefile 2>/dev/null | head -1)
+          [ -n "$cc" ] || cc=$(sed -n "s/^ac_cv_prog_CC='\{0,1\}//p" config.log 2>/dev/null | head -1 | tr -d "'")
+          echo "  configure selected CC: ${cc:-<undetermined>}"
+          case "$cc" in
+            *"$LFS_TGT"*) echo "  cross compiler confirmed" ;;
+            "")  echo "  UNDETERMINED -- not proceeding"; exit 1 ;;
+            *)   echo "  NOT the cross compiler -- a host build wearing a cross"
+                 echo "  build's name. Stopping."; exit 1 ;;
+          esac
+          make -j"$(nproc)" > b.log 2>&1 || die build b.log
+          make DESTDIR="$S" install > i.log 2>&1 || die install i.log
+          echo "  loader: $(ls "$S"/lib/ld-linux-* 2>/dev/null || echo MISSING)"
+          echo "  libc  : $(ls "$S"/lib/libc.so.* 2>/dev/null | head -1 || echo MISSING)"
+          # LFS'S OWN SANITY CHECK, at the seam where two other sysroots in this
+          # repo stopped. If the cross compiler cannot LINK, the next configure
+          # reports "Link tests are not allowed after GCC_NO_EXECUTABLES", which
+          # names the consequence and not the cause.
+          echo "  --- can the cross compiler link? ---"
+          echo 'int main(void){return 0;}' > /tmp/lt.c
+          if "$LFS_TGT-gcc" /tmp/lt.c -o /tmp/lt 2> /tmp/lt.err; then
+            echo "    links OK"
+            readelf -l /tmp/lt | grep -A1 'program interpreter' | sed 's/^/    /'
+          else
+            echo "    CANNOT LINK:"; head -8 /tmp/lt.err | sed 's/^/      /'
+            "$LFS_TGT-gcc" -print-search-dirs | head -4 | sed 's/^/      /'
+            ls "$S/lib" 2>/dev/null | head -12 | sed 's/^/      /'
+            exit 1
+          fi
+
+      # ---------------------------------------------------- LFS 10.0  5.6
+      - name: '5.6 libstdc++ pass 1'
+        run: |
+          set -eu
+          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          command -v "$LFS_TGT-g++" > /dev/null \
+            || { echo "  the cross g++ is not on PATH -- configure would"; \
+                 echo "  silently use the host's instead"; exit 1; }
+          mkdir -p b-libstdcxx && cd b-libstdcxx
+          "../gcc-$GCCVER/libstdc++-v3/configure" \
+            --host="$LFS_TGT" \
+            --build="$(../gcc-$GCCVER/config.guess)" \
+            --prefix=/usr \
+            --disable-multilib \
+            --disable-nls \
+            --disable-libstdcxx-pch \
+            --with-gxx-include-dir="/tools/$LFS_TGT/include/c++/$GCCVER" \
+            > c.log 2>&1 || die configure c.log
+          make -j"$(nproc)" > b.log 2>&1 || die build b.log
+          make DESTDIR="$S" install > i.log 2>&1 || die install i.log
+          echo "  libstdc++: $(ls "$S"/usr/lib/libstdc++.* 2>/dev/null | head -1 || echo MISSING)"
+
+      # ------------------------------------------- LFS 10.0 ch.6, abridged
+      - name: '6.x userland: BusyBox, make, binutils pass 2, gcc pass 2'
+        run: |
+          set -eu
+          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          export PATH="$S/tools/bin:$PATH"
+
+          # LFS chapter 6 builds seventeen packages to get a shell and the text
+          # tools. BusyBox is one package that supplies sh, sed, grep, awk, tar
+          # and the coreutils. A declared substitution, not an oversight.
+          tar xf "busybox-$BUSYBOX.tar.bz2" && cd "busybox-$BUSYBOX"
+          make defconfig > /dev/null 2>&1
+          # Disable AFTER oldconfig: it re-derives selected symbols and silently
+          # undoes seds applied before it. Then VERIFY, because a sed that
+          # matches nothing is silent.
+          yes '' | make oldconfig > /dev/null 2>&1
+          for sym in CONFIG_TC CONFIG_TLS CONFIG_SSL_CLIENT \
+                     CONFIG_FEATURE_WGET_HTTPS CONFIG_FEATURE_WGET_OPENSSL; do
+            sed -i "s/^$sym=y/# $sym is not set/" .config
+            grep -q "^$sym=y" .config && { echo "  $sym still on"; exit 1; }
+            printf '    %-32s off\n' "$sym"
+          done
+          # THE FLAG GOES IN .config, NOT ON THE MAKE LINE. BusyBox reads
+          # CONFIG_EXTRA_CFLAGS; EXTRA_CFLAGS and CFLAGS_EXTRA are ignored
+          # silently, which looks exactly like a fix that did not help.
+          sed -i 's|^CONFIG_EXTRA_CFLAGS=.*|CONFIG_EXTRA_CFLAGS="-D_GNU_SOURCE"|' .config
+          grep -q '^CONFIG_EXTRA_CFLAGS="-D_GNU_SOURCE"' .config \
+            || { echo "  could not set CONFIG_EXTRA_CFLAGS"; exit 1; }
+          make -j"$(nproc)" CROSS_COMPILE="$LFS_TGT-" > b.log 2>&1 || die busybox b.log
+          mkdir -p "$S/usr/bin"
+          cp busybox "$S/usr/bin/"
+          ( cd "$S/usr/bin" && for a in $(./busybox --list); do [ -e "$a" ] || ln -sf busybox "$a"; done )
+          # 10.0 has no /usr merge, so /bin needs its own links.
+          ( cd "$S/bin" && for a in sh ls cat echo mkdir rm cp mv sed grep awk tar; do
+              [ -e "$a" ] || ln -sf ../usr/bin/busybox "$a"; done )
+          echo "  applets: $(ls "$S/usr/bin" | wc -l)"
+
+          cd "$W" && tar xf "make-$MAKE_VER.tar.gz" && mkdir -p b-make && cd b-make
+          "../make-$MAKE_VER/configure" --prefix=/usr --host="$LFS_TGT" \
+            --build="$(../make-$MAKE_VER/config.guess)" --disable-nls \
+            > c.log 2>&1 || die "make configure" c.log
+          make -j"$(nproc)" > b.log 2>&1 || die "make build" b.log
+          make DESTDIR="$S" install > i.log 2>&1 || die "make install" i.log
+
+          cd "$W" && mkdir -p b-bu2 && cd b-bu2
+          "../binutils-$BINUTILS/configure" \
+            --prefix=/usr \
+            --build="$(../binutils-$BINUTILS/config.guess)" \
+            --host="$LFS_TGT" \
+            --disable-nls --enable-shared --disable-werror --enable-64-bit-bfd \
+            > c.log 2>&1 || die "binutils2 configure" c.log
+          make -j"$(nproc)" > b.log 2>&1 || die "binutils2 build" b.log
+          make DESTDIR="$S" install > i.log 2>&1 || die "binutils2 install" i.log
+          echo "  binutils pass 2 ok"
+
+          cd "$W" && mkdir -p b-gcc2 && cd b-gcc2
+          # THE BOOK'S gthr-default.h LINK. gcc pass 2 is a Canadian cross and
+          # its libgcc needs a threads header that only exists once configured;
+          # 10.0 creates it by hand before configure runs.
+          mkdir -pv "$LFS_TGT/libgcc"
+          ln -sf ../../../"gcc-$GCCVER"/libgcc/gthr-posix.h "$LFS_TGT/libgcc/gthr-default.h"
+          "../gcc-$GCCVER/configure" \
+            --build="$(../gcc-$GCCVER/config.guess)" \
+            --host="$LFS_TGT" \
+            --prefix=/usr \
+            CC_FOR_TARGET="$LFS_TGT-gcc" \
+            --with-build-sysroot="$S" \
+            --enable-initfini-array \
+            --disable-nls --disable-multilib --disable-decimal-float \
+            --disable-libatomic --disable-libgomp --disable-libquadmath \
+            --disable-libssp --disable-libvtv --disable-libstdcxx \
+            --enable-languages=c,c++ \
+            > c.log 2>&1 || die "gcc2 configure" c.log
+          make -j"$(nproc)" > b.log 2>&1 || die "gcc2 build" b.log
+          make DESTDIR="$S" install > i.log 2>&1 || die "gcc2 install" i.log
+          ln -sfv gcc "$S/usr/bin/cc"
+          echo "  gcc: $(file "$S/usr/bin/gcc" | cut -c1-90)"
+
+      - name: 'THE LADDER: is the box self-sufficient?'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          rung() {
+            name=$1; shift
+            out=$(S="$S" "$W/box10.sh" "$@" 2>&1); rc=$?
+            case "$out" in *"not found"*|*"No such file"*|*"cannot execute"*) rc=127 ;; esac
+            [ $rc -eq 0 ] && printf '  %-28s OK    %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-46)" \
+                          || printf '  %-28s FAIL  %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-52)"
+          }
+          rung "1. shell"        /bin/sh -c 'echo alive'
+          rung "2. coreutils"    /usr/bin/ls /
+          rung "3. sed/grep/awk" /bin/sh -c 'echo x | sed s/x/y/ | grep -q y && echo ok'
+          rung "4. make"         /usr/bin/make --version
+          rung "5. as"           /usr/bin/as --version
+          rung "6. ld"           /usr/bin/ld --version
+          rung "7. gcc"          /usr/bin/gcc --version
+          echo
+          echo "  --- 8. compile and run, entirely inside ---"
+          mkdir -p "$S/work"
+          printf 'int main(void){return 42;}\n' > "$S/work/t.c"
+          S="$S" "$W/box10.sh" /usr/bin/gcc -o /work/t /work/t.c 2>&1 | head -6 | sed 's/^/    /'
+          if [ -x "$S/work/t" ]; then
+            S="$S" "$W/box10.sh" /work/t; echo "    ran: exit=$? (expect 42)"
+          else
+            echo "    no binary produced -- the attempts below cannot work"
+          fi
+
+      - name: 'Stage gcc ${{ env.GCC15 }} and gcc ${{ env.GCC16 }} into the box'
+        run: |
+          set -eu
+          # Fetched OUTSIDE and copied in: the box has no network, deliberately.
+          for v in "$GCC15" "$GCC16"; do
+            case "$v" in
+              "$GCC15") [ "${{ github.event.inputs.try_gcc15 }}" = "no" ] && continue ;;
+              "$GCC16") [ "${{ github.event.inputs.try_gcc16 }}" = "no" ] && continue ;;
+            esac
+            echo "  gcc-$v"
+            curl -fsSL --retry 3 -O "$GNU/gcc/gcc-$v/gcc-$v.tar.xz"
+            rm -rf "src-$v" && mkdir -p "src-$v"
+            tar xf "gcc-$v.tar.xz" -C "src-$v" --strip-components=1
+            ( cd "src-$v"
+              tar xf "$W/gmp-$GMP_VER.tar.xz"   && mv "gmp-$GMP_VER" gmp
+              tar xf "$W/mpfr-$MPFR_VER.tar.xz" && mv "mpfr-$MPFR_VER" mpfr
+              tar xf "$W/mpc-$MPC_VER.tar.gz"   && mv "mpc-$MPC_VER" mpc )
+            rm -rf "$S/work/src-$v" && cp -r "src-$v" "$S/work/"
+          done
+          echo "  staged: $(ls "$S/work" | tr '\n' ' ')"
+
+      - name: 'ATTEMPT 1: gcc 10 builds gcc ${{ env.GCC15 }}'
+        if: ${{ github.event.inputs.try_gcc15 != 'no' }}
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # gcc 15 requires an ISO C++11 compiler; gcc 10.2 provides C++14, so
+          # the LANGUAGE side is not in question. What this measures is whether
+          # a 2014-era-adjacent sysroot -- glibc 2.32, binutils 2.35 -- carries
+          # a 2025 libstdc++ and a 2025 build system. If it fails, the failure
+          # is expected to be the LIBC or binutils, not the compiler, and the
+          # log should say which.
+          S="$S" "$W/box10.sh" /bin/sh -c '
+            gcc --version | head -1
+            mkdir -p /work/b15 && cd /work/b15
+            /work/src-'"$GCC15"'/configure --prefix=/work/out15 \
+              --enable-languages=c,c++ --disable-multilib --disable-bootstrap \
+              --disable-libsanitizer --disable-libvtv --disable-libgomp \
+              --disable-libquadmath --disable-werror > c.log 2>&1
+            echo "configure rc=$?"; tail -5 c.log
+            make -j4 MAKEINFO=true > b.log 2>&1
+            echo "make rc=$?"
+            grep -E "internal compiler error|error:|Error [0-9]" b.log | head -8
+            echo "--- last lines ---"; tail -12 b.log
+            make install > i.log 2>&1; echo "install rc=$?"
+            /work/out15/bin/gcc --version 2>&1 | head -1
+          ' 2>&1 | sed 's/^/    /'
+
+      - name: 'ATTEMPT 2: gcc 10 builds gcc ${{ env.GCC16 }}'
+        if: ${{ github.event.inputs.try_gcc16 != 'no' }}
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # RUN THIS EVEN IF ATTEMPT 1 FAILED. The two are independent
+          # questions and the interesting answer is the one where they differ:
+          # 15.2 landing and 16.1 not would mean the stable branch of the chain
+          # works and the bleeding one needs a newer sysroot under it, which is
+          # a decision, not a bug. Reporting only the first would hide that.
+          S="$S" "$W/box10.sh" /bin/sh -c '
+            gcc --version | head -1
+            mkdir -p /work/b16 && cd /work/b16
+            /work/src-'"$GCC16"'/configure --prefix=/work/out16 \
+              --enable-languages=c,c++ --disable-multilib --disable-bootstrap \
+              --disable-libsanitizer --disable-libvtv --disable-libgomp \
+              --disable-libquadmath --disable-werror > c.log 2>&1
+            echo "configure rc=$?"; tail -5 c.log
+            make -j4 MAKEINFO=true > b.log 2>&1
+            echo "make rc=$?"
+            grep -E "internal compiler error|error:|Error [0-9]" b.log | head -8
+            echo "--- last lines ---"; tail -12 b.log
+            make install > i.log 2>&1; echo "install rc=$?"
+            /work/out16/bin/gcc --version 2>&1 | head -1
+          ' 2>&1 | sed 's/^/    /'
+
+      - name: 'RUNG 2 SUMMARY'
+        if: always()
+        run: |
+          set -u
+          set +e
+          echo "  environment   LFS 10.0 -- binutils $BINUTILS, glibc $GLIBC, linux $KERNEL"
+          echo "  compiler      gcc $GCCVER, cross-built, running inside the box"
+          echo
+          printf '  %-30s %s\n' "box compiles and runs"  "$( [ -x "$S/work/t" ] && echo yes || echo no)"
+          printf '  %-30s %s\n' "gcc $GCC15 built"       "$( [ -x "$S/work/out15/bin/gcc" ] && echo yes || echo no)"
+          printf '  %-30s %s\n' "gcc $GCC16 built"       "$( [ -x "$S/work/out16/bin/gcc" ] && echo yes || echo no)"
+          echo
+          echo "  Below this rung: hermetic-gcc47 shows OUR gcc 4.7 reaching"
+          echo "  gcc 10 -- this box starts from a host-built cross toolchain"
+          echo "  on purpose, so a failure here is gcc 10's and not 4.7's."
+          echo
+          echo "  Above it: hermetic-gcc15 and hermetic-gcc16 take those"
+          echo "  compilers on to a kernel and a QEMU boot. No kernel is built"
+          echo "  in this box."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hermetic-gcc10-logs
+          path: |
+            box10.sh
+            b-*/c.log
+            b-*/b.log
+            sysroot/work/b15/c.log
+            sysroot/work/b15/b.log
+            sysroot/work/b16/c.log
+            sysroot/work/b16/b.log
+          if-no-files-found: warn

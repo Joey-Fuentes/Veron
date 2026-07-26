@@ -9,7 +9,8 @@
 > reproduces upstream's reference compiler **byte for byte** (see §5b). All
 > current work — Mes, tcc, gcc — is stage 3 and starts from the short
 > `spikes/stage3/README.md`, with the forward plan in
-> `spikes/stage3/ROADMAP.md`. Do not load this file for context unless you
+> `spikes/stage3/ROADMAP.md` (to tcc) and `spikes/stage4/ROADMAP.md` (above it).
+> Do not load this file for context unless you
 > specifically need stage 0–2 detail.
 
 > **Scope: invariants SUSPENDED.** Everything described here lives under

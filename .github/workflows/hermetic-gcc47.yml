@@ -1,0 +1,694 @@
+name: hermetic-gcc47
+
+# ============================================================================
+# RUNG 1 OF THE CHAIN.  Build gcc 4.7.4 hermetically, then use it to reach gcc 10.
+# ============================================================================
+#
+# WHAT THIS IS FOR
+#
+# The end state has no host compiler anywhere in it:
+#
+#     tcc  ->  binutils, gmp/mpfr/mpc, make
+#          ->  gcc 4.7.4 + backported aarch64 backend   (c AND c++)
+#          ->  libgcc + libstdc++
+#          ->  g++ 4.7   ->  gcc 10           <- THIS BOX ENDS HERE
+#          ->  gcc 10    ->  gcc 15 / gcc 16  <- hermetic-gcc10
+#          ->  gcc 15/16 ->  kernel + userland + boot  <- hermetic-gcc15 / -gcc16
+#
+# This box is that chain's FIRST LINK, made to stand up on its own. It proves
+# two things and nothing else:
+#
+#   1. gcc 4.7.4 + the transplant builds COMPLETELY -- through libgcc and
+#      libstdc++ -- in an environment with no host /usr.
+#   2. The g++ it yields can compile AND LINK, and can then build gcc 10.
+#
+# WHAT THIS IS NOT
+#
+#   * NOT a QEMU boot. No kernel is built here. Booting is hermetic-gcc15 and
+#     hermetic-gcc16, which are the boxes whose whole job is a running system.
+#   * NOT tcc. The host gcc builds the LFS 7.5 scaffolding, exactly as LFS
+#     chapter 5 does. Replacing that is stage 3's job (seed -> tcc), and when it
+#     lands it swaps in UNDER this box without changing anything above.
+#   * NOT a claim that gcc 4.8.2 is a rung. The 4.8.2 in the sysroot below is
+#     DISPOSABLE SCAFFOLDING -- it exists only because gcc 4.7.2 has no aarch64
+#     backend and therefore cannot be the cross compiler of a sysroot targeting
+#     aarch64. In the real chain tcc builds 4.7 directly and 4.8.2 never exists.
+#
+# WHY LFS 7.5 IS THE ENVIRONMENT
+#
+# Every workaround this leg accumulated is a 2013 compiler meeting a 2026
+# system: `sed struct ucontext -> ucontext_t`, -std=gnu89, -fcommon,
+# MAKEINFO=true. A period sysroot removes the mismatch instead of patching
+# around it, which is the difference between a result and a workaround.
+#
+# THE QUESTION THIS BOX HAS NEVER YET REACHED
+#
+# libgcc is the gate for the ENTIRE chain: without libgcc.a there is no linking
+# g++, so no gcc 10, so no gcc 15, so nothing. The blocker is
+#
+#     libgcc/unwind-dw2.c:1490:44: internal compiler error: Segmentation fault
+#
+# reproduced identically under the host gcc and under tcc, so it is the
+# transplant's environment and not the compiler building it. The prediction --
+# stated before the run, and the reason this box is glibc 2.19 -- is that the
+# fault is ENVIRONMENTAL:
+#
+#     gcc47-libgcc-ice's control showed vanilla 4.8.5 failing at the SAME object
+#     with a clean diagnostic:
+#         md-unwind-support.h:42:21: error: field 'uc' has incomplete type
+#     That is `struct ucontext uc;` meeting a glibc that renamed the type in
+#     2.26. glibc 2.19 PREDATES the rename.
+#
+#     libgcc builds unpatched  ->  the ICE was the era; the transplant is clean
+#     it still ICEs at :1490   ->  the transplant is at fault; get the backtrace
+#
+# Every previous attempt died BEFORE putting that question -- fixincludes with
+# no /usr/include, configure with no in-tree mpfr, python3 absent for the
+# transplant. This file is ordered so the prediction is answered as early as it
+# can be, and the verdict step reports "NOT TESTED" rather than an answer when
+# the build did not get there.
+#
+# HOW TO RUN IT
+#
+#   push        edits to THIS FILE ONLY -- this box never triggers another and
+#               no other box triggers it
+#   dispatch    ucontext_patch : no  = test the prediction (default)
+#                                yes = patch it, to get past and reach gcc 10
+#               try_gcc10      : yes = attempt gcc 10.2.0 after the gate
+#
+# ============================================================================
+
+on:
+  push:
+    paths:
+      - '.github/workflows/hermetic-gcc47.yml'
+  workflow_dispatch:
+    inputs:
+      ucontext_patch:
+        description: 'patch struct ucontext in our 4.7 tree (no = test the prediction)'
+        required: false
+        default: 'no'
+      try_gcc10:
+        description: 'after the gate, attempt gcc 10.2.0 with g++ 4.7'
+        required: false
+        default: 'yes'
+
+concurrency:
+  group: hermetic-gcc47-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GNU: 'https://mirrors.kernel.org/gnu'
+  LFS_TGT: 'aarch64-veron-linux-gnu'
+  # LFS 7.5's tested set. Not composed by us -- every pairing here is one a
+  # book has run end to end, which is the rule three earlier runs were lost to.
+  BINUTILS: '2.24'
+  GCCVER: '4.8.2'
+  GLIBC: '2.19'
+  KERNEL: '3.13.3'
+  GMP_VER: '5.1.3'
+  MPFR_VER: '3.1.2'
+  MPC_VER: '1.0.2'
+  # rung 1's own output and its donor
+  SHA474: '92e61c6dc3a0a449e62d72a38185fda550168a86702dea07125ebd3ec3996282'
+  SHA485: '22fb1e7e0f68a63cee631d85b20461d1ea6bda162f03096350e38c8d427ecf23'
+  # what rung 1 hands to rung 2. 10.2.0 rather than 10.4.0 because 10.2.0 is
+  # LFS 10.0's gcc, so hermetic-gcc10 can surround it with a tested set --
+  # and GCC's own prerequisites put the whole 10.x series up to 10.4 inside
+  # what a C++98 compiler may bootstrap, so the choice costs nothing.
+  GCC10: '10.2.0'
+
+jobs:
+  rung1:
+    name: 'LFS 7.5 box -> gcc 4.7.4 + backend -> g++ -> gcc 10'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bubblewrap curl git bzip2 xz-utils gcc g++ make bison flex \
+            texinfo m4 perl python3 file gawk
+
+      # ================================================== the scaffolding
+      # Steps up to 'THE BOX' build the PERIOD ENVIRONMENT. They are LFS 7.5
+      # chapter 5, and they carry seven runs of fixes -- each noted where it
+      # applies. None of this is a rung; it is the room rung 1 is built in.
+
+      - name: 'Environment (LFS 7.5 ch. 4)'
+        run: |
+          set -eu
+          S="$PWD/sysroot"
+          echo "S=$S" >> "$GITHUB_ENV"
+          echo "W=$PWD" >> "$GITHUB_ENV"
+          mkdir -pv "$S"/tools "$S"/work
+          echo "$S/tools/bin" >> "$GITHUB_PATH"
+          # `ln -sv $LFS/tools /` is LFS 7.5 chapter 4 and it is load-bearing:
+          # chapter 5 configures with ABSOLUTE /tools paths, and those must
+          # resolve on the HOST while the cross compiler is driven from outside
+          # the sysroot. Skipping it cost a run in which asm/unistd.h was
+          # verifiably present at $S/tools/include and glibc still could not
+          # find it, because it was looking in /tools/include.
+          sudo ln -sfn "$S/tools" /tools
+          echo "  /tools -> $(readlink -f /tools)"
+          # AND THE SYSROOT-RELATIVE PATHS MUST LEAD SOMEWHERE. gcc pass 1 is
+          # configured --with-sysroot="$S", so its startfile search becomes
+          # $S/lib and $S/usr/lib -- while LFS 7.5 installs glibc to /tools/lib.
+          mkdir -p "$S/usr"
+          ln -sfn tools/lib "$S/lib"
+          ln -sfn ../tools/lib "$S/usr/lib"
+          # AND /bin, FOR THE SAME REASON ONE STEP LATER. `#!/bin/sh` does not
+          # read PATH, so with no /bin the kernel cannot load the interpreter
+          # and configure reports "command not found" about itself.
+          ln -sfn tools/bin "$S/bin"
+          ln -sfn ../tools/bin "$S/usr/bin"
+          ln -sfn tools/sbin "$S/sbin" 2>/dev/null || true
+          echo "  \$S/lib     -> $(readlink "$S/lib")"
+          echo "  \$S/usr/lib -> $(readlink "$S/usr/lib")"
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          echo "  LFS_TGT: $LFS_TGT   host: $(gcc -dumpmachine)"
+
+      - name: 'Cache the period sysroot'
+        id: sysrootcache
+        uses: actions/cache@v4
+        with:
+          path: sysroot
+          # Namespaced to THIS box. Cache keys are repo-scoped, so a shared
+          # prefix is how two workflows quietly hand each other a sysroot.
+          key: hermetic-gcc47-${{ env.BINUTILS }}-${{ env.GCCVER }}-${{ env.GLIBC }}-${{ env.KERNEL }}-v1
+
+      - name: 'Fetch (LFS 7.5 versions, plus 4.7.4 / 4.8.5 / 10.2.0)'
+        run: |
+          set -eu
+          for u in "$GNU/binutils/binutils-$BINUTILS.tar.bz2" \
+                   "$GNU/gcc/gcc-$GCCVER/gcc-$GCCVER.tar.bz2" \
+                   "$GNU/glibc/glibc-$GLIBC.tar.xz" \
+                   "$GNU/gmp/gmp-$GMP_VER.tar.xz" \
+                   "$GNU/mpfr/mpfr-$MPFR_VER.tar.xz" \
+                   "$GNU/mpc/mpc-$MPC_VER.tar.gz" \
+                   "$GNU/make/make-4.0.tar.bz2" \
+                   "https://busybox.net/downloads/busybox-1.36.1.tar.bz2" \
+                   "https://cdn.kernel.org/pub/linux/kernel/v3.x/linux-$KERNEL.tar.xz"; do
+            echo "  $(basename "$u")"; curl -fsSL --retry 3 -O "$u"
+          done
+          F=tools/fetch-pinned.sh
+          bash "$F" g474 "$HOME/.cache/veron/gcc-4.7.4.tar.bz2" "$SHA474" \
+            "$GNU/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2" "" "" | sed 's/^/  /'
+          bash "$F" g485 "$HOME/.cache/veron/gcc-4.8.5.tar.bz2" "$SHA485" \
+            "$GNU/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2" "" "" | sed 's/^/  /'
+          if [ "${{ github.event.inputs.try_gcc10 }}" != "no" ]; then
+            echo "  gcc-$GCC10"
+            curl -fsSL --retry 3 -O "$GNU/gcc/gcc-$GCC10/gcc-$GCC10.tar.xz"
+          fi
+
+      - name: '5.4 binutils 2.24 pass 1'
+        run: |
+          set -eu
+          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|internal compiler|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          tar xf "binutils-$BINUTILS.tar.bz2"
+          mkdir -p b-bu1 && cd b-bu1
+          "../binutils-$BINUTILS/configure" \
+            --prefix=/tools --with-sysroot="$S" --with-lib-path=/tools/lib \
+            --target="$LFS_TGT" --disable-nls --disable-werror \
+            > c.log 2>&1 || die "configure" c.log
+          make -j"$(nproc)" > b.log 2>&1 || die "build" b.log
+          make DESTDIR="$S" install > i.log 2>&1 || die "install" i.log
+          echo "  tools: $(ls "$S/tools/bin" | wc -l) cross binaries"
+
+      - name: '5.5 gcc 4.8.2 pass 1 (SCAFFOLDING, not a rung)'
+        run: |
+          set -eu
+          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|internal compiler|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          tar xf "gcc-$GCCVER.tar.bz2"
+          cd "gcc-$GCCVER"
+          sed -i '/k prot/agcc_cv_libc_provides_ssp=yes' gcc/configure
+          # LFS 7.5 APPLIES THIS TO BOTH GCC PASSES. It redirects gcc's built-in
+          # idea of where the dynamic linker and the startfiles live, from /lib
+          # and /usr to /tools. Without it, pass 1 cannot find crt1.o and pass 2
+          # searches the HOST triplet's lib dir.
+          for file in $(find gcc/config -name linux64.h -o -name linux.h -o -name sysv4.h); do
+            cp -u "$file" "$file.orig"
+            sed -e 's@/lib\(64\)\?\(32\)\?/ld@/tools&@g' \
+                -e 's@/usr@/tools@g' "$file.orig" > "$file"
+            printf '\n#undef STANDARD_STARTFILE_PREFIX_1\n#undef STANDARD_STARTFILE_PREFIX_2\n#define STANDARD_STARTFILE_PREFIX_1 "/tools/lib/"\n#define STANDARD_STARTFILE_PREFIX_2 ""\n' >> "$file"
+            touch "$file.orig"
+          done
+          echo "  startfile prefix redirected in $(find gcc/config -name '*.orig' | wc -l) headers"
+          tar xf "../mpfr-$MPFR_VER.tar.xz" && mv "mpfr-$MPFR_VER" mpfr
+          tar xf "../gmp-$GMP_VER.tar.xz"   && mv "gmp-$GMP_VER" gmp
+          tar xf "../mpc-$MPC_VER.tar.gz"   && mv "mpc-$MPC_VER" mpc
+          cd "$W" && mkdir -p b-gcc1 && cd b-gcc1
+          # CXX="g++ -std=gnu++98": reload1.c:89 does `bool++`, legal in C++98
+          # and removed in C++17, which is what a 2026 host g++ defaults to.
+          "../gcc-$GCCVER/configure" \
+            CXX="g++ -std=gnu++98" \
+            --target="$LFS_TGT" --prefix=/tools --with-sysroot="$S" \
+            --with-newlib --without-headers \
+            --with-local-prefix=/tools --with-native-system-header-dir=/tools/include \
+            --disable-nls --disable-shared --disable-multilib \
+            --disable-decimal-float --disable-threads --disable-libatomic \
+            --disable-libgomp --disable-libitm --disable-libmudflap \
+            --disable-libquadmath --disable-libsanitizer --disable-libssp \
+            --disable-libstdc++-v3 --enable-languages=c,c++ \
+            > c.log 2>&1 || die "configure" c.log
+          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || die "build" b.log
+          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || die "install" i.log
+          # A gcc built --without-headers installs a self-contained limits.h
+          # that knows nothing of the system one, so PATH_MAX is absent and
+          # binutils pass 2 dies on 'PATH_MAX' undeclared.
+          LIMH=$(dirname "$("$LFS_TGT-gcc" -print-libgcc-file-name)")
+          for d in include include-fixed; do
+            [ -d "$LIMH/$d" ] || continue
+            cat "../gcc-$GCCVER/gcc/limitx.h" "../gcc-$GCCVER/gcc/glimits.h" \
+                "../gcc-$GCCVER/gcc/limity.h" > "$LIMH/$d/limits.h"
+            echo "  full limits.h written to $d/"
+          done
+          "$S/tools/bin/$LFS_TGT-gcc" --version | head -1 | sed 's/^/  /'
+
+      - name: '5.6 linux 3.13.3 API headers'
+        run: |
+          set -eu
+          tar xf "linux-$KERNEL.tar.xz"
+          cd "linux-$KERNEL"
+          make mrproper > /dev/null 2>&1
+          # ARCH=arm64 is required: linux 3.13 derives SUBARCH from `uname -m`
+          # and its sed table predates aarch64, so it installs only the generic
+          # headers and glibc then dies on "asm/unistd.h: No such file".
+          make ARCH=arm64 INSTALL_HDR_PATH=dest headers_install > hi.log 2>&1 \
+            || { echo "  headers_install failed:"; tail -10 hi.log | sed 's/^/    /'; exit 1; }
+          mkdir -p "$S/tools/include"
+          cp -r dest/include/* "$S/tools/include"
+          echo "  headers: $(find "$S/tools/include" -name '*.h' | wc -l)"
+          bad=0
+          for h in asm/unistd.h asm-generic/unistd.h linux/version.h; do
+            if [ -f "$S/tools/include/$h" ]; then printf '    %-24s present\n' "$h"
+            else printf '    %-24s MISSING\n' "$h"; bad=1; fi
+          done
+          [ "$bad" -eq 0 ] || { echo "  arch headers absent -- glibc cannot build"; exit 1; }
+
+      - name: '5.7 glibc 2.19 -- the period libc, no ucontext rename'
+        run: |
+          set -eu
+          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          command -v "$LFS_TGT-gcc" > /dev/null || { echo "  cross gcc not on PATH"; exit 1; }
+          tar xf "glibc-$GLIBC.tar.xz"
+          mkdir -p b-glibc && cd b-glibc
+          # MAKEINFO=: AT CONFIGURE TIME. glibc's manual/Makefile compares
+          # against the LITERAL string ":", so MAKEINFO=true at make time is not
+          # a no-op to it. Three runs went into that distinction.
+          # The libc_cv_* answers are LFS 7.5's and are required: a cross
+          # compiler cannot RUN the programs those checks compile.
+          "../glibc-$GLIBC/configure" \
+            --prefix=/tools --host="$LFS_TGT" \
+            --build="$(../glibc-$GLIBC/scripts/config.guess)" \
+            --disable-profile --enable-kernel=2.6.32 \
+            --with-headers=/tools/include \
+            libc_cv_forced_unwind=yes libc_cv_ctors_header=yes \
+            libc_cv_c_cleanup=yes MAKEINFO=: \
+            > c.log 2>&1 || die "configure" c.log
+          # glibc records CC in config.make, not Makefile. Looking in the wrong
+          # file once produced "host build in disguise" about a good cross
+          # build -- undetermined is not the same as wrong.
+          cc=$(sed -n 's/^CC *= *//p' config.make Makefile 2>/dev/null | head -1)
+          echo "  CC: ${cc:-<undetermined>}"
+          case "$cc" in
+            *"$LFS_TGT"*) echo "  cross compiler confirmed" ;;
+            "")  echo "  UNDETERMINED -- not proceeding"; exit 1 ;;
+            *)   echo "  NOT the cross compiler"; exit 1 ;;
+          esac
+          make -j"$(nproc)" > b.log 2>&1 || die "build" b.log
+          make DESTDIR="$S" install > i.log 2>&1 || die "install" i.log
+          miss=0
+          for a in lib/libc.so.6 lib/ld-linux-aarch64.so.1 lib/libc.a \
+                   include/stdio.h include/gnu/stubs.h; do
+            if [ -e "$S/tools/$a" ]; then printf '    %-32s present\n' "$a"
+            else printf '    %-32s MISSING\n' "$a"; miss=1; fi
+          done
+          [ "$miss" -eq 0 ] || { echo "  the libc did not land"; exit 1; }
+          echo "  --- can the cross compiler link? ---"
+          echo 'int main(void){return 0;}' > /tmp/lt.c
+          if "$LFS_TGT-gcc" /tmp/lt.c -o /tmp/lt 2> /tmp/lt.err; then
+            echo "    links OK"
+          else
+            echo "    CANNOT LINK:"; head -8 /tmp/lt.err | sed 's/^/      /'
+            "$LFS_TGT-gcc" -print-search-dirs | head -4 | sed 's/^/      /'
+            exit 1
+          fi
+          # THE PREMISE OF THIS ENTIRE BOX, checked rather than assumed.
+          echo "  --- struct ucontext in glibc $GLIBC (the prediction's premise) ---"
+          if grep -q 'struct ucontext' "$S/tools/include/sys/ucontext.h" 2>/dev/null; then
+            grep -n 'struct ucontext' "$S/tools/include/sys/ucontext.h" | head -3 | sed 's/^/    /'
+            echo "    PREMISE HOLDS: the struct tag exists at this glibc."
+          else
+            echo "    PREMISE FAILS: no 'struct ucontext' tag here. The ICE"
+            echo "    prediction below is testing something that is not true,"
+            echo "    and a pass would not mean what it appears to mean."
+          fi
+
+      - name: '5.9-5.11 libstdc++, binutils pass 2, gcc pass 2'
+        run: |
+          set -eu
+          die() { echo "  --- $1 ---"; grep -nE "Error [0-9]|configure: error|error:" "$2" | head -10 | sed 's/^/    /'; tail -12 "$2" | sed 's/^/    /'; exit 1; }
+          mkdir -p b-libstdcxx && cd b-libstdcxx
+          "../gcc-$GCCVER/libstdc++-v3/configure" \
+            --host="$LFS_TGT" --prefix=/tools --disable-multilib --disable-shared \
+            --disable-nls --disable-libstdcxx-threads --disable-libstdcxx-pch \
+            --with-gxx-include-dir="/tools/$LFS_TGT/include/c++/$GCCVER" \
+            > c.log 2>&1 || die "libstdc++ configure" c.log
+          make -j"$(nproc)" > b.log 2>&1 || die "libstdc++ build" b.log
+          make DESTDIR="$S" install > i.log 2>&1 || die "libstdc++ install" i.log
+          echo "  libstdc++ ok"
+
+          cd "$W" && mkdir -p b-bu2 && cd b-bu2
+          CC="$LFS_TGT-gcc" AR="$LFS_TGT-ar" RANLIB="$LFS_TGT-ranlib" \
+            "../binutils-$BINUTILS/configure" --prefix=/tools --disable-nls \
+            --disable-werror --with-lib-path=/tools/lib --with-sysroot \
+            > c.log 2>&1 || die "binutils2 configure" c.log
+          make -j"$(nproc)" > b.log 2>&1 || die "binutils2 build" b.log
+          make DESTDIR="$S" install > i.log 2>&1 || die "binutils2 install" i.log
+          echo "  binutils pass 2 ok"
+
+          cd "$W/gcc-$GCCVER"
+          cat gcc/limitx.h gcc/glimits.h gcc/limity.h \
+            > "$(dirname "$("$LFS_TGT-gcc" -print-libgcc-file-name)")/include-fixed/limits.h"
+          cd "$W" && mkdir -p b-gcc2 && cd b-gcc2
+          CC="$LFS_TGT-gcc" CXX="$LFS_TGT-g++" \
+          AR="$LFS_TGT-ar" RANLIB="$LFS_TGT-ranlib" \
+            "../gcc-$GCCVER/configure" --prefix=/tools \
+            --with-local-prefix=/tools --with-native-system-header-dir=/tools/include \
+            --enable-clocale=gnu --enable-shared --enable-threads=posix \
+            --enable-__cxa_atexit \
+            --enable-languages=c,c++ --disable-libstdcxx-pch \
+            --disable-multilib --disable-bootstrap --disable-libgomp \
+            --with-mpfr-include="$W/gcc-$GCCVER/mpfr/src" \
+            --with-mpfr-lib="$W/b-gcc2/mpfr/src/.libs" \
+            > c.log 2>&1 || die "gcc2 configure" c.log
+          make -j"$(nproc)" MAKEINFO=true > b.log 2>&1 || die "gcc2 build" b.log
+          make DESTDIR="$S" MAKEINFO=true install > i.log 2>&1 || die "gcc2 install" i.log
+          ln -sfv gcc "$S/tools/bin/cc" 2>/dev/null || true
+          echo "  native /tools gcc: $("$S/tools/bin/gcc" --version 2>&1 | head -1)"
+
+      - name: 'userland: BusyBox + make, cross-built'
+        run: |
+          set -eu
+          tar xf busybox-1.36.1.tar.bz2 && cd busybox-1.36.1
+          make defconfig > /dev/null 2>&1
+          yes '' | make oldconfig > /dev/null 2>&1
+          # Disable AFTER oldconfig -- before it, the symbols are re-derived and
+          # the seds are undone. CONFIG_SEEDRNG needs <sys/random.h> (glibc
+          # 2.25+); this box is 2.19 on purpose. BusyBox 1.36.1 is 2023 code
+          # against a 2014 libc, so expect more of these.
+          for sym in CONFIG_TC CONFIG_TLS CONFIG_SSL_CLIENT \
+                     CONFIG_FEATURE_WGET_HTTPS CONFIG_FEATURE_WGET_OPENSSL \
+                     CONFIG_SEEDRNG CONFIG_FEATURE_UTMP CONFIG_FEATURE_WTMP; do
+            sed -i "s/^$sym=y/# $sym is not set/" .config
+            grep -q "^$sym=y" .config && { echo "  $sym still on"; exit 1; }
+            printf '    %-32s off\n' "$sym"
+          done
+          make -j"$(nproc)" CROSS_COMPILE="$LFS_TGT-" > b.log 2>&1 || {
+            echo "  --- busybox ---"
+            grep -nE "error:|Error [0-9]" b.log | head -10 | sed 's/^/    /'; exit 1; }
+          cp busybox "$S/tools/bin/"
+          ( cd "$S/tools/bin" && for a in $(./busybox --list); do [ -e "$a" ] || ln -sf busybox "$a"; done )
+          cd "$W" && tar xf make-4.0.tar.bz2 && mkdir -p b-make && cd b-make
+          ../make-4.0/configure --prefix=/tools --host="$LFS_TGT" \
+            --build="$(../make-4.0/config.guess)" --disable-nls > c.log 2>&1 \
+            || { tail -15 c.log | sed 's/^/    /'; exit 1; }
+          make -j"$(nproc)" > b.log 2>&1 && make DESTDIR="$S" install > i.log 2>&1
+          echo "  applets: $(ls "$S/tools/bin" | wc -l)"
+
+      - name: 'THE BOX (period, no host /usr)'
+        run: |
+          set -eu
+          cat > box47.sh <<'EOS'
+          #!/bin/sh
+          set -eu
+          S=${S:?}
+          exec bwrap --unshare-all --die-with-parent --new-session --clearenv \
+            --setenv PATH /tools/bin --setenv HOME /work \
+            --setenv LC_ALL POSIX --setenv TERM dumb --setenv SOURCE_DATE_EPOCH 0 \
+            --bind "$S" / --proc /proc --dev /dev --tmpfs /tmp \
+            --chdir /work "$@"
+          EOS
+          chmod +x box47.sh
+          # Every caller uses "$W/box47.sh", never ./box47.sh: steps that `cd`
+          # first would resolve a relative path inside the source tree.
+          echo "  sysroot: $(du -sh "$S" | cut -f1)"
+          for c in "/tools/bin/sh -c true" "/tools/bin/gcc --version" \
+                   "/tools/bin/as --version" "/tools/bin/make --version"; do
+            set -- $c
+            printf '  %-14s %s\n' "$(basename "$1")" \
+              "$(S="$S" "$W/box47.sh" "$@" 2>&1 | head -1 | cut -c1-60)"
+          done
+
+      # ================================================== RUNG 1 STARTS HERE
+      - name: 'Transplant 4.8.5s aarch64 backend into 4.7.4'
+        run: |
+          set -eu
+          # THE TRANSPLANT RUNS OUTSIDE THE BOX, AND THAT IS A RECORDED DEBT.
+          # backport-aarch64.sh shells out to python3 for
+          # expand_int_iterators.py and port_gcc47_api.py, and the sysroot has
+          # no python -- run 1 of the old spike died at "python3: not found".
+          #
+          # A bootstrap has no python until very late, so two of the three
+          # transplant deltas are currently expressed in a language that does
+          # not exist where they would need to run. The answer is to FREEZE the
+          # generators' output as reviewed patch files (audit criterion 4), and
+          # the step below takes the first half of that: it emits the whole
+          # transplant as a single diff, uploaded as an artifact, so the frozen
+          # form can be reviewed and committed without re-deriving it.
+          bash spikes/stage4/probes/backport-aarch64.sh g474 g485 2>&1 | tail -3
+          [ "$(grep -c aarch64 g474/gcc/config.gcc)" -gt 0 ] \
+            || { echo "  transplant did not take"; exit 1; }
+          echo "  --- freezing the transplant as a reviewable diff ---"
+          rm -rf g474-pristine && mkdir g474-pristine
+          tar xf "$HOME/.cache/veron/gcc-4.7.4.tar.bz2" -C g474-pristine --strip-components=1
+          diff -ruN --exclude=gmp --exclude=mpfr --exclude=mpc \
+            g474-pristine g474 > transplant-4.7.4.patch 2>/dev/null || true
+          echo "  transplant-4.7.4.patch: $(wc -l < transplant-4.7.4.patch) lines, $(grep -c '^+++ ' transplant-4.7.4.patch) files"
+          rm -rf g474-pristine
+          # gcc 4.7 NEEDS GMP, MPFR AND MPC AND THE BOX HAS NONE -- they were
+          # only ever unpacked inside 4.8.2's tree, never installed to /tools.
+          # In-tree is how LFS feeds them to gcc: no prefix to point at, and the
+          # versions travel with the source.
+          ( cd g474
+            rm -rf gmp mpfr mpc
+            tar xf "$W/gmp-$GMP_VER.tar.xz"   && mv "gmp-$GMP_VER" gmp
+            tar xf "$W/mpfr-$MPFR_VER.tar.xz" && mv "mpfr-$MPFR_VER" mpfr
+            tar xf "$W/mpc-$MPC_VER.tar.gz"   && mv "mpc-$MPC_VER" mpc )
+          if [ "${{ github.event.inputs.ucontext_patch }}" = "yes" ]; then
+            echo "  applying the ucontext patch -- PREDICTION NOT UNDER TEST"
+            sed -i 's/\bstruct ucontext\b/ucontext_t/g' \
+              g474/libgcc/config/aarch64/linux-unwind.h 2>/dev/null || true
+          else
+            echo "  NOT applying the ucontext patch -- this IS the experiment"
+          fi
+          rm -rf "$S/work/g474" && cp -r g474 "$S/work/"
+          echo "  staged: $(ls "$S/work/g474/configure" >/dev/null 2>&1 && echo yes || echo NO)"
+
+      - name: 'RUNG 1: build gcc 4.7.4 COMPLETELY -- through libgcc'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # THE DIFFERENCE FROM EVERY PREVIOUS ATTEMPT: a full `make`, not
+          # `make all-gcc`. all-gcc stops before the runtime, which is why
+          # earlier runs produced a cc1plus and called it a C++ compiler. A
+          # compiler that cannot link is not a rung, so libgcc is the gate.
+          S="$S" "$W/box47.sh" /tools/bin/sh -c '
+            cd /work
+            mkdir -p b47 && cd b47
+            # --with-mpfr-*: the top-level configure accepts in-tree gmp/mpfr/mpc
+            # (rc=0) and then the gcc SUBDIRECTORY configure looks for the built
+            # library and fails with "libmpfr not found or uses a different ABI".
+            # LFS 7.5 passes these to both its gcc passes for exactly this.
+            /work/g474/configure --prefix=/work/out47 \
+              --enable-languages=c,c++ \
+              --build=aarch64-unknown-linux-gnu \
+              --host=aarch64-unknown-linux-gnu \
+              --target=aarch64-unknown-linux-gnu \
+              --disable-multilib --disable-bootstrap --disable-werror \
+              --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+              --disable-libssp --disable-libatomic \
+              --with-mpfr-include=/work/g474/mpfr/src \
+              --with-mpfr-lib=/work/b47/mpfr/src/.libs > c.log 2>&1
+            crc=$?
+            echo "configure rc=$crc"
+            if [ "$crc" -ne 0 ]; then
+              echo "--- configure said ---"; tail -12 c.log
+              echo "--- config.log, last failing test ---"
+              grep -B4 "configure: error" config.log 2>/dev/null | tail -16
+              exit 1
+            fi
+            make -j4 MAKEINFO=true > b.log 2>&1
+            echo "make rc=$?"
+            echo "cc1     : $( [ -x gcc/cc1 ] && wc -c < gcc/cc1 || echo MISSING)"
+            echo "cc1plus : $( [ -x gcc/cc1plus ] && wc -c < gcc/cc1plus || echo MISSING)"
+            echo "libgcc.a: $(find . -name libgcc.a | head -1 || echo NOT-BUILT)"
+            echo "libstdc++: $(find . -name "libstdc++.*" | head -1 || echo NOT-BUILT)"
+            # A NARROW GREP FOUND NOTHING WHILE make RETURNED 2. libgcc can fail
+            # on a link, a missing rule, or a bare make error, none of which
+            # contain "error:". Match what actually appears.
+            grep -E "internal compiler error|error:|Error [0-9]|\*\*\*|cannot find|No such file|No rule" \
+              b.log | head -12
+            echo "--- last lines of the build ---"
+            tail -15 b.log
+            make install > i.log 2>&1; echo "install rc=$?"
+          ' 2>&1 | sed 's/^/    /'
+
+      - name: 'VERDICT: was the ICE the era, or the transplant?'
+        if: always()
+        run: |
+          set -u
+          set +e
+          # THE VERDICT MUST REFLECT WHAT HAPPENED. It printed twice before on
+          # runs where the compiler never configured, which reads as an answer
+          # and is not one.
+          if [ "${{ github.event.inputs.ucontext_patch }}" = "yes" ]; then
+            echo "  ucontext_patch=yes -- the prediction was NOT under test"
+            echo "  this run is about reaching gcc 10, not about the ICE"
+            exit 0
+          fi
+          if [ -n "$(find "$S/work/b47" -name libgcc.a 2>/dev/null | head -1)" ]; then
+            echo "  libgcc.a BUILT against glibc 2.19, UNPATCHED."
+            echo "  ==> The ICE was the ERA, not the transplant."
+            echo "      The transplant is clean and the real chain needs a"
+            echo "      period libc at this rung, which tcc will be building"
+            echo "      anyway."
+          elif grep -q 'internal compiler error' "$S/work/b47/b.log" 2>/dev/null; then
+            echo "  STILL ICEs at glibc 2.19."
+            echo "  ==> The TRANSPLANT is implicated. gcc47-libgcc-ice's"
+            echo "      backtrace arm is the next step, not another era."
+            grep -m2 'internal compiler error' "$S/work/b47/b.log" | sed 's/^/    /'
+          else
+            echo "  NOT TESTED -- the compiler did not build far enough to put"
+            echo "  the question. See the configure/make output above. This is"
+            echo "  not evidence either way."
+          fi
+
+      - name: 'THE GATE: does g++ 4.7 COMPILE AND LINK?'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # `g++ --version` runs the DRIVER and proves nothing -- it printed
+          # happily on every run where libgcc was missing and the compiler
+          # could not link a single program. The gate is a program that
+          # compiles, links, RUNS, and returns a known value.
+          #
+          # It exercises what building gcc 10 will need: templates, virtual
+          # dispatch, the standard library, and operator new -- i.e. libstdc++
+          # and libgcc, not just cc1plus.
+          {
+            echo '#include <string>'
+            echo '#include <vector>'
+            echo 'struct S { virtual ~S() {} virtual int v() const { return 7; } };'
+            echo 'struct T : S { int v() const { return 35; } };'
+            echo 'int main() {'
+            echo '  std::vector<int> xs;'
+            echo '  for (int i = 0; i < 5; ++i) xs.push_back(i);'
+            echo '  int s = 0;'
+            echo '  for (unsigned i = 0; i < xs.size(); ++i) s += xs[i];'
+            echo '  std::string n("ok");'
+            echo '  S* p = new T();'
+            echo '  int r = s + p->v() + (int)n.size();'
+            echo '  delete p;'
+            echo '  return r;'
+            echo '}'
+          } > "$S/work/gate.cpp"
+          echo "  gate.cpp: $(wc -l < "$S/work/gate.cpp") lines  (expects exit 47)"
+          S="$S" "$W/box47.sh" /tools/bin/sh -c '
+            export PATH=/work/out47/bin:$PATH
+            command -v g++ >/dev/null || { echo "no g++ 4.7 was installed"; exit 1; }
+            echo "g++ : $(g++ --version 2>&1 | head -1)"
+            g++ -o /work/gate /work/gate.cpp 2> /work/gate.err
+            echo "compile+link rc=$?"
+            [ -s /work/gate.err ] && { echo "--- diagnostics ---"; head -12 /work/gate.err; }
+            if [ -x /work/gate ]; then
+              /work/gate; echo "ran: exit=$? (expect 47)"
+            else
+              echo "NO BINARY -- g++ 4.7 cannot link. Rung 2 cannot start."
+            fi
+          ' 2>&1 | sed 's/^/    /'
+
+      - name: 'HANDOFF: g++ 4.7 attempts gcc ${{ env.GCC10 }}'
+        if: ${{ github.event.inputs.try_gcc10 != 'no' }}
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # THE RUNG THE WHOLE CHOICE OF 4.7 EXISTS FOR. 4.7 is the last gcc
+          # written in C, so tcc can reach it; its C++ front end is built FROM
+          # that C, and the g++ that yields is what carries the chain upward.
+          # Nothing above this point involves tcc at all.
+          #
+          # This is an ATTEMPT, not a gate. hermetic-gcc10 builds gcc 10 in its
+          # own box with LFS 10.0's tested set around it; what THIS step adds is
+          # the one thing that box cannot show -- that the compiler doing the
+          # building is our 4.7.
+          tar xf "gcc-$GCC10.tar.xz"
+          ( cd "gcc-$GCC10"
+            tar xf "$W/gmp-$GMP_VER.tar.xz"   && mv "gmp-$GMP_VER" gmp
+            tar xf "$W/mpfr-$MPFR_VER.tar.xz" && mv "mpfr-$MPFR_VER" mpfr
+            tar xf "$W/mpc-$MPC_VER.tar.gz"   && mv "mpc-$MPC_VER" mpc )
+          rm -rf "$S/work/src10" && cp -r "gcc-$GCC10" "$S/work/src10"
+          S="$S" "$W/box47.sh" /tools/bin/sh -c '
+            export PATH=/work/out47/bin:$PATH
+            command -v g++ >/dev/null || { echo "no g++ 4.7 -- nothing to attempt"; exit 1; }
+            echo "building gcc '"$GCC10"' with: $(g++ --version 2>&1 | head -1)"
+            mkdir -p /work/b10 && cd /work/b10
+            /work/src10/configure --prefix=/work/out10 \
+              --enable-languages=c,c++ --disable-multilib --disable-bootstrap \
+              --disable-libsanitizer --disable-libvtv --disable-libgomp \
+              --disable-libquadmath --disable-werror > c.log 2>&1
+            echo "configure rc=$?"; tail -5 c.log
+            make -j4 MAKEINFO=true > b.log 2>&1
+            echo "make rc=$?"
+            grep -E "internal compiler error|error:|Error [0-9]" b.log | head -8
+            echo "--- last lines ---"; tail -12 b.log
+            make install > i.log 2>&1; echo "install rc=$?"
+            /work/out10/bin/gcc --version 2>&1 | head -1
+          ' 2>&1 | sed 's/^/    /'
+
+      - name: 'RUNG 1 SUMMARY'
+        if: always()
+        run: |
+          set -u
+          set +e
+          have() { [ -n "$(find "$1" -name "$2" 2>/dev/null | head -1)" ] && echo yes || echo no; }
+          echo "  environment   LFS 7.5, glibc $GLIBC, binutils $BINUTILS   (scaffolding)"
+          echo "  cross cc      gcc $GCCVER                                 (DISPOSABLE -- tcc replaces it)"
+          echo
+          printf '  %-28s %s\n' "gcc 4.7.4 cc1"      "$(have "$S/work/b47" cc1)"
+          printf '  %-28s %s\n' "gcc 4.7.4 cc1plus"  "$(have "$S/work/b47" cc1plus)"
+          printf '  %-28s %s\n' "libgcc.a  <- THE GATE" "$(have "$S/work/b47" libgcc.a)"
+          printf '  %-28s %s\n' "g++ 4.7 links a program" "$( [ -x "$S/work/gate" ] && echo yes || echo no)"
+          printf '  %-28s %s\n' "gcc $GCC10 built"   "$( [ -x "$S/work/out10/bin/gcc" ] && echo yes || echo no)"
+          echo
+          echo "  Next link: hermetic-gcc10 builds gcc $GCC10 in its own box"
+          echo "  with LFS 10.0's tested set, and attempts gcc 15 and gcc 16."
+          echo
+          echo "  Still borrowed at this rung, and it is the honest list:"
+          echo "    * the HOST gcc built the 7.5 scaffolding (LFS ch.5 does the same)"
+          echo "    * binutils and make are NOT yet known to be tcc-buildable;"
+          echo "      gmp/mpfr/mpc are (tcc-builds-gcc-arm64)"
+          echo "    * the transplant still runs on the host via python3 --"
+          echo "      transplant-4.7.4.patch in this run's artifacts is the"
+          echo "      frozen form that removes that dependency"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hermetic-gcc47-logs
+          path: |
+            box47.sh
+            transplant-4.7.4.patch
+            b-*/c.log
+            b-*/b.log
+            sysroot/work/b47/c.log
+            sysroot/work/b47/b.log
+            sysroot/work/b10/b.log
+          if-no-files-found: warn

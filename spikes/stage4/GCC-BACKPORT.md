@@ -343,12 +343,12 @@ toolchain — with one difference that is not in our favour: **they sever the
 lineage and we do not yet.** LFS chroots and rebuilds everything with the
 temporary toolchain, Gentoo goes stage1 → stage2 → stage3, and the shipped
 system contains no bytes produced by host binaries. We build gcc 4.7 with gcc 13
-and stop. Phase 4 of `hermetic-1-sandbox` is exactly that rebuild pass, which is
+and stop. Phase 4 of `hermetic-enumerate-host` is exactly that rebuild pass, which is
 why it exists.
 
 ### The hermetic ladder
 
-`.github/workflows/hermetic-1-sandbox.yml`. Isolation is not the absence of
+`.github/workflows/hermetic-enumerate-host.yml`. Isolation is not the absence of
 dependencies — a chroot with Ubuntu's `/usr` copied in is perfectly isolated and
 entirely host-dependent. What a sandbox buys is **enforcement**: an undeclared
 dependency stops being silently satisfied and becomes a visible error, so the

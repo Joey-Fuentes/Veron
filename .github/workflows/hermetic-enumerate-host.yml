@@ -1,75 +1,59 @@
-name: hermetic-1-sandbox
+name: hermetic-enumerate-host
 
-# HERMETIC LADDER, STEP 1: PUT THE EXISTING RESULTS IN A BOX.
+# ============================================================================
+# WHAT DOES THE HOST STILL SUPPLY?  An enumeration, not a rung.
+# ============================================================================
 #
-# Nothing is removed in this step. That is the point.
+# WHAT THIS IS FOR
+#
+# This is NOT a step in the gcc ladder and it builds no sysroot. It takes the
+# four gcc-4.7 backport arms, runs them inside bwrap with the host toolchain
+# still bound, and then TRACES a configure run to enumerate which host paths
+# were actually opened.
+#
+# Nothing is removed here. That is the point.
 #
 # Every gcc result so far was built on a bare runner, where a dependency we
 # never thought about is silently satisfied and we never learn it was there.
-# The issue is not that the builds use host tools -- they do, and at this stage
-# they must, since tcc itself is built by gcc 13 and seed -> tcc does not exist
-# on aarch64 yet. The issue is that the host set is UNENUMERATED. We cannot
-# currently write down what these builds depend on; we would be reciting it from
-# memory.
+# The issue is not that these builds use host tools -- they do, and at this
+# stage they must, since tcc itself is built by gcc 13 and seed -> tcc does not
+# exist on aarch64 yet. The issue is that the host set is UNENUMERATED. We
+# cannot currently write down what these builds depend on; we would be reciting
+# it from memory.
 #
 # A sandbox does not make dependencies go away. It makes an UNDECLARED one fail
-# loudly instead of being quietly satisfied. The bind list below IS the
-# declaration, and every later step in this ladder is a deletion from it:
+# loudly instead of being quietly satisfied. The bind list in this file IS the
+# declaration, and the trace output is the evidence for or against it.
 #
-#   step 1  bwrap, host toolchain still bound      <- this file
-#   step 2  musl sysroot, static, in place of glibc
-#   step 3  our own binutils in place of the host as/ld
-#   step 4  our own make/shell/coreutils
-#   step 5  a tcc not built by gcc 13   (blocked: seed -> tcc needs MesCC
-#                                        aarch64, see spikes/PROGRESS.md)
+# THE ARMS
+#   A-485-vanilla    gcc 4.8.5, untouched
+#   B-474-control    gcc 4.7.4, config.sub/guess only, arm-none-eabi
+#   C-474-backport   gcc 4.7.4 + the aarch64 transplant
+#   D-474-tcc        the same, built by our tcc
+# They are NOT comparable to each other -- different sources, different
+# targets, different builders. Each is compared only against itself.
 #
-# SO THE EXPECTED RESULT OF THIS RUN IS "NOTHING CHANGED". All four arms should
-# behave exactly as they already do. If one does not, the sandbox has found a
-# dependency we did not know we had -- which is the whole reason to run it
-# before starting to remove things rather than after.
+# WHERE THE ACTUAL LADDER LIVES
+#   hermetic-gcc47   rung 1: gcc 4.7.4 + backend, then gcc 10
+#   hermetic-gcc10   rung 2: gcc 10.2.0, then gcc 15 and gcc 16
+#   hermetic-gcc15   the stable system: kernel + boot
+#   hermetic-gcc16   the bleeding system: kernel + boot
 #
-# FOUR ARMS, the four results this leg has established:
+# HOW TO RUN IT
 #
-#   A  4.8.5 vanilla, host gcc      needs CXX="g++ -std=gnu++98"
-#   B  4.7.4 control, host gcc      target arm-none-eabi, no backend question
-#   C  4.7.4 + transplant, host gcc cc1 55,044,256 B, fib = 55
-#   D  4.7.4 + transplant, OUR tcc  cc1 80,016,473 B, fib = 55
+#   push        edits to THIS FILE ONLY -- this box never triggers another and
+#               no other box triggers it
 #
-# WHAT THE BOX ACTUALLY ENFORCES
-#
-#   --unshare-all   no network, no host PID/IPC/UTS namespace. The build cannot
-#                   fetch anything. Sources are fetched OUTSIDE, hash-verified
-#                   against sources/gcc.toml, and handed in -- provenance and
-#                   hermeticity are different criteria and are kept separate.
-#   --clearenv      no ambient environment. Every variable the build gets is
-#                   listed below, so an inherited CFLAGS or LD_LIBRARY_PATH
-#                   cannot silently change a result.
-#   ro-bind /usr    the host toolchain, read-only. Declared, not hidden.
-#   ro-bind /etc    ld.so.cache, passwd, alternatives. Narrowing this is a
-#                   later step; today it is named rather than assumed.
-#   one writable    /work. Nothing else in the filesystem can be modified,
-#                   which is the property that makes "it only used what we
-#                   gave it" checkable rather than asserted.
-#
-#   NOT enforced, and deliberately: the KERNEL. bwrap cannot isolate it and
-#   should not pretend to. TRUST-BOUNDARY.md already declares kernel and
-#   hardware as trusted inputs, so the sandbox boundary and the declared trust
-#   boundary land in the same place.
-#
-# UBUNTU 24.04 RESTRICTS UNPRIVILEGED USER NAMESPACES via AppArmor, so bwrap
-# fails with "setting up uid map: Permission denied" out of the box. The sysctl
-# is the smallest fix; an AppArmor profile granting `userns` is the fallback.
-# spikes/livebootstrap copies live-bootstrap's profile for this, which works but
-# means cloning a whole upstream repository to get one file.
+# ============================================================================
 
 on:
   push:
     paths:
-      - '.github/workflows/hermetic-1-sandbox.yml'
+      - '.github/workflows/hermetic-enumerate-host.yml'
   workflow_dispatch:
 
 concurrency:
-  group: hermetic-1-${{ github.ref }}
+  group: hermetic-enumerate-host-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -133,13 +117,13 @@ jobs:
           #
           # A smoke test that does not exercise the same box the build runs in
           # is not a smoke test. Everything below goes through this script.
-          cat > box.sh <<'EOS'
+          cat > boxenum.sh <<'EOS'
           #!/bin/sh
-          # The canonical sandbox. See hermetic-1-sandbox.yml for what each
+          # The canonical sandbox. See hermetic-enumerate-host.yml for what each
           # line is for and why the kernel is deliberately not isolated.
           set -eu
-          W=${W:?box.sh: W (work dir) not set}
-          REPO=${REPO:?box.sh: REPO (checkout) not set}
+          W=${W:?boxenum.sh: W (work dir) not set}
+          REPO=${REPO:?boxenum.sh: REPO (checkout) not set}
           LIB64=""
           # aarch64 has no /lib64; x86_64 does. Emit the symlink only if the
           # host actually has one, so this script is portable across both.
@@ -165,8 +149,8 @@ jobs:
             --chdir /work \
             "$@"
           EOS
-          chmod +x box.sh
-          # The bind list as prose, for the artifact. Kept next to box.sh so a
+          chmod +x boxenum.sh
+          # The bind list as prose, for the artifact. Kept next to boxenum.sh so a
           # change to one without the other is visible in review.
           cat > bind-list.txt <<'EOF'
           read-only:
@@ -202,7 +186,7 @@ jobs:
           # invocation is sound. Checks the three things run 1 got wrong:
           # a dynamically linked binary runs (the loader resolves), the binds
           # are present, and there is genuinely no network.
-          W="$PWD/work" REPO="$PWD" ./box.sh /bin/sh -c '
+          W="$PWD/work" REPO="$PWD" ./boxenum.sh /bin/sh -c '
             echo "  arch    : $(uname -m)"
             echo "  loader  : $(ls /lib/ld-linux-* 2>/dev/null || echo MISSING)"
             echo "  gcc     : $(gcc -dumpversion)"
@@ -621,7 +605,7 @@ jobs:
         run: |
           set -u
           set +e
-          W="$PWD/work" REPO="$PWD" ./box.sh /bin/bash /work/build.sh '${{ matrix.arm }}'
+          W="$PWD/work" REPO="$PWD" ./boxenum.sh /bin/bash /work/build.sh '${{ matrix.arm }}'
           rc=$?
           echo "  sandboxed build rc=$rc"
           echo "BOX_RC=$rc" >> "$GITHUB_ENV"
@@ -637,7 +621,7 @@ jobs:
           # that does the probing: a configure run. That is where a build system
           # goes looking for the host, and the distinct paths it opens outside
           # /work are the real declared set.
-          W="$W" REPO="$PWD" ./box.sh /usr/bin/strace -f -qq -e trace=openat,execve \
+          W="$W" REPO="$PWD" ./boxenum.sh /usr/bin/strace -f -qq -e trace=openat,execve \
               -o /work/trace.log \
               /bin/sh -c 'mkdir -p /work/tracebuild && cd /work/tracebuild && /work/gmp-6.2.1/configure --disable-shared --disable-assembly >/dev/null 2>&1' \
             > /dev/null 2>&1

@@ -1,17 +1,23 @@
-name: hermetic-5-bleeding
+name: hermetic-gcc16
 
-# THE BLEEDING EDGE ARM: gcc 16.1.0 AND A RELEASE-CANDIDATE KERNEL.
+# ============================================================================
+# THE BLEEDING SYSTEM.  A gcc 16.1.0 box that builds an -rc kernel and boots it.
+# ============================================================================
 #
-# hermetic-2-sysroot is the baseline: LFS 13.0's tested set, gcc 15.2.0, and a
-# released kernel. This is the same shape with everything pushed forward --
-# the development book's pins (gcc 16.1.0, binutils 2.46.1, mpc 1.4.1) and
-# linux v7.2-rc4 straight from git rather than a tarball.
+# WHAT THIS IS FOR
 #
-# SEPARATE FILE, ON PURPOSE. Sharing one workflow would mean a failure in
-# 16.1 or in an -rc kernel obscures whether the 13.0 baseline still works.
-# They answer different questions: the baseline asks "is our recipe correct",
-# this asks "does the recipe survive the newest inputs". Keeping them apart is
-# what lets the second one fail without costing the first.
+#     tcc -> gcc 4.7 -> gcc 10 -> gcc 16  ->  kernel + userland + boot
+#            gcc47      gcc10     ^^^^^^^^^^ THIS BOX
+#
+# Same shape as hermetic-gcc15, everything pushed forward: the LFS DEVELOPMENT
+# book's pins (r13.0-156 -- gcc 16.1.0, binutils 2.46.1) and linux v7.2-rc4
+# straight from git rather than a tarball.
+#
+# SEPARATE FILE, ON PURPOSE. Sharing one workflow with the stable box would
+# mean a failure in 16.1 or in an -rc kernel obscures whether the 13.0 baseline
+# still works. They answer different questions: the baseline asks "is our
+# recipe correct", this asks "does the recipe survive the newest inputs".
+# Keeping them apart is what lets this one fail without costing the other.
 #
 # WHAT THE DEV BOOK CHANGES, and it is only two things:
 #   --disable-fixincludes   on both gcc passes
@@ -19,32 +25,27 @@ name: hermetic-5-bleeding
 # Everything else is the same recipe, which is itself a small finding: two
 # major gcc releases apart, the chapter-5 procedure is unchanged.
 #
-# EVERY LESSON FROM THE BASELINE IS CARRIED HERE. They were expensive:
-#   PATH once, in the layout step   a missing cross compiler does not announce
-#                                   itself, it is silently replaced by the host's
-#   box helper defined early,       it is used from steps that `cd` elsewhere,
-#   called by absolute path         and a relative path lies about why
-#   the full limits.h               a --without-headers gcc has no PATH_MAX
-#   a link test after glibc         "GCC_NO_EXECUTABLES" names the consequence
-#   busybox --install INSIDE        sysroot binaries need the sysroot's libc
-#   version pins from the book      gcc 13.2+glibc 2.39, busybox 1.36.1, m4
-#                                   1.4.20 -- three runs lost to memory
-#   *_VER for every version         M4/BISON/FLEX/GMP are autoconf's names for
-#                                   the PROGRAMS, and shadowing them broke the
-#                                   first build in the workflow
+# WHAT THIS IS NOT
 #
-# THE KERNEL IS PINNED BY COMMIT, not by tag alone. Tags move on rc branches
-# far more readily than releases, and "v7.2-rc4" a week from now may not be the
-# tree this was tested against.
+#   * NOT proof that gcc 10 can build gcc 16 -- that is hermetic-gcc10's second
+#     attempt. This box starts from a host-built cross toolchain on purpose, so
+#     a failure here is the SYSTEM's and not the ladder's.
+#
+# HOW TO RUN IT
+#
+#   push        edits to THIS FILE ONLY -- this box never triggers another and
+#               no other box triggers it
+#
+# ============================================================================
 
 on:
   push:
     paths:
-      - '.github/workflows/hermetic-5-bleeding.yml'
+      - '.github/workflows/hermetic-gcc16.yml'
   workflow_dispatch:
 
 concurrency:
-  group: hermetic-5-${{ github.ref }}
+  group: hermetic-gcc16-${{ github.ref }}
   cancel-in-progress: true
 
 env:
@@ -100,12 +101,12 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
           # The box is defined HERE because steps well before the "box" step use
           # it -- busybox installs its applets from inside. Callers always use
-          # "$W/box.sh": several steps cd into a source tree first, and a
+          # "$W/box16.sh": several steps cd into a source tree first, and a
           # relative path resolves there instead.
-          cat > box.sh <<'EOS'
+          cat > box16.sh <<'EOS'
           #!/bin/sh
           set -eu
-          S=${S:?box.sh: S not set}
+          S=${S:?box16.sh: S not set}
           exec bwrap \
             --unshare-all --die-with-parent --new-session --clearenv \
             --setenv PATH /usr/bin:/usr/sbin:/tools/bin \
@@ -114,7 +115,7 @@ jobs:
             --bind "$S" / --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
             --chdir /work "$@"
           EOS
-          chmod +x box.sh
+          chmod +x box16.sh
           echo "  LFS_TGT: $LFS_TGT   host: $(gcc -dumpmachine)"
           echo "  gcc $GCC_VER / glibc $GLIBC_VER / binutils $BINUTILS_VER"
           echo "  image kernel: $KTAG ($KSHA)"
@@ -302,7 +303,7 @@ jobs:
           cp busybox "$S/usr/bin/"
           # From INSIDE: this binary needs the sysroot's glibc, which is newer
           # than the runner's, so the host cannot execute it.
-          S="$S" "$W/box.sh" /usr/bin/busybox --install -s /usr/bin
+          S="$S" "$W/box16.sh" /usr/bin/busybox --install -s /usr/bin
           n=$(ls "$S/usr/bin" | wc -l); echo "  applets: $n"
           [ "$n" -gt 100 ] || { echo "  --install did not run"; exit 1; }
 
@@ -342,7 +343,7 @@ jobs:
           set -u
           set +e
           rung() { name=$1; shift
-            out=$(S="$S" "$W/box.sh" "$@" 2>&1); rc=$?
+            out=$(S="$S" "$W/box16.sh" "$@" 2>&1); rc=$?
             case "$out" in *"not found"*|*"No such file"*) rc=127 ;; esac
             [ $rc -eq 0 ] && printf '  %-16s OK    %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-50)" \
                           || printf '  %-16s FAIL  %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-50)"; }
@@ -353,8 +354,8 @@ jobs:
           rung gcc     /usr/bin/gcc --version
           mkdir -p "$S/work"
           printf 'int main(void){return 42;}\n' > "$S/work/t.c"
-          S="$S" "$W/box.sh" /usr/bin/gcc -o /work/t /work/t.c 2>&1 | head -5 | sed 's/^/    /'
-          S="$S" "$W/box.sh" /work/t; echo "  compile+run: exit=$? (expect 42)"
+          S="$S" "$W/box16.sh" /usr/bin/gcc -o /work/t /work/t.c 2>&1 | head -5 | sed 's/^/    /'
+          S="$S" "$W/box16.sh" /work/t; echo "  compile+run: exit=$? (expect 42)"
 
       - name: 'Stage the kernel and its build tools into the box'
         run: |
@@ -372,7 +373,7 @@ jobs:
       - name: 'Build m4, bison, flex, perl, bc INSIDE the box'
         run: |
           set -eu
-          S="$S" "$W/box.sh" /bin/sh -c '
+          S="$S" "$W/box16.sh" /bin/sh -c '
             set -e
             for p in m4-'"$M4_VER"' bison-'"$BISON_VER"' flex-'"$FLEX_VER"'; do
               echo "=== $p ==="; cd /work/$p
@@ -393,7 +394,7 @@ jobs:
       - name: 'Build linux ${{ env.KTAG }} INSIDE the box'
         run: |
           set -eu
-          S="$S" "$W/box.sh" /bin/sh -c '
+          S="$S" "$W/box16.sh" /bin/sh -c '
             set -e
             cd /work/linux
             make ARCH=arm64 defconfig > /dev/null 2>&1
@@ -429,7 +430,7 @@ jobs:
       - name: 'Assemble the initramfs INSIDE the box'
         run: |
           set -eu
-          S="$S" "$W/box.sh" /bin/sh -c '
+          S="$S" "$W/box16.sh" /bin/sh -c '
             set -e
             rm -rf /work/ir && mkdir -p /work/ir/bin /work/ir/dev /work/ir/proc /work/ir/sys
             cp /usr/bin/busybox /work/ir/bin/
@@ -475,7 +476,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: bleeding-image
+          name: hermetic-gcc16-image
           path: |
             qemu.log
             sysroot/work/Image

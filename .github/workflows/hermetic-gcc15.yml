@@ -1,91 +1,61 @@
-name: hermetic-2-sysroot
+name: hermetic-gcc15
 
-# HERMETIC LADDER, STEP 2: THE LFS METHOD, NOT STATIC LINKING.
+# ============================================================================
+# THE STABLE SYSTEM.  A gcc 15.2.0 box that builds a kernel and boots it.
+# ============================================================================
 #
-# THREE RUNS WERE SPENT ON THE WRONG TECHNIQUE. The first version of this file
-# tried to make every binary in the sysroot statically linked, so it would run
-# in a box that binds nothing. That failed three times, each time differently,
-# and the reasons are worth keeping because they are all libtool:
+# WHAT THIS IS FOR
 #
-#   run 2  LDFLAGS="-static"      tools came out dynamic. libtool INTERCEPTS a
-#                                 bare -static and reads it as "prefer static
-#                                 libtool libraries", removing it from the real
-#                                 link. The flag never reached the linker.
-#   run 3  LDFLAGS="-all-static"  libtool's actual flag -- but the top-level
-#                                 make re-runs sub-configures, so it landed on
-#                                 `gcc -all-static conftest.c`, which gcc
-#                                 rejects. Every later test then died with
-#                                 "Link tests are not allowed after
-#                                 GCC_NO_EXECUTABLES."
-#   run 4  CC="gcc -static"       dynamic again: libtool strips -static from
-#                                 ANYWHERE in the command, including from CC.
+#     tcc -> gcc 4.7 -> gcc 10 -> gcc 15  ->  kernel + userland + boot
+#            gcc47      gcc10     ^^^^^^^^^^ THIS BOX
 #
-# LFS 13.0 DOES NOT LINK ANYTHING STATICALLY. Its isolation comes from three
-# things acting together, and the book states the principle outright: cross
-# compilation is not needed for a same-machine build, but it has one great
-# advantage -- anything that is cross-compiled cannot depend on the host
-# environment.
+# This box is the TOP of the stable branch, and unlike the rungs below it, it
+# is not chasing another compiler. Its whole job is to show that a complete
+# system -- toolchain, userland, kernel, init -- builds inside a box with no
+# host /usr and then actually boots.
 #
-#   1. A TRIPLET THE HOST DOES NOT HAVE.  LFS_TGT=$(uname -m)-lfs-linux-gnu.
-#      Ours is aarch64-veron-linux-gnu. The host is aarch64-unknown-linux-gnu,
-#      so the two search-path trees do not overlap at any point. There is
-#      nothing to leak through, by construction rather than by policy.
-#   2. --with-sysroot=$LFS, so the compiler looks for target libraries inside
-#      the sysroot instead of /usr.
-#   3. A LIBC BUILT INTO THE SYSROOT, cross-compiled with --host=$LFS_TGT. The
-#      tools stay dynamically linked; they simply find their loader and their
-#      libc inside the sysroot, at the paths they were told to expect.
+#   LFS 13.0's tested set: binutils 2.46.0, gcc 15.2.0, glibc 2.43
+#   kernel 7.1.5, built INSIDE the box by the toolchain the box itself contains
+#   QEMU runs on the host, deliberately: it is a test harness, not a dependency
 #
-# WHY glibc AND NOT musl. musl appears elsewhere in this repository because
-# tcc-userland-arm64 needed a libc tcc could build; that was a spike about tcc,
-# not a decision about this. LFS uses glibc, gcc knows how to cross-compile it,
-# and musl would need a triplet (…-linux-musl) that gcc's config.sub does not
-# recognise without patching -- the same class of problem the aarch64 backport
-# already solved once. glibc is the lower-risk choice here.
+# WHAT THIS IS NOT
 #
-# WHY THE TEMPORARY COMPILER IS NOT 4.8.5. It cannot be: glibc 2.39 requires
-# gcc 6.2 or newer to build, so a 2013 compiler cannot produce the libc that
-# makes the sysroot self-sufficient. The temporary toolchain is therefore a
-# current gcc, and **4.8.5 becomes the first thing built INSIDE the box** --
-# which is still a hermetically built 4.8.5, one layer later than asked.
+#   * NOT the bleeding-edge arm. gcc 16.1.0 and a release-candidate kernel are
+#     hermetic-gcc16, a separate file, so that a failure there cannot obscure
+#     whether this baseline still works. They answer different questions: this
+#     one asks "is our recipe correct", that one asks "does the recipe survive
+#     the newest inputs".
+#   * NOT proof that gcc 10 can build gcc 15 -- that is hermetic-gcc10's first
+#     attempt. This box starts from a host-built cross toolchain on purpose,
+#     so a failure here is the SYSTEM's and not the ladder's.
 #
-# WHAT THIS RUN PROVES IF IT PASSES: a compiler, an assembler, a linker and a
-# shell userland that were all cross-compiled against a libc in the sysroot,
-# running with no /usr, no /etc, no host loader and no network -- and able to
-# compile and run a program. That is LFS chapters 5-7 in one job, with BusyBox
-# standing in for chapter 6's seventeen packages.
+# HOW TO RUN IT
 #
-# STILL BORROWED, and unavoidably at this rung: the host gcc builds the cross
-# toolchain, exactly as LFS chapter 5 does. Removing that means reaching a
-# compiler from the seed, which is leg 1.
+#   push        edits to THIS FILE ONLY -- this box never triggers another and
+#               no other box triggers it
+#   dispatch    build_kernel : no = stop after the toolchain and the ladder
+#
+# ============================================================================
 
 on:
   push:
     paths:
-      - '.github/workflows/hermetic-2-sysroot.yml'
+      - '.github/workflows/hermetic-gcc15.yml'
   workflow_dispatch:
     inputs:
       build_kernel:
         description: 'also build linux + initramfs and boot it in QEMU (yes/no)'
         required: false
         default: 'yes'
-      lfs_set:
-        description: 'which tested set: 13.0 (gcc 15.2) or dev (gcc 16.1)'
-        required: false
-        default: '13.0'
 
 concurrency:
-  group: hermetic-2-${{ github.ref }}
+  group: hermetic-gcc15-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   GNU: 'https://mirrors.kernel.org/gnu'
   LFS_TGT: 'aarch64-veron-linux-gnu'
-  # THE BOOK'S TESTED SET. Defaults are LFS 13.0; `lfs_set: dev` switches to
-  # the development book (r13.0-156), which pins gcc 16.1. TWO SETS, ONE
-  # RECIPE: the books' configure lines differ in exactly two places, so this is
-  # a switch rather than a second file. (The PERIOD book is a separate
-  # workflow, because there the OPTIONS differ too, not just the pins.) Run 1 used gcc 13.2 with
+  # THE BOOK'S TESTED SET -- LFS 13.0, and only that. Run 1 used gcc 13.2 with
   # glibc 2.39 -- a pairing I chose from memory, not from the book -- and glibc
   # died on `wctomb.c:57:1: error: 'artificial' attribute ignored
   # [-Werror=attributes]`. glibc builds itself with -Werror, so a compiler that
@@ -149,15 +119,15 @@ jobs:
           # DEFINE THE BOX HERE, NOT LATER. The busybox applets are installed
           # from inside it during the userland step, which runs well before the
           # step that used to create this file -- so the run died with
-          #   "$W/box2.sh": No such file or directory
+          #   "$W/box15.sh": No such file or directory
           # A helper that only exists after its first use is a sequencing bug
           # waiting for someone to move a step.
-          cat > box2.sh <<'EOS'
+          cat > box15.sh <<'EOS'
           #!/bin/sh
           # No /usr bind. No /etc bind. The sysroot IS the filesystem.
           # PATH mirrors LFS's chroot: /usr/bin:/usr/sbin, plus /tools/bin.
           set -eu
-          S=${S:?box2.sh: S not set}
+          S=${S:?box15.sh: S not set}
           exec bwrap \
             --unshare-all --die-with-parent --new-session \
             --clearenv \
@@ -172,8 +142,8 @@ jobs:
             --chdir /work \
             "$@"
           EOS
-          chmod +x box2.sh
-          # Every caller uses "$W/box2.sh", never ./box2.sh: the
+          chmod +x box15.sh
+          # Every caller uses "$W/box15.sh", never ./box15.sh: the
           # userland step does `cd busybox-...` first, so a relative
           # path resolved inside the BusyBox source tree and reported
           # "No such file or directory" about a file that existed.
@@ -188,24 +158,16 @@ jobs:
           # prevent.
           echo "$S/tools/bin" >> "$GITHUB_PATH"
           # The two tested sets. Nothing here is chosen by us: each row is a
-          # combination one of the books has run end to end. hermetic-2 already
+          # combination one of the books has run end to end. hermetic-gcc15 already
           # lost a run to a pairing picked from memory (gcc 13.2 + glibc 2.39,
           # dead on -Werror=attributes), which is the whole reason these are
           # copied rather than composed.
-          if [ "${{ github.event.inputs.lfs_set }}" = "dev" ]; then
-            {
-              echo "BINUTILS=2.46.1"; echo "GCCVER=16.1.0"; echo "GLIBC=2.43"
-              echo "KERNEL=7.1.3";    echo "MPC=1.4.1"
-              echo "ENABLE_KERNEL=5.10"
-              echo "EXTRA_GCC=--disable-fixincludes"
-            } >> "$GITHUB_ENV"
-            echo "  set: LFS dev (r13.0-156) -- gcc 16.1.0"
-          else
-            {
-              echo "ENABLE_KERNEL=5.4"; echo "EXTRA_GCC="
-            } >> "$GITHUB_ENV"
-            echo "  set: LFS 13.0 -- gcc 15.2.0"
-          fi
+          # ONE BOX, ONE VERSION SET. This used to carry an lfs_set switch
+          # that could turn it into the dev book's gcc 16.1 -- i.e. into
+          # hermetic-gcc16. Two boxes that can be each other cannot fail
+          # independently, which is the entire point of keeping them apart.
+          { echo "ENABLE_KERNEL=5.4"; echo "EXTRA_GCC="; } >> "$GITHUB_ENV"
+          echo "  set: LFS 13.0 -- gcc 15.2.0"
           echo "  LFS_TGT: $LFS_TGT   (host is $(gcc -dumpmachine))"
           echo "  the two triplets differ, which is the isolation"
 
@@ -316,7 +278,7 @@ jobs:
           crosscheck() {  # $1 = build dir
             # glibc records CC in config.make, autotools in Makefile, and
             # configure's own answer lands in config.log. Check all three:
-            # hermetic-3 lost a run to looking in only one and calling the
+            # hermetic-gcc47 lost a run to looking in only one and calling the
             # silence a failure.
             cc=$(sed -n 's/^CC *= *//p' "$1/config.make" "$1/Makefile" 2>/dev/null | head -1)
             [ -n "$cc" ] || cc=$(sed -n "s/^ac_cv_prog_CC='\\{0,1\\}//p" "$1/config.log" 2>/dev/null | head -1 | tr -d "'")
@@ -517,7 +479,7 @@ jobs:
           #
           # --install -s is busybox's own symlink farm, so there is no applet
           # list to parse and nothing to get wrong.
-          S="$S" "$W/box2.sh" /usr/bin/busybox --install -s /usr/bin
+          S="$S" "$W/box15.sh" /usr/bin/busybox --install -s /usr/bin
           n=$(ls "$S/usr/bin" | wc -l)
           echo "  applets linked: $n"
           [ "$n" -gt 100 ] || { echo "  too few applets -- --install did not run"; exit 1; }
@@ -569,7 +531,7 @@ jobs:
       - name: 'THE BOX: bind the sysroot as / and nothing else'
         run: |
           set -eu
-          # (box2.sh is written in the layout step, so every step can use it)
+          # (box15.sh is written in the layout step, so every step can use it)
           echo "  sysroot: $(du -sh "$S" | cut -f1)"
           du -sh "$S"/* 2>/dev/null | sed 's/^/    /'
 
@@ -580,7 +542,7 @@ jobs:
           set +e
           rung() {
             name=$1; shift
-            out=$(S="$S" "$W/box2.sh" "$@" 2>&1); rc=$?
+            out=$(S="$S" "$W/box15.sh" "$@" 2>&1); rc=$?
             case "$out" in *"not found"*|*"No such file"*|*"cannot execute"*) rc=127 ;; esac
             [ $rc -eq 0 ] && printf '  %-30s OK    %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-46)" \
                           || printf '  %-30s FAIL  %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-52)"
@@ -596,9 +558,9 @@ jobs:
           echo "  --- 8. compile and run, entirely inside ---"
           mkdir -p "$S/work"
           printf 'int main(void){return 42;}\n' > "$S/work/t.c"
-          S="$S" "$W/box2.sh" /usr/bin/gcc -o /work/t /work/t.c 2>&1 | head -6 | sed 's/^/    /'
+          S="$S" "$W/box15.sh" /usr/bin/gcc -o /work/t /work/t.c 2>&1 | head -6 | sed 's/^/    /'
           if [ -x "$S/work/t" ]; then
-            S="$S" "$W/box2.sh" /work/t; echo "    ran: exit=$? (expect 42)"
+            S="$S" "$W/box15.sh" /work/t; echo "    ran: exit=$? (expect 42)"
           else
             echo "    no binary produced"
           fi
@@ -611,7 +573,7 @@ jobs:
             echo "    corpus copied: $(ls "$S/work/mk/configure" 2>/dev/null || echo 'NO configure')"
           else
             echo "    could not stage a configure script to test with"; fi
-          S="$S" "$W/box2.sh" /bin/sh -c \
+          S="$S" "$W/box15.sh" /bin/sh -c \
             'mkdir -p /work/cm && cd /work/cm && /work/mk/configure --disable-nls >cfg.log 2>&1; echo "configure rc=$?"; echo "--- last lines ---"; tail -12 cfg.log; echo "--- missing commands ---"; grep -oE "[a-z_-]+: not found" cfg.log | sort -u | head' \
             2>&1 | head -10 | sed 's/^/    /'
 
@@ -630,14 +592,14 @@ jobs:
           echo "  Still borrowed: the host gcc built the cross toolchain, as LFS"
           echo "  chapter 5 does. Removing that is leg 1 (seed -> tcc)."
           echo "  Substituted: BusyBox for LFS chapter 6's seventeen packages."
-          echo "  Next: build gcc 4.8.5 INSIDE this box."
+          echo "  Sibling: hermetic-gcc16, same shape at gcc 16.1 + an -rc kernel."
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: sysroot-logs
+          name: hermetic-gcc15-logs
           path: |
-            box2.sh
+            box15.sh
             b-*/c.log
             b-*/b.log
           if-no-files-found: warn
@@ -670,7 +632,7 @@ jobs:
           # Built natively, in the box, by the toolchain the box already has.
           # This is LFS chapter 7's shape -- and it is the first real proof the
           # sysroot can produce software rather than merely run it.
-          S="$S" "$W/box2.sh" /bin/sh -c '
+          S="$S" "$W/box15.sh" /bin/sh -c '
             set -e
             for p in m4-'"$M4_VER"' bison-'"$BISON_VER"' flex-'"$FLEX_VER"'; do
               echo "=== $p ==="
@@ -692,7 +654,7 @@ jobs:
         if: ${{ github.event.inputs.build_kernel != 'no' }}
         run: |
           set -eu
-          S="$S" "$W/box2.sh" /bin/sh -c '
+          S="$S" "$W/box15.sh" /bin/sh -c '
             set -e
             cd /work/linux-'"$KVER"'
             make ARCH=arm64 defconfig > /dev/null 2>&1
@@ -728,7 +690,7 @@ jobs:
         if: ${{ github.event.inputs.build_kernel != 'no' }}
         run: |
           set -eu
-          S="$S" "$W/box2.sh" /bin/sh -c '
+          S="$S" "$W/box15.sh" /bin/sh -c '
             set -e
             rm -rf /work/ir && mkdir -p /work/ir/bin /work/ir/dev /work/ir/proc /work/ir/sys
             cp /usr/bin/busybox /work/ir/bin/
@@ -784,7 +746,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: kernel-and-image
+          name: hermetic-gcc15-image
           path: |
             qemu.log
             sysroot/work/Image
