@@ -171,29 +171,70 @@ jobs:
           cat > box.sh <<'EOS'
           #!/bin/sh
           # The canonical sandbox for tcc-builds-gcc-arm64.
+          #   box.sh --show-mask    print what would be masked, and exit
+          #   box.sh CMD ...        run CMD inside the box
+          # ONE definition with two uses, so the printed list and the enforced
+          # list cannot drift apart.
           set -eu
+
+          # ---------------------------------------------------------------- the mask
+          # MASK THE RESOLVED REAL BINARY, NOT THE NAME. Run 81871617317 died at
+          #     bwrap: Can't create file at /usr/bin/c++: No such file or directory
+          # because almost every driver name on an Ubuntu runner is a symlink,
+          # and c++ leaves /usr/bin on the way to its target:
+          #     c++ -> /etc/alternatives/c++ -> /usr/bin/g++ -> g++-13
+          #         -> aarch64-linux-gnu-g++-13
+          # Fourteen names resolve to just THREE real files. Resolving first and
+          # deduping means three bind operations, every one of them onto a plain
+          # regular file in /usr/bin, and no symlink traversal for bwrap to
+          # refuse. It masks exactly as much, because every chain ends at one of
+          # those three.
+          mask_list() {
+            for c in $(ls /usr/bin 2>/dev/null | grep -E \
+                       '^(cc|c\+\+|cpp|gcc|g\+\+|clang|clang\+\+)(-[0-9.]+)?$|^[a-z0-9_]+-linux-gnu-(gcc|g\+\+|cpp)(-[0-9.]+)?$'); do
+              t=$(readlink -f "/usr/bin/$c" 2>/dev/null) || continue
+              if [ -n "$t" ] && [ -f "$t" ]; then echo "$t"; fi
+            done | sort -u
+          }
+
+          MASK=""
+          for t in $(mask_list); do
+            MASK="$MASK --ro-bind /dev/null $t"
+          done
+          # THE STRUCTURAL HALF OF THE MASK, and note WHICH directory matters:
+          # on Ubuntu cc1 and cc1plus live in /usr/libexec/gcc, NOT /usr/lib/gcc
+          #   /usr/libexec/gcc/aarch64-linux-gnu/13/cc1
+          #   /usr/lib/gcc/aarch64-linux-gnu/13/     crt*.o, libstdc++.a, specs
+          # Both are masked, but libexec is the one that makes compiling
+          # impossible -- do not drop it thinking the other covers it.
+          #
+          # Masking these cannot be routed around: without cc1 a driver reached
+          # under a name the scan missed still compiles nothing. And the
+          # RUNTIME libgcc_s.so.1 is not in either of them -- it is in
+          # /usr/lib/<triplet>/ -- so dynamically linked binaries still run.
+          if [ -d /usr/lib/gcc ];     then MASK="$MASK --tmpfs /usr/lib/gcc";     fi
+          if [ -d /usr/libexec/gcc ]; then MASK="$MASK --tmpfs /usr/libexec/gcc"; fi
+
+          if [ "${1:-}" = "--show-mask" ]; then
+            echo "  compiler binaries bind-mounted to /dev/null:"
+            mask_list | sed 's/^/    /'
+            if [ -d /usr/lib/gcc ];     then echo "    (tmpfs) /usr/lib/gcc       <- crt*.o, libstdc++.a, specs"; fi
+            if [ -d /usr/libexec/gcc ]; then echo "    (tmpfs) /usr/libexec/gcc   <- cc1, cc1plus  [load-bearing]"; fi
+            echo "  the names that resolve into that set:"
+            ls /usr/bin 2>/dev/null | grep -E \
+              '^(cc|c\+\+|cpp|gcc|g\+\+|clang|clang\+\+)(-[0-9.]+)?$|^[a-z0-9_]+-linux-gnu-(gcc|g\+\+|cpp)(-[0-9.]+)?$' \
+              | tr '\n' ' ' | sed 's/^/    /'
+            echo
+            exit 0
+          fi
+
           W=${W:?box.sh: W (work dir) not set}
           REPO=${REPO:?box.sh: REPO (checkout) not set}
 
           LIB64=""
           # aarch64 has no /lib64; x86_64 does. Emit the symlink only if the
           # host actually has one, so this script is portable across both.
-          [ -d /lib64 ] && LIB64="--symlink usr/lib64 /lib64"
-
-          # MASK EVERY HOST COMPILER DRIVER. Built by scanning rather than from
-          # a hand-written list, because a hand-written list silently misses
-          # gcc-14 the day the runner image moves and the box then has a
-          # compiler in it that nobody declared.
-          MASK=""
-          for c in $(ls /usr/bin 2>/dev/null | grep -E \
-                     '^(cc|c\+\+|cpp|gcc|g\+\+|clang|clang\+\+)(-[0-9.]+)?$|^[a-z0-9_]+-linux-gnu-(gcc|g\+\+|cpp)(-[0-9.]+)?$'); do
-            MASK="$MASK --ro-bind /dev/null /usr/bin/$c"
-          done
-          # /usr/lib/gcc is where Ubuntu keeps cc1, cc1plus and libgcc. Masking
-          # the drivers without masking this leaves the actual compiler proper
-          # sitting in the box, reachable by anything that knows the path.
-          [ -d /usr/lib/gcc ] && MASK="$MASK --tmpfs /usr/lib/gcc"
-          [ -d /usr/libexec/gcc ] && MASK="$MASK --tmpfs /usr/libexec/gcc"
+          if [ -d /lib64 ]; then LIB64="--symlink usr/lib64 /lib64"; fi
 
           exec bwrap \
             --unshare-all --die-with-parent --new-session \
@@ -220,6 +261,11 @@ jobs:
             "$@"
           EOS
           chmod +x box.sh
+          # PRINT WHAT WILL BE MASKED. The failing run could not show this --
+          # the mask was computed inside the same command that invoked bwrap, so
+          # when bwrap rejected one of its own arguments there was no record of
+          # what the arguments had been.
+          ./box.sh --show-mask
 
           # The bind list as prose, next to the script, so a change to one
           # without the other is visible in review.
@@ -234,9 +280,16 @@ jobs:
                       layout because the transplant locates its tools with
                       dirname($0)/../../.., which needs the repo shape.
           masked (present on the host, deliberately NOT in the box):
-            /usr/bin/{cc,gcc,g++,c++,cpp,clang,...}   -> /dev/null
-            /usr/lib/gcc, /usr/libexec/gcc            -> empty tmpfs
-                      This is the whole point. tcc is the only compiler here.
+            the RESOLVED compiler binaries behind every cc/gcc/g++/c++/cpp/clang
+            name -- typically three real files, e.g.
+              /usr/bin/aarch64-linux-gnu-{gcc,g++,cpp}-13   -> /dev/null
+            plus, structurally,
+              /usr/libexec/gcc   -> empty tmpfs   cc1, cc1plus  [load-bearing]
+              /usr/lib/gcc       -> empty tmpfs   crt*.o, libstdc++.a, specs
+            so a driver reached under a name the scan missed still cannot
+            compile anything. The RUNTIME libgcc_s.so.1 lives in
+            /usr/lib/<triplet>/ and is NOT masked, so binaries still run.
+            This is the whole point. tcc is the only compiler here.
           writable:
             /work     tcc, sources, build trees, outputs -- nothing else
           synthetic:
@@ -288,10 +341,22 @@ jobs:
             echo "  --- THE POINT: is there a host compiler in here? ---"
             printf "int main(void){return 0;}\n" > /tmp/hostprobe.c
             found=""
+            # BY NAME, as configure would find it.
             for c in cc gcc g++ c++ cpp clang; do
               command -v "$c" >/dev/null 2>&1 || continue
               if "$c" /tmp/hostprobe.c -o /tmp/hostprobe 2>/dev/null && [ -x /tmp/hostprobe ]; then
                 found="$found $c"
+              fi
+              rm -f /tmp/hostprobe
+            done
+            # AND BY ABSOLUTE PATH, because the mask now targets resolved
+            # binaries and a name-only check would not notice one of them
+            # surviving under a spelling PATH lookup happens to miss.
+            for p in $(ls /usr/bin 2>/dev/null | grep -E \
+                       "^(cc|c\+\+|cpp|gcc|g\+\+|clang|clang\+\+)(-[0-9.]+)?$|^[a-z0-9_]+-linux-gnu-(gcc|g\+\+|cpp)(-[0-9.]+)?$"); do
+              [ -x "/usr/bin/$p" ] || continue
+              if "/usr/bin/$p" /tmp/hostprobe.c -o /tmp/hostprobe 2>/dev/null && [ -x /tmp/hostprobe ]; then
+                found="$found /usr/bin/$p"
               fi
               rm -f /tmp/hostprobe
             done
@@ -301,7 +366,7 @@ jobs:
               echo "  anything, so it stops here."
               exit 1
             fi
-            echo "  host cc : masked -- none of cc/gcc/g++/c++/cpp/clang can compile"
+            echo "  host cc : masked -- nothing in /usr/bin can compile a C file"
             if [ -d /usr/lib/gcc ]; then
               echo "  /usr/lib/gcc entries: $(ls /usr/lib/gcc | wc -l) (expect 0)"
             fi
