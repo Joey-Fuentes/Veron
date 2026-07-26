@@ -522,6 +522,78 @@ jobs:
           sed -n '1470,1500p' "$W/g474/libgcc/unwind-dw2.c" | cat -n \
             | awk '{printf "    %d\t%s\n", $1+1469, substr($0, index($0,$2))}' | head -32
 
+      - name: '6. THE FIX, TESTED HERE BEFORE IT GRADUATES'
+        continue-on-error: true
+        run: |
+          set -u
+          set +e
+          # ROOT CAUSE, CONFIRMED 2026-07-26. Three independent facts:
+          #
+          #   1. exactly ONE implicit declaration in the whole compiler build,
+          #      and it is on the fault path:
+          #        aarch64.c:3941: warning: implicit declaration of function
+          #          'get_hard_reg_initial_val' [-Wimplicit-function-declaration]
+          #   2. gcc MOVED that declaration between releases:
+          #        4.7.4  gcc/integrate.h:21
+          #        4.8.5  gcc/function.h:770
+          #      and the backend, written for 4.8, includes function.h and not
+          #      integrate.h -- so in a 4.7 tree nothing declares it.
+          #   3. the returned pointer is a sign-extended 32-bit truncation:
+          #        tem    = 0xfffffffff6b46500
+          #        fndecl = 0x0000fffff78b6800   (a valid pointer, same frame)
+          #      low half preserved, high half 0xffffffff. C89 assumed `int`,
+          #      the 64-bit rtx was truncated and widened back. NON-NULL, so it
+          #      passed `if (tem == NULL)`, and REG_P(tem) dereferenced it.
+          #
+          # THE FIX IS ONE INCLUDE. It is applied HERE first, in the workflow
+          # that found the bug, because a fix belongs where it can be falsified
+          # before it goes anywhere shared. If libgcc.a appears below, this
+          # graduates to tools/port_gcc47_api.py as a new rule kind -- the table
+          # currently handles drop-an-argument, add-an-argument and rename-a-
+          # token, and this is a fourth: a declaration that CHANGED HEADERS.
+          A="$W/g474/gcc/config/aarch64/aarch64.c"
+          if grep -q '#include "integrate.h"' "$A"; then
+            echo "  already present"
+          else
+            sed -i 's|#include "function.h"|#include "function.h"\n#include "integrate.h"   /* 4.7: get_hard_reg_initial_val lives here, not function.h */|' "$A"
+          fi
+          echo "  --- includes around the change ---"
+          grep -n '#include "\(function\|integrate\)\.h"' "$A" | sed 's/^/    /'
+          [ "$(grep -c '#include "integrate.h"' "$A")" -eq 1 ] \
+            || { echo "  the sed did not apply exactly once -- stopping"; exit 1; }
+
+          echo "  --- rebuild cc1 (only aarch64.c changed) ---"
+          ( cd "$W/c474" && timeout 3600 make -j"$(nproc)" MAKEINFO=true all-gcc \
+              > build-fixed.log 2>&1 )
+          echo "    make all-gcc rc=$?"
+          echo "    implicit declarations now: $(grep -c 'implicit declaration' "$W/c474/build-fixed.log" 2>/dev/null || echo 0)"
+          grep -n 'implicit declaration' "$W/c474/build-fixed.log" 2>/dev/null | head -5 | sed 's/^/      /'
+
+          echo "  --- rebuild libgcc, the thing that could never be built ---"
+          find "$W/c474" -path '*libgcc*' -name 'unwind-dw2.o' -delete
+          ( cd "$W/c474" && timeout 3600 make -k -j"$(nproc)" MAKEINFO=true \
+              all-target-libgcc > libgcc-fixed.log 2>&1 )
+          echo "    objects : $(find "$W/c474" -path '*libgcc*' -name '*.o' | wc -l)"
+          LA=$(find "$W/c474" -name libgcc.a | head -1)
+          echo "    libgcc.a: ${LA:-NOT BUILT}"
+          [ -n "$LA" ] && echo "    size    : $(wc -c < "$LA") bytes"
+          grep -nE 'internal compiler error|error:' "$W/c474/libgcc-fixed.log" 2>/dev/null \
+            | head -5 | sed 's/^/      /'
+          echo
+          echo "  VERDICT:"
+          if [ -n "$LA" ]; then
+            echo "    libgcc.a BUILT. One #include closes the ICE that has blocked"
+            echo "    this leg since it opened. The diagnosis holds and the change"
+            echo "    should move into tools/port_gcc47_api.py."
+          elif grep -q 'internal compiler error' "$W/c474/libgcc-fixed.log" 2>/dev/null; then
+            echo "    STILL ICEs. The implicit declaration was real -- one warning,"
+            echo "    on the fault path, with a truncated pointer to match -- but"
+            echo "    it is not the whole story. Take the new backtrace."
+            grep -m2 'internal compiler error' "$W/c474/libgcc-fixed.log" | sed 's/^/      /'
+          else
+            echo "    Did not reach the question -- see the rebuild output above."
+          fi
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
