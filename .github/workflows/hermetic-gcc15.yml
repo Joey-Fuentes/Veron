@@ -132,18 +132,6 @@ jobs:
           # No /usr bind. No /etc bind. The sysroot IS the filesystem.
           # PATH mirrors LFS's chroot: /usr/bin:/usr/sbin, plus /tools/bin.
           set -eu
-          # THE awk PROGRAM LIVES IN A FILE, NOT IN THE COMMAND STRING. It has to
-          # run inside `sh -c '...'`, where every literal quote needs three levels of
-          # escaping and one slip silently changes what awk sees -- which is how the
-          # selector search came to be broken in two different ways at once. Writing
-          # it here, on the host, and calling it with -f removes the problem.
-          mkdir -p "$S/work"
-          {
-            echo '# -v s=SYMBOL: print every `config NAME` block containing `select SYMBOL`'
-            echo '/^[[:space:]]*config[[:space:]]+/ { cur = $2 }'
-            echo '$0 ~ ("select[[:space:]]+" s "([[:space:]]|$)") { if (cur != "") print cur }'
-          } > "$S/work/selector.awk"
-          echo "  selector.awk: $(wc -l < "$S/work/selector.awk") lines"
           S=${S:?box15.sh: S not set}
           exec bwrap \
             --unshare-all --die-with-parent --new-session \
@@ -727,126 +715,60 @@ jobs:
         if: ${{ success() && github.event.inputs.build_kernel != 'no' }}
         run: |
           set -eu
-          # THE CONFIG LOGIC LIVES IN A SCRIPT, NOT IN A NESTED COMMAND STRING.
-          # It has broken three times on quoting alone: a literal apostrophe in a
-          # comment (the box + apostrophe + s) silently closed the sh -c string,
-          # and an awk program needed three levels of escaping to survive. Written
-          # here with a quoted heredoc there is one level of quoting and none of
-          # it is fragile.
-          mkdir -p "$S/work"
-          cat > "$S/work/kconfig-off.sh" <<'KEOF'
-          #!/bin/sh
-          # Turn off modules and the certs machinery, and PROVE they stayed off.
+          # WHAT THE BOOK ACTUALLY SAYS, chapter 10.3:
           #
-          # WHY: an initramfs boot needs no modules, and the certs code builds
-          # certs/extract-cert, which needs openssl, which a hermetic box has not:
-          #   certs/extract-cert.c:21: fatal error: openssl/bio.h: No such file
+          #   "A good starting place for setting up the kernel configuration is to
+          #    run make defconfig."
+          #   "Be sure to enable/disable/set the following features or the system
+          #    might not work correctly or boot at all:
+          #      General setup --->
+          #        [ ] Compile the kernel with warnings as errors [WERROR]"
           #
-          # WHY IT IS NOT A ONE-LINER: a symbol with no prompt of its own is turned
-          # on by another symbol that selects it, and olddefconfig puts it back
-          # every round. The selector has to be found and disabled too.
+          # That is the FIRST item on its list, and this workflow never did it.
+          # CONFIG_WERROR defaults to y in modern kernels, so any warning from a
+          # toolchain the kernel was not tested against becomes a hard error.
           #
-          # AND WHY IT NEVER WORKED: the search used grep -r with --include, which
-          # is a GNU grep EXTENSION. This box runs BusyBox, whose grep does not
-          # implement it. BusyBox grep rejected the option, the error went to a
-          # discarded stderr, and empty output read as "nothing selects it". Every
-          # grep in the evidence dump that used --include came back blank; the only
-          # one that did not, plain grep on .config, worked. That is the tell.
-          # find(1) enumerates the files instead, which is POSIX.
-          set -u
-          TARGETS="MODULES MODULE_SIG MODULE_SIG_ALL DEBUG_INFO_BTF
-                   SYSTEM_TRUSTED_KEYRING SECONDARY_TRUSTED_KEYRING
-                   SYSTEM_REVOCATION_LIST"
-
-          kconfig_files() { find . -name "Kconfig*" -type f 2>/dev/null; }
-
-          n=$(kconfig_files | wc -l)
-          echo "  searching $n Kconfig files"
-          [ "$n" -gt 0 ] || { echo "  NO Kconfig FILES FOUND: the search is broken, not the tree"; exit 1; }
-
-          round=0
-          while [ "$round" -lt 4 ]; do
-            round=$((round + 1))
-            for sym in $TARGETS; do
-              ./scripts/config --disable "$sym" 2>/dev/null || \
-                sed -i "s/^CONFIG_$sym=y/# CONFIG_$sym is not set/" .config
-            done
-            # olddefconfig answers new symbols with their default and reads nothing
-            # from stdin; the yes-pipe this used to have only ever contributed
-            # "yes: Broken pipe" to the log.
-            make ARCH=arm64 olddefconfig >/dev/null 2>&1
-            still=""
-            for sym in $TARGETS; do
-              grep -q "^CONFIG_$sym=y" .config && still="$still $sym"
-            done
-            [ -z "$still" ] && break
-            echo "  round $round: still on:$still"
-
-            extra=""
-            for sym in $still; do
-              for kf in $(kconfig_files | xargs grep -l "select $sym" 2>/dev/null | head -40); do
-                for name in $(awk -v s="$sym" -f /work/selector.awk "$kf"); do
-                  if grep -q "^CONFIG_$name=y" .config; then
-                    case " $TARGETS $extra " in
-                      *" $name "*) ;;
-                      *) extra="$extra $name" ;;
-                    esac
-                  fi
-                done
-              done
-            done
-
-            if [ -z "$extra" ]; then
-              echo "  no ENABLED selector found for:$still"
-              for sym in $still; do
-                echo "  ---- $sym ----"
-                echo "  its Kconfig definition:"
-                kconfig_files | xargs grep -n -A8 "^config $sym\$" 2>/dev/null | head -14 | sed "s/^/      /"
-                echo "  every select/imply of it, enabled or not:"
-                kconfig_files | xargs grep -nE "(select|imply)[[:space:]]+$sym([[:space:]]|\$)" 2>/dev/null | head -8 | sed "s/^/      /"
-                echo "  does arch/arm64/configs/defconfig set it?"
-                # NOT grep-pipe-head-or-echo: a pipeline exits with head status,
-                # always 0, so that fallback never fired and an absent symbol
-                # printed nothing at all, which looked like a broken grep.
-                if grep -n "$sym" arch/arm64/configs/defconfig >/tmp/dc.txt 2>/dev/null && [ -s /tmp/dc.txt ]; then
-                  head -3 /tmp/dc.txt | sed "s/^/      /"
-                else
-                  echo "      not set there"
-                fi
-                echo "  what .config says now:"
-                grep -n "CONFIG_$sym[= ]" .config 2>/dev/null | head -3 | sed "s/^/      /"
-              done
-              echo "  That is a finding, not something to retry."
-              exit 1
-            fi
-            echo "  selected by (now also disabled):$extra"
-            TARGETS="$TARGETS $extra"
-          done
-
-          bad=0
-          for sym in MODULES MODULE_SIG DEBUG_INFO_BTF SYSTEM_TRUSTED_KEYRING; do
-            grep -q "^CONFIG_$sym=y" .config && { echo "  CONFIG_$sym still on after $round round(s)"; bad=1; }
-          done
-          [ "$bad" -eq 0 ] || exit 1
-          echo "  kernel config ready (modules and certs off, $round round(s))"
-          KEOF
-          sed -i 's/^    //' "$S/work/kconfig-off.sh"
-
-          cat > "$S/work/selector.awk" <<'AEOF'
-          # -v s=SYMBOL : print every config block that contains a select of SYMBOL
-          /^[[:space:]]*config[[:space:]]+/ { cur = $2 }
-          $0 ~ ("select[[:space:]]+" s "([[:space:]]|$)") { if (cur != "") print cur }
-          AEOF
-          sed -i 's/^    //' "$S/work/selector.awk"
-          echo "  staged: kconfig-off.sh $(wc -l < "$S/work/kconfig-off.sh") lines, selector.awk $(wc -l < "$S/work/selector.awk") lines"
-
+          # WHAT THE BOOK NEVER SAYS, anywhere in all eleven chapters:
+          #
+          #   extract-cert       0 occurrences
+          #   TRUSTED_KEYRING    0
+          #   MODULE_SIG         0
+          #   certs              0
+          #
+          # LFS builds this kernel from defconfig and never touches the certs
+          # machinery. The openssl justification that used to sit here was inherited
+          # from a comment, not from the book, and several runs went into satisfying
+          # it -- a seven-symbol disable list, a four-round hunt for whichever symbol
+          # selected SYSTEM_TRUSTED_KEYRING, an evidence dump when the hunt found
+          # nothing. All of it is gone. If extract-cert genuinely needs openssl in
+          # this box, the build will say so, and that is a fact worth one run.
           S="$S" "$W/box15.sh" /bin/sh -c '
             set -e
             cd /work/linux-'"$KVER"'
+            # The book opens with this and says not to trust a freshly untarred tree.
+            make mrproper > /dev/null 2>&1
             make ARCH=arm64 defconfig > /dev/null 2>&1
-            sh /work/kconfig-off.sh
+            # The books first required setting.
+            ./scripts/config --disable WERROR 2>/dev/null || \
+              sed -i "s/^CONFIG_WERROR=y/# CONFIG_WERROR is not set/" .config
+            # olddefconfig re-derives dependent symbols after a hand edit. It answers
+            # new symbols with their defaults and reads nothing from stdin.
+            make ARCH=arm64 olddefconfig > /dev/null 2>&1
+            # Verify the one thing we set, because a sed that matches nothing is
+            # silent and scripts/config can fail without saying so.
+            if grep -q "^CONFIG_WERROR=y" .config; then
+              echo "CONFIG_WERROR is still on -- the disable did not take"
+              exit 1
+            fi
+            echo "config ready: defconfig, WERROR off"
             make ARCH=arm64 -j4 Image > b.log 2>&1 || {
-              grep -E "error:|Error [0-9]|No rule" b.log | head -12; exit 1; }
+              echo "--- compiler diagnostics ---"
+              grep -E "error:|Error [0-9]|No rule|fatal error" b.log | grep -v "^make" | head -12
+              echo "--- make errors ---"
+              grep -E "\*\*\* \[" b.log | head -4
+              echo "--- tail ---"
+              tail -20 b.log
+              exit 1; }
             ls -l arch/arm64/boot/Image | awk "{print \"  Image: \" \$5 \" bytes\"}"
             cp arch/arm64/boot/Image /work/Image
           ' 2>&1 | sed 's/^/    /'
