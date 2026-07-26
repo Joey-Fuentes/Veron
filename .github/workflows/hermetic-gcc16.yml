@@ -464,7 +464,21 @@ jobs:
               done
               if [ -z "$extra" ]; then
                 echo "  no ENABLED selector found for:$still"
-                echo "  the symbol is on for a reason this search cannot see."
+                # DO NOT STOP WITHOUT THE EVIDENCE. The previous run printed exactly
+                # the line above and nothing else, so the only possible next move was
+                # another guess. If the search cannot see why the symbol is on, print
+                # what the source and the config actually say about it.
+                for sym in $still; do
+                  echo "  ---- $sym ----"
+                  echo "  its Kconfig definition:"
+                  grep -rn -A8 "^config $sym$" --include="Kconfig*" . 2>/dev/null | head -14 | sed "s/^/      /"
+                  echo "  every select/imply of it, enabled or not:"
+                  grep -rnE "(select|imply)[ \t]+$sym([ \t]|$)" --include="Kconfig*" . 2>/dev/null | head -8 | sed "s/^/      /"
+                  echo "  does arch/arm64/configs/defconfig set it?"
+                  grep -n "$sym" arch/arm64/configs/defconfig 2>/dev/null | head -3 | sed "s/^/      /" || echo "      no"
+                  echo "  what .config says now:"
+                  grep -n "CONFIG_$sym[= ]" .config 2>/dev/null | head -3 | sed "s/^/      /"
+                done
                 echo "  That is a finding, not something to retry."
                 exit 1
               fi

@@ -162,6 +162,38 @@ Also gone: `yes "" | make olddefconfig`. `olddefconfig` answers new symbols with
 their defaults and reads nothing from stdin, so the pipe contributed only
 `yes: Broken pipe` to the log.
 
+**Run 3: the selector search came up empty, and said so.**
+
+```
+round 1 -- still on: SYSTEM_TRUSTED_KEYRING
+no ENABLED selector found for: SYSTEM_TRUSTED_KEYRING
+the symbol is on for a reason this search cannot see.
+```
+
+That is the honesty working — it refused to retry blindly. But it stopped with
+nothing to act on, so the only possible next move was another guess. It now
+dumps the evidence before failing: the symbol's own `Kconfig` block (prompt,
+`default`, `depends`), **every** `select`/`imply` of it whether enabled or not,
+whether `arch/arm64/configs/defconfig` sets it directly, and what `.config` says
+at that moment. One of those four answers the question.
+
+**And a worse bug hid behind it.** The kernel config step failed, and the
+initramfs and boot steps ran anyway — producing a 626,579-byte initramfs and a
+QEMU run against a kernel that did not exist. **In GitHub Actions, supplying any
+`if:` drops the implicit `success()`**, and those three steps carried
+`if: build_kernel != 'no'`. So a failed kernel build still reached the boot step,
+which then reported
+
+```
+DID NOT REACH USERSPACE
+```
+
+— which reads as a kernel that boots badly rather than one that was never built,
+and is exactly the distinction that log line was written to preserve. Fixed two
+ways: `success() &&` restored on all three conditions, and the boot step now
+refuses to run at all if `$S/work/Image` is missing or empty, saying so plainly
+rather than handing QEMU a nonexistent file.
+
 **An earlier run did build the kernel**, and QEMU then refused to start:
 
 ```

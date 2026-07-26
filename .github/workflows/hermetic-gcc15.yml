@@ -663,7 +663,7 @@ jobs:
           if-no-files-found: warn
 
       - name: 'Fetch what the kernel build needs (outside; no network inside)'
-        if: ${{ github.event.inputs.build_kernel != 'no' }}
+        if: ${{ success() && github.event.inputs.build_kernel != 'no' }}
         run: |
           set -eu
           # THE TOOLCHAIN IS NOT ENOUGH TO BUILD A KERNEL. kconfig is generated
@@ -687,7 +687,7 @@ jobs:
           echo "  staged into the box: $(ls "$S/work" | tr '\n' ' ')"
 
       - name: 'Build m4, bison, flex, perl INSIDE the box'
-        if: ${{ github.event.inputs.build_kernel != 'no' }}
+        if: ${{ success() && github.event.inputs.build_kernel != 'no' }}
         run: |
           set -eu
           # Built natively, in the box, by the toolchain the box already has.
@@ -712,7 +712,7 @@ jobs:
           ' 2>&1 | sed 's/^/    /'
 
       - name: 'Build linux ${{ env.KVER }} INSIDE the box'
-        if: ${{ github.event.inputs.build_kernel != 'no' }}
+        if: ${{ success() && github.event.inputs.build_kernel != 'no' }}
         run: |
           set -eu
           S="$S" "$W/box15.sh" /bin/sh -c '
@@ -771,7 +771,21 @@ jobs:
               done
               if [ -z "$extra" ]; then
                 echo "  no ENABLED selector found for:$still"
-                echo "  the symbol is on for a reason this search cannot see."
+                # DO NOT STOP WITHOUT THE EVIDENCE. The previous run printed exactly
+                # the line above and nothing else, so the only possible next move was
+                # another guess. If the search cannot see why the symbol is on, print
+                # what the source and the config actually say about it.
+                for sym in $still; do
+                  echo "  ---- $sym ----"
+                  echo "  its Kconfig definition:"
+                  grep -rn -A8 "^config $sym$" --include="Kconfig*" . 2>/dev/null | head -14 | sed "s/^/      /"
+                  echo "  every select/imply of it, enabled or not:"
+                  grep -rnE "(select|imply)[ \t]+$sym([ \t]|$)" --include="Kconfig*" . 2>/dev/null | head -8 | sed "s/^/      /"
+                  echo "  does arch/arm64/configs/defconfig set it?"
+                  grep -n "$sym" arch/arm64/configs/defconfig 2>/dev/null | head -3 | sed "s/^/      /" || echo "      no"
+                  echo "  what .config says now:"
+                  grep -n "CONFIG_$sym[= ]" .config 2>/dev/null | head -3 | sed "s/^/      /"
+                done
                 echo "  That is a finding, not something to retry."
                 exit 1
               fi
@@ -792,7 +806,7 @@ jobs:
           ' 2>&1 | sed 's/^/    /'
 
       - name: 'Assemble an initramfs INSIDE the box'
-        if: ${{ github.event.inputs.build_kernel != 'no' }}
+        if: ${{ success() && github.event.inputs.build_kernel != 'no' }}
         run: |
           set -eu
           S="$S" "$W/box15.sh" /bin/sh -c '
@@ -816,7 +830,7 @@ jobs:
           ' 2>&1 | sed 's/^/    /'
 
       - name: 'BOOT IT: QEMU, outside the box'
-        if: ${{ github.event.inputs.build_kernel != 'no' }}
+        if: ${{ success() && github.event.inputs.build_kernel != 'no' }}
         continue-on-error: true
         run: |
           set -u
@@ -825,6 +839,19 @@ jobs:
           # of the build -- the Image and the initramfs inside it were produced
           # entirely by the sysroot's own toolchain, with no /usr bound.
           sudo apt-get install -y --no-install-recommends qemu-system-arm > /dev/null 2>&1
+          # AN ABSENT IMAGE IS NOT A FAILED BOOT. The kernel config step failed
+          # once and the initramfs and boot steps ran anyway -- any `if:` drops
+          # GitHub's implicit success() -- so QEMU was handed a nonexistent
+          # kernel and the log said "DID NOT REACH USERSPACE", which reads as a
+          # kernel that boots badly rather than one that was never built.
+          IMG="$S/work/Image"
+          if [ ! -s "$IMG" ]; then
+            echo "  NO KERNEL IMAGE at $IMG -- nothing to boot."
+            echo "  The kernel step did not produce one; this is not a boot"
+            echo "  failure and the console below would be meaningless."
+            exit 1
+          fi
+          echo "  Image: $(stat -c%s "$IMG") bytes"
           echo "  booting linux $KVER on qemu-system-aarch64 -M virt ..."
           timeout 180 qemu-system-aarch64 \
             -M virt -cpu cortex-a57 -m 1024 -nographic -no-reboot \
