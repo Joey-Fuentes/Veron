@@ -176,7 +176,7 @@ The rewrite changes what the box is for:
 It also emits the transplant as `transplant-4.7.4.patch` in its artifacts —
 the frozen form that removes the python3 dependency, ready to review and commit.
 
-### hermetic-gcc10 (gcc 10.2.0, glibc 2.32) — new, never run
+### hermetic-gcc10 (gcc 10.2.0, glibc 2.32) — run 1 died in the fetch
 
 Built from the vendored LFS 10.0 book rather than from memory. What that book
 does differently from 13.0, each of which would have cost a run:
@@ -192,6 +192,32 @@ It attempts **both** gcc 15.2.0 and gcc 16.1.0, and runs the second even if the
 first fails — 15.2 landing and 16.1 not would mean the stable branch works and
 the bleeding one needs a newer sysroot under it, which is a decision rather than
 a bug, and running only one attempt would hide it.
+
+**Run 1 (2026-07-26) never built anything.** It died 27 seconds into
+`linux-5.8.3.tar.xz`:
+
+```
+curl: (92) HTTP/2 stream 1 was not closed cleanly: PROTOCOL_ERROR (err 1)
+```
+
+Nothing was learned about gcc 10. Three defects, all in the harness:
+
+- **`--retry` never fired.** curl retries timeouts, 5xx, 408 and 429. Exit 92 is
+  a transport-layer HTTP/2 stream error and is not on that list, so `--retry 3`
+  was decoration. `--retry-all-errors` is what covers it.
+- **HTTP/2 was the failure mode**, not a symptom. `--http1.1` removes it rather
+  than retrying into it — cheaper than a bigger retry budget.
+- **The summary then lied.** It printed `box compiles and runs: no`,
+  `gcc 15.2.0 built: no`, `gcc 16.1.0 built: no` — three confident negatives
+  about experiments that never started, which reads as "gcc 10 cannot build
+  gcc 15". Both summaries now key on whether the *input* to each step exists and
+  report **NOT REACHED** against **FAILED** separately. This is the third time
+  this project has paid for a check that cannot distinguish absence from
+  failure.
+
+All four fetching boxes got the same hardening, plus mirror fallback for
+`cdn.kernel.org` and the real curl error printed on the way out — the old
+`get()` in the gcc16 box discarded stderr, so a failure there named no cause.
 
 ### hermetic-gcc16 (gcc 16.1.0) — glibc stops it
 

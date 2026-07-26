@@ -141,11 +141,20 @@ jobs:
               *)        alt="$1" ;;
             esac
             gnu=$(printf '%s' "$1" | sed 's|https://mirrors.kernel.org/gnu|https://ftp.gnu.org/gnu|')
-            for u in "$1" "$gnu" "$alt"; do
-              curl -fsSL --retry 3 -O "$u" 2>/dev/null && return 0
+            # --http1.1 + --retry-all-errors: hermetic-gcc10 run 1 died on a
+            # 110 MB kernel tarball with "curl: (92) HTTP/2 stream ...
+            # PROTOCOL_ERROR". Exit 92 is not one of the statuses plain
+            # --retry covers, so the retry budget never applied. Same fetch,
+            # same runners, same fix.
+            kern=$(printf '%s' "$1" | sed 's|https://cdn.kernel.org|https://mirrors.edge.kernel.org|')
+            for u in "$1" "$gnu" "$kern" "$alt"; do
+              curl -fsSL --http1.1 --retry 3 --retry-all-errors --retry-delay 3 \
+                --connect-timeout 15 --max-time 900 -O "$u" 2>/tmp/curl.err && return 0
             done
-            echo "    COULD NOT FETCH. Tried:"
-            printf '      %s\n' "$1" "$gnu" "$alt"
+            echo "    COULD NOT FETCH."
+            echo "    last curl error: $(tail -1 /tmp/curl.err 2>/dev/null)"
+            echo "    tried:"
+            printf '      %s\n' "$1" "$gnu" "$kern" "$alt"
             return 1
           }
           get "$GNU/binutils/binutils-$BINUTILS_VER.tar.xz"

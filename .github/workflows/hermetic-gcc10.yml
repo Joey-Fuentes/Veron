@@ -176,7 +176,60 @@ jobs:
       - name: 'Fetch everything (no network exists inside the box)'
         run: |
           set -eu
-          get() { echo "  $(basename "$1")"; curl -fsSL --retry 3 -O "$1"; }
+          # HARDENED FETCH. Run 1 of this box died here, 27 seconds into a
+          # 110 MB download:
+          #
+          #   linux-5.8.3.tar.xz
+          #   curl: (92) HTTP/2 stream 1 was not closed cleanly: PROTOCOL_ERROR
+          #   ##[error]Process completed with exit code 92.
+          #
+          # Three separate defects, none of them about gcc:
+          #
+          #   1. --retry NEVER FIRED. curl retries timeouts, 5xx, 408 and 429.
+          #      Exit 92 is a transport-layer HTTP/2 stream error and is not on
+          #      that list, so "--retry 3" was decoration. --retry-all-errors
+          #      is what actually covers it.
+          #   2. HTTP/2 IS THE FAILURE MODE. cdn.kernel.org serves h2 and long
+          #      transfers on it fail this way on shared runners.
+          #      --http1.1 removes the mode outright rather than retrying into
+          #      it. That is a cheaper fix than a bigger retry budget.
+          #   3. A DEAD JOB FOR A DEAD SOCKET. A fetch failure stopped a build
+          #      that had not started. Sources are cached and mirrored; nothing
+          #      here should cost a run.
+          #
+          # Also: the failing URL was never NAMED. get() echoed the basename
+          # BEFORE fetching, so the reader has to infer which line was in
+          # flight when the error appeared. Report the URL on failure.
+          get() {
+            base=$(basename "$1"); printf '  %-30s' "$base"
+            case "$1" in
+              *.tar.gz) alt=$(printf '%s' "$1" | sed 's/\.tar\.gz$/.tar.xz/') ;;
+              *.tar.xz) alt=$(printf '%s' "$1" | sed 's/\.tar\.xz$/.tar.gz/') ;;
+              *)        alt="$1" ;;
+            esac
+            gnu=$(printf '%s' "$1" | sed 's|https://mirrors.kernel.org/gnu|https://ftp.gnu.org/gnu|')
+            kern=$(printf '%s' "$1" | sed 's|https://cdn.kernel.org|https://mirrors.edge.kernel.org|')
+            n=0
+            for u in "$1" "$gnu" "$kern" "$alt"; do
+              n=$((n+1))
+              # -C - resumes a partial file, which is exactly the case a
+              # mid-stream protocol error leaves behind. Not on the first
+              # attempt: a complete file plus a range request is a 416.
+              [ "$n" -eq 1 ] && resume="" || resume="-C -"
+              # shellcheck disable=SC2086
+              if curl -fsSL --http1.1 --retry 3 --retry-all-errors \
+                   --retry-delay 3 --connect-timeout 15 --max-time 900 \
+                   $resume -O "$u" 2> /tmp/curl.err; then
+                echo " ok  $(du -h "$base" 2>/dev/null | cut -f1)"
+                return 0
+              fi
+            done
+            echo " FAILED"
+            echo "    last curl error: $(tail -1 /tmp/curl.err 2>/dev/null)"
+            echo "    tried:"
+            printf '      %s\n' "$1" "$gnu" "$kern" "$alt"
+            return 1
+          }
           get "$GNU/binutils/binutils-$BINUTILS.tar.xz"
           get "$GNU/gcc/gcc-$GCCVER/gcc-$GCCVER.tar.xz"
           get "$GNU/glibc/glibc-$GLIBC.tar.xz"
@@ -482,7 +535,9 @@ jobs:
               "$GCC16") [ "${{ github.event.inputs.try_gcc16 }}" = "no" ] && continue ;;
             esac
             echo "  gcc-$v"
-            curl -fsSL --retry 3 -O "$GNU/gcc/gcc-$v/gcc-$v.tar.xz"
+            curl -fsSL --http1.1 --retry 3 --retry-all-errors --retry-delay 3 \
+              --connect-timeout 15 --max-time 900 -O "$GNU/gcc/gcc-$v/gcc-$v.tar.xz" \
+              || { echo "    FETCH FAILED for gcc-$v -- attempt skipped, not failed"; continue; }
             rm -rf "src-$v" && mkdir -p "src-$v"
             tar xf "gcc-$v.tar.xz" -C "src-$v" --strip-components=1
             ( cd "src-$v"
@@ -553,12 +608,38 @@ jobs:
         run: |
           set -u
           set +e
+          # A SUMMARY MUST NOT REPORT A RESULT THAT WAS NEVER MEASURED.
+          # Run 1 died in the FETCH step -- before a single thing was built --
+          # and this table printed:
+          #
+          #     box compiles and runs          no
+          #     gcc 15.2.0 built               no
+          #     gcc 16.1.0 built               no
+          #
+          # Three confident negatives about experiments that never started. It
+          # reads as "gcc 10 cannot build gcc 15", which is not what happened
+          # and is not known either way. Same defect this repo has already paid
+          # for twice: a check that cannot distinguish absence from failure.
+          #
+          # The discriminator is whether the INPUT to each step is present. If
+          # the source was never staged, the attempt never ran.
+          state() {   # $1 = input path, $2 = output path
+            if   [ -e "$2" ]; then echo "yes"
+            elif [ -e "$1" ]; then echo "FAILED       (it ran and did not finish)"
+            else                   echo "NOT REACHED  (never started)"
+            fi
+          }
           echo "  environment   LFS 10.0 -- binutils $BINUTILS, glibc $GLIBC, linux $KERNEL"
           echo "  compiler      gcc $GCCVER, cross-built, running inside the box"
           echo
-          printf '  %-30s %s\n' "box compiles and runs"  "$( [ -x "$S/work/t" ] && echo yes || echo no)"
-          printf '  %-30s %s\n' "gcc $GCC15 built"       "$( [ -x "$S/work/out15/bin/gcc" ] && echo yes || echo no)"
-          printf '  %-30s %s\n' "gcc $GCC16 built"       "$( [ -x "$S/work/out16/bin/gcc" ] && echo yes || echo no)"
+          printf '  %-26s %s\n' "sysroot built" \
+            "$(state "$W/b-gcc2" "$S/usr/bin/gcc")"
+          printf '  %-26s %s\n' "box compiles and runs" \
+            "$(state "$S/work/t.c" "$S/work/t")"
+          printf '  %-26s %s\n' "gcc $GCC15 built" \
+            "$(state "$S/work/src-$GCC15" "$S/work/out15/bin/gcc")"
+          printf '  %-26s %s\n' "gcc $GCC16 built" \
+            "$(state "$S/work/src-$GCC16" "$S/work/out16/bin/gcc")"
           echo
           echo "  Below this rung: hermetic-gcc47 shows OUR gcc 4.7 reaching"
           echo "  gcc 10 -- this box starts from a host-built cross toolchain"

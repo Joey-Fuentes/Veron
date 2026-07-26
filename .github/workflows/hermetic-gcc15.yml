@@ -174,7 +174,60 @@ jobs:
       - name: 'Fetch everything (no network exists past this point)'
         run: |
           set -eu
-          get() { echo "  $1"; curl -fsSL --retry 3 -O "$1"; }
+          # HARDENED FETCH. Run 1 of this box died here, 27 seconds into a
+          # 110 MB download:
+          #
+          #   linux-5.8.3.tar.xz
+          #   curl: (92) HTTP/2 stream 1 was not closed cleanly: PROTOCOL_ERROR
+          #   ##[error]Process completed with exit code 92.
+          #
+          # Three separate defects, none of them about gcc:
+          #
+          #   1. --retry NEVER FIRED. curl retries timeouts, 5xx, 408 and 429.
+          #      Exit 92 is a transport-layer HTTP/2 stream error and is not on
+          #      that list, so "--retry 3" was decoration. --retry-all-errors
+          #      is what actually covers it.
+          #   2. HTTP/2 IS THE FAILURE MODE. cdn.kernel.org serves h2 and long
+          #      transfers on it fail this way on shared runners.
+          #      --http1.1 removes the mode outright rather than retrying into
+          #      it. That is a cheaper fix than a bigger retry budget.
+          #   3. A DEAD JOB FOR A DEAD SOCKET. A fetch failure stopped a build
+          #      that had not started. Sources are cached and mirrored; nothing
+          #      here should cost a run.
+          #
+          # Also: the failing URL was never NAMED. get() echoed the basename
+          # BEFORE fetching, so the reader has to infer which line was in
+          # flight when the error appeared. Report the URL on failure.
+          get() {
+            base=$(basename "$1"); printf '  %-30s' "$base"
+            case "$1" in
+              *.tar.gz) alt=$(printf '%s' "$1" | sed 's/\.tar\.gz$/.tar.xz/') ;;
+              *.tar.xz) alt=$(printf '%s' "$1" | sed 's/\.tar\.xz$/.tar.gz/') ;;
+              *)        alt="$1" ;;
+            esac
+            gnu=$(printf '%s' "$1" | sed 's|https://mirrors.kernel.org/gnu|https://ftp.gnu.org/gnu|')
+            kern=$(printf '%s' "$1" | sed 's|https://cdn.kernel.org|https://mirrors.edge.kernel.org|')
+            n=0
+            for u in "$1" "$gnu" "$kern" "$alt"; do
+              n=$((n+1))
+              # -C - resumes a partial file, which is exactly the case a
+              # mid-stream protocol error leaves behind. Not on the first
+              # attempt: a complete file plus a range request is a 416.
+              [ "$n" -eq 1 ] && resume="" || resume="-C -"
+              # shellcheck disable=SC2086
+              if curl -fsSL --http1.1 --retry 3 --retry-all-errors \
+                   --retry-delay 3 --connect-timeout 15 --max-time 900 \
+                   $resume -O "$u" 2> /tmp/curl.err; then
+                echo " ok  $(du -h "$base" 2>/dev/null | cut -f1)"
+                return 0
+              fi
+            done
+            echo " FAILED"
+            echo "    last curl error: $(tail -1 /tmp/curl.err 2>/dev/null)"
+            echo "    tried:"
+            printf '      %s\n' "$1" "$gnu" "$kern" "$alt"
+            return 1
+          }
           get "$GNU/binutils/binutils-$BINUTILS.tar.xz"
           get "$GNU/gcc/gcc-$GCCVER/gcc-$GCCVER.tar.xz"
           get "$GNU/glibc/glibc-$GLIBC.tar.xz"
@@ -617,7 +670,10 @@ jobs:
                    "https://github.com/westes/flex/releases/download/v$FLEX_VER/flex-$FLEX_VER.tar.gz" \
                    "https://www.cpan.org/src/5.0/perl-$PERL_VER.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KVER%%.*}.x/linux-$KVER.tar.xz"; do
-            echo "  $(basename "$u")"; curl -fsSL --retry 3 -O "$u"
+            echo "  $(basename "$u")"
+            curl -fsSL --http1.1 --retry 3 --retry-all-errors --retry-delay 3 \
+              --connect-timeout 15 --max-time 900 -O "$u" \
+              || { echo "    FETCH FAILED: $u"; exit 1; }
           done
           for t in m4-$M4_VER bison-$BISON_VER flex-$FLEX_VER perl-$PERL_VER linux-$KVER; do
             d="$S/work/$t"; mkdir -p "$d"

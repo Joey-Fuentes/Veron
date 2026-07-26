@@ -192,7 +192,10 @@ jobs:
                    "$GNU/make/make-4.0.tar.bz2" \
                    "https://busybox.net/downloads/busybox-1.36.1.tar.bz2" \
                    "https://cdn.kernel.org/pub/linux/kernel/v3.x/linux-$KERNEL.tar.xz"; do
-            echo "  $(basename "$u")"; curl -fsSL --retry 3 -O "$u"
+            echo "  $(basename "$u")"
+            curl -fsSL --http1.1 --retry 3 --retry-all-errors --retry-delay 3 \
+              --connect-timeout 15 --max-time 900 -O "$u" \
+              || { echo "    FETCH FAILED: $u"; exit 1; }
           done
           F=tools/fetch-pinned.sh
           bash "$F" g474 "$HOME/.cache/veron/gcc-4.7.4.tar.bz2" "$SHA474" \
@@ -201,7 +204,8 @@ jobs:
             "$GNU/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2" "" "" | sed 's/^/  /'
           if [ "${{ github.event.inputs.try_gcc10 }}" != "no" ]; then
             echo "  gcc-$GCC10"
-            curl -fsSL --retry 3 -O "$GNU/gcc/gcc-$GCC10/gcc-$GCC10.tar.xz"
+            curl -fsSL --http1.1 --retry 3 --retry-all-errors --retry-delay 3 \
+              --connect-timeout 15 --max-time 900 -O "$GNU/gcc/gcc-$GCC10/gcc-$GCC10.tar.xz"
           fi
 
       - name: '5.4 binutils 2.24 pass 1'
@@ -658,15 +662,36 @@ jobs:
         run: |
           set -u
           set +e
-          have() { [ -n "$(find "$1" -name "$2" 2>/dev/null | head -1)" ] && echo yes || echo no; }
+          # A SUMMARY MUST NOT REPORT A RESULT THAT WAS NEVER MEASURED.
+          # hermetic-gcc10 run 1 died in its FETCH step and its summary printed
+          # three confident "no"s about experiments that never started, which
+          # reads as evidence and is not. The discriminator is whether the
+          # INPUT to a step exists: no input means the step never ran.
+          state() {   # $1 = input path, $2 = output path
+            if   [ -e "$2" ]; then echo "yes"
+            elif [ -e "$1" ]; then echo "FAILED       (it ran and did not finish)"
+            else                   echo "NOT REACHED  (never started)"
+            fi
+          }
+          found() {   # $1 = dir, $2 = name
+            [ -n "$(find "$1" -name "$2" 2>/dev/null | head -1)" ]
+          }
           echo "  environment   LFS 7.5, glibc $GLIBC, binutils $BINUTILS   (scaffolding)"
           echo "  cross cc      gcc $GCCVER                                 (DISPOSABLE -- tcc replaces it)"
           echo
-          printf '  %-28s %s\n' "gcc 4.7.4 cc1"      "$(have "$S/work/b47" cc1)"
-          printf '  %-28s %s\n' "gcc 4.7.4 cc1plus"  "$(have "$S/work/b47" cc1plus)"
-          printf '  %-28s %s\n' "libgcc.a  <- THE GATE" "$(have "$S/work/b47" libgcc.a)"
-          printf '  %-28s %s\n' "g++ 4.7 links a program" "$( [ -x "$S/work/gate" ] && echo yes || echo no)"
-          printf '  %-28s %s\n' "gcc $GCC10 built"   "$( [ -x "$S/work/out10/bin/gcc" ] && echo yes || echo no)"
+          printf '  %-30s %s\n' "sysroot built" \
+            "$(state "$W/b-gcc2" "$S/tools/bin/gcc")"
+          if [ -d "$S/work/b47" ]; then
+            printf '  %-30s %s\n' "gcc 4.7.4 cc1"     "$(found "$S/work/b47" cc1 && echo yes || echo no)"
+            printf '  %-30s %s\n' "gcc 4.7.4 cc1plus" "$(found "$S/work/b47" cc1plus && echo yes || echo no)"
+            printf '  %-30s %s\n' "libgcc.a  <- THE GATE" "$(found "$S/work/b47" libgcc.a && echo yes || echo no)"
+          else
+            printf '  %-30s %s\n' "gcc 4.7.4 build"   "NOT REACHED  (never started)"
+          fi
+          printf '  %-30s %s\n' "g++ 4.7 links a program" \
+            "$(state "$S/work/gate.cpp" "$S/work/gate")"
+          printf '  %-30s %s\n' "gcc $GCC10 built" \
+            "$(state "$S/work/src10" "$S/work/out10/bin/gcc")"
           echo
           echo "  Next link: hermetic-gcc10 builds gcc $GCC10 in its own box"
           echo "  with LFS 10.0's tested set, and attempts gcc 15 and gcc 16."
