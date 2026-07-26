@@ -83,6 +83,45 @@ patterns a gcc-built one drops as constant-false — 2,082 live patterns against
 above: gcc's source expects the compiler to fold a compile-time constant, and
 tcc does not. See `GCC-BACKPORT.md`.
 
+## A third gap, and it is NOT the same kind
+
+The two above are both *"gcc's source expects a constant to be folded and tcc
+does not"*. The third is different in a way worth keeping separate, because it
+constrains what tcc's output can be **handed to** rather than what tcc can
+compile:
+
+**tcc's object files link under tcc's own linker and not under GNU ld.**
+Measured on 2026-07-26 by `tcc-builds-gcc-arm64`, which builds gmp/mpfr/mpc with
+tcc and then asks a *gcc* to link against the result:
+
+```
+libmpfr.a(add1.o): undefined reference to `alloca'
+libmpfr.a(div.o) : undefined reference to `alloca'      (and more, elided)
+.eh_frame_hdr refers to overlapping FDEs
+final link failed: bad value
+```
+
+Two distinct defects in one archive:
+
+- **`alloca` is emitted as a call to a real symbol.** gcc expands it as a
+  builtin and nothing survives into the object; glibc defines no such function,
+  so the reference is dangling the moment anything other than tcc resolves it.
+- **overlapping FDEs** in the unwind tables tcc writes, which GNU ld rejects
+  outright rather than merging.
+
+Neither shows up while tcc is the only linker in the chain, which is exactly why
+it went unnoticed until a gcc built by tcc was asked to link tcc's archives.
+**The fix is the reference chain's own shape and not a workaround**: every rung
+rebuilds its prerequisites with the compiler that rung is about to use, so the
+archives a gcc links were produced by a gcc. Confirmed as a control rather than
+assumed — the same sources rebuilt by the tcc-built gcc link clean, and the run
+prints both outcomes side by side.
+
+The useful reading: this is a *linker interoperability* gap, not a codegen one.
+Nothing here suggests tcc compiles anything incorrectly, and the differential
+test in `GCC-BACKPORT.md` is the evidence for that. It says tcc's `.o` files
+carry assumptions only tcc's linker satisfies.
+
 ## Everything else was plumbing
 
 Worth separating, because the roadmap's thesis is precisely that incidental and
@@ -91,6 +130,7 @@ forced complexity arrive together and get conflated:
 | category | items |
 |---|---|
 | **compiler capability** | no dead-code elimination *(one item)* |
+| **linker interoperability** | `alloca` emitted as a call, overlapping FDEs — found later, on the gcc leg; see above |
 | **invocation** | `-Wp,-MD` splitting; `__GNUC__` undefined so `__attribute__` was nulled out; `--start-group`; no `-L`/`-nostdlib` so the link silently used system glibc; `INFO_OPTS()` linker diagnostics |
 | **sysroot** | kernel UAPI headers, which musl does not ship |
 | **version skew** | `tc` needs CBQ enums dropped from the uapi headers — **gcc fails identically** |

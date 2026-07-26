@@ -4,10 +4,18 @@
 (`spikes/stage3/ROADMAP.md`); this file owns what tcc is then used to build —
 gcc, a userland, a kernel, and a QEMU boot.
 
-**Status: the entry point and the userland are proven; the climb is not.** An
-arm64 tcc builds a gcc 4.7.4 that targets aarch64 (`GCC-BACKPORT.md`), and a
-tcc-built userland boots as PID 1 (`TCC-USERLAND.md`). Above those: g++ 4.7 is
-built but libgcc is not, and no kernel has been built by anything in this tree.
+**Status: the entry point, the userland, and the first three rungs of the climb
+are proven.** An arm64 tcc builds a gcc 4.7.4 that targets aarch64
+(`GCC-BACKPORT.md`), a tcc-built userland boots as PID 1 (`TCC-USERLAND.md`),
+and as of 2026-07-26 the chain **tcc → gcc 4.7.4 → gcc 4.7.4 → gcc 10.2.0**
+runs inside a sandbox with every host compiler masked out. What is not proven is
+everything above gcc 10, and nothing anywhere has been bootstrapped, tested with
+DejaGnu, or rebuilt twice.
+
+> The paragraph this replaced read: *"the entry point and the userland are
+> proven; the climb is not … g++ 4.7 is built but libgcc is not, and no kernel
+> has been built by anything in this tree."* Both halves are now superseded —
+> see the two notes below and `README.md`.
 
 > **SUPERSEDED 2026-07-26 on the kernel point.** `hermetic-gcc16` builds gcc
 > 16.1.0 in a box with no host filesystem, builds linux v7.2-rc4 with it, and
@@ -233,8 +241,13 @@ failures enumerate themselves.
    both host gcc and tcc, so it is the transplant) and the period box's missing
    `/usr/include`, which stops `fixincludes` before libgcc is ever reached. The
    second is what currently leaves the `ucontext` hypothesis untested.
-5. **g++ 4.7 builds gcc 10.2.0** — the rung the whole choice of 4.7 rests on,
-   and still never attempted.
+5. ~~**g++ 4.7 builds gcc 10.2.0**~~ **DONE 2026-07-26** — the rung the whole
+   choice of 4.7 rests on. `tcc-builds-gcc-arm64` runs the chain in one sandbox
+   with every host compiler masked out: tcc builds gcc 4.7.4 with `c,c++`, that
+   gcc rebuilds it, and the g++ 4.7 that yields builds `gcc (GCC) 10.2.0`. The
+   worry recorded against this item — that "an ISO C++98 compiler" is a floor
+   rather than a compatibility guarantee across thirteen years — was reasonable
+   and did not materialise. Full record in `README.md`.
 6. **Leg 3** — minimal kernel config against a bare environment.
 
 ## The rule this track runs on

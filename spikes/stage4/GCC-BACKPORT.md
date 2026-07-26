@@ -1,8 +1,16 @@
 # gcc 4.7 + gcc 4.8's aarch64 backend — the entry point to the gcc leg
 
-**Status: the compiler builds under both gcc and tcc, produces correct aarch64
-code, and shows no miscompilation across 349 translation units. libgcc does not
-build. 2026-07-25.**
+**Status: DONE, and it carries. The compiler builds under both gcc and tcc,
+produces correct aarch64 code, shows no miscompilation across 349 translation
+units, builds its own runtime, and yields a g++ 4.7 that has now built gcc
+10.2.0. 2026-07-26.**
+
+> **libgcc built on 2026-07-26.** The ICE that blocked it was one missing
+> `#include` — `get_hard_reg_initial_val` moved from `integrate.h` to
+> `function.h` between 4.7 and 4.8, so C89 truncated the returned `rtx` on LP64.
+> `tools/port_gcc47_api.py` adds the include as a fourth rule kind. Every
+> passage below that says libgcc cannot be built is kept as the record of what
+> the obstacle looked like; `README.md` has the current state.
 
 ```
                       host gcc 13        OUR arm64 tcc
@@ -163,6 +171,64 @@ the case arms extracted from 4.8.5 rather than hand-written.
 It then **proves** the result by sourcing `config.gcc` the way `gcc/configure`
 does, which turns a 40-minute build into an answer in seconds.
 
+### A fourth delta, found late: the catch-all arm was shadowing the dispatch
+
+`config.gcc` gets its arms classified — cpu_type table and per-target dispatch
+go to different `case` blocks — and `libgcc/config.host` did not, for months.
+4.8.5 names aarch64 in two case statements and the extraction returns all three
+arms in source order, so the **catch-all landed first**:
+
+```
+aarch64*-*-*)      cpu_type=aarch64          <- matches, and a shell case STOPS
+aarch64*-*-elf)    tmake_file=... t-softfp
+aarch64*-*-linux*) tmake_file=... t-softfp
+```
+
+`aarch64*-*-*` matches `aarch64-unknown-linux-gnu`, so the dispatch selected the
+arm that sets `cpu_type` and nothing else. **No `tmake_file`, no `extra_parts`,
+no `md_unwind_header`** — and libgcc then built cleanly from the generic rules,
+rc=0, at a plausible size, with no diagnostic anywhere.
+
+What it cost is the interesting part. `aarch64/t-softfp` and `t-softfp` were
+both present on disk and named by an arm nothing ever selected, so **libgcc
+carried none of the soft-float binary128 routines**:
+
+```
+__gttf2 __lttf2 __eqtf2 __letf2 __getf2 __addtf3 __multf3 __extenddftf2
+  -- all eight MISSING, libgcc.a 989,540 bytes
+```
+
+aarch64's `long double` is IEEE binary128 with no hardware for it, so every
+comparison on one is a call into libgcc. Nothing noticed, because the only
+things ever linked against that libgcc were `fib(10)` and a `std::vector` — and
+neither touches a `long double`. It surfaced when the tcc-built gcc was first
+asked to link **mpfr**, whose `set_ld.c` does nothing but convert long doubles:
+
+```
+undefined reference to `__gttf2'  `__lttf2'  `__eqtf2'  `__letf2'  `__getf2'
+```
+
+With the arms classified, `tmake_file` resolves and libgcc.a is 1,290,110 bytes
+with all eight present and 12 TFmode objects. The transplant now **proves** this
+too, by sourcing `config.host` the way `libgcc/configure` does and failing in
+seconds if `t-softfp` is absent from the result — with three distinct outcomes,
+because they need different fixes: the dispatch shadowed, the host matching no
+arm at all (config.host's catch-all calls `exit`, which kills a sourced shell),
+and the file not being parseable, which is *no evidence* rather than a failure.
+
+Two lessons, both already in this repository's notes and both re-learned anyway:
+**a splice that reports success proves nothing about where it landed**, and
+**order matters in a `case` — the specific arms must precede the catch-all.**
+
+### And one consequence of fixing it
+
+`md_unwind_header=aarch64/linux-unwind.h` had never taken effect, so that header
+had never been compiled. With the dispatch selected it is, and it is 2013 source
+meeting a modern glibc: `struct ucontext` was renamed `ucontext_t` in 2.26. The
+transplant now applies that rename unconditionally as a declared, printed
+compatibility patch — the same one `hermetic-gcc47` was already applying to its
+own copy, now in one place so every consumer gets it.
+
 ## Built by tcc
 
 The host-gcc arms answered *does this transplant work*. They deliberately did
@@ -279,11 +345,17 @@ Agreement in failure is still agreement. It is also a real bug — see below.
 
 ## What this does NOT show
 
-- **libgcc is not built.** The arms run `make all-gcc`, which stops before the
-  runtime, so `gcc/xgcc` cannot link a program: `cannot find crtbegin.o`,
-  `cannot find -lgcc`. `cc1` is exercised directly instead — emit assembly,
-  assemble with the system `as`, link, run. A full `make` is the next step.
-- **THE BACKPORTED COMPILER ICEs, AND libgcc CANNOT BE BUILT.**
+- ~~**libgcc is not built.**~~ **RESOLVED 2026-07-26.** The arms now run a full
+  `make` and the runtime builds; `xgcc` links and runs a program. Kept below is
+  the record of what the obstacle looked like while it stood.
+
+  The arms ran `make all-gcc`, which stops before the
+  runtime, so `gcc/xgcc` could not link a program: `cannot find crtbegin.o`,
+  `cannot find -lgcc`. `cc1` was exercised directly instead — emit assembly,
+  assemble with the system `as`, link, run.
+- ~~**THE BACKPORTED COMPILER ICEs, AND libgcc CANNOT BE BUILT.**~~
+  **RESOLVED 2026-07-26 — one missing `#include`, see the note at the top.**
+  The record of the obstacle follows.
 
   ```
   g474/libgcc/unwind-dw2.c: In function 'uw_init_context_1':
@@ -297,12 +369,15 @@ Agreement in failure is still agreement. It is also a real bug — see below.
   `crtbegin.o`, so `xgcc` cannot link a program, which is why every result here
   exercises `cc1` directly. **This is the next thing to fix in this leg.**
 
-  **The period-box experiment has not yet reached it.** `spikes/stage4`'s
-  glibc 2.19 sysroot exists to test whether the ICE is the era rather than the
-  transplant, and the premise checks out — `typedef struct ucontext` is present
-  in that libc, so `md-unwind-support.h` is valid there and there is nothing to
-  patch around. But the build stops earlier, at fixincludes, because that box
-  has no `/usr/include`. The question is set up and still unasked.
+  **The period-box experiment ran, and FALSIFIED its own hypothesis.** The
+  glibc 2.19 sysroot existed to test whether the ICE was the era rather than the
+  transplant. It verified its premise first — `typedef struct ucontext` present
+  at that libc — and the compiler then died in the same file, at the same line
+  and column, on a libc where the theory cannot apply. The era was never the
+  cause. `hermetic-gcc47` moved to the LFS 10.0 base and the whole 4.8.2 cross
+  toolchain was deleted; the `struct ucontext` → `ucontext_t` rename is now
+  applied unconditionally by the transplant as a declared compatibility patch,
+  because it is what lets 2013 source meet any glibc past 2.26.
 - ~~**Only `cc1`, and only C.**~~ **ANSWERED, 2026-07-26.** g++ 4.7 exists.
   `spikes/stage4`'s period box built the transplanted 4.7.4 with
   `--enable-languages=c,c++`: `cc1` 65,938,829 bytes, `cc1plus` 71,662,708,
@@ -316,6 +391,12 @@ Agreement in failure is still agreement. It is also a real bug — see below.
   other, so a fault common to tcc and gcc 13 is invisible to it — they share no
   code, which makes that a coincidence rather than a risk, but it is not
   nothing. gcc's own DejaGnu suite is the next and much longer step.
+- **The rung above is no longer hypothetical.** `tcc-builds-gcc-arm64` now runs
+  three stages in one box — tcc builds gcc 4.7.4, that gcc rebuilds it with
+  `c,c++`, and the resulting g++ 4.7 builds **gcc 10.2.0** — with every host
+  compiler masked out of the sandbox. See `README.md`; the consequence for this
+  document is that "an ISO C++98 compiler is a floor, not a compatibility
+  guarantee across thirteen years" has been tested and the floor held.
 
 ## What the host supplies
 
@@ -356,6 +437,7 @@ bind list *is* the declaration and each step is a deletion from it.
 
 ```
 step 1  bwrap, host toolchain still bound      DONE
+step 1b THE HOST COMPILERS REMOVED FROM THE BOX  DONE  <- tcc-builds-gcc-arm64
 step 2  musl sysroot, static, instead of glibc
 step 3  our own binutils instead of host as/ld
 step 4  our own make/shell/coreutils
@@ -365,6 +447,33 @@ step 5  a tcc not built by gcc 13   -- blocked on seed -> tcc
 Step 5 is last because invariant #1 forbids a committed binary, so a tcc must be
 *derived*, and today the only thing that can derive one is gcc 13. The
 alternative is reaching it from the seed, which is leg 1.
+
+**Step 1b, and it is the one that changes what a result here MEANS.**
+`tcc-builds-gcc-arm64` builds tcc outside the box and then runs everything above
+it inside a sandbox where **every host C and C++ compiler is masked**: each
+driver name is resolved to the real binary behind it and bind-mounted to
+`/dev/null`, and `/usr/libexec/gcc` — where `cc1` and `cc1plus` live — is
+replaced by an empty tmpfs.
+
+Until this landed, every gcc result in this document was produced on a machine
+where `/usr/bin/gcc` was one silent fallback away, and nothing in the run could
+distinguish *"tcc built this"* from *"something quietly used the host
+compiler"*. The box does not make that distinction by argument; it makes it
+structurally, and the run proves it before spending an hour on a build:
+
+```
+host cc : masked -- nothing in /usr/bin can compile a C file
+tcc     : compiled, linked and ran, exit=6
+```
+
+The mask is built by scanning rather than from a list, which earned its keep
+immediately: the arm64 runner carries gcc 12, 13 and 14 **and** clang 16, 17 and
+18 — 34 names resolving to 12 real binaries. A hand-written list would have
+missed half of them.
+
+**What is still borrowed, in this box, named rather than implied:** tcc itself
+(built outside by the host gcc — step 5, above), binutils, glibc and its
+headers, and make/perl/m4/bison/flex/sh/coreutils/python3.
 
 **Step 1 result.** All four arms confirmed the box: the loader resolves, every
 bind is present, `/work` is the only writable path, and `curl` cannot reach the

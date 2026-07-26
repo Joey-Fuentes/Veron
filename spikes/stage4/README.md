@@ -12,14 +12,17 @@ results have their own full records in `GCC-BACKPORT.md` and `TCC-USERLAND.md`.
 
 ## The jobs, and where each stands
 
-Six workflows carry this stage. Each triggers on its own file only; none starts
-another.
+Each triggers on its own file only; none starts another. The first four are the
+gcc leg; the `hermetic-*` boxes are the climb above it.
 
 | job | question it owns | state |
 |---|---|---|
 | `gcc47-aarch64-backport` | can 4.8.5's aarch64 backend live in 4.7.4? | **ANSWERED** — full build, libgcc, xgcc runs |
 | `gcc47-libgcc-ice` | why did libgcc never build? | **ANSWERED** — one missing `#include` |
-| `tcc-builds-gcc-arm64` | can *our tcc* build that same compiler? | **nearly** — builds it; g++ link unproven |
+| `tcc-builds-gcc-arm64` | can *our tcc* reach a modern gcc, with no host compiler? | **ANSWERED** — tcc → gcc 4.7.4 → gcc 4.7.4 → **gcc 10.2.0**, boxed |
+| `tcc-gcc-miscompile-check` | did tcc miscompile the gcc it built? | **ANSWERED** — 349 of 349 TUs identical |
+| `tcc-userland-arm64` | can a tcc-built userland boot? | **ANSWERED** — PID 1 under a gcc-built kernel |
+| `hermetic-gcc47` | rung 1 in an LFS 10.0 box, then gcc 10 | in progress |
 | `hermetic-gcc10` | a gcc 10.2.0 box, and can it reach 15 and 16? | in progress, chapter 6 |
 | `hermetic-gcc15` | a gcc 15.2.0 system that boots | kernel config rewritten, awaiting a run |
 | `hermetic-gcc16` | a gcc 16.1.0 system that boots | **ANSWERED** — boots linux v7.2-rc4, 142 checks green |
@@ -114,6 +117,115 @@ Worth recording, because the shape recurs:
 
 ---
 
+## THE THIRD RESULT: tcc reaches gcc 10.2.0, with no host compiler in the box
+
+**A tcc built the last gcc written in C; that gcc rebuilt itself with a C++
+front end; and the g++ that yielded built gcc 10.2.0. All of it inside a sandbox
+where every host C and C++ compiler is masked out.** `tcc-builds-gcc-arm64`,
+2026-07-26, about 14 minutes end to end:
+
+```
+stage 1 configure rc : 0     tcc      -> gcc 4.7.4 (c,c++)   -> /work/out
+stage 1 build     rc : 0     libgcc TF symbols missing of 8 : 0
+stage 2           rc : 0     gcc 4.7  -> gcc 4.7.4 (c,c++)   -> /work/out2
+stage 3           rc : 0     g++ 4.7  -> gcc 10.2.0          -> /work/out10
+gcc 10 version : gcc (GCC) 10.2.0        implicit declarations : 0
+```
+
+This closes the question the choice of 4.7 was *for*. The old note read: *"an
+ISO C++98 compiler is a floor, not a compatibility guarantee across thirteen
+years."* It was a fair worry — the expectation was that gcc 10's source would
+reach for C++11 *library* headers that 4.7's libstdc++ only partly has. It
+didn't. gcc 10.2.0 built under g++ 4.7 with no intervention at all.
+
+### The box, and why it changes what the earlier results mean
+
+Every gcc result before this one was produced on a runner where `/usr/bin/gcc`
+sat on `PATH` throughout. Nothing in those runs could distinguish *"tcc built
+this"* from *"something quietly fell back to the host compiler"* — and
+`/usr/bin/ld` appearing in a link error is what that looks like from outside.
+
+The build now runs under bwrap with **the host compilers removed**. Each driver
+name is resolved to the real binary behind it and bind-mounted to `/dev/null`,
+and `/usr/libexec/gcc` — where `cc1` and `cc1plus` live — is replaced by an
+empty tmpfs. The masking is structural rather than argued, and the run proves it
+before spending anything on a build:
+
+```
+host cc : masked -- nothing in /usr/bin can compile a C file
+/repo   : read-only        network : unreachable
+tcc     : compiled, linked and ran, exit=6
+```
+
+**Resolve the binary, never the name.** The first attempt masked all fourteen
+driver names directly and bwrap refused it:
+
+```
+bwrap: Can't create file at /usr/bin/c++: No such file or directory
+```
+
+Twelve of the fourteen are symlinks, and `c++` leaves `/usr/bin` on the way to
+its target — `c++ → /etc/alternatives/c++ → /usr/bin/g++ → g++-13 →
+aarch64-linux-gnu-g++-13`. All of them terminate at a handful of real files, so
+resolving first and deduping masks exactly as much with no symlink for bwrap to
+traverse.
+
+**Scan, do not enumerate.** The mask is built by scanning `/usr/bin`, which
+earned its keep immediately: the arm64 runner carries gcc 12, 13 **and** 14 plus
+clang 16, 17 and 18 — 34 names resolving to 12 real binaries. A hand-written
+list would have missed half.
+
+### Each rung is exercised, not asserted
+
+A compiler that exists is not a compiler that works, and this file already
+records why `--version` proves nothing. Every rung runs its own output:
+
+| rung | what is run | result |
+|---|---|---|
+| gcc 4.7 `cc1` | emits aarch64, assembled, **linked by our own gcc**, run | exit 55 |
+| g++ 4.7 (tcc-built) | `std::vector` + `std::string`, compiled, linked, run | exit 47 |
+| g++ 4.7 (gcc-built) | the same | exit 47 |
+| gcc 10 `gcc` | `fib(10)` compiled, linked, run | exit 55 |
+| gcc 10 `gcc` | **gmp 6.2.1 rebuilt — 515 objects — then linked and RUN** | 2^100 correct |
+| gcc 10 `g++` | C++14 return-type deduction, run | exit 47 |
+| control | the same file through g++ 4.7 at `-std=c++11` | rejected on the **language** |
+
+The gmp check is the one that carries weight: 515 objects of limb arithmetic
+compiled by gcc 10 and then asked for a value with a known decimal expansion.
+Compiling is not computing, and the earlier version of this gate built those 515
+objects and executed none of them.
+
+The control is there because *"gcc 10 compiled C++14"* means nothing unless 4.7
+could not. It has to fail for the right reason: run at `-std=c++14` it answered
+`unrecognized command line option`, which shows 4.7 does not know the **flag**,
+not that it cannot compile the **code**. At `-std=c++11` — the newest standard
+4.7 accepts — it rejects the language, and the gate now fails if it ever sees
+the flag error instead.
+
+### What is still borrowed here, named
+
+tcc itself is built **outside** the box by the host gcc, and that cannot be
+closed at this rung: invariant #1 forbids a committed binary, so a tcc must be
+derived, and today the only thing that can derive one is the host gcc. Reaching
+it from the seed is stage 3's open rung. Until then this job's claim is about
+**capability, not provenance**.
+
+Also bound and declared: binutils (`as`, `ld`, `ar`, `ranlib` — gcc cannot be
+built without them and binutils is not known to be tcc-buildable), glibc and its
+headers, and make/perl/m4/bison/flex/sh/coreutils/python3.
+
+### What it does not show
+
+- **No testsuite.** DejaGnu has never run against any of these compilers.
+- **Nothing rebuilt twice.** No byte-identical rebuild of any rung.
+- **No bootstrap.** All three stages are `--disable-bootstrap`, so gcc's own
+  stage2/stage3 byte-identical comparison — the self-validating gate this stage
+  keeps naming — has never run here either. See the deferral section below.
+- **gcc 10 is not self-contained.** Its binaries were linked by g++ 4.7 against
+  `out2`'s `libstdc++.so.6.0.17` and need it on `LD_LIBRARY_PATH` to run.
+
+---
+
 ## What is proven
 
 **The gcc entry point, completely.** `gcc47-aarch64-backport`, host tools:
@@ -131,20 +243,16 @@ not a choice but a consequence of the ICE. The full build is new, and so is the
 gate that **fails the arm on any implicit declaration in the backend**, because
 that is now known to be a truncated pointer rather than a style complaint.
 
-**tcc builds that compiler too — including its C++ front end.**
-`tcc-builds-gcc-arm64`:
+**tcc builds that compiler too — including its C++ front end, and the g++ it
+yields has built gcc 10.2.0.** `tcc-builds-gcc-arm64`, and see the section
+below for the whole chain:
 
 ```
-make rc=0    (full build, --enable-languages=c,c++)
-libgcc.a   989,540 bytes
-xgcc       BUILT
-cc1plus    BUILT
-implicit declarations: 0
+stage 1  tcc      -> gcc 4.7.4 (c,c++)   libgcc.a 1,290,110   cc1plus BUILT
+stage 2  that gcc -> gcc 4.7.4 (c,c++)   g++ links, runs, exit 47
+stage 3  g++ 4.7  -> gcc 10.2.0          gcc, g++, cpp installed
+implicit declarations: 0     libgcc soft-float binary128 routines: 8 of 8
 ```
-
-**What is not yet shown** is that the resulting g++ 4.7 can *link*. The gate ran,
-the compile failed, and the diagnostic was destroyed by errexit before it
-printed — see the method notes. That is the single open question on this job.
 
 **The userland half of the Linux leg.** A musl + BusyBox userland compiled
 entirely by tcc boots as PID 1 under a GCC-built arm64 kernel. Gated by
@@ -177,12 +285,17 @@ the sysroot so the tools find their loader inside it.
 ## The ladder, and the box that owns each rung
 
 ```
-tcc  →  gcc 4.7.4 + 4.8.5's aarch64 backend      last gcc written in C
-     →  g++ 4.7                                  built FROM that C
-     →  gcc 10.2.0                               C++98 ceiling is "prior to 10.5"
+tcc  →  gcc 4.7.4 + 4.8.5's aarch64 backend      last gcc written in C     ]
+     →  g++ 4.7                                  built FROM that C        ]  all three
+     →  gcc 10.2.0                               C++98 ceiling            ]  PROVEN, boxed
      →  gcc 15.2.0 / 16.1.0                      needs C++14, which 10.2 has
      →  kernel + userland + QEMU boot
 ```
+
+The first three rungs are carried end to end by `tcc-builds-gcc-arm64` in a
+single box with no host compiler in it. The `hermetic-*` boxes below own the
+rungs above, and reach rung 1 by a different route — an LFS-style cross
+toolchain built by the host gcc, which is scaffolding that tcc replaces.
 
 | box | book | builds | then attempts | boots? |
 |---|---|---|---|---|
@@ -501,6 +614,12 @@ exists for this — and not a judgement that the checks are unnecessary. There i
 nothing to fixpoint until a single pass completes, and the gate costs ~3x. Both
 lower boxes take `bootstrap: yes` as a dispatch input.
 
+**`tcc-builds-gcc-arm64` defers it too, and there the deferral now costs the
+most.** That job is the only one whose whole chain — tcc → 4.7 → 4.7 → 10.2.0 —
+is built by compilers this tree made, so it is where a stage2/stage3 comparison
+would say the most and where a consistently miscompiling compiler would be
+hardest to notice. It has no `bootstrap` input yet.
+
 1. **Fixpoint, per builder.** `make bootstrap` requires stage2 and stage3 to
    compare **byte-identical**. `ROADMAP.md` already calls this out: *"gcc insists
    on exactly the property we would want to prove, using its own machinery.
@@ -528,16 +647,22 @@ what makes this affordable.
 
 ## Open, in the order they block things
 
-1. **Does the tcc-built g++ 4.7 link?** `cc1plus` and `xgcc` exist; the compile
-   failed and the diagnostic was lost to errexit. One run answers it.
+1. ~~**Does the tcc-built g++ 4.7 link?**~~ **ANSWERED 2026-07-26.** It does —
+   compiled, linked and ran, exit 47, and so does the one stage 2 builds. The
+   old failure was the gate looking for C++ headers in an *uninstalled* build
+   tree, where `-B` does not add them; against an installed prefix the answer
+   means something.
 2. **`hermetic-gcc10` through chapter 7** — libstdc++ pass 2 and bison in the
    box, then the gcc 15 and gcc 16 attempts, neither of which has ever run with
    a working box beneath it.
 3. **`hermetic-gcc47` on the LFS 10.0 base** — it inherits gcc10's fixes and is
    the rung that hands off to gcc 10 in the real chain.
-4. **g++ 4.7 → gcc 10.2.0 has never been attempted**, and it is the single
-   assumption the entire upper ladder rests on. "Requires an ISO C++98 compiler"
-   is a floor, not a compatibility guarantee across thirteen years.
+4. ~~**g++ 4.7 → gcc 10.2.0 has never been attempted**~~ **ANSWERED
+   2026-07-26** — `gcc (GCC) 10.2.0`, built by the g++ 4.7 that tcc produced,
+   in a box with no host compiler. The worry was reasonable and did not
+   materialise: the floor held, and gcc 10's source needed nothing from 4.7's
+   libstdc++ that it did not have. What remains untested above this rung is
+   gcc 10 → gcc 15/16, which `hermetic-gcc10` owns.
 5. **Nothing has been rebuilt twice.** No box has been shown byte-identical
    across two runs — cheap, and the natural gate for a project whose thesis is
    "rebuild and diff rather than trust".
@@ -609,8 +734,15 @@ first clean transcript.
 
 ## What is still borrowed
 
-The host gcc builds the cross toolchain, exactly as LFS chapter 5 does.
-Removing that is stage 3's job — seed → tcc — not this directory's.
+**In the `hermetic-*` boxes**, the host gcc builds the cross toolchain, exactly
+as LFS chapter 5 does. Removing that is stage 3's job — seed → tcc — not this
+directory's.
+
+**In `tcc-builds-gcc-arm64` it no longer does.** That box masks every host C and
+C++ compiler, so the only compiler above tcc is one this tree produced. What is
+left there is tcc itself, built outside by the host gcc — which is step 5 of the
+hermetic ladder in `GCC-BACKPORT.md` and is blocked on seed → tcc, not on
+anything here.
 
 - **Kernel UAPI headers** are copied in as content.
 - **The transplant needs python3**, which no bootstrap chain has until very
@@ -696,6 +828,27 @@ rather than in the thing under test. The recurring shape is worth naming:
 - **`actions/cache` saves on failure.** A build tree is only meaningful
   complete; mark it, and discard an unmarked one.
 
+### Sandboxes
+
+- **Mask the resolved binary, not the name.** Almost every compiler driver on an
+  Ubuntu image is a symlink, and `c++` leaves `/usr/bin` on its way to a target
+  — `c++ → /etc/alternatives/c++ → g++ → g++-13 → <triplet>-g++-13`. Binding
+  over the names gets `bwrap: Can't create file at /usr/bin/c++`. Fourteen names
+  resolved to three real files.
+- **Scan for what to mask; do not list it.** The arm64 runner carries gcc 12, 13
+  and 14 *and* clang 16, 17 and 18. A hand-written list is a list that silently
+  stops being complete the day the runner image moves.
+- **Mask the compiler proper, not just the drivers.** `cc1` and `cc1plus` live
+  in `/usr/libexec/gcc`, not `/usr/lib/gcc`; the latter holds `crt*.o` and
+  `libstdc++.a`. Both are worth masking and only one of them is load-bearing.
+  The runtime `libgcc_s.so.1` is in neither — it is in `/usr/lib/<triplet>/` —
+  so masking those directories does not stop dynamically linked binaries running.
+- **Prove the box before spending an hour in it**, and make the proof the thing
+  the box is *for*: compile a C file with every driver and fail if any succeeds.
+  A sandbox that still contains a compiler makes every claim above it vacuous.
+- **A read-only bind is a mount property, not a permission.** `test -w` answers
+  the wrong question; try the write.
+
 ### Diagnostics
 
 - **Prefer the compiler's message over make's.** make prints several
@@ -706,7 +859,21 @@ rather than in the thing under test. The recurring shape is worth naming:
 - **Classify on the whole output, not `head -1`.** The first line of a gcc
   failure is `In function 'foo':`; six ICEs read as six unknowns.
 - **A check that cannot fail is not a check**, and a summary must distinguish
-  *never ran* from *ran and failed*. A fetch failure once printed three
+  *never ran* from *ran and failed*. A step called `STAGE 3 GATE` printed
+  `expect exit 55` next to the real value and exited 0 regardless, so a compiler
+  answering 99 would have gone green. Printing an expectation is not asserting
+  it.
+- **A control has to fail for the right reason.** The C++14 gate ran its control
+  at `-std=c++14`, and g++ 4.7 answered `unrecognized command line option` —
+  which shows it does not know the flag, not that it cannot compile the code.
+  Run at the newest standard it *does* accept, it rejects the language. The gate
+  now fails if it ever sees the flag error instead, because that outcome
+  supports nothing.
+- **Glob where the files are.** A report globbed `out/lib/.../libgcc.a` and
+  tested `work/$lg`, so the pattern expanded against a directory that had no
+  `out/`, stayed literal, and every iteration hit `continue`. It printed
+  nothing at all, which is worse than the ambiguous number it replaced —
+  silence cannot be told apart from a step that never ran. A fetch failure once printed three
   confident "no"s about experiments that never started.
 - **A `head`/`tail` window is not a log.** The one run where a command was
   missing from the boot image, the guest printed `cp: not found` and the line

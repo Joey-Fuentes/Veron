@@ -17,9 +17,14 @@
 #
 # 4.8.5 does NOT need a book: it is the transplant DONOR. We copy
 # gcc/config/aarch64, gcc/common/config/aarch64, libgcc/config/aarch64,
-# config.sub and config.guess out of the tarball and never build it. 4.8.2 is a
-# different matter -- it is the compiler that currently builds the period
-# sysroot, and 7.5 is its book.
+# config.sub and config.guess out of the tarball and never build it.
+#
+# 4.8.2 NO LONGER BUILDS ANYTHING. It was the compiler for the period sysroot,
+# and the period sysroot existed only to test the ucontext hypothesis for the
+# libgcc ICE. That hypothesis was falsified at glibc 2.19 and the ICE turned out
+# to be a moved declaration, so hermetic-gcc47 moved to the LFS 10.0 base and
+# the whole 4.8.2 cross toolchain was deleted. 7.5 is kept for its description
+# of a 4.7-era environment, not because anything builds in it.
 
 [[book]]
 version  = "7.3"
@@ -32,7 +37,8 @@ linux    = "3.8.1"
 role     = "reference only -- describes a 4.7-era system"
 note     = """
 Cannot be built on aarch64: gcc 4.7.2 has no aarch64 backend, which is the
-entire reason spikes/stage3's transplant exists. Kept because it is the only
+entire reason spikes/stage4's transplant exists (spikes/stage4/probes/
+backport-aarch64.sh; stage 3 owns reaching tcc, not what tcc then builds). Kept because it is the only
 description of the environment our transplanted 4.7.4 is native to.
 """
 
@@ -44,14 +50,19 @@ gcc      = "4.8.2"
 glibc    = "2.19"
 binutils = "2.24"
 linux    = "3.13.3"
-role     = "the period sysroot -- .github/workflows/hermetic-gcc47.yml"
+role     = "reference only -- the period sysroot it described is retired"
 note     = """
 The earliest LFS whose cross compiler can target aarch64, and therefore the
 earliest period sysroot buildable here. Also the 4.8 book.
 
 glibc 2.19 predates the struct ucontext -> ucontext_t rename (2.26), which is
-what makes this the only environment where the libgcc ICE recorded in
-stage4/GCC-BACKPORT.md can be tested rather than patched around.
+why this was the only environment where the libgcc ICE could be tested rather
+than patched around. That test was run on 2026-07-26 and the hypothesis was
+FALSIFIED: the premise held (the struct tag is present at this glibc) and the
+compiler died in the same file, line and column anyway. The ICE was a
+declaration that moved headers between 4.7 and 4.8. Nothing needs a 2014 libc
+now, and the rename is applied unconditionally as a declared compatibility
+patch by spikes/stage4/probes/backport-aarch64.sh.
 """
 
 [[book]]
@@ -73,8 +84,10 @@ just as well as 10.4 would.
 
 This is now the ONLY number in the tree. An earlier workflow built 10.4.0
 while this manifest said 10.2.0, so the rung named here was not the rung any
-code built. hermetic-gcc10 builds 10.2.0 and hermetic-gcc47 hands off to
-10.2.0.
+code built. hermetic-gcc10 builds 10.2.0, hermetic-gcc47 hands off to 10.2.0,
+and tcc-builds-gcc-arm64 stage 3 builds 10.2.0 with the g++ 4.7 that tcc
+produced -- which is the first time anything in this tree has actually made
+that handoff. See spikes/stage4/README.md.
 """
 
 [[book]]
