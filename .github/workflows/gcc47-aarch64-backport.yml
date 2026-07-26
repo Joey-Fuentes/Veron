@@ -185,7 +185,27 @@ jobs:
           # -Otarget: with -j the output of parallel compiles INTERLEAVES, so
           # run 2's "first failure in context" showed warnings from resource.c
           # next to a reload1.o failure. -Otarget groups each target's output.
-          timeout 7200 make -k -j"$(nproc)" -Otarget MAKEINFO=true all-gcc > build.log 2>&1
+          # THE QUESTION HAS MOVED, SO THE TARGET HAS TOO. all-gcc stops before the
+          # runtime, and that was right while libgcc was IMPOSSIBLE: the transplanted
+          # compiler segfaulted at
+          #   libgcc/unwind-dw2.c:1490:44: internal compiler error
+          # every single time. Diagnosed 2026-07-26 as a declaration that moved headers
+          # between 4.7 and 4.8 -- get_hard_reg_initial_val, integrate.h -> function.h --
+          # and tools/port_gcc47_api.py now adds the include. libgcc.a then built at
+          # 992,532 bytes.
+          #
+          # So "does it build" is answered, and the live question is "does it build
+          # COMPLETELY": libgcc, and an xgcc that can link.
+          #
+          # ARM B IS A DELIBERATE EXCEPTION. It targets arm-none-eabi, bare metal with
+          # no libc here, so libgcc cannot be built and a failure there would say
+          # nothing about the transplant. B stays on all-gcc; A and C target Linux and
+          # do the full build.
+          case "${{ matrix.arm }}" in
+            B-*) MKTGT="all-gcc"; echo "  target: all-gcc (bare-metal arm, no libc for libgcc)" ;;
+            *)   MKTGT="all";     echo "  target: all (full build, through libgcc)" ;;
+          esac
+          timeout 7200 make -k -j"$(nproc)" -Otarget MAKEINFO=true $MKTGT > build.log 2>&1
           rc=$?
           # Run 1 printed "(124 = timed out)" next to rc=2, which reads as a
           # claim rather than a legend. Say what actually happened.
@@ -345,13 +365,52 @@ jobs:
             fi
           fi
           echo
+          echo "  --- 2b. IMPLICIT DECLARATIONS IN THE BACKEND ---"
+          # THIS CHECK EXISTS BECAUSE ITS ABSENCE COST THE LEG WEEKS. A declaration that
+          # moved headers is a WARNING, not an error: C89 assumes an int return and on
+          # LP64 the returned pointer is truncated to 32 bits and sign extended --
+          #   tem = 0xfffffffff6b46500      non-null, so it passes a NULL check
+          # -- and the compiler segfaults on first dereference, a hundred objects into
+          # libgcc, with nothing on its face pointing at a missing include. The build
+          # reported "0 errors, 471 warnings" and the one warning that mattered was the
+          # ONLY implicit declaration in it.
+          #
+          # Any implicit declaration in the TRANSPLANTED BACKEND is a latent truncated
+          # pointer, not a style complaint. Fail on it.
+          IMPL=$(grep -c "implicit declaration" build.log 2>/dev/null || echo 0)
+          echo "    implicit declarations in the whole build: $IMPL"
+          BACKEND_IMPL=0
+          if [ "$IMPL" -gt 0 ]; then
+            grep -n "implicit declaration" build.log | head -10 | sed "s/^/      /"
+            BE=$(grep "implicit declaration" build.log | grep -c "config/aarch64" || true)
+            echo "    of those, in config/aarch64: ${BE:-0}"
+            if [ "${BE:-0}" -gt 0 ]; then
+              echo "    ^^ EACH ONE IS A TRUNCATED POINTER WAITING TO HAPPEN."
+              echo "    Find which header 4.7 declares it in and add a rule to"
+              echo "    tools/port_gcc47_api.py with kind=include."
+              BACKEND_IMPL=1
+            fi
+          fi
+          echo
+          echo "  --- 2c. did the RUNTIME build? ---"
+          LG=$(find . -name libgcc.a 2>/dev/null | head -1)
+          echo "    libgcc.a: ${LG:-NOT BUILT}"
+          [ -n "$LG" ] && echo "    size    : $(wc -c < "$LG") bytes"
+          echo
           echo "  --- 3. the full driver, if it was built ---"
           if [ -x gcc/xgcc ]; then
             gcc/xgcc -B gcc/ -O2 /tmp/t.c -o /tmp/t2 2>&1 | head -5 | sed 's/^/    /'
             [ -x /tmp/t2 ] && { /tmp/t2; echo "    xgcc end-to-end: exit=$? (expect 55)"; }
           else
-            echo "    xgcc not built (all-gcc stops short of the driver)"
+            echo "    xgcc not built"
+            echo "    (expected on arm B, which stops at all-gcc; on A or C it means"
+            echo "     the runtime did not finish -- see 2b and 2c above)"
           fi
+          [ "${BACKEND_IMPL:-0}" -eq 0 ] || {
+            echo
+            echo "  FAILING THE ARM: the backend compiled with an implicit declaration."
+            echo "  That is the exact shape of the ICE this leg already spent weeks on."
+            exit 1; }
 
       - name: 'SIZE THE NEXT FIX'
         continue-on-error: true
