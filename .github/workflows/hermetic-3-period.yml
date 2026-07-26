@@ -416,12 +416,16 @@ jobs:
             --chdir /work "$@"
           EOS
           chmod +x box3.sh
+          # Every caller uses "$W/box3.sh", never ./box3.sh: the
+          # userland step does `cd busybox-...` first, so a relative
+          # path resolved inside the BusyBox source tree and reported
+          # "No such file or directory" about a file that existed.
           echo "  sysroot: $(du -sh "$S" | cut -f1)"
           for c in "/tools/bin/sh -c true" "/tools/bin/gcc --version" \
                    "/tools/bin/as --version" "/tools/bin/make --version"; do
             set -- $c
             printf '  %-14s %s\n' "$(basename "$1")" \
-              "$(S="$S" ./box3.sh "$@" 2>&1 | head -1 | cut -c1-60)"
+              "$(S="$S" "$W/box3.sh" "$@" 2>&1 | head -1 | cut -c1-60)"
           done
 
       - name: 'THE EXPERIMENT: our 4.7.4 + transplant, inside, unpatched'
@@ -477,9 +481,9 @@ jobs:
             echo "  NOT applying the ucontext patch -- this is the experiment"
           fi
           echo "  --- does /bin/sh resolve inside the box? ---"
-          S="$S" ./box3.sh /bin/sh -c 'echo "    /bin/sh works: $(uname -m)"' \
+          S="$S" "$W/box3.sh" /bin/sh -c 'echo "    /bin/sh works: $(uname -m)"' \
             || { echo "    /bin/sh does not resolve -- shebangs will fail"; exit 1; }
-          S="$S" ./box3.sh /tools/bin/sh -c '
+          S="$S" "$W/box3.sh" /tools/bin/sh -c '
             cd /work
             mkdir -p b && cd b
             /work/g474/configure --prefix=/work/out47 --enable-languages=c,c++ \
@@ -558,7 +562,7 @@ jobs:
           # that C, and the g++ it yields is what carries the chain upward.
           # Nothing above this point involves tcc at all -- by here it is long
           # gone, which is why this rung is testable without it.
-          S="$S" ./box3.sh /tools/bin/sh -c '
+          S="$S" "$W/box3.sh" /tools/bin/sh -c '
             export PATH=/work/out47/bin:$PATH
             gxx=$(command -v g++ || echo NONE)
             echo "compiler for this rung: $gxx"
@@ -588,7 +592,7 @@ jobs:
           # C++14 gcc 15 needs). The open question is not the compiler but the
           # LIBC: this box is glibc 2.19, and a 2026 libstdc++ may want more
           # than a 2014 libc provides. That is the thing this rung measures.
-          S="$S" ./box3.sh /tools/bin/sh -c '
+          S="$S" "$W/box3.sh" /tools/bin/sh -c '
             export PATH=/work/out104/bin:$PATH
             gcc --version 2>&1 | head -1
             mkdir -p /work/b152 && cd /work/b152

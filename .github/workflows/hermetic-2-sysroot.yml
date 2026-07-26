@@ -143,7 +143,7 @@ jobs:
           # DEFINE THE BOX HERE, NOT LATER. The busybox applets are installed
           # from inside it during the userland step, which runs well before the
           # step that used to create this file -- so the run died with
-          #   ./box2.sh: No such file or directory
+          #   "$W/box2.sh": No such file or directory
           # A helper that only exists after its first use is a sequencing bug
           # waiting for someone to move a step.
           cat > box2.sh <<'EOS'
@@ -167,6 +167,10 @@ jobs:
             "$@"
           EOS
           chmod +x box2.sh
+          # Every caller uses "$W/box2.sh", never ./box2.sh: the
+          # userland step does `cd busybox-...` first, so a relative
+          # path resolved inside the BusyBox source tree and reported
+          # "No such file or directory" about a file that existed.
 
           # LFS chapter 4 sets PATH ONCE for the whole session. Run 2 set it in
           # two build steps out of six, so libstdc++'s configure could not find
@@ -507,7 +511,7 @@ jobs:
           #
           # --install -s is busybox's own symlink farm, so there is no applet
           # list to parse and nothing to get wrong.
-          S="$S" ./box2.sh /usr/bin/busybox --install -s /usr/bin
+          S="$S" "$W/box2.sh" /usr/bin/busybox --install -s /usr/bin
           n=$(ls "$S/usr/bin" | wc -l)
           echo "  applets linked: $n"
           [ "$n" -gt 100 ] || { echo "  too few applets -- --install did not run"; exit 1; }
@@ -570,7 +574,7 @@ jobs:
           set +e
           rung() {
             name=$1; shift
-            out=$(S="$S" ./box2.sh "$@" 2>&1); rc=$?
+            out=$(S="$S" "$W/box2.sh" "$@" 2>&1); rc=$?
             case "$out" in *"not found"*|*"No such file"*|*"cannot execute"*) rc=127 ;; esac
             [ $rc -eq 0 ] && printf '  %-30s OK    %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-46)" \
                           || printf '  %-30s FAIL  %s\n' "$name" "$(printf '%s' "$out" | head -1 | cut -c1-52)"
@@ -586,9 +590,9 @@ jobs:
           echo "  --- 8. compile and run, entirely inside ---"
           mkdir -p "$S/work"
           printf 'int main(void){return 42;}\n' > "$S/work/t.c"
-          S="$S" ./box2.sh /usr/bin/gcc -o /work/t /work/t.c 2>&1 | head -6 | sed 's/^/    /'
+          S="$S" "$W/box2.sh" /usr/bin/gcc -o /work/t /work/t.c 2>&1 | head -6 | sed 's/^/    /'
           if [ -x "$S/work/t" ]; then
-            S="$S" ./box2.sh /work/t; echo "    ran: exit=$? (expect 42)"
+            S="$S" "$W/box2.sh" /work/t; echo "    ran: exit=$? (expect 42)"
           else
             echo "    no binary produced"
           fi
@@ -601,7 +605,7 @@ jobs:
             echo "    corpus copied: $(ls "$S/work/mk/configure" 2>/dev/null || echo 'NO configure')"
           else
             echo "    could not stage a configure script to test with"; fi
-          S="$S" ./box2.sh /bin/sh -c \
+          S="$S" "$W/box2.sh" /bin/sh -c \
             'mkdir -p /work/cm && cd /work/cm && /work/mk/configure --disable-nls >cfg.log 2>&1; echo "configure rc=$?"; echo "--- last lines ---"; tail -12 cfg.log; echo "--- missing commands ---"; grep -oE "[a-z_-]+: not found" cfg.log | sort -u | head' \
             2>&1 | head -10 | sed 's/^/    /'
 
@@ -660,7 +664,7 @@ jobs:
           # Built natively, in the box, by the toolchain the box already has.
           # This is LFS chapter 7's shape -- and it is the first real proof the
           # sysroot can produce software rather than merely run it.
-          S="$S" ./box2.sh /bin/sh -c '
+          S="$S" "$W/box2.sh" /bin/sh -c '
             set -e
             for p in m4-'"$M4_VER"' bison-'"$BISON_VER"' flex-'"$FLEX_VER"'; do
               echo "=== $p ==="
@@ -682,7 +686,7 @@ jobs:
         if: ${{ github.event.inputs.build_kernel != 'no' }}
         run: |
           set -eu
-          S="$S" ./box2.sh /bin/sh -c '
+          S="$S" "$W/box2.sh" /bin/sh -c '
             set -e
             cd /work/linux-'"$KVER"'
             make ARCH=arm64 defconfig > /dev/null 2>&1
@@ -704,7 +708,7 @@ jobs:
         if: ${{ github.event.inputs.build_kernel != 'no' }}
         run: |
           set -eu
-          S="$S" ./box2.sh /bin/sh -c '
+          S="$S" "$W/box2.sh" /bin/sh -c '
             set -e
             rm -rf /work/ir && mkdir -p /work/ir/bin /work/ir/dev /work/ir/proc /work/ir/sys
             cp /usr/bin/busybox /work/ir/bin/
