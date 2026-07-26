@@ -117,7 +117,25 @@ jobs:
       - name: 'Fetch everything (no network exists inside the box)'
         run: |
           set -eu
-          get() { echo "  $(basename "$1")"; curl -fsSL --retry 3 -O "$1"; }
+          # curl -f EXITS 22 ON A 404 AND SAYS NOTHING ELSE. The run died with
+          # "Process completed with exit code 22" and the only clue was which
+          # basename had been echoed last -- mpc-1.4.1.tar.gz, pinned by the
+          # development book but not present at that mirror path. Try the
+          # mirror, then ftp.gnu.org, then the other archive extension, and
+          # name every URL that was attempted before giving up.
+          get() {
+            base=$(basename "$1"); echo "  $base"
+            for u in "$1" \
+                     "$(printf '%s' "$1" | sed 's|https://mirrors.kernel.org/gnu|https://ftp.gnu.org/gnu|')" \
+                     "$(printf '%s' "$1" | sed 's/\.tar\.gz$/.tar.xz/; s/\.tar\.xz$/.tar.gz/')"; do
+              curl -fsSL --retry 3 -O "$u" 2>/dev/null && return 0
+            done
+            echo "    COULD NOT FETCH. Tried:"
+            printf '      %s\n' "$1"
+            printf '      %s\n' "$(printf '%s' "$1" | sed 's|https://mirrors.kernel.org/gnu|https://ftp.gnu.org/gnu|')"
+            printf '      %s\n' "$(printf '%s' "$1" | sed 's/\.tar\.gz$/.tar.xz/; s/\.tar\.xz$/.tar.gz/')"
+            return 1
+          }
           get "$GNU/binutils/binutils-$BINUTILS_VER.tar.xz"
           get "$GNU/gcc/gcc-$GCC_VER/gcc-$GCC_VER.tar.xz"
           get "$GNU/glibc/glibc-$GLIBC_VER.tar.xz"
@@ -168,7 +186,7 @@ jobs:
           ( cd "gcc-$GCC_VER"
             tar xf "../gmp-$GMP_VER.tar.xz"   && mv "gmp-$GMP_VER" gmp
             tar xf "../mpfr-$MPFR_VER.tar.xz" && mv "mpfr-$MPFR_VER" mpfr
-            tar xf "../mpc-$MPC_VER.tar.gz"   && mv "mpc-$MPC_VER" mpc )
+            tar xf "$(ls ../mpc-$MPC_VER.tar.* | head -1)" && mv "mpc-$MPC_VER" mpc )
           mkdir -p b-gcc1 && cd b-gcc1
           # --disable-fixincludes is the dev book's addition over 13.0.
           "../gcc-$GCC_VER/configure" --target="$LFS_TGT" --prefix="$S/tools" \
@@ -332,7 +350,10 @@ jobs:
           set -eu
           for t in m4-$M4_VER bison-$BISON_VER flex-$FLEX_VER perl-$PERL_VER bc-$BC_VER; do
             d="$S/work/$t"; mkdir -p "$d"
-            tar xf "$(ls ${t}.tar.*)" -C "$d" --strip-components=1
+            # ls the glob: get() may have fallen back to the other extension.
+            f=$(ls ${t}.tar.* 2>/dev/null | head -1)
+            [ -n "$f" ] || { echo "  no tarball for $t"; exit 1; }
+            tar xf "$f" -C "$d" --strip-components=1
           done
           cp -r ksrc "$S/work/linux"
           echo "  staged: $(ls "$S/work" | tr '\n' ' ')"
