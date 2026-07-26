@@ -8,6 +8,15 @@ gcc, a userland, a kernel, and a QEMU boot.
 arm64 tcc builds a gcc 4.7.4 that targets aarch64 (`GCC-BACKPORT.md`), and a
 tcc-built userland boots as PID 1 (`TCC-USERLAND.md`). Above those: g++ 4.7 is
 built but libgcc is not, and no kernel has been built by anything in this tree.
+
+> **SUPERSEDED 2026-07-26 on the libgcc point.** The ICE was one missing
+> `#include`: `get_hard_reg_initial_val` moved from `integrate.h` to
+> `function.h` between 4.7 and 4.8, so the transplanted backend had no visible
+> declaration and C89 truncated the returned `rtx` to 32 bits. With
+> `tools/port_gcc47_api.py` adding the include, a full `make` completes —
+> `libgcc.a` 648,788 bytes under the host gcc, 989,540 under our tcc, with a
+> working `xgcc` both ways. See `README.md`; the passages below are kept as the
+> record of how the leg looked while it was blocked.
 Current box status is in `spikes/stage4/README.md`, which is the file to read
 first.
 
@@ -206,7 +215,11 @@ failures enumerate themselves.
 1. ~~Get a working tcc userland~~ **done** — `TCC-USERLAND.md`.
 2. ~~tcc builds a gcc that targets aarch64~~ **done** — `GCC-BACKPORT.md`.
 3. ~~g++ 4.7 exists~~ **done** — built in the period box, `README.md`.
-4. **Unblock libgcc.** Two separate obstacles are open and must not be
+4. ~~**Unblock libgcc.**~~ **DONE 2026-07-26** — one missing `#include`, see
+   `README.md`. Both obstacles below turned out to be downstream of it; the
+   ucontext hypothesis was falsified at glibc 2.19 and the period box that
+   existed to test it has been retired. Original text kept:
+   Two separate obstacles are open and must not be
    conflated: the `uw_init_context_1` ICE (stage 4's blocker, reproduced under
    both host gcc and tcc, so it is the transplant) and the period box's missing
    `/usr/include`, which stops `fixincludes` before libgcc is ever reached. The
@@ -651,7 +664,9 @@ result runs and returns the right answer. Full record in `GCC-BACKPORT.md`.
 
 ### What this does NOT yet show
 
-- **libgcc.** The arms run `make all-gcc`, which stops before the runtime, so
+- **libgcc.** *(Resolved 2026-07-26 — the arms now run a full `make` and the
+  runtime builds. Kept for the record of what the obstacle looked like.)*
+  The arms run `make all-gcc`, which stops before the runtime, so
   `gcc/xgcc` cannot link: `cannot find crtbegin.o`, `cannot find -lgcc`. `cc1`
   is exercised directly instead.
 

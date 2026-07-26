@@ -24,6 +24,11 @@ other already produced a binary:
 | M2-Planet → Mes → tcc (live-bootstrap's) | Mes rung in progress, three rungs out |
 | enhanced M2-Planet → tcc directly | measured, not started — `ROADMAP.md` |
 
+Stage 4 has since proven what a tcc is *worth* once reached: an arm64 tcc builds
+a complete gcc 4.7.4 carrying gcc 4.8.5's aarch64 backend — libgcc, `xgcc`, and
+a `cc1plus` — which is the rung the whole choice of 4.7 rests on. That raises
+the value of closing this stage, and changes nothing about how it is closed.
+
 Stage 4 already **has** a tcc, pinned and patched, and uses it. What stage 3
 owes is a tcc reached *from the seed*.
 
