@@ -426,6 +426,21 @@ jobs:
       - name: 'RESULT'
         if: always()
         run: |
+          # set +e, AND THIS STEP NEVER HAD IT. GitHub runs `run:` blocks with
+          # `bash -e {0}`, so the FIRST command that returns non-zero kills the
+          # step. This is a pure REPORTING step and several of the things it
+          # runs are expected to fail -- that is the point of them.
+          #
+          # It cost a whole run. The C++ gate printed its header and the step
+          # died with exit 1 and nothing else:
+          #   --- THE C++ GATE: does the tcc-built g++ 4.7 LINK? ---
+          #   ##[error]Process completed with exit code 1.
+          # The driver WAS found and WAS invoked; the compile failed, and
+          # errexit threw the diagnostic away before "compile+link rc=" could
+          # print. The one thing the run existed to show was the one thing
+          # errexit deleted.
+          set -u
+          set +e
           echo "  tcc source : ${TCC_SOURCE}"
           echo "  configure  : rc=${CONF_RC:-?}"
           echo "  build      : rc=${BUILD_RC:-?}"
@@ -493,9 +508,18 @@ jobs:
               echo "  int s=0; for(unsigned i=0;i<v.size();++i) s+=v[i];"
               echo "  std::string n(\"ok\"); return s+(int)n.size()+35; }"
             } > /tmp/gate.cpp
+            rm -f /tmp/gate
             "$GXX" -B build/gcc/ /tmp/gate.cpp -o /tmp/gate 2> /tmp/gate.err
-            echo "    compile+link rc=$?"
-            [ -s /tmp/gate.err ] && head -8 /tmp/gate.err | sed "s/^/      /"
+            GRC=$?
+            echo "    compile+link rc=$GRC"
+            # Show the driver and what it looked for -- if the tcc-built g++
+            # cannot find its own C++ headers or libstdc++, that is the answer,
+            # and it is a different finding from a codegen fault.
+            echo "    driver: $GXX"
+            if [ -s /tmp/gate.err ]; then
+              echo "    --- what it said ---"
+              head -20 /tmp/gate.err | sed "s/^/      /"
+            fi
             if [ -x /tmp/gate ]; then
               /tmp/gate; echo "    ran: exit=$? (expect 47)"
             else
