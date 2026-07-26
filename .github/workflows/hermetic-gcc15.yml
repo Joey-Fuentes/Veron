@@ -15,7 +15,9 @@ name: hermetic-gcc15
 # host /usr and then actually boots.
 #
 #   LFS 13.0's tested set: binutils 2.46.0, gcc 15.2.0, glibc 2.43
-#   kernel 7.1.5, built INSIDE the box by the toolchain the box itself contains
+#   kernel 6.18.10, built INSIDE the box by the toolchain the box itself
+#   contains -- and it is the SAME tarball chapter 5.4 takes its API headers
+#   from, because LFS 13.0 pins exactly one kernel and so does this box
 #   QEMU runs on the host, deliberately: it is a test harness, not a dependency
 #
 # WHAT THIS IS NOT
@@ -70,11 +72,27 @@ env:
   BINUTILS: '2.46.0'
   GCCVER: '15.2.0'
   GLIBC: '2.43'
+  # ONE KERNEL, AND IT IS THE BOOK'S. This box used to carry TWO kernel
+  # versions: KERNEL=6.18.10 for the chapter 5.4 API headers, and KVER=7.1.5
+  # for the image built in chapter 10. 6.18.10 is LFS 13.0's pin -- its
+  # wget-list says linux-6.18.10.tar.xz and its chapter 10.3 is titled
+  # "Linux-6.18.10". 7.1.5 is in NO book. sources/lfs.toml records
+  # linux = "6.18.10" against the 13.0 entry whose role field names this very
+  # workflow, so the rung named in the manifest was not the rung this code
+  # built. That is the same defect lfs.toml already records once, against
+  # gcc10: "an earlier workflow built 10.4.0 while this manifest said 10.2.0".
+  #
+  # It also inverted this box's whole reason for existing. The header says
+  # this is NOT the bleeding-edge arm -- it asks "is our recipe correct",
+  # which only means anything if every input is one somebody has already run
+  # end to end. A kernel newer than any book made the stable arm the more
+  # adventurous of the two.
+  #
+  # The headers and the image are now the same tarball, fetched once.
   KERNEL: '6.18.10'
   GMP_VER: '6.3.0'
   MPFR_VER: '4.2.2'
   MPC_VER: '1.3.1'
-  KVER: '7.1.5'
   # *_VER, NOT THE BARE NAMES. M4, BISON, FLEX and PERL are the variables
   # autoconf uses to OVERRIDE THE PROGRAMS, so setting FLEX=2.6.4 in the job
   # environment told every configure in the tree that flex lives at "2.6.4".
@@ -92,6 +110,13 @@ env:
   BISON_VER: '3.8.2'
   FLEX_VER: '2.6.4'
   PERL_VER: '5.42.0'
+  # BC WAS DECLARED HERE AND NEVER FETCHED OR BUILT. The kernel generates
+  # kernel/time/timeconst.h by piping CONFIG_HZ through bc, so a box without
+  # it cannot build a kernel at all -- and BusyBox's own bc applet, which
+  # defconfig enables, was silently standing in for the real one. That is an
+  # undeclared substitution in a tree whose whole claim is that every input is
+  # named. LFS 13.0 builds bc at 8.15, between M4 and Flex; so does this box
+  # now, from the book's own URL.
   BC_VER: '7.0.3'
 
 jobs:
@@ -241,8 +266,11 @@ jobs:
           get "$GNU/mpc/mpc-$MPC_VER.tar.gz"
           get "$GNU/make/make-4.4.1.tar.gz"
           get "https://busybox.net/downloads/busybox-1.36.1.tar.bz2"
-          # v6.x vs v7.x: the directory follows the version, and the dev book
-          # pins linux 7.1.3.
+          # The directory follows the major version. This is the ONLY kernel
+          # this box fetches: the same tarball supplies chapter 5.4's API
+          # headers and chapter 10.3's image. The comment that used to sit here
+          # talked about a development book's pin, which is not this box's
+          # book -- an inherited line above a version it did not describe.
           get "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL%%.*}.x/linux-$KERNEL.tar.xz"
           ls -la *.tar.* | awk '{print "    "$5"  "$9}'
 
@@ -670,23 +698,43 @@ jobs:
           # by flex and bison, and the kernel's scripts want perl. None of the
           # three are in the sysroot, and pretending otherwise would just move
           # the failure later. m4 comes first because bison and flex need it.
+          # bc IS NOT OPTIONAL. kernel/time/Makefile generates timeconst.h by
+          # piping CONFIG_HZ through bc; without one the kernel does not build.
+          # BC_VER was declared in this file and never fetched, so what has
+          # been answering to `bc` in this box is BusyBox's applet, which
+          # defconfig turns on. It may well work -- but nothing here declared
+          # it, which is the failure mode this repository is built to avoid.
+          # The URL is LFS 13.0's own, straight out of its wget-list.
+          #
+          # The kernel is NOT re-fetched: chapter 5.4 already pulled
+          # linux-$KERNEL.tar.xz for the API headers and it is the same image
+          # this chapter builds. Skip anything already on disk rather than
+          # spending 150 MB of runner bandwidth on a second copy.
           for u in "$GNU/m4/m4-$M4_VER.tar.xz" \
+                   "https://github.com/gavinhoward/bc/releases/download/$BC_VER/bc-$BC_VER.tar.xz" \
                    "$GNU/bison/bison-$BISON_VER.tar.xz" \
                    "https://github.com/westes/flex/releases/download/v$FLEX_VER/flex-$FLEX_VER.tar.gz" \
                    "https://www.cpan.org/src/5.0/perl-$PERL_VER.tar.xz" \
-                   "https://cdn.kernel.org/pub/linux/kernel/v${KVER%%.*}.x/linux-$KVER.tar.xz"; do
-            echo "  $(basename "$u")"
+                   "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL%%.*}.x/linux-$KERNEL.tar.xz"; do
+            b=$(basename "$u")
+            if [ -s "$b" ]; then echo "  $b (already fetched)"; continue; fi
+            echo "  $b"
             curl -fsSL --http1.1 --retry 3 --retry-all-errors --retry-delay 3 \
               --connect-timeout 15 --max-time 900 -O "$u" \
               || { echo "    FETCH FAILED: $u"; exit 1; }
           done
-          for t in m4-$M4_VER bison-$BISON_VER flex-$FLEX_VER perl-$PERL_VER linux-$KVER; do
-            d="$S/work/$t"; mkdir -p "$d"
+          # The linux tree is unpacked FRESH from the tarball. The copy in $W
+          # was mrproper'd and had `make headers` run in it by the HOST gcc in
+          # chapter 5.4; nothing built inside the box should start from a tree
+          # a host compiler has already been in.
+          for t in m4-$M4_VER bc-$BC_VER bison-$BISON_VER flex-$FLEX_VER \
+                   perl-$PERL_VER linux-$KERNEL; do
+            d="$S/work/$t"; rm -rf "$d"; mkdir -p "$d"
             tar xf "$(ls ${t}.tar.*)" -C "$d" --strip-components=1
           done
           echo "  staged into the box: $(ls "$S/work" | tr '\n' ' ')"
 
-      - name: 'Build m4, bison, flex, perl INSIDE the box'
+      - name: 'Build m4, bc, bison, flex, perl INSIDE the box'
         if: ${{ success() && github.event.inputs.build_kernel != 'no' }}
         run: |
           set -eu
@@ -703,6 +751,34 @@ jobs:
               make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
               echo "  installed"
             done
+            echo "=== bc '"$BC_VER"' ==="
+            # DELETE THE APPLET SYMLINKS FIRST, AND NOT ONLY FOR TIDINESS.
+            # /usr/bin/bc and /usr/bin/dc are symlinks to busybox, left by
+            # `busybox --install -s`. Installing over a symlink follows it, so
+            # a tool that writes its output to /usr/bin/bc writes THROUGH the
+            # link and lands on /usr/bin/busybox -- which is the shell, ls,
+            # sed, grep and tar this box is made of. Unlink, then install.
+            rm -f /usr/bin/bc /usr/bin/dc
+            cd /work/bc-'"$BC_VER"'
+            # LFS 13.0 8.15 says:
+            #   CC="gcc -std=c99" ./configure --prefix=/usr -G -O3 -r
+            # -r enables Readline, and this box has no readline: the book
+            # builds it earlier in chapter 8 and we build seventeen fewer
+            # packages than the book does. Dropping -r is a DECLARED
+            # SUBSTITUTION -- bc here has no line editing, and nothing in a
+            # kernel build types at it. Everything else is the book verbatim.
+            CC="gcc -std=c99" ./configure --prefix=/usr -G -O3 \
+              > c.log 2>&1 || { tail -12 c.log; exit 1; }
+            make -j4 > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -5; exit 1; }
+            make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
+            # PROVE IT IS THE REAL ONE. If this is still a symlink then the
+            # install did not land and the applet is still answering, which is
+            # exactly the silent substitution this block exists to remove.
+            [ -f /usr/bin/bc ] && [ ! -L /usr/bin/bc ] || {
+              echo "  /usr/bin/bc is not a regular file -- busybox still owns it"
+              exit 1; }
+            echo "  bc: $(bc --version 2>&1 | head -1)"
+            echo "  timeconst check: $(echo 250 | bc -q /work/linux-'"$KERNEL"'/kernel/time/timeconst.bc | head -1)"
             echo "=== perl ==="
             cd /work/perl-'"$PERL_VER"'
             ./Configure -des -Dprefix=/usr -Dcc=gcc > c.log 2>&1 || { tail -12 c.log; exit 1; }
@@ -711,7 +787,7 @@ jobs:
             echo "  perl: $(perl -v 2>&1 | grep -o "v5[.0-9]*" | head -1)"
           ' 2>&1 | sed 's/^/    /'
 
-      - name: 'Build linux ${{ env.KVER }} INSIDE the box'
+      - name: 'Build linux ${{ env.KERNEL }} INSIDE the box'
         if: ${{ success() && github.event.inputs.build_kernel != 'no' }}
         run: |
           set -eu
@@ -744,23 +820,57 @@ jobs:
           # this box, the build will say so, and that is a fact worth one run.
           S="$S" "$W/box15.sh" /bin/sh -c '
             set -e
-            cd /work/linux-'"$KVER"'
+            cd /work/linux-'"$KERNEL"'
             # The book opens with this and says not to trust a freshly untarred tree.
             make mrproper > /dev/null 2>&1
             make ARCH=arm64 defconfig > /dev/null 2>&1
-            # The books first required setting.
-            ./scripts/config --disable WERROR 2>/dev/null || \
-              sed -i "s/^CONFIG_WERROR=y/# CONFIG_WERROR is not set/" .config
+            # SET SYMBOLS BY REWRITING THE LINE, NOT VIA scripts/config. That
+            # script is #!/bin/bash and this box has BusyBox ash, so it failed
+            # every time and the sed after the || was doing all the work --
+            # a fallback that is really the implementation. Delete whichever
+            # form of the line exists and append the one we want; kconfig
+            # takes the last assignment it reads, and olddefconfig then
+            # re-derives everything that depends on it.
+            set_cfg() {
+              sed -i "/^CONFIG_$1=/d; /^# CONFIG_$1 is not set\$/d" .config
+              if [ "$2" = y ]; then echo "CONFIG_$1=y" >> .config
+              else echo "# CONFIG_$1 is not set" >> .config; fi
+            }
+            # THE BOOK LISTS THREE THINGS THIS BOX ACTUALLY DEPENDS ON.
+            # WERROR is the first item on its list and is why several runs
+            # died on warnings. The other two are further down the same list:
+            #   [*] Maintain a devtmpfs filesystem to mount at /dev [DEVTMPFS]
+            #   [*] Automount devtmpfs at /dev, after the kernel mounted the
+            #       rootfs [DEVTMPFS_MOUNT]
+            # Without them the initramfs has no /dev/console, so init starts
+            # with no stdin/stdout at all and its echo goes nowhere. The boot
+            # would then look IDENTICAL to a kernel that never reached
+            # userspace -- a silent success reported as a failure, which is
+            # the most expensive kind of log this project keeps meeting.
+            # The rest of the book list (PSI, CGROUPS, IPV6, RELOCATABLE...)
+            # is there for a systemd userland; ours is one busybox and an
+            # init script, so those stay at their defconfig values.
+            set_cfg WERROR n
+            set_cfg DEVTMPFS y
+            set_cfg DEVTMPFS_MOUNT y
             # olddefconfig re-derives dependent symbols after a hand edit. It answers
             # new symbols with their defaults and reads nothing from stdin.
             make ARCH=arm64 olddefconfig > /dev/null 2>&1
-            # Verify the one thing we set, because a sed that matches nothing is
-            # silent and scripts/config can fail without saying so.
+            # Verify AFTER olddefconfig, because olddefconfig is what undid the
+            # same edit three runs running. A sed that matches nothing is silent.
+            bad=0
             if grep -q "^CONFIG_WERROR=y" .config; then
-              echo "CONFIG_WERROR is still on -- the disable did not take"
+              echo "  WERROR came back on after olddefconfig"; bad=1; fi
+            if ! grep -q "^CONFIG_DEVTMPFS=y" .config; then
+              echo "  DEVTMPFS did not take"; bad=1; fi
+            if ! grep -q "^CONFIG_DEVTMPFS_MOUNT=y" .config; then
+              echo "  DEVTMPFS_MOUNT did not take"; bad=1; fi
+            if [ $bad -ne 0 ]; then
+              echo "  --- what the config actually says ---"
+              grep -E "^(# )?CONFIG_(WERROR|DEVTMPFS)" .config || true
               exit 1
             fi
-            echo "config ready: defconfig, WERROR off"
+            echo "config ready: defconfig, WERROR off, devtmpfs automounted"
             make ARCH=arm64 -j4 Image > b.log 2>&1 || {
               echo "--- compiler diagnostics ---"
               grep -E "error:|Error [0-9]|No rule|fatal error" b.log | grep -v "^make" | head -12
@@ -777,19 +887,68 @@ jobs:
         if: ${{ success() && github.event.inputs.build_kernel != 'no' }}
         run: |
           set -eu
+          # THIS INITRAMFS CONTAINED NO C LIBRARY, AND COULD NEVER HAVE BOOTED.
+          # It held one file -- a dynamically linked busybox -- plus symlinks.
+          # Its PT_INTERP names /lib/ld-linux-aarch64.so.1, which was not in
+          # the archive, so the kernel would have failed to exec /init and
+          # panicked. Nothing about that failure would have mentioned a
+          # missing library: the console says "Failed to execute /init", which
+          # reads as a broken init script. The 626,575-byte initramfs recorded
+          # in the stage 4 README is exactly the size of a busybox and nothing
+          # else, which is the tell.
+          #
+          # Copying the sysroot's own loader and libc in is also the STRONGER
+          # claim. A static busybox would have booted too, but it would only
+          # have proved the compiler works. This proves the glibc this box
+          # built runs as PID 1 under the kernel this box built, on a kernel
+          # ABI, outside bwrap.
           S="$S" "$W/box15.sh" /bin/sh -c '
             set -e
-            rm -rf /work/ir && mkdir -p /work/ir/bin /work/ir/dev /work/ir/proc /work/ir/sys
+            rm -rf /work/ir
+            mkdir -p /work/ir/bin /work/ir/dev /work/ir/proc /work/ir/sys /work/ir/usr/lib
+            # Mirror the sysroot layout: /lib -> usr/lib, so whatever path
+            # PT_INTERP names resolves whichever of the two it names.
+            ln -s usr/lib /work/ir/lib
             cp /usr/bin/busybox /work/ir/bin/
-            cd /work/ir/bin && for a in sh mount umount uname echo cat ls poweroff; do
+            B=/usr/bin/busybox
+            INTERP=$(readelf -l $B | sed -n "s/.*interpreter: \(.*\)\]/\1/p")
+            echo "  busybox PT_INTERP: ${INTERP:-<none -- statically linked>}"
+            if [ -n "$INTERP" ]; then
+              cp -L "$INTERP" /work/ir/usr/lib/
+              for l in $(readelf -d $B | sed -n "s/.*Shared library: \[\(.*\)\]/\1/p"); do
+                cp -L "/usr/lib/$l" /work/ir/usr/lib/
+                echo "    + $l"
+              done
+              # A copy that silently went nowhere looks the same as no copy.
+              [ -e "/work/ir$INTERP" ] || {
+                echo "  the loader did not land at $INTERP"; exit 1; }
+            fi
+            cd /work/ir/bin
+            for a in sh mount umount uname echo cat ls mkdir sleep dmesg poweroff; do
               ln -sf busybox $a; done
             cd /work/ir
+            # bwrap is unprivileged, so mknod is not available here. That is
+            # what CONFIG_DEVTMPFS_MOUNT is for -- the kernel mounts devtmpfs
+            # on the initramfs /dev before it runs init, and /dev/console
+            # exists by the time the script opens it. Try anyway and say which
+            # of the two is carrying it.
+            if mknod dev/console c 5 1 2>/dev/null; then
+              echo "  /dev/console created in the image"
+            else
+              echo "  no mknod in the box -- /dev/console comes from CONFIG_DEVTMPFS_MOUNT"
+            fi
             cat > init <<"EOF"
           #!/bin/sh
+          mount -t devtmpfs none /dev 2>/dev/null
+          # Only redirect if there is something to redirect TO. An exec onto a
+          # missing device kills the shell, and then a kernel that booted
+          # perfectly prints nothing and reads as a kernel that did not.
+          [ -c /dev/console ] && exec > /dev/console 2>&1
           mount -t proc none /proc
           mount -t sysfs none /sys
           echo "VERON-BOOT-OK $(uname -srm)"
           echo "VERON-COMPILER $(cat /proc/version)"
+          echo "VERON-LIBC $(/lib/ld-linux-aarch64.so.1 --version 2>&1 | head -1)"
           poweroff -f
           EOF
             chmod +x init
@@ -806,7 +965,30 @@ jobs:
           # QEMU runs on the HOST, deliberately. It is a test harness, not part
           # of the build -- the Image and the initramfs inside it were produced
           # entirely by the sysroot's own toolchain, with no /usr bound.
-          sudo apt-get install -y --no-install-recommends qemu-system-arm > /dev/null 2>&1
+          # THE ROMFILE FAILURE WAS OURS, NOT THE RUNNER'S. Every boot attempt
+          # from this box has died on
+          #   failed to find romfile "efi-virtio.rom"
+          # and that was recorded as the runner's QEMU packaging. It is this
+          # line. `-M virt` instantiates a default virtio-net-pci, that device
+          # wants an option ROM, the ROM ships in ipxe-qemu, and ipxe-qemu is
+          # a RECOMMENDS -- which --no-install-recommends drops.
+          #
+          # Two fixes, and the real one is on the QEMU command line below:
+          # -nic none removes the device, so no ROM is looked for at all. A
+          # boot test has no use for a network card. ipxe-qemu is installed as
+          # well so that the next person to add a NIC is not sent back here.
+          #
+          # And the install no longer hides its own output. This line ended
+          # with `> /dev/null 2>&1` and no status check, under set +e, so a
+          # failed install would have surfaced 20 lines later as a confusing
+          # qemu error instead of as a failed install.
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-arm ipxe-qemu 2>&1 | tail -3 | sed 's/^/    /'
+          if ! command -v qemu-system-aarch64 > /dev/null; then
+            echo "  qemu-system-aarch64 was not installed -- nothing can be booted"
+            exit 1
+          fi
+          qemu-system-aarch64 --version | head -1 | sed 's/^/  /'
           # AN ABSENT IMAGE IS NOT A FAILED BOOT. The kernel config step failed
           # once and the initramfs and boot steps ran anyway -- any `if:` drops
           # GitHub's implicit success() -- so QEMU was handed a nonexistent
@@ -820,12 +1002,21 @@ jobs:
             exit 1
           fi
           echo "  Image: $(stat -c%s "$IMG") bytes"
-          echo "  booting linux $KVER on qemu-system-aarch64 -M virt ..."
-          timeout 180 qemu-system-aarch64 \
-            -M virt -cpu cortex-a57 -m 1024 -nographic -no-reboot \
+          echo "  initramfs: $(stat -c%s "$S/work/initramfs.cpio.gz") bytes"
+          echo "  booting linux $KERNEL on qemu-system-aarch64 -M virt ..."
+          # -nic none  : no default virtio-net-pci, therefore no option ROM.
+          # earlycon   : output from before the real console driver is up. The
+          #              PL011 address comes from the DTB QEMU generates, so
+          #              the bare form is right for -M virt. Without it, a
+          #              kernel that dies early prints nothing at all and is
+          #              indistinguishable from a kernel that never started.
+          # 300s       : this is TCG emulation, not KVM. 180 was tight enough
+          #              that a slow runner would have read as a hang.
+          timeout 300 qemu-system-aarch64 \
+            -M virt -cpu cortex-a57 -m 1024 -nographic -no-reboot -nic none \
             -kernel "$S/work/Image" \
             -initrd "$S/work/initramfs.cpio.gz" \
-            -append "console=ttyAMA0 rdinit=/init panic=1 loglevel=4" \
+            -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7" \
             > qemu.log 2>&1
           echo "  qemu rc=$?"
           echo "  --- console, last 25 lines ---"
@@ -841,14 +1032,46 @@ jobs:
             echo "  DID NOT REACH USERSPACE. The console above is the evidence;"
             echo "  a kernel that builds and does not boot is a different"
             echo "  problem from one that does not build."
+            echo
+            # NAME THE FAILURE IF THE LOG NAMES IT. "did not reach userspace"
+            # covered four completely different faults, and each one cost a
+            # run to tell apart by reading the console by hand.
+            echo "  --- what the console says it was ---"
+            if grep -q 'romfile' qemu.log; then
+              echo "    an option ROM is missing -- QEMU never started the guest."
+              echo "    Not a kernel fault. See the -nic none note above."
+            elif grep -qE 'Failed to execute /init|No working init' qemu.log; then
+              echo "    the kernel booted and could not run /init. The usual"
+              echo "    cause is a dynamically linked busybox with no loader or"
+              echo "    libc in the archive; check the + lines in the initramfs"
+              echo "    step above and that PT_INTERP is present."
+            elif grep -q 'Unable to mount root fs' qemu.log; then
+              echo "    the initramfs was not unpacked -- check it is cpio newc"
+              echo "    and that the kernel has RD_GZIP."
+            elif [ ! -s qemu.log ]; then
+              echo "    the console is EMPTY. QEMU produced nothing at all,"
+              echo "    which is a harness problem, not a boot problem."
+            else
+              echo "    nothing recognised. The full console is in the"
+              echo "    hermetic-gcc15-image artifact."
+            fi
           fi
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: hermetic-gcc15-image
+          # THE ONLY OTHER UPLOAD IN THIS FILE RUNS BEFORE THE KERNEL STEPS,
+          # so every log written INSIDE the box was discarded and a kernel
+          # failure left nothing but the dozen grepped lines the step printed.
+          # The .config is here too: "which config was this" is the first
+          # question anyone asks about a kernel that did not boot.
           path: |
             qemu.log
             sysroot/work/Image
             sysroot/work/initramfs.cpio.gz
+            sysroot/work/linux-*/.config
+            sysroot/work/*/c.log
+            sysroot/work/*/b.log
+            sysroot/work/*/i.log
           if-no-files-found: warn
