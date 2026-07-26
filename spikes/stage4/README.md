@@ -508,12 +508,44 @@ as the `2>/dev/null` on the transplant diff: a step that fails without saying
 why. It now greps compiler diagnostics *first*, excludes make's own lines, then
 shows make errors and a tail separately.
 
-It also prints which compiler `configure` selected, because `--host=$LFS_TGT`
-names a triplet whose tools exist twice in this box — the pass-1 cross
-compilers in `/tools/bin`, which are linked against the host libc and cannot run
-inside, and the pass-2 ones in `/usr/bin`, which can. `/usr/bin` comes first on
-PATH so it should be the latter, but "should be" is what the glibc step already
-learned not to accept.
+It also prints which tools `configure` selected — and **that check found the
+bug on its first run**:
+
+```
+configure selected CXX: aarch64-veron-linux-gnu-g++
+configure selected CC:  aarch64-veron-linux-gnu-gcc
+...
+aarch64-veron-linux-gnu-ar: /lib/libc.so.6: version `GLIBC_2.33' not found
+aarch64-veron-linux-gnu-ar: /lib/libc.so.6: version `GLIBC_2.34' not found
+aarch64-veron-linux-gnu-ar: /lib/libc.so.6: version `GLIBC_2.38' not found
+```
+
+Every object compiled and the build died at the **archive** step. `ar` was the
+pass-1 cross binutils out of `/tools/bin` — built by the host gcc against the
+host glibc 2.38 — and this sysroot is glibc 2.32, so it cannot execute at all.
+
+The compilers resolved correctly because gcc pass 2 installs `$LFS_TGT-gcc` and
+`$LFS_TGT-g++` into `/usr/bin`. **binutils pass 2 installs plain names only**,
+so `$LFS_TGT-ar` existed nowhere except `/tools/bin` — and autoconf looks for
+`$host_alias-ar` *before* falling back to plain `ar`, so it found the unusable
+one and never fell back.
+
+**The root cause was the box PATH, and the book had it right all along.** LFS
+10.0's chroot uses:
+
+```
+PATH=/bin:/usr/bin:/sbin:/usr/sbin
+```
+
+No `/tools/bin`. I added it. Removing it restores the fallback LFS depends on.
+That is the second time in this leg that copying a layout detail without
+checking the book's reason for it cost a run — the first was
+`--with-native-system-header-dir`, carried from LFS 7.5 into a tree laid out the
+opposite way.
+
+**`ar` and `ranlib` were also not on the ladder**, which is why the failure
+arrived at the archive step rather than at rung 7. They are now. A tool the
+build uses and the ladder does not test is a tool whose failure arrives late.
 
 **The ladder had no C++ rung, and that is why this cost a run.** It proved the
 box could compile and run C, and the cheapest possible C++ check sat one line

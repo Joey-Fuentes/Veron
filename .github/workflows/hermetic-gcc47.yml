@@ -261,11 +261,26 @@ jobs:
           #!/bin/sh
           # No /usr bind, no /etc bind. The sysroot IS the filesystem.
           # PATH carries BOTH /bin and /usr/bin because 10.0 has no merge.
+          #
+          # AND NO /tools/bin -- THIS IS THE BOOK'S CHROOT PATH, EXACTLY:
+          #     PATH=/bin:/usr/bin:/sbin:/usr/sbin
+          # /tools holds the PASS-1 cross tools, built by the HOST gcc against
+          # the HOST glibc. Inside the box they cannot run at all:
+          #     aarch64-veron-linux-gnu-ar: /lib/libc.so.6:
+          #       version `GLIBC_2.33' not found (required by ...-ar)
+          # because this sysroot is glibc 2.32 and the host is 2.38.
+          #
+          # It is not enough that they fail -- they were being CHOSEN. autoconf
+          # looks for $host_alias-ar before falling back to plain ar, so with
+          # /tools/bin on PATH it found the unusable cross ar and never fell
+          # back. libstdc++ pass 2 compiled every object and then died at the
+          # archive step. Removing the directory restores the fallback, which
+          # is what LFS relies on and why the book leaves it out.
           set -eu
           S=${S:?box47.sh: S not set}
           exec bwrap \
             --unshare-all --die-with-parent --new-session --clearenv \
-            --setenv PATH /bin:/usr/bin:/sbin:/usr/sbin:/tools/bin \
+            --setenv PATH /bin:/usr/bin:/sbin:/usr/sbin \
             --setenv BOOTFLAG "${BOOTFLAG:-}" --setenv BOOTTGT "${BOOTTGT:-all}" \
             --setenv HOME /work \
             --setenv LC_ALL POSIX \
@@ -688,12 +703,18 @@ jobs:
               --prefix=/usr --disable-multilib --disable-nls \
               --host='"$LFS_TGT"' --disable-libstdcxx-pch > c.log 2>&1 \
               || { echo "libstdc++ configure failed"; tail -12 c.log; exit 1; }
-            # WHICH COMPILER DID configure ACTUALLY PICK? --host names a triplet
-            # whose tools exist TWICE in this box: the pass-1 CROSS compilers in
-            # /tools/bin, which are linked against the HOST libc and cannot run
-            # in here, and the pass-2 ones in /usr/bin, which can. /usr/bin comes
-            # first on PATH so it should be the second -- but "should be" is what
-            # the glibc step already learned not to accept.
+            # WHICH TOOLS DID configure ACTUALLY PICK? This check earned its
+            # place on the run after it was added. --host names a triplet whose
+            # tools existed TWICE while /tools/bin was on PATH: the pass-1 CROSS
+            # tools there, host-linked and unable to run in the box, and the
+            # pass-2 ones in /usr/bin. /usr/bin came first, so the COMPILERS
+            # resolved correctly -- and `ar` did not, because binutils pass 2
+            # installs plain names only, so $LFS_TGT-ar existed nowhere except
+            # /tools/bin. Every object compiled and the archive step died on
+            #   ...-ar: /lib/libc.so.6: version `GLIBC_2.33' not found
+            # /tools/bin is off PATH now (the book's chroot never had it), so
+            # autoconf falls back to plain `ar` as LFS intends. Keep printing
+            # the selection: it is what turned that into one run instead of three.
             for v in CXX CC; do
               val=$(sed -n "s/^$v = //p" Makefile 2>/dev/null | head -1)
               echo "  configure selected $v: ${val:-<undetermined>}"
@@ -743,6 +764,13 @@ jobs:
           rung "5. as"           /usr/bin/as --version
           rung "6. ld"           /usr/bin/ld --version
           rung "7. gcc"          /usr/bin/gcc --version
+          # ar AND ranlib WERE NOT ON THIS LADDER AND THEY ARE WHAT BROKE.
+          # libstdc++ pass 2 compiled every object and then failed at the
+          # archive step, because the ar being selected was a host-linked
+          # cross binary that could not execute. A tool the build uses and
+          # the ladder does not test is a tool whose failure arrives late.
+          rung "7b. ar"          /usr/bin/ar --version
+          rung "7c. ranlib"      /usr/bin/ranlib --version
           rung "8. bison"        /usr/bin/bison --version
           echo
           echo "  --- 9. compile and run C, entirely inside ---"
