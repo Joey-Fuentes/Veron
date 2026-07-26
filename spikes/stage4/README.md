@@ -372,6 +372,41 @@ these two things:
   m4 (chapter 6, cross-built, with the book's `_IO_ftrylockfile` sed that glibc
   2.28+ requires) comes with it.
 
+**Run 3 (2026-07-26): chapter 7 ran, and the new C++ rung did its job.**
+`m4` installed, then libstdc++ pass 2 failed and the ladder caught it in
+seconds rather than forty minutes:
+
+```
+8. bison                     FAIL  execvp /usr/bin/bison: No such file
+10. compile and run C++      /work/t.cpp:1:10: fatal error: memory: No such file
+    NO C++ BINARY -- gcc 15/16 cannot be built from this box.
+```
+
+That is the rung working exactly as intended — it named the box as the cause
+before either attempt was spent. bison never ran because `set -e` inside the box
+stopped at libstdc++.
+
+**What libstdc++ actually failed on is still unknown, and that is a diagnostic
+defect of mine, not a mystery.** The step printed only:
+
+```
+make[2]: *** [Makefile:738: libsupc++convenience.la] Error 1
+```
+
+The pattern was `grep -E "error:|Error [0-9]" b.log | head -6`, and make emits
+four `*** [target] Error 1` lines for every real error — so `head -6` filled
+with make's summary and the compiler diagnostic never appeared. The same shape
+as the `2>/dev/null` on the transplant diff: a step that fails without saying
+why. It now greps compiler diagnostics *first*, excludes make's own lines, then
+shows make errors and a tail separately.
+
+It also prints which compiler `configure` selected, because `--host=$LFS_TGT`
+names a triplet whose tools exist twice in this box — the pass-1 cross
+compilers in `/tools/bin`, which are linked against the host libc and cannot run
+inside, and the pass-2 ones in `/usr/bin`, which can. `/usr/bin` comes first on
+PATH so it should be the latter, but "should be" is what the glibc step already
+learned not to accept.
+
 **The ladder had no C++ rung, and that is why this cost a run.** It proved the
 box could compile and run C, and the cheapest possible C++ check sat one line
 away and was not written — so a missing libstdc++ was reported forty minutes

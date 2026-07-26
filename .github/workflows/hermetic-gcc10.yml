@@ -579,7 +579,31 @@ jobs:
               --prefix=/usr --disable-multilib --disable-nls \
               --host='"$LFS_TGT"' --disable-libstdcxx-pch > c.log 2>&1 \
               || { echo "libstdc++ configure failed"; tail -12 c.log; exit 1; }
-            make -j4 > b.log 2>&1 || { grep -E "error:|Error [0-9]" b.log | head -6; exit 1; }
+            # WHICH COMPILER DID configure ACTUALLY PICK? --host names a triplet
+            # whose tools exist TWICE in this box: the pass-1 CROSS compilers in
+            # /tools/bin, which are linked against the HOST libc and cannot run
+            # in here, and the pass-2 ones in /usr/bin, which can. /usr/bin comes
+            # first on PATH so it should be the second -- but "should be" is what
+            # the glibc step already learned not to accept.
+            for v in CXX CC; do
+              val=$(sed -n "s/^$v = //p" Makefile 2>/dev/null | head -1)
+              echo "  configure selected $v: ${val:-<undetermined>}"
+            done
+            if ! make -j4 > b.log 2>&1; then
+              # PREFER THE COMPILER DIAGNOSTIC OVER make SUMMARY LINES. The old
+              # pattern was `grep -E "error:|Error [0-9]" | head -6`, and make
+              # prints four "*** [target] Error 1" lines for every real error --
+              # so head -6 filled with those and the actual cause never
+              # appeared. Run 1 of this step reported nothing but Error 1.
+              echo "  --- compiler diagnostics ---"
+              grep -E "error:|Error:|undefined reference|cannot find|No such file" b.log \
+                | grep -v "^make" | head -12
+              echo "  --- make errors ---"
+              grep -E "\*\*\* \[" b.log | head -4
+              echo "  --- tail ---"
+              tail -20 b.log
+              exit 1
+            fi
             make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
             echo "libstdc++ pass 2 installed"
             echo "=== bison ==="
@@ -769,8 +793,14 @@ jobs:
           echo
           printf '  %-26s %s\n' "sysroot built" \
             "$(state "$W/b-gcc2" "$S/usr/bin/gcc")"
-          printf '  %-26s %s\n' "box compiles and runs" \
+          printf '  %-26s %s\n' "box compiles C" \
             "$(state "$S/work/t.c" "$S/work/t")"
+          # C++ IS THE RUNG THAT DECIDES. Run 2 reported "box compiles and runs
+          # yes" from the C rung while C++ was broken, which reads as a working
+          # box next to two failed attempts -- when in fact the attempts could
+          # not have worked and the box was the reason.
+          printf '  %-26s %s\n' "box compiles C++  <- decides" \
+            "$(state "$S/work/t.cpp" "$S/work/tcc")"
           printf '  %-26s %s\n' "gcc $GCC15 built" \
             "$(state "$S/work/src-$GCC15" "$S/work/out15/bin/gcc")"
           printf '  %-26s %s\n' "gcc $GCC16 built" \
