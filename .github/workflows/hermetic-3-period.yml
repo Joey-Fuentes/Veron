@@ -485,13 +485,23 @@ jobs:
             || { echo "    /bin/sh does not resolve -- shebangs will fail"; exit 1; }
           S="$S" "$W/box3.sh" /tools/bin/sh -c '
             cd /work
+            # IN-TREE IS NOT ENOUGH ON ITS OWN. The top-level configure accepts
+            # gmp/mpfr/mpc sitting in the source tree -- rc=0 -- and then the
+            # gcc subdirectory configure looks for the built library and fails:
+            #   configure: error: libmpfr not found or uses a different ABI
+            # LFS 7.5 passes --with-mpfr-include and --with-mpfr-lib to both of
+            # its gcc passes for precisely this, pointing at the source dir and
+            # at the .libs the in-tree build will produce. Copied from the book
+            # rather than rediscovered.
             mkdir -p b && cd b
             /work/g474/configure --prefix=/work/out47 --enable-languages=c,c++ \
               --build=aarch64-unknown-linux-gnu --host=aarch64-unknown-linux-gnu \
               --target=aarch64-unknown-linux-gnu --disable-multilib \
               --disable-bootstrap --disable-werror --disable-libsanitizer \
               --disable-libgomp --disable-libquadmath --disable-libssp \
-              --disable-libatomic --disable-shared > c.log 2>&1
+              --disable-libatomic --disable-shared \
+              --with-mpfr-include=/work/g474/mpfr/src \
+              --with-mpfr-lib=/work/b/mpfr/src/.libs > c.log 2>&1
             crc=$?
             echo "configure rc=$crc"
             if [ "$crc" -ne 0 ]; then
