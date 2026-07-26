@@ -986,7 +986,21 @@ jobs:
             cd /work/bison
             ./configure --prefix=/usr --docdir=/usr/share/doc/bison-'"$BISON_VER"' \
               > c.log 2>&1 || { tail -12 c.log; exit 1; }
-            if ! make -j4 MAKEINFO=true > b.log 2>&1; then
+            # PERL=true BECAUSE THIS BOX HAS NO perl AND bison POST-PROCESSES
+            # ITS OWN DOCS WITH IT. The bison configure script does not fall
+            # back to the `missing` wrapper for perl, it just leaves $(PERL)
+            # EMPTY, so the first word of the recipe vanishes and the shell
+            # tries to execute the flags instead:
+            #   GEN      doc/bison.info.bak
+            #   /bin/sh: -pi.bak: not found
+            #   make: *** [Makefile:10389: doc/bison.info.bak] Error 127
+            # -pi.bak is `perl -p -i.bak`. src/bison had already linked -- only
+            # the documentation was left. `true` swallows the arguments and
+            # returns 0, which is the correct outcome for a doc target in a
+            # bootstrap box that ships no documentation. LFS installs perl at
+            # 7.10, one section AFTER bison; if something later turns out to
+            # need a real perl, that is the section to add, not this flag.
+            if ! make -j4 MAKEINFO=true PERL=true > b.log 2>&1; then
               # THE OLD PATTERN HID THE CAUSE. grep "error:|Error [0-9]" piped
               # into head -6 returned two make summary lines and nothing else,
               # so the run reported a bison failure with no reason attached.
@@ -998,7 +1012,8 @@ jobs:
               echo "  --- tail ---"; tail -20 b.log
               exit 1
             fi
-            make install > i.log 2>&1 || { tail -8 i.log; exit 1; }
+            make install MAKEINFO=true PERL=true > i.log 2>&1 \
+              || { echo "  --- install tail ---"; tail -12 i.log; exit 1; }
             bison --version | head -1
             # THE ATTEMPTS RESOLVE bison BY PATH, NOT THROUGH THIS SHELL.
             # Assert the file the box will actually execute.
