@@ -1003,17 +1003,30 @@ jobs:
           else
             say "    NO BINARY -- gcc 10's g++ cannot link."
           fi
-          # THE CONTROL. If g++ 4.7 compiled this too, the test would prove
-          # nothing about having climbed anything.
-          say "  --- control: the SAME file through g++ 4.7 (expect failure) ---"
+          # THE CONTROL, AND THE FLAG IT USES IS THE POINT. Run 81880728014 ran
+          # this with -std=c++14 and g++ 4.7 answered
+          #     error: unrecognized command line option '-std=c++14'
+          # which fires for the right reason by accident: it shows 4.7 does not
+          # know the FLAG, not that it cannot compile the CODE. -std=c++11 is
+          # the newest standard 4.7 accepts (c++14 arrived in gcc 4.9), so using
+          # it forces the compiler to actually read the file and reject the
+          # language:
+          #     error: 'add' function uses 'auto' type specifier without
+          #            trailing return type
+          # A control that fails for a reason unrelated to the claim is not a
+          # control.
+          say "  --- control: the SAME file through g++ 4.7 at its best (-std=c++11) ---"
           rm -f /tmp/c14b
-          /work/out2/bin/g++ -std=c++14 /tmp/c14.cpp -o /tmp/c14b 2> /tmp/c14b.err
+          /work/out2/bin/g++ -std=c++11 /tmp/c14.cpp -o /tmp/c14b 2> /tmp/c14b.err
           say "    compile+link rc=$?"
-          head -3 /tmp/c14b.err | sed 's/^/      /'
+          head -4 /tmp/c14b.err | sed 's/^/      /'
           if [ -x /tmp/c14b ]; then
             say "    IT COMPILED -- the control failed, so the C++14 test proves nothing"
+          elif grep -q "unrecognized command line option" /tmp/c14b.err; then
+            say "    INCONCLUSIVE -- rejected on the flag, not the language."
+            say "    That says nothing about capability; fix the flag, not the file."
           else
-            say "    rejected, as expected: gcc 10 can compile what gcc 4.7 cannot"
+            say "    rejected on the LANGUAGE: gcc 10 compiles what gcc 4.7 cannot"
           fi
           exit 0
           EOS
@@ -1168,12 +1181,15 @@ jobs:
           echo "    cc1      : $( [ -x work/build/gcc/cc1 ] && echo BUILT || echo no)"
           echo "    cc1plus  : $( [ -x work/build/gcc/cc1plus ] && echo BUILT || echo no)"
           echo "    xgcc     : $( [ -x work/build/gcc/xgcc ] && echo BUILT || echo no)"
-          LGA=$(find work -name libgcc.a 2>/dev/null | head -1)
-          if [ -n "$LGA" ]; then
-            echo "    libgcc.a : $(wc -c < "$LGA" | tr -d ' ') bytes"
-          else
-            echo "    libgcc.a : NOT BUILT"
-          fi
+          # NAME THE FILE. `find work -name libgcc.a | head -1` picks one of six
+          # -- two build trees and three prefixes now carry one -- and prints a
+          # size with no indication of which. Run 81880728014 reported 941,510
+          # here while stage 1 reported 1,290,110 for the installed one; both
+          # were true and the summary looked like it contradicted the step.
+          for lg in out/lib/gcc/*/*/libgcc.a out2/lib/gcc/*/*/libgcc.a out10/lib/gcc/*/*/libgcc.a; do
+            [ -f "work/$lg" ] || continue
+            printf '    %-46s %s bytes\n' "$lg" "$(wc -c < "work/$lg" | tr -d ' ')"
+          done
           echo
           echo "  --- IMPLICIT DECLARATIONS ---"
           # A declaration that moved headers is a WARNING, and on LP64 it
