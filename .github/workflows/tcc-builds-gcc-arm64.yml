@@ -450,8 +450,15 @@ jobs:
           else
             echo "    libgcc.a : NOT BUILT"
           fi
-          echo "    xgcc     : $( [ -x gcc/xgcc ] && echo BUILT || echo no)"
-          echo "    cc1plus  : $( [ -x gcc/cc1plus ] && echo BUILT || echo no)"
+          # THE PATHS BELOW MUST START WITH build/. This step runs from the
+          # repository root -- the line above that reports cc1 already says
+          # build/gcc/cc1 -- and my first version of these said gcc/xgcc and
+          # gcc/cc1plus. They reported "no" for a build that had in fact just
+          # completed with rc=0 and produced a 989,540-byte libgcc.a, which
+          # only xgcc can produce. libgcc.a was found anyway because that line
+          # uses `find .`, which searches recursively and hid the mistake.
+          echo "    xgcc     : $( [ -x build/gcc/xgcc ] && echo BUILT || echo no)"
+          echo "    cc1plus  : $( [ -x build/gcc/cc1plus ] && echo BUILT || echo no)"
           echo
           echo "  --- IMPLICIT DECLARATIONS ---"
           # The gate the host-gcc arm carries. A declaration that moved headers is a
@@ -476,8 +483,8 @@ jobs:
           # g++ --version proves nothing -- it printed happily on every run where
           # libgcc was missing and nothing could be linked. Compile, link, run, check.
           GXX=""
-          [ -x gcc/xg++ ] && GXX=gcc/xg++
-          [ -z "$GXX" ] && [ -x gcc/g++ ] && GXX=gcc/g++
+          [ -x build/gcc/xg++ ] && GXX=build/gcc/xg++
+          [ -z "$GXX" ] && [ -x build/gcc/g++ ] && GXX=build/gcc/g++
           if [ -n "$GXX" ]; then
             {
               echo "#include <string>"
@@ -486,7 +493,7 @@ jobs:
               echo "  int s=0; for(unsigned i=0;i<v.size();++i) s+=v[i];"
               echo "  std::string n(\"ok\"); return s+(int)n.size()+35; }"
             } > /tmp/gate.cpp
-            "$GXX" -B gcc/ /tmp/gate.cpp -o /tmp/gate 2> /tmp/gate.err
+            "$GXX" -B build/gcc/ /tmp/gate.cpp -o /tmp/gate 2> /tmp/gate.err
             echo "    compile+link rc=$?"
             [ -s /tmp/gate.err ] && head -8 /tmp/gate.err | sed "s/^/      /"
             if [ -x /tmp/gate ]; then
@@ -495,5 +502,7 @@ jobs:
               echo "    NO BINARY -- the tcc-built g++ 4.7 cannot link."
             fi
           else
-            echo "    no g++ driver was built"
+            echo "    no g++ driver found. What IS in build/gcc:"
+            ls build/gcc 2>/dev/null | grep -E "^(xgcc|xg\+\+|g\+\+|cc1|cc1plus)$" \
+              | sed "s/^/      /" || echo "      (build/gcc not readable)"
           fi
