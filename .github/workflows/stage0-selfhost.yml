@@ -348,7 +348,11 @@ jobs:
           # labels then move together and PC-relative encodings are preserved.
           # Compare against the LINKED .text, which is what was disassembled.
           "$P/bin/objcopy" -O binary --only-section=.text stage0-as orig.bin
-          python3 tools/s0_roundtrip.py relist stage0-as.dis orig.bin redis.s
+          # Read .text's VMA rather than guessing it from the first instruction.
+          tbase=$("$P/bin/objdump" -h stage0-as \
+                  | awk '$2==".text"{print $4; exit}')
+          echo "    .text VMA 0x$tbase, $(wc -c < orig.bin) bytes"
+          python3 tools/s0_roundtrip.py relist stage0-as.dis orig.bin redis.s "$tbase"
 
           # TWO ASSEMBLERS, NOT ONE. Round-tripping through the same toolchain
           # that produced the binary is a weak check -- a systematic quirk would
@@ -358,7 +362,13 @@ jobs:
           # is the self-host gate at the bottom of this file: it needs the .s0
           # translation, and the probe table above says how far that is from
           # complete.
+          # set +e FOR THE WHOLE LOOP. The previous version ran the assembler
+          # under `set -eu`, so a failed assembly killed the step before the
+          # branch that reports WHY -- exit 1, no diagnostic, nothing to read.
+          # A verification step that cannot describe its own failure is not
+          # much of a verification step.
           fail_a=0
+          set +e
           for tool in gnu llvm; do
             case "$tool" in
               gnu)  "$P/bin/as" -o "redis-$tool.o" redis.s 2>"redis-$tool.err" ;;
@@ -391,6 +401,7 @@ jobs:
               fail_a=$((fail_a + 1))
             fi
           done
+          set -e
           if [ "$fail_a" = 0 ]; then
             echo "    both assemblers reproduce the binary from its own disassembly."
           fi

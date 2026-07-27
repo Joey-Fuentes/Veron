@@ -173,7 +173,7 @@ def cmd_crosscheck(a_path, b_path):
     return 0
 
 
-def cmd_relist(dis_path, bin_path, out_path):
+def cmd_relist(dis_path, bin_path, out_path, base_hex=None):
     """Turn a disassembly into something GNU `as` will take back.
 
     Check A's first attempt fed objdump's text straight to `as` and it choked on
@@ -207,7 +207,14 @@ def cmd_relist(dis_path, bin_path, out_path):
     # gets a label, as an instruction where there is one and as .byte where
     # there is not, so every target resolves and the comparison is total.
     data = open(bin_path, "rb").read()
-    base = min(insns) if insns else 0
+    # THE SECTION'S REAL VMA, NOT THE FIRST INSTRUCTION'S ADDRESS. Inferring
+    # base = min(instruction address) is wrong whenever .text does not begin
+    # with an instruction, and it fails in the nastiest possible way: every
+    # address before that point is mis-classified as out-of-section, gets an
+    # absolute `.set`, AND gets a label from the byte walk -- so the symbol is
+    # defined twice and the assembler rejects the file. The caller reads the
+    # VMA out of `objdump -h` and passes it in.
+    base = int(base_hex, 16) if base_hex else (min(insns) if insns else 0)
     end = base + len(data)
 
     # TARGETS OUTSIDE .text NEED DEFINING TOO. The first instruction is
@@ -222,6 +229,9 @@ def cmd_relist(dis_path, bin_path, out_path):
         refs.update(int(x, 16) for x in re.findall(r"\bL([0-9a-f]+)\b", t))
     external = sorted(a for a in refs if not (base <= a < end))
     head = [".set L%x, 0x%x" % (a, a) for a in external]
+    # belt and braces: a symbol must never be both `.set` and a label
+    inside = set(range(base, end))
+    assert not (set(external) & inside), "a .set collides with a label"
 
     body, off, n_ins, n_dat = [], 0, 0, 0
     while off < len(data):
@@ -249,8 +259,8 @@ def cmd_relist(dis_path, bin_path, out_path):
 def main():
     if len(sys.argv) == 4 and sys.argv[1] == "crosscheck":
         return cmd_crosscheck(sys.argv[2], sys.argv[3])
-    if len(sys.argv) == 5 and sys.argv[1] == "relist":
-        return cmd_relist(sys.argv[2], sys.argv[3], sys.argv[4])
+    if sys.argv[1:2] == ["relist"] and len(sys.argv) in (5, 6):
+        return cmd_relist(*sys.argv[2:])
     budget = None
     argv = sys.argv[1:]
     if "--budget" in argv:
@@ -260,7 +270,7 @@ def main():
         sys.argv = [sys.argv[0]] + argv
     if len(sys.argv) != 3:
         print("usage: s0_roundtrip.py <source.s> <objdump-output> [--budget N]")
-        print("       s0_roundtrip.py relist <objdump-out> <text.bin> <out.s>")
+        print("       s0_roundtrip.py relist <objdump-out> <text.bin> <out.s> [base]")
         print("       s0_roundtrip.py crosscheck <dis-a> <dis-b>")
         return 2
     src = [x for x in read_source(sys.argv[1]) if x[0] != "<data>"]
