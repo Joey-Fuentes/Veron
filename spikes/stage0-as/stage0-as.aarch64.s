@@ -638,6 +638,12 @@ h_orr:
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
+    // OPTIONAL SHIFT AMOUNT. `orr Rd Rn Rm 8` is 33 of the 55 lines stage0-as
+    // could not yet assemble from its own source. The word was already built
+    // correctly; the shift field was simply never read, so bits 15-10 stayed
+    // zero and every such line came out 0x2000 short of what GNU as emits.
+    bl      opt_dec
+    orr     w9, w9, w0, lsl #10             // imm6, bits 15-10
     bl      emit_dp
     b       parse_loop
 h_and:
@@ -866,6 +872,45 @@ nr_dl:
     add     x20, x20, #0x1
     b       nr_dl
 nr_r:
+    ret
+
+// ---- optional trailing decimal operand, THIS LINE ONLY ----
+// Returns w0 = the value, or 0 with the cursor untouched if the line ends
+// first.
+//
+// It must not call skip_ws. skip_ws treats a newline as whitespace -- that is
+// how parse_loop advances from one line to the next -- so using it to look for
+// an optional operand would step onto the FOLLOWING line and, if that line
+// happened to begin with a digit, silently consume it as this instruction's
+// shift amount. Spaces and tabs only, and the cursor is restored when nothing
+// is found.
+//
+// x12 is used to save the cursor because it is referenced nowhere else in this
+// file; parse_dec clobbers w0, w10 and w11 and leaves w9 alone, so the caller
+// can finish building its word afterwards.
+opt_dec:
+    mov     x12, x20                        // remember the cursor
+od_ws:
+    cmp     x20, x21
+    b.ge    od_none
+    ldrb    w10, [x19, x20]
+    cmp     w10, #0x20                      // ' '
+    b.eq    od_adv
+    cmp     w10, #0x9                       // tab
+    b.eq    od_adv
+    b       od_chk
+od_adv:
+    add     x20, x20, #0x1
+    b       od_ws
+od_chk:
+    cmp     w10, #0x30                      // '0'
+    b.lt    od_none
+    cmp     w10, #0x39                      // '9'
+    b.gt    od_none
+    b       parse_dec                       // tail call: its ret returns to us
+od_none:
+    mov     x20, x12                        // nothing there; put the cursor back
+    mov     w0, #0x0
     ret
 
 skip_ws:

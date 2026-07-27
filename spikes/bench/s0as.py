@@ -122,9 +122,15 @@ def _encode(l, at, labels):
         imm=int(d) if d else 0
         return (0xF1000000|(imm<<10)|(n<<5)|31,('cmp_i',n,imm))
     if op in ('orr','and','eor'):
+        # OPTIONAL FOURTH OPERAND = the shift amount, imm6 in bits 15-10.
+        # .s0 spells it as a bare token with the `lsl` keyword dropped, the same
+        # way movk spells its shift. Absent means zero. The model and the
+        # assembler gained this in the same commit; if they ever disagree the
+        # probe's `bench=` column says so.
         d=_reg(p[1]);n=_reg(p[2]);m=_reg(p[3])
+        sh=int(p[4]) if len(p)>4 else 0
         base={'orr':0xAA000000,'and':0x8A000000,'eor':0xCA000000}[op]
-        return (base|(m<<16)|(n<<5)|d,(op,d,n,m))
+        return (base|(m<<16)|(sh<<10)|(n<<5)|d,(op,d,n,m,sh))
     if op in ('lsl','lsr','asr'):
         d=_reg(p[1]);n=_reg(p[2]);m=_reg(p[3])
         sel={'lsl':0x2000,'lsr':0x2400,'asr':0x2800}[op]

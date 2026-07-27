@@ -175,6 +175,12 @@ def to_s0(mn, ops):
         if "lsl" in ops:
             return "movk", ops.replace("lsl", "").replace("  ", " ").strip()
         return "movk", ops + " 0"
+    if mn in ("orr", "and", "eor") and "lsl" in ops:
+        # Shifted-register operand: .s0 spells the amount as a bare fourth
+        # token, exactly as movk spells its shift, and absent means zero. The
+        # `lsl` keyword is GNU-as punctuation -- leaving it in would give the
+        # assembler five tokens where it expects four.
+        return mn, ops.replace("lsl", "").replace("  ", " ").strip()
     return mn, ops
 
 
