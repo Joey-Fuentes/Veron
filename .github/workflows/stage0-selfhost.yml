@@ -202,6 +202,51 @@ jobs:
           echo
           echo "  $accepted of $n nonsense inputs accepted silently. Target is 0."
 
+      - name: 'ROUND-TRIP: do the bytes disassemble back to the source?'
+        run: |
+          set -eu
+          # THIS IS THE CHECK THE WHOLE TRUST STORY RESTS ON, AND IT HAD NEVER
+          # BEEN RUN ON THIS BINARY. TRUST-BOUNDARY.md says the assembler is
+          # untrusted by design and README.md says the seed is verified against
+          # its source by round-trip disassembly rather than trusted -- but
+          # stage0-roundtrip.yml only ever disassembled
+          # spikes/stage0-arm64/stage0-handencoded.aarch64.s, eight `.inst`
+          # words proving the METHOD. The 695-instruction assembler the ladder
+          # actually stands on was never checked.
+          #
+          # It matters most now: the plan is to COMMIT this binary and verify it
+          # by disassembly. A committed binary whose disassembly nobody has
+          # compared to the source is exactly the opaque artifact the project
+          # exists to avoid.
+          objdump -d stage0-as > stage0-as.dis
+
+          echo "  --- A. MECHANICAL: disassemble, reassemble, compare bytes ---"
+          # Unambiguous by construction: it proves the disassembly denotes the
+          # same machine code, whatever spelling it chose. It does NOT prove the
+          # disassembly resembles our source, which is check B.
+          sed -n 's/^[ \t]*[0-9a-f]\+:\t[0-9a-f ]\+\t//p' stage0-as.dis \
+            | sed 's,//.*,,; s,<[^>]*>,,' > redis.s
+          if as -o redis.o redis.s 2>redis.err; then
+            objcopy -O binary --only-section=.text redis.o redis.bin
+            objcopy -O binary --only-section=.text s0.o  orig.bin
+            if cmp -s redis.bin orig.bin; then
+              echo "    PASS: reassembled disassembly is byte-identical"
+            else
+              echo "    DIFFERS: $(cmp redis.bin orig.bin 2>&1 | head -1)"
+              echo "    (sizes: $(wc -c < redis.bin) vs $(wc -c < orig.bin))"
+            fi
+          else
+            echo "    reassembly failed -- first errors:"
+            head -5 redis.err | sed 's/^/      /'
+            echo "    (data bytes in .text decode as instructions GNU as will"
+            echo "     not accept; that is expected until the strings move to"
+            echo "     their own section, and is why check B excludes them)"
+          fi
+
+          echo
+          echo "  --- B. AUDITABLE: does a human see what the source says? ---"
+          python3 tools/s0_roundtrip.py "$SRC" stage0-as.dis
+
       - name: 'REGRESSION: does this stage0-as still build stage 1 and stage 2?'
         run: |
           set -eu
