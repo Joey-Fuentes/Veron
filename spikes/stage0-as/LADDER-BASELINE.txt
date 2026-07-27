@@ -31,10 +31,18 @@
 # run: elf, stage1, stage2 and all eight emitted-output fingerprints were
 # UNCHANGED, and stage3-hermetic-arm64 on the same commit passed 426/426 with
 # G1 == dc38e13e4ceaeecb.
-stage0-as       6640     a3273e83dfc23798
+stage0-as       6760     6041f6619f51f19c
 elf             1880     c4b44c02f85b10df
-stage1          1469     5fcf2a59b9edd064
-stage2          23257    da274839c125d1a1
+# stage1 and stage2 MOVED once, at the sf-bit fix (m83), and have been stable
+# since. Their SIZES did not change -- 1469 and 23257 before and after -- only
+# the encoding of the 39 `cmp w<n> <imm>` and 57 `mov w<n> <imm>` they contain.
+# The evidence that this was safe is that nothing they PRODUCE moved: canon,
+# G0 and G1 are byte-identical across the change, and G1 still equals upstream's
+# M2-Planet. Two further stage0-as changes (m84, the register-letter fix) left
+# both untouched, as predicted, because the ladder uses none of the forms it
+# enabled.
+stage1          1469     18e9fdf2863f82eb
+stage2          23257    4a6dd5df3650a75e
 
 # Above tcc-free ladder level, recorded for cross-reference. These come from the
 # same run and are re-verified by stage3-hermetic-arm64, not by stage0-selfhost.
