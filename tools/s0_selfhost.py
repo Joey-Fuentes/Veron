@@ -142,6 +142,42 @@ def cmd_census(path):
 # One minimal, self-contained test per form. GNU-as text and the .s0 text that
 # should encode identically. Registers and immediates are concrete so the two
 # can be byte-compared.
+# GNU-as mnemonic -> stage0-as spelling. The two languages are NOT the same
+# assembly with different punctuation, and treating them as such produced three
+# false "REJECTED" rows:
+#
+#   movz Rd, #imm        .s0 has NO `movz`. h_mov tests char+3 for 'k' (movk)
+#                        and otherwise treats the mnemonic as `mov`, so `movz`
+#                        parses as `mov` and leaves a stray `z`. The ladder
+#                        spells it `mov` -- 778 uses of `mov`, ZERO of `movz`.
+#   svc #0               .s0 `svc` takes NO operand; h_svc advances x20 by 3 and
+#                        emits D4000001. A trailing `0` is a stray line.
+#   movk Rd, #imm        .s0 `movk` wants an explicit shift: `movk Rd imm 0`.
+#
+# movz-with-a-shift has no single .s0 spelling at all -- it needs `mov` plus
+# `movk` -- so it is a TRANSLATION gap, not a missing encoding, and is reported
+# as such rather than counted against the assembler.
+NEEDS_TWO = "movz-with-shift needs mov+movk: no single .s0 instruction"
+
+
+def to_s0(mn, ops):
+    """Rewrite one GNU-as instruction into stage0-as's spelling."""
+    if mn == "svc":
+        return "svc", ""
+    if mn == "movz":
+        if "lsl" in ops:
+            return None, NEEDS_TWO
+        return "mov", ops
+    if mn == "movk":
+        # .s0 spells the shift as a bare third operand: `movk Rd imm shift`.
+        # The `lsl` keyword is GNU-as punctuation and must go, or the line has
+        # four tokens where the assembler expects three. Absent shift means 0.
+        if "lsl" in ops:
+            return "movk", ops.replace("lsl", "").replace("  ", " ").strip()
+        return "movk", ops + " 0"
+    return mn, ops
+
+
 def probe_pair(mn, sh):
     """Return (gnu_as_text, s0_text) for a form, or None if not expressible."""
     subs_gnu = {
@@ -179,7 +215,10 @@ def probe_pair(mn, sh):
     body = s0.replace(",", " ").replace("[", " ").replace("]", " ")
     body = body.replace("#", "")          # .s0 has no '#' -- it starts a comment
     body = re.sub(r"\s+", " ", body).strip()
-    return g, ("%s %s" % (mn, body)).rstrip()
+    s0mn, s0body = to_s0(mn, body)
+    if s0mn is None:
+        return None
+    return g, ("%s %s" % (s0mn, s0body)).rstrip()
 
 
 def cmd_probes(path, outdir):
@@ -262,7 +301,12 @@ def cmd_xlate(path, out):
         body = ops.replace(",", " ").replace("[", " ").replace("]", " ")
         body = body.replace("#", "")
         body = re.sub(r"\s+", " ", body).strip()
-        out_lines.append(("%s %s" % (mn, body)).rstrip())
+        s0mn, s0body = to_s0(mn, body)
+        if s0mn is None:
+            need[s0body] += 1
+            out_lines.append("### NEEDS: %s | %s" % (s0body, s))
+            continue
+        out_lines.append(("%s %s" % (s0mn, s0body)).rstrip())
     with open(out, "w", encoding="utf-8") as fh:
         fh.write("\n".join(out_lines) + "\n")
     done = sum(1 for x in out_lines if not x.startswith("###"))
