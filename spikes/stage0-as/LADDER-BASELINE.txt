@@ -39,7 +39,13 @@
 # symbol grows the file even when it changes no instruction.
 # 6768 -> 6864 when the .ascii strings moved to .rodata (r41), which is
 # what made .text pure code and the round-trip total.
-stage0-as       6864     836acfcef291fdcf
+# 6864 -> 7792 as stage0-as learned to assemble its own source: an optional
+# shift on orr/and/eor, shift-by-immediate via UBFM/SBFM, strb with no index
+# register, and source rewrites for the bitmask-immediate and extended-
+# addressing lines. The probe reads 40 forms ok, 0 wrong, 0 rejected, 802/802
+# lines. All eight emitted-output fingerprints are unchanged and stage1,
+# stage2 and elf did not move -- the assembler grew, its output did not.
+stage0-as       7792     3176f8ec8a176792
 # 1880 -> 1920 when elf gained bss_origin, the 16-byte unreferenced symbol
 # that absorbs __bss_start so codebuf has a unique address. Its OUTPUT is
 # unchanged -- stage1 and stage2 did not move, and neither did any of the
