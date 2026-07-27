@@ -77,6 +77,22 @@ jobs:
       # and one branch. Lower it whenever the number falls; never raise it
       # without saying why in the same commit.
       ROUNDTRIP_BUDGET: '2'
+      # PINNED TOOLCHAINS, NOT WHATEVER THE RUNNER SHIPS. The first round-trip
+      # runs used Ubuntu's binutils 2.42-4ubuntu2.10 -- a distro package, on a
+      # distro schedule, whose alias preferences could change under us with no
+      # commit of ours. For a check whose whole purpose is to make a committed
+      # binary auditable, the tool doing the auditing has to be pinned too.
+      #
+      # binutils 2.47 released 2026-07-26 and notably adds new disassembler
+      # options; LLVM 22.1.8 is llvmorg-22.1.8, 2026-06-16.
+      BINUTILS_VER: '2.47'
+      LLVM_VER: '22.1.8'
+      # Build with the pinned `as`/`ld` as well as verify with them. OFF for the
+      # first run ON PURPOSE: pinning the assembler may change stage0-as's bytes
+      # relative to the 2.42 baseline, and changing the verifier and the builder
+      # in one commit would leave no way to tell which caused what. Flip to
+      # 'true' once the verification result is known.
+      PIN_BUILD_TOOLCHAIN: 'false'
     steps:
       - uses: actions/checkout@v5
 
@@ -96,6 +112,50 @@ jobs:
             "$(sha256sum stage0-as | cut -c1-16)"
           printf '  %-14s %8s  %s\n' elf "$(wc -c < elf)" \
             "$(sha256sum elf | cut -c1-16)"
+
+      - name: Cache the pinned toolchains
+        uses: actions/cache@v4
+        with:
+          path: |
+            pinned
+          key: pinned-binutils-${{ env.BINUTILS_VER }}-llvm-${{ env.LLVM_VER }}-v1
+
+      - name: 'Pin the disassemblers (binutils ${{ env.BINUTILS_VER }}, LLVM ${{ env.LLVM_VER }})'
+        run: |
+          set -eu
+          P="$PWD/pinned"; echo "P=$P" >> "$GITHUB_ENV"
+          if [ -x "$P/bin/objdump" ] && [ -x "$P/bin/llvm-objdump" ]; then
+            echo "  restored from cache"
+          else
+            mkdir -p "$P/bin" src
+            sudo apt-get install -y --no-install-recommends \
+              curl xz-utils build-essential texinfo bison flex
+            # --- GNU binutils, from source: there is no distro package for a
+            # release this new, and the point is to control the version.
+            curl -fsSL --retry 3 --max-time 600 \
+              "https://ftp.gnu.org/gnu/binutils/binutils-$BINUTILS_VER.tar.xz" \
+              -o src/binutils.tar.xz
+            tar -C src -xf src/binutils.tar.xz
+            mkdir -p src/b && cd src/b
+            ../binutils-$BINUTILS_VER/configure --prefix="$P" \
+              --disable-nls --disable-gdb --disable-gdbserver \
+              --disable-sim --disable-werror >/dev/null
+            make -j"$(nproc)" >/dev/null
+            make install >/dev/null
+            cd "$GITHUB_WORKSPACE"
+            # --- LLVM, prebuilt for Linux ARM64: we need one binary from it.
+            curl -fsSL --retry 3 --max-time 900 \
+              "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VER/LLVM-$LLVM_VER-Linux-ARM64.tar.xz" \
+              -o src/llvm.tar.xz
+            tar -C src -xf src/llvm.tar.xz
+            cp "$(find src -name llvm-objdump -type f | head -1)" "$P/bin/"
+          fi
+          echo "  --- versions now pinned ---"
+          "$P/bin/as" --version | head -1 | sed 's/^/    /'
+          "$P/bin/objdump" --version | head -1 | sed 's/^/    /'
+          "$P/bin/llvm-objdump" --version | grep -i version | head -1 | sed 's/^/    /'
+          echo "  --- what the runner would have given us ---"
+          as --version | head -1 | sed 's/^/    /'
 
       - name: 'CENSUS: what forms does stage0-as''s own source use?'
         run: python3 tools/s0_selfhost.py census "$SRC"
@@ -224,7 +284,12 @@ jobs:
           # by disassembly. A committed binary whose disassembly nobody has
           # compared to the source is exactly the opaque artifact the project
           # exists to avoid.
-          objdump -d stage0-as > stage0-as.dis
+          # BOTH DISASSEMBLERS, PINNED. Agreeing with one decoder proves the
+          # source matches that decoder's opinion; it does not prove the opinion
+          # is right. Two independent implementations agreeing is the stronger
+          # claim, and it is the one a committed seed needs.
+          "$P/bin/objdump" -d stage0-as > stage0-as.dis
+          "$P/bin/llvm-objdump" -d stage0-as > stage0-as.llvm.dis
 
           echo "  --- A. MECHANICAL: disassemble, reassemble, compare bytes ---"
           # Unambiguous by construction: it proves the disassembly denotes the
@@ -275,8 +340,16 @@ jobs:
           echo "  --- B. AUDITABLE: does a human see what the source says? ---"
           # THE RATCHET. $ROUNDTRIP_BUDGET is how many instructions currently
           # fail to read back as written. It may fall and must never rise.
+          echo "  ...against GNU objdump $BINUTILS_VER:"
           python3 tools/s0_roundtrip.py "$SRC" stage0-as.dis \
             --budget "$ROUNDTRIP_BUDGET"
+          echo
+          echo "  ...against llvm-objdump $LLVM_VER:"
+          python3 tools/s0_roundtrip.py "$SRC" stage0-as.llvm.dis \
+            --budget "$ROUNDTRIP_BUDGET"
+          echo
+          echo "  --- C. DO THE TWO DISASSEMBLERS AGREE WITH EACH OTHER? ---"
+          python3 tools/s0_roundtrip.py crosscheck stage0-as.dis stage0-as.llvm.dis
 
       - name: 'REGRESSION: does this stage0-as still build stage 1 and stage 2?'
         run: |

@@ -49,8 +49,16 @@ import re
 import sys
 from collections import Counter
 
-# objdump line:  "  4000a4:\tmov\tx0, #0x2                   \t// comment"
-DIS = re.compile(r"^\s*([0-9a-f]+):\s+(?:[0-9a-f ]+\t)?([a-z][a-z0-9.]*)\s*(.*)$")
+# TWO DISASSEMBLERS, TWO LAYOUTS. GNU objdump writes
+#     4000a4:\t d2800040 \tmov\tx0, #0x2
+# and llvm-objdump writes
+#     4000a4: d2800040      mov     x0, #0x2
+# with targets as 0x4003c4 rather than 4003c4, and `;` comments rather than
+# `//`. One tolerant pattern reads both; anything stricter would silently parse
+# zero instructions from the other one and report a perfect match.
+DIS = re.compile(
+    r"^\s*([0-9a-f]+):\s+(?:[0-9a-f]{2}(?:[0-9a-f ]*)?[\t ]+)?"
+    r"([a-z][a-z0-9._]*)[\t ]*(.*)$")
 SYM = re.compile(r"^\s*([0-9a-f]+)\s+<([^>]+)>:")
 SRC = re.compile(r"^\s+([a-z][a-z0-9.]*)\s*(.*)$")
 
@@ -58,6 +66,7 @@ SRC = re.compile(r"^\s+([a-z][a-z0-9.]*)\s*(.*)$")
 def norm(mn, ops):
     """Reduce one instruction to a comparable form."""
     o = ops.split("//")[0].split(";")[0].strip()
+    o = re.sub(r"\b0x([0-9a-f]+)\s+<", r"\1 <", o)   # llvm-objdump target form
     # objdump renders a branch or adr target as "4003c4 <inbuf>". Keep the
     # SYMBOL and drop the address: the source names a label, and comparing it
     # against a link-time address would report every branch as a mismatch.
@@ -127,6 +136,38 @@ def read_objdump(path):
         yield cur, norm(m.group(2), m.group(3))
 
 
+def cmd_crosscheck(a_path, b_path):
+    """Do two independent disassemblers agree with each other?
+
+    Round-tripping against ONE disassembler proves the source agrees with that
+    disassembler's opinion. It does not prove the opinion is right. Alias
+    preference is exactly the kind of thing that differs between
+    implementations and drifts between versions, so two independent decoders
+    agreeing is a much stronger statement than either agreeing with us -- and
+    it is the statement a committed seed needs.
+    """
+    a = [x for _, x in read_objdump(a_path)]
+    b = [x for _, x in read_objdump(b_path)]
+    print("  A %-28s %d instructions" % (a_path, len(a)))
+    print("  B %-28s %d instructions" % (b_path, len(b)))
+    if len(a) != len(b):
+        print("  COUNT MISMATCH of %d -- the two decoders do not agree on where"
+              % abs(len(a) - len(b)))
+        print("  the instructions even are. That is a finding in itself.")
+    n = min(len(a), len(b))
+    diff = [(i, a[i], b[i]) for i in range(n) if a[i] != b[i]]
+    print()
+    print("  %d of %d agree (%.1f%%)"
+          % (n - len(diff), n, 100.0 * (n - len(diff)) / n if n else 0))
+    if diff:
+        print("  first 12 disagreements, A | B:")
+        for i, x, y in diff[:12]:
+            print("    %-34s | %s" % ("%s %s" % x, "%s %s" % y))
+    else:
+        print("  Both decoders produce the identical instruction stream.")
+    return 0
+
+
 def cmd_relist(dis_path, out_path):
     """Turn a disassembly into something GNU `as` will take back.
 
@@ -158,6 +199,8 @@ def cmd_relist(dis_path, out_path):
 
 
 def main():
+    if len(sys.argv) == 4 and sys.argv[1] == "crosscheck":
+        return cmd_crosscheck(sys.argv[2], sys.argv[3])
     if len(sys.argv) == 4 and sys.argv[1] == "relist":
         return cmd_relist(sys.argv[2], sys.argv[3])
     budget = None
@@ -170,6 +213,7 @@ def main():
     if len(sys.argv) != 3:
         print("usage: s0_roundtrip.py <source.s> <objdump-output> [--budget N]")
         print("       s0_roundtrip.py relist <objdump-output> <out.s>")
+        print("       s0_roundtrip.py crosscheck <dis-a> <dis-b>")
         return 2
     src = [x for x in read_source(sys.argv[1]) if x[0] != "<data>"]
     # Symbols whose contents are .ascii data, not code -- excluded by name.
