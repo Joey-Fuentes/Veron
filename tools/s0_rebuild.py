@@ -20,6 +20,26 @@ So reconstruct everything the disassembly can account for:
     .bss symbols and sizes, from the symbol table.
     .global bindings, from the g/l column.
 
+THE ADDRESS INVARIANTS, ENUMERATED. Five consecutive fixes to this file were
+five different ways of getting an address wrong, each found only after a CI
+round trip because the class was never written down. It is written down now,
+and anything added here must satisfy all of it:
+
+  1. Every referenced symbol must EXIST.  Labels come from the symbol table as
+     well as the disassembly, because objdump -d only names symbols in the
+     sections it decodes.
+  2. Every branch target keeps its OFFSET.  `<slurp+0x2c>` is not `slurp`.
+  3. Every section starts where it started.  --section-start=NAME=ADDR for all
+     of them; -Ttext/-Tdata/-Tbss are the only -T forms GNU ld has, and a
+     wrong one is accepted in silence.
+  4. Every section keeps its ALIGNMENT.  Pinning the start is not enough if the
+     source's .balign is missing -- the section moves anyway.
+  5. Every symbol sits at its ABSOLUTE offset within its section.  Accumulating
+     sizes drifts the moment a symbol is filtered, duplicated, or shares an
+     address.
+  6. Linker-generated symbols are NOT source symbols.  __bss_start, _end and
+     _edata come from the link, and re-emitting them as labels adds gaps.
+
 WHAT CANNOT BE RECONSTRUCTED, AND IS REPORTED RATHER THAN FAKED. AArch64 `as`
 emits $x/$d mapping symbols of its own, and `ld` may add notes; neither is
 under the source's control. If the whole-file comparison fails on those, the
@@ -35,8 +55,9 @@ DIS = re.compile(r"^\s*([0-9a-f]+):\s+(?:[0-9a-f]{2}(?:[0-9a-f ]*)?[\t ]+)?"
 LBL = re.compile(r"^\s*([0-9a-f]+)\s+<([^>]+)>:")
 # objdump -t:  0000000000410dd4 l    O .bss  0000000004000000 inbuf
 SYM = re.compile(r"^([0-9a-f]+)\s+(.)\s*\S*\s+(\S+)\s+([0-9a-f]+)\s+(\S+)\s*$")
-SEC = re.compile(r"^\s*\d+\s+(\.\S+)\s+([0-9a-f]+)\s+([0-9a-f]+)")
-# groups: 1 = name, 2 = SIZE, 3 = VMA
+SEC = re.compile(r"^\s*\d+\s+(\.\S+)\s+([0-9a-f]+)\s+([0-9a-f]+)"
+                 r".*?2\*\*(\d+)\s*$")
+# groups: 1 = name, 2 = SIZE, 3 = VMA, 4 = log2(alignment)
 
 
 def main():
@@ -53,7 +74,8 @@ def main():
             # Reading them as (VMA, Size) instead of (Size, VMA) made .text
             # start at 0xc and run for 4 MB -- a four-million-line output file
             # from a twelve-byte section. Order matters and the test caught it.
-            sections[m.group(1)] = (int(m.group(3), 16), int(m.group(2), 16))
+            sections[m.group(1)] = (int(m.group(3), 16), int(m.group(2), 16),
+                                    1 << int(m.group(4)))
 
     syms, globals_ = {}, set()
     for ln in open(sym_p, encoding="utf-8", errors="replace"):
@@ -103,8 +125,9 @@ def main():
     for g in sorted(globals_):
         out.append(".global %s" % g)
 
-    tbase, tsize = sections.get(".text", (min(insns) if insns else 0, 0))
+    tbase, tsize = sections.get(".text", (min(insns) if insns else 0, 0, 4))[:2]
     out.append(".text")
+    out.append("\t.balign %d" % sections.get(".text", (0, 0, 4))[2])
     addr = tbase
     end = tbase + tsize
     while addr < end:
@@ -119,9 +142,10 @@ def main():
             addr += 1
 
     if ".rodata" in sections:
-        rbase, rsize = sections[".rodata"]
+        rbase, rsize, ralign = sections[".rodata"]
         data = open(rodata_p, "rb").read()
         out.append(".section .rodata")
+        out.append("\t.balign %d" % ralign)
         for off in range(min(rsize, len(data))):
             a = rbase + off
             if a in labels:
@@ -143,8 +167,9 @@ def main():
     bss = sorted((v, n) for n, (v, sc, z) in syms.items()
                  if sc == ".bss" and n not in LINKER_MADE)
     if bss and ".bss" in sections:
-        bbase, bsize = sections[".bss"]
+        bbase, bsize, balign = sections[".bss"]
         out.append(".bss")
+        out.append("\t.balign %d" % balign)
         cur = 0
         for val, name in bss:
             want = val - bbase
@@ -163,9 +188,15 @@ def main():
     # different immediates, .text differing at identical size. The original
     # addresses are in `objdump -h` and are written out here for the caller.
     with open(out_p + ".secs", "w", encoding="utf-8") as fh:
-        for name in (".text", ".rodata", ".data", ".bss"):
-            if name in sections:
-                fh.write("-T%s=0x%x\n" % (name.lstrip("."), sections[name][0]))
+        for name in sorted(sections, key=lambda n: sections[n][0]):
+            # --section-start FOR EVERY SECTION. GNU ld defines -Ttext, -Tdata
+            # and -Tbss and nothing else: `-Trodata=0x400b90` is not an option,
+            # it was accepted silently, and .rodata was packed straight after
+            # .text -- four bytes early, because the source's `.balign 8` was
+            # not reproduced either. Every adr into it then encoded short.
+            # --section-start=NAME=ADDR works for any section and says exactly
+            # what is meant.
+            fh.write("--section-start=%s=0x%x\n" % (name, sections[name][0]))
     ro = [n for n, (v, sc, z) in syms.items() if sc == ".rodata"]
     print("  rebuilt %s: %d instructions, %d labels, %d globals, %d bss, %d rodata"
           % (out_p, len(insns), len(labels), len(globals_), len(bss), len(ro)))
