@@ -257,7 +257,15 @@ h_mov:
     mov     w24, w0
     bl      skip_ws
     ldrb    w0, [x19, x20]
+    // A REGISTER OPERAND MAY BE 'w' OR 'x'. Testing only for 'x' sent every
+    // w-register second operand into the immediate parser, which read no digits,
+    // returned 0, and left the token behind -- `mov w0 w1` became `movz x0, #0`
+    // before input rejection existed, and a hard error after it. The same
+    // one-character omission appears in h_add, h_cmp and h_sub; all four are
+    // fixed together because they are the same bug, not four bugs.
     cmp     w0, #'x'
+    b.eq    h_mov_reg
+    cmp     w0, #'w'
     b.eq    h_mov_reg
     bl      parse_dec               // immediate
     lsl     w9, w0, #5
@@ -285,6 +293,8 @@ h_add:
     bl      skip_ws
     ldrb    w0, [x19, x20]
     cmp     w0, #'x'
+    b.eq    h_add_reg
+    cmp     w0, #'w'
     b.eq    h_add_reg
     bl      parse_dec
     lsl     w9, w0, #10
@@ -344,6 +354,8 @@ h_cmp:
     bl      skip_ws
     ldrb    w0, [x19, x20]
     cmp     w0, #'x'
+    b.eq    h_cmp_reg
+    cmp     w0, #'w'
     b.eq    h_cmp_reg
     bl      parse_dec               // immediate
     lsl     w9, w0, #10
@@ -437,6 +449,8 @@ h_sub:
     bl      skip_ws
     ldrb    w0, [x19, x20]
     cmp     w0, #'x'
+    b.eq    h_sub_reg
+    cmp     w0, #'w'
     b.eq    h_sub_reg
     bl      parse_dec
     lsl     w9, w0, #10

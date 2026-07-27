@@ -75,20 +75,11 @@ def _encode(l, at, labels):
         return ((_pos(lbl)-at) >> sh) & mask
     if op == 'mov':
         d = _reg(p[1])
-        if p[2][0] == 'w':
-            # DO NOT GUESS THIS ONE. stage0-selfhost measured a three-way
-            # disagreement on `mov w0 w1`: this model said aa0103e0 (a 64-bit
-            # register move), the real stage0-as says d2800000 (movz x0,#0 --
-            # `w1` falls through to the immediate parser and reads as zero), and
-            # GNU as says 2a0103e0 (a 32-bit move). Modelling any one of those
-            # would make the bench confidently wrong. Refusing is the only
-            # honest answer until the real assembler's w-register handling is
-            # fixed, at which point this branch models whatever it then does.
-            raise ValueError(
-                'mov with a w-register source is not modelled: the real '
-                'stage0-as mis-parses it as an immediate. See '
-                '.github/workflows/stage0-selfhost.yml')
-        if p[2][0] == 'x':
+        # The three-way disagreement recorded here earlier is resolved: the
+        # assembler now takes 'w' as a register letter and clears sf, so
+        # `mov w0 w1` is 2a0103e0 in all three -- this model, stage0-as and
+        # GNU as. The refusal that stood in for it is removed.
+        if p[2][0] in 'xw':
             n=_reg(p[2]); return (0xAA0003E0|(n<<16)|d, ('mov_r',d,n))
         imm=int(p[2])
         # MOVZ carries a 16-bit immediate. Real stage0-as encodes `mov` the same way
@@ -106,12 +97,12 @@ def _encode(l, at, labels):
         return (0xF2800000|(hw<<21)|((imm&0xffff)<<5)|d, ('movk',d,imm,hw*16))
     if op=='add':
         d=_reg(p[1]);n=_reg(p[2])
-        if p[3][0]=='x':
+        if p[3][0] in 'xw':
             m=_reg(p[3]); return (0x8B000000|(m<<16)|(n<<5)|d,('addr',d,n,m))
         imm=int(p[3]); return (0x91000000|(imm<<10)|(n<<5)|d,('add',d,n,imm))
     if op=='sub':
         d=_reg(p[1]);n=_reg(p[2])
-        if p[3][0]=='x':
+        if p[3][0] in 'xw':
             m=_reg(p[3]); return (0xCB000000|(m<<16)|(n<<5)|d,('subr',d,n,m))
         imm=int(p[3]); return (0xD1000000|(imm<<10)|(n<<5)|d,('sub',d,n,imm))
     if op=='mul':
@@ -122,7 +113,7 @@ def _encode(l, at, labels):
         return (0x9AC00800|(m<<16)|(n<<5)|d,('udiv',d,n,m))
     if op=='cmp':
         n=_reg(p[1])
-        if p[2][0]=='x':                      # stage0-as: reg-compare ONLY for x-regs
+        if p[2][0] in 'xw':                   # both register letters, since m84
             m=_reg(p[2]); return (0xEB000000|(m<<16)|(n<<5)|31,('cmp_r',n,m))
         d=''                                  # else parse_dec: leading digits, else 0
         for ch in p[2]:
