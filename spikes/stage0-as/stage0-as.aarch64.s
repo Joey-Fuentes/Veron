@@ -734,7 +734,15 @@ shift_common:
 shift_imm:
     cmp     x17, #0x0                       // 0 = x-register was used
     b.eq    die
-    bl      parse_dec                       // w0 = shift amount
+    // opt_dec, NOT parse_dec. parse_dec does not skip whitespace -- every other
+    // caller in this file pairs it with skip_ws first. Called bare, the cursor
+    // was still on the space before the digit, so it returned 0 without
+    // consuming anything: the shift encoded as 0 AND the leftover digit became
+    // the next "line", which is not a recognised first character, so the
+    // assembler died. That is why the probe reported REJECTED rather than
+    // WRONG BYTES. opt_dec does the space-and-tab skip without crossing a
+    // newline, which is what this position needs.
+    bl      opt_dec                         // w0 = shift amount
     mov     w13, #0x1f                      // 31
     // COMPARE THE KIND CODE, NOT THE OPCODE BITS. w26 holds 0x2000/0x2400/
     // 0x2800 because those are the LSLV/LSRV/ASRV selector bits, and two of the
