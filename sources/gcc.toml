@@ -1,9 +1,16 @@
 # gcc — the entry point to the compiler leg.
 # See sources/README.md: url + hash + license, nothing enters a build unnamed.
 #
-# TWO VERSIONS, ONE BUILD. 4.7.4 is the tree that is built; 4.8.5 contributes
-# its aarch64 backend and its config.sub/config.guess and is never built itself.
-# Both are fetched, so both are pinned.
+# THE COMPILER LEG, PINNED IN LADDER ORDER. 4.7.4 is the tree that is built;
+# 4.8.5 contributes its aarch64 backend and its config.sub/config.guess and is
+# never built itself. 10.2.0 is the rung 4.7 exists to reach, and was added when
+# stage4-complete began fetching it directly rather than inheriting it from
+# hermetic-gcc10. Everything fetched is pinned.
+#
+# 15.2.0 IS NOT HERE YET, AND THAT IS NOT AN OVERSIGHT. No run has measured it:
+# rung 1 has never finished, so rung 2 has never fetched it. It goes in when a
+# run prints its hash, not before. See sources/prereqs.toml for the same rule
+# applied to gmp/mpfr/mpc and for the list of what is still outstanding.
 
 [[source]]
 name     = "gcc"
@@ -22,6 +29,32 @@ mirrors  = ["https://ftpmirror.gnu.org/gcc/gcc-4.8.5/gcc-4.8.5.tar.bz2"]
 sha256   = "22fb1e7e0f68a63cee631d85b20461d1ea6bda162f03096350e38c8d427ecf23"
 license  = "GPL-3.0-or-later"
 role     = "donor -- gcc/config/aarch64, gcc/common/config/aarch64, libgcc/config/aarch64, config.sub, config.guess"
+
+[[source]]
+name     = "gcc"
+version  = "10.2.0"
+url      = "https://mirrors.kernel.org/gnu/gcc/gcc-10.2.0/gcc-10.2.0.tar.xz"
+mirrors  = ["https://ftpmirror.gnu.org/gcc/gcc-10.2.0/gcc-10.2.0.tar.xz"]
+sha256   = "b8dd4368bb9c7f0b98188317ee0254dd8cc99d1e3a18d0ff146c855fe16c1d8c"
+license  = "GPL-3.0-or-later"
+role     = "the rung the whole choice of 4.7 exists for -- built by g++ 4.7"
+note     = """
+10.2.0 AND NOT 10.4.0, and this is the same number tcc-builds-gcc-arm64 pins in
+its env: block. gcc's own prerequisites put the ceiling for an ISO C++98
+bootstrap compiler above the whole 10.x series, so the choice inside that range
+is free -- and 10.2.0 is the version LFS 10.0 documents, which means a tested
+set of everything around it. sources/lfs.toml records this as the only 10.x
+number in the tree; do not drift it.
+
+.tar.xz, NOT .tar.bz2. GNU stopped shipping bz2 tarballs after the 4.x/5.x era,
+which is why 4.7.4 and 4.8.5 above are .tar.bz2 and this is not. An earlier
+stage4-complete asked for gcc-10.2.0.tar.bz2 with a curl that lacked -f, got a
+404 page written into the cache file, and failed hours later in tar.
+"""
+
+# WHERE 10.2.0'S HASH COMES FROM. Measured, like the two above: read off
+# mirrors.kernel.org by stage4-complete run 81907665505 on 2026-07-27, which
+# reported it as an UNPINNED finding rather than silently accepting it.
 
 # LICENSE NOTE. The compiler proper is GPL-3.0-or-later. libgcc and the other
 # runtime libraries additionally carry the GCC Runtime Library Exception

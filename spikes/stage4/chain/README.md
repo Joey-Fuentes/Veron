@@ -20,6 +20,25 @@ relearn every lesson those implementations had already paid for.
 The distinction in that last column is load-bearing. Read the next section
 before running this.
 
+## Run history
+
+| run | got to | died on |
+|---|---|---|
+| 81901874247 | step 3 of 18 | `apt-get` without `sudo`; `RESULT` printed a full proof banner anyway |
+| 81907665505 | rung 1, stage 1 | `GMP_VER: parameter not set` — the rung scripts read the workflow's `env:` block, which `--clearenv` does not carry into the box |
+
+What 81907665505 established, which is the part worth keeping: rung 0 built the
+patched tcc at the pinned commit and sealed it; rung 1's seam check verified the
+restored tree against that seal and passed; `fetch.sh` pin-verified 4.7.4 and
+4.8.5 against `sources/gcc.toml` and reported four unpinned inputs with their
+hashes; and when the chain broke, the ledger named the three missing records,
+said "THE CHAIN DOES NOT CONNECT", and exited 1 **without printing a claim**.
+That last line is the whole reason this workflow was restructured.
+
+The `--clearenv` failure is worth keeping too, in the sense that `set -u` turned
+it into a one-line stop at the first use rather than a build of `gmp-` that
+failed incomprehensibly forty minutes later.
+
 ## Status — read this before believing anything
 
 **None of this has been executed.** It was written by reading the jobs that do

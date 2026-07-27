@@ -1,0 +1,56 @@
+# prereqs — gmp, mpfr, mpc: the arbitrary-precision libraries every gcc rung
+# rebuilds for itself.
+# See sources/README.md: url + hash + license, nothing enters a build unnamed.
+#
+# WHY THESE ARE PINNED SEPARATELY FROM gcc.toml. gcc.toml is scoped to the
+# transplant pair -- 4.7.4 is built, 4.8.5 donates a backend -- and says so in
+# its header. These three are not a gcc version; they are rebuilt at EVERY rung
+# by the compiler that rung is testing, so that stage N's cc1 contains object
+# code from stage N's compiler rather than from the one below it. They belong to
+# the ladder, not to any one step of it.
+#
+# WHERE THESE HASHES COME FROM. Measured, not transcribed, by the same method
+# gcc.toml records: spikes/stage4/chain/fetch.sh has no pin to check against, so
+# it fetches, hashes, and PRINTS the value with an UNPINNED finding attached.
+# These four values are what stage4-complete run 81907665505 read off
+# mirrors.kernel.org on 2026-07-27. Inventing a plausible hash would have been
+# worse than leaving the field empty, so the fetcher was written to produce one
+# instead.
+#
+# TO RE-VERIFY: delete an entry and run the chain. fetch.sh will print what it
+# got and mark it unpinned; compare, then put it back.
+
+[[source]]
+name     = "gmp"
+version  = "6.3.0"
+url      = "https://mirrors.kernel.org/gnu/gmp/gmp-6.3.0.tar.xz"
+mirrors  = ["https://ftpmirror.gnu.org/gmp/gmp-6.3.0.tar.xz"]
+sha256   = "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898"
+license  = "LGPL-3.0-or-later OR GPL-2.0-or-later"
+role     = "rebuilt at every rung; --disable-assembly under tcc"
+
+[[source]]
+name     = "mpfr"
+version  = "4.2.2"
+url      = "https://mirrors.kernel.org/gnu/mpfr/mpfr-4.2.2.tar.xz"
+mirrors  = ["https://ftpmirror.gnu.org/mpfr/mpfr-4.2.2.tar.xz"]
+sha256   = "b67ba0383ef7e8a8563734e2e889ef5ec3c3b898a01d00fa0a6869ad81c6ce01"
+license  = "LGPL-3.0-or-later"
+role     = "rebuilt at every rung"
+
+[[source]]
+name     = "mpc"
+version  = "1.3.1"
+url      = "https://mirrors.kernel.org/gnu/mpc/mpc-1.3.1.tar.gz"
+mirrors  = ["https://ftpmirror.gnu.org/mpc/mpc-1.3.1.tar.gz"]
+sha256   = "ab642492f5cf882b74aa0cb730cd410a81edcdbec895183ce930e706c1c759b8"
+license  = "LGPL-3.0-or-later"
+role     = "rebuilt at every rung"
+
+# STILL UNPINNED, DELIBERATELY. gcc 15.2.0 and everything rung 2 and rung 3
+# fetch -- binutils 2.46.0, glibc 2.43, linux 7.1.3 headers, linux 7.1.5,
+# busybox 1.36.1 -- have no entry here because no run has measured them yet:
+# rung 1 has never finished, so rung 2 has never started. fetch.sh will report
+# each of them as UNPINNED with its hash the first time it gets that far, and
+# those values belong here afterwards. An empty field is honest; a guessed one
+# is not.

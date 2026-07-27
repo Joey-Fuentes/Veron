@@ -267,6 +267,31 @@ jobs:
           # gcc-15.2.0.tar.bz2, then untarred gcc-15.2.0.tar.XZ, which it had
           # never fetched.
 
+      - name: 'Write the version set into the box'
+        run: |
+          set -eu
+          mkdir -p work
+          # ONE DEFINITION, CROSSING AS A FILE. See the header of any rung
+          # script: box.sh clears the environment deliberately, so the version
+          # set has to be handed over explicitly. Printing it also makes the log
+          # answer "which versions was this run", which sources/lfs.toml records
+          # three lost runs for not being able to answer.
+          cat > work/versions.env <<EOF
+          export BINUTILS='$BINUTILS'
+          export GCC47='$GCC47'
+          export GCC48='$GCC48'
+          export GCC10='$GCC10'
+          export GCC15='$GCC15'
+          export GLIBC='$GLIBC'
+          export LINUX_HEADERS='$LINUX_HEADERS'
+          export KERNEL='$KERNEL'
+          export GMP_VER='$GMP_VER'
+          export MPFR_VER='$MPFR_VER'
+          export MPC_VER='$MPC_VER'
+          export LFS_TGT='$LFS_TGT'
+          EOF
+          sed 's/^/  /' work/versions.env
+
       - name: 'Transplant 4.8.5 aarch64 backend into 4.7.4'
         run: |
           set -eu
@@ -391,6 +416,31 @@ jobs:
             "$GNU/mpfr/mpfr-$MPFR_VER.tar.xz" \
             "$GNU/mpc/mpc-$MPC_VER.tar.gz"
 
+      - name: 'Write the version set into the box'
+        run: |
+          set -eu
+          mkdir -p work
+          # ONE DEFINITION, CROSSING AS A FILE. See the header of any rung
+          # script: box.sh clears the environment deliberately, so the version
+          # set has to be handed over explicitly. Printing it also makes the log
+          # answer "which versions was this run", which sources/lfs.toml records
+          # three lost runs for not being able to answer.
+          cat > work/versions.env <<EOF
+          export BINUTILS='$BINUTILS'
+          export GCC47='$GCC47'
+          export GCC48='$GCC48'
+          export GCC10='$GCC10'
+          export GCC15='$GCC15'
+          export GLIBC='$GLIBC'
+          export LINUX_HEADERS='$LINUX_HEADERS'
+          export KERNEL='$KERNEL'
+          export GMP_VER='$GMP_VER'
+          export MPFR_VER='$MPFR_VER'
+          export MPC_VER='$MPC_VER'
+          export LFS_TGT='$LFS_TGT'
+          EOF
+          sed 's/^/  /' work/versions.env
+
       - name: 'Chapters 5-6, then gcc 15, in the box'
         run: |
           set -eu
@@ -506,6 +556,31 @@ jobs:
           REPO="$PWD" sh spikes/stage4/chain/fetch.sh "$PWD/work/src" \
             "$KORG/v${KERNEL%%.*}.x/linux-$KERNEL.tar.xz" \
             "https://busybox.net/downloads/busybox-1.36.1.tar.bz2"
+
+      - name: 'Write the version set into the box'
+        run: |
+          set -eu
+          mkdir -p work
+          # ONE DEFINITION, CROSSING AS A FILE. See the header of any rung
+          # script: box.sh clears the environment deliberately, so the version
+          # set has to be handed over explicitly. Printing it also makes the log
+          # answer "which versions was this run", which sources/lfs.toml records
+          # three lost runs for not being able to answer.
+          cat > work/versions.env <<EOF
+          export BINUTILS='$BINUTILS'
+          export GCC47='$GCC47'
+          export GCC48='$GCC48'
+          export GCC10='$GCC10'
+          export GCC15='$GCC15'
+          export GLIBC='$GLIBC'
+          export LINUX_HEADERS='$LINUX_HEADERS'
+          export KERNEL='$KERNEL'
+          export GMP_VER='$GMP_VER'
+          export MPFR_VER='$MPFR_VER'
+          export MPC_VER='$MPC_VER'
+          export LFS_TGT='$LFS_TGT'
+          EOF
+          sed 's/^/  /' work/versions.env
 
       - name: 'Kernel and userland, in the box'
         run: |

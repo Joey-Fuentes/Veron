@@ -9,6 +9,15 @@
 # the compiler and the init script uses it: VERON-GCC-IN-GUEST is the gate,
 # VERON-BOOT-OK is only the precondition.
 set -u
+# THE VERSION SET CROSSES THE BOUNDARY AS A FILE, NOT AS INHERITED ENV.
+# box.sh uses --clearenv on purpose: the box's environment is part of what this
+# job DECLARES, not whatever the runner happened to export. Run 81907665505
+# died here -- "GMP_VER: parameter not set" -- because this script was written
+# as though the workflow's env: block reached inside. It does not, and it should
+# not. /work/versions.env is written by the job before entry, so the set is
+# explicit, is one definition for all rungs, and lands in the log as an answer
+# to "which versions was this".
+. /work/versions.env
 cd /work
 NP=$(nproc)
 S=/work/sysroot
