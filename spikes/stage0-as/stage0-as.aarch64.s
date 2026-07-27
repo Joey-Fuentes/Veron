@@ -82,6 +82,7 @@ parse_loop:
     cmp     x20, x21
     b.ge    pass_end
     mov     x28, x20                // line start, kept for `die` to echo
+    mov     x17, #0                 // width: 0 = 64-bit, 1 = 32-bit (w-register)
     ldrb    w0, [x19, x20]
     cmp     w0, #'#'
     b.eq    skip_line
@@ -247,9 +248,12 @@ h_mov:
     cmp     w10, #'k'               // 'movk'
     b.eq    h_movk
     add     x20, x20, #3
-    bl      skip_ws
-    add     x20, x20, #1
-    bl      parse_dec
+    // USE next_reg, THE WAY h_cmp ALREADY DOES. This parsed the destination
+    // inline -- skip_ws, step over the register letter, read the digits -- and
+    // so never saw whether the letter was 'x' or 'w'. next_reg does the same
+    // work and records the width, which is what makes `mov w0, #5` encode as a
+    // 32-bit MOVZ (0x52800000) instead of the 64-bit one (0xD2800000).
+    bl      next_reg
     mov     w24, w0
     bl      skip_ws
     ldrb    w0, [x19, x20]
@@ -260,7 +264,7 @@ h_mov:
     movz    w1, #0xD280, lsl #16
     orr     w9, w9, w1
     orr     w9, w9, w24
-    bl      emit
+    bl      emit_dp
     b       parse_loop
 h_mov_reg:
     add     x20, x20, #1
@@ -269,7 +273,7 @@ h_mov_reg:
     movk    w9, #0xAA00, lsl #16
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w24
-    bl      emit
+    bl      emit_dp
     b       parse_loop
 
 h_add:
@@ -288,7 +292,7 @@ h_add:
     orr     w9, w9, w1
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
-    bl      emit
+    bl      emit_dp
     b       parse_loop
 h_add_reg:
     bl      next_reg
@@ -296,7 +300,7 @@ h_add_reg:
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
-    bl      emit
+    bl      emit_dp
     b       parse_loop
 
 h_adr:
@@ -347,7 +351,7 @@ h_cmp:
     orr     w9, w9, w1
     orr     w9, w9, w24, lsl #5
     orr     w9, w9, #31
-    bl      emit
+    bl      emit_dp
     b       parse_loop
 h_cmp_reg:
     add     x20, x20, #1
@@ -356,7 +360,7 @@ h_cmp_reg:
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w24, lsl #5
     orr     w9, w9, #31
-    bl      emit
+    bl      emit_dp
     b       parse_loop
 
 // ---- 'l' : ldrb or ldr ----
@@ -440,7 +444,7 @@ h_sub:
     orr     w9, w9, w1
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
-    bl      emit
+    bl      emit_dp
     b       parse_loop
 h_sub_reg:
     bl      next_reg
@@ -448,7 +452,7 @@ h_sub_reg:
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
-    bl      emit
+    bl      emit_dp
     b       parse_loop
 h_st:
     add     x2, x20, #3
@@ -597,7 +601,7 @@ h_orr:
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
-    bl      emit
+    bl      emit_dp
     b       parse_loop
 h_and:
     add     x20, x20, #3            // skip "and"
@@ -610,7 +614,7 @@ h_and:
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
-    bl      emit
+    bl      emit_dp
     b       parse_loop
 
 h_eor:
@@ -624,7 +628,7 @@ h_eor:
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
-    bl      emit
+    bl      emit_dp
     b       parse_loop
 
 // ---- lsl/lsr/asr x<d> x<n> x<m>  (variable shift by register) ----
@@ -654,7 +658,7 @@ shift_common:
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
-    bl      emit
+    bl      emit_dp
     b       parse_loop
 
 // ---- movk x<d> <imm> <shift>   shift in {0,16,32,48} ----
@@ -672,7 +676,7 @@ h_movk:
     orr     w9, w9, w0, lsl #21
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
-    bl      emit
+    bl      emit_dp
     b       parse_loop
 
 // ---- mul x<d> x<n> x<m>  (= madd with xzr) ----
@@ -688,7 +692,7 @@ h_mul:
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
-    bl      emit
+    bl      emit_dp
     b       parse_loop
 
 h_bcond:
@@ -791,6 +795,16 @@ nr_a:
     add     x20, x20, #1
     b       nr_ws
 nr_done:
+    // READ THE LETTER BEFORE SKIPPING IT. This routine already consumed the
+    // 'x' or 'w' without looking at it, which is why every data-processing
+    // form encoded as 64-bit regardless: `cmp w0, #65` emitted the X-form
+    // SUBS (0xF1...) where GNU as emits the W-form (0x71...). Measured across
+    // the whole source, 131 lines differed from GNU as by exactly bit 31.
+    ldrb    w10, [x19, x20]
+    cmp     w10, #'w'
+    b.ne    nr_x
+    mov     x17, #1
+nr_x:
     add     x20, x20, #1            // skip reg letter
     mov     w0, #0
 nr_dl:
@@ -848,6 +862,21 @@ pd_l:
 pd_r:
     ret
 
+// ---- emit_dp: emit a DATA-PROCESSING word, honouring the register width ---
+// Bit 31 is the sf flag for data-processing instructions, so a w-register
+// operand means it must be cleared. It is NOT a width flag everywhere: loads
+// and stores put a size field in bits 31:30, and `ldr w<t>` is 0xB9400000 --
+// clearing bit 31 there would silently turn it into `ldrb`. So this is OPT-IN.
+// Only handlers whose opcode genuinely carries sf call it; everything else
+// still calls `emit` directly. A handler wrongly left on `emit` shows up as a
+// WRONG row in stage0-selfhost's probe table, which is visible and harmless;
+// a load wrongly routed through here would be neither.
+emit_dp:
+    cmp     x17, #0
+    b.eq    emit
+    movz    x13, #0xFFFF
+    movk    x13, #0x7FFF, lsl #16
+    and     x9, x9, x13
 emit:
     cmp     x23, #2
     b.ne    e_adv

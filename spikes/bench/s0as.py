@@ -46,7 +46,25 @@ def assemble(text):
         code += struct.pack('<I', w); prog.append(ins)
     return bytes(code), prog, labels
 
+# Data-processing opcodes carry the sf flag in bit 31; a w-register operand
+# means it must be cleared. Loads and stores are NOT in this set: they put a
+# size field in bits 31:30, and clearing bit 31 of `ldr w<t>` (0xB9400000)
+# would turn it into `ldrb`. This mirrors stage0-as's emit_dp exactly -- the
+# model and the assembler gained the behaviour in the same commit.
+DP_OPS = {'mov','add','sub','cmp','orr','and','eor',
+          'lsl','lsr','asr','udiv','movk','mul'}
+
+
 def encode(l, at, labels):
+    word, dec = _encode(l, at, labels)
+    p = l.split()
+    if p and p[0] in DP_OPS:
+        if any(t[:1] == 'w' and t[1:].isdigit() for t in p[1:]):
+            word &= 0x7FFFFFFF
+    return word, dec
+
+
+def _encode(l, at, labels):
     p = l.split()
     op = p[0]
     def _pos(o):   # branch target: @<digits> = absolute byte-pos; else a label
