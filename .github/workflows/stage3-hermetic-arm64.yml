@@ -1,0 +1,514 @@
+name: stage3-hermetic-arm64
+
+# SPIKE. THE LADDER, NATIVE AARCH64, IN A SEALED BOX.
+#
+# What every existing ladder workflow does today, and why this one exists:
+# all 22 of them run on ubuntu-latest (x86_64) and execute every rung under
+# qemu-aarch64 user-mode emulation, with the seed cross-assembled by
+# aarch64-linux-gnu-as. So the floor of the ladder carries TWO borrowed host
+# tools, not the one TRUST-BOUNDARY.md names: the assembler AND the emulator.
+# This job removes the emulator by running on real arm64 hardware, and puts a
+# hard, enumerated, enforced boundary around what is left.
+#
+# THE HOST BUDGET, in two tiers. The distinction is selfhost-demo's own rule
+# about oracles -- a host tool is legitimate exactly when it never appears on
+# the build path -- applied to the sandbox instead of to the comparison.
+#
+#   TIER 1, ON THE BUILD PATH (its output becomes our artifact bytes):
+#       as, ld          <- assemble and link the stage-0 seed. Nothing else.
+#   TIER 2, THE DRIVER (moves and compares files; touches no artifact byte):
+#       busybox         <- one static binary. sh, cat, cmp, sha256sum, ...
+#
+# Tier 1 is the number that must go to zero. When spikes/seedas/ becomes the
+# real hand-encoded seed, `as` and `ld` come out of BUDGET_PATH below and the
+# box builds from a committed, round-trip-verifiable seed with NOTHING entering
+# it. That is a one-line edit to this file, which is the point of writing the
+# budget as a variable instead of as prose.
+#
+# Tier 2 is not on the road to zero and should not pretend to be. A build has
+# to be driven by something. What matters is that it is ONE binary with ONE
+# hash, that it is enumerated, and that the SEAL step fails if anything else
+# turns up inside the box. Do not let this list grow without moving the entry
+# into the header above.
+#
+# WHAT IS OUTSIDE THE BOX, DELIBERATELY:
+#   - the fetch. Pinned sources are cloned in the airlock, hashed, and bound in
+#     READ-ONLY. The box itself runs --unshare-all, so it has no network at all.
+#   - tools/drop_asm.py. It is a SOURCE transformation, not a compilation: it
+#     runs in the airlock and its output (patched_bootstrap.c) is bound in as a
+#     hashed input like any other source file. Putting python3 in the box to
+#     avoid this would cost far more than it buys.
+#   - the reference arm. Upstream's M2-Planet, built by host gcc, in a separate
+#     job that never touches the box. It is an ORACLE: it says what the right
+#     answer is and never appears on our build path.
+#
+# THE GATE IS ON .M1 TEXT, NOT ON A LINKED BINARY -- and that is deliberate.
+# m2libc-113-bisect gates on `G1 == refM2P` as ELF binaries, which needs
+# blood-elf + M1 + hex2 to link each generation, and it gets those from
+# `make -C upstream-mescc`, i.e. from HOST GCC. That is a host compiler on the
+# build path and it cannot come into this box.
+#
+# Building M1/hex2 with our own stage 2 instead is the correct fix and it is
+# blocked today by a real stage-2 codegen defect: our M1 hangs in M2libc's
+# memset (`for(s = ptr; 0 < num; num = num - 1)` -- see m1-loop.yml) and our
+# hex2 writes byte-identical output and then crashes on exit. Both are recorded
+# in spikes/UPSTREAM-PINS.md.
+#
+# So the proof is moved one level down, where it is just as strong and needs no
+# linker: G0 compiles M2-Planet's UNPATCHED source, and the .M1 it emits must be
+# byte-identical to the .M1 upstream's own M2-Planet emits from the same input.
+# Identical .M1 through the same M1+hex2 yields an identical binary by
+# construction, so this subsumes the binary comparison. selfhost-demo already
+# compares at this level (`ab_cmp gen2 .M1`); this makes it the gate.
+#
+#   GATE 1 (blocking)     ours-gen1.M1 == ref-gen1.M1, byte for byte
+#   GATE 2 (non-blocking) the same thing linked, with M1/hex2 built in-box by
+#                         stage 2. Expected RED on the memset defect. It is here
+#                         to measure how far the pure chain gets, and to turn
+#                         green on its own the day stage 2 is fixed.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage0-as/**'
+      - 'spikes/stage1-as/**'
+      - 'spikes/stage2-mini-c/**'
+      - 'spikes/elf/**'
+      - 'tools/drop_asm.py'
+      - '.github/workflows/stage3-hermetic-arm64.yml'
+      - '!spikes/*.md'
+      - '!spikes/**/*.md'
+  workflow_dispatch:
+
+# Long jobs queue instead of cancelling -- one push to fix a typo must not kill
+# an in-flight run.
+concurrency:
+  group: stage3-hermetic-arm64-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  M2PLANET_SHA: bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d
+  M2LIBC_SHA: 68a23cfd05d5a355ba7a30c770d684cbe86fcc4e
+  MESCC_SHA: 5adfbf3
+
+jobs:
+
+  # ===================================================================
+  # ORACLE. Host gcc builds upstream's M2-Planet and runs it on the same
+  # -f list our G0 will get. Never touches the box; only its .M1 output
+  # crosses back, after the box has closed.
+  # ===================================================================
+  oracle:
+    runs-on: ubuntu-24.04-arm          # NATIVE aarch64
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc make git
+
+      - name: Fetch pinned upstreams
+        run: |
+          set -eu
+          git clone https://github.com/oriansj/M2-Planet.git m2
+          git -C m2 checkout -q "$M2PLANET_SHA"
+          git -C m2 submodule update --init --recursive
+          git -C m2/M2libc checkout -q "$M2LIBC_SHA" 2>/dev/null || true
+          echo "  M2-Planet $(git -C m2 rev-parse --short HEAD)  M2libc $(git -C m2/M2libc rev-parse --short HEAD)"
+
+      - name: Derive the -f list from upstream's own script
+        run: |
+          set -eu
+          # NEVER HAND-WRITE THE -f LIST. Four reconstructed lists in a row were
+          # wrong (m2libc-113-bisect's header records this), and the specific
+          # trap here is `M2libc/bootstrap.c` -- the generic one, which does NOT
+          # EXIST at the 1.13.1 pin. Four workflows still reference it and are
+          # red because of it: stage3-m2-demo, mescc-tools-full, no-host-chain
+          # and selfhost-demo. Deriving from upstream's script cannot make that
+          # mistake, and the assertion below makes sure of it.
+          S=m2/test/test1000/hello-aarch64.sh
+          # join backslash continuations, then pull -f tokens off the first
+          # M2-Planet invocation
+          sed -e ':a' -e '/\\$/{N; s/\\\n//; ta}' "$S" > joined.sh
+          grep -m1 'M2-Planet' joined.sh | grep -o -- '-f [^ ]*' | awk '{print $2}' > flist.txt
+          [ -s flist.txt ] || { echo "FAIL: derived an empty -f list from $S"; exit 1; }
+          if grep -qx 'M2libc/bootstrap.c' flist.txt; then
+            echo "FAIL: derived list contains the generic M2libc/bootstrap.c."
+            echo "      That file does not exist at the 1.13.1 pin. The pin or"
+            echo "      the script changed -- do not paper over this."
+            exit 1
+          fi
+          echo "  derived $(wc -l < flist.txt) files:"
+          sed 's/^/    /' flist.txt
+          # every file must actually be there before we hand this to anyone
+          miss=0
+          while read -r f; do [ -f "m2/$f" ] || { echo "    MISSING: $f"; miss=1; }; done < flist.txt
+          [ "$miss" = 0 ] || { echo "FAIL: derived list names files that do not exist"; exit 1; }
+
+      - name: Build the reference M2-Planet and self-compile
+        run: |
+          set -eu
+          make -C m2 M2-Planet
+          cd m2
+          # the -f list, verbatim, as upstream wrote it
+          set --
+          while read -r f; do set -- "$@" -f "$f"; done < ../flist.txt
+          ./bin/M2-Planet --architecture aarch64 --bootstrap-mode "$@" -o ../ref-gen1.M1
+          cd ..
+          printf '  ref-gen1.M1  %s bytes  %s\n' \
+            "$(wc -c < ref-gen1.M1)" "$(sha256sum ref-gen1.M1 | cut -c1-16)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: oracle
+          path: |
+            ref-gen1.M1
+            flist.txt
+
+  # ===================================================================
+  # THE BOX.
+  # ===================================================================
+  hermetic:
+    runs-on: ubuntu-24.04-arm          # NATIVE aarch64 -- no qemu in the way
+    needs: oracle
+    timeout-minutes: 60
+    env:
+      # TIER 1 -- on the build path. THIS IS THE NUMBER THAT MUST REACH ZERO.
+      BUDGET_PATH: 'as ld'
+      # TIER 2 -- the driver. One binary.
+      BUDGET_DRIVER: 'busybox'
+    steps:
+      - uses: actions/checkout@v5
+
+      # --- AIRLOCK: everything that needs a network happens here ----------
+      - name: Install (airlock only -- none of this enters the box)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bubblewrap binutils busybox-static git python3 file
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+
+      - name: Fetch pinned upstreams
+        run: |
+          set -eu
+          git clone https://github.com/oriansj/M2-Planet.git pins/m2
+          git -C pins/m2 checkout -q "$M2PLANET_SHA"
+          git -C pins/m2 submodule update --init --recursive
+          git -C pins/m2/M2libc checkout -q "$M2LIBC_SHA" 2>/dev/null || true
+          git clone --recursive https://github.com/oriansj/mescc-tools.git pins/mescc
+          git -C pins/mescc checkout -q "$MESCC_SHA"
+          echo "  M2-Planet $(git -C pins/m2 rev-parse --short HEAD)"
+          echo "  M2libc    $(git -C pins/m2/M2libc rev-parse --short HEAD)"
+          echo "  mescc     $(git -C pins/mescc rev-parse --short HEAD)"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: oracle
+          path: oracle
+
+      - name: The substitution (airlock -- a source edit, not a compilation)
+        run: |
+          set -eu
+          L=pins/m2/M2libc
+          echo "  what drop_asm removes from aarch64/linux/bootstrap.c:"
+          python3 tools/drop_asm.py --list "$L/aarch64/linux/bootstrap.c" | sed 's/^/    /'
+          python3 tools/drop_asm.py "$L/aarch64/linux/bootstrap.c" > pins/patched_bootstrap.c
+          echo "    asm() blocks remaining: $(grep -c 'asm(' pins/patched_bootstrap.c || true)"
+          printf '  %-28s %8s  %s\n' 'bootstrap.c (upstream)' \
+            "$(wc -c < "$L/aarch64/linux/bootstrap.c")" \
+            "$(sha256sum "$L/aarch64/linux/bootstrap.c" | cut -c1-16)"
+          printf '  %-28s %8s  %s\n' 'bootstrap.c (patched)' \
+            "$(wc -c < pins/patched_bootstrap.c)" \
+            "$(sha256sum pins/patched_bootstrap.c | cut -c1-16)"
+          # Reuse the oracle's derived list verbatim. Both arms MUST get the
+          # identical -f list; a list derived twice is a list that can differ
+          # twice, and then a red gate means nothing.
+          cp oracle/flist.txt pins/flist.txt
+          echo "  -f list ($(wc -l < pins/flist.txt) files) taken from the oracle job, not re-derived"
+
+      - name: Derive the mescc-tools source lists from upstream's makefile
+        run: |
+          set -eu
+          # Same rule, same reason: no-host-chain's header records that three
+          # hand-written lists in a row were wrong, and that the one they all
+          # missed was stringify.c -- whose absence hung M1 at runtime while
+          # --help still worked. The makefile is authoritative. This is that
+          # job's derivation, unchanged, so the two diff against each other.
+          MK=pins/mescc/makefile
+          srcs() {
+            grep -E "^bin/$1:" "$MK" | sed 's/|.*//' \
+              | grep -o '[A-Za-z0-9_./-]*\.c' | awk '!seen[$0]++' \
+              | grep -v 'bootstrappable\.c'
+          }
+          # M2-Planet is single-pass: the main-bearing file must come last.
+          order() {
+            m=""; r=""
+            for f in $1; do
+              if grep -q '^int main(' "pins/mescc/$f" 2>/dev/null; then m="$f"; else r="$r $f"; fi
+            done
+            echo "$r $m"
+          }
+          for t in M1 hex2; do
+            out=$(order "$(srcs "$t")")
+            [ -n "$(echo $out)" ] || { echo "FAIL: could not derive $t sources"; exit 1; }
+            printf '%s\n' $out > "pins/$t-srcs.txt"
+            echo "  $t: $out"
+          done
+
+      # --- BUILD THE BOX --------------------------------------------------
+      - name: Assemble the box
+        run: |
+          set -eu
+          BOX="$PWD/box"; echo "BOX=$BOX" >> "$GITHUB_ENV"
+          mkdir -p "$BOX"/bin "$BOX"/lib "$BOX"/work "$BOX"/out \
+                   "$BOX"/src "$BOX"/in "$BOX"/tmp "$BOX"/proc "$BOX"/dev
+
+          for t in $BUDGET_PATH; do
+            cp -L "$(command -v "$t")" "$BOX/bin/$t"
+          done
+          cp -L /bin/busybox "$BOX/bin/busybox"
+
+          # dynamic deps of whatever we just copied, and the loader itself
+          for b in "$BOX"/bin/*; do
+            ldd "$b" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}'
+          done | sort -u > /tmp/needed
+          while read -r l; do [ -f "$l" ] && cp -L "$l" "$BOX/lib/" || true; done < /tmp/needed
+          mkdir -p "$BOX"/usr/lib && cp -a "$BOX"/lib/. "$BOX"/usr/lib/ 2>/dev/null || true
+
+          # busybox applet names. Anything the in-box script uses must be here;
+          # PATH inside the box is /bin only, so a missing applet fails loudly
+          # instead of silently reaching for a host binary.
+          for a in sh cat cmp sha256sum wc printf mkdir cp rm mv ln chmod sed \
+                   head tail tr ls sort comm grep cut awk timeout od dd env date; do
+            ln -sf busybox "$BOX/bin/$a"
+          done
+
+          echo "  box laid out: $(du -sh "$BOX" | cut -f1)"
+
+      - name: 'SEAL: enumerate every executable in the box and enforce the budget'
+        run: |
+          set -eu
+          echo "  === TIER 1: ON THE BUILD PATH ==="
+          for t in $BUDGET_PATH; do
+            printf '    %-12s %10s  %s\n' "$t" "$(wc -c < "$BOX/bin/$t")" \
+              "$(sha256sum "$BOX/bin/$t" | cut -c1-16)"
+          done
+          echo "  === TIER 2: DRIVER (touches no artifact byte) ==="
+          for t in $BUDGET_DRIVER; do
+            printf '    %-12s %10s  %s\n' "$t" "$(wc -c < "$BOX/bin/$t")" \
+              "$(sha256sum "$BOX/bin/$t" | cut -c1-16)"
+          done
+          echo "  === shared objects carried in for the above ==="
+          ls -1 "$BOX/lib" | sed 's/^/    /'
+
+          # THE ENFORCEMENT. Every REAL file (not a busybox symlink) under
+          # $BOX/bin must be named in one of the two budgets. If someone adds a
+          # cp of gcc, or an apt package quietly lands a helper here, this fails
+          # -- which is the entire value of writing the budget down.
+          find "$BOX/bin" -maxdepth 1 -type f -printf '%f\n' | sort > /tmp/actual
+          printf '%s\n' $BUDGET_PATH $BUDGET_DRIVER | sort > /tmp/declared
+          if ! cmp -s /tmp/actual /tmp/declared; then
+            echo
+            echo "FAIL: the box contains executables outside the declared budget."
+            echo "  declared:"; sed 's/^/    /' /tmp/declared
+            echo "  actual:";   sed 's/^/    /' /tmp/actual
+            echo "  difference:"; comm -3 /tmp/declared /tmp/actual | sed 's/^/    /'
+            exit 1
+          fi
+          echo
+          echo "  SEALED. $(wc -l < /tmp/declared) host binaries, $(printf '%s' "$BUDGET_PATH" | wc -w) of them on the build path."
+
+      - name: Write the in-box script
+        run: |
+          set -eu
+          cat > "$BOX/work/run.sh" <<'EOS'
+          #!/bin/sh
+          # Runs with no network, no host PATH, and nothing in /bin but the
+          # declared budget. Every path here is inside the box.
+          set -eu
+          cd /work
+
+          say() { printf '\n  === %s ===\n' "$1"; }
+          art() { printf '    %-28s %10s  %s\n' "$1" \
+                    "$(wc -c < "$2" 2>/dev/null || echo -)" \
+                    "$(sha256sum "$2" 2>/dev/null | cut -c1-16 || echo -)"; }
+
+          say '1. SEED -- the only host tools on the build path'
+          as -o s0.o  /src/stage0-as/stage0-as.aarch64.s
+          ld -static -o stage0-as s0.o
+          as -o elf.o /src/elf/elf.aarch64.s
+          ld -static -o elf elf.o
+          art 'stage0-as' stage0-as
+          art 'elf'       elf
+
+          # NATIVE EXECUTION STARTS HERE. Under qemu-aarch64 every rung was
+          # invoked as `qemu-aarch64 ./stage1`, which merely OPENS the file --
+          # the exec bit and the ELF headers were never really tested. Here the
+          # kernel's binfmt loader validates both. spikes/elf/README.md says the
+          # elf tool sets 0755 itself via openat+fchmod, so no chmod should be
+          # needed; if that is wrong, it fails right here, which is exactly the
+          # kind of thing this port exists to find.
+          say '2. STAGE 1 -- written in stage 0 language'
+          ./stage0-as < /src/stage1-as/stage1-as.s0 | ./elf stage1
+          [ -x stage1 ] || { echo "    FAIL: stage1 is not executable -- elf did not set 0755"; exit 1; }
+          art 'stage1' stage1
+
+          say '3. STAGE 2 -- written in stage 1 language'
+          ./stage1 < /src/stage2-mini-c/stage2-mini-c.s1 | ./stage0-as | ./elf stage2
+          [ -x stage2 ] || { echo "    FAIL: stage2 is not executable"; exit 1; }
+          art 'stage2' stage2
+
+          say '4. SMOKE -- each rung actually runs on this hardware'
+          printf 'int main(){return 42;}' > smoke.c
+          ./stage2 < smoke.c > smoke.s1
+          ./stage1 < smoke.s1 | ./stage0-as | ./elf smoke
+          set +e; ./smoke; rc=$?; set -e
+          echo "    smoke.c through the whole ladder -> rc=$rc (want 42)"
+          [ "$rc" = 42 ] || { echo "    FAIL: the ladder does not run natively"; exit 1; }
+
+          say '5. G0 -- stage 2 builds M2-Planet from PATCHED source'
+          # The substitution applies to G0 and only G0. patched_bootstrap.c goes
+          # first so its enums (NULL EOF TRUE FALSE stdin/stdout/stderr EXIT_*)
+          # are in scope for the shim, and the shim supplies fgetc/fputc -- the
+          # only two dropped functions our m53/m69 builtins do not already cover.
+          {
+            cat /in/patched_bootstrap.c
+            cat /src/stage2-mini-c/m2libc-shim.c
+            while read -r f; do
+              case "$f" in
+                M2libc/aarch64/linux/bootstrap.c) : ;;   # replaced above
+                *) cat "/in/m2/$f" ;;
+              esac
+            done < /in/flist.txt
+          } > m2.c
+          art 'm2.c (our translation unit)' m2.c
+          ./stage2 < m2.c > m2.s1
+          echo "    stage2 emitted $(wc -c < m2.s1) bytes of stage-1 assembly"
+          ./stage1 < m2.s1 | ./stage0-as | ./elf M2-ours
+          [ -x M2-ours ] || { echo "    FAIL: no G0"; exit 1; }
+          art 'G0 = M2-Planet (ours)' M2-ours
+
+          say '6. G1 -- G0 compiles UNPATCHED M2-Planet source'
+          # From here the patch is gone: our M2-Planet handles asm() perfectly
+          # well, so G1 onward is built from upstream source exactly as shipped.
+          set --
+          while read -r f; do set -- "$@" -f "$f"; done < /in/flist.txt
+          cd /in/m2
+          /work/M2-ours --architecture aarch64 --bootstrap-mode "$@" -o /out/ours-gen1.M1
+          cd /work
+          art 'ours-gen1.M1' /out/ours-gen1.M1
+
+          say '7. GATE 2 (non-blocking) -- link it with a toolchain we built'
+          # Needs M1 + hex2 + blood-elf as RUNNING BINARIES. The only way to get
+          # them without a host compiler is to build them with stage 2, and that
+          # is blocked today: our M1 hangs in M2libc memset and our hex2 crashes
+          # on exit (m1-loop.yml, spikes/UPSTREAM-PINS.md). Reported, not gated.
+          # When stage 2 is fixed this turns green with no edit to this file.
+          # Sources come from /in/M1-srcs.txt and /in/hex2-srcs.txt, derived in
+          # the airlock from upstream's makefile. Do not inline a list here.
+          build2() {  # build2 <name>
+            o="$1"
+            { cat /in/patched_bootstrap.c
+              cat /src/stage2-mini-c/m2libc-shim.c
+              cat /in/m2/M2libc/bootstrappable.c
+              while read -r f; do cat "/in/mescc/$f"; done < "/in/$o-srcs.txt"
+            } > "$o.c" || { echo "    $o: could not assemble sources"; return 1; }
+            ./stage2 < "$o.c" > "$o.s1" || { echo "    $o: stage2 rc=$?"; return 1; }
+            ./stage1 < "$o.s1" | ./stage0-as | ./elf "$o" || return 1
+            [ -x "$o" ] || return 1
+            art "  $o (ours)" "$o"
+          }
+          set +e
+          build2 M1;   m1rc=$?
+          build2 hex2; hxrc=$?
+          if [ "$m1rc" = 0 ] && [ "$hxrc" = 0 ]; then
+            echo "    both built -- trying the link (60s budget each)"
+            timeout 60 ./M1 -f /in/m2/M2libc/aarch64/aarch64_defs.M1 \
+                            -f /in/m2/M2libc/aarch64/libc-core.M1 \
+                            -f /out/ours-gen1.M1 --little-endian \
+                            --architecture aarch64 -o gen1.hex2
+            echo "    our M1   rc=$? (124 = HUNG, the known memset defect)"
+            timeout 60 ./hex2 -f /in/m2/M2libc/aarch64/ELF-aarch64.hex2 -f gen1.hex2 \
+                            --little-endian --architecture aarch64 \
+                            --base-address 0x400000 -o /out/gen1
+            echo "    our hex2 rc=$?"
+            [ -s /out/gen1 ] && art 'gen1 (linked, ours)' /out/gen1
+          else
+            echo "    SKIP the link: M1 rc=$m1rc hex2 rc=$hxrc"
+            echo "    This is the measured blocker, not a surprise. See the header."
+          fi
+          set -e
+
+          say 'DONE -- inside the box'
+          cp m2.c /out/m2.c 2>/dev/null || true
+          EOS
+          chmod +x "$BOX/work/run.sh"
+
+      # --- RUN THE BOX ----------------------------------------------------
+      - name: 'IN THE BOX: seed -> stage1 -> stage2 -> M2-Planet -> self-compile'
+        run: |
+          set -eu
+          bwrap \
+            --unshare-all --die-with-parent --new-session --clearenv \
+            --setenv PATH /bin \
+            --setenv HOME /work \
+            --setenv LC_ALL POSIX \
+            --setenv TERM dumb \
+            --setenv SOURCE_DATE_EPOCH 0 \
+            --setenv LD_LIBRARY_PATH /lib \
+            --bind "$BOX" / \
+            --ro-bind "$PWD/spikes" /src \
+            --ro-bind "$PWD/pins" /in \
+            --bind "$BOX/out" /out \
+            --proc /proc --dev /dev --tmpfs /tmp \
+            --chdir /work \
+            /bin/sh /work/run.sh
+
+      # --- OUT OF THE BOX -------------------------------------------------
+      - name: 'GATE 1: our seed-built compiler matches upstream, byte for byte'
+        run: |
+          set -eu
+          A="$BOX/out/ours-gen1.M1"
+          B=oracle/ref-gen1.M1
+          [ -s "$A" ] || { echo "FAIL: the box produced no ours-gen1.M1"; exit 1; }
+          echo
+          printf '  %-28s %10s  %s\n' 'ARTIFACT' 'BYTES' 'SHA256[0:16]'
+          printf '  %-28s %10s  %s\n' 'ref-gen1.M1  (host gcc)' \
+            "$(wc -c < "$B")" "$(sha256sum "$B" | cut -c1-16)"
+          printf '  %-28s %10s  %s\n' 'ours-gen1.M1 (our ladder)' \
+            "$(wc -c < "$A")" "$(sha256sum "$A" | cut -c1-16)"
+          echo
+          if cmp -s "$A" "$B"; then
+            echo "PASS: a compiler built from hand-written ARM64 assembly, on ARM64"
+            echo "      hardware, inside a sealed box whose entire host budget is"
+            echo "      \`$BUDGET_PATH\`, compiles M2-Planet's own unpatched source to"
+            echo "      output identical to upstream's reference compiler."
+          else
+            echo "FAIL: our G0's self-compile differs from the reference."
+            cmp "$A" "$B" 2>&1 | head -3 | sed 's/^/  /'
+            echo "  first differing region:"
+            od -A d -t x1 "$A" | head -3 | sed 's/^/    ours /'
+            od -A d -t x1 "$B" | head -3 | sed 's/^/    ref  /'
+            exit 1
+          fi
+
+      - name: 'BUDGET: what this run still borrowed from the host'
+        if: always()
+        run: |
+          echo "  on the build path : $BUDGET_PATH"
+          echo "  driver            : $BUDGET_DRIVER"
+          echo "  emulator          : none -- native $(uname -m)"
+          echo "  network in the box: none -- --unshare-all"
+          echo
+          echo "  When spikes/seedas/ becomes the real hand-encoded seed, remove"
+          echo "  \`as ld\` from BUDGET_PATH and the SEAL step will hold the line."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage3-hermetic-arm64
+          path: |
+            box/out/
+          if-no-files-found: warn
