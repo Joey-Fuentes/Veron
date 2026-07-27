@@ -1,91 +1,118 @@
-# stage4-complete.yml — One job, tcc to booting Linux
+# stage4-complete.yml — one job, tcc to a booting Linux
 
-## What this is
-
-A single GitHub Actions workflow that proves the entire ladder works hermetically end to end:
+**Status: GREEN, 2026-07-27, run 81944089602, 61.4 minutes.**
 
 ```
-tcc (host gcc, declared)
-  ↓
-gcc 4.7.4 + aarch64 backend  [stages 1-3 from tcc-builds-gcc-arm64]
-  ↓
-gcc 10.2.0
-  ↓
-gcc 15.2.0                    [builds the sysroot using gcc 10]
-  ↓
-linux 7.1.5 kernel + glibc 2.43 userland
-  ↓
-QEMU BOOT
+VERON-BOOT-OK        Linux 7.1.5 aarch64
+VERON-COMPILER       Linux version 7.1.5 (gcc (GCC) 15.2.0, GNU ld ...)
+VERON-TESTS          pass=8 fail=0
+VERON-GCC-IN-GUEST   ok compiled and ran, rc=42 (expect 42)
+GCC-EXERCISE         pass=10 fail=0
 ```
 
-**Inside one bwrap box.** Host compilers masked. No hand-offs. No caching. One narrative.
+The kernel's own version string names the compiler that built it. That gcc
+15.2.0 was built by a gcc 10.2.0 that tcc built, four steps earlier in the same
+process.
 
-## Why one job instead of three
+---
 
-- `tcc-builds-gcc-arm64` proves tcc→gcc10 hermetically (stops before kernel)
-- `hermetic-gcc15` proves kernel+boot (starts from host cross toolchain)
-- **This job proves both, without a seam.**
+## What it proves that nothing else did
 
-If the kernel step fails, it fails because of something in the chain, not because of a layer boundary or an undeclared dependency between boxes.
-
-## What it does NOT claim
-
-- `tcc` is reproducible — that's stage 3's rung (seed → tcc is open)
-- 3-stage bootstrap — that's deferred like the other rung jobs
-- DejaGnu testing — future improvement
-- Every step cached — transparency beats speed for a proof statement
-
-## How to use it
-
-```bash
-cd ~/Veron
-mkdir -p ~/tmp && unzip -o /storage/emulated/0/Download/veron-stage4-complete-s5.zip -d ~/tmp
-cp -a ~/tmp/. ~/Veron/ && rm -rf ~/tmp
-git add -A && git commit -m "stage4-complete: one job proving tcc to boot" && git push
+```
+tcc  →  gcc 4.7.4  →  gcc 4.7.4  →  gcc 10.2.0  →  gcc 15.2.0
+                                                        ↓
+                                          linux 7.1.5 + userland
+                                                        ↓
+                                            QEMU boot, compile in guest
 ```
 
-The job will:
+Every other box here starts from a host-built cross toolchain **on purpose**, so
+a failure localises to one question — `hermetic-gcc10` says so in its header,
+`hermetic-gcc15` and `-gcc16` add *"this box never triggers another and no other
+box triggers it."* That is the right shape and they keep it.
 
-1. Build tcc with host gcc (announced in the log)
-2. Fetch all sources needed for the entire chain
-3. Mask the host compilers
-4. Run tcc→4.7→4.7→10→15→kernel→boot, all inside bwrap
-5. Report boot success or failure
+The cost was that the two green chains never touched. `tcc-builds-gcc-arm64`
+ended at a gcc 10 that nothing consumed; the gcc that booted in `hermetic-gcc15`
+was built by the runner's gcc. Same version numbers, different ancestry.
 
-### Dispatch options
+This job walks it in one process. `VERON-GCC-IN-GUEST rc=42` is the line that
+matters: a compiler descended from tcc, running inside the kernel that same
+chain built, compiling and running a program.
 
-- `boot: yes` (default) — build and boot the kernel
-- `boot: no` — build only through gcc 15, skip kernel/boot
+## The join is one substitution
 
-## What it proves
+LFS chapters 5.2 and 5.3 build binutils and gcc pass 1 with whatever `gcc` is on
+`PATH` — the runner's. Everything above them is already built by the cross
+toolchain those two steps produce. So pointing **only those two** at the
+tcc-built gcc 10 moves the entire sysroot, kernel and boot onto tcc's line.
 
-Once green:
+The `SEED` step does it, and checks the one thing that could have stopped it:
+that gcc 10 was configured `--prefix=/work/out10` *inside* bwrap, and chapters
+5.2/5.3 run on the host where `/work` does not exist. GCC relocates itself by
+computing its own location, so it works — but SEED compiles and runs a program
+to find out in seconds rather than letting a `configure` report only "no" forty
+minutes later.
 
-> Every compiler and binary between tcc and a booting linux kernel descends from tcc. No host /usr, no network, no fallback to the runner's compiler after masking. The method works end to end.
+That gcc 10 → gcc 15 step was not a guess: `hermetic-gcc10`'s ATTEMPT 1 proves
+it green in 10.4 minutes.
 
-## Expected wall-clock
+## Where the steps come from
 
-- ~50–70 minutes on the first run
-- Chapter 5–6 rebuilds every run (no caching)
-- Kernel build ~10 min, boot ~1 min
+34 steps. **28 are copied byte-for-byte** from `tcc-builds-gcc-arm64` (the tcc
+half) and `hermetic-gcc15` (the sysroot/kernel/boot half), with step names
+unchanged so any of them can be diffed against its source.
 
-## If it fails
+Four are not:
 
-The log is linear: find the first red line. It will be:
-- `tcc` stage (host gcc issue — not this repo's problem)
-- Stage 1/2/3 (gcc chain issue — look at `tcc-builds-gcc-arm64` for context)
-- Sysroot chapter (LFS recipe issue — check hermetic-gcc15 for fixes)
-- Kernel config (defconfig issue for the kernel version)
-- Boot (qemu or initramfs issue — check dmesg)
+| step | what is different |
+|---|---|
+| `Install` | union of both halves' packages |
+| `5.2 binutils pass 1` | +4-line guard exporting `CC="$CHAIN_CC"` |
+| `5.3 gcc pass 1` | same guard |
+| `SEED` | new — the join, 20 lines |
 
-Each failure is local to the chain, not to a hand-off.
+Earlier drafts of this file *paraphrased* those recipes and spent six revisions
+rediscovering the reasons for flags that were already written down. Nothing here
+is retyped from memory. Every failure this job hit in the end was in one of the
+four steps above, never in the 28.
 
-## What to merge it into
+## No cache, deliberately
 
-- Main branch, under `.github/workflows/`
-- Triggers on:
-  - Push to the yml file itself
-  - Manual dispatch
-  - Changes to the transplant tools (`port_gcc47_api.py`, `expand_int_iterators.py`, the backport probe)
+`hermetic-gcc15` caches its sysroot because it rebuilds the same one every run.
+A cached sysroot here would have been seeded by some earlier run's compiler, and
+restoring one would boot a system that did not descend from *this* run's tcc
+while the log said it did. An hour of compute is cheaper than a false claim.
 
-This is the stage 4 conclusion job. Run it before a release.
+## It fits in one job
+
+The earlier argument against a single job read the **350-minute timeout** on
+`tcc-builds-gcc-arm64` as if it were a runtime. It is a guard. Measured:
+
+| | |
+|---|---|
+| tcc → 4.7.4 → 4.7.4 → 10.2.0 | 14.1 min |
+| LFS sysroot, cold, no cache | ~17 min |
+| gcc 10 → gcc 15.2.0 | 10.4 min |
+| **whole chain, measured** | **61.4 min** |
+
+The ceiling is six hours.
+
+## What it does not claim
+
+- **tcc's own provenance.** Host-built here, outside the box — the declared
+  hole, and stage 3's open rung (`spikes/stage3/README.md`).
+- **Reproducibility.** One run is one run. Criterion 2 wants N byte-identical
+  rebuilds and this contributes one attestation, not a comparison.
+- **3-stage bootstrap or DejaGnu.** Deferred, as in every other rung job.
+- **gcc 16 or an -rc kernel.** `hermetic-gcc16` answers that, alone, on its own
+  trigger.
+- **That it replaces any existing box.** It does not. They answer localised
+  questions and stay useful precisely because they start from a host base. This
+  one answers the end-to-end question and is worth exactly as much as its
+  weakest rung.
+
+## Running it
+
+Triggers on push to its own file, and on `workflow_dispatch` with a
+`tcc_source` input (`pinned-series` — the `sources/tcc.toml` pin plus the arm64
+asm series — or `mob`).

@@ -17,6 +17,16 @@ rather than from the tcc-built 4.7, so **the two halves have not been joined
 end to end** — that join, not the individual rungs, is now the gap. And nothing
 anywhere has been bootstrapped, tested with DejaGnu, or rebuilt twice.
 
+> **SUPERSEDED 2026-07-27 on the join point.** The join is closed.
+> `stage4-complete` walks **tcc → gcc 4.7.4 → gcc 4.7.4 → gcc 10.2.0 → gcc
+> 15.2.0 → linux 7.1.5 → QEMU boot** in one job, in 61.4 minutes, and a
+> compiler descended from that tcc compiled and ran a program *inside* the
+> kernel the same chain built. Run 81944089602, 2026-07-27. See
+> `README-complete.md` for the record and the log excerpt.
+>
+> The rest of the paragraph stands: nothing has been bootstrapped three ways,
+> tested with DejaGnu, or rebuilt twice. One run is one run.
+
 > The paragraph this replaced read: *"the entry point and the userland are
 > proven; the climb is not … g++ 4.7 is built but libgcc is not, and no kernel
 > has been built by anything in this tree."* Both halves are now superseded —

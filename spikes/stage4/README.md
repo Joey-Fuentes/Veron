@@ -27,6 +27,51 @@ gcc leg; the `hermetic-*` boxes are the climb above it.
 | `hermetic-gcc15` | a gcc 15.2.0 system that boots | **ANSWERED** — boots linux 7.1.5; gcc runs inside the guest |
 | `hermetic-gcc16` | a gcc 16.1.0 system that boots | **ANSWERED** — boots linux v7.2-rc4, 142 checks green |
 | `hermetic-enumerate-host` | what does the host still supply? | not a rung; enumeration only |
+| `stage4-complete` | does the *whole* ladder run, tcc to a boot, in one process? | **ANSWERED** — tcc → 4.7.4 → 4.7.4 → 10.2.0 → 15.2.0 → linux 7.1.5, booted, 61.4 min |
+
+---
+
+## THE JOIN, CLOSED
+
+**A gcc 15.2.0 whose entire ancestry was built in the same process — starting
+from tcc — built linux 7.1.5, booted it, and compiled a program inside it.**
+
+```
+VERON-BOOT-OK        Linux 7.1.5 aarch64
+VERON-COMPILER       Linux version 7.1.5 (gcc (GCC) 15.2.0, GNU ld ...)
+VERON-TESTS          pass=8 fail=0
+VERON-GCC-IN-GUEST   ok compiled and ran, rc=42 (expect 42)
+GCC-EXERCISE         pass=10 fail=0
+```
+
+`stage4-complete` first ran green on 2026-07-27, run 81944089602, 61.4 minutes.
+
+Why this is different from the `hermetic-*` boxes: those each start from a
+host-built cross toolchain *on purpose*, so a failure localises to one question.
+That is the right shape for them and they keep it. But it means the gcc that
+booted in `hermetic-gcc15` was built by the runner's gcc, and the gcc 10 that
+`tcc-builds-gcc-arm64` reached was consumed by nothing. Two green chains that
+never touched.
+
+`stage4-complete` walks the whole thing in one job. The join is a single
+substitution: LFS chapters 5.2 and 5.3 build binutils and gcc pass 1 with
+whatever `gcc` is on `PATH`, and everything above them is already built by the
+cross toolchain those two steps produce — so pointing just those two at the
+tcc-built gcc 10 moves the entire sysroot, kernel and boot onto tcc's line.
+
+28 of its 34 steps are copied byte-for-byte from `tcc-builds-gcc-arm64` and
+`hermetic-gcc15`, step names unchanged so each diffs against its source. The
+four that are not: `Install` (union of both), `5.2` and `5.3` (four-line guard
+exporting `CC`), and `SEED` (the join itself).
+
+**What it does not claim.** tcc is host-built here, outside the box — the
+declared hole, and stage 3's open rung. One run, so nothing about
+reproducibility. No 3-stage bootstrap, no DejaGnu. gcc 16 is not in this chain;
+`hermetic-gcc16` answers that alone.
+
+**No cache, deliberately.** A restored sysroot was seeded by some earlier run's
+compiler, and booting one would claim a tcc ancestry it did not have. An hour of
+compute is cheaper than a false claim.
 
 ---
 
