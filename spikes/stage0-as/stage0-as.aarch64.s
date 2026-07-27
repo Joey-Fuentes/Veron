@@ -196,14 +196,12 @@ skip_line:
     b       parse_loop
 
 do_label:
-    add     x20, x20, #0x1
-    ldrb    w0, [x19, x20]
-    add     x20, x20, #0x1
-    // Extended addressing (`[x27, w0, uxtw #2]`) is not implemented: it needs a
-    // whole new operand parse for the extend-and-scale suffix. w0 came from
-    // ldrb, so its top bits are already zero and a plain shift-and-add is the
-    // same address, in forms this assembler already handles.
-    lsl     w0, w0, #2
+    add     x20, x20, #0x1                  // skip ':'
+    // sym_idx reads BOTH characters itself. The single-character read that
+    // used to sit here would consume the first one, leaving sym_idx to take
+    // characters two and three -- every label silently resolving to the wrong
+    // slot, which is the one failure a symbol table must not have.
+    bl      sym_idx
     add     x0, x27, x0
     str     w22, [x0]
     b       parse_loop
@@ -361,9 +359,8 @@ h_adr:
     mov     w1, w0
     b       ha_enc
 ha_lab:
-    add     x20, x20, #0x1
-    lsl     w1, w0, #2
-    add     x1, x27, x1
+    bl      sym_idx
+    add     x1, x27, x0
     ldr     w1, [x1]
 ha_enc:
     sub     w1, w1, w22
@@ -582,9 +579,8 @@ h_branch:
     mov     w1, w0
     b       hb_enc
 hb_lab:
-    add     x20, x20, #0x1
-    lsl     w1, w0, #2
-    add     x1, x27, x1
+    bl      sym_idx
+    add     x1, x27, x0
     ldr     w1, [x1]
 hb_enc:
     sub     w1, w1, w22
@@ -620,9 +616,8 @@ h_bl_or_blr:
     mov     w1, w0
     b       hbl_enc
 hbl_lab:
-    add     x20, x20, #0x1
-    lsl     w1, w0, #2
-    add     x1, x27, x1
+    bl      sym_idx
+    add     x1, x27, x0
     ldr     w1, [x1]
 hbl_enc:
     sub     w1, w1, w22
@@ -903,9 +898,8 @@ bc_go:
     mov     w1, w0
     b       bc_enc
 bc_lab:
-    add     x20, x20, #0x1
-    lsl     w1, w0, #2
-    add     x1, x27, x1
+    bl      sym_idx
+    add     x1, x27, x0
     ldr     w1, [x1]
 bc_enc:
     sub     w1, w1, w22
@@ -990,6 +984,29 @@ nr_r:
 // x12 is used to save the cursor because it is referenced nowhere else in this
 // file; parse_dec clobbers w0, w10 and w11 and leaves w9 alone, so the caller
 // can finish building its word afterwards.
+// ---- two-character label -> symbol-table byte offset ----
+// Reads two characters at the cursor and returns w0 = (c1-0x21)*94 + (c2-0x21),
+// scaled by 4. The cursor is left just past the pair.
+//
+// WHY TWO. A one-character label indexes a 128-entry table directly, of which
+// only about 90 are printable and usable -- and this source now defines 102
+// labels, so it no longer fits its own assembler. A pair over the printable
+// range gives 94*94 = 8836 slots for a 35 KB .bss table, and .bss is
+// demand-zero so an unused reserve costs nothing. The ceiling stops being
+// something a future change can walk into.
+sym_idx:
+    ldrb    w0, [x19, x20]
+    add     x20, x20, #0x1
+    ldrb    w10, [x19, x20]
+    add     x20, x20, #0x1
+    sub     w0, w0, #0x21
+    sub     w10, w10, #0x21
+    mov     w11, #0x5e                      // 94 printable columns
+    mul     w0, w0, w11
+    add     w0, w0, w10
+    lsl     w0, w0, #2                      // 4 bytes per entry
+    ret
+
 // ---- optional register operand, THIS LINE ONLY ----
 // Returns w0 = register number and w11 = 1 when one is present, or w11 = 0 with
 // the cursor untouched when the line ends first. Same newline rule as opt_dec:
@@ -1164,6 +1181,6 @@ rejnl:   .ascii  "\n"
 // Realigned afterwards so symtab keeps the 16-byte alignment it had.
 bss_origin: .space 16
     .align  4
-symtab:  .space 512
+symtab:  .space 35344                   // 94*94 entries * 4 bytes
 outword: .space 4
 inbuf:   .space INBUF_SZ

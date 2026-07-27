@@ -99,6 +99,32 @@ DOCUMENTED = {
     ("ldr", "%W, [%X]"), ("str", "%W, [%X]"),
     ("ldr", "%X, [%X]"), ("str", "%X, [%X]"),
     ("svc", "#%i"),
+    # ADDED WHEN THE PROBE SAID SO, NOT BEFORE. Every entry below was measured
+    # against the real binary by the PROBE step -- 40 forms ok, 0 wrong,
+    # 0 rejected, 802/802 source lines -- and only then written down. This
+    # table is documentation; the file header says not to trust its opinion,
+    # and xlate gating on it while it lagged the assembler is exactly the
+    # failure that warning describes: 322 lines marked NEEDS for forms that
+    # had been working for several commits.
+    ('add', '%W, %W, %W'),
+    ('and', '%W, %W, %W'),
+    ('asr', '%W, %W, #%i'),
+    ('b.gt', '%L'),
+    ('b.le', '%L'),
+    ('cmp', '%W, #%i'),
+    ('lsl', '%W, %W, #%i'),
+    ('lsr', '%W, %W, #%i'),
+    ('mov', '%W, #%i'),
+    ('mov', '%W, %W'),
+    ('mov', '%X, #%e'),
+    ('movk', '%W, #%i'),
+    ('movk', '%W, #%i, lsl #%i'),
+    ('mul', '%W, %W, %W'),
+    ('orr', '%W, %W, %W'),
+    ('orr', '%W, %W, %W, lsl #%i'),
+    ('strb', '%W, [%X]'),
+    ('sub', '%W, %W, #%i'),
+    ('sub', '%W, %W, %W'),
 }
 
 
@@ -269,7 +295,21 @@ def cmd_probes(path, outdir):
 # Register letters are fine: a branch operand is never a register.
 # Digits ARE usable: only `@` followed by a digit is a numeric target, so a bare
 # digit in operand position is read as a label like any other character.
-LABEL_CHARS = [chr(c) for c in range(0x21, 0x7f) if chr(c) not in "@#:."]
+# TWO characters, over the printable range. A single character indexed a
+# 128-entry table of which ~90 were usable, and this source defines 102 labels
+# -- it had outgrown its own assembler. A pair gives 94*94 = 8836 slots.
+# The first character avoids the ones the parser reads as something else:
+#   '@' introduces a numeric target, '#' comment, ':' label definition,
+#   '.' directive. The SECOND character is unconstrained: by then the parser is
+# already committed to reading a label.
+# Neither character may be one the operand normaliser rewrites: `,` `[` `]` are
+# turned into spaces and `#` is deleted outright, so a label containing them
+# would be silently mangled rather than rejected. The first character
+# additionally avoids what the line parser dispatches on.
+_STRIPPED = ",[]#"
+_C1 = [chr(c) for c in range(0x21, 0x7f) if chr(c) not in _STRIPPED + "@:."]
+_C2 = [chr(c) for c in range(0x21, 0x7f) if chr(c) not in _STRIPPED]
+LABEL_CHARS = [a + b for a in _C1 for b in _C2]
 
 
 def label_map(src):
@@ -288,8 +328,8 @@ def label_map(src):
             seen.append(m.group(1))
     if len(seen) > len(LABEL_CHARS):
         raise SystemExit(
-            "  %d labels but only %d usable characters -- stage0-as cannot "
-            "address them all.\n  Reduce labels or widen the symbol table."
+            "  %d labels but only %d slots -- stage0-as cannot address them "
+            "all.\n  Reduce labels or widen the symbol table."
             % (len(seen), len(LABEL_CHARS)))
     return dict(zip(seen, LABEL_CHARS))
 
@@ -345,8 +385,13 @@ def cmd_xlate(path, out):
         # Rewrite label REFERENCES with the same map used for definitions, so
         # the two cannot drift. Longest-first, or `h_l` would be rewritten by
         # the rule for `h`.
+        # The replacement goes through a function, not a template: a label like
+        # `\x` is a valid two-character name and re.sub would read the
+        # backslash as an escape and raise. Nothing in the map is ever
+        # interpreted.
         for name in sorted(lmap, key=len, reverse=True):
-            ops = re.sub(r"\b%s\b" % re.escape(name), lmap[name], ops)
+            ops = re.sub(r"\b%s\b" % re.escape(name),
+                         (lambda v: lambda mm: v)(lmap[name]), ops)
         body = ops.replace(",", " ").replace("[", " ").replace("]", " ")
         body = body.replace("#", "")
         body = re.sub(r"\s+", " ", body).strip()
@@ -361,7 +406,7 @@ def cmd_xlate(path, out):
     done = sum(1 for x in out_lines if not x.startswith("###"))
     todo = sum(need.values())
     print("  wrote %s: %d lines translated, %d marked NEEDS" % (out, done, todo))
-    print("  %d labels mapped to single characters (%d available)"
+    print("  %d labels mapped to two-character names (%d slots available)"
           % (len(lmap), len(LABEL_CHARS)))
     if need:
         print("  what is still missing, by form:")
