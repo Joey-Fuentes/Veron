@@ -121,7 +121,18 @@ def main():
     for name, (val, sec, size) in syms.items():
         labels.setdefault(val, name)
 
+    # ABSOLUTE SYMBOLS COME FROM .equ AND MUST BE RE-DECLARED. `.equ INBUF_SZ,
+    # 0x4000000` puts INBUF_SZ in the symbol table as an *ABS* entry. The
+    # disassembly has the value inlined, so a rebuild driven from it never
+    # creates the symbol -- which is the missing 24-byte Elf64_Sym and 9 of the
+    # strtab bytes. objdump -t lists it, so it is recoverable.
+    #
+    # FILE symbols are skipped: they name the object the assembler was given,
+    # not anything the source declares, and their names are not identifiers.
     out = []
+    for name, (val, sec, size) in sorted(syms.items()):
+        if sec == "*ABS*" and re.fullmatch(r"[A-Za-z_]\w*", name):
+            out.append(".equ %s, 0x%x" % (name, val))
     for g in sorted(globals_):
         out.append(".global %s" % g)
 
