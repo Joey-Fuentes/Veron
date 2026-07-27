@@ -504,15 +504,19 @@ jobs:
           # "rebuild.o" where the original has "s0.o" -- a 24-byte symbol slot
           # matching, a strtab differing. Reproducing a build means reproducing
           # its output names too; a subdirectory keeps it clear of the real one.
+          # THE FILE SYMBOL NAMES THE OBJECT THE *LINKER* WAS GIVEN. Assembling
+          # to rb/s0.o and then copying it back to rebuild.o before linking
+          # undid the fix one line later -- ld saw "rebuild.o" and recorded it.
+          # Assemble AND link inside rb/, referring to the object by the bare
+          # name the original build used.
           mkdir -p rb && cp rebuild.s rb/ 2>/dev/null || true
           ( cd rb && "$P/bin/as" -o s0.o rebuild.s ) 2>rebuild.as.err && _asok=1
-          cp rb/s0.o rebuild.o 2>/dev/null || true
           if [ "$_asok" = 1 ]; then
             set -- 
             while read -r a; do set -- "$@" "$a"; done < rebuild.s.secs
             echo "    linking at the original addresses: $*"
-            "$P/bin/ld" "$@" -o rebuild.elf \
-              rebuild.o 2>rebuild.ld.err && _ldok=1
+            ( cd rb && "$P/bin/ld" "$@" -o ../rebuild.elf s0.o ) \
+              2>rebuild.ld.err && _ldok=1
           fi
           if [ "$_asok" = 0 ] || [ "$_ldok" = 0 ]; then
             [ "$_asok" = 0 ] && echo "    ASSEMBLER failed:" \
