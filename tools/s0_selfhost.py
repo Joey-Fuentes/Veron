@@ -382,6 +382,16 @@ def cmd_xlate(path, out):
             need["%-6s %s" % (mn, sh)] += 1
             out_lines.append("### NEEDS: %s %s | %s" % (mn, sh, s))
             continue
+        # HEX IN THE SOURCE, DECIMAL IN THE .s0. The source writes immediates as
+        # lowercase hex because that is what makes the round-trip diff against
+        # objdump clean; stage0-as's parse_dec reads decimal only. Passing
+        # `0x0` through meant parse_dec consumed the `0`, stopped at the `x`,
+        # and left `x0` behind to be read as the next line -- `rejected: x0`.
+        # Two conventions set for different reasons, never checked against each
+        # other. Converted BEFORE the label rewrite, so a label that happens to
+        # be named `0x` is substituted afterwards and survives.
+        ops = re.sub(r"\b0[xX]([0-9a-fA-F]+)\b",
+                     lambda mm: str(int(mm.group(1), 16)), ops)
         # Rewrite label REFERENCES with the same map used for definitions, so
         # the two cannot drift. Longest-first, or `h_l` would be rewritten by
         # the rule for `h`.
