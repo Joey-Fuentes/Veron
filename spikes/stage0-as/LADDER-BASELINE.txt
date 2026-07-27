@@ -41,7 +41,17 @@
 # what made .text pure code and the round-trip total.
 # 7792 -> 7848: two-character labels (sym_idx) so the source's 103 labels fit
 # a symbol table that only had ~90 usable single-character slots.
-stage0-as       7848     aeadddfce30a9e3b
+# 7848 -> 7920: h_mov now encodes the UPPER halfword. MOVZ carries 16 bits and
+# a 2-bit shift, and only the low halfword was being set -- so all 29 constants
+# over 16 bits (0xd2800000, INBUF_SZ, the opcode words) silently assembled as
+# `mov Rd, #0`. The probe never saw it because it substituted #8 for an
+# immediate; the self-host gate found it on its first real run.
+#
+# WITH THIS, SELF-HOSTING IS PROVEN: gen1 == gen2 == gen3 (3328 bytes,
+# 18a1c7e0004359bb) and gen1 builds stage1 byte-identically to the reference
+# build. The four words differing from as+ld are all .bss references, which
+# ld page-aligns and elf does not.
+stage0-as       7920     c286551e6d8b9d17
 # 1880 -> 1920 when elf gained bss_origin, the 16-byte unreferenced symbol
 # that absorbs __bss_start so codebuf has a unique address. Its OUTPUT is
 # unchanged -- stage1 and stage2 did not move, and neither did any of the
