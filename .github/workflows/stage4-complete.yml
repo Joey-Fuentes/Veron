@@ -1229,7 +1229,14 @@ jobs:
             echo "  (it is relocatable in principle; if this is a cc1 lookup failure the"
             echo "   fix is to run chapters 5.2/5.3 inside box.sh, which binds /work)"
             exit 1; }
-          /tmp/seed; echo "  seed compiler runs on the host: exit $? (expect 42)"
+          # RUN IT WITHOUT set -e KILLING THE STEP ON SUCCESS. Run 81928142348
+          # died here with "exit code 42" -- which was the TEST PROGRAM's exit
+          # code, the one that means everything worked. `cmd; echo $?` cannot
+          # report a non-zero status under set -e, because set -e aborts at cmd.
+          # The status has to be captured in the same command that produces it.
+          if /tmp/seed; then rc=0; else rc=$?; fi
+          echo "  seed compiler runs on the host: exit $rc (expect 42)"
+          [ "$rc" -eq 42 ] || { echo "  wrong exit -- the compiler links but miscompiles"; exit 1; }
           echo "  $($CC --version | head -1)"
           echo "CHAIN_CC=$CC"   >> "$GITHUB_ENV"
           echo "CHAIN_CXX=$CXX" >> "$GITHUB_ENV"
