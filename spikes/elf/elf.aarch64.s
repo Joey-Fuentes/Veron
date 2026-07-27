@@ -31,6 +31,17 @@
                                    // so an unused reserve costs nothing; overflow
                                    // is reported (see read_done), never truncated.
     .equ HDR_LEN,    0x78
+    // ZEROED MEMORY PAST THE FILE IMAGE. p_memsz larger than p_filesz makes the
+    // kernel map the difference as demand-zero pages -- which is what .bss IS.
+    // Without it a program built by this tool has nowhere to put a buffer: the
+    // mapping ends exactly at the last byte of code, so a seed-built stage0-as
+    // could not hold its own symbol table, let alone a 64 MiB input reserve.
+    //
+    // 68 MiB covers stage0-as's needs (35 KB symtab + 64 MiB input) with room
+    // to spare, and costs nothing: demand-zero pages are not backed until
+    // touched. Every program this tool writes gets the same reserve, which
+    // keeps the header template fixed and the arithmetic trivial.
+    .equ BSS_RESERVE, 0x4100000
 
     .text
     .global _start
@@ -76,7 +87,9 @@ read_ok:
     mov     x24, #HDR_LEN
     add     x24, x24, x20                   // filesz
     str     x24, [x23, #96]                 // p_filesz
-    str     x24, [x23, #104]                // p_memsz
+    mov     x25, #BSS_RESERVE
+    add     x25, x25, x24                   // memsz = filesz + reserve
+    str     x25, [x23, #104]                // p_memsz
 
     // ---- open the output file (creates it 0755) ----
     mov     x0, #0xffffffffffffff9c         // AT_FDCWD
