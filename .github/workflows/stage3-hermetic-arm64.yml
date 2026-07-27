@@ -316,50 +316,24 @@ jobs:
           done
 
       # --- BUILD THE BOX --------------------------------------------------
-      - name: Extract the stage-2 conformance corpus from the demo workflow
+      - name: Load the stage-2 conformance corpus
         run: |
           set -eu
-          # FIND THE DEMO WHEREVER IT LIVES. The 426-program corpus is extracted
-          # from stage2-mini-c-demo.yml, and archiving that file to
-          # .github/workflows-archive/ broke this job -- GitHub stops EXECUTING
-          # an archived workflow but this one READS it as data. The archive
-          # audit checked which workflows fire and not which are referenced,
-          # which is the same class of mistake as a dangling symlink.
+          # THE CORPUS IS A COMMITTED FILE. It used to be extracted from
+          # stage2-mini-c-demo.yml on every run, which made test data a
+          # dependency of a YAML file -- and archiving that YAML broke this
+          # build, because GitHub stops EXECUTING an archived workflow but
+          # nothing stops another job READING it. Data belongs in the tree.
           #
-          # The corpus is data and should not live inside a workflow at all;
-          # until it is lifted out, look in both places and say which was used.
-          CORPUS_SRC=.github/workflows/stage2-mini-c-demo.yml
-          [ -f "$CORPUS_SRC" ] || CORPUS_SRC=.github/workflows-archive/stage2-mini-c-demo.yml
-          [ -f "$CORPUS_SRC" ] || { echo "  corpus source not found in either location"; exit 1; }
-          echo "  corpus source: $CORPUS_SRC"
+          # tools/extract_stage2_tests.py still exists and the provenance is in
+          # spikes/stage2-mini-c/corpus/README.md; regenerating is a deliberate
+          # act now rather than something that happens silently every run.
+          CORPUS=spikes/stage2-mini-c/corpus/conformance.tsv
+          [ -f "$CORPUS" ] || { echo "  corpus not found at $CORPUS"; exit 1; }
+          cp "$CORPUS" tests.tsv
+          printf '  corpus %s: %s tests, %s\n' "$CORPUS" \
+            "$(wc -l < tests.tsv)" "$(sha256sum tests.tsv | cut -c1-16)"
 
-          # THE DEMO STAYS THE SINGLE SOURCE OF TRUTH. stage2-mini-c-demo.yml
-          # carries ~490 example programs across 21 harness definitions;
-          # copying them here would fork the corpus, and a forked corpus drifts
-          # silently -- the copy stays green while the original grows a case it
-          # does not have. Read it instead. Current yield: 426.
-          #
-          # The harness printf form is DERIVED POSITIONALLY, not assumed. Four
-          # harnesses (etry ftry ptry btry) are redefined mid-file and etry's
-          # two definitions disagree -- the first is `printf "$1"` (escapes
-          # interpreted), the second `printf '%s' "$1"` (literal). Getting that
-          # wrong fed 34 tests to stage 2 as raw \047\134n\047 instead of
-          # '\n', and 16 of them failed looking exactly like codegen defects.
-          # They were not. See tools/extract_stage2_tests.py.
-          #
-          # Runtime argv is derived too: atry runs its binary as `./a.out $3`,
-          # a third positional carrying the argv under test. Dropping it ran all
-          # 13 argc/argv tests with no arguments and 7 failed, looking again
-          # like stage-2 defects. The corpus is therefore three columns:
-          # expected-rc, argv, program.
-          #
-          # The floor catches the other direction. Skips are reported BY REASON,
-          # never silently, because a shrinking corpus still passes: losing a
-          # whole harness drops the count below the floor and fails here rather
-          # than quietly running four hundred tests and calling it a gate.
-          python3 tools/extract_stage2_tests.py \
-            "$CORPUS_SRC" \
-            pins/stage2-tests.corpus --floor 415
 
       - name: Assemble the box
         run: |
