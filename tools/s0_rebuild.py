@@ -118,10 +118,13 @@ def main():
         for i, (val, name) in enumerate(bss):
             out.append("%s:" % name)
             size = syms[name][2]
+            if not size and i + 1 < len(bss):
+                size = bss[i + 1][0] - val
+            # `.space 0` is legal but warns, and three of those were the only
+            # thing visible in the failure output -- they crowded out the real
+            # error. Emit nothing rather than something that warns.
             if size:
                 out.append("\t.space %d" % size)
-            elif i + 1 < len(bss):
-                out.append("\t.space %d" % (bss[i + 1][0] - val))
 
     with open(out_p, "w", encoding="utf-8") as fh:
         fh.write("\n".join(out) + "\n")

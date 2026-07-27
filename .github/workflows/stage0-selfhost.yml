@@ -493,10 +493,28 @@ jobs:
           set +e
           python3 tools/s0_rebuild.py stage0-as.dis stage0-as.syms \
             stage0-as.secs rodata.bin rebuild.s
-          if [ -s rebuild.s ] \
-             && "$P/bin/as" -o rebuild.o rebuild.s 2>rebuild.err \
-             && "$P/bin/ld" -Ttext="$(cat redis.s.base)" -o rebuild.elf \
-                  rebuild.o 2>>rebuild.err; then
+          # SEPARATE THE TWO STDERRs AND SHOW THE ERRORS, NOT THE FIRST FIVE
+          # LINES. The previous version merged assembler and linker output and
+          # printed head -5, which was three harmless `.space 0` warnings --
+          # so the run reported "rebuild did not assemble/link" and then showed
+          # nothing about why. Which of the two failed was not even visible.
+          _asok=0; _ldok=0
+          "$P/bin/as" -o rebuild.o rebuild.s 2>rebuild.as.err && _asok=1
+          if [ "$_asok" = 1 ]; then
+            "$P/bin/ld" -Ttext="$(cat redis.s.base)" -o rebuild.elf \
+              rebuild.o 2>rebuild.ld.err && _ldok=1
+          fi
+          if [ "$_asok" = 0 ] || [ "$_ldok" = 0 ]; then
+            [ "$_asok" = 0 ] && echo "    ASSEMBLER failed:" \
+                             || echo "    assembler ok; LINKER failed:"
+            for _e in rebuild.as.err rebuild.ld.err; do
+              [ -s "$_e" ] || continue
+              echo "    --- $_e"
+              grep -i -m6 'error\|undefined\|overlap\|out of range' "$_e" \
+                | sed 's/^/      /' || tail -6 "$_e" | sed 's/^/      /'
+            done
+          fi
+          if [ "$_ldok" = 1 ]; then
             printf '    %-26s %12s  %-16s  %s\n' 'binary stage0-as' \
               "$(wc -c < stage0-as)" "$(sha256sum stage0-as | cut -c1-16)" 'the original'
             _v='DIFFERS'
@@ -520,9 +538,6 @@ jobs:
               echo "    A section-level match with a named metadata difference is a"
               echo "    far more precise statement than \"we only checked .text\"."
             fi
-          else
-            echo "    rebuild did not assemble/link:"
-            head -5 rebuild.err | sed 's/^/      /'
           fi
           set -e
           echo
