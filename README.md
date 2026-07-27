@@ -2,7 +2,7 @@
 
 A hermetic, reproducible, end-to-end auditable operating system — bootstrapped from a tiny, hand-audited, per-architecture **assembly seed** up a readable ladder to a traditional **GNU/Linux** desktop.
 
-**Status:** The ladder runs. A feasibility track under [`spikes/`](./spikes) climbs hand-written ARM64 assembly → assembler → C-subset compiler → M2-Planet, and — from a pinned tcc — reaches **gcc 15.2.0, a Linux 7.1.5 kernel, and a QEMU boot that compiles a program inside itself.** Two gaps remain before that is one continuous chain from the seed; both are named below. Veron proper (`seed/`, `stages/`, `lib/`) is still to be written against the invariants.
+**Status:** The ladder runs, natively and hermetically. `stage3-hermetic-arm64` builds the whole climb on **real ARM64 hardware inside a `bubblewrap` sandbox with no network**, whose entire host budget on the build path is `as` and `ld`: seed → stage 1 → stage 2 → 426 conformance programs → M2-Planet, whose self-compilation output is **byte-identical to upstream's own reference compiler** (`dc38e13e4ceaeecb`, 2,947,903 bytes). 5.3 seconds inside the box. A feasibility track under [`spikes/`](./spikes) climbs hand-written ARM64 assembly → assembler → C-subset compiler → M2-Planet, and — from a pinned tcc — reaches **gcc 15.2.0, a Linux 7.1.5 kernel, and a QEMU boot that compiles a program inside itself.** Two gaps remain before that is one continuous chain from the seed; both are named below. Veron proper (`seed/`, `stages/`, `lib/`) is still to be written against the invariants.
 
 **License:** [MIT](./LICENSE) for Veron's own code. Upstream dependencies keep their own licenses, tracked per-node in the ledger.
 
@@ -27,7 +27,7 @@ Everything below lives under [`spikes/`](./spikes) and is a **feasibility tracer
 
 | rung | what it is | state |
 |---|---|---|
-| `stage0-as` | two-pass mnemonic assembler, hand-written ARM64 assembly. The last tool written in raw assembly. | **works** — assembler-complete, every instruction byte-verified against GNU `as` |
+| `stage0-as` | two-pass mnemonic assembler, hand-written ARM64 assembly. The last tool written in raw assembly. | **works, and now measured** — 615 of 670 instruction forms in its own source byte-verified against GNU `as`; rejects unrecognised input; the remaining 55 lines are enumerated in `stage0-selfhost` |
 | `stage1-as` | two-pass numeric label resolver, written in *stage 0's own language* | **works** — gives the ladder unbounded multi-character labels |
 | `stage2-mini-c` | C-subset compiler, written in *stage 1's language* | **works** — 220 KB of upstream C in, 81,893 instructions out |
 | `stage3` | M2-Planet, compiled by stage 2. There is no separately-written stage 3 — M2-Planet *is* stage 3. | **hand-off proven** — our build reproduces upstream's M2-Planet **byte for byte**, stable over five generations |
@@ -62,7 +62,7 @@ Two proven segments, one gap between them, and one dependency at the floor. Neit
 
 ### 1. Stage 0 — stand on our own assembler
 
-`stage0-as` is hand-written ARM64 assembly **assembled by GNU `as`**. That host `as` is the floor's last borrowed tool. `spikes/seedas/` proves the shape — a hex-loader we wrote, reading input and emitting a runnable binary — but it is explicitly *not* the real seed: the real one is hand-encoded and bijective, so that its binary can be verified against its source by **round-trip disassembly** rather than trusted.
+`stage0-as` is hand-written ARM64 assembly **assembled by GNU `as` and linked by GNU `ld`**. Those two are the floor's last borrowed tools — `stage3-hermetic-arm64` declares them as `BUDGET_PATH` and fails the run if anything else appears in the sandbox. `ld` is not doing linking: with one object, no relocations and no libc it picks a base address, lays out `.text` and writes ELF headers, which is exactly what our own `elf` tool does. It is there because we cannot yet read `as`'s object format, not because the ladder needs a linker — every rung above the seed is already linked by `elf`. `spikes/seedas/` proves the shape — a hex-loader we wrote, reading input and emitting a runnable binary — but it is explicitly *not* the real seed: the real one is hand-encoded and bijective, so that its binary can be verified against its source by **round-trip disassembly** rather than trusted.
 
 Closing this replaces `as` with the seed at the bottom of the ladder. See [`TRUST-BOUNDARY.md`](./TRUST-BOUNDARY.md) — the assembler is *untrusted* by design; the work is making that literal.
 
@@ -106,4 +106,6 @@ The empty directories are Veron proper and are written against the invariants. `
 - [`spikes/README.md`](./spikes/README.md) — the live pipeline, and what each spike answered
 - [`spikes/stage3/README.md`](./spikes/stage3/README.md) — the open rung
 - [`spikes/stage4/README.md`](./spikes/stage4/README.md) — everything above tcc, including the end-to-end run
+- `.github/workflows/stage3-hermetic-arm64.yml` — the native, sandboxed climb and its host budget
+- `.github/workflows/stage0-selfhost.yml` — can stage0-as assemble its own source? the measured answer
 - [`spikes/PROGRESS.md`](./spikes/PROGRESS.md) — 150 KB of stage 0–2 history; reference only, do not load for context

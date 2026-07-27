@@ -124,9 +124,14 @@ the emitted instruction, then read the compiler's own branch. Reach for
   in the bisect workflow.
 - **Stage-2 defects that are real but not on the critical path.** Stage 2 hangs
   on `M2libc/stdlib.c` (rc=124) and segfaults on `M2libc/stdio.c` (rc=139);
-  object-like `#define` is still unsupported (m75); our M1 segfaults on
-  `--architecture x86`; our hex2 writes byte-identical output and then crashes
-  on exit.
+  object-like `#define` is still unsupported (m75), and that is what blocks the
+  in-box link: stage 2 SEGFAULTS compiling hex2's sources (rc=139), because
+  `hex2.h` needs object-like `#define` and `--bootstrap-mode` does not expand
+  them. **Two older claims here did not survive native execution.** Under
+  `qemu-aarch64` our M1 was recorded as hanging in M2libc's `memset` and our
+  hex2 as crashing on exit; on real ARM64 hardware M1 builds and runs clean
+  (rc=0, 57,028 bytes) and hex2 never gets built at all. Both were artefacts of
+  the emulator, not defects in our output. See `stage3-hermetic-arm64`, GATE 2.
 - **`mescc-tools-full` / `no-host-chain` / `stage3-m2-demo`** are still red from
   the stale generic `bootstrap.c` (they reference a file that does not exist at
   1.13.1). One fix, several workflows: replace `$L/bootstrap.c` with either the

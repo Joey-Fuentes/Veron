@@ -21,6 +21,26 @@ See `spikes/stage4/README-complete.md`.
 It does not replace the localised boxes and should not grow to. They stay
 useful *because* they start from a host base.
 
+## Native ARM64, and the host budget
+
+Every workflow that builds the seed ladder runs on `ubuntu-latest` (x86_64)
+under `qemu-aarch64`, with the seed cross-assembled. Two do not:
+
+- **`stage3-hermetic-arm64`** — the same climb on `ubuntu-24.04-arm`, no
+  emulator, inside `bubblewrap` with `--unshare-all`. Its host budget is
+  declared in two tiers and enforced: `as` and `ld` on the build path, one
+  static `busybox` as the driver. The SEAL step enumerates every executable in
+  the sandbox and fails if anything else is there. Gates on our seed-built
+  M2-Planet producing output byte-identical to upstream's reference compiler,
+  behind 426 conformance programs and the `canon` fixpoint.
+- **`stage0-selfhost`** — asks whether `stage0-as` can assemble its own source,
+  which is what would let `as` and `ld` come out of that budget. Measurement
+  only: it probes each instruction form against BOTH the real assembler and GNU
+  `as` and byte-compares, and it guards the ladder against its own changes with
+  `spikes/stage0-as/LADDER-BASELINE.txt` — artifact hashes plus a behavioural
+  fingerprint of what stage 2 emits, so an encoding change that moves binaries
+  without moving meaning is distinguishable from one that does not.
+
 Workflows to add once `lib/` exists:
 - `trunk.yml`        — build + attest stages 0–3 (shared, audited once)
 - `flavor-musl.yml`  — instantiate stages 4+ with `libc=musl`
