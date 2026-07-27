@@ -214,11 +214,17 @@ def probe_pair(mn, sh):
     """Return (gnu_as_text, s0_text) for a form, or None if not expressible."""
     subs_gnu = {
         "%X": ["x0", "x1", "x2"], "%W": ["w0", "w1", "w2"],
-        "#%i": ["#8"], "#%e": ["#8"], "#%c": ["#65"], "%L": ["t"],
+        # #%e IS A .equ CONSTANT, AND IN THIS SOURCE THEY ARE LARGE. Probing it
+        # with 8 exercised only the low-halfword path, so `mov x2, #INBUF_SZ`
+        # -- 0x4000000 -- reported ok while the assembler silently encoded
+        # `mov x2, #0`. Twenty-nine lines, found by the self-host gate rather
+        # than by the tool whose job it was. Probe with the value the source
+        # actually uses.
+        "#%i": ["#8"], "#%e": ["#0x4000000"], "#%c": ["#65"], "%L": ["t"],
     }
     subs_s0 = {
         "%X": ["x0", "x1", "x2"], "%W": ["w0", "w1", "w2"],
-        "#%i": ["8"], "#%e": ["8"], "#%c": ["65"], "%L": ["t"],
+        "#%i": ["8"], "#%e": ["67108864"], "#%c": ["65"], "%L": ["t"],
     }
     # AArch64 constrains some immediates: movz/movk shifts must be 0/16/32/48
     # and uxtw scales must be 0 or 2. A probe case GNU `as` rejects proves

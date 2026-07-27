@@ -295,7 +295,24 @@ h_mov:
     cmp     w0, #0x77                       // 'w'
     b.eq    h_mov_reg
     bl      parse_dec                       // immediate
+    // MOVZ CARRIES 16 BITS AND A 2-BIT SHIFT, AND THIS ONLY ENCODED THE LOW
+    // HALFWORD. Every constant over 16 bits in this source is X<<16 -- opcode
+    // words like 0xd2800000, and INBUF_SZ -- so all 29 of them silently became
+    // `mov Rd, #0`. Nothing caught it: the probe substitutes #8 for an
+    // immediate, so the large-value path was never exercised. The self-host
+    // gate found it the first time it ran, which is what that gate is for.
+    mov     w13, #0x0                       // hw = 0
+    mov     w11, #0xffff
+    and     w12, w0, w11
+    cmp     w12, #0x0
+    b.ne    hm_lo                           // low bits present -> hw 0
+    cmp     w0, #0x0
+    b.eq    hm_lo                           // zero -> hw 0
+    lsr     w0, w0, #16
+    mov     w13, #0x1                       // hw = 1, value was X<<16
+hm_lo:
     lsl     w9, w0, #5
+    orr     w9, w9, w13, lsl #21            // hw field
     mov     w1, #0xd2800000
     orr     w9, w9, w1
     orr     w9, w9, w24
