@@ -83,6 +83,17 @@ def main():
         ops = re.sub(r"<([^>]+)>", r"\1", ops)
         insns[addr] = ("%s %s" % (m.group(2), ops)).strip()
 
+    # LABELS FROM THE SYMBOL TABLE, NOT ONLY FROM THE DISASSEMBLY. objdump -d
+    # prints `<sym>:` headers only for sections it disassembles, so once the
+    # strings moved to .rodata its labels for inover/rejmsg/rejnl vanished and
+    # the adr references to them dangled:
+    #   (.text+0x48): undefined reference to `inover'
+    # The names were in `objdump -t` the whole time, already parsed and then
+    # not used. Merge both sources, preferring the disassembly's spelling where
+    # they overlap.
+    for name, (val, sec, size) in syms.items():
+        labels.setdefault(val, name)
+
     out = []
     for g in sorted(globals_):
         out.append(".global %s" % g)
@@ -128,8 +139,11 @@ def main():
 
     with open(out_p, "w", encoding="utf-8") as fh:
         fh.write("\n".join(out) + "\n")
-    print("  rebuilt %s: %d instructions, %d labels, %d globals, %d bss symbols"
-          % (out_p, len(insns), len(labels), len(globals_), len(bss)))
+    ro = [n for n, (v, sc, z) in syms.items() if sc == ".rodata"]
+    print("  rebuilt %s: %d instructions, %d labels, %d globals, %d bss, %d rodata"
+          % (out_p, len(insns), len(labels), len(globals_), len(bss), len(ro)))
+    if ro:
+        print("    .rodata symbols: %s" % " ".join(sorted(ro)))
     return 0
 
 
