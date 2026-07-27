@@ -486,6 +486,44 @@ jobs:
           python3 tools/s0_roundtrip.py "$SRC" stage0-as.llvm.dis \
             --budget "$ROUNDTRIP_BUDGET"; rc_llvm=$?
           echo
+          echo "  --- D0. CAN THE DECODERS BE ASKED TO PRINT OUR SPELLING? ---"
+          # I claimed the formatting differences were unfixable presentation
+          # choices. That was answered from memory and it was wrong: both tools
+          # have options that change exactly those choices, most importantly
+          # llvm-objdump's --no-print-imm-hex (hex has been its default since
+          # 2022, and the flag turns it off). So MEASURE the option space rather
+          # than assert a ceiling. Each flag is probed against --help first, so
+          # an unsupported one is reported instead of failing the run.
+          try_opts() {   # try_opts <tool> <binpath> <label> <opts...>
+            _t="$1"; _b="$2"; _l="$3"; shift 3
+            for f in "$@"; do
+              case "$f" in -*)
+                "$_b" --help 2>&1 | grep -q -- "$f" || {
+                  printf '    %-34s flag %s unsupported\n' "$_l" "$f"; return; } ;;
+              esac
+            done
+            "$_b" -d "$@" stage0-as > "opt-$_t.dis" 2>/dev/null || {
+              printf '    %-34s FAILED to run\n' "$_l"; return; }
+            printf '    %-34s ' "$_l"
+            python3 tools/s0_roundtrip.py verbatim "$SRC" "opt-$_t.dis" \
+              | head -1 | sed 's/^ *verbatim[^:]*: //'
+          }
+          echo "  GNU objdump $BINUTILS_VER:"
+          try_opts g1 "$P/bin/objdump" "plain -d"                     
+          try_opts g2 "$P/bin/objdump" "+no-show-raw-insn"  --no-show-raw-insn
+          try_opts g3 "$P/bin/objdump" "+no-addresses"      --no-show-raw-insn --no-addresses
+          echo "  llvm-objdump $LLVM_VER:"
+          try_opts l1 "$P/bin/llvm-objdump" "plain -d"
+          try_opts l2 "$P/bin/llvm-objdump" "+no-show-raw-insn" --no-show-raw-insn
+          try_opts l3 "$P/bin/llvm-objdump" "+no-leading-addr"  --no-show-raw-insn --no-leading-addr
+          try_opts l4 "$P/bin/llvm-objdump" "+no-print-imm-hex" --no-show-raw-insn --no-leading-addr --no-print-imm-hex
+          echo
+          echo "  The last row is the interesting one: --no-print-imm-hex prints"
+          echo "  decimal immediates, which is what the source writes. If it moves"
+          echo "  the number materially, the remaining gap is small enough that"
+          echo "  writing the source to match is worth considering."
+          echo
+
           echo "  --- D. HOW CLOSE IS THE TEXT, BEFORE NORMALISING? ---"
           # Check B asks "does a human read the same meaning". This asks the
           # stricter question: does the disassembly come back CHARACTER FOR
