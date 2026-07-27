@@ -1,3 +1,26 @@
+// IMMEDIATES ARE WRITTEN AS LOWERCASE HEX, DELIBERATELY, AND CHARACTER
+// LITERALS AS THEIR HEX VALUE WITH THE CHARACTER IN A TRAILING COMMENT.
+//
+// This is not a style preference. GNU objdump prints every immediate as
+// lowercase hex, unconditionally; llvm-objdump does the same by default. With
+// the source written the same way, the round-trip check in
+// .github/workflows/stage0-selfhost.yml becomes a plain `diff` of the
+// comment-stripped source against the disassembly, rather than a comparison
+// mediated by a normaliser -- and a normaliser that is itself wrong
+// manufactures findings in the thing being measured, which happened twice
+// while this check was being built.
+//
+// Nothing is lost: `#0x23  // '#'` carries the character for the reader and
+// the exact bytes for the check. Shift amounts stay decimal because both
+// decoders print `lsl #16` decimal even beside a hex immediate.
+//
+// MEASURED LIMIT: 30 of 785 lines cannot satisfy both decoders whatever the
+// source says. llvm-objdump renders 32-bit immediates with the high bit set as
+// negative hex (`#-0x2d800000` where GNU prints `#0xd2800000`, 20 lines) and
+// prints svc's immediate in decimal (10 lines). Same bits either way -- both
+// assemblers reproduce the binary from either disassembly. GNU objdump is
+// therefore the exact-diff target; llvm-objdump remains the independent
+// cross-check.
 // ============================================================================
 // Veron — SPIKE stage0-as  (ARM64 / AArch64)       *** feasibility spike ***
 // ============================================================================
@@ -43,17 +66,17 @@
 
 _start:
     adr     x19, inbuf
-    mov     x21, #0
+    mov     x21, #0x0
 slurp:
-    mov     x0, #0
+    mov     x0, #0x0
     add     x1, x19, x21
     mov     x2, #INBUF_SZ
     sub     x2, x2, x21
-    cmp     x2, #0
+    cmp     x2, #0x0
     b.le    slurp_done
-    mov     x8, #63
-    svc     #0
-    cmp     x0, #0
+    mov     x8, #0x3f
+    svc     #0x0
+    cmp     x0, #0x0
     b.le    slurp_done
     add     x21, x21, x0
     b       slurp
@@ -63,63 +86,63 @@ slurp_done:
     mov     x2, #INBUF_SZ
     cmp     x21, x2
     b.lt    slurp_ok
-    mov     x0, #2
+    mov     x0, #0x2
     adr     x1, inover
-    mov     x2, #34
-    mov     x8, #64
-    svc     #0
-    mov     x0, #2
-    mov     x8, #93
-    svc     #0
+    mov     x2, #0x22
+    mov     x8, #0x40
+    svc     #0x0
+    mov     x0, #0x2
+    mov     x8, #0x5d
+    svc     #0x0
 slurp_ok:
     adr     x27, symtab
-    mov     x23, #1
+    mov     x23, #0x1
 pass_start:
-    mov     x20, #0
-    mov     x22, #0
+    mov     x20, #0x0
+    mov     x22, #0x0
 parse_loop:
     bl      skip_ws
     cmp     x20, x21
     b.ge    pass_end
-    mov     x28, x20                // line start, kept for `die` to echo
-    mov     x17, #0                 // width: 0 = 64-bit, 1 = 32-bit (w-register)
+    mov     x28, x20                        // line start, kept for `die` to echo
+    mov     x17, #0x0                       // width: 0 = 64-bit, 1 = 32-bit (w-register)
     ldrb    w0, [x19, x20]
-    cmp     w0, #'#'
+    cmp     w0, #0x23                       // '#'
     b.eq    skip_line
-    cmp     w0, #':'
+    cmp     w0, #0x3a                       // ':'
     b.eq    do_label
-    cmp     w0, #'.'
+    cmp     w0, #0x2e                       // '.'
     b.eq    do_dot
-    cmp     w0, #'m'
+    cmp     w0, #0x6d                       // 'm'
     b.eq    h_mov
-    cmp     w0, #'a'
+    cmp     w0, #0x61                       // 'a'
     b.eq    h_a
-    cmp     w0, #'c'
+    cmp     w0, #0x63                       // 'c'
     b.eq    h_cmp
-    cmp     w0, #'b'
+    cmp     w0, #0x62                       // 'b'
     b.eq    h_branch
-    cmp     w0, #'l'
+    cmp     w0, #0x6c                       // 'l'
     b.eq    h_l
-    cmp     w0, #'s'
+    cmp     w0, #0x73                       // 's'
     b.eq    h_s
-    cmp     w0, #'r'
+    cmp     w0, #0x72                       // 'r'
     b.eq    h_ret
-    cmp     w0, #'o'
+    cmp     w0, #0x6f                       // 'o'
     b.eq    h_orr
-    cmp     w0, #'u'
+    cmp     w0, #0x75                       // 'u'
     b.eq    h_udiv
-    cmp     w0, #'e'
+    cmp     w0, #0x65                       // 'e'
     b.eq    h_eor
-    b       die                     // was `b skip_line`: unknown mnemonics VANISHED
+    b       die                             // was `b skip_line`: unknown mnemonics VANISHED
 pass_end:
-    cmp     x23, #2
+    cmp     x23, #0x2
     b.eq    the_end
-    mov     x23, #2
+    mov     x23, #0x2
     b       pass_start
 the_end:
-    mov     x0, #0
-    mov     x8, #93
-    svc     #0
+    mov     x0, #0x0
+    mov     x8, #0x5d
+    svc     #0x0
 
 // ---- die: reject the current line and exit nonzero ------------------------
 // Entered with x28 = start of the offending line (saved in parse_loop). Writes
@@ -134,88 +157,88 @@ the_end:
 // Every instruction below is inside the subset stage0-as itself accepts, so
 // this routine does not enlarge the self-hosting gap it exists to close.
 die:
-    mov     x0, #2
+    mov     x0, #0x2
     adr     x1, rejmsg
-    mov     x2, #21
-    mov     x8, #64
-    svc     #0
+    mov     x2, #0x15
+    mov     x8, #0x40
+    svc     #0x0
     mov     x24, x28
 die_scan:
     cmp     x24, x21
     b.ge    die_emit
     ldrb    w10, [x19, x24]
-    cmp     w10, #0x0A
+    cmp     w10, #0x0a
     b.eq    die_emit
-    add     x24, x24, #1
+    add     x24, x24, #0x1
     b       die_scan
 die_emit:
     add     x1, x19, x28
     sub     x2, x24, x28
-    mov     x0, #2
-    mov     x8, #64
-    svc     #0
-    mov     x0, #2
+    mov     x0, #0x2
+    mov     x8, #0x40
+    svc     #0x0
+    mov     x0, #0x2
     adr     x1, rejnl
-    mov     x2, #1
-    mov     x8, #64
-    svc     #0
-    mov     x0, #2
-    mov     x8, #93
-    svc     #0
+    mov     x2, #0x1
+    mov     x8, #0x40
+    svc     #0x0
+    mov     x0, #0x2
+    mov     x8, #0x5d
+    svc     #0x0
 
 skip_line:
     cmp     x20, x21
     b.ge    parse_loop
     ldrb    w10, [x19, x20]
-    add     x20, x20, #1
-    cmp     w10, #0x0A
+    add     x20, x20, #0x1
+    cmp     w10, #0x0a
     b.ne    skip_line
     b       parse_loop
 
 do_label:
-    add     x20, x20, #1
+    add     x20, x20, #0x1
     ldrb    w0, [x19, x20]
-    add     x20, x20, #1
+    add     x20, x20, #0x1
     str     w22, [x27, w0, uxtw #2]
     b       parse_loop
 
 // ---- '.' : .byte / .ascii ----
 do_dot:
-    add     x2, x20, #1
+    add     x2, x20, #0x1
     ldrb    w10, [x19, x2]
-    cmp     w10, #'b'
+    cmp     w10, #0x62                      // 'b'
     b.eq    do_byte
-    cmp     w10, #'a'
+    cmp     w10, #0x61                      // 'a'
     b.eq    do_ascii
-    b       die                     // unknown '.' directive
+    b       die                             // unknown '.' directive
 do_byte:
-    add     x20, x20, #5            // ".byte"
+    add     x20, x20, #0x5                  // ".byte"
     bl      skip_ws
     bl      parse_dec
     mov     w9, w0
     bl      emit_byte
     b       parse_loop
 do_ascii:
-    add     x20, x20, #6            // ".ascii"
+    add     x20, x20, #0x6                  // ".ascii"
     bl      skip_ws
     ldrb    w0, [x19, x20]
-    cmp     w0, #0x22               // opening quote
-    b.ne    die                     // .ascii with no opening quote
-    add     x20, x20, #1
+    cmp     w0, #0x22                       // opening quote
+    b.ne    die                             // .ascii with no opening quote
+    add     x20, x20, #0x1
 asc_loop:
     cmp     x20, x21
     b.ge    parse_loop
     ldrb    w0, [x19, x20]
-    add     x20, x20, #1
-    cmp     w0, #0x22               // closing quote
+    add     x20, x20, #0x1
+    cmp     w0, #0x22                       // closing quote
     b.eq    parse_loop
-    cmp     w0, #0x5C               // backslash
+    cmp     w0, #0x5c                       // backslash
     b.ne    asc_emit
-    ldrb    w0, [x19, x20]          // escaped char
-    add     x20, x20, #1
-    cmp     w0, #'n'
+    ldrb    w0, [x19, x20]                  // escaped char
+    add     x20, x20, #0x1
+    cmp     w0, #0x6e                       // 'n'
     b.ne    asc_emit
-    mov     w0, #0x0A
+    mov     w0, #0x0a
 asc_emit:
     mov     w9, w0
     bl      emit_byte
@@ -223,31 +246,31 @@ asc_emit:
 
 // ---- 'a' : add or adr ----
 h_a:
-    add     x2, x20, #1
+    add     x2, x20, #0x1
     ldrb    w10, [x19, x2]
-    cmp     w10, #'n'               // 'and'
+    cmp     w10, #0x6e                      // 'n'  'and'
     b.eq    h_and
-    cmp     w10, #'s'               // 'asr'
+    cmp     w10, #0x73                      // 's'  'asr'
     b.eq    h_asr
-    add     x2, x20, #2             // else 'd' -> add / adr
+    add     x2, x20, #0x2                   // else 'd' -> add / adr
     ldrb    w10, [x19, x2]
-    cmp     w10, #'d'
+    cmp     w10, #0x64                      // 'd'
     b.eq    h_add
-    cmp     w10, #'r'
+    cmp     w10, #0x72                      // 'r'
     b.eq    h_adr
-    b       die                     // 'a...' that is not and/asr/add/adr
+    b       die                             // 'a...' that is not and/asr/add/adr
 
 // ---- mov x<d> <imm>  or  mov x<d> x<n> ----
 h_mov:
-    add     x2, x20, #1
+    add     x2, x20, #0x1
     ldrb    w10, [x19, x2]
-    cmp     w10, #'u'               // 'mul'
+    cmp     w10, #0x75                      // 'u'  'mul'
     b.eq    h_mul
-    add     x2, x20, #3
+    add     x2, x20, #0x3
     ldrb    w10, [x19, x2]
-    cmp     w10, #'k'               // 'movk'
+    cmp     w10, #0x6b                      // 'k'  'movk'
     b.eq    h_movk
-    add     x20, x20, #3
+    add     x20, x20, #0x3
     // USE next_reg, THE WAY h_cmp ALREADY DOES. This parsed the destination
     // inline -- skip_ws, step over the register letter, read the digits -- and
     // so never saw whether the letter was 'x' or 'w'. next_reg does the same
@@ -263,41 +286,41 @@ h_mov:
     // before input rejection existed, and a hard error after it. The same
     // one-character omission appears in h_add, h_cmp and h_sub; all four are
     // fixed together because they are the same bug, not four bugs.
-    cmp     w0, #'x'
+    cmp     w0, #0x78                       // 'x'
     b.eq    h_mov_reg
-    cmp     w0, #'w'
+    cmp     w0, #0x77                       // 'w'
     b.eq    h_mov_reg
-    bl      parse_dec               // immediate
-    lsl     w9, w0, #5
-    mov     w1, #0xD2800000
+    bl      parse_dec                       // immediate
+    lsl     w9, w0, #0x5
+    mov     w1, #0xd2800000
     orr     w9, w9, w1
     orr     w9, w9, w24
     bl      emit_dp
     b       parse_loop
 h_mov_reg:
-    add     x20, x20, #1
-    bl      parse_dec               // src n
-    mov     w9, #0x3E0
-    movk    w9, #0xAA00, lsl #16
+    add     x20, x20, #0x1
+    bl      parse_dec                       // src n
+    mov     w9, #0x3e0
+    movk    w9, #0xaa00, lsl #16
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w24
     bl      emit_dp
     b       parse_loop
 
 h_add:
-    add     x20, x20, #3
+    add     x20, x20, #0x3
     bl      next_reg
     mov     w24, w0
     bl      next_reg
     mov     w25, w0
     bl      skip_ws
     ldrb    w0, [x19, x20]
-    cmp     w0, #'x'
+    cmp     w0, #0x78                       // 'x'
     b.eq    h_add_reg
-    cmp     w0, #'w'
+    cmp     w0, #0x77                       // 'w'
     b.eq    h_add_reg
     bl      parse_dec
-    lsl     w9, w0, #10
+    lsl     w9, w0, #0xa
     mov     w1, #0x91000000
     orr     w9, w9, w1
     orr     w9, w9, w25, lsl #5
@@ -306,7 +329,7 @@ h_add:
     b       parse_loop
 h_add_reg:
     bl      next_reg
-    mov     w9, #0x8B000000
+    mov     w9, #0x8b000000
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
@@ -314,31 +337,31 @@ h_add_reg:
     b       parse_loop
 
 h_adr:
-    add     x20, x20, #3
+    add     x20, x20, #0x3
     bl      next_reg
     mov     w24, w0
     bl      skip_ws
     ldrb    w0, [x19, x20]
-    cmp     w0, #'@'               // '@'+digit = numeric pos; else label (incl. label '@')
+    cmp     w0, #0x40                       // '@'  '@'+digit = numeric pos; else label (incl. label '@')
     b.ne    ha_lab
-    add     x2, x20, #1
+    add     x2, x20, #0x1
     ldrb    w2, [x19, x2]
-    cmp     w2, #'0'
+    cmp     w2, #0x30                       // '0'
     b.lt    ha_lab
-    cmp     w2, #'9'
+    cmp     w2, #0x39                       // '9'
     b.gt    ha_lab
-    add     x20, x20, #1           // skip '@'
-    bl      parse_dec              // w0 = absolute target byte-position
+    add     x20, x20, #0x1                  // skip '@'
+    bl      parse_dec                       // w0 = absolute target byte-position
     mov     w1, w0
     b       ha_enc
 ha_lab:
-    add     x20, x20, #1
+    add     x20, x20, #0x1
     ldr     w1, [x27, w0, uxtw #2]
 ha_enc:
     sub     w1, w1, w22
-    and     w2, w1, #3
-    asr     w3, w1, #2
-    and     w3, w3, #0x7FFFF
+    and     w2, w1, #0x3
+    asr     w3, w1, #0x2
+    and     w3, w3, #0x7ffff
     mov     w9, #0x10000000
     orr     w9, w9, w2, lsl #29
     orr     w9, w9, w3, lsl #5
@@ -348,52 +371,52 @@ ha_enc:
 
 // ---- cmp x<n> x<m>  or  cmp x<n> <imm> ----
 h_cmp:
-    add     x20, x20, #3
+    add     x20, x20, #0x3
     bl      next_reg
     mov     w24, w0
     bl      skip_ws
     ldrb    w0, [x19, x20]
-    cmp     w0, #'x'
+    cmp     w0, #0x78                       // 'x'
     b.eq    h_cmp_reg
-    cmp     w0, #'w'
+    cmp     w0, #0x77                       // 'w'
     b.eq    h_cmp_reg
-    bl      parse_dec               // immediate
-    lsl     w9, w0, #10
-    mov     w1, #0xF1000000
+    bl      parse_dec                       // immediate
+    lsl     w9, w0, #0xa
+    mov     w1, #0xf1000000
     orr     w9, w9, w1
     orr     w9, w9, w24, lsl #5
-    orr     w9, w9, #31
+    orr     w9, w9, #0x1f
     bl      emit_dp
     b       parse_loop
 h_cmp_reg:
-    add     x20, x20, #1
-    bl      parse_dec               // m
-    mov     w9, #0xEB000000
+    add     x20, x20, #0x1
+    bl      parse_dec                       // m
+    mov     w9, #0xeb000000
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w24, lsl #5
-    orr     w9, w9, #31
+    orr     w9, w9, #0x1f
     bl      emit_dp
     b       parse_loop
 
 // ---- 'l' : ldrb or ldr ----
 h_l:
-    add     x2, x20, #1
+    add     x2, x20, #0x1
     ldrb    w10, [x19, x2]
-    cmp     w10, #'s'               // 'lsl' / 'lsr'
+    cmp     w10, #0x73                      // 's'  'lsl' / 'lsr'
     b.eq    h_lsl_or_lsr
-    add     x2, x20, #3             // else 'd' -> ldr / ldrb
+    add     x2, x20, #0x3                   // else 'd' -> ldr / ldrb
     ldrb    w10, [x19, x2]
-    cmp     w10, #'b'
+    cmp     w10, #0x62                      // 'b'
     b.eq    h_ldrb
     b       h_ldr
 h_lsl_or_lsr:
-    add     x2, x20, #2
+    add     x2, x20, #0x2
     ldrb    w10, [x19, x2]
-    cmp     w10, #'r'
+    cmp     w10, #0x72                      // 'r'
     b.eq    h_lsr
     b       h_lsl
 h_ldrb:
-    add     x20, x20, #4
+    add     x20, x20, #0x4
     bl      next_reg
     mov     w24, w0
     bl      next_reg
@@ -407,13 +430,13 @@ h_ldrb:
     bl      emit
     b       parse_loop
 h_ldr:
-    add     x20, x20, #3
-    bl      skip_ws                 // land on the reg-width letter (w/x)
+    add     x20, x20, #0x3
+    bl      skip_ws                         // land on the reg-width letter (w/x)
     ldrb    w10, [x19, x20]
-    mov     w9, #0xB9400000             // 32-bit: ldr w<t>, [x<n>]
-    cmp     w10, #'x'
+    mov     w9, #0xb9400000                 // 32-bit: ldr w<t>, [x<n>]
+    cmp     w10, #0x78                      // 'x'
     b.ne    h_ldr_e
-    mov     w9, #0xF9400000             // 64-bit: ldr x<t>, [x<n>]
+    mov     w9, #0xf9400000                 // 64-bit: ldr x<t>, [x<n>]
 h_ldr_e:
     bl      next_reg
     mov     w24, w0
@@ -425,36 +448,36 @@ h_ldr_e:
 
 // ---- 's' : svc / sub / str / strb ----
 h_s:
-    add     x2, x20, #1
+    add     x2, x20, #0x1
     ldrb    w10, [x19, x2]
-    cmp     w10, #'v'
+    cmp     w10, #0x76                      // 'v'
     b.eq    h_svc
-    cmp     w10, #'u'
+    cmp     w10, #0x75                      // 'u'
     b.eq    h_sub
-    cmp     w10, #'t'
+    cmp     w10, #0x74                      // 't'
     b.eq    h_st
-    b       die                     // 's...' that is not svc/sub/st*
+    b       die                             // 's...' that is not svc/sub/st*
 h_svc:
-    add     x20, x20, #3
+    add     x20, x20, #0x3
     mov     w9, #0x1
-    movk    w9, #0xD400, lsl #16
+    movk    w9, #0xd400, lsl #16
     bl      emit
     b       parse_loop
 h_sub:
-    add     x20, x20, #3
+    add     x20, x20, #0x3
     bl      next_reg
     mov     w24, w0
     bl      next_reg
     mov     w25, w0
     bl      skip_ws
     ldrb    w0, [x19, x20]
-    cmp     w0, #'x'
+    cmp     w0, #0x78                       // 'x'
     b.eq    h_sub_reg
-    cmp     w0, #'w'
+    cmp     w0, #0x77                       // 'w'
     b.eq    h_sub_reg
     bl      parse_dec
-    lsl     w9, w0, #10
-    mov     w1, #0xD1000000
+    lsl     w9, w0, #0xa
+    mov     w1, #0xd1000000
     orr     w9, w9, w1
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
@@ -462,26 +485,26 @@ h_sub:
     b       parse_loop
 h_sub_reg:
     bl      next_reg
-    mov     w9, #0xCB000000
+    mov     w9, #0xcb000000
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
     bl      emit_dp
     b       parse_loop
 h_st:
-    add     x2, x20, #3
+    add     x2, x20, #0x3
     ldrb    w10, [x19, x2]
-    cmp     w10, #'b'
+    cmp     w10, #0x62                      // 'b'
     b.eq    h_strb
     b       h_str
 h_str:
-    add     x20, x20, #3
-    bl      skip_ws                 // land on the reg-width letter (w/x)
+    add     x20, x20, #0x3
+    bl      skip_ws                         // land on the reg-width letter (w/x)
     ldrb    w10, [x19, x20]
-    mov     w9, #0xB9000000             // 32-bit: str w<t>, [x<n>]
-    cmp     w10, #'x'
+    mov     w9, #0xb9000000                 // 32-bit: str w<t>, [x<n>]
+    cmp     w10, #0x78                      // 'x'
     b.ne    h_str_e
-    mov     w9, #0xF9000000             // 64-bit: str x<t>, [x<n>]
+    mov     w9, #0xf9000000                 // 64-bit: str x<t>, [x<n>]
 h_str_e:
     bl      next_reg
     mov     w24, w0
@@ -491,7 +514,7 @@ h_str_e:
     bl      emit
     b       parse_loop
 h_strb:
-    add     x20, x20, #4
+    add     x20, x20, #0x4
     bl      next_reg
     mov     w24, w0
     bl      next_reg
@@ -507,37 +530,37 @@ h_strb:
 
 // ---- 'b' : b / b.cond ----
 h_branch:
-    add     x2, x20, #1
+    add     x2, x20, #0x1
     ldrb    w10, [x19, x2]
-    cmp     w10, #'.'
+    cmp     w10, #0x2e                      // '.'
     b.eq    h_bcond
-    cmp     w10, #'l'               // 'bl' or 'blr'
+    cmp     w10, #0x6c                      // 'l'  'bl' or 'blr'
     b.eq    h_bl_or_blr
-    cmp     w10, #'r'               // 'br'
+    cmp     w10, #0x72                      // 'r'  'br'
     b.eq    h_br
     // plain unconditional  b <L>   or   b @<pos>  (numeric output byte-position)
-    add     x20, x20, #1
+    add     x20, x20, #0x1
     bl      skip_ws
     ldrb    w0, [x19, x20]
-    cmp     w0, #'@'               // '@'+digit = numeric pos; else label (incl. label '@')
+    cmp     w0, #0x40                       // '@'  '@'+digit = numeric pos; else label (incl. label '@')
     b.ne    hb_lab
-    add     x2, x20, #1
+    add     x2, x20, #0x1
     ldrb    w2, [x19, x2]
-    cmp     w2, #'0'
+    cmp     w2, #0x30                       // '0'
     b.lt    hb_lab
-    cmp     w2, #'9'
+    cmp     w2, #0x39                       // '9'
     b.gt    hb_lab
-    add     x20, x20, #1           // skip '@'
-    bl      parse_dec              // w0 = absolute target byte-position
+    add     x20, x20, #0x1                  // skip '@'
+    bl      parse_dec                       // w0 = absolute target byte-position
     mov     w1, w0
     b       hb_enc
 hb_lab:
-    add     x20, x20, #1
+    add     x20, x20, #0x1
     ldr     w1, [x27, w0, uxtw #2]
 hb_enc:
     sub     w1, w1, w22
-    asr     w1, w1, #2
-    and     w1, w1, #0x3FFFFFF
+    asr     w1, w1, #0x2
+    and     w1, w1, #0x3ffffff
     mov     w9, #0x14000000
     orr     w9, w9, w1
     bl      emit
@@ -546,32 +569,32 @@ hb_enc:
 // ---- bl <L>  (branch-and-link; sets x30 automatically) ----
 // same as 'b' but base 0x94000000; 'blr' when a 3rd char 'r' follows.
 h_bl_or_blr:
-    add     x2, x20, #2
+    add     x2, x20, #0x2
     ldrb    w10, [x19, x2]
-    cmp     w10, #'r'
+    cmp     w10, #0x72                      // 'r'
     b.eq    h_blr
-    add     x20, x20, #2            // skip "bl"
+    add     x20, x20, #0x2                  // skip "bl"
     bl      skip_ws
     ldrb    w0, [x19, x20]
-    cmp     w0, #'@'               // '@'+digit = numeric pos; else label (incl. label '@')
+    cmp     w0, #0x40                       // '@'  '@'+digit = numeric pos; else label (incl. label '@')
     b.ne    hbl_lab
-    add     x2, x20, #1
+    add     x2, x20, #0x1
     ldrb    w2, [x19, x2]
-    cmp     w2, #'0'
+    cmp     w2, #0x30                       // '0'
     b.lt    hbl_lab
-    cmp     w2, #'9'
+    cmp     w2, #0x39                       // '9'
     b.gt    hbl_lab
-    add     x20, x20, #1           // skip '@'
-    bl      parse_dec              // w0 = absolute target byte-position
+    add     x20, x20, #0x1                  // skip '@'
+    bl      parse_dec                       // w0 = absolute target byte-position
     mov     w1, w0
     b       hbl_enc
 hbl_lab:
-    add     x20, x20, #1
+    add     x20, x20, #0x1
     ldr     w1, [x27, w0, uxtw #2]
 hbl_enc:
     sub     w1, w1, w22
-    asr     w1, w1, #2
-    and     w1, w1, #0x3FFFFFF
+    asr     w1, w1, #0x2
+    and     w1, w1, #0x3ffffff
     mov     w9, #0x94000000
     orr     w9, w9, w1
     bl      emit
@@ -579,52 +602,52 @@ hbl_enc:
 
 // ---- br x<n>  (branch to register) ----
 h_br:
-    add     x20, x20, #2            // skip "br"
+    add     x20, x20, #0x2                  // skip "br"
     bl      next_reg
-    mov     w9, #0xD61F0000
+    mov     w9, #0xd61f0000
     orr     w9, w9, w0, lsl #5
     bl      emit
     b       parse_loop
 
 // ---- blr x<n>  (branch-to-register-and-link) ----
 h_blr:
-    add     x20, x20, #3            // skip "blr"
+    add     x20, x20, #0x3                  // skip "blr"
     bl      next_reg
-    mov     w9, #0xD63F0000
+    mov     w9, #0xd63f0000
     orr     w9, w9, w0, lsl #5
     bl      emit
     b       parse_loop
 
 // ---- ret  (return via x30) ----
 h_ret:
-    add     x20, x20, #3            // skip "ret"
-    mov     w9, #0x3C0
-    movk    w9, #0xD65F, lsl #16
+    add     x20, x20, #0x3                  // skip "ret"
+    mov     w9, #0x3c0
+    movk    w9, #0xd65f, lsl #16
     bl      emit
     b       parse_loop
 
 // ---- orr/and x<d> x<n> x<m>  (combine / mask instruction fields) ----
 h_orr:
-    add     x20, x20, #3            // skip "orr"
+    add     x20, x20, #0x3                  // skip "orr"
     bl      next_reg
     mov     w24, w0
     bl      next_reg
     mov     w25, w0
     bl      next_reg
-    mov     w9, #0xAA000000
+    mov     w9, #0xaa000000
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
     bl      emit_dp
     b       parse_loop
 h_and:
-    add     x20, x20, #3            // skip "and"
+    add     x20, x20, #0x3                  // skip "and"
     bl      next_reg
     mov     w24, w0
     bl      next_reg
     mov     w25, w0
     bl      next_reg
-    mov     w9, #0x8A000000
+    mov     w9, #0x8a000000
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
@@ -632,13 +655,13 @@ h_and:
     b       parse_loop
 
 h_eor:
-    add     x20, x20, #3            // skip "eor"
+    add     x20, x20, #0x3                  // skip "eor"
     bl      next_reg
     mov     w24, w0
     bl      next_reg
     mov     w25, w0
     bl      next_reg
-    mov     w9, #0xCA000000
+    mov     w9, #0xca000000
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
@@ -647,19 +670,19 @@ h_eor:
 
 // ---- lsl/lsr/asr x<d> x<n> x<m>  (variable shift by register) ----
 h_lsl:
-    add     x20, x20, #3            // skip "lsl"
+    add     x20, x20, #0x3                  // skip "lsl"
     mov     w26, #0x2000
     b       shift_common
 h_lsr:
-    add     x20, x20, #3            // skip "lsr"
+    add     x20, x20, #0x3                  // skip "lsr"
     mov     w26, #0x2400
     b       shift_common
 h_udiv:
-    add     x20, x20, #4            // skip "udiv"
-    mov     w26, #0x800                 // UDIV: 0x9AC00800 | m<<16 | n<<5 | d
+    add     x20, x20, #0x4                  // skip "udiv"
+    mov     w26, #0x800                     // UDIV: 0x9AC00800 | m<<16 | n<<5 | d
     b       shift_common
 h_asr:
-    add     x20, x20, #3            // skip "asr"
+    add     x20, x20, #0x3                  // skip "asr"
     mov     w26, #0x2800
 shift_common:
     bl      next_reg
@@ -667,8 +690,8 @@ shift_common:
     bl      next_reg
     mov     w25, w0
     bl      next_reg
-    mov     w9, #0x9AC00000
-    orr     w9, w9, w26             // 0x2000/0x2400/0x2800 selector
+    mov     w9, #0x9ac00000
+    orr     w9, w9, w26                     // 0x2000/0x2400/0x2800 selector
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
@@ -677,16 +700,16 @@ shift_common:
 
 // ---- movk x<d> <imm> <shift>   shift in {0,16,32,48} ----
 h_movk:
-    add     x20, x20, #4            // skip "movk"
-    bl      next_reg                // d
+    add     x20, x20, #0x4                  // skip "movk"
+    bl      next_reg                        // d
     mov     w24, w0
     bl      skip_ws
-    bl      parse_dec               // imm16
+    bl      parse_dec                       // imm16
     mov     w25, w0
     bl      skip_ws
-    bl      parse_dec               // shift
-    lsr     w0, w0, #4              // hw = shift / 16
-    mov     w9, #0xF2800000
+    bl      parse_dec                       // shift
+    lsr     w0, w0, #0x4                    // hw = shift / 16
+    mov     w9, #0xf2800000
     orr     w9, w9, w0, lsl #21
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
@@ -695,14 +718,14 @@ h_movk:
 
 // ---- mul x<d> x<n> x<m>  (= madd with xzr) ----
 h_mul:
-    add     x20, x20, #3            // skip "mul"
+    add     x20, x20, #0x3                  // skip "mul"
     bl      next_reg
     mov     w24, w0
     bl      next_reg
     mov     w25, w0
     bl      next_reg
-    mov     w9, #0x9B000000
-    movk    w9, #0x7C00
+    mov     w9, #0x9b000000
+    movk    w9, #0x7c00
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
@@ -710,11 +733,11 @@ h_mul:
     b       parse_loop
 
 h_bcond:
-    add     x20, x20, #2
+    add     x20, x20, #0x2
     ldrb    w2, [x19, x20]
-    add     x3, x20, #1
+    add     x3, x20, #0x1
     ldrb    w3, [x19, x3]
-    add     x20, x20, #2
+    add     x20, x20, #0x2
     // BOTH CONDITION CHARACTERS ARE CHECKED, AND THERE IS NO DEFAULT.
     // The previous version tested only the first and left w26 at 14 (AL), so
     // three different inputs assembled to three wrong answers, none of them an
@@ -724,64 +747,64 @@ h_bcond:
     // stage0-as's OWN source uses them eight times, so self-hosting on the old
     // code would have produced an assembler with eight inverted comparisons and
     // no diagnostic. Condition codes: EQ 0, NE 1, GE 10, LT 11, GT 12, LE 13.
-    cmp     w2, #'e'
+    cmp     w2, #0x65                       // 'e'
     b.ne    bc_n
-    cmp     w3, #'q'
+    cmp     w3, #0x71                       // 'q'
     b.ne    die
-    mov     w26, #0                 // eq
+    mov     w26, #0x0                       // eq
     b       bc_go
 bc_n:
-    cmp     w2, #'n'
+    cmp     w2, #0x6e                       // 'n'
     b.ne    bc_l
-    cmp     w3, #'e'
+    cmp     w3, #0x65                       // 'e'
     b.ne    die
-    mov     w26, #1                 // ne
+    mov     w26, #0x1                       // ne
     b       bc_go
 bc_l:
-    cmp     w2, #'l'
+    cmp     w2, #0x6c                       // 'l'
     b.ne    bc_g
-    cmp     w3, #'t'
+    cmp     w3, #0x74                       // 't'
     b.ne    bc_le
-    mov     w26, #11                // lt
+    mov     w26, #0xb                       // lt
     b       bc_go
 bc_le:
-    cmp     w3, #'e'
+    cmp     w3, #0x65                       // 'e'
     b.ne    die
-    mov     w26, #13                // le
+    mov     w26, #0xd                       // le
     b       bc_go
 bc_g:
-    cmp     w2, #'g'
+    cmp     w2, #0x67                       // 'g'
     b.ne    die
-    cmp     w3, #'e'
+    cmp     w3, #0x65                       // 'e'
     b.ne    bc_gt
-    mov     w26, #10                // ge
+    mov     w26, #0xa                       // ge
     b       bc_go
 bc_gt:
-    cmp     w3, #'t'
+    cmp     w3, #0x74                       // 't'
     b.ne    die
-    mov     w26, #12                // gt
+    mov     w26, #0xc                       // gt
 bc_go:
     bl      skip_ws
     ldrb    w0, [x19, x20]
-    cmp     w0, #'@'               // '@'+digit = numeric pos; else label (incl. label '@')
+    cmp     w0, #0x40                       // '@'  '@'+digit = numeric pos; else label (incl. label '@')
     b.ne    bc_lab
-    add     x2, x20, #1
+    add     x2, x20, #0x1
     ldrb    w2, [x19, x2]
-    cmp     w2, #'0'
+    cmp     w2, #0x30                       // '0'
     b.lt    bc_lab
-    cmp     w2, #'9'
+    cmp     w2, #0x39                       // '9'
     b.gt    bc_lab
-    add     x20, x20, #1           // skip '@'
-    bl      parse_dec              // w0 = absolute target byte-position
+    add     x20, x20, #0x1                  // skip '@'
+    bl      parse_dec                       // w0 = absolute target byte-position
     mov     w1, w0
     b       bc_enc
 bc_lab:
-    add     x20, x20, #1
+    add     x20, x20, #0x1
     ldr     w1, [x27, w0, uxtw #2]
 bc_enc:
     sub     w1, w1, w22
-    asr     w1, w1, #2
-    and     w1, w1, #0x7FFFF
+    asr     w1, w1, #0x2
+    and     w1, w1, #0x7ffff
     mov     w9, #0x54000000
     orr     w9, w9, w1, lsl #5
     orr     w9, w9, w26
@@ -803,17 +826,17 @@ next_reg:
     cmp     x20, x21
     b.ge    nr_done
     ldrb    w10, [x19, x20]
-    cmp     w10, #' '
+    cmp     w10, #0x20                      // ' '
     b.eq    nr_a
     cmp     w10, #0x09
     b.eq    nr_a
-    cmp     w10, #0x0A
+    cmp     w10, #0x0a
     b.eq    nr_a
-    cmp     w10, #0x0D
+    cmp     w10, #0x0d
     b.eq    nr_a
     b       nr_done
 nr_a:
-    add     x20, x20, #1
+    add     x20, x20, #0x1
     b       next_reg
 nr_done:
     // READ THE LETTER BEFORE SKIPPING IT. This routine already consumed the
@@ -822,25 +845,25 @@ nr_done:
     // SUBS (0xF1...) where GNU as emits the W-form (0x71...). Measured across
     // the whole source, 131 lines differed from GNU as by exactly bit 31.
     ldrb    w10, [x19, x20]
-    cmp     w10, #'w'
+    cmp     w10, #0x77                      // 'w'
     b.ne    nr_x
-    mov     x17, #1
+    mov     x17, #0x1
 nr_x:
-    add     x20, x20, #1            // skip reg letter
-    mov     w0, #0
+    add     x20, x20, #0x1                  // skip reg letter
+    mov     w0, #0x0
 nr_dl:
     cmp     x20, x21
     b.ge    nr_r
     ldrb    w10, [x19, x20]
-    cmp     w10, #'0'
+    cmp     w10, #0x30                      // '0'
     b.lt    nr_r
-    cmp     w10, #'9'
+    cmp     w10, #0x39                      // '9'
     b.gt    nr_r
-    sub     w10, w10, #'0'
-    mov     w11, #10
+    sub     w10, w10, #0x30                 // '0'
+    mov     w11, #0xa
     mul     w0, w0, w11
     add     w0, w0, w10
-    add     x20, x20, #1
+    add     x20, x20, #0x1
     b       nr_dl
 nr_r:
     ret
@@ -849,36 +872,36 @@ skip_ws:
     cmp     x20, x21
     b.ge    sw_r
     ldrb    w10, [x19, x20]
-    cmp     w10, #' '
+    cmp     w10, #0x20                      // ' '
     b.eq    sw_a
     cmp     w10, #0x09
     b.eq    sw_a
-    cmp     w10, #0x0A
+    cmp     w10, #0x0a
     b.eq    sw_a
-    cmp     w10, #0x0D
+    cmp     w10, #0x0d
     b.eq    sw_a
     b       sw_r
 sw_a:
-    add     x20, x20, #1
+    add     x20, x20, #0x1
     b       skip_ws
 sw_r:
     ret
 
 parse_dec:
-    mov     w0, #0
+    mov     w0, #0x0
 pd_l:
     cmp     x20, x21
     b.ge    pd_r
     ldrb    w10, [x19, x20]
-    cmp     w10, #'0'
+    cmp     w10, #0x30                      // '0'
     b.lt    pd_r
-    cmp     w10, #'9'
+    cmp     w10, #0x39                      // '9'
     b.gt    pd_r
-    sub     w10, w10, #'0'
-    mov     w11, #10
+    sub     w10, w10, #0x30                 // '0'
+    mov     w11, #0xa
     mul     w0, w0, w11
     add     w0, w0, w10
-    add     x20, x20, #1
+    add     x20, x20, #0x1
     b       pd_l
 pd_r:
     ret
@@ -893,37 +916,37 @@ pd_r:
 // WRONG row in stage0-selfhost's probe table, which is visible and harmless;
 // a load wrongly routed through here would be neither.
 emit_dp:
-    cmp     x17, #0
+    cmp     x17, #0x0
     b.eq    emit
-    mov     x13, #0xFFFF
-    movk    x13, #0x7FFF, lsl #16
+    mov     x13, #0xffff
+    movk    x13, #0x7fff, lsl #16
     and     x9, x9, x13
 emit:
-    cmp     x23, #2
+    cmp     x23, #0x2
     b.ne    e_adv
     adr     x10, outword
     str     w9, [x10]
-    mov     x0, #1
+    mov     x0, #0x1
     mov     x1, x10
-    mov     x2, #4
-    mov     x8, #64
-    svc     #0
+    mov     x2, #0x4
+    mov     x8, #0x40
+    svc     #0x0
 e_adv:
-    add     x22, x22, #4
+    add     x22, x22, #0x4
     ret
 
 emit_byte:
-    cmp     x23, #2
+    cmp     x23, #0x2
     b.ne    eb_adv
     adr     x10, outword
     strb    w9, [x10]
-    mov     x0, #1
+    mov     x0, #0x1
     mov     x1, x10
-    mov     x2, #1
-    mov     x8, #64
-    svc     #0
+    mov     x2, #0x1
+    mov     x8, #0x40
+    svc     #0x0
 eb_adv:
-    add     x22, x22, #1
+    add     x22, x22, #0x1
     ret
 
     .balign 8
