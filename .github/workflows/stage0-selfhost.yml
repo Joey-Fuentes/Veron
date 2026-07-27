@@ -486,6 +486,48 @@ jobs:
           python3 tools/s0_roundtrip.py "$SRC" stage0-as.llvm.dis \
             --budget "$ROUNDTRIP_BUDGET"; rc_llvm=$?
           echo
+          echo "  --- E. PLAIN DIFF: canonical source vs canonical disassembly ---"
+          # THE COMMENT CARRIES THE READABILITY; THE CODE CARRIES THE EXACTNESS.
+          # Keep the commented file as the human artifact, strip it to a
+          # canonical form, and round-trip THAT. Anywhere exactness costs
+          # readability -- writing `#65` where `#'"'"'A'"'"'` reads better -- the reason
+          # goes in a comment directly above the line, which survives in the
+          # source and disappears from the comparison.
+          #
+          # The result is a `diff` of two files rather than a semantic
+          # comparison decided by a normaliser. That matters because a
+          # normaliser that is itself wrong manufactures findings in the thing
+          # being measured, which happened twice here already.
+          #
+          # Only things that emit no instruction are removed, from both sides
+          # by the same rules. Immediates and mnemonics pass through untouched:
+          # if the source says #0 and the decoder says #0x0, that is a REAL
+          # difference and must appear in the diff.
+          "$P/bin/objdump" -d --no-show-raw-insn --no-addresses stage0-as \
+            > canon-gnu.dis 2>/dev/null || \
+            "$P/bin/objdump" -d --no-show-raw-insn stage0-as > canon-gnu.dis
+          "$P/bin/llvm-objdump" -d --no-show-raw-insn --no-leading-addr \
+            --no-print-imm-hex stage0-as > canon-llvm.dis 2>/dev/null || \
+            "$P/bin/llvm-objdump" -d --no-show-raw-insn stage0-as > canon-llvm.dis
+          python3 tools/s0_canon.py source "$SRC" > canon-src.txt
+          for t in gnu llvm; do
+            python3 tools/s0_canon.py disasm "canon-$t.dis" > "canon-$t.txt"
+            n=$(diff "canon-src.txt" "canon-$t.txt" | grep -c '^[<>]' || true)
+            if [ "$n" = 0 ]; then
+              printf '    %-5s IDENTICAL -- %s canonical lines, plain diff clean\n' \
+                "$t" "$(wc -l < canon-src.txt)"
+            else
+              printf '    %-5s %s differing lines of %s\n' "$t" "$n" \
+                "$(wc -l < canon-src.txt)"
+              diff "canon-src.txt" "canon-$t.txt" | head -12 | sed 's/^/      /'
+            fi
+          done
+          echo
+          echo "  Each difference is either a decoder flag we have not set or a"
+          echo "  source line to rewrite WITH A COMMENT saying why. Neither is"
+          echo "  something to paper over in the comparison."
+          echo
+
           echo "  --- D0. CAN THE DECODERS BE ASKED TO PRINT OUR SPELLING? ---"
           # I claimed the formatting differences were unfixable presentation
           # choices. That was answered from memory and it was wrong: both tools
