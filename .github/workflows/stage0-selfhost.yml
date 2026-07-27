@@ -235,11 +235,27 @@ jobs:
           if as -o redis.o redis.s 2>redis.err; then
             objcopy -O binary --only-section=.text redis.o redis.bin
             objcopy -O binary --only-section=.text s0.o  orig.bin
-            if cmp -s redis.bin orig.bin; then
-              echo "    PASS: reassembled disassembly is byte-identical"
+            # THE SIZE GAP IS EXPECTED AND EXPLAINED. .text carries the three
+            # .ascii strings as well as code -- inover 34 + rejmsg 21 + rejnl 1
+            # = 56 bytes -- and the disassembly has only instructions. Compare
+            # the code prefix; the tail difference is the strings, and the fact
+            # that they live in .text at all is itself a finding for a binary
+            # that is going to be committed and audited.
+            nb=$(wc -c < redis.bin)
+            head -c "$nb" orig.bin > orig-code.bin
+            echo "    code prefix: $nb bytes; .text is $(wc -c < orig.bin) (the extra is .ascii)"
+            if cmp -s redis.bin orig-code.bin; then
+              echo "    PASS: reassembled disassembly is byte-identical over the code"
             else
-              echo "    DIFFERS: $(cmp redis.bin orig.bin 2>&1 | head -1)"
-              echo "    (sizes: $(wc -c < redis.bin) vs $(wc -c < orig.bin))"
+              off=$(cmp redis.bin orig-code.bin 2>&1 | sed 's/.*differ: byte //; s/,.*//')
+              ins=$(( (off - 1) / 4 ))
+              echo "    DIFFERS at byte $off = instruction $ins (0-based)"
+              echo "    what each side has there:"
+              sed -n "$(( ins * 2 + 2 ))p" redis.s | sed 's/^/      redis.s: /'
+              grep -E "^\s*[0-9a-f]+:" stage0-as.dis | sed -n "$(( ins + 1 ))p" \
+                | sed 's/^/      objdump: /'
+              echo "      ours=$(dd if=redis.bin bs=4 skip=$ins count=1 2>/dev/null | od -An -tx1 | tr -d ' ')" \
+                   "orig=$(dd if=orig-code.bin bs=4 skip=$ins count=1 2>/dev/null | od -An -tx1 | tr -d ' ')"
             fi
           else
             echo "    reassembly failed -- first errors:"

@@ -195,13 +195,28 @@ def main():
           % (same, n, 100.0 * same / n if n else 0))
     print()
     if diff:
-        by_form = Counter("%s -> %s" % (a[1][0], a[2][0]) for a in diff)
+        # SPLIT BY SEVERITY, NOT BY MNEMONIC. `movz w9 992` printing as
+        # `mov w9 992` is an alias NAME difference and a human reads it at a
+        # glance. `movz w1 53888 lsl 16` printing as `mov w1 3531603968` is the
+        # shift folded into the immediate: same instruction, but the reader has
+        # to redo the arithmetic to check it. Only the second kind is the
+        # ambiguity the round-trip exists to exclude, and reporting them
+        # together overstates the problem by a third.
+        cosmetic = [d for d in diff if d[1][1] == d[2][1]]
+        real = [d for d in diff if d[1][1] != d[2][1]]
+        print("  of %d differences:" % len(diff))
+        print("    %3d are the SAME OPERANDS under a different alias name"
+              % len(cosmetic))
+        print("    %3d change what the reader sees  <-- these are the finding"
+              % len(real))
+        print()
+        by_form = Counter("%s -> %s" % (a[1][0], a[2][0]) for a in real)
         print("  where the text differs, by mnemonic pair:")
         for k, c in by_form.most_common():
             print("    %-28s %4d" % (k, c))
         print()
-        print("  first 12, source | disassembly:")
-        for i, s, d in diff[:12]:
+        print("  first 12 of those, source | disassembly:")
+        for i, s, d in real[:12]:
             print("    %-34s | %s" % ("%s %s" % s, "%s %s" % d))
         print()
         print("  A DIFFERENCE IS NOT AUTOMATICALLY A DEFECT. `mov x0 5` printed")
