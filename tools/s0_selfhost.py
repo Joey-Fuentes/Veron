@@ -146,11 +146,11 @@ def probe_pair(mn, sh):
     """Return (gnu_as_text, s0_text) for a form, or None if not expressible."""
     subs_gnu = {
         "%X": ["x0", "x1", "x2"], "%W": ["w0", "w1", "w2"],
-        "#%i": ["#8"], "#%e": ["#8"], "#%c": ["#65"], "%L": ["tgt"],
+        "#%i": ["#8"], "#%e": ["#8"], "#%c": ["#65"], "%L": ["t"],
     }
     subs_s0 = {
         "%X": ["x0", "x1", "x2"], "%W": ["w0", "w1", "w2"],
-        "#%i": ["8"], "#%e": ["8"], "#%c": ["65"], "%L": ["tgt"],
+        "#%i": ["8"], "#%e": ["8"], "#%c": ["65"], "%L": ["t"],
     }
     # AArch64 constrains some immediates: movz/movk shifts must be 0/16/32/48
     # and uxtw scales must be 0 or 2. A probe case GNU `as` rejects proves
@@ -194,9 +194,15 @@ def cmd_probes(path, outdir):
         gnu, s0 = pair
         name = "f%03d" % i
         with open(os.path.join(outdir, name + ".s"), "w") as fh:
-            fh.write(".text\n.global _start\n_start:\n%s\ntgt:\n\tnop\n" % gnu)
+            # LABELS ARE ONE CHARACTER. stage0-as's symtab is 512 bytes -- 128
+            # entries of 4, indexed by the label character's own byte value --
+            # so `:tgt` defines label `t` and leaves a stray line `gt`. Every
+            # probe carried that stray line for four runs and nobody noticed,
+            # because the old assembler silently dropped unrecognised lines.
+            # The rejection fix caught it on its first run. Use `t`.
+            fh.write(".text\n.global _start\n_start:\n%s\nt:\n\tnop\n" % gnu)
         with open(os.path.join(outdir, name + ".s0"), "w") as fh:
-            fh.write("%s\n:tgt\n" % s0)
+            fh.write("%s\n:t\n" % s0)
         index.append("%s\t%d\t%s\t%s" % (name, n, mn, sh))
     with open(os.path.join(outdir, "index.tsv"), "w") as fh:
         fh.write("\n".join(index) + "\n")

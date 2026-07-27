@@ -23,7 +23,15 @@
 #
 # format:  <name> <bytes> <sha256[0:16]>
 
-stage0-as       6248     96a0edfb2a20bfca
+# stage0-as MOVED on 2026-07-27, commit 49d5db3, intentionally: input
+# rejection plus the b.gt/b.le condition fix, +40 instruction lines and two
+# message strings. 6248 -> 6640 is larger than 40 instructions because `ld`
+# also carries seven new symbol-table entries. The line below was updated in
+# that change's own follow-up, and the evidence that it is safe is on the same
+# run: elf, stage1, stage2 and all eight emitted-output fingerprints were
+# UNCHANGED, and stage3-hermetic-arm64 on the same commit passed 426/426 with
+# G1 == dc38e13e4ceaeecb.
+stage0-as       6640     a3273e83dfc23798
 elf             1880     c4b44c02f85b10df
 stage1          1469     5fcf2a59b9edd064
 stage2          23257    da274839c125d1a1
