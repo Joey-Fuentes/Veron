@@ -1040,8 +1040,34 @@ jobs:
           nd=$(cmp -l gen1.bin reference.bin 2>/dev/null \
                | awk '{print int(($1-1)/4)}' | sort -u | wc -l)
           printf '  %-30s %s\n' 'words differing from as+ld' "$nd"
-          if [ "$nd" -le 7 ]; then
-            echo "  PASS: only the adr-to-data lines differ, as expected."
+          objdump -d stage0-as > ref.dis 2>/dev/null || true
+          tb=$(objdump -h stage0-as | awk '$2==".text"{print $4; exit}')
+          echo "  each differing word, from the as+ld side:"
+          cmp -l gen1.bin reference.bin 2>/dev/null \
+            | awk '{print int(($1-1)/4)}' | sort -un \
+            | while read -r w; do
+                a=$(printf '%x' $((0x$tb + w * 4)))
+                echo "    $(grep -m1 "^ *$a:" ref.dis | sed 's/^ *//')"
+              done
+          # NAME THEM, DO NOT JUST COUNT THEM. "only the adr-to-data lines
+          # differ, as expected" was true and useless: it did not say which,
+          # and it read as a pass when the count came back 4 against a
+          # prediction of 7, with nothing explaining the gap.
+          #
+          # Seven adr instructions reference data. THREE point into .rodata and
+          # both layouts place that 8-aligned straight after the code, so those
+          # MATCH. FOUR point into .bss -- inbuf, symtab, and outword twice --
+          # and ld page-aligns .bss while elf does not. Those four differ, and
+          # the check is that it is those four and no others.
+          nb=$(cmp -l gen1.bin reference.bin 2>/dev/null \
+               | awk '{print int(($1-1)/4)}' | sort -un \
+               | while read -r w; do
+                   a=$(printf '%x' $((0x$tb + w * 4)))
+                   grep -m1 "^ *$a:" ref.dis
+                 done | grep -cE "inbuf|symtab|outword")
+          if [ "$nd" = "$nb" ]; then
+            echo "  PASS: all $nd differing words are .bss references -- ld"
+            echo "        page-aligns .bss, elf does not. .rodata matches."
           else
             echo "  FAIL: $nd words differ; at most 7 should."
             echo "  the first differing words, disassembled from both sides:"
@@ -1057,10 +1083,63 @@ jobs:
                 done
             exit 1
           fi
+          # THREE GENERATIONS, WITH THE NUMBERS SHOWN. "gen2 == gen1 -- FIXPOINT"
+          # asserted the result without exhibiting it, and one comparison only
+          # shows the assembler is stable across a single step. A third pass
+          # costs nothing and rules out a two-cycle -- an assembler that
+          # alternated between two outputs would satisfy gen2 == gen1 only if
+          # you happened to stop there.
           ./gen1 < stage0-as.s0 > gen2.bin
-          cmp -s gen2.bin gen1.bin \
-            && echo "  PASS: gen2 == gen1 -- FIXPOINT." \
-            || { echo "  FAIL: not a fixpoint."; exit 1; }
+          ./elf gen2 < gen2.bin || true
+          chmod +x gen2 2>/dev/null || true
+          ./gen2 < stage0-as.s0 > gen3.bin || true
+          . tools/ab.sh
+          gen_row() {
+            _v='-'
+            if [ -n "$3" ] && [ -f "$2" ] && [ -f "$3" ]; then
+              cmp -s "$2" "$3" && _v="MATCHES $4" || _v="DIFFERS from $4"
+            fi
+            printf '  %-26s %10s  %-16s  %s\n' "$1" \
+              "$(ab_size "$2")" "$(ab_sha "$2")" "$_v"
+          }
+          printf '\n  === SELF-HOST GENERATIONS ===\n'
+          printf '  %-26s %10s  %-16s  %s\n' 'ARTIFACT' 'BYTES' 'SHA256[0:16]' 'vs PREVIOUS'
+          gen_row 'reference (as+ld .text)' reference.bin '' ''
+          gen_row 'gen1 (committed as on .s0)' gen1.bin '' ''
+          gen_row 'gen2 (gen1 on .s0)' gen2.bin gen1.bin gen1
+          gen_row 'gen3 (gen2 on .s0)' gen3.bin gen2.bin gen2
+          echo
+          if cmp -s gen2.bin gen1.bin && cmp -s gen3.bin gen2.bin; then
+            echo "  PASS: gen1 == gen2 == gen3 -- FIXPOINT, and stable across"
+            echo "        three generations rather than one comparison."
+          else
+            echo "  FAIL: not a fixpoint."
+            exit 1
+          fi
+
+          # ASSERTION 4, WHICH THE SKIP MESSAGE HAS PROMISED SINCE THIS GATE WAS
+          # WRITTEN AND THE CODE NEVER DID. It is the strongest of the four. A
+          # fixpoint says gen1 reproduces itself, which an assembler that is
+          # broken CONSISTENTLY would also satisfy. Building the ladder to the
+          # same bytes as the reference build is what says it is the same
+          # assembler rather than merely a stable one.
+          echo
+          echo "  4. does gen1 build stage 1 to identical bytes?"
+          if [ ! -f spikes/stage1-as/stage1-as.s0 ]; then
+            echo "    stage1-as.s0 not found -- cannot check"
+            exit 1
+          fi
+          ./gen1 < spikes/stage1-as/stage1-as.s0 > g1s1.bin \
+            && ./elf g1stage1 < g1s1.bin \
+            || { echo "    gen1 could not build stage1"; exit 1; }
+          if cmp -s g1stage1 stage1; then
+            echo "    PASS: stage1 byte-identical to the reference build."
+          else
+            printf '    FAIL: %s vs reference %s\n' \
+              "$(sha256sum g1stage1 | cut -c1-16)" \
+              "$(sha256sum stage1 | cut -c1-16)"
+            exit 1
+          fi
 
       - name: 'GATE: does the committed binary match its source?'
         run: |
