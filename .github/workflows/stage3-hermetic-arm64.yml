@@ -330,9 +330,24 @@ jobs:
           # act now rather than something that happens silently every run.
           CORPUS=spikes/stage2-mini-c/corpus/conformance.tsv
           [ -f "$CORPUS" ] || { echo "  corpus not found at $CORPUS"; exit 1; }
-          cp "$CORPUS" tests.tsv
-          printf '  corpus %s: %s tests, %s\n' "$CORPUS" \
-            "$(wc -l < tests.tsv)" "$(sha256sum tests.tsv | cut -c1-16)"
+          # pins/ IS BIND-MOUNTED AT /in, AND THE IN-BOX SCRIPT READS
+          # /in/stage2-tests.corpus. The extractor used to write there directly;
+          # replacing it with a copy to tests.tsv in the workspace left that
+          # path empty, so the while-read loop read nothing and the suite
+          # reported "0/0 passed, 0 failed" -- as a PASS.
+          mkdir -p pins
+          cp "$CORPUS" pins/stage2-tests.corpus
+          n=$(wc -l < pins/stage2-tests.corpus)
+          printf '  corpus %s: %s tests, %s\n' "$CORPUS" "$n" \
+            "$(sha256sum pins/stage2-tests.corpus | cut -c1-16)"
+          # THE FLOOR THE EXTRACTOR USED TO ENFORCE. --floor 415 asserted the
+          # extraction found a plausible number of tests; dropping the extractor
+          # dropped the floor with it, and nothing downstream had any opinion
+          # about how many tests should run.
+          if [ "$n" -lt 415 ]; then
+            echo "  FAIL: only $n tests; the corpus should carry at least 415."
+            exit 1
+          fi
 
 
       - name: Assemble the box
@@ -511,6 +526,14 @@ jobs:
           done < /in/stage2-tests.corpus
           set -e
           echo "    $pass/$n passed, $fail failed"
+          # A SUITE THAT RAN NOTHING IS NOT A SUITE THAT PASSED. This reported
+          # "0/0 passed, 0 failed" and exited clean when the corpus failed to
+          # reach the box -- the single most dangerous shape a test result can
+          # have, because it looks exactly like success.
+          if [ "$n" -lt 415 ]; then
+            echo "    FAIL: only $n tests ran; expected at least 415."
+            exit 1
+          fi
           if [ "$fail" != 0 ]; then
             echo "    first failures (full list in the artifact):"
             head -20 /out/stage2-failures.txt | sed 's/^/      /'
