@@ -208,6 +208,21 @@ def cmd_relist(dis_path, bin_path, out_path):
     # there is not, so every target resolves and the comparison is total.
     data = open(bin_path, "rb").read()
     base = min(insns) if insns else 0
+    end = base + len(data)
+
+    # TARGETS OUTSIDE .text NEED DEFINING TOO. The first instruction is
+    # `adr x19, inbuf`, and inbuf lives in .bss -- so no label for it exists in
+    # a listing built only from .text, and the reference resolved to zero
+    # exactly like the .ascii case before it. Same silent failure, one section
+    # further out. Every referenced address beyond the range gets an absolute
+    # `.set`, and the caller links at the real VMA so the PC-relative arithmetic
+    # comes out right.
+    refs = set()
+    for t in insns.values():
+        refs.update(int(x, 16) for x in re.findall(r"\bL([0-9a-f]+)\b", t))
+    external = sorted(a for a in refs if not (base <= a < end))
+    head = [".set L%x, 0x%x" % (a, a) for a in external]
+
     body, off, n_ins, n_dat = [], 0, 0, 0
     while off < len(data):
         addr = base + off
@@ -221,9 +236,13 @@ def cmd_relist(dis_path, bin_path, out_path):
             off += 1
             n_dat += 1
     with open(out_path, "w", encoding="utf-8") as fh:
-        fh.write(".text\n" + "\n".join(body) + "\n")
+        fh.write("\n".join(head) + "\n.text\n" + "\n".join(body) + "\n")
+    with open(out_path + ".base", "w", encoding="utf-8") as fh:
+        fh.write("0x%x\n" % base)
     print("  wrote %s: %d instructions + %d data bytes, every byte labelled"
           % (out_path, n_ins, n_dat))
+    print("  %d targets outside .text defined absolutely; link at 0x%x"
+          % (len(external), base))
     return 0
 
 

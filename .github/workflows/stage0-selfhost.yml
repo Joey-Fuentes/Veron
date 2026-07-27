@@ -370,8 +370,17 @@ jobs:
               head -4 "redis-$tool.err" | sed 's/^/      /'
               fail_a=$((fail_a + 1)); continue
             fi
+            # LINK AT THE ORIGINAL VMA. The out-of-.text targets are absolute
+            # `.set`s, so the PC-relative arithmetic in `adr` is only right if
+            # the section sits where it sat in the original. Assembling alone
+            # left `adr x19, inbuf` pointing at zero -- the same silent
+            # zero-immediate failure as the .ascii case, one section further
+            # out. GNU ld does the linking for BOTH so the ASSEMBLER is the
+            # only variable between the two arms.
+            "$P/bin/ld" -Ttext="$(cat redis.s.base)" --entry=0 \
+              -o "redis-$tool.elf" "redis-$tool.o" 2>/dev/null
             "$P/bin/objcopy" -O binary --only-section=.text \
-              "redis-$tool.o" "redis-$tool.bin"
+              "redis-$tool.elf" "redis-$tool.bin"
             if cmp -s "redis-$tool.bin" orig.bin; then
               printf '    %-5s PASS  %s bytes reproduce the original exactly\n' \
                 "$tool" "$(wc -c < "redis-$tool.bin")"
