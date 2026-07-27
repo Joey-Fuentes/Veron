@@ -71,6 +71,12 @@ jobs:
     timeout-minutes: 20
     env:
       SRC: spikes/stage0-as/stage0-as.aarch64.s
+      # Instructions whose disassembly is not their source spelling. Folding the
+      # movz shifts into their immediates took this from 27 to 2; what is left
+      # is `adr x27, symtab` printing as `__bss_start` (two names, one address)
+      # and one branch. Lower it whenever the number falls; never raise it
+      # without saying why in the same commit.
+      ROUNDTRIP_BUDGET: '2'
     steps:
       - uses: actions/checkout@v5
 
@@ -267,7 +273,10 @@ jobs:
 
           echo
           echo "  --- B. AUDITABLE: does a human see what the source says? ---"
-          python3 tools/s0_roundtrip.py "$SRC" stage0-as.dis
+          # THE RATCHET. $ROUNDTRIP_BUDGET is how many instructions currently
+          # fail to read back as written. It may fall and must never rise.
+          python3 tools/s0_roundtrip.py "$SRC" stage0-as.dis \
+            --budget "$ROUNDTRIP_BUDGET"
 
       - name: 'REGRESSION: does this stage0-as still build stage 1 and stage 2?'
         run: |

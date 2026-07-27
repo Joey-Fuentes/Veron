@@ -160,8 +160,15 @@ def cmd_relist(dis_path, out_path):
 def main():
     if len(sys.argv) == 4 and sys.argv[1] == "relist":
         return cmd_relist(sys.argv[2], sys.argv[3])
+    budget = None
+    argv = sys.argv[1:]
+    if "--budget" in argv:
+        i = argv.index("--budget")
+        budget = int(argv[i + 1])
+        del argv[i:i + 2]
+        sys.argv = [sys.argv[0]] + argv
     if len(sys.argv) != 3:
-        print("usage: s0_roundtrip.py <source.s> <objdump-output>")
+        print("usage: s0_roundtrip.py <source.s> <objdump-output> [--budget N]")
         print("       s0_roundtrip.py relist <objdump-output> <out.s>")
         return 2
     src = [x for x in read_source(sys.argv[1]) if x[0] != "<data>"]
@@ -228,6 +235,29 @@ def main():
         print("  round-trip exists to exclude.")
     else:
         print("  Every instruction disassembles to its own source spelling.")
+
+    # A RATCHET, NOT A THRESHOLD. The budget is the number of instructions that
+    # currently fail to read back as written. It may go down and must never go
+    # up: that is what stops a new source line quietly reintroducing a form the
+    # disassembler will re-spell. When it reaches 0 the budget goes to 0 too and
+    # the round-trip is exact by construction rather than by inspection.
+    if budget is not None:
+        n_real = len([d for d in diff if d[1][1] != d[2][1]])
+        print()
+        if n_real > budget:
+            print("  FAIL: %d instructions do not read back as written; budget is %d."
+                  % (n_real, budget))
+            print("        A source line was added in a form the disassembler")
+            print("        re-spells. Either write it in a form that round-trips")
+            print("        or say why the budget should rise -- but a rising")
+            print("        budget is the thing this check exists to prevent.")
+            return 1
+        if n_real < budget:
+            print("  %d of a budgeted %d remain -- LOWER THE BUDGET to %d in this"
+                  % (n_real, budget, n_real))
+            print("  commit, so the gain cannot be given back silently.")
+        else:
+            print("  %d of a budgeted %d remain." % (n_real, budget))
     return 0
 
 
