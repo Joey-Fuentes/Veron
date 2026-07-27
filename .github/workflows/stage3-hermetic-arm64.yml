@@ -319,6 +319,20 @@ jobs:
       - name: Extract the stage-2 conformance corpus from the demo workflow
         run: |
           set -eu
+          # FIND THE DEMO WHEREVER IT LIVES. The 426-program corpus is extracted
+          # from stage2-mini-c-demo.yml, and archiving that file to
+          # .github/workflows-archive/ broke this job -- GitHub stops EXECUTING
+          # an archived workflow but this one READS it as data. The archive
+          # audit checked which workflows fire and not which are referenced,
+          # which is the same class of mistake as a dangling symlink.
+          #
+          # The corpus is data and should not live inside a workflow at all;
+          # until it is lifted out, look in both places and say which was used.
+          CORPUS_SRC=.github/workflows/stage2-mini-c-demo.yml
+          [ -f "$CORPUS_SRC" ] || CORPUS_SRC=.github/workflows-archive/stage2-mini-c-demo.yml
+          [ -f "$CORPUS_SRC" ] || { echo "  corpus source not found in either location"; exit 1; }
+          echo "  corpus source: $CORPUS_SRC"
+
           # THE DEMO STAYS THE SINGLE SOURCE OF TRUTH. stage2-mini-c-demo.yml
           # carries ~490 example programs across 21 harness definitions;
           # copying them here would fork the corpus, and a forked corpus drifts
@@ -344,7 +358,7 @@ jobs:
           # whole harness drops the count below the floor and fails here rather
           # than quietly running four hundred tests and calling it a gate.
           python3 tools/extract_stage2_tests.py \
-            .github/workflows/stage2-mini-c-demo.yml \
+            "$CORPUS_SRC" \
             pins/stage2-tests.corpus --floor 415
 
       - name: Assemble the box

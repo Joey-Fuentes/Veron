@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """extract_stage2_tests.py -- lift the stage-2 conformance corpus out of
-.github/workflows/stage2-mini-c-demo.yml so another job can run it.
+the stage2-mini-c-demo workflow so another job can run it.
+
+The demo may live in .github/workflows/ or .github/workflows-archive/ -- the
+caller passes the path, because archiving a workflow stops GitHub executing it
+but does not stop this reading it as data.
 
     usage: extract_stage2_tests.py <demo.yml> <out.tsv> [--floor N]
 
