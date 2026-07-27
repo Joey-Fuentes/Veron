@@ -81,6 +81,7 @@ parse_loop:
     bl      skip_ws
     cmp     x20, x21
     b.ge    pass_end
+    mov     x28, x20                // line start, kept for `die` to echo
     ldrb    w0, [x19, x20]
     cmp     w0, #'#'
     b.eq    skip_line
@@ -108,7 +109,7 @@ parse_loop:
     b.eq    h_udiv
     cmp     w0, #'e'
     b.eq    h_eor
-    b       skip_line
+    b       die                     // was `b skip_line`: unknown mnemonics VANISHED
 pass_end:
     cmp     x23, #2
     b.eq    the_end
@@ -116,6 +117,48 @@ pass_end:
     b       pass_start
 the_end:
     mov     x0, #0
+    mov     x8, #93
+    svc     #0
+
+// ---- die: reject the current line and exit nonzero ------------------------
+// Entered with x28 = start of the offending line (saved in parse_loop). Writes
+//     stage0-as: rejected: <the line>
+// to stderr and exits 2. Never returns, so it clobbers freely.
+//
+// WHY AN ECHO RATHER THAN A BARE STRING. A fixed message costs eight
+// instructions and says only that something, somewhere, was wrong. Echoing the
+// line costs about twelve more and says exactly which one. Against a 639-line
+// self-host that is the difference between a log you can act on and a bisect.
+//
+// Every instruction below is inside the subset stage0-as itself accepts, so
+// this routine does not enlarge the self-hosting gap it exists to close.
+die:
+    mov     x0, #2
+    adr     x1, rejmsg
+    mov     x2, #21
+    mov     x8, #64
+    svc     #0
+    mov     x24, x28
+die_scan:
+    cmp     x24, x21
+    b.ge    die_emit
+    ldrb    w10, [x19, x24]
+    cmp     w10, #0x0A
+    b.eq    die_emit
+    add     x24, x24, #1
+    b       die_scan
+die_emit:
+    add     x1, x19, x28
+    sub     x2, x24, x28
+    mov     x0, #2
+    mov     x8, #64
+    svc     #0
+    mov     x0, #2
+    adr     x1, rejnl
+    mov     x2, #1
+    mov     x8, #64
+    svc     #0
+    mov     x0, #2
     mov     x8, #93
     svc     #0
 
@@ -143,7 +186,7 @@ do_dot:
     b.eq    do_byte
     cmp     w10, #'a'
     b.eq    do_ascii
-    b       skip_line
+    b       die                     // unknown '.' directive
 do_byte:
     add     x20, x20, #5            // ".byte"
     bl      skip_ws
@@ -156,7 +199,7 @@ do_ascii:
     bl      skip_ws
     ldrb    w0, [x19, x20]
     cmp     w0, #0x22               // opening quote
-    b.ne    skip_line
+    b.ne    die                     // .ascii with no opening quote
     add     x20, x20, #1
 asc_loop:
     cmp     x20, x21
@@ -191,7 +234,7 @@ h_a:
     b.eq    h_add
     cmp     w10, #'r'
     b.eq    h_adr
-    b       skip_line
+    b       die                     // 'a...' that is not and/asr/add/adr
 
 // ---- mov x<d> <imm>  or  mov x<d> x<n> ----
 h_mov:
@@ -374,7 +417,7 @@ h_s:
     b.eq    h_sub
     cmp     w10, #'t'
     b.eq    h_st
-    b       skip_line
+    b       die                     // 's...' that is not svc/sub/st*
 h_svc:
     add     x20, x20, #3
     movz    w9, #0x0001
@@ -654,27 +697,51 @@ h_bcond:
     add     x3, x20, #1
     ldrb    w3, [x19, x3]
     add     x20, x20, #2
-    mov     w26, #14
+    // BOTH CONDITION CHARACTERS ARE CHECKED, AND THERE IS NO DEFAULT.
+    // The previous version tested only the first and left w26 at 14 (AL), so
+    // three different inputs assembled to three wrong answers, none of them an
+    // error:  b.le -> 11 (LT),  b.gt -> 10 (GE),  b.zz -> an UNCONDITIONAL
+    // branch. Nothing above stage0-as emits b.gt or b.le -- stage1-as.s0 and
+    // stage2-mini-c.s1 contain none -- which is why the ladder was unaffected.
+    // stage0-as's OWN source uses them eight times, so self-hosting on the old
+    // code would have produced an assembler with eight inverted comparisons and
+    // no diagnostic. Condition codes: EQ 0, NE 1, GE 10, LT 11, GT 12, LE 13.
     cmp     w2, #'e'
     b.ne    bc_n
     cmp     w3, #'q'
-    b.ne    bc_go
-    mov     w26, #0
+    b.ne    die
+    mov     w26, #0                 // eq
     b       bc_go
 bc_n:
     cmp     w2, #'n'
     b.ne    bc_l
-    mov     w26, #1
+    cmp     w3, #'e'
+    b.ne    die
+    mov     w26, #1                 // ne
     b       bc_go
 bc_l:
     cmp     w2, #'l'
     b.ne    bc_g
-    mov     w26, #11
+    cmp     w3, #'t'
+    b.ne    bc_le
+    mov     w26, #11                // lt
+    b       bc_go
+bc_le:
+    cmp     w3, #'e'
+    b.ne    die
+    mov     w26, #13                // le
     b       bc_go
 bc_g:
     cmp     w2, #'g'
-    b.ne    bc_go
-    mov     w26, #10
+    b.ne    die
+    cmp     w3, #'e'
+    b.ne    bc_gt
+    mov     w26, #10                // ge
+    b       bc_go
+bc_gt:
+    cmp     w3, #'t'
+    b.ne    die
+    mov     w26, #12                // gt
 bc_go:
     bl      skip_ws
     ldrb    w0, [x19, x20]
@@ -811,6 +878,8 @@ eb_adv:
 
     .balign 8
 inover:  .ascii  "stage0-as: input exceeds INBUF_SZ\n"
+rejmsg:  .ascii  "stage0-as: rejected: "
+rejnl:   .ascii  "\n"
 
     .bss
     .align  4

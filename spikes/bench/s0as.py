@@ -57,7 +57,20 @@ def encode(l, at, labels):
         return ((_pos(lbl)-at) >> sh) & mask
     if op == 'mov':
         d = _reg(p[1])
-        if p[2][0] in 'xw':
+        if p[2][0] == 'w':
+            # DO NOT GUESS THIS ONE. stage0-selfhost measured a three-way
+            # disagreement on `mov w0 w1`: this model said aa0103e0 (a 64-bit
+            # register move), the real stage0-as says d2800000 (movz x0,#0 --
+            # `w1` falls through to the immediate parser and reads as zero), and
+            # GNU as says 2a0103e0 (a 32-bit move). Modelling any one of those
+            # would make the bench confidently wrong. Refusing is the only
+            # honest answer until the real assembler's w-register handling is
+            # fixed, at which point this branch models whatever it then does.
+            raise ValueError(
+                'mov with a w-register source is not modelled: the real '
+                'stage0-as mis-parses it as an immediate. See '
+                '.github/workflows/stage0-selfhost.yml')
+        if p[2][0] == 'x':
             n=_reg(p[2]); return (0xAA0003E0|(n<<16)|d, ('mov_r',d,n))
         imm=int(p[2])
         # MOVZ carries a 16-bit immediate. Real stage0-as encodes `mov` the same way
@@ -128,7 +141,12 @@ def encode(l, at, labels):
     if op=='blr': n=_reg(p[1]); return (0xD63F0000|(n<<5),('blr',n))
     if op=='bl':  return (0x94000000|rel(p[1],2,0x3FFFFFF),('bl',_pos(p[1])))
     if op=='b':   return (0x14000000|rel(p[1],2,0x3FFFFFF),('b',_pos(p[1])))
-    if op in ('b.eq','b.ne','b.lt','b.ge'):
-        cond={'b.eq':0,'b.ne':1,'b.lt':11,'b.ge':10}[op]
+    if op in ('b.eq','b.ne','b.lt','b.ge','b.gt','b.le'):
+        # b.gt and b.le were added to stage0-as together with input rejection.
+        # Before that, its condition dispatch tested only the FIRST character
+        # after `b.` and defaulted to 14 (AL), so `b.gt` assembled as `b.ge` and
+        # `b.le` as `b.lt` -- silently, with no diagnostic. Both are now checked
+        # on two characters and anything else is rejected.
+        cond={'b.eq':0,'b.ne':1,'b.ge':10,'b.lt':11,'b.gt':12,'b.le':13}[op]
         return (0x54000000|(rel(p[1],2,0x7FFFF)<<5)|cond,('bcc',op,_pos(p[1])))
     raise ValueError("unknown: "+l)
