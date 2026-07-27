@@ -111,6 +111,38 @@ a verified toolchain, and `spikes/stage0-as/LADDER-BASELINE.txt` already checks
 that it rebuilds identically. A disassembler written in `.s0`, or in stage 2's C
 subset, is in that category: source only.
 
+## Deferred, and deliberately so
+
+Three pieces are understood, scoped, and **not** being built yet. They are
+recorded here so that "not done" is never mistaken for "not thought about".
+
+**A driver written in `.s0`, replacing busybox.** `BUDGET_DRIVER` is the last
+non-empty tier. Measured, the in-box script needs a real shell today -- 27
+pipes, 18 command substitutions, 29 conditionals -- but almost all of that is
+reporting and verification, not building. Move the checking outside the box and
+what remains is: run a program with args, redirect stdin and stdout, run in
+sequence, abort on a non-zero exit. That is `kaem`'s feature set: roughly
+200-300 ARM64 instructions, needing `open`, `close`, `read`, `dup3`, `clone`,
+`execve`, `wait4` and `exit`.
+
+The property that makes it worth doing this way: written in `.s0` it is
+assembled by our own committed `stage0-as` and `elf`, so it needs no host
+toolchain to produce and does not wait on tcc. It becomes a third committed,
+round-trip-verified artifact and `BUDGET_DRIVER` goes empty. Do the
+verification-moves-out-of-the-box refactor first -- it measures the exact
+command list rather than estimating it, and it is a pure refactor.
+
+**A disassembler of our own.** See the verification chain above: it is a
+replacement for binutils and LLVM in the round trip, not a second opinion, and
+it is sound only because those two audited the root first. Source only, never
+committed -- it is derived like everything else above the seed.
+
+**A hand-written builder OS.** The `spikes/seedas/` end state, where the
+committed artifact is hex and `stage0-as` itself becomes derived.
+
+None of these is on the critical path to a working ladder. All three reduce what
+has to be trusted. None should start before stage 0 self-hosting closes.
+
 ## Where this sits on the road to the real seed
 
 ```
