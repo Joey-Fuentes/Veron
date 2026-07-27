@@ -199,7 +199,13 @@ do_label:
     add     x20, x20, #0x1
     ldrb    w0, [x19, x20]
     add     x20, x20, #0x1
-    str     w22, [x27, w0, uxtw #2]
+    // Extended addressing (`[x27, w0, uxtw #2]`) is not implemented: it needs a
+    // whole new operand parse for the extend-and-scale suffix. w0 came from
+    // ldrb, so its top bits are already zero and a plain shift-and-add is the
+    // same address, in forms this assembler already handles.
+    lsl     w0, w0, #2
+    add     x0, x27, x0
+    str     w22, [x0]
     b       parse_loop
 
 // ---- '.' : .byte / .ascii ----
@@ -356,12 +362,21 @@ h_adr:
     b       ha_enc
 ha_lab:
     add     x20, x20, #0x1
-    ldr     w1, [x27, w0, uxtw #2]
+    lsl     w1, w0, #2
+    add     x1, x27, x1
+    ldr     w1, [x1]
 ha_enc:
     sub     w1, w1, w22
-    and     w2, w1, #0x3
+    // Bitmask-immediate forms (N:immr:imms) are not implemented: encoding an
+    // arbitrary value into them needs rotation and run-length analysis, which
+    // is real logic to put in a trust root a human has to read. Two or three
+    // instructions here cost less than that, and the value stays visible.
+    mov     w2, #0x3
+    and     w2, w1, w2
     asr     w3, w1, #2
-    and     w3, w3, #0x7ffff
+    mov     w13, #0xffff
+    movk    w13, #0x7, lsl #16              // 0x0007ffff
+    and     w3, w3, w13
     mov     w9, #0x10000000
     orr     w9, w9, w2, lsl #29
     orr     w9, w9, w3, lsl #5
@@ -385,7 +400,8 @@ h_cmp:
     mov     w1, #0xf1000000
     orr     w9, w9, w1
     orr     w9, w9, w24, lsl #5
-    orr     w9, w9, #0x1f
+    mov     w1, #0x1f
+    orr     w9, w9, w1
     bl      emit_dp
     b       parse_loop
 h_cmp_reg:
@@ -394,7 +410,8 @@ h_cmp_reg:
     mov     w9, #0xeb000000
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w24, lsl #5
-    orr     w9, w9, #0x1f
+    mov     w0, #0x1f
+    orr     w9, w9, w0
     bl      emit_dp
     b       parse_loop
 
@@ -566,11 +583,15 @@ h_branch:
     b       hb_enc
 hb_lab:
     add     x20, x20, #0x1
-    ldr     w1, [x27, w0, uxtw #2]
+    lsl     w1, w0, #2
+    add     x1, x27, x1
+    ldr     w1, [x1]
 hb_enc:
     sub     w1, w1, w22
     asr     w1, w1, #2
-    and     w1, w1, #0x3ffffff
+    mov     w13, #0xffff
+    movk    w13, #0x3ff, lsl #16            // 0x03ffffff
+    and     w1, w1, w13
     mov     w9, #0x14000000
     orr     w9, w9, w1
     bl      emit
@@ -600,11 +621,15 @@ h_bl_or_blr:
     b       hbl_enc
 hbl_lab:
     add     x20, x20, #0x1
-    ldr     w1, [x27, w0, uxtw #2]
+    lsl     w1, w0, #2
+    add     x1, x27, x1
+    ldr     w1, [x1]
 hbl_enc:
     sub     w1, w1, w22
     asr     w1, w1, #2
-    and     w1, w1, #0x3ffffff
+    mov     w13, #0xffff
+    movk    w13, #0x3ff, lsl #16            // 0x03ffffff
+    and     w1, w1, w13
     mov     w9, #0x94000000
     orr     w9, w9, w1
     bl      emit
@@ -879,11 +904,15 @@ bc_go:
     b       bc_enc
 bc_lab:
     add     x20, x20, #0x1
-    ldr     w1, [x27, w0, uxtw #2]
+    lsl     w1, w0, #2
+    add     x1, x27, x1
+    ldr     w1, [x1]
 bc_enc:
     sub     w1, w1, w22
     asr     w1, w1, #2
-    and     w1, w1, #0x7ffff
+    mov     w13, #0xffff
+    movk    w13, #0x7, lsl #16              // 0x0007ffff
+    and     w1, w1, w13
     mov     w9, #0x54000000
     orr     w9, w9, w1, lsl #5
     orr     w9, w9, w26
