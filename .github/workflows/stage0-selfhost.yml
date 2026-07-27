@@ -452,21 +452,43 @@ jobs:
             echo "    both assemblers reproduce the binary from its own disassembly."
           fi
           . tools/ab.sh
-          ab_rule 'EVERY ARTIFACT IN THE ROUND TRIP'
-          ab_art 'source .s'              "$SRC"
-          ab_art 'binary stage0-as'       stage0-as
-          ab_art '  .text extracted'      orig.bin
-          ab_art 'disasm objdump'         stage0-as.dis
-          ab_art 'disasm llvm-objdump'    stage0-as.llvm.dis
-          ab_art 'relisted .s'            redis.s
-          ab_art 'reasm .text via gnu'    redis-gnu.bin
-          ab_art 'reasm .text via llvm'   redis-llvm.bin
+          # SAY WHETHER IT MATCHES; DO NOT MAKE THE READER COMPARE HEX STRINGS.
+          # The reassembled .text shas were already equal to the original's, but
+          # nothing in the output said so -- the claim rested on someone noticing
+          # the same 16 characters three times. A verification step should state
+          # its verdict.
+          verdict() {   # verdict <label> <file> <reference-or-->
+            _v='-'
+            if [ "$3" != '-' ] && [ -f "$2" ] && [ -f "$3" ]; then
+              if cmp -s "$2" "$3"; then _v='MATCHES the original'
+              else _v='DIFFERS'; fi
+            elif [ "$3" = 'n/a' ]; then _v='n/a -- different text layout'
+            fi
+            printf '  %-26s %12s  %-16s  %s\n' "$1" \
+              "$(ab_size "$2")" "$(ab_sha "$2")" "$_v"
+          }
+          printf '\n  === EVERY ARTIFACT IN THE ROUND TRIP ===\n'
+          printf '  %-26s %12s  %-16s  %s\n' 'ARTIFACT' 'BYTES' 'SHA256[0:16]' 'vs ORIGINAL .text'
+          verdict 'source .s'            "$SRC"               -
+          verdict 'binary stage0-as'     stage0-as            -
+          verdict '  .text extracted'    orig.bin             orig.bin
+          verdict 'disasm objdump'       stage0-as.dis        n/a
+          verdict 'disasm llvm-objdump'  stage0-as.llvm.dis   n/a
+          verdict 'relisted .s'          redis.s              -
+          verdict 'reasm .text via gnu'  redis-gnu.bin        orig.bin
+          verdict 'reasm .text via llvm' redis-llvm.bin       orig.bin
+          echo
+          echo "  SCOPE, STATED PLAINLY. What is compared is the .text SECTION,"
+          echo "  not the whole ELF. The reassembled object carries our own"
+          echo "  address-derived labels rather than the original symbol names,"
+          echo "  has no .bss, and its section headers differ -- so a whole-file"
+          echo "  comparison would fail for reasons that say nothing about the"
+          echo "  code. The claim being made is: THE CODE IS REPRODUCED EXACTLY."
+          echo "  The ELF container is not reconstructed and is not claimed to be."
           echo
           echo "  The two DISASSEMBLY FILES have different shas and must: they are"
-          echo "  different text layouts. What has to match is the instruction"
-          echo "  stream they encode, which is check C. The three .text shas -- the"
-          echo "  original and both reassemblies -- must be identical, and that is"
-          echo "  the claim check A makes."
+          echo "  different text layouts of the same instruction stream. Equality"
+          echo "  there is asserted on the stream, by check C."
           echo
           echo "  --- B. AUDITABLE: does a human see what the source says? ---"
           # THE RATCHET. $ROUNDTRIP_BUDGET is how many instructions currently
