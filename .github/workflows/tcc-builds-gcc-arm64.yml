@@ -60,6 +60,17 @@ name: tcc-builds-gcc-arm64
 # ============================================================================
 
 on:
+  # CALLABLE, so stage4-complete can ORDER these jobs instead of
+  # reimplementing them. Nothing below changes: this workflow still
+  # runs standalone on push and on dispatch exactly as before.
+  # github.event.inputs is null when called, and every reference to it
+  # in this file already has a `|| 'default'` fallback, so the defaults
+  # apply and no input plumbing is needed.
+  workflow_call:
+    outputs:
+      sysroot_hash:
+        description: 'gcc 10.2.0, descended from tcc'
+        value: ${{ jobs.boxed.outputs.sysroot_hash }}
   push:
     paths:
       - '.github/workflows/tcc-builds-gcc-arm64.yml'
@@ -95,6 +106,8 @@ env:
 
 jobs:
   boxed:
+    outputs:
+      sysroot_hash: ${{ steps.chain_seal.outputs.hash }}
     name: 'arm64 tcc -> arm64 gcc 4.7.4, boxed'
     runs-on: ubuntu-24.04-arm
     # THREE gcc builds now: 4.7.4 twice and 10.2.0 once, plus gmp/mpfr/mpc
@@ -1369,3 +1382,24 @@ jobs:
           echo "  --- what the host still supplied, for the record ---"
           sed -n '/^masked/,/^writable/p' bind-list.txt | sed 's/^/  /'
           exit 0
+
+      # ---------------------------------------------------------------- chain
+      # THE HAND-OFF, SAID OUT LOUD. hermetic-gcc10 already notes that "prefix is
+      # how two workflows quietly hand each other a sysroot" -- this is the same
+      # hand-off with the quiet taken out. The tree gets a content hash, the hash
+      # becomes a workflow output, and stage4-complete asserts that what the next
+      # rung consumed is what this rung produced. Standalone runs just print it.
+      - name: 'Seal this rung for the chain'
+        id: chain_seal
+        if: always()
+        run: |
+          set -eu
+          T=work/out10
+          if [ -d "$T" ]; then
+            H=$(sh spikes/stage4/chain/seal.sh hash "$T")
+          else
+            H=none
+            echo "  no $T -- this run produced nothing to hand on"
+          fi
+          echo "hash=$H" >> "$GITHUB_OUTPUT"
+          echo "  boxed sealed: $H"
