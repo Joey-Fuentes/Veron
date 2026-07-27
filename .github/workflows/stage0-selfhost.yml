@@ -123,20 +123,42 @@ jobs:
       - name: Build the reference stage0-as and elf
         run: |
           set -eu
-          # ONCE THE BINARIES ARE COMMITTED, VERIFY THOSE, NOT FRESH ONES.
-          # Rebuilding from source and checking the rebuild proves the source
-          # is self-consistent and says nothing about the artifact in the
-          # repository -- which is the thing that will actually be run.
-          if [ -x spikes/stage0-as/stage0-as ] && [ -x spikes/elf/elf ]; then
-            echo "  committed binaries present -- verifying THOSE"
-            cp spikes/stage0-as/stage0-as stage0-as
-            cp spikes/elf/elf elf
-            as -o s0.o "$SRC"
-            for _b in stage0-as elf; do
-              printf '  %-14s %8s  %s  (committed)\n' "$_b" \
-                "$(wc -c < "$_b")" "$(sha256sum "$_b" | cut -c1-16)"
-            done
-            exit 0
+          # BUILD FROM SOURCE, THEN CHECK THE COMMITTED ARTIFACT AGAINST IT.
+          # The first version used the committed binary and exited early, so a
+          # source change could never produce its replacement: the probes ran
+          # against the old binary and the round trip compared it to the new
+          # source. Correct to fail, impossible to fix.
+          #
+          # Building here is not a budget violation -- BUDGET_PATH governs the
+          # sealed box in stage3-hermetic-arm64, and this job is verification.
+          as -o s0.o "$SRC"
+          ld -static -o stage0-as s0.o
+          as -o elf.o spikes/elf/elf.aarch64.s
+          ld -static -o elf elf.o
+          for _b in stage0-as elf; do
+            printf '  %-14s %8s  %s  (from source)\n' "$_b" \
+              "$(wc -c < "$_b")" "$(sha256sum "$_b" | cut -c1-16)"
+          done
+          _stale=0
+          for _p in spikes/stage0-as/stage0-as spikes/elf/elf; do
+            _b=$(basename "$_p")
+            [ -f "$_p" ] || continue
+            if cmp -s "$_p" "$_b"; then
+              printf '  %-14s committed artifact MATCHES the source\n' "$_b"
+            else
+              printf '  %-14s committed %s  built %s  STALE\n' "$_b" \
+                "$(sha256sum "$_p" | cut -c1-16)" "$(sha256sum "$_b" | cut -c1-16)"
+              _stale=$((_stale + 1))
+            fi
+          done
+          echo "_stale=$_stale" >> "$GITHUB_ENV"
+          if [ "$_stale" != 0 ]; then
+            echo
+            echo "  $_stale committed binary/binaries no longer match their source."
+            echo "  The checks below run against the FRESH build, so they measure"
+            echo "  the change. Download them from this run's artifact and commit"
+            echo "  them; the final step fails until the repository agrees with"
+            echo "  itself, which is the whole point of committing them."
           fi
           as -o s0.o "$SRC"
           ld -static -o stage0-as s0.o
@@ -995,6 +1017,19 @@ jobs:
           cmp -s gen2.bin gen1.bin \
             && echo "  PASS: gen2 == gen1 -- FIXPOINT." \
             || { echo "  FAIL: not a fixpoint."; exit 1; }
+
+      - name: 'GATE: does the committed binary match its source?'
+        run: |
+          set -eu
+          if [ "${_stale:-0}" = 0 ]; then
+            echo "  committed binaries agree with their sources."
+          else
+            echo "  FAIL: $_stale committed binary/binaries are stale."
+            echo "  Changing stage0-as or elf takes two commits by design --"
+            echo "  the source, then the binary it produces. This gate is what"
+            echo "  stops the second one being forgotten."
+            exit 1
+          fi
 
       - name: 'WHERE THIS LEAVES THE HOST BUDGET'
         if: always()
