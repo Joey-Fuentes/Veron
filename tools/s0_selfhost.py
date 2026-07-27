@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""s0_selfhost.py -- can stage0-as assemble its own source?
+
+    usage: s0_selfhost.py census  <stage0-as.aarch64.s>          # the inventory
+           s0_selfhost.py probes  <stage0-as.aarch64.s> <outdir> # one case per form
+           s0_selfhost.py xlate   <stage0-as.aarch64.s> <out.s0> # the translation
+
+WHY. stage0-as is a mnemonic assembler written in GNU `as` syntax, so `as` and
+`ld` are needed to build it -- the last two host tools on Veron's build path. If
+its source were rewritten in stage0-as's OWN input language, stage0-as could
+assemble itself, and the only thing host tools would be needed for is birthing
+the very first binary (which a hand-encoded seed then replaces).
+
+The question is whether stage0-as's input language is expressive enough. A
+mnemonic-level count says yes -- 27 distinct mnemonics, 25 of them in the
+documented table. That count is MISLEADING and this tool exists because of it.
+At OPERAND-FORM level the source uses 44 distinct (mnemonic, operand-shape)
+pairs, and several use addressing and shift forms the table does not list:
+
+    orr  w0, w1, w2, lsl #5           shifted-register operand
+    movz w0, #0x1234, lsl #16         movz with a shift
+    lsl  w0, w1, #4                   IMMEDIATE shift amount (table has register)
+    ldr  w0, [x1, w2, uxtw #2]        extended-register addressing
+    b.gt / b.le                       two condition codes
+    cmp  w0, #'x'                     character-literal immediate
+    add  x0, x0, #INBUF_SZ            .equ symbolic constant
+
+DO NOT TRUST THIS FILE'S OPINION ABOUT WHAT IS SUPPORTED. The documented table
+is documentation; what stage0-as actually accepts is a property of the binary.
+`probes` emits one minimal test per form so CI can settle each by feeding it to
+the real stage0-as and byte-comparing against GNU `as` -- the same method
+stage2-mini-c-demo already uses for individual instruction encodings. The census
+below only says what the source NEEDS, which is a fact about text and can be
+computed here.
+"""
+
+import os
+import re
+import sys
+from collections import Counter
+
+INSTR = re.compile(r"^\s+([a-z][a-z0-9.]*)\s*(.*)$")
+CHARLIT = re.compile(r"#'(\\?.)'")
+
+
+def strip_comment(line):
+    return line.split("//")[0].rstrip()
+
+
+def equ_table(lines):
+    """Collect `.equ NAME, value` definitions."""
+    table = {}
+    for ln in lines:
+        m = re.match(r"\s*\.equ\s+([A-Za-z_][A-Za-z0-9_]*)\s*,\s*(\S+)", ln)
+        if m:
+            table[m.group(1)] = m.group(2)
+    return table
+
+
+def shape(operands):
+    """Normalise an operand list to its FORM, keeping structure that matters."""
+    o = operands
+    # PLACEHOLDERS ARE NON-ALPHABETIC ON PURPOSE. An earlier version used
+    # #IMM / #EQU / Xn, and the .equ rule `#[A-Za-z_]...` then matched the
+    # #IMM it had just written, reclassifying every numeric immediate as a
+    # symbolic constant -- 62 character literals and every hex constant landed
+    # in the wrong bucket and the summary arithmetic went negative. A
+    # substitution alphabet disjoint from the input cannot do that.
+    o = CHARLIT.sub("#%c", o)
+    o = re.sub(r"#0x[0-9a-fA-F]+", "#%i", o)
+    o = re.sub(r"#-?\d+", "#%i", o)
+    o = re.sub(r"#[A-Za-z_][A-Za-z0-9_]*", "#%e", o)
+    o = re.sub(r"\bx\d+\b", "%X", o)
+    o = re.sub(r"\bw\d+\b", "%W", o)
+    # a bare identifier left over is a branch/adr target
+    # (?<!%) so the label rule cannot eat the letter of a placeholder it has
+    # already written -- without it, "#%i" became "#%%L".
+    o = re.sub(r"(?<!%)\b(?!lsl|lsr|asr|uxtw|sxtw)[a-z_][a-z0-9_.]*\b", "%L", o)
+    return o.strip()
+
+
+# Forms the documented table covers. Deliberately conservative: anything not
+# listed here is reported as UNKNOWN, not as unsupported, because only the
+# binary can settle it.
+DOCUMENTED = {
+    ("mov", "%X, #%i"), ("mov", "%X, %X"),
+    ("add", "%X, %X, #%i"), ("add", "%X, %X, %X"),
+    ("sub", "%X, %X, #%i"), ("sub", "%X, %X, %X"),
+    ("cmp", "%X, %X"), ("cmp", "%X, #%i"),
+    ("b", "%L"), ("b.eq", "%L"), ("b.ne", "%L"),
+    ("b.lt", "%L"), ("b.ge", "%L"),
+    ("bl", "%L"), ("ret", ""), ("br", "%X"), ("blr", "%X"),
+    ("orr", "%X, %X, %X"), ("and", "%X, %X, %X"), ("eor", "%X, %X, %X"),
+    ("lsl", "%X, %X, %X"), ("lsr", "%X, %X, %X"), ("asr", "%X, %X, %X"),
+    ("movk", "%X, #%i, lsl #%i"),
+    ("mul", "%X, %X, %X"), ("udiv", "%X, %X, %X"),
+    ("adr", "%X, %L"),
+    ("ldrb", "%W, [%X, %X]"), ("strb", "%W, [%X, %X]"),
+    ("ldr", "%W, [%X]"), ("str", "%W, [%X]"),
+    ("ldr", "%X, [%X]"), ("str", "%X, [%X]"),
+    ("svc", "#%i"),
+}
+
+
+def census(path):
+    lines = [strip_comment(x) for x in open(path, encoding="utf-8")]
+    equ = equ_table(open(path, encoding="utf-8"))
+    forms = Counter()
+    for ln in lines:
+        m = INSTR.match(ln)
+        if not m or m.group(1).startswith("."):
+            continue
+        forms[(m.group(1), shape(m.group(2)))] += 1
+    return forms, equ
+
+
+def cmd_census(path):
+    forms, equ = census(path)
+    total = sum(forms.values())
+    documented = sum(v for k, v in forms.items() if k in DOCUMENTED)
+    print("  %s" % path)
+    print("  %d instruction lines, %d distinct (mnemonic, operand-form) pairs"
+          % (total, len(forms)))
+    print("  .equ constants: %s"
+          % (", ".join("%s=%s" % kv for kv in equ.items()) or "none"))
+    print()
+    print("  %-6s %-34s %6s  %s" % ("MNEM", "OPERAND FORM", "USES", "vs TABLE"))
+    for (mn, sh), n in sorted(forms.items(), key=lambda kv: -kv[1]):
+        mark = "documented" if (mn, sh) in DOCUMENTED else "NOT LISTED"
+        print("  %-6s %-34s %6d  %s" % (mn, sh, n, mark))
+    print()
+    ndoc = sum(1 for k in forms if k in DOCUMENTED)
+    print("  %d of %d lines (%.0f%%) use forms the table documents;"
+          % (documented, total, 100.0 * documented / total))
+    print("  %d lines use the other %d forms. Those are what the probes"
+          % (total - documented, len(forms) - ndoc))
+    print("  must settle against the real binary -- the table is documentation,")
+    print("  not the assembler.")
+    return 0
+
+
+# One minimal, self-contained test per form. GNU-as text and the .s0 text that
+# should encode identically. Registers and immediates are concrete so the two
+# can be byte-compared.
+def probe_pair(mn, sh):
+    """Return (gnu_as_text, s0_text) for a form, or None if not expressible."""
+    subs_gnu = {
+        "%X": ["x0", "x1", "x2"], "%W": ["w0", "w1", "w2"],
+        "#%i": ["#8"], "#%e": ["#8"], "#%c": ["#65"], "%L": ["tgt"],
+    }
+    subs_s0 = {
+        "%X": ["x0", "x1", "x2"], "%W": ["w0", "w1", "w2"],
+        "#%i": ["8"], "#%e": ["8"], "#%c": ["65"], "%L": ["tgt"],
+    }
+    # AArch64 constrains some immediates: movz/movk shifts must be 0/16/32/48
+    # and uxtw scales must be 0 or 2. A probe case GNU `as` rejects proves
+    # nothing about stage0-as, so pick values the encoding actually allows.
+    if "lsl #%i" in sh and mn in ("movz", "movk"):
+        sh_g = sh.replace("lsl #%i", "lsl #16")
+    elif "uxtw #%i" in sh:
+        sh_g = sh.replace("uxtw #%i", "uxtw #2")
+    else:
+        sh_g = sh
+    gnu, s0 = sh_g, sh_g
+    for key in ("#%c", "#%e", "#%i", "%X", "%W", "%L"):
+        i = 0
+        while key in gnu:
+            gnu = gnu.replace(key, subs_gnu[key][min(i, len(subs_gnu[key]) - 1)], 1)
+            s0 = s0.replace(key, subs_s0[key][min(i, len(subs_s0[key]) - 1)], 1)
+            i += 1
+    g = ("\t%s %s" % (mn, gnu)).rstrip()
+    # .s0 syntax: no commas, no brackets, no '#'
+    body = s0.replace(",", " ").replace("[", " ").replace("]", " ")
+    body = body.replace("#", "")          # .s0 has no '#' -- it starts a comment
+    body = re.sub(r"\s+", " ", body).strip()
+    return g, ("%s %s" % (mn, body)).rstrip()
+
+
+def cmd_probes(path, outdir):
+    forms, _ = census(path)
+    os.makedirs(outdir, exist_ok=True)
+    index = []
+    for i, ((mn, sh), n) in enumerate(
+            sorted(forms.items(), key=lambda kv: -kv[1])):
+        pair = probe_pair(mn, sh)
+        if pair is None:
+            continue
+        gnu, s0 = pair
+        name = "f%03d" % i
+        with open(os.path.join(outdir, name + ".s"), "w") as fh:
+            fh.write(".text\n.global _start\n_start:\n%s\ntgt:\n\tnop\n" % gnu)
+        with open(os.path.join(outdir, name + ".s0"), "w") as fh:
+            fh.write("%s\n:tgt\n" % s0)
+        index.append("%s\t%d\t%s\t%s" % (name, n, mn, sh))
+    with open(os.path.join(outdir, "index.tsv"), "w") as fh:
+        fh.write("\n".join(index) + "\n")
+    print("  wrote %d probe pairs to %s" % (len(index), outdir))
+    print("  each is one instruction, in GNU-as text and in .s0 text;")
+    print("  CI assembles both and byte-compares the .text.")
+    return 0
+
+
+def cmd_xlate(path, out):
+    """Mechanical GNU-as -> .s0 translation of the parts that translate.
+
+    Untranslatable lines are emitted as `### NEEDS: <reason> | <original>` so
+    the output is never silently wrong -- a translator that quietly drops a
+    line it did not understand would produce an assembler with a hole in it.
+    """
+    src = list(open(path, encoding="utf-8"))
+    equ = equ_table(src)
+    out_lines, need = [], Counter()
+    for raw in src:
+        ln = strip_comment(raw)
+        if not ln.strip():
+            continue
+        s = ln.strip()
+        if s.startswith((".text", ".global", ".align", ".balign", ".equ")):
+            continue
+        if s.startswith(".bss"):
+            need["'.bss' -- buffers must come from the elf tool's segment"] += 1
+            out_lines.append("### NEEDS: .bss segment | %s" % s)
+            continue
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*):\s*$", s)
+        if m:
+            out_lines.append(":%s" % m.group(1))
+            continue
+        if s.startswith((".byte", ".ascii")):
+            out_lines.append(s)
+            continue
+        m = INSTR.match(ln)
+        if not m:
+            need["unparsed line"] += 1
+            out_lines.append("### NEEDS: unparsed | %s" % s)
+            continue
+        mn, ops = m.group(1), m.group(2)
+        for name, val in equ.items():
+            ops = re.sub(r"#%s\b" % re.escape(name), "#" + val, ops)
+        ops = CHARLIT.sub(lambda mm: "#%d" % ord(
+            {"\\n": "\n", "\\t": "\t", "\\0": "\0", "\\\\": "\\"}
+            .get(mm.group(1), mm.group(1))), ops)
+        # SHAPE THE SUBSTITUTED OPERANDS, NOT THE ORIGINAL. Computing it from
+        # m.group(2) marked `mov x2, #INBUF_SZ` as unsupported even though the
+        # .equ had just been expanded to a plain immediate.
+        sh = shape(ops)
+        if (mn, sh) not in DOCUMENTED:
+            need["%-6s %s" % (mn, sh)] += 1
+            out_lines.append("### NEEDS: %s %s | %s" % (mn, sh, s))
+            continue
+        body = ops.replace(",", " ").replace("[", " ").replace("]", " ")
+        body = body.replace("#", "")
+        body = re.sub(r"\s+", " ", body).strip()
+        out_lines.append(("%s %s" % (mn, body)).rstrip())
+    with open(out, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(out_lines) + "\n")
+    done = sum(1 for x in out_lines if not x.startswith("###"))
+    todo = sum(need.values())
+    print("  wrote %s: %d lines translated, %d marked NEEDS" % (out, done, todo))
+    if need:
+        print("  what is still missing, by form:")
+        for k, v in need.most_common():
+            print("    %-46s %4d" % (k, v))
+    return 0
+
+
+def main():
+    if len(sys.argv) < 3:
+        print(__doc__.strip().split("\n\n")[1])
+        return 2
+    cmd = sys.argv[1]
+    if cmd == "census":
+        return cmd_census(sys.argv[2])
+    if cmd == "probes":
+        return cmd_probes(sys.argv[2], sys.argv[3])
+    if cmd == "xlate":
+        return cmd_xlate(sys.argv[2], sys.argv[3])
+    print("unknown command: %s" % cmd)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

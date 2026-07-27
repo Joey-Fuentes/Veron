@@ -1,0 +1,242 @@
+name: stage0-selfhost
+
+# SPIKE. CAN stage0-as ASSEMBLE ITS OWN SOURCE?
+#
+# THE POINT. stage0-as is a mnemonic assembler written in GNU `as` syntax, so
+# `as` and `ld` are needed to build it -- the last two host tools on Veron's
+# build path (see stage3-hermetic-arm64.yml's BUDGET_PATH). If its source were
+# expressed in stage0-as's OWN input language, stage0-as could assemble itself,
+# and the host tools would be needed only to birth the very first binary. That
+# binary can then be committed as verified hex and checked by round-trip
+# disassembly, which is what TRUST-BOUNDARY.md means by "the assembler is
+# untrusted by design".
+#
+# THIS WORKFLOW DOES NOT CLOSE THAT. It MEASURES it, because the first estimate
+# was wrong and wrong in the expensive direction.
+#
+#   mnemonic-level count : 27 distinct mnemonics, 25 in the documented table
+#                          -> "the gap is b.gt and b.le, 8 lines"
+#   operand-form count   : 43 distinct (mnemonic, operand-shape) pairs, and
+#                          251 lines use shapes the table does not list
+#
+# The same source line count, two answers an order of magnitude apart. Counting
+# mnemonics hides that `orr w0,w1,w2,lsl #5`, `movz w0,#x,lsl #16`,
+# `lsl w0,w1,#4` and `ldr w0,[x1,w2,uxtw #2]` are different instructions from
+# the `orr`/`movz`/`lsl`/`ldr` the table documents. AGENTS.md's rule is measure,
+# do not estimate; this is what that rule is for.
+#
+# AND THE DOCUMENTED TABLE IS ALSO NOT THE ANSWER. spikes/stage0-as/README.md
+# is documentation; what stage0-as accepts is a property of the binary. Roughly
+# 150 of those 251 lines are simply w-register spellings of forms the table
+# gives in x-register terms (`mov w0, w1` vs `mov x<d> x<n>`), and stage0-as may
+# well take them already. Nobody knows, and guessing is how the first estimate
+# went wrong twice.
+#
+# So: PROBE FIRST. One minimal test per form, assembled BOTH ways -- by GNU `as`
+# and by stage0-as -- and byte-compared. That is exactly how
+# stage2-mini-c-demo settles individual instruction encodings, and it turns
+# "does it support this?" into a checksum.
+#
+# EVERY STEP HERE IS NON-GATING ON PURPOSE. This is a measurement spike. It
+# reports ground truth so the next commit can be aimed; it does not yet assert
+# anything. The GATE section at the bottom is written and switched off, and
+# turns on by itself the day the gap reaches zero.
+#
+# WHAT THE ANSWER LOOKS LIKE EITHER WAY. Each unsupported form has two possible
+# fixes and the probe tells you which is cheaper:
+#   - teach stage0-as the form (it already has the shift and register-encoding
+#     machinery -- movk with a shift is in the table), or
+#   - rewrite those source lines into forms it already takes (`lsl w0,w1,#4`
+#     becomes a mov of 4 into a scratch register plus the register-shift form).
+# Character literals (#'x', 62 uses) and the one .equ are pure source-side text
+# substitutions the translator already handles, and cost the assembler nothing.
+
+on:
+  push:
+    paths:
+      - 'spikes/stage0-as/**'
+      - 'spikes/elf/**'
+      - 'tools/s0_selfhost.py'
+      - '.github/workflows/stage0-selfhost.yml'
+      - '!spikes/**/*.md'
+  workflow_dispatch:
+
+concurrency:
+  group: stage0-selfhost-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  selfhost:
+    runs-on: ubuntu-24.04-arm          # NATIVE aarch64 -- no qemu in the way
+    timeout-minutes: 20
+    env:
+      SRC: spikes/stage0-as/stage0-as.aarch64.s
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends binutils python3
+
+      - name: Build the reference stage0-as and elf
+        run: |
+          set -eu
+          as -o s0.o "$SRC"
+          ld -static -o stage0-as s0.o
+          as -o elf.o spikes/elf/elf.aarch64.s
+          ld -static -o elf elf.o
+          printf '  %-14s %8s  %s\n' stage0-as "$(wc -c < stage0-as)" \
+            "$(sha256sum stage0-as | cut -c1-16)"
+          printf '  %-14s %8s  %s\n' elf "$(wc -c < elf)" \
+            "$(sha256sum elf | cut -c1-16)"
+
+      - name: 'CENSUS: what forms does stage0-as''s own source use?'
+        run: python3 tools/s0_selfhost.py census "$SRC"
+
+      - name: 'PROBE: settle every form against the real binary'
+        run: |
+          set -eu
+          python3 tools/s0_selfhost.py probes "$SRC" probes
+          echo
+          printf '  %-6s %-34s %5s  %s\n' 'MNEM' 'OPERAND FORM' 'USES' 'VERDICT'
+          ok=0; bad=0; rej=0; inc=0; lines_ok=0; lines_tot=0
+          while IFS="$(printf '\t')" read -r id uses mnem form; do
+            lines_tot=$((lines_tot + uses))
+            # REFERENCE: GNU as. If IT cannot assemble the case, the case is
+            # bad and proves nothing about stage0-as -- say INCONCLUSIVE rather
+            # than blaming our assembler for our own test.
+            if ! as -o "probes/$id.o" "probes/$id.s" 2>"probes/$id.aserr"; then
+              printf '  %-6s %-34s %5s  INCONCLUSIVE (GNU as rejected the case)\n' \
+                "$mnem" "$form" "$uses"
+              inc=$((inc + 1)); continue
+            fi
+            objcopy -O binary --only-section=.text "probes/$id.o" "probes/$id.ref"
+            set +e
+            ./stage0-as < "probes/$id.s0" > "probes/$id.ours" 2>"probes/$id.err"
+            rc=$?
+            set -e
+            if [ "$rc" != 0 ] || [ ! -s "probes/$id.ours" ]; then
+              printf '  %-6s %-34s %5s  REJECTED by stage0-as (rc=%s)\n' \
+                "$mnem" "$form" "$uses" "$rc"
+              rej=$((rej + 1)); continue
+            fi
+            # compare only the instruction under test: the first four bytes
+            dd if="probes/$id.ref"  of="probes/$id.r4" bs=4 count=1 2>/dev/null
+            dd if="probes/$id.ours" of="probes/$id.o4" bs=4 count=1 2>/dev/null
+            if cmp -s "probes/$id.r4" "probes/$id.o4"; then
+              printf '  %-6s %-34s %5s  ok\n' "$mnem" "$form" "$uses"
+              ok=$((ok + 1)); lines_ok=$((lines_ok + uses))
+            else
+              printf '  %-6s %-34s %5s  WRONG BYTES  ours=%s ref=%s\n' \
+                "$mnem" "$form" "$uses" \
+                "$(od -An -tx1 "probes/$id.o4" | tr -d ' \n')" \
+                "$(od -An -tx1 "probes/$id.r4" | tr -d ' \n')"
+              bad=$((bad + 1))
+            fi
+          done < probes/index.tsv
+          echo
+          echo "  forms: $ok ok, $bad wrong bytes, $rej rejected, $inc inconclusive"
+          echo "  source lines covered by forms that encode correctly: $lines_ok / $lines_tot"
+          echo
+          echo "  WRONG BYTES is the interesting column. A rejected form is a"
+          echo "  missing feature; a form that is accepted and encodes DIFFERENTLY"
+          echo "  is a bug, and it would have been silently inherited by every"
+          echo "  binary a self-hosted stage0-as ever produced."
+          echo "$lines_ok" > lines_ok.txt
+
+      - name: 'XLATE: mechanical GNU-as -> .s0 translation'
+        run: |
+          set -eu
+          # Untranslatable lines are emitted as `### NEEDS: ...` markers, never
+          # dropped. A translator that quietly skips what it does not understand
+          # produces an assembler with a hole in it that assembles most things.
+          python3 tools/s0_selfhost.py xlate "$SRC" stage0-as.s0
+          echo
+          echo "  first 20 translated lines:"
+          grep -v '^###' stage0-as.s0 | head -20 | sed 's/^/    /'
+          echo
+          echo "  remaining NEEDS markers: $(grep -c '^###' stage0-as.s0 || true)"
+
+      - name: 'PROBE: how far does the translation get through stage0-as?'
+        continue-on-error: true
+        run: |
+          set -eu
+          # Feed it the translatable subset alone. This will NOT produce a
+          # working assembler while NEEDS markers remain -- the point is to see
+          # whether stage0-as parses what we hand it, separately from whether
+          # what we hand it is complete.
+          grep -v '^###' stage0-as.s0 > partial.s0
+          echo "  feeding $(wc -l < partial.s0) translated lines to stage0-as"
+          set +e
+          ./stage0-as < partial.s0 > partial.bin 2> partial.err
+          rc=$?
+          set -e
+          echo "  stage0-as rc=$rc, emitted $(wc -c < partial.bin 2>/dev/null || echo 0) bytes"
+          [ -s partial.err ] && head -5 partial.err | sed 's/^/    ! /'
+          echo
+          echo "  (a clean rc here with NEEDS still outstanding means the SYNTAX"
+          echo "   translation is right and only the missing FORMS remain)"
+
+      - name: 'GATE (off until the gap is zero): self-host and fixpoint'
+        continue-on-error: true
+        run: |
+          set -eu
+          if grep -q '^###' stage0-as.s0; then
+            n=$(grep -c '^###' stage0-as.s0)
+            echo "  SKIP: $n lines still need forms stage0-as does not take."
+            echo "  This gate turns on by itself when that reaches zero. What it"
+            echo "  will then assert, in order:"
+            echo "    1. stage0-as assembles stage0-as.s0 -> gen1 code bytes"
+            echo "    2. gen1 == objcopy -O binary of the as+ld build, byte for byte"
+            echo "    3. gen1 assembles stage0-as.s0 again -> gen2; gen2 == gen1"
+            echo "    4. gen1 still builds stage1 and stage2 to identical bytes"
+            echo "  (2) is the one that matters: it proves the translation"
+            echo "  preserved meaning, as a checksum rather than an argument."
+            exit 0
+          fi
+          objcopy -O binary --only-section=.text s0.o reference.bin
+          ./stage0-as < stage0-as.s0 > gen1.bin
+          ./elf gen1 < gen1.bin || true
+          printf '  %-24s %8s  %s\n' 'reference (as+ld .text)' \
+            "$(wc -c < reference.bin)" "$(sha256sum reference.bin | cut -c1-16)"
+          printf '  %-24s %8s  %s\n' 'gen1 (stage0-as on .s0)' \
+            "$(wc -c < gen1.bin)" "$(sha256sum gen1.bin | cut -c1-16)"
+          if cmp -s gen1.bin reference.bin; then
+            echo "  PASS: stage0-as reproduces its own code bytes from .s0 source."
+          else
+            echo "  FAIL: the translation changed the emitted code."
+            cmp gen1.bin reference.bin 2>&1 | head -2 | sed 's/^/    /'
+            exit 1
+          fi
+          ./gen1 < stage0-as.s0 > gen2.bin
+          cmp -s gen2.bin gen1.bin \
+            && echo "  PASS: gen2 == gen1 -- FIXPOINT." \
+            || { echo "  FAIL: not a fixpoint."; exit 1; }
+
+      - name: 'WHERE THIS LEAVES THE HOST BUDGET'
+        if: always()
+        run: |
+          echo "  stage3-hermetic-arm64 currently declares BUDGET_PATH='as ld'."
+          echo
+          echo "  Self-hosting stage0-as does NOT by itself remove them: something"
+          echo "  must still produce the FIRST stage0-as binary. What it does buy"
+          echo "  is the right to commit that binary, because a committed binary"
+          echo "  that reproduces itself from committed source is checkable in a"
+          echo "  way a committed binary alone is not:"
+          echo
+          echo "    round-trip disassembly   the bytes decode to the source we wrote"
+          echo "    self-host fixpoint       the source rebuilds those exact bytes"
+          echo
+          echo "  Only then does removing 'as ld' from BUDGET_PATH mean anything."
+          echo "  Doing it before would just move the trust off the build path and"
+          echo "  into a binary nobody can check."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage0-selfhost
+          path: |
+            stage0-as.s0
+            probes/index.tsv
+          if-no-files-found: warn
