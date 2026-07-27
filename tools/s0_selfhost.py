@@ -334,6 +334,45 @@ def label_map(src):
     return dict(zip(seen, LABEL_CHARS))
 
 
+def data_layout(src, n_instr):
+    """Place the data symbols the code refers to, and say where each landed.
+
+    stage0-as's own source names six things that are not code: three .ascii
+    strings and three .bss reservations. In the as+ld build ld places them --
+    .rodata in its own section, .bss on a page boundary. `elf` has no sections;
+    it writes one flat image, so the translation has to do the placing.
+
+    The layout is the simplest one that works: code, then the strings 8-aligned
+    after it, then the zero-filled reservations after those. `elf` reserves
+    65 MiB of demand-zero memory past the image, which is where the
+    reservations live -- they occupy address space, not file bytes.
+
+    Returns (offset by name, [(name, bytes)] for the strings that need emitting).
+    """
+    pos = n_instr * 4
+    pos = (pos + 7) & ~7
+    offs, blobs = {}, []
+    for raw in src:
+        t = strip_comment(raw).strip()
+        m = re.match(r'^([A-Za-z_]\w*):\s*\.ascii\s+"(.*)"\s*$', t)
+        if m:
+            body = (m.group(2).replace("\\n", "\n").replace("\\t", "\t")
+                    .replace("\\0", "\0").replace("\\\\", "\\"))
+            offs[m.group(1)] = pos
+            blobs.append((m.group(1), body.encode("utf-8")))
+            pos += len(body)
+    pos = (pos + 7) & ~7
+    for raw in src:
+        t = strip_comment(raw).strip()
+        m = re.match(r"^([A-Za-z_]\w*):\s*\.space\s+(\S+)\s*$", t)
+        if m:
+            offs[m.group(1)] = pos
+            n = m.group(2)
+            pos += int(n, 16) if n.lower().startswith("0x") else (
+                int(n) if n.isdigit() else 0)
+    return offs, blobs
+
+
 def cmd_xlate(path, out):
     """Mechanical GNU-as -> .s0 translation of the parts that translate.
 
@@ -344,6 +383,8 @@ def cmd_xlate(path, out):
     src = list(open(path, encoding="utf-8"))
     equ = equ_table(src)
     lmap = label_map(src)
+    n_instr = sum(1 for r in src if INSTR.match(strip_comment(r)))
+    dmap, blobs = data_layout(src, n_instr)
     out_lines, need = [], Counter()
     for raw in src:
         ln = strip_comment(raw)
@@ -353,8 +394,9 @@ def cmd_xlate(path, out):
         if s.startswith((".text", ".global", ".align", ".balign", ".equ")):
             continue
         if s.startswith(".bss"):
-            need["'.bss' -- buffers must come from the elf tool's segment"] += 1
-            out_lines.append("### NEEDS: .bss segment | %s" % s)
+            # No longer a gap. elf reserves 65 MiB of demand-zero memory past
+            # the image, and data_layout has already assigned every reservation
+            # an address in it -- .bss is a section marker with nothing to emit.
             continue
         m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*):\s*$", s)
         if m:
@@ -362,6 +404,12 @@ def cmd_xlate(path, out):
             continue
         if s.startswith((".byte", ".ascii")):
             out_lines.append(s)
+            continue
+        # The data lines themselves are consumed by data_layout: their bytes are
+        # appended below and their addresses are already substituted above.
+        if re.match(r'^[A-Za-z_]\w*:\s*\.(ascii|space)\b', s):
+            continue
+        if s.startswith((".section", ".data")):
             continue
         m = INSTR.match(ln)
         if not m:
@@ -382,6 +430,12 @@ def cmd_xlate(path, out):
             need["%-6s %s" % (mn, sh)] += 1
             out_lines.append("### NEEDS: %s %s | %s" % (mn, sh, s))
             continue
+        # DATA SYMBOLS BECOME ABSOLUTE POSITIONS. `adr x19, inbuf` cannot use
+        # the label table -- inbuf is not code and has no entry there. The `@`
+        # form takes a byte position directly, which is exactly what the layout
+        # above computed.
+        for name in sorted(dmap, key=len, reverse=True):
+            ops = re.sub(r"\b%s\b" % re.escape(name), "@%d" % dmap[name], ops)
         # HEX IN THE SOURCE, DECIMAL IN THE .s0. The source writes immediates as
         # lowercase hex because that is what makes the round-trip diff against
         # objdump clean; stage0-as's parse_dec reads decimal only. Passing
@@ -411,6 +465,13 @@ def cmd_xlate(path, out):
             out_lines.append("### NEEDS: %s | %s" % (s0body, s))
             continue
         out_lines.append(("%s %s" % (s0mn, s0body)).rstrip())
+    # Pad to the 8-byte boundary the layout assumed, then emit the strings.
+    pad = ((n_instr * 4 + 7) & ~7) - n_instr * 4
+    for _ in range(pad):
+        out_lines.append(".byte 0")
+    for name, b in blobs:
+        for ch in b:
+            out_lines.append(".byte %d" % ch)
     with open(out, "w", encoding="utf-8") as fh:
         fh.write("\n".join(out_lines) + "\n")
     done = sum(1 for x in out_lines if not x.startswith("###"))
