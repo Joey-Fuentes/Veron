@@ -559,14 +559,26 @@ jobs:
               echo "    --- where do the two files actually differ? ---"
               "$P/bin/objdump" -h rebuild.elf > rebuild.secs 2>/dev/null || true
               "$P/bin/objdump" -t rebuild.elf > rebuild.syms 2>/dev/null || true
-              echo "    sections present:"
-              diff <(awk '$2 ~ /^\./ {print $2, $3}' stage0-as.secs) \
-                   <(awk '$2 ~ /^\./ {print $2, $3}' rebuild.secs) \
-                | sed 's/^/      /' || echo "      (identical section table)"
-              echo "    symbols only in one side (name and section):"
-              diff <(awk '{print $NF, $(NF-2)}' stage0-as.syms | sort) \
-                   <(awk '{print $NF, $(NF-2)}' rebuild.syms | sort) \
-                | head -20 | sed 's/^/      /' || echo "      (identical symbols)"
+              # AN EMPTY DIFF IS NOT EVIDENCE OF A MATCH IF THE PROBE NEVER
+              # LOOKED. The previous version compared `objdump -h`, which lists
+              # only allocatable sections -- .text .rodata .bss -- so .symtab,
+              # .strtab and .shstrtab were never in the comparison, and both
+              # diffs came back empty while the files differed by 24 bytes.
+              # readelf -S and -s list every section header and every symbol.
+              # The COUNTS are printed too, because "the diff was empty" and
+              # "there was nothing to diff" look identical in a log.
+              for _w in S s; do
+                "$P/bin/readelf" -W -$_w stage0-as   > "o.$_w.txt" 2>/dev/null || true
+                "$P/bin/readelf" -W -$_w rebuild.elf > "r.$_w.txt" 2>/dev/null || true
+              done
+              echo "    section headers: original $(grep -c '^  \[' o.S.txt) vs rebuilt $(grep -c '^  \[' r.S.txt)"
+              diff <(awk '/^  \[/ {print $3, $6, $7}' o.S.txt) \
+                   <(awk '/^  \[/ {print $3, $6, $7}' r.S.txt) \
+                | head -14 | sed 's/^/      /'
+              echo "    symbols: original $(grep -c '^ *[0-9]*:' o.s.txt) vs rebuilt $(grep -c '^ *[0-9]*:' r.s.txt)"
+              diff <(awk '/^ *[0-9]+:/ {print $2, $4, $5, $8}' o.s.txt | sort) \
+                   <(awk '/^ *[0-9]+:/ {print $2, $4, $5, $8}' r.s.txt | sort) \
+                | head -14 | sed 's/^/      /'
               echo "    first 12 differing bytes (a size change cascades, so"
               echo "    the first offset is the meaningful one):"
               cmp -l stage0-as rebuild.elf 2>/dev/null | head -12 \
