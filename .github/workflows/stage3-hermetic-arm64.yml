@@ -61,11 +61,25 @@ name: stage3-hermetic-arm64
 # construction, so this subsumes the binary comparison. selfhost-demo already
 # compares at this level (`ab_cmp gen2 .M1`); this makes it the gate.
 #
+#   GATE 0 (blocking)     the stage-2 conformance corpus -- ~411 example
+#                         programs lifted from stage2-mini-c-demo.yml -- all
+#                         pass, natively, plus the canon.c compiler-shaped
+#                         fixpoint. NOTHING above is attempted until this holds.
 #   GATE 1 (blocking)     ours-gen1.M1 == ref-gen1.M1, byte for byte
 #   GATE 2 (non-blocking) the same thing linked, with M1/hex2 built in-box by
 #                         stage 2. Expected RED on the memset defect. It is here
 #                         to measure how far the pure chain gets, and to turn
 #                         green on its own the day stage 2 is fixed.
+#
+# ON "STAGE 2 RECOMPILING ITSELF": there is no such thing, and the file should
+# say so rather than quietly substituting something adjacent. Stage 2 is written
+# in stage 1's language (stage2-mini-c.s1), not in C, so it has no source it
+# could compile. The nearest real thing -- and what GATE 0 runs -- is
+# selfhost/canon.c: a compiler-shaped program (file I/O, heap structs, function
+# pointers, deep recursion) whose transform is idempotent, giving a true
+# canon(canon(x)) == canon(x) fixpoint, including over canon's own source text.
+# A genuine stage-2 self-compilation would need a C implementation of stage 2,
+# which does not exist and is not planned -- M2-Planet is the self-hosting rung.
 
 on:
   push:
@@ -294,6 +308,23 @@ jobs:
           done
 
       # --- BUILD THE BOX --------------------------------------------------
+      - name: Extract the stage-2 conformance corpus from the demo workflow
+        run: |
+          set -eu
+          # THE DEMO STAYS THE SINGLE SOURCE OF TRUTH. stage2-mini-c-demo.yml
+          # carries ~450 example programs; copying them here would fork the
+          # corpus, and a forked corpus drifts silently -- the copy stays green
+          # while the original grows a case it does not have. Read it instead.
+          #
+          # The floor is the important part. Programs built out of shell
+          # variables and printf-escape forms cannot survive extraction and are
+          # skipped BY REASON, never silently, because a shrinking corpus still
+          # passes. If the demo's harness shape changes, this fails loudly here
+          # rather than quietly running forty tests and calling it a gate.
+          python3 tools/extract_stage2_tests.py \
+            .github/workflows/stage2-mini-c-demo.yml \
+            pins/stage2-tests.tsv --floor 380
+
       - name: Assemble the box
         run: |
           set -eu
@@ -404,7 +435,104 @@ jobs:
           echo "    smoke.c through the whole ladder -> rc=$rc (want 42)"
           [ "$rc" = 42 ] || { echo "    FAIL: the ladder does not run natively"; exit 1; }
 
-          say '5. G0 -- stage 2 builds M2-Planet from PATCHED source'
+          say '5. STAGE 2 CONFORMANCE -- the demo corpus, run natively'
+          # Every one of these compiles through the full ladder and is judged on
+          # its exit code, exactly as stage2-mini-c-demo does it -- but on real
+          # hardware instead of under qemu-aarch64. If our codegen has an ARM64
+          # assumption that qemu was forgiving about, this is where it surfaces,
+          # and it surfaces on a 40-character program instead of on 215 KB of
+          # M2-Planet where nobody can bisect it.
+          #
+          # THIS GATES M2-PLANET. A compiler that cannot get `return 2000*2000`
+          # right has no business being pointed at cc_core.c, and a failure here
+          # is readable in a way that a failure up there is not.
+          n=0; pass=0; fail=0
+          : > /out/stage2-failures.txt
+          TAB=$(printf '\t')
+          set +e
+          while IFS="$TAB" read -r want prog; do
+            [ -n "${want:-}" ] || continue
+            n=$((n + 1))
+            printf '%s' "$prog" > t.c
+            timeout 30 ./stage2 < t.c > t.s 2>/dev/null
+            if [ $? != 0 ] || [ ! -s t.s ]; then
+              fail=$((fail + 1))
+              printf 'COMPILE\twant=%s\t%s\n' "$want" "$prog" >> /out/stage2-failures.txt
+              continue
+            fi
+            ./stage1 < t.s 2>/dev/null | ./stage0-as 2>/dev/null | ./elf t.elf 2>/dev/null
+            if [ ! -x t.elf ]; then
+              fail=$((fail + 1))
+              printf 'LINK\twant=%s\t%s\n' "$want" "$prog" >> /out/stage2-failures.txt
+              continue
+            fi
+            timeout 30 ./t.elf < /dev/null > /dev/null 2>&1
+            rc=$?
+            if [ "$rc" = "$want" ]; then
+              pass=$((pass + 1))
+            else
+              fail=$((fail + 1))
+              printf 'RUN got=%s\twant=%s\t%s\n' "$rc" "$want" "$prog" >> /out/stage2-failures.txt
+            fi
+            rm -f t.elf
+          done < /in/stage2-tests.tsv
+          set -e
+          echo "    $pass/$n passed, $fail failed"
+          if [ "$fail" != 0 ]; then
+            echo "    first failures (full list in the artifact):"
+            head -20 /out/stage2-failures.txt | sed 's/^/      /'
+            exit 1
+          fi
+
+          say '6. STAGE 2 FIXPOINT -- the compiler-shaped canary'
+          # NOTE WHAT THIS IS AND IS NOT. Stage 2 has no C source -- it is
+          # written in stage 1's language, as stage2-mini-c.s1 -- so there is no
+          # stage-2 self-compilation and no stage-2 fixpoint in the M2-Planet
+          # sense. What exists is spikes/stage2-mini-c/selfhost/canon.c: a
+          # compiler-shaped program (file I/O, heap structs, function pointers,
+          # deep recursion) whose transform is IDEMPOTENT, so
+          # canon(canon(x)) == canon(x) is a genuine fixpoint over a real
+          # compiler-shaped workload. Its own README calls it a proof-of-pivot,
+          # not a permanent rung. Treat it as the canary it is.
+          #
+          # canon returns the output LENGTH as its exit status, so a good run
+          # exits NONZERO. Every invocation is judged on its output file.
+          C=/src/stage2-mini-c/selfhost/canon.c
+          ./stage2 < "$C" > canon.s
+          ./stage1 < canon.s | ./stage0-as | ./elf canon
+          [ -x canon ] || { echo "    FAIL: canon did not build"; exit 1; }
+          art 'canon (ours)' canon
+
+          # structural -- guards against the canary degrading into something trivial
+          fp_ok=yes
+          for pat in 'bl calloc' 'blr' 'bl open' 'bl read' 'bl write' ':emit_list'; do
+            grep -q "$pat" canon.s || { echo "    MISSING $pat in emitted canon"; fp_ok=no; }
+          done
+          echo "    emitted program uses calloc + blr + file I/O + recursion: $fp_ok"
+
+          run_canon() { rm -f in out; cp "$1" in; set +e; timeout 60 ./canon >/dev/null 2>&1; set -e; }
+
+          printf '  int  main( ) {\n\t int   x =\t42 ;\n   return   x+x ;\n}\n' > sh_sample
+          printf 'int\nmain(\n)\n{\nint\nx\n=\n42\n;\nreturn\nx+x\n;\n}\n' > sh_want
+          run_canon sh_sample
+          if cmp -s out sh_want; then st=OK; else st=DIFF; fp_ok=no; fi
+          echo "    tokenizes messy input to one token per line: $st"
+
+          cp out g1; run_canon g1; cp out g2
+          if cmp -s g1 g2; then st=OK; else st=DIFF; fp_ok=no; fi
+          echo "    FIXPOINT canon(canon(x)) == canon(x): $st  ($(wc -c < g1) bytes)"
+
+          run_canon "$C"; cp out s1; run_canon s1; cp out s2
+          if cmp -s s1 s2 && [ -s s1 ]; then st=OK; else st=DIFF; fp_ok=no; fi
+          echo "    FIXPOINT on canon's OWN source: $st  ($(wc -c < s1) bytes)"
+
+          ntok=$(wc -w < "$C"); nline=$(wc -l < s1)
+          if [ "$ntok" = "$nline" ]; then st=OK; else st=DIFF; fp_ok=no; fi
+          echo "    own-source token count matches a whitespace split: $st ($nline vs $ntok)"
+
+          [ "$fp_ok" = yes ] || { echo "    FAIL: the stage-2 canary is not clean"; exit 1; }
+
+          say '7. G0 -- stage 2 builds M2-Planet from PATCHED source'
           # The substitution applies to G0 and only G0. patched_bootstrap.c goes
           # first so its enums (NULL EOF TRUE FALSE stdin/stdout/stderr EXIT_*)
           # are in scope for the shim, and the shim supplies fgetc/fputc -- the
@@ -435,7 +563,7 @@ jobs:
           [ -x M2-ours ] || { echo "    FAIL: no G0"; exit 1; }
           art 'G0 = M2-Planet (ours)' M2-ours
 
-          say '6. G1 -- G0 compiles UNPATCHED M2-Planet source'
+          say '8. G1 -- G0 compiles UNPATCHED M2-Planet source'
           # From here the patch is gone: our M2-Planet handles asm() perfectly
           # well, so G1 onward is built from upstream source exactly as shipped.
           set --
@@ -445,7 +573,7 @@ jobs:
           cd /work
           art 'ours-gen1.M1' /out/ours-gen1.M1
 
-          say '7. GATE 2 (non-blocking) -- link it with a toolchain we built'
+          say '9. GATE 2 (non-blocking) -- link it with a toolchain we built'
           # Needs M1 + hex2 + blood-elf as RUNNING BINARIES. The only way to get
           # them without a host compiler is to build them with stage 2, and that
           # is blocked today: our M1 hangs in M2libc memset and our hex2 crashes
