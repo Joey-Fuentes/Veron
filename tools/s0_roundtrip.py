@@ -141,6 +141,73 @@ def read_objdump(path):
         yield cur, norm(m.group(2), m.group(3))
 
 
+def cmd_verbatim(src_path, dis_path):
+    """How close is the disassembly to the source TEXT, before normalising?
+
+    Check B compares normalised instructions, which is the right test for "does
+    a human read the same meaning". This asks the stricter question a
+    hand-written disassembler would have to answer: how many lines come back
+    CHARACTER FOR CHARACTER as the source wrote them?
+
+    The answer for objdump and llvm-objdump will be low, and not because
+    anything is wrong -- they choose their own number formatting (`#0x0` for a
+    source `#0`), their own separators, and their own operand spacing. Those
+    are presentation choices we cannot influence from the source side.
+
+    The point of measuring is that this IS the specification for our own
+    disassembler: whatever classes of difference show up here are exactly the
+    formatting rules it would have to adopt to make the round-trip a plain
+    `diff` instead of a normalised comparison.
+    """
+    src = [("%s %s" % (mn, ops)).strip()
+           for mn, ops in read_source(src_path) if mn != "<data>"]
+    dis = []
+    for _, (mn, ops) in read_objdump(dis_path):
+        dis.append(("%s %s" % (mn, ops)).strip())
+    # re-read raw so we compare TEXT, not the normalised forms read_* return
+    raw_src, raw_dis = [], []
+    for ln in open(src_path, encoding="utf-8"):
+        t = ln.split("//")[0].rstrip()
+        m = SRC.match(t)
+        if m and not m.group(1).startswith("."):
+            raw_src.append(re.sub(r"\s+", " ", t.strip()))
+    for ln in open(dis_path, encoding="utf-8", errors="replace"):
+        m = DIS.match(ln)
+        if m:
+            body = m.group(3).split("//")[0].split(";")[0].strip()
+            raw_dis.append(re.sub(r"\s+", " ", ("%s %s" % (m.group(2), body)).strip()))
+    n = min(len(raw_src), len(raw_dis))
+    same = sum(1 for i in range(n) if raw_src[i] == raw_dis[i])
+    print("  verbatim (character for character): %d of %d (%.1f%%)"
+          % (same, n, 100.0 * same / n if n else 0))
+    classes = Counter()
+    ex = {}
+    for i in range(n):
+        if raw_src[i] == raw_dis[i]:
+            continue
+        a, b = raw_src[i], raw_dis[i]
+        if a.split()[0] != b.split()[0]:
+            k = "mnemonic alias chosen"
+        elif re.search(r"0x[0-9a-f]+\s*<[^>]*>", b):
+            k = "target as address+symbol, not the name"
+        elif re.search(r"#'", a):
+            k = "character literal rendered as a number"
+        elif norm(*a.split(None, 1)) == norm(*b.split(None, 1)):
+            k = "same value, different number format"
+        elif a.replace(", ", ",") == b.replace(", ", ","):
+            k = "operand spacing"
+        else:
+            k = "other"
+        classes[k] += 1
+        ex.setdefault(k, (a, b))
+    if classes:
+        print("  differences by class -- this is the spec for our own decoder:")
+        for k, c in classes.most_common():
+            print("    %-28s %4d   e.g. %-28s | %s"
+                  % (k, c, ex[k][0][:28], ex[k][1][:28]))
+    return 0
+
+
 def cmd_crosscheck(a_path, b_path):
     """Do two independent disassemblers agree with each other?
 
@@ -265,6 +332,8 @@ def cmd_relist(dis_path, bin_path, out_path, base_hex=None):
 
 
 def main():
+    if len(sys.argv) == 4 and sys.argv[1] == "verbatim":
+        return cmd_verbatim(sys.argv[2], sys.argv[3])
     if len(sys.argv) == 4 and sys.argv[1] == "crosscheck":
         return cmd_crosscheck(sys.argv[2], sys.argv[3])
     if sys.argv[1:2] == ["relist"] and len(sys.argv) in (5, 6):
@@ -280,6 +349,7 @@ def main():
         print("usage: s0_roundtrip.py <source.s> <objdump-output> [--budget N]")
         print("       s0_roundtrip.py relist <objdump-out> <text.bin> <out.s> [base]")
         print("       s0_roundtrip.py crosscheck <dis-a> <dis-b>")
+        print("       s0_roundtrip.py verbatim <source.s> <objdump-output>")
         return 2
     src = [x for x in read_source(sys.argv[1]) if x[0] != "<data>"]
     # Symbols whose contents are .ascii data, not code -- excluded by name.

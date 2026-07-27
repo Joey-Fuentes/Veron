@@ -486,6 +486,24 @@ jobs:
           python3 tools/s0_roundtrip.py "$SRC" stage0-as.llvm.dis \
             --budget "$ROUNDTRIP_BUDGET"; rc_llvm=$?
           echo
+          echo "  --- D. HOW CLOSE IS THE TEXT, BEFORE NORMALISING? ---"
+          # Check B asks "does a human read the same meaning". This asks the
+          # stricter question: does the disassembly come back CHARACTER FOR
+          # CHARACTER as the source wrote it? It will not, and not because
+          # anything is wrong -- objdump and llvm-objdump choose their own
+          # number formats, their own target rendering, their own spacing, and
+          # nothing on the source side can influence that.
+          #
+          # It is measured because it is the SPECIFICATION for the hand-written
+          # disassembler TRUST-BOUNDARY.md calls "small and diverse-
+          # implementable". Whatever classes appear here are exactly the
+          # formatting rules ours would adopt to make the round-trip a plain
+          # `diff` rather than a normalised comparison.
+          echo "  objdump $BINUTILS_VER:"
+          python3 tools/s0_roundtrip.py verbatim "$SRC" stage0-as.dis
+          echo "  llvm-objdump $LLVM_VER:"
+          python3 tools/s0_roundtrip.py verbatim "$SRC" stage0-as.llvm.dis
+          echo
           echo "  --- C. DO THE TWO DISASSEMBLERS AGREE WITH EACH OTHER? ---"
           python3 tools/s0_roundtrip.py crosscheck stage0-as.dis stage0-as.llvm.dis
           set -e
