@@ -241,7 +241,7 @@ jobs:
           # what stage 2 EMITS. These cover the forms most at risk from an sf-bit
           # or register-parsing change: byte loads, char compares, w-register
           # moves, shifts and calls.
-          i=0
+          i=0; drift=0
           for prog in \
             'int main(){return 42;}' \
             'int main(){char c;c=65;return c;}' \
@@ -254,15 +254,33 @@ jobs:
             i=$((i + 1))
             printf '%s' "$prog" > r.c
             ./stage2 < r.c > "r$i.s"
-            printf '  emit-%-2s %8s  %s\n' "$i" "$(wc -c < "r$i.s")" \
-              "$(sha256sum "r$i.s" | cut -c1-16)"
+            got=$(sha256sum "r$i.s" | cut -c1-16)
+            want=$(awk -v n="emit-$i" '$1==n {print $3}' "$B")
+            if [ -z "$want" ]; then
+              printf '  emit-%-2s %8s  %s  (no baseline -- record it)\n' \
+                "$i" "$(wc -c < "r$i.s")" "$got"
+            elif [ "$want" = "$got" ]; then
+              printf '  emit-%-2s %8s  %s  unchanged\n' \
+                "$i" "$(wc -c < "r$i.s")" "$got"
+            else
+              printf '  emit-%-2s %8s  %s  CHANGED (baseline %s)\n' \
+                "$i" "$(wc -c < "r$i.s")" "$got" "$want"
+              drift=$((drift + 1))
+            fi
           done
           echo
-          echo "  Those emit-N hashes are the behavioural fingerprint. Record them"
-          echo "  in LADDER-BASELINE on the first green run; after that, a change"
-          echo "  that moves stage2's BINARY but not its OUTPUT is encoding-only"
-          echo "  and safe, and a change that moves the OUTPUT is a semantic change"
-          echo "  that must be justified rather than re-baselined."
+          if [ "$drift" != 0 ]; then
+            echo "  FAIL: $drift of 8 emitted-output fingerprints CHANGED."
+            echo "  stage 2 no longer produces the same assembly for the same input."
+            echo "  That is a semantic change, not an encoding change. Do not"
+            echo "  re-baseline it -- find out which instruction form moved, using"
+            echo "  the per-form table above, and decide whether the new meaning is"
+            echo "  the intended one. stage3-hermetic-arm64 on this commit is the"
+            echo "  second opinion: it runs 426 conformance tests and the"
+            echo "  byte-identical M2-Planet gate."
+            exit 1
+          fi
+          echo "  all 8 emitted-output fingerprints unchanged -- behaviour preserved."
           echo
           if [ "$moved" = 0 ]; then
             echo "  $moved artifacts moved -- ladder byte-identical to baseline."

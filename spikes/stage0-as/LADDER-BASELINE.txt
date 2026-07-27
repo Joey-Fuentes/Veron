@@ -34,3 +34,26 @@ canon           5052     26b728839212d9b1
 m2.c            214910   51e88df569188908
 G0-M2-Planet    314860   cb76e0e3fe4ac9ea
 ours-gen1.M1    2947903  dc38e13e4ceaeecb
+
+# --- BEHAVIOURAL FINGERPRINT ---------------------------------------------
+#
+# sha256[0:16] of what stage 2 EMITS for eight fixed programs. This is the
+# check that matters when stage0-as changes: stage2's own BINARY may move
+# legitimately (an sf-bit fix re-encodes ~110 instructions it already
+# contains), but what stage2 EMITS must not. A binary that moved with an
+# unchanged fingerprint is an encoding change and is safe; a moved fingerprint
+# is a semantic change and must be justified, not re-baselined.
+#
+# Recorded from stage0-selfhost run 82039329105, the same commit on which
+# stage3-hermetic-arm64 passed 426/426 with G1 == upstream M2-Planet.
+#
+# format:  emit-<n> <bytes> <sha256[0:16]>   # the program
+
+emit-1          491      e0dac066312de7ab   # int main(){return 42;}
+emit-2          587      d604691a1d2323f2   # char c;c=65;return c;
+emit-3          701      86a4ab2868188474   # char s[4];s[0]=65;return s[0];
+emit-4          1367     bc529843ffe073e1   # while loop, accumulate 0..4
+emit-5          1508     5b0942f64be8efce   # recursive fib(10)
+emit-6          727      0f1804a5cfb89fec   # string literal, s[0]
+emit-7          602      5109fa48d070913c   # bitwise and, 12&10
+emit-8          600      c25a81d52219d0d8   # shift, 1<<4
