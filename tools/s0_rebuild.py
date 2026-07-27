@@ -137,7 +137,12 @@ def main():
     # FILE symbols are skipped: they name the object the assembler was given,
     # not anything the source declares, and their names are not identifiers.
     out = []
-    for name, (val, sec, size) in sorted(syms.items()):
+    # SYMBOL-TABLE ORDER, NOT ALPHABETICAL. `syms` is built by reading
+    # `objdump -t` top to bottom, so it already carries the order the original
+    # has -- and sorted() threw that away, emitting BSS_RESERVE, CODEBUF_SZ,
+    # HDR_LEN where the source declares CODEBUF_SZ, HDR_LEN, BSS_RESERVE. Same
+    # 28 symbols, different order, so the rebuilt symbol table did not match.
+    for name, (val, sec, size) in syms.items():
         if sec == "*ABS*" and re.fullmatch(r"[A-Za-z_]\w*", name):
             out.append(".equ %s, 0x%x" % (name, val))
     for g in sorted(globals_):

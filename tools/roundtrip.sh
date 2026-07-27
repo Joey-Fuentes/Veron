@@ -94,9 +94,25 @@ if ( cd "rb-$W" && "$P/bin/as" -o "$obj" in.s ) 2>"$W.as.err" \
     for sec in $("$P/bin/objdump" -h "$BIN" | awk '$2 ~ /^\./ {print $2}'); do
       "$P/bin/objcopy" -O binary --only-section=$sec "$W.rebuilt" \
         "$W.r$sec.bin" 2>/dev/null || : > "$W.r$sec.bin"
-      cmp -s "$W$sec.bin" "$W.r$sec.bin" \
-        && printf '        %-9s identical\n' "$sec" \
-        || printf '        %-9s DIFFERS\n' "$sec"
+      # SIZES TOO. "DIFFERS" alone cannot distinguish a content difference
+      # from an empty-versus-absent one, and .bss has no file bytes at all --
+      # so the report said .bss DIFFERS without saying whether either side
+      # even had any.
+      _os=$(wc -c < "$W$sec.bin" 2>/dev/null || echo 0)
+      _rs=$(wc -c < "$W.r$sec.bin" 2>/dev/null || echo 0)
+      if cmp -s "$W$sec.bin" "$W.r$sec.bin"; then
+        printf '        %-9s identical (%s bytes)\n' "$sec" "$_os"
+      else
+        printf '        %-9s DIFFERS  %s vs %s bytes' "$sec" "$_os" "$_rs"
+        if [ "$_os" = "$_rs" ] && [ "$_os" != 0 ]; then
+          # cmp's message says "char" on some builds and "byte" on others, so
+          # parsing it printed the whole sentence instead of a number. cmp -l
+          # gives the offset as its first field, unambiguously.
+          printf '  first differing byte %s' \
+            "$(cmp -l "$W$sec.bin" "$W.r$sec.bin" 2>/dev/null | head -1 | awk '{print $1}')"
+        fi
+        printf '\n'
+      fi
     done
     # Symbol counts from both sides. The previous line read a file that was
     # never created and printed "symbols: ?" every time -- a diagnostic that
