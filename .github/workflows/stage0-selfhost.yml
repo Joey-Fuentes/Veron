@@ -120,6 +120,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends binutils python3
 
+      - name: 'LINT: immediates the encoding cannot hold'
+        run: |
+          set -eu
+          # Cheap, and it runs BEFORE the build so the failure names the whole
+          # class rather than GNU as naming the first offender after a push.
+          python3 tools/s0_selfhost.py lint "$SRC"
+          python3 tools/s0_selfhost.py lint spikes/elf/elf.aarch64.s
+
       - name: Build the reference stage0-as and elf
         run: |
           set -eu

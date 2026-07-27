@@ -325,6 +325,38 @@ def cmd_xlate(path, out):
     return 0
 
 
+def cmd_lint(path):
+    """Reject an arithmetic immediate the encoding cannot hold.
+
+    ADD/SUB/CMP/CMN take a 12-bit immediate, optionally shifted left by 12 --
+    so 0x2000 encodes as 2<<12 and 0x2400 encodes as nothing at all. Reading
+    the source that distinction is invisible, and it broke a build: three
+    selector values were chosen to match some opcode bits and only two of them
+    happened to be comparable.
+
+    GNU as catches it, but only after a push and only for the first offender.
+    This catches the whole class before one.
+    """
+    pat = re.compile(r"\s*(cmp|cmn|add|sub|adds|subs)\s+[wx]\d+,\s*"
+                     r"(?:[wx]\d+,\s*)?#(0x[0-9a-fA-F]+|\d+)\s*$")
+    bad = 0
+    for n, raw in enumerate(open(path, encoding="utf-8"), 1):
+        m = pat.match(raw.split("//")[0])
+        if not m:
+            continue
+        t = m.group(2)
+        v = int(t, 16) if t.lower().startswith("0x") else int(t)
+        if v > 0xFFF and (v & 0xFFF):
+            print("  %s:%d: 0x%x fits neither imm12 nor imm12<<12 -- %s"
+                  % (path, n, v, raw.split("//")[0].strip()))
+            bad += 1
+    if bad:
+        print("  %d unencodable immediate(s)." % bad)
+        return 1
+    print("  arithmetic immediates: all encodable.")
+    return 0
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__.strip().split("\n\n")[1])
@@ -336,6 +368,8 @@ def main():
         return cmd_probes(sys.argv[2], sys.argv[3])
     if cmd == "xlate":
         return cmd_xlate(sys.argv[2], sys.argv[3])
+    if cmd == "lint":
+        return cmd_lint(sys.argv[2])
     print("unknown command: %s" % cmd)
     return 2
 

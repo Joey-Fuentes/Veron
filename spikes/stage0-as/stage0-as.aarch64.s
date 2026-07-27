@@ -688,18 +688,22 @@ h_eor:
 h_lsl:
     add     x20, x20, #0x3                  // skip "lsl"
     mov     w26, #0x2000
+    mov     w16, #0x1                        // kind: 0 udiv 1 lsl 2 lsr 3 asr
     b       shift_common
 h_lsr:
     add     x20, x20, #0x3                  // skip "lsr"
     mov     w26, #0x2400
+    mov     w16, #0x2                        // kind: 0 udiv 1 lsl 2 lsr 3 asr
     b       shift_common
 h_udiv:
     add     x20, x20, #0x4                  // skip "udiv"
-    mov     w26, #0x800                     // UDIV: 0x9AC00800 | m<<16 | n<<5 | d
+    mov     w26, #0x800
+    mov     w16, #0x0                        // kind: 0 udiv 1 lsl 2 lsr 3 asr                     // UDIV: 0x9AC00800 | m<<16 | n<<5 | d
     b       shift_common
 h_asr:
     add     x20, x20, #0x3                  // skip "asr"
     mov     w26, #0x2800
+    mov     w16, #0x3                        // kind: 0 udiv 1 lsl 2 lsr 3 asr
 shift_common:
     bl      next_reg
     mov     w24, w0
@@ -732,7 +736,15 @@ shift_imm:
     b.eq    die
     bl      parse_dec                       // w0 = shift amount
     mov     w13, #0x1f                      // 31
-    cmp     w26, #0x2000                    // lsl?
+    // COMPARE THE KIND CODE, NOT THE OPCODE BITS. w26 holds 0x2000/0x2400/
+    // 0x2800 because those are the LSLV/LSRV/ASRV selector bits, and two of the
+    // three cannot appear in a CMP at all: the immediate is 12 bits, optionally
+    // shifted by 12, so 0x2000 encodes as 2<<12 and 0x2400 encodes as nothing.
+    // Choosing a value for one purpose and then comparing against it is what
+    // broke the build; w16 carries a small code that is always encodable.
+    cmp     w16, #0x0                       // udiv has no immediate form
+    b.eq    die
+    cmp     w16, #0x1                       // lsl?
     b.ne    si_rs
     mov     w11, #0x20                      // 32
     sub     w11, w11, w0
@@ -743,7 +755,7 @@ shift_imm:
 si_rs:
     mov     w11, w0                         // immr = s
     mov     w12, w13                        // imms = 31
-    cmp     w26, #0x2400                    // lsr?
+    cmp     w16, #0x2                       // lsr?
     b.eq    si_u
     mov     w9, #0x13000000                 // asr -> SBFM
     b       si_emit
