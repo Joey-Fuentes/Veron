@@ -533,16 +533,26 @@ jobs:
           # and compare the files.
           "$P/bin/objdump" -t stage0-as > stage0-as.syms
           "$P/bin/objdump" -h stage0-as > stage0-as.secs
-          "$P/bin/objcopy" -O binary --only-section=.rodata stage0-as \
-            rodata.bin 2>/dev/null || : > rodata.bin
+          # A SECTION DIRECTORY, NOT ONE FILE. s0_rebuild.py has taken a
+          # directory of <section>.bin since elf needed .data as well as
+          # .rodata; roundtrip.sh was updated and this inline copy was not. It
+          # kept passing rodata.bin, so the tool looked for
+          # rodata.bin/.rodata.bin, found nothing, emitted no .rodata, and the
+          # link failed on `undefined reference to inover`.
+          rm -rf secdir && mkdir -p secdir
+          for sec in .rodata .data; do
+            "$P/bin/objcopy" -O binary --only-section=$sec stage0-as \
+              "secdir/$sec.bin" 2>/dev/null || : > "secdir/$sec.bin"
+          done
           set +e
           python3 tools/s0_rebuild.py stage0-as.dis stage0-as.syms \
-            stage0-as.secs rodata.bin rebuild.s
+            stage0-as.secs secdir rebuild.s
           # SEPARATE THE TWO STDERRs AND SHOW THE ERRORS, NOT THE FIRST FIVE
           # LINES. The previous version merged assembler and linker output and
           # printed head -5, which was three harmless `.space 0` warnings --
           # so the run reported "rebuild did not assemble/link" and then showed
           # nothing about why. Which of the two failed was not even visible.
+          a2_fail=0
           _asok=0; _ldok=0
           # ASSEMBLE TO THE SAME OBJECT NAME. `as` records the object it was
           # asked to produce as a FILE symbol, so `-o rebuild.o` put
@@ -564,6 +574,7 @@ jobs:
               2>rebuild.ld.err && _ldok=1
           fi
           if [ "$_asok" = 0 ] || [ "$_ldok" = 0 ]; then
+            a2_fail=1
             [ "$_asok" = 0 ] && echo "    ASSEMBLER failed:" \
                              || echo "    assembler ok; LINKER failed:"
             for _e in rebuild.as.err rebuild.ld.err; do
@@ -645,11 +656,20 @@ jobs:
               echo "    first difference at byte $_fd; sections and their file offsets:"
               awk '$2 ~ /^\./ {printf "      %-12s size %-8s file-off %s\n", $2, $3, $6}' \
                 stage0-as.secs
-              echo "    A section-level match with a named metadata difference is a"
+                echo "    A section-level match with a named metadata difference is a"
               echo "    far more precise statement than \"we only checked .text\"."
+              a2_fail=1
             fi
           fi
           set -e
+          if [ "${a2_fail:-0}" != 0 ]; then
+            echo
+            echo "  A2 FAILED. This step used to print the problem and carry on,"
+            echo "  which is how a broken rebuild reached the log three runs in a"
+            echo "  row while the job stayed green. A check that reports and does"
+            echo "  not gate is a comment."
+            exit 1
+          fi
           echo
           echo "  SCOPE, STATED PLAINLY. What is compared is the .text SECTION,"
           echo "  not the whole ELF. The reassembled object carries our own"
@@ -833,7 +853,6 @@ jobs:
           echo "  both decoders within budget."
 
       - name: 'ROUND-TRIP: elf, the OTHER binary as+ld builds'
-        continue-on-error: true
         run: |
           set -eu
           # stage3-hermetic-arm64 runs four host-tool commands and TWO are for
@@ -844,9 +863,12 @@ jobs:
           # The checks live in tools/roundtrip.sh rather than being copied from
           # the block above: every lesson in that block is specific to nothing
           # about stage0-as, and a copy would drift with the copy staying green.
-          # Non-gating for now -- elf's own gap is measured first.
+          # GATING. This was non-gating while elf's gap was being measured, and
+          # the measuring finished several runs ago -- roundtrip.sh returns the
+          # number of failed checks and `|| true` was throwing it away, so elf's
+          # whole-binary rebuild could fail silently and did.
           chmod +x tools/roundtrip.sh
-          tools/roundtrip.sh spikes/elf/elf.aarch64.s elf "$P" || true
+          tools/roundtrip.sh spikes/elf/elf.aarch64.s elf "$P"
 
       - name: 'REGRESSION: does this stage0-as still build stage 1 and stage 2?'
         run: |
@@ -956,8 +978,9 @@ jobs:
           echo
           echo "  remaining NEEDS markers: $(grep -c '^###' stage0-as.s0 || true)"
 
+      # Also gating now: the translation reaches the end and emits 3328 bytes,
+      # so a shortfall from here is a regression rather than a known gap.
       - name: 'PROBE: how far does the translation get through stage0-as?'
-        continue-on-error: true
         run: |
           set -eu
           # Feed it the translatable subset alone. This will NOT produce a
@@ -990,8 +1013,12 @@ jobs:
             echo "  SHORTFALL of $((instr - words)) -- that many lines were silently dropped."
           fi
 
-      - name: 'GATE (off until the gap is zero): self-host and fixpoint'
-        continue-on-error: true
+      # GATING, AS OF THE RUN WHERE IT FIRST PASSED. It was continue-on-error
+      # while the gap was being closed, and it stayed that way through the run
+      # that proved self-hosting -- so the strongest check in this workflow was
+      # advisory at the exact moment it started meaning something. If it ever
+      # fails again that is a regression in the seed, and the job should say so.
+      - name: 'GATE: self-host and fixpoint'
         run: |
           set -eu
           if grep -q '^###' stage0-as.s0; then

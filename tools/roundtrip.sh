@@ -87,14 +87,28 @@ if ( cd "rb-$W" && "$P/bin/as" -o "$obj" in.s ) 2>"$W.as.err" \
   else
     printf '  A2  whole binary      %8s vs %-8s DIFFERS\n' \
       "$(wc -c < "$BIN")" "$(wc -c < "$W.rebuilt")"
-    for sec in .text .rodata; do
+    # EVERY SECTION THE BINARY HAS, not a hardcoded two. elf keeps its ELF
+    # header template in .data, which this loop never looked at -- so the
+    # per-section report could say ".text identical, .rodata identical" while
+    # the whole-file comparison failed, and name nothing.
+    for sec in $("$P/bin/objdump" -h "$BIN" | awk '$2 ~ /^\./ {print $2}'); do
       "$P/bin/objcopy" -O binary --only-section=$sec "$W.rebuilt" \
         "$W.r$sec.bin" 2>/dev/null || : > "$W.r$sec.bin"
       cmp -s "$W$sec.bin" "$W.r$sec.bin" \
         && printf '        %-9s identical\n' "$sec" \
         || printf '        %-9s DIFFERS\n' "$sec"
     done
-    echo "      symbols: $(grep -c '^ *[0-9]*:' "$W.o.s" 2>/dev/null || echo ?)"
+    # Symbol counts from both sides. The previous line read a file that was
+    # never created and printed "symbols: ?" every time -- a diagnostic that
+    # cannot fail is not a diagnostic.
+    for _s in "$BIN" "$W.rebuilt"; do
+      "$P/bin/readelf" -W -s "$_s" > "$W.$(basename "$_s").syms" 2>/dev/null || true
+    done
+    printf '      symbols: original %s  rebuilt %s\n' \
+      "$(grep -c '^ *[0-9]*:' "$W.$(basename "$BIN").syms" 2>/dev/null || echo 0)" \
+      "$(grep -c '^ *[0-9]*:' "$W.$(basename "$W.rebuilt").syms" 2>/dev/null || echo 0)"
+    diff "$W.$(basename "$BIN").syms" "$W.$(basename "$W.rebuilt").syms" \
+      | grep '^[<>]' | head -6 | sed 's/^/        /' || true
     fail=$((fail + 1))
   fi
 else
