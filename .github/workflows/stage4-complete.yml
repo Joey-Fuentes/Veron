@@ -52,6 +52,12 @@ name: stage4-complete
 # compute is cheaper than a false claim.
 
 on:
+  # SCOPED TO THIS FILE, like every other box here. It cannot be dragged in by
+  # an edit elsewhere: the nine-run pile-up on c28ef9e happened because five
+  # workflow files changed in one commit, not because they had push triggers.
+  push:
+    paths:
+      - '.github/workflows/stage4-complete.yml'
   workflow_dispatch:
     inputs:
       tcc_source:
@@ -70,6 +76,13 @@ env:
   GNU: https://mirrors.kernel.org/gnu
   GNU2: https://ftpmirror.gnu.org
   GCC10: 10.2.0
+  # REQUIRED BY THE COPIED FETCH STEP. Dropping it is what killed run
+  # 81927656056: "TRY_GCC10: unbound variable" under set -u, eight steps in.
+  # In tcc-builds-gcc-arm64 this is a dispatch input defaulting to 'yes',
+  # because that job can usefully stop at gcc 4.7.4. This chain cannot -- gcc 10
+  # is the rung everything above it stands on -- so it is fixed at 'yes' rather
+  # than plumbed as an input that must never be answered 'no'.
+  TRY_GCC10: 'yes'
   LFS_TGT: aarch64-veron-linux-gnu
   BINUTILS: 2.46.0
   GCCVER: 15.2.0
