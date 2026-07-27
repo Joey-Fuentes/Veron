@@ -312,18 +312,26 @@ jobs:
         run: |
           set -eu
           # THE DEMO STAYS THE SINGLE SOURCE OF TRUTH. stage2-mini-c-demo.yml
-          # carries ~450 example programs; copying them here would fork the
-          # corpus, and a forked corpus drifts silently -- the copy stays green
-          # while the original grows a case it does not have. Read it instead.
+          # carries ~490 example programs across 21 harness definitions;
+          # copying them here would fork the corpus, and a forked corpus drifts
+          # silently -- the copy stays green while the original grows a case it
+          # does not have. Read it instead. Current yield: 426.
           #
-          # The floor is the important part. Programs built out of shell
-          # variables and printf-escape forms cannot survive extraction and are
-          # skipped BY REASON, never silently, because a shrinking corpus still
-          # passes. If the demo's harness shape changes, this fails loudly here
-          # rather than quietly running forty tests and calling it a gate.
+          # The harness printf form is DERIVED POSITIONALLY, not assumed. Four
+          # harnesses (etry ftry ptry btry) are redefined mid-file and etry's
+          # two definitions disagree -- the first is `printf "$1"` (escapes
+          # interpreted), the second `printf '%s' "$1"` (literal). Getting that
+          # wrong fed 34 tests to stage 2 as raw \047\134n\047 instead of
+          # '\n', and 16 of them failed looking exactly like codegen defects.
+          # They were not. See tools/extract_stage2_tests.py.
+          #
+          # The floor catches the other direction. Skips are reported BY REASON,
+          # never silently, because a shrinking corpus still passes: losing a
+          # whole harness drops the count below the floor and fails here rather
+          # than quietly running four hundred tests and calling it a gate.
           python3 tools/extract_stage2_tests.py \
             .github/workflows/stage2-mini-c-demo.yml \
-            pins/stage2-tests.tsv --floor 380
+            pins/stage2-tests.tsv --floor 415
 
       - name: Assemble the box
         run: |
