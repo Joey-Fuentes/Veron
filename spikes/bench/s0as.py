@@ -132,16 +132,45 @@ def _encode(l, at, labels):
         base={'orr':0xAA000000,'and':0x8A000000,'eor':0xCA000000}[op]
         return (base|(m<<16)|(sh<<10)|(n<<5)|d,(op,d,n,m,sh))
     if op in ('lsl','lsr','asr'):
-        d=_reg(p[1]);n=_reg(p[2]);m=_reg(p[3])
-        sel={'lsl':0x2000,'lsr':0x2400,'asr':0x2800}[op]
-        return (0x9AC00000|sel|(m<<16)|(n<<5)|d,(op,d,n,m))
+        d=_reg(p[1]);n=_reg(p[2])
+        # A REGISTER THIRD OPERAND IS LSLV/LSRV/ASRV; AN IMMEDIATE ONE IS AN
+        # ALIAS FOR UBFM/SBFM -- a different instruction family, not a variant.
+        #   lsl Wd,Wn,#s = UBFM immr=(32-s)&31 imms=31-s
+        #   lsr Wd,Wn,#s = UBFM immr=s         imms=31
+        #   asr Wd,Wn,#s = SBFM immr=s         imms=31
+        # 32-bit only, matching the assembler; the x-form is rejected there.
+        if p[3][:1] in ('w','x'):
+            m=_reg(p[3])
+            sel={'lsl':0x2000,'lsr':0x2400,'asr':0x2800}[op]
+            return (0x9AC00000|sel|(m<<16)|(n<<5)|d,(op,d,n,m))
+        sh=int(p[3])
+        if op=='lsl': immr,imms,base=(32-sh)&31, 31-sh, 0x53000000
+        elif op=='lsr': immr,imms,base=sh, 31, 0x53000000
+        else: immr,imms,base=sh, 31, 0x13000000
+        return (base|(immr<<16)|(imms<<10)|(n<<5)|d,(op+'_i',d,n,sh))
     if op=='adr':
         d=_reg(p[1]); tgt=_pos(p[2]); v=(tgt-at)   # accepts @<pos> (numeric) or a label
         return (0x10000000|((v&3)<<29)|(((v>>2)&0x7FFFF)<<5)|d,('adr',d,tgt))
     if op=='ldrb':
-        t=_reg(p[1]);n=_reg(p[2]);m=_reg(p[3]); return (0x38606800|(m<<16)|(n<<5)|t,('ldrb',t,n,m))
+        # THE INDEX REGISTER IS OPTIONAL. Two operands is the
+        # unsigned-offset form with offset zero, three is the register
+        # form. Reading p[3] unconditionally raised IndexError on
+        # `ldrb w9 x10`, which is the line stage0-as also rejected.
+        t=_reg(p[1]);n=_reg(p[2])
+        if len(p) > 3:
+            m=_reg(p[3])
+            return (0x38606800|(m<<16)|(n<<5)|t,('ldrb',t,n,m))
+        return (0x39400000|(n<<5)|t,('ldrb_b',t,n))
     if op=='strb':
-        t=_reg(p[1]);n=_reg(p[2]);m=_reg(p[3]); return (0x38206800|(m<<16)|(n<<5)|t,('strb',t,n,m))
+        # THE INDEX REGISTER IS OPTIONAL. Two operands is the
+        # unsigned-offset form with offset zero, three is the register
+        # form. Reading p[3] unconditionally raised IndexError on
+        # `strb w9 x10`, which is the line stage0-as also rejected.
+        t=_reg(p[1]);n=_reg(p[2])
+        if len(p) > 3:
+            m=_reg(p[3])
+            return (0x38206800|(m<<16)|(n<<5)|t,('strb',t,n,m))
+        return (0x39000000|(n<<5)|t,('strb_b',t,n))
     if op=='ldr':
         t=_reg(p[1]);n=_reg(p[2]); w=p[1][0]
         base=0xF9400000 if w=='x' else 0xB9400000   # x-form sets size bit30

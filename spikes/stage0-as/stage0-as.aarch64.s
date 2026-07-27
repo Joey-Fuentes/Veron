@@ -519,10 +519,20 @@ h_strb:
     mov     w24, w0
     bl      next_reg
     mov     w25, w0
-    bl      next_reg
+    // THE INDEX REGISTER IS OPTIONAL. `strb w9 x10` is the unsigned-offset form
+    // with offset zero, 0x39000000; only `strb w9 x10 x11` is the register form.
+    bl      opt_reg
+    cmp     w11, #0x0
+    b.eq    strb_base
     mov     w9, #0x38200000
     movk    w9, #0x6800
     orr     w9, w9, w0, lsl #16
+    orr     w9, w9, w25, lsl #5
+    orr     w9, w9, w24
+    bl      emit
+    b       parse_loop
+strb_base:
+    mov     w9, #0x39000000                 // STRB (immediate), offset 0
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
     bl      emit
@@ -695,10 +705,53 @@ shift_common:
     mov     w24, w0
     bl      next_reg
     mov     w25, w0
-    bl      next_reg
+    // REGISTER OR IMMEDIATE. `lsl w9 w0 w1` is LSLV; `lsl w9 w0 5` is an alias
+    // for UBFM and a different instruction family entirely. Nine lines of this
+    // source use the immediate form and the handler only knew the register one.
+    bl      opt_reg
+    cmp     w11, #0x0
+    b.eq    shift_imm
     mov     w9, #0x9ac00000
     orr     w9, w9, w26                     // 0x2000/0x2400/0x2800 selector
     orr     w9, w9, w0, lsl #16
+    orr     w9, w9, w25, lsl #5
+    orr     w9, w9, w24
+    bl      emit_dp
+    b       parse_loop
+
+// ---- lsl/lsr/asr w<d> w<n> <imm>  -> UBFM / SBFM ----
+//   lsl Wd,Wn,#s = UBFM Wd,Wn,#((32-s)&31),#(31-s)
+//   lsr Wd,Wn,#s = UBFM Wd,Wn,#s,#31
+//   asr Wd,Wn,#s = SBFM Wd,Wn,#s,#31
+// Only the 32-bit form is implemented, which is all this source uses. An
+// x-register with an immediate shift needs a different base word (0xd3400000,
+// N=1, six-bit fields against 63) so it is REJECTED rather than encoded wrong:
+// a silently incorrect encoding is the one failure this assembler must not have.
+shift_imm:
+    cmp     x17, #0x0                       // 0 = x-register was used
+    b.eq    die
+    bl      parse_dec                       // w0 = shift amount
+    mov     w13, #0x1f                      // 31
+    cmp     w26, #0x2000                    // lsl?
+    b.ne    si_rs
+    mov     w11, #0x20                      // 32
+    sub     w11, w11, w0
+    and     w11, w11, w13                   // immr = (32-s) & 31
+    sub     w12, w13, w0                    // imms = 31 - s
+    mov     w9, #0x53000000                 // UBFM, 32-bit
+    b       si_emit
+si_rs:
+    mov     w11, w0                         // immr = s
+    mov     w12, w13                        // imms = 31
+    cmp     w26, #0x2400                    // lsr?
+    b.eq    si_u
+    mov     w9, #0x13000000                 // asr -> SBFM
+    b       si_emit
+si_u:
+    mov     w9, #0x53000000                 // lsr -> UBFM
+si_emit:
+    orr     w9, w9, w11, lsl #16
+    orr     w9, w9, w12, lsl #10
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
     bl      emit_dp
@@ -888,6 +941,44 @@ nr_r:
 // x12 is used to save the cursor because it is referenced nowhere else in this
 // file; parse_dec clobbers w0, w10 and w11 and leaves w9 alone, so the caller
 // can finish building its word afterwards.
+// ---- optional register operand, THIS LINE ONLY ----
+// Returns w0 = register number and w11 = 1 when one is present, or w11 = 0 with
+// the cursor untouched when the line ends first. Same newline rule as opt_dec:
+// next_reg calls skip_ws, which treats \n as whitespace, so asking it for an
+// operand that may not be there walks onto the next line and reads its mnemonic
+// as a register. That is why `strb w9, [x10]` was rejected rather than encoded.
+opt_reg:
+    mov     x14, x30                        // next_reg needs the link register
+    mov     x15, x20
+or_ws:
+    cmp     x20, x21
+    b.ge    or_none
+    ldrb    w10, [x19, x20]
+    cmp     w10, #0x20                      // ' '
+    b.eq    or_adv
+    cmp     w10, #0x9                       // tab
+    b.eq    or_adv
+    b       or_chk
+or_adv:
+    add     x20, x20, #0x1
+    b       or_ws
+or_chk:
+    cmp     w10, #0x77                      // 'w'
+    b.eq    or_yes
+    cmp     w10, #0x78                      // 'x'
+    b.ne    or_none
+or_yes:
+    bl      next_reg
+    mov     w11, #0x1
+    mov     x30, x14
+    ret
+or_none:
+    mov     x20, x15                        // nothing there; cursor back
+    mov     w0, #0x0
+    mov     w11, #0x0
+    mov     x30, x14
+    ret
+
 opt_dec:
     mov     x12, x20                        // remember the cursor
 od_ws:
