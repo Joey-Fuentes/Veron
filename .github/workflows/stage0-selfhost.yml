@@ -478,6 +478,54 @@ jobs:
           verdict 'reasm .text via gnu'  redis-gnu.bin        orig.bin
           verdict 'reasm .text via llvm' redis-llvm.bin       orig.bin
           echo
+          echo "  --- A2. THE WHOLE BINARY, NOT JUST .text ---"
+          # .text matching is a real result but it is not the claim a committed
+          # seed needs: the artifact that gets committed is the whole file, and
+          # an ELF whose .text is verified while its e_entry is not has an
+          # unverified field deciding what actually runs. So reconstruct
+          # everything the disassembly can account for -- real symbol names,
+          # .rodata bytes, .bss sizes, global bindings -- link it the same way,
+          # and compare the files.
+          "$P/bin/objdump" -t stage0-as > stage0-as.syms
+          "$P/bin/objdump" -h stage0-as > stage0-as.secs
+          "$P/bin/objcopy" -O binary --only-section=.rodata stage0-as \
+            rodata.bin 2>/dev/null || : > rodata.bin
+          set +e
+          python3 tools/s0_rebuild.py stage0-as.dis stage0-as.syms \
+            stage0-as.secs rodata.bin rebuild.s
+          if [ -s rebuild.s ] \
+             && "$P/bin/as" -o rebuild.o rebuild.s 2>rebuild.err \
+             && "$P/bin/ld" -Ttext="$(cat redis.s.base)" -o rebuild.elf \
+                  rebuild.o 2>>rebuild.err; then
+            printf '    %-26s %12s  %-16s  %s\n' 'binary stage0-as' \
+              "$(wc -c < stage0-as)" "$(sha256sum stage0-as | cut -c1-16)" 'the original'
+            _v='DIFFERS'
+            cmp -s rebuild.elf stage0-as && _v='MATCHES the original'
+            printf '    %-26s %12s  %-16s  %s\n' 'binary REASSEMBLED' \
+              "$(wc -c < rebuild.elf)" "$(sha256sum rebuild.elf | cut -c1-16)" "$_v"
+            if [ "$_v" = DIFFERS ]; then
+              echo "    per-section, to localise it:"
+              for sec in .text .rodata; do
+                "$P/bin/objcopy" -O binary --only-section=$sec stage0-as \
+                  "o$sec.bin" 2>/dev/null || : > "o$sec.bin"
+                "$P/bin/objcopy" -O binary --only-section=$sec rebuild.elf \
+                  "r$sec.bin" 2>/dev/null || : > "r$sec.bin"
+                if cmp -s "o$sec.bin" "r$sec.bin"; then
+                  printf '      %-10s %8s bytes  identical\n' "$sec" "$(wc -c < "o$sec.bin")"
+                else
+                  printf '      %-10s %8s vs %-8s DIFFERS\n' "$sec" \
+                    "$(wc -c < "o$sec.bin")" "$(wc -c < "r$sec.bin")"
+                fi
+              done
+              echo "    A section-level match with a named metadata difference is a"
+              echo "    far more precise statement than \"we only checked .text\"."
+            fi
+          else
+            echo "    rebuild did not assemble/link:"
+            head -5 rebuild.err | sed 's/^/      /'
+          fi
+          set -e
+          echo
           echo "  SCOPE, STATED PLAINLY. What is compared is the .text SECTION,"
           echo "  not the whole ELF. The reassembled object carries our own"
           echo "  address-derived labels rather than the original symbol names,"
