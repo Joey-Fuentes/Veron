@@ -31,7 +31,13 @@
 # run: elf, stage1, stage2 and all eight emitted-output fingerprints were
 # UNCHANGED, and stage3-hermetic-arm64 on the same commit passed 426/426 with
 # G1 == dc38e13e4ceaeecb.
-stage0-as       6760     6041f6619f51f19c
+# 6760 -> 6768 at the bss_origin change (r26). The +8 bytes are an ELF symbol
+# table entry, NOT code: .text is untouched, all 695 instructions are identical,
+# and the round-trip proves it -- 100% against binutils 2.47 AND llvm-objdump
+# 22.1.8, with the two decoders agreeing on all 696 words. I had said this
+# change "provably can't" move stage0-as's bytes; that was wrong. Adding a
+# symbol grows the file even when it changes no instruction.
+stage0-as       6768     5b9126b8278089ca
 elf             1880     c4b44c02f85b10df
 # stage1 and stage2 MOVED once, at the sf-bit fix (m83), and have been stable
 # since. Their SIZES did not change -- 1469 and 23257 before and after -- only
