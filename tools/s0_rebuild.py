@@ -79,7 +79,12 @@ def main():
         addr = int(m.group(1), 16)
         ops = m.group(3).split("//")[0].split(";")[0].strip()
         # keep the SYMBOL, drop the address objdump prints beside it
-        ops = re.sub(r"\b(?:0x)?[0-9a-f]+\s+<([^>+]+)(?:\+0x[0-9a-f]+)?>", r"\1", ops)
+        # KEEP THE OFFSET. `<slurp+0x2c>` means "44 bytes past slurp", and the
+        # old pattern captured only the symbol -- so every branch to an address
+        # without its own label silently retargeted to the start of the
+        # enclosing one. GNU as accepts `slurp+0x2c`, so pass the whole thing
+        # through.
+        ops = re.sub(r"\b(?:0x)?[0-9a-f]+\s+<([^>]+)>", r"\1", ops)
         ops = re.sub(r"<([^>]+)>", r"\1", ops)
         insns[addr] = ("%s %s" % (m.group(2), ops)).strip()
 

@@ -536,6 +536,20 @@ jobs:
                 else
                   printf '      %-10s %8s vs %-8s DIFFERS\n' "$sec" \
                     "$(wc -c < "o$sec.bin")" "$(wc -c < "r$sec.bin")"
+                  # NAME THE FIRST DIFFERING INSTRUCTION. Two runs have now
+                  # been spent guessing at why .text differs; the binaries are
+                  # right here and can be asked. Print the offending word from
+                  # each side, disassembled, so the cause is read rather than
+                  # inferred.
+                  _off=$(cmp "o$sec.bin" "r$sec.bin" 2>&1 \
+                         | sed 's/.*differ: byte //; s/,.*//')
+                  _ins=$(( (_off - 1) / 4 ))
+                  _addr=$(printf '%x' $(( 0x$(sed -n "s/^-T${sec#.}=0x//p" \
+                           rebuild.s.secs | head -1) + _ins * 4 )))
+                  echo "        first difference at byte $_off = word $_ins, addr 0x$_addr"
+                  echo "        original    : $(grep -m1 "^ *$_addr:" stage0-as.dis | sed 's/^ *//')"
+                  "$P/bin/objdump" -d rebuild.elf > rebuild.dis 2>/dev/null || true
+                  echo "        reassembled : $(grep -m1 "^ *$_addr:" rebuild.dis | sed 's/^ *//')"
                 fi
               done
               echo "    A section-level match with a named metadata difference is a"
