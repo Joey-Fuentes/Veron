@@ -949,6 +949,14 @@ eb_adv:
     add     x22, x22, #0x1
     ret
 
+// STRINGS LIVE IN .rodata, NOT .text. While they sat in .text a disassembler
+// decoded them as instructions, which cost three phantom labels and a padding
+// word -- the "LINE COUNT DIFFERS by 4" that stopped the round-trip diff from
+// being total, and the reason check A could only compare a prefix of the
+// section rather than all of it. .text holding only code is also what
+// AGENTS.md's round-trip rule implies: every byte of it should decode back to
+// a source line.
+    .section .rodata
     .balign 8
 inover:  .ascii  "stage0-as: input exceeds INBUF_SZ\n"
 rejmsg:  .ascii  "stage0-as: rejected: "
