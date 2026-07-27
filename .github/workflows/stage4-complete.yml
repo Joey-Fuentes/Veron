@@ -355,9 +355,21 @@ jobs:
         if: always()
         with:
           name: s4c-record-rung1
+          # THE BUILD LOGS, NOT JUST THE STEP'S STDOUT. Run 81908437787's gcc 10
+          # failed with "make: *** [Makefile:958: all] Error 2" and the actual
+          # compiler error was in work/b10/build.log, which lived on the runner
+          # and was thrown away when the job ended. A failure you cannot read is
+          # a failure you have to reproduce, and each reproduction is 12 minutes.
+          # if-no-files-found: ignore, because a failure before build B leaves
+          # some of these absent and that must not fail the upload itself.
+          if-no-files-found: ignore
           path: |
             records/rung1.json
             work/rung1.log
+            work/b*/build.log
+            work/b*/conf.log
+            work/b*/config.log
+            work/b*/install.log
 
   # ==========================================================================
   # RUNG 2 -- gcc 10 -> sysroot (chapters 5-6) -> gcc 15.2.0
@@ -491,9 +503,12 @@ jobs:
         if: always()
         with:
           name: s4c-record-rung2
+          if-no-files-found: ignore
           path: |
             records/rung2.json
             work/rung2.log
+            work/last.log
+            work/b-*/config.log
 
   # ==========================================================================
   # RUNG 3 -- gcc 15 -> linux 7.1.5 + userland -> QEMU -> compile IN the guest
@@ -654,8 +669,11 @@ jobs:
           path: |
             records/rung3.json
             work/rung3.log
+            work/kbuild.log
+            work/bbuild.log
             qemu.log
             work/Image
+            work/img/kernel.config
 
   # ==========================================================================
   # LEDGER -- the only step allowed to make a claim, and only from evidence.

@@ -25,7 +25,33 @@ before running this.
 | run | got to | died on |
 |---|---|---|
 | 81901874247 | step 3 of 18 | `apt-get` without `sudo`; `RESULT` printed a full proof banner anyway |
-| 81907665505 | rung 1, stage 1 | `GMP_VER: parameter not set` — the rung scripts read the workflow's `env:` block, which `--clearenv` does not carry into the box |
+| 81907665505 | rung 1, first pass | `GMP_VER: parameter not set` — the rung scripts read the workflow's `env:` block, which `--clearenv` does not carry into the box |
+| 81908437787 | rung 1, gcc 10 | `make: *** [Makefile:958: all] Error 2`. tcc built gcc 4.7.4 (2 min) and that gcc rebuilt it (5 min); all six sources pin-verified. Two defects of mine surfaced: the failure diagnostics printed make's directory chatter instead of the compiler error, and the build log was never uploaded, so the actual error is unrecoverable without a rerun. Both fixed in r3. |
+
+### Two things r3 changes because they were wrong, not because they broke
+
+**The passes are no longer numbered.** They were `STAGE 1/2/3`, inherited from
+`tcc-builds-gcc-arm64`. But `ARCHITECTURE.md` §2, `AGENTS.md` §4, that job, and
+this workflow's own rungs already give a small integer beside "stage" four
+different meanings, and the first two disagree in a way that is an open
+stop-and-ask. Adding a fifth scheme made a log line unreadable without knowing
+which file the reader had open. The passes are named by the transition they
+perform.
+
+**The fixpoint check was measuring the wrong pair, and pre-declaring the
+answer.** It compared build A's `cc1` (compiled by tcc) against build B's
+(compiled by gcc) — two different compilers, which have no reason to emit
+identical code — and annotated the inevitable difference "expected at this
+rung; 3-stage bootstrap is deferred". A check with one possible outcome, and a
+comment ensuring that outcome reads as success, is the same defect as the gate
+that printed "expect exit 55" and exited 0 regardless.
+
+r3 builds a third 4.7.4 and compares **B against C**: identical source,
+identical `--prefix`, compilers that are themselves identical-source 4.7.4.
+Those *should* be byte-identical, so a difference is a real finding — a tcc
+miscompilation surviving a generation, or non-determinism. It is a hard failure
+with `cmp -l` offsets printed. Cost is one extra 4.7.4 build, which run
+81908437787 measured at 2–5 minutes against a 330-minute budget.
 
 What 81907665505 established, which is the part worth keeping: rung 0 built the
 patched tcc at the pinned commit and sealed it; rung 1's seam check verified the

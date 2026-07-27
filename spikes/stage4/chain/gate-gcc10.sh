@@ -12,7 +12,7 @@ bad() { say "    ^^ FAIL: $*"; fail=1; }
 
 [ -x /work/out10/bin/gcc ] || { say "  no gcc 10 to test"; exit 1; }
 [ -x /work/out10/bin/g++ ] || { say "  no g++ 10 to test"; exit 1; }
-export LD_LIBRARY_PATH=/work/out10/lib64:/work/out10/lib:/work/out2/lib64
+export LD_LIBRARY_PATH=/work/out10/lib64:/work/out10/lib:/work/g47/lib64:/work/g47/lib
 
 # 1. C CODEGEN, NOT --version. fib exercises a conditional, a subtraction and
 # recursion, and RUNNING it is what separates codegen from mere compilation.
