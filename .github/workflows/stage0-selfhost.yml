@@ -540,15 +540,27 @@ jobs:
             _t="$1"; _b="$2"; _l="$3"; shift 3
             for f in "$@"; do
               case "$f" in -*)
-                "$_b" --help 2>&1 | grep -q -- "$f" || {
-                  printf '    %-34s flag %s unsupported\n' "$_l" "$f"; return; } ;;
+                # PROBE THE FLAG, DO NOT GREP THE HELP. `objdump --help` does
+                # not necessarily spell every option the way the command line
+                # takes it, and the previous grep declared GNU's
+                # --no-show-raw-insn unsupported when it plainly is. Running it
+                # on a trivial input answers the question directly.
+                "$_b" -d "$f" stage0-as >/dev/null 2>&1 || {
+                  printf '    %-34s flag %s not accepted\n' "$_l" "$f"
+                  return; } ;;
               esac
             done
             "$_b" -d "$@" stage0-as > "opt-$_t.dis" 2>/dev/null || {
               printf '    %-34s FAILED to run\n' "$_l"; return; }
-            printf '    %-34s ' "$_l"
-            python3 tools/s0_roundtrip.py verbatim "$SRC" "opt-$_t.dis" \
-              | head -1 | sed 's/^ *verbatim[^:]*: //'
+            # USE THE CANONICALISER, NOT THE VERBATIM PROBE. The probe's line
+            # pattern requires a leading address, so the moment --no-addresses
+            # or --no-leading-addr does its job the parser sees zero
+            # instructions and reports "0 of 0 (0.0%)" -- a perfect score for
+            # an empty comparison. s0_canon.py reads both layouts.
+            python3 tools/s0_canon.py disasm "opt-$_t.dis" > "opt-$_t.txt"
+            _n=$(diff canon-src.txt "opt-$_t.txt" | grep -c '^[<>]' || true)
+            _l2=$(wc -l < "opt-$_t.txt")
+            printf '    %-34s %s lines, %s differing\n' "$_l" "$_l2" "$_n"
           }
           echo "  GNU objdump $BINUTILS_VER:"
           try_opts g1 "$P/bin/objdump" "plain -d"                     
