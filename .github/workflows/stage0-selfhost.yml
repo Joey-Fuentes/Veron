@@ -519,7 +519,14 @@ jobs:
             else
               printf '    %-5s %s differing lines of %s\n' "$t" "$n" \
                 "$(wc -l < canon-src.txt)"
-              diff "canon-src.txt" "canon-$t.txt" | head -12 | sed 's/^/      /'
+              # CLASSIFY, DO NOT JUST PRINT THE FIRST TWELVE. The raw head of a
+              # diff shows whichever class happens to come first and hides the
+              # rest -- which is how 492 and 274 differing lines got read as
+              # "the immediate base" when the source's own mix predicts 255 and
+              # 132. The gap between predicted and observed is a class nobody
+              # has named, and a decision made without it is a guess.
+              python3 tools/s0_canon.py classify canon-src.txt "canon-$t.txt" \
+                | sed 's/^/      /'
             fi
           done
           echo

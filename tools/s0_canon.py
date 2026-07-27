@@ -115,9 +115,59 @@ def from_disasm(path):
     return out
 
 
+def classify(a_path, b_path):
+    """Break a canonical diff into classes, so a decision rests on data.
+
+    Check E reported 492 differing lines against GNU and 274 against llvm, but
+    the source's immediate mix predicts 255 and 132. Both residuals are far
+    larger than that, which means at least one class of difference is present
+    that nobody has named -- and picking a number base to fix "the immediate
+    problem" before knowing what the rest is would be guessing.
+    """
+    a = open(a_path, encoding="utf-8").read().splitlines()
+    b = open(b_path, encoding="utf-8").read().splitlines()
+    print("  canonical lines: source %d, disassembly %d" % (len(a), len(b)))
+    n = min(len(a), len(b))
+    classes, ex = {}, {}
+    for i in range(n):
+        if a[i] == b[i]:
+            continue
+        x, y = a[i], b[i]
+        xm = x.split(" ", 1)[0]
+        ym = y.split(" ", 1)[0]
+        if x.endswith(":") or y.endswith(":"):
+            k = "label line"
+        elif xm != ym:
+            k = "mnemonic differs (%s -> %s)" % (xm, ym)
+        elif "#'" in x:
+            k = "character literal vs number"
+        elif re.search(r"#0x[0-9a-f]+", x) and re.search(r"#\d+\b", y):
+            k = "source hex, decoder decimal"
+        elif re.search(r"#\d+\b", x) and re.search(r"#0x[0-9a-f]+", y):
+            k = "source decimal, decoder hex"
+        elif x.replace(" ", "") == y.replace(" ", ""):
+            k = "whitespace only"
+        else:
+            k = "OTHER -- unclassified"
+        classes[k] = classes.get(k, 0) + 1
+        ex.setdefault(k, (x, y))
+    tot = sum(classes.values())
+    print("  %d differing lines of %d compared" % (tot, n))
+    for k in sorted(classes, key=lambda z: -classes[z]):
+        print("    %-34s %4d" % (k, classes[k]))
+        print("      %-30s | %s" % (ex[k][0][:30], ex[k][1][:30]))
+    if len(a) != len(b):
+        print("  LINE COUNT DIFFERS by %d -- the tail is not being compared at all"
+              % abs(len(a) - len(b)))
+    return 0
+
+
 def main():
+    if len(sys.argv) == 4 and sys.argv[1] == "classify":
+        return classify(sys.argv[2], sys.argv[3])
     if len(sys.argv) != 3 or sys.argv[1] not in ("source", "disasm"):
         print("usage: s0_canon.py source|disasm <file>", file=sys.stderr)
+        print("       s0_canon.py classify <canon-a> <canon-b>", file=sys.stderr)
         return 2
     lines = (from_source if sys.argv[1] == "source" else from_disasm)(sys.argv[2])
     sys.stdout.write("\n".join(lines) + "\n")
