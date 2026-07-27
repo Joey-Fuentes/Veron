@@ -4,38 +4,54 @@
 
     usage: extract_stage2_tests.py <demo.yml> <out.tsv> [--floor N]
 
-WHY THIS EXISTS. stage2-mini-c-demo.yml carries ~450 example programs, each an
-invocation of one of thirteen near-identical harnesses:
+Output is one test per line, three fields separated by 0x1F (ASCII US):
 
-    <harness> '<program>' <expected-exit-code> ['<label>']
+    <expected-exit-code>  <runtime argv, may be empty>  <program source>
 
-Copying them into a second workflow would fork the corpus, and a forked corpus
-drifts silently -- the copy stays green while the original grows a case it does
-not have. So the demo stays the single source of truth and this script reads it.
-Add a test there and every job that runs the corpus picks it up.
+THE SEPARATOR IS NOT A TAB, AND THAT IS LOAD-BEARING. POSIX classifies tab as
+IFS *white space*, so a shell `read -r a b c` collapses a run of tabs into one
+delimiter -- an empty middle field simply vanishes and every later field shifts
+left. With argv empty on 414 of 426 rows, a tab-separated corpus would hand the
+program text to the argv variable on almost every line. 0x1F is not IFS white
+space, so empty fields survive, and it cannot occur in C source.
 
-TWO PRINTF FORMS, AND THE FIRST VERSION GOT THIS WRONG. The harnesses do not
-all write their program the same way:
+WHY THIS EXISTS. stage2-mini-c-demo.yml carries ~490 example programs across
+21 harness definitions. Copying them into a second workflow would fork the
+corpus, and a forked corpus drifts silently -- the copy stays green while the
+original grows a case it does not have. So the demo stays the single source of
+truth and this script reads it. Add a test there and every job that runs the
+corpus picks it up.
 
-    try, vtry, ftry, ... :  printf '%s' "$1"   -- program written LITERALLY
-    etry, pptry          :  printf "$1"        -- program is a printf FORMAT,
-                                                  so \\047 \\134 \\042 \\n are
-                                                  INTERPRETED before compiling
+EVERYTHING ABOUT A HARNESS IS DERIVED FROM ITS OWN DEFINITION, NOT ASSUMED.
+That rule was learned three times, each time by shipping a green harness that
+manufactured red results in the component under test:
 
-v1 treated everything as literal, so all 34 escape-form tests were handed to
-stage 2 as the raw text `c=\\047\\134n\\047;` instead of `c='\\n';`. Sixteen of
-them failed and looked exactly like stage-2 codegen defects. They were not.
-That is the expensive kind of wrong: a green-looking harness manufacturing red
-results in the component under test.
+  1. PRINTF FORM. Most harnesses write the program with `printf '%s' "$1"`
+     (literal). etry, pptry and c23 use `printf "$1"`, so \\047 \\134 \\042 are
+     INTERPRETED first. Treating those as literal fed stage 2 the raw text
+     `c=\\047\\134n\\047;` instead of `c='\\n';` -- 16 failures that looked
+     exactly like codegen defects and were not. The demo's own c23 comment
+     records upstream hitting the identical trap.
 
-So the form is DERIVED, not assumed -- the script reads each harness's own
-definition out of the demo and classifies it. If someone adds a fourteenth
-harness, or changes an existing one's printf, this follows automatically.
+  2. THE FORM IS POSITIONAL. etry, ftry, ptry and btry are each defined TWICE,
+     and etry's two definitions disagree -- format at ~1046, literal at ~1746.
+     So "what form is etry?" has no single answer; it depends where the call
+     sits. This walks the file in order and classifies each call by the
+     definition then in scope, which is what the shell itself does.
 
-WHAT IT STILL SKIPS. Programs assembled from shell variables, and anything whose
-decoded text contains a real tab or newline (the corpus is one test per line,
-tab-separated). Skips are counted and reported BY REASON, never silent, because
-a shrinking corpus still passes.
+  3. RUNTIME ARGV. atry runs the built binary as `./a.out $3` -- a third
+     positional argument carrying the argv to test against. Dropping it ran all
+     13 argc/argv tests with no arguments; 7 failed. The run line is parsed for
+     that positional and it becomes the corpus's second column.
+
+A harness is only registered if its body has all three of: a printf that writes
+the program, a line that RUNS the built binary, and a `"$rc" = "$2"` comparison.
+Anything else is not an exit-code test and must not be run as one.
+
+WHAT IT STILL SKIPS, counted and reported BY REASON, never silently -- because a
+shrinking corpus still passes: programs assembled from shell variables, the
+wsame/tsame pairs (which compare two programs' output rather than an exit code),
+and anything whose decoded text contains a real tab, newline or 0x1F.
 
 --floor N fails if fewer than N tests come out, so a refactor of the demo that
 breaks the invocation shape cannot quietly turn the gate into a no-op.
@@ -46,11 +62,15 @@ import shlex
 import sys
 from collections import Counter
 
-# Harness definition:  `          name() {`  at ten spaces of indent.
 DEFN = re.compile(r"^\s{10}([a-z][a-z0-9_]*)\(\)\s*\{\s*$")
-# Its first printf, within a few lines of the opening brace.
-LITERAL_PRINTF = re.compile(r"""printf\s+'%s'\s+"\$1\"""")
-FORMAT_PRINTF = re.compile(r"""printf\s+"\$1"|printf\s+"\$\{1\}\"""")
+CALL = re.compile(r"^\s{10}([a-z][a-z0-9_]*)\s+(\S.*)$")
+
+LITERAL_PRINTF = re.compile(r"""printf\s+'%s'\s+"\$\{?1\}?\"""")
+FORMAT_PRINTF = re.compile(r"""printf\s+"\$\{?1\}?"\s""")
+# the line that runs the built binary, with any positional argv appended
+RUNS_BINARY = re.compile(r"\./a\.out((?:\s+\$\{?\d\}?)*)\s*;")
+RC_COMPARE = re.compile(r"""\[\s*"\$rc"\s*=\s*"\$\{?2\}?"\s*\]""")
+ARGV_POS = re.compile(r"\$\{?(\d)\}?")
 
 SIMPLE = {
     "\\": "\\", "a": "\a", "b": "\b", "f": "\f",
@@ -61,12 +81,12 @@ SIMPLE = {
 def printf_decode(s):
     """Decode a POSIX printf format string the way `printf "$1"` would.
 
-    Handles \\NNN and \\0NNN octal (which is what the demo's char-literal and
-    string-literal tests are built from: \\047 = ' , \\134 = \\ , \\042 = ")
-    plus the standard single-character escapes. A single left-to-right pass, so
-    a decoded backslash is never re-interpreted as the start of a new escape --
-    \\134n must come out as the two characters \\ and n, which is the C escape
-    the test is actually about, not as a newline.
+    Handles \\NNN and \\0NNN octal -- which is what the char-literal and
+    string-literal tests are built from (\\047 = ' , \\134 = \\ , \\042 = ")
+    -- plus the standard single-character escapes. One left-to-right pass, so a
+    decoded backslash is never re-read as the start of a new escape: \\134n must
+    come out as the two characters \\ and n, the C escape the test is about, not
+    as a newline.
     """
     out = []
     i, end = 0, len(s)
@@ -101,66 +121,77 @@ def printf_decode(s):
     return "".join(out)
 
 
+def classify(body):
+    """Return (form, argv_index) for a harness body, or None if not a test."""
+    if LITERAL_PRINTF.search(body):
+        form = "literal"
+    elif FORMAT_PRINTF.search(body):
+        form = "format"
+    else:
+        return None
+    run = RUNS_BINARY.search(body)
+    if not run or not RC_COMPARE.search(body):
+        return None
+    pos = ARGV_POS.findall(run.group(1))
+    return form, (int(pos[0]) if pos else 0)
+
+
 def extract(lines):
-    """Single positional pass: definitions and calls in file order.
-
-    FOUR HARNESSES ARE REDEFINED MID-FILE -- etry, ftry, ptry, btry -- and
-    etry's two definitions do not agree: the first (line ~1046) is
-    `printf "$1"`, the second (~1746) is `printf '%s' "$1"`. So "what form is
-    etry?" has no single answer; it depends on where the call sits. Building a
-    name->form map in one pass and applying it to the whole file gets 34 tests
-    wrong in whichever direction the last definition happens to point.
-
-    Walking in order and classifying each call by the definition CURRENTLY in
-    scope is both correct and exactly what the shell itself does.
-    """
-    forms = {}
-    seen_defs = []
-    tests, skipped = [], []
-    call = re.compile(r"^\s{10}([a-z][a-z0-9_]*)\s+(\S.*)$")
+    active = {}          # name -> (form, argv_index), as currently in scope
+    defs, tests, skipped = [], [], []
 
     for idx, raw in enumerate(lines):
         m = DEFN.match(raw)
         if m:
             name = m.group(1)
-            body = "\n".join(lines[idx + 1: idx + 10])
-            if LITERAL_PRINTF.search(body):
-                forms[name] = "literal"
-            elif FORMAT_PRINTF.search(body):
-                forms[name] = "format"
-            else:
+            info = classify("\n".join(lines[idx + 1: idx + 18]))
+            if info is None:
+                defs.append((idx + 1, name, "-", "not an exit-code test"))
+                active.pop(name, None)
                 continue
-            seen_defs.append((name, forms[name], idx + 1))
+            active[name] = info
+            defs.append((idx + 1, name, info[0],
+                         "argv=$%d" % info[1] if info[1] else ""))
             continue
 
-        m = call.match(raw)
+        m = CALL.match(raw)
         if not m:
             continue
-        harness, rest = m.group(1), m.group(2).strip()
-        if harness not in forms:
-            continue          # not a test harness, or not yet defined
+        name, rest = m.group(1), m.group(2).strip()
+        if name not in active:
+            continue
+        form, argv_idx = active[name]
         try:
             parts = shlex.split(rest, posix=True)
         except ValueError:
-            skipped.append((harness, "unbalanced quotes", rest))
+            skipped.append((name, "unbalanced quotes", rest))
             continue
         if len(parts) < 2:
-            skipped.append((harness, "too few arguments", rest))
+            skipped.append((name, "too few arguments", rest))
             continue
         prog, want = parts[0], parts[1]
         if "$" in prog:
-            skipped.append((harness, "shell variable in program", rest))
+            skipped.append((name, "shell variable in program", rest))
             continue
         if not want.isdigit():
-            skipped.append((harness, "non-numeric expectation", rest))
+            skipped.append((name, "non-numeric expectation", rest))
             continue
-        if forms[harness] == "format":
+        args = ""
+        if argv_idx:
+            # $3 is parts[2]: positionals are 1-based, parts is 0-based
+            if len(parts) >= argv_idx:
+                args = parts[argv_idx - 1]
+            if "$" in args:
+                skipped.append((name, "shell variable in argv", rest))
+                continue
+        if form == "format":
             prog = printf_decode(prog)
-        if "\n" in prog or "\t" in prog:
-            skipped.append((harness, "multi-line program", rest))
+        blob = prog + args
+        if "\n" in blob or "\t" in blob or "\x1f" in blob:
+            skipped.append((name, "multi-line program or argv", rest))
             continue
-        tests.append((harness, want, prog))
-    return tests, skipped, seen_defs
+        tests.append((name, want, args, prog))
+    return tests, skipped, defs
 
 
 def main():
@@ -184,33 +215,35 @@ def main():
         return 1
 
     with open(argv[1], "w", encoding="utf-8") as out:
-        for _, want, prog in tests:
-            out.write("%s\t%s\n" % (want, prog))
+        for _, want, args, prog in tests:
+            out.write("%s\x1f%s\x1f%s\n" % (want, args, prog))
 
-    print("  harness definitions, in file order (form is positional):")
-    for name, form, line in defs:
-        mark = "   <- escapes decoded" if form == "format" else ""
-        print("    line %-5s %-8s %s%s" % (line, name, form, mark))
+    print("  harness definitions in file order (form and argv are positional):")
+    for line, name, form, note in defs:
+        print("    line %-5s %-8s %-8s %s" % (line, name, form, note))
     print("  extracted %d tests from %s" % (len(tests), argv[0]))
-    by_harness = Counter(h for h, _, _ in tests)
+    by_harness = Counter(t[0] for t in tests)
     print("    " + "  ".join("%s=%d" % kv for kv in sorted(by_harness.items())))
+    print("    %d of them pass runtime arguments"
+          % sum(1 for t in tests if t[2]))
 
     if skipped:
         print("  skipped %d (reported, never silent):" % len(skipped))
-        for reason, count in Counter(r for _, r, _ in skipped).most_common():
-            print("    %-28s %d" % (reason, count))
+        for reason, count in Counter(s[1] for s in skipped).most_common():
+            print("    %-30s %d" % (reason, count))
         seen = set()
-        for harness, reason, rest in skipped:
+        for name, reason, rest in skipped:
             if reason in seen:
                 continue
             seen.add(reason)
-            print("      e.g. [%s] %s %s" % (reason, harness, rest[:88]))
+            print("      e.g. [%s] %s %s" % (reason, name, rest[:80]))
 
     if len(tests) < floor:
         print("FAIL: extracted %d tests, floor is %d." % (len(tests), floor))
-        print("      The demo's harness shape probably changed. Fix this script")
-        print("      rather than lowering the floor -- a shrinking corpus still")
-        print("      passes, which is the whole reason the floor is here.")
+        print("      Either the demo's harness shape changed -- fix this script")
+        print("      -- or tests were removed on purpose, in which case lower the")
+        print("      floor in the same commit. A shrinking corpus still passes,")
+        print("      which is the whole reason the floor is here.")
         return 1
     return 0
 

@@ -325,13 +325,19 @@ jobs:
           # '\n', and 16 of them failed looking exactly like codegen defects.
           # They were not. See tools/extract_stage2_tests.py.
           #
+          # Runtime argv is derived too: atry runs its binary as `./a.out $3`,
+          # a third positional carrying the argv under test. Dropping it ran all
+          # 13 argc/argv tests with no arguments and 7 failed, looking again
+          # like stage-2 defects. The corpus is therefore three columns:
+          # expected-rc, argv, program.
+          #
           # The floor catches the other direction. Skips are reported BY REASON,
           # never silently, because a shrinking corpus still passes: losing a
           # whole harness drops the count below the floor and fails here rather
           # than quietly running four hundred tests and calling it a gate.
           python3 tools/extract_stage2_tests.py \
             .github/workflows/stage2-mini-c-demo.yml \
-            pins/stage2-tests.tsv --floor 415
+            pins/stage2-tests.corpus --floor 415
 
       - name: Assemble the box
         run: |
@@ -456,34 +462,44 @@ jobs:
           # is readable in a way that a failure up there is not.
           n=0; pass=0; fail=0
           : > /out/stage2-failures.txt
-          TAB=$(printf '\t')
+          # THE SEPARATOR IS 0x1F, NOT A TAB. POSIX classifies tab as IFS white
+          # space, so `read -r a b c` collapses a run of tabs into ONE delimiter
+          # and an empty middle field vanishes, shifting every later field left.
+          # argv is empty on 414 of the 426 rows, so a tab-separated corpus put
+          # the program text into $args on almost every line. Verified: with
+          # tabs, `0<TAB><TAB>prog` reads back as b=prog, c=empty.
+          US=$(printf '\037')
           set +e
-          while IFS="$TAB" read -r want prog; do
+          while IFS="$US" read -r want args prog; do
             [ -n "${want:-}" ] || continue
             n=$((n + 1))
             printf '%s' "$prog" > t.c
             timeout 30 ./stage2 < t.c > t.s 2>/dev/null
             if [ $? != 0 ] || [ ! -s t.s ]; then
               fail=$((fail + 1))
-              printf 'COMPILE\twant=%s\t%s\n' "$want" "$prog" >> /out/stage2-failures.txt
+              printf 'COMPILE\twant=%s\targv=[%s]\t%s\n' "$want" "$args" "$prog" >> /out/stage2-failures.txt
               continue
             fi
             ./stage1 < t.s 2>/dev/null | ./stage0-as 2>/dev/null | ./elf t.elf 2>/dev/null
             if [ ! -x t.elf ]; then
               fail=$((fail + 1))
-              printf 'LINK\twant=%s\t%s\n' "$want" "$prog" >> /out/stage2-failures.txt
+              printf 'LINK\twant=%s\targv=[%s]\t%s\n' "$want" "$args" "$prog" >> /out/stage2-failures.txt
               continue
             fi
-            timeout 30 ./t.elf < /dev/null > /dev/null 2>&1
+            # $args IS DELIBERATELY UNQUOTED. atry runs its binary as
+            # `./a.out $3`, so `-o out` must word-split into TWO arguments;
+            # quoting it would pass one argument containing a space and every
+            # argc test would be off by one. Empty args expands to nothing.
+            timeout 30 ./t.elf $args < /dev/null > /dev/null 2>&1
             rc=$?
             if [ "$rc" = "$want" ]; then
               pass=$((pass + 1))
             else
               fail=$((fail + 1))
-              printf 'RUN got=%s\twant=%s\t%s\n' "$rc" "$want" "$prog" >> /out/stage2-failures.txt
+              printf 'RUN got=%s\twant=%s\targv=[%s]\t%s\n' "$rc" "$want" "$args" "$prog" >> /out/stage2-failures.txt
             fi
             rm -f t.elf
-          done < /in/stage2-tests.tsv
+          done < /in/stage2-tests.corpus
           set -e
           echo "    $pass/$n passed, $fail failed"
           if [ "$fail" != 0 ]; then
