@@ -128,19 +128,32 @@ def main():
                 out.append("%s:" % labels[a])
             out.append("\t.byte 0x%02x" % data[off])
 
-    bss = sorted((v, n) for n, (v, s, z) in syms.items() if s == ".bss")
-    if bss:
+    # PAD TO EACH SYMBOL'S ABSOLUTE OFFSET; DO NOT ACCUMULATE SIZES.
+    # The first version emitted label-then-.space in address order and let the
+    # offsets add up, which put inbuf eight bytes late:
+    #   original    adr x19, 410de4 <inbuf>
+    #   reassembled adr x19, 410dec <inbuf>
+    # 11 .bss symbols were reported where the source declares four; the rest
+    # are linker-generated (__bss_start, _end, _edata), several sharing an
+    # address. Any one of them contributing a stray gap shifts everything
+    # after it. Padding to an absolute offset cannot drift, and symbols that
+    # share an address simply emit two labels and no padding.
+    LINKER_MADE = ("__bss_start", "_end", "_edata", "__end__", "__bss_end__",
+                   "__bss_start__", "_bss_end__")
+    bss = sorted((v, n) for n, (v, sc, z) in syms.items()
+                 if sc == ".bss" and n not in LINKER_MADE)
+    if bss and ".bss" in sections:
+        bbase, bsize = sections[".bss"]
         out.append(".bss")
-        for i, (val, name) in enumerate(bss):
+        cur = 0
+        for val, name in bss:
+            want = val - bbase
+            if want > cur:
+                out.append("\t.space %d" % (want - cur))
+                cur = want
             out.append("%s:" % name)
-            size = syms[name][2]
-            if not size and i + 1 < len(bss):
-                size = bss[i + 1][0] - val
-            # `.space 0` is legal but warns, and three of those were the only
-            # thing visible in the failure output -- they crowded out the real
-            # error. Emit nothing rather than something that warns.
-            if size:
-                out.append("\t.space %d" % size)
+        if bsize > cur:
+            out.append("\t.space %d" % (bsize - cur))
 
     with open(out_p, "w", encoding="utf-8") as fh:
         fh.write("\n".join(out) + "\n")
