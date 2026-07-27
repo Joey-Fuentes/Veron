@@ -224,8 +224,14 @@ jobs:
           # Unambiguous by construction: it proves the disassembly denotes the
           # same machine code, whatever spelling it chose. It does NOT prove the
           # disassembly resembles our source, which is check B.
-          sed -n 's/^[ \t]*[0-9a-f]\+:\t[0-9a-f ]\+\t//p' stage0-as.dis \
-            | sed 's,//.*,,; s,<[^>]*>,,' > redis.s
+          #
+          # The first attempt piped objdump's text straight into `as` and it
+          # choked on `adr x19,410dd4` and `b.le 4000e8` -- a bare hex address
+          # is not a label, and stripping the `<symbol>` annotation had removed
+          # the only thing that made it one. So give every instruction a label
+          # derived from its own address and rewrite targets to match: all
+          # labels then move together and PC-relative encodings are preserved.
+          python3 tools/s0_roundtrip.py relist stage0-as.dis redis.s
           if as -o redis.o redis.s 2>redis.err; then
             objcopy -O binary --only-section=.text redis.o redis.bin
             objcopy -O binary --only-section=.text s0.o  orig.bin

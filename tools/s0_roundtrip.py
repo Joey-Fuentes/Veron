@@ -64,11 +64,22 @@ def norm(mn, ops):
     # "<inbuf+0x8>" keeps only the symbol, which is the right granularity here.
     o = re.sub(r"\b[0-9a-f]+\s+<([A-Za-z_][\w.]*)(?:\+0x[0-9a-f]+)?>", r"\1", o)
     o = re.sub(r"<[^>]*>", "", o)            # any annotation left over
+    # CHARACTER LITERALS BEFORE STRIPPING '#'. `cmp w0, #'#'` was reduced to
+    # `cmp w0 ''` because the '#' removal ran first and ate the literal's own
+    # character. Ten rows of the first round-trip run were this, not the binary.
+    o = re.sub(r"#'(\\?.)'", lambda m: str(ord(
+        {"\\n": "\n", "\\t": "\t", "\\r": "\r", "\\0": "\0",
+         "\\\\": "\\"}.get(m.group(1), m.group(1)))), o)
     o = o.replace(",", " ").replace("#", "")
     o = re.sub(r"\s+", " ", o).strip()
     out = []
     for t in o.split():
-        if re.fullmatch(r"0x[0-9a-f]+", t):
+        # HEX IS CASE-INSENSITIVE. The source writes 0x0A and 0x7FFFF; matching
+        # only [0-9a-f] left those as literal strings while objdump's lowercase
+        # form became a decimal, so twenty identical instructions were reported
+        # as differing. A normaliser that is itself unfaithful is worse than
+        # none: it manufactures findings in the thing being measured.
+        if re.fullmatch(r"0x[0-9a-fA-F]+", t):
             out.append(str(int(t, 16)))
         elif re.fullmatch(r"-?\d+", t):
             out.append(str(int(t)))
@@ -116,9 +127,42 @@ def read_objdump(path):
         yield cur, norm(m.group(2), m.group(3))
 
 
+def cmd_relist(dis_path, out_path):
+    """Turn a disassembly into something GNU `as` will take back.
+
+    Check A's first attempt fed objdump's text straight to `as` and it choked on
+    `adr x19,410dd4` and `b.le 4000e8`: a bare hex address is not a label, and
+    the assembler has no idea those digits were an address. Stripping the
+    `<symbol>` annotation had thrown away the only thing that made them names.
+
+    The fix is to give every instruction a label of its own, derived from its
+    address, and rewrite every target to the matching label. All labels then
+    move together, so PC-relative encodings are preserved exactly and the
+    reassembled bytes must equal the original.
+    """
+    body = []
+    for ln in open(dis_path, encoding="utf-8", errors="replace"):
+        m = DIS.match(ln)
+        if not m:
+            continue
+        addr, mn, ops = m.group(1), m.group(2), m.group(3)
+        o = ops.split("//")[0].strip()
+        o = re.sub(r"\b([0-9a-f]+)\s*<[^>]*>", r"L\1", o)   # target with a symbol
+        o = re.sub(r"(?<=[\s,])([0-9a-f]{4,})\b(?!x)", r"L\1", o)  # bare address
+        body.append("L%s:\n\t%s %s" % (addr, mn, o))
+    with open(out_path, "w", encoding="utf-8") as fh:
+        fh.write(".text\n" + "\n".join(body) + "\n")
+    print("  wrote %s: %d instructions, each with an address-derived label"
+          % (out_path, len(body)))
+    return 0
+
+
 def main():
+    if len(sys.argv) == 4 and sys.argv[1] == "relist":
+        return cmd_relist(sys.argv[2], sys.argv[3])
     if len(sys.argv) != 3:
         print("usage: s0_roundtrip.py <source.s> <objdump-output>")
+        print("       s0_roundtrip.py relist <objdump-output> <out.s>")
         return 2
     src = [x for x in read_source(sys.argv[1]) if x[0] != "<data>"]
     # Symbols whose contents are .ascii data, not code -- excluded by name.
