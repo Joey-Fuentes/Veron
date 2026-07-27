@@ -89,7 +89,13 @@ jobs:
       # ambiguity in the source and the duplicate label is gone. Both were
       # invisible under 2.42 -- which is the argument for pinning a current tool
       # and for cross-checking two of them.
-      ROUNDTRIP_BUDGET: '2'
+      # ZERO. Both decoders now read every instruction back as the source
+      # wrote it: llvm-objdump 22.1.8 was already exact at 695/695, and GNU
+      # objdump 2.47's single remaining difference was `adr x27, symtab`
+      # printed as `__bss_start` -- the same byte under two names. bss_origin
+      # now absorbs that collision. From here the round-trip is exact by
+      # construction and any commit that spoils it fails this step.
+      ROUNDTRIP_BUDGET: '0'
       # PINNED TOOLCHAINS, NOT WHATEVER THE RUNNER SHIPS. The first round-trip
       # runs used Ubuntu's binutils 2.42-4ubuntu2.10 -- a distro package, on a
       # distro schedule, whose alias preferences could change under us with no
