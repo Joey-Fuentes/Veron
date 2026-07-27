@@ -68,7 +68,13 @@ concurrency:
 jobs:
   selfhost:
     runs-on: ubuntu-24.04-arm          # NATIVE aarch64 -- no qemu in the way
-    timeout-minutes: 20
+    # 20 MINUTES WAS RIGHT UNTIL r22 ADDED A BINUTILS BUILD. Compiling binutils
+    # from source on a 4-core arm64 runner takes 10-20 minutes, so the job was
+    # being killed mid-build -- and because actions/cache only SAVES on a
+    # successful job, the cache never populated and every subsequent run
+    # rebuilt from scratch and died the same way. A self-sustaining failure
+    # loop, not a hang.
+    timeout-minutes: 90
     env:
       SRC: spikes/stage0-as/stage0-as.aarch64.s
       # Instructions whose disassembly is not their source spelling. Folding the
@@ -120,7 +126,13 @@ jobs:
             pinned
           key: pinned-binutils-${{ env.BINUTILS_VER }}-llvm-${{ env.LLVM_VER }}-v1
 
-      - name: 'Pin the disassemblers (binutils ${{ env.BINUTILS_VER }}, LLVM ${{ env.LLVM_VER }})'
+      # NOTE FOR ANYONE WATCHING A RUN: this is the slow step, not the one above
+      # it. On a cold cache it compiles binutils from source and takes 10-20
+      # minutes; on a warm cache it takes seconds. The step before it, "Build
+      # the reference stage0-as and elf", is four assembler invocations and
+      # finishes instantly -- it was misread as the slow one because this step's
+      # output used to be suppressed entirely.
+      - name: 'Pin the disassemblers -- SLOW ON A COLD CACHE (builds binutils)'
         run: |
           set -eu
           P="$PWD/pinned"; echo "P=$P" >> "$GITHUB_ENV"
@@ -140,8 +152,24 @@ jobs:
             ../binutils-$BINUTILS_VER/configure --prefix="$P" \
               --disable-nls --disable-gdb --disable-gdbserver \
               --disable-sim --disable-werror >/dev/null
-            make -j"$(nproc)" >/dev/null
-            make install >/dev/null
+            # SHOW PROGRESS. `make >/dev/null` printed nothing for fifteen
+            # minutes, which is indistinguishable from a hang -- and it was
+            # reported as one. A heartbeat costs nothing and makes a long step
+            # legible.
+            make -j"$(nproc)" > "$GITHUB_WORKSPACE/binutils-build.log" 2>&1 &
+            mk=$!
+            while kill -0 "$mk" 2>/dev/null; do
+              sleep 30
+              printf '    [%s] still building: %s\n' \
+                "$(date -u +%H:%M:%S)" \
+                "$(tail -1 "$GITHUB_WORKSPACE/binutils-build.log" | cut -c1-90)"
+            done
+            wait "$mk" || {
+              echo "  binutils build FAILED -- last 20 lines:"
+              tail -20 "$GITHUB_WORKSPACE/binutils-build.log" | sed 's/^/    /'
+              exit 1
+            }
+            make install > /dev/null
             cd "$GITHUB_WORKSPACE"
             # --- LLVM, prebuilt for Linux ARM64: we need one binary from it.
             curl -fsSL --retry 3 --max-time 900 \
