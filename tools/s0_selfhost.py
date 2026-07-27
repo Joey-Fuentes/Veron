@@ -155,7 +155,13 @@ def probe_pair(mn, sh):
     # AArch64 constrains some immediates: movz/movk shifts must be 0/16/32/48
     # and uxtw scales must be 0 or 2. A probe case GNU `as` rejects proves
     # nothing about stage0-as, so pick values the encoding actually allows.
-    if "lsl #%i" in sh and mn in ("movz", "movk"):
+    if mn == "svc":
+        # stage0-as encodes `svc` as svc #0 unconditionally, and #0 is the only
+        # form the source uses. Probing it with #8 made a correct assembler look
+        # wrong -- a probe case that does not match real usage is a false
+        # positive, and false positives in a measurement tool are expensive.
+        sh_g = "#0"
+    elif "lsl #%i" in sh and mn in ("movz", "movk"):
         sh_g = sh.replace("lsl #%i", "lsl #16")
     elif "uxtw #%i" in sh:
         sh_g = sh.replace("uxtw #%i", "uxtw #2")

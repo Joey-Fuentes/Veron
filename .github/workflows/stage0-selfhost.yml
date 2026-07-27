@@ -124,14 +124,27 @@ jobs:
             # compare only the instruction under test: the first four bytes
             dd if="probes/$id.ref"  of="probes/$id.r4" bs=4 count=1 2>/dev/null
             dd if="probes/$id.ours" of="probes/$id.o4" bs=4 count=1 2>/dev/null
+            # THIRD OPINION: the bench model. spikes/bench/s0as.py is what
+            # local development is written against, and its README already
+            # records two real bugs it masked. Run 1 measured a three-way
+            # disagreement on `mov w0 w1` -- bench aa0103e0, stage0-as
+            # d2800000, GNU as 2a0103e0 -- and `sub w0 w1 w2` where the model
+            # is correctly strict and the real assembler silently emits a
+            # different instruction. An inner loop that disagrees with ground
+            # truth is worse than no inner loop, so print it every run.
+            ours_hex=$(od -An -tx1 "probes/$id.o4" | tr -d ' \n')
+            bench=$(python3 tools/s0_bench_check.py "$(head -1 "probes/$id.s0")")
+            if [ "$bench" = "$ours_hex" ]; then bmark='bench=same'
+            elif [ "$bench" = raise ]; then bmark='bench=REJECTS'
+            else bmark="bench=DIFFERS($bench)"; fi
             if cmp -s "probes/$id.r4" "probes/$id.o4"; then
-              printf '  %-6s %-34s %5s  ok\n' "$mnem" "$form" "$uses"
+              printf '  %-6s %-30s %5s  ok     %s\n' \
+                "$mnem" "$form" "$uses" "$bmark"
               ok=$((ok + 1)); lines_ok=$((lines_ok + uses))
             else
-              printf '  %-6s %-34s %5s  WRONG BYTES  ours=%s ref=%s\n' \
-                "$mnem" "$form" "$uses" \
-                "$(od -An -tx1 "probes/$id.o4" | tr -d ' \n')" \
-                "$(od -An -tx1 "probes/$id.r4" | tr -d ' \n')"
+              printf '  %-6s %-30s %5s  WRONG  ours=%s ref=%s  %s\n' \
+                "$mnem" "$form" "$uses" "$ours_hex" \
+                "$(od -An -tx1 "probes/$id.r4" | tr -d ' \n')" "$bmark"
               bad=$((bad + 1))
             fi
           done < probes/index.tsv
@@ -144,6 +157,46 @@ jobs:
           echo "  is a bug, and it would have been silently inherited by every"
           echo "  binary a self-hosted stage0-as ever produced."
           echo "$lines_ok" > lines_ok.txt
+
+      - name: 'PROBE: does stage0-as ever say no?'
+        run: |
+          set -eu
+          # RUN 1 FOUND 0 REJECTED OUT OF 43 FORMS. stage0-as accepts everything
+          # and emits something for input it does not understand. `b.gt` comes
+          # out as `b.ge` -- cond 0xa, not 0xc -- because the mnemonic match
+          # stops after `b.g`; `mov w0 w1` comes out as `movz x0, #0` because
+          # `w1` falls through to the immediate parser and reads as zero.
+          #
+          # Nothing above stage0-as emits those forms today: stage1-as.s0 and
+          # stage2-mini-c.s1 contain no b.gt or b.le, which is why the ladder is
+          # correct and 426/426 holds. But stage0-as's OWN source uses them
+          # eight times, so a self-host attempt would have assembled cleanly and
+          # produced an assembler with eight inverted comparisons inside it.
+          #
+          # An assembler that guesses cannot be measured -- you cannot tell a
+          # missing feature from a wrong answer without byte-comparing every
+          # instruction, which is why this sat undiscovered. Fix this BEFORE
+          # adding forms and the table above becomes a progress meter.
+          accepted=0; n=0
+          for junk in 'frobnicate x0 x1' 'b.zz tgt' 'mov' 'mov q0 q1' \
+                      'add x0' 'ldr x0 x1 x2 x3' '.quad 7'; do
+            n=$((n + 1))
+            printf '%s\n:tgt\n' "$junk" > junk.s0
+            set +e
+            ./stage0-as < junk.s0 > junk.bin 2>/dev/null
+            rc=$?
+            set -e
+            sz=$(wc -c < junk.bin 2>/dev/null || echo 0)
+            if [ "$rc" = 0 ]; then
+              printf '  %-22s ACCEPTED rc=0, emitted %s bytes   <-- silent\n' \
+                "$junk" "$sz"
+              accepted=$((accepted + 1))
+            else
+              printf '  %-22s rejected rc=%s\n' "$junk" "$rc"
+            fi
+          done
+          echo
+          echo "  $accepted of $n nonsense inputs accepted silently. Target is 0."
 
       - name: 'XLATE: mechanical GNU-as -> .s0 translation'
         run: |
