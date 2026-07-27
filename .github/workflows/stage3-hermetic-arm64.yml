@@ -129,23 +129,59 @@ jobs:
           # and selfhost-demo. Deriving from upstream's script cannot make that
           # mistake, and the assertion below makes sure of it.
           S=m2/test/test1000/hello-aarch64.sh
-          # join backslash continuations, then pull -f tokens off the first
-          # M2-Planet invocation
-          sed -e ':a' -e '/\\$/{N; s/\\\n//; ta}' "$S" > joined.sh
-          grep -m1 'M2-Planet' joined.sh | grep -o -- '-f [^ ]*' | awk '{print $2}' > flist.txt
-          [ -s flist.txt ] || { echo "FAIL: derived an empty -f list from $S"; exit 1; }
-          if grep -qx 'M2libc/bootstrap.c' flist.txt; then
-            echo "FAIL: derived list contains the generic M2libc/bootstrap.c."
-            echo "      That file does not exist at the 1.13.1 pin. The pin or"
-            echo "      the script changed -- do not paper over this."
+
+          # ANCHOR ON THE INVOCATION, NOT THE PROJECT NAME. The first run of
+          # this job derived an EMPTY list because `grep -m1 'M2-Planet'`
+          # matched line 4 of the GPL header --
+          #     ## This file is part of M2-Planet.
+          # -- which carries no -f tokens at all. Match `bin/M2-Planet`, which
+          # only the invocation line has. The x86 proof invocation further down
+          # runs ./test/results/test1000-aarch64-binary and so cannot be hit by
+          # this pattern, which is the other half of why this anchor is right.
+          #
+          # The continuation lines are TAB-indented, so the -f token separator
+          # is not reliably a space: extract with [[:space:]] rather than ' ',
+          # or the match runs on past the filename into the next token.
+          sed -e ':a' -e '/\\$/{N; s/\\\n/ /; ta}' "$S" > joined.sh
+          grep -m1 'bin/M2-Planet' joined.sh \
+            | grep -oE -- '-f[[:space:]]+[^[:space:]]+' \
+            | sed 's/^-f[[:space:]]*//' > flist.txt
+
+          if [ ! -s flist.txt ]; then
+            echo "FAIL: derived an empty -f list from $S"
+            echo "  the joined invocation line this matched, if any:"
+            grep -m1 'bin/M2-Planet' joined.sh | cut -c1-300 | sed 's/^/    /' || echo "    (no match)"
+            echo "  first 30 lines of the script, for the next reader:"
+            head -30 "$S" | sed 's/^/    /'
             exit 1
           fi
+
           echo "  derived $(wc -l < flist.txt) files:"
           sed 's/^/    /' flist.txt
-          # every file must actually be there before we hand this to anyone
+
+          # THE EXISTENCE CHECK IS THE GATE -- not a pattern assertion. The
+          # first draft hard-failed if the list named M2libc/bootstrap.c, on
+          # the strength of the note in spikes/stage3/README.md that the file
+          # is gone at 1.13.1. That is a claim about the pin, and asserting it
+          # by pattern would false-fail the day it stops being true. Checking
+          # that every named file is actually present tests the same thing,
+          # cannot be wrong, and says which file if it is.
           miss=0
-          while read -r f; do [ -f "m2/$f" ] || { echo "    MISSING: $f"; miss=1; }; done < flist.txt
-          [ "$miss" = 0 ] || { echo "FAIL: derived list names files that do not exist"; exit 1; }
+          while read -r f; do
+            [ -f "m2/$f" ] || { echo "    MISSING: $f"; miss=1; }
+          done < flist.txt
+          if [ "$miss" != 0 ]; then
+            echo "FAIL: upstream's own script names files that are not in the tree at this pin."
+            echo "      If the missing one is M2libc/bootstrap.c, that is the removal"
+            echo "      spikes/stage3/README.md records, and BOTH arms must drop it --"
+            echo "      do not fix it in one arm only."
+            exit 1
+          fi
+          if grep -qx 'M2libc/bootstrap.c' flist.txt; then
+            echo "  NOTE: the generic M2libc/bootstrap.c IS present at this pin."
+            echo "        The box omits it from G0's translation unit (m71's rule)"
+            echo "        and passes it to G1 unpatched. Both are reported in-box."
+          fi
 
       - name: Build the reference M2-Planet and self-compile
         run: |
@@ -373,13 +409,22 @@ jobs:
           # first so its enums (NULL EOF TRUE FALSE stdin/stdout/stderr EXIT_*)
           # are in scope for the shim, and the shim supplies fgetc/fputc -- the
           # only two dropped functions our m53/m69 builtins do not already cover.
+          # Say out loud what happens to every file in the list. A substitution
+          # that is not printed is a substitution someone will later mistake for
+          # a clean build.
           {
             cat /in/patched_bootstrap.c
             cat /src/stage2-mini-c/m2libc-shim.c
             while read -r f; do
               case "$f" in
-                M2libc/aarch64/linux/bootstrap.c) : ;;   # replaced above
-                *) cat "/in/m2/$f" ;;
+                M2libc/aarch64/linux/bootstrap.c)
+                  echo "    REPLACE $f -> patched_bootstrap.c + m2libc-shim.c" >&2 ;;
+                M2libc/bootstrap.c)
+                  # m71's omission. Only reachable if this pin still ships it.
+                  echo "    OMIT    $f  (m71 rule; G1 still gets it unpatched)" >&2 ;;
+                *)
+                  echo "    as-is   $f" >&2
+                  cat "/in/m2/$f" ;;
               esac
             done < /in/flist.txt
           } > m2.c
