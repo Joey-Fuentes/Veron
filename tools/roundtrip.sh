@@ -66,8 +66,24 @@ if ( cd "rb-$W" && "$P/bin/as" -o "$obj" in.s ) 2>"$W.as.err" \
    && ( cd "rb-$W" && "$P/bin/ld" "$@" -o "../$W.rebuilt" "$obj" ) \
         2>"$W.ld.err"; then
   if cmp -s "$W.rebuilt" "$BIN"; then
-    printf '  A2  whole binary      %8s  %s  MATCHES\n' \
-      "$(wc -c < "$BIN")" "$(sha256sum "$BIN" | cut -c1-16)"
+    # BOTH SHAS, SIDE BY SIDE. Printing one sha and the word MATCHES asks the
+    # reader to take the comparison on trust; printing the original and the
+    # reassembled lets them see it. Same shape as the artifact table the
+    # stage0-as round trip prints.
+    printf '\n  === %s ARTIFACTS ===\n' "$W"
+    printf '  %-26s %10s  %-16s  %s\n' 'ARTIFACT' 'BYTES' 'SHA256[0:16]' 'vs ORIGINAL'
+    printf '  %-26s %10s  %-16s  %s\n' 'source .s' \
+      "$(wc -c < "$SRC")" "$(sha256sum "$SRC" | cut -c1-16)" '-'
+    printf '  %-26s %10s  %-16s  %s\n' "binary $W (ORIGINAL)" \
+      "$(wc -c < "$BIN")" "$(sha256sum "$BIN" | cut -c1-16)" 'the original'
+    printf '  %-26s %10s  %-16s  %s\n' "binary $W (REASSEMBLED)" \
+      "$(wc -c < "$W.rebuilt")" "$(sha256sum "$W.rebuilt" | cut -c1-16)" \
+      'MATCHES the original'
+    printf '  %-26s %10s  %-16s  %s\n' 'disassembly' \
+      "$(wc -c < "$W.dis")" "$(sha256sum "$W.dis" | cut -c1-16)" 'n/a -- text'
+    printf '  %-26s %10s  %-16s  %s\n' 'reconstructed .s' \
+      "$(wc -c < "$W.rebuild.s")" "$(sha256sum "$W.rebuild.s" | cut -c1-16)" '-'
+    echo
   else
     printf '  A2  whole binary      %8s vs %-8s DIFFERS\n' \
       "$(wc -c < "$BIN")" "$(wc -c < "$W.rebuilt")"
@@ -102,6 +118,21 @@ else
   python3 tools/s0_canon.py classify "$W.canon.src" "$W.canon.txt" \
     | sed 's/^/        /'
   fail=$((fail + 1))
+fi
+
+# PRINT THE WHOLE DISASSEMBLY WHEN IT IS SMALL ENOUGH TO READ. The point of
+# this project is that a person can audit the seed by reading it; a check that
+# proves the bytes match the source and then hides both is only half the job.
+# 200 instructions is about three screens -- past that it is noise, and the
+# artifact is uploaded either way.
+_n=$(grep -c "^ *[0-9a-f]*:" "$W.dis" 2>/dev/null || echo 0)
+if [ "$_n" -le 200 ]; then
+  echo
+  echo "  ---- $W: the full disassembly, $_n instructions ----"
+  sed -n '/Disassembly/,$p' "$W.dis" | sed 's/^/  /'
+  echo "  ---- end $W ----"
+else
+  echo "  ($_n instructions -- too long to print; see the uploaded artifact)"
 fi
 
 echo "  $W: $fail check(s) failed"

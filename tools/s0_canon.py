@@ -56,6 +56,14 @@ def squash(text):
 def from_source(path):
     equ = {}
     out = []
+    # TRACK THE SECTION. The comparison is against `objdump -d`, which only
+    # disassembles CODE, so anything the source declares in .data, .rodata or
+    # .bss must not appear on our side either. stage0-as got away without this
+    # because its data labels are written `inover: .ascii "..."` -- label and
+    # directive on one line, which the drop rule already ate. elf writes
+    # `header:` on its own line in .data and it leaked through as a phantom
+    # 73rd line against the disassembly's 72.
+    in_text = True
     for raw in open(path, encoding="utf-8"):
         line = raw.split("//")[0].rstrip()
         if not line.strip():
@@ -65,6 +73,14 @@ def from_source(path):
             equ[m.group(1)] = m.group(2)
             continue
         body = line.strip()
+        if re.match(r"^\.(text|section\s+\.text)\b", body):
+            in_text = True
+            continue
+        if re.match(r"^\.(data|bss|rodata|section\s+\.(?!text))", body):
+            in_text = False
+            continue
+        if not in_text:
+            continue
         if body.startswith(DROP):
             continue
         # A LABEL MAY SHARE ITS LINE WITH A DIRECTIVE. `inbuf: .space 8` is one
