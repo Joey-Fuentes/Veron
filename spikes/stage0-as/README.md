@@ -134,6 +134,19 @@ exact-diff target; llvm-objdump is the independent cross-check.
 
 ---
 
+## Where the authoritative numbers live
+
+**`LADDER-BASELINE.txt` is the record.** It carries the size and sha of every
+artifact -- `stage0-as`, `elf`, `stage1`, `stage2` -- and the eight
+emitted-output fingerprints, and `stage0-selfhost.yml` fails the job when any of
+them moves without the baseline being updated in the same commit.
+
+Prose does not repeat those shas, deliberately. A sha written into a paragraph
+is a second copy with nothing checking it, and this repository has already had
+to correct several documented claims that had quietly stopped being true. If you
+want to know what is committed, read the baseline; if you want to know whether
+it is still correct, read the workflow's last run.
+
 ## Verification, as measured
 
 Every number here is produced by `.github/workflows/stage0-selfhost.yml` on each

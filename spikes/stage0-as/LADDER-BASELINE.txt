@@ -74,6 +74,19 @@ elf             1952     d4817d983e478280
 stage1          1469     7079745950cf5859
 stage2          23257    89db623297d5a476
 
+# WHAT IS DELIBERATELY NOT HERE: G0, the M2-Planet our ladder builds inside the
+# hermetic box. Its sha moves whenever `elf` changes -- it did at the bss
+# reserve, 314860 bytes cb76e0e3fe4ac9ea -> 9d7564f9493c57f8, same size,
+# different p_memsz -- and a baseline entry would need updating each time
+# without adding anything.
+#
+# G0 needs no baseline because its OUTPUT is checked against something stronger
+# than a number we wrote down: GATE 1 in stage3-hermetic-arm64 compares
+# ours-gen1.M1 against upstream's own reference compiler, byte for byte
+# (2947903, dc38e13e4ceaeecb). An external reference beats a self-recorded one.
+# If G0 moves and G1 still matches upstream, the behaviour is intact by
+# definition.
+
 # Above tcc-free ladder level, recorded for cross-reference. These come from the
 # same run and are re-verified by stage3-hermetic-arm64, not by stage0-selfhost.
 canon           5052     26b728839212d9b1
