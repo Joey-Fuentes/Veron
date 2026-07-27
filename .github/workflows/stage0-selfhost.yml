@@ -787,6 +787,22 @@ jobs:
           fi
           echo "  both decoders within budget."
 
+      - name: 'ROUND-TRIP: elf, the OTHER binary as+ld builds'
+        continue-on-error: true
+        run: |
+          set -eu
+          # stage3-hermetic-arm64 runs four host-tool commands and TWO are for
+          # elf. Committing a verified stage0-as while elf still needs `as` and
+          # `ld` would not move BUDGET_PATH at all -- it is both or neither, and
+          # elf has never been round-tripped.
+          #
+          # The checks live in tools/roundtrip.sh rather than being copied from
+          # the block above: every lesson in that block is specific to nothing
+          # about stage0-as, and a copy would drift with the copy staying green.
+          # Non-gating for now -- elf's own gap is measured first.
+          chmod +x tools/roundtrip.sh
+          tools/roundtrip.sh spikes/elf/elf.aarch64.s elf "$P" || true
+
       - name: 'REGRESSION: does this stage0-as still build stage 1 and stage 2?'
         run: |
           set -eu
