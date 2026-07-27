@@ -1021,7 +1021,12 @@ jobs:
             echo "  ladder to identical bytes IS the same assembler."
             exit 0
           fi
-          objcopy -O binary --only-section=.text s0.o reference.bin
+          # THE LINKED BINARY, NOT THE OBJECT. s0.o still holds relocations:
+          # every reference to a symbol outside .text sits at zero there, so
+          # comparing against it makes the seven adr-to-data lines differ AND
+          # anything else the linker resolves. Check A already learned this;
+          # this gate was written before that and had never run to find out.
+          objcopy -O binary --only-section=.text stage0-as reference.bin
           ./stage0-as < stage0-as.s0 > gen1.bin
           ./elf gen1 < gen1.bin || true
           printf '  %-24s %8s  %s\n' 'reference (as+ld .text)' \
@@ -1039,7 +1044,17 @@ jobs:
             echo "  PASS: only the adr-to-data lines differ, as expected."
           else
             echo "  FAIL: $nd words differ; at most 7 should."
-            cmp -l gen1.bin reference.bin | head -4 | sed 's/^/    /'
+            echo "  the first differing words, disassembled from both sides:"
+            objdump -d stage0-as > ref.dis 2>/dev/null || true
+            tb=$(awk '$2==".text"{print $4; exit}' \
+                 <(objdump -h stage0-as) 2>/dev/null)
+            cmp -l gen1.bin reference.bin 2>/dev/null \
+              | awk '{print int(($1-1)/4)}' | sort -un | head -4 \
+              | while read -r w; do
+                  a=$(printf '%x' $((0x$tb + w * 4)))
+                  echo "    word $w @0x$a"
+                  echo "      as+ld : $(grep -m1 "^ *$a:" ref.dis | sed 's/^ *//')"
+                done
             exit 1
           fi
           ./gen1 < stage0-as.s0 > gen2.bin
