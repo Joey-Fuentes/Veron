@@ -257,6 +257,43 @@ def cmd_probes(path, outdir):
     return 0
 
 
+# LABELS ARE ONE CHARACTER. stage0-as's symbol table is 512 bytes -- 128 entries
+# of four -- indexed by the byte value of a single character, so `nbuf` is not a
+# long label, it is the label `n` followed by the stray token `buf`, which is
+# why the whole-file translation died on `rejected: nbuf`.
+#
+# The characters to avoid are the ones the parser reads as something else:
+#   '@'  introduces an absolute numeric target
+#   '#'  comment    ':'  label definition    '.'  directive
+#   0-9  would be parsed as a number, whitespace ends a token
+# Register letters are fine: a branch operand is never a register.
+# Digits ARE usable: only `@` followed by a digit is a numeric target, so a bare
+# digit in operand position is read as a label like any other character.
+LABEL_CHARS = [chr(c) for c in range(0x21, 0x7f) if chr(c) not in "@#:."]
+
+
+def label_map(src):
+    """Assign each distinct label a unique single character.
+
+    Deterministic -- labels in order of first definition -- so the translation
+    is reproducible and a diff between two runs means a real change. Fails
+    loudly rather than reusing a character: two labels sharing a symtab slot
+    would silently branch to the wrong place, which is far worse than not
+    translating at all.
+    """
+    seen = []
+    for raw in src:
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*):\s*$", strip_comment(raw).strip())
+        if m and m.group(1) not in seen:
+            seen.append(m.group(1))
+    if len(seen) > len(LABEL_CHARS):
+        raise SystemExit(
+            "  %d labels but only %d usable characters -- stage0-as cannot "
+            "address them all.\n  Reduce labels or widen the symbol table."
+            % (len(seen), len(LABEL_CHARS)))
+    return dict(zip(seen, LABEL_CHARS))
+
+
 def cmd_xlate(path, out):
     """Mechanical GNU-as -> .s0 translation of the parts that translate.
 
@@ -266,6 +303,7 @@ def cmd_xlate(path, out):
     """
     src = list(open(path, encoding="utf-8"))
     equ = equ_table(src)
+    lmap = label_map(src)
     out_lines, need = [], Counter()
     for raw in src:
         ln = strip_comment(raw)
@@ -280,7 +318,7 @@ def cmd_xlate(path, out):
             continue
         m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*):\s*$", s)
         if m:
-            out_lines.append(":%s" % m.group(1))
+            out_lines.append(":%s" % lmap[m.group(1)])
             continue
         if s.startswith((".byte", ".ascii")):
             out_lines.append(s)
@@ -304,6 +342,11 @@ def cmd_xlate(path, out):
             need["%-6s %s" % (mn, sh)] += 1
             out_lines.append("### NEEDS: %s %s | %s" % (mn, sh, s))
             continue
+        # Rewrite label REFERENCES with the same map used for definitions, so
+        # the two cannot drift. Longest-first, or `h_l` would be rewritten by
+        # the rule for `h`.
+        for name in sorted(lmap, key=len, reverse=True):
+            ops = re.sub(r"\b%s\b" % re.escape(name), lmap[name], ops)
         body = ops.replace(",", " ").replace("[", " ").replace("]", " ")
         body = body.replace("#", "")
         body = re.sub(r"\s+", " ", body).strip()
@@ -318,6 +361,8 @@ def cmd_xlate(path, out):
     done = sum(1 for x in out_lines if not x.startswith("###"))
     todo = sum(need.values())
     print("  wrote %s: %d lines translated, %d marked NEEDS" % (out, done, todo))
+    print("  %d labels mapped to single characters (%d available)"
+          % (len(lmap), len(LABEL_CHARS)))
     if need:
         print("  what is still missing, by form:")
         for k, v in need.most_common():
