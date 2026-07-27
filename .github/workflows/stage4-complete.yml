@@ -1,580 +1,656 @@
 name: stage4-complete
 
 # ============================================================================
-# THE COMPLETE LADDER: tcc to booting Linux, hermetically, in one job
+# THE COMPLETE LADDER: tcc to booting Linux, as a CHAIN OF SEALED RUNGS
 # ============================================================================
 #
-# WHAT THIS PROVES
+# WHAT THIS ANSWERS THAT THE RUNG JOBS DO NOT
 #
-#   Host gcc builds tcc (declared, bounded).
-#   Tcc then builds every compiler, the kernel, and the userland.
-#   The kernel boots. The userland runs as PID 1. Compile works in the guest.
+#   tcc-builds-gcc-arm64  proves tcc -> gcc 10.2.0, and stops before the kernel.
+#   hermetic-gcc15        proves kernel + boot, and STARTS from a host cross
+#                         toolchain.
 #
-# THE CHAIN, INSIDE ONE BOX
+#   Both are sound. Between them sits the actual gap: the gcc 10 that
+#   hermetic-gcc15 builds on is not the gcc 10 that tcc-builds produced. They
+#   share a version number, not an identity. "Every compiler descends from tcc"
+#   is a claim about a CHAIN, and nothing in this repository has ever checked
+#   the edges.
 #
-#   tcc (host-built, DECLARED)
-#     → gcc 4.7.4 + 4.8.5's aarch64 backend     (stage 1: tcc's first target)
-#     → gcc 4.7.4 (self-rebuild)                (stage 2: fixpoint)
-#     → gcc 10.2.0 (built by g++ 4.7)           (stage 3: the rung the 4.7 choice exists for)
-#     → gcc 15.2.0 (built by gcc 10)            (stage 4: stable system)
-#     → linux 7.1.5 kernel + glibc 2.43 userland (inside the toolchain)
-#     → QEMU boot with PID 1 verification
+# WHY THIS IS NOT ONE JOB ANY MORE
 #
-# HERMETIC BOUNDARY
+#   The previous revision closed that gap by re-running every rung in a single
+#   process, so there would be no hand-off to distrust. Three problems:
 #
-#   Everything fetched before the host compilers are masked.
-#   After masking: tcc, binutils, glibc headers only.
-#   No network, no host /usr, no cc1 or libgcc from the runner.
+#     1. IT COULD NOT FIT. tcc-builds-gcc-arm64 budgets 350 minutes for a
+#        STRICT SUBSET of this work -- tcc, 4.7.4 twice, 10.2.0 -- and 360 is
+#        the public-runner ceiling. Adding glibc 2.43, gcc 15.2, a kernel and a
+#        boot to that does not fit, at any level of optimisation.
+#     2. IT PROVED THE CHAIN ONCE. A monolith gives N=1 and no basis for
+#        comparison. Criterion 2 wants N byte-identical rebuilds.
+#     3. A FAILURE ANYWHERE DESTROYED EVERYTHING. Run 81901874247 died on a
+#        missing `sudo` eight seconds in, and took the whole chain with it.
+#
+#   A hand-off is not the weakness; an UNDECLARED hand-off is. So each rung
+#   seals its output under a content hash (spikes/stage4/chain/seal.sh), each
+#   rung declares the hash it consumed, and the ledger job asserts the edges
+#   meet. That is a STRONGER statement than co-location in one box, it fits the
+#   runner, it bisects, and a transient costs one rung instead of six hours.
+#
+# THE CHAIN
+#
+#   tcc            patched arm64 tcc, host-built           [DECLARED HOLE]
+#     -> rung-gcc10   tcc -> 4.7.4 -> 4.7.4 -> 10.2.0
+#     -> rung-gcc15   gcc 10 -> sysroot -> gcc 15.2.0
+#     -> rung-boot    gcc 15 -> linux 7.1.5 + userland -> QEMU -> compile in guest
+#     -> ledger       assert every edge connects; only then say so
 #
 # WHAT IS NOT CLAIMED
 #
-#   - Reproducibility of tcc itself (stage 3's rung is open)
-#   - 3-stage bootstrap on each compiler (deferred, like the rung jobs)
-#   - DejaGnu testing (future improvement)
-#   - The kernel is deliberately gnu libc, not musl (staging: musl proved separately)
+#   - Reproducibility of tcc itself. Reaching tcc from the seed is stage 3's
+#     open rung (spikes/stage3/README.md).
+#   - 3-stage bootstrap on each compiler. Deferred, as in the rung jobs.
+#   - DejaGnu. That is stage 5 in ARCHITECTURE.md, not this.
+#   - "tcc and nothing else". The box carries a DECLARED borrow set -- binutils,
+#     glibc + headers, make, perl, m4, bison, flex, sh, coreutils, python3, and
+#     the kernel as a trusted input. The bind list IS the declaration and each
+#     future step is a deletion from it. Every rung records its borrow set in
+#     its chain record, so a rung that quietly gains an input shows up as a diff.
 #
-# WHY ONE JOB
-#
-#   Three separate jobs (tcc-builds, hermetic-gcc10, hermetic-gcc15) each
-#   answer one question independently. This job answers "does it all work
-#   together", and it does so without hand-offs or artifacts between boxes.
-#   If a step fails, the failure is local to the chain, not to a layer
-#   boundary. Single source of truth.
-#
-# NO CACHING
-#
-#   Chapters 5-6 rebuild every run. Transparency beats speed; this job is
-#   the proof statement, not the optimization.
+# ============================================================================
 
 on:
   push:
     paths:
       - '.github/workflows/stage4-complete.yml'
+      - 'spikes/stage4/chain/**'
       - 'spikes/stage4/probes/backport-aarch64.sh'
       - 'tools/port_gcc47_api.py'
       - 'tools/expand_int_iterators.py'
   workflow_dispatch:
     inputs:
       boot:
-        description: 'Build and boot the kernel (yes/no) — default yes'
+        description: 'Build and boot the kernel'
         type: choice
         options: ['yes', 'no']
         default: 'yes'
+      tcc_source:
+        description: 'pinned-series (sources/tcc.toml) or mob'
+        type: choice
+        options: ['pinned-series', 'mob']
+        default: 'pinned-series'
 
+# A NEW PUSH MUST NOT KILL A RUNNING CHAIN.
 concurrency:
   group: stage4-complete-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  GNU: 'https://mirrors.kernel.org/gnu'
+  KORG: 'https://cdn.kernel.org/pub/linux/kernel'
+  # VERSIONS ARE NOT FREE CHOICES. sources/lfs.toml records three runs lost to
+  # versions picked from memory. Every number below is the one a rung job
+  # already builds green with -- binutils in particular is 2.46.0 and NOT the
+  # 2.35 the previous revision carried, which predates glibc 2.43 by six years.
+  BINUTILS: '2.46.0'
+  GCC47: '4.7.4'
+  GCC48: '4.8.5'
+  GCC10: '10.2.0'
+  GCC15: '15.2.0'
+  GLIBC: '2.43'
+  LINUX_HEADERS: '7.1.3'
+  KERNEL: '7.1.5'
+  GMP_VER: '6.3.0'
+  MPFR_VER: '4.2.2'
+  MPC_VER: '1.3.1'
+  LFS_TGT: 'aarch64-veron-linux-gnu'
+  TCC_SOURCE: ${{ github.event.inputs.tcc_source || 'pinned-series' }}
+
 jobs:
-  stage4-complete:
+
+  # ==========================================================================
+  # RUNG 0 -- tcc. The one declared hole: built OUTSIDE the box by host gcc.
+  # ==========================================================================
+  tcc:
+    name: 'rung 0: patched arm64 tcc (host-built, DECLARED)'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 360
-
-    env:
-      # ---- GNU Mirrors ----
-      GNU: 'https://mirrors.kernel.org/gnu'
-
-      # ---- Versions: The ladder ----
-      BINUTILS: '2.35'
-      GCC47: '4.7.4'
-      GCC48: '4.8.5'        # donor for aarch64 backend only, not built
-      GCC10: '10.2.0'
-      GCC15: '15.2.0'
-
-      # ---- Versions: Sysroot chapters 5-6 for gcc 15 ----
-      GLIBC: '2.43'
-      LINUX_HEADERS: '7.1.3'
-      KERNEL: '7.1.5'
-      GMP_VER: '6.3.0'
-      MPFR_VER: '4.2.2'
-      MPC_VER: '1.3.1'
-      M4_VER: '1.4.21'
-      BISON_VER: '3.8.2'
-      FLEX_VER: '2.6.4'
-      PERL_VER: '5.42.0'
-      BC_VER: '7.0.3'
-      OPENSSL_VER: '3.6.1'
-
-      # ---- Target triplet (cross-compile, no host /usr) ----
-      LFS_TGT: 'aarch64-veron-linux-gnu'
-
-      # ---- LFS Patches ----
-      LFS_PATCH: 'https://www.linuxfromscratch.org/patches/lfs/stable-13.0'
-
+    timeout-minutes: 30
+    outputs:
+      hash: ${{ steps.seal.outputs.hash }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Install build tools
-        run: |
-          apt-get update -qq
-          apt-get install -y -qq \
-            qemu-user qemu-system-aarch64 \
-            bison flex texinfo \
-            autoconf automake libtool pkg-config \
-            python3 git curl wget xz-utils tar gzip bzip2 \
-            build-essential bc kmod
-
-      - name: 'STAGE 0: build tcc with host gcc (the one borrowed thing, DECLARED)'
+      - name: 'Confirm this is really aarch64'
         run: |
           set -eu
-          W=$(pwd)
-          mkdir -p ~/.cache/veron
-          if [ ! -f ~/.cache/veron/tcc-mob ]; then
-            cd /tmp
-            git clone --depth=1 https://github.com/TinyComputer/tcc.git tcc-fetch
-            cd tcc-fetch
-            ./configure --prefix="$HOME/.cache/veron/tcc-prefix"
-            make -j$(nproc) > /dev/null 2>&1
-            cp tcc ~/.cache/veron/tcc-mob
-            cd /tmp && rm -rf tcc-fetch
+          # Native throughout. If this is not aarch64 the whole run means
+          # nothing, and that must stop the job rather than colour a summary.
+          echo "  uname -m : $(uname -m)"
+          [ "$(uname -m)" = aarch64 ] || { echo "  NOT aarch64 -- aborting"; exit 1; }
+
+      - name: Install
+        run: |
+          set -eu
+          # sudo. The previous revision omitted it and died in eight seconds on
+          # "Could not open lock file /var/lib/apt/lists/lock".
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl git bzip2 xz-utils gcc make bison flex texinfo m4 perl \
+            file binutils bubblewrap python3
+
+      - name: 'Build OUR arm64 tcc'
+        run: |
+          set -eu
+          # FULL CLONE, not --depth 1: apply-series.sh locates its base by
+          # matching the patches' index pre-image blobs against history, so a
+          # shallow clone leaves it nothing to search and it falls back to a
+          # date guess -- the wrong tree, failing on tccasm.c:1178.
+          #
+          # AND THE PINNED URL. The previous revision cloned --depth=1 from
+          # github.com/TinyComputer/tcc and applied NO patches, which is stock
+          # mob HEAD -- the exact tree sources/tcc.toml documents as broken,
+          # because mob's arm64 assembler rejects bic, svc, adrp and 17 others.
+          mkdir -p work
+          git clone -q git://repo.or.cz/tinycc.git work/tccsrc \
+            || git clone -q https://repo.or.cz/tinycc.git work/tccsrc
+
+          if [ "$TCC_SOURCE" = "pinned-series" ]; then
+            echo "  --- applying the arm64 series (sources/tcc.toml pin) ---"
+            bash spikes/stage3/patches/tcc-arm64-asm/apply-series.sh work/tccsrc | sed 's/^/  /'
+          else
+            echo "  --- mob HEAD, series NOT applied ---"
           fi
-          TCC="$HOME/.cache/veron/tcc-mob"
-          echo "TCC=$TCC" >> $GITHUB_ENV
-          file "$TCC"
-          "$TCC" --version | head -1
 
-      - name: 'Create working directories'
-        run: |
-          W=$(pwd)
-          S=/work/sysroot
-          mkdir -p /work/{src,build,out,cache}
-          echo "W=$W" >> $GITHUB_ENV
-          echo "S=$S" >> $GITHUB_ENV
+          cd work/tccsrc
+          echo "  tcc tree : $(git rev-parse HEAD)"
+          # --prefix matters: inside the box this tree lives at /work/tccsrc and
+          # tcc bakes its configured prefix into its search paths. Build it with
+          # the path it will be USED at.
+          ./configure --cc=gcc --prefix=/work/tccsrc > /dev/null
+          make -j"$(nproc)" > /dev/null
+          ./tcc -v
+          ./tcc -v 2>&1 | grep -q AArch64 || { echo "  tcc is not an AArch64 build"; exit 1; }
 
-      - name: 'BEFORE MASKING: Fetch everything the entire chain needs'
+      - name: 'Seal rung 0'
+        id: seal
         run: |
           set -eu
-          W="$W"
-          get() {
-            url="$1"
-            out="${2:-$(basename "$url")}"
-            [ -f "/work/cache/$out" ] && { echo "  $out (cached)"; return 0; }
-            echo "  fetching $out..."
-            curl -sS -L -o "/work/cache/$out" "$url" || { echo "ERROR fetching $url"; exit 1; }
-            echo "  $out (done)"
+          export CHAIN_BUILDER='host gcc (declared hole -- seed->tcc is stage 3)'
+          export CHAIN_BORROWED='["host gcc","binutils","glibc","make","sh","coreutils"]'
+          export CHAIN_DEFERRED='["reproducibility of tcc itself"]'
+          export CHAIN_VERIFIED='["tcc -v reports AArch64","arm64 asm series applied"]'
+          mkdir -p records
+          sh spikes/stage4/chain/seal.sh seal work/tccsrc rung0-tcc "" records/rung0.json
+          H=$(sh spikes/stage4/chain/seal.sh hash work/tccsrc)
+          echo "hash=$H" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/save@v4
+        with:
+          path: work/tccsrc
+          key: s4c-tcc-${{ github.run_id }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s4c-record-rung0
+          path: records/rung0.json
+
+  # ==========================================================================
+  # RUNG 1 -- tcc -> gcc 4.7.4 -> gcc 4.7.4 -> gcc 10.2.0, no host compiler.
+  # ==========================================================================
+  rung-gcc10:
+    name: 'rung 1: tcc -> 4.7.4 -> 4.7.4 -> 10.2.0'
+    needs: tcc
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 330
+    outputs:
+      hash: ${{ steps.seal.outputs.hash }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl git bzip2 xz-utils gcc make bison flex texinfo m4 perl \
+            file binutils bubblewrap python3
+
+      - name: 'Let bwrap create a user namespace'
+        run: |
+          set -eu
+          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor, so
+          # bwrap otherwise fails with "setting up uid map: Permission denied".
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
+            sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+            include if exists <local/bwrap>
           }
-          cd /work/cache
-          
-          echo "=== Compiler sources ==="
-          get "$GNU/gcc/gcc-$GCC47/gcc-$GCC47.tar.bz2"
-          get "$GNU/gcc/gcc-$GCC48/gcc-$GCC48.tar.bz2"
-          get "$GNU/gcc/gcc-$GCC10/gcc-$GCC10.tar.bz2"
-          get "$GNU/gcc/gcc-$GCC15/gcc-$GCC15.tar.bz2"
-          
-          echo "=== Sysroot packages (chapters 5-6 for gcc 15) ==="
-          get "$GNU/binutils/binutils-$BINUTILS.tar.xz"
-          get "$GNU/glibc/glibc-$GLIBC.tar.xz"
-          get "https://www.kernel.org/pub/linux/kernel/v7.x/linux-$LINUX_HEADERS.tar.xz" "linux-headers-$LINUX_HEADERS.tar.xz"
-          get "$GNU/gmp/gmp-$GMP_VER.tar.xz"
-          get "$GNU/mpfr/mpfr-$MPFR_VER.tar.xz"
-          get "$GNU/mpc/mpc-$MPC_VER.tar.gz"
-          get "$GNU/m4/m4-$M4_VER.tar.xz"
-          get "$GNU/bison/bison-$BISON_VER.tar.xz"
-          get "$GNU/flex/flex-$FLEX_VER.tar.xz"
-          get "$GNU/make/make-4.4.1.tar.gz"
-          get "https://www.cpan.org/src/5.0/perl-$PERL_VER.tar.xz"
-          get "$GNU/bc/bc-$BC_VER.tar.xz"
-          get "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VER/openssl-$OPENSSL_VER.tar.gz"
-          
-          echo "=== Linux kernel for boot ==="
-          get "https://www.kernel.org/pub/linux/kernel/v7.x/linux-$KERNEL.tar.xz"
-          
-          echo "=== Userland (BusyBox, musl) ==="
-          get "https://busybox.net/downloads/busybox-1.36.1.tar.bz2"
-          get "https://musl.libc.org/releases/musl-1.2.5.tar.gz"
-          
-          echo "=== LFS patches ==="
-          get "$LFS_PATCH/glibc-$GLIBC-upstream_fixes-1.patch"
-          get "$LFS_PATCH/glibc-$GLIBC-fhs-1.patch"
-          
-          echo "All sources fetched."
-          ls -lh /work/cache | tail -20
+          EOF
+            sudo systemctl reload apparmor || sudo service apparmor reload || true
+            echo "  apparmor profile installed for bwrap"
+          else
+            echo "  unprivileged userns already permitted"
+          fi
 
-      - name: 'Stage sysroot and cache into /work'
+      - uses: actions/cache/restore@v4
+        with:
+          path: work/tccsrc
+          key: s4c-tcc-${{ github.run_id }}
+          fail-on-cache-miss: true
+
+      - name: 'THE SEAM: is this the tcc rung 0 sealed?'
         run: |
           set -eu
-          S="$S"
-          mkdir -p "$S"
-          # Stage what we'll need
-          cp -v /work/cache/* /work/src/ 2>/dev/null || true
-          echo "Staged."
+          # The whole reason this workflow is a chain and not three unrelated
+          # jobs. If this fails, nothing downstream can claim to descend from
+          # the tcc that was actually built and inspected.
+          sh spikes/stage4/chain/seal.sh verify work/tccsrc '${{ needs.tcc.outputs.hash }}'
 
-      - name: 'Set up bwrap with host compilers masked'
+      - name: 'The box: one definition, and no host compiler in it'
         run: |
           set -eu
-          W="$W"
-          # Resolve the real binaries behind the symlinks
-          MASKED=""
-          for name in gcc cc c++ g++ cpp; do
-            real=$(which $name 2>/dev/null | xargs readlink -f)
-            if [ -n "$real" ]; then
-              MASKED="$MASKED --bind /dev/null $real"
+          W="$PWD/work" REPO="$PWD" sh spikes/stage4/chain/box.sh --show-mask
+
+      - name: 'Fetch and pin-verify'
+        run: |
+          set -eu
+          REPO="$PWD" sh spikes/stage4/chain/fetch.sh "$PWD/work/src" \
+            "$GNU/gcc/gcc-$GCC47/gcc-$GCC47.tar.bz2" \
+            "$GNU/gcc/gcc-$GCC48/gcc-$GCC48.tar.bz2" \
+            "$GNU/gcc/gcc-$GCC10/gcc-$GCC10.tar.xz" \
+            "$GNU/gmp/gmp-$GMP_VER.tar.xz" \
+            "$GNU/mpfr/mpfr-$MPFR_VER.tar.xz" \
+            "$GNU/mpc/mpc-$MPC_VER.tar.gz"
+          # gcc 10 and 15 as .tar.xz. GNU stopped shipping .tar.bz2 after the
+          # 4.x/5.x era; the previous revision asked for gcc-10.2.0.tar.bz2 and
+          # gcc-15.2.0.tar.bz2, then untarred gcc-15.2.0.tar.XZ, which it had
+          # never fetched.
+
+      - name: 'Transplant 4.8.5 aarch64 backend into 4.7.4'
+        run: |
+          set -eu
+          cd work && tar xf src/gcc-$GCC47.tar.bz2 && tar xf src/gcc-$GCC48.tar.bz2
+          cd .. && bash spikes/stage4/probes/backport-aarch64.sh \
+            work/gcc-$GCC47 work/gcc-$GCC48 2>&1 | tail -5
+
+      - name: 'STAGE 1+2+3 in the box'
+        run: |
+          set -eu
+          # BOX SCRIPTS ARE WRITTEN TO FILES AND RUN BY PATH, never embedded in
+          # a quoted one-liner. hermetic-gcc16's header records why: quoting a
+          # multi-hundred-line build into `bash -c '...'` is how the previous
+          # revision ended up with '"'"' nesting in its initramfs step.
+          cp spikes/stage4/chain/rung1.sh work/rung1.sh
+          W="$PWD/work" REPO="$PWD" sh spikes/stage4/chain/box.sh /bin/sh /work/rung1.sh 2>&1 | tee work/rung1.log
+          # PIPESTATUS, NOT pipefail, AND NOT NOTHING. A pipeline exits with its
+          # LAST command's status, so `| tee` made every box failure green. That
+          # is the bug hermetic-gcc16's header opens with, it was fixed there in
+          # 3e16e0f, and the previous stage4-complete reintroduced it in all
+          # eight of its box calls.
+          rc=${PIPESTATUS[0]}
+          [ "$rc" -eq 0 ] || { echo "  the box exited $rc -- see above"; exit "$rc"; }
+        shell: bash
+
+      - name: 'GATE: is the gcc 10 real, and is it a rung UP?'
+        run: |
+          set -eu
+          # A check that cannot fail is not a check. This asserts rather than
+          # reports: the C compiler must RUN something, not merely answer
+          # --version. fib(10) exercises a conditional, a subtraction and
+          # recursion, and running it is what separates codegen from
+          # compilation.
+          cp spikes/stage4/chain/gate-gcc10.sh work/gate.sh
+          W="$PWD/work" REPO="$PWD" sh spikes/stage4/chain/box.sh /bin/sh /work/gate.sh 2>&1 | tee -a work/rung1.log
+          rc=${PIPESTATUS[0]}
+          [ "$rc" -eq 0 ] || exit "$rc"
+        shell: bash
+
+      - name: 'Seal rung 1'
+        id: seal
+        run: |
+          set -eu
+          export CHAIN_BUILDER='tcc (rung 0), then the gcc it produced'
+          export CHAIN_BORROWED='["binutils","glibc+headers","make","perl","m4","bison","flex","sh","coreutils","python3"]'
+          export CHAIN_VERIFIED='["gcc10 compiles and RUNS fib(10)=55","g++ 4.7 self-rebuild fixpoint"]'
+          export CHAIN_DEFERRED='["3-stage bootstrap"]'
+          export CHAIN_UNPINNED=$(cat work/src/.unpinned.count 2>/dev/null || echo 0)
+          mkdir -p records
+          sh spikes/stage4/chain/seal.sh seal work/out10 rung1-gcc10 \
+            '${{ needs.tcc.outputs.hash }}' records/rung1.json
+          H=$(sh spikes/stage4/chain/seal.sh hash work/out10)
+          echo "hash=$H" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/save@v4
+        if: success()
+        with:
+          path: work/out10
+          key: s4c-gcc10-${{ github.run_id }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s4c-record-rung1
+          path: |
+            records/rung1.json
+            work/rung1.log
+
+  # ==========================================================================
+  # RUNG 2 -- gcc 10 -> sysroot (chapters 5-6) -> gcc 15.2.0
+  # ==========================================================================
+  rung-gcc15:
+    name: 'rung 2: gcc 10 -> sysroot -> 15.2.0'
+    needs: [tcc, rung-gcc10]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 330
+    outputs:
+      hash: ${{ steps.seal.outputs.hash }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install
+        run: |
+          set -eu
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl git bzip2 xz-utils gcc make bison flex texinfo m4 perl \
+            file binutils bubblewrap python3 bc
+      - name: 'Let bwrap create a user namespace'
+        run: |
+          set -eu
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
+            sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+            include if exists <local/bwrap>
+          }
+          EOF
+            sudo systemctl reload apparmor || sudo service apparmor reload || true
+          fi
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: work/out10
+          key: s4c-gcc10-${{ github.run_id }}
+          fail-on-cache-miss: true
+
+      - name: 'THE SEAM: is this the gcc 10 rung 1 sealed?'
+        run: |
+          set -eu
+          sh spikes/stage4/chain/seal.sh verify work/out10 '${{ needs.rung-gcc10.outputs.hash }}'
+
+      - name: 'Fetch and pin-verify'
+        run: |
+          set -eu
+          REPO="$PWD" sh spikes/stage4/chain/fetch.sh "$PWD/work/src" \
+            "$GNU/binutils/binutils-$BINUTILS.tar.xz" \
+            "$GNU/gcc/gcc-$GCC15/gcc-$GCC15.tar.xz" \
+            "$GNU/glibc/glibc-$GLIBC.tar.xz" \
+            "$KORG/v${LINUX_HEADERS%%.*}.x/linux-$LINUX_HEADERS.tar.xz" \
+            "$GNU/gmp/gmp-$GMP_VER.tar.xz" \
+            "$GNU/mpfr/mpfr-$MPFR_VER.tar.xz" \
+            "$GNU/mpc/mpc-$MPC_VER.tar.gz"
+
+      - name: 'Chapters 5-6, then gcc 15, in the box'
+        run: |
+          set -eu
+          # ORDER MATTERS AND THE PREVIOUS REVISION HAD IT WRONG. It ran
+          # binutils -> headers -> glibc -> gcc15, with glibc configured
+          # --host=$LFS_TGT before anything had built an $LFS_TGT-gcc for it to
+          # use. LFS builds the cross compiler (gcc pass 1) FIRST for exactly
+          # this reason. rung2.sh follows the book's order.
+          cp spikes/stage4/chain/rung2.sh work/rung2.sh
+          W="$PWD/work" REPO="$PWD" sh spikes/stage4/chain/box.sh /bin/sh /work/rung2.sh 2>&1 | tee work/rung2.log
+          rc=${PIPESTATUS[0]}
+          [ "$rc" -eq 0 ] || { echo "  the box exited $rc -- see above"; exit "$rc"; }
+        shell: bash
+
+      - name: 'GATE: a compiler that RUNS IN the sysroot'
+        run: |
+          set -eu
+          # gcc pass 2's whole point, and the distinction the previous revision
+          # collapsed: pass 1's compiler runs on the HOST and merely targets
+          # LFS_TGT. What the guest needs is one that runs in the sysroot.
+          cp spikes/stage4/chain/gate-gcc15.sh work/gate.sh
+          W="$PWD/work" REPO="$PWD" sh spikes/stage4/chain/box.sh /bin/sh /work/gate.sh 2>&1 | tee -a work/rung2.log
+          rc=${PIPESTATUS[0]}
+          [ "$rc" -eq 0 ] || exit "$rc"
+        shell: bash
+
+      - name: 'Seal rung 2'
+        id: seal
+        run: |
+          set -eu
+          export CHAIN_BUILDER='gcc 10.2.0 from rung 1'
+          export CHAIN_BORROWED='["binutils source (built here)","make","perl","m4","bison","flex","sh","coreutils"]'
+          export CHAIN_VERIFIED='["gcc15 compiles+runs in sysroot","exceptions, not just return 42"]'
+          export CHAIN_DEFERRED='["3-stage bootstrap","DejaGnu (stage 5)"]'
+          export CHAIN_UNPINNED=$(cat work/src/.unpinned.count 2>/dev/null || echo 0)
+          mkdir -p records
+          sh spikes/stage4/chain/seal.sh seal work/sysroot rung2-gcc15 \
+            '${{ needs.rung-gcc10.outputs.hash }}' records/rung2.json
+          H=$(sh spikes/stage4/chain/seal.sh hash work/sysroot)
+          echo "hash=$H" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache/save@v4
+        if: success()
+        with:
+          path: work/sysroot
+          key: s4c-sysroot-${{ github.run_id }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s4c-record-rung2
+          path: |
+            records/rung2.json
+            work/rung2.log
+
+  # ==========================================================================
+  # RUNG 3 -- gcc 15 -> linux 7.1.5 + userland -> QEMU -> compile IN the guest
+  # ==========================================================================
+  rung-boot:
+    name: 'rung 3: kernel, userland, boot, compile in guest'
+    needs: [rung-gcc10, rung-gcc15]
+    if: github.event.inputs.boot != 'no'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    outputs:
+      hash: ${{ steps.seal.outputs.hash }}
+      booted: ${{ steps.boot.outputs.booted }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install
+        run: |
+          set -eu
+          # qemu-system-arm, NOT qemu-system-aarch64. The latter is a BINARY
+          # shipped by the former, not a package; asking apt for it fails the
+          # whole install. cpio is here because the initramfs step needs it and
+          # the previous revision never installed it.
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            curl git bzip2 xz-utils gcc make bison flex texinfo m4 perl \
+            file binutils bubblewrap python3 bc cpio kmod \
+            qemu-system-arm qemu-user
+          command -v qemu-system-aarch64 > /dev/null \
+            || { echo "  qemu-system-aarch64 absent -- nothing can be booted"; exit 1; }
+          qemu-system-aarch64 --version | head -1 | sed 's/^/  /'
+      - name: 'Let bwrap create a user namespace'
+        run: |
+          set -eu
+          if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" = "1" ]; then
+            sudo tee /etc/apparmor.d/bwrap > /dev/null <<'EOF'
+          abi <abi/4.0>,
+          include <tunables/global>
+          profile bwrap /usr/bin/bwrap flags=(unconfined) {
+            userns,
+            include if exists <local/bwrap>
+          }
+          EOF
+            sudo systemctl reload apparmor || sudo service apparmor reload || true
+          fi
+
+      - uses: actions/cache/restore@v4
+        with:
+          path: work/sysroot
+          key: s4c-sysroot-${{ github.run_id }}
+          fail-on-cache-miss: true
+
+      - name: 'THE SEAM: is this the sysroot rung 2 sealed?'
+        run: |
+          set -eu
+          sh spikes/stage4/chain/seal.sh verify work/sysroot '${{ needs.rung-gcc15.outputs.hash }}'
+
+      - name: 'Fetch and pin-verify'
+        run: |
+          set -eu
+          REPO="$PWD" sh spikes/stage4/chain/fetch.sh "$PWD/work/src" \
+            "$KORG/v${KERNEL%%.*}.x/linux-$KERNEL.tar.xz" \
+            "https://busybox.net/downloads/busybox-1.36.1.tar.bz2"
+
+      - name: 'Kernel and userland, in the box'
+        run: |
+          set -eu
+          cp spikes/stage4/chain/rung3.sh work/rung3.sh
+          W="$PWD/work" REPO="$PWD" sh spikes/stage4/chain/box.sh /bin/sh /work/rung3.sh 2>&1 | tee work/rung3.log
+          rc=${PIPESTATUS[0]}
+          [ "$rc" -eq 0 ] || { echo "  the box exited $rc -- see above"; exit "$rc"; }
+          # The kernel must EXIST before anything is booted. The failure this
+          # prevents is recorded in hermetic-gcc16's header: QEMU was handed an
+          # Image that had never been written and the log said "DID NOT REACH
+          # USERSPACE", which reads like a kernel that boots badly rather than
+          # one that was never built.
+          [ -f work/Image ]         || { echo "  no kernel Image was produced"; exit 1; }
+          [ -f work/initramfs.cpio.gz ] || { echo "  no initramfs was produced"; exit 1; }
+        shell: bash
+
+      - name: 'BOOT IT, and compile inside it'
+        id: boot
+        run: |
+          set -eu
+          echo "booted=no" >> "$GITHUB_OUTPUT"
+          # 600, not 30. A cold arm64 boot plus an in-guest compile does not fit
+          # in thirty seconds and hermetic-gcc15 already budgets ten minutes.
+          timeout 600 qemu-system-aarch64 \
+            -M virt -cpu cortex-a57 -smp 2 -m 1024 \
+            -nographic -no-reboot \
+            -kernel work/Image -initrd work/initramfs.cpio.gz \
+            -append "console=ttyAMA0 rdinit=/init" \
+            2>&1 | tee qemu.log || true
+
+          # THE BOOT MARKER IS NOT THE PROOF. Reaching userspace says the kernel
+          # works; it says nothing about the toolchain that built it. The claim
+          # this chain exists to support is that the compiler descends from tcc,
+          # so the guest must COMPILE. VERON-GCC-IN-GUEST is the real gate.
+          fail=0
+          for m in VERON-BOOT-OK VERON-GCC-IN-GUEST VERON-GUEST-RAN; do
+            if grep -q "$m" qemu.log; then
+              echo "  $m"
+            else
+              echo "  MISSING: $m"; fail=1
             fi
           done
-          # Mask /usr/lib/gcc
-          MASKED="$MASKED --tmpfs /usr/libexec/gcc"
-          
-          echo "BWRAP_MASK<<'EOF'" >> $GITHUB_ENV
-          echo "$MASKED" >> $GITHUB_ENV
-          echo "EOF" >> $GITHUB_ENV
-          
-          # Proof: verify the mask works before starting
-          echo "Testing mask..."
-          bwrap --bind / / $MASKED /bin/bash -c 'gcc --version 2>&1' | head -1 || \
-            echo "✓ host gcc is masked (expected failure)"
-
-      - name: 'Create box entry script'
-        run: |
-          cat > /work/box.sh <<'BOXEOF'
-          #!/bin/bash
-          set -u
-          S=${S:?box.sh: S not set}
-          exec bwrap \
-            --bind / / \
-            --bind "$S" /usr \
-            --tmpfs /tmp \
-            --tmpfs /work \
-            --ro-bind /work/src /src \
-            $BWRAP_MASK \
-            "$@"
-          BOXEOF
-          chmod +x /work/box.sh
-
-      - name: 'STAGE 1: tcc → gcc 4.7.4 + aarch64 backend'
-        run: |
-          set -eu
-          W="$W"; S="$S"; TCC="$TCC"
-          
-          export PATH="$S/tools/bin:$PATH"
-          
-          # Unpack sources inside the box once; reuse for all stages
-          /work/box.sh /bin/bash -c '
-            cd /work
-            tar xf /src/gcc-$GCC47.tar.bz2
-            tar xf /src/gcc-$GCC48.tar.bz2
-            tar xf /src/binutils-$BINUTILS.tar.xz
-            tar xf /src/glibc-$GLIBC.tar.xz
-            echo "sources unpacked"
-          '
-          
-          # Transplant aarch64 backend
-          bash spikes/stage4/probes/backport-aarch64.sh gcc-$GCC47 gcc-$GCC48 2>&1 | tail -3
-          
-          # Stage into sysroot for the box
-          mkdir -p "$S/work"
-          cp -r gcc-$GCC47 "$S/work/"
-          
-          # Stage 1: tcc → gcc 4.7.4
-          /work/box.sh /bin/bash -c '
-            set -e
-            cd /work
-            rm -rf b1 && mkdir b1 && cd b1
-            ../gcc-'$GCC47'/configure \
-              --target=aarch64-linux-gnu --prefix=/work/out1 \
-              --enable-languages=c,c++ --disable-multilib \
-              --disable-bootstrap --disable-nls \
-              > c.log 2>&1
-            echo "stage1 configure rc=$?"
-            make -j4 MAKEINFO=true all-gcc all-target-libgcc > b.log 2>&1
-            echo "stage1 build rc=$?"
-            make install-gcc install-target-libgcc > i.log 2>&1
-            /work/out1/bin/aarch64-linux-gnu-gcc --version | head -1
-          ' 2>&1 | grep -E 'stage1|gcc|error' | head -20
-          
-          echo "✓ Stage 1 complete: tcc built gcc 4.7.4"
-
-      - name: 'STAGE 2: gcc 4.7.4 → gcc 4.7.4 (self-rebuild)'
-        run: |
-          set -eu
-          W="$W"; S="$S"
-          
-          export PATH="$S/tools/bin:/work/out1/bin:$PATH"
-          
-          /work/box.sh /bin/bash -c '
-            set -e
-            cd /work
-            rm -rf b2 && mkdir b2 && cd b2
-            ../gcc-'$GCC47'/configure \
-              --target=aarch64-linux-gnu --prefix=/work/out2 \
-              --enable-languages=c,c++ --disable-multilib \
-              --disable-bootstrap --disable-nls \
-              > c.log 2>&1
-            echo "stage2 configure rc=$?"
-            make -j4 MAKEINFO=true all-gcc all-target-libgcc > b.log 2>&1
-            echo "stage2 build rc=$?"
-            make install-gcc install-target-libgcc > i.log 2>&1
-            /work/out2/bin/aarch64-linux-gnu-gcc --version | head -1
-          ' 2>&1 | grep -E 'stage2|gcc|error' | head -20
-          
-          echo "✓ Stage 2 complete: gcc 4.7.4 → gcc 4.7.4 fixpoint"
-
-      - name: 'STAGE 3: g++ 4.7 → gcc 10.2.0'
-        run: |
-          set -eu
-          W="$W"; S="$S"
-          
-          /work/box.sh /bin/bash -c '
-            set -e
-            export PATH=/work/out2/bin:$PATH
-            cd /work
-            tar xf /src/gcc-'$GCC10'.tar.bz2
-            cd /work/b2/../gcc-'$GCC10'
-            tar xf /src/gmp-$GMP_VER.tar.xz && mv gmp-$GMP_VER gmp
-            tar xf /src/mpfr-$MPFR_VER.tar.xz && mv mpfr-$MPFR_VER mpfr
-            tar xf /src/mpc-$MPC_VER.tar.gz && mv mpc-$MPC_VER mpc
-            cd /work
-            rm -rf b3 && mkdir b3 && cd b3
-            ../gcc-'$GCC10'/configure --prefix=/work/out10 \
-              --enable-languages=c,c++ --disable-multilib --disable-bootstrap \
-              --disable-nls > c.log 2>&1
-            echo "stage3 configure rc=$?"
-            make -j4 MAKEINFO=true > b.log 2>&1
-            echo "stage3 build rc=$?"
-            make install > i.log 2>&1
-            /work/out10/bin/gcc --version | head -1
-          ' 2>&1 | grep -E 'stage3|gcc|error' | head -20
-          
-          echo "✓ Stage 3 complete: tcc→4.7→4.7→gcc 10 chain proven"
-
-      - name: 'Set up the sysroot for gcc 15 (chapters 5-6, inside the box)'
-        run: |
-          set -eu
-          S="$S"
-          
-          # Stage gcc 15 sources and deps
-          mkdir -p "$S/work"
-          cp /work/cache/* "$S/work/src/" 2>/dev/null || true
-          
-          /work/box.sh /bin/bash -c '
-            set -e
-            export PATH=/work/out10/bin:$PATH
-            cd /work
-            
-            # Unpack for chapter 5-6 build
-            tar xf /src/binutils-$BINUTILS.tar.xz
-            tar xf /src/gcc-'$GCC15'.tar.xz
-            tar xf /src/glibc-$GLIBC.tar.xz
-            tar xf /src/linux-headers-$LINUX_HEADERS.tar.xz
-            
-            # Basic toolchain for chapters 5-6
-            mkdir -p /work/tools
-            export LFS_TGT=aarch64-veron-linux-gnu
-            
-            # Chapter 5.2: binutils pass 1
-            cd /work
-            rm -rf b-bi1 && mkdir b-bi1 && cd b-bi1
-            ../binutils-$BINUTILS/configure \
-              --target=$LFS_TGT --prefix=/work/tools \
-              --disable-nls > /dev/null 2>&1
-            make -j4 > /dev/null 2>&1
-            make install > /dev/null 2>&1
-            echo "binutils pass 1 ok"
-            
-            # Chapter 5.4: linux headers
-            cd /work/linux-$LINUX_HEADERS
-            make mrproper > /dev/null 2>&1
-            make headers_install INSTALL_HDR_PATH=/work/tools/$LFS_TGT > /dev/null 2>&1
-            echo "linux headers ok"
-            
-            # Chapter 5.5: glibc (cross-compiled INTO sysroot)
-            cd /work
-            rm -rf b-gl && mkdir b-gl && cd b-gl
-            ../glibc-$GLIBC/configure \
-              --prefix=/work/sysroot --host=$LFS_TGT \
-              --build=$(../glibc-$GLIBC/scripts/config.guess) \
-              --enable-kernel=5.4 libc_cv_slibdir=/lib \
-              > /dev/null 2>&1
-            make -j4 > /dev/null 2>&1
-            make install DESTDIR=/work/sysroot > /dev/null 2>&1
-            echo "glibc ok"
-          ' 2>&1 | grep -E 'ok|error' | head -10
-          
-          echo "✓ Sysroot chapters 5 prepared"
-
-      - name: 'Build gcc 15 inside the sysroot'
-        run: |
-          set -eu
-          S="$S"
-          
-          /work/box.sh /bin/bash -c '
-            set -e
-            export PATH=/work/tools/bin:/work/out10/bin:$PATH
-            export LFS_TGT=aarch64-veron-linux-gnu
-            
-            cd /work
-            
-            # Chapters 5.6-6: gcc pass 1, pass 2, userland
-            # Simplified: just get gcc 15 built and runnable
-            
-            mkdir -p /work/tools/lib
-            tar xf /src/gmp-$GMP_VER.tar.xz -C /work/tools/..
-            tar xf /src/mpfr-$MPFR_VER.tar.xz -C /work/tools/..
-            tar xf /src/mpc-$MPC_VER.tar.gz -C /work/tools/..
-            
-            cd /work/tools/../gcc-$GCC15
-            ln -sf ../gmp-$GMP_VER gmp
-            ln -sf ../mpfr-$MPFR_VER mpfr
-            ln -sf ../mpc-$MPC_VER mpc
-            
-            cd /work
-            rm -rf b-gc15 && mkdir b-gc15 && cd b-gc15
-            ../gcc-$GCC15/configure \
-              --prefix=/work/out15 \
-              --target=$LFS_TGT \
-              --enable-languages=c,c++ --disable-multilib --disable-bootstrap \
-              --disable-nls \
-              > /dev/null 2>&1
-            make -j4 MAKEINFO=true > /dev/null 2>&1
-            make install > /dev/null 2>&1
-            /work/out15/bin/$LFS_TGT-gcc --version | head -1
-            echo "gcc 15 ok"
-          ' 2>&1 | grep -E 'ok|error|gcc' | head -10
-          
-          echo "✓ gcc 15 built"
-
-      - name: 'Build linux kernel inside the sysroot'
-        if: github.event.inputs.boot == 'yes' || github.event_name == 'push'
-        run: |
-          set -eu
-          S="$S"
-          
-          /work/box.sh /bin/bash -c '
-            set -e
-            export PATH=/work/out15/bin:$PATH
-            
-            cd /work
-            tar xf /src/linux-$KERNEL.tar.xz
-            cd linux-$KERNEL
-            
-            make ARCH=arm64 CROSS_COMPILE=aarch64-veron-linux-gnu- defconfig > /dev/null 2>&1
-            
-            # Minimal config tweaks for QEMU boot
-            sed -i "s/^# CONFIG_DEVTMPFS is not set/CONFIG_DEVTMPFS=y/" .config
-            sed -i "s/^# CONFIG_DEVTMPFS_MOUNT is not set/CONFIG_DEVTMPFS_MOUNT=y/" .config
-            echo "CONFIG_WERROR=n" >> .config
-            
-            make -j4 ARCH=arm64 CROSS_COMPILE=aarch64-veron-linux-gnu- > /dev/null 2>&1
-            echo "linux kernel ok"
-            
-            # Verify Image exists
-            file arch/arm64/boot/Image
-          ' 2>&1 | grep -E 'ok|Image|error' | head -10
-          
-          echo "✓ Linux kernel built"
-
-      - name: 'Assemble initramfs with userland'
-        if: github.event.inputs.boot == 'yes' || github.event_name == 'push'
-        run: |
-          set -eu
-          S="$S"
-          
-          /work/box.sh /bin/bash -c '
-            set -e
-            export PATH=/work/out15/bin:$PATH
-            
-            cd /work
-            tar xf /src/busybox-1.36.1.tar.bz2
-            cd busybox-1.36.1
-            
-            make CROSS_COMPILE=aarch64-veron-linux-gnu- defconfig > /dev/null 2>&1
-            sed -i "s/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/" .config
-            
-            make CROSS_COMPILE=aarch64-veron-linux-gnu- -j4 > /dev/null 2>&1
-            
-            # Build initramfs
-            mkdir -p /work/initramfs/{bin,sbin,etc,lib,lib64,proc,sys,dev,tmp}
-            install -m755 busybox /work/initramfs/bin/
-            cd /work/initramfs/bin
-            for applet in sh ls cat echo mkdir mount umount cd pwd true false; do
-              ln -sf busybox $applet
-            done
-            
-            # Init script
-            cat > /work/initramfs/init <<'"'"'INIT'"'"'
-            #!/bin/sh
-            mount -t proc proc /proc
-            mount -t sysfs sys /sys
-            mount -t devtmpfs dev /dev
-            echo "VERON-BOOT-OK   $(uname -s) $(uname -r) $(uname -m)"
-            echo "VERON-KERNEL    $(uname -a | cut -c1-80)"
-            id > /tmp/id.txt 2>&1 && echo "VERON-UID       $(cat /tmp/id.txt)"
-            exec /bin/sh
-            INIT
-            chmod +x /work/initramfs/init
-            
-            # Cpio
-            cd /work/initramfs
-            find . -print0 | cpio -0 -o -H newc | gzip > /work/initramfs.img
-            echo "initramfs ok: $(ls -lh /work/initramfs.img | awk '"'"'{print $5}'"'"')"
-          ' 2>&1 | grep -E 'ok|VERON|error' | head -15
-          
-          echo "✓ Initramfs assembled"
-
-      - name: 'BOOT IT: QEMU'
-        if: github.event.inputs.boot == 'yes' || github.event_name == 'push'
-        run: |
-          set -eu
-          
-          KERNEL_PATH=$(find /work/linux-* -name Image -o -name Image.gz 2>/dev/null | head -1)
-          INITRAMFS_PATH="/work/initramfs.img"
-          
-          if [ ! -f "$KERNEL_PATH" ]; then
-            echo "ERROR: kernel Image not found"
+          if [ "$fail" -ne 0 ]; then
+            echo "  --- last 40 lines ---"
+            tail -40 qemu.log | sed 's/^/    /'
             exit 1
           fi
-          if [ ! -f "$INITRAMFS_PATH" ]; then
-            echo "ERROR: initramfs not found"
-            exit 1
-          fi
-          
-          echo "Booting..."
-          echo "  Kernel: $KERNEL_PATH"
-          echo "  Initramfs: $INITRAMFS_PATH"
-          
-          timeout 30 qemu-system-aarch64 \
-            -M virt -cpu cortex-a57 -smp 2 -m 256 \
-            -nographic -no-reboot \
-            -kernel "$KERNEL_PATH" \
-            -initrd "$INITRAMFS_PATH" \
-            -append "console=ttyAMA0" \
-            2>&1 | tee qemu.log || true
-          
-          # Check for boot markers
-          if grep -q "VERON-BOOT-OK" qemu.log; then
-            echo "✓ KERNEL BOOTED"
-            grep "VERON-" qemu.log | sed 's/^/  /'
-          else
-            echo "Boot did not reach userspace"
-            tail -20 qemu.log | sed 's/^/  /'
-            exit 1
-          fi
+          grep "VERON-" qemu.log | sed 's/^/  /'
+          echo "booted=yes" >> "$GITHUB_OUTPUT"
+
+      - name: 'Seal rung 3'
+        id: seal
+        run: |
+          set -eu
+          export CHAIN_BUILDER='gcc 15.2.0 from rung 2'
+          export CHAIN_BORROWED='["linux kernel + hardware (declared trusted inputs -- TRUST-BOUNDARY.md)"]'
+          export CHAIN_VERIFIED='["kernel boots","busybox runs as PID 1","gcc compiles and runs INSIDE the guest"]'
+          export CHAIN_DEFERRED='["reproducibility of the image"]'
+          export CHAIN_UNPINNED=$(cat work/src/.unpinned.count 2>/dev/null || echo 0)
+          mkdir -p records
+          sh spikes/stage4/chain/seal.sh seal work/img rung3-boot \
+            '${{ needs.rung-gcc15.outputs.hash }}' records/rung3.json
+          H=$(sh spikes/stage4/chain/seal.sh hash work/img)
+          echo "hash=$H" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s4c-record-rung3
+          path: |
+            records/rung3.json
+            work/rung3.log
+            qemu.log
+            work/Image
+
+  # ==========================================================================
+  # LEDGER -- the only step allowed to make a claim, and only from evidence.
+  # ==========================================================================
+  ledger:
+    name: 'ledger: does the chain actually connect?'
+    needs: [tcc, rung-gcc10, rung-gcc15, rung-boot]
+    if: always()
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: s4c-record-*
+          path: records
+          merge-multiple: true
 
       - name: 'RESULT'
-        if: always()
         run: |
+          set -eu
+          # THIS STEP IS NOT `if: always()` WITH AN UNCONDITIONAL BANNER.
+          # Run 81901874247 printed "The following chain is HERMETIC and PROVEN
+          # ... BOOTS" six seconds into a run whose only accomplishment was
+          # failing to install apt. The job was red, so CI status was honest --
+          # but the LOG was not, and the log is the artifact that gets quoted.
+          # A proof statement that cannot tell "proven" from "never ran" is not
+          # one. So: the banner is printed by seal.sh chain, from the records,
+          # or it is not printed at all.
           echo "=========================================="
-          echo "STAGE 4 COMPLETE PROOF"
+          echo "STAGE 4 -- CHAIN VERIFICATION"
           echo "=========================================="
-          echo ""
-          echo "The following chain is HERMETIC and PROVEN:"
-          echo ""
-          echo "  tcc (host-built, declared)"
-          echo "    ↓"
-          echo "  gcc 4.7.4 + aarch64 backend"
-          echo "    ↓"
-          echo "  gcc 4.7.4 (self-rebuild)"
-          echo "    ↓"
-          echo "  gcc 10.2.0"
-          echo "    ↓"
-          echo "  gcc 15.2.0"
-          echo "    ↓"
-          echo "  linux 7.1.5 kernel"
-          echo "    ↓"
-          echo "  glibc 2.43 userland"
-          echo "    ↓"
-          echo "  BOOTS"
-          echo ""
-          echo "Every compiler and library descends from tcc."
-          echo "No host /usr, no network, no hand-offs."
+          echo
+          for r in rung0 rung1 rung2 rung3; do
+            [ -f "records/$r.json" ] || { echo "  $r: NO RECORD -- that rung did not complete"; }
+          done
+          echo
+          sh spikes/stage4/chain/seal.sh chain \
+            records/rung0.json records/rung1.json records/rung2.json records/rung3.json
+          echo
+          echo "  boot + in-guest compile : ${{ needs.rung-boot.outputs.booted }}"
+          [ '${{ needs.rung-boot.outputs.booted }}' = 'yes' ] \
+            || { echo "  the guest did not compile -- no claim is made"; exit 1; }
+          echo
           echo "=========================================="
+          echo "Every rung's declared input hash equals the previous rung's"
+          echo "sealed output hash, no input entered unpinned, and the compiler"
+          echo "at the top of the chain compiled and ran a program inside the"
+          echo "kernel it built. The chain connects."
+          echo
+          echo "NOT claimed: reproducibility of tcc; 3-stage bootstrap; DejaGnu;"
+          echo "a box containing tcc and nothing else. See each record's"
+          echo "'borrowed' and 'deferred' fields for what this run actually"
+          echo "rested on."
+          echo "=========================================="
+
+      - name: 'Write the ledger entries'
+        if: success()
+        run: |
+          set -eu
+          # Invariant #8: every build node emits an audit record. The previous
+          # revision built five compilers, a kernel and a userland and wrote
+          # nothing to ledger/.
+          mkdir -p ledger
+          for r in records/rung*.json; do
+            h=$(sed -n 's/.*"output_hash": *"\([^"]*\)".*/\1/p' "$r")
+            cp "$r" "ledger/$h.json"
+            echo "  ledger/$h.json"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s4c-ledger
+          path: ledger/
