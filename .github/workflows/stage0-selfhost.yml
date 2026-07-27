@@ -205,6 +205,41 @@ jobs:
           echo "  --- what the runner would have given us ---"
           as --version | head -1 | sed 's/^/    /'
 
+      - name: 'LEG 1: assemble the source with BOTH assemblers'
+        run: |
+          set -eu
+          . tools/ab.sh
+          # THE FIRST LEG OF THE TRIANGLE. Everything else verifies a binary
+          # that ONE assembler produced. If that assembler encodes something
+          # its own disassembler decodes back the same way, the round-trip is
+          # self-consistent and still wrong. Two independent assemblers
+          # producing identical .text removes that hole.
+          #
+          # GNU ld links both, so the ASSEMBLER is the only variable.
+          "$P/bin/as" -o s0-gnu.o "$SRC"
+          "$P/bin/llvm-mc" -triple=aarch64-linux-gnu -filetype=obj \
+            -o s0-llvm.o "$SRC" 2> llvm-mc.err || true
+          ab_rule 'LEG 1 -- source assembled two ways'
+          ab_art 'source' "$SRC"
+          if [ ! -s s0-llvm.o ]; then
+            echo "    llvm-mc could not assemble the source:"
+            head -6 llvm-mc.err | sed 's/^/      /'
+            echo "    (GNU-as directives it may not share -- a finding, not a"
+            echo "     blocker; the rest of the checks continue on the GNU build)"
+          else
+            for t in gnu llvm; do
+              "$P/bin/objcopy" -O binary --only-section=.text "s0-$t.o" "s0-$t.text"
+              ab_art "  .text via $t" "s0-$t.text"
+            done
+            if cmp -s s0-gnu.text s0-llvm.text; then
+              echo "    IDENTICAL -- two independent assemblers agree on every byte."
+            else
+              echo "    DIFFER at byte $(cmp s0-gnu.text s0-llvm.text 2>&1 | sed 's/.*byte //; s/,.*//')"
+              echo "    Two assemblers disagreeing about what the source MEANS is"
+              echo "    a finding about the source, not about either tool."
+            fi
+          fi
+
       - name: 'CENSUS: what forms does stage0-as''s own source use?'
         run: python3 tools/s0_selfhost.py census "$SRC"
 
@@ -416,6 +451,22 @@ jobs:
           if [ "$fail_a" = 0 ]; then
             echo "    both assemblers reproduce the binary from its own disassembly."
           fi
+          . tools/ab.sh
+          ab_rule 'EVERY ARTIFACT IN THE ROUND TRIP'
+          ab_art 'source .s'              "$SRC"
+          ab_art 'binary stage0-as'       stage0-as
+          ab_art '  .text extracted'      orig.bin
+          ab_art 'disasm objdump'         stage0-as.dis
+          ab_art 'disasm llvm-objdump'    stage0-as.llvm.dis
+          ab_art 'relisted .s'            redis.s
+          ab_art 'reasm .text via gnu'    redis-gnu.bin
+          ab_art 'reasm .text via llvm'   redis-llvm.bin
+          echo
+          echo "  The two DISASSEMBLY FILES have different shas and must: they are"
+          echo "  different text layouts. What has to match is the instruction"
+          echo "  stream they encode, which is check C. The three .text shas -- the"
+          echo "  original and both reassemblies -- must be identical, and that is"
+          echo "  the claim check A makes."
           echo
           echo "  --- B. AUDITABLE: does a human see what the source says? ---"
           # THE RATCHET. $ROUNDTRIP_BUDGET is how many instructions currently
