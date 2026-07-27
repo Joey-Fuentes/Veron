@@ -28,7 +28,18 @@ before running this.
 | 81907665505 | rung 1, first pass | `GMP_VER: parameter not set` — the rung scripts read the workflow's `env:` block, which `--clearenv` does not carry into the box |
 | 81908437787 | rung 1, gcc 10 | `make: *** [Makefile:958: all] Error 2`. tcc built gcc 4.7.4 (2 min) and that gcc rebuilt it (5 min); all six sources pin-verified. Two defects of mine surfaced: the failure diagnostics printed make's directory chatter instead of the compiler error, and the build log was never uploaded, so the actual error is unrecoverable without a rerun. Both fixed in r3. |
 
-### Two things r3 changes because they were wrong, not because they broke
+| 81910448983 | rung 1, bootstrap comparison | The comparison ran and failed — on my setup, not on the compilers. gcc records its configure line in the binary, so B carried `CC=/work/g47a/bin/gcc` and C carried `CC=/work/g47/bin/gcc`, one character shorter; everything after it shifted and `cmp` reported the first difference at ELF64's `e_shoff`. Decoded, the differing bytes were `a/bin` against `/bin`. Fixed in r4: the builder path, the prereq prefix and the build directory all go through fixed paths (`/work/cc-prev` repointed by symlink, `/work/prereq`, `/work/bld`) so B and C record byte-identical configure lines. |
+
+r4 also splits the comparison in two, because r3 conflated two questions.
+**Stripped** images answer "does the code match" — the compiler question.
+**Raw** images additionally cover recorded build metadata, which is this
+script's business rather than the compiler's. A metadata-only difference now
+reports as one, and both are still failures: the intended state is
+byte-identical and nothing is waved through. On any difference the two
+configure lines are printed, because in 81910448983 the entire discrepancy was
+one character of that string and finding it cost a 12-minute run and a hexdump.
+
+### Two things r3 changed because they were wrong, not because they broke
 
 **The passes are no longer numbered.** They were `STAGE 1/2/3`, inherited from
 `tcc-builds-gcc-arm64`. But `ARCHITECTURE.md` §2, `AGENTS.md` §4, that job, and

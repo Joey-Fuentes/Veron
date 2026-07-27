@@ -43,10 +43,26 @@
 # It costs one extra 4.7.4 build. Run 81908437787 measured those at 2-5 minutes
 # against gcc 10's 5 and a 330-minute budget, so cost was never the reason.
 #
-# B AND C ARE CONFIGURED WITH THE SAME --prefix ON PURPOSE. gcc bakes its prefix
-# into its binaries; building them at different prefixes would guarantee a
-# difference and prove nothing. B installs to the real path, C installs the same
-# prefix under a DESTDIR, and the two trees are compared.
+# EVERYTHING THE CONFIGURE LINE CONTAINS MUST BE IDENTICAL, NOT JUST --prefix.
+# Run 81910448983 got this half right and the comparison failed on my setup
+# rather than on the compilers. gcc records its full configure command line in
+# the binary (it is what `gcc -v` prints back), so B carried
+#     CC=/work/g47a/bin/gcc          <- build A's prefix
+# and C carried
+#     CC=/work/g47/bin/gcc           <- build B's prefix
+# one character shorter. cmp put the first difference at offset 41, which is
+# ELF64's e_shoff -- the section table had moved because everything after the
+# string shifted. The decoded bytes were literally "a/bin" against "/bin".
+#
+# So all three of these are now routed through fixed paths that do not change
+# between B and C:
+#     /work/cc-prev    symlink, repointed to whichever compiler is building
+#     /work/prereq     one prefix, wiped and rebuilt per pass
+#     /work/bld        one build directory, wiped per pass
+# B installs to the real prefix, C installs the same prefix under a DESTDIR,
+# and the trees are compared. If gcc canonicalises the symlink when recording
+# the line, this will still differ -- and the comparison now prints both
+# configure strings on failure, so that takes one look rather than one run.
 set -u
 
 # THE VERSION SET CROSSES THE BOUNDARY AS A FILE, NOT AS INHERITED ENV.
@@ -92,9 +108,13 @@ mkdir -p src
 # that pass is testing. FRESH TREES, not `make distclean` -- if distclean
 # misses, make relinks .o files the previous compiler produced into an archive
 # this pass attributes to the new one.
-build_prereqs() {   # $1 = CC, $2 = prefix dir under /work
+# ONE PREFIX PATH, REBUILT PER PASS. It used to be pA/pB/pC, which put
+# --with-gmp=/work/pB into B's recorded configure line and /work/pC into C's.
+# Same length, different bytes -- another difference that was mine.
+build_prereqs() {   # $1 = CC
+  rm -rf /work/prereq; mkdir -p /work/prereq
   for p in gmp-$GMP_VER mpfr-$MPFR_VER mpc-$MPC_VER; do
-    rm -rf "/work/$2-$p"; mkdir -p "/work/$2-$p"; cd "/work/$2-$p"
+    rm -rf "/work/src-$p"; mkdir -p "/work/src-$p"; cd "/work/src-$p"
     case "$p" in
       mpc-*) tar xf /work/src/$p.tar.gz ;;
       *)     tar xf /work/src/$p.tar.xz ;;
@@ -103,11 +123,11 @@ build_prereqs() {   # $1 = CC, $2 = prefix dir under /work
     EXTRA=""
     case "$p" in
       gmp-*)  EXTRA="--disable-assembly" ;;
-      mpfr-*) EXTRA="--with-gmp=/work/$2" ;;
-      mpc-*)  EXTRA="--with-gmp=/work/$2 --with-mpfr=/work/$2" ;;
+      mpfr-*) EXTRA="--with-gmp=/work/prereq" ;;
+      mpc-*)  EXTRA="--with-gmp=/work/prereq --with-mpfr=/work/prereq" ;;
     esac
     # shellcheck disable=SC2086
-    ./configure CC="$1" --disable-shared $EXTRA --prefix="/work/$2" \
+    ./configure CC="$1" --disable-shared $EXTRA --prefix=/work/prereq \
       > conf.log 2>&1 || { say "    $p configure FAILED"; tail -20 conf.log | sed 's/^/      /'; return 1; }
     make -j"$NP" > build.log 2>&1 || { say "    $p build FAILED"; diagnose "$PWD/build.log" "$p"; return 1; }
     make install > /dev/null 2>&1 || return 1
@@ -118,23 +138,26 @@ build_prereqs() {   # $1 = CC, $2 = prefix dir under /work
 
 # ONE configure LINE, THREE CALL SITES, so B and C cannot drift apart. If they
 # drifted, the comparison below would be measuring the drift.
-configure_47() {   # $1 = builddir  $2 = CC  $3 = prefix  $4 = prereq prefix
-  rm -rf "/work/$1" && mkdir "/work/$1" && cd "/work/$1"
+# ONE BUILD DIRECTORY. bB and bC were the same length, so they did not show up
+# in run 81910448983 -- but DW_AT_comp_dir records it and a two-character name
+# is luck, not design.
+configure_47() {   # $1 = CC  $2 = prefix
+  rm -rf /work/bld && mkdir /work/bld && cd /work/bld
   # No CXX. All of gcc 4.7 is C, INCLUDING cc1plus, which is the whole reason
   # 4.7 is the entry point: a C compiler yields a C++98 compiler.
   # --disable-bootstrap: with it on, the tree would bootstrap itself internally
   # and the contribution of the compiler being tested would be discarded --
   # which is also why the B-vs-C comparison has to be done by hand.
   /work/gcc-$GCC47/configure \
-    CC="$2" \
+    CC="$1" \
     --build=aarch64-unknown-linux-gnu \
     --host=aarch64-unknown-linux-gnu \
     --target=aarch64-unknown-linux-gnu \
-    --prefix="$3" --enable-languages=c,c++ \
+    --prefix="$2" --enable-languages=c,c++ \
     --disable-multilib --disable-bootstrap --disable-werror \
     --disable-libsanitizer --disable-libgomp --disable-libquadmath \
     --disable-libssp --disable-libatomic --disable-shared \
-    --with-gmp="/work/$4" --with-mpfr="/work/$4" --with-mpc="/work/$4" \
+    --with-gmp=/work/prereq --with-mpfr=/work/prereq --with-mpc=/work/prereq \
     > conf.log 2>&1
 }
 
@@ -142,14 +165,14 @@ configure_47() {   # $1 = builddir  $2 = CC  $3 = prefix  $4 = prereq prefix
 say ""
 say "  === [tcc -> gcc 4.7.4]   build A ==="
 say "  --- prerequisites, built by tcc ---"
-build_prereqs "$TCC -B/work/tccsrc" pA || die "build A prerequisites failed"
-configure_47 bA "$TCC -B/work/tccsrc" /work/g47a pA \
-  || { say "  configure FAILED"; tail -30 /work/bA/conf.log | sed 's/^/    /'; exit 1; }
+build_prereqs "$TCC -B/work/tccsrc" || die "build A prerequisites failed"
+configure_47 "$TCC -B/work/tccsrc" /work/g47a \
+  || { say "  configure FAILED"; tail -30 /work/bld/conf.log | sed 's/^/    /'; exit 1; }
 # MAKEINFO=true: 2026's makeinfo rejects 2012's texinfo and would report failure
 # over documentation. -Otarget: with -j, parallel output interleaves and the
 # first error lands next to another target's warnings.
 make -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 \
-  || { say "  build FAILED"; diagnose /work/bA/build.log "build A"; exit 1; }
+  || { say "  build FAILED"; diagnose /work/bld/build.log "build A"; exit 1; }
 make install > install.log 2>&1
 [ -x /work/g47a/bin/gcc ] || die "build A installed no gcc"
 say "  A: $(/work/g47a/bin/gcc --version | head -1)"
@@ -168,11 +191,13 @@ else say "  preflight: BUILD A CANNOT LINK"; head -12 /tmp/p1.err | sed 's/^/   
 say ""
 say "  === [gcc 4.7.4 A -> gcc 4.7.4 B]   build B ==="
 say "  --- prerequisites, rebuilt by A ---"
-build_prereqs /work/g47a/bin/gcc pB || die "build B prerequisites failed"
-configure_47 bB /work/g47a/bin/gcc /work/g47 pB \
-  || { say "  configure FAILED"; tail -30 /work/bB/conf.log | sed 's/^/    /'; exit 1; }
+# THE SYMLINK IS THE POINT. B and C must both record CC=/work/cc-prev/bin/gcc.
+ln -sfn /work/g47a /work/cc-prev
+build_prereqs /work/cc-prev/bin/gcc || die "build B prerequisites failed"
+configure_47 /work/cc-prev/bin/gcc /work/g47 \
+  || { say "  configure FAILED"; tail -30 /work/bld/conf.log | sed 's/^/    /'; exit 1; }
 make -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 \
-  || { say "  build FAILED"; diagnose /work/bB/build.log "build B"; exit 1; }
+  || { say "  build FAILED"; diagnose /work/bld/build.log "build B"; exit 1; }
 make install > install.log 2>&1
 [ -x /work/g47/bin/gcc ] || die "build B installed no gcc"
 say "  B: $(/work/g47/bin/gcc --version | head -1)"
@@ -182,12 +207,15 @@ cd /work
 say ""
 say "  === [gcc 4.7.4 B -> gcc 4.7.4 C]   build C, for comparison ==="
 say "  --- prerequisites, rebuilt by B ---"
-build_prereqs /work/g47/bin/gcc pC || die "build C prerequisites failed"
-# SAME --prefix AS B, different DESTDIR. See the header.
-configure_47 bC /work/g47/bin/gcc /work/g47 pC \
-  || { say "  configure FAILED"; tail -30 /work/bC/conf.log | sed 's/^/    /'; exit 1; }
+# REPOINT, DO NOT RENAME. Same string, different target -- that is the whole
+# trick, and it is why the recorded configure lines can now be identical.
+ln -sfn /work/g47 /work/cc-prev
+build_prereqs /work/cc-prev/bin/gcc || die "build C prerequisites failed"
+# SAME --prefix AND SAME CC STRING AS B, different DESTDIR. See the header.
+configure_47 /work/cc-prev/bin/gcc /work/g47 \
+  || { say "  configure FAILED"; tail -30 /work/bld/conf.log | sed 's/^/    /'; exit 1; }
 make -j"$NP" -Otarget MAKEINFO=true > build.log 2>&1 \
-  || { say "  build FAILED"; diagnose /work/bC/build.log "build C"; exit 1; }
+  || { say "  build FAILED"; diagnose /work/bld/build.log "build C"; exit 1; }
 make install DESTDIR=/work/dC > install.log 2>&1
 [ -x /work/dC/work/g47/bin/gcc ] || die "build C installed no gcc"
 cd /work
@@ -199,16 +227,49 @@ say "  Both are gcc 4.7.4 from identical source at an identical --prefix,"
 say "  compiled by compilers that are themselves gcc 4.7.4 from identical"
 say "  source. A correct compiler emits the same code either way."
 bfail=0
+sfail=0
+
+# WHAT IS COMPARED, AND IN WHICH ORDER. Two questions, and run 81910448983
+# conflated them:
+#   1. does the CODE match?      compare with debug info stripped
+#   2. does everything match?    compare raw
+# (1) is the compiler question. (2) additionally covers recorded build metadata
+# -- configure line, comp_dir, producer strings -- which is my setup's problem
+# rather than the compiler's. Reporting them separately means a metadata-only
+# difference reads as a metadata difference instead of as a miscompilation.
+confline() {   # $1 = binary -> the configure line gcc recorded in it
+  "$1" -v 2>&1 | sed -n 's/^Configured with: //p' | head -1 && return 0
+  strings "$1" 2>/dev/null | grep -m1 -- '--enable-languages' || echo '<unreadable>'
+}
+
 cmp_one() {   # $1 = label  $2 = path in B  $3 = path in C
   if [ ! -f "$2" ] || [ ! -f "$3" ]; then say "    $1: missing on one side"; bfail=1; return; fi
+
+  # (1) code, debug info removed
+  rm -f /tmp/sb /tmp/sc
+  cp "$2" /tmp/sb; cp "$3" /tmp/sc
+  objcopy --strip-debug /tmp/sb 2>/dev/null || strip -g /tmp/sb 2>/dev/null || true
+  objcopy --strip-debug /tmp/sc 2>/dev/null || strip -g /tmp/sc 2>/dev/null || true
+  sb=$(sha256sum /tmp/sb | cut -d' ' -f1); sc=$(sha256sum /tmp/sc | cut -d' ' -f1)
+
+  # (2) everything
   hb=$(sha256sum "$2" | cut -d' ' -f1); hc=$(sha256sum "$3" | cut -d' ' -f1)
-  if [ "$hb" = "$hc" ]; then say "    $1: identical"; return; fi
-  say "    $1: DIFFER"
-  say "      B $hb"
-  say "      C $hc"
-  say "      sizes: B=$(stat -c%s "$2")  C=$(stat -c%s "$3")"
-  say "      first differing bytes (offset, B, C):"
-  cmp -l "$2" "$3" 2>/dev/null | head -5 | sed 's/^/        /'
+
+  if [ "$sb" = "$sc" ] && [ "$hb" = "$hc" ]; then say "    $1: identical"; return; fi
+  if [ "$sb" = "$sc" ]; then
+    say "    $1: code identical, metadata differs"
+    say "      stripped  $sb  (both)"
+    say "      raw       B $hb"
+    say "      raw       C $hc"
+    sfail=1
+    return
+  fi
+  say "    $1: CODE DIFFERS"
+  say "      stripped  B $sb"
+  say "      stripped  C $sc"
+  say "      sizes     B=$(stat -c%s "$2")  C=$(stat -c%s "$3")"
+  say "      first differing bytes of the stripped images (offset, B, C, octal):"
+  cmp -l /tmp/sb /tmp/sc 2>/dev/null | head -5 | sed 's/^/        /'
   bfail=1
 }
 for rel in bin/gcc bin/g++ bin/cpp; do
@@ -221,18 +282,39 @@ for n in cc1 cc1plus; do
   cmp_one "$n" "$b" "$c"
 done
 
+# THE CONFIGURE LINES, PRINTED WHENEVER ANYTHING DIFFERS. In run 81910448983
+# the entire difference was one character of this string, and finding that out
+# cost a 12-minute run and a hexdump. It costs two lines to print.
+if [ "$bfail" -ne 0 ] || [ "$sfail" -ne 0 ]; then
+  say ""
+  say "  --- recorded configure lines ---"
+  say "    B: $(confline /work/g47/bin/gcc)"
+  say "    C: $(confline /work/dC/work/g47/bin/gcc)"
+  say "    (these must be byte-identical. If they are not, the difference"
+  say "     belongs to this script setup and not to the compilers.)"
+fi
+
 if [ "$bfail" -ne 0 ]; then
   say ""
-  say "  THE BOOTSTRAP COMPARISON FAILED."
+  say "  THE BOOTSTRAP COMPARISON FAILED ON CODE."
   say ""
-  say "  This is a finding and it is NOT annotated away. Either tcc miscompiled"
-  say "  gcc 4.7.4 in a way that survives one generation, or something in the"
-  say "  build is non-deterministic. Both are worth knowing and neither is"
-  say "  'expected'. Look before deciding which."
+  say "  Stripped images differ, so this is not recorded build metadata. Either"
+  say "  tcc miscompiled gcc 4.7.4 in a way that survives a generation, or"
+  say "  something in the build is non-deterministic. Both are worth knowing"
+  say "  and neither of those is an expected result. Look first."
+  exit 1
+fi
+if [ "$sfail" -ne 0 ]; then
   say ""
-  say "  If it turns out to be build-path or debug-info noise rather than"
-  say "  codegen, the fix is to normalise what is compared -- gcc's own"
-  say "  contrib/compare-debug is the reference -- NOT to relabel the result."
+  say "  CODE MATCHES; RECORDED METADATA DOES NOT."
+  say ""
+  say "  The compilers agree, which is the question this check exists to ask."
+  say "  What differs is what the build recorded about itself. Compare the two"
+  say "  configure lines above -- run 81910448983 differed by a single"
+  say "  character of a path and it took a hexdump to see it."
+  say ""
+  say "  This is a real difference and it is not being waved through: the"
+  say "  chain record will carry it, and the intended state is byte-identical."
   exit 1
 fi
 say "    all identical -- gcc 4.7.4 has reached a fixed point under itself"
@@ -243,7 +325,7 @@ say "  === [g++ 4.7.4 -> gcc 10.2.0] ==="
 say "  (the rung the whole choice of 4.7 exists for)"
 tar xf /work/src/gcc-$GCC10.tar.xz
 say "  --- prerequisites, rebuilt by B ---"
-build_prereqs /work/g47/bin/gcc p10 || die "gcc 10 prerequisites failed"
+build_prereqs /work/g47/bin/gcc || die "gcc 10 prerequisites failed"
 
 rm -rf b10 && mkdir b10 && cd b10
 /work/gcc-$GCC10/configure \
@@ -255,7 +337,7 @@ rm -rf b10 && mkdir b10 && cd b10
   --disable-multilib --disable-bootstrap --disable-werror \
   --disable-libsanitizer --disable-libvtv --disable-libgomp \
   --disable-libquadmath \
-  --with-gmp=/work/p10 --with-mpfr=/work/p10 --with-mpc=/work/p10 \
+  --with-gmp=/work/prereq --with-mpfr=/work/prereq --with-mpc=/work/prereq \
   > conf.log 2>&1
 if [ ! -f Makefile ]; then
   say "  no Makefile -- configure tail:"; tail -25 conf.log | sed 's/^/    /'
