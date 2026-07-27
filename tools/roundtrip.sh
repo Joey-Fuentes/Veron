@@ -40,8 +40,16 @@ echo "  ================ $W ================"
 "$P/bin/objdump" -t "$BIN" > "$W.syms"
 "$P/bin/objdump" -h "$BIN" > "$W.secs"
 "$P/bin/objcopy" -O binary --only-section=.text "$BIN" "$W.text.bin"
-"$P/bin/objcopy" -O binary --only-section=.rodata "$BIN" "$W.rodata.bin" \
-  2>/dev/null || : > "$W.rodata.bin"
+# EVERY non-code section, not just .rodata. elf keeps its 120-byte ELF header
+# template in .data because the program patches p_filesz into it at runtime, so
+# a rebuild that only knew about .rodata had no label for `header` and the link
+# failed on an undefined reference.
+rm -rf "sec-$W" && mkdir -p "sec-$W"
+for sec in .rodata .data; do
+  "$P/bin/objcopy" -O binary --only-section=$sec "$BIN" "sec-$W/$sec.bin" \
+    2>/dev/null || : > "sec-$W/$sec.bin"
+done
+cp "sec-$W/.rodata.bin" "$W.rodata.bin" 2>/dev/null || : > "$W.rodata.bin"
 
 # ---- A2: the whole binary -------------------------------------------------
 # The object is assembled AND linked under the name the original build used:
@@ -49,7 +57,7 @@ echo "  ================ $W ================"
 # and then linking it as rebuild.o puts the wrong name in the symbol table.
 obj=$(sed -n 's/.*FILE *LOCAL *//p' "$W.syms" 2>/dev/null | head -1)
 [ -n "$obj" ] || obj="$W.o"
-python3 tools/s0_rebuild.py "$W.dis" "$W.syms" "$W.secs" "$W.rodata.bin" \
+python3 tools/s0_rebuild.py "$W.dis" "$W.syms" "$W.secs" "sec-$W" \
   "$W.rebuild.s"
 rm -rf "rb-$W" && mkdir -p "rb-$W" && cp "$W.rebuild.s" "rb-$W/in.s"
 set --

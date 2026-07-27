@@ -3,7 +3,13 @@
 TRIP produces a whole ELF to compare, not just a .text section.
 
     usage: s0_rebuild.py <objdump -d out> <objdump -t out> <objdump -h out> \\
-                         <rodata.bin> <out.s>
+                         <section-dir> <out.s>
+
+<section-dir> holds the raw bytes of each non-code section as <name>.bin, e.g.
+.rodata.bin and .data.bin. Handling only .rodata was enough for stage0-as and
+not for elf, whose 120-byte ELF header template lives in .data because the
+program writes into it -- the rebuild had no labels for it and the link failed
+on `undefined reference to header'.
 
 WHY. Until now the round trip compared the .text SECTION: original 2840 bytes
 against two reassemblies, all three the same sha. That is a real result but it
@@ -47,6 +53,7 @@ per-section report says so, and a section-level match with a named metadata
 difference is a far more precise statement than "we only checked .text".
 """
 
+import os
 import re
 import sys
 
@@ -64,7 +71,7 @@ def main():
     if len(sys.argv) != 6:
         print(__doc__.strip().splitlines()[2].strip(), file=sys.stderr)
         return 2
-    dis_p, sym_p, hdr_p, rodata_p, out_p = sys.argv[1:]
+    dis_p, sym_p, hdr_p, secdir, out_p = sys.argv[1:]
 
     sections = {}
     for ln in open(hdr_p, encoding="utf-8", errors="replace"):
@@ -152,10 +159,15 @@ def main():
             out.append("\t.byte 0  // UNDECODED BYTE AT 0x%x" % addr)
             addr += 1
 
-    if ".rodata" in sections:
-        rbase, rsize, ralign = sections[".rodata"]
-        data = open(rodata_p, "rb").read()
-        out.append(".section .rodata")
+    for sec in (".rodata", ".data"):
+        if sec not in sections:
+            continue
+        blob = os.path.join(secdir, sec + ".bin")
+        if not os.path.exists(blob):
+            continue
+        rbase, rsize, ralign = sections[sec]
+        data = open(blob, "rb").read()
+        out.append(".section %s" % sec if sec != ".data" else ".data")
         out.append("\t.balign %d" % ralign)
         for off in range(min(rsize, len(data))):
             a = rbase + off
@@ -208,11 +220,11 @@ def main():
             # --section-start=NAME=ADDR works for any section and says exactly
             # what is meant.
             fh.write("--section-start=%s=0x%x\n" % (name, sections[name][0]))
-    ro = [n for n, (v, sc, z) in syms.items() if sc == ".rodata"]
+    ro = [n for n, (v, sc, z) in syms.items() if sc in (".rodata", ".data")]
     print("  rebuilt %s: %d instructions, %d labels, %d globals, %d bss, %d rodata"
           % (out_p, len(insns), len(labels), len(globals_), len(bss), len(ro)))
     if ro:
-        print("    .rodata symbols: %s" % " ".join(sorted(ro)))
+        print("    .rodata/.data symbols: %s" % " ".join(sorted(ro)))
     return 0
 
 
