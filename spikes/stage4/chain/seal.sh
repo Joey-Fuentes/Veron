@@ -70,6 +70,8 @@ case "${1:?seal.sh: subcommand required}" in
   "run_id": "${GITHUB_RUN_ID:-local}",
   "commit": "${GITHUB_SHA:-unknown}",
   "borrowed": ${CHAIN_BORROWED:-"[]"},
+  "reviewed_delta": "${CHAIN_DELTA_HASH:-none}",
+  "env0": "${CHAIN_ENV0_HASH:-unrecorded}",
   "unpinned_inputs": ${CHAIN_UNPINNED:-0},
   "verified": ${CHAIN_VERIFIED:-"[]"},
   "deferred": ${CHAIN_DEFERRED:-"[]"}

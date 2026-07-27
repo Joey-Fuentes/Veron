@@ -12,7 +12,8 @@ relearn every lesson those implementations had already paid for.
 | `box.sh` | the sandbox | **verbatim extraction** from `tcc-builds-gcc-arm64.yml` |
 | `fetch.sh` | hardened fetch + pin verification | **extraction** from `hermetic-gcc15.yml`, plus new `sources/` verification |
 | `seal.sh` | content-hash the hand-off between rungs | **new** |
-| `rung1.sh` | tcc → 4.7.4 → 4.7.4 → 10.2.0 | **port** of `tcc-builds-gcc-arm64.yml` |
+| `transplant.sh` | 4.8.5's aarch64 backend into 4.7.4, in the box | **port** of `tcc-builds-gcc-arm64.yml` |
+| `rung1.sh` | tcc → 4.7.4 ×3 → 10.2.0 | **port** of `tcc-builds-gcc-arm64.yml` |
 | `rung2.sh` | gcc 10 → sysroot → 15.2.0 | **port** of `hermetic-gcc15.yml` |
 | `rung3.sh` | kernel + userland + initramfs | **port** of `hermetic-gcc15.yml` |
 | `gate-gcc10.sh`, `gate-gcc15.sh` | assertions, not reports | **port** |
@@ -114,6 +115,37 @@ What I would expect to need iteration:
 
 Treat a red first run as expected and read the first red line. That is what the
 per-rung logs and `${PIPESTATUS[0]}` are for.
+
+## Where python enters, and why that is not a hole
+
+`spikes/stage4/probes/backport-aarch64.sh` calls `python3` at seven sites, two
+of them our own rewriters: `tools/expand_int_iterators.py` turns 4.8's
+`define_int_iterator` constructs into patterns 4.7's generators can read, and
+`tools/port_gcc47_api.py` adapts 4.8 middle-end calls to 4.7 signatures. The
+transplant does not copy a backend — it **rewrites gcc's source**. Python is
+load-bearing, not incidental.
+
+That is fine, and it is declared. `python3` sits in `tcc-builds-gcc-arm64`'s
+borrow list beside make, perl, m4, bison and flex; it comes from the same
+read-only `/usr`; and every C and C++ driver is masked, so nothing in that step
+can compile anything. `transplant.sh` now asserts both halves at the moment it
+matters — python present, no working `gcc` — rather than asking a reader to
+trust `--show-mask` output from three steps earlier.
+
+**What was a hole, until r5:** this chain ran the transplant on the *host*. A
+step outside the box is invisible to the mechanism the box exists for, so host
+python was shaping a build input the box then compiled without having seen it
+arrive. `tcc-builds-gcc-arm64` runs it inside and says so in a comment; this was
+a straight regression on my part. It also ended in `| tail -5` under the default
+`bash -e` with no pipefail, so a failed transplant would have exited 0 and rung 1
+would have built an untransplanted 4.7.4 against a target it does not have.
+
+**And the second-order problem it exposed:** `fetch.sh` proves
+`gcc-4.7.4.tar.bz2` matches `sources/gcc.toml` — and then the transplant
+rewrites the unpacked tree, so what gets compiled is not what was pinned. A
+record carrying only the pin attests to a tarball nobody builds. Rung 1 now
+seals the transplanted tree too and carries it as `reviewed_delta`, which is
+criterion 4 and is the honest name for it.
 
 ## The design change, stated plainly
 
