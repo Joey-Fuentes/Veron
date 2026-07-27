@@ -173,7 +173,7 @@ def cmd_crosscheck(a_path, b_path):
     return 0
 
 
-def cmd_relist(dis_path, out_path):
+def cmd_relist(dis_path, bin_path, out_path):
     """Turn a disassembly into something GNU `as` will take back.
 
     Check A's first attempt fed objdump's text straight to `as` and it choked on
@@ -186,28 +186,52 @@ def cmd_relist(dis_path, out_path):
     move together, so PC-relative encodings are preserved exactly and the
     reassembled bytes must equal the original.
     """
-    body = []
+    insns = {}
     for ln in open(dis_path, encoding="utf-8", errors="replace"):
         m = DIS.match(ln)
         if not m:
             continue
-        addr, mn, ops = m.group(1), m.group(2), m.group(3)
-        o = ops.split("//")[0].strip()
+        addr, mn, ops = int(m.group(1), 16), m.group(2), m.group(3)
+        o = ops.split("//")[0].split(";")[0].strip()
+        o = re.sub(r"\b0x([0-9a-f]+)\s+<", r"\1 <", o)
         o = re.sub(r"\b([0-9a-f]+)\s*<[^>]*>", r"L\1", o)   # target with a symbol
-        o = re.sub(r"(?<=[\s,])([0-9a-f]{4,})\b(?!x)", r"L\1", o)  # bare address
-        body.append("L%s:\n\t%s %s" % (addr, mn, o))
+        o = re.sub(r"(?<=[\s,])0x([0-9a-f]{4,})\b", r"L\1", o)   # bare 0x target
+        insns[addr] = "%s %s" % (mn, o.strip())
+
+    # FILL THE GAPS WITH THE ACTUAL BYTES. The first version emitted only the
+    # instructions objdump printed, so the .ascii strings -- which it does not
+    # decode -- had no labels. `adr x1, L400b90` then referred to an undefined
+    # symbol; GNU `as` accepted it, emitted a relocation, and left the field
+    # ZERO. It assembled cleanly and produced the wrong bytes, which is the
+    # worst way for a verification step to be wrong. Every byte of .text now
+    # gets a label, as an instruction where there is one and as .byte where
+    # there is not, so every target resolves and the comparison is total.
+    data = open(bin_path, "rb").read()
+    base = min(insns) if insns else 0
+    body, off, n_ins, n_dat = [], 0, 0, 0
+    while off < len(data):
+        addr = base + off
+        body.append("L%x:" % addr)
+        if addr in insns:
+            body.append("\t%s" % insns[addr])
+            off += 4
+            n_ins += 1
+        else:
+            body.append("\t.byte 0x%02x" % data[off])
+            off += 1
+            n_dat += 1
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write(".text\n" + "\n".join(body) + "\n")
-    print("  wrote %s: %d instructions, each with an address-derived label"
-          % (out_path, len(body)))
+    print("  wrote %s: %d instructions + %d data bytes, every byte labelled"
+          % (out_path, n_ins, n_dat))
     return 0
 
 
 def main():
     if len(sys.argv) == 4 and sys.argv[1] == "crosscheck":
         return cmd_crosscheck(sys.argv[2], sys.argv[3])
-    if len(sys.argv) == 4 and sys.argv[1] == "relist":
-        return cmd_relist(sys.argv[2], sys.argv[3])
+    if len(sys.argv) == 5 and sys.argv[1] == "relist":
+        return cmd_relist(sys.argv[2], sys.argv[3], sys.argv[4])
     budget = None
     argv = sys.argv[1:]
     if "--budget" in argv:
@@ -217,7 +241,7 @@ def main():
         sys.argv = [sys.argv[0]] + argv
     if len(sys.argv) != 3:
         print("usage: s0_roundtrip.py <source.s> <objdump-output> [--budget N]")
-        print("       s0_roundtrip.py relist <objdump-output> <out.s>")
+        print("       s0_roundtrip.py relist <objdump-out> <text.bin> <out.s>")
         print("       s0_roundtrip.py crosscheck <dis-a> <dis-b>")
         return 2
     src = [x for x in read_source(sys.argv[1]) if x[0] != "<data>"]

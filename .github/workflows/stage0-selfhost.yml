@@ -189,12 +189,15 @@ jobs:
               "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VER/LLVM-$LLVM_VER-Linux-ARM64.tar.xz" \
               -o src/llvm.tar.xz
             tar -C src -xf src/llvm.tar.xz
-            cp "$(find src -name llvm-objdump -type f | head -1)" "$P/bin/"
+            for t in llvm-objdump llvm-mc; do
+              cp "$(find src -name "$t" -type f | head -1)" "$P/bin/"
+            done
           fi
           echo "  --- versions now pinned ---"
           "$P/bin/as" --version | head -1 | sed 's/^/    /'
           "$P/bin/objdump" --version | head -1 | sed 's/^/    /'
           "$P/bin/llvm-objdump" --version | grep -i version | head -1 | sed 's/^/    /'
+          "$P/bin/llvm-mc" --version | grep -i version | head -1 | sed 's/^/    /'
           echo "  --- what the runner would have given us ---"
           as --version | head -1 | sed 's/^/    /'
 
@@ -332,7 +335,7 @@ jobs:
           "$P/bin/objdump" -d stage0-as > stage0-as.dis
           "$P/bin/llvm-objdump" -d stage0-as > stage0-as.llvm.dis
 
-          echo "  --- A. MECHANICAL: disassemble, reassemble, compare bytes ---"
+          echo "  --- A. MECHANICAL: disassemble, REASSEMBLE, compare bytes ---"
           # Unambiguous by construction: it proves the disassembly denotes the
           # same machine code, whatever spelling it chose. It does NOT prove the
           # disassembly resembles our source, which is check B.
@@ -343,40 +346,45 @@ jobs:
           # the only thing that made it one. So give every instruction a label
           # derived from its own address and rewrite targets to match: all
           # labels then move together and PC-relative encodings are preserved.
-          python3 tools/s0_roundtrip.py relist stage0-as.dis redis.s
-          if as -o redis.o redis.s 2>redis.err; then
-            objcopy -O binary --only-section=.text redis.o redis.bin
-            objcopy -O binary --only-section=.text s0.o  orig.bin
-            # THE SIZE GAP IS EXPECTED AND EXPLAINED. .text carries the three
-            # .ascii strings as well as code -- inover 34 + rejmsg 21 + rejnl 1
-            # = 56 bytes -- and the disassembly has only instructions. Compare
-            # the code prefix; the tail difference is the strings, and the fact
-            # that they live in .text at all is itself a finding for a binary
-            # that is going to be committed and audited.
-            nb=$(wc -c < redis.bin)
-            head -c "$nb" orig.bin > orig-code.bin
-            echo "    code prefix: $nb bytes; .text is $(wc -c < orig.bin) (the extra is .ascii)"
-            if cmp -s redis.bin orig-code.bin; then
-              echo "    PASS: reassembled disassembly is byte-identical over the code"
-            else
-              off=$(cmp redis.bin orig-code.bin 2>&1 | sed 's/.*differ: byte //; s/,.*//')
-              ins=$(( (off - 1) / 4 ))
-              echo "    DIFFERS at byte $off = instruction $ins (0-based)"
-              echo "    what each side has there:"
-              sed -n "$(( ins * 2 + 2 ))p" redis.s | sed 's/^/      redis.s: /'
-              grep -E "^\s*[0-9a-f]+:" stage0-as.dis | sed -n "$(( ins + 1 ))p" \
-                | sed 's/^/      objdump: /'
-              echo "      ours=$(dd if=redis.bin bs=4 skip=$ins count=1 2>/dev/null | od -An -tx1 | tr -d ' ')" \
-                   "orig=$(dd if=orig-code.bin bs=4 skip=$ins count=1 2>/dev/null | od -An -tx1 | tr -d ' ')"
-            fi
-          else
-            echo "    reassembly failed -- first errors:"
-            head -5 redis.err | sed 's/^/      /'
-            echo "    (data bytes in .text decode as instructions GNU as will"
-            echo "     not accept; that is expected until the strings move to"
-            echo "     their own section, and is why check B excludes them)"
-          fi
+          # Compare against the LINKED .text, which is what was disassembled.
+          "$P/bin/objcopy" -O binary --only-section=.text stage0-as orig.bin
+          python3 tools/s0_roundtrip.py relist stage0-as.dis orig.bin redis.s
 
+          # TWO ASSEMBLERS, NOT ONE. Round-tripping through the same toolchain
+          # that produced the binary is a weak check -- a systematic quirk would
+          # cancel itself out. Feeding one disassembly to two independent
+          # assemblers and requiring both to reproduce the original bytes does
+          # not have that hole. The THIRD assembler is stage0-as itself, which
+          # is the self-host gate at the bottom of this file: it needs the .s0
+          # translation, and the probe table above says how far that is from
+          # complete.
+          fail_a=0
+          for tool in gnu llvm; do
+            case "$tool" in
+              gnu)  "$P/bin/as" -o "redis-$tool.o" redis.s 2>"redis-$tool.err" ;;
+              llvm) "$P/bin/llvm-mc" -triple=aarch64-linux-gnu -filetype=obj \
+                      -o "redis-$tool.o" redis.s 2>"redis-$tool.err" ;;
+            esac
+            if [ ! -s "redis-$tool.o" ]; then
+              echo "    $tool: ASSEMBLY FAILED"
+              head -4 "redis-$tool.err" | sed 's/^/      /'
+              fail_a=$((fail_a + 1)); continue
+            fi
+            "$P/bin/objcopy" -O binary --only-section=.text \
+              "redis-$tool.o" "redis-$tool.bin"
+            if cmp -s "redis-$tool.bin" orig.bin; then
+              printf '    %-5s PASS  %s bytes reproduce the original exactly\n' \
+                "$tool" "$(wc -c < "redis-$tool.bin")"
+            else
+              off=$(cmp "redis-$tool.bin" orig.bin 2>&1 | sed 's/.*differ: byte //; s/,.*//')
+              printf '    %-5s DIFFERS at byte %s (sizes %s vs %s)\n' "$tool" "$off" \
+                "$(wc -c < "redis-$tool.bin")" "$(wc -c < orig.bin)"
+              fail_a=$((fail_a + 1))
+            fi
+          done
+          if [ "$fail_a" = 0 ]; then
+            echo "    both assemblers reproduce the binary from its own disassembly."
+          fi
           echo
           echo "  --- B. AUDITABLE: does a human see what the source says? ---"
           # THE RATCHET. $ROUNDTRIP_BUDGET is how many instructions currently
