@@ -139,6 +139,15 @@ def main():
 
     with open(out_p, "w", encoding="utf-8") as fh:
         fh.write("\n".join(out) + "\n")
+    # PIN EVERY SECTION, NOT JUST .text. Passing only -Ttext let the linker
+    # choose where .rodata and .bss landed, so every `adr x19, inbuf` and
+    # `adr x1, inover` encoded a different displacement -- same instructions,
+    # different immediates, .text differing at identical size. The original
+    # addresses are in `objdump -h` and are written out here for the caller.
+    with open(out_p + ".secs", "w", encoding="utf-8") as fh:
+        for name in (".text", ".rodata", ".data", ".bss"):
+            if name in sections:
+                fh.write("-T%s=0x%x\n" % (name.lstrip("."), sections[name][0]))
     ro = [n for n, (v, sc, z) in syms.items() if sc == ".rodata"]
     print("  rebuilt %s: %d instructions, %d labels, %d globals, %d bss, %d rodata"
           % (out_p, len(insns), len(labels), len(globals_), len(bss), len(ro)))

@@ -501,7 +501,10 @@ jobs:
           _asok=0; _ldok=0
           "$P/bin/as" -o rebuild.o rebuild.s 2>rebuild.as.err && _asok=1
           if [ "$_asok" = 1 ]; then
-            "$P/bin/ld" -Ttext="$(cat redis.s.base)" -o rebuild.elf \
+            set -- 
+            while read -r a; do set -- "$@" "$a"; done < rebuild.s.secs
+            echo "    linking at the original addresses: $*"
+            "$P/bin/ld" "$@" -o rebuild.elf \
               rebuild.o 2>rebuild.ld.err && _ldok=1
           fi
           if [ "$_asok" = 0 ] || [ "$_ldok" = 0 ]; then
