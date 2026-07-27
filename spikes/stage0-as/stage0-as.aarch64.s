@@ -167,7 +167,7 @@ die_scan:
     cmp     x24, x21
     b.ge    die_emit
     ldrb    w10, [x19, x24]
-    cmp     w10, #0x0a
+    cmp     w10, #0xa
     b.eq    die_emit
     add     x24, x24, #0x1
     b       die_scan
@@ -191,7 +191,7 @@ skip_line:
     b.ge    parse_loop
     ldrb    w10, [x19, x20]
     add     x20, x20, #0x1
-    cmp     w10, #0x0a
+    cmp     w10, #0xa
     b.ne    skip_line
     b       parse_loop
 
@@ -238,7 +238,7 @@ asc_loop:
     add     x20, x20, #0x1
     cmp     w0, #0x6e                       // 'n'
     b.ne    asc_emit
-    mov     w0, #0x0a
+    mov     w0, #0xa
 asc_emit:
     mov     w9, w0
     bl      emit_byte
@@ -291,7 +291,7 @@ h_mov:
     cmp     w0, #0x77                       // 'w'
     b.eq    h_mov_reg
     bl      parse_dec                       // immediate
-    lsl     w9, w0, #0x5
+    lsl     w9, w0, #5
     mov     w1, #0xd2800000
     orr     w9, w9, w1
     orr     w9, w9, w24
@@ -320,7 +320,7 @@ h_add:
     cmp     w0, #0x77                       // 'w'
     b.eq    h_add_reg
     bl      parse_dec
-    lsl     w9, w0, #0xa
+    lsl     w9, w0, #10
     mov     w1, #0x91000000
     orr     w9, w9, w1
     orr     w9, w9, w25, lsl #5
@@ -360,7 +360,7 @@ ha_lab:
 ha_enc:
     sub     w1, w1, w22
     and     w2, w1, #0x3
-    asr     w3, w1, #0x2
+    asr     w3, w1, #2
     and     w3, w3, #0x7ffff
     mov     w9, #0x10000000
     orr     w9, w9, w2, lsl #29
@@ -381,7 +381,7 @@ h_cmp:
     cmp     w0, #0x77                       // 'w'
     b.eq    h_cmp_reg
     bl      parse_dec                       // immediate
-    lsl     w9, w0, #0xa
+    lsl     w9, w0, #10
     mov     w1, #0xf1000000
     orr     w9, w9, w1
     orr     w9, w9, w24, lsl #5
@@ -476,7 +476,7 @@ h_sub:
     cmp     w0, #0x77                       // 'w'
     b.eq    h_sub_reg
     bl      parse_dec
-    lsl     w9, w0, #0xa
+    lsl     w9, w0, #10
     mov     w1, #0xd1000000
     orr     w9, w9, w1
     orr     w9, w9, w25, lsl #5
@@ -559,7 +559,7 @@ hb_lab:
     ldr     w1, [x27, w0, uxtw #2]
 hb_enc:
     sub     w1, w1, w22
-    asr     w1, w1, #0x2
+    asr     w1, w1, #2
     and     w1, w1, #0x3ffffff
     mov     w9, #0x14000000
     orr     w9, w9, w1
@@ -593,7 +593,7 @@ hbl_lab:
     ldr     w1, [x27, w0, uxtw #2]
 hbl_enc:
     sub     w1, w1, w22
-    asr     w1, w1, #0x2
+    asr     w1, w1, #2
     and     w1, w1, #0x3ffffff
     mov     w9, #0x94000000
     orr     w9, w9, w1
@@ -708,7 +708,7 @@ h_movk:
     mov     w25, w0
     bl      skip_ws
     bl      parse_dec                       // shift
-    lsr     w0, w0, #0x4                    // hw = shift / 16
+    lsr     w0, w0, #4                      // hw = shift / 16
     mov     w9, #0xf2800000
     orr     w9, w9, w0, lsl #21
     orr     w9, w9, w25, lsl #5
@@ -803,7 +803,7 @@ bc_lab:
     ldr     w1, [x27, w0, uxtw #2]
 bc_enc:
     sub     w1, w1, w22
-    asr     w1, w1, #0x2
+    asr     w1, w1, #2
     and     w1, w1, #0x7ffff
     mov     w9, #0x54000000
     orr     w9, w9, w1, lsl #5
@@ -828,11 +828,11 @@ next_reg:
     ldrb    w10, [x19, x20]
     cmp     w10, #0x20                      // ' '
     b.eq    nr_a
-    cmp     w10, #0x09
+    cmp     w10, #0x9
     b.eq    nr_a
-    cmp     w10, #0x0a
+    cmp     w10, #0xa
     b.eq    nr_a
-    cmp     w10, #0x0d
+    cmp     w10, #0xd
     b.eq    nr_a
     b       nr_done
 nr_a:
@@ -874,11 +874,11 @@ skip_ws:
     ldrb    w10, [x19, x20]
     cmp     w10, #0x20                      // ' '
     b.eq    sw_a
-    cmp     w10, #0x09
+    cmp     w10, #0x9
     b.eq    sw_a
-    cmp     w10, #0x0a
+    cmp     w10, #0xa
     b.eq    sw_a
-    cmp     w10, #0x0d
+    cmp     w10, #0xd
     b.eq    sw_a
     b       sw_r
 sw_a:
