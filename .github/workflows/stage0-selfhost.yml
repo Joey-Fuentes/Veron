@@ -123,6 +123,21 @@ jobs:
       - name: Build the reference stage0-as and elf
         run: |
           set -eu
+          # ONCE THE BINARIES ARE COMMITTED, VERIFY THOSE, NOT FRESH ONES.
+          # Rebuilding from source and checking the rebuild proves the source
+          # is self-consistent and says nothing about the artifact in the
+          # repository -- which is the thing that will actually be run.
+          if [ -x spikes/stage0-as/stage0-as ] && [ -x spikes/elf/elf ]; then
+            echo "  committed binaries present -- verifying THOSE"
+            cp spikes/stage0-as/stage0-as stage0-as
+            cp spikes/elf/elf elf
+            as -o s0.o "$SRC"
+            for _b in stage0-as elf; do
+              printf '  %-14s %8s  %s  (committed)\n' "$_b" \
+                "$(wc -c < "$_b")" "$(sha256sum "$_b" | cut -c1-16)"
+            done
+            exit 0
+          fi
           as -o s0.o "$SRC"
           ld -static -o stage0-as s0.o
           as -o elf.o spikes/elf/elf.aarch64.s
@@ -1004,6 +1019,8 @@ jobs:
         with:
           name: stage0-selfhost
           path: |
+            stage0-as
+            elf
             stage0-as.s0
             probes/index.tsv
           if-no-files-found: warn

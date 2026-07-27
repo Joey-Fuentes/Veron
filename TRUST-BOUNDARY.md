@@ -68,6 +68,32 @@ not on every run.
 
 ## What must be committed, and what must not
 
+**A raw executable, not hex.** Git preserves the executable bit, so a committed
+ELF is run by the kernel's own loader on checkout and needs no tool at all. A
+committed hex file is inert until something converts it, and that converter is
+precisely the host dependency being removed.
+
+No commented-hex artifact is committed alongside, because there is nothing for
+one to add. `stage0-posix` commits hex because **hex is its source language** --
+its assembler reads it. Veron's source is ARM64 assembly with mnemonics, labels
+and comments, which is what a person reads; a hex rendering would be strictly
+less legible and one more file to keep in sync.
+
+The comparison is worth stating precisely, because it is easy to get the wrong
+way round. `builder-hex0`'s own README concedes that you must trust the hex
+codes represent the opcodes in the comments -- the correspondence there is
+**assumed**. Here it is **verified**: two independent disassemblers prove the
+committed bytes decode to exactly the committed source, and two independent
+assemblers prove that source produces exactly those bytes. A human never audits
+an encoding; they read a program and judge whether it is correct, which is the
+only part of the job a human is good at.
+
+Byte count is not a meaningful axis of comparison. It would be if the reader had
+to decode the bytes, which is their situation and not ours. And the layers are
+not equivalent: hex0 is a hex decoder, and reaching what `stage0-as` does --
+mnemonics, labels, a symbol table -- takes hex0 -> hex1 -> hex2 -> M0/M1 there,
+every rung of which is also a thing a human must audit.
+
 Only the binaries that host tools produce need committing and round-tripping:
 
 ```

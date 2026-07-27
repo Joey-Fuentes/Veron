@@ -226,6 +226,14 @@ jobs:
     timeout-minutes: 60
     env:
       # TIER 1 -- on the build path. THIS IS THE NUMBER THAT MUST REACH ZERO.
+      # When spikes/stage0-as/stage0-as and spikes/elf/elf are committed this
+      # goes to '' -- git preserves the executable bit, so a committed ELF is
+      # run by the kernel's own loader and needs NO tool to become runnable.
+      # A committed hex file would need one to convert it, which is the host
+      # dependency being removed. The readable artifact is the .s source; that
+      # the binary corresponds to it exactly is proven by stage0-selfhost, not
+      # assumed. Set this to '' in the SAME commit that adds the binaries --
+      # the SEAL step enforces whatever is declared here, so they cannot drift.
       BUDGET_PATH: 'as ld'
       # TIER 2 -- the driver. One binary.
       BUDGET_DRIVER: 'busybox'
@@ -417,10 +425,23 @@ jobs:
                     "$(sha256sum "$2" 2>/dev/null | cut -c1-16 || echo -)"; }
 
           say '1. SEED -- the only host tools on the build path'
-          as -o s0.o  /src/stage0-as/stage0-as.aarch64.s
-          ld -static -o stage0-as s0.o
-          as -o elf.o /src/elf/elf.aarch64.s
-          ld -static -o elf elf.o
+          # COMMITTED BINARIES IF PRESENT, OTHERWISE BUILD THEM. This is the
+          # switch that empties BUDGET_PATH. A committed ELF is executed by the
+          # kernel's loader with no host tool involved; its correspondence to the
+          # source is not taken on trust -- stage0-selfhost reconstructs the whole
+          # ELF from its own disassembly and compares byte for byte, under both
+          # binutils 2.47 and LLVM 22.1.8.
+          if [ -x /src/stage0-as/stage0-as ] && [ -x /src/elf/elf ]; then
+            cp /src/stage0-as/stage0-as stage0-as
+            cp /src/elf/elf elf
+            echo "    seed binaries: COMMITTED -- no as, no ld"
+          else
+            as -o s0.o  /src/stage0-as/stage0-as.aarch64.s
+            ld -static -o stage0-as s0.o
+            as -o elf.o /src/elf/elf.aarch64.s
+            ld -static -o elf elf.o
+            echo "    seed binaries: built here with as + ld"
+          fi
           art 'stage0-as' stage0-as
           art 'elf'       elf
 
