@@ -269,7 +269,7 @@ h_mov:
     b.eq    h_mov_reg
     bl      parse_dec               // immediate
     lsl     w9, w0, #5
-    movz    w1, #0xD280, lsl #16
+    mov     w1, #0xD2800000
     orr     w9, w9, w1
     orr     w9, w9, w24
     bl      emit_dp
@@ -277,7 +277,7 @@ h_mov:
 h_mov_reg:
     add     x20, x20, #1
     bl      parse_dec               // src n
-    movz    w9, #0x03E0
+    mov     w9, #0x3E0
     movk    w9, #0xAA00, lsl #16
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w24
@@ -298,7 +298,7 @@ h_add:
     b.eq    h_add_reg
     bl      parse_dec
     lsl     w9, w0, #10
-    movz    w1, #0x9100, lsl #16
+    mov     w1, #0x91000000
     orr     w9, w9, w1
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
@@ -306,7 +306,7 @@ h_add:
     b       parse_loop
 h_add_reg:
     bl      next_reg
-    movz    w9, #0x8B00, lsl #16
+    mov     w9, #0x8B000000
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
@@ -339,7 +339,7 @@ ha_enc:
     and     w2, w1, #3
     asr     w3, w1, #2
     and     w3, w3, #0x7FFFF
-    movz    w9, #0x1000, lsl #16
+    mov     w9, #0x10000000
     orr     w9, w9, w2, lsl #29
     orr     w9, w9, w3, lsl #5
     orr     w9, w9, w24
@@ -359,7 +359,7 @@ h_cmp:
     b.eq    h_cmp_reg
     bl      parse_dec               // immediate
     lsl     w9, w0, #10
-    movz    w1, #0xF100, lsl #16
+    mov     w1, #0xF1000000
     orr     w9, w9, w1
     orr     w9, w9, w24, lsl #5
     orr     w9, w9, #31
@@ -368,7 +368,7 @@ h_cmp:
 h_cmp_reg:
     add     x20, x20, #1
     bl      parse_dec               // m
-    movz    w9, #0xEB00, lsl #16
+    mov     w9, #0xEB000000
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w24, lsl #5
     orr     w9, w9, #31
@@ -399,7 +399,7 @@ h_ldrb:
     bl      next_reg
     mov     w25, w0
     bl      next_reg
-    movz    w9, #0x3860, lsl #16
+    mov     w9, #0x38600000
     movk    w9, #0x6800
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
@@ -410,10 +410,10 @@ h_ldr:
     add     x20, x20, #3
     bl      skip_ws                 // land on the reg-width letter (w/x)
     ldrb    w10, [x19, x20]
-    movz    w9, #0xB940, lsl #16    // 32-bit: ldr w<t>, [x<n>]
+    mov     w9, #0xB9400000             // 32-bit: ldr w<t>, [x<n>]
     cmp     w10, #'x'
     b.ne    h_ldr_e
-    movz    w9, #0xF940, lsl #16    // 64-bit: ldr x<t>, [x<n>]
+    mov     w9, #0xF9400000             // 64-bit: ldr x<t>, [x<n>]
 h_ldr_e:
     bl      next_reg
     mov     w24, w0
@@ -436,7 +436,7 @@ h_s:
     b       die                     // 's...' that is not svc/sub/st*
 h_svc:
     add     x20, x20, #3
-    movz    w9, #0x0001
+    mov     w9, #0x1
     movk    w9, #0xD400, lsl #16
     bl      emit
     b       parse_loop
@@ -454,7 +454,7 @@ h_sub:
     b.eq    h_sub_reg
     bl      parse_dec
     lsl     w9, w0, #10
-    movz    w1, #0xD100, lsl #16
+    mov     w1, #0xD1000000
     orr     w9, w9, w1
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
@@ -462,7 +462,7 @@ h_sub:
     b       parse_loop
 h_sub_reg:
     bl      next_reg
-    movz    w9, #0xCB00, lsl #16
+    mov     w9, #0xCB000000
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
@@ -478,10 +478,10 @@ h_str:
     add     x20, x20, #3
     bl      skip_ws                 // land on the reg-width letter (w/x)
     ldrb    w10, [x19, x20]
-    movz    w9, #0xB900, lsl #16    // 32-bit: str w<t>, [x<n>]
+    mov     w9, #0xB9000000             // 32-bit: str w<t>, [x<n>]
     cmp     w10, #'x'
     b.ne    h_str_e
-    movz    w9, #0xF900, lsl #16    // 64-bit: str x<t>, [x<n>]
+    mov     w9, #0xF9000000             // 64-bit: str x<t>, [x<n>]
 h_str_e:
     bl      next_reg
     mov     w24, w0
@@ -497,7 +497,7 @@ h_strb:
     bl      next_reg
     mov     w25, w0
     bl      next_reg
-    movz    w9, #0x3820, lsl #16
+    mov     w9, #0x38200000
     movk    w9, #0x6800
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
@@ -538,7 +538,7 @@ hb_enc:
     sub     w1, w1, w22
     asr     w1, w1, #2
     and     w1, w1, #0x3FFFFFF
-    movz    w9, #0x1400, lsl #16
+    mov     w9, #0x14000000
     orr     w9, w9, w1
     bl      emit
     b       parse_loop
@@ -572,7 +572,7 @@ hbl_enc:
     sub     w1, w1, w22
     asr     w1, w1, #2
     and     w1, w1, #0x3FFFFFF
-    movz    w9, #0x9400, lsl #16
+    mov     w9, #0x94000000
     orr     w9, w9, w1
     bl      emit
     b       parse_loop
@@ -581,7 +581,7 @@ hbl_enc:
 h_br:
     add     x20, x20, #2            // skip "br"
     bl      next_reg
-    movz    w9, #0xD61F, lsl #16
+    mov     w9, #0xD61F0000
     orr     w9, w9, w0, lsl #5
     bl      emit
     b       parse_loop
@@ -590,7 +590,7 @@ h_br:
 h_blr:
     add     x20, x20, #3            // skip "blr"
     bl      next_reg
-    movz    w9, #0xD63F, lsl #16
+    mov     w9, #0xD63F0000
     orr     w9, w9, w0, lsl #5
     bl      emit
     b       parse_loop
@@ -598,7 +598,7 @@ h_blr:
 // ---- ret  (return via x30) ----
 h_ret:
     add     x20, x20, #3            // skip "ret"
-    movz    w9, #0x03C0
+    mov     w9, #0x3C0
     movk    w9, #0xD65F, lsl #16
     bl      emit
     b       parse_loop
@@ -611,7 +611,7 @@ h_orr:
     bl      next_reg
     mov     w25, w0
     bl      next_reg
-    movz    w9, #0xAA00, lsl #16
+    mov     w9, #0xAA000000
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
@@ -624,7 +624,7 @@ h_and:
     bl      next_reg
     mov     w25, w0
     bl      next_reg
-    movz    w9, #0x8A00, lsl #16
+    mov     w9, #0x8A000000
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
@@ -638,7 +638,7 @@ h_eor:
     bl      next_reg
     mov     w25, w0
     bl      next_reg
-    movz    w9, #0xCA00, lsl #16
+    mov     w9, #0xCA000000
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
@@ -648,26 +648,26 @@ h_eor:
 // ---- lsl/lsr/asr x<d> x<n> x<m>  (variable shift by register) ----
 h_lsl:
     add     x20, x20, #3            // skip "lsl"
-    movz    w26, #0x2000
+    mov     w26, #0x2000
     b       shift_common
 h_lsr:
     add     x20, x20, #3            // skip "lsr"
-    movz    w26, #0x2400
+    mov     w26, #0x2400
     b       shift_common
 h_udiv:
     add     x20, x20, #4            // skip "udiv"
-    movz    w26, #0x0800            // UDIV: 0x9AC00800 | m<<16 | n<<5 | d
+    mov     w26, #0x800                 // UDIV: 0x9AC00800 | m<<16 | n<<5 | d
     b       shift_common
 h_asr:
     add     x20, x20, #3            // skip "asr"
-    movz    w26, #0x2800
+    mov     w26, #0x2800
 shift_common:
     bl      next_reg
     mov     w24, w0
     bl      next_reg
     mov     w25, w0
     bl      next_reg
-    movz    w9, #0x9AC0, lsl #16
+    mov     w9, #0x9AC00000
     orr     w9, w9, w26             // 0x2000/0x2400/0x2800 selector
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
@@ -686,7 +686,7 @@ h_movk:
     bl      skip_ws
     bl      parse_dec               // shift
     lsr     w0, w0, #4              // hw = shift / 16
-    movz    w9, #0xF280, lsl #16
+    mov     w9, #0xF2800000
     orr     w9, w9, w0, lsl #21
     orr     w9, w9, w25, lsl #5
     orr     w9, w9, w24
@@ -701,7 +701,7 @@ h_mul:
     bl      next_reg
     mov     w25, w0
     bl      next_reg
-    movz    w9, #0x9B00, lsl #16
+    mov     w9, #0x9B000000
     movk    w9, #0x7C00
     orr     w9, w9, w0, lsl #16
     orr     w9, w9, w25, lsl #5
@@ -782,7 +782,7 @@ bc_enc:
     sub     w1, w1, w22
     asr     w1, w1, #2
     and     w1, w1, #0x7FFFF
-    movz    w9, #0x5400, lsl #16
+    mov     w9, #0x54000000
     orr     w9, w9, w1, lsl #5
     orr     w9, w9, w26
     bl      emit
@@ -895,7 +895,7 @@ pd_r:
 emit_dp:
     cmp     x17, #0
     b.eq    emit
-    movz    x13, #0xFFFF
+    mov     x13, #0xFFFF
     movk    x13, #0x7FFF, lsl #16
     and     x9, x9, x13
 emit:

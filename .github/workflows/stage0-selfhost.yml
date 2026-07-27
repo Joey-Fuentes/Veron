@@ -375,16 +375,30 @@ jobs:
           echo "  --- B. AUDITABLE: does a human see what the source says? ---"
           # THE RATCHET. $ROUNDTRIP_BUDGET is how many instructions currently
           # fail to read back as written. It may fall and must never rise.
+          # RUN ALL THREE, THEN DECIDE. The first version let the budget check
+          # exit non-zero in the middle of a `set -eu` step, so a failure
+          # against GNU objdump meant the llvm-objdump run and the cross-check
+          # never happened at all -- the two most informative checks were
+          # skipped precisely when something was wrong. Collect, then fail.
+          rc_gnu=0; rc_llvm=0
           echo "  ...against GNU objdump $BINUTILS_VER:"
+          set +e
           python3 tools/s0_roundtrip.py "$SRC" stage0-as.dis \
-            --budget "$ROUNDTRIP_BUDGET"
+            --budget "$ROUNDTRIP_BUDGET"; rc_gnu=$?
           echo
           echo "  ...against llvm-objdump $LLVM_VER:"
           python3 tools/s0_roundtrip.py "$SRC" stage0-as.llvm.dis \
-            --budget "$ROUNDTRIP_BUDGET"
+            --budget "$ROUNDTRIP_BUDGET"; rc_llvm=$?
           echo
           echo "  --- C. DO THE TWO DISASSEMBLERS AGREE WITH EACH OTHER? ---"
           python3 tools/s0_roundtrip.py crosscheck stage0-as.dis stage0-as.llvm.dis
+          set -e
+          echo
+          if [ "$rc_gnu" != 0 ] || [ "$rc_llvm" != 0 ]; then
+            echo "  round-trip budget exceeded (gnu rc=$rc_gnu, llvm rc=$rc_llvm)"
+            exit 1
+          fi
+          echo "  both decoders within budget."
 
       - name: 'REGRESSION: does this stage0-as still build stage 1 and stage 2?'
         run: |
