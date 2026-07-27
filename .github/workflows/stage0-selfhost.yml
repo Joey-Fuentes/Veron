@@ -82,6 +82,13 @@ jobs:
       # is `adr x27, symtab` printing as `__bss_start` (two names, one address)
       # and one branch. Lower it whenever the number falls; never raise it
       # without saying why in the same commit.
+      # Was 2 against binutils 2.42. Pinning 2.47 raised it to 57: the newer
+      # disassembler prints large immediates signed (-0x2d800000 for what 2.42
+      # called 3531603968) and picks the OTHER of two labels sharing an address.
+      # The first was a normaliser gap and is fixed; the second was a real
+      # ambiguity in the source and the duplicate label is gone. Both were
+      # invisible under 2.42 -- which is the argument for pinning a current tool
+      # and for cross-checking two of them.
       ROUNDTRIP_BUDGET: '2'
       # PINNED TOOLCHAINS, NOT WHATEVER THE RUNNER SHIPS. The first round-trip
       # runs used Ubuntu's binutils 2.42-4ubuntu2.10 -- a distro package, on a

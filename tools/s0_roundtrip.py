@@ -88,10 +88,15 @@ def norm(mn, ops):
         # form became a decimal, so twenty identical instructions were reported
         # as differing. A normaliser that is itself unfaithful is worse than
         # none: it manufactures findings in the thing being measured.
-        if re.fullmatch(r"0x[0-9a-fA-F]+", t):
-            out.append(str(int(t, 16)))
-        elif re.fullmatch(r"-?\d+", t):
-            out.append(str(int(t)))
+        # NORMALISE TO ONE CANONICAL VALUE, NOT ONE SPELLING. binutils 2.42
+        # printed a large 32-bit immediate as unsigned decimal (3531603968);
+        # 2.47 prints the same bits as signed hex (-0x2d800000). Neither is
+        # wrong and the encoding is identical, so a comparison that cares which
+        # one it sees is measuring the disassembler, not the binary. Fold every
+        # immediate into its unsigned 32-bit value and the question disappears.
+        if re.fullmatch(r"-?0x[0-9a-fA-F]+", t) or re.fullmatch(r"-?\d+", t):
+            v = int(t, 16) if "x" in t.lower() else int(t)
+            out.append(str(v & 0xFFFFFFFF if v < 0 else v))
         elif re.fullmatch(r"'.'", t):
             out.append(str(ord(t[1])))
         else:
