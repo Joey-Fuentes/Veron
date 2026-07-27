@@ -131,3 +131,29 @@ llvm-objdump renders 32-bit immediates with the high bit set as negative hex
 immediate in decimal (10 lines). Same bits either way — both assemblers
 reproduce the binary from either disassembly. GNU objdump is therefore the
 exact-diff target; llvm-objdump is the independent cross-check.
+
+---
+
+## Verification, as measured
+
+Every number here is produced by `.github/workflows/stage0-selfhost.yml` on each
+push, and every check in it fails the job rather than reporting.
+
+| check | result |
+|---|---|
+| forms probed against the real binary | 40 ok, 0 wrong, 0 rejected, **817/817 lines** |
+| disassembly vs source, GNU objdump 2.47 | plain `diff`, **IDENTICAL**, 921 canonical lines |
+| disassembly vs source, llvm-objdump 22.1.8 | budget 0 of 0 |
+| the two decoders against each other | **817/817 agree** |
+| whole ELF reconstructed from its own disassembly | **MATCHES**, 7920 bytes |
+| reassembled by GNU `as` and by `llvm-mc` | both reproduce the original `.text` |
+| self-host fixpoint | **gen1 == gen2 == gen3**, 3328 bytes |
+| gen1 rebuilds stage1 | **byte-identical** to the reference build |
+
+The 29-instruction `mov` bug -- every constant over 16 bits silently assembling
+as `mov Rd, #0` -- was live for the whole history of this file and was found by
+the self-host gate on its first real run. The form probe reported `ok` because
+it substituted `#8` for an immediate and never reached the large-value path.
+**Forms reporting ok means the probe's chosen values worked, not that the
+assembler is correct.** The gate is the only check that exercises it on the
+exact input it will be given.

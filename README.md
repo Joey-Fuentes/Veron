@@ -4,6 +4,17 @@ A hermetic, reproducible, end-to-end auditable operating system — bootstrapped
 
 **Status:** The ladder runs natively and hermetically, **with no host tool on the build path.** `stage3-hermetic-arm64` climbs seed → stage 1 → stage 2 → 426 conformance programs → M2-Planet on real ARM64 hardware inside a `bubblewrap` sandbox with no network, and M2-Planet's self-compilation output is **byte-identical to upstream's own reference compiler** (`dc38e13e4ceaeecb`, 2,947,903 bytes). The seed assembler and ELF writer are committed binaries, verified on every push: each is disassembled and compared to its own source by **two independent disassemblers**, and the whole linked ELF is reconstructed from that disassembly and compared byte for byte. `BUDGET_PATH` is empty.
 
+**Self-hosting, stated exactly.** `stage0-as` assembles a mechanical translation
+of its own source. The result reproduces itself — `gen1 == gen2 == gen3`, 3328
+bytes — and builds `stage1` to bytes identical to the reference build. It is not
+byte-identical to the `as`+`ld` build and cannot be: that image keeps strings in
+a separate `.rodata` section and page-aligns `.bss`, while `elf` writes one flat
+blob, so four `adr` instructions encode a different displacement and 56 bytes of
+string data sit inside the code image rather than beside it. The gate names all
+four and requires that they are the only ones. Making the shas match would mean
+teaching `elf` to imitate `ld`, which is the tool the exercise removes.
+
+
 **License:** [MIT](./LICENSE) for Veron's own code. Upstream dependencies keep their own licenses, tracked per-node in the ledger.
 
 ---
@@ -27,7 +38,7 @@ Everything below lives under [`spikes/`](./spikes) and is a **feasibility tracer
 
 | rung | what it is | state |
 |---|---|---|
-| `stage0-as` | two-pass mnemonic assembler, hand-written ARM64 assembly. The last tool written in raw assembly. | **committed and verified** — the binary is in the repo and re-checked on every push: disassembly diffs clean against the source under two independent decoders, and the whole ELF reconstructs byte for byte |
+| `stage0-as` | two-pass mnemonic assembler, hand-written ARM64 assembly. The last tool written in raw assembly. | **self-hosting** — assembles its own source (817/817 forms); gen1 == gen2 == gen3 and gen1 rebuilds `stage1` byte-identically. Committed as a verified binary, re-checked on every push by round-trip disassembly under two independent decoders |
 | `stage1-as` | two-pass numeric label resolver, written in *stage 0's own language* | **works** — gives the ladder unbounded multi-character labels |
 | `stage2-mini-c` | C-subset compiler, written in *stage 1's language* | **works** — 220 KB of upstream C in, 81,893 instructions out |
 | `stage3` | M2-Planet, compiled by stage 2. There is no separately-written stage 3 — M2-Planet *is* stage 3. | **hand-off proven** — our build reproduces upstream's M2-Planet **byte for byte**, stable over five generations |
@@ -107,5 +118,5 @@ The empty directories are Veron proper and are written against the invariants. `
 - [`spikes/stage3/README.md`](./spikes/stage3/README.md) — the open rung
 - [`spikes/stage4/README.md`](./spikes/stage4/README.md) — everything above tcc, including the end-to-end run
 - `.github/workflows/stage3-hermetic-arm64.yml` — the native, sandboxed climb and its host budget
-- `.github/workflows/stage0-selfhost.yml` — can stage0-as assemble its own source? the measured answer
+- `.github/workflows/stage0-selfhost.yml` — **yes.** `stage0-as` assembles its own source; the result reproduces itself across three generations and rebuilds `stage1` byte-identically
 - [`spikes/PROGRESS.md`](./spikes/PROGRESS.md) — 150 KB of stage 0–2 history; reference only, do not load for context

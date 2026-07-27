@@ -111,6 +111,33 @@ a verified toolchain, and `spikes/stage0-as/LADDER-BASELINE.txt` already checks
 that it rebuilds identically. A disassembler written in `.s0`, or in stage 2's C
 subset, is in that category: source only.
 
+## What self-hosting does and does not claim
+
+`stage0-as` assembles a mechanical translation of its own source, and the result
+is a fixpoint: `gen1 == gen2 == gen3`, 3328 bytes, `18a1c7e0004359bb`. `gen1`
+then rebuilds `stage1` to bytes identical to the reference build.
+
+It is **not** byte-identical to the `as`+`ld` build, and the difference is
+structural rather than a defect:
+
+| | as+ld | .s0 build |
+|---|---|---|
+| strings | `.rodata`, a separate section | inline, 8-aligned after the code |
+| `.bss` | page-aligned to `0x411000` | straight after the strings |
+| image | 176-byte prefix, section headers | 120-byte header, one flat blob |
+
+So `reference.bin` is 3268 bytes of pure `.text` and `gen1.bin` is 3328 -- the
+same code plus 56 bytes of string data and 4 of alignment -- and within the
+shared 3268 exactly four words differ, all `adr` into `.bss`. The gate names
+each one and fails if the count or the targets change.
+
+Making the two match would mean teaching `elf` to reproduce `ld`'s layout: a
+176-byte prefix, a separate `.rodata`, a page-aligned `.bss`. That would make
+the self-hosting claim depend on imitating the tool the ladder exists to remove,
+which is the wrong direction. The claim that matters is behavioural and it is
+checked: an assembler that reproduces itself across three generations and
+rebuilds the ladder to identical bytes is the same assembler.
+
 ## Deferred, and deliberately so
 
 Three pieces are understood, scoped, and **not** being built yet. They are
