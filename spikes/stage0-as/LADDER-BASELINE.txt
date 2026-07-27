@@ -39,18 +39,17 @@
 # symbol grows the file even when it changes no instruction.
 # 6768 -> 6864 when the .ascii strings moved to .rodata (r41), which is
 # what made .text pure code and the round-trip total.
-# 6864 -> 7792 as stage0-as learned to assemble its own source: an optional
-# shift on orr/and/eor, shift-by-immediate via UBFM/SBFM, strb with no index
-# register, and source rewrites for the bitmask-immediate and extended-
-# addressing lines. The probe reads 40 forms ok, 0 wrong, 0 rejected, 802/802
-# lines. All eight emitted-output fingerprints are unchanged and stage1,
-# stage2 and elf did not move -- the assembler grew, its output did not.
-stage0-as       7792     3176f8ec8a176792
+# 7792 -> 7848: two-character labels (sym_idx) so the source's 103 labels fit
+# a symbol table that only had ~90 usable single-character slots.
+stage0-as       7848     aeadddfce30a9e3b
 # 1880 -> 1920 when elf gained bss_origin, the 16-byte unreferenced symbol
 # that absorbs __bss_start so codebuf has a unique address. Its OUTPUT is
 # unchanged -- stage1 and stage2 did not move, and neither did any of the
 # eight emitted-output fingerprints.
-elf             1920     7a4a64d1f614403c
+# 1920 -> 1952: p_memsz = p_filesz + 65 MiB, so the kernel maps demand-zero
+# pages past the image. Without it a seed-built program has nowhere to put a
+# buffer -- the mapping ended at the last byte of code.
+elf             1952     d4817d983e478280
 # stage1 and stage2 MOVED once, at the sf-bit fix (m83), and have been stable
 # since. Their SIZES did not change -- 1469 and 23257 before and after -- only
 # the encoding of the 39 `cmp w<n> <imm>` and 57 `mov w<n> <imm>` they contain.
@@ -59,8 +58,11 @@ elf             1920     7a4a64d1f614403c
 # M2-Planet. Two further stage0-as changes (m84, the register-letter fix) left
 # both untouched, as predicted, because the ladder uses none of the forms it
 # enabled.
-stage1          1469     18e9fdf2863f82eb
-stage2          23257    4a6dd5df3650a75e
+# stage1 and stage2 are WRITTEN BY elf, so both carry the new p_memsz. Same
+# sizes, same code, different header field -- and all eight emitted-output
+# fingerprints are unchanged, which is what says the behaviour did not move.
+stage1          1469     7079745950cf5859
+stage2          23257    89db623297d5a476
 
 # Above tcc-free ladder level, recorded for cross-reference. These come from the
 # same run and are re-verified by stage3-hermetic-arm64, not by stage0-selfhost.
