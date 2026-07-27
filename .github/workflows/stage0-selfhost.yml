@@ -552,6 +552,31 @@ jobs:
                   echo "        reassembled : $(grep -m1 "^ *$_addr:" rebuild.dis | sed 's/^ *//')"
                 fi
               done
+                # STOP REASONING ABOUT ELF STRUCTURE SIZES AND LOOK AT THE BYTES.
+              # The last several rounds were spent inferring causes that the two
+              # files could have been asked about directly. Compare them.
+              echo
+              echo "    --- where do the two files actually differ? ---"
+              "$P/bin/objdump" -h rebuild.elf > rebuild.secs 2>/dev/null || true
+              "$P/bin/objdump" -t rebuild.elf > rebuild.syms 2>/dev/null || true
+              echo "    sections present:"
+              diff <(awk '$2 ~ /^\./ {print $2, $3}' stage0-as.secs) \
+                   <(awk '$2 ~ /^\./ {print $2, $3}' rebuild.secs) \
+                | sed 's/^/      /' || echo "      (identical section table)"
+              echo "    symbols only in one side (name and section):"
+              diff <(awk '{print $NF, $(NF-2)}' stage0-as.syms | sort) \
+                   <(awk '{print $NF, $(NF-2)}' rebuild.syms | sort) \
+                | head -20 | sed 's/^/      /' || echo "      (identical symbols)"
+              echo "    first 12 differing bytes (a size change cascades, so"
+              echo "    the first offset is the meaningful one):"
+              cmp -l stage0-as rebuild.elf 2>/dev/null | head -12 \
+                | while read -r off a b; do
+                    printf '      offset %-8s original 0%-4s rebuilt 0%s\n' "$off" "$a" "$b"
+                  done
+              _fd=$(cmp stage0-as rebuild.elf 2>&1 | sed 's/.*differ: byte //; s/,.*//')
+              echo "    first difference at byte $_fd; sections and their file offsets:"
+              awk '$2 ~ /^\./ {printf "      %-12s size %-8s file-off %s\n", $2, $3, $6}' \
+                stage0-as.secs
               echo "    A section-level match with a named metadata difference is a"
               echo "    far more precise statement than \"we only checked .text\"."
             fi
