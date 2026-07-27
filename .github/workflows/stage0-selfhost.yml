@@ -137,7 +137,11 @@ jobs:
         with:
           path: |
             pinned
-          key: pinned-binutils-${{ env.BINUTILS_VER }}-llvm-${{ env.LLVM_VER }}-v1
+          # v2: v1 predates llvm-mc. Adding a file to a cached DIRECTORY does
+          # not change the key, so the stale cache kept winning and llvm-mc was
+          # never there -- "No such file or directory" on every run. Bump the
+          # key whenever the contents of the cached tree change.
+          key: pinned-binutils-${{ env.BINUTILS_VER }}-llvm-${{ env.LLVM_VER }}-v2
 
       # NOTE FOR ANYONE WATCHING A RUN: this is the slow step, not the one above
       # it. On a cold cache it compiles binutils from source and takes 10-20
@@ -387,8 +391,15 @@ jobs:
             # zero-immediate failure as the .ascii case, one section further
             # out. GNU ld does the linking for BOTH so the ASSEMBLER is the
             # only variable between the two arms.
-            "$P/bin/ld" -Ttext="$(cat redis.s.base)" --entry=0 \
-              -o "redis-$tool.elf" "redis-$tool.o" 2>/dev/null
+            # --defsym for every target outside .text; the assembler left them
+            # undefined on purpose so the LINKER computes the displacement.
+            set -- -Ttext="$(cat redis.s.base)" --entry=0
+            while read -r d; do set -- "$@" --defsym "$d"; done < redis.s.defs
+            "$P/bin/ld" "$@" -o "redis-$tool.elf" "redis-$tool.o" \
+              2>"redis-$tool.lderr" || {
+                echo "    $tool: LINK FAILED"
+                head -4 "redis-$tool.lderr" | sed 's/^/      /'
+                fail_a=$((fail_a + 1)); continue; }
             "$P/bin/objcopy" -O binary --only-section=.text \
               "redis-$tool.elf" "redis-$tool.bin"
             if cmp -s "redis-$tool.bin" orig.bin; then

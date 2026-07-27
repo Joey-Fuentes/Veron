@@ -227,11 +227,16 @@ def cmd_relist(dis_path, bin_path, out_path, base_hex=None):
     refs = set()
     for t in insns.values():
         refs.update(int(x, 16) for x in re.findall(r"\bL([0-9a-f]+)\b", t))
+    # LEAVE THEM UNDEFINED, DO NOT `.set` THEM. Defining an out-of-section
+    # target as an absolute address makes the assembler compute `adr`'s
+    # displacement against a section that is still at VMA 0, so a target 68 KB
+    # away in the linked image looks 4 MB away and blows adr's +-1 MB range:
+    #     Error: immediate value out of range ... -- `adr x19,L410de4'
+    # An UNDEFINED symbol makes the assembler emit a relocation instead, and
+    # the linker fills it in once the section address is real. The values go to
+    # a side file so the caller can pass them as --defsym.
     external = sorted(a for a in refs if not (base <= a < end))
-    head = [".set L%x, 0x%x" % (a, a) for a in external]
-    # belt and braces: a symbol must never be both `.set` and a label
-    inside = set(range(base, end))
-    assert not (set(external) & inside), "a .set collides with a label"
+    head = []
 
     body, off, n_ins, n_dat = [], 0, 0, 0
     while off < len(data):
@@ -249,9 +254,12 @@ def cmd_relist(dis_path, bin_path, out_path, base_hex=None):
         fh.write("\n".join(head) + "\n.text\n" + "\n".join(body) + "\n")
     with open(out_path + ".base", "w", encoding="utf-8") as fh:
         fh.write("0x%x\n" % base)
+    with open(out_path + ".defs", "w", encoding="utf-8") as fh:
+        for a in external:
+            fh.write("L%x=0x%x\n" % (a, a))
     print("  wrote %s: %d instructions + %d data bytes, every byte labelled"
           % (out_path, n_ins, n_dat))
-    print("  %d targets outside .text defined absolutely; link at 0x%x"
+    print("  %d targets outside .text left undefined for the linker; base 0x%x"
           % (len(external), base))
     return 0
 
