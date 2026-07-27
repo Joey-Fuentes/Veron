@@ -1,0 +1,36 @@
+# LADDER-BASELINE -- known-good artifacts of the ladder, native aarch64.
+#
+# WHY THIS FILE EXISTS. stage0-as is about to be modified (b.gt/b.le, the sf
+# bit, shifted-register operands, input rejection). Any of those changes the
+# BYTES of stage1 and stage2, because both use the affected forms:
+#
+#     mov  W i     57 uses      cmp  W i     39 uses      mov  W X   14 uses
+#     ldrb W X X  162 uses      str  W X     86 uses      ldr  W X   64 uses
+#
+# So "did the ladder still build?" is not the question -- it will build, and it
+# will build DIFFERENT. The question is whether it still MEANS the same thing.
+# A bare byte-compare against this file answers the first; the emitted-assembly
+# comparison in the same workflow step answers the second.
+#
+# HOW TO UPDATE. When a change to stage0-as is intended to move these bytes,
+# update the line in the SAME commit and say in the message which forms moved
+# and why. A baseline edited separately from the change it describes is a
+# baseline nobody reads.
+#
+# Values are sha256, first 16 hex chars, from the green stage3-hermetic-arm64
+# run of 2026-07-27 (job 82026046700) -- the run where 426/426 passed, the canon
+# fixpoint held, and G1 matched upstream's M2-Planet byte for byte.
+#
+# format:  <name> <bytes> <sha256[0:16]>
+
+stage0-as       6248     96a0edfb2a20bfca
+elf             1880     c4b44c02f85b10df
+stage1          1469     5fcf2a59b9edd064
+stage2          23257    da274839c125d1a1
+
+# Above tcc-free ladder level, recorded for cross-reference. These come from the
+# same run and are re-verified by stage3-hermetic-arm64, not by stage0-selfhost.
+canon           5052     26b728839212d9b1
+m2.c            214910   51e88df569188908
+G0-M2-Planet    314860   cb76e0e3fe4ac9ea
+ours-gen1.M1    2947903  dc38e13e4ceaeecb

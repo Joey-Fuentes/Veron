@@ -198,6 +198,83 @@ jobs:
           echo
           echo "  $accepted of $n nonsense inputs accepted silently. Target is 0."
 
+      - name: 'REGRESSION: does this stage0-as still build stage 1 and stage 2?'
+        run: |
+          set -eu
+          # THE QUESTION IS NOT "DOES IT STILL BUILD". Every change queued for
+          # stage0-as moves the bytes of stage1 and stage2, because both use the
+          # affected forms -- measured, not assumed:
+          #
+          #     mov  W i    57     cmp  W i    39     mov  W X   14
+          #     ldrb W X X 162     str  W X    86     ldr  W X   64
+          #
+          # Fixing the sf bit re-encodes ~110 instructions that already exist in
+          # the ladder. They will assemble. The question is whether they still
+          # MEAN the same thing, and a green build does not answer that.
+          #
+          # So two checks, in order:
+          #   1. bytes vs LADDER-BASELINE   -- did anything move, and what
+          #   2. emitted assembly           -- does stage 2 still produce the
+          #                                    SAME OUTPUT for the same input
+          # (2) is the one that matters. stage2's own binary may legitimately
+          # change while what it emits must not.
+          B=spikes/stage0-as/LADDER-BASELINE.txt
+          ./stage0-as < spikes/stage1-as/stage1-as.s0 | ./elf stage1
+          ./stage1 < spikes/stage2-mini-c/stage2-mini-c.s1 | ./stage0-as | ./elf stage2
+          [ -x stage1 ] && [ -x stage2 ] || { echo "  FAIL: ladder did not build"; exit 1; }
+
+          moved=0
+          for a in stage0-as elf stage1 stage2; do
+            want=$(awk -v n="$a" '$1==n {print $3}' "$B")
+            got=$(sha256sum "$a" | cut -c1-16)
+            sz=$(wc -c < "$a")
+            if [ "$want" = "$got" ]; then
+              printf '  %-10s %8s  %s  unchanged\n' "$a" "$sz" "$got"
+            else
+              printf '  %-10s %8s  %s  MOVED (baseline %s)\n' "$a" "$sz" "$got" "$want"
+              moved=$((moved + 1))
+            fi
+          done
+          echo
+
+          # BEHAVIOURAL EQUIVALENCE. Compile a fixed set of programs and hash
+          # what stage 2 EMITS. These cover the forms most at risk from an sf-bit
+          # or register-parsing change: byte loads, char compares, w-register
+          # moves, shifts and calls.
+          i=0
+          for prog in \
+            'int main(){return 42;}' \
+            'int main(){char c;c=65;return c;}' \
+            'int main(){char s[4];s[0]=65;return s[0];}' \
+            'int main(){int i;int s;s=0;i=0;while(i<5){s=s+i;i=i+1;}return s;}' \
+            'int f(int n){if(n<2){return n;}return f(n-1)+f(n-2);}int main(){return f(10);}' \
+            'int main(){char* s;s="hi";return s[0];}' \
+            'int main(){return 12&10;}' \
+            'int main(){return 1<<4;}'; do
+            i=$((i + 1))
+            printf '%s' "$prog" > r.c
+            ./stage2 < r.c > "r$i.s"
+            printf '  emit-%-2s %8s  %s\n' "$i" "$(wc -c < "r$i.s")" \
+              "$(sha256sum "r$i.s" | cut -c1-16)"
+          done
+          echo
+          echo "  Those emit-N hashes are the behavioural fingerprint. Record them"
+          echo "  in LADDER-BASELINE on the first green run; after that, a change"
+          echo "  that moves stage2's BINARY but not its OUTPUT is encoding-only"
+          echo "  and safe, and a change that moves the OUTPUT is a semantic change"
+          echo "  that must be justified rather than re-baselined."
+          echo
+          if [ "$moved" = 0 ]; then
+            echo "  $moved artifacts moved -- ladder byte-identical to baseline."
+          else
+            echo "  $moved artifact(s) moved. Expected while stage0-as is being"
+            echo "  changed; NOT expected otherwise. Cross-check against the"
+            echo "  stage3-hermetic-arm64 run for the same commit: it re-runs 426"
+            echo "  conformance tests, the canon fixpoint, and the byte-identical"
+            echo "  M2-Planet gate, and it is triggered by spikes/stage0-as/** so"
+            echo "  it will already have run."
+          fi
+
       - name: 'XLATE: mechanical GNU-as -> .s0 translation'
         run: |
           set -eu
@@ -228,8 +305,22 @@ jobs:
           echo "  stage0-as rc=$rc, emitted $(wc -c < partial.bin 2>/dev/null || echo 0) bytes"
           [ -s partial.err ] && head -5 partial.err | sed 's/^/    ! /'
           echo
-          echo "  (a clean rc here with NEEDS still outstanding means the SYNTAX"
-          echo "   translation is right and only the missing FORMS remain)"
+          # THIS STEP'S ORIGINAL CONCLUSION WAS WRONG AND IS RETRACTED HERE.
+          # It read "a clean rc means the syntax translation is right". Run 2
+          # showed stage0-as returns rc=0 for `frobnicate x0 x1` -- and emits
+          # ZERO bytes for it. An unrecognised line does not fail; it VANISHES.
+          # So rc=0 says nothing at all, and neither does a plausible byte count.
+          #
+          # Until the rejection probe above reads 0, the only trustworthy signal
+          # is the per-form byte comparison. Word count is printed as a weak
+          # cross-check: instruction lines in, words out, and a shortfall means
+          # lines were silently dropped.
+          words=$(( $(wc -c < partial.bin 2>/dev/null || echo 0) / 4 ))
+          instr=$(grep -cvE '^:|^\.' partial.s0 || true)
+          echo "  instruction lines in: $instr   words out: $words"
+          if [ "$words" -lt "$instr" ]; then
+            echo "  SHORTFALL of $((instr - words)) -- that many lines were silently dropped."
+          fi
 
       - name: 'GATE (off until the gap is zero): self-host and fixpoint'
         continue-on-error: true
