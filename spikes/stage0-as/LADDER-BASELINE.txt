@@ -37,8 +37,14 @@
 # 22.1.8, with the two decoders agreeing on all 696 words. I had said this
 # change "provably can't" move stage0-as's bytes; that was wrong. Adding a
 # symbol grows the file even when it changes no instruction.
-stage0-as       6768     5b9126b8278089ca
-elf             1880     c4b44c02f85b10df
+# 6768 -> 6864 when the .ascii strings moved to .rodata (r41), which is
+# what made .text pure code and the round-trip total.
+stage0-as       6864     836acfcef291fdcf
+# 1880 -> 1920 when elf gained bss_origin, the 16-byte unreferenced symbol
+# that absorbs __bss_start so codebuf has a unique address. Its OUTPUT is
+# unchanged -- stage1 and stage2 did not move, and neither did any of the
+# eight emitted-output fingerprints.
+elf             1920     7a4a64d1f614403c
 # stage1 and stage2 MOVED once, at the sf-bit fix (m83), and have been stable
 # since. Their SIZES did not change -- 1469 and 23257 before and after -- only
 # the encoding of the 39 `cmp w<n> <imm>` and 57 `mov w<n> <imm>` they contain.

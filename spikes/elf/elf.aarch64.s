@@ -30,7 +30,7 @@
     .equ CODEBUF_SZ, 0x4000000     // 64 MiB reserve. .bss is demand-zero-paged,
                                    // so an unused reserve costs nothing; overflow
                                    // is reported (see read_done), never truncated.
-    .equ HDR_LEN,    120
+    .equ HDR_LEN,    0x78
 
     .text
     .global _start
@@ -39,7 +39,7 @@ _start:
     ldr     x0, [sp]                        // argc
     cmp     x0, #0x2
     b.lt    clean_exit                      // no output path -> harmless no-op success
-    ldr     x19, [sp, #0x10]                // argv[1] = output path
+    ldr     x19, [sp, #16]                  // argv[1] = output path
 
     // ---- slurp raw code bytes from stdin into codebuf ----
     adr     x22, codebuf
@@ -75,11 +75,11 @@ read_ok:
     adr     x23, header
     mov     x24, #HDR_LEN
     add     x24, x24, x20                   // filesz
-    str     x24, [x23, #0x60]               // p_filesz
-    str     x24, [x23, #0x68]               // p_memsz
+    str     x24, [x23, #96]                 // p_filesz
+    str     x24, [x23, #104]                // p_memsz
 
     // ---- open the output file (creates it 0755) ----
-    mov     x0, #-0x64                      // AT_FDCWD
+    mov     x0, #0xffffffffffffff9c         // AT_FDCWD
     mov     x1, x19                         // path
     mov     x2, #0x241                      // O_WRONLY|O_CREAT|O_TRUNC
     mov     x3, #0x1ed                      // mode 0755
