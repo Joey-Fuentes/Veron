@@ -506,8 +506,14 @@ jobs:
           "$P/bin/objdump" -d --no-show-raw-insn --no-addresses stage0-as \
             > canon-gnu.dis 2>/dev/null || \
             "$P/bin/objdump" -d --no-show-raw-insn stage0-as > canon-gnu.dis
+          # NO --no-print-imm-hex. Hex is llvm-objdump's DEFAULT -- made so in
+          # 2022 explicitly to bring it in line with GNU objdump -- and forcing
+          # decimal is what drove the two decoders apart in the first place.
+          # GNU prints hex unconditionally, so hex is the only base where a
+          # SINGLE source style can satisfy both, and that is worth far more
+          # than matching whichever base the source happens to use today.
           "$P/bin/llvm-objdump" -d --no-show-raw-insn --no-leading-addr \
-            --no-print-imm-hex stage0-as > canon-llvm.dis 2>/dev/null || \
+            stage0-as > canon-llvm.dis 2>/dev/null || \
             "$P/bin/llvm-objdump" -d --no-show-raw-insn stage0-as > canon-llvm.dis
           python3 tools/s0_canon.py source "$SRC" > canon-src.txt
           for t in gnu llvm; do
@@ -529,6 +535,24 @@ jobs:
                 | sed 's/^/      /'
             fi
           done
+          echo
+          echo "  --- E2. DO THE TWO CANONICAL DISASSEMBLIES MATCH EACH OTHER? ---"
+          # THE QUESTION THAT DECIDES WHETHER ONE SOURCE STYLE CAN SATISFY BOTH.
+          # Checks B and C compare NORMALISED instruction streams, so they say
+          # the decoders agree about meaning. This asks whether they agree
+          # CHARACTER FOR CHARACTER once both are canonicalised -- because if
+          # they do not, no source text exists that both will diff clean
+          # against, and the plain-diff goal has to pick one decoder and say so.
+          ndd=$(diff canon-gnu.txt canon-llvm.txt | grep -c '^[<>]' || true)
+          if [ "$ndd" = 0 ]; then
+            echo "    IDENTICAL -- one source style can satisfy BOTH decoders."
+          else
+            echo "    $ndd differing lines between the two decoders:"
+            python3 tools/s0_canon.py classify canon-gnu.txt canon-llvm.txt \
+              | sed 's/^/      /'
+            echo "    Classes here are decoder-vs-decoder, nothing to do with our"
+            echo "    source. Anything left is a hard limit on matching both."
+          fi
           echo
           echo "  Each difference is either a decoder flag we have not set or a"
           echo "  source line to rewrite WITH A COMMENT saying why. Neither is"
