@@ -92,7 +92,29 @@
 # elfgen3) and then byte-compared against the committed files, so they need no
 # entry here: a number in this file is only worth writing when nothing else
 # measures it, and something else measures them every run.
-stage0-as       8144     6fd1462b1be629d8
+# 8144 -> 8624 (r76): six leaves the .s0 backend needs, batched because the
+# round-trip, census, baseline move and probe run cost the same for six as for
+# one. ldrh/strh/ldrsb/ldrsh share an h_ls_plain tail and are OFFSET-0 ONLY --
+# every use M2-Planet's backend emits -- because their imm12 scales by 2 or 1
+# where ldr/str scale by 8 or 4, and a variable scale needs a register shift
+# this source does not use. sdiv rides shift_common with the selector at 0xc00.
+# b.hi/b.ls/b.hs/b.lo complete a condition set that had only ever been signed
+# by accident: the comment in h_bcond records b.gt and b.le being added late,
+# after three inputs assembled to three wrong answers.
+#
+# msub was measured as needed and DELIBERATELY NOT ADDED. The backend
+# synthesizes modulo as udiv+mul+sub: two extra instructions on a cold
+# operation, written once in C, against a leaf hand-written three times across
+# three assembly languages once x86_64 and riscv64 exist. That is the rule now
+# -- if existing forms express it cheaply, the backend does it, because stages
+# 0-2 are per-arch and everything above them is written once.
+#
+# All ten new forms were settled against real GNU as on the run that produced
+# this number: 68 forms, 0 wrong bytes, 0 rejected, 885/885 lines. The plain
+# diff stayed IDENTICAL, gen1 == gen2 == gen3 held, elf still self-hosts with
+# its five adr-to-data words, and all eight emitted-output fingerprints are
+# unchanged -- the ladder uses none of the new forms.
+stage0-as       8624     3fb2d2b9beab9416
 # 1880 -> 1920 when elf gained bss_origin, the 16-byte unreferenced symbol
 # that absorbs __bss_start so codebuf has a unique address. Its OUTPUT is
 # unchanged -- stage1 and stage2 did not move, and neither did any of the

@@ -234,6 +234,13 @@ def _encode(l, at, labels):
         # after `b.` and defaulted to 14 (AL), so `b.gt` assembled as `b.ge` and
         # `b.le` as `b.lt` -- silently, with no diagnostic. Both are now checked
         # on two characters and anything else is rejected.
-        cond={'b.eq':0,'b.ne':1,'b.ge':10,'b.lt':11,'b.gt':12,'b.le':13}[op]
+        # TWO PLACES, AND r76 UPDATED ONLY ONE. The `if op in (...)` above
+        # gained the four unsigned conditions and this table did not, so the
+        # model raised KeyError and reported REJECTS for forms the real
+        # assembler encodes correctly. The probe said `ok  bench=REJECTS` and
+        # that is exactly what that column is for -- it was right and I read it
+        # as pre-existing noise. HI 8, LS 9, HS 2, LO 3.
+        cond={'b.eq':0,'b.ne':1,'b.hs':2,'b.lo':3,'b.hi':8,'b.ls':9,
+              'b.ge':10,'b.lt':11,'b.gt':12,'b.le':13}[op]
         return (0x54000000|(rel(p[1],2,0x7FFFF)<<5)|cond,('bcc',op,_pos(p[1])))
     raise ValueError("unknown: "+l)
