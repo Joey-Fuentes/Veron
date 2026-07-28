@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "THROUGH tccpp.c entirely -- now in tccgen.c".
+"hangs forever on tcc.c" to "THROUGH tccpp.c; stopped at struct assignment in tccgen.c".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -55,6 +55,8 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
                                             cc_core.c
   string rows in a 2D initialiser           cc_core.c   tccpp.c:3429
   adjacent literals for a pointer init      cc_core.c   tccpp.c:3596
+  an inline struct defn may carry a         cc_types.c  tccgen.c:94
+    declarator, `struct X {...} **p`
 
 UNSOUND, AND WHY
 ----------------
@@ -509,7 +511,28 @@ UNSOUND, AND WHY
 MILESTONE: tccpp.c PARSES COMPLETELY -- all 3,900+ lines. Four files done:
 tcc.h, libtcc.h, elf.h, tcctok.h and now tccpp.c. Now in tccgen.c.
 
-STOPPED AT: tccgen.c:94, "ERROR in create_struct Missing ;".
+33. AN INLINE STRUCT DEFINITION MAY CARRY A DECLARATOR.
+
+        static struct switch_t {
+            struct case_t { int64_t v1, v2; int ind, line; } **p; int n;
+        };                                              tccgen.c:94
+
+    fallible_type_name RETURNED straight out of create_struct, skipping the
+    '*' loop at the bottom of the function, so `**p` was never consumed and
+    the member list died on "Missing ;". The named-struct path needs a
+    require_extra_token to eat the tag; this path must not, because
+    create_struct has already eaten both tag and body -- so the star loop is
+    repeated inline rather than shared.
+
+STOPPED AT: tccgen.c:392, `char_pointer_type = char_type;` -- STRUCT
+ASSIGNMENT BY VALUE, 16 bytes. micro-c has an explicit "we don't yet support
+assigning structs to structs", and store_value(16) is where it surfaces.
+
+This is not another few lines. Every assignment micro-c emits is
+value-in-register -> store; a struct assignment needs BOTH addresses and a
+copy, and the right-hand side must not be "loaded" into a register at all.
+That is a different shape from the whole existing assignment path, so it wants
+designing rather than patching.
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -524,7 +547,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Forty-seven walls between a hanging compiler and tcc's first genuinely large
+Forty-eight walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11

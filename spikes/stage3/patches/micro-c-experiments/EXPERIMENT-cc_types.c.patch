@@ -268,7 +268,36 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_match("ERROR in create_struct\n Missing ;\n", ";");
  		require(NULL != global_token, "Unterminated struct\n");
  	}
-@@ -870,9 +1087,18 @@
+@@ -823,7 +1040,27 @@
+ 			((NULL != global_token->next) &&
+ 			(match(global_token->next->s, "{") || match(global_token->next->s, ";"))))
+ 		{
+-			return create_struct(FALSE);
++			/* A STRUCT DEFINED INLINE MAY STILL CARRY A DECLARATOR:
++			 *     struct switch_t {
++			 *         struct case_t { int64_t v1, v2; int ind, line; } **p;
++			 *     };                                       tccgen.c:94
++			 * Returning here skipped the '*' loop at the bottom, so `**p` was
++			 * left unconsumed and the member list died on "Missing ;".
++			 *
++			 * create_struct has already eaten the tag and the body, so fall
++			 * through to the star loop WITHOUT the require_extra_token that
++			 * the named-struct path needs. */
++			struct type* defined = create_struct(FALSE);
++			while(global_token->s[0] == '*')
++			{
++				defined = defined->indirect;
++				require_extra_token();
++				while(match("const", global_token->s) || match("restrict", global_token->s))
++				{
++					require_extra_token();
++				}
++			}
++			return defined;
+ 		}
+ 		else if(NULL == ret)
+ 		{
+@@ -870,9 +1107,18 @@
  		require_extra_token();
  	}
  
@@ -287,7 +316,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_extra_token();
  
  		while(match("const", global_token->s) || match("restrict", global_token->s))
-@@ -913,6 +1139,7 @@
+@@ -913,6 +1159,7 @@
  {
  	struct type* head = lookup_primitive_type();
  	struct type* i;
@@ -295,7 +324,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(NULL == head)
  	{
  		head = calloc(1, sizeof(struct type));
-@@ -922,10 +1149,21 @@
+@@ -922,10 +1169,21 @@
  
  		i = calloc(1, sizeof(struct type));
  		require(NULL != i, "Exhausted memory while creating a struct indirection\n");
@@ -317,7 +346,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	head->name = global_token->s;
-@@ -936,12 +1174,29 @@
+@@ -936,12 +1194,29 @@
  	i->offset = source->indirect->offset;
  	head->is_signed = source->is_signed;
  	i->is_signed = source->indirect->is_signed;
