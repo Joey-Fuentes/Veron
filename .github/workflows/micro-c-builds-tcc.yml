@@ -165,14 +165,18 @@ jobs:
 
           # Two SMALLER M2libc builds, for the bisect. The jump from A (236
           # bytes) to B (fifty thousand) is too large to learn much from.
-          # bootstrappable.c cannot stand alone -- it calls fputs -- so the
-          # small sets stop short of it. Locally these link to 1,312 and
-          # 22,374 bytes, between A's 248 and B's 49,711.
+          # THE FLOOR IS stdlib.c. Anything smaller fails to LINK -- ctype.c
+          # and unistd.c both reach for malloc -- which is why the previous
+          # ladder had a rung that reported "hex2 FAILED" and told us nothing.
+          # A rung that cannot link is not a rung.
+          #
+          # Locally: 14,478 with stdlib, 22,374 adding string, 49,711 adding
+          # stdio, against A's 248.
           H="-f $M/stdarg.h -f $M/sys/types.h -f $M/stddef.h -f $M/signal.h -f $M/sys/utsname.h"
           ./micro-c --architecture aarch64 --max-string 65536 \
             -f "$M/ctype.c" $H \
             -f "$M/aarch64/linux/unistd.c" -f "$M/aarch64/linux/fcntl.c" \
-            -f "$M/fcntl.c" -o m2_min.M1
+            -f "$M/fcntl.c" -f "$M/stdlib.c" -o m2_min.M1
           ./micro-c --architecture aarch64 --max-string 65536 \
             -f "$M/ctype.c" $H \
             -f "$M/aarch64/linux/unistd.c" -f "$M/aarch64/linux/fcntl.c" \
@@ -251,10 +255,10 @@ jobs:
             cat "$@" > "$nm.M1"
             ./M1 -f $D/aarch64_defs.M1 -f "$D/$core" -f "$nm.M1" \
                  --little-endian --architecture aarch64 -o "$nm.hex2" 2>/dev/null \
-              || { printf '  %-34s M1 FAILED\n' "$nm"; return 0; }
+              || { printf '  %-34s M1 FAILED -- BROKEN RUNG\n' "$nm"; echo "$nm" >> broken.txt; return 0; }
             ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
                    -f $D/ELF-aarch64.hex2 -f "$nm.hex2" -o "$nm" 2>/dev/null \
-              || { printf '  %-34s hex2 FAILED\n' "$nm"; return 0; }
+              || { printf '  %-34s hex2 FAILED -- BROKEN RUNG\n' "$nm"; echo "$nm" >> broken.txt; return 0; }
             chmod +x "$nm"
             set +e
             ./"$nm" >/dev/null 2>&1
@@ -276,13 +280,14 @@ jobs:
           }
 
           : > faults.txt
+          : > broken.txt
           # A2 and A3 sit between A and B. B moved when the M2libc composition
           # changed, and the gap is too large to learn from: A links 248 bytes,
           # B links 49,711. The ladder is 248 / 1,312 / 22,374 / 49,711, so
           # whichever step faults names a specific part of M2libc.
           run_probe A-bare-core     libc-core.M1  bare.M1
-          run_probe A2-syscalls     libc-core.M1  m2_min.M1 bare.M1
-          run_probe A3-nostdio      libc-core.M1  m2_nostdio.M1 bare.M1
+          run_probe A2-stdlib       libc-core.M1  m2_min.M1 bare.M1
+          run_probe A3-plus-string  libc-core.M1  m2_nostdio.M1 bare.M1
           run_probe B-m2libc-core   libc-core.M1  m2libc.M1 bare.M1
           run_probe C-m2libc-full   libc-full.M1  m2libc.M1 bare.M1
           run_probe D-plus-stubs    libc-full.M1  m2libc.M1 stubs.M1 bare.M1
@@ -290,6 +295,15 @@ jobs:
           run_probe F-call-tcc_new  libc-full.M1  libtcc.M1 m2libc.M1 stubs.M1 callit.M1
 
           echo
+          # A RUNG THAT CANNOT LINK IS NOT A RUNG. The previous ladder had one
+          # that printed "hex2 FAILED" and was skipped, so the step it was
+          # supposed to isolate went unmeasured and the bisect silently lost
+          # its resolution. That is now a failure in its own right.
+          if [ -s broken.txt ]; then
+            echo "  BROKEN RUNG(S): $(tr '\n' ' ' < broken.txt)"
+            echo "  The ladder has a gap; fix the link set before reading the faults."
+            exit 1
+          fi
           if [ -s faults.txt ]; then
             echo "  FIRST FAULT: $(head -1 faults.txt)"
             echo "  Everything before it ran, which is what makes that mean something."

@@ -975,17 +975,30 @@ not the only thing wrong -- and a fix that makes a symptom move is not the
 same as a fix that makes it go away. Worth saying plainly, because "no
 duplicate globals" was asserted and passing while the binary still died.
 
-TWO THINGS THE NEXT RUN CHANGES.
+THE RAW-SYSCALL PROBE WORKS, AND stdio IS INNOCENT.
 
-The probe main now exits 42 through a RAW SYSCALL -- no exit(), no FILE flush,
-no atexit. `return 0` could not tell "main ran" from "the process died before
-main", which is exactly the question. Exit 42 is proof main was reached;
-nothing else in the binary can produce it.
+    A   libc-core + bare main               MAIN RAN, exit 42      248 bytes
+    A2  + ctype/syscalls/fcntl              hex2 FAILED -- no rung
+    A3  + stdlib + string                   SIGNAL 7            22,374 bytes
+    B   + stdio                             SIGNAL 7            49,711 bytes
+    C..F                                    SIGNAL 7
 
-And the ladder between A and B was too coarse -- 248 bytes to 49,711 in one
-step. It is now 248 / 1,312 / 22,374 / 49,711: syscalls only, then stdlib and
-string, then stdio. Whichever step faults names a specific part of M2libc
-rather than "M2libc".
+Exit 42 through a raw syscall proves main is REACHED with libc-core alone --
+the ELF, the entry point and micro-c's calling convention are all fine.
+
+A3 faults with NO stdio linked, so __init_io was not it. That is the fourth
+guess in a row about this fault that has been wrong, and the reason the ladder
+exists rather than another hypothesis.
+
+A2 COULD NOT LINK, which is a defect in the LADDER, not a result. ctype.c and
+unistd.c both reach for malloc, so stdlib.c is the floor -- anything smaller
+fails at hex2. The rung was skipped with a printed warning and the step it was
+meant to isolate went unmeasured. A rung that cannot link is not a rung, and
+the job now FAILS on one rather than quietly losing resolution.
+
+The rebuilt ladder is 248 / 14,478 / 22,374 / 49,711 -- bare, then stdlib,
+then string, then stdio -- and every rung links locally. Whichever faults
+first names one file.
 
 TWO BISECTS WERE NEEDED AND THE FIRST WAS USELESS. It varied what main did
 while linking everything in every arm, so the suspect was present in all three
