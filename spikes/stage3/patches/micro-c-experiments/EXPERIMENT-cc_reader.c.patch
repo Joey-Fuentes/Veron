@@ -1,8 +1,41 @@
 EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 
+GENERATED AGAINST THE PIN: bd2fe4b plus patches 0001-0004, and against
+EVERY differing file rather than a hand-written list. The previous
+series used a hardcoded list that omitted cc_emit.h, so the tree built
+here and failed to compile in CI.
+
 --- a/cc_reader.c
 +++ b/cc_reader.c
-@@ -254,6 +254,25 @@
+@@ -41,8 +41,25 @@
+ 
+ int grab_byte(void)
+ {
+-	int c = fgetc(input);
+-	if(10 == c) line = line + 1;
++	if (file_index >= FILE_BUFFER_SIZE)
++	{
++		file_max = fread(file_buffer, 1, FILE_BUFFER_SIZE, input);
++		file_index = 0;
++	}
++
++	if (file_index == file_max)
++	{
++		return EOF;
++	}
++
++	int c = file_buffer[file_index];
++	file_index = file_index + 1;
++
++	if (c == '\n')
++	{
++		line = line + 1;
++	}
++
+ 	return c;
+ }
+ 
+@@ -237,6 +254,25 @@
  	else if('#' == c)
  	{
  		c = consume_byte(c);
@@ -28,7 +61,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		while (c == ' ' || c == '\t')
  		{
  			c = grab_byte();
-@@ -267,7 +286,36 @@
+@@ -250,7 +286,36 @@
  	}
  	else if(in_set(c, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"))
  	{
@@ -65,7 +98,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		if(define_state == DEFINE_STATE_DEFINE)
  		{
  			if(c != '(')
-@@ -284,7 +332,55 @@
+@@ -267,7 +332,55 @@
  	}
  	else if(in_set(c, "<=>|&!^%"))
  	{
@@ -122,3 +155,11 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  	else if(in_set(c, "'\""))
  	{
+@@ -451,6 +564,7 @@
+ 	line = 1;
+ 	file = filename;
+ 	token = current;
++	file_index = FILE_BUFFER_SIZE;
+ 	int ch = grab_byte();
+ 	define_state = DEFINE_STATE_NONE;
+ 	while(EOF != ch)

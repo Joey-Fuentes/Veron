@@ -1,8 +1,27 @@
 EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 
+GENERATED AGAINST THE PIN: bd2fe4b plus patches 0001-0004, and against
+EVERY differing file rather than a hand-written list. The previous
+series used a hardcoded list that omitted cc_emit.h, so the tree built
+here and failed to compile in CI.
+
 --- a/cc_macro.c
 +++ b/cc_macro.c
-@@ -230,17 +230,36 @@
+@@ -127,8 +127,11 @@
+ 		copy->s = token->s;
+ 		copy->filename = token->filename;
+ 		copy->linenumber = token->linenumber;
+-		/* Carry the paint. This file has TWO independent field-by-field token
+-		 * copies and each silently drops any field not enumerated in it. */
++		/* AND HERE TOO. This is the SECOND field-by-field token copy in this
++		 * file, and it is the one on the path that actually matters: the paint
++		 * was being applied, carried through copy_token, and then dropped
++		 * again right here. Two copies enumerating fields independently is why
++		 * adding one field took three attempts to land. */
+ 		copy->no_expand = token->no_expand;
+ 
+ 		if(NULL == first)
+@@ -227,17 +230,36 @@
  		exit(EXIT_FAILURE);
  	}
  
@@ -45,7 +64,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	while (NULL != hold->next)
  	{
  		if (match(token->s, hold->next->symbol))
-@@ -248,13 +267,13 @@
+@@ -245,13 +267,13 @@
  			temp = hold->next;
  			hold->next = hold->next->next;
  			free(temp);
@@ -63,7 +82,34 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	return;
  }
  
-@@ -984,6 +1003,8 @@
+@@ -682,9 +704,13 @@
+ 		offset = offset + 1;
+ 		offset = offset + copy_string(buffer + offset, include_filename, MAX_STRING - offset);
+ 		/* TERMINATE IT. copy_string copies and counts; it does not write a NUL.
+-		 * One buffer is reused for every -I in turn, so any path shorter than a
+-		 * previous attempt inherits that attempt's tail and fopen is handed
+-		 * garbage -- in effect only the FIRST -I ever worked. */
++		 * One buffer is reused for every -I in turn, so without this any path
++		 * shorter than a previous attempt inherits that attempt's tail and
++		 * fopen is handed garbage. The effect is that only the FIRST -I works:
++		 *     -I stubs                  -> found
++		 *     -I long/path -I stubs     -> "Unable to find include file"
++		 * The quoted-include branch above already terminates; this loop and the
++		 * M2libc fallback below did not. */
+ 		buffer[offset] = 0;
+ 
+ 		f = fopen(buffer, "r");
+@@ -968,11 +994,17 @@
+ 	to->arguments = from->arguments;
+ 	to->depth = from->depth;
+ 	to->linenumber = from->linenumber;
+-	to->no_expand = from->no_expand;   /* see insert_tokens */
++	/* CARRY THE PAINT. This copy enumerates the fields it moves, so a new one
++	 * is silently dropped unless it is added here -- which is exactly what
++	 * happened: the paint was applied correctly and then lost on every copy,
++	 * so the macro expanded forever anyway. */
++	to->no_expand = from->no_expand;
+ 
  	return to;
  }
  
@@ -72,7 +118,20 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  struct token_list* maybe_expand(struct token_list* token)
  {
  	if(NULL == token)
-@@ -1085,6 +1106,60 @@
+@@ -984,7 +1016,11 @@
+ 
+ 	/* PAINTED TOKENS ARE NOT MACRO INVOCATIONS. Without this, tcc.h's
+ 	 * thirteen self-referential defines expand forever:
+-	 *     #define total_bytes TCC_STATE_VAR(total_bytes) */
++	 *     #define total_bytes TCC_STATE_VAR(total_bytes)
++	 * The inner name must stay an identifier. M2-Planet already terminated on
++	 * the direct `#define FOO FOO` form, but not when the self-reference sits
++	 * inside a function-like macro's argument list, which is the form real
++	 * code uses. */
+ 	if(token->no_expand)
+ 	{
+ 		return token->next;
+@@ -1070,6 +1106,60 @@
  
  				while(expand_list != NULL)
  				{
@@ -133,7 +192,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  					if(match(expand_list->s, argument->name))
  					{
  						start_token_copy = deep_copy_token_list(start_token);
-@@ -1142,7 +1217,48 @@
+@@ -1127,11 +1217,55 @@
  
  	if (NULL == hold->expansion)
  	{
@@ -182,8 +241,17 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 +		pst = pst->next;
  	}
  
- 	/* Paint every occurrence of this macro's own name in what we are about to
-@@ -1160,9 +1276,94 @@
+-	/* Paint every occurrence of this macro's own name in what is about to be
+-	 * spliced, so the inner one can never be expanded. */
++	/* Paint every occurrence of this macro's own name in what we are about to
++	 * splice. For a function-like macro `expansion` is a fresh deep copy, so
++	 * this is per-invocation; for an object-like macro it is the stored list,
++	 * and painting it once is both correct and idempotent -- an occurrence of
++	 * the name inside its own expansion can never be expandable. */
+ 	struct token_list* paint = expansion;
+ 	while(NULL != paint)
+ 	{
+@@ -1142,9 +1276,94 @@
  		paint = paint->next;
  	}
  
@@ -279,7 +347,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  }
  
  void preprocess(void)
-@@ -1192,6 +1393,13 @@
+@@ -1174,6 +1393,13 @@
  		else if('\n' == macro_token->s[0])
  		{
  			start_of_line = TRUE;

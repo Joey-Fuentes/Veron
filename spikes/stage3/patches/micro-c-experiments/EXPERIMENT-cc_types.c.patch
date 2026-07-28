@@ -1,5 +1,10 @@
 EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 
+GENERATED AGAINST THE PIN: bd2fe4b plus patches 0001-0004, and against
+EVERY differing file rather than a hand-written list. The previous
+series used a hardcoded list that omitted cc_emit.h, so the tree built
+here and failed to compile in CI.
+
 --- a/cc_types.c
 +++ b/cc_types.c
 @@ -174,6 +174,14 @@
@@ -108,7 +113,34 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	line_error();
  	fputs("\n", stderr);
  	exit(EXIT_FAILURE);
-@@ -517,6 +593,30 @@
+@@ -456,6 +532,7 @@
+ {
+ 	require_extra_token(); /* skip '(' */
+ 	require_match("Required '*' after '(' in struct function pointer.", "*");
++	require(NULL != global_token, "Incomplete function pointer declarator.\n");
+ 
+ 	char* name = NULL;
+ 	if(global_token->s[0] != ')')
+@@ -466,15 +543,18 @@
+ 
+ 	require_match("Required ')' after name in struct function pointer.", ")");
+ 	require_match("Required '(' after ')' in struct function pointer.", "(");
++	require(NULL != global_token, "Incomplete function pointer parameter list.\n");
+ 
+ 	while(global_token->s[0] != ')')
+ 	{
+ 		type_name();
++		require(NULL != global_token, "Incomplete function pointer parameter list.\n");
+ 
+ 		if(global_token->s[0] == '(')
+ 		{
+ 			parse_function_pointer();
+ 		}
++		require(NULL != global_token, "Incomplete function pointer parameter list.\n");
+ 
+ 		if(global_token->s[0] != ')' && global_token->s[0] != ',')
+ 		{
+@@ -513,6 +593,30 @@
  	{
  		i->name = global_token->s;
  		require_extra_token();
@@ -139,7 +171,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  	else
  	{
-@@ -673,11 +773,46 @@
+@@ -669,11 +773,46 @@
  	int largest_member_size = 0;
  	require_match("ERROR in create_struct\n Missing {\n", "{");
  	struct type* last = NULL;
@@ -186,7 +218,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		if(member_size == NO_STRUCT_DEFINITION)
  		{
  			line_error();
-@@ -696,6 +831,98 @@
+@@ -692,6 +831,98 @@
  			offset = 0;
  		}
  
@@ -285,7 +317,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_match("ERROR in create_struct\n Missing ;\n", ";");
  		require(NULL != global_token, "Unterminated struct\n");
  	}
-@@ -815,6 +1042,18 @@
+@@ -811,13 +1042,47 @@
  		require_extra_token();
  	}
  
@@ -304,11 +336,14 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(match("struct", global_token->s))
  	{
  		require_extra_token();
-@@ -823,7 +1062,27 @@
- 			((NULL != global_token->next) &&
- 			(match(global_token->next->s, "{") || match(global_token->next->s, ";"))))
- 		{
+ 		ret = lookup_global_type();
+-		if(match(global_token->s, "{") || match(global_token->next->s, "{") || match(global_token->next->s, ";"))
+-		{
 -			return create_struct(FALSE);
++		if(match(global_token->s, "{") ||
++			((NULL != global_token->next) &&
++			(match(global_token->next->s, "{") || match(global_token->next->s, ";"))))
++		{
 +			/* A STRUCT DEFINED INLINE MAY STILL CARRY A DECLARATOR:
 +			 *     struct switch_t {
 +			 *         struct case_t { int64_t v1, v2; int ind, line; } **p;
@@ -333,7 +368,18 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		}
  		else if(NULL == ret)
  		{
-@@ -870,9 +1129,23 @@
+@@ -837,7 +1102,9 @@
+ 	{
+ 		require_extra_token();
+ 		ret = lookup_global_type();
+-		if(match(global_token->s, "{") || match(global_token->next->s, "{") || match(global_token->next->s, ";"))
++		if(match(global_token->s, "{") ||
++			((NULL != global_token->next) &&
++			(match(global_token->next->s, "{") || match(global_token->next->s, ";"))))
+ 		{
+ 			return create_struct(TRUE);
+ 		}
+@@ -862,9 +1129,23 @@
  		require_extra_token();
  	}
  
@@ -357,7 +403,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_extra_token();
  
  		while(match("const", global_token->s) || match("restrict", global_token->s))
-@@ -913,6 +1186,7 @@
+@@ -905,6 +1186,7 @@
  {
  	struct type* head = lookup_primitive_type();
  	struct type* i;
@@ -365,7 +411,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(NULL == head)
  	{
  		head = calloc(1, sizeof(struct type));
-@@ -922,10 +1196,21 @@
+@@ -914,10 +1196,21 @@
  
  		i = calloc(1, sizeof(struct type));
  		require(NULL != i, "Exhausted memory while creating a struct indirection\n");
@@ -387,7 +433,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	head->name = global_token->s;
-@@ -936,12 +1221,29 @@
+@@ -928,12 +1221,29 @@
  	i->offset = source->indirect->offset;
  	head->is_signed = source->is_signed;
  	i->is_signed = source->indirect->is_signed;
@@ -407,14 +453,15 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	head->members = source->members;
  	i->members =  source->indirect->members;
  	head->type = head;
- 	i->type = head;
- 
+-	i->type = i;
++	i->type = head;
++
 +	ii->name = head->name;
 +	ii->size = i->size;
 +	ii->offset = i->offset;
 +	ii->is_signed = i->is_signed;
 +	ii->members = i->members;
 +	ii->type = i;
-+
+ 
  	return head;
  }

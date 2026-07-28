@@ -1,8 +1,25 @@
 EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 
+GENERATED AGAINST THE PIN: bd2fe4b plus patches 0001-0004, and against
+EVERY differing file rather than a hand-written list. The previous
+series used a hardcoded list that omitted cc_emit.h, so the tree built
+here and failed to compile in CI.
+
 --- a/cc_globals.h
 +++ b/cc_globals.h
-@@ -74,3 +74,14 @@
+@@ -36,6 +36,11 @@
+ /* Make our string collection more efficient */
+ extern char* hold_string;
+ extern int string_index;
++extern int file_index;
++extern int file_max;
++extern char* file_buffer;
++extern int output_file_index;
++extern char* output_file_buffer;
+ 
+ /* Our Target Architecture */
+ extern int Architecture;
+@@ -69,3 +74,14 @@
  
  /* feature unsupported by cc_* */
  extern void maybe_bootstrap_error(char* feature);

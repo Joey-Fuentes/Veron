@@ -1,5 +1,10 @@
 EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 
+GENERATED AGAINST THE PIN: bd2fe4b plus patches 0001-0004, and against
+EVERY differing file rather than a hand-written list. The previous
+series used a hardcoded list that omitted cc_emit.h, so the tree built
+here and failed to compile in CI.
+
 --- a/cc_core.c
 +++ b/cc_core.c
 @@ -36,6 +36,12 @@
@@ -15,7 +20,60 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  struct token_list* break_frame;
  int current_count;
  int Address_of;
-@@ -215,6 +221,8 @@
+@@ -59,6 +65,36 @@
+ 
+ char* parse_function_pointer(void);
+ 
++void flush_output_buffer(FILE* destination_file)
++{
++	if (output_file_index == 0)
++	{
++		return;
++	}
++
++	fwrite(output_file_buffer, 1, output_file_index, destination_file);
++	output_file_index = 0;
++}
++
++void write_to_out_buffer(char* s, FILE* destination_file)
++{
++	int size = string_length(s);
++
++	if (output_file_index + size >= OUTPUT_FILE_BUFFER_SIZE)
++	{
++		flush_output_buffer(destination_file);
++	}
++
++	if (size >= OUTPUT_FILE_BUFFER_SIZE)
++	{
++		fwrite(s, 1, size, destination_file);
++	}
++
++	output_file_index = output_file_index + copy_string(
++		output_file_buffer + output_file_index, s,
++		OUTPUT_FILE_BUFFER_SIZE - output_file_index);
++}
++
+ int type_is_pointer(struct type* type_size)
+ {
+ 	return type_size->type != type_size || (type_size->options & TO_FUNCTION_POINTER);
+@@ -119,7 +155,14 @@
+ 		fputs("problem at end of file\n", stderr);
+ 		return;
+ 	}
+-	fputs(token->filename, stderr);
++	if(NULL == token->filename)
++	{
++		fputs("<unknown>", stderr);
++	}
++	else
++	{
++		fputs(token->filename, stderr);
++	}
+ 	fputs(":", stderr);
+ 	fputs(int2str(token->linenumber, 10, TRUE), stderr);
+ 	fputs(":", stderr);
+@@ -178,6 +221,8 @@
  }
  
  int unary_expr_sizeof(void);
@@ -24,7 +82,23 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  int constant_unary_expression(void)
  {
  	if('-' == global_token->s[0])
-@@ -268,6 +276,65 @@
+@@ -205,6 +250,15 @@
+ 		struct token_list* lookup = sym_lookup(global_token->s, global_constant_list);
+ 		if(lookup != NULL)
+ 		{
++			if(lookup->arguments == NULL || lookup->arguments->s == NULL)
++			{
++				line_error();
++				fputs("Unable to use incomplete enum constant '", stderr);
++				fputs(global_token->s, stderr);
++				fputs("' in constant expression.\n", stderr);
++				exit(EXIT_FAILURE);
++			}
++
+ 			require_extra_token();
+ 			return strtoint(lookup->arguments->s);
+ 		}
+@@ -222,6 +276,65 @@
  		require_extra_token();
  		return strtoint(global_token->prev->s);
  	}
@@ -90,10 +164,11 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	line_error();
  	fputs("Invalid token '", stderr);
-@@ -293,13 +360,76 @@
+@@ -247,8 +360,76 @@
  		require_extra_token();
  		return lhs - constant_expression();
  	}
+-	else if(global_token->s[0] == ',' || global_token->s[0] == ']' || global_token->s[0] == ';' || global_token->s[0] == '}' || global_token->s[0] == ':')
 +	/* EXPERIMENT: the rest of the integer operators. tcc.h:483 writes
 +	 *     int tab[LDOUBLE_SIZE/4];
 +	 * and only + and - were handled.
@@ -104,12 +179,11 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 +	 * defect rather than introducing it, which is fine for measuring how far
 +	 * tcc parses and NOT fine to ship -- a real fix needs precedence levels,
 +	 * the way the expression parser proper has them. */
- 	else if(global_token->s[0] == '*')
- 	{
- 		require_extra_token();
- 		return lhs * constant_expression();
- 	}
--	else if(global_token->s[0] == ',' || global_token->s[0] == ']' || global_token->s[0] == ';' || global_token->s[0] == '}' || global_token->s[0] == ':')
++	else if(global_token->s[0] == '*')
++	{
++		require_extra_token();
++		return lhs * constant_expression();
++	}
 +	else if(global_token->s[0] == '/')
 +	{
 +		require_extra_token();
@@ -168,7 +242,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		return lhs;
  	}
  
-@@ -311,6 +441,7 @@
+@@ -260,6 +441,7 @@
  }
  
  void expression(void);
@@ -176,7 +250,67 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  void function_call(struct token_list* s, int is_function_pointer)
  {
  	require_match("ERROR in process_expression_list\nNo ( was found\n", "(");
-@@ -439,6 +570,20 @@
+@@ -273,13 +455,16 @@
+ 	emit_push(REGISTER_BASE, "Protect the old base pointer");
+ 	emit_push(REGISTER_LOCALS, "Protect the old locals pointer");
+ 
+-	emit_move(REGISTER_TEMP, REGISTER_STACK, "Copy new base pointer");
+-
++	/* Spill the function pointer to the stack instead of a register.
++	 * On x86 REGISTER_TEMP2 is EDX, which is implicitly written by mul
++	 * (used to scale array subscripts) when evaluating arguments. */
+ 	if(is_function_pointer)
+ 	{
+-		emit_move(REGISTER_TEMP2, REGISTER_ZERO, "Save function pointer address");
++		emit_push(REGISTER_ZERO, "Save function pointer on stack");
+ 	}
+ 
++	emit_move(REGISTER_TEMP, REGISTER_STACK, "Copy new base pointer");
++
+ 	int passed = 0;
+ 	while(global_token->s[0] != ')')
+ 	{
+@@ -305,7 +490,8 @@
+ 
+ 	if(TRUE == is_function_pointer)
+ 	{
+-		emit_move(REGISTER_ZERO, REGISTER_TEMP2, "Restore function pointer");
++		emit_load_relative_to_register(REGISTER_ZERO, REGISTER_TEMP, 0, "Address of saved function pointer");
++		emit_dereference(REGISTER_ZERO, "Restore function pointer from stack");
+ 
+ 		if(Architecture & ARCH_FAMILY_KNIGHT)
+ 		{
+@@ -327,7 +513,7 @@
+ 		else if(AARCH64 == Architecture)
+ 		{
+ 			emit_move(REGISTER_TEMP, REGISTER_ZERO, "function pointer call");
+-			emit_out("BLR_X16\n");
++			emit_out("blr_x16\n");
+ 		}
+ 		else if(Architecture & ARCH_FAMILY_RISCV)
+ 		{
+@@ -357,7 +543,7 @@
+ 		else if(AARCH64 == Architecture)
+ 		{
+ 			emit_load_named_immediate(REGISTER_TEMP, "FUNCTION_", s->s, "function call");
+-			emit_out("BLR_X16\n");
++			emit_out("blr_x16\n");
+ 		}
+ 		else if(Architecture & ARCH_FAMILY_RISCV)
+ 		{
+@@ -372,6 +558,11 @@
+ 		emit_move(REGISTER_STACK, REGISTER_BASE, "Clean up function arguments");
+ 	}
+ 
++	if(is_function_pointer)
++	{
++		emit_pop(REGISTER_ONE, "Discard saved function pointer slot");
++	}
++
+ 	emit_pop(REGISTER_LOCALS, "Restore old locals pointer");
+ 	emit_pop(REGISTER_BASE, "Restore old base pointer");
+ 	if((AARCH64 == Architecture) || (RISCV64 == Architecture) || (RISCV32 == Architecture))
+@@ -379,6 +570,20 @@
  		emit_pop(REGISTER_RETURN, "Restore old return pointer (link)");
  	}
  	emit_pop(REGISTER_TEMP, "Restore temp register");
@@ -197,7 +331,39 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  }
  
  char* load_value_signed(unsigned size)
-@@ -479,7 +624,26 @@
+@@ -389,7 +594,7 @@
+ 		else if(X86 == Architecture) return "movsx_eax,BYTE_PTR_[eax]\n";
+ 		else if(AMD64 == Architecture) return "movsx_rax,BYTE_PTR_[rax]\n";
+ 		else if(ARMV7L == Architecture) return "LOADS8 R0 LOAD R0 HALF_MEMORY\n";
+-		else if(AARCH64 == Architecture) return "LDRSB_X0_[X0]\n";
++		else if(AARCH64 == Architecture) return "ldrsb_x0,[x0]\n";
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) return "rd_a0 rs1_a0 lb\n";
+ 	}
+ 	else if(size == 2)
+@@ -398,7 +603,7 @@
+ 		else if(X86 == Architecture) return "movsx_eax,WORD_PTR_[eax]\n";
+ 		else if(AMD64 == Architecture) return "movsx_rax,WORD_PTR_[rax]\n";
+ 		else if(ARMV7L == Architecture) return "LOADS16 R0 LOAD R0 HALF_MEMORY\n";
+-		else if(AARCH64 == Architecture) return "LDRSH_X0_[X0]\n";
++		else if(AARCH64 == Architecture) return "ldrsh_x0,[x0]\n";
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) return "rd_a0 rs1_a0 lh\n";
+ 	}
+ 	else if(size == 4)
+@@ -407,19 +612,38 @@
+ 		else if(X86 == Architecture) return "mov_eax,[eax]\n";
+ 		else if(AMD64 == Architecture) return "movsx_rax,DWORD_PTR_[rax]\n";
+ 		else if(ARMV7L == Architecture) return "!0 R0 LOAD32 R0 MEMORY\n";
+-		else if(AARCH64 == Architecture) return "LDR_W0_[X0]\n";
++		else if(AARCH64 == Architecture) return "ldr_w0,[x0]\n";
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) return "rd_a0 rs1_a0 lw\n";
+ 	}
+ 	else if(size == 8)
+ 	{
+ 		if(AMD64 == Architecture) return "mov_rax,[rax]\n";
+-		else if(AARCH64 == Architecture) return "DEREF_X0\n";
++		else if(AARCH64 == Architecture) return "ldr_x0,[x0]\n";
+ 		else if(RISCV64 == Architecture) return "rd_a0 rs1_a0 ld\n";
+ 	}
  	line_error();
  	fputs(" Got unsupported size ", stderr);
  	fputs(int2str(size, 10, TRUE), stderr);
@@ -225,7 +391,40 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	exit(EXIT_FAILURE);
  }
  
-@@ -522,7 +686,20 @@
+@@ -431,7 +655,7 @@
+ 		else if(X86 == Architecture) return "movzx_eax,BYTE_PTR_[eax]\n";
+ 		else if(AMD64 == Architecture) return "movzx_rax,BYTE_PTR_[rax]\n";
+ 		else if(ARMV7L == Architecture) return "!0 R0 LOAD R0 MEMORY\n";
+-		else if(AARCH64 == Architecture) return "DEREF_X0_BYTE\n";
++		else if(AARCH64 == Architecture) return "ldrb_w0,[x0]\n";
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) return "rd_a0 rs1_a0 lbu\n";
+ 	}
+ 	else if(size == 2)
+@@ -440,7 +664,7 @@
+ 		else if(X86 == Architecture) return "movzx_eax,WORD_PTR_[eax]\n";
+ 		else if(AMD64 == Architecture) return "movzx_rax,WORD_PTR_[rax]\n";
+ 		else if(ARMV7L == Architecture) return "NO_OFFSET R0 LOAD R0 HALF_MEMORY\n";
+-		else if(AARCH64 == Architecture) return "LDRH_W0_[X0]\n";
++		else if(AARCH64 == Architecture) return "ldrh_w0,[x0]\n";
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) return "rd_a0 rs1_a0 lhu\n";
+ 	}
+ 	else if(size == 4)
+@@ -449,20 +673,33 @@
+ 		else if(X86 == Architecture) return "mov_eax,[eax]\n";
+ 		else if(AMD64 == Architecture) return "mov_eax,[rax]\n";
+ 		else if(ARMV7L == Architecture) return "!0 R0 LOAD32 R0 MEMORY\n";
+-		else if(AARCH64 == Architecture) return "LDR_W0_[X0]\n";
++		else if(AARCH64 == Architecture) return "ldr_w0,[x0]\n";
+ 		else if(RISCV32 == Architecture) return "rd_a0 rs1_a0 lw\n";
+ 		else if(RISCV64 == Architecture) return "rd_a0 rs1_a0 lwu\n";
+ 	}
+ 	else if(size == 8)
+ 	{
+ 		if(AMD64 == Architecture) return "mov_rax,[rax]\n";
+-		else if(AARCH64 == Architecture) return "DEREF_X0\n";
++		else if(AARCH64 == Architecture) return "ldr_x0,[x0]\n";
+ 		else if(RISCV64 == Architecture) return "rd_a0 rs1_a0 ld\n";
+ 	}
  	line_error();
  	fputs(" Got unsupported size ", stderr);
  	fputs(int2str(size, 10, TRUE), stderr);
@@ -247,7 +446,115 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	exit(EXIT_FAILURE);
  }
  
-@@ -734,6 +911,15 @@
+@@ -480,7 +717,7 @@
+ 		else if(X86 == Architecture) return "mov_[ebx],al\n";
+ 		else if(AMD64 == Architecture) return "mov_[rbx],al\n";
+ 		else if(ARMV7L == Architecture) return "!0 R0 STORE8 R1 MEMORY\n";
+-		else if(AARCH64 == Architecture) return "STR_BYTE_W0_[X1]\n";
++		else if(AARCH64 == Architecture) return "strb_w0,[x1]\n";
+ 		else if(RISCV32 == Architecture || RISCV64 == Architecture) return "rs1_a1 rs2_a0 sb\n";
+ 	}
+ 	else if(size == 2)
+@@ -489,7 +726,7 @@
+ 		else if(X86 == Architecture) return "mov_[ebx],ax\n";
+ 		else if(AMD64 == Architecture) return "mov_[rbx],ax\n";
+ 		else if(ARMV7L == Architecture) return "NO_OFFSET R0 STORE16 R1 HALF_MEMORY\n";
+-		else if(AARCH64 == Architecture) return "STRH_W0_[X1]\n";
++		else if(AARCH64 == Architecture) return "strh_w0,[x1]\n";
+ 		else if(RISCV32 == Architecture || RISCV64 == Architecture) return "rs1_a1 rs2_a0 sh\n";
+ 	}
+ 	else if(size == 4)
+@@ -498,13 +735,13 @@
+ 		else if(X86 == Architecture) return "mov_[ebx],eax\n";
+ 		else if(AMD64 == Architecture) return "mov_[rbx],eax\n";
+ 		else if(ARMV7L == Architecture) return "!0 R0 STORE32 R1 MEMORY\n";
+-		else if(AARCH64 == Architecture) return "STR_W0_[X1]\n";
++		else if(AARCH64 == Architecture) return "str_w0,[x1]\n";
+ 		else if(RISCV32 == Architecture || RISCV64 == Architecture) return "rs1_a1 rs2_a0 sw\n";
+ 	}
+ 	else if(size == 8)
+ 	{
+ 		if(AMD64 == Architecture) return "mov_[rbx],rax\n";
+-		else if(AARCH64 == Architecture) return "STR_X0_[X1]\n";
++		else if(AARCH64 == Architecture) return "str_x0,[x1]\n";
+ 		else if(RISCV64 == Architecture) return "rs1_a1 rs2_a0 sd\n";
+ 	}
+ 	/* Should not happen but print error message. */
+@@ -552,29 +789,51 @@
+ 	exit(EXIT_FAILURE);
+ }
+ 
+-void primary_expr_string(void)
++struct string_list* strings;
++char* add_string_to_string_list(char* str)
+ {
++	struct string_list* s = strings;
++
++	while (s != NULL)
++	{
++		if (match(str, s->string))
++		{
++			return s->name;
++		}
++
++		s = s->next;
++	}
++
++	s = calloc(1, sizeof(struct string_list));
+ 	char* number_string = int2str(current_count, 10, TRUE);
+ 	current_count = current_count + 1;
+-	char* unique_id = create_unique_id("STRING_", function->s, number_string);
++	s->name = create_unique_id("STRING_", function->s, number_string);
++	s->string = str;
++	s->next = strings;
++	strings = s;
+ 
+-	emit_load_named_immediate(REGISTER_ZERO, "", unique_id, "primary expr string");
++	strings_list = emit("\n", emit(s->name, emit(":", strings_list)));
++	strings_list = emit(parse_string(str), strings_list);
+ 
+-	/* The target */
+-	strings_list = emit("\n", emit(unique_id, emit(":", strings_list)));
++	return s->name;
++}
+ 
++void primary_expr_string(void)
++{
+ 	/* catch case of just "foo" from segfaulting */
+ 	require(NULL != global_token->next, "a string by itself is not valid C\n");
+ 
++	char* s;
++
+ 	/* Parse the string */
+ 	if('"' != global_token->next->s[0])
+ 	{
+-		strings_list = emit(parse_string(global_token->s), strings_list);
++		s = global_token->s;
+ 		require_extra_token();
+ 	}
+ 	else
+ 	{
+-		char* s = calloc(MAX_STRING, sizeof(char));
++		s = calloc(MAX_STRING, sizeof(char));
+ 
+ 		/* prefix leading string */
+ 		s[0] = '"';
+@@ -602,10 +861,11 @@
+ 			require_extra_token();
+ 			used_string_concatenation = TRUE;
+ 		}
+-
+-		/* Now use it */
+-		strings_list = emit(parse_string(s), strings_list);
+ 	}
++
++	char* unique_id = add_string_to_string_list(s);
++
++	emit_load_named_immediate(REGISTER_ZERO, "", unique_id, "primary expr string");
+ }
+ 
+ void primary_expr_char(void)
+@@ -651,6 +911,15 @@
  	if(NULL != variable)
  	{
  		emit_load_named_immediate(REGISTER_ZERO, "FUNCTION_", variable->s, "function load");
@@ -263,7 +570,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		return variable;
  	}
  
-@@ -849,14 +1035,144 @@
+@@ -766,14 +1035,144 @@
  	}
  	num_dereference_after_postfix = num_dereference;
  
@@ -409,7 +716,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	char* s = global_token->s;
-@@ -892,15 +1208,43 @@
+@@ -809,15 +1208,43 @@
  
  	struct token_list* type = load_address_of_variable_into_register(REGISTER_ZERO, s);
  
@@ -454,7 +761,29 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(match(".", global_token->s))
  	{
  		postfix_expr_stub();
-@@ -928,7 +1272,14 @@
+@@ -826,10 +1253,11 @@
+ 
+ 	int is_prefix_operator = (match("++", global_token->prev->prev->s) || match("--", global_token->prev->prev->s)) && (options != TLO_STATIC && options != TLO_GLOBAL);
+ 	int is_postfix_operator = (match("++", global_token->s) || match("--", global_token->s)) && (options != TLO_STATIC && options != TLO_GLOBAL);
+-	int is_local_array = match("[", global_token->s) && (options & TLO_LOCAL_ARRAY);
++	int is_indexed_local_array = match("[", global_token->s) && (options & TLO_LOCAL_ARRAY);
++	int is_local_array = (options & TLO_LOCAL_ARRAY) != 0;
+ 	int is_function = options & TLO_FUNCTION;
+ 
+-	if(is_prefix_operator || is_postfix_operator || is_local_array || is_function)
++	if(is_prefix_operator || is_postfix_operator || is_indexed_local_array || is_function)
+ 	{
+ 		return;
+ 	}
+@@ -837,27 +1265,73 @@
+ 	int is_assignment = match("=", global_token->s);
+ 	int is_compound_operator = is_compound_assignment(global_token->s);
+ 
+-	if(!is_assignment && !is_compound_operator)
++	if(!is_assignment && !is_compound_operator && !is_local_array)
+ 	{
+ 		int size = register_size;
+ 		if(options == TLO_LOCAL || options == TLO_ARGUMENT)
  		{
  			size = current_target->size;
  		}
@@ -470,11 +799,12 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	if(is_assignment)
-@@ -937,15 +1288,50 @@
+ 	{
+ 		while (num_dereference > 0)
  		{
- 			if(!is_local_array)
- 			{
--				emit_out(load_value(current_target->size, current_target->is_signed));
+-			emit_out(load_value(current_target->size, current_target->is_signed));
++			if(!is_local_array)
++			{
 +				/* A STRUCT IS NEVER LOADED INTO A REGISTER. Dereferencing a
 +						 * struct pointer yields its ADDRESS, which is what every
 +						 * other struct path already assumes -- member access has
@@ -482,8 +812,8 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 +						 * struct tried load_value(16):
 +						 *     unsupported size 16 of type 'CType'   tccgen.c:895 */
 +						if(register_size >= current_target->size) emit_out(load_value(current_target->size, current_target->is_signed));
- 			}
- 			is_local_array = FALSE;
++			}
++			is_local_array = FALSE;
  			current_target = current_target->type;
  			num_dereference = num_dereference - 1;
  		}
@@ -522,7 +852,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		int should_not_deref;
  		while (num_dereference > 0)
  		{
-@@ -956,10 +1342,17 @@
+@@ -868,10 +1342,17 @@
  			if(!should_not_deref)
  			{
  				current_target = current_target->type;
@@ -541,7 +871,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  }
  
-@@ -985,6 +1378,25 @@
+@@ -897,6 +1378,25 @@
  	return i;
  }
  
@@ -567,7 +897,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  void common_recursion(FUNCTION f)
  {
  	emit_push(REGISTER_ZERO, "_common_recursion");
-@@ -1063,6 +1475,49 @@
+@@ -975,6 +1475,49 @@
  	current_target = i->type;
  	require_extra_token();
  
@@ -617,7 +947,18 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(0 != i->offset)
  	{
  		emit_add_immediate(REGISTER_ZERO, i->offset, "-> offset calculation");
-@@ -1119,7 +1574,14 @@
+@@ -982,8 +1525,9 @@
+ 
+ 	if(global_token->s[0] == '.') return;
+ 
++	int is_postfix_operator = match("++", global_token->s) || match("--", global_token->s);
+ 	/* We don't yet support assigning structs to structs */
+-	if((!match("=", global_token->s) && !is_compound_assignment(global_token->s) && (register_size >= i->size)))
++	if((!match("=", global_token->s) && !is_compound_assignment(global_token->s) && !is_postfix_operator && (register_size >= i->size)))
+ 	{
+ 		emit_out(load_value(i->size, i->is_signed));
+ 	}
+@@ -1030,7 +1574,14 @@
  
  	while (num_dereference_after_postfix > 0)
  	{
@@ -633,7 +974,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		current_target = current_target->type;
  		num_dereference_after_postfix = num_dereference_after_postfix - 1;
  	}
-@@ -1137,6 +1599,49 @@
+@@ -1048,19 +1599,70 @@
  	current_target = i->type;
  	require_extra_token();
  
@@ -683,8 +1024,10 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(0 != i->offset)
  	{
  		emit_add_immediate(REGISTER_ZERO, i->offset, ". offset calculation");
-@@ -1145,7 +1650,13 @@
- 	if(match("=", global_token->s) || is_compound_assignment(global_token->s) || is_postfix_operator) return;
+ 	}
+-	if(match("=", global_token->s) || is_compound_assignment(global_token->s)) return;
++	int is_postfix_operator = match("++", global_token->s) || match("--", global_token->s);
++	if(match("=", global_token->s) || is_compound_assignment(global_token->s) || is_postfix_operator) return;
  	if(match("[", global_token->s) || match(".", global_token->s)) return;
  
 -	emit_out(load_value(current_target->size, current_target->is_signed));
@@ -698,7 +1041,26 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  }
  
  void postfix_expr_array(void)
-@@ -1181,7 +1692,16 @@
+ {
+ 	char* prefix_operator = global_token->prev->prev->s;
++	int was_address_of = Address_of;
+ 
+ 	struct type* array = current_target;
+ 	common_recursion(expression);
+@@ -1079,18 +1681,27 @@
+ 		emit_mul_register_zero_with_immediate(current_target->type->size, "primary expr array");
+ 	}
+ 
+-	emit_add(REGISTER_ZERO, REGISTER_ONE, "primary expr array");
++	emit_add(REGISTER_ZERO, REGISTER_ONE, TRUE, "primary expr array");
+ 
+ 	require_match("ERROR in postfix_expr\nMissing ]\n", "]");
+ 	require(NULL != global_token, "truncated array expression\n");
+ 
+ 	int is_prefix_operator = match("++", prefix_operator) || match("--", prefix_operator);
+ 	int is_postfix_operator = match("++", global_token->s) || match("--", global_token->s);
+-	if(match("=", global_token->s) || is_compound_assignment(global_token->s) || match(".", global_token->s) || is_prefix_operator || is_postfix_operator)
++	if(match("=", global_token->s) || is_compound_assignment(global_token->s) || match(".", global_token->s) || is_prefix_operator || is_postfix_operator || was_address_of)
  	{
  		assign = "";
  	}
@@ -716,7 +1078,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	{
  		current_target = current_target->type;
  	}
-@@ -1199,8 +1719,67 @@
+@@ -1108,7 +1719,67 @@
  int unary_expr_sizeof(void)
  {
  	require_extra_token();
@@ -733,7 +1095,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 +		sizeof_parens = 1;
 +		require_extra_token();
 +	}
- 	require(NULL != global_token, "Incomplete sizeof expression.\n");
++	require(NULL != global_token, "Incomplete sizeof expression.\n");
 +
 +	/* `sizeof ((T*)0)->member` -- the idiom for the size of a member without
 +	 * an instance:
@@ -785,7 +1147,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	struct token_list* t = NULL;
  
  	int num_dereferences = 0;
-@@ -1214,7 +1793,7 @@
+@@ -1122,7 +1793,7 @@
  
  			require_extra_token();
  
@@ -794,7 +1156,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  			return length;
  		}
-@@ -1257,7 +1836,62 @@
+@@ -1165,7 +1836,62 @@
  			num_dereferences = num_dereferences - 1;
  		}
  
@@ -858,7 +1220,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		{
  			size = a->size * t->array_modifier;
  		}
-@@ -1276,7 +1910,7 @@
+@@ -1184,7 +1910,7 @@
  		size = a->size;
  	}
  
@@ -867,7 +1229,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	return size;
  }
-@@ -1318,6 +1952,10 @@
+@@ -1226,6 +1952,10 @@
  		{
  			line_error();
  			fputs("Attempted to use operator ( on non-function pointer", stderr);
@@ -878,7 +1240,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  			exit(EXIT_FAILURE);
  		}
  	}
-@@ -1327,6 +1965,51 @@
+@@ -1235,6 +1965,51 @@
  {
  	primary_expr();
  	postfix_expr_stub();
@@ -930,7 +1292,112 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  }
  
  /*
-@@ -1621,7 +2304,23 @@
+@@ -1276,9 +2051,9 @@
+ 	}
+ 	else if(AARCH64 == Architecture)
+ 	{
+-		general_recursion(postfix_expr, "MUL_X0_X1_X0\n", "*", additive_expr_stub_a);
+-		arithmetic_recursion(postfix_expr, "SDIV_X0_X1_X0\n", "UDIV_X0_X1_X0\n", "/", additive_expr_stub_a);
+-		arithmetic_recursion(postfix_expr, "SDIV_X2_X1_X0\nMSUB_X0_X0_X2_X1\n", "UDIV_X2_X1_X0\nMSUB_X0_X0_X2_X1\n", "%", additive_expr_stub_a);
++		general_recursion(postfix_expr, "mul_x0,x1,x0\n", "*", additive_expr_stub_a);
++		arithmetic_recursion(postfix_expr, "sdiv_x0,x1,x0\n", "udiv_x0,x1,x0\n", "/", additive_expr_stub_a);
++		arithmetic_recursion(postfix_expr, "sdiv_x2,x1,x0\nmsub_x0,x0,x2,x1\n", "udiv_x2,x1,x0\nmsub_x0,x0,x2,x1\n", "%", additive_expr_stub_a);
+ 	}
+ 	else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
+ 	{
+@@ -1297,35 +2072,18 @@
+ 
+ void additive_expr_stub_b(void)
+ {
+-	if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture))
+-	{
+-		arithmetic_recursion(additive_expr_a, "ADD R0 R1 R0\n", "ADDU R0 R1 R0\n", "+", additive_expr_stub_b);
+-		arithmetic_recursion(additive_expr_a, "SUB R0 R1 R0\n", "SUBU R0 R1 R0\n", "-", additive_expr_stub_b);
+-	}
+-	else if(X86 == Architecture)
+-	{
+-		arithmetic_recursion(additive_expr_a, "add_eax,ebx\n", "add_eax,ebx\n", "+", additive_expr_stub_b);
+-		arithmetic_recursion(additive_expr_a, "sub_ebx,eax\nmov_eax,ebx\n", "sub_ebx,eax\nmov_eax,ebx\n", "-", additive_expr_stub_b);
+-	}
+-	else if(AMD64 == Architecture)
++	require(NULL != global_token, "Received EOF in additive_expr_stub_a\n");
++	if(match("+", global_token->s))
+ 	{
+-		arithmetic_recursion(additive_expr_a, "add_rax,rbx\n", "add_rax,rbx\n", "+", additive_expr_stub_b);
+-		arithmetic_recursion(additive_expr_a, "sub_rbx,rax\nmov_rax,rbx\n", "sub_rbx,rax\nmov_rax,rbx\n", "-", additive_expr_stub_b);
++		common_recursion(additive_expr_a);
++		emit_add(REGISTER_ZERO, REGISTER_ONE, current_target->is_signed, NULL);
++		additive_expr_stub_b();
+ 	}
+-	else if(ARMV7L == Architecture)
+-	{
+-		arithmetic_recursion(additive_expr_a, "'0' R0 R0 ADD R1 ARITH2_ALWAYS\n", "'0' R0 R0 ADD R1 ARITH2_ALWAYS\n", "+", additive_expr_stub_b);
+-		arithmetic_recursion(additive_expr_a, "'0' R0 R0 SUB R1 ARITH2_ALWAYS\n", "'0' R0 R0 SUB R1 ARITH2_ALWAYS\n", "-", additive_expr_stub_b);
+-	}
+-	else if(AARCH64 == Architecture)
+-	{
+-		general_recursion(additive_expr_a, "ADD_X0_X1_X0\n", "+", additive_expr_stub_b);
+-		general_recursion(additive_expr_a, "SUB_X0_X1_X0\n", "-", additive_expr_stub_b);
+-	}
+-	else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
++	else if(match("-", global_token->s))
+ 	{
+-		general_recursion(additive_expr_a, "rd_a0 rs1_a1 rs2_a0 add\n", "+", additive_expr_stub_b);
+-		general_recursion(additive_expr_a, "rd_a0 rs1_a1 rs2_a0 sub\n", "-", additive_expr_stub_b);
++		common_recursion(additive_expr_a);
++		emit_rsub(REGISTER_ZERO, REGISTER_ONE, current_target->is_signed, NULL);
++		additive_expr_stub_b();
+ 	}
+ }
+ 
+@@ -1360,8 +2118,8 @@
+ 	}
+ 	else if(AARCH64 == Architecture)
+ 	{
+-		general_recursion(additive_expr_b, "LSHIFT_X0_X1_X0\n", "<<", additive_expr_stub_c);
+-		arithmetic_recursion(additive_expr_b, "ARITH_RSHIFT_X0_X1_X0\n", "LOGICAL_RSHIFT_X0_X1_X0\n", ">>", additive_expr_stub_c);
++		general_recursion(additive_expr_b, "lsl_x0,x1,x0\n", "<<", additive_expr_stub_c);
++		arithmetic_recursion(additive_expr_b, "asr_x0,x1,x0\n", "lsr_x0,x1,x0\n", ">>", additive_expr_stub_c);
+ 	}
+ 	else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
+ 	{
+@@ -1427,12 +2185,12 @@
+ 	}
+ 	else if(AARCH64 == Architecture)
+ 	{
+-		arithmetic_recursion(additive_expr_c, "CMP_X1_X0\nSET_X0_TO_1\nSKIP_INST_LT\nSET_X0_TO_0\n", "CMP_X1_X0\nSET_X0_TO_1\nSKIP_INST_LO\nSET_X0_TO_0\n", "<", relational_expr_stub);
+-		arithmetic_recursion(additive_expr_c, "CMP_X1_X0\nSET_X0_TO_1\nSKIP_INST_LE\nSET_X0_TO_0\n", "CMP_X1_X0\nSET_X0_TO_1\nSKIP_INST_LS\nSET_X0_TO_0\n", "<=", relational_expr_stub);
+-		arithmetic_recursion(additive_expr_c, "CMP_X1_X0\nSET_X0_TO_1\nSKIP_INST_GE\nSET_X0_TO_0\n", "CMP_X1_X0\nSET_X0_TO_1\nSKIP_INST_HS\nSET_X0_TO_0\n", ">=", relational_expr_stub);
+-		arithmetic_recursion(additive_expr_c, "CMP_X1_X0\nSET_X0_TO_1\nSKIP_INST_GT\nSET_X0_TO_0\n", "CMP_X1_X0\nSET_X0_TO_1\nSKIP_INST_HI\nSET_X0_TO_0\n", ">", relational_expr_stub);
+-		general_recursion(additive_expr_c, "CMP_X1_X0\nSET_X0_TO_1\nSKIP_INST_EQ\nSET_X0_TO_0\n", "==", relational_expr_stub);
+-		general_recursion(additive_expr_c, "CMP_X1_X0\nSET_X0_TO_1\nSKIP_INST_NE\nSET_X0_TO_0\n", "!=", relational_expr_stub);
++		arithmetic_recursion(additive_expr_c, "cmp_x1,x0\ncset_w0,lt\n", "cmp_x1,x0\ncset_w0,cc\n", "<", relational_expr_stub);
++		arithmetic_recursion(additive_expr_c, "cmp_x1,x0\ncset_w0,le\n", "cmp_x1,x0\ncset_w0,ls\n", "<=", relational_expr_stub);
++		arithmetic_recursion(additive_expr_c, "cmp_x1,x0\ncset_w0,ge\n", "cmp_x1,x0\ncset_w0,cs\n", ">=", relational_expr_stub);
++		arithmetic_recursion(additive_expr_c, "cmp_x1,x0\ncset_w0,gt\n", "cmp_x1,x0\ncset_w0,hi\n", ">", relational_expr_stub);
++		general_recursion(additive_expr_c, "cmp_x1,x0\ncset_w0,eq\n", "==", relational_expr_stub);
++		general_recursion(additive_expr_c, "cmp_x1,x0\ncset_w0,ne\n", "!=", relational_expr_stub);
+ 	}
+ 	else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
+ 	{
+@@ -1496,11 +2254,11 @@
+ 	}
+ 	else if(AARCH64 == Architecture)
+ 	{
+-		general_recursion(relational_expr, "AND_X0_X1_X0\n", "&", bitwise_expr_stub);
+-		general_recursion(relational_expr, "AND_X0_X1_X0\n", "&&", bitwise_expr_stub);
+-		general_recursion(relational_expr, "OR_X0_X1_X0\n", "|", bitwise_expr_stub);
+-		general_recursion(relational_expr, "OR_X0_X1_X0\n", "||", bitwise_expr_stub);
+-		general_recursion(relational_expr, "XOR_X0_X1_X0\n", "^", bitwise_expr_stub);
++		general_recursion(relational_expr, "and_x0,x1,x0\n", "&", bitwise_expr_stub);
++		general_recursion(relational_expr, "and_x0,x1,x0\n", "&&", bitwise_expr_stub);
++		general_recursion(relational_expr, "orr_x0,x1,x0\n", "|", bitwise_expr_stub);
++		general_recursion(relational_expr, "orr_x0,x1,x0\n", "||", bitwise_expr_stub);
++		general_recursion(relational_expr, "eor_x0,x0,x1\n", "^", bitwise_expr_stub);
+ 	}
+ 	else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
+ 	{
+@@ -1546,13 +2304,29 @@
  			emit_load_immediate(REGISTER_ZERO, 0, "primary expr");
  		}
  
@@ -955,7 +1422,14 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  		if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture)) emit_out("NEG R0 R0\n");
  		else if(X86 == Architecture) emit_out("sub_ebx,eax\nmov_eax,ebx\n");
-@@ -1637,7 +2336,11 @@
+ 		else if(AMD64 == Architecture) emit_out("sub_rbx,rax\nmov_rax,rbx\n");
+ 		else if(ARMV7L == Architecture) emit_out("'0' R0 R0 SUB R1 ARITH2_ALWAYS\n");
+-		else if(AARCH64 == Architecture) emit_out("SUB_X0_X1_X0\n");
++		else if(AARCH64 == Architecture) emit_out("sub_x0,x1,x0\n");
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) emit_out("rd_a0 rs1_a1 rs2_a0 sub\n");
+ 	}
+ 	else if('!' == global_token->s[0])
+@@ -1562,13 +2336,17 @@
  			emit_load_immediate(REGISTER_ZERO, 1, "primary expr");
  		}
  
@@ -968,7 +1442,23 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  		if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture)) emit_out("CMPU R0 R1 R0\nSET.G R0 R0 1\n");
  		else if(X86 == Architecture) emit_out("cmp_ebx,eax\nseta_al\nmovzx_eax,al\n");
-@@ -1710,12 +2413,27 @@
+ 		else if(AMD64 == Architecture) emit_out("cmp_rbx,rax\nseta_al\nmovzx_rax,al\n");
+ 		else if(ARMV7L == Architecture) emit_out("'0' R0 CMP R1 AUX_ALWAYS\n!0 R0 LOADI8_ALWAYS\n!1 R0 LOADI8_HI\n");
+-		else if(AARCH64 == Architecture) emit_out("CMP_X1_X0\nSET_X0_TO_1\nSKIP_INST_HI\nSET_X0_TO_0\n");
++		else if(AARCH64 == Architecture) emit_out("cmp_x1,x0\nmov_x0,1\nb.hi_8\nmov_x0,0\n");
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) emit_out("rd_a0 rs1_a0 !1 sltiu\n");
+ 	}
+ 	else if('~' == global_token->s[0])
+@@ -1579,7 +2357,7 @@
+ 		else if(X86 == Architecture) emit_out("not_eax\n");
+ 		else if(AMD64 == Architecture) emit_out("not_rax\n");
+ 		else if(ARMV7L == Architecture) emit_out("'0' R0 R0 MVN_ALWAYS\n");
+-		else if(AARCH64 == Architecture) emit_out("MVN_X0\n");
++		else if(AARCH64 == Architecture) emit_out("mvn_x0,x0\n");
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) emit_out("rd_a0 rs1_a0 not\n");
+ 	}
+ 	else if(match("--", global_token->s) || match("++", global_token->s))
+@@ -1635,12 +2413,27 @@
  				type_size = function_pointer;
  			}
  			require_match("Invalid character received in cast. Expected ')'.\n", ")");
@@ -998,7 +1488,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  			require_match("Error in Primary expression\nDidn't get )\n", ")");
  		}
  	}
-@@ -1723,6 +2441,30 @@
+@@ -1648,8 +2441,32 @@
  	else if(global_token->s[0] == '"') primary_expr_string();
  	else if(in_set(global_token->s[0], "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"))
  	{
@@ -1027,9 +1517,118 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 +		}
 +
  		struct token_list* variable = sym_lookup(global_token->s, global_function_list);
- 		if (variable != NULL && global_token->next != NULL && global_token->next->s[0] == '(')
+-		if (variable != NULL && global_token->next->s[0] == '(')
++		if (variable != NULL && global_token->next != NULL && global_token->next->s[0] == '(')
  		{
-@@ -1934,11 +2676,205 @@
+ 			/* Call function directly without loading into register optimization */
+ 			require_extra_token();
+@@ -1674,25 +2491,11 @@
+ 	char* operation = "";
+ 	if(match("+=", operator))
+ 	{
+-		if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture))
+-		{
+-			if(is_signed) operation = "ADD R0 R1 R0\n";
+-			else operation = "ADDU R0 R1 R0\n";
+-		}
+-		else emit_add(REGISTER_ZERO, REGISTER_ONE, "compound operation");
++		emit_add(REGISTER_ZERO, REGISTER_ONE, is_signed, "compound operation");
+ 	}
+ 	else if(match("-=", operator))
+ 	{
+-		if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture))
+-		{
+-			if(is_signed) operation = "SUB R0 R1 R0\n";
+-			else operation =  "SUBU R0 R1 R0\n";
+-		}
+-		else if(X86 == Architecture) operation = "sub_ebx,eax\nmov_eax,ebx\n";
+-		else if(AMD64 == Architecture) operation = "sub_rbx,rax\nmov_rax,rbx\n";
+-		else if(ARMV7L == Architecture) operation = "'0' R0 R0 SUB R1 ARITH2_ALWAYS\n";
+-		else if(AARCH64 == Architecture) operation = "SUB_X0_X1_X0\n";
+-		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) operation = "rd_a0 rs1_a1 rs2_a0 sub\n";
++		emit_rsub(REGISTER_ZERO, REGISTER_ONE, is_signed, "compound operation");
+ 	}
+ 	else if(match("*=", operator))
+ 	{
+@@ -1712,7 +2515,7 @@
+ 			else operation = "mul_rbx\n";
+ 		}
+ 		else if(ARMV7L == Architecture) operation = "'9' R0 '0' R1 MULS R0 ARITH2_ALWAYS\n";
+-		else if(AARCH64 == Architecture) operation = "MUL_X0_X1_X0\n";
++		else if(AARCH64 == Architecture) operation = "mul_x0,x1,x0\n";
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) operation = "rd_a0 rs1_a1 rs2_a0 mul\n";
+ 	}
+ 	else if(match("/=", operator))
+@@ -1739,8 +2542,8 @@
+ 		}
+ 		else if(AARCH64 == Architecture)
+ 		{
+-			if(is_signed) operation = "SDIV_X0_X1_X0\n";
+-			else operation = "UDIV_X0_X1_X0\n";
++			if(is_signed) operation = "sdiv_x0,x1,x0\n";
++			else operation = "udiv_x0,x1,x0\n";
+ 		}
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
+ 		{
+@@ -1772,8 +2575,8 @@
+ 		}
+ 		else if(AARCH64 == Architecture)
+ 		{
+-			if(is_signed) operation = "SDIV_X2_X1_X0\nMSUB_X0_X0_X2_X1\n";
+-			else operation = "UDIV_X2_X1_X0\nMSUB_X0_X0_X2_X1\n";
++			if(is_signed) operation = "sdiv_x2,x1,x0\nmsub_x0,x0,x2,x1\n";
++			else operation = "udiv_x2,x1,x0\nmsub_x0,x0,x2,x1\n";
+ 		}
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
+ 		{
+@@ -1799,7 +2602,7 @@
+ 			else operation = "mov_rcx,rax\nmov_rax,rbx\nshl_rax,cl\n";
+ 		}
+ 		else if(ARMV7L == Architecture) operation = "LEFT R1 R0 R0 SHIFT AUX_ALWAYS\n";
+-		else if(AARCH64 == Architecture) operation = "LSHIFT_X0_X1_X0\n";
++		else if(AARCH64 == Architecture) operation = "lsl_x0,x1,x0\n";
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) operation = "rd_a0 rs1_a1 rs2_a0 sll\n";
+ 	}
+ 	else if(match(">>=", operator))
+@@ -1826,8 +2629,8 @@
+ 		}
+ 		else if(AARCH64 == Architecture)
+ 		{
+-			if(is_signed) operation = "ARITH_RSHIFT_X0_X1_X0\n";
+-			else operation = "LOGICAL_RSHIFT_X0_X1_X0\n";
++			if(is_signed) operation = "asr_x0,x1,x0\n";
++			else operation = "lsr_x0,x1,x0\n";
+ 		}
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
+ 		{
+@@ -1841,7 +2644,7 @@
+ 		else if(X86 == Architecture) operation = "and_eax,ebx\n";
+ 		else if(AMD64 == Architecture) operation = "and_rax,rbx\n";
+ 		else if(ARMV7L == Architecture) operation = "NO_SHIFT R0 R0 AND R1 ARITH2_ALWAYS\n";
+-		else if(AARCH64 == Architecture) operation = "AND_X0_X1_X0\n";
++		else if(AARCH64 == Architecture) operation = "and_x0,x1,x0\n";
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) operation = "rd_a0 rs1_a1 rs2_a0 and\n";
+ 	}
+ 	else if(match("^=", operator))
+@@ -1850,7 +2653,7 @@
+ 		else if(X86 == Architecture) operation = "xor_eax,ebx\n";
+ 		else if(AMD64 == Architecture) operation = "xor_rax,rbx\n";
+ 		else if(ARMV7L == Architecture) operation = "'0' R0 R0 XOR R1 ARITH2_ALWAYS\n";
+-		else if(AARCH64 == Architecture) operation = "XOR_X0_X1_X0\n";
++		else if(AARCH64 == Architecture) operation = "eor_x0,x0,x1\n";
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) operation = "rd_a0 rs1_a1 rs2_a0 xor\n";
+ 	}
+ 	else if(match("|=", operator))
+@@ -1859,7 +2662,7 @@
+ 		else if(X86 == Architecture) operation = "or_eax,ebx\n";
+ 		else if(AMD64 == Architecture) operation = "or_rax,rbx\n";
+ 		else if(ARMV7L == Architecture) operation = "NO_SHIFT R0 R0 OR R1 AUX_ALWAYS\n";
+-		else if(AARCH64 == Architecture) operation = "OR_X0_X1_X0\n";
++		else if(AARCH64 == Architecture) operation = "orr_x0,x1,x0\n";
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) operation = "rd_a0 rs1_a1 rs2_a0 or\n";
+ 	}
+ 	else
+@@ -1873,11 +2676,205 @@
  }
  
  
@@ -1235,10 +1834,30 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		char* store = "";
  		if(match("]", global_token->prev->s))
  		{
-@@ -2107,6 +3043,39 @@
+@@ -1907,7 +2904,7 @@
+ 			else if(X86 == Architecture) load = "mov_ebx,[ebx]\n";
+ 			else if(AMD64 == Architecture) load = "mov_rbx,[rbx]\n";
+ 			else if(ARMV7L == Architecture) load = "!0 R1 LOAD32 R1 MEMORY\n";
+-			else if(AARCH64 == Architecture) load = "DEREF_X1\n";
++			else if(AARCH64 == Architecture) load = "ldr_x1,[x1]\n";
+ 			else if(RISCV32 == Architecture) load = "rd_a1 rs1_a1 lw\n";
+ 			else if(RISCV64 == Architecture) load = "rd_a1 rs1_a1 ld\n";
+ 		}
+@@ -1917,7 +2914,7 @@
+ 			else if(X86 == Architecture) load = "movsx_ebx,BYTE_PTR_[ebx]\n";
+ 			else if(AMD64 == Architecture) load = "movsx_rbx,BYTE_PTR_[rbx]\n";
+ 			else if(ARMV7L == Architecture) load = "LOADU8 R1 LOAD R1 MEMORY\n";
+-			else if(AARCH64 == Architecture) load = "DEREF_X1_BYTE\n";
++			else if(AARCH64 == Architecture) load = "ldrb_x1,[x1]\n";
+ 			else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) load = "rd_a1 rs1_a1 lbu\n";
+ 		}
  
- 		require(NULL != name, "Local function pointer declarations require a name.\n");
+@@ -2044,6 +3041,41 @@
+ 			require_extra_token();
+ 		}
  
++		require(NULL != name, "Local function pointer declarations require a name.\n");
++
 +		/* A FUNCTION DECLARATION AT BLOCK SCOPE:
 +		 *     void __clear_cache(void *beginning, void *end);   tccrun.c:476
 +		 * Legal C, and not a variable at all -- micro-c read the '(' as the
@@ -1275,7 +1894,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		a = sym_declare(name, current_type, list_to_append_to, TLO_LOCAL);
  		list_to_append_to = a;
  
-@@ -2147,6 +3116,24 @@
+@@ -2084,6 +3116,24 @@
  			}
  
  			require_match("ERROR in collect_local\nMissing ] after local array size\n", "]");
@@ -1300,7 +1919,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		}
  
  		if(NULL != function->locals)
-@@ -2177,12 +3164,118 @@
+@@ -2114,12 +3164,118 @@
  			}
  
  			require_extra_token();
@@ -1424,7 +2043,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		}
  
  		if(global_token->s[0] == ',')
-@@ -2221,7 +3314,7 @@
+@@ -2158,7 +3314,7 @@
  
  	global_token = global_token->next;
  	require_match("ERROR in process_if\nMISSING (\n", "(");
@@ -1433,7 +2052,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	emit_jump_if_zero(REGISTER_ZERO, "ELSE_", unique_id, "Jump to else");
  
-@@ -2275,12 +3368,17 @@
+@@ -2212,12 +3368,17 @@
  	char* nested_break_func = break_target_func;
  	char* nested_break_num = break_target_num;
  	char* nested_continue_head = continue_target_head;
@@ -1452,7 +2071,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	break_target_num = number_string;
  	break_frame = function->locals;
  	break_target_func = function->s;
-@@ -2310,6 +3408,31 @@
+@@ -2247,6 +3408,31 @@
  	int value;
  process_switch_iter:
  	require(NULL != global_token, "incomplete switch statement\n");
@@ -1484,7 +2103,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(match("case", global_token->s))
  	{
  		require_extra_token();
-@@ -2340,20 +3463,30 @@
+@@ -2277,20 +3463,30 @@
  		require_match("ERROR in process_switch\nMISSING : after default\n", ":");
  		emit_label("_SWITCH_DEFAULT_", unique_id);
  
@@ -1524,7 +2143,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	/* create the table */
  	emit_label("_SWITCH_TABLE_", unique_id);
  
-@@ -2385,6 +3518,8 @@
+@@ -2322,6 +3518,8 @@
  	break_target_func = nested_break_func;
  	break_target_num = nested_break_num;
  	continue_target_head = nested_continue_head;
@@ -1533,7 +2152,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	break_frame = nested_locals;
  }
  
-@@ -2395,12 +3530,16 @@
+@@ -2332,12 +3530,16 @@
  	char* nested_break_func = break_target_func;
  	char* nested_break_num = break_target_num;
  	char* nested_continue_head = continue_target_head;
@@ -1550,7 +2169,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	break_target_num = number_string;
  	break_frame = function->locals;
  	break_target_func = function->s;
-@@ -2423,7 +3562,9 @@
+@@ -2360,7 +3562,9 @@
  	}
  	else if(!match(";", global_token->s))
  	{
@@ -1561,7 +2180,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_match("ERROR in process_for\nMISSING ;1\n", ";");
  	}
  	else
-@@ -2433,16 +3574,37 @@
+@@ -2370,16 +3574,37 @@
  
  	emit_label("FOR_", unique_id);
  
@@ -1603,7 +2222,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	emit_unconditional_jump("FOR_", unique_id, "Check conditional");
  
-@@ -2460,6 +3622,8 @@
+@@ -2397,6 +3622,8 @@
  	break_target_func = nested_break_func;
  	break_target_num = nested_break_num;
  	continue_target_head = nested_continue_head;
@@ -1612,7 +2231,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	break_frame = nested_locals;
  }
  
-@@ -2486,6 +3650,8 @@
+@@ -2423,6 +3650,8 @@
  	char* nested_break_func = break_target_func;
  	char* nested_break_num = break_target_num;
  	char* nested_continue_head = continue_target_head;
@@ -1621,7 +2240,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	char* number_string = int2str(current_count, 10, TRUE);
  	current_count = current_count + 1;
-@@ -2494,6 +3660,8 @@
+@@ -2431,6 +3660,8 @@
  
  	break_target_head = "DO_END_";
  	continue_target_head = "DO_TEST_";
@@ -1630,7 +2249,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	break_target_num = number_string;
  	break_frame = function->locals;
  	break_target_func = function->s;
-@@ -2508,7 +3676,11 @@
+@@ -2445,7 +3676,11 @@
  
  	require_match("ERROR in process_do\nMISSING while\n", "while");
  	require_match("ERROR in process_do\nMISSING (\n", "(");
@@ -1643,7 +2262,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	require_match("ERROR in process_do\nMISSING )\n", ")");
  	require_match("ERROR in process_do\nMISSING ;\n", ";");
  
-@@ -2521,6 +3693,8 @@
+@@ -2458,6 +3693,8 @@
  	break_target_func = nested_break_func;
  	break_target_num = nested_break_num;
  	continue_target_head = nested_continue_head;
@@ -1652,7 +2271,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  }
  
  
-@@ -2532,6 +3706,8 @@
+@@ -2469,6 +3706,8 @@
  	char* nested_break_func = break_target_func;
  	char* nested_break_num = break_target_num;
  	char* nested_continue_head = continue_target_head;
@@ -1661,7 +2280,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	char* number_string = int2str(current_count, 10, TRUE);
  	current_count = current_count + 1;
-@@ -2540,6 +3716,8 @@
+@@ -2477,6 +3716,8 @@
  
  	break_target_head = "END_WHILE_";
  	continue_target_head = "WHILE_";
@@ -1670,7 +2289,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	break_target_num = number_string;
  	break_frame = function->locals;
  	break_target_func = function->s;
-@@ -2548,7 +3726,7 @@
+@@ -2485,7 +3726,7 @@
  
  	global_token = global_token->next;
  	require_match("ERROR in process_while\nMISSING (\n", "(");
@@ -1679,7 +2298,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	emit_jump_if_zero(REGISTER_ZERO, "END_WHILE_", unique_id, "Jump to end");
  
-@@ -2568,6 +3746,8 @@
+@@ -2505,6 +3746,8 @@
  	break_target_func = nested_break_func;
  	break_target_num = nested_break_num;
  	continue_target_head = nested_continue_head;
@@ -1688,7 +2307,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	break_frame = nested_locals;
  }
  
-@@ -2611,7 +3791,7 @@
+@@ -2548,7 +3791,7 @@
  	}
  	require_extra_token();
  
@@ -1697,7 +2316,22 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	emit_unconditional_jump("", continue_target, "Continue statement");
  
-@@ -2771,7 +3951,16 @@
+@@ -2609,6 +3852,7 @@
+  *     return ;
+  *     break ;
+  *     expr ;
++ * 	   ; (Empty statement)
+  */
+ 
+ struct type* lookup_primitive_type(void);
+@@ -2700,10 +3944,23 @@
+ 		require_extra_token();
+ 
+ 		process_static_variable();
++	} else if (match(";", global_token->s))
++	{
++		/* empty statement */
++		require_extra_token();
  	}
  	else
  	{
@@ -1715,7 +2349,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_match("ERROR in statement\nMISSING ;\n", ";");
  	}
  }
-@@ -2800,6 +3989,89 @@
+@@ -2732,6 +3989,89 @@
  		type_size = type_name();
  		require(NULL != global_token, "Received EOF when attempting to collect arguments\n");
  		require(NULL != type_size, "Must have non-null type\n");
@@ -1805,7 +2439,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		if(global_token->s[0] == ')')
  		{
  			/* foo(int,char,void) doesn't need anything done */
-@@ -2808,7 +4080,14 @@
+@@ -2740,7 +4080,14 @@
  		else if(global_token->s[0] != ',')
  		{
  			/* deal with foo(int a, char b) */
@@ -1821,7 +2455,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  			require(!iskeywordp(global_token->s), "You are not allowed to use a keyword as a argument variable name\n");
  			a = sym_declare(global_token->s, type_size, function->arguments, TLO_ARGUMENT);
  			if(NULL == function->arguments)
-@@ -2861,10 +4140,14 @@
+@@ -2793,10 +4140,14 @@
  	require_extra_token();
  }
  
@@ -1838,7 +2472,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	/* allow previously defined functions to be looked up */
  	global_function_list = function;
-@@ -2969,6 +4252,47 @@
+@@ -2901,6 +4252,47 @@
  	{
  		type_size = mirror_type(type_size);
  		global_token = global_token->next;
@@ -1886,7 +2520,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	require_match("ERROR in typedef statement\nMissing ;\n", ";");
-@@ -3061,7 +4385,19 @@
+@@ -2993,7 +4385,19 @@
  	{
  		if(('"' == global_token->s[0]))
  		{
@@ -1907,7 +2541,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  			globals_list = emit("&GLOBAL_", globals_list);
  			globals_list = emit(name, globals_list);
  			globals_list = emit("_contents ", globals_list);
-@@ -3074,9 +4410,35 @@
+@@ -3006,9 +4410,35 @@
  			strings_list = emit(":GLOBAL_", strings_list);
  			strings_list = emit(name, strings_list);
  			strings_list = emit("_contents\n", strings_list);
@@ -1945,7 +2579,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		}
  		else if(match("0", global_token->s))
  		{
-@@ -3119,6 +4481,32 @@
+@@ -3051,6 +4481,32 @@
  			}
  			require_extra_token();
  		}
@@ -1978,7 +2612,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		else
  		{
  			line_error();
-@@ -3189,6 +4577,45 @@
+@@ -3121,6 +4577,45 @@
  			exit(EXIT_FAILURE);
  		}
  
@@ -2024,10 +2658,12 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		global_value_selection(type_size);
  
  		amount_of_elements = amount_of_elements + 1;
-@@ -3316,10 +4743,78 @@
- 	require_match("missing close bracket\n", "]");
- 	require(NULL != global_token, "Unterminated global array declaration\n");
+@@ -3246,11 +4741,80 @@
  
+ 	/* Ensure properly closed */
+ 	require_match("missing close bracket\n", "]");
++	require(NULL != global_token, "Unterminated global array declaration\n");
++
 +	/* A SECOND DIMENSION on a global or static array. Same two-level row type
 +	 * the local path builds; here it only has to scale the STORAGE, since the
 +	 * declared type is already recorded on the variable and indexing reads it
@@ -2055,7 +2691,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 +	{
 +		global_second_dimension = 0;
 +	}
-+
+ 
  	if(global_token->s[0] == '=')
  	{
  		require_extra_token();
@@ -2103,7 +2739,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_match("Missing { after = in global array", "{");
  
  		array_modifier = global_array_initializer_list(type_size, array_modifier);
-@@ -3458,7 +4953,7 @@
+@@ -3389,7 +4953,7 @@
  	/* Deal with global functions */
  	if(match("(", global_token->s))
  	{
@@ -2112,3 +2748,23 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		goto new_type;
  	}
  
+@@ -3406,7 +4970,7 @@
+ 	struct token_list* i = reverse_list(head);
+ 	while(NULL != i)
+ 	{
+-		fputs(i->s, out);
++		write_to_out_buffer(i->s, out);
+ 		i = i->next;
+ 	}
+ }
+@@ -3415,8 +4979,8 @@
+ {
+ 	while(NULL != i)
+ 	{
+-		fputs(i->s, out);
+-		fputs(" ", out);
++		write_to_out_buffer(i->s, out);
++		write_to_out_buffer(" ", out);
+ 		i = i->next;
+ 	}
+ }

@@ -1,16 +1,38 @@
 EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 
+GENERATED AGAINST THE PIN: bd2fe4b plus patches 0001-0004, and against
+EVERY differing file rather than a hand-written list. The previous
+series used a hardcoded list that omitted cc_emit.h, so the tree built
+here and failed to compile in CI.
+
 --- a/cc.h
 +++ b/cc.h
-@@ -67,6 +67,7 @@
+@@ -62,8 +62,12 @@
+ 	NO_STRUCT_DEFINITION = 0,
+ };
  
++void write_to_out_buffer(char* s, FILE* destination_file);
++void flush_output_buffer(FILE* destination_file);
++
  int copy_string(char* target, char* source, int max);
  char* concat_strings2(char* a, char* b);
 +struct type* new_array_row_type(struct type* element, int inner);
  char* concat_strings3(char* a, char* b, char* c);
  char* concat_strings4(char* a, char* b, char* c, char* d);
  int string_length(char* a);
-@@ -120,6 +121,11 @@
+@@ -76,6 +80,11 @@
+ void require_extra_token(void);
+ void require_token(void);
+ 
++enum {
++	FILE_BUFFER_SIZE = 65536,
++	OUTPUT_FILE_BUFFER_SIZE = 65536,
++};
++
+ enum
+ {
+ 	REGISTER_ZERO = 0,
+@@ -112,6 +121,11 @@
  	struct type* type;
  	char* name;
  	int options;
@@ -22,3 +44,16 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  };
  
  /* TLO = Token List Option */
+@@ -165,6 +179,12 @@
+ 	struct include_path_list* next;
+ };
+ 
++struct string_list {
++  struct string_list* next;
++  char* name;
++  char* string;
++};
++
+ struct token_list* sym_declare(char *s, struct type* t, struct token_list* list, int options);
+ void line_error_token(struct token_list* token);
+ 
