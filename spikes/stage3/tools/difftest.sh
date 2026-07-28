@@ -53,6 +53,19 @@ T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 
 pass=0; fail=0; broken=0; skipped=0
+gap_failed=0; gap_passed=0
+
+# A case whose first line says KNOWN GAP is EXPECTED to fail. It documents
+# something micro-c does not do yet, with the reasoning in the file.
+#
+# Two things follow, and both matter:
+#   - a known gap failing does NOT fail the run, so "green" stays meaningful
+#     and nobody has to remember which failure is the acceptable one
+#   - a known gap PASSING is reported loudly, because it means either the gap
+#     was closed or the case stopped testing what it claims to
+is_known_gap() {
+    head -5 "$1" | grep -q "KNOWN GAP"
+}
 
 for c in "$CASES"/*.c; do
     [ -e "$c" ] || continue
@@ -109,7 +122,15 @@ for c in "$CASES"/*.c; do
     m_rc=$?
     set -e
 
-    if [ "$m_rc" = 0 ]; then
+    if is_known_gap "$c"; then
+        if [ "$m_rc" = 0 ]; then
+            printf '  %-28s KNOWN GAP NOW PASSES -- close it or fix the case\n' "$name"
+            gap_passed=$((gap_passed + 1))
+        else
+            printf '  %-28s known gap (expected)\n' "$name"
+            gap_failed=$((gap_failed + 1))
+        fi
+    elif [ "$m_rc" = 0 ]; then
         pass=$((pass + 1))
     elif [ "$m_rc" -gt 128 ]; then
         printf '  %-28s SIGNAL %s (gcc returns 0)\n' "$name" "$((m_rc - 128))"
@@ -121,5 +142,8 @@ for c in "$CASES"/*.c; do
 done
 
 echo
-echo "  pass $pass   fail $fail   will-not-compile $skipped   broken-case $broken"
+echo "  pass $pass   fail $fail   known-gap $gap_failed   will-not-compile $skipped   broken-case $broken"
+if [ "$gap_passed" != 0 ]; then
+    echo "  $gap_passed known gap(s) now pass -- that is news, not noise"
+fi
 [ "$fail" = 0 ] || exit 1

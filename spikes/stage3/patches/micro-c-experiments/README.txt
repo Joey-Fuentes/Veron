@@ -2203,3 +2203,74 @@ patches/m2libc/0002 makes malloc print the size it refused. Written with
 write() and a local formatter, because M2libc compiles stdlib.c before stdio.c
 and bootstrappable.c, so neither fputs nor int2str exists at that point -- a
 detail worth stating because the obvious version does not compile.
+
+=============================================================================
+FORWARD-LOOKING CASES FOUND `*p++ = x`
+
+Cases written for constructs that had NEVER failed, rather than from bugs
+already found -- the thing said two rounds ago would break the "always one
+more" pattern. Nine new cases: unions, function pointers in struct members,
+nested and partial initialisers, wide switches with fallthrough and a default
+declared first, arrays of structs, chained arrows, compound assignment.
+
+Eight passed. One did not:
+
+    *p++ = 'a'      SIGSEGV
+
+and it emitted
+
+    add_rax,1 ; mov_[rbx],rax     p = p + 1          correct
+    pop_rax                        old p
+    movsx_rax,BYTE_PTR_[rax]       LOADS *old_p      wrong
+    mov_[rbx],al                   stores through the loaded VALUE
+
+When `*p++` is an ASSIGNMENT TARGET the last dereference must yield an
+address, not load through it. postfix_expr's own deferred loop has had that
+check all along under the name `assigning`; postfix_expr_inc_or_dec is a
+separate copy that never got it -- the fourth place in this file carrying its
+own version of one rule.
+
+tcc uses this idiom constantly. `*s->include_stack_ptr++ = file` is one, and
+it would have written to an arbitrary address every time.
+
+=============================================================================
+POINTER ARITHMETIC DOES NOT SCALE -- RECORDED, NOT SHIPPED
+
+Chasing the above turned up something larger:
+
+    long lbuf[4];  lbuf + 1     should be eight bytes on, is ONE
+    long *q;       q + 1        the same
+
+Indexing scales correctly, which is why this survived: M2-Planet's own sources
+index and rarely add. tcc does both.
+
+A fix was written and IS NOT WIRED IN. It made those cases pass and broke
+10-pointer-to-member, so it is kept as scale_pointer_operand with its
+reasoning and left uncalled. Two shapes it would still get wrong, both needing
+type information promote_type has folded away by the time the operator is
+handled:
+
+    n + p     the scale belongs on the other operand
+    p - q     the answer counts ELEMENTS, so divide after rather than scale
+              before
+
+Shipping a semantic change that fixes two cases and breaks a third is worse
+than a documented gap, and this is the second time this session that pattern
+came up -- the first was short-circuit, which was right to defer and right to
+land later once the actual cause was measured.
+
+=============================================================================
+KNOWN GAPS ARE NOW A CATEGORY, NOT A FAILURE
+
+difftest treats a case whose first lines say KNOWN GAP as expected-fail. Two
+consequences, both deliberate:
+
+  - a gap failing does not fail the run, so "green" stays meaningful and
+    nobody has to remember which failure is the acceptable one
+  - a gap PASSING is reported loudly, because it means either the gap closed
+    or the case stopped testing what it claims to
+
+    difftest    20 pass / 0 fail / 1 known gap
+    regression  0 regressions
+    vocabulary  clean on five architectures
+    full unit   366,619 lines
