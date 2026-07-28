@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "660 lines into tccpp.c".
+"hangs forever on tcc.c" to "673 lines into tccpp.c".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -41,6 +41,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   cast with a PARENTHESISED operand           cc_core.c   tccpp.c:390
   empty `for` clauses, `for (;;)`             cc_core.c   tccpp.c:415
   a call's result carries its RETURN TYPE     cc_core.c   tccpp.c:523
+  unary `*` deferred past the postfix chain   cc_core.c   tccpp.c:660
 
 UNSOUND, AND WHY
 ----------------
@@ -318,10 +319,30 @@ UNSOUND, AND WHY
     Instrumenting first was again what found it -- printing s->type showed
     NULL, where the guess would have been that the type was simply wrong.
 
-STOPPED AT: tccpp.c:660, "unsupported size 1125 ... of type 'BufferedFile'
-near token '->'" -- a large struct being loaded by value. Same shape as the
-mirror_type bug fixed earlier but on a different path, and the improved
-diagnostic named it immediately.
+20. A UNARY `*` BINDS LOOSER THAN A POSTFIX ACCESS, the same lesson the cast
+    taught two entries ago. `*bf->buf_end` means `*(bf->buf_end)`, but the
+    star was applied to `bf`, loading the whole struct:
+
+        *bf->buf_end = CH_EOB;                      tccpp.c:660
+        unsupported size 1125 of type 'BufferedFile' near '->'
+
+    Deferring it to postfix_expr -- which runs after postfix_expr_stub's
+    recursion finishes -- is the fix. TWO THINGS WENT WRONG ON THE WAY, both
+    caught by comparing emitted code against the `t = bf->buf_end; *t = 7;`
+    equivalent rather than by whether it compiled:
+
+    (a) An ASSIGNMENT TARGET must not be loaded. The first version emitted
+        `ldrb` -- one byte of an eight-byte pointer -- and then stored through
+        the truncated address. The ordinary path guards this with
+        is_assignment; the deferred path needed the same guard.
+
+    (b) The is_assignment branch applies the dereference ITSELF, so leaving
+        the deferred count set made postfix_expr apply it a SECOND time. That
+        broke `*pal = al` and sent tcc BACKWARDS from line 660 to 177 -- a
+        regression in a case that had passed for six rounds, caught only
+        because the local test files are re-run every time.
+
+    Both write and read now match the temp-variable equivalent exactly.
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -336,7 +357,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Thirty-four walls between a hanging compiler and tcc's first genuinely large
+Thirty-five walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
