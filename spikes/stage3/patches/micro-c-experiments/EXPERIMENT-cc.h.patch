@@ -30,7 +30,7 @@ EVERY differing file rather than a hand-written list.
  enum
  {
  	REGISTER_ZERO = 0,
-@@ -112,6 +121,11 @@
+@@ -112,6 +121,15 @@
  	struct type* type;
  	char* name;
  	int options;
@@ -39,10 +39,14 @@ EVERY differing file rather than a hand-written list.
 +	 * is the bit position within the storage unit that `offset` addresses. */
 +	int bit_offset;
 +	int bit_width;
++	/* ARRAY MEMBERS. Non-zero when the member was declared `T name[N]`, so
++	 * that member access knows to yield the ADDRESS rather than load the first
++	 * element. calloc leaves it zero for every member that is not an array. */
++	int is_array;
  };
  
  /* TLO = Token List Option */
-@@ -165,6 +179,12 @@
+@@ -165,6 +183,12 @@
  	struct include_path_list* next;
  };
  

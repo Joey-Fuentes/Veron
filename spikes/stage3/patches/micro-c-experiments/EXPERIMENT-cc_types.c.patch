@@ -169,7 +169,27 @@ EVERY differing file rather than a hand-written list.
  	}
  	else
  	{
-@@ -669,11 +773,46 @@
+@@ -548,7 +652,18 @@
+ 	if(match( "[", global_token->s))
+ 	{
+ 		require_extra_token();
+-		i->size = constant_expression() * member_type->type->size;
++		/* THE ELEMENT SIZE IS member_type->size, NOT member_type->type->size.
++		 * The second steps down one level of indirection, which is right only
++		 * when the type is self-referential -- as `int` is, its ->type being
++		 * itself. For a POINTER element it is wrong:
++		 *     char *include_stack[32]
++		 * measured 32 * sizeof(char) = 32 bytes instead of 32 * 8 = 256, so
++		 * every member after it in TCCState sat at the wrong offset.
++		 *
++		 * It also records that this member IS an array, which member access
++		 * needs: an array decays to its address and must not be loaded. */
++		i->is_array = TRUE;
++		i->size = constant_expression() * member_type->size;
+ 		if(0 == i->size)
+ 		{
+ 			fputs("Struct only supports [num] form\n", stderr);
+@@ -669,11 +784,46 @@
  	int largest_member_size = 0;
  	require_match("ERROR in create_struct\n Missing {\n", "{");
  	struct type* last = NULL;
@@ -216,7 +236,7 @@ EVERY differing file rather than a hand-written list.
  		if(member_size == NO_STRUCT_DEFINITION)
  		{
  			line_error();
-@@ -692,6 +831,98 @@
+@@ -692,6 +842,98 @@
  			offset = 0;
  		}
  
@@ -315,7 +335,7 @@ EVERY differing file rather than a hand-written list.
  		require_match("ERROR in create_struct\n Missing ;\n", ";");
  		require(NULL != global_token, "Unterminated struct\n");
  	}
-@@ -811,13 +1042,47 @@
+@@ -811,13 +1053,47 @@
  		require_extra_token();
  	}
  
@@ -366,7 +386,7 @@ EVERY differing file rather than a hand-written list.
  		}
  		else if(NULL == ret)
  		{
-@@ -837,7 +1102,9 @@
+@@ -837,7 +1113,9 @@
  	{
  		require_extra_token();
  		ret = lookup_global_type();
@@ -377,7 +397,7 @@ EVERY differing file rather than a hand-written list.
  		{
  			return create_struct(TRUE);
  		}
-@@ -862,9 +1129,23 @@
+@@ -862,9 +1140,23 @@
  		require_extra_token();
  	}
  
@@ -401,7 +421,7 @@ EVERY differing file rather than a hand-written list.
  		require_extra_token();
  
  		while(match("const", global_token->s) || match("restrict", global_token->s))
-@@ -905,6 +1186,7 @@
+@@ -905,6 +1197,7 @@
  {
  	struct type* head = lookup_primitive_type();
  	struct type* i;
@@ -409,7 +429,7 @@ EVERY differing file rather than a hand-written list.
  	if(NULL == head)
  	{
  		head = calloc(1, sizeof(struct type));
-@@ -914,10 +1196,21 @@
+@@ -914,10 +1207,21 @@
  
  		i = calloc(1, sizeof(struct type));
  		require(NULL != i, "Exhausted memory while creating a struct indirection\n");
@@ -431,7 +451,7 @@ EVERY differing file rather than a hand-written list.
  	}
  
  	head->name = global_token->s;
-@@ -928,12 +1221,29 @@
+@@ -928,12 +1232,29 @@
  	i->offset = source->indirect->offset;
  	head->is_signed = source->is_signed;
  	i->is_signed = source->indirect->is_signed;

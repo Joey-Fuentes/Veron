@@ -312,6 +312,8 @@ jobs:
           ./micro-c --architecture aarch64 --max-string 65536 \
             -f "$P/main-03-mallocz.c" -o mallocz.M1
           ./micro-c --architecture aarch64 --max-string 65536 \
+            -f "$P/main-04-strdup.c" -o strdupit.M1
+          ./micro-c --architecture aarch64 --max-string 65536 \
             -f "$P/main-01-tccnew.c" -o callit.M1
 
           run_probe() {
@@ -373,6 +375,11 @@ jobs:
           # E4: tcc_mallocz(8192) -- a BIG allocation plus memset, which is
           # literally tcc_new's first statement. E3 only proved 64 bytes.
           run_probe E4-mallocz      libc-full.M1  libtcc.M1 m2libc.M1 stubs.M1 mallocz.M1
+          # E5: tcc_strdup -- the only call tcc_new makes past its allocation
+          # that can be reached without a TCCState. tcc_set_options is
+          # #ifdef'd out here, so if E5 passes, all that is left inside
+          # tcc_new is writing fields into the struct itself.
+          run_probe E5-strdup       libc-full.M1  libtcc.M1 m2libc.M1 stubs.M1 strdupit.M1
           run_probe F-call-tcc_new  libc-full.M1  libtcc.M1 m2libc.M1 stubs.M1 callit.M1
 
           echo

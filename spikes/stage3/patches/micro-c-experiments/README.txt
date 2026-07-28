@@ -1170,3 +1170,53 @@ back but never really mapped.
 Four probes have now each removed one explanation without any of them being
 the answer. That is what the ladder is for; the alternative was reading
 tccgen.c with no idea which part to read.
+
+=============================================================================
+AN ARRAY MEMBER WAS BEING LOADED, AND SIZED WRONG
+
+Five probes each ruled out one explanation without finding the fault:
+
+    E2  malloc(64)             ran      the allocator is fine
+    E3  tcc_malloc(64)         ran      the global function pointer is fine
+    E4  tcc_mallocz(8192)      ran      big allocation and memset are fine
+    F   tcc_new()              SIGSEGV
+
+Past its allocation, tcc_new does two things: write fields into the struct,
+and call tcc_set_lib_path. tcc_set_options is #ifdef CONFIG_TCC_SWITCHES and
+that is not defined here. One of those field writes is
+
+    s->include_stack_ptr = s->include_stack;
+
+where include_stack is `char *include_stack[32]`. READING THE EMITTED CODE for
+that one statement found TWO bugs, neither of which any probe would have
+isolated:
+
+  1. THE ARRAY MEMBER WAS LOADED. `s->include_stack` emitted ldr, fetching
+     include_stack[0] -- zero, straight after the memset -- and stored THAT
+     into the pointer. Every later use of include_stack_ptr was a null
+     dereference. An array decays to its ADDRESS; micro-c has always got this
+     right for a plain array variable, and only member access did not know.
+
+     The existing guard asked whether the member FITS IN A REGISTER. An
+     array's element size does fit, so the guard let it through. What matters
+     is that it is an array at all.
+
+  2. THE ARRAY MEMBER WAS SIZED WRONG.
+
+         i->size = constant_expression() * member_type->type->size;
+
+     `member_type->type` steps down one level of indirection, which is correct
+     only when a type's ->type is itself -- as `int`'s is. For a POINTER
+     element it is wrong: `char *include_stack[32]` measured 32 * sizeof(char)
+     = 32 bytes instead of 32 * 8 = 256. Every member after it in TCCState sat
+     at the wrong offset.
+
+     In the local repro, `char *arr[8]` put the following member at offset 16
+     instead of 72.
+
+THE LESSON ABOUT PROBES. The ladder was the right tool for "which layer" and
+useless for "which statement" -- it can only test what can be CALLED, and
+neither of these bugs is reachable through a function boundary. Reading the
+emitted assembly for the three statements that remained took one command and
+found both. The probes narrowed it to a function; they could never have
+narrowed it to a line.
