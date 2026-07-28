@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "3428 lines into tccpp.c -- past float literals, stopped at 2D arrays".
+"hangs forever on tcc.c" to "THROUGH tccpp.c entirely -- now in tccgen.c".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -51,6 +51,10 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   `sizeof x->y` over a member chain         cc_core.c   tccpp.c:1809
   commas in `for` init and increment        cc_core.c   tccpp.c:1946
   FLOAT LITERALS as single tokens           cc_reader.c tccpp.c:2398
+  TWO-DIMENSIONAL ARRAYS, local + global    cc_types.c, tccpp.c:3428
+                                            cc_core.c
+  string rows in a 2D initialiser           cc_core.c   tccpp.c:3429
+  adjacent literals for a pointer init      cc_core.c   tccpp.c:3596
 
 UNSOUND, AND WHY
 ----------------
@@ -467,9 +471,45 @@ UNSOUND, AND WHY
     That is not a fork -- these are the C standard's signatures, and the
     implementations still come from whatever supplies the runtime.
 
-STOPPED AT: tccpp.c:3428, `static char const ab_month_name[12][4] = {"Jan",
-...}`. micro-c has NO two-dimensional array support -- not for static locals,
-not for globals. A real feature, not a few lines.
+30. TWO-DIMENSIONAL ARRAYS. `char m[12][4]` is an array of 12 things each 4
+    chars wide. micro-c carries ONE element count per declarator, so the inner
+    dimension had nowhere to live.
+
+    FLATTENING TO char[48] WOULD HAVE BEEN WRONG, not merely lossy: indexing
+    strides by current_target->type->size, so m[i] would step by 1 instead of
+    4 -- right total size, wrong address, silently.
+
+    TWO synthetic levels are needed, not one, because postfix_expr_array takes
+    its stride from current_target->type->size and only THEN steps down:
+
+        m -> wrapper(size 4) -> row(size 4) -> element(size 1)
+             stride = wrapper->type->size = 4      then current_target = row
+             stride = row->type->size     = 1
+
+    A self-referential row gives 4 twice; a row pointing straight at the
+    element gives 1 twice. Verified: `char m[12][4]` reserves 48 bytes (same
+    as char[48]) and m[2][3] computes 2*4 + 3*1 = 11.
+
+    The global path needed the storage size RECOMPUTED -- it was calculated
+    from the first dimension a dozen lines before the second is parsed, so it
+    allocated 12 bytes instead of 48.
+
+31. STRING ROWS IN A 2D INITIALISER -- `{"Jan", "Feb", ...}`. Each element
+    fills a whole row, so the bytes are emitted and padded to the row width.
+    Without the padding the rows run together and every index past the first
+    is wrong while the total size still looks right. Verified byte by byte:
+    4A 61 6E 00 / 46 65 62 00 / 4D 61 72 00.
+
+32. ADJACENT LITERALS FOR A POINTER INITIALISER --
+    `static const char * const x = "a\0" "b\0" ...` at tccpp.c:3596. The
+    pointer path existed but consumed only the first literal. Third place this
+    same concatenation rule has had to be written; primary_expr_string and the
+    array initialiser were the others.
+
+MILESTONE: tccpp.c PARSES COMPLETELY -- all 3,900+ lines. Four files done:
+tcc.h, libtcc.h, elf.h, tcctok.h and now tccpp.c. Now in tccgen.c.
+
+STOPPED AT: tccgen.c:94, "ERROR in create_struct Missing ;".
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -484,7 +524,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Forty-three walls between a hanging compiler and tcc's first genuinely large
+Forty-seven walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11

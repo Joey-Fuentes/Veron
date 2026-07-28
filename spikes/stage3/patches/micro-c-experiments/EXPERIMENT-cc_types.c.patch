@@ -17,7 +17,66 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(BOOTSTRAP_MODE)
  	{
  		/* Define FILE */
-@@ -374,7 +382,13 @@
+@@ -204,6 +212,58 @@
+ 	return NULL;
+ }
+ 
++/* A ROW TYPE FOR A TWO-DIMENSIONAL ARRAY.
++ *
++ * `char m[12][4]` is an array of 12 things each of which is 4 chars. micro-c
++ * carries one element count per declarator (array_modifier), so the inner
++ * dimension has nowhere to live -- and indexing strides by
++ * current_target->type->size, which for a flattened array would be 1 rather
++ * than 4. Flattening therefore INDEXES WRONG rather than merely losing
++ * information, which is why this synthesises a real type instead.
++ *
++ * The row type has size inner*sizeof(element) and steps down to the element
++ * type, so m[i] strides by 4 and m[i][j] then strides by 1, which is what C
++ * means. tcc reaches it at tccpp.c:3428:
++ *     static char const ab_month_name[12][4] = {"Jan", "Feb", ...}; */
++struct type* new_array_row_type(struct type* element, int inner)
++{
++	char* rowname = concat_strings4(element->name, "[", int2str(inner, 10, FALSE), "]");
++	struct type* existing = lookup_type(concat_strings2(rowname, "#"), global_types);
++	if(NULL != existing) return existing;
++
++	/* TWO LEVELS ARE NEEDED, not one. postfix_expr_array takes its stride from
++	 * current_target->type->size and only THEN steps current_target down. So
++	 * for `m[i][j]` to stride by the row and then by the element:
++	 *
++	 *     m's type  ->  wrapper (size row)  ->  row (size row)  ->  element
++	 *                   stride = wrapper->type->size = row      = 4
++	 *                   after [ : current_target = row
++	 *                   stride = row->type->size = element      = 1
++	 *
++	 * A single level cannot do both: a self-referential row gives 4 twice, and
++	 * a row pointing straight at the element gives 1 twice. */
++	int rowsize = element->size * inner;
++
++	struct type* row = new_primitive(rowname,
++	                                 concat_strings2(rowname, "*"),
++	                                 concat_strings2(rowname, "**"),
++	                                 rowsize, element->is_signed);
++	row->type = element;
++	row->next = global_types;
++	global_types = row;
++
++	struct type* wrapper = new_primitive(concat_strings2(rowname, "#"),
++	                                     concat_strings2(rowname, "#*"),
++	                                     concat_strings2(rowname, "#**"),
++	                                     rowsize, element->is_signed);
++	wrapper->type = row;
++	wrapper->next = global_types;
++	global_types = wrapper;
++
++	return wrapper;
++}
++
++
+ struct type* lookup_primitive_type(void)
+ {
+ 	if(BOOTSTRAP_MODE)
+@@ -374,7 +434,13 @@
  	{
  		require(global_token->next != NULL, "NULL token received in multi token type lookup 'long'");
  
@@ -32,7 +91,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		{
  			global_token = global_token->next;
  			require(global_token->next != NULL, "NULL token received in multi token type lookup 'long long'");
-@@ -517,6 +531,30 @@
+@@ -517,6 +583,30 @@
  	{
  		i->name = global_token->s;
  		require_extra_token();
@@ -63,7 +122,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  	else
  	{
-@@ -673,11 +711,46 @@
+@@ -673,11 +763,46 @@
  	int largest_member_size = 0;
  	require_match("ERROR in create_struct\n Missing {\n", "{");
  	struct type* last = NULL;
@@ -110,7 +169,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		if(member_size == NO_STRUCT_DEFINITION)
  		{
  			line_error();
-@@ -696,6 +769,98 @@
+@@ -696,6 +821,98 @@
  			offset = 0;
  		}
  
@@ -209,7 +268,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_match("ERROR in create_struct\n Missing ;\n", ";");
  		require(NULL != global_token, "Unterminated struct\n");
  	}
-@@ -870,9 +1035,18 @@
+@@ -870,9 +1087,18 @@
  		require_extra_token();
  	}
  
@@ -228,7 +287,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_extra_token();
  
  		while(match("const", global_token->s) || match("restrict", global_token->s))
-@@ -913,6 +1087,7 @@
+@@ -913,6 +1139,7 @@
  {
  	struct type* head = lookup_primitive_type();
  	struct type* i;
@@ -236,7 +295,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(NULL == head)
  	{
  		head = calloc(1, sizeof(struct type));
-@@ -922,10 +1097,21 @@
+@@ -922,10 +1149,21 @@
  
  		i = calloc(1, sizeof(struct type));
  		require(NULL != i, "Exhausted memory while creating a struct indirection\n");
@@ -258,7 +317,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	head->name = global_token->s;
-@@ -936,12 +1122,29 @@
+@@ -936,12 +1174,29 @@
  	i->offset = source->indirect->offset;
  	head->is_signed = source->is_signed;
  	i->is_signed = source->indirect->is_signed;

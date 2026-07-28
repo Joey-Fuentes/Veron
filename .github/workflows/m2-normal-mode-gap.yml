@@ -96,7 +96,12 @@
 #     commas in `for` init and increment               tccpp.c:1946
 #     float LITERALS as single tokens                  tccpp.c:2398 lexical only
 #     math.h / stdlib.h / time.h surface               micro-c-libc/
-#     two-dimensional arrays                           tccpp.c:3428 NOT DONE
+#     two-dimensional arrays, local and global         tccpp.c:3428
+#     string rows in a 2D initialiser                  tccpp.c:3429
+#     adjacent literals for a pointer initialiser      tccpp.c:3596
+#
+#   tccpp.c NOW PARSES COMPLETELY -- all 3,900+ lines. Now in tccgen.c:
+#     create_struct Missing ;                          tccgen.c:94 NOT DONE
 #
 # float was the item ROADMAP called pivotal and it was two extern declarations,
 # not arithmetic. Bitfield LAYOUT is done and verified -- three packed fields

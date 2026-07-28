@@ -2,7 +2,15 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 
 --- a/cc.h
 +++ b/cc.h
-@@ -120,6 +120,11 @@
+@@ -67,6 +67,7 @@
+ 
+ int copy_string(char* target, char* source, int max);
+ char* concat_strings2(char* a, char* b);
++struct type* new_array_row_type(struct type* element, int inner);
+ char* concat_strings3(char* a, char* b, char* c);
+ char* concat_strings4(char* a, char* b, char* c, char* d);
+ int string_length(char* a);
+@@ -120,6 +121,11 @@
  	struct type* type;
  	char* name;
  	int options;
