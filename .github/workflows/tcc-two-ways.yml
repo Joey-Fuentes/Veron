@@ -307,6 +307,7 @@ jobs:
           rc=$?
           set -e
           echo "  markers: $(tr '\n' ' ' < /tmp/co-marks.txt)"
+          echo "  last libtcc marker: $(grep -aoE '^T[0-9A-C]' /tmp/co-marks.txt | tail -1)"
           echo "  exit: $rc"
           case "$rc" in
             42) echo "  IT COMPILED A FUNCTION -- parser and codegen work" ;;
@@ -341,7 +342,11 @@ jobs:
             T1) echo "  DIED IN: tcc_add_sysinclude_path" ;;
             T3) echo "  DIED IN: tccelf_new" ;;
             T5) echo "  DIED IN: tcc_add_library_path" ;;
-            T7) echo "  past tcc_set_output_type" ;;
+            T7) echo "  DIED IN: tcc_split_path" ;;
+            T9) echo "  DIED IN: the if, or something corrupted earlier" ;;
+            TA) echo "  DIED IN: tccelf_add_crtbegin -- LINKER work" ;;
+            TB) echo "  DIED IN: the return from tcc_set_output_type" ;;
+            TC) echo "  tcc_set_output_type completed; died on the way back" ;;
           esac
           case "$(grep -aoE '^D[0-9]' /tmp/marks.txt | tail -1)" in
             D1) echo "  DIED IN: tcc_new" ;;

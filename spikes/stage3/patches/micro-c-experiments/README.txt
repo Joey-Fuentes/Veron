@@ -1619,3 +1619,39 @@ micro-c resolves it is worth knowing.
 The new probe links WITHOUT libtcc -- 58 KB, allocator only -- so a failure
 there cannot be blamed on tcc, and a pass rules the allocator out for good
 rather than leaving it as a maybe.
+
+=============================================================================
+THE ALLOCATOR IS COMPLETELY EXONERATED
+
+    markers: R1 R2 R3 R4
+    exit 42 -- realloc GROWS AND PRESERVES correctly
+
+A 32-byte block filled with a known pattern, grown to 4096, every byte
+verified afterwards, and the new space written to. In a 58 KB binary with no
+libtcc in it at all, so nothing about the result can be blamed on tcc.
+
+That closes the allocator: malloc, tcc_malloc, tcc_mallocz and now realloc all
+work. The corruption theory needs a different source, or is wrong.
+
+WHERE THAT LEAVES IT. The compile-only probe reaches T9, SKIPS the crtbegin
+call because its output type is MEMORY, and dies before its caller sees
+control again. Between those two points there is almost nothing: an if
+condition on two unsigned char fields, and a return.
+
+A new marker TC sits after the if and before the return, which separates:
+
+    dies before TC   the if condition faults
+    dies after TC    the RETURN faults -- and a faulting return means a
+                     corrupted return address, which points at the stack
+                     rather than at any of the code read so far
+
+The second would be a much more interesting answer than the first, and would
+explain why two probes taking different paths die at different points after
+the same last successful call.
+
+FIVE PROBES HAVE NOW EACH RULED SOMETHING OUT: the ELF and startup, our
+compiled M2libc, the envp and malloc init, tcc's allocation wrappers, and
+realloc. None found the fault. That is not wasted -- each one is a thing that
+no longer needs considering -- but it is worth being clear that the method has
+been narrowing rather than finding, and the last three real bugs all came from
+reading emitted code once the ladder had picked a statement.
