@@ -77,58 +77,60 @@ jobs:
           ls -l tcc | awk '{print "  gcc-built tcc: "$5" bytes"}'
           sha256sum tcc | awk '{print "  sha256: "$1}'
 
-      - name: 'CONTROL: tcctest.c, run, diff against the reference'
+      - name: 'CONTROL: tcc own test suite (test1, test2, test3)'
         continue-on-error: true
         run: |
           set -eu
           cd gcc-tcc
-          # The reference output is produced by tcc's own build; comparing
-          # against it is the check tcc's maintainers use.
-          ./tcc -B. -I. -Iinclude tests/tcctest.c -o /tmp/tcctest-gcc 2>&1 | head -20 || true
-          if [ -x /tmp/tcctest-gcc ]; then
-            /tmp/tcctest-gcc > /tmp/tcctest-gcc.out 2>&1 || true
-            if diff -u tests/tcctest.ref /tmp/tcctest-gcc.out > /tmp/gcc.diff; then
-              echo "  CONTROL PASSES: output matches tcctest.ref exactly"
-            else
-              echo "  control differs from the reference -- first 20 lines:"
-              head -20 /tmp/gcc.diff
-              echo "  ($(grep -c '^[+-]' /tmp/gcc.diff) differing lines)"
-            fi
-          else
-            echo "  control did not produce a binary"
-          fi
+          # tcc SHIPS these and they are exactly the questions asked here.
+          #
+          #   test.ref  tcctest.c compiled by the HOST cc and run -- the
+          #             reference output. It is GENERATED, not committed, which
+          #             is why the first attempt at this job could not find it.
+          #   test1     tcc -run tcctest.c            vs test.ref
+          #   test2     tcc -run tcc.c -run tcctest.c vs test.ref
+          #             ^ tcc compiles TCC, and that tcc runs the test
+          #   test3     three levels deep
+          #
+          # test2 and test3 ARE the self-compilation fixpoint, done through
+          # -run rather than by writing binaries. Hand-rolling it was a mistake.
+          make -C tests test.ref >/dev/null 2>&1 || make -C tests test.ref || true
+          for t in test1 test2 test3; do
+            echo "  --- $t ---"
+            make -C tests "$t" 2>&1 | tail -6 || echo "  $t FAILED"
+          done
 
       - name: 'CONTROL: full test suite'
         continue-on-error: true
         run: |
           set -eu
           cd gcc-tcc
-          make test 2>&1 | tail -40 || true
+          make test 2>&1 | tail -45 || true
 
-      - name: 'CONTROL: self-compilation to a fixpoint'
+      - name: 'CONTROL: self-compilation, sizes and hashes'
         continue-on-error: true
         run: |
           set -eu
           cd gcc-tcc
-          # gen1 is the gcc-built tcc. Each generation builds the next from the
-          # SAME sources, so gen2 and gen3 differ only if the compiler is not
-          # yet reproducing itself.
-          cp tcc /tmp/gen1
-          report() { printf '  %-6s %9s bytes  %s\n' "$1" "$(stat -c%s "$2")" "$(sha256sum "$2" | cut -c1-16)"; }
-          report gen1 /tmp/gen1
-
-          make clean >/dev/null 2>&1 || true
-          ./configure --cc=/tmp/gen1 >/dev/null 2>&1
-          if make -j"$(nproc)" >/dev/null 2>&1; then
-            cp tcc /tmp/gen2; report gen2 /tmp/gen2
-            make clean >/dev/null 2>&1 || true
-            ./configure --cc=/tmp/gen2 >/dev/null 2>&1
-            if make -j"$(nproc)" >/dev/null 2>&1; then
-              cp tcc /tmp/gen3; report gen3 /tmp/gen3
-              if cmp -s /tmp/gen2 /tmp/gen3; then
-                echo "  FIXPOINT REACHED: gen2 and gen3 are byte-identical"
+          report() { printf '  %-5s %9s bytes  sha256 %s\n' "$1" "$(stat -c%s "$2")" "$(sha256sum "$2" | cut -c1-32)"; }
+          # gen1 is the gcc-built tcc. Each generation compiles tcc.c with the
+          # PREVIOUS generation, which is what tcc's own Makefile does for
+          # tcc2 -- not a fresh ./configure, which was the other mistake.
+          cp tcc gen1; report gen1 gen1
+          set +e
+          ./gen1 -B. -I. -DONE_SOURCE=1 tcc.c -o gen2 2>&1 | head -5
+          set -e
+          if [ -x gen2 ]; then
+            report gen2 gen2
+            set +e
+            ./gen2 -B. -I. -DONE_SOURCE=1 tcc.c -o gen3 2>&1 | head -5
+            set -e
+            if [ -x gen3 ]; then
+              report gen3 gen3
+              if cmp -s gen2 gen3; then
+                echo "  FIXPOINT: gen2 and gen3 are byte-identical"
               else
-                echo "  NO FIXPOINT: gen2 and gen3 differ"
+                echo "  NO FIXPOINT: gen2 and gen3 differ ($(cmp -l gen2 gen3 2>/dev/null | wc -l) bytes)"
               fi
             else
               echo "  gen2 could not build gen3"
@@ -137,9 +139,6 @@ jobs:
             echo "  gen1 could not build gen2"
           fi
 
-      # =================================================================
-      # SUBJECT: micro-c builds tcc, then exactly the same questions.
-      # =================================================================
       - name: 'SUBJECT: build micro-c from the pin plus our patches'
         run: |
           set -eu
@@ -253,39 +252,53 @@ jobs:
         run: |
           set -eu
           cd mc-tcc
+          # The same source and the same reference the control was measured
+          # against. test.ref was generated during the control step above.
           set +e
           ../mc-tcc-bin -B. -I. -Iinclude tests/tcctest.c -o /tmp/tcctest-mc 2>&1 | head -30
           rc=$?
           set -e
           echo "  exit: $rc"
+          if [ "$rc" -gt 128 ]; then echo "  SIGNAL $((rc - 128))"; fi
           if [ -x /tmp/tcctest-mc ]; then
             /tmp/tcctest-mc > /tmp/tcctest-mc.out 2>&1 || true
-            diff -u tests/tcctest.ref /tmp/tcctest-mc.out > /tmp/mc.diff \
-              && echo "  MATCHES tcctest.ref" \
-              || echo "  differs: $(grep -c '^[+-]' /tmp/mc.diff) lines"
+            if [ -f ../gcc-tcc/tests/test.ref ]; then
+              diff -u ../gcc-tcc/tests/test.ref /tmp/tcctest-mc.out > /tmp/mc.diff \
+                && echo "  MATCHES the reference output exactly" \
+                || echo "  differs from the reference: $(grep -c '^[+-]' /tmp/mc.diff) lines"
+            fi
           else
             echo "  no binary produced"
           fi
 
-      - name: 'SUBJECT: self-compilation'
+      - name: 'SUBJECT: self-compilation, sizes and hashes'
         continue-on-error: true
         run: |
           set -eu
-          # gen1 is the micro-c-built tcc. Asking it to build tcc is the same
-          # question the control answered, and reaching gen2 at all would mean
-          # this compiler can build a C compiler.
-          printf '  %-6s %9s bytes  %s\n' gen1 "$(stat -c%s mc-tcc-bin)" "$(sha256sum mc-tcc-bin | cut -c1-16)"
+          report() { printf '  %-5s %9s bytes  sha256 %s\n' "$1" "$(stat -c%s "$2")" "$(sha256sum "$2" | cut -c1-32)"; }
+          report gen1 mc-tcc-bin
           cd mc-tcc
           set +e
-          ../mc-tcc-bin -B. -I. -Iinclude -DONE_SOURCE=1 -DTCC_TARGET_ARM64=1 \
+          ../mc-tcc-bin -B. -I. -DONE_SOURCE=1 -DTCC_TARGET_ARM64=1 \
                         -DTCC_TARGET_LINUX=1 tcc.c -o /tmp/gen2-mc 2>&1 | head -20
           rc=$?
           set -e
-          echo "  gen2 build exit: $rc"
+          echo "  gen2 exit: $rc"
           if [ -x /tmp/gen2-mc ]; then
-            printf '  %-6s %9s bytes  %s\n' gen2 "$(stat -c%s /tmp/gen2-mc)" "$(sha256sum /tmp/gen2-mc | cut -c1-16)"
+            report gen2 /tmp/gen2-mc
+            set +e
+            /tmp/gen2-mc -B. -I. -DONE_SOURCE=1 tcc.c -o /tmp/gen3-mc 2>&1 | head -10
+            set -e
+            if [ -x /tmp/gen3-mc ]; then
+              report gen3 /tmp/gen3-mc
+              cmp -s /tmp/gen2-mc /tmp/gen3-mc \
+                && echo "  FIXPOINT: gen2 and gen3 are byte-identical" \
+                || echo "  NO FIXPOINT: gen2 and gen3 differ"
+            else
+              echo "  gen2 could not build gen3"
+            fi
           else
-            echo "  gen2 not produced -- self-compilation not reached"
+            echo "  self-compilation not reached"
           fi
 
       - uses: actions/upload-artifact@v4

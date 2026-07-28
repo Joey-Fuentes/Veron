@@ -1409,3 +1409,44 @@ it lays out differs from what a normal compiler produces and every libc call
 crosses an ABI boundary wrongly; float is an integer. What is worth having is
 WHERE it stops, measured the same way as the control rather than by a bespoke
 test that only it has to satisfy.
+
+=============================================================================
+THE CONTROL CAUGHT TWO BUGS IN THE HARNESS
+
+Which is what a control is for. gcc built tcc without trouble -- 427,576 bytes
+-- and tcctest.c compiled with only warnings. Both failures were mine:
+
+  1. tests/tcctest.ref DOES NOT EXIST. The reference is tests/test.ref and it
+     is GENERATED, not committed: tcctest.c compiled by the HOST cc and run.
+     I diffed against a file that was never there and reported "0 differing
+     lines", which reads like success.
+
+  2. THE SELF-COMPILE INVOCATION WAS WRONG. Re-running ./configure --cc=gen1
+     does not make tcc build itself; tcc's own Makefile compiles tcc.c with
+     the previous binary directly.
+
+BOTH ARE FIXED BY USING tcc'S OWN TESTS, which already ask exactly these
+questions and which I should have looked for first:
+
+    test1   tcc -run tcctest.c                      vs test.ref
+    test2   tcc -run tcc.c -run tcctest.c           vs test.ref
+    test3   three levels deep
+
+test2 and test3 ARE the self-compilation fixpoint, expressed through -run.
+Hand-rolling a worse version of a test the project already ships was the
+actual mistake; the reference-file bug was a symptom of it.
+
+VERIFIED LOCALLY on an x86_64 host before shipping:
+
+    test1  Auto Test OK
+    test2  Auto Test2 OK
+    test3  Auto Test3 OK
+
+    gen1   372,800 bytes  sha256 6f49c9564bff458a...   gcc-built
+    gen2   425,212 bytes  sha256 28b06bc6e1fdeffc...   built by gen1
+    gen3   425,212 bytes  sha256 28b06bc6e1fdeffc...   built by gen2
+    FIXPOINT -- gen2 and gen3 byte-identical
+
+gen1 differs from gen2 because a different compiler produced it; gen2 matching
+gen3 is the property that matters. That is the number our side has to be
+measured against, and now there is one.
