@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "stops at `*(p)` deref, tcc.h:1874 of 2013".
+"hangs forever on tcc.c" to "stops at the comma operator, tcc.h:1947 of 2013".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -29,7 +29,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
                                                cc.c
   an empty macro must not skip the next token  cc_macro.c
   ternary `c ? a : b`                          cc_core.c   tcc.h:1417, 405 uses
-  cast vs parens after unary `*` (ERROR only)  cc_core.c   tcc.h:1874
+  cast vs parens after unary `*`               cc_core.c   tcc.h:1874
 
 UNSOUND, AND WHY
 ----------------
@@ -136,21 +136,23 @@ UNSOUND, AND WHY
    this one is inspected rather than run, unlike the layout work which is
    proven by byte-identical output.
 
-9. `*(p)` IS AN ERROR, NOT A GUESS. After a unary `*`, seeing '(' the parser
-   called type_name(), which HARD-ERRORS on a non-type -- so `*(p)++` died as
-   "Unknown type p". tcc reaches it through
+9. `*(p)` TOOK TWO ATTEMPTS, AND THE SECOND IS THE ONE TO READ. After a unary
+   `*`, seeing '(' the parser called type_name(), which HARD-ERRORS on a
+   non-type -- so `*(p)++` died as "Unknown type p". tcc reaches it through
 
        #define dwarf_read_1(ln,end) ((ln) < (end) ? *(ln)++ : 0)
 
-   Switching to fallible_type_name() and delegating to primary_expr parses it,
-   but the dereference then needs the load WIDTH and signedness, and
-   current_target is not the pointed-to type there: the emitted load came out
-   as a bare 8-byte read where `*p` on a char* correctly emits ldrsb. That is
-   a silently wrong VALUE, so it stops instead:
+   fallible_type_name() plus delegation to primary_expr parses it. The trap is
+   the dereference that follows: the first version loaded and THEN stepped
+   current_target down, which emitted an 8-byte read where `*p` on a char*
+   correctly emits ldrsb -- a silently wrong VALUE. The ordinary dereference
+   path steps down FIRST, then loads at that type's width, and carries a
+   function-pointer guard. Using that exact sequence makes `*(p)` emit
+   BYTE-IDENTICAL code to `*p` for char, int, long and `**p`.
 
-       d3.c:1: dereference of a parenthesised expression is not supported yet
-
-   Real casts `*(int*)p` and plain `*p` both still work and are unaffected.
+   Twice now a change here has looked right and had the wrong load width --
+   bitfields were the other. Both were caught by diffing against a known-good
+   equivalent, not by reading the code. That is the technique that works here.
 
 The other seven look sound and are candidates for promotion once reviewed.
 The declarator one is the strongest candidate: `int a, b, c;` now emits
