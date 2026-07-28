@@ -51,7 +51,7 @@ def assemble(text):
 # size field in bits 31:30, and clearing bit 31 of `ldr w<t>` (0xB9400000)
 # would turn it into `ldrb`. This mirrors stage0-as's emit_dp exactly -- the
 # model and the assembler gained the behaviour in the same commit.
-DP_OPS = {'mov','movn','add','sub','cmp','orr','and','eor',
+DP_OPS = {'mov','movn','add','sub','cmp','orr','and','eor','sdiv',
           'lsl','lsr','asr','udiv','movk','mul'}
 
 
@@ -196,6 +196,17 @@ def _encode(l, at, labels):
             m=_reg(p[3])
             return (0x38206800|(m<<16)|(n<<5)|t,('strb',t,n,m))
         return (0x39000000|(n<<5)|t,('strb_b',t,n))
+    if op in ('ldrh','strh','ldrsb','ldrsh'):
+        # r76. Offset-0 only, matching the assembler. Bits 31:30 are the SIZE
+        # field here, not sf, so these must never go through the sf-clearing
+        # path -- ldrh with bit 31 cleared is ldrb.
+        base={'ldrh':0x79400000,'strh':0x79000000,
+              'ldrsb':0x39800000,'ldrsh':0x79800000}[op]
+        t=_reg(p[1]); n=_reg(p[2])
+        return (base|(n<<5)|t,(op,t,n))
+    if op=='sdiv':
+        d=_reg(p[1]); n=_reg(p[2]); m=_reg(p[3])
+        return (0x9AC00C00|(m<<16)|(n<<5)|d,('sdiv',d,n,m))
     if op in ('ldr','str'):
         # OPTIONAL THIRD OPERAND = unsigned immediate offset (r68). imm12 sits
         # at bits 21:10 and is SCALED by the access size, so the field carries
@@ -217,7 +228,7 @@ def _encode(l, at, labels):
     if op=='blr': n=_reg(p[1]); return (0xD63F0000|(n<<5),('blr',n))
     if op=='bl':  return (0x94000000|rel(p[1],2,0x3FFFFFF),('bl',_pos(p[1])))
     if op=='b':   return (0x14000000|rel(p[1],2,0x3FFFFFF),('b',_pos(p[1])))
-    if op in ('b.eq','b.ne','b.lt','b.ge','b.gt','b.le'):
+    if op in ('b.eq','b.ne','b.lt','b.ge','b.gt','b.le','b.hi','b.ls','b.hs','b.lo'):
         # b.gt and b.le were added to stage0-as together with input rejection.
         # Before that, its condition dispatch tested only the FIRST character
         # after `b.` and defaulted to 14 (AL), so `b.gt` assembled as `b.ge` and

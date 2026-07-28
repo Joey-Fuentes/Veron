@@ -466,6 +466,10 @@ h_l:
     ldrb    w10, [x19, x2]
     cmp     w10, #0x62                      // 'b'
     b.eq    h_ldrb
+    cmp     w10, #0x68                      // 'h'
+    b.eq    h_ldrh
+    cmp     w10, #0x73                      // 's'  'ldrsb' / 'ldrsh'
+    b.eq    h_ldrs
     b       h_ldr
 h_lsl_or_lsr:
     add     x2, x20, #0x2
@@ -513,7 +517,9 @@ h_s:
     b.eq    h_sub
     cmp     w10, #0x74                      // 't'
     b.eq    h_st
-    b       die                             // 's...' that is not svc/sub/st*
+    cmp     w10, #0x64                      // 'd'  'sdiv'
+    b.eq    h_sdiv
+    b       die                             // 's...' that is not svc/sub/st*/sdiv
 h_svc:
     add     x20, x20, #0x3
     mov     w9, #0x1
@@ -553,6 +559,8 @@ h_st:
     ldrb    w10, [x19, x2]
     cmp     w10, #0x62                      // 'b'
     b.eq    h_strb
+    cmp     w10, #0x68                      // 'h'
+    b.eq    h_strh
     b       h_str
 h_str:
     add     x20, x20, #0x3
@@ -569,6 +577,45 @@ h_str_e:
     orr     w9, w9, w0, lsl #5
     orr     w9, w9, w24
     b       h_ls_off
+
+// ---- ldrh / strh / ldrsb / ldrsh : [Xn] at offset 0 ----
+// Offset ZERO ONLY, which is every use M2-Planet's backend has: it emits
+// ldrh_w0,[x0] / strh_w0,[x1] / ldrsb_x0,[x0] / ldrsh_x0,[x0] and nothing with
+// a displacement. The ldr/str offset form added in r68 scales its imm12 by the
+// ACCESS SIZE -- 8 or 4 there, 2 or 1 here -- and a variable scale needs either
+// a register shift, which is not among the operand forms this source uses, or a
+// four-way branch. Neither is worth writing for a displacement nothing emits.
+// If a backend later needs one, that is its own rung.
+//
+// `emit`, never `emit_dp`. Bits 31:30 are the SIZE field on a load or store,
+// not the sf flag, so clearing bit 31 would silently turn ldrh into ldrb --
+// which is precisely the trap emit_dp's own comment documents.
+h_ldrh:
+    add     x20, x20, #0x4                  // skip "ldrh"
+    mov     w9, #0x79400000                 // LDRH  Wt, [Xn]
+    b       h_ls_plain
+h_strh:
+    add     x20, x20, #0x4                  // skip "strh"
+    mov     w9, #0x79000000                 // STRH  Wt, [Xn]
+    b       h_ls_plain
+h_ldrs:
+    add     x2, x20, #0x4
+    ldrb    w10, [x19, x2]
+    add     x20, x20, #0x5                  // skip "ldrsb" / "ldrsh"
+    mov     w9, #0x39800000                 // LDRSB Xt, [Xn]
+    cmp     w10, #0x62                      // 'b'
+    b.eq    h_ls_plain
+    cmp     w10, #0x68                      // 'h'
+    b.ne    die
+    mov     w9, #0x79800000                 // LDRSH Xt, [Xn]
+h_ls_plain:
+    bl      next_reg
+    mov     w24, w0
+    bl      next_reg
+    orr     w9, w9, w0, lsl #5
+    orr     w9, w9, w24
+    bl      emit
+    b       parse_loop
 
 // ---- optional [base, #imm] offset, shared by ldr and str ----
 // imm12 sits at bits 21:10 and is SCALED by the access size: the field holds
@@ -787,6 +834,15 @@ h_lsr:
     mov     w26, #0x2400
     mov     w16, #0x2                        // kind: 0 udiv 1 lsl 2 lsr 3 asr
     b       shift_common
+// ---- sdiv x<d> x<n> x<m> : signed divide ----
+// Same word as udiv with the selector at 0xc00 instead of 0x800, so it rides
+// shift_common unchanged. Kind 0 like udiv, because neither has an immediate
+// form and shift_imm already rejects that kind.
+h_sdiv:
+    add     x20, x20, #0x4                  // skip "sdiv"
+    mov     w26, #0xc00
+    mov     w16, #0x0                       // no immediate form, as udiv
+    b       shift_common
 h_udiv:
     add     x20, x20, #0x4                  // skip "udiv"
     mov     w26, #0x800
@@ -940,12 +996,22 @@ bc_l:
     b       bc_go
 bc_le:
     cmp     w3, #0x65                       // 'e'
-    b.ne    die
+    b.ne    bc_ls
     mov     w26, #0xd                       // le
+    b       bc_go
+bc_ls:
+    cmp     w3, #0x73                       // 's'
+    b.ne    bc_lo
+    mov     w26, #0x9                       // ls  (unsigned <=)
+    b       bc_go
+bc_lo:
+    cmp     w3, #0x6f                       // 'o'
+    b.ne    die
+    mov     w26, #0x3                       // lo  (unsigned <)
     b       bc_go
 bc_g:
     cmp     w2, #0x67                       // 'g'
-    b.ne    die
+    b.ne    bc_h
     cmp     w3, #0x65                       // 'e'
     b.ne    bc_gt
     mov     w26, #0xa                       // ge
@@ -954,6 +1020,29 @@ bc_gt:
     cmp     w3, #0x74                       // 't'
     b.ne    die
     mov     w26, #0xc                       // gt
+    b       bc_go
+// ---- the UNSIGNED conditions ----
+// This chain held EQ NE GE LT GT LE and nothing else, and that was never a
+// design choice: the comment above records b.gt and b.le being added late,
+// because this file's own source had started using them and three inputs were
+// assembling to three wrong answers. The set is what accreted, not a rule.
+//
+// Compiled C needs unsigned comparison everywhere, and it has no cheap
+// synthesis: without these you bias both operands by flipping the sign bit and
+// compare signed, which is roughly three extra instructions on EVERY unsigned
+// comparison, on every architecture. Four cases here cost five lines each once.
+// HI 8, LS 9, HS 2, LO 3.
+bc_h:
+    cmp     w2, #0x68                       // 'h'
+    b.ne    die
+    cmp     w3, #0x69                       // 'i'
+    b.ne    bc_hs
+    mov     w26, #0x8                       // hi  (unsigned >)
+    b       bc_go
+bc_hs:
+    cmp     w3, #0x73                       // 's'
+    b.ne    die
+    mov     w26, #0x2                       // hs  (unsigned >=)
 bc_go:
     bl      skip_ws
     ldrb    w0, [x19, x20]

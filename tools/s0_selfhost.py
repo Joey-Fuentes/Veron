@@ -131,6 +131,14 @@ DOCUMENTED = {
     # is the check. The table lagging the assembler is its own documented
     # failure (322 lines wrongly marked NEEDS); leading it is caught loudly.
     ('movn', '%X, #%i'),
+    # r76: the six leaves M2-Planet's aarch64 backend needs that this assembler
+    # did not have. Halfword and signed loads are offset-0 only, which is every
+    # use the backend emits. sdiv rides shift_common. The four unsigned
+    # conditions complete a set that had accreted as signed-only by accident.
+    ('ldrh', '%W, [%X]'), ('strh', '%W, [%X]'),
+    ('ldrsb', '%X, [%X]'), ('ldrsh', '%X, [%X]'),
+    ('sdiv', '%X, %X, %X'), ('sdiv', '%W, %W, %W'),
+    ('b.hi', '%L'), ('b.ls', '%L'), ('b.hs', '%L'), ('b.lo', '%L'),
     ('ldr', '%X, [%X, #%i]'),
     ('str', '%X, [%X, #%i]'),
     ('ldr', '%W, [%X, #%i]'),
