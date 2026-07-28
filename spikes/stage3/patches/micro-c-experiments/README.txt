@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "tccgen.c:1549 -- 1,549 lines into the code generator".
+"hangs forever on tcc.c" to "tccgen.c:3300 -- 3,300 lines into the code generator".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -63,6 +63,8 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   struct assignment to an array element     cc_core.c   tccgen.c:907
   a LOCAL struct is not loaded either        cc_core.c   tccgen.c:909
   local struct BRACE INITIALISER             cc_core.c   tccgen.c:1167
+  OPERATOR TOKENIZING, bounded              cc_reader.c tccgen.c:1549
+  `default:` need not come last             cc_core.c   tccgen.c:2396
 
 UNSOUND, AND WHY
 ----------------
@@ -600,10 +602,35 @@ tcc.h, libtcc.h, elf.h, tcctok.h and now tccpp.c. Now in tccgen.c.
     Store widths match field-by-field assignment exactly, so the initialiser
     inherits micro-c's existing behaviour rather than inventing its own.
 
-STOPPED AT: tccgen.c:1549, `temp_var = &arr_temp_local_vars[i];` -- taking the
-address of an array element into a GLOBAL pointer. The same statement with a
-LOCAL pointer compiles. Confirmed against the previous build that this is
-pre-existing rather than newly introduced.
+40. THE OPERATOR TOKENIZER ABSORBED ANY RUN OF "<=>|&!^%".
+
+        temp_var=&arr_temp_local_vars[i];            tccgen.c:1549
+
+    tokenized `=&` as ONE token. Worth 847 lines when fixed -- tccgen.c:1549
+    to 2396, the largest single jump of the whole run.
+
+    HOW IT HID FOR FIFTY-FOUR WALLS: every reproduction written by hand had
+    spaces around the '=' and passed. I chased "global vs local pointer" and
+    "struct vs int" for three rounds because those were the differences
+    between my repros and tcc's line. The discriminator was WHITESPACE. What
+    found it was making the statement error print the token it stopped on --
+    `=&` -- rather than narrowing by guesswork.
+
+    The fix spells out the valid combinations (== != <= >= |= &= ^= %= << >>
+    && || <<= >>=) instead of approximating them with a character class.
+
+41. `default:` NEED NOT COME LAST. The default branch collected statements
+    straight through to '}', so a `case` after it hit statement() as an
+    undefined symbol.
+
+    Fixing it moved the jump that skips the jump-table OUT of the default
+    branch to after the whole body, which is where it belongs. Two things
+    were wrong before: emitting it at the end of default cuts the legal
+    fall-through from default into a following case, and a switch with NO
+    default emitted no such jump at all -- running its last case's statements
+    straight into the comparison table.
+
+STOPPED AT: tccgen.c:3300, "lookup_member double->c does not exist".
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -618,7 +645,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Fifty-four walls between a hanging compiler and tcc's first genuinely large
+Fifty-six walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
