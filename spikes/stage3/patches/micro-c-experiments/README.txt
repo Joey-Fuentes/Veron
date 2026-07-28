@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "stops at __attribute__ in tcc.h:117".
+"hangs forever on tcc.c" to "stops at tcc.h:1417, 1300 lines further in".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -25,6 +25,9 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   per-line expansion bound (mutual recursion)  cc_macro.c, cc_globals.c
   pointer declarators, `T *a, *b` and         cc_types.c, tcc.h:899
     `int *seg2lc, nseg`                        cc_globals.*
+  strip __attribute__((...)) from the stream   cc_macro.c, tcc.h:117
+                                               cc.c
+  an empty macro must not skip the next token  cc_macro.c
 
 UNSOUND, AND WHY
 ----------------
@@ -91,6 +94,27 @@ UNSOUND, AND WHY
    type and the star depth are now recorded in fallible_type_name, where the
    stars are actually consumed and both are known.
 
+6. IGNORING __attribute__ HAS ONE REAL COST, AND IT IS RECORDED RATHER THAN
+   DISCOVERED LATER. Of 16 uses in the pinned tree, all but one are inside
+   STRING LITERALS (tccelf.c emitting C for tcc to compile) or comments.
+   `noreturn` and `format` are hints. The exception is real:
+
+       libtcc.c:332   ALIGNED(16) unsigned char magic3[4];
+
+   That member will not be 16-aligned. If anything depends on it, a built tcc
+   is subtly wrong -- one site, known, not yet handled.
+
+7. THE EMPTY-MACRO FIX IS THE COMPANION TO RESCAN-FROM-HEAD. `maybe_expand`
+   returned token->next for an empty expansion, and since `token` already
+   points past the macro name, that SKIPPED whatever followed:
+
+       #define PUB_FUNC
+       #define NORETURN __attribute__((noreturn))
+       PUB_FUNC NORETURN void die(char*);   -> NORETURN never expanded
+
+   Uniformly wrong before; inconsistent once expansions began rescanning from
+   their head. Both now resume AT the next token, never past it.
+
 The other seven look sound and are candidates for promotion once reviewed.
 The declarator one is the strongest candidate: `int a, b, c;` now emits
 output BYTE-IDENTICAL to `int a; int b; int c;`, which proves the member
@@ -98,7 +122,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Eighteen walls between a hanging compiler and tcc's first genuinely large
+Twenty walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11

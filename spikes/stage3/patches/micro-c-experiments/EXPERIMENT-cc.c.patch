@@ -1,0 +1,13 @@
+EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
+
+--- a/cc.c
++++ b/cc.c
+@@ -361,6 +361,8 @@
+ 		preprocess();
+ 	}
+ 
++	strip_attributes();
++
+ 	if (PREPROCESSOR_MODE)
+ 	{
+ 		write_to_out_buffer("\n/* Preprocessed source */\n", destination_file);

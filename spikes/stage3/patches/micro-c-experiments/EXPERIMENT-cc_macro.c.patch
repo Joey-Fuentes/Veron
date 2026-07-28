@@ -11,10 +11,23 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  struct token_list* maybe_expand(struct token_list* token)
  {
  	if(NULL == token)
-@@ -1145,6 +1147,38 @@
- 		return token->next;
- 	}
+@@ -1142,7 +1144,48 @@
  
+ 	if (NULL == hold->expansion)
+ 	{
+-		return token->next;
++		/* AN EMPTY MACRO MUST NOT SWALLOW THE NEXT TOKEN. `token` already
++		 * points PAST the macro name (eat_token above), so returning
++		 * token->next skips whatever followed it:
++		 *     #define PUB_FUNC
++		 *     #define NORETURN __attribute__((noreturn))
++		 *     PUB_FUNC NORETURN void die(char*);
++		 * left NORETURN unexpanded, because PUB_FUNC's empty expansion jumped
++		 * over it. Consistent with rescanning from the head elsewhere: resume
++		 * AT the next token, never past it. */
++		return token;
++	}
++
 +	/* PASTE: fold `X ## Y` into a single token XY, after argument substitution
 +	 * has run so the operands are the substituted text. Applied to the
 +	 * expansion list about to be spliced, walking left to right so a chain like
@@ -45,12 +58,10 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 +			}
 +		}
 +		pst = pst->next;
-+	}
-+
+ 	}
+ 
  	/* Paint every occurrence of this macro's own name in what we are about to
- 	 * splice. For a function-like macro `expansion` is a fresh deep copy, so
- 	 * this is per-invocation; for an object-like macro it is the stored list,
-@@ -1160,9 +1194,41 @@
+@@ -1160,9 +1203,94 @@
  		paint = paint->next;
  	}
  
@@ -90,10 +101,63 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 +	 * head is exactly what makes a self-referential macro loop, and the paint
 +	 * is what stops it. The two changes belong together. */
 +	return hold2;
++}
++
++/* STRIP `__attribute__ ((...))` FROM THE TOKEN STREAM.
++ *
++ * A GCC extension, used 16 times in the pinned tcc tree -- but almost all of
++ * those are inside STRING LITERALS (tccelf.c emitting C source for tcc to
++ * compile later) or comments. Exactly one is a real use in code we parse:
++ *
++ *     libtcc.c:332   ALIGNED(16) unsigned char magic3[4];
++ *
++ * tcc.h offers no portable branch: #ifdef _MSC_VER gives __declspec instead,
++ * which is no better. So ignoring the construct is what any compiler building
++ * GCC-flavoured C has to do at minimum.
++ *
++ * WHAT IGNORING COSTS, STATED: `noreturn` and `format` are hints and cost
++ * nothing. `aligned(16)` is NOT a hint -- that member will not be 16-aligned,
++ * and if anything depends on it a built tcc would be subtly wrong. One site,
++ * recorded here rather than discovered later.
++ *
++ * A stream pass rather than a parser rule because the construct is legal in
++ * many positions -- before a type, after a declarator, on a struct member --
++ * and catching them all in the grammar is far more surface than deleting them. */
++void strip_attributes(void)
++{
++	struct token_list* t = global_token;
++	while(NULL != t)
++	{
++		if(match("__attribute__", t->s))
++		{
++			struct token_list* start = t;
++			struct token_list* scan = t->next;
++			int depth = 0;
++			/* skip to the opening paren, then over the balanced group */
++			while(NULL != scan)
++			{
++				if('(' == scan->s[0]) depth = depth + 1;
++				else if(')' == scan->s[0])
++				{
++					depth = depth - 1;
++					if(0 == depth) { scan = scan->next; break; }
++				}
++				else if(0 == depth) break;   /* no parens: nothing to skip */
++				scan = scan->next;
++			}
++			/* unlink [start, scan) */
++			if(NULL != start->prev) start->prev->next = scan;
++			else global_token = scan;
++			if(NULL != scan) scan->prev = start->prev;
++			t = scan;
++			continue;
++		}
++		t = t->next;
++	}
  }
  
  void preprocess(void)
-@@ -1192,6 +1258,13 @@
+@@ -1192,6 +1320,13 @@
  		else if('\n' == macro_token->s[0])
  		{
  			start_of_line = TRUE;
