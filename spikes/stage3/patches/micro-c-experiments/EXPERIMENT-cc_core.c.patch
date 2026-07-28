@@ -63,7 +63,28 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		return lhs;
  	}
  
-@@ -479,7 +518,20 @@
+@@ -439,6 +478,20 @@
+ 		emit_pop(REGISTER_RETURN, "Restore old return pointer (link)");
+ 	}
+ 	emit_pop(REGISTER_TEMP, "Restore temp register");
++
++	/* THE RESULT HAS THE FUNCTION'S RETURN TYPE. Without this current_target
++	 * kept whatever the last argument left behind, so a member access on a
++	 * call's result looked the member up in the wrong type:
++	 *     tok_alloc(str, strlen(str))->tok            tccpp.c:523
++	 *     ERROR in lookup_member char*->tok does not exist
++	 * -- `char*` being the type of `str`, the last thing evaluated. */
++	if(NULL != s)
++	{
++		if(NULL != s->type)
++		{
++			current_target = s->type;
++		}
++	}
+ }
+ 
+ char* load_value_signed(unsigned size)
+@@ -479,7 +532,20 @@
  	line_error();
  	fputs(" Got unsupported size ", stderr);
  	fputs(int2str(size, 10, TRUE), stderr);
@@ -85,7 +106,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	exit(EXIT_FAILURE);
  }
  
-@@ -522,7 +574,20 @@
+@@ -522,7 +588,20 @@
  	line_error();
  	fputs(" Got unsupported size ", stderr);
  	fputs(int2str(size, 10, TRUE), stderr);
@@ -107,7 +128,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	exit(EXIT_FAILURE);
  }
  
-@@ -852,11 +917,81 @@
+@@ -852,11 +931,81 @@
  	struct type* cast_type = NULL;
  	if(global_token->s[0] == '(')
  	{
@@ -193,7 +214,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	char* s = global_token->s;
-@@ -1063,6 +1198,24 @@
+@@ -1063,6 +1212,24 @@
  	current_target = i->type;
  	require_extra_token();
  
@@ -218,7 +239,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(0 != i->offset)
  	{
  		emit_add_immediate(REGISTER_ZERO, i->offset, "-> offset calculation");
-@@ -1137,6 +1290,24 @@
+@@ -1137,6 +1304,24 @@
  	current_target = i->type;
  	require_extra_token();
  
@@ -243,7 +264,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(0 != i->offset)
  	{
  		emit_add_immediate(REGISTER_ZERO, i->offset, ". offset calculation");
-@@ -1199,7 +1370,18 @@
+@@ -1199,7 +1384,18 @@
  int unary_expr_sizeof(void)
  {
  	require_extra_token();
@@ -263,7 +284,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	require(NULL != global_token, "Incomplete sizeof expression.\n");
  	struct token_list* t = NULL;
  
-@@ -1214,7 +1396,7 @@
+@@ -1214,7 +1410,7 @@
  
  			require_extra_token();
  
@@ -272,7 +293,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  			return length;
  		}
-@@ -1276,7 +1458,7 @@
+@@ -1276,7 +1472,7 @@
  		size = a->size;
  	}
  
@@ -281,7 +302,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	return size;
  }
-@@ -1710,7 +1892,14 @@
+@@ -1710,7 +1906,14 @@
  				type_size = function_pointer;
  			}
  			require_match("Invalid character received in cast. Expected ')'.\n", ")");
@@ -297,7 +318,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  			current_target = type_size;
  		}
  		else
-@@ -1937,6 +2126,40 @@
+@@ -1937,6 +2140,40 @@
  void expression(void)
  {
  	bitwise_expr();
@@ -338,7 +359,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(match("=", global_token->s))
  	{
  		char* store = "";
-@@ -2433,16 +2656,32 @@
+@@ -2433,16 +2670,32 @@
  
  	emit_label("FOR_", unique_id);
  
@@ -375,7 +396,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	emit_unconditional_jump("FOR_", unique_id, "Check conditional");
  
-@@ -2772,6 +3011,29 @@
+@@ -2772,6 +3025,29 @@
  	else
  	{
  		expression();
@@ -405,7 +426,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_match("ERROR in statement\nMISSING ;\n", ";");
  	}
  }
-@@ -2800,6 +3062,60 @@
+@@ -2800,6 +3076,60 @@
  		type_size = type_name();
  		require(NULL != global_token, "Received EOF when attempting to collect arguments\n");
  		require(NULL != type_size, "Must have non-null type\n");
@@ -466,7 +487,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		if(global_token->s[0] == ')')
  		{
  			/* foo(int,char,void) doesn't need anything done */
-@@ -2808,7 +3124,14 @@
+@@ -2808,7 +3138,14 @@
  		else if(global_token->s[0] != ',')
  		{
  			/* deal with foo(int a, char b) */
@@ -482,7 +503,24 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  			require(!iskeywordp(global_token->s), "You are not allowed to use a keyword as a argument variable name\n");
  			a = sym_declare(global_token->s, type_size, function->arguments, TLO_ARGUMENT);
  			if(NULL == function->arguments)
-@@ -2969,6 +3292,35 @@
+@@ -2861,10 +3198,14 @@
+ 	require_extra_token();
+ }
+ 
+-void declare_function(void)
++void declare_function(struct type* return_type)
+ {
+ 	current_count = 0;
+-	function = sym_declare(global_token->prev->s, NULL, global_function_list, TLO_FUNCTION);
++	/* RECORD THE RETURN TYPE. It was registered as NULL, so a call's result had
++	 * no type and current_target kept whatever the last ARGUMENT left behind --
++	 * which is how `tok_alloc(str, strlen(str))->tok` came to look up `tok` in
++	 * `char*`, the type of `str`. */
++	function = sym_declare(global_token->prev->s, return_type, global_function_list, TLO_FUNCTION);
+ 
+ 	/* allow previously defined functions to be looked up */
+ 	global_function_list = function;
+@@ -2969,6 +3310,35 @@
  	{
  		type_size = mirror_type(type_size);
  		global_token = global_token->next;
@@ -518,7 +556,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	require_match("ERROR in typedef statement\nMissing ;\n", ";");
-@@ -3320,6 +3672,46 @@
+@@ -3320,6 +3690,46 @@
  	{
  		require_extra_token();
  
@@ -565,3 +603,12 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_match("Missing { after = in global array", "{");
  
  		array_modifier = global_array_initializer_list(type_size, array_modifier);
+@@ -3458,7 +3868,7 @@
+ 	/* Deal with global functions */
+ 	if(match("(", global_token->s))
+ 	{
+-		declare_function();
++		declare_function(type_size);
+ 		goto new_type;
+ 	}
+ 

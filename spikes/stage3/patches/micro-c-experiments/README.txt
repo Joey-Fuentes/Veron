@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "523 lines into tccpp.c".
+"hangs forever on tcc.c" to "660 lines into tccpp.c".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -40,6 +40,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   a cast applies to the POSTFIX expression     cc_core.c   tccpp.c:281
   cast with a PARENTHESISED operand           cc_core.c   tccpp.c:390
   empty `for` clauses, `for (;;)`             cc_core.c   tccpp.c:415
+  a call's result carries its RETURN TYPE     cc_core.c   tccpp.c:523
 
 UNSOUND, AND WHY
 ----------------
@@ -301,10 +302,26 @@ UNSOUND, AND WHY
     so the break is the only exit -- and an ordinary three-clause `for` emits
     code IDENTICAL to the pre-change build.
 
-STOPPED AT: `tok_alloc(str, strlen(str))->tok` at tccpp.c:523 --
-"lookup_member char*->tok does not exist". A member access on a FUNCTION
-CALL's return value; the call's return type is not tracked into the postfix
-chain. Distinct from the cast work above, and not started.
+19. A CALL'S RESULT HAD NO TYPE. declare_function registered every function
+    with sym_declare(..., NULL, ...), so after a call current_target kept
+    whatever the last ARGUMENT left behind:
+
+        tok_alloc(str, strlen(str))->tok            tccpp.c:523
+        ERROR in lookup_member char*->tok does not exist
+
+    `char*` being the type of `str`. The declared return type was already in
+    scope at the only call site, so it just needed passing through.
+
+    Verified by offset rather than by "it compiles": `alloc(s)->len` and
+    `t = alloc(s); t->len` both emit +8 for the second member.
+
+    Instrumenting first was again what found it -- printing s->type showed
+    NULL, where the guess would have been that the type was simply wrong.
+
+STOPPED AT: tccpp.c:660, "unsupported size 1125 ... of type 'BufferedFile'
+near token '->'" -- a large struct being loaded by value. Same shape as the
+mirror_type bug fixed earlier but on a different path, and the improved
+diagnostic named it immediately.
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -319,7 +336,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Thirty-three walls between a hanging compiler and tcc's first genuinely large
+Thirty-four walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
