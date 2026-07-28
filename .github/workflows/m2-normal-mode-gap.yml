@@ -126,7 +126,16 @@ jobs:
             echo "FAIL: accepted a program it must reject -- not measuring anything"
             exit 1
           fi
-          echo "  sanity: accepts valid C, rejects invalid C"
+          # AND THAT --expand-includes IS ACTUALLY DOING SOMETHING. It defaults
+          # off and fails SILENTLY when off, so a probe that loses the flag
+          # reports "Unknown type" for every macro in every header and looks
+          # like a language finding. Assert the failure mode directly.
+          mkdir -p /tmp/inc && printf 'int from_header;\n' > /tmp/inc/h.h
+          printf '#include "h.h"\nint main(){from_header=1;return from_header;}\n' > /tmp/inc/m.c
+          "$M2" --architecture aarch64 --expand-includes -I /tmp/inc \
+            -f /tmp/inc/m.c -o /dev/null \
+            || { echo "FAIL: #include is not being followed"; exit 1; }
+          echo "  sanity: accepts valid C, rejects invalid C, follows #include"
 
       - name: Fetch pinned tcc and apply our patch series
         run: |
@@ -178,8 +187,13 @@ jobs:
           # files are ever seen with a target defined.
           for f in tcc.c libtcc.c; do
             want=$((want + 1))
-            # NORMAL MODE -- no --bootstrap-mode. The preprocessor runs, so
-            # #include resolves and the thirteen guarded constructs are allowed.
+            # NORMAL MODE -- no --bootstrap-mode -- plus --expand-includes.
+            # THAT FLAG IS NOT OPTIONAL AND ITS ABSENCE IS SILENT. #include is
+            # gated on FOLLOW_INCLUDES, which defaults FALSE, and the directive
+            # is then dropped with no diagnostic at all: a missing header exits
+            # 0. Every "Unknown type ST_DATA / ST_FUNC / ExprValue" this probe
+            # has reported was that -- tcc.h was never read. Nothing about the
+            # error said so, which is why it looked like a language gap.
             # BOUNDED, AND NOISY. The first version ran the whole loop
             # silently and unbounded: it was killed after ~70s with no output
             # at all, so the log could not say which file it died on or even
@@ -190,7 +204,7 @@ jobs:
             # to find, and it must not be able to take the job down with it.
             # ulimit does the same for a runaway allocation, in a subshell so
             # the limit cannot leak into the next iteration.
-            err=$( (ulimit -v 4194304; timeout 300 "$M2" --architecture aarch64 \
+            err=$( (ulimit -v 4194304; timeout 300 "$M2" --architecture aarch64 --expand-includes \
                      -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 \
                      -D TCC_TARGET_LINUX=1 -D CONFIG_TCC_STATIC=1 \
                      -I . -I include -I "$M2LIBC" \
@@ -249,6 +263,37 @@ jobs:
             sed -n "s/^$f\t[0-9]*\t//p" /tmp/results.tsv | sed 's/^/      /'
           done
           echo
+          # WHAT DID THE PREPROCESSOR ACTUALLY PRODUCE? An "Unknown type X"
+          # for a name that IS a macro means the definition never reached the
+          # parser -- a header not found, or a conditional evaluated the other
+          # way. Guessing which from the parse error is exactly the loop that
+          # cost three runs earlier in this probe's life. -E dumps the token
+          # stream, so the answer is in the artifact rather than in an argument.
+          echo "  --- PREPROCESSOR CHECK (-E) ---"
+          cd tcc
+          for f in tcc.c libtcc.c; do
+            out=/tmp/pp-$f.txt
+            (ulimit -v 4194304; timeout 300 "$M2" --architecture aarch64 -E --expand-includes \
+               -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 \
+               -D TCC_TARGET_LINUX=1 -D CONFIG_TCC_STATIC=1 \
+               -I . -I include -I "$M2LIBC" \
+               -f "$f" -o "$out") >/dev/null 2>&1 || true
+            if [ -s "$out" ]; then
+              printf '    %-10s preprocessed to %s lines\n' "$f" "$(wc -l < "$out")"
+              # Did tcc.h get in at all, and did the ST_* macros expand?
+              printf '      tcc.h reached : %s\n' \
+                "$(grep -c 'TCC_VERSION\|CONFIG_TCCDIR' "$out" || echo 0)"
+              printf '      bare ST_DATA  : %s occurrences left unexpanded\n' \
+                "$(grep -ow 'ST_DATA' "$out" | wc -l)"
+              printf '      bare ST_FUNC  : %s\n' \
+                "$(grep -ow 'ST_FUNC' "$out" | wc -l)"
+            else
+              printf '    %-10s -E produced NOTHING\n' "$f"
+            fi
+          done
+          cp /tmp/pp-*.txt /tmp/ 2>/dev/null || true
+          cd ..
+          echo
           echo "  --- GROUPED, MOST COMMON FIRST ---"
           # The number that matters: how many DISTINCT things stop it. A long
           # tail of one construct is a rung; twenty different constructs is a
@@ -266,5 +311,7 @@ jobs:
         if: always()
         with:
           name: m2-normal-mode-gap
-          path: /tmp/results.tsv
+          path: |
+            /tmp/results.tsv
+            /tmp/pp-*.txt
           if-no-files-found: warn
