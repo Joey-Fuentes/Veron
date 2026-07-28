@@ -1978,3 +1978,43 @@ WHAT MADE THE DIFFERENCE. Six rounds of markers narrowed to a function and
 stopped. Three test cases written in the SHAPE of that function found a bug
 that markers could never have located, because the fault is not at a
 statement boundary -- it is in what one expression compiles to.
+
+=============================================================================
+THE DIFFTEST NOW RUNS ON aarch64 TOO
+
+Same cases, same gcc reference, run natively on the runner:
+
+    amd64     7 pass / 3 fail
+    aarch64   6 pass / 4 fail   (05-struct-assign faults there and will not
+                                 even assemble here -- the struct-copy fix is
+                                 aarch64-shaped in one direction and broken
+                                 in the other)
+
+No case fails ONLY on aarch64 any more, which is worth noting: after the
+member alignment fix, the two architectures agree about these constructs.
+
+AND ANOTHER REAL BUG: THE INDEXED LOAD WIDTH WAS A NAME COMPARISON.
+
+    char* assign = load_value(register_size, ...);
+    if(match("char*", current_target->name)) assign = load_value(1, TRUE);
+
+So `char msg[] = "hello"; msg[0]` -- whose type is named `char`, not `char*`
+-- loaded EIGHT bytes and compared six characters of the string against 'h'.
+A name comparison cannot answer a question about width.
+
+Replaced with the element size, which is the same expression the stride
+already uses, so the two now agree by construction rather than coincidence.
+That immediately surfaced two cases the name check had been hiding:
+
+    an array of 57-byte TokenSym    load_value(57) is not an instruction;
+                                    a struct element yields its ADDRESS
+    an array involving FILE         size 0, an opaque type -- load a register,
+                                    because what is indexed is a pointer array
+
+Both came from tccpp.c, and neither would have been found without compiling
+tcc; the difftest cases are all small by design. The two tools find different
+things and that is the point of having both.
+
+    difftest   7 pass / 3 fail   was 4 / 6 two rounds ago
+    regression 0 regressions
+    full unit  350,429 lines
