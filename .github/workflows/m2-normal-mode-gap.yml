@@ -77,6 +77,24 @@ jobs:
           git -C m2 checkout -q "$M2PLANET_SHA"
           git -C m2 submodule update --init --recursive -q
           echo "  M2-Planet $(git -C m2 rev-parse --short HEAD)"
+          # OUR FIXES, APPLIED BEFORE MEASURING. Each one in this directory is
+          # a defect this probe found and that we intend M2v to carry -- so
+          # measuring without them would just re-find the same wall every run
+          # and never reach the code behind it. They are patches rather than a
+          # fork so the delta stays readable and each is justified in its own
+          # header.
+          P=spikes/stage3/patches/m2-planet
+          if [ -d "$P" ]; then
+            n=0
+            for q in "$P"/[0-9]*.patch; do
+              [ -e "$q" ] || continue
+              git -C m2 apply --ignore-whitespace "../$q" \
+                || { echo "FAIL: could not apply $(basename "$q")"; exit 1; }
+              echo "    applied $(basename "$q")"
+              n=$((n + 1))
+            done
+            echo "  $n M2-Planet fix(es) applied"
+          fi
           make -C m2 M2-Planet >/dev/null 2>&1 || make -C m2 >/dev/null
 
       - name: 'ASSERT: the binary exists and runs'

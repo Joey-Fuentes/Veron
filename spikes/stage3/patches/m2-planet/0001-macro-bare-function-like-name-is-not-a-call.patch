@@ -1,0 +1,48 @@
+From: Veron
+Subject: [PATCH] cc_macro: a function-like macro name without `(` is not a call
+
+C expands a function-like macro only when its name is followed by an open
+paren. Anywhere else the name is an ordinary identifier and must be left
+alone. maybe_expand() ate the name FIRST and then checked, so every bare use
+was a hard error:
+
+    libtcc.c:267: Function-like-macro called without parameter list
+
+Measured by .github/workflows/m2-normal-mode-gap.yml, which compiles our
+patched tcc in NORMAL mode -- the mode we will actually build tcc in, as
+opposed to --bootstrap-mode, which is a reduced language we only ever used
+because M2-Planet's own source is written to fit it.
+
+The fix checks for `(` BEFORE eating the name and, when it is absent, returns
+exactly as the "not a macro at all" path above already does.
+
+VERIFIED, not argued: with this applied, M2-Planet's output over its own nine
+source files is BYTE-IDENTICAL to the unpatched compiler's, so nothing that
+was compiling before compiles differently. A bare macro name now reports
+"X is not a defined symbol" -- the correct diagnostic for an undefined
+identifier -- instead of dying in the preprocessor.
+
+This is a conformance fix, not a feature: it makes M2-Planet agree with C
+where it previously did not.
+@@ -991,6 +991,21 @@
+ 		return token->next;
+ 	}
+ 
++	/* A FUNCTION-LIKE MACRO NAME NOT FOLLOWED BY `(` IS NOT AN INVOCATION.
++	 * C says such a name is left as an ordinary identifier -- it is only a
++	 * macro call when the next token is an open paren. This used to eat the
++	 * name first and then die on the check below, so any bare use of the name
++	 * -- passing it somewhere, or reusing the spelling as a declarator -- was
++	 * a hard error. tcc trips it at libtcc.c:267. Returning here is the same
++	 * thing the `not a macro at all` path above already does. */
++	if(NULL != hold->arguments)
++	{
++		if(token->next->s[0] != '(')
++		{
++			return token->next;
++		}
++	}
++
+ 	token = eat_token(token);
+ 
+ 	struct token_list* expansion = hold->expansion;
