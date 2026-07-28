@@ -370,6 +370,49 @@ def label_map(src):
     return dict(zip(seen, LABEL_CHARS))
 
 
+def byte_blocks(src):
+    """`name:` followed by one or more `.byte` lines -> [(name, bytes)].
+
+    Values may be hex or decimal and several to a line; stage0-as's own `.byte`
+    takes exactly one decimal value, so the expansion to one-per-line happens
+    here rather than in the assembler. A label followed by anything else is
+    code and is left alone, which is why `_start:` and friends fall straight
+    through.
+    """
+    out, cur, vals = [], None, []
+
+    def flush():
+        if cur is not None and vals:
+            out.append((cur, bytes(vals)))
+
+    for raw in src:
+        t = strip_comment(raw).strip()
+        if not t:
+            continue
+        m = re.match(r"^([A-Za-z_]\w*):\s*$", t)
+        if m:
+            flush()
+            cur, vals = m.group(1), []
+            continue
+        if t.startswith(".byte") and cur is not None:
+            for v in t[len(".byte"):].split(","):
+                v = v.strip()
+                if not v:
+                    continue
+                vals.append(int(v, 16) if v.lower().startswith("0x")
+                            else int(v))
+            continue
+        # Anything else ends the block. A directive that emits nothing
+        # (.align, .balign) must NOT end it -- it sits between the label and
+        # its data in some sources -- but anything that occupies space does.
+        if t.startswith((".align", ".balign", ".global", ".data", ".text")):
+            continue
+        flush()
+        cur, vals = None, []
+    flush()
+    return out
+
+
 def data_layout(src, n_instr):
     """Place the data symbols the code refers to, and say where each landed.
 
@@ -388,6 +431,20 @@ def data_layout(src, n_instr):
     pos = n_instr * 4
     pos = (pos + 7) & ~7
     offs, blobs = {}, []
+    # BYTE BLOCKS FIRST. A bare label followed by `.byte` lines is data, not
+    # code -- elf's 120-byte ELF header template is written exactly that way,
+    # eighteen lines of four to eight comma-separated values under `header:`.
+    # Before this they were classified as a CODE label with the bytes inline,
+    # which broke twice over: stage0-as's `.byte` takes ONE value so the line
+    # was rejected outright, and every later data symbol was placed as though
+    # those 120 bytes did not exist. stage0-as's own source has no such block,
+    # which is why neither showed up until elf was translated -- the census
+    # counts INSTRUCTION lines, so a file reports 100% with its data untouched.
+    for name, body in byte_blocks(src):
+        offs[name] = pos
+        blobs.append((name, body))
+        pos += len(body)
+    pos = (pos + 7) & ~7
     for raw in src:
         t = strip_comment(raw).strip()
         m = re.match(r'^([A-Za-z_]\w*):\s*\.ascii\s+"(.*)"\s*$', t)
@@ -422,6 +479,8 @@ def cmd_xlate(path, out):
     n_instr = sum(1 for r in src if INSTR.match(strip_comment(r)))
     dmap, blobs = data_layout(src, n_instr)
     out_lines, need = [], Counter()
+    blob_names = {n for n, _ in byte_blocks(src)}
+    in_blob = False
     for raw in src:
         ln = strip_comment(raw)
         if not ln.strip():
@@ -436,8 +495,21 @@ def cmd_xlate(path, out):
             continue
         m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*):\s*$", s)
         if m:
+            if m.group(1) in blob_names:
+                # A data blob's label. data_layout gave it an address and its
+                # bytes are appended with the other blobs, so emitting a code
+                # label here would place the data in the INSTRUCTION stream and
+                # shift every data symbol after it.
+                in_blob = True
+                continue
+            in_blob = False
             out_lines.append(":%s" % lmap[m.group(1)])
             continue
+        if s.startswith(".byte") and in_blob:
+            continue
+        if s.startswith((".align", ".balign")):
+            continue
+        in_blob = False
         if s.startswith((".byte", ".ascii")):
             out_lines.append(s)
             continue
