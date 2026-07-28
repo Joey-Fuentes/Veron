@@ -1220,7 +1220,7 @@ jobs:
 
           printf '\n  === ELF SELF-HOST GENERATIONS ===\n'
           printf '  %-28s %10s  %-16s  %s\n' 'ARTIFACT' 'BYTES' 'SHA256[0:16]' 'vs PREVIOUS'
-          printf '  %-28s %10s  %-16s  %s\n' 'reference elf (as+ld)' \
+          printf '  %-28s %10s  %-16s  %s\n' 'as+ld elf (not shipped)' \
             "$(ab_size elf)" "$(ab_sha elf)" '-'
           printf '  %-28s %10s  %-16s  %s\n' 'elfgen1 (stage0-as on .s0)' \
             "$(ab_size elfgen1)" "$(ab_sha elfgen1)" '-'
@@ -1233,6 +1233,37 @@ jobs:
           _v='DIFFERS from elfgen2'; cmp -s elfgen3 elfgen2 && _v='MATCHES elfgen2'
           printf '  %-28s %10s  %-16s  %s\n' 'elfgen3 (elfgen2 wrapping)' \
             "$(ab_size elfgen3)" "$(ab_sha elfgen3)" "$_v"
+          echo
+          # THE COMMITTED elf, WRAPPING THE SAME PAYLOAD. Without this row the
+          # shipped binary is never EXECUTED in the job that ships it -- it is
+          # byte-compared against elfgen1 and nothing more. It does get run in
+          # stage3-hermetic, but a downstream job finding the artifact broken is
+          # a worse place to find out than here.
+          #
+          # The chain still ANCHORS on the as+ld build rather than on this one,
+          # and deliberately: elfgen2 == elfgen1 says our elf writes the same
+          # container as+ld's does, where starting from the committed binary
+          # would only say it reproduces itself -- which a consistently wrong
+          # wrapper satisfies too. This row is additive, so it carries no
+          # bootstrap trap: a source change still produces its own replacement.
+          if [ -x spikes/elf/elf ]; then
+            ./spikes/elf/elf elfgenC < elfgen1.bin
+            _v='DIFFERS from elfgen1'
+            cmp -s elfgenC elfgen1 && _v='MATCHES elfgen1'
+            printf '  %-28s %10s  %-16s  %s\n' 'elfgenC (COMMITTED wrapping)' \
+              "$(ab_size elfgenC)" "$(ab_sha elfgenC)" "$_v"
+            if ! cmp -s elfgenC elfgen1; then
+              echo
+              echo "  FAIL: the COMMITTED elf does not write the container this"
+              echo "  run's elf writes. The committed binary is on the build"
+              echo "  path in stage3-hermetic; a mismatch here is that box"
+              echo "  building on a wrapper nothing in this job validated."
+              exit 1
+            fi
+          else
+            printf '  %-28s %10s  %-16s  %s\n' 'elfgenC (COMMITTED wrapping)' \
+              '-' '-' 'not committed yet'
+          fi
           echo
           if cmp -s elfgen2 elfgen1 && cmp -s elfgen3 elfgen2; then
             echo "  PASS: elfgen1 == elfgen2 == elfgen3 -- the self-built elf"
