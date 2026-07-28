@@ -2,7 +2,20 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 
 --- a/cc_core.c
 +++ b/cc_core.c
-@@ -268,6 +268,17 @@
+@@ -36,6 +36,12 @@
+ char* break_target_func;
+ char* break_target_num;
+ char* continue_target_head;
++/* CONTINUE NEEDS ITS OWN func/num. It used to borrow break's, which is why a
++ * `continue` inside a `switch` had to be banned outright: the switch overwrites
++ * break_target_func/num with its own id, so the label would have pointed at the
++ * switch rather than the enclosing loop. C sends continue to the LOOP. */
++char* continue_target_func;
++char* continue_target_num;
+ struct token_list* break_frame;
+ int current_count;
+ int Address_of;
+@@ -268,6 +274,17 @@
  		require_extra_token();
  		return strtoint(global_token->prev->s);
  	}
@@ -20,7 +33,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	line_error();
  	fputs("Invalid token '", stderr);
-@@ -293,13 +304,41 @@
+@@ -293,13 +310,41 @@
  		require_extra_token();
  		return lhs - constant_expression();
  	}
@@ -63,7 +76,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		return lhs;
  	}
  
-@@ -439,6 +478,20 @@
+@@ -439,6 +484,20 @@
  		emit_pop(REGISTER_RETURN, "Restore old return pointer (link)");
  	}
  	emit_pop(REGISTER_TEMP, "Restore temp register");
@@ -84,7 +97,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  }
  
  char* load_value_signed(unsigned size)
-@@ -479,7 +532,20 @@
+@@ -479,7 +538,20 @@
  	line_error();
  	fputs(" Got unsupported size ", stderr);
  	fputs(int2str(size, 10, TRUE), stderr);
@@ -106,7 +119,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	exit(EXIT_FAILURE);
  }
  
-@@ -522,7 +588,20 @@
+@@ -522,7 +594,20 @@
  	line_error();
  	fputs(" Got unsupported size ", stderr);
  	fputs(int2str(size, 10, TRUE), stderr);
@@ -128,7 +141,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	exit(EXIT_FAILURE);
  }
  
-@@ -849,14 +928,120 @@
+@@ -849,14 +934,120 @@
  	}
  	num_dereference_after_postfix = num_dereference;
  
@@ -253,7 +266,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	char* s = global_token->s;
-@@ -943,9 +1128,28 @@
+@@ -943,9 +1134,28 @@
  			current_target = current_target->type;
  			num_dereference = num_dereference - 1;
  		}
@@ -282,7 +295,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		int should_not_deref;
  		while (num_dereference > 0)
  		{
-@@ -960,6 +1164,7 @@
+@@ -960,6 +1170,7 @@
  			}
  			num_dereference = num_dereference - 1;
  		}
@@ -290,7 +303,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  }
  
-@@ -1063,6 +1268,24 @@
+@@ -1063,6 +1274,24 @@
  	current_target = i->type;
  	require_extra_token();
  
@@ -315,7 +328,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(0 != i->offset)
  	{
  		emit_add_immediate(REGISTER_ZERO, i->offset, "-> offset calculation");
-@@ -1137,6 +1360,24 @@
+@@ -1137,6 +1366,24 @@
  	current_target = i->type;
  	require_extra_token();
  
@@ -340,7 +353,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(0 != i->offset)
  	{
  		emit_add_immediate(REGISTER_ZERO, i->offset, ". offset calculation");
-@@ -1199,7 +1440,18 @@
+@@ -1199,7 +1446,18 @@
  int unary_expr_sizeof(void)
  {
  	require_extra_token();
@@ -360,7 +373,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	require(NULL != global_token, "Incomplete sizeof expression.\n");
  	struct token_list* t = NULL;
  
-@@ -1214,7 +1466,7 @@
+@@ -1214,7 +1472,7 @@
  
  			require_extra_token();
  
@@ -369,7 +382,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  			return length;
  		}
-@@ -1276,7 +1528,7 @@
+@@ -1276,7 +1534,7 @@
  		size = a->size;
  	}
  
@@ -378,7 +391,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	return size;
  }
-@@ -1327,6 +1579,39 @@
+@@ -1327,6 +1585,39 @@
  {
  	primary_expr();
  	postfix_expr_stub();
@@ -418,7 +431,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  }
  
  /*
-@@ -1710,7 +1995,14 @@
+@@ -1710,7 +2001,14 @@
  				type_size = function_pointer;
  			}
  			require_match("Invalid character received in cast. Expected ')'.\n", ")");
@@ -434,7 +447,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  			current_target = type_size;
  		}
  		else
-@@ -1937,6 +2229,40 @@
+@@ -1937,6 +2235,40 @@
  void expression(void)
  {
  	bitwise_expr();
@@ -475,7 +488,52 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(match("=", global_token->s))
  	{
  		char* store = "";
-@@ -2433,16 +2759,32 @@
+@@ -2275,12 +2607,17 @@
+ 	char* nested_break_func = break_target_func;
+ 	char* nested_break_num = break_target_num;
+ 	char* nested_continue_head = continue_target_head;
++	char* nested_continue_func = continue_target_func;
++	char* nested_continue_num = continue_target_num;
+ 
+ 	char* number_string = int2str(current_count, 10, TRUE);
+ 	current_count = current_count + 1;
+ 
+ 	break_target_head = "_SWITCH_END_";
+-	continue_target_head = NULL; /* don't allow continue in switch statements */
++	/* continue_target_head is DELIBERATELY LEFT ALONE. tccpp.c:893 has a
++	 * `continue` inside a switch inside a while loop, which is ordinary C --
++	 * continue targets the enclosing LOOP, break targets the switch. Now that
++	 * continue carries its own func/num, passing it through is safe. */
+ 	break_target_num = number_string;
+ 	break_frame = function->locals;
+ 	break_target_func = function->s;
+@@ -2385,6 +2722,8 @@
+ 	break_target_func = nested_break_func;
+ 	break_target_num = nested_break_num;
+ 	continue_target_head = nested_continue_head;
++	continue_target_func = nested_continue_func;
++	continue_target_num = nested_continue_num;
+ 	break_frame = nested_locals;
+ }
+ 
+@@ -2395,12 +2734,16 @@
+ 	char* nested_break_func = break_target_func;
+ 	char* nested_break_num = break_target_num;
+ 	char* nested_continue_head = continue_target_head;
++	char* nested_continue_func = continue_target_func;
++	char* nested_continue_num = continue_target_num;
+ 
+ 	char* number_string = int2str(current_count, 10, TRUE);
+ 	current_count = current_count + 1;
+ 
+ 	break_target_head = "FOR_END_";
+ 	continue_target_head = "FOR_ITER_";
++	continue_target_num = number_string;
++	continue_target_func = function->s;
+ 	break_target_num = number_string;
+ 	break_frame = function->locals;
+ 	break_target_func = function->s;
+@@ -2433,16 +2776,32 @@
  
  	emit_label("FOR_", unique_id);
  
@@ -512,7 +570,79 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	emit_unconditional_jump("FOR_", unique_id, "Check conditional");
  
-@@ -2772,6 +3114,29 @@
+@@ -2460,6 +2819,8 @@
+ 	break_target_func = nested_break_func;
+ 	break_target_num = nested_break_num;
+ 	continue_target_head = nested_continue_head;
++	continue_target_func = nested_continue_func;
++	continue_target_num = nested_continue_num;
+ 	break_frame = nested_locals;
+ }
+ 
+@@ -2486,6 +2847,8 @@
+ 	char* nested_break_func = break_target_func;
+ 	char* nested_break_num = break_target_num;
+ 	char* nested_continue_head = continue_target_head;
++	char* nested_continue_func = continue_target_func;
++	char* nested_continue_num = continue_target_num;
+ 
+ 	char* number_string = int2str(current_count, 10, TRUE);
+ 	current_count = current_count + 1;
+@@ -2494,6 +2857,8 @@
+ 
+ 	break_target_head = "DO_END_";
+ 	continue_target_head = "DO_TEST_";
++	continue_target_num = number_string;
++	continue_target_func = function->s;
+ 	break_target_num = number_string;
+ 	break_frame = function->locals;
+ 	break_target_func = function->s;
+@@ -2521,6 +2886,8 @@
+ 	break_target_func = nested_break_func;
+ 	break_target_num = nested_break_num;
+ 	continue_target_head = nested_continue_head;
++	continue_target_func = nested_continue_func;
++	continue_target_num = nested_continue_num;
+ }
+ 
+ 
+@@ -2532,6 +2899,8 @@
+ 	char* nested_break_func = break_target_func;
+ 	char* nested_break_num = break_target_num;
+ 	char* nested_continue_head = continue_target_head;
++	char* nested_continue_func = continue_target_func;
++	char* nested_continue_num = continue_target_num;
+ 
+ 	char* number_string = int2str(current_count, 10, TRUE);
+ 	current_count = current_count + 1;
+@@ -2540,6 +2909,8 @@
+ 
+ 	break_target_head = "END_WHILE_";
+ 	continue_target_head = "WHILE_";
++	continue_target_num = number_string;
++	continue_target_func = function->s;
+ 	break_target_num = number_string;
+ 	break_frame = function->locals;
+ 	break_target_func = function->s;
+@@ -2568,6 +2939,8 @@
+ 	break_target_func = nested_break_func;
+ 	break_target_num = nested_break_num;
+ 	continue_target_head = nested_continue_head;
++	continue_target_func = nested_continue_func;
++	continue_target_num = nested_continue_num;
+ 	break_frame = nested_locals;
+ }
+ 
+@@ -2611,7 +2984,7 @@
+ 	}
+ 	require_extra_token();
+ 
+-	char* continue_target = concat_strings4(continue_target_head, break_target_func, "_", break_target_num);
++	char* continue_target = concat_strings4(continue_target_head, continue_target_func, "_", continue_target_num);
+ 
+ 	emit_unconditional_jump("", continue_target, "Continue statement");
+ 
+@@ -2772,6 +3145,29 @@
  	else
  	{
  		expression();
@@ -542,7 +672,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_match("ERROR in statement\nMISSING ;\n", ";");
  	}
  }
-@@ -2800,6 +3165,60 @@
+@@ -2800,6 +3196,60 @@
  		type_size = type_name();
  		require(NULL != global_token, "Received EOF when attempting to collect arguments\n");
  		require(NULL != type_size, "Must have non-null type\n");
@@ -603,7 +733,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		if(global_token->s[0] == ')')
  		{
  			/* foo(int,char,void) doesn't need anything done */
-@@ -2808,7 +3227,14 @@
+@@ -2808,7 +3258,14 @@
  		else if(global_token->s[0] != ',')
  		{
  			/* deal with foo(int a, char b) */
@@ -619,7 +749,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  			require(!iskeywordp(global_token->s), "You are not allowed to use a keyword as a argument variable name\n");
  			a = sym_declare(global_token->s, type_size, function->arguments, TLO_ARGUMENT);
  			if(NULL == function->arguments)
-@@ -2861,10 +3287,14 @@
+@@ -2861,10 +3318,14 @@
  	require_extra_token();
  }
  
@@ -636,7 +766,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	/* allow previously defined functions to be looked up */
  	global_function_list = function;
-@@ -2969,6 +3399,35 @@
+@@ -2969,6 +3430,35 @@
  	{
  		type_size = mirror_type(type_size);
  		global_token = global_token->next;
@@ -672,7 +802,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	require_match("ERROR in typedef statement\nMissing ;\n", ";");
-@@ -3320,6 +3779,46 @@
+@@ -3320,6 +3810,46 @@
  	{
  		require_extra_token();
  
@@ -719,7 +849,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_match("Missing { after = in global array", "{");
  
  		array_modifier = global_array_initializer_list(type_size, array_modifier);
-@@ -3458,7 +3957,7 @@
+@@ -3458,7 +3988,7 @@
  	/* Deal with global functions */
  	if(match("(", global_token->s))
  	{

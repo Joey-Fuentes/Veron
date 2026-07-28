@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "893 lines into tccpp.c".
+"hangs forever on tcc.c" to "952 lines into tccpp.c".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -43,6 +43,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   a call's result carries its RETURN TYPE     cc_core.c   tccpp.c:523
   unary `*` deferred past the postfix chain   cc_core.c   tccpp.c:660
   prefix ++/-- under a dereference           cc_core.c   tccpp.c:673
+  `continue` inside a switch inside a loop   cc_core.c   tccpp.c:893
 
 UNSOUND, AND WHY
 ----------------
@@ -357,9 +358,26 @@ UNSOUND, AND WHY
     exact equivalent is `q = ++file->buf_ptr; ch = *q;`, and against that the
     counts match. Picking the right comparison matters as much as making one.
 
-STOPPED AT: tccpp.c:893, "Not inside of a loop" -- a `continue` inside a
-`switch` inside a while loop. Legal C: continue targets the enclosing LOOP,
-not the switch. The switch context is masking it.
+22. `continue` INSIDE A `switch` WAS BANNED, and the ban was load-bearing.
+    process_switch did
+
+        continue_target_head = NULL; /* don't allow continue in switch */
+
+    which is not C -- continue targets the enclosing LOOP, break targets the
+    switch. But simply removing the line would have been wrong: continue built
+    its label from break_target_func/num, which the switch OVERWRITES with its
+    own id, so the jump would have gone to the switch.
+
+    So continue now carries its own func/num, saved and restored at all four
+    sites that scope it. Verified in the emitted labels rather than by
+    compiling:
+
+        continue -> &FOR_ITER_f_0      the LOOP's iteration label
+        break    -> &_SWITCH_END_f_1   the SWITCH's end
+
+STOPPED AT: tccpp.c:952, an ordinary goto LABEL inside a switch body --
+`_default:` sitting immediately before `default:`. process_switch does not
+allow a plain label between cases.
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -374,7 +392,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Thirty-six walls between a hanging compiler and tcc's first genuinely large
+Thirty-seven walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
