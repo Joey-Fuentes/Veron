@@ -1074,3 +1074,42 @@ STATE AFTER THE ALIGNMENT FIX
 D and E both had shipping faults rather than code faults. stubs.c still
 carried the main() that calls tcc_new, so D referenced a symbol it had no
 reason to; the correct stubs.c had been written but not copied into the drop.
+
+=============================================================================
+THE PIPELINE IS PROVEN END TO END
+
+    A   libc-core + bare main       MAIN RAN, exit 42        248 bytes
+    A2  + stdlib                    MAIN RAN, exit 42     14,478
+    A3  + string                    MAIN RAN, exit 42     22,374
+    B   + stdio                     MAIN RAN, exit 42     49,711
+    C   libc-full                   MAIN RAN, exit 42     49,783
+    D   + stubs                     MAIN RAN, exit 42     49,985
+    E   + libtcc.M1                 MAIN RAN, exit 42  1,442,545
+    F   main calls tcc_new          SIGNAL 11          1,442,693
+
+A 1.44 MB binary containing all 350,000 lines of compiled tcc STARTS, reaches
+main and exits cleanly. Compile, assemble, link and run all work; every symbol
+resolves; every branch target is aligned.
+
+AND THE SIGNAL CHANGED, WHICH IS THE POINT. Every fault until now was SIGBUS 7
+-- alignment, the same fault everywhere, nothing to do with tcc. F is SIGSEGV
+11, and it is the first failure in this entire run that is actually about
+tcc's own compiled code.
+
+WHAT F MEANS AND DOES NOT MEAN. tcc_new allocates a TCCState and fills it in.
+A segfault there could be micro-c's eight-byte `int` changing every struct
+layout, or one of the twenty-five deliberately-wrong stubs, or a genuine
+codegen bug. It could equally be the allocator, which is why E2 was added: same
+link set, main calls malloc instead of tcc_new. If malloc faults, tcc is not
+the problem and reading tccgen.c would be wasted effort.
+
+WHAT IS STILL KNOWINGLY WRONG, unchanged and now directly in the way:
+
+  - float, double and long double are ONE word-sized integer type
+  - `int` is EIGHT bytes, so every struct tcc lays out differs from what a
+    normal compiler would produce, and every libc call has the wrong ABI
+  - constant_expression has no precedence
+  - 25 stub functions return 0 or do nothing
+
+Any of these could produce exactly what F shows. None of them is a surprise;
+all of them were recorded before the binary existed to demonstrate them.

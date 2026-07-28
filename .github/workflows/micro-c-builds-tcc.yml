@@ -306,6 +306,8 @@ jobs:
           ./micro-c --architecture aarch64 --max-string 65536 \
             -f "$P/main-00-nothing.c" -o bare.M1
           ./micro-c --architecture aarch64 --max-string 65536 \
+            -f "$P/main-01-malloc.c" -o mallocit.M1
+          ./micro-c --architecture aarch64 --max-string 65536 \
             -f "$P/main-01-tccnew.c" -o callit.M1
 
           run_probe() {
@@ -350,6 +352,11 @@ jobs:
           run_probe C-m2libc-full   libc-full.M1  m2libc.M1 bare.M1
           run_probe D-plus-stubs    libc-full.M1  m2libc.M1 stubs.M1 bare.M1
           run_probe E-plus-libtcc   libc-full.M1  libtcc.M1 m2libc.M1 stubs.M1 bare.M1
+          # E2 sits between E and F: same link set, but main calls MALLOC
+          # rather than tcc_new. tcc_new's first act is an allocation, so if
+          # the allocator is broken then F faults for a reason that has nothing
+          # to do with tcc and reading tccgen.c would be wasted effort.
+          run_probe E2-malloc       libc-full.M1  libtcc.M1 m2libc.M1 stubs.M1 mallocit.M1
           run_probe F-call-tcc_new  libc-full.M1  libtcc.M1 m2libc.M1 stubs.M1 callit.M1
 
           echo
