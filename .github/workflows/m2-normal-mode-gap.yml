@@ -185,40 +185,54 @@ jobs:
           # tree. ONE_SOURCE makes libtcc.c pull in the rest, which is how
           # the upstream makefile builds it and the only way the per-target
           # files are ever seen with a target defined.
+          # STUB-AND-RETRY, INSTEAD OF ONE ERROR PER RUN. M2-Planet stops at the
+          # first problem, so a single pass reports one wall and says nothing
+          # about what is behind it. Each missing header is a fact worth having,
+          # not a reason to end the run -- so create an EMPTY stub for it and go
+          # again. What accumulates is the header surface tcc needs that M2libc
+          # does not provide, measured rather than guessed from a list of what
+          # tcc.h usually includes.
+          #
+          # An empty stub means anything the header should have DECLARED shows
+          # up later as "not a defined symbol", which is also what we want: it
+          # says what tcc actually uses from each one, rather than what the
+          # header contains.
+          mkdir -p /tmp/stubs
+          : > /tmp/stublist.txt
           for f in tcc.c libtcc.c; do
             want=$((want + 1))
-            # NORMAL MODE -- no --bootstrap-mode -- plus --expand-includes.
-            # THAT FLAG IS NOT OPTIONAL AND ITS ABSENCE IS SILENT. #include is
-            # gated on FOLLOW_INCLUDES, which defaults FALSE, and the directive
-            # is then dropped with no diagnostic at all: a missing header exits
-            # 0. Every "Unknown type ST_DATA / ST_FUNC / ExprValue" this probe
-            # has reported was that -- tcc.h was never read. Nothing about the
-            # error said so, which is why it looked like a language gap.
-            # BOUNDED, AND NOISY. The first version ran the whole loop
-            # silently and unbounded: it was killed after ~70s with no output
-            # at all, so the log could not say which file it died on or even
-            # how far it got. A per-file line costs nothing and turns the next
-            # failure into a data point instead of a mystery. `timeout` turns a
-            # hang into rc=124, which is a MEASUREMENT -- "M2-Planet cannot
-            # finish this file" is exactly the kind of thing this probe exists
-            # to find, and it must not be able to take the job down with it.
-            # ulimit does the same for a runaway allocation, in a subshell so
-            # the limit cannot leak into the next iteration.
-            err=$( (ulimit -v 4194304; timeout 300 "$M2" --architecture aarch64 --expand-includes \
-                     -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 \
-                     -D TCC_TARGET_LINUX=1 -D CONFIG_TCC_STATIC=1 \
-                     -I . -I include -I "$M2LIBC" \
-                     -f "$f" -o /dev/null) 2>&1 >/dev/null ) && rc=0 || rc=$?
+            rc=0; note=''; tries=0
+            while [ "$tries" -lt 60 ]; do
+              tries=$((tries + 1))
+              err=$( (ulimit -v 4194304; timeout 300 "$M2" --architecture aarch64 --expand-includes \
+                       -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 \
+                       -D TCC_TARGET_LINUX=1 -D CONFIG_TCC_STATIC=1 \
+                       -I . -I include -I /tmp/stubs -I "$M2LIBC" \
+                       -f "$f" -o /dev/null) 2>&1 >/dev/null ) && rc=0 || rc=$?
+              [ "$rc" = 0 ] && { note='OK'; break; }
+              first=$(printf '%s\n' "$err" | grep -v '^$' | head -1)
+              miss=$(printf '%s' "$first" | sed -n 's/.*Unable to find include file: //p')
+              if [ -n "$miss" ]; then
+                mkdir -p "/tmp/stubs/$(dirname "$miss")"
+                : > "/tmp/stubs/$miss"
+                echo "$miss" >> /tmp/stublist.txt
+                printf '      stubbed missing header: %s\n' "$miss"
+                continue
+              fi
+              case "$rc" in
+                124) note='HUNG (300s)' ;;
+                *)   note="${first:-rc=$rc, no message}" ;;
+              esac
+              break
+            done
             ran=$((ran + 1))
-            first=$(printf '%s\n' "$err" | grep -v '^$' | head -1)
-            case "$rc" in
-              0)   note='OK' ;;
-              124) note='HUNG (300s)' ;;
-              *)   note="${first:-rc=$rc, no message}" ;;
-            esac
             printf '    %-18s rc=%-4s %s\n' "$f" "$rc" "$note"
             printf '%s\t%s\t%s\n' "$f" "$rc" "$note" >> /tmp/results.tsv
           done
+          echo
+          echo "  headers tcc needs that M2libc does not provide:"
+          sort -u /tmp/stublist.txt | sed 's/^/    /'
+          echo "  ($(sort -u /tmp/stublist.txt | wc -l) distinct)"
           echo "  attempted $want files, ran $ran"
           # DID THE COMPILER RUN, OR ONLY THE LOOP? `ran` is incremented every
           # iteration, so it proves the loop executed and nothing more -- which

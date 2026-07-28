@@ -1,0 +1,45 @@
+From: Veron
+Subject: [PATCH] cc_macro: an include producing no tokens must not crash
+
+read_all_tokens returns NULL for a file with no tokens in it -- an empty
+header, or one holding only comments -- and the splice that follows then walks
+last_token->next from a null pointer. Two lines reproduce it:
+
+    : > empty.h
+    printf '#include "empty.h"\nint main(){return 0;}\n' > t.c
+    M2-Planet --expand-includes -I . -f t.c      ->  Segmentation fault
+
+Nothing to splice means nothing to do, so return.
+
+Found while making .github/workflows/m2-normal-mode-gap.yml stub out the
+headers tcc needs and M2libc lacks: the first stub it created crashed the
+compiler. It is also the likeliest explanation for the rc=139 this probe
+recorded against tccdbg.c and tccelf.c in an earlier run.
+
+NOT the doubly-included-guarded-header case, which was checked and is fine:
+the tokens are read and the conditional logic drops them afterwards, so
+read_all_tokens still returns a list.
+
+VERIFIED: M2-Planet's output over its own nine source files is byte-identical
+with and without this patch.
+
+--- a/cc_macro.c
++++ b/cc_macro.c
+@@ -713,6 +713,17 @@
+ 	struct token_list* new_token_list = read_all_tokens(f, NULL, buffer);
+ 	new_token_list = reverse_list(new_token_list);
+ 
++	/* AN INCLUDE THAT PRODUCES NO TOKENS IS NOT AN ERROR, AND MUST NOT CRASH.
++	 * An empty header -- or one holding nothing but comments -- makes
++	 * read_all_tokens return NULL, and the splice below then walks
++	 * last_token->next from a null pointer. Two lines of C reproduce it:
++	 *     : > empty.h ; printf '#include "empty.h"\nint main(){return 0;}\n'
++	 * segfaults. Nothing to splice means nothing to do. */
++	if(NULL == new_token_list)
++	{
++		return;
++	}
++
+ 	struct token_list* last_token = new_token_list;
+ 	while(last_token->next != NULL)
+ 	{
