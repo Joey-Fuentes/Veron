@@ -1883,3 +1883,56 @@ could have been built on day one. micro-c targets amd64; the development
 machine is amd64; nothing prevented compiling and RUNNING its output locally
 from the very beginning. Instead everything went through aarch64, which the
 machine cannot execute, and every bug cost a CI round trip.
+
+=============================================================================
+BISECTING LOCALLY INSTEAD OF BY CI ROUND
+
+Stuck at the same marker for six rounds, the useful move turned out not to be
+another marker. Case 07 -- written in the SHAPE of tcc_set_output_type --
+segfaults on amd64 too, so the whole thing could be bisected here, in seconds
+per step, by deleting one statement at a time:
+
+    full            SIGSEGV
+    without the &&  SIGSEGV
+    without split   SIGSEGV
+    without ary[]   SIGSEGV
+    without p_nb[]  SIGSEGV
+    WITHOUT THE ZEROING LOOP   passes
+
+The loop is
+
+    char* p = (char*)&st;
+    while (i < (int)sizeof(struct State)) { p[i] = 0; i = i + 1; }
+
+Guards placed either side of the struct showed it writing BELOW it.
+
+AND THE CAUSE WAS A FIX OF MINE FROM TWO ROUNDS EARLIER. The indexed store
+width had been changed from current_target->type->size to
+current_target->size, so that
+
+    char *arr[8];  arr[0] = x;     would store EIGHT bytes rather than one
+
+That case was real. But the same code path handles
+
+    char *p;  p[i] = 0;            which must store ONE
+
+so every char-buffer write became an eight-byte write, and a loop zeroing a
+struct through a char* overran it by seven bytes and corrupted whatever was
+below. In tcc that is a stack local next to a TCCState.
+
+BOTH ARE RIGHT AND micro-c CANNOT TELL THEM APART. `char *p` and
+`char *arr[8]` both leave current_target as `char *`; nothing records which
+was indexed. Distinguishing them needs array-ness carried on the type, which
+now exists for struct MEMBERS (is_array) and not for locals or globals.
+
+Reverted to the pointer rule, which is the common case and the dangerous one
+to get wrong. The array-of-pointers case stays a KNOWN GAP with a failing
+difftest case rather than being traded for a worse bug.
+
+Case 07 now passes locally. difftest is 3 pass / 4 fail, up from 2/5.
+
+THE LESSON ABOUT THE PREVIOUS SIX ROUNDS. Every one of them added a marker to
+narrow WHERE. What was needed was a way to iterate at all -- and that existed
+from the beginning, because micro-c targets the architecture this machine
+runs. Six rounds of narrowing were spent on a problem that took nine local
+compiles to bisect.
