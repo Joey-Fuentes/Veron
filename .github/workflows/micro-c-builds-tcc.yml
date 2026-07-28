@@ -193,7 +193,36 @@ jobs:
           done
           echo "  M2libc: $(grep -c '^:FUNCTION_' m2libc.M1) functions, no duplicate globals"
 
-          cat libtcc.M1 m2libc.M1 stubs.M1 > all.M1
+          # ORDER MATTERS: all CODE, then all STRINGS.
+          #
+          # micro-c emits each object as code followed by its string pool. In a
+          # CONCATENATION that puts one object's strings immediately before the
+          # next object's code, and a string pool is an arbitrary number of
+          # bytes -- so the next function starts on an address that is not a
+          # multiple of four. On aarch64 a branch to an unaligned instruction
+          # is SIGBUS, which is why the ladder ran at 248 bytes and faulted at
+          # 14,478.
+          #
+          # Splitting at the marker and emitting all code first keeps every
+          # label aligned. The compiler also pads its own global string data
+          # now; both are needed, because either one alone still leaves an odd
+          # number of bytes somewhere ahead of a function.
+          join_objs() {
+            out="$1"; shift
+            : > "$out.code"; : > "$out.strs"
+            for f in "$@"; do
+              if grep -q '^# Program strings$' "$f"; then
+                sed '/^# Program strings$/,$d' "$f" >> "$out.code"
+                sed -n '/^# Program strings$/,$p' "$f" >> "$out.strs"
+              else
+                cat "$f" >> "$out.code"
+              fi
+            done
+            cat "$out.code" "$out.strs" > "$out"
+            rm -f "$out.code" "$out.strs"
+          }
+
+          join_objs all.M1 libtcc.M1 m2libc.M1 stubs.M1
           echo "  combined: $(grep -c '^:FUNCTION_' all.M1) functions"
 
       - name: 'STAGE 2: assemble with M1'
@@ -219,6 +248,35 @@ jobs:
 
       - name: 'STAGE 3+4: bisect by LINK SET'
         run: |
+          # ORDER MATTERS: all CODE, then all STRINGS.
+          #
+          # micro-c emits each object as code followed by its string pool. In a
+          # CONCATENATION that puts one object's strings immediately before the
+          # next object's code, and a string pool is an arbitrary number of
+          # bytes -- so the next function starts on an address that is not a
+          # multiple of four. On aarch64 a branch to an unaligned instruction
+          # is SIGBUS, which is why the ladder ran at 248 bytes and faulted at
+          # 14,478.
+          #
+          # Splitting at the marker and emitting all code first keeps every
+          # label aligned. The compiler also pads its own global string data
+          # now; both are needed, because either one alone still leaves an odd
+          # number of bytes somewhere ahead of a function.
+          join_objs() {
+            out="$1"; shift
+            : > "$out.code"; : > "$out.strs"
+            for f in "$@"; do
+              if grep -q '^# Program strings$' "$f"; then
+                sed '/^# Program strings$/,$d' "$f" >> "$out.code"
+                sed -n '/^# Program strings$/,$p' "$f" >> "$out.strs"
+              else
+                cat "$f" >> "$out.code"
+              fi
+            done
+            cat "$out.code" "$out.strs" > "$out"
+            rm -f "$out.code" "$out.strs"
+          }
+
           set -eu
           D=spikes/reference/m2libc/aarch64
           P=spikes/stage3/micro-c-libc/impl
@@ -252,7 +310,7 @@ jobs:
 
           run_probe() {
             nm="$1"; core="$2"; shift 2
-            cat "$@" > "$nm.M1"
+            join_objs "$nm.M1" "$@"
             ./M1 -f $D/aarch64_defs.M1 -f "$D/$core" -f "$nm.M1" \
                  --little-endian --architecture aarch64 -o "$nm.hex2" 2>/dev/null \
               || { printf '  %-34s M1 FAILED -- BROKEN RUNG\n' "$nm"; echo "$nm" >> broken.txt; return 0; }

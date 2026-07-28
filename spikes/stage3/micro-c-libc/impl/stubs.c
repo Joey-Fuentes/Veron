@@ -46,3 +46,13 @@ int time(int* t) { return 0; }
 void* localtime(int* t) { return 0; }
 void* freopen(char* f, char* m, void* s) { return 0; }
 char* realpath(char* p, char* r) { return 0; }
+
+/* libtcc.c is a LIBRARY -- no main, and the ELF entry point needs one. This
+ * exists purely so the link can close; the real entry point is tcc.c's main,
+ * and tcc.c does not compile yet (it stops in tcctools.c). */
+int tcc_new();
+int main(int argc, char** argv)
+{
+    tcc_new();
+    return 0;
+}
