@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "390 lines into tccpp.c".
+"hangs forever on tcc.c" to "415 lines into tccpp.c".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -38,6 +38,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   load_value error names type and token        cc_core.c   diagnostic only
   mirror_type: the MISSING THIRD indirection   cc_types.c  tccpp.c:177
   a cast applies to the POSTFIX expression     cc_core.c   tccpp.c:281
+  cast with a PARENTHESISED operand           cc_core.c   tccpp.c:390
 
 UNSOUND, AND WHY
 ----------------
@@ -273,6 +274,21 @@ UNSOUND, AND WHY
     went into primary_expr_variable, which is not even on this path, and a
     debug print showed it never ran. Instrument before editing.
 
+17. A CAST WHOSE OPERAND IS PARENTHESISED, under a dereference:
+
+        *(nwchar_t *)(cstr->data + size - sizeof(nwchar_t)) = ch;   tccpp.c:390
+
+    After consuming the cast the code expected an identifier and found '(' --
+    "( is not a defined symbol". Same delegation the no-cast branch uses, with
+    the cast type applied before the dereference walk.
+
+    STORE WIDTH CHECKED, because it has been wrong twice before. The cast form
+    and the equivalent `q = (T*)(d+n); *q = 5;` emit the SAME store for char,
+    int and long -- all str_x0. That 8-byte store for an int* is pre-existing
+    M2-Planet behaviour, not something this change introduced, and it is worth
+    knowing separately: assignment through a pointer appears to use register
+    size rather than the pointed-to type.
+
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
 
@@ -286,7 +302,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Thirty-one walls between a hanging compiler and tcc's first genuinely large
+Thirty-two walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
