@@ -1836,3 +1836,50 @@ until now would have said so.
 State after both fixes: regression 0 regressions, full ONE_SOURCE unit
 compiles in 41s to 351,470 lines, 01 advances from its first failure to its
 second.
+
+=============================================================================
+STRUCT MEMBERS WERE NOT ALIGNED AT ALL
+
+Found by writing a difftest case in the SHAPE of tcc_set_output_type -- the
+function the built tcc dies in -- and then bisecting it locally in seconds
+rather than by CI round.
+
+    struct State { unsigned char a; char** cp; int n; int tail; };
+
+    gcc      sizeof 24
+    micro-c  sizeof 25
+
+25 is not a multiple of anything. micro-c placed members end to end with no
+padding, so the pointer sat at offset 1.
+
+ON AMD64 AN UNALIGNED LOAD MERELY COSTS TIME. ON AARCH64 IT IS A FAULT. That
+asymmetry is why this survived: every local test ran on amd64 and passed,
+while the aarch64 binary died.
+
+TCCState opens with ELEVEN unsigned char fields and then pointers:
+
+    gcc      tcc_lib_path at offset 16
+    micro-c  tcc_lib_path at offset 9      -> now 16
+
+So every pointer in TCCState was misaligned, and the built tcc dies as soon as
+it touches one. That is a very good candidate for the SIGBUS and SIGSEGV that
+have resisted six probes, two rounds of markers and three codegen fixes.
+
+THE RULE IMPLEMENTED: a member aligns to its own size, capped at the register
+width, rounded down to a power of two; for an ARRAY the ELEMENT determines
+alignment, not the whole array; bitfields are left to the unit logic that
+already decided where their storage sits. Over-aligning would waste space and
+stay correct, under-aligning is a fault, so the cap is deliberate.
+
+sizeof(TCCState) went from 2325 to 2328. The full unit still compiles, in 36
+seconds, and the regression shows no regressions.
+
+WHAT THIS DOES NOT FIX. Case 07 still faults on amd64, where alignment is not
+enforced -- so there is a second bug in that shape as well. The difference is
+that it can now be chased in seconds instead of CI rounds.
+
+AND THE HONEST NOTE ON METHOD. This was found in one sitting with a tool that
+could have been built on day one. micro-c targets amd64; the development
+machine is amd64; nothing prevented compiling and RUNNING its output locally
+from the very beginning. Instead everything went through aarch64, which the
+machine cannot execute, and every bug cost a CI round trip.

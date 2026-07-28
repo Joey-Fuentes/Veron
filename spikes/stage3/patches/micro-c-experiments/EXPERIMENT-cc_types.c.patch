@@ -189,7 +189,7 @@ EVERY differing file rather than a hand-written list.
  		if(0 == i->size)
  		{
  			fputs("Struct only supports [num] form\n", stderr);
-@@ -669,11 +784,46 @@
+@@ -669,11 +784,94 @@
  	int largest_member_size = 0;
  	require_match("ERROR in create_struct\n Missing {\n", "{");
  	struct type* last = NULL;
@@ -204,6 +204,54 @@ EVERY differing file rather than a hand-written list.
  	{
  		last = build_member(last, offset);
  
++		/* ALIGN THE MEMBER.
++		 *
++		 * micro-c placed members end to end with no padding, so
++		 *
++		 *     struct { unsigned char a; char** p; }
++		 *
++		 * put p at offset 1. On amd64 an unaligned load merely costs time; on
++		 * AARCH64 IT IS A FAULT. TCCState opens with ELEVEN unsigned char
++		 * fields followed by pointers, so every pointer in it was misaligned,
++		 * which is a very good candidate for the SIGBUS/SIGSEGV that the
++		 * micro-c-built tcc dies with as soon as it touches one.
++		 *
++		 * Measured against gcc on TCCState's own opening fields:
++		 *     gcc      tcc_lib_path at offset 16
++		 *     micro-c  tcc_lib_path at offset 9
++		 *
++		 * The rule: a member aligns to its own size, capped at the register
++		 * width, rounded down to a power of two. For an ARRAY it is the
++		 * ELEMENT that determines alignment, not the whole array. Aligning
++		 * more than strictly required would waste space but stay correct;
++		 * aligning less is a fault, so the cap is deliberate rather than
++		 * clever.
++		 *
++		 * Bitfields are left alone: their offsets are managed by the unit
++		 * logic below, which has already decided where the storage unit sits. */
++		if(0 == last->bit_width)
++		{
++			int align_size = last->size;
++			if(last->is_array)
++			{
++				if(NULL != last->type) align_size = last->type->size;
++			}
++			if(align_size > register_size) align_size = register_size;
++
++			int align = 1;
++			while(align * 2 <= align_size) align = align * 2;
++
++			if(align > 1)
++			{
++				int slack = offset % align;
++				if(0 != slack)
++				{
++					offset = offset + (align - slack);
++					last->offset = offset;
++				}
++			}
++		}
++
 +		if(0 != last->bit_width)
 +		{
 +			/* Does it fit in the unit we are filling? */
@@ -236,7 +284,7 @@ EVERY differing file rather than a hand-written list.
  		if(member_size == NO_STRUCT_DEFINITION)
  		{
  			line_error();
-@@ -692,6 +842,98 @@
+@@ -692,6 +890,98 @@
  			offset = 0;
  		}
  
@@ -335,7 +383,7 @@ EVERY differing file rather than a hand-written list.
  		require_match("ERROR in create_struct\n Missing ;\n", ";");
  		require(NULL != global_token, "Unterminated struct\n");
  	}
-@@ -811,13 +1053,47 @@
+@@ -811,13 +1101,47 @@
  		require_extra_token();
  	}
  
@@ -386,7 +434,7 @@ EVERY differing file rather than a hand-written list.
  		}
  		else if(NULL == ret)
  		{
-@@ -837,7 +1113,9 @@
+@@ -837,7 +1161,9 @@
  	{
  		require_extra_token();
  		ret = lookup_global_type();
@@ -397,7 +445,7 @@ EVERY differing file rather than a hand-written list.
  		{
  			return create_struct(TRUE);
  		}
-@@ -862,9 +1140,23 @@
+@@ -862,9 +1188,23 @@
  		require_extra_token();
  	}
  
@@ -421,7 +469,7 @@ EVERY differing file rather than a hand-written list.
  		require_extra_token();
  
  		while(match("const", global_token->s) || match("restrict", global_token->s))
-@@ -905,6 +1197,7 @@
+@@ -905,6 +1245,7 @@
  {
  	struct type* head = lookup_primitive_type();
  	struct type* i;
@@ -429,7 +477,7 @@ EVERY differing file rather than a hand-written list.
  	if(NULL == head)
  	{
  		head = calloc(1, sizeof(struct type));
-@@ -914,10 +1207,21 @@
+@@ -914,10 +1255,21 @@
  
  		i = calloc(1, sizeof(struct type));
  		require(NULL != i, "Exhausted memory while creating a struct indirection\n");
@@ -451,7 +499,7 @@ EVERY differing file rather than a hand-written list.
  	}
  
  	head->name = global_token->s;
-@@ -928,12 +1232,29 @@
+@@ -928,12 +1280,29 @@
  	i->offset = source->indirect->offset;
  	head->is_signed = source->is_signed;
  	i->is_signed = source->indirect->is_signed;
