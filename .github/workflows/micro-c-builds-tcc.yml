@@ -163,6 +163,21 @@ jobs:
             -f "$M/bootstrappable.c" \
             -o m2libc.M1
 
+          # Two SMALLER M2libc builds, for the bisect. The jump from A (236
+          # bytes) to B (fifty thousand) is too large to learn much from.
+          # bootstrappable.c cannot stand alone -- it calls fputs -- so the
+          # small sets stop short of it. Locally these link to 1,312 and
+          # 22,374 bytes, between A's 248 and B's 49,711.
+          H="-f $M/stdarg.h -f $M/sys/types.h -f $M/stddef.h -f $M/signal.h -f $M/sys/utsname.h"
+          ./micro-c --architecture aarch64 --max-string 65536 \
+            -f "$M/ctype.c" $H \
+            -f "$M/aarch64/linux/unistd.c" -f "$M/aarch64/linux/fcntl.c" \
+            -f "$M/fcntl.c" -o m2_min.M1
+          ./micro-c --architecture aarch64 --max-string 65536 \
+            -f "$M/ctype.c" $H \
+            -f "$M/aarch64/linux/unistd.c" -f "$M/aarch64/linux/fcntl.c" \
+            -f "$M/fcntl.c" -f "$M/stdlib.c" -f "$M/string.c" -o m2_nostdio.M1
+
           ./micro-c --architecture aarch64 --max-string 65536 \
             -f spikes/stage3/micro-c-libc/impl/stubs.c -o stubs.M1
 
@@ -245,8 +260,13 @@ jobs:
             ./"$nm" >/dev/null 2>&1
             rc=$?
             set -e
-            if [ "$rc" = 0 ]; then
-              printf '  %-34s ran, exit 0            (%s bytes)\n' "$nm" "$(stat -c%s "$nm")"
+            if [ "$rc" = 42 ]; then
+              # 42 comes from a raw exit syscall inside main. Nothing else in
+              # the binary can produce it, so it is proof main was REACHED --
+              # which `exit 0` never was.
+              printf '  %-34s MAIN RAN (exit 42)     (%s bytes)\n' "$nm" "$(stat -c%s "$nm")"
+            elif [ "$rc" = 0 ]; then
+              printf '  %-34s exit 0 -- main did NOT reach its syscall (%s bytes)\n' "$nm" "$(stat -c%s "$nm")"
             elif [ "$rc" -gt 128 ]; then
               printf '  %-34s SIGNAL %-3s             (%s bytes)\n' "$nm" "$((rc - 128))" "$(stat -c%s "$nm")"
               echo "$nm" >> faults.txt
@@ -256,7 +276,13 @@ jobs:
           }
 
           : > faults.txt
+          # A2 and A3 sit between A and B. B moved when the M2libc composition
+          # changed, and the gap is too large to learn from: A links 248 bytes,
+          # B links 49,711. The ladder is 248 / 1,312 / 22,374 / 49,711, so
+          # whichever step faults names a specific part of M2libc.
           run_probe A-bare-core     libc-core.M1  bare.M1
+          run_probe A2-syscalls     libc-core.M1  m2_min.M1 bare.M1
+          run_probe A3-nostdio      libc-core.M1  m2_nostdio.M1 bare.M1
           run_probe B-m2libc-core   libc-core.M1  m2libc.M1 bare.M1
           run_probe C-m2libc-full   libc-full.M1  m2libc.M1 bare.M1
           run_probe D-plus-stubs    libc-full.M1  m2libc.M1 stubs.M1 bare.M1

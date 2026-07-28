@@ -946,40 +946,46 @@ Every stage matched the local rehearsal exactly, which is the first time that
 has been true -- the patch series had been generated against the wrong tree
 until now, so CI and local had never agreed.
 
-THE FAULT WAS MINE, IN THE BUILD -- NOT IN micro-c, tcc OR THE TOOLCHAIN.
+THE BUILD WAS WRONG IN TWO WAYS, AND FIXING THE FIRST MOVED THE FAULT.
 
-Bisecting by LINK SET, on the native aarch64 runner:
+First bisect by LINK SET:
 
-    A  libc-core + bare main            ran, exit 0        236 bytes
-    B  libc-core + M2libc + bare        ran, exit 0     96,436 bytes
-    C  libc-full + M2libc + bare        SIGNAL 7        96,508 bytes
-    D  C + stubs                        SIGNAL 7
-    E  D + libtcc.M1                    SIGNAL 7
-    F  E, main calls tcc_new            SIGNAL 7
+    A  libc-core + bare main            ran            236 bytes
+    B  libc-core + M2libc + bare        ran         96,436 bytes
+    C  libc-full + M2libc + bare        SIGNAL 7    96,508 bytes
 
-B and C differ ONLY by libc-core.M1 -> libc-full.M1. Everything micro-c
-compiled is byte-identical between them, and 72 bytes of startup separates
-running from faulting.
+B and C differed only by libc-core -> libc-full, which adds writing envp into
+GLOBAL__envp and calling __init_malloc and __init_io. M2libc was being compiled
+as SEPARATE translation units and concatenated, so every file including the
+headers re-emitted those globals -- each was defined THREE times, and the
+startup wrote one copy while malloc read another.
 
-WHAT libc-full ADDS: writing argv/envp into GLOBAL__envp, then calling
-__init_malloc and __init_io.
+Fixed by compiling M2libc in ONE invocation in its own order, taken from
+M2libc's test0106, plus two arch files that were missing entirely
+(aarch64/linux/unistd.c and fcntl.c) and string.c for memcpy. The job now
+asserts single definition.
 
-WHY THAT FAULTED: M2libc was being compiled as SEPARATE translation units and
-concatenated, so every file that included the headers re-emitted the globals.
-GLOBAL__envp, __init_malloc and __init_io were each defined THREE times. The
-startup wrote envp into one copy and malloc read another.
+AND THE FAULT MOVED, WHICH IS THE MORE USEFUL RESULT:
 
-libc-core never touches those globals, which is exactly why B ran and C did
-not -- and why a program doing nothing at all still died.
+    A  libc-core + bare main            ran            236 bytes
+    B  libc-core + M2libc + bare        SIGNAL 7    49,699 bytes
 
-THE FIX is M2libc's own composition, taken from its test0106: ONE invocation,
-a specific order, and two arch-specific files (aarch64/linux/unistd.c and
-fcntl.c) that were missing entirely. Plus string.c, which that test does not
-need and libtcc does, for memcpy. Every symbol is now defined once and the
-full binary links at 1,442,519 bytes.
+B faulted where it had previously RUN. So the duplicates were real and were
+not the only thing wrong -- and a fix that makes a symptom move is not the
+same as a fix that makes it go away. Worth saying plainly, because "no
+duplicate globals" was asserted and passing while the binary still died.
 
-The job now ASSERTS single definition of those three symbols, because this is
-invisible until the thing runs.
+TWO THINGS THE NEXT RUN CHANGES.
+
+The probe main now exits 42 through a RAW SYSCALL -- no exit(), no FILE flush,
+no atexit. `return 0` could not tell "main ran" from "the process died before
+main", which is exactly the question. Exit 42 is proof main was reached;
+nothing else in the binary can produce it.
+
+And the ladder between A and B was too coarse -- 248 bytes to 49,711 in one
+step. It is now 248 / 1,312 / 22,374 / 49,711: syscalls only, then stdlib and
+string, then stdio. Whichever step faults names a specific part of M2libc
+rather than "M2libc".
 
 TWO BISECTS WERE NEEDED AND THE FIRST WAS USELESS. It varied what main did
 while linking everything in every arm, so the suspect was present in all three
