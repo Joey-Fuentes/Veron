@@ -51,7 +51,7 @@ def assemble(text):
 # size field in bits 31:30, and clearing bit 31 of `ldr w<t>` (0xB9400000)
 # would turn it into `ldrb`. This mirrors stage0-as's emit_dp exactly -- the
 # model and the assembler gained the behaviour in the same commit.
-DP_OPS = {'mov','add','sub','cmp','orr','and','eor',
+DP_OPS = {'mov','movn','add','sub','cmp','orr','and','eor',
           'lsl','lsr','asr','udiv','movk','mul'}
 
 
@@ -101,6 +101,22 @@ def _encode(l, at, labels):
                 f'mov immediate {imm} needs more than one MOVZ halfword; '
                 f'emit `mov`+`movk` instead')
         return (0xD2800000|(hw<<21)|(imm<<5)|d, ('mov_i',d,imm,hw))
+    if op == 'movn':
+        # MOVN, the negative-immediate move (r71). Same halfword fold as `mov`
+        # and the same rejection past one halfword -- only the base word
+        # differs. The operand is the INVERTED value: xlate emits `movn x0 99`
+        # where the source wrote `mov x0, #0xffffffffffffff9c`, because
+        # stage0-as's parse_dec accumulates in a w register and cannot hold the
+        # 64-bit form.
+        d = _reg(p[1]); imm = int(p[2])
+        if 0 <= imm < 0x10000:
+            hw = 0
+        elif (imm & 0xFFFF) == 0 and (imm >> 16) < 0x10000:
+            hw, imm = 1, imm >> 16
+        else:
+            raise ValueError(
+                f'movn immediate {imm} needs more than one halfword')
+        return (0x92800000|(hw<<21)|(imm<<5)|d, ('movn_i',d,imm,hw))
     if op=='movk':
         d=_reg(p[1]); imm=int(p[2]); hw=int(p[3])//16
         return (0xF2800000|(hw<<21)|((imm&0xffff)<<5)|d, ('movk',d,imm,hw*16))

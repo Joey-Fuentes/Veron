@@ -130,6 +130,7 @@ DOCUMENTED = {
     # a form in this table that the binary rejects fails the probe step, which
     # is the check. The table lagging the assembler is its own documented
     # failure (322 lines wrongly marked NEEDS); leading it is caught loudly.
+    ('movn', '%X, #%i'),
     ('ldr', '%X, [%X, #%i]'),
     ('str', '%X, [%X, #%i]'),
     ('ldr', '%W, [%X, #%i]'),
@@ -210,6 +211,22 @@ def to_s0(mn, ops):
     """Rewrite one GNU-as instruction into stage0-as's spelling."""
     if mn == "svc":
         return "svc", ""
+    if mn == "mov":
+        # A NEGATIVE IMMEDIATE IS A MOVN, AND stage0-as SPELLS IT SEPARATELY.
+        # The source writes the 64-bit unsigned value -- `#0xffffffffffffff9c`
+        # for AT_FDCWD -- because that is what both decoders print for a MOVN
+        # and the round-trip is a plain diff. stage0-as does not choose MOVZ vs
+        # MOVN from the value, so the inversion happens here: ~V is 99, which
+        # parse_dec can hold in a w register, where V itself cannot.
+        p = ops.split()
+        if len(p) == 2 and p[1].isdigit() and int(p[1]) >= (1 << 32):
+            inv = (~int(p[1])) & 0xFFFFFFFFFFFFFFFF
+            if inv < (1 << 32):
+                return "movn", "%s %d" % (p[0], inv)
+            # Neither the value nor its inverse fits what the encoding and
+            # parse_dec can carry between them. Say so instead of emitting
+            # something that assembles to the wrong bits.
+            return None, "mov immediate is neither MOVZ- nor MOVN-encodable"
     if mn == "movz":
         if "lsl" in ops:
             return None, NEEDS_TWO
@@ -291,6 +308,20 @@ def probe_pair(mn, sh):
 
 def cmd_probes(path, outdir):
     forms, _ = census(path)
+    # PROBE EVERY DOCUMENTED FORM, NOT ONLY THE ONES THIS FILE HAPPENS TO USE.
+    # stage0-as consumes the .s0 TRANSLATION, and that is a different language
+    # from this .s source: a form can be required by another file's translation,
+    # or exist only in .s0 and in no .s anywhere. Both r68's ldr/str immediate
+    # offset and the movn that AT_FDCWD needs shipped unprobed for exactly that
+    # reason -- neither appears in stage0-as.aarch64.s, so the generator never
+    # emitted a case, and the run reported "824 of 824 lines" while the new
+    # encoding had never been byte-compared against GNU as at all.
+    #
+    # A form listed in DOCUMENTED is a claim that the binary accepts it. This
+    # makes every such claim a measurement. Forms the source does not use show
+    # a count of 0 in the index, which is the honest number.
+    for f in DOCUMENTED:
+        forms.setdefault(f, 0)
     os.makedirs(outdir, exist_ok=True)
     index = []
     for i, ((mn, sh), n) in enumerate(

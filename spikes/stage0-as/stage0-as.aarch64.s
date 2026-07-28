@@ -274,6 +274,8 @@ h_mov:
     ldrb    w10, [x19, x2]
     cmp     w10, #0x6b                      // 'k'  'movk'
     b.eq    h_movk
+    cmp     w10, #0x6e                      // 'n'  'movn'
+    b.eq    h_movn
     add     x20, x20, #0x3
     // USE next_reg, THE WAY h_cmp ALREADY DOES. This parsed the destination
     // inline -- skip_ws, step over the register letter, read the digits -- and
@@ -295,6 +297,32 @@ h_mov:
     cmp     w0, #0x77                       // 'w'
     b.eq    h_mov_reg
     bl      parse_dec                       // immediate
+    mov     w1, #0xd2800000                 // MOVZ
+    b       hm_fold
+// ---- movn Rd <imm> : MOVN, the negative-immediate move ----
+// AArch64 has three moves and this language already spells two of them
+// separately -- `mov` is MOVZ, `movk` is MOVK. `movn` completes the set rather
+// than teaching `mov` to pick an encoding from the VALUE, which is the one
+// thing the seed rules forbid an assembler to do.
+//
+// The .s SOURCE still writes `mov x0, #0xffffffffffffff9c`, because that is
+// what both decoders print for a MOVN and the round-trip is a plain diff. The
+// translator inverts: it emits `movn x0 99`. That split is deliberate --
+// parse_dec accumulates in a w register, so it can hold 99 and cannot hold
+// 0xffffffffffffff9c, and widening it would touch all thirteen of its callers
+// to carry one constant.
+//
+// Nothing here duplicates the fold below. That fold is where the 29-instruction
+// halfword bug lived, and a second copy of it is a second place for it to come
+// back; the two handlers differ only in the base word they leave in w1.
+h_movn:
+    add     x20, x20, #0x4                  // skip "movn"
+    bl      next_reg
+    mov     w24, w0
+    bl      skip_ws
+    bl      parse_dec                       // immediate, already inverted
+    mov     w1, #0x92800000                 // MOVN
+hm_fold:
     // MOVZ CARRIES 16 BITS AND A 2-BIT SHIFT, AND THIS ONLY ENCODED THE LOW
     // HALFWORD. Every constant over 16 bits in this source is X<<16 -- opcode
     // words like 0xd2800000, and INBUF_SZ -- so all 29 of them silently became
@@ -313,8 +341,7 @@ h_mov:
 hm_lo:
     lsl     w9, w0, #5
     orr     w9, w9, w13, lsl #21            // hw field
-    mov     w1, #0xd2800000
-    orr     w9, w9, w1
+    orr     w9, w9, w1                      // MOVZ or MOVN, set by the caller
     orr     w9, w9, w24
     bl      emit_dp
     b       parse_loop
