@@ -270,6 +270,27 @@ jobs:
           printf '  micro-c tcc: %s bytes  sha %s\n' \
             "$(stat -c%s mc-tcc-bin)" "$(sha256sum mc-tcc-bin | cut -c1-16)"
 
+      - name: 'SUBJECT: differential test, NATIVELY on aarch64'
+        continue-on-error: true
+        run: |
+          set -eu
+          # THE SAME CASES THE DEVELOPMENT MACHINE RUNS ON amd64, RUN HERE ON
+          # aarch64. That matters because the two architectures disagree about
+          # what is legal: amd64 tolerates unaligned loads and aarch64 faults
+          # on them, so a whole class of bug is invisible locally and fatal
+          # here.
+          #
+          # This is also the answer to being stuck. Six CI rounds were spent
+          # adding one marker each to narrow WHERE a fault was. One round of
+          # this checks every case at once, on the machine where the faults
+          # actually happen, and names the construct rather than the function.
+          chmod +x spikes/stage3/tools/difftest.sh
+          mkdir -p mescc-bin && cp M1 hex2 mescc-bin/
+          set +e
+          ARCH=aarch64 sh spikes/stage3/tools/difftest.sh \
+            "$PWD/micro-c" "$PWD/spikes/reference/m2libc" "$PWD/mescc-bin"
+          echo "  (a failure here names a C construct, not a tcc function)"
+
       - name: 'SUBJECT: does realloc work'
         continue-on-error: true
         run: |

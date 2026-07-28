@@ -1936,3 +1936,45 @@ narrow WHERE. What was needed was a way to iterate at all -- and that existed
 from the beginning, because micro-c targets the architecture this machine
 runs. Six rounds of narrowing were spent on a problem that took nine local
 compiles to bisect.
+
+=============================================================================
+INDEXING A STRUCT MEMBER NEVER LOADED THE POINTER
+
+Adding three cases for the constructs AROUND the fault -- rather than more
+markers inside it -- found this in one run:
+
+    struct M { unsigned char a; char* p; };
+    m.p = "abc";
+    m.p[0]                       read 'a' under gcc, garbage under micro-c
+
+Emitted:
+
+    lea_rax,[r13-16]             address of m
+    add_rax,BYTE '08'            + offset of p    -> &m.p
+    add_rax,rbx                  + index
+    movsx_rax,BYTE_PTR_[rax]     reads the POINTER'S OWN BYTES
+
+It never loads p. postfix_expr_dot returns early when '[' follows, which is
+RIGHT for an array member -- m.arr[0] does index off &m.arr -- and WRONG for a
+pointer member, where the pointer's VALUE is the base.
+
+`s->member[i]` is everywhere in tcc.
+
+The two are only separable because struct members now carry is_array, added
+for the array-decay fix. The same distinction is still missing for locals and
+globals, which is the gap behind case 01.
+
+RESULT: difftest goes from 4 pass / 6 fail to 6 PASS / 4 FAIL. Cases 08
+(mixed-alignment members), 09 (nested struct members) and 10 (&s->member
+written through) all pass now, and all three were written to mimic what
+tcc_set_output_type does.
+
+Case 01 changed from a wrong value to SIGSEGV, which is the KNOWN array-of-
+pointers gap becoming visible rather than a new fault: `char *arr[8]` still
+stores one byte per element, so reading eight back gives one good byte and
+seven of garbage.
+
+WHAT MADE THE DIFFERENCE. Six rounds of markers narrowed to a function and
+stopped. Three test cases written in the SHAPE of that function found a bug
+that markers could never have located, because the fault is not at a
+statement boundary -- it is in what one expression compiles to.

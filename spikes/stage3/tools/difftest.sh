@@ -32,12 +32,23 @@ M2LIBC="${2:-}"
 MESCC="${3:-}"
 CASES="${4:-$(dirname "$0")/cases}"
 
+# ARCH defaults to amd64 because that is what a development machine usually
+# is, and the whole point of this tool is that it needs no emulation. Set it
+# to aarch64 on an aarch64 runner and the SAME cases are checked where the
+# faults that resisted six CI rounds actually happen.
+#
+# gcc is still the reference either way: on the aarch64 runner it is a native
+# aarch64 gcc, so the comparison stays like-for-like.
+ARCH="${ARCH:-amd64}"
+BASE_ADDR="${BASE_ADDR:-0x600000}"
+if [ "$ARCH" = "aarch64" ]; then BASE_ADDR="0x400000"; fi
+
 if [ -z "$MICROC" ] || [ -z "$M2LIBC" ] || [ -z "$MESCC" ]; then
-    echo "usage: $0 <micro-c> <m2libc-dir> <mescc-tools-dir> [cases-dir]"
+    echo "usage: [ARCH=amd64|aarch64] $0 <micro-c> <m2libc-dir> <mescc-tools-dir> [cases-dir]"
     exit 2
 fi
 
-D="$M2LIBC/amd64"
+D="$M2LIBC/$ARCH"
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 
@@ -65,7 +76,7 @@ for c in "$CASES"/*.c; do
     fi
 
     set +e
-    "$MICROC" --architecture amd64 --max-string 65536 -f "$c" -o "$T/m.M1" 2>"$T/cerr"
+    "$MICROC" --architecture "$ARCH" --max-string 65536 -f "$c" -o "$T/m.M1" 2>"$T/cerr"
     crc=$?
     set -e
     if [ "$crc" != 0 ]; then
@@ -79,11 +90,11 @@ for c in "$CASES"/*.c; do
     # libc-core, not libc-full: full's _start calls __init_malloc, which
     # lives in M2libc's C sources and is not linked here. These cases do not
     # allocate, so core is both sufficient and a smaller thing to be wrong.
-    "$MESCC/M1" -f "$D/amd64_defs.M1" -f "$D/libc-core.M1" -f "$T/m.M1" \
-                --little-endian --architecture amd64 -o "$T/m.hex2" 2>/dev/null
+    "$MESCC/M1" -f "$D/${ARCH}_defs.M1" -f "$D/libc-core.M1" -f "$T/m.M1" \
+                --little-endian --architecture "$ARCH" -o "$T/m.hex2" 2>/dev/null
     a=$?
-    "$MESCC/hex2" --architecture amd64 --little-endian --base-address 0x600000 \
-                  -f "$D/ELF-amd64.hex2" -f "$T/m.hex2" -o "$T/m.bin" 2>/dev/null
+    "$MESCC/hex2" --architecture "$ARCH" --little-endian --base-address "$BASE_ADDR" \
+                  -f "$D/ELF-$ARCH.hex2" -f "$T/m.hex2" -o "$T/m.bin" 2>/dev/null
     h=$?
     set -e
     if [ "$a" != 0 ] || [ "$h" != 0 ] || [ ! -s "$T/m.bin" ]; then
