@@ -1,19 +1,20 @@
 DEBUG ONLY -- NOT PART OF ANY BUILD.
 
-Markers inside tcc_set_output_type, which is where the driver dies:
+Markers through tcc_set_output_type. The previous version stopped at T7 and
+the run reached T7, so the fault is in what FOLLOWS it -- these carry on to
+the end of the function.
 
-    T1  entered, about to set output_type
-    T2  about to add the system include path
-    T3  system include path added
-    T4  about to call tccelf_new
-    T5  tccelf_new returned
-    T6  about to add the library path
-    T7  library path added
+    T1  entered            T2/T3  system include path
+    T4/T5  tccelf_new      T6/T7  library path
+    T8/T9  tcc_split_path for the crt paths -- note the argument is
+           &s->nb_crt_paths, an address-of through a pointer, which is a
+           shape micro-c got wrong once already
+    TA/TB  tccelf_add_crtbegin -- LINKER work, not compiler work: it looks
+           for crtbegin.o on disk
 
-The driver-level markers narrowed it to this function; these narrow it to a
-statement. Same reason as before -- four guesses at what tcc_new was doing
-were all wrong, and reading emitted code only helps once there is a specific
-statement to read.
+TB never printing while T9 does would put it in the linker, which matters:
+a compiler that compiles but cannot link is a much better position than one
+that cannot compile, and the two are worth telling apart.
 
 --- a/libtcc.c
 +++ b/libtcc.c
@@ -53,3 +54,17 @@ statement to read.
  
  #ifdef TCC_TARGET_PE
  # ifdef TCC_IS_NATIVE
+@@ -1007,9 +1014,13 @@
+ # endif
+ #else
+     /* paths for crt objects */
++    write(2, "T8\n", 3);
+     tcc_split_path(s, &s->crt_paths, &s->nb_crt_paths, CONFIG_TCC_CRTPREFIX);
++    write(2, "T9\n", 3);
+     if (output_type != TCC_OUTPUT_MEMORY && !s->nostdlib)
++        write(2, "TA\n", 3);
+         tccelf_add_crtbegin(s);
++        write(2, "TB\n", 3);
+ #endif
+     return 0;
+ }

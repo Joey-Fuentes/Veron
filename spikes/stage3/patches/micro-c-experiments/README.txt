@@ -1557,3 +1557,32 @@ untouched, so the comparison between the two stays honest.
 Also fixed: mark() wrote four bytes for a three-character string, sending a
 NUL into the log and making grep treat it as binary. That is why the last run
 printed "died before the first marker" while also printing the markers.
+
+=============================================================================
+tcc_set_output_type RUNS TO ITS LAST MARKER
+
+    markers: D1 M50 M51 M52 M53 D2 T1 T2 T3 T4 T5 T6 T7
+    SIGNAL 11
+
+Read that sequence: tcc_new runs to completion (M50 through M53), returns
+(D2), and tcc_set_output_type then gets through the system include path,
+tccelf_new and the library path -- T1 to T7. Everything the earlier rounds
+were suspicious of WORKS.
+
+The fault is in what follows T7, which is two statements:
+
+    tcc_split_path(s, &s->crt_paths, &s->nb_crt_paths, CONFIG_TCC_CRTPREFIX);
+    if (output_type != TCC_OUTPUT_MEMORY && !s->nostdlib)
+        tccelf_add_crtbegin(s);
+
+Markers now run to TB so the next round names which.
+
+AND A SEPARATION WORTH MAKING ANYWAY. tccelf_add_crtbegin is LINKER work -- it
+goes looking for crtbegin.o on disk. TCC_OUTPUT_MEMORY skips both statements,
+so a second binary (main-compile-only.c) drives tcc_compile_string with
+output type MEMORY: parser and code generator, no linker.
+
+That distinction matters more than which of the two statements faults. A
+compiler that COMPILES but cannot LINK is a much better position than one that
+cannot compile, and a single test doing both cannot tell you which you have.
+The compile-only probe answers it directly, and it links at 1,450,538 bytes.

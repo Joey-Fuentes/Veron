@@ -218,6 +218,8 @@ jobs:
             -f spikes/stage3/micro-c-libc/impl/setjmp-aarch64.c -o setjmp.M1
           ./micro-c --architecture aarch64 --max-string 65536 \
             -f spikes/stage3/micro-c-libc/impl/main-tcc.c -o maintcc.M1
+          ./micro-c --architecture aarch64 --max-string 65536 \
+            -f spikes/stage3/micro-c-libc/impl/main-compile-only.c -o compileonly.M1
           echo "  libtcc $(grep -c '^:FUNCTION_' libtcc.M1) functions, runtime $(grep -c '^:FUNCTION_' runtime.M1)"
 
       - name: 'SUBJECT: assemble and link'
@@ -232,12 +234,17 @@ jobs:
 
           # Code before strings, or a function lands on an address that is not
           # a multiple of four and every call to it is SIGBUS.
-          : > all.code; : > all.strs
-          for f in libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1 maintcc.M1; do
-            sed '/^# Program strings$/,$d' "$f" >> all.code
-            sed -n '/^# Program strings$/,$p' "$f" >> all.strs
-          done
-          cat all.code all.strs > all.M1
+          join() {
+            out="$1"; shift
+            : > "$out.code"; : > "$out.strs"
+            for f in "$@"; do
+              sed '/^# Program strings$/,$d' "$f" >> "$out.code"
+              sed -n '/^# Program strings$/,$p' "$f" >> "$out.strs"
+            done
+            cat "$out.code" "$out.strs" > "$out"; rm -f "$out.code" "$out.strs"
+          }
+          join all.M1 libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1 maintcc.M1
+          join co.M1  libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1 compileonly.M1
 
           D=spikes/reference/m2libc/aarch64
           ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f all.M1 \
@@ -245,8 +252,36 @@ jobs:
           ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
                  -f $D/ELF-aarch64.hex2 -f all.hex2 -o mc-tcc-bin
           chmod +x mc-tcc-bin
+          ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f co.M1 \
+               --little-endian --architecture aarch64 -o co.hex2
+          ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
+                 -f $D/ELF-aarch64.hex2 -f co.hex2 -o mc-compile-only
+          chmod +x mc-compile-only
           printf '  micro-c tcc: %s bytes  sha %s\n' \
             "$(stat -c%s mc-tcc-bin)" "$(sha256sum mc-tcc-bin | cut -c1-16)"
+
+      - name: 'SUBJECT: compile WITHOUT linking'
+        continue-on-error: true
+        run: |
+          set -eu
+          # TCC_OUTPUT_MEMORY skips the crt paths and crtbegin, so this is the
+          # PARSER and CODE GENERATOR with no linker involved. Worth separating:
+          # a compiler that compiles but cannot link is a much better position
+          # than one that cannot compile, and a test that does both at once
+          # cannot tell you which you have.
+          set +e
+          ./mc-compile-only 2> /tmp/co-marks.txt
+          rc=$?
+          set -e
+          echo "  markers: $(tr '\n' ' ' < /tmp/co-marks.txt)"
+          echo "  exit: $rc"
+          case "$rc" in
+            42) echo "  IT COMPILED A FUNCTION -- parser and codegen work" ;;
+             2) echo "  tcc_new returned NULL" ;;
+             3) echo "  tcc_set_output_type failed" ;;
+             4) echo "  tcc_compile_string reported an error" ;;
+             *) if [ "$rc" -gt 128 ]; then echo "  SIGNAL $((rc - 128))"; fi ;;
+          esac
 
       - name: 'SUBJECT: does it compile anything at all'
         continue-on-error: true
