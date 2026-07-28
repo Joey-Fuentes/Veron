@@ -9,6 +9,8 @@
 #ifndef _MICROC_SIGNAL_H
 #define _MICROC_SIGNAL_H
 
+#include <stdint.h>
+
 #define SIGILL   4
 #define SIGABRT  6
 #define SIGFPE   8
@@ -44,36 +46,54 @@
 #define SEGV_MAPERR 1
 #define SEGV_ACCERR 2
 
-/* Only si_signo and si_code are read by tcc's handler; the rest is padding to
+/* LAYOUTS HERE MUST MATCH THE KERNEL, NOT glibc, AND NOT WHATEVER micro-c
+ * WOULD PRODUCE FROM `int`.
+ *
+ * micro-c makes `int` EIGHT bytes. Written with int, si_code landed at offset
+ * 16 where the kernel puts it at 8, so a handler reading si_code would have
+ * read si_pad0. Every field is therefore explicitly sized.
+ *
+ * Only si_signo and si_code are read by tcc's handler; the rest is padding to
  * the kernel's 128-byte siginfo. */
 typedef struct siginfo_t {
-    int si_signo;
-    int si_errno;
-    int si_code;
-    int si_pad0;
-    unsigned long si_pad[14];
+    int32_t si_signo;
+    int32_t si_errno;
+    int32_t si_code;
+    int32_t si_pad0;
+    uint64_t si_pad[14];
 } siginfo_t;
 
-typedef struct sigset_t { unsigned long __bits[16]; } sigset_t;
+typedef struct sigset_t { uint64_t __bits[16]; } sigset_t;
 
 typedef struct stack_t {
     void* ss_sp;
-    int ss_flags;
-    unsigned long ss_size;
+    int32_t ss_flags;
+    int32_t ss_pad;
+    uint64_t ss_size;
 } stack_t;
 
-/* sa_handler and sa_sigaction are a UNION in the real header -- the same slot,
- * read either as a plain handler or as the three-argument form selected by
- * SA_SIGINFO. tcc sets sa_sigaction. Declared as a union so both spellings
- * resolve to the same offset, which is what the kernel expects. */
+/* THE KERNEL'S ORDER, WHICH IS NOT glibc'S. On Linux/aarch64 the raw
+ * rt_sigaction structure is
+ *
+ *     handler, flags, restorer, mask
+ *
+ * The version previously here was handler, mask, flags, restorer -- glibc's
+ * shape, near enough to look right and completely wrong as an argument to the
+ * syscall. It has never mattered because sigaction is stubbed in runtime.c and
+ * never reaches the kernel; it would have mattered the moment it did, and the
+ * failure would have been a handler installed on the wrong signal with the
+ * wrong flags.
+ *
+ * sa_handler and sa_sigaction are the same slot, read either as a plain
+ * handler or as the three-argument form selected by SA_SIGINFO. */
 struct sigaction {
     union {
         void* sa_handler;
         void* sa_sigaction;
     };
-    unsigned long sa_mask[16];
-    int sa_flags;
+    uint64_t sa_flags;
     void* sa_restorer;
+    sigset_t sa_mask;
 };
 
 #define SIG_BLOCK   0
