@@ -47,13 +47,14 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 +	 * defect rather than introducing it, which is fine for measuring how far
 +	 * tcc parses and NOT fine to ship -- a real fix needs precedence levels,
 +	 * the way the expression parser proper has them. */
-+	else if(global_token->s[0] == '*')
-+	{
-+		require_extra_token();
-+		return lhs * constant_expression();
-+	}
+ 	else if(global_token->s[0] == '*')
+ 	{
+ 		require_extra_token();
+ 		return lhs * constant_expression();
+ 	}
+-	else if(global_token->s[0] == ',' || global_token->s[0] == ']' || global_token->s[0] == ';' || global_token->s[0] == '}' || global_token->s[0] == ':')
 +	else if(global_token->s[0] == '/')
-+	{
+ 	{
 +		require_extra_token();
 +		return lhs / constant_expression();
 +	}
@@ -62,14 +63,13 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 +		require_extra_token();
 +		return lhs % constant_expression();
 +	}
- 	else if(global_token->s[0] == '*')
- 	{
- 		require_extra_token();
- 		return lhs * constant_expression();
- 	}
--	else if(global_token->s[0] == ',' || global_token->s[0] == ']' || global_token->s[0] == ';' || global_token->s[0] == '}' || global_token->s[0] == ':')
++	else if(global_token->s[0] == '*')
++	{
++		require_extra_token();
++		return lhs * constant_expression();
++	}
 +	else if(global_token->s[0] == ',' || global_token->s[0] == ']' || global_token->s[0] == ';' || global_token->s[0] == '}' || global_token->s[0] == ':' || global_token->s[0] == ')')
- 	{
++	{
 +		/* ')' joins the terminator set for the grouping parens added to
 +		 * constant_expression_term: the inner expression has to be able to
 +		 * stop at its own closing paren. */
@@ -507,7 +507,39 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	break_target_num = number_string;
  	break_frame = function->locals;
  	break_target_func = function->s;
-@@ -2385,6 +2722,8 @@
+@@ -2310,6 +2647,31 @@
+ 	int value;
+ process_switch_iter:
+ 	require(NULL != global_token, "incomplete switch statement\n");
++
++	/* AN ORDINARY GOTO LABEL MAY SIT BETWEEN CASES. tccpp.c:952 has
++	 *     break;
++	 * _default:
++	 *     default:
++	 * -- `_default:` is a goto target, not a case. process_case returns after
++	 * a `break`, so the label lands back here, where only case/default/} were
++	 * accepted. Emit it and carry on; statement() handles labels the same way
++	 * elsewhere, this loop just never saw one. */
++	if(NULL != global_token->next)
++	{
++		if(global_token->next->s[0] == ':')
++		{
++			if(!match("case", global_token->s) && !match("default", global_token->s))
++			{
++				emit_out(":");
++				emit_out(global_token->s);
++				emit_out("\t#C goto label in switch\n");
++				global_token = global_token->next;
++				require_extra_token();
++				goto process_switch_iter;
++			}
++		}
++	}
++
+ 	if(match("case", global_token->s))
+ 	{
+ 		require_extra_token();
+@@ -2385,6 +2747,8 @@
  	break_target_func = nested_break_func;
  	break_target_num = nested_break_num;
  	continue_target_head = nested_continue_head;
@@ -516,7 +548,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	break_frame = nested_locals;
  }
  
-@@ -2395,12 +2734,16 @@
+@@ -2395,12 +2759,16 @@
  	char* nested_break_func = break_target_func;
  	char* nested_break_num = break_target_num;
  	char* nested_continue_head = continue_target_head;
@@ -533,7 +565,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	break_target_num = number_string;
  	break_frame = function->locals;
  	break_target_func = function->s;
-@@ -2433,16 +2776,32 @@
+@@ -2433,16 +2801,32 @@
  
  	emit_label("FOR_", unique_id);
  
@@ -570,7 +602,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	emit_unconditional_jump("FOR_", unique_id, "Check conditional");
  
-@@ -2460,6 +2819,8 @@
+@@ -2460,6 +2844,8 @@
  	break_target_func = nested_break_func;
  	break_target_num = nested_break_num;
  	continue_target_head = nested_continue_head;
@@ -579,7 +611,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	break_frame = nested_locals;
  }
  
-@@ -2486,6 +2847,8 @@
+@@ -2486,6 +2872,8 @@
  	char* nested_break_func = break_target_func;
  	char* nested_break_num = break_target_num;
  	char* nested_continue_head = continue_target_head;
@@ -588,7 +620,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	char* number_string = int2str(current_count, 10, TRUE);
  	current_count = current_count + 1;
-@@ -2494,6 +2857,8 @@
+@@ -2494,6 +2882,8 @@
  
  	break_target_head = "DO_END_";
  	continue_target_head = "DO_TEST_";
@@ -597,7 +629,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	break_target_num = number_string;
  	break_frame = function->locals;
  	break_target_func = function->s;
-@@ -2521,6 +2886,8 @@
+@@ -2521,6 +2911,8 @@
  	break_target_func = nested_break_func;
  	break_target_num = nested_break_num;
  	continue_target_head = nested_continue_head;
@@ -606,7 +638,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  }
  
  
-@@ -2532,6 +2899,8 @@
+@@ -2532,6 +2924,8 @@
  	char* nested_break_func = break_target_func;
  	char* nested_break_num = break_target_num;
  	char* nested_continue_head = continue_target_head;
@@ -615,7 +647,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	char* number_string = int2str(current_count, 10, TRUE);
  	current_count = current_count + 1;
-@@ -2540,6 +2909,8 @@
+@@ -2540,6 +2934,8 @@
  
  	break_target_head = "END_WHILE_";
  	continue_target_head = "WHILE_";
@@ -624,7 +656,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	break_target_num = number_string;
  	break_frame = function->locals;
  	break_target_func = function->s;
-@@ -2568,6 +2939,8 @@
+@@ -2568,6 +2964,8 @@
  	break_target_func = nested_break_func;
  	break_target_num = nested_break_num;
  	continue_target_head = nested_continue_head;
@@ -633,7 +665,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	break_frame = nested_locals;
  }
  
-@@ -2611,7 +2984,7 @@
+@@ -2611,7 +3009,7 @@
  	}
  	require_extra_token();
  
@@ -642,7 +674,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	emit_unconditional_jump("", continue_target, "Continue statement");
  
-@@ -2772,6 +3145,29 @@
+@@ -2772,6 +3170,29 @@
  	else
  	{
  		expression();
@@ -672,7 +704,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_match("ERROR in statement\nMISSING ;\n", ";");
  	}
  }
-@@ -2800,6 +3196,60 @@
+@@ -2800,6 +3221,60 @@
  		type_size = type_name();
  		require(NULL != global_token, "Received EOF when attempting to collect arguments\n");
  		require(NULL != type_size, "Must have non-null type\n");
@@ -733,7 +765,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		if(global_token->s[0] == ')')
  		{
  			/* foo(int,char,void) doesn't need anything done */
-@@ -2808,7 +3258,14 @@
+@@ -2808,7 +3283,14 @@
  		else if(global_token->s[0] != ',')
  		{
  			/* deal with foo(int a, char b) */
@@ -749,7 +781,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  			require(!iskeywordp(global_token->s), "You are not allowed to use a keyword as a argument variable name\n");
  			a = sym_declare(global_token->s, type_size, function->arguments, TLO_ARGUMENT);
  			if(NULL == function->arguments)
-@@ -2861,10 +3318,14 @@
+@@ -2861,10 +3343,14 @@
  	require_extra_token();
  }
  
@@ -766,7 +798,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  
  	/* allow previously defined functions to be looked up */
  	global_function_list = function;
-@@ -2969,6 +3430,35 @@
+@@ -2969,6 +3455,35 @@
  	{
  		type_size = mirror_type(type_size);
  		global_token = global_token->next;
@@ -802,7 +834,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	require_match("ERROR in typedef statement\nMissing ;\n", ";");
-@@ -3320,6 +3810,46 @@
+@@ -3320,6 +3835,46 @@
  	{
  		require_extra_token();
  
@@ -849,7 +881,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_match("Missing { after = in global array", "{");
  
  		array_modifier = global_array_initializer_list(type_size, array_modifier);
-@@ -3458,7 +3988,7 @@
+@@ -3458,7 +4013,7 @@
  	/* Deal with global functions */
  	if(match("(", global_token->s))
  	{

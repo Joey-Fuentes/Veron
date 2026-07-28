@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "952 lines into tccpp.c".
+"hangs forever on tcc.c" to "1536 lines into tccpp.c".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -44,6 +44,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   unary `*` deferred past the postfix chain   cc_core.c   tccpp.c:660
   prefix ++/-- under a dereference           cc_core.c   tccpp.c:673
   `continue` inside a switch inside a loop   cc_core.c   tccpp.c:893
+  a goto label between switch cases         cc_core.c   tccpp.c:952
 
 UNSOUND, AND WHY
 ----------------
@@ -375,9 +376,24 @@ UNSOUND, AND WHY
         continue -> &FOR_ITER_f_0      the LOOP's iteration label
         break    -> &_SWITCH_END_f_1   the SWITCH's end
 
-STOPPED AT: tccpp.c:952, an ordinary goto LABEL inside a switch body --
-`_default:` sitting immediately before `default:`. process_switch does not
-allow a plain label between cases.
+23. A GOTO LABEL BETWEEN SWITCH CASES.
+
+        break;
+    _default:
+        default:                                    tccpp.c:952
+
+    `_default:` is a goto target, not a case. process_case RETURNS after a
+    `break`, so the label lands back in process_switch's dispatch loop, which
+    accepted only case/default/}. statement() has handled labels all along --
+    this loop simply never saw one. Emit it in place and carry on.
+
+    Worth 584 lines: tccpp.c:952 -> 1536, the largest single jump of the run.
+
+STOPPED AT: tccpp.c:1536, `while (next(), tok != TOK_EOF)` -- the COMMA
+OPERATOR inside a while condition. Entry 10 added comma at STATEMENT level and
+explicitly recorded that the parenthesised form was not covered and that tcc
+did not appear to use it. tcc does use it, here, in a controlling expression.
+The note was right that it was uncovered and wrong that it was unused.
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -392,7 +408,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Thirty-seven walls between a hanging compiler and tcc's first genuinely large
+Thirty-eight walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
