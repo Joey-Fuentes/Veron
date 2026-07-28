@@ -91,7 +91,24 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		{
  			global_token = global_token->next;
  			require(global_token->next != NULL, "NULL token received in multi token type lookup 'long long'");
-@@ -517,6 +583,30 @@
+@@ -444,6 +510,16 @@
+ 	fputs("->", stderr);
+ 	fputs(name, stderr);
+ 	fputs(" does not exist\n", stderr);
++	fputs("  context: ", stderr);
++	struct token_list* ctx = global_token;
++	int back = 0;
++	while(back < 8 && NULL != ctx->prev) { ctx = ctx->prev; back = back + 1; }
++	while(back > -6 && NULL != ctx)
++	{
++		fputs(ctx->s, stderr); fputs(" ", stderr);
++		ctx = ctx->next; back = back - 1;
++	}
++	fputs("\n", stderr);
+ 	line_error();
+ 	fputs("\n", stderr);
+ 	exit(EXIT_FAILURE);
+@@ -517,6 +593,30 @@
  	{
  		i->name = global_token->s;
  		require_extra_token();
@@ -122,7 +139,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  	else
  	{
-@@ -673,11 +763,46 @@
+@@ -673,11 +773,46 @@
  	int largest_member_size = 0;
  	require_match("ERROR in create_struct\n Missing {\n", "{");
  	struct type* last = NULL;
@@ -169,7 +186,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		if(member_size == NO_STRUCT_DEFINITION)
  		{
  			line_error();
-@@ -696,6 +821,98 @@
+@@ -696,6 +831,98 @@
  			offset = 0;
  		}
  
@@ -268,7 +285,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_match("ERROR in create_struct\n Missing ;\n", ";");
  		require(NULL != global_token, "Unterminated struct\n");
  	}
-@@ -823,7 +1040,27 @@
+@@ -823,7 +1050,27 @@
  			((NULL != global_token->next) &&
  			(match(global_token->next->s, "{") || match(global_token->next->s, ";"))))
  		{
@@ -297,7 +314,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		}
  		else if(NULL == ret)
  		{
-@@ -870,9 +1107,18 @@
+@@ -870,9 +1117,18 @@
  		require_extra_token();
  	}
  
@@ -316,7 +333,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_extra_token();
  
  		while(match("const", global_token->s) || match("restrict", global_token->s))
-@@ -913,6 +1159,7 @@
+@@ -913,6 +1169,7 @@
  {
  	struct type* head = lookup_primitive_type();
  	struct type* i;
@@ -324,7 +341,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(NULL == head)
  	{
  		head = calloc(1, sizeof(struct type));
-@@ -922,10 +1169,21 @@
+@@ -922,10 +1179,21 @@
  
  		i = calloc(1, sizeof(struct type));
  		require(NULL != i, "Exhausted memory while creating a struct indirection\n");
@@ -346,7 +363,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	head->name = global_token->s;
-@@ -936,12 +1194,29 @@
+@@ -936,12 +1204,29 @@
  	i->offset = source->indirect->offset;
  	head->is_signed = source->is_signed;
  	i->is_signed = source->indirect->is_signed;

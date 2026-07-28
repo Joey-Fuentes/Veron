@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "tccgen.c:3300 -- 3,300 lines into the code generator".
+"hangs forever on tcc.c" to "tccgen.c:7335 -- 82% through the code generator".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -65,6 +65,8 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   local struct BRACE INITIALISER             cc_core.c   tccgen.c:1167
   OPERATOR TOKENIZING, bounded              cc_reader.c tccgen.c:1549
   `default:` need not come last             cc_core.c   tccgen.c:2396
+  a unary operator does not PROMOTE         cc_core.c   tccgen.c:3300
+  indexing yields the ELEMENT type          cc_core.c   tccgen.c:3300
 
 UNSOUND, AND WHY
 ----------------
@@ -630,7 +632,36 @@ tcc.h, libtcc.h, elf.h, tcctok.h and now tccpp.c. Now in tccgen.c.
     default emitted no such jump at all -- running its last case's statements
     straight into the comparison table.
 
-STOPPED AT: tccgen.c:3300, "lookup_member double->c does not exist".
+42. A UNARY OPERATOR MUST NOT PROMOTE AGAINST THE PREVIOUS TYPE.
+    common_recursion ends with promote_type(current_target, last_type), which
+    is right for a BINARY operator and wrong for a unary one -- last_type is
+    simply whatever was current before. In
+
+        vtop->c.ld = -(long double)-vtop->c.i;      tccgen.c:3300
+
+    that is `double` from the left-hand side, so the operand came back as
+    double and the following `->c` was looked up in it.
+
+    Setting current_target to integer first only MOVED it --
+    promote_type(SValue*, integer) picks integer. The answer is not to promote
+    at all: unary minus and logical not now do common_recursion's
+    push/parse/pop WITHOUT its final promotion, so the result keeps the
+    operand's type.
+
+43. INDEXING YIELDS THE ELEMENT TYPE, WHATEVER FOLLOWS. Only a following '['
+    stepped current_target down, so `p[0]->v2` on a `struct case_t **p` left
+    it at the double pointer.
+
+    Worth 4,035 lines: tccgen.c:3300 -> 7335.
+
+    THE COMMA DECLARATORS WERE A RED HERRING. The failing member was the
+    second of `long v1, v2;`, so two rounds went into whether multiple
+    declarators registered for lookup. Testing p[0]->v1 -- the FIRST member --
+    proved them innocent in one line. Test the thing you believe works, not
+    just the thing that failed.
+
+STOPPED AT: tccgen.c:7335, `sw->sv = *vtop--;` -- a struct copy whose source
+is a POST-DECREMENT under a dereference.
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -645,7 +676,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Fifty-six walls between a hanging compiler and tcc's first genuinely large
+Fifty-eight walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
