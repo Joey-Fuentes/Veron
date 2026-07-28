@@ -2120,3 +2120,42 @@ down to a power of two.
     full unit          350,704 lines
 
 Only 04-short-circuit remains, deferred.
+
+=============================================================================
+SHORT-CIRCUIT LANDS, AND THE OOM WAS NEVER SHORT-CIRCUIT
+
+The deferred patch is deferred no longer. difftest is 11 pass / 0 fail.
+
+WHAT WAS ACTUALLY WRONG. reset_emit_string calloc'd MAX_STRING for EVERY
+emitted instruction, and nothing is ever freed. With --max-string 65536 that
+is 64 KB per line of output. Measured, on a file with N logical operators,
+each emitting about six instructions:
+
+     200 operators      83 MB
+     800 operators     320 MB
+    3200 operators    1279 MB      -- 400 KB per operator, or 64 KB x 6
+
+Short-circuit did not leak. It emitted more instructions, and every
+instruction cost 64 KB. The full tcc unit crossed 4 GB and was killed.
+
+Two rounds ago this was blamed on the container's memory, and then on the
+short-circuit logic, and then the patch was deferred as "makes things worse".
+All three were wrong, and the measurement that settled it -- peak RSS against
+operator count -- took one command.
+
+THE FIX IS TO micro-c GENERALLY, not to short-circuit. The emit buffer now
+starts at 256 bytes and doubles only when something needs the room, with
+MAX_STRING still the ceiling so nothing that used to fit stops fitting. The
+longest line in 350,000 of tcc output is the tcc_keywords byte string at
+19,571 characters; everything else is an instruction of a few dozen bytes.
+
+    200 operators      83 MB  ->   3.4 MB
+    full tcc unit      OOM    ->   366,649 lines in 23 SECONDS, down from 39
+
+So the compiler is now meaningfully faster and smaller as well as correct
+about && and ||, and the deferred patch turned out to be diagnosing someone
+else's bug the whole time.
+
+    difftest    11 pass / 0 fail
+    regression  0 regressions
+    full unit   366,649 lines

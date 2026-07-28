@@ -77,3 +77,26 @@ entirely.
 Every case here was written FROM a bug that had already been found the slow
 way. The obvious next move is to write cases for constructs that have NOT
 failed yet, so the tool starts finding bugs before tcc does rather than after.
+
+=============================================================================
+A CASE THAT CANNOT ISOLATE IS NOT A CASE
+
+05-struct-assign checked its result with
+
+    if (y.a != 1 || y.b != 2 || y.c != 3 || y.d != 4) return 1;
+
+and failed on aarch64 while passing on amd64. That looked like a struct-copy
+bug and consumed a round chasing one -- but the case contains a chain of ||,
+and micro-c's || is the known non-short-circuiting one that 04 already fails
+on. The case could not tell the two apart, and neither could I.
+
+Split into four separate ifs, each returning its own code, plus a new case
+11-logical-or-chain that exercises || with operands that cannot fault. The
+next run distinguishes them:
+
+    11 passes, 05 fails    -> the struct copy
+    both fail              -> the || itself
+
+WHEN WRITING A CASE, THE FAILURE CODE SHOULD NAME ONE THING. A case that
+combines constructs tests their conjunction, which is rarely what is wanted
+and is actively misleading when one of the constructs is already known broken.

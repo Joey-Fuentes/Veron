@@ -5,7 +5,74 @@ EVERY differing file rather than a hand-written list.
 
 --- a/cc_emit.c
 +++ b/cc_emit.c
-@@ -58,7 +58,11 @@
+@@ -43,22 +43,75 @@
+ 
+ char* emit_string;
+ int emit_string_index;
++int emit_string_capacity;
++
++/* THE EMIT BUFFER GROWS ON DEMAND INSTEAD OF STARTING AT MAX_STRING.
++ *
++ * reset_emit_string used to calloc MAX_STRING for EVERY emitted instruction,
++ * and nothing is ever freed. With --max-string 65536 that is 64 KB per line of
++ * output. Measured against a file with N logical operators, each of which
++ * emits about six instructions:
++ *
++ *     200 operators     83 MB
++ *     800 operators    320 MB
++ *    3200 operators   1279 MB     -- about 400 KB per operator
++ *
++ * which is 64 KB times six, exactly. Adding short-circuit && and || pushed the
++ * full tcc unit past 4 GB and it was killed by the OOM reaper -- a failure
++ * that looked like a bug in short-circuit and was nothing of the kind.
++ *
++ * Emitted lines are short: the longest in 350,000 lines of tcc output is the
++ * tcc_keywords byte string at 19,571 characters, and everything else is an
++ * instruction of a few dozen. So start small and grow only when something
++ * actually needs the room.
++ *
++ * MAX_STRING remains the hard ceiling, so nothing that used to fit stops
++ * fitting. */
++void grow_emit_string(int needed)
++{
++	if(needed <= emit_string_capacity) return;
++
++	int bigger = emit_string_capacity;
++	while(bigger < needed)
++	{
++		bigger = bigger * 2;
++		if(bigger > MAX_STRING) bigger = MAX_STRING;
++		if(bigger == MAX_STRING) break;
++	}
++
++	char* fresh = calloc(bigger + 1, sizeof(char));
++	require(NULL != fresh, "Exhausted memory while growing the emit buffer\n");
++	if(NULL != emit_string)
++	{
++		copy_string(fresh, emit_string, bigger);
++	}
++	emit_string = fresh;
++	emit_string_capacity = bigger;
++}
+ 
+ void emit_to_string(char* s)
+ {
+-	emit_string_index = emit_string_index + copy_string(emit_string + emit_string_index, s, MAX_STRING - emit_string_index);
++	int length = string_length(s);
++	grow_emit_string(emit_string_index + length + 1);
++	emit_string_index = emit_string_index + copy_string(emit_string + emit_string_index, s, emit_string_capacity - emit_string_index);
+ }
+ 
+ void reset_emit_string(void)
+ {
+-	/* Emitted strings are just added to a linked list so we need a new one each time. */
+-	emit_string = calloc(MAX_STRING, sizeof(char));
++	/* Emitted strings are just added to a linked list so we need a new one each
++	 * time -- but only as much as this one turns out to need. */
++	emit_string_capacity = 256;
++	emit_string = calloc(emit_string_capacity + 1, sizeof(char));
+ 	emit_string_index = 0;
+ }
  
  char* integer_to_raw_byte_string(int value)
  {
@@ -18,7 +85,7 @@ EVERY differing file rather than a hand-written list.
  	{
  		fputs("Value out of range provided to 'integer_to_raw_byte_string': ", stderr);
  		fputs(int2str(value, 10, TRUE), stderr);
-@@ -71,8 +75,11 @@
+@@ -71,8 +124,11 @@
  
  	string = calloc(6, sizeof(char));
  	string[0] = '\'';
@@ -32,7 +99,7 @@ EVERY differing file rather than a hand-written list.
  	string[3] = '\'';
  	string[4] = ' ';
  
-@@ -128,15 +135,15 @@
+@@ -128,15 +184,15 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -57,7 +124,7 @@ EVERY differing file rather than a hand-written list.
  	}
  	else if(Architecture & ARCH_FAMILY_RISCV)
  	{
-@@ -182,7 +189,7 @@
+@@ -182,7 +238,7 @@
  	else if(AARCH64 == Architecture)
  	{
  		emit_load_named_immediate(REGISTER_TEMP, prefix, name, note);
@@ -66,7 +133,7 @@ EVERY differing file rather than a hand-written list.
  	}
  	else if(Architecture & ARCH_FAMILY_RISCV)
  	{
-@@ -237,11 +244,11 @@
+@@ -237,11 +293,11 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -81,7 +148,7 @@ EVERY differing file rather than a hand-written list.
  	}
  	else if(Architecture & ARCH_FAMILY_RISCV)
  	{
-@@ -298,11 +305,11 @@
+@@ -298,11 +354,11 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -96,7 +163,7 @@ EVERY differing file rather than a hand-written list.
  	}
  	else if(Architecture & ARCH_FAMILY_RISCV)
  	{
-@@ -369,13 +376,13 @@
+@@ -369,13 +425,13 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -113,7 +180,7 @@ EVERY differing file rather than a hand-written list.
  	}
  	else if(Architecture & ARCH_FAMILY_RISCV)
  	{
-@@ -442,11 +449,11 @@
+@@ -442,11 +498,11 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -127,7 +194,7 @@ EVERY differing file rather than a hand-written list.
  		emit_out(prefix);
  		emit_out(name);
  	}
-@@ -544,20 +551,22 @@
+@@ -544,20 +600,22 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -155,7 +222,7 @@ EVERY differing file rather than a hand-written list.
  			emit_to_string(value_string);
  		}
  	}
-@@ -650,14 +659,17 @@
+@@ -650,14 +708,17 @@
  }
  
  /* Adds destination and source and places result in destination */
@@ -175,7 +242,7 @@ EVERY differing file rather than a hand-written list.
  		emit_to_string(destination_name);
  		emit_to_string(" R");
  		emit_to_string(destination_name);
-@@ -683,11 +695,11 @@
+@@ -683,11 +744,11 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -190,7 +257,7 @@ EVERY differing file rather than a hand-written list.
  		emit_to_string(destination_name);
  	}
  	else if(Architecture & ARCH_FAMILY_RISCV)
-@@ -713,10 +725,10 @@
+@@ -713,10 +774,10 @@
  	}
  }
  
@@ -203,7 +270,7 @@ EVERY differing file rather than a hand-written list.
  	emit_out(emit_string);
  }
  
-@@ -760,7 +772,7 @@
+@@ -760,7 +821,7 @@
  	else
  	{
  		write_load_immediate(REGISTER_EMIT_TEMP, value, note);
@@ -212,7 +279,7 @@ EVERY differing file rather than a hand-written list.
  	}
  }
  
-@@ -772,14 +784,17 @@
+@@ -772,14 +833,17 @@
  }
  
  /* Subtracts destination and source and places result in destination */
@@ -232,7 +299,7 @@ EVERY differing file rather than a hand-written list.
  		emit_to_string(destination_name);
  		emit_to_string(" R");
  		emit_to_string(destination_name);
-@@ -806,11 +821,11 @@
+@@ -806,11 +870,11 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -247,7 +314,7 @@ EVERY differing file rather than a hand-written list.
  		emit_to_string(source_name);
  	}
  	else if(Architecture & ARCH_FAMILY_RISCV)
-@@ -836,10 +851,10 @@
+@@ -836,10 +900,10 @@
  	}
  }
  
@@ -260,7 +327,7 @@ EVERY differing file rather than a hand-written list.
  	emit_out(emit_string);
  }
  
-@@ -887,7 +902,7 @@
+@@ -887,7 +951,7 @@
  	else
  	{
  		write_load_immediate(REGISTER_EMIT_TEMP, value, note);
@@ -269,7 +336,7 @@ EVERY differing file rather than a hand-written list.
  	}
  }
  
-@@ -898,6 +913,84 @@
+@@ -898,6 +962,84 @@
  	emit_out(emit_string);
  }
  
@@ -354,7 +421,7 @@ EVERY differing file rather than a hand-written list.
  void emit_mul_into_register_zero(int reg, char* note)
  {
  	char* reg_name = register_from_string(reg);
-@@ -921,9 +1014,9 @@
+@@ -921,9 +1063,9 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -366,7 +433,7 @@ EVERY differing file rather than a hand-written list.
  	}
  	else if(Architecture & ARCH_FAMILY_RISCV)
  	{
-@@ -979,9 +1072,9 @@
+@@ -979,9 +1121,9 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -378,7 +445,7 @@ EVERY differing file rather than a hand-written list.
  		emit_to_string(source_name);
  	}
  	else if(Architecture & ARCH_FAMILY_RISCV)
-@@ -1061,8 +1154,21 @@
+@@ -1061,8 +1203,21 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -402,7 +469,7 @@ EVERY differing file rather than a hand-written list.
  	}
  	else if(Architecture & ARCH_FAMILY_RISCV)
  	{
-@@ -1136,8 +1242,11 @@
+@@ -1136,8 +1291,11 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -415,7 +482,7 @@ EVERY differing file rather than a hand-written list.
  	}
  	else if(Architecture & ARCH_FAMILY_RISCV)
  	{
-@@ -1183,8 +1292,9 @@
+@@ -1183,8 +1341,9 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -426,7 +493,7 @@ EVERY differing file rather than a hand-written list.
  	}
  	else if(RISCV32 == Architecture)
  	{
-@@ -1233,8 +1343,9 @@
+@@ -1233,8 +1392,9 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
