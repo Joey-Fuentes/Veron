@@ -2,9 +2,12 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 
 --- a/cc_globals.c
 +++ b/cc_globals.c
-@@ -71,3 +71,5 @@
+@@ -71,3 +71,8 @@
  
  /* feature unsupported by cc_* */
  void maybe_bootstrap_error(char* feature);
 +
 +int expand_depth;
++
++struct type* last_type_base;
++int last_type_stars;

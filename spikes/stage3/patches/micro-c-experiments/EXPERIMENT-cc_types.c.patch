@@ -110,7 +110,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		if(member_size == NO_STRUCT_DEFINITION)
  		{
  			line_error();
-@@ -696,6 +769,68 @@
+@@ -696,6 +769,98 @@
  			offset = 0;
  		}
  
@@ -127,12 +127,42 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 +		while(',' == global_token->s[0])
 +		{
 +			require_extra_token();
++
++			/* POINTER DECLARATORS: `Section *a, *b, *c;`. The '*' binds to the
++			 * DECLARATOR, not the type, so each one carries its own. Reusing
++			 * the previous member's type is right only when the star counts
++			 * match -- `int *a, b;` gives a an int* and b an int, and quietly
++			 * treating b as int* would be exactly the silent-wrong-type bug
++			 * this project keeps digging out. So count them, and refuse the
++			 * mismatch loudly instead of guessing. */
++			int stars = 0;
++			while('*' == global_token->s[0])
++			{
++				stars = stars + 1;
++				require_extra_token();
++			}
++			/* Count the previous declarator's stars from its TYPE NAME, which
++			 * M2-Planet spells "int", "int*", "int**". The indirect/type
++			 * fields are a two-way chain and reading direction off them is how
++			 * the first version of this check got it exactly backwards. */
++			/* Apply THIS declarator's stars to the shared base type, which is
++			 * what C means. tcc needs both: `Section *a, *b` 107 times and
++			 * `int *seg2lc, nseg` five times -- and the second is exactly what
++			 * reusing the previous member's type gets wrong. */
++			struct type* dtype = last_type_base;
++			int k = 0;
++			while(k < stars)
++			{
++				dtype = dtype->indirect;
++				k = k + 1;
++			}
++
 +			struct type* extra = calloc(1, sizeof(struct type));
 +			require(NULL != extra, "Exhausted memory on extra struct member\n");
 +			extra->members = last;
 +			extra->offset = offset;
-+			extra->type = last->type;
-+			extra->size = last->size;
++			extra->type = dtype;
++			extra->size = dtype->size;
 +			require(NULL != global_token, "Unterminated struct member list\n");
 +			extra->name = global_token->s;
 +			require_extra_token();
@@ -179,3 +209,22 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_match("ERROR in create_struct\n Missing ;\n", ";");
  		require(NULL != global_token, "Unterminated struct\n");
  	}
+@@ -870,9 +1035,18 @@
+ 		require_extra_token();
+ 	}
+ 
++	/* RECORD THE DECLARATOR'S POINTER DEPTH AND ITS BASE, here where the stars
++	 * are actually consumed -- the only place that knows both. A struct member
++	 * list shares the BASE type but each declarator carries its own stars:
++	 * `int *a, b;` gives a an int* and b an int. Counting stars from the type
++	 * NAME works for primitives and silently fails for struct pointers, whose
++	 * name is just "T". */
++	last_type_base = ret;
++	last_type_stars = 0;
+ 	while(global_token->s[0] == '*')
+ 	{
+ 		ret = ret->indirect;
++		last_type_stars = last_type_stars + 1;
+ 		require_extra_token();
+ 
+ 		while(match("const", global_token->s) || match("restrict", global_token->s))

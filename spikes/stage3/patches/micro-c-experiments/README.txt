@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "stops on an empty header stub at tcc.h:858".
+"hangs forever on tcc.c" to "stops at __attribute__ in tcc.h:117".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -23,6 +23,8 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   token pasting during expansion               cc_macro.c
   rescan from the HEAD of an expansion         cc_macro.c  tcc.h:421
   per-line expansion bound (mutual recursion)  cc_macro.c, cc_globals.c
+  pointer declarators, `T *a, *b` and         cc_types.c, tcc.h:899
+    `int *seg2lc, nseg`                        cc_globals.*
 
 UNSOUND, AND WHY
 ----------------
@@ -73,6 +75,22 @@ UNSOUND, AND WHY
    fired on arm64-asm.c's OPT_ANY_GPR, which expands two levels and
    terminates. A runaway is a property of one chain, not of a file.
 
+5. THE DECLARATOR WORK IS THE STRONGEST PROMOTION CANDIDATE. Every form is
+   verified by emitting BYTE-IDENTICAL code to its split equivalent:
+
+       int a, b, c;      == int a; int b; int c;
+       int *x, *y;       == int *x; int *y;
+       int *a, b;        == int *a; int b;
+
+   That last one matters: tcc uses the mixed form five times (`int *seg2lc,
+   nseg`) alongside 107 all-pointer ones, and reusing the previous member's
+   type -- the obvious implementation -- gives `nseg` a pointer type silently.
+   Two earlier attempts to detect it were wrong: reading direction off the
+   indirect chain, and counting stars in the type NAME, which works for
+   primitives and fails for struct pointers whose name is just "T". The base
+   type and the star depth are now recorded in fallible_type_name, where the
+   stars are actually consumed and both are known.
+
 The other seven look sound and are candidates for promotion once reviewed.
 The declarator one is the strongest candidate: `int a, b, c;` now emits
 output BYTE-IDENTICAL to `int a; int b; int c;`, which proves the member
@@ -80,7 +98,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Sixteen walls between a hanging compiler and tcc's first genuinely large
+Eighteen walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
