@@ -76,7 +76,11 @@
 #   consecutive rounds. Remaining walls are in other files:
 #     global char array = string literal                tcc.c:32, tccpp.c:64
 #     --max-string 65536 (capacity, not a gap)          tccpp.c
-#     '#' stringify operator                            tcctok.h:187 NOT DONE
+#     '#' stringify operator                            tcctok.h:187 77 uses
+#     full 0..255 byte range in global data             tccpp.c
+#
+#   EVERY HEADER NOW PARSES. Walls are inside .c files now:
+#     unary_expr Missing (                              tccpp.c:104 NOT DONE
 #
 # float was the item ROADMAP called pivotal and it was two extern declarations,
 # not arithmetic. Bitfield LAYOUT is done and verified -- three packed fields

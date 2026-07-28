@@ -1,0 +1,31 @@
+EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
+
+--- a/cc_emit.c
++++ b/cc_emit.c
+@@ -58,7 +58,11 @@
+ 
+ char* integer_to_raw_byte_string(int value)
+ {
+-	if(value > 127 || value < -128)
++	/* A BYTE IS A BYTE: accept the full 0..255 as well as -128..127. The check
++	 * allowed only the SIGNED range, so a global char array holding any value
++	 * with the high bit set was rejected -- tcc hits it with 158. Both ranges
++	 * denote the same eight bits; masking below makes the encoding agree. */
++	if(value > 255 || value < -128)
+ 	{
+ 		fputs("Value out of range provided to 'integer_to_raw_byte_string': ", stderr);
+ 		fputs(int2str(value, 10, TRUE), stderr);
+@@ -71,8 +75,11 @@
+ 
+ 	string = calloc(6, sizeof(char));
+ 	string[0] = '\'';
+-	string[1] = hex_table[value >> 4];
+-	string[2] = hex_table[value & 15];
++	/* Mask to eight bits so a negative value encodes as its two's-complement
++	 * byte rather than shifting in sign bits: -1 must be FF, not F...F. */
++	int b8 = value & 255;
++	string[1] = hex_table[b8 >> 4];
++	string[2] = hex_table[b8 & 15];
+ 	string[3] = '\'';
+ 	string[4] = ' ';
+ 

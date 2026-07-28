@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "through tcc.h entirely; stops at the # stringify operator".
+"hangs forever on tcc.c" to "through every header; now inside tccpp.c".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -32,6 +32,8 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   cast vs parens after unary `*`               cc_core.c   tcc.h:1874
   comma operator, at STATEMENT level           cc_core.c   tcc.h:1947, 21 uses
   global char array = string literal           cc_core.c   tcc.c:32, tccpp.c:64
+  '#' stringify operator                       cc_macro.c  tcctok.h:187, 77 uses
+  full 0..255 byte range in global data        cc_emit.c   tccpp.c
 
 UNSOUND, AND WHY
 ----------------
@@ -190,6 +192,34 @@ UNSOUND, AND WHY
     It then hit MAX_STRING, which is a capacity limit rather than a language
     gap -- M2-Planet takes `--max-string`. The probe passes 65536.
 
+12. STRINGIFY `#x` IS A ONE-TOKEN MATCH, not a two-token pattern: the
+    tokenizer's '#' branch consumes the hash and then grabs the following
+    alphanumerics, so `#x` arrives as a single token. Substitution therefore
+    compares against "#" + the parameter name, alongside the existing
+    parameter comparison.
+
+    THE STRING TOKEN CARRIES ONLY ITS LEADING QUOTE -- parse_string supplies
+    the terminator when bytes are emitted. Adding a closing quote here put a
+    literal 0x22 INSIDE the data, and `-E` did not show it because -E prints
+    raw tokens; the hex dump did. Compare emitted output, not preprocessed
+    text. With that right, `STR(hello)` emits BYTE-IDENTICAL code to a
+    hand-written "hello".
+
+    Argument text is joined with single spaces, which is not what C specifies
+    -- the standard preserves the original spelling. Every use in tcc
+    stringifies a single identifier, where the two agree exactly. A
+    multi-token argument would normalise its spacing.
+
+13. integer_to_raw_byte_string ACCEPTED ONLY -128..127, so any global char
+    array holding a value with the high bit set was rejected; tcc supplies
+    158. Both ranges denote the same eight bits, so the check now takes
+    0..255 as well and the encoding masks to eight bits -- otherwise -1 would
+    shift in sign bits instead of encoding as FF. Verified: 158 -> 9E,
+    -1 -> FF, -128 -> 80.
+
+MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
+walls are now inside tccpp.c, the first .c file reached.
+
 MILESTONE: tcc.h PARSES COMPLETELY. All 2013 lines. It had been the wall for
 fifteen consecutive rounds; the remaining walls are in other files.
 
@@ -200,7 +230,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Twenty-six walls between a hanging compiler and tcc's first genuinely large
+Twenty-eight walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11

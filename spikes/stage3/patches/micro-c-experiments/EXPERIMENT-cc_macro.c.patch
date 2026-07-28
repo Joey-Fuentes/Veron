@@ -11,7 +11,68 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  struct token_list* maybe_expand(struct token_list* token)
  {
  	if(NULL == token)
-@@ -1142,7 +1144,48 @@
+@@ -1085,6 +1087,60 @@
+ 
+ 				while(expand_list != NULL)
+ 				{
++					/* STRINGIFY, `#x`. The tokenizer already makes `#x` a
++					 * single token -- the '#' branch consumes the hash and then
++					 * grabs the following alphanumerics -- so this is a name
++					 * comparison against "#" + the parameter, not a two-token
++					 * pattern.
++					 *
++					 * tcc uses it 77 times as #x alone, and reaches it first at
++					 *     #define DEF_ATOMIC(ID) DEF(TOK_##__##ID, "__"#ID)
++					 * where the result is concatenated with an adjacent literal,
++					 * which the string handling already does.
++					 *
++					 * The argument text is joined with single spaces. That is
++					 * not what C specifies -- the standard preserves the
++					 * original spelling minus leading and trailing whitespace --
++					 * but every use in tcc stringifies a single identifier,
++					 * where the two agree exactly. Recorded rather than
++					 * pretended: a multi-token argument would stringify with
++					 * normalised spacing. */
++					if('#' == expand_list->s[0] && match(expand_list->s + 1, argument->name))
++					{
++						char* acc = calloc(MAX_STRING, sizeof(char));
++						require(NULL != acc, "Exhausted memory stringifying a macro argument\n");
++						int ai = 0;
++						acc[ai] = '"';
++						ai = ai + 1;
++						struct token_list* w = start_token;
++						while(NULL != w)
++						{
++							if(ai > 1)
++							{
++								acc[ai] = ' ';
++								ai = ai + 1;
++							}
++							int j = 0;
++							while(0 != w->s[j])
++							{
++								require(ai < MAX_STRING, "stringified argument too long\n");
++								acc[ai] = w->s[j];
++								ai = ai + 1;
++								j = j + 1;
++							}
++							w = w->next;
++						}
++						/* NO CLOSING QUOTE. A string TOKEN carries only the
++						 * leading '"' -- parse_string supplies the terminator
++						 * when the bytes are emitted. Adding one here put a
++						 * literal 0x22 inside the data, which -E did not show
++						 * because it prints raw tokens: the hex dump did.
++						 * Compare emitted output, not preprocessed text. */
++						acc[ai] = 0;
++						expand_list->s = acc;
++						expand_list = expand_list->next;
++						continue;
++					}
+ 					if(match(expand_list->s, argument->name))
+ 					{
+ 						start_token_copy = deep_copy_token_list(start_token);
+@@ -1142,7 +1198,48 @@
  
  	if (NULL == hold->expansion)
  	{
@@ -61,7 +122,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	/* Paint every occurrence of this macro's own name in what we are about to
-@@ -1160,9 +1203,94 @@
+@@ -1160,9 +1257,94 @@
  		paint = paint->next;
  	}
  
@@ -157,7 +218,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  }
  
  void preprocess(void)
-@@ -1192,6 +1320,13 @@
+@@ -1192,6 +1374,13 @@
  		else if('\n' == macro_token->s[0])
  		{
  			start_of_line = TRUE;
