@@ -228,3 +228,64 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_extra_token();
  
  		while(match("const", global_token->s) || match("restrict", global_token->s))
+@@ -913,6 +1087,7 @@
+ {
+ 	struct type* head = lookup_primitive_type();
+ 	struct type* i;
++	struct type* ii;
+ 	if(NULL == head)
+ 	{
+ 		head = calloc(1, sizeof(struct type));
+@@ -922,10 +1097,21 @@
+ 
+ 		i = calloc(1, sizeof(struct type));
+ 		require(NULL != i, "Exhausted memory while creating a struct indirection\n");
++
++		ii = calloc(1, sizeof(struct type));
++		require(NULL != ii, "Exhausted memory while creating a struct double indirection\n");
+ 	}
+ 	else
+ 	{
+ 		i = head->indirect;
++		ii = i->indirect;
++		if(ii == head)
++		{
++			/* An older two-level chain built by this function. Give it the
++			 * third level it should always have had. */
++			ii = calloc(1, sizeof(struct type));
++			require(NULL != ii, "Exhausted memory while creating a struct double indirection\n");
++		}
+ 	}
+ 
+ 	head->name = global_token->s;
+@@ -936,12 +1122,29 @@
+ 	i->offset = source->indirect->offset;
+ 	head->is_signed = source->is_signed;
+ 	i->is_signed = source->indirect->is_signed;
++	/* THREE LEVELS, NOT TWO. `i->indirect = head` made T** resolve to T
++	 * itself, so `*pal` on a T** loaded sizeof(T) instead of sizeof(T*) --
++	 * "unsupported size 48" at tccpp.c:177, and only ever for structs reached
++	 * through a typedef. create_forward_declared_struct has always built
++	 * head / i / ii with ii->indirect = ii; this is the same shape.
++	 *
++	 * Reproduction, which passes without the typedef and fails with it:
++	 *     typedef struct T { struct T* next; int a; } T;
++	 *     int f(T** pal) { T* q; q = *pal; return 0; } */
+ 	head->indirect = i;
+-	i->indirect = head;
++	i->indirect = ii;
++	ii->indirect = ii;
+ 	head->members = source->members;
+ 	i->members =  source->indirect->members;
+ 	head->type = head;
+ 	i->type = head;
+ 
++	ii->name = head->name;
++	ii->size = i->size;
++	ii->offset = i->offset;
++	ii->is_signed = i->is_signed;
++	ii->members = i->members;
++	ii->type = i;
++
+ 	return head;
+ }

@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "through every header and 177 lines into tccpp.c".
+"hangs forever on tcc.c" to "into tccpp.c, past the typedef indirection bug".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -36,6 +36,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   full 0..255 byte range in global data        cc_emit.c   tccpp.c
   `sizeof x` without parentheses               cc_core.c   tccpp.c:104
   load_value error names type and token        cc_core.c   diagnostic only
+  mirror_type: the MISSING THIRD indirection   cc_types.c  tccpp.c:177
 
 UNSOUND, AND WHY
 ----------------
@@ -226,43 +227,39 @@ UNSOUND, AND WHY
     whether one was consumed, and require the matching ')' only then.
     `sizeof t` emits BYTE-IDENTICAL code to `sizeof(t)`.
 
-STOPPED AT: DEREFERENCING A `struct**` LOADS THE STRUCT BY VALUE.
+15. THE TYPEDEF INDIRECTION BUG -- the best find of this stretch, and worth
+    the method more than the fix.
 
-The wall at tccpp.c:177 is characterised, not guessed. Making load_value name
-the type and token turned "unsupported size 48" into
+    `mirror_type`, which builds the type record for `typedef struct X {...} X;`,
+    built only TWO levels and then looped back:
 
-    Got unsupported size 48 when trying to load value
-    of type 'TinyAlloc' near token ','
+        head->indirect = i;      /* T  -> T*  */
+        i->indirect = head;      /* T* -> T   <-- should be T** */
 
-and from there a ten-line reproduction:
+    So T** resolved to T ITSELF, and `*pal` on a T** loaded sizeof(T) rather
+    than sizeof(T*). create_forward_declared_struct has always built three
+    levels (head / i / ii, ii->indirect = ii); the typedef path never did.
 
-    typedef struct TinyAlloc {
-        unsigned char *p;
-        unsigned char *bufend;
-        struct TinyAlloc *next;
-        unsigned nb_allocs;
-        unsigned size;
-        unsigned char buffer[1];
-    } TinyAlloc;
-    int f(TinyAlloc **pal) { TinyAlloc* q; q = *pal; return 0; }
+    It reproduces in three lines and the discriminator is the typedef:
 
-WHAT IT IS NOT. The comma operator is innocent -- `al->next = *pal;` alone
-fails. The typedef is innocent -- `struct TinyAlloc **` fails identically.
-Member access (`al->p`, `al->next`) and single-pointer dereference both work.
-`pal[0]` fails the same way, which is the same operation spelled differently.
+        struct T { struct T* next; int a; };                        OK
+        typedef struct T { struct T* next; int a; } T;              FAILS
+        int f(T** pal) { T* q; q = *pal; return 0; }
 
-WHAT IT IS. `*pal` on a `T**` yields sizeof(T) rather than sizeof(T*), so the
-type chain's T** -> T* step is not being taken. create_forward_declared_struct
-builds the chain correctly (head=T, i=T* size 8, ii=T** size 8, ii->type = i),
-so the parameter is most likely being typed T* rather than T** somewhere in
-declaration parsing -- but that is a hypothesis, and the last several times a
-hypothesis went unchecked here it was wrong.
+    HOW IT WAS FOUND, because guessing had failed twice: teach load_value to
+    name the type and token, which turned "unsupported size 48" into "of type
+    'TinyAlloc' near token ','". Then eliminate -- the comma was innocent, the
+    member order was innocent, each individual struct feature was innocent --
+    until only the typedef was left.
 
-An EARLIER repro of the same shape PASSED, with `next` as the struct's FIRST
-member. That difference is the thread to pull next.
+    VERIFIED: the typedef'd form now emits BYTE-IDENTICAL code to the
+    non-typedef'd one, and T*** still resolves correctly.
 
-This is type-model work rather than another few lines, which is why it is
-recorded rather than patched.
+STOPPED AT: `ERROR in lookup_member tal_header_t->p does not exist` in
+tccpp.c. `tal_header_t` has one member, `size`; `p` belongs to TinyAlloc. So a
+type record is being shared or overwritten between two typedefs in the same
+file. Two-typedef reproductions pass, so the trigger is narrower than that and
+needs the same eliminate-don't-guess treatment.
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -277,7 +274,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Twenty-nine walls between a hanging compiler and tcc's first genuinely large
+Thirty walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11

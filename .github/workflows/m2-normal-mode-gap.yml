@@ -81,8 +81,8 @@
 #
 #   EVERY HEADER NOW PARSES. Walls are inside .c files now:
 #     `sizeof x` without parentheses                    tccpp.c:104
-#     `*pal` on a struct** loads the STRUCT, not the    tccpp.c:177 NOT DONE
-#       pointer -- 10-line repro in the experiments README
+#     mirror_type built 2 indirection levels, not 3    tccpp.c:177 typedef only
+#     lookup_member across two typedefs                tccpp.c    NOT DONE
 #
 # float was the item ROADMAP called pivotal and it was two extern declarations,
 # not arithmetic. Bitfield LAYOUT is done and verified -- three packed fields
