@@ -1,0 +1,30 @@
+EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
+
+--- a/cc_reader.c
++++ b/cc_reader.c
+@@ -254,6 +254,25 @@
+ 	else if('#' == c)
+ 	{
+ 		c = consume_byte(c);
++
++		/* '##' IS ONE TOKEN. Without this, `a##b` tokenizes as `a`, `#`, `#b`:
++		 * the first '#' takes no following alphanumerics because the next
++		 * character is another '#', and the second '#' swallows `b`. The paste
++		 * operator then never exists for expansion to act on, and tcc.h:407
++		 *     # define ElfW(type) Elf##64##_##type
++		 * fails as "Elf is not a defined symbol". */
++		if('#' == c)
++		{
++			c = consume_byte(c);
++			/* Fall THROUGH to new_token at the bottom. Returning here consumed
++			 * the '##' and then threw it away, because that is where the token
++			 * is actually created -- which is why the expansion list arrived at
++			 * the paste pass already reading [Elf64_] [Sym] with no operator
++			 * between them. */
++			new_token(hold_string, string_index + 2);
++			return c;
++		}
++
+ 		while (c == ' ' || c == '\t')
+ 		{
+ 			c = grab_byte();

@@ -1,0 +1,109 @@
+EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
+
+--- a/cc_macro.c
++++ b/cc_macro.c
+@@ -984,6 +984,8 @@
+ 	return to;
+ }
+ 
++extern int expand_depth;
++
+ struct token_list* maybe_expand(struct token_list* token)
+ {
+ 	if(NULL == token)
+@@ -1145,6 +1147,38 @@
+ 		return token->next;
+ 	}
+ 
++	/* PASTE: fold `X ## Y` into a single token XY, after argument substitution
++	 * has run so the operands are the substituted text. Applied to the
++	 * expansion list about to be spliced, walking left to right so a chain like
++	 * `Elf##64##_##type` folds progressively: Elf64, Elf64_, Elf64_type.
++	 *
++	 * The result is re-looked-up as an ordinary identifier by the normal
++	 * rescan, which is what makes `ElfW(Sym)` reach the parser as Elf64_Sym. */
++	struct token_list* pst = expansion;
++	while(NULL != pst)
++	{
++		if(NULL != pst->next)
++		{
++			if(match("##", pst->next->s))
++			{
++				struct token_list* op = pst->next;
++				if(NULL != op->next)
++				{
++					pst->s = concat_strings2(pst->s, op->next->s);
++					/* unlink the operator and its right operand */
++					pst->next = op->next->next;
++					if(NULL != pst->next)
++					{
++						pst->next->prev = pst;
++					}
++					/* fold again from the same token, for chains */
++					continue;
++				}
++			}
++		}
++		pst = pst->next;
++	}
++
+ 	/* Paint every occurrence of this macro's own name in what we are about to
+ 	 * splice. For a function-like macro `expansion` is a fresh deep copy, so
+ 	 * this is per-invocation; for an object-like macro it is the stored list,
+@@ -1160,9 +1194,41 @@
+ 		paint = paint->next;
+ 	}
+ 
++	/* MUTUAL RECURSION IS NOT COVERED BY THE PAINT, AND MUST NOT HANG.
++	 *     #define A B
++	 *     #define B A
++	 * Neither body contains its own name, so nothing gets painted, and
++	 * rescanning from the head above makes them expand into each other
++	 * forever. C solves this with a per-token HIDE SET -- the set of macros
++	 * being expanded when the token was produced -- which is the real fix and
++	 * more machinery than a single flag.
++	 *
++	 * Until that exists, bound it and say so. A diagnostic is recoverable; a
++	 * hang in CI is forty minutes and no information. The bound is far above
++	 * any legitimate nesting: tcc's deepest real chain is three. */
++	expand_depth = expand_depth + 1;
++	if(expand_depth > 10000)
++	{
++		line_error_token(macro_token);
++		fputs("macro expansion did not terminate (mutually recursive?) at '", stderr);
++		fputs(hold->symbol, stderr);
++		fputs("'\n", stderr);
++		exit(EXIT_FAILURE);
++	}
++
+ 	struct token_list* hold2 = insert_tokens(token, expansion);
+ 
+-	return hold2->next;
++	/* RESCAN FROM THE FIRST INSERTED TOKEN, NOT PAST IT. Returning hold2->next
++	 * skipped the head of every expansion, so a macro whose body STARTS with
++	 * another macro never expanded it:
++	 *     #define addr_t ElfW(Addr)
++	 * put [ElfW] [(] [Addr] [)] in the stream and resumed at '(', leaving ElfW
++	 * to reach the parser as an identifier -- "Unknown type ElfW", tcc.h:421.
++	 *
++	 * This is only safe because of the blue paint above: rescanning from the
++	 * head is exactly what makes a self-referential macro loop, and the paint
++	 * is what stops it. The two changes belong together. */
++	return hold2;
+ }
+ 
+ void preprocess(void)
+@@ -1192,6 +1258,13 @@
+ 		else if('\n' == macro_token->s[0])
+ 		{
+ 			start_of_line = TRUE;
++			/* RESET THE EXPANSION BOUND PER LINE. It was cumulative across the
++			 * whole translation unit, so it fired on arm64-asm.c's OPT_ANY_GPR
++			 * -- which expands two levels deep and terminates -- purely because
++			 * ten thousand unrelated expansions had happened earlier in the
++			 * file. A runaway is a property of one expansion chain, and a line
++			 * is the closest scope available without a hide set. */
++			expand_depth = 0;
+ 			macro_token = macro_token->next;
+ 		}
+ 		else

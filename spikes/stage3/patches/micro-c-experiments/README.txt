@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "stops at ## token pasting in tcc.h:421".
+"hangs forever on tcc.c" to "stops on an empty header stub at tcc.h:858".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -19,6 +19,10 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   bitfield LAYOUT (not access)                 cc.h,       tcc.h:504
                                                cc_types.c,
                                                cc_core.c
+  '##' as one token                            cc_reader.c tcc.h:407
+  token pasting during expansion               cc_macro.c
+  rescan from the HEAD of an expansion         cc_macro.c  tcc.h:421
+  per-line expansion bound (mutual recursion)  cc_macro.c, cc_globals.c
 
 UNSOUND, AND WHY
 ----------------
@@ -50,6 +54,25 @@ UNSOUND, AND WHY
    which is why they are not here. tcc parses past tcc.h:504 without them
    because the declarations are what blocked it, not the uses.
 
+4. THE EXPANSION BOUND IS A PLACEHOLDER FOR A HIDE SET. Rescanning from the
+   head of an expansion is required -- without it a macro whose body STARTS
+   with another macro never expands it, which is what made `#define addr_t
+   ElfW(Addr)` fail. But rescanning from the head is also what lets mutually
+   recursive macros loop:
+
+       #define A B
+       #define B A
+
+   Blue paint does not catch that: neither body contains its own name. C
+   solves it with a per-token HIDE SET -- the set of macros being expanded
+   when the token was produced -- and that is the real fix. Until it exists,
+   expansion is bounded PER SOURCE LINE and a runaway is a diagnostic with a
+   line number rather than a hang.
+
+   The first version of that bound was cumulative across the whole file and
+   fired on arm64-asm.c's OPT_ANY_GPR, which expands two levels and
+   terminates. A runaway is a property of one chain, not of a file.
+
 The other seven look sound and are candidates for promotion once reviewed.
 The declarator one is the strongest candidate: `int a, b, c;` now emits
 output BYTE-IDENTICAL to `int a; int b; int c;`, which proves the member
@@ -57,7 +80,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Thirteen walls between a hanging compiler and tcc's first genuinely large
+Sixteen walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
