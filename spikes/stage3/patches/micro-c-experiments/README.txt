@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "673 lines into tccpp.c".
+"hangs forever on tcc.c" to "893 lines into tccpp.c".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -42,6 +42,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   empty `for` clauses, `for (;;)`             cc_core.c   tccpp.c:415
   a call's result carries its RETURN TYPE     cc_core.c   tccpp.c:523
   unary `*` deferred past the postfix chain   cc_core.c   tccpp.c:660
+  prefix ++/-- under a dereference           cc_core.c   tccpp.c:673
 
 UNSOUND, AND WHY
 ----------------
@@ -344,6 +345,22 @@ UNSOUND, AND WHY
 
     Both write and read now match the temp-variable equivalent exactly.
 
+21. A PREFIX ++/-- UNDER A DEREFERENCE. `*++file->buf_ptr` at tccpp.c:673 is
+    `*(++(file->buf_ptr))`. The stars are consumed first and the function then
+    expects an identifier, so it died on "++ is not a defined symbol".
+    primary_expr already has the prefix handler and it already calls
+    postfix_expr, so this delegates to it and applies the dereference after --
+    the same shape as the parenthesised-operand case.
+
+    COMPARING AGAINST `++file->buf_ptr; ch = *file->buf_ptr;` WOULD HAVE BEEN
+    WRONG: that form re-reads the member and legitimately emits more work. The
+    exact equivalent is `q = ++file->buf_ptr; ch = *q;`, and against that the
+    counts match. Picking the right comparison matters as much as making one.
+
+STOPPED AT: tccpp.c:893, "Not inside of a loop" -- a `continue` inside a
+`switch` inside a while loop. Legal C: continue targets the enclosing LOOP,
+not the switch. The switch context is masking it.
+
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
 
@@ -357,7 +374,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Thirty-five walls between a hanging compiler and tcc's first genuinely large
+Thirty-six walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
