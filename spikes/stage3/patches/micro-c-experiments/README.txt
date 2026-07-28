@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "tccgen.c:7335 -- 82% through the code generator".
+"hangs forever on tcc.c" to "tccgen.c:8723 of 8917 -- 98% through the code generator".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -67,6 +67,9 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   `default:` need not come last             cc_core.c   tccgen.c:2396
   a unary operator does not PROMOTE         cc_core.c   tccgen.c:3300
   indexing yields the ELEMENT type          cc_core.c   tccgen.c:3300
+  postfix ++/-- binds tighter than `*`      cc_core.c   tccgen.c:7335
+  __FUNCTION__                              cc_core.c   tcc.h:1250
+  aggregate members zeroed word by word     cc_core.c   tccgen.c:7732
 
 UNSOUND, AND WHY
 ----------------
@@ -660,8 +663,29 @@ tcc.h, libtcc.h, elf.h, tcctok.h and now tccpp.c. Now in tccgen.c.
     proved them innocent in one line. Test the thing you believe works, not
     just the thing that failed.
 
-STOPPED AT: tccgen.c:7335, `sw->sv = *vtop--;` -- a struct copy whose source
-is a POST-DECREMENT under a dereference.
+44. POSTFIX ++/-- BINDS TIGHTER THAN UNARY '*'. `sw->sv = *vtop--` is
+    `*(vtop--)`: the POINTER is decremented, not the struct it points at.
+    Simply missing from the deferral list alongside -> . and [.
+
+    It then needed the struct guard in a THIRD deferred-dereference loop --
+    postfix_expr_inc_or_dec has its own, beside the ones in
+    primary_expr_variable and postfix_expr. Three copies of one rule.
+
+45. __FUNCTION__ IS NOT A PREPROCESSOR MACRO. __LINE__ and __FILE__ live in
+    lookup_macro because their values are known while preprocessing; the
+    enclosing function's name is not known until parsing, so it belongs in
+    primary_expr. tcc reaches it through tcc_internal_error at tcc.h:1250.
+    Emits "myfunc" for a function named myfunc.
+
+46. AN AGGREGATE MEMBER CANNOT BE STORED IN ONE GO. `Sym aref = {0};` at
+    tccgen.c:7732 -- Sym's members include structs, so a member store hit 16
+    bytes. Zeroing writes a word at a time.
+
+    ONLY the zero case: storing a non-zero value into an aggregate member
+    would need a copy from a source address, and there is no source here, so
+    that path stops rather than writing one word and calling it done.
+
+STOPPED AT: tccgen.c:8723, "unsupported size 3 of type 'AttributeDef'".
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -676,7 +700,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Fifty-eight walls between a hanging compiler and tcc's first genuinely large
+Sixty-one walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11

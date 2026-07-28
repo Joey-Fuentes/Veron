@@ -112,7 +112,10 @@
 #     `default:` need not come last                    tccgen.c:2396
 #     a unary operator does not promote                tccgen.c:3300
 #     indexing yields the element type                 tccgen.c:3300 +4035 lines
-#     `sw->sv = *vtop--` struct copy from post-dec     tccgen.c:7335 NOT DONE
+#     postfix ++/-- binds tighter than unary `*`       tccgen.c:7335
+#     __FUNCTION__                                     tcc.h:1250
+#     aggregate members zeroed word by word            tccgen.c:7732
+#     unsupported size 3, AttributeDef                 tccgen.c:8723 NOT DONE
 #
 # float was the item ROADMAP called pivotal and it was two extern declarations,
 # not arithmetic. Bitfield LAYOUT is done and verified -- three packed fields
