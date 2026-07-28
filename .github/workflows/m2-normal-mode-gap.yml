@@ -152,6 +152,12 @@
 #   hex2 stops on FUNCTION___init_malloc, which libc-full.M1 references but
 #   does not define.
 #
+#   IT LINKS. M2libc compiled by micro-c covers 34 of the 59 undefined
+#   symbols; 25 deliberately-wrong stubs cover the rest, and hex2 produces a
+#   1,489,312-byte AArch64 ELF64 executable with a valid entry point. NOT RUN
+#   -- no aarch64 here -- and it would not work: the stubs return 0, float is
+#   still an integer, and `int` is still 8 bytes.
+#
 #   SOUNDNESS: micro-c's `int` is EIGHT bytes (M2-Planet's own type model, not
 #   introduced here). Internally consistent, wrong at the libc boundary and in
 #   bitfield storage units. The fixed-width types ARE correct, so ELF headers

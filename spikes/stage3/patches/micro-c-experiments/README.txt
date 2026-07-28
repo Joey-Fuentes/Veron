@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "libtcc.c COMPILES AND ASSEMBLES -- 332,893 lines of hex2".
+"hangs forever on tcc.c" to "libtcc.c COMPILES, ASSEMBLES AND LINKS -- a 1.5MB aarch64 ELF".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -913,7 +913,35 @@ output. Worth remembering that M1 and hex2 are scaffolding here: the plan
 replaces both with the .s0 backend, and they are being used only because they
 can validate what parsing cannot.
 
-The next real test is whether a linked tcc can compile anything.
+IT LINKS.
+
+    micro-c    libtcc.c        ->  350,951 lines of M1
+    micro-c    all of M2libc   ->   25,837 lines, 242 functions
+    M1         everything      ->  332,893 lines of hex2, rc=0
+    hex2       + ELF header    ->  1,489,312 bytes, rc=0
+
+    ELF64, EXEC, AArch64, entry 0x400078 -- structurally valid.
+
+WHAT IT TOOK. A compiled libtcc.c references 742 functions and defines 695,
+leaving 59 undefined. M2libc -- itself compiled by micro-c, which is its own
+result -- covers 34. The other 25 are in impl/stubs.c and every one of them is
+DELIBERATELY WRONG: strtoX returns 0, setjmp/longjmp do nothing, qsort does
+not sort, the signal and semaphore calls are no-ops. A tcc linked against that
+starts and does not work.
+
+The stub file also supplies main, because libtcc.c is a LIBRARY and the ELF
+entry point needs one. tcc.c has the real main and does not compile yet.
+
+WHY DO IT ANYWAY. The link is the only thing that answers "does every symbol
+exist and resolve", and it produced a precise list of what a real runtime
+owes: 25 functions, of which the interesting ones are setjmp/longjmp (needs
+assembly), the strtoX family, qsort, and the float parsers -- which micro-c
+could not compile correctly regardless, since float is still a word-sized
+integer.
+
+NOT RUN. This container is x86_64 with no qemu, so execution is untested. The
+binary's structure is valid; its behaviour is unknown and, given the stubs and
+the unsound items above, would not be correct yet.
 =============================================================================
 =============================================================================
 
