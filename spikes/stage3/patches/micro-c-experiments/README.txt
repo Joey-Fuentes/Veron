@@ -1655,3 +1655,62 @@ realloc. None found the fault. That is not wasted -- each one is a thing that
 no longer needs considering -- but it is worth being clear that the method has
 been narrowing rather than finding, and the last three real bugs all came from
 reading emitted code once the ladder had picked a statement.
+
+=============================================================================
+&& AND || DID NOT SHORT-CIRCUIT
+
+Reading the emitted code for tcc's
+
+    if (output_type != TCC_OUTPUT_MEMORY && !s->nostdlib)
+
+showed both sides evaluated and combined with a bitwise AND. That is what
+general_recursion does, and it is what M2-Planet has always done for && and ||.
+
+C does not permit it, and tcc depends on it not happening in FORTY-EIGHT
+places of the form
+
+    if (esym && esym->st_shndx == SHN_UNDEF)
+    if (!sym || sym->type.t & VT_STATIC)
+
+Every one of those dereferences a null pointer when the left-hand side is the
+guard. Which one you hit depends on the path taken -- which is precisely the
+pattern observed: two probes dying at different points after the same last
+successful call.
+
+Fixed with a logical_recursion that emits a real branch, for all six
+architectures. Verified in the emitted code: with `np && side(np)` and np
+null, the call to side is jumped over entirely.
+
+=============================================================================
+AND THE REGRESSION HAD BEEN VACUOUS SINCE THE FIRST RUN
+
+Byte-identical output was reported as 9/9 on every single batch of this work.
+It was checking this:
+
+    M2-ref  -f OUR_PATCHED_SOURCES  ; ra=$?      -> failed, 0 bytes
+    M2TP    -f OUR_PATCHED_SOURCES  ; rb=$?      -> failed, 0 bytes
+    [ "$ra" = "$rb" ] && cmp -s a.M1 b.M1        -> 1 = 1, and cmp says two
+                                                    empty files match
+
+Both compilers need -I for stdio.h and never got it. So both produced NOTHING,
+exited 1, and the check passed -- from the first run to the hundredth, without
+ever compiling a line.
+
+It was not a weak test. It was not a test. And it was the thing I quoted after
+every change as evidence that nothing had broken.
+
+WHAT REPLACES IT, in tools/regression.sh:
+
+  - it ASSERTS that both sides produced output; fewer than 100 bytes is a
+    failure, not a match
+  - it compiles the REFERENCE's own sources, which the unpatched compiler can
+    actually build
+  - it does NOT demand byte-identical output, because the code generator has
+    deliberately changed -- identical output would now mean the changes had
+    not taken effect
+  - it fails only on a REGRESSION: something the reference compiles and we no
+    longer do
+
+Current state: 7 files compiled by both, 7 differ, 0 regressions. The
+differences are the short-circuit branches and the array-member fixes, which
+is what they should be.

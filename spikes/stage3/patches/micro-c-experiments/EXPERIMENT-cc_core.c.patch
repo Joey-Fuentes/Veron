@@ -208,12 +208,12 @@ EVERY differing file rather than a hand-written list.
 +		return lhs | constant_expression();
 +	}
 +	else if(match("&", global_token->s))
- 	{
++	{
 +		require_extra_token();
 +		return lhs & constant_expression();
 +	}
 +	else if(match("^", global_token->s))
-+	{
+ 	{
 +		require_extra_token();
 +		return lhs ^ constant_expression();
 +	}
@@ -919,7 +919,88 @@ EVERY differing file rather than a hand-written list.
  void common_recursion(FUNCTION f)
  {
  	emit_push(REGISTER_ZERO, "_common_recursion");
-@@ -975,6 +1498,49 @@
+@@ -920,6 +1443,80 @@
+ 	}
+ }
+ 
++/* SHORT-CIRCUIT && AND ||.
++ *
++ * These were general_recursion with a bitwise and/or, which evaluates BOTH
++ * sides and combines them. C does not permit that, and tcc depends on it not
++ * happening in forty-eight places of the form
++ *
++ *     if (esym && esym->st_shndx == SHN_UNDEF)
++ *     if (!sym || sym->type.t & VT_STATIC)
++ *
++ * where evaluating the right-hand side with a null left-hand side is a null
++ * dereference. Any of those is a segfault, and which one you hit depends on
++ * the path taken -- which is exactly the pattern seen here: two probes dying
++ * at different points after the same last successful call.
++ *
++ * The emitted shape:
++ *
++ *     &&                          ||
++ *     <left in R0>                <left in R0>
++ *     jump-if-zero  -> false      jump-if-zero  -> eval right
++ *     <right in R0>               R0 = 1
++ *     jump-if-zero  -> false      jump         -> end
++ *     R0 = 1                      <right in R0>
++ *     jump -> end                 jump-if-zero -> false
++ *     false: R0 = 0               R0 = 1; jump -> end
++ *     end:                        false: R0 = 0
++ *                                 end:
++ *
++ * The result is normalised to 0 or 1, which the bitwise version also did --
++ * every comparison feeding these already produces 0 or 1 -- so nothing
++ * downstream changes except that the right-hand side is no longer evaluated
++ * when the left-hand side settles it. */
++void logical_recursion(FUNCTION f, int is_and, char* name, FUNCTION iterate)
++{
++	require(NULL != global_token, "Received EOF in logical_recursion\n");
++	if(!match(name, global_token->s)) return;
++
++	char* number_string = int2str(current_count, 10, TRUE);
++	current_count = current_count + 1;
++	char* short_id = create_unique_id("SC_SHORT_", "l", number_string);
++	char* end_id = create_unique_id("SC_END_", "l", number_string);
++
++	/* Left operand is already in REGISTER_ZERO. */
++	if(is_and)
++	{
++		emit_jump_if_zero(REGISTER_ZERO, "", short_id, "&& left is false");
++	}
++	else
++	{
++		emit_jump_if_not_zero(REGISTER_ZERO, "", short_id, "|| left is true");
++	}
++
++	require_extra_token();
++	f();
++
++	if(is_and)
++	{
++		emit_jump_if_zero(REGISTER_ZERO, "", short_id, "&& right is false");
++		emit_load_immediate(REGISTER_ZERO, TRUE, "both true");
++	}
++	else
++	{
++		emit_jump_if_not_zero(REGISTER_ZERO, "", short_id, "|| right is true");
++		emit_load_immediate(REGISTER_ZERO, FALSE, "neither true");
++	}
++	emit_unconditional_jump("", end_id, "skip the short-circuit result");
++
++	emit_label("", short_id);
++	if(is_and) emit_load_immediate(REGISTER_ZERO, FALSE, "&& short-circuited");
++	else emit_load_immediate(REGISTER_ZERO, TRUE, "|| short-circuited");
++
++	emit_label("", end_id);
++	iterate();
++}
++
+ void multiply_by_object_size(int object_size)
+ {
+ 	/* bootstrap mode can't depend upon on pointer arithmetic */
+@@ -975,6 +1572,49 @@
  	current_target = i->type;
  	require_extra_token();
  
@@ -969,7 +1050,7 @@ EVERY differing file rather than a hand-written list.
  	if(0 != i->offset)
  	{
  		emit_add_immediate(REGISTER_ZERO, i->offset, "-> offset calculation");
-@@ -982,8 +1548,28 @@
+@@ -982,8 +1622,28 @@
  
  	if(global_token->s[0] == '.') return;
  
@@ -1000,7 +1081,7 @@ EVERY differing file rather than a hand-written list.
  	{
  		emit_out(load_value(i->size, i->is_signed));
  	}
-@@ -1030,7 +1616,14 @@
+@@ -1030,7 +1690,14 @@
  
  	while (num_dereference_after_postfix > 0)
  	{
@@ -1016,7 +1097,7 @@ EVERY differing file rather than a hand-written list.
  		current_target = current_target->type;
  		num_dereference_after_postfix = num_dereference_after_postfix - 1;
  	}
-@@ -1048,19 +1641,70 @@
+@@ -1048,19 +1715,70 @@
  	current_target = i->type;
  	require_extra_token();
  
@@ -1089,7 +1170,7 @@ EVERY differing file rather than a hand-written list.
  
  	struct type* array = current_target;
  	common_recursion(expression);
-@@ -1079,18 +1723,27 @@
+@@ -1079,18 +1797,27 @@
  		emit_mul_register_zero_with_immediate(current_target->type->size, "primary expr array");
  	}
  
@@ -1120,7 +1201,7 @@ EVERY differing file rather than a hand-written list.
  	{
  		current_target = current_target->type;
  	}
-@@ -1108,7 +1761,67 @@
+@@ -1108,7 +1835,67 @@
  int unary_expr_sizeof(void)
  {
  	require_extra_token();
@@ -1189,7 +1270,7 @@ EVERY differing file rather than a hand-written list.
  	struct token_list* t = NULL;
  
  	int num_dereferences = 0;
-@@ -1122,7 +1835,7 @@
+@@ -1122,7 +1909,7 @@
  
  			require_extra_token();
  
@@ -1198,7 +1279,7 @@ EVERY differing file rather than a hand-written list.
  
  			return length;
  		}
-@@ -1165,7 +1878,62 @@
+@@ -1165,7 +1952,62 @@
  			num_dereferences = num_dereferences - 1;
  		}
  
@@ -1262,7 +1343,7 @@ EVERY differing file rather than a hand-written list.
  		{
  			size = a->size * t->array_modifier;
  		}
-@@ -1184,7 +1952,7 @@
+@@ -1184,7 +2026,7 @@
  		size = a->size;
  	}
  
@@ -1271,7 +1352,7 @@ EVERY differing file rather than a hand-written list.
  
  	return size;
  }
-@@ -1226,6 +1994,10 @@
+@@ -1226,6 +2068,10 @@
  		{
  			line_error();
  			fputs("Attempted to use operator ( on non-function pointer", stderr);
@@ -1282,7 +1363,7 @@ EVERY differing file rather than a hand-written list.
  			exit(EXIT_FAILURE);
  		}
  	}
-@@ -1235,6 +2007,51 @@
+@@ -1235,6 +2081,51 @@
  {
  	primary_expr();
  	postfix_expr_stub();
@@ -1334,7 +1415,7 @@ EVERY differing file rather than a hand-written list.
  }
  
  /*
-@@ -1276,9 +2093,9 @@
+@@ -1276,9 +2167,9 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -1347,7 +1428,7 @@ EVERY differing file rather than a hand-written list.
  	}
  	else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
  	{
-@@ -1297,35 +2114,18 @@
+@@ -1297,35 +2188,18 @@
  
  void additive_expr_stub_b(void)
  {
@@ -1362,25 +1443,25 @@ EVERY differing file rather than a hand-written list.
 -		arithmetic_recursion(additive_expr_a, "sub_ebx,eax\nmov_eax,ebx\n", "sub_ebx,eax\nmov_eax,ebx\n", "-", additive_expr_stub_b);
 -	}
 -	else if(AMD64 == Architecture)
-+	require(NULL != global_token, "Received EOF in additive_expr_stub_a\n");
-+	if(match("+", global_token->s))
- 	{
+-	{
 -		arithmetic_recursion(additive_expr_a, "add_rax,rbx\n", "add_rax,rbx\n", "+", additive_expr_stub_b);
 -		arithmetic_recursion(additive_expr_a, "sub_rbx,rax\nmov_rax,rbx\n", "sub_rbx,rax\nmov_rax,rbx\n", "-", additive_expr_stub_b);
-+		common_recursion(additive_expr_a);
-+		emit_add(REGISTER_ZERO, REGISTER_ONE, current_target->is_signed, NULL);
-+		additive_expr_stub_b();
- 	}
+-	}
 -	else if(ARMV7L == Architecture)
 -	{
 -		arithmetic_recursion(additive_expr_a, "'0' R0 R0 ADD R1 ARITH2_ALWAYS\n", "'0' R0 R0 ADD R1 ARITH2_ALWAYS\n", "+", additive_expr_stub_b);
 -		arithmetic_recursion(additive_expr_a, "'0' R0 R0 SUB R1 ARITH2_ALWAYS\n", "'0' R0 R0 SUB R1 ARITH2_ALWAYS\n", "-", additive_expr_stub_b);
 -	}
 -	else if(AARCH64 == Architecture)
--	{
++	require(NULL != global_token, "Received EOF in additive_expr_stub_a\n");
++	if(match("+", global_token->s))
+ 	{
 -		general_recursion(additive_expr_a, "ADD_X0_X1_X0\n", "+", additive_expr_stub_b);
 -		general_recursion(additive_expr_a, "SUB_X0_X1_X0\n", "-", additive_expr_stub_b);
--	}
++		common_recursion(additive_expr_a);
++		emit_add(REGISTER_ZERO, REGISTER_ONE, current_target->is_signed, NULL);
++		additive_expr_stub_b();
+ 	}
 -	else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
 +	else if(match("-", global_token->s))
  	{
@@ -1392,7 +1473,7 @@ EVERY differing file rather than a hand-written list.
  	}
  }
  
-@@ -1360,8 +2160,8 @@
+@@ -1360,8 +2234,8 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -1403,7 +1484,7 @@ EVERY differing file rather than a hand-written list.
  	}
  	else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
  	{
-@@ -1427,12 +2227,12 @@
+@@ -1427,12 +2301,12 @@
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -1422,7 +1503,46 @@ EVERY differing file rather than a hand-written list.
  	}
  	else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
  	{
-@@ -1496,11 +2296,11 @@
+@@ -1465,49 +2339,49 @@
+ 	if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture))
+ 	{
+ 		general_recursion(relational_expr, "AND R0 R0 R1\n", "&", bitwise_expr_stub);
+-		general_recursion(relational_expr, "AND R0 R0 R1\n", "&&", bitwise_expr_stub);
++		logical_recursion(relational_expr, TRUE, "&&", bitwise_expr_stub);
+ 		general_recursion(relational_expr, "OR R0 R0 R1\n", "|", bitwise_expr_stub);
+-		general_recursion(relational_expr, "OR R0 R0 R1\n", "||", bitwise_expr_stub);
++		logical_recursion(relational_expr, FALSE, "||", bitwise_expr_stub);
+ 		general_recursion(relational_expr, "XOR R0 R0 R1\n", "^", bitwise_expr_stub);
+ 	}
+ 	else if(X86 == Architecture)
+ 	{
+ 		general_recursion(relational_expr, "and_eax,ebx\n", "&", bitwise_expr_stub);
+-		general_recursion(relational_expr, "and_eax,ebx\n", "&&", bitwise_expr_stub);
++		logical_recursion(relational_expr, TRUE, "&&", bitwise_expr_stub);
+ 		general_recursion(relational_expr, "or_eax,ebx\n", "|", bitwise_expr_stub);
+-		general_recursion(relational_expr, "or_eax,ebx\n", "||", bitwise_expr_stub);
++		logical_recursion(relational_expr, FALSE, "||", bitwise_expr_stub);
+ 		general_recursion(relational_expr, "xor_eax,ebx\n", "^", bitwise_expr_stub);
+ 	}
+ 	else if(AMD64 == Architecture)
+ 	{
+ 		general_recursion(relational_expr, "and_rax,rbx\n", "&", bitwise_expr_stub);
+-		general_recursion(relational_expr, "and_rax,rbx\n", "&&", bitwise_expr_stub);
++		logical_recursion(relational_expr, TRUE, "&&", bitwise_expr_stub);
+ 		general_recursion(relational_expr, "or_rax,rbx\n", "|", bitwise_expr_stub);
+-		general_recursion(relational_expr, "or_rax,rbx\n", "||", bitwise_expr_stub);
++		logical_recursion(relational_expr, FALSE, "||", bitwise_expr_stub);
+ 		general_recursion(relational_expr, "xor_rax,rbx\n", "^", bitwise_expr_stub);
+ 	}
+ 	else if(ARMV7L == Architecture)
+ 	{
+ 		general_recursion(relational_expr, "NO_SHIFT R0 R0 AND R1 ARITH2_ALWAYS\n", "&", bitwise_expr_stub);
+-		general_recursion(relational_expr, "NO_SHIFT R0 R0 AND R1 ARITH2_ALWAYS\n", "&&", bitwise_expr_stub);
++		logical_recursion(relational_expr, TRUE, "&&", bitwise_expr_stub);
+ 		general_recursion(relational_expr, "NO_SHIFT R0 R0 OR R1 AUX_ALWAYS\n", "|", bitwise_expr_stub);
+-		general_recursion(relational_expr, "NO_SHIFT R0 R0 OR R1 AUX_ALWAYS\n", "||", bitwise_expr_stub);
++		logical_recursion(relational_expr, FALSE, "||", bitwise_expr_stub);
+ 		general_recursion(relational_expr, "'0' R0 R0 XOR R1 ARITH2_ALWAYS\n", "^", bitwise_expr_stub);
  	}
  	else if(AARCH64 == Architecture)
  	{
@@ -1432,14 +1552,23 @@ EVERY differing file rather than a hand-written list.
 -		general_recursion(relational_expr, "OR_X0_X1_X0\n", "||", bitwise_expr_stub);
 -		general_recursion(relational_expr, "XOR_X0_X1_X0\n", "^", bitwise_expr_stub);
 +		general_recursion(relational_expr, "and_x0,x1,x0\n", "&", bitwise_expr_stub);
-+		general_recursion(relational_expr, "and_x0,x1,x0\n", "&&", bitwise_expr_stub);
++		logical_recursion(relational_expr, TRUE, "&&", bitwise_expr_stub);
 +		general_recursion(relational_expr, "orr_x0,x1,x0\n", "|", bitwise_expr_stub);
-+		general_recursion(relational_expr, "orr_x0,x1,x0\n", "||", bitwise_expr_stub);
++		logical_recursion(relational_expr, FALSE, "||", bitwise_expr_stub);
 +		general_recursion(relational_expr, "eor_x0,x0,x1\n", "^", bitwise_expr_stub);
  	}
  	else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
  	{
-@@ -1546,13 +2346,29 @@
+ 		general_recursion(relational_expr, "rd_a0 rs1_a1 rs2_a0 and\n", "&", bitwise_expr_stub);
+-		general_recursion(relational_expr, "rd_a0 rs1_a1 rs2_a0 and\n", "&&", bitwise_expr_stub);
++		logical_recursion(relational_expr, TRUE, "&&", bitwise_expr_stub);
+ 		general_recursion(relational_expr, "rd_a0 rs1_a1 rs2_a0 or\n", "|", bitwise_expr_stub);
+-		general_recursion(relational_expr, "rd_a0 rs1_a1 rs2_a0 or\n", "||", bitwise_expr_stub);
++		logical_recursion(relational_expr, FALSE, "||", bitwise_expr_stub);
+ 		general_recursion(relational_expr, "rd_a0 rs1_a1 rs2_a0 xor\n", "^", bitwise_expr_stub);
+ 	}
+ }
+@@ -1546,13 +2420,29 @@
  			emit_load_immediate(REGISTER_ZERO, 0, "primary expr");
  		}
  
@@ -1471,7 +1600,7 @@ EVERY differing file rather than a hand-written list.
  		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) emit_out("rd_a0 rs1_a1 rs2_a0 sub\n");
  	}
  	else if('!' == global_token->s[0])
-@@ -1562,13 +2378,17 @@
+@@ -1562,13 +2452,17 @@
  			emit_load_immediate(REGISTER_ZERO, 1, "primary expr");
  		}
  
@@ -1491,7 +1620,7 @@ EVERY differing file rather than a hand-written list.
  		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) emit_out("rd_a0 rs1_a0 !1 sltiu\n");
  	}
  	else if('~' == global_token->s[0])
-@@ -1579,7 +2399,7 @@
+@@ -1579,7 +2473,7 @@
  		else if(X86 == Architecture) emit_out("not_eax\n");
  		else if(AMD64 == Architecture) emit_out("not_rax\n");
  		else if(ARMV7L == Architecture) emit_out("'0' R0 R0 MVN_ALWAYS\n");
@@ -1500,7 +1629,7 @@ EVERY differing file rather than a hand-written list.
  		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) emit_out("rd_a0 rs1_a0 not\n");
  	}
  	else if(match("--", global_token->s) || match("++", global_token->s))
-@@ -1635,12 +2455,27 @@
+@@ -1635,12 +2529,27 @@
  				type_size = function_pointer;
  			}
  			require_match("Invalid character received in cast. Expected ')'.\n", ")");
@@ -1530,7 +1659,7 @@ EVERY differing file rather than a hand-written list.
  			require_match("Error in Primary expression\nDidn't get )\n", ")");
  		}
  	}
-@@ -1648,8 +2483,32 @@
+@@ -1648,8 +2557,32 @@
  	else if(global_token->s[0] == '"') primary_expr_string();
  	else if(in_set(global_token->s[0], "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_"))
  	{
@@ -1564,7 +1693,7 @@ EVERY differing file rather than a hand-written list.
  		{
  			/* Call function directly without loading into register optimization */
  			require_extra_token();
-@@ -1674,25 +2533,11 @@
+@@ -1674,25 +2607,11 @@
  	char* operation = "";
  	if(match("+=", operator))
  	{
@@ -1592,7 +1721,7 @@ EVERY differing file rather than a hand-written list.
  	}
  	else if(match("*=", operator))
  	{
-@@ -1712,7 +2557,7 @@
+@@ -1712,7 +2631,7 @@
  			else operation = "mul_rbx\n";
  		}
  		else if(ARMV7L == Architecture) operation = "'9' R0 '0' R1 MULS R0 ARITH2_ALWAYS\n";
@@ -1601,7 +1730,7 @@ EVERY differing file rather than a hand-written list.
  		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) operation = "rd_a0 rs1_a1 rs2_a0 mul\n";
  	}
  	else if(match("/=", operator))
-@@ -1739,8 +2584,8 @@
+@@ -1739,8 +2658,8 @@
  		}
  		else if(AARCH64 == Architecture)
  		{
@@ -1612,7 +1741,7 @@ EVERY differing file rather than a hand-written list.
  		}
  		else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
  		{
-@@ -1772,8 +2617,8 @@
+@@ -1772,8 +2691,8 @@
  		}
  		else if(AARCH64 == Architecture)
  		{
@@ -1623,7 +1752,7 @@ EVERY differing file rather than a hand-written list.
  		}
  		else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
  		{
-@@ -1799,7 +2644,7 @@
+@@ -1799,7 +2718,7 @@
  			else operation = "mov_rcx,rax\nmov_rax,rbx\nshl_rax,cl\n";
  		}
  		else if(ARMV7L == Architecture) operation = "LEFT R1 R0 R0 SHIFT AUX_ALWAYS\n";
@@ -1632,7 +1761,7 @@ EVERY differing file rather than a hand-written list.
  		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) operation = "rd_a0 rs1_a1 rs2_a0 sll\n";
  	}
  	else if(match(">>=", operator))
-@@ -1826,8 +2671,8 @@
+@@ -1826,8 +2745,8 @@
  		}
  		else if(AARCH64 == Architecture)
  		{
@@ -1643,7 +1772,7 @@ EVERY differing file rather than a hand-written list.
  		}
  		else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
  		{
-@@ -1841,7 +2686,7 @@
+@@ -1841,7 +2760,7 @@
  		else if(X86 == Architecture) operation = "and_eax,ebx\n";
  		else if(AMD64 == Architecture) operation = "and_rax,rbx\n";
  		else if(ARMV7L == Architecture) operation = "NO_SHIFT R0 R0 AND R1 ARITH2_ALWAYS\n";
@@ -1652,7 +1781,7 @@ EVERY differing file rather than a hand-written list.
  		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) operation = "rd_a0 rs1_a1 rs2_a0 and\n";
  	}
  	else if(match("^=", operator))
-@@ -1850,7 +2695,7 @@
+@@ -1850,7 +2769,7 @@
  		else if(X86 == Architecture) operation = "xor_eax,ebx\n";
  		else if(AMD64 == Architecture) operation = "xor_rax,rbx\n";
  		else if(ARMV7L == Architecture) operation = "'0' R0 R0 XOR R1 ARITH2_ALWAYS\n";
@@ -1661,7 +1790,7 @@ EVERY differing file rather than a hand-written list.
  		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) operation = "rd_a0 rs1_a1 rs2_a0 xor\n";
  	}
  	else if(match("|=", operator))
-@@ -1859,7 +2704,7 @@
+@@ -1859,7 +2778,7 @@
  		else if(X86 == Architecture) operation = "or_eax,ebx\n";
  		else if(AMD64 == Architecture) operation = "or_rax,rbx\n";
  		else if(ARMV7L == Architecture) operation = "NO_SHIFT R0 R0 OR R1 AUX_ALWAYS\n";
@@ -1670,7 +1799,7 @@ EVERY differing file rather than a hand-written list.
  		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) operation = "rd_a0 rs1_a1 rs2_a0 or\n";
  	}
  	else
-@@ -1873,11 +2718,205 @@
+@@ -1873,11 +2792,205 @@
  }
  
  
@@ -1876,7 +2005,7 @@ EVERY differing file rather than a hand-written list.
  		char* store = "";
  		if(match("]", global_token->prev->s))
  		{
-@@ -1907,7 +2946,7 @@
+@@ -1907,7 +3020,7 @@
  			else if(X86 == Architecture) load = "mov_ebx,[ebx]\n";
  			else if(AMD64 == Architecture) load = "mov_rbx,[rbx]\n";
  			else if(ARMV7L == Architecture) load = "!0 R1 LOAD32 R1 MEMORY\n";
@@ -1885,7 +2014,7 @@ EVERY differing file rather than a hand-written list.
  			else if(RISCV32 == Architecture) load = "rd_a1 rs1_a1 lw\n";
  			else if(RISCV64 == Architecture) load = "rd_a1 rs1_a1 ld\n";
  		}
-@@ -1917,7 +2956,7 @@
+@@ -1917,7 +3030,7 @@
  			else if(X86 == Architecture) load = "movsx_ebx,BYTE_PTR_[ebx]\n";
  			else if(AMD64 == Architecture) load = "movsx_rbx,BYTE_PTR_[rbx]\n";
  			else if(ARMV7L == Architecture) load = "LOADU8 R1 LOAD R1 MEMORY\n";
@@ -1894,7 +2023,7 @@ EVERY differing file rather than a hand-written list.
  			else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) load = "rd_a1 rs1_a1 lbu\n";
  		}
  
-@@ -2044,6 +3083,41 @@
+@@ -2044,6 +3157,41 @@
  			require_extra_token();
  		}
  
@@ -1936,7 +2065,7 @@ EVERY differing file rather than a hand-written list.
  		a = sym_declare(name, current_type, list_to_append_to, TLO_LOCAL);
  		list_to_append_to = a;
  
-@@ -2084,6 +3158,24 @@
+@@ -2084,6 +3232,24 @@
  			}
  
  			require_match("ERROR in collect_local\nMissing ] after local array size\n", "]");
@@ -1961,7 +2090,7 @@ EVERY differing file rather than a hand-written list.
  		}
  
  		if(NULL != function->locals)
-@@ -2114,12 +3206,118 @@
+@@ -2114,12 +3280,118 @@
  			}
  
  			require_extra_token();
@@ -2085,7 +2214,7 @@ EVERY differing file rather than a hand-written list.
  		}
  
  		if(global_token->s[0] == ',')
-@@ -2158,7 +3356,7 @@
+@@ -2158,7 +3430,7 @@
  
  	global_token = global_token->next;
  	require_match("ERROR in process_if\nMISSING (\n", "(");
@@ -2094,7 +2223,7 @@ EVERY differing file rather than a hand-written list.
  
  	emit_jump_if_zero(REGISTER_ZERO, "ELSE_", unique_id, "Jump to else");
  
-@@ -2212,12 +3410,17 @@
+@@ -2212,12 +3484,17 @@
  	char* nested_break_func = break_target_func;
  	char* nested_break_num = break_target_num;
  	char* nested_continue_head = continue_target_head;
@@ -2113,7 +2242,7 @@ EVERY differing file rather than a hand-written list.
  	break_target_num = number_string;
  	break_frame = function->locals;
  	break_target_func = function->s;
-@@ -2247,6 +3450,31 @@
+@@ -2247,6 +3524,31 @@
  	int value;
  process_switch_iter:
  	require(NULL != global_token, "incomplete switch statement\n");
@@ -2145,7 +2274,7 @@ EVERY differing file rather than a hand-written list.
  	if(match("case", global_token->s))
  	{
  		require_extra_token();
-@@ -2277,20 +3505,30 @@
+@@ -2277,20 +3579,30 @@
  		require_match("ERROR in process_switch\nMISSING : after default\n", ":");
  		emit_label("_SWITCH_DEFAULT_", unique_id);
  
@@ -2185,7 +2314,7 @@ EVERY differing file rather than a hand-written list.
  	/* create the table */
  	emit_label("_SWITCH_TABLE_", unique_id);
  
-@@ -2322,6 +3560,8 @@
+@@ -2322,6 +3634,8 @@
  	break_target_func = nested_break_func;
  	break_target_num = nested_break_num;
  	continue_target_head = nested_continue_head;
@@ -2194,7 +2323,7 @@ EVERY differing file rather than a hand-written list.
  	break_frame = nested_locals;
  }
  
-@@ -2332,12 +3572,16 @@
+@@ -2332,12 +3646,16 @@
  	char* nested_break_func = break_target_func;
  	char* nested_break_num = break_target_num;
  	char* nested_continue_head = continue_target_head;
@@ -2211,7 +2340,7 @@ EVERY differing file rather than a hand-written list.
  	break_target_num = number_string;
  	break_frame = function->locals;
  	break_target_func = function->s;
-@@ -2360,7 +3604,9 @@
+@@ -2360,7 +3678,9 @@
  	}
  	else if(!match(";", global_token->s))
  	{
@@ -2222,7 +2351,7 @@ EVERY differing file rather than a hand-written list.
  		require_match("ERROR in process_for\nMISSING ;1\n", ";");
  	}
  	else
-@@ -2370,16 +3616,37 @@
+@@ -2370,16 +3690,37 @@
  
  	emit_label("FOR_", unique_id);
  
@@ -2264,7 +2393,7 @@ EVERY differing file rather than a hand-written list.
  
  	emit_unconditional_jump("FOR_", unique_id, "Check conditional");
  
-@@ -2397,6 +3664,8 @@
+@@ -2397,6 +3738,8 @@
  	break_target_func = nested_break_func;
  	break_target_num = nested_break_num;
  	continue_target_head = nested_continue_head;
@@ -2273,7 +2402,7 @@ EVERY differing file rather than a hand-written list.
  	break_frame = nested_locals;
  }
  
-@@ -2423,6 +3692,8 @@
+@@ -2423,6 +3766,8 @@
  	char* nested_break_func = break_target_func;
  	char* nested_break_num = break_target_num;
  	char* nested_continue_head = continue_target_head;
@@ -2282,7 +2411,7 @@ EVERY differing file rather than a hand-written list.
  
  	char* number_string = int2str(current_count, 10, TRUE);
  	current_count = current_count + 1;
-@@ -2431,6 +3702,8 @@
+@@ -2431,6 +3776,8 @@
  
  	break_target_head = "DO_END_";
  	continue_target_head = "DO_TEST_";
@@ -2291,7 +2420,7 @@ EVERY differing file rather than a hand-written list.
  	break_target_num = number_string;
  	break_frame = function->locals;
  	break_target_func = function->s;
-@@ -2445,7 +3718,11 @@
+@@ -2445,7 +3792,11 @@
  
  	require_match("ERROR in process_do\nMISSING while\n", "while");
  	require_match("ERROR in process_do\nMISSING (\n", "(");
@@ -2304,7 +2433,7 @@ EVERY differing file rather than a hand-written list.
  	require_match("ERROR in process_do\nMISSING )\n", ")");
  	require_match("ERROR in process_do\nMISSING ;\n", ";");
  
-@@ -2458,6 +3735,8 @@
+@@ -2458,6 +3809,8 @@
  	break_target_func = nested_break_func;
  	break_target_num = nested_break_num;
  	continue_target_head = nested_continue_head;
@@ -2313,7 +2442,7 @@ EVERY differing file rather than a hand-written list.
  }
  
  
-@@ -2469,6 +3748,8 @@
+@@ -2469,6 +3822,8 @@
  	char* nested_break_func = break_target_func;
  	char* nested_break_num = break_target_num;
  	char* nested_continue_head = continue_target_head;
@@ -2322,7 +2451,7 @@ EVERY differing file rather than a hand-written list.
  
  	char* number_string = int2str(current_count, 10, TRUE);
  	current_count = current_count + 1;
-@@ -2477,6 +3758,8 @@
+@@ -2477,6 +3832,8 @@
  
  	break_target_head = "END_WHILE_";
  	continue_target_head = "WHILE_";
@@ -2331,7 +2460,7 @@ EVERY differing file rather than a hand-written list.
  	break_target_num = number_string;
  	break_frame = function->locals;
  	break_target_func = function->s;
-@@ -2485,7 +3768,7 @@
+@@ -2485,7 +3842,7 @@
  
  	global_token = global_token->next;
  	require_match("ERROR in process_while\nMISSING (\n", "(");
@@ -2340,7 +2469,7 @@ EVERY differing file rather than a hand-written list.
  
  	emit_jump_if_zero(REGISTER_ZERO, "END_WHILE_", unique_id, "Jump to end");
  
-@@ -2505,6 +3788,8 @@
+@@ -2505,6 +3862,8 @@
  	break_target_func = nested_break_func;
  	break_target_num = nested_break_num;
  	continue_target_head = nested_continue_head;
@@ -2349,7 +2478,7 @@ EVERY differing file rather than a hand-written list.
  	break_frame = nested_locals;
  }
  
-@@ -2548,7 +3833,7 @@
+@@ -2548,7 +3907,7 @@
  	}
  	require_extra_token();
  
@@ -2358,7 +2487,7 @@ EVERY differing file rather than a hand-written list.
  
  	emit_unconditional_jump("", continue_target, "Continue statement");
  
-@@ -2609,6 +3894,7 @@
+@@ -2609,6 +3968,7 @@
   *     return ;
   *     break ;
   *     expr ;
@@ -2366,7 +2495,7 @@ EVERY differing file rather than a hand-written list.
   */
  
  struct type* lookup_primitive_type(void);
-@@ -2700,10 +3986,23 @@
+@@ -2700,10 +4060,23 @@
  		require_extra_token();
  
  		process_static_variable();
@@ -2391,7 +2520,7 @@ EVERY differing file rather than a hand-written list.
  		require_match("ERROR in statement\nMISSING ;\n", ";");
  	}
  }
-@@ -2732,6 +4031,89 @@
+@@ -2732,6 +4105,89 @@
  		type_size = type_name();
  		require(NULL != global_token, "Received EOF when attempting to collect arguments\n");
  		require(NULL != type_size, "Must have non-null type\n");
@@ -2481,7 +2610,7 @@ EVERY differing file rather than a hand-written list.
  		if(global_token->s[0] == ')')
  		{
  			/* foo(int,char,void) doesn't need anything done */
-@@ -2740,7 +4122,14 @@
+@@ -2740,7 +4196,14 @@
  		else if(global_token->s[0] != ',')
  		{
  			/* deal with foo(int a, char b) */
@@ -2497,7 +2626,7 @@ EVERY differing file rather than a hand-written list.
  			require(!iskeywordp(global_token->s), "You are not allowed to use a keyword as a argument variable name\n");
  			a = sym_declare(global_token->s, type_size, function->arguments, TLO_ARGUMENT);
  			if(NULL == function->arguments)
-@@ -2793,10 +4182,14 @@
+@@ -2793,10 +4256,14 @@
  	require_extra_token();
  }
  
@@ -2514,7 +2643,7 @@ EVERY differing file rather than a hand-written list.
  
  	/* allow previously defined functions to be looked up */
  	global_function_list = function;
-@@ -2901,6 +4294,47 @@
+@@ -2901,6 +4368,47 @@
  	{
  		type_size = mirror_type(type_size);
  		global_token = global_token->next;
@@ -2562,7 +2691,7 @@ EVERY differing file rather than a hand-written list.
  	}
  
  	require_match("ERROR in typedef statement\nMissing ;\n", ";");
-@@ -2993,7 +4427,19 @@
+@@ -2993,7 +4501,19 @@
  	{
  		if(('"' == global_token->s[0]))
  		{
@@ -2583,7 +2712,7 @@ EVERY differing file rather than a hand-written list.
  			globals_list = emit("&GLOBAL_", globals_list);
  			globals_list = emit(name, globals_list);
  			globals_list = emit("_contents ", globals_list);
-@@ -3006,9 +4452,35 @@
+@@ -3006,9 +4526,35 @@
  			strings_list = emit(":GLOBAL_", strings_list);
  			strings_list = emit(name, strings_list);
  			strings_list = emit("_contents\n", strings_list);
@@ -2621,7 +2750,7 @@ EVERY differing file rather than a hand-written list.
  		}
  		else if(match("0", global_token->s))
  		{
-@@ -3051,6 +4523,32 @@
+@@ -3051,6 +4597,32 @@
  			}
  			require_extra_token();
  		}
@@ -2654,7 +2783,7 @@ EVERY differing file rather than a hand-written list.
  		else
  		{
  			line_error();
-@@ -3121,6 +4619,45 @@
+@@ -3121,6 +4693,45 @@
  			exit(EXIT_FAILURE);
  		}
  
@@ -2700,7 +2829,7 @@ EVERY differing file rather than a hand-written list.
  		global_value_selection(type_size);
  
  		amount_of_elements = amount_of_elements + 1;
-@@ -3246,11 +4783,92 @@
+@@ -3246,11 +4857,92 @@
  
  	/* Ensure properly closed */
  	require_match("missing close bracket\n", "]");
@@ -2793,7 +2922,7 @@ EVERY differing file rather than a hand-written list.
  		require_match("Missing { after = in global array", "{");
  
  		array_modifier = global_array_initializer_list(type_size, array_modifier);
-@@ -3389,7 +5007,7 @@
+@@ -3389,7 +5081,7 @@
  	/* Deal with global functions */
  	if(match("(", global_token->s))
  	{
@@ -2802,7 +2931,7 @@ EVERY differing file rather than a hand-written list.
  		goto new_type;
  	}
  
-@@ -3406,7 +5024,7 @@
+@@ -3406,7 +5098,7 @@
  	struct token_list* i = reverse_list(head);
  	while(NULL != i)
  	{
@@ -2811,7 +2940,7 @@ EVERY differing file rather than a hand-written list.
  		i = i->next;
  	}
  }
-@@ -3415,8 +5033,8 @@
+@@ -3415,8 +5107,8 @@
  {
  	while(NULL != i)
  	{
