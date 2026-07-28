@@ -220,6 +220,8 @@ jobs:
             -f spikes/stage3/micro-c-libc/impl/main-tcc.c -o maintcc.M1
           ./micro-c --architecture aarch64 --max-string 65536 \
             -f spikes/stage3/micro-c-libc/impl/main-compile-only.c -o compileonly.M1
+          ./micro-c --architecture aarch64 --max-string 65536 \
+            -f spikes/stage3/micro-c-libc/impl/main-06-realloc.c -o realloc.M1
           echo "  libtcc $(grep -c '^:FUNCTION_' libtcc.M1) functions, runtime $(grep -c '^:FUNCTION_' runtime.M1)"
 
       - name: 'SUBJECT: assemble and link'
@@ -245,6 +247,9 @@ jobs:
           }
           join all.M1 libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1 maintcc.M1
           join co.M1  libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1 compileonly.M1
+          # The realloc probe needs NO libtcc -- it is 58 KB and tests only the
+          # allocator, so a failure there cannot be blamed on tcc.
+          join rl.M1  m2libc.M1 runtime.M1 setjmp.M1 realloc.M1
 
           D=spikes/reference/m2libc/aarch64
           ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f all.M1 \
@@ -257,8 +262,36 @@ jobs:
           ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
                  -f $D/ELF-aarch64.hex2 -f co.hex2 -o mc-compile-only
           chmod +x mc-compile-only
+          ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f rl.M1 \
+               --little-endian --architecture aarch64 -o rl.hex2
+          ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
+                 -f $D/ELF-aarch64.hex2 -f rl.hex2 -o mc-realloc
+          chmod +x mc-realloc
           printf '  micro-c tcc: %s bytes  sha %s\n' \
             "$(stat -c%s mc-tcc-bin)" "$(sha256sum mc-tcc-bin | cut -c1-16)"
+
+      - name: 'SUBJECT: does realloc work'
+        continue-on-error: true
+        run: |
+          set -eu
+          # realloc GROWING a block is the one allocator path nothing has
+          # tested: tcc_malloc is realloc(0, n), which only calls malloc.
+          # cstr_cat inside tcc_split_path grows buffers, and tcc_split_path is
+          # the last thing both probes got through before dying at DIFFERENT
+          # later points -- which is what memory corruption looks like.
+          set +e
+          ./mc-realloc 2> /tmp/rl-marks.txt
+          rc=$?
+          set -e
+          echo "  markers: $(tr '\n' ' ' < /tmp/rl-marks.txt)"
+          echo "  exit: $rc"
+          case "$rc" in
+            42) echo "  realloc GROWS AND PRESERVES correctly" ;;
+             2) echo "  malloc failed" ;;
+             3) echo "  realloc returned NULL" ;;
+             4) echo "  CONTENTS LOST across the move -- realloc is broken" ;;
+             *) if [ "$rc" -gt 128 ]; then echo "  SIGNAL $((rc - 128)) inside realloc"; fi ;;
+          esac
 
       - name: 'SUBJECT: compile WITHOUT linking'
         continue-on-error: true

@@ -1586,3 +1586,36 @@ That distinction matters more than which of the two statements faults. A
 compiler that COMPILES but cannot LINK is a much better position than one that
 cannot compile, and a single test doing both cannot tell you which you have.
 The compile-only probe answers it directly, and it links at 1,450,538 bytes.
+
+=============================================================================
+TWO PROBES, TWO DIFFERENT DEATHS -- WHICH IS ITSELF THE CLUE
+
+    driver        D1 M50..M53 D2 T1..T7 T8 T9 TA        SIGSEGV
+    compile-only  C1 M50..M53 C2 T1..T7 T8 T9           SIGSEGV
+
+The driver enters tccelf_add_crtbegin (TA) and never returns. The compile-only
+probe skips that call entirely -- TCC_OUTPUT_MEMORY makes the condition false
+-- and dies anyway, before its next marker.
+
+TWO DIFFERENT DEATH POINTS AFTER THE SAME LAST SUCCESSFUL CALL. That is what
+memory corruption looks like: the damage happens in one place and the crash
+happens wherever the damaged thing is next touched, which differs by path.
+
+The last call both got through is tcc_split_path, and inside it cstr_cat grows
+a buffer through tcc_realloc.
+
+realloc IS THE ONE ALLOCATOR PATH NOTHING HAS TESTED. E3 proved tcc_malloc,
+which is reallocator(0, size) -- the branch that only calls malloc. GROWING an
+existing block is entirely different code: find the old size, allocate, copy,
+free.
+
+M2libc's realloc is also worth a look on its own:
+
+    struct _malloc_node* i = _allocated_list;    ... later ...    int i;
+
+two declarations of `i` in one function. Whatever gcc makes of that, how
+micro-c resolves it is worth knowing.
+
+The new probe links WITHOUT libtcc -- 58 KB, allocator only -- so a failure
+there cannot be blamed on tcc, and a pass rules the allocator out for good
+rather than leaving it as a maybe.
