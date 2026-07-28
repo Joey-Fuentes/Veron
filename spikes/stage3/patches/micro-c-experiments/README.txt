@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "1781 lines into tccpp.c".
+"hangs forever on tcc.c" to "2398 lines into tccpp.c -- at genuine floating-point arithmetic".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -47,6 +47,9 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   a goto label between switch cases         cc_core.c   tccpp.c:952
   comma_expression: statement, condition,   cc_core.c   tccpp.c:1536,
     and grouping parens                                  tcc.h:1996
+  a function designator is a fn pointer     cc_core.c   tccpp.c:1781
+  `sizeof x->y` over a member chain         cc_core.c   tccpp.c:1809
+  commas in `for` init and increment        cc_core.c   tccpp.c:1946
 
 UNSOUND, AND WHY
 ----------------
@@ -414,8 +417,38 @@ UNSOUND, AND WHY
     where it is used. A line number in a header is not always a wall in that
     header.
 
-STOPPED AT: tccpp.c:1781, "Attempted to use operator ( on non-function
-pointer".
+25. A FUNCTION DESIGNATOR USED AS A VALUE IS A FUNCTION POINTER.
+    load_address_of_variable_into_register already emitted the function's
+    address but left current_target alone -- unlike the global branch right
+    below it -- so calling through the result failed:
+
+        tcc_warning_c(warn_all)("#pragma %s ignored", ...)      tccpp.c:1781
+        Attempted to use operator ( on non-function pointer -- type 'int'
+
+    tcc_warning_c expands to `(..., _tcc_warning)` and the call applies to
+    that result. One line, found by making the error print the type it saw.
+
+26. `sizeof x->y` OVER A MEMBER CHAIN. The earlier paren-less sizeof handled
+    bare variables; `sizeof file->filename` (tccpp.c:1809) resolved only the
+    base and then looked `filename` up in whatever followed. Walking the
+    member chain is compile-time only, nothing emitted. Both `sizeof f->m`
+    and `sizeof(f->m)` yield 40 for a `char[40]` member.
+
+27. COMMAS IN `for` INIT AND INCREMENT -- `for (n = 0, q = ...; *q; ++q)` at
+    tccpp.c:1946. The fourth and fifth positions taking comma_expression.
+
+REACHED: GENUINE FLOATING-POINT ARITHMETIC, tccpp.c:2398.
+
+    d = (long double)bn[3] * 79228162514264337593543950336.0L + ...
+
+    The tokenizer reads `.0L` as a member access -- "lookup_member
+    double->0L". This is tcc's number parser converting literals to floats,
+    and it is the first wall in 42 that needs REAL float support rather than
+    float declarations. Entry 1's note stands: float as a word-sized integer
+    would compile this and compute nonsense.
+
+    It sits inside #else of TCC_USING_DOUBLE_FOR_LDOUBLE, so defining that
+    takes a double path instead -- simpler, still floating point.
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -430,7 +463,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Thirty-nine walls between a hanging compiler and tcc's first genuinely large
+Forty-two walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
