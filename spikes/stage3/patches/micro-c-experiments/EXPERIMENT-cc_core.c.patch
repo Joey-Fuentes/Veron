@@ -1,9 +1,7 @@
 EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 
 GENERATED AGAINST THE PIN: bd2fe4b plus patches 0001-0004, and against
-EVERY differing file rather than a hand-written list. The previous
-series used a hardcoded list that omitted cc_emit.h, so the tree built
-here and failed to compile in CI.
+EVERY differing file rather than a hand-written list.
 
 --- a/cc_core.c
 +++ b/cc_core.c
@@ -2658,7 +2656,7 @@ here and failed to compile in CI.
  		global_value_selection(type_size);
  
  		amount_of_elements = amount_of_elements + 1;
-@@ -3246,11 +4741,80 @@
+@@ -3246,11 +4741,92 @@
  
  	/* Ensure properly closed */
  	require_match("missing close bracket\n", "]");
@@ -2731,6 +2729,18 @@ here and failed to compile in CI.
 +			}
 +			acc[ai] = 0;
 +			globals_list = emit(parse_string(acc), globals_list);
++			/* PAD TO REGISTER SIZE. A string initialiser writes an arbitrary
++			 * number of bytes and whatever comes next starts immediately after.
++			 * When that next thing is CODE, the function lands on an address
++			 * that is not a multiple of four, and on aarch64 every call to it
++			 * is SIGBUS -- which is how a binary that ran fine at 248 bytes
++			 * died at 14,478.
++			 *
++			 * Every other global path already pads; the string paths added
++			 * later did not. M1 writes the characters plus a NUL, which is
++			 * exactly `ai` bytes: one leading quote in acc, replaced by the
++			 * terminator M1 appends. */
++			global_pad_to_register_size(ai);
 +			/* The caller consumes the ';'. array_modifier stays as parsed --
 +			 * the declared size, if any -- so `char x[8] = "hi"` keeps its 8. */
 +			return array_modifier;
@@ -2739,7 +2749,7 @@ here and failed to compile in CI.
  		require_match("Missing { after = in global array", "{");
  
  		array_modifier = global_array_initializer_list(type_size, array_modifier);
-@@ -3389,7 +4953,7 @@
+@@ -3389,7 +4965,7 @@
  	/* Deal with global functions */
  	if(match("(", global_token->s))
  	{
@@ -2748,7 +2758,7 @@ here and failed to compile in CI.
  		goto new_type;
  	}
  
-@@ -3406,7 +4970,7 @@
+@@ -3406,7 +4982,7 @@
  	struct token_list* i = reverse_list(head);
  	while(NULL != i)
  	{
@@ -2757,7 +2767,7 @@ here and failed to compile in CI.
  		i = i->next;
  	}
  }
-@@ -3415,8 +4979,8 @@
+@@ -3415,8 +4991,8 @@
  {
  	while(NULL != i)
  	{

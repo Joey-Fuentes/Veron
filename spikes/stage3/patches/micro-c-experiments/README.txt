@@ -1034,3 +1034,43 @@ WHAT THIS COST: eight rungs of link-set bisection that all pointed at
 "content", when the answer was in four bytes at a fixed offset in the ELF.
 Decoding the entry point should have come first -- the ladder was measuring
 a symptom that varied with size because the CAUSE varied with size.
+
+=============================================================================
+A THIRD PROCESS FAILURE, WORTH RECORDING WITH THE OTHER TWO
+
+The alignment fix was made in the working tree AFTER the patch series had been
+regenerated, and the drop shipped the workflow change without the compiler
+change. CI then showed exactly what it should have: A through C ran, and E --
+the only rung with libtcc in it -- still faulted, because the padding that
+makes libtcc's globals align had never left this machine.
+
+The pattern across all three:
+
+  1. patches diffed against the wrong tree
+  2. patch generation using a hardcoded file list
+  3. a fix made after generation and never regenerated
+
+Each is a different way of shipping something other than what was tested. The
+common cause is that generation, verification and packaging were three
+separate manual steps with nothing tying them together, so any edit made
+between them silently dropped out.
+
+The verification that catches all three is the same one: apply the SHIPPED
+patches to a PRISTINE pin, build, and run the whole chain from that binary.
+That is what was run before this drop -- 12 patches apply, it builds, libtcc
+compiles to 351,480 lines, and main lands 4-byte aligned at every rung.
+
+=============================================================================
+STATE AFTER THE ALIGNMENT FIX
+
+    A   libc-core + bare main            MAIN RAN, exit 42       248 bytes
+    A2  + stdlib                         MAIN RAN, exit 42    14,478 bytes
+    A3  + string                         MAIN RAN, exit 42    22,374 bytes
+    B   + stdio                          MAIN RAN, exit 42    49,711 bytes
+    C   libc-full                        MAIN RAN, exit 42    49,783 bytes
+    D   + stubs                          link failed -- stale stubs.c shipped
+    E   + libtcc                         faulted -- padding fix not shipped
+
+D and E both had shipping faults rather than code faults. stubs.c still
+carried the main() that calls tcc_new, so D referenced a symbol it had no
+reason to; the correct stubs.c had been written but not copied into the drop.
