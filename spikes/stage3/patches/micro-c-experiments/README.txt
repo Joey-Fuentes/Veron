@@ -946,18 +946,35 @@ Every stage matched the local rehearsal exactly, which is the first time that
 has been true -- the patch series had been generated against the wrong tree
 until now, so CI and local had never agreed.
 
-SIGBUS, NOT SIGSEGV. That points at alignment or a malformed pointer rather
-than a plain null dereference, but a single binary calling tcc_new says only
-"something is wrong somewhere". The job now builds and runs a PROBE SERIES
-instead, each doing a little more than the last:
+ALL THREE PROBES FAULTED, INCLUDING `int main(){ return 0; }`.
 
-    00  nothing   ->  ELF, startup stub, calling convention
-    01  malloc    ->  M2libc's allocator and __init_malloc
-    02  tcc_new   ->  compiled tcc code
+That is the finding, and it is not the one that was expected. The fault is not
+in tcc's compiled code at all -- a program that does nothing faults the same
+way. Every hypothesis in the previous entry was about tcc or about malloc, and
+all of them were wrong.
 
-The first to fault is the answer, and the ones before it passing is what makes
-that answer mean anything. All three are built and run even after one fails,
-because "01 and 02 both fault" and "only 02 faults" are different diagnoses.
+THE FIRST BISECT WAS BUILT WRONG. It varied what main DID and linked
+everything -- libtcc, M2libc, the stubs -- in every case. So the variable
+under test was never isolated and all three probes were, in effect, the same
+program. A bisect where every arm shares the suspect part cannot find anything.
+
+The replacement varies WHAT IS LINKED:
+
+    A  libc-core + bare main            the toolchain and ELF header
+    B  libc-core + M2libc + bare        our compiler's output at all
+    C  libc-full + M2libc + bare        envp and __init_malloc startup
+    D  C + stubs
+    E  D + libtcc.M1                    tcc's 350k lines
+    F  E, and main calls tcc_new
+
+Locally A links to a 236-byte binary and E to 1,489,256; all five assemble and
+link. If something 236 bytes long faults, nothing above it is worth reading,
+and the answer is in the ELF header or the startup stub rather than in
+anything this project compiled.
+
+Note also that libc-full's _start calls __init_malloc, so it cannot be linked
+without M2libc -- which is why B uses libc-core. The first attempt at this
+ordering failed at hex2 for exactly that reason.
 
 The bisect is done in CI because it cannot be done here: this container is
 x86_64 and the binary is aarch64.

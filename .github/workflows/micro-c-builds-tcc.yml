@@ -165,7 +165,7 @@ jobs:
                --little-endian --architecture aarch64 -o all.hex2
           echo "  assembled: $(wc -l < all.hex2) lines"
 
-      - name: 'STAGE 3+4: link and run a PROBE SERIES'
+      - name: 'STAGE 3+4: bisect by LINK SET'
         run: |
           set -eu
           D=spikes/reference/m2libc/aarch64
@@ -173,59 +173,77 @@ jobs:
           echo "  runner is $(uname -m); the binary is aarch64, so this is native"
           echo
 
-          # ONE BINARY PER PROBE, each doing a little more than the last.
+          # WHAT VARIES HERE IS WHAT IS LINKED, not what main does.
           #
-          # The first run of this job got SIGBUS from a single binary that
-          # called tcc_new, which said only "something is wrong somewhere". A
-          # bisect cannot be done locally -- this container is x86 -- so it is
-          # done here, and the FIRST probe to fault is the answer:
+          # The first bisect varied main and linked everything in every case,
+          # so all three faulted identically and it proved nothing except that
+          # `int main(){return 0;}` faults -- which was itself the finding: the
+          # problem is not in tcc's code.
           #
-          #   00  nothing        -> ELF, startup stub, calling convention
-          #   01  malloc         -> M2libc's allocator and __init_malloc
-          #   02  tcc_new        -> compiled tcc code
+          #   A  libc-core + bare              the toolchain and ELF header
+          #   B  libc-core + M2libc + bare      our compiler's output at all
+          #   C  libc-full + M2libc + bare      envp and __init_malloc startup
+          #   D  C + stubs                      the stub file
+          #   E  D + libtcc.M1                  tcc's 350k lines
+          #   F  E, main calls tcc_new          tcc's code actually running
           #
-          # Every probe is built and run even after one fails, because "01 and
-          # 02 both fault" and "only 02 faults" are different diagnoses.
-          worst=0
-          for probe in "$P"/main-*.c; do
-            nm=$(basename "$probe" .c)
-            ./micro-c --architecture aarch64 --max-string 65536 -f "$probe" -o probe.M1
-            cat libtcc.M1 m2_*.M1 stubs.M1 probe.M1 > "$nm.all.M1"
-            ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f "$nm.all.M1" \
-                 --little-endian --architecture aarch64 -o "$nm.hex2" 2>/dev/null
-            ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
-                   -f $D/ELF-aarch64.hex2 -f "$nm.hex2" -o "$nm" 2>/dev/null
-            chmod +x "$nm"
+          # libc-full's _start calls __init_malloc, so it cannot be linked
+          # without M2libc -- which is why B uses libc-core. Locally, A links
+          # to a 236-byte binary; if something that small faults, nothing above
+          # it is worth reading.
+          #
+          # The first to fault is the answer.
+          ./micro-c --architecture aarch64 --max-string 65536 \
+            -f "$P/main-00-nothing.c" -o bare.M1
+          ./micro-c --architecture aarch64 --max-string 65536 \
+            -f "$P/main-01-tccnew.c" -o callit.M1
 
+          run_probe() {
+            nm="$1"; core="$2"; shift 2
+            cat "$@" > "$nm.M1"
+            ./M1 -f $D/aarch64_defs.M1 -f "$D/$core" -f "$nm.M1" \
+                 --little-endian --architecture aarch64 -o "$nm.hex2" 2>/dev/null \
+              || { printf '  %-34s M1 FAILED\n' "$nm"; return 0; }
+            ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
+                   -f $D/ELF-aarch64.hex2 -f "$nm.hex2" -o "$nm" 2>/dev/null \
+              || { printf '  %-34s hex2 FAILED\n' "$nm"; return 0; }
+            chmod +x "$nm"
             set +e
             ./"$nm" >/dev/null 2>&1
             rc=$?
             set -e
             if [ "$rc" = 0 ]; then
-              printf '  %-20s ran, exit 0\n' "$nm"
+              printf '  %-34s ran, exit 0            (%s bytes)\n' "$nm" "$(stat -c%s "$nm")"
             elif [ "$rc" -gt 128 ]; then
-              printf '  %-20s SIGNAL %s\n' "$nm" "$((rc - 128))"
-              worst=1
+              printf '  %-34s SIGNAL %-3s             (%s bytes)\n' "$nm" "$((rc - 128))" "$(stat -c%s "$nm")"
+              echo "$nm" >> faults.txt
             else
-              printf '  %-20s exit %s (ran, returned non-zero)\n' "$nm" "$rc"
+              printf '  %-34s exit %-3s (ran)         (%s bytes)\n' "$nm" "$rc" "$(stat -c%s "$nm")"
             fi
-          done
+          }
+
+          : > faults.txt
+          run_probe A-bare-core     libc-core.M1  bare.M1
+          run_probe B-m2libc-core   libc-core.M1  m2_*.M1 bare.M1
+          run_probe C-m2libc-full   libc-full.M1  m2_*.M1 bare.M1
+          run_probe D-plus-stubs    libc-full.M1  m2_*.M1 stubs.M1 bare.M1
+          run_probe E-plus-libtcc   libc-full.M1  libtcc.M1 m2_*.M1 stubs.M1 bare.M1
+          run_probe F-call-tcc_new  libc-full.M1  libtcc.M1 m2_*.M1 stubs.M1 callit.M1
 
           echo
-          if [ "$worst" = 0 ]; then
-            echo "  every probe ran"
-          else
-            echo "  A PROBE FAULTED. The first one that did is where to look;"
-            echo "  the ones before it passing is what makes that meaningful."
+          if [ -s faults.txt ]; then
+            echo "  FIRST FAULT: $(head -1 faults.txt)"
+            echo "  Everything before it ran, which is what makes that mean something."
             exit 1
           fi
+          echo "  every link set ran"
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: micro-c-tcc
           path: |
-            main-*
-            *.all.M1
+            A-bare-core
+            F-call-tcc_new
             libtcc.M1
           if-no-files-found: warn
