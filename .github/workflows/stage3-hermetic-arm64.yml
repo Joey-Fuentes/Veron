@@ -428,23 +428,29 @@ jobs:
                     "$(sha256sum "$2" 2>/dev/null | cut -c1-16 || echo -)"; }
 
           say '1. SEED -- the only host tools on the build path'
-          # COMMITTED BINARIES IF PRESENT, OTHERWISE BUILD THEM. This is the
-          # switch that empties BUDGET_PATH. A committed ELF is executed by the
-          # kernel's loader with no host tool involved; its correspondence to the
-          # source is not taken on trust -- stage0-selfhost reconstructs the whole
-          # ELF from its own disassembly and compares byte for byte, under both
-          # binutils 2.47 and LLVM 22.1.8.
-          if [ -x /src/stage0-as/stage0-as ] && [ -x /src/elf/elf ]; then
-            cp /src/stage0-as/stage0-as stage0-as
-            cp /src/elf/elf elf
-            echo "    seed binaries: COMMITTED -- no as, no ld"
-          else
-            as -o s0.o  /src/stage0-as/stage0-as.aarch64.s
-            ld -static -o stage0-as s0.o
-            as -o elf.o /src/elf/elf.aarch64.s
-            ld -static -o elf elf.o
-            echo "    seed binaries: built here with as + ld"
-          fi
+          # THE COMMITTED BINARIES, OR NOTHING. There was an `as`+`ld` fallback
+          # here for when they were absent. It was already unreachable and could
+          # never have worked: BUDGET_PATH is empty, so neither tool is inside
+          # the box, and the branch could only ever die as `as: not found` -- an
+          # obscure message for a condition that deserves a plain one. Worse, a
+          # branch reading "otherwise build them here" advertises a capability
+          # this box does not have and must never regain.
+          #
+          # A committed ELF is executed by the kernel's own loader with no host
+          # tool involved. Its correspondence to the readable .s source is not
+          # taken on trust -- stage0-selfhost reconstructs the whole ELF from its
+          # own disassembly and compares it byte for byte, under both binutils
+          # 2.47 and LLVM 22.1.8.
+          for s in /src/stage0-as/stage0-as /src/elf/elf; do
+            [ -x "$s" ] || { echo "    FAIL: $s missing or not executable."; \
+              echo "    Seed binaries are committed artifacts and this box has"; \
+              echo "    no way to make them: BUDGET_PATH is empty, so there is"; \
+              echo "    no as and no ld in here. stage0-selfhost uploads both;"; \
+              echo "    commit them and re-run."; exit 1; }
+          done
+          cp /src/stage0-as/stage0-as stage0-as
+          cp /src/elf/elf elf
+          echo "    seed binaries: COMMITTED -- no as, no ld"
           art 'stage0-as' stage0-as
           art 'elf'       elf
 
