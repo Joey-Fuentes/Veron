@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "2398 lines into tccpp.c -- at genuine floating-point arithmetic".
+"hangs forever on tcc.c" to "3428 lines into tccpp.c -- past float literals, stopped at 2D arrays".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -50,6 +50,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   a function designator is a fn pointer     cc_core.c   tccpp.c:1781
   `sizeof x->y` over a member chain         cc_core.c   tccpp.c:1809
   commas in `for` init and increment        cc_core.c   tccpp.c:1946
+  FLOAT LITERALS as single tokens           cc_reader.c tccpp.c:2398
 
 UNSOUND, AND WHY
 ----------------
@@ -437,18 +438,38 @@ UNSOUND, AND WHY
 27. COMMAS IN `for` INIT AND INCREMENT -- `for (n = 0, q = ...; *q; ++q)` at
     tccpp.c:1946. The fourth and fifth positions taking comma_expression.
 
-REACHED: GENUINE FLOATING-POINT ARITHMETIC, tccpp.c:2398.
+28. FLOAT LITERALS ARE ONE TOKEN. Digits share the identifier character set,
+    so `79228162514264337593543950336.0L` came out as three tokens -- the
+    digits, a '.', and `0L` -- and the parser read the dot as a member access:
 
-    d = (long double)bn[3] * 79228162514264337593543950336.0L + ...
+        ERROR in lookup_member double->0L does not exist     tccpp.c:2398
 
-    The tokenizer reads `.0L` as a member access -- "lookup_member
-    double->0L". This is tcc's number parser converting literals to floats,
-    and it is the first wall in 42 that needs REAL float support rather than
-    float declarations. Entry 1's note stands: float as a word-sized integer
-    would compile this and compute nonsense.
+    The token now absorbs a decimal point, an exponent (signed included) and
+    any suffix letters, but ONLY when it started with a digit -- so `x.y`
+    stays a member access, which is checked every round.
 
-    It sits inside #else of TCC_USING_DOUBLE_FOR_LDOUBLE, so defining that
-    takes a double path instead -- simpler, still floating point.
+    WHAT THIS IS AND IS NOT. It is lexical: tcc's float-parsing code now
+    PARSES. It is not float arithmetic. micro-c still maps float, double and
+    long double to one word-sized integer type, so any of that code would
+    compute nonsense if run. Entry 1's warning is unchanged and now matters
+    more, because the code that would hit it is no longer unreachable.
+
+29. THE LIBC SURFACE GREW TO MATCH. Three headers, all measured from what tcc
+    actually references:
+
+      math.h    fabs, ldexp, ldexpl, pow, frexp
+      stdlib.h  the standard set plus strtod/strtof/strtold
+      time.h    time, localtime, and exactly the six struct tm fields
+                tccpp.c reads for __DATE__ and __TIME__
+
+    stdlib.h had to become COMPLETE rather than additive: micro-c-libc is
+    searched before M2libc, so a header here shadows instead of extending.
+    That is not a fork -- these are the C standard's signatures, and the
+    implementations still come from whatever supplies the runtime.
+
+STOPPED AT: tccpp.c:3428, `static char const ab_month_name[12][4] = {"Jan",
+...}`. micro-c has NO two-dimensional array support -- not for static locals,
+not for globals. A real feature, not a few lines.
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -463,7 +484,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Forty-two walls between a hanging compiler and tcc's first genuinely large
+Forty-three walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11

@@ -28,3 +28,40 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		while (c == ' ' || c == '\t')
  		{
  			c = grab_byte();
+@@ -267,7 +286,36 @@
+ 	}
+ 	else if(in_set(c, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"))
+ 	{
++		int starts_with_digit = in_set(c, "0123456789");
+ 		c = preserve_keyword(c, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_");
++
++		/* A FLOATING-POINT LITERAL IS ONE TOKEN. Digits share the identifier
++		 * character set, so `79228162514264337593543950336.0L` came out as
++		 * three tokens -- the number, a '.', and `0L` -- and the parser read
++		 * the '.' as a member access:
++		 *     ERROR in lookup_member double->0L does not exist   tccpp.c:2398
++		 *
++		 * Only absorb the '.' when the token STARTED with a digit, so `x.y`
++		 * stays a member access. The exponent is taken too, including a signed
++		 * one, and then any suffix letters (f, F, l, L). */
++		if(starts_with_digit)
++		{
++			if('.' == c)
++			{
++				c = consume_byte(c);
++				c = preserve_keyword(c, "0123456789");
++			}
++			if('e' == c || 'E' == c)
++			{
++				c = consume_byte(c);
++				if('+' == c || '-' == c)
++				{
++					c = consume_byte(c);
++				}
++				c = preserve_keyword(c, "0123456789");
++			}
++			c = preserve_keyword(c, "fFlLuU");
++		}
+ 		if(define_state == DEFINE_STATE_DEFINE)
+ 		{
+ 			if(c != '(')
