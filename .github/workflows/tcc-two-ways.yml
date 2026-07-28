@@ -174,6 +174,15 @@ jobs:
           M=m2libc-patched
 
           cp -r tcc-src mc-tcc
+          # DEBUG MARKERS inside libtcc, so a fault names a statement rather
+          # than a function. Applied to the micro-c copy only; the control's
+          # tree is untouched, so the comparison stays honest.
+          for p in spikes/stage3/patches/tcc-debug/[0-9]*.patch; do
+            [ -e "$p" ] || continue
+            (cd mc-tcc && git apply --ignore-whitespace "../$p") \
+              && echo "  applied $(basename "$p")" \
+              || echo "  skipped $(basename "$p") -- does not apply"
+          done
           cd mc-tcc
           # ./configure GENERATES config.h, which tcc.h includes on line 27.
           # The local rehearsal used an already-configured tree and so never
@@ -258,7 +267,15 @@ jobs:
           echo "  markers: $(tr '\n' ' ' < /tmp/marks.txt)"
           echo "  exit: $rc"
           if [ "$rc" -gt 128 ]; then echo "  SIGNAL $((rc - 128))"; fi
-          case "$(grep -oE '^D[0-9]' /tmp/marks.txt | tail -1)" in
+          # D markers come from our driver, T markers from inside libtcc.
+          echo "  last libtcc marker: $(grep -aoE '^T[0-9]' /tmp/marks.txt | tail -1)"
+          case "$(grep -aoE '^T[0-9]' /tmp/marks.txt | tail -1)" in
+            T1) echo "  DIED IN: tcc_add_sysinclude_path" ;;
+            T3) echo "  DIED IN: tccelf_new" ;;
+            T5) echo "  DIED IN: tcc_add_library_path" ;;
+            T7) echo "  past tcc_set_output_type" ;;
+          esac
+          case "$(grep -aoE '^D[0-9]' /tmp/marks.txt | tail -1)" in
             D1) echo "  DIED IN: tcc_new" ;;
             D2) echo "  DIED IN: tcc_set_output_type" ;;
             D3) echo "  DIED IN: option or include-path handling" ;;

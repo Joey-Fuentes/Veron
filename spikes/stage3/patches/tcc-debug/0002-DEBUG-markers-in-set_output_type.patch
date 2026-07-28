@@ -1,0 +1,55 @@
+DEBUG ONLY -- NOT PART OF ANY BUILD.
+
+Markers inside tcc_set_output_type, which is where the driver dies:
+
+    T1  entered, about to set output_type
+    T2  about to add the system include path
+    T3  system include path added
+    T4  about to call tccelf_new
+    T5  tccelf_new returned
+    T6  about to add the library path
+    T7  library path added
+
+The driver-level markers narrowed it to this function; these narrow it to a
+statement. Same reason as before -- four guesses at what tcc_new was doing
+were all wrong, and reading emitted code only helps once there is a specific
+statement to read.
+
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -971,12 +971,15 @@
+     if (output_type == TCC_OUTPUT_EXE)
+         output_type |= TCC_OUTPUT_DYN;
+ #endif
++    write(2, "T1\n", 3);
+     s->output_type = output_type;
+ 
+     if (!s->nostdinc) {
+         /* default include paths */
+         /* -isystem paths have already been handled */
++        write(2, "T2\n", 3);
+         tcc_add_sysinclude_path(s, CONFIG_TCC_SYSINCLUDEPATHS);
++        write(2, "T3\n", 3);
+     }
+ 
+     if (output_type == TCC_OUTPUT_PREPROCESS) {
+@@ -985,7 +988,9 @@
+     }
+ 
+     /* add sections */
++    write(2, "T4\n", 3);
+     tccelf_new(s);
++    write(2, "T5\n", 3);
+ 
+     if (output_type == TCC_OUTPUT_OBJ) {
+         /* always elf for objects */
+@@ -994,7 +999,9 @@
+     }
+ 
+     if (!s->nostdlib_paths)
++        write(2, "T6\n", 3);
+         tcc_add_library_path(s, CONFIG_TCC_LIBPATHS);
++        write(2, "T7\n", 3);
+ 
+ #ifdef TCC_TARGET_PE
+ # ifdef TCC_IS_NATIVE

@@ -1523,3 +1523,37 @@ THE CONTROL, for comparison, on the same machine:
 
 That gap is the honest measure of where this is: one side reaches a fixpoint,
 the other segfaults on `int main(void){ return 0; }`.
+
+=============================================================================
+IT DIES IN tcc_set_output_type
+
+    markers: D1 D2
+    SIGNAL 11
+
+D2 means tcc_new RETURNED. The fault is in tcc_set_output_type, the next call.
+
+A FALSE LEAD WORTH RECORDING. tcc_set_output_type's first real work reaches
+dynarray_add, which does `*(void ***)ptab` and `pp[nb++] = data` -- both
+shapes micro-c has had bugs in before. Counting pushes against pops in the
+emitted code showed 4 against 6 and looked like a smoking gun.
+
+It was a counting error: I matched only `str_x0,[x18,-8]!` and missed the
+`str_x1` pushes. Counting every register gives 6 and 6, balanced, and reading
+the sequence through shows it is correct -- the two loads into x1 that looked
+redundant are restoring a saved register and then popping the base address, in
+that order, which is right.
+
+Two minutes of arithmetic would have saved the detour, and the detour was
+entirely self-inflicted: the tool was fine, the grep was wrong.
+
+NEXT: markers INSIDE tcc_set_output_type, in
+patches/tcc-debug/0002. T1 through T7 bracket each call it makes --
+tcc_add_sysinclude_path, tcc_elf_new, tcc_add_library_path -- so the next run
+names a statement rather than a function.
+
+The debug patches apply to the micro-c copy of tcc ONLY. The control's tree is
+untouched, so the comparison between the two stays honest.
+
+Also fixed: mark() wrote four bytes for a three-character string, sending a
+NUL into the log and making grep treat it as binary. That is why the last run
+printed "died before the first marker" while also printing the markers.

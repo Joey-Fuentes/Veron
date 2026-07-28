@@ -30,7 +30,10 @@ int write(int fd, char* buf, int count);
  * write() straight to fd 2 rather than puts(), because puts goes through
  * stdio buffering and a buffer that is never flushed loses exactly the
  * evidence being collected. */
-static void mark(char* s) { write(2, s, 4); }
+static void mark(char* s) { write(2, s, 3); }   /* 3, not 4: "D1\n" is three
+                                                 * characters and writing four
+                                                 * sends the NUL too, which turns
+                                                 * the log into a binary file */
 
 #define TCC_OUTPUT_EXE 2
 
