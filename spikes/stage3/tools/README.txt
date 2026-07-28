@@ -211,3 +211,34 @@ TWO FIXES, because the report was wrong in two ways:
 A tool that answers confidently in the one case it cannot distinguish is
 worse than one that says it does not know, and this one did that for a full
 round.
+
+=============================================================================
+WHY THE FAULT LOOKED INVISIBLE
+
+"I don't see the line it's crashing on."
+
+Two separate reasons, and neither was a mystery about tcc.
+
+FIRST, IT WAS NOT CRASHING. exit 1 is not a signal. tcc printed its own
+"memory full" and called exit() deliberately -- an error path, not a fault.
+There is no crashing line to find.
+
+SECOND, NOTHING WAS INSTRUMENTED WHERE IT WAS FAILING. instrument.py took ONE
+function name and the CI default was tcc_set_output_type. Once execution moved
+past that into tcc_compile there were no markers at all, so the report went
+quiet -- and a quiet report reads like a vanished fault.
+
+That is a limitation of the instrument, and it is now fixed: the tool takes a
+comma-separated list, the map records WHICH function each marker belongs to,
+and the CI default covers the whole path
+
+    tcc_set_output_type,tcc_compile,tcc_compile_string
+
+which is 46 statements including `if (setjmp(s1->error_jmp_buf) == 0)` -- the
+setjmp written by hand for this compiler, which nothing had exercised until
+now.
+
+THE GENERAL LESSON. Both times the tooling went quiet this session it was read
+as the program becoming mysterious, when it was the instrument running out of
+reach. A tool that says nothing should be assumed silent rather than
+conclusive.

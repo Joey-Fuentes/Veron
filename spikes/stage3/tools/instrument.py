@@ -38,8 +38,8 @@ Each of those would produce code that does not compile, which wastes a round
 in a different way.
 
 USAGE
-    instrument.py <file.c> <function> > patched.c
-    instrument.py --map <file.c> <function>      print the line map only
+    instrument.py <file.c> <func>[,func2,...] > patched.c
+    instrument.py --map <file.c> <func>[,func2,...]     the line map only
 
 The map matters: "L07" means nothing without it, and the mapping changes
 whenever the source does.
@@ -117,24 +117,49 @@ def main():
         sys.stderr.write(__doc__)
         return 2
 
-    path, func = args
+    path, funcnames = args
     lines = open(path).read().split('\n')
-    start, end = find_function(lines, func)
-    if start is None:
-        sys.stderr.write("could not find a definition of %s in %s\n" % (func, path))
+
+    # SEVERAL FUNCTIONS AT ONCE, comma-separated.
+    #
+    # Instrumenting one function is only useful while you already know which
+    # one. When the failure moved from tcc_set_output_type into
+    # tcc_compile_string there were NO markers there at all, so the report had
+    # nothing to say and it looked like the fault had become invisible. It had
+    # not; the instrument simply did not reach it.
+    ranges = []
+    for func in funcnames.split(','):
+        func = func.strip()
+        if not func:
+            continue
+        start, end = find_function(lines, func)
+        if start is None:
+            sys.stderr.write("skipping %s: no definition found in %s\n" % (func, path))
+            continue
+        ranges.append((start, end, func))
+
+    if not ranges:
+        sys.stderr.write("none of the named functions were found in %s\n" % path)
         return 1
+
+    def covering(i):
+        for start, end, func in ranges:
+            if start <= i <= end:
+                return func
+        return None
 
     out = []
     mapping = []
     n = 0
     for i, line in enumerate(lines):
         out.append(line)
-        if start <= i <= end and instrumentable(line):
+        func = covering(i)
+        if func is not None and instrumentable(line):
             n += 1
             tag = "L%02d" % n
             indent = line[:len(line) - len(line.lstrip())]
             out.append('%swrite(2, "%s\\n", 4);' % (indent, tag))
-            mapping.append((tag, i + 1, line.strip()))
+            mapping.append((tag, i + 1, "%s: %s" % (func, line.strip())))
 
     if map_only:
         for tag, lineno, text in mapping:
@@ -142,8 +167,8 @@ def main():
         return 0
 
     sys.stdout.write('\n'.join(out))
-    sys.stderr.write("instrumented %s: %d markers over lines %d-%d\n"
-                     % (func, n, start + 1, end + 1))
+    sys.stderr.write("instrumented %d function(s): %d markers\n"
+                     % (len(ranges), n))
     return 0
 
 

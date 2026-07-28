@@ -465,10 +465,17 @@ jobs:
           # "somewhere in tcc_set_output_type" after several of them. The
           # placement is mechanical, so this does all of it at once and the
           # LAST marker printed names the exact line.
-          FUNC="${DEBUG_FUNC:-tcc_set_output_type}"
+          # THE WHOLE COMPILE PATH, not one function.
+          #
+          # Instrumenting a single function is only useful while you already
+          # know which one. When the failure moved out of tcc_set_output_type
+          # and into tcc_compile there were no markers there at all, so the
+          # report had nothing to say and it looked like the fault had gone
+          # invisible. It had not -- the instrument did not reach it.
+          FUNC="${DEBUG_FUNC:-tcc_set_output_type,tcc_compile,tcc_compile_string}"
           python3 spikes/stage3/tools/instrument.py --map mc-tcc/libtcc.c "$FUNC" \
             > marker-map.txt || { echo "  could not instrument $FUNC"; exit 0; }
-          echo "  --- marker map ---"
+          echo "  --- marker map ($(wc -l < marker-map.txt) statements) ---"
           cat marker-map.txt
           python3 spikes/stage3/tools/instrument.py mc-tcc/libtcc.c "$FUNC" \
             > /tmp/inst.c 2>/dev/null
