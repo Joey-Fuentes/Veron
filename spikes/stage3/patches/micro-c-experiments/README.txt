@@ -946,35 +946,45 @@ Every stage matched the local rehearsal exactly, which is the first time that
 has been true -- the patch series had been generated against the wrong tree
 until now, so CI and local had never agreed.
 
-ALL THREE PROBES FAULTED, INCLUDING `int main(){ return 0; }`.
+THE FAULT WAS MINE, IN THE BUILD -- NOT IN micro-c, tcc OR THE TOOLCHAIN.
 
-That is the finding, and it is not the one that was expected. The fault is not
-in tcc's compiled code at all -- a program that does nothing faults the same
-way. Every hypothesis in the previous entry was about tcc or about malloc, and
-all of them were wrong.
+Bisecting by LINK SET, on the native aarch64 runner:
 
-THE FIRST BISECT WAS BUILT WRONG. It varied what main DID and linked
-everything -- libtcc, M2libc, the stubs -- in every case. So the variable
-under test was never isolated and all three probes were, in effect, the same
-program. A bisect where every arm shares the suspect part cannot find anything.
+    A  libc-core + bare main            ran, exit 0        236 bytes
+    B  libc-core + M2libc + bare        ran, exit 0     96,436 bytes
+    C  libc-full + M2libc + bare        SIGNAL 7        96,508 bytes
+    D  C + stubs                        SIGNAL 7
+    E  D + libtcc.M1                    SIGNAL 7
+    F  E, main calls tcc_new            SIGNAL 7
 
-The replacement varies WHAT IS LINKED:
+B and C differ ONLY by libc-core.M1 -> libc-full.M1. Everything micro-c
+compiled is byte-identical between them, and 72 bytes of startup separates
+running from faulting.
 
-    A  libc-core + bare main            the toolchain and ELF header
-    B  libc-core + M2libc + bare        our compiler's output at all
-    C  libc-full + M2libc + bare        envp and __init_malloc startup
-    D  C + stubs
-    E  D + libtcc.M1                    tcc's 350k lines
-    F  E, and main calls tcc_new
+WHAT libc-full ADDS: writing argv/envp into GLOBAL__envp, then calling
+__init_malloc and __init_io.
 
-Locally A links to a 236-byte binary and E to 1,489,256; all five assemble and
-link. If something 236 bytes long faults, nothing above it is worth reading,
-and the answer is in the ELF header or the startup stub rather than in
-anything this project compiled.
+WHY THAT FAULTED: M2libc was being compiled as SEPARATE translation units and
+concatenated, so every file that included the headers re-emitted the globals.
+GLOBAL__envp, __init_malloc and __init_io were each defined THREE times. The
+startup wrote envp into one copy and malloc read another.
 
-Note also that libc-full's _start calls __init_malloc, so it cannot be linked
-without M2libc -- which is why B uses libc-core. The first attempt at this
-ordering failed at hex2 for exactly that reason.
+libc-core never touches those globals, which is exactly why B ran and C did
+not -- and why a program doing nothing at all still died.
+
+THE FIX is M2libc's own composition, taken from its test0106: ONE invocation,
+a specific order, and two arch-specific files (aarch64/linux/unistd.c and
+fcntl.c) that were missing entirely. Plus string.c, which that test does not
+need and libtcc does, for memcpy. Every symbol is now defined once and the
+full binary links at 1,442,519 bytes.
+
+The job now ASSERTS single definition of those three symbols, because this is
+invisible until the thing runs.
+
+TWO BISECTS WERE NEEDED AND THE FIRST WAS USELESS. It varied what main did
+while linking everything in every arm, so the suspect was present in all three
+and they failed identically. The lesson is not "bisect" -- it is that a bisect
+whose arms all contain the suspect proves nothing.
 
 The bisect is done in CI because it cannot be done here: this container is
 x86_64 and the binary is aarch64.

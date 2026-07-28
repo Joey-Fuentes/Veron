@@ -131,17 +131,50 @@ jobs:
         run: |
           set -eu
           M=spikes/reference/m2libc
-          for f in stdlib.c string.c ctype.c fcntl.c; do
-            ./micro-c --architecture aarch64 --expand-includes --max-string 65536 \
-              -I "$M" -f "$M/$f" -o "m2_${f%.c}.M1"
-          done
-          # stdio.c uses FILE without including its own header; M2-Planet's build
-          # passes the header separately, so this does too.
-          ./micro-c --architecture aarch64 --expand-includes --max-string 65536 \
-            -I "$M" -f "$M/stdio.h" -f "$M/stdio.c" -o m2_stdio.M1
+
+          # ONE INVOCATION, IN M2libc's OWN ORDER.
+          #
+          # Compiling these as separate translation units and concatenating the
+          # results defined GLOBAL__envp, __init_malloc and __init_io THREE
+          # TIMES each -- every file that includes the headers re-emits them.
+          # The startup stub then wrote envp into one copy and malloc read
+          # another, and the binary took SIGBUS before reaching main. A bare
+          # `int main(){return 0;}` faulted; nothing this project compiled was
+          # at fault.
+          #
+          # The order is taken from M2libc's own test0106, plus string.c, which
+          # that test does not need and libtcc does (memcpy). Header files
+          # appear as -f arguments because that is how M2-Planet is fed types
+          # that have no .c of their own.
+          ./micro-c --architecture aarch64 --max-string 65536 \
+            -f "$M/ctype.c" \
+            -f "$M/stdarg.h" \
+            -f "$M/sys/types.h" \
+            -f "$M/stddef.h" \
+            -f "$M/signal.h" \
+            -f "$M/sys/utsname.h" \
+            -f "$M/aarch64/linux/unistd.c" \
+            -f "$M/aarch64/linux/fcntl.c" \
+            -f "$M/fcntl.c" \
+            -f "$M/stdlib.c" \
+            -f "$M/string.c" \
+            -f "$M/stdio.h" \
+            -f "$M/stdio.c" \
+            -f "$M/bootstrappable.c" \
+            -o m2libc.M1
+
           ./micro-c --architecture aarch64 --max-string 65536 \
             -f spikes/stage3/micro-c-libc/impl/stubs.c -o stubs.M1
-          cat libtcc.M1 m2_*.M1 stubs.M1 > all.M1
+
+          # ASSERT NO DUPLICATES. This is the bug that cost two CI rounds, and
+          # it is invisible until the thing runs, so check it here.
+          for sym in GLOBAL__envp FUNCTION___init_malloc FUNCTION___init_io; do
+            n=$(grep -c "^:$sym" m2libc.M1 || true)
+            [ "$n" = 1 ] || { echo "FAIL: $sym defined $n times, expected 1"; exit 1; }
+          done
+          echo "  M2libc: $(grep -c '^:FUNCTION_' m2libc.M1) functions, no duplicate globals"
+
+          cat libtcc.M1 m2libc.M1 stubs.M1 > all.M1
           echo "  combined: $(grep -c '^:FUNCTION_' all.M1) functions"
 
       - name: 'STAGE 2: assemble with M1'
@@ -224,11 +257,11 @@ jobs:
 
           : > faults.txt
           run_probe A-bare-core     libc-core.M1  bare.M1
-          run_probe B-m2libc-core   libc-core.M1  m2_*.M1 bare.M1
-          run_probe C-m2libc-full   libc-full.M1  m2_*.M1 bare.M1
-          run_probe D-plus-stubs    libc-full.M1  m2_*.M1 stubs.M1 bare.M1
-          run_probe E-plus-libtcc   libc-full.M1  libtcc.M1 m2_*.M1 stubs.M1 bare.M1
-          run_probe F-call-tcc_new  libc-full.M1  libtcc.M1 m2_*.M1 stubs.M1 callit.M1
+          run_probe B-m2libc-core   libc-core.M1  m2libc.M1 bare.M1
+          run_probe C-m2libc-full   libc-full.M1  m2libc.M1 bare.M1
+          run_probe D-plus-stubs    libc-full.M1  m2libc.M1 stubs.M1 bare.M1
+          run_probe E-plus-libtcc   libc-full.M1  libtcc.M1 m2libc.M1 stubs.M1 bare.M1
+          run_probe F-call-tcc_new  libc-full.M1  libtcc.M1 m2libc.M1 stubs.M1 callit.M1
 
           echo
           if [ -s faults.txt ]; then
