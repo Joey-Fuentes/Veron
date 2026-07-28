@@ -2274,3 +2274,56 @@ consequences, both deliberate:
     regression  0 regressions
     vocabulary  clean on five architectures
     full unit   366,619 lines
+
+=============================================================================
+THE SIZE WAS MACHINE CODE
+
+    malloc: refusing 17960355317460018824 bytes
+
+    0xF9400000D100A688
+
+That is not a number. 0xF9400000 is `ldr x0,[x0]` on AArch64. Eight bytes of
+INSTRUCTIONS were loaded as data and passed as an allocation size.
+
+Instrumenting the whole compile path gave the line:
+
+    L06  libtcc.c:809  tcc_compile: int len = strlen(str);      completed
+    L07  libtcc.c:810  tcc_open_bf(s1, filename ? filename : "<string>", len);
+
+A TERNARY IN AN ARGUMENT LIST.
+
+On aarch64 a far jump loads its target into x16 and does br_x16. x16 is
+REGISTER_TEMP, and micro-c's CALL SEQUENCE holds the callee's new base pointer
+there while the arguments are evaluated:
+
+    mov_x16,x18    # Copy new base pointer
+    ...arguments...
+    mov_x17,x16    # Set new base pointer
+
+So the ternary overwrote the base pointer with a CODE ADDRESS, and every
+argument after it was read relative to that -- which is why an allocation size
+came back as instructions.
+
+amd64 does not have this problem at all: its far jump is a plain jmp to a
+label and touches no register. Case 22 passes there and always would have.
+That is the third bug this session invisible on the development machine and
+fatal on the runner.
+
+FIXED for both places that branch inside an expression -- the ternary and
+short-circuit && and || -- by bracketing them with a push and pop of
+REGISTER_TEMP. Both paths reach the end label, so one pair covers them, and
+the pair nests inside the expression so the argument stack around it is
+undisturbed.
+
+    1,343 protected sites in libtcc alone
+    full unit   369,305 lines
+    difftest    21 pass / 0 fail / 1 known gap
+    regression  0 regressions
+    vocabulary  clean on five architectures
+
+A NOTE ON HAVING BEEN HERE BEFORE. This exact hazard was identified four
+rounds ago while debugging short-circuit, a fix was written, it appeared not
+to work, and it was abandoned along with the patch. It appeared not to work
+because the build was being killed by the OOM reaper for an unrelated reason,
+so the fix was never actually tested. The diagnosis was right the first time
+and was discarded on the strength of a symptom that had nothing to do with it.
