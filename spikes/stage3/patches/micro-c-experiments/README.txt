@@ -2087,3 +2087,36 @@ rather than what remains. tcc still dies at the same marker, which is the
 honest headline -- the difftest has fixed real and pervasive bugs (arrays of
 pointers, member indexing, member alignment, load and store widths) without
 yet reaching whatever T9 is.
+
+=============================================================================
+THE STRUCT ITSELF WAS NOT PADDED
+
+The reorder made 05-struct-assign pass on amd64 and it still faulted on
+aarch64. The reason was not the copy at all:
+
+    struct S { long a; long b; int c; char d; };
+
+    gcc      sizeof 24
+    micro-c  sizeof 25
+
+Aligning MEMBERS put each field on a sensible boundary. It did not make the
+WHOLE struct a multiple of that boundary. C requires the total to be a
+multiple of the largest member's alignment, and an ARRAY of these is why: every
+element after the first starts at a misaligned address, so reading `a` out of
+element 1 is a fault on aarch64 and merely slow on amd64.
+
+That asymmetry is the same one that hid the member-alignment bug, and it hid
+this one for exactly as long -- the local difftest passed, the runner faulted.
+
+It also made whole-struct assignment copy 25 bytes, ending mid-word.
+
+Fixed with the same rule used for placing members, so the two cannot
+disagree: the largest member's size, capped at the register width, rounded
+down to a power of two.
+
+    sizeof(struct S)   25 -> 32
+    difftest           9 pass / 1 fail on BOTH architectures
+    regression         0 regressions
+    full unit          350,704 lines
+
+Only 04-short-circuit remains, deferred.

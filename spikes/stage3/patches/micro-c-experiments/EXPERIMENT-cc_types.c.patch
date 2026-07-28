@@ -383,7 +383,43 @@ EVERY differing file rather than a hand-written list.
  		require_match("ERROR in create_struct\n Missing ;\n", ";");
  		require(NULL != global_token, "Unterminated struct\n");
  	}
-@@ -811,13 +1101,47 @@
+@@ -707,6 +997,35 @@
+ 		head->size = largest_member_size;
+ 	}
+ 
++	/* PAD THE STRUCT ITSELF, not just its members.
++	 *
++	 * Aligning members put each field on a sensible boundary; it did not make
++	 * the WHOLE struct a multiple of that boundary, so
++	 *
++	 *     struct S { long a; long b; int c; char d; };
++	 *
++	 * measured 25. C requires the total to be a multiple of the largest
++	 * member's alignment, and for a good reason: an ARRAY of these puts every
++	 * element after the first at a misaligned address, and on aarch64 reading
++	 * `a` out of element 1 is a fault rather than a slow load.
++	 *
++	 * It also made whole-struct assignment copy 25 bytes, ending mid-word.
++	 *
++	 * The alignment is the largest member's size capped at the register width,
++	 * rounded down to a power of two -- the same rule used for placing the
++	 * members, so the two cannot disagree. */
++	int struct_align = largest_member_size;
++	if(struct_align > register_size) struct_align = register_size;
++
++	int pow2 = 1;
++	while(pow2 * 2 <= struct_align) pow2 = pow2 * 2;
++
++	if(pow2 > 1)
++	{
++		int tail = head->size % pow2;
++		if(0 != tail) head->size = head->size + (pow2 - tail);
++	}
++
+ 	head->members = last;
+ 	i->members = last;
+ 
+@@ -811,13 +1130,47 @@
  		require_extra_token();
  	}
  
@@ -434,7 +470,7 @@ EVERY differing file rather than a hand-written list.
  		}
  		else if(NULL == ret)
  		{
-@@ -837,7 +1161,9 @@
+@@ -837,7 +1190,9 @@
  	{
  		require_extra_token();
  		ret = lookup_global_type();
@@ -445,7 +481,7 @@ EVERY differing file rather than a hand-written list.
  		{
  			return create_struct(TRUE);
  		}
-@@ -862,9 +1188,23 @@
+@@ -862,9 +1217,23 @@
  		require_extra_token();
  	}
  
@@ -469,7 +505,7 @@ EVERY differing file rather than a hand-written list.
  		require_extra_token();
  
  		while(match("const", global_token->s) || match("restrict", global_token->s))
-@@ -905,6 +1245,7 @@
+@@ -905,6 +1274,7 @@
  {
  	struct type* head = lookup_primitive_type();
  	struct type* i;
@@ -477,7 +513,7 @@ EVERY differing file rather than a hand-written list.
  	if(NULL == head)
  	{
  		head = calloc(1, sizeof(struct type));
-@@ -914,10 +1255,21 @@
+@@ -914,10 +1284,21 @@
  
  		i = calloc(1, sizeof(struct type));
  		require(NULL != i, "Exhausted memory while creating a struct indirection\n");
@@ -499,7 +535,7 @@ EVERY differing file rather than a hand-written list.
  	}
  
  	head->name = global_token->s;
-@@ -928,12 +1280,29 @@
+@@ -928,12 +1309,29 @@
  	i->offset = source->indirect->offset;
  	head->is_signed = source->is_signed;
  	i->is_signed = source->indirect->is_signed;
