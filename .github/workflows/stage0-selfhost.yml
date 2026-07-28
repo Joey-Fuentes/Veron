@@ -1141,7 +1141,9 @@ jobs:
           # NOWHERE in its own log. You could read the committed binary's
           # identity out of the uploaded artifact, or out of stage3-hermetic,
           # but not here. That is backwards: this is the job that makes it.
-          gen_row 'gen1 WRAPPED (committed)' gen1 '' ''
+          echo
+          gen_row 'gen1 WRAPPED = +120B hdr' gen1 \
+            spikes/stage0-as/stage0-as 'committed'
           echo
           if cmp -s gen2.bin gen1.bin && cmp -s gen3.bin gen2.bin; then
             echo "  PASS: gen1 == gen2 == gen3 -- FIXPOINT, and stable across"
@@ -1211,11 +1213,37 @@ jobs:
           # gate has never run -- so the first green run establishes it, and a
           # bound goes in afterwards once there is a measured value to bound.
           # Printing an unbounded number is a comment; it is labelled as one.
-          objcopy -O binary --only-section=.text elf elfref.bin 2>/dev/null || true
-          if [ -f elfref.bin ]; then
-            nd=$(cmp -l elfgen1.bin elfref.bin 2>/dev/null \
-                 | awk '{print int(($1-1)/4)}' | sort -u | wc -l)
-            printf '  %-34s %s\n' 'words differing from as+ld (FYI)' "$nd"
+          # NAME THEM, DO NOT JUST COUNT THEM -- the same rule the stage0-as
+          # gate above already runs on. elf.aarch64.s contains exactly five adr
+          # instructions and every one targets data: codebuf, cbover and header.
+          # ld and elf place data differently by construction, so those five
+          # displacements differ and NOTHING else may. This was an unbounded FYI
+          # for one run because there was no measured value to bound; there is
+          # now, and an unbounded number printed next to a gate is a comment.
+          objcopy -O binary --only-section=.text elf elfref.bin
+          nd=$(cmp -l elfgen1.bin elfref.bin 2>/dev/null \
+               | awk '{print int(($1-1)/4)}' | sort -u | wc -l)
+          objdump -d elf > elfref.dis 2>/dev/null || true
+          etb=$(objdump -h elf | awk '$2==".text"{print $4; exit}')
+          nb=$(cmp -l elfgen1.bin elfref.bin 2>/dev/null \
+               | awk '{print int(($1-1)/4)}' | sort -un \
+               | while read -r w; do
+                   a=$(printf '%x' $((0x$etb + w * 4)))
+                   grep -m1 "^ *$a:" elfref.dis
+                 done | grep -cE "codebuf|cbover|header")
+          if [ "$nd" = "$nb" ]; then
+            printf '  %-34s %s\n' 'differing words, all adr-to-data' "$nd"
+          else
+            echo "  FAIL: $nd words differ from as+ld but only $nb are adr-to-data."
+            echo "  A word differing for any other reason means the translation"
+            echo "  changed the meaning of the code, not just its data layout."
+            cmp -l elfgen1.bin elfref.bin 2>/dev/null \
+              | awk '{print int(($1-1)/4)}' | sort -un | head -8 \
+              | while read -r w; do
+                  a=$(printf '%x' $((0x$etb + w * 4)))
+                  grep -m1 "^ *$a:" elfref.dis | sed 's/^/    /'
+                done
+            exit 1
           fi
 
           printf '\n  === ELF SELF-HOST GENERATIONS ===\n'

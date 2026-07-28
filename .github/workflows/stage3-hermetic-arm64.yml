@@ -718,7 +718,13 @@ jobs:
           if cmp -s "$A" "$B"; then
             echo "PASS: a compiler built from hand-written ARM64 assembly, on ARM64"
             echo "      hardware, inside a sealed box whose entire host budget is"
-            echo "      \`$BUDGET_PATH\`, compiles M2-Planet's own unpatched source to"
+            # EMPTY IS THE WHOLE POINT, SO SAY IT IN WORDS. BUDGET_PATH went
+            # to '' when the binaries were committed, and this line then read
+            # "whose entire host budget is ``" -- two backticks, which looks
+            # like a broken variable rather than the result the job exists to
+            # produce.
+            _bp="$BUDGET_PATH"; [ -n "$_bp" ] || _bp='EMPTY -- nothing'
+            echo "      $_bp, compiles M2-Planet's own unpatched source to"
             echo "      output identical to upstream's reference compiler."
           else
             echo "FAIL: our G0's self-compile differs from the reference."
