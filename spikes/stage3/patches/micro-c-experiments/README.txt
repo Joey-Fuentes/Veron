@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "stops at bitfields in tcc.h:504".
+"hangs forever on tcc.c" to "stops at ## token pasting in tcc.h:421".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -16,6 +16,9 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   ')' added to the constant terminator set     cc_core.c
   * / % in constant expressions                cc_core.c   tcc.h:483
   multiple declarators per struct member       cc_types.c  tcc.h:493
+  bitfield LAYOUT (not access)                 cc.h,       tcc.h:504
+                                               cc_types.c,
+                                               cc_core.c
 
 UNSOUND, AND WHY
 ----------------
@@ -32,14 +35,29 @@ UNSOUND, AND WHY
    radius from additive-only to everything. A shippable version needs real
    precedence levels, as the ordinary expression parser already has.
 
-The other six look sound and are candidates for promotion once reviewed.
+3. BITFIELD ACCESS IS NOT IMPLEMENTED, ON PURPOSE. Layout is: bit_offset and
+   bit_width are assigned, consecutive fields pack into one storage unit, and
+   `{a:5, b:1, c:2; int after;}` emits output BYTE-IDENTICAL to
+   `{unsigned short unit; int after;}` -- which proves the offsets, not just
+   the parse. But READING such a member would return the whole storage unit
+   with its neighbours in it, and writing would clobber them, silently. So
+   access is a hard ERROR instead:
+
+       bfacc.c:2: bitfield member 'a' cannot be read or written yet
+
+   What is left: shift right by bit_offset and mask to bit_width on read, and
+   a read-modify-write on assignment. Both are per-architecture emission,
+   which is why they are not here. tcc parses past tcc.h:504 without them
+   because the declarations are what blocked it, not the uses.
+
+The other seven look sound and are candidates for promotion once reviewed.
 The declarator one is the strongest candidate: `int a, b, c;` now emits
 output BYTE-IDENTICAL to `int a; int b; int c;`, which proves the member
 offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Twelve walls between a hanging compiler and tcc's first genuinely large
+Thirteen walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11

@@ -60,11 +60,13 @@
 #     parenthesised constant expression               elf.h:75
 #     * / % in constant expressions                   tcc.h:483
 #     multiple declarators per struct member          tcc.h:493  offsets verified
-#     bitfields                                       tcc.h:504  NOT DONE
+#     bitfield LAYOUT                                 tcc.h:504  access = error
+#     ## token pasting                                 tcc.h:421  NOT DONE
 #
 # float was the item ROADMAP called pivotal and it was two extern declarations,
-# not arithmetic. Bitfields are the first wall that is real work: 18 uses, in
-# struct SymAttr, which is embedded in Sym and therefore not stubbable.
+# not arithmetic. Bitfield LAYOUT is done and verified -- three packed fields
+# emit byte-identical code to the storage unit they share -- but ACCESS is a
+# hard error rather than silently returning the neighbouring fields with it.
 #
 # Wall 11 was first labelled "anonymous union" -- wrongly. Plain anonymous
 # unions already worked; the failure was `int jtrue, jfalse;`. Naming a wall

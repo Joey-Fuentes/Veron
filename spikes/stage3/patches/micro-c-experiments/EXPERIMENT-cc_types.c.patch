@@ -32,7 +32,85 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		{
  			global_token = global_token->next;
  			require(global_token->next != NULL, "NULL token received in multi token type lookup 'long long'");
-@@ -696,6 +710,41 @@
+@@ -517,6 +531,30 @@
+ 	{
+ 		i->name = global_token->s;
+ 		require_extra_token();
++
++		/* BITFIELD: `unsigned short aligned : 5`. The width is a constant
++		 * expression; the bit POSITION is assigned by the caller, which is the
++		 * only place that knows what came before in this storage unit. */
++		if(NULL != global_token)
++		{
++			if(global_token->s[0] == ':')
++			{
++				require_extra_token();
++				i->bit_width = constant_expression();
++				if(i->bit_width < 1)
++				{
++					line_error();
++					fputs("bitfield width must be at least 1\n", stderr);
++					exit(EXIT_FAILURE);
++				}
++				if(i->bit_width > (member_type->size * 8))
++				{
++					line_error();
++					fputs("bitfield wider than its type\n", stderr);
++					exit(EXIT_FAILURE);
++				}
++			}
++		}
+ 	}
+ 	else
+ 	{
+@@ -673,11 +711,46 @@
+ 	int largest_member_size = 0;
+ 	require_match("ERROR in create_struct\n Missing {\n", "{");
+ 	struct type* last = NULL;
++	/* BITFIELD PACKING STATE. bit_cursor is how many bits of the CURRENT
++	 * storage unit are spoken for; unit_offset is that unit's byte offset.
++	 * A non-bitfield member, or one that will not fit, closes the unit. */
++	int bit_cursor = 0;
++	int unit_offset = 0;
++	int unit_size = 0;
+ 	require(NULL != global_token, "Incomplete struct definition at end of file\n");
+ 	while('}' != global_token->s[0])
+ 	{
+ 		last = build_member(last, offset);
+ 
++		if(0 != last->bit_width)
++		{
++			/* Does it fit in the unit we are filling? */
++			if(0 != bit_cursor)
++			{
++				if(last->type->size != unit_size) bit_cursor = 0;
++				else if((bit_cursor + last->bit_width) > (unit_size * 8)) bit_cursor = 0;
++			}
++			if(0 == bit_cursor)
++			{
++				unit_offset = offset;
++				unit_size = last->type->size;
++			}
++			last->offset = unit_offset;
++			last->bit_offset = bit_cursor;
++			bit_cursor = bit_cursor + last->bit_width;
++			last->size = unit_size;
++			/* member_size CANNOT be 0 here: NO_STRUCT_DEFINITION is 0, so a
++			 * zero would trip the undefined-type check below. A packed field
++			 * adds nothing to the struct, so say so by rewinding the offset
++			 * after the caller advances it, rather than by reporting 0. */
++			member_size = unit_size;
++			if(last->bit_offset != 0) offset = offset - unit_size;
++		}
++		else
++		{
++			bit_cursor = 0;
++		}
++
+ 		if(member_size == NO_STRUCT_DEFINITION)
+ 		{
+ 			line_error();
+@@ -696,6 +769,68 @@
  			offset = 0;
  		}
  
@@ -58,6 +136,33 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 +			require(NULL != global_token, "Unterminated struct member list\n");
 +			extra->name = global_token->s;
 +			require_extra_token();
++
++			if(NULL != global_token)
++			{
++				if(global_token->s[0] == ':')
++				{
++					require_extra_token();
++					extra->bit_width = constant_expression();
++					if(0 != bit_cursor)
++					{
++						if(extra->type->size != unit_size) bit_cursor = 0;
++						else if((bit_cursor + extra->bit_width) > (unit_size * 8)) bit_cursor = 0;
++					}
++					if(0 == bit_cursor)
++					{
++						unit_offset = offset;
++						unit_size = extra->type->size;
++					}
++					extra->offset = unit_offset;
++					extra->bit_offset = bit_cursor;
++					bit_cursor = bit_cursor + extra->bit_width;
++					/* Same rule in the comma path: only the field that opens
++					 * the unit contributes its size. */
++					if(extra->bit_offset == 0) extra->size = unit_size;
++					else extra->size = 0;
++					unit_size = unit_size;
++				}
++			}
 +			last = extra;
 +
 +			offset = offset + extra->size;

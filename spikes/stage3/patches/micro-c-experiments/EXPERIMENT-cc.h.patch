@@ -1,0 +1,16 @@
+EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
+
+--- a/cc.h
++++ b/cc.h
+@@ -120,6 +120,11 @@
+ 	struct type* type;
+ 	char* name;
+ 	int options;
++	/* BITFIELDS. bit_width 0 means "not a bitfield" -- every existing member
++	 * keeps that by calloc, so nothing outside this feature changes. bit_offset
++	 * is the bit position within the storage unit that `offset` addresses. */
++	int bit_offset;
++	int bit_width;
+ };
+ 
+ /* TLO = Token List Option */
