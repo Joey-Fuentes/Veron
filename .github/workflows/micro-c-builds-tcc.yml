@@ -165,43 +165,67 @@ jobs:
                --little-endian --architecture aarch64 -o all.hex2
           echo "  assembled: $(wc -l < all.hex2) lines"
 
-      - name: 'STAGE 3: link with hex2'
+      - name: 'STAGE 3+4: link and run a PROBE SERIES'
         run: |
           set -eu
           D=spikes/reference/m2libc/aarch64
-          ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
-                 -f $D/ELF-aarch64.hex2 -f all.hex2 -o tcc-microc
-          chmod +x tcc-microc
-          ls -l tcc-microc | awk '{print "  binary: "$5" bytes"}'
-          file tcc-microc || true
+          P=spikes/stage3/micro-c-libc/impl
+          echo "  runner is $(uname -m); the binary is aarch64, so this is native"
+          echo
 
-      - name: 'STAGE 4: run it'
-        run: |
-          set -eu
-          echo "  runner is $(uname -m) -- the binary is aarch64, so this is native"
-          # THE BAR IS DELIBERATELY LOW. main() calls tcc_new() and returns; the
-          # runtime underneath is 25 deliberately-wrong stubs. What is being
-          # asked is whether the binary STARTS and returns -- that the ELF is
-          # valid, the entry point is right, and the first real call into
-          # compiled tcc code does not fault. It is not a test that tcc works.
-          set +e
-          ./tcc-microc
-          rc=$?
-          set -e
-          echo "  exit code: $rc"
-          if [ "$rc" -gt 128 ]; then
-            echo "  KILLED BY SIGNAL $((rc - 128)) -- it started and then faulted."
-            echo "  That is a real result and it is recorded, not swallowed."
+          # ONE BINARY PER PROBE, each doing a little more than the last.
+          #
+          # The first run of this job got SIGBUS from a single binary that
+          # called tcc_new, which said only "something is wrong somewhere". A
+          # bisect cannot be done locally -- this container is x86 -- so it is
+          # done here, and the FIRST probe to fault is the answer:
+          #
+          #   00  nothing        -> ELF, startup stub, calling convention
+          #   01  malloc         -> M2libc's allocator and __init_malloc
+          #   02  tcc_new        -> compiled tcc code
+          #
+          # Every probe is built and run even after one fails, because "01 and
+          # 02 both fault" and "only 02 faults" are different diagnoses.
+          worst=0
+          for probe in "$P"/main-*.c; do
+            nm=$(basename "$probe" .c)
+            ./micro-c --architecture aarch64 --max-string 65536 -f "$probe" -o probe.M1
+            cat libtcc.M1 m2_*.M1 stubs.M1 probe.M1 > "$nm.all.M1"
+            ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f "$nm.all.M1" \
+                 --little-endian --architecture aarch64 -o "$nm.hex2" 2>/dev/null
+            ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
+                   -f $D/ELF-aarch64.hex2 -f "$nm.hex2" -o "$nm" 2>/dev/null
+            chmod +x "$nm"
+
+            set +e
+            ./"$nm" >/dev/null 2>&1
+            rc=$?
+            set -e
+            if [ "$rc" = 0 ]; then
+              printf '  %-20s ran, exit 0\n' "$nm"
+            elif [ "$rc" -gt 128 ]; then
+              printf '  %-20s SIGNAL %s\n' "$nm" "$((rc - 128))"
+              worst=1
+            else
+              printf '  %-20s exit %s (ran, returned non-zero)\n' "$nm" "$rc"
+            fi
+          done
+
+          echo
+          if [ "$worst" = 0 ]; then
+            echo "  every probe ran"
+          else
+            echo "  A PROBE FAULTED. The first one that did is where to look;"
+            echo "  the ones before it passing is what makes that meaningful."
             exit 1
           fi
-          echo "  it ran"
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: micro-c-tcc
           path: |
-            tcc-microc
-            all.M1
-            all.hex2
+            main-*
+            *.all.M1
+            libtcc.M1
           if-no-files-found: warn

@@ -931,7 +931,38 @@ output. Worth remembering that M1 and hex2 are scaffolding here: the plan
 replaces both with the .s0 backend, and they are being used only because they
 can validate what parsing cannot.
 
-IT LINKS.
+IT LINKS, AND IT FAULTS.
+
+CI, on a native aarch64 runner:
+
+    14 patches applied to bd2fe4b
+    libtcc.c        ->  351,477 lines, 695 functions
+    + M2libc + stubs ->  963 functions
+    M1              ->  357,063 lines
+    hex2            ->  1,489,312 bytes, ELF64 AArch64
+    run             ->  Bus error, SIGNAL 7
+
+Every stage matched the local rehearsal exactly, which is the first time that
+has been true -- the patch series had been generated against the wrong tree
+until now, so CI and local had never agreed.
+
+SIGBUS, NOT SIGSEGV. That points at alignment or a malformed pointer rather
+than a plain null dereference, but a single binary calling tcc_new says only
+"something is wrong somewhere". The job now builds and runs a PROBE SERIES
+instead, each doing a little more than the last:
+
+    00  nothing   ->  ELF, startup stub, calling convention
+    01  malloc    ->  M2libc's allocator and __init_malloc
+    02  tcc_new   ->  compiled tcc code
+
+The first to fault is the answer, and the ones before it passing is what makes
+that answer mean anything. All three are built and run even after one fails,
+because "01 and 02 both fault" and "only 02 faults" are different diagnoses.
+
+The bisect is done in CI because it cannot be done here: this container is
+x86_64 and the binary is aarch64.
+
+
 
     micro-c    libtcc.c        ->  350,951 lines of M1
     micro-c    all of M2libc   ->   25,837 lines, 242 functions
