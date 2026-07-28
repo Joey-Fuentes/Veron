@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "THROUGH SIX .c FILES -- now in arm64-gen.c".
+"hangs forever on tcc.c" to "arm64-gen.c:1445 of 2177 -- 66% through the backend".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -81,6 +81,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   function-type typedefs are CALLABLE       cc_core.c   tccrun.c:1140
   real headers: stdio, string, unistd,      micro-c-libc/
     signal, sys/ucontext
+  #undef removes EVERY definition           cc_macro.c  arm64-gen.c:252
 
 UNSOUND, AND WHY
 ----------------
@@ -779,7 +780,32 @@ MILESTONE: SIX .c FILES PARSE COMPLETELY -- tccpp.c, tccgen.c, tccdbg.c,
 tccasm.c, tccelf.c and tccrun.c, plus all four headers. Now in arm64-gen.c,
 the backend.
 
-STOPPED AT: arm64-gen.c:252, "use_tcc_error_noabort is not a defined symbol".
+57. `#undef` REMOVED ONLY THE FIRST DEFINITION.
+
+    A #define does not replace an existing entry -- it PREPENDS a new one --
+    so a macro defined N times has N entries and lookup finds the newest.
+    remove_macro returned after unlinking one, leaving the older ones live and
+    the symbol still defined.
+
+        #define X poison
+        #define X poison
+        #undef X
+        int X;              ->  became `int poison;`
+
+    tcc hits it because EVERY .c file re-includes tcc.h, whose tail defines
+    `_tcc_error` as a poison for files that do not set USING_GLOBALS and
+    #undefs it for those that do. By arm64-gen.c there were several poison
+    entries and one #undef could not clear them.
+
+    FOUR MECHANISMS WERE TESTED AND CLEARED FIRST -- re-inclusion, guard
+    skipping, nested conditionals inside a skipped guard, and the ONE_SOURCE
+    nesting shape -- each in a small file, each working. The bug was in none
+    of them. A #warning probe inside tcc's own arm64-gen.c is what narrowed
+    it, and even that answered the wrong question at first: USING_GLOBALS is
+    deliberately undefined by tcc.h after use, so "not set" was correct
+    behaviour rather than the fault.
+
+STOPPED AT: arm64-gen.c:1445, "unsupported size 16 when storing".
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -794,7 +820,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Seventy-one walls between a hanging compiler and tcc's first genuinely large
+Seventy-two walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11

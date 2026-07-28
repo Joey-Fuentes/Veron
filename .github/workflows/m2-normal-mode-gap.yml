@@ -129,7 +129,8 @@
 #     real stdio/string/unistd/signal/ucontext headers micro-c-libc/
 #
 #   SIX .c FILES NOW PARSE COMPLETELY. Now in the arm64 backend:
-#     use_tcc_error_noabort                            arm64-gen.c:252 NOT DONE
+#     #undef removes EVERY definition, not the first   arm64-gen.c:252
+#     unsupported size 16 when storing                 arm64-gen.c:1445 NOT DONE
 #
 #   SOUNDNESS: micro-c's `int` is EIGHT bytes (M2-Planet's own type model, not
 #   introduced here). Internally consistent, wrong at the libc boundary and in

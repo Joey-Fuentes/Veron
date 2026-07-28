@@ -2,7 +2,68 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 
 --- a/cc_macro.c
 +++ b/cc_macro.c
-@@ -984,6 +984,8 @@
+@@ -230,17 +230,36 @@
+ 		exit(EXIT_FAILURE);
+ 	}
+ 
++	/* #undef MUST REMOVE EVERY DEFINITION, not just the first.
++	 *
++	 * A #define does not replace an existing entry -- it PREPENDS a new one --
++	 * so a macro re-defined N times has N entries and lookup finds the newest.
++	 * Returning after the first removal left the older ones live, and the
++	 * symbol stayed defined.
++	 *
++	 * tcc hits this because every .c file re-includes tcc.h, whose tail does
++	 *     #define _tcc_error use_tcc_error_noabort     (the poison)
++	 * for files that do NOT set USING_GLOBALS, and
++	 *     #undef _tcc_error
++	 * for those that do. By the time arm64-gen.c sets USING_GLOBALS there are
++	 * several poison entries, and one #undef could not clear them:
++	 *     arm64-gen.c:252 use_tcc_error_noabort is not a defined symbol */
+ 	struct macro_list* hold = macro_env;
+ 	struct macro_list* temp;
+ 
+-	/* Deal with the first element */
+-	if (match(token->s, hold->symbol)) {
+-		macro_env = hold->next;
+-		free(hold);
+-		return;
++	/* Leading matches */
++	while (NULL != macro_env)
++	{
++		if (!match(token->s, macro_env->symbol)) break;
++		temp = macro_env;
++		macro_env = macro_env->next;
++		free(temp);
+ 	}
+ 
+-	/* Remove element form the middle of linked list */
++	if (NULL == macro_env) return;
++
++	/* Matches further in */
++	hold = macro_env;
+ 	while (NULL != hold->next)
+ 	{
+ 		if (match(token->s, hold->next->symbol))
+@@ -248,13 +267,13 @@
+ 			temp = hold->next;
+ 			hold->next = hold->next->next;
+ 			free(temp);
+-			return;
+ 		}
+-
+-		hold = hold->next;
++		else
++		{
++			hold = hold->next;
++		}
+ 	}
+ 
+-	/* nothing to undefine */
+ 	return;
+ }
+ 
+@@ -984,6 +1003,8 @@
  	return to;
  }
  
@@ -11,7 +72,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  struct token_list* maybe_expand(struct token_list* token)
  {
  	if(NULL == token)
-@@ -1085,6 +1087,60 @@
+@@ -1085,6 +1106,60 @@
  
  				while(expand_list != NULL)
  				{
@@ -72,7 +133,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  					if(match(expand_list->s, argument->name))
  					{
  						start_token_copy = deep_copy_token_list(start_token);
-@@ -1142,7 +1198,48 @@
+@@ -1142,7 +1217,48 @@
  
  	if (NULL == hold->expansion)
  	{
@@ -122,7 +183,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	/* Paint every occurrence of this macro's own name in what we are about to
-@@ -1160,9 +1257,94 @@
+@@ -1160,9 +1276,94 @@
  		paint = paint->next;
  	}
  
@@ -218,7 +279,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  }
  
  void preprocess(void)
-@@ -1192,6 +1374,13 @@
+@@ -1192,6 +1393,13 @@
  		else if('\n' == macro_token->s[0])
  		{
  			start_of_line = TRUE;
