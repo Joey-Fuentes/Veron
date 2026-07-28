@@ -308,6 +308,8 @@ jobs:
           ./micro-c --architecture aarch64 --max-string 65536 \
             -f "$P/main-01-malloc.c" -o mallocit.M1
           ./micro-c --architecture aarch64 --max-string 65536 \
+            -f "$P/main-02-tccmalloc.c" -o tccmal.M1
+          ./micro-c --architecture aarch64 --max-string 65536 \
             -f "$P/main-01-tccnew.c" -o callit.M1
 
           run_probe() {
@@ -357,6 +359,15 @@ jobs:
           # the allocator is broken then F faults for a reason that has nothing
           # to do with tcc and reading tccgen.c would be wasted effort.
           run_probe E2-malloc       libc-full.M1  libtcc.M1 m2libc.M1 stubs.M1 mallocit.M1
+          # E3 is the narrowest step into tcc there is. tcc_malloc is
+          #     return reallocator(0, size);
+          # an INDIRECT call through a global function pointer initialised with
+          # a function name -- something micro-c only learned to emit at
+          # libtcc.c:265, right at the end of the walk, and which nothing has
+          # exercised since. E2 already proved the underlying malloc works, so
+          # if E3 faults the fault is the indirect call, not the allocator and
+          # not tcc's logic.
+          run_probe E3-tcc_malloc   libc-full.M1  libtcc.M1 m2libc.M1 stubs.M1 tccmal.M1
           run_probe F-call-tcc_new  libc-full.M1  libtcc.M1 m2libc.M1 stubs.M1 callit.M1
 
           echo

@@ -1113,3 +1113,32 @@ WHAT IS STILL KNOWINGLY WRONG, unchanged and now directly in the way:
 
 Any of these could produce exactly what F shows. None of them is a surprise;
 all of them were recorded before the binary existed to demonstrate them.
+
+=============================================================================
+THE ALLOCATOR IS EXONERATED
+
+    E2  same link set, main calls malloc(64)    MAIN RAN, exit 42
+
+M2libc's malloc, compiled by micro-c, returns writable memory inside the full
+1.44 MB binary. So F's segfault is in tcc's code, not underneath it.
+
+THE NEXT STEP IS ONE LEVEL NARROWER, not a reading of tccgen.c. tcc does not
+call malloc directly:
+
+    static void *(*reallocator)(void*, unsigned long) = default_reallocator;
+    PUB_FUNC void *tcc_malloc(unsigned long size) { return reallocator(0, size); }
+
+That is an INDIRECT CALL through a global function pointer initialised with a
+function name -- which micro-c only learned to emit at libtcc.c:265, the
+second-to-last wall of the whole walk, and which nothing has exercised since.
+It emits
+
+    :GLOBAL_reallocator
+    &FUNCTION_default_reallocator %0
+
+which looks right; the four-byte address plus four bytes of padding makes the
+eight-byte pointer. Looking right is not running right, and every previous
+guess in this sequence has been wrong, so E3 asks instead.
+
+E2 already rules out the allocator underneath, so E3 isolates exactly one
+thing: whether that indirect call goes where it should.
