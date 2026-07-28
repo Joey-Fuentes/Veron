@@ -56,7 +56,7 @@ jobs:
     # No code is run, only parsed, so the target architecture is irrelevant and
     # an aarch64 runner would only make the job slower to schedule.
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       M2PLANET_SHA: bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d
       M2LIBC_SHA:   68a23cf0b1b0f2e2c1e1a1e1f1a1b1c1d1e1f1a1
@@ -199,12 +199,29 @@ jobs:
           # header contains.
           mkdir -p /tmp/stubs
           : > /tmp/stublist.txt
+          # SEED THE STUBS WITH WHAT THE LAST RUN ALREADY FOUND. Discovery is
+          # re-work: every retry re-preprocesses from the top, so each new
+          # header costs another full pass. These seven are measured, not
+          # guessed -- the run that found them is what made this list exist.
+          for h in errno.h math.h setjmp.h time.h sys/time.h inttypes.h semaphore.h; do
+            mkdir -p "/tmp/stubs/$(dirname "$h")"
+            : > "/tmp/stubs/$h"
+            echo "$h" >> /tmp/stublist.txt
+          done
+          echo "  pre-stubbed $(sort -u /tmp/stublist.txt | wc -l) headers found by the previous run"
           for f in tcc.c libtcc.c; do
             want=$((want + 1))
             rc=0; note=''; tries=0
-            while [ "$tries" -lt 60 ]; do
+            # 30s, NOT 300. This loop is DISCOVERY: an "Unable to find include
+            # file" surfaces in the first moments of preprocessing, so a try
+            # that runs longer than that is past the phase this loop is for.
+            # At 300s a 60-try loop is a five-hour worst case against a 45
+            # minute job, which is what left the previous run apparently hung
+            # after seven stubs -- it was not hung, it was doing 300s passes.
+            # The real compile gets its full bound once discovery settles.
+            while [ "$tries" -lt 25 ]; do
               tries=$((tries + 1))
-              err=$( (ulimit -v 4194304; timeout 300 "$M2" --architecture aarch64 --expand-includes \
+              err=$( (ulimit -v 4194304; timeout 30 "$M2" --architecture aarch64 --expand-includes \
                        -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 \
                        -D TCC_TARGET_LINUX=1 -D CONFIG_TCC_STATIC=1 \
                        -I . -I include -I /tmp/stubs -I "$M2LIBC" \
@@ -220,11 +237,27 @@ jobs:
                 continue
               fi
               case "$rc" in
-                124) note='HUNG (300s)' ;;
+                124) note='slow past 30s -- retrying once with the full bound' ;;
                 *)   note="${first:-rc=$rc, no message}" ;;
               esac
               break
             done
+            # DISCOVERY IS OVER; give it the real bound once.
+            if [ "$rc" = 124 ]; then
+              printf '      %s: past 30s, one full pass at 300s...\n' "$f"
+              err=$( (ulimit -v 4194304; timeout 300 "$M2" --architecture aarch64 --expand-includes \
+                       -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 \
+                       -D TCC_TARGET_LINUX=1 -D CONFIG_TCC_STATIC=1 \
+                       -I . -I include -I /tmp/stubs -I "$M2LIBC" \
+                       -f "$f" -o /dev/null) 2>&1 >/dev/null ) && rc=0 || rc=$?
+              first=$(printf '%s\n' "$err" | grep -v '^$' | head -1)
+              case "$rc" in
+                0)   note='OK' ;;
+                124) note='HUNG (300s)' ;;
+                *)   note="${first:-rc=$rc, no message}" ;;
+              esac
+            fi
+            printf '      %s: settled after %s discovery pass(es)\n' "$f" "$tries"
             ran=$((ran + 1))
             printf '    %-18s rc=%-4s %s\n' "$f" "$rc" "$note"
             printf '%s\t%s\t%s\n' "$f" "$rc" "$note" >> /tmp/results.tsv
