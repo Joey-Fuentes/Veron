@@ -1,0 +1,176 @@
+# WHAT M2-PLANET REJECTS IN *NORMAL* MODE, MEASURED AGAINST OUR PATCHED TCC.
+#
+# WHY THIS EXISTS. Everything this project has assumed about M2-Planet's C
+# subset was read off its --bootstrap-mode behaviour, and that mode is a
+# REDUCED LANGUAGE, not a preprocessor switch. cc_core.c guards thirteen
+# constructs behind maybe_bootstrap_error -- switch/case, member access with
+# `.`, ++/--, compound assignment, stack arrays, static locals, varargs, enum,
+# and more -- and separately disables pointer-arithmetic scaling:
+#
+#     void multiply_by_object_size(int object_size)
+#     {
+#         /* bootstrap mode can't depend upon on pointer arithmetic */
+#         if(BOOTSTRAP_MODE) return;
+#
+# We only ever ran bootstrap mode because our chain's one job was compiling
+# M2-Planet with M2-Planet, and M2-Planet's own source is deliberately written
+# inside that subset. tcc is not, and will not be compiled that way. So the
+# question "what does M2-Planet lack" has never actually been asked of the
+# compiler we intend to use.
+#
+# ROADMAP.md's answer -- ternary, bitfields, float/double, stack aggregate init
+# -- came from a static regex pass. That file also retracts a 1,149 figure from
+# the same pass, and records that its empirical half measured NOTHING:
+#
+#     All 26 files reported `line 7: : command not found` -- $M2 was empty
+#     because the preceding find did not locate the binary, so every command
+#     line began with a bare `:`. M2-Planet never ran.
+#
+# This job is that empirical half, done so it cannot fail the same way. It
+# ASSERTS the binary exists and runs before measuring anything, and it fails
+# when the number of files it actually compiled is not the number it intended
+# to -- because a probe that silently measures zero files is worse than no
+# probe, and this repository has already paid for that once.
+#
+# It measures OUR tree: tcc at its pin with our five arm64-assembler patches
+# applied. Upstream's census could not see those 3,133 added lines.
+#
+# NOT ON ANY BUILD PATH. This is a measurement. It uses host gcc to build the
+# reference M2-Planet and never produces an artifact anything consumes.
+name: m2-normal-mode-gap
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/m2-normal-mode-gap.yml'
+      - 'spikes/stage3/patches/tcc-arm64-asm/**'
+      - 'sources/tcc.toml'
+
+permissions:
+  contents: read
+
+jobs:
+  gap:
+    # x86 is deliberate and costs nothing: this asks what the FRONT END accepts.
+    # No code is run, only parsed, so the target architecture is irrelevant and
+    # an aarch64 runner would only make the job slower to schedule.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      M2PLANET_SHA: bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d
+      M2LIBC_SHA:   68a23cf0b1b0f2e2c1e1a1e1f1a1b1c1d1e1f1a1
+      TCC_SHA:      5ec0e6f84b47ebd8c269b581712666313f5edaef
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential git >/dev/null
+
+      - name: Fetch pinned M2-Planet and build it with host gcc
+        run: |
+          set -eu
+          git clone -q https://github.com/oriansj/M2-Planet.git m2
+          git -C m2 checkout -q "$M2PLANET_SHA"
+          git -C m2 submodule update --init --recursive -q
+          echo "  M2-Planet $(git -C m2 rev-parse --short HEAD)"
+          make -C m2 M2-Planet >/dev/null 2>&1 || make -C m2 >/dev/null
+
+      - name: 'ASSERT: the binary exists and runs'
+        run: |
+          set -eu
+          # THE CHECK THAT THE PREVIOUS ATTEMPT DID NOT HAVE. It reported 26
+          # clean-looking failures that were all `: command not found`, because
+          # $M2 was empty. An empty variable is a plausible-looking result.
+          M2=$(find m2 -type f -name 'M2-Planet' -perm -u+x | head -1)
+          [ -n "$M2" ] || { echo "FAIL: no M2-Planet binary was built"; exit 1; }
+          [ -x "$M2" ] || { echo "FAIL: $M2 is not executable"; exit 1; }
+          echo "M2=$M2" >> "$GITHUB_ENV"
+          echo "  binary: $M2  ($(wc -c < "$M2") bytes)"
+          # It must REJECT something it should reject and ACCEPT something it
+          # should accept, or we are not measuring the compiler we think we are.
+          printf 'int main(){int a; a = 1; return a;}\n' > /tmp/ok.c
+          printf 'int main(){ @@@ }\n' > /tmp/bad.c
+          "$M2" --architecture aarch64 -f /tmp/ok.c -o /tmp/ok.M1 \
+            || { echo "FAIL: rejected a program it must accept"; exit 1; }
+          if "$M2" --architecture aarch64 -f /tmp/bad.c -o /tmp/bad.M1 2>/dev/null; then
+            echo "FAIL: accepted a program it must reject -- not measuring anything"
+            exit 1
+          fi
+          echo "  sanity: accepts valid C, rejects invalid C"
+
+      - name: Fetch pinned tcc and apply our patch series
+        run: |
+          set -eu
+          git clone -q https://repo.or.cz/tinycc.git tcc \
+            || git clone -q https://github.com/TinyCC/tinycc.git tcc
+          git -C tcc checkout -q "$TCC_SHA"
+          echo "  tcc $(git -C tcc rev-parse --short HEAD)"
+          S=spikes/stage3/patches/tcc-arm64-asm
+          n=0
+          for p in "$S"/[0-9]*.patch; do
+            git -C tcc apply --ignore-whitespace "../$p" \
+              || { echo "FAIL: could not apply $(basename "$p")"; exit 1; }
+            n=$((n + 1))
+          done
+          [ "$n" = 5 ] || { echo "FAIL: applied $n patches, expected 5"; exit 1; }
+          echo "  applied $n patches -- measuring OUR tree, not upstream's"
+
+      - name: 'MEASURE: compile every tcc .c in NORMAL mode'
+        run: |
+          set -eu
+          cd tcc
+          : > /tmp/results.tsv
+          want=0; ran=0
+          for f in *.c; do
+            case "$f" in *_test*|tests/*) continue ;; esac
+            want=$((want + 1))
+            # NORMAL MODE -- no --bootstrap-mode. The preprocessor runs, so
+            # #include resolves and the thirteen guarded constructs are allowed.
+            err=$("$M2" --architecture aarch64 -f "$f" -o /dev/null 2>&1 >/dev/null) && rc=0 || rc=$?
+            ran=$((ran + 1))
+            first=$(printf '%s\n' "$err" | grep -v '^$' | head -1)
+            printf '%s\t%s\t%s\n' "$f" "$rc" "${first:-OK}" >> /tmp/results.tsv
+          done
+          echo "  attempted $want files, ran $ran"
+          [ "$ran" = "$want" ] && [ "$want" -gt 10 ] || {
+            echo "FAIL: measured $ran of $want files. A probe that measures"
+            echo "  nothing reports the same shape as a probe that measures a"
+            echo "  clean tree, which is how the last attempt at this passed"
+            echo "  review while never running the compiler at all."
+            exit 1
+          }
+
+      - name: 'REPORT: what it actually rejected'
+        run: |
+          set -eu
+          ok=$(awk -F'\t' '$2==0' /tmp/results.tsv | wc -l)
+          bad=$(awk -F'\t' '$2!=0' /tmp/results.tsv | wc -l)
+          echo "  files accepted whole: $ok"
+          echo "  files rejected      : $bad"
+          echo
+          echo "  --- FIRST ERROR PER FILE ---"
+          awk -F'\t' '$2!=0 {printf "    %-18s %s\n", $1, $3}' /tmp/results.tsv
+          echo
+          echo "  --- GROUPED, MOST COMMON FIRST ---"
+          # The number that matters: how many DISTINCT things stop it. A long
+          # tail of one construct is a rung; twenty different constructs is a
+          # rewrite, and the shape is not visible from a per-file list.
+          awk -F'\t' '$2!=0 {print $3}' /tmp/results.tsv \
+            | sed 's/^[^:]*:[0-9]*:*//' | sed 's/[0-9]\+/N/g' \
+            | sort | uniq -c | sort -rn | sed 's/^/    /'
+          echo
+          echo "  Read against ROADMAP.md's static census: ternary, bitfields,"
+          echo "  float/double and stack aggregate init. 'array on the stack' is"
+          echo "  a maybe_bootstrap_error string, so if it does NOT appear above"
+          echo "  it was never a missing feature -- only a bootstrap refusal."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: m2-normal-mode-gap
+          path: /tmp/results.tsv
+          if-no-files-found: warn
