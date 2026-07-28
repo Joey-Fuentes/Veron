@@ -70,7 +70,11 @@
 #     empty macro must not skip the next token        (companion to rescan)
 #     ternary c ? a : b                               tcc.h:1417 405 uses
 #     `*(p)` deref vs cast                            tcc.h:1874 byte-identical
-#     comma operator `a, b`                           tcc.h:1947 NOT DONE
+#     comma operator `a, b`                           tcc.h:1947 21 uses
+#
+#   tcc.h NOW PARSES COMPLETELY -- all 2013 lines. It was the wall for fifteen
+#   consecutive rounds. Remaining walls are in other files:
+#     global array = non-brace initialiser              tcctok.h:3 NOT DONE
 #
 # float was the item ROADMAP called pivotal and it was two extern declarations,
 # not arithmetic. Bitfield LAYOUT is done and verified -- three packed fields

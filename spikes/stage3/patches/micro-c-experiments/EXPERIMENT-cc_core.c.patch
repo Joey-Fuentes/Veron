@@ -34,29 +34,29 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
 +	 * defect rather than introducing it, which is fine for measuring how far
 +	 * tcc parses and NOT fine to ship -- a real fix needs precedence levels,
 +	 * the way the expression parser proper has them. */
-+	else if(global_token->s[0] == '*')
-+	{
-+		require_extra_token();
-+		return lhs * constant_expression();
-+	}
-+	else if(global_token->s[0] == '/')
-+	{
-+		require_extra_token();
-+		return lhs / constant_expression();
-+	}
-+	else if(global_token->s[0] == '%')
-+	{
-+		require_extra_token();
-+		return lhs % constant_expression();
-+	}
  	else if(global_token->s[0] == '*')
  	{
  		require_extra_token();
  		return lhs * constant_expression();
  	}
 -	else if(global_token->s[0] == ',' || global_token->s[0] == ']' || global_token->s[0] == ';' || global_token->s[0] == '}' || global_token->s[0] == ':')
-+	else if(global_token->s[0] == ',' || global_token->s[0] == ']' || global_token->s[0] == ';' || global_token->s[0] == '}' || global_token->s[0] == ':' || global_token->s[0] == ')')
++	else if(global_token->s[0] == '/')
++	{
++		require_extra_token();
++		return lhs / constant_expression();
++	}
++	else if(global_token->s[0] == '%')
  	{
++		require_extra_token();
++		return lhs % constant_expression();
++	}
++	else if(global_token->s[0] == '*')
++	{
++		require_extra_token();
++		return lhs * constant_expression();
++	}
++	else if(global_token->s[0] == ',' || global_token->s[0] == ']' || global_token->s[0] == ';' || global_token->s[0] == '}' || global_token->s[0] == ':' || global_token->s[0] == ')')
++	{
 +		/* ')' joins the terminator set for the grouping parens added to
 +		 * constant_expression_term: the inner expression has to be able to
 +		 * stop at its own closing paren. */
@@ -226,7 +226,37 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(match("=", global_token->s))
  	{
  		char* store = "";
-@@ -2800,6 +2966,60 @@
+@@ -2772,6 +2938,29 @@
+ 	else
+ 	{
+ 		expression();
++
++		/* COMMA OPERATOR, `a, b`. 21 uses in the pinned tcc tree, e.g.
++		 *     sem_init(&p->sem, 0, 1), p->init = 1;
++		 * It evaluates the left side, discards the value, and yields the
++		 * right.
++		 *
++		 * HERE AND NOT INSIDE expression(), which is the whole difficulty:
++		 * comma is C's LOWEST-precedence operator, but the same character also
++		 * separates function arguments, struct declarators and initialiser
++		 * lists, where it is punctuation rather than an operator. Handling it
++		 * in expression() would make `f(a, b)` parse as one argument. At
++		 * statement level a full expression is what is expected, so the comma
++		 * can only be the operator.
++		 *
++		 * Nothing is emitted to discard the left result: each expression
++		 * leaves its value in the return register and the next overwrites it,
++		 * which is exactly the semantics wanted. */
++		while(match(",", global_token->s))
++		{
++			require_extra_token();
++			expression();
++		}
++
+ 		require_match("ERROR in statement\nMISSING ;\n", ";");
+ 	}
+ }
+@@ -2800,6 +2989,60 @@
  		type_size = type_name();
  		require(NULL != global_token, "Received EOF when attempting to collect arguments\n");
  		require(NULL != type_size, "Must have non-null type\n");
@@ -287,7 +317,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		if(global_token->s[0] == ')')
  		{
  			/* foo(int,char,void) doesn't need anything done */
-@@ -2808,7 +3028,14 @@
+@@ -2808,7 +3051,14 @@
  		else if(global_token->s[0] != ',')
  		{
  			/* deal with foo(int a, char b) */
@@ -303,7 +333,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  			require(!iskeywordp(global_token->s), "You are not allowed to use a keyword as a argument variable name\n");
  			a = sym_declare(global_token->s, type_size, function->arguments, TLO_ARGUMENT);
  			if(NULL == function->arguments)
-@@ -2969,6 +3196,35 @@
+@@ -2969,6 +3219,35 @@
  	{
  		type_size = mirror_type(type_size);
  		global_token = global_token->next;

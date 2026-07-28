@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "stops at the comma operator, tcc.h:1947 of 2013".
+"hangs forever on tcc.c" to "through tcc.h entirely -- now in tcctok.h".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -30,6 +30,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   an empty macro must not skip the next token  cc_macro.c
   ternary `c ? a : b`                          cc_core.c   tcc.h:1417, 405 uses
   cast vs parens after unary `*`               cc_core.c   tcc.h:1874
+  comma operator, at STATEMENT level           cc_core.c   tcc.h:1947, 21 uses
 
 UNSOUND, AND WHY
 ----------------
@@ -154,6 +155,24 @@ UNSOUND, AND WHY
    bitfields were the other. Both were caught by diffing against a known-good
    equivalent, not by reading the code. That is the technique that works here.
 
+10. THE COMMA OPERATOR GOES AT STATEMENT LEVEL, AND THAT IS THE WHOLE POINT.
+    It is C's LOWEST-precedence operator, but the same character separates
+    function arguments, struct declarators and initialiser lists, where it is
+    punctuation. Handling it in expression() would make `f(a, b)` parse as a
+    single argument. At statement level a full expression is expected, so a
+    comma there can only be the operator.
+
+    `g = 1, h = 2;` emits BYTE-IDENTICAL code to `g = 1; h = 2;`, and nothing
+    is emitted to discard the left value -- each expression leaves its result
+    in the return register and the next overwrites it, which is the semantics
+    wanted.
+
+    NOT COVERED: the parenthesised form, `(g = 1, 5)`. tcc does not use it --
+    checked, the apparent matches are all `(tok == ',')` character literals.
+
+MILESTONE: tcc.h PARSES COMPLETELY. All 2013 lines. It had been the wall for
+fifteen consecutive rounds; the remaining walls are in other files.
+
 The other seven look sound and are candidates for promotion once reviewed.
 The declarator one is the strongest candidate: `int a, b, c;` now emits
 output BYTE-IDENTICAL to `int a; int b; int c;`, which proves the member
@@ -161,7 +180,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Twenty-two walls between a hanging compiler and tcc's first genuinely large
+Twenty-four walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
