@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "tccgen.c:8723 of 8917 -- 98% through the code generator".
+"hangs forever on tcc.c" to "THROUGH tccgen.c entirely -- now in tccdbg.c".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -70,6 +70,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   postfix ++/-- binds tighter than `*`      cc_core.c   tccgen.c:7335
   __FUNCTION__                              cc_core.c   tcc.h:1250
   aggregate members zeroed word by word     cc_core.c   tccgen.c:7732
+  copy chunks must be 8/4/2/1               cc_core.c   tccgen.c:8723
 
 UNSOUND, AND WHY
 ----------------
@@ -685,7 +686,27 @@ tcc.h, libtcc.h, elf.h, tcctok.h and now tccpp.c. Now in tccgen.c.
     would need a copy from a source address, and there is no source here, so
     that path stops rather than writing one word and calling it done.
 
-STOPPED AT: tccgen.c:8723, "unsupported size 3 of type 'AttributeDef'".
+47. A COPY CHUNK MUST BE A SIZE THE MACHINE CAN LOAD -- 8, 4, 2 or 1.
+
+    `AttributeDef ad, adbase; ad = adbase;` at tccgen.c:8723. AttributeDef is
+    27 bytes, so the struct copy did 8+8+8 and then asked for a 3-byte tail.
+    load_value(3) is not an instruction.
+
+    THE ERROR READ "unsupported size 3 ... of type 'AttributeDef'", WHICH
+    LOOKED LIKE A BROKEN LAYOUT. Two rounds went into whether bitfield structs
+    were sizing wrong. Instrumenting create_struct showed the layout was
+    perfect -- 2, 8, 8, 8, 8, 8, 1 summing to 43 -- and the fault was in the
+    COPY I wrote three rounds earlier, which only ever ran on multiples of 8
+    until now.
+
+    Fixed in both places that chunk: the struct copy and the aggregate-member
+    zeroing. A 27-byte struct now copies as 8+8+8+2+1.
+
+MILESTONE: tccgen.c PARSES COMPLETELY -- all 8,917 lines, the largest file in
+the compilation unit. Six files done: tcc.h, libtcc.h, elf.h, tcctok.h,
+tccpp.c and tccgen.c. Now in tccdbg.c.
+
+STOPPED AT: tccdbg.c:36, "Invalid token '|' used in constant expression".
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -700,7 +721,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Sixty-one walls between a hanging compiler and tcc's first genuinely large
+Sixty-two walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11

@@ -115,7 +115,15 @@
 #     postfix ++/-- binds tighter than unary `*`       tccgen.c:7335
 #     __FUNCTION__                                     tcc.h:1250
 #     aggregate members zeroed word by word            tccgen.c:7732
-#     unsupported size 3, AttributeDef                 tccgen.c:8723 NOT DONE
+#     copy chunks must be 8/4/2/1 (a 27-byte struct)   tccgen.c:8723
+#
+#   tccgen.c NOW PARSES COMPLETELY -- all 8,917 lines. Now in tccdbg.c:
+#     '|' in a constant expression                     tccdbg.c:36 NOT DONE
+#
+#   SOUNDNESS: micro-c's `int` is EIGHT bytes (M2-Planet's own type model, not
+#   introduced here). Internally consistent, wrong at the libc boundary and in
+#   bitfield storage units. The fixed-width types ARE correct, so ELF headers
+#   lay out properly -- checked, not assumed.
 #
 # float was the item ROADMAP called pivotal and it was two extern declarations,
 # not arithmetic. Bitfield LAYOUT is done and verified -- three packed fields
