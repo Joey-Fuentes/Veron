@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "through tcc.h entirely -- now in tcctok.h".
+"hangs forever on tcc.c" to "through tcc.h entirely; stops at the # stringify operator".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -31,6 +31,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   ternary `c ? a : b`                          cc_core.c   tcc.h:1417, 405 uses
   cast vs parens after unary `*`               cc_core.c   tcc.h:1874
   comma operator, at STATEMENT level           cc_core.c   tcc.h:1947, 21 uses
+  global char array = string literal           cc_core.c   tcc.c:32, tccpp.c:64
 
 UNSOUND, AND WHY
 ----------------
@@ -170,6 +171,25 @@ UNSOUND, AND WHY
     NOT COVERED: the parenthesised form, `(g = 1, 5)`. tcc does not use it --
     checked, the apparent matches are all `(tok == ',')` character literals.
 
+11. STRING-INITIALISED GLOBAL ARRAYS were the FIRST wall this probe ever hit,
+    at tcc.c:32, and could not be reached again until the preprocessor work
+    landed. tccpp.c builds one from 433 lines of macro expansion:
+
+        static const char tcc_keywords[] =
+        #define DEF(id, str) str "\0"
+        #include "tcctok.h"
+        ;
+
+    Adjacent literals concatenate, so the accumulation mirrors what
+    primary_expr_string already does. The difference is where the bytes go:
+    a string EXPRESSION gets its own STRING_ label and is referenced by
+    address, while this emits under the GLOBAL's own label. Verified by
+    reading the emitted M1: `:GLOBAL_STORAGE_help` / `"hello"`, and adjacent
+    literals arriving as `"ab"`.
+
+    It then hit MAX_STRING, which is a capacity limit rather than a language
+    gap -- M2-Planet takes `--max-string`. The probe passes 65536.
+
 MILESTONE: tcc.h PARSES COMPLETELY. All 2013 lines. It had been the wall for
 fifteen consecutive rounds; the remaining walls are in other files.
 
@@ -180,7 +200,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Twenty-four walls between a hanging compiler and tcc's first genuinely large
+Twenty-six walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11

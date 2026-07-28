@@ -369,3 +369,50 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	require_match("ERROR in typedef statement\nMissing ;\n", ";");
+@@ -3320,6 +3599,46 @@
+ 	{
+ 		require_extra_token();
+ 
++		/* A GLOBAL CHAR ARRAY MAY BE INITIALISED WITH A STRING.
++		 *     static const char help[] = "usage: ...";          tcc.c:32
++		 *     static const char tcc_keywords[] =                tccpp.c:64
++		 *         #define DEF(id,str) str "\0"
++		 *         #include "tcctok.h"
++		 *     ;
++		 * The second is 433 lines of adjacent literals produced by macro
++		 * expansion, which is why this could not be reached until the
++		 * preprocessor work landed.
++		 *
++		 * Adjacent literals concatenate, so the loop mirrors what
++		 * primary_expr_string already does. The bytes go out under the
++		 * GLOBAL's own label -- unlike a string EXPRESSION, which gets its own
++		 * STRING_ label and is referenced by address. */
++		if(global_token->s[0] == '"')
++		{
++			char* acc = calloc(MAX_STRING, sizeof(char));
++			require(NULL != acc, "Exhausted memory on global string initialiser\n");
++			int ai = 0;
++			acc[ai] = '"';
++			ai = ai + 1;
++			while('"' == global_token->s[0])
++			{
++				int j = 1;   /* step past this literal's leading quote */
++				while(0 != global_token->s[j])
++				{
++					require(ai < MAX_STRING, "global string initialiser exceeded MAX_STRING\n");
++					acc[ai] = global_token->s[j];
++					ai = ai + 1;
++					j = j + 1;
++				}
++				require_extra_token();
++			}
++			acc[ai] = 0;
++			globals_list = emit(parse_string(acc), globals_list);
++			/* The caller consumes the ';'. array_modifier stays as parsed --
++			 * the declared size, if any -- so `char x[8] = "hi"` keeps its 8. */
++			return array_modifier;
++		}
++
+ 		require_match("Missing { after = in global array", "{");
+ 
+ 		array_modifier = global_array_initializer_list(type_size, array_modifier);

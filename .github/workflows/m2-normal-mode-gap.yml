@@ -74,7 +74,9 @@
 #
 #   tcc.h NOW PARSES COMPLETELY -- all 2013 lines. It was the wall for fifteen
 #   consecutive rounds. Remaining walls are in other files:
-#     global array = non-brace initialiser              tcctok.h:3 NOT DONE
+#     global char array = string literal                tcc.c:32, tccpp.c:64
+#     --max-string 65536 (capacity, not a gap)          tccpp.c
+#     '#' stringify operator                            tcctok.h:187 NOT DONE
 #
 # float was the item ROADMAP called pivotal and it was two extern declarations,
 # not arithmetic. Bitfield LAYOUT is done and verified -- three packed fields
@@ -283,7 +285,7 @@ jobs:
             while [ "$tries" -lt 25 ]; do
               tries=$((tries + 1))
               err=$( (ulimit -v 4194304; timeout 30 "$M2" --architecture aarch64 --expand-includes \
-                       -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 \
+                       --max-string 65536 -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 \
                        -D TCC_TARGET_LINUX=1 -D CONFIG_TCC_STATIC=1 \
                        -I . -I /tmp/stubs -I "$M2LIBC" \
                        -f "$f" -o /dev/null) 2>&1 >/dev/null ) && rc=0 || rc=$?
@@ -307,7 +309,7 @@ jobs:
             if [ "$rc" = 124 ]; then
               printf '      %s: past 30s, one full pass at 300s...\n' "$f"
               err=$( (ulimit -v 4194304; timeout 300 "$M2" --architecture aarch64 --expand-includes \
-                       -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 \
+                       --max-string 65536 -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 \
                        -D TCC_TARGET_LINUX=1 -D CONFIG_TCC_STATIC=1 \
                        -I . -I /tmp/stubs -I "$M2LIBC" \
                        -f "$f" -o /dev/null) 2>&1 >/dev/null ) && rc=0 || rc=$?
@@ -382,7 +384,7 @@ jobs:
           for f in tcc.c libtcc.c; do
             out=/tmp/pp-$f.txt
             (ulimit -v 4194304; timeout 300 "$M2" --architecture aarch64 -E --expand-includes \
-               -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 \
+               --max-string 65536 -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 \
                -D TCC_TARGET_LINUX=1 -D CONFIG_TCC_STATIC=1 \
                -I . -I include -I "$M2LIBC" \
                -f "$f" -o "$out") >/dev/null 2>&1 || true
