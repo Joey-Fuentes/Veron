@@ -310,6 +310,8 @@ jobs:
           ./micro-c --architecture aarch64 --max-string 65536 \
             -f "$P/main-02-tccmalloc.c" -o tccmal.M1
           ./micro-c --architecture aarch64 --max-string 65536 \
+            -f "$P/main-03-mallocz.c" -o mallocz.M1
+          ./micro-c --architecture aarch64 --max-string 65536 \
             -f "$P/main-01-tccnew.c" -o callit.M1
 
           run_probe() {
@@ -368,6 +370,9 @@ jobs:
           # if E3 faults the fault is the indirect call, not the allocator and
           # not tcc's logic.
           run_probe E3-tcc_malloc   libc-full.M1  libtcc.M1 m2libc.M1 stubs.M1 tccmal.M1
+          # E4: tcc_mallocz(8192) -- a BIG allocation plus memset, which is
+          # literally tcc_new's first statement. E3 only proved 64 bytes.
+          run_probe E4-mallocz      libc-full.M1  libtcc.M1 m2libc.M1 stubs.M1 mallocz.M1
           run_probe F-call-tcc_new  libc-full.M1  libtcc.M1 m2libc.M1 stubs.M1 callit.M1
 
           echo

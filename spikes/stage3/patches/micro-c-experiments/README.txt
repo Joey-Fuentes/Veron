@@ -1142,3 +1142,31 @@ guess in this sequence has been wrong, so E3 asks instead.
 
 E2 already rules out the allocator underneath, so E3 isolates exactly one
 thing: whether that indirect call goes where it should.
+
+=============================================================================
+THE INDIRECT CALL IS EXONERATED TOO
+
+    E2  malloc(64)                    MAIN RAN, exit 42
+    E3  tcc_malloc(64)                MAIN RAN, exit 42
+    F   tcc_new()                     SIGNAL 11
+
+E3 goes through `reallocator`, the global function pointer initialised with a
+function name at libtcc.c:265 -- the newest and least-exercised thing in the
+series. It works. So does the allocator underneath it.
+
+The fault is inside tcc_new past its allocation. The fields it sets first --
+gnu_ext, tcc_ext, nocommon -- are plain unsigned char, not bitfields, so the
+bitfield read-modify-write is not implicated either.
+
+WHAT IS LEFT BETWEEN E3 AND F is the SIZE. tcc_new begins
+
+    s = tcc_mallocz(sizeof(TCCState));
+
+and TCCState is kilobytes, larger still under micro-c's eight-byte `int`. E3
+only ever proved 64 bytes. E4 asks for 8192 through the same call, memset
+across it, and writes at both ends -- which catches a block that was handed
+back but never really mapped.
+
+Four probes have now each removed one explanation without any of them being
+the answer. That is what the ladder is for; the alternative was reading
+tccgen.c with no idea which part to read.
