@@ -1450,3 +1450,40 @@ VERIFIED LOCALLY on an x86_64 host before shipping:
 gen1 differs from gen2 because a different compiler produced it; gen2 matching
 gen3 is the property that matters. That is the number our side has to be
 measured against, and now there is one.
+
+=============================================================================
+THE CONTROL IS ESTABLISHED
+
+On the native aarch64 runner, tcc built by gcc:
+
+    gcc-built tcc   427,576 bytes  sha256 dd9aa07f35323406...
+
+    test1           Auto Test OK
+    test2           Auto Test2 OK        tcc compiles tcc, that tcc runs the test
+    test3           Auto Test3 OK        three levels deep
+    make test       passes, including the bounds-checking variants
+
+    gen1            427,576 bytes  sha256 dd9aa07f35323406...   gcc-built
+    gen2            543,689 bytes  sha256 8426636dc655d0b2...   built by gen1
+    gen3            543,689 bytes  sha256 8426636dc655d0b2...   built by gen2
+    FIXPOINT -- gen2 and gen3 byte-identical
+
+Those are the numbers our side is measured against. Note gen2 on aarch64 is
+543,689 where the x86_64 rehearsal gave 425,212 -- the same property on a
+different target, which is why the control has to run on the same machine as
+the subject rather than being quoted from a laptop.
+
+THE SUBJECT SIDE DID NOT GET AS FAR AS A COMPILER THIS TIME. It stopped at
+
+    tcc.h:27: Unable to find include file: config.h
+
+because the job copies a fresh tcc clone and generates tccdefs_.h but never
+runs ./configure, which is what produces config.h. The local rehearsal used a
+tree that had been configured hours earlier, so it could not have caught this
+-- the same shape of mistake as verifying patches against the wrong tree, and
+the third time in this run that a check shared an assumption with the thing it
+was checking.
+
+Fixed, and re-rehearsed from a copy with config.h and tccdefs_.h deleted
+first: configure runs, both files regenerate, libtcc.c compiles to 351,497
+lines.

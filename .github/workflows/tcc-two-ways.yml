@@ -175,6 +175,11 @@ jobs:
 
           cp -r tcc-src mc-tcc
           cd mc-tcc
+          # ./configure GENERATES config.h, which tcc.h includes on line 27.
+          # The local rehearsal used an already-configured tree and so never
+          # noticed; CI starts from a fresh clone and does.
+          ./configure --cpu=arm64 >/dev/null 2>&1 || true
+          [ -f config.h ] || { echo "FAIL: configure did not produce config.h"; exit 1; }
           cc -DC2STR conftest.c -o c2str.exe && ./c2str.exe include/tccdefs.h tccdefs_.h
           cd ..
 
