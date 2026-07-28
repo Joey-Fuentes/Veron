@@ -1757,3 +1757,38 @@ Every file compiles individually, and CI compiled the whole unit successfully
 on the same source, so this is a 4 GB limit rather than a defect. It does mean
 the end-to-end check now only exists in CI, and that is worth saying rather
 than quietly dropping the claim.
+
+=============================================================================
+SHORT-CIRCUIT IS REVERTED AND DEFERRED
+
+The x16 fix did not work. Markers stayed at D1 -- inside tcc_new, earlier than
+anything reached since the alignment bug. So the change is out of the main
+series and lives in patches/micro-c-deferred/ instead.
+
+MEASURED, same source, with and without:
+
+    without   libtcc.c compiles in 42s, 351,497 lines
+              built tcc reaches tcc_set_output_type, markers to T9
+
+    with      libtcc.c OOM-killed at 38s in a 4 GB container
+              in CI, where memory is not the limit, the built tcc dies
+              inside tcc_new
+
+AND A CORRECTION TO WHAT WAS WRITTEN LAST ROUND. The OOM was blamed on this
+container's memory, on the grounds that CI compiled the same source fine.
+That was wrong: reverting the change makes the full unit compile here again,
+in 42 seconds. The change caused BOTH failures. CI had enough memory to get
+past the first one and then hit the second.
+
+Two guesses at "it works in CI so it must be my environment" and "it must be
+x16" were both wrong, in the same round. The measurement that settled it --
+revert and re-run -- was available the whole time and cost one command.
+
+WHY THE PATCH IS KEPT RATHER THAN DISCARDED. The bug is real: C requires
+short-circuit and tcc relies on it in forty-eight places where the left
+operand is a null guard. It will have to be fixed. The deferred patch carries
+the fix, the x16 hazard that was found along the way, and a list of what has
+already been ruled out, so the next attempt does not start from zero.
+
+MAIN SERIES IS BACK TO THE KNOWN STATE: 12 patches apply to a pristine
+bd2fe4b, it builds, libtcc.c compiles to 351,497 lines.
