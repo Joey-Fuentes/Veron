@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "tccgen.c:909 -- bitfield access done, struct-by-value in progress".
+"hangs forever on tcc.c" to "tccgen.c:1549 -- 1,549 lines into the code generator".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -61,6 +61,8 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   BITFIELD READ and READ-MODIFY-WRITE      cc_core.c   tccgen.c:397
   a struct is never LOADED into a register  cc_core.c   tccgen.c:895
   struct assignment to an array element     cc_core.c   tccgen.c:907
+  a LOCAL struct is not loaded either        cc_core.c   tccgen.c:909
+  local struct BRACE INITIALISER             cc_core.c   tccgen.c:1167
 
 UNSOUND, AND WHY
 ----------------
@@ -581,10 +583,27 @@ tcc.h, libtcc.h, elf.h, tcctok.h and now tccpp.c. Now in tccgen.c.
     tccgen.c:907, 60 bytes. The size comes from current_target->type there,
     the same place the ordinary indexed store reads it.
 
-STOPPED AT: tccgen.c:909, the LOAD side of the same thing -- `tmp = vtop[0]`
-where the element is a struct. Third struct-by-value site in a row; they are
-coming in a cluster because tccgen.c manipulates SValue and CType by value
-throughout.
+38. A LOCAL STRUCT IS NOT LOADED EITHER. The dereference sites were guarded
+    in entry 36; this is the plain-variable path, which loads
+    current_target->size for a LOCAL or ARGUMENT. For a struct that is 16, so
+    `vtop[0] = tmp` failed at tccgen.c:909 where tcc swaps two SValues through
+    a local. Four places now know the same rule -- member access, dereference,
+    local, argument -- which suggests it wants to be one predicate rather than
+    four copies, if this were being written properly rather than measured.
+
+39. LOCAL STRUCT BRACE INITIALISERS -- `CType ct = { VT_ASM_FUNC, NULL };` at
+    tccgen.c:1167. Walk the members in order, store each initialiser at its
+    own offset, and ZERO the ones left out: an incomplete initialiser zeroes
+    the rest in C, and skipping that would leave stack garbage in the tail of
+    the struct, silently.
+
+    Store widths match field-by-field assignment exactly, so the initialiser
+    inherits micro-c's existing behaviour rather than inventing its own.
+
+STOPPED AT: tccgen.c:1549, `temp_var = &arr_temp_local_vars[i];` -- taking the
+address of an array element into a GLOBAL pointer. The same statement with a
+LOCAL pointer compiles. Confirmed against the previous build that this is
+pre-existing rather than newly introduced.
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -599,7 +618,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Fifty-two walls between a hanging compiler and tcc's first genuinely large
+Fifty-four walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
