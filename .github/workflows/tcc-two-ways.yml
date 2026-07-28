@@ -475,14 +475,31 @@ jobs:
           # and into tcc_compile there were no markers there at all, so the
           # report had nothing to say and it looked like the fault had gone
           # invisible. It had not -- the instrument did not reach it.
+          # TWO FILES, EACH WITH ITS OWN MARKER LETTER.
+          #
+          # The fault moved out of libtcc.c into preprocess_start, which lives
+          # in tccpp.c -- and instrumenting one file cannot see it. Each file
+          # gets a distinct prefix because both number their markers from 1.
           FUNC="${DEBUG_FUNC:-tcc_set_output_type,tcc_compile,tcc_compile_string}"
-          python3 spikes/stage3/tools/instrument.py --map mc-tcc/libtcc.c "$FUNC" \
-            > marker-map.txt || { echo "  could not instrument $FUNC"; exit 0; }
+          PPFUNC="${DEBUG_PPFUNC:-preprocess_start,tccpp_new}"
+
+          : > marker-map.txt
+          python3 spikes/stage3/tools/instrument.py --map --prefix L \
+            mc-tcc/libtcc.c "$FUNC" >> marker-map.txt \
+            || { echo "  could not instrument $FUNC"; exit 0; }
+          python3 spikes/stage3/tools/instrument.py --map --prefix P \
+            mc-tcc/tccpp.c "$PPFUNC" >> marker-map.txt \
+            || echo "  (could not instrument $PPFUNC in tccpp.c)"
+
           echo "  --- marker map ($(wc -l < marker-map.txt) statements) ---"
           cat marker-map.txt
-          python3 spikes/stage3/tools/instrument.py mc-tcc/libtcc.c "$FUNC" \
-            > /tmp/inst.c 2>/dev/null
+
+          python3 spikes/stage3/tools/instrument.py --prefix L \
+            mc-tcc/libtcc.c "$FUNC" > /tmp/inst.c 2>/dev/null
           cp /tmp/inst.c mc-tcc/libtcc.c
+          python3 spikes/stage3/tools/instrument.py --prefix P \
+            mc-tcc/tccpp.c "$PPFUNC" > /tmp/instpp.c 2>/dev/null \
+            && cp /tmp/instpp.c mc-tcc/tccpp.c
 
           L="$PWD/spikes/stage3/micro-c-libc"
           cd mc-tcc
@@ -513,9 +530,9 @@ jobs:
           ./tcc-inst 2> inst-marks.txt
           rc=$?
           set -e
-          last=$(grep -aoE '^L[0-9]+' inst-marks.txt | tail -1)
+          last=$(grep -aoE '^[LP][0-9]+' inst-marks.txt | tail -1)
           echo "  --- result ---"
-          echo "  markers printed: $(grep -acE '^L[0-9]+' inst-marks.txt), exit $rc"
+          echo "  markers printed: $(grep -acE '^[LP][0-9]+' inst-marks.txt), exit $rc"
           echo "  LAST STATEMENT THAT COMPLETED: $last"
           grep "^$last " marker-map.txt || true
 

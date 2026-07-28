@@ -317,3 +317,31 @@ digit-only grep, the hardcoded C3, the do_debug substring, and now this -- had
 the same shape: the tool answered confidently in a case it could not
 distinguish. The raw marker sequence was correct every single time. It was the
 sentence underneath it that was wrong.
+
+=============================================================================
+THE REJOIN MARKERS WORKED
+
+    LAST STATEMENT THAT COMPLETED: L19  libtcc.c:823  tcc_compile: (rejoin) }
+
+L19 is the rejoin after the if/else. L20 is
+
+    preprocess_start(s1, filetype);
+
+and it never printed. THE FAULT IS IN preprocess_start, named exactly, with no
+interpretation required -- which is what the rejoin markers were added for one
+round earlier.
+
+preprocess_start is in tccpp.c, a different file, so instrumenting libtcc.c
+could not see inside it. instrument.py now takes --prefix so each FILE gets its
+own marker letter -- both number from 1, and two L07s in one log cannot be
+told apart. CI instruments libtcc.c as L and tccpp.c as P.
+
+WORTH NOTING WHAT IS IN THERE:
+
+    P04  s1->include_stack_ptr = s1->include_stack;
+
+That is the array-member decay bug from early in this work -- a member that
+must yield its ADDRESS, not its first element. It was fixed for `->`, then
+found again for `.`, and this is the exact line in tcc that first exposed it.
+If it faults there again it will be the third time that one rule has been
+missing from a fourth place.

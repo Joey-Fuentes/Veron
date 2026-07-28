@@ -38,8 +38,12 @@ Each of those would produce code that does not compile, which wastes a round
 in a different way.
 
 USAGE
-    instrument.py <file.c> <func>[,func2,...] > patched.c
-    instrument.py --map <file.c> <func>[,func2,...]     the line map only
+    instrument.py [--prefix X] <file.c> <func>[,func2,...] > patched.c
+    instrument.py --map [--prefix X] <file.c> <func>[,...]   the line map only
+
+--prefix gives each FILE its own marker letter. Instrumenting two files with
+the default produces two L07s, and the map cannot then say which one a marker
+came from.
 
 The map matters: "L07" means nothing without it, and the mapping changes
 whenever the source does.
@@ -118,9 +122,16 @@ def instrumentable(line):
 def main():
     args = sys.argv[1:]
     map_only = False
+    prefix = 'L'
     if args and args[0] == '--map':
         map_only = True
         args = args[1:]
+    if len(args) >= 2 and args[0] == '--prefix':
+        # A DISTINCT LETTER PER FILE. Markers are numbered from 1 in whichever
+        # file they come from, so instrumenting two files with the default
+        # prefix produces two L07s and the map cannot say which is which.
+        prefix = args[1]
+        args = args[2:]
     if len(args) != 2:
         sys.stderr.write(__doc__)
         return 2
@@ -186,7 +197,7 @@ def main():
 
         if func is not None and closing and depth >= 1 and before > depth:
             n += 1
-            tag = "L%02d" % n
+            tag = "%s%02d" % (prefix, n)
             indent = line[:len(line) - len(line.lstrip())]
             out.append('%swrite(2, "%s\\n", 4);' % (indent, tag))
             mapping.append((tag, i + 1, "%s: (rejoin) %s" % (func, line.strip())))
@@ -194,7 +205,7 @@ def main():
 
         if func is not None and instrumentable(line):
             n += 1
-            tag = "L%02d" % n
+            tag = "%s%02d" % (prefix, n)
             indent = line[:len(line) - len(line.lstrip())]
             out.append('%swrite(2, "%s\\n", 4);' % (indent, tag))
             mapping.append((tag, i + 1, "%s: %s" % (func, line.strip())))
