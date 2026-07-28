@@ -120,7 +120,16 @@
 #   tccgen.c NOW PARSES COMPLETELY -- all 8,917 lines. Now in tccdbg.c:
 #     bitwise ops in constant_expression               tccdbg.c:36
 #     `sizeof (x[0])`                                  tccdbg.c:82
-#     Unknown type (                                   tccdbg.c:497 NOT DONE
+#     `sizeof ((T*)0)->member`                         tccdbg.c:497
+#     cast after postfix, dereference path             tccdbg.c:551
+#     `static` may follow the type                     tccrun.c:68
+#     comma in a do-while condition                    tccrun.c:296
+#     block-scope function declarations                tccrun.c:476
+#     function-type typedefs are callable              tccrun.c:1140
+#     real stdio/string/unistd/signal/ucontext headers micro-c-libc/
+#
+#   SIX .c FILES NOW PARSE COMPLETELY. Now in the arm64 backend:
+#     use_tcc_error_noabort                            arm64-gen.c:252 NOT DONE
 #
 #   SOUNDNESS: micro-c's `int` is EIGHT bytes (M2-Planet's own type model, not
 #   introduced here). Internally consistent, wrong at the libc boundary and in

@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "tccdbg.c:497 of 2676".
+"hangs forever on tcc.c" to "THROUGH SIX .c FILES -- now in arm64-gen.c".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -73,6 +73,14 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   copy chunks must be 8/4/2/1               cc_core.c   tccgen.c:8723
   bitwise ops in constant_expression        cc_core.c   tccdbg.c:36
   `sizeof (x[0])`                           cc_core.c   tccdbg.c:82
+  `sizeof ((T*)0)->member`                  cc_core.c   tccdbg.c:497
+  a cast applies after postfix, deref path  cc_core.c   tccdbg.c:551
+  `static` may follow the type              cc_types.c  tccrun.c:68
+  comma in a do-while condition             cc_core.c   tccrun.c:296
+  block-scope function declarations         cc_core.c   tccrun.c:476
+  function-type typedefs are CALLABLE       cc_core.c   tccrun.c:1140
+  real headers: stdio, string, unistd,      micro-c-libc/
+    signal, sys/ucontext
 
 UNSOUND, AND WHY
 ----------------
@@ -730,7 +738,48 @@ tccpp.c and tccgen.c. Now in tccdbg.c.
     array_modifier. Stepping the type gave sizeof(tbl[0]) == sizeof(tbl).
     Verified: 128/16 = 8 elements, 80/8 = 10 elements.
 
-STOPPED AT: tccdbg.c:497, "Unknown type (".
+50. `sizeof ((T*)0)->member` -- the size of a member without an instance. The
+    '(' after sizeof was NOT its delimiter; it opened a cast expression, and
+    the member walk continues after the closing paren.
+
+51. A CAST APPLIES AFTER THE POSTFIX -- IN THE DEREFERENCE PATH TOO.
+    primary_expr's cast branch learned this at tccgen.c:281; the dereference
+    path kept its own copy and had to learn it again at
+        (*(uint8_t*)section_ptr_add((s), 1) = (data))   tccdbg.c:551
+
+52. `static` MAY FOLLOW THE TYPE. `#define TCC_SEM(s) TCCSem s` with
+    `TCC_SEM(static rt_sem)` expands to `TCCSem static rt_sem;`, which C
+    allows -- storage class and type specifiers may appear in any order.
+
+53. COMMA IN A do-while CONDITION -- `} while (++p, f);`. The sixth and last
+    controlling-expression position to take comma_expression.
+
+54. FUNCTION DECLARATIONS AT BLOCK SCOPE -- `void __clear_cache(void*, void*);`
+    inside a function body. Skipping it entirely was not enough: the CALL is
+    the next line, so it has to be registered in the global function list.
+
+55. FUNCTION-TYPE TYPEDEFS MUST BE MARKED CALLABLE. Entry 3 registered them
+    pointer-sized, which was enough to PARSE the declaration and not enough to
+    call through one -- postfix_expr_stub refused the '(' on a
+    non-function-pointer at tccrun.c:1140.
+
+56. FIVE REAL HEADERS REPLACED STUBS: stdio (the whole printf family, which
+    M2libc lacks), string (strerror), unistd (environ, getcwd), signal, and
+    sys/ucontext.
+
+    THE LAST TWO HAVE LAYOUTS THAT MUST MATCH THE KERNEL, not merely parse.
+    ucontext mirrors Linux arm64's sigcontext because tcc's backtrace reads
+    mcontext.pc and regs[29] out of it; the signal numbers and si_code values
+    are ABI. A wrong value there installs a handler for the wrong signal --
+    the kind of thing that looks fine until something crashes. Every field is
+    explicitly sized, because micro-c's 8-byte `int` would otherwise corrupt
+    any struct declared with plain ints.
+
+MILESTONE: SIX .c FILES PARSE COMPLETELY -- tccpp.c, tccgen.c, tccdbg.c,
+tccasm.c, tccelf.c and tccrun.c, plus all four headers. Now in arm64-gen.c,
+the backend.
+
+STOPPED AT: arm64-gen.c:252, "use_tcc_error_noabort is not a defined symbol".
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -745,7 +794,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Sixty-four walls between a hanging compiler and tcc's first genuinely large
+Seventy-one walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11

@@ -32,6 +32,8 @@ int atoi(char* str);
 
 long strtol(char* nptr, char** endptr, int base);
 unsigned long strtoul(char* nptr, char** endptr, int base);
+long long strtoll(char* nptr, char** endptr, int base);
+unsigned long long strtoull(char* nptr, char** endptr, int base);
 double strtod(char* nptr, char** endptr);
 double strtold(char* nptr, char** endptr);
 float strtof(char* nptr, char** endptr);

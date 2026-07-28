@@ -285,7 +285,26 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_match("ERROR in create_struct\n Missing ;\n", ";");
  		require(NULL != global_token, "Unterminated struct\n");
  	}
-@@ -823,7 +1050,27 @@
+@@ -815,6 +1042,18 @@
+ 		require_extra_token();
+ 	}
+ 
++	/* `static` MAY FOLLOW THE TYPE as well as precede it -- C lets storage
++	 * class and type specifiers appear in any order. tcc reaches it through
++	 *     #define TCC_SEM(s) TCCSem s
++	 *     TCC_SEM(static rt_sem);                  tccrun.c:68
++	 * which expands to `TCCSem static rt_sem;`. Skipped here and after the
++	 * type below; the declaration is already at file scope either way, and
++	 * micro-c does not act on internal linkage. */
++	if(match("static", global_token->s))
++	{
++		require_extra_token();
++	}
++
+ 	if(match("struct", global_token->s))
+ 	{
+ 		require_extra_token();
+@@ -823,7 +1062,27 @@
  			((NULL != global_token->next) &&
  			(match(global_token->next->s, "{") || match(global_token->next->s, ";"))))
  		{
@@ -314,10 +333,15 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		}
  		else if(NULL == ret)
  		{
-@@ -870,9 +1117,18 @@
+@@ -870,9 +1129,23 @@
  		require_extra_token();
  	}
  
++	if(match("static", global_token->s))   /* see the note above */
++	{
++		require_extra_token();
++	}
++
 +	/* RECORD THE DECLARATOR'S POINTER DEPTH AND ITS BASE, here where the stars
 +	 * are actually consumed -- the only place that knows both. A struct member
 +	 * list shares the BASE type but each declarator carries its own stars:
@@ -333,7 +357,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		require_extra_token();
  
  		while(match("const", global_token->s) || match("restrict", global_token->s))
-@@ -913,6 +1169,7 @@
+@@ -913,6 +1186,7 @@
  {
  	struct type* head = lookup_primitive_type();
  	struct type* i;
@@ -341,7 +365,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	if(NULL == head)
  	{
  		head = calloc(1, sizeof(struct type));
-@@ -922,10 +1179,21 @@
+@@ -922,10 +1196,21 @@
  
  		i = calloc(1, sizeof(struct type));
  		require(NULL != i, "Exhausted memory while creating a struct indirection\n");
@@ -363,7 +387,7 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  	}
  
  	head->name = global_token->s;
-@@ -936,12 +1204,29 @@
+@@ -936,12 +1221,29 @@
  	i->offset = source->indirect->offset;
  	head->is_signed = source->is_signed;
  	i->is_signed = source->indirect->is_signed;
