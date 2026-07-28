@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "stops at tcc.h:1417, 1300 lines further in".
+"hangs forever on tcc.c" to "stops at tcc.h:1874 of 2013 -- nearly through the header".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -28,6 +28,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   strip __attribute__((...)) from the stream   cc_macro.c, tcc.h:117
                                                cc.c
   an empty macro must not skip the next token  cc_macro.c
+  ternary `c ? a : b`                          cc_core.c   tcc.h:1417, 405 uses
 
 UNSOUND, AND WHY
 ----------------
@@ -115,6 +116,25 @@ UNSOUND, AND WHY
    Uniformly wrong before; inconsistent once expansions began rescanning from
    their head. Both now resume AT the next token, never past it.
 
+8. THE TERNARY IS ROADMAP.md's LARGEST PREDICTED ITEM AND THE FIRST OF ITS
+   FOUR TO BE EXACTLY WHAT IT SAID. 405 uses. It goes above assignment in
+   expression(), which is where C puts conditional-expression, so `x = c ? a
+   : b` still parses its left side correctly. Codegen is process_if's shape:
+
+       cmp / cset            condition -> x0
+       cbnz  -> skip
+         -> TERNARY_ELSE     false arm
+       mov_x0,42             true arm
+         -> _END_TERNARY
+       :TERNARY_ELSE
+       mov_x0,7              false arm
+       :_END_TERNARY
+
+   Both arms leave the result in the same register, so the join needs nothing.
+   Verified by reading the emitted M1 -- aarch64 cannot be executed here, so
+   this one is inspected rather than run, unlike the layout work which is
+   proven by byte-identical output.
+
 The other seven look sound and are candidates for promotion once reviewed.
 The declarator one is the strongest candidate: `int a, b, c;` now emits
 output BYTE-IDENTICAL to `int a; int b; int c;`, which proves the member
@@ -122,7 +142,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Twenty walls between a hanging compiler and tcc's first genuinely large
+Twenty-one walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
