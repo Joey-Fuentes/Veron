@@ -51,7 +51,48 @@
 # 18a1c7e0004359bb) and gen1 builds stage1 byte-identically to the reference
 # build. The four words differing from as+ld are all .bss references, which
 # ld page-aligns and elf does not.
-stage0-as       7920     c286551e6d8b9d17
+# 7920 -> 8144, two changes measured on the same run:
+#   r68  ldr/str gained an OPTIONAL unsigned immediate offset. h_ls_off is a
+#        tail both handlers now share, scaling by 8 for the x-form and 4 for
+#        the w-form. Added for `elf`, not for this file -- elf.aarch64.s uses
+#        it four times and could not be translated without it.
+#   r71  `movn`, the negative-immediate move. AArch64 has three moves and this
+#        language already spelled two of them separately, so movn completes the
+#        set rather than teaching `mov` to pick an encoding from the VALUE --
+#        which is the one thing the seed rules forbid an assembler to do. It
+#        shares hm_fold with `mov`; the two differ only in the base word, and a
+#        second copy of that fold is a second place for the halfword bug above
+#        to come back. elf's AT_FDCWD (#0xffffffffffffff9c) needed it: the
+#        translator inverts to `movn x0 99`, because parse_dec accumulates in a
+#        w register and cannot hold the 64-bit form.
+# 817 -> 833 instruction lines, and the rest of the growth is symbol and string
+# table entries for five new labels, not code.
+#
+# WHY THIS IS SAFE, all from the run that produced these numbers: the plain diff
+# of canonical source against canonical disassembly is IDENTICAL over 942 lines;
+# both decoders agree 833/833; both reassemble the .text exactly; the whole
+# binary reconstructs to 8144 bytes matching; gen1 == gen2 == gen3; gen1 still
+# builds stage1 byte-identically; and all EIGHT emitted-output fingerprints
+# below are unchanged. The ladder uses neither new form, so nothing it produces
+# could move -- and nothing did.
+#
+# BOTH FORMS ARE NOW PROBED, which they were not when r68 landed. The generator
+# used to emit cases only for forms THIS file uses, but stage0-as consumes the
+# .s0 translation, and that is a different language -- a form can exist in .s0
+# and in no .s anywhere. r71 made it probe every DOCUMENTED form: 58 pairs,
+# 58 ok, 0 wrong bytes, 0 rejected, with the bench model agreeing on all of
+# them. The five forms this file does not itself use show a count of 0, which
+# is the honest number rather than a missing row.
+# WHAT THIS LINE TRACKS, SINCE r73: the as+ld build, which is now a
+# VERIFICATION artifact rather than the thing we ship. It is rebuilt from source
+# every run, it is what the round-trip disassembles and plain-diffs against the
+# source, and it is never committed. What IS committed is gen1 -- the binary
+# this ladder assembles from its own translated source -- and elfgen1. Those are
+# checked by the self-host gates (gen1 == gen2 == gen3, elfgen1 == elfgen2 ==
+# elfgen3) and then byte-compared against the committed files, so they need no
+# entry here: a number in this file is only worth writing when nothing else
+# measures it, and something else measures them every run.
+stage0-as       8144     6fd1462b1be629d8
 # 1880 -> 1920 when elf gained bss_origin, the 16-byte unreferenced symbol
 # that absorbs __bss_start so codebuf has a unique address. Its OUTPUT is
 # unchanged -- stage1 and stage2 did not move, and neither did any of the
@@ -71,7 +112,14 @@ elf             1952     d4817d983e478280
 # stage1 and stage2 are WRITTEN BY elf, so both carry the new p_memsz. Same
 # sizes, same code, different header field -- and all eight emitted-output
 # fingerprints are unchanged, which is what says the behaviour did not move.
-stage1          1469     7079745950cf5859
+# 1469 -> 1702 (r66): findlabel stopped returning position 0 for a name it
+# could not resolve. It now reports each missing name to stderr, counts them,
+# and refuses to write stdout at all -- so one run lists every missing name and
+# the pipeline gets nothing rather than a program that reads address zero. The
+# growth is the reporting path plus three message strings. Its OUTPUT did not
+# move: stage2 is unchanged below, all eight emitted-output fingerprints are
+# unchanged, and stage1 resolves stage2's own source to the same 71140 bytes.
+stage1          1702     6d3ba9bede35c413
 stage2          23257    89db623297d5a476
 
 # WHAT IS DELIBERATELY NOT HERE: G0, the M2-Planet our ladder builds inside the
@@ -87,8 +135,23 @@ stage2          23257    89db623297d5a476
 # If G0 moves and G1 still matches upstream, the behaviour is intact by
 # definition.
 
-# Above tcc-free ladder level, recorded for cross-reference. These come from the
-# same run and are re-verified by stage3-hermetic-arm64, not by stage0-selfhost.
+# Above tcc-free ladder level, recorded for cross-reference.
+#
+# THESE FOUR ARE NOT CHECKED BY ANYTHING, AND ONE OF THEM IS KNOWN WRONG.
+# This block used to say they were "re-verified by stage3-hermetic-arm64, not by
+# stage0-selfhost". That is false. stage3-hermetic PRINTS canon, m2.c and G0 and
+# never compares them to anything; stage0-selfhost is the only job that reads
+# this file at all. `canon` was observed at ba935364bb0532c0 on 2026-07-28,
+# against the 26b728839212d9b1 recorded here -- same size, different bytes. It
+# drifted at some earlier commit and nothing noticed, which is what an unchecked
+# number does. The stage-1 change of r66 was ruled out as the cause: old and new
+# stage1 resolve canon's assembly to byte-identical output.
+#
+# The value below is left as recorded rather than quietly refreshed, because
+# re-baselining a number nobody measures would hide the real defect, which is
+# that no gate reads it. `ours-gen1.M1` is the exception and needs no gate here:
+# GATE 1 compares it against upstream's own reference compiler, which is a
+# stronger check than anything this file could hold.
 canon           5052     26b728839212d9b1
 m2.c            214910   51e88df569188908
 G0-M2-Planet    314860   cb76e0e3fe4ac9ea

@@ -148,26 +148,20 @@ jobs:
               "$(wc -c < "$_b")" "$(sha256sum "$_b" | cut -c1-16)"
           done
           _stale=0
-          for _p in spikes/stage0-as/stage0-as spikes/elf/elf; do
-            _b=$(basename "$_p")
-            [ -f "$_p" ] || continue
-            if cmp -s "$_p" "$_b"; then
-              printf '  %-14s committed artifact MATCHES the source\n' "$_b"
-            else
-              printf '  %-14s committed %s  built %s  STALE\n' "$_b" \
-                "$(sha256sum "$_p" | cut -c1-16)" "$(sha256sum "$_b" | cut -c1-16)"
-              _stale=$((_stale + 1))
-            fi
-          done
-          echo "_stale=$_stale" >> "$GITHUB_ENV"
-          if [ "$_stale" != 0 ]; then
-            echo
-            echo "  $_stale committed binary/binaries no longer match their source."
-            echo "  The checks below run against the FRESH build, so they measure"
-            echo "  the change. Download them from this run's artifact and commit"
-            echo "  them; the final step fails until the repository agrees with"
-            echo "  itself, which is the whole point of committing them."
-          fi
+          # THE COMPARISON MOVED. It used to run here, against the as+ld build,
+          # which was correct only while the as+ld build was what we committed.
+          # It no longer is: the committed artifacts are gen1 and elfgen1, the
+          # ones this ladder builds from its own source, and those do not exist
+          # until the self-host gates below have run. So the check now lives
+          # after them and compares the committed files against what the ladder
+          # actually produced. `_stale` is still enforced by the final gate.
+          #
+          # Nothing else in this job reads the committed binaries -- the round
+          # trip, the probes and the regression all use the as+ld build in the
+          # work directory, which is rebuilt from source every run. That is what
+          # makes this swap small: the readable-symbol reference the plain diff
+          # needs is regenerated here and never shipped, and what we ship is
+          # ours.
           as -o s0.o "$SRC"
           ld -static -o stage0-as s0.o
           as -o elf.o spikes/elf/elf.aarch64.s
@@ -1240,6 +1234,37 @@ jobs:
           else
             echo "  FAIL: elf is not a fixpoint of itself."
             exit 1
+          fi
+
+          # --- ARE THE COMMITTED BINARIES THE ONES THIS LADDER JUST BUILT? ---
+          # gen1 and elfgen1 exist only now, which is why this is here and not
+          # up with the as+ld build. The question it asks is the one that
+          # matters: does the repository ship what its own source produces? The
+          # old form asked whether it shipped what GNU as and ld produce, which
+          # is a different claim and not the one this project makes.
+          _stale=0
+          for _pair in "spikes/stage0-as/stage0-as gen1" "spikes/elf/elf elfgen1"; do
+            set -- $_pair
+            _p="$1"; _b="$2"
+            [ -f "$_p" ] || { echo "  $_p is not committed yet"; \
+                              _stale=$((_stale + 1)); continue; }
+            if cmp -s "$_p" "$_b"; then
+              printf '  %-22s committed artifact MATCHES %s\n' \
+                "$(basename "$_p")" "$_b"
+            else
+              printf '  %-22s committed %s  built %s  STALE\n' \
+                "$(basename "$_p")" "$(sha256sum "$_p" | cut -c1-16)" \
+                "$(sha256sum "$_b" | cut -c1-16)"
+              _stale=$((_stale + 1))
+            fi
+          done
+          echo "_stale=$_stale" >> "$GITHUB_ENV"
+          if [ "$_stale" != 0 ]; then
+            echo
+            echo "  $_stale committed binary/binaries do not match what this"
+            echo "  ladder built. Download gen1 and elfgen1 from this run's"
+            echo "  artifact and commit them; the final gate fails until the"
+            echo "  repository agrees with itself."
           fi
 
       - name: 'GATE: does the committed binary match its source?'
