@@ -1,0 +1,35 @@
+DEBUG ONLY -- NOT PART OF ANY BUILD.
+
+Raw-syscall markers through tcc_new, so that a segfault says WHICH STATEMENT
+rather than which function. Each exits with a distinct code before any libc
+code runs, so nothing can mask it:
+
+    50  reached the field writes at all
+    51  s->ppfp = stdout survived
+    52  s->include_stack_ptr = s->include_stack survived
+    53  tcc_set_lib_path survived, so tcc_new is complete
+
+The probe ladder narrowed the fault to tcc_new and then stopped being useful:
+it can only test what can be CALLED, and what is left is a handful of
+statements inside one function. Reading the emitted assembly found two real
+bugs there (array members loaded rather than decayed, and sized by the wrong
+type) and neither was the whole answer -- so this measures instead.
+
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -908,11 +908,15 @@
+ #ifdef CONFIG_NEW_DTAGS
+     s->enable_new_dtags = 1;
+ #endif
++    asm("mov_x0,50" "mov_x8,93" "svc_0");
+     s->ppfp = stdout;
++    asm("mov_x0,51" "mov_x8,93" "svc_0");
+     /* might be used in error() before preprocess_start() */
+     s->include_stack_ptr = s->include_stack;
++    asm("mov_x0,52" "mov_x8,93" "svc_0");
+ 
+     tcc_set_lib_path(s, CONFIG_TCCDIR);
++    asm("mov_x0,53" "mov_x8,93" "svc_0");
+ #ifdef CONFIG_TCC_SWITCHES /* predefined options */
+     tcc_set_options(s, CONFIG_TCC_SWITCHES);
+ #endif

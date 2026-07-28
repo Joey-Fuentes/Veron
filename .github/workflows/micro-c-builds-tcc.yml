@@ -399,6 +399,63 @@ jobs:
           fi
           echo "  every link set ran"
 
+      - name: 'DEBUG: which statement in tcc_new faults'
+        if: always()
+        run: |
+          set -eu
+          # Rebuild libtcc.c with raw-syscall markers through tcc_new, so the
+          # exit code names the STATEMENT. This runs whether or not the ladder
+          # passed, because when F is the only failure this is the only thing
+          # that advances it.
+          #
+          #   50  reached the field writes
+          #   51  s->ppfp = stdout survived
+          #   52  s->include_stack_ptr = s->include_stack survived
+          #   53  tcc_set_lib_path survived -- tcc_new complete
+          #   11  segfault, at the statement after the last marker printed
+          cd tcc
+          git apply --ignore-whitespace ../spikes/stage3/patches/tcc-debug/0001-DEBUG-markers-in-tcc_new.patch \
+            || { echo "  debug patch does not apply -- skipping"; exit 0; }
+          cd ..
+          L="$PWD/spikes/stage3/micro-c-libc"
+          cd tcc
+          ../micro-c --architecture aarch64 --expand-includes --max-string 65536 \
+            -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 -D TCC_TARGET_LINUX=1 \
+            -D CONFIG_TCC_STATIC=1 -I . -I "$L" -I ../m2/M2libc \
+            -f libtcc.c -o ../dbg.M1
+          cd ..
+          D=spikes/reference/m2libc/aarch64
+          join_objs() {
+            out="$1"; shift
+            : > "$out.code"; : > "$out.strs"
+            for f in "$@"; do
+              if grep -q '^# Program strings$' "$f"; then
+                sed '/^# Program strings$/,$d' "$f" >> "$out.code"
+                sed -n '/^# Program strings$/,$p' "$f" >> "$out.strs"
+              else
+                cat "$f" >> "$out.code"
+              fi
+            done
+            cat "$out.code" "$out.strs" > "$out"; rm -f "$out.code" "$out.strs"
+          }
+          join_objs dbgall.M1 dbg.M1 m2libc.M1 stubs.M1 callit.M1
+          ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f dbgall.M1 \
+               --little-endian --architecture aarch64 -o dbg.hex2
+          ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
+                 -f $D/ELF-aarch64.hex2 -f dbg.hex2 -o tcc-dbg
+          chmod +x tcc-dbg
+          set +e
+          ./tcc-dbg
+          rc=$?
+          set -e
+          case "$rc" in
+            50) echo "  FAULTS AT: s->ppfp = stdout" ;;
+            51) echo "  FAULTS AT: s->include_stack_ptr = s->include_stack" ;;
+            52) echo "  FAULTS AT: tcc_set_lib_path" ;;
+            53) echo "  tcc_new COMPLETED -- the fault is after it" ;;
+            *)  echo "  exit $rc -- did not reach the first marker; the fault is in the field writes above it" ;;
+          esac
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

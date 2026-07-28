@@ -1220,3 +1220,32 @@ neither of these bugs is reachable through a function boundary. Reading the
 emitted assembly for the three statements that remained took one command and
 found both. The probes narrowed it to a function; they could never have
 narrowed it to a line.
+
+=============================================================================
+THE ARRAY FIX WAS REAL AND NOT THE WHOLE ANSWER
+
+    E5  tcc_strdup            MAIN RAN, exit 42
+    F   tcc_new               SIGNAL 11
+
+Both array bugs were genuine -- the load and the size -- and F still faults.
+Fixing something real is not the same as fixing the thing.
+
+WHAT WAS RULED OUT SINCE, by reading the emitted code rather than guessing:
+
+  sizeof(TCCState) is 2325 and the largest offset tcc_new writes to is 48, so
+  the struct is not being overrun. free(NULL) walks M2libc's allocation list
+  and finds nothing, which is safe. Both were candidates; neither survives.
+
+WHY THE NEXT STEP IS A DEBUG PATCH RATHER THAN ANOTHER PROBE. The ladder can
+only test what can be CALLED. What remains is a handful of statements inside
+one function, none of them reachable across a function boundary. Six probes
+have each removed one layer and none can remove another.
+
+spikes/stage3/patches/tcc-debug/ puts raw-syscall markers between those
+statements, so the exit code names the line. It is applied only by the debug
+stage of the workflow, never by the build, and tcc's source is restored
+afterwards.
+
+This is the same move as the load_value and lookup_member diagnostics earlier
+in the run: when reasoning has been wrong four times, make the program say
+where it is instead of asking it to confirm a guess.
