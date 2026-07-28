@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "THROUGH tccpp.c; stopped at struct assignment in tccgen.c".
+"hangs forever on tcc.c" to "tccgen.c:397 -- where the bitfield error planted at wall 12 fires".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -57,6 +57,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   adjacent literals for a pointer init      cc_core.c   tccpp.c:3596
   an inline struct defn may carry a         cc_types.c  tccgen.c:94
     declarator, `struct X {...} **p`
+  STRUCT ASSIGNMENT as a word-by-word copy  cc_core.c   tccgen.c:392
 
 UNSOUND, AND WHY
 ----------------
@@ -524,15 +525,34 @@ tcc.h, libtcc.h, elf.h, tcctok.h and now tccpp.c. Now in tccgen.c.
     create_struct has already eaten both tag and body -- so the star loop is
     repeated inline rather than shared.
 
-STOPPED AT: tccgen.c:392, `char_pointer_type = char_type;` -- STRUCT
-ASSIGNMENT BY VALUE, 16 bytes. micro-c has an explicit "we don't yet support
-assigning structs to structs", and store_value(16) is where it surfaces.
+34. STRUCT ASSIGNMENT IS A COPY, NOT A STORE. `char_pointer_type =
+    char_type;` at tccgen.c:392 is 16 bytes; store_value(16) is where it
+    failed.
 
-This is not another few lines. Every assignment micro-c emits is
-value-in-register -> store; a struct assignment needs BOTH addresses and a
-copy, and the right-hand side must not be "loaded" into a register at all.
-That is a different shape from the whole existing assignment path, so it wants
-designing rather than patching.
+    It turned out smaller than it looked. A struct variable never gets LOADED
+    -- micro-c skips the load whenever the size exceeds a register, which is
+    the same guard that makes struct member access work -- so both sides
+    already arrive as ADDRESSES. The work is then a word-by-word copy.
+
+    REGISTER_TEMP and TEMP2 make it a plain loop: TEMP holds the source,
+    TEMP2 the destination, ZERO carries each word. ZERO and ONE alone cannot
+    do it, because the load clobbers the very pointer it loads through.
+
+    Verified by reading the emitted copy and by chunk count: a 16-byte struct
+    emits two load/store pairs, a 24-byte struct three, and both pointers
+    advance by a word each time.
+
+THE BITFIELD ERROR PLANTED AT WALL 12 HAS FIRED, at tccgen.c:397:
+
+    bitfield member 'func_call' cannot be read or written yet -- layout only
+
+That was deliberate: entry 3 implemented bitfield LAYOUT, proved it by
+byte-identical output, and made ACCESS a hard error rather than silently
+returning the whole storage unit with its neighbours in it. Thirty-six walls
+later tcc reads one, and the diagnostic is waiting where it was left.
+
+WHAT IS STILL OWED: shift right by bit_offset and mask to bit_width on read,
+and a read-modify-write on assignment. Both are per-architecture emission.
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -547,7 +567,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Forty-eight walls between a hanging compiler and tcc's first genuinely large
+Forty-nine walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
