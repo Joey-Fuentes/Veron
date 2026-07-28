@@ -72,6 +72,15 @@ def shape(operands):
     o = re.sub(r"#[A-Za-z_][A-Za-z0-9_]*", "#%e", o)
     o = re.sub(r"\bx\d+\b", "%X", o)
     o = re.sub(r"\bw\d+\b", "%W", o)
+    # SP IS REGISTER 31, NOT A LABEL. Without this the label rule below eats
+    # `sp` and `ldr x0, [sp]` classifies as `ldr %X, [%L]` -- a form nothing
+    # could ever support, which is why elf's census read as needing three new
+    # forms when it needs one. stage0-as's next_reg reads `x`/`w` then decimal
+    # digits, so it has no spelling for `sp`; but register 31 in the base
+    # position of a load or store IS the stack pointer, and `ldr x0 x31`
+    # already encodes `ldr x0, [sp]` byte for byte. A spelling difference, not
+    # a missing capability.
+    o = re.sub(r"\bsp\b", "%X", o)
     # a bare identifier left over is a branch/adr target
     # (?<!%) so the label rule cannot eat the letter of a placeholder it has
     # already written -- without it, "#%i" became "#%%L".
@@ -114,6 +123,17 @@ DOCUMENTED = {
     ('cmp', '%W, #%i'),
     ('lsl', '%W, %W, #%i'),
     ('lsr', '%W, %W, #%i'),
+    # r68: the optional unsigned immediate offset on ldr/str. imm12 sits at
+    # bits 21:10 SCALED by the access size, so the field carries offset/8 for
+    # the x-form and offset/4 for the w-form. Listed here in the same change
+    # that adds it to the assembler, because the PROBE is what settles it --
+    # a form in this table that the binary rejects fails the probe step, which
+    # is the check. The table lagging the assembler is its own documented
+    # failure (322 lines wrongly marked NEEDS); leading it is caught loudly.
+    ('ldr', '%X, [%X, #%i]'),
+    ('str', '%X, [%X, #%i]'),
+    ('ldr', '%W, [%X, #%i]'),
+    ('str', '%W, [%X, #%i]'),
     ('mov', '%W, #%i'),
     ('mov', '%W, %W'),
     ('mov', '%X, #%e'),
@@ -226,6 +246,16 @@ def probe_pair(mn, sh):
         "%X": ["x0", "x1", "x2"], "%W": ["w0", "w1", "w2"],
         "#%i": ["8"], "#%e": ["67108864"], "#%c": ["65"], "%L": ["t"],
     }
+    # THE SAME LESSON AS #%e, ONE FORM LATER. A load/store offset is SCALED by
+    # the access size, so probing it with 8 exercises imm12 == 1 and nothing
+    # else: every bit above the lowest stays zero, and a wrong scale shift is
+    # invisible past the first one. elf's real offsets are 16, 96 and 104. 104
+    # is divisible by both 8 and 4, so one value probes the x-form and the
+    # w-form, and it sets four bits of the field -- a wrong shift moves them
+    # where the diff can see it.
+    if mn in ("ldr", "str") and "[" in sh and "#%i" in sh:
+        subs_gnu = dict(subs_gnu, **{"#%i": ["#104"]})
+        subs_s0 = dict(subs_s0, **{"#%i": ["104"]})
     # AArch64 constrains some immediates: movz/movk shifts must be 0/16/32/48
     # and uxtw scales must be 0 or 2. A probe case GNU `as` rejects proves
     # nothing about stage0-as, so pick values the encoding actually allows.
@@ -464,6 +494,10 @@ def cmd_xlate(path, out):
                          (lambda v: lambda mm: v)(lmap[name]), ops)
         body = ops.replace(",", " ").replace("[", " ").replace("]", " ")
         body = body.replace("#", "")
+        # Same rule as shape()'s: sp is x31. Applied AFTER the label rewrite so
+        # a label that happened to be named `sp` has already been substituted
+        # and cannot be caught by this.
+        body = re.sub(r"\bsp\b", "x31", body)
         body = re.sub(r"\s+", " ", body).strip()
         s0mn, s0body = to_s0(mn, body)
         if s0mn is None:

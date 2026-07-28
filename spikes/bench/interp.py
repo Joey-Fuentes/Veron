@@ -154,11 +154,12 @@ def run(prog, stdin=b'', mem_size=0x40000, trace=False, oob_trap=True, files=Non
         elif op=='ldrb': a=R[ins[2]]+R[ins[3]]; chk(a,1,False); R[ins[1]]=img[a]
         elif op=='strb': a=R[ins[2]]+R[ins[3]]; chk(a,1,True);  img[a]=R[ins[1]]&0xff
         elif op=='ldr':
-            a=R[ins[2]]
+            # ins[4] is the immediate offset (r68); absent on older decodings.
+            a=R[ins[2]]+(ins[4] if len(ins)>4 else 0)
             if len(ins)>3 and ins[3]=='x': chk(a,8,False); R[ins[1]]=struct.unpack_from('<Q',img,a)[0]
             else:                          chk(a,4,False); R[ins[1]]=struct.unpack_from('<I',img,a)[0]
         elif op=='str':
-            a=R[ins[2]]
+            a=R[ins[2]]+(ins[4] if len(ins)>4 else 0)
             if len(ins)>3 and ins[3]=='x': chk(a,8,True); struct.pack_into('<Q',img,a,R[ins[1]]&0xFFFFFFFFFFFFFFFF)
             else:                          chk(a,4,True); struct.pack_into('<I',img,a,R[ins[1]]&0xFFFFFFFF)
         elif op=='bl': R[30]=o+4; i=idx(ins[1]); continue

@@ -474,8 +474,7 @@ h_ldr_e:
     bl      next_reg
     orr     w9, w9, w0, lsl #5
     orr     w9, w9, w24
-    bl      emit
-    b       parse_loop
+    b       h_ls_off
 
 // ---- 's' : svc / sub / str / strb ----
 h_s:
@@ -542,6 +541,35 @@ h_str_e:
     bl      next_reg
     orr     w9, w9, w0, lsl #5
     orr     w9, w9, w24
+    b       h_ls_off
+
+// ---- optional [base, #imm] offset, shared by ldr and str ----
+// imm12 sits at bits 21:10 and is SCALED by the access size: the field holds
+// offset/8 for the 64-bit form and offset/4 for the 32-bit one. x17 is the
+// width next_reg already recorded, and it answers exactly the right question
+// here -- only Rt can be a w-register on these forms, the base is always an
+// x, so nothing else can set it.
+//
+// opt_dec, NOT parse_dec. The cursor is sitting on the space before the digit
+// and parse_dec does no whitespace skip, which is the same trap shift_imm
+// documents above. A line with no third operand leaves the cursor untouched
+// and w0 zero, which ORs in as offset 0 -- so the two-operand form emits
+// byte-for-byte what it emitted before this existed.
+//
+// A register shift would read better than the branch below, but `lsr %W, %W,
+// %W` is not among the operand forms this file already uses, and introducing
+// one to the SOURCE is what breaks the self-host census. Two immediate shifts
+// stay inside the existing set.
+h_ls_off:
+    bl      opt_dec
+    cmp     x17, #0x0                       // 0 = x-register, 64-bit access
+    b.ne    h_ls_w
+    lsr     w0, w0, #3
+    b       h_ls_emit
+h_ls_w:
+    lsr     w0, w0, #2
+h_ls_emit:
+    orr     w9, w9, w0, lsl #10
     bl      emit
     b       parse_loop
 h_strb:

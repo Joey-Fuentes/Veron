@@ -180,14 +180,21 @@ def _encode(l, at, labels):
             m=_reg(p[3])
             return (0x38206800|(m<<16)|(n<<5)|t,('strb',t,n,m))
         return (0x39000000|(n<<5)|t,('strb_b',t,n))
-    if op=='ldr':
+    if op in ('ldr','str'):
+        # OPTIONAL THIRD OPERAND = unsigned immediate offset (r68). imm12 sits
+        # at bits 21:10 and is SCALED by the access size, so the field carries
+        # offset/8 for the x-form and offset/4 for the w-form. Absent offset is
+        # 0, which is the two-operand form byte-for-byte.
         t=_reg(p[1]);n=_reg(p[2]); w=p[1][0]
-        base=0xF9400000 if w=='x' else 0xB9400000   # x-form sets size bit30
-        return (base|(n<<5)|t,('ldr',t,n,w))
-    if op=='str':
-        t=_reg(p[1]);n=_reg(p[2]); w=p[1][0]
-        base=0xF9000000 if w=='x' else 0xB9000000
-        return (base|(n<<5)|t,('str',t,n,w))
+        sc=8 if w=='x' else 4
+        off=int(p[3]) if len(p)>3 else 0
+        if off % sc:
+            raise ValueError('%s offset %d not a multiple of %d' % (op,off,sc))
+        if not 0 <= off//sc < 4096:
+            raise ValueError('%s offset %d out of imm12 range' % (op,off))
+        if op=='ldr': base=0xF9400000 if w=='x' else 0xB9400000
+        else:         base=0xF9000000 if w=='x' else 0xB9000000
+        return (base|((off//sc)<<10)|(n<<5)|t,(op,t,n,w,off))
     if op=='svc': return (0xD4000001,('svc',))
     if op=='ret': return (0xD65F03C0,('ret',))
     if op=='br':  n=_reg(p[1]); return (0xD61F0000|(n<<5),('br',n))
