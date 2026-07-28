@@ -4,7 +4,7 @@ Pinned copies of the upstream sources that define our handoff target. These are
 here so the source can be **consulted locally** (including by the assistant in a
 fresh session, whose sandbox has no network and does not persist) when designing
 against the C subset we must reach — see
-[`../stage2-mini-c/TARGET-SUBSET.md`](../stage2-mini-c/TARGET-SUBSET.md).
+[`../stage2-pico-c/TARGET-SUBSET.md`](../stage2-pico-c/TARGET-SUBSET.md).
 
 ## What's here
 

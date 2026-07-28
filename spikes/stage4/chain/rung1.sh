@@ -11,7 +11,7 @@
 # was a mistake: this repository already has FOUR live meanings for a small
 # integer next to the word stage --
 #
-#   ARCHITECTURE.md §2    stage 3 = mini-c
+#   ARCHITECTURE.md §2    stage 3 = pico-c
 #   AGENTS.md §4          stage 3 = full-c
 #   tcc-builds-gcc-arm64  its own third step
 #   stage4-complete       rung 3 = kernel + boot

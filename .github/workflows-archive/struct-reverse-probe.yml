@@ -43,7 +43,7 @@ name: struct-reverse-probe
 on:
   push:
     paths:
-      - 'spikes/stage2-mini-c/**'
+      - 'spikes/stage2-pico-c/**'
       - '.github/workflows/struct-reverse-probe.yml'
       - '!spikes/*.md'
       - '!spikes/**/*.md'
@@ -90,7 +90,7 @@ jobs:
           aarch64-linux-gnu-ld -static -o elf elf.o
           cat spikes/stage1-as/stage1-as.s0 \
             | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
-          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+          cat spikes/stage2-pico-c/stage2-pico-c.s1 \
             | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
           test -x stage2
 

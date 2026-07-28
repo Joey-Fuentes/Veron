@@ -238,7 +238,7 @@ print("== stage 2 uses WORD variable slots (through the real assembled ladder) =
 # mod-256 exit code, byte vs word storage is behaviourally INDISTINGUISHABLE by
 # exit code (mod-256 is a +,-,* homomorphism), so this guard is STRUCTURAL:
 # it checks the emitted instruction forms, plus exit codes for no regression.
-s2p = os.path.join(os.path.dirname(__file__), "..", "stage2-mini-c", "stage2-mini-c.s1")
+s2p = os.path.join(os.path.dirname(__file__), "..", "stage2-pico-c", "stage2-pico-c.s1")
 if os.path.exists(s1p) and os.path.exists(s2p):
     _, s1prog, _ = assemble(open(s1p).read())
     _, s2asm = run(s1prog, stdin=open(s2p).read().encode())     # resolve via REAL stage1
@@ -1281,7 +1281,7 @@ if os.path.exists(s1p) and os.path.exists(s2p):
 #
 # This pins the canary on the bench. CI runs the same program through the real
 # ladder; per AGENTS.md a green bench never overrides a red CI.
-_canon = os.path.join(os.path.dirname(__file__), "..", "stage2-mini-c",
+_canon = os.path.join(os.path.dirname(__file__), "..", "stage2-pico-c",
                       "selfhost", "canon.c")
 if os.path.exists(s1p) and os.path.exists(s2p) and os.path.exists(_canon):
     print("\n== stage-2 self-host canary (m56/A15) ==")
@@ -1962,7 +1962,7 @@ if os.path.exists(s1p) and os.path.exists(s2p):
     #      structs/strings/goto/short-circuit). Verified during development by
     #      building both compilers through the real ladder and comparing emissions;
     #      it cannot be pinned here because validate.py has only the current
-    #      source. CI carries it: stage2-mini-c-demo diffs against git HEAD~1.
+    #      source. CI carries it: stage2-pico-c-demo diffs against git HEAD~1.
     #  (2) What IS pinned here: the behavioural invariance of those same
     #      constructs, plus a byte-level ORDER-INDEPENDENCE witness -- appending a
     #      do-using function must not change one byte of what precedes it. That is

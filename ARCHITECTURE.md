@@ -39,7 +39,7 @@ The governing rule: **add exactly one new abstraction per stage, and write each 
 |-------|------|-----------|------|---|
 | 1 | `seed-as` | **readable per-arch assembly** (x86-64 / ARM64 / RV64I) | line-oriented assembly → static ELF; labels, `.byte`/`.ascii` | Round-trip auditable hand-written root |
 | 2 | `macro-as` | stage-1 assembly | macros, named constants, integer expressions, `.include` | Minimal abstraction in assembly works |
-| 3 | `mini-c` | stage-2 assembly | C subset: functions, int/char/ptr, if/while, arrays, globals | C layer climbs bootstrapped from asm |
+| 3 | `pico-c` | stage-2 assembly | C subset: functions, int/char/ptr, if/while, arrays, globals | C layer climbs bootstrapped from asm |
 | 4 | `tcc` → `Linux boot` | stage-3 C → full C (tcc) | libc, binutils, GCC 4.7 → 10 → modern, kernel + minimal userland | **Proof:** the chain works end to end; Linux boots from tcc-built tools |
 | 5 | `Full ecosystem` + **verification** | modern GCC | BLFS packages, X11, applications; 3-stage bootstrap; DejaGnu; reproducibility audits | **Solid:** the OS is complete, verified, reproducible, proven by testing at scale |
 | 6 | `release` | — | signed audit ledger; packaged image; distribution metadata | **Shipped:** auditable, reproducible, releasable OS ready for use |
@@ -120,7 +120,7 @@ os/
 ├── stages/                      # ── THE LADDER (derivations) ──
 │   ├── 0-seed-as/               #    trunk begins — flavor-blind
 │   ├── 1-macro-as/
-│   ├── 2-mini-c/
+│   ├── 2-pico-c/
 │   ├── 3-full-c/
 │   │   └── FIXPOINT.md          #    self-host proof + DDC procedure (Regime B)
 │   │   ══════════════════════   #    ═══ FORK LINE ═══

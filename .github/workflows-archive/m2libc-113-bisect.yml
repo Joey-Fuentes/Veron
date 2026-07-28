@@ -20,7 +20,7 @@ name: m2libc-113-bisect
 # strlen memset calloc free exit) with asm() in only 6 of them, and there is no
 # generic bootstrap.c to omit the way m71 did. tools/drop_asm.py cuts at
 # FUNCTION granularity; m53/m69 builtins supply open/close/brk/exit; and
-# spikes/stage2-mini-c/m2libc-shim.c supplies fgetc/fputc, the two left over.
+# spikes/stage2-pico-c/m2libc-shim.c supplies fgetc/fputc, the two left over.
 # Only our stage 2 needs this -- M2-Planet itself compiles asm() fine, so the
 # reference arm and the self-compilation input are upstream's source unpatched.
 #
@@ -33,7 +33,7 @@ name: m2libc-113-bisect
 on:
   push:
     paths:
-      - 'spikes/stage2-mini-c/**'
+      - 'spikes/stage2-pico-c/**'
       - '.github/workflows/m2libc-113-bisect.yml'
       - '!spikes/*.md'
       - '!spikes/**/*.md'
@@ -80,12 +80,12 @@ jobs:
           aarch64-linux-gnu-ld -static -o elf elf.o
           cat spikes/stage1-as/stage1-as.s0 \
             | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
-          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+          cat spikes/stage2-pico-c/stage2-pico-c.s1 \
             | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
           echo "  LADDER BUILT FROM:"
-          printf '    %-26s %8s  %s\n' stage2-mini-c.s1 \
-            "$(wc -c < spikes/stage2-mini-c/stage2-mini-c.s1)" \
-            "$(sha256sum spikes/stage2-mini-c/stage2-mini-c.s1 | cut -c1-16)"
+          printf '    %-26s %8s  %s\n' stage2-pico-c.s1 \
+            "$(wc -c < spikes/stage2-pico-c/stage2-pico-c.s1)" \
+            "$(sha256sum spikes/stage2-pico-c/stage2-pico-c.s1 | cut -c1-16)"
           printf '    %-26s %8s  %s\n' stage1-as.s0 \
             "$(wc -c < spikes/stage1-as/stage1-as.s0)" \
             "$(sha256sum spikes/stage1-as/stage1-as.s0 | cut -c1-16)"
@@ -135,11 +135,11 @@ jobs:
           # m69, exit from m53. It goes AFTER the patched bootstrap.c so that
           # file's enums (NULL EOF TRUE FALSE stdin/stdout/stderr EXIT_*) are in
           # scope, and before M2-Planet's own sources.
-          cat patched_bootstrap.c spikes/stage2-mini-c/m2libc-shim.c \
+          cat patched_bootstrap.c spikes/stage2-pico-c/m2libc-shim.c \
               $L/bootstrappable.c \
               $M/cc.h $M/cc_globals.c $M/cc_reader.c $M/cc_strings.c \
               $M/cc_types.c $M/cc_emit.c $M/cc_core.c $M/cc_macro.c $M/cc.c > m2.c
-          ab_art 'm2libc-shim.c' spikes/stage2-mini-c/m2libc-shim.c
+          ab_art 'm2libc-shim.c' spikes/stage2-pico-c/m2libc-shim.c
           ab_art 'm2.c (our translation unit)' m2.c
           set +e
           timeout 300 qemu-aarch64 ./stage2 < m2.c > m2.s1

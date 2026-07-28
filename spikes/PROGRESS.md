@@ -126,7 +126,7 @@ stage-0 test: loop + memory + byte-compares), `elf-demo.yml`,
    `spikes/stage1-as/stage1-as.s0`, the first tool written **in stage0-as's own
    language** (not hand-encoded). Resolves multi-char labels to single-char and
    pipes into `stage0-as`; output byte-identical to `as`, runs under QEMU.
-12. **Stage 2 (`mini-c`) SEED** — `spikes/stage2-mini-c/stage2-mini-c.s1`,
+12. **Stage 2 (`pico-c`) SEED** — `spikes/stage2-pico-c/stage2-pico-c.s1`,
    written **in stage-1's language** (multi-char labels). Compiles
    `int main(){return N;}` to aarch64 machine code that exits N. The first
    real compiler our own seed produces. Full ladder:
@@ -221,7 +221,7 @@ a capability rung).* We now treat M2-Planet's own source as the concrete
 definition of the C subset the ladder must eventually accept (M2-Planet is
 self-hosting, so its source is written in exactly the subset it compiles). The
 `borrow-m2-demo` workflow pins M2-Planet to `34fbd5c…` (M2libc transitively via
-its submodule gitlink, `ca023d8…`) so the spec can't drift. `spikes/stage2-mini-c/
+its submodule gitlink, `ca023d8…`) so the spec can't drift. `spikes/stage2-pico-c/
 TARGET-SUBSET.md` records what that subset actually **uses** (structs, enums,
 function pointers, multi-level pointers, arrays, full operators, recursion, a
 small `calloc`/`free` heap, and file I/O) versus what it deliberately **avoids**
@@ -293,7 +293,7 @@ the prologue. Compiler label budget 74→**75** of 76 (net +1: added `offtab` +
 `emitoff`, removed the slot table); source actually shrank (the big slot-table
 string is gone). Pinned in `validate.py` (structural: frame base, per-var offsets,
 no `:a`/`:z`/`.byte 0`; behavioural: many-variable programs) and **CI-confirmed**
-(real `as` + QEMU) via `stage2-mini-c-demo`. Next: **floor item 2b — branch-offset
+(real `as` + QEMU) via `stage2-pico-c-demo`. Next: **floor item 2b — branch-offset
 backpatching**, which removes the last emitted-label class (control flow), leaving
 only function-entry labels; then functions on the m25 call stack.
 
@@ -354,7 +354,7 @@ counter, `pos6`, and branch strings; dropped the label emitter). Designed in
 ladder (deep nesting, if-in-while, sequential blocks, a 190-iteration loop; branch
 targets hand-checked to land on the right instruction), pinned in `validate.py`
 (no labels emitted; numeric branches; 4-aligned in-range targets; behavioural
-sweep), and **CI-confirmed** via `stage2-mini-c-demo`. Next: **larger compiler
+sweep), and **CI-confirmed** via `stage2-pico-c-demo`. Next: **larger compiler
 buffers** (input/output/stacks) to cash in the label-free codegen, then functions
 on the m25 call stack.
 
@@ -373,7 +373,7 @@ Result: a program with **150 sequential if-blocks** (~65 KB of emitted assembly)
 compiles and runs to the right exit code — far beyond both the old ~63-label
 ceiling and the old ~4.4 KB output buffer. Pinned in `validate.py` (20/40/80/150
 sequential blocks, a big-body loop, and an >30 KB label-free emission) and
-**CI-confirmed** via `stage2-mini-c-demo` (an 80-block program end-to-end).
+**CI-confirmed** via `stage2-pico-c-demo` (an 80-block program end-to-end).
 Next: **functions + a real call stack** on the m25 64-bit `ldr x`/`str x`, the
 first genuinely new language capability of the floor.
 
@@ -442,7 +442,7 @@ numeric-branch milestone (m27) had only added the `@<pos>` path to `b` and
 branch encoder), so the resolver's output assembled to a byte-identical binary *in
 the bench* while real stage0-as read the `@` as a label and mis-encoded all 46
 calls — the stage-2 compiler built through the new stage 1 emitted nothing, and
-`stage2-mini-c-demo` / `stage1-as-demo` went red. The bench was more capable than
+`stage2-pico-c-demo` / `stage1-as-demo` went red. The bench was more capable than
 reality, exactly the failure the bench-honesty rule exists to prevent; the gap was
 that `bl @<pos>` had a model but **no CI anchor against real `as`**. Fix: add the
 `@`+digit path to `h_bl_or_blr` (identical to the m27 branch, base `0x94000000`),
@@ -481,7 +481,7 @@ deep nesting, and single-char vars named `i`/`w`/`r` that must NOT be read as
 keywords — with `validate.py` gaining end-to-end tokenizer anchors and staying
 green (140→145 checks). Because output is byte-identical and the new front end uses
 only instruction forms the compiler already emitted, there is **no new stage0-as
-capability and no new byte-anchor needed** — the existing `stage2-mini-c-demo`
+capability and no new byte-anchor needed** — the existing `stage2-pico-c-demo`
 (which rebuilds the compiler and checks its emitted output + exit codes across the
 whole sweep) is the CI witness. Next: **A2 — functions + a real call stack**,
 flipping the frame policy to a declaration-order allocator and making the symbol
@@ -527,7 +527,7 @@ expression until `,` was added as a punct token. `validate.py` now resolves stag
 output **through stage1** before assembling (retiring the "emitted output is
 label-free" assertions — the only labels are function names, verified explicitly),
 checks declaration-order offsets, and gains a functions+recursion section (145→169
-checks). The `stage2-mini-c-demo` workflow inserts stage1 into the compiled-program
+checks). The `stage2-pico-c-demo` workflow inserts stage1 into the compiled-program
 pipeline and adds structural (`:func` label, prologue/epilogue, `bl`) + behavioural
 (add/sq/nested/fact/fib/pw/tri/mutual/ack) anchors on real aarch64; because the
 emitted saves/restores use only the m25 64-bit `str x`/`ldr x` forms already
@@ -561,7 +561,7 @@ and codegen) and verified through the **real assembled ladder** on precedence
 (`2+10/2=7`), left-associativity (`20/4/5=1`, `3*4/2=6`), the identity
 `(n/d)*d + n%d == n`, divide-by-zero, and Euclid's `gcd(48,36)=12`; `validate.py`
 gains a division section (169→184 checks) including the model's `udiv` encoding, and
-the `stage2-mini-c-demo` workflow gains the `udiv` byte-anchor + `/`/`%` structural
+the `stage2-pico-c-demo` workflow gains the `udiv` byte-anchor + `/`/`%` structural
 and behavioural checks wired into its pass/fail gate. Next: **A3 — pointers, `char`,
 and arrays**.
 
@@ -591,7 +591,7 @@ lifts its word mask to `2^64-1` so it agrees; verification runs the **full A2 + 
 corpus** (functions, recursion, `ack(2,3)`, `gcd`, `/`, `%` — all identical) plus
 the new distinguishers through the real `stage2 | stage1 | stage0-as` ladder.
 `validate.py` gains a word-model section (184→190 checks) and the
-`stage2-mini-c-demo` workflow gains the 64-bit structural greps (`ldr x0 x1`,
+`stage2-pico-c-demo` workflow gains the 64-bit structural greps (`ldr x0 x1`,
 `str x0 x9`, `off 0000/0008`) and the distinguisher runs in its pass/fail gate. No
 stage0-as change — the ISA already had 64-bit `str x`/`ldr x` (byte-anchored since
 m25). Next: **A3b — `char`, `&`, `*`, and arrays `[]`** on top of this word model.
@@ -623,7 +623,7 @@ dereference (`*p` → 5), store-through (`*p=42` → 42), read-modify-write via 
 pointer (`*p=*p+y`), pointer copy (`q=p; *q=99`), `inc(&c)` twice → 43, and the
 classic `swap(&x,&y)` → 83 — plus the **entire A2 + division + word-model corpus**
 unchanged. `validate.py` gains a pointer section (190→201 checks) and the
-`stage2-mini-c-demo` workflow gains the `&`/`*` structural greps and pass-by-
+`stage2-pico-c-demo` workflow gains the `&`/`*` structural greps and pass-by-
 reference behavioural runs in its pass/fail gate. Next: **A3c — arrays `int a[N]`
 and subscript `a[i]`** (per-var frame sizing + scaled indexing), then **A3d —
 `char`** (byte `ldrb`/`strb` access + char literals).
@@ -655,7 +655,7 @@ through the **real assembled ladder** on element load/store, an indexed fill loo
 array→pointer decay, a two-array dot product (`dot(x,y,3)` → 32), nested subscript
 `a[a[2]]`, and `&a[i]` — plus the **entire pointer + A2 + division corpus**
 unchanged. `validate.py` gains an array section (201→211 checks) and the
-`stage2-mini-c-demo` workflow gains subscript-scaling structural greps and array
+`stage2-pico-c-demo` workflow gains subscript-scaling structural greps and array
 behavioural runs in its pass/fail gate. Next: **A3d — `char`** (byte `ldrb`/`strb`
 access + char literals), the last A3 rung before revisiting the M2-Planet subset.
 
@@ -682,7 +682,7 @@ A2, and division corpus is unchanged. **No stage0-as change** — `ldrb`/`strb` 
 existed. One bench-side note: the larger self-hosting compiler needs more interpreter
 steps than the old 5M runaway guard allowed, so the Python model's guard was raised
 (the real CI runs native under qemu, with no such limit). `validate.py` gains a char
-section (211→222 checks) and the `stage2-mini-c-demo` workflow gains `ldrb`/`strb`
+section (211→222 checks) and the `stage2-pico-c-demo` workflow gains `ldrb`/`strb`
 and char-literal structural greps plus char behavioural runs. **A3 is complete**
 (pointers, arrays, char, byte access on the uniform word model); the next work
 revisits the M2-Planet C subset toward stage 3 — string literals (a data section),
@@ -715,7 +715,7 @@ No stage0-as change. One bench note: `adr` is PC-relative with a bounded range
 (fine for M2-Planet-scale programs; `adrp`+`add` for full range is a later refinement,
 exactly the kind of thing tcc/gcc handle once the chain hands off to them).
 `validate.py` gains a string-literal section (222→232 checks) and the
-`stage2-mini-c-demo` workflow gains `adr`/`:__d`/`.byte` structural greps plus string
+`stage2-pico-c-demo` workflow gains `adr`/`:__d`/`.byte` structural greps plus string
 behavioural runs. Next: **globals** (reusing this data section), then general pointer
 arithmetic and structs — the pieces M2-Planet's own source leans on.
 
@@ -932,7 +932,7 @@ its C subset; self-hosted code (and M2-Planet's source) may use any C function n
 **Milestone 48 — stage 2: function pointers (floor backbone A9).** The last purely
 type-system rung before self-hosting: a variable can now hold the address of a function
 and a call can go through it. Three mechanisms, ported from the a9a reference of record
-into `stage2-mini-c.s1` as a direct assembly-text patch (`patch_a9a_direct.py`). **(1)
+into `stage2-pico-c.s1` as a direct assembly-text patch (`patch_a9a_direct.py`). **(1)
 Declarator parsing** — `int (*f)(...)` is recognised at all three declaration sites
 (local, parameter, file-scope global) plus the frame **prescan**: after the type, a `(`
 whose next token is `*` opens a function-pointer declarator, so `f` is declared as a
@@ -958,7 +958,7 @@ inside a loop** (dispatch add1/dbl →62), and a fnptr parameter whose callee mu
 **global** across two zero-arg calls (→2). `validate.py` 801→846 (a function-pointer
 section: decay/`ldr x16`/`blr` instruction forms, the `bl`-vs-`blr` coexistence in
 `apply`, a `:g_gp` global-fnptr data label, and seven ladder exit-code runs); the whole
-prior stage-2 corpus is unchanged. `.s1` 412→432 labels. The stage2-mini-c demo gains a
+prior stage-2 corpus is unchanged. `.s1` 412→432 labels. The stage2-pico-c demo gains a
 function-pointer program built and run on real `as` + QEMU. **A8→A9 done — the floor's
 type system is complete.** (Forward pointer since revised — see §6: finish the floor
 (heap + I/O), run a self-host *test*, then grow **stage 2** to M2-Planet's full subset so
@@ -988,7 +988,7 @@ whole-struct `&p`, plain `&var`, `&a[i]`, function pointers, and the full arithm
 corpus all unchanged; the emitted code for `&p.x` is now `add x1 x10 …; add x1 x1 <off>;
 str x1 x9` with no `adr x0 x` and no scale. Reference unchanged (it was already correct);
 this is a `.s1`-only codegen fix. **CI-confirmed GREEN on real `aarch64-linux-gnu-as`
-+ qemu-user** (`stage2-mini-c-demo`, run #43): the checkpoint case
++ qemu-user** (`stage2-pico-c-demo`, run #43): the checkpoint case
 `struct P{int x;int y;};int main(){struct P p; p.x=8; int* q; q=&p.x; return *q;}`
 exits **8** on real qemu (it previously segfaulted, exit 139), and all 152 behavioural
 exit-code checks are OK with the honest gate (the `$(...)`-subshell false-pass, which had
@@ -1022,11 +1022,11 @@ present, `str x1 x9` address-push present, **no `adr x0 x`** leaked primary, **n
 on the address-of path) plus **five behavioural witnesses that now genuinely fault** if the
 m49 shape regresses: `&p.x` (offset 0 → 8), `&p.y` (nonzero offset → 7), a write *through*
 `&p.x` (→ 42), a **char** member `&c.a` (ptype 1 → 65), and `&(r->y)` (→ 9). The
-`stage2-mini-c-demo` gained the matching **structural greps** (`amp.s`: field-offset add +
+`stage2-pico-c-demo` gained the matching **structural greps** (`amp.s`: field-offset add +
 address push present, `adr x0 x` + `lsl` absent) and **four more behavioural `try` runs on
 real `as`+QEMU** (7 / 42 / 65 / 9) — the class was effectively untested on hardware before
 m49 because it segfaulted. `validate.py` 342 → **351**. Housekeeping: the harmless
-**duplicate `:spushx1` template** in `stage2-mini-c.s1` (two byte-identical definitions) is
+**duplicate `:spushx1` template** in `stage2-pico-c.s1` (two byte-identical definitions) is
 **de-duped** to one; the compiler binary's byte positions shift but its emitted output is
 **byte-identical** across the corpus (verified by fingerprint), and all three
 `adr x9 spushx1` references resolve to the surviving definition. No stage-0/1 change, no
@@ -1069,7 +1069,7 @@ orders**; and the three-way emit+predicate+builder program now returns correct c
 instead of running away. Guarded so the class cannot return silently: `validate.py` gained
 an **x17 emit-accounting section** (no blank line in the code region, `x17` == true
 instruction count, order-independence witnesses, and the three-way shape), 412 → **429**,
-and `stage2-mini-c-demo` gained a matching **`emit_ok`** section wired into the pass gate,
+and `stage2-pico-c-demo` gained a matching **`emit_ok`** section wired into the pass gate,
 with `timeout` bounding the runaway case so a regression fails fast instead of hanging CI.
 Confirmed the guards actually catch it: reverting the one-line fix turns 12 of them red,
 including the nested-while victim, which reports `<runaway>`.
@@ -1109,7 +1109,7 @@ failure rather than lifting the limit — `.byte`/`.ascii` are the only directiv
 
 None of the four adds an emitted line, so the **A13 `x17` invariant is untouched** —
 re-verified per new construct (0 blanks, 0 drift). `validate.py` 429 → **462**;
-`stage2-mini-c-demo` gained a matching **`fe_ok`** section wired into the pass gate, all
+`stage2-pico-c-demo` gained a matching **`fe_ok`** section wired into the pass gate, all
 cases `timeout`-bounded so a regression fails fast instead of hanging CI.
 
 Two notes for whoever picks this up. **Newly surfaced:** member access directly on a call
@@ -1130,7 +1130,7 @@ survive this ladder?** Not "does a rung work" — the rungs each have their own 
 but does a program with the *shape* of a compiler front end, exercising all of them at
 once, compile and run correctly end to end.
 
-`spikes/stage2-mini-c/selfhost/canon.c` is that program: a **lexical canonicalizer**.
+`spikes/stage2-pico-c/selfhost/canon.c` is that program: a **lexical canonicalizer**.
 It reads a file, tokenizes it into a **heap-allocated linked list of token records**
 (`struct Tok{off,len,nx}` — M2-Planet's own token-list data model) driven by a
 **function-pointer classifier** forwarded through two scanner helpers, walks that list
@@ -1157,7 +1157,7 @@ Two things it cost, neither a bug:
   capped at the 8192-byte buffer. `append` also binds `mk_tok`'s result to a local
   before `->`, avoiding the call-result member access m55 flagged as still open.
 
-`validate.py` 462 → **471**. `stage2-mini-c-demo` gained a **`selfhost_ok`** section
+`validate.py` 462 → **471**. `stage2-pico-c-demo` gained a **`selfhost_ok`** section
 wired into the pass gate: it builds `canon` through the real ladder, checks the
 tokenization, both fixpoints, the 500-token scale case, and **structurally** greps the
 emitted assembly for `bl calloc` / `blr` / `bl open` / `:emit_list` so the canary cannot
@@ -1228,7 +1228,7 @@ short-circuiting function still returning what they return alone.
 `validate.py` 471 → **549**. The new guards are deliberately behavioural where the
 feature is behavioural — a `bump()` side effect that must **not** happen, and a null
 deref that must **not** be reached (a real witness since m50, when the interp began
-faulting on wild addresses like hardware). `stage2-mini-c-demo` gained an `sc_ok`
+faulting on wild addresses like hardware). `stage2-pico-c-demo` gained an `sc_ok`
 section and an `eor_ok` byte-check against real `as`, both wired into the pass gate;
 every stage is `timeout`-bounded, since a mis-aimed backpatch loops forever rather
 than returning something wrong.
@@ -1273,7 +1273,7 @@ deliberately re-injected, "no blank line" and "targets 4-aligned and in range" b
 passed (the drifted target is still aligned and still in range), and only the exact
 witness plus the behavioural runs went red. Nine checks turn red on the injected bug,
 including the order-independence witness. `validate.py` 549 → **569**;
-`stage2-mini-c-demo` gained a `goto_ok` section wired into the pass gate, every stage
+`stage2-pico-c-demo` gained a `goto_ok` section wired into the pass gate, every stage
 `timeout`-bounded since a mis-aimed branch loops forever rather than returning wrong.
 
 Verified through the real assembled ladder on the shapes M2-Planet actually uses:
@@ -1332,7 +1332,7 @@ only label is `:main`).
 Verified through the real assembled ladder on all eight shapes that previously hung: named
 and unnamed parameters, a `struct*` return type, `void`, prototype + recursion, a prototype
 enabling mutual recursion, a prototype spanning several lines, and the no-prototype
-regression. `validate.py` 569 → **579**; `stage2-mini-c-demo` gained a `proto_ok` section
+regression. `validate.py` 569 → **579**; `stage2-pico-c-demo` gained a `proto_ok` section
 wired into the pass gate, timeout-bounded since the old failure mode was a hang.
 
 ---
@@ -1377,7 +1377,7 @@ forward prototypes, a `goto` loop, braceless `if` bodies, `char*` parameters, su
 string literals, calls inside conditions, and unary `!`. `in_set` and `match` are the
 shape of M2-Planet's own helpers, with `match` written as its goto-loop idiom; the program
 returns 42 only if every assertion holds. It does. `validate.py` 579 → **611**;
-`stage2-mini-c-demo` gained a `bl_ok` section (19 behavioural runs + structural checks +
+`stage2-pico-c-demo` gained a `bl_ok` section (19 behavioural runs + structural checks +
 the M2-shaped program) wired into the pass gate, timeout-bounded throughout.
 
 ---
@@ -1554,7 +1554,7 @@ nearly free, the same call m58 made on function-scoped labels.
 and skips once HEAD~1 already has the rung; `validate.py` pins the behavioural half plus a
 byte-level **order-independence** witness — appending a do-using function must not change
 one byte of what precedes it, which is the m54 failure class and the specific way a
-block-record change goes wrong. `validate.py` 680 → **725**; `stage2-mini-c-demo` gained a
+block-record change goes wrong. `validate.py` 680 → **725**; `stage2-pico-c-demo` gained a
 `dw_ok` section wired into the pass gate, with a structural witness that **discriminates
 `do` from `while`**: the two emit the same instructions and the same label pair, differing
 only in order, so the check is that the body precedes the test in one and follows it in the
@@ -1633,7 +1633,7 @@ the loop variable's value surviving the loop, nesting, braceless bodies, `break`
 of the step), `goto` out of a `for`, a `for` as a braceless `if` body, declaration inits,
 all three empty clauses including `for(;;)`, and break binding to the innermost loop across
 all three loop forms. `validate.py` 725 → **757**; the for-free corpus is byte-identical to
-the pre-rung compiler, and `stage2-mini-c-demo` gained a `for_ok` section whose structural
+the pre-rung compiler, and `stage2-pico-c-demo` gained a `for_ok` section whose structural
 witness pins the whole jump-over layout in one assertion: the four labels are *allocated*
 top, exit, step, body but *defined* top, step, body, exit, so the definition order is ids
 0, 2, 3, 1. Any other layout changes it.
@@ -1992,7 +1992,7 @@ PASS: our seed-built compiler reproduces upstream's reference
 ```
 
 **How to read the generations.** `G0` is our M2-Planet, built by stage 2 from the
-*patched* source (`tools/drop_asm.py` + `spikes/stage2-mini-c/m2libc-shim.c`).
+*patched* source (`tools/drop_asm.py` + `spikes/stage2-pico-c/m2libc-shim.c`).
 Every generation after that is built by the previous generation from upstream's
 **unpatched** `-f` list, because our M2-Planet compiles `asm()` perfectly well —
 so **the substitution applies to G0 only and drops out of the chain at once**.
@@ -2191,7 +2191,7 @@ stage in the language of the stage below.
   (pinned at `34fbd5c…`, vendored read-only at `spikes/reference/`) into a working
   M2-Planet, which drives the borrowed live-bootstrap chain (see
   `spikes/borrow-m2/`, `spikes/livebootstrap/`). The target C subset is spelled
-  out in `stage2-mini-c/TARGET-SUBSET.md`.
+  out in `stage2-pico-c/TARGET-SUBSET.md`.
 - **Cross-arch reality (mapped; deferred behind M2-Planet).** Our M2-Planet is **native
   aarch64** (M2-Planet targets aarch64 directly — verified in `borrow-m2`). The seam is
   one rung up: **MesCC has no _native_ aarch64 backend** (x86 + armhf only, confirmed vs

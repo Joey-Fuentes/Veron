@@ -24,7 +24,7 @@ name: bench-codegen
 on:
   push:
     paths:
-      - 'spikes/stage2-mini-c/**'
+      - 'spikes/stage2-pico-c/**'
       - '.github/workflows/bench-codegen.yml'
       - '!spikes/*.md'
       - '!spikes/**/*.md'
@@ -78,7 +78,7 @@ jobs:
           aarch64-linux-gnu-ld -static -o elf elf.o
           cat spikes/stage1-as/stage1-as.s0 \
             | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
-          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+          cat spikes/stage2-pico-c/stage2-pico-c.s1 \
             | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
           M=upstream-m2planet
           cat $M/M2libc/bootstrap.c $M/M2libc/bootstrappable.c \
@@ -569,7 +569,7 @@ jobs:
           # names are unique, first-match and last-match agree, so every
           # program without a redeclaration must compile to the same bytes as
           # before the change. That is the containment check for m72.
-          git show HEAD~1:spikes/stage2-mini-c/stage2-mini-c.s1 > old.s1 2>/dev/null \
+          git show HEAD~1:spikes/stage2-pico-c/stage2-pico-c.s1 > old.s1 2>/dev/null \
             || { echo "no HEAD~1 copy; skipping"; exit 0; }
           cat old.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as \
             | qemu-aarch64 ./elf stage2old
@@ -597,7 +597,7 @@ jobs:
 
       - name: 'GATE: the redeclared-local reproducer (m72)'
         run: |
-          # See spikes/stage2-mini-c/SLOT-BUG.md. Fails until symlookup binds a
+          # See spikes/stage2-pico-c/SLOT-BUG.md. Fails until symlookup binds a
           # name to its most recent declaration. This is the gate for that fix.
           cat > slot.c <<'EOF'
           struct ty { int pad; int size; };

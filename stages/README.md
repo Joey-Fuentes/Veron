@@ -4,7 +4,7 @@ Each stage adds exactly one abstraction and is written in the language the
 stage below just produced.
 
 ```
-0-seed-as → 1-macro-as → 2-mini-c → 3-full-c      (trunk — flavor-blind)
+0-seed-as → 1-macro-as → 2-pico-c → 3-full-c      (trunk — flavor-blind)
 ════════════════════════ FORK LINE ════════════════════════
 4-libc + 4-binutils → 5-gcc-bootstrap → 5-gcc → 5-userland → 5-kernel
                                         (parameterized by libc = musl | glibc)

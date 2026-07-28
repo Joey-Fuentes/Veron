@@ -34,7 +34,7 @@ name: stage0-selfhost
 #
 # So: PROBE FIRST. One minimal test per form, assembled BOTH ways -- by GNU `as`
 # and by stage0-as -- and byte-compared. That is exactly how
-# stage2-mini-c-demo settles individual instruction encodings, and it turns
+# stage2-pico-c-demo settles individual instruction encodings, and it turns
 # "does it support this?" into a checksum.
 #
 # EVERY STEP HERE IS NON-GATING ON PURPOSE. This is a measurement spike. It
@@ -356,7 +356,7 @@ jobs:
           # `w1` falls through to the immediate parser and reads as zero.
           #
           # Nothing above stage0-as emits those forms today: stage1-as.s0 and
-          # stage2-mini-c.s1 contain no b.gt or b.le, which is why the ladder is
+          # stage2-pico-c.s1 contain no b.gt or b.le, which is why the ladder is
           # correct and 426/426 holds. But stage0-as's OWN source uses them
           # eight times, so a self-host attempt would have assembled cleanly and
           # produced an assembler with eight inverted comparisons inside it.
@@ -886,7 +886,7 @@ jobs:
           # change while what it emits must not.
           B=spikes/stage0-as/LADDER-BASELINE.txt
           ./stage0-as < spikes/stage1-as/stage1-as.s0 | ./elf stage1
-          ./stage1 < spikes/stage2-mini-c/stage2-mini-c.s1 | ./stage0-as | ./elf stage2
+          ./stage1 < spikes/stage2-pico-c/stage2-pico-c.s1 | ./stage0-as | ./elf stage2
           [ -x stage1 ] && [ -x stage2 ] || { echo "  FAIL: ladder did not build"; exit 1; }
 
           moved=0

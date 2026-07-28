@@ -65,7 +65,7 @@ Plus twelve upper-rung workflows (gcc, tcc, mes) that do not fire on
 - **`stage0-as-mul-demo.yml`** -- SPIKE (invariants suspended). Verifies the arithmetic ops added to stage0-as for stage 2's expression codegen:
 - **`stage0-roundtrip.yml`** -- EXPERIMENTAL stage 0 round-trip demo (spike zone — invariants suspended). Assembles the hand-encoded ARM64 proof-of-concept, RUNS it (proves the bytes
 - **`stage1-as-demo.yml`** -- SPIKE (invariants suspended). Stage 1 = macro-as: a TWO-PASS NUMERIC LABEL RESOLVER, written in stage0-as's OWN language (subroutines + shifts + brk) 
-- **`stage2-mini-c-demo.yml`** -- SPIKE (invariants suspended). Stage 2 = mini-c. Supports: one-or-more  int name(params){ ... }  functions; a body has
+- **`stage2-pico-c-demo.yml`** -- SPIKE (invariants suspended). Stage 2 = pico-c. Supports: one-or-more  int name(params){ ... }  functions; a body has
 - **`stage3-m2-demo.yml`** -- SPIKE (invariants suspended). THE HANDOFF: our stage-2 compiler builds M2-Planet from M2-Planet's own source, and the resulting binary compiles C.
 - **`struct-reverse-probe.yml`** -- SPIKE. REDUCER for the fault m2libc-113-bisect located. Our stage-2-built M2-Planet compiles a small program byte-identically to
 - **`tcc-aarch64-probe.yml`** -- SPIKE. IS tcc's AARCH64 BACKEND REAL ENOUGH TO BUILD ON? THE QUESTION THIS DECIDES. The Mes path forces a cross-architecture detour and

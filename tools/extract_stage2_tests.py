@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """extract_stage2_tests.py -- lift the stage-2 conformance corpus out of
-the stage2-mini-c-demo workflow so another job can run it.
+the stage2-pico-c-demo workflow so another job can run it.
 
 The demo may live in .github/workflows/ or .github/workflows-archive/ -- the
 caller passes the path, because archiving a workflow stops GitHub executing it
@@ -19,7 +19,7 @@ left. With argv empty on 414 of 426 rows, a tab-separated corpus would hand the
 program text to the argv variable on almost every line. 0x1F is not IFS white
 space, so empty fields survive, and it cannot occur in C source.
 
-WHY THIS EXISTS. stage2-mini-c-demo.yml carries ~490 example programs across
+WHY THIS EXISTS. stage2-pico-c-demo.yml carries ~490 example programs across
 21 harness definitions. Copying them into a second workflow would fork the
 corpus, and a forked corpus drifts silently -- the copy stays green while the
 original grows a case it does not have. So the demo stays the single source of

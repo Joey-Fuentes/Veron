@@ -35,7 +35,7 @@ git mv \
   .github/workflows/stage0-as-mul-demo.yml \
   .github/workflows/stage0-roundtrip.yml \
   .github/workflows/stage1-as-demo.yml \
-  .github/workflows/stage2-mini-c-demo.yml \
+  .github/workflows/stage2-pico-c-demo.yml \
   .github/workflows/stage3-m2-demo.yml \
   .github/workflows/struct-reverse-probe.yml \
   .github/workflows/tcc-aarch64-probe.yml \

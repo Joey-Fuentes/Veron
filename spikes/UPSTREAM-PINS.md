@@ -162,7 +162,7 @@ M2-Planet (ours)             313,608 B
 ```
 
 `open`/`close`/`exit` come from m53 and `brk` from m69, so only `fgetc` and
-`fputc` were left — they sit a level above the raw syscalls. `spikes/stage2-mini-c/m2libc-shim.c`
+`fputc` were left — they sit a level above the raw syscalls. `spikes/stage2-pico-c/m2libc-shim.c`
 supplies both in ten lines of C over our `read`/`write` builtins. That is a
 smaller substitution than m71's and it states its own rule rather than relying
 on a coincidence of upstream's file layout.

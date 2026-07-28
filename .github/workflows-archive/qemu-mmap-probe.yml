@@ -2,7 +2,7 @@ name: qemu-mmap-probe
 
 # SIDE PROBE (not a gate). Two diagnostics, run on the real CI host (qemu-user +
 # aarch64), both isolated from the compiler ladder:
-#   (A) stage0-as large-immediate encoding vs real `as`. mini-c emits integer
+#   (A) stage0-as large-immediate encoding vs real `as`. pico-c emits integer
 #       literals as a bare `mov x<d> <imm>`, but stage0-as encodes mov as a 16-bit
 #       MOVZ (0xD2800000|(imm<<5)|d); for imm >= 2^16 the immediate overflows into
 #       the shift/opcode bits -> a corrupt instruction. The Python bench hides this
@@ -42,7 +42,7 @@ jobs:
         run: qemu-aarch64 --version || true
       - name: Probe stage0-as large-immediate encoding vs as (the real culprit)
         run: |
-          # mini-c emits integer literals as a bare `mov x<d> <imm>`, but stage0-as
+          # pico-c emits integer literals as a bare `mov x<d> <imm>`, but stage0-as
           # encodes mov as 0xD2800000|(imm<<5)|d — a 16-bit MOVZ. For imm >= 2^16 the
           # immediate overflows the field -> a corrupt instruction on real hardware.
           # The Python bench hides this (its interp carries the full value in the

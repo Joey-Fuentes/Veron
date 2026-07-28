@@ -970,7 +970,7 @@ h_bcond:
     // three different inputs assembled to three wrong answers, none of them an
     // error:  b.le -> 11 (LT),  b.gt -> 10 (GE),  b.zz -> an UNCONDITIONAL
     // branch. Nothing above stage0-as emits b.gt or b.le -- stage1-as.s0 and
-    // stage2-mini-c.s1 contain none -- which is why the ladder was unaffected.
+    // stage2-pico-c.s1 contain none -- which is why the ladder was unaffected.
     // stage0-as's OWN source uses them eight times, so self-hosting on the old
     // code would have produced an assembler with eight inverted comparisons and
     // no diagnostic. Condition codes: EQ 0, NE 1, GE 10, LT 11, GT 12, LE 13.

@@ -29,7 +29,7 @@ DO NOT TRUST THIS FILE'S OPINION ABOUT WHAT IS SUPPORTED. The documented table
 is documentation; what stage0-as actually accepts is a property of the binary.
 `probes` emits one minimal test per form so CI can settle each by feeding it to
 the real stage0-as and byte-comparing against GNU `as` -- the same method
-stage2-mini-c-demo already uses for individual instruction encodings. The census
+stage2-pico-c-demo already uses for individual instruction encodings. The census
 below only says what the source NEEDS, which is a fact about text and can be
 computed here.
 """

@@ -1,4 +1,4 @@
-# spikes/stage2-mini-c — SPIKE stage 2 (mini-c)
+# spikes/stage2-pico-c — SPIKE stage 2 (pico-c)
 
 **Invariants SUSPENDED.** A compiler our own seed produces: C-ish source in,
 working aarch64 machine code out.
@@ -12,7 +12,7 @@ working aarch64 machine code out.
 labels), so it exercises the whole ladder:
 
 ```
-stage2-mini-c.s1 | stage1 | stage0-as | elf  ->  stage2   (the compiler)
+stage2-pico-c.s1 | stage1 | stage0-as | elf  ->  stage2   (the compiler)
 prog.c  | stage2 | stage1 | stage0-as | elf   ->  a.out ; ./a.out   (exit == value)
 ```
 
@@ -511,7 +511,7 @@ raises instead of silently reading 0 — so the `&member` address-of checks (`ad
 incl. char-field and `&(ptr->field)`) are real witnesses, closing the m49 gap where only
 qemu could see the bug. Pinned in `validate.py`; CI
 (real `as` + QEMU) is ground truth — the
-`stage2-mini-c-demo` workflow rebuilds the compiler and runs compiled programs
+`stage2-pico-c-demo` workflow rebuilds the compiler and runs compiled programs
 through `stage2 | stage1 | stage0-as | elf`, checking both the emitted instruction
 forms (`:func` labels, prologue/epilogue, frame-relative vars, numeric if/while,
 pointer scaling `lsl x0 x0 x3`) and exit codes across the whole sweep. The compiler is

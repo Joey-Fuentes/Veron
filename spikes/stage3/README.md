@@ -89,7 +89,7 @@ Stage 2 cannot compile `asm()`. At 1.13.1 M2libc's
 `aarch64/linux/bootstrap.c` is the whole mini-libc with `asm()` in six of its
 fifteen functions. `tools/drop_asm.py` drops those six at *function*
 granularity; m53/m69 builtins supply `open`/`close`/`brk`/`exit`; and
-`spikes/stage2-mini-c/m2libc-shim.c` supplies `fgetc`/`fputc`, the two left
+`spikes/stage2-pico-c/m2libc-shim.c` supplies `fgetc`/`fputc`, the two left
 over. Applies to G0 only.
 
 ## Tools worth knowing about

@@ -142,7 +142,7 @@ README.md            human-facing overview
 
 seed/                readable per-arch assembly trust root (NO binaries here)
   <arch>/            seed-as.S, seed-as.hash, roundtrip.sh, AUDIT.md
-stages/              the ladder: 0-seed-as → 1-macro-as → 2-mini-c → 3-full-c
+stages/              the ladder: 0-seed-as → 1-macro-as → 2-pico-c → 3-full-c
                      │ (FORK LINE) │ 4-libc → 4-binutils → 5-gcc-… → 5-kernel
 flavors/             musl/ and glibc/ — parameter files, not copies
 lib/                 build engine: derivations, sandbox, binary cache
@@ -162,7 +162,7 @@ ci/                  Dockerfile for a prebuilt fast-start CI image
 |-------|------|-----------|--------------|
 | 0 | `seed-as` | readable per-arch assembly | A — source read + round-trip disassembly |
 | 1 | `macro-as` | stage-0 assembly | A — full source read |
-| 2 | `mini-c` | stage-1 assembly | A — full source read |
+| 2 | `pico-c` | stage-1 assembly | A — full source read |
 | 3 | `full-c` | stage-2 C subset (self-hosts) | B — self-host + diverse double-compilation |
 | — | **FORK LINE** | *nothing above references libc* | |
 | 4 | `libc` + `binutils` | full C | C — reproduce + review delta + defer |

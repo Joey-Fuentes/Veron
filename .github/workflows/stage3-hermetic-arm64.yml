@@ -62,7 +62,7 @@ name: stage3-hermetic-arm64
 # compares at this level (`ab_cmp gen2 .M1`); this makes it the gate.
 #
 #   GATE 0 (blocking)     the stage-2 conformance corpus -- ~411 example
-#                         programs lifted from stage2-mini-c-demo.yml -- all
+#                         programs lifted from stage2-pico-c-demo.yml -- all
 #                         pass, natively, plus the canon.c compiler-shaped
 #                         fixpoint. NOTHING above is attempted until this holds.
 #   GATE 1 (blocking)     ours-gen1.M1 == ref-gen1.M1, byte for byte
@@ -73,7 +73,7 @@ name: stage3-hermetic-arm64
 #
 # ON "STAGE 2 RECOMPILING ITSELF": there is no such thing, and the file should
 # say so rather than quietly substituting something adjacent. Stage 2 is written
-# in stage 1's language (stage2-mini-c.s1), not in C, so it has no source it
+# in stage 1's language (stage2-pico-c.s1), not in C, so it has no source it
 # could compile. The nearest real thing -- and what GATE 0 runs -- is
 # selfhost/canon.c: a compiler-shaped program (file I/O, heap structs, function
 # pointers, deep recursion) whose transform is idempotent, giving a true
@@ -86,7 +86,7 @@ on:
     paths:
       - 'spikes/stage0-as/**'
       - 'spikes/stage1-as/**'
-      - 'spikes/stage2-mini-c/**'
+      - 'spikes/stage2-pico-c/**'
       - 'spikes/elf/**'
       - 'tools/drop_asm.py'
       - '.github/workflows/stage3-hermetic-arm64.yml'
@@ -320,15 +320,15 @@ jobs:
         run: |
           set -eu
           # THE CORPUS IS A COMMITTED FILE. It used to be extracted from
-          # stage2-mini-c-demo.yml on every run, which made test data a
+          # stage2-pico-c-demo.yml on every run, which made test data a
           # dependency of a YAML file -- and archiving that YAML broke this
           # build, because GitHub stops EXECUTING an archived workflow but
           # nothing stops another job READING it. Data belongs in the tree.
           #
           # tools/extract_stage2_tests.py still exists and the provenance is in
-          # spikes/stage2-mini-c/corpus/README.md; regenerating is a deliberate
+          # spikes/stage2-pico-c/corpus/README.md; regenerating is a deliberate
           # act now rather than something that happens silently every run.
-          CORPUS=spikes/stage2-mini-c/corpus/conformance.tsv
+          CORPUS=spikes/stage2-pico-c/corpus/conformance.tsv
           [ -f "$CORPUS" ] || { echo "  corpus not found at $CORPUS"; exit 1; }
           # pins/ IS BIND-MOUNTED AT /in, AND THE IN-BOX SCRIPT READS
           # /in/stage2-tests.corpus. The extractor used to write there directly;
@@ -467,7 +467,7 @@ jobs:
           art 'stage1' stage1
 
           say '3. STAGE 2 -- written in stage 1 language'
-          ./stage1 < /src/stage2-mini-c/stage2-mini-c.s1 | ./stage0-as | ./elf stage2
+          ./stage1 < /src/stage2-pico-c/stage2-pico-c.s1 | ./stage0-as | ./elf stage2
           [ -x stage2 ] || { echo "    FAIL: stage2 is not executable"; exit 1; }
           art 'stage2' stage2
 
@@ -481,7 +481,7 @@ jobs:
 
           say '5. STAGE 2 CONFORMANCE -- the demo corpus, run natively'
           # Every one of these compiles through the full ladder and is judged on
-          # its exit code, exactly as stage2-mini-c-demo does it -- but on real
+          # its exit code, exactly as stage2-pico-c-demo does it -- but on real
           # hardware instead of under qemu-aarch64. If our codegen has an ARM64
           # assumption that qemu was forgiving about, this is where it surfaces,
           # and it surfaces on a 40-character program instead of on 215 KB of
@@ -548,9 +548,9 @@ jobs:
 
           say '6. STAGE 2 FIXPOINT -- the compiler-shaped canary'
           # NOTE WHAT THIS IS AND IS NOT. Stage 2 has no C source -- it is
-          # written in stage 1's language, as stage2-mini-c.s1 -- so there is no
+          # written in stage 1's language, as stage2-pico-c.s1 -- so there is no
           # stage-2 self-compilation and no stage-2 fixpoint in the M2-Planet
-          # sense. What exists is spikes/stage2-mini-c/selfhost/canon.c: a
+          # sense. What exists is spikes/stage2-pico-c/selfhost/canon.c: a
           # compiler-shaped program (file I/O, heap structs, function pointers,
           # deep recursion) whose transform is IDEMPOTENT, so
           # canon(canon(x)) == canon(x) is a genuine fixpoint over a real
@@ -559,7 +559,7 @@ jobs:
           #
           # canon returns the output LENGTH as its exit status, so a good run
           # exits NONZERO. Every invocation is judged on its output file.
-          C=/src/stage2-mini-c/selfhost/canon.c
+          C=/src/stage2-pico-c/selfhost/canon.c
           ./stage2 < "$C" > canon.s
           ./stage1 < canon.s | ./stage0-as | ./elf canon
           [ -x canon ] || { echo "    FAIL: canon did not build"; exit 1; }
@@ -604,7 +604,7 @@ jobs:
           # a clean build.
           {
             cat /in/patched_bootstrap.c
-            cat /src/stage2-mini-c/m2libc-shim.c
+            cat /src/stage2-pico-c/m2libc-shim.c
             while read -r f; do
               case "$f" in
                 M2libc/aarch64/linux/bootstrap.c)
@@ -646,7 +646,7 @@ jobs:
           build2() {  # build2 <name>
             o="$1"
             { cat /in/patched_bootstrap.c
-              cat /src/stage2-mini-c/m2libc-shim.c
+              cat /src/stage2-pico-c/m2libc-shim.c
               cat /in/m2/M2libc/bootstrappable.c
               while read -r f; do cat "/in/mescc/$f"; done < "/in/$o-srcs.txt"
             } > "$o.c" || { echo "    $o: could not assemble sources"; return 1; }

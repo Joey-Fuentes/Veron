@@ -103,7 +103,7 @@ def main(argv):
     sp = os.path.join(ROOT, 'spikes')
     s1 = assemble(open(os.path.join(sp, 'stage1-as', 'stage1-as.s0')).read())[1]
     _, s2asm = clean_run(s1, stdin=open(
-        os.path.join(sp, 'stage2-mini-c', 'stage2-mini-c.s1')).read().encode(),
+        os.path.join(sp, 'stage2-pico-c', 'stage2-pico-c.s1')).read().encode(),
         timeout_s=600)
     s2 = assemble(s2asm.decode())[1]
 

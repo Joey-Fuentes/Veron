@@ -62,7 +62,7 @@ exist to untar and string-replace. Some of it is **forced** — real capability
 gaps between rungs. The two get conflated because they arrive together. This
 track separates them, and removes only the first.
 
-**Measure, don't estimate.** `../stage2-mini-c/TARGET-SUBSET.md` §2 derived stage 2's required
+**Measure, don't estimate.** `../stage2-pico-c/TARGET-SUBSET.md` §2 derived stage 2's required
 feature set mechanically from pinned source instead of guessing, and that is why
 it was right. Every leg below starts with a measurement spike that enumerates
 real failures, not an opinion about difficulty.

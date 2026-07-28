@@ -17,7 +17,7 @@ exist to untar and string-replace. Some of it is **forced** — real capability
 gaps between rungs. The two get conflated because they arrive together. This
 track separates them, and removes only the first.
 
-**Measure, don't estimate.** `../stage2-mini-c/TARGET-SUBSET.md` §2 derived stage 2's required
+**Measure, don't estimate.** `../stage2-pico-c/TARGET-SUBSET.md` §2 derived stage 2's required
 feature set mechanically from pinned source instead of guessing, and that is why
 it was right. Every leg below starts with a measurement spike that enumerates
 real failures, not an opinion about difficulty.
@@ -86,7 +86,7 @@ all point the same way.**
   support — `cc_core.c` contains no `"?"` at all) and bitfields (~84, clustered
   in `tcc.h`).
 
-**What M2-Planet actually implements is much larger than `../stage2-mini-c/TARGET-SUBSET.md`
+**What M2-Planet actually implements is much larger than `../stage2-pico-c/TARGET-SUBSET.md`
 §3–§4 suggests**, because that section documents what its *self-host uses*. Read
 from the pinned source, the type table alone carries `void`, `char`,
 signed/unsigned `char`, `_Bool`, `short`, `int`, `long`, `long long`, the

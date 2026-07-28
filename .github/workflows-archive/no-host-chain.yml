@@ -31,7 +31,7 @@ name: no-host-chain
 on:
   push:
     paths:
-      - 'spikes/stage2-mini-c/**'
+      - 'spikes/stage2-pico-c/**'
       - 'spikes/stage1-as/**'
       - 'spikes/stage0-as/**'
       - 'spikes/elf/**'
@@ -93,7 +93,7 @@ jobs:
           aarch64-linux-gnu-ld -static -o elf elf.o
           cat spikes/stage1-as/stage1-as.s0 \
             | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
-          cat spikes/stage2-mini-c/stage2-mini-c.s1 \
+          cat spikes/stage2-pico-c/stage2-pico-c.s1 \
             | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
           test -x stage2 || { echo "stage2 not built"; exit 1; }
 

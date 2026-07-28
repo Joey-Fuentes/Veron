@@ -40,7 +40,7 @@ Everything below lives under [`spikes/`](./spikes) and is a **feasibility tracer
 |---|---|---|
 | `stage0-as` | two-pass mnemonic assembler, hand-written ARM64 assembly. The last tool written in raw assembly. | **self-hosting** — assembles its own source (817/817 forms); gen1 == gen2 == gen3 and gen1 rebuilds `stage1` byte-identically. Committed as a verified binary, re-checked on every push by round-trip disassembly under two independent decoders |
 | `stage1-as` | two-pass numeric label resolver, written in *stage 0's own language* | **works** — gives the ladder unbounded multi-character labels |
-| `stage2-mini-c` | C-subset compiler, written in *stage 1's language* | **works** — 220 KB of upstream C in, 81,893 instructions out |
+| `stage2-pico-c` | C-subset compiler, written in *stage 1's language* | **works** — 220 KB of upstream C in, 81,893 instructions out |
 | `stage3` | M2-Planet, compiled by stage 2. There is no separately-written stage 3 — M2-Planet *is* stage 3. | **hand-off proven** — our build reproduces upstream's M2-Planet **byte for byte**, stable over five generations |
 | `stage4` | everything tcc is used to build: gcc, a userland, a kernel, a boot | **works** — `tcc → 4.7.4 → 10.2.0 → 15.2.0 → linux 7.1.5 → boot`, 61 min, one job |
 
@@ -96,7 +96,7 @@ The direct route is the shorter one: extend M2-Planet's C subset far enough to c
 
 ```
 seed/       readable per-arch assembly trust root (the only hand-authored root)   [empty]
-stages/     the ladder: 0-seed-as → 1-macro-as → 2-mini-c → 3-full-c │ 4-libc → 5-…  [empty]
+stages/     the ladder: 0-seed-as → 1-macro-as → 2-pico-c → 3-full-c │ 4-libc → 5-…  [empty]
 flavors/    musl / glibc instantiations (parameter files, not copies)             [empty]
 lib/        the build engine: derivations, sandbox, binary cache                  [empty]
 sources/    pinned upstream manifests (url + hash + signature + license)

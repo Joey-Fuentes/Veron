@@ -18,7 +18,7 @@ space, so empty fields survive, and it cannot occur in C source.
 
 ## Provenance
 
-Extracted from `stage2-mini-c-demo.yml` by `tools/extract_stage2_tests.py`,
+Extracted from `stage2-pico-c-demo.yml` by `tools/extract_stage2_tests.py`,
 which derives each harness's printf form and runtime argv from the harness's own
 definition rather than a hand-written list. That workflow is now in
 `.github/workflows-archive/`.
@@ -26,8 +26,8 @@ definition rather than a hand-written list. That workflow is now in
 To regenerate:
 
     python3 tools/extract_stage2_tests.py \
-      .github/workflows-archive/stage2-mini-c-demo.yml \
-      spikes/stage2-mini-c/corpus/conformance.tsv
+      .github/workflows-archive/stage2-pico-c-demo.yml \
+      spikes/stage2-pico-c/corpus/conformance.tsv
 
 ## Why it lives here and not in the workflow
 

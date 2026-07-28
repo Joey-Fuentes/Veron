@@ -7,7 +7,7 @@ so it can be found without running anything. That matters because reaching the
 fault costs a 97s qemu run plus a 7 GB trace, and only tells you where it landed
 -- not which construct leaked.
 
-THE CONTRACT (from stage2-mini-c.s1's own header):
+THE CONTRACT (from stage2-pico-c.s1's own header):
   push  = `str xN x9` then `add x9 x9 8`
   pop   = `sub x9 x9 8` then `ldr xN x9`
   a call evaluates args L->R onto the value stack, `bl f`; the callee pops P

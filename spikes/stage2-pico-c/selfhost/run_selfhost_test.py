@@ -3,7 +3,7 @@
 
 Compiles selfhost/canon.c through the real ladder
 
-    canon.c -> stage2-mini-c.s1 -> stage1-as.s0 -> stage0-as(model) -> a.out
+    canon.c -> stage2-pico-c.s1 -> stage1-as.s0 -> stage0-as(model) -> a.out
 
 and runs the result on the interp's in-memory filesystem, proving three things:
 
@@ -36,7 +36,7 @@ from s0as import assemble          # noqa: E402
 from interp import run, OOBAccess  # noqa: E402
 
 S1 = os.path.join(BENCH, "..", "stage1-as", "stage1-as.s0")
-S2 = os.path.join(BENCH, "..", "stage2-mini-c", "stage2-mini-c.s1")
+S2 = os.path.join(BENCH, "..", "stage2-pico-c", "stage2-pico-c.s1")
 SRC = os.path.join(HERE, "canon.c")
 
 MEM = 0x400000

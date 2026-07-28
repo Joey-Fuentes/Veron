@@ -1,6 +1,6 @@
-name: stage2-mini-c-demo
+name: stage2-pico-c-demo
 
-# SPIKE (invariants suspended). Stage 2 = mini-c. Supports:
+# SPIKE (invariants suspended). Stage 2 = pico-c. Supports:
 #   one-or-more  int name(params){ ... }  functions; a body has
 #   int a=<expr>; a=<expr>; if(<expr>){...} while(<expr>){...} return <expr>;
 # MULTI-CHAR names -> FRAME-RELATIVE 64-bit WORD (8-byte) slots at x10+off in
@@ -38,11 +38,11 @@ name: stage2-mini-c-demo
 on:
   push:
     paths:
-      - 'spikes/stage2-mini-c/**'
+      - 'spikes/stage2-pico-c/**'
       - 'spikes/stage1-as/**'
       - 'spikes/stage0-as/**'
       - 'spikes/elf/**'
-      - '.github/workflows/stage2-mini-c-demo.yml'
+      - '.github/workflows/stage2-pico-c-demo.yml'
       - '!spikes/*.md'
       - '!spikes/**/*.md'
       - '!spikes/*.txt'
@@ -50,7 +50,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: stage2-mini-c-demo-${{ github.ref }}
+  group: stage2-pico-c-demo-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -72,7 +72,7 @@ jobs:
           aarch64-linux-gnu-as -o elf.o spikes/elf/elf.aarch64.s
           aarch64-linux-gnu-ld -static -o elf elf.o
           cat spikes/stage1-as/stage1-as.s0 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage1
-          cat spikes/stage2-mini-c/stage2-mini-c.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
+          cat spikes/stage2-pico-c/stage2-pico-c.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2
           test -x stage2 || { echo "stage2 not built"; exit 1; }
 
           # ---- byte-compare the WORD var load/store forms against real `as` ----
@@ -1351,7 +1351,7 @@ jobs:
             || { echo "  elf lost its overflow diagnostic"; cap_ok=no; }
           grep -q 'input exceeds arena' spikes/stage1-as/stage1-as.s0 \
             || { echo "  stage1 lost its overflow diagnostic"; cap_ok=no; }
-          grep -q 'exceeds @<pos> field width' spikes/stage2-mini-c/stage2-mini-c.s1 \
+          grep -q 'exceeds @<pos> field width' spikes/stage2-pico-c/stage2-pico-c.s1 \
             || { echo "  stage2 lost its position-overflow guard"; cap_ok=no; }
           printf '  %-64s %s\n' 'all remaining bounds fail LOUDLY (diagnostic + exit 2)' \
                  "$([ "$cap_ok" = yes ] && echo OK || echo DIFF)"
@@ -1370,7 +1370,7 @@ jobs:
           # are one byte). Every invocation is therefore `set +e`-wrapped and judged on
           # its OUTPUT FILE, not on its exit status.
           selfhost_ok=yes
-          CANON=spikes/stage2-mini-c/selfhost/canon.c
+          CANON=spikes/stage2-pico-c/selfhost/canon.c
 
           # --- build canon through the full ladder; every stage timeout-bounded -------
           set +e
@@ -1577,7 +1577,7 @@ jobs:
           # constructs sharing that stack must emit BYTE-IDENTICAL output to before.
           # Runs only on the commit that introduces the rung (HEAD~1 has no :dodo);
           # afterwards it reports SKIP rather than comparing against itself.
-          if git show HEAD~1:spikes/stage2-mini-c/stage2-mini-c.s1 > old.s1 2>/dev/null && ! grep -q '^:dodo$' old.s1; then
+          if git show HEAD~1:spikes/stage2-pico-c/stage2-pico-c.s1 > old.s1 2>/dev/null && ! grep -q '^:dodo$' old.s1; then
             cat old.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2old
             dwid=yes
             dwcmp() {
@@ -1697,7 +1697,7 @@ jobs:
           # Second record widening in two rungs (16 -> 24 bytes), so the constructs
           # sharing that stack must emit byte-identical output to before. Runs only on
           # the commit that introduces the rung; reports SKIP afterwards.
-          if git show HEAD~1:spikes/stage2-mini-c/stage2-mini-c.s1 > oldf.s1 2>/dev/null && ! grep -q '^:dofor$' oldf.s1; then
+          if git show HEAD~1:spikes/stage2-pico-c/stage2-pico-c.s1 > oldf.s1 2>/dev/null && ! grep -q '^:dofor$' oldf.s1; then
             cat oldf.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2oldf
             fid=yes
             fcmp() {
@@ -1843,7 +1843,7 @@ jobs:
           # emitnum was split so emitval can lower a value held in a register, so EVERY
           # integer literal now flows through new code. The corpus spans literals of all
           # four halfword widths. Runs only on the commit that introduces the rung.
-          if git show HEAD~1:spikes/stage2-mini-c/stage2-mini-c.s1 > olde.s1 2>/dev/null && ! grep -q '^:doenum$' olde.s1; then
+          if git show HEAD~1:spikes/stage2-pico-c/stage2-pico-c.s1 > olde.s1 2>/dev/null && ! grep -q '^:doenum$' olde.s1; then
             cat olde.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2olde
             eid=yes
             ecmp() {
@@ -1977,7 +1977,7 @@ jobs:
           # --- byte-identity against the PRE-RUNG compiler ---------------------------
           # The int path is untouched, so a keyword-free program must compile to the same
           # bytes as before the rung. Runs only on the commit that introduces it.
-          if git show HEAD~1:spikes/stage2-mini-c/stage2-mini-c.s1 > oldw.s1 2>/dev/null && ! grep -q '^:nt_wtype$' oldw.s1; then
+          if git show HEAD~1:spikes/stage2-pico-c/stage2-pico-c.s1 > oldw.s1 2>/dev/null && ! grep -q '^:nt_wtype$' oldw.s1; then
             cat oldw.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2oldw
             wid=yes
             wcmp() {
@@ -2106,7 +2106,7 @@ jobs:
           # --- byte-identity against the PRE-RUNG compiler ---------------------------
           # prescan runs for EVERY function, so this rung put every frame size in every
           # program on new code. The corpus is therefore frame-shaped on purpose.
-          if git show HEAD~1:spikes/stage2-mini-c/stage2-mini-c.s1 > oldt.s1 2>/dev/null && ! grep -q '^:ps_idecl$' oldt.s1; then
+          if git show HEAD~1:spikes/stage2-pico-c/stage2-pico-c.s1 > oldt.s1 2>/dev/null && ! grep -q '^:ps_idecl$' oldt.s1; then
             cat oldt.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2oldt
             tid=yes
             tcmp() {
@@ -2237,7 +2237,7 @@ jobs:
 
           # --- byte-identity against the PRE-RUNG compiler ---------------------------
           # Programs with no pointer-array and no double pointer must be untouched.
-          if git show HEAD~1:spikes/stage2-mini-c/stage2-mini-c.s1 > oldp.s1 2>/dev/null && ! grep -q '^:di_stars$' oldp.s1; then
+          if git show HEAD~1:spikes/stage2-pico-c/stage2-pico-c.s1 > oldp.s1 2>/dev/null && ! grep -q '^:di_stars$' oldp.s1; then
             cat oldp.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2oldp
             pid=yes
             pcmp() {
@@ -2325,7 +2325,7 @@ jobs:
           # byte-identity is the wrong guard. The right one is that the change is
           # confined to the entry preamble: from `bl main` onward the output must match
           # the pre-rung compiler exactly.
-          if git show HEAD~1:spikes/stage2-mini-c/stage2-mini-c.s1 > olda.s1 2>/dev/null && ! grep -q 'add x3 x31 0' olda.s1; then
+          if git show HEAD~1:spikes/stage2-pico-c/stage2-pico-c.s1 > olda.s1 2>/dev/null && ! grep -q 'add x3 x31 0' olda.s1; then
             cat olda.s1 | qemu-aarch64 ./stage1 | qemu-aarch64 ./stage0-as | qemu-aarch64 ./elf stage2olda
             aid=yes
             acmp() {
@@ -2356,7 +2356,7 @@ jobs:
 
 
           {
-            echo "## stage2-mini-c — variables, if/while, reassignment, functions + recursion"
+            echo "## stage2-pico-c — variables, if/while, reassignment, functions + recursion"
             echo '```'
             echo "word ldr/str byte-identical to as   : $ld_ok"
             echo "emitted word forms + frame-rel vars : $struct_ok"
