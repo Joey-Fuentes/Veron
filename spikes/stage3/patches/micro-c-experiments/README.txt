@@ -1714,3 +1714,46 @@ WHAT REPLACES IT, in tools/regression.sh:
 Current state: 7 files compiled by both, 7 differ, 0 regressions. The
 differences are the short-circuit branches and the array-member fixes, which
 is what they should be.
+
+=============================================================================
+THE SHORT-CIRCUIT FIX CLOBBERED x16
+
+The first version made things WORSE. Markers went from
+
+    D1 M50 M51 M52 M53 D2 T1 ... T9      (before)
+    D1                                    (after)
+
+-- straight into tcc_new, earlier than anything since the alignment bug.
+
+emit_jump_if_zero reaches a far label like this:
+
+    cbnz_x0,20
+    ldr_w16,8
+    b_8
+    &SC_SHORT_l_0
+    br_x16
+
+It loads the target into x16 and branches through it. x16 is REGISTER_TEMP,
+and micro-c's CALL SEQUENCE holds the callee's new base pointer there between
+
+    mov_x16,x18        # Copy new base pointer
+    ...
+    mov_x17,x16        # Set new base pointer
+
+So a && appearing inside an ARGUMENT LIST destroyed the callee's frame
+pointer. tcc_new is full of calls with conditions in their arguments.
+
+WHY IT WAS NEVER A PROBLEM BEFORE: if and while use the same helper at
+STATEMENT level, where x16 is dead. Putting a jump inside an EXPRESSION is new,
+and the helper was never written for it.
+
+Fixed by saving x16 across the sequence. Both paths reach the end label, so one
+push and one pop covers them, balanced whichever branch is taken. Verified in
+the emitted code: 1 push, 1 pop.
+
+A NOTE ON WHAT COULD NOT BE VERIFIED HERE. The full ONE_SOURCE unit no longer
+compiles in this container -- it is killed by the OOM reaper at 38 seconds.
+Every file compiles individually, and CI compiled the whole unit successfully
+on the same source, so this is a 4 GB limit rather than a defect. It does mean
+the end-to-end check now only exists in CI, and that is worth saying rather
+than quietly dropping the claim.
