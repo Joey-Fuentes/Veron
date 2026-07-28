@@ -2056,3 +2056,34 @@ Storing one byte per element in any of those is not a subtle wrongness.
 The two left are 04-short-circuit, deferred with its own patch and notes, and
 05-struct-assign, whose copy loop was written against aarch64's macro
 vocabulary and does not assemble for amd64 at all.
+
+=============================================================================
+NINE OF TEN, AND THE STRUCT COPY IS PORTABLE
+
+    emit_move(REGISTER_ONE, REGISTER_TEMP2)
+
+is mov_x1,x15 on aarch64 and mov_rbx,r15 on amd64, and only the first exists.
+Routing through REGISTER_ZERO works on both -- but ZERO holds the loaded word
+by that point, so the ORDER had to change rather than the route: set the
+destination while ZERO is still free, then load.
+
+The whole loop had been written against aarch64's macro list and checked
+against aarch64's, which is why it did not assemble for amd64 at all. That is
+the third fix in this series found to be architecture-shaped, and the only
+reason any of them were found is that the difftest runs on both.
+
+    difftest    9 pass / 1 fail    (4 / 6 four rounds ago)
+    regression  0 regressions
+    full unit   350,744 lines
+    all ten cases build and link for aarch64 as well as amd64
+
+The one remaining failure is 04-short-circuit, which is deferred with its own
+patch, its own notes, and a record of what has already been ruled out.
+
+WHAT THE SCORE DOES AND DOES NOT MEAN. Nine cases passing is nine constructs
+that behave as gcc does. It is not a claim about micro-c generally: the cases
+were written FROM bugs already found, so they measure what has been fixed
+rather than what remains. tcc still dies at the same marker, which is the
+honest headline -- the difftest has fixed real and pervasive bugs (arrays of
+pointers, member indexing, member alignment, load and store widths) without
+yet reaching whatever T9 is.
