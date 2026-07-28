@@ -144,3 +144,40 @@ WHAT WOULD ACTUALLY STOP THE PATTERN: cases written for constructs that have
 NOT failed yet -- unions, function pointers in structs, nested initialisers,
 const and volatile, wide switches, varargs. Writing those is the difference
 between a suite that confirms fixes and one that finds bugs.
+
+=============================================================================
+instrument.py -- WHY MARKERS WERE PLACED BY HAND FOR SO LONG
+
+Asked why T9 could not be broken down further, the honest answer was that
+markers were being placed BY HAND, six or eight to a function, one refinement
+per CI round. After several rounds the answer was still "somewhere in
+tcc_set_output_type".
+
+Nothing about that placement requires judgement. instrument.py puts a marker
+after EVERY statement of a named function, so one run names the exact line.
+
+    instrument.py --map libtcc.c tcc_set_output_type    the line map
+    instrument.py libtcc.c tcc_set_output_type          the patched source
+
+On tcc_set_output_type it produces 18 markers where 8 were placed by hand, and
+covers statements no one thought to mark -- including the ones inside the
+early-return branches.
+
+WHAT IT REFUSES TO INSTRUMENT, because each would emit code that does not
+compile and cost a round in a different way:
+
+    declarations with initialisers   a marker cannot split a declarator from
+                                     its initialiser
+    for(;;) headers                  the semicolons are separators
+    preprocessor lines               the semicolon may be inside a branch that
+                                     is compiled out
+    loop-body opening braces         a marker there repeats every iteration and
+                                     drowns the log
+
+THE LINE MAP IS PART OF THE OUTPUT, not an afterthought. "L07" means nothing
+without it, and it changes whenever the source does -- so the CI stage prints
+the map next to the result rather than expecting anyone to reconstruct it.
+
+Verified before shipping: the instrumented libtcc.c compiles under micro-c to
+367,040 lines with 15 markers emitted -- 15 and not 18 because three sit in
+#ifdef branches for other targets, which is correct.

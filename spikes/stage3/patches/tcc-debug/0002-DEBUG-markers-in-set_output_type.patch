@@ -1,17 +1,25 @@
 DEBUG ONLY -- NOT PART OF ANY BUILD.
 
-Markers through tcc_set_output_type, now including the return.
+Markers through tcc_set_output_type, with the final CONDITION SPLIT.
 
-    T1  entered                T2/T3  system include path
-    T4/T5  tccelf_new          T6/T7  library path
-    T8/T9  tcc_split_path      TA/TB  tccelf_add_crtbegin (skipped when the
-                                      output type is MEMORY)
-    TC  the if is done, about to return
+    T1  entered              T2/T3  system include path
+    T4/T5  tccelf_new        T6/T7  library path
+    T8/T9  tcc_split_path
+    TD  about to evaluate output_type != TCC_OUTPUT_MEMORY
+    TE  that operand survived; about to read s->nostdlib
+    TF  both operands survived
+    TA/TB  tccelf_add_crtbegin, only when the condition holds
+    TC  about to return
 
-TC is the one that matters. The compile-only probe reaches T9, skips crtbegin
-because its output type is MEMORY, and dies before its caller sees control
-again. Either the if faults, the return faults, or something corrupted earlier
-surfaces there -- and TC tells those apart.
+WHY SPLIT IT. Every run so far ends at T9, which says the fault is in the
+if -- and an if with two operands and an && between them is three things,
+not one. A marker before a compound condition cannot say which part faulted,
+and rounds were spent assuming it could.
+
+    dies after TD   reading output_type, a plain parameter
+    dies after TE   reading s->nostdlib, an unsigned char member
+    dies after TF   the && itself, or the branch
+    reaches TC      the condition is fine and the fault is the return
 
 --- a/libtcc.c
 +++ b/libtcc.c
@@ -51,19 +59,34 @@ surfaces there -- and TC tells those apart.
  
  #ifdef TCC_TARGET_PE
  # ifdef TCC_IS_NATIVE
-@@ -1007,10 +1014,15 @@
+@@ -1007,10 +1014,28 @@
  # endif
  #else
      /* paths for crt objects */
 +    write(2, "T8\n", 3);
      tcc_split_path(s, &s->crt_paths, &s->nb_crt_paths, CONFIG_TCC_CRTPREFIX);
+-    if (output_type != TCC_OUTPUT_MEMORY && !s->nostdlib)
+-        tccelf_add_crtbegin(s);
 +    write(2, "T9\n", 3);
-     if (output_type != TCC_OUTPUT_MEMORY && !s->nostdlib)
-+        write(2, "TA\n", 3);
-         tccelf_add_crtbegin(s);
-+        write(2, "TB\n", 3);
++    {
++        /* SPLIT DELIBERATELY. Written as one condition, a fault could be
++         * either operand or the && between them, and the marker before it
++         * cannot say which. Each operand now gets its own. */
++        int cond_a;
++        int cond_b;
++        write(2, "TD\n", 3);
++        cond_a = (output_type != TCC_OUTPUT_MEMORY);
++        write(2, "TE\n", 3);
++        cond_b = !s->nostdlib;
++        write(2, "TF\n", 3);
++        if (cond_a && cond_b) {
++            write(2, "TA\n", 3);
++            tccelf_add_crtbegin(s);
++            write(2, "TB\n", 3);
++        }
++    }
  #endif
-+    write(2, "TC\n", 3);   /* the if is done; about to return */
++    write(2, "TC\n", 3);
      return 0;
  }
  

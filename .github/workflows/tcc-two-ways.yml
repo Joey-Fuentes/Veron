@@ -453,6 +453,63 @@ jobs:
             echo "  self-compilation not reached"
           fi
 
+      - name: 'DEBUG: which STATEMENT faults, every one instrumented'
+        if: always()
+        continue-on-error: true
+        run: |
+          set -eu
+          # AUTOMATIC instrumentation: a marker after EVERY statement of the
+          # function, not the six or eight a human places by hand.
+          #
+          # Hand placement cost a round per refinement and still ended with
+          # "somewhere in tcc_set_output_type" after several of them. The
+          # placement is mechanical, so this does all of it at once and the
+          # LAST marker printed names the exact line.
+          FUNC="${DEBUG_FUNC:-tcc_set_output_type}"
+          python3 spikes/stage3/tools/instrument.py --map mc-tcc/libtcc.c "$FUNC" \
+            > marker-map.txt || { echo "  could not instrument $FUNC"; exit 0; }
+          echo "  --- marker map ---"
+          cat marker-map.txt
+          python3 spikes/stage3/tools/instrument.py mc-tcc/libtcc.c "$FUNC" \
+            > /tmp/inst.c 2>/dev/null
+          cp /tmp/inst.c mc-tcc/libtcc.c
+
+          L="$PWD/spikes/stage3/micro-c-libc"
+          cd mc-tcc
+          ../micro-c --architecture aarch64 --expand-includes --max-string 65536 \
+            -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 -D TCC_TARGET_LINUX=1 \
+            -D CONFIG_TCC_STATIC=1 -I . -I "$L" -I ../m2/M2libc \
+            -f libtcc.c -o ../inst.M1
+          cd ..
+
+          join2() {
+            out="$1"; shift
+            : > "$out.code"; : > "$out.strs"
+            for f in "$@"; do
+              sed '/^# Program strings$/,$d' "$f" >> "$out.code"
+              sed -n '/^# Program strings$/,$p' "$f" >> "$out.strs"
+            done
+            cat "$out.code" "$out.strs" > "$out"; rm -f "$out.code" "$out.strs"
+          }
+          join2 inst-all.M1 inst.M1 m2libc.M1 runtime.M1 setjmp.M1 compileonly.M1
+          D=spikes/reference/m2libc/aarch64
+          ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f inst-all.M1 \
+               --little-endian --architecture aarch64 -o inst.hex2
+          ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
+                 -f $D/ELF-aarch64.hex2 -f inst.hex2 -o tcc-inst
+          chmod +x tcc-inst
+
+          set +e
+          ./tcc-inst 2> inst-marks.txt
+          rc=$?
+          set -e
+          last=$(grep -aoE '^L[0-9]+' inst-marks.txt | tail -1)
+          echo "  --- result ---"
+          echo "  markers printed: $(grep -acE '^L[0-9]+' inst-marks.txt), exit $rc"
+          echo "  LAST STATEMENT THAT COMPLETED: $last"
+          grep "^$last " marker-map.txt || true
+          echo "  the fault is in whatever follows that line"
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
