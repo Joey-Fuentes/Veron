@@ -1,0 +1,61 @@
+From: Veron
+Subject: [PATCH] stdlib: say what size malloc refused
+
+malloc rounds every request up to the next power of two and returns NULL for
+anything over 1 GB. The caller then reports "memory full", which cannot
+distinguish genuine exhaustion from ONE absurd request -- and those need
+opposite fixes: a bigger heap, or a bug in whatever computed the size.
+
+It matters particularly under micro-c, where int is eight bytes, so a size
+derived from a sizeof or a shift can come out enormous with nothing wrong at
+the call site.
+
+Written with write() and a local decimal formatter rather than fputs and
+int2str, because M2libc compiles stdlib.c BEFORE stdio.c and bootstrappable.c
+and neither exists yet at this point in the build.
+
+A DEBUGGING AID: the return value is unchanged.
+
+--- a/stdlib.c
++++ b/stdlib.c
+@@ -273,7 +273,39 @@
+ 		used = used << 1;
+ 
+ 		/* fail big allocations */
+-		if(used > max) return NULL;
++		if(used > max)
++		{
++			/* SAY WHAT WAS ASKED FOR. A caller that gets NULL back reports
++			 * "memory full", which cannot distinguish genuine exhaustion from
++			 * ONE absurd request -- and those need opposite fixes: a bigger heap,
++			 * or a bug in whatever computed the size.
++			 *
++			 * It matters here because micro-c makes `int` eight bytes, so a size
++			 * derived from a sizeof or a shift can come out enormous with nothing
++			 * looking wrong at the call site.
++			 *
++			 * WRITTEN WITH write() AND A LOCAL FORMATTER, not fputs and int2str:
++			 * in M2libc's own build order stdlib.c is compiled BEFORE stdio.c and
++			 * bootstrappable.c, so neither of those exists yet. */
++			char digits[24];
++			int at = 24;
++			size_t left = size;
++			write(2, "malloc: refusing ", 17);
++			if(0 == left)
++			{
++				at = at - 1;
++				digits[at] = '0';
++			}
++			while(0 != left)
++			{
++				at = at - 1;
++				digits[at] = '0' + (left % 10);
++				left = left / 10;
++			}
++			write(2, digits + at, 24 - at);
++			write(2, " bytes\n", 7);
++			return NULL;
++		}
+ 	}
+ 
+ 	/* try the cabinets around the house */

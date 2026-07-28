@@ -2159,3 +2159,47 @@ else's bug the whole time.
     difftest    11 pass / 0 fail
     regression  0 regressions
     full unit   366,649 lines
+
+=============================================================================
+tcc_set_output_type COMPLETES. THE COMPILER IS RUNNING.
+
+Automatic instrumentation -- a marker after EVERY statement rather than the
+eight placed by hand -- gave the answer in one run:
+
+    markers: C1 M50 M51 M52 M53 C2 T1..T9 TD TE TF TC C3 memory full
+    exit 1
+
+Read that: tcc_new completes, tcc_set_output_type completes, C3 prints -- back
+in main, past the whole setup -- and then tcc emits ITS OWN error message.
+
+"memory full" is tcc's, from tcc_malloc when the allocator returns NULL. So
+the thing is inside tcc_compile_string doing compiler work, and the failure is
+no longer a fault at all.
+
+FOUR ROUNDS SAID "DIED IN tcc_set_output_type" AND THAT WAS ALWAYS THE LIMIT
+OF WHERE HAND-PLACED MARKERS COULD SEE. The function was completing the whole
+time; the last hand marker simply sat before the end of it.
+
+AND A PRECISE CLUE ABOUT THE EARLIER FAULT. The split condition works where
+the compound one segfaulted:
+
+    if (output_type != TCC_OUTPUT_MEMORY && !s->nostdlib)   faulted
+    cond_a = (output_type != TCC_OUTPUT_MEMORY);
+    cond_b = !s->nostdlib;
+    if (cond_a && cond_b)                                   works
+
+Both are &&. The difference is a UNARY NOT on a struct member as the right
+operand. Case 12-not-member-in-and covers exactly that shape; it passes on
+amd64, so if it fails on the runner it names the bug outright.
+
+NEXT: WHY THE ALLOCATOR SAYS FULL. M2libc's malloc rounds every request up to
+the next power of two and refuses anything over 1 GB. "memory full" cannot
+distinguish real exhaustion from one absurd request, and those need opposite
+fixes -- a bigger heap, or a bug in whatever computed the size. The second is
+live here because micro-c's eight-byte int makes a size derived from a sizeof
+or a shift come out enormous with nothing wrong at the call site.
+
+patches/m2libc/0002 makes malloc print the size it refused. Written with
+write() and a local formatter, because M2libc compiles stdlib.c before stdio.c
+and bootstrappable.c, so neither fputs nor int2str exists at that point -- a
+detail worth stating because the obvious version does not compile.
