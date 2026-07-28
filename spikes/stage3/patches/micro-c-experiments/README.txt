@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "through every header; now inside tccpp.c".
+"hangs forever on tcc.c" to "through every header and 177 lines into tccpp.c".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -34,6 +34,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   global char array = string literal           cc_core.c   tcc.c:32, tccpp.c:64
   '#' stringify operator                       cc_macro.c  tcctok.h:187, 77 uses
   full 0..255 byte range in global data        cc_emit.c   tccpp.c
+  `sizeof x` without parentheses               cc_core.c   tccpp.c:104
 
 UNSOUND, AND WHY
 ----------------
@@ -217,6 +218,19 @@ UNSOUND, AND WHY
     shift in sign bits instead of encoding as FF. Verified: 158 -> 9E,
     -1 -> FF, -128 -> 80.
 
+14. `sizeof x` WITHOUT PARENTHESES. C requires them only for a TYPE operand;
+    for an expression `sizeof x` is legal, and tccpp.c:104 writes
+    `pstrcpy(tmp, sizeof tmp, ...)`. The body already resolved a variable and
+    computed its size -- only the mandatory '(' was in the way. Remember
+    whether one was consumed, and require the matching ')' only then.
+    `sizeof t` emits BYTE-IDENTICAL code to `sizeof(t)`.
+
+STOPPED AT: tccpp.c:177, "Got unsupported size 48 when trying to load value"
+-- a 48-byte struct being loaded by value. The obvious candidates on that line
+(`al->next = *pal, *pal = al;`) were reproduced in isolation and all compile,
+so the cause is elsewhere and needs a real bisect rather than a guess. Left
+open deliberately rather than patched on a hunch.
+
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
 
@@ -230,7 +244,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Twenty-eight walls between a hanging compiler and tcc's first genuinely large
+Twenty-nine walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
