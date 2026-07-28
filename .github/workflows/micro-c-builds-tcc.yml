@@ -132,6 +132,18 @@ jobs:
           set -eu
           M=spikes/reference/m2libc
 
+          # M2libc IS PATCHED TOO. free(NULL) exits(1) upstream instead of
+          # doing nothing, and tcc relies on the standard behaviour. Applied to
+          # a COPY so the vendored reference tree stays pristine.
+          rm -rf m2libc-patched && cp -r "$M" m2libc-patched
+          for p in spikes/stage3/patches/m2libc/[0-9]*.patch; do
+            [ -e "$p" ] || continue
+            (cd m2libc-patched && git apply --ignore-whitespace "../$p") \
+              || { echo "FAIL: $(basename "$p") does not apply to M2libc"; exit 1; }
+            echo "  applied $(basename "$p") to M2libc"
+          done
+          M=m2libc-patched
+
           # ONE INVOCATION, IN M2libc's OWN ORDER.
           #
           # Compiling these as separate translation units and concatenating the

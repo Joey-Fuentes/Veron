@@ -1,0 +1,42 @@
+From: Veron
+Subject: [PATCH] stdlib: free(NULL) is a no-op
+
+M2libc's free walks the allocated list looking for the block, and if it does
+not find one it reaches
+
+    /* we received a pointer to a block that was not allocated */
+    /* Bail *HARD* because I do not want to cover this edge case */
+    exit(EXIT_FAILURE);
+
+free(NULL) takes exactly that path. C requires free(NULL) to do nothing, and
+real code depends on it -- tcc's tcc_set_str frees the old string before
+storing a new one, and the old string is NULL the first time:
+
+    static void tcc_set_str(char **pp, const char *str)
+    { tcc_free(*pp); *pp = str ? tcc_strdup(str) : NULL; }
+
+The symptom is a silent exit(1) with nothing on stderr, which is very hard to
+trace back to free. Found by putting progress markers through tcc_new: the
+last one printed was immediately before tcc_set_lib_path.
+
+--- a/stdlib.c
++++ b/stdlib.c
+@@ -134,6 +134,18 @@
+ {
+ /* just in case someone needs to quickly turn it off */
+ #ifndef _MALLOC_DISABLE_FREE
++	/* free(NULL) IS A NO-OP. C requires it, and real code relies on it:
++	 *
++	 *     static void tcc_set_str(char **pp, const char *str)
++	 *     { tcc_free(*pp); *pp = str ? tcc_strdup(str) : NULL; }
++	 *
++	 * *pp is NULL the first time, straight out of a calloc'd struct. Without
++	 * this, the search below finds no matching block and falls through to the
++	 * exit(EXIT_FAILURE) at the end of the function -- so the program dies
++	 * with status 1 and NO message, which is a hard thing to trace back here.
++	 */
++	if(NULL == ptr) return;
++
+ 	struct _malloc_node* i = _allocated_list;
+ 	struct _malloc_node* last = NULL;
+ 

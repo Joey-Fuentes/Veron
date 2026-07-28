@@ -1314,3 +1314,36 @@ THREE CODEGEN BUGS IN A ROW HAVE COME FROM READING EMITTED CODE, not from
 probes: array members loaded instead of decayed, array members sized by the
 wrong type, and now this. The probes were right to narrow to a function and
 wrong to be trusted past that point.
+
+=============================================================================
+free(NULL) EXITS 1 IN M2libc
+
+After the address-of fix:
+
+    F-call-tcc_new    exit 1 (ran)      -- no signal
+    markers:          M50 M51 M52       -- exit 1 at tcc_set_lib_path
+
+No segfault any more, and no message on stderr either. M2libc's free walks the
+allocated list looking for the block, and when it finds none it reaches:
+
+    /* we received a pointer to a block that wasn't allocated */
+    /* Bail *HARD* because I don't want to cover this edge case */
+    exit(EXIT_FAILURE);
+
+free(NULL) takes exactly that path. C requires it to do nothing, and tcc
+relies on that -- tcc_set_str frees the old string before storing the new one,
+and the old string is NULL the first time.
+
+I CHECKED THIS FUNCTION TWO ROUNDS AGO AND CALLED IT SAFE. I read as far as
+the search loop, saw it would simply not match, and stopped -- without reading
+the six lines after the loop. The note in this file said "free(NULL) walks
+M2libc's allocation list and finds nothing, which is safe". It was wrong, and
+it was wrong in a way that reading the whole function would have caught
+immediately.
+
+Fixed in spikes/stage3/patches/m2libc/, applied to a COPY so the vendored
+reference tree stays pristine -- the same discipline as the tcc patches.
+
+A silent exit(1) is a nasty failure mode: no signal, no message, and an exit
+code that looks like ordinary program failure. The progress markers are the
+only reason it was located at all.
