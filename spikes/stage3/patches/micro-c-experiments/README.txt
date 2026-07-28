@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "into tccpp.c, past the typedef indirection bug".
+"hangs forever on tcc.c" to "390 lines into tccpp.c".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -37,6 +37,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   `sizeof x` without parentheses               cc_core.c   tccpp.c:104
   load_value error names type and token        cc_core.c   diagnostic only
   mirror_type: the MISSING THIRD indirection   cc_types.c  tccpp.c:177
+  a cast applies to the POSTFIX expression     cc_core.c   tccpp.c:281
 
 UNSOUND, AND WHY
 ----------------
@@ -255,11 +256,22 @@ UNSOUND, AND WHY
     VERIFIED: the typedef'd form now emits BYTE-IDENTICAL code to the
     non-typedef'd one, and T*** still resolves correctly.
 
-STOPPED AT: `ERROR in lookup_member tal_header_t->p does not exist` in
-tccpp.c. `tal_header_t` has one member, `size`; `p` belongs to TinyAlloc. So a
-type record is being shared or overwritten between two typedefs in the same
-file. Two-typedef reproductions pass, so the trigger is narrower than that and
-needs the same eliminate-don't-guess treatment.
+16. A CAST APPLIES TO THE POSTFIX EXPRESSION, NOT THE PRIMARY ONE. The cast
+    branch called primary_expr(), which consumes only `al`, then set
+    current_target to the cast type -- leaving `->p` for the caller, which
+    looked the member up in the CAST type:
+
+        ERROR in lookup_member tal_header_t->p does not exist
+
+    at tccpp.c:281, `memcpy((tal_header_t*)al->p + 1, p, header->size)`.
+    `(T*)al->p` means `(T*)(al->p)`, so calling postfix_expr() is the fix.
+
+    It also shows why the shared-type-record theory in the previous entry was
+    WRONG. `tal_header_t` really did have no member `p` -- the parser was
+    asking the wrong type. Two-typedef reproductions passed because the
+    trigger was never the typedefs; it was the cast. The first fix attempt
+    went into primary_expr_variable, which is not even on this path, and a
+    debug print showed it never ran. Instrument before editing.
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -274,7 +286,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Thirty walls between a hanging compiler and tcc's first genuinely large
+Thirty-one walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
