@@ -145,6 +145,13 @@
 #
 #     tcc.c, the full driver, still stops at tcctools.c:60 NOT DONE
 #
+#   THE OUTPUT ASSEMBLES: M1 rc=0, 332,893 lines of hex2. Running M1 over it
+#   found FIVE bugs parsing could not -- three emissions outside M2libc's
+#   aarch64 macro vocabulary, a function-pointer parameter with no stack
+#   depth, and a label built from a string's contents. Not linked yet:
+#   hex2 stops on FUNCTION___init_malloc, which libc-full.M1 references but
+#   does not define.
+#
 #   SOUNDNESS: micro-c's `int` is EIGHT bytes (M2-Planet's own type model, not
 #   introduced here). Internally consistent, wrong at the libc boundary and in
 #   bitfield storage units. The fixed-width types ARE correct, so ELF headers

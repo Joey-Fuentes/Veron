@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "libtcc.c COMPILES END TO END -- 350,808 lines of output".
+"hangs forever on tcc.c" to "libtcc.c COMPILES AND ASSEMBLES -- 332,893 lines of hex2".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -87,6 +87,11 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   global fn pointer = a function name       cc_core.c   libtcc.c:265
   comma in a `for` CONDITION                cc_core.c   libtcc.c:582
   offsetof folded at compile time           cc_core.c   tcc.h:102
+  --- found by ASSEMBLING the output ---
+  temps take mov only from x0               cc_core.c   M1 vocabulary
+  temps cannot be add-immediate'd           cc_core.c   M1 vocabulary
+  fn-pointer parameters need a DEPTH        cc_core.c   sub_x0,x17,0
+  a label must not be a string's contents   cc_core.c   tccdbg.c strings
 
 UNSOUND, AND WHY
 ----------------
@@ -867,8 +872,49 @@ less, because there is finally output to be wrong:
   - constant_expression still has no precedence: `a | b & c` folds right to
     left.
 
-The next real test is whether that output assembles, and after that whether
-the resulting tcc can compile anything. Neither has been attempted.
+=============================================================================
+THE OUTPUT ASSEMBLES. M1 rc=0, 332,893 lines of hex2.
+
+Running M1 over it found FIVE real bugs that parsing never could. Every one
+had emitted happily for the whole run:
+
+63. `mov_x15,x1` AND `mov_x16,x1` DO NOT EXIST. M2libc's aarch64_defs.M1
+    defines mov INTO x15/x16 only from x0. The struct copy, the struct
+    initialiser copy and the bitfield write all moved x1 straight into a temp.
+    Routed through x0 instead.
+
+64. THE TEMPS CANNOT BE ADD-IMMEDIATE'D. There is no `add_x16,x14,x16`, so
+    emit_add_immediate cannot be pointed at x15/x16 -- which the copy loops
+    did to advance their pointers. What IS defined is `add_x0,x16,x0`, so
+    emit_advance_temp round-trips through x0.
+
+65. A FUNCTION-POINTER PARAMETER NEEDS A STACK DEPTH. Entry 4 registered the
+    name, which was enough to parse and enough to reference, but left depth 0
+    -- and `sub_x0,x17,0` is not in the vocabulary at all, since argument
+    offsets start at 8. Three functions in tcc take one (expr_type,
+    list_elf_symbols, tcc_list_symbols) and M2-Planet's own source has NONE,
+    which is why nine hundred regression runs never saw it.
+
+66. A LABEL MUST NOT BE A STRING'S CONTENTS. global_value_selection used the
+    text of a string as its symbol name, which works only while every such
+    string is a plain identifier. tccdbg.c has
+        "long int:t3=r3;-9223372036854775808;9223372036854775807;"
+    and M1 rejected the label outright. A generated id is valid and unique.
+
+WHAT THE VOCABULARY LESSON IS. Four of these are the same mistake: I wrote
+emission that was correct aarch64 and not in the target's macro set. The M1
+vocabulary is much narrower than the instruction set, and nothing in parsing
+or in the byte-identical regression could tell me -- M2-Planet's own sources
+never exercise those combinations.
+
+STILL NOT LINKED. hex2 stops on `FUNCTION___init_malloc`, which libc-full.M1
+REFERENCES but does not DEFINE -- a gap in the vendored M2libc, not in our
+output. Worth remembering that M1 and hex2 are scaffolding here: the plan
+replaces both with the .s0 backend, and they are being used only because they
+can validate what parsing cannot.
+
+The next real test is whether a linked tcc can compile anything.
+=============================================================================
 =============================================================================
 
 STOPPED AT: tcctools.c:60 for the FULL DRIVER. tcc.c includes tcctools.c on
@@ -888,7 +934,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Seventy-seven walls between a hanging compiler and tcc's first genuinely large
+Eighty-one walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
