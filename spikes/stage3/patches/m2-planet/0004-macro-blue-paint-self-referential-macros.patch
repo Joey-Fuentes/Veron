@@ -1,0 +1,116 @@
+From: Veron
+Subject: [PATCH] cc_macro: blue paint -- a macro name in its own expansion is not re-expanded
+
+C does not re-expand a macro name that appears inside its own expansion. tcc.h
+relies on it thirteen times:
+
+    #define total_bytes   TCC_STATE_VAR(total_bytes)
+    #define symtab_section TCC_STATE_VAR(symtab_section)
+    ...
+
+M2-Planet expanded forever. Three lines reproduce it:
+
+    #define WRAP(x) ((s)->x)
+    #define total_bytes WRAP(total_bytes)
+    int main(){ total_bytes = 1; return 0; }        ->  hangs
+
+It already terminated on the direct `#define FOO FOO` form; the gap was the
+self-reference sitting inside a function-like macro's argument list, which is
+the form real code uses.
+
+Fix: a `no_expand` flag on the token. Before splicing an expansion, paint every
+token in it that names the macro being expanded; maybe_expand returns
+immediately for a painted token.
+
+CARRYING THE FLAG TOOK THREE ATTEMPTS, and that is worth recording. This file
+has TWO independent field-by-field token copies -- copy_token and the loop
+inside insert_tokens -- and each silently drops any field not enumerated in it.
+The paint was applied correctly and discarded twice before both were found.
+
+MEASURED: with this, tcc.c and libtcc.c go from hanging past 300s with no
+output at all, to failing in 2s on a real and actionable error (a generated
+header that tcc's own build produces). M2-Planet's output over its own nine
+source files is byte-identical with and without this patch.
+
+--- a/cc.h
++++ b/cc.h
+@@ -148,6 +148,10 @@
+ 	int linenumber;
+ 	int array_modifier;
+ 	int options;
++	/* BLUE PAINT. Set on a token that names the macro currently being
++	 * expanded, so it is never expanded again. C requires this: a macro name
++	 * appearing in its own expansion is not re-expanded. */
++	int no_expand;
+ };
+ 
+ struct case_list
+
+--- a/cc_macro.c
++++ b/cc_macro.c
+@@ -127,6 +127,12 @@
+ 		copy->s = token->s;
+ 		copy->filename = token->filename;
+ 		copy->linenumber = token->linenumber;
++		/* AND HERE TOO. This is the SECOND field-by-field token copy in this
++		 * file, and it is the one on the path that actually matters: the paint
++		 * was being applied, carried through copy_token, and then dropped
++		 * again right here. Two copies enumerating fields independently is why
++		 * adding one field took three attempts to land. */
++		copy->no_expand = token->no_expand;
+ 
+ 		if(NULL == first)
+ 		{
+@@ -969,6 +975,11 @@
+ 	to->arguments = from->arguments;
+ 	to->depth = from->depth;
+ 	to->linenumber = from->linenumber;
++	/* CARRY THE PAINT. This copy enumerates the fields it moves, so a new one
++	 * is silently dropped unless it is added here -- which is exactly what
++	 * happened: the paint was applied correctly and then lost on every copy,
++	 * so the macro expanded forever anyway. */
++	to->no_expand = from->no_expand;
+ 
+ 	return to;
+ }
+@@ -982,6 +993,18 @@
+ 		exit(EXIT_FAILURE);
+ 	}
+ 
++	/* PAINTED TOKENS ARE NOT MACRO INVOCATIONS. Without this, tcc.h's
++	 * thirteen self-referential defines expand forever:
++	 *     #define total_bytes TCC_STATE_VAR(total_bytes)
++	 * The inner name must stay an identifier. M2-Planet already terminated on
++	 * the direct `#define FOO FOO` form, but not when the self-reference sits
++	 * inside a function-like macro's argument list, which is the form real
++	 * code uses. */
++	if(token->no_expand)
++	{
++		return token->next;
++	}
++
+ 	struct macro_list* hold = lookup_macro(token);
+ 	if(NULL == token->next)
+ 	{
+@@ -1122,6 +1145,21 @@
+ 		return token->next;
+ 	}
+ 
++	/* Paint every occurrence of this macro's own name in what we are about to
++	 * splice. For a function-like macro `expansion` is a fresh deep copy, so
++	 * this is per-invocation; for an object-like macro it is the stored list,
++	 * and painting it once is both correct and idempotent -- an occurrence of
++	 * the name inside its own expansion can never be expandable. */
++	struct token_list* paint = expansion;
++	while(NULL != paint)
++	{
++		if(match(hold->symbol, paint->s))
++		{
++			paint->no_expand = TRUE;
++		}
++		paint = paint->next;
++	}
++
+ 	struct token_list* hold2 = insert_tokens(token, expansion);
+ 
+ 	return hold2->next;
