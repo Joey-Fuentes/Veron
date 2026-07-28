@@ -408,11 +408,12 @@ jobs:
           # passed, because when F is the only failure this is the only thing
           # that advances it.
           #
-          #   50  reached the field writes
-          #   51  s->ppfp = stdout survived
-          #   52  s->include_stack_ptr = s->include_stack survived
-          #   53  tcc_set_lib_path survived -- tcc_new complete
-          #   11  segfault, at the statement after the last marker printed
+          # The LAST marker printed names the last statement that survived.
+          #
+          # The first version of this used EXIT syscalls, which was useless: an
+          # exit marker ends the process, so only the first could ever fire and
+          # it reported the position of that marker rather than the fault.
+          # These write to stderr and carry on.
           cd tcc
           git apply --ignore-whitespace ../spikes/stage3/patches/tcc-debug/0001-DEBUG-markers-in-tcc_new.patch \
             || { echo "  debug patch does not apply -- skipping"; exit 0; }
@@ -445,15 +446,19 @@ jobs:
                  -f $D/ELF-aarch64.hex2 -f dbg.hex2 -o tcc-dbg
           chmod +x tcc-dbg
           set +e
-          ./tcc-dbg
+          ./tcc-dbg 2> markers.txt
           rc=$?
           set -e
-          case "$rc" in
-            50) echo "  FAULTS AT: s->ppfp = stdout" ;;
-            51) echo "  FAULTS AT: s->include_stack_ptr = s->include_stack" ;;
-            52) echo "  FAULTS AT: tcc_set_lib_path" ;;
-            53) echo "  tcc_new COMPLETED -- the fault is after it" ;;
-            *)  echo "  exit $rc -- did not reach the first marker; the fault is in the field writes above it" ;;
+          echo "  markers printed: $(tr '\n' ' ' < markers.txt)"
+          echo "  exit: $rc"
+          last=$(tail -1 markers.txt 2>/dev/null || true)
+          case "$last" in
+            M50) echo "  FAULTS AT: s->ppfp = stdout" ;;
+            M51) echo "  FAULTS AT: s->include_stack_ptr = s->include_stack" ;;
+            M52) echo "  FAULTS AT: tcc_set_lib_path" ;;
+            M53) echo "  tcc_new COMPLETED -- the fault is after it" ;;
+            *)   echo "  no marker printed at all -- the fault is BEFORE the field writes," ;
+                 echo "  or write() itself does not work here" ;;
           esac
 
       - uses: actions/upload-artifact@v4

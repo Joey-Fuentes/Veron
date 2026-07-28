@@ -1249,3 +1249,30 @@ afterwards.
 This is the same move as the load_value and lookup_member diagnostics earlier
 in the run: when reasoning has been wrong four times, make the program say
 where it is instead of asking it to confirm a guess.
+
+=============================================================================
+THE DEBUG PATCH WAS WRONG THE FIRST TIME
+
+It reported:
+
+    FAULTS AT: s->ppfp = stdout
+
+and that was an artefact, not a finding. The markers were EXIT syscalls. An
+exit marker ends the process, so only the FIRST one can ever fire, and its
+code says nothing except "the function was entered" -- which six probes had
+already established. The reported statement was simply wherever the first
+marker had been placed.
+
+Had it been believed, the next hours would have gone into `s->ppfp = stdout`,
+a two-word assignment that is almost certainly fine.
+
+The markers now WRITE to stderr and continue, so the LAST one printed names
+the last statement that survived. write(2, ...) is M2libc's syscall wrapper,
+which rung A2 of the ladder already proved works.
+
+Verified before shipping this time: the patch applies to the pinned tcc, the
+patched libtcc.c compiles to 351,538 lines, and the debug binary assembles and
+links with main aligned.
+
+A diagnostic that cannot distinguish its own position from the answer is worse
+than none, because it looks like an answer.
