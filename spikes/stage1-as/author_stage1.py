@@ -27,6 +27,13 @@ mov x5 0
 mov x8 222
 svc
 mov x19 x0
+# x18 = number of names pass 2 could not resolve. Each one is reported to stderr
+# as it is found, so a SINGLE run lists every missing name, and x18 is checked
+# once at p2done. Before this, findlabel returned position 0 for an unknown name
+# and stage 1 exited 0 -- so a missing label silently became '@000000000' and the
+# pipeline built a program that read address zero. Counting rather than exiting
+# on the first one is deliberate: the list is the diagnostic.
+mov x18 0
 # Read the whole input -- two passes means it MUST be buffered. The bound is the
 # arena, and exhausting it is a LOUD failure rather than a silent truncation.
 mov x21 0
@@ -47,7 +54,7 @@ b rdloop
 :rdfull
 mov x0 2
 adr x1 sinover
-mov x2 28
+mov x2 @@LEN:sinover@@
 mov x8 64
 svc
 mov x0 2
@@ -214,12 +221,26 @@ b p2
 bl cpline
 b p2
 :p2done
+# An unresolved name means the output is wrong, so do not write it. Emitting it
+# with a non-zero exit would still feed a '|' pipeline; staying silent on stdout
+# makes stage0-as fail too, which is the behaviour we want.
+cmp x18 0
+b.ne p2fail
 mov x0 1
 mov x1 x22
 mov x2 x23
 mov x8 64
 svc
 mov x0 0
+mov x8 93
+svc
+:p2fail
+mov x0 2
+adr x1 sunrfin
+mov x2 @@LEN:sunrfin@@
+mov x8 64
+svc
+mov x0 3
 mov x8 93
 svc
 # ---- sksp: skip spaces/tabs in input ----
@@ -366,6 +387,41 @@ ldr w0 x9
 mov x20 x6
 ret
 :findfail
+# Name at x20 matched nothing in the table. Report it, count it, and carry on so
+# one run prints the whole list. x6 is NOT reusable here: it holds however far
+# the last candidate matched, and is untouched when the table is empty -- so
+# rescan from x20 to find the real end of the name and advance x20 to it.
+# No 'bl' below, so x30 survives and the 'ret' is still the caller's.
+mov x0 2
+adr x1 sunres
+mov x2 @@LEN:sunres@@
+mov x8 64
+svc
+mov x6 x20
+:ffscan
+cmp x6 x21
+b.ge ffend
+ldrb w4 x19 x6
+cmp w4 32
+b.eq ffend
+cmp w4 9
+b.eq ffend
+cmp w4 10
+b.eq ffend
+add x6 x6 1
+b ffscan
+:ffend
+mov x0 2
+add x1 x19 x20
+sub x2 x6 x20
+mov x8 64
+svc
+mov x0 2
+adr x1 snl
+mov x2 @@LEN:snl@@
+mov x8 64
+svc
+add x18 x18 1
 mov x0 0
 mov x20 x6
 ret
@@ -417,10 +473,38 @@ cmp x2 0
 b.ne emitposa
 add x23 x23 9
 ret
-:sinover
-.ascii "stage1: input exceeds arena\n"
-.byte 0
+@@STRINGS@@
 """
+
+# --- string table -------------------------------------------------------
+# Emitted as .ascii blocks AND used to fill every '@@LEN:name@@' above, so a
+# message and the length stage 1 passes to write(2) cannot drift apart. The
+# previous 'mov x2 28' next to a 28-byte string was correct, but it was correct
+# by hand, and this file already carries one bug that a hand-carried number hid.
+STRINGS = {
+    'sinover':  'stage1: input exceeds arena\n',
+    'sunres':   'stage1: unresolved label: ',
+    'snl':      '\n',
+    'sunrfin':  'stage1: unresolved labels above; refusing to emit\n',
+}
+
+
+def _esc(s):
+    return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+
+
+_tbl = []
+for _name, _val in STRINGS.items():
+    _tbl.append(':' + _name)
+    _tbl.append('.ascii "%s"' % _esc(_val))
+_tbl.append('.byte 0')
+SRC = SRC.replace('@@STRINGS@@', '\n'.join(_tbl))
+
+for _name, _val in STRINGS.items():
+    SRC = SRC.replace('@@LEN:%s@@' % _name, str(len(_val)))
+
+assert '@@' not in SRC, 'unsubstituted template token: %r' % (
+    re.search(r'@@[^@]*@@', SRC).group(0),)
 
 # --- map readable labels to distinct single chars (avoid lowercase w/x, ':' , '#') ---
 defs = re.findall(r'^:(\w+)', SRC, re.M)
