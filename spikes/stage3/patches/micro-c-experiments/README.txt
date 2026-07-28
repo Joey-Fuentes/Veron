@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "arm64-gen.c:1445 of 2177 -- 66% through the backend".
+"hangs forever on tcc.c" to "back in libtcc.c -- every included file parses".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -82,6 +82,10 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   real headers: stdio, string, unistd,      micro-c-libc/
     signal, sys/ucontext
   #undef removes EVERY definition           cc_macro.c  arm64-gen.c:252
+  a struct INITIALISER is a copy            cc_core.c   arm64-gen.c:1445
+  stdint limit macros                       micro-c-libc/ arm64-asm.c:1699
+  global fn pointer = a function name       cc_core.c   libtcc.c:265
+  comma in a `for` CONDITION                cc_core.c   libtcc.c:582
 
 UNSOUND, AND WHY
 ----------------
@@ -805,7 +809,35 @@ the backend.
     deliberately undefined by tcc.h after use, so "not set" was correct
     behaviour rather than the fault.
 
-STOPPED AT: arm64-gen.c:1445, "unsupported size 16 when storing".
+58. A STRUCT INITIALISER IS A COPY, NOT A STORE -- `CType type = *func_type;`
+    at arm64-gen.c:1445. The ASSIGNMENT path learned this at tccgen.c:392; the
+    DECLARATION path kept its own store and had to learn it separately. That
+    is the eighth place carrying its own copy of "a struct is used by address".
+
+59. stdint LIMIT MACROS. M2libc's stdint.h is empty -- the fixed-width types
+    are built into M2-Planet -- so this ADDS rather than shadows. Written in
+    HEX: micro-c folds constants as signed 64-bit, so the decimal spelling of
+    UINT64_MAX would overflow, and the hex form is the same bits.
+
+60. A GLOBAL FUNCTION POINTER MAY BE INITIALISED WITH A FUNCTION NAME:
+        static void *(*reallocator)(void*, unsigned long)
+            = default_reallocator;                libtcc.c:265
+    The pointer branch took "string", 0 and &name but not a bare function --
+    the ordinary way to fill a function pointer. A designator IS its address,
+    so it emits the same &FUNCTION_ reference.
+
+61. COMMA IN A `for` CONDITION -- `for (p = in; c = *p, c != 0 && ...; ++p)`.
+    Init and increment already took comma_expression; the middle clause was
+    the one still missing. Seven positions now.
+
+MILESTONE: EVERY INCLUDED FILE PARSES -- tccpp.c, tccgen.c, tccdbg.c,
+tccasm.c, tccelf.c, tccrun.c, arm64-gen.c, arm64-link.c and arm64-asm.c, plus
+all four headers. What remains is libtcc.c's own body.
+
+STOPPED AT: tcc.h:102, `#define offsetof(type, field) ((size_t) &((type *)0)->field)`
+used in a CONSTANT expression. Constant folding has to compute a member
+offset: a cast, an address-of, a cast to a pointer, and a member access, all
+without emitting code.
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -820,7 +852,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Seventy-two walls between a hanging compiler and tcc's first genuinely large
+Seventy-six walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11

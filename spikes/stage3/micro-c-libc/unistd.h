@@ -23,5 +23,6 @@ int _exit(int status);
 long lseek(int fd, long offset, int whence);
 int getpid(void);
 char* getcwd(char* buf, size_t size);
+char* realpath(char* path, char* resolved);
 
 #endif

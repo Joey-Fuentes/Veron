@@ -130,7 +130,13 @@
 #
 #   SIX .c FILES NOW PARSE COMPLETELY. Now in the arm64 backend:
 #     #undef removes EVERY definition, not the first   arm64-gen.c:252
-#     unsupported size 16 when storing                 arm64-gen.c:1445 NOT DONE
+#     a struct initialiser is a copy                   arm64-gen.c:1445
+#     stdint limit macros                              arm64-asm.c:1699
+#     global fn pointer = a function name               libtcc.c:265
+#     comma in a `for` condition                       libtcc.c:582
+#
+#   EVERY INCLUDED FILE PARSES. What remains is libtcc.c's own body:
+#     offsetof in a constant expression                tcc.h:102 NOT DONE
 #
 #   SOUNDNESS: micro-c's `int` is EIGHT bytes (M2-Planet's own type model, not
 #   introduced here). Internally consistent, wrong at the libc boundary and in
