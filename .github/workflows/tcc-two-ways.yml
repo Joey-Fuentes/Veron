@@ -347,7 +347,7 @@ jobs:
           rc=$?
           set -e
           echo "  markers: $(tr '\n' ' ' < /tmp/co-marks.txt)"
-          echo "  last libtcc marker: $(grep -aoE '^T[0-9A-C]' /tmp/co-marks.txt | tail -1)"
+          echo "  last libtcc marker: $(grep -aoE '^T[0-9A-F]' /tmp/co-marks.txt | tail -1)"
           echo "  exit: $rc"
           case "$rc" in
             42) echo "  IT COMPILED A FUNCTION -- parser and codegen work" ;;
@@ -377,8 +377,8 @@ jobs:
           echo "  exit: $rc"
           if [ "$rc" -gt 128 ]; then echo "  SIGNAL $((rc - 128))"; fi
           # D markers come from our driver, T markers from inside libtcc.
-          echo "  last libtcc marker: $(grep -aoE '^T[0-9]' /tmp/marks.txt | tail -1)"
-          case "$(grep -aoE '^T[0-9]' /tmp/marks.txt | tail -1)" in
+          echo "  last libtcc marker: $(grep -aoE '^T[0-9A-F]' /tmp/marks.txt | tail -1)"
+          case "$(grep -aoE '^T[0-9A-F]' /tmp/marks.txt | tail -1)" in
             T1) echo "  DIED IN: tcc_add_sysinclude_path" ;;
             T3) echo "  DIED IN: tccelf_new" ;;
             T5) echo "  DIED IN: tcc_add_library_path" ;;
@@ -388,13 +388,16 @@ jobs:
             TB) echo "  DIED IN: the return from tcc_set_output_type" ;;
             TC) echo "  tcc_set_output_type completed; died on the way back" ;;
           esac
+          # The D markers only bracket the DRIVER's calls, so D2 means "past
+          # tcc_new", not "died in tcc_set_output_type" -- a T marker after it
+          # says where it actually got to.
           case "$(grep -aoE '^D[0-9]' /tmp/marks.txt | tail -1)" in
-            D1) echo "  DIED IN: tcc_new" ;;
-            D2) echo "  DIED IN: tcc_set_output_type" ;;
-            D3) echo "  DIED IN: option or include-path handling" ;;
-            D4) echo "  DIED IN: tcc_add_file -- the actual COMPILE" ;;
-            D5) echo "  DIED IN: tcc_output_file -- codegen and ELF writing" ;;
-            D6) echo "  compiled and wrote output; died in tcc_delete" ;;
+            D1) echo "  past: entering tcc_new" ;;
+            D2) echo "  past: tcc_new returned" ;;
+            D3) echo "  past: output type set" ;;
+            D4) echo "  past: options handled, about to add the input file" ;;
+            D5) echo "  past: file added, about to write output" ;;
+            D6) echo "  past: output written" ;;
             *)  echo "  died before the first marker" ;;
           esac
           [ -f /tmp/trivial-out ] && ls -l /tmp/trivial-out | awk '{print "  produced "$5" bytes"}'
@@ -516,16 +519,26 @@ jobs:
           echo "  LAST STATEMENT THAT COMPLETED: $last"
           grep "^$last " marker-map.txt || true
 
-          # A FUNCTION THAT RETURNS NORMALLY ALSO STOPS AT ITS LAST MARKER,
-          # because nothing runs after a return. So the marker number alone
-          # cannot distinguish "faulted here" from "finished". The CALLER'S
-          # next marker is what separates them -- the driver prints C3 once
-          # tcc_set_output_type has returned.
-          if grep -aq '^C3' inst-marks.txt; then
-            echo "  BUT the caller continued (C3 printed), so this function"
-            echo "  RETURNED NORMALLY -- the fault is later, not here."
+          # WHETHER THIS IS A FAULT OR A CLEAN FINISH.
+          #
+          # A function that returns normally also stops at its last marker,
+          # because nothing runs after a return. The distinguishing evidence is
+          # whether a marker from a LATER function appeared -- and that has to
+          # be judged against which functions were instrumented, not against a
+          # hardcoded C3. An earlier version checked for C3 unconditionally and
+          # announced "returned normally" while the process was dumping core.
+          #
+          # So: say what is known and let the map speak, rather than asserting.
+          echo "  markers seen, in order:"
+          grep -aoE '^[LTCDMR][0-9A-F]*' inst-marks.txt | tr '\n' ' ' | fold -w 100 | sed 's/^/    /'
+          echo
+          if [ "$rc" -gt 128 ]; then
+            echo "  exit $rc is SIGNAL $((rc - 128)): the fault is at or just after that line"
+          elif [ "$rc" != 0 ]; then
+            echo "  exit $rc is not a signal, so something called exit() --"
+            echo "  an error path was taken rather than a crash"
           else
-            echo "  the caller never resumed, so the fault is at or after that line"
+            echo "  exit 0: it ran to completion"
           fi
           if [ "$rc" -le 128 ] && [ "$rc" != 0 ]; then
             echo "  exit $rc is not a signal -- something called exit(), which"

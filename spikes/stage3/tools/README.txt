@@ -242,3 +242,42 @@ THE GENERAL LESSON. Both times the tooling went quiet this session it was read
 as the program becoming mysterious, when it was the instrument running out of
 reach. A tool that says nothing should be assumed silent rather than
 conclusive.
+
+=============================================================================
+THE REPORTING WAS WRONG THREE TIMES, AND EACH TIME IT SOUNDED CERTAIN
+
+    markers: ... T9 TD TE TF TA
+    last libtcc marker: T9
+    DIED IN: tcc_set_output_type
+
+Every part of those last two lines is wrong, and the raw markers on the line
+above say so.
+
+  1. THE GREP MATCHED ONLY DIGITS. `grep -aoE '^T[0-9]'` cannot see TA, TB,
+     TC, TD, TE or TF -- so the six markers added specifically to narrow this
+     down were invisible to the thing reporting on them. The last marker was
+     TA, inside tccelf_add_crtbegin.
+
+  2. "DIED IN tcc_set_output_type" came from the DRIVER's D markers, which
+     only bracket the driver's own calls. D2 means "tcc_new returned". It
+     never meant what it printed.
+
+  3. AN EARLIER VERSION announced "RETURNED NORMALLY -- the fault is later"
+     while the process was dumping core, because it checked for a hardcoded C3
+     that the driver prints regardless.
+
+All three replaced. The report now prints the raw marker sequence and says
+what the exit code means, instead of asserting a conclusion it cannot support.
+
+AND THE INSTRUMENTER SKIPPED THE ONE LINE THAT MATTERED. Loop detection was
+
+    if t.endswith('{') and ('for' in t or 'while' in t or 'do' in t)
+
+and the statement immediately after the last completed marker is
+
+    if (s1->do_debug && filename) {
+
+"do" appears inside "do_debug", so it was treated as a do-loop and skipped.
+Matched as a word now. A substring test for a keyword will eventually hit an
+identifier that contains it, and this one hit the single most important line
+in the run.

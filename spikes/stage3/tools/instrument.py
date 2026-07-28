@@ -95,8 +95,16 @@ def instrumentable(line):
         return False
     if t.startswith('for'):
         return False            # semicolons are separators here
-    if t.endswith('{') and ('for' in t or 'while' in t or 'do' in t):
-        return False            # a marker at the top of a loop body repeats
+    if t.endswith('{') and re.match(r'^(for|while|do)\b', t):
+        # A marker at the top of a LOOP body repeats every iteration and
+        # drowns the log.
+        #
+        # MATCHED AS A WORD, not a substring. `'do' in t` was true for
+        #     if (s1->do_debug && filename) {
+        # because "do" appears inside "do_debug" -- so the statement
+        # immediately after the last one that completed was silently skipped,
+        # which is the one statement the whole run existed to identify.
+        return False
     if t.startswith(('return', 'break', 'continue', 'goto')):
         return False            # NOTHING RUNS AFTER THESE. A marker here is
                                 # unreachable, and its absence made a function
