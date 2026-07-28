@@ -1,0 +1,178 @@
+EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -268,6 +268,17 @@
+ 		require_extra_token();
+ 		return strtoint(global_token->prev->s);
+ 	}
++	else if(global_token->s[0] == '(')
++	{
++		/* EXPERIMENT: a PARENTHESISED constant expression. elf.h writes
++		 *     #define EI_NIDENT (16)
++		 * and then `unsigned char e_ident[EI_NIDENT];`, which reaches here as
++		 * `[ ( 16 ) ]`. Grouping parens are ordinary C and cost one recursion. */
++		require_extra_token();
++		int val = constant_expression();
++		require_match("Missing ) in constant expression\n", ")");
++		return val;
++	}
+ 
+ 	line_error();
+ 	fputs("Invalid token '", stderr);
+@@ -293,13 +304,41 @@
+ 		require_extra_token();
+ 		return lhs - constant_expression();
+ 	}
++	/* EXPERIMENT: the rest of the integer operators. tcc.h:483 writes
++	 *     int tab[LDOUBLE_SIZE/4];
++	 * and only + and - were handled.
++	 *
++	 * PRECEDENCE IS WRONG HERE, and was already: this is right-recursive with
++	 * no levels, so `2 * 3 + 1` evaluates as 2 * (3 + 1). The existing + and -
++	 * have the same flaw (`3 - 1 + 1` gives 1). Adding operators extends that
++	 * defect rather than introducing it, which is fine for measuring how far
++	 * tcc parses and NOT fine to ship -- a real fix needs precedence levels,
++	 * the way the expression parser proper has them. */
+ 	else if(global_token->s[0] == '*')
+ 	{
+ 		require_extra_token();
+ 		return lhs * constant_expression();
+ 	}
+-	else if(global_token->s[0] == ',' || global_token->s[0] == ']' || global_token->s[0] == ';' || global_token->s[0] == '}' || global_token->s[0] == ':')
++	else if(global_token->s[0] == '/')
++	{
++		require_extra_token();
++		return lhs / constant_expression();
++	}
++	else if(global_token->s[0] == '%')
+ 	{
++		require_extra_token();
++		return lhs % constant_expression();
++	}
++	else if(global_token->s[0] == '*')
++	{
++		require_extra_token();
++		return lhs * constant_expression();
++	}
++	else if(global_token->s[0] == ',' || global_token->s[0] == ']' || global_token->s[0] == ';' || global_token->s[0] == '}' || global_token->s[0] == ':' || global_token->s[0] == ')')
++	{
++		/* ')' joins the terminator set for the grouping parens added to
++		 * constant_expression_term: the inner expression has to be able to
++		 * stop at its own closing paren. */
+ 		return lhs;
+ 	}
+ 
+@@ -2800,6 +2839,60 @@
+ 		type_size = type_name();
+ 		require(NULL != global_token, "Received EOF when attempting to collect arguments\n");
+ 		require(NULL != type_size, "Must have non-null type\n");
++
++		/* EXPERIMENT: FUNCTION-POINTER PARAMETER, `void (*cb)(int, char*)`.
++		 * libtcc.h:99 declares one. The parameter name is wrapped in parens and
++		 * followed by its own argument list, so the name check below sees '('
++		 * and rejects it. Take the name out of the first paren group, register
++		 * it pointer-sized, then skip the trailing argument list. */
++		if(global_token->s[0] == '(')
++		{
++			int d = 0;
++			char* fpname = NULL;
++			while(NULL != global_token)
++			{
++				if(global_token->s[0] == '(') d = d + 1;
++				else if(global_token->s[0] == ')')
++				{
++					d = d - 1;
++					if(0 == d) { global_token = global_token->next; break; }
++				}
++				else if(NULL == fpname)
++				{
++					if(global_token->s[0] != '*') fpname = global_token->s;
++				}
++				global_token = global_token->next;
++			}
++			if(NULL != fpname)
++			{
++				a = sym_declare(fpname, function_pointer, function->arguments, TLO_ARGUMENT);
++				function->arguments = a;
++			}
++			/* now skip the function pointer's own parameter list */
++			if(NULL != global_token)
++			{
++				if(global_token->s[0] == '(')
++				{
++					d = 0;
++					while(NULL != global_token)
++					{
++						if(global_token->s[0] == '(') d = d + 1;
++						else if(global_token->s[0] == ')')
++						{
++							d = d - 1;
++							if(0 == d) { global_token = global_token->next; break; }
++						}
++						global_token = global_token->next;
++					}
++				}
++			}
++			if(NULL != global_token)
++			{
++				if(global_token->s[0] == ',') global_token = global_token->next;
++			}
++			continue;
++		}
++
+ 		if(global_token->s[0] == ')')
+ 		{
+ 			/* foo(int,char,void) doesn't need anything done */
+@@ -2808,7 +2901,14 @@
+ 		else if(global_token->s[0] != ',')
+ 		{
+ 			/* deal with foo(int a, char b) */
+-			require(!in_set(global_token->s[0], "[{(<=>)}]|&!^%;:'\""), "forbidden character in argument variable name\n");
++			if(in_set(global_token->s[0], "[{(<=>)}]|&!^%;:'\""))
++			{
++				line_error();
++				fputs("forbidden character in argument variable name: '", stderr);
++				fputs(global_token->s, stderr);
++				fputs("'\n", stderr);
++				exit(EXIT_FAILURE);
++			}
+ 			require(!iskeywordp(global_token->s), "You are not allowed to use a keyword as a argument variable name\n");
+ 			a = sym_declare(global_token->s, type_size, function->arguments, TLO_ARGUMENT);
+ 			if(NULL == function->arguments)
+@@ -2969,6 +3069,35 @@
+ 	{
+ 		type_size = mirror_type(type_size);
+ 		global_token = global_token->next;
++
++		/* EXPERIMENT: FUNCTION-TYPE typedef, `typedef T name(args);`.
++		 * The branch above handles `typedef T (*name)(args)` -- a function
++		 * POINTER -- but not the plain function type, which libtcc.h uses three
++		 * times (TCCReallocFunc, TCCErrorFunc, TCCBtFunc) and tcc uses nowhere
++		 * in the pointer form. Skip the balanced parameter list; the name is
++		 * already registered with a pointer-sized type, which is enough for the
++		 * declarations that follow to parse. */
++		if(NULL != global_token)
++		{
++			if(global_token->s[0] == '(')
++			{
++				int depth = 0;
++				while(NULL != global_token)
++				{
++					if(global_token->s[0] == '(') depth = depth + 1;
++					if(global_token->s[0] == ')')
++					{
++						depth = depth - 1;
++						if(0 == depth)
++						{
++							global_token = global_token->next;
++							break;
++						}
++					}
++					global_token = global_token->next;
++				}
++			}
++		}
+ 	}
+ 
+ 	require_match("ERROR in typedef statement\nMissing ;\n", ";");
