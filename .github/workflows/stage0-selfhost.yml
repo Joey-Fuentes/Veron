@@ -509,7 +509,7 @@ jobs:
           printf '\n  === EVERY ARTIFACT IN THE ROUND TRIP ===\n'
           printf '  %-26s %12s  %-16s  %s\n' 'ARTIFACT' 'BYTES' 'SHA256[0:16]' 'vs ORIGINAL .text'
           verdict 'source .s'            "$SRC"               -
-          verdict 'binary stage0-as'     stage0-as            -
+          verdict 'binary as+ld (not shipped)' stage0-as       -
           verdict '  .text extracted'    orig.bin             orig.bin
           verdict 'disasm objdump'       stage0-as.dis        n/a
           verdict 'disasm llvm-objdump'  stage0-as.llvm.dis   n/a
@@ -1135,6 +1135,13 @@ jobs:
           gen_row 'gen1 (fresh as+ld on .s0)' gen1.bin '' ''
           gen_row 'gen2 (gen1 on .s0)' gen2.bin gen1.bin gen1
           gen_row 'gen3 (gen2 on .s0)' gen3.bin gen2.bin gen2
+          # THE WRAPPED FILE, WHICH IS THE ONE THAT SHIPS. Every row above is a
+          # .bin -- raw code bytes, before `elf` puts a container round them --
+          # so the sha of the artifact this job exists to produce appeared
+          # NOWHERE in its own log. You could read the committed binary's
+          # identity out of the uploaded artifact, or out of stage3-hermetic,
+          # but not here. That is backwards: this is the job that makes it.
+          gen_row 'gen1 WRAPPED (committed)' gen1 '' ''
           echo
           if cmp -s gen2.bin gen1.bin && cmp -s gen3.bin gen2.bin; then
             echo "  PASS: gen1 == gen2 == gen3 -- FIXPOINT, and stable across"
@@ -1249,8 +1256,9 @@ jobs:
             [ -f "$_p" ] || { echo "  $_p is not committed yet"; \
                               _stale=$((_stale + 1)); continue; }
             if cmp -s "$_p" "$_b"; then
-              printf '  %-22s committed artifact MATCHES %s\n' \
-                "$(basename "$_p")" "$_b"
+              printf '  %-22s committed %s  == %-8s %s  MATCHES\n' \
+                "$(basename "$_p")" "$(sha256sum "$_p" | cut -c1-16)" \
+                "$_b" "$(sha256sum "$_b" | cut -c1-16)"
             else
               printf '  %-22s committed %s  built %s  STALE\n' \
                 "$(basename "$_p")" "$(sha256sum "$_p" | cut -c1-16)" \
