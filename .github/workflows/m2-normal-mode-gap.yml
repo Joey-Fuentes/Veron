@@ -88,6 +88,12 @@ jobs:
             n=0
             for q in "$P"/[0-9]*.patch; do
               [ -e "$q" ] || continue
+              # --check FIRST, so a malformed patch says so instead of
+              # half-applying. r83 shipped a patch whose --- / +++ header had
+              # been stripped, and `git apply` reported it as a fragment
+              # without a header three steps into the job.
+              git -C m2 apply --ignore-whitespace --check "../$q" \
+                || { echo "FAIL: $(basename "$q") does not apply cleanly"; exit 1; }
               git -C m2 apply --ignore-whitespace "../$q" \
                 || { echo "FAIL: could not apply $(basename "$q")"; exit 1; }
               echo "    applied $(basename "$q")"
