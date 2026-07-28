@@ -32,3 +32,45 @@ EXPERIMENT -- see README.txt. Unsound in parts; do not ship.
  		{
  			global_token = global_token->next;
  			require(global_token->next != NULL, "NULL token received in multi token type lookup 'long long'");
+@@ -696,6 +710,41 @@
+ 			offset = 0;
+ 		}
+ 
++		/* EXPERIMENT: MULTIPLE DECLARATORS IN ONE MEMBER, `int jtrue, jfalse;`.
++		 * build_member parses one declarator and the loop then demanded ';',
++		 * so the comma form was a hard error. tcc.h:493 uses it inside an
++		 * anonymous union, which made this look like an anonymous-union gap --
++		 * it is not. Plain anonymous unions already worked; splitting the
++		 * declarators onto separate lines compiles fine.
++		 *
++		 * Each extra declarator repeats the PREVIOUS member's type. That is
++		 * what `int a, b;` means, and it is why this is a loop over the name
++		 * rather than a re-parse of the type. */
++		while(',' == global_token->s[0])
++		{
++			require_extra_token();
++			struct type* extra = calloc(1, sizeof(struct type));
++			require(NULL != extra, "Exhausted memory on extra struct member\n");
++			extra->members = last;
++			extra->offset = offset;
++			extra->type = last->type;
++			extra->size = last->size;
++			require(NULL != global_token, "Unterminated struct member list\n");
++			extra->name = global_token->s;
++			require_extra_token();
++			last = extra;
++
++			offset = offset + extra->size;
++			if(extra->size > largest_member_size)
++			{
++				largest_member_size = extra->size;
++			}
++			if(is_union)
++			{
++				offset = 0;
++			}
++		}
++
+ 		require_match("ERROR in create_struct\n Missing ;\n", ";");
+ 		require(NULL != global_token, "Unterminated struct\n");
+ 	}
