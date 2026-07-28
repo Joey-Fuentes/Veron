@@ -1792,3 +1792,47 @@ already been ruled out, so the next attempt does not start from zero.
 
 MAIN SERIES IS BACK TO THE KNOWN STATE: 12 patches apply to a pristine
 bd2fe4b, it builds, libtcc.c compiles to 351,497 lines.
+
+=============================================================================
+THE DIFFERENTIAL TESTER FOUND TWO BUGS IN ITS FIRST HOUR
+
+micro-c targets amd64. This machine IS amd64. So a program compiled by
+micro-c, assembled by M1 and linked by hex2 can be RUN here -- no CI, no
+emulation. That was true from the first day of this work and went unused,
+because everything was aimed at aarch64.
+
+tools/difftest.sh compiles each case with gcc and with micro-c, runs both, and
+compares. First run, about a second:
+
+    01-array-member          returns 1
+    04-short-circuit         SIGNAL 11   -- known, deferred
+    05-struct-assign         will not assemble: emits mov_rbx,r15
+    06-global-string-align   returns 1
+
+TWO REAL BUGS FIXED FROM IT SO FAR:
+
+1. AN INDEXED STORE USED THE WIDTH OF THE POINTED-AT TYPE.
+
+       char *arr[8];  arr[0] = "first";      stored ONE byte, not eight
+
+   store_value(current_target->type->size) steps down one indirection, which
+   is right only when a type's ->type is itself, as int's is. This is exactly
+   the mistake already fixed for struct member SIZES, in a second place that
+   was not looked at then.
+
+2. postfix_expr_dot IS A SEPARATE FUNCTION FROM postfix_expr_arrow, and the
+   array-decay fix only went into the arrow one. `s.ptr = s.arr` loaded
+   arr[0] instead of taking the array's address -- the same bug as the arrow
+   case, in the other half of member access, unnoticed because the tcc code
+   that exposed it happened to use `->`.
+
+BOTH ARE THE SAME CLASS AS BUGS THAT PREVIOUSLY COST THREE CI ROUNDS EACH TO
+FIND. Twelve lines of C and an exit code found them in seconds. 05 is also
+worth noting: the struct-copy fix emits mov_rbx,r15, which is not in M2libc's
+amd64 vocabulary -- it was written against aarch64's macro list and checked
+against aarch64's. SEVERAL FIXES IN THIS SERIES ARE AARCH64-ONLY and nothing
+until now would have said so.
+
+State after both fixes: regression 0 regressions, full ONE_SOURCE unit
+compiles in 41s to 351,470 lines, 01 advances from its first failure to its
+second.
