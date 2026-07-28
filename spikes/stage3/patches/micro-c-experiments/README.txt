@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "back in libtcc.c -- every included file parses".
+"hangs forever on tcc.c" to "libtcc.c COMPILES END TO END -- 350,808 lines of output".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -86,6 +86,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   stdint limit macros                       micro-c-libc/ arm64-asm.c:1699
   global fn pointer = a function name       cc_core.c   libtcc.c:265
   comma in a `for` CONDITION                cc_core.c   libtcc.c:582
+  offsetof folded at compile time           cc_core.c   tcc.h:102
 
 UNSOUND, AND WHY
 ----------------
@@ -834,10 +835,45 @@ MILESTONE: EVERY INCLUDED FILE PARSES -- tccpp.c, tccgen.c, tccdbg.c,
 tccasm.c, tccelf.c, tccrun.c, arm64-gen.c, arm64-link.c and arm64-asm.c, plus
 all four headers. What remains is libtcc.c's own body.
 
-STOPPED AT: tcc.h:102, `#define offsetof(type, field) ((size_t) &((type *)0)->field)`
-used in a CONSTANT expression. Constant folding has to compute a member
-offset: a cast, an address-of, a cast to a pointer, and a member access, all
-without emitting code.
+62. offsetof, FOLDED AT COMPILE TIME. Two pieces were missing:
+
+    A CAST IN A CONSTANT EXPRESSION -- offsetof wraps its result in
+    `(size_t)`, and a cast does not change a compile-time value. Told apart
+    from grouping parens by trying fallible_type_name and rewinding.
+
+    `&((T *)0)->field` -- taken relative to a null pointer, that address IS
+    the member's byte offset, which is the whole point of the idiom. Folding
+    it emits no code; it reads the offset out of the type. Verified: 0, 8, 16
+    for `int a; long b; long c;`.
+
+=============================================================================
+MILESTONE: micro-c COMPILES THE WHOLE OF libtcc.c.
+
+    rc=0, nothing on stderr, 36 seconds
+    350,808 lines of output -- 695 functions, 310 globals
+
+That is the entire ONE_SOURCE unit: tccpp.c, tccgen.c, tccdbg.c, tccasm.c,
+tccelf.c, tccrun.c, arm64-gen.c, arm64-link.c, arm64-asm.c and libtcc.c's own
+body, plus tcc.h, libtcc.h, elf.h and tcctok.h. Roughly 34,000 lines of C.
+
+WHAT THIS IS NOT. It PARSES and EMITS; nothing has been assembled, linked or
+run. The unsound items in this file are unchanged and now matter more, not
+less, because there is finally output to be wrong:
+
+  - float, double and long double are one word-sized INTEGER type. Any float
+    arithmetic in that output computes nonsense.
+  - `int` is EIGHT bytes, so every call into a runtime compiled by anything
+    else has the wrong ABI.
+  - constant_expression still has no precedence: `a | b & c` folds right to
+    left.
+
+The next real test is whether that output assembles, and after that whether
+the resulting tcc can compile anything. Neither has been attempted.
+=============================================================================
+
+STOPPED AT: tcctools.c:60 for the FULL DRIVER. tcc.c includes tcctools.c on
+top of libtcc.c and hits a string in a constant expression there. libtcc.c is
+the library; tcc.c is the command-line front end.
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -852,7 +888,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Seventy-six walls between a hanging compiler and tcc's first genuinely large
+Seventy-seven walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11

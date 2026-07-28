@@ -136,7 +136,14 @@
 #     comma in a `for` condition                       libtcc.c:582
 #
 #   EVERY INCLUDED FILE PARSES. What remains is libtcc.c's own body:
-#     offsetof in a constant expression                tcc.h:102 NOT DONE
+#     offsetof folded at compile time                  tcc.h:102
+#
+#   MILESTONE: libtcc.c COMPILES END TO END -- rc=0, 350,808 lines of output,
+#   695 functions, 310 globals, ~34,000 lines of C. It PARSES and EMITS;
+#   nothing has been assembled or run, and the unsound items (8-byte int,
+#   float as integer, no precedence in constant folding) are unchanged.
+#
+#     tcc.c, the full driver, still stops at tcctools.c:60 NOT DONE
 #
 #   SOUNDNESS: micro-c's `int` is EIGHT bytes (M2-Planet's own type model, not
 #   introduced here). Internally consistent, wrong at the libc boundary and in
