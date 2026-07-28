@@ -1487,3 +1487,39 @@ was checking.
 Fixed, and re-rehearsed from a copy with config.h and tccdefs_.h deleted
 first: configure runs, both files regenerate, libtcc.c compiles to 351,497
 lines.
+
+=============================================================================
+A COMPILER THAT BUILDS, LINKS, RUNS AND SEGFAULTS
+
+With config.h generated, the subject side reached a real compiler:
+
+    micro-c compiles tcc     695 functions
+    assembles and links      1,452,381 bytes  sha e168a660f3dba6b9
+    compile a trivial file   SIGNAL 11
+
+The driver starts, parses its arguments and dies inside libtcc. That is
+further than anything before it -- this is a tcc binary being asked to do a
+tcc's job -- and it is the first failure that is unambiguously about compiling
+rather than about plumbing.
+
+WHERE, NOT WHETHER. The driver now brackets each libtcc call with a marker
+written straight to fd 2:
+
+    D1 entering tcc_new         D2 tcc_new returned
+    D3 output type set          D4 about to add the input file
+    D5 file added, about to write output
+    D6 output written
+
+write() rather than puts() on purpose: puts goes through stdio buffering, and
+a buffer that is never flushed loses exactly the evidence being collected. The
+last marker on stderr names the last call that RETURNED, so the next run says
+whether this is the parser, the code generator or the ELF writer.
+
+THE CONTROL, for comparison, on the same machine:
+
+    test1/test2/test3        all OK
+    make test                passes
+    gen2 == gen3             543,689 bytes, byte-identical
+
+That gap is the honest measure of where this is: one side reaches a fixpoint,
+the other segfaults on `int main(void){ return 0; }`.

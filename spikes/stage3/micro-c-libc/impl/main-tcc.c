@@ -21,6 +21,16 @@ int tcc_add_include_path(void* s, char* path);
 int tcc_set_options(void* s, char* str);
 int strcmp(char* a, char* b);
 int puts(char* s);
+int write(int fd, char* buf, int count);
+
+/* PROGRESS MARKERS. The driver segfaults somewhere between tcc_new and a
+ * written output file, and a segfault says nothing about WHERE. Each call is
+ * bracketed so the last marker on stderr names the last one that returned.
+ *
+ * write() straight to fd 2 rather than puts(), because puts goes through
+ * stdio buffering and a buffer that is never flushed loses exactly the
+ * evidence being collected. */
+static void mark(char* s) { write(2, s, 4); }
 
 #define TCC_OUTPUT_EXE 2
 
@@ -37,7 +47,9 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    mark("D1\n");
     s = tcc_new();
+    mark("D2\n");
     if(0 == s)
     {
         puts("tcc_new failed");
@@ -45,6 +57,7 @@ int main(int argc, char** argv)
     }
 
     tcc_set_output_type(s, TCC_OUTPUT_EXE);
+    mark("D3\n");
 
     while(i < argc)
     {
@@ -81,18 +94,21 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    mark("D4\n");
     if(tcc_add_file(s, input) < 0)
     {
         puts("compilation failed");
         return 1;
     }
 
+    mark("D5\n");
     if(tcc_output_file(s, output) < 0)
     {
         puts("could not write output");
         return 1;
     }
 
+    mark("D6\n");
     tcc_delete(s);
     return 0;
 }

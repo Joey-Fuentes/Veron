@@ -245,11 +245,28 @@ jobs:
           set -eu
           echo 'int main(void){ return 0; }' > /tmp/trivial.c
           set +e
-          ./mc-tcc-bin /tmp/trivial.c -o /tmp/trivial-out
+          ./mc-tcc-bin /tmp/trivial.c -o /tmp/trivial-out 2> /tmp/marks.txt
           rc=$?
           set -e
+          # The driver brackets each libtcc call with a marker on stderr, so
+          # the last one printed names the last call that RETURNED.
+          #
+          #   D1 entering tcc_new     D2 tcc_new returned
+          #   D3 output type set      D4 about to add the input file
+          #   D5 file added, about to write output
+          #   D6 output written
+          echo "  markers: $(tr '\n' ' ' < /tmp/marks.txt)"
           echo "  exit: $rc"
           if [ "$rc" -gt 128 ]; then echo "  SIGNAL $((rc - 128))"; fi
+          case "$(grep -oE '^D[0-9]' /tmp/marks.txt | tail -1)" in
+            D1) echo "  DIED IN: tcc_new" ;;
+            D2) echo "  DIED IN: tcc_set_output_type" ;;
+            D3) echo "  DIED IN: option or include-path handling" ;;
+            D4) echo "  DIED IN: tcc_add_file -- the actual COMPILE" ;;
+            D5) echo "  DIED IN: tcc_output_file -- codegen and ELF writing" ;;
+            D6) echo "  compiled and wrote output; died in tcc_delete" ;;
+            *)  echo "  died before the first marker" ;;
+          esac
           [ -f /tmp/trivial-out ] && ls -l /tmp/trivial-out | awk '{print "  produced "$5" bytes"}'
 
       - name: 'SUBJECT: tcctest.c, the same file the control used'
