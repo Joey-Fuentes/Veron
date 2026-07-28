@@ -17,7 +17,7 @@ EVERY differing file rather than a hand-written list.
  
  /* Our Target Architecture */
  int Architecture;
-@@ -66,3 +71,14 @@
+@@ -66,3 +71,24 @@
  
  /* feature unsupported by cc_* */
  void maybe_bootstrap_error(char* feature);
@@ -32,3 +32,13 @@ EVERY differing file rather than a hand-written list.
 +int pending_bitfield_offset;
 +int pending_bitfield_width;
 +int pending_bitfield_size;
++
++/* Set immediately before an indexing expression when the thing being indexed
++ * is known to be an ARRAY rather than a pointer. See postfix_expr_array. */
++int indexing_an_array;
++
++/* The element width the last index expression settled on. The STORE for an
++ * indexed assignment happens in expression(), a different function from the
++ * one that worked out the width, and the two must agree -- so the answer is
++ * carried rather than recomputed from a type that cannot express it. */
++int indexed_element_size;

@@ -2018,3 +2018,41 @@ things and that is the point of having both.
     difftest   7 pass / 3 fail   was 4 / 6 two rounds ago
     regression 0 regressions
     full unit  350,429 lines
+
+=============================================================================
+ARRAY-OF-POINTERS: THE GAP IS CLOSED
+
+    char *p;        p[i]     element is char     -> ->type->size
+    char *arr[8];   arr[i]   element is char*    -> ->size
+
+Both leave current_target as `char *`. Nothing in the TYPE distinguishes them,
+which is why every attempt to pick one expression broke the other:
+
+    ->size for a pointer      every char-buffer write became eight bytes wide
+                              and a loop zeroing a struct corrupted the stack
+    ->type->size for an array stored one byte of each pointer and left seven
+                              bytes of garbage
+
+Both were live in this tree within the last two rounds.
+
+The answer is not a better expression, it is carrying the fact from whoever
+knows it. Three places do: struct members via is_array, locals and globals via
+TLO_LOCAL_ARRAY, and any declarator with array_modifier > 1. Two globals carry
+it to the index code and to the STORE, which happens in a different function
+and had been recomputing the width from a type that cannot express it.
+
+WHY THIS MATTERS FOR tcc: it is full of arrays of pointers.
+
+    char *include_stack[32];
+    char **crt_paths;
+    TokenSym **table_ident;
+
+Storing one byte per element in any of those is not a subtle wrongness.
+
+    difftest    8 pass / 2 fail   was 4 / 6 three rounds ago
+    regression  0 regressions
+    full unit   350,429 lines
+
+The two left are 04-short-circuit, deferred with its own patch and notes, and
+05-struct-assign, whose copy loop was written against aarch64's macro
+vocabulary and does not assemble for amd64 at all.
