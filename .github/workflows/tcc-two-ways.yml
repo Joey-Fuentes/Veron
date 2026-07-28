@@ -1,0 +1,300 @@
+# tcc BUILT TWO WAYS, PUT THROUGH THE SAME TESTS.
+#
+# The gcc side is the CONTROL, and it runs first for a reason: if the harness
+# is wrong, that is where it shows, on a compiler nobody doubts. Any result
+# from the micro-c side is only worth reading once the same steps have
+# succeeded on a tcc built by gcc.
+#
+# THREE THINGS ARE MEASURED, identically on both sides:
+#
+#   1. tcc's own test file        tcctest.c compiled, run, output diffed
+#                                 against tests/tcctest.ref
+#   2. SELF-COMPILATION FIXPOINT  gen1 = tcc built by the compiler under test
+#                                 gen2 = tcc built by gen1
+#                                 gen3 = tcc built by gen2
+#                                 gen2 and gen3 should be byte-identical --
+#                                 that is what "fixpoint" means, and it is a
+#                                 much stronger statement than "it compiles"
+#   3. size and sha256 of every generation
+#
+# WHAT IS EXPECTED. gcc's tcc should pass everything. micro-c's tcc is not
+# expected to: `int` is eight bytes in micro-c, so every struct tcc lays out
+# differs from what a normal compiler produces and every libc call crosses an
+# ABI boundary wrongly; float, double and long double are one integer type.
+# The value is in WHERE it stops and with what message, measured the same way
+# as the control.
+name: tcc two ways
+
+on:
+  push:
+    paths:
+      - 'spikes/stage3/**'
+      - '.github/workflows/tcc-two-ways.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04-arm      # native aarch64; nothing is emulated
+    timeout-minutes: 90
+    env:
+      M2PLANET_SHA: bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d
+      TCC_SHA:      5ec0e6f84b47ebd8c269b581712666313f5edaef
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential git >/dev/null
+          gcc --version | head -1
+
+      - name: Fetch pinned tcc
+        run: |
+          set -eu
+          git clone -q https://repo.or.cz/tinycc.git tcc-src \
+            || git clone -q https://github.com/TinyCC/tinycc.git tcc-src
+          git -C tcc-src checkout -q "$TCC_SHA"
+          for p in spikes/stage3/patches/tcc-arm64-asm/[0-9]*.patch; do
+            git -C tcc-src apply --ignore-whitespace "../$p" \
+              || { echo "FAIL: $(basename "$p")"; exit 1; }
+          done
+          echo "  tcc $(git -C tcc-src rev-parse --short HEAD) + arm64 patches"
+
+      # =================================================================
+      # CONTROL: gcc builds tcc, and tcc is put through its own tests.
+      # =================================================================
+      - name: 'CONTROL: gcc builds tcc'
+        run: |
+          set -eu
+          cp -r tcc-src gcc-tcc
+          cd gcc-tcc
+          ./configure --cc=gcc >/dev/null 2>&1
+          make -j"$(nproc)" >/dev/null 2>&1 || make >/dev/null
+          ls -l tcc | awk '{print "  gcc-built tcc: "$5" bytes"}'
+          sha256sum tcc | awk '{print "  sha256: "$1}'
+
+      - name: 'CONTROL: tcctest.c, run, diff against the reference'
+        continue-on-error: true
+        run: |
+          set -eu
+          cd gcc-tcc
+          # The reference output is produced by tcc's own build; comparing
+          # against it is the check tcc's maintainers use.
+          ./tcc -B. -I. -Iinclude tests/tcctest.c -o /tmp/tcctest-gcc 2>&1 | head -20 || true
+          if [ -x /tmp/tcctest-gcc ]; then
+            /tmp/tcctest-gcc > /tmp/tcctest-gcc.out 2>&1 || true
+            if diff -u tests/tcctest.ref /tmp/tcctest-gcc.out > /tmp/gcc.diff; then
+              echo "  CONTROL PASSES: output matches tcctest.ref exactly"
+            else
+              echo "  control differs from the reference -- first 20 lines:"
+              head -20 /tmp/gcc.diff
+              echo "  ($(grep -c '^[+-]' /tmp/gcc.diff) differing lines)"
+            fi
+          else
+            echo "  control did not produce a binary"
+          fi
+
+      - name: 'CONTROL: full test suite'
+        continue-on-error: true
+        run: |
+          set -eu
+          cd gcc-tcc
+          make test 2>&1 | tail -40 || true
+
+      - name: 'CONTROL: self-compilation to a fixpoint'
+        continue-on-error: true
+        run: |
+          set -eu
+          cd gcc-tcc
+          # gen1 is the gcc-built tcc. Each generation builds the next from the
+          # SAME sources, so gen2 and gen3 differ only if the compiler is not
+          # yet reproducing itself.
+          cp tcc /tmp/gen1
+          report() { printf '  %-6s %9s bytes  %s\n' "$1" "$(stat -c%s "$2")" "$(sha256sum "$2" | cut -c1-16)"; }
+          report gen1 /tmp/gen1
+
+          make clean >/dev/null 2>&1 || true
+          ./configure --cc=/tmp/gen1 >/dev/null 2>&1
+          if make -j"$(nproc)" >/dev/null 2>&1; then
+            cp tcc /tmp/gen2; report gen2 /tmp/gen2
+            make clean >/dev/null 2>&1 || true
+            ./configure --cc=/tmp/gen2 >/dev/null 2>&1
+            if make -j"$(nproc)" >/dev/null 2>&1; then
+              cp tcc /tmp/gen3; report gen3 /tmp/gen3
+              if cmp -s /tmp/gen2 /tmp/gen3; then
+                echo "  FIXPOINT REACHED: gen2 and gen3 are byte-identical"
+              else
+                echo "  NO FIXPOINT: gen2 and gen3 differ"
+              fi
+            else
+              echo "  gen2 could not build gen3"
+            fi
+          else
+            echo "  gen1 could not build gen2"
+          fi
+
+      # =================================================================
+      # SUBJECT: micro-c builds tcc, then exactly the same questions.
+      # =================================================================
+      - name: 'SUBJECT: build micro-c from the pin plus our patches'
+        run: |
+          set -eu
+          git clone -q https://github.com/oriansj/M2-Planet.git m2
+          git -C m2 checkout -q "$M2PLANET_SHA"
+          git -C m2 submodule update --init --recursive -q
+          n=0
+          for p in spikes/stage3/patches/m2-planet/[0-9]*.patch \
+                   spikes/stage3/patches/micro-c-experiments/EXPERIMENT-*.patch; do
+            [ -e "$p" ] || continue
+            git -C m2 apply --ignore-whitespace --check "../$p" \
+              || { echo "FAIL: $(basename "$p") does not apply"; exit 1; }
+            git -C m2 apply --ignore-whitespace "../$p"
+            n=$((n + 1))
+          done
+          [ "$n" -ge 12 ] || { echo "FAIL: only $n patches"; exit 1; }
+          cd m2
+          gcc -w -o ../micro-c cc.c cc_core.c cc_emit.c cc_globals.c \
+                               cc_macro.c cc_reader.c cc_strings.c cc_types.c \
+                               M2libc/bootstrappable.c
+          echo "  micro-c built from $n patches"
+
+      - name: 'SUBJECT: micro-c compiles tcc'
+        run: |
+          set -eu
+          M=spikes/reference/m2libc
+          rm -rf m2libc-patched && cp -r "$M" m2libc-patched
+          for p in spikes/stage3/patches/m2libc/[0-9]*.patch; do
+            [ -e "$p" ] || continue
+            (cd m2libc-patched && git apply --ignore-whitespace "../$p") \
+              || { echo "FAIL: $(basename "$p")"; exit 1; }
+          done
+          M=m2libc-patched
+
+          cp -r tcc-src mc-tcc
+          cd mc-tcc
+          cc -DC2STR conftest.c -o c2str.exe && ./c2str.exe include/tccdefs.h tccdefs_.h
+          cd ..
+
+          L="$PWD/spikes/stage3/micro-c-libc"
+          cd mc-tcc
+          ../micro-c --architecture aarch64 --expand-includes --max-string 65536 \
+            -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 -D TCC_TARGET_LINUX=1 \
+            -D CONFIG_TCC_STATIC=1 -I . -I "$L" -I ../m2/M2libc \
+            -f libtcc.c -o ../libtcc.M1
+          cd ..
+
+          H="-f $M/stdarg.h -f $M/sys/types.h -f $M/stddef.h -f $M/signal.h -f $M/sys/utsname.h"
+          ./micro-c --architecture aarch64 --max-string 65536 \
+            -f "$M/ctype.c" $H \
+            -f "$M/aarch64/linux/unistd.c" -f "$M/aarch64/linux/fcntl.c" \
+            -f "$M/fcntl.c" -f "$M/stdlib.c" -f "$M/string.c" \
+            -f "$M/stdio.h" -f "$M/stdio.c" -f "$M/bootstrappable.c" -o m2libc.M1
+
+          # THE REAL RUNTIME, not the stubs. strtoX, qsort, getenv, strerror
+          # and a setjmp/longjmp pair written for micro-c's own calling
+          # convention. Without these tcc compiles nothing: setjmp wraps every
+          # compilation and qsort orders switch cases.
+          ./micro-c --architecture aarch64 --max-string 65536 \
+            -I spikes/stage3/micro-c-libc \
+            -f spikes/stage3/micro-c-libc/impl/runtime.c -o runtime.M1
+          ./micro-c --architecture aarch64 --max-string 65536 \
+            -f spikes/stage3/micro-c-libc/impl/setjmp-aarch64.c -o setjmp.M1
+          ./micro-c --architecture aarch64 --max-string 65536 \
+            -f spikes/stage3/micro-c-libc/impl/main-tcc.c -o maintcc.M1
+          echo "  libtcc $(grep -c '^:FUNCTION_' libtcc.M1) functions, runtime $(grep -c '^:FUNCTION_' runtime.M1)"
+
+      - name: 'SUBJECT: assemble and link'
+        run: |
+          set -eu
+          T=spikes/reference/mescc-tools
+          cp -r "$T" mescc && mkdir -p mescc/M2libc
+          cp spikes/reference/m2libc/bootstrappable.c spikes/reference/m2libc/bootstrappable.h mescc/M2libc/
+          sed -i 's/max_string = 4096,/max_string = 262144,/' mescc/M1-macro.c
+          gcc -w -o M1 mescc/M1-macro.c mescc/stringify.c mescc/M2libc/bootstrappable.c
+          gcc -w -o hex2 mescc/hex2_linker.c mescc/hex2_word.c mescc/hex2.c mescc/M2libc/bootstrappable.c
+
+          # Code before strings, or a function lands on an address that is not
+          # a multiple of four and every call to it is SIGBUS.
+          : > all.code; : > all.strs
+          for f in libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1 maintcc.M1; do
+            sed '/^# Program strings$/,$d' "$f" >> all.code
+            sed -n '/^# Program strings$/,$p' "$f" >> all.strs
+          done
+          cat all.code all.strs > all.M1
+
+          D=spikes/reference/m2libc/aarch64
+          ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f all.M1 \
+               --little-endian --architecture aarch64 -o all.hex2
+          ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
+                 -f $D/ELF-aarch64.hex2 -f all.hex2 -o mc-tcc-bin
+          chmod +x mc-tcc-bin
+          printf '  micro-c tcc: %s bytes  sha %s\n' \
+            "$(stat -c%s mc-tcc-bin)" "$(sha256sum mc-tcc-bin | cut -c1-16)"
+
+      - name: 'SUBJECT: does it compile anything at all'
+        continue-on-error: true
+        run: |
+          set -eu
+          echo 'int main(void){ return 0; }' > /tmp/trivial.c
+          set +e
+          ./mc-tcc-bin /tmp/trivial.c -o /tmp/trivial-out
+          rc=$?
+          set -e
+          echo "  exit: $rc"
+          if [ "$rc" -gt 128 ]; then echo "  SIGNAL $((rc - 128))"; fi
+          [ -f /tmp/trivial-out ] && ls -l /tmp/trivial-out | awk '{print "  produced "$5" bytes"}'
+
+      - name: 'SUBJECT: tcctest.c, the same file the control used'
+        continue-on-error: true
+        run: |
+          set -eu
+          cd mc-tcc
+          set +e
+          ../mc-tcc-bin -B. -I. -Iinclude tests/tcctest.c -o /tmp/tcctest-mc 2>&1 | head -30
+          rc=$?
+          set -e
+          echo "  exit: $rc"
+          if [ -x /tmp/tcctest-mc ]; then
+            /tmp/tcctest-mc > /tmp/tcctest-mc.out 2>&1 || true
+            diff -u tests/tcctest.ref /tmp/tcctest-mc.out > /tmp/mc.diff \
+              && echo "  MATCHES tcctest.ref" \
+              || echo "  differs: $(grep -c '^[+-]' /tmp/mc.diff) lines"
+          else
+            echo "  no binary produced"
+          fi
+
+      - name: 'SUBJECT: self-compilation'
+        continue-on-error: true
+        run: |
+          set -eu
+          # gen1 is the micro-c-built tcc. Asking it to build tcc is the same
+          # question the control answered, and reaching gen2 at all would mean
+          # this compiler can build a C compiler.
+          printf '  %-6s %9s bytes  %s\n' gen1 "$(stat -c%s mc-tcc-bin)" "$(sha256sum mc-tcc-bin | cut -c1-16)"
+          cd mc-tcc
+          set +e
+          ../mc-tcc-bin -B. -I. -Iinclude -DONE_SOURCE=1 -DTCC_TARGET_ARM64=1 \
+                        -DTCC_TARGET_LINUX=1 tcc.c -o /tmp/gen2-mc 2>&1 | head -20
+          rc=$?
+          set -e
+          echo "  gen2 build exit: $rc"
+          if [ -x /tmp/gen2-mc ]; then
+            printf '  %-6s %9s bytes  %s\n' gen2 "$(stat -c%s /tmp/gen2-mc)" "$(sha256sum /tmp/gen2-mc | cut -c1-16)"
+          else
+            echo "  gen2 not produced -- self-compilation not reached"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tcc-two-ways
+          path: |
+            mc-tcc-bin
+            all.M1
+            /tmp/gcc.diff
+            /tmp/mc.diff
+          if-no-files-found: warn

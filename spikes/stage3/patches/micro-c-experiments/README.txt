@@ -1347,3 +1347,65 @@ reference tree stays pristine -- the same discipline as the tcc patches.
 A silent exit(1) is a nasty failure mode: no signal, no message, and an exit
 code that looks like ordinary program failure. The progress markers are the
 only reason it was located at all.
+
+=============================================================================
+A REAL RUNTIME, AND A REAL DRIVER
+
+Everything through the probe ladder ran against stubs.c, in which all
+twenty-five functions returned 0. That was the right thing while the question
+was "does the pipeline close" and is useless the moment the question becomes
+"can this tcc compile a program" -- a compiler built on functions that return
+zero produces zeros.
+
+impl/runtime.c replaces them with real implementations: the strtoX family
+(base 0 handling included), qsort, getenv walking environ, strerror, and
+honest constants for time and realpath. What CANNOT be real is marked as such
+in the file -- strtod and friends return 0 because micro-c has no float
+representation to parse into, and mprotect, sem_* and sig* are no-ops on paths
+tcc does not need to compile a file.
+
+impl/setjmp-aarch64.c is the one that mattered most. libtcc.c:806 wraps every
+compilation in setjmp and tcc_error longjmps out of it, so without a working
+pair nothing compiles -- not even successfully.
+
+    A portable aarch64 setjmp saves x19-x28 because the ABI calls them
+    callee-saved. micro-c uses NONE of them: its convention is x13 locals,
+    x17 base, x18 stack, lr return, and everything else lives on the x18
+    stack. Saving those four is sufficient FOR CODE THIS COMPILER GENERATES,
+    which is all the code here. Against any other compiler it would be wrong.
+
+The macro vocabulary shaped it more than the algorithm did. There is no
+mov_x0,lr, so the return address is pushed and popped to get it into a
+register. There is no mov_x18,x0, so the stack pointer is restored through
+x17 -- which clobbers x17, so x17 has to be restored AFTER x18 rather than
+before. Every macro emitted was checked against aarch64_defs.M1 before the
+file was compiled, because a missing one is an assembler error and a wrong one
+is silent.
+
+impl/main-tcc.c is a real driver -- parse argv, add the file, write the
+output. tcc.c's own main is not usable yet because it pulls in tcctools.c,
+which micro-c still cannot parse.
+
+Links at 1,452,381 bytes with main aligned.
+
+=============================================================================
+THE COMPARISON HARNESS
+
+.github/workflows/tcc-two-ways.yml builds tcc twice and asks both the same
+three questions:
+
+    1. tcctest.c compiled, run, output diffed against tests/tcctest.ref
+    2. self-compilation to a FIXPOINT -- gen1 builds gen2 builds gen3, and
+       gen2 and gen3 must be byte-identical
+    3. size and sha256 of every generation
+
+The gcc side runs FIRST and is the control. If the harness is wrong, that is
+where it shows, on a compiler nobody doubts -- and no result from the micro-c
+side is worth reading until the same steps have succeeded on a tcc built by
+gcc. That ordering is the whole point of having a control.
+
+micro-c's tcc is NOT expected to pass. `int` is eight bytes, so every struct
+it lays out differs from what a normal compiler produces and every libc call
+crosses an ABI boundary wrongly; float is an integer. What is worth having is
+WHERE it stops, measured the same way as the control rather than by a bespoke
+test that only it has to satisfy.
