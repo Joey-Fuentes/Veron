@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "415 lines into tccpp.c".
+"hangs forever on tcc.c" to "523 lines into tccpp.c".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -39,6 +39,7 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   mirror_type: the MISSING THIRD indirection   cc_types.c  tccpp.c:177
   a cast applies to the POSTFIX expression     cc_core.c   tccpp.c:281
   cast with a PARENTHESISED operand           cc_core.c   tccpp.c:390
+  empty `for` clauses, `for (;;)`             cc_core.c   tccpp.c:415
 
 UNSOUND, AND WHY
 ----------------
@@ -289,6 +290,22 @@ UNSOUND, AND WHY
     knowing separately: assignment through a pointer appears to use register
     size rather than the pointed-to type.
 
+18. EMPTY `for` CLAUSES. `for (;;)` at tccpp.c:415 has all three empty. The
+    INIT clause already handled it; the condition and increment called
+    expression() unconditionally and died on ';' and ')'.
+
+    Skipping the EXIT JUMP matters as much as skipping the expression: an
+    empty condition is always true in C, so emitting jump-if-zero on whatever
+    happened to be left in the register would end the loop on the previous
+    statement's value. Verified in the emitted M1 -- no "Jump to end" at all,
+    so the break is the only exit -- and an ordinary three-clause `for` emits
+    code IDENTICAL to the pre-change build.
+
+STOPPED AT: `tok_alloc(str, strlen(str))->tok` at tccpp.c:523 --
+"lookup_member char*->tok does not exist". A member access on a FUNCTION
+CALL's return value; the call's return type is not tracked into the postfix
+chain. Distinct from the cast work above, and not started.
+
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
 
@@ -302,7 +319,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Thirty-two walls between a hanging compiler and tcc's first genuinely large
+Thirty-three walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
