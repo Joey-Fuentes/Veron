@@ -56,7 +56,7 @@ jobs:
     # No code is run, only parsed, so the target architecture is irrelevant and
     # an aarch64 runner would only make the job slower to schedule.
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       M2PLANET_SHA: bd2fe4b0659fd0ad3f476a5ad0ef801bd134665d
       M2LIBC_SHA:   68a23cf0b1b0f2e2c1e1a1e1f1a1b1c1d1e1f1a1
@@ -140,10 +140,27 @@ jobs:
             want=$((want + 1))
             # NORMAL MODE -- no --bootstrap-mode. The preprocessor runs, so
             # #include resolves and the thirteen guarded constructs are allowed.
-            err=$("$M2" --architecture aarch64 -f "$f" -o /dev/null 2>&1 >/dev/null) && rc=0 || rc=$?
+            # BOUNDED, AND NOISY. The first version ran the whole loop
+            # silently and unbounded: it was killed after ~70s with no output
+            # at all, so the log could not say which file it died on or even
+            # how far it got. A per-file line costs nothing and turns the next
+            # failure into a data point instead of a mystery. `timeout` turns a
+            # hang into rc=124, which is a MEASUREMENT -- "M2-Planet cannot
+            # finish this file" is exactly the kind of thing this probe exists
+            # to find, and it must not be able to take the job down with it.
+            # ulimit does the same for a runaway allocation, in a subshell so
+            # the limit cannot leak into the next iteration.
+            err=$( (ulimit -v 4194304; timeout 60 "$M2" --architecture aarch64 \
+                     -f "$f" -o /dev/null) 2>&1 >/dev/null ) && rc=0 || rc=$?
             ran=$((ran + 1))
             first=$(printf '%s\n' "$err" | grep -v '^$' | head -1)
-            printf '%s\t%s\t%s\n' "$f" "$rc" "${first:-OK}" >> /tmp/results.tsv
+            case "$rc" in
+              0)   note='OK' ;;
+              124) note='HUNG (60s)' ;;
+              *)   note="${first:-rc=$rc, no message}" ;;
+            esac
+            printf '    %-18s rc=%-4s %s\n' "$f" "$rc" "$note"
+            printf '%s\t%s\t%s\n' "$f" "$rc" "$note" >> /tmp/results.tsv
           done
           echo "  attempted $want files, ran $ran"
           # DID THE COMPILER RUN, OR ONLY THE LOOP? `ran` is incremented every
@@ -151,6 +168,8 @@ jobs:
           # is why it passed while $M2 was unresolvable. A shell-level failure
           # is not a compiler diagnostic, so look for one directly.
           shellerr=$(grep -cE "No such file or directory|command not found|Permission denied|cannot execute" /tmp/results.tsv || true)
+          hung=$(awk -F'\t' '$2==124' /tmp/results.tsv | wc -l)
+          [ "$hung" = 0 ] || echo "  note: $hung file(s) hit the 60s bound -- recorded, not fatal"
           [ "$shellerr" = 0 ] || {
             echo "FAIL: $shellerr of $want results are SHELL errors, not compiler"
             echo "  output. The compiler did not run. First one:"
