@@ -1276,3 +1276,41 @@ links with main aligned.
 
 A diagnostic that cannot distinguish its own position from the answer is worse
 than none, because it looks like an answer.
+
+=============================================================================
+&s->member DID NOT LOAD s
+
+With markers that print instead of exiting:
+
+    markers printed: M50 M51 M52
+    FAULTS AT: tcc_set_lib_path
+
+M52 also confirms the array fix worked -- s->include_stack_ptr survives now.
+
+tcc_set_lib_path is tcc_set_str(&s->tcc_lib_path, path), and reading the
+emitted code for `&s->member` found it:
+
+    sub_x0,x17,8       address of the SLOT holding s
+    mov_x14,8          member offset
+    add_x0,x14,x0      slot_address + 8        <- wrong place entirely
+    ldr_x0,[x0]
+
+primary_expr_variable returns early when Address_of is set, leaving
+REGISTER_ZERO holding the address of the slot that STORES s. postfix_expr_arrow
+then adds the member offset to that, addressing a spot on the stack rather
+than inside the struct. The resulting garbage pointer segfaults on the first
+*pp inside tcc_set_str.
+
+`&s.member` is a different case and was always right: a struct variable's slot
+IS its address, so no load belongs there. Only the ARROW form needs one, which
+is why the early return went unnoticed -- every use of it until now was either
+a plain variable or a struct by value.
+
+The member's own value must still not be loaded, since that is what the caller
+asked to take the address of, so the member-load guard now checks Address_of
+too.
+
+THREE CODEGEN BUGS IN A ROW HAVE COME FROM READING EMITTED CODE, not from
+probes: array members loaded instead of decayed, array members sized by the
+wrong type, and now this. The probes were right to narrow to a function and
+wrong to be trusted past that point.
