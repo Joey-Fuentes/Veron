@@ -508,7 +508,22 @@ jobs:
           echo "  markers printed: $(grep -acE '^L[0-9]+' inst-marks.txt), exit $rc"
           echo "  LAST STATEMENT THAT COMPLETED: $last"
           grep "^$last " marker-map.txt || true
-          echo "  the fault is in whatever follows that line"
+
+          # A FUNCTION THAT RETURNS NORMALLY ALSO STOPS AT ITS LAST MARKER,
+          # because nothing runs after a return. So the marker number alone
+          # cannot distinguish "faulted here" from "finished". The CALLER'S
+          # next marker is what separates them -- the driver prints C3 once
+          # tcc_set_output_type has returned.
+          if grep -aq '^C3' inst-marks.txt; then
+            echo "  BUT the caller continued (C3 printed), so this function"
+            echo "  RETURNED NORMALLY -- the fault is later, not here."
+          else
+            echo "  the caller never resumed, so the fault is at or after that line"
+          fi
+          if [ "$rc" -le 128 ] && [ "$rc" != 0 ]; then
+            echo "  exit $rc is not a signal -- something called exit(), which"
+            echo "  means an error path was taken rather than a crash"
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()

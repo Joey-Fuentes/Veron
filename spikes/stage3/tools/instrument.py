@@ -15,9 +15,15 @@ and string/comment state, and writes
 
     write(2, "L<nn>\\n", 4);
 
-after every statement-terminating semicolon and after every opening brace. The
-marker is emitted BEFORE the statement it labels executes on the next line, so
+after every statement-terminating semicolon and after every opening brace, so
 the LAST marker printed names the last line that completed.
+
+READ THE LAST MARKER CAREFULLY. A function that returns NORMALLY also stops
+at its last marker, because nothing can run after a return -- so "last marker
+is L38" and "faulted at L38" look identical from the number alone. The way to
+tell them apart is whether the CALLER'S next marker appears. It caught me out
+once: L38 was the statement before `return 0`, the function had completed, and
+the report said the fault was in whatever followed.
 
 WHAT IT DELIBERATELY DOES NOT DO:
 
@@ -91,6 +97,11 @@ def instrumentable(line):
         return False            # semicolons are separators here
     if t.endswith('{') and ('for' in t or 'while' in t or 'do' in t):
         return False            # a marker at the top of a loop body repeats
+    if t.startswith(('return', 'break', 'continue', 'goto')):
+        return False            # NOTHING RUNS AFTER THESE. A marker here is
+                                # unreachable, and its absence made a function
+                                # that returned normally look like it had
+                                # faulted on its last statement.
     # a declaration WITH an initialiser: a marker cannot split it, but one
     # after it is fine -- so this is allowed. A bare declaration is allowed too.
     return True

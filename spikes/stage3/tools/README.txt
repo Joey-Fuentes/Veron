@@ -181,3 +181,33 @@ the map next to the result rather than expecting anyone to reconstruct it.
 Verified before shipping: the instrumented libtcc.c compiles under micro-c to
 367,040 lines with 15 markers emitted -- 15 and not 18 because three sit in
 #ifdef branches for other targets, which is correct.
+
+=============================================================================
+THE LAST MARKER IS AMBIGUOUS AND I READ IT WRONG
+
+    LAST STATEMENT THAT COMPLETED: L38
+    L38  libtcc.c:1042  write(2, "TC\n", 3);
+    the fault is in whatever follows that line
+
+The statement after L38 was `return 0;`. Markers go AFTER statements, and
+nothing runs after a return -- so a function that FINISHES NORMALLY stops at
+its last marker too. "Last marker is L38" and "faulted at L38" are
+indistinguishable from the number alone.
+
+The rest of the log said so plainly: TC then C3, and C3 is in the CALLER. The
+function had returned and the driver had moved on. My report asserted a fault
+where there was none.
+
+TWO FIXES, because the report was wrong in two ways:
+
+  1. instrument.py no longer places markers after return, break, continue or
+     goto. They are unreachable, so their absence was never evidence.
+  2. the CI report checks whether the caller resumed. If the driver's next
+     marker printed, it says the function returned normally instead of
+     claiming a fault. It also notes when the exit code is not a signal --
+     exit 1 means something called exit(), which is an error path, not a
+     crash.
+
+A tool that answers confidently in the one case it cannot distinguish is
+worse than one that says it does not know, and this one did that for a full
+round.
