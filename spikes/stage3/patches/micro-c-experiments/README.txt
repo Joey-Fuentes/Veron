@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "1536 lines into tccpp.c".
+"hangs forever on tcc.c" to "1781 lines into tccpp.c".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -45,6 +45,8 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   prefix ++/-- under a dereference           cc_core.c   tccpp.c:673
   `continue` inside a switch inside a loop   cc_core.c   tccpp.c:893
   a goto label between switch cases         cc_core.c   tccpp.c:952
+  comma_expression: statement, condition,   cc_core.c   tccpp.c:1536,
+    and grouping parens                                  tcc.h:1996
 
 UNSOUND, AND WHY
 ----------------
@@ -389,11 +391,31 @@ UNSOUND, AND WHY
 
     Worth 584 lines: tccpp.c:952 -> 1536, the largest single jump of the run.
 
-STOPPED AT: tccpp.c:1536, `while (next(), tok != TOK_EOF)` -- the COMMA
-OPERATOR inside a while condition. Entry 10 added comma at STATEMENT level and
-explicitly recorded that the parenthesised form was not covered and that tcc
-did not appear to use it. tcc does use it, here, in a controlling expression.
-The note was right that it was uncovered and wrong that it was unused.
+24. THE COMMA OPERATOR, PROPERLY THIS TIME. Entry 10 put it at statement
+    level and recorded that the parenthesised form was uncovered and looked
+    unused by tcc. Half right: it was uncovered, and tcc uses it twice over.
+
+        while (next(), tok != TOK_EOF)              tccpp.c:1536
+        #define tcc_warning_c(sw) TCC_SET_STATE((
+            tcc_state->warn_num = ... , _tcc_warning))    tcc.h:1996
+
+    The earlier check grepped for `(x = ..., ...)` shapes and found only
+    `(tok == ',')` character literals -- it missed a controlling expression
+    and a macro body, both different shapes.
+
+    So there is now one comma_expression() helper, used at all THREE positions
+    where C expects a full expression: a statement, a controlling expression
+    (while/if), and inside grouping parens. It stays out of expression()
+    itself, because the same character separates function arguments, struct
+    declarators and initialiser lists -- `f(a, b)` must remain two arguments,
+    and is checked every round.
+
+    The second of those reported tcc.h:1996 -- where the macro is DEFINED, not
+    where it is used. A line number in a header is not always a wall in that
+    header.
+
+STOPPED AT: tccpp.c:1781, "Attempted to use operator ( on non-function
+pointer".
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -408,7 +430,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Thirty-eight walls between a hanging compiler and tcc's first genuinely large
+Thirty-nine walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
