@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "tccgen.c:397 -- where the bitfield error planted at wall 12 fires".
+"hangs forever on tcc.c" to "tccgen.c:909 -- bitfield access done, struct-by-value in progress".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -58,6 +58,9 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   an inline struct defn may carry a         cc_types.c  tccgen.c:94
     declarator, `struct X {...} **p`
   STRUCT ASSIGNMENT as a word-by-word copy  cc_core.c   tccgen.c:392
+  BITFIELD READ and READ-MODIFY-WRITE      cc_core.c   tccgen.c:397
+  a struct is never LOADED into a register  cc_core.c   tccgen.c:895
+  struct assignment to an array element     cc_core.c   tccgen.c:907
 
 UNSOUND, AND WHY
 ----------------
@@ -542,17 +545,46 @@ tcc.h, libtcc.h, elf.h, tcctok.h and now tccpp.c. Now in tccgen.c.
     emits two load/store pairs, a 24-byte struct three, and both pointers
     advance by a word each time.
 
-THE BITFIELD ERROR PLANTED AT WALL 12 HAS FIRED, at tccgen.c:397:
+35. BITFIELD ACCESS -- THE DEBT FROM WALL 12, PAID.
 
-    bitfield member 'func_call' cannot be read or written yet -- layout only
+    The error planted there fired exactly as intended, at tccgen.c:397:
+    `func_old_type.ref->f.func_call = FUNC_CDECL;`. Layout had been done and
+    proved byte-identical; access was left as a HARD ERROR rather than a read
+    that silently returned the whole storage unit with its neighbours in it.
 
-That was deliberate: entry 3 implemented bitfield LAYOUT, proved it by
-byte-identical output, and made ACCESS a hard error rather than silently
-returning the whole storage unit with its neighbours in it. Thirty-six walls
-later tcc reads one, and the diagnostic is waiting where it was left.
+    READ is `(unit >> off) & ((1 << width) - 1)`. The macros take dest x0 and
+    first source x1, so each step moves the running value into ONE and the
+    operand into ZERO. For `b:3` after `a:5` this emits
 
-WHAT IS STILL OWED: shift right by bit_offset and mask to bit_width on read,
-and a read-modify-write on assignment. Both are per-architecture emission.
+        ldrh_w0,[x0]   lsr by 5   and with 7
+
+    WRITE is a read-modify-write, and it lives in expression()'s '=' branch
+    because that is the only place holding BOTH the address and the new value:
+
+        unit = (unit & ~(mask << off)) | ((value & mask) << off)
+
+    Verified in the emitted clear mask: 65311 = 0xFF1F, which is exactly
+    ~(7<<5) within a 16-bit unit, with ldrh in and strh out.
+
+    ONE TRAP: the unit width is i->type->size, NOT i->size. The layout work
+    made only the field that OPENS a unit carry its size, so a packed field
+    reports 0 -- and load_value(0) is not a load. The declared type is the
+    unit.
+
+36. A STRUCT IS NEVER LOADED INTO A REGISTER. Member access has had that
+    guard all along; the nine dereference sites did not, so `x = *p` for a
+    struct tried load_value(16) at tccgen.c:895. Dereferencing a struct
+    pointer yields its ADDRESS, which is what every other struct path already
+    assumes.
+
+37. STRUCT ASSIGNMENT TO AN ARRAY ELEMENT -- `vtop[0] = vtop[-1]` at
+    tccgen.c:907, 60 bytes. The size comes from current_target->type there,
+    the same place the ordinary indexed store reads it.
+
+STOPPED AT: tccgen.c:909, the LOAD side of the same thing -- `tmp = vtop[0]`
+where the element is a struct. Third struct-by-value site in a row; they are
+coming in a cluster because tccgen.c manipulates SValue and CType by value
+throughout.
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -567,7 +599,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Forty-nine walls between a hanging compiler and tcc's first genuinely large
+Fifty-two walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
