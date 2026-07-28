@@ -270,6 +270,25 @@ jobs:
           printf '  micro-c tcc: %s bytes  sha %s\n' \
             "$(stat -c%s mc-tcc-bin)" "$(sha256sum mc-tcc-bin | cut -c1-16)"
 
+      - name: 'SUBJECT: vocabulary check, EVERY architecture'
+        run: |
+          set -eu
+          # Does every macro micro-c can emit actually exist for the
+          # architecture it is emitting for? M2libc's *_defs.M1 files are the
+          # ground truth.
+          #
+          # This exists because the same failure kept recurring one
+          # architecture at a time -- mov_x15,x1 missing on aarch64,
+          # mov_rbx,r15 missing on amd64, add_x16,x14,x16 missing on aarch64 --
+          # each found by assembling or running, each costing a round trip.
+          # They are all "that instruction does not exist here", and that
+          # question can be answered statically for every target at once.
+          #
+          # It finds no logic bugs. It closes one whole class.
+          chmod +x spikes/stage3/tools/vocabulary.sh
+          sh spikes/stage3/tools/vocabulary.sh \
+            "$PWD/micro-c" "$PWD/spikes/reference/m2libc"
+
       - name: 'SUBJECT: differential test, NATIVELY on aarch64'
         continue-on-error: true
         run: |

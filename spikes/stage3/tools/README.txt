@@ -100,3 +100,47 @@ next run distinguishes them:
 WHEN WRITING A CASE, THE FAILURE CODE SHOULD NAME ONE THING. A case that
 combines constructs tests their conjunction, which is rarely what is wanted
 and is actively misleading when one of the constructs is already known broken.
+
+=============================================================================
+WHY THERE IS ALWAYS ONE MORE
+
+A fair observation, and worth answering rather than patching around.
+
+    amd64    11 pass / 0 fail
+    aarch64  10 pass / 1 fail
+
+THREE REASONS, and only one of them is fixable by trying harder.
+
+1. THE CASES ARE RETROSPECTIVE. Every one was written FROM a bug already
+   found. The suite therefore measures what has been FIXED, not what remains,
+   and will keep producing "one more" until cases exist for constructs that
+   have never failed. That is the honest limit of the tool as built.
+
+2. TWO ARCHITECTURES DISAGREE ABOUT WHAT IS LEGAL. amd64 tolerates unaligned
+   loads; aarch64 faults on them. Four separate bugs -- member alignment,
+   struct total padding, instruction alignment, global data padding -- were
+   invisible locally and fatal on the runner. Every one cost a round trip
+   because the development machine cannot execute aarch64.
+
+3. ONE CLASS WAS RECURRING AND IS NOW CLOSED. vocabulary.sh checks that every
+   macro micro-c can emit actually exists in M2libc's defs for the
+   architecture it is emitting for. That is four of the bugs found so far:
+
+       mov_x15,x1        not in aarch64's defs
+       mov_rbx,r15       not in amd64's defs
+       add_x16,x14,x16   not in aarch64's defs
+       mov_x0,lr         not in aarch64's defs (setjmp)
+
+   Each was found by assembling or running. All four are the same question --
+   "does this instruction exist here" -- and it can be answered statically,
+   for FIVE architectures at once, with no runner and no emulation. It is a
+   hard gate in CI now.
+
+   It came back CLEAN this round, which is itself informative: the remaining
+   aarch64 failure is a LOGIC bug, not a missing instruction, and that rules
+   out the class that produced most of the recent ones.
+
+WHAT WOULD ACTUALLY STOP THE PATTERN: cases written for constructs that have
+NOT failed yet -- unions, function pointers in structs, nested initialisers,
+const and volatile, wide switches, varargs. Writing those is the difference
+between a suite that confirms fixes and one that finds bugs.
