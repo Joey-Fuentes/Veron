@@ -87,6 +87,7 @@ jobs:
           # $M2 was empty. An empty variable is a plausible-looking result.
           M2=$(find m2 -type f -name 'M2-Planet' -perm -u+x | head -1)
           [ -n "$M2" ] || { echo "FAIL: no M2-Planet binary was built"; exit 1; }
+          M2=$(realpath "$M2")          # ABSOLUTE -- see the MEASURE step
           [ -x "$M2" ] || { echo "FAIL: $M2 is not executable"; exit 1; }
           echo "M2=$M2" >> "$GITHUB_ENV"
           echo "  binary: $M2  ($(wc -c < "$M2") bytes)"
@@ -123,10 +124,19 @@ jobs:
         run: |
           set -eu
           cd tcc
+          # RE-ASSERT AT THE POINT OF USE, IN THIS DIRECTORY. The first version
+          # of this job resolved $M2 in the repo root and then ran the loop from
+          # here, so a RELATIVE path stopped resolving and all 30 files reported
+          # "No such file or directory" -- the same nothing the ROADMAP records,
+          # reached by a different route. Checking a binary somewhere other than
+          # where you invoke it is not a check.
+          "$M2" --version >/dev/null 2>&1 \
+            || "$M2" --architecture aarch64 -f /tmp/ok.c -o /dev/null \
+            || { echo "FAIL: \$M2 ($M2) does not run from $(pwd)"; exit 1; }
           : > /tmp/results.tsv
           want=0; ran=0
           for f in *.c; do
-            case "$f" in *_test*|tests/*) continue ;; esac
+            case "$f" in *_test*|tests/*|conftest.c) continue ;; esac
             want=$((want + 1))
             # NORMAL MODE -- no --bootstrap-mode. The preprocessor runs, so
             # #include resolves and the thirteen guarded constructs are allowed.
@@ -136,6 +146,17 @@ jobs:
             printf '%s\t%s\t%s\n' "$f" "$rc" "${first:-OK}" >> /tmp/results.tsv
           done
           echo "  attempted $want files, ran $ran"
+          # DID THE COMPILER RUN, OR ONLY THE LOOP? `ran` is incremented every
+          # iteration, so it proves the loop executed and nothing more -- which
+          # is why it passed while $M2 was unresolvable. A shell-level failure
+          # is not a compiler diagnostic, so look for one directly.
+          shellerr=$(grep -cE "No such file or directory|command not found|Permission denied|cannot execute" /tmp/results.tsv || true)
+          [ "$shellerr" = 0 ] || {
+            echo "FAIL: $shellerr of $want results are SHELL errors, not compiler"
+            echo "  output. The compiler did not run. First one:"
+            grep -m1 -E "No such file|command not found|Permission denied" /tmp/results.tsv | sed 's/^/    /'
+            exit 1
+          }
           [ "$ran" = "$want" ] && [ "$want" -gt 10 ] || {
             echo "FAIL: measured $ran of $want files. A probe that measures"
             echo "  nothing reports the same shape as a probe that measures a"
