@@ -90,6 +90,7 @@ jobs:
           M2=$(realpath "$M2")          # ABSOLUTE -- see the MEASURE step
           [ -x "$M2" ] || { echo "FAIL: $M2 is not executable"; exit 1; }
           echo "M2=$M2" >> "$GITHUB_ENV"
+          echo "M2LIBC=$(realpath m2/M2libc)" >> "$GITHUB_ENV"
           echo "  binary: $M2  ($(wc -c < "$M2") bytes)"
           # It must REJECT something it should reject and ACCEPT something it
           # should accept, or we are not measuring the compiler we think we are.
@@ -124,6 +125,18 @@ jobs:
         run: |
           set -eu
           cd tcc
+          # CONFIGURE FIRST. The previous run compiled all 29 .c files
+          # standalone with no defines and no include path: 18 died on
+          # `Unknown type ST_FUNC` / `ST_DATA` / `ExprValue` -- names from
+          # tcc.h -- and libtcc.c reported tcc's own `#error unknown
+          # target`. That measured the invocation, not the language.
+          #
+          # tcc is not built that way. arm64-gen.c, arm64-link.c and the
+          # *-asm.c files are #include'd BY libtcc.c; the build compiles
+          # tcc.c and libtcc.c with a target selected, and those files
+          # expect the config.h configure emits.
+          ./configure --cpu=arm64 >/dev/null 2>&1 || true
+          [ -f config.h ] || echo "  note: configure produced no config.h"
           # RE-ASSERT AT THE POINT OF USE, IN THIS DIRECTORY. The first version
           # of this job resolved $M2 in the repo root and then ran the loop from
           # here, so a RELATIVE path stopped resolving and all 30 files reported
@@ -135,8 +148,11 @@ jobs:
             || { echo "FAIL: \$M2 ($M2) does not run from $(pwd)"; exit 1; }
           : > /tmp/results.tsv
           want=0; ran=0
-          for f in *.c; do
-            case "$f" in *_test*|tests/*|conftest.c) continue ;; esac
+          # THE TRANSLATION UNITS tcc ITSELF COMPILES, not every .c in the
+          # tree. ONE_SOURCE makes libtcc.c pull in the rest, which is how
+          # the upstream makefile builds it and the only way the per-target
+          # files are ever seen with a target defined.
+          for f in tcc.c libtcc.c; do
             want=$((want + 1))
             # NORMAL MODE -- no --bootstrap-mode. The preprocessor runs, so
             # #include resolves and the thirteen guarded constructs are allowed.
@@ -150,13 +166,16 @@ jobs:
             # to find, and it must not be able to take the job down with it.
             # ulimit does the same for a runaway allocation, in a subshell so
             # the limit cannot leak into the next iteration.
-            err=$( (ulimit -v 4194304; timeout 60 "$M2" --architecture aarch64 \
+            err=$( (ulimit -v 4194304; timeout 300 "$M2" --architecture aarch64 \
+                     -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 \
+                     -D TCC_TARGET_LINUX=1 -D CONFIG_TCC_STATIC=1 \
+                     -I . -I include -I "$M2LIBC" \
                      -f "$f" -o /dev/null) 2>&1 >/dev/null ) && rc=0 || rc=$?
             ran=$((ran + 1))
             first=$(printf '%s\n' "$err" | grep -v '^$' | head -1)
             case "$rc" in
               0)   note='OK' ;;
-              124) note='HUNG (60s)' ;;
+              124) note='HUNG (300s)' ;;
               *)   note="${first:-rc=$rc, no message}" ;;
             esac
             printf '    %-18s rc=%-4s %s\n' "$f" "$rc" "$note"
@@ -169,14 +188,14 @@ jobs:
           # is not a compiler diagnostic, so look for one directly.
           shellerr=$(grep -cE "No such file or directory|command not found|Permission denied|cannot execute" /tmp/results.tsv || true)
           hung=$(awk -F'\t' '$2==124' /tmp/results.tsv | wc -l)
-          [ "$hung" = 0 ] || echo "  note: $hung file(s) hit the 60s bound -- recorded, not fatal"
+          [ "$hung" = 0 ] || echo "  note: $hung file(s) hit the 300s bound -- recorded, not fatal"
           [ "$shellerr" = 0 ] || {
             echo "FAIL: $shellerr of $want results are SHELL errors, not compiler"
             echo "  output. The compiler did not run. First one:"
             grep -m1 -E "No such file|command not found|Permission denied" /tmp/results.tsv | sed 's/^/    /'
             exit 1
           }
-          [ "$ran" = "$want" ] && [ "$want" -gt 10 ] || {
+          [ "$ran" = "$want" ] && [ "$want" -gt 1 ] || {
             echo "FAIL: measured $ran of $want files. A probe that measures"
             echo "  nothing reports the same shape as a probe that measures a"
             echo "  clean tree, which is how the last attempt at this passed"
@@ -192,8 +211,19 @@ jobs:
           echo "  files accepted whole: $ok"
           echo "  files rejected      : $bad"
           echo
-          echo "  --- FIRST ERROR PER FILE ---"
+          echo "  --- FIRST ERROR PER UNIT ---"
           awk -F'\t' '$2!=0 {printf "    %-18s %s\n", $1, $3}' /tmp/results.tsv
+          echo
+          # WITH TWO UNITS INSTEAD OF TWENTY-NINE, ONE LINE EACH IS TOO LITTLE.
+          # M2-Planet stops at the FIRST error, so the interesting question is
+          # no longer "which files fail" -- both will -- but what the failure is
+          # and how deep into real code it got. The full stderr is the answer,
+          # and at two units it is short enough to read.
+          echo "  --- FULL OUTPUT, BOTH UNITS ---"
+          for f in tcc.c libtcc.c; do
+            echo "    == $f =="
+            sed -n "s/^$f\t[0-9]*\t//p" /tmp/results.tsv | sed 's/^/      /'
+          done
           echo
           echo "  --- GROUPED, MOST COMMON FIRST ---"
           # The number that matters: how many DISTINCT things stop it. A long
