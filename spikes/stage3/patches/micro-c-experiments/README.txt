@@ -2,7 +2,7 @@ EXPERIMENTS, NOT PATCHES. DO NOT APPLY TO A BUILD THAT MATTERS.
 ================================================================
 
 These are the changes that walked micro-c (our enhanced M2-Planet) from
-"hangs forever on tcc.c" to "THROUGH tccgen.c entirely -- now in tccdbg.c".
+"hangs forever on tcc.c" to "tccdbg.c:497 of 2676".
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
@@ -71,6 +71,8 @@ Applied on top of the four real fixes in ../m2-planet/, in order:
   __FUNCTION__                              cc_core.c   tcc.h:1250
   aggregate members zeroed word by word     cc_core.c   tccgen.c:7732
   copy chunks must be 8/4/2/1               cc_core.c   tccgen.c:8723
+  bitwise ops in constant_expression        cc_core.c   tccdbg.c:36
+  `sizeof (x[0])`                           cc_core.c   tccdbg.c:82
 
 UNSOUND, AND WHY
 ----------------
@@ -706,7 +708,29 @@ MILESTONE: tccgen.c PARSES COMPLETELY -- all 8,917 lines, the largest file in
 the compilation unit. Six files done: tcc.h, libtcc.h, elf.h, tcctok.h,
 tccpp.c and tccgen.c. Now in tccdbg.c.
 
-STOPPED AT: tccdbg.c:36, "Invalid token '|' used in constant expression".
+48. THE BITWISE OPERATORS IN constant_expression -- `| & ^ << >>`, which
+    entry 10 left out when it added * / %.
+
+    WORTH SAYING PLAINLY: this was not tcc using an exotic construct in a new
+    file. constant_expression is a SECOND, much smaller expression parser than
+    the real one, and it shipped knowing only + and -. Every addition to it so
+    far has been in response to a wall. This completes the integer set so the
+    rest do not arrive one at a time.
+
+    Precedence is still absent, and now matters more: `a | b & c` evaluates
+    right to left, which is wrong for operators of genuinely different
+    precedence. Recorded, not fixed.
+
+49. `sizeof (x[0])` -- the idiom C uses to count array elements, so it appears
+    wherever a table is declared. The index is parsed and discarded, since
+    sizeof asks about the type.
+
+    INDEXING DROPS THE ARRAY COUNT, it does not step the type: for
+    `struct D tbl[8]` the element type IS D, and the array-ness lives in
+    array_modifier. Stepping the type gave sizeof(tbl[0]) == sizeof(tbl).
+    Verified: 128/16 = 8 elements, 80/8 = 10 elements.
+
+STOPPED AT: tccdbg.c:497, "Unknown type (".
 
 MILESTONE: EVERY HEADER PARSES -- tcc.h, libtcc.h, elf.h and tcctok.h. The
 walls are now inside tccpp.c, the first .c file reached.
@@ -721,7 +745,7 @@ offsets rather than only the parse.
 
 WHAT THIS BOUGHT
 ----------------
-Sixty-two walls between a hanging compiler and tcc's first genuinely large
+Sixty-four walls between a hanging compiler and tcc's first genuinely large
 feature, each with a file and line.
 
 A LABEL THAT WAS WRONG, RECORDED BECAUSE THE MISTAKE IS INSTRUCTIVE. Wall 11
