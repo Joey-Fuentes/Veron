@@ -281,3 +281,39 @@ and the statement immediately after the last completed marker is
 Matched as a word now. A substring test for a keyword will eventually hit an
 identifier that contains it, and this one hit the single most important line
 in the run.
+
+=============================================================================
+A SKIPPED BRANCH HIDES PROGRESS
+
+    LAST STATEMENT THAT COMPLETED: L08  memcpy(file->buffer, str, len);
+    exit 139 is SIGNAL 11: the fault is at or just after that line
+
+The second line is still too confident. L09 is
+
+    if (s1->do_debug && filename) {
+
+and a marker placed after that line sits INSIDE the body. do_debug is zero, so
+the branch is never taken and L09 CANNOT print in a correct run either. The
+same is true of L10 through L18. The first marker that would print again is
+whatever follows the whole construct.
+
+So "last marker was L08" was consistent with the fault being anywhere in the
+next dozen statements, and the report named the wrong one.
+
+FIXED by marking REJOIN POINTS -- a closing brace that leaves a block while
+still inside the function. Both paths pass through it, so a skipped branch no
+longer creates a blind stretch:
+
+    L14  (rejoin) }
+    L15  (rejoin) }
+    L19  (rejoin) }
+    L20  preprocess_start(s1, filetype);
+
+Now L19 printing and L20 not means the fault is in preprocess_start, and there
+is no interpretation left to get wrong.
+
+THE PATTERN ACROSS ALL OF THESE. Every reporting bug this session -- the
+digit-only grep, the hardcoded C3, the do_debug substring, and now this -- had
+the same shape: the tool answered confidently in a case it could not
+distinguish. The raw marker sequence was correct every single time. It was the
+sentence underneath it that was wrong.

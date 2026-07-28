@@ -159,9 +159,39 @@ def main():
     out = []
     mapping = []
     n = 0
+    depth = 0
     for i, line in enumerate(lines):
         out.append(line)
         func = covering(i)
+
+        # MARK WHERE CONTROL REJOINS, not only where it enters.
+        #
+        # A marker after `if (...) {` sits INSIDE the body, so it never prints
+        # when the branch is not taken -- and "last marker" then understates
+        # how far execution got. That is what happened here: the last marker
+        # was memcpy, the next was inside `if (s1->do_debug && filename)`, and
+        # do_debug is zero, so the branch was skipped and the fault was
+        # actually several statements further on with nothing to say so.
+        #
+        # A closing brace that leaves the block still inside the function is a
+        # rejoin point, and both paths pass through it.
+        closing = line.strip() == '}' or line.strip().startswith('} else') \
+                  or line.strip() == '};'
+        before = depth
+        for ch in line:
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+
+        if func is not None and closing and depth >= 1 and before > depth:
+            n += 1
+            tag = "L%02d" % n
+            indent = line[:len(line) - len(line.lstrip())]
+            out.append('%swrite(2, "%s\\n", 4);' % (indent, tag))
+            mapping.append((tag, i + 1, "%s: (rejoin) %s" % (func, line.strip())))
+            continue
+
         if func is not None and instrumentable(line):
             n += 1
             tag = "L%02d" % n
