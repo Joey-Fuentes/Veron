@@ -1055,7 +1055,13 @@ jobs:
           # this gate was written before that and had never run to find out.
           objcopy -O binary --only-section=.text stage0-as reference.bin
           ./stage0-as < stage0-as.s0 > gen1.bin
-          ./elf gen1 < gen1.bin || true
+          # NO `|| true`. This wrap used to be allowed to fail silently, which
+          # was survivable while gen1 was only inspected and thrown away. It is
+          # not survivable now that gen1 is uploaded for committing: a failed
+          # wrap would leave whatever `gen1` happened to be on disk, and the
+          # artifact would carry it.
+          ./elf gen1 < gen1.bin
+          chmod +x gen1
           printf '  %-24s %8s  %s\n' 'reference (as+ld .text)' \
             "$(wc -c < reference.bin)" "$(sha256sum reference.bin | cut -c1-16)"
           printf '  %-24s %8s  %s\n' 'gen1 (stage0-as on .s0)' \
@@ -1117,9 +1123,9 @@ jobs:
           # alternated between two outputs would satisfy gen2 == gen1 only if
           # you happened to stop there.
           ./gen1 < stage0-as.s0 > gen2.bin
-          ./elf gen2 < gen2.bin || true
-          chmod +x gen2 2>/dev/null || true
-          ./gen2 < stage0-as.s0 > gen3.bin || true
+          ./elf gen2 < gen2.bin
+          chmod +x gen2
+          ./gen2 < stage0-as.s0 > gen3.bin
           . tools/ab.sh
           gen_row() {
             _v='-'
@@ -1132,7 +1138,7 @@ jobs:
           printf '\n  === SELF-HOST GENERATIONS ===\n'
           printf '  %-26s %10s  %-16s  %s\n' 'ARTIFACT' 'BYTES' 'SHA256[0:16]' 'vs PREVIOUS'
           gen_row 'reference (as+ld .text)' reference.bin '' ''
-          gen_row 'gen1 (committed as on .s0)' gen1.bin '' ''
+          gen_row 'gen1 (fresh as+ld on .s0)' gen1.bin '' ''
           gen_row 'gen2 (gen1 on .s0)' gen2.bin gen1.bin gen1
           gen_row 'gen3 (gen2 on .s0)' gen3.bin gen2.bin gen2
           echo
@@ -1165,6 +1171,74 @@ jobs:
             printf '    FAIL: %s vs reference %s\n' \
               "$(sha256sum g1stage1 | cut -c1-16)" \
               "$(sha256sum stage1 | cut -c1-16)"
+            exit 1
+          fi
+
+      - name: 'GATE: elf self-hosts too'
+        run: |
+          set -eu
+          # WHY THIS EXISTS NOW AND NOT BEFORE. stage0-as has had a self-host
+          # gate since it could translate its own source. elf never did, because
+          # four lines of elf.aarch64.s used forms stage0-as would not take --
+          # `ldr x0, [sp]` and three immediate-offset loads and stores. r68 added
+          # the offset form and taught the translator that `sp` is register 31,
+          # so elf.aarch64.s translates completely and this gate can exist.
+          #
+          # elf is a WRAPPER, not an assembler, so its fixpoint has a different
+          # shape. There is no "elfgen1 assembles the source again". What there
+          # is: elfgen1 is a payload wrapped by the REFERENCE elf, and then that
+          # same payload wrapped by ELFGEN1 ITSELF. If the self-built wrapper
+          # writes the container the reference wrapper writes, the files match.
+          python3 tools/s0_selfhost.py xlate spikes/elf/elf.aarch64.s elf.s0
+          if grep -q '^###' elf.s0; then
+            n=$(grep -c '^###' elf.s0)
+            echo "  FAIL: $n line(s) of elf.aarch64.s need forms stage0-as does"
+            echo "  not accept. This gate was added when that count reached zero;"
+            echo "  going back above zero is a regression, not a reason to skip."
+            grep '^###' elf.s0 | sed 's/^/    /'
+            exit 1
+          fi
+          echo "  elf.s0 translated, 0 untranslatable lines"
+          ./stage0-as < elf.s0 > elfgen1.bin
+          ./elf elfgen1 < elfgen1.bin
+          chmod +x elfgen1
+          . tools/ab.sh
+
+          # DIAGNOSTIC, NOT THE GATE. How far the self-assembled code differs
+          # from what as+ld produced. stage0-as's equivalent settled at four
+          # words, all .bss references. elf's number is not known yet -- this
+          # gate has never run -- so the first green run establishes it, and a
+          # bound goes in afterwards once there is a measured value to bound.
+          # Printing an unbounded number is a comment; it is labelled as one.
+          objcopy -O binary --only-section=.text elf elfref.bin 2>/dev/null || true
+          if [ -f elfref.bin ]; then
+            nd=$(cmp -l elfgen1.bin elfref.bin 2>/dev/null \
+                 | awk '{print int(($1-1)/4)}' | sort -u | wc -l)
+            printf '  %-34s %s\n' 'words differing from as+ld (FYI)' "$nd"
+          fi
+
+          printf '\n  === ELF SELF-HOST GENERATIONS ===\n'
+          printf '  %-28s %10s  %-16s  %s\n' 'ARTIFACT' 'BYTES' 'SHA256[0:16]' 'vs PREVIOUS'
+          printf '  %-28s %10s  %-16s  %s\n' 'reference elf (as+ld)' \
+            "$(ab_size elf)" "$(ab_sha elf)" '-'
+          printf '  %-28s %10s  %-16s  %s\n' 'elfgen1 (stage0-as on .s0)' \
+            "$(ab_size elfgen1)" "$(ab_sha elfgen1)" '-'
+          ./elfgen1 elfgen2 < elfgen1.bin
+          chmod +x elfgen2
+          ./elfgen2 elfgen3 < elfgen1.bin
+          _v='DIFFERS from elfgen1'; cmp -s elfgen2 elfgen1 && _v='MATCHES elfgen1'
+          printf '  %-28s %10s  %-16s  %s\n' 'elfgen2 (elfgen1 wrapping)' \
+            "$(ab_size elfgen2)" "$(ab_sha elfgen2)" "$_v"
+          _v='DIFFERS from elfgen2'; cmp -s elfgen3 elfgen2 && _v='MATCHES elfgen2'
+          printf '  %-28s %10s  %-16s  %s\n' 'elfgen3 (elfgen2 wrapping)' \
+            "$(ab_size elfgen3)" "$(ab_sha elfgen3)" "$_v"
+          echo
+          if cmp -s elfgen2 elfgen1 && cmp -s elfgen3 elfgen2; then
+            echo "  PASS: elfgen1 == elfgen2 == elfgen3 -- the self-built elf"
+            echo "        writes the same container the reference elf writes,"
+            echo "        and is stable across three generations."
+          else
+            echo "  FAIL: elf is not a fixpoint of itself."
             exit 1
           fi
 
@@ -1206,6 +1280,9 @@ jobs:
           path: |
             stage0-as
             elf
+            gen1
+            elfgen1
             stage0-as.s0
+            elf.s0
             probes/index.tsv
           if-no-files-found: warn
