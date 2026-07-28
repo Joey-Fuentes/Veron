@@ -46,3 +46,34 @@ HOW TO ADD A CASE. Write a C program that returns 0 when correct and a
 distinct small number for each way it can fail. gcc is the reference: if gcc
 does not return 0, the harness reports the CASE as broken rather than blaming
 micro-c.
+
+=============================================================================
+CURRENT STATE OF THE CASES, AND WHAT EACH ONE MEANS
+
+    01-array-member          returns 2   was 1 -- the decay is fixed, the
+                                         remaining failure is s.ptr[0][0],
+                                         a double index through a member
+    04-short-circuit         SIGNAL 11   deferred; see
+                                         patches/micro-c-deferred/
+    05-struct-assign         no assemble the struct copy emits mov_rbx,r15,
+                                         which amd64's macro set lacks. The
+                                         fix was written and checked against
+                                         AARCH64 only.
+    06-global-string-align   returns 1   the padding fix is also likely
+                                         aarch64-shaped
+
+TWO OF THESE FOUR ARE PORTABILITY FAILURES IN FIXES THAT WORK ON AARCH64.
+That is worth stating plainly: this series has been developed against one
+architecture and verified against one architecture, and running the same code
+on a second one immediately shows where that assumption leaked in.
+
+WHAT THIS TOOL IS AND IS NOT. It is fast, local and specific -- twelve lines
+of C, an exit code, a second. It is not a substitute for the CI job: it does
+not build tcc, does not link 350,000 lines, and cannot see anything that only
+appears at that scale. What it does is take the class of bug that dominated
+this work -- ordinary C constructs compiled wrongly -- out of the CI loop
+entirely.
+
+Every case here was written FROM a bug that had already been found the slow
+way. The obvious next move is to write cases for constructs that have NOT
+failed yet, so the tool starts finding bugs before tcc does rather than after.
