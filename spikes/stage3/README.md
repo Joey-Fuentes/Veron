@@ -22,7 +22,13 @@ other already produced a binary:
 | route | state |
 |---|---|
 | M2-Planet → Mes → tcc (live-bootstrap's) | Mes rung in progress, three rungs out |
-| enhanced M2-Planet → tcc directly | measured, not started — `ROADMAP.md` |
+| enhanced M2-Planet → tcc directly | **compiles all of tcc; the binary runs and reaches tcc's preprocessor** — `MICRO-C.md` |
+
+The direct route now has a name — **micro-c** — and its own file. It compiles
+`libtcc.c` to 371,437 lines of M1, assembles and links a 1.45 MB aarch64 binary,
+and that binary runs: `tcc_new` completes, `tcc_set_output_type` completes, and
+it faults inside `tok_alloc` while building tcc's keyword table. It is not a
+working tcc; it is a long way past "not started".
 
 Stage 4 has since proven what a tcc is *worth* once reached: an arm64 tcc builds
 a complete gcc 4.7.4 carrying gcc 4.8.5's aarch64 backend — libgcc, `xgcc`, and
@@ -43,6 +49,14 @@ G2..G5 identical            -- stable fixpoint
 ```
 
 Gated by `.github/workflows/m2libc-113-bisect.yml`.
+
+**The micro-c route is gated by `.github/workflows/tcc-two-ways.yml`**, which
+builds tcc twice on the same aarch64 runner — once with gcc as a control, once
+with micro-c — and puts both through tcc's own `test1`/`test2`/`test3`, `make
+test`, and a self-compilation fixpoint. The control runs **first** on purpose:
+if the harness is wrong, that is where it shows, on a compiler nobody doubts.
+The first version of that job reported "0 differing lines" against a reference
+file that did not exist, and the control is what caught it.
 
 `G0` is our M2-Planet, built by stage 2 from *patched* source. Every generation
 after it is built from upstream's **unpatched** sources, because our M2-Planet
@@ -96,6 +110,10 @@ over. Applies to G0 only.
 
 | tool | what it is for |
 |---|---|
+| `stage3/tools/difftest.sh` | compile one small C program with gcc **and** micro-c, run both, compare — about a second per case, no CI |
+| `stage3/tools/vocabulary.sh` | does every macro micro-c can emit exist in M2libc's defs? Static, five architectures at once |
+| `stage3/tools/regression.sh` | does micro-c still compile everything the reference M2-Planet compiles? |
+| `stage3/tools/instrument.py` | put a marker after every statement of a function; the last one printed names the line |
 | `tools/backtrace.py` | run a program through the ladder; on a fault, print the last N instructions with every PC mapped to `label+offset` |
 | `tools/vstack.py` | find value-stack arity mismatches by *reading* emitted assembly — no execution |
 | `tools/pcmap.py` | map a faulting PC back to a function label |
@@ -112,10 +130,25 @@ together. What worked was watching the machine: trap the store, map the PC, read
 the emitted instruction, then read the compiler's own branch. Reach for
 `backtrace.py` before reaching for another source variant.
 
+**A second technique also called "differential testing" is sound, and is now the
+main tool on the micro-c route.** It is narrower: compile a *small,
+self-contained* C program with gcc and with micro-c, run both, compare the exit
+code. No tcc is involved, so nothing about tcc can shift underneath the
+measurement — which is exactly what broke the first technique. See `MICRO-C.md`;
+the distinction matters because the two share a name and only one of them is
+trustworthy here.
+
+**And the machine to watch was available all along.** micro-c targets amd64 and
+the development machine *is* amd64, so its output can be compiled, linked and
+run locally. That went unused for a long time because the work was aimed at
+aarch64, and the cost was a CI round trip per bug.
+
 ## Open
 
 - **The tcc rung itself** — the one thing this stage exists to close. Neither
-  route has produced a tcc from the seed. `ROADMAP.md` has the measured gap for
+  route has produced a *working* tcc from the seed, though the direct route now
+  produces a tcc **binary** that runs and gets into the preprocessor
+  (`MICRO-C.md`). `ROADMAP.md` has the measured gap for
   the direct route; `mes-rung.yml` is the reference arm for the other.
 - **G0's x86 codegen** differs from upstream: compiling for x86 it takes the
   short-immediate branch in `write_add_immediate` where upstream emits the
@@ -144,6 +177,9 @@ the emitted instruction, then read the compiler's own branch. Reach for
 ```
 spikes/stage3/          this folder -- the hand-off, and the road to tcc
 spikes/stage3/ROADMAP.md        leg 1: enhanced M2-Planet builds real tcc
+spikes/stage3/MICRO-C.md        that leg's STATE -- what works, what is wrong, why
+spikes/stage3/tools/            difftest, vocabulary, regression, instrument
+spikes/stage3/micro-c-libc/     the runtime under tcc: headers and impl/
 spikes/stage3/patches/  the tcc arm64 assembler series + our two fixes
 spikes/stage4/          EVERYTHING ABOVE TCC -- gcc, userland, kernel, boot
 sources/tcc.toml        the tcc pin, hash, license and declared substitutions

@@ -4,8 +4,24 @@
 from M2-Planet. Everything *above* tcc — gcc, the userland, the kernel — moved
 to `spikes/stage4/ROADMAP.md` when the two stages were separated.
 
-**Status: measured, not started.** The gap between M2-Planet's C subset and
-tcc's source has been counted (below). No enhanced M2-Planet has been written.
+**Status: leg 1 is well underway. See `MICRO-C.md` for its state.**
+
+The enhanced M2-Planet exists and is called **micro-c**. It compiles the whole
+of `libtcc.c`, assembles and links a 1.45 MB aarch64 binary, and that binary
+runs far enough to reach tcc's preprocessor before faulting. The measurement
+below is still the honest map of the *gap*; what has changed is that most of it
+has been closed, and the remaining problems are different in kind — not missing
+language features, but wrong code generation for features that parse fine.
+
+The largest of those, and the reason this is not finished:
+
+- **`int` is eight bytes**, so every struct micro-c lays out differs from a
+  normal ABI
+- **pointer arithmetic does not scale** — `p + n` advances n bytes, not n
+  elements
+- **one rule has nineteen implementations.** `emit_out(load_value(...))` appears
+  19 times in `cc_core.c` with a different subset of guards at each site; four
+  bugs this session were one site missing a condition another site already had
 
 ---
 
