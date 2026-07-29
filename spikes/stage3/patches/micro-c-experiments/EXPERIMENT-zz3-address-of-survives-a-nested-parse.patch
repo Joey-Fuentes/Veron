@@ -1,0 +1,125 @@
+Address_of is a global, and two nested parses were destroying it.
+
+primary_expr begins with
+
+    if(match("&", ...)) Address_of = TRUE; else Address_of = FALSE;
+
+so any re-entry with a token other than `&` clears the flag its own caller set.
+Two paths re-enter:
+
+  1. GROUPING PARENS.  `pts = &(ts->hash_next);`  -- tccpp.c:516, written with
+     the parens -- takes the `(` branch, which calls comma_expression and comes
+     back round to primary_expr for `ts`. The member was LOADED instead of
+     addressed, so pts became whatever hash_next held (NULL on a fresh entry)
+     and the next *pts faulted. `&ts->hash_next` was always correct: it never
+     re-enters.
+
+     Fixed by having the grouping branch say explicitly that it is handing the
+     flag down. Clearing on the way OUT instead was tried and is much worse --
+     22 cases pass against 42 -- because `&a[i]` parses its index through here
+     and must start with the flag down.
+
+  2. THE INDEX PARSE.  `pp = &pool[0].next;` -- postfix_expr_array calls
+     common_recursion to parse the index, which clears the global. The function
+     itself is fine, having saved was_address_of, but postfix_expr_dot runs
+     AFTER it and reads the global, so it emitted the member load.
+     current_target is already restored one line up for the same reason; this
+     restores the other piece of state the index parse walks over.
+
+KNOWN GAP, recorded as case 44: `&((*p)->m)` still fails. `&(X)` needs the flag
+TRUE at the final lvalue step of X and FALSE everywhere inside it, and for a
+dereference in the middle those are different points. One global cannot say
+both. The real fix is to carry address-of on the expression rather than in a
+global -- a refactor of every site that reads it.
+diff --git a/cc_core.c b/cc_core.c
+index f86cd7a..b7b2731 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -1892,6 +1892,25 @@ void postfix_expr_array(void)
+ 	struct type* array = current_target;
+ 	common_recursion(expression);
+ 	current_target = array;
++
++	/* AND RESTORE Address_of, WHICH THE INDEX PARSE JUST DESTROYED.
++	 *
++	 * common_recursion parses the index through primary_expr, whose first act
++	 * is to clear Address_of unless it sees a `&`. This function saved the
++	 * flag into was_address_of and is therefore fine itself -- but anything
++	 * that runs AFTER it reads the global, and by then it is FALSE:
++	 *
++	 *     pp = &pool[0].next;
++	 *
++	 * postfix_expr_dot handles `.next` and takes the address-of branch on the
++	 * global, so it emitted the member LOAD and pp got pool[0].next instead
++	 * of its address. `&head->next`, with no index in front, was always right.
++	 *
++	 * current_target is restored one line up for exactly the same reason.
++	 * This is the same restore, for the other piece of state the index parse
++	 * walks over. */
++	Address_of = was_address_of;
++
+ 	require(NULL != current_target, "Arrays only apply to variables\n");
+ 
+ 	/* THE LOAD WIDTH IS THE ELEMENT'S, WHICH IS WHAT THE TYPE POINTS AT.
+@@ -2619,12 +2638,34 @@ void bitwise_expr(void)
+ void primary_expr(void)
+ {
+ 	require(NULL != global_token, "Received EOF where primary expression expected\n");
++	/* GROUPING PARENS ARE TRANSPARENT TO `&`.
++	 *
++	 *     pts = &(ts->hash_next);        tccpp.c:516
++	 *
++	 * takes the `(` branch below, which calls comma_expression and comes back
++	 * round to primary_expr for `ts`. With no `&` in front of it, the `else`
++	 * here reset the flag its own caller had set two frames up, so `&(p->m)`
++	 * LOADED the member instead of taking its address. `&p->m` -- the same
++	 * expression without parens -- was always right, because it never
++	 * re-enters this function.
++	 *
++	 * Clearing on the way OUT instead was tried and is worse: 22 cases pass
++	 * against 38. The head clear is load-bearing -- `&a[i]` parses its index
++	 * through here and must start with the flag down.
++	 *
++	 * So the grouping branch says explicitly that it is handing the flag
++	 * down, and this is the only place that reads it. It is consumed
++	 * immediately, so a nested expression inside the parens still starts
++	 * clean. */
++	int inherited = address_of_through_parens;
++	address_of_through_parens = FALSE;
++
+ 	if(match("&", global_token->s))
+ 	{
+ 		Address_of = TRUE;
+ 		require_extra_token();
+ 	}
+-	else
++	else if(!inherited)
+ 	{
+ 		Address_of = FALSE;
+ 	}
+@@ -2766,6 +2807,7 @@ void primary_expr(void)
+ 			 * elsewhere. This is the third and last position where a full
+ 			 * expression is grammatically expected -- statement, controlling
+ 			 * expression, and inside grouping parens. */
++			address_of_through_parens = Address_of;
+ 			comma_expression();
+ 			require_match("Error in Primary expression\nDidn't get )\n", ")");
+ 		}
+diff --git a/cc_globals.c b/cc_globals.c
+index 40d0052..85ab66f 100644
+--- a/cc_globals.c
++++ b/cc_globals.c
+@@ -92,3 +92,4 @@ int indexing_an_array;
+  * one that worked out the width, and the two must agree -- so the answer is
+  * carried rather than recomputed from a type that cannot express it. */
+ int indexed_element_size;
++int address_of_through_parens;
+diff --git a/cc_globals.h b/cc_globals.h
+index 4d28fbe..92bbe4f 100644
+--- a/cc_globals.h
++++ b/cc_globals.h
+@@ -88,3 +88,4 @@ extern int pending_bitfield_size;
+ 
+ extern int indexing_an_array;
+ extern int indexed_element_size;
++extern int address_of_through_parens;

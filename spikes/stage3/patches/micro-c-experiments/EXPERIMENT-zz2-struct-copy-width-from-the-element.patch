@@ -1,0 +1,39 @@
+An indexed assignment's struct-copy decision must use the ELEMENT width, which
+postfix_expr_array has already computed.
+
+    struct Big* arr[8];   arr[0] = 0;
+
+compiled to a 48-byte struct copy that treated the right-hand side as a source
+ADDRESS and read from it. The right-hand side was 0, so it loaded from a null
+pointer. `long* arr[8]` was fine, because sizeof(long) is not greater than
+register_size and the branch was never taken.
+
+current_target for `T* arr[N]` is `T*`, and ->type->size is sizeof(T) -- the
+POINTED-AT type, not the element. That is the same `char *p` versus
+`char *arr[8]` distinction indexed_element_size was introduced for, and the
+ordinary indexed store twelve lines below already reads it. This makes the two
+agree by construction, which is what the comment above them already claims.
+
+Correct for all three shapes: `T* arr[N]` gives register_size and no copy;
+`T arr[N]` gives sizeof(T) and copies; `T* p; p[i] = v` gives sizeof(T) and
+copies.
+
+Not fixed here, and pre-existing in both branches: `> register_size` is a proxy
+for "is this a struct", so a struct SMALLER than a register still takes the
+plain-store path.
+diff --git a/cc_core.c b/cc_core.c
+index 3d5d45b..f86cd7a 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -3180,9 +3180,9 @@ void expression(void)
+ 		int struct_copy = 0;
+ 		if(match("]", global_token->prev->s))
+ 		{
+-			if(current_target->type->size > register_size)
++			if(indexed_element_size > register_size)
+ 			{
+-				struct_copy = current_target->type->size;
++				struct_copy = indexed_element_size;
+ 			}
+ 		}
+ 		else

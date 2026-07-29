@@ -782,3 +782,55 @@ the address-of path specifically -- the same path already fixed twice.
 
 difftest now prints whatever a crashing case wrote before it died. Cases do
 not print today; it costs two lines and means one that does will be heard.
+
+=============================================================================
+ROUND 7: BUILT AND TESTED LOCALLY, FOR THE FIRST TIME
+
+Vendoring M2-Planet at the pin changed the method, not just a file. micro-c now
+builds in the sandbox and difftest runs there in about a second per case, so
+what follows was measured rather than argued.
+
+    before   pass 34   fail 8   known-gap 2
+    after    pass 42   fail 0   known-gap 2
+
+THREE BUGS, ALL THE SAME SHAPE
+
+  1. THE STRUCT-COPY WIDTH.  `struct Big* arr[8]; arr[0] = 0;` compiled to a
+     48-byte struct copy reading from a null pointer. The decision used
+     current_target->type->size -- the POINTED-AT type -- where the ELEMENT
+     width was wanted, and indexed_element_size twelve lines below already
+     held it. `long*` was fine only because the two numbers coincide, which is
+     why every case in this directory missed it for six rounds.
+
+  2. GROUPING PARENS DESTROY Address_of.  primary_expr clears the flag unless
+     it sees `&`, and `&(ts->hash_next)` -- tccpp.c:516, as tcc writes it --
+     re-enters primary_expr for `ts`. `&ts->hash_next` was always right.
+
+  3. THE INDEX PARSE DESTROYS IT TOO.  postfix_expr_array saves the flag for
+     its own use and common_recursion clears the global, so the `.next` in
+     `&pool[0].next` read FALSE and emitted the member load.
+
+All three are one global written at one parse site and read at another. That is
+the fourth, fifth and sixth time this file has recorded that sentence.
+
+WHAT MEASURING CHANGED
+
+Two candidate fixes for (2) were written. Clearing Address_of on the way out of
+primary_expr instead of on the way in is the tidier change and it is WRONG:
+22 cases pass against 42, because `&a[i]` parses its index through there and
+needs the flag down. That took one minute to find and would have been a CI
+round and a confident wrong explanation.
+
+CASE 43 CAUGHT ME IN THE TRAP ITS OWN COMMENT DESCRIBES
+
+It checked `&(x)` against `&x` and required them equal. Both were broken
+identically -- both loaded the member -- so the pair agreed and the case
+passed. It is anchored to a real address now. A case comparing two forms of the
+same construct tests only that they are consistent.
+
+STILL OPEN
+
+    21  known gap, pointer arithmetic does not scale
+    44  known gap, `&((*p)->m)` -- parens around a DEREFERENCE
+    05  struct assignment, aarch64 only, untested here (no qemu)
+    16  wide switch, aarch64 only, same
