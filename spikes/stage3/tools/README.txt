@@ -695,3 +695,49 @@ from a large-array case would have been wrong.
 32 and 33 test NO construct. No address-of, no pointer arrays. 32 varies the
 element count at a fixed 8-byte element; 33 holds the count at four and grows
 the element, so between them count and total bytes come apart.
+
+=============================================================================
+ROUND 5: SIZE WAS A RED HERRING, AND THE REAL VARIABLE IS THE ELEMENT TYPE
+
+32 and 33 both PASS. A 64-element array of longs and a 4-element array of
+96-byte structs both fill and read back with their guards intact. Global array
+storage is fine, the harness is exonerated, and the size correlation was an
+accident of which cases happened to be small.
+
+That was worth one round to learn. Three hypotheses have now been killed by
+measurement rather than argument -- the pointer difference, ->size versus
+->type->size, and storage size -- and each died on the first round that
+actually tested it.
+
+WHAT THE SUITE SAYS WHEN YOU ASK IT THE RIGHT QUESTION
+
+    grep -l 'struct X* name[' cases/*.c
+
+    28-hash-bucket-walk.c
+    31-pointer-array-large-element.c
+
+Those are the only two cases in the directory holding POINTERS TO A STRUCT in
+an array, and they are exactly the two that fail. Every passing case uses
+long* or an array of structs. The variable was never controlled for because
+every case was written to name a construct, and the element type came along
+for the ride.
+
+34 THROUGH 37 CROSS IT PROPERLY
+
+    34  long*        x8    control
+    35  long*       x64
+    36  struct Big*  x8
+    37  struct Big* x64
+
+ONE COMBINATION PER FILE rather than one bitmask case. A bitmask is better
+when the failure is a wrong value; 28 and 31 SEGFAULT, and a crash returns no
+bitmask. Separate files each crash or pass independently and the return code
+names which of the six steps did it.
+
+A NOTE ON WHAT THE EMISSION PROVED, WHICH IS LESS THAN IT LOOKED
+
+The M1 for exactly this access reads correctly -- base loaded, index scaled by
+8, member offset applied. It was never RUN. The emit step compiles and prints;
+it does not execute. If 36 and 37 fail, then reading an emission and calling
+it correct is a step short of a measurement, and this is the round that says
+so.
