@@ -200,7 +200,7 @@ jobs:
           # a passing one. Without it a silently-missing patch passes the
           # check, and a missing codegen patch looks exactly like a codegen
           # bug. Bumped to 30 with EXPERIMENT-zzg.
-          [ "$n" -ge 30 ] || { echo "FAIL: only $n patches"; exit 1; }
+          [ "$n" -ge 31 ] || { echo "FAIL: only $n patches"; exit 1; }
 
           pre=0
           for p in spikes/stage3/patches/m2-planet/[0-9]*.patch \
@@ -738,7 +738,25 @@ jobs:
           head -30 /tmp/tcctest-build.log
           echo "  ($(wc -l < /tmp/tcctest-build.log) lines total, full log in the artifact)"
           echo "  exit: $rc"
-          if [ "$rc" -gt 128 ]; then echo "  SIGNAL $((rc - 128))"; fi
+          # A SIGNAL HERE IS A REGRESSION, AND IT IS NOW A FAILURE.
+          #
+          # For five rounds mc-tcc died on SIGSEGV here and the job stayed
+          # green, because a crash was the expected state and nothing asserted
+          # otherwise. EXPERIMENT-zzh closed it -- a member of an anonymous
+          # struct nested in an anonymous union resolved to offset 0, so
+          # sym_push2's `s->c = c` wiped the token `s->v = v` had just written,
+          # and every symbol tcc created came back with v == 0.
+          #
+          # mc-tcc now exits 1 at the linker, not 11 in check_fields. Going
+          # back to a signal means a codegen regression, and a gate that only
+          # printed it would let that happen quietly a sixth time.
+          if [ "$rc" -gt 128 ]; then
+            echo "  SIGNAL $((rc - 128))"
+            echo "  FAIL: mc-tcc died on a signal. It reached the linker before"
+            echo "  EXPERIMENT-zzh and must still reach it; a signal is a"
+            echo "  codegen regression, not the expected state."
+            exit 1
+          fi
           if [ -x /tmp/tcctest-mc ]; then
             /tmp/tcctest-mc > /tmp/tcctest-mc.out 2>&1 || true
             if [ -f ../gcc-tcc/tests/test.ref ]; then

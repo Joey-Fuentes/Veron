@@ -1,0 +1,188 @@
+A nested anonymous aggregate gets the enclosing offset.
+
+THIS IS THE P151 FAULT, AND IT WAS NEVER IN tccgen.
+
+For five rounds this series recorded the fault as "next() returns and its caller
+in tccgen faults", and every attempt to explain it looked for a codegen bug on
+the token path. It was a member offset, three functions away, and it had been
+corrupting every symbol tcc ever created.
+
+    before   exit: 139   SIGNAL 11
+    after    exit: 1     no signal
+
+mc-tcc now preprocesses, parses and generates code for its input and stops at
+the linker, complaining that crt1.o and crti.o are not present -- which they
+are not, in the local harness. That is a different problem and a much later
+one.
+
+WHAT WAS WRONG. `members` is the SIBLING chain: build_member sets
+i->members = last. So the flattening loop for an anonymous aggregate
+
+    while (iterator != NULL) {
+        iterator->offset = iterator->offset + offset;
+        iterator = iterator->members;
+    }
+
+visits every member of ONE aggregate, and only one. A nested anonymous struct
+appears on that chain as a single entry whose own members hang off
+entry->type->members -- a different list -- and those never received the
+enclosing offset. They kept offsets relative to the inner aggregate.
+
+tcc's Sym is exactly that shape:
+
+    typedef struct Sym {
+        int v;                  /* offset 0  */
+        unsigned short r;
+        struct SymAttr a;
+        union {
+            struct { int c; int sym_scope; ... };    /* c resolved to 0 */
+            int jnext;
+        };
+    } Sym;
+
+`c` aliased `v`. And sym_push2 is:
+
+    s->v = v;          /* token written        */
+    s->type.t = t;
+    s->c = c;          /* c is 0 for a field -- wipes the token */
+
+so the third store erased what the first had just written. EVERY symbol tcc
+created came back with v == 0. check_fields then computed
+
+    table_ident[v - TOK_IDENT]   ->   table_ident[0 - 256]   ->   index -256
+
+read NULL out of it, and dereferenced that. SIGSEGV.
+
+The fix recurses into a nested anonymous aggregate. It also makes the offsets
+agree with lookup_member, which ALREADY recursed into anonymous members -- so
+the two halves of the same rule had disagreed since anonymous aggregates were
+added.
+
+HOW IT WAS FOUND, BECAUSE THE ROUTE IS THE LESSON.
+
+Bisecting downward with hand-placed write() markers, one frame at a time:
+
+    tccgen_compile      next() completes, decl(VT_CONST) faults
+    decl                parse_btype entered, never returns
+    parse_btype         depth 1 -> 2 -> 1 -> 2 -> 1, all returns clean
+    struct_decl         all six members of __builtin_va_list parse correctly
+    struct_decl tail    M13 attributes done, M14 not reached
+    check_fields        v == 0, index -256, ts == NULL
+    sym_push2           P2 s->v=333, P3 s->v=333, P4 s->v=0
+
+The last line is the whole diagnosis. Four probes on four consecutive stores.
+
+FOUR TIMES DURING THIS HUNT A CONCLUSION WAS DRAWN FROM A STALE marks.txt.
+local-tcc.sh does not stop when micro-c fails to compile the unit, and the
+runs were piped to /dev/null or through `head`, which closes the pipe and kills
+the script before it ever runs the binary. The file was eleven minutes older
+than the binary beside it and said what the previous build had said. Three
+separate "findings" were retracted:
+
+  - "none of the 9 call sites fire"     -- the build had failed on zdbg being
+                                          used above its definition
+  - "continue jumps to the function top" -- stale; a difftest case for it passes
+  - the frame/depth probes              -- stale twice over
+
+Every conclusion in this patch comes from a run where marks.txt was verified
+NEWER than mc-tcc. That check costs one line and should have been there from
+the first probe:
+
+    ls -l --time-style=+%H:%M:%S mc-tcc marks.txt
+
+MEASURED
+
+    tcc           SIGSEGV -> exit 1, no signal. THE FAULT IS CLOSED.
+    difftest      60 pass / 0 fail / 1 known gap, both architectures
+    case 62       the construct in 30 lines, red before and green after
+    vocabulary    clean on five architectures
+    corpus        423 of 426 on aarch64
+
+WHAT IS NEXT AND NOT DONE HERE: crt1.o and crti.o. mc-tcc reaches the linker
+and cannot find the C runtime objects. Whether that is a gap in the local
+harness or the next real problem has not been established, and is not claimed
+either way.
+
+diff --git a/cc_types.c b/cc_types.c
+index 2eac4f2..ec3ec1e 100644
+--- a/cc_types.c
++++ b/cc_types.c
+@@ -573,6 +573,62 @@ char* parse_function_pointer(void)
+ }
+ 
+ int member_size;
++/* AN ANONYMOUS AGGREGATE CAN CONTAIN ANOTHER ONE, AND ONLY ONE LEVEL WAS BEING
++ * FLATTENED.
++ *
++ * `members` is the sibling chain -- build_member sets i->members = last -- so
++ * walking it visits every member of ONE aggregate. A nested anonymous struct
++ * appears on that chain as a single entry whose own members hang off
++ * entry->type->members, a different list, and those never received the
++ * enclosing offset. They kept offsets relative to the inner aggregate.
++ *
++ * tcc's Sym is exactly this shape:
++ *
++ *     typedef struct Sym {
++ *         int v;
++ *         unsigned short r;
++ *         struct SymAttr a;
++ *         union {
++ *             struct { int c; int sym_scope; ... };
++ *             ...
++ *         };
++ *     } Sym;
++ *
++ * so `c` -- the first member of the inner struct -- resolved to OFFSET 0 and
++ * aliased `v`. sym_push2 does
++ *
++ *     s->v = v;  s->type.t = t;  s->c = c;
++ *
++ * and c is 0 for a field, so the third store wiped the token the first store
++ * had just written. Every symbol tcc created came back with v == 0.
++ * check_fields then computed table_ident[0 - TOK_IDENT] -- index -256 -- read
++ * NULL out of it and dereferenced that. THAT is the P151 fault: it was never
++ * in tccgen at all, it was a member offset.
++ *
++ * lookup_member already recurses into anonymous members, so the offsets have
++ * to be correct at every level for it to agree with itself. */
++void offset_anonymous_members(struct type* list, int offset)
++{
++	struct type* iterator = list;
++	struct type* inner;
++
++	while(NULL != iterator)
++	{
++		iterator->offset = iterator->offset + offset;
++
++		inner = iterator->type;
++		if(NULL != inner)
++		{
++			if(match("anonymous struct", inner->name) || match("anonymous union", inner->name))
++			{
++				offset_anonymous_members(inner->members, offset);
++			}
++		}
++
++		iterator = iterator->members;
++	}
++}
++
+ struct type* build_member(struct type* last, int offset)
+ {
+ 	struct type* i = calloc(1, sizeof(struct type));
+@@ -639,13 +695,8 @@ struct type* build_member(struct type* last, int offset)
+ 		i->name = "";
+ 
+ 		/* We need to offset all the member so that they're pointing correctly
+-		 * into the current struct. */
+-		while (iterator != NULL)
+-		{
+-			iterator->offset = iterator->offset + offset;
+-
+-			iterator = iterator->members;
+-		}
++		 * into the current struct -- at EVERY level, not just this one. */
++		offset_anonymous_members(iterator, offset);
+ 	}
+ 
+ 	/* Check to see if array */
