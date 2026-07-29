@@ -47,7 +47,12 @@ case suite and could not be reproduced locally at all. Under this emulator it
 reproduced immediately, and the cause turned out to be three wrong instruction
 encodings in M2libc's macro table — not a compiler bug.
 
-**How to use it.** Invoke it explicitly. No `binfmt_misc` registration, no
+**How to use it.** For stage-3 work you do not invoke it directly --
+`spikes/stage3/tools/local-build.sh` and `local-tcc.sh` do, and they also
+encode the four silent traps between a clean checkout and a working setup.
+Start there.
+
+To use it by hand, invoke it explicitly. No `binfmt_misc` registration, no
 root:
 
 ```sh

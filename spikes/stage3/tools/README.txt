@@ -1465,3 +1465,47 @@ it means something else.
 instrument.py STILL CANNOT ENTER A SWITCH. tok_str_add2 and next_nomacro are
 both un-instrumentable for that reason. Hand-placed markers reached past it
 this time; that will not scale.
+
+=============================================================================
+REPRODUCING ANY OF THIS: local-build.sh AND local-tcc.sh
+
+Everything above was found locally, and none of it was reproducible from the
+repository until now. Doing the obvious thing -- copy the reference tree, apply
+the patches, build -- produces a compiler that segfaults on case 05, and the
+reasonable conclusion is that micro-c is broken. It is not.
+
+FOUR TRAPS, ALL SILENT, THREE FOUND THE HARD WAY
+
+  1. git apply INSIDE THIS REPOSITORY SKIPS AND EXITS 0. git-apply(1): "When
+     running from a subdirectory in a repository, patched paths outside the
+     directory are ignored." A plain copy of spikes/reference/m2libc in the
+     working tree is exactly that. Nothing in the m2libc series applied for
+     weeks. Every copy gets `git init` first.
+
+  2. M1's max_string DEFAULTS TO 4096 and tcc's keyword table is one string
+     far bigger. Without the substitution the link dies with "exceeds max
+     string size" and hex2 then fails on a file that does not exist -- two
+     errors, neither naming the cause.
+
+  3. THE .M1 TABLES MUST COME FROM THE PATCHED M2libc. Three aarch64 macros in
+     the vendored table encode x16 as x8. They assemble, link, run, and compute
+     garbage. Both CI workflows made this mistake and it read as a codegen bug
+     twice.
+
+  4. CODE MUST PRECEDE STRINGS in the joined .M1, or a function lands off a
+     four-byte boundary and every call to it is SIGBUS on aarch64.
+
+The scripts encode all four and ASSERT THE RESULT rather than the action. "The
+patch was applied" and "the fix is in the file" are different claims; every
+earlier version of this checked the first one.
+
+    sh spikes/stage3/tools/local-build.sh
+    sh spikes/stage3/tools/local-tcc.sh build/local
+    sh spikes/stage3/tools/local-tcc.sh build/local tccpp.c macro_subst
+
+difftest-qemu.sh runs the same case suite on aarch64 under the committed
+emulator, which is where the alignment class of bug lives and where two cases
+have only ever failed.
+
+Verified from a clean checkout: 45 pass / 0 fail / 3 gaps on amd64, 44 / 1 / 3
+on aarch64, and mc-tcc built and run to the same fault this file describes.

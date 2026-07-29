@@ -490,9 +490,41 @@ is x86_64 — a `qemu-aarch64-static` built for aarch64 emulates aarch64 on
 aarch64 and is useless — and it proves the emulator works by running a real
 aarch64 binary under the copy it is about to upload, rather than claiming it.
 
-With those, the whole loop is local: micro-c builds in seconds, `libtcc.c`
-compiles in 26 s, the link produces a 1.52 MB aarch64 binary, and it runs under
-the emulator. An instrumented round is about a minute. Every finding in
+**Two scripts do all of it**, and they are the answer to "how do I reproduce
+this" rather than a list of commands in prose:
+
+```sh
+sh spikes/stage3/tools/local-build.sh
+    # micro-c + patched M2libc + M1/hex2, then difftest on BOTH architectures
+
+sh spikes/stage3/tools/local-tcc.sh build/local
+    # compile tcc with micro-c, link it, run it under the emulator
+
+sh spikes/stage3/tools/local-tcc.sh build/local tccpp.c macro_subst
+    # the same, with those functions instrumented -- the last marker names
+    # the statement execution reached
+```
+
+They exist as scripts because doing the obvious thing produces a compiler that
+segfaults on case 05, and the natural conclusion is that micro-c is broken. It
+is not. Four traps sit between a clean checkout and a working setup, all
+silent:
+
+| trap | symptom if you miss it |
+|---|---|
+| `git apply` inside this repo **skips and exits 0** | the patch series appears to apply and does nothing |
+| M1's `max_string` defaults to 4096 | linking tcc dies on the keyword table, then hex2 fails on a file that does not exist |
+| the `.M1` tables must come from the **patched** M2libc | cases 05 and 46 segfault against a compiler that passes them |
+| code must precede strings in the joined `.M1` | a function lands off a 4-byte boundary and every call is SIGBUS |
+
+Three of those were found the hard way and two of them cost days. The scripts
+encode all four and assert the result rather than the action -- "the patch was
+applied" and "the fix is in the file" are different claims and only the second
+one matters.
+
+With them the whole loop is local: micro-c builds in seconds, `libtcc.c`
+compiles in about 30 s, the link produces a 1.52 MB aarch64 binary, and it runs
+under the emulator. An instrumented round is about a minute. Every finding in
 **Later rounds** above came out of that loop, and several of them were wrong
 first — cheaply.
 
