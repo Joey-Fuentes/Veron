@@ -1361,3 +1361,45 @@ And the report now PRINTS WHAT IT INSTRUMENTED, with the warning that a fault
 outside the set appears as the last marker inside it. A reader can then check
 the frequency column -- a "last statement" that ran 980 times is a statement
 in a loop, not a crash site.
+
+=============================================================================
+A MARKER INSIDE AN ARRAY INITIALISER
+
+Following the frontier broke the instrumenter, and the error named the marker
+rather than the placement:
+
+    tccpp.c:3542: Unable to find symbol 'write' for use in constant expression.
+
+    static char const ab_month_name[12][4] = {
+    write(2, "P114\n", 4);                        <- HERE
+        "Jan", "Feb", "Mar", ...
+    };                                            tccpp.c:3541
+
+instrumentable() treated any line ending in `{` as opening a block. An
+aggregate initialiser ends in `{` too, and so does a type definition, and
+neither contains statements.
+
+The guard has to distinguish an ASSIGNMENT `=` from the tail of ==, !=, <=, >=
+or a compound operator, because `if (a == b) {` really does open a block:
+
+    [^=!<>+\-*/%&|^]=\s*\{$
+
+That is the third placement bug in this tool and they share a shape: a line
+that ends in a character the instrumenter reads as structure, in a context
+where it means something else. The first was a braceless loop body, the second
+a function's own closing brace, this one an initialiser.
+
+Each was found the same way -- micro-c refused the instrumented file and named
+a symbol that made no sense, `write`, in a place that had nothing to do with
+markers. A tool whose failures point somewhere else is expensive, and this one
+now has three separate reasons in its guards.
+
+WHERE THE FAULT IS
+
+With the tool fixed, 30,502 markers and:
+
+    P95  macro_subst_tok: sa = sym_push2(nested_list, v, 0, 0);   completed
+    P96  macro_subst_tok: ret = macro_subst(tok_str, nested_list, jstr);
+
+macro_subst -- the recursive expansion body, one level below macro_subst_tok
+-- does not return. That is the next thing to instrument.

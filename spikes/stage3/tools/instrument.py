@@ -110,6 +110,23 @@ def instrumentable(line):
         return False
     if t.startswith('for'):
         return False            # semicolons are separators here
+    if re.search(r'[^=!<>+\-*/%&|^]=\s*\{$', t):
+        # AN AGGREGATE INITIALISER ALSO ENDS IN `{`, and it does not open a
+        # block:
+        #     static char const ab_month_name[12][4] = {
+        #         "Jan", "Feb", ...
+        #     };                                        tccpp.c:3541
+        # A marker after that line lands between the braces, where micro-c is
+        # parsing a constant expression, and the error names the marker:
+        #     Unable to find symbol 'write' for use in constant expression.
+        #
+        # The `=` has to be an ASSIGNMENT, not the tail of ==, !=, <=, >= or a
+        # compound operator -- `if (a == b) {` really does open a block.
+        return False
+    if re.match(r'^(typedef|struct|union|enum)\b', t) and t.endswith('{'):
+        # A type definition, likewise. Its body is a member list, not
+        # statements.
+        return False
     if t.endswith('{') and re.match(r'^(for|while|do)\b', t):
         # A marker at the top of a LOOP body repeats every iteration and
         # drowns the log.
