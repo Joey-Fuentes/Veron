@@ -141,12 +141,21 @@ jobs:
           #
           # stdarg.h's va_copy is the case that exposed it: correct in the
           # patched copy, still reversed in the one libtcc.c sees.
+          # LENIENT, THEN ASSERTED. The submodule is a different M2libc
+          # revision from the vendored copy, so a patch written against one
+          # need not apply to the other -- 0004 touches aarch64_defs.M1 and
+          # does not. That is fine here: this tree is only an INCLUDE PATH,
+          # so the header fixes are what matter and the .M1 tables come from
+          # m2libc-patched. "Applied" and "the fix is present" are different
+          # claims; only the second is checked.
           for p in "$GITHUB_WORKSPACE"/spikes/stage3/patches/m2libc/[0-9]*.patch; do
             [ -e "$p" ] || continue
-            (cd m2/M2libc && git apply --ignore-whitespace "$p") \
-              || { echo "FAIL: $(basename "$p") in m2/M2libc"; exit 1; }
+            (cd m2/M2libc && git apply --ignore-whitespace "$p" 2>/dev/null) \
+              && echo "  applied $(basename "$p")" \
+              || echo "  skipped $(basename "$p") -- other revision"
           done
-          grep -n 'define va_copy' m2/M2libc/stdarg.h | sed 's/^/  /'
+          grep -q "define va_copy(ap1, ap2) ap1 = ap2" m2/M2libc/stdarg.h \
+            || { echo "FAIL: va_copy not fixed where libtcc.c reads it"; exit 1; }
 
           L="$PWD/spikes/stage3/micro-c-libc"
           cd tcc
@@ -284,7 +293,13 @@ jobs:
           gcc -w -o M1 mescc/M1-macro.c mescc/stringify.c mescc/M2libc/bootstrappable.c
           gcc -w -o hex2 mescc/hex2_linker.c mescc/hex2_word.c mescc/hex2.c mescc/M2libc/bootstrappable.c
 
-          D=spikes/reference/m2libc/aarch64
+          # THE PATCHED TABLE, NOT THE VENDORED ONE.
+          #
+          # This said spikes/reference/m2libc/aarch64 -- the unpatched copy --
+          # so a fix to aarch64_defs.M1 was assembled with the broken table
+          # anyway. Third copy of M2libc in this job and the third time a fix
+          # landed in one that nothing reads. See spikes/stage3/tools/README.
+          D=m2libc-patched/aarch64
           ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f all.M1 \
                --little-endian --architecture aarch64 -o all.hex2
           echo "  assembled: $(wc -l < all.hex2) lines"
@@ -321,7 +336,13 @@ jobs:
           }
 
           set -eu
-          D=spikes/reference/m2libc/aarch64
+          # THE PATCHED TABLE, NOT THE VENDORED ONE.
+          #
+          # This said spikes/reference/m2libc/aarch64 -- the unpatched copy --
+          # so a fix to aarch64_defs.M1 was assembled with the broken table
+          # anyway. Third copy of M2libc in this job and the third time a fix
+          # landed in one that nothing reads. See spikes/stage3/tools/README.
+          D=m2libc-patched/aarch64
           P=spikes/stage3/micro-c-libc/impl
           echo "  runner is $(uname -m); the binary is aarch64, so this is native"
           echo
@@ -468,7 +489,13 @@ jobs:
             -D CONFIG_TCC_STATIC=1 -I . -I "$L" -I ../m2/M2libc \
             -f libtcc.c -o ../dbg.M1
           cd ..
-          D=spikes/reference/m2libc/aarch64
+          # THE PATCHED TABLE, NOT THE VENDORED ONE.
+          #
+          # This said spikes/reference/m2libc/aarch64 -- the unpatched copy --
+          # so a fix to aarch64_defs.M1 was assembled with the broken table
+          # anyway. Third copy of M2libc in this job and the third time a fix
+          # landed in one that nothing reads. See spikes/stage3/tools/README.
+          D=m2libc-patched/aarch64
           join_objs() {
             out="$1"; shift
             : > "$out.code"; : > "$out.strs"

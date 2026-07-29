@@ -203,9 +203,25 @@ jobs:
           M=spikes/reference/m2libc
           rm -rf m2libc-patched && cp -r "$M" m2libc-patched
           apply_m2libc_series m2libc-patched
-          apply_m2libc_series m2/M2libc
-          echo "  m2libc series applied to m2libc-patched AND m2/M2libc"
-          grep -n 'define va_copy' m2/M2libc/stdarg.h | sed 's/^/    submodule: /'
+
+          # THE SUBMODULE IS A DIFFERENT REVISION (68a23cfd against the
+          # vendored ca023d8), so a patch written against one will not always
+          # apply to the other -- 0004 touches aarch64_defs.M1 and does not.
+          # That is fine: the submodule is only ever used as an INCLUDE PATH
+          # for libtcc.c, so header patches are what matter there and the
+          # .M1 tables are read from m2libc-patched.
+          #
+          # Applied leniently, then ASSERTED. "It was applied" and "the fix is
+          # present" are different claims and only the second one matters.
+          for p in "$GITHUB_WORKSPACE"/spikes/stage3/patches/m2libc/[0-9]*.patch; do
+            [ -e "$p" ] || continue
+            (cd m2/M2libc && git apply --ignore-whitespace "$p" 2>/dev/null) \
+              && echo "  m2/M2libc: applied $(basename "$p")" \
+              || echo "  m2/M2libc: skipped $(basename "$p") -- not applicable to this revision"
+          done
+          grep -q 'define va_copy(ap1, ap2) ap1 = ap2' m2/M2libc/stdarg.h \
+            || { echo "FAIL: va_copy is not fixed in the headers libtcc.c includes"; exit 1; }
+          echo "  m2libc series applied; va_copy verified in both copies"
           M=m2libc-patched
 
           cp -r tcc-src mc-tcc
@@ -259,6 +275,27 @@ jobs:
             -f spikes/stage3/micro-c-libc/impl/main-06-realloc.c -o realloc.M1
           echo "  libtcc $(grep -c '^:FUNCTION_' libtcc.M1) functions, runtime $(grep -c '^:FUNCTION_' runtime.M1)"
 
+      - name: 'SUBJECT: every macro must ENCODE what its name says'
+        run: |
+          set -eu
+          # vocabulary.sh asks whether a macro EXISTS. This asks whether it is
+          # CORRECT, which is a different question and was never asked.
+          #
+          #     DEFINE add_x0,x16,x0 0020008b   ->  ADD x0, x0, x0, LSL #8
+          #
+          # Three macros in M2libc's aarch64 table encode x16 as x8 in the Rn
+          # field. They assemble, they link, they run, and one of them is used
+          # 315 times in a single compile of libtcc.c. It surfaced as "struct
+          # assignment is broken on aarch64 and only aarch64", which is a
+          # sentence that sends you looking at alignment for hours.
+          #
+          # Checked against the PATCHED table, since that is what gets
+          # assembled. A hard gate: unlike a codegen failure this cannot be a
+          # false positive -- for a register-to-register form the encoding is
+          # fully determined by the name.
+          python3 spikes/stage3/tools/verify_defs.py \
+            m2libc-patched/aarch64/aarch64_defs.M1
+
       - name: 'SUBJECT: assemble and link'
         run: |
           set -eu
@@ -293,7 +330,13 @@ jobs:
           # allocator, so a failure there cannot be blamed on tcc.
           join rl.M1  m2libc.M1 runtime.M1 setjmp.M1 realloc.M1
 
-          D=spikes/reference/m2libc/aarch64
+          # THE PATCHED TABLE, NOT THE VENDORED ONE.
+          #
+          # This said spikes/reference/m2libc/aarch64 -- the unpatched copy --
+          # so a fix to aarch64_defs.M1 was assembled with the broken table
+          # anyway. Third copy of M2libc in this job and the third time a fix
+          # landed in one that nothing reads. See spikes/stage3/tools/README.
+          D=m2libc-patched/aarch64
           ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f all.M1 \
                --little-endian --architecture aarch64 -o all.hex2
           ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
@@ -311,27 +354,6 @@ jobs:
           chmod +x mc-realloc
           printf '  micro-c tcc: %s bytes  sha %s\n' \
             "$(stat -c%s mc-tcc-bin)" "$(sha256sum mc-tcc-bin | cut -c1-16)"
-
-      - name: 'SUBJECT: every macro must ENCODE what its name says'
-        run: |
-          set -eu
-          # vocabulary.sh asks whether a macro EXISTS. This asks whether it is
-          # CORRECT, which is a different question and was never asked.
-          #
-          #     DEFINE add_x0,x16,x0 0020008b   ->  ADD x0, x0, x0, LSL #8
-          #
-          # Three macros in M2libc's aarch64 table encode x16 as x8 in the Rn
-          # field. They assemble, they link, they run, and one of them is used
-          # 315 times in a single compile of libtcc.c. It surfaced as "struct
-          # assignment is broken on aarch64 and only aarch64", which is a
-          # sentence that sends you looking at alignment for hours.
-          #
-          # Checked against the PATCHED table, since that is what gets
-          # assembled. A hard gate: unlike a codegen failure this cannot be a
-          # false positive -- for a register-to-register form the encoding is
-          # fully determined by the name.
-          python3 spikes/stage3/tools/verify_defs.py \
-            m2libc-patched/aarch64/aarch64_defs.M1
 
       - name: 'SUBJECT: vocabulary check, EVERY architecture'
         run: |
@@ -626,7 +648,13 @@ jobs:
             cat "$out.code" "$out.strs" > "$out"; rm -f "$out.code" "$out.strs"
           }
           join2 inst-all.M1 inst.M1 m2libc.M1 runtime.M1 setjmp.M1 compileonly.M1
-          D=spikes/reference/m2libc/aarch64
+          # THE PATCHED TABLE, NOT THE VENDORED ONE.
+          #
+          # This said spikes/reference/m2libc/aarch64 -- the unpatched copy --
+          # so a fix to aarch64_defs.M1 was assembled with the broken table
+          # anyway. Third copy of M2libc in this job and the third time a fix
+          # landed in one that nothing reads. See spikes/stage3/tools/README.
+          D=m2libc-patched/aarch64
           ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f inst-all.M1 \
                --little-endian --architecture aarch64 -o inst.hex2
           ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \

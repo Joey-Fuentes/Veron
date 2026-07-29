@@ -1061,3 +1061,33 @@ would also be red. Three was correct. The deeper mistake is that I had been
 quoting amd64 numbers from a local suite while CI runs aarch64 -- two
 different suites with two different results, reported as though they were one.
 Both numbers, always, from here.
+
+THE SAME MISTAKE, A THIRD TIME, IN ONE ROUND
+
+0004 failed to apply and the log said so. Chasing it found something worse:
+
+    D=spikes/reference/m2libc/aarch64        <- the UNPATCHED copy
+    ./M1 -f $D/aarch64_defs.M1 ...
+
+The assembly read the vendored table, not the patched one, so the encoding fix
+would have been assembled with the broken macros regardless of whether the
+patch applied. THREE copies of M2libc in one job:
+
+    spikes/reference/m2libc   the .c sources compiled into m2libc.M1
+    m2libc-patched            the patched copy -- and, until now, the only
+                              place a patch had any effect
+    m2/M2libc                 the submodule, used as the -I for libtcc.c
+
+Five sites across two workflows now read m2libc-patched. And the submodule is
+a DIFFERENT REVISION (68a23cfd against ca023d8), so a patch written against
+one need not apply to the other -- 0004 touches aarch64_defs.M1 and does not.
+That copy is only an include path, so its series is applied leniently and then
+ASSERTED:
+
+    grep -q 'define va_copy(ap1, ap2) ap1 = ap2' m2/M2libc/stdarg.h || exit 1
+
+"It was applied" and "the fix is present" are different claims and only the
+second one matters. Every earlier version of this checked the first.
+
+The verify_defs gate also ran AFTER the assembly it exists to guard. Moved
+ahead of it, so a bad table fails before anything is built from it.
