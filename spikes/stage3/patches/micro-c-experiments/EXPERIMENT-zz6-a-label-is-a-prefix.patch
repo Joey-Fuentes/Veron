@@ -1,0 +1,101 @@
+A label is a PREFIX to a statement, not a statement.
+
+    if (t0 == TOK_PPJOIN)
+    bad_twosharp:
+        tcc_error("'##' cannot appear at either end of macro");   tccpp.c:1621
+
+statement() emitted the label and returned, so the `if` got the label as its
+entire body and the tcc_error became the NEXT statement -- unconditional.
+Every #define tcc preprocessed raised that error, and the first one reported
+was its own predefs:
+
+    In file included from /tmp/trivial.c:0: <command line>:1:
+    error: '##' cannot appear at either end of macro
+
+It reads like a macro-expansion bug and is a parser one.
+
+WHY IT SURVIVED. Inside a block the mistake is invisible: the block loop calls
+statement() again for the next line and the output is identical. It only bites
+where exactly one statement is expected -- the body of a braceless if, while
+or for. M2-Planet's own sources put labels at block scope, so nothing upstream
+ever exercised it. tcc uses the construct deliberately, to reach one error site
+both by falling into it and by goto.
+
+AND NOT WHEN A case OR default FOLLOWS. tccpp.c:952 writes
+
+    break;
+    _default:
+        default:
+
+an ordinary goto label immediately in front of a switch label. Recursing into
+statement() there made it parse `default` as an expression:
+
+    tcc.h:1116: case is not a defined symbol
+
+-- reported against a #define that has nothing to do with it. process_switch
+already has a branch for this exact shape and its comment says so; the guard
+here is the same rule seen from the other side. A `}` after a label is invalid
+C89 and C99 but is tolerated rather than misparsed.
+
+MEASURED, both architectures, patched tables, aarch64 under qemu:
+
+    amd64    44 pass  0 fail  2 known gaps    unchanged
+    aarch64  43 pass  1 fail  2 known gaps    unchanged (16-switch-wide)
+
+and the micro-c-built tcc now preprocesses its own predefs without error and
+reaches macro_subst_tok on the first identifier of a real source file.
+
+diff --git a/cc_core.c b/cc_core.c
+index 38eadd3..d748cdc 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -4373,6 +4373,49 @@ void statement(void)
+ 		emit_out("\t#C goto label\n");
+ 		global_token = global_token->next;
+ 		require_extra_token();
++
++		/* A LABEL IS A PREFIX, NOT A STATEMENT.
++		 *
++		 * `lab: stmt;` is ONE labelled statement in C. Returning here made
++		 * the label a statement in its own right, which is harmless inside a
++		 * block -- the block loop just calls statement() again for the next
++		 * line -- and wrong wherever a single statement is expected:
++		 *
++		 *     if (t0 == TOK_PPJOIN)
++		 *     bad_twosharp:
++		 *         tcc_error("'##' cannot appear at either end of macro");
++		 *                                                    tccpp.c:1621
++		 *
++		 * The if got the label as its whole body and the tcc_error became the
++		 * next statement, unconditional. So every #define tcc preprocessed
++		 * raised that error, and the first one reported was <command line>:1
++		 * -- its own predefs. It looked like a macro bug and was a parser one.
++		 *
++		 * The construct is unusual because the label is BOTH a goto target and
++		 * the branch body; tcc uses it to reach one error site two ways.
++		 *
++		 * A `}` cannot follow a label in C89 or C99, but tolerating it costs
++		 * nothing and misparsing it would cost a round.
++		 *
++		 * AND NOT WHEN A case OR default FOLLOWS. tccpp.c:952 writes
++		 *
++		 *     break;
++		 * _default:
++		 *     default:
++		 *
++		 * -- an ordinary goto label immediately in front of a switch label.
++		 * Those belong to process_switch, not to statement(), and recursing
++		 * into statement() here made it try to parse `default` as an
++		 * expression: "case is not a defined symbol", reported against
++		 * tcc.h:1116, which has nothing to do with it. process_switch already
++		 * has a branch for exactly this shape and its comment says so; this
++		 * is the same rule seen from the other side. */
++		if(global_token->s[0] != '}' &&
++		   !match("case", global_token->s) &&
++		   !match("default", global_token->s))
++		{
++			statement();
++		}
+ 	}
+ 	else if((NULL != lookup_primitive_type()) ||
+ 	          match("enum", global_token->s) ||

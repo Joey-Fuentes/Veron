@@ -1251,3 +1251,71 @@ That is tcc's OWN preprocessor, running, parsing the predefs buffer that
 tcc_predefs pushes, and rejecting one of its built-in macros. Not a crash --
 a diagnostic, printed through the error path that va_copy fixed. It is the
 first time tcc has judged anything about a program.
+
+=============================================================================
+ROUND 12: A LABEL IS A PREFIX
+
+The '##' error was not a macro bug.
+
+    In file included from /tmp/trivial.c:0: <command line>:1:
+    error: '##' cannot appear at either end of macro
+
+tcc raises that from
+
+    if (t0 == TOK_PPJOIN)
+    bad_twosharp:
+        tcc_error("'##' cannot appear at either end of macro");   tccpp.c:1621
+
+-- a braceless if whose body is a LABELLED STATEMENT, and the label is also a
+goto target, so one error site is reached two ways. statement() emitted the
+label and returned, treating it as a complete statement, so the if got the
+label as its whole body and the tcc_error became the next statement,
+unconditional. Every #define raised the error; the first reported was line 1
+of tcc's own predefs.
+
+Inside a block the mistake is INVISIBLE -- the block loop parses the next line
+anyway and the emitted code is identical. It bites only where exactly one
+statement is expected. M2-Planet's own sources label at block scope, so
+nothing upstream ever exercised it.
+
+MY FIRST FIX BROKE THE COMPILE IN ONE MINUTE
+
+    tcc.h:1116: case is not a defined symbol
+
+tccpp.c:952 has an ordinary goto label directly in front of a switch label:
+
+    break;
+    _default:
+        default:
+
+Recursing into statement() made it parse `default` as an expression, and the
+error was reported against a #define with nothing to do with it. process_switch
+already has a branch for exactly that shape, with a comment saying so -- the
+guard here is the same rule from the other side. Under CI that is a round and a
+misleading location; locally it was the next command.
+
+    amd64    45 pass  0 fail  2 gaps
+    aarch64  44 pass  1 fail  2 gaps      (16-switch-wide)
+
+WHERE tcc IS NOW
+
+    tcc_new -> tcc_set_output_type -> crt errors PRINTED -> D3
+    tcc_add_file -> tcc_compile -> preprocess_start (980 keywords interned)
+    -> tccgen_init -> tccgen_compile -> next()
+    -> next_nomacro OK, define_find OK
+    -> macro_subst_tok            <- the next fault
+
+It preprocesses its own predefs cleanly and reaches macro substitution on the
+first identifier of a real source file.
+
+A LIMIT OF instrument.py WORTH KNOWING
+
+It cannot instrument next_nomacro. Markers inside that function's large switch
+produce
+
+    ERROR in process_switch
+    MISSING }
+
+because micro-c's switch parser will not accept statements where the
+instrumenter puts them. The biggest function on the tokenizer path is
+currently un-instrumentable, and that is a tool limit, not a compiler bug.
