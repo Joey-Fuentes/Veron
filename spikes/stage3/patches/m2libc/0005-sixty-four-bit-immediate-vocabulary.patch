@@ -1,0 +1,120 @@
+Sixty-four-bit immediates: the M1 vocabulary, verified by running it.
+
+WHY THIS IS A SEPARATE PATCH WITH NOTHING ELSE IN IT. micro-c truncates every
+integer literal to 32 bits, and the fix is not a C change: a 64-bit immediate
+cannot currently be EXPRESSED.
+
+    M1-macro.c:562,584   `%` emits exactly 4 bytes and masks to 0xFFFFFFFF
+    amd64_defs.M1        `mov_rax, 48C7C0` is MOV r/m64, imm32. No movabs.
+    aarch64_defs.M1      the long path is `ldr_w<r>,8 / b_8 / %value` -- a
+                         32-BIT load from a 4-byte literal. No PC-relative
+                         64-bit form exists.
+
+So the emitter has to gain a 64-bit path, and that path needs instructions the
+tables do not have. Those go in first, alone, so that a wrong encoding is
+unambiguous rather than tangled with a compiler change.
+
+WHAT IT ADDS
+
+  aarch64   ldr_x<r>,8   for the eleven registers that already have ldr_w<r>,8
+            b_12         to branch over an eight-byte literal pool
+
+  amd64     movabs_<r>,  MOV r64, imm64 -- the only x86-64 form that takes a
+                         full 64-bit immediate
+
+The literal pool needs no new directive: M1 emits `%` as four little-endian
+bytes, so `%lo %hi` IS a correct 64-bit little-endian doubleword. That was
+checked, not assumed.
+
+HOW THEY WERE DERIVED. `LDR (literal)` 64-bit is opc=01 where the 32-bit form
+is opc=00, so every one of these is its `ldr_w` sibling with 0x18 -> 0x58 and
+the same Rt in the low five bits:
+
+    ldr_w0,8  40000018        ldr_x0,8  40000058
+    ldr_w14,8 4e000018        ldr_x14,8 4e000058
+
+`b_8` is 02000014 (B, imm26=2); imm26 counts instructions, so twelve bytes is
+imm26=3 -> 03000014. amd64 movabs is 48 B8+rd, and 49 B8+rd for r8-r15.
+
+HOW THEY WERE VERIFIED, WHICH IS THE PART THAT MATTERS. Not by eye. Three
+macros in this very table were wrong for weeks because they were read rather
+than checked -- see 0004-aarch64-defs-x16-in-the-rn-field.patch, where
+`add_x0,x16,x0` encoded x8 in the Rn field, assembled, linked, ran, and
+computed garbage.
+
+There is no aarch64 assembler on the development machine, so a byte-compare
+against `as` was not available. EXECUTION was: spikes/toolbox/qemu-aarch64-static
+runs the result. A constant is put through the literal pool and read back, and
+the exit code proves it:
+
+    ldr_x<r>,8 / b_12 / %2596069104 / %305419896   ->  x<r> = 0x123456789ABCDEF0
+    low byte via the exit status                   ->  0xF0 = 240
+    high word via lsr 32 then the exit status      ->  0x78 = 120
+
+Both halves, so a form that loaded only 32 bits would fail the second. Run for
+x0, x1, x2, x6, x13, x15 and x16 -- covering Rt below and above 7, where the
+nibble carries -- and for amd64 movabs on rax, rbx and r14, natively. x14 sits
+between two registers that were tested and shares their derivation.
+
+Arguably this is a STRONGER check than a byte-compare: byte-identity proves the
+bytes match what `as` would emit, whereas running it proves the CPU does what
+was intended. A CI byte-anchor against real `as` should still be added -- qemu
+is an emulator and this project has twice recorded qemu artefacts that did not
+survive native execution -- but it is a confirmation, not the first evidence.
+
+`tools/verify-imm64.sh` re-runs the whole check from the repository.
+
+WHAT THIS DOES NOT DO. Nothing emits these yet. micro-c still truncates every
+literal to 32 bits, `0x8000000000000000ULL` is still 0, and tcc's parse_number
+still warns "integer constant overflow" on every constant it reads and marks it
+unsigned. That is the next patch, and it now has a foundation that has been
+run rather than argued for.
+
+diff --git a/aarch64/aarch64_defs.M1 b/aarch64/aarch64_defs.M1
+index 8d22ed0..ec37814 100644
+--- a/aarch64/aarch64_defs.M1
++++ b/aarch64/aarch64_defs.M1
+@@ -2402,3 +2402,23 @@ DEFINE add_sp,sp,592 ff430991
+ DEFINE add_sp,sp,600 ff630991
+ 
+ DEFINE nop 1f2003d5
++
++# 64-bit PC-relative literal load, for immediates that do not fit 32 bits.
++# LDR (literal) 64-bit is opc=01 where the 32-bit form above is opc=00, so each
++# of these is its ldr_w sibling with 0x18 -> 0x58. Verified by EXECUTION under
++# qemu-aarch64 (a 64-bit constant round-trips through the literal pool), not by
++# eye -- three macros in this table were once wrong because they were read.
++DEFINE ldr_x0,8 40000058
++DEFINE ldr_x1,8 41000058
++DEFINE ldr_x2,8 42000058
++DEFINE ldr_x3,8 43000058
++DEFINE ldr_x4,8 44000058
++DEFINE ldr_x5,8 45000058
++DEFINE ldr_x6,8 46000058
++DEFINE ldr_x13,8 4d000058
++DEFINE ldr_x14,8 4e000058
++DEFINE ldr_x15,8 4f000058
++DEFINE ldr_x16,8 50000058
++# B over an eight-byte literal pool. b_8 is 02000014 (imm26=2); imm26 counts
++# instructions, so twelve bytes is 3.
++DEFINE b_12 03000014
+diff --git a/amd64/amd64_defs.M1 b/amd64/amd64_defs.M1
+index a9ace1c..310a3f4 100644
+--- a/amd64/amd64_defs.M1
++++ b/amd64/amd64_defs.M1
+@@ -331,3 +331,15 @@ DEFINE inc_rax 48ffc0
+ DEFINE inc_rbx 48ffc3
+ DEFINE dec_rcx 48ffc9
+ DEFINE cmovs_rax,rbx 480F48C3
++
++# MOV r64, imm64 -- the only x86-64 form that takes a full 64-bit immediate.
++# 48 B8+rd. Verified by executing it natively.
++DEFINE movabs_rax, 48B8
++DEFINE movabs_rbx, 48BB
++DEFINE movabs_rcx, 48B9
++DEFINE movabs_rdx, 48BA
++DEFINE movabs_rsi, 48BE
++DEFINE movabs_rdi, 48BF
++DEFINE movabs_r13, 49BD
++DEFINE movabs_r14, 49BE
++DEFINE movabs_r15, 49BF

@@ -1605,6 +1605,36 @@ whether it did not.
 
 
 ================================================================================
+ROUND: I SAID I COULD NOT VERIFY AN ENCODING. I COULD.
+================================================================================
+
+patches/m2libc/0005 and tools/verify-imm64.sh.
+
+The reasoning was: these macros need a byte-compare against real `as`, there is
+no aarch64 assembler on this machine, therefore they cannot be checked here and
+must not ship. Every step true, conclusion wrong. spikes/toolbox has a
+qemu-aarch64-static and it has been sitting there since the toolbox landed.
+
+    A BYTE-COMPARE IS NOT THE ONLY WAY TO CHECK AN ENCODING. RUNNING IT IS
+    ANOTHER, AND IT ANSWERS A DIFFERENT AND ARGUABLY BETTER QUESTION.
+
+Byte-identity proves the bytes are what `as` would have emitted -- that the
+encoding was TYPED right. Executing it proves the CPU does the intended thing.
+For `ldr_x0,8` the second is what is actually wanted, and it took four minutes.
+
+The test that discriminates: read BOTH HALVES of the constant back. A form that
+loaded only the low 32 bits -- exactly the bug being fixed -- passes a low-byte
+check. Checking one half would have confirmed the broken behaviour, which is
+the shape MICRO-C.md's "honest limits of the case suite" section already
+records twice (case 43 passing because both sides were broken identically,
+every array-of-pointers probe using `long*` where both widths are 8).
+
+Also: Rt was exercised below and above 7, where the encoding's nibble carries.
+Testing x0 and x1 alone would not have caught a wrong high-register form, and
+the previous encoding disaster in this table (0004, x16 read as x8) was exactly
+a register-field error.
+
+================================================================================
 ROUND: THE LABEL COLLISION, AND HOW TO STOP READING
 ================================================================================
 

@@ -109,7 +109,7 @@ for p in "$ROOT"/spikes/stage3/patches/m2libc/[0-9]*.patch; do
     n=$((n + 1))
 done
 echo "  $n patches applied"
-[ "$n" -ge 4 ] || { echo "  FAIL: expected at least 4, got $n"; exit 1; }
+[ "$n" -ge 5 ] || { echo "  FAIL: expected at least 5, got $n"; exit 1; }
 
 # TRAP 3. Assert the encoding fix is present in the table that will be
 # assembled with. "The patch was applied" and "the fix is there" are different
@@ -120,6 +120,10 @@ grep -q 'define va_copy(ap1, ap2) ap1 = ap2' m2libc/stdarg.h \
     || { echo "  FAIL: va_copy is still reversed"; exit 1; }
 python3 "$ROOT/spikes/stage3/tools/verify_defs.py" \
     m2libc/aarch64/aarch64_defs.M1 | sed 's/^/  /'
+
+# TRAP 5. THE 64-BIT IMMEDIATE MACROS CANNOT BE CHECKED BY ANY ASSEMBLER HERE,
+# so they are checked by RUNNING them -- see verify-imm64.sh. It needs M1/hex2,
+# so it is called at the end of section 3 rather than here.
 
 # ---------------------------------------------------------------------------
 # 3. mescc-tools: M1 and hex2
@@ -148,6 +152,13 @@ gcc -w -o hex2 mescc/hex2_linker.c mescc/hex2_word.c mescc/hex2.c \
                mescc/M2libc/bootstrappable.c
 mkdir -p mescc-bin && cp M1 hex2 mescc-bin/
 echo "  built"
+
+# ---------------------------------------------------------------------------
+# 3b. The 64-bit immediate vocabulary, proven by executing it
+# ---------------------------------------------------------------------------
+echo
+echo "== 64-bit immediate macros =="
+sh "$ROOT/spikes/stage3/tools/verify-imm64.sh" "$WORK" | tail -3
 
 # ---------------------------------------------------------------------------
 # 4. Prove it, on both architectures
