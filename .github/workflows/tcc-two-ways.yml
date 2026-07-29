@@ -466,8 +466,10 @@ jobs:
           #
           # It finds no logic bugs. It closes one whole class.
           chmod +x spikes/stage3/tools/vocabulary.sh
+          # Also the patched table: vocabulary asks whether every macro
+          # micro-c can emit EXISTS, and a patch may add one.
           sh spikes/stage3/tools/vocabulary.sh \
-            "$PWD/micro-c" "$PWD/spikes/reference/m2libc"
+            "$PWD/micro-c" "$PWD/m2libc-patched"
 
       - name: 'SUBJECT: differential test, NATIVELY on aarch64'
         continue-on-error: true
@@ -486,8 +488,14 @@ jobs:
           chmod +x spikes/stage3/tools/difftest.sh
           mkdir -p mescc-bin && cp M1 hex2 mescc-bin/
           set +e
+          # THE PATCHED TABLE. difftest assembles every case with
+          # $M2LIBC/aarch64/aarch64_defs.M1, and this was handing it the
+          # VENDORED copy -- so cases 05 and 46 kept segfaulting on the very
+          # encoding bug that patch 0004 fixes, while the encoding gate two
+          # steps earlier reported the table clean. Fourth site in this file
+          # reading the unpatched copy.
           ARCH=aarch64 sh spikes/stage3/tools/difftest.sh \
-            "$PWD/micro-c" "$PWD/spikes/reference/m2libc" "$PWD/mescc-bin"
+            "$PWD/micro-c" "$PWD/m2libc-patched" "$PWD/mescc-bin"
           echo "$?" > "$GITHUB_WORKSPACE/difftest-rc.txt"
           set -e
           echo "  (a failure here names a C construct, not a tcc function)"

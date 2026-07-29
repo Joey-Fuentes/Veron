@@ -1218,3 +1218,36 @@ real error, exit 1.
 All three workflows that clone tcc use it. sources/tcc.toml remains the
 authority on the mirror list; it is duplicated in the workflows because they
 cannot read toml.
+
+=============================================================================
+FOURTH SITE, SAME COPY
+
+The m91 fix worked -- the encoding gate now reports the table clean, and 19
+patches build micro-c. tcc moved from 40,761 markers to 40,782 and from L21 to
+L33, past tccgen_init.
+
+But 05 and 46 stayed red on aarch64, having passed locally under qemu with the
+same compiler. difftest was being handed the wrong table:
+
+    ARCH=aarch64 sh difftest.sh "$PWD/micro-c" \
+      "$PWD/spikes/reference/m2libc" "$PWD/mescc-bin"
+
+difftest assembles every case with $M2LIBC/aarch64/aarch64_defs.M1, so it was
+using the UNPATCHED encodings -- the exact bug patch 0004 fixes -- while the
+gate two steps earlier reported the patched table clean. Both statements were
+true about different files.
+
+The count so far, for one dependency in one workflow: the .c sources, the
+include path, the assembler tables, difftest, and vocabulary. Five consumers,
+three copies, and a fix has to reach the right one. Each time it has been
+found by a symptom that looked like a compiler bug.
+
+WHAT THE tcc RUN NOW SAYS, WHICH IS NEW
+
+    In file included from /tmp/trivial.c:0: <command line>:1:
+    error: '##' cannot appear at either end of macro
+
+That is tcc's OWN preprocessor, running, parsing the predefs buffer that
+tcc_predefs pushes, and rejecting one of its built-in macros. Not a crash --
+a diagnostic, printed through the error path that va_copy fixed. It is the
+first time tcc has judged anything about a program.
