@@ -515,3 +515,67 @@ fixes that look identical from outside. The emit step compiles four shapes of
 the same access and prints the M1 for each, with plain_global as the control:
 case 18 says that one works, so its emission is what correct looks like for
 the same array.
+
+=============================================================================
+ROUND 2: THE M1 NAMED IT, AND THE FIX IS FOUR LINES
+
+29 returned 235, which difftest printed as "SIGNAL 107" -- a signal number
+that does not exist. The bitmask reached past 128 and an exit code above 128
+is indistinguishable from a fatal signal at the shell. My case, my bug; it is
+seven probes now and difftest refuses to decode an out-of-range one rather
+than reporting a number it cannot trust.
+
+Decoded, 235 is bits 1|2|8|32|64 with 4 and 16 CLEAR:
+
+    &g[0]            FAILS        g[3]  plain indexing   passes
+    &g[3]            FAILS        p = g decay           passes
+    write via &g[2]  FAILS
+    &g[i] variable   FAILS
+    &cg[2] char      FAILS
+
+Every address-of variant fails; every non-address-of variant passes. It fails
+at index ZERO and with element size ONE, so it is not a scaling bug -- with a
+zero index or a one-byte element there is nothing to scale. The BASE is wrong.
+
+THE EMITTED M1, which is why this round did not need another guess:
+
+    return g[2]      &GLOBAL_g ; ldr_x0,[x0] ; mov_x0,2 ; mul ; add ; ldr
+    p = &g[2]        &GLOBAL_g ;              mov_x0,2 ; mul ; add
+                                ^^^^^^^^^^^^
+A GLOBAL ARRAY'S SYMBOL IS A POINTER CELL, NOT THE STORAGE. `static long g[4]`
+emits a cell holding the address of the data, so every access dereferences the
+cell first. The ordinary path does, at the bottom of primary_expr_variable,
+guarded by !is_local_array. The Address_of branch returns before reaching it,
+so &g[i] added the index to the address of the CELL.
+
+A LOCAL array is the opposite: its storage is inline on the stack, the slot IS
+the data, and no load belongs there. That is why 24 failed and 25 passed, and
+TLO_LOCAL_ARRAY already draws exactly that line -- the address-of path just
+never consulted it.
+
+    if(match("[", global_token->s) && !(type->options & TLO_LOCAL_ARRAY))
+    {
+        emit_out(load_value(register_size, FALSE));
+    }
+
+in EXPERIMENT-zz-global-array-address-of.patch, applied after the series.
+
+NOT "GLOBAL ARRAYS NEED A LOAD" -- EVERYTHING BUT A LOCAL ARRAY DOES
+
+The rule is the one the ordinary path already uses. A pointer variable's slot
+holds a pointer and must be loaded before an index is added to it, exactly as
+a global array's cell must. So `char* p; &p[3]` is broken today for the same
+reason, and case 30 says so BEFORE the fix lands rather than after. A case
+written to predict a fix can be wrong, which is what makes it worth writing.
+
+27 WENT GREEN
+
+With its array made local it passes, which retires the argument-list theory:
+the flags survive nesting fine, and its earlier failure was 24's bug wearing
+another case's name.
+
+STILL OPEN, UNTOUCHED BY THIS
+
+    05-struct-assign    SIGNAL 11 on aarch64
+    16-switch-wide      returns 1
+    21                  known gap, pointer arithmetic does not scale

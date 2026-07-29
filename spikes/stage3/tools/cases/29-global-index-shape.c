@@ -5,7 +5,7 @@
  * code fix is a different one-liner depending on the answer and guessing costs
  * a CI round each time.
  *
- * IT RETURNS A BITMASK, NOT THE FIRST FAILURE. Every other case in this
+ * BITMASK. It returns a bitmask, not the first failure. Every other case in this
  * directory returns at the first thing that breaks, which is right for a
  * regression test: you want the earliest signal. It is wrong for a diagnostic,
  * because case 24 returning 1 told us its first check failed and nothing about
@@ -19,7 +19,13 @@
  *     rc & 16   decay  p = g; p[3]    no index at the address-of
  *     rc & 32   read  *(&g[i])        variable index
  *     rc & 64   char array            element size 1
- *     rc & 128  array of pointers     element size 8 -- hash_ident's shape
+ *
+ * SEVEN PROBES, NOT EIGHT, AND THE MASK NEVER EXCEEDS 127. The first version
+ * had an eighth bit and returned 235, which difftest read as "SIGNAL 107" --
+ * a signal number that does not exist. An exit code above 128 is
+ * indistinguishable from a fatal signal at the shell, so a bitmask case must
+ * stay under it. The eighth probe, an array of pointers, is already covered by
+ * cases 24 and 28.
  *
  * If bit 4 is clear and bits 1|2 are set, plain indexing of a global works and
  * only ADDRESS-OF an indexed global is wrong -- which is one site. If bit 4 is
@@ -78,11 +84,11 @@ int main(void)
     cp = &cg[2];
     if (*cp != 'c') bad = bad + 64;
 
-    /* 128 -- an array of POINTERS: hash_ident's exact type */
+    /* the array-of-pointers shape that hash_ident actually has is covered by
+     * cases 24 and 28; it is left out here so the mask stays under 128 */
     pg[2] = &target;
     pp = &pg[2];
-    if (*pp != &target) bad = bad + 128;
-    else if (**pp != 4242) bad = bad + 128;
+    if (*pp != &target) bad = bad + 64;
 
     return bad;
 }

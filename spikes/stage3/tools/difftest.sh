@@ -67,6 +67,22 @@ is_known_gap() {
     head -5 "$1" | grep -q "KNOWN GAP"
 }
 
+# A case whose header says BITMASK returns one bit per probe instead of
+# stopping at the first failure, so one run describes the whole shape. Decode
+# it here rather than making the reader do arithmetic on a number in a log.
+is_bitmask() {
+    head -8 "$1" | grep -q "BITMASK"
+}
+
+decode_bits() {
+    v="$1"; b=1; out=""
+    while [ "$b" -le 64 ]; do
+        if [ "$((v / b % 2))" = 1 ]; then out="$out $b"; fi
+        b=$((b * 2))
+    done
+    echo "$out"
+}
+
 for c in "$CASES"/*.c; do
     [ -e "$c" ] || continue
     name=$(basename "$c" .c)
@@ -132,6 +148,19 @@ for c in "$CASES"/*.c; do
         fi
     elif [ "$m_rc" = 0 ]; then
         pass=$((pass + 1))
+    elif is_bitmask "$c"; then
+        # AN EXIT CODE ABOVE 128 IS INDISTINGUISHABLE FROM A SIGNAL at the
+        # shell, so a bitmask that reaches into that range reports itself as a
+        # signal number that does not exist. Say so instead of decoding a
+        # value that cannot be trusted.
+        if [ "$m_rc" -gt 127 ]; then
+            printf '  %-28s BITMASK %s IS OUT OF RANGE -- fix the case to stay under 128\n' \
+                "$name" "$m_rc"
+        else
+            printf '  %-28s bitmask %s -- failing probes:%s\n' \
+                "$name" "$m_rc" "$(decode_bits "$m_rc")"
+        fi
+        fail=$((fail + 1))
     elif [ "$m_rc" -gt 128 ]; then
         printf '  %-28s SIGNAL %s (gcc returns 0)\n' "$name" "$((m_rc - 128))"
         fail=$((fail + 1))

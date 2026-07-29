@@ -1,0 +1,37 @@
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -1240,8 +1240,34 @@
+ 		if(match("->", global_token->s))
+ 		{
+ 			emit_out(load_value(register_size, FALSE));
+ 		}
++
++		/* A GLOBAL ARRAY'S SYMBOL IS A POINTER CELL, NOT THE STORAGE.
++		 *
++		 * `static long g[4]` emits a cell holding the address of the data,
++		 * so every read of g dereferences that cell first. The ordinary path
++		 * does exactly that at the bottom of this function, where the load is
++		 * guarded by !is_local_array. Taking an ADDRESS returns before ever
++		 * reaching it, so &g[i] added the index to the address of the CELL
++		 * and the result pointed just past it.
++		 *
++		 * A LOCAL array is the opposite and is why the two difftest cases
++		 * disagreed: its storage is inline on the stack, so the slot IS the
++		 * data and no load belongs there. TLO_LOCAL_ARRAY already draws that
++		 * distinction; this path simply never consulted it.
++		 *
++		 * The emitted M1 said it plainly. For `return g[2]`:
++		 *     &GLOBAL_g ; ldr_x0,[x0] ; mov_x0,2 ; mul ; add ; ldr
++		 * and for `p = &g[2]`, the same sequence with the first ldr missing.
++		 *
++		 * Pointers fall on the right side of this test for the same reason:
++		 * `char* p; &p[i]` must load p, and p is not a local array. Only a
++		 * local array suppresses the load. */
++		if(match("[", global_token->s) && !(type->options & TLO_LOCAL_ARRAY))
++		{
++			emit_out(load_value(register_size, FALSE));
++		}
+ 		return;
+ 	}
+ 
+ 	int options = type->options;
