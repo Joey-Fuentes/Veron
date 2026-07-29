@@ -40,7 +40,24 @@ WORK=$(cd "$WORK" && pwd)
 
 M="$WORK/m2libc"
 MESCC="$WORK/mescc-bin"
-Q="$ROOT/spikes/toolbox/qemu-aarch64-static"
+
+# NATIVE IF WE CAN, EMULATED IF WE MUST.
+#
+# On an aarch64 runner these binaries run directly, which answers the one
+# caveat the emulator cannot: qemu is a model of the ISA, and this project has
+# twice recorded qemu artefacts that did not survive native execution (see
+# stage3/README.md, GATE 2 -- an M1 "hang" and a hex2 "crash" that were both
+# the emulator). The same script therefore becomes a stronger check in CI than
+# it is on the development machine, without being a second script that can
+# drift from this one.
+if [ "$(uname -m)" = "aarch64" ]; then
+    Q=""
+    RUNNER="native"
+else
+    Q="$ROOT/spikes/toolbox/qemu-aarch64-static"
+    RUNNER="qemu-aarch64-static"
+    [ -x "$Q" ] || { echo "FAIL: no emulator at $Q and this host is not aarch64"; exit 1; }
+fi
 
 [ -d "$M" ] || { echo "FAIL: no $M -- run local-build.sh first"; exit 1; }
 [ -x "$MESCC/M1" ] || { echo "FAIL: no $MESCC/M1 -- run local-build.sh first"; exit 1; }
@@ -72,7 +89,10 @@ run_aarch64() {   # $1 = name  $2 = body  $3 = expected exit
     "$MESCC/hex2" --architecture aarch64 --little-endian --base-address 0x400000 \
         -f "$M/aarch64/ELF-aarch64.hex2" -f "$T/t.hex2" -o "$T/t.bin" >/dev/null 2>&1
     chmod +x "$T/t.bin"
-    set +e; "$Q" "$T/t.bin" >/dev/null 2>&1; got=$?; set -e
+    set +e
+    if [ -n "$Q" ]; then "$Q" "$T/t.bin" >/dev/null 2>&1; else "$T/t.bin" >/dev/null 2>&1; fi
+    got=$?
+    set -e
     if [ "$got" = "$3" ]; then
         printf '  %-34s ok\n' "$1"; pass=$((pass + 1))
     else
@@ -95,7 +115,7 @@ run_amd64() {
     fi
 }
 
-echo "== aarch64, under the committed emulator =="
+echo "== aarch64, $RUNNER =="
 
 # THE LOW BYTE. Proves the pool is read at all.
 run_aarch64 "ldr_x0,8  low byte" \
