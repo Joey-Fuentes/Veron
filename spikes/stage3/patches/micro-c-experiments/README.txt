@@ -15,6 +15,9 @@ to need one:
   EXPERIMENT-zz8   a dereference of an address is an lvalue -- the prefix-++
                    test, `*(t) = x`, and `*(&x)`. Closed cases 48 and 49, and
                    this is the one that moved tcc past macro_subst's loop.
+  EXPERIMENT-zz9   a case value is signed. `case -2:` loaded 4294967294.
+                   Closed cases 16 and 51; the aarch64 difftest column is
+                   clean for the first time.
 
 Applied on top of the four real fixes in ../m2-planet/, in order:
 

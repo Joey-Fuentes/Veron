@@ -1561,3 +1561,44 @@ THREE THINGS TO REUSE:
 WHAT THE SUITE STILL CANNOT SEE. Every case here is amd64-and-aarch64 C with an
 exit code. It cannot see that `16-switch-wide` has been red on aarch64 and
 green on amd64 for some time -- that needs someone to read the second column.
+
+
+================================================================================
+ROUND: A NEGATIVE case LABEL, AND WHAT THE SECOND COLUMN IS FOR
+================================================================================
+
+EXPERIMENT-zz9. Cases 16 and 51 closed; aarch64 50/0 for the first time.
+
+`case -2:` emitted `:_SWITCH_CASE_4294967294_...` and the jump table loaded
+that name back through strtoint, so the sign went out through a string. The
+switch value is sign-extended in its register; the constant was not; nothing
+matched.
+
+WHAT MAKES IT WORTH A LOG ENTRY IS NOT THE BUG. It is that difftest had been
+REPORTING it, on the aarch64 line, for some time -- and the docs said nothing,
+because the amd64 line was green and that is the line that gets read. x86-64's
+`mov_rax,%imm32` sign-extends, so on the development machine the wrong constant
+landed on the right value. That is the fifth member of the
+invisible-on-amd64/fatal-on-aarch64 family; the other four each cost a CI
+round to find. This one cost nothing to find and months to notice.
+
+    A GREEN amd64 DIFFTEST IS NOT A RESULT.
+
+Two things to reuse:
+
+1. RUN BOTH COLUMNS AND READ BOTH. difftest-qemu.sh exists and is fast. Every
+   number quoted in a commit message from here should be a pair.
+
+2. A CASE THAT CANNOT FAIL ON ONE ARCHITECTURE SHOULD SAY SO IN ITS HEADER.
+   Case 51 passes on amd64 with and without the fix -- by design, since the
+   bug is that the two architectures disagree. A reader seeing it green on a
+   laptop needs to know that means nothing. Cases 05, 06 and 08 have the same
+   property and did not say it.
+
+And the fix's own lesson: there was no negative-immediate lowering to reach
+for -- three hardcoded entries in the aarch64 table, the ones M2libc needed --
+so the constant is built as ~(|v| - 1), reusing the NOT that unary `~` already
+emits on all six architectures. When a per-architecture emission looks
+necessary, check whether an identity gets you there with instructions that are
+already proven. It usually does, and vocabulary.sh will tell you in seconds
+whether it did not.

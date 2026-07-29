@@ -1,0 +1,151 @@
+A case value must be loaded SIGNED.
+
+    case -2:      ->      :_SWITCH_CASE_4294967294_f_0
+
+The case list stores each value as its LABEL SPELLING, which is rendered
+unsigned, and the jump table then recovered the constant by strtoint()ing that
+name back. The sign was laundered out through a string. The switch value sits
+in the other register sign-extended to the full width, so
+
+    0x00000000FFFFFFFE  !=  0xFFFFFFFFFFFFFFFE
+
+and no negative case ever matched. They fell through to default, or to nothing.
+
+IT PASSED ON amd64, WHICH IS WHY IT LASTED. x86-64's `mov_rax,%imm32`
+SIGN-EXTENDS, so the wrong constant landed on the right value and every
+negative switch worked by accident. aarch64 builds its immediates
+zero-extended and does not. That is the fifth instance of the
+invisible-on-amd64/fatal-on-aarch64 class MICRO-C.md counts four of, and it is
+the first one the case suite caught by itself -- case 16 has been red on the
+aarch64 column and green on amd64 for some time, with only the amd64 column
+being read.
+
+NEGATION WITHOUT A NEGATE, which is the only interesting part of the fix.
+There is no general negative-immediate lowering in this compiler. The aarch64
+table carries exactly three -- `mov_x0,-1`, `-8` and `-100`, the ones M2libc
+happened to need -- so `mov x0, -2` would need a new M1 macro on every
+architecture, and MICRO-C.md already records per-architecture emission as the
+reason bitfield ACCESS is not implemented. It is not necessary here:
+
+    -v  ==  ~(v - 1)
+
+so the magnitude minus one is loaded and bitwise-NOT'd. Every one of those NOT
+forms is already emitted for unary `~`, and is therefore already proven against
+each architecture's M1 vocabulary. NO NEW MACRO ANYWHERE, on any of the six.
+
+`-(value + 1)` rather than `-value - 1` deliberately: the first is exactly
+|value| - 1 and stays representable at INT_MIN, where negating first would
+overflow. `case -1:` loads 0 and NOTs it, which is the boundary case and is
+tested.
+
+WHY int2str's SPELLING IS LEFT ALONE. Making the label read `-2` would put a
+`-` in an M1 symbol name, and rendering it 64-bit would depend on how wide the
+HOST's int is -- micro-c's own `int` is 32-bit under gcc and 64-bit once
+self-hosted, so the same source would emit different label names depending on
+which compiler built the compiler. The name is only a name. What was broken was
+using it as a number, and the value now travels beside it as one.
+
+MEASURED, both architectures, patched tables:
+
+    amd64     pass 50  fail 0    unchanged
+    aarch64   pass 50  fail 0    16 and 51 closed -- THE aarch64 COLUMN IS
+                                 CLEAN FOR THE FIRST TIME
+    regression.sh                0 regressions
+    tcc                          still builds, 372,475 lines, 1.53 MB, and the
+                                 marker trail is unchanged
+
+AND SWITCHES WITHOUT A NEGATIVE CASE EMIT BYTE-IDENTICAL OUTPUT -- checked by
+diffing the emitted .M1 for a corpus of ordinary switches (fallthrough,
+default, char labels, values past 16 bits) against the pre-patch compiler. The
+positive path does not go near the new code.
+
+diff --git a/cc.h b/cc.h
+index 586451f..5903b77 100644
+--- a/cc.h
++++ b/cc.h
+@@ -168,6 +168,11 @@ struct case_list
+ {
+ 	struct case_list* next;
+ 	char* value;
++	/* THE VALUE ITSELF, beside its spelling. `value` is a LABEL NAME and is
++	 * rendered unsigned, so `case -2:` spells itself 4294967294 -- fine for a
++	 * name, and destroyed as a number. The table used to recover the constant
++	 * by strtoint()ing that name back, which is where the sign went. */
++	int ivalue;
+ };
+ 
+ struct static_variable_list
+diff --git a/cc_core.c b/cc_core.c
+index 86401dd..9b80b1f 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -4129,6 +4129,52 @@ process_case_iter:
+ 	}
+ }
+ 
++/* LOAD A CASE VALUE INTO R0, SIGN INTACT.
++ *
++ * `case -2:` was loaded as 4294967294. The value is stored in the case list as
++ * its LABEL SPELLING, which is rendered unsigned, and the table recovered the
++ * constant by strtoint()ing that name back -- so the sign was laundered out
++ * through a string. R1 holds the switch value, sign-extended to the full
++ * register, so nothing ever matched and the switch fell to default.
++ *
++ * IT PASSED ON amd64 BY ACCIDENT, which is why it survived: x86-64's
++ * `mov_rax,%imm32` SIGN-EXTENDS, so the wrong constant landed on the right
++ * value. aarch64 builds its immediates zero-extended and does not. That is the
++ * fifth instance of the invisible-on-amd64/fatal-on-aarch64 class MICRO-C.md
++ * counts, and it is the one the difftest suite caught by being run on both.
++ *
++ * NEGATION WITHOUT A NEGATE. There is no general negative-immediate lowering
++ * here -- the aarch64 table carries exactly three, `mov_x0,-1`, `-8` and
++ * `-100`, the ones M2libc happened to need -- so emitting `mov x0, -2` would
++ * need a new macro on every architecture. It is not necessary:
++ *
++ *     -v  ==  ~(v - 1)
++ *
++ * so the magnitude minus one is loaded and bitwise-NOT'd. Every one of those
++ * NOT forms is already emitted for unary `~` and is therefore already proven
++ * against each architecture's M1 vocabulary. No new macro anywhere.
++ *
++ * `-(value + 1)` rather than `-value - 1` on purpose: the first is exactly
++ * |value| - 1 and stays representable at INT_MIN, where negating first would
++ * overflow. */
++void emit_case_value(int value)
++{
++	if(value >= 0)
++	{
++		emit_load_immediate(REGISTER_ZERO, value, "Load case value");
++		return;
++	}
++
++	emit_load_immediate(REGISTER_ZERO, -(value + 1), "Load case value (magnitude - 1)");
++
++	if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture)) emit_out("NOT R0 R0\n");
++	else if(X86 == Architecture) emit_out("not_eax\n");
++	else if(AMD64 == Architecture) emit_out("not_rax\n");
++	else if(ARMV7L == Architecture) emit_out("'0' R0 R0 MVN_ALWAYS\n");
++	else if(AARCH64 == Architecture) emit_out("mvn_x0,x0\n");
++	else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) emit_out("rd_a0 rs1_a0 not\n");
++}
++
+ void process_switch(void)
+ {
+ 	maybe_bootstrap_error("switch/case statements");
+@@ -4211,6 +4257,7 @@ process_switch_iter:
+ 		{
+ 			struct case_list* c = calloc(1, sizeof(struct case_list));
+ 			c->next = backtrack;
++			c->ivalue = value;
+ 			c->value = int2str(value, 10, FALSE);
+ 			backtrack = c;
+ 			emit_out(":_SWITCH_CASE_");
+@@ -4264,7 +4311,7 @@ process_switch_iter:
+ 	while(NULL != backtrack)
+ 	{
+ 		/* put case value in R0 as the switch (value) is in R1 */
+-		emit_load_immediate(REGISTER_ZERO, strtoint(backtrack->value), "Load case value");
++		emit_case_value(backtrack->ivalue);
+ 		hold = backtrack->next;
+ 
+ 		buf = concat_strings3(backtrack->value, "_", unique_id);

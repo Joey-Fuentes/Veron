@@ -175,11 +175,13 @@ aarch64, and the cost was a CI round trip per bug.
   `instrument.py`'s function list is the next move and costs a minute.
   `ROADMAP.md` has the measured gap for the direct route; `mes-rung.yml` is the
   reference arm for the other.
-- **`16-switch-wide` fails on aarch64 and is not a known gap.** It returns 1
-  where gcc returns 0, under the committed emulator and on the runner. It
-  predates the zz7/zz8 work — verified against a compiler built without them —
-  and nothing in the docs mentions it, so it has probably been red for a while
-  with only the amd64 column being read.
+- ~~`16-switch-wide` fails on aarch64~~ — **closed by `EXPERIMENT-zz9`.** A
+  negative `case` label was loaded unsigned; amd64's sign-extending immediate
+  made the wrong constant land on the right value, so it was green there and
+  fatal here. Both columns are now clean. The lesson outlived the bug and is
+  recorded in `MICRO-C.md`: **a green amd64 difftest is not a result**, and
+  this had been red on the second column for some time with nobody reading
+  it.
 - **G0's x86 codegen** differs from upstream: compiling for x86 it takes the
   short-immediate branch in `write_add_immediate` where upstream emits the
   register form (~1350 sites, 31,698 bytes). G1 proves the aarch64 path is
