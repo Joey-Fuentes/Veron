@@ -176,6 +176,32 @@ jobs:
           # doing nothing, and tcc relies on the standard behaviour. Applied to
           # a COPY so the vendored reference tree stays pristine.
           rm -rf m2libc-patched && cp -r "$M" m2libc-patched
+          # ITS OWN REPOSITORY, AND THAT IS THE WHOLE FIX.
+          #
+          # git-apply(1): "When running from a subdirectory in a repository,
+          # patched paths outside the directory are ignored."
+          #
+          # m2libc-patched is a plain copy -- spikes/reference/m2libc has no
+          # .git -- so it sat inside the Veron repository as an ordinary
+          # subdirectory. git computed the prefix `m2libc-patched/`, saw the
+          # patch asking for `aarch64/aarch64_defs.M1`, decided that was
+          # outside the current directory, and SKIPPED IT WHILE EXITING 0:
+          #
+          #     $ git apply --check -v ...0004...
+          #     Skipped patch 'aarch64/aarch64_defs.M1'.
+          #     $ echo $?
+          #     0
+          #
+          # So NONE of the m2libc series has ever applied here -- not
+          # free(NULL), not the malloc reporting, not va_copy. The va_copy
+          # fix worked only because it also goes to m2/M2libc, which IS a
+          # repository. mc-tcc escapes it for the same reason: `cp -r tcc-src
+          # mc-tcc` copies tcc's .git along with it.
+          #
+          # An empty repository here makes the prefix empty and the paths
+          # resolve. `patch -p1` would also work but applies with fuzz, and
+          # zero fuzz is worth keeping.
+          git -C m2libc-patched init -q
           for p in spikes/stage3/patches/m2libc/[0-9]*.patch; do
             [ -e "$p" ] || continue
             (cd m2libc-patched && git apply --ignore-whitespace "../$p") \

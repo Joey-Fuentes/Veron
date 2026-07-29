@@ -1132,3 +1132,62 @@ Deleted.
 
 is m2/M2libc, a different M2libc revision, and is skipped by design -- that
 tree is only an include path. Neither line had anything to do with the gate.
+
+=============================================================================
+git apply SKIPS AND EXITS 0
+
+The instrumented step said everything and the answer was one line of git's
+manual.
+
+    m2libc-patched: applied 0001-free-null-is-a-no-op.patch
+    m2libc-patched: applied 0002-malloc-report-refused-size.patch
+    m2libc-patched: applied 0003-va-copy-argument-order.patch
+    m2libc-patched: applied 0004-aarch64-defs-x16-in-the-rn-field.patch
+    m2libc-patched: 4 patch(es) applied
+    FAIL: add_x0,x16,x0 is still wrong in m2libc-patched
+    848:DEFINE add_x0,x16,x0 0020008b
+
+Four successes and an unchanged file. Reproduced locally, then asked git:
+
+    $ git apply --check -v .../0004-...patch
+    Skipped patch 'aarch64/aarch64_defs.M1'.
+    $ echo $?
+    0
+
+git-apply(1): "When running from a subdirectory in a repository, patched paths
+outside the directory are ignored." m2libc-patched is a plain copy --
+spikes/reference/m2libc has no .git -- so it lived inside the Veron repository
+as an ordinary subdirectory. git computed the prefix `m2libc-patched/`, saw
+the patch asking for `aarch64/aarch64_defs.M1`, judged it outside, skipped it,
+and returned success.
+
+NONE OF THE m2libc SERIES HAS EVER APPLIED THERE. Not free(NULL), not the
+malloc reporting, not va_copy. Every run since that copy was introduced has
+compiled m2libc.M1 from unpatched sources while the log said otherwise.
+
+WHY IT WAS INVISIBLE. va_copy appeared to work because it ALSO goes to
+m2/M2libc, which is a real repository, and that is the copy libtcc.c includes
+-- so the fix that mattered landed and the one that did not was never
+observed. mc-tcc escapes the whole thing for an accidental reason: `cp -r
+tcc-src mc-tcc` copies tcc's .git along with it, so it is a repository too.
+m2libc-patched was the only plain directory in either workflow receiving a
+git apply, which is why nothing else ever misbehaved.
+
+THE FIX IS ONE LINE.
+
+    git -C m2libc-patched init -q
+
+An empty repository makes the prefix empty and the paths resolve. `patch -p1`
+would also work and applies with fuzz; zero fuzz is worth keeping.
+
+WHAT ACTUALLY FOUND IT. Not reasoning -- three theories died first: git apply
+from a subdirectory (works, when the subdirectory is not inside another repo),
+the patch being malformed (it applies fine to /tmp), and .gitignore (the file
+is not ignored). What found it was making the step report per-patch and assert
+its own result, so the log contained a contradiction that could not be
+explained away. Before that, "applied" and "the loop never ran" were the same
+output, and the failure appeared two steps later attached to different code.
+
+A step that reports only failure cannot be debugged. This one now names each
+patch, counts them, refuses to proceed below four, and checks the bytes it
+just claimed to have written.
