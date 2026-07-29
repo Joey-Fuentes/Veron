@@ -84,18 +84,43 @@ done
 # ------------------------------------------------------------------------ git
 # GIT_TERMINAL_PROMPT=0 turns a 404-that-looks-private into an immediate error
 # instead of "could not read Username". timeout bounds the connect stall.
+# TWO THINGS WERE WRONG HERE, and the comment was one of them.
+#
+#   "no hash check possible on a clone" is false. A clone is the EASIEST
+#   thing in this file to verify -- one rev-parse against the pin -- and
+#   this was the only path in the whole fetch chain with no check at all,
+#   in a script whose entire subject is that a version string is not a
+#   hash. tools/clone-pinned.sh does that check and this now defers to it.
+#
+#   `--branch` takes a branch or a tag and NEVER a commit SHA, so passing a
+#   commit pin as GITREF could not have worked. It went unnoticed because
+#   every caller reaches a tarball first and the git path is the fallback.
+#
+# GITREF may still be a branch or tag, which cannot be verified by identity
+# -- a moving ref has no fixed answer. That case is called out in the log
+# rather than passed off as checked.
 export GIT_TERMINAL_PROMPT=0
-for g in $GITURLS; do
-    [ -n "$GITREF" ] || break
-    say "  cloning $g at $GITREF"
-    rm -rf "$DEST.git"
-    if timeout 120 git clone -q --depth 1 --branch "$GITREF" "$g" "$DEST.git"; then
-        rm -rf "$DEST"; mv "$DEST.git" "$DEST"
-        say "  cloned (no hash check possible on a clone)"
-        exit 0
+if [ -n "$GITURLS" ] && [ -n "$GITREF" ]; then
+    if printf '%s' "$GITREF" | grep -Eq '^[0-9a-f]{40}$'; then
+        . "$(dirname "$0")/clone-pinned.sh"
+        if clone_pinned "$DEST.git" "$GITREF" "$GITURLS"; then
+            rm -rf "$DEST"; mv "$DEST.git" "$DEST"
+            exit 0
+        fi
+    else
+        for g in $GITURLS; do
+            say "  cloning $g at $GITREF"
+            rm -rf "$DEST.git"
+            if timeout 120 git clone -q --depth 1 --branch "$GITREF" "$g" "$DEST.git"; then
+                rm -rf "$DEST"; mv "$DEST.git" "$DEST"
+                say "  cloned $GITREF -- a BRANCH OR TAG, so identity is not pinned;"
+                say "  pin a 40-char commit to make this verifiable"
+                exit 0
+            fi
+            rm -rf "$DEST.git"
+        done
     fi
-    rm -rf "$DEST.git"
-done
+fi
 
 say "  ALL SOURCES FAILED for $DEST"
 say "  This is a fetch problem, not a build problem. Re-run the job; if it"

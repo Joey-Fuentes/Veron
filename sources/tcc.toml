@@ -4,7 +4,11 @@
 [source]
 name       = "tinycc"
 upstream   = "git://repo.or.cz/tinycc.git"
-mirrors    = ["https://repo.or.cz/tinycc.git", "https://github.com/TinyCC/tinycc.git"]
+mirrors    = ["https://github.com/TinyCC/tinycc.git", "https://repo.or.cz/tinycc.git"]
+# ORDER IS DELIBERATE and is a speed choice, not a trust one: every fetch
+# verifies the commit it landed on (tools/clone-pinned.sh), so a mirror is
+# transport. repo.or.cz is canonical and resets often enough to need two
+# attempts a run, so it is the fallback rather than the first try.
 commit     = "5ec0e6f84b47ebd8c269b581712666313f5edaef"   # 2025-12-21 "some reverts & fixes"
 version    = "0.9.28rc"
 license    = "LGPL-2.1-or-later"

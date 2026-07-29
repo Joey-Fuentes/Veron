@@ -55,44 +55,21 @@ jobs:
       - name: Fetch pinned tcc
         run: |
           set -eu
-          # CLONE tcc FROM WHICHEVER MIRROR IS UP, AND SAY WHICH.
+          # ONE helper, not three copies -- tools/clone-pinned.sh. It orders
+          # the mirrors, retries, fetches ONLY the pinned commit, and then
+          # VERIFIES that what landed is the pin. That last step is what makes
+          # the order below a speed choice rather than a trust choice; see the
+          # header of that file for the argument and its limits.
           #
-          # repo.or.cz resets the connection often enough to be a nuisance:
-          #
-          #     fatal: unable to access 'https://repo.or.cz/tinycc.git/':
-          #     Recv failure: Connection reset by peer
-          #
-          # The old form was `clone A || clone B`, which recovers but prints a
-          # fatal: that means nothing. A log that cries wolf gets skimmed, and
-          # this file has already lost time to a benign `error: No valid
-          # patches in input` sitting next to a real failure.
-          #
-          # Each mirror is tried twice before moving on, because a reset is
-          # usually transient and re-cloning the same host is cheaper than
-          # giving up on it. Output is captured and shown ONLY if every attempt
-          # fails, so a successful run is quiet and a failed one is complete.
+          # GitHub first because repo.or.cz resets the connection often enough
+          # to need two attempts per run, and a full clone of tinycc from it
+          # was costing minutes for a tree we use one commit of.
           #
           # sources/tcc.toml is the authority on this list; it is duplicated
           # here because the workflow cannot read toml.
-          clone_tcc() {
-            _dest="$1"
-            for url in https://repo.or.cz/tinycc.git \
-                       https://github.com/TinyCC/tinycc.git; do
-              for attempt in 1 2; do
-                if git clone -q "$url" "$_dest" 2>/tmp/clone-err.txt; then
-                  echo "  cloned from $url (attempt $attempt)"
-                  return 0
-                fi
-                rm -rf "$_dest"
-                echo "  $url attempt $attempt failed, retrying"
-              done
-            done
-            echo "FAIL: every tcc mirror refused"
-            cat /tmp/clone-err.txt
-            return 1
-          }
-          clone_tcc tcc-src
-          git -C tcc-src checkout -q "$TCC_SHA"
+          . "$GITHUB_WORKSPACE/tools/clone-pinned.sh"
+          clone_pinned tcc-src "$TCC_SHA" \
+            "https://github.com/TinyCC/tinycc.git https://repo.or.cz/tinycc.git"
           for p in spikes/stage3/patches/tcc-arm64-asm/[0-9]*.patch; do
             git -C tcc-src apply --ignore-whitespace "../$p" \
               || { echo "FAIL: $(basename "$p")"; exit 1; }
@@ -184,9 +161,15 @@ jobs:
       - name: 'SUBJECT: build micro-c from the pin plus our patches'
         run: |
           set -eu
+          # THE COMPILER'S OWN SOURCE IS A PIN TOO, and was checked out
+          # without anyone asserting what arrived. Submodules keep this a
+          # clone rather than a shallow SHA fetch; the verification is the
+          # part that was missing, not the transport.
           git clone -q https://github.com/oriansj/M2-Planet.git m2
           git -C m2 checkout -q "$M2PLANET_SHA"
           git -C m2 submodule update --init --recursive -q
+          . "$GITHUB_WORKSPACE/tools/clone-pinned.sh"
+          verify_pinned m2 "$M2PLANET_SHA" || exit 1
           n=0
           for p in spikes/stage3/patches/m2-planet/[0-9]*.patch \
                    spikes/stage3/patches/micro-c-experiments/EXPERIMENT-*.patch; do
@@ -200,7 +183,7 @@ jobs:
           # The bound has to move with the series or a silently-missing patch
           # passes the check, and a missing codegen patch looks exactly like a
           # codegen bug.
-          [ "$n" -ge 20 ] || { echo "FAIL: only $n patches"; exit 1; }
+          [ "$n" -ge 22 ] || { echo "FAIL: only $n patches"; exit 1; }
           cd m2
           gcc -w -o ../micro-c cc.c cc_core.c cc_emit.c cc_globals.c \
                                cc_macro.c cc_reader.c cc_strings.c cc_types.c \
