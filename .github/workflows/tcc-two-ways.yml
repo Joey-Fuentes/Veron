@@ -194,6 +194,13 @@ jobs:
             git -C m2 apply --ignore-whitespace "../$p"
             n=$((n + 1))
           done
+          # THE FLOOR, RESTORED. It was lost when the guard trees were
+          # re-anchored -- the edit replaced a span that happened to contain
+          # it, and nothing noticed, because a missing floor looks exactly like
+          # a passing one. Without it a silently-missing patch passes the
+          # check, and a missing codegen patch looks exactly like a codegen
+          # bug. Bumped to 30 with EXPERIMENT-zzg.
+          [ "$n" -ge 30 ] || { echo "FAIL: only $n patches"; exit 1; }
 
           pre=0
           for p in spikes/stage3/patches/m2-planet/[0-9]*.patch \

@@ -1,4 +1,4 @@
-/* KNOWN GAP. A prefix ++/-- on a member of a LOCAL STRUCT, reached by `.`.
+/* A prefix ++/-- on a member of a LOCAL STRUCT, reached by `.`. CLOSED.
  *
  * Found while writing case 55 and deliberately NOT fixed with it. Case 55 is
  * the ARROW form -- `--p->n` added the member offset to the address of the

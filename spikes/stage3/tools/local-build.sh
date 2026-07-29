@@ -81,7 +81,7 @@ for p in "$ROOT"/spikes/stage3/patches/m2-planet/[0-9]*.patch \
     n=$((n + 1))
 done
 echo "  $n patches applied"
-[ "$n" -ge 29 ] || { echo "  FAIL: expected at least 29, got $n"; exit 1; }
+[ "$n" -ge 30 ] || { echo "  FAIL: expected at least 30, got $n"; exit 1; }
 
 gcc -w -o micro-c \
     m2-planet/cc.c m2-planet/cc_core.c m2-planet/cc_emit.c \

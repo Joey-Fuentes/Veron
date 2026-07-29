@@ -80,11 +80,20 @@ the member -- and `--a[i]` has cases behind it. Neither is touched.
 WHAT IT DOES NOT DO, AND A SECOND BUG FOUND ON THE WAY.
 
 `--s.n` on a LOCAL STRUCT is also wrong. It was found while writing case 55 and
-is NOT fixed here: it is a different site with a different cause, and the first
-attempt at a joint fix -- suppressing the dot site's final load under the same
-flag -- did not close it. That is evidence, not an assumption, and it is why
-the two are separate. It is case 57, marked KNOWN GAP, so it cannot be
-forgotten and cannot quietly go green without being noticed.
+is not fixed here. It is case 57, marked KNOWN GAP, so it cannot be forgotten
+and cannot quietly go green without being noticed.
+
+    CORRECTED BY EXPERIMENT-zzg. This paragraph used to claim the dot form was
+    "a different site with a different cause", and that a joint fix "did not
+    close it -- that is evidence, not an assumption". It was the SAME cause,
+    and the evidence was a difftest bitmask of 139 that the tool had flagged as
+    out of range on the same line, because an exit code above 127 cannot be
+    distinguished from a signal. The flag this patch introduces is set in
+    primary_expr_variable, and a struct variable returns from that function
+    before reaching the line that sets it -- so for `--s.n` it never arrived.
+    zzg moves the assignment to the prefix handler, which every prefix
+    operator passes through. Left in place rather than rewritten: a wrong
+    conclusion drawn from a number the tool disowned is worth keeping visible.
 
 MEASURED
 
