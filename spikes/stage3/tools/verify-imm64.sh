@@ -50,13 +50,33 @@ MESCC="$WORK/mescc-bin"
 # the emulator). The same script therefore becomes a stronger check in CI than
 # it is on the development machine, without being a second script that can
 # drift from this one.
-if [ "$(uname -m)" = "aarch64" ]; then
+HOST=$(uname -m)
+if [ "$HOST" = "aarch64" ]; then
     Q=""
     RUNNER="native"
 else
     Q="$ROOT/spikes/toolbox/qemu-aarch64-static"
     RUNNER="qemu-aarch64-static"
     [ -x "$Q" ] || { echo "FAIL: no emulator at $Q and this host is not aarch64"; exit 1; }
+fi
+
+# AND THE amd64 HALF IS HOST-DEPENDENT IN THE MIRROR IMAGE, which is the thing
+# this script got wrong on its first CI run. The aarch64 probes were made
+# host-aware and the amd64 ones were left assuming an x86_64 host, so on the
+# arm64 runner they tried to execute an amd64 binary and returned 126 --
+# "found, not executable" -- which reads like a failed check rather than an
+# unrunnable one.
+#
+# There is no committed x86_64 emulator (spikes/toolbox has qemu-aarch64-static
+# and nothing else, because aarch64 is the reference architecture and x86_64 is
+# what the development machine already is). So the amd64 probes RUN where they
+# can and are SKIPPED, loudly, where they cannot. A skip is reported separately
+# from a pass: this file exists because macros went unchecked once already, and
+# a skip counted as a pass is how that happens again.
+if [ "$HOST" = "x86_64" ]; then
+    AMD64_RUNS=yes
+else
+    AMD64_RUNS=no
 fi
 
 [ -d "$M" ] || { echo "FAIL: no $M -- run local-build.sh first"; exit 1; }
@@ -81,6 +101,7 @@ HI=305419896       # 0x12345678
 
 pass=0
 fail=0
+skip=0
 
 run_aarch64() {   # $1 = name  $2 = body  $3 = expected exit
     printf ':FUNCTION_main\n%s\nret\n\n:ELF_end\n' "$2" > "$T/t.M1"
@@ -145,13 +166,21 @@ mov_x0,x$r" 240
 done
 
 echo
-echo "== amd64, natively =="
-run_amd64 "movabs_rax  low byte" "movabs_rax, %$LO %$HI" 240
-run_amd64 "movabs_rbx  register field" "movabs_rbx, %$LO %$HI
+if [ "$AMD64_RUNS" = yes ]; then
+    echo "== amd64, natively =="
+    run_amd64 "movabs_rax  low byte" "movabs_rax, %$LO %$HI" 240
+    run_amd64 "movabs_rbx  register field" "movabs_rbx, %$LO %$HI
 mov_rax,rbx" 240
-run_amd64 "movabs_r14  register field" "movabs_r14, %$LO %$HI
+    run_amd64 "movabs_r14  register field" "movabs_r14, %$LO %$HI
 mov_rax,r14" 240
+else
+    echo "== amd64: SKIPPED, this host is $HOST and cannot execute it =="
+    echo "  the movabs macros are checked on the development machine, which is"
+    echo "  x86_64; nothing here can run them, and pretending otherwise would"
+    echo "  make a skip look like a pass"
+    skip=$((skip + 3))
+fi
 
 echo
-echo "  pass $pass   fail $fail"
+echo "  pass $pass   fail $fail   skipped $skip"
 [ "$fail" = 0 ] || exit 1
