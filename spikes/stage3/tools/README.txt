@@ -1602,3 +1602,49 @@ emits on all six architectures. When a per-architecture emission looks
 necessary, check whether an identity gets you there with instructions that are
 already proven. It usually does, and vocabulary.sh will tell you in seconds
 whether it did not.
+
+
+================================================================================
+ROUND: THE LABEL COLLISION, AND HOW TO STOP READING
+================================================================================
+
+EXPERIMENT-zza. Case 52. tcc is out of macro expansion.
+
+`tccpp.c` has FIVE functions that each declare `redo:`. micro-c emitted the
+bare name into one flat namespace, so every `goto redo` in the unit went to
+whichever definition survived -- into an unrelated function.
+
+WHAT THIS COST: four rounds aimed at macro expansion, because the last
+completed marker was a `begin_macro` call and the natural reading of "last
+statement that completed" is "crash site". It is not. It is the last statement
+before control went SOMEWHERE ELSE, and a goto is somewhere else.
+
+    A LAST MARKER IS NOT A CRASH SITE. It is a boundary. Ask what the next
+    control transfer was before believing the function it names.
+
+WHAT ENDED IT IN ONE BUILD, and this is the technique to reuse. Instead of
+reading more code, `begin_macro` was made to ANSWER:
+
+    int *zsave = str->str;
+    if (zsave == 0)            write(2, "Z_NULL_ON_ENTRY\n", 16);
+    str->alloc = alloc;
+    if (str->str != zsave)     write(2, "Z_CLOBBER_ALLOC\n", 16);
+    ... one check per store ...
+    write(2, "Z_PRE_READ\n", 11);
+    { int zt = *macro_ptr; }
+    write(2, "Z_READ_OK\n", 10);
+
+It printed Z_P_PLAUSIBLE, Z_PRE_READ, Z_READ_OK -- no null, no clobber, and it
+successfully performed the very dereference that was believed to be faulting.
+That eliminated the entire function in one minute. What is left after the last
+statement of a function is the control flow out of it.
+
+The general shape: when a marker names a function, do not read the function.
+Make it assert its own preconditions and postconditions and print which one
+broke. instrument.py says WHERE execution stopped; this says WHAT was untrue.
+They answer different questions and the second one is usually the one wanted.
+
+Also worth keeping: the reproducer is three lines and fails on BOTH
+architectures, so it was never an aarch64 problem and could have been found on
+the development machine at any point in the last four rounds. Every difftest
+case that has ever mattered has been under twenty lines.

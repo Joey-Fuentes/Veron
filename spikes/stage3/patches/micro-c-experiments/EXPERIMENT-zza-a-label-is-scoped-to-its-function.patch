@@ -1,0 +1,138 @@
+A C label is scoped to its function. This compiler emitted it globally.
+
+(Named `zza` and not `zz10` on purpose: the series is applied by a shell glob,
+which sorts lexicographically, so `EXPERIMENT-zz10-` lands BETWEEN `zz-` and
+`zz2-` and is applied ninth from last. It failed to apply and said so, which is
+the good outcome, but the next one after `zz9` has to be a letter.)
+
+    :redo     #C goto label
+
+-- FIVE TIMES, in one flat assembler namespace, from the five different
+functions in tccpp.c that each write `redo:`. Every `goto redo` in the unit
+resolved to whichever definition survived, so control left for an unrelated
+function and never came back.
+
+THIS IS WHAT WAS KILLING THE MICRO-C-BUILT tcc. `next()` called
+`macro_subst_tok`, then `tok_str_add`, then `begin_macro`; all three returned
+correctly; the next statement is `goto redo`, and the process died there. The
+last completed marker was the `begin_macro` call, which is why four rounds of
+reading pointed at macro expansion. Nothing was wrong with macro expansion.
+
+M2-Planet gets away with a flat namespace because M2-Planet's own source has
+globally unique labels -- there is a literal `/* because of how M2-Planet
+treats labels */` comment in its switch code saying so. tcc's source does not,
+and has no reason to: C says a label is visible only inside the function that
+declares it, so five functions may each have a `redo:`, and tcc has 509 gotos.
+
+OUR OWN STAGE 2 HIT THIS AND FIXED IT THE SAME WAY. PROGRESS.md m58 records
+qualifying the emitted name with a per-function index and notes explicitly that
+this is "stricter than the target requires, at no cost". It turned out to be
+exactly what the target requires; the note was written when the target was
+M2-Planet's source and not tcc's.
+
+The definition and the reference now both go through one function,
+`goto_label_name`, rather than concatenating in two places -- if they ever
+disagree the label silently vanishes, which is the failure mode this whole
+file keeps producing.
+
+HOW IT WAS FOUND, because it is a better method than the four rounds before it.
+Not by reading: by making the program answer a question it could answer.
+`begin_macro` was instrumented to report which of three things had gone wrong
+-- a null pointer, a store clobbering a neighbouring member, or a bad load --
+and it reported NONE of them, then successfully performed the very dereference
+that was believed to be faulting. That eliminated the whole function in one
+build. What is left after the last statement of a function is the control flow
+out of it, and `goto redo` was the only thing there.
+
+REPRODUCER, three lines, both architectures:
+
+    static int a(int n){ int r=0;   redo: r=r+1;  if(r<n) goto redo; return r; }
+    static int b(int n){ int r=100; redo: r=r+10; if(r<n) goto redo; return r; }
+    int main(void){ return a(3)==3 && b(130)==130 ? 0 : 1; }
+
+`a(3)` returned 1. Case 52.
+
+MEASURED, both architectures, patched tables:
+
+    amd64     pass 51  fail 0
+    aarch64   pass 51  fail 0
+    regression.sh      0 regressions
+
+AND tcc MOVES A LONG WAY. It now gets out of macro expansion entirely and into
+compiling the input file, reporting real diagnostics with file context:
+
+    In file included from seven.c:0:
+    <command line>:27: warning: integer constant overflow
+
+It still faults, later and elsewhere. The `integer constant overflow` warning
+is new information and is not yet explained -- micro-c's `int` is eight bytes,
+so a predef constant that fits for gcc need not fit here; that is the next
+thing to look at, and it is a warning rather than the fault.
+
+diff --git a/cc_core.c b/cc_core.c
+index 9b80b1f..1328999 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -4175,6 +4175,35 @@ void emit_case_value(int value)
+ 	else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) emit_out("rd_a0 rs1_a0 not\n");
+ }
+ 
++/* A C LABEL IS SCOPED TO ITS FUNCTION. THIS COMPILER EMITTED IT GLOBALLY.
++ *
++ *     :redo     #C goto label
++ *
++ * -- five times, in one flat assembler namespace, from the five different
++ * functions in tccpp.c that each write `redo:`. Every `goto redo` in the unit
++ * therefore resolved to whichever definition the linker kept, and control left
++ * for an unrelated function. That is what was killing the micro-c-built tcc:
++ * `next()` reached `begin_macro`, returned from it correctly, executed
++ * `goto redo`, and never came back.
++ *
++ * M2-Planet gets away with it because M2-Planet's own source has globally
++ * unique labels -- there is a `/* because of how M2-Planet treats labels *``/`
++ * comment in its switch code saying as much. tcc's source does not, and has no
++ * reason to: C says a label is visible only inside the function that declares
++ * it, so five functions may each have a `redo:` and thousands of programs do.
++ *
++ * Our own stage 2 hit this exactly once and fixed it the same way (see
++ * PROGRESS.md m58): qualify the emitted name with the enclosing function, so
++ * two functions may each define `redo` and neither can see the other's. The
++ * definition and the reference must agree by construction, which is why both
++ * go through this one function rather than concatenating in two places. */
++char* goto_label_name(char* name)
++{
++	char* scope = "";
++	if(NULL != function) scope = function->s;
++	return concat_strings3(name, "_L_", scope);
++}
++
+ void process_switch(void)
+ {
+ 	maybe_bootstrap_error("switch/case statements");
+@@ -4239,7 +4268,7 @@ process_switch_iter:
+ 			if(!match("case", global_token->s) && !match("default", global_token->s))
+ 			{
+ 				emit_out(":");
+-				emit_out(global_token->s);
++				emit_out(goto_label_name(global_token->s));
+ 				emit_out("\t#C goto label in switch\n");
+ 				global_token = global_token->next;
+ 				require_extra_token();
+@@ -4697,7 +4726,7 @@ void statement(void)
+ 	else if(is_label)
+ 	{
+ 		emit_out(":");
+-		emit_out(global_token->s);
++		emit_out(goto_label_name(global_token->s));
+ 		emit_out("\t#C goto label\n");
+ 		global_token = global_token->next;
+ 		require_extra_token();
+@@ -4782,7 +4811,7 @@ void statement(void)
+ 	else if(match("goto", global_token->s))
+ 	{
+ 		require_extra_token();
+-		emit_unconditional_jump("", global_token->s, "Goto");
++		emit_unconditional_jump("", goto_label_name(global_token->s), "Goto");
+ 		require_extra_token();
+ 		require_match("ERROR in statement\nMissing ;\n", ";");
+ 	}

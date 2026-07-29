@@ -18,6 +18,10 @@ to need one:
   EXPERIMENT-zz9   a case value is signed. `case -2:` loaded 4294967294.
                    Closed cases 16 and 51; the aarch64 difftest column is
                    clean for the first time.
+  EXPERIMENT-zza  a goto label is scoped to its function. tcc has five
+                   `redo:` labels in one file and they collided. THIS WAS
+                   THE BLOCKER; tcc now gets out of macro expansion and
+                   into compiling the input file. Case 52.
 
 Applied on top of the four real fixes in ../m2-planet/, in order:
 

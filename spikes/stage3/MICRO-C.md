@@ -54,10 +54,24 @@ runs                         tcc_new completes
                              its own predefs preprocessed without error
                              tccgen_init, tccgen_compile, next()
                              macro_subst_tok -> macro_subst
-                             a full pass of the substitution loop
-                             returns into macro_subst_tok, tccpp.c:3396
-                             faults after macro_subst returns
+                             out of macro expansion entirely
+                             compiling the input file, with real
+                             diagnostics carrying file context:
+                                 In file included from seven.c:0:
+                                 <command line>:27: warning:
+                                     integer constant overflow
+                             faults later, and elsewhere
 ```
+
+**`EXPERIMENT-zza` is what moved it, and the diagnosis that preceded it was
+wrong for four rounds.** The fault was recorded here as being in macro
+expansion because the last completed statement was a `begin_macro` call. It was
+not in macro expansion. `next()` executes `goto redo` immediately afterwards,
+and **`tccpp.c` has five functions that each declare a `redo:` label** —
+emitted into one flat assembler namespace, so every `goto redo` in the unit
+went to whichever definition survived. Nothing was wrong with the macro code at
+all; the last-marker report was describing the last statement before a jump,
+not a crash site.
 
 The trail either side of `EXPERIMENT-zz8`, which is what "the frontier moved"
 means here rather than an impression:
@@ -225,6 +239,7 @@ a 200-operator file from 83 MB to 3.4 MB.
 | `&x` reports x's own type | One level short of what it is: there is no `T*` handed back. `EXPERIMENT-zz8` cancels it locally for `*(&x)`, the only shape that has bitten, but the under-reporting itself is untouched and will surface again |
 | ~~a negative `case` label~~ | **CLOSED, `EXPERIMENT-zz9`.** `case -2:` loaded 4294967294: the value is kept as its label SPELLING, rendered unsigned, and the jump table recovered it by `strtoint`ing the name back. Fifth instance of the class below, and the first the case suite caught on its own -- case 16 had been red on aarch64 and green on amd64 for some time |
 | **amd64 hides what aarch64 faults on -- FIVE times now** | Unaligned members, unpadded string data, struct `sizeof`, arrays of structs, and now a sign-extending `mov_rax,%imm32` making a wrong constant land on the right value. The rule this has earned: **a green amd64 difftest is not a result.** Read the second column |
+| ~~a goto label is global~~ | **CLOSED, `EXPERIMENT-zza`.** A C label is scoped to its function; this emitted the bare name flat, so tcc's five `redo:` labels collided. **This was the blocker.** M2-Planet's own source has globally unique labels, which is why upstream never needed it -- our stage 2 fixed the same thing at m58 and the note there says it is "stricter than the target requires, at no cost". It was exactly what the target required |
 | one lvalue rule, EIGHT implementations | Beside the nineteen load sites, `cc_core.c` decides "is this an assignment target" in eight places, and **three have been found missing a case the others had, one per round**. Same disease, worth its own row: it is the one that has cost tcc the most |
 | `float`/`double`/`long double` | one word-sized integer type |
 | `constant_expression` precedence | `a\|b&c` folds right-to-left |
@@ -573,8 +588,8 @@ fresh session needs only the repository.
 
 ## Honest limits of the case suite
 
-51 cases, 50 passing and 1 known gap, and for the first time the aarch64
-column is as clean as the amd64 one. That is 50 constructs behaving as gcc
+52 cases, 51 passing and 1 known gap, on both architectures. That is 51
+constructs behaving as gcc
 does. It is **not** a claim about micro-c generally, because most cases were
 written *from* bugs already found — they measure what has been fixed, not what
 remains.
@@ -623,7 +638,7 @@ tools/                        difftest, vocabulary, regression, instrument, veri
 tools/cases/                  one C file per construct, 48 of them
 ```
 
-23 patches build micro-c and 4 patch M2libc. Both workflows assert the count,
+24 patches build micro-c and 4 patch M2libc. Both workflows assert the count,
 because a missing codegen patch looks exactly like a codegen bug.
 
 `patches/micro-c-experiments/README.txt` is the working log — every wrong turn,
