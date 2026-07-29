@@ -63,6 +63,20 @@ runs                         tcc_new completes
                              faults later, and elsewhere
 ```
 
+**Where it faults now.** `next()` completes and RETURNS -- the last statement
+reached is the rejoin at tccpp.c:3556, after `define_find` found no macro --
+so the fault is in its caller, in tccgen, outside the instrumented set. 41,852
+markers. Per this step's own warning, a fault outside the set appears as the
+last marker inside it, so that line is a boundary and not a site.
+
+**Do not diagnose it yet.** The `<command line>:27` warning above is
+`#if __STDC_VERSION__>=201112L`, and it fires because every integer literal is
+truncated to 32 bits (see the table below): `parse_number` tests
+`n >= 0x8000000000000000ULL`, that literal is 0, the test is `n >= 0`, and the
+same statement marks the constant **unsigned**. Every constant this tcc reads
+is therefore mis-typed, which is a plausible cause of the tccgen fault. Fix the
+literals first or risk explaining a symptom.
+
 **`EXPERIMENT-zza` is what moved it, and the diagnosis that preceded it was
 wrong for four rounds.** The fault was recorded here as being in macro
 expansion because the last completed statement was a `begin_macro` call. It was
@@ -411,6 +425,7 @@ the slow way first.
 | `regression.sh` | does micro-c still compile everything the reference compiles? | local |
 | `instrument.py` | which statement did execution last complete? | one build, ~1 min local |
 | `verify_defs.py` | does each aarch64 macro ENCODE what its name says? | static, instant |
+| `verify-imm64.sh` | do the 64-bit immediate macros DO what they claim? | ~5 s, local under the emulator; native in CI |
 
 **`difftest.sh` should have existed on day one.** micro-c targets amd64 and the
 development machine *is* amd64, so its output can be compiled, linked and **run**
@@ -434,6 +449,22 @@ not exist here" — `mov_x15,x1` missing on aarch64, `mov_rbx,r15` missing on
 amd64, and two more. Each was found by assembling or running. All four ask a
 question that can be answered **statically, for five architectures at once**. It
 is a hard gate in CI.
+
+**`verify-imm64.sh` asks a question neither of them can.** `verify_defs.py`
+covers register-to-register forms, where the encoding is fully determined by the
+name; a PC-relative literal load and a branch are not that shape. Those are
+checked by RUNNING them -- a 64-bit constant goes through the literal pool and
+both halves are read back, because a form that loaded only the low 32 bits (the
+exact bug the vocabulary exists to fix) passes a low-byte check. It runs under
+the committed emulator locally and NATIVELY in CI, and CI additionally
+byte-anchors the same macros against real `as`, which is the one thing an
+emulator cannot settle.
+
+Worth stating plainly, because the opposite was believed for a round: **a
+byte-compare is not the only way to check an encoding.** Byte-identity proves
+the bytes are what `as` would emit. Running it proves the CPU does the intended
+thing. The second is usually the question actually being asked, and this
+repository has had an aarch64 emulator committed the whole time.
 
 **`verify_defs.py` asks the question `vocabulary.sh` structurally cannot.**
 Existence and correctness are different, and three macros in M2libc's aarch64
@@ -639,7 +670,7 @@ tools/                        difftest, vocabulary, regression, instrument, veri
 tools/cases/                  one C file per construct, 48 of them
 ```
 
-24 patches build micro-c and 4 patch M2libc. Both workflows assert the count,
+24 patches build micro-c and 5 patch M2libc. Both workflows assert the count,
 because a missing codegen patch looks exactly like a codegen bug.
 
 `patches/micro-c-experiments/README.txt` is the working log — every wrong turn,

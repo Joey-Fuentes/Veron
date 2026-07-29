@@ -7,35 +7,52 @@ to `spikes/stage4/ROADMAP.md` when the two stages were separated.
 **Status: leg 1 is well underway. See `MICRO-C.md` for its state.**
 
 The short version: the enhanced compiler exists, is called **micro-c**, and
-compiles all of tcc into a binary that runs, reports diagnostics, preprocesses
-its own predefs and a real source file, interns the whole keyword table and
-reaches macro expansion. The remaining fault is a single documented gap --
-pointer arithmetic that does not scale -- and the measurement below is the
-honest map of what the direct route required.
+compiles all of tcc into a binary that runs, reports diagnostics, interns the
+whole keyword table, preprocesses its own predefs and a real source file, and
+is now through the preprocessor and faulting in the code generator. The
+measurement below is the honest map of what the direct route required.
+
+**Read `MICRO-C.md` for the state; this file is the PLAN and its status line
+has been wrong before.** Twice now a cause recorded here as settled turned out
+to be a hypothesis nobody had measured -- pointer arithmetic that does not
+scale was named as the blocker for four rounds, was real, was fixed, and moved
+the marker trail by nothing. The list of "largest remaining" items below is
+documentation, not evidence.
 
 **The thesis held.** The gap was measured at four missing features and turned
 out to be four features plus a long tail of code generation that was wrong
 rather than absent, in a compiler whose own sources never exercised it. Three
-of the twenty patches fix upstream code that was correct for everything its
-author compiled and had never been asked to compile tcc.
+of the twenty-four patches fix upstream code that was correct for everything
+its author compiled and had never been asked to compile tcc -- and a fourth,
+`zza`, fixes something upstream is *entitled* to get away with: M2-Planet's own
+source has globally unique labels, so a flat label namespace has never cost it
+anything.
 
 The enhanced M2-Planet exists and is called **micro-c**. It compiles the whole
 of `libtcc.c`, assembles and links a 1.52 MB aarch64 binary, and that binary
-runs far enough to preprocess a real source file and reach macro expansion
-before faulting. The measurement
-below is still the honest map of the *gap*; what has changed is that most of it
-has been closed, and the remaining problems are different in kind — not missing
-language features, but wrong code generation for features that parse fine.
+runs through the preprocessor and into the code generator before faulting. The
+measurement below is still the honest map of the *gap*; what has changed is
+that most of it has been closed, and the remaining problems are different in
+kind — not missing language features, but wrong code generation for features
+that parse fine.
 
 The largest of those, and the reason this is not finished:
 
+- **every integer literal is truncated to 32 bits.** `strtoint` returns `int`
+  and micro-c is built by gcc, so it cannot represent a 64-bit constant in the
+  source it compiles. tcc's `parse_number` therefore marks every constant it
+  reads as unsigned. The missing M1 instructions landed in
+  `patches/m2libc/0005`; the emitter change is the next rung
 - **`int` is eight bytes**, so every struct micro-c lays out differs from a
   normal ABI
-- **pointer arithmetic does not scale** — `p + n` advances n bytes, not n
-  elements
-- **one rule has nineteen implementations.** `emit_out(load_value(...))` appears
-  19 times in `cc_core.c` with a different subset of guards at each site; four
-  bugs this session were one site missing a condition another site already had
+- **one rule has many implementations.** `emit_out(load_value(...))` appears 19
+  times in `cc_core.c` with a different subset of guards at each site, and the
+  "is this an lvalue" question is asked in eight places — three of which have
+  been found missing a case the others had, one per round. That class has now
+  cost more than every missing feature put together
+
+*(Pointer arithmetic that does not scale was the third item here for several
+rounds. It is closed — `EXPERIMENT-zz7` — and it was never the blocker.)*
 
 ---
 

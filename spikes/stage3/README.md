@@ -33,7 +33,7 @@ other already produced a binary:
 | route | state |
 |---|---|
 | M2-Planet → Mes → tcc (live-bootstrap's) | Mes rung in progress, three rungs out |
-| enhanced M2-Planet → tcc directly | **compiles all of tcc; the binary runs, diagnoses, preprocesses, and is now inside macro expansion** — `MICRO-C.md` |
+| enhanced M2-Planet → tcc directly | **compiles all of tcc; the binary runs, diagnoses, preprocesses its predefs and the input file, and now faults in the code generator** — `MICRO-C.md` |
 
 The direct route now has a name — **micro-c** — and its own file. It compiles
 `libtcc.c` to 369,255 lines of M1, assembles and links a 1.52 MB aarch64 binary,
@@ -140,7 +140,9 @@ over. Applies to G0 only.
 | `tools/vstack.py` | find value-stack arity mismatches by *reading* emitted assembly — no execution |
 | `tools/pcmap.py` | map a faulting PC back to a function label |
 | `tools/drop_asm.py` | the substitution |
+| `stage3/tools/verify-imm64.sh` | do the 64-bit immediate macros DO what they claim? Runs them — native on aarch64, under the committed emulator elsewhere, and skips what the host cannot execute rather than counting it as a pass |
 | `tools/fetch-pinned.sh` | pinned fetch with a cache, a hash check and bounded time (shared with stage 4) |
+| `tools/clone-pinned.sh` | fetch one pinned commit from the first mirror that answers, and **verify `rev-parse HEAD` against the pin**. Mirror order is a speed choice because of that check, not a trust one |
 | `spikes/bench/` | Python model of the ladder; compiles M2-Planet locally in ~30 s |
 
 ## Method note (this one earned its place)
@@ -169,12 +171,18 @@ aarch64, and the cost was a CI round trip per bug.
 
 - **The tcc rung itself** — the one thing this stage exists to close. Neither
   route has produced a *working* tcc from the seed, though the direct route now
-  produces a tcc **binary** that runs and reaches macro expansion
-  (`MICRO-C.md`). The current fault is after `macro_subst` returns into
-  `macro_subst_tok` (tccpp.c:3396) and is **undiagnosed**; extending
-  `instrument.py`'s function list is the next move and costs a minute.
-  `ROADMAP.md` has the measured gap for the direct route; `mes-rung.yml` is the
-  reference arm for the other.
+  produces a tcc **binary** that gets through the preprocessor and faults in
+  the code generator (`MICRO-C.md`). `ROADMAP.md` has the measured gap for the
+  direct route; `mes-rung.yml` is the reference arm for the other.
+- **Every integer literal is truncated to 32 bits**, so tcc marks every
+  constant it reads as unsigned. This is the known blocker and it is *not* a C
+  change: M1's `%` emits four bytes and masks to 32, amd64 had only
+  `mov r64, imm32`, and aarch64 had no PC-relative 64-bit load. Those
+  instructions landed in `patches/m2libc/0005`, verified four ways; nothing
+  emits them yet.
+- **The fault at `next()`'s return is undiagnosed**, and should be read only
+  after the literal fix — corrupt constant types are a plausible cause of it,
+  so diagnosing it first risks explaining a symptom.
 - ~~`16-switch-wide` fails on aarch64~~ — **closed by `EXPERIMENT-zz9`.** A
   negative `case` label was loaded unsigned; amd64's sign-extending immediate
   made the wrong constant land on the right value, so it was green there and
@@ -210,7 +218,8 @@ aarch64, and the cost was a CI round trip per bug.
 spikes/stage3/          this folder -- the hand-off, and the road to tcc
 spikes/stage3/ROADMAP.md        leg 1: enhanced M2-Planet builds real tcc
 spikes/stage3/MICRO-C.md        that leg's STATE -- what works, what is wrong, why
-spikes/stage3/tools/            difftest, vocabulary, regression, instrument
+spikes/stage3/tools/            difftest, vocabulary, regression, instrument,
+                                verify-imm64
 spikes/stage3/micro-c-libc/     the runtime under tcc: headers and impl/
 spikes/stage3/patches/  the tcc arm64 assembler series + our two fixes
 spikes/stage4/          EVERYTHING ABOVE TCC -- gcc, userland, kernel, boot
