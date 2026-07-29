@@ -97,6 +97,24 @@ def prev_code_line(lines, i):
     return None
 
 
+# THE BYTE COUNT IS len(tag)+1, NOT 4.
+#
+# A marker is written with write(2, "P01\n", 4) -- three characters and a
+# newline. That was hardcoded, so the hundredth marker onwards emitted
+# write(2, "P100\n", 4) and dropped its newline:
+#
+#     P100Q1
+#     Q3
+#
+# Two markers on one line. Every grep in the reporting is anchored with ^, so
+# the second of each pair becomes invisible -- and it looks exactly like a
+# statement that did not execute. I read that as a dropped statement and spent
+# a round on it.
+#
+# Any file with more than 99 markers was affected, which by now is most of
+# them: the tccpp.c set alone maps 286 statements.
+
+
 def instrumentable(line):
     """Can a marker legally follow this line?"""
     t = line.strip()
@@ -294,7 +312,7 @@ def main():
             n += 1
             tag = "%s%02d" % (prefix, n)
             indent = line[:len(line) - len(line.lstrip())]
-            out.append('%swrite(2, "%s\\n", 4);' % (indent, tag))
+            out.append('%swrite(2, "%s\\n", %d);' % (indent, tag, len(tag) + 1))
             mapping.append((tag, i + 1, "%s: (rejoin) %s" % (func, line.strip())))
             continue
 
@@ -337,10 +355,10 @@ def main():
             indent = line[:len(line) - len(line.lstrip())]
             if wrap:
                 out[-1] = '%s{ %s' % (indent, line.strip())
-                out.append('%swrite(2, "%s\\n", 4); }' % (indent, tag))
+                out.append('%swrite(2, "%s\\n", %d); }' % (indent, tag, len(tag) + 1))
                 mapping.append((tag, i + 1, "%s: (braced) %s" % (func, line.strip())))
             else:
-                out.append('%swrite(2, "%s\\n", 4);' % (indent, tag))
+                out.append('%swrite(2, "%s\\n", %d);' % (indent, tag, len(tag) + 1))
                 mapping.append((tag, i + 1, "%s: %s" % (func, line.strip())))
 
     if map_only:

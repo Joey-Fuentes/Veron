@@ -1403,3 +1403,65 @@ With the tool fixed, 30,502 markers and:
 
 macro_subst -- the recursive expansion body, one level below macro_subst_tok
 -- does not return. That is the next thing to instrument.
+
+=============================================================================
+ROUND 13: THE FRONTIER REACHED THE KNOWN GAP
+
+The trace, all local, about a minute a round:
+
+    next -> macro_subst_tok -> macro_subst
+      iteration 1  TOK_GET ok, else branch, tok_str_add2_spc x29 ok, P31
+      iteration 2  TOK_GET                                    SIGSEGV
+
+TOK_GET is tcc's token reader and runs for every token it reads:
+
+    #define TOK_GET(t,p,c) do { \
+        int _t = **(p); \
+        if (TOK_HAS_VALUE(_t)) \
+            tok_get(t, p, c); \
+        else \
+            *(t) = _t, ++*(p); \
+        } while (0)                              tccpp.c:1245
+
+    ++*(p) through a pointer-to-pointer    gcc=0  micro-c=1
+    comma expr as a braceless else body    gcc=0  micro-c=0     fine
+    both together, TOK_GET's shape         gcc=0  micro-c=139
+
+`*p` is `const int *`, so ++ must advance it by sizeof(int) and advances it by
+ONE. The first iteration works because the initial pointer is valid; the
+second reads from a misaligned address.
+
+THAT IS CASE 21. Pointer arithmetic does not scale -- the gap documented and
+deferred several rounds ago, reached from a new direction and now load-bearing
+rather than theoretical. Recorded as case 48 so the shape TOK_GET actually
+uses is covered: through a parameter, through a global, and with a wider
+element so a one-byte advance is unmistakable.
+
+    45 pass  0 fail  3 known gaps
+
+The shelved fix, scale_pointer_operand, made two cases pass and broke a third
+because promote_type folds the pointee type away before the operator is
+handled. That is the same information loss behind the nineteen load sites, and
+it is now the blocker rather than a note.
+
+TWO TOOL FIXES OUT OF THE SAME STRETCH
+
+THE MARKER BYTE COUNT WAS HARDCODED AT 4. Correct for "P01\n" and one short
+for "P100\n", so from the hundredth marker on the newline was dropped:
+
+    P100Q1
+    Q3
+
+Two markers on one line, and every grep in the reporting is anchored with ^,
+so the second of each pair is invisible -- indistinguishable from a statement
+that did not run. I read it as a dropped statement and spent a round on it.
+Any file with more than 99 markers was affected, which by now is most of them.
+
+AND MARKERS MUST NOT LAND IN AN AGGREGATE INITIALISER, which is the previous
+entry -- three placement bugs in this tool now, all the same shape: a line
+ending in a character the instrumenter reads as structure, in a context where
+it means something else.
+
+instrument.py STILL CANNOT ENTER A SWITCH. tok_str_add2 and next_nomacro are
+both un-instrumentable for that reason. Hand-placed markers reached past it
+this time; that will not scale.
