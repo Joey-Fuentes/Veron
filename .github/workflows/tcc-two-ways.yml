@@ -55,8 +55,43 @@ jobs:
       - name: Fetch pinned tcc
         run: |
           set -eu
-          git clone -q https://repo.or.cz/tinycc.git tcc-src \
-            || git clone -q https://github.com/TinyCC/tinycc.git tcc-src
+          # CLONE tcc FROM WHICHEVER MIRROR IS UP, AND SAY WHICH.
+          #
+          # repo.or.cz resets the connection often enough to be a nuisance:
+          #
+          #     fatal: unable to access 'https://repo.or.cz/tinycc.git/':
+          #     Recv failure: Connection reset by peer
+          #
+          # The old form was `clone A || clone B`, which recovers but prints a
+          # fatal: that means nothing. A log that cries wolf gets skimmed, and
+          # this file has already lost time to a benign `error: No valid
+          # patches in input` sitting next to a real failure.
+          #
+          # Each mirror is tried twice before moving on, because a reset is
+          # usually transient and re-cloning the same host is cheaper than
+          # giving up on it. Output is captured and shown ONLY if every attempt
+          # fails, so a successful run is quiet and a failed one is complete.
+          #
+          # sources/tcc.toml is the authority on this list; it is duplicated
+          # here because the workflow cannot read toml.
+          clone_tcc() {
+            _dest="$1"
+            for url in https://repo.or.cz/tinycc.git \
+                       https://github.com/TinyCC/tinycc.git; do
+              for attempt in 1 2; do
+                if git clone -q "$url" "$_dest" 2>/tmp/clone-err.txt; then
+                  echo "  cloned from $url (attempt $attempt)"
+                  return 0
+                fi
+                rm -rf "$_dest"
+                echo "  $url attempt $attempt failed, retrying"
+              done
+            done
+            echo "FAIL: every tcc mirror refused"
+            cat /tmp/clone-err.txt
+            return 1
+          }
+          clone_tcc tcc-src
           git -C tcc-src checkout -q "$TCC_SHA"
           for p in spikes/stage3/patches/tcc-arm64-asm/[0-9]*.patch; do
             git -C tcc-src apply --ignore-whitespace "../$p" \

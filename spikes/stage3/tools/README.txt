@@ -1191,3 +1191,30 @@ output, and the failure appeared two steps later attached to different code.
 A step that reports only failure cannot be debugged. This one now names each
 patch, counts them, refuses to proceed below four, and checks the bytes it
 just claimed to have written.
+
+=============================================================================
+A fatal: THAT MEANS NOTHING
+
+    fatal: unable to access 'https://repo.or.cz/tinycc.git/':
+    Recv failure: Connection reset by peer
+      tcc 5ec0e6f8 + 5 patches, tccdefs_.h generated
+
+The clone worked. `clone A || clone B` recovers and prints A's failure anyway,
+so every run where repo.or.cz hiccups carries a fatal: that is not one.
+
+That matters more here than it looks. This file has already lost time to a
+benign `error: No valid patches in input` -- a zero-byte tcc-debug patch --
+sitting three lines from a real failure, and to `git apply` reporting success
+while skipping the patch. A log that cries wolf gets skimmed, and the next
+line down is where the actual answer usually is.
+
+clone_tcc now tries each mirror TWICE before moving on, because a reset is
+typically transient and re-cloning the same host is cheaper than abandoning
+it. It names the mirror and attempt that worked. Output is captured and shown
+only if every attempt fails, so a good run is silent and a bad one is
+complete. Tested against unreachable mirrors: four attempts, one FAIL, the
+real error, exit 1.
+
+All three workflows that clone tcc use it. sources/tcc.toml remains the
+authority on the mirror list; it is duplicated in the workflows because they
+cannot read toml.
