@@ -84,9 +84,11 @@ Stage 4 already **has** a tcc — pinned, patched, and used. What stage 3 owes i
 | route | state |
 |---|---|
 | M2-Planet → Mes → tcc | Mes rung in progress, three rungs out |
-| **enhanced M2-Planet → tcc directly** | gap measured against tcc's source; no enhanced M2-Planet written yet |
+| **enhanced M2-Planet → tcc directly** | **the enhanced compiler exists.** It is called micro-c — M2-Planet at pin `bd2fe4b` plus 20 patches — and it compiles all of tcc, links a 1.52 MB aarch64 binary, and that binary runs, prints diagnostics, preprocesses, interns the whole keyword table and reaches macro expansion before it faults |
 
-The direct route is the shorter one: extend M2-Planet's C subset far enough to compile real tcc, skipping the intermediate rungs entirely. The thesis behind it is that much of what the bootstrap ecosystem carries is *incidental* complexity — build plumbing, script-calling-script — rather than real capability gaps, and that the two can be separated by measuring instead of estimating. See [`spikes/stage3/ROADMAP.md`](./spikes/stage3/ROADMAP.md).
+The direct route is the shorter one: extend M2-Planet's C subset far enough to compile real tcc, skipping the intermediate rungs entirely. The thesis behind it is that much of what the bootstrap ecosystem carries is *incidental* complexity — build plumbing, script-calling-script — rather than real capability gaps, and that the two can be separated by measuring instead of estimating. See [`spikes/stage3/ROADMAP.md`](./spikes/stage3/ROADMAP.md) for the plan and [`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md) for the state.
+
+It is not a working tcc. What stops it is one documented gap — pointer arithmetic that does not scale, so `++*(p)` in tcc's token reader advances by one byte instead of the element width. A differential suite of 48 cases stands at 45 passing and 3 known gaps on both amd64 and aarch64, and the compiler, the emulator and the tcc tree can all be run outside CI, which is why the last several bugs took minutes rather than rounds.
 
 **Close those two and the chain is continuous from hand-read assembly to a booting GNU/Linux.** What stands between here and a rough-draft OS is that, plus re-applying the invariants — the spike track suspends every one of them.
 

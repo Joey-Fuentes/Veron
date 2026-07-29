@@ -22,13 +22,15 @@ other already produced a binary:
 | route | state |
 |---|---|
 | M2-Planet → Mes → tcc (live-bootstrap's) | Mes rung in progress, three rungs out |
-| enhanced M2-Planet → tcc directly | **compiles all of tcc; the binary runs and reaches tcc's preprocessor** — `MICRO-C.md` |
+| enhanced M2-Planet → tcc directly | **compiles all of tcc; the binary runs, diagnoses, preprocesses and reaches macro expansion** — `MICRO-C.md` |
 
 The direct route now has a name — **micro-c** — and its own file. It compiles
-`libtcc.c` to 371,437 lines of M1, assembles and links a 1.45 MB aarch64 binary,
-and that binary runs: `tcc_new` completes, `tcc_set_output_type` completes, and
-it faults inside `tok_alloc` while building tcc's keyword table. It is not a
-working tcc; it is a long way past "not started".
+`libtcc.c` to 369,255 lines of M1, assembles and links a 1.52 MB aarch64 binary,
+and that binary runs: it reports that the crt files are missing, preprocesses
+its own predefs and a real source file, interns all 980 keywords with their
+collision chains, and faults inside macro expansion on `++*(p)` — pointer
+arithmetic that does not scale, which is a documented gap rather than an
+unknown. It is not a working tcc; it is a long way past "not started".
 
 Stage 4 has since proven what a tcc is *worth* once reached: an arm64 tcc builds
 a complete gcc 4.7.4 carrying gcc 4.8.5's aarch64 backend — libgcc, `xgcc`, and

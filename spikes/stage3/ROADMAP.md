@@ -6,9 +6,23 @@ to `spikes/stage4/ROADMAP.md` when the two stages were separated.
 
 **Status: leg 1 is well underway. See `MICRO-C.md` for its state.**
 
+The short version: the enhanced compiler exists, is called **micro-c**, and
+compiles all of tcc into a binary that runs, reports diagnostics, preprocesses
+its own predefs and a real source file, interns the whole keyword table and
+reaches macro expansion. The remaining fault is a single documented gap --
+pointer arithmetic that does not scale -- and the measurement below is the
+honest map of what the direct route required.
+
+**The thesis held.** The gap was measured at four missing features and turned
+out to be four features plus a long tail of code generation that was wrong
+rather than absent, in a compiler whose own sources never exercised it. Three
+of the twenty patches fix upstream code that was correct for everything its
+author compiled and had never been asked to compile tcc.
+
 The enhanced M2-Planet exists and is called **micro-c**. It compiles the whole
-of `libtcc.c`, assembles and links a 1.45 MB aarch64 binary, and that binary
-runs far enough to reach tcc's preprocessor before faulting. The measurement
+of `libtcc.c`, assembles and links a 1.52 MB aarch64 binary, and that binary
+runs far enough to preprocess a real source file and reach macro expansion
+before faulting. The measurement
 below is still the honest map of the *gap*; what has changed is that most of it
 has been closed, and the remaining problems are different in kind — not missing
 language features, but wrong code generation for features that parse fine.

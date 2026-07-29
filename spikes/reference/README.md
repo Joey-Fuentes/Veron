@@ -33,6 +33,16 @@ outside CI, and every stage-3 diagnosis had to go through a full CI round. At
 the pin, all fifteen patches apply and the resulting binary is **byte-identical**
 to the one CI builds.
 
+**Patches land on a COPY, and the copy needs its own `.git`.** Both stage-3
+workflows make `m2libc-patched` from this directory and apply
+`patches/m2libc/` to it. That silently did nothing for as long as the code
+existed: git-apply(1) says *"When running from a subdirectory in a repository,
+patched paths outside the directory are ignored"*, and a plain copy inside the
+Veron checkout is exactly that -- git computed the prefix, judged the patch
+paths outside it, skipped them and **exited 0**. `git -C m2libc-patched init -q`
+gives the copy an empty repository of its own so the prefix is empty. Anything
+else that copies a tree from here and patches it needs the same.
+
 **`m2libc/` is still at the old pin and is known-stale.** `UPSTREAM-PINS.md`
 records the current M2libc pin as `68a23cfd05d5a355ba7a30c770d684cbe86fcc4e`,
 which is also what M2-Planet's own submodule points at from `bd2fe4b`. This

@@ -5,28 +5,59 @@ compile tcc directly, rather than reaching tcc through Mes. That enhanced
 compiler is called **micro-c**: M2-Planet at pin `bd2fe4b` plus a patch series.
 This file is its state.
 
-**Status: it compiles all of tcc, links a 1.45 MB aarch64 binary, and that
-binary runs and gets into tcc's preprocessor before it faults.** It is not a
-working tcc. It is much further than "measured, not started", which is what
-`ROADMAP.md` said before this.
+**Status: it compiles all of tcc, links a 1.52 MB aarch64 binary, and that
+binary runs, reports diagnostics, preprocesses its own predefs and a real
+source file, interns the whole keyword table, and reaches macro expansion
+before it faults.** It is not a working tcc. It is a long way past "gets into
+the preprocessor", which is what this file said before.
+
+The remaining fault is `++*(p)` in tcc's token reader -- pointer arithmetic
+that does not scale, which is case 21, a gap documented and deferred several
+rounds before the frontier arrived at it.
 
 ---
 
 ## Where it gets to
 
 Run by `.github/workflows/tcc-two-ways.yml` on `ubuntu-24.04-arm`, native, no
-emulation.
+emulation -- and, since the toolbox described under **Tools** below, on an
+x86_64 development machine under `qemu-aarch64-static` in about a minute.
 
 ```
-micro-c compiles libtcc.c    371,437 lines of M1, 695 functions
-assembles and links          ~1.45 MB, ELF64 AArch64, main aligned
+micro-c compiles libtcc.c    369,255 lines of M1, 695 functions
+assembles and links          ~1.52 MB, ELF64 AArch64, main aligned
 runs                         tcc_new completes
                              tcc_set_output_type completes
-                             tcc_compile reached, buffer allocated, source copied
-                             preprocess_start reached
-                             tccpp_new reached, keyword table loop entered
-                             faults inside tok_alloc
+                             crt files are absent and it SAYS SO:
+                                 tcc: error: file 'crt1.o' not found
+                                 tcc: error: file 'crti.o' not found
+                             tcc_add_file -> tcc_compile
+                             preprocess_start, tccpp_new
+                             980 keywords interned, 29 hash collisions resolved
+                             its own predefs preprocessed without error
+                             tccgen_init, tccgen_compile, next()
+                             macro_subst_tok -> macro_subst
+                             faults on the second TOK_GET
 ```
+
+Those two error lines are worth their own sentence: they are printed through
+`cstr_vprintf`, the path that used to crash, and they mean tcc is judging a
+program rather than dying in setup. The crt files genuinely are not on the
+runner.
+
+THE KEYWORD NUMBERS RECONCILE, which is a stronger claim than "it did not
+crash". Each keyword is scanned len+1 times and hashed len times, so the
+scan-loop count minus the intern count must equal the hash-loop count:
+
+```
+6522 - 980 = 5542      and the hash loop ran 5542 times      exact
+980 + 29   = 1009      buckets read, with 29 chain steps     exact
+```
+
+If `r - p - 1` were wrong for any one of 980 keywords those totals would not
+reconcile. The pointer difference is provably right across the whole table --
+a thing this file previously recorded as suspect on the strength of a
+miscounted marker.
 
 The control in the same job — tcc built by gcc — passes tcc's own `test1`,
 `test2` and `test3`, passes `make test`, and reaches a byte-identical
@@ -46,9 +77,15 @@ number from a laptop would have been wrong.
 
 ## What was wrong with micro-c, and what it means
 
-Twelve patches, and the interesting thing is not the count but that **four
-separate bugs turned out to be one missing concept, and four more were one
-duplicated rule.**
+Twenty patches. The interesting thing is not the count but that almost every
+one falls into two families: **a missing concept applied inconsistently**, or
+**one rule with several implementations that disagree**. The sections below are
+the first round of them; the ones after are later and the pattern holds.
+
+**And a third family appeared once the frontier got past the compiler's own
+bugs: upstream code that is correct for everything its author compiled and has
+never been asked to compile tcc.** Three of the twenty are that, and none of
+them are ours.
 
 ### No notion of alignment, anywhere
 
@@ -150,10 +187,134 @@ a 200-operator file from 83 MB to 3.4 MB.
 | gap | consequence |
 |---|---|
 | `int` is EIGHT bytes | every struct differs from a normal ABI; three of our own headers had wrong layouts because of it |
-| pointer arithmetic does not scale | `p + n` advances n **bytes**, not n elements. Indexing scales correctly, which is why it survived — M2-Planet indexes and rarely adds. Documented as difftest case 21 with a fix that is written and **not wired in**, because it fixed two cases and broke a third |
+| pointer arithmetic does not scale | **THIS IS NOW THE BLOCKER.** `p + n` advances n **bytes**, not n elements, and `++*(p)` through a pointer-to-pointer advances by one. tcc's `TOK_GET` macro (tccpp.c:1245) is exactly that, and it runs for every token tcc reads. Cases 21 and 48. The fix is written as `scale_pointer_operand` and **not wired in**: it made two cases pass and broke a third, because `promote_type` folds the pointee type away before the operator is handled |
 | `float`/`double`/`long double` | one word-sized integer type |
 | `constant_expression` precedence | `a\|b&c` folds right-to-left |
 | 19 load sites | see above |
+| `&((*p)->m)` | grouping parens around a **dereference**. `&(p->m)` works. `&(X)` needs address-of TRUE at X's final lvalue step and FALSE inside it, and with a dereference in the middle those are different points; one global flag cannot say both. Case 44 |
+| a switch cannot be instrumented | not a compiler bug but it shapes the work: `instrument.py` cannot place markers inside a switch body, so `next_nomacro` and `tok_str_add2` — two functions squarely on the token path — have to be probed by hand |
+
+---
+
+## Later rounds, and where they came from
+
+Everything above was found before micro-c could be built outside CI. What
+follows was found after, mostly in minutes rather than rounds. The
+distinguishing feature is that several are **not micro-c's bugs at all**.
+
+### A global struct is a struct
+
+`primary_expr_variable` decides whether to load a variable's value, and its
+"do not load a struct" guard tested a width that only becomes the type's real
+size for `TLO_LOCAL` and `TLO_ARGUMENT`. A **global** struct kept
+`register_size`, so the guard could not see a struct at all and loaded its
+first eight bytes as an address:
+
+```
+char_pointer_type = char_type;          tccgen.c:392
+```
+
+both file-scope, so the copy's source became `char_type.t` -- the integer 3 --
+used as a pointer. The local form had already been fixed; this is the same
+rule in the other storage class.
+
+The first attempt at the fix was wrong and the suite said so in a second:
+suppressing the load on element size alone broke cases 31 and 43, because that
+load does **double duty** -- for a scalar it fetches the value, for a global
+ARRAY it dereferences the pointer cell the symbol holds.
+
+### `++` and `--` on a global
+
+Upstream's own condition in `primary_expr_variable`:
+
+```c
+is_postfix_operator = match("++", ...) && (options != TLO_STATIC
+                                        && options != TLO_GLOBAL);
+```
+
+It reads like a guard and is not one. Excluding a global makes it fall through
+to the ordinary path, which LOADS the value; the increment then treats that
+value as an address and stores through it. Every form -- postfix, prefix, a
+bare `n++` -- segfaulted. `ts->tok = tok_ident++` at tccpp.c:480 is the
+statement tcc died on. **M2-Planet never increments a global; tcc does it
+constantly.**
+
+### A label is a prefix, not a statement
+
+`lab: stmt;` is ONE labelled statement. `statement()` emitted the label and
+returned, which is invisible inside a block -- the block loop parses the next
+line anyway -- and wrong wherever exactly one statement is expected:
+
+```c
+if (t0 == TOK_PPJOIN)
+bad_twosharp:
+    tcc_error("'##' cannot appear at either end of macro");   tccpp.c:1621
+```
+
+The `if` got the label as its whole body and the `tcc_error` became the next
+statement, unconditional. **Every `#define` tcc preprocessed raised that
+error**, and the first one reported was line 1 of its own predefs. It reads
+like a macro bug and is a parser one.
+
+The fix needed a guard of its own: an ordinary goto label may sit directly in
+front of a `case` or `default` (tccpp.c:952), and those belong to
+`process_switch`, not to `statement()`.
+
+### Address-of does not survive a nested parse
+
+`Address_of` is a global flag, and two things destroyed it.
+
+**Grouping parens.** `primary_expr` clears the flag unless it sees `&`, and
+`&(ts->hash_next)` -- tccpp.c:516, as tcc writes it -- re-enters
+`primary_expr` for `ts`. `&ts->hash_next` was always fine: it never re-enters.
+
+**The index parse.** `postfix_expr_array` saves the flag for its own use, and
+`common_recursion` clears the global, so the `.next` in `&pool[0].next` read
+FALSE and emitted the member load.
+
+Clearing on the way OUT of `primary_expr` instead is the tidier change and is
+**wrong**: 22 cases pass against 42, because `&a[i]` parses its index through
+there and needs the flag down. That took one minute to find locally and would
+have been a round and a confident wrong explanation.
+
+### Three that are not ours
+
+**`va_copy`'s arguments are reversed in M2libc.**
+
+```c
+#define va_copy(ap1, ap2) ap2 = ap1
+```
+
+C says `va_copy(dest, src)` copies src into dest. tcc's `va_copy(v, ap)`
+therefore became `ap = v` with `v` uninitialised -- destroying the live
+argument pointer and passing garbage to `vsnprintf`. That is on the path of
+**every diagnostic tcc emits**, which is why the crt-not-found message crashed
+instead of printing.
+
+Nothing upstream uses `va_copy`. The single use in the whole tree is a test,
+and the test is written backwards in the same direction as the macro, so the
+two errors cancel and it has always passed. Fixing the macro breaks that test;
+the test is wrong, not the fix.
+
+**Three aarch64 macros encode x16 as x8.**
+
+```
+DEFINE add_x0,x16,x0 0020008b        ->  ADD x0, x0, x0, LSL #8
+```
+
+Not a missing macro -- a wrong one. It assembles, links, runs, and is used 315
+times in one compile of libtcc.c. It is the source-pointer advance in the
+struct copy, so the struct's SIZE decided everything: eight bytes worked, and
+sixteen read its second word from address 2056. Case 05 was red from the day it
+was written because of this, and the emitted copy loop was correct all along.
+
+`vocabulary.sh` cannot find this: it asks whether a macro EXISTS, and all three
+do. `tools/verify_defs.py` asks whether it is CORRECT, which for a
+register-to-register form is fully determined by the name.
+
+**And the same class in reverse: `int` is eight bytes** -- still the deepest
+open item, and still the reason every struct micro-c lays out differs from a
+normal ABI.
 
 ---
 
@@ -194,7 +355,8 @@ the slow way first.
 | `difftest.sh` | does this C construct behave as gcc does? | ~1 s per case, local |
 | `vocabulary.sh` | does every macro micro-c can emit exist for that architecture? | static, five architectures at once |
 | `regression.sh` | does micro-c still compile everything the reference compiles? | local |
-| `instrument.py` | which statement did execution last complete? | one CI round |
+| `instrument.py` | which statement did execution last complete? | one build, ~1 min local |
+| `verify_defs.py` | does each aarch64 macro ENCODE what its name says? | static, instant |
 
 **`difftest.sh` should have existed on day one.** micro-c targets amd64 and the
 development machine *is* amd64, so its output can be compiled, linked and **run**
@@ -203,7 +365,15 @@ because the work was aimed at aarch64. Every codegen bug found the hard way is
 now a case in `tools/cases/`, and each takes about a second to check.
 
 It now runs on **both** architectures — `ARCH=aarch64` in CI, where the
-alignment class of bug is fatal rather than invisible.
+alignment class of bug is fatal rather than invisible, and locally too under
+the emulator described below.
+
+**Twice it has reported clean while assembling with the WRONG TABLE.** difftest
+takes an M2libc directory and assembles each case with
+`$M2LIBC/aarch64/aarch64_defs.M1`; it was being handed the vendored copy while
+the patches went to another. Cases 05 and 46 stayed red against a compiler that
+passed them locally. Whatever a tool is handed, check it is the thing the
+patches reached.
 
 **`vocabulary.sh` closed a whole class.** Four bugs were "that instruction does
 not exist here" — `mov_x15,x1` missing on aarch64, `mov_rbx,r15` missing on
@@ -211,12 +381,47 @@ amd64, and two more. Each was found by assembling or running. All four ask a
 question that can be answered **statically, for five architectures at once**. It
 is a hard gate in CI.
 
+**`verify_defs.py` asks the question `vocabulary.sh` structurally cannot.**
+Existence and correctness are different, and three macros in M2libc's aarch64
+table exist and are wrong. For a register-to-register form the encoding is
+fully determined by the name, so name and bytes can be compared by machine —
+which is the only way, because by eye is exactly how three of them got in. It
+covers `mov`/`add`/`sub` register forms only; immediates, loads, stores and
+branches are left alone rather than half-checked, and amd64 is not covered at
+all because x86-64 encoding is not a function of the mnemonic in the same way.
+
+It nearly shipped reporting **eight false positives**: every `mov` involving
+`sp`. SP and XZR are both register 31, and `MOV Xd,Xm` is an alias for
+`ORR Xd,XZR,Xm` where 31 means XZR — so SP cannot be named that way and those
+forms use `ADD Xd,Xn,#0`. All eight were right. A gate with false positives
+gets switched off, and then the real errors beside it go unnoticed too.
+
 **`instrument.py` replaced hand-placed markers.** Six CI rounds were spent
 adding one marker each and still ended with "somewhere in
 `tcc_set_output_type`". The placement is mechanical, so the tool does every
 statement at once. It also marks **control-flow rejoin points**, because a
 marker after `if (...) {` sits inside the body and cannot print when the branch
 is skipped — which understated progress by a dozen statements once.
+
+It has had **four placement bugs**, and they share a shape: a line ending in a
+character the tool reads as structure, in a context where it means something
+else. A braceless loop body, so a frequency count meant nothing. A function's
+own closing brace, so a marker landed at file scope. An aggregate initialiser,
+so a marker landed between the braces of a constant expression. And the byte
+count hardcoded at 4 — right for `"P01\n"`, one short for `"P100\n"`, so past
+the hundredth marker the newline was dropped and two markers ran together on
+one line, invisible to every `^`-anchored grep in the reporting. That one cost
+a round chasing a dropped statement that had not been dropped.
+
+**It cannot enter a switch.** Markers inside a switch body produce
+`ERROR in process_switch / MISSING }`, so `next_nomacro` and `tok_str_add2` —
+both squarely on the token path — must be probed by hand.
+
+**And the set it covers has to follow the frontier.** When the fault moved into
+`macro_subst_tok`, which was not in the list, the report named the last marker
+INSIDE the list — `tok_alloc_new`, doing ordinary work — as the last thing that
+happened. The step now prints what it instrumented and warns that a fault
+outside that set appears as the last marker inside it.
 
 ### A note on reading these tools
 
@@ -257,11 +462,61 @@ only one of them is sound here.
 
 ---
 
+## Building and running it outside CI
+
+For most of this work every question cost a CI round. It no longer does, and
+the change was not cleverness — it was noticing that `spikes/reference/m2-planet`
+had drifted **56 commits** past the pin, so the patch series would not apply to
+it and micro-c could not be built locally at all. At the pin, all patches apply
+and the binary is byte-identical to CI's.
+
+What a sandbox needs, none of which it can fetch for itself:
+
+| piece | why | where from |
+|---|---|---|
+| M2-Planet at `bd2fe4b` | build micro-c | now vendored at `spikes/reference/m2-planet` |
+| `qemu-aarch64-static` | RUN aarch64 output on an x86_64 host | `.github/workflows/local-toolbox.yml` |
+| tcc at the pin, configured | `tcc.h:27` includes a generated `config.h` | same workflow |
+
+`local-toolbox.yml` packs the last two into one artifact. It asserts the runner
+is x86_64 — a `qemu-aarch64-static` built for aarch64 emulates aarch64 on
+aarch64 and is useless — and it proves the emulator works by running a real
+aarch64 binary under the copy it is about to upload, rather than claiming it.
+
+With those, the whole loop is local: micro-c builds in seconds, `libtcc.c`
+compiles in 26 s, the link produces a 1.52 MB aarch64 binary, and it runs under
+the emulator. An instrumented round is about a minute. Every finding in
+**Later rounds** above came out of that loop, and several of them were wrong
+first — cheaply.
+
+**The sandbox does not persist.** Each session starts empty and needs those
+uploads again.
+
+---
+
 ## Honest limits of the case suite
 
-22 passing cases is 22 constructs behaving as gcc does. It is **not** a claim
-about micro-c generally, because most cases were written *from* bugs already
-found — they measure what has been fixed, not what remains.
+48 cases, 45 passing and 3 known gaps. That is 45 constructs behaving as gcc
+does. It is **not** a claim about micro-c generally, because most cases were
+written *from* bugs already found — they measure what has been fixed, not what
+remains.
+
+Three failures of the suite itself are worth more than the count:
+
+**A case can pass because both sides are broken identically.** Case 43 checked
+`&(x)` against `&x` and required them equal. Both loaded the member, so they
+agreed, and it passed. It is anchored to a real address now. A case comparing
+two forms of one construct tests only that they are consistent.
+
+**A case can fail for another case's reason.** Case 27 used a global array to
+test argument lists, so it failed on the global-array bug and would have gone
+green when that was fixed, teaching nothing about argument lists. Its array is
+local now.
+
+**A case suite can be structurally blind.** Every array-of-pointers probe used
+`long*`, where the element width and the pointed-at width are both 8 — so no
+case could detect a wrong choice between them. Three green rounds passed while
+tcc did not move. Case 31 makes the two numbers differ by six.
 
 The cases written for constructs that had **never** failed are the ones that
 earned their keep: nine of them, eight passed, and the ninth found `*p++ = x`
@@ -281,13 +536,36 @@ means either the gap closed or the case stopped testing what it claims.
 ```
 patches/m2-planet/            0001-0004, the base fixes
 patches/micro-c-experiments/  the enhancement series + README.txt (the long history)
-patches/m2libc/               free(NULL) is a no-op; malloc reports refused sizes
+patches/m2libc/               free(NULL), malloc reporting, va_copy's argument
+                              order, and three wrong aarch64 encodings
 patches/tcc-debug/            write() markers ONLY -- no logic, scratch copy, never the control
 patches/tcc-arm64-asm/        pre-existing: the ARM64 assembler upstream tcc lacks
 micro-c-libc/                 headers and impl/ -- the runtime under tcc
-tools/                        difftest, vocabulary, regression, instrument
-tools/cases/                  one C file per construct
+tools/                        difftest, vocabulary, regression, instrument, verify_defs
+tools/cases/                  one C file per construct, 48 of them
 ```
+
+20 patches build micro-c and 4 patch M2libc. Both workflows assert the count,
+because a missing codegen patch looks exactly like a codegen bug.
 
 `patches/micro-c-experiments/README.txt` is the working log — every wrong turn,
 what it cost, and what settled it. It is long and it is the honest record.
+`tools/README.txt` continues it round by round.
+
+---
+
+## The next piece of work
+
+Not another one-liner. Nine of the bugs above are "one rule, several
+implementations, and the copies disagree", and the remaining blocker is the
+same information loss seen from the other side: `promote_type` folds the
+pointee type away before the operator is handled, which is why
+`scale_pointer_operand` fixed two cases and broke a third, and why the load
+decision is spread over nineteen sites that each carry a different subset of
+the guards.
+
+The fix is to carry the type on the expression instead of in a global, and to
+have one function answer "load or address, and how wide". That is a refactor
+of every site that reads the flags, and it wants the case suite as a net —
+which is why the suite came first, and why its three structural failures above
+are worth reading before trusting it.
