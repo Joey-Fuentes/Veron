@@ -1,0 +1,122 @@
+An expanded token is at the invocation, not at the #define.
+
+__LINE__ inside a macro body expanded to the line the macro was DEFINED on --
+the same number at every call site. Found while instrumenting tcc:
+
+    #define tcc_free(ptr)   tcc_free_at(ptr, __LINE__)        tcc.h:1229
+
+Every tcc_free in the program reported 1229. tcc uses __LINE__ in tcc_error,
+in MEM_DEBUG, and in tcc_strdup_debug(str, __FILE__, __LINE__), so every line
+number tcc printed was the line of a macro definition in a header -- including
+the ones this spike has been reading as evidence.
+
+WHY. insert_tokens copied each expansion token's position from the token it was
+copied FROM: a token in the replacement list, whose line is the line of the
+`#define`. __FILE__ had the same problem.
+
+THE FIRST FIX WAS WRONG IN A WAY WORTH RECORDING. Taking the position from the
+insertion point -- `point->linenumber` -- looks obviously right, and is right
+for an object-like macro. For a FUNCTION-LIKE macro the caller's token pointer
+has already advanced past the argument list by the time the splice happens, so
+it can be sitting on the next line entirely. A call on line 7 reported 8.
+
+The measurement that caught it was one fputs in insert_tokens printing the
+position it was about to use. The fix is to capture the position at ENTRY to
+maybe_expand, before anything is consumed, and pass it down.
+
+Case 64 probes both forms deliberately, including a function-like macro whose
+argument list runs onto the next line -- the shape that made the off-by-one
+visible.
+
+WHY IT MATTERS BEYOND tcc's DIAGNOSTICS. Two rounds of this spike were spent
+reading numbers that turned out to be meaningless: a difftest bitmask above 127
+that the tool had already disowned, and four stale marks.txt files. This is the
+third instance of the same class and the only one that was the COMPILER lying
+rather than the harness -- and unlike those two, it would have gone on lying
+quietly in every error message tcc ever printed.
+
+MEASURED
+
+    difftest      62 -> 63 pass, both architectures, nothing regressed
+    vocabulary    clean on five architectures
+    corpus        423 of 426 on aarch64
+
+diff --git a/cc_macro.c b/cc_macro.c
+index 8105ffd..46addad 100644
+--- a/cc_macro.c
++++ b/cc_macro.c
+@@ -116,7 +116,7 @@ void eat_newline_tokens(void)
+ }
+ 
+ /* returns the first token inserted; inserts *before* point */
+-struct token_list* insert_tokens(struct token_list* point, struct token_list* token)
++struct token_list* insert_tokens(struct token_list* point, struct token_list* token, char* at_file, int at_line)
+ {
+ 	struct token_list* copy;
+ 	struct token_list* first = NULL;
+@@ -125,8 +125,33 @@ struct token_list* insert_tokens(struct token_list* point, struct token_list* to
+ 	{
+ 		copy = calloc(1, sizeof(struct token_list));
+ 		copy->s = token->s;
+-		copy->filename = token->filename;
+-		copy->linenumber = token->linenumber;
++
++		/* AN EXPANDED TOKEN IS AT THE INVOCATION, NOT AT THE #define.
++		 *
++		 * These copies carried the position of the token they were copied
++		 * FROM -- a token in the macro's replacement list, whose line is the
++		 * line of the `#define`. So __LINE__ inside a macro body expanded to
++		 * the line the macro was DEFINED on, the same number at every call
++		 * site:
++		 *
++		 *     #define tcc_free(ptr)  tcc_free_at(ptr, __LINE__)   tcc.h:1229
++		 *
++		 * Every tcc_free in the program reported 1229. tcc uses __LINE__ in
++		 * tcc_error, in MEM_DEBUG and in tcc_strdup_debug(str, __FILE__,
++		 * __LINE__), so every line number tcc printed was the line of a macro
++		 * definition in a header.
++		 *
++		 * The position is passed in rather than read from `point`. For a
++		 * FUNCTION-LIKE macro the caller's token pointer has already advanced
++		 * past the argument list by the time the splice happens -- it can sit
++		 * on the next line entirely -- so `point` is not the invocation. The
++		 * first attempt at this fix used point->linenumber and reported 8 for
++		 * a call on line 7. Captured at entry to maybe_expand instead, before
++		 * anything is consumed. This fixes __FILE__ the same way and makes an
++		 * error inside an expansion point at the call rather than the
++		 * header. */
++		copy->filename = at_file;
++		copy->linenumber = at_line;
+ 		/* AND HERE TOO. This is the SECOND field-by-field token copy in this
+ 		 * file, and it is the one on the path that actually matters: the paint
+ 		 * was being applied, carried through copy_token, and then dropped
+@@ -1007,6 +1032,10 @@ extern int expand_depth;
+ 
+ struct token_list* maybe_expand(struct token_list* token)
+ {
++	/* CAPTURED BEFORE ANYTHING IS CONSUMED -- see insert_tokens. */
++	char* invocation_file;
++	int invocation_line;
++
+ 	if(NULL == token)
+ 	{
+ 		line_error_token(macro_token);
+@@ -1021,6 +1050,9 @@ struct token_list* maybe_expand(struct token_list* token)
+ 	 * the direct `#define FOO FOO` form, but not when the self-reference sits
+ 	 * inside a function-like macro's argument list, which is the form real
+ 	 * code uses. */
++	invocation_file = token->filename;
++	invocation_line = token->linenumber;
++
+ 	if(token->no_expand)
+ 	{
+ 		return token->next;
+@@ -1298,7 +1330,7 @@ struct token_list* maybe_expand(struct token_list* token)
+ 		exit(EXIT_FAILURE);
+ 	}
+ 
+-	struct token_list* hold2 = insert_tokens(token, expansion);
++	struct token_list* hold2 = insert_tokens(token, expansion, invocation_file, invocation_line);
+ 
+ 	/* RESCAN FROM THE FIRST INSERTED TOKEN, NOT PAST IT. Returning hold2->next
+ 	 * skipped the head of every expansion, so a macro whose body STARTS with

@@ -1,0 +1,126 @@
+The allocator's bail-outs say which one, and with what.
+
+M2libc's allocator has three exit(EXIT_FAILURE) calls and not one of them
+printed anything. A program that trips one dies with status 1 and no output --
+indistinguishable from a clean `return 1` -- and one of them had been ending
+every run of the stage-3 tcc spike. Finding that took a qemu syscall trace to
+see that the exit was coming from the allocator at all.
+
+The comment above the free() one already said so, in the round that fixed
+free(NULL):
+
+    "the search below finds no matching block and falls through to the
+     exit(EXIT_FAILURE) at the end of the function -- so the program dies with
+     status 1 and NO message, which is a hard thing to trace back here"
+
+The message was never added. This adds it, and the pointer with it, which is
+the same argument patch 0002 makes for malloc: a refusal that does not say
+what it refused cannot be told from exhaustion.
+
+    M2libc: free: pointer was never returned by malloc (23077168)
+
+That one line is what turned "mc-tcc exits 1 for no visible reason" into a
+located problem.
+
+diff --git a/stdlib.c b/stdlib.c
+index c37a9c9..e719592 100644
+--- a/stdlib.c
++++ b/stdlib.c
+@@ -82,6 +82,64 @@ void __init_malloc()
+  * The free function however is rarely called, so it can kick sand and  *
+  * do things the hard way                                               *
+  ************************************************************************/
++/* SAY WHICH BAIL-OUT IT WAS, AND WITH WHAT.
++ *
++ * The allocator had three exit(EXIT_FAILURE) calls and not one of them printed
++ * anything. A program that trips one dies with status 1 and NO output, which
++ * is indistinguishable from a clean `return 1` -- and one of them had been
++ * ending every run of the stage-3 tcc spike. It took a syscall trace to see
++ * that the exit was even coming from here, and the comment above the free()
++ * one already says a previous round lost time to exactly that:
++ *
++ *     "so the program dies with status 1 and NO message, which is a hard thing
++ *      to trace back here"
++ *
++ * That note was written when free(NULL) was fixed and the silence was left in
++ * place. This is the same argument M2libc patch 0002 makes for malloc: a
++ * refusal that does not say what it refused cannot be told from exhaustion.
++ *
++ * write() and a local formatter, not fputs and int2str: in M2libc's own build
++ * order stdlib.c is compiled BEFORE stdio.c and bootstrappable.c, so neither
++ * of those exists yet. */
++void _malloc_die(char* why, long value)
++{
++	char digits[24];
++	int j;
++	long x;
++	int n;
++
++	n = 0;
++	while(why[n] != 0) n = n + 1;
++	write(2, "M2libc: ", 8);
++	write(2, why, n);
++	write(2, " (", 2);
++
++	x = value;
++	if(x < 0)
++	{
++		write(2, "-", 1);
++		x = 0 - x;
++	}
++	if(0 == x) write(2, "0", 1);
++	else
++	{
++		j = 0;
++		while(x != 0)
++		{
++			digits[j] = 48 + (x % 10);
++			j = j + 1;
++			x = x / 10;
++		}
++		while(j != 0)
++		{
++			j = j - 1;
++			write(2, digits + j, 1);
++		}
++	}
++	write(2, ")\n", 2);
++	exit(EXIT_FAILURE);
++}
++
+ void _malloc_insert_block(struct _malloc_node* n, int used)
+ {
+ 	/* Allocated block doesn't care about order */
+@@ -94,9 +152,9 @@ void _malloc_insert_block(struct _malloc_node* n, int used)
+ 	}
+ 
+ 	/* sanity check garbage */
+-	if(_NOT_IN_USE != used) exit(EXIT_FAILURE);
+-	if(_NOT_IN_USE != n->used) exit(EXIT_FAILURE);
+-	if(NULL != n->next) exit(EXIT_FAILURE);
++	if(_NOT_IN_USE != used) _malloc_die("_malloc_insert_block: used flag is not _NOT_IN_USE", used);
++	if(_NOT_IN_USE != n->used) _malloc_die("_malloc_insert_block: node used flag is not _NOT_IN_USE", n->used);
++	if(NULL != n->next) _malloc_die("_malloc_insert_block: node already has a next", (long)n->next);
+ 
+ 	/* Free block really does care about order */
+ 	struct _malloc_node* i = _free_list;
+@@ -173,8 +231,7 @@ void free(void* ptr)
+ 	}
+ 
+ 	/* we received a pointer to a block that wasn't allocated */
+-	/* Bail *HARD* because I don't want to cover this edge case */
+-	exit(EXIT_FAILURE);
++	_malloc_die("free: pointer was never returned by malloc", (long)ptr);
+ #endif
+ 	/* if free is disabled, there is nothing to do */
+ 	return;
+@@ -368,8 +425,7 @@ void* realloc(void* ptr, unsigned size)
+ 	{
+ 		/* Same behavior as the normal free */
+ 		/* we received a pointer to a block that wasn't allocated */
+-		/* Bail *HARD* because I don't want to cover this edge case */
+-		exit(EXIT_FAILURE);
++		_malloc_die("realloc: pointer was never returned by malloc", (long)ptr);
+ 	}
+ 
+ 	copy_size = old_alloc_size;

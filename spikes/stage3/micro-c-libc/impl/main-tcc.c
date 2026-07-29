@@ -36,6 +36,7 @@ static void mark(char* s) { write(2, s, 3); }   /* 3, not 4: "D1\n" is three
                                                  * the log into a binary file */
 
 #define TCC_OUTPUT_EXE 2
+#define TCC_OUTPUT_OBJ 3
 
 int main(int argc, char** argv)
 {
@@ -43,6 +44,7 @@ int main(int argc, char** argv)
     char* input = 0;
     char* output = "a.out";
     int i = 1;
+    int output_type = TCC_OUTPUT_EXE;
 
     if(argc < 2)
     {
@@ -59,9 +61,17 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    tcc_set_output_type(s, TCC_OUTPUT_EXE);
-    mark("D3\n");
-
+    /* OPTIONS FIRST, THEN THE OUTPUT TYPE. tcc.c does exactly this --
+     * tcc_parse_args at tcc.c:301, tcc_set_output_type at tcc.c:357 -- and
+     * this driver had them the other way round.
+     *
+     * tcc_set_output_type is what resolves the library paths and goes looking
+     * for crt1.o and crti.o. Calling it before -B and -L have been applied
+     * makes it search the wrong directories, and the two "file not found"
+     * errors it raises set the error count, after which tcc_add_file declines
+     * to do anything. Every run of this driver has ended that way, and it was
+     * read as a compiler problem for several rounds. It is a driver problem:
+     * four lines in the wrong order. */
     while(i < argc)
     {
         if(0 == strcmp(argv[i], "-o"))
@@ -77,6 +87,17 @@ int main(int argc, char** argv)
         else if('-' == argv[i][0] && 'I' == argv[i][1])
         {
             tcc_add_include_path(s, argv[i] + 2);
+        }
+        else if(0 == strcmp(argv[i], "-c"))
+        {
+            /* -c HAS TO REACH tcc_set_output_type, NOT JUST tcc_set_options.
+             * The driver used to hardcode TCC_OUTPUT_EXE and call it anyway,
+             * so tcc reported "-c: overriding compiler action already
+             * specified" and went on trying to link -- which needs crt1.o and
+             * crti.o and fails without them. Compiling to an object asks the
+             * question this spike is actually about, and asks it without a C
+             * runtime present at all. */
+            output_type = TCC_OUTPUT_OBJ;
         }
         else if('-' == argv[i][0])
         {
@@ -97,10 +118,18 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    tcc_set_output_type(s, output_type);
+    mark("D3\n");
+
     mark("D4\n");
-    if(tcc_add_file(s, input) < 0)
+    int addrc = tcc_add_file(s, input);
+    if(addrc < 0)
     {
-        puts("compilation failed");
+        /* write(), not puts(): puts goes through stdio buffering and a buffer
+         * that is never flushed loses exactly the evidence being collected --
+         * the same reason mark() uses write. This message was invisible for
+         * one round because of it. */
+        write(2, "compilation failed\n", 19);
         return 1;
     }
 

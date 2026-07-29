@@ -81,7 +81,7 @@ for p in "$ROOT"/spikes/stage3/patches/m2-planet/[0-9]*.patch \
     n=$((n + 1))
 done
 echo "  $n patches applied"
-[ "$n" -ge 32 ] || { echo "  FAIL: expected at least 32, got $n"; exit 1; }
+[ "$n" -ge 33 ] || { echo "  FAIL: expected at least 33, got $n"; exit 1; }
 
 gcc -w -o micro-c \
     m2-planet/cc.c m2-planet/cc_core.c m2-planet/cc_emit.c \
@@ -150,7 +150,7 @@ for p in "$ROOT"/spikes/stage3/patches/m2libc/[0-9]*.patch; do
     n=$((n + 1))
 done
 echo "  $n patches applied"
-[ "$n" -ge 5 ] || { echo "  FAIL: expected at least 5, got $n"; exit 1; }
+[ "$n" -ge 6 ] || { echo "  FAIL: expected at least 6, got $n"; exit 1; }
 
 # TRAP 3. Assert the encoding fix is present in the table that will be
 # assembled with. "The patch was applied" and "the fix is there" are different
