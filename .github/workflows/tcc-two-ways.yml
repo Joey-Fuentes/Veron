@@ -661,11 +661,32 @@ jobs:
           # not scaled" are two different one-line fixes that look the same
           # from outside.
           #
-          # Four shapes in ONE file so the emissions can be read side by side.
-          # plain_global is the control: case 18 says it works, so its M1 is
-          # what correct looks like for the same array.
+          # ROUND 4 ADDS THE POINTER-TO-STRUCT SHAPES, and they are the
+          # reason this step exists again.
+          #
+          # &g[i] on long and long* is fixed and passing (cases 24, 29, 30).
+          # The same shape on an array of pointers TO A STRUCT segfaults
+          # (cases 28 and 31) -- while tcc's own `TokenSym *hash_ident[16384]`,
+          # which is that shape, started working in the same run. Those two
+          # facts do not fit together and no amount of reasoning from outside
+          # will settle which one is misleading.
+          #
+          # What settles it is the SCALE CONSTANT. postfix_expr_array emits
+          #     mov_x14,N ; mul_x0,x14,x0
+          # and N is the element width it chose. For `struct Big* t[64]` the
+          # right N is 8 and the wrong one is sizeof(struct Big) = 48. Reading
+          # N off the emission answers it directly instead of by inference.
+          #
+          # bigptr_* is the failing shape, longptr_* the passing one, and
+          # plain_bigptr the control that never went through Address_of.
           cat > /tmp/shape.c <<'ENDC'
-          static long g[4];
+          struct Big { long a; long b; long c; long d; long e; long f; };
+
+          static long        g[4];
+          static struct Big  items[4];
+          static struct Big* bigtab[64];
+          static long*       longtab[64];
+          static long        target;
 
           long via_global(void)
           {
@@ -695,15 +716,64 @@ jobs:
               return p[2];
           }
 
+          /* THE FAILING SHAPE: an array of pointers to a 48-byte struct.
+             Right scale 8, wrong scale 48. */
+          long bigptr_addr(void)
+          {
+              struct Big** pp;
+              struct Big*  q;
+              pp = &bigtab[40];
+              q = *pp;
+              return q->a;
+          }
+
+          /* the same access WITHOUT address-of -- this path was always
+             correct, so its scale constant is the reference */
+          long plain_bigptr(void)
+          {
+              struct Big* q;
+              q = bigtab[40];
+              return q->a;
+          }
+
+          /* THE PASSING SHAPE: identical but the element points at a long,
+             where ->size and ->type->size are both 8 and no choice between
+             them can be observed. */
+          long longptr_addr(void)
+          {
+              long** pp;
+              long*  q;
+              pp = &longtab[40];
+              q = *pp;
+              return *q;
+          }
+
           int main(void)
           {
               g[2] = 5;
-              return via_global() + via_local() + plain_global() + decay_global();
+              items[0].a = 11;
+              target = 22;
+              bigtab[40] = &items[0];
+              longtab[40] = &target;
+              return via_global() + via_local() + plain_global() + decay_global()
+                   + bigptr_addr() + plain_bigptr() + longptr_addr();
           }
           ENDC
           ./micro-c --architecture aarch64 --max-string 65536 \
             -f /tmp/shape.c -o /tmp/shape.M1 || { echo "  micro-c refused it"; exit 0; }
-          for f in via_global plain_global decay_global via_local; do
+
+          # THE SCALE CONSTANTS, PULLED OUT FIRST. The full emissions are
+          # below and worth reading, but the one number this round turns on
+          # is N in `mov_x14,N` immediately before a `mul`.
+          echo "  --- element width chosen per function ---"
+          awk '
+            /^:FUNCTION_/ { fn = substr($0, 11) }
+            /^mov_x14,/   { last = $0 }
+            /^mul_x0,x14,x0/ { printf "    %-16s %s\n", fn, last }
+          ' /tmp/shape.M1
+          echo "    (bigptr_addr should match plain_bigptr; 8 is right, 48 is wrong)"
+
+          for f in bigptr_addr plain_bigptr longptr_addr via_global plain_global decay_global via_local; do
             echo "  ===== $f ====="
             awk -v want=":FUNCTION_$f" '
               $0 == want { on = 1 }
