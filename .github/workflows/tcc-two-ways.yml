@@ -412,19 +412,6 @@ jobs:
           }
           echo "  ldr_x0,8 and b_12 are byte-identical to real as"
 
-      - name: 'SUBJECT: the 64-bit immediate macros, RUN natively'
-        run: |
-          set -eu
-          # The same script the development machine runs under the emulator,
-          # run here on real hardware -- which answers the one caveat qemu
-          # cannot. It reads BOTH HALVES of a 64-bit constant back out of the
-          # literal pool, because a form that loaded only the low 32 bits --
-          # the exact bug this vocabulary exists to fix -- passes a low-byte
-          # check and would have confirmed the broken behaviour.
-          mkdir -p imm64-work && cp -r m2libc-patched imm64-work/m2libc
-          mkdir -p imm64-work/mescc-bin && cp M1 hex2 imm64-work/mescc-bin/
-          sh spikes/stage3/tools/verify-imm64.sh "$PWD/imm64-work"
-
       - name: 'SUBJECT: assemble and link'
         run: |
           set -eu
@@ -483,6 +470,24 @@ jobs:
           chmod +x mc-realloc
           printf '  micro-c tcc: %s bytes  sha %s\n' \
             "$(stat -c%s mc-tcc-bin)" "$(sha256sum mc-tcc-bin | cut -c1-16)"
+
+      - name: 'SUBJECT: the 64-bit immediate macros, RUN natively'
+        # PLACED AFTER 'assemble and link', WHICH IS WHERE M1 AND hex2 ARE
+        # BUILT (M1-macro.c is compiled at the top of that step). Putting this
+        # beside the byte-anchor -- which needs nothing but binutils -- looked
+        # tidier and failed with 'cp: cannot stat M1'. The two checks answer
+        # different questions and have different prerequisites.
+        run: |
+          set -eu
+          # The same script the development machine runs under the emulator,
+          # run here on real hardware -- which answers the one caveat qemu
+          # cannot. It reads BOTH HALVES of a 64-bit constant back out of the
+          # literal pool, because a form that loaded only the low 32 bits --
+          # the exact bug this vocabulary exists to fix -- passes a low-byte
+          # check and would have confirmed the broken behaviour.
+          mkdir -p imm64-work && cp -r m2libc-patched imm64-work/m2libc
+          mkdir -p imm64-work/mescc-bin && cp M1 hex2 imm64-work/mescc-bin/
+          sh spikes/stage3/tools/verify-imm64.sh "$PWD/imm64-work"
 
       - name: 'SUBJECT: vocabulary check, EVERY architecture'
         run: |
