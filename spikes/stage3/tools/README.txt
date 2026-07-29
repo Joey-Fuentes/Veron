@@ -449,3 +449,69 @@ Failing at the difftest step itself would abort the job and skip every probe
 and the instrumented run, so a red round would cost as much as a green one and
 tell us less. The step records its result; a final step reads it and fails.
 Evidence first, verdict after.
+
+=============================================================================
+ROUND 1 RESULT: THE PAIR ANSWERED
+
+    24-address-of-global-index      returns 1   FAILS
+    25-address-of-local-index       -           passes
+    26-address-of-member-index      -           passes
+    18-array-of-struct-member       -           passes (already did)
+
+The identical shape passes on a local and fails on a global. That is what the
+pair was for, and it narrows the fault at tccpp.c:509 from "somewhere in the
+address computation" to the global path specifically.
+
+24 returns 1, which is its FIRST check -- `p = &g[3]; if (*p != 103)`. So the
+plain read through the computed address is already wrong, and the eight probes
+after it are unmeasured. That is the right shape for a regression test and the
+wrong one for a diagnosis, which is why 29 exists.
+
+THE INSTRUMENTER FIX PAID FOR ITSELF ON THE SAME ROUND
+
+With loop bodies braced, tok_alloc's hash loop reports
+
+    P26  h = TOK_HASH_FUNC(h, ((unsigned char *)str)[i])   x2
+    P74  c = *r++                                          x3
+
+Three characters scanned including the terminator, two hash rounds: len is 2
+and `tok_alloc(p, r - p - 1)` computed it CORRECTLY. Before the fix the same
+loop reported x1, and x1 was read as evidence that the pointer difference was
+broken. It is not. That reading was wrong and the round would have been spent
+on it.
+
+A CASE THAT FAILS FOR ANOTHER CASE'S REASON IS WORSE THAN NO CASE
+
+27-address-of-index-in-arglist used a GLOBAL array, so it failed -- on 24's
+bug, not on anything to do with argument lists. It would have gone green when
+the global path was fixed and nobody would have learned whether the construct
+it names works. Its array is local now. Locals pass, so a failure there means
+the argument list.
+
+29 IS A DIAGNOSTIC, NOT A REGRESSION TEST, AND RETURNS A BITMASK
+
+Every other case returns at the first failure. 29 sets a bit per probe and
+keeps going, so one number describes the whole shape:
+
+    1 &g[0]   2 &g[3]   4 g[3] plain   8 write   16 decay
+   32 &g[i]  64 char element  128 array of pointers
+
+Bits 2|1 set with bit 4 clear means plain indexing of a global is fine and only
+ADDRESS-OF an indexed global is wrong -- one site, one fix. Bit 4 set means
+global arrays are wrong generally and the fix is elsewhere. Case 18 makes the
+second unlikely; 29 settles it instead of assuming.
+
+THE JOB WAS NOT HANGING
+
+After the marker map prints, the instrumented libtcc.c is recompiled -- 55
+seconds, silent. In a live log the last line is the map's last marker, so the
+job reads as stuck at a tccpp_new statement. It is now announced.
+
+WHAT THE EMIT STEP IS FOR
+
+difftest names the construct. It cannot say whether the base was loaded
+instead of decayed, or the index was not scaled -- two different one-line
+fixes that look identical from outside. The emit step compiles four shapes of
+the same access and prints the M1 for each, with plain_global as the control:
+case 18 says that one works, so its emission is what correct looks like for
+the same array.

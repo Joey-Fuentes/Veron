@@ -10,8 +10,15 @@
  * Two arguments, so the second is evaluated after the first has already set and
  * consumed the flags once -- which is the condition a single-argument case
  * cannot create.
+ *
+ * THE ARRAY IS LOCAL ON PURPOSE. It was global in the first version of this
+ * case, and the case duly failed -- but so did 24, on the same global-array
+ * bug, so this one indicted argument lists for something globals were doing.
+ * A case that fails for another case's reason is worse than no case: it will
+ * go green when that bug is fixed and nobody will have learned whether the
+ * construct it names actually works. Locals pass (case 25), so a failure here
+ * now means the argument list.
  */
-static long slots[8];
 static long seen_a;
 static long seen_b;
 
@@ -28,6 +35,7 @@ static long deref(long* a)
 
 int main(void)
 {
+    long slots[8];
     int i;
     int j;
 

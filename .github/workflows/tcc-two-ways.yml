@@ -551,6 +551,14 @@ jobs:
             mc-tcc/tccpp.c "$PPFUNC" > /tmp/instpp.c 2>/dev/null \
             && cp /tmp/instpp.c mc-tcc/tccpp.c
 
+          # THE MAP IS PRINTED, THEN NOTHING HAPPENS FOR ABOUT A MINUTE.
+          #
+          # What follows is a full micro-c recompile of libtcc.c -- the same
+          # ~55 seconds step 10 takes -- and it emits nothing while it runs.
+          # In a live log the last line is the final marker of the map, so the
+          # job reads as hung at whatever tccpp_new statement happened to be
+          # last. Saying so costs one line.
+          echo "  --- recompiling instrumented libtcc.c (about a minute, silent) ---"
           L="$PWD/spikes/stage3/micro-c-libc"
           cd mc-tcc
           ../micro-c --architecture aarch64 --expand-includes --max-string 65536 \
@@ -631,6 +639,75 @@ jobs:
             echo "  exit 0: it ran to completion"
           fi
 
+
+      # Evidence, and it must survive a red gate -- hence if: always().
+      # A step without it is SKIPPED when an earlier step fails, and the whole
+      # point of this one is to be read on the round where things are broken.
+      - name: 'SUBJECT: what micro-c EMITS for &global[i] vs &local[i]'
+        if: always()
+        continue-on-error: true
+        run: |
+          set -eu
+          # THE DIFFTEST SAYS WHICH CONSTRUCT IS WRONG. THIS SAYS HOW.
+          #
+          # Case 24 (&global[i]) fails; case 25, the identical shape on a
+          # local, passes; case 18 indexes a global array of structs and
+          # passes. That localises the bug but not to a line of cc_core.c,
+          # and "the base was loaded instead of decayed" and "the index was
+          # not scaled" are two different one-line fixes that look the same
+          # from outside.
+          #
+          # Four shapes in ONE file so the emissions can be read side by side.
+          # plain_global is the control: case 18 says it works, so its M1 is
+          # what correct looks like for the same array.
+          cat > /tmp/shape.c <<'ENDC'
+          static long g[4];
+
+          long via_global(void)
+          {
+              long* p;
+              p = &g[2];
+              return *p;
+          }
+
+          long via_local(void)
+          {
+              long l[4];
+              long* p;
+              l[2] = 7;
+              p = &l[2];
+              return *p;
+          }
+
+          long plain_global(void)
+          {
+              return g[2];
+          }
+
+          long decay_global(void)
+          {
+              long* p;
+              p = g;
+              return p[2];
+          }
+
+          int main(void)
+          {
+              g[2] = 5;
+              return via_global() + via_local() + plain_global() + decay_global();
+          }
+          ENDC
+          ./micro-c --architecture aarch64 --max-string 65536 \
+            -f /tmp/shape.c -o /tmp/shape.M1 || { echo "  micro-c refused it"; exit 0; }
+          for f in via_global plain_global decay_global via_local; do
+            echo "  ===== $f ====="
+            awk -v want=":FUNCTION_$f" '
+              $0 == want { on = 1 }
+              on && /^:FUNCTION_/ && $0 != want { exit }
+              on { print "    " $0 }
+            ' /tmp/shape.M1
+          done
+          cp /tmp/shape.M1 "$GITHUB_WORKSPACE/shape.M1"
 
       # =================================================================
       # THE GATE. Runs last so that a red job still carries a full round of
