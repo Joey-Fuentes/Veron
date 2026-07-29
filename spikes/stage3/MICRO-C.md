@@ -69,13 +69,27 @@ so the fault is in its caller, in tccgen, outside the instrumented set. 41,852
 markers. Per this step's own warning, a fault outside the set appears as the
 last marker inside it, so that line is a boundary and not a site.
 
-**Do not diagnose it yet.** The `<command line>:27` warning above is
-`#if __STDC_VERSION__>=201112L`, and it fires because every integer literal is
-truncated to 32 bits (see the table below): `parse_number` tests
-`n >= 0x8000000000000000ULL`, that literal is 0, the test is `n >= 0`, and the
-same statement marks the constant **unsigned**. Every constant this tcc reads
-is therefore mis-typed, which is a plausible cause of the tccgen fault. Fix the
-literals first or risk explaining a symptom.
+**Now diagnose it.** This file said "do not diagnose it yet" for three
+rounds, because every integer literal was truncated to 32 bits: `parse_number`
+tests `n >= 0x8000000000000000ULL`, that literal was 0, the test was `n >= 0`,
+and the same statement marked the constant **unsigned**. Every constant this
+tcc read was mis-typed, which is not a thing to explain a segfault on top of.
+`EXPERIMENT-zzb` closed it and the warning is gone.
+
+**It did not move the marker.** The fault is still P151 and the count went
+41,852 to 41,790. That is stated first and plainly, because the last time this
+series recorded a cause it was wrong for four rounds, and what settled it was
+re-running the trail and finding it had not moved. zzb removed a **confound**,
+which is all it claimed to do. The fault is now worth diagnosing on its own
+terms rather than through corrupted types.
+
+**One new observation, undiagnosed.** The `<command line>:27` warning did not
+disappear -- it CHANGED, from "integer constant overflow" to "extra tokens
+after directive". Same line, a different complaint. It is not yet known whether
+that is tcc reading a directive correctly for the first time or a second bug
+the first one was masking, and guessing which is exactly the move this file
+keeps recording as a mistake. Dumping the `<command line>` buffer is a minute's
+work and has not been done.
 
 **`EXPERIMENT-zza` is what moved it, and the diagnosis that preceded it was
 wrong for four rounds.** The fault was recorded here as being in macro
@@ -250,10 +264,11 @@ a 200-operator file from 83 MB to 3.4 MB.
 |---|---|
 | `int` is EIGHT bytes | every struct differs from a normal ABI; three of our own headers had wrong layouts because of it |
 | ~~pointer arithmetic does not scale~~ | **CLOSED, `EXPERIMENT-zz7`.** All four shapes (`p+n`, `n+p`, `p-n`, `p-q`) scale; cases 21 and 50. It was never the blocker -- see the correction above. The shelved `scale_pointer_operand` failed for a reason this file did not have: **an integer literal had no type**, so `q + 1` reported a pointer on *both* sides and read as a difference. Three further losses had to go with it -- see the patch preamble |
-| **every integer literal is truncated to 32 bits** | `0x100000000` is 0, `0x7fffffffffffffff` is `0xffffffff`. `strtoint` returns `int` and micro-c is built by gcc, so it cannot REPRESENT a 64-bit constant in the source it compiles. This is why tcc warns "integer constant overflow" on every constant it reads: `parse_number` tests `n >= 0x8000000000000000ULL`, that literal is 0, so the test is `n >= 0` -- and the same statement then marks the constant **unsigned**. Silent, and semantic. 33 such literals in tcc, about half in our translation unit. `patches/m2libc/0005` lands the missing instructions; the emitter change is next |
+| ~~every integer literal is truncated to 32 bits~~ | **CLOSED, `EXPERIMENT-zzb`.** `strtoint` returns `int` AND sign-extends from bit 31, `int2str` masks to 32, and `write_load_immediate` took an `int`; built by gcc, micro-c could not REPRESENT a 64-bit constant in the source it compiles. `strtolong`/`long2str` and a `long long` emitter path close it, emitting the vocabulary `patches/m2libc/0005` landed. tcc no longer warns "integer constant overflow" on every constant it reads. Cases 53 and 54 |
+| **a constant with bit 31 set was wrong on one architecture or the other, always** | The threshold for the wide path is 2^31 rather than 2^32 because between the two there is no correct 32-bit form: aarch64's `ldr_w` zero-extends (right there, wrong for negatives) and amd64's `mov_<r>,%imm32` sign-extends (right for negatives, wrong there). 189 constants in one compile of libtcc.c sat in that range, every one of them becoming `0xFFFFFFFF80000000` on amd64. Sixth instance of the class below and the **first running the other way** -- here amd64 is the wrong column |
 | `&x` reports x's own type | One level short of what it is: there is no `T*` handed back. `EXPERIMENT-zz8` cancels it locally for `*(&x)`, the only shape that has bitten, but the under-reporting itself is untouched and will surface again |
 | ~~a negative `case` label~~ | **CLOSED, `EXPERIMENT-zz9`.** `case -2:` loaded 4294967294: the value is kept as its label SPELLING, rendered unsigned, and the jump table recovered it by `strtoint`ing the name back. Fifth instance of the class below, and the first the case suite caught on its own -- case 16 had been red on aarch64 and green on amd64 for some time |
-| **amd64 hides what aarch64 faults on -- FIVE times now** | Unaligned members, unpadded string data, struct `sizeof`, arrays of structs, and now a sign-extending `mov_rax,%imm32` making a wrong constant land on the right value. The rule this has earned: **a green amd64 difftest is not a result.** Read the second column |
+| **amd64 hides what aarch64 faults on -- FIVE times -- and once the reverse** | Unaligned members, unpadded string data, struct `sizeof`, arrays of structs, and a sign-extending `mov_rax,%imm32` making a wrong constant land on the right value. The rule this earned: **a green amd64 difftest is not a result.** `EXPERIMENT-zzb` supplies the mirror image -- 189 constants that aarch64's zero-extension put back on the right answer and amd64 got wrong -- so the rule is now symmetric: **neither column is the reference.** Read both |
 | ~~a goto label is global~~ | **CLOSED, `EXPERIMENT-zza`.** A C label is scoped to its function; this emitted the bare name flat, so tcc's five `redo:` labels collided. **This was the blocker.** M2-Planet's own source has globally unique labels, which is why upstream never needed it -- our stage 2 fixed the same thing at m58 and the note there says it is "stricter than the target requires, at no cost". It was exactly what the target required |
 | one lvalue rule, EIGHT implementations | Beside the nineteen load sites, `cc_core.c` decides "is this an assignment target" in eight places, and **three have been found missing a case the others had, one per round**. Same disease, worth its own row: it is the one that has cost tcc the most |
 | `float`/`double`/`long double` | one word-sized integer type |
@@ -426,6 +441,7 @@ the slow way first.
 | `instrument.py` | which statement did execution last complete? | one build, ~1 min local |
 | `verify_defs.py` | does each aarch64 macro ENCODE what its name says? | static, instant |
 | `verify-imm64.sh` | do the 64-bit immediate macros DO what they claim? | ~5 s, local under the emulator; native in CI |
+| `imm-identity.sh` | did widening the immediate path move anything below the threshold? | ~10 s, local, both architectures |
 
 **`difftest.sh` should have existed on day one.** micro-c targets amd64 and the
 development machine *is* amd64, so its output can be compiled, linked and **run**
@@ -620,7 +636,7 @@ fresh session needs only the repository.
 
 ## Honest limits of the case suite
 
-52 cases, 51 passing and 1 known gap, on both architectures. That is 51
+54 cases, 53 passing and 1 known gap, on both architectures. That is 53
 constructs behaving as gcc
 does. It is **not** a claim about micro-c generally, because most cases were
 written *from* bugs already found — they measure what has been fixed, not what
@@ -681,10 +697,17 @@ what it cost, and what settled it. It is long and it is the honest record.
 
 ## The next piece of work
 
-**First, the cheap thing: diagnose the new fault.** It is after `macro_subst`
-returns into `macro_subst_tok` (tccpp.c:3396), around `tok_str_free_str`.
-`instrument.py` cannot reach it from the current set -- extend the list and
-re-run. That is a minute, not a round.
+**First, the cheap thing, and it is now unobstructed.** The fault is at the
+P151 boundary: `next()` completes and RETURNS, so the crash is in its caller in
+tccgen, which is outside the instrumented set. Extend the set into tccgen and
+re-run -- a minute, not a round. Until `EXPERIMENT-zzb` this was not worth
+doing, because every constant tcc had read was mis-typed and any explanation
+would have been an explanation of that. It is worth doing now.
+
+**And the `<command line>:27` warning that changed rather than went away.**
+Dump the buffer, count to 27, and find out whether "extra tokens after
+directive" is tcc being right or a second bug. Do not assume; that is the move
+this file records as costing four rounds.
 
 Then the structural work, which this round argued for rather than away. Nine of
 the bugs above are "one rule, several implementations, and the copies

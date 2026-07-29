@@ -179,16 +179,47 @@ jobs:
             git -C m2 apply --ignore-whitespace "../$p"
             n=$((n + 1))
           done
-          # BUMPED TO 13 with EXPERIMENT-zz-global-array-address-of.patch.
+          # BUMPED TO 25 with
+          # EXPERIMENT-zzb-an-integer-literal-is-sixty-four-bits-wide.patch.
           # The bound has to move with the series or a silently-missing patch
           # passes the check, and a missing codegen patch looks exactly like a
           # codegen bug.
-          [ "$n" -ge 24 ] || { echo "FAIL: only $n patches"; exit 1; }
+          [ "$n" -ge 25 ] || { echo "FAIL: only $n patches"; exit 1; }
           cd m2
           gcc -w -o ../micro-c cc.c cc_core.c cc_emit.c cc_globals.c \
                                cc_macro.c cc_reader.c cc_strings.c cc_types.c \
                                M2libc/bootstrappable.c
           echo "  micro-c built from $n patches"
+
+          # THE SAME COMPILER, ONE PATCH BACK, for the guard two steps below.
+          # EXPERIMENT-zzb adds an emission path that is unreachable below
+          # 0x7FFFFFFF, so the question it has to answer is not "does it work"
+          # -- difftest answers that -- but "did anything ELSE move". Only the
+          # compiler as it was immediately before can answer it, and building
+          # it costs one gcc invocation.
+          # CLONED FROM THE LOCAL m2, NOT FETCHED AGAIN. m2's working tree is
+          # dirty with the patch series; its HISTORY is the verified pin and
+          # nothing else, so a local clone lands exactly on $M2PLANET_SHA with
+          # no network and no second verification to keep in step.
+          rm -rf m2-pre
+          git clone -q m2 m2-pre
+          git -C m2-pre checkout -q "$M2PLANET_SHA"
+          git -C m2-pre submodule update --init --recursive -q
+          pre=0
+          for p in spikes/stage3/patches/m2-planet/[0-9]*.patch \
+                   spikes/stage3/patches/micro-c-experiments/EXPERIMENT-*.patch; do
+            [ -e "$p" ] || continue
+            case "$(basename "$p")" in EXPERIMENT-zzb-*) continue ;; esac
+            git -C m2-pre apply --ignore-whitespace "../$p" \
+              || { echo "FAIL (pre): $(basename "$p")"; exit 1; }
+            pre=$((pre + 1))
+          done
+          [ "$pre" = "$((n - 1))" ] \
+            || { echo "FAIL: pre tree has $pre patches, expected $((n - 1))"; exit 1; }
+          ( cd m2-pre && gcc -w -o ../micro-c-pre cc.c cc_core.c cc_emit.c \
+                             cc_globals.c cc_macro.c cc_reader.c cc_strings.c \
+                             cc_types.c M2libc/bootstrappable.c )
+          echo "  micro-c-pre built from $pre patches (the tree without zzb)"
 
       - name: 'SUBJECT: micro-c compiles tcc'
         run: |
@@ -509,6 +540,27 @@ jobs:
           # micro-c can emit EXISTS, and a patch may add one.
           sh spikes/stage3/tools/vocabulary.sh \
             "$PWD/micro-c" "$PWD/m2libc-patched"
+
+      - name: 'SUBJECT: the 64-bit widening moved nothing below the threshold'
+        run: |
+          set -eu
+          # EXPERIMENT-zzb widens every integer literal to 64 bits and adds an
+          # emission path for constants outside 0..0x7FFFFFFF. That path is
+          # UNREACHABLE below the threshold, so anything that moves down there
+          # is a bug in the WIDENING -- an int that should have become a long
+          # long, a mask written as a literal, a renderer that truncates --
+          # rather than a bug in the feature.
+          #
+          # difftest cannot ask this. It asks whether a construct behaves as
+          # gcc does; it cannot ask whether 369,000 lines of unrelated output
+          # stayed exactly where they were, which is the question a widening
+          # raises. This is a diff of the compiler against ITSELF, one patch
+          # apart, and the expected exceptions are declared in the case files
+          # rather than listed here -- a list kept in the tool drifts from the
+          # thing it describes, and then the gate gets switched off.
+          chmod +x spikes/stage3/tools/imm-identity.sh
+          sh spikes/stage3/tools/imm-identity.sh \
+            "$PWD/micro-c-pre" "$PWD/micro-c"
 
       - name: 'SUBJECT: differential test, NATIVELY on aarch64'
         continue-on-error: true

@@ -2344,3 +2344,90 @@ to work, and it was abandoned along with the patch. It appeared not to work
 because the build was being killed by the OOM reaper for an unrelated reason,
 so the fix was never actually tested. The diagnosis was right the first time
 and was discarded on the strength of a symptom that had nothing to do with it.
+
+
+================================================================================
+EXPERIMENT-zzb -- AN INTEGER LITERAL IS SIXTY-FOUR BITS WIDE
+================================================================================
+
+THE THING THAT WAS ACTUALLY IN THE WAY OF DIAGNOSING ANYTHING. Not a
+segfault -- a confound. Every constant tcc read was mis-typed, so any
+explanation of the tccgen fault would have been an explanation of that.
+
+Three separate 32-bit chokepoints, and the round before this one found only
+the third:
+
+    strtoint()              returns int AND sign-extends from bit 31 by hand
+    int2str()               masks to 32 bits
+    write_load_immediate()  takes int, and the 32-bit forms are all it had
+
+WHERE THE FIX HAD TO LIVE, WHICH IS NOT WHERE IT LOOKS. strtoint and int2str
+are M2libc's. Patching them there would have been the fourth time in this
+series that a fix landed in a copy nothing on the path reads: local-build.sh
+compiles micro-c against spikes/reference/m2libc/bootstrappable.c, the
+UNPATCHED tree, while patches/m2libc/ goes somewhere else entirely. So
+strtolong and long2str are micro-c's own, in cc_strings.c beside char2hex, the
+digit reader they use.
+
+THE TRAP INSIDE int2str, WHICH NEARLY GOT REUSED. Its unsigned path ends
+
+    i = x & (0x7FFFFFFF + 0x80000000);
+
+a 32-bit mask ONLY IF the compiler that built it reads 0x80000000 as positive.
+gcc does. M2-Planet, whose strtoint sign-extends bit 31, reads it as
+-2147483648, so the expression is -1 and the mask does nothing. int2str
+truncates or does not depending on WHICH COMPILER BUILT IT -- and after this
+patch, on whether that compiler had this patch. Splitting a 64-bit constant
+with it would have worked here and stopped working at self-compilation, which
+is the worst possible time to find out. long2str builds its mask by
+arithmetic.
+
+The first draft used int2str anyway, on exactly that reasoning ("the halves
+are non-negative, so the mask is harmless"). It was right about the halves and
+wrong about the mask.
+
+THE THRESHOLD IS 2^31 AND THE REASON IS A NEW BUG. The obvious rule is "wide
+if it does not fit 32 bits". Between 2^31 and 2^32 the two targets are wrong
+in OPPOSITE directions -- aarch64's ldr_w zero-extends, amd64's mov imm32
+sign-extends -- so there is no correct 32-bit form in that range for both.
+One compile of libtcc.c had 189 constants in it. On amd64 every one became
+0xFFFFFFFF80000000.
+
+Sixth instance of the invisible-on-one-column class, and the FIRST with the
+columns swapped. The rule this series has been carrying, "a green amd64
+difftest is not a result", now has its mirror and reads: neither column is the
+reference.
+
+TWO FAILURES WHILE WRITING IT, BOTH INSTRUCTIVE.
+
+Cases 16 and 51 stopped ASSEMBLING. long2str had been used for a switch
+label's spelling, and a switch label is a NAME -- :_SWITCH_CASE_<n>_<uid> --
+so widening it changed every label micro-c has ever emitted. Reverted to
+int2str with a comment saying why, because the guard on this patch is that the
+.M1 does not move for any constant that fits 32 bits, and a label spelling is
+exactly the kind of thing that moves without anyone deciding it should.
+
+long2str read table[negative] for a negative x rendered unsigned. int2str
+never did because its 32-bit mask made the value positive first. Without the
+mask it indexes in front of the digit table and prints whatever is there --
+silent, and it would have looked like a codegen bug. It requires now.
+
+HOW IT IS GUARDED. tools/imm-identity.sh: compile the whole corpus with the
+compiler as it was before this patch and with it after, both architectures,
+and require byte-identity everywhere except the cases that declare WIDE
+CONSTANTS in their header. 108 compilations, 104 identical, 4 declared.
+The declaration lives in the case file for the same reason KNOWN GAP does.
+
+Over the tcc unit the census closes exactly: 1,135 lines removed and 1,428
+added out of 369,433, every one of them a constant outside 0..0x7FFFFFFF, and
+the b_* count on the added side is 219 + 7, matching the load forms.
+
+WHAT IT DID NOT DO. Move the marker trail. P151 before, P151 after; 41,852
+markers to 41,790. Written down first rather than last, because the previous
+four rounds of this series recorded a cause that was wrong and what settled it
+was re-running the trail and finding it had not moved.
+
+    difftest    53 pass / 0 fail / 1 known gap, both architectures
+    vocabulary  clean on five architectures, 54 files
+    verify-imm64  11 pass / 0 fail
+    imm-identity  104 identical, 4 declared, 0 undeclared

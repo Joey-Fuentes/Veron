@@ -81,7 +81,7 @@ for p in "$ROOT"/spikes/stage3/patches/m2-planet/[0-9]*.patch \
     n=$((n + 1))
 done
 echo "  $n patches applied"
-[ "$n" -ge 24 ] || { echo "  FAIL: expected at least 24, got $n"; exit 1; }
+[ "$n" -ge 25 ] || { echo "  FAIL: expected at least 25, got $n"; exit 1; }
 
 gcc -w -o micro-c \
     m2-planet/cc.c m2-planet/cc_core.c m2-planet/cc_emit.c \
@@ -89,6 +89,38 @@ gcc -w -o micro-c \
     m2-planet/cc_strings.c m2-planet/cc_types.c \
     "$ROOT/spikes/reference/m2libc/bootstrappable.c"
 echo "  micro-c built"
+
+# ---------------------------------------------------------------------------
+# 1b. THE SAME COMPILER, ONE PATCH BACK.
+#
+# EXPERIMENT-zzb widens every integer literal to 64 bits and adds an emission
+# path that is UNREACHABLE below 0x7FFFFFFF. The guard for a change of that
+# shape is not "does it work" -- difftest answers that -- but "did anything
+# ELSE move", and the only thing that can answer it is the compiler as it was
+# immediately before. It costs one gcc invocation, which is seconds.
+# ---------------------------------------------------------------------------
+rm -rf m2-planet-pre
+cp -r "$ROOT/spikes/reference/m2-planet" m2-planet-pre
+git -C m2-planet-pre init -q
+git -C m2-planet-pre config user.email local@veron
+git -C m2-planet-pre config user.name local
+pre=0
+for p in "$ROOT"/spikes/stage3/patches/m2-planet/[0-9]*.patch \
+         "$ROOT"/spikes/stage3/patches/micro-c-experiments/EXPERIMENT-*.patch; do
+    [ -e "$p" ] || continue
+    case "$(basename "$p")" in EXPERIMENT-zzb-*) continue ;; esac
+    (cd m2-planet-pre && git apply --ignore-whitespace "$p") \
+        || { echo "  FAIL (pre): $(basename "$p")"; exit 1; }
+    pre=$((pre + 1))
+done
+[ "$pre" = "$((n - 1))" ] \
+    || { echo "  FAIL: pre-zzb tree has $pre patches, expected $((n - 1))"; exit 1; }
+gcc -w -o micro-c-pre \
+    m2-planet-pre/cc.c m2-planet-pre/cc_core.c m2-planet-pre/cc_emit.c \
+    m2-planet-pre/cc_globals.c m2-planet-pre/cc_macro.c m2-planet-pre/cc_reader.c \
+    m2-planet-pre/cc_strings.c m2-planet-pre/cc_types.c \
+    "$ROOT/spikes/reference/m2libc/bootstrappable.c"
+echo "  micro-c-pre built from $pre patches (the same tree without zzb)"
 
 # ---------------------------------------------------------------------------
 # 2. M2libc, patched. THE TABLES COME FROM HERE, NOT FROM spikes/reference.
@@ -164,6 +196,11 @@ sh "$ROOT/spikes/stage3/tools/verify-imm64.sh" "$WORK" | tail -3
 # 4. Prove it, on both architectures
 # ---------------------------------------------------------------------------
 echo
+echo "== the 64-bit widening moved nothing it should not have =="
+sh "$ROOT/spikes/stage3/tools/imm-identity.sh" \
+    "$WORK/micro-c-pre" "$WORK/micro-c" | tail -3
+
+echo
 echo "== difftest, amd64 (native) =="
 sh "$ROOT/spikes/stage3/tools/difftest.sh" \
     "$WORK/micro-c" "$WORK/m2libc" "$WORK/mescc-bin" | tail -4
@@ -177,6 +214,8 @@ cat <<EOF
 == ready ==
 
   $WORK/micro-c        the compiler
+  $WORK/micro-c-pre    the same compiler without EXPERIMENT-zzb, for the
+                       byte-identity guard only -- never assemble with it
   $WORK/m2libc         PATCHED -- assemble with this, never spikes/reference
   $WORK/mescc-bin/     M1 and hex2, M1 with the larger string buffer
 
