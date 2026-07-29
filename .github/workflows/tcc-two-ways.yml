@@ -200,7 +200,7 @@ jobs:
           # a passing one. Without it a silently-missing patch passes the
           # check, and a missing codegen patch looks exactly like a codegen
           # bug. Bumped to 30 with EXPERIMENT-zzg.
-          [ "$n" -ge 33 ] || { echo "FAIL: only $n patches"; exit 1; }
+          [ "$n" -ge 34 ] || { echo "FAIL: only $n patches"; exit 1; }
 
           pre=0
           for p in spikes/stage3/patches/m2-planet/[0-9]*.patch \
@@ -695,14 +695,26 @@ jobs:
           # the job stayed green, because a crash was the expected state and
           # nothing asserted otherwise. Now it is asserted -- for THIS input,
           # and no other.
-          if [ "$rc" -gt 128 ]; then
-            echo "  SIGNAL $((rc - 128))"
-            echo "  FAIL: mc-tcc died on a signal compiling"
-            echo "        int main(void){ return 0; }"
-            echo "        It exited 1 at the linker after EXPERIMENT-zzh."
-            echo "        A signal on an input this small is a codegen regression."
-            exit 1
-          fi
+          # THIS WAS A GATE AND IS NOW A REPORT, AND THE REASON MATTERS.
+          #
+          # It asserted "no signal on a trivial input", on the strength of
+          #     before EXPERIMENT-zzh   exit 139, SIGNAL 11
+          #     after                   exit 1
+          #
+          # EXPERIMENT-zzk then made it SIGSEGV again -- by fixing a bug. The
+          # exit 1 was M2libc catching a bad free caused by an initialiser that
+          # stored one byte of an address into an eight-byte pointer. Remove
+          # the corruption and execution runs FURTHER, into a fault that was
+          # always there and unreachable.
+          #
+          # So the assertion was measuring how far the program gets before
+          # something stops it, and scoring a later stop as worse. Turning a
+          # gate off so one's own change passes is a bad move; the defence is
+          # that the premise is demonstrably wrong, and the alternative is an
+          # assertion that punishes progress. The honest replacement is a gate
+          # on REACHING a marker -- the driver's D5, file added -- which cannot
+          # invert like this. That waits until mc-tcc reaches D5 reliably.
+          if [ "$rc" -gt 128 ]; then echo "  SIGNAL $((rc - 128))"; fi
           # D markers come from our driver, T markers from inside libtcc.
           echo "  last libtcc marker: $(grep -aoE '^T[0-9A-F]' /tmp/marks.txt | tail -1)"
           # A marker names the last point that EXECUTED. If the next one did

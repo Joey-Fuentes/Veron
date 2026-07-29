@@ -1,0 +1,127 @@
+An initialiser stores the declarator's width, not the declaration's.
+
+WHAT IT IS. In a declaration with several declarators, the initialiser's store
+used the width of the BASE type -- what type_name() returned for the whole
+declaration -- instead of the width of the declarator being initialised. They
+are the same for the first declarator and diverge the moment a later one adds
+a star:
+
+    uint8_t buf[1000], *p = buf;                      tccpp.c:2191
+
+type_size is `uint8_t`, size 1, so this emitted
+
+    sub_x0,x13,8        # &buf
+    ...
+    strb_w0,[x1]        # ONE BYTE of an address, into an eight-byte pointer
+
+`p` was DECLARED correctly -- sym_declare is handed current_type, which has the
+star applied -- so it had the right type and seven bytes of stale stack. Every
+later read loaded all eight.
+
+The declaration path already knew the right answer six lines further down: the
+comma branch does `current_type = base_type` and then walks the stars. Only the
+store did not use it.
+
+WHAT IT COST, AND WHY IT SURFACED SO FAR FROM HOME. parse_string is
+
+    uint8_t buf[1000], *p = buf;
+    ...
+    if (len >= sizeof buf) p = tcc_malloc(len + 1);
+    memcpy(p, s, len);
+    ...
+    if (p != buf) tcc_free(p);
+
+sizeof buf was right and the malloc branch was correctly skipped, so for every
+SHORT string literal tcc memcpy'd through a wild pointer and then handed it to
+free. The allocator noticed and killed the process -- with no message at all
+until M2libc patch 0006 -- which read as "mc-tcc exits 1 for no reason".
+
+WHAT IT UNBLOCKS. micro-c's tcc now compiles a file end to end:
+
+    exit=0
+    /tmp/t.o: ELF 64-bit LSB relocatable, ARM aarch64, version 1 (SYSV)
+
+That is the first object file this spike has produced. Getting there needed one
+more thing that is NOT in this patch and is not a fix: tal_free_impl walks its
+buffer list with no NULL check, and one TokenSym pointer lies outside every
+buffer on the list, so the walk runs off the end. A guard makes it complete;
+why that pointer is orphaned is not yet known and is deliberately left open
+rather than papered over.
+
+THE EXIT STATUS GOT WORSE, AND THAT IS THE PATCH WORKING.
+
+Before: exit 1. After: SIGSEGV. The old exit 1 was the allocator catching the
+bad free that THIS BUG caused; remove the corruption and execution runs further,
+into a fault that was always there and unreachable. The step-20 CI gate asserts
+"no signal on a trivial input", so it now fails.
+
+That gate is therefore measuring how far the program gets before something
+stops it, and scoring a LATER stop as worse. It is changed back to reporting in
+this commit, with the reasoning written next to it. Weakening a gate so one's
+own change passes is a bad move and this is one; the defence is that the gate's
+premise is demonstrably wrong and the alternative -- leaving an assertion that
+punishes progress -- is worse. A gate on reaching the driver's D5 marker will
+be the honest replacement once the orphan is understood.
+
+FIVE MINIMAL CASES SEPARATE IT, and only one fails:
+
+    unsigned char a[8], *p = a;      FAILS
+    int x = 1, y = 2;                ok
+    int m[4], n = 5;                 ok
+    int *p = &g, *q = &g;            ok    (base type is already 8 wide)
+    unsigned char a[8]; ... *p = a;  ok    (split into two declarations)
+
+MEASURED
+
+    difftest      63 pass / 0 fail / 1 known gap, both architectures
+    vocabulary    clean on five architectures
+    corpus        423 of 426 on aarch64
+    mc-tcc -c     produces a valid aarch64 ELF relocatable
+
+diff --git a/cc_core.c b/cc_core.c
+index afcbe42..6e6b1cf 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -4203,9 +4203,28 @@ void collect_local(void)
+ 				 * DECLARATION path kept its own store and had to learn it
+ 				 * again. Both sides are addresses, so it is the same
+ 				 * word-by-word copy, chunked 8/4/2/1. */
+-				if(register_size >= type_size->size)
++				/* THE DECLARATOR'S TYPE, NOT THE BASE TYPE.
++				 *
++				 * type_size is what type_name() returned -- the base of the
++				 * whole declaration. current_type is THIS declarator's type,
++				 * with the stars applied. They are the same for the first
++				 * declarator and diverge the moment a second one adds a `*`:
++				 *
++				 *     uint8_t buf[1000], *p = buf;        tccpp.c:2191
++				 *
++				 * Here type_size is `uint8_t`, size 1, so the initialiser
++				 * stored ONE BYTE of buf's address into an eight-byte pointer.
++				 * The declaration below it was already right -- sym_declare
++				 * gets current_type -- so `p` had the correct type and the
++				 * wrong value, and every later read loaded eight bytes of
++				 * which seven were whatever the stack held.
++				 *
++				 * parse_string then memcpy'd through that pointer on every
++				 * short string literal, and eventually handed it to free,
++				 * which is where it finally became visible. */
++				if(register_size >= current_type->size)
+ 				{
+-					emit_out(store_value(type_size->size));
++					emit_out(store_value(current_type->size));
+ 				}
+ 				else
+ 				{
+@@ -4213,9 +4232,9 @@ void collect_local(void)
+ 					emit_move(REGISTER_ZERO, REGISTER_ONE, "struct init: destination via x0");
+ 					emit_move(REGISTER_TEMP2, REGISTER_ZERO, "struct init: destination");
+ 					int done = 0;
+-					while(done < type_size->size)
++					while(done < current_type->size)
+ 					{
+-						int rem = type_size->size - done;
++						int rem = current_type->size - done;
+ 						int ch = register_size;
+ 						if(rem < 8) ch = 4;
+ 						if(rem < 4) ch = 2;
