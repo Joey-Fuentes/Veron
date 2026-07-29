@@ -1,0 +1,176 @@
+A prefix ++/-- targets the LAST step of the chain, not the first.
+
+WHAT IT IS. `--p->n` computed `&p + offset` -- the member offset added to the
+address of the LOCAL VARIABLE p -- and decremented whatever stack slot that
+landed on.
+
+    sub_x0,x13,8        # &p
+    mov_x14,8           # -> offset calculation
+    add_x0,x14,x0       # &p + 8       <-- a stack slot, not a member
+    ldr_x0,[x0]
+
+`primary_expr` carries a flag, prefix_lvalue, meaning "do not load this
+variable, the caller wants its address". That is right when the variable IS the
+target -- `--n` -- and wrong the moment anything stands between it and the
+target, because then the address wanted is p's VALUE plus the offset. The flag
+was applied to the first node of the chain instead of the last.
+
+`p->n++` was always right, and the reason is the whole shape of this class: a
+POSTFIX operator sits where a lookahead can see it, so postfix_expr_arrow tests
+the token in front of it and suppresses its own load. A PREFIX operator was
+consumed before the chain was parsed and no lookahead there can see it. Ninth
+instance of one-rule-several-implementations in this series, and the second
+where a global flag was right for the simple case and wrong across a chain --
+Address_of was the first.
+
+HOW IT WAS FOUND, BECAUSE THE ROUTE MATTERS MORE THAN THE FIX.
+
+The symptom was three frames away. tcc reported
+
+    <command line>:27: warning: extra tokens after directive
+
+on the first `#if` of its own predefs. skip_to_eol was told the token was not a
+linefeed. It was:
+
+    LEFTOVER tok=655360        TOK_LINEFEED is 10.  655360 is 10 << 16.
+
+Not a shift -- a base pointer. Probing expr_preprocess across the end_macro()
+call gave every local shifted identically:
+
+    before  t=10       t0=256       str=23066160        &t=...567320
+    after   t=655360   t0=16777216  str=1511663861760   &t=...567318
+
+which is what reading eight bytes from an address TWO BYTES LOW looks like. The
+stack pointer measured identical either side, so only the saved locals pointer
+came back wrong.
+
+Four reductions by SHAPE all passed -- an identical static copy of end_macro
+reproduced it, and the same statements split across two calls did not, so it
+was not the construct. Snapshotting 96 words of the frame across the call named
+the exact slot and the exact delta:
+
+    SLOT -6   old=70368752567336   new=70368752567334   delta=-2
+
+A poor-man's watchpoint on that address, armed from a global so it survived the
+corrupted frame, caught the writer:
+
+    W2 after free_str delta=-1
+
+tok_str_free -> tal_free_impl, whose second statement is
+
+    if (0 == --al->nb_allocs)                        tccpp.c
+
+That is the construct. It runs on every token string tcc frees, and in that
+frame the stray decrement landed on the caller's saved locals pointer.
+
+    guessing at the shape:    5 attempts, 0 hits
+    following the write:      1 attempt, exact
+
+THE FIX. When a `->` follows the variable, prefix_lvalue no longer suppresses
+its load -- the pointer is needed -- and prefix_lvalue_target carries the "you
+are the lvalue" instruction to the arrow site, which suppresses ITS final load
+instead. The flag is set and cleared inside one statement, and cleared again in
+the prefix handler if the chain never reached an arrow, because a global that
+outlives its statement is exactly how Address_of earned its section in
+MICRO-C.md.
+
+Only the pointer form is redirected. `--s.n` needs no load -- `&s + offset` IS
+the member -- and `--a[i]` has cases behind it. Neither is touched.
+
+WHAT IT DOES NOT DO, AND A SECOND BUG FOUND ON THE WAY.
+
+`--s.n` on a LOCAL STRUCT is also wrong. It was found while writing case 55 and
+is NOT fixed here: it is a different site with a different cause, and the first
+attempt at a joint fix -- suppressing the dot site's final load under the same
+flag -- did not close it. That is evidence, not an assumption, and it is why
+the two are separate. It is case 57, marked KNOWN GAP, so it cannot be
+forgotten and cannot quietly go green without being noticed.
+
+MEASURED
+
+    difftest         55 pass / 0 fail / 2 known gaps, BOTH architectures
+    vocabulary       clean on five architectures
+    imm-identity     104 byte-identical, 4 declared, 0 undeclared
+    tcc              "extra tokens after directive" is GONE -- tcc now
+                     preprocesses its own predefs with no diagnostic at all
+    fault            still SIGSEGV, and the marker trail has not been re-read
+                     since; that is the next round's measurement, not a claim
+                     made here
+
+diff --git a/cc_core.c b/cc_core.c
+index 3146d4e..df65944 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -46,6 +46,21 @@ struct token_list* break_frame;
+ int current_count;
+ int Address_of;
+ 
++/* A PREFIX ++/-- WHOSE TARGET IS REACHED THROUGH `->`.
++ *
++ * prefix_lvalue tells primary_expr "do not load this variable, the caller wants
++ * its address". That is right when the variable IS the target -- `--n` -- and
++ * wrong the moment anything stands between it and the target. In `--p->n` the
++ * address wanted is `p + offset`, which needs p's VALUE; suppressing the load
++ * makes the compiler add the member offset to `&p` and decrement a neighbouring
++ * stack slot.
++ *
++ * The flag has to move from the FIRST node of the chain to the LAST. This
++ * carries it there, is set and cleared inside one statement, and is read only
++ * by the arrow site -- the file's own lesson from Address_of, which became
++ * unreliable precisely by outliving the statement that set it. */
++int prefix_lvalue_target;
++
+ /* DID THE EXPRESSION JUST PARSED END AT AN `&`?
+  *
+  * `&x` leaves REGISTER_ZERO holding an address but reports x's OWN type, one
+@@ -1453,6 +1468,17 @@ void primary_expr_variable(void)
+ 	 * could sit here. tcc does it constantly. */
+ 	int is_prefix_operator = prefix_lvalue;
+ 	int is_postfix_operator = match("++", global_token->s) || match("--", global_token->s);
++
++	/* `->` IS THE ONE THAT NEEDS THE VALUE. `--s.n` on a struct variable is
++	 * fine returning the address unloaded, because `&s + offset` IS the
++	 * member; `--p->n` is not, because `&p + offset` is the stack slot after
++	 * p. Only the pointer form is redirected, so the dot and index paths --
++	 * both of which have cases behind them -- are untouched. */
++	if(is_prefix_operator && match("->", global_token->s))
++	{
++		prefix_lvalue_target = TRUE;
++		is_prefix_operator = FALSE;
++	}
+ 	int is_indexed_local_array = match("[", global_token->s) && (options & TLO_LOCAL_ARRAY);
+ 	int is_local_array = (options & TLO_LOCAL_ARRAY) != 0;
+ 	int is_function = options & TLO_FUNCTION;
+@@ -1887,7 +1913,19 @@ void postfix_expr_arrow(void)
+ 	 * thing without finding it. */
+ 	int member_is_array = i->is_array;
+ 
+-	if((!match("=", global_token->s) && !is_compound_assignment(global_token->s) && !is_postfix_operator && (register_size >= i->size) && !member_is_array && (TRUE != Address_of)))
++	/* THE LAST STEP OF THE CHAIN IS THE LVALUE, AND ONLY THE LAST.
++	 *
++	 * A prefix ++/-- wants the ADDRESS of its target. is_postfix_operator
++	 * already says so for `p->n++`, because there the operator sits after the
++	 * member and a lookahead can see it; a PREFIX operator was consumed
++	 * before the chain was parsed and no lookahead here can. prefix_lvalue
++	 * _target carries it, and it applies only where the chain stops -- an
++	 * intermediate `->` or `[` still has to load the pointer to follow it. */
++	int chain_continues = match("->", global_token->s) || match("[", global_token->s);
++	int is_prefix_target = prefix_lvalue_target && !chain_continues;
++	if(is_prefix_target) prefix_lvalue_target = FALSE;
++
++	if((!match("=", global_token->s) && !is_compound_assignment(global_token->s) && !is_postfix_operator && !is_prefix_target && (register_size >= i->size) && !member_is_array && (TRUE != Address_of)))
+ 	{
+ 		emit_out(load_value(i->size, i->is_signed));
+ 	}
+@@ -3067,6 +3105,11 @@ void primary_expr(void)
+ 		emit_push(REGISTER_ZERO, "Previous value");
+ 		require_extra_token();
+ 		postfix_expr();
++		/* BOUNDED TO THIS STATEMENT. If the chain never reached an arrow site
++		 * -- `--n`, `--s.n`, `--a[i]` -- the flag was never consumed, and a
++		 * flag left standing is how Address_of earned its section in
++		 * MICRO-C.md. */
++		prefix_lvalue_target = FALSE;
+ 		emit_pop(REGISTER_ONE, "Restore previous value");
+ 
+ 		emit_push(REGISTER_ONE, "Previous value");
