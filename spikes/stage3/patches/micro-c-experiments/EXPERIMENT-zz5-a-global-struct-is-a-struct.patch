@@ -1,0 +1,81 @@
+A GLOBAL struct is a struct too.
+
+    char_pointer_type = char_type;          tccgen.c:392
+
+Both file-scope. micro-c compiled that to a struct copy whose SOURCE address
+was char_type's first eight bytes -- the integer 3 -- so it read from address
+3. tcc dies there, at marker N07, immediately after preprocess_start returns.
+
+WHERE IT CAME FROM. primary_expr_variable decides whether to load a variable's
+value:
+
+    int size = register_size;
+    if(options == TLO_LOCAL || options == TLO_ARGUMENT)
+        size = current_target->size;
+    if(register_size >= size)                  <- "do not load a struct"
+        emit_out(load_value(size, ...));
+
+`size` only becomes the type's real width for a LOCAL or an ARGUMENT. For a
+GLOBAL or STATIC it stays at register_size, so the guard could not see that
+the thing was a struct at all. The local form was fixed when tccgen.c:909 hit
+it; the global form is the same rule in the other storage class.
+
+THE FIRST ATTEMPT WAS WRONG AND THE SUITE CAUGHT IT. Suppressing the load
+whenever the type is bigger than a register broke cases 31 and 43, because
+that load does DOUBLE DUTY: for a scalar it fetches the value, and for a
+GLOBAL ARRAY it dereferences the pointer cell the symbol actually holds.
+`static struct Big items[4]` has current_target->size 48 and still needs it.
+array_modifier separates the two jobs, so the suppression now applies only to
+a non-array variable.
+
+WHAT THIS DOES NOT FIX. Struct assignment is ALSO broken on aarch64, for both
+storage classes, and that is a separate fault: the emitted copy loop is
+instruction-for-instruction identical to amd64's, which passes. Case 05 stays
+red on aarch64 and is not addressed here.
+
+    amd64    43 pass  0 fail  2 known gaps   (was 41 pass 2 fail)
+    aarch64  struct assignment still fails -- bug 2, untouched
+
+diff --git a/cc_core.c b/cc_core.c
+index 3520856..38eadd3 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -1355,11 +1355,34 @@ void primary_expr_variable(void)
+ 		{
+ 			size = current_target->size;
+ 		}
+-		/* A LOCAL STRUCT IS NOT LOADED EITHER. Same rule as the dereference
+-		 * sites and member access: a struct is used by ADDRESS. Without this,
++		/* A STRUCT IS NOT LOADED EITHER. Same rule as the dereference sites
++		 * and member access: a struct is used by ADDRESS. Without this,
+ 		 * `vtop[0] = tmp` with a local struct tmp tried load_value(16) --
+-		 * tccgen.c:909, where tcc swaps two SValues through a local. */
+-		if(register_size >= size)
++		 * tccgen.c:909, where tcc swaps two SValues through a local.
++		 *
++		 * AND THE GUARD HAS TO ASK THE TYPE, NOT `size`. size only becomes the
++		 * type's real width for TLO_LOCAL and TLO_ARGUMENT above; for a GLOBAL
++		 * or STATIC it stays at register_size, so the test could not see that
++		 * the thing was a struct at all and loaded its first eight bytes as if
++		 * they were the value. tcc hits it immediately:
++		 *     char_pointer_type = char_type;          tccgen.c:392
++		 * both file-scope, so the source of the copy became char_type.t -- the
++		 * integer 3 -- used as an address.
++		 *
++		 * The local form was fixed and the global form is the same rule in the
++		 * other storage class, which is the fourth time that sentence appears
++		 * in this file.
++		 *
++		 * AND NOT FOR AN ARRAY. This load does double duty: for a scalar it
++		 * fetches the value, and for a GLOBAL ARRAY it dereferences the
++		 * pointer cell the symbol actually holds. Suppressing it on element
++		 * size alone killed the second job -- `static struct Big items[4]`
++		 * has current_target->size 48 and still needs the load. array_modifier
++		 * separates them.
++		 */
++		int suppress_struct_load = (register_size < current_target->size)
++		                           && (type->array_modifier <= 1);
++		if(register_size >= size && !suppress_struct_load)
+ 		{
+ 			emit_out(load_value(size, current_target->is_signed));
+ 		}

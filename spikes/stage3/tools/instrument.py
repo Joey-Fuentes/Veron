@@ -219,6 +219,30 @@ def main():
                 return func
         return None
 
+    def at_func_end(i):
+        """Is this line a instrumented function's OWN closing brace?
+
+        The rejoin marker is guarded by a file-wide brace counter, and that
+        counter drifts: braces inside string literals and comments are counted,
+        and over six thousand lines of tccgen.c it ends up off. A drifted depth
+        lets the guard pass on a function's final brace, which emits
+
+            }
+            write(2, "N34\\n", 4);      <- FILE SCOPE
+
+        and micro-c rejects it with `Unknown type write` -- an error that names
+        the marker rather than the placement, which is why it reads as
+        nonsense.
+
+        The function's own end is known exactly, from the range that was
+        computed by matching braces from its definition. Use that instead of
+        trusting the running counter.
+        """
+        for start, end, func in ranges:
+            if i == end:
+                return True
+        return False
+
     out = []
     mapping = []
     skipped = []
@@ -248,7 +272,8 @@ def main():
             elif ch == '}':
                 depth -= 1
 
-        if func is not None and closing and depth >= 1 and before > depth:
+        if func is not None and closing and depth >= 1 and before > depth \
+                and not at_func_end(i):
             n += 1
             tag = "%s%02d" % (prefix, n)
             indent = line[:len(line) - len(line.lstrip())]

@@ -954,3 +954,50 @@ patching also happened AFTER the compile step.
 Two copies of one dependency, patches applied to one of them. Third time this
 file has recorded that shape: the vendored M2-Planet 56 commits off the pin,
 the patch-count bound at 12 in one workflow and 18 in the other, and now this.
+
+=============================================================================
+ROUND 10: TWO BUGS WEARING ONE NAME
+
+tccgen_init instrumented locally:
+
+    N06  char_type.t |= VT_UNSIGNED;      completed
+    N07  char_pointer_type = char_type;   never returns
+
+A whole-struct assignment -- which looked like case 05, red on aarch64 since
+the beginning. It is not case 05. Crossing storage class against architecture
+separates them:
+
+                        amd64   aarch64
+    global y = x         139     139      <- tcc's shape, covered by NOTHING
+    local  y = x           0     139      <- case 05
+
+Two independent faults. Chasing 05 would have fixed something tcc never hits.
+
+BUG 1, FIXED. primary_expr_variable's "do not load a struct" guard reads
+
+    int size = register_size;
+    if(options == TLO_LOCAL || options == TLO_ARGUMENT) size = current_target->size;
+    if(register_size >= size) emit_out(load_value(size, ...));
+
+`size` only becomes the type's real width for a local or an argument, so for a
+GLOBAL struct it stayed at register_size and the guard could not see a struct
+at all. It loaded the first eight bytes and used them as the copy's source
+address -- char_type.t, the integer 3.
+
+THE FIRST FIX WAS WRONG AND THE SUITE SAID SO IN ONE SECOND. Suppressing the
+load on element size alone broke 31 and 43: that load does DOUBLE DUTY -- for
+a scalar it fetches the value, for a GLOBAL ARRAY it dereferences the pointer
+cell the symbol holds. `static struct Big items[4]` is 48 bytes per element
+and still needs it. array_modifier separates them.
+
+    amd64  41 pass 2 fail  ->  44 pass 0 fail
+
+BUG 2, OPEN. Struct assignment fails on aarch64 in BOTH storage classes. The
+emitted copy loop is instruction-for-instruction identical to amd64's, which
+passes, so it is not the sequence. Case 05 stays red and is untouched.
+
+CASE 46 IS A PAIR. Every check runs on a global and on a local with the same
+contents. A single-sided case cannot say "the storage class is the variable",
+which is the only thing that separated these two bugs. The struct is 25 bytes
+of content on purpose -- three longs and a char -- so the copy has a tail
+chunk rather than dividing evenly.
