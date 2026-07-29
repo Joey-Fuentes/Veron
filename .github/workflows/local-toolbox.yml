@@ -1,0 +1,170 @@
+# PACK THE TWO THINGS A SANDBOX CANNOT FETCH FOR ITSELF.
+#
+# The assistant's sandbox has no network at all -- every host returns 403 with
+# `x-deny-reason: host_not_allowed` -- and no qemu. That is why every stage-3
+# diagnosis had to go through a CI round: micro-c could be built locally only
+# after M2-Planet was vendored at the pin, and aarch64 binaries still cannot be
+# RUN there at all.
+#
+# This job produces one artifact containing:
+#
+#   qemu-aarch64-static     so aarch64 binaries can be executed on an x86_64
+#                           host by invoking the emulator directly -- no
+#                           binfmt_misc registration, no root
+#   tcc-<pin>-arm64.tar.gz  the pinned tcc tree, arm64 patches applied and
+#                           ./configure already run, so the GENERATED files
+#                           (config.h, tccdefs_.h) are present
+#
+# With both, `ARCH=aarch64 difftest.sh` runs locally in about a second per
+# case, and micro-c can compile libtcc.c and the result can actually be run --
+# which is the loop this repository has been paying three minutes a round for.
+#
+# RUN IT WITH workflow_dispatch. It is a utility, not part of any build, and
+# nothing else in the tree depends on it.
+name: local toolbox
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    # x86_64 ON PURPOSE, and asserted below. On an arm64 runner
+    # qemu-aarch64-static is an aarch64 binary that emulates aarch64, which is
+    # useless to an x86_64 host. This is the one job in the repo that must NOT
+    # run on ubuntu-24.04-arm.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TCC_SHA: 5ec0e6f84b47ebd8c269b581712666313f5edaef
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'ASSERT: the runner is x86_64'
+        run: |
+          set -eu
+          arch=$(uname -m)
+          echo "  runner arch: $arch"
+          if [ "$arch" != "x86_64" ]; then
+            echo "FAIL: this job must run on an x86_64 runner."
+            echo "      A qemu-aarch64-static built for aarch64 emulates aarch64"
+            echo "      on aarch64 -- it cannot help an x86_64 sandbox."
+            exit 1
+          fi
+
+      - name: Install
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static gcc-aarch64-linux-gnu git >/dev/null
+
+      - name: 'Pack qemu-aarch64-static'
+        run: |
+          set -eu
+          mkdir -p out
+          cp /usr/bin/qemu-aarch64-static out/
+          chmod +x out/qemu-aarch64-static
+          printf '  %s\n' "$(file -b out/qemu-aarch64-static | cut -c1-90)"
+          printf '  %s bytes\n' "$(stat -c%s out/qemu-aarch64-static)"
+          out/qemu-aarch64-static --version | head -1 | sed 's/^/  /'
+
+      - name: 'PROVE IT: run an aarch64 binary on this x86_64 runner'
+        run: |
+          set -eu
+          # A claim that the emulator "is included" is not the same as the
+          # emulator working. Build a real aarch64 static binary and run it
+          # under the copy that is about to be uploaded, not under the system
+          # one, and check the exit code rather than that it printed something.
+          echo 'int main(void) { return 42; }' > /tmp/t42.c
+          aarch64-linux-gnu-gcc -static -O0 -o /tmp/t42.aarch64 /tmp/t42.c
+          printf '  built: %s\n' "$(file -b /tmp/t42.aarch64 | cut -c1-70)"
+          set +e
+          ./out/qemu-aarch64-static /tmp/t42.aarch64
+          rc=$?
+          set -e
+          echo "  exit: $rc"
+          [ "$rc" = 42 ] || { echo "FAIL: expected 42"; exit 1; }
+          echo "  aarch64 executed on x86_64 via the packed emulator"
+
+          # And the repo's own committed aarch64 artifact, which is the thing
+          # that will actually be run locally.
+          if [ -x spikes/stage0-as/stage0-as ]; then
+            set +e
+            ./out/qemu-aarch64-static spikes/stage0-as/stage0-as >/dev/null 2>&1
+            echo "  stage0-as loads and runs under it (exit $?)"
+            set -e
+          fi
+
+      - name: 'Pack tcc at the pin, arm64 patches applied and configured'
+        run: |
+          set -eu
+          git clone -q https://repo.or.cz/tinycc.git tcc-src \
+            || git clone -q https://github.com/TinyCC/tinycc.git tcc-src
+          git -C tcc-src checkout -q "$TCC_SHA"
+          echo "  tcc $(git -C tcc-src rev-parse --short HEAD)"
+
+          n=0
+          for p in spikes/stage3/patches/tcc-arm64-asm/[0-9]*.patch; do
+            [ -e "$p" ] || continue
+            git -C tcc-src apply --ignore-whitespace "../$p" \
+              || { echo "FAIL: $(basename "$p") does not apply"; exit 1; }
+            n=$((n + 1))
+          done
+          echo "  $n arm64 assembler patches applied"
+
+          cd tcc-src
+          # THE GENERATED FILES ARE THE POINT. tcc.h includes config.h on line
+          # 27, and it does not exist in the repository -- ./configure writes
+          # it. tccdefs_.h is produced by c2str.exe from include/tccdefs.h.
+          # A raw clone is missing both, and that is exactly the failure this
+          # workflow's sibling hit on its first run.
+          ./configure --cpu=arm64 >/dev/null 2>&1 || true
+          [ -f config.h ] || { echo "FAIL: configure produced no config.h"; exit 1; }
+          cc -DC2STR conftest.c -o c2str.exe
+          ./c2str.exe include/tccdefs.h tccdefs_.h
+          [ -s tccdefs_.h ] || { echo "FAIL: tccdefs_.h is empty"; exit 1; }
+          echo "  config.h and tccdefs_.h generated"
+          rm -rf .git c2str.exe
+          cd ..
+
+          tar -czf out/tcc-arm64-configured.tar.gz tcc-src
+          printf '  %s bytes\n' "$(stat -c%s out/tcc-arm64-configured.tar.gz)"
+
+      - name: 'Manifest'
+        run: |
+          set -eu
+          {
+            echo "veron local toolbox"
+            echo
+            echo "built by .github/workflows/local-toolbox.yml"
+            echo "runner: $(uname -m) $(lsb_release -ds 2>/dev/null || echo linux)"
+            echo "date:   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            echo "qemu-aarch64-static"
+            echo "  $(out/qemu-aarch64-static --version | head -1)"
+            echo "  run an aarch64 binary on x86_64 with:"
+            echo "      ./qemu-aarch64-static ./some-aarch64-binary"
+            echo "  no binfmt registration and no root are needed when the"
+            echo "  emulator is invoked explicitly."
+            echo
+            echo "tcc-arm64-configured.tar.gz"
+            echo "  tinycc at $TCC_SHA"
+            echo "  spikes/stage3/patches/tcc-arm64-asm applied"
+            echo "  ./configure --cpu=arm64 already run, so config.h and"
+            echo "  tccdefs_.h are present -- a raw clone has neither and"
+            echo "  tcc.h:27 includes config.h."
+            echo "  .git removed."
+            echo
+            echo "sha256"
+            (cd out && sha256sum *) | sed 's/^/  /'
+          } > out/MANIFEST.txt
+          cat out/MANIFEST.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: veron-local-toolbox
+          path: out/
+          if-no-files-found: error
+          compression-level: 6
