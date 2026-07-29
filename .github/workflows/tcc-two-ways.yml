@@ -170,18 +170,20 @@ jobs:
           git -C m2 submodule update --init --recursive -q
           . "$GITHUB_WORKSPACE/tools/clone-pinned.sh"
           verify_pinned m2 "$M2PLANET_SHA" || exit 1
-          # A PRISTINE SECOND COPY, TAKEN BEFORE ANY PATCH TOUCHES m2.
+          # TWO PRISTINE COPIES, TAKEN BEFORE ANY PATCH TOUCHES m2.
           #
-          # EXPERIMENT-zzb adds an emission path that is unreachable below
-          # 0x7FFFFFFF, so the question it has to answer is not "does it work"
-          # -- difftest answers that -- but "did anything ELSE move", and only
-          # the compiler as it was immediately before can answer it.
+          # The byte-identity guard below needs the compiler either side of
+          # EXPERIMENT-zzb. BOTH SIDES STOP AT zzb: this used to build "every
+          # patch except zzb", which broke the moment zzf edited a line zzb had
+          # introduced -- and, worse, once zzd..zzf landed the comparison was
+          # no longer about zzb at all. A guard whose meaning drifts with the
+          # series goes red for the wrong reason and then gets switched off.
           #
-          # A plain cp, not a clone. `git clone m2 m2-pre` gets the committed
-          # pin without the submodule, so it would need a submodule update and
-          # therefore the network, for a tree that is already sitting here
-          # complete and verified.
+          # A plain cp, not a clone: `git clone m2 m2-pre` gets the committed
+          # pin without the submodule and would need the network for a tree
+          # that is already here, complete and verified.
           cp -r m2 m2-pre
+          cp -r m2 m2-zzb
 
           n=0
           for p in spikes/stage3/patches/m2-planet/[0-9]*.patch \
@@ -197,19 +199,22 @@ jobs:
           for p in spikes/stage3/patches/m2-planet/[0-9]*.patch \
                    spikes/stage3/patches/micro-c-experiments/EXPERIMENT-*.patch; do
             [ -e "$p" ] || continue
-            case "$(basename "$p")" in EXPERIMENT-zzb-*) continue ;; esac
+            case "$(basename "$p")" in EXPERIMENT-zz[b-z]*) break ;; esac
             git -C m2-pre apply --ignore-whitespace "../$p" \
               || { echo "FAIL (pre): $(basename "$p")"; exit 1; }
             pre=$((pre + 1))
           done
-          # BUMPED TO 25 with
-          # EXPERIMENT-zzb-an-integer-literal-is-sixty-four-bits-wide.patch.
-          # The bound has to move with the series or a silently-missing patch
-          # passes the check, and a missing codegen patch looks exactly like a
-          # codegen bug.
-          [ "$n" -ge 26 ] || { echo "FAIL: only $n patches"; exit 1; }
-          [ "$pre" = "$((n - 1))" ] \
-            || { echo "FAIL: pre tree has $pre patches, expected $((n - 1))"; exit 1; }
+          zzb=0
+          for p in spikes/stage3/patches/m2-planet/[0-9]*.patch \
+                   spikes/stage3/patches/micro-c-experiments/EXPERIMENT-*.patch; do
+            [ -e "$p" ] || continue
+            case "$(basename "$p")" in EXPERIMENT-zz[c-z]*) break ;; esac
+            git -C m2-zzb apply --ignore-whitespace "../$p" \
+              || { echo "FAIL (zzb): $(basename "$p")"; exit 1; }
+            zzb=$((zzb + 1))
+          done
+          [ "$zzb" = "$((pre + 1))" ] \
+            || { echo "FAIL: the two guard trees are $pre and $zzb, not one apart"; exit 1; }
 
           # BOTH COMPILERS, EACH BUILT IN A SUBSHELL. The previous version of
           # this step did `cd m2` and then referred to `m2` again from inside
@@ -223,8 +228,11 @@ jobs:
           ( cd m2-pre && gcc -w -o ../micro-c-pre cc.c cc_core.c cc_emit.c \
                              cc_globals.c cc_macro.c cc_reader.c cc_strings.c \
                              cc_types.c M2libc/bootstrappable.c )
+          ( cd m2-zzb && gcc -w -o ../micro-c-zzb cc.c cc_core.c cc_emit.c \
+                             cc_globals.c cc_macro.c cc_reader.c cc_strings.c \
+                             cc_types.c M2libc/bootstrappable.c )
           echo "  micro-c built from $n patches"
-          echo "  micro-c-pre built from $pre patches (the tree without zzb)"
+          echo "  guard trees: $pre patches and $zzb patches, one apart at zzb"
 
       - name: 'SUBJECT: micro-c compiles tcc'
         run: |
@@ -565,7 +573,7 @@ jobs:
           # thing it describes, and then the gate gets switched off.
           chmod +x spikes/stage3/tools/imm-identity.sh
           sh spikes/stage3/tools/imm-identity.sh \
-            "$PWD/micro-c-pre" "$PWD/micro-c"
+            "$PWD/micro-c-pre" "$PWD/micro-c-zzb"
 
       - name: 'SUBJECT: differential test, NATIVELY on aarch64'
         continue-on-error: true
@@ -1091,6 +1099,48 @@ jobs:
       # meaningful without anyone having to remember which failure is the
       # acceptable one.
       # =================================================================
+      - name: "SUBJECT: stage 2's conformance corpus, run through micro-c"
+        run: |
+          set -eu
+          # 426 SMALL C PROGRAMS WRITTEN FOR A DIFFERENT COMPILER, AND THAT IS
+          # THE WHOLE POINT.
+          #
+          # tools/cases/ was written FROM bugs already found, so it measures
+          # what has been fixed rather than what remains. This corpus was
+          # written against pico-c, for a different rung, by someone not
+          # looking for micro-c's bugs. Every failure in it is a construct
+          # nobody here chose.
+          #
+          # It found three live codegen bugs in one sitting, all of which the
+          # case suite had been green over for rounds -- including an array of
+          # char* loading one signed byte of an eight-byte pointer, which is
+          # squarely on tcc's own data structures.
+          #
+          # NATIVE HERE. The runner is aarch64, so these run on real hardware
+          # rather than under the emulator.
+          chmod +x spikes/stage3/tools/stage2-corpus.sh
+          mkdir -p corpus-bin && cp M1 hex2 corpus-bin/
+          set +e
+          ARCH=aarch64 sh spikes/stage3/tools/stage2-corpus.sh \
+            "$PWD/micro-c" "$PWD/m2libc-patched" "$PWD/corpus-bin" \
+            | tee corpus-out.txt
+          set -e
+          # A FLOOR, BECAUSE A SUITE THAT RAN NOTHING IS NOT A SUITE THAT
+          # PASSED. The hermetic workflow learned this the hard way: it once
+          # reported "0/0 passed, 0 failed" and exited clean when the corpus
+          # never reached the box, which is the single most dangerous shape a
+          # test result can have.
+          got=$(sed -n 's/.*rows: pass \([0-9]*\).*/\1/p' corpus-out.txt | tail -1)
+          [ -n "$got" ] || { echo "  FAIL: the corpus produced no result line"; exit 1; }
+          echo "  $got of 426 passed"
+          if [ "$got" -lt 423 ]; then
+            echo "  FAIL: $got passed, and 423 passed when this step was written."
+            echo "  Three of the 426 are not micro-c's problem -- one needs a"
+            echo "  forward declaration, two are rejected by gcc as well -- so"
+            echo "  423 is the number to hold."
+            exit 1
+          fi
+
       - name: 'GATE: differential test must be clean'
         if: always()
         run: |

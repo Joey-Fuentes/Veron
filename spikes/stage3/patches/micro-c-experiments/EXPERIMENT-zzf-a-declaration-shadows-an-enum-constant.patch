@@ -1,0 +1,89 @@
+A declaration shadows an enum constant.
+
+WHAT IT IS. Eight lines of legal C, and micro-c segfaults on them:
+
+    enum { V = 7 };
+    int main(void) { int V; V = 2; return V; }
+
+primary_expr consulted global_constant_list BEFORE any variable list, so `V`
+resolved to the literal 7 -- and `V = 2` then STORED THROUGH THE CONSTANT 7 as
+if it were an address.
+
+THE FIX. name_is_a_variable() runs the same lookups, in the same order, that
+load_address_of_variable_into_register performs, and reports whether they would
+find anything -- without emitting. The decision is then made before either path
+commits.
+
+`function` is NULL at file scope, which is exactly where an enum constant
+SHOULD win, and it is tested rather than assumed. The alternative -- reordering
+the two lookups -- would have been shorter and wrong: at file scope there is no
+`function` to search and the deref would have faulted.
+
+WHERE IT CAME FROM. Row 320 of stage 2's conformance corpus. pico-c compiles
+it. It is a construct nobody working on this compiler would have thought to
+write, which is the entire argument for borrowing a corpus written against a
+different rung: the case suite in tools/cases/ was built FROM bugs already
+found, so it measures what has been fixed rather than what remains.
+
+WHETHER IT MATTERS FOR tcc: no. tcc does not shadow an enum constant anywhere.
+That is stated because the previous two patches in this series were also not on
+tcc's path, and a run of fixes that do not move the subject is worth naming as
+such rather than letting the count of green cases imply progress.
+
+MEASURED
+
+    difftest      57 -> 58 pass, both architectures, nothing regressed
+    corpus        422 -> 423 of 426 on aarch64
+    vocabulary    clean on five architectures
+    tcc           compiles, links and runs as before; the fault has NOT moved
+
+diff --git a/cc_core.c b/cc_core.c
+index 2a9e615..358b880 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -925,6 +925,34 @@ void primary_expr_number(char* s)
+ 	current_target = integer;
+ }
+ 
++/* IS THIS NAME A VARIABLE? Asked WITHOUT emitting anything.
++ *
++ * A DECLARATION SHADOWS AN ENUM CONSTANT, and this compiler did not know it:
++ *
++ *     enum { V = 7 };
++ *     int main(void) { int V; V = 2; return V; }
++ *
++ * The constant list was consulted before any variable list, so `V` resolved to
++ * the literal 7 -- and `V = 2` then STORED THROUGH THE CONSTANT 7 as if it
++ * were an address. SIGSEGV, on eight lines of legal C that pico-c compiles.
++ *
++ * The lookups below are the same ones, in the same order, that
++ * load_address_of_variable_into_register performs; this one only reports
++ * whether they would find anything, so the decision can be made before either
++ * path emits. `function` is NULL at file scope, which is exactly where an enum
++ * constant SHOULD win, and is checked rather than assumed. */
++int name_is_a_variable(char* s)
++{
++	if(NULL != static_variable_lookup(s)) return TRUE;
++	if(NULL != function)
++	{
++		if(NULL != sym_lookup(s, function->locals)) return TRUE;
++		if(NULL != sym_lookup(s, function->arguments)) return TRUE;
++	}
++	if(NULL != sym_lookup(s, global_symbol_list)) return TRUE;
++	return FALSE;
++}
++
+ struct token_list* load_address_of_variable_into_register(int reg, char* s)
+ {
+ 	struct token_list* variable = static_variable_lookup(s);
+@@ -1330,8 +1358,9 @@ void primary_expr_variable(void)
+ 		return;
+ 	}
+ 
++	/* A VARIABLE OF THE SAME NAME WINS -- see name_is_a_variable above. */
+ 	struct token_list* a = sym_lookup(s, global_constant_list);
+-	if(NULL != a)
++	if(NULL != a && !name_is_a_variable(s))
+ 	{
+ 		emit_load_immediate(REGISTER_ZERO, strtolong(a->arguments->s), "constant load");
+ 		return;

@@ -81,7 +81,7 @@ for p in "$ROOT"/spikes/stage3/patches/m2-planet/[0-9]*.patch \
     n=$((n + 1))
 done
 echo "  $n patches applied"
-[ "$n" -ge 26 ] || { echo "  FAIL: expected at least 26, got $n"; exit 1; }
+[ "$n" -ge 29 ] || { echo "  FAIL: expected at least 29, got $n"; exit 1; }
 
 gcc -w -o micro-c \
     m2-planet/cc.c m2-planet/cc_core.c m2-planet/cc_emit.c \
@@ -91,36 +91,45 @@ gcc -w -o micro-c \
 echo "  micro-c built"
 
 # ---------------------------------------------------------------------------
-# 1b. THE SAME COMPILER, ONE PATCH BACK.
+# 1b. THE COMPILER EITHER SIDE OF EXPERIMENT-zzb, AS A SEQUENCE POINT.
 #
-# EXPERIMENT-zzb widens every integer literal to 64 bits and adds an emission
-# path that is UNREACHABLE below 0x7FFFFFFF. The guard for a change of that
-# shape is not "does it work" -- difftest answers that -- but "did anything
-# ELSE move", and the only thing that can answer it is the compiler as it was
-# immediately before. It costs one gcc invocation, which is seconds.
+# zzb widens every integer literal to 64 bits and adds an emission path that is
+# UNREACHABLE below 0x7FFFFFFF. The guard for a change of that shape is not
+# "does it work" -- difftest answers that -- but "did anything ELSE move", and
+# only the compiler as it was immediately before can answer it.
+#
+# BOTH SIDES STOP AT zzb, and that is a correction. This used to build "every
+# patch except zzb", which worked until zzf edited a line zzb had introduced
+# and the pre tree stopped applying. Worse, once zzd..zzf landed the comparison
+# was no longer about zzb at all: three later codegen patches were in one side
+# and not the other, so the guard would have reported their changes as leaks.
+#
+# A guard whose meaning drifts as the series grows is worse than no guard,
+# because it goes red for the wrong reason and then gets switched off. Pinning
+# both sides to the same point in the series fixes the meaning permanently.
 # ---------------------------------------------------------------------------
-rm -rf m2-planet-pre
-cp -r "$ROOT/spikes/reference/m2-planet" m2-planet-pre
-git -C m2-planet-pre init -q
-git -C m2-planet-pre config user.email local@veron
-git -C m2-planet-pre config user.name local
-pre=0
-for p in "$ROOT"/spikes/stage3/patches/m2-planet/[0-9]*.patch \
-         "$ROOT"/spikes/stage3/patches/micro-c-experiments/EXPERIMENT-*.patch; do
-    [ -e "$p" ] || continue
-    case "$(basename "$p")" in EXPERIMENT-zzb-*) continue ;; esac
-    (cd m2-planet-pre && git apply --ignore-whitespace "$p") \
-        || { echo "  FAIL (pre): $(basename "$p")"; exit 1; }
-    pre=$((pre + 1))
-done
-[ "$pre" = "$((n - 1))" ] \
-    || { echo "  FAIL: pre-zzb tree has $pre patches, expected $((n - 1))"; exit 1; }
-gcc -w -o micro-c-pre \
-    m2-planet-pre/cc.c m2-planet-pre/cc_core.c m2-planet-pre/cc_emit.c \
-    m2-planet-pre/cc_globals.c m2-planet-pre/cc_macro.c m2-planet-pre/cc_reader.c \
-    m2-planet-pre/cc_strings.c m2-planet-pre/cc_types.c \
-    "$ROOT/spikes/reference/m2libc/bootstrappable.c"
-echo "  micro-c-pre built from $pre patches (the same tree without zzb)"
+build_upto() {   # $1 = dir, $2 = stop-before basename glob, $3 = output binary
+    rm -rf "$1"
+    cp -r "$ROOT/spikes/reference/m2-planet" "$1"
+    git -C "$1" init -q
+    git -C "$1" config user.email local@veron
+    git -C "$1" config user.name local
+    _c=0
+    for _p in "$ROOT"/spikes/stage3/patches/m2-planet/[0-9]*.patch \
+              "$ROOT"/spikes/stage3/patches/micro-c-experiments/EXPERIMENT-*.patch; do
+        [ -e "$_p" ] || continue
+        case "$(basename "$_p")" in $2) break ;; esac
+        (cd "$1" && git apply --ignore-whitespace "$_p") \
+            || { echo "  FAIL ($1): $(basename "$_p")"; exit 1; }
+        _c=$((_c + 1))
+    done
+    gcc -w -o "$3" "$1"/cc.c "$1"/cc_core.c "$1"/cc_emit.c "$1"/cc_globals.c \
+        "$1"/cc_macro.c "$1"/cc_reader.c "$1"/cc_strings.c "$1"/cc_types.c \
+        "$ROOT/spikes/reference/m2libc/bootstrappable.c"
+    echo "  $3 built from $_c patches"
+}
+build_upto m2-planet-pre  'EXPERIMENT-zz[b-z]*'  micro-c-pre
+build_upto m2-planet-zzb  'EXPERIMENT-zz[c-z]*'  micro-c-zzb
 
 # ---------------------------------------------------------------------------
 # 2. M2libc, patched. THE TABLES COME FROM HERE, NOT FROM spikes/reference.
@@ -198,7 +207,7 @@ sh "$ROOT/spikes/stage3/tools/verify-imm64.sh" "$WORK" | tail -3
 echo
 echo "== the 64-bit widening moved nothing it should not have =="
 sh "$ROOT/spikes/stage3/tools/imm-identity.sh" \
-    "$WORK/micro-c-pre" "$WORK/micro-c" | tail -3
+    "$WORK/micro-c-pre" "$WORK/micro-c-zzb" | tail -3
 
 echo
 echo "== difftest, amd64 (native) =="
@@ -209,13 +218,28 @@ echo
 echo "== difftest, aarch64 (under the committed emulator) =="
 sh "$ROOT/spikes/stage3/tools/difftest-qemu.sh" "$WORK" | tail -4
 
+echo
+echo "== stage 2's conformance corpus, run through micro-c (aarch64) =="
+# 426 SMALL C PROGRAMS WRITTEN FOR A DIFFERENT COMPILER.
+#
+# tools/cases/ was written FROM bugs already found, so it measures what has
+# been fixed. This corpus was written against pico-c, for a different rung, by
+# someone not looking for micro-c's bugs -- so every failure in it is a
+# construct nobody here chose. Three of them were live codegen bugs that the
+# case suite had been green over for rounds, including one on tcc's own data
+# structures.
+ARCH=aarch64 sh "$ROOT/spikes/stage3/tools/stage2-corpus.sh" \
+    "$WORK/micro-c" "$WORK/m2libc" "$WORK/mescc-bin" | tail -3
+
 cat <<EOF
 
 == ready ==
 
   $WORK/micro-c        the compiler
-  $WORK/micro-c-pre    the same compiler without EXPERIMENT-zzb, for the
-                       byte-identity guard only -- never assemble with it
+  $WORK/micro-c-pre    the series stopped just BEFORE zzb
+  $WORK/micro-c-zzb    the series stopped just AFTER zzb
+                       both exist only for the byte-identity guard -- never
+                       assemble anything with either
   $WORK/m2libc         PATCHED -- assemble with this, never spikes/reference
   $WORK/mescc-bin/     M1 and hex2, M1 with the larger string buffer
 

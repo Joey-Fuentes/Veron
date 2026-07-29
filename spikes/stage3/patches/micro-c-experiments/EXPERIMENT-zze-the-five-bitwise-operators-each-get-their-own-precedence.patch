@@ -1,0 +1,233 @@
+The five bitwise and logical operators each get their own precedence.
+
+WHAT IT IS. One function tried all five -- & && | || ^ -- at a SINGLE level and
+recursed into itself, so they parsed flat, left to right:
+
+    1 | 2 ^ 3      read as (1|2)^3 = 0        C says 1|(2^3) = 1
+    6 ^ 3 & 1      read as (6^3)&1 = 1        C says 6^(3&1) = 7
+    1 || 0 && 0    read as (1||0)&&0 = 0      C says 1||(0&&0) = 1
+
+AND THE NOTE IN MICRO-C.md WAS WRONG IN TWO WAYS, which is worth correcting
+rather than quietly fixing. It recorded this as `constant_expression`
+"folding right-to-left".
+
+  - It is not confined to the constant parser. Every one of the three lines
+    above is an ordinary runtime expression.
+  - It is not right-to-left. It is left-to-right with NO PRECEDENCE AT ALL,
+    which is a different bug and would have been diagnosed differently: a
+    right-to-left fold gets `1|2^3` RIGHT by accident.
+
+The note had never been checked. What settled it was three lines of C and their
+exit codes -- the cheapest measurement in this repository, and the one this
+file keeps recording as the thing that should have been done first.
+
+THE FIX. C's order, tightest first, is  &  ^  |  &&  ||  and all five are looser
+than == and !=, which relational_expr already handles. So the chain sits on top
+of it exactly as C's grammar does:
+
+    bitwise_and_expr  : relational_expr    ( '&'  relational_expr    )*
+    bitwise_xor_expr  : bitwise_and_expr   ( '^'  bitwise_and_expr   )*
+    bitwise_or_expr   : bitwise_xor_expr   ( '|'  bitwise_xor_expr   )*
+    logical_and_expr  : bitwise_or_expr    ( '&&' bitwise_or_expr    )*
+    bitwise_expr      : logical_and_expr   ( '||' logical_and_expr   )*
+
+The per-architecture instruction strings move into three small functions so
+each tier names one operator instead of one function naming five across six
+architectures. `match` is an exact string compare and the tokeniser emits `&&`
+as one token, so `&` cannot swallow it.
+
+ARITHMETIC PRECEDENCE WAS ALWAYS RIGHT -- `1+2*3` is 7 -- because
+additive_expr_a/b/c is already a tiered chain. This is the same shape for the
+tier nobody had written, which is also why it survived: the obvious probe
+passes.
+
+WHY tcc NEVER SHOWED IT. Scanning tcc for expressions that mix these tiers
+without parentheses at the same depth finds essentially nothing: tcc
+parenthesises `x & (A|B)` everywhere, and the three logical-tier candidates are
+a string literal and two comments. No amount of staring at tcc would have found
+this. Rows 193, 196 and 197 of stage 2's conformance corpus did, in a second.
+
+MEASURED
+
+    difftest      56 -> 57 pass, both architectures, nothing regressed
+    vocabulary    clean on five architectures -- all six instruction tables
+                  moved, so this is the gate that matters here
+    corpus        419 -> 422 of 426 on aarch64
+    tcc           compiles, links and runs as before; the fault has NOT moved
+
+diff --git a/cc_core.c b/cc_core.c
+index d8f20ec..2a9e615 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -2951,63 +2951,120 @@ void relational_expr(void)
+  *         bitwise-expr || bitwise-expr
+  *         bitwise-expr ^ bitwise-expr
+  */
+-void bitwise_expr_stub(void)
++/* THE FIVE BITWISE AND LOGICAL OPERATORS, EACH AT ITS OWN PRECEDENCE.
++ *
++ * WHAT WAS HERE. One function tried all five -- & && | || ^ -- at a SINGLE
++ * level and recursed into itself, so they were parsed flat, left to right:
++ *
++ *     1 | 2 ^ 3     read as (1|2)^3 = 0        C says 1|(2^3) = 1
++ *     6 ^ 3 & 1     read as (6^3)&1 = 1        C says 6^(3&1) = 7
++ *     1 || 0 && 0   read as (1||0)&&0 = 0      C says 1||(0&&0) = 1
++ *
++ * MICRO-C.md recorded this as `constant_expression` folding "right-to-left".
++ * Both halves of that sentence are wrong and it is worth correcting rather
++ * than quietly fixing: it is not confined to the constant parser -- these are
++ * ordinary runtime expressions -- and it is not right-to-left. It is
++ * left-to-right with no precedence at all, which is a different bug and would
++ * have been diagnosed differently. The measurement that settled it was three
++ * lines of C and their exit codes; the note had never been checked.
++ *
++ * C's order, tightest first, is  &  ^  |  &&  ||  -- and all five are looser
++ * than == and !=, which relational_expr already handles, so this chain sits on
++ * top of it exactly as C's grammar does.
++ *
++ * ARITHMETIC PRECEDENCE WAS ALWAYS RIGHT (`1+2*3` is 7), which is why this
++ * survived: additive_expr_a/b/c is already a tiered chain. This is the same
++ * shape, for the tier nobody had written.
++ *
++ * Found by borrowing stage 2's conformance corpus -- rows 193, 196 and 197.
++ * tcc itself parenthesises almost everything and is unaffected, which is
++ * exactly why no amount of staring at tcc would have found it. */
++char* bitwise_and_instruction(void)
+ {
+-	if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture))
+-	{
+-		general_recursion(relational_expr, "AND R0 R0 R1\n", "&", bitwise_expr_stub);
+-		logical_recursion(relational_expr, TRUE, "&&", bitwise_expr_stub);
+-		general_recursion(relational_expr, "OR R0 R0 R1\n", "|", bitwise_expr_stub);
+-		logical_recursion(relational_expr, FALSE, "||", bitwise_expr_stub);
+-		general_recursion(relational_expr, "XOR R0 R0 R1\n", "^", bitwise_expr_stub);
+-	}
+-	else if(X86 == Architecture)
+-	{
+-		general_recursion(relational_expr, "and_eax,ebx\n", "&", bitwise_expr_stub);
+-		logical_recursion(relational_expr, TRUE, "&&", bitwise_expr_stub);
+-		general_recursion(relational_expr, "or_eax,ebx\n", "|", bitwise_expr_stub);
+-		logical_recursion(relational_expr, FALSE, "||", bitwise_expr_stub);
+-		general_recursion(relational_expr, "xor_eax,ebx\n", "^", bitwise_expr_stub);
+-	}
+-	else if(AMD64 == Architecture)
+-	{
+-		general_recursion(relational_expr, "and_rax,rbx\n", "&", bitwise_expr_stub);
+-		logical_recursion(relational_expr, TRUE, "&&", bitwise_expr_stub);
+-		general_recursion(relational_expr, "or_rax,rbx\n", "|", bitwise_expr_stub);
+-		logical_recursion(relational_expr, FALSE, "||", bitwise_expr_stub);
+-		general_recursion(relational_expr, "xor_rax,rbx\n", "^", bitwise_expr_stub);
+-	}
+-	else if(ARMV7L == Architecture)
+-	{
+-		general_recursion(relational_expr, "NO_SHIFT R0 R0 AND R1 ARITH2_ALWAYS\n", "&", bitwise_expr_stub);
+-		logical_recursion(relational_expr, TRUE, "&&", bitwise_expr_stub);
+-		general_recursion(relational_expr, "NO_SHIFT R0 R0 OR R1 AUX_ALWAYS\n", "|", bitwise_expr_stub);
+-		logical_recursion(relational_expr, FALSE, "||", bitwise_expr_stub);
+-		general_recursion(relational_expr, "'0' R0 R0 XOR R1 ARITH2_ALWAYS\n", "^", bitwise_expr_stub);
+-	}
+-	else if(AARCH64 == Architecture)
+-	{
+-		general_recursion(relational_expr, "and_x0,x1,x0\n", "&", bitwise_expr_stub);
+-		logical_recursion(relational_expr, TRUE, "&&", bitwise_expr_stub);
+-		general_recursion(relational_expr, "orr_x0,x1,x0\n", "|", bitwise_expr_stub);
+-		logical_recursion(relational_expr, FALSE, "||", bitwise_expr_stub);
+-		general_recursion(relational_expr, "eor_x0,x0,x1\n", "^", bitwise_expr_stub);
+-	}
+-	else if((RISCV32 == Architecture) || (RISCV64 == Architecture))
+-	{
+-		general_recursion(relational_expr, "rd_a0 rs1_a1 rs2_a0 and\n", "&", bitwise_expr_stub);
+-		logical_recursion(relational_expr, TRUE, "&&", bitwise_expr_stub);
+-		general_recursion(relational_expr, "rd_a0 rs1_a1 rs2_a0 or\n", "|", bitwise_expr_stub);
+-		logical_recursion(relational_expr, FALSE, "||", bitwise_expr_stub);
+-		general_recursion(relational_expr, "rd_a0 rs1_a1 rs2_a0 xor\n", "^", bitwise_expr_stub);
+-	}
++	if(Architecture & ARCH_FAMILY_KNIGHT) return "AND R0 R0 R1\n";
++	else if(X86 == Architecture) return "and_eax,ebx\n";
++	else if(AMD64 == Architecture) return "and_rax,rbx\n";
++	else if(ARMV7L == Architecture) return "NO_SHIFT R0 R0 AND R1 ARITH2_ALWAYS\n";
++	else if(AARCH64 == Architecture) return "and_x0,x1,x0\n";
++	else if(Architecture & ARCH_FAMILY_RISCV) return "rd_a0 rs1_a1 rs2_a0 and\n";
++	return "";
+ }
+ 
++char* bitwise_xor_instruction(void)
++{
++	if(Architecture & ARCH_FAMILY_KNIGHT) return "XOR R0 R0 R1\n";
++	else if(X86 == Architecture) return "xor_eax,ebx\n";
++	else if(AMD64 == Architecture) return "xor_rax,rbx\n";
++	else if(ARMV7L == Architecture) return "'0' R0 R0 XOR R1 ARITH2_ALWAYS\n";
++	else if(AARCH64 == Architecture) return "eor_x0,x0,x1\n";
++	else if(Architecture & ARCH_FAMILY_RISCV) return "rd_a0 rs1_a1 rs2_a0 xor\n";
++	return "";
++}
+ 
+-void bitwise_expr(void)
++char* bitwise_or_instruction(void)
++{
++	if(Architecture & ARCH_FAMILY_KNIGHT) return "OR R0 R0 R1\n";
++	else if(X86 == Architecture) return "or_eax,ebx\n";
++	else if(AMD64 == Architecture) return "or_rax,rbx\n";
++	else if(ARMV7L == Architecture) return "NO_SHIFT R0 R0 OR R1 AUX_ALWAYS\n";
++	else if(AARCH64 == Architecture) return "orr_x0,x1,x0\n";
++	else if(Architecture & ARCH_FAMILY_RISCV) return "rd_a0 rs1_a1 rs2_a0 or\n";
++	return "";
++}
++
++void bitwise_and_stub(void)
++{
++	general_recursion(relational_expr, bitwise_and_instruction(), "&", bitwise_and_stub);
++}
++
++void bitwise_and_expr(void)
+ {
+ 	relational_expr();
+-	bitwise_expr_stub();
++	bitwise_and_stub();
++}
++
++void bitwise_xor_stub(void)
++{
++	general_recursion(bitwise_and_expr, bitwise_xor_instruction(), "^", bitwise_xor_stub);
++}
++
++void bitwise_xor_expr(void)
++{
++	bitwise_and_expr();
++	bitwise_xor_stub();
++}
++
++void bitwise_or_stub(void)
++{
++	general_recursion(bitwise_xor_expr, bitwise_or_instruction(), "|", bitwise_or_stub);
++}
++
++void bitwise_or_expr(void)
++{
++	bitwise_xor_expr();
++	bitwise_or_stub();
++}
++
++void logical_and_stub(void)
++{
++	logical_recursion(bitwise_or_expr, TRUE, "&&", logical_and_stub);
++}
++
++void logical_and_expr(void)
++{
++	bitwise_or_expr();
++	logical_and_stub();
++}
++
++void logical_or_stub(void)
++{
++	logical_recursion(logical_and_expr, FALSE, "||", logical_or_stub);
++}
++
++void bitwise_expr(void)
++{
++	logical_and_expr();
++	logical_or_stub();
+ }
+ 
+ /*

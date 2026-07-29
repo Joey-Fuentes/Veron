@@ -1,0 +1,107 @@
+An array of pointers is not a pointer, and a name cannot tell them apart.
+
+WHAT IT IS. `char *a[2]; p = a[1]; p[0]` segfaults. The identical program with
+`long *` in place of `char *` passes, and the emitted code says why:
+
+    char* a[2]; p=a[1]            long* a[2]; p=a[1]
+      mov_x0,1                      mov_x0,1
+                                    mov_x14,8 / mul_x0,x14,x0     <- stride
+      add_x0,x1,x0                  add_x0,x1,x0
+      ldrsb_x0,[x0]                 ldr_x0,[x0]                   <- width
+
+No stride, and one SIGNED BYTE of an eight-byte pointer.
+
+THE CAUSE IS A LINE THE FILE ALREADY APOLOGISES FOR. postfix_expr_array carries
+a long comment saying "A name comparison cannot answer a question about width.
+The element size can, and it is the same expression the stride below already
+uses, so the two now agree by construction instead of by coincidence." Directly
+underneath it:
+
+    if(match("char*", current_target->name))
+    {
+        assign = load_value(1, TRUE);
+    }
+    else
+    {
+        emit_mul_register_zero_with_immediate(element_size, ...);
+    }
+
+The comparison was never removed. It decides BOTH the load width and whether to
+scale, and it is right for `char *p; p[i]` -- element is a char, stride 1, load
+1 -- and wrong for `char *arr[8]` -- element is a char POINTER, stride 8, load
+8. current_target is `char *` in both cases. That is precisely why a name
+cannot separate them, and the comment above says so.
+
+element_size already separates them six lines up, through indexing_an_array.
+
+HOW IT WAS FOUND, AND WHY THE SUITE COULD NOT.
+
+MICRO-C.md names this blind spot in its own words:
+
+    "Every array-of-pointers probe used `long*`, where the element width and
+    the pointed-at width are both 8 -- so no case could detect a wrong choice
+    between them."
+
+It then says case 31 closed it. Case 31 made the two widths differ for a STRUCT
+element. It never did for a pointer-to-char element, so the suite has been
+green over a live bug every round since.
+
+What found it was borrowing stage 2's conformance corpus -- 426 small C
+programs written for pico-c, for a different rung, by someone not looking for
+this compiler's bugs. NINE of them fail on this one line: rows 394, 396, 397,
+398, 400, 401, 402, 403 and 404. A suite written FROM bugs already found
+measures what has been fixed; a corpus written for something else measures what
+remains.
+
+WHY IT MATTERS FOR tcc. `char *include_stack[32]`, `char **argv`, and about
+forty more declarations across the translation unit. This is the first bug in
+several rounds that is squarely on tcc's own data structures.
+
+MEASURED
+
+    difftest      55 -> 56 pass, both architectures, nothing regressed
+    corpus        410 -> 419 of 426 on aarch64
+    vocabulary    clean on five architectures
+    tcc           compiles, links and runs as before; the fault has NOT moved
+
+diff --git a/cc_core.c b/cc_core.c
+index df65944..d8f20ec 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -2222,11 +2222,31 @@ void postfix_expr_array(void)
+ 		assign = load_value(element_size, current_target->is_signed);
+ 	}
+ 
+-	if(match("char*", current_target->name))
+-	{
+-		assign = load_value(1, TRUE);
+-	}
+-	else
++	/* THE NAME COMPARISON, ACTUALLY REMOVED THIS TIME.
++	 *
++	 * The comment above says a name cannot answer a question about width, and
++	 * then this asked one anyway -- and it decided TWO things: a one-byte load
++	 * AND no stride multiply at all. Both are right for `char *p; p[i]`, where
++	 * the element is a char. Both are wrong for `char *arr[8]`, where the
++	 * element is a char POINTER: the index went unscaled and one signed byte
++	 * of an eight-byte pointer was loaded. `current_target` is `char *` in
++	 * BOTH cases, which is exactly why a name cannot separate them.
++	 *
++	 * element_size already separates them, six lines up, via
++	 * indexing_an_array. Using it means the load width and the stride agree by
++	 * construction rather than by coincidence -- which is what the comment
++	 * above claimed and the code below did not do.
++	 *
++	 * `assign` is left as the earlier branch set it, so an `unsigned char`
++	 * array keeps its unsigned load; the old override forced TRUE and would
++	 * have sign-extended it.
++	 *
++	 * FOUND BY BORROWING STAGE 2's CONFORMANCE CORPUS. Nine of its 426
++	 * programs fail on this -- 394, 396, 397, 398, 400, 401, 402, 403, 404 --
++	 * and the stage-3 case suite has been green over it every round, because
++	 * every array-of-pointers case in it used `long*`, where the element width
++	 * and the pointed-at width are both 8. */
++	if(1 != element_size)
+ 	{
+ 		emit_mul_register_zero_with_immediate(element_size, "primary expr array");
+ 	}
