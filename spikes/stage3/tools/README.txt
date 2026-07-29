@@ -1091,3 +1091,44 @@ second one matters. Every earlier version of this checked the first.
 
 The verify_defs gate also ran AFTER the assembly it exists to guard. Moved
 ahead of it, so a bad table fails before anything is built from it.
+
+=============================================================================
+A STEP THAT COULD NOT SAY WHAT IT DID
+
+The encoding gate fired against m2libc-patched while the patching step that
+feeds it reported nothing at all. Reading the log, "all four patches applied"
+and "the loop never ran" are the same output: silence. The function echoed
+only on failure.
+
+Two things were ruled out first, both by testing rather than argument:
+
+  - `git apply` from a subdirectory inside a git repository works normally,
+    and applies to the subdirectory, not the repo root
+  - 0004 applies cleanly to a fresh copy of the vendored tree
+
+So the answer is not known yet, and guessing a fourth time is how the last
+several rounds went wrong. The step now:
+
+  - echoes each patch as it applies, naming the directory
+  - COUNTS them and fails below four, because a glob that matches nothing is
+    the silent case that matters most here
+  - asserts the encoding IN THE STEP THAT PRODUCED IT, printing the offending
+    line, the cwd and the file's stat on failure
+
+The gate two steps later could only say "the table is wrong" and point at
+nothing. An assertion belongs next to the code that just claimed to have done
+the work.
+
+TWO RED HERRINGS IN THE SAME LOG, BOTH BENIGN
+
+    error: No valid patches in input (allow with "--allow-empty")
+
+is patches/tcc-debug/0001-DEBUG-mark-progress-through-tcc_new.patch, a
+ZERO-BYTE FILE. git apply says that on an empty input, the loop tolerates it,
+and the "skipped" line follows. It has been in every log of this workflow.
+Deleted.
+
+    skipped 0004 ... -- not applicable to this revision
+
+is m2/M2libc, a different M2libc revision, and is skipped by design -- that
+tree is only an include path. Neither line had anything to do with the gate.

@@ -192,12 +192,31 @@ jobs:
           # 68a23cfd in the submodule (see spikes/reference/README.md) -- so
           # they are NOT interchangeable and the -I is deliberately left
           # pointing at the submodule rather than swapped.
+          # SAY WHAT IT DID. The previous version echoed nothing on success,
+          # so "every patch applied" and "the loop never ran" produced exactly
+          # the same log -- and when the gate two steps later found the table
+          # still broken there was no way to tell which had happened. Same
+          # failure as the vacuous regression check and the marker greps: a
+          # step that cannot distinguish two cases and reports the reassuring
+          # one.
+          #
+          # It also counts, because a glob that matches nothing is the silent
+          # case that matters most here.
           apply_m2libc_series() {
+            _dir="$1"
+            _n=0
             for p in "$GITHUB_WORKSPACE"/spikes/stage3/patches/m2libc/[0-9]*.patch; do
               [ -e "$p" ] || continue
-              (cd "$1" && git apply --ignore-whitespace "$p") \
-                || { echo "FAIL: $(basename "$p") in $1"; exit 1; }
+              if (cd "$_dir" && git apply --ignore-whitespace "$p"); then
+                echo "  $_dir: applied $(basename "$p")"
+                _n=$((_n + 1))
+              else
+                echo "  FAIL: $(basename "$p") in $_dir"
+                exit 1
+              fi
             done
+            echo "  $_dir: $_n patch(es) applied"
+            [ "$_n" -ge 4 ] || { echo "  FAIL: expected at least 4, got $_n"; exit 1; }
           }
 
           M=spikes/reference/m2libc
@@ -221,7 +240,22 @@ jobs:
           done
           grep -q 'define va_copy(ap1, ap2) ap1 = ap2' m2/M2libc/stdarg.h \
             || { echo "FAIL: va_copy is not fixed in the headers libtcc.c includes"; exit 1; }
-          echo "  m2libc series applied; va_copy verified in both copies"
+          # ASSERT THE RESULT, IN THE STEP THAT PRODUCED IT.
+          #
+          # The encoding gate is a separate step, so its failure said only
+          # "the table is wrong" and pointed at nothing. Checking here means a
+          # patch that silently does not take is caught where it happened, by
+          # the code that just claimed to have applied it.
+          grep -q '^DEFINE add_x0,x16,x0 0002008b' \
+            m2libc-patched/aarch64/aarch64_defs.M1 \
+            || { echo "FAIL: add_x0,x16,x0 is still wrong in m2libc-patched"
+                 echo "      the series reported success, so the patch applied"
+                 echo "      somewhere this is not, or not at all:"
+                 grep -n 'add_x0,x16,x0' m2libc-patched/aarch64/aarch64_defs.M1
+                 echo "      cwd: $PWD"
+                 ls -la m2libc-patched/aarch64/aarch64_defs.M1
+                 exit 1; }
+          echo "  m2libc series applied; va_copy and the aarch64 table verified"
           M=m2libc-patched
 
           cp -r tcc-src mc-tcc
