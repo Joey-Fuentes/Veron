@@ -705,7 +705,24 @@ jobs:
           # did not return -- the fault can be anywhere inside it, not in the
           # argument that was being computed. Reading the marker as naming the
           # call site was a mistake worth not repeating.
-          PPFUNC="${DEBUG_PPFUNC:-preprocess_start,tccpp_new,tok_alloc,tok_alloc_new}"
+          # THE SET HAS TO FOLLOW THE FRONTIER OR THE REPORT LIES.
+          #
+          # These were chosen when the fault was in tok_alloc. It is now in
+          # macro_subst_tok, which was not in the list, so the last marker
+          # printed was tok_alloc_new interning a token during macro
+          # substitution -- ordinary work, reported as the last thing that
+          # happened. The trail was honest and the sentence on top of it was
+          # not.
+          #
+          # next_nomacro IS DELIBERATELY ABSENT. Markers inside its large
+          # switch produce
+          #     ERROR in process_switch
+          #     MISSING }
+          # because micro-c's switch parser will not accept statements where
+          # instrument.py puts them. The biggest function on this path cannot
+          # be instrumented today; that is a tool limit, not a compiler bug,
+          # and pretending otherwise would cost a round.
+          PPFUNC="${DEBUG_PPFUNC:-preprocess_start,tccpp_new,tok_alloc,tok_alloc_new,next,macro_subst_tok}"
 
           : > marker-map.txt
           python3 spikes/stage3/tools/instrument.py --map --prefix L \
@@ -715,6 +732,14 @@ jobs:
             mc-tcc/tccpp.c "$PPFUNC" >> marker-map.txt \
             || echo "  (could not instrument $PPFUNC in tccpp.c)"
 
+          # SAY WHAT WAS INSTRUMENTED, so "last statement" can be read
+          # correctly. A fault outside this set shows up as the last marker
+          # INSIDE it, which looks identical to a fault at that line.
+          echo "  --- instrumented ---"
+          echo "    libtcc.c: $FUNC"
+          echo "    tccpp.c:  $PPFUNC"
+          echo "    anything faulting outside these appears as the last marker"
+          echo "    inside them -- check the frequency column before believing it"
           echo "  --- marker map ($(wc -l < marker-map.txt) statements) ---"
           cat marker-map.txt
 

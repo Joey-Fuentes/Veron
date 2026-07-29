@@ -1319,3 +1319,45 @@ produce
 because micro-c's switch parser will not accept statements where the
 instrumenter puts them. The biggest function on the tokenizer path is
 currently un-instrumentable, and that is a tool limit, not a compiler bug.
+
+=============================================================================
+THE INSTRUMENT STOPPED REACHING THE FAULT AGAIN
+
+The label fix landed: the '##' error is gone from every step of the run, and
+difftest is 44 pass / 1 fail on aarch64, matching the local numbers exactly.
+Markers went 40,782 -> 41,165.
+
+But the report said
+
+    LAST STATEMENT THAT COMPLETED: P20
+    P20  tccpp.c:488  tok_alloc_new: ts->str[len] = '\0';
+
+and that is not the fault. tok_alloc_new is interning a token during macro
+substitution -- ordinary work. The fault is in macro_subst_tok, which was not
+in the instrumented set, so the last marker INSIDE the set got reported as the
+last thing that happened.
+
+The set was chosen when the fault was in tok_alloc, three subsystems ago. This
+file already records the same thing happening once:
+
+    "Instrumenting a single function is only useful while you already know
+     which one. When the failure moved out of tcc_set_output_type and into
+     tcc_compile there were no markers there at all, so the report had nothing
+     to say and it looked like the fault had gone invisible. It had not -- the
+     instrument did not reach it."
+
+It is the same failure with the opposite symptom. Then the trail went quiet;
+this time it pointed confidently at a line that was fine. Quiet is easier to
+notice.
+
+TWO CHANGES
+
+next and macro_subst_tok added to the default set. next_nomacro deliberately
+left out, with the reason in the workflow: markers inside its switch produce
+`ERROR in process_switch / MISSING }`, because micro-c's switch parser will
+not accept statements where instrument.py puts them.
+
+And the report now PRINTS WHAT IT INSTRUMENTED, with the warning that a fault
+outside the set appears as the last marker inside it. A reader can then check
+the frequency column -- a "last statement" that ran 980 times is a statement
+in a loop, not a crash site.
