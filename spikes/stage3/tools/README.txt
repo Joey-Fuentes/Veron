@@ -345,3 +345,39 @@ must yield its ADDRESS, not its first element. It was fixed for `->`, then
 found again for `.`, and this is the exact line in tcc that first exposed it.
 If it faults there again it will be the third time that one rule has been
 missing from a fourth place.
+
+=============================================================================
+THE P04 PREDICTION WAS WRONG
+
+Predicted: the fault would be at
+
+    P04  s1->include_stack_ptr = s1->include_stack;
+
+the array-member decay line, on the reasoning that one rule has nineteen
+implementations in cc_core.c and this would be a twentieth site missing it.
+
+Actual:
+
+    LAST STATEMENT THAT COMPLETED: P44
+    P45  tccpp.c:3772  tccpp_new: tok_alloc(p, r - p - 1);
+
+P04 executed fine. The nineteen-implementations analysis is still true and
+still useful -- it is a real structural problem and it caused four bugs this
+session -- but it did not predict this one, and using it to guess a specific
+line was overreach.
+
+AND THEN A SECOND MISTAKE, IMMEDIATELY. Case 23 was written for the shape at
+P45 -- a pointer difference computed inside an argument list -- and it passes.
+It was testing the wrong thing: P45 not printing means tok_alloc DID NOT
+RETURN. The fault can be anywhere inside that function. "The last marker names
+the statement" is only true when the statement does not call anything.
+
+tok_alloc and tok_alloc_new are instrumented now, 82 markers across four
+functions. Worth noting what is waiting in there:
+
+    P07  ptable = tcc_realloc(table_ident, (i + TOK_ALLOC_INCR) * sizeof(TokenSym *));
+    P10  ts = tal_realloc(&toksym_alloc, 0, sizeof(TokenSym) + len);
+    P11  table_ident[i] = ts;
+
+an array of pointers written by index, and two allocations sized from a
+sizeof -- both shapes with a history in this work.

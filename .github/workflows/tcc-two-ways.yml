@@ -481,7 +481,11 @@ jobs:
           # in tccpp.c -- and instrumenting one file cannot see it. Each file
           # gets a distinct prefix because both number their markers from 1.
           FUNC="${DEBUG_FUNC:-tcc_set_output_type,tcc_compile,tcc_compile_string}"
-          PPFUNC="${DEBUG_PPFUNC:-preprocess_start,tccpp_new}"
+          # tok_alloc IS INCLUDED because "P45 did not print" means the CALL
+          # did not return -- the fault can be anywhere inside it, not in the
+          # argument that was being computed. Reading the marker as naming the
+          # call site was a mistake worth not repeating.
+          PPFUNC="${DEBUG_PPFUNC:-preprocess_start,tccpp_new,tok_alloc,tok_alloc_new}"
 
           : > marker-map.txt
           python3 spikes/stage3/tools/instrument.py --map --prefix L \
