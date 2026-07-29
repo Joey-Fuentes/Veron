@@ -25,7 +25,6 @@ mkdir -p ${TMPDIR}
 ./bin/M2-Planet \
 	--architecture knight-posix \
 	-f M2libc/knight/linux/bootstrap.c \
-	-f M2libc/bootstrap.c \
 	-f cc.h \
 	-f M2libc/bootstrappable.c \
 	-f cc_globals.c \

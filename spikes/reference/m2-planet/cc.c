@@ -45,8 +45,6 @@ int main(int argc, char** argv)
 	FILE* in = stdin;
 	FILE* destination_file = stdout;
 	Architecture = 0; /* catch unset */
-	file_buffer = calloc(1, FILE_BUFFER_SIZE);
-	output_file_buffer = calloc(1, OUTPUT_FILE_BUFFER_SIZE);
 
 	/* These need to be here instead of defines
 	 * since cc_* can't handle string constants. */
@@ -152,9 +150,8 @@ int main(int argc, char** argv)
 			else
 			{
 				fputs("Unknown architecture: ", stderr);
-				if(NULL == arch) { arch = ""; }
 				fputs(arch, stderr);
-				fputs(" known values are: knight-native, knight-posix, x86, amd64, armv7l, aarch64, riscv32 and riscv64\n", stderr);
+				fputs(" know values are: knight-native, knight-posix, x86, amd64, armv7l, aarch64, riscv32 and riscv64\n", stderr);
 				exit(EXIT_FAILURE);
 			}
 			i = i + 2;
@@ -328,13 +325,17 @@ int main(int argc, char** argv)
 	{
 		return_instruction = "RET R15\n";
 	}
-	else if (Architecture == AARCH64 || Architecture & (ARCH_FAMILY_X86 | ARCH_FAMILY_RISCV))
+	else if (Architecture & (ARCH_FAMILY_X86 | ARCH_FAMILY_RISCV))
 	{
 		return_instruction = "ret\n";
 	}
 	else if (Architecture == ARMV7L)
 	{
 		return_instruction = "'1' LR RETURN\n";
+	}
+	else if (Architecture == AARCH64)
+	{
+		return_instruction = "RETURN\n";
 	}
 
 	/* Deal with special case of wanting to read from standard input */
@@ -363,7 +364,7 @@ int main(int argc, char** argv)
 
 	if (PREPROCESSOR_MODE)
 	{
-		write_to_out_buffer("\n/* Preprocessed source */\n", destination_file);
+		fputs("\n/* Preprocessed source */\n", destination_file);
 		output_tokens(global_token, destination_file);
 		goto exit_success;
 	}
@@ -377,19 +378,18 @@ int main(int argc, char** argv)
 	program();
 
 	/* Output the program we have compiled */
-	write_to_out_buffer("\n# Core program\n", destination_file);
+	fputs("\n# Core program\n", destination_file);
 	recursive_output(output_list, destination_file);
-	if(KNIGHT_NATIVE == Architecture) write_to_out_buffer("\n", destination_file);
-	else if(DEBUG) write_to_out_buffer("\n:ELF_data\n", destination_file);
-	write_to_out_buffer("\n# Program global variables\n", destination_file);
+	if(KNIGHT_NATIVE == Architecture) fputs("\n", destination_file);
+	else if(DEBUG) fputs("\n:ELF_data\n", destination_file);
+	fputs("\n# Program global variables\n", destination_file);
 	recursive_output(globals_list, destination_file);
-	write_to_out_buffer("\n# Program strings\n", destination_file);
+	fputs("\n# Program strings\n", destination_file);
 	recursive_output(strings_list, destination_file);
-	if(KNIGHT_NATIVE == Architecture) write_to_out_buffer("\n:STACK\n", destination_file);
-	else if(!DEBUG) write_to_out_buffer("\n:ELF_end\n", destination_file);
+	if(KNIGHT_NATIVE == Architecture) fputs("\n:STACK\n", destination_file);
+	else if(!DEBUG) fputs("\n:ELF_end\n", destination_file);
 
 exit_success:
-	flush_output_buffer(destination_file);
 	if (destination_file != stdout)
 	{
 		fclose(destination_file);

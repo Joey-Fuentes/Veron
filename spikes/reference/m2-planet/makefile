@@ -108,16 +108,13 @@ test/results:
 	mkdir -p test/results
 
 # tests
-.PHONY: test
 test: bin/M2-Planet | bin test/results
 	+make -f makefile-tests --output-sync
 	sha256sum -c test/test.answers
 
 # Generate test answers
-.PHONY: Generate-test-answers gen
-gen: Generate-test-answers
+.PHONY: Generate-test-answers
 Generate-test-answers:
-	GET_MACHINE_FLAGS="--override impossible" $(MAKE) -f makefile-tests --output-sync
 	sha256sum test/results/* >| test/test.answers
 	sha256sum test/test1000/proof >| test/test1000/proof.answer
 
