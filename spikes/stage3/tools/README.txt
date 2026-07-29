@@ -579,3 +579,71 @@ STILL OPEN, UNTOUCHED BY THIS
     05-struct-assign    SIGNAL 11 on aarch64
     16-switch-wide      returns 1
     21                  known gap, pointer arithmetic does not scale
+
+=============================================================================
+ROUND 3: THE ADDRESS-OF FIX WAS HALF THE CHANGE
+
+difftest went 23 -> 26 pass. 24, 29 and 30 all went green and 30 had predicted
+it. The bug was real and is gone.
+
+tcc did not move by one statement. Same 202 markers, same trail, same P28,
+same SIGSEGV -- byte for byte the previous round.
+
+THAT COMBINATION IS THE INFORMATION. The construct at P28 is now proven
+working in isolation and tcc still dies on it, so the statement was never the
+cause on its own.
+
+WHAT WAS ACTUALLY WRONG
+
+Address_of returns early from primary_expr_variable. Everything that
+configures the INDEX lives below that return:
+
+    if(TRUE == Address_of) { ...; return; }      <- the base load went here
+
+    int options = type->options;
+    ...
+    if(match("[", global_token->s))
+    {
+        indexing_an_array = (options & TLO_LOCAL_ARRAY) != 0;
+        if(type->array_modifier > 1) indexing_an_array = TRUE;
+    }
+
+So `&a[i]` got its base loaded and left indexing_an_array unset.
+postfix_expr_array then took its default:
+
+    int element_size = current_target->type->size;
+    if(indexing_an_array) element_size = current_target->size;
+
+-- the size of what a POINTER points at, not the size of an ARRAY element.
+For `TokenSym *hash_ident[16384]` that is sizeof(TokenSym) against
+sizeof(TokenSym*), about eight to one. With h masked to 16383, &hash_ident[h]
+landed roughly a megabyte past a 128 KB array and `ts = *pts` read unmapped
+memory. One entry to tok_alloc, no tok_alloc_new, straight to SIGSEGV.
+
+THE FIX IS NOT A SECOND COPY
+
+Adding those four lines inside the Address_of branch would work and would be
+the FOURTH place in this file carrying one rule -- the pattern that produced
+this bug in the first place. The single copy moved ABOVE the branch instead,
+so both paths run it and there is still one of it. That also reaches the
+deferred-cast path below, which calls postfix_expr_stub, and therefore
+possibly postfix_expr_array, at a point where the flag had never been set.
+
+WHY THE SUITE WAS BLIND, WHICH IS THE PART WORTH KEEPING
+
+Every array-of-pointers probe in cases 24, 28, 29 and 30 used `long*`.
+current_target->size is 8 and current_target->type->size is 8. Those cases are
+STRUCTURALLY INCAPABLE of detecting a wrong choice between the two numbers.
+They passed before the fix, passed after it, and would pass with the element
+width chosen by a coin toss.
+
+Case 28 was the exception and it never went green. `struct Sym* buckets[16]`
+with a 24-byte struct scales by 24 instead of 8, so &buckets[15] lands 360
+bytes into a 128-byte array -- inside the pool, no fault, wrong slot, and
+`a->len != 3` fires. It was reproducing the real bug the whole time and was
+read twice as a struct-layout problem.
+
+31-pointer-array-large-element makes the two numbers differ by six and checks
+index 0, a small index, a large index, a write, a variable index, and plain
+indexing as the control. A case whose two candidate answers are the same
+number is not a test.

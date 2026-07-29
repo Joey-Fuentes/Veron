@@ -1,32 +1,75 @@
 --- a/cc_core.c
 +++ b/cc_core.c
-@@ -1240,8 +1240,34 @@
+@@ -1236,32 +1236,77 @@
+ 		else
+ 		{
+ 			current_target = cast_type;
+ 		}
+ 	}
+ 
++	/* WHICH KIND OF THING IS BEING INDEXED, DECIDED BEFORE ANYONE RETURNS.
++	 *
++	 * These four lines used to sit BELOW the Address_of branch, among the
++	 * is_* declarations. Address_of returns before reaching them, so `&a[i]`
++	 * left indexing_an_array unset and postfix_expr_array fell through to its
++	 * default: scale by current_target->type->size, the size of what a
++	 * POINTER points at, rather than ->size, the size of an ARRAY element.
++	 *
++	 * For `TokenSym *hash_ident[16384]` those are sizeof(TokenSym) against
++	 * sizeof(TokenSym*) -- about eight to one. With h masked to 16383,
++	 * &hash_ident[h] landed roughly a megabyte past a 128 KB array and
++	 * `ts = *pts` read unmapped memory. That is the tok_alloc fault.
++	 *
++	 * A SECOND COPY INSIDE THE BRANCH WOULD ALSO HAVE WORKED, and would have
++	 * been the fourth place in this file carrying one rule. Moving the single
++	 * copy above the branch means both paths run it and there is still only
++	 * one. It also reaches the deferred-cast path below, which calls
++	 * postfix_expr_stub -- and so possibly postfix_expr_array -- at a point
++	 * where the flag had not been set at all.
++	 *
++	 * type->options rather than options: the local is declared after the
++	 * branch, and this now runs before it. */
++	if(match("[", global_token->s))
++	{
++		indexing_an_array = (type->options & TLO_LOCAL_ARRAY) != 0;
++		if(type->array_modifier > 1) indexing_an_array = TRUE;
++	}
++
+ 	if(TRUE == Address_of)
+ 	{
+ 		/* `&s->member` STILL HAS TO LOAD s.
+ 		 *
+ 		 * Returning here leaves REGISTER_ZERO holding the address of the SLOT
+ 		 * that stores s, and postfix_expr_arrow then adds the member offset to
+ 		 * THAT -- addressing a place on the stack rather than inside the
+ 		 * struct. tcc reaches it through
+ 		 *     tcc_set_lib_path -> tcc_set_str(&s->tcc_lib_path, path)
+ 		 * and the garbage pointer segfaults on the first *pp.
+ 		 *
+ 		 * `&s.member` is different and was always right: a struct variable's
+ 		 * slot IS its address, so no load belongs there. Only the arrow form
+ 		 * needs one.
+ 		 *
+ 		 * The member's own value must still not be loaded -- that is what the
+ 		 * caller asked to take the address OF -- and postfix_expr_arrow
+ 		 * already skips it while Address_of is set. */
  		if(match("->", global_token->s))
  		{
  			emit_out(load_value(register_size, FALSE));
  		}
 +
-+		/* A GLOBAL ARRAY'S SYMBOL IS A POINTER CELL, NOT THE STORAGE.
++		/* AND THE BASE ITSELF. A global array's symbol is a POINTER CELL, not
++		 * the storage: `static long g[4]` emits a cell holding the address of
++		 * the data, so every access dereferences it first. The ordinary path
++		 * does that at the bottom of this function, guarded by !is_local_array;
++		 * returning here skipped it, and &g[i] added the index to the address
++		 * of the CELL.
 +		 *
-+		 * `static long g[4]` emits a cell holding the address of the data,
-+		 * so every read of g dereferences that cell first. The ordinary path
-+		 * does exactly that at the bottom of this function, where the load is
-+		 * guarded by !is_local_array. Taking an ADDRESS returns before ever
-+		 * reaching it, so &g[i] added the index to the address of the CELL
-+		 * and the result pointed just past it.
-+		 *
-+		 * A LOCAL array is the opposite and is why the two difftest cases
-+		 * disagreed: its storage is inline on the stack, so the slot IS the
-+		 * data and no load belongs there. TLO_LOCAL_ARRAY already draws that
-+		 * distinction; this path simply never consulted it.
-+		 *
-+		 * The emitted M1 said it plainly. For `return g[2]`:
-+		 *     &GLOBAL_g ; ldr_x0,[x0] ; mov_x0,2 ; mul ; add ; ldr
-+		 * and for `p = &g[2]`, the same sequence with the first ldr missing.
-+		 *
-+		 * Pointers fall on the right side of this test for the same reason:
-+		 * `char* p; &p[i]` must load p, and p is not a local array. Only a
-+		 * local array suppresses the load. */
++		 * A LOCAL array is the opposite -- its storage is inline on the stack,
++		 * the slot IS the data, no load belongs there -- which is why the two
++		 * difftest cases disagreed. A pointer VARIABLE needs the load for the
++		 * same reason a global array does, so the test is not "is it global"
++		 * but the one the ordinary path already uses. */
 +		if(match("[", global_token->s) && !(type->options & TLO_LOCAL_ARRAY))
 +		{
 +			emit_out(load_value(register_size, FALSE));
@@ -35,3 +78,13 @@
  	}
  
  	int options = type->options;
+@@ -1300,9 +1300,4 @@
+ 	int is_indexed_local_array = match("[", global_token->s) && (options & TLO_LOCAL_ARRAY);
+-	if(match("[", global_token->s))
+-	{
+-		indexing_an_array = (options & TLO_LOCAL_ARRAY) != 0;
+-		if(type->array_modifier > 1) indexing_an_array = TRUE;
+-	}
+ 	int is_local_array = (options & TLO_LOCAL_ARRAY) != 0;
+ 	int is_function = options & TLO_FUNCTION;
+ 
