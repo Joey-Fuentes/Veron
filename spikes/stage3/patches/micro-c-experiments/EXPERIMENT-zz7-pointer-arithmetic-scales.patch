@@ -1,0 +1,426 @@
+Pointer arithmetic scales by the pointed-at size.
+
+    long lbuf[4];  lbuf + 1     must be eight bytes on, not one
+    long *q;       q + 1        the same
+    int **p;       *p + 1       the same
+
+micro-c emitted a plain add, so `p + n` advanced n BYTES whatever p pointed
+at. Indexing was right -- p[n] scales, and so do `p++` and `p += n` -- which
+is why this survived: this was the ONE arithmetic path that did not, and
+M2-Planet's own sources index rather than add.
+
+WHY THE SHELVED FIX DID NOT WORK, which matters more than the fix.
+
+MICRO-C.md records scale_pointer_operand as written and not wired in, because
+"it made two cases pass and broke a third". The stated reason was that
+promote_type folds the pointee type away before the operator is handled. That
+is true and it is not the whole story. Underneath it:
+
+    primary_expr_number NEVER SET current_target.
+
+An integer literal inherited whatever type the expression happened to be
+carrying. So in `q + 1` the literal reported itself as `long*`, both operands
+looked like pointers, and any rule keyed on "is the right operand a pointer"
+read `p + n` as a pointer DIFFERENCE and scaled nothing. The shelved fix was
+not seeing the operand types it was written against.
+
+Four separate losses had to be closed, and each was invisible until the one
+before it was fixed:
+
+  1. common_recursion discards both operand types. It ends with promote_type,
+     which is a NAME lookup -- `long* + int` comes back as plain `long`, with
+     the indirection and the knowledge of which side carried it both gone.
+     operand_left_type/operand_right_type record them one line earlier.
+
+  2. An integer literal has no type. Fixed above.
+
+  3. Indexing did not yield the element type unless `[`, `->` or `.` followed.
+     `pn[0] + 1` on an `int*` therefore reported a pointer on the left, scaled
+     the 1 by eight, and case 10 went red -- which is exactly the third case
+     the shelved fix broke. The type now steps down whenever a value was
+     actually LOADED, which is the honest test: `assign` is emitted for an
+     rvalue and blanked for every lvalue context. The lvalue paths still need
+     the pointer type because the store width comes from it, so this is keyed
+     on the load rather than made unconditional.
+
+  4. An array name used as a value is a pointer to its first element, and this
+     compiler's type model cannot say so -- an array's current_target IS the
+     element type, with the array-ness held on the symbol. `lbuf + 1` scaled
+     nothing for that reason. NOT applied when a `[` follows, because
+     postfix_expr_array takes its element width from current_target->size and
+     decaying first would make `char s[10]; s[i]` stride by eight.
+
+ALL FOUR SHAPES, because the previous attempt handled one and the other three
+were not merely unhandled but actively wrong:
+
+    p + n   scale the right operand by sizeof(*p)      result: pointer
+    n + p   scale the LEFT operand, so swap first      result: pointer
+    p - n   scale the right operand                    result: pointer
+    p - q   subtract, then DIVIDE by the element size  result: integer
+
+The swap goes through the stack rather than a scratch register: on aarch64 the
+temps have a deliberately narrow M1 vocabulary (see emit_advance_temp) and this
+is not on their list. The divide reuses the sequences the `/` operator already
+lowers to on every architecture, so this adds NO new M1 macro anywhere --
+checked against the patched tables for aarch64 and amd64.
+
+pointer_element_size returns the size rather than a boolean, because "is it a
+pointer" and "must I emit a multiply" are different questions: `char*` is the
+first and not the second, and `p - q` on char* still yields a count and an
+integer result. Conflating them is what the earlier version did. A FUNCTION
+pointer and an opaque struct (size 0) are excluded -- neither has an element to
+measure, and multiplying by zero would silently flatten the offset.
+
+MEASURED, both architectures, patched tables, aarch64 under the committed
+emulator:
+
+    amd64     pass 45  fail 0    case 21 closed
+    aarch64   pass 44  fail 1    case 21 closed; 16-switch-wide is PRE-EXISTING
+                                 and fails identically without this patch
+    regression.sh                0 regressions, 7 files compiled both sides
+    tcc                          still builds; 369,440 lines of M1, 1.52 MB
+
+AND IT DOES NOT MOVE tcc AT ALL. The marker trail with this patch is
+byte-identical to the trail without it. MICRO-C.md called pointer scaling THE
+BLOCKER; it was a real gap and it was not what tcc was stopping on. What tcc
+was stopping on is the next patch in this series. The two are recorded
+separately for that reason.
+
+diff --git a/cc_core.c b/cc_core.c
+index d748cdc..2352411 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -874,9 +874,22 @@ void primary_expr_char(void)
+ 	require_extra_token();
+ }
+ 
++/* AN INTEGER LITERAL HAS A TYPE, AND IT IS `int`.
++ *
++ * This left current_target alone, so a literal inherited whatever type the
++ * expression was carrying when it arrived. Harmless while nothing asked --
++ * promote_type folds the two operands together anyway -- and fatal the moment
++ * something does: in `q + 1` the literal reported itself as `long*`, so the
++ * pointer-arithmetic rule below saw a pointer on BOTH sides, read the
++ * expression as a pointer difference, and scaled nothing.
++ *
++ * Setting it is what C says and it is also the smaller lie: a leftover type is
++ * wrong in a way that varies with context, which is the class of bug this
++ * compiler keeps producing. */
+ void primary_expr_number(char* s)
+ {
+ 	emit_load_immediate(REGISTER_ZERO, strtoint(s), "primary expr number");
++	current_target = integer;
+ }
+ 
+ struct token_list* load_address_of_variable_into_register(int reg, char* s)
+@@ -1388,6 +1401,40 @@ void primary_expr_variable(void)
+ 		}
+ 	}
+ 
++	/* AN ARRAY NAME USED AS A VALUE IS A POINTER TO ITS FIRST ELEMENT.
++	 *
++	 * This compiler's type model cannot say that: an array's current_target IS
++	 * the element type -- `long lbuf[4]` carries `long`, with the array-ness
++	 * held on the SYMBOL (TLO_LOCAL_ARRAY, array_modifier) rather than in the
++	 * type. Every path that needed to know has therefore carried the answer
++	 * out of band; indexing_an_array is the existing example.
++	 *
++	 * That was survivable while nothing asked the type. Pointer arithmetic
++	 * asks: `lbuf + 1` must advance eight bytes, and the register at that
++	 * point genuinely holds a `long*` -- the load above has already turned the
++	 * symbol into the address of element zero. Saying `long` is not a
++	 * simplification, it is false, and it is false about the exact value in
++	 * the register.
++	 *
++	 * NOT WHEN A '[' FOLLOWS, and that guard is what makes this safe rather
++	 * than a rewrite: postfix_expr_array takes its element width from
++	 * current_target->size when indexing_an_array is set, so decaying first
++	 * would make `char s[10]; s[i]` stride by eight. A local array indexed
++	 * never reaches here at all (is_indexed_local_array returns above); a
++	 * GLOBAL one does, which is why the test is on the token and not on the
++	 * storage class.
++	 *
++	 * Nor under an assignment, a compound assignment, an `&`, or a leading
++	 * `*` -- those want the address or a width, not a decayed value. */
++	if(!is_assignment && !is_compound_operator && (TRUE != Address_of)
++	   && (0 == num_dereference) && !match("[", global_token->s))
++	{
++		if(is_local_array || (1 < type->array_modifier))
++		{
++			current_target = current_target->indirect;
++		}
++	}
++
+ 	if(is_assignment)
+ 	{
+ 		while (num_dereference > 0)
+@@ -1568,6 +1615,23 @@ void logical_recursion(FUNCTION f, int is_and, char* name, FUNCTION iterate)
+ 	iterate();
+ }
+ 
++/* THE TWO OPERAND TYPES, RECORDED BEFORE promote_type FOLDS THEM TOGETHER.
++ *
++ * promote_type answers "what type is the RESULT", and it answers it by NAME
++ * lookup against global_types -- so `long* + int` comes back as plain `long`,
++ * with both the indirection and the knowledge of which side carried it gone.
++ * That is the information loss behind the shelved scale_pointer_operand: by
++ * the time an operator is handled there is nothing left to tell `p + n` from
++ * `n + p` from `p - q`, and those three lower to three different things.
++ *
++ * These are read by the caller IMMEDIATELY after common_recursion returns.
++ * Nesting is safe for that reason and only for that reason: f() may recurse
++ * through common_recursion any number of times, but every one of those
++ * completes before f() returns, and these two lines run after it. Anything
++ * that wants them later must copy them into a local first. */
++struct type* operand_left_type;
++struct type* operand_right_type;
++
+ void common_recursion(FUNCTION f)
+ {
+ 	emit_push(REGISTER_ZERO, "_common_recursion");
+@@ -1575,6 +1639,8 @@ void common_recursion(FUNCTION f)
+ 	struct type* last_type = current_target;
+ 	require_extra_token();
+ 	f();
++	operand_left_type = last_type;
++	operand_right_type = current_target;
+ 	current_target = promote_type(current_target, last_type);
+ 
+ 	emit_pop(REGISTER_ONE, "_common_recursion");
+@@ -2042,12 +2108,27 @@ void postfix_expr_array(void)
+ 	 *
+ 	 * The comma-declarator members were a red herring here -- p[0]->v1 failed
+ 	 * identically. Two rounds went into the wrong hypothesis before testing
+-	 * the FIRST member proved the declarators innocent. */
+-	if(match("[", global_token->s) || match("->", global_token->s) || match(".", global_token->s))
++	 * the FIRST member proved the declarators innocent.
++	 *
++	 * AND IT YIELDS IT WHEN A VALUE WAS ACTUALLY LOADED, not only in front of
++	 * the three operators that were noticed first. `assign` is the load: it is
++	 * emitted for an rvalue and blanked above for every lvalue context (`=`, a
++	 * compound assignment, `&`, `++`/`--`). So a non-empty `assign` means the
++	 * register now holds an ELEMENT, and saying otherwise is simply false.
++	 *
++	 * It went unnoticed for the same reason the pointer-arithmetic gap did --
++	 * nothing asked. Once `p + n` scales, `pn[0] + 1` on an `int*` reports a
++	 * pointer on the left, scales the 1 by eight, and case 10 goes red. The
++	 * lvalue paths still need the pointer type, because the store width is
++	 * taken from it, which is why this is keyed on the load and not made
++	 * unconditional. */
++	if(match("[", global_token->s) || match("->", global_token->s) || match(".", global_token->s)
++	   || !match("", assign))
+ 	{
+ 		current_target = current_target->type;
+ 	}
+ 
++
+ 	emit_out(assign);
+ }
+ 
+@@ -2412,67 +2493,168 @@ void additive_expr_a(void)
+ 	additive_expr_stub_a();
+ }
+ 
+-void additive_expr_stub_b(void)
+-{
+-	require(NULL != global_token, "Received EOF in additive_expr_stub_a\n");
+-/* Should the right-hand operand be scaled by what the left points at?
++/* THE ELEMENT SIZE THIS OPERAND'S ARITHMETIC SCALES BY, or 0 if it is not a
++ * pointer that scales at all.
++ *
++ * type_is_pointer() alone is not the question. Two of the things it says yes
++ * to have no element to measure:
+  *
+- * ONLY THE LEFT IS INSPECTED, and it has to be: common_recursion ends with
+- * promote_type, which returns the POINTER when either side is one -- so by the
+- * time this is asked, the right operand's own type is gone. An earlier version
+- * tested current_target for not-being-a-pointer and therefore never fired at
+- * all.
++ *   a FUNCTION pointer   ->type is itself, so ->type->size is the pointer's
++ *                        own width and scaling by it would be nonsense
++ *   an OPAQUE struct     size 0 (NO_STRUCT_DEFINITION) -- `struct FILE*` with
++ *                        no definition in scope. Multiplying by 0 would zero
++ *                        the offset silently, which is worse than not scaling
+  *
+- * TWO CASES ARE KNOWINGLY WRONG as a result, both with a failing test case
+- * rather than a silent guess:
++ * A size of 1 IS a scaling pointer -- `char*` -- and the caller must treat it
++ * as one, because `p - q` on char* still yields a count and its result type is
++ * an integer. It simply needs no multiply emitted. So this returns the size
++ * and the caller decides; "is it a pointer" and "must I emit a multiply" are
++ * different questions and conflating them is what the earlier version did. */
++int pointer_element_size(struct type* t)
++{
++	if(NULL == t) return 0;
++	if(!type_is_pointer(t)) return 0;
++	if(t->options & TO_FUNCTION_POINTER) return 0;
++	if(NULL == t->type) return 0;
++	if(t->type == t) return 0;
++	if(0 >= t->type->size) return 0;
++	return t->type->size;
++}
++
++/* R0 = R0 / <immediate>, for the pointer-difference case.
+  *
+- *   n + p    legal C, and the scale belongs on the LEFT operand there. Nothing
+- *            here can tell that shape apart from p + n.
+- *   p - q    between two pointers the answer is a count of ELEMENTS, which
+- *            means dividing after the subtraction, not scaling before it.
++ * The instruction sequences are the SAME ones the `/` operator lowers to in
++ * additive_expr_stub_a, deliberately: every one of them is already proven
++ * against the M1 vocabulary for its architecture, so this adds no new macro on
++ * any target. They all compute R0 = R1 / R0, so the value is moved into R1 and
++ * the divisor loaded into R0 first.
+  *
+- * Both were already wrong before this change; neither is made worse by it. */
+-/* NOT CALLED. Kept with its reasoning because the bug it addresses is real and
+- * will have to be fixed; see the note above and difftest case 21. Wiring it in
+- * made `p + n` correct and broke `pn[0] = pn[0] + 1` in case 10, so it is not
+- * ready. */
+-int scale_pointer_operand(struct type* left_side)
++ * The signed forms are used because a pointer difference is signed -- `p - q`
++ * is negative when q is further along. */
++void emit_divide_register_zero_by_immediate(int value, char* note)
+ {
+-	if(NULL == left_side) return FALSE;
+-	if(!type_is_pointer(left_side)) return FALSE;
+-	if(NULL == left_side->type) return FALSE;
+-	if(left_side->type == left_side) return FALSE;
+-	if(left_side->type->size <= 1) return FALSE;
+-	return TRUE;
++	emit_move(REGISTER_ONE, REGISTER_ZERO, note);
++	emit_load_immediate(REGISTER_ZERO, value, note);
++
++	if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture)) emit_out("DIV R0 R1 R0\n");
++	else if(X86 == Architecture) emit_out("xchg_ebx,eax\ncdq\nidiv_ebx\n");
++	else if(AMD64 == Architecture) emit_out("xchg_rbx,rax\ncqo\nidiv_rbx\n");
++	else if(ARMV7L == Architecture) emit_out("{LR} PUSH_ALWAYS\n^~divides CALL_ALWAYS\n{LR} POP_ALWAYS\n");
++	else if(AARCH64 == Architecture) emit_out("sdiv_x0,x1,x0\n");
++	else if(Architecture & ARCH_FAMILY_RISCV) emit_out("rd_a0 rs1_a1 rs2_a0 div\n");
+ }
+ 
++/* SWAP THE TWO OPERANDS. `n + p` needs the scale applied to the LEFT operand,
++ * which sits in R1, and the multiply helper only knows how to scale R0.
++ * Addition is commutative, so exchanging them is exact rather than a
++ * workaround -- and it is done through the stack rather than through a scratch
++ * register because on aarch64 the temps have a deliberately narrow M1
++ * vocabulary (see emit_advance_temp) and this is not on their list. */
++void emit_swap_operands(char* note)
++{
++	emit_push(REGISTER_ZERO, note);
++	emit_move(REGISTER_ZERO, REGISTER_ONE, note);
++	emit_pop(REGISTER_ONE, note);
++}
++
++void additive_expr_stub_b(void)
++{
++	require(NULL != global_token, "Received EOF in additive_expr_stub_a\n");
++
+ 	/* POINTER ARITHMETIC SCALES BY THE POINTED-AT SIZE.
+ 	 *
+ 	 *     long lbuf[4];  lbuf + 1     must be eight bytes on, not one
+ 	 *     long *q;       q + 1        the same
++	 *     int **p;       *p + 1       the same, and this one is tcc's TOK_GET
+ 	 *
+ 	 * micro-c emitted a plain add, so `p + n` advanced n BYTES whatever p
+-	 * pointed at. Indexing was right -- p[n] scales -- which is why this went
+-	 * unnoticed: M2-Planet's own sources index and rarely add.
++	 * pointed at. Indexing was right -- p[n] scales, postfix_expr_array does
++	 * it, and so do `p++` and `p += n` -- which is why this survived: this
++	 * was the ONE arithmetic path that did not, and M2-Planet's own sources
++	 * index rather than add.
++	 *
++	 * ALL FOUR SHAPES ARE HANDLED, because the previous attempt handled one
++	 * and the other three were not merely unhandled but actively wrong:
++	 *
++	 *     p + n   scale the right operand by sizeof(*p)     result: pointer
++	 *     n + p   scale the LEFT operand, so swap first     result: pointer
++	 *     p - n   scale the right operand                   result: pointer
++	 *     p - q   subtract, then DIVIDE by the element size  result: integer
+ 	 *
+-	 * Only the LEFT operand is inspected. `n + p` is legal C and is not
+-	 * handled here: after common_recursion the right operand's type has been
+-	 * folded away by promote_type, so there is nothing left to test. Left as a
+-	 * known gap rather than guessed at.
++	 * What made this possible is operand_left_type/operand_right_type above.
++	 * The shelved version could only inspect the promoted type, which is why
++	 * it could not tell those four apart -- and why wiring it in fixed `p + n`
++	 * and broke `pn[0] = pn[0] + 1`, where the left operand is an indexed
++	 * pointer whose promoted type still looks like one.
+ 	 *
+-	 * `p - q` between two pointers should DIVIDE by the element size. That is
+-	 * also not handled, and scaling the right operand would make it worse
+-	 * rather than better, so a pointer on the right suppresses the scale. */
++	 * THE RESULT TYPE IS SET EXPLICITLY, and that is half the fix rather than
++	 * a tidy-up. promote_type is a name lookup: for `long* + int` it returns
++	 * plain `long`, so after `q = q + 1` the expression no longer knew it held
++	 * a pointer and the NEXT operator in a chain -- `p + 1 + 1`, `*(p + 1)`,
++	 * `(p + 1)->m` -- had nothing to scale by. */
+ 	if(match("+", global_token->s))
+ 	{
+ 		common_recursion(additive_expr_a);
+-		emit_add(REGISTER_ZERO, REGISTER_ONE, current_target->is_signed, NULL);
++		struct type* lhs = operand_left_type;
++		struct type* rhs = operand_right_type;
++		int left_element = pointer_element_size(lhs);
++		int right_element = pointer_element_size(rhs);
++		int is_signed = current_target->is_signed;
++
++		if(0 != left_element && 0 == right_element)
++		{
++			if(1 < left_element) emit_mul_register_zero_with_immediate(left_element, "pointer arithmetic");
++			emit_add(REGISTER_ZERO, REGISTER_ONE, is_signed, NULL);
++			current_target = lhs;
++		}
++		else if(0 == left_element && 0 != right_element)
++		{
++			if(1 < right_element)
++			{
++				emit_swap_operands("int + pointer");
++				emit_mul_register_zero_with_immediate(right_element, "pointer arithmetic");
++			}
++			emit_add(REGISTER_ZERO, REGISTER_ONE, is_signed, NULL);
++			current_target = rhs;
++		}
++		else
++		{
++			/* Two pointers added together is not C, and two non-pointers
++			 * need nothing. Both keep the promoted type. */
++			emit_add(REGISTER_ZERO, REGISTER_ONE, is_signed, NULL);
++		}
+ 		additive_expr_stub_b();
+ 	}
+ 	else if(match("-", global_token->s))
+ 	{
+ 		common_recursion(additive_expr_a);
+-		emit_rsub(REGISTER_ZERO, REGISTER_ONE, current_target->is_signed, NULL);
++		struct type* lhs = operand_left_type;
++		struct type* rhs = operand_right_type;
++		int left_element = pointer_element_size(lhs);
++		int right_element = pointer_element_size(rhs);
++		int is_signed = current_target->is_signed;
++
++		if(0 != left_element && 0 == right_element)
++		{
++			if(1 < left_element) emit_mul_register_zero_with_immediate(left_element, "pointer arithmetic");
++			emit_rsub(REGISTER_ZERO, REGISTER_ONE, is_signed, NULL);
++			current_target = lhs;
++		}
++		else if(0 != left_element && 0 != right_element)
++		{
++			/* A DIFFERENCE OF POINTERS IS A COUNT OF ELEMENTS, not of bytes,
++			 * so the divide comes AFTER the subtraction. The result is an
++			 * integer -- leaving it a pointer would make the next operator in
++			 * a chain scale a count, which is how `r - p - 1` would go wrong
++			 * on anything wider than a char. */
++			emit_rsub(REGISTER_ZERO, REGISTER_ONE, is_signed, NULL);
++			if(1 < left_element) emit_divide_register_zero_by_immediate(left_element, "pointer difference");
++			current_target = integer;
++		}
++		else
++		{
++			emit_rsub(REGISTER_ZERO, REGISTER_ONE, is_signed, NULL);
++		}
+ 		additive_expr_stub_b();
+ 	}
+ }

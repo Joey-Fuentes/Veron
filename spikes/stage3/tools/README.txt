@@ -1509,3 +1509,55 @@ have only ever failed.
 
 Verified from a clean checkout: 45 pass / 0 fail / 3 gaps on amd64, 44 / 1 / 3
 on aarch64, and mc-tcc built and run to the same fault this file describes.
+
+================================================================================
+ROUND: POINTER ARITHMETIC, AND THE THING THAT WAS ACTUALLY IN THE WAY
+================================================================================
+
+Two patches: EXPERIMENT-zz7 (pointer arithmetic scales) and EXPERIMENT-zz8 (a
+dereference of an address is an lvalue). Cases 21 and 48 closed, 49 and 50
+added. amd64 49/0, aarch64 48/1, regression 0.
+
+THE FINDING THAT MATTERS IS NEGATIVE. MICRO-C.md named pointer scaling as THE
+BLOCKER. It was a real gap and it is now closed -- and the tcc marker trail
+with the fix is BYTE-IDENTICAL to the trail without it. A cause that has been
+written down for several rounds is still a hypothesis until something measures
+it, and the cheap measurement here was: fix it, rerun, diff the trail. That is
+two minutes locally and it would have been worth doing before any of the work.
+
+WHAT MOVED tcc was `*(t) = 7` -- an assignment through a parenthesised
+dereference -- storing through the loaded value, where `*t = 7` had always been
+right. Found by reducing TOK_GET to fifteen lines and bisecting it with
+difftest, which separated the two spellings in about a second. Reading emitted
+assembly would have shown the extra load; it would not have said which of the
+three constructs in that macro carried it.
+
+THREE THINGS TO REUSE:
+
+1. FIX IT AND DIFF THE TRAIL. `local-tcc.sh WORK tccpp.c FUNC` twice, once per
+   compiler, and `diff` the marks. It is the only way to tell "this was a real
+   bug" from "this was the bug". Both patches here are real fixes; only one of
+   them moved anything.
+
+2. A FIX WITH THE WRONG LEVEL COUNT LOOKS LIKE NO FIX AT ALL. zz8's
+   address-of cancellation was first keyed on the dereference loop's LAST
+   iteration, which is correct only when there is one star. `++*(&x)` passed in
+   isolation and tcc did not move by a single marker, because the same macro
+   also writes `**(p)`. A green case suite said nothing about it. Cost: one
+   round.
+
+3. STACK THE CASES AGAINST EVERY VERSION, not just the final one. Each of the
+   four cases here was run against three compilers -- baseline, zz7 only, both:
+
+       21  BASE=FAIL  A=pass  NEW=pass
+       48  BASE=FAIL  A=FAIL  NEW=pass
+       49  BASE=FAIL  A=FAIL  NEW=pass
+       50  BASE=FAIL  A=pass  NEW=pass
+
+   That table is what makes the split honest: each patch is witnessed by cases
+   that its predecessor does not fix. A case that passes on the baseline is
+   measuring nothing, and the only way to know is to run it there.
+
+WHAT THE SUITE STILL CANNOT SEE. Every case here is amd64-and-aarch64 C with an
+exit code. It cannot see that `16-switch-wide` has been red on aarch64 and
+green on amd64 for some time -- that needs someone to read the second column.

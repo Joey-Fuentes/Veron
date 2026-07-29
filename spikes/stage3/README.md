@@ -33,15 +33,24 @@ other already produced a binary:
 | route | state |
 |---|---|
 | M2-Planet → Mes → tcc (live-bootstrap's) | Mes rung in progress, three rungs out |
-| enhanced M2-Planet → tcc directly | **compiles all of tcc; the binary runs, diagnoses, preprocesses and reaches macro expansion** — `MICRO-C.md` |
+| enhanced M2-Planet → tcc directly | **compiles all of tcc; the binary runs, diagnoses, preprocesses, and is now inside macro expansion** — `MICRO-C.md` |
 
 The direct route now has a name — **micro-c** — and its own file. It compiles
 `libtcc.c` to 369,255 lines of M1, assembles and links a 1.52 MB aarch64 binary,
 and that binary runs: it reports that the crt files are missing, preprocesses
 its own predefs and a real source file, interns all 980 keywords with their
-collision chains, and faults inside macro expansion on `++*(p)` — pointer
-arithmetic that does not scale, which is a documented gap rather than an
-unknown. It is not a working tcc; it is a long way past "not started".
+collision chains, and now survives a full pass of `macro_subst`'s substitution
+loop before faulting on the way back out of it. It is not a working tcc; it is
+a long way past "not started".
+
+That last step is worth reading in `MICRO-C.md` for the method rather than the
+result. The fault there was recorded for several rounds as pointer arithmetic
+that does not scale. Scaling was a real gap, it is now closed, and closing it
+moved the marker trail **by nothing**. What was in the way was an assignment
+through a parenthesised dereference — `*(t) = 7` storing through the loaded
+value where `*t = 7` had always been correct — the eighth copy of one rule in
+`cc_core.c` and the third found missing. A documented cause is not a measured
+one.
 
 Stage 4 has since proven what a tcc is *worth* once reached: an arm64 tcc builds
 a complete gcc 4.7.4 carrying gcc 4.8.5's aarch64 backend — libgcc, `xgcc`, and
@@ -160,9 +169,17 @@ aarch64, and the cost was a CI round trip per bug.
 
 - **The tcc rung itself** — the one thing this stage exists to close. Neither
   route has produced a *working* tcc from the seed, though the direct route now
-  produces a tcc **binary** that runs and gets into the preprocessor
-  (`MICRO-C.md`). `ROADMAP.md` has the measured gap for
-  the direct route; `mes-rung.yml` is the reference arm for the other.
+  produces a tcc **binary** that runs and reaches macro expansion
+  (`MICRO-C.md`). The current fault is after `macro_subst` returns into
+  `macro_subst_tok` (tccpp.c:3396) and is **undiagnosed**; extending
+  `instrument.py`'s function list is the next move and costs a minute.
+  `ROADMAP.md` has the measured gap for the direct route; `mes-rung.yml` is the
+  reference arm for the other.
+- **`16-switch-wide` fails on aarch64 and is not a known gap.** It returns 1
+  where gcc returns 0, under the committed emulator and on the runner. It
+  predates the zz7/zz8 work — verified against a compiler built without them —
+  and nothing in the docs mentions it, so it has probably been red for a while
+  with only the amd64 column being read.
 - **G0's x86 codegen** differs from upstream: compiling for x86 it takes the
   short-immediate branch in `write_add_immediate` where upstream emits the
   register form (~1350 sites, 31,698 bytes). G1 proves the aarch64 path is

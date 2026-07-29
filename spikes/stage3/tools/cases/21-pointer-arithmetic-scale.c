@@ -1,17 +1,21 @@
-/* KNOWN GAP. `p + n` must advance by n * sizeof(*p); micro-c advances n BYTES.
+/* `p + n` advances by n * sizeof(*p), not by n bytes.
  *
- *     long lbuf[4];  lbuf + 1     should be 8 bytes on, is 1
+ *     long lbuf[4];  lbuf + 1     eight bytes on
  *     long *q;       q + 1        the same
  *
- * Indexing is correct -- p[n] scales -- which is why this survived: M2-Planet's
- * own sources index and rarely add. tcc does both.
+ * Indexing always scaled -- p[n], p++ and p += n all did -- and this one
+ * arithmetic path did not, which is why it survived: M2-Planet's own sources
+ * index rather than add.
  *
- * A fix exists (scale_pointer_operand in cc_core.c) and is NOT wired in: it
- * made these pass and broke case 10, so it is recorded rather than shipped.
- * Two shapes it would still get wrong, both needing type information that
- * promote_type has already folded away by the time the operator is handled:
- *     n + p      the scale belongs on the other operand
- *     p - q      the answer is a count of elements, so divide after
+ * WAS A KNOWN GAP. Closed by EXPERIMENT-zz7. It stayed open for two rounds
+ * because the obvious fix does not work on its own: an integer literal had no
+ * type, so `q + 1` reported a pointer on BOTH sides and read as a pointer
+ * difference. See the patch preamble -- four losses had to be closed, and each
+ * was invisible until the one before it was fixed.
+ *
+ * The array form below is the one that needs decay: an array's type IS its
+ * element type in this compiler, so `lbuf` looks like a `long` rather than a
+ * `long*` and nothing was there to scale by.
  */
 int main(void)
 {

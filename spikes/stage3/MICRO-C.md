@@ -7,13 +7,30 @@ This file is its state.
 
 **Status: it compiles all of tcc, links a 1.52 MB aarch64 binary, and that
 binary runs, reports diagnostics, preprocesses its own predefs and a real
-source file, interns the whole keyword table, and reaches macro expansion
-before it faults.** It is not a working tcc. It is a long way past "gets into
-the preprocessor", which is what this file said before.
+source file, interns the whole keyword table, and is now INSIDE macro
+expansion, having survived a full pass of `macro_subst`'s substitution loop.**
+It is not a working tcc. It is a long way past "gets into the preprocessor",
+which is what this file said before.
 
-The remaining fault is `++*(p)` in tcc's token reader -- pointer arithmetic
-that does not scale, which is case 21, a gap documented and deferred several
-rounds before the frontier arrived at it.
+**A correction, because this file was wrong about it for several rounds.** The
+remaining fault was recorded here as `++*(p)` in tcc's token reader caused by
+*pointer arithmetic that does not scale* -- case 21. The shape was right and
+the cause was not. Scaling was a real gap and it has been closed
+(`EXPERIMENT-zz7`); closing it moved the marker trail **by nothing at all**.
+What was actually stopping tcc is in `EXPERIMENT-zz8`, and the load-bearing
+line of it is four characters wide:
+
+```
+*(t) = 7;      stored through the LOADED VALUE -- SIGSEGV
+*t   = 7;      correct, and always was
+```
+
+An assignment through a *parenthesised* dereference: the eighth copy of the
+`assigning` rule in `cc_core.c` and the third one found missing. That is the
+same one-rule-many-implementations shape this file counts nineteen of for
+`load_value`, arriving from a direction nobody was watching. tcc writes the
+parenthesised form because `TOK_GET` is a macro and `*(t)` is the only safe way
+to dereference a macro parameter.
 
 ---
 
@@ -37,8 +54,25 @@ runs                         tcc_new completes
                              its own predefs preprocessed without error
                              tccgen_init, tccgen_compile, next()
                              macro_subst_tok -> macro_subst
-                             faults on the second TOK_GET
+                             a full pass of the substitution loop
+                             returns into macro_subst_tok, tccpp.c:3396
+                             faults after macro_subst returns
 ```
+
+The trail either side of `EXPERIMENT-zz8`, which is what "the frontier moved"
+means here rather than an impression:
+
+```
+before   ... P97 P100 P115 P116 P119 [SIGSEGV]
+after    ... P97 P100 P115 P116 P119 P100 P65 [SIGSEGV]
+```
+
+`P100` is `TOK_GET(&t, &macro_str, &cval)`. It now completes a **second** time
+-- the loop body iterates, which it had never done -- and `P65`
+(`ret = macro_subst(tok_str, nested_list, jstr)`, tccpp.c:3396) completes in
+the caller before the fault. 21 markers to 23. **The new fault is after
+`macro_subst` returns, around `tok_str_free_str`, and has not been
+diagnosed.**
 
 Those two error lines are worth their own sentence: they are printed through
 `cstr_vprintf`, the path that used to crash, and they mean tcc is judging a
@@ -187,7 +221,9 @@ a 200-operator file from 83 MB to 3.4 MB.
 | gap | consequence |
 |---|---|
 | `int` is EIGHT bytes | every struct differs from a normal ABI; three of our own headers had wrong layouts because of it |
-| pointer arithmetic does not scale | **THIS IS NOW THE BLOCKER.** `p + n` advances n **bytes**, not n elements, and `++*(p)` through a pointer-to-pointer advances by one. tcc's `TOK_GET` macro (tccpp.c:1245) is exactly that, and it runs for every token tcc reads. Cases 21 and 48. The fix is written as `scale_pointer_operand` and **not wired in**: it made two cases pass and broke a third, because `promote_type` folds the pointee type away before the operator is handled |
+| ~~pointer arithmetic does not scale~~ | **CLOSED, `EXPERIMENT-zz7`.** All four shapes (`p+n`, `n+p`, `p-n`, `p-q`) scale; cases 21 and 50. It was never the blocker -- see the correction above. The shelved `scale_pointer_operand` failed for a reason this file did not have: **an integer literal had no type**, so `q + 1` reported a pointer on *both* sides and read as a difference. Three further losses had to go with it -- see the patch preamble |
+| `&x` reports x's own type | One level short of what it is: there is no `T*` handed back. `EXPERIMENT-zz8` cancels it locally for `*(&x)`, the only shape that has bitten, but the under-reporting itself is untouched and will surface again |
+| one lvalue rule, EIGHT implementations | Beside the nineteen load sites, `cc_core.c` decides "is this an assignment target" in eight places, and **three have been found missing a case the others had, one per round**. Same disease, worth its own row: it is the one that has cost tcc the most |
 | `float`/`double`/`long double` | one word-sized integer type |
 | `constant_expression` precedence | `a\|b&c` folds right-to-left |
 | 19 load sites | see above |
@@ -535,7 +571,7 @@ fresh session needs only the repository.
 
 ## Honest limits of the case suite
 
-48 cases, 45 passing and 3 known gaps. That is 45 constructs behaving as gcc
+50 cases, 49 passing and 1 known gap. That is 49 constructs behaving as gcc
 does. It is **not** a claim about micro-c generally, because most cases were
 written *from* bugs already found — they measure what has been fixed, not what
 remains.
@@ -584,7 +620,7 @@ tools/                        difftest, vocabulary, regression, instrument, veri
 tools/cases/                  one C file per construct, 48 of them
 ```
 
-20 patches build micro-c and 4 patch M2libc. Both workflows assert the count,
+22 patches build micro-c and 4 patch M2libc. Both workflows assert the count,
 because a missing codegen patch looks exactly like a codegen bug.
 
 `patches/micro-c-experiments/README.txt` is the working log — every wrong turn,
@@ -595,16 +631,26 @@ what it cost, and what settled it. It is long and it is the honest record.
 
 ## The next piece of work
 
-Not another one-liner. Nine of the bugs above are "one rule, several
-implementations, and the copies disagree", and the remaining blocker is the
-same information loss seen from the other side: `promote_type` folds the
-pointee type away before the operator is handled, which is why
-`scale_pointer_operand` fixed two cases and broke a third, and why the load
-decision is spread over nineteen sites that each carry a different subset of
-the guards.
+**First, the cheap thing: diagnose the new fault.** It is after `macro_subst`
+returns into `macro_subst_tok` (tccpp.c:3396), around `tok_str_free_str`.
+`instrument.py` cannot reach it from the current set -- extend the list and
+re-run. That is a minute, not a round.
+
+Then the structural work, which this round argued for rather than away. Nine of
+the bugs above are "one rule, several implementations, and the copies
+disagree", and **that class has now cost more than every missing feature put
+together**: the thing holding tcc up was not an absent capability but the
+eighth copy of `assigning` missing a case the other seven had.
 
 The fix is to carry the type on the expression instead of in a global, and to
-have one function answer "load or address, and how wide". That is a refactor
-of every site that reads the flags, and it wants the case suite as a net —
-which is why the suite came first, and why its three structural failures above
-are worth reading before trusting it.
+have one function answer "load or address, and how wide" -- and, on `zz8`'s
+evidence, a second answering "is this an lvalue", since that question is
+currently asked eight different ways. `EXPERIMENT-zz7` is a small down payment
+on the first: `operand_left_type`/`operand_right_type` carry what `promote_type`
+used to destroy, and they are read one line after they are written precisely
+because a global that outlives its statement is how `Address_of` became
+unreliable.
+
+That is a refactor of every site that reads the flags, and it wants the case
+suite as a net -- which is why the suite came first, and why its three
+structural failures above are worth reading before trusting it.

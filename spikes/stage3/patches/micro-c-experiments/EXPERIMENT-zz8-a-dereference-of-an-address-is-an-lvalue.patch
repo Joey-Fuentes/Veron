@@ -1,0 +1,244 @@
+A dereference of an address is an lvalue -- and this is what tcc was stopping on.
+
+MICRO-C.md names `++*(p)` in tcc's TOK_GET as the remaining fault and attributes
+it to pointer arithmetic that does not scale. The shape is right, the cause is
+not: scaling was fixed in the previous patch and the marker trail did not move
+by one statement. Three separate defects sit in that one macro.
+
+    #define TOK_GET(t, p, c) do { \
+        int _t = **(p); \
+        if (TOK_HAS_VALUE(_t)) tok_get(t, p, c); \
+        else *(t) = _t, ++*(p); \
+        } while (0)                                     tccpp.c:1245
+
+It is reached as TOK_GET(&t, &macro_str, &cval), so after substitution the
+expressions are literally `**(&macro_str)`, `*(&t) = _t` and `++*(&macro_str)`.
+Every one of them is a dereference of a PARENTHESISED expression, because that
+is how you write a macro parameter safely, and every one of them was wrong.
+
+(1) THE PREFIX ++ TEST COULD NOT SEE ITSELF. is_prefix_operator looked two
+    tokens back from the identifier. That is the `++` for `++p` and the `*` for
+    `++*p`, so the whole through-a-dereference class took the ordinary rvalue
+    path, loaded one level too far, and incremented the pointed-AT object
+    instead of the pointer. Reading it from the token in front of the STARS --
+    remembered before the loop eats them -- covers both. `(*p)++` was never
+    affected: the operator sits after the expression, where nothing has been
+    consumed yet.
+
+(2) AN ASSIGNMENT THROUGH PARENTHESES STORED THROUGH THE LOADED VALUE.
+
+        *(t) = 7;      SIGSEGV
+        *t  = 7;       correct, and four characters shorter
+
+    This is the eighth copy of the `assigning` rule in cc_core.c and the third
+    one found missing. It is the defect that was actually killing tcc.
+
+(3) `*(&x)` IS `x`, AND THE TYPE HAS TO SAY SO. `&x` reports x's OWN type, one
+    level short of what it is -- there is no `T*` handed back. So the
+    dereference stepped the type down from a level that was never stepped up
+    and landed one below where it started, and `++*(&macro_str)` added ONE
+    instead of the element size. The address was right the whole time.
+
+    Note which application cancels the `&`: the FIRST, not the last. Keying it
+    off the loop's final iteration is right only when there is exactly one
+    star, so `++*(&x)` came out correct in isolation while tcc -- which writes
+    `**(p)` in the same macro -- did not move at all. That cost a round.
+
+FOUND IN A MINUTE, NOT A ROUND, and the method is the point. `difftest.sh`
+reduced TOK_GET to fifteen lines of self-contained C, and bisecting it locally
+separated `*(t) = 7` from `*t = 7` in about a second. Reading emitted assembly
+would have found the extra load; it would not have told me which of the three
+constructs in the macro carried it.
+
+MEASURED, both architectures, patched tables:
+
+    amd64     pass 45  fail 0    cases 21 and 48 both closed
+    aarch64   pass 44  fail 1    16-switch-wide is PRE-EXISTING (see zz7)
+    regression.sh                0 regressions
+
+AND THE FRONTIER MOVED, which is the first movement past the fault MICRO-C.md
+documents:
+
+    before   ... P97 P100 P115 P116 P119 [SIGSEGV]
+    after    ... P97 P100 P115 P116 P119 P100 P65 [SIGSEGV]
+
+P100 is `TOK_GET(&t, &macro_str, &cval)`. It now completes a SECOND time --
+macro_subst's loop body iterates -- and control returns into macro_subst_tok,
+where P65 (`ret = macro_subst(tok_str, nested_list, jstr)`, tccpp.c:3396)
+completes before the fault. 21 markers to 23.
+
+The new fault is AFTER macro_subst returns, around tok_str_free_str. It has not
+been diagnosed. Instrument macro_subst_tok's tail next.
+
+diff --git a/cc_core.c b/cc_core.c
+index 2352411..86401dd 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -46,6 +46,20 @@ struct token_list* break_frame;
+ int current_count;
+ int Address_of;
+ 
++/* DID THE EXPRESSION JUST PARSED END AT AN `&`?
++ *
++ * `&x` leaves REGISTER_ZERO holding an address but reports x's OWN type, one
++ * level short of what it is -- there is no `T*` handed back. Nothing noticed
++ * while the only consumer was a store, and `*(&x)` is where it shows: the
++ * dereference steps the type down from a level that was never stepped up, and
++ * lands one below where it started.
++ *
++ * Set by the Address_of path in primary_expr_variable, read by the
++ * parenthesised dereference immediately after, and cleared on entry to every
++ * primary_expr_variable so it can only ever describe the parse that just
++ * finished. */
++int last_expr_was_address_of;
++
+ /* Imported functions */
+ char* int2str(int x, int base, int signed_p);
+ int strtoint(char *a);
+@@ -1041,6 +1055,13 @@ void emit_va_end_intrinsic(void)
+ int num_dereference_after_postfix;
+ void primary_expr_variable(void)
+ {
++	/* THE TOKEN THIS UNARY EXPRESSION STARTS AT, remembered before the stars
++	 * are eaten. Everything below that wants to know what OPERATOR this
++	 * expression is the operand of has to look here: once the loop has run,
++	 * the tokens behind the identifier are the stars, not the operator. */
++	struct token_list* unary_start = global_token;
++	last_expr_was_address_of = FALSE;
++
+ 	int num_dereference = 0;
+ 	while(global_token->s[0] == '*') {
+ 		require_extra_token();
+@@ -1048,6 +1069,29 @@ void primary_expr_variable(void)
+ 	}
+ 	num_dereference_after_postfix = num_dereference;
+ 
++	/* IS THIS THE OPERAND OF A PREFIX ++ / -- ?
++	 *
++	 * `++*p` is `++(*p)`: an LVALUE. The increment wants the address the
++	 * pointer holds, so the dereference chain must stop one load short --
++	 * which is exactly the rule the assignment paths already carry, under the
++	 * name `assigning`.
++	 *
++	 * The existing test for this looks two tokens back from the IDENTIFIER.
++	 * That is the `++` for `++p` and the `*` for `++*p`, so the entire
++	 * through-a-dereference class was invisible: the compiler took the
++	 * ordinary rvalue path, loaded one level too far, and then incremented the
++	 * pointed-AT object instead of the pointer. It is the same mistake in both
++	 * directions -- `(*p)++` reads the `++` correctly because it sits after
++	 * the expression, where nothing has been consumed.
++	 *
++	 * tcc's TOK_GET macro (tccpp.c:1245) is `++*(p)` and runs for every token
++	 * tcc reads. */
++	int prefix_lvalue = FALSE;
++	if(NULL != unary_start->prev)
++	{
++		prefix_lvalue = match("++", unary_start->prev->s) || match("--", unary_start->prev->s);
++	}
++
+ 	/* A PREFIX ++/-- UNDER A DEREFERENCE: `*++file->buf_ptr`, tccpp.c:673,
+ 	 * which is `*(++(file->buf_ptr))`. The stars are consumed above and this
+ 	 * function then expects an identifier, so it died on "++ is not a defined
+@@ -1131,20 +1175,75 @@ void primary_expr_variable(void)
+ 			 * correctly emits ldrsb. */
+ 			global_token = before_paren;
+ 			primary_expr();
++			/* AND IT MAY BE AN LVALUE, in which case the LAST dereference
++			 * yields an address and must not load.
++			 *
++			 *     ++*(p)     tcc's TOK_GET, tccpp.c:1245
++			 *     (*p)++     the same thing written the other way round
++			 *
++			 * prefix_lvalue was read from the token in front of the stars; a
++			 * postfix ++/-- is read from the token in front of us right now,
++			 * because primary_expr has just consumed the parenthesised part
++			 * and left the cursor exactly there.
++			 *
++			 * The type still steps down for that level -- it is the LOAD that
++			 * is skipped, not the dereference. Getting that half wrong is what
++			 * made the increment scale by the pointer's own width instead of
++			 * its element's. */
++			int paren_lvalue = prefix_lvalue;
++			if(NULL != global_token)
++			{
++				if(match("++", global_token->s) || match("--", global_token->s)) paren_lvalue = TRUE;
++				/* AND AN ASSIGNMENT TARGET, which is the same rule again and
++				 * the eighth place in this file to carry its own copy of it.
++				 * `*(t) = 7` loaded through the pointer and stored at the
++				 * VALUE it found; `*t = 7`, four characters shorter, has been
++				 * correct all along. tcc writes the parenthesised form because
++				 * TOK_GET is a macro and `*(t)` is how you write it safely. */
++				if(match("=", global_token->s) || is_compound_assignment(global_token->s)) paren_lvalue = TRUE;
++			}
++			/* `*(&x)` IS `x`, AND THE TYPE HAS TO SAY SO.
++			 *
++			 * `&x` reports x's own type rather than a pointer to it -- see
++			 * last_expr_was_address_of. So this dereference must NOT step the
++			 * type down: there is no level to give back. It still loads, or
++			 * not, exactly as it would otherwise; only the type is left where
++			 * it was.
++			 *
++			 * That one level is the whole of tcc's remaining fault. TOK_GET
++			 * is `++*(p)` and is reached as `TOK_GET(&t, &macro_str, &cval)`,
++			 * so after substitution the expression is literally `++*(&x)`.
++			 * The address was right all along; the increment was adding ONE
++			 * because the type had fallen from `int*` to `int`. */
++			int cancels_address_of = last_expr_was_address_of;
++			/* THE FIRST APPLICATION IS THE ONE THAT CANCELS THE `&`, not the
++			 * last. `**(&x)` steps twice: the first turns the address back
++			 * into x, the second is a real dereference. Keying this off
++			 * `1 == num_dereference` -- the loop's LAST iteration -- is right
++			 * only when there is exactly one star, which is why `++*(&x)` came
++			 * out correct and tcc, which writes `**(p)` in the same macro, did
++			 * not move at all. */
++			int outermost = num_dereference;
+ 			int fp_no_deref;
+ 			while(num_dereference > 0)
+ 			{
+ 				fp_no_deref = current_target->type == current_target->type->type && (current_target->type->options & TO_FUNCTION_POINTER);
+ 				if(!fp_no_deref)
+ 				{
+-					current_target = current_target->type;
++					if(!(cancels_address_of && (outermost == num_dereference)))
++					{
++						current_target = current_target->type;
++					}
+ 					/* A STRUCT IS NEVER LOADED INTO A REGISTER. Dereferencing a
+ 						 * struct pointer yields its ADDRESS, which is what every
+ 						 * other struct path already assumes -- member access has
+ 						 * had this guard all along. Without it `x = *p` for a
+ 						 * struct tried load_value(16):
+ 						 *     unsupported size 16 of type 'CType'   tccgen.c:895 */
+-						if(register_size >= current_target->size) emit_out(load_value(current_target->size, current_target->is_signed));
++						if(!(paren_lvalue && (1 == num_dereference)))
++						{
++							if(register_size >= current_target->size) emit_out(load_value(current_target->size, current_target->is_signed));
++						}
+ 				}
+ 				num_dereference = num_dereference - 1;
+ 			}
+@@ -1310,6 +1409,7 @@ void primary_expr_variable(void)
+ 		{
+ 			emit_out(load_value(register_size, FALSE));
+ 		}
++		last_expr_was_address_of = TRUE;
+ 		return;
+ 	}
+ 
+@@ -1347,7 +1447,7 @@ void primary_expr_variable(void)
+ 	 *
+ 	 * M2-Planet's own sources never increment a global, which is why this
+ 	 * could sit here. tcc does it constantly. */
+-	int is_prefix_operator = match("++", global_token->prev->prev->s) || match("--", global_token->prev->prev->s);
++	int is_prefix_operator = prefix_lvalue;
+ 	int is_postfix_operator = match("++", global_token->s) || match("--", global_token->s);
+ 	int is_indexed_local_array = match("[", global_token->s) && (options & TLO_LOCAL_ARRAY);
+ 	int is_local_array = (options & TLO_LOCAL_ARRAY) != 0;
+@@ -2128,7 +2228,6 @@ void postfix_expr_array(void)
+ 		current_target = current_target->type;
+ 	}
+ 
+-
+ 	emit_out(assign);
+ }
+ 

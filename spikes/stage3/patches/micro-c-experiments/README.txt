@@ -6,6 +6,16 @@ These are the changes that walked micro-c (our enhanced M2-Planet) from
 They exist to MEASURE how far the compiler gets, and two of them are
 knowingly unsound.
 
+NOTE: this list ends at EXPERIMENT-zz6. Two more were added afterwards and are
+documented in their own preambles rather than here, because each is long enough
+to need one:
+
+  EXPERIMENT-zz7   pointer arithmetic scales by the pointed-at size, all four
+                   shapes. Closed cases 21 and 50. Did NOT move tcc.
+  EXPERIMENT-zz8   a dereference of an address is an lvalue -- the prefix-++
+                   test, `*(t) = x`, and `*(&x)`. Closed cases 48 and 49, and
+                   this is the one that moved tcc past macro_subst's loop.
+
 Applied on top of the four real fixes in ../m2-planet/, in order:
 
   float / double as word-sized primitives      cc_types.c
