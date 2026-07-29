@@ -680,7 +680,29 @@ jobs:
           #   D6 output written
           echo "  markers: $(tr '\n' ' ' < /tmp/marks.txt)"
           echo "  exit: $rc"
-          if [ "$rc" -gt 128 ]; then echo "  SIGNAL $((rc - 128))"; fi
+          # A SIGNAL ON THE TRIVIAL INPUT IS A REGRESSION, AND IT IS A FAILURE.
+          #
+          # This is the one place the before/after is established by
+          # measurement rather than by hope:
+          #
+          #   before EXPERIMENT-zzh   exit 139, SIGNAL 11
+          #   after                   exit 1, no signal
+          #
+          # zzh found that a member of an anonymous struct nested in an
+          # anonymous union resolved to offset 0, so sym_push2's `s->c = c`
+          # wiped the token `s->v = v` had just written and every symbol tcc
+          # created came back with v == 0. For five rounds mc-tcc died here and
+          # the job stayed green, because a crash was the expected state and
+          # nothing asserted otherwise. Now it is asserted -- for THIS input,
+          # and no other.
+          if [ "$rc" -gt 128 ]; then
+            echo "  SIGNAL $((rc - 128))"
+            echo "  FAIL: mc-tcc died on a signal compiling"
+            echo "        int main(void){ return 0; }"
+            echo "        It exited 1 at the linker after EXPERIMENT-zzh."
+            echo "        A signal on an input this small is a codegen regression."
+            exit 1
+          fi
           # D markers come from our driver, T markers from inside libtcc.
           echo "  last libtcc marker: $(grep -aoE '^T[0-9A-F]' /tmp/marks.txt | tail -1)"
           # A marker names the last point that EXECUTED. If the next one did
@@ -738,24 +760,22 @@ jobs:
           head -30 /tmp/tcctest-build.log
           echo "  ($(wc -l < /tmp/tcctest-build.log) lines total, full log in the artifact)"
           echo "  exit: $rc"
-          # A SIGNAL HERE IS A REGRESSION, AND IT IS NOW A FAILURE.
+          # A SIGNAL HERE IS THE CURRENT FRONTIER, NOT A REGRESSION, AND THIS
+          # STEP DOES NOT GATE ON IT.
           #
-          # For five rounds mc-tcc died on SIGSEGV here and the job stayed
-          # green, because a crash was the expected state and nothing asserted
-          # otherwise. EXPERIMENT-zzh closed it -- a member of an anonymous
-          # struct nested in an anonymous union resolved to offset 0, so
-          # sym_push2's `s->c = c` wiped the token `s->v = v` had just written,
-          # and every symbol tcc created came back with v == 0.
+          # A gate was added here and it failed the job on its first run,
+          # correctly. Its premise was that mc-tcc "reached the linker before
+          # EXPERIMENT-zzh and must still reach it" -- which was measured on
+          # `int main(void){return 0;}` and asserted about tcctest.c, several
+          # thousand lines of deliberately awkward C. On THIS input mc-tcc has
+          # never got that far, before zzh or after.
           #
-          # mc-tcc now exits 1 at the linker, not 11 in check_fields. Going
-          # back to a signal means a codegen regression, and a gate that only
-          # printed it would let that happen quietly a sixth time.
+          # The gate now lives in the trivial-input step above, where the
+          # before/after is real: exit 139 SIGNAL 11 -> exit 1. Claiming it
+          # here turned a known state into a failure and said the fault was
+          # closed when what closed was one translation unit's worth of it.
           if [ "$rc" -gt 128 ]; then
-            echo "  SIGNAL $((rc - 128))"
-            echo "  FAIL: mc-tcc died on a signal. It reached the linker before"
-            echo "  EXPERIMENT-zzh and must still reach it; a signal is a"
-            echo "  codegen regression, not the expected state."
-            exit 1
+            echo "  SIGNAL $((rc - 128)) -- the frontier, tracked in the trivial step"
           fi
           if [ -x /tmp/tcctest-mc ]; then
             /tmp/tcctest-mc > /tmp/tcctest-mc.out 2>&1 || true
