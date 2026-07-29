@@ -175,13 +175,37 @@ jobs:
       - name: 'SUBJECT: micro-c compiles tcc'
         run: |
           set -eu
+          # THERE ARE TWO COPIES OF M2libc IN THIS JOB AND THE PATCHES ONLY
+          # EVER REACHED ONE OF THEM.
+          #
+          #   spikes/reference/m2libc   vendored, supplies the .c files that
+          #                             become m2libc.M1
+          #   m2/M2libc                 M2-Planet's submodule at the pin, and
+          #                             the -I the libtcc.c COMPILE uses
+          #
+          # A patch to stdarg.h landed in the first and the second is what
+          # libtcc.c actually includes, so a header fix was invisible to the
+          # thing it was written for. Found by the va_copy fix appearing to do
+          # nothing. Both get the series now.
+          #
+          # They are also different revisions -- ca023d8 vendored against
+          # 68a23cfd in the submodule (see spikes/reference/README.md) -- so
+          # they are NOT interchangeable and the -I is deliberately left
+          # pointing at the submodule rather than swapped.
+          apply_m2libc_series() {
+            for p in "$GITHUB_WORKSPACE"/spikes/stage3/patches/m2libc/[0-9]*.patch; do
+              [ -e "$p" ] || continue
+              (cd "$1" && git apply --ignore-whitespace "$p") \
+                || { echo "FAIL: $(basename "$p") in $1"; exit 1; }
+            done
+          }
+
           M=spikes/reference/m2libc
           rm -rf m2libc-patched && cp -r "$M" m2libc-patched
-          for p in spikes/stage3/patches/m2libc/[0-9]*.patch; do
-            [ -e "$p" ] || continue
-            (cd m2libc-patched && git apply --ignore-whitespace "../$p") \
-              || { echo "FAIL: $(basename "$p")"; exit 1; }
-          done
+          apply_m2libc_series m2libc-patched
+          apply_m2libc_series m2/M2libc
+          echo "  m2libc series applied to m2libc-patched AND m2/M2libc"
+          grep -n 'define va_copy' m2/M2libc/stdarg.h | sed 's/^/    submodule: /'
           M=m2libc-patched
 
           cp -r tcc-src mc-tcc

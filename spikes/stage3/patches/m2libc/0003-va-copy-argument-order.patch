@@ -1,0 +1,66 @@
+From: Veron
+Subject: [PATCH] stdarg: va_copy's arguments are reversed
+
+    #define va_copy(ap1, ap2) ap2 = ap1
+
+C says va_copy(dest, src) copies SRC INTO DEST. This assigns ap1 into ap2 --
+backwards. Correct C therefore does the opposite of what it says:
+
+    va_copy(v, ap);          /* means: v = ap                        */
+                             /* does:  ap = v, with v uninitialised  */
+
+so it destroys the live argument pointer AND leaves the copy holding garbage.
+
+HOW THIS SURVIVED. Nothing upstream uses it. Zero uses in M2libc, zero in
+M2-Planet's compiler sources. The single use in the whole tree is a test:
+
+    va_start(args, count);
+    va_copy(args, second_args);        test/run-pass/variadic_functions.c:57
+    ... then reads va_arg(args) and va_arg(second_args) ...
+
+second_args is uninitialised on that line, so as C it is meaningless. The
+author meant "copy args into second_args" and wrote the arguments in the same
+reversed order the macro expects, so the two errors cancel and the test
+passes. It has always passed and it proves nothing.
+
+CONSEQUENCE OF FIXING IT: that test depends on the reversed direction and will
+FAIL against this patch. The test is wrong, not the fix -- but a run that
+executes M2-Planet's own suite will go red and should not be read as a
+regression.
+
+WHY IT MATTERS HERE. tcc uses va_copy in the standard order in cstr_vprintf,
+which is on the path of every diagnostic tcc emits:
+
+    va_copy(v, ap);
+    len = vsnprintf(cstr->data + cstr->size, size, fmt, v);   tccpp.c:420
+
+The micro-c-built tcc segfaulted inside tcc_set_output_type. The trace was
+tccelf_add_crtbegin -> tcc_add_crt("crt1.o") -> tcc_add_library_internal ->
+tcc_error_noabort -> error1 -> cstr_vprintf. The crt files genuinely are not
+present; tcc was trying to SAY SO and crashed formatting the message, before
+reading a line of source.
+
+With this patch the same binary prints
+
+    tcc: error: file 'crt1.o' not found
+    tcc: error: file 'crti.o' not found
+
+and the driver advances from marker D2 to D4 -- past tcc_set_output_type and
+into tcc_add_file, the compile path, for the first time.
+
+Verified on aarch64 under qemu: va_copy(v, ap) followed by va_arg(v, char*)
+segfaults before and returns the right value after, and the full tcc rebuild
+above was run end to end.
+
+diff --git a/stdarg.h b/stdarg.h
+index 573d800..9bcc379 100644
+--- a/stdarg.h
++++ b/stdarg.h
+@@ -24,6 +24,6 @@ typedef __va_list va_list;
+ #define va_start __va_start
+ #define va_arg __va_arg
+ #define va_end __va_end
+-#define va_copy(ap1, ap2) ap2 = ap1
++#define va_copy(ap1, ap2) ap1 = ap2
+ 
+ #endif

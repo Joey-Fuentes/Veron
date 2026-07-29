@@ -878,3 +878,79 @@ The first six were ours -- one rule implemented in several places, and the
 copies disagreeing. This one is upstream's, and it is the same category seen
 from the other side: a path that was correct for every program its author
 compiled, and had never been asked to compile tcc.
+
+=============================================================================
+ROUND 9: THE ERROR REPORTER WAS THE BUG
+
+With qemu and the pinned tcc tree both local, the whole build runs here:
+libtcc.c compiles in 26s to 369,255 lines, links to a 1.5 MB aarch64 binary,
+and runs under qemu. Same numbers as CI.
+
+A three-line program was enough:
+
+    int main(void) { return 7; }
+
+    tcc seven.c -o out    exit=139   markers D1 D2
+    tcc -run seven.c      exit=139   markers D1 D2
+    tcc -v                exit=139   markers D1 D2
+    tcc                   exit=1     usage, no crash
+
+`-v` FAILING IS THE TELL. It prints a version string; the driver ignores it and
+calls tcc_set_output_type anyway. No source is read, no token allocated. So
+this fault has nothing to do with compiling.
+
+The trace, four instrumentation rounds at about a minute each:
+
+    tcc_set_output_type -> tccelf_add_crtbegin -> tcc_add_crt("crt1.o")
+      -> tcc_add_library_internal -> tcc_error_noabort -> error1
+      -> cstr_vprintf                                        never returns
+
+The crt files genuinely are not there. tcc was trying to SAY SO and crashed
+formatting the message.
+
+RULED OUT ON THE WAY, each in about a minute: a ternary returning a string in
+an argument list; the same under an `if (flags & BIT)` guard; variadic calls;
+va_arg consumed in place; va_list forwarded one and two levels; vsnprintf
+missing from the link. All fine. Under CI that list is six rounds.
+
+THE CAUSE IS ONE CHARACTER IN M2libc
+
+    #define va_copy(ap1, ap2) ap2 = ap1
+
+Reversed. va_copy(dest, src) copies src into dest; this does the opposite, so
+tcc's `va_copy(v, ap)` becomes `ap = v` with v uninitialised -- destroying the
+live argument pointer and passing garbage to vsnprintf.
+
+    va_copy(v, ap)   C order      SIGSEGV
+    va_copy(ap, v)   swapped      exit 0
+    v = ap           plain        exit 0
+
+HOW IT SURVIVED, WHICH IS THE INTERESTING PART. Nothing upstream uses va_copy.
+Zero uses in M2libc, zero in M2-Planet's compiler. The only use in the tree is
+test/run-pass/variadic_functions.c:57, and it is written backwards too --
+va_copy(args, second_args) with second_args uninitialised. The test and the
+macro are wrong in the same direction, so they agree, and the test has always
+passed. Fixing the macro will BREAK that test; the test is wrong, not the fix.
+
+That is the same trap case 43 caught me in one round earlier: two things broken
+identically compare equal and look like a pass.
+
+AFTER THE FIX
+
+    tcc: error: file 'crt1.o' not found
+    tcc: error: file 'crti.o' not found
+    markers D1 D2 D3 D4
+
+Past tcc_set_output_type and into tcc_add_file -- the compile path -- for the
+first time.
+
+AND THE PATCH WOULD HAVE DONE NOTHING
+
+Both workflows apply the m2libc series to a copy of spikes/reference/m2libc,
+while the libtcc.c compile includes m2/M2libc, M2-Planet's submodule. A header
+fix landed in a tree that compile never reads. In micro-c-builds-tcc the
+patching also happened AFTER the compile step.
+
+Two copies of one dependency, patches applied to one of them. Third time this
+file has recorded that shape: the vendored M2-Planet 56 commits off the pin,
+the patch-count bound at 12 in one workflow and 18 in the other, and now this.

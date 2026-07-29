@@ -131,6 +131,23 @@ jobs:
       - name: 'STAGE 1: compile libtcc.c'
         run: |
           set -eu
+          # PATCH THE HEADERS libtcc.c ACTUALLY INCLUDES, BEFORE COMPILING IT.
+          #
+          # The m2libc series is applied further down, to a copy made from
+          # spikes/reference/m2libc, and that copy supplies the .c files for
+          # m2libc.M1. The -I below points somewhere else entirely --
+          # m2/M2libc, M2-Planet's submodule -- so a header fix landed in a
+          # tree this compile never reads, and did so AFTER this step anyway.
+          #
+          # stdarg.h's va_copy is the case that exposed it: correct in the
+          # patched copy, still reversed in the one libtcc.c sees.
+          for p in "$GITHUB_WORKSPACE"/spikes/stage3/patches/m2libc/[0-9]*.patch; do
+            [ -e "$p" ] || continue
+            (cd m2/M2libc && git apply --ignore-whitespace "$p") \
+              || { echo "FAIL: $(basename "$p") in m2/M2libc"; exit 1; }
+          done
+          grep -n 'define va_copy' m2/M2libc/stdarg.h | sed 's/^/  /'
+
           L="$PWD/spikes/stage3/micro-c-libc"
           cd tcc
           ../micro-c --architecture aarch64 --expand-includes --max-string 65536 \
