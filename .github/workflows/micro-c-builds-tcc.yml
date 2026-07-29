@@ -80,7 +80,21 @@ jobs:
             n=$((n + 1))
           done
           echo "  applied $n patches to M2-Planet $(git -C m2 rev-parse --short HEAD)"
-          [ "$n" -ge 12 ] || { echo "FAIL: expected at least 12 patches, applied $n"; exit 1; }
+          # THE BOUND LIVES IN TWO WORKFLOWS AND ONLY ONE WAS MOVED.
+          #
+          # This said 12 while tcc-two-ways.yml said 18, so six patches --
+          # including every codegen fix from the last three rounds -- could
+          # have gone missing here and the check would still have passed. A
+          # missing codegen patch looks exactly like a codegen bug, which is
+          # the whole reason the assertion exists.
+          #
+          # Same failure as spikes/reference/m2-planet sitting 56 commits off
+          # the pin: one copy of a fact updated, the other left behind, and
+          # nothing failing to say so. If a third workflow ever applies this
+          # series, this number has to move in three places -- which is an
+          # argument for the series carrying its own count, not for
+          # remembering harder.
+          [ "$n" -ge 18 ] || { echo "FAIL: expected at least 18 patches, applied $n"; exit 1; }
 
           cd m2
           gcc -w -o ../micro-c cc.c cc_core.c cc_emit.c cc_globals.c \
