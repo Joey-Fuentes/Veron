@@ -322,7 +322,13 @@ jobs:
           set +e
           ARCH=aarch64 sh spikes/stage3/tools/difftest.sh \
             "$PWD/micro-c" "$PWD/spikes/reference/m2libc" "$PWD/mescc-bin"
+          echo "$?" > "$GITHUB_WORKSPACE/difftest-rc.txt"
+          set -e
           echo "  (a failure here names a C construct, not a tcc function)"
+          # THE RESULT IS RECORDED, NOT ACTED ON HERE. Failing at this point
+          # would abort the job and skip every probe and the instrumented run
+          # below -- so the round would cost as much and tell us less. The
+          # gate is the last step instead, after all the evidence is in.
 
       - name: 'SUBJECT: does realloc work'
         continue-on-error: true
@@ -625,6 +631,36 @@ jobs:
             echo "  exit 0: it ran to completion"
           fi
 
+
+      # =================================================================
+      # THE GATE. Runs last so that a red job still carries a full round of
+      # evidence: every probe, the instrumented run, and the artifact.
+      #
+      # difftest is the only subject-side measurement that is a PASS/FAIL
+      # question rather than a "how far did it get" one, which is what makes
+      # it gateable at all. The KNOWN GAP category is what makes it safe:
+      # a documented gap failing does not fail the run, so green stays
+      # meaningful without anyone having to remember which failure is the
+      # acceptable one.
+      # =================================================================
+      - name: 'GATE: differential test must be clean'
+        if: always()
+        run: |
+          set -eu
+          if [ ! -f difftest-rc.txt ]; then
+            echo "  difftest did not run -- nothing to gate on, and that is"
+            echo "  itself a failure: the step above must always record a result"
+            exit 1
+          fi
+          rc=$(cat difftest-rc.txt)
+          if [ "$rc" = 0 ]; then
+            echo "  difftest clean on aarch64"
+          else
+            echo "  DIFFTEST FAILED (exit $rc). A failure here names a C"
+            echo "  construct that micro-c compiles differently from gcc."
+            echo "  Read the 'differential test' step above for which one."
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()

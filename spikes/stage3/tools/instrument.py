@@ -86,6 +86,17 @@ def find_function(lines, name):
     return None, None
 
 
+def prev_code_line(lines, i):
+    """The nearest preceding line that is actual code, or None."""
+    j = i - 1
+    while j >= 0:
+        t = lines[j].strip()
+        if t and not t.startswith(('//', '/*', '*', '#')):
+            return lines[j]
+        j -= 1
+    return None
+
+
 def instrumentable(line):
     """Can a marker legally follow this line?"""
     t = line.strip()
@@ -117,6 +128,47 @@ def instrumentable(line):
     # a declaration WITH an initialiser: a marker cannot split it, but one
     # after it is fine -- so this is allowed. A bare declaration is allowed too.
     return True
+
+
+# A control header with NO opening brace: the body is the single statement
+# that follows it, and a marker placed after that statement is a SIBLING of
+# the loop or branch, not part of it.
+#
+# This is not cosmetic. In tok_alloc,
+#
+#     for(i=0;i<len;i++)
+#         h = TOK_HASH_FUNC(h, ((unsigned char *)str)[i]);
+#
+# the marker landed after the loop, so its frequency count read 1 no matter
+# how many times the loop ran -- and 1 was read as "the loop ran once", which
+# is a claim the instrument cannot make. The count was correct; the sentence
+# underneath it was wrong, which is the same failure this file was written to
+# stop.
+#
+# Worse, a braceless `if (c)\n    stmt;` followed by `else` puts the marker
+# between the body and the else and does not compile at all.
+BRACELESS = re.compile(r'^(if|for|while|else\s+if)\b.*\)\s*$')
+BRACELESS_ELSE = re.compile(r'^else\s*$')
+
+
+def opens_braceless_body(line):
+    """Is this a control header whose body is the next statement, unbraced?"""
+    t = line.strip()
+    if t.endswith('{') or t.endswith(';'):
+        return False
+    return bool(BRACELESS.match(t) or BRACELESS_ELSE.match(t))
+
+
+def is_single_line_branch(line):
+    """`if (x) foo();` -- header and body on one line.
+
+    A marker after it runs whether or not the branch was taken, so it cannot
+    mean what every other marker means. Skipped rather than reported wrongly.
+    """
+    t = line.strip()
+    if not t.endswith(';'):
+        return False
+    return bool(re.match(r'^(if|while|else)\b', t))
 
 
 def main():
@@ -169,6 +221,7 @@ def main():
 
     out = []
     mapping = []
+    skipped = []
     n = 0
     depth = 0
     for i, line in enumerate(lines):
@@ -204,15 +257,59 @@ def main():
             continue
 
         if func is not None and instrumentable(line):
+            # THE BODY OF A BRACELESS CONTROL HEADER GETS BRACED.
+            #
+            # Appending the marker on its own would put it OUTSIDE the loop or
+            # branch. Wrapping both in braces keeps the marker where it reads
+            # as it does everywhere else -- once per execution of that body --
+            # and keeps the program meaning identical.
+            prev = prev_code_line(lines, i)
+            prev_t = prev.strip() if prev is not None else ''
+
+            # A LOOP HEADER WITH THE BRACE ON THE NEXT LINE is still a loop
+            # header. The existing guard only caught `while (x) {`; written
+            #     while (x)
+            #     {
+            # the brace line was instrumented and the marker repeated every
+            # iteration -- the drowning this file set out to avoid, just in
+            # the other brace style.
+            if line.strip() == '{' and re.match(r'^(for|while|do)\b', prev_t):
+                continue
+
+            # Only wrap when this line really IS the unbraced body. If the
+            # next thing after the header is a brace, the body is braced
+            # already and wrapping it would add a block that changes nothing
+            # and reads as though it did.
+            wrap = prev is not None and opens_braceless_body(prev) \
+                   and line.strip() != '{'
+
+            if is_single_line_branch(line):
+                # header and body on one line: a marker after it is
+                # unconditional and would mean something different from every
+                # other marker. Recorded as skipped, not silently dropped.
+                skipped.append((i + 1, line.strip()))
+                continue
+
             n += 1
             tag = "%s%02d" % (prefix, n)
             indent = line[:len(line) - len(line.lstrip())]
-            out.append('%swrite(2, "%s\\n", 4);' % (indent, tag))
-            mapping.append((tag, i + 1, "%s: %s" % (func, line.strip())))
+            if wrap:
+                out[-1] = '%s{ %s' % (indent, line.strip())
+                out.append('%swrite(2, "%s\\n", 4); }' % (indent, tag))
+                mapping.append((tag, i + 1, "%s: (braced) %s" % (func, line.strip())))
+            else:
+                out.append('%swrite(2, "%s\\n", 4);' % (indent, tag))
+                mapping.append((tag, i + 1, "%s: %s" % (func, line.strip())))
 
     if map_only:
         for tag, lineno, text in mapping:
             print("%s  %s:%d  %s" % (tag, path, lineno, text[:70]))
+        # A LINE WITH NO MARKER IS A BLIND SPOT, and a blind spot the reader
+        # does not know about is how "the instrument went quiet" gets read as
+        # "the program became mysterious". Name them.
+        for lineno, text in skipped:
+            print("--   %s:%d  (no marker: single-line branch) %s"
+                  % (path, lineno, text[:60]))
         return 0
 
     sys.stdout.write('\n'.join(out))

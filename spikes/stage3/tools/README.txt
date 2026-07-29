@@ -381,3 +381,71 @@ functions. Worth noting what is waiting in there:
 
 an array of pointers written by index, and two allocations sized from a
 sizeof -- both shapes with a history in this work.
+
+=============================================================================
+ROUND 1 OF THE FIX ORDER: THE SAFETY NET
+
+The refactor these cases exist to protect -- one should_load(), one carried
+type descriptor, replacing the global flags Address_of / indexing_an_array /
+indexed_element_size -- touches 19 sites. Building the net first is the whole
+point; a refactor with no way to tell whether it broke something is not a
+refactor, it is a rewrite with extra steps.
+
+FOUR NEW CASES AIMED AT THE CURRENT FAULT
+
+The micro-c-built tcc dies at tccpp.c:509
+
+    pts = &hash_ident[h];       completed
+    ts = *pts;                  never printed
+
+h is masked to the table size on the line before, so the index is in range
+whatever else is wrong. That leaves the address computation, and the reason to
+suspect it is structural: "is this an array" is not a property of the type. It
+is the global flag indexing_an_array, set from three different places --
+is_array for members, TLO_LOCAL_ARRAY for locals, array_modifier for globals --
+and reset after one use. Address_of is a second global flag, read at a
+different point. &global[i] needs both to survive together.
+
+    24-address-of-global-index    &global[i], 8-byte elements, BSS
+    25-address-of-local-index     THE SAME SHAPE ON A LOCAL -- the control
+    26-address-of-member-index    &s.arr[i] and &s->arr[i], the third mechanism
+    27-address-of-index-in-arglist   two of them in one argument list
+    28-hash-bucket-walk           the whole tok_alloc idiom, no allocation
+
+24 and 25 are a PAIR and the pair is the point. If 24 fails and 25 passes, the
+hole is the global path and the fix is narrow. If both fail, the address-of-
+index site is wrong everywhere and the fix is the shared one. Either answer is
+worth more than either case alone.
+
+THE INSTRUMENTER WAS MISCOUNTING LOOPS
+
+    for(i=0;i<len;i++)
+        h = TOK_HASH_FUNC(h, ((unsigned char *)str)[i]);
+
+The body is unbraced, so a marker appended after it is a SIBLING of the loop,
+not part of it. Its count read 1 no matter how many times the loop ran, and 1
+was read as "the loop ran once" -- a claim the instrument cannot make. Same
+failure as every other reporting bug here: the data was right, the sentence
+underneath it was wrong.
+
+Fixed by BRACING the body around its marker, so a count means iterations
+everywhere. Three consequences worth knowing:
+
+  - a braceless `if (c)\n    stmt;` before an `else` used to emit a marker
+    between the body and the else, which does not compile at all
+  - `if (x) foo();` on ONE line still gets no marker: one placed after it runs
+    whether or not the branch was taken, so it cannot mean what every other
+    marker means. It is now listed in the map as a blind spot rather than
+    silently absent
+  - a loop written Allman-style
+        while (x)
+        {
+    had its brace line instrumented, repeating the marker every iteration --
+    the drowning the K&R guard already prevented, in the other brace style
+
+DIFFTEST IS NOW A GATE, AND IT RUNS LAST
+
+Failing at the difftest step itself would abort the job and skip every probe
+and the instrumented run, so a red round would cost as much as a green one and
+tell us less. The step records its result; a final step reads it and fails.
+Evidence first, verdict after.
