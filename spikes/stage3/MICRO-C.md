@@ -470,15 +470,22 @@ had drifted **56 commits** past the pin, so the patch series would not apply to
 it and micro-c could not be built locally at all. At the pin, all patches apply
 and the binary is byte-identical to CI's.
 
-What a sandbox needs, none of which it can fetch for itself:
+What a sandbox needs, none of which it can fetch for itself. **All three are
+now committed:**
 
-| piece | why | where from |
+| piece | why | where |
 |---|---|---|
-| M2-Planet at `bd2fe4b` | build micro-c | now vendored at `spikes/reference/m2-planet` |
-| `qemu-aarch64-static` | RUN aarch64 output on an x86_64 host | `.github/workflows/local-toolbox.yml` |
-| tcc at the pin, configured | `tcc.h:27` includes a generated `config.h` | same workflow |
+| M2-Planet at `bd2fe4b` | build micro-c | `spikes/reference/m2-planet/` |
+| `qemu-aarch64-static` | RUN aarch64 output on an x86_64 host | `spikes/toolbox/` |
+| tcc at the pin, configured | `tcc.h:27` includes a generated `config.h` | `spikes/toolbox/` |
 
-`local-toolbox.yml` packs the last two into one artifact. It asserts the runner
+`spikes/toolbox/README.md` records what each one is, which version, where it
+came from and why it is acceptable to commit an opaque binary in a repository
+whose whole point is that nothing opaque is committed. The short answer is that
+neither file is on any build path: they cannot influence an output, only what
+we observe about one.
+
+`.github/workflows/local-toolbox.yml` regenerates them. It asserts the runner
 is x86_64 — a `qemu-aarch64-static` built for aarch64 emulates aarch64 on
 aarch64 and is useless — and it proves the emulator works by running a real
 aarch64 binary under the copy it is about to upload, rather than claiming it.
@@ -489,8 +496,8 @@ the emulator. An instrumented round is about a minute. Every finding in
 **Later rounds** above came out of that loop, and several of them were wrong
 first — cheaply.
 
-**The sandbox does not persist.** Each session starts empty and needs those
-uploads again.
+**The sandbox does not persist**, but since all three pieces are in the tree, a
+fresh session needs only the repository.
 
 ---
 

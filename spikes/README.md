@@ -37,6 +37,13 @@ Full progress log, spike inventory, and what's next: **`PROGRESS.md`**.
 - `reference/` — pinned, read-only copies of the M2-Planet + M2libc source
   (the handoff target), vendored so the source can be consulted locally. Not part
   of the build; see `reference/README.md`.
+- `toolbox/` — two committed development binaries: `qemu-aarch64-static`, so
+  aarch64 output can be **run** on a non-aarch64 machine, and the pinned tcc
+  tree already configured. Also not part of the build, and deliberately the one
+  place in this repository holding something opaque — read `toolbox/README.md`
+  for the version of each, where it came from, and why that exception is
+  acceptable. Delete the directory and every workflow still passes; what you
+  lose is the ability to work outside CI.
 
 ## Naming convention (for the generic `spike` matrix)
 
