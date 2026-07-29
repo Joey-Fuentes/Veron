@@ -107,8 +107,12 @@ jobs:
           cd gcc-tcc
           make test 2>&1 | tail -45 || true
 
+      # THIS ONE IS A HARD GATE, and it is the only control step that is.
+      # The header of this file says a micro-c result is worth reading only
+      # once the same steps have succeeded on a compiler nobody doubts.
+      # Nothing enforced that: every control step was continue-on-error, so a
+      # broken yardstick produced a green run and unreadable numbers below it.
       - name: 'CONTROL: self-compilation, sizes and hashes'
-        continue-on-error: true
         run: |
           set -eu
           cd gcc-tcc
@@ -131,12 +135,15 @@ jobs:
                 echo "  FIXPOINT: gen2 and gen3 are byte-identical"
               else
                 echo "  NO FIXPOINT: gen2 and gen3 differ ($(cmp -l gen2 gen3 2>/dev/null | wc -l) bytes)"
+                echo "  THE CONTROL MOVED. Nothing measured on the subject side"
+                echo "  is interpretable until this is explained."
+                exit 1
               fi
             else
-              echo "  gen2 could not build gen3"
+              echo "  gen2 could not build gen3"; exit 1
             fi
           else
-            echo "  gen1 could not build gen2"
+            echo "  gen1 could not build gen2"; exit 1
           fi
 
       - name: 'SUBJECT: build micro-c from the pin plus our patches'
@@ -230,7 +237,14 @@ jobs:
           T=spikes/reference/mescc-tools
           cp -r "$T" mescc && mkdir -p mescc/M2libc
           cp spikes/reference/m2libc/bootstrappable.c spikes/reference/m2libc/bootstrappable.h mescc/M2libc/
+          # ASSERT THE SED MATCHED. If upstream changes this literal the sed
+          # silently no-ops and the result is a truncation that reads like a
+          # codegen bug. Same discipline as the patch-count check above.
+          grep -q 'max_string = 4096,' mescc/M1-macro.c \
+            || { echo "FAIL: M1-macro.c no longer contains 'max_string = 4096,'"; \
+                 grep -n 'max_string' mescc/M1-macro.c; exit 1; }
           sed -i 's/max_string = 4096,/max_string = 262144,/' mescc/M1-macro.c
+          grep -q 'max_string = 262144,' mescc/M1-macro.c || { echo "FAIL: sed did not apply"; exit 1; }
           gcc -w -o M1 mescc/M1-macro.c mescc/stringify.c mescc/M2libc/bootstrappable.c
           gcc -w -o hex2 mescc/hex2_linker.c mescc/hex2_word.c mescc/hex2.c mescc/M2libc/bootstrappable.c
 
@@ -378,15 +392,21 @@ jobs:
           if [ "$rc" -gt 128 ]; then echo "  SIGNAL $((rc - 128))"; fi
           # D markers come from our driver, T markers from inside libtcc.
           echo "  last libtcc marker: $(grep -aoE '^T[0-9A-F]' /tmp/marks.txt | tail -1)"
+          # A marker names the last point that EXECUTED. If the next one did
+          # not print, the fault is anywhere between them -- including deep
+          # inside a call that never returned. "DID NOT RETURN FROM" is what
+          # the evidence supports; "DIED IN" was a stronger claim than the
+          # data, and reading it that way cost rounds before.
           case "$(grep -aoE '^T[0-9A-F]' /tmp/marks.txt | tail -1)" in
-            T1) echo "  DIED IN: tcc_add_sysinclude_path" ;;
-            T3) echo "  DIED IN: tccelf_new" ;;
-            T5) echo "  DIED IN: tcc_add_library_path" ;;
-            T7) echo "  DIED IN: tcc_split_path" ;;
-            T9) echo "  DIED IN: the if, or something corrupted earlier" ;;
-            TA) echo "  DIED IN: tccelf_add_crtbegin -- LINKER work" ;;
-            TB) echo "  DIED IN: the return from tcc_set_output_type" ;;
-            TC) echo "  tcc_set_output_type completed; died on the way back" ;;
+            T1) echo "  did not get past: tcc_add_sysinclude_path" ;;
+            T3) echo "  did not get past: tccelf_new" ;;
+            T5) echo "  did not get past: tcc_add_library_path" ;;
+            T7) echo "  did not get past: tcc_split_path" ;;
+            T9) echo "  did not get past: the if (or state was corrupted earlier)" ;;
+            TA) echo "  did not get past: tccelf_add_crtbegin -- LINKER work" ;;
+            TB) echo "  did not get past: the return from tcc_set_output_type" ;;
+            TC) echo "  tcc_set_output_type completed; lost on the way back" ;;
+            "") echo "  no libtcc marker printed -- died before the first one" ;;
           esac
           # The D markers only bracket the DRIVER's calls, so D2 means "past
           # tcc_new", not "died in tcc_set_output_type" -- a T marker after it
@@ -400,7 +420,14 @@ jobs:
             D6) echo "  past: output written" ;;
             *)  echo "  died before the first marker" ;;
           esac
-          [ -f /tmp/trivial-out ] && ls -l /tmp/trivial-out | awk '{print "  produced "$5" bytes"}'
+          # `[ -f x ] && ls ...` as the LAST line means a missing file exits the
+          # step non-zero -- so "it produced nothing", which is a RESULT, was
+          # being rendered as the step having broken.
+          if [ -f /tmp/trivial-out ]; then
+            ls -l /tmp/trivial-out | awk '{print "  produced "$5" bytes"}'
+          else
+            echo "  produced no output file"
+          fi
 
       - name: 'SUBJECT: tcctest.c, the same file the control used'
         continue-on-error: true
@@ -409,10 +436,16 @@ jobs:
           cd mc-tcc
           # The same source and the same reference the control was measured
           # against. test.ref was generated during the control step above.
+          # NOT `... | head -30`. A pipeline's $? is the LAST command's, so
+          # rc was head's status -- always 0 -- and the SIGNAL branch below
+          # could never fire. Capture, then show a slice of the capture.
           set +e
-          ../mc-tcc-bin -B. -I. -Iinclude tests/tcctest.c -o /tmp/tcctest-mc 2>&1 | head -30
+          ../mc-tcc-bin -B. -I. -Iinclude tests/tcctest.c -o /tmp/tcctest-mc \
+            > /tmp/tcctest-build.log 2>&1
           rc=$?
           set -e
+          head -30 /tmp/tcctest-build.log
+          echo "  ($(wc -l < /tmp/tcctest-build.log) lines total, full log in the artifact)"
           echo "  exit: $rc"
           if [ "$rc" -gt 128 ]; then echo "  SIGNAL $((rc - 128))"; fi
           if [ -x /tmp/tcctest-mc ]; then
@@ -435,15 +468,22 @@ jobs:
           cd mc-tcc
           set +e
           ../mc-tcc-bin -B. -I. -DONE_SOURCE=1 -DTCC_TARGET_ARM64=1 \
-                        -DTCC_TARGET_LINUX=1 tcc.c -o /tmp/gen2-mc 2>&1 | head -20
+                        -DTCC_TARGET_LINUX=1 tcc.c -o /tmp/gen2-mc \
+                        > /tmp/gen2-build.log 2>&1
           rc=$?
           set -e
+          head -20 /tmp/gen2-build.log
           echo "  gen2 exit: $rc"
+          if [ "$rc" -gt 128 ]; then echo "  gen2 died on SIGNAL $((rc - 128))"; fi
           if [ -x /tmp/gen2-mc ]; then
             report gen2 /tmp/gen2-mc
             set +e
-            /tmp/gen2-mc -B. -I. -DONE_SOURCE=1 tcc.c -o /tmp/gen3-mc 2>&1 | head -10
+            /tmp/gen2-mc -B. -I. -DONE_SOURCE=1 tcc.c -o /tmp/gen3-mc \
+              > /tmp/gen3-build.log 2>&1
+            rc3=$?
             set -e
+            head -10 /tmp/gen3-build.log
+            echo "  gen3 exit: $rc3"
             if [ -x /tmp/gen3-mc ]; then
               report gen3 /tmp/gen3-mc
               cmp -s /tmp/gen2-mc /tmp/gen3-mc \
@@ -550,9 +590,32 @@ jobs:
           # announced "returned normally" while the process was dumping core.
           #
           # So: say what is known and let the map speak, rather than asserting.
+          # ONE PATTERN, DEFINED ONCE. The previous version used
+          # '^[LP][0-9]+' to find the last marker and '^[LTCDMR][0-9A-F]*'
+          # to print the trail -- so the trail could not see P markers at
+          # all, which is exactly where the fault now is. Any prefix letter
+          # followed by at least one digit, and nothing else.
+          MRE='^[A-Z][0-9]+'
+
           echo "  markers seen, in order:"
-          grep -aoE '^[LTCDMR][0-9A-F]*' inst-marks.txt | tr '\n' ' ' | fold -w 100 | sed 's/^/    /'
+          grep -aoE "$MRE" inst-marks.txt | tr '\n' ' ' | fold -w 100 | sed 's/^/    /'
           echo
+
+          # THE LAST MARKER IS NOT THE FURTHEST ONE WHEN THERE IS A LOOP.
+          # tccpp_new walks tcc_keywords, so every marker in that body prints
+          # once per keyword. The count says WHICH ITERATION faulted, which is
+          # the difference between "it dies in the keyword loop" and "it dies
+          # on keyword 3".
+          echo "  --- marker frequency (a count > 1 means a loop body) ---"
+          grep -aoE "$MRE" inst-marks.txt | sort | uniq -c | sort -k2,2V \
+            | awk '{printf "    %-6s x%s\n", $2, $1}'
+
+          # The last statement alone does not say which BRANCH was taken to
+          # reach it. The preceding few do.
+          echo "  --- last 8 statements that completed ---"
+          for m in $(grep -aoE "$MRE" inst-marks.txt | tail -8); do
+            grep "^$m " marker-map.txt || echo "    $m (not in map)"
+          done
           if [ "$rc" -gt 128 ]; then
             echo "  exit $rc is SIGNAL $((rc - 128)): the fault is at or just after that line"
           elif [ "$rc" != 0 ]; then
@@ -561,10 +624,7 @@ jobs:
           else
             echo "  exit 0: it ran to completion"
           fi
-          if [ "$rc" -le 128 ] && [ "$rc" != 0 ]; then
-            echo "  exit $rc is not a signal -- something called exit(), which"
-            echo "  means an error path was taken rather than a crash"
-          fi
+
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -573,6 +633,13 @@ jobs:
           path: |
             mc-tcc-bin
             all.M1
-            /tmp/gcc.diff
+            marker-map.txt
+            inst-marks.txt
+            /tmp/marks.txt
+            /tmp/co-marks.txt
+            /tmp/rl-marks.txt
+            /tmp/tcctest-build.log
+            /tmp/gen2-build.log
+            /tmp/gen3-build.log
             /tmp/mc.diff
           if-no-files-found: warn
