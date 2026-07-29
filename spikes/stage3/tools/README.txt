@@ -647,3 +647,51 @@ read twice as a struct-layout problem.
 index 0, a small index, a large index, a write, a variable index, and plain
 indexing as the control. A case whose two candidate answers are the same
 number is not a test.
+
+=============================================================================
+ROUND 4: THE SCALE WAS NEVER THE PROBLEM IN 28 AND 31
+
+The fix worked where it counted. tcc went from 202 markers to 214:
+
+    P28  pts = &hash_ident[h]     completed
+    P29  ts = *pts                COMPLETED -- the bucket read works
+    P31  (rejoin)                 broke out of the walk, ts was NULL
+    P01..P11                      tok_alloc_new RUNS
+    P12  ts->tok = tok_ident++    SIGSEGV
+
+First forward movement in this sequence, and exactly where the fix predicted.
+
+But 28 got worse (returns 2 -> SIGNAL 11) and 31, written to catch the scale
+bug, failed too. The theory was that ->size is not the pointer width for a
+pointer-to-struct. THE EMISSION SAYS OTHERWISE:
+
+    bigptr_addr    &GLOBAL_bigtab ; ldr_x0,[x0] ; mov_x0,40 ; mov_x14,8 ; mul ; add
+    plain_bigptr   identical
+    longptr_addr   identical
+
+mov_x14,8 in all three. The construct is correct. Two rounds of reasoning
+about ->size versus ->type->size were reasoning about something that was
+already right, and the dump cost one step and settled it.
+
+THE VARIABLE NOBODY CONTROLLED FOR
+
+    every case that PASSES has a global array of <= 8 elements
+    the two that FAIL have 16 and 64
+
+Every case here was written to exercise a construct. None was written to vary
+a size, so the size varied by accident and correlated perfectly with the
+result. That is not evidence of a size bug yet -- it is evidence that the
+suite cannot tell a size bug from a construct bug, which is worse.
+
+AND THE HARNESS IS NOW A SUSPECT
+
+difftest links cases against libc-core; tcc is built against libc-full. In the
+same run, tcc memsets `TokenSym *hash_ident[16384]` across its full 128 KB
+without faulting, while a 512-byte array in a difftest case segfaults. Both
+cannot be micro-c's storage. If 32 fails, the conclusion is about libc-core
+and this harness, not about the compiler -- and every future diagnosis drawn
+from a large-array case would have been wrong.
+
+32 and 33 test NO construct. No address-of, no pointer arrays. 32 varies the
+element count at a fixed 8-byte element; 33 holds the count at four and grows
+the element, so between them count and total bytes come apart.
