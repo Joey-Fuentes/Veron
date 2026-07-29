@@ -1,0 +1,58 @@
+`++` and `--` on a global or static segfaulted. All forms: postfix, prefix, and
+a bare `n++` with the value discarded.
+
+    ts->tok = tok_ident++;          tccpp.c:480
+
+is the statement the micro-c-built tcc dies on, and tok_ident is a file-scope
+int.
+
+The cause is upstream's own condition in primary_expr_variable, unmodified at
+the pin:
+
+    is_postfix_operator = match("++", ...) && (options != TLO_STATIC
+                                            && options != TLO_GLOBAL);
+
+which reads like a guard and is not one. Excluding a global here makes it fall
+through to the ordinary path, which LOADS the variable's value; the increment
+code then treats that value as an address and stores through it. A LOCAL is
+excluded from the load and keeps its ADDRESS in the register, which is what the
+increment needs -- and a global scalar's symbol is already the address of its
+value (`lea_rax,[rip] %GLOBAL_n`), so the same treatment is correct for it.
+
+M2-Planet's own sources never increment a global, so nothing upstream exercised
+this. tcc does it constantly.
+
+Verified against the whole case suite: 43 pass, 0 fail, 2 known gaps, no
+regressions. Case 45 covers postfix, prefix, bare statement, decrement, a wide
+type, a global POINTER (where ++ must advance by the element), the tcc
+statement itself, and a loop condition that reads and writes each pass.
+diff --git a/cc_core.c b/cc_core.c
+index b7b2731..3520856 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -1319,8 +1319,23 @@ void primary_expr_variable(void)
+ 		return;
+ 	}
+ 
+-	int is_prefix_operator = (match("++", global_token->prev->prev->s) || match("--", global_token->prev->prev->s)) && (options != TLO_STATIC && options != TLO_GLOBAL);
+-	int is_postfix_operator = (match("++", global_token->s) || match("--", global_token->s)) && (options != TLO_STATIC && options != TLO_GLOBAL);
++	/* `++` AND `--` ON A GLOBAL OR STATIC.
++	 *
++	 * Upstream excludes them here, and the exclusion is not a guard against
++	 * anything -- it makes the variable fall through to the ordinary path,
++	 * which LOADS its value. The ++ handling then treats that value as an
++	 * address and stores through it. `tok_ident++` at tccpp.c:480 segfaults,
++	 * and so does a bare `n++` on any global.
++	 *
++	 * A local works because is_postfix_operator returns the ADDRESS without
++	 * loading, which is what ++ needs. A global scalar's symbol is already the
++	 * address of its value -- `lea_rax,[rip] %GLOBAL_n` -- so the same
++	 * treatment is correct for it.
++	 *
++	 * M2-Planet's own sources never increment a global, which is why this
++	 * could sit here. tcc does it constantly. */
++	int is_prefix_operator = match("++", global_token->prev->prev->s) || match("--", global_token->prev->prev->s);
++	int is_postfix_operator = match("++", global_token->s) || match("--", global_token->s);
+ 	int is_indexed_local_array = match("[", global_token->s) && (options & TLO_LOCAL_ARRAY);
+ 	int is_local_array = (options & TLO_LOCAL_ARRAY) != 0;
+ 	int is_function = options & TLO_FUNCTION;

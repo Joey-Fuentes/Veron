@@ -834,3 +834,47 @@ STILL OPEN
     44  known gap, `&((*p)->m)` -- parens around a DEREFERENCE
     05  struct assignment, aarch64 only, untested here (no qemu)
     16  wide switch, aarch64 only, same
+
+=============================================================================
+ROUND 8: `++` ON A GLOBAL
+
+The three fixes landed -- aarch64 difftest went to 40 pass / 2 fail, and the
+two remaining are 05 and 16, the arch-specific pair. tcc did not move: still
+214 markers, still
+
+    P11  table_ident[i] = ts;      completed
+    P12  ts->tok = tok_ident++;    SIGSEGV
+
+With micro-c building locally, that took four minutes instead of a round.
+Compiling TokenSym's exact shape reproduced it on amd64, and bisecting the
+statement gave:
+
+    LOCAL   i = n++     works
+    GLOBAL  i = n++     SIGSEGV
+    GLOBAL  n++         SIGSEGV
+    GLOBAL  ++n         SIGSEGV
+    GLOBAL  n = n + 1   works
+
+Every form of increment on a global or static, broken. The cause is upstream's
+own condition, unmodified at the pin:
+
+    is_postfix_operator = match("++", ...) && (options != TLO_STATIC
+                                            && options != TLO_GLOBAL);
+
+It reads like a guard and is not one. Excluding a global makes it fall through
+to the ordinary path, which LOADS the value; the increment then treats that
+value as an address and stores through it. A local is excluded from the load
+and keeps its ADDRESS, which is what the increment needs -- and a global
+scalar's symbol IS the address of its value, so the same treatment fits.
+
+M2-Planet never increments a global. tcc does it constantly. Nothing upstream
+had reason to find this.
+
+    43 pass   0 fail   2 known gaps   no regressions
+
+A NOTE ON WHERE THE BUGS ARE COMING FROM NOW
+
+The first six were ours -- one rule implemented in several places, and the
+copies disagreeing. This one is upstream's, and it is the same category seen
+from the other side: a path that was correct for every program its author
+compiled, and had never been asked to compile tcc.
