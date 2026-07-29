@@ -8,6 +8,17 @@ tcc is then **used** to build (gcc, a userland, a kernel, a QEMU boot) is
 Stages 0–2 are done; their detailed history is in `spikes/PROGRESS.md` (152 KB
 of it) and you do not need to read it to work here.
 
+**To run any of this yourself**, from this repository and nothing else:
+
+```bash
+sh spikes/stage3/tools/local-build.sh          # micro-c + the case suite, both arches
+sh spikes/stage3/tools/local-tcc.sh build/local # compile tcc with it and run it
+```
+
+Requires gcc, git, tar and python3. No network. `MICRO-C.md` explains the four
+silent traps those scripts encode — assembling the pieces by hand produces a
+compiler that segfaults on case 05 and looks broken when it is not.
+
 ---
 
 ## What stage 3 is

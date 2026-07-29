@@ -37,6 +37,12 @@ Full progress log, spike inventory, and what's next: **`PROGRESS.md`**.
 - `reference/` — pinned, read-only copies of the M2-Planet + M2libc source
   (the handoff target), vendored so the source can be consulted locally. Not part
   of the build; see `reference/README.md`.
+- `stage3/tools/local-build.sh` and `local-tcc.sh` — **the entry point for
+  running any of this.** They build micro-c, patch M2libc, build M1/hex2, run
+  the case suite on amd64 *and* aarch64, then compile tcc with micro-c and run
+  it — from this repository alone, no network. Assembling the pieces by hand
+  produces a compiler that segfaults on case 05 and looks broken when it is
+  not; the scripts encode the four silent traps that cause it.
 - `toolbox/` — two committed development binaries: `qemu-aarch64-static`, so
   aarch64 output can be **run** on a non-aarch64 machine, and the pinned tcc
   tree already configured. Also not part of the build, and deliberately the one

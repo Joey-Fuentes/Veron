@@ -228,6 +228,42 @@ one fails. For a faster start, build `ci/Dockerfile`, push to GHCR, and set
 
 ---
 
+## 6a. Daily workflow — stage 3, which is different
+
+Stage-3 work is not a spike. It builds a whole compiler and points it at
+370,000 lines of C, and for most of its life every question cost a CI round of
+about three minutes. It does not any more, and the entry point is two scripts:
+
+```bash
+sh spikes/stage3/tools/local-build.sh
+    # micro-c + patched M2libc + M1/hex2, then the case suite on BOTH
+    # architectures -- aarch64 runs under spikes/toolbox/qemu-aarch64-static
+
+sh spikes/stage3/tools/local-tcc.sh build/local
+    # compile tcc with micro-c, link it, run it under the emulator
+
+sh spikes/stage3/tools/local-tcc.sh build/local tccpp.c macro_subst
+    # the same, with those functions instrumented; the last marker names the
+    # statement execution reached
+```
+
+**Do not assemble the pieces by hand.** Four traps sit between a clean
+checkout and a working setup and every one of them is silent — most visibly,
+`git apply` inside this repository *skips patches and exits 0*, so the series
+appears to apply and does nothing. The scripts encode all four and assert the
+result rather than the action. Their headers explain each one; read those
+before working around them.
+
+Everything needed is committed: M2-Planet at the pin in
+`spikes/reference/m2-planet/`, and the emulator and the configured tcc tree in
+`spikes/toolbox/` (see that directory's README for what those binaries are and
+why an opaque one is committed at all).
+
+CI is still the verdict. Local results are a filter: amd64 hides the alignment
+class of bug entirely, and qemu is not silicon.
+
+---
+
 ## 7. Before you commit — checklist
 
 Run these from the repo root:
