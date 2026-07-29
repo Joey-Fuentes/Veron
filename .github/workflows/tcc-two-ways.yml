@@ -312,6 +312,27 @@ jobs:
           printf '  micro-c tcc: %s bytes  sha %s\n' \
             "$(stat -c%s mc-tcc-bin)" "$(sha256sum mc-tcc-bin | cut -c1-16)"
 
+      - name: 'SUBJECT: every macro must ENCODE what its name says'
+        run: |
+          set -eu
+          # vocabulary.sh asks whether a macro EXISTS. This asks whether it is
+          # CORRECT, which is a different question and was never asked.
+          #
+          #     DEFINE add_x0,x16,x0 0020008b   ->  ADD x0, x0, x0, LSL #8
+          #
+          # Three macros in M2libc's aarch64 table encode x16 as x8 in the Rn
+          # field. They assemble, they link, they run, and one of them is used
+          # 315 times in a single compile of libtcc.c. It surfaced as "struct
+          # assignment is broken on aarch64 and only aarch64", which is a
+          # sentence that sends you looking at alignment for hours.
+          #
+          # Checked against the PATCHED table, since that is what gets
+          # assembled. A hard gate: unlike a codegen failure this cannot be a
+          # false positive -- for a register-to-register form the encoding is
+          # fully determined by the name.
+          python3 spikes/stage3/tools/verify_defs.py \
+            m2libc-patched/aarch64/aarch64_defs.M1
+
       - name: 'SUBJECT: vocabulary check, EVERY architecture'
         run: |
           set -eu

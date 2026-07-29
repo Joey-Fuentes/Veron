@@ -1001,3 +1001,63 @@ contents. A single-sided case cannot say "the storage class is the variable",
 which is the only thing that separated these two bugs. The struct is 25 bytes
 of content on purpose -- three longs and a char -- so the copy has a tail
 chunk rather than dividing evenly.
+
+=============================================================================
+ROUND 11: A MACRO THAT EXISTS AND IS WRONG
+
+Bug 2 -- "struct assignment fails on aarch64, both storage classes, and the
+emitted loop is instruction-for-instruction identical to amd64's, which
+passes" -- is one wrong instruction encoding in M2libc.
+
+    DEFINE add_x0,x16,x0 0020008b        ADD x0, x0, x0, LSL #8
+
+Rn=16 needs bits 5-9 = 0x200. All three of these carry 0x100, which is Rn=8:
+
+    add_x0,x16,x0      ADD x0, x0, x0, LSL #8
+    add_x18,x16,x18    ADD x18, x8, x18
+    sub_x18,x16,x18    SUB x18, x8, x18
+
+The first is the SOURCE-POINTER ADVANCE in the struct copy, which is why the
+struct's SIZE decided everything:
+
+    8 bytes    one chunk, the advance is never used again    works
+    16 bytes   second chunk reads 8 + (8 << 8) = 2056        SIGSEGV
+
+315 uses in one compile of libtcc.c. Case 05 has been red since it was written
+and this is why; the copy loop was correct all along and was assembling into
+something else.
+
+    aarch64  41 pass 3 fail  ->  43 pass 1 fail   (only 16-switch-wide)
+
+THE GATE THAT COULD NOT HAVE CAUGHT IT, AND THE ONE THAT CAN
+
+vocabulary.sh asks "does every macro micro-c can emit exist for this
+architecture". It closed a whole class -- four bugs that were all "that
+instruction does not exist here". It is structurally unable to ask whether the
+macro that exists is CORRECT.
+
+verify_defs.py asks that. For a register-to-register form the encoding is
+fully determined by the name, so name and bytes can be compared by machine --
+which is the only way, because by eye is exactly how three of them got in.
+109 macros checked, those three reported, nothing else.
+
+I NEARLY SHIPPED IT REPORTING EIGHT FALSE POSITIVES. The first version flagged
+every mov involving sp. SP and XZR are both register 31, and MOV Xd,Xm is an
+alias for ORR Xd,XZR,Xm where 31 means XZR -- so SP cannot be named that way
+at all and those forms use ADD Xd,Xn,#0 instead. All eight were right and the
+checker was wrong. A gate with false positives gets switched off, and then the
+three real errors beside it go unnoticed too, which is the exact thing this
+tool exists to prevent.
+
+SCOPE IS STATED, NOT GUESSED. Only mov/add/sub register forms. Immediates,
+loads, stores, branches and condition codes are left alone rather than
+half-checked, and amd64 is not covered: x86-64 is variable-length and its
+encoding is not a function of the mnemonic in the same way.
+
+AND A COUNTING ERROR OF MINE, WORTH RECORDING
+
+The previous round predicted "2 failures" one paragraph after saying case 46
+would also be red. Three was correct. The deeper mistake is that I had been
+quoting amd64 numbers from a local suite while CI runs aarch64 -- two
+different suites with two different results, reported as though they were one.
+Both numbers, always, from here.

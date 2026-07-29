@@ -1,0 +1,67 @@
+From: Veron
+Subject: [PATCH] aarch64: three macros encode x16 as x8 in the Rn field
+
+    DEFINE add_x0,x16,x0 0020008b        ->  ADD x0, x0, x0, LSL #8
+
+Not a missing macro -- a WRONG one. It assembles, it links, it runs, and it is
+used 315 times in one compile of libtcc.c. Every one computed garbage.
+
+All three have the same typo. Rn=16 needs bits 5-9 set to 0b10000, which is
+0x200; they carry 0x100, which is Rn=8.
+
+    add_x0,x16,x0      0020008b   ADD x0, x0, x0, LSL #8   -> 0002008b
+    add_x18,x16,x18    1201128b   ADD x18, x8, x18         -> 1202128b
+    sub_x18,x16,x18    120112cb   SUB x18, x8, x18         -> 120212cb
+
+HOW IT PRESENTED. "Struct assignment is broken on aarch64 and only aarch64" --
+a sentence that sends you looking at alignment. It is the SOURCE-POINTER
+ADVANCE in the struct copy, so the size of the struct decided everything:
+
+    8-byte struct    one chunk, the advance is never used again    works
+    16-byte struct   second chunk reads from 8 + (8 << 8) = 2056   SIGSEGV
+
+Case 05 has been red on aarch64 since it was written and this is why. Case 46
+too. Both pass with this patch; the emitted copy loop was correct all along
+and was assembling into something else.
+
+vocabulary.sh CANNOT FIND THIS. It asks whether every macro micro-c can emit
+exists for the target, and all three do exist. The question it cannot ask is
+whether the macro that exists is correct. tools/verify_defs.py asks that one:
+for register-to-register forms the encoding is fully determined by the name,
+so the two can be compared by machine. It reports these three and nothing else
+across 109 checked macros.
+
+Verified on aarch64 under qemu: the whole case suite goes from 41 pass 3 fail
+to 43 pass 1 fail, with only 16-switch-wide left.
+
+diff --git a/aarch64/aarch64_defs.M1 b/aarch64/aarch64_defs.M1
+index 1d83aea..8d22ed0 100644
+--- a/aarch64/aarch64_defs.M1
++++ b/aarch64/aarch64_defs.M1
+@@ -845,7 +845,7 @@ DEFINE add_x0,x14,x0 c001008b
+ DEFINE ADD_X0_X15_X0 e001008b ; add x0, x15, x0
+ DEFINE add_x0,x15,x0 e001008b
+ DEFINE ADD_X0_X16_X0 0020008b ; add x0, x16, x0
+-DEFINE add_x0,x16,x0 0020008b
++DEFINE add_x0,x16,x0 0002008b
+ DEFINE ADD_X0_BP_X0 2002008b
+ DEFINE add_x0,x17,x0 2002008b
+ DEFINE ADD_X1_SP_8 41220091
+@@ -861,7 +861,7 @@ DEFINE add_x18,x14,x18 d201128b
+ DEFINE ADD_SP_X15_SP f201128b ; add x18, x15, x18
+ DEFINE add_x18,x15,x18 f201128b
+ DEFINE ADD_SP_X16_SP 1201128b ; add x18, x16, x18
+-DEFINE add_x18,x16,x18 1201128b
++DEFINE add_x18,x16,x18 1202128b
+ DEFINE add_x1,x1,x0 2100008b
+ DEFINE add_x1,x1,x5 2100058b
+ DEFINE add_x1,x1,x3 2100038b
+@@ -908,7 +908,7 @@ DEFINE sub_x18,x14,x18 d20112cb
+ DEFINE SUB_SP_X15_SP f20112cb ; sub x18, x15, x18
+ DEFINE sub_x18,x15,x18 f20112cb
+ DEFINE SUB_SP_X16_SP 120112cb ; sub x18, x16, x18
+-DEFINE sub_x18,x16,x18 120112cb
++DEFINE sub_x18,x16,x18 120212cb
+ DEFINE SUB_SP_SP_X14 52020ecb ; sub x18, x18, x14
+ DEFINE sub_x18,x18,x14 52020ecb
+ DEFINE SUB_SP_SP_X15 52020fcb ; sub x18, x18, x15
