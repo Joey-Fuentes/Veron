@@ -163,6 +163,14 @@ for c in "$CASES"/*.c; do
         fail=$((fail + 1))
     elif [ "$m_rc" -gt 128 ]; then
         printf '  %-28s SIGNAL %s (gcc returns 0)\n' "$name" "$((m_rc - 128))"
+        # A CRASH CARRIES NO RETURN CODE, so a case with six numbered steps
+        # says only "it died". Anything the program managed to write before
+        # dying is the only thing left, and it was being captured and thrown
+        # away. Cases do not print today; this costs two lines and means one
+        # that does will be heard.
+        if [ -s "$T/m.out" ]; then
+            printf '  %-28s   last output: %s\n' "" "$(tail -c 120 "$T/m.out" | tr '\n' ' ')"
+        fi
         fail=$((fail + 1))
     else
         printf '  %-28s returns %s, gcc returns 0\n' "$name" "$m_rc"

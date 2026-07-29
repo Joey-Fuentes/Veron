@@ -741,3 +741,44 @@ The M1 for exactly this access reads correctly -- base loaded, index scaled by
 it does not execute. If 36 and 37 fail, then reading an emission and calling
 it correct is a step short of a measurement, and this is the round that says
 so.
+
+=============================================================================
+ROUND 6: THE ELEMENT TYPE IS CONFIRMED
+
+    34  long*        x8    passes
+    35  long*       x64    passes
+    36  struct Big*  x8    SIGNAL 11
+    37  struct Big* x64    SIGNAL 11
+
+Element type, not count, and not size. Four hypotheses have now been killed by
+measurement: the pointer difference, ->size versus ->type->size, storage size,
+and element count.
+
+AND THE M1 I READ AS CORRECT IS NOT
+
+Last round the emit step printed, for exactly this access,
+
+    &GLOBAL_bigtab ; ldr_x0,[x0] ; mov_x0,40 ; mov_x14,8 ; mul ; add
+
+and I read it as correct and said so. The emit step COMPILES AND PRINTS; it
+never runs. 36 and 37 execute that shape and crash. So either the emission is
+wrong somewhere I did not look, or the fault is in a statement the dump did
+not cover -- and in both cases, reading an emission and calling it correct is
+a step short of a measurement. The emit step should run what it prints, or
+stop being described as evidence.
+
+38, 39 AND 40 SPLIT 36 ALONG WHAT IS LEFT
+
+A crash carries no return code, so 36's six numbered steps tell us only that
+it died. These are the smallest programs that can each ask one question:
+
+    38  a struct pointer, NO ARRAY at all
+    39  a struct pointer in an array, PLAIN INDEX only
+    40  a struct pointer in an array, ADDRESS-OF INDEX only
+
+38 failing means arrays are irrelevant. 38 passing and 39 failing means it is
+index access with a struct-pointer element. Both passing and 40 failing means
+the address-of path specifically -- the same path already fixed twice.
+
+difftest now prints whatever a crashing case wrote before it died. Cases do
+not print today; it costs two lines and means one that does will be heard.
