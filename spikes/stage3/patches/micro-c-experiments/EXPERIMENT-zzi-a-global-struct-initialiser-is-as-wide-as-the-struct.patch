@@ -1,0 +1,145 @@
+A global struct initialiser is as wide as the struct.
+
+WHAT IT IS. The initialiser emitted the members back to back and stopped.
+Nothing put the PADDING in -- neither the gaps between members nor the tail
+that takes the struct up to its alignment -- so the bytes written were the sum
+of the member sizes while every accessor strides by the struct's SIZE.
+
+For one struct that is invisible: the members are at their right offsets and
+nothing reads past the last one. For an ARRAY of them the two numbers disagree
+by the padding on every element and the drift compounds.
+
+    struct TCCOption { const char *name; uint16_t index, flags; };
+
+    emitted    &str %0 $1 $0        8 + 2 + 2 = 12 bytes per entry
+    accessed   stride 16, index at 8, flags at 10
+
+tcc's option table is exactly that shape.
+
+WHAT IT COST. A single `-B` flag segfaulted a one-line program.
+
+    /tmp/triv.c                          exit 1
+    -B. /tmp/triv.c                      exit 139, SIGNAL 11
+    -I. /tmp/triv.c                      exit 1
+    -Iinclude /tmp/triv.c                exit 1
+
+tcc_parse_args walks tcc_options with `++popt`. Entry 0 read correctly; entry 1
+was read four bytes early, so its `name` came back as 0x100000000 -- the tail of
+entry 0 spliced to the head of entry 1 -- and was dereferenced.
+
+    A1-scan-start table=5636740
+    A2-popt=5636740   A3-name=5717135      valid, points at "h"
+    A2-popt=5636756   A3-name=4294967296   0x100000000
+
+AND IT MEANS A CI STEP HAS BEEN MEASURING THE WRONG THING FOR ROUNDS. The
+"tcctest.c" step passes `-B. -I. -Iinclude`. It was never reaching tcctest.c:
+it died in option parsing before the file was opened. Every reading of that
+step as "micro-c's tcc cannot compile tcc's test file" was unfounded. With this
+patch both inputs behave identically, which is the tell that the input was
+never the variable:
+
+    -B. /tmp/triv.c                              exit 1, no signal
+    -B. -I. -Iinclude tests/tcctest.c            exit 1, no signal
+
+THE FIX pads to each member's own `offset` rather than assuming the members are
+contiguous, then pads the tail to type_size->size. The offset form is not
+belt-and-braces: `struct { char c; int i; }` has a seven-byte gap before `i`,
+and that gap is the same bug in miniature -- it would have been left out too.
+
+WHAT THIS DOES NOT FIX. crt1.o and crti.o are still not found, so tcc_add_file
+declines and everything stops at the driver's D4 marker with exit 1. That is
+the next thing to look at and it may be harness configuration rather than a
+compiler bug; no claim either way is made here.
+
+A NOTE ON THE PREVIOUS PATCH. EXPERIMENT-zzh said "the P151 fault is closed"
+and the CI gate written with it failed on its first run. Both were right about
+the bug and wrong about the scope: zzh fixed a real corruption -- every symbol
+tcc created had its token wiped -- but it was measured on a one-line file and
+generalised. The gate has since been moved to the trivial-input step, where the
+before/after was actually measured. This patch is what closed the remaining
+signal, and it is being described in terms of the two inputs it was measured
+on, not in terms of "the fault".
+
+MEASURED
+
+    -B. on a one-line file    SIGNAL 11 -> exit 1
+    tcctest.c with flags      SIGNAL 11 -> exit 1
+    difftest                  61 pass / 0 fail / 1 known gap, both architectures
+    case 63                   the construct in 20 lines, red before, green after
+    vocabulary                clean on five architectures
+    corpus                    423 of 426 on aarch64
+
+diff --git a/cc_core.c b/cc_core.c
+index c41f77a..afcbe42 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -5615,6 +5615,30 @@ void global_struct_initializer_list(struct type* type_size)
+ 
+ 	struct type* member = type_size->members;
+ 
++	/* A GLOBAL STRUCT INITIALISER MUST BE AS WIDE AS THE STRUCT.
++	 *
++	 * This emitted the members back to back and stopped. Nothing put the
++	 * PADDING in -- neither the gaps between members nor the tail that takes
++	 * the struct up to its alignment -- so the bytes written were the sum of
++	 * the member sizes while every access used the struct's SIZE as its
++	 * stride. For one struct that is invisible. For an ARRAY of them the two
++	 * disagree by the padding on every element and the drift compounds:
++	 *
++	 *     struct TCCOption { const char *name; uint16_t index, flags; };
++	 *
++	 *     emitted   &str %0 $1 $0        8 + 2 + 2 = 12 bytes
++	 *     accessed  stride 16, index at 8, flags at 10
++	 *
++	 * tcc's option table is exactly that. `-B.` made tcc_parse_args walk to
++	 * the second entry, read its `name` four bytes early -- 0x100000000, the
++	 * tail of entry 0 spliced to the head of entry 1 -- and dereference it.
++	 * A single `-B` flag segfaulted a one-line program.
++	 *
++	 * The cursor pads to each member's own offset rather than assuming the
++	 * members are contiguous, because `struct { char c; int i; }` has a gap
++	 * before `i` and that gap is the same bug in miniature. */
++	int cursor = 0;
++
+ 	do
+ 	{
+ 		if(member == NULL)
+@@ -5624,7 +5648,14 @@ void global_struct_initializer_list(struct type* type_size)
+ 			exit(EXIT_FAILURE);
+ 		}
+ 
++		while(cursor < member->offset)
++		{
++			global_value_output(0, 1);
++			cursor = cursor + 1;
++		}
++
+ 		global_value_selection(member->type);
++		cursor = member->offset + member->size;
+ 
+ 		member = member->members;
+ 
+@@ -5637,10 +5668,23 @@ void global_struct_initializer_list(struct type* type_size)
+ 
+ 	while(member != NULL)
+ 	{
++		while(cursor < member->offset)
++		{
++			global_value_output(0, 1);
++			cursor = cursor + 1;
++		}
+ 		global_value_output(0, member->size);
++		cursor = member->offset + member->size;
+ 		member = member->members;
+ 	}
+ 
++	/* THE TAIL. sizeof is what the accessor strides by. */
++	while(cursor < type_size->size)
++	{
++		global_value_output(0, 1);
++		cursor = cursor + 1;
++	}
++
+ 	globals_list = emit("\n", globals_list);
+ 
+ 	require_match("Struct assignment initialization is invalid for globals.", "}");
