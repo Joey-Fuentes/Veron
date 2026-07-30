@@ -1,0 +1,120 @@
+DEBUG: dump the state entering the external-symbol path.
+
+The crash needs only
+
+    int f(int);
+    void g(void){ f(1); }
+
+-- a call to a function that is DECLARED and not defined. A fixed prototype is
+enough; variadic, escapes and string literals were all red herrings. It is
+deterministic, 10/10 with and without ASLR, and it does NOT reproduce under
+qemu-user: the same binary compiles that file cleanly there and emits a
+structurally sound object. So it cannot be reduced anywhere but the runner.
+
+Knowing which STATEMENT faults still leaves the question of what that statement
+was handed. These print the arguments themselves on entry to put_extern_sym2
+and greloca -- which is before the fault by construction, whatever the fault
+turns out to be -- and the symbol's own name, so the log says outright which
+declared-but-undefined function is being processed and with what.
+
+The name lookup is guarded: sym->v is range-checked against tok_ident before
+table_ident is indexed, because an out-of-range v is one of the things this is
+looking for and reading it would crash the diagnostic instead of reporting it.
+A bad v prints as a number rather than dereferencing.
+
+write() and a hand-rolled formatter, for the reason the driver's markers use
+them: a buffered line is lost when the process dies, and the last line printed
+is the whole point.
+
+A tcc-debug patch -- the micro-c copy only, never the control.
+
+diff --git a/tccgen.c b/tccgen.c
+index 6d42de6..d1925c1 100644
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -513,6 +513,43 @@ ST_FUNC void update_storage(Sym *sym)
+ /* update sym->c so that it points to an external symbol in section
+    'section' with value 'value' */
+ 
++
++/* DEBUG: dump the state on the way into the external-symbol path.
++ *
++ * The crash needs only `int f(int); void g(void){ f(1); }` -- a call to a
++ * function that is DECLARED and not defined -- and it does not reproduce under
++ * qemu-user at all, so it cannot be reduced off the runner. Knowing WHICH
++ * statement faults still leaves the question of what it was handed; these
++ * print the arguments themselves, on entry, which is before the fault by
++ * construction whatever the fault turns out to be.
++ *
++ * write() and a hand-rolled formatter: the same reason the driver's markers
++ * use it. A buffered line is lost when the process dies, and the whole point
++ * is the last thing printed. */
++static void dbg_num(const char *tag, long long v)
++{
++    char b[32]; int i = 0, n = 0; long long x = v;
++    while (tag[n]) n++;
++    write(2, tag, n);
++    if (x < 0) { write(2, "-", 1); x = -x; }
++    if (x == 0) write(2, "0", 1);
++    else { char d[32]; int j = 0;
++           while (x) { d[j] = 48 + (int)(x % 10); j = j + 1; x = x / 10; }
++           while (j) { j = j - 1; b[i] = d[j]; i = i + 1; } write(2, b, i); }
++    write(2, "\n", 1);
++}
++
++static void dbg_str(const char *tag, const char *s)
++{
++    int n = 0, m = 0;
++    while (tag[n]) n++;
++    write(2, tag, n);
++    if (!s) { write(2, "(null)\n", 7); return; }
++    while (s[m] && m < 64) m++;
++    write(2, s, m);
++    write(2, "\n", 1);
++}
++
+ ST_FUNC void put_extern_sym2(Sym *sym, int sh_num,
+                             addr_t value, unsigned long size,
+                             int can_add_underscore)
+@@ -520,6 +557,25 @@ ST_FUNC void put_extern_sym2(Sym *sym, int sh_num,
+     int sym_type, sym_bind, info, other, t;
+     ElfSym *esym;
+     const char *name;
++
++    write(2, "PES-enter\n", 10);
++    dbg_num("  sym=",        (long long)sym);
++    dbg_num("  sh_num=",     sh_num);
++    dbg_num("  value=",      (long long)value);
++    dbg_num("  size=",       (long long)size);
++    if (sym) {
++        dbg_num("  sym->v=",       sym->v);
++        dbg_num("  sym->type.t=",  sym->type.t);
++        dbg_num("  sym->c=",       sym->c);
++        dbg_num("  sym->r=",       sym->r);
++        dbg_num("  sym->type.ref=", (long long)sym->type.ref);
++        dbg_num("  tok_ident=",    tok_ident);
++        if (sym->v >= TOK_IDENT && sym->v - TOK_IDENT < tok_ident - TOK_IDENT
++            && table_ident)
++            dbg_str("  name=", table_ident[sym->v - TOK_IDENT]->str);
++        else
++            dbg_num("  name: v out of range, v-TOK_IDENT=", sym->v - TOK_IDENT);
++    }
+     char buf1[256];
+ 
+     if (!sym->c) {
+@@ -594,6 +650,15 @@ ST_FUNC void greloca(Section *s, Sym *sym, unsigned long offset, int type,
+ {
+     int c = 0;
+ 
++    write(2, "GRL-enter\n", 10);
++    dbg_num("  s=",      (long long)s);
++    dbg_num("  sym=",    (long long)sym);
++    dbg_num("  offset=", (long long)offset);
++    dbg_num("  type=",   type);
++    dbg_num("  addend=", (long long)addend);
++    if (s) dbg_num("  s->sh_num=", s->sh_num);
++    if (sym) dbg_num("  sym->c=", sym->c);
++
+     if (nocode_wanted && s == cur_text_section)
+         return;
+ 

@@ -1326,12 +1326,27 @@ jobs:
           L="$PWD/spikes/stage3/micro-c-libc"
           M="$PWD/m2/M2libc"
           rm -rf inst && cp -r mc-tcc inst
+          # TWO FILES, TWO PREFIXES.
+          #
+          # The first run of this covered tccgen.c only and reported "last
+          # completed P52 = put_extern_sym's call to put_extern_sym2". That
+          # call is made FROM greloca, and what follows it is
+          #     put_elf_reloca(symtab_section, s, offset, type, c, addend);
+          # which lives in tccelf.c and had no markers at all -- so the trail
+          # simply stopped at the file boundary and looked like the fault was
+          # at P52. Instrumenting both means the last marker names the file as
+          # well as the statement.
           python3 spikes/stage3/tools/instrument.py --map --prefix P \
             inst/tccgen.c 'put_extern_sym2,put_extern_sym,greloca' > inst-map.txt
           python3 spikes/stage3/tools/instrument.py --prefix P \
             inst/tccgen.c 'put_extern_sym2,put_extern_sym,greloca' > /tmp/i.c
           mv /tmp/i.c inst/tccgen.c
-          echo "  $(wc -l < inst-map.txt) statements mapped"
+          python3 spikes/stage3/tools/instrument.py --map --prefix E \
+            inst/tccelf.c 'put_elf_reloca,put_elf_reloc,put_elf_sym,find_elf_sym' >> inst-map.txt
+          python3 spikes/stage3/tools/instrument.py --prefix E \
+            inst/tccelf.c 'put_elf_reloca,put_elf_reloc,put_elf_sym,find_elf_sym' > /tmp/e.c
+          mv /tmp/e.c inst/tccelf.c
+          echo "  $(wc -l < inst-map.txt) statements mapped across tccgen.c and tccelf.c"
 
           ( cd inst && ../micro-c --architecture aarch64 --expand-includes \
               --max-string 65536 -D ONE_SOURCE=1 -D TCC_TARGET_LINUX=1 \
@@ -1371,13 +1386,29 @@ jobs:
             echo "  layout, and reducing it by construct will not work."
           fi
           echo "  markers printed: $(grep -ac '^P[0-9]' /tmp/ext-marks.txt || true)"
-          last=$(grep -ao '^P[0-9]*' /tmp/ext-marks.txt | tail -1 || true)
+          last=$(grep -ao '^[PE][0-9]*' /tmp/ext-marks.txt | tail -1 || true)
           echo "  LAST STATEMENT THAT COMPLETED: ${last:-none}"
           if [ -n "${last:-}" ]; then
             grep -E "^$last " inst-map.txt | sed 's/^/    /' || true
-            echo "  --- the next statements, one of which is the fault ---"
-            grep -A4 -E "^$last " inst-map.txt | tail -4 | sed 's/^/    /' || true
+            # THE REST OF THE SAME FUNCTION, not the next lines of the map.
+            #
+            # The first version printed the following map entries, which are in
+            # FILE order, not execution order -- so after a marker at the end of
+            # put_extern_sym it helpfully listed the start of greloca, a function
+            # that had already run. That reads as "the fault is in greloca's
+            # opening brace" and is simply wrong. The fault is in whatever runs
+            # next in the function the last marker belongs to.
+            fn=$(grep -E "^$last " inst-map.txt | sed 's/.*[0-9]:  *//; s/:.*//')
+            echo "  --- rest of $fn, where execution was heading ---"
+            awk -v f="$fn" -v l="$last" '
+              $0 ~ ("  " f ": ") { seen[NR] = $0; if (found) { print "    " $0; n++ }
+                                   if ($1 == l) found = 1 }
+              n >= 6 { exit }
+            ' inst-map.txt
           fi
+          echo "  --- state on entry (from tcc-debug/0005) ---"
+          grep -aE '^(PES|GRL)-enter|^  (sym|s|name|offset|type|addend|sh_num|value|size|tok_ident)' \
+            /tmp/ext-marks.txt | tail -24 | sed 's/^/  /' || true
 
       # =================================================================
       # THE GATE. Runs last so that a red job still carries a full round of
