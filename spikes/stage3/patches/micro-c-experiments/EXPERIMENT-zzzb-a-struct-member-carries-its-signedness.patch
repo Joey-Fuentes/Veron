@@ -1,0 +1,90 @@
+A struct member carries its signedness.
+
+build_member callocs the member record and copies the declared type's SIZE
+into it, but never its is_signed. Every struct member therefore reported as
+unsigned, whatever it was declared:
+
+    struct S { int a; char b; unsigned c; };
+        a  sz=4 sgn=0      should be signed
+        b  sz=1 sgn=0      should be signed
+        c  sz=4 sgn=0      correctly unsigned
+
+The member read chooses its instruction from that flag --
+
+    emit_out(load_value(i->size, i->is_signed));
+
+-- so it emitted the zero-extending ldr_w0 where int needs ldrsw, and a
+negative value written through `p->c` came back as its unsigned bit pattern:
+-1 stored 0xFFFFFFFF and read back 0x00000000FFFFFFFF.
+
+    struct S { int c; };
+    int main(void){ struct S s; struct S* p; p=&s;
+                    p->c = 0 - 1; if(p->c != 0 - 1) return 1; return 0; }
+    gcc 0, micro-c 1
+
+WHILE `int` WAS EIGHT BYTES this could not show: an eight-byte load has nothing
+to extend, so the flag never reached the emitted code. At four bytes it decides
+correctness.
+
+WHAT IT BLOCKED. tcc pushes a fresh struct with c = -1 and then asks
+
+    if (s->c != -1 && ...) tcc_error("struct/union/enum already defined");
+
+The comparison failed, so every anonymous struct in tccdefs.h -- beginning with
+aarch64's __builtin_va_list, at <command line>:56 -- reported as already
+defined. mc-tcc rejected EVERY program it was handed, including
+`int main(void){ return 7; }`, with
+
+    <command line>:53: error: struct/union/enum already defined
+
+HOW IT WAS FOUND. Dump the <command line> buffer to see what line 53 is; read
+the condition that raises the error rather than guessing at it; tag all 22
+load_value call sites and compile `p->c` to see which one fires; print size and
+is_signed at that site. Four measurements, no hypotheses.
+
+MEASURED: negative int, char and pointer-adjacent members all match gcc, and
+unsigned members stay unsigned. difftest stays 84/85 -- no regression.
+mc-tcc COMPILES: `-c seven.c` returns 0 with a 1,038-byte object, where it
+previously rejected everything.
+
+STILL FAILING: programs using pointer-into-array walks and function-pointer
+struct members segfault at RUN time (the 05 and 11 shapes, and difftest's
+14-function-pointer-member). Those are codegen, not this.
+
+--- a/cc_types.c
++++ b/cc_types.c
+@@ -744,6 +744,34 @@ struct type* build_member(struct type* last, int offset)
+ 	{
+ 		i->size = member_type->size;
+ 	}
++
++	/* AND ITS SIGNEDNESS, which nothing here copied.
++	 *
++	 * build_member callocs the record, so is_signed started 0 and stayed
++	 * there: EVERY struct member reported as unsigned, whatever it was
++	 * declared. The member read then chose the zero-extending load --
++	 *
++	 *     emit_out(load_value(i->size, i->is_signed));    ldr_w0, not ldrsw
++	 *
++	 * -- so a negative value written through `p->c` read back as its unsigned
++	 * bit pattern: -1 stored 0xFFFFFFFF and returned 0x00000000FFFFFFFF.
++	 *
++	 * While `int` was eight bytes an eight-byte load had nothing to extend
++	 * and signedness never reached the emitted code. At four bytes it decides
++	 * correctness.
++	 *
++	 * tcc pushes a fresh struct with c = -1 and then asks
++	 *
++	 *     if (s->c != -1) tcc_error("struct/union/enum already defined");
++	 *
++	 * so every anonymous struct in tccdefs.h -- beginning with aarch64's
++	 * __builtin_va_list at <command line>:56 -- reported as already defined,
++	 * and every program our tcc was handed failed to compile.
++	 *
++	 * An ARRAY member keeps the element's signedness, which is what a read of
++	 * one element needs. A function pointer has none to carry. */
++	i->is_signed = member_type->is_signed;
++
+ 	member_size = i->size;
+ 
+ 	return i;
