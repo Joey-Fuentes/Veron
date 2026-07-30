@@ -1,0 +1,117 @@
+multiply_by_object_size uses the parameter it was given.
+
+    void multiply_by_object_size(int object_size)
+    {
+        if(object_size == 1) return;                          /* tested here */
+        emit_mul_register_zero_with_immediate(
+            current_target->type->size, "pointer arithmetic"); /* not used here */
+    }
+
+It took the size as a parameter, TESTED that parameter, and then emitted a
+different number -- re-reading the global that the caller had already changed:
+
+    /* We need this before it's changed by the following expression  */
+    int object_size = current_target->type->size;
+    common_recursion(expression);
+    current_target = promote_type(current_target, last_type);   <-- changed
+    ...
+    multiply_by_object_size(object_size);
+
+The caller's own comment names the hazard. The value was captured to dodge it,
+and then the capture was ignored.
+
+WHY IT HID FOR SO LONG. For `struct X *p; p -= 2;` the promoted type still
+happened to yield the struct's size, so the obvious test passes and the
+emission looks right. It only diverges when a TYPEDEF stands between the
+pointer and the struct, where the promoted type yields 8 -- the pointer's own
+width -- and the pointer moves by two WORDS instead of two elements:
+
+    struct Raw* rp;  rp -= 2;   ->   mov_x14,24     correct
+    Tdef*       tp;  tp -= 2;   ->   mov_x14,8      wrong
+
+Plain `tp = tp - 2` is fine; that path goes through pointer_element_size and
+never touches this function. Only the COMPOUND forms reach it.
+
+WHAT IT COST. tcc's value stack is exactly that shape:
+
+    ST_DATA SValue *vtop;
+    arm64_gen_opil:   vtop -= 2;  ...  ++vtop;      /* net -1, the pop */
+
+so the pop after a binary operator moved ONE entry instead of two, and tcc's
+own self-check caught it:
+
+    int m(void){ int a; int b; return a+b; }
+    error: internal compiler error: vstack leak (1)
+
+Every binary operator with two VARIABLE operands -- + - * & < -- and every
+type. `a+1` and `1+2` escaped because they constant-fold and never reach the
+two-operand path, which is why the fault needed two locals to reproduce.
+
+That diagnostic is legible at all only because EXPERIMENT-zzl gave tcc a
+working stderr; before it, this was a silent wrong answer.
+
+WHAT IT UNBLOCKS
+
+    int m(void){ int a; int b; return a+b; }         exit 0, 1038-byte object
+    int add(int,int); int main(void)                 exit 0, 1321-byte object
+
+Multi-function translation units now compile and link into valid aarch64
+objects. tcctest.c still faults and is the next frontier.
+
+ALSO IN THIS CHANGE: two cases pinning aarch64 PADDING, which had been fixed
+twice (zzh, zzi) without a broad regression test. 28 probes over alignment
+invariants and over the emitted data for initialised globals -- including the
+`{char*, unsigned short, unsigned short}` option-table shape that broke before
+zzi. Written as INVARIANTS rather than absolute offsets, because micro-c's
+eight-byte int makes absolute layouts legitimately differ from gcc's and a
+test that hard-codes gcc's numbers would be measuring the wrong thing.
+
+MEASURED
+
+    difftest      69 pass / 0 fail / 1 known gap, both architectures
+    corpus        423 of 426 on aarch64
+    vocabulary    clean on five architectures
+
+diff --git a/cc_core.c b/cc_core.c
+index 3bc9d2d..0cba7f2 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -1835,7 +1835,37 @@ void multiply_by_object_size(int object_size)
+ 		return;
+ 	}
+ 
+-	emit_mul_register_zero_with_immediate(current_target->type->size, "pointer arithmetic");
++	/* THE PARAMETER, NOT THE GLOBAL.
++	 *
++	 * This tested `object_size` and then emitted current_target->type->size,
++	 * which is a different number: the caller reassigns current_target via
++	 * promote_type between capturing the size and calling this. The caller
++	 * even says so --
++	 *
++	 *     /* We need this before it's changed by the following expression  *\/
++	 *     int object_size = current_target->type->size;
++	 *
++	 * -- so the hazard was seen, the value was captured to dodge it, and then
++	 * the capture was ignored here.
++	 *
++	 * For `struct X *p; p -= 2;` the promoted type still happened to yield the
++	 * struct's size, so it looked right. For a pointer to a TYPEDEF'd struct
++	 * it yields 8 -- the pointer's own width -- and the pointer moves by two
++	 * WORDS instead of two elements.
++	 *
++	 * tcc's value stack is exactly that shape:
++	 *
++	 *     ST_DATA SValue *vtop;      arm64_gen_opil:  vtop -= 2; ... ++vtop;
++	 *
++	 * so the pop after a binary operator moved one entry instead of two, and
++	 * every operator with two variable operands leaked a vstack slot:
++	 *
++	 *     int m(void){ int a; int b; return a+b; }
++	 *     error: internal compiler error: vstack leak (1)
++	 *
++	 * `a+1` and `1+2` escape it because they constant-fold and never reach
++	 * the two-operand path. */
++	emit_mul_register_zero_with_immediate(object_size, "pointer arithmetic");
+ }
+ 
+ void arithmetic_recursion(FUNCTION f, char* s1, char* s2, char* name, FUNCTION iterate)
