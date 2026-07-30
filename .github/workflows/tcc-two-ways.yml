@@ -367,7 +367,22 @@ jobs:
           # ./configure GENERATES config.h, which tcc.h includes on line 27.
           # The local rehearsal used an already-configured tree and so never
           # noticed; CI starts from a fresh clone and does.
-          ./configure --cpu=arm64 >/dev/null 2>&1 || true
+          # --triplet IS NOT OPTIONAL HERE.
+          #
+          # configure only learns the real multiarch triplet when it can
+          # interrogate the compiler. Given an explicit --cpu it takes the
+          # "can only make guesses about compiler and target" branch and sets
+          #     default triplet "${cpu}-linux-gnu"      ->  arm64-linux-gnu
+          # Nothing on Debian is called that; the directory is
+          # aarch64-linux-gnu. config.h then has no CONFIG_TCC_CRTPREFIX, so
+          # tcc.h builds one from the wrong triplet and every link fails with
+          #     tcc: error: file 'crt1.o' not found
+          # for rounds, read repeatedly as a compiler fault. The CONTROL never
+          # hit it because it configures without --cpu and gets the triplet
+          # from gcc.
+          ./configure --cpu=arm64 --triplet=aarch64-linux-gnu >/dev/null 2>&1 || true
+          grep -q 'aarch64-linux-gnu' config.h \
+            || { echo "FAIL: config.h did not take the triplet"; exit 1; }
           [ -f config.h ] || { echo "FAIL: configure did not produce config.h"; exit 1; }
           cc -DC2STR conftest.c -o c2str.exe && ./c2str.exe include/tccdefs.h tccdefs_.h
           cd ..
@@ -668,20 +683,12 @@ jobs:
           set -eu
           echo 'int main(void){ return 0; }' > /tmp/trivial.c
           set +e
-          # -B AT THE MULTIARCH DIRECTORY, because that is where crt1.o lives.
-          #
-          # tcc's config.h has CONFIG_TRIPLET "arm64-linux-gnu", so its crt
-          # search is /usr/lib/arm64-linux-gnu -- a directory Debian does not
-          # have; the real one is /usr/lib/aarch64-linux-gnu. Without this the
-          # step reported "file 'crt1.o' not found" and exit 1 for rounds, and
-          # it was repeatedly mistaken for a compiler fault when it is a search
-          # path. It is passed explicitly rather than by re-configuring the
-          # pinned tree, because the CONTROL links fine with the same triplet
-          # and that route has not been traced -- changing the shared config on
-          # a guess would risk the side that works.
-          CRT=/usr/lib/aarch64-linux-gnu
-          [ -e "$CRT/crt1.o" ] || echo "  note: $CRT/crt1.o is absent on this runner"
-          ./mc-tcc-bin -B"$CRT" /tmp/trivial.c -o /tmp/trivial-out 2> /tmp/marks.txt
+          # NO -B FOR THE CRT PATH -- that was tried and it cannot work.
+          # -B calls tcc_set_lib_path (libtcc.c:1972); the crt search comes
+          # from s->crt_paths, which is filled ONCE from CONFIG_TCC_CRTPREFIX
+          # (libtcc.c:1022) and by no command-line option at all. The fix is
+          # the --triplet passed to configure above.
+          ./mc-tcc-bin /tmp/trivial.c -o /tmp/trivial-out 2> /tmp/marks.txt
           rc=$?
           set -e
           # The driver brackets each libtcc call with a marker on stderr, so
@@ -896,22 +903,22 @@ jobs:
           total=$(grep -c '' tests/tcctest.c)
           echo "  tcctest.c is $total lines"
 
+          # errexit STAYS OFF for the whole bisection. The first version had
+          # `set -e` at the end of this function, which is not function-scoped
+          # in sh: it re-armed errexit before `return`, so the first signalling
+          # run killed the step instead of steering the search.
+          set +e
           run_head() {
             head -"$1" tests/tcctest.c > /tmp/cut.c
-            set +e
-            ./../mc-tcc-bin -B. -I. -Iinclude -Itests -c /tmp/cut.c -o /tmp/cut.o \
+            ./../mc-tcc-bin -I. -Iinclude -Itests -c /tmp/cut.c -o /tmp/cut.o \
               > /tmp/cut.log 2>&1
-            rc=$?
-            set -e
-            return $rc
+            return $?
           }
 
           # A TRUNCATED FILE CAN FAIL FOR ITS OWN REASONS -- a cut mid-function
           # is a syntax error, not our bug. Only a SIGNAL counts as the fault;
           # a clean diagnostic means the cut was the problem, not the compiler.
-          set +e
           run_head "$total"; full=$?
-          set -e
           echo "  whole file: exit $full"
           if [ "$full" -le 128 ]; then
             echo "  no signal on the whole file -- nothing to bisect"
@@ -922,9 +929,7 @@ jobs:
           lo=1; hi=$total
           while [ $((hi - lo)) -gt 1 ]; do
             mid=$(( (lo + hi) / 2 ))
-            set +e
             run_head "$mid"; rc=$?
-            set -e
             if [ "$rc" -gt 128 ]; then hi=$mid; else lo=$mid; fi
           done
           echo "  last line that does NOT signal: $lo"

@@ -132,7 +132,13 @@ jobs:
           # it. tccdefs_.h is produced by c2str.exe from include/tccdefs.h.
           # A raw clone is missing both, and that is exactly the failure this
           # workflow's sibling hit on its first run.
-          ./configure --cpu=arm64 >/dev/null 2>&1 || true
+          # --triplet, for the same reason tcc-two-ways passes it: with an
+          # explicit --cpu, configure takes its "can only make guesses" branch
+          # and produces triplet arm64-linux-gnu. Debian's directory is
+          # aarch64-linux-gnu, so tcc's crt search points at nothing and every
+          # link fails with "file 'crt1.o' not found". This job cross-configures
+          # on x86_64, so it can never detect the right value on its own.
+          ./configure --cpu=arm64 --triplet=aarch64-linux-gnu >/dev/null 2>&1 || true
           [ -f config.h ] || { echo "FAIL: configure produced no config.h"; exit 1; }
           cc -DC2STR conftest.c -o c2str.exe
           ./c2str.exe include/tccdefs.h tccdefs_.h
