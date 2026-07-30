@@ -123,7 +123,20 @@ jobs:
             -o mc-tcc-mapped >/dev/null
           cmp mc-tcc mc-tcc-mapped \
             || { echo "FAIL: the mapped build is not byte-identical"; exit 1; }
-          echo "  $(wc -l < labels.txt) labels, binary byte-identical"
+          # ASSERT THE MAP IS IN RANGE. The first version of the hex2 patch
+          # added Base_Address to an address that already included it, so every
+          # label was 0x400000 too high and the resolver silently matched
+          # nothing -- five "?" lines that looked like a watchpoint problem.
+          sz=$(stat -c%s mc-tcc)
+          python3 - "$sz" <<'EOF'
+          import sys
+          sz = int(sys.argv[1]); lo, hi = 0x400000, 0x400000 + sz
+          v = [int(l.split()[0], 16) for l in open('labels.txt') if len(l.split()) == 2]
+          print("  %d labels, %#x..%#x, binary %#x..%#x" % (len(v), min(v), max(v), lo, hi))
+          if not v or min(v) < lo or max(v) > hi:
+              print("FAIL: the label map is outside the binary"); sys.exit(1)
+          print("  label map in range, binary byte-identical")
+          EOF
 
       - name: 'PASS 1: learn the address'
         run: |
@@ -135,8 +148,13 @@ jobs:
           # silent -- and pass 2 says so.
           cd build/local/tcc-work
           echo 'int main(void){ return 0; }' > /tmp/t.c
+          # setarch -R DISABLES ADDRESS-SPACE RANDOMISATION, because gdb does
+          # it too and the two passes must agree. Without it pass 1 reported
+          # 313503256 and pass 2's own run printed 23584280 -- the watchpoint
+          # was set on an address that did not exist in that process, so it
+          # never fired and the run looked like "nothing writes here".
           set +e
-          ../mc-tcc -c /tmp/t.c -o /tmp/t.o > /tmp/p1.log 2>&1
+          setarch -R ../mc-tcc -c /tmp/t.c -o /tmp/t.o > /tmp/p1.log 2>&1
           echo "  pass 1 exit: $?"
           set -e
           addr=$(grep -a "${{ inputs.marker }}" /tmp/p1.log | head -1 | sed 's/.*=//')
@@ -169,6 +187,19 @@ jobs:
           gdb --batch -x /tmp/cmds.gdb ../mc-tcc > /tmp/gdb.log 2>&1
           echo "  gdb exit: $?"
           set -e
+          # THE TWO PASSES MUST AGREE ABOUT THE ADDRESS. The probe prints it in
+          # pass 2 as well, so this is checkable rather than assumed. A silent
+          # mismatch is what made the first run useless: the watchpoint was
+          # armed on an address from a different process image and simply never
+          # fired, which is indistinguishable from "nothing wrote there".
+          got=$(grep -a 'TW-armed at=' /tmp/gdb.log | head -1 | sed 's/.*=//')
+          if [ -n "$got" ] && [ "$got" != "$WATCH_ADDR" ]; then
+            echo "FAIL: pass 1 saw $WATCH_ADDR, pass 2 saw $got."
+            echo "      The layout is not repeating, so the watchpoint was"
+            echo "      armed on an address this process never used."
+            exit 1
+          fi
+          echo "  both passes agree on $WATCH_ADDR"
           tail -40 /tmp/gdb.log | sed 's/^/  /'
 
       - name: 'Resolve the program counters against the label map'

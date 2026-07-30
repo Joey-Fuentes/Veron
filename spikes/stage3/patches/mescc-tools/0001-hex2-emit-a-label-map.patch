@@ -24,9 +24,16 @@ OFF BY DEFAULT. Nothing happens unless HEX2_LABEL_MAP names a file. Checked by
 building both ways: the emitted binary is byte-identical with the variable set
 and unset, so this cannot change what is being debugged.
 
-    14626 labels for the current mc-tcc
-    804DC0 FUNCTION_tok_alloc_new
-    85CEA0 FUNCTION_post_type
+    14394 labels, all inside 0x400000..<end of binary>
+    404DC0 FUNCTION_tok_alloc_new
+    45CEA0 FUNCTION_post_type
+
+entry->target ALREADY INCLUDES Base_Address -- ip is initialised to it before
+the first pass. The first version of this patch added it again, so every label
+came out 0x400000 too high, the resolver matched nothing, and the first run of
+the watchpoint job printed "?" for all five program counters. A map that is
+uniformly wrong is worse than no map, because it looks like it worked. The
+range is now asserted by the job rather than eyeballed.
 
 WHAT IT IS FOR. A native gdb on the aarch64 runner can set a hardware
 watchpoint on the address a stray write is landing on -- but without a symbol
@@ -65,7 +72,7 @@ index 0e3c85a..8bd6833 100644
  	output = stdout;
  	char* output_file = "";
 diff --git a/hex2_linker.c b/hex2_linker.c
-index 7785692..02ecd76 100644
+index 7785692..296ca25 100644
 --- a/hex2_linker.c
 +++ b/hex2_linker.c
 @@ -24,6 +24,7 @@ FILE* output;
@@ -76,7 +83,7 @@ index 7785692..02ecd76 100644
  int Architecture;
  int ByteMode;
  int exec_enable;
-@@ -146,6 +147,31 @@ int storeLabel(FILE* source_file, int ip)
+@@ -146,6 +147,38 @@ int storeLabel(FILE* source_file, int ip)
  	entry->next = jump_tables[h];
  	jump_tables[h] = entry;
  
@@ -99,7 +106,14 @@ index 7785692..02ecd76 100644
 +	 * default behaviour are unchanged. */
 +	if(NULL != label_map_file)
 +	{
-+		fputs(int2str(entry->target + Base_Address, 16, FALSE), label_map_file);
++		/* entry->target ALREADY INCLUDES Base_Address -- ip is initialised to
++		 * it, not to zero. Adding it again put every label 0x400000 high, so
++		 * the map spanned 0x800000..0x974463 for a binary living at
++		 * 0x400000..0x574463 and every lookup returned "?". Caught by the
++		 * first real backtrace, which is a slower way to find it than
++		 * comparing the map's range against the file size, and that check is
++		 * now in local-build.sh. */
++		fputs(int2str(entry->target, 16, FALSE), label_map_file);
 +		fputc(' ', label_map_file);
 +		fputs(entry->name, label_map_file);
 +		fputc('\n', label_map_file);

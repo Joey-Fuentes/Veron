@@ -63,33 +63,38 @@ runs                         tcc_new completes
                              faults later, and elsewhere
 ```
 
-**Where it faults now.** `next()` completes and RETURNS -- the last statement
-reached is the rejoin at tccpp.c:3556, after `define_find` found no macro --
-so the fault is in its caller, in tccgen, outside the instrumented set. 41,852
-markers. Per this step's own warning, a fault outside the set appears as the
-last marker inside it, so that line is a boundary and not a site.
+**Where it stands now.** micro-c's tcc compiles a file end to end and emits a
+real object:
 
-**Now diagnose it.** This file said "do not diagnose it yet" for three
-rounds, because every integer literal was truncated to 32 bits: `parse_number`
-tests `n >= 0x8000000000000000ULL`, that literal was 0, the test was `n >= 0`,
-and the same statement marked the constant **unsigned**. Every constant this
-tcc read was mis-typed, which is not a thing to explain a segfault on top of.
-`EXPERIMENT-zzb` closed it and the warning is gone.
+```
+    exit=0
+    /tmp/t.o: ELF 64-bit LSB relocatable, ARM aarch64, version 1 (SYSV)
+```
 
-**It did not move the marker.** The fault is still P151 and the count went
-41,852 to 41,790. That is stated first and plainly, because the last time this
-series recorded a cause it was wrong for four rounds, and what settled it was
-re-running the trail and finding it had not moved. zzb removed a **confound**,
-which is all it claimed to do. The fault is now worth diagnosing on its own
-terms rather than through corrupted types.
+That needs ONE thing that is not committed and is not a fix: a NULL check in
+`tal_free_impl`, which walks its buffer list without one. Without the check the
+same run segfaults. The check hides a stray write rather than repairing it, so
+it stays out of the tree; the write is the open frontier and is described below.
 
-**One new observation, undiagnosed.** The `<command line>:27` warning did not
-disappear -- it CHANGED, from "integer constant overflow" to "extra tokens
-after directive". Same line, a different complaint. It is not yet known whether
-that is tcc reading a directive correctly for the first time or a second bug
-the first one was masking, and guessing which is exactly the move this file
-keeps recording as a mistake. Dumping the `<command line>` buffer is a minute's
-work and has not been done.
+**Everything above about P151 was wrong, and the way it was wrong is the
+lesson.** For five rounds this file recorded the fault as "in tccgen, past
+where `next()` returns". It was a member offset three functions away: a member
+of an anonymous struct nested in an anonymous union resolved to OFFSET 0, so
+`sym_push2`'s `s->c = c` wiped the token `s->v = v` had just written, and every
+symbol tcc created came back with `v == 0`. `EXPERIMENT-zzh`. The marker trail
+had been read as pointing AT the fault when all it can do is bracket between
+probe points.
+
+**Corrections to what this file used to say**, each because it was measured
+rather than reasoned about:
+
+| was recorded as | actually |
+|---|---|
+| the P151 fault is in tccgen | a member offset in `cc_types.c`, `zzh` |
+| `<command line>:27` changed to "extra tokens after directive" -- possibly new | pre-existing; it was third in the list all along, behind two overflow warnings that `zzb` removed |
+| `constant_expression` folds `a\|b&c` right-to-left | not confined to constant expressions, and not right-to-left: the five bitwise/logical operators had NO precedence and parsed flat, left to right. `zze` |
+| case 31 closed array-of-pointers | it closed it for a STRUCT element. A `char*` element was still loading one signed byte of an eight-byte pointer, in `tcc`'s own `char *include_stack[32]`. `zzd` |
+| the tcctest.c step measures tcctest.c | it died in option parsing before opening the file -- a single `-B` flag segfaulted a one-line program. `zzi` |
 
 **`EXPERIMENT-zza` is what moved it, and the diagnosis that preceded it was
 wrong for four rounds.** The fault was recorded here as being in macro
@@ -272,7 +277,7 @@ a 200-operator file from 83 MB to 3.4 MB.
 | ~~a goto label is global~~ | **CLOSED, `EXPERIMENT-zza`.** A C label is scoped to its function; this emitted the bare name flat, so tcc's five `redo:` labels collided. **This was the blocker.** M2-Planet's own source has globally unique labels, which is why upstream never needed it -- our stage 2 fixed the same thing at m58 and the note there says it is "stricter than the target requires, at no cost". It was exactly what the target required |
 | one lvalue rule, EIGHT implementations | Beside the nineteen load sites, `cc_core.c` decides "is this an assignment target" in eight places, and **three have been found missing a case the others had, one per round**. Same disease, worth its own row: it is the one that has cost tcc the most |
 | `float`/`double`/`long double` | one word-sized integer type |
-| `constant_expression` precedence | `a\|b&c` folds right-to-left |
+| ~~`constant_expression` precedence~~ | **CLOSED, `EXPERIMENT-zze`.** And the description here was wrong twice over: not confined to the constant parser, and not right-to-left. All five bitwise/logical operators sat at ONE level and parsed flat, left to right, so `1\|2^3` was `(1\|2)^3`. A right-to-left fold would have got that one right by accident. Case 59 |
 | 19 load sites | see above |
 | `&((*p)->m)` | grouping parens around a **dereference**. `&(p->m)` works. `&(X)` needs address-of TRUE at X's final lvalue step and FALSE inside it, and with a dereference in the middle those are different points; one global flag cannot say both. Case 44 |
 | a switch cannot be instrumented | not a compiler bug but it shapes the work: `instrument.py` cannot place markers inside a switch body, so `next_nomacro` and `tok_str_add2` — two functions squarely on the token path — have to be probed by hand |
@@ -636,9 +641,11 @@ fresh session needs only the repository.
 
 ## Honest limits of the case suite
 
-54 cases, 53 passing and 1 known gap, on both architectures. That is 53
-constructs behaving as gcc
-does. It is **not** a claim about micro-c generally, because most cases were
+65 cases, 64 passing and 1 known gap, on both architectures -- plus 423 of the
+426 programs in stage 2's conformance corpus, borrowed because a suite written
+FROM bugs already found measures what has been fixed rather than what remains.
+Three live codegen bugs came out of that corpus in one sitting, all of them
+invisible to the case suite. It is **not** a claim about micro-c generally, because most cases were
 written *from* bugs already found — they measure what has been fixed, not what
 remains.
 
@@ -697,17 +704,58 @@ what it cost, and what settled it. It is long and it is the honest record.
 
 ## The next piece of work
 
-**First, the cheap thing, and it is now unobstructed.** The fault is at the
-P151 boundary: `next()` completes and RETURNS, so the crash is in its caller in
-tccgen, which is outside the instrumented set. Extend the set into tccgen and
-re-run -- a minute, not a round. Until `EXPERIMENT-zzb` this was not worth
-doing, because every constant tcc had read was mis-typed and any explanation
-would have been an explanation of that. It is worth doing now.
+**THE OPEN FRONTIER: a two-slot write into `table_ident`.**
 
-**And the `<command line>:27` warning that changed rather than went away.**
-Dump the buffer, count to 27, and find out whether "extra tokens after
-directive" is tcc being right or a second bug. Do not assume; that is the move
-this file records as costing four rounds.
+The reproduction is one second and needs no rebuild:
+
+```
+    PREDEF_LINES=0  mc-tcc -c /dev/null
+```
+
+Empty input, no predefs. tcc interns its fixed keyword table and frees it at
+teardown, and that alone crashes. Between interning keyword 1086 and 1087,
+exactly two slots of `table_ident` are overwritten:
+
+```
+    index  199    22553992 -> 23590984
+    index 1090    0        -> 23591272      288 bytes apart
+```
+
+The indices are stable across runs. Both values point into a block whose first
+words are token NUMBERS (`451` is `alloca`, then `560`, `4102`) -- a token
+string, not a `Sym` and not a `TokenSym`, and not inside `tokstr_alloc`,
+`toksym_alloc`, `cstr_buf`, `tokcstr` or `unget_buf`.
+
+The window between those two interns is six statements: a NUL scan, a hash
+walk, and two returns. None of them writes to the heap in the source, so the
+answer is a store whose ADDRESS is computed wrongly.
+
+RULED OUT, each by measurement rather than argument:
+
+  * allocator handing out overlapping blocks -- 0 genuine double-allocations
+    once frees are accounted for. The first pass at this reported 781 overlaps
+    and was wrong; they were all legitimate reuse
+  * use-after-free of the table -- its block is allocated once and never freed
+  * misdirected `hash_ident[h] = ts` -- the indices look like hash slots and
+    those slots are empty, but the written values are not TokenSym pointers
+  * `&&` short-circuit leaking a stack push -- the `x16` protect is popped on
+    both paths
+  * the instrument itself -- re-derived with a two-word detector after the
+    first version used a 1600-entry static array
+
+WHAT NOT TO REPEAT. Four instrument bugs during this hunt produced false
+negatives that were acted on: a cached slot address that went stale when the
+array was realloc'd, a `static` function called from another file, a watch that
+reset its baseline on the first hit so every later probe compared against the
+corrupt value, and a print taken before the field it printed was populated.
+Three "ruled out" conclusions had to be retracted. If a probe reports silence,
+check that it can still speak.
+
+AND WATCHPOINTS ARE NOT AVAILABLE UNDER THE EMULATOR. qemu-user's gdbstub was
+checked packet by packet -- `Z0` and `Z1` return OK, `Z2`/`Z3`/`Z4` return
+empty. Vendoring gdb-multiarch would have connected to the same stub and been
+refused. Watchpoint work has to happen natively on the aarch64 runner; see
+`.github/workflows/stage3-watchpoint.yml`.
 
 Then the structural work, which this round argued for rather than away. Nine of
 the bugs above are "one rule, several implementations, and the copies
