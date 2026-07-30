@@ -1,0 +1,131 @@
+`extern` declares a global; it does not define one.
+
+WHAT IT IS. The keyword was skipped and the declaration fell through to the
+ordinary global path, which EMITS STORAGE:
+
+    extern char** environ;        ->        :GLOBAL_environ
+
+So every translation unit that declared an extern global got its own
+zero-initialised copy of it, and hex2 has no duplicate-label diagnostic to
+notice. The unit that READS the variable and the unit that INITIALISES it were
+two different objects.
+
+WHAT IT COST. micro-c-libc's headers declare `stdin`, `stdout`, `stderr`,
+`errno` and `environ` this way, and libtcc.c includes them. tcc has therefore
+been writing every diagnostic through a null `stderr` of its own rather than
+M2libc's. That explains something this series misdiagnosed earlier: a
+"compilation failed" message that never appeared, put down at the time to
+stdio buffering.
+
+It also silently disabled two rounds of instrumentation. micro-c-libc had a
+getenv() sitting over `extern char** environ`, and NOTHING anywhere defines
+`environ`. The reference resolved only because micro-c invented a null global
+for it, so getenv returned NULL for every lookup, and two separate bisections
+were run with environment switches -- PREDEF_LINES, KEYWORD_LIMIT -- that did
+nothing at all. Both sets of readings were void, and neither announced itself.
+
+WHY NO CASE CAUGHT IT. All 65 cases in tools/cases/ are a single file. A
+LINKAGE bug is structurally invisible to a one-unit test -- there is no second
+unit for the symbol to disagree with. This is the same shape as the
+array-of-pointers gap, where every probe used `long*` so element width and
+pointed-at width were both 8 and no case could tell them apart. A suite can
+only find bugs in the shapes it is able to express.
+
+WHAT THE FIX EXPOSED, both correctly:
+
+  * micro-c-libc's getenv referenced an `environ` that does not exist. With
+    extern no longer inventing one, the link fails. Removed -- M2libc's
+    stdlib.c has a real getenv, and having two was the problem.
+  * `environ` itself still has to exist, because tcc references it at
+    tccrun.c:213 on the `-run` path. It is now DEFINED once, explicitly null,
+    with a note that -run would need _start to pass envp. This spike only ever
+    uses -c, and a null there fails immediately and obviously rather than
+    subtly.
+
+MEASURED
+
+    difftest      64 pass / 0 fail / 1 known gap, both architectures
+    corpus        423 of 426 on aarch64
+    vocabulary    clean on five architectures
+    tcc           builds and links; stdout/stderr resolve to M2libc's real
+                  globals for the first time
+    the open two-slot write into table_ident is unaffected and still open
+
+diff --git a/cc_core.c b/cc_core.c
+index 6e6b1cf..467146a 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -5822,6 +5822,23 @@ int global_array_initializer_list(struct type* type_size, int array_modifier)
+ 
+ int global_static_array(struct type* type_size, char* name)
+ {
++	/* AN `extern` DECLARATION EMITS NOTHING. The symbol is already registered
++	 * by the caller, so references resolve to `&GLOBAL_<name>` -- which the
++	 * unit that DEFINES it supplies. Emitting storage here is what produced
++	 * two objects with one name; see the comment in cc_types.c. */
++	if(extern_declaration)
++	{
++		extern_declaration = FALSE;
++		/* consume to the end of the declaration without emitting */
++		while(NULL != global_token)
++		{
++			if(global_token->s[0] == ';') break;
++			if(global_token->s[0] == ',') break;
++			require_extra_token();
++		}
++		return 0;
++	}
++
+ 	global_variable_header(name);
+ 
+ 	if(global_token->s[0] == ';' || global_token->s[0] == ',')
+diff --git a/cc_globals.c b/cc_globals.c
+index 85ab66f..3367bca 100644
+--- a/cc_globals.c
++++ b/cc_globals.c
+@@ -93,3 +93,5 @@ int indexing_an_array;
+  * carried rather than recomputed from a type that cannot express it. */
+ int indexed_element_size;
+ int address_of_through_parens;
++
++int extern_declaration;
+diff --git a/cc_globals.h b/cc_globals.h
+index 92bbe4f..62031cc 100644
+--- a/cc_globals.h
++++ b/cc_globals.h
+@@ -89,3 +89,5 @@ extern int pending_bitfield_size;
+ extern int indexing_an_array;
+ extern int indexed_element_size;
+ extern int address_of_through_parens;
++
++extern int extern_declaration;
+diff --git a/cc_types.c b/cc_types.c
+index ec3ec1e..dc37d4c 100644
+--- a/cc_types.c
++++ b/cc_types.c
+@@ -1173,6 +1173,25 @@ struct type* fallible_type_name(void)
+ 
+ 	if(match("extern", global_token->s))
+ 	{
++		/* `extern` DECLARES; IT DOES NOT DEFINE.
++		 *
++		 * This skipped the keyword and let the declaration fall through to the
++		 * ordinary global path, which EMITS STORAGE. So
++		 *
++		 *     extern char** environ;          micro-c-libc/impl/runtime.c:214
++		 *
++		 * produced `:GLOBAL_environ` in that unit as well as in M2libc, and
++		 * hex2 has no duplicate-label diagnostic. The unit that reads it and
++		 * the unit `_start` initialises were two different objects: getenv saw
++		 * NULL and returned NULL for everything.
++		 *
++		 * The same headers declare `stdin`, `stdout`, `stderr` and `errno`
++		 * the same way, and libtcc.c includes them, so tcc's diagnostics were
++		 * going through a null FILE* of its own.
++		 *
++		 * Every case in tools/cases/ is a single file, which is exactly why
++		 * this survived: a linkage bug is invisible to a one-unit test. */
++		extern_declaration = TRUE;
+ 		require_extra_token();
+ 	}
+ 

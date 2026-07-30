@@ -210,33 +210,34 @@ char* strerror(int errnum)
 	return "Unknown error";
 }
 
-/* environ is set up by libc-full's _start. Walking it is all getenv is. */
-extern char** environ;
+/* getenv IS M2libc's, NOT OURS.
+ *
+ * There used to be a copy here, over `extern char** environ;` -- and nothing
+ * anywhere defines `environ`. micro-c used to turn that extern into a fresh
+ * null global of its own, so the copy linked, returned NULL for every lookup,
+ * and looked like it worked. Two rounds of bisection ran with environment
+ * switches that silently did nothing because of it.
+ *
+ * Now that `extern` declares rather than defines, the reference is unresolved
+ * and the link fails -- correctly. M2libc's stdlib.c has a getenv that reads
+ * the environment properly, so the right answer is to not have a second one.
+ */
 
-char* getenv(char* name)
-{
-	char** e = environ;
-	unsigned long n = strlen(name);
-	unsigned long k;
+/* environ ITSELF STILL HAS TO EXIST, because tcc references it:
+ *
+ *     extern char **environ;                       tccrun.c:213
+ *     char **envp = environ;                       tccrun.c:214
+ *
+ * Only on the `-run` path, which this spike never takes -- everything here is
+ * `-c`. So this is a DEFINITION so the link resolves, and it is null because
+ * nothing sets it: M2libc's _start does not pass envp through. If `-run` is
+ * ever wanted, that is the thing to fix, and the null here will produce an
+ * immediate and obvious failure rather than a subtle one.
+ *
+ * It is defined once, here, on purpose. Before `extern` was fixed, every unit
+ * that declared it got its own silent copy. */
+char** environ;
 
-	if(NULL == e) return NULL;
-
-	while(NULL != e[0])
-	{
-		k = 0;
-		while(k < n)
-		{
-			if(e[0][k] != name[k]) break;
-			k = k + 1;
-		}
-		if(k == n)
-		{
-			if(e[0][n] == '=') return e[0] + n + 1;
-		}
-		e = e + 1;
-	}
-	return NULL;
-}
 
 /* HONEST STUBS -- these do not do what their names say, and every one of them
  * is only reached on a path tcc does not need to compile a program.
