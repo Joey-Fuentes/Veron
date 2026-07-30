@@ -1,30 +1,39 @@
-DEBUG: say where a missing file was looked for.
+DEBUG: say what was actually opened when a file is not found.
 
     tcc: error: file 'crt1.o' not found
 
-That names the file and not one of the directories it was sought in. From the
-outside, "the search path is wrong" and "the file really is absent" look
-identical -- and they need opposite fixes. Several rounds of this spike went
-into guessing which: reproducing the failure, reasoning about multiarch
-triplets, changing configure flags, and re-reading the same log line unchanged
-each time. The answer was in s->crt_paths throughout and the program simply
-never printed it.
+That names the file and not one of the places it was sought. From the outside
+"the search path is wrong" and "the file really is absent" look identical, and
+they need opposite fixes. Several rounds of this spike went into guessing
+which -- reproducing the failure, reasoning about multiarch triplets, changing
+configure flags, re-reading the same unchanged log line each time. s->crt_paths
+held the answer throughout and nothing ever printed it.
 
-This prints every path that was tried, and calls out an EMPTY list separately,
-because zero paths and a wrong path are indistinguishable in the current
-message and mean different things: zero means the CONFIG_* macros expanded to
-nothing, which is exactly what happened here -- -D TCC_TARGET_ARM64 on the
-command line skipped the config.h block that defines CONFIG_TRIPLET, so
-USE_TRIPLET(s) collapsed to s.
+With it, one run settled what four rounds of argument had not:
 
-It is a tcc-debug patch: applied to the micro-c copy only, never to the
-control, so the comparison stays honest.
+    tcc: error: file 'crt1.o' not found
+            tried: /usr/lib/arm64-linux-gnu/crt1.o
+
+-- a directory Debian does not have, because -D TCC_TARGET_ARM64 on the
+command line skipped the config.h block that defines CONFIG_TRIPLET.
+
+It prints the full CANDIDATE NAME rather than the directory, because a
+directory list still leaves two situations looking alike: the file is absent,
+or it is present and the open failed. "library 'c' not found" over a directory
+that does contain libc.so cannot be explained from the log without it.
+
+An EMPTY path list is called out separately. Zero paths and a wrong path are
+indistinguishable in the original message and mean different things: zero means
+the CONFIG_* macros expanded to nothing.
+
+A tcc-debug patch: the micro-c copy only, never the control, so the comparison
+stays honest.
 
 diff --git a/libtcc.c b/libtcc.c
-index 171e362..3800e7c 100644
+index 4d1d829..8fb2e54 100644
 --- a/libtcc.c
 +++ b/libtcc.c
-@@ -1266,9 +1266,30 @@ static int tcc_add_library_internal(TCCState *s1, const char *fmt,
+@@ -1295,9 +1295,39 @@ static int tcc_add_library_internal(TCCState *s1, const char *fmt,
          if (ret != FILE_NOT_FOUND)
              return ret;
      }
@@ -32,25 +41,34 @@ index 171e362..3800e7c 100644
 +    if (flags & AFF_PRINT_ERROR) {
          tcc_error_noabort("%s '%s' not found",
              flags & AFF_TYPE_LIB ? "library" : "file", filename);
-+        /* SAY WHERE WE LOOKED.
++        /* SAY WHAT WAS ACTUALLY OPENED.
 +         *
-+         * "file 'crt1.o' not found" names the file and not one of the
-+         * directories it was sought in, so the log cannot distinguish "the
-+         * path list is wrong" from "the file really is missing" -- and those
-+         * need opposite fixes. Several rounds went into guessing which,
-+         * reproducing the failure and theorising about triplets, when the
-+         * program had the answer in s->crt_paths the whole time and simply
-+         * never said it.
++         * "file 'crt1.o' not found" names the file and not one of the places
++         * it was sought, so the log cannot tell "the search path is wrong"
++         * from "the file really is missing" -- and those need opposite fixes.
++         * Several rounds of this spike went into guessing which: reproducing
++         * the failure, reasoning about multiarch triplets, changing configure
++         * flags, and re-reading the same unchanged line each time. s->crt_paths
++         * held the answer throughout and nothing ever printed it.
 +         *
-+         * An empty list is called out separately, because zero paths and a
-+         * wrong path look identical from the outside and mean different
-+         * things: zero means the CONFIG_* macros expanded to nothing. */
++         * The full candidate name is printed, not the directory, because a
++         * directory list still leaves two different situations looking alike:
++         * absent, or present and the open failed. "library 'c' not found" over
++         * a directory that does contain libc.so is unexplainable without it.
++         *
++         * An EMPTY list is called out separately: zero paths and a wrong path
++         * are indistinguishable in the old message and mean different things.
++         * Zero means the CONFIG_* macros expanded to nothing -- which is
++         * exactly what -D TCC_TARGET_ARM64 on the command line caused, by
++         * skipping the config.h block that defines CONFIG_TRIPLET. */
 +        if (nb_paths == 0) {
 +            fprintf(stderr, "        (no search paths at all -- the path"
 +                            " macros expanded to nothing)\n");
 +        } else {
-+            for (i = 0; i < nb_paths; i++)
-+                fprintf(stderr, "        looked in: %s\n", paths[i]);
++            for (i = 0; i < nb_paths; i++) {
++                snprintf(buf, sizeof(buf), fmt, paths[i], filename);
++                fprintf(stderr, "        tried: %s\n", buf);
++            }
 +        }
 +    }
      return FILE_NOT_FOUND;

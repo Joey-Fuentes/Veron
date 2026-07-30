@@ -703,12 +703,32 @@ jobs:
           set -eu
           echo 'int main(void){ return 0; }' > /tmp/trivial.c
           set +e
-          # NO -B FOR THE CRT PATH -- that was tried and it cannot work.
-          # -B calls tcc_set_lib_path (libtcc.c:1972); the crt search comes
-          # from s->crt_paths, which is filled ONCE from CONFIG_TCC_CRTPREFIX
-          # (libtcc.c:1022) and by no command-line option at all. The fix is
-          # the --triplet passed to configure above.
-          ./mc-tcc-bin /tmp/trivial.c -o /tmp/trivial-out 2> /tmp/marks.txt
+          # -B AT THE CONTROL'S BUILD DIRECTORY, FOR libtcc1.a ONLY.
+          #
+          # Not for the crt path -- that was tried and cannot work: -B calls
+          # tcc_set_lib_path (libtcc.c:1972), while the crt search is filled
+          # once from CONFIG_TCC_CRTPREFIX (libtcc.c:1022) and by no option at
+          # all. That was fixed by letting config.h define the target.
+          #
+          # libtcc1.a is different. It is tcc's own runtime support -- division
+          # and soft-float helpers -- and it is looked for under CONFIG_TCCDIR,
+          # which IS what -B sets. The subject never builds one; the control
+          # does, during its make. Borrowing it is honest: it is a support
+          # library compiled by gcc, not part of what micro-c is being tested
+          # on. Building it WITH mc-tcc is a separate goal.
+          #
+          # Asserted rather than assumed, so a missing file says so instead of
+          # arriving later disguised as a compiler fault.
+          TCCLIB="$GITHUB_WORKSPACE/gcc-tcc"
+          if [ -e "$TCCLIB/libtcc1.a" ]; then
+            echo "  borrowing libtcc1.a from the control at $TCCLIB"
+            BFLAG="-B$TCCLIB"
+          else
+            echo "  note: no libtcc1.a at $TCCLIB -- linking will fail on it"
+            ls "$TCCLIB"/*.a 2>/dev/null | head -3 | sed 's/^/    /' || true
+            BFLAG=""
+          fi
+          ./mc-tcc-bin $BFLAG /tmp/trivial.c -o /tmp/trivial-out 2> /tmp/marks.txt
           rc=$?
           set -e
           # The driver brackets each libtcc call with a marker on stderr, so
