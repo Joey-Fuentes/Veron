@@ -694,8 +694,20 @@ jobs:
               while read -r f; do cat "/in/mescc/$f"; done < "/in/$o-srcs.txt"
             } > "$o.c" || { echo "    $o: could not assemble sources"; return 1; }
             ./stage2 < "$o.c" > "$o.s1" || { echo "    $o: stage2 rc=$?"; return 1; }
-            ./stage1 < "$o.s1" | ./stage0-as | ./elf "$o" || return 1
+            # THE PIPELINE USED TO SWALLOW stage 1's VERDICT.
+            #
+            # `./stage1 | ./stage0-as | ./elf $o` takes its exit status from
+            # elf, which happily emits a 120-byte ELF from an empty stream. So
+            # stage 1 refusing on unresolved labels and stage 1 succeeding both
+            # ended with `[ -x "$o" ]` true, and the log reported
+            # `hex2 (ours) 120` as though it had built. Split the stages so each
+            # is checked, and floor the size, because a linker is not 120 bytes.
+            ./stage1 < "$o.s1" > "$o.s0" \
+              || { echo "    $o: stage 1 refused -- unresolved labels"; return 1; }
+            ./stage0-as < "$o.s0" | ./elf "$o" || return 1
             [ -x "$o" ] || return 1
+            sz=$(wc -c < "$o")
+            [ "$sz" -gt 4096 ] || { echo "    $o: $sz bytes -- a stub, not a build"; return 1; }
             art "  $o (ours)" "$o"
           }
           set +e
