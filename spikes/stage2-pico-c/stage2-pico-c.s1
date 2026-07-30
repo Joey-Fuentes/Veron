@@ -291,9 +291,18 @@ b flf_ckd
 adr x3 sbrk
 bl nameq
 cmp x0 0
-b.eq flf_ckd
+b.eq flf_ckg
 mov x0 1
 adr x3 udef_brk
+str x0 x3
+b flf_ckd
+:flf_ckg
+adr x3 schmod
+bl nameq
+cmp x0 0
+b.eq flf_ckd
+mov x0 1
+adr x3 udef_chmod
 str x0 x3
 :flf_ckd
 mov x1 61440
@@ -2844,9 +2853,18 @@ b cc_after
 adr x3 sbrk
 bl nameq
 cmp x0 0
-b.eq cc_after
+b.eq ccu_ckg
 mov x0 1
 adr x3 used_brk
+str x0 x3
+b cc_after
+:ccu_ckg
+adr x3 schmod
+bl nameq
+cmp x0 0
+b.eq cc_after
+mov x0 1
+adr x3 used_chmod
 str x0 x3
 b cc_after
 :cc_blr
@@ -5315,12 +5333,23 @@ bl emitstr
 adr x3 used_brk
 ldr x0 x3
 cmp x0 0
-b.eq ert_done
+b.eq ert_chmod
 adr x3 udef_brk
 ldr x0 x3
 cmp x0 0
-b.ne ert_done
+b.ne ert_chmod
 adr x9 sbrk_rt
+bl emitstr
+:ert_chmod
+adr x3 used_chmod
+ldr x0 x3
+cmp x0 0
+b.eq ert_done
+adr x3 udef_chmod
+ldr x0 x3
+cmp x0 0
+b.ne ert_done
+adr x9 schmod_rt
 bl emitstr
 :ert_done
 sub x28 x28 8
@@ -5606,8 +5635,29 @@ b ps_l
 .byte 0
 .byte 0
 .byte 0
+:used_chmod
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+:udef_chmod
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
+.byte 0
 :sbrk
 .ascii "brk"
+.byte 0
+:schmod
+.ascii "chmod"
 .byte 0
 :scalloc
 .ascii "calloc"
@@ -5653,6 +5703,9 @@ b ps_l
 .byte 0
 :sbrk_rt
 .ascii ":brk\nsub x9 x9 8\nldr x0 x9\nmov x8 214\nsvc\nstr x0 x9\nadd x9 x9 8\nret\n"
+.byte 0
+:schmod_rt
+.ascii ":chmod\nsub x9 x9 8\nldr x2 x9\nsub x9 x9 8\nldr x1 x9\nmov x0 0\nsub x0 x0 100\nmov x3 0\nmov x8 53\nsvc\nstr x0 x9\nadd x9 x9 8\nret\n"
 .byte 0
 :smovkx0
 .ascii "movk x0 "

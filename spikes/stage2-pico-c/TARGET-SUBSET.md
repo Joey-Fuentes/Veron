@@ -21,6 +21,24 @@ toward, grounded in the actual upstream source rather than guesswork.
 > numbers and argument order (m53 for five, m69 for `brk`). Every other file of
 > the upstream `-f` list is compiled **unpatched**. See §6 item 12.
 >
+> **A seventh builtin, `chmod`, landed for hex2.** `M2libc/aarch64/linux/sys/stat.c`
+> writes it as an `asm()` body too, so it cannot be compiled here either, and
+> unlike the six above there was no builtin to meet it — `hex2.c:196` calls it to
+> make its own output executable. Encoded exactly as M2libc does: aarch64 has no
+> `chmod` syscall, so it is `fchmodat(AT_FDCWD, path, mode, 0)`, number 53, using
+> the same `-100` dance `open` already uses for `openat`.
+
+**Correction (object-like `#define`).** The preprocessor note below claims
+support for "simple object-like `#define` constants". That has never been true:
+`nt_hash` skips a `#` line to end-of-line and nothing else happens, so
+`#define ANSWER 42` compiles clean and leaves `ANSWER` for stage 1 to fail on.
+It went unnoticed because M2-Planet uses `#define` exactly once in its whole
+source — `#define CC_H`, a bare guard — and expresses every constant as an
+`enum`, and because the 426-row corpus contains no `#define` at all. hex2 is the
+first thing in this ladder to need one; the constants are rewritten as enums in
+the airlock by `tools/defines_to_enums.py` rather than by teaching this compiler
+a second mechanism for something its enum table already expresses.
+>
 > What is **not** done: the emitted `.M1` is not yet driven through M1/hex2 into
 > an executable. That is `spikes/borrow-m2/`'s half of the chain, already green
 > on its own, and joining the two is the next rung. Until that join exists, "M2-
