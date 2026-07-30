@@ -1025,6 +1025,55 @@ jobs:
           probe "macro arg expansion" '#define A 2
           #define N 1234 + A
           int printf(const char*,...); void f(void){ printf("%d\n", N); }'
+
+          # IS IT EVEN DETERMINISTIC?
+          #
+          # The probes above disagree with each other in a way no construct
+          # explains: a plain "hi" signals while "hi\n" exits 0, and
+          # printf("x") with no escape at all signals. That is the signature of
+          # a LAYOUT-DEPENDENT fault -- memory corrupted on every run, fatal
+          # only when it lands on an unmapped page.
+          #
+          # It fits everything else, too. This binary crashes here and runs to
+          # completion under qemu-user, which has no ASLR; native Linux
+          # randomises the heap and stack on every exec. So the same executable
+          # is deterministic there and a coin flip here.
+          #
+          # Ten runs of ONE input settles it. Varying counts mean the bug is
+          # always present and only sometimes visible, and every reduction done
+          # by comparing single runs -- several rounds of them -- was reading
+          # noise. A constant count means it is deterministic and the probes
+          # above are telling the truth.
+          echo "  --- the same input, ten times ---"
+          printf 'int printf(const char*,...); void f(void){ printf("x"); }\n' > /tmp/d.c
+          sig=0; ok=0
+          n=0
+          while [ $n -lt 10 ]; do
+            ./../mc-tcc-bin -I. -Iinclude -c /tmp/d.c -o /tmp/d.o > /dev/null 2>&1
+            rc=$?
+            if [ "$rc" -gt 128 ]; then sig=$((sig + 1)); else ok=$((ok + 1)); fi
+            n=$((n + 1))
+          done
+          echo "    signalled $sig / 10,  completed $ok / 10"
+          if [ "$sig" -gt 0 ] && [ "$ok" -gt 0 ]; then
+            echo "    NON-DETERMINISTIC -- the fault is layout-dependent."
+            echo "    Single-run comparisons cannot reduce it; count runs."
+          fi
+
+          # AND THE SAME INPUT WITH RANDOMISATION OFF.
+          #
+          # setarch -R fixes the layout, which is what qemu-user gives by
+          # accident. If it stops signalling under -R, that is the divergence
+          # explained outright and reductions can be done under -R natively.
+          echo "  --- ten more, with ASLR disabled ---"
+          sig=0; ok=0; n=0
+          while [ $n -lt 10 ]; do
+            setarch -R ./../mc-tcc-bin -I. -Iinclude -c /tmp/d.c -o /tmp/d.o > /dev/null 2>&1
+            rc=$?
+            if [ "$rc" -gt 128 ]; then sig=$((sig + 1)); else ok=$((ok + 1)); fi
+            n=$((n + 1))
+          done
+          echo "    signalled $sig / 10,  completed $ok / 10  (setarch -R)"
       - name: 'SUBJECT: what micro-c EMITS for &global[i] vs &local[i]'
         if: always()
         continue-on-error: true
