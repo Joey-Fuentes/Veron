@@ -1,0 +1,184 @@
+A global scalar loads at its own width -- and an array sized by its
+initialiser must say that it is an array.
+
+TWO CHANGES, because the first cannot be made safely without the second.
+
+1. THE LOAD. primary_expr_variable defaulted `size` to register_size for
+anything that is not a local or an argument. The STORE already used the type's
+width, so for a global scalar the two disagreed:
+
+    str_w0,[x1]      g = -3   four bytes
+    ldr_x0,[x0]      read g   EIGHT bytes
+
+The eight-byte read takes g and the four bytes after it. A positive value
+survives because the neighbours are zero -- which is why every global test
+written with positive values passed, and why this site was examined and cleared
+twice before -- and a negative one does not: -3 stores as 0xFFFFFFFD and reads
+back as 0x????????FFFFFFFD.
+
+    int g;
+    int main(void){ g = 0 - 3; if(g != 0 - 3) return 1; return 0; }
+    gcc 0, micro-c 1
+
+WHAT IT COST. tcc compares `tok != TOK_EOF`, and TOK_EOF is (-1). The
+comparison failed, so tcc_error("...") fired at tccpp.c, pp_expr was left set
+at 256 instead of being reset on the next line, and error1 routed every
+diagnostic to pp_error -- the handler for preprocessor EXPRESSION errors, in a
+file with no directives at all. pp_error then rewinds and lexes to TOK_EOF:
+
+    while (next(), tok != TOK_EOF)
+
+which is the same comparison, so it never terminated. 5,316,311 iterations,
+with vsnprintf at 74% of the trace because it is the most expensive thing
+inside the loop. The tcc micro-c builds hung instead of compiling.
+
+2. THE DISCRIMINATOR, which is why 1 took three attempts. register_size is
+CORRECT for a global array, whose symbol is a pointer CELL rather than the
+storage, so the narrowing must apply to scalars only. array_modifier could not
+tell them apart:
+
+    int g               armod=0    scalar
+    char m[] = "hello"  armod=0    array   <- indistinguishable
+    int a[3]            armod=3    array
+
+global_static_array returned the DECLARED size, and an array sized by its
+initialiser has none. The length was already known -- `ai`, the byte count the
+string branch pads from -- it was simply not recorded. It is now, so `char m[]
+= "hello"` records 6 and the symbol can say what it is.
+
+That is a correctness fix in its own right: any site asking array_modifier to
+separate an array from a scalar got the wrong answer for exactly the form C
+sizes from its initialiser.
+
+MEASURED: difftest stays 84/85 -- no regression -- negative globals, global
+char arrays, global int arrays and global pointers all match gcc. mc-tcc STOPS
+HANGING: `-c` returns 1 rather than timing out, and the freestanding hello
+world it builds runs and prints "hello, world".
+
+STILL BROKEN: tcc now reports `<command line>:53: error: struct/union/enum
+already defined`, which is a real error to chase rather than a hang hiding one.
+14-function-pointer-member still faults.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -1112,20 +1112,20 @@ void emit_va_arg_intrinsic(void)
+ 	 * The READ above is at the type's width and that is right. The STRIDE is
+ 	 * not: every variadic argument occupies a full register-width slot on
+ 	 * this ABI, whatever its declared type, so advancing by sizeof(ty) lands
+-	 * mid-slot for anything narrower and desynchronises every argument after
+-	 * it.
++	 * mid-slot for anything narrower.
+ 	 *
+ 	 * While `int` was eight bytes this was invisible -- int, long and every
+-	 * pointer were all register-width. At four bytes the first %d corrupts
+-	 * the rest:
++	 * pointer were all register-width, and the only narrower types anyone
++	 * passed variadically were promoted anyway. At four bytes the first %d
++	 * desynchronises everything after it:
+ 	 *
+-	 *     snprintf(b, 64, "%d %d", 1, 2)          returned 12, glibc 3
+-	 *     snprintf(b, 64, "%s%d%s", "a", 2, "c")  SIGSEGV, glibc 3
+-	 *     snprintf(b, 64, "%s%s%s", ...)          correct -- char* is 8 bytes
++	 *     snprintf(b, 64, "%d %d", 1, 2)     returns 12, glibc returns 3
++	 *     snprintf(b, 64, "%s%d%s", ...)     SIGSEGV -- third arg is garbage
++	 *     snprintf(b, 64, "%s%s%s", ...)     correct, char* is register-width
+ 	 *
+-	 * tcc's pp_error formats "%s:%d: ..." so every diagnostic came out
+-	 * corrupt, and the garbage sent cstr_vprintf into a loop that never
+-	 * terminated.
++	 * tcc's pp_error formats "%s:%d: ..." and every diagnostic it tried to
++	 * print came out corrupt, which is what sent cstr_vprintf into a loop and
++	 * hung the compiler.
+ 	 *
+ 	 * A type WIDER than a register keeps its own size, so a struct passed by
+ 	 * value still advances by its own width. */
+@@ -1616,11 +1616,34 @@ void primary_expr_variable(void)
+ 
+ 	if(!is_assignment && !is_compound_operator && !is_local_array)
+ 	{
++		/* A GLOBAL SCALAR IS ITS OWN STORAGE, SO IT LOADS AT ITS OWN WIDTH.
++		 *
++		 * register_size is right for a global ARRAY, whose symbol is a
++		 * pointer CELL -- this load does double duty fetching it, as the note
++		 * below describes. It is wrong for a global scalar, whose symbol IS
++		 * the value, and the STORE already used the type's width:
++		 *
++		 *     str_w0,[x1]      g = -3   four bytes
++		 *     ldr_x0,[x0]      read g   EIGHT bytes
++		 *
++		 * The eight-byte read takes g and the four bytes after it. A positive
++		 * value survives because the neighbours are zero -- which is why every
++		 * global test written with positive values passed, twice -- and a
++		 * negative one does not: -3 stores as 0xFFFFFFFD and reads back as
++		 * 0x????????FFFFFFFD.
++		 *
++		 * tcc compares `tok != TOK_EOF` and TOK_EOF is (-1), so the
++		 * comparison failed, tcc_error("...") fired, pp_expr was left set, and
++		 * pp_error's `while (next(), tok != TOK_EOF)` ran 5,316,311 times. */
+ 		int size = register_size;
+ 		if(options == TLO_LOCAL || options == TLO_ARGUMENT)
+ 		{
+ 			size = current_target->size;
+ 		}
++		else if(0 == type->array_modifier)
++		{
++			size = current_target->size;
++		}
+ 		/* A STRUCT IS NOT LOADED EITHER. Same rule as the dereference sites
+ 		 * and member access: a struct is used by ADDRESS. Without this,
+ 		 * `vtop[0] = tmp` with a local struct tmp tried load_value(16) --
+@@ -2825,21 +2848,14 @@ void postfix_expr(void)
+ 	 * The two branches below differ only in whether current_target is stepped
+ 	 * before or after the load, which decides whether the load reads the
+ 	 * POINTER or the object it points at. `*p = v` takes the second, correct
+-	 * one -- its comment says "Load the POINTER (this level's width)" -- and
+-	 * `--*p` took the first, because the test only asked whether the next
+-	 * token was `=`.
++	 * one -- its comment says so -- and `--*p` took the first, because the
++	 * test only looked for an `=`.
+ 	 *
+ 	 * While every type was register-width both widths were eight and the
+-	 * branches were interchangeable. At four bytes `--*p` loads an eight-byte
+-	 * pointer with a four-byte ldrsw and increments through the truncated
+-	 * address:
+-	 *
+-	 *     int=8:  ldr_x0,[x0]      reads p, 8 bytes
+-	 *     int=4:  ldrsw_x0,[x0]    reads p, 4 bytes
+-	 *
+-	 * dynarray_reset's loop is `for (p = *pp; *n; ++p, --*n)`, so the tcc
+-	 * micro-c built segfaulted before it had parsed anything -- even
+-	 * --version died.
++	 * branches were interchangeable. At four bytes `--*p` loaded an
++	 * eight-byte pointer with a four-byte ldrsw and incremented through the
++	 * truncated address. dynarray_reset's `--*n` is that line, so tcc
++	 * segfaulted before it had parsed anything -- even --version died.
+ 	 *
+ 	 * prefix_lvalue_target is already set by the prefix handler for exactly
+ 	 * this purpose and is still standing here: the member sites at 2051 and
+@@ -6375,8 +6391,24 @@ int global_static_array(struct type* type_size, char* name)
+ 			 * exactly `ai` bytes: one leading quote in acc, replaced by the
+ 			 * terminator M1 appends. */
+ 			global_pad_to_register_size(ai);
+-			/* The caller consumes the ';'. array_modifier stays as parsed --
+-			 * the declared size, if any -- so `char x[8] = "hi"` keeps its 8. */
++			/* AN ARRAY SIZED BY ITS INITIALISER MUST STILL SAY IT IS AN ARRAY.
++			 *
++			 * `char x[8] = "hi"` keeps its declared 8. `char x[] = "hi"` had
++			 * nothing declared, so this returned 0 -- and 0 is what a plain
++			 * scalar records too, leaving the symbol unable to say which it
++			 * is. Every site that asks `array_modifier` to separate an array
++			 * from a scalar therefore got the wrong answer for exactly the
++			 * form C sizes from the initialiser.
++			 *
++			 * The length is already known: ai is the byte count this branch
++			 * just padded from, one leading quote in acc standing in for the
++			 * terminator M1 appends. That is the C size of the array. */
++			if(0 == array_modifier)
++			{
++				array_modifier = ai / type_size->size;
++				if(array_modifier < 1) array_modifier = 1;
++			}
++			/* The caller consumes the ';'. */
+ 			return array_modifier;
+ 		}
+ 
