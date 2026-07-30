@@ -381,6 +381,31 @@ jobs:
           # The tool REFUSES function-like or non-integer macros rather than
           # guessing, so if upstream adds one this stops instead of quietly
           # putting a wrong constant into a linker.
+          # M1's STRING BUFFER, RAISED BEFORE ANYTHING READS THE SOURCE.
+          #
+          # tcc's keyword table is ONE string literal -- if\0else\0while\0...
+          # through every attribute name -- and micro-c emits it as a single
+          # 19,571-character line in the .M1. M1's max_string is 4096, so it
+          # stops with
+          #
+          #     tcc-all.M1:363852 :String: '...' exceeds max string size
+          #
+          # after micro-c had already compiled all 369,946 lines of libtcc.M1.
+          # spikes/stage3/tools/local-build.sh has carried this substitution and
+          # its comment ("TRAP 2") since long before this job existed; the
+          # hermetic path simply never did it.
+          #
+          # Assert the literal before substituting, so an upstream change reads
+          # as a pin failure here rather than as a truncation that looks like a
+          # codegen bug three rungs later.
+          grep -q 'max_string = 4096,' pins/mescc/M1-macro.c \
+            || { echo "FAIL: M1-macro.c no longer contains 'max_string = 4096,'";
+                 grep -n 'max_string' pins/mescc/M1-macro.c; exit 1; }
+          sed -i 's/max_string = 4096,/max_string = 262144,/' pins/mescc/M1-macro.c
+          grep -q 'max_string = 262144,' pins/mescc/M1-macro.c \
+            || { echo "FAIL: the substitution did not take"; exit 1; }
+          echo "  M1 max_string raised to 262144 (tcc's keyword table is 19,571 chars)"
+
           # OCTAL FIRST, THEN THE DEFINES. THE ORDER IS LOAD-BEARING.
           #
           # stage 2 does not implement octal: parseval checks for a leading
