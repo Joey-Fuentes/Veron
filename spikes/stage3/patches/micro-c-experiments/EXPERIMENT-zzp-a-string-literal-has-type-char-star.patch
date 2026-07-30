@@ -1,0 +1,132 @@
+A string literal has a type, and it is `char*`.
+
+primary_expr_string emitted the address and left current_target alone -- the
+same omission the integer literal had before the note above it was written. A
+literal therefore inherited whatever type the previous expression happened to
+leave, and indexing one used the DEFAULT element size, eight:
+
+    "abc"[1]     mov_x14,8 / mul_x0,x14,x0 / ldr_x0,[x0]
+    g[1]         add_x0,x1,x0             / ldrsb_x0,[x0]
+
+for the same access through a char* variable. The index scaled by eight and
+eight bytes were loaded instead of one.
+
+WHAT IT COST. tcc walks every one of its path lists with
+
+    for (p = in; c = *p, c != '\0' && c != PATHSEP[0]; ++p)
+
+and PATHSEP is ":". PATHSEP[0] read eight bytes of the wrong place, so the
+separator was never recognised and tcc_split_path returned the entire
+colon-separated list as a SINGLE path:
+
+    tcc: error: library 'c' not found
+            tried: /usr/lib/aarch64-linux-gnu:/usr/lib:/lib:...:/usr/local/lib/c
+
+The crt search escaped it only because CRTPREFIX is one path with no separator
+in it. Every list-valued path -- libraries, system includes -- was broken.
+
+HOW IT WAS FOUND, because the method is the point. The log had said
+"library 'c' not found" for several rounds and no more, and rounds were spent
+reasoning about multiarch triplets and configure flags. tcc-debug/0004 made the
+error print the candidate it actually opened; the very next run showed the
+whole list concatenated with "/c" on the end, and there was nothing left to
+deduce. Every time this spike made the program SAY something it was solved in
+one round; every time it was reasoned about instead, it took four.
+
+`char` was the one primitive built and then dropped -- every other type
+anything asks about is held in a global -- so there was no type to name here
+even had the omission been noticed. It is now kept as `character`.
+
+MEASURED
+
+    difftest      70 pass / 0 fail / 1 known gap, both architectures
+    corpus        423 of 426 on aarch64
+    vocabulary    clean on five architectures
+    emission      "abc"[1] now identical to g[1] on a char* variable
+
+KNOWN GAP, deliberately left: `*"abc"` -- dereferencing a literal rather than
+indexing it -- is rejected outright as "is not a defined symbol". A separate
+hole in primary_expr_variable's star handling; tcc does not use the form.
+
+diff --git a/cc_core.c b/cc_core.c
+index e20da61..e535e8e 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -899,6 +899,33 @@ void primary_expr_string(void)
+ 	char* unique_id = add_string_to_string_list(s);
+ 
+ 	emit_load_named_immediate(REGISTER_ZERO, "", unique_id, "primary expr string");
++
++	/* A STRING LITERAL HAS A TYPE, AND IT IS `char*`.
++	 *
++	 * This left current_target alone, exactly as the integer literal did
++	 * before the note below was written, so a literal inherited whatever type
++	 * the previous expression happened to leave. Indexing one therefore used
++	 * the DEFAULT element size -- eight -- and emitted
++	 *
++	 *     "abc"[1]     mov_x14,8 / mul_x0,x14,x0 / ldr_x0,[x0]
++	 *     g[1]         add_x0,x1,x0             / ldrsb_x0,[x0]
++	 *
++	 * for the same access through a char* variable: the index scaled by eight
++	 * and eight bytes loaded instead of one.
++	 *
++	 * tcc walks its path lists with
++	 *
++	 *     for (p = in; c = *p, c != '\0' && c != PATHSEP[0]; ++p)
++	 *
++	 * where PATHSEP is ":". PATHSEP[0] read eight bytes of the wrong place, so
++	 * the separator was never recognised and tcc_split_path returned the whole
++	 * colon-separated list as ONE path:
++	 *
++	 *     tried: /usr/lib/aarch64-linux-gnu:/usr/lib:/lib:...:/usr/local/lib/c
++	 *
++	 * The crt search survived only because CRTPREFIX is a single path with no
++	 * separator in it. */
++	current_target = character->indirect;
+ }
+ 
+ void primary_expr_char(void)
+diff --git a/cc_globals.c b/cc_globals.c
+index 3367bca..363fc35 100644
+--- a/cc_globals.c
++++ b/cc_globals.c
+@@ -51,6 +51,7 @@ char* return_instruction;
+ int MAX_STRING;
+ struct type* integer;
+ struct type* unsigned_integer;
++struct type* character;
+ struct type* signed_char;
+ struct type* unsigned_char;
+ struct type* signed_short;
+diff --git a/cc_globals.h b/cc_globals.h
+index 62031cc..15a28d8 100644
+--- a/cc_globals.h
++++ b/cc_globals.h
+@@ -54,6 +54,7 @@ extern int MAX_STRING;
+ /* Primitive types required for multi token types */
+ extern struct type* integer;
+ extern struct type* unsigned_integer;
++extern struct type* character;
+ extern struct type* signed_char;
+ extern struct type* unsigned_char;
+ extern struct type* signed_short;
+diff --git a/cc_types.c b/cc_types.c
+index dc37d4c..b62207e 100644
+--- a/cc_types.c
++++ b/cc_types.c
+@@ -148,9 +148,12 @@ void initialize_types(void)
+ 	hold = new_primitive("int8_t", "int8_t*", "int8_t**", 1, TRUE);
+ 	prim_types = add_primitive(hold);
+ 
+-	/* Define char */
+-	hold = new_primitive("char", "char*", "char**", 1, TRUE);
+-	prim_types = add_primitive(hold);
++	/* Define char -- KEPT, because a string literal needs its pointer type.
++	 * Every other primitive that anything asks about is held in a global;
++	 * `char` was the one built and dropped, so primary_expr_string had
++	 * nothing to name and left current_target alone. */
++	character = new_primitive("char", "char*", "char**", 1, TRUE);
++	prim_types = add_primitive(character);
+ 
+ 	/* Define signed char */
+ 	signed_char = new_primitive("signed char", "signed char*", "signed char**", 1, TRUE);
