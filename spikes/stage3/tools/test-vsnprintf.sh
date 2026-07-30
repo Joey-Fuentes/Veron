@@ -155,6 +155,39 @@ int main(void)
       checks++;
       if (strlen(t) > 7) { fails++; printf("  FAIL truncation overran: [%s]\n", t); } }
 
+    /* AND THE RETURN VALUE ON TRUNCATION, which nothing here checked.
+     *
+     * Every check above compares OUTPUT. The return was never read, so
+     * M2libc returning the bytes WRITTEN rather than the bytes WANTED passed
+     * all 51 of them -- and made every grow-and-retry caller believe its
+     * string fit:
+     *
+     *     len = vsnprintf(buf, size, fmt, ap);
+     *     if (len >= size) { grow; retry; }        tccpp.c cstr_vprintf
+     *
+     * The property that matters to such a caller is `len >= size` when the
+     * text did not fit, and an exact count when it did. M2libc reports the
+     * limit rather than the true would-be length -- see patches/m2libc/0009
+     * -- so the truncated case is checked as a bound, not an equality. */
+    { char t[8]; char g[8]; int rm; int rg;
+      rm = m2_snprintf(t, 4, "hello");
+      rg = snprintf(g, 4, "hello");
+      checks++;
+      if (rm < 4) { fails++; printf("  FAIL truncated return %d, want >= 4 (glibc %d)\n", rm, rg); }
+      checks++;
+      if (strcmp(t, "hel")) { fails++; printf("  FAIL truncated text [%s] want [hel]\n", t); }
+
+      rm = m2_snprintf(t, 8, "hello");
+      rg = snprintf(g, 8, "hello");
+      checks++;
+      if (rm != rg) { fails++; printf("  FAIL exact return %d, glibc %d\n", rm, rg); }
+
+      rm = m2_snprintf(t, 6, "%s-%d", "abcdef", 12345);
+      checks++;
+      if (rm < 6) { fails++; printf("  FAIL truncated-in-spec return %d, want >= 6\n", rm); }
+      checks++;
+      if (strlen(t) > 5) { fails++; printf("  FAIL truncated-in-spec overran [%s]\n", t); } }
+
     printf("\n%s: %d checks, %d failures\n", fails ? "FAIL" : "PASS", checks, fails);
     return fails ? 1 : 0;
 }

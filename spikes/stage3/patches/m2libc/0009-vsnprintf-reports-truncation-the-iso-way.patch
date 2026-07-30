@@ -1,0 +1,80 @@
+vsnprintf must report truncation the way ISO callers read it.
+
+    snprintf(buf, 4, "hello")
+        glibc:   returns 5   -- what it WOULD have written
+        M2libc:  returns 3   -- what it DID write
+
+C says the return is the length the call would have produced, ignoring the
+limit. Every grow-and-retry caller is written against that:
+
+    len = vsnprintf(buf, size, fmt, ap);
+    if (len >= size) { grow to len + 1; retry; }        tccpp.c cstr_vprintf
+
+With the written count returned, len is never >= size, so the caller believes
+every string fit and takes a truncated message as complete.
+
+WHY IT SURVIVED 0007. That patch rewrote this function's conversion parsing and
+kept the existing return deliberately -- its header says "Resume contract
+unchanged" -- because M2libc's own vfprintf uses this function as a CHUNKING
+engine and accumulated the return as the size of each chunk. Two callers, two
+contracts, and the in-tree one was the only one checked. The 51 checks added
+with 0007 compare formatted OUTPUT against glibc and not one of them reads the
+return value on truncation, which is exactly why this got through.
+
+WHAT CHANGES. The two truncation exits return n -- at or above the limit, which
+is what "truncated" has to look like -- and vfprintf accumulates strlen of the
+buffer it is about to write rather than the return value, which is what it
+actually wanted all along. The resume protocol via __vsnprintf_string_offset
+and __vsnprintf_ap is untouched, so the chunking still works.
+
+NOT FULLY ISO. A truncated call returns n rather than the exact would-be
+length: this function stops at the truncation point by design so the caller can
+resume, and computing the true total would mean parsing the rest of the format
+twice. Grow-and-retry callers are correct because they only compare against the
+limit; a caller doing `p += snprintf(...)` past the end would not be. That is
+recorded here rather than left to be discovered.
+
+MEASURED: the existing 51 checks still pass, and the new truncation checks in
+test-vsnprintf.sh fail before this patch and pass after.
+
+--- a/stdio.c
++++ b/stdio.c
+@@ -611,7 +611,12 @@ int vsnprintf(char* s, size_t n, const char* format, va_list arg)
+ 				__vsnprintf_string_offset = i;
+ 				__vsnprintf_ap = arg;
+ 				s[output] = '\0';
+-				return output;
++				/* TRUNCATED: SAY SO THE WAY ISO CALLERS READ IT. See the note
++				 * above vfprintf. Returning the bytes WRITTEN makes
++				 *     len = vsnprintf(buf, size, ...);
++				 *     if (len >= size) { grow; retry; }
++				 * believe every string fit. */
++				return n;
+ 			}
+ 			s[output] = format[i];
+ 			output = output + 1;
+@@ -866,7 +871,8 @@ int vsnprintf(char* s, size_t n, const char* format, va_list arg)
+ 			__vsnprintf_string_offset = spec_start;
+ 			__vsnprintf_ap = ap_save;
+ 			s[output] = '\0';
+-			return output;
++			/* TRUNCATED -- same reason as the site above. */
++			return n;
+ 		}
+ 
+ 		if(!flag_minus && !flag_zero)
+@@ -952,7 +958,13 @@ int vfprintf(FILE* stream, char* format, va_list arg)
+ 
+ 	do
+ 	{
+-		output += vsnprintf(printf_buf, PRINTF_BUFFER_SIZE, format, ap);
++		/* WHAT WAS WRITTEN, NOT WHAT WAS RETURNED.
++		 *
++		 * vsnprintf's return now reports TRUNCATION for ISO callers, so it is
++		 * no longer the size of this chunk. This loop wants the bytes it is
++		 * about to hand to fputs, which is exactly strlen of the buffer. */
++		vsnprintf(printf_buf, PRINTF_BUFFER_SIZE, format, ap);
++		output += strlen(printf_buf);
+ 		format += __vsnprintf_string_offset;
+ 		ap = __vsnprintf_ap;
+ 		fputs(printf_buf, stream);
