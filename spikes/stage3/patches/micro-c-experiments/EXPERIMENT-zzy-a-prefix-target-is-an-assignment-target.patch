@@ -2,10 +2,10 @@ A prefix ++/-- target is an assignment target.
 
 postfix_expr's deferred dereference loop carries BOTH orderings:
 
-    if(!assigning) { current_target = current_target->type;   /* step */
+    if(!assigning) { current_target = current_target->type;   /* step  */
                      load at current_target->size; }          /* pointed-to width */
     else           { load at current_target->size;            /* POINTER width */
-                     current_target = current_target->type; } /* step */
+                     current_target = current_target->type; } /* step  */
 
 The second is correct for a destination -- its own comment says "Load the
 POINTER (this level's width)" -- and `--*p` took the first, because the test
@@ -25,59 +25,23 @@ prefix_lvalue_target is already set by the prefix handler for exactly this
 purpose and is still standing at this point: the member sites at 2051 and 2270
 consume it, and `--*p` reaches neither.
 
-HOW IT WAS FOUND. Two structural hypotheses failed first -- one of them
-regressed cases 17, 23 and 28 and was reverted. What settled it was tagging all
-22 load_value call sites with markers, compiling `--*p`, and reading which
-marker came out. That is the same lesson as zzx: measure which code runs,
-do not reason about which code should run. This file has FIVE near-duplicate
-copies of this dereference rule and its own comments count them off; reading
-them is how both wrong hypotheses were formed.
+HOW IT WAS FOUND. Two structural hypotheses failed first; one regressed cases
+17, 23 and 28 and was reverted. What settled it was tagging all 22 load_value
+call sites with markers, compiling `--*p`, and reading which marker came out.
+Same lesson as zzx: measure which code RUNS rather than reason about which code
+should. This file has five near-duplicate copies of this dereference rule and
+its own comments count them off; reading them is how both wrong hypotheses were
+formed.
 
-MEASURED: difftest stays 84/85 -- no regression -- and mc-tcc stops crashing at
-startup. `--version` returns 0 where it segfaulted before.
+MEASURED: difftest stays 84/85 -- no regression -- `--*p` and `++*p` pass, and
+mc-tcc stops crashing at startup: `--version` returns 0 where it segfaulted.
 
 STILL BROKEN: `(*p)--`, the parenthesised postfix form, takes a different path
-and still faults. 14-function-pointer-member still faults. mc-tcc has not been
-run through the twelve programs yet.
+and still faults. 14-function-pointer-member still faults.
 
 --- a/cc_core.c
 +++ b/cc_core.c
-@@ -2096,7 +2096,33 @@ void postfix_expr_inc_or_dec(void)
- 	emit_push(REGISTER_ONE, "Old register one value");
- 
- 	emit_push(REGISTER_ZERO, "Address of variable");
--	emit_dereference(REGISTER_ZERO, "Get value");
-+	/* AT THE VARIABLE'S WIDTH, NOT THE REGISTER'S.
-+	 *
-+	 * emit_dereference always loads a full register. While `int` was eight
-+	 * bytes that was the same thing; at four it reads the variable AND the
-+	 * four bytes after it. In dynarray_add,
-+	 *
-+	 *     pp[nb++] = data;
-+	 *
-+	 * nb is 1 and the next slot holds the high half of a stack pointer, so
-+	 * the postfix read produced
-+	 *
-+	 *     X00=0000400000000001
-+	 *
-+	 * -- the right value with an address welded to its top -- and the
-+	 * store that followed went through a wild pointer. tcc segfaulted
-+	 * before it had parsed anything; even --version died.
-+	 *
-+	 * load_value is what every other read already uses, and it takes the
-+	 * width and the signedness from the type. */
-+	if(NULL != current_target && register_size >= current_target->size)
-+	{
-+		emit_out(load_value(current_target->size, current_target->is_signed));
-+	}
-+	else
-+	{
-+		emit_dereference(REGISTER_ZERO, "Get value");
-+	}
- 
- 	/* We need the address to be at the top of the stack and the value to be below it */
- 	emit_pop(REGISTER_ONE, "Address of variable");
-@@ -2767,7 +2793,25 @@ void postfix_expr(void)
+@@ -2793,7 +2793,32 @@ void postfix_expr(void)
  	 * register. Loading anyway emitted ldrb -- one byte of an eight-byte
  	 * pointer -- and stored through the truncated result. Step the type down
  	 * either way, because the store width comes from it. */
@@ -87,14 +51,21 @@ run through the twelve programs yet.
 +	 * The two branches below differ only in whether current_target is stepped
 +	 * before or after the load, which decides whether the load reads the
 +	 * POINTER or the object it points at. `*p = v` takes the second, correct
-+	 * one -- its comment says so -- and `--*p` took the first, because the
-+	 * test only looked for an `=`.
++	 * one -- its comment says "Load the POINTER (this level's width)" -- and
++	 * `--*p` took the first, because the test only asked whether the next
++	 * token was `=`.
 +	 *
 +	 * While every type was register-width both widths were eight and the
-+	 * branches were interchangeable. At four bytes `--*p` loaded an
-+	 * eight-byte pointer with a four-byte ldrsw and incremented through the
-+	 * truncated address. dynarray_reset's `--*n` is that line, so tcc
-+	 * segfaulted before it had parsed anything -- even --version died.
++	 * branches were interchangeable. At four bytes `--*p` loads an eight-byte
++	 * pointer with a four-byte ldrsw and increments through the truncated
++	 * address:
++	 *
++	 *     int=8:  ldr_x0,[x0]      reads p, 8 bytes
++	 *     int=4:  ldrsw_x0,[x0]    reads p, 4 bytes
++	 *
++	 * dynarray_reset's loop is `for (p = *pp; *n; ++p, --*n)`, so the tcc
++	 * micro-c built segfaulted before it had parsed anything -- even
++	 * --version died.
 +	 *
 +	 * prefix_lvalue_target is already set by the prefix handler for exactly
 +	 * this purpose and is still standing here: the member sites at 2051 and
@@ -104,21 +75,3 @@ run through the twelve programs yet.
  	int fp_nd;
  	while(num_dereference_after_postfix > 0)
  	{
-@@ -3438,7 +3482,16 @@ void primary_expr(void)
- 		emit_push(REGISTER_ONE, "Previous value");
- 		emit_push(REGISTER_ZERO, "Address of variable");
- 
--		emit_dereference(REGISTER_ZERO, "Deref to get value");
-+		/* Same as the postfix site above: the prefix operators read the
-+		 * variable at its own width, not at the register's. */
-+		if(NULL != current_target && register_size >= current_target->size)
-+		{
-+			emit_out(load_value(current_target->size, current_target->is_signed));
-+		}
-+		else
-+		{
-+			emit_dereference(REGISTER_ZERO, "Deref to get value");
-+		}
- 
- 		int value = 1;
- 		if(type_is_pointer(current_target))
