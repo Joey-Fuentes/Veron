@@ -1,0 +1,83 @@
+An intermediate arrow after a DOT still has to load the pointer.
+
+THE ELEVENTH INSTANCE OF ONE RULE WITH TWO IMPLEMENTATIONS, AND THE RULE WAS
+ALREADY WRITTEN DOWN IN THE SIBLING FUNCTION.
+
+EXPERIMENT-zzr taught `chain_continues` to postfix_expr_arrow:
+
+    if(... && (TRUE != Address_of || chain_continues))
+        emit_out(load_value(...));
+
+postfix_expr_dot has the same decision to make and makes it unconditionally:
+
+    if(TRUE == Address_of) return;
+
+`.` and `[` return above it on their own, so the only continuation that reaches
+that line is `->` -- and an intermediate `->` still has to LOAD the pointer to
+follow it. So `&a.b->c` added c's offset to the ADDRESS of b instead of to what
+b points at.
+
+MEASURED, NOT ARGUED. Case 94 asks the question directly rather than checking a
+value: it compares `&op->m.ref->t` against `&inner_.t` (correct) and against
+`&op->m.ref` (the pointer cell). micro-c returned the pointer cell, on BOTH
+architectures -- so this is not the alignment class and neither column is
+hiding it.
+
+    &mp->ref->t          correct      -- arrow, arrow: zzr's site
+    &op->m.ref->t        WRONG        -- arrow, DOT, arrow: this one
+    &flat_[2].ref->t     WRONG        -- index, dot, arrow
+    &v[-1].m.ref->t      WRONG        -- negative index, dot, arrow
+     op->m.ref->t        correct      -- the same chain without `&`
+
+WHERE IT BITES. Four sites in tcc, and one of them is
+
+    arm64-gen.c:1012   return_type = &vtop[-nb_args].type.ref->type;
+
+which sits inside gfunc_call between `save_regs(nb_args + 1)` at 1005 and
+`arm64_pcs(...)` a few lines below. `return_type` becomes `t[0]`, and
+arm64_pcs_aux then reads `type[0]->t` off it. The other three are
+tccgen.c:1279 and 8844 (`merge_funcattr(&sym->type.ref->f, ...)`) and
+tccgen.c:8457 (`vpush_type_size(&arg->type.ref->type, &align)`).
+
+That is exactly where the CI trail on `int f(int); void g(void){ f(1); }`
+stops: last markers `save_regs` then `is_float`, both of which are tccgen.c
+functions called FROM the uninstrumented arm64-gen.c, with 1012 between them.
+
+WHAT IS NOT CLAIMED. That this closes the SIGSEGV. The reproducer does not
+reproduce under qemu-user -- run in a sandbox, tcc built by the UNFIXED
+compiler also returns 0 on that file and emits a 1177-byte object -- so the
+only place the claim can be tested is the runner. The codegen bug, its cause
+and its fix are measured; its sufficiency is not.
+
+VERIFICATION
+  difftest aarch64   79 pass, 0 fail   (74 existing + cases 90-94)
+  difftest amd64     77 pass, 0 fail   (91 is AARCH64 ONLY, as 73 is)
+  stage-2 corpus     423/426 -- byte-for-byte the same rows as before the fix
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -2275,17 +2275,23 @@ void postfix_expr_dot(void)
+ 	 * exposed it used `->`.
+ 	 *
+ 	 * Found by the differential tester in its first run. Two of these have now
+ 	 * been found by compiling twelve lines of C and comparing an exit code
+ 	 * against gcc, after the first cost three CI rounds.
+ 	 *
+ 	 * Taking the address of it must not load either. */
+ 	if(member_is_array) return;
+-	if(TRUE == Address_of) return;
++	/* AND THE SAME chain_continues RULE THE ARROW SITE ALREADY HAS.
++	 *
++	 * `.` and `[` returned above, so the only continuation that reaches here
++	 * is `->`, and an intermediate `->` still has to LOAD the pointer to
++	 * follow it. This returned unconditionally, so `&a.b->c` added c's offset
++	 * to the ADDRESS of b instead of to what b points at. */
++	if(TRUE == Address_of && !match("->", global_token->s)) return;
+ 
+ 	/* A STRUCT IS NEVER LOADED INTO A REGISTER -- dereferencing a struct
+ 	 * pointer yields its ADDRESS, which every other struct path assumes. */
+ 	if(register_size >= current_target->size)
+ 	{
+ 		emit_out(load_value(current_target->size, current_target->is_signed));
+ 	}
+ }
