@@ -691,7 +691,15 @@ jobs:
             { cat /in/patched_bootstrap.c
               cat /src/stage2-pico-c/m2libc-shim.c
               cat /in/m2/M2libc/bootstrappable.c
-              while read -r f; do cat "/in/mescc/$f"; done < "/in/$o-srcs.txt"
+              # FROM THE REWRITTEN TREE, NOT THE PINNED ONE.
+              #
+              # defines_to_enums.py writes pins/mescc-s2/ in the airlock; this
+              # read pins/mescc/ and so consumed the untouched sources. The
+              # rewrite ran, reported fourteen constants, and changed nothing --
+              # stage 1's unresolved list came back byte-identical, which is the
+              # most confusing possible way for a transformation to fail. A
+              # producer with no consumer is not a no-op, it is a lie in the log.
+              while read -r f; do cat "/in/mescc-s2/$f"; done < "/in/$o-srcs.txt"
             } > "$o.c" || { echo "    $o: could not assemble sources"; return 1; }
             ./stage2 < "$o.c" > "$o.s1" || { echo "    $o: stage2 rc=$?"; return 1; }
             # THE PIPELINE USED TO SWALLOW stage 1's VERDICT.
@@ -721,9 +729,15 @@ jobs:
           # that shipped a short header list looked exactly like the six before
           # it.
           if [ "$m1rc" != 0 ] || [ "$hxrc" != 0 ]; then
-            echo "    FAIL: stage 2 could not COMPILE the tools (M1 rc=$m1rc hex2 rc=$hxrc)."
-            echo "    Both compiled clean when this gate was written. Check the"
-            echo "    derived source lists above before suspecting stage 2."
+            # SAY WHICH RUNG REFUSED. The first version of this message blamed
+            # stage 2 for everything, and the run it fired on had stage 2
+            # compiling hex2 perfectly well -- it was stage 1 rejecting
+            # unresolved labels. build2 prints the real reason above; this line
+            # must not overwrite it with a guess.
+            echo "    FAIL: could not BUILD the tools (M1 rc=$m1rc hex2 rc=$hxrc)."
+            echo "    The line above says which rung refused and why. A stage-2"
+            echo "    rc is a compiler problem; 'stage 1 refused' is a missing"
+            echo "    definition, so check the derived source lists first."
             exit 1
           fi
           if [ "$m1rc" = 0 ] && [ "$hxrc" = 0 ]; then
