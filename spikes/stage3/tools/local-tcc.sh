@@ -79,9 +79,18 @@ if [ -n "$INST_FILE" ] && [ -n "$INST_FUNCS" ]; then
 fi
 
 # --- compile ----------------------------------------------------------------
+# NO -D TCC_TARGET_ARM64 -- config.h defines it, and CONFIG_TRIPLET with it.
+# config.h guards those behind
+#     #if !(TCC_TARGET_I386 || ... || TCC_TARGET_ARM64 || ...)
+# so a command-line target WINS and the whole block is skipped. Passing the
+# -D therefore left CONFIG_TRIPLET undefined, tcc.h fell to
+#     # define USE_TRIPLET(s) s
+# and the crt prefix came out as a bare /usr/lib -- no crt1.o there, so every
+# link failed. configure's --triplet cannot help: the text lands inside the
+# block that never runs.
 echo "== micro-c compiles libtcc.c (about 30 s, silent) =="
 ( cd tcc-work && "$MC" --architecture aarch64 --expand-includes --max-string 65536 \
-    -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 -D TCC_TARGET_LINUX=1 \
+    -D ONE_SOURCE=1 -D TCC_TARGET_LINUX=1 \
     -D CONFIG_TCC_STATIC=1 -I . -I "$L" -I "$M" \
     -f libtcc.c -o ../libtcc.M1 )
 echo "  libtcc.M1: $(wc -l < libtcc.M1) lines, $(grep -c '^:FUNCTION_' libtcc.M1) functions"
