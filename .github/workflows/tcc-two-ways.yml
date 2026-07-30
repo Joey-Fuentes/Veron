@@ -1336,10 +1336,18 @@ jobs:
           # simply stopped at the file boundary and looked like the fault was
           # at P52. Instrumenting both means the last marker names the file as
           # well as the statement.
+          # gen_function IS THE ONE THAT IS ACTUALLY RUNNING.
+          #
+          # Two rounds were lost reading the boundary as the fault. P69 is
+          # put_extern_sym's LAST statement, so it means "past here", and both
+          # times the answer was to instrument the CALLEE again. The function
+          # executing when it dies is gen_function, and it had no markers at
+          # all. It is first in the list now.
+          FN='gen_function,put_extern_sym2,put_extern_sym,greloca'
           python3 spikes/stage3/tools/instrument.py --map --prefix P \
-            inst/tccgen.c 'put_extern_sym2,put_extern_sym,greloca' > inst-map.txt
+            inst/tccgen.c "$FN" > inst-map.txt
           python3 spikes/stage3/tools/instrument.py --prefix P \
-            inst/tccgen.c 'put_extern_sym2,put_extern_sym,greloca' > /tmp/i.c
+            inst/tccgen.c "$FN" > /tmp/i.c
           mv /tmp/i.c inst/tccgen.c
           python3 spikes/stage3/tools/instrument.py --map --prefix E \
             inst/tccelf.c 'put_elf_reloca,put_elf_reloc,put_elf_sym,find_elf_sym' >> inst-map.txt
@@ -1398,7 +1406,15 @@ jobs:
             # that had already run. That reads as "the fault is in greloca's
             # opening brace" and is simply wrong. The fault is in whatever runs
             # next in the function the last marker belongs to.
-            fn=$(grep -E "^$last " inst-map.txt | sed 's/.*[0-9]:  *//; s/:.*//')
+            # THE FUNCTION NAME, not the file name.
+            #
+            # A map line is "P69  inst/tccgen.c:657  put_extern_sym: <stmt>",
+            # and the old expression stripped to the first colon -- yielding
+            # "inst/tccgen.c". Nothing matched it, so this section printed
+            # NOTHING in two consecutive runs and the omission went unnoticed
+            # because an empty section looks like an empty result.
+            fn=$(grep -E "^$last " inst-map.txt | awk '{print $3}' | sed 's/:$//')
+            echo "  (function: $fn)"
             echo "  --- rest of $fn, where execution was heading ---"
             awk -v f="$fn" -v l="$last" '
               $0 ~ ("  " f ": ") { seen[NR] = $0; if (found) { print "    " $0; n++ }
