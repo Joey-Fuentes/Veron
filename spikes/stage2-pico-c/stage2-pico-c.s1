@@ -3850,11 +3850,22 @@ ret
 str x30 x28
 add x28 x28 8
 bl struct_findtag
+cmp x0 0
+b.eq szundef
 add x0 x0 16
 ldr w0 x0
 sub x28 x28 8
 ldr x30 x28
 ret
+:szundef
+mov x0 2
+adr x1 sszundef
+mov x2 38
+mov x8 64
+svc
+mov x0 3
+mov x8 93
+svc
 :struct_findtag
 str x12 x28
 add x28 x28 8
@@ -5738,6 +5749,9 @@ b ps_l
 .byte 0
 :sbrkerr
 .ascii "stage2: break/continue outside a loop\n"
+.byte 0
+:sszundef
+.ascii "stage2: sizeof of an undefined struct\n"
 .byte 0
 :sinover
 .ascii "stage2: input exceeds arena\n"

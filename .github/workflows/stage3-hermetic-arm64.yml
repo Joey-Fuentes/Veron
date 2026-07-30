@@ -308,11 +308,42 @@ jobs:
             done
             echo "$r $m"
           }
+          # THE MAKEFILE LISTS TRANSLATION UNITS. IT DOES NOT LIST HEADERS,
+          # AND THIS BUILD CONCATENATES RATHER THAN COMPILES-AND-LINKS, SO A
+          # HEADER LEFT OUT IS A TYPE THAT DOES NOT EXIST.
+          #
+          # That is exactly what blocked hex2. `struct entry` and
+          # `struct input_files` are defined ONLY in hex2.h; hex2_globals.h
+          # merely declares `extern struct entry** jump_tables;`. With hex2.h
+          # absent, hex2.c:34
+          #
+          #     jump_tables = calloc(65537, sizeof(struct entry*));
+          #
+          # asks stage 2 for the size of a type it has never seen -- and stage 2
+          # segfaulted rather than saying so, which is why this read as "our
+          # hex2 crashes" for as long as it did. Both halves are fixed: stage 2
+          # now diagnoses (spikes/stage2-pico-c, struct_size), and the header is
+          # in the unit. MEASURED: with hex2.h present, stage 2 compiles the
+          # hex2 unit clean -- rc=0, 202,160 bytes of stage-1 assembly.
+          #
+          # The headers are derived from the SOURCES' OWN #include lines rather
+          # than listed here, for the same reason the .c list is derived from
+          # the makefile: a hand-written list is a list that goes stale, and
+          # no-host-chain's header records three of them in a row being wrong.
+          hdrs() {
+            for f in $1; do
+              sed -n 's/^#include[[:space:]]*"\([^"]*\)".*/\1/p' "pins/mescc/$f"
+            done | awk '!seen[$0]++'
+          }
           for t in M1 hex2; do
             out=$(order "$(srcs "$t")")
             [ -n "$(echo $out)" ] || { echo "FAIL: could not derive $t sources"; exit 1; }
-            printf '%s\n' $out > "pins/$t-srcs.txt"
-            echo "  $t: $out"
+            h=$(hdrs "$out")
+            # Headers first: the unit is concatenated, and a type must be
+            # defined before the line that uses it.
+            printf '%s\n' $h $out > "pins/$t-srcs.txt"
+            echo "  $t headers: ${h:-none}"
+            echo "  $t sources: $out"
           done
 
       # --- BUILD THE BOX --------------------------------------------------
