@@ -758,22 +758,20 @@ jobs:
 
           [ "$fp_ok" = yes ] || { echo "    FAIL: the stage-2 canary is not clean"; exit 1; }
 
-          say '7. G0 -- stage 2 builds micro-c from UNPATCHED upstream source'
-          # THE COMPILER THIS LADDER PRODUCES IS CALLED micro-c. "M2-Planet"
-          # is the upstream project it is forked from, and that name belongs
-          # only to the pin, the clone, and the reference binary GATE 1
-          # measures against -- not to anything we build.
+          say '7. G0 -- stage 2 builds UPSTREAM M2-Planet, for GATE 1 only'
+          # THIS IS NOT micro-c, AND CALLING IT THAT WAS WORSE THAN THE NAME
+          # IT REPLACED. Steps 7 and 8 build UPSTREAM M2-Planet, deliberately
+          # unpatched, and they exist for one purpose: GATE 1 compares this
+          # compiler's self-compile byte for byte against upstream's own
+          # reference build. That comparison measures the LADDER -- seed,
+          # stage 1, stage 2 -- not our compiler. Put our patches in here and
+          # the gate stops meaning anything at all.
           #
-          # G0 is micro-c built from UNPATCHED upstream source, with one
-          # substitution: M2libc/aarch64/linux/bootstrap.c, whose entire
-          # content is six asm() bodies stage 2 cannot compile. It is
-          # deliberately not our patch series, because GATE 1 compares its
-          # self-compile byte for byte against upstream's reference, and that
-          # comparison is what proves the LADDER faithful. Patch the source and
-          # the gate stops meaning anything.
+          # One substitution only: M2libc/aarch64/linux/bootstrap.c, whose
+          # entire content is six asm() bodies stage 2 cannot compile.
           #
-          # The real micro-c -- upstream plus this project's 43 patches -- is
-          # built in step 10, and that is the one that compiles tcc.
+          # micro-c -- upstream plus this project's 43 patches -- is built in
+          # step 10, and it is the one that compiles tcc.
           # The substitution applies to G0 and only G0. patched_bootstrap.c goes
           # first so its enums (NULL EOF TRUE FALSE stdin/stdout/stderr EXIT_*)
           # are in scope for the shim, and the shim supplies fgetc/fputc -- the
@@ -800,17 +798,17 @@ jobs:
           art 'm2.c (our translation unit)' m2.c
           ./stage2 < m2.c > m2.s1
           echo "    stage2 emitted $(wc -c < m2.s1) bytes of stage-1 assembly"
-          ./stage1 < m2.s1 | ./stage0-as | ./elf microc-g0
-          [ -x microc-g0 ] || { echo "    FAIL: no G0"; exit 1; }
-          art 'G0 = micro-c (unpatched source)' microc-g0
+          ./stage1 < m2.s1 | ./stage0-as | ./elf upstream-g0
+          [ -x upstream-g0 ] || { echo "    FAIL: no G0"; exit 1; }
+          art 'G0 = upstream M2-Planet (our ladder)' upstream-g0
 
-          say '8. G1 -- G0 compiles that same unpatched source again'
+          say '8. G1 -- G0 compiles upstream source again, for the gate'
           # From here the patch is gone: our M2-Planet handles asm() perfectly
           # well, so G1 onward is built from upstream source exactly as shipped.
           set --
           while read -r f; do set -- "$@" -f "$f"; done < /in/flist.txt
           cd /in/m2
-          /work/microc-g0 --architecture aarch64 --bootstrap-mode "$@" -o /out/ours-gen1.M1
+          /work/upstream-g0 --architecture aarch64 --bootstrap-mode "$@" -o /out/ours-gen1.M1
           cd /work
           art 'ours-gen1.M1' /out/ours-gen1.M1
 

@@ -597,6 +597,8 @@ bl next_token
 b funcloop
 :fl_gstruct
 bl struct_findtag
+cmp x0 0
+b.eq flg_fwd
 mov x2 37120
 movk x2 2053 16
 add x2 x19 x2
@@ -606,6 +608,11 @@ lsr x5 x5 x1
 add x27 x5 1
 add x1 x0 16
 ldr w7 x1
+b flg_look
+:flg_fwd
+mov x27 0
+mov x7 8
+:flg_look
 bl next_token
 cmp x29 42
 b.ne flg_st_val
@@ -640,6 +647,8 @@ bl flg_ststag
 bl emit_gdata
 b flg_st_sk
 :flg_st_val
+cmp x27 0
+b.eq stfwd
 mov x2 0
 mov x13 x7
 bl gsymdecl
@@ -998,6 +1007,8 @@ b stmtend
 :dostruct
 bl next_token
 bl struct_findtag
+cmp x0 0
+b.eq ds_fwd
 mov x2 37120
 movk x2 2053 16
 add x2 x19 x2
@@ -1007,6 +1018,11 @@ lsr x5 x5 x1
 add x27 x5 1
 add x1 x0 16
 ldr w13 x1
+b ds_look
+:ds_fwd
+mov x27 0
+mov x13 8
+:ds_look
 bl next_token
 cmp x29 42
 b.ne ds_value
@@ -1060,6 +1076,8 @@ bl emitstr
 add x6 x6 1
 b stmtend
 :ds_value
+cmp x27 0
+b.eq stfwd
 mov x2 0
 bl symdecl
 sub x3 x8 1
@@ -3875,6 +3893,15 @@ ldr w0 x0
 sub x28 x28 8
 ldr x30 x28
 ret
+:stfwd
+mov x0 2
+adr x1 sstfwd
+mov x2 44
+mov x8 64
+svc
+mov x0 4
+mov x8 93
+svc
 :szundef
 mov x0 2
 adr x1 sszundef
@@ -5805,6 +5832,9 @@ b ps_l
 .byte 0
 :sszundef
 .ascii "stage2: sizeof of an undefined struct\n"
+.byte 0
+:sstfwd
+.ascii "stage2: an undefined struct needs a pointer\n"
 .byte 0
 :sinover
 .ascii "stage2: input exceeds arena\n"
