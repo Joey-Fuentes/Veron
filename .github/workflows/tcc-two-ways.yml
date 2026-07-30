@@ -684,7 +684,13 @@ jobs:
           # the last thing both probes got through before dying at DIFFERENT
           # later points -- which is what memory corruption looks like.
           set +e
-          ./mc-realloc 2> /tmp/rl-marks.txt
+          # A HANG IS AN ANSWER, BUT ONLY IF IT ARRIVES. Nothing in this file
+          # had a timeout, so when the tcc micro-c builds started hanging
+          # instead of crashing, this step ran until GitHub killed the job and
+          # the log said nothing at all. 60s is far more than a working
+          # compiler needs for one small file; longer is a hang, and rc=124
+          # says so.
+          timeout 60 ./mc-realloc 2> /tmp/rl-marks.txt
           rc=$?
           set -e
           echo "  markers: $(tr '\n' ' ' < /tmp/rl-marks.txt)"
@@ -707,7 +713,13 @@ jobs:
           # than one that cannot compile, and a test that does both at once
           # cannot tell you which you have.
           set +e
-          ./mc-compile-only 2> /tmp/co-marks.txt
+          # A HANG IS AN ANSWER, BUT ONLY IF IT ARRIVES. Nothing in this file
+          # had a timeout, so when the tcc micro-c builds started hanging
+          # instead of crashing, this step ran until GitHub killed the job and
+          # the log said nothing at all. 60s is far more than a working
+          # compiler needs for one small file; longer is a hang, and rc=124
+          # says so.
+          timeout 60 ./mc-compile-only 2> /tmp/co-marks.txt
           rc=$?
           set -e
           echo "  markers: $(tr '\n' ' ' < /tmp/co-marks.txt)"
@@ -752,7 +764,13 @@ jobs:
             ls "$TCCLIB"/*.a 2>/dev/null | head -3 | sed 's/^/    /' || true
             BFLAG=""
           fi
-          ./mc-tcc-bin $BFLAG /tmp/trivial.c -o /tmp/trivial-out 2> /tmp/marks.txt
+          # A HANG IS AN ANSWER, BUT ONLY IF IT ARRIVES. Nothing in this file
+          # had a timeout, so when the tcc micro-c builds started hanging
+          # instead of crashing, this step ran until GitHub killed the job and
+          # the log said nothing at all. 60s is far more than a working
+          # compiler needs for one small file; longer is a hang, and rc=124
+          # says so.
+          timeout 60 ./mc-tcc-bin $BFLAG /tmp/trivial.c -o /tmp/trivial-out 2> /tmp/marks.txt
           rc=$?
           set -e
           # The driver brackets each libtcc call with a marker on stderr, so

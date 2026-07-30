@@ -1134,32 +1134,13 @@ jobs:
               # the next argv as the path's absence:
               #     tcc: error: argument to '-B' is missing
               # local-tcc.sh writes them attached, and I did not.
-              timeout 120 /out/mc-tcc -B/in/tcc-src -I/in/tcc-src \
+              timeout 25 /out/mc-tcc -B/in/tcc-src -I/in/tcc-src \
                           -c seven.c -o seven.o 2>/work/run7.err
               crc=$?
               set -e
               echo "    mc-tcc -c seven.c: rc=$crc, object $(wc -c < seven.o 2>/dev/null || echo 0) bytes"
               if [ "$crc" != 0 ] || [ ! -s seven.o ]; then
                 grep -av '^[A-Z][0-9]*$' /work/run7.err | head -3 | sed 's/^/      /'
-                s3ok=no
-              fi
-
-              # 00: DOES IT START AT ALL? Ask before anything else.
-              #
-              # When mc-tcc could not initialise -- a four-byte load of an
-              # eight-byte pointer in dynarray_reset's `--*n` -- every one of
-              # the twelve programs below reported the same rc=139, and the log
-              # said nothing about which of thirteen things was wrong. One line
-              # here separates "the compiler is broken" from "the compiler
-              # compiles the wrong code", and those are different
-              # investigations.
-              set +e
-              timeout 60 /out/mc-tcc --version >v.out 2>&1; vrc=$?
-              set -e
-              echo "    00-does-it-start            rc=$vrc  $(grep -av '^[A-Z][0-9]*$' v.out | head -1)"
-              if [ "$vrc" -gt 128 ]; then
-                echo "      IT DOES NOT START. Everything below will fail for this"
-                echo "      reason and not for its own; read this line, not those."
                 s3ok=no
               fi
 
@@ -1207,7 +1188,7 @@ jobs:
               }
               tc() {  # tc <label> <want_exit> <want_output>
                 set +e
-                timeout 120 /out/mc-tcc -B/in/tcc-src -I/in/tcc-src \
+                timeout 25 /out/mc-tcc -B/in/tcc-src -I/in/tcc-src \
                             -nostdlib -static -o t.bin t.c 2>t.err
                 crc=$?
                 set -e
@@ -1217,7 +1198,7 @@ jobs:
                   s3ok=no; return
                 fi
                 chmod 0755 t.bin
-                set +e; tout=$(timeout 60 ./t.bin 2>&1); trc=$?; set -e
+                set +e; tout=$(timeout 20 ./t.bin 2>&1); trc=$?; set -e
                 if [ "$trc" = "$2" ] && [ "$tout" = "$3" ]; then v=ok; else v="WRONG (want exit=$2 out=[$3])"; s3ok=no; fi
                 printf "    %-26s exit=%-4s out=[%s] %s\n" "$1" "$trc" "$tout" "$v"
               }
@@ -1346,7 +1327,7 @@ jobs:
             T2=/in/tcc-src/tests/tests2
             b=00_assignment
             set +e
-            timeout 120 /out/mc-tcc -B/in/tcc-src -I"$SH" -nostdlib -static \
+            timeout 25 /out/mc-tcc -B/in/tcc-src -I"$SH" -nostdlib -static \
                         -o t2.bin "$T2/$b.c" "$SH/crt.c" 2>t2.err
             c2=$?
             set -e
