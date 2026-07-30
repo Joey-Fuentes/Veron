@@ -1,0 +1,195 @@
+# CATCH A STRAY WRITE WITH A REAL WATCHPOINT, ON REAL HARDWARE.
+#
+# WHY THIS IS A SEPARATE JOB, AND WHY IT RUNS HERE.
+#
+# spikes/stage3 has diagnosed every fault so far by bisection: put a write()
+# marker in, rebuild, run, see whether the value has changed yet. That found
+# several real bugs. It also hit a floor on the last one -- the window narrowed
+# to a few statements and stopped -- and, worse, four separate INSTRUMENT bugs
+# during that hunt produced false negatives that were acted on:
+#
+#   a cached slot address that went stale when the array was realloc'd
+#   a `static` function called from another file
+#   a watch that reset its baseline on the first hit, so every later probe
+#     compared against the corrupt value and reported nothing
+#   a print taken before the field it printed had been populated
+#
+# Each one made innocent code look innocent for the wrong reason. Sampling is
+# not just slow here; it fails quietly, which is the worst property a
+# diagnostic can have.
+#
+# A WATCHPOINT ANSWERS THE QUESTION DIRECTLY: which instruction wrote this
+# address. It cannot be off by one probe point and it cannot be silently
+# defeated by its own baseline.
+#
+# IT CANNOT BE DONE UNDER THE EMULATOR. qemu-user's gdbstub was checked packet
+# by packet:
+#
+#     Z0 (sw breakpoint) -> OK
+#     Z1 (hw breakpoint) -> OK
+#     Z2 (write watch)   -> ''      not supported
+#     Z3 (read watch)    -> ''
+#     Z4 (access watch)  -> ''
+#
+# Watchpoints live in QEMU's system-mode path, not linux-user. A vendored
+# gdb-multiarch would have connected to that same stub and been refused
+# identically -- so the 50MB binary, the toolbox entry and the plumbing would
+# all have bought nothing. That was measured before it was proposed.
+#
+# This runner is aarch64. mc-tcc runs NATIVELY on it, so `gdb` from apt gets a
+# real hardware watchpoint on real hardware, and the whole problem disappears.
+#
+# HEX2 EMITS A BARE ELF -- no sections, no symbol table -- so a native gdb's
+# backtrace would still be bare hex. patches/mescc-tools/0001 makes hex2 write
+# out the addresses it has already computed, and the resolver below turns a
+# program counter into the nearest label at or below it. Both halves are
+# needed; neither is useful alone.
+#
+# RUN IT WITH workflow_dispatch. It is an investigation, not a gate, and
+# nothing depends on it.
+name: stage3 watchpoint
+
+on:
+  workflow_dispatch:
+    inputs:
+      marker:
+        description: 'stderr marker whose value is the address to watch'
+        default: 'TW-armed at='
+      width:
+        description: 'bytes to watch'
+        default: '8'
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    # aarch64 ON PURPOSE. The entire point is that mc-tcc runs natively here.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'ASSERT: the runner is aarch64'
+        run: |
+          set -eu
+          arch=$(uname -m)
+          echo "  runner arch: $arch"
+          [ "$arch" = "aarch64" ] || {
+            echo "FAIL: a watchpoint needs mc-tcc to run natively."
+            echo "      Under qemu-user the gdbstub refuses Z2/Z3/Z4."
+            exit 1; }
+
+      - name: Install
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gdb gcc git >/dev/null
+          gdb --version | head -1 | sed 's/^/  /'
+
+      - name: 'Build mc-tcc and its label map'
+        run: |
+          set -eu
+          sh spikes/stage3/tools/local-build.sh > /tmp/build.log 2>&1 \
+            || { tail -30 /tmp/build.log; exit 1; }
+          grep -E 'patches applied|pass ' /tmp/build.log | sed 's/^/  /'
+          sh spikes/stage3/tools/local-tcc.sh build/local > /tmp/tcc.log 2>&1 \
+            || { tail -20 /tmp/tcc.log; exit 1; }
+          grep -E 'mc-tcc:' /tmp/tcc.log | sed 's/^/  /'
+
+          # The label map comes from the same hex2 run that produced the
+          # binary, so the two cannot disagree about where anything is.
+          cd build/local
+          HEX2_LABEL_MAP="$PWD/labels.txt" ./hex2 \
+            --architecture aarch64 --little-endian --base-address 0x400000 \
+            -f m2libc/aarch64/ELF-aarch64.hex2 -f all.hex2 \
+            -o mc-tcc-mapped >/dev/null
+          cmp mc-tcc mc-tcc-mapped \
+            || { echo "FAIL: the mapped build is not byte-identical"; exit 1; }
+          echo "  $(wc -l < labels.txt) labels, binary byte-identical"
+
+      - name: 'PASS 1: learn the address'
+        run: |
+          set -eu
+          # The address is a heap pointer and is only known at runtime. Under
+          # a native run with no ASLR difference between passes and M2libc's
+          # straight brk bump allocator, it repeats. If that ever stops being
+          # true the symptom is a watchpoint that never fires -- loud, not
+          # silent -- and pass 2 says so.
+          cd build/local/tcc-work
+          echo 'int main(void){ return 0; }' > /tmp/t.c
+          set +e
+          ../mc-tcc -c /tmp/t.c -o /tmp/t.o > /tmp/p1.log 2>&1
+          echo "  pass 1 exit: $?"
+          set -e
+          addr=$(grep -a "${{ inputs.marker }}" /tmp/p1.log | head -1 | sed 's/.*=//')
+          [ -n "$addr" ] || {
+            echo "FAIL: no line matching '${{ inputs.marker }}' on stderr."
+            echo "      The build must carry the probe that prints it."
+            tail -20 /tmp/p1.log; exit 1; }
+          echo "  address: $addr"
+          echo "WATCH_ADDR=$addr" >> "$GITHUB_ENV"
+
+      - name: 'PASS 2: watch it'
+        run: |
+          set -eu
+          cd build/local/tcc-work
+          cat > /tmp/cmds.gdb <<EOF
+          set confirm off
+          set pagination off
+          set \$a = (unsigned long)$WATCH_ADDR
+          watch *(unsigned long *)\$a
+          run -c /tmp/t.c -o /tmp/t.o
+          printf "PC=%p\n", \$pc
+          info registers pc
+          bt
+          continue
+          printf "PC=%p\n", \$pc
+          bt
+          quit
+          EOF
+          set +e
+          gdb --batch -x /tmp/cmds.gdb ../mc-tcc > /tmp/gdb.log 2>&1
+          echo "  gdb exit: $?"
+          set -e
+          tail -40 /tmp/gdb.log | sed 's/^/  /'
+
+      - name: 'Resolve the program counters against the label map'
+        run: |
+          set -eu
+          python3 - <<'PY' | tee /tmp/resolved.txt
+          import re
+          labels = []
+          for line in open('build/local/labels.txt'):
+              p = line.split()
+              if len(p) == 2:
+                  try: labels.append((int(p[0], 16), p[1]))
+                  except ValueError: pass
+          labels.sort()
+          def name(pc):
+              best = None
+              for a, n in labels:
+                  if a <= pc: best = (a, n)
+                  else: break
+              return "?" if best is None else "%s+%d" % (best[1], pc - best[0])
+          seen = 0
+          for line in open('/tmp/gdb.log', errors='ignore'):
+              for m in re.finditer(r'0x0*([0-9a-fA-F]{5,16})', line):
+                  pc = int(m.group(1), 16)
+                  if 0x400000 <= pc < 0x2000000:
+                      print("  %#x  %s" % (pc, name(pc)))
+                      seen += 1
+          if seen == 0:
+              print("  no program counters in range -- the watchpoint may not have fired")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage3-watchpoint
+          path: |
+            /tmp/gdb.log
+            /tmp/p1.log
+            /tmp/resolved.txt
+            build/local/labels.txt
+          if-no-files-found: warn

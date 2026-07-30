@@ -1,0 +1,110 @@
+hex2: emit a label map, if asked for.
+
+hex2 produces a bare ELF -- no sections, no symbol table. That is right for a
+bootstrap linker and it makes a crash unreadable: a fault reports an address
+and there is nothing to turn it into a name.
+
+Every diagnosis in spikes/stage3 has worked around that by bisecting with
+write() markers, because a raw program counter was useless. That found real
+bugs, but it can only bracket BETWEEN probe points, and on the last hunt it
+narrowed to a few statements and stopped. Four instrument bugs during that hunt
+produced false negatives that were acted on -- a stale slot address, a static
+function called cross-file, a watch that reset its baseline on the first hit,
+and a print taken before the field was populated. Sampling is not only slow
+here, it fails quietly.
+
+THE ADDRESS IS ALREADY COMPUTED. storeLabel is handed `ip` and records it; this
+writes the same number out as it is assigned. The alternative -- rebuilding the
+table by counting bytes over the .hex2 -- means reimplementing the width of
+every directive for every architecture, and being wrong the first time the two
+implementations drift. Taking the number from the assembler that computes it
+cannot drift.
+
+OFF BY DEFAULT. Nothing happens unless HEX2_LABEL_MAP names a file. Checked by
+building both ways: the emitted binary is byte-identical with the variable set
+and unset, so this cannot change what is being debugged.
+
+    14626 labels for the current mc-tcc
+    804DC0 FUNCTION_tok_alloc_new
+    85CEA0 FUNCTION_post_type
+
+WHAT IT IS FOR. A native gdb on the aarch64 runner can set a hardware
+watchpoint on the address a stray write is landing on -- but without a symbol
+table its backtrace is bare hex. This is the other half of that.
+
+It is NOT for the emulator. qemu-user's gdbstub implements breakpoints and
+refuses watchpoints:
+
+    Z0 (sw breakpoint) -> OK
+    Z1 (hw breakpoint) -> OK
+    Z2 (write watch)   -> ''
+
+so watchpoint work has to happen on real aarch64 hardware, which is what the
+runner already is.
+
+diff --git a/hex2.c b/hex2.c
+index 0e3c85a..8bd6833 100644
+--- a/hex2.c
++++ b/hex2.c
+@@ -18,6 +18,8 @@
+  */
+ 
+ #include "hex2_globals.h"
++#include <stdlib.h>
++extern FILE* label_map_file;
+ 
+ /* The essential functions */
+ void first_pass(struct input_files* input);
+@@ -36,6 +38,8 @@ int main(int argc, char **argv)
+ 
+ 	Architecture = KNIGHT;
+ 	Base_Address = 0;
++	{ char* _lm = getenv("HEX2_LABEL_MAP");
++	  if(NULL != _lm) label_map_file = fopen(_lm, "w"); }
+ 	struct input_files* input = NULL;
+ 	output = stdout;
+ 	char* output_file = "";
+diff --git a/hex2_linker.c b/hex2_linker.c
+index 7785692..02ecd76 100644
+--- a/hex2_linker.c
++++ b/hex2_linker.c
+@@ -24,6 +24,7 @@ FILE* output;
+ struct entry** jump_tables;
+ int BigEndian;
+ int Base_Address;
++FILE* label_map_file;
+ int Architecture;
+ int ByteMode;
+ int exec_enable;
+@@ -146,6 +147,31 @@ int storeLabel(FILE* source_file, int ip)
+ 	entry->next = jump_tables[h];
+ 	jump_tables[h] = entry;
+ 
++	/* A LABEL MAP, IF ASKED FOR.
++	 *
++	 * hex2 emits a bare ELF: no sections, no symbol table. That is correct
++	 * for a bootstrap linker and it makes a crash unreadable -- a fault
++	 * reports an address and there is nothing to turn it into a name. Every
++	 * debugging session in spikes/stage3 has worked around it by hand,
++	 * bisecting with write() markers because a raw program counter was
++	 * useless.
++	 *
++	 * This is the address hex2 has ALREADY computed for the label, written
++	 * out as it is assigned. Building the same table independently -- by
++	 * counting bytes over the .hex2 -- would mean reimplementing every
++	 * directive's width and would be wrong the first time the two drifted.
++	 * Taking it from the assembler that computes it cannot drift.
++	 *
++	 * Off unless HEX2_LABEL_MAP names a file, so the default output and the
++	 * default behaviour are unchanged. */
++	if(NULL != label_map_file)
++	{
++		fputs(int2str(entry->target + Base_Address, 16, FALSE), label_map_file);
++		fputc(' ', label_map_file);
++		fputs(entry->name, label_map_file);
++		fputc('\n', label_map_file);
++	}
++
+ 	return c;
+ }
+ 

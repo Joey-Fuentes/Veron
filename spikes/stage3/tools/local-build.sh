@@ -173,6 +173,9 @@ echo
 echo "== M1 and hex2 =="
 rm -rf mescc
 cp -r "$ROOT/spikes/reference/mescc-tools" mescc
+git -C mescc init -q
+git -C mescc config user.email local@veron
+git -C mescc config user.name local
 mkdir -p mescc/M2libc
 cp "$ROOT/spikes/reference/m2libc/bootstrappable.c" \
    "$ROOT/spikes/reference/m2libc/bootstrappable.h" mescc/M2libc/
@@ -187,6 +190,20 @@ grep -q 'max_string = 4096,' mescc/M1-macro.c \
 sed -i 's/max_string = 4096,/max_string = 262144,/' mescc/M1-macro.c
 grep -q 'max_string = 262144,' mescc/M1-macro.c || { echo "  FAIL: sed"; exit 1; }
 echo "  M1 max_string raised to 262144"
+
+# THE LABEL MAP PATCH. hex2 emits a bare ELF, so a fault reports an address and
+# nothing can turn it into a name. patches/mescc-tools/0001 makes hex2 write the
+# addresses it already computes to HEX2_LABEL_MAP, off unless that is set --
+# checked by building both ways and comparing the output byte for byte.
+mt=0
+for p in "$ROOT"/spikes/stage3/patches/mescc-tools/[0-9]*.patch; do
+    [ -e "$p" ] || continue
+    (cd mescc && git apply --ignore-whitespace "$p") \
+        || { echo "  FAIL: $(basename "$p")"; exit 1; }
+    mt=$((mt + 1))
+done
+[ "$mt" -ge 1 ] || { echo "  FAIL: expected at least 1 mescc-tools patch, got $mt"; exit 1; }
+echo "  $mt mescc-tools patch(es) applied"
 
 gcc -w -o M1   mescc/M1-macro.c mescc/stringify.c mescc/M2libc/bootstrappable.c
 gcc -w -o hex2 mescc/hex2_linker.c mescc/hex2_word.c mescc/hex2.c \
