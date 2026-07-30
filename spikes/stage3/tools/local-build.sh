@@ -226,13 +226,36 @@ echo "== the 64-bit widening moved nothing it should not have =="
 sh "$ROOT/spikes/stage3/tools/imm-identity.sh" \
     "$WORK/micro-c-pre" "$WORK/micro-c-zzb" | tail -3
 
+# WHICH COLUMNS THIS HOST CAN ACTUALLY RUN.
+#
+# This script was written on x86_64 and assumed it. Run on the aarch64 runner
+# it reported
+#
+#     pass 0   fail 64        amd64 -- the host cannot execute amd64 binaries
+#     aarch64  pass 0  fail 64  the committed emulator is an x86_64 binary
+#
+# and exited 0, so the job that called it carried on. Two columns of total
+# failure that mean nothing about the compiler is worse than no columns at
+# all: the first reading of that log was "micro-c is completely broken".
+#
+# stage2-corpus.sh already had this check. The rest did not.
+HOST=$(uname -m)
 echo
-echo "== difftest, amd64 (native) =="
-sh "$ROOT/spikes/stage3/tools/difftest.sh" \
-    "$WORK/micro-c" "$WORK/m2libc" "$WORK/mescc-bin" | tail -4
+if [ "$HOST" = "x86_64" ]; then
+    echo "== difftest, amd64 (native) =="
+    sh "$ROOT/spikes/stage3/tools/difftest.sh" \
+        "$WORK/micro-c" "$WORK/m2libc" "$WORK/mescc-bin" | tail -4
+else
+    echo "== difftest, amd64 -- SKIPPED, this host is $HOST =="
+    echo "  A skip is not a pass. The amd64 column is unmeasured on this run."
+fi
 
 echo
-echo "== difftest, aarch64 (under the committed emulator) =="
+if [ "$HOST" = "aarch64" ]; then
+    echo "== difftest, aarch64 (NATIVE) =="
+else
+    echo "== difftest, aarch64 (under the committed emulator) =="
+fi
 sh "$ROOT/spikes/stage3/tools/difftest-qemu.sh" "$WORK" | tail -4
 
 echo

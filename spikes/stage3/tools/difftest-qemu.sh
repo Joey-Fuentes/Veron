@@ -24,12 +24,28 @@ WORK=${1:-$ROOT/build/local}
 # command line stops resolving the moment they do.
 mkdir -p "$WORK"
 WORK=$(cd "$WORK" && pwd)
+# NATIVE IF THIS HOST IS aarch64, EMULATED IF IT IS NOT.
+#
+# The committed emulator is an x86_64 binary -- that is the whole point of it,
+# see spikes/toolbox/README.md -- so on an aarch64 host it cannot run at all.
+# Without this check every case failed to execute and the suite reported
+#
+#     aarch64  pass 0   fail 64   known-gap 1
+#
+# on the arm runner, which reads as "micro-c is completely broken" and is
+# really "the harness is on the wrong machine". A result that wrong must not
+# be reachable by running the right script on a supported host.
 Q="$ROOT/spikes/toolbox/qemu-aarch64-static"
+if [ "$(uname -m)" = "aarch64" ]; then
+    Q=""
+fi
 D="$WORK/m2libc/aarch64"
 CASES="$ROOT/spikes/stage3/tools/cases"
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 
-[ -x "$Q" ] || { echo "FAIL: $Q is missing or not executable"; exit 1; }
+if [ -n "$Q" ]; then
+    [ -x "$Q" ] || { echo "FAIL: $Q is missing or not executable"; exit 1; }
+fi
 [ -f "$D/aarch64_defs.M1" ] || { echo "FAIL: run local-build.sh first"; exit 1; }
 
 # THE PATCHED TABLE, ASSERTED. Assembling against the vendored copy makes
@@ -78,7 +94,13 @@ for c in "$CASES"/*.c; do
     fi
 
     chmod +x "$T/m.bin"
-    set +e; timeout 30 "$Q" "$T/m.bin" >/dev/null 2>&1; rc=$?; set -e
+    # $Q is empty on a native aarch64 host; running "" would be a shell error,
+    # so the two cases are spelled out rather than relying on word splitting.
+    set +e
+    if [ -n "$Q" ]; then timeout 30 "$Q" "$T/m.bin" >/dev/null 2>&1
+    else timeout 30 "$T/m.bin" >/dev/null 2>&1; fi
+    rc=$?
+    set -e
 
     if head -8 "$c" | grep -q "KNOWN GAP"; then
         if [ "$rc" = 0 ]; then

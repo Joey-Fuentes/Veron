@@ -93,6 +93,23 @@ jobs:
           sh spikes/stage3/tools/local-build.sh > /tmp/build.log 2>&1 \
             || { tail -30 /tmp/build.log; exit 1; }
           grep -E 'patches applied|pass ' /tmp/build.log | sed 's/^/  /'
+          # ONE BUILD TO CREATE tcc-src, THEN THE PROBE, THEN A REBUILD.
+          #
+          # local-tcc.sh does not apply the tcc-debug series -- only
+          # tcc-two-ways does -- so the probe that publishes the watch address
+          # has to be applied here. It goes into tcc-src, which local-tcc.sh
+          # extracts once and then copies to tcc-work on every run, so a patch
+          # placed there survives the rebuild.
+          sh spikes/stage3/tools/local-tcc.sh build/local > /tmp/tcc0.log 2>&1 \
+            || { tail -20 /tmp/tcc0.log; exit 1; }
+          git -C build/local/tcc-src init -q
+          git -C build/local/tcc-src apply --ignore-whitespace \
+            "$GITHUB_WORKSPACE/spikes/stage3/patches/tcc-debug/0003-DEBUG-publish-a-table_ident-slot-address.patch" \
+            || { echo "FAIL: the watch-address probe does not apply"; exit 1; }
+          grep -q 'TW-armed at=' build/local/tcc-src/tccpp.c \
+            || { echo "FAIL: the probe is not in the source after applying"; exit 1; }
+          echo "  watch-address probe applied"
+          rm -rf build/local/tcc-work
           sh spikes/stage3/tools/local-tcc.sh build/local > /tmp/tcc.log 2>&1 \
             || { tail -20 /tmp/tcc.log; exit 1; }
           grep -E 'mc-tcc:' /tmp/tcc.log | sed 's/^/  /'

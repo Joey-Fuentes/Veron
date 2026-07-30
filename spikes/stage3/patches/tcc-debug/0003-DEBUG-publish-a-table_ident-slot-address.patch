@@ -1,0 +1,69 @@
+DEBUG: publish the address of one table_ident slot, for a watchpoint.
+
+table_ident[199] -- the TokenSym for __multf3 -- is overwritten between
+interning and tccpp_delete by a stray eight-byte write. Its neighbours 198 and
+200 survive, so it is one slot, not a bulk corruption. Ruled out by
+measurement: the tal allocator, the hash chain, realloc's copy, allocation
+overlap, sym_link, and parse_btype's TOK_LONG path. Bisection with write()
+markers narrowed it to "between two tokens, while parsing the alloca prototype
+at <command line>:95" and then stopped narrowing.
+
+A watchpoint answers "which instruction wrote this address" directly, and it
+needs the address. That address is a heap pointer, known only at runtime, so
+the watchpoint job runs the binary twice: once to read this line off stderr,
+once under gdb watching what it printed. The layout repeats because there is no
+ASLR difference between the two runs and M2libc's allocator is a straight brk
+bump; if that ever stops holding the symptom is a watchpoint that never fires,
+which is loud.
+
+IT CANNOT BE DONE UNDER THE EMULATOR. qemu-user's gdbstub was checked packet by
+packet: Z0 and Z1 return OK, Z2/Z3/Z4 return empty. Watchpoints live in QEMU's
+system-mode path. So the job runs natively on the aarch64 runner, which is what
+that runner is for.
+
+This targets tccpp.c, which patches 0001 and 0002 do not touch, so it applies
+independently of them.
+
+write() and a hand-rolled formatter, not printf: stdio may not be usable this
+early and a buffer that is never flushed loses exactly the line being
+collected. The D markers in the driver use write() for the same reason, and
+that reason is written down there too.
+
+diff --git a/tccpp.c b/tccpp.c
+index 5a5ee07..fcac69e 100644
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -477,6 +477,33 @@ static TokenSym *tok_alloc_new(TokenSym **pts, const char *str, int len)
+ 
+     ts = tal_realloc(&toksym_alloc, 0, sizeof(TokenSym) + len);
+     table_ident[i] = ts;
++    /* DEBUG: publish the address of one table slot, for a watchpoint.
++     *
++     * table_ident[199] is the TokenSym for __multf3, and it is being
++     * overwritten between interning and tccpp_delete by a stray eight-byte
++     * write -- its neighbours 198 and 200 survive. Bisection with markers
++     * narrowed that to "between two tokens while parsing the alloca prototype
++     * in the predefs" and then stopped narrowing.
++     *
++     * A watchpoint answers it directly, and needs the address. It is a heap
++     * pointer, so it is only knowable at runtime: this prints it, the
++     * watchpoint job reads it from stderr on a first pass and watches it on a
++     * second. Under qemu-user that is impossible -- its gdbstub refuses
++     * Z2/Z3/Z4 -- so the job runs natively on the aarch64 runner.
++     *
++     * write() and a hand-rolled formatter because stdio may not be usable at
++     * this point and a buffer that is never flushed loses the one line that
++     * matters. Same reason the D markers in the driver use write(). */
++    if (i == 199) {
++        char d[24]; int j = 0; unsigned long x = (unsigned long)&table_ident[199];
++        write(2, "TW-armed at=", 12);
++        if (x == 0) write(2, "0", 1);
++        else {
++            while (x) { d[j] = 48 + (int)(x % 10); j = j + 1; x = x / 10; }
++            while (j) { j = j - 1; write(2, d + j, 1); }
++        }
++        write(2, "\n", 1);
++    }
+     ts->tok = tok_ident++;
+     ts->sym_define = NULL;
+     ts->sym_label = NULL;
