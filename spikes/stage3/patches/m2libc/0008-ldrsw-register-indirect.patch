@@ -11,8 +11,18 @@ ZEROES the top half of x0.
 One bit apart, and it is exactly the bit that decides sign extension.
 Required by EXPERIMENT-zzu.
 
---- a/aarch64_defs.M1
-+++ b/aarch64_defs.M1
+NUMBERED 0008, NOT 0007. The first cut of this patch collided with
+0007-vsnprintf, and its diff was generated in a flat scratch directory so the
+path came out `a/aarch64_defs.M1` rather than `a/aarch64/aarch64_defs.M1` --
+local-build.sh stopped with
+
+    error: aarch64_defs.M1: No such file or directory
+    FAIL: 0007-ldrsw-register-indirect.patch
+
+Delete the old file; this one replaces it.
+
+--- a/aarch64/aarch64_defs.M1
++++ b/aarch64/aarch64_defs.M1
 @@ -329,6 +329,7 @@ DEFINE LDRSH_X0_[X0] 00008079
  DEFINE ldrsh_x0,[x0] 00008079
  DEFINE LDR_W0_[X0] 000040B9
