@@ -59,6 +59,11 @@ STILL BROKEN: tcc now reports `<command line>:53: error: struct/union/enum
 already defined`, which is a real error to chase rather than a hang hiding one.
 14-function-pointer-member still faults.
 
+
+NAMED zzza, NOT aab. The workflows apply this directory by glob, so the series
+runs in ALPHABETICAL order -- and `aab` sorted ahead of zzu..zzz, which is not
+where it was generated or tested. It has to land after zzz.
+
 --- a/cc_core.c
 +++ b/cc_core.c
 @@ -1112,20 +1112,20 @@ void emit_va_arg_intrinsic(void)
