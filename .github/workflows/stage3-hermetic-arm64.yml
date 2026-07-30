@@ -330,19 +330,31 @@ jobs:
           # than listed here, for the same reason the .c list is derived from
           # the makefile: a hand-written list is a list that goes stale, and
           # no-host-chain's header records three of them in a row being wrong.
-          hdrs() {
-            for f in $1; do
-              sed -n 's/^#include[[:space:]]*"\([^"]*\)".*/\1/p' "pins/mescc/$f"
-            done | awk '!seen[$0]++'
-          }
+          # THE CLOSURE MUST BE TRANSITIVE, AND THE FIRST VERSION WAS NOT.
+          #
+          # Scanning only the .c files finds hex2_globals.h and stops -- but
+          # `struct entry` and `struct input_files` live in hex2.h, one level
+          # further down, and hex2.h in turn needs M2libc/bootstrappable.h.
+          # A one-level scan produced a unit missing the very type that
+          # hex2.c:34 asks the size of. It cost a run, and it read as
+          # "our hex2 crashes" rather than as a list that was short by one.
+          #
+          # tools/include_closure.py walks the graph to a fixpoint and emits
+          # dependencies FIRST -- hex2.h before hex2_globals.h -- because this
+          # unit is CONCATENATED, not compiled, so order is meaning rather than
+          # style. It also FAILS on a quoted include it cannot resolve instead
+          # of dropping it, which is the same defect one layer along.
+          #
+          # MEASURED with the closure in place, both units compile clean:
+          #   hex2  rc=0, 202,160 bytes of stage-1 assembly
+          #   M1    rc=0, 179,172 bytes
           for t in M1 hex2; do
             out=$(order "$(srcs "$t")")
             [ -n "$(echo $out)" ] || { echo "FAIL: could not derive $t sources"; exit 1; }
-            h=$(hdrs "$out")
-            # Headers first: the unit is concatenated, and a type must be
-            # defined before the line that uses it.
+            h=$(python3 tools/include_closure.py pins/mescc $out) \
+              || { echo "FAIL: could not close $t's includes"; exit 1; }
             printf '%s\n' $h $out > "pins/$t-srcs.txt"
-            echo "  $t headers: ${h:-none}"
+            echo "  $t headers: $(echo $h)"
             echo "  $t sources: $out"
           done
 
@@ -689,6 +701,19 @@ jobs:
           set +e
           build2 M1;   m1rc=$?
           build2 hex2; hxrc=$?
+          # A COMPILE FAILURE IS NOW A FAILURE. The LINK stays advisory -- that
+          # is what GATE 2 is for -- but "stage 2 could not compile M1 or hex2"
+          # is a regression in stage 2 or in the derived source list, and it
+          # used to print the same `SKIP the link` line as the blocker it was
+          # tracking. Two very different conditions, one message, and the run
+          # that shipped a short header list looked exactly like the six before
+          # it.
+          if [ "$m1rc" != 0 ] || [ "$hxrc" != 0 ]; then
+            echo "    FAIL: stage 2 could not COMPILE the tools (M1 rc=$m1rc hex2 rc=$hxrc)."
+            echo "    Both compiled clean when this gate was written. Check the"
+            echo "    derived source lists above before suspecting stage 2."
+            exit 1
+          fi
           if [ "$m1rc" = 0 ] && [ "$hxrc" = 0 ]; then
             echo "    both built -- trying the link (60s budget each)"
             timeout 60 ./M1 -f /in/m2/M2libc/aarch64/aarch64_defs.M1 \
