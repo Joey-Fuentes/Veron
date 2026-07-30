@@ -1,0 +1,114 @@
+A vararg slot is a register, not a sizeof.
+
+emit_va_arg_intrinsic advanced ap by sizeof(ty). The READ is at the type's
+width and that is right; the STRIDE is not. Every variadic argument occupies a
+full register-width slot on this ABI whatever its declared type, so advancing
+by sizeof lands mid-slot for anything narrower and desynchronises every
+argument after it.
+
+While `int` was eight bytes this was invisible: int, long and every pointer
+were all register-width. At four bytes the first %d corrupts the rest.
+
+    snprintf(b, 64, "%d %d", 1, 2)          returned 12, glibc 3
+    snprintf(b, 64, "%d %d %d", 1, 2, 3)    returned 14, glibc 5
+    snprintf(b, 64, "%s%d%s", "a", 2, "c")  SIGSEGV, glibc 3
+    snprintf(b, 64, "%s%s%s", ...)          correct -- char* is register-width
+
+That last line is the tell: %s survived and %d did not, because pointers happen
+to still be a register wide and int no longer is.
+
+WHAT IT COST. tcc's pp_error formats "%s:%d: ..." so every diagnostic it tried
+to print came out corrupt, and the garbage sent cstr_vprintf into a loop that
+never terminated. The tcc micro-c builds hung instead of compiling, and the
+hang was three layers away from the cause: vsnprintf at 74% of the trace,
+reached through pp_error, with the real defect in the compiler's varargs.
+
+A type WIDER than a register keeps its own size, so a struct passed by value
+still advances by its own width.
+
+MEASURED: every case above now matches glibc exactly. difftest stays 84/85 --
+no regression -- and the 51 vsnprintf checks still pass.
+
+AND IT UNBLOCKS THE COMPILER. mc-tcc now compiles correctly: `-c` produces a
+1,038-byte object, and the freestanding hello world it builds RUNS and prints
+"hello, world". It still hangs at exit rather than terminating -- the work is
+done and something in teardown spins -- so this is not the last bug, but it is
+the one between "hangs instead of compiling" and "compiles, then hangs".
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -1107,17 +1107,44 @@ void emit_va_arg_intrinsic(void)
+ 	emit_dereference(REGISTER_ZERO, "Deref ap");
+ 	emit_push(REGISTER_ZERO, "Dereffed va_arg");
+ 
+-	emit_out("# ap = ap - sizeof(ty)\n");
++	/* A VARARG SLOT IS A REGISTER, NOT A sizeof.
++	 *
++	 * The READ above is at the type's width and that is right. The STRIDE is
++	 * not: every variadic argument occupies a full register-width slot on
++	 * this ABI, whatever its declared type, so advancing by sizeof(ty) lands
++	 * mid-slot for anything narrower.
++	 *
++	 * While `int` was eight bytes this was invisible -- int, long and every
++	 * pointer were all register-width, and the only narrower types anyone
++	 * passed variadically were promoted anyway. At four bytes the first %d
++	 * desynchronises everything after it:
++	 *
++	 *     snprintf(b, 64, "%d %d", 1, 2)     returns 12, glibc returns 3
++	 *     snprintf(b, 64, "%s%d%s", ...)     SIGSEGV -- third arg is garbage
++	 *     snprintf(b, 64, "%s%s%s", ...)     correct, char* is register-width
++	 *
++	 * tcc's pp_error formats "%s:%d: ..." and every diagnostic it tried to
++	 * print came out corrupt, which is what sent cstr_vprintf into a loop and
++	 * hung the compiler.
++	 *
++	 * A type WIDER than a register keeps its own size, so a struct passed by
++	 * value still advances by its own width. */
++	int slot_size = type_size->size;
++	if(slot_size < register_size)
++	{
++		slot_size = register_size;
++	}
++	emit_out("# ap = ap - slot\n");
+ 	load_address_of_variable_into_register(REGISTER_ZERO, ap_name);
+ 	emit_push(REGISTER_ZERO, "Push ap address");
+ 	emit_dereference(REGISTER_ZERO, "Deref ap for pointer to va_arg");
+ 	if(stack_direction == STACK_DIRECTION_PLUS)
+ 	{
+-		emit_add_immediate(REGISTER_ZERO, type_size->size, "Add size of variable");
++		emit_add_immediate(REGISTER_ZERO, slot_size, "Add slot size");
+ 	}
+ 	else
+ 	{
+-		emit_sub_immediate(REGISTER_ZERO, type_size->size, "Subtract size of variable");
++		emit_sub_immediate(REGISTER_ZERO, slot_size, "Subtract slot size");
+ 	}
+ 
+ 	emit_pop(REGISTER_ONE, "Pop AP address");
+@@ -2793,7 +2820,25 @@ void postfix_expr(void)
+ 	 * register. Loading anyway emitted ldrb -- one byte of an eight-byte
+ 	 * pointer -- and stored through the truncated result. Step the type down
+ 	 * either way, because the store width comes from it. */
+-	int assigning = match("=", global_token->s) || is_compound_assignment(global_token->s);
++	/* A PREFIX ++/-- TARGET IS AN ASSIGNMENT TARGET.
++	 *
++	 * The two branches below differ only in whether current_target is stepped
++	 * before or after the load, which decides whether the load reads the
++	 * POINTER or the object it points at. `*p = v` takes the second, correct
++	 * one -- its comment says so -- and `--*p` took the first, because the
++	 * test only looked for an `=`.
++	 *
++	 * While every type was register-width both widths were eight and the
++	 * branches were interchangeable. At four bytes `--*p` loaded an
++	 * eight-byte pointer with a four-byte ldrsw and incremented through the
++	 * truncated address. dynarray_reset's `--*n` is that line, so tcc
++	 * segfaulted before it had parsed anything -- even --version died.
++	 *
++	 * prefix_lvalue_target is already set by the prefix handler for exactly
++	 * this purpose and is still standing here: the member sites at 2051 and
++	 * 2270 consume it, and `--*p` reaches neither. */
++	int assigning = match("=", global_token->s) || is_compound_assignment(global_token->s)
++	                || prefix_lvalue_target;
+ 	int fp_nd;
+ 	while(num_dereference_after_postfix > 0)
+ 	{
