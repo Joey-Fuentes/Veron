@@ -66,3 +66,27 @@ int fflush(FILE* f)
 {
 	return 0;
 }
+
+/* fread -- ONE READ, EXACTLY AS UPSTREAM WRITES IT.
+ *
+ * EXPERIMENT-cc_reader.c.patch made micro-c read its input in
+ * FILE_BUFFER_SIZE blocks instead of a byte at a time, and that call is
+ * cc_reader.c:46:
+ *
+ *     file_max = fread(file_buffer, 1, FILE_BUFFER_SIZE, input);
+ *
+ * M2libc has fread, but in the GENERIC M2libc/bootstrap.c -- which the m71
+ * rule omits from this unit -- and not in aarch64/linux/bootstrap.c, which is
+ * the one drop_asm.py turns into patched_bootstrap.c. So the one function the
+ * patch series needs is in the one file the unit leaves out.
+ *
+ * The body is upstream's, unchanged: a single read of size*count bytes,
+ * returning what read returned. That is not strict ISO fread -- it reports
+ * BYTES rather than items -- but it is what M2libc does and what cc_reader.c
+ * is written against, and matching upstream matters more here than matching
+ * the standard.
+ */
+unsigned fread(char* buffer, unsigned size, unsigned count, FILE* f)
+{
+	return read(f, buffer, size * count);
+}
