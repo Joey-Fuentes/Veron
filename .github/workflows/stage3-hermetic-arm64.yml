@@ -358,6 +358,50 @@ jobs:
             echo "  $t sources: $out"
           done
 
+          # OBJECT-LIKE #defines BECOME enums, IN THE AIRLOCK.
+          #
+          # stage 2 has no preprocessor: nt_hash skips a `#` line to
+          # end-of-line and that is all of it. So `#define AARM64 0xB7` leaves
+          # nothing behind and AARM64 reaches stage 1 as an unresolved label.
+          #
+          # It has never mattered before because M2-Planet uses `#define`
+          # exactly ONCE in its entire source -- `#define CC_H`, a bare guard --
+          # and expresses every constant as an `enum`, having been written for
+          # compilers with no preprocessor. mescc-tools is the same author
+          # writing for a later rung, so hex2 is the first thing in this ladder
+          # to need one.
+          #
+          # Teaching stage 2 `#define` would add a second mechanism, in
+          # hand-written aarch64 assembly, for something its enum table already
+          # expresses. Rewriting the constants is smaller and checkable, and it
+          # is the same category as drop_asm.py above: a declared source edit in
+          # the AIRLOCK, not a compilation. The box still gets only busybox and
+          # receives the result through pins/.
+          #
+          # The tool REFUSES function-like or non-integer macros rather than
+          # guessing, so if upstream adds one this stops instead of quietly
+          # putting a wrong constant into a linker.
+          rm -rf pins/mescc-s2
+          for t in M1 hex2; do
+            echo "  rewriting $t's defines:"
+            python3 tools/defines_to_enums.py pins/mescc pins/mescc-s2 \
+              $(cat "pins/$t-srcs.txt") \
+              || { echo "FAIL: could not rewrite $t's defines"; exit 1; }
+          done
+          # A PRODUCER WITH NO CONSUMER IS A LIE IN THE LOG, AND SO IS A
+          # CONSUMER WITH NO PRODUCER. The previous two revisions had one of
+          # each: the rewrite ran and nothing read it, then build2 read a
+          # directory nothing created. Assert the tree exists and covers every
+          # file build2 will ask for, here, where the message can be plain.
+          for t in M1 hex2; do
+            while read -r f; do
+              [ -f "pins/mescc-s2/$f" ] || {
+                echo "FAIL: pins/mescc-s2/$f missing -- the rewrite did not"
+                echo "      cover every file in pins/$t-srcs.txt"; exit 1; }
+            done < "pins/$t-srcs.txt"
+          done
+          echo "  rewritten tree: $(find pins/mescc-s2 -type f | wc -l) files
+
       # --- BUILD THE BOX --------------------------------------------------
       - name: Load the stage-2 conformance corpus
         run: |
