@@ -506,13 +506,21 @@ jobs:
               -C pins/tcc-src --strip-components=1
           [ -f pins/tcc-src/config.h ] \
             || { echo "FAIL: no config.h -- the tarball is not the configured one"; exit 1; }
+          # A FLOOR, BECAUSE THE SUITE BELOW DEPENDS ON THESE. Every program
+          # uses __asm__ with register constraints for its syscalls, so tcc's
+          # arm64 inline assembler has to be patched in. If this glob ever
+          # matches nothing, zero patches apply in silence and ten programs
+          # fail for a reason that has nothing to do with micro-c.
+          tap=0
           for p in spikes/stage3/patches/tcc-arm64-asm/[0-9]*.patch; do
             [ -e "$p" ] || continue
             git -C pins/tcc-src apply --ignore-whitespace "$PWD/$p" 2>/dev/null \
               || patch -p1 -d pins/tcc-src -i "$PWD/$p" >/dev/null \
               || { echo "FAIL: $(basename "$p") does not apply to tcc"; exit 1; }
+            tap=$((tap + 1))
           done
-          echo "  tcc-src ready: $(ls pins/tcc-src/*.c | wc -l) .c files"
+          [ "$tap" -ge 5 ] || { echo "FAIL: only $tap tcc-arm64-asm patches, expected >= 5"; exit 1; }
+          echo "  tcc-src ready: $(ls pins/tcc-src/*.c | wc -l) .c files, $tap asm patches"
 
           # THE TABLES COME FROM spikes/reference/m2libc, PATCHED -- NOT FROM
           # M2-Planet'S SUBMODULE.
@@ -1136,56 +1144,129 @@ jobs:
                 s3ok=no
               fi
 
-              # THAT mc-tcc EXISTS IS NOT THE QUESTION. tcc-two-ways has built
-              # one for a long time; what is new here is that this one is
-              # hermetic. What has mattered throughout is whether the tcc it
-              # produces WORKS, and compiling to an object does not ask that:
-              # the last real fault was a valid aarch64 ELF that ran, exited 0
-              # and printed nothing, because a GOT entry was never allocated.
-              # Only running the output catches it.
+              # THAT mc-tcc EXISTS IS NOT THE QUESTION. tcc-two-ways has
+              # built one for a long time; what is new here is that this one is
+              # hermetic. What matters is whether the tcc it produces WORKS,
+              # and compiling to an object does not ask that: the last real
+              # fault was a valid aarch64 ELF that ran, exited 0 and printed
+              # nothing, because a GOT entry was never allocated.
               #
-              # Freestanding on purpose -- own _start, syscalls direct, no libc
-              # and no crt -- so the only code in the binary is the code under
-              # test, and nothing depends on a C library this box lacks.
-              : > hello.c
-                printf '%s\n' 'static long sys3(long n, long a, long b, long c)' >> hello.c
-                printf '%s\n' '{' >> hello.c
-                printf '%s\n' '    register long x8 __asm__("x8") = n;' >> hello.c
-                printf '%s\n' '    register long x0 __asm__("x0") = a;' >> hello.c
-                printf '%s\n' '    register long x1 __asm__("x1") = b;' >> hello.c
-                printf '%s\n' '    register long x2 __asm__("x2") = c;' >> hello.c
-                printf '%s\n' '    __asm__ __volatile__("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");' >> hello.c
-                printf '%s\n' '    return x0;' >> hello.c
-                printf '%s\n' '}' >> hello.c
-                printf '%s\n' 'void _start(void)' >> hello.c
-                printf '%s\n' '{' >> hello.c
-                printf '%s\n' '    sys3(64, 1, (long)"hello, world*n", 13);' >> hello.c
-                printf '%s\n' '    sys3(93, 0, 0, 0);' >> hello.c
-                printf '%s\n' '}' >> hello.c
-              tr '*' '\\' < hello.c > hello2.c && mv hello2.c hello.c
-              set +e
-              timeout 120 /out/mc-tcc -B/in/tcc-src -I/in/tcc-src \
-                          -nostdlib -static -o /out/hello hello.c 2>/work/hello.err
-              hrc=$?
-              set -e
-              echo "    mc-tcc builds a freestanding program: rc=$hrc, $(wc -c < /out/hello 2>/dev/null || echo 0) bytes"
-              if [ "$hrc" = 0 ] && [ -s /out/hello ]; then
-                chmod 0755 /out/hello
+              # So: ten programs, each COMPILED AND RUN, asking a little more
+              # each time -- a constant, arithmetic, loops, recursion,
+              # pointers, structs, globals in .bss, a string literal,
+              # char/switch/goto, and an indirect call. Every one is
+              # freestanding: its own _start, exit by syscall, no libc and no
+              # crt, so the only code in the binary is the code under test.
+              #
+              # Most report through the EXIT CODE, which is the least a shell
+              # can misread. Number 08 writes to stdout instead, because a
+              # string literal is an address in .data and that is exactly the
+              # class that failed silently before.
+              # THE SUITE. Ten programs, each compiled and RUN, one at a time.
+              #
+              # Written with printf because a heredoc terminator cannot be indented
+              # and every line here must be. No harness, no python -- busybox alone
+              # feeds each one to the compiler we built and reads back what it did.
+              prologue() {
+                printf '%s\n' 'static long sys3(long n, long a, long b, long c)' >> "$1"
+                printf '%s\n' '{' >> "$1"
+                printf '%s\n' '    register long x8 __asm__("x8") = n;' >> "$1"
+                printf '%s\n' '    register long x0 __asm__("x0") = a;' >> "$1"
+                printf '%s\n' '    register long x1 __asm__("x1") = b;' >> "$1"
+                printf '%s\n' '    register long x2 __asm__("x2") = c;' >> "$1"
+                printf '%s\n' '    __asm__ __volatile__("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");' >> "$1"
+                printf '%s\n' '    return x0;' >> "$1"
+                printf '%s\n' '}' >> "$1"
+                printf '%s\n' 'int run(void);' >> "$1"
+                printf '%s\n' 'void _start(void) { sys3(93, run(), 0, 0); }' >> "$1"
+              }
+              tc() {  # tc <label> <want_exit> <want_output>
                 set +e
-                hout=$(timeout 60 /out/hello 2>&1); orc=$?
+                timeout 120 /out/mc-tcc -B/in/tcc-src -I/in/tcc-src \
+                            -nostdlib -static -o t.bin t.c 2>t.err
+                crc=$?
                 set -e
-                echo "    running it: exit=$orc  output=[$hout]"
-                if [ "$hout" = "hello, world" ]; then
-                  echo "    THE tcc WE BUILT PRODUCES A WORKING PROGRAM"
-                else
-                  echo "    WRONG OUTPUT. A valid ELF that exits 0 and prints"
-                  echo "    nothing is the shape of a bad address, not a crash."
-                  s3ok=no
+                if [ "$crc" != 0 ] || [ ! -s t.bin ]; then
+                  printf "    %-26s COMPILE FAILED rc=%s\n" "$1" "$crc"
+                  grep -av '^[A-Z][0-9]*$' t.err | head -2 | sed 's/^/        /'
+                  s3ok=no; return
                 fi
-              else
-                grep -av '^[A-Z][0-9]*$' /work/hello.err | head -3 | sed 's/^/      /'
-                s3ok=no
-              fi
+                chmod 0755 t.bin
+                set +e; tout=$(timeout 60 ./t.bin 2>&1); trc=$?; set -e
+                if [ "$trc" = "$2" ] && [ "$tout" = "$3" ]; then v=ok; else v="WRONG (want exit=$2 out=[$3])"; s3ok=no; fi
+                printf "    %-26s exit=%-4s out=[%s] %s\n" "$1" "$trc" "$tout" "$v"
+              }
+              : > t.c; prologue t.c
+              printf '%s\n' 'int run(void) { return 42; }' >> t.c
+              tc 01-return-a-value 42 ""
+              : > t.c; prologue t.c
+              printf '%s\n' 'int run(void) { int a; a = 7; return a * 6 + 12 / 4 - 3 % 2; }' >> t.c
+              tc 02-arithmetic 44 ""
+              : > t.c; prologue t.c
+              printf '%s\n' 'int run(void)' >> t.c
+              printf '%s\n' '{' >> t.c
+              printf '%s\n' '    int i; int s;' >> t.c
+              printf '%s\n' '    s = 0; i = 1;' >> t.c
+              printf '%s\n' '    while (i <= 10) { s = s + i; i = i + 1; }' >> t.c
+              printf '%s\n' '    if (s == 55) return s;' >> t.c
+              printf '%s\n' '    return 1;' >> t.c
+              printf '%s\n' '}' >> t.c
+              tc 03-loops-and-if 55 ""
+              : > t.c; prologue t.c
+              printf '%s\n' 'int fact(int n) { if (n < 2) return 1; return n * fact(n - 1); }' >> t.c
+              printf '%s\n' 'int run(void) { return fact(5); }' >> t.c
+              tc 04-recursion 120 ""
+              : > t.c; prologue t.c
+              printf '%s\n' 'int run(void)' >> t.c
+              printf '%s\n' '{' >> t.c
+              printf '%s\n' '    int a[4]; int *p; int s;' >> t.c
+              printf '%s\n' '    a[0] = 1; a[1] = 2; a[2] = 3; a[3] = 4;' >> t.c
+              printf '%s\n' '    p = a; s = 0;' >> t.c
+              printf '%s\n' '    while (p < a + 4) { s = s + *p; p = p + 1; }' >> t.c
+              printf '%s\n' '    return s;' >> t.c
+              printf '%s\n' '}' >> t.c
+              tc 05-pointers-and-arrays 10 ""
+              : > t.c; prologue t.c
+              printf '%s\n' 'struct P { int x; int y; };' >> t.c
+              printf '%s\n' 'int total(struct P *p) { return p->x + p->y; }' >> t.c
+              printf '%s\n' 'int run(void) { struct P p; p.x = 20; p.y = 22; return total(&p); }' >> t.c
+              tc 06-structs-by-pointer 42 ""
+              : > t.c; prologue t.c
+              printf '%s\n' 'int g[3];' >> t.c
+              printf '%s\n' 'int zero;' >> t.c
+              printf '%s\n' 'int run(void)' >> t.c
+              printf '%s\n' '{' >> t.c
+              printf '%s\n' '    g[0] = 10; g[1] = 20; g[2] = 12;' >> t.c
+              printf '%s\n' '    return g[0] + g[1] + g[2] + zero;' >> t.c
+              printf '%s\n' '}' >> t.c
+              tc 07-globals-and-bss 42 ""
+              : > t.c; prologue t.c
+              printf '%s\n' 'int run(void) { sys3(64, 1, (long)"strings work", 12); return 0; }' >> t.c
+              tc 08-string-literal-write 0 "strings work"
+              : > t.c; prologue t.c
+              printf '%s\n' 'int run(void)' >> t.c
+              printf '%s\n' '{' >> t.c
+              printf '%s\n' '    char c; int r;' >> t.c
+              printf '%s\n' '    c = 65; r = 0;' >> t.c
+              printf '%s\n' '    switch (c) { case 65: r = 40; break; default: r = 1; }' >> t.c
+              printf '%s\n' '    if (r == 40) goto done;' >> t.c
+              printf '%s\n' '    return 2;' >> t.c
+              printf '%s\n' 'done:' >> t.c
+              printf '%s\n' '    return r + 2;' >> t.c
+              printf '%s\n' '}' >> t.c
+              tc 09-char-switch-and-goto 42 ""
+              : > t.c; prologue t.c
+              printf '%s\n' 'int add(int a, int b) { return a + b; }' >> t.c
+              printf '%s\n' 'int mul(int a, int b) { return a * b; }' >> t.c
+              printf '%s\n' 'int run(void)' >> t.c
+              printf '%s\n' '{' >> t.c
+              printf '%s\n' '    int (*f)(int, int);' >> t.c
+              printf '%s\n' '    f = add;' >> t.c
+              printf '%s\n' '    if (f(20, 21) != 41) return 1;' >> t.c
+              printf '%s\n' '    f = mul;' >> t.c
+              printf '%s\n' '    return f(6, 7);' >> t.c
+              printf '%s\n' '}' >> t.c
+              tc 10-function-pointers 42 ""
             else
               echo "    no mc-tcc produced ($(wc -c < /out/mc-tcc 2>/dev/null || echo 0) bytes)"
               s3ok=no
