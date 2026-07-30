@@ -1343,16 +1343,44 @@ jobs:
           # times the answer was to instrument the CALLEE again. The function
           # executing when it dies is gen_function, and it had no markers at
           # all. It is first in the list now.
-          FN='gen_function,put_extern_sym2,put_extern_sym,greloca'
-          python3 spikes/stage3/tools/instrument.py --map --prefix P \
+          # ENTRY MARKERS ON EVERY FUNCTION, NOT STATEMENTS IN A CHOSEN FEW.
+          #
+          # Statement marking answers "which statement" only for a function
+          # someone already guessed. Three rounds went that way: the trail
+          # stopped at put_extern_sym's last statement, then at gen_function's
+          # call to block(0), each time because the function actually executing
+          # had no markers. block() is 700 lines and calls most of the parser,
+          # so guessing again is not a plan.
+          #
+          # Entry marking has no statement-boundary decisions to make -- the
+          # position is the first line of a body the range-finder already
+          # located -- so it works on ALL of them at once and prints the call
+          # PATH. Locally that turned a week-old fault into twenty minutes:
+          #     vstore -> verify_assign_cast -> compare_types
+          #            -> is_compatible_unqualified_types -> compare_types
+          # named the two-line branch that was wrong.
+          #
+          # Statement marking cannot be used at this scale anyway: it inserts
+          # markers before `else`, before `case`, and -- brace depth being
+          # counted textually across #ifndef blocks -- at file scope, each of
+          # which breaks the compile rather than the trail.
+          FN=$(grep -oE '^(ST_FUNC|static|LIBTCCAPI)?[A-Za-z_][A-Za-z0-9_ \*]*\b([a-z_][a-z0-9_]*)[[:space:]]*\(' inst/tccgen.c \
+               | grep -oE '[a-z_][a-z0-9_]*[[:space:]]*\($' | sed 's/[( ]//g' \
+               | sort -u | tr '\n' ',' | sed 's/,$//')
+          echo "  $(echo "$FN" | tr ',' '\n' | wc -l) functions in tccgen.c"
+          python3 spikes/stage3/tools/instrument.py --map --entry --prefix P \
             inst/tccgen.c "$FN" > inst-map.txt
-          python3 spikes/stage3/tools/instrument.py --prefix P \
+          python3 spikes/stage3/tools/instrument.py --entry --prefix P \
             inst/tccgen.c "$FN" > /tmp/i.c
           mv /tmp/i.c inst/tccgen.c
-          python3 spikes/stage3/tools/instrument.py --map --prefix E \
-            inst/tccelf.c 'put_elf_reloca,put_elf_reloc,put_elf_sym,find_elf_sym' >> inst-map.txt
-          python3 spikes/stage3/tools/instrument.py --prefix E \
-            inst/tccelf.c 'put_elf_reloca,put_elf_reloc,put_elf_sym,find_elf_sym' > /tmp/e.c
+          FE=$(grep -oE '^(ST_FUNC|static|LIBTCCAPI)?[A-Za-z_][A-Za-z0-9_ \*]*\b([a-z_][a-z0-9_]*)[[:space:]]*\(' inst/tccelf.c \
+               | grep -oE '[a-z_][a-z0-9_]*[[:space:]]*\($' | sed 's/[( ]//g' \
+               | sort -u | tr '\n' ',' | sed 's/,$//')
+          echo "  $(echo "$FE" | tr ',' '\n' | wc -l) functions in tccelf.c"
+          python3 spikes/stage3/tools/instrument.py --map --entry --prefix E \
+            inst/tccelf.c "$FE" >> inst-map.txt
+          python3 spikes/stage3/tools/instrument.py --entry --prefix E \
+            inst/tccelf.c "$FE" > /tmp/e.c
           mv /tmp/e.c inst/tccelf.c
           echo "  $(wc -l < inst-map.txt) statements mapped across tccgen.c and tccelf.c"
 
@@ -1398,6 +1426,8 @@ jobs:
           echo "  LAST STATEMENT THAT COMPLETED: ${last:-none}"
           if [ -n "${last:-}" ]; then
             grep -E "^$last " inst-map.txt | sed 's/^/    /' || true
+            # (with entry markers there is no "rest of the function" to show --
+            #  the call path above is the answer)
             # THE REST OF THE SAME FUNCTION, not the next lines of the map.
             #
             # The first version printed the following map entries, which are in
@@ -1415,6 +1445,10 @@ jobs:
             # because an empty section looks like an empty result.
             fn=$(grep -E "^$last " inst-map.txt | awk '{print $3}' | sed 's/:$//')
             echo "  (function: $fn)"
+            echo "  --- the last 12 functions entered ---"
+            grep -aoE "^[PE][0-9]+" /tmp/ext-marks.txt | tail -12 | while read m; do
+              grep -E "^$m " inst-map.txt | sed 's/.*  //' | sed 's/^/    /'
+            done
             echo "  --- rest of $fn, where execution was heading ---"
             awk -v f="$fn" -v l="$last" '
               $0 ~ ("  " f ": ") { seen[NR] = $0; if (found) { print "    " $0; n++ }
