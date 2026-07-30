@@ -1021,6 +1021,29 @@ jobs:
             done
             cat tcc.code tcc.strs > tcc-all.M1
             A=/in/m2/M2libc/aarch64
+            # SAY WHAT IS BEING FED IN, BEFORE GUESSING WHY IT FAILED.
+            #
+            # `tcc-all.M1:20 :Received invalid other; ret` means M1 reached
+            # print_hex with a token that has no Expression -- ret's DEFINE
+            # never registered -- while mov_x0,x17 on the lines above did. Two
+            # rounds went on hypotheses about that. The same M1 binary links
+            # gen1 in GATE 2 above, and gen1's .M1 is LARGER, so it is not size
+            # and not the binary. Print the inputs and stop theorising.
+            echo "    inputs to M1:"
+            for i in "$A/aarch64_defs.M1" "$A/libc-full.M1" tcc-all.M1; do
+              printf '      %-44s %8s lines  %10s bytes\n' "$i" \
+                "$(wc -l < "$i" 2>/dev/null || echo -)" \
+                "$(wc -c < "$i" 2>/dev/null || echo -)"
+            done
+            echo "      DEFINE ret present: $(grep -c '^DEFINE ret ' "$A/aarch64_defs.M1" 2>/dev/null || echo 0)"
+            echo "      per-part line counts, in join order:"
+            for f in libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1 maintcc.M1; do
+              printf '        %-14s %8s lines  strings-marker: %s\n' "$f" \
+                "$(wc -l < "$f")" "$(grep -c '^# Program strings$' "$f")"
+            done
+            echo "      tcc-all.M1 first 4 lines:"
+            head -4 tcc-all.M1 | sed 's/^/        | /'
+            echo "      tcc-all.M1 line 20: $(sed -n '20p' tcc-all.M1)"
             set +e
             timeout 300 ./M1 -f "$A/aarch64_defs.M1" -f "$A/libc-full.M1" \
                              -f tcc-all.M1 --little-endian --architecture aarch64 \
