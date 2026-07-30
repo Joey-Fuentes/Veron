@@ -978,6 +978,22 @@ jobs:
           # A TRUNCATED FILE CAN FAIL FOR ITS OWN REASONS -- a cut mid-function
           # is a syntax error, not our bug. Only a SIGNAL counts as the fault;
           # a clean diagnostic means the cut was the problem, not the compiler.
+          #
+          # THAT IS NOT ENOUGH, AND THE FIRST VERSION OF THIS WAS MISREAD
+          # BECAUSE OF IT. Treating "did not signal" as "succeeded" makes a
+          # parse error indistinguishable from a clean compile, so the search
+          # converges on the point where truncation stops HIDING the crash --
+          # not on the construct that causes it. It reported "last good 155,
+          # first bad 156" for several rounds; both of those files are cut
+          # mid-function and neither compiles:
+          #
+          #     head -155   exit 1   error: expression expected before <eof>
+          #     head -156   exit 1   error: expression expected before <eof>
+          #
+          # So the answer was read as "line 156 contains the bad construct"
+          # when it meant "at 156 the file is long enough to reach it". The
+          # boundary is now reported WITH the exit status and message at each
+          # end, so a reader can see whether either side actually compiled.
           run_head "$total"; full=$?
           echo "  whole file: exit $full"
           if [ "$full" -le 128 ]; then
@@ -992,8 +1008,18 @@ jobs:
             run_head "$mid"; rc=$?
             if [ "$rc" -gt 128 ]; then hi=$mid; else lo=$mid; fi
           done
-          echo "  last line that does NOT signal: $lo"
-          echo "  first line that DOES:           $hi"
+          # REPORT WHAT EACH SIDE ACTUALLY DID, not just that one signalled.
+          run_head "$lo"; lo_rc=$?
+          lo_msg=$(grep -a 'error:' /tmp/cut.log | head -1 | cut -c1-60)
+          run_head "$hi"; hi_rc=$?
+          hi_msg=$(grep -a 'error:' /tmp/cut.log | head -1 | cut -c1-60)
+          echo "  last line that does NOT signal: $lo   (exit $lo_rc ${lo_msg:-clean})"
+          echo "  first line that DOES:           $hi   (exit $hi_rc)"
+          if [ "$lo_rc" != 0 ]; then
+            echo "  NOTE: the last non-signalling file did NOT compile either --"
+            echo "        it failed to parse, so this boundary is where truncation"
+            echo "        stops hiding the crash, NOT the construct that causes it."
+          fi
           echo "  --- the line ---"
           sed -n "${hi}p" tests/tcctest.c | sed 's/^/    /'
           echo "  --- context ---"
@@ -1192,13 +1218,59 @@ jobs:
           # THE SCALE CONSTANTS, PULLED OUT FIRST. The full emissions are
           # below and worth reading, but the one number this round turns on
           # is N in `mov_x14,N` immediately before a `mul`.
-          echo "  --- element width chosen per function ---"
+          # A VERDICT, NOT A TABLE.
+          #
+          # This used to print the width for every function including main --
+          # whose 48s are CORRECT, because main indexes `struct Big items[4]`
+          # where the element really is 48 bytes -- and then a footnote saying
+          # "48 is wrong". Unlabelled correct 48s under a note calling 48 wrong
+          # reads as a failure to anyone who did not write the step, and it
+          # cost a round of exactly that. Output that needs interpreting is a
+          # bug in the output.
+          #
+          # The three probe functions are compared mechanically instead. main
+          # is shown separately and explained, since its widths are evidence
+          # that a genuine 48-byte element still scales by 48.
+          echo "  --- element width, probe functions ---"
+          width_of() {
+            awk -v want=":FUNCTION_$1" '
+              $0 == want { on = 1 }
+              on && /^:FUNCTION_/ && $0 != want { exit }
+              on && /^mov_x14,/ { w = $0 }
+              on && /^mul_x0,x14,x0/ { sub(/^mov_x14,/, "", w); sub(/ .*/, "", w);
+                                       print w; exit }
+            ' /tmp/shape.M1
+          }
+          bad=0
+          for f in via_global via_local plain_global decay_global \
+                   bigptr_addr plain_bigptr longptr_addr; do
+            w=$(width_of "$f")
+            if [ "$w" = 8 ]; then mark="ok"; else mark="WRONG -- expected 8"; bad=$((bad + 1)); fi
+            printf '    %-16s %-4s %s\n' "$f" "${w:-none}" "$mark"
+          done
+          bp=$(width_of bigptr_addr); pb=$(width_of plain_bigptr)
+          if [ "$bp" = "$pb" ]; then
+            echo "    VERDICT: bigptr_addr matches plain_bigptr ($bp) -- the"
+            echo "             address-of path picked the same width as the path"
+            echo "             that was always correct."
+          else
+            echo "    VERDICT: MISMATCH -- bigptr_addr $bp, plain_bigptr $pb."
+            echo "             Address_of chose a different element width."
+            bad=$((bad + 1))
+          fi
+
+          echo "  --- main, for contrast ---"
+          echo "    main indexes 'struct Big items[4]', a real 48-byte element,"
+          echo "    so 48 here is CORRECT and is what a genuine struct array"
+          echo "    should emit:"
           awk '
-            /^:FUNCTION_/ { fn = substr($0, 11) }
-            /^mov_x14,/   { last = $0 }
-            /^mul_x0,x14,x0/ { printf "    %-16s %s\n", fn, last }
+            /^:FUNCTION_main$/ { on = 1 }
+            on && /^:FUNCTION_/ && !/^:FUNCTION_main$/ { exit }
+            on && /^mov_x14,/ { last = $0 }
+            on && /^mul_x0,x14,x0/ { print "      " last }
           ' /tmp/shape.M1
-          echo "    (bigptr_addr should match plain_bigptr; 8 is right, 48 is wrong)"
+          [ "$bad" = 0 ] && echo "  all probe widths correct" \
+                         || echo "  $bad probe(s) wrong -- see above"
 
           for f in bigptr_addr plain_bigptr longptr_addr via_global plain_global decay_global via_local; do
             echo "  ===== $f ====="
