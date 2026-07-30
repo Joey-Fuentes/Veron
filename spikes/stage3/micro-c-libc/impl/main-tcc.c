@@ -46,6 +46,35 @@ int main(int argc, char** argv)
     int i = 1;
     int output_type = TCC_OUTPUT_EXE;
 
+    /* --version: DOES THE COMPILER COME UP AT ALL?
+     *
+     * This driver knows -o, -I, -B and -c and skips anything else, so
+     * `--version` fell through to "no input file" and exit 1 -- which reads as
+     * a failure in the log every run and says nothing about whether the
+     * compiler works.
+     *
+     * Worth answering properly, because it is the question that mattered for
+     * weeks: mc-tcc segfaulted inside tcc_new (dynarray_add, a four-byte load
+     * of an eight-byte pointer) and later hung before reaching main's body.
+     * Building and freeing a TCCState exercises exactly that path and nothing
+     * else, so a clean exit here means initialisation is sound and any failure
+     * below is about the code being compiled. */
+    if(argc > 1)
+    {
+        if(0 == strcmp(argv[1], "--version"))
+        {
+            s = tcc_new();
+            if(0 == s)
+            {
+                puts("mc-tcc: tcc_new returned NULL");
+                return 2;
+            }
+            tcc_delete(s);
+            puts("mc-tcc: tcc_new and tcc_delete completed");
+            return 0;
+        }
+    }
+
     if(argc < 2)
     {
         puts("usage: tcc input.c [-o output] [-I path] [-B path]");

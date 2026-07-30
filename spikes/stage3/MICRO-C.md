@@ -63,6 +63,19 @@ runs                         tcc_new completes
                              faults later, and elsewhere
 ```
 
+**Since `int` became four bytes** (`EXPERIMENT-zzw`) and the seven defects
+behind it were fixed, it compiles rather than faulting:
+
+```
+mc-tcc --version             tcc_new and tcc_delete completed
+mc-tcc -c seven.c            rc=0, a 1,038-byte object
+a freestanding hello world   builds, runs, prints "hello, world"
+```
+
+Four of the twelve programs in the hermetic suite pass outright -- a constant,
+globals in `.bss`, `char`/`switch`/`goto`, and a string literal written through
+`write`. Two segfault at RUN time; see **What is still wrong**.
+
 **Where it stands now.** micro-c's tcc compiles a file end to end and emits a
 real object:
 
@@ -267,7 +280,7 @@ a 200-operator file from 83 MB to 3.4 MB.
 
 | gap | consequence |
 |---|---|
-| `int` is EIGHT bytes | every struct differs from a normal ABI; three of our own headers had wrong layouts because of it |
+| ~~`int` is EIGHT bytes~~ | **CLOSED, `EXPERIMENT-zzw`.** tcc forced it: `#define DATA_ONLY_WANTED 0x80000000` into an `int` has to WRAP NEGATIVE or `put_extern_sym` takes its early return and every global is dropped. One line in `cc_types.c`, and six further defects behind it -- zzu, zzv, zzx, zzy, zzz, zzza, zzzb -- because at eight bytes `int`, `long`, every pointer and the register were all one width, so no width or signedness decision had ever been exercised. See the table below |
 | ~~pointer arithmetic does not scale~~ | **CLOSED, `EXPERIMENT-zz7`.** All four shapes (`p+n`, `n+p`, `p-n`, `p-q`) scale; cases 21 and 50. It was never the blocker -- see the correction above. The shelved `scale_pointer_operand` failed for a reason this file did not have: **an integer literal had no type**, so `q + 1` reported a pointer on *both* sides and read as a difference. Three further losses had to go with it -- see the patch preamble |
 | ~~every integer literal is truncated to 32 bits~~ | **CLOSED, `EXPERIMENT-zzb`.** `strtoint` returns `int` AND sign-extends from bit 31, `int2str` masks to 32, and `write_load_immediate` took an `int`; built by gcc, micro-c could not REPRESENT a 64-bit constant in the source it compiles. `strtolong`/`long2str` and a `long long` emitter path close it, emitting the vocabulary `patches/m2libc/0005` landed. tcc no longer warns "integer constant overflow" on every constant it reads. Cases 53 and 54 |
 | **a constant with bit 31 set was wrong on one architecture or the other, always** | The threshold for the wide path is 2^31 rather than 2^32 because between the two there is no correct 32-bit form: aarch64's `ldr_w` zero-extends (right there, wrong for negatives) and amd64's `mov_<r>,%imm32` sign-extends (right for negatives, wrong there). 189 constants in one compile of libtcc.c sat in that range, every one of them becoming `0xFFFFFFFF80000000` on amd64. Sixth instance of the class below and the **first running the other way** -- here amd64 is the wrong column |
@@ -276,6 +289,7 @@ a 200-operator file from 83 MB to 3.4 MB.
 | **amd64 hides what aarch64 faults on -- FIVE times -- and once the reverse** | Unaligned members, unpadded string data, struct `sizeof`, arrays of structs, and a sign-extending `mov_rax,%imm32` making a wrong constant land on the right value. The rule this earned: **a green amd64 difftest is not a result.** `EXPERIMENT-zzb` supplies the mirror image -- 189 constants that aarch64's zero-extension put back on the right answer and amd64 got wrong -- so the rule is now symmetric: **neither column is the reference.** Read both |
 | ~~a goto label is global~~ | **CLOSED, `EXPERIMENT-zza`.** A C label is scoped to its function; this emitted the bare name flat, so tcc's five `redo:` labels collided. **This was the blocker.** M2-Planet's own source has globally unique labels, which is why upstream never needed it -- our stage 2 fixed the same thing at m58 and the note there says it is "stricter than the target requires, at no cost". It was exactly what the target required |
 | one lvalue rule, EIGHT implementations | Beside the nineteen load sites, `cc_core.c` decides "is this an assignment target" in eight places, and **three have been found missing a case the others had, one per round**. Same disease, worth its own row: it is the one that has cost tcc the most |
+| **a pointer walked over a local array, and a function pointer in a struct member** | Both SEGFAULT at run time in programs mc-tcc builds -- `while (p < a + 4) ... p = p + 1`, and `o.add(2,3)` through `struct Ops { int (*add)(int,int); }`. difftest case 14 is the second and is still unreduced after many attempts: every hand-written reduction passes while the real file faults. These are the last two known wrong-codegen shapes |
 | `float`/`double`/`long double` | one word-sized integer type |
 | ~~`constant_expression` precedence~~ | **CLOSED, `EXPERIMENT-zze`.** And the description here was wrong twice over: not confined to the constant parser, and not right-to-left. All five bitwise/logical operators sat at ONE level and parsed flat, left to right, so `1\|2^3` was `(1\|2)^3`. A right-to-left fold would have got that one right by accident. Case 59 |
 | 19 load sites | see above |
@@ -400,9 +414,46 @@ was written because of this, and the emitted copy loop was correct all along.
 do. `tools/verify_defs.py` asks whether it is CORRECT, which for a
 register-to-register form is fully determined by the name.
 
-**And the same class in reverse: `int` is eight bytes** -- still the deepest
-open item, and still the reason every struct micro-c lays out differs from a
-normal ABI.
+**`int` IS NOW FOUR BYTES.** It was eight, and that was the deepest open item
+in this file for a long time. tcc forced it: tccgen.c keeps
+
+    ST_DATA int nocode_wanted;
+    #define NODATA_WANTED     (nocode_wanted > 0)
+    #define DATA_ONLY_WANTED  0x80000000
+
+and sets DATA_ONLY_WANTED for every file-scope variable. On a 32-bit int that
+sets the SIGN bit, so NODATA_WANTED is false and put_extern_sym defines the
+symbol; at eight bytes 0x80000000 stays positive and put_extern_sym takes its
+early return. Every global in every program our tcc compiled was silently
+dropped.
+
+The change is EXPERIMENT-zzw, one line in cc_types.c. What it cost is the
+interesting part: at eight bytes, `int`, `long`, every pointer and the register
+were all the same width, so a whole class of width and signedness decisions had
+never been exercised. Six further defects came out of it, each invisible before:
+
+| | |
+|---|---|
+| **zzu** | a signed four-byte load must sign-extend; aarch64 used `ldr_w0`, which zeroes the top half. Every other target already had this right. Needs `ldrsw_x0,[x0]`, added as patches/m2libc/0008. |
+| **zzv** | the bitfield clear mask overflowed according to the width of the int in *micro-c's own source* -- four bytes under gcc, eight under stage 2 -- so the same line produced different masks depending on who built the compiler. |
+| **zzx** | `++`/`--` dereferenced at register width rather than the variable's. |
+| **zzy** | a prefix `++`/`--` target is an assignment target: `--*p` loaded an eight-byte pointer with a four-byte `ldrsw`. |
+| **zzz** | a vararg slot is a register, not a `sizeof`. `%d` desynchronised every argument after it, so every tcc diagnostic came out corrupt. |
+| **zzza** | a global scalar is stored at its type's width and was read at the register's. Positives survived because the neighbours are zero; `-1` did not. |
+| **zzzb** | a struct member never carried its `is_signed`, so every member read zero-extending. `p->c = -1; p->c != -1` was true. |
+
+The last two are worth reading together: both are store-narrow/load-wide, in
+different storage classes, and both were invisible to any test using positive
+values. Several tests written for exactly these sites passed for that reason.
+
+**Every struct micro-c lays out now matches a normal ABI for its integer
+members** -- which was the other half of the old note, and is no longer true of
+the compiler.
+
+**What this does NOT yet mean.** mc-tcc compiles and links, and the programs it
+builds run, but two shapes still fault at run time: a pointer walked over a
+local array (`while (p < a + 4) ... p = p + 1`) and a function pointer held in a
+struct member. difftest case 14 is the second of those and is still unreduced.
 
 ---
 
