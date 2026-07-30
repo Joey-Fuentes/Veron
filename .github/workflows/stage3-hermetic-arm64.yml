@@ -381,10 +381,42 @@ jobs:
           # The tool REFUSES function-like or non-integer macros rather than
           # guessing, so if upstream adds one this stops instead of quietly
           # putting a wrong constant into a linker.
-          rm -rf pins/mescc-s2
+          # OCTAL FIRST, THEN THE DEFINES. THE ORDER IS LOAD-BEARING.
+          #
+          # stage 2 does not implement octal: parseval checks for a leading
+          # `0x` and otherwise reads the digits as decimal, so `0750` is 750.
+          # hex2.c:196 chmods its own output with 0750, and 750 as a mode is
+          # 0o1356 -- owner `--wx`, no read bit. hex2 linked gen1 correctly and
+          # then nothing could open it:
+          #
+          #     /work/run.sh: line 9: can't open /out/gen1: Permission denied
+          #
+          # THIS ONE IS EXHAUSTIVE ON PURPOSE, unlike the defines rewrite. A
+          # `#define` stage 2 cannot expand fails LOUDLY, as an unresolved label
+          # at stage 1. A misparsed octal literal fails SILENTLY -- it is just a
+          # different number, and the program runs and does the wrong thing. So
+          # every literal in the unit is rewritten and reported, not only the
+          # one that happened to hurt.
+          #
+          # Measured across the pinned trees: M2-Planet has ZERO octal literals
+          # (same reason it has no #defines -- written for compilers like this
+          # one), mescc-tools has exactly ONE, and M2libc has 223, all of them
+          # mode and open-flag constants like `#define S_IRWXU 00700`.
+          #
+          # Those M2libc ones are why this runs BEFORE defines_to_enums: that
+          # tool would match `00700` as an integer and emit
+          # `enum { S_IRWXU = 00700 }`, which stage 2 then reads as 700. Running
+          # octal first means the defines tool only ever sees decimal.
+          rm -rf pins/mescc-oct pins/mescc-s2
+          for t in M1 hex2; do
+            echo "  rewriting $t's octal literals:"
+            python3 tools/octal_to_decimal.py pins/mescc pins/mescc-oct \
+              $(cat "pins/$t-srcs.txt") \
+              || { echo "FAIL: could not rewrite $t's octal literals"; exit 1; }
+          done
           for t in M1 hex2; do
             echo "  rewriting $t's defines:"
-            python3 tools/defines_to_enums.py pins/mescc pins/mescc-s2 \
+            python3 tools/defines_to_enums.py pins/mescc-oct pins/mescc-s2 \
               $(cat "pins/$t-srcs.txt") \
               || { echo "FAIL: could not rewrite $t's defines"; exit 1; }
           done
