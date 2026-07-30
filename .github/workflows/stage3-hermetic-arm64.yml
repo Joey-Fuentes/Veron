@@ -353,6 +353,25 @@ jobs:
             [ -n "$(echo $out)" ] || { echo "FAIL: could not derive $t sources"; exit 1; }
             h=$(python3 tools/include_closure.py pins/mescc $out) \
               || { echo "FAIL: could not close $t's includes"; exit 1; }
+            # chmod COMES FROM M2libc, BECAUSE THE BOX HAS NO SYSTEM libc.
+            #
+            # Upstream's makefile lists only M2libc/bootstrappable.c and takes
+            # fopen, fputs, chmod and the rest from glibc. In here there is no
+            # glibc: patched_bootstrap.c supplies most of it, and chmod is the
+            # one hex2.c:196 needs that it does not. M2libc has it at
+            # aarch64/linux/sys/stat.c -- 98 self-contained lines, none of which
+            # redefine anything bootstrap.c already provides. fflush is the
+            # other, and it went into m2libc-shim.c as a no-op, because nothing
+            # in this libc is buffered and pulling in M2libc/stdio.c to get it
+            # would redefine fopen, fclose and fputs.
+            #
+            # This is an ADDITION to a derived list, so it is spelled out here
+            # rather than hidden in the derivation: the makefile cannot know
+            # what a libc-less target needs.
+            if [ "$t" = hex2 ]; then
+              out="M2libc/aarch64/linux/sys/stat.c $out"
+              echo "  $t added for the box: M2libc/aarch64/linux/sys/stat.c"
+            fi
             printf '%s\n' $h $out > "pins/$t-srcs.txt"
             echo "  $t headers: $(echo $h)"
             echo "  $t sources: $out"

@@ -50,3 +50,19 @@ void fputc(char s, FILE* f)
 	__shim_buf[0] = s;
 	write(f, __shim_buf, 1);
 }
+
+/* fflush -- NOTHING IS BUFFERED HERE, SO THERE IS NOTHING TO FLUSH.
+ *
+ * hex2.c:188 calls fflush(output) before chmod-ing its result. M2libc's FILE*
+ * is a bare file descriptor and fputs/fputc go straight out through the write
+ * syscall, so a flush has no work to do and returning 0 is the honest answer
+ * rather than a stub.
+ *
+ * It lives here and not by adding M2libc/stdio.c to the unit because
+ * bootstrap.c already defines fopen, fclose and fputs -- pulling stdio.c in
+ * would redefine all three to get this one function.
+ */
+int fflush(FILE* f)
+{
+	return 0;
+}
