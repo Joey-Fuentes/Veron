@@ -1,0 +1,98 @@
+The last dereference of an assignment target is not a load.
+
+    *--file->buf_ptr = '\\';        tccpp.c, handle_stray_noerror
+
+primary_expr_variable has two branches for a dereference under a prefix ++/--,
+and the comment directly above them states the rule:
+
+    the dereference chain must stop one load short -- which is exactly the
+    rule the assignment paths already carry, under the name `assigning`
+
+It did not stop short. BOTH branches emitted the load; they differed only in
+whether current_target was stepped before or after it. So `*--p = v` computed
+the address, LOADED the byte living there, and stored through that byte as if
+it were a pointer.
+
+WHAT IT COST. handle_stray_noerror's last line runs only when the lexer meets a
+stray backslash, so:
+
+    char* s = "hi";        compiled
+    char* s = "hi\n";      SIGSEGV
+
+Every escape -- \n \t \\ \" \0 \x41 -- and only escapes. tcctest.c reached it at
+line 156, the first string with a \n in it; the 155 lines before compiled
+clean. That made it look like a size or complexity limit for several rounds
+rather than one construct, and the bisection that finally found it was on the
+INPUT, not the compiler: head -N tcctest.c until the exit code changed.
+
+FIFTH TIME FOR ONE RULE. zzc taught it to the arrow site, zzg to the dot site,
+zzm to the array site, and here it is again one layer deeper -- this time not a
+missing flag but a rule that was WRITTEN DOWN in the comment and not
+implemented in either branch beneath it. An address applies to the LAST step of
+a chain, never to a step that still has to be followed. Only the final
+dereference is spared: `**pp = v` still loads once to reach the inner pointer.
+
+Four functions now carry this rule independently. MICRO-C.md counts the class;
+this is the strongest argument yet for hoisting it into one place, because the
+comment being right and the code being wrong is a failure mode that reviewing
+the comment cannot catch.
+
+WHAT IT UNBLOCKS
+
+    char* s = "hi\n";                exit 0, 815-byte object
+    tcctest.c                        line 156 -> line 294, and now a
+                                     DIAGNOSTIC rather than a signal:
+                                     "invalid operand types for binary operation"
+
+MEASURED
+
+    difftest      69 pass / 0 fail / 1 known gap, both architectures
+    corpus        423 of 426 on aarch64
+    vocabulary    clean on five architectures
+
+diff --git a/cc_core.c b/cc_core.c
+index 0cba7f2..e20da61 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -1170,13 +1170,34 @@ void primary_expr_variable(void)
+ 					}
+ 					else
+ 					{
+-						/* A STRUCT IS NEVER LOADED INTO A REGISTER. Dereferencing a
+-						 * struct pointer yields its ADDRESS, which is what every
+-						 * other struct path already assumes -- member access has
+-						 * had this guard all along. Without it `x = *p` for a
+-						 * struct tried load_value(16):
+-						 *     unsupported size 16 of type 'CType'   tccgen.c:895 */
+-						if(register_size >= current_target->size) emit_out(load_value(current_target->size, current_target->is_signed));
++						/* THE LAST DEREFERENCE OF AN ASSIGNMENT TARGET IS NOT A
++						 * LOAD -- and this branch emitted one anyway.
++						 *
++						 * The comment above says the chain "must stop one load
++						 * short" when assigning. It did not: both branches
++						 * loaded and differed only in whether current_target
++						 * was stepped before or after. So `*--p = v` computed
++						 * the address, LOADED the byte at it, and stored
++						 * through that byte as if it were a pointer.
++						 *
++						 *     return *--file->buf_ptr = '\\';   tccpp.c
++						 *
++						 * That line runs only when the lexer meets a stray
++						 * backslash, so every string literal containing an
++						 * ESCAPE crashed and every string without one was
++						 * fine. tcctest.c reaches it at line 156, the first
++						 * "...\n..." in the file; the 155 lines before it
++						 * compile clean.
++						 *
++						 * Only the LAST dereference is spared: `**pp = v`
++						 * still has to load once to reach the inner pointer.
++						 * Same rule as EXPERIMENT-zzc, zzg and zzm -- an
++						 * address applies to the last step of a chain, never
++						 * to a step that still has to be followed. */
++						if(num_dereference > 1)
++						{
++							if(register_size >= current_target->size) emit_out(load_value(current_target->size, current_target->is_signed));
++						}
+ 						current_target = current_target->type;
+ 					}
+ 				}
