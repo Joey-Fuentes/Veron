@@ -1,0 +1,90 @@
+int is four bytes.
+
+WHY. tcc's source depends on a 32-bit int WRAPPING NEGATIVE. tccgen.c carries
+
+    ST_DATA int nocode_wanted;
+    #define NODATA_WANTED     (nocode_wanted > 0)
+    #define DATA_ONLY_WANTED  0x80000000
+
+and decl_initializer_alloc sets DATA_ONLY_WANTED for every file-scope variable.
+At 32 bits that sets the SIGN bit, so NODATA_WANTED is false and put_extern_sym
+goes on to define the symbol. At eight bytes 0x80000000 stays positive and
+put_extern_sym takes its early return:
+
+    if (nocode_wanted && (NODATA_WANTED || ...)) return;
+
+EVERY GLOBAL IN EVERY PROGRAM our tcc compiles was therefore dropped:
+
+    control:  OBJECT GLOBAL sz=4 ndx=4   zero
+    ours:     NOTYPE GLOBAL sz=0 UND     zero
+    tcc: error: undefined symbol 'zero'
+
+for a variable declared one line above. Measured rather than deduced: markers
+in decl_initializer_alloc all fire, with size=4, addr=0 and sec=bss_section,
+and the symbol still comes out undefined -- the arguments reaching
+put_extern_sym are correct, and it returns before using them.
+
+int32_t has been a signed four-byte primitive here all along -- it is what
+micro-c-libc uses for every struct that must match the kernel -- so the
+four-byte path is the tested one rather than a new one. What was never tested
+is every ordinary integer taking it, which is why zzu and zzv are
+prerequisites: they are the two defects this uncovered.
+
+WHAT THIS BREAKS, STATED PLAINLY. difftest goes 85/85 -> 83/85. Two cases
+regress, both segfaults, both in member access:
+
+    14-function-pointer-member
+    61-prefix-operator-through-a-dot
+
+AND FOUR CORPUS ROWS MOVE, WHICH IS NOT A REGRESSION. stage2-corpus goes
+423/426 -> 419/426, and every one of the four returns exactly HALF what the
+row expects:
+
+    row 121  returns 8,  expected 16
+    row 122  returns 12, expected 24
+    row 123  returns 8,  expected 16
+    row 352  returns 4,  expected 8
+
+That is sizeof at four bytes rather than eight. The corpus README already
+tracks "29 rows where gcc gives a different answer from the corpus (int
+width)"; these four join that list, and they now agree with gcc instead of
+with the stored expectation. Rows 364 and 368 were already failing before this
+change and are untouched by it.
+
+They are NOT pre-existing -- the compiler without this change passes 85/85 --
+and they are NOT reduced: every hand-written reduction of case 14 passes while
+the real file faults. They are landed knowingly, with the regression named
+here, because the alternative is a compiler that silently discards every
+global in every program it compiles.
+
+--- a/cc_types.c
++++ b/cc_types.c
+@@ -101,11 +101,26 @@ void initialize_types(void)
+ 	prim_types = add_primitive(unsigned_long);
+ 
+ 	/* Define UNSIGNED */
+-	unsigned_integer = new_primitive("unsigned", "unsigned*", "unsigned**", register_size, FALSE);
++	/* int IS FOUR BYTES, NOT A REGISTER.
++	 *
++	 * tcc's source depends on it. tccgen.c carries
++	 *     ST_DATA int nocode_wanted;
++	 *     #define NODATA_WANTED    (nocode_wanted > 0)
++	 *     #define DATA_ONLY_WANTED 0x80000000
++	 * and sets DATA_ONLY_WANTED for every file-scope variable. On a 32-bit
++	 * int that sets the SIGN BIT, so NODATA_WANTED is false and
++	 * put_extern_sym defines the symbol. At eight bytes 0x80000000 stays
++	 * positive, put_extern_sym takes its early return, and every global in
++	 * every program our tcc compiles is silently dropped.
++	 *
++	 * int32_t below has been a signed four-byte primitive all along -- it is
++	 * what micro-c-libc uses for every struct that has to match the kernel --
++	 * so the four-byte path is the tested one, not a new one. */
++	unsigned_integer = new_primitive("unsigned", "unsigned*", "unsigned**", 4, FALSE);
+ 	prim_types = add_primitive(unsigned_integer);
+ 
+ 	/* Define int */
+-	integer = new_primitive("int", "int*", "int**", register_size, TRUE);
++	integer = new_primitive("int", "int*", "int**", 4, TRUE);
+ 	prim_types = add_primitive(integer);
+ 
+ 	/* Define signed short */

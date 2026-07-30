@@ -1,0 +1,64 @@
+The bitfield clear mask must not depend on the width of the compiler that
+built micro-c.
+
+EXPERIMENT-zzq fixed this block once: `1 << unit_bits` is not all-ones when
+unit_bits is 64, because the shift count is taken modulo the register width, so
+the clear mask came out ZERO and writing one bitfield wiped every other field
+sharing the unit. The guard it added was
+
+    if(unit_bits >= register_size * 8)   -> no mask needed
+    else                                 -> & ((1 << unit_bits) - 1)
+
+THAT GUARD ASKS ABOUT THE WRONG WIDTH. `1 << unit_bits` overflows according to
+the width of the int in THIS source -- in whichever compiler built micro-c --
+not according to the target's register_size. gcc gives that int four bytes and
+stage 2 gives it eight, so the same line produced different masks depending on
+who compiled the compiler, and nothing anywhere said so.
+
+It became visible the moment `int` in the LANGUAGE became four bytes (zzw): a
+bitfield unit is then 32 bits, `32 >= 64` is false, the else branch runs,
+`1 << 32` overflows a 32-bit int, and the mask is zero again. The identical
+defect, one width down, inside the code that documents it.
+
+The intermediate is now a long -- eight bytes under both compilers -- so the
+shift can never reach its own width. unit_bits is at most 64, and 64 takes the
+branch that does not shift at all.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -3918,14 +3918,32 @@ void expression(void)
+ 			 *
+ 			 * A full-width unit needs no masking at all: ~(mask << off) is
+ 			 * already exactly the bits to keep. */
+-			int bf_clear;
+-			if(unit_bits >= register_size * 8)
++			/* AND THE WIDTH THAT OVERFLOWS IS THE COMPILER'S, NOT THE
++			 * TARGET'S. The guard above compared unit_bits against the
++			 * TARGET's register width, but `1 << unit_bits` overflows
++			 * according to the width of the int in THIS source, in
++			 * whichever compiler built micro-c. gcc gives that int four
++			 * bytes and stage 2 gives it eight, so the same line produced
++			 * different masks depending on who compiled the compiler --
++			 * and once `int` became four bytes in the LANGUAGE, unit_bits
++			 * became 32, the else branch was taken, `1 << 32` overflowed a
++			 * 32-bit int, and the clear mask came out zero again. Exactly
++			 * the defect this block already documents, one width down.
++			 *
++			 * A long is eight bytes under both, so the shift can never
++			 * reach its own width: unit_bits is at most 64, and 64 takes
++			 * the branch that does not shift at all. */
++			long bf_all;
++			long bf_clear;
++			if(unit_bits >= 64)
+ 			{
+ 				bf_clear = ~(bf_mask << bf_off);
+ 			}
+ 			else
+ 			{
+-				bf_clear = (~(bf_mask << bf_off)) & ((1 << unit_bits) - 1);
++				bf_all = 1;
++				bf_all = (bf_all << unit_bits) - 1;
++				bf_clear = (~(bf_mask << bf_off)) & bf_all;
+ 			}
+ 
+ 			common_recursion(expression);

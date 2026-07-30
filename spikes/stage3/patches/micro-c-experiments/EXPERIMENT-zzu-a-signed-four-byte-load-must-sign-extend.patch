@@ -1,0 +1,43 @@
+A signed four-byte load must sign-extend, and on aarch64 it did not.
+
+    load_value_signed(4), AARCH64:  "ldr_w0,[x0]"
+
+`ldr w0` loads 32 bits and ZEROES the top half of x0, so a negative int read
+back positive. The three branches directly above it already get this right --
+amd64 uses movsx_rax,DWORD_PTR_[rax], riscv's lw sign-extends on rv64, armv7l
+is 32-bit throughout. aarch64 was the one architecture where the wrong
+instruction was chosen.
+
+WHY IT NEVER SHOWED. While `int` was eight bytes this branch was reachable only
+through int32_t, and micro-c-libc uses int32_t for struct fields it stores and
+loads and never COMPARES -- struct tm, siginfo_t, struct sigaction. A field
+written and read back keeps its bits either way; only a comparison notices the
+sign is gone. EXPERIMENT-zzw routes every ordinary integer through here, which
+is how it surfaced.
+
+Needs patches/m2libc/0007, which adds the encoding.
+
+VERIFIED: difftest 85/85 with this alone, at the old width.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -645,7 +645,18 @@ char* load_value_signed(unsigned size)
+ 		else if(X86 == Architecture) return "mov_eax,[eax]\n";
+ 		else if(AMD64 == Architecture) return "movsx_rax,DWORD_PTR_[rax]\n";
+ 		else if(ARMV7L == Architecture) return "!0 R0 LOAD32 R0 MEMORY\n";
+-		else if(AARCH64 == Architecture) return "ldr_w0,[x0]\n";
++		/* A SIGNED FOUR-BYTE LOAD MUST SIGN-EXTEND, and `ldr w0` does not:
++		 * it loads 32 bits and ZEROES the top half of x0. The three lines
++		 * above already get this right -- amd64 uses movsx, riscv's lw
++		 * sign-extends on rv64, armv7l is 32-bit throughout -- so aarch64
++		 * was the one target where a negative int read back positive.
++		 *
++		 * It never showed while `int` was eight bytes: this branch was
++		 * reachable only through int32_t, and micro-c-libc uses int32_t for
++		 * struct fields it stores and loads and never COMPARES. A field
++		 * written and read back keeps its bits either way; only a
++		 * comparison notices the sign is gone. */
++		else if(AARCH64 == Architecture) return "ldrsw_x0,[x0]\n";
+ 		else if((RISCV32 == Architecture) || (RISCV64 == Architecture)) return "rd_a0 rs1_a0 lw\n";
+ 	}
+ 	else if(size == 8)

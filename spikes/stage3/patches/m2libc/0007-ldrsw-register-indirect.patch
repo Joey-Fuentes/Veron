@@ -1,0 +1,23 @@
+aarch64_defs.M1: the register-indirect LDRSW.
+
+The table had `ldrsw_x0,8` -- the PC-relative literal form -- and no way to
+sign-extend a 32-bit load from an address held in a register. A signed
+four-byte load therefore had to use `ldr_w0,[x0]`, which loads 32 bits and
+ZEROES the top half of x0.
+
+    DEFINE ldr_w0,[x0]   000040B9    LDR   Wt, [Xn]   ->  0xB9400000
+    DEFINE ldrsw_x0,[x0] 000080B9    LDRSW Xt, [Xn]   ->  0xB9800000
+
+One bit apart, and it is exactly the bit that decides sign extension.
+Required by EXPERIMENT-zzu.
+
+--- a/aarch64_defs.M1
++++ b/aarch64_defs.M1
+@@ -329,6 +329,7 @@ DEFINE LDRSH_X0_[X0] 00008079
+ DEFINE ldrsh_x0,[x0] 00008079
+ DEFINE LDR_W0_[X0] 000040B9
+ DEFINE ldr_w0,[x0] 000040B9
++DEFINE ldrsw_x0,[x0] 000080B9
+ DEFINE DEREF_X0_BYTE 00004039
+ DEFINE ldrb_w0,[x0] 00004039
+ DEFINE DEREF_X1_BYTE 21004039
