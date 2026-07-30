@@ -1,0 +1,144 @@
+The bitfield clear mask was zero, so every write wiped the whole unit.
+
+    int unit_bits = bf_size * 8;
+    int bf_clear = (~(bf_mask << bf_off)) & ((1 << unit_bits) - 1);
+
+A shift count is taken modulo the register width. unit_bits is 64 -- micro-c
+makes `int` and `unsigned` eight bytes, so the storage unit is eight bytes for
+essentially every bitfield there is -- and `1 << 64` is therefore 1, not
+2^64. `(1 << 64) - 1` is 0. The emitted store became
+
+    mov_x0,0        # bitfield: clear mask
+    and_x0,x1,x0    # the whole unit, gone
+    orr_x0,x1,x0
+
+so writing ONE bitfield destroyed every other field sharing its unit. This
+fired on every bitfield write in every program; it was not a corner case.
+
+WHAT IT COST. tcc keeps function attributes exactly in that shape:
+
+    struct FuncAttr { unsigned func_call:3, func_type:2, func_noreturn:1,
+                      func_ctor:1, func_dtor:1, func_args:8, ... };
+
+Setting the calling convention cleared func_ctor and the rest. gen_function
+then branches on what survived:
+
+    put_extern_sym(sym, cur_text_section, ind, 0);
+    if (sym->type.ref->f.func_ctor)
+        add_array(tcc_state, ".init_array", sym->c);
+
+which is the statement immediately after the last marker the instrumented run
+reported, for the symbol it named:
+
+    LAST STATEMENT THAT COMPLETED: P69
+      put_extern_sym: put_extern_sym2(sym, s ? s->sh_num : SHN_UNDEF, ...)
+    PES-enter  sym->v=1376  type.t=6 (VT_FUNC)  r=560 (VT_CONST|VT_SYM)
+               sh_num=1  name=g
+
+-- `g`, the function being DEFINED, not `f`, the undefined one that the probe
+table had pointed at. The trigger was "a call to a declared-but-undefined
+function" because that is what makes tcc reach gen_function with a relocation
+already emitted.
+
+A FULL-WIDTH UNIT NEEDS NO MASKING. ~(mask << off) is already exactly the bits
+to keep; the & was only ever there to trim a narrower unit, and it is now
+applied only when the unit is narrower.
+
+WHY A TWO-COLUMN SUITE NEVER CAUGHT IT. The bitfield write path emits aarch64
+mnemonics literally --
+
+    emit_out("and_x0,x1,x0\n");
+
+-- so on amd64 it does not assemble at all: `Received invalid other`. Every
+bitfield write case would have failed to build on the reference column, so
+there were none. A suite only finds bugs in the shapes it can express, and one
+column could not express this shape at all. difftest.sh now supports a case
+declaring AARCH64 ONLY, skipped on the other column WITH THE REASON PRINTED --
+never silently, because a silent skip is how a suite quietly stops testing
+something.
+
+ALSO FIXED HERE: `mov_rbx,r15` does not exist in amd64_defs.M1 either, so the
+value now travels through the accumulator, the same routing the author already
+used for aarch64's missing mov_x16,x1. That is not enough to make bitfield
+writes portable -- the hardcoded mnemonics remain -- but it removes one of two
+reasons the construct cannot assemble there, and the remaining one is recorded.
+
+MEASURED
+
+    A/B on the fix   without: case 73 fails (first field reads wrong)
+                     with:    passes
+    difftest         71 pass / 0 fail / 1 known gap / 1 arch-skipped, amd64
+                     72 pass / 0 fail / 1 known gap, aarch64
+    corpus           423 of 426 on aarch64
+
+diff --git a/cc_core.c b/cc_core.c
+index e535e8e..970f6dd 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -3792,7 +3792,45 @@ void expression(void)
+ 		{
+ 			int bf_mask = (1 << bf_width) - 1;
+ 			int unit_bits = bf_size * 8;
+-			int bf_clear = (~(bf_mask << bf_off)) & ((1 << unit_bits) - 1);
++
++			/* `1 << unit_bits` IS NOT ALL-ONES WHEN unit_bits IS 64.
++			 *
++			 * The shift count is taken modulo the register width, so
++			 * `1 << 64` is 1, `(1 << 64) - 1` is 0, and the clear mask came
++			 * out ZERO -- which made the store
++			 *
++			 *     mov_x0,0        # bitfield: clear mask
++			 *     and_x0,x1,x0    # the whole unit, gone
++			 *
++			 * so writing ONE bitfield wiped every other field sharing the
++			 * unit. micro-c makes `int` and `unsigned` eight bytes, so the
++			 * unit is eight bytes and unit_bits is 64 for essentially every
++			 * bitfield in existence: the bug fired always, not in a corner.
++			 *
++			 * tcc keeps its function attributes in exactly that shape --
++			 *
++			 *     struct FuncAttr { unsigned func_call:3, func_type:2,
++			 *                       func_noreturn:1, func_ctor:1, ... };
++			 *
++			 * -- so setting the calling convention cleared func_ctor and the
++			 * rest, and gen_function then read whatever survived:
++			 *
++			 *     if (sym->type.ref->f.func_ctor)
++			 *         add_array(tcc_state, ".init_array", sym->c);
++			 *
++			 * A garbage func_ctor sends it into work it must never do.
++			 *
++			 * A full-width unit needs no masking at all: ~(mask << off) is
++			 * already exactly the bits to keep. */
++			int bf_clear;
++			if(unit_bits >= register_size * 8)
++			{
++				bf_clear = ~(bf_mask << bf_off);
++			}
++			else
++			{
++				bf_clear = (~(bf_mask << bf_off)) & ((1 << unit_bits) - 1);
++			}
+ 
+ 			common_recursion(expression);
+ 			/* REGISTER_ONE = address of the unit, REGISTER_ZERO = new value.
+@@ -3804,7 +3842,18 @@ void expression(void)
+ 			emit_move(REGISTER_TEMP2, REGISTER_ZERO, "bitfield: park the new value");
+ 			emit_move(REGISTER_ZERO, REGISTER_ONE, "bitfield: address via x0");
+ 			emit_move(REGISTER_TEMP, REGISTER_ZERO, "bitfield: address");
+-			emit_move(REGISTER_ONE, REGISTER_TEMP2, "bitfield: new value");
++			/* VIA REGISTER_ZERO, because REGISTER_ONE <- TEMP2 does not
++			 * exist on every architecture. The comment above records that
++			 * aarch64 has no mov_x16,x1 or mov_x15,x1; amd64 likewise has no
++			 * mov_rbx,r15, and a bitfield WRITE therefore did not assemble
++			 * there at all -- M1 stopped with
++			 *     Received invalid other; mov_rbx,r15
++			 * so the whole construct was untestable on the amd64 column and
++			 * the clear-mask bug below could never have been caught by it.
++			 * The address is already parked in TEMP by this point, so x0 is
++			 * free to carry the value across. */
++			emit_move(REGISTER_ZERO, REGISTER_TEMP2, "bitfield: new value via x0");
++			emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: new value");
+ 			emit_load_immediate(REGISTER_ZERO, bf_mask, "bitfield: mask");
+ 			emit_out("and_x0,x1,x0\n");
+ 			if(0 != bf_off)

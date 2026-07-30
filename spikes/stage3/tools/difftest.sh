@@ -67,6 +67,26 @@ is_known_gap() {
     head -5 "$1" | grep -q "KNOWN GAP"
 }
 
+# A CASE THE amd64 COLUMN CANNOT EXPRESS.
+#
+# Not every construct is portable across the two columns, and pretending
+# otherwise costs more than it saves. A bitfield WRITE emits aarch64 mnemonics
+# literally --
+#     emit_out("and_x0,x1,x0\n");
+# -- so on amd64 it does not assemble at all:
+#     Received invalid other; and_x0,x1,x0
+# That is a real gap in micro-c and it is recorded in the case, but it is not
+# the thing the case is testing, and marking it KNOWN GAP would be wrong in the
+# other direction: the case PASSES on aarch64, and a known gap that passes is
+# reported loudly, which would be a permanent false alarm.
+#
+# So a case may declare the architecture it applies to, and the other column
+# skips it WITH THE REASON PRINTED -- never silently, because a silent skip is
+# how a suite quietly stops testing something.
+is_arch_only() {
+    head -8 "$1" | grep -q "AARCH64 ONLY"
+}
+
 # A case whose header says BITMASK returns one bit per probe instead of
 # stopping at the first failure, so one run describes the whole shape. Decode
 # it here rather than making the reader do arithmetic on a number in a log.
@@ -86,6 +106,15 @@ decode_bits() {
 for c in "$CASES"/*.c; do
     [ -e "$c" ] || continue
     name=$(basename "$c" .c)
+
+    # BEFORE ANYTHING ELSE. Checked first because the construct may not
+    # assemble on this column at all, and a skip decided after the attempt is
+    # not a skip -- it is a failure with an excuse printed next to it.
+    if is_arch_only "$c"; then
+        printf '  %-28s SKIPPED on amd64: %s\n' "$name" \
+            "$(head -8 "$c" | sed -n '2p' | sed 's|^ *\* *||')"
+        continue
+    fi
 
     # gcc is the reference. -O0 so the comparison is against straightforward
     # code rather than against the optimiser.
