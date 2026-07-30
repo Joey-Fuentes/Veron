@@ -1,5 +1,8 @@
 /* tcc's OWN hand-rolled 32-to-64 sign extension, arm64-gen.c:494, in load():
  *
+ * WIDE CONSTANTS -- 4294967264 and 4294967296 are the whole point of the case,
+ * so it is expected to move across EXPERIMENT-zzb. See imm-identity.sh.
+ *
  *     uint64_t svcul = (uint32_t)sv->c.i;
  *     svcul = svcul >> 31 & 1 ? svcul - ((uint64_t)1 << 32) : svcul;
  *

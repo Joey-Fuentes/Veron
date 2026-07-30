@@ -1781,3 +1781,71 @@ file that was passed. Both routes fail -- two sources in one invocation, and
 two objects linked afterwards -- so this is state carried ACROSS translation
 units. Everything the twelve programs exercise is single-file, which is why it
 sat behind them.
+
+--------------------------------------------------------------------------------
+FOLLOW-UP: the wider measurement, and what the twelve programs did not ask.
+--------------------------------------------------------------------------------
+
+imm-identity.sh WENT RED AND IT WAS MINE. Cases 101 and 102 carry 4294967264
+and 4294967296, so they legitimately move across zzb -- they just were not
+declared. `WIDE CONSTANTS` added to both headers; moved 8, declared 8,
+undeclared 0. A guard that goes red for a correct reason still costs a round,
+and a new case is exactly when to check it.
+
+12/12 MEANT LESS THAN IT LOOKED. All twelve hermetic programs are small enough
+that tcc never grows a section past its first allocation, so none of them
+reaches realloc. Swept tcc's own tests2 -- 129 tests, each compiled and run,
+against a control tcc built by gcc from the same source:
+
+    pass 0    fail 57    not-applicable 72
+
+    46  M2libc: realloc: pointer was never returned by malloc
+     5  SIGNAL 11 during compile
+     1  _Generic -- a real missing feature
+     1  ran, output differs
+
+The control decides which count: 72 tests it cannot pass either are measuring
+the shim, not us. Both sides get the SAME single concatenated file, because
+feeding the control two inputs and mc-tcc one would have measured the multi-TU
+gap and reported it as 57 codegen failures.
+
+FOUR HYPOTHESES, ALL KILLED BY MEASUREMENT, IN ORDER:
+
+  1. the malloc/realloc SIGNATURE MISMATCH. M2libc defines malloc(unsigned)
+     and realloc(void*, unsigned) -- four bytes since zzw -- while
+     micro-c-libc/stdlib.h declares both `unsigned long`. This looked
+     conclusive and was written up as the answer before it was tested.
+     main-06-realloc.c crosses that exact boundary and PASSES. Wrong.
+  2. the allocator's own reuse logic. main-07-realloc-sequences.c, written for
+     this, exercises seven shapes main-06 does not -- free-list reuse, chained
+     reallocs, a grow with another block freed between, a shrink, 64
+     allocations of churn before growing the OLDEST block, 24 reallocs
+     interleaved with mallocs, content survival across a move. All seven pass.
+  3. use-after-free. m2libc 0011 walks _free_list before dying. Not on it.
+  4. an interior pointer / tal_header_t skip -- `((tal_header_t *)p) - 1` is
+     the obvious guess. 0011 checks every live block's range. Not inside one.
+
+WHAT IS LEFT, AND THE ONE NUMBER. The address is in the heap region, is not a
+block start in either list, and is not interior to any live block. 0011 reports
+the distance to the nearest block start:
+
+    realloc: not a block; bytes to the NEAREST block start is (288)
+
+288 APPEARS EARLIER IN MICRO-C.md. The table_ident two-slot write -- the
+frontier recorded as CLOSED -- reported its two overwritten values as "288
+bytes apart". Not established as the same structure and it must not be assumed.
+Written down because it is worth one grep, and because that frontier section
+sat in the file describing a fault that had stopped reproducing long before
+anyone read it again. A frontier is a claim with a date on it.
+
+MULTI-FILE INPUT WAS DEMOTED, AND THE DEMOTION IS THE LESSON. It was called
+THE open frontier on one data point, in the previous entry, by me. tcc.c and
+libtcc.c both `#define ONE_SOURCE 1`, so self-compilation is a SINGLE input
+file -- which is what tcc's own test1/2/3 do. Multi-file is needed to link
+libtcc1.a and the crt objects, not to compile tcc. Concatenating the two files
+makes the symptom CHANGE, not disappear, which is what a thing that is not in
+the way looks like.
+
+NOT LOOKED AT: the five SIGNAL 11 compiles. They may or may not share the
+realloc cause; nobody has checked, and saying so is cheaper than implying they
+are covered.

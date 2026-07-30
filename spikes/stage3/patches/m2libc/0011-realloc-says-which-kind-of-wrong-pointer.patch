@@ -1,0 +1,101 @@
+realloc says WHICH KIND of wrong pointer it was handed.
+
+`realloc: pointer was never returned by malloc` is true and useless. It cannot
+distinguish three situations that need opposite investigations:
+
+  * the block was FREED earlier -- a use-after-free, and its node is sitting on
+    _free_list where the walk never looks
+  * the pointer is INTERIOR to a live block -- an offset was added somewhere,
+    or a header was skipped
+  * the address is not related to any block at all -- it was computed wrongly
+
+This checks all three before dying, and when none of them fits it reports the
+distance to the NEAREST block start in either list. That last number is the one
+that pays: a pointer sitting a fixed small distance from a block is a header
+skip -- tcc's own tal_realloc_impl computes `((tal_header_t *)p) - 1` -- while a
+large distance means the address is unrelated to the heap and the fault is
+upstream of the allocator.
+
+MEASURED, on mc-tcc compiling tests2/00_assignment.c against tcc-test-shim:
+
+    realloc: pointer was never returned by malloc (5733536)
+        -> not on the free list        so NOT a use-after-free
+        -> not interior to any block   so NOT a header skip or an offset
+        -> nearest block start is 288 bytes away
+
+288 IS NOT A NEW NUMBER IN THIS SPIKE. MICRO-C.md's earlier frontier -- the
+two-slot write into table_ident, recorded as closed -- reported its two
+overwritten values as `288 bytes apart`. Whether that is the same structure is
+not established here, and it should not be assumed; it is written down because
+the coincidence is worth one grep by whoever picks this up, and because
+"already closed" was the reason nobody looked again.
+
+WHY THE ALLOCATOR ITSELF IS NOT THE SUSPECT. main-06-realloc.c passes, and
+main-07-realloc-sequences.c -- added alongside this -- exercises seven shapes
+main-06 does not: a block reused from the free list, chained reallocs, a grow
+with another block freed in between, a shrink, sixty-four allocations of churn
+before growing the oldest block, twenty-four reallocs interleaved with mallocs,
+and content survival across a move. All seven pass. The allocator handles
+everything asked of it; something upstream is producing an address that was
+never a block.
+
+Costs one list walk on a path that ends in exit().
+--- a/stdlib.c
++++ b/stdlib.c
+@@ -423,9 +423,53 @@
+ 
+ 	if(old_alloc_size == 0)
+ 	{
+-		/* Same behavior as the normal free */
+-		/* we received a pointer to a block that wasn't allocated */
+-		_malloc_die("realloc: pointer was never returned by malloc", (long)ptr);
++		/* WHICH KIND OF WRONG POINTER. "never returned by malloc" cannot
++		 * distinguish a block that was FREED earlier -- a use-after-free,
++		 * whose node is sitting on _free_list -- from an address that was
++		 * never a block start at all, which is a corrupted or interior
++		 * pointer. Those are opposite investigations, so ask before dying. */
++		struct _malloc_node* f = _free_list;
++		while(NULL != f)
++		{
++			if(f->block == ptr)
++			{
++				_malloc_die("realloc: USE AFTER FREE -- this block is on the free list", (long)ptr);
++			}
++			f = f->next;
++		}
++		/* Not a block start in either list. Is it INSIDE one? */
++		struct _malloc_node* g = _allocated_list;
++		while(NULL != g)
++		{
++			if((ptr > g->block) && (ptr < (void*)(((char*)g->block) + g->size)))
++			{
++				_malloc_die("realloc: INTERIOR pointer, offset into a live block", (long)(((char*)ptr) - ((char*)g->block)));
++			}
++			g = g->next;
++		}
++		/* HOW FAR FROM A REAL BLOCK. A pointer sitting a fixed small
++		 * distance ABOVE a block start is a header skip -- tcc's own
++		 * tal_realloc_impl computes `((tal_header_t *)p) - 1`, so the
++		 * inverse shows up as a constant offset. A large distance means the
++		 * address is not related to any block and was computed wrongly. */
++		long best = 0x7FFFFFFF;
++		struct _malloc_node* h = _allocated_list;
++		while(NULL != h)
++		{
++			long d = ((char*)ptr) - ((char*)h->block);
++			if(d < 0) d = -d;
++			if(d < best) best = d;
++			h = h->next;
++		}
++		struct _malloc_node* k = _free_list;
++		while(NULL != k)
++		{
++			long d = ((char*)ptr) - ((char*)k->block);
++			if(d < 0) d = -d;
++			if(d < best) best = d;
++			k = k->next;
++		}
++		_malloc_die("realloc: not a block; bytes to the NEAREST block start is", best);
+ 	}
+ 
+ 	copy_size = old_alloc_size;

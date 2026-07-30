@@ -782,6 +782,12 @@ what it cost, and what settled it. It is long and it is the honest record.
 That is the first time the end-to-end suite has been green, and it moved on one
 fault, not four.
 
+**READ THAT NARROWLY.** All twelve programs are small enough that tcc never
+grows a section past its first allocation, so not one of them reaches
+`realloc` -- which is where every larger input now dies. 12/12 means the twelve
+things we chose to ask are all below that threshold, not that mc-tcc works. The
+tests2 sweep below is the wider measurement and it is much less flattering.
+
 ```
     00-does-it-start                   rc=0   tcc_new and tcc_delete completed
     01-return-a-value  02-arithmetic  03-loops-and-if  04-recursion       ok
@@ -846,52 +852,129 @@ after the cause was already known.
 
 ---
 
+## The wider measurement: tcc's own tests2, one at a time
+
+129 tests, each compiled by mc-tcc and run under the emulator, against a
+control tcc built by **gcc from the same source**. The control decides which
+tests count: one it cannot pass is measuring a gap in `tcc-test-shim` -- no
+malloc, no file I/O, no floats -- not a defect in the compiler we built.
+
+```
+    pass 0    fail 57    not-applicable 72
+```
+
+Of the 57 that the control passes and we do not:
+
+```
+    46   M2libc: realloc: pointer was never returned by malloc
+     5   SIGNAL 11 during compile
+     1   error: type 'void *' does not match any association    (_Generic)
+     1   compiled and ran, output differs
+```
+
+**One fault is eighty per cent of the failures.** Everything else is noise
+until it is fixed.
+
+BOTH SIDES GET THE SAME SINGLE FILE. mc-tcc cannot yet take two inputs in one
+invocation, so `test.c` and `crt.c` are concatenated before either compiler
+sees them. Handing the control two files and mc-tcc one would have measured
+the multi-TU gap instead of codegen, and reported it as 57 codegen failures.
+`tools/tests2-sweep.sh` encodes that.
+
+---
+
 ## The next piece of work
 
-**THE OPEN FRONTIER: more than one translation unit per invocation.**
+**THE OPEN FRONTIER: realloc is handed an address that was never a block.**
 
-The previous frontier — a two-slot write into `table_ident` on
-`PREDEF_LINES=0 mc-tcc -c /dev/null` — no longer reproduces. That entry stood
-in this file after it had already been closed, which is its own lesson: a
-frontier section is a claim with a date on it.
-
-What fails now is the step after the twelve programs, `tcc`'s own
-`tests2/00_assignment.c` built against `tcc-test-shim`:
+Reproduction, about a minute, no instrumentation:
 
 ```
-    mc-tcc -nostdlib -static -o t2.bin tests2/00_assignment.c crt.c
-        -> SIGSEGV during the compile
-
-    mc-tcc -c tests2/00_assignment.c   -> rc=0, 1577-byte object
-    mc-tcc -c crt.c                    -> rc=0, 5961-byte object
+    cat tests/tests2/00_assignment.c            > u.c
+    grep -v '^int main(void);$' crt.c          >> u.c
+    mc-tcc -B<tcc-src> -I<shim> -nostdlib -static -o m.bin u.c
 ```
 
-Each file compiles **on its own**. Two files in one invocation does not. And
-the reduced form is smaller than the shim:
+### What it is not
+
+Each ruled out by measurement, and each ruling-out is cheap to redo:
+
+* **Not the allocator.** `main-06-realloc.c` passes.
+  `main-07-realloc-sequences.c` was written for this and passes too -- seven
+  shapes main-06 does not reach: a block reused from the free list, chained
+  reallocs, a grow with another block freed in between, a shrink, sixty-four
+  allocations of churn before growing the *oldest* block, twenty-four reallocs
+  interleaved with mallocs, and content survival across a move.
+* **Not a use-after-free.** m2libc patch 0011 walks `_free_list` before dying.
+  The pointer is not on it.
+* **Not an interior pointer or a header skip.** 0011 also checks whether the
+  address falls inside any live block. It does not -- so it is not
+  `((tal_header_t *)p) - 1`, which was the obvious guess.
+* **Not the malloc/realloc signature mismatch.** M2libc defines
+  `malloc(unsigned)` and `realloc(void*, unsigned)` -- four bytes since zzw --
+  while `micro-c-libc/stdlib.h` declares both with `unsigned long`. That is a
+  real disagreement and worth tidying, but it is **not this bug**: the probes
+  above cross the same boundary and pass. It was the first hypothesis here and
+  it was wrong.
+
+### What is known
+
+The address is in the heap region, is not a block start in either list, and is
+not interior to any live block. 0011 reports the distance to the nearest block
+start:
 
 ```
-    a.c: int helper(void) { return 7; }
-    b.c: _start calling helper()
-
-    mc-tcc -o ab.bin b.c a.c        tcc: error: _start not defined
-    mc-tcc -c each, then link both   tcc: error: _start not defined
+    realloc: not a block; bytes to the NEAREST block start is (288)
 ```
 
-Both routes fail, and the message says a symbol that is plainly defined in
-`b.c` is not defined — so this is about state carried **across** translation
-units, not about compiling either one. Where that state lives is not yet
-established, and the marker-trail loop in `local-tcc.sh` is the tool for it.
+**288 is not a new number in this file.** The earlier frontier -- the two-slot
+write into `table_ident`, recorded above as closed -- reported its two
+overwritten values as `288 bytes apart`. Whether that is the same structure is
+**not established**, and it must not be assumed. It is written down because the
+coincidence is worth one grep by whoever picks this up, and because "already
+closed" is exactly the reason nobody looked again. That frontier section stood
+in this file describing a fault that had stopped reproducing before the round
+that finally read it.
 
-Everything the twelve programs exercise is single-file, which is why this sat
-behind them.
+### Where to look next
 
-### And then the structural work
+The five `SIGNAL 11 during compile` failures are a separate set and may or may
+not share a cause; nothing here has looked at them. `_Generic` is a genuine
+missing feature and is the only failure in the sweep that is honestly a
+*feature* gap rather than a defect.
 
-Unchanged and still argued for by this round. Nine of the bugs in this file are
-"one rule, several implementations, and the copies disagree", and **that class
-has cost more than every missing feature put together**. This round adds a
-tenth of a slightly different kind: `build_member` had the right type in hand
-and read the size from the wrong variable, eighty lines apart.
+The instrumentation loop in `local-tcc.sh` -- `INST_MODE=entry` over
+`tccpp.c` and `libtcc.c` -- is the tool for naming the call site, and it has
+not been run on this yet. Read the warnings in `tools/README.txt` first: four
+instrument bugs during the last hunt produced false negatives that were acted
+on, and three "ruled out" conclusions had to be retracted.
+
+### Multi-file input, demoted
+
+An earlier draft of this section called multiple translation units the open
+frontier. That was one data point and a wrong emphasis:
+
+* `tcc.c` and `libtcc.c` both `#define ONE_SOURCE 1`, so **self-compilation is
+  a single input file** -- which is what tcc's own test1/test2/test3 do
+  (`-run ../tcc.c`). Multi-file is needed to link `libtcc1.a` and the crt
+  objects, not to compile tcc.
+* Concatenating the two files makes the symptom change, not disappear, so it
+  was never the thing in the way.
+
+It is still broken -- two sources in one invocation, and two objects linked
+afterwards, both report a symbol that is plainly defined as undefined -- and it
+is still on the path to a *useful* tcc. It is not on the path to a
+self-hosting one, and it is behind realloc either way.
+
+---
+
+## And then the structural work
+
+Unchanged and still argued for. Nine of the bugs in this file are "one rule,
+several implementations, and the copies disagree", and **that class has cost
+more than every missing feature put together**. This round adds a tenth of a
+slightly different kind: `build_member` had the right type in hand and read the
+size from the wrong variable, eighty lines apart.
 
 The fix is to carry the type on the expression instead of in a global, and to
 have one function answer "load or address, and how wide" — and, on `zz8`'s

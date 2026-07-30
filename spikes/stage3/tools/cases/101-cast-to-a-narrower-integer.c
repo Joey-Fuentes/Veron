@@ -1,5 +1,8 @@
 /* A cast to an integer narrower than a register DISCARDS THE HIGH BITS.
  *
+ * WIDE CONSTANTS -- 4294967264 and 65504 do not fit an immediate field, so
+ * this case is expected to move across EXPERIMENT-zzb. See imm-identity.sh.
+ *
  * micro-c treated a cast as a statement about type alone and emitted nothing.
  * That was correct by accident while `int` was eight bytes -- every integer
  * cast was register-width to register-width. EXPERIMENT-zzw ended the
