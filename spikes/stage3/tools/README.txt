@@ -1678,3 +1678,106 @@ Also worth keeping: the reproducer is three lines and fails on BOTH
 architectures, so it was never an aarch64 problem and could have been found on
 the development machine at any point in the last four rounds. Every difftest
 case that has ever mattered has been under twenty lines.
+
+================================================================================
+ROUND: THE NARROWING CAST. Twelve programs green; the frontier moves to
+multiple translation units.
+================================================================================
+
+STARTING STATE. mc-tcc built and started, `-c seven.c` produced a 1022-byte
+object, and four of the twelve end-to-end programs segfaulted: 05
+(pointers-and-arrays), 06 (structs-by-pointer), 11 (function-pointer-member),
+12 (prefix-operator-through-a-dot). difftest aarch64 was 84/1 with case 14 red.
+
+THE WRONG START, RECORDED BECAUSE IT WAS PLAUSIBLE. Case 14 and program 11 are
+the same twelve lines of C and both were red, so they read as one bug. They are
+not. Case 14 is compiled by MICRO-C; program 11 is compiled by MC-TCC, so tcc
+lays that struct out. One grep of the tcc tree settled it: the only inline
+function-pointer member in all of tcc is `void (*error_func)(...)` at
+tcc.h:856, and `void` is register-sized, so micro-c's layout bug cannot reach
+tcc at all. Two real bugs, adjacent, sharing a shape and nothing else.
+
+WHAT NARROWED IT. Not a marker trail. The pass/fail split:
+
+    passing   constants, arithmetic, loops, recursion, globals+bss, string
+              literal, char/switch/goto, a function pointer in a SCALAR local
+    failing   every program that takes the address of, or indexes, a LOCAL
+              AGGREGATE
+
+Globals passing (program 07) rules out the whole symbol path. Scalars passing
+rules out `loc` itself. That points at one branch of tcc's `load()`, and the
+two branches differ in a way that predicts exactly this split:
+
+    VT_LOCAL | VT_LVAL   scalar load -> arm64_ldrx -> ldur with (off & 511)
+                         THE HIGH BITS ARE MASKED OFF
+    VT_LOCAL             address-of, arm64-gen.c:572 -> range test, then
+                         straight into an instruction word, NO MASK
+
+THE PROBE. arm64-gen.c:494 sign-extends a 32-bit offset by hand. Six sub-steps,
+one bit each, twelve lines, no tcc build, seconds:
+
+    bit 1  (unsigned int)ci truncates   FAIL     <- the only cause
+    bit 2  (v >> 31) & 1                ok       <- zze had fixed precedence
+    bit 4  (unsigned long)1 << 32       ok       <- zzb had fixed the literal
+    bit 8  the whole sign extension     FAIL     <- consequence
+    bit 16 -svcul == 32                 FAIL     <- consequence
+    bit 32 the range test               FAIL     <- consequence
+
+Then one more probe returning WHICH shape the value had: gcc 1 (truncated),
+micro-c 2 (untouched). The cast emitted nothing at all.
+
+Splitting the sub-steps is the whole technique here. A case checking only the
+final value says "the idiom is wrong" and names nothing, and four of the six
+bits fail as consequences of the first.
+
+WHY IT WAS INVISIBLE UNTIL NOW. While `int` was eight bytes every integer cast
+was register-width to register-width and there was nothing to discard. zzw made
+`int` four bytes. This is the fourth bug in this file whose cause is "zzw ended
+an accident", after zzu, zzx and zzzb.
+
+THE FIX. emit_narrowing_cast() in cc_core.c, called from primary_expr's cast
+branch. Six aarch64 macros and five amd64 macros added to the tables --
+neither had an instruction for a register-to-register truncation.
+
+ONE SITE, NOT ALL THREE. primary_expr applies a cast type in three places.
+Only the one a cast over a postfix expression reaches is wired up, because that
+is where `(uint32_t)sv->c.i` goes and it is the only one cases 101/102 can
+reach. An emission site no case can reach is a liability, not coverage.
+
+RESULT.
+    difftest aarch64   84/1  -> 87/0   (2 new cases)
+    difftest amd64     82/1  -> 83/0
+    mc-tcc programs     8/12 -> 12/12
+    micro-c -c /dev/null, PREDEF_LINES=0     rc=0 (the old frontier: closed,
+                                             and it had been closed before this
+                                             round started -- MICRO-C.md was
+                                             describing a fault that no longer
+                                             reproduced)
+
+THE CASES FAIL WITHOUT THE FIX, CHECKED. A case that passes either way tests
+nothing, and this file already records two of those. Against the compiler built
+WITHOUT zzzc/zzzd: case 101 rc=199, case 102 rc=249, case 14 rc=139 (SIGSEGV).
+All three rc=0 with them.
+
+STAGE-2 SUBSET, CHECKED BEFORE HANDING OVER. micro-c's own source is compiled
+by `./stage2 < microc.c` in step 10 of the hermetic job, and stage 2 discards a
+`#`-line entire -- `#define ANSWER 42` compiles clean and leaves ANSWER for
+stage 1 to fail on. The only `#define` in micro-c is still `cc.h:20 #define
+CC_H`, a bare guard; AARCH64, AMD64 and TO_FUNCTION_POINTER are enum constants
+(cc.h:37, 39, 121). This round adds no constant of any kind. A `#define` here
+would build under gcc, pass local-build.sh, pass difftest, and fail only in the
+box, at stage 1, as an undefined label with no line pointing back.
+
+THE NEXT FRONTIER. tcc's own tests2/00_assignment.c against the shim segfaults
+during the COMPILE -- but each file compiles alone:
+
+    mc-tcc -c tests2/00_assignment.c   rc=0, 1577 bytes
+    mc-tcc -c crt.c                    rc=0, 5961 bytes
+    mc-tcc -o t2.bin 00_assignment.c crt.c      SIGSEGV
+
+Reduced to two trivial files it becomes a different message from the same
+cause: `tcc: error: _start not defined`, for a `_start` plainly defined in the
+file that was passed. Both routes fail -- two sources in one invocation, and
+two objects linked afterwards -- so this is state carried ACROSS translation
+units. Everything the twelve programs exercise is single-file, which is why it
+sat behind them.

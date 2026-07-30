@@ -84,17 +84,17 @@ Stage 4 already **has** a tcc — pinned, patched, and used. What stage 3 owes i
 | route | state |
 |---|---|
 | M2-Planet → Mes → tcc | Mes rung in progress, three rungs out |
-| **enhanced M2-Planet → tcc directly** | **the enhanced compiler exists.** It is called micro-c — M2-Planet at pin `bd2fe4b` plus 24 patches — and it compiles all of tcc, links a 1.52 MB aarch64 binary, and that binary runs, prints diagnostics, interns the whole keyword table, preprocesses its own predefs and the input file, and now faults in the code generator rather than the preprocessor |
+| **enhanced M2-Planet → tcc directly** | **the enhanced compiler exists.** It is called micro-c — M2-Planet at pin `bd2fe4b` plus 53 patches — and it compiles all of tcc, links a 1.52 MB aarch64 binary, and **that binary compiles and runs all twelve end-to-end programs**, from a constant through pointers, structs, an indirect call and a function pointer held in a struct member |
 
 The direct route is the shorter one: extend M2-Planet's C subset far enough to compile real tcc, skipping the intermediate rungs entirely. The thesis behind it is that much of what the bootstrap ecosystem carries is *incidental* complexity — build plumbing, script-calling-script — rather than real capability gaps, and that the two can be separated by measuring instead of estimating. See [`spikes/stage3/ROADMAP.md`](./spikes/stage3/ROADMAP.md) for the plan and [`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md) for the state.
 
-It is not a working tcc. A differential suite of 65 cases stands at **64 passing and 1 known gap on both amd64 and aarch64**, and the compiler, the emulator and the tcc tree can all be run outside CI, which is why the last several bugs took minutes rather than rounds.
+It is not yet a finished tcc. A differential suite of 87 cases stands at **87 passing on both amd64 and aarch64**, and the compiler, the emulator and the tcc tree can all be run outside CI, which is why the last several bugs took minutes rather than rounds.
 
 Eleven codegen bugs have been closed since, and the two worth carrying up here are about method rather than about tcc. The fault was recorded for five rounds as living in `tccgen`, past where `next()` returns; it was a **member offset three functions away** — a member of an anonymous struct nested in an anonymous union resolved to offset 0, so every symbol tcc created had its token wiped immediately after it was written. A marker trail brackets between probe points; it does not point at a fault, and reading it as though it did cost those five rounds.
 
 The second is that a test suite written *from* bugs already found measures what has been fixed, not what remains. Borrowing stage 2's 426-program conformance corpus — written for a different compiler, by someone not looking for these bugs — turned up three live codegen faults in one sitting, including an array of `char*` loading one signed byte of an eight-byte pointer. The stage-3 case suite had been green over that one every round, because every array-of-pointers case in it used `long*`, where the element width and the pointed-at width are both 8.
 
-micro-c's tcc now compiles a file end to end and emits a valid aarch64 ELF object. One open fault remains, described in `spikes/stage3/MICRO-C.md`.
+micro-c's tcc now compiles and runs all twelve of the end-to-end programs. The last fault closed was that micro-c never truncated a narrowing cast, so tcc's hand-rolled 32-bit sign extension at `arm64-gen.c:494` ran on a value that had never been truncated and every local offset came out 2^32 too small — which is why taking the address of a local aggregate segfaulted while scalars and globals worked. The open frontier is now more than one translation unit per invocation; see `spikes/stage3/MICRO-C.md`.
 
 **Close those two and the chain is continuous from hand-read assembly to a booting GNU/Linux.** What stands between here and a rough-draft OS is that, plus re-applying the invariants — the spike track suspends every one of them.
 

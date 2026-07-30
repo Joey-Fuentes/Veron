@@ -715,7 +715,7 @@ fresh session needs only the repository.
 
 ## Honest limits of the case suite
 
-65 cases, 64 passing and 1 known gap, on both architectures -- plus 423 of the
+87 cases, all passing on both architectures -- plus 423 of the
 426 programs in stage 2's conformance corpus, borrowed because a suite written
 FROM bugs already found measures what has been fixed rather than what remains.
 Three live codegen bugs came out of that corpus in one sitting, all of them
@@ -764,11 +764,11 @@ patches/tcc-debug/            write() markers ONLY -- no logic, scratch copy, ne
 patches/tcc-arm64-asm/        pre-existing: the ARM64 assembler upstream tcc lacks
 micro-c-libc/                 headers and impl/ -- the runtime under tcc
 tools/                        difftest, vocabulary, regression, instrument, verify_defs
-tools/cases/                  one C file per construct, 48 of them
+tools/cases/                  one C file per construct, 87 of them
 ```
 
-24 patches build micro-c and 5 patch M2libc. Both workflows assert the count,
-because a missing codegen patch looks exactly like a codegen bug.
+53 patches build micro-c and 10 patch M2libc. Both workflows assert the count
+with `-ge`, because a missing codegen patch looks exactly like a codegen bug.
 
 `patches/micro-c-experiments/README.txt` is the working log — every wrong turn,
 what it cost, and what settled it. It is long and it is the honest record.
@@ -776,76 +776,129 @@ what it cost, and what settled it. It is long and it is the honest record.
 
 ---
 
+## The state, after the narrowing cast
+
+**mc-tcc now compiles and runs all twelve programs in `stage3-hermetic-arm64`.**
+That is the first time the end-to-end suite has been green, and it moved on one
+fault, not four.
+
+```
+    00-does-it-start                   rc=0   tcc_new and tcc_delete completed
+    01-return-a-value  02-arithmetic  03-loops-and-if  04-recursion       ok
+    05-pointers-and-arrays             exit=10   ok
+    06-structs-by-pointer              exit=42   ok
+    07-globals-and-bss  08-string-literal-write  09-char-switch-and-goto   ok
+    10-function-pointers               exit=42   ok
+    11-function-pointer-member         exit=0    ok
+    12-prefix-operator-through-a-dot   exit=0    ok
+    pass 12   fail 0
+```
+
+The fault was that **micro-c never truncated a narrowing cast** — `(uint32_t)x`
+set the type and emitted nothing. Correct by accident while `int` was eight
+bytes, and wrong from EXPERIMENT-zzw onward. tcc sign-extends a 32-bit local
+offset by hand at `arm64-gen.c:494` and the extension ran on a value that was
+never truncated, so every local offset came out 2^32 too small.
+
+**Why it looked like four unrelated bugs.** The corrupted offset is masked away
+in one path and fatal in the other:
+
+| path | what happens |
+|---|---|
+| `svr == (VT_LOCAL \| VT_LVAL)` — a scalar load | reaches `arm64_ldrx`, which emits `ldur` with `(off & 511)`. The high bits are **masked off** and the damage never lands. |
+| `svr == VT_LOCAL` — the **address** of a local, `:572` | the value goes into a range test and then straight into an instruction word, **unmasked**. |
+
+So scalars worked, globals worked — they go through `VT_CONST` and a symbol —
+and every program that took the address of, or indexed, a *local aggregate*
+segfaulted. 05, 06, 11 and 12 are exactly that set. Nothing about the four
+programs was the common factor; the common factor was one branch of `load()`.
+
+### What this round is actually about
+
+**A resemblance is not a cause.** Case 14 (`function-pointer-member`) and
+program 11 are the same twelve lines of C, and case 14 was red at the same
+time. It was tempting, and wrong, to read that as one bug: case 14 is compiled
+by **micro-c**, program 11 by **mc-tcc**, so tcc lays that struct out, not
+micro-c. Checking the tcc tree settled it in one grep — the only inline
+function-pointer member in all of tcc is `void (*error_func)(...)` at
+`tcc.h:856`, and `void` is register-sized, so micro-c's layout bug could not
+reach tcc at all. Two real bugs, adjacent, sharing a shape and nothing else.
+EXPERIMENT-zzzd fixes case 14 and moves no program.
+
+**The probe cost nothing and named the cause in one run.** Six sub-steps of
+the `arm64-gen.c:494` idiom, one bit each, compiled and run against gcc:
+
+```
+    bit 1  the cast truncates      FAIL        bit 8   sign extension   FAIL
+    bit 2  (v >> 31) & 1           ok          bit 16  -svcul == 32     FAIL
+    bit 4  (unsigned long)1 << 32  ok          bit 32  range test       FAIL
+```
+
+Five of the six were either already right or failing as a *consequence*.
+Splitting them is what separated the one cause from the four symptoms — a case
+checking only the final value would have said "the idiom is wrong" and named
+nothing. zzb and zze had already made the shift and the precedence correct,
+which is why bits 2 and 4 are green and worth keeping in case 102 anyway.
+
+**Twelve lines of C, no tcc build, seconds per round.** The whole diagnosis ran
+without compiling tcc once. Building tcc was needed only to *confirm* the fix,
+after the cause was already known.
+
+---
+
 ## The next piece of work
 
-**THE OPEN FRONTIER: a two-slot write into `table_ident`.**
+**THE OPEN FRONTIER: more than one translation unit per invocation.**
 
-The reproduction is one second and needs no rebuild:
+The previous frontier — a two-slot write into `table_ident` on
+`PREDEF_LINES=0 mc-tcc -c /dev/null` — no longer reproduces. That entry stood
+in this file after it had already been closed, which is its own lesson: a
+frontier section is a claim with a date on it.
 
-```
-    PREDEF_LINES=0  mc-tcc -c /dev/null
-```
-
-Empty input, no predefs. tcc interns its fixed keyword table and frees it at
-teardown, and that alone crashes. Between interning keyword 1086 and 1087,
-exactly two slots of `table_ident` are overwritten:
+What fails now is the step after the twelve programs, `tcc`'s own
+`tests2/00_assignment.c` built against `tcc-test-shim`:
 
 ```
-    index  199    22553992 -> 23590984
-    index 1090    0        -> 23591272      288 bytes apart
+    mc-tcc -nostdlib -static -o t2.bin tests2/00_assignment.c crt.c
+        -> SIGSEGV during the compile
+
+    mc-tcc -c tests2/00_assignment.c   -> rc=0, 1577-byte object
+    mc-tcc -c crt.c                    -> rc=0, 5961-byte object
 ```
 
-The indices are stable across runs. Both values point into a block whose first
-words are token NUMBERS (`451` is `alloca`, then `560`, `4102`) -- a token
-string, not a `Sym` and not a `TokenSym`, and not inside `tokstr_alloc`,
-`toksym_alloc`, `cstr_buf`, `tokcstr` or `unget_buf`.
+Each file compiles **on its own**. Two files in one invocation does not. And
+the reduced form is smaller than the shim:
 
-The window between those two interns is six statements: a NUL scan, a hash
-walk, and two returns. None of them writes to the heap in the source, so the
-answer is a store whose ADDRESS is computed wrongly.
+```
+    a.c: int helper(void) { return 7; }
+    b.c: _start calling helper()
 
-RULED OUT, each by measurement rather than argument:
+    mc-tcc -o ab.bin b.c a.c        tcc: error: _start not defined
+    mc-tcc -c each, then link both   tcc: error: _start not defined
+```
 
-  * allocator handing out overlapping blocks -- 0 genuine double-allocations
-    once frees are accounted for. The first pass at this reported 781 overlaps
-    and was wrong; they were all legitimate reuse
-  * use-after-free of the table -- its block is allocated once and never freed
-  * misdirected `hash_ident[h] = ts` -- the indices look like hash slots and
-    those slots are empty, but the written values are not TokenSym pointers
-  * `&&` short-circuit leaking a stack push -- the `x16` protect is popped on
-    both paths
-  * the instrument itself -- re-derived with a two-word detector after the
-    first version used a 1600-entry static array
+Both routes fail, and the message says a symbol that is plainly defined in
+`b.c` is not defined — so this is about state carried **across** translation
+units, not about compiling either one. Where that state lives is not yet
+established, and the marker-trail loop in `local-tcc.sh` is the tool for it.
 
-WHAT NOT TO REPEAT. Four instrument bugs during this hunt produced false
-negatives that were acted on: a cached slot address that went stale when the
-array was realloc'd, a `static` function called from another file, a watch that
-reset its baseline on the first hit so every later probe compared against the
-corrupt value, and a print taken before the field it printed was populated.
-Three "ruled out" conclusions had to be retracted. If a probe reports silence,
-check that it can still speak.
+Everything the twelve programs exercise is single-file, which is why this sat
+behind them.
 
-AND WATCHPOINTS ARE NOT AVAILABLE UNDER THE EMULATOR. qemu-user's gdbstub was
-checked packet by packet -- `Z0` and `Z1` return OK, `Z2`/`Z3`/`Z4` return
-empty. Vendoring gdb-multiarch would have connected to the same stub and been
-refused. Watchpoint work has to happen natively on the aarch64 runner; see
-`.github/workflows/stage3-watchpoint.yml`.
+### And then the structural work
 
-Then the structural work, which this round argued for rather than away. Nine of
-the bugs above are "one rule, several implementations, and the copies
-disagree", and **that class has now cost more than every missing feature put
-together**: the thing holding tcc up was not an absent capability but the
-eighth copy of `assigning` missing a case the other seven had.
+Unchanged and still argued for by this round. Nine of the bugs in this file are
+"one rule, several implementations, and the copies disagree", and **that class
+has cost more than every missing feature put together**. This round adds a
+tenth of a slightly different kind: `build_member` had the right type in hand
+and read the size from the wrong variable, eighty lines apart.
 
 The fix is to carry the type on the expression instead of in a global, and to
-have one function answer "load or address, and how wide" -- and, on `zz8`'s
+have one function answer "load or address, and how wide" — and, on `zz8`'s
 evidence, a second answering "is this an lvalue", since that question is
 currently asked eight different ways. `EXPERIMENT-zz7` is a small down payment
-on the first: `operand_left_type`/`operand_right_type` carry what `promote_type`
-used to destroy, and they are read one line after they are written precisely
-because a global that outlives its statement is how `Address_of` became
-unreliable.
+on the first.
 
 That is a refactor of every site that reads the flags, and it wants the case
-suite as a net -- which is why the suite came first, and why its three
+suite as a net — which is why the suite came first, and why its three
 structural failures above are worth reading before trusting it.

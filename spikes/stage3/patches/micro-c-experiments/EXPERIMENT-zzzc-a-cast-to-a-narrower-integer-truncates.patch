@@ -1,0 +1,161 @@
+A cast to a narrower integer truncates.
+
+micro-c treated a cast as a statement about TYPE alone: primary_expr set
+current_target to the cast type and emitted nothing at all. While `int` was
+eight bytes that was correct by accident -- every integer cast was
+register-width to register-width, so there was nothing to discard.
+EXPERIMENT-zzw made `int` four bytes and the accident ended.
+
+Measured, not argued:
+
+    long ci = -32;
+    unsigned long v = (unsigned int)ci;
+    gcc      v == 0x00000000FFFFFFE0     truncated
+    micro-c  v == 0xFFFFFFFFFFFFFFE0     the cast did nothing
+
+THIS IS THE FAULT BEHIND THE FOUR FAILING PROGRAMS IN
+stage3-hermetic-arm64. tcc sign-extends a 32-bit local offset by hand, at
+arm64-gen.c:494, in load():
+
+    uint64_t svcul = (uint32_t)sv->c.i;
+    svcul = svcul >> 31 & 1 ? svcul - ((uint64_t)1 << 32) : svcul;
+
+With the cast a no-op, svcul keeps all 64 bits of a negative offset, the sign
+test still fires, and 2^32 is subtracted from a value that was never
+truncated. Every local offset comes out 2^32 too small.
+
+That is survivable in one path and fatal in the other, which is exactly why
+the failures looked arbitrary:
+
+    svr == (VT_LOCAL | VT_LVAL)   a scalar load, reaches arm64_ldrx, which
+                                  emits ldur with `(off & 511)` -- the high
+                                  bits are MASKED OFF and the damage never
+                                  lands
+    svr == VT_LOCAL               the ADDRESS of a local, arm64-gen.c:572,
+                                  puts the value into a comparison and then
+                                  straight into an instruction word with no
+                                  mask at all
+
+So programs using only scalar locals worked, and every program that took the
+address of, or indexed, a LOCAL AGGREGATE segfaulted. Globals were unaffected
+-- they go through VT_CONST and a symbol. That is the whole of the 05/06/11/12
+pattern, and none of it was visible from the compiler's own test suite,
+because micro-c compiles those four programs correctly. It was tcc, as micro-c
+had built it, that was wrong.
+
+A probe of the idiom alone -- six sub-steps, one bit each -- named the cast in
+one run and cost no tcc build:
+
+    bit 1 cast truncates      FAIL      bit 8  sign extension    FAIL
+    bit 2 (v >> 31) & 1       ok        bit 16 -svcul == 32      FAIL
+    bit 4 (u64)1 << 32        ok        bit 32 range test        FAIL
+
+Bits 2 and 4 passing is what makes this worth writing down: zzb and zze had
+already made the shift and the precedence right, so five of the six sub-steps
+either passed or failed as a CONSEQUENCE, and only the first was a cause.
+
+ONLY INTEGERS ARE TRUNCATED. A pointer is register-width and needs nothing; a
+struct is not held in a register at all; a function pointer is an address.
+Each is excluded BY NAME rather than left to fall out of the size test,
+because a four-byte struct would otherwise be truncated as though it were an
+int -- the same shape of accident this patch is fixing.
+
+ONE SITE, NOT ALL THREE. primary_expr has three places a cast type is applied;
+this changes the one that a cast over a postfix expression reaches, which is
+where `(uint32_t)sv->c.i` goes. The other two serve `*(T*)x` and deferred
+casts through a chain, where the cast type is a pointer in every use in tcc
+and truncation would be a no-op. They are left alone deliberately: an untested
+emission site is a liability, and cases 101 and 102 cannot reach them.
+
+STAGE-2 SUBSET. No `#define` -- stage 2 discards a `#`-line entire and leaves
+the name for stage 1 to fail on, so micro-c's own source expresses every
+constant as an enum. AARCH64, AMD64 and TO_FUNCTION_POINTER are enum constants
+already (cc.h:37, 39, 121); this patch adds no new constant of any kind.
+
+Requires m2libc patch 0010 for the six aarch64 and five amd64 macros.
+Cases 101 and 102. difftest aarch64 84/1 -> 85/0, amd64 82/1 -> 83/0.
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -753,6 +753,74 @@
+ 	return load_value_unsigned(size);
+ }
+ 
++/* A CAST TO A NARROWER INTEGER DISCARDS THE HIGH BITS.
++ *
++ * micro-c treated a cast as a statement about TYPE alone: primary_expr set
++ * current_target and emitted nothing. While `int` was eight bytes that was
++ * correct by accident -- every integer cast was register-width to
++ * register-width, so there was nothing to discard. EXPERIMENT-zzw made `int`
++ * four bytes and the accident ended.
++ *
++ * tcc depends on it directly. arm64-gen.c:494 sign-extends a 32-bit local
++ * offset by hand:
++ *
++ *     uint64_t svcul = (uint32_t)sv->c.i;
++ *     svcul = svcul >> 31 & 1 ? svcul - ((uint64_t)1 << 32) : svcul;
++ *
++ * With the cast a no-op, `svcul` keeps all 64 bits of a negative offset, the
++ * sign test still fires, and 2^32 is subtracted from a value that was never
++ * truncated -- so every local offset comes out 2^32 too small.
++ *
++ * That is survivable in load()'s scalar path, which reaches arm64_ldrx and is
++ * masked to nine bits by `(off & 511)`, and fatal in the `svr == VT_LOCAL`
++ * path at :572, which puts the value straight into an instruction word with no
++ * mask. Hence the exact split observed: scalars work, the address of a local
++ * segfaults.
++ *
++ * ONLY INTEGERS. A pointer is register-width and needs nothing; a struct is
++ * not held in a register at all; a function pointer is an address. Each is
++ * excluded by name rather than left to fall out of the size test, because a
++ * four-byte struct would otherwise be truncated as though it were an int. */
++void emit_narrowing_cast(struct type* t)
++{
++	if(NULL == t) return;
++	if(NULL != t->members) return;
++	if(t->options & TO_FUNCTION_POINTER) return;
++	if(0 == t->size) return;
++	if(t->size >= register_size) return;
++
++	if(AARCH64 == Architecture)
++	{
++		if(t->is_signed)
++		{
++			if(1 == t->size) emit_out("sxtb_x0,w0\n");
++			else if(2 == t->size) emit_out("sxth_x0,w0\n");
++			else if(4 == t->size) emit_out("sxtw_x0,w0\n");
++		}
++		else
++		{
++			if(1 == t->size) emit_out("uxtb_w0,w0\n");
++			else if(2 == t->size) emit_out("uxth_w0,w0\n");
++			else if(4 == t->size) emit_out("mov_w0,w0\n");
++		}
++	}
++	else if(AMD64 == Architecture)
++	{
++		if(t->is_signed)
++		{
++			if(1 == t->size) emit_out("movsx_rax,al\n");
++			else if(2 == t->size) emit_out("movsx_rax,ax\n");
++			else if(4 == t->size) emit_out("movsx_rax,eax\n");
++		}
++		else
++		{
++			if(1 == t->size) emit_out("movzx_rax,al\n");
++			else if(2 == t->size) emit_out("movzx_rax,ax\n");
++			else if(4 == t->size) emit_out("mov_eax,eax\n");
++		}
++	}
++}
++
+ char* store_value(unsigned size)
+ {
+ 	if(size == 1)
+@@ -3588,6 +3656,7 @@
+ 			 * at tccpp.c:281, `memcpy((tal_header_t*)al->p + 1, ...)`. */
+ 			postfix_expr();
+ 			current_target = type_size;
++			emit_narrowing_cast(type_size);
+ 		}
+ 		else
+ 		{

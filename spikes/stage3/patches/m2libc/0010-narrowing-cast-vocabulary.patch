@@ -1,0 +1,63 @@
+The vocabulary for a narrowing cast, on both tables.
+
+micro-c treated a cast as a statement about type alone and emitted nothing,
+which was correct by accident while `int` was eight bytes: every integer cast
+was register-width to register-width and there was nothing to discard.
+EXPERIMENT-zzw made `int` four bytes and ended the accident. EXPERIMENT-zzzc
+emits a truncation; neither table had an instruction for one.
+
+aarch64. SBFM/UBFM with the register in Rn and Rd, little-endian in the file,
+the same convention as `and_x0,x1,x0 2000008a` (0x8A000020) and
+`mvn_x0,x0 e00320aa` (0xAA2003E0):
+
+    sxtb_x0,w0   SBFM Xd,Xn,#0,#7    0x93401C00
+    sxth_x0,w0   SBFM Xd,Xn,#0,#15   0x93403C00
+    sxtw_x0,w0   SBFM Xd,Xn,#0,#31   0x93407C00
+    uxtb_w0,w0   UBFM Wd,Wn,#0,#7    0x53001C00
+    uxth_w0,w0   UBFM Wd,Wn,#0,#15   0x53003C00
+    mov_w0,w0    ORR  Wd,WZR,Wm      0x2A0003E0
+
+There is no `uxtw`: a 32-bit register write zeroes the top half of the x
+register, so `mov w0,w0` IS the zero-extending move, and that is why the
+unsigned four-byte entry is named differently from the other five.
+
+amd64. `movzx_rax,al` was already there; the other five were not.
+
+    movsx_rax,al    REX.W 0F BE C0
+    movsx_rax,ax    REX.W 0F BF C0
+    movzx_rax,ax    REX.W 0F B7 C0
+    movsx_rax,eax   REX.W 63 C0        MOVSXD
+    mov_eax,eax     89 C0              32-bit mov zeroes the top half
+
+VERIFIED BY EXECUTION, not by reading. Cases 101 and 102 run the results
+through the emulator on aarch64 and natively on amd64 and compare exit codes
+against gcc -- which is the only check available here, since nothing in this
+box can disassemble aarch64. Same rule as 0005's 64-bit immediates.
+--- a/aarch64/aarch64_defs.M1
++++ b/aarch64/aarch64_defs.M1
+@@ -2423,3 +2423,12 @@
+ # B over an eight-byte literal pool. b_8 is 02000014 (imm26=2); imm26 counts
+ # instructions, so twelve bytes is 3.
+ DEFINE b_12 03000014
++
++# NARROWING CASTS. A cast to an integer narrower than a register must discard
++# the high bits; micro-c had no way to say so because nothing here could.
++DEFINE sxtb_x0,w0 001c4093
++DEFINE sxth_x0,w0 003c4093
++DEFINE sxtw_x0,w0 007c4093
++DEFINE uxtb_w0,w0 001c0053
++DEFINE uxth_w0,w0 003c0053
++DEFINE mov_w0,w0 e003002a
+--- a/amd64/amd64_defs.M1
++++ b/amd64/amd64_defs.M1
+@@ -343,3 +343,10 @@
+ DEFINE movabs_r13, 49BD
+ DEFINE movabs_r14, 49BE
+ DEFINE movabs_r15, 49BF
++
++# NARROWING CASTS -- see the aarch64 table for why.
++DEFINE movsx_rax,al 480FBEC0
++DEFINE movsx_rax,ax 480FBFC0
++DEFINE movzx_rax,ax 480FB7C0
++DEFINE movsx_rax,eax 4863C0
++DEFINE mov_eax,eax 89C0

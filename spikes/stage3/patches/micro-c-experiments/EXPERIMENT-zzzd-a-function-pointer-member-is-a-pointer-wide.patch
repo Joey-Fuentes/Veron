@@ -1,0 +1,101 @@
+A function-pointer member is a pointer wide, not a return value wide.
+
+build_member parses the member's type name, then REPLACES the type when the
+declarator turns out to be a function pointer:
+
+    struct type* member_type = type_name();     /* `int` -- 4 bytes now */
+    i->type = member_type;
+    if(global_token->s[0] == '(')
+    {
+        i->name = parse_function_pointer();
+        i->type = function_pointer;             /* 8 bytes, unsigned */
+    }
+
+and then, eighty lines further down, takes the SIZE and the SIGNEDNESS from
+`member_type` -- the return type -- rather than from the type it just
+assigned. For `int (*add)(int, int)` that is four bytes, signed.
+
+create_struct reads i->size for BOTH the running offset and the alignment, so
+the members after it overlap:
+
+    struct Ops { int (*add)(int,int); int (*mul)(int,int); int tag; };
+        micro-c   add@0  mul@4  tag@8    size 12
+        gcc       add@0  mul@8  tag@16   size 24
+
+The STORE is eight bytes wide, because that width comes from i->type, which is
+correct. So `o.mul = do_mul` writes eight bytes at offset 4 and overwrites the
+top half of `o.add`, and the first call through `o.add` jumps to an address
+spliced from two different function pointers. SIGSEGV, which is what case 14
+had been reporting.
+
+Invisible until now for the usual reason: while `int` was eight bytes the
+return type and the pointer were the same number. EXPERIMENT-zzw made them
+differ. `void (*f)()` is still fine either way, which is why tcc's own
+error_func at tcc.h:856 -- the only inline function-pointer member in the whole
+tcc tree -- never showed this.
+
+BOTH FIELDS, AND THE ARRAY BRANCH TOO. is_signed comes from the same wrong
+place, so a function-pointer member was marked signed; at eight bytes that
+never reached the emitted code, exactly as EXPERIMENT-zzzb's note says of the
+bug it fixed in this same function. And the array branch computes
+`count * member_type->size`, so an array of function pointers would get
+four-byte elements. Sourcing all three from i->type fixes them together and
+adds no new knowledge of what a function pointer's width is -- for every other
+member i->type IS member_type, so the change is a no-op there.
+
+THIS FIXES CASE 14 AND NOTHING ELSE. It is NOT the cause of the failing
+programs in stage3-hermetic-arm64: 11-function-pointer-member is the same
+twelve lines of C as case 14, but it is compiled BY mc-tcc, so tcc lays that
+struct out, not micro-c. The resemblance is a trap and it cost a wrong
+conclusion here before the tcc tree was checked. See EXPERIMENT-zzzc for the
+fault that actually moved those four.
+
+difftest aarch64 84/1 -> 85/0 with zzzc; case 14 is the one that closes.
+--- a/cc_types.c
++++ b/cc_types.c
+@@ -732,7 +732,7 @@
+ 		 * It also records that this member IS an array, which member access
+ 		 * needs: an array decays to its address and must not be loaded. */
+ 		i->is_array = TRUE;
+-		i->size = constant_expression() * member_type->size;
++		i->size = constant_expression() * i->type->size;
+ 		if(0 == i->size)
+ 		{
+ 			fputs("Struct only supports [num] form\n", stderr);
+@@ -742,7 +742,26 @@
+ 	}
+ 	else
+ 	{
+-		i->size = member_type->size;
++		/* THE DECLARATOR'S OWN TYPE, NOT THE TYPE NAME IT STARTED FROM.
++		 *
++		 * For `int (*add)(int, int);` the branch above already replaced
++		 * i->type with function_pointer -- and then this line took the size
++		 * from `int`, the RETURN type, giving a member four bytes wide where
++		 * the pointer is eight. create_struct reads that for both the running
++		 * offset and the alignment, so the members after it overlap:
++		 *
++		 *     struct Ops { int (*add)(); int (*mul)(); int tag; }
++		 *     add@0 mul@4 tag@8            add and mul share four bytes
++		 *
++		 * The store is eight bytes wide, because THAT width comes from
++		 * i->type, so `o.mul = do_mul` overwrites the top half of `o.add` and
++		 * the first call through it jumps to a spliced address.
++		 *
++		 * Invisible while `int` was eight bytes: the return type and the
++		 * pointer were the same number. EXPERIMENT-zzw made them differ.
++		 * For every other member i->type IS member_type, so this is a no-op
++		 * there. */
++		i->size = i->type->size;
+ 	}
+ 
+ 	/* AND ITS SIGNEDNESS, which nothing here copied.
+@@ -770,7 +789,7 @@
+ 	 *
+ 	 * An ARRAY member keeps the element's signedness, which is what a read of
+ 	 * one element needs. A function pointer has none to carry. */
+-	i->is_signed = member_type->is_signed;
++	i->is_signed = i->type->is_signed;
+ 
+ 	member_size = i->size;
+ 
