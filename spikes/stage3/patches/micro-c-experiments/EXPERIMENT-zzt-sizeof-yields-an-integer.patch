@@ -1,0 +1,112 @@
+sizeof yields an integer, and had no type of its own.
+
+THIRD INSTANCE OF A RULE TWO OTHER LEAVES ALREADY LEARNED. primary_expr_number
+sets `current_target = integer`, and the string literal above it sets `char*`,
+each with a comment saying why. `sizeof` emitted its value and set nothing, so
+it inherited whatever the previous expression left in current_target. The
+previous expression is very often an assignment target:
+
+    BufferedFile *bf;
+    bf = tcc_mallocz(sizeof(BufferedFile) + buflen);      libtcc.c tcc_open_bf
+
+`sizeof(BufferedFile)` was therefore typed as BufferedFile*, additive_expr read
+a pointer on the left and an integer on the right, and scaled buflen by 1128.
+
+MEASURED IN THE RUNNING COMPILER, not inferred. A probe on the line above:
+
+    A:1128      sizeof(BufferedFile)
+    B:8192      buflen
+    C:9320      sizeof(BufferedFile) + buflen        correct
+    Z:9241704   what tcc_mallocz actually received   = 1128 * (8192 + 1)
+
+IT NEVER FAULTS, WHICH IS WHY NOTHING CAUGHT IT. tcc_mallocz zeroes what it
+allocates, so the only symptom is work. Compiling an EMPTY file:
+
+    micro-c-built tcc, before   ~23 MB zeroed, 800 memset calls
+    micro-c-built tcc, after    ~1  MB zeroed
+    gcc-built control            0.23 MB,      802 memset calls
+
+The call counts matching is the load-bearing measurement: the control flow was
+already identical, so this was never a logic defect, only a size one.
+
+WHAT IT ALSO FIXED, WHICH WAS NOT EXPECTED. A freestanding hello world built
+by the micro-c-built tcc produced a valid aarch64 ELF that ran, exited 0 and
+printed nothing. Its .got held only the three reserved words where the
+control's held a fourth with the string's address, so the ADRP/LDR pair loaded
+a null pointer and write() returned -EFAULT. That was being tracked as a
+separate linker defect. With this patch:
+
+    $ qemu-aarch64 ./hello
+    hello, world
+
+    .got  micro-c  [0, 0, 0, 0x4103c8]
+    .got  control  [0, 0, 0, 0x4103c8]
+
+and the two executables are BYTE-IDENTICAL, 1172 bytes. The GOT entry was
+never missing for its own reason -- the allocation it lives in was sized
+through the same scaled expression.
+
+HOW IT WAS FOUND, because the route matters more than the patch. Not by
+instrumenting tcc: by compiling a fifteen-line freestanding program with the
+control tcc and with the micro-c-built tcc, running both, and comparing. The
+object files were byte-identical, which acquitted codegen in one step and put
+the whole search in the link. tools/difftest-tcc.sh is that loop.
+
+BOUNDED BY FOUR CASES, THREE OF WHICH PASS. 97 shows `sizeof(T) + n` is right
+when assigned to an integer, 98 that it is right as a bare argument, 99 that a
+typedef name changes nothing, and 100 that it is wrong exactly when the call's
+result is assigned to a pointer -- and right again for `char*`, whose element
+width is 1 and whose scaling is therefore invisible. 95 and 96 are the two
+hypotheses this replaced, kept because they were written for constructs that
+had never failed.
+
+VERIFICATION
+  difftest aarch64   85 pass, 0 fail
+  difftest amd64     83 pass, 0 fail
+  hello world        byte-identical to the control, and it prints
+  compile+link       0.82 s -> 0.16 s
+  tcctest.c          unchanged: still stops in the allocator, which is next
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -3301,13 +3301,39 @@ void primary_expr(void)
+ 	}
+ 	else if(!inherited)
+ 	{
+ 		Address_of = FALSE;
+ 	}
+ 
+-	if(match("sizeof", global_token->s)) emit_load_immediate(REGISTER_ZERO, unary_expr_sizeof(), "load sizeof");
++	if(match("sizeof", global_token->s))
++	{
++		/* SIZEOF YIELDS AN INTEGER, AND HAD NO TYPE OF ITS OWN.
++		 *
++		 * Third instance of the rule primary_expr_number and the string
++		 * literal above already learned: a leaf that emits a value must SAY
++		 * what it is, or it inherits whatever the previous expression left in
++		 * current_target. Here the previous expression is often an assignment
++		 * target, so
++		 *
++		 *     BufferedFile *bf;
++		 *     bf = tcc_mallocz(sizeof(BufferedFile) + buflen);
++		 *
++		 * left `sizeof(BufferedFile)` typed as BufferedFile*, additive_expr
++		 * read a pointer on the left and an integer on the right, and scaled
++		 * buflen by 1128. The request became 1128 * (8192 + 1) = 9,241,704
++		 * bytes instead of 9,320 -- and tcc_mallocz then ZEROES it.
++		 *
++		 * It never faults. Compiling an empty file, a tcc built by this
++		 * compiler zeroed 23 MB where the gcc-built control zeroed 0.23 MB,
++		 * with the SAME 800 memset calls -- identical control flow, every
++		 * allocation a thousand times too large. Case 100 pins it; 97, 98 and
++		 * 99 bound it, because the same expression is correct when assigned
++		 * to an integer, when passed as an argument, and through a typedef. */
++		emit_load_immediate(REGISTER_ZERO, unary_expr_sizeof(), "load sizeof");
++		current_target = integer;
++	}
+ 	else if(match("-", global_token->s))
+ 	{
+ 		if((KNIGHT_POSIX != Architecture) && (KNIGHT_NATIVE != Architecture))
+ 		{
+ 			emit_load_immediate(REGISTER_ZERO, 0, "primary expr");
+ 		}
