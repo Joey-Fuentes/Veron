@@ -668,7 +668,20 @@ jobs:
           set -eu
           echo 'int main(void){ return 0; }' > /tmp/trivial.c
           set +e
-          ./mc-tcc-bin /tmp/trivial.c -o /tmp/trivial-out 2> /tmp/marks.txt
+          # -B AT THE MULTIARCH DIRECTORY, because that is where crt1.o lives.
+          #
+          # tcc's config.h has CONFIG_TRIPLET "arm64-linux-gnu", so its crt
+          # search is /usr/lib/arm64-linux-gnu -- a directory Debian does not
+          # have; the real one is /usr/lib/aarch64-linux-gnu. Without this the
+          # step reported "file 'crt1.o' not found" and exit 1 for rounds, and
+          # it was repeatedly mistaken for a compiler fault when it is a search
+          # path. It is passed explicitly rather than by re-configuring the
+          # pinned tree, because the CONTROL links fine with the same triplet
+          # and that route has not been traced -- changing the shared config on
+          # a guess would risk the side that works.
+          CRT=/usr/lib/aarch64-linux-gnu
+          [ -e "$CRT/crt1.o" ] || echo "  note: $CRT/crt1.o is absent on this runner"
+          ./mc-tcc-bin -B"$CRT" /tmp/trivial.c -o /tmp/trivial-out 2> /tmp/marks.txt
           rc=$?
           set -e
           # The driver brackets each libtcc call with a marker on stderr, so
@@ -855,178 +868,71 @@ jobs:
             echo "  self-compilation not reached"
           fi
 
-      - name: 'DEBUG: which STATEMENT faults, every one instrumented'
-        if: always()
+      - name: 'SUBJECT: which line of tcctest.c stops it (native bisection)'
         continue-on-error: true
         run: |
           set -eu
-          # AUTOMATIC instrumentation: a marker after EVERY statement of the
-          # function, not the six or eight a human places by hand.
+          # WHAT THIS REPLACED, AND WHY.
           #
-          # Hand placement cost a round per refinement and still ended with
-          # "somewhere in tcc_set_output_type" after several of them. The
-          # placement is mechanical, so this does all of it at once and the
-          # LAST marker printed names the exact line.
-          # THE WHOLE COMPILE PATH, not one function.
+          # A whole second instrumented build of tcc used to sit here -- every
+          # statement marked, 55 seconds, about a fifth of the job. It found
+          # nothing. Worse, it ran on the compile-only input, which PASSES, so
+          # it spent that time reporting that a working case worked, while the
+          # input that actually fails is the step above.
           #
-          # Instrumenting a single function is only useful while you already
-          # know which one. When the failure moved out of tcc_set_output_type
-          # and into tcc_compile there were no markers there at all, so the
-          # report had nothing to say and it looked like the fault had gone
-          # invisible. It had not -- the instrument did not reach it.
-          # TWO FILES, EACH WITH ITS OWN MARKER LETTER.
+          # And markers only ever bracket BETWEEN probe points. Read as though
+          # they locate a fault, they supported a wrong conclusion -- "the
+          # fault is in tccgen" -- for five rounds; it was a member offset
+          # three functions away.
           #
-          # The fault moved out of libtcc.c into preprocess_start, which lives
-          # in tccpp.c -- and instrumenting one file cannot see it. Each file
-          # gets a distinct prefix because both number their markers from 1.
-          FUNC="${DEBUG_FUNC:-tcc_set_output_type,tcc_compile,tcc_compile_string}"
-          # tok_alloc IS INCLUDED because "P45 did not print" means the CALL
-          # did not return -- the fault can be anywhere inside it, not in the
-          # argument that was being computed. Reading the marker as naming the
-          # call site was a mistake worth not repeating.
-          # THE SET HAS TO FOLLOW THE FRONTIER OR THE REPORT LIES.
-          #
-          # These were chosen when the fault was in tok_alloc. It is now in
-          # macro_subst_tok, which was not in the list, so the last marker
-          # printed was tok_alloc_new interning a token during macro
-          # substitution -- ordinary work, reported as the last thing that
-          # happened. The trail was honest and the sentence on top of it was
-          # not.
-          #
-          # next_nomacro IS DELIBERATELY ABSENT. Markers inside its large
-          # switch produce
-          #     ERROR in process_switch
-          #     MISSING }
-          # because micro-c's switch parser will not accept statements where
-          # instrument.py puts them. The biggest function on this path cannot
-          # be instrumented today; that is a tool limit, not a compiler bug,
-          # and pretending otherwise would cost a round.
-          PPFUNC="${DEBUG_PPFUNC:-preprocess_start,tccpp_new,tok_alloc,tok_alloc_new,next,macro_subst_tok}"
-
-          : > marker-map.txt
-          python3 spikes/stage3/tools/instrument.py --map --prefix L \
-            mc-tcc/libtcc.c "$FUNC" >> marker-map.txt \
-            || { echo "  could not instrument $FUNC"; exit 0; }
-          python3 spikes/stage3/tools/instrument.py --map --prefix P \
-            mc-tcc/tccpp.c "$PPFUNC" >> marker-map.txt \
-            || echo "  (could not instrument $PPFUNC in tccpp.c)"
-
-          # SAY WHAT WAS INSTRUMENTED, so "last statement" can be read
-          # correctly. A fault outside this set shows up as the last marker
-          # INSIDE it, which looks identical to a fault at that line.
-          echo "  --- instrumented ---"
-          echo "    libtcc.c: $FUNC"
-          echo "    tccpp.c:  $PPFUNC"
-          echo "    anything faulting outside these appears as the last marker"
-          echo "    inside them -- check the frequency column before believing it"
-          echo "  --- marker map ($(wc -l < marker-map.txt) statements) ---"
-          cat marker-map.txt
-
-          python3 spikes/stage3/tools/instrument.py --prefix L \
-            mc-tcc/libtcc.c "$FUNC" > /tmp/inst.c 2>/dev/null
-          cp /tmp/inst.c mc-tcc/libtcc.c
-          python3 spikes/stage3/tools/instrument.py --prefix P \
-            mc-tcc/tccpp.c "$PPFUNC" > /tmp/instpp.c 2>/dev/null \
-            && cp /tmp/instpp.c mc-tcc/tccpp.c
-
-          # THE MAP IS PRINTED, THEN NOTHING HAPPENS FOR ABOUT A MINUTE.
-          #
-          # What follows is a full micro-c recompile of libtcc.c -- the same
-          # ~55 seconds step 10 takes -- and it emits nothing while it runs.
-          # In a live log the last line is the final marker of the map, so the
-          # job reads as hung at whatever tccpp_new statement happened to be
-          # last. Saying so costs one line.
-          echo "  --- recompiling instrumented libtcc.c (about a minute, silent) ---"
-          L="$PWD/spikes/stage3/micro-c-libc"
+          # Every bug closed in this series was found by one of two things:
+          # reducing the INPUT until the failure moved, or a minimal difftest
+          # case checked against gcc. This is the first of those, and it runs
+          # HERE because the emulator and this runner disagree: locally
+          # tcctest.c exits 1 with a diagnostic at line 294, natively it dies
+          # with a signal. Anything concluded off-runner about tcc's behaviour
+          # is suspect, which is exactly how several rounds were lost.
           cd mc-tcc
-          ../micro-c --architecture aarch64 --expand-includes --max-string 65536 \
-            -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 -D TCC_TARGET_LINUX=1 \
-            -D CONFIG_TCC_STATIC=1 -I . -I "$L" -I ../m2/M2libc \
-            -f libtcc.c -o ../inst.M1
-          cd ..
+          total=$(grep -c '' tests/tcctest.c)
+          echo "  tcctest.c is $total lines"
 
-          join2() {
-            out="$1"; shift
-            : > "$out.code"; : > "$out.strs"
-            for f in "$@"; do
-              sed '/^# Program strings$/,$d' "$f" >> "$out.code"
-              sed -n '/^# Program strings$/,$p' "$f" >> "$out.strs"
-            done
-            cat "$out.code" "$out.strs" > "$out"; rm -f "$out.code" "$out.strs"
+          run_head() {
+            head -"$1" tests/tcctest.c > /tmp/cut.c
+            set +e
+            ./../mc-tcc-bin -B. -I. -Iinclude -Itests -c /tmp/cut.c -o /tmp/cut.o \
+              > /tmp/cut.log 2>&1
+            rc=$?
+            set -e
+            return $rc
           }
-          join2 inst-all.M1 inst.M1 m2libc.M1 runtime.M1 setjmp.M1 compileonly.M1
-          # THE PATCHED TABLE, NOT THE VENDORED ONE.
-          #
-          # This said spikes/reference/m2libc/aarch64 -- the unpatched copy --
-          # so a fix to aarch64_defs.M1 was assembled with the broken table
-          # anyway. Third copy of M2libc in this job and the third time a fix
-          # landed in one that nothing reads. See spikes/stage3/tools/README.
-          D=m2libc-patched/aarch64
-          ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f inst-all.M1 \
-               --little-endian --architecture aarch64 -o inst.hex2
-          ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
-                 -f $D/ELF-aarch64.hex2 -f inst.hex2 -o tcc-inst
-          chmod +x tcc-inst
 
+          # A TRUNCATED FILE CAN FAIL FOR ITS OWN REASONS -- a cut mid-function
+          # is a syntax error, not our bug. Only a SIGNAL counts as the fault;
+          # a clean diagnostic means the cut was the problem, not the compiler.
           set +e
-          ./tcc-inst 2> inst-marks.txt
-          rc=$?
+          run_head "$total"; full=$?
           set -e
-          last=$(grep -aoE '^[LP][0-9]+' inst-marks.txt | tail -1)
-          echo "  --- result ---"
-          echo "  markers printed: $(grep -acE '^[LP][0-9]+' inst-marks.txt), exit $rc"
-          echo "  LAST STATEMENT THAT COMPLETED: $last"
-          grep "^$last " marker-map.txt || true
-
-          # WHETHER THIS IS A FAULT OR A CLEAN FINISH.
-          #
-          # A function that returns normally also stops at its last marker,
-          # because nothing runs after a return. The distinguishing evidence is
-          # whether a marker from a LATER function appeared -- and that has to
-          # be judged against which functions were instrumented, not against a
-          # hardcoded C3. An earlier version checked for C3 unconditionally and
-          # announced "returned normally" while the process was dumping core.
-          #
-          # So: say what is known and let the map speak, rather than asserting.
-          # ONE PATTERN, DEFINED ONCE. The previous version used
-          # '^[LP][0-9]+' to find the last marker and '^[LTCDMR][0-9A-F]*'
-          # to print the trail -- so the trail could not see P markers at
-          # all, which is exactly where the fault now is. Any prefix letter
-          # followed by at least one digit, and nothing else.
-          MRE='^[A-Z][0-9]+'
-
-          echo "  markers seen, in order:"
-          grep -aoE "$MRE" inst-marks.txt | tr '\n' ' ' | fold -w 100 | sed 's/^/    /'
-          echo
-
-          # THE LAST MARKER IS NOT THE FURTHEST ONE WHEN THERE IS A LOOP.
-          # tccpp_new walks tcc_keywords, so every marker in that body prints
-          # once per keyword. The count says WHICH ITERATION faulted, which is
-          # the difference between "it dies in the keyword loop" and "it dies
-          # on keyword 3".
-          echo "  --- marker frequency (a count > 1 means a loop body) ---"
-          grep -aoE "$MRE" inst-marks.txt | sort | uniq -c | sort -k2,2V \
-            | awk '{printf "    %-6s x%s\n", $2, $1}'
-
-          # The last statement alone does not say which BRANCH was taken to
-          # reach it. The preceding few do.
-          echo "  --- last 8 statements that completed ---"
-          for m in $(grep -aoE "$MRE" inst-marks.txt | tail -8); do
-            grep "^$m " marker-map.txt || echo "    $m (not in map)"
-          done
-          if [ "$rc" -gt 128 ]; then
-            echo "  exit $rc is SIGNAL $((rc - 128)): the fault is at or just after that line"
-          elif [ "$rc" != 0 ]; then
-            echo "  exit $rc is not a signal, so something called exit() --"
-            echo "  an error path was taken rather than a crash"
-          else
-            echo "  exit 0: it ran to completion"
+          echo "  whole file: exit $full"
+          if [ "$full" -le 128 ]; then
+            echo "  no signal on the whole file -- nothing to bisect"
+            grep -a 'error:' /tmp/cut.log | head -3 | sed 's/^/    /'
+            exit 0
           fi
 
-
-      # Evidence, and it must survive a red gate -- hence if: always().
-      # A step without it is SKIPPED when an earlier step fails, and the whole
-      # point of this one is to be read on the round where things are broken.
+          lo=1; hi=$total
+          while [ $((hi - lo)) -gt 1 ]; do
+            mid=$(( (lo + hi) / 2 ))
+            set +e
+            run_head "$mid"; rc=$?
+            set -e
+            if [ "$rc" -gt 128 ]; then hi=$mid; else lo=$mid; fi
+          done
+          echo "  last line that does NOT signal: $lo"
+          echo "  first line that DOES:           $hi"
+          echo "  --- the line ---"
+          sed -n "${hi}p" tests/tcctest.c | sed 's/^/    /'
+          echo "  --- context ---"
+          sed -n "$((hi>3?hi-3:1)),$((hi+1))p" tests/tcctest.c | sed 's/^/    /'
       - name: 'SUBJECT: what micro-c EMITS for &global[i] vs &local[i]'
         if: always()
         continue-on-error: true
