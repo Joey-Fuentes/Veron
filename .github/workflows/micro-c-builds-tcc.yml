@@ -177,7 +177,6 @@ jobs:
 
           L="$PWD/spikes/stage3/micro-c-libc"
           cd tcc
-          ../micro-c --architecture aarch64 --expand-includes --max-string 65536 \
           # NO -D TCC_TARGET_ARM64 HERE -- config.h must define it.
           #
           # config.h guards its definitions with
@@ -198,6 +197,7 @@ jobs:
           #     with    -D TCC_TARGET_ARM64=1:  /usr/lib/aarch64-linux-gnu x0
           #     without                      :  /usr/lib/aarch64-linux-gnu x2
           #     (695 functions either way -- only the path strings move)
+          ../micro-c --architecture aarch64 --expand-includes --max-string 65536 \
             -D ONE_SOURCE=1 -D TCC_TARGET_LINUX=1 \
             -D CONFIG_TCC_STATIC=1 \
             -I . -I "$L" -I ../m2/M2libc \

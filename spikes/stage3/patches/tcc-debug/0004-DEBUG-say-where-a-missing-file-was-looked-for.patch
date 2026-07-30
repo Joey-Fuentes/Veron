@@ -1,0 +1,58 @@
+DEBUG: say where a missing file was looked for.
+
+    tcc: error: file 'crt1.o' not found
+
+That names the file and not one of the directories it was sought in. From the
+outside, "the search path is wrong" and "the file really is absent" look
+identical -- and they need opposite fixes. Several rounds of this spike went
+into guessing which: reproducing the failure, reasoning about multiarch
+triplets, changing configure flags, and re-reading the same log line unchanged
+each time. The answer was in s->crt_paths throughout and the program simply
+never printed it.
+
+This prints every path that was tried, and calls out an EMPTY list separately,
+because zero paths and a wrong path are indistinguishable in the current
+message and mean different things: zero means the CONFIG_* macros expanded to
+nothing, which is exactly what happened here -- -D TCC_TARGET_ARM64 on the
+command line skipped the config.h block that defines CONFIG_TRIPLET, so
+USE_TRIPLET(s) collapsed to s.
+
+It is a tcc-debug patch: applied to the micro-c copy only, never to the
+control, so the comparison stays honest.
+
+diff --git a/libtcc.c b/libtcc.c
+index 171e362..3800e7c 100644
+--- a/libtcc.c
++++ b/libtcc.c
+@@ -1266,9 +1266,30 @@ static int tcc_add_library_internal(TCCState *s1, const char *fmt,
+         if (ret != FILE_NOT_FOUND)
+             return ret;
+     }
+-    if (flags & AFF_PRINT_ERROR)
++    if (flags & AFF_PRINT_ERROR) {
+         tcc_error_noabort("%s '%s' not found",
+             flags & AFF_TYPE_LIB ? "library" : "file", filename);
++        /* SAY WHERE WE LOOKED.
++         *
++         * "file 'crt1.o' not found" names the file and not one of the
++         * directories it was sought in, so the log cannot distinguish "the
++         * path list is wrong" from "the file really is missing" -- and those
++         * need opposite fixes. Several rounds went into guessing which,
++         * reproducing the failure and theorising about triplets, when the
++         * program had the answer in s->crt_paths the whole time and simply
++         * never said it.
++         *
++         * An empty list is called out separately, because zero paths and a
++         * wrong path look identical from the outside and mean different
++         * things: zero means the CONFIG_* macros expanded to nothing. */
++        if (nb_paths == 0) {
++            fprintf(stderr, "        (no search paths at all -- the path"
++                            " macros expanded to nothing)\n");
++        } else {
++            for (i = 0; i < nb_paths; i++)
++                fprintf(stderr, "        looked in: %s\n", paths[i]);
++        }
++    }
+     return FILE_NOT_FOUND;
+ }
+ 
