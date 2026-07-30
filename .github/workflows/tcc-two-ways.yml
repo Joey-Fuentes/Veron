@@ -787,12 +787,32 @@ jobs:
           # writes an object file, so both halves can be asserted: no signal,
           # and the driver's D6 -- output written -- actually reached. A gate
           # on progress cannot invert the way the old one did.
+          # THE GATE IS ON PROGRESS, NOT ON THE EXIT STATUS.
+          #
+          # It asserted "no signal" and I wrote that on the strength of a
+          # result from a DIFFERENT command: mc-tcc -c writes an object after
+          # zzm. This step does not pass -c -- it links -- and it has never
+          # once produced an executable. The assertion was of something that
+          # had not happened.
+          #
+          # It then failed for the worst possible reason: the crt and libtcc1.a
+          # searches started working, so the run got PAST the early exit that
+          # used to hide everything and reached the ELF output path for the
+          # first time, where it crashes. Scoring that as a regression is the
+          # same inversion that retired the previous version of this gate.
+          #
+          # D5 is the driver's "input file added" marker. It cannot invert:
+          # reaching further can never make it fail. The signal is reported
+          # loudly and does not fail the step, until linking works at all.
           if [ "$rc" -gt 128 ]; then
-            echo "  SIGNAL $((rc - 128))"
-            echo "  FAIL: mc-tcc died on a signal compiling a trivial unit."
-            echo "        It exited cleanly and wrote an object after zzm."
-            exit 1
+            echo "  SIGNAL $((rc - 128)) -- past the link inputs, crashing in output"
           fi
+          grep -q '^D5' /tmp/marks.txt || {
+            echo "  FAIL: D5 not reached -- the input file was not even added."
+            echo "        That is a regression; it has been reached since the"
+            echo "        crt search was fixed."
+            exit 1; }
+          echo "  D5 reached: the input file was added"
           # D markers come from our driver, T markers from inside libtcc.
           echo "  last libtcc marker: $(grep -aoE '^T[0-9A-F]' /tmp/marks.txt | tail -1)"
           # A marker names the last point that EXECUTED. If the next one did
@@ -978,6 +998,33 @@ jobs:
           sed -n "${hi}p" tests/tcctest.c | sed 's/^/    /'
           echo "  --- context ---"
           sed -n "$((hi>3?hi-3:1)),$((hi+1))p" tests/tcctest.c | sed 's/^/    /'
+
+          # CLASSIFY IT WITH TINY PROBES, ON THIS MACHINE.
+          #
+          # The line alone does not say WHICH construct on it is at fault, and
+          # the question cannot be answered anywhere else: CI's own binary,
+          # byte for byte, reaches line 294 and exits 1 under qemu while it
+          # dies at 156 with a signal here. Same executable, different result
+          # -- so a local reduction is measuring a different program. These
+          # probes are seconds each and run where the fault actually is.
+          probe() {
+            printf '%s\n' "$2" > /tmp/p.c
+            ./../mc-tcc-bin -I. -Iinclude -c /tmp/p.c -o /tmp/p.o > /dev/null 2>&1
+            rc=$?
+            if [ "$rc" -gt 128 ]; then r="SIGNAL $((rc - 128))"; else r="exit $rc"; fi
+            printf '    %-34s %s\n' "$1" "$r"
+          }
+          echo "  --- probes ---"
+          probe "plain string"        'char* s = "hi";'
+          probe "string with \\n"      'char* s = "hi\n";'
+          probe "string with \\t"      'char* s = "hi\t";'
+          probe "printf, no escape"   'int printf(const char*,...); void f(void){ printf("x"); }'
+          probe "printf with \\n"      'int printf(const char*,...); void f(void){ printf("x\n"); }'
+          probe "via an object macro" '#define pf printf
+          int printf(const char*,...); void f(void){ pf("x\n"); }'
+          probe "macro arg expansion" '#define A 2
+          #define N 1234 + A
+          int printf(const char*,...); void f(void){ printf("%d\n", N); }'
       - name: 'SUBJECT: what micro-c EMITS for &global[i] vs &local[i]'
         if: always()
         continue-on-error: true
