@@ -16,6 +16,24 @@
  * NOT ON ANY BUILD PATH.
  */
 
+/* environ IS A DEFINITION, NOT A STUB FUNCTION.
+ *
+ * tcc references it at tccrun.c:213 on the `-run` path. It used to resolve by
+ * accident: micro-c turned `extern char** environ;` into a fresh null global
+ * in whichever unit declared it, so every link found "a" definition and none
+ * of them was the right one. EXPERIMENT-zzl stopped that, and this link set --
+ * the ladder's, which uses stubs.c rather than runtime.c -- then had nothing
+ * defining the symbol and every rung from E onward failed to link.
+ *
+ * Two runtimes exist and they are easy to forget about individually:
+ *
+ *     runtime.c   the real one    tcc-two-ways, local-tcc.sh
+ *     stubs.c     link-only       micro-c-builds-tcc (the ladder)
+ *
+ * Anything libtcc.c references has to exist in BOTH. zzl was verified against
+ * the first and not the second, which is how the ladder broke. */
+char** environ;
+
 int strtol(char* s, char** e, int b) { return 0; }
 int strtoll(char* s, char** e, int b) { return 0; }
 int strtoul(char* s, char** e, int b) { return 0; }
