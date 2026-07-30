@@ -501,6 +501,48 @@ jobs:
           done
           echo "  tcc-src ready: $(ls pins/tcc-src/*.c | wc -l) .c files"
 
+          # THE TABLES COME FROM spikes/reference/m2libc, PATCHED -- NOT FROM
+          # M2-Planet'S SUBMODULE.
+          #
+          # The box clones M2-Planet, whose M2libc submodule carries a 229-line
+          # aarch64_defs.M1. The M2libc this project actually uses has 2,404
+          # lines, and `ret` is one of the 2,175 the submodule's copy lacks:
+          #
+          #     tcc-all.M1:20 :Received invalid other; ret
+          #     DEFINE ret present: 0
+          #
+          # GATE 2 links gen1 with the submodule's tables because M2-Planet's
+          # own output happens to stay inside that vocabulary. micro-c
+          # compiling M2libc's aarch64 asm does not.
+          #
+          # local-build.sh has said so in a comment for as long as it has
+          # existed -- "THE TABLES COME FROM HERE, NOT FROM spikes/reference"
+          # is its heading for the patched copy -- and the hermetic path was
+          # reaching for the submodule instead.
+          #
+          # Steps 7-9 are untouched: GATE 1 compares against an oracle built
+          # from the submodule, so changing what THEY use would break the
+          # comparison. This tree is for step 10 only.
+          rm -rf pins/m2libc-veron
+          cp -r spikes/reference/m2libc pins/m2libc-veron
+          git -C pins/m2libc-veron init -q 2>/dev/null || true
+          mn=0
+          for p in spikes/stage3/patches/m2libc/[0-9]*.patch; do
+            [ -e "$p" ] || continue
+            git -C pins/m2libc-veron apply --ignore-whitespace "$PWD/$p" \
+              || { echo "FAIL: $(basename "$p") does not apply to m2libc"; exit 1; }
+            mn=$((mn + 1))
+          done
+          [ "$mn" -ge 6 ] || { echo "FAIL: expected >= 6 m2libc patches, got $mn"; exit 1; }
+          # TRAP 3, as local-build.sh calls it: assert the encoding fix is in
+          # the table that will actually be used, not merely that a patch ran.
+          grep -q '^DEFINE add_x0,x16,x0 0002008b' \
+            pins/m2libc-veron/aarch64/aarch64_defs.M1 \
+            || { echo "FAIL: the x16 encoding fix is not in the defs table"; exit 1; }
+          grep -q '^DEFINE ret ' pins/m2libc-veron/aarch64/aarch64_defs.M1 \
+            || { echo "FAIL: no DEFINE ret in the defs table"; exit 1; }
+          echo "  m2libc (ours) = reference + $mn patches, $(grep -c '^DEFINE' pins/m2libc-veron/aarch64/aarch64_defs.M1) DEFINEs"
+
           # The -f list is the oracle's, exactly as G0/G1 use it.
           cp pins/flist.txt pins/microc-srcs.txt
 
@@ -972,7 +1014,8 @@ jobs:
           if [ "$s3ok" = yes ]; then
             MCFLAGS='--architecture aarch64 --max-string 65536'
             L=/src/stage3/micro-c-libc
-            M=/in/m2/M2libc
+            # ours, patched -- see the airlock note above
+            M=/in/m2libc-veron
             set +e
             ( cd /in/tcc-src && /work/micro-c $MCFLAGS --expand-includes \
                 -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 -D TCC_TARGET_LINUX=1 \
@@ -1020,7 +1063,7 @@ jobs:
               sed -n '/^# Program strings$/,$p' "$f" >> tcc.strs
             done
             cat tcc.code tcc.strs > tcc-all.M1
-            A=/in/m2/M2libc/aarch64
+            A=/in/m2libc-veron/aarch64
             # SAY WHAT IS BEING FED IN, BEFORE GUESSING WHY IT FAILED.
             #
             # `tcc-all.M1:20 :Received invalid other; ret` means M1 reached
