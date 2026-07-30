@@ -1,0 +1,99 @@
+++ and -- must read the variable at ITS width, not the register's.
+
+Both increment paths did
+
+    emit_dereference(REGISTER_ZERO, "Get value");
+
+which always loads a full register -- `ldr x0,[x0]` on aarch64 -- whatever the
+variable's type. Every other read in the compiler goes through
+load_value(size, is_signed), which takes both from the type.
+
+WHILE `int` WAS EIGHT BYTES THOSE WERE THE SAME THING for the common case, and
+that is why this sat unnoticed. At four bytes the read takes the variable AND
+the four bytes after it. In tcc's dynarray_add,
+
+    pp[nb++] = data;
+
+nb is 1 and the next slot holds the high half of a stack pointer, so qemu's
+register dump at the fault reads
+
+    PC=0x526274  X00=0000400000000001
+
+-- the correct value with an address welded to its top. The store that followed
+went through a wild pointer, and the tcc micro-c built segfaulted before it had
+parsed anything. Even `--version` died.
+
+HOW IT WAS FOUND, because the route is the lesson. Five rounds of hand-written
+reductions all PASSED while the real file faulted; the register dump named it
+in one command. `qemu -d cpu,nochain` plus the label map from the .hex2 files
+turns "it crashes somewhere" into a corrupted value and the instruction that
+produced it. That should have been the first move, not the twelfth.
+
+WHAT THIS FIXES, MEASURED: difftest 83/85 -> 84/85 at four-byte int.
+61-prefix-operator-through-a-dot passes. mc-tcc stops dying at startup and gets
+as far as emitting a 1,038-byte object.
+
+WHAT IT DOES NOT: 14-function-pointer-member still faults, and mc-tcc still
+segfaults later in its run. There is at least one more read of the same shape.
+
+AND IT HAS NO FAILING TEST OF ITS OWN AT EIGHT-BYTE int. Every narrow-type
+probe -- char, short and int32_t members, prefix and postfix, with non-zero
+neighbouring bytes -- passes without this change, because the array-index path
+does not reach emit_dereference. It is landed as correct-in-principle and
+demonstrably necessary once int is four bytes, not because a case fails today.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -2096,7 +2096,33 @@ void postfix_expr_inc_or_dec(void)
+ 	emit_push(REGISTER_ONE, "Old register one value");
+ 
+ 	emit_push(REGISTER_ZERO, "Address of variable");
+-	emit_dereference(REGISTER_ZERO, "Get value");
++	/* AT THE VARIABLE'S WIDTH, NOT THE REGISTER'S.
++	 *
++	 * emit_dereference always loads a full register. While `int` was eight
++	 * bytes that was the same thing; at four it reads the variable AND the
++	 * four bytes after it. In dynarray_add,
++	 *
++	 *     pp[nb++] = data;
++	 *
++	 * nb is 1 and the next slot holds the high half of a stack pointer, so
++	 * the postfix read produced
++	 *
++	 *     X00=0000400000000001
++	 *
++	 * -- the right value with an address welded to its top -- and the
++	 * store that followed went through a wild pointer. tcc segfaulted
++	 * before it had parsed anything; even --version died.
++	 *
++	 * load_value is what every other read already uses, and it takes the
++	 * width and the signedness from the type. */
++	if(NULL != current_target && register_size >= current_target->size)
++	{
++		emit_out(load_value(current_target->size, current_target->is_signed));
++	}
++	else
++	{
++		emit_dereference(REGISTER_ZERO, "Get value");
++	}
+ 
+ 	/* We need the address to be at the top of the stack and the value to be below it */
+ 	emit_pop(REGISTER_ONE, "Address of variable");
+@@ -3438,7 +3464,16 @@ void primary_expr(void)
+ 		emit_push(REGISTER_ONE, "Previous value");
+ 		emit_push(REGISTER_ZERO, "Address of variable");
+ 
+-		emit_dereference(REGISTER_ZERO, "Deref to get value");
++		/* Same as the postfix site above: the prefix operators read the
++		 * variable at its own width, not at the register's. */
++		if(NULL != current_target && register_size >= current_target->size)
++		{
++			emit_out(load_value(current_target->size, current_target->is_signed));
++		}
++		else
++		{
++			emit_dereference(REGISTER_ZERO, "Deref to get value");
++		}
+ 
+ 		int value = 1;
+ 		if(type_is_pointer(current_target))
