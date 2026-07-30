@@ -200,7 +200,7 @@ jobs:
           # a passing one. Without it a silently-missing patch passes the
           # check, and a missing codegen patch looks exactly like a codegen
           # bug. Bumped to 30 with EXPERIMENT-zzg.
-          [ "$n" -ge 35 ] || { echo "FAIL: only $n patches"; exit 1; }
+          [ "$n" -ge 36 ] || { echo "FAIL: only $n patches"; exit 1; }
 
           pre=0
           for p in spikes/stage3/patches/m2-planet/[0-9]*.patch \
@@ -714,7 +714,25 @@ jobs:
           # assertion that punishes progress. The honest replacement is a gate
           # on REACHING a marker -- the driver's D5, file added -- which cannot
           # invert like this. That waits until mc-tcc reaches D5 reliably.
-          if [ "$rc" -gt 128 ]; then echo "  SIGNAL $((rc - 128))"; fi
+          # A SIGNAL HERE IS A REGRESSION, AND IT IS A FAILURE AGAIN.
+          #
+          # This assertion was turned off once already, when EXPERIMENT-zzk
+          # made the exit status look WORSE by fixing a bug -- the old exit 1
+          # was the allocator catching corruption early, and removing the
+          # corruption let execution run further into a fault that was always
+          # there. The note then said the honest replacement was a gate on
+          # REACHING a marker, once mc-tcc reached one reliably.
+          #
+          # EXPERIMENT-zzm closed that fault. mc-tcc now compiles a unit and
+          # writes an object file, so both halves can be asserted: no signal,
+          # and the driver's D6 -- output written -- actually reached. A gate
+          # on progress cannot invert the way the old one did.
+          if [ "$rc" -gt 128 ]; then
+            echo "  SIGNAL $((rc - 128))"
+            echo "  FAIL: mc-tcc died on a signal compiling a trivial unit."
+            echo "        It exited cleanly and wrote an object after zzm."
+            exit 1
+          fi
           # D markers come from our driver, T markers from inside libtcc.
           echo "  last libtcc marker: $(grep -aoE '^T[0-9A-F]' /tmp/marks.txt | tail -1)"
           # A marker names the last point that EXECUTED. If the next one did

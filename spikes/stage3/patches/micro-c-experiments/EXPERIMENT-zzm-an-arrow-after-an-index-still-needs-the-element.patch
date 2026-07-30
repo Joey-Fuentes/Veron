@@ -1,0 +1,129 @@
+An arrow after an index still needs the element loaded.
+
+THIS IS THE FAULT THE STAGE-3 SPIKE HAS BEEN CHASING. With it fixed, micro-c's
+tcc compiles a translation unit and writes a valid object file, with no
+workaround of any kind:
+
+    exit=0
+    /tmp/o.o: ELF 64-bit LSB relocatable, ARM aarch64, version 1 (SYSV)
+
+WHAT IT IS. postfix_expr_array blanked the element load in every lvalue
+context, `&` among them:
+
+    if (... || match(".", tok) || is_prefix_operator
+            || is_postfix_operator || was_address_of)
+        assign = "";
+
+Every other entry there is right: in an lvalue context the ADDRESS of the
+element is the answer and loading it goes one step too far. An arrow is not
+like the others. The element is a POINTER, and the thing being addressed is at
+the other end of it, so the load is not optional -- it is how you get there.
+
+    ps = &table_ident[v - TOK_IDENT]->sym_identifier;        tccgen.c
+
+`&` set was_address_of, the load was blanked, and the member offset was added
+to the address of the ARRAY SLOT rather than to the TokenSym it points at.
+
+THE ARITHMETIC IS EXACT, which is how it was finally pinned. sym_identifier
+sits at offset 32 in TokenSym, so the write lands four slots further along a
+table of eight-byte entries:
+
+    alloca            v - TOK_IDENT = 195     corrupted slot 199
+    __builtin_alloca  v - TOK_IDENT = 1086    corrupted slot 1090
+
+Both off by exactly 4. global_identifier_push then stored a Sym* into each --
+over a live entry of tcc's own token table -- on every declaration carrying an
+asm rename, of which tcc's predefs have about twenty.
+
+The crash was three removes from that: the overwritten entries later reach
+tal_free as pointers belonging to no allocator buffer, and tal_free_impl walks
+its buffer list off the end with no NULL check.
+
+SAME RULE, THIRD FUNCTION. EXPERIMENT-zzc taught it to postfix_expr_arrow and
+zzg to postfix_expr_dot: a request for an address applies to the LAST step of a
+chain, never to a step that still has to be followed. postfix_expr_array had to
+learn it separately. That is four functions now implementing one rule -- the
+class MICRO-C.md counts -- and it is the strongest argument in the file for
+making the rule live in one place.
+
+HOW LONG IT TOOK, AND WHY. This bug survived a great many rounds behind
+instrumentation that was itself broken. Recorded so the next hunt does not
+repeat it:
+
+  * a watch that cached a slot ADDRESS and went stale when the array moved
+  * a `static` detector called from another file, so it silently never ran
+  * a watch that RESET its baseline on the first hit, after which every later
+    probe compared against the corrupt value and reported "clean"
+  * a print of a field taken before the field was populated
+  * PREDEF_LINES and KEYWORD_LIMIT switches that did nothing for two rounds
+    because getenv returned NULL -- which was EXPERIMENT-zzl, an unrelated
+    linkage bug, silently disabling the instruments
+
+Three "ruled out" conclusions had to be retracted, and the correct
+localisation (predef line 95) was found early, dismissed on the strength of a
+switch that was not working, and then found again. If a probe reports silence,
+check that it can still speak.
+
+WHAT IT REVEALS NEXT. A real program now gets a DIAGNOSTIC rather than a
+signal:
+
+    /tmp/real.c:1: error: internal compiler error: vstack leak (1)
+
+That message is legible only because zzl gave tcc a working stderr. tcc's own
+self-checks are reporting for the first time, which is a different and much
+better regime to debug in.
+
+MEASURED
+
+    difftest      65 pass / 0 fail / 1 known gap, both architectures
+    corpus        423 of 426 on aarch64
+    vocabulary    clean on five architectures
+    mc-tcc -c     empty unit -> valid aarch64 ELF relocatable, exit 0
+                  real unit  -> tcc diagnoses a vstack leak
+
+diff --git a/cc_core.c b/cc_core.c
+index 467146a..3bc9d2d 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -2310,9 +2310,39 @@ void postfix_expr_array(void)
+ 
+ 	int is_prefix_operator = match("++", prefix_operator) || match("--", prefix_operator);
+ 	int is_postfix_operator = match("++", global_token->s) || match("--", global_token->s);
+-	if(match("=", global_token->s) || is_compound_assignment(global_token->s) || match(".", global_token->s) || is_prefix_operator || is_postfix_operator || was_address_of)
++
++	/* `->` NEEDS THE ELEMENT'S VALUE, WHATEVER THE CONTEXT WANTS.
++	 *
++	 * Every other entry in this condition is an lvalue context, where the
++	 * ADDRESS of the element is the answer and loading it would be one step
++	 * too far. An arrow is different: the element is a POINTER and the thing
++	 * being addressed lives at the other end of it, so the load is not
++	 * optional -- it is how you get there.
++	 *
++	 *     ps = &table_ident[v - TOK_IDENT]->sym_identifier;    tccgen.c
++	 *
++	 * `&` set was_address_of, the load was blanked, and the member offset was
++	 * added to the address of the ARRAY SLOT instead of to the TokenSym. For
++	 * `alloca` that is index 195 plus 32 bytes = slot 199, and
++	 * global_identifier_push then stored a Sym* there -- over a live entry of
++	 * the token table. tcc's own symbol table, corrupted two slots at a time,
++	 * on every declaration carrying an asm rename.
++	 *
++	 * That is the SIGSEGV this spike has been chasing: the overwritten entries
++	 * reach tal_free as pointers belonging to no allocator buffer, and
++	 * tal_free_impl walks its list off the end with no NULL check.
++	 *
++	 * Same rule as EXPERIMENT-zzc and zzg for prefix ++/--: a request for an
++	 * address applies to the LAST step of a chain, never to a step that still
++	 * has to be followed. This is the third function to learn it separately;
++	 * MICRO-C.md counts the class. */
++	int arrow_follows = match("->", global_token->s);
++	if(!arrow_follows)
+ 	{
+-		assign = "";
++		if(match("=", global_token->s) || is_compound_assignment(global_token->s) || match(".", global_token->s) || is_prefix_operator || is_postfix_operator || was_address_of)
++		{
++			assign = "";
++		}
+ 	}
+ 	/* INDEXING YIELDS THE ELEMENT TYPE, whatever follows.
+ 	 *     case_cmp(p[0]->v2, p[1]->v2)               tccgen.c around 3300
