@@ -1151,10 +1151,16 @@ jobs:
               # fault was a valid aarch64 ELF that ran, exited 0 and printed
               # nothing, because a GOT entry was never allocated.
               #
-              # So: ten programs, each COMPILED AND RUN, asking a little more
-              # each time -- a constant, arithmetic, loops, recursion,
+              # So: twelve programs, each COMPILED AND RUN, asking a little
+              # more each time -- a constant, arithmetic, loops, recursion,
               # pointers, structs, globals in .bss, a string literal,
-              # char/switch/goto, and an indirect call. Every one is
+              # char/switch/goto, an indirect call, and finally the two shapes
+              # that micro-c's own difftest cases 14 and 61 cover: a function
+              # pointer held in a struct member, and prefix ++/-- applied
+              # through a dot. Those two are here because they are the ones
+              # currently breaking when micro-c's int becomes four bytes, and
+              # seeing them run against the tcc we built says whether the tcc
+              # has the same hole. Every one is
               # freestanding: its own _start, exit by syscall, no libc and no
               # crt, so the only code in the binary is the code under test.
               #
@@ -1267,6 +1273,40 @@ jobs:
               printf '%s\n' '    return f(6, 7);' >> t.c
               printf '%s\n' '}' >> t.c
               tc 10-function-pointers 42 ""
+              : > t.c; prologue t.c
+              printf '%s\n' 'int do_add(int a, int b) { return a + b; }' >> t.c
+              printf '%s\n' 'int do_mul(int a, int b) { return a * b; }' >> t.c
+              printf '%s\n' 'struct Ops { int (*add)(int, int); int (*mul)(int, int); int tag; };' >> t.c
+              printf '%s\n' 'int run(void)' >> t.c
+              printf '%s\n' '{' >> t.c
+              printf '%s\n' '    struct Ops o; struct Ops *p;' >> t.c
+              printf '%s\n' '    o.add = do_add; o.mul = do_mul; o.tag = 3;' >> t.c
+              printf '%s\n' '    if (o.add(2, 3) != 5) return 1;' >> t.c
+              printf '%s\n' '    if (o.mul(4, 5) != 20) return 2;' >> t.c
+              printf '%s\n' '    if (o.tag != 3) return 3;' >> t.c
+              printf '%s\n' '    p = &o;' >> t.c
+              printf '%s\n' '    if (p->add(10, 1) != 11) return 4;' >> t.c
+              printf '%s\n' '    if (p->mul(6, 7) != 42) return 5;' >> t.c
+              printf '%s\n' '    return 0;' >> t.c
+              printf '%s\n' '}' >> t.c
+              tc 11-function-pointer-member 0 ""
+              : > t.c; prologue t.c
+              printf '%s\n' 'struct S { char *str; int len; int c; };' >> t.c
+              printf '%s\n' 'struct S gs;' >> t.c
+              printf '%s\n' 'int run(void)' >> t.c
+              printf '%s\n' '{' >> t.c
+              printf '%s\n' '    struct S s; char buf[4]; int r;' >> t.c
+              printf '%s\n' '    r = 0;' >> t.c
+              printf '%s\n' '    s.len = 3; --s.len; if (s.len != 2) r = r + 1;' >> t.c
+              printf '%s\n' '    s.c = 5;   ++s.c;   if (s.c != 6)   r = r + 2;' >> t.c
+              printf '%s\n' '    buf[0] = 97; buf[1] = 98; buf[2] = 99;' >> t.c
+              printf '%s\n' '    s.str = buf; s.len = 3;' >> t.c
+              printf '%s\n' '    if (s.str[--s.len] != 99) r = r + 4;' >> t.c
+              printf '%s\n' '    if (s.len != 2) r = r + 8;' >> t.c
+              printf '%s\n' '    gs.len = 3; --gs.len; if (gs.len != 2) r = r + 16;' >> t.c
+              printf '%s\n' '    return r;' >> t.c
+              printf '%s\n' '}' >> t.c
+              tc 12-prefix-operator-through-a-dot 0 ""
             else
               echo "    no mc-tcc produced ($(wc -c < /out/mc-tcc 2>/dev/null || echo 0) bytes)"
               s3ok=no
