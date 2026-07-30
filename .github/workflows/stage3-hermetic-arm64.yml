@@ -404,20 +404,17 @@ jobs:
           sed -i 's/max_string = 4096,/max_string = 262144,/' pins/mescc/M1-macro.c
           grep -q 'max_string = 262144,' pins/mescc/M1-macro.c \
             || { echo "FAIL: the substitution did not take"; exit 1; }
-          # AND THE mescc-tools SERIES, which this job was not applying at all.
-          # Today it is one patch -- hex2 emitting a label map, a debugging aid
-          # rather than a build requirement -- but the floor is what stops the
-          # next one being skipped in silence.
-          git -C pins/mescc init -q 2>/dev/null || true
-          tn=0
-          for p in spikes/stage3/patches/mescc-tools/[0-9]*.patch; do
-            [ -e "$p" ] || continue
-            git -C pins/mescc apply --ignore-whitespace "$PWD/$p" \
-              || { echo "FAIL: $(basename "$p") does not apply to mescc-tools"; exit 1; }
-            tn=$((tn + 1))
-          done
-          [ "$tn" -ge 1 ] || { echo "FAIL: expected >= 1 mescc-tools patch, got $tn"; exit 1; }
-          echo "  mescc-tools: $tn patch(es)" 
+          # THE mescc-tools SERIES IS DELIBERATELY NOT APPLIED HERE.
+          #
+          # I added it for symmetry with local-build.sh and it broke GATE 2:
+          # patches/mescc-tools/0001 makes hex2 emit a label map guarded by
+          #     getenv("HEX2_LABEL_MAP")
+          # and getenv lives in M2libc/stdlib.c, which is not in hex2's unit.
+          #     stage1: unresolved label: getenv
+          # It is a debugging aid for the local path, where a full libc is
+          # linked; it is not a build requirement. Applying a patch this box
+          # cannot satisfy, to match a script that runs elsewhere, is not
+          # symmetry -- it is a regression with a tidy justification.
           echo "  M1 max_string raised to 262144 (tcc's keyword table is 19,571 chars)"
 
           # OCTAL FIRST, THEN THE DEFINES. THE ORDER IS LOAD-BEARING.
@@ -1136,10 +1133,57 @@ jobs:
               echo "    mc-tcc -c seven.c: rc=$crc, object $(wc -c < seven.o 2>/dev/null || echo 0) bytes"
               if [ "$crc" != 0 ] || [ ! -s seven.o ]; then
                 grep -av '^[A-Z][0-9]*$' /work/run7.err | head -3 | sed 's/^/      /'
-                # AND IT COUNTS. The run that produced mc-tcc still printed
-                # "stage 3 end to end: yes" because nothing downstream of the
-                # link could set this flag. A step that builds a compiler it
-                # cannot run has not finished.
+                s3ok=no
+              fi
+
+              # THAT mc-tcc EXISTS IS NOT THE QUESTION. tcc-two-ways has built
+              # one for a long time; what is new here is that this one is
+              # hermetic. What has mattered throughout is whether the tcc it
+              # produces WORKS, and compiling to an object does not ask that:
+              # the last real fault was a valid aarch64 ELF that ran, exited 0
+              # and printed nothing, because a GOT entry was never allocated.
+              # Only running the output catches it.
+              #
+              # Freestanding on purpose -- own _start, syscalls direct, no libc
+              # and no crt -- so the only code in the binary is the code under
+              # test, and nothing depends on a C library this box lacks.
+              : > hello.c
+                printf '%s\n' 'static long sys3(long n, long a, long b, long c)' >> hello.c
+                printf '%s\n' '{' >> hello.c
+                printf '%s\n' '    register long x8 __asm__("x8") = n;' >> hello.c
+                printf '%s\n' '    register long x0 __asm__("x0") = a;' >> hello.c
+                printf '%s\n' '    register long x1 __asm__("x1") = b;' >> hello.c
+                printf '%s\n' '    register long x2 __asm__("x2") = c;' >> hello.c
+                printf '%s\n' '    __asm__ __volatile__("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");' >> hello.c
+                printf '%s\n' '    return x0;' >> hello.c
+                printf '%s\n' '}' >> hello.c
+                printf '%s\n' 'void _start(void)' >> hello.c
+                printf '%s\n' '{' >> hello.c
+                printf '%s\n' '    sys3(64, 1, (long)"hello, world*n", 13);' >> hello.c
+                printf '%s\n' '    sys3(93, 0, 0, 0);' >> hello.c
+                printf '%s\n' '}' >> hello.c
+              tr '*' '\\' < hello.c > hello2.c && mv hello2.c hello.c
+              set +e
+              timeout 120 /out/mc-tcc -B/in/tcc-src -I/in/tcc-src \
+                          -nostdlib -static -o /out/hello hello.c 2>/work/hello.err
+              hrc=$?
+              set -e
+              echo "    mc-tcc builds a freestanding program: rc=$hrc, $(wc -c < /out/hello 2>/dev/null || echo 0) bytes"
+              if [ "$hrc" = 0 ] && [ -s /out/hello ]; then
+                chmod 0755 /out/hello
+                set +e
+                hout=$(timeout 60 /out/hello 2>&1); orc=$?
+                set -e
+                echo "    running it: exit=$orc  output=[$hout]"
+                if [ "$hout" = "hello, world" ]; then
+                  echo "    THE tcc WE BUILT PRODUCES A WORKING PROGRAM"
+                else
+                  echo "    WRONG OUTPUT. A valid ELF that exits 0 and prints"
+                  echo "    nothing is the shape of a bad address, not a crash."
+                  s3ok=no
+                fi
+              else
+                grep -av '^[A-Z][0-9]*$' /work/hello.err | head -3 | sed 's/^/      /'
                 s3ok=no
               fi
             else
