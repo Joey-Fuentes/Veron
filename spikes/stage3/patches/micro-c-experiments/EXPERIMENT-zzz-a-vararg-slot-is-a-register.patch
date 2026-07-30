@@ -47,20 +47,20 @@ the one between "hangs instead of compiling" and "compiles, then hangs".
 +	 * The READ above is at the type's width and that is right. The STRIDE is
 +	 * not: every variadic argument occupies a full register-width slot on
 +	 * this ABI, whatever its declared type, so advancing by sizeof(ty) lands
-+	 * mid-slot for anything narrower.
++	 * mid-slot for anything narrower and desynchronises every argument after
++	 * it.
 +	 *
 +	 * While `int` was eight bytes this was invisible -- int, long and every
-+	 * pointer were all register-width, and the only narrower types anyone
-+	 * passed variadically were promoted anyway. At four bytes the first %d
-+	 * desynchronises everything after it:
++	 * pointer were all register-width. At four bytes the first %d corrupts
++	 * the rest:
 +	 *
-+	 *     snprintf(b, 64, "%d %d", 1, 2)     returns 12, glibc returns 3
-+	 *     snprintf(b, 64, "%s%d%s", ...)     SIGSEGV -- third arg is garbage
-+	 *     snprintf(b, 64, "%s%s%s", ...)     correct, char* is register-width
++	 *     snprintf(b, 64, "%d %d", 1, 2)          returned 12, glibc 3
++	 *     snprintf(b, 64, "%s%d%s", "a", 2, "c")  SIGSEGV, glibc 3
++	 *     snprintf(b, 64, "%s%s%s", ...)          correct -- char* is 8 bytes
 +	 *
-+	 * tcc's pp_error formats "%s:%d: ..." and every diagnostic it tried to
-+	 * print came out corrupt, which is what sent cstr_vprintf into a loop and
-+	 * hung the compiler.
++	 * tcc's pp_error formats "%s:%d: ..." so every diagnostic came out
++	 * corrupt, and the garbage sent cstr_vprintf into a loop that never
++	 * terminated.
 +	 *
 +	 * A type WIDER than a register keeps its own size, so a struct passed by
 +	 * value still advances by its own width. */
@@ -85,30 +85,3 @@ the one between "hangs instead of compiling" and "compiles, then hangs".
  	}
  
  	emit_pop(REGISTER_ONE, "Pop AP address");
-@@ -2793,7 +2820,25 @@ void postfix_expr(void)
- 	 * register. Loading anyway emitted ldrb -- one byte of an eight-byte
- 	 * pointer -- and stored through the truncated result. Step the type down
- 	 * either way, because the store width comes from it. */
--	int assigning = match("=", global_token->s) || is_compound_assignment(global_token->s);
-+	/* A PREFIX ++/-- TARGET IS AN ASSIGNMENT TARGET.
-+	 *
-+	 * The two branches below differ only in whether current_target is stepped
-+	 * before or after the load, which decides whether the load reads the
-+	 * POINTER or the object it points at. `*p = v` takes the second, correct
-+	 * one -- its comment says so -- and `--*p` took the first, because the
-+	 * test only looked for an `=`.
-+	 *
-+	 * While every type was register-width both widths were eight and the
-+	 * branches were interchangeable. At four bytes `--*p` loaded an
-+	 * eight-byte pointer with a four-byte ldrsw and incremented through the
-+	 * truncated address. dynarray_reset's `--*n` is that line, so tcc
-+	 * segfaulted before it had parsed anything -- even --version died.
-+	 *
-+	 * prefix_lvalue_target is already set by the prefix handler for exactly
-+	 * this purpose and is still standing here: the member sites at 2051 and
-+	 * 2270 consume it, and `--*p` reaches neither. */
-+	int assigning = match("=", global_token->s) || is_compound_assignment(global_token->s)
-+	                || prefix_lvalue_target;
- 	int fp_nd;
- 	while(num_dereference_after_postfix > 0)
- 	{
