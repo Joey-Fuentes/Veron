@@ -69,10 +69,22 @@ rm -rf tcc-work && cp -r tcc-src tcc-work
 # --- optional instrumentation -----------------------------------------------
 if [ -n "$INST_FILE" ] && [ -n "$INST_FUNCS" ]; then
     echo "== instrumenting $INST_FILE: $INST_FUNCS =="
-    python3 "$ROOT/spikes/stage3/tools/instrument.py" --map --prefix P \
+    # INST_MODE=entry MARKS FUNCTION ENTRIES INSTEAD OF STATEMENTS.
+    #
+    # Per-statement marking cannot survive a large file: it has to guess where
+    # a statement boundary is, and it guesses wrong before an `else`, before a
+    # `case`, and -- brace depth being counted textually across #ifndef blocks
+    # -- after a function it thinks is still open. Each of those breaks the
+    # COMPILE rather than the trail, which then left a zero-byte M1 and a stale
+    # binary that got read as data. Entry marking makes none of those choices
+    # and works on all 212 functions of tccgen.c at once, which is what naming
+    # a fault in a parser that size actually needs.
+    MODEFLAG=""
+    [ "${INST_MODE:-}" = entry ] && MODEFLAG="--entry"
+    python3 "$ROOT/spikes/stage3/tools/instrument.py" --map $MODEFLAG --prefix P \
         "tcc-work/$INST_FILE" "$INST_FUNCS" > marker-map.txt \
         || { echo "FAIL: could not instrument"; exit 1; }
-    python3 "$ROOT/spikes/stage3/tools/instrument.py" --prefix P \
+    python3 "$ROOT/spikes/stage3/tools/instrument.py" $MODEFLAG --prefix P \
         "tcc-work/$INST_FILE" "$INST_FUNCS" > /tmp/inst.$$ 2>/dev/null
     mv /tmp/inst.$$ "tcc-work/$INST_FILE"
     echo "  $(wc -l < marker-map.txt) statements mapped -> $WORK/marker-map.txt"
@@ -93,6 +105,15 @@ echo "== micro-c compiles libtcc.c (about 30 s, silent) =="
     -D ONE_SOURCE=1 -D TCC_TARGET_LINUX=1 \
     -D CONFIG_TCC_STATIC=1 -I . -I "$L" -I "$M" \
     -f libtcc.c -o ../libtcc.M1 )
+# ASSERT THE COMPILE PRODUCED SOMETHING.
+#
+# micro-c reports a parse error and exits 0, so a failed compile left a
+# ZERO-BYTE libtcc.M1, the link quietly reused the previous mc-tcc, and the run
+# that followed was reading a STALE BINARY. Two local results were drawn from
+# that before it was noticed -- "0 markers printed" was not evidence of an early
+# crash, it was evidence of a binary with no markers in it.
+[ -s libtcc.M1 ] || { echo "  FAIL: libtcc.M1 is empty -- micro-c did not compile it"; exit 1; }
+grep -q '^:FUNCTION_' libtcc.M1 || { echo "  FAIL: libtcc.M1 has no functions"; exit 1; }
 echo "  libtcc.M1: $(wc -l < libtcc.M1) lines, $(grep -c '^:FUNCTION_' libtcc.M1) functions"
 
 echo "== the runtime under it =="

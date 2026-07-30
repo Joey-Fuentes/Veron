@@ -1,0 +1,177 @@
+An address applies to the last step of a chain -- both spellings.
+
+TWO BUGS, ONE RULE, AND THE RULE WAS ALREADY WRITTEN DOWN.
+
+postfix_expr_arrow computes `chain_continues` and the comment above it says
+exactly the right thing -- "an intermediate `->` or `[` still has to load the
+pointer to follow it" -- and then applies it to the prefix ++/-- flag only.
+Address_of was left out, so `&` suppressed the load at EVERY arrow:
+
+    &p->ref->type      ldr [p]  add 8  add 8
+     p->ref->type.t    ldr [p]  add 8  ldr  add 8  ldr
+
+The middle load is how you follow `->ref`. Without it the second offset lands
+on the ADDRESS of ref rather than on what ref points at.
+
+The parenthesised spelling failed differently. primary_expr hands Address_of
+into grouping parens, which is right for `&(x)` -- the parenthesised thing IS
+the target -- and wrong the moment a chain follows the `)`, because then the
+inside is an ordinary value. That one dropped the FIRST load:
+
+    &(p)->ref->type             add 8  ldr  add 8
+
+The lookahead scans to the MATCHING paren, not the next one, because the inside
+may contain calls and casts of its own; Address_of is restored afterwards so
+the chain still ends in an address.
+
+WHAT IT COST. tcc writes the parenthesised form, because pointed_type is a
+macro:
+
+    #define pointed_type(t) (&(t)->ref->type)
+
+compare_types calls it for every pointer comparison, so ANY assignment of a
+pointer-valued expression walked a wild address:
+
+    char *p = g();     SIGSEGV
+    int   n = g();     fine
+    g();               fine, the result is never stored
+
+HOW IT WAS FOUND, because the method is the point. tcctest.c had been failing
+at line 293 locally for many rounds and was skipped over as "the native crash
+is the real one". It is not: 293 is `const char *fn = get_file_from_header();`
+-- a pointer-valued call assigned to a variable, reproducible in the sandbox in
+one second. Function-ENTRY instrumentation over all 212 functions of tccgen.c
+then printed the path directly:
+
+    vstore -> verify_assign_cast -> is_null_pointer -> is_integer_btype
+           -> compare_types -> is_compatible_unqualified_types -> compare_types
+
+and compare_types' pointer branch is two lines long.
+
+FIFTH FUNCTION, AND CASE 44 CAME WITH IT. zzc taught this rule to the prefix
+operators, zzg to the dot site, zzm to the array site. Closing these two also
+closed case 44 -- `&((*p)->m)`, open since the beginning of the spike --
+without touching it. Three spellings of one bug, which is the strongest
+argument yet that the rule belongs in one place instead of five.
+
+MEASURED
+
+    difftest      73 pass / 0 fail / 0 known gap, amd64  (1 arch-skipped)
+                  74 pass / 0 fail / 0 known gap, aarch64
+                  the first run of this suite with NO known gap
+    corpus        423 of 426 on aarch64
+    vocabulary    clean on five architectures
+    mc-tcc        char *p = g();   crash -> exit 0
+                  tcctest.c        line 294 -> line 337
+
+diff --git a/cc_core.c b/cc_core.c
+index 970f6dd..fb35ba2 100644
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -2040,7 +2040,37 @@ void postfix_expr_arrow(void)
+ 	int is_prefix_target = prefix_lvalue_target && !chain_continues;
+ 	if(is_prefix_target) prefix_lvalue_target = FALSE;
+ 
+-	if((!match("=", global_token->s) && !is_compound_assignment(global_token->s) && !is_postfix_operator && !is_prefix_target && (register_size >= i->size) && !member_is_array && (TRUE != Address_of)))
++	/* AND Address_of OBEYS THE SAME RULE, which it did not.
++	 *
++	 * chain_continues was computed right above for prefix_lvalue_target and
++	 * then not applied to Address_of, so `&` suppressed the load at EVERY
++	 * arrow rather than only the last:
++	 *
++	 *     &p->ref->type      ldr [p]  add 8  add 8
++	 *      p->ref->type.t    ldr [p]  add 8  ldr  add 8  ldr
++	 *
++	 * The middle load is how you follow `->ref`. Without it the second offset
++	 * is added to the ADDRESS of ref instead of to what ref points at.
++	 *
++	 * tcc reaches it through
++	 *
++	 *     #define pointed_type(t) (&(t)->ref->type)
++	 *
++	 * used by compare_types for every pointer comparison, so any assignment
++	 * of a pointer-valued expression walked into a wild address:
++	 *
++	 *     char *p = g();          crash
++	 *     int   n = g();          fine
++	 *
++	 * The call path was vstore -> verify_assign_cast -> compare_types ->
++	 * is_compatible_unqualified_types -> compare_types, and it died in the
++	 * innermost one.
++	 *
++	 * Fourth function to learn this rule -- zzc taught it to the prefix
++	 * operators here, zzg to the dot site, zzm to the array site. Here the
++	 * rule was WRITTEN in the comment above and applied to one of the two
++	 * flags beneath it. */
++	if((!match("=", global_token->s) && !is_compound_assignment(global_token->s) && !is_postfix_operator && !is_prefix_target && (register_size >= i->size) && !member_is_array && (TRUE != Address_of || chain_continues)))
+ 	{
+ 		emit_out(load_value(i->size, i->is_signed));
+ 	}
+@@ -3423,9 +3453,64 @@ void primary_expr(void)
+ 			 * elsewhere. This is the third and last position where a full
+ 			 * expression is grammatically expected -- statement, controlling
+ 			 * expression, and inside grouping parens. */
+-			address_of_through_parens = Address_of;
+-			comma_expression();
+-			require_match("Error in Primary expression\nDidn't get )\n", ")");
++			/* A CHAIN AFTER THE CLOSING PAREN MAKES THE INSIDE AN RVALUE.
++			 *
++			 * Handing Address_of down is right for `&(x)`, where the
++			 * parenthesised thing IS the target. It is wrong for
++			 *
++			 *     &(p)->ref->type
++			 *
++			 * because there `p` must be LOADED to be followed; only the last
++			 * step of the chain yields the address. With the flag handed down,
++			 * `p` was not loaded and the offsets were added to the address of
++			 * the variable instead of to its value:
++			 *
++			 *     &p->ref->type      ldr [p]  add 8  ldr  add 8
++			 *     &(p)->ref->type             add 8  ldr  add 8
++			 *
++			 * tcc writes the parenthesised spelling because pointed_type is a
++			 * macro:
++			 *
++			 *     #define pointed_type(t) (&(t)->ref->type)
++			 *
++			 * and compare_types calls it for every pointer comparison, so any
++			 * assignment of a pointer-valued expression walked a wild address.
++			 *
++			 * The lookahead scans to the MATCHING paren rather than the next
++			 * one, because the inside may contain calls and casts of its own.
++			 * Address_of is restored afterwards so the chain still ends in an
++			 * address; it is the inside that must be an ordinary value. */
++			int paren_depth = 1;
++			struct token_list* scan = global_token;
++			int chain_after_parens = FALSE;
++			while(NULL != scan && 0 != paren_depth)
++			{
++				if('(' == scan->s[0] && 0 == scan->s[1]) paren_depth = paren_depth + 1;
++				else if(')' == scan->s[0] && 0 == scan->s[1]) paren_depth = paren_depth - 1;
++				if(0 == paren_depth) break;
++				scan = scan->next;
++			}
++			if(NULL != scan && NULL != scan->next)
++			{
++				chain_after_parens = match("->", scan->next->s)
++				                  || match(".", scan->next->s)
++				                  || match("[", scan->next->s);
++			}
++
++			if(chain_after_parens)
++			{
++				int want_address = Address_of;
++				address_of_through_parens = FALSE;
++				comma_expression();
++				require_match("Error in Primary expression\nDidn't get )\n", ")");
++				Address_of = want_address;
++			}
++			else
++			{
++				address_of_through_parens = Address_of;
++				comma_expression();
++				require_match("Error in Primary expression\nDidn't get )\n", ")");
++			}
+ 		}
+ 	}
+ 	else if(global_token->s[0] == '\'') primary_expr_char();

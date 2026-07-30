@@ -1,4 +1,4 @@
-/* KNOWN GAP. `&((*p)->m)` -- grouping parens around a DEREFERENCE.
+/* CLOSED by EXPERIMENT-zzr. `&((*p)->m)` -- grouping parens around a DEREFERENCE.
  *
  * `&(p->m)` works (case 43). This does not, and the reason is structural
  * rather than a missing guard.
@@ -21,7 +21,14 @@
  *
  * Whether tcc needs this shape is unmeasured. tccpp.c:516 uses the simple
  * `&(ts->hash_next)`, which works.
- */
+  *
+ * CLOSED. It was the same rule the arrow and array sites already carried: an
+ * address applies to the LAST step of a chain, never to a step that still has
+ * to be followed. Two spellings were wrong -- `&p->a->b` dropped the middle
+ * load, `&(p)->a->b` dropped the first -- and this case is the third,
+ * `&((*p)->m)`. Fixing the other two closed it without it being touched, which
+ * is the tell that they were one bug wearing three faces.
+*/
 struct Node { struct Node* next; long value; };
 
 static struct Node  pool[4];

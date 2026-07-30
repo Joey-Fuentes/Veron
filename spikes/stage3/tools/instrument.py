@@ -209,9 +209,30 @@ def is_single_line_branch(line):
 def main():
     args = sys.argv[1:]
     map_only = False
+    entry_only = False
     prefix = 'L'
     if args and args[0] == '--map':
         map_only = True
+        args = args[1:]
+    # ONE MARKER PER FUNCTION, AT ITS FIRST STATEMENT.
+    #
+    # Per-statement marking cannot be used on large functions here. It has to
+    # decide where a statement boundary is, and it gets that wrong in three
+    # ways that all produce a BROKEN COMPILE rather than a bad trail: a marker
+    # between `}` and `else`, a marker between one case body and the next
+    # `case`, and -- because brace depth is counted textually while tccgen.c is
+    # full of #ifndef blocks -- a marker emitted at FILE SCOPE after a function
+    # it thought was still open. micro-c then says "else is not a defined
+    # symbol", "ERROR in process_switch", or "Unknown type write".
+    #
+    # Entry marking has none of those decisions to make: the position is the
+    # first line of a body the range-finder already located, which is always a
+    # legal place for a statement. It answers a coarser question -- which
+    # function, not which statement -- but it answers it for EVERY function in
+    # a file, which is what naming a crash in a 4000-line parser actually
+    # needs.
+    if args and args[0] == '--entry':
+        entry_only = True
         args = args[1:]
     if len(args) >= 2 and args[0] == '--prefix':
         # A DISTINCT LETTER PER FILE. Markers are numbered from 1 in whichever
@@ -283,6 +304,28 @@ def main():
     skipped = []
     n = 0
     depth = 0
+
+    if entry_only:
+        # ONE MARKER, AT THE FIRST LINE OF EACH BODY. No statement-boundary
+        # decisions, so none of the three ways the per-statement path breaks a
+        # compile can happen here.
+        starts = {}
+        for start, end, func in ranges:
+            starts[start] = func
+        for i, line in enumerate(lines):
+            out.append(line)
+            if i in starts:
+                n += 1
+                tag = "%s%02d" % (prefix, n)
+                out.append('    write(2, "%s\\n", %d);' % (tag, len(tag) + 1))
+                mapping.append((tag, i + 1, "%s: ENTRY" % starts[i]))
+        if map_only:
+            for tag, ln, what in mapping:
+                sys.stdout.write("%s  %s:%d  %s\n" % (tag, path, ln, what))
+        else:
+            sys.stdout.write('\n'.join(out))
+        return 0
+
     for i, line in enumerate(lines):
         out.append(line)
         func = covering(i)
@@ -307,8 +350,33 @@ def main():
             elif ch == '}':
                 depth -= 1
 
+        # NOT IF THE NEXT THING IS else, case, default OR ANOTHER CLOSE.
+        #
+        # A marker is a statement, and a statement is not legal between a
+        # closing brace and the `else` that continues it, nor between the end
+        # of one case body and the `case` that follows, nor after the last
+        # statement of a block whose closer comes next. Inserting there
+        # produced, from micro-c,
+        #
+        #     tccgen.c:594:  else is not a defined symbol
+        #     tccgen.c:5600: ERROR in process_switch / MISSING }
+        #
+        # -- and, because the compile output was not checked, a ZERO-BYTE
+        # libtcc.M1 and a stale binary that was then read as evidence. That is
+        # why this tool worked on three small functions and fell over on decl,
+        # block and unary, which are full of both constructs.
+        nxt = ''
+        for _j in range(i + 1, min(i + 4, len(lines))):
+            _t = lines[_j].strip()
+            if _t:
+                nxt = _t
+                break
+        unsafe_next = (nxt.startswith('else') or nxt.startswith('case ')
+                       or nxt.startswith('case(') or nxt.startswith('default:')
+                       or nxt.startswith('}'))
+
         if func is not None and closing and depth >= 1 and before > depth \
-                and not at_func_end(i):
+                and not unsafe_next and not at_func_end(i):
             n += 1
             tag = "%s%02d" % (prefix, n)
             indent = line[:len(line) - len(line.lstrip())]
@@ -316,7 +384,7 @@ def main():
             mapping.append((tag, i + 1, "%s: (rejoin) %s" % (func, line.strip())))
             continue
 
-        if func is not None and instrumentable(line):
+        if func is not None and instrumentable(line) and not unsafe_next:
             # THE BODY OF A BRACELESS CONTROL HEADER GETS BRACED.
             #
             # Appending the marker on its own would put it OUTSIDE the loop or
