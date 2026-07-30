@@ -434,6 +434,51 @@ jobs:
           done
           echo "  rewritten tree: $(find pins/mescc-s2 -type f | wc -l) files"
 
+      - name: 'AIRLOCK: micro-c source, and tcc, for the stage-3 rung'
+        run: |
+          set -eu
+          # micro-c IS M2-Planet PLUS THIS PROJECT'S PATCH SERIES, and the
+          # difference matters. GATE 1 above proves the ladder reaches UPSTREAM
+          # M2-Planet byte for byte -- it says nothing about the compiler stage
+          # 3 actually uses, which is upstream plus 38 experiments. Applying
+          # them is a source edit, so it happens out here beside drop_asm.py
+          # and the two rewrites; the box gets the result through pins/.
+          rm -rf pins/microc && cp -r pins/m2 pins/microc
+          git -C pins/microc init -q . 2>/dev/null || true
+          n=0
+          for p in spikes/stage3/patches/m2-planet/[0-9]*.patch \
+                   spikes/stage3/patches/micro-c-experiments/EXPERIMENT-*.patch; do
+            [ -e "$p" ] || continue
+            git -C pins/microc apply --ignore-whitespace "$PWD/$p" \
+              || { echo "FAIL: $(basename "$p") does not apply"; exit 1; }
+            n=$((n + 1))
+          done
+          # A FLOOR, BECAUSE A SILENTLY EMPTY SERIES LOOKS EXACTLY LIKE A
+          # PASSING ONE. tcc-two-ways carries the same guard for the same
+          # reason.
+          [ "$n" -ge 30 ] || { echo "FAIL: only $n patches applied, expected >= 30"; exit 1; }
+          echo "  micro-c = M2-Planet + $n patches"
+
+          # THE TARBALL IS EXTRACTED HERE, NOT IN THE BOX. busybox has tar, but
+          # the box's applet list is the budget's inventory and every name on it
+          # is a capability someone has to justify. Unpacking is not a
+          # compilation, so it belongs in the airlock.
+          rm -rf pins/tcc-src && mkdir -p pins/tcc-src
+          tar -xzf spikes/toolbox/tcc-5ec0e6f8-arm64-configured.tar.gz \
+              -C pins/tcc-src --strip-components=1
+          [ -f pins/tcc-src/config.h ] \
+            || { echo "FAIL: no config.h -- the tarball is not the configured one"; exit 1; }
+          for p in spikes/stage3/patches/tcc-arm64-asm/[0-9]*.patch; do
+            [ -e "$p" ] || continue
+            git -C pins/tcc-src apply --ignore-whitespace "$PWD/$p" 2>/dev/null \
+              || patch -p1 -d pins/tcc-src -i "$PWD/$p" >/dev/null \
+              || { echo "FAIL: $(basename "$p") does not apply to tcc"; exit 1; }
+          done
+          echo "  tcc-src ready: $(ls pins/tcc-src/*.c | wc -l) .c files"
+
+          # The -f list is the oracle's, exactly as G0/G1 use it.
+          cp pins/flist.txt pins/microc-srcs.txt
+
       # --- BUILD THE BOX --------------------------------------------------
       - name: Load the stage-2 conformance corpus
         run: |
@@ -833,6 +878,114 @@ jobs:
             echo "    This is the measured blocker, not a surprise. See the header."
           fi
           set -e
+
+          say '10. STAGE 3 -- micro-c compiles tcc, our M1 and hex2 link it'
+          # EVERYTHING THIS STEP USES WAS BUILT IN THIS BOX. stage 2 from the
+          # seed, micro-c from stage 2, M1 and hex2 from stage 2, and the link
+          # by those. The only inputs are pinned source and busybox.
+          #
+          # NON-GATING on its first outing, like GATE 2 was: it reports where it
+          # stops. What it must never do is report success it did not have, so
+          # every artifact is size-checked, not just tested for existence -- the
+          # 120-byte hex2 taught that lesson already.
+          s3ok=yes
+          {
+            cat /in/patched_bootstrap.c
+            cat /src/stage2-pico-c/m2libc-shim.c
+            cat /in/m2/M2libc/bootstrappable.c
+            while read -r f; do cat "/in/microc/$f"; done < /in/microc-srcs.txt
+          } > microc.c
+          art 'microc.c (patched unit)' microc.c
+          if ./stage2 < microc.c > microc.s1 2>/dev/null \
+             && ./stage1 < microc.s1 > microc.s0 2>/dev/null \
+             && ./stage0-as < microc.s0 | ./elf micro-c \
+             && [ -x micro-c ] && [ "$(wc -c < micro-c)" -gt 65536 ]; then
+            art 'micro-c (ours)' micro-c
+          else
+            echo "    micro-c did not build -- stopping stage 3 here"
+            s3ok=no
+          fi
+
+          if [ "$s3ok" = yes ]; then
+            MCFLAGS='--architecture aarch64 --max-string 65536'
+            L=/src/stage3/micro-c-libc
+            M=/in/m2/M2libc
+            set +e
+            ( cd /in/tcc-src && /work/micro-c $MCFLAGS --expand-includes \
+                -D ONE_SOURCE=1 -D TCC_TARGET_ARM64=1 -D TCC_TARGET_LINUX=1 \
+                -D CONFIG_TCC_STATIC=1 -I . -I "$L" -I "$M" \
+                -f libtcc.c -o /work/libtcc.M1 ) 2>/work/libtcc.err
+            rc=$?
+            set -e
+            if [ "$rc" = 0 ] && [ -s libtcc.M1 ]; then
+              echo "    libtcc.M1: $(wc -l < libtcc.M1) lines, $(grep -c '^:FUNCTION_' libtcc.M1) functions"
+            else
+              echo "    micro-c could not compile libtcc.c (rc=$rc)"
+              head -3 /work/libtcc.err | sed 's/^/      /'
+              s3ok=no
+            fi
+          fi
+
+          if [ "$s3ok" = yes ]; then
+            H="-f $M/stdarg.h -f $M/sys/types.h -f $M/stddef.h -f $M/signal.h -f $M/sys/utsname.h"
+            set +e
+            ./micro-c $MCFLAGS -f "$M/ctype.c" $H \
+              -f "$M/aarch64/linux/unistd.c" -f "$M/aarch64/linux/fcntl.c" \
+              -f "$M/fcntl.c" -f "$M/stdlib.c" -f "$M/string.c" \
+              -f "$M/stdio.h" -f "$M/stdio.c" -f "$M/bootstrappable.c" -o m2libc.M1 2>/dev/null
+            r1=$?
+            ./micro-c $MCFLAGS -I "$L" -f "$L/impl/runtime.c"       -o runtime.M1 2>/dev/null; r2=$?
+            ./micro-c $MCFLAGS -f "$L/impl/setjmp-aarch64.c"        -o setjmp.M1  2>/dev/null; r3=$?
+            ./micro-c $MCFLAGS -f "$L/impl/main-tcc.c"              -o maintcc.M1 2>/dev/null; r4=$?
+            set -e
+            if [ "$r1$r2$r3$r4" = 0000 ]; then
+              echo "    runtime: m2libc $(grep -c '^:FUNCTION_' m2libc.M1), runtime $(grep -c '^:FUNCTION_' runtime.M1)"
+            else
+              echo "    runtime did not compile (rc: $r1 $r2 $r3 $r4)"
+              s3ok=no
+            fi
+          fi
+
+          if [ "$s3ok" = yes ]; then
+            # CODE BEFORE STRINGS. Concatenating units naively interleaves their
+            # string sections, so a function can land on an address that is not a
+            # multiple of four and every call to it is SIGBUS on aarch64. This is
+            # not an optimisation; without it nothing runs.
+            : > tcc.code; : > tcc.strs
+            for f in libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1 maintcc.M1; do
+              sed '/^# Program strings$/,$d'   "$f" >> tcc.code
+              sed -n '/^# Program strings$/,$p' "$f" >> tcc.strs
+            done
+            cat tcc.code tcc.strs > tcc-all.M1
+            A=/in/m2/M2libc/aarch64
+            set +e
+            timeout 300 ./M1 -f "$A/aarch64_defs.M1" -f "$A/libc-full.M1" \
+                             -f tcc-all.M1 --little-endian --architecture aarch64 \
+                             -o tcc-all.hex2
+            m1rc=$?
+            timeout 300 ./hex2 --architecture aarch64 --little-endian \
+                             --base-address 0x400000 -f "$A/ELF-aarch64.hex2" \
+                             -f tcc-all.hex2 -o /out/mc-tcc
+            hxrc=$?
+            set -e
+            echo "    our M1 rc=$m1rc   our hex2 rc=$hxrc"
+            if [ -s /out/mc-tcc ] && [ "$(wc -c < /out/mc-tcc)" -gt 262144 ]; then
+              art 'mc-tcc (ours, end to end)' /out/mc-tcc
+              chmod 0755 /out/mc-tcc
+              printf 'int main(void) { return 7; }\n' > seven.c
+              set +e
+              timeout 120 /out/mc-tcc -B /in/tcc-src -I /in/tcc-src \
+                          -c seven.c -o seven.o 2>/work/run7.err
+              crc=$?
+              set -e
+              echo "    mc-tcc -c seven.c: rc=$crc, object $(wc -c < seven.o 2>/dev/null || echo 0) bytes"
+              [ "$crc" = 0 ] || head -3 /work/run7.err | sed 's/^/      /'
+            else
+              echo "    no mc-tcc produced ($(wc -c < /out/mc-tcc 2>/dev/null || echo 0) bytes)"
+              s3ok=no
+            fi
+          fi
+          echo "    stage 3 end to end: $s3ok"
 
           say 'DONE -- inside the box'
           cp m2.c /out/m2.c 2>/dev/null || true
