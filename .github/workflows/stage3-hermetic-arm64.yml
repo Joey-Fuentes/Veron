@@ -197,7 +197,7 @@ jobs:
             echo "        and passes it to G1 unpatched. Both are reported in-box."
           fi
 
-      - name: Build the reference M2-Planet and self-compile
+      - name: Build upstream's reference compiler and self-compile
         run: |
           set -eu
           make -C m2 M2-Planet
@@ -758,7 +758,22 @@ jobs:
 
           [ "$fp_ok" = yes ] || { echo "    FAIL: the stage-2 canary is not clean"; exit 1; }
 
-          say '7. G0 -- stage 2 builds M2-Planet from PATCHED source'
+          say '7. G0 -- stage 2 builds micro-c from UNPATCHED upstream source'
+          # THE COMPILER THIS LADDER PRODUCES IS CALLED micro-c. "M2-Planet"
+          # is the upstream project it is forked from, and that name belongs
+          # only to the pin, the clone, and the reference binary GATE 1
+          # measures against -- not to anything we build.
+          #
+          # G0 is micro-c built from UNPATCHED upstream source, with one
+          # substitution: M2libc/aarch64/linux/bootstrap.c, whose entire
+          # content is six asm() bodies stage 2 cannot compile. It is
+          # deliberately not our patch series, because GATE 1 compares its
+          # self-compile byte for byte against upstream's reference, and that
+          # comparison is what proves the LADDER faithful. Patch the source and
+          # the gate stops meaning anything.
+          #
+          # The real micro-c -- upstream plus this project's 43 patches -- is
+          # built in step 10, and that is the one that compiles tcc.
           # The substitution applies to G0 and only G0. patched_bootstrap.c goes
           # first so its enums (NULL EOF TRUE FALSE stdin/stdout/stderr EXIT_*)
           # are in scope for the shim, and the shim supplies fgetc/fputc -- the
@@ -785,17 +800,17 @@ jobs:
           art 'm2.c (our translation unit)' m2.c
           ./stage2 < m2.c > m2.s1
           echo "    stage2 emitted $(wc -c < m2.s1) bytes of stage-1 assembly"
-          ./stage1 < m2.s1 | ./stage0-as | ./elf M2-ours
-          [ -x M2-ours ] || { echo "    FAIL: no G0"; exit 1; }
-          art 'G0 = M2-Planet (ours)' M2-ours
+          ./stage1 < m2.s1 | ./stage0-as | ./elf microc-g0
+          [ -x microc-g0 ] || { echo "    FAIL: no G0"; exit 1; }
+          art 'G0 = micro-c (unpatched source)' microc-g0
 
-          say '8. G1 -- G0 compiles UNPATCHED M2-Planet source'
+          say '8. G1 -- G0 compiles that same unpatched source again'
           # From here the patch is gone: our M2-Planet handles asm() perfectly
           # well, so G1 onward is built from upstream source exactly as shipped.
           set --
           while read -r f; do set -- "$@" -f "$f"; done < /in/flist.txt
           cd /in/m2
-          /work/M2-ours --architecture aarch64 --bootstrap-mode "$@" -o /out/ours-gen1.M1
+          /work/microc-g0 --architecture aarch64 --bootstrap-mode "$@" -o /out/ours-gen1.M1
           cd /work
           art 'ours-gen1.M1' /out/ours-gen1.M1
 
@@ -889,20 +904,45 @@ jobs:
           # every artifact is size-checked, not just tested for existence -- the
           # 120-byte hex2 taught that lesson already.
           s3ok=yes
+          # THE SAME REPLACE/OMIT RULES G0 USES, because this is the same
+          # translation unit with a different source tree behind it.
+          #
+          # The first cut just catted every name in the list, and also
+          # bootstrappable.c on top. That pulled in
+          # M2libc/aarch64/linux/bootstrap.c with its six raw asm() bodies --
+          # the very file patched_bootstrap.c REPLACES -- and M2libc/bootstrap.c
+          # which the m71 rule omits. 399,620 bytes against G0's 215,485, and
+          # stage 2 had no chance.
           {
             cat /in/patched_bootstrap.c
             cat /src/stage2-pico-c/m2libc-shim.c
-            cat /in/m2/M2libc/bootstrappable.c
-            while read -r f; do cat "/in/microc/$f"; done < /in/microc-srcs.txt
+            while read -r f; do
+              case "$f" in
+                M2libc/aarch64/linux/bootstrap.c) ;;
+                M2libc/bootstrap.c) ;;
+                *) cat "/in/microc/$f" ;;
+              esac
+            done < /in/microc-srcs.txt
           } > microc.c
           art 'microc.c (patched unit)' microc.c
-          if ./stage2 < microc.c > microc.s1 2>/dev/null \
-             && ./stage1 < microc.s1 > microc.s0 2>/dev/null \
-             && ./stage0-as < microc.s0 | ./elf micro-c \
-             && [ -x micro-c ] && [ "$(wc -c < micro-c)" -gt 65536 ]; then
+          # AND EVERY RUNG REPORTS ITS OWN VERDICT. The first cut chained all
+          # four with && and sent stderr to /dev/null, so "micro-c did not
+          # build" was the entire diagnosis -- which is the fault I had just
+          # finished fixing in build2, written again three steps later.
+          set +e
+          ./stage2 < microc.c > microc.s1 2>microc.e2; r2=$?
+          ./stage1 < microc.s1 > microc.s0 2>microc.e1; r1=$?
+          ./stage0-as < microc.s0 > microc.bin 2>microc.e0; r0=$?
+          ./elf micro-c < microc.bin 2>microc.ee; re=$?
+          set -e
+          echo "    stage2 rc=$r2  stage1 rc=$r1  stage0-as rc=$r0  elf rc=$re"
+          [ "$r2" = 0 ] || head -3 microc.e2 | sed 's/^/      stage2: /'
+          [ "$r1" = 0 ] || head -3 microc.e1 | sed 's/^/      stage1: /'
+          [ "$r0" = 0 ] || head -3 microc.e0 | sed 's/^/      stage0-as: /'
+          if [ -x micro-c ] && [ "$(wc -c < micro-c)" -gt 65536 ]; then
             art 'micro-c (ours)' micro-c
           else
-            echo "    micro-c did not build -- stopping stage 3 here"
+            echo "    micro-c did not build ($(wc -c < micro-c 2>/dev/null || echo 0) bytes)"
             s3ok=no
           fi
 
@@ -993,7 +1033,7 @@ jobs:
           chmod +x "$BOX/work/run.sh"
 
       # --- RUN THE BOX ----------------------------------------------------
-      - name: 'IN THE BOX: seed -> stage1 -> stage2 -> M2-Planet -> self-compile'
+      - name: 'IN THE BOX: seed -> stage1 -> stage2 -> micro-c -> tcc'
         run: |
           set -eu
           bwrap \
@@ -1035,7 +1075,7 @@ jobs:
             # like a broken variable rather than the result the job exists to
             # produce.
             _bp="$BUDGET_PATH"; [ -n "$_bp" ] || _bp='EMPTY -- nothing'
-            echo "      $_bp, compiles M2-Planet's own unpatched source to"
+            echo "      $_bp, compiles upstream's own unpatched source to"
             echo "      output identical to upstream's reference compiler."
           else
             echo "FAIL: our G0's self-compile differs from the reference."
