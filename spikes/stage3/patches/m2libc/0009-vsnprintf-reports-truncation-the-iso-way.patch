@@ -37,11 +37,39 @@ recorded here rather than left to be discovered.
 MEASURED: the existing 51 checks still pass, and the new truncation checks in
 test-vsnprintf.sh fail before this patch and pass after.
 
+
+CORRECTION. The first cut of this patch had vfprintf accumulate
+strlen(printf_buf). strlen appears nowhere else in stdio.c, so in any build
+that compiles this file alone the symbol is undefined -- 40 corpus rows went
+from passing to "WILL NOT COMPILE: stdio.c:967:str". It passed my testing
+because I built it with gcc, where strlen comes from the host's <string.h>,
+and never through micro-c.
+
+vsnprintf already knows how many bytes it wrote, so it exports the count as
+__vsnprintf_written beside the resume state, and vfprintf reads that. No new
+symbol, and nothing recomputed.
+
 --- a/stdio.c
 +++ b/stdio.c
-@@ -611,7 +611,12 @@ int vsnprintf(char* s, size_t n, const char* format, va_list arg)
+@@ -512,6 +512,13 @@ char* __integer_to_string(int value)
+ 
+ int __vsnprintf_string_offset;
+ va_list __vsnprintf_ap;
++/* BYTES ACTUALLY WRITTEN by the last vsnprintf call, for vfprintf's chunking
++ * loop. The RETURN value reports truncation the way ISO callers read it and is
++ * therefore no longer the size of the chunk; this is. Exported rather than
++ * recomputed because the function already knows it, and because the obvious
++ * alternative -- strlen of the buffer -- adds a symbol stdio.c does not
++ * otherwise use, which is exactly what broke 40 corpus rows. */
++int __vsnprintf_written;
+ /* One line since M2-Mesoplanet doesn't support multi line macros */
+ #define INLINE_STRSCPY str_i = 0; while(str[str_i] != '\0' && output < n - 1) { s[output++] = str[str_i++]; }
+ /* A CONVERSION SPECIFICATION IS NOT JUST ITS LAST LETTER.
+@@ -610,8 +617,14 @@ int vsnprintf(char* s, size_t n, const char* format, va_list arg)
+ 			{
  				__vsnprintf_string_offset = i;
  				__vsnprintf_ap = arg;
++				__vsnprintf_written = output;
  				s[output] = '\0';
 -				return output;
 +				/* TRUNCATED: SAY SO THE WAY ISO CALLERS READ IT. See the note
@@ -53,9 +81,11 @@ test-vsnprintf.sh fail before this patch and pass after.
  			}
  			s[output] = format[i];
  			output = output + 1;
-@@ -866,7 +871,8 @@ int vsnprintf(char* s, size_t n, const char* format, va_list arg)
+@@ -865,8 +878,10 @@ int vsnprintf(char* s, size_t n, const char* format, va_list arg)
+ 		{
  			__vsnprintf_string_offset = spec_start;
  			__vsnprintf_ap = ap_save;
++			__vsnprintf_written = output;
  			s[output] = '\0';
 -			return output;
 +			/* TRUNCATED -- same reason as the site above. */
@@ -63,7 +93,15 @@ test-vsnprintf.sh fail before this patch and pass after.
  		}
  
  		if(!flag_minus && !flag_zero)
-@@ -952,7 +958,13 @@ int vfprintf(FILE* stream, char* format, va_list arg)
+@@ -926,6 +941,7 @@ int vsnprintf(char* s, size_t n, const char* format, va_list arg)
+ 
+ 	__vsnprintf_string_offset = i;
+ 	__vsnprintf_ap = arg;
++	__vsnprintf_written = output;
+ 	if(format[i] == '\0') __vsnprintf_string_offset = 0;
+ 
+ 	if(output < n)
+@@ -952,7 +968,13 @@ int vfprintf(FILE* stream, char* format, va_list arg)
  
  	do
  	{
@@ -74,7 +112,7 @@ test-vsnprintf.sh fail before this patch and pass after.
 +		 * no longer the size of this chunk. This loop wants the bytes it is
 +		 * about to hand to fputs, which is exactly strlen of the buffer. */
 +		vsnprintf(printf_buf, PRINTF_BUFFER_SIZE, format, ap);
-+		output += strlen(printf_buf);
++		output += __vsnprintf_written;
  		format += __vsnprintf_string_offset;
  		ap = __vsnprintf_ap;
  		fputs(printf_buf, stream);

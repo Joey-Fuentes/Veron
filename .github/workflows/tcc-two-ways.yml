@@ -1570,11 +1570,29 @@ jobs:
           got=$(sed -n 's/.*rows: pass \([0-9]*\).*/\1/p' corpus-out.txt | tail -1)
           [ -n "$got" ] || { echo "  FAIL: the corpus produced no result line"; exit 1; }
           echo "  $got of 426 passed"
-          if [ "$got" -lt 423 ]; then
-            echo "  FAIL: $got passed, and 423 passed when this step was written."
-            echo "  Three of the 426 are not micro-c's problem -- one needs a"
-            echo "  forward declaration, two are rejected by gcc as well -- so"
-            echo "  423 is the number to hold."
+          # 419, NOT 423. Four rows moved when `int` became four bytes
+          # (EXPERIMENT-zzw) and every one returns exactly HALF what the row
+          # expects:
+          #
+          #     row 121  returns 8,  expected 16
+          #     row 122  returns 12, expected 24
+          #     row 123  returns 8,  expected 16
+          #     row 352  returns 4,  expected 8
+          #
+          # That is sizeof at four bytes rather than eight. The corpus was
+          # captured against stage 2, whose int IS a register, so these four now
+          # agree with gcc and disagree with the stored expectation -- they join
+          # the 29 the line above already reports as int-width divergence.
+          # Lowering a floor deserves suspicion, so the four are named here
+          # rather than left as a smaller number.
+          #
+          # The other three that never passed: one needs a forward declaration,
+          # two are rejected by gcc as well.
+          if [ "$got" -lt 419 ]; then
+            echo "  FAIL: $got passed, and 419 passed when this step was written."
+            echo "  Seven of the 426 are not micro-c's problem: three predate"
+            echo "  this work, and four are sizeof(int) rows the corpus captured"
+            echo "  at eight bytes. 419 is the number to hold."
             exit 1
           fi
 
