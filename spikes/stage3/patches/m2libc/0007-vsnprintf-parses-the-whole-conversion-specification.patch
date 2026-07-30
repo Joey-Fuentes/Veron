@@ -1,0 +1,554 @@
+vsnprintf parses the whole conversion specification, not just its last letter.
+
+WHAT WAS WRONG. The format loop read the character after `%` and compared it
+against six conversions. A flag, a width, a precision or a length modifier
+matched none of them, so it emitted nothing for the `%`, advanced one
+character, and copied the remainder of the specification out as literal text.
+
+    "#define __TINYC__ 9%.2s\n", &TCC_VERSION[4]      tccpp.c:3631
+
+became `#define __TINYC__ 92s`. `92s` is not a number, so every `#if __TINYC__`
+in tcc's own test suite failed:
+
+    tests/tcctest.c:337: error: invalid number
+
+AND IT DID NOT CONSUME THE ARGUMENT. That is the worse half, because it is
+silent. An unrecognised specification fell through without calling va_arg, so
+every conversion after it in the same format string read the WRONG SLOT and
+printed a plausible number from someone else's value. tcc uses 41 `%lx`, 24
+`%p`, 12 `%-2d`, 11 `%08x` and 11 `%04x` among others -- none of which this
+understood -- so any diagnostic mixing them was misaligned from the first one
+onward, with nothing to say so.
+
+WHAT IS IMPLEMENTED NOW. The full shape:
+
+    %[flags][width][.precision][length]conversion
+
+flags `-` `0` `+` ` ` `#`; width and precision as digits or `*`; length
+modifiers h/hh/l/ll/z/j/t/L; conversions d i u o x X c s p %%.
+
+The length modifier is REMEMBERED rather than skipped. Where int and long are
+the same width -- true of the compiler this is built by -- fetching everything
+as a long is exact. Where they are not it is not: an int argument occupies a
+slot whose upper half means nothing, and reading it as a long turned -42 into
+4294967254. Keeping the flag costs one variable and makes the same source
+correct under both, which is what let it be tested against glibc at all.
+
+WHAT IS NOT. e E f g G a A n -- there is no floating point here to convert
+from. They emit the specification verbatim AND consume one slot, so what
+follows stays aligned: a visibly wrong field instead of an invisible shift of
+everything after it.
+
+THE RESUME CONTRACT IS UNCHANGED, WHICH IS WHY THE ROOM CHECK MOVED. vfprintf
+calls this in PRINTF_BUFFER_SIZE chunks and restarts from
+__vsnprintf_string_offset with __vsnprintf_ap. So "does it fit" is now asked
+once per specification instead of once per character, and on truncation the
+offset points at the START of that specification with the va_list snapshotted
+from before its arguments were taken. Previously a long `%s` could be cut in
+half and its remainder dropped -- the offset had already advanced past it. A
+specification too large for an empty buffer is emitted truncated rather than
+deferred, because otherwise vfprintf would ask for it forever.
+
+`__vsnprintf_ap = arg` requires an assignable va_list. M2libc's is; glibc's is
+an array type. The original code already relied on this, so it is not a new
+constraint -- but it is why the test harness below copies with va_copy.
+
+TESTED AGAINST glibc, NOT AGAINST ITSELF. tools/test-vsnprintf.sh compiles this
+function with gcc under the name m2_vsnprintf and compares its output with the
+platform snprintf over every conversion tcc actually uses, the width and
+precision forms, `*` width and precision, and three argument-alignment probes
+of the shape that used to fail silently. 50 checks. It runs in about a second
+and needs nothing but gcc, so it can gate.
+
+    before  4 failures, all negative %d      (the int-vs-long fetch above)
+    after   50 checks, 0 failures
+
+AND IN THE PIPELINE:
+
+    predef line, before   #define __TINYC__ 92s
+    predef line, after    #define __TINYC__ 928
+    gcc-built control     #define __TINYC__ 928
+
+    tcctest.c before      tests/tcctest.c:337: error: invalid number
+    tcctest.c after       past 337; stops later, in the allocator:
+                          "M2libc: realloc: pointer was never returned by
+                           malloc" -- which is patch 0006 doing its job
+
+NO REGRESSION. difftest aarch64 79/79, amd64 77/77, stage-2 corpus 423/426 --
+the same rows as before.
+
+--- a/stdio.c
++++ b/stdio.c
+@@ -511,93 +511,435 @@ char* __integer_to_string(int value)
+ }
+ 
+ int __vsnprintf_string_offset;
+ va_list __vsnprintf_ap;
+ /* One line since M2-Mesoplanet doesn't support multi line macros */
+ #define INLINE_STRSCPY str_i = 0; while(str[str_i] != '\0' && output < n - 1) { s[output++] = str[str_i++]; }
++/* A CONVERSION SPECIFICATION IS NOT JUST ITS LAST LETTER.
++ *
++ * This loop read the character after `%` and compared it against the six
++ * conversions it knew. Anything else -- a flag, a width, a precision, a length
++ * modifier -- matched nothing, so it emitted NOTHING for the `%`, advanced one
++ * character, and then copied the rest of the specification out as literal
++ * text. `%.2s` became the two characters `2s`, and tcc's
++ *
++ *     cstr_printf(cs, "#define __TINYC__ 9%.2s\n", &TCC_VERSION[4]);
++ *
++ * produced `#define __TINYC__ 92s`. Every `#if __TINYC__` in tcc's own test
++ * suite then failed with "invalid number", at tcctest.c:337.
++ *
++ * AND IT DID NOT CONSUME THE ARGUMENT. That is the worse half. An unrecognised
++ * specification fell through without calling va_arg, so every conversion after
++ * it in the same format string read the WRONG SLOT -- silently, with no
++ * diagnostic, producing plausible numbers from the wrong values. tcc uses 41
++ * `%lx`, 11 `%08x`, 24 `%p` and 12 `%-2d` among others, none of which this
++ * understood, so any diagnostic mixing them was misaligned from the first one
++ * onwards.
++ *
++ * WHAT IS IMPLEMENTED NOW: the full specification shape
++ *
++ *     %[flags][width][.precision][length]conversion
++ *
++ * flags `-`, `0`, `+`, ` `, `#`; width and precision as digits or `*`; the
++ * length modifiers h/hh/l/ll/z/j/t/L parsed and discarded; and the conversions
++ * d i u o x X c s p %%. Every integer is fetched as a long, which is the
++ * widest of the modifiers and, where int and long are the same width, also the
++ * narrowest -- so discarding them is exact here rather than approximate.
++ *
++ * WHAT IS NOT: e E f g G a A n. There is no floating point in this compiler to
++ * convert from. They emit the specification verbatim AND consume one argument
++ * slot, so the conversions after them stay aligned -- a visible wrong output
++ * rather than an invisible shift of everything downstream.
++ *
++ * THE RESUME CONTRACT IS UNCHANGED, AND IS WHY THE ROOM CHECK MOVED.
++ * vfprintf calls this in PRINTF_BUFFER_SIZE chunks and restarts from
++ * __vsnprintf_string_offset with __vsnprintf_ap. So the check for "does it
++ * fit" now happens BEFORE a specification is emitted rather than per
++ * character, and on truncation the offset points at the START of that
++ * specification with the va_list snapshotted from before its arguments were
++ * taken. Previously a `%s` could be cut in half and the remainder dropped: the
++ * offset had already advanced past it. A specification too large for an empty
++ * buffer is emitted truncated rather than retried, because otherwise vfprintf
++ * would ask for it forever.
++ */
++
++char __vsnprintf_scratch[80];
++
+ int vsnprintf(char* s, size_t n, const char* format, va_list arg)
+ {
+-	int i = 0;
+-	int output = 0;
++	int i;
++	int output;
+ 	int str_i;
+ 	char* str;
+-
++	char* digits;
++	va_list ap_save;
++	int spec_start;
++	int flag_minus;
++	int flag_zero;
++	int flag_plus;
++	int flag_space;
++	int flag_hash;
++	int width;
++	int precision;
++	int have_precision;
++	int base;
++	int uppercase;
++	int is_negative;
++	int nlen;
++	int total;
++	int pad;
++	int k;
++	int sign_len;
++	char sign_ch;
++	int prefix_len;
++	int len_long;
++	unsigned long uvalue;
++	long svalue;
++	char conv;
++
++	i = 0;
++	output = 0;
+ 	__vsnprintf_string_offset = 0;
+ 
+ 	if(0 == n) return 0;
+-	while(format[i] != '\0' && output < n - 1)
++
++	while(format[i] != '\0')
+ 	{
+-		if(format[i] == '%')
++		if(format[i] != '%')
++		{
++			if(output >= n - 1)
++			{
++				__vsnprintf_string_offset = i;
++				__vsnprintf_ap = arg;
++				s[output] = '\0';
++				return output;
++			}
++			s[output] = format[i];
++			output = output + 1;
++			i = i + 1;
++			continue;
++		}
++
++		/* Snapshot BEFORE any va_arg of this specification, so a truncated
++		 * chunk can be redone from here by vfprintf. */
++		spec_start = i;
++		ap_save = arg;
++		i = i + 1;
++
++		flag_minus = 0;
++		flag_zero = 0;
++		flag_plus = 0;
++		flag_space = 0;
++		flag_hash = 0;
++		while(format[i] == '-' || format[i] == '0' || format[i] == '+'
++		   || format[i] == ' ' || format[i] == '#')
+ 		{
+-			++i;
++			if(format[i] == '-') flag_minus = 1;
++			if(format[i] == '0') flag_zero = 1;
++			if(format[i] == '+') flag_plus = 1;
++			if(format[i] == ' ') flag_space = 1;
++			if(format[i] == '#') flag_hash = 1;
++			i = i + 1;
++		}
+ 
+-			if(format[i] == 's')
++		width = 0;
++		if(format[i] == '*')
++		{
++			width = va_arg(arg, int);
++			if(width < 0)
+ 			{
+-				str = va_arg(arg, char*);
+-				INLINE_STRSCPY
++				flag_minus = 1;
++				width = 0 - width;
+ 			}
+-			else if(format[i] == 'u' || format[i] == 'x' || format[i] == 'X' || format[i] == 'o')
++			i = i + 1;
++		}
++		else
++		{
++			while(format[i] >= '0' && format[i] <= '9')
++			{
++				width = width * 10 + (format[i] - '0');
++				i = i + 1;
++			}
++		}
++
++		have_precision = 0;
++		precision = 0;
++		if(format[i] == '.')
++		{
++			have_precision = 1;
++			i = i + 1;
++			if(format[i] == '*')
+ 			{
+-				int uppercase = 0;
+-				int base = 10;
+-				if(format[i] == 'x')
++				precision = va_arg(arg, int);
++				/* A NEGATIVE PRECISION IS AS IF IT WERE OMITTED, not as if it
++				 * were zero -- the difference is a whole string or none. */
++				if(precision < 0)
+ 				{
+-					base = 16;
++					have_precision = 0;
++					precision = 0;
+ 				}
+-				else if(format[i] == 'X')
++				i = i + 1;
++			}
++			else
++			{
++				while(format[i] >= '0' && format[i] <= '9')
++				{
++					precision = precision * 10 + (format[i] - '0');
++					i = i + 1;
++				}
++			}
++		}
++
++		/* THE LENGTH MODIFIER IS PARSED AND REMEMBERED, NOT DISCARDED.
++		 *
++		 * Where int and long are the same width -- which is the case for the
++		 * compiler this library is built by -- fetching everything as a long
++		 * is exact. Where they are not, it is not: an `int` argument occupies
++		 * a slot whose upper half means nothing, so reading it as a long
++		 * turns -42 into 4294967254. Keeping the flag costs one variable and
++		 * makes the same source correct under both. */
++		len_long = 0;
++		while(format[i] == 'h' || format[i] == 'l' || format[i] == 'L'
++		   || format[i] == 'z' || format[i] == 'j' || format[i] == 't')
++		{
++			if(format[i] != 'h') len_long = 1;
++			i = i + 1;
++		}
++
++		conv = format[i];
++		if(conv == '\0')
++		{
++			/* A format ending in a bare `%`. Emit it and stop rather than
++			 * reading past the end of the string. */
++			if(output < n - 1)
++			{
++				s[output] = '%';
++				output = output + 1;
++			}
++			break;
++		}
++		i = i + 1;
++
++		sign_len = 0;
++		sign_ch = ' ';
++		prefix_len = 0;
++		base = 10;
++		uppercase = 0;
++		is_negative = 0;
++		nlen = 0;
++		str = __vsnprintf_scratch;
++
++		if(conv == 's')
++		{
++			str = va_arg(arg, char*);
++			if(0 == str) str = "(null)";
++			while(str[nlen] != '\0') nlen = nlen + 1;
++			if(have_precision && precision < nlen) nlen = precision;
++			flag_zero = 0;
++		}
++		else if(conv == 'c')
++		{
++			__vsnprintf_scratch[0] = va_arg(arg, int);
++			nlen = 1;
++			flag_zero = 0;
++		}
++		else if(conv == '%')
++		{
++			__vsnprintf_scratch[0] = '%';
++			nlen = 1;
++			flag_zero = 0;
++		}
++		else if(conv == 'd' || conv == 'i' || conv == 'u' || conv == 'o'
++		     || conv == 'x' || conv == 'X' || conv == 'p')
++		{
++			if(conv == 'd' || conv == 'i')
++			{
++				if(len_long) svalue = va_arg(arg, long);
++				else svalue = va_arg(arg, int);
++				if(svalue < 0)
+ 				{
+-					uppercase = 1;
+-					base = 16;
++					is_negative = 1;
++					uvalue = 0 - svalue;
+ 				}
+-				else if(format[i] == 'o')
++				else
+ 				{
+-					base = 8;
++					uvalue = svalue;
+ 				}
++			}
++			else
++			{
++				/* A pointer is always the full width, whatever the modifier
++				 * said. */
++				if(len_long || conv == 'p') uvalue = va_arg(arg, unsigned long);
++				else uvalue = va_arg(arg, unsigned int);
++				if(conv == 'o') base = 8;
++				else if(conv == 'u') base = 10;
++				else base = 16;
++				if(conv == 'X') uppercase = 1;
++			}
++
++			digits = "0123456789abcdef";
++			if(uppercase) digits = "0123456789ABCDEF";
+ 
+-				unsigned int value = va_arg(arg, unsigned int);
+-				str = __unsigned_integer_to_string(value, base, uppercase);
+-				INLINE_STRSCPY
++			/* Built backwards into the tail of the scratch buffer. */
++			k = 78;
++			__vsnprintf_scratch[79] = '\0';
++			if(0 == uvalue && have_precision && 0 == precision)
++			{
++				/* A zero printed with an explicit precision of zero is the
++				 * empty string. */
+ 			}
+-			else if(format[i] == 'd' || format[i] == 'i')
++			else
+ 			{
+-				int value = va_arg(arg, int);
+-				if(value < 0)
++				do
+ 				{
+-					if(output < n - 1) s[output++] = '-';
+-					value = -value;
++					__vsnprintf_scratch[k] = digits[uvalue % base];
++					uvalue = uvalue / base;
++					k = k - 1;
+ 				}
+-				str = __integer_to_string(value);
+-				INLINE_STRSCPY
++				while(uvalue != 0);
+ 			}
+-			else if(format[i] == 'c')
++			nlen = 78 - k;
++
++			/* ON AN INTEGER, PRECISION IS A MINIMUM NUMBER OF DIGITS, and it
++			 * overrides the `0` flag rather than adding to it. */
++			if(have_precision)
++			{
++				flag_zero = 0;
++				while(nlen < precision && k > 0)
++				{
++					__vsnprintf_scratch[k] = '0';
++					k = k - 1;
++					nlen = nlen + 1;
++				}
++			}
++			str = &__vsnprintf_scratch[k + 1];
++
++			if(is_negative)
++			{
++				sign_ch = '-';
++				sign_len = 1;
++			}
++			else if(flag_plus && (conv == 'd' || conv == 'i'))
+ 			{
+-				char value = va_arg(arg, char);
+-				if(output < n - 1) s[output++] = value;
++				sign_ch = '+';
++				sign_len = 1;
+ 			}
+-			else if(format[i] == '%')
++			else if(flag_space && (conv == 'd' || conv == 'i'))
+ 			{
+-				if(output < n - 1) s[output++] = '%';
++				sign_ch = ' ';
++				sign_len = 1;
+ 			}
+ 
+-			++i;
++			if(conv == 'p') prefix_len = 2;
++			else if(flag_hash && 16 == base && nlen != 0) prefix_len = 2;
+ 		}
+ 		else
+ 		{
+-			if(output < n - 1) s[output++] = format[i];
+-			i = i + 1;
++			/* NOT IMPLEMENTED. Consume one slot so that everything after this
++			 * conversion still reads its own argument, and show the
++			 * specification rather than a plausible wrong number. */
++			va_arg(arg, long);
++			k = 0;
++			while(spec_start + k < i && k < 78)
++			{
++				__vsnprintf_scratch[k] = format[spec_start + k];
++				k = k + 1;
++			}
++			nlen = k;
++			str = __vsnprintf_scratch;
++			width = 0;
++			flag_zero = 0;
++			flag_minus = 0;
++		}
++
++		total = nlen + sign_len + prefix_len;
++		pad = 0;
++		if(width > total) pad = width - total;
++
++		/* THE ROOM CHECK IS PER SPECIFICATION, NOT PER CHARACTER, so a chunk
++		 * boundary never lands inside a conversion. If nothing has been
++		 * written yet the specification cannot be deferred to a later chunk,
++		 * so it is emitted truncated instead -- otherwise vfprintf asks for
++		 * the same specification forever. */
++		if(output + total + pad > n - 1 && output > 0)
++		{
++			__vsnprintf_string_offset = spec_start;
++			__vsnprintf_ap = ap_save;
++			s[output] = '\0';
++			return output;
++		}
++
++		if(!flag_minus && !flag_zero)
++		{
++			while(pad > 0 && output < n - 1)
++			{
++				s[output] = ' ';
++				output = output + 1;
++				pad = pad - 1;
++			}
++		}
++		if(sign_len && output < n - 1)
++		{
++			s[output] = sign_ch;
++			output = output + 1;
++		}
++		if(prefix_len)
++		{
++			if(output < n - 1)
++			{
++				s[output] = '0';
++				output = output + 1;
++			}
++			if(output < n - 1)
++			{
++				if(uppercase) s[output] = 'X';
++				else s[output] = 'x';
++				output = output + 1;
++			}
++		}
++		if(!flag_minus && flag_zero)
++		{
++			while(pad > 0 && output < n - 1)
++			{
++				s[output] = '0';
++				output = output + 1;
++				pad = pad - 1;
++			}
++		}
++		str_i = 0;
++		while(str_i < nlen && output < n - 1)
++		{
++			s[output] = str[str_i];
++			output = output + 1;
++			str_i = str_i + 1;
++		}
++		if(flag_minus)
++		{
++			while(pad > 0 && output < n - 1)
++			{
++				s[output] = ' ';
++				output = output + 1;
++				pad = pad - 1;
++			}
+ 		}
+ 	}
+ 
+ 	__vsnprintf_string_offset = i;
+ 	__vsnprintf_ap = arg;
++	if(format[i] == '\0') __vsnprintf_string_offset = 0;
+ 
+ 	if(output < n)
+ 	{
+ 		/* Null terminator doesn't count */
+ 		s[output] = '\0';
+ 	}
++	else
++	{
++		s[n - 1] = '\0';
++	}
+ 
+ 	return output;
+ }
+ #undef INLINE_STRSCPY
+ 
+ #define PRINTF_BUFFER_SIZE 4096
