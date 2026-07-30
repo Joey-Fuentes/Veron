@@ -1040,17 +1040,28 @@ jobs:
             if [ "$rc" -gt 128 ]; then r="SIGNAL $((rc - 128))"; else r="exit $rc"; fi
             printf '    %-34s %s\n' "$1" "$r"
           }
+          # THE PREVIOUS SET NARROWED IT, so this one narrows further.
+          #
+          # It showed escapes are irrelevant -- "hi", "hi\n" and "hi\t" all
+          # compile -- and that every crashing probe carried the same thing:
+          # a VARIADIC prototype and a call to it. These split that into its
+          # parts: prototype alone, fixed-argument call, variadic prototype
+          # with and without a call, and a definition with a body.
+          #
+          # micro-c itself parses `int printf(const char*, ...)` and emits for
+          # it correctly, so this is tcc's handling of the construct while
+          # running as micro-c-compiled code, not a gap in micro-c's front end.
           echo "  --- probes ---"
-          probe "plain string"        'char* s = "hi";'
-          probe "string with \\n"      'char* s = "hi\n";'
-          probe "string with \\t"      'char* s = "hi\t";'
-          probe "printf, no escape"   'int printf(const char*,...); void f(void){ printf("x"); }'
-          probe "printf with \\n"      'int printf(const char*,...); void f(void){ printf("x\n"); }'
-          probe "via an object macro" '#define pf printf
-          int printf(const char*,...); void f(void){ pf("x\n"); }'
-          probe "macro arg expansion" '#define A 2
-          #define N 1234 + A
-          int printf(const char*,...); void f(void){ printf("%d\n", N); }'
+          probe "empty file"           ''
+          probe "global string"        'char* s = "hi";'
+          probe "function, no proto"   'int f(int x){ return x + 1; }'
+          probe "fixed proto only"     'int f(int);'
+          probe "fixed proto + call"   'int f(int); void g(void){ f(1); }'
+          probe "variadic proto only"  'int f(const char*, ...);'
+          probe "variadic + call"      'int f(const char*, ...); void g(void){ f("x"); }'
+          probe "variadic, no args"    'int f(const char*, ...); void g(void){ f("x", 1); }'
+          probe "variadic defined"     'int f(const char* a, ...){ return 0; }'
+          probe "printf spelling"      'int printf(const char*,...); void f(void){ printf("x"); }'
 
           # IS IT EVEN DETERMINISTIC?
           #
