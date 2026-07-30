@@ -1293,6 +1293,92 @@ jobs:
           done
           cp /tmp/shape.M1 "$GITHUB_WORKSPACE/shape.M1"
 
+      - name: 'DEBUG: which statement faults on a call to an external symbol'
+        continue-on-error: true
+        run: |
+          set -eu
+          # THE SMALLEST INPUT THAT CRASHES, AND ONLY THE FUNCTIONS ON ITS PATH.
+          #
+          # The probe table narrowed this to one construct: calling a function
+          # that is DECLARED and not defined.
+          #
+          #     int f(int);                          exit 0
+          #     int f(int); void g(void){ f(1); }    SIGNAL 11
+          #     int f(const char* a, ...){ ... }     exit 0
+          #
+          # Variadic was a red herring -- a fixed prototype crashes the same
+          # way -- and so were escapes and string literals. It is deterministic,
+          # 10/10 with and without ASLR, and it does NOT reproduce under
+          # qemu-user: CI's own binary compiles that file cleanly there and
+          # emits a structurally sound object. So it cannot be reduced off this
+          # machine, which is why this step exists here.
+          #
+          # The previous version of this idea instrumented all of libtcc.c and
+          # ran it on an input that PASSES, which is why it reported nothing
+          # for rounds. This instruments the three functions that emit an
+          # undefined symbol and its relocation, and runs the two-line file
+          # that actually fails.
+          #
+          # IF THE CRASH DISAPPEARS UNDER INSTRUMENTATION that is the result,
+          # not a failure: it would mean the fault is sensitive to code size or
+          # layout despite being deterministic, and construct-level reduction
+          # is the wrong tool. Reported either way.
+          L="$PWD/spikes/stage3/micro-c-libc"
+          M="$PWD/m2/M2libc"
+          rm -rf inst && cp -r mc-tcc inst
+          python3 spikes/stage3/tools/instrument.py --map --prefix P \
+            inst/tccgen.c 'put_extern_sym2,put_extern_sym,greloca' > inst-map.txt
+          python3 spikes/stage3/tools/instrument.py --prefix P \
+            inst/tccgen.c 'put_extern_sym2,put_extern_sym,greloca' > /tmp/i.c
+          mv /tmp/i.c inst/tccgen.c
+          echo "  $(wc -l < inst-map.txt) statements mapped"
+
+          ( cd inst && ../micro-c --architecture aarch64 --expand-includes \
+              --max-string 65536 -D ONE_SOURCE=1 -D TCC_TARGET_LINUX=1 \
+              -D CONFIG_TCC_STATIC=1 -I . -I "$L" -I ../m2/M2libc \
+              -f libtcc.c -o ../inst-libtcc.M1 )
+
+          join2() {
+            out="$1"; shift
+            : > "$out.code"; : > "$out.strs"
+            for f in "$@"; do
+              sed '/^# Program strings$/,$d' "$f" >> "$out.code"
+              sed -n '/^# Program strings$/,$p' "$f" >> "$out.strs"
+            done
+            cat "$out.code" "$out.strs" > "$out"; rm -f "$out.code" "$out.strs"
+          }
+          join2 inst-all.M1 inst-libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1 maintcc.M1
+          D=m2libc-patched/aarch64
+          ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f inst-all.M1 \
+               --little-endian --architecture aarch64 -o inst-all.hex2
+          ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
+                 -f $D/ELF-aarch64.hex2 -f inst-all.hex2 -o mc-tcc-inst
+          chmod +x mc-tcc-inst
+          printf '  instrumented binary: %s bytes\n' "$(stat -c%s mc-tcc-inst)"
+
+          printf 'int f(int);\nvoid g(void){ f(1); }\n' > /tmp/ext.c
+          cd inst
+          set +e
+          ../mc-tcc-inst -I. -Iinclude -c /tmp/ext.c -o /tmp/ext.o > /tmp/ext-marks.txt 2>&1
+          rc=$?
+          set -e
+          cd ..
+          if [ "$rc" -gt 128 ]; then
+            echo "  exit $rc -- SIGNAL $((rc - 128)), still crashing when instrumented"
+          else
+            echo "  exit $rc -- NO SIGNAL under instrumentation."
+            echo "  THAT IS THE FINDING: the fault is sensitive to code size or"
+            echo "  layout, and reducing it by construct will not work."
+          fi
+          echo "  markers printed: $(grep -ac '^P[0-9]' /tmp/ext-marks.txt || true)"
+          last=$(grep -ao '^P[0-9]*' /tmp/ext-marks.txt | tail -1 || true)
+          echo "  LAST STATEMENT THAT COMPLETED: ${last:-none}"
+          if [ -n "${last:-}" ]; then
+            grep -E "^$last " inst-map.txt | sed 's/^/    /' || true
+            echo "  --- the next statements, one of which is the fault ---"
+            grep -A4 -E "^$last " inst-map.txt | tail -4 | sed 's/^/    /' || true
+          fi
+
       # =================================================================
       # THE GATE. Runs last so that a red job still carries a full round of
       # evidence: every probe, the instrumented run, and the artifact.
