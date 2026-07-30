@@ -1274,6 +1274,44 @@ jobs:
           fi
           echo "    stage 3 end to end: $s3ok"
 
+          say "11. tcc's OWN TEST SUITE -- one test, compiled and run"
+          # tests2/00_assignment.c is the first file in tcc's own suite and the
+          # simplest: three printf("%d") calls and a return. It wants <stdio.h>,
+          # a printf, and something to call main() -- none of which this box
+          # has, so spikes/stage3/tcc-test-shim supplies them in C that mc-tcc
+          # compiles itself. No make, no configure, no harness: two source files
+          # in, one binary out, its output compared against the .expect file
+          # that ships with tcc.
+          if [ "$s3ok" = yes ]; then
+            SH=/src/stage3/tcc-test-shim
+            T2=/in/tcc-src/tests/tests2
+            b=00_assignment
+            set +e
+            timeout 120 /out/mc-tcc -B/in/tcc-src -I"$SH" -nostdlib -static \
+                        -o t2.bin "$T2/$b.c" "$SH/crt.c" 2>t2.err
+            c2=$?
+            set -e
+            if [ "$c2" != 0 ] || [ ! -s t2.bin ]; then
+              echo "    $b: COMPILE FAILED rc=$c2"
+              grep -av '^[A-Z][0-9]*$' t2.err | head -3 | sed 's/^/        /'
+              s3ok=no
+            else
+              chmod 0755 t2.bin
+              set +e; ./t2.bin > t2.out 2>&1; r2=$?; set -e
+              echo "    $b: exit=$r2, $(wc -c < t2.out) bytes of output"
+              echo "      got:"      ; sed 's/^/        /' t2.out
+              echo "      expected:" ; sed 's/^/        /' "$T2/$b.expect"
+              if cmp -s t2.out "$T2/$b.expect"; then
+                echo "      MATCHES tcc's OWN .expect FILE"
+              else
+                echo "      DIFFERS from tcc's .expect"
+                s3ok=no
+              fi
+            fi
+          else
+            echo "    skipped: stage 3 did not get this far"
+          fi
+
           say 'DONE -- inside the box'
           cp m2.c /out/m2.c 2>/dev/null || true
           EOS
