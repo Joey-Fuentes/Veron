@@ -52,6 +52,30 @@ jobs:
           sudo apt-get install -y -qq build-essential git >/dev/null
           gcc --version | head -1
 
+      - name: 'GATE: the instrument must be sound before anything trusts it'
+        run: |
+          set -eu
+          # A WRONG MARKER MAP CANNOT BE CAUGHT DOWNSTREAM. A right map and a
+          # wrong one look identical in a log, and every reading built on the
+          # wrong one is confident and false.
+          #
+          # find_function() took the first line containing `name(` that reached
+          # an opening brace, and an `if` header ending in `{` is one:
+          #
+          #     tccgen.c:7274   if (!decl(VT_JMP)) {      <- was MATCHED
+          #     tccgen.c:8664   static int decl(int l)    <- is the definition
+          #
+          # In the set the DEBUG step below entry-marks -- every function in
+          # tccgen.c and tccelf.c, 304 of them -- five landed on a call site:
+          # decl, is_compatible_types, parse_btype, pointed_type, and
+          # bind_exe_dynsyms. --entry does not help; it still has to know where
+          # the body starts. is_compatible_types is on the call path MICRO-C.md
+          # quotes as the local win, so this was being read.
+          #
+          # Under a second, no network, no tcc. FIRST, because a red instrument
+          # makes the debug step at the end worse than useless.
+          python3 spikes/stage3/tools/test_instrument.py
+
       - name: Fetch pinned tcc
         run: |
           set -eu
@@ -1383,6 +1407,29 @@ jobs:
             inst/tccelf.c "$FE" > /tmp/e.c
           mv /tmp/e.c inst/tccelf.c
           echo "  $(wc -l < inst-map.txt) statements mapped across tccgen.c and tccelf.c"
+
+          # THE CONTROL RUNS FIRST HERE TOO, AND IT COSTS TWO SECONDS.
+          #
+          # The instrumented tree is about to be handed to micro-c for a
+          # ~55-second compile. If the instrumentation produced C that does not
+          # parse, micro-c reports it in its own vocabulary -- `MISSING }`,
+          # `else is not a defined symbol`, `Unknown type write` -- and that
+          # reads as a micro-c defect. It has read that way twice, and once the
+          # compile output was not checked at all: a ZERO-BYTE libtcc.M1 and a
+          # stale binary were then used as evidence.
+          #
+          # gcc answers the same question in two seconds and answers it about
+          # the TOOL. Non-gating: a red parse here must not hide the rest of
+          # the job, it must just stop the next 55 seconds being misread.
+          echo "  --- does the instrumented tree still parse? (gcc, 2 s) ---"
+          if ( cd inst && gcc -fsyntax-only -DONE_SOURCE=1 -DTCC_TARGET_ARM64 \
+                 -DTCC_TARGET_LINUX -I. libtcc.c ) 2> /tmp/synt.txt; then
+            echo "    clean -- anything micro-c says below is micro-c's"
+          else
+            echo "    THE INSTRUMENTED TREE DOES NOT PARSE. This is the tool,"
+            echo "    not micro-c. Do not read the run below as a compiler bug."
+            head -20 /tmp/synt.txt | sed 's/^/    /'
+          fi
 
           ( cd inst && ../micro-c --architecture aarch64 --expand-includes \
               --max-string 65536 -D ONE_SOURCE=1 -D TCC_TARGET_LINUX=1 \

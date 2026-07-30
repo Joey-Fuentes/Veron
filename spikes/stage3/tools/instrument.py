@@ -52,37 +52,180 @@ import re
 import sys
 
 
-def find_function(lines, name):
-    """Return (start, end) line indices of the function body, brace to brace."""
+# ---------------------------------------------------------------------------
+# LEXICAL MASKING, done once; everything structural reads the masked copy.
+#
+# Brace depth used to be counted in the RAW text, so a brace inside a string or
+# a comment voted. Measured on the pinned tree, tccpp.c ends at raw depth -2 and
+# masked depth 0 -- the drift is real, it is those braces, and it is not the
+# #ifdef blocks it was attributed to. That drift is one of the three reasons
+# --entry mode exists.
+#
+# Lengths are preserved exactly, so masked[i] and lines[i] agree column for
+# column.
+# ---------------------------------------------------------------------------
+def mask_source(lines):
+    """Blank out string bodies, char bodies and comments. Same shape, no lexemes."""
+    out = []
+    in_block_comment = False
+    for line in lines:
+        buf = []
+        i = 0
+        n = len(line)
+        while i < n:
+            c = line[i]
+            if in_block_comment:
+                if c == '*' and i + 1 < n and line[i + 1] == '/':
+                    in_block_comment = False
+                    buf.append('  ')
+                    i += 2
+                    continue
+                buf.append(' ')
+                i += 1
+                continue
+            if c == '/' and i + 1 < n and line[i + 1] == '*':
+                in_block_comment = True
+                buf.append('  ')
+                i += 2
+                continue
+            if c == '/' and i + 1 < n and line[i + 1] == '/':
+                buf.append(' ' * (n - i))
+                i = n
+                continue
+            if c == '"' or c == "'":
+                quote = c
+                buf.append(quote)
+                i += 1
+                while i < n:
+                    if line[i] == '\\' and i + 1 < n:
+                        buf.append('  ')
+                        i += 2
+                        continue
+                    if line[i] == quote:
+                        buf.append(quote)
+                        i += 1
+                        break
+                    buf.append(' ')
+                    i += 1
+                continue
+            buf.append(c)
+            i += 1
+        m = ''.join(buf)
+        out.append(m[:len(line)] if len(m) > len(line) else m + ' ' * (len(line) - len(m)))
+    return out
+
+
+def brace_depths(masked):
+    """depth_before[i], depth_after[i] for every line, from masked text."""
+    before, after = [], []
+    d = 0
+    for line in masked:
+        before.append(d)
+        for ch in line:
+            if ch == '{':
+                d += 1
+            elif ch == '}':
+                d -= 1
+        after.append(d)
+    return before, after
+
+
+def switch_lines(masked):
+    """Lines covered by a `switch (...) { ... }` BODY, plus the spans.
+
+    micro-c answers a statement placed in there with `ERROR in process_switch /
+    MISSING }`. Skipping the marker is right; skipping the whole FUNCTION, which
+    is what was done before, costs next_nomacro, tok_str_add2, unary, decl and
+    block -- most of the token path and most of tccgen.
+    """
+    flat = '\n'.join(masked)
+    starts = [0]
+    for line in masked:
+        starts.append(starts[-1] + len(line) + 1)
+
+    def line_of(pos):
+        lo, hi = 0, len(masked) - 1
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if starts[mid] <= pos:
+                lo = mid
+            else:
+                hi = mid - 1
+        return lo
+
+    covered, spans = set(), []
+    for m in re.finditer(r'\bswitch\b', flat):
+        i = flat.find('{', m.end())
+        if i < 0:
+            continue
+        d, j = 0, i
+        while j < len(flat):
+            if flat[j] == '{':
+                d += 1
+            elif flat[j] == '}':
+                d -= 1
+                if d == 0:
+                    break
+            j += 1
+        if d != 0:
+            continue
+        a, b = line_of(i), line_of(j)
+        spans.append((a, b))
+        for k in range(a, b + 1):
+            covered.add(k)
+    return covered, spans
+
+
+def find_function(lines, name, masked=None, depth_before=None, depth_after=None):
+    """Return (body_open, body_close) line indices of the DEFINITION.
+
+    A CALL SITE IS NOT A DEFINITION. This used to take the first line
+    containing `name(` that reached an opening brace within twelve lines, and
+    on the pinned tree that is not the definition:
+
+        tccgen.c:7274   if (!decl(VT_JMP)) {        <- was MATCHED
+        tccgen.c:8664   static int decl(int l)      <- is the definition
+
+        tccgen.c:4574   if (!parse_btype(&btype, &ad1, 0)) {   <- was MATCHED
+        tccgen.c:4712   static int parse_btype(...)            <- is the definition
+
+    The `{` closing that `if` header opened a block, the tool called it the
+    body, and it instrumented two lines of block() while labelling every marker
+    `decl:`. A wrong map and a right map look identical in a log, so nothing
+    downstream could catch it.
+
+    A definition is at FILE SCOPE. Candidates are required to sit at brace
+    depth 0, measured on the masked copy, and a candidate reaching `;` before
+    `{` is a prototype.
+    """
+    if masked is None:
+        masked = mask_source(lines)
+    if depth_before is None:
+        depth_before, depth_after = brace_depths(masked)
     pattern = re.compile(r'\b' + re.escape(name) + r'\s*\(')
-    for i, line in enumerate(lines):
-        if not pattern.search(line):
+    for i, mline in enumerate(masked):
+        if depth_before[i] != 0:
+            continue                    # inside some other function's body
+        if not pattern.search(mline):
             continue
-        if line.lstrip().startswith(('//', '*', '/*')):
+        j, limit, opened = i, min(i + 16, len(masked)), None
+        while j < limit:
+            seg = masked[j]
+            b, sc = seg.find('{'), seg.find(';')
+            if sc >= 0 and (b < 0 or sc < b):
+                break                   # prototype
+            if b >= 0:
+                opened = j
+                break
+            j += 1
+        if opened is None:
             continue
-        # walk forward to the opening brace of the body
-        depth = 0
-        opened = False
-        for j in range(i, min(i + 12, len(lines))):
-            for ch in lines[j]:
-                if ch == '{':
-                    depth += 1
-                    opened = True
-                elif ch == '}':
-                    depth -= 1
-            if opened:
-                # found the body; now find its close
-                for k in range(j + 1, len(lines)):
-                    for ch in lines[k]:
-                        if ch == '{':
-                            depth += 1
-                        elif ch == '}':
-                            depth -= 1
-                    if depth == 0:
-                        return j, k
-                return j, len(lines) - 1
-            if ';' in lines[j]:
-                break   # a prototype, not a definition
+        if depth_after[opened] < 1:
+            continue                    # `{` closed again on the same line
+        for k in range(opened, len(masked)):
+            if depth_after[k] == 0:
+                return opened, k
+        return opened, len(masked) - 1
     return None, None
 
 
@@ -254,14 +397,22 @@ def main():
     # tcc_compile_string there were NO markers there at all, so the report had
     # nothing to say and it looked like the fault had become invisible. It had
     # not; the instrument simply did not reach it.
+    masked = mask_source(lines)
+    depth_before, depth_after = brace_depths(masked)
+    sw_lines, sw_spans = switch_lines(masked)
+
     ranges = []
     for func in funcnames.split(','):
         func = func.strip()
         if not func:
             continue
-        start, end = find_function(lines, func)
+        start, end = find_function(lines, func, masked, depth_before, depth_after)
         if start is None:
-            sys.stderr.write("skipping %s: no definition found in %s\n" % (func, path))
+            # "no DEFINITION found" and not "skipping": the old wording read as
+            # a function that was absent, when what it usually meant was that a
+            # call site had been matched instead. Say which question failed.
+            sys.stderr.write("no DEFINITION found for %s in %s "
+                             "(a call site is not a definition)\n" % (func, path))
             continue
         ranges.append((start, end, func))
 
@@ -299,11 +450,18 @@ def main():
                 return True
         return False
 
+    # SWITCH BODIES INSIDE THE INSTRUMENTED SET, named so a trail that stops
+    # just before one is explained rather than mysterious.
+    blind = []
+    for _a, _b in sw_spans:
+        _f = covering(_a)
+        if _f is not None:
+            blind.append((_f, _a + 1, _b + 1))
+
     out = []
     mapping = []
     skipped = []
     n = 0
-    depth = 0
 
     if entry_only:
         # ONE MARKER, AT THE FIRST LINE OF EACH BODY. No statement-boundary
@@ -330,6 +488,14 @@ def main():
         out.append(line)
         func = covering(i)
 
+        # NO MARKERS INSIDE A SWITCH BODY, rather than no markers in a function
+        # that HAS one. micro-c rejects a statement placed there with `ERROR in
+        # process_switch / MISSING }`; the rest of the function is still worth
+        # instrumenting, and the switch is reported as a `!!` blind spot with
+        # its line range.
+        if func is not None and i in sw_lines:
+            continue
+
         # MARK WHERE CONTROL REJOINS, not only where it enters.
         #
         # A marker after `if (...) {` sits INSIDE the body, so it never prints
@@ -341,14 +507,28 @@ def main():
         #
         # A closing brace that leaves the block still inside the function is a
         # rejoin point, and both paths pass through it.
-        closing = line.strip() == '}' or line.strip().startswith('} else') \
-                  or line.strip() == '};'
-        before = depth
-        for ch in line:
-            if ch == '{':
-                depth += 1
-            elif ch == '}':
-                depth -= 1
+        # A REJOIN LINE HAS TO BE A COMPLETE ONE.
+        #
+        # `startswith('} else')` was the whole test, and an else-if whose
+        # CONDITION runs onto the next line is not a complete anything:
+        #
+        #     tccpp.c:2892  } else if ((isidnum_table['.' - CH_EOF] & IS_ID)
+        #     tccpp.c:2893                  && ...) {
+        #
+        # The marker landed after the first half and gcc said `expected ')'
+        # before 'write'`. Same shape at tccgen.c:9434. A bare `} else` with an
+        # unbraced body fails the same way, between the else and its statement.
+        #
+        # So: the line must END the construct AND its parentheses must balance,
+        # counted on the MASKED copy so a bracket in a string cannot vote.
+        stripped = line.strip()
+        mline = masked[i]
+        balanced = mline.count('(') == mline.count(')')
+        closing = balanced and (
+            stripped == '}' or stripped == '};'
+            or (stripped.startswith('} else') and stripped.endswith('{')))
+        before = depth_before[i]
+        depth = depth_after[i]
 
         # NOT IF THE NEXT THING IS else, case, default OR ANOTHER CLOSE.
         #
@@ -438,11 +618,16 @@ def main():
         for lineno, text in skipped:
             print("--   %s:%d  (no marker: single-line branch) %s"
                   % (path, lineno, text[:60]))
+        for func, a, b in blind:
+            print("!!   %s:%d-%d  (no markers: SWITCH BODY in %s, %d lines) "
+                  "a fault in here shows as the last marker BEFORE it"
+                  % (path, a, b, func, b - a + 1))
         return 0
 
     sys.stdout.write('\n'.join(out))
-    sys.stderr.write("instrumented %d function(s): %d markers\n"
-                     % (len(ranges), n))
+    sys.stderr.write("instrumented %d function(s): %d markers, "
+                     "%d switch blind spot(s)\n"
+                     % (len(ranges), n, len(blind)))
     return 0
 
 

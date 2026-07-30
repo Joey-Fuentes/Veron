@@ -79,6 +79,14 @@ if [ -n "$INST_FILE" ] && [ -n "$INST_FUNCS" ]; then
     # binary that got read as data. Entry marking makes none of those choices
     # and works on all 212 functions of tccgen.c at once, which is what naming
     # a fault in a parser that size actually needs.
+    # THE TOOL IS CHECKED BEFORE IT IS TRUSTED. A wrong marker map cannot be
+    # caught downstream -- it looks exactly like a right one. Under a second.
+    python3 "$ROOT/spikes/stage3/tools/test_instrument.py" > /tmp/ti.$$ 2>&1 || {
+        echo "FAIL: instrument.py self-test is red -- the map cannot be believed"
+        cat /tmp/ti.$$; rm -f /tmp/ti.$$; exit 1; }
+    echo "  instrument self-test: $(tail -1 /tmp/ti.$$)"
+    rm -f /tmp/ti.$$
+
     MODEFLAG=""
     [ "${INST_MODE:-}" = entry ] && MODEFLAG="--entry"
     python3 "$ROOT/spikes/stage3/tools/instrument.py" --map $MODEFLAG --prefix P \
@@ -87,7 +95,13 @@ if [ -n "$INST_FILE" ] && [ -n "$INST_FUNCS" ]; then
     python3 "$ROOT/spikes/stage3/tools/instrument.py" $MODEFLAG --prefix P \
         "tcc-work/$INST_FILE" "$INST_FUNCS" > /tmp/inst.$$ 2>/dev/null
     mv /tmp/inst.$$ "tcc-work/$INST_FILE"
-    echo "  $(wc -l < marker-map.txt) statements mapped -> $WORK/marker-map.txt"
+    echo "  $(grep -c '^[A-Z][0-9]' marker-map.txt) statements mapped -> $WORK/marker-map.txt"
+    # BLIND SPOTS, SAID OUT LOUD. A trail that stops just before a switch is
+    # explained by this line and mysterious without it.
+    if grep -q '^!!' marker-map.txt; then
+        echo "  blind spots (no marker can be placed in these ranges):"
+        sed -n 's/^!!   /    /p' marker-map.txt
+    fi
 fi
 
 # --- compile ----------------------------------------------------------------

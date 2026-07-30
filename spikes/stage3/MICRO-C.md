@@ -280,7 +280,7 @@ a 200-operator file from 83 MB to 3.4 MB.
 | ~~`constant_expression` precedence~~ | **CLOSED, `EXPERIMENT-zze`.** And the description here was wrong twice over: not confined to the constant parser, and not right-to-left. All five bitwise/logical operators sat at ONE level and parsed flat, left to right, so `1\|2^3` was `(1\|2)^3`. A right-to-left fold would have got that one right by accident. Case 59 |
 | 19 load sites | see above |
 | `&((*p)->m)` | grouping parens around a **dereference**. `&(p->m)` works. `&(X)` needs address-of TRUE at X's final lvalue step and FALSE inside it, and with a dereference in the middle those are different points; one global flag cannot say both. Case 44 |
-| a switch cannot be instrumented | not a compiler bug but it shapes the work: `instrument.py` cannot place markers inside a switch body, so `next_nomacro` and `tok_str_add2` — two functions squarely on the token path — have to be probed by hand |
+| ~~a switch cannot be instrumented~~ | **PARTLY CLOSED.** A marker still cannot go *inside* a switch body — micro-c answers `ERROR in process_switch / MISSING }` — but that is now a no-marker ZONE rather than a reason to skip the whole function. `next_nomacro` and `tok_str_add2` are instrumented everywhere else and the switch is reported in the map as a `!!` blind spot with its line range. A named gap beats a function nobody may instrument |
 
 ---
 
@@ -501,6 +501,29 @@ It nearly shipped reporting **eight false positives**: every `mov` involving
 `ORR Xd,XZR,Xm` where 31 means XZR — so SP cannot be named that way and those
 forms use `ADD Xd,Xn,#0`. All eight were right. A gate with false positives
 gets switched off, and then the real errors beside it go unnoticed too.
+
+**`instrument.py` matched CALL SITES, not definitions, and it was reading
+wrong for as long as this file has existed.** `find_function` took the first
+line containing `name(` that reached an opening brace within twelve lines, and
+an `if` header ending in `{` is one:
+
+```
+tccgen.c:7274   if (!decl(VT_JMP)) {        <- was MATCHED as the body
+tccgen.c:8664   static int decl(int l)      <- is the definition
+```
+
+Five functions in the set the workflow entry-marks landed on a call site —
+`decl`, `is_compatible_types`, `parse_btype`, `pointed_type` in tccgen.c and
+`bind_exe_dynsyms` in tccelf.c — out of 304. `--entry` does not dodge it; entry
+marking still has to know where the body starts. `is_compatible_types` is on
+the call path quoted below as the local win, so this was being read.
+
+Nothing downstream could have caught it: **a wrong map and a right map look
+identical in a log.** That is why `test_instrument.py` now exists and runs as
+the first step of `tcc-two-ways`, and why the instrumented tree is put through
+`gcc -fsyntax-only` before micro-c is asked to spend 55 seconds on it. Two of
+the three bugs it pins were found by compiling the output rather than reading
+it.
 
 **`instrument.py` replaced hand-placed markers.** Six CI rounds were spent
 adding one marker each and still ended with "somewhere in
