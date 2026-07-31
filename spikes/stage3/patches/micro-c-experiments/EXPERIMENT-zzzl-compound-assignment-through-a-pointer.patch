@@ -1,0 +1,74 @@
+From: Veron
+Subject: [PATCH] cc_core: a compound assignment is an assignment
+
+`*p += v` loaded the POINTER at the pointed-at type's width. For `int *p` that
+is a four-byte SIGNED read of an eight-byte pointer, so the address stored
+through was truncated and sign-extended:
+
+    *p = 5     lea_rax,[rbp-8] / mov_rax,[rax]                8 bytes, correct
+    *p += 5    lea_rax,[rbp-8] / movsx_rax,DWORD_PTR_[rax]    4 bytes, SIGNED
+
+Same expression, two different loads, differing only by which operator follows
+it. `is_assignment` at cc_core.c:1831 is `match("=")` and nothing else, so a
+compound assignment fell through to the RVALUE branch -- which steps the type
+down first and then loads, because that is what an rvalue read of `*p` wants.
+The lvalue branch loads first, at the pointer's own width, which is what an
+assignment target wants. Both orders are correct for their own case; the flag
+selecting between them did not know about `+=`.
+
+`is_compound_operator` was already computed on the very next line and already
+consulted by the two guards above (1834, 1922). Only this branch was missed.
+
+WHAT IT COST. tcc's find_field walks anonymous struct/union members and
+accumulates the offset with
+
+    *cumofs += s->c;                            tccgen.c:4153
+
+so every recursive resolution stored through a truncated pointer. A designated
+initializer naming a member of an anonymous struct -- `union U { struct { int
+a, b; }; }; union U g = {.b = 8};` -- segfaulted mc-tcc at compile time, while
+the same initializer written with braces was fine, because the braced form does
+not take the recursive path. tests2/90_struct-init is the case; it went from
+SIGSEGV to passing.
+
+THE FAULT WAS NOT LAYOUT-SENSITIVE, which is what made it worth bisecting by
+construct: eight filename lengths through tools/layout-sweep.sh all failed
+identically, so the heap-roulette shape that cost two rounds on the realloc
+corruption did not apply here and the reduction converged in two passes.
+
+This is the same rule as zz8 and it is now the ninth copy of it found missing.
+The structural fix argued for at the end of MICRO-C.md -- one function
+answering "is this an lvalue" -- would have made all nine a single line.
+
+---
+diff --git a/cc_core.c b/cc_core.c
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -1928,7 +1928,26 @@
+ 		}
+ 	}
+ 
+-	if(is_assignment)
++	/* A COMPOUND ASSIGNMENT IS AN ASSIGNMENT, and this is the copy of that
++	 * rule that did not know it. `is_assignment` above is `match("=")` only,
++	 * so `*p += v` fell through to the rvalue branch below -- which steps the
++	 * type DOWN and then loads at the pointed-at width. For `int *p` that
++	 * loaded the eight-byte pointer as a four-byte signed int:
++	 *
++	 *     *p = 5     lea_rax,[rbp-8] / mov_rax,[rax]                8 bytes
++	 *     *p += 5    lea_rax,[rbp-8] / movsx_rax,DWORD_PTR_[rax]    4, SIGNED
++	 *
++	 * The truncated pointer is then stored through, so any address above 2GB
++	 * or with bit 31 set becomes a wild write. tcc's find_field does exactly
++	 * this -- `*cumofs += s->c` -- which is why a designated initializer
++	 * naming a member of an ANONYMOUS struct segfaulted mc-tcc while the same
++	 * initializer written with braces was fine.
++	 *
++	 * The load-before-step order in this branch is what makes it right: an
++	 * lvalue wants the POINTER at the pointer's width; only an rvalue read
++	 * wants the pointed-at type. Same rule as zz8, and the copies still
++	 * disagree. */
++	if(is_assignment || is_compound_operator)
+ 	{
+ 		while (num_dereference > 0)
+ 		{
