@@ -740,9 +740,32 @@ LDF="-static"
 # tool by name with flags of its own choosing, give it a tool that already does
 # the right thing.
 mkdir -p "$PFX/bin"
+# -include sys/cdefs.h, BECAUSE PUTTING IT IN THE SYSROOT WAS NOT ENOUGH.
+#
+# Rung 2 writes a minimal <sys/cdefs.h> into the sysroot and make's dir.c still
+# failed with the same line twice:
+#
+#     dir.c:1181: error: ';' expected (got 'open_dirstream')
+#
+# which is `static __ptr_t open_dirstream (const char *);`. The shim defines
+# __ptr_t. The problem is that NOTHING INCLUDES THE SHIM: musl's headers do not
+# reference <sys/cdefs.h>, because on musl it does not exist. On glibc these
+# macros reach a source file whether or not it asks -- glibc's own headers pull
+# cdefs.h in -- so old GNU code uses them without including anything, and that
+# habit is invisible until the libc changes.
+#
+# Forcing it into every translation unit is the same class-level fix as writing
+# the header in the first place: the alternative is patching __ptr_t into dir.c,
+# then into the next file, exactly as glob.c went five rounds. Everything in the
+# shim is an #ifndef-guarded macro with no type names, so a unit that does not
+# need it is unaffected.
+#
+# ONLY THE AUTOCONF RUNGS GET THIS. musl at rung 2 is compiled with $CC
+# directly, not through this wrapper, so the libc is still built against its own
+# headers and nothing else.
 cat > "$PFX/bin/cc-static" <<CCWRAP
 #!/bin/sh
-exec CCBIN -B TCCDIR -I/usr/include -L/usr/lib -static "\$@"
+exec CCBIN -B TCCDIR -I/usr/include -L/usr/lib -include sys/cdefs.h -static "\$@"
 CCWRAP
 sed -i -e "s|CCBIN|$CC_BIN|" -e "s|-B TCCDIR|-B$TCCDIR|" "$PFX/bin/cc-static"
 chmod 0755 "$PFX/bin/cc-static"
@@ -753,7 +776,10 @@ say "  === the compiler every autoconf rung will use ==="
 sed 's/^/    /' "$PFX/bin/cc-static"
 # PROVE THE WRAPPER PRODUCES A STATIC BINARY before four rungs depend on it.
 ( cd /tmp && rm -f w.c w.bin
-  printf '#include <stdio.h>\nint main(void){printf("wrapper ok\\n");return 0;}\n' > w.c
+  # The probe uses __ptr_t WITHOUT including anything, which is exactly what
+  # make's dir.c does and exactly what failed twice. If the force-include is
+  # not working this says so here, not four rungs later.
+  printf 'static __ptr_t p(void){return 0;}\n#include <stdio.h>\nint main(void){printf("wrapper ok %%d\\n", p()?1:0);return 0;}\n' > w.c
   if "$CCAUTO" -o w.bin w.c 2>/tmp/w.err && ./w.bin >/tmp/w.out 2>&1; then
     printf '    compiles and runs: %s\n' "$(cat /tmp/w.out)"
     if grep -aq 'ld-musl\|ld-linux' w.bin; then
