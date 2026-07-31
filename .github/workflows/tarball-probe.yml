@@ -1,0 +1,145 @@
+# CAN WE OPEN THESE TWO TARBALLS? THAT IS THE WHOLE JOB.
+#
+# No bubblewrap, no box, no compiler, no rungs. Fetch the exact binutils and
+# the exact make the bridge uses, and try to open them -- with host tar, and
+# with the same busybox binary the box gets. Print what happened.
+#
+# WHY THIS EXISTS. Six runs of stage3-to-stage4-reference were spent on a tar
+# failure that turned out to be a format question, buried four rungs deep in a
+# sandboxed script where every diagnostic had to be written blind. Three of
+# those diagnostics were themselves broken. This job asks the one question
+# directly, in about a minute, where the answer is the entire output.
+#
+# WHAT IS ALREADY KNOWN, so this can confirm or contradict it rather than
+# rediscover it:
+#
+#   musl-1.2.5    PAX  magic(257)=ustar\0 00   busybox opens it
+#   make-3.82     V7   magic(257)=\0 x8        busybox REFUSES it
+#   make-4.4      V7   magic(257)=\0 x8        busybox REFUSES it
+#
+# GNU release tarballs are V7 format and carry no ustar magic. busybox's
+# get_header_tar requires it. Host GNU tar reads V7 fine, which is why nothing
+# outside the box ever noticed. binutils has never been checked at all -- the
+# earlier probe only looked at musl and make -- so its format is genuinely
+# unknown and is half the point of this job.
+
+name: tarball-probe
+
+on:
+  workflow_dispatch:
+
+env:
+  BINUTILS: '2.30'
+  MAKE_VER: '3.82'
+  MAKE_ALT: '4.4'
+  MUSL_VER: '1.2.5'
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    steps:
+      - name: Install
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends busybox-static curl xz-utils
+
+      - name: Fetch
+        run: |
+          set -eu
+          mkdir -p t && cd t
+          GNU=https://ftp.gnu.org/gnu
+          for u in "$GNU/binutils/binutils-$BINUTILS.tar.xz" \
+                   "$GNU/make/make-$MAKE_VER.tar.gz" \
+                   "$GNU/make/make-$MAKE_ALT.tar.gz" \
+                   "https://musl.libc.org/releases/musl-$MUSL_VER.tar.gz"; do
+            echo "  fetching $(basename "$u")"
+            curl -fsSL --retry 3 -O "$u"
+          done
+          ls -l | sed 's/^/    /'
+
+      - name: 'THE QUESTION: can host tar and busybox tar open each of these?'
+        run: |
+          set -u
+          B=/bin/busybox
+          echo "  busybox: $($B 2>&1 | head -1)"
+          echo
+
+          for f in t/*.tar.*; do
+            n=$(basename "$f")
+            echo "================================================================"
+            echo "  $n   $(wc -c < "$f") bytes"
+            echo "================================================================"
+
+            # --- decompress on its own, so compression and archive are separate
+            case "$f" in
+              *.tar.gz)  Z=gzip;  ZF=-zxf ;;
+              *.tar.xz)  Z=xz;    ZF=-Jxf ;;
+              *.tar.bz2) Z=bzip2; ZF=-jxf ;;
+            esac
+            "$Z" -dc "$f" > /tmp/p.tar 2>/tmp/z.err
+            zrc=$?
+            sz=$(wc -c < /tmp/p.tar 2>/dev/null || echo 0)
+            echo "    $Z -dc            rc=$zrc  -> $sz bytes  512-aligned=$(( sz % 512 == 0 ))"
+            [ -s /tmp/z.err ] && sed 's/^/      /' /tmp/z.err | head -2
+
+            # --- the header, carved with dd and formatted with od
+            echo "    name  (offset 0)  : $(dd if=/tmp/p.tar bs=1 count=20 2>/dev/null | od -c | head -1)"
+            echo "    type  (offset 156): $(dd if=/tmp/p.tar bs=1 skip=156 count=1 2>/dev/null | od -c | head -1)"
+            echo "    magic (offset 257): $(dd if=/tmp/p.tar bs=1 skip=257 count=8 2>/dev/null | od -c | head -1)"
+            m=$(dd if=/tmp/p.tar bs=1 skip=257 count=5 2>/dev/null)
+            if [ "$m" = ustar ]; then echo "    format            : ustar  (busybox should accept)"
+            else                      echo "    format            : V7 / no magic  (busybox will REFUSE)"; fi
+            echo
+
+            # --- host GNU tar
+            if tar -tf "$f" > /dev/null 2>/tmp/h.err; then
+              echo "    HOST tar -tf      : OK   ($(tar -tf "$f" 2>/dev/null | wc -l) members)"
+            else
+              echo "    HOST tar -tf      : FAIL $(head -1 /tmp/h.err)"
+            fi
+
+            # --- busybox, compressed, exactly as the box calls it
+            rm -rf /tmp/a && mkdir -p /tmp/a
+            if ( cd /tmp/a && $B tar $ZF "$OLDPWD/$f" ) 2>/tmp/b1.err; then
+              echo "    BUSYBOX tar $ZF   : OK   ($(ls /tmp/a | head -1))"
+            else
+              echo "    BUSYBOX tar $ZF   : FAIL $(head -1 /tmp/b1.err)"
+            fi
+
+            # --- busybox, already decompressed, to separate the -z path
+            rm -rf /tmp/b && mkdir -p /tmp/b
+            if ( cd /tmp/b && $B tar -xf /tmp/p.tar ) 2>/tmp/b2.err; then
+              echo "    BUSYBOX tar -xf   : OK   (on the decompressed file)"
+            else
+              echo "    BUSYBOX tar -xf   : FAIL $(head -1 /tmp/b2.err)"
+            fi
+
+            # --- and if busybox refused, does repacking as ustar fix it?
+            if [ "$m" != ustar ]; then
+              echo
+              echo "    --- repack V7 -> ustar and retry ---"
+              d=$(mktemp -d); tar xf "$f" -C "$d"
+              ( cd "$d" && tar czf /tmp/re.tar.gz --format=ustar ./* )
+              rm -rf "$d"
+              m2=$(gzip -dc /tmp/re.tar.gz | dd bs=1 skip=257 count=5 2>/dev/null)
+              echo "    repacked magic    : [$m2]  $(wc -c < /tmp/re.tar.gz) bytes"
+              rm -rf /tmp/c && mkdir -p /tmp/c
+              if ( cd /tmp/c && $B tar -zxf /tmp/re.tar.gz ) 2>/tmp/b3.err; then
+                echo "    BUSYBOX on repack : OK   ($(ls /tmp/c | head -1))"
+              else
+                echo "    BUSYBOX on repack : FAIL $(head -1 /tmp/b3.err)"
+              fi
+              rm -f /tmp/re.tar.gz
+            fi
+            echo
+            rm -f /tmp/p.tar
+          done
+
+      - name: Verdict
+        run: |
+          echo "  Read the block above per file. What matters:"
+          echo "    HOST ok + BUSYBOX ok            -> nothing to do"
+          echo "    HOST ok + BUSYBOX fail + repack ok"
+          echo "                                    -> V7, and repacking is the fix"
+          echo "    HOST fail                       -> the download is bad, not the format"

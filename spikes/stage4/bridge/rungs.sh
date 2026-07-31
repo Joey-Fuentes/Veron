@@ -676,27 +676,70 @@ if [ "$R3" = ok ]; then
     R35=FAIL
   else
     say "    building $_got"
+    # WHAT ACTUALLY LANDED. `configure rc=77` followed by build.sh missing
+    # build.cfg said nothing about which of the two failed or what was on disk
+    # when it did. Print the tree.
+    say "    --- /work/src after extraction ---"
+    ls -la /work/src 2>/dev/null | sed 's/^/      /' | head -12
+    say "    --- $_got (first 25 entries) ---"
+    ls -la "/work/src/$_got" 2>/dev/null | sed 's/^/      /' | head -25
+    say "    build.sh present: $( [ -f "/work/src/$_got/build.sh" ] && echo yes || echo NO )"
+    say "    configure present: $( [ -f "/work/src/$_got/configure" ] && echo yes || echo NO )"
   fi
   if [ "$R35" != FAIL ]; then
   cd "$_got" 2>/dev/null || { say "    cannot enter $_got"; R35=FAIL; }
   fi
   if [ "$R35" != FAIL ]; then
+  say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./configure --prefix=$PFX --disable-nls CC=\"$CC $HOSTED\""
+  say "    (cwd: $(pwd))"
   ./configure --prefix="$PFX" --disable-nls CC="$CC $HOSTED" > cfg.log 2>&1
-  say "    configure rc=$?"
+  _crc=$?
+  say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_crc)"
+
+  # CONFIGURE'S EXIT CODE GATES THE REST. The last run read rc=77 -- autoconf's
+  # "cannot run test program", usually "C compiler cannot create executables" --
+  # and then ran build.sh anyway, which failed on a build.cfg configure never
+  # wrote. That reported the second failure and hid the first.
+  say "    --- $_got after configure ---"
+  ls -la . 2>/dev/null | sed 's/^/      /' | head -20
+  say "    build.cfg present: $( [ -f build.cfg ] && echo yes || echo NO )"
+  say "    Makefile present:  $( [ -f Makefile ]  && echo yes || echo NO )"
+  say "    config.log size:   $( [ -f config.log ] && wc -c < config.log || echo absent )"
+
+  if [ "$_crc" != 0 ]; then
+    R35=FAIL
+    say "    --- configure output (tail) ---"
+    tail -25 cfg.log 2>/dev/null | sed 's/^/      /'
+    # config.log IS WHERE AUTOCONF WRITES THE FAILING COMMAND AND ITS ERROR.
+    # cfg.log is only what configure printed to the terminal; the reason lives
+    # here.
+    say "    --- config.log: the failing test ---"
+    grep -nE "error|cannot|failed|No such" config.log 2>/dev/null | head -15 | sed 's/^/      /'
+    say "    --- config.log (last 30 lines) ---"
+    tail -30 config.log 2>/dev/null | sed 's/^/      /'
+  fi
+
+  if [ "$_crc" = 0 ]; then
   if [ -f build.sh ]; then
-    if sh ./build.sh > build.log 2>&1 && [ -x ./make ]; then
+    say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: sh ./build.sh"
+    say "    (cwd: $(pwd))"
+    sh ./build.sh > build.log 2>&1
+    _brc=$?
+    say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_brc)"
+    if [ "$_brc" = 0 ] && [ -x ./make ]; then
       cp ./make "$PFX/bin/make"; R35=ok
       say "    make: $(wc -c < "$PFX/bin/make") bytes"
       "$PFX/bin/make" --version 2>&1 | head -1 | sed 's/^/    /'
     else
       R35=FAIL; say "    --- where it stopped ---"
       grep -nE "error:|undefined reference" build.log 2>/dev/null | head -15 | sed 's/^/      /'
-      tail -15 build.log 2>/dev/null | sed 's/^/      /'
+      tail -20 build.log 2>/dev/null | sed 's/^/      /'
     fi
   else
     R35=FAIL
-    say "    configure produced no build.sh -- cannot bootstrap make without make"
-    tail -12 cfg.log 2>/dev/null | sed 's/^/      /'
+    say "    no build.sh in $(pwd) -- cannot bootstrap make without make"
+    ls -la . 2>/dev/null | sed 's/^/      /' | head -20
+  fi
   fi
   fi
   cd /work
