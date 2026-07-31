@@ -564,6 +564,88 @@ if [ "$R1" = ok ]; then
   done
   say "    empty stubs: $(ls "$SYS/lib"/lib*.a 2>/dev/null | wc -l) archives in $SYS/lib (libc.a + 8 stubs)"
 
+  # A MINIMAL sys/cdefs.h, DECLARED, BECAUSE musl DELIBERATELY OMITS IT.
+  #
+  # Four separate failures so far have been one cause: old GNU source treats
+  # "not glibc" as "not much of a libc", and reaches for glibc-only spelling
+  # helpers that live in <sys/cdefs.h>:
+  #
+  #     make.h:40      alloca            (its own declaration, wrong prototype)
+  #     make.h         strncasecmp       (its own declaration, int vs size_t)
+  #     glob.c:289     getlogin          (its own declaration)
+  #     glob.c:294     __P               (glibc macro, used unconditionally)
+  #     glob.c:303     __ptr_t           (same family)
+  #
+  # musl omits sys/cdefs.h on purpose -- none of it is standard, and __P is a
+  # K&R compatibility macro that does nothing on an ANSI compiler. But omitting
+  # the header does not stop 1990s source from using its contents, and patching
+  # each symbol in each file has now cost four rounds in one file.
+  #
+  # So supply the header once, with only the DECORATIVE macros: the ones that
+  # expand to nothing, to their argument, or to a token paste. Nothing here
+  # claims a libc feature exists.
+  #
+  # __ptr_t IS DELIBERATELY NOT HERE. It is a TYPE, not a decoration, and
+  # sources that want it write `typedef void *__ptr_t;` guarded on their own
+  # terms -- defining it as a macro would turn that line into
+  # `typedef void *void *;`. Type-level collisions stay per-file.
+  mkdir -p "$SYS/include/sys"
+  if [ ! -f "$SYS/include/sys/cdefs.h" ]; then
+    cat > "$SYS/include/sys/cdefs.h" <<'CDEFS'
+/* Minimal <sys/cdefs.h> for a musl sysroot.
+ *
+ * musl omits this header deliberately: nothing in it is standard, and the
+ * macros are K&R-era spelling helpers that expand to nothing useful on an
+ * ANSI compiler. Old GNU source uses them anyway. Only decorative macros are
+ * defined here -- no type names, and nothing that asserts a libc feature.
+ */
+#ifndef _SYS_CDEFS_H
+#define _SYS_CDEFS_H 1
+
+#ifdef __cplusplus
+# define __BEGIN_DECLS extern "C" {
+# define __END_DECLS   }
+#else
+# define __BEGIN_DECLS
+# define __END_DECLS
+#endif
+
+#define __P(args)     args
+#define __PMT(args)   args
+#define __CONCAT(a,b) a ## b
+#define __STRING(x)   #x
+
+#ifndef __THROW
+# define __THROW
+#endif
+#ifndef __THROWNL
+# define __THROWNL
+#endif
+#ifndef __nonnull
+# define __nonnull(params)
+#endif
+#ifndef __attribute_pure__
+# define __attribute_pure__
+#endif
+#ifndef __attribute_const__
+# define __attribute_const__
+#endif
+#ifndef __attribute_malloc__
+# define __attribute_malloc__
+#endif
+#ifndef __wur
+# define __wur
+#endif
+
+#define __const    const
+#define __signed   signed
+#define __volatile volatile
+
+#endif /* _SYS_CDEFS_H */
+CDEFS
+    say "    sys/cdefs.h: written ($(wc -l < "$SYS/include/sys/cdefs.h") lines) -- declared substitution"
+  fi
+
   say "    headers: $(find "$SYS/include" -name '*.h' 2>/dev/null | wc -l) files"
   say "    crt:     $(ls "$SYS/lib"/crt*.o 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
   if [ -s "$SYS/lib/libc.a" ] && [ -f "$SYS/lib/crt1.o" ]; then R2=ok; else R2=FAIL; fi
@@ -1429,35 +1511,53 @@ if [ "$R4" = ok ]; then
       sed -i '/^extern int getlogin_r/d; /^extern char \*getlogin/d' glob/glob.c 2>/dev/null || true
       say "      getlogin declarations removed: $_before"
 
-      # 2. __P, WHICH IS glibc's AND WHICH glob.c USES ANYWAY.
-      #
-      #        glob.c:294: error: ';' expected (got '__P')
-      #
-      #    __P(args) is defined in glibc's <sys/cdefs.h> -- a header musl does
-      #    not ship, because __P is a K&R-era compatibility macro that expands
-      #    to nothing but its argument on any ANSI compiler. glob.c reaches for
-      #    it inside the very branch it takes when it decides it is NOT on
-      #    glibc, which is the same wrong assumption as the getlogin block: not
-      #    glibc is read as not much of a libc at all.
-      #
-      #    Supplying the macro is smaller than defining __GNU_LIBRARY__ to make
-      #    glob.c believe it is on glibc -- that guard also gates __stat64,
-      #    __alloca and other glibc internals musl has no equivalent for, so
-      #    taking that branch would trade a parse error for a link error.
-      #
-      #    Injected into the file rather than passed as -D'__P(args)=args',
-      #    which would need a function-like macro to survive shell quoting
-      #    through configure and would apply to every other compilation too.
-      if ! grep -q "define __P" glob/glob.c 2>/dev/null; then
-        sed -i '1i #ifndef __P\n#define __P(args) args\n#endif' glob/glob.c
-        say "      __P: defined at the top of glob.c"
-      else
-        say "      __P: already defined, left alone"
-      fi
-      say "      first lines now:"
-      head -4 glob/glob.c | sed 's/^/        /'
+      # 2. __P COMES FROM sys/cdefs.h NOW. Rung 2 installs a minimal one into
+      #    the sysroot, so the injection that used to live here is gone --
+      #    fixing the class beat fixing the fourth instance.
 
-      if cfg_try "make $MAKE_ALT" --prefix="$PFX" --disable-nls; then
+      # 3. THE DUPLICATE __ptr_t TYPEDEF.
+      #
+      #        glob.c:303: error: redeclaration of '__ptr_t'
+      #
+      #    glob/glob.h and glob/glob.c BOTH define it, each under its own
+      #    "am I on glibc" guard. On glibc neither fires; on musl both do, and
+      #    C89 does not allow a typedef to be repeated. This is a TYPE, so it
+      #    cannot be handled in cdefs.h -- defining __ptr_t as a macro would
+      #    turn `typedef void *__ptr_t;` into `typedef void *void *;`.
+      #
+      #    Removing glob.c's copy keeps glob.h's, which is the one every other
+      #    file in that directory includes.
+      _pt=$(grep -c "^typedef.*__ptr_t;" glob/glob.c 2>/dev/null || true)
+      sed -i '/^typedef .*__ptr_t;$/d' glob/glob.c 2>/dev/null || true
+      say "      __ptr_t typedefs removed from glob.c: $_pt"
+      say "      __P now supplied by $SYS/include/sys/cdefs.h: $( [ -f "$SYS/include/sys/cdefs.h" ] && echo yes || echo MISSING )"
+
+      # STOP BUILDING THE BUNDLED glob. FIVE PATCHES IN ONE FILE IS THE SIGNAL.
+      #
+      #     getlogin      incompatible types for redefinition
+      #     getlogin_r    same
+      #     __P           ';' expected -- glibc's <sys/cdefs.h> macro
+      #     __ptr_t       redeclaration
+      #     ...           and no reason to think that is the last one
+      #
+      # Every one is the same wrong assumption -- glob.c's `#ifndef
+      # __GNU_LIBRARY__` branch treats "not glibc" as "a libc from 1991" and
+      # supplies its own versions of things musl already has, correctly. Each
+      # fix is two lines and each one uncovers the next; that is a losing shape.
+      #
+      # make's configure has a switch for exactly this. make_cv_sys_gnu_glob
+      # asks "does the system libc have a GNU-quality glob"; when it is yes the
+      # glob/ subdirectory is not built at all and <glob.h> is used instead.
+      # musl's glob is POSIX and complete, which is what make actually needs.
+      #
+      # THIS MAY NOT HOLD, and the failure will be specific and readable if it
+      # does not: make uses glob_pattern_p, which is a GNU extension musl does
+      # not export, so this either links or stops with one undefined symbol
+      # naming it. That is a better next log than a sixth parse error. If it
+      # does stop there, make 4.3 dropped the bundled glob entirely and is the
+      # next thing to try rather than a sixth patch.
+      if cfg_try "make $MAKE_ALT" --prefix="$PFX" --disable-nls \
+                 make_cv_sys_gnu_glob=yes; then
         # MAKEINFO=true, as live-bootstrap's own steps/make-4.2.1/pass1.sh does
         # -- texinfo is not in this box and make builds its manual otherwise.
         if timeout 1800 make -j"$NP" MAKEINFO=true > build.log 2>&1 && [ -x ./make ]; then
@@ -1473,7 +1573,12 @@ if [ "$R4" = ok ]; then
           fi
         else
           R45=FAIL; say "    --- where it stopped ---"
-          grep -nE "error:|Error [0-9]" build.log 2>/dev/null | head -10 | sed 's/^/      /'
+          grep -nE "error:|Error [0-9]|undefined symbol" build.log 2>/dev/null | head -12 | sed 's/^/      /'
+          if grep -q "glob_pattern_p" build.log 2>/dev/null; then
+            say "    ^ glob_pattern_p is the GNU extension musl does not export."
+            say "      make 4.3 dropped the bundled glob entirely; that is the"
+            say "      next version to try rather than another patch here."
+          fi
           tail -15 build.log 2>/dev/null | sed 's/^/      /'
         fi
       else
