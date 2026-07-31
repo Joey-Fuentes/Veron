@@ -1421,11 +1421,41 @@ if [ "$R4" = ok ]; then
       # Deleting a wrong declaration is smaller and more honest than defining
       # __GNU_LIBRARY__ to make glob.c believe it is on glibc, which would turn
       # on a dozen other paths nobody has looked at.
-      say "    --- declared substitution: glob.c's own getlogin declarations ---"
+      say "    --- declared substitutions in glob/glob.c ---"
+
+      # 1. ITS OWN getlogin DECLARATIONS. Redundant on musl, and the wrong
+      #    prototype, so they collide with unistd.h's.
       _before=$(grep -c "^extern .*getlogin" glob/glob.c 2>/dev/null || true)
       sed -i '/^extern int getlogin_r/d; /^extern char \*getlogin/d' glob/glob.c 2>/dev/null || true
-      _after=$(grep -c "^extern .*getlogin" glob/glob.c 2>/dev/null || true)
-      say "      removed $_before declaration(s), $_after remain"
+      say "      getlogin declarations removed: $_before"
+
+      # 2. __P, WHICH IS glibc's AND WHICH glob.c USES ANYWAY.
+      #
+      #        glob.c:294: error: ';' expected (got '__P')
+      #
+      #    __P(args) is defined in glibc's <sys/cdefs.h> -- a header musl does
+      #    not ship, because __P is a K&R-era compatibility macro that expands
+      #    to nothing but its argument on any ANSI compiler. glob.c reaches for
+      #    it inside the very branch it takes when it decides it is NOT on
+      #    glibc, which is the same wrong assumption as the getlogin block: not
+      #    glibc is read as not much of a libc at all.
+      #
+      #    Supplying the macro is smaller than defining __GNU_LIBRARY__ to make
+      #    glob.c believe it is on glibc -- that guard also gates __stat64,
+      #    __alloca and other glibc internals musl has no equivalent for, so
+      #    taking that branch would trade a parse error for a link error.
+      #
+      #    Injected into the file rather than passed as -D'__P(args)=args',
+      #    which would need a function-like macro to survive shell quoting
+      #    through configure and would apply to every other compilation too.
+      if ! grep -q "define __P" glob/glob.c 2>/dev/null; then
+        sed -i '1i #ifndef __P\n#define __P(args) args\n#endif' glob/glob.c
+        say "      __P: defined at the top of glob.c"
+      else
+        say "      __P: already defined, left alone"
+      fi
+      say "      first lines now:"
+      head -4 glob/glob.c | sed 's/^/        /'
 
       if cfg_try "make $MAKE_ALT" --prefix="$PFX" --disable-nls; then
         # MAKEINFO=true, as live-bootstrap's own steps/make-4.2.1/pass1.sh does
