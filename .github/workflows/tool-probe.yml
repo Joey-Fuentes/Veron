@@ -134,9 +134,30 @@ jobs:
             ln -sf "$B" "$T/$a"
           done
 
-          for a in gawk mawk nawk comm join split csplit paste expand unexpand \
+          # gawk IS NOT TRAPPED ANY MORE, AND THAT CHANGES THE RESULT.
+          #
+          # The first run trapped it and m4, bison and flex all came back rc=1.
+          # That looked like three packages needing gawk. The dedicated step
+          # below then showed busybox awk handles everything they use --
+          # ENVIRON, -f, gsub, printf, match -- so the trap was making the box
+          # STRICTER than the real one and the rc=1 said nothing.
+          #
+          # A probe that fails for a reason the real box does not have is worse
+          # than no probe: it produces three findings that are all the same
+          # false one. So gawk passes through to busybox awk, and if a package
+          # genuinely cannot use it, THAT failure is real.
+          #
+          # msgfmt is likewise passed through as a no-op stub rather than
+          # trapped: it is gettext, every real rung passes --disable-nls, and
+          # trapping it only reproduces a configuration we never use.
+          for a in gawk awk; do
+            $B --list | grep -qx awk && ln -sf "$B" "$T/$a"
+          done
+          printf '#!/bin/sh\nexit 0\n' > "$T/msgfmt"; chmod 0755 "$T/msgfmt"
+
+          for a in mawk nawk comm join split csplit paste expand unexpand \
                    fold fmt nl pr tsort col perl python python3 bison yacc \
-                   flex lex m4 bc pkg-config msgfmt gettext autoconf automake \
+                   flex lex m4 bc pkg-config gettext autoconf automake \
                    libtool makeinfo texi2any pod2man help2man rsync diff patch; do
             $B --list | grep -qx "$a" && continue
             # printf, not a heredoc. A heredoc terminator has to sit at
@@ -180,13 +201,25 @@ jobs:
                 # perl: not autoconf, and -des answers every prompt.
                 timeout 420 ./Configure -des -Dprefix=/tmp/x-$d -Dcc=gcc > c.log 2>&1
               elif [ -x ./configure ]; then
-                timeout 420 ./configure --prefix=/tmp/x-$d > c.log 2>&1
+                # --disable-nls, because every rung that builds these passes
+                # it. Without it configure reaches for msgfmt and gettext and
+                # reports a requirement we have arranged never to have.
+                timeout 420 ./configure --prefix=/tmp/x-$d --disable-nls > c.log 2>&1
               else
                 echo "    no configure script" >> "$L"; exit 0
               fi
               rc=$?
               set -e
               echo "    configure rc=$rc" >> "$L"
+              # THE rc IS THE USEFUL COLUMN AND IT NEEDS A REASON BESIDE IT.
+              # rc=0 with traps caught means the tool was OPTIONAL -- Python
+              # and perl both did that. rc!=0 means something actually stopped,
+              # and the last thing configure printed says what.
+              if [ "$rc" != 0 ]; then
+                echo "    --- why ---" >> "$L"
+                grep -aiE "error|fatal|cannot|not found|required" c.log \
+                  | tail -6 | sed 's/^/      /' >> "$L"
+              fi
               # What the configure ITSELF said it could not find, which catches
               # tools reached by a name the trap list does not have.
               grep -aiE "not found|no acceptable|missing|command not found|required" c.log \
