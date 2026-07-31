@@ -220,17 +220,39 @@ if [ "$R1" = ok ]; then
   # above, so the generic C is what stands in for them -- which is exactly what
   # that declaration says happens, and it falls out of this rule for free
   # rather than needing a second list.
+  # SKIPPING A GENERIC FILE ONLY HELPS IF ITS REPLACEMENT IS ACTUALLY BUILT.
+  #
+  # The last run skipped src/string/memset.c because src/string/aarch64/memset.S
+  # exists -- and then never compiled memset.S, because the arch glob was *.c
+  # only. memset and memcpy ended up in NEITHER, and rung 3 failed with
+  # "undefined symbol 'memset'" against a 3.2 MB libc.a. The earlier `find`
+  # version masked this by compiling everything, so tightening the file set is
+  # what exposed it.
+  #
+  # THE ARCH FILES ARE ASSEMBLY. .S is preprocessed assembly and .s is plain;
+  # tcc assembles both with the integrated assembler the arm64 patch series
+  # supplies, which is one of the things this rung is here to exercise. The 9
+  # .s files sources/musl.toml declares dropped were deleted above, so they
+  # match nothing here and their generic C is used instead -- which is what the
+  # declaration says happens.
+  #
+  # TWO DIRECTORIES ARE NOT ONE LEVEL UNDER src/ AND ARE EASY TO MISS:
+  #   src/malloc/mallocng/   musl's allocator since 1.2 -- __libc_free lives
+  #                          here, and it was the third undefined symbol
+  #   compat/time32/         the 32-bit time shims, referenced by dispatch
   : > /work/srclist
-  for f in src/*/*.c ldso/*.c; do
+  for f in src/*/*.c src/malloc/mallocng/*.c ldso/*.c compat/time32/*.c; do
     [ -f "$f" ] || continue
     d=$(dirname "$f"); b=$(basename "$f" .c)
-    # replaced by an aarch64 version? then skip the generic one
+    # Replaced by an aarch64 version? Skip the generic ONLY if the replacement
+    # is one this loop will actually compile.
     if [ -f "$d/aarch64/$b.c" ] || [ -f "$d/aarch64/$b.s" ] || [ -f "$d/aarch64/$b.S" ]; then
       continue
     fi
     echo "$f" >> /work/srclist
   done
-  for f in src/*/aarch64/*.c crt/*.c crt/aarch64/*.c; do
+  for f in src/*/aarch64/*.c src/*/aarch64/*.s src/*/aarch64/*.S \
+           crt/*.c crt/aarch64/*.c crt/aarch64/*.s crt/aarch64/*.S; do
     [ -f "$f" ] && echo "$f" >> /work/srclist
   done
   say "    file set: $(wc -l < /work/srclist) sources (aarch64, arch files replacing generic)"
@@ -238,7 +260,10 @@ if [ "$R1" = ok ]; then
   nc=0; nf=0
   : > /work/musl-fail.txt
   for f in $(sort /work/srclist); do
-    o="obj/${f%.c}.o"; mkdir -p "$(dirname "$o")"
+    # .c, .s and .S all land on the same object name, which is how musl's own
+    # REPLACED_OBJS rule collapses an arch file onto the generic one it stands
+    # in for.
+    o="obj/${f%.*}.o"; mkdir -p "$(dirname "$o")"
     # musl's Makefile adds -DCRT for the crt objects; without it crt1.c
     # compiles to something that is not a crt file.
     case "$f" in crt/*) X=-DCRT ;; *) X= ;; esac
@@ -319,6 +344,19 @@ if [ "$R1" = ok ]; then
   mkdir -p "$SYS/include/bits"
   cp -a obj/include/bits/. "$SYS/include/bits/" 2>/dev/null || true
 
+  # SIZE IS NOT COMPLETENESS. The last run archived 1265 objects into 3.2 MB
+  # and was missing memset. These four are what any hosted program needs
+  # immediately, so their absence is worth naming here rather than discovering
+  # as a link error one rung later.
+  say "    --- symbols every hosted program needs ---"
+  for sym in memset memcpy malloc free printf __libc_start_main; do
+    if "$CC_BIN" -ar t "$SYS/lib/libc.a" >/dev/null 2>&1; then :; fi
+    if grep -aq "$sym" "$SYS/lib/libc.a" 2>/dev/null; then
+      printf '      %-20s present\n' "$sym"
+    else
+      printf '      %-20s MISSING\n' "$sym"
+    fi
+  done
   say "    headers: $(find "$SYS/include" -name '*.h' 2>/dev/null | wc -l) files"
   say "    crt:     $(ls "$SYS/lib"/crt*.o 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
   if [ -s "$SYS/lib/libc.a" ] && [ -f "$SYS/lib/crt1.o" ]; then R2=ok; else R2=FAIL; fi
