@@ -151,6 +151,39 @@ proves a tcc can do.
 
 ---
 
+## Their constraints are not ours, and I imported three of them anyway
+
+The ordering above is theirs and it is checked. The **reasons behind it** are
+theirs too, and three times a reason was carried over without asking whether the
+constraint still applied. Recorded because the mistake has a shape.
+
+**make before musl.** Theirs, because mes-libc is installed by then. Ours
+inverts, because M2libc lives *inside* mc-tcc rather than on disk and could not
+carry make anyway. Cost: rung 2 hand-drives musl in shell. Already covered
+above, and it is the one where the divergence was noticed early.
+
+**make 3.82, then 4.2.1.** Theirs is a real pin with a real recipe, and 3.82
+built here exactly as their `pass1.kaem` says. But 4.2.1 does not survive musl:
+its **bundled glob** cost five substitutions — `getlogin`, `getlogin_r`, `__P`,
+`__ptr_t` — before hitting `gl_opendir`, a `glob_t` member from GNU's
+`GLOB_ALTDIRFUNC` that musl has no equivalent for. **make 4.3 dropped the
+bundled glob entirely**; 4.4 keeps it dropped and uses gnulib, and it builds.
+Their reason for avoiding 4.4 is stated in `parts.rst` — *"the use of automake
+1.16 which we do not have yet"* — and it is an autotools reason, not a musl one.
+We do not regenerate, so it never applied to us.
+
+**perl in four versions.** 5.000 → 5.003 → 5.005_03 → 5.6.2, because they build
+perl *before binutils and gcc*, with tcc and mes-libc. Modern perl will not
+build in that environment. We would build it **after gcc 15**, where it is an
+ordinary package that Alpine builds against musl as a matter of course. Reading
+their four-stage climb as a cost we would also pay inflated the remaining work
+from roughly eight rungs to twenty-plus.
+
+**The rule.** live-bootstrap's ordering is evidence about *dependencies*. Their
+version pins are evidence about *their environment*: kaem, mes-libc, no
+autotools, x86. Ours is busybox, musl, a full binutils by rung 4, aarch64. Take
+the ordering; re-derive the pins.
+
 ## Sources, and how firm each is
 
 **Primary, read directly:** live-bootstrap's `parts.rst` (prose tracking of

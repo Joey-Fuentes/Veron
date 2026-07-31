@@ -84,23 +84,66 @@ Stage 4 already **has** a tcc — pinned, patched, and used. What stage 3 owes i
 | route | state |
 |---|---|
 | M2-Planet → Mes → tcc | Mes rung in progress, three rungs out |
-| **enhanced M2-Planet → tcc directly** | **the enhanced compiler exists.** It is called micro-c — M2-Planet at pin `bd2fe4b` plus 59 patches — and it compiles `tcc.c`, tcc's whole source *including its driver*, to 378,759 lines of M1 across 707 functions, links a 1.57 MB aarch64 binary, and **that binary compiles and runs all twelve end-to-end programs** and 59 of tcc's own 127 tests2 programs. It also compiles tcc's source *back* to an object — see below |
+| **enhanced M2-Planet → tcc directly** | **the enhanced compiler exists.** It is called micro-c — M2-Planet at pin `bd2fe4b` plus 61 patches — and it compiles `tcc.c`, tcc's whole source *including its driver*, to 378,759 lines of M1 across 707 functions, links a 1.57 MB aarch64 binary, and **that binary compiles and runs all twelve end-to-end programs** and 73 of tcc's own tests2 programs. It also compiles tcc's source *back* to an object — see below |
 
 The direct route is the shorter one: extend M2-Planet's C subset far enough to compile real tcc, skipping the intermediate rungs entirely. The thesis behind it is that much of what the bootstrap ecosystem carries is *incidental* complexity — build plumbing, script-calling-script — rather than real capability gaps, and that the two can be separated by measuring instead of estimating. See [`spikes/stage3/ROADMAP.md`](./spikes/stage3/ROADMAP.md) for the plan and [`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md) for the state.
 
-It is not yet a finished tcc. A differential suite of **95 cases** stands at **94 passing on aarch64 and 92 on amd64**, with one `KNOWN GAP` and two cases skipped on amd64 where a bitfield write emits aarch64 mnemonics literally; alongside it, 419 of the 426 programs in stage 2's conformance corpus. The compiler, the emulator and the tcc tree can all be run outside CI, which is why the last several bugs took minutes rather than rounds.
+It is not yet a finished tcc. A differential suite of **97 cases** stands at **96 passing on aarch64 and 94 on amd64**, with one `KNOWN GAP` and two cases skipped on amd64 where a bitfield write emits aarch64 mnemonics literally; alongside it, 419 of the 426 programs in stage 2's conformance corpus. The compiler, the emulator and the tcc tree can all be run outside CI, which is why the last several bugs took minutes rather than rounds.
 
 Eleven codegen bugs have been closed since, and the two worth carrying up here are about method rather than about tcc. The fault was recorded for five rounds as living in `tccgen`, past where `next()` returns; it was a **member offset three functions away** — a member of an anonymous struct nested in an anonymous union resolved to offset 0, so every symbol tcc created had its token wiped immediately after it was written. A marker trail brackets between probe points; it does not point at a fault, and reading it as though it did cost those five rounds.
 
 The second is that a test suite written *from* bugs already found measures what has been fixed, not what remains. Borrowing stage 2's 426-program conformance corpus — written for a different compiler, by someone not looking for these bugs — turned up three live codegen faults in one sitting, including an array of `char*` loading one signed byte of an eight-byte pointer. The stage-3 case suite had been green over that one every round, because every array-of-pointers case in it used `long*`, where the element width and the pointed-at width are both 8.
 
-micro-c compiles **tcc's whole source, driver included**, and `stage3-hermetic-arm64` reports **`stage 3 end to end: yes`** — a 1.57 MB tcc built from the seed on native ARM64 inside the sealed box, answering `tcc version 0.9.28rc (AArch64 Linux)` from tcc's own driver, with all twelve end-to-end programs compiling and running and **59 of tcc's own 127 `tests2` programs matching tcc's `.expect` files**.
+micro-c compiles **tcc's whole source, driver included**, and `stage3-hermetic-arm64` reports **`stage 3 end to end: yes`** — a 1.57 MB tcc built from the seed on native ARM64 inside the sealed box, answering `tcc version 0.9.28rc (AArch64 Linux)` from tcc's own driver, with all twelve end-to-end programs compiling and running and **77 of tcc's own 127 `tests2` programs matching tcc's `.expect` files** — a
+number that moved from 59 mostly because the *harness* was wrong, not the
+compiler: the sweep ran an aarch64 binary with no emulator, compared strictly
+where tcc compares with `diff -b`, and never passed `31_args` its arguments.
+Two of the remaining differences are real and named — `134_double_to_signed`
+waits on floating point, `94_generic` on `_Generic` type matching.
 
 **The heap corruption is closed.** It was `sizeof` of a dereferenced *member* pointer — `sizeof(*s->tab)` returned the pointer's width, not the struct's, so `tccelf.c` allocated the symbol-attribute table at half the width its own indexing strides through, and later entries read past it into string data. One GOT relocation then resolved to a wild address and every linked binary died on its second string literal. The same construct through a plain pointer was always correct, which is why it survived: the two forms disagree only when a member sits between the star and the name.
 
 **mc-tcc compiles tcc's own source back to an object under the emulator** — 870,242 bytes against the gcc-built control's 873,890, with the same 705 function symbols and relocation counts within two. **On real ARM64 it segfaults**, so read that narrowly: it is step 1 of the five a fixpoint needs, it holds only under `qemu-aarch64`, and **it is not self-hosting**. Steps 2–5 are: link gen2, run it, build gen3, and compare gen2 against gen3. gen2 does not link yet because it needs a libc, and the next rung is a libc built in-chain — see [`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md).
 
 **Close those two and the chain is continuous from hand-read assembly to a booting GNU/Linux.** What stands between here and a rough-draft OS is that, plus re-applying the invariants — the spike track suspends every one of them.
+
+### 3½. The bridge — what stage 4 borrows, built instead
+
+Stage 4 already goes from a tcc to a booting Linux. Its one declared hole is
+where that tcc comes from — `./configure --cc=gcc`. But its box also binds host
+`/usr` and borrows binutils, make, perl, bison, flex and a libc, and its own
+accounting says so plainly: *"the guarantee stage 4 currently makes is 'no host
+compiler', not 'no host dependencies'."*
+
+`stage3-to-stage4-reference` removes the rest, and **it closes**. Eight rungs
+from one static tcc to a working gcc 4.7.4 with a C++ compiler, in a sandbox
+whose entire host inventory is one busybox:
+
+```
+musl ──► make 3.82 ──► binutils 2.30 ──► make 4.4 ──► gmp/mpfr/mpc ──► gcc 4.7.4
+
+xgcc 2.7 MB   cc1 70 MB   cc1plus 77 MB
+SEALED. 1 host binaries, 0 of them on the build path.
+```
+
+musl is compiled by a shell loop because there is no make yet; make 3.82 by 27
+literal commands because there is no `ld` for its configure to find; binutils by
+that make; make 4.4 by that binutils. `ar` is `tcc -ar` until rung 4 produces a
+real one. gcc 4.7.4 carries 4.8.5's aarch64 backend — 4.7 predates the
+architecture — applied in the box as two declared patches with busybox `tar`
+and `patch`.
+
+**It proves the recipe, not the seed.** That arm's tcc is host-built and the
+BUDGET step says so in every log. `stage3-to-stage4-bridge` runs the identical
+script with mc-tcc and is the experiment that matters; the reference exists so
+that when it fails, the failure is attributable to micro-c rather than to the
+harness. Six of the first seven runs found harness bugs, not compiler bugs.
+
+Twelve substitutions, all declared. Eleven are one thing: old GNU source
+treating "not glibc" as "barely a libc" — `alloca`, `strncasecmp`, `getlogin`,
+`__P`, `__ptr_t`, `__assert_fail`, `_IScntrl`. See
+[`spikes/stage4/bridge/README.md`](./spikes/stage4/bridge/README.md) for the
+ledger, the ordering argument against LFS's, and where the harness lied.
 
 ---
 

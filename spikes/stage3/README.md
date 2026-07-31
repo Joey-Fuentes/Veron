@@ -193,15 +193,18 @@ aarch64, and the cost was a CI round trip per bug.
   produces a tcc **binary** that gets through the preprocessor and faults in
   the code generator (`MICRO-C.md`). `ROADMAP.md` has the measured gap for the
   direct route; `mes-rung.yml` is the reference arm for the other.
-- **Every integer literal is truncated to 32 bits**, so tcc marks every
-  constant it reads as unsigned. This is the known blocker and it is *not* a C
-  change: M1's `%` emits four bytes and masks to 32, amd64 had only
-  `mov r64, imm32`, and aarch64 had no PC-relative 64-bit load. Those
-  instructions landed in `patches/m2libc/0005`, verified four ways; nothing
-  emits them yet.
-- **The fault at `next()`'s return is undiagnosed**, and should be read only
-  after the literal fix — corrupt constant types are a plausible cause of it,
-  so diagnosing it first risks explaining a symptom.
+- ~~**Every integer literal is truncated to 32 bits**~~ — **CLOSED by
+  `EXPERIMENT-zzb`, and this entry outlived it by months.** The instructions
+  landed in `patches/m2libc/0005` and `zzb` wired them up; a direct probe of
+  bare 64-bit literals now AGREES on both columns. Leaving it here as "the
+  known blocker" cost a round: `118_switch`'s SIGILL looked exactly like it and
+  was investigated as it, and the actual cause was `promote_type` picking types
+  by declaration order (`EXPERIMENT-zzzm`). **A stale open item is worse than no
+  open item** — it does not just fail to help, it aims the next round.
+- **The fault at `next()`'s return is undiagnosed.** It used to say "read this
+  only after the literal fix, because corrupt constant types are a plausible
+  cause". The literal fix landed, so that condition is met and this is simply
+  open.
 - ~~`16-switch-wide` fails on aarch64~~ — **closed by `EXPERIMENT-zz9`.** A
   negative `case` label was loaded unsigned; amd64's sign-extending immediate
   made the wrong constant land on the right value, so it was green there and

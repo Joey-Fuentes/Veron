@@ -291,6 +291,104 @@ context)` answering "load or address, and how wide", called everywhere. That is
 a substantial refactor of `cc_core.c` and it is not done. Until it is, the
 twentieth site is a matter of time.
 
+It was six weeks. **`EXPERIMENT-zzzl`** is the ninth copy of the `assigning`
+rule found missing, and it is the same shape as `zz8`: `is_assignment` at
+`cc_core.c:1831` is `match("=")` and nothing else, so `*p += v` fell through to
+the RVALUE branch — which steps the type down and *then* loads, because that is
+what an rvalue read of `*p` wants. The lvalue branch loads first, at the
+pointer's own width. Both orders are correct for their own case; the flag
+selecting between them did not know about `+=`:
+
+```
+*p = 5     lea_rax,[rbp-8] / mov_rax,[rax]                8 bytes, correct
+*p += 5    lea_rax,[rbp-8] / movsx_rax,DWORD_PTR_[rax]    4 bytes, SIGNED
+```
+
+Same expression, two different loads, differing only in which operator follows.
+A four-byte sign-extended read of an eight-byte pointer, then stored through.
+
+`is_compound_operator` was already computed on the very next line and already
+consulted by the two guards above it, at 1834 and 1922. Only the branch that
+chooses load ORDER was missed.
+
+**What it cost.** `tccgen.c:4153`, inside `find_field`, accumulates an offset
+with `*cumofs += s->c;` while walking anonymous struct members — so every
+recursive resolution stored through a truncated pointer. A designated
+initializer naming a member of an anonymous struct segfaulted mc-tcc at compile
+time, while the same initializer written with braces was fine, because the
+braced form never takes the recursive path. `tests2/90_struct-init`, closed.
+
+**How it was found**, because the route matters more than the result here.
+Layout sweep first: eight filename lengths, all failing identically, so *not*
+heap roulette and bisection by construct was legitimate. Reduction converged in
+two passes. Then phase-splitting (`-E` clean, `-c` faults), the faulting PC out
+of qemu mapped through the hex2 label table to `find_field`, then tagging all 22
+`load_value` sites and rebuilding to see which one emitted it: SITE1997 for
+compound, SITE1943 for plain.
+
+Four speculative probes came first — recursion through `&s->type`, `&cumofs`,
+the `&&` guard, operator precedence — and all four came back AGREE. They cost
+turns and proved nothing. **Reading the emitted instruction is what worked.**
+
+### The type that wins is decided by declaration order
+
+`promote_type` walked `global_types` and returned the **first entry whose name
+matched either operand**. Which type won was therefore decided by the order
+things were registered, not by the types:
+
+```c
+for(i = global_types; NULL != i; i = i->next)
+{
+    if(a->name == i->name) break;
+    if(b->name == i->name) break;
+    ...
+}
+return i;
+```
+
+That is right whenever the wider type happens to be registered first. `int` is
+registered early, so anything meeting an `int` and declared later simply lost —
+and **every typedef is declared later**:
+
+```
+unsigned long x;   x >> 43     shr_rax,cl    logical, correct
+u64           x;   x >> 43     sar_rax,cl    arithmetic, WRONG
+```
+
+Same width, same signedness, different answer, because `u64` is a typedef. The
+promoted type came back as `int` carrying `is_signed = TRUE`, so **every
+unsigned typedef in the program was signed as far as codegen was concerned**.
+Division and comparison went the same way: a probe of shift, division and
+comparison returns 42 through a typedef and 0 with the primitive spelled out.
+
+**What it cost.** tcc's `elf.h:34` is `typedef unsigned long long int uint64_t`,
+so this was every `uint64_t` in tcc. `arm64_movi` encodes a value whose only set
+bit is bit 63 with
+
+```c
+if (!(x & ~(m << 48)))
+    return 0xd2e00000 | r | x >> 43;            arm64-gen.c:184
+```
+
+and an arithmetic shift turns `0x100000` into `0xfff00000`, so the emitted word
+was `0xfff00001` — not an aarch64 encoding at all. `tests2/118_switch` died with
+SIGILL on the one case range in the file whose low bound is exactly `LONG_MIN`.
+`LONG_MIN+1 ... -1` was fine, which is what made it look like a switch bug.
+
+**`EXPERIMENT-zzzm`** replaces the walk: wider wins, and at equal width the
+unsigned one wins, which is C's rule for equal rank. A pointer is wider than an
+int and still wins, which is what the old walk produced for pointer arithmetic.
+Case 110 remains a declared `KNOWN GAP` — this is not the full usual arithmetic
+conversions, it is the selection rule those conversions need underneath them.
+
+**Two wrong answers came first.** The README listed "every integer literal is
+truncated to 32 bits" as the known blocker and this looked like it — but a
+direct probe of bare 64-bit literals AGREES on both columns, so that item was
+stale and `zzb` had already closed it. The second answer was that a typedef
+loses `is_signed` in `mirror_type`; instrumenting `mirror_type` shows it copying
+`src_signed=0` correctly. Only instrumenting `promote_type`'s **inputs** showed
+both operands arriving intact and the wrong one being returned.
+
 ### Branching inside an expression clobbers the frame pointer
 
 On aarch64 a far jump loads its target into **x16** and does `br_x16`. x16 is
