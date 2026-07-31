@@ -250,6 +250,11 @@ if [ "$R1" = ok ]; then
   done
   say "    compiled $nc objects, $nf failed"
   if [ "$nf" -gt 0 ]; then
+    # src/thread/__unmapself.c IS EXPECTED TO FAIL and is not a compiler
+    # defect: sources/musl.toml declares the aarch64 __unmapself.s dropped, so
+    # the generic C stands in, and that generic C is inline asm tcc does not
+    # parse. It costs the thread-exit unmapping path, which nothing below gcc
+    # exercises. Named here so it stops looking like a finding every run.
     say "    --- files that would not compile (first 10 of $nf) ---"
     head -10 /work/musl-fail.txt | sed 's/^/      /'
     # DISTINCT MESSAGES, WITH COUNTS. The first twelve lines of the error log
@@ -271,10 +276,42 @@ if [ "$R1" = ok ]; then
     say "    ar FAILED"
     grep -av '^[A-Z][0-9]*$' /work/ar.err | head -6 | sed 's/^/      /'
   fi
+  # ASK THE COMPILER WHERE IT LOOKS. DO NOT ASSUME.
+  #
+  # The last run built crt1.o, crti.o and crtn.o correctly, put them in
+  # /usr/lib, and still got "file 'crt1.o' not found". tcc's crt search path is
+  # compiled in at configure time and is NOT reachable from -L; on a Debian or
+  # Ubuntu host tcc's configure picks up the multiarch layout and sets it to
+  # something like /usr/lib/aarch64-linux-gnu, not /usr/lib.
+  #
+  # Guessing that path is how this rung failed twice. The compiler will say:
+  # -print-search-dirs is exactly the question, and it is answered by both arms
+  # -- MICRO-C.md records it working on mc-tcc. So the crt files are installed
+  # into every directory the compiler names, plus /usr/lib as the conventional
+  # one. The box is ours and contains only what these rungs built, so writing
+  # to several of its directories costs nothing and removes an assumption.
+  say "    --- where this compiler looks ---"
+  $CC -print-search-dirs > /work/searchdirs.txt 2>&1 || true
+  sed 's/^/      /' /work/searchdirs.txt | head -20
+
+  crtdirs="$SYS/lib"
+  for d in $(tr -s ' :=' '\n' < /work/searchdirs.txt | grep '^/' | sort -u); do
+    case "$d" in */lib*|*/tcc*) crtdirs="$crtdirs $d" ;; esac
+  done
+  say "    installing crt into: $crtdirs"
+
   for c in crt1 crti crtn Scrt1 rcrt1; do
-    for d in "obj/crt/aarch64/$c.o" "obj/crt/$c.o"; do
-      [ -f "$d" ] && cp "$d" "$SYS/lib/" 2>/dev/null
+    for src in "obj/crt/aarch64/$c.o" "obj/crt/$c.o"; do
+      [ -f "$src" ] || continue
+      for d in $crtdirs; do
+        mkdir -p "$d" 2>/dev/null
+        cp "$src" "$d/" 2>/dev/null || true
+      done
     done
+  done
+  # libc.a goes beside them, so -lc resolves wherever the crt files were found.
+  for d in $crtdirs; do
+    [ -f "$SYS/lib/libc.a" ] && cp "$SYS/lib/libc.a" "$d/" 2>/dev/null || true
   done
   cp -a include/. "$SYS/include/" 2>/dev/null || true
   cp -a arch/aarch64/bits "$SYS/include/" 2>/dev/null || true
@@ -311,11 +348,36 @@ int main(int argc, char **argv)
     return 0;
 }
 EOF
-  if $CC $HOSTED -static -o r3.bin r3.c 2>r3.err && ./r3.bin >r3.out 2>&1; then
-    say "    $(cat r3.out)"; R3=ok
+  # TWO WAYS, AND THE DIFFERENCE BETWEEN THEM IS THE DIAGNOSIS.
+  #
+  #   plain     what autoconf will do -- `$CC prog.c -o prog`, nothing else.
+  #   explicit  crt files named on the command line, -nostdlib, libc by path.
+  #
+  # If plain fails and explicit works, the libc is fine and the compiler simply
+  # cannot FIND it -- which still sinks every rung above, because configure
+  # runs hundreds of conftest cycles and will not pass paths for us. If both
+  # fail, the libc itself is wrong. Those are different problems and the last
+  # two runs could not tell them apart.
+  if $CC -static -o r3.bin r3.c 2>r3.err && ./r3.bin >r3.out 2>&1; then
+    say "    plain:    $(cat r3.out)"; R3=ok
   else
-    R3=FAIL; say "    FAILED -- if rung 2 passed, this is the frontier"
-    grep -av '^[A-Z][0-9]*$' r3.err | head -15 | sed 's/^/      /'
+    say "    plain:    FAILED"
+    grep -av '^[A-Z][0-9]*$' r3.err | head -8 | sed 's/^/      /'
+    if $CC $HOSTED -nostdlib -static -o r3e.bin \
+         "$SYS/lib/crt1.o" "$SYS/lib/crti.o" r3.c -lc "$TCCDIR/libtcc1.a" \
+         "$SYS/lib/crtn.o" 2>r3e.err && ./r3e.bin >r3e.out 2>&1; then
+      R3=FAIL
+      say "    explicit: $(cat r3e.out)"
+      say ""
+      say "    THE LIBC IS GOOD AND THE COMPILER CANNOT FIND IT. That is a"
+      say "    search-path problem, not a codegen one -- but it still stops"
+      say "    every rung above, because autoconf will not pass paths."
+      say "    Compare the crt install above against -print-search-dirs."
+    else
+      R3=FAIL
+      say "    explicit: ALSO FAILED -- the libc itself is wrong"
+      grep -av '^[A-Z][0-9]*$' r3e.err | head -12 | sed 's/^/      /'
+    fi
   fi
 fi
 
