@@ -613,6 +613,41 @@ cfg_try() {
         say "    $_lbl: configured NATIVE (-static was enough)"
         return 0
     fi
+    # NO ld IN THE BOX, AND THAT IS AN ORDERING PROBLEM, NOT A FLAG.
+    #
+    #     checking for non-GNU ld... no
+    #     configure: error: no acceptable ld found in $PATH
+    #
+    # binutils is rung 4 and make is rung 3.5, so there is no ld yet. tcc does
+    # not need one -- it has an internal linker, which is how rungs 0-3 linked
+    # anything at all -- but autoconf's AC_LIB_PROG_LD (pulled in by gettext
+    # even under --disable-nls) searches for one independently of whether the
+    # compiler wants it.
+    #
+    # AC_LIB_PROG_LD TAKES $LD IF IT IS SET and skips the search. Pointing LD
+    # at the compiler is honest here: tcc IS the linker in this box, and the
+    # build never invokes $LD directly -- it links through $CC, which links
+    # internally. This is the same shape as tcc -ar standing in for binutils'
+    # ar at rung 2.
+    #
+    # If that is not enough, live-bootstrap's answer is to not run make's
+    # configure at all: steps/make-3.82/pass1.kaem compiles make directly from
+    # a flat command list, precisely because configure asks for things that do
+    # not exist yet. That is the fallback if LD= does not carry it.
+    if grep -q "no acceptable ld found" cfg.log 2>/dev/null; then
+        say "    $_lbl: configure wants an ld and rung 4 has not built one yet"
+        say "    retrying with LD pointed at the compiler (tcc links internally)"
+        say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./configure $* CC=\"$CCAUTO\" LD=\"$CC_BIN\""
+        ./configure "$@" CC="$CCAUTO" LD="$CC_BIN" > cfg.log 2>&1
+        _cfgrc=$?
+        say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_cfgrc)"
+        if [ "$_cfgrc" = 0 ]; then
+            say "    $_lbl: configured with LD=$CC_BIN"
+            return 0
+        fi
+        say "    still failing after LD= -- tail:"
+        tail -12 cfg.log 2>/dev/null | sed 's/^/      /'
+    fi
     if grep -q "cannot run C compiled programs" cfg.log 2>/dev/null; then
         say "    $_lbl: native configure cannot run its tests -- retrying the LFS way"
         say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./configure --build=$BUILDTRIP --host=$HOSTTRIP $* CC=\"$CCAUTO\""
@@ -791,7 +826,26 @@ if [ "$R3" = ok ]; then
   cd "$_got" 2>/dev/null || { say "    cannot enter $_got"; R35=FAIL; }
   fi
   if [ "$R35" != FAIL ]; then
-  if cfg_try "make" --prefix="$PFX" --disable-nls; then _crc=0; else _crc=1; R35=FAIL; fi
+  # IF THIS VERSION'S CONFIGURE WILL NOT GO, TRY THE OTHER ONE. 4.4 and 3.82
+  # are twelve years apart and do not ask autoconf for the same things; there
+  # is no reason to give up on make because one of them wanted an ld.
+  if cfg_try "make $_got" --prefix="$PFX" --disable-nls; then
+    _crc=0
+  else
+    _crc=1
+    _other=$MAKE_VER
+    [ "$_got" = "make-$MAKE_VER" ] && _other=$MAKE_ALT
+    say "    --- $_got would not configure; trying make-$_other ---"
+    cd /work/src
+    if untar "/in/make-$_other"; then
+      _got2=$(onedir "make-$_other ./make-$_other")
+      if [ -n "$_got2" ] && cd "$_got2"; then
+        _got=$_got2
+        if cfg_try "make $_got" --prefix="$PFX" --disable-nls; then _crc=0; fi
+      fi
+    fi
+  fi
+  [ "$_crc" = 0 ] || R35=FAIL
 
   say "    --- $_got after configure ---"
   ls -la . 2>/dev/null | sed 's/^/      /' | head -20
