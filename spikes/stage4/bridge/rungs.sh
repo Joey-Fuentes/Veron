@@ -1005,11 +1005,32 @@ if [ "$R35" = ok ]; then
 #!/bin/sh
 # tcc -ar standing in for binutils ar until rung 4 builds a real one.
 #
-# libtool calls `ar cru`, `ar cq`, `ar cr`; tcc -ar accepts `rcs` and prints
-# usage for anything else. Every creation mode means the same thing here --
-# replace members, create if absent, write an index -- so they all map to rcs.
-# Extraction modes are NOT translated: tcc cannot do them, and doing something
-# else quietly would corrupt a build rather than stop it.
+# TWO THINGS tcc -ar DOES NOT DO, AND BOTH BIT.
+#
+# 1. IT DOES NOT UNDERSTAND libtool's FLAGS. libtool calls `ar cru`, `ar cq`,
+#    `ar cr`; tcc -ar accepts `rcs` and prints usage for anything else. Every
+#    creation mode means the same thing here -- replace members, create if
+#    absent, write an index -- so they all map to rcs. Extraction modes are NOT
+#    translated: tcc cannot do them and doing something else quietly would
+#    corrupt a build rather than stop it.
+#
+# 2. IT CREATES RATHER THAN APPENDS, which is the one that cost a run. libtool
+#    builds a large archive with REPEATED ar calls -- a batch of objects at a
+#    time -- and real ar's `r` replaces-or-appends into the existing archive.
+#    tcc -ar rewrites it from just the objects on that command line, so every
+#    batch but the last is silently discarded:
+#
+#        libbfd.a  823842 bytes, members: elf64-gen.o elf32-gen.o plugin.o
+#                  cpu-aarch64.o cpu-arm.o        <- the TAIL of bfd's objects
+#        minimal link against it: undefined symbol 'bfd_init'
+#
+#    The archive had a valid header and a symbol index, so it looked fine.
+#    It was simply missing nearly all of its members.
+#
+#    So this keeps a sidecar list per archive and rebuilds from the full
+#    accumulated set each time. Order is preserved and duplicates collapse,
+#    which is what `r` means. The objects are still on disk in the build tree,
+#    so re-reading them costs time and nothing else.
 _flags=$1
 case "$_flags" in
   -*) _flags=${_flags#-} ;;
@@ -1020,7 +1041,25 @@ case "$_flags" in
       exit 1 ;;
 esac
 shift
-exec CCBIN -ar rcs "$@"
+
+_out=$1; shift
+_lst="$_out.tcc-ar-members"
+
+# Accumulate. A member named twice keeps its first position, which is `r`.
+for _o in "$@"; do
+    grep -qxF -- "$_o" "$_lst" 2>/dev/null || printf '%s\n' "$_o" >> "$_lst"
+done
+
+# Drop anything that has since disappeared, or the rebuild fails on a stale
+# entry rather than on anything the caller did.
+: > "$_lst.live"
+while IFS= read -r _o; do
+    [ -f "$_o" ] && printf '%s\n' "$_o" >> "$_lst.live"
+done < "$_lst"
+mv "$_lst.live" "$_lst"
+
+set -- $(cat "$_lst")
+exec CCBIN -ar rcs "$_out" "$@"
 ARSHIM
   sed -i "s|CCBIN|$CC_BIN|" "$PFX/bin/tcc-ar"
   printf '#!/bin/sh\nexit 0\n' > "$PFX/bin/tcc-ranlib"
@@ -1042,7 +1081,19 @@ ARSHIM
         printf '      tcc-ar %-4s -> FAIL %s\n' "$_f" "$(head -1 /tmp/ar.err)"
       fi
     done
-    rm -f as.c as.o as.a )
+    # AND THAT REPEATED CALLS ACCUMULATE, which is how libtool builds a large
+    # archive and is what silently truncated libbfd.a to its last five members.
+    rm -f as.a as.a.tcc-ar-members
+    printf 'int p2(void){return 2;}\n' > as2.c; $CC -c -o as2.o as2.c 2>/dev/null
+    "$AR" cru as.a as.o  >/dev/null 2>&1
+    "$AR" cru as.a as2.o >/dev/null 2>&1
+    _n=$(grep -c . as.a.tcc-ar-members 2>/dev/null || echo 0)
+    if [ "$_n" = 2 ]; then
+      say "      two ar calls -> $_n members accumulated  ok"
+    else
+      say "      two ar calls -> $_n members  EXPECTED 2 -- archives will truncate"
+    fi
+    rm -f as.c as.o as2.c as2.o as.a as.a.tcc-ar-members )
   say "    AR=$AR  RANLIB=$RANLIB"
 
   _busrc="../$(cd .. && onedir 'binutils-* ./binutils-*')"
