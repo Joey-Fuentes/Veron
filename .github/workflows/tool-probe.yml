@@ -32,6 +32,11 @@ name: tool-probe
 
 on:
   workflow_dispatch:
+    inputs:
+      pkg:
+        description: 'which package to build hermetically (perl, Python, m4, bison, flex, bc)'
+        required: false
+        default: 'perl' 
 
 env:
   PERL_VER: '5.42.0'
@@ -263,6 +268,149 @@ jobs:
             tail -20 b.log | sed 's/^/    /'
           fi
 
+      # AND NOW BUILD ONE, PROPERLY, IN A SEALED BOX.
+      #
+      # Everything above ran on the bare runner with host /usr present, because
+      # the question was "what does this configure ASK for" and that answers in
+      # minutes. It cannot answer "does this BUILD" -- musl instead of glibc,
+      # busybox ash instead of bash, no /usr at all. Those are the failures that
+      # have cost the most, and they only appear inside the box.
+      #
+      # So the same job does both. The probe narrows it to a tool list in two
+      # minutes; this proves one package against the real constraints while that
+      # list is still on screen. PKG picks which -- perl by default, because it
+      # is the one blocking the reference job.
+      #
+      # THE BOX IS THE REFERENCE JOB's BOX, minus the toolchain: our busybox
+      # from the step above, a gcc, and nothing else. Not the same thing as the
+      # reference arm -- that gcc is the host's, and this proves the PACKAGE,
+      # not the chain. What it catches is exactly the class the fast probe
+      # cannot: a configure that passes and a build that does not.
+      - name: 'HERMETIC: build the package for real, in a box with only busybox'
+        run: |
+          set -eu
+          PKG="${{ github.event.inputs.pkg }}"
+          [ -n "$PKG" ] || PKG=perl
+          echo "  building: $PKG"
+          BOX="$PWD/pbox"
+          rm -rf "$BOX"
+          mkdir -p "$BOX"/bin "$BOX"/lib "$BOX"/work "$BOX"/tmp "$BOX"/proc "$BOX"/dev "$BOX"/usr
+
+          # OUR busybox, the one built above -- not Ubuntu's. That is the point
+          # of having built it: the applet list is now something we declared.
+          cp src/bb/busybox "$BOX/bin/busybox"
+          for a in $("$BOX/bin/busybox" --list); do
+            [ "$a" = busybox ] && continue
+            ln -sf busybox "$BOX/bin/$a"
+          done
+          echo "  applets in the box: $(find "$BOX/bin" -type l | wc -l)"
+
+          # A compiler and the libc it needs. This is the HOST's gcc -- the
+          # question here is whether the PACKAGE builds under busybox, not
+          # whether our chain can build it. Say so rather than let the sealed
+          # box imply more than it proves.
+          for t in gcc cpp as ld ar ranlib nm strip objcopy make; do
+            p=$(command -v "$t" 2>/dev/null) || continue
+            cp -L "$p" "$BOX/bin/$t"
+          done
+          mkdir -p "$BOX"/usr/lib "$BOX"/usr/libexec
+          cp -a /usr/include "$BOX/usr/" 2>/dev/null || true
+          cp -a /usr/lib/gcc "$BOX/usr/lib/" 2>/dev/null || true
+          cp -a /usr/libexec/gcc "$BOX/usr/libexec/" 2>/dev/null || true
+          cp -a /usr/lib/aarch64-linux-gnu "$BOX/usr/lib/" 2>/dev/null || true
+          for b in "$BOX"/bin/*; do
+            [ -f "$b" ] || continue
+            ldd "$b" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}'
+          done | sort -u | while read -r l; do
+            [ -f "$l" ] && cp -L "$l" "$BOX/lib/" 2>/dev/null || true
+          done
+          cp -a "$BOX"/lib/. "$BOX"/usr/lib/ 2>/dev/null || true
+
+          # WHAT IS IN THE BOX, ENUMERATED. Same discipline as the reference
+          # job's SEAL: a list, not an assumption.
+          echo "  --- real executables in the box ---"
+          find "$BOX/bin" -type f -printf '    %f\n' | sort
+          echo "  no /usr/bin: $( [ -d "$BOX/usr/bin" ] && echo FALSE || echo true )"
+
+          # The package source, already unpacked by the probe step.
+          d=$(ls -d src/$PKG* 2>/dev/null | grep -v tar | head -1)
+          if [ -z "$d" ]; then echo "  no unpacked $PKG in src/"; exit 0; fi
+          cp -a "$d" "$BOX/work/pkg"
+          # Anything the probe's configure left behind would be configured for
+          # the runner, not the box.
+          ( cd "$BOX/work/pkg" && rm -rf UU config.log config.status Makefile 2>/dev/null || true )
+
+          cat > "$BOX/work/build.sh" <<'INBOX'
+          #!/bin/sh
+          set -u
+          cd /work/pkg
+          echo "  shell: $(readlink /bin/sh 2>/dev/null || echo busybox ash)"
+          echo "  cc:    $(cc --version 2>&1 | head -1 || gcc --version 2>&1 | head -1)"
+          echo
+          if [ -x ./Configure ]; then
+            echo "  === ./Configure -des (perl is not autoconf) ==="
+            ./Configure -des -Dprefix=/work/out -Dcc=gcc > c.log 2>&1
+            rc=$?
+          else
+            echo "  === ./configure ==="
+            ./configure --prefix=/work/out > c.log 2>&1
+            rc=$?
+          fi
+          echo "  configure rc=$rc"
+          if [ "$rc" != 0 ]; then
+            echo "  --- what it could not find ---"
+            grep -aiE "not found|no acceptable|my life depends|missing|cannot" c.log \
+              | sort -u | head -15 | sed 's/^/    /'
+            echo "  --- tail ---"
+            tail -20 c.log | sed 's/^/    /'
+            exit 1
+          fi
+          echo
+          echo "  === make ==="
+          make -j"$(nproc 2>/dev/null || echo 2)" > b.log 2>&1
+          rc=$?
+          echo "  make rc=$rc"
+          if [ "$rc" != 0 ]; then
+            echo "  --- errors ---"
+            grep -aiE "not found|error:|Error [0-9]" b.log | head -15 | sed 's/^/    /'
+            echo "  --- tail ---"
+            tail -20 b.log | sed 's/^/    /'
+            exit 1
+          fi
+          echo
+          echo "  === make install, then RUN IT ==="
+          make install > i.log 2>&1
+          echo "  install rc=$?"
+          # BUILT IS NOT WORKING. The reference job learned this three times --
+          # a rung reporting ok because a file existed, while the binary could
+          # not execute. Run the thing.
+          for b in /work/out/bin/*; do
+            [ -x "$b" ] || continue
+            echo "  $(basename "$b"): $("$b" --version 2>&1 | head -1)"
+            break
+          done
+          if [ -x /work/out/bin/perl ]; then
+            /work/out/bin/perl -e 'print "  perl runs: 2+2=", 2+2, "\n"' 2>&1
+          fi
+          if [ -x /work/out/bin/python3 ]; then
+            /work/out/bin/python3 -c 'print("  python runs: 2+2=", 2+2)' 2>&1
+          fi
+          INBOX
+          sed -i 's/^          //' "$BOX/work/build.sh"
+          chmod 0755 "$BOX/work/build.sh"
+
+          echo
+          echo "  === IN THE BOX ==="
+          set +e
+          bwrap --unshare-all --die-with-parent \
+            --setenv PATH /bin --setenv HOME /work --setenv LC_ALL POSIX \
+            --bind "$BOX" / \
+            --proc /proc --dev /dev --tmpfs /tmp \
+            --chdir /work \
+            /bin/sh /work/build.sh
+          echo "  in-box rc=$?"
+          set -e
+
       - name: Verdict
         if: always()
         run: |
@@ -279,3 +427,13 @@ jobs:
           echo "     chain's own gcc. Cheaper per tool, worse if the list is long."
           echo
           echo "  The list decides. Two tools: write them. Ten: build busybox."
+          echo
+          echo "  AND THE TWO HALVES ANSWER DIFFERENT QUESTIONS:"
+          echo "    the probe   -- what does configure ASK for   (minutes, dirty)"
+          echo "    the box     -- does it actually BUILD        (sealed, one package)"
+          echo
+          echo "  A clean probe and a failed box is the interesting case: the"
+          echo "  tools were all present and something else -- ash instead of"
+          echo "  bash, a missing header, a shell builtin that is not -- is what"
+          echo "  stopped it. That is the class the reference job keeps hitting"
+          echo "  ninety minutes in, and it costs two minutes here."
