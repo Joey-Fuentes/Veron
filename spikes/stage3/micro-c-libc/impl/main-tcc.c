@@ -1,4 +1,24 @@
-/* THE REAL main FOR A micro-c-BUILT tcc.
+/* SUPERSEDED. mc-tcc IS NOW BUILT FROM tcc.c -- tcc's OWN main.
+ *
+ * EXPERIMENT-zzzf taught micro-c the one declaration that stood in the way,
+ * `static const ArHdr arhdr_init` at tcctools.c:60, so nothing needs this
+ * file any more. It is kept because it is the smallest thing that drives
+ * libtcc, which makes it useful for bisecting a fault to "the compiler" or
+ * "the driver" -- but it is NOT what ships.
+ *
+ * IT TAKES ONE INPUT FILE AND NOW SAYS SO. `input` is a single pointer and
+ * each argument overwrote the last, so passing two files silently compiled
+ * only one. stage3-hermetic-arm64 step 11 passes a test and a crt, which made
+ * it compile the crt alone and report
+ *
+ *     tcc: error: undefined symbol 'main'
+ *
+ * -- a true message about an invalid test, recorded as a stage-3 failure for
+ * several rounds. A tool that cannot do a thing must refuse it, not do
+ * something else quietly. See MICRO-C.md, "A note on reading these tools".
+ *
+ * ---------------------------------------------------------------------------
+ * THE REAL main FOR A micro-c-BUILT tcc.
  *
  * Everything before this used a probe main that called one function and
  * exited. This is tcc's actual entry point: parse argv, compile, write output.
@@ -136,6 +156,14 @@ int main(int argc, char** argv)
         }
         else
         {
+            /* ARITY, ENFORCED. See the header: silently keeping the last
+             * file is how an invalid test came to look like a compiler bug. */
+            if(0 != input)
+            {
+                puts("mc-tcc: this driver takes ONE input file.");
+                puts("mc-tcc: build from tcc.c for the real driver -- see local-tcc.sh.");
+                return 1;
+            }
             input = argv[i];
         }
         i = i + 1;

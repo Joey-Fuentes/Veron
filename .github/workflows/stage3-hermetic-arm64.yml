@@ -1047,7 +1047,7 @@ jobs:
             ( cd /in/tcc-src && /work/micro-c $MCFLAGS --expand-includes \
                 -D ONE_SOURCE=1 -D TCC_TARGET_LINUX=1 \
                 -D CONFIG_TCC_STATIC=1 -I . -I "$L" -I "$M" \
-                -f libtcc.c -o /work/libtcc.M1 ) 2>/work/libtcc.err
+                -f tcc.c -o /work/libtcc.M1 ) 2>/work/libtcc.err
             rc=$?
             set -e
             if [ "$rc" = 0 ] && [ -s libtcc.M1 ]; then
@@ -1069,12 +1069,11 @@ jobs:
             r1=$?
             ./micro-c $MCFLAGS -I "$L" -f "$L/impl/runtime.c"       -o runtime.M1 2>/dev/null; r2=$?
             ./micro-c $MCFLAGS -f "$L/impl/setjmp-aarch64.c"        -o setjmp.M1  2>/dev/null; r3=$?
-            ./micro-c $MCFLAGS -f "$L/impl/main-tcc.c"              -o maintcc.M1 2>/dev/null; r4=$?
             set -e
-            if [ "$r1$r2$r3$r4" = 0000 ]; then
+            if [ "$r1$r2$r3" = 000 ]; then
               echo "    runtime: m2libc $(grep -c '^:FUNCTION_' m2libc.M1), runtime $(grep -c '^:FUNCTION_' runtime.M1)"
             else
-              echo "    runtime did not compile (rc: $r1 $r2 $r3 $r4)"
+              echo "    runtime did not compile (rc: $r1 $r2 $r3)"
               s3ok=no
             fi
           fi
@@ -1084,12 +1083,23 @@ jobs:
             # string sections, so a function can land on an address that is not a
             # multiple of four and every call to it is SIGBUS on aarch64. This is
             # not an optimisation; without it nothing runs.
-            : > tcc.code; : > tcc.strs
-            for f in libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1 maintcc.M1; do
-              sed '/^# Program strings$/,$d'   "$f" >> tcc.code
+            : > tcc.code; : > tcc.glob; : > tcc.strs
+            # THREE SECTIONS, NOT TWO. micro-c emits "# Core program", then
+            # "# Program global variables", then "# Program strings". Splitting
+            # only at the strings marker leaves each unit's GLOBALS glued to its
+            # code, and a global holding a string is arbitrary-length data
+            # between one unit's code and the next unit's functions. That was
+            # harmless while libtcc.M1's globals happened to total a multiple of
+            # four; tcc.c adds
+            #     :GLOBAL_STORAGE_version "tcc version 0.9.28rc (AArch64 Linux)"
+            # and every function after it lands misaligned. SIGBUS before main.
+            for f in libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1; do
+              sed '/^# Program global variables$/,$d' "$f" >> tcc.code
+              sed -n '/^# Program global variables$/,/^# Program strings$/p' "$f" \
+                | sed '/^# Program strings$/d' >> tcc.glob
               sed -n '/^# Program strings$/,$p' "$f" >> tcc.strs
             done
-            cat tcc.code tcc.strs > tcc-all.M1
+            cat tcc.code tcc.glob tcc.strs > tcc-all.M1
             A=/in/m2libc-veron/aarch64
             # SAY WHAT IS BEING FED IN, BEFORE GUESSING WHY IT FAILED.
             #
@@ -1107,7 +1117,7 @@ jobs:
             done
             echo "      DEFINE ret present: $(grep -c '^DEFINE ret ' "$A/aarch64_defs.M1" 2>/dev/null || echo 0)"
             echo "      per-part line counts, in join order:"
-            for f in libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1 maintcc.M1; do
+            for f in libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1; do
               printf '        %-14s %8s lines  strings-marker: %s\n' "$f" \
                 "$(wc -l < "$f")" "$(grep -c '^# Program strings$' "$f")"
             done

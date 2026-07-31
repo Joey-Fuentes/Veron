@@ -16,11 +16,18 @@
 # ---------------------------------------------------------------------------
 # THE TWO THINGS THAT ARE NOT OBVIOUS
 #
-# CODE BEFORE STRINGS. Concatenating compilation units naively interleaves
-# their string sections, so a function can land on an address that is not a
-# multiple of four and every call to it is SIGBUS on aarch64. join() below
-# splits each unit at its "# Program strings" line and emits all the code
-# first. This is not an optimisation; without it nothing runs.
+# CODE BEFORE GLOBALS BEFORE STRINGS. Concatenating compilation units naively
+# interleaves their data sections, so a function can land on an address that is
+# not a multiple of four and every call to it is SIGBUS on aarch64.
+#
+# THREE SECTIONS, NOT TWO. micro-c emits "# Core program", then
+# "# Program global variables", then "# Program strings". This split only at
+# the strings marker, which left each unit's GLOBALS glued to its code -- and a
+# global holding a string is arbitrary-length data sitting between one unit's
+# code and the next unit's functions. It happened to work while libtcc.M1's
+# globals came to a multiple of four; compiling tcc.c instead added
+#     :GLOBAL_STORAGE_version  "tcc version 0.9.28rc (AArch64 Linux)\n"
+# and every function after it was misaligned. SIGBUS before main.
 #
 # THE TABLES COME FROM THE PATCHED m2libc. Three aarch64 macros in the vendored
 # copy encode x16 as x8, which assembles and links and computes garbage. $M
@@ -114,11 +121,15 @@ fi
 # and the crt prefix came out as a bare /usr/lib -- no crt1.o there, so every
 # link failed. configure's --triplet cannot help: the text lands inside the
 # block that never runs.
-echo "== micro-c compiles libtcc.c (about 30 s, silent) =="
+# tcc.c, NOT libtcc.c. libtcc.c is the compiler without a driver -- no argv
+# parsing, no -E, no -ar, and only one input file. tcc.c adds main() and
+# tcctools.c, whose `static const ArHdr arhdr_init` was the single declaration
+# micro-c could not parse; EXPERIMENT-zzzf closed it. mc-tcc is now a whole tcc.
+echo "== micro-c compiles tcc.c (about 30 s, silent) =="
 ( cd tcc-work && "$MC" --architecture aarch64 --expand-includes --max-string 65536 \
     -D ONE_SOURCE=1 -D TCC_TARGET_LINUX=1 \
     -D CONFIG_TCC_STATIC=1 -I . -I "$L" -I "$M" \
-    -f libtcc.c -o ../libtcc.M1 )
+    -f tcc.c -o ../libtcc.M1 )
 # ASSERT THE COMPILE PRODUCED SOMETHING.
 #
 # micro-c reports a parse error and exits 0, so a failed compile left a
@@ -140,23 +151,25 @@ H="-f $M/stdarg.h -f $M/sys/types.h -f $M/stddef.h -f $M/signal.h -f $M/sys/utsn
     -f "$M/stdio.h" -f "$M/stdio.c" -f "$M/bootstrappable.c" -o m2libc.M1
 "$MC" --architecture aarch64 --max-string 65536 -I "$L" -f "$L/impl/runtime.c" -o runtime.M1
 "$MC" --architecture aarch64 --max-string 65536 -f "$L/impl/setjmp-aarch64.c" -o setjmp.M1
-"$MC" --architecture aarch64 --max-string 65536 -f "$L/impl/main-tcc.c" -o maintcc.M1
 echo "  m2libc $(grep -c '^:FUNCTION_' m2libc.M1), runtime $(grep -c '^:FUNCTION_' runtime.M1)"
 
 # --- link -------------------------------------------------------------------
 # CODE BEFORE STRINGS. See the header.
 join() {
     out="$1"; shift
-    : > "$out.code"; : > "$out.strs"
+    : > "$out.code"; : > "$out.glob"; : > "$out.strs"
     for f in "$@"; do
-        sed '/^# Program strings$/,$d'   "$f" >> "$out.code"
+        sed '/^# Program global variables$/,$d' "$f" >> "$out.code"
+        sed -n '/^# Program global variables$/,/^# Program strings$/p' "$f" \
+            | sed '/^# Program strings$/d' >> "$out.glob"
         sed -n '/^# Program strings$/,$p' "$f" >> "$out.strs"
     done
-    cat "$out.code" "$out.strs" > "$out"; rm -f "$out.code" "$out.strs"
+    cat "$out.code" "$out.glob" "$out.strs" > "$out"
+    rm -f "$out.code" "$out.glob" "$out.strs"
 }
 
 echo "== assemble and link =="
-join all.M1 libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1 maintcc.M1
+join all.M1 libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1
 "$WORK/mescc-bin/M1" -f "$D/aarch64_defs.M1" -f "$D/libc-full.M1" -f all.M1 \
     --little-endian --architecture aarch64 -o all.hex2
 "$WORK/mescc-bin/hex2" --architecture aarch64 --little-endian \

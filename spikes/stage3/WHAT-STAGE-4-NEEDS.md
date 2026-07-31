@@ -111,10 +111,11 @@ scaffolding we wrote.
 
 ## 4. The gap, in order
 
-**1. micro-c must compile `tcc.c`, so mc-tcc has tcc's real driver.**
-MEASURED: with the blocking initialiser stubbed *for measurement only*, the
-whole of `tcc.c` compiles — **707 functions against libtcc's 695**. So this is
-the *only* parse blocker in the entire front end. The blocker, `tcctools.c:60`:
+**1. ~~micro-c must compile `tcc.c`~~ — DONE.** EXPERIMENT-zzzf closed it and
+`tcc.c` compiles unmodified: **707 functions against libtcc's 695**. `mc-tcc
+--version` answers `tcc version 0.9.28rc (AArch64 Linux)`; `-E`, `-c`,
+`-print-search-dirs` and multiple input files all work. It was the only parse
+blocker in the entire front end. The blocker was `tcctools.c:60`:
 
 ```c
     static const ArHdr arhdr_init = {

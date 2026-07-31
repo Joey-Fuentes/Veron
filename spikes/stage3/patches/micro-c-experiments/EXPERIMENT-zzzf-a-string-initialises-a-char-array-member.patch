@@ -1,0 +1,145 @@
+A string literal initialises a char array member, laid out inline.
+
+THIS IS THE DECLARATION THAT KEPT mc-tcc FROM BEING A WHOLE tcc.
+
+    static const ArHdr arhdr_init = {
+        "/               ",        char ar_name[16]
+        "0           ",            char ar_date[12]
+        ...
+        ARFMAG                     char ar_fmag[2]   -- "`\n"
+        };                                              tcctools.c:60
+
+tcc.c includes tcctools.c, so this one declaration made tcc's own main()
+uncompilable, and mc-tcc carried a 175-line hand-written driver instead --
+`micro-c-libc/impl/main-tcc.c`, which knew -o -I -B -c and skipped every other
+argument, and held ONE input file in a single pointer that each argument
+overwrote.
+
+Measured, once it was closed: micro-c compiles tcc.c unmodified, 707 functions
+against libtcc's 695, and the linked binary answers
+
+    $ mc-tcc --version
+    tcc version 0.9.28rc (AArch64 Linux)
+
+with -E, -c, -print-search-dirs and MULTIPLE INPUT FILES all working, because
+they are tcc's code and always were. Two files in one invocation compile, link
+and run.
+
+WHY IT NEEDED NEW CODE. micro-c has a string path for globals, but only
+`if(type_is_pointer(type_size))` -- it emits a POINTER to storage elsewhere. A
+`char[16]` MEMBER cannot be that: the struct is memcpy'd into an archive header
+and written to a file, so the bytes belong at the member's own offset.
+
+EXACTLY member->size BYTES, AND NO NUL BY ASSUMPTION. ar_fmag is two bytes
+initialised from a two-character string, which C allows precisely because the
+terminator is dropped when it does not fit. Emitting the literal and letting M1
+append its own NUL would make the struct one byte long and every field after it
+wrong. Short strings pad with zeroes; long ones truncate. Case 104 checks all
+three shapes and checks the member AFTER a string member is still at its own
+offset, which is the thing a wrong byte count moves.
+
+ESCAPES ARE DECODED HERE. ARFMAG is a backtick and a NEWLINE: three characters
+of source, two bytes of data. Emitting the source text would put a backslash
+and an 'n' into every archive header. It reuses escape_lookup and
+amount_of_escaped_chars_to_skip -- the pair the string collector already uses --
+rather than a second copy of the rule, because "one rule, several
+implementations, and the copies disagree" is the class that has cost this spike
+more than every missing feature put together.
+
+IT CANNOT BE STUBBED, which is worth saying because it nearly was. The argument
+for stubbing `tcc -ar` was that stage 4 borrows binutils. That is true of the
+current borrow list and false of the goal: gcc needs an assembler and linker, so
+binutils must be built BY tcc, and building it means creating libbfd.a and
+libiberty.a before any ar exists. `tcc -ar` is the answer to that
+chicken-and-egg. And zeroing the initialiser does not degrade gracefully --
+ar_name is "/               " and ar_fmag is ARFMAG, both format-critical, so a
+zeroed struct writes INVALID archives rather than archives with poor metadata.
+
+Case 104. difftest aarch64 88/0 -> 89/0. The twelve end-to-end programs stay
+12/12, now compiled by a tcc with its own driver.
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -6120,6 +6120,65 @@
+ 	}
+ }
+ 
++/* A STRING LITERAL INITIALISING A char ARRAY MEMBER, LAID OUT INLINE.
++ *
++ * micro-c has a string path for globals, but only `if(type_is_pointer(...))`,
++ * where it emits a POINTER to storage elsewhere. A `char[16]` MEMBER cannot be
++ * that: the bytes belong at the member's own offset, because the struct is
++ * memcpy'd and written to a file and the layout has to be exact.
++ *
++ *     static const ArHdr arhdr_init = {
++ *         "/               ",        char ar_name[16]
++ *         "0           ",            char ar_date[12]
++ *         ...
++ *         ARFMAG                     char ar_fmag[2]   -- "`\n", NO room for NUL
++ *     };                                          tcctools.c:60
++ *
++ * That declaration is the only thing in tcc's whole front end micro-c could
++ * not parse, and it is why mc-tcc has a 175-line hand-written driver instead
++ * of tcc.c.
++ *
++ * EXACTLY member->size BYTES, NEVER A NUL BY ASSUMPTION. ar_fmag is two bytes
++ * initialised from a two-character string, which C allows precisely because
++ * the terminator is dropped when it does not fit. Emitting the string and
++ * letting M1 append its own NUL would make the struct one byte too long and
++ * every field after it wrong. Short strings pad with zeroes; long ones
++ * truncate, which is what C says.
++ *
++ * ESCAPES ARE DECODED HERE. ARFMAG is a backtick and a newline -- three
++ * characters of source, two bytes of data. Emitting the source text would put
++ * a backslash and an 'n' in the archive header. escape_lookup and
++ * amount_of_escaped_chars_to_skip are the same pair the string collector uses,
++ * so there is one answer to "what byte is this" rather than a second copy of
++ * the rule -- the class of bug this file has paid for nine times. */
++void global_member_string_output(struct type* member)
++{
++	char* p = global_token->s + 1;   /* past the opening quote */
++	int written = 0;
++	int ch;
++
++	while(0 != p[0])
++	{
++		if(written >= member->size) break;
++		ch = escape_lookup(p);
++		if('\\' == p[0])
++		{
++			p = p + amount_of_escaped_chars_to_skip(p);
++		}
++		p = p + 1;
++		global_value_output(ch, 1);
++		written = written + 1;
++	}
++
++	while(written < member->size)
++	{
++		global_value_output(0, 1);
++		written = written + 1;
++	}
++
++	require_extra_token();
++}
++
+ void global_struct_initializer_list(struct type* type_size)
+ {
+ 	require_match("Struct assignment initialization is invalid for globals.", "{");
+@@ -6166,7 +6225,16 @@
+ 			cursor = cursor + 1;
+ 		}
+ 
+-		global_value_selection(member->type);
++		/* An ARRAY member initialised by a STRING is laid out inline; every
++		 * other member goes through the ordinary value path. */
++		if(member->is_array && ('"' == global_token->s[0]))
++		{
++			global_member_string_output(member);
++		}
++		else
++		{
++			global_value_selection(member->type);
++		}
+ 		cursor = member->offset + member->size;
+ 
+ 		member = member->members;

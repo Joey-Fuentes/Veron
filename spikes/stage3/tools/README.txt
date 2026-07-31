@@ -2006,3 +2006,63 @@ removing the reset: it is load-bearing for the other eight sites.
 WORTH DOING ONCE, PROPERLY: a duplicate-label check on the joined .M1 as a
 build-time gate, comparing CONTENTS and failing only on a difference. That
 would have caught this the day it appeared instead of on a grep months later.
+
+--------------------------------------------------------------------------------
+mc-tcc IS A WHOLE tcc. tcctools.c:60 closed; the driver is tcc's own.
+--------------------------------------------------------------------------------
+
+    $ mc-tcc --version
+    tcc version 0.9.28rc (AArch64 Linux)
+
+micro-c compiles tcc.c UNMODIFIED -- 707 functions against libtcc's 695. -E,
+-c, -print-search-dirs and MULTIPLE INPUT FILES all work, because they are
+tcc's code and always were. Two files in one invocation compile, link and run.
+
+THE FEATURE. `static const ArHdr arhdr_init` initialises char ARRAY members
+from string literals, and the bytes belong at the member's own offset -- the
+struct is memcpy'd into an archive header and written to a file. micro-c's
+other string path emits a POINTER to storage elsewhere, which a member cannot
+be. ar_fmag decides the rule: two bytes from a two-character string, no room
+for a terminator, so the emitter writes exactly member->size bytes and never
+appends a NUL by assumption. ARFMAG is a backtick and a NEWLINE -- three source
+characters, two data bytes -- so escapes are decoded, reusing escape_lookup
+rather than adding a ninth copy of the rule.
+
+IT NEARLY GOT STUBBED, and the argument against is the one worth keeping: `tcc
+-ar` is on the critical path because gcc needs binutils, binutils must be built
+BY tcc, and building it means creating libbfd.a before any ar exists. Zeroing
+the initialiser does not degrade gracefully either -- ar_name and ar_fmag are
+format-critical, so a zeroed struct writes INVALID archives.
+
+A SECOND FAULT SURFACED ONLY WHEN tcc.c WAS LINKED, and it was latent in the
+shipping build. The .M1 join split TWO ways, at "# Program strings", leaving
+each unit's GLOBALS glued to its code. A global holding a string is
+arbitrary-length data sitting between one unit's code and the next unit's
+functions. Harmless while libtcc.M1's globals happened to total a multiple of
+four; fatal once tcc.c added
+
+    :GLOBAL_STORAGE_version  "tcc version 0.9.28rc (AArch64 Linux)\n"
+
+-- every function after it misaligned, SIGBUS before main. micro-c emits THREE
+sections ("# Core program", "# Program global variables", "# Program strings")
+and the join now honours all three. Fixed in local-tcc.sh AND in
+stage3-hermetic-arm64.yml, which had its own copy.
+
+STEP 11 WAS NEVER A VALID TEST. It passes a test file AND a crt; main-tcc.c
+held ONE pointer and each argument overwrote the last, so it compiled the crt
+alone and tcc correctly reported `undefined symbol 'main'`. A true message
+about an invalid test, recorded as a stage-3 capability failure for rounds.
+main-tcc.c is superseded, kept only for bisecting "compiler or driver", and it
+now REFUSES a second input instead of quietly using the last. A tool that
+cannot do a thing must say so.
+
+VERIFIED FROM A PRISTINE TREE at b1361a3 plus this overlay:
+
+    55 micro-c patches, 11 m2libc patches, all apply
+    difftest amd64   87/0        difftest aarch64  89/0
+    stage-2 corpus   419 (floor) twelve programs   12/12
+    local-tcc.sh     707 functions, 1,564,793 bytes, --version answers
+
+WHAT IS LEFT. realloc -- step 11 now fails on it honestly rather than on a
+harness defect, and it is 46 of 57 real failures across tcc's tests2. That is
+the whole of the remaining distance to a tcc that autoconf can drive.

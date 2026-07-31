@@ -949,39 +949,40 @@ not been run on this yet. Read the warnings in `tools/README.txt` first: four
 instrument bugs during the last hunt produced false negatives that were acted
 on, and three "ruled out" conclusions had to be retracted.
 
-### Multi-file input: NOT A COMPILER FAULT AT ALL
+### Multi-file input: CLOSED, and it was never a compiler fault
 
-An earlier draft of this section called multiple translation units the open
-frontier. It is not a fault in micro-c or in tcc. **mc-tcc is not tcc**: it is
-`libtcc.c` plus a 175-line hand-written driver, `micro-c-libc/impl/main-tcc.c`,
-which holds
+**mc-tcc is now built from `tcc.c` -- tcc's own `main`.** EXPERIMENT-zzzf taught
+micro-c the one declaration that stood in the way, `static const ArHdr
+arhdr_init` at tcctools.c:60, and tcc.c compiles unmodified: 707 functions
+against libtcc's 695.
 
-    char* input = 0;      ...      input = argv[i];
+```
+    $ mc-tcc --version
+    tcc version 0.9.28rc (AArch64 Linux)
+```
 
-one pointer, overwritten by each file. Two inputs means one is compiled and the
-other's symbols are absent -- which is exactly the `undefined symbol 'main'`
-the hermetic job reports at step 11. It is scaffolding we wrote, and it exists
-because micro-c cannot yet parse `tcctools.c:60`, a `static const` struct
-initialised with string members, so tcc's own `main` is unavailable.
+`-E`, `-c`, `-print-search-dirs` and **multiple input files** all work now,
+because they are tcc's code and always were. Two files in one invocation
+compile, link and run.
 
-Closing that parse gap removes the hand driver and with it `-E`, `-ar`,
-`-print-search-dirs`, `-l`, `-L`, multiple inputs and a correct `--version` in
-one step, because all of those are tcc's code and always were. See
-`WHAT-STAGE-4-NEEDS.md`, which measures the whole distance to the stage-4 join.
+What had looked like a codegen frontier was `micro-c-libc/impl/main-tcc.c`, a
+175-line driver of our own holding `char* input = 0;` -- one pointer, overwritten
+by each file. `stage3-hermetic-arm64` step 11 passes a test and a crt, so it
+compiled the crt alone and reported `undefined symbol 'main'`: a true message
+about an invalid test, recorded as a stage-3 failure for several rounds. That
+driver is superseded, kept only for bisecting "compiler or driver", and it now
+REFUSES a second input rather than silently keeping the last.
 
-Two further things that were wrong in that draft:
+**And a second fault surfaced only when tcc.c was linked.** The `.M1` join split
+two ways, at `# Program strings`, which left each unit's GLOBALS glued to its
+code. A global holding a string is arbitrary-length data between one unit's code
+and the next unit's functions -- harmless while libtcc.M1's globals happened to
+total a multiple of four, and fatal once tcc.c added
 
-* `tcc.c` and `libtcc.c` both `#define ONE_SOURCE 1`, so **self-compilation is
-  a single input file** -- which is what tcc's own test1/test2/test3 do
-  (`-run ../tcc.c`). Multi-file is needed to link `libtcc1.a` and the crt
-  objects, not to compile tcc.
-* Concatenating the two files makes the symptom change, not disappear, so it
-  was never the thing in the way.
+    :GLOBAL_STORAGE_version   "tcc version 0.9.28rc (AArch64 Linux)\n"
 
-And the emphasis was wrong in a third way: self-hosting was never the goal.
-Stage 3 owes stage 4 a tcc that **autoconf can drive** -- `rung1.sh` hands it
-to `./configure` for gmp, mpfr, mpc and then gcc 4.7.4. That is a driver
-requirement first and a codegen requirement second.
+Every function after it landed misaligned: SIGBUS before `main`. The join is
+three-way now, in `local-tcc.sh` and in the workflow. It was latent in both.
 
 ---
 
