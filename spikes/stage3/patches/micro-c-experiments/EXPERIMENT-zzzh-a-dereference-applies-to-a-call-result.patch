@@ -1,0 +1,303 @@
+A dereference applied to a call's result -- `*f(args)`.
+
+Three faults in one shape, all on the path tcc uses to write every byte of
+.eh_frame. Case 105 covers all three and was KNOWN GAP; it now passes on both
+architectures.
+
+    #define dwarf_data1(s,data) \
+        (*(uint8_t*)section_ptr_add((s), 1) = (data))     tccdbg.c:550
+
+1. THE PENDING `*` LANDED ON THE ARGUMENT.
+
+primary_expr_variable eats the stars and parks the count in
+num_dereference_after_postfix for the postfix walk to apply. For a function
+designator it then returns early --
+
+    int is_function = options & TLO_FUNCTION;
+    if(is_prefix_operator || is_postfix_operator || is_indexed_local_array
+       || is_function) return;
+
+-- without clearing the count. The argument list is parsed after that point and
+every argument is a full expression reading the same global, so `*give(8)`
+emitted
+
+    mov_rax, %8                  # primary expr number
+    movsx_rax,DWORD_PTR_[rax]    # dereferencing the literal 8 as an address
+    push_rax                     # function argument
+
+and the call's result was never dereferenced at all.
+
+The count belongs to the expression that parked it and never to a
+sub-expression, so function_call holds it across the argument list and clears
+the global for that region. It saves the CURRENT value rather than restoring a
+constant, which is what makes it safe on the paths that deliberately consume
+the count first -- see the `CONSUMED HERE` note in primary_expr_variable. Those
+arrive with 0 and leave with 0.
+
+EXPERIMENT-zzzg wrapped the whole call instead and went 12/12 -> 0/12. The
+region that must not see the count is the argument list alone.
+
+2. THE RETURN TYPE DID NOT REACH current_target.
+
+primary_expr has a fast path that calls function_call(variable, FALSE) with the
+symbol in hand, and function_call uses it to set current_target at the end.
+Under a leading `*` that path does not match -- it tests global_token->s, which
+is `*` -- so the call arrives through function_call(NULL, TRUE) with no symbol
+and the result kept the generic function_pointer type. The dereference then
+read at the WRONG WIDTH:
+
+    unsigned char* give(int);
+    *give(8)   ->  movsx_rax,DWORD_PTR_[rax]     four bytes, signed
+                   wanted movzx_rax,BYTE_PTR_[rax]
+
+That is a silent wrong VALUE rather than a fault, and it hides: the bytes after
+a correct one are usually zero, so the wrong-width load returns the right
+answer. Case 105 already guarded against this -- it sets buf[9] = 66 before
+reading buf[8] -- but the minimal probe written while chasing fault 1 did not,
+and it PASSED with fix 1 alone until 0xAA 0xBB 0xCC were written after the
+byte under test. Third time this series has recorded that trap, and the first
+where the case suite was already right and the throwaway probe was not.
+
+The designator is recorded ONLY when a '(' follows, so `p = give;` cannot park
+a symbol for a later indirect call to collect, and function_call takes it into
+a local before parsing arguments so a nested `*other(3)` cannot overwrite it.
+
+3. `*f(x) = v` LOADED THROUGH THE RETURNED POINTER.
+
+The assigning branch loads once to turn an lvalue into the address being stored
+through. That is right for a variable, where the register holds the address of
+the SLOT --
+
+    lea_rax,[r13-8]      address of the slot holding p
+    mov_rax,[rax]        p's VALUE, the destination
+
+-- and one step too far for a call, where the pointer is already in the
+register:
+
+    call_rax             rax = &buf[16]
+    mov_rax,[rax]        loads buf[16..23] and stores through THAT
+
+so `*give(16) = 99` wrote to whatever eight bytes sat at buf[16]. Only the
+first level is spared: `**f() = v` still has to load once to reach the inner
+pointer. Same rule as zzc, zzg, zzm and zzo -- an address applies to the last
+step of a chain, never to a step that still has to be followed.
+
+WHAT THIS DOES NOT DO, MEASURED RATHER THAN ASSUMED.
+
+It does not close the heap corruption. Over the tests2 00_assignment shape,
+swept across 24 filename lengths -- see tools/layout-sweep.sh, and the reason
+that is the right instrument is below -- realloc failures fall from 15/24 to
+8/24 and the compile still never succeeds. The corruption is confirmed to come
+from the .eh_frame path by toggling TCC_EH_FRAME, which takes realloc failures
+to 0/24 for this patch AND for the unpatched series; a second, independent
+SIGSEGV remains at every layout in both. Neither blocker is closed here.
+
+THE MEASUREMENT NOTE THAT MATTERS MORE THAN THE PATCH. Whether a given compile
+survives depends on the length of its own FILENAME:
+
+    a.c ab.c abc.c          rc=0    compiles
+    abcd.c ... abcdefgh.c   rc=1    realloc: pointer was never returned
+
+Identical bytes, identical binary. The filename is stored on the heap, so its
+length shifts every later allocation and decides whether the stray write lands
+on a live allocator node. A single compile is therefore one sample from a
+distribution, and bisecting the INPUT finds filename lengths rather than
+language constructs. Two conclusions drawn during this work were withdrawn for
+exactly that reason.
+
+GATES: difftest 89 pass / 0 fail on aarch64 and 87 / 0 on amd64 with case 105
+closed, the stage-2 corpus unchanged at 419/426, and the twelve end-to-end
+programs still 12/12 -- which is the one gate that compiles tcc, and the one
+zzzg broke.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -30,6 +30,21 @@
+ /* Core lists for this file */
+ struct token_list* function;
+ 
++/* A PENDING `*`, PARKED BETWEEN THE STARS AND THE POSTFIX WALK.
++ * Defined here rather than beside primary_expr_variable because function_call
++ * -- which is earlier in the file -- has to clear it across an argument list.
++ * See the note there. */
++int num_dereference_after_postfix;
++
++/* THE FUNCTION DESIGNATOR OF A CALL THAT IS ABOUT TO HAPPEN, when the call
++ * could not go through primary_expr's direct fast path. Consumed and cleared
++ * by function_call. See the notes at both ends. */
++struct token_list* pending_function_designator;
++
++/* THE REGISTER HOLDS A CALL'S RESULT -- a VALUE, not the address of a storage
++ * slot. Set by function_call, consumed and cleared by postfix_expr. */
++int last_expr_was_call;
++
+ /* What we are currently working on */
+ struct type* current_target;
+ char* break_target_head;
+@@ -516,6 +531,46 @@
+ 
+ 	emit_move(REGISTER_TEMP, REGISTER_STACK, "Copy new base pointer");
+ 
++	/* AN ARGUMENT LIST IS A SEPARATE EXPRESSION CONTEXT.
++	 *
++	 * A pending `*` is parked in num_dereference_after_postfix when the stars
++	 * are eaten, for the postfix walk to apply once the chain is resolved. The
++	 * argument list is parsed BETWEEN those two points, and every argument is
++	 * a full expression that reads the same global -- so in `*give(8)` the
++	 * star landed on the literal 8:
++	 *
++	 *     mov_rax, %8                  # primary expr number
++	 *     movsx_rax,DWORD_PTR_[rax]    # dereferencing 8 as an address
++	 *     push_rax                     # function argument
++	 *
++	 * and the call's result was never dereferenced at all. tcc writes every
++	 * byte of .eh_frame through this shape -- tccdbg.c:550,
++	 * `*(uint8_t*)section_ptr_add((s), 1) = (data)`. In a small program the
++	 * bogus address is unmapped and it segfaults; inside tcc it is usually
++	 * MAPPED, so the write silently lands on the wrong memory, an allocator
++	 * node's `next` is overwritten, and the damage surfaces much later as
++	 * "realloc: pointer was never returned by malloc".
++	 *
++	 * The count belongs to the expression that parked it, never to a
++	 * sub-expression, so it is held here and the global is cleared for the
++	 * duration of the list. Saving the CURRENT value rather than restoring a
++	 * constant is what makes this safe on the paths that deliberately consume
++	 * the count before reaching a call -- see the `CONSUMED HERE` note in
++	 * primary_expr_variable. Those arrive with 0 and leave with 0.
++	 *
++	 * EXPERIMENT-zzzg restored it around the whole call instead and regressed
++	 * mc-tcc from 12/12 to 0/12; the boundary that works is the argument list
++	 * alone, which is the only region that must not see the count. */
++	int pending_deref = num_dereference_after_postfix;
++	num_dereference_after_postfix = 0;
++
++	/* TAKEN INTO A LOCAL BEFORE THE ARGUMENTS ARE PARSED. An argument may be
++	 * `*other(3)`, which parks its own designator through the same global, so
++	 * reading it after the list would take the innermost call's return type
++	 * for the outermost call's result. */
++	struct token_list* designator = pending_function_designator;
++	pending_function_designator = NULL;
++
+ 	int passed = 0;
+ 	while(global_token->s[0] != ')')
+ 	{
+@@ -530,6 +585,8 @@
+ 		}
+ 	}
+ 
++	num_dereference_after_postfix = pending_deref;
++
+ 	require_match("ERROR in process_expression_list\nNo ) was found\n", ")");
+ 
+ 	if(ARMV7L == Architecture)
+@@ -635,6 +692,18 @@
+ 			current_target = s->type;
+ 		}
+ 	}
++	else if(NULL != designator)
++	{
++		/* THE SAME RULE FOR THE INDIRECT PATH. Reached when a leading `*` sent
++		 * the call through primary_expr_variable rather than primary_expr's
++		 * direct fast path, so there was no symbol to pass. */
++		if(NULL != designator->type)
++		{
++			current_target = designator->type;
++		}
++	}
++
++	last_expr_was_call = TRUE;
+ }
+ 
+ char* load_value_signed(unsigned size)
+@@ -1108,6 +1177,35 @@
+ 	variable = sym_lookup(s, global_function_list);
+ 	if(NULL != variable)
+ 	{
++		/* REMEMBER THE DESIGNATOR IF A CALL FOLLOWS, so the result can carry
++		 * the RETURN type.
++		 *
++		 * primary_expr has a fast path that calls function_call(variable,
++		 * FALSE) with the symbol in hand, and function_call uses it to set
++		 * current_target at the end. Under a leading `*` that path does not
++		 * match -- it tests global_token->s, which is `*` -- so the call
++		 * arrives here instead and goes out through function_call(NULL, TRUE)
++		 * with no symbol at all. The result then kept the generic
++		 * function_pointer type set below, and the dereference that follows
++		 * read at the WRONG WIDTH:
++		 *
++		 *     unsigned char* give(int);
++		 *     *give(8)      ->  movsx_rax,DWORD_PTR_[rax]    four bytes, signed
++		 *                       wanted movzx_rax,BYTE_PTR_[rax]
++		 *
++		 * That is a silent wrong VALUE, not a fault, and it hides: the four
++		 * bytes after a correct one are usually zero, so the wrong load
++		 * returns the right answer and a case built from that form certifies
++		 * a broken compiler.
++		 *
++		 * ONLY WHEN A '(' FOLLOWS. The name has already been consumed, so
++		 * global_token is the token after it. Without this guard a designator
++		 * used as a VALUE -- `p = give;` -- would leave a symbol parked here
++		 * for whatever indirect call came next to pick up. */
++		if(NULL != global_token)
++		{
++			if(global_token->s[0] == '(') pending_function_designator = variable;
++		}
+ 		emit_load_named_immediate(REGISTER_ZERO, "FUNCTION_", variable->s, "function load");
+ 		/* A FUNCTION DESIGNATOR USED AS A VALUE IS A FUNCTION POINTER. The
+ 		 * address was already being loaded here, but current_target was left
+@@ -1250,7 +1348,6 @@
+ 	require_match("Invalid token at end of __va_start, expected ')'", ")");
+ }
+ 
+-int num_dereference_after_postfix;
+ void primary_expr_variable(void)
+ {
+ 	/* THE TOKEN THIS UNARY EXPRESSION STARTS AT, remembered before the stars
+@@ -2948,6 +3045,35 @@
+ 	 * 2270 consume it, and `--*p` reaches neither. */
+ 	int assigning = match("=", global_token->s) || is_compound_assignment(global_token->s)
+ 	                || prefix_lvalue_target;
++
++	/* A CALL'S RESULT IS ALREADY THE POINTER; A VARIABLE'S SLOT IS NOT.
++	 *
++	 * The assigning branch below loads once to turn an lvalue into the address
++	 * being stored through. That is right for a variable, where the register
++	 * holds the address of the SLOT:
++	 *
++	 *     lea_rax,[r13-8]      address of the slot holding p
++	 *     mov_rax,[rax]        p's VALUE -- the destination
++	 *
++	 * and one step too far for a call, where `call` has already left the
++	 * returned pointer in the register:
++	 *
++	 *     call_rax             rax = &buf[16]
++	 *     mov_rax,[rax]        <-- loads buf[16..23] and stores through THAT
++	 *
++	 * so `*give(16) = 99` wrote 99 to whatever eight bytes happened to be at
++	 * buf[16]. tcc writes every byte of .eh_frame through exactly this shape,
++	 * `*(uint8_t*)section_ptr_add((s), 1) = (data)` at tccdbg.c:550.
++	 *
++	 * ONLY THE FIRST LEVEL IS SPARED. `**f() = v` still has to load once to
++	 * reach the inner pointer -- a call result starts the chain one step
++	 * further along, it does not shorten every step. Same rule as zzc, zzg,
++	 * zzm and zzo: an address applies to the last step of a chain, never to a
++	 * step that still has to be followed. */
++	int result_is_call = last_expr_was_call;
++	int outermost_deref = num_dereference_after_postfix;
++	last_expr_was_call = FALSE;
++
+ 	int fp_nd;
+ 	while(num_dereference_after_postfix > 0)
+ 	{
+@@ -2975,7 +3101,10 @@
+ 						 * had this guard all along. Without it `x = *p` for a
+ 						 * struct tried load_value(16):
+ 						 *     unsupported size 16 of type 'CType'   tccgen.c:895 */
+-						if(register_size >= current_target->size) emit_out(load_value(current_target->size, current_target->is_signed));
++						if(!(result_is_call && (outermost_deref == num_dereference_after_postfix)))
++						{
++							if(register_size >= current_target->size) emit_out(load_value(current_target->size, current_target->is_signed));
++						}
+ 				current_target = current_target->type;
+ 			}
+ 		}
