@@ -1,0 +1,281 @@
+# WHAT DO THE REMAINING PACKAGES ACTUALLY NEED? ASK THEM, DO NOT GUESS.
+#
+# rung 11.5 died on `split: not found` and then `comm: not found` -- two
+# applets Ubuntu's busybox-static was compiled without. Each cost a full
+# 20-minute round to discover, one at a time, and there are six more packages
+# above perl that have never been built here: python, bison, flex, m4, bc,
+# openssl, and the kernel's own scripts.
+#
+# Discovering those the same way is six more rounds. This job finds them all in
+# about two minutes, by running each package's OWN configure inside a box that
+# has exactly what the real box has -- and recording every command the shell
+# could not find.
+#
+# HOW IT WORKS. PATH is set to a directory of TRAPS: one tiny script per
+# candidate tool name, each of which logs itself and exits 127 like a missing
+# command. Nothing is actually built. What comes out is the set of external
+# programs each configure reached for, which is precisely the list the real box
+# needs to supply.
+#
+# WHY A TRAP RATHER THAN grep. A configure script decides what to invoke at
+# runtime -- `if test -z "$AWK"`, `case $host in`, `for ac_prog in gawk mawk
+# nawk awk` -- so reading the source tells you what it MIGHT use. Running it
+# tells you what it DID. perl's Configure is 30,000 lines of shell precisely
+# because it probes rather than declares.
+#
+# WHAT THIS DOES NOT ANSWER. It finds tools missing at CONFIGURE time. A
+# package can also want something only during `make` -- the kernel wants perl
+# in scripts/, glibc wants python for gen-tunable-list.py -- so a clean result
+# here is not a promise. It is a much shorter list of surprises.
+
+name: tool-probe
+
+on:
+  workflow_dispatch:
+
+env:
+  PERL_VER: '5.42.0'
+  PYTHON_VER: '3.14.3'
+  M4_VER: '1.4.21'
+  BISON_VER: '3.8.2'
+  FLEX_VER: '2.6.4'
+  BC_VER: '7.0.3'
+  GLIBC: '2.43'
+  KHDR: '7.1.3'
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    # Parallel configures, cached downloads. This is meant to answer in
+    # minutes -- the whole point is to be cheaper than discovering the same
+    # thing one tool at a time in the reference job's twenty-minute rounds.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends busybox-static curl xz-utils gcc
+
+      - name: 'What this busybox has, and what it does not'
+        run: |
+          set -eu
+          B=/bin/busybox
+          echo "  busybox: $($B 2>&1 | head -1)"
+          echo "  applets: $($B --list | wc -l)"
+          echo
+          echo "  --- POSIX-ish tools this build DOES NOT have ---"
+          # The list is every name a configure script plausibly reaches for.
+          # Being generous here is free; being short is what cost two rounds.
+          for a in awk gawk sed grep egrep fgrep tr cut sort uniq comm join \
+                   split csplit paste expand unexpand fold fmt nl pr tsort col \
+                   cmp diff patch find xargs sh bash test expr basename dirname \
+                   od dd printf tee cat head tail wc ls cp mv rm mkdir rmdir \
+                   ln chmod touch date env which command hostname uname id \
+                   tar gzip bzip2 xz cpio ar nm strip ranlib ld as make m4 \
+                   bison yacc flex lex perl python python3 pkg-config bc \
+                   install msgfmt gettext autoconf automake libtool texi2any \
+                   makeinfo pod2man help2man rsync file sleep seq yes true false; do
+            $B --list | grep -qx "$a" || printf '    %s\n' "$a"
+          done
+
+      # THE DOWNLOADS ARE CACHED. This job exists to be run repeatedly while
+      # the list is being worked through, so a fresh 150 MB fetch each time
+      # would be most of its runtime.
+      - uses: actions/cache@v4
+        with:
+          path: src
+          key: probe-src-${{ env.PERL_VER }}-${{ env.PYTHON_VER }}-${{ env.GLIBC }}-v1
+
+      - name: Fetch the packages that have never been built here
+        run: |
+          set -eu
+          mkdir -p src && cd src
+          get() {
+            b=$(basename "$1")
+            [ -s "$b" ] && { echo "  cached  $b"; return 0; }
+            curl -fsSL --connect-timeout 20 --retry 2 -O "$1" \
+              && echo "  fetched $b" || echo "  FAILED  $1"
+          }
+          GNU=https://ftpmirror.gnu.org
+          get "https://www.cpan.org/src/5.0/perl-$PERL_VER.tar.xz"
+          get "https://www.python.org/ftp/python/$PYTHON_VER/Python-$PYTHON_VER.tar.xz"
+          get "$GNU/m4/m4-$M4_VER.tar.xz"
+          get "$GNU/bison/bison-$BISON_VER.tar.xz"
+          get "https://github.com/westes/flex/releases/download/v$FLEX_VER/flex-$FLEX_VER.tar.gz"
+          get "https://github.com/gavinhoward/bc/releases/download/$BC_VER/bc-$BC_VER.tar.xz"
+          get "$GNU/glibc/glibc-$GLIBC.tar.xz"
+
+      - name: 'THE PROBE: run each configure with a PATH of traps'
+        run: |
+          set -u
+          # THE TRAP DIRECTORY. Every candidate name becomes a script that
+          # records the call and exits 127, which is what a shell reports for a
+          # missing command. Anything busybox HAS is symlinked instead, so the
+          # configure gets a working tool and only genuinely-absent ones are
+          # recorded.
+          #
+          # THE COMPILER IS REAL. gcc stays on PATH: a configure that cannot
+          # compile bails in the first ten lines and probes nothing, which
+          # would produce a clean-looking result that means nothing.
+          B=/bin/busybox
+          T=/tmp/traps
+          rm -rf "$T" && mkdir -p "$T"
+          : > /tmp/missing.log
+
+          for a in $($B --list); do
+            case "$a" in busybox) continue ;; esac
+            ln -sf "$B" "$T/$a"
+          done
+
+          for a in gawk mawk nawk comm join split csplit paste expand unexpand \
+                   fold fmt nl pr tsort col perl python python3 bison yacc \
+                   flex lex m4 bc pkg-config msgfmt gettext autoconf automake \
+                   libtool makeinfo texi2any pod2man help2man rsync diff patch; do
+            $B --list | grep -qx "$a" && continue
+            # printf, not a heredoc. A heredoc terminator has to sit at
+            # column 0, which ends the YAML block scalar and breaks the file --
+            # the first version of this job would not parse.
+            printf '#!/bin/sh\necho "$PKG NEEDS: %s $*" >> /tmp/missing.log\nexit 127\n' \
+              "$a" > "$T/$a"
+            chmod 0755 "$T/$a"
+          done
+          # The real compiler and the real shell, plus the traps.
+          for a in gcc cc g++ cpp ld as ar ranlib nm strip objdump; do
+            p=$(command -v "$a" 2>/dev/null) && ln -sf "$p" "$T/$a"
+          done
+          echo "  traps: $(find "$T" -type f | wc -l)   passthrough: $(find "$T" -type l | wc -l)"
+          echo
+
+          # ALL PACKAGES AT ONCE. Each configure is independent -- nothing is
+          # installed and nothing is shared -- so they run in parallel and the
+          # job takes as long as the slowest one rather than the sum. glibc and
+          # Python are minutes on their own; serially this would be twenty.
+          cd src
+          for t in *.tar.*; do
+            [ -f "$t" ] || continue
+            d=$(echo "$t" | sed 's/\.tar\..*//')
+            rm -rf "$d" && mkdir -p "$d"
+            tar xf "$t" -C "$d" --strip-components=1 2>/dev/null || continue
+            (
+              cd "$d"
+              export PKG="$d"
+              export PATH="$T"
+              # Each package logs to its own file, or parallel writes interleave
+              # mid-line and the output becomes unreadable.
+              L=/tmp/out-$d.log
+              {
+                echo "================================================================"
+                echo "  $d"
+                echo "================================================================"
+              } > "$L"
+              set +e
+              if [ -x ./Configure ]; then
+                # perl: not autoconf, and -des answers every prompt.
+                timeout 420 ./Configure -des -Dprefix=/tmp/x-$d -Dcc=gcc > c.log 2>&1
+              elif [ -x ./configure ]; then
+                timeout 420 ./configure --prefix=/tmp/x-$d > c.log 2>&1
+              else
+                echo "    no configure script" >> "$L"; exit 0
+              fi
+              rc=$?
+              set -e
+              echo "    configure rc=$rc" >> "$L"
+              # What the configure ITSELF said it could not find, which catches
+              # tools reached by a name the trap list does not have.
+              grep -aiE "not found|no acceptable|missing|command not found|required" c.log \
+                | grep -avE "checking|^ *$" | sort -u | head -12 | sed 's/^/      /' >> "$L"
+            ) &
+          done
+          wait
+          cat /tmp/out-*.log
+
+          echo "================================================================"
+          echo "  EVERY TOOL THE PROBE CAUGHT, BY PACKAGE"
+          echo "================================================================"
+          if [ -s /tmp/missing.log ]; then
+            sort -u /tmp/missing.log | sed 's/^/  /'
+            echo
+            echo "  --- the set, deduplicated ---"
+            awk '{print $3}' /tmp/missing.log | sort -u | tr '\n' ' '
+            echo
+          else
+            echo "  nothing was trapped -- every tool these configures wanted"
+            echo "  was present in busybox"
+          fi
+
+      # OPTION 1, MEASURED RATHER THAN ASSUMED. If the list above is long, the
+      # answer is our own busybox with the missing applets turned on. That is
+      # only a good answer if it actually builds and actually has them, so this
+      # builds one and reports -- in the same run, while the list is on screen.
+      #
+      # IT ALSO CHANGES WHAT THE BOX IS. Right now the single host binary is
+      # Ubuntu's busybox, and what it contains is whatever Ubuntu chose. One we
+      # build is one we declare: the applet list becomes a pinned input like
+      # every other, and "the box has no split" stops being a surprise.
+      - name: 'OPTION 1: build our own static busybox with everything on'
+        run: |
+          set -eu
+          BB=1.36.1
+          cd src
+          [ -s "busybox-$BB.tar.bz2" ] || \
+            curl -fsSL --connect-timeout 20 --retry 2 \
+              -O "https://busybox.net/downloads/busybox-$BB.tar.bz2"
+          rm -rf bb && mkdir bb && tar xf "busybox-$BB.tar.bz2" -C bb --strip-components=1
+          cd bb
+          make defconfig > /dev/null 2>&1
+          # STATIC, and the applets Ubuntu's build left out. allnoconfig would
+          # be the wrong direction; defconfig plus these is the smallest change
+          # that answers the question.
+          sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+          for sym in SPLIT COMM JOIN CSPLIT PASTE EXPAND UNEXPAND FOLD FMT NL \
+                     PR TSORT CMP DIFF PATCH AWK SED GREP SORT UNIQ TR CUT; do
+            sed -i "s/^# CONFIG_$sym is not set/CONFIG_$sym=y/" .config
+            grep -q "^CONFIG_$sym=y" .config || echo "CONFIG_$sym=y" >> .config
+          done
+          # TLS drags in code that wants glibc feature macros; a build box has
+          # no use for HTTPS. Same substitution the reference job makes.
+          for sym in SSL_CLIENT FEATURE_WGET_OPENSSL TLS; do
+            sed -i "s/^CONFIG_$sym=y/# CONFIG_$sym is not set/" .config
+          done
+          yes '' | make oldconfig > /dev/null 2>&1
+          # VERIFY AFTER oldconfig, which re-derives symbols and has undone
+          # exactly this kind of edit before.
+          echo "  --- did the symbols survive oldconfig? ---"
+          for sym in STATIC SPLIT COMM; do
+            printf '    %-8s %s\n' "$sym" \
+              "$(grep -q "^CONFIG_$sym=y" .config && echo on || echo OFF)"
+          done
+          if make -j"$(nproc)" > b.log 2>&1 && [ -x busybox ]; then
+            echo "  built: $(wc -c < busybox) bytes"
+            echo "  applets: $(./busybox --list | wc -l)  (Ubuntu's: $(/bin/busybox --list | wc -l))"
+            echo "  static: $(file -b busybox | grep -o 'statically linked' || echo NO)"
+            echo "  --- the ones Ubuntu's lacked ---"
+            for a in split comm join csplit paste expand unexpand fold fmt nl pr tsort; do
+              printf '    %-10s ours=%-3s ubuntu=%s\n' "$a" \
+                "$(./busybox --list | grep -qx "$a" && echo yes || echo no)" \
+                "$(/bin/busybox --list | grep -qx "$a" && echo yes || echo no)"
+            done
+          else
+            echo "  BUILD FAILED"
+            grep -nE "error:|Error [0-9]" b.log | head -12 | sed 's/^/    /'
+            tail -20 b.log | sed 's/^/    /'
+          fi
+
+      - name: Verdict
+        if: always()
+        run: |
+          echo "  Two ways to act on the list above:"
+          echo
+          echo "  1. BUILD OUR OWN busybox, statically, with the applets this"
+          echo "     one lacks turned on. One package, one config, and the box"
+          echo "     stops depending on how Ubuntu happened to compile theirs."
+          echo "     That is also the honest end state: the box's single host"
+          echo "     binary would then be one WE built."
+          echo
+          echo "  2. WRITE THE MISSING FILTERS, as rung 11.5 does for split and"
+          echo "     comm -- thirty lines each, auditable, compiled by the"
+          echo "     chain's own gcc. Cheaper per tool, worse if the list is long."
+          echo
+          echo "  The list decides. Two tools: write them. Ten: build busybox."
