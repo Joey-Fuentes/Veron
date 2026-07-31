@@ -1150,7 +1150,7 @@ jobs:
               set -e
               echo "    mc-tcc -c seven.c: rc=$crc, object $(wc -c < seven.o 2>/dev/null || echo 0) bytes"
               if [ "$crc" != 0 ] || [ ! -s seven.o ]; then
-                grep -av '^[A-Z][0-9]*$' /work/run7.err | head -3 | sed 's/^/      /'
+                grep -av '^[A-Z][0-9]*$' /work/run7.err | head -30 | sed 's/^/      /'
                 s3ok=no
               fi
 
@@ -1362,7 +1362,7 @@ jobs:
             set -e
             if [ "$c2" != 0 ] || [ ! -s t2.bin ]; then
               echo "    $b: COMPILE FAILED rc=$c2"
-              grep -av '^[A-Z][0-9]*$' t2.err | head -3 | sed 's/^/        /'
+              grep -av '^[A-Z][0-9]*$' t2.err | head -30 | sed 's/^/        /'
               s3ok=no
             else
               chmod 0755 t2.bin

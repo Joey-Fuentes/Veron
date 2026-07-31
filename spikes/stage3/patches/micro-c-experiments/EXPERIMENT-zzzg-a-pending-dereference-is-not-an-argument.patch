@@ -1,0 +1,140 @@
+A pending dereference belongs to the call's result, not to its arguments.
+
+`*f(8)` is `*(f(8))`. primary_expr_variable eats the stars and parks the count
+in `num_dereference_after_postfix` so the postfix walk can apply it once the
+chain is resolved -- but THE ARGUMENT LIST IS PARSED BETWEEN THOSE TWO POINTS,
+and every argument is a full expression that reads the same global. So the star
+landed on an argument:
+
+    mov_x0,8            # primary expr number
+    ldrsw_x0,[x0]       # <-- dereferencing the literal 8 as an address
+    str_x0,[x18,-8]!    # function argument
+
+THIS IS THE HEAP CORRUPTION. tcc writes every byte of .eh_frame through exactly
+this shape:
+
+    #define dwarf_data1(s,data) \
+        (*(uint8_t*)section_ptr_add((s), 1) = (data))       tccdbg.c:550
+
+In a twelve-line program the bogus address is unmapped and the process
+segfaults, which is why no existing case caught it. Inside tcc the address is
+usually MAPPED, so the access silently succeeds against the wrong memory. An
+allocator node's `next` was overwritten with a small value, cutting 62 of 79
+nodes off the allocated list, and the failure surfaced much later and somewhere
+else entirely as
+
+    M2libc: realloc: pointer was never returned by malloc
+
+which was true of the LIST and false of the HEAP. Four hypotheses died against
+that message before the node-loss detector in m2libc 0011 bracketed the damage
+to one allocator interval and the block's own bytes -- a DWARF CIE with
+augmentation "zR" and return-address register 30 -- named .eh_frame as the
+overrun source.
+
+SAVED AND RESTORED, NOT CLEARED, because the count is still owed to the result
+once the arguments are done. Address_of travels with it: `&f(x)` is not valid
+C, but `f(&x)` is, and an argument taking an address must not inherit the
+caller's flag either.
+
+num_dereference_after_postfix MOVES to the global block at the top of the file.
+It used to sit just above the function that sets it, which was fine while only
+that function and the postfix walk read it; function_call is 750 lines earlier.
+
+TWO FAULTS IN THIS SHAPE REMAIN, and case 105 is marked KNOWN GAP until both
+are closed:
+
+  1. THE RETURN TYPE DOES NOT REACH current_target, so the dereference uses the
+     wrong WIDTH -- `unsigned char* give(int)` dereferenced emits a four-byte
+     signed load. Worth reading the case for this: `*give(9)` PASSES while
+     `*give(8)` fails, because the bytes after buf[9] happen to be zero and the
+     wrong-width load returns the right answer. A case built from the passing
+     form would certify a broken compiler.
+
+  2. `*f(x) = v` LOADS THROUGH THE RETURNED POINTER and stores through the
+     loaded value. For a variable the register holds the variable's ADDRESS and
+     one load is right; for a call result it already holds the pointer, so the
+     load is one step too far. That asymmetry lives in the lvalue path
+     MICRO-C.md counts eight implementations of, and it is not being rushed.
+
+Case 105 (KNOWN GAP). difftest aarch64 89/0 with 1 known gap; stage-2 corpus
+419, floor held.
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -44,6 +44,14 @@
+ char* continue_target_num;
+ struct token_list* break_frame;
+ int current_count;
++/* DECLARED HERE, NOT BESIDE primary_expr_variable.
++ *
++ * It used to sit just above the function that sets it, which was fine while
++ * only that function and the postfix walk read it. function_call has to save
++ * and restore it around the argument list -- a pending `*` belongs to the
++ * call's RESULT, not to its arguments -- and function_call is 750 lines
++ * earlier in the file. */
++int num_dereference_after_postfix;
+ /* A SEPARATE COUNTER FOR GLOBAL-SCOPE GENERATED LABELS.
+  *
+  * current_count is reset by declare_function, which is correct for every other
+@@ -516,6 +524,43 @@
+ 
+ 	emit_move(REGISTER_TEMP, REGISTER_STACK, "Copy new base pointer");
+ 
++	/* A PENDING DEREFERENCE BELONGS TO THE CALL'S RESULT, NOT ITS ARGUMENTS.
++	 *
++	 * `*f(8)` is `*(f(8))`. primary_expr_variable eats the stars and parks the
++	 * count in num_dereference_after_postfix so the postfix walk can apply it
++	 * afterwards -- but the argument list is parsed BETWEEN those two points,
++	 * and each argument is a full expression that reads the same global. So
++	 * the star landed on the argument:
++	 *
++	 *     mov_x0,8            # primary expr number
++	 *     ldrsw_x0,[x0]       # <-- dereferencing the literal 8 as an address
++	 *     str_x0,[x18,-8]!    # function argument
++	 *
++	 * tccdbg.c:550 writes every byte of .eh_frame through exactly this shape:
++	 *
++	 *     #define dwarf_data1(s,data) \
++	 *         (*(uint8_t*)section_ptr_add((s), 1) = (data))
++	 *
++	 * so the store went to an address computed from the ARGUMENT rather than
++	 * from the returned section pointer. In a small program that address is
++	 * unmapped and it segfaults; inside tcc it is usually mapped, and the write
++	 * lands somewhere in the heap. That is the corruption behind
++	 * "realloc: pointer was never returned by malloc" -- an allocator node's
++	 * `next` overwritten with a small value, cutting 62 nodes off the list.
++	 *
++	 * Saved and restored rather than cleared, because the count is still owed
++	 * to the result once the arguments are done. Address_of travels with it:
++	 * `&f(x)` is not valid C, but `f(&x)` is, and an argument that takes an
++	 * address must not inherit the caller's flag either.
++	 *
++	 * Eleventh instance of one-rule-two-implementations in this file, and the
++	 * second where a global outliving its statement is the mechanism -- see the
++	 * zz7 note on why operand types are read one line after they are written. */
++	int saved_deref = num_dereference_after_postfix;
++	int saved_address_of = Address_of;
++	num_dereference_after_postfix = 0;
++	Address_of = FALSE;
++
+ 	int passed = 0;
+ 	while(global_token->s[0] != ')')
+ 	{
+@@ -532,6 +577,10 @@
+ 
+ 	require_match("ERROR in process_expression_list\nNo ) was found\n", ")");
+ 
++	/* THE ARGUMENTS ARE DONE; THE DEREFERENCE IS OWED TO THE RESULT AGAIN. */
++	num_dereference_after_postfix = saved_deref;
++	Address_of = saved_address_of;
++
+ 	if(ARMV7L == Architecture)
+ 	{
+ 		emit_push(REGISTER_RETURN, "Protect the old link register");
+@@ -1250,7 +1299,6 @@
+ 	require_match("Invalid token at end of __va_start, expected ')'", ")");
+ }
+ 
+-int num_dereference_after_postfix;
+ void primary_expr_variable(void)
+ {
+ 	/* THE TOKEN THIS UNARY EXPRESSION STARTS AT, remembered before the stars

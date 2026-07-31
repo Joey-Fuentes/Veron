@@ -883,118 +883,75 @@ the multi-TU gap instead of codegen, and reported it as 57 codegen failures.
 
 ---
 
+## The corruption, found
+
+**A pending `*` was landing on the function's ARGUMENT.**
+
+`*f(8)` is `*(f(8))`. `primary_expr_variable` eats the stars and parks the
+count in `num_dereference_after_postfix` for the postfix walk to apply — but
+the argument list is parsed between those two points, and every argument is a
+full expression reading the same global:
+
+```
+    mov_x0,8            # primary expr number
+    ldrsw_x0,[x0]       # <-- dereferencing the literal 8 as an address
+    str_x0,[x18,-8]!    # function argument
+```
+
+**tcc writes every byte of `.eh_frame` through exactly this shape** —
+`tccdbg.c:550`, `*(uint8_t*)section_ptr_add((s), 1) = (data)`. In a twelve-line
+program the bogus address is unmapped and the process dies, which is why no
+case caught it. Inside tcc the address is usually **mapped**: the access
+silently succeeds against the wrong memory, an allocator node's `next` takes a
+small value, and 62 of 79 nodes drop off the list. It surfaced much later as
+`realloc: pointer was never returned by malloc` — true of the list, false of
+the heap.
+
+EXPERIMENT-zzzg saves and restores the count around the argument list. Not
+clears: it is still owed to the result.
+
+### The route that worked
+
+Four hypotheses died against the realloc message before any of this. What
+actually moved it:
+
+1. classify the bad pointer three ways — free list, interior, neither
+2. **read the memory at it** — the 32 bytes below were a `_malloc_node` whose
+   `block` field *was* the pointer. Live block, unreachable node.
+3. a node-loss detector — created vs reachable, every `malloc` and `free`,
+   bounded so a cycle reports instead of hanging. 62 lost in one store.
+4. **read the neighbour's bytes** — a DWARF CIE, augmentation `"zR"`,
+   return-address register 30. `.eh_frame`.
+5. reduce the writer's shape to twelve lines and diff against gcc.
+
+Steps 2 and 4 are the same move and both were decisive. Three rounds of
+reasoning about distances produced nothing; reading the bytes produced the
+answer twice.
+
+---
+
 ## The next piece of work
 
-**THE OPEN FRONTIER: the allocated list loses nodes. realloc is the symptom.**
+**TWO FAULTS REMAIN IN `*f(args)`.** Case 105 is `KNOWN GAP` until both close,
+and difftest will report loudly if it goes green early.
 
-Reproduction, about a minute:
+**1. The return type does not reach `current_target`, so the dereference uses
+the wrong width.** `unsigned char* give(int)` dereferenced emits a four-byte
+signed load. Worth reading the case for this one: `*give(9)` **passes** while
+`*give(8)` fails, because the bytes after `buf[9]` happen to be zero and the
+wrong-width load returns the right answer. A case built from the passing form
+would certify a broken compiler — the third time this file has recorded that
+trap.
 
-```
-    mc-tcc -B<tcc-src> -I<shim> -nostdlib -static -o t2.bin \
-        tests/tests2/00_assignment.c <shim>/crt.c
-```
+**2. `*f(x) = v` loads through the returned pointer** and stores through the
+loaded value. For a *variable* the register holds the variable's address and
+one load is right; for a *call result* it already holds the pointer, so the
+load is one step too far. That asymmetry lives in the lvalue path this file
+counts eight implementations of, which is why it is not being rushed.
 
-m2libc patch 0011 prints the pointer, the nearest block, that block's size, the
-whole allocated and free lists, and the memory at the pointer:
-
-```
-    realloc: bad ptr        = 5779744
-    realloc: nearest block  = 5779456     +288, one allocation stride
-    realloc: nearest size   = 256         ptr is 32 bytes past its end
-    realloc: live blocks    = 15
-    realloc: ptr[-4] (next?)= 6927552
-    realloc: ptr[-3] (blk?) = 5779744     <-- EQUALS THE BAD POINTER
-    realloc: ptr[-2] (size?)= 256
-    realloc: ptr[-1] (used?)= 1           <-- _IN_USE
-```
-
-**The 32 bytes below the pointer are a `struct _malloc_node` whose `block`
-field is exactly that pointer, marked in use.** The block is allocated. Its
-node is intact. The list does not reach it.
-
-So `pointer was never returned by malloc` is true of the LIST and false of the
-HEAP, and every reading of it as an allocator bug or a caller bug was chasing
-a symptom. The allocated list is losing nodes: a `next` somewhere in the chain
-has been clobbered, the walk stops early, and every node past it is invisible
-while its block stays live.
-
-**That is heap corruption by a store with a wrongly-computed address, upstream
-of the allocator entirely** — the same shape as the earlier `table_ident`
-report. And **288 is not a structure size**: it is the allocator's stride for a
-minimum block, a 32-byte node plus a 256-byte block. Reading it as a structure
-size, as the earlier note invited, points nowhere.
-
-### Ruled out, each by measurement
-
-* **the allocator's logic** — `main-06-realloc.c` passes, and
-  `main-07-realloc-sequences.c`, written for this, passes over seven reuse
-  shapes: free-list reuse, chained reallocs, a grow with another block freed
-  between, a shrink, sixty-four allocations of churn before growing the
-  *oldest* block, twenty-four reallocs interleaved with mallocs, content
-  survival across a move
-* **use-after-free** — the free-list walk does not fire, and **disabling
-  `free()` entirely**, so nothing ever leaves the allocated list, reproduces
-  the failure unchanged
-* **an interior pointer or a `tal_header_t` skip** — the range walk does not
-  fire
-* **the malloc/realloc signature mismatch** between M2libc (`unsigned`) and
-  `micro-c-libc/stdlib.h` (`unsigned long`) — real, worth tidying, and not this
-* **duplicate symbols** — `_allocated_list`, `_free_list`, `malloc`, `free`,
-  `realloc` and `_malloc_insert_block` are each defined exactly once
-
-### The detector, built and firing
-
-m2libc patch 0011 now carries it. A node is created exactly once and afterwards
-only *moves* between the two lists, so reachable(allocated) + reachable(free)
-must always equal the number created. Checked at every `malloc` and `free`,
-with both walks bounded so a chain clobbered into a **cycle** reports rather
-than hangs:
-
-```
-    MALLOC CHECK: NODES LOST at malloc
-      nodes created    = 79
-      nodes reachable  = 17
-      lost             = 62
-      last node addr   = 6877408
-      its block        = 6877440   size 512
-      its next (BAD)   = 0         <-- clobbered to NULL
-```
-
-**62 nodes cut off in one store**, so the break is near the head of the chain.
-`next` is at offset 0 of the node, 32 bytes before its block — exactly where
-the *previous* allocation's data ends. This is an **overrun of the neighbouring
-block**, not a stray write at a random address.
-
-### And the neighbour is identified
-
-```
-      OVERRUN SOURCE blk = 6877152   size 256
-       word[0]           = 16
-       word[1]           = 0x011e780400527a01
-```
-
-`01 7a 52 00 04 78 1e 01` — version 1, augmentation `"zR"`, code alignment 4,
-data alignment `0x78` (SLEB −8), return-address register 30. That is a **DWARF
-CIE for aarch64**, and the block's tail holds CFA opcodes. **The overrunning
-block is tcc's `.eh_frame` section data.**
-
-### Ruled out since, by reducing the logic and diffing against gcc
-
-* **`CString` growth** — `cstr_cat`'s `if (size > cstr->size_allocated)` gate,
-  `cstr_realloc`'s doubling, and the 16-byte struct layout. Correct.
-* **`section_add`** — `offset = (sec->data_offset + align - 1) & -align` with a
-  4-byte `int` align against 8-byte `unsigned long` offsets, the growth gate,
-  and 400 iterations checking allocated never falls behind offset. Correct,
-  including that the mask sign-extends rather than clearing the top half.
-
-So the section bookkeeping is right and something writes past the end anyway.
-**The next question is who writes `.eh_frame`**: a pointer taken from
-`section_ptr_add` and held across a later `section_realloc` would write through
-a stale base, which is the classic shape and is not covered by either probe.
-
-Watchpoints remain unavailable under qemu-user — the gdbstub answers `Z0`/`Z1`
-and refuses `Z2`/`Z3`/`Z4` — so the marker trail in `local-tcc.sh` is the route
-from here.
+Both are on the `.eh_frame` path, so tcc will keep corrupting its heap until
+they are closed — the argument fix removes one of three writes to the wrong
+address, not all three.
 
 ---
 

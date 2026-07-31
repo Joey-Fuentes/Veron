@@ -2172,3 +2172,59 @@ covered by either probe above.
 THE DETECTOR IS A DEBUGGING PATCH, NOT A SHIPPING ONE. It walks both lists at
 every malloc and free, which is O(n^2) over a run. It is in because the fault
 is live; it should come out when the corruption is fixed.
+
+--------------------------------------------------------------------------------
+THE CORRUPTION, FOUND: a pending `*` was landing on the ARGUMENT.
+--------------------------------------------------------------------------------
+
+    *f(8)   is   *(f(8))
+
+primary_expr_variable eats the stars and parks the count in
+num_dereference_after_postfix for the postfix walk. THE ARGUMENT LIST IS PARSED
+BETWEEN THOSE TWO POINTS, and every argument is a full expression that reads
+the same global:
+
+    mov_x0,8            # primary expr number
+    ldrsw_x0,[x0]       # <-- dereferencing the literal 8 as an address
+    str_x0,[x18,-8]!    # function argument
+
+tcc writes EVERY BYTE of .eh_frame through this shape -- tccdbg.c:550,
+`*(uint8_t*)section_ptr_add((s), 1) = (data)`. In a twelve-line program the
+bogus address is unmapped and it segfaults, which is why no case caught it. In
+tcc the address is usually MAPPED, the access silently succeeds against the
+wrong memory, an allocator node's `next` gets a small value, and 62 of 79 nodes
+drop off the list. It surfaced as "realloc: pointer was never returned by
+malloc" -- true of the LIST, false of the HEAP, and four hypotheses died
+against it.
+
+THE ROUTE THAT WORKED, since none of the reasoning did:
+
+  1. classify the bad pointer three ways (free list / interior / neither)
+  2. READ THE MEMORY AT IT -- the 32 bytes below were a _malloc_node whose
+     block field WAS the pointer. The block is live; the list cannot reach it.
+  3. a node-loss detector: created vs reachable, checked every malloc and free,
+     bounded so a cycle reports instead of hanging. 62 lost in ONE store.
+  4. READ THE NEIGHBOUR'S BYTES -- a DWARF CIE, augmentation "zR",
+     return-address register 30. .eh_frame.
+  5. reduce the writer's shape to twelve lines and diff against gcc.
+
+Steps 2 and 4 are the same move and both were decisive. Three rounds of
+reasoning about distances produced nothing; reading the bytes produced the
+answer twice.
+
+TWO FAULTS IN THIS SHAPE REMAIN. Case 105 is KNOWN GAP until both close:
+
+  * the RETURN TYPE does not reach current_target, so the deref uses the wrong
+    WIDTH. `*give(9)` PASSES and `*give(8)` FAILS -- the bytes after buf[9] are
+    zero, so a four-byte load returns the right answer. A case built from the
+    passing form would certify a broken compiler. Third time this file has
+    recorded that trap.
+  * `*f(x) = v` loads through the returned pointer and stores through the
+    loaded value. For a VARIABLE the register holds the variable's address and
+    one load is right; for a CALL RESULT it already holds the pointer. That
+    asymmetry is in the lvalue path with eight implementations, and it is not
+    being rushed at the end of a long session.
+
+ALSO: the hermetic job truncated stderr to `head -3`, so the diagnostic that
+does all this work printed three lines and stopped. Widened to 30 in both
+places. A diagnostic nobody can read is not a diagnostic.
