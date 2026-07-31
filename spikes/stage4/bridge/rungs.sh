@@ -548,6 +548,93 @@ fi
 
 HOSTED="-I$SYS/include -L$SYS/lib"
 
+# EVERY AUTOCONF RUNG LINKS STATICALLY, AND THAT IS NOT AN OPTIMISATION.
+#
+# make's configure got this far:
+#
+#     checking whether the C compiler works... yes
+#     checking for C compiler default output file name... a.out
+#     checking whether we are cross compiling... error: cannot run C
+#         compiled programs.  If you meant to cross compile, use `--host'.
+#
+# It LINKS and it cannot EXECUTE. rung 2 builds musl as libc.a only -- there is
+# no libc.so and no dynamic loader anywhere in this box -- so a dynamically
+# linked binary has a PT_INTERP pointing at /lib/ld-musl-aarch64.so.1, which
+# does not exist, and the kernel refuses it before main runs.
+#
+# rung 3 passes because it passes -static explicitly. autoconf does not: it
+# compiles conftest with plain $CC and then runs it, and that is the check that
+# fails. So -static belongs in CC itself, where every conftest inherits it.
+#
+# This is also just correct for a bootstrap. Static is what the box can
+# actually run, and it is what the binaries built here -- make, then binutils,
+# then gcc -- need to be in order to keep working as the sysroot changes
+# underneath them. rung 3's own diagnostic already prints "interp: PRESENT --
+# this binary is DYNAMIC and the box has no loader" for exactly this shape.
+CCAUTO="$CC $HOSTED -static"
+
+# THE LFS SHAPE: DECLARE A CROSS BUILD SO autoconf STOPS RUNNING ITS TESTS.
+#
+# make's configure died here:
+#
+#     checking whether we are cross compiling... configure: error: cannot run
+#     C compiled programs.  If you meant to cross compile, use `--host'.
+#
+# That message is the instruction. LFS chapter 5 builds its toolchain with a
+# DELIBERATELY DIFFERENT TRIPLET -- x86_64-lfs-linux-gnu rather than the host's
+# x86_64-pc-linux-gnu -- and chapter 6 passes --host with it. The architecture
+# is identical; the point is to declare "you cannot run what you build here",
+# which makes autoconf skip every run test and take its answers from the
+# cross-compilation defaults instead.
+#
+# --host MUST DIFFER FROM --build AS A STRING. If they match, autoconf decides
+# the build is native and runs the tests anyway, which is the failure above.
+# aarch64-veron-linux-musl differs from aarch64-unknown-linux-gnu, and it is
+# also honest about the libc, which several configure scripts key on.
+#
+# BOTH ANSWERS ARE TRIED, in this order, and the log says which worked:
+#   1. native + -static     the box IS the target, so a static binary really
+#                           does run here; letting configure measure beats
+#                           letting it guess
+#   2. LFS cross triplets   for anything -static does not save
+BUILDTRIP=aarch64-unknown-linux-gnu
+HOSTTRIP=aarch64-veron-linux-musl
+
+# Run configure natively; on the specific "cannot run" failure, retry the LFS
+# way. $1 is a label, the rest are the package's own configure arguments.
+cfg_try() {
+    _lbl=$1; shift
+    say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./configure $* CC=\"$CCAUTO\""
+    say "    (cwd: $(pwd))"
+    ./configure "$@" CC="$CCAUTO" > cfg.log 2>&1
+    _cfgrc=$?
+    say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_cfgrc)"
+    if [ "$_cfgrc" = 0 ]; then
+        say "    $_lbl: configured NATIVE (-static was enough)"
+        return 0
+    fi
+    if grep -q "cannot run C compiled programs" cfg.log 2>/dev/null; then
+        say "    $_lbl: native configure cannot run its tests -- retrying the LFS way"
+        say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./configure --build=$BUILDTRIP --host=$HOSTTRIP $* CC=\"$CCAUTO\""
+        ./configure --build="$BUILDTRIP" --host="$HOSTTRIP" "$@" \
+            CC="$CCAUTO" > cfg.log 2>&1
+        _cfgrc=$?
+        say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_cfgrc)"
+        if [ "$_cfgrc" = 0 ]; then
+            say "    $_lbl: configured CROSS (--build/--host, LFS style)"
+            return 0
+        fi
+    fi
+    say "    $_lbl: configure FAILED rc=$_cfgrc"
+    say "    --- cfg.log tail ---"
+    tail -20 cfg.log 2>/dev/null | sed 's/^/      /'
+    say "    --- config.log: the failing test ---"
+    grep -nE "error|cannot|failed|No such" config.log 2>/dev/null | head -12 | sed 's/^/      /'
+    say "    --- config.log tail ---"
+    tail -25 config.log 2>/dev/null | sed 's/^/      /'
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 head1 "RUNG 3 -- a HOSTED program: #include <stdio.h>, real crt, real libc"
 # THE PIVOT. Everything stage 3 has ever measured is -nostdlib -static
@@ -617,6 +704,20 @@ EOF
     fi
     return 1
   }
+
+  # AND THE DYNAMIC CASE, BECAUSE THAT IS WHAT autoconf ACTUALLY DOES.
+  # rung 3 passed for four runs on -static while every configure below it was
+  # about to fail on the same compiler, because autoconf compiles conftest with
+  # a plain $CC and then RUNS it. Testing only the static case measured the one
+  # shape nothing above uses.
+  say "    --- no -static, which is how autoconf compiles conftest ---"
+  if $CC -o r3dyn.bin r3.c 2>/dev/null && ./r3dyn.bin >/dev/null 2>&1; then
+    say "    dynamic: compiled AND ran -- a loader exists in this box"
+  else
+    say "    dynamic: does NOT run (expected: libc.a only, no loader in the box)"
+    say "             this is why every configure needs -static in CC"
+  fi
+  rm -f r3dyn.bin
 
   if try_r3 "plain:" $CC -static -o r3.bin r3.c; then
     R3=ok
@@ -690,34 +791,12 @@ if [ "$R3" = ok ]; then
   cd "$_got" 2>/dev/null || { say "    cannot enter $_got"; R35=FAIL; }
   fi
   if [ "$R35" != FAIL ]; then
-  say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./configure --prefix=$PFX --disable-nls CC=\"$CC $HOSTED\""
-  say "    (cwd: $(pwd))"
-  ./configure --prefix="$PFX" --disable-nls CC="$CC $HOSTED" > cfg.log 2>&1
-  _crc=$?
-  say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_crc)"
+  if cfg_try "make" --prefix="$PFX" --disable-nls; then _crc=0; else _crc=1; R35=FAIL; fi
 
-  # CONFIGURE'S EXIT CODE GATES THE REST. The last run read rc=77 -- autoconf's
-  # "cannot run test program", usually "C compiler cannot create executables" --
-  # and then ran build.sh anyway, which failed on a build.cfg configure never
-  # wrote. That reported the second failure and hid the first.
   say "    --- $_got after configure ---"
   ls -la . 2>/dev/null | sed 's/^/      /' | head -20
   say "    build.cfg present: $( [ -f build.cfg ] && echo yes || echo NO )"
   say "    Makefile present:  $( [ -f Makefile ]  && echo yes || echo NO )"
-  say "    config.log size:   $( [ -f config.log ] && wc -c < config.log || echo absent )"
-
-  if [ "$_crc" != 0 ]; then
-    R35=FAIL
-    say "    --- configure output (tail) ---"
-    tail -25 cfg.log 2>/dev/null | sed 's/^/      /'
-    # config.log IS WHERE AUTOCONF WRITES THE FAILING COMMAND AND ITS ERROR.
-    # cfg.log is only what configure printed to the terminal; the reason lives
-    # here.
-    say "    --- config.log: the failing test ---"
-    grep -nE "error|cannot|failed|No such" config.log 2>/dev/null | head -15 | sed 's/^/      /'
-    say "    --- config.log (last 30 lines) ---"
-    tail -30 config.log 2>/dev/null | sed 's/^/      /'
-  fi
 
   if [ "$_crc" = 0 ]; then
   if [ -f build.sh ]; then
@@ -756,10 +835,25 @@ if [ "$R35" = ok ]; then
   cd /work/src
   untar /in/binutils- || { R4=FAIL; say "    binutils did not extract"; }
   mkdir -p b-binutils && cd b-binutils
-  "../$(cd .. && onedir 'binutils-* ./binutils-*')/configure" --prefix="$PFX" --disable-nls --disable-werror \
-    --disable-gdb --disable-gdbserver --disable-libdecnumber --disable-readline \
-    CC="$CC $HOSTED" > cfg.log 2>&1
-  say "    configure rc=$?"
+  _busrc="../$(cd .. && onedir 'binutils-* ./binutils-*')"
+  cfg_binutils() {
+      say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: $_busrc/configure $* CC=\"$CCAUTO\""
+      "$_busrc/configure" "$@" --prefix="$PFX" --disable-nls --disable-werror \
+        --disable-gdb --disable-gdbserver --disable-libdecnumber --disable-readline \
+        CC="$CCAUTO" > cfg.log 2>&1
+      _r=$?; say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_r)"; return $_r
+  }
+  if cfg_binutils; then
+      say "    binutils: configured NATIVE"
+  elif grep -q "cannot run C compiled programs" cfg.log 2>/dev/null \
+       && cfg_binutils --build="$BUILDTRIP" --host="$HOSTTRIP"; then
+      say "    binutils: configured CROSS (LFS style)"
+  else
+      R4=FAIL
+      say "    binutils: configure FAILED"
+      tail -20 cfg.log 2>/dev/null | sed 's/^/      /'
+      grep -nE "error|cannot" config.log 2>/dev/null | head -10 | sed 's/^/      /'
+  fi
   # MAKEINFO=true: texinfo is borrowed by stage 4 and absent here. See rung 6.
   if timeout 3000 make -j"$NP" MAKEINFO=true > build.log 2>&1 \
      && make install MAKEINFO=true > /dev/null 2>&1; then
@@ -803,8 +897,7 @@ if [ "$R4" = ok ]; then
       mpc)  EXTRA="--with-gmp=/work/prereq --with-mpfr=/work/prereq" ;;
     esac
     ( cd "$pk" \
-      && ./configure CC="$CC" --disable-shared $EXTRA --prefix=/work/prereq \
-           > cfg.log 2>&1 \
+      && cfg_try "$pk" --disable-shared $EXTRA --prefix=/work/prereq \
       && timeout 1800 make -j"$NP" MAKEINFO=true > build.log 2>&1 \
       && make install MAKEINFO=true > /dev/null 2>&1 ) \
       || { r5=FAIL
@@ -867,8 +960,14 @@ if [ "$R5" = ok ]; then
   # --with-sysroot is NOT here, and I had added it. With the libc installed at
   # /usr -- where this box's compiler already looks -- a sysroot is both
   # unnecessary and wrong: it would prefix every system path again.
+  # CC="$CCAUTO", NOT "$CC". Stage 4's line is CC="$1" and its $1 is a tcc
+  # against host glibc, which HAS a dynamic loader -- so its conftests run
+  # either way and -static never came up. This box has libc.a and no loader, so
+  # the same configure would stop at "cannot run C compiled programs" exactly
+  # as make's did. The difference is forced by the box, not a drift from stage
+  # 4's recipe.
   "/work/src/$g47/configure" \
-    CC="$CC" \
+    CC="$CCAUTO" \
     --build=aarch64-unknown-linux-gnu \
     --host=aarch64-unknown-linux-gnu \
     --target=aarch64-unknown-linux-gnu \
