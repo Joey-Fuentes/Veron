@@ -729,6 +729,38 @@ jobs:
             --chdir /work \
             /bin/sh /src/stage4/bridge/rungs.sh
 
+      # PUBLISH THE SYSROOT SO SIDE EXPERIMENTS CAN START FROM IT.
+      #
+      # tool-probe can build one package hermetically -- no host /usr, our
+      # busybox, our toolchain -- but only if it has a toolchain to start from.
+      # Without this it falls back to skipping, which is the honest thing but
+      # not a useful one.
+      #
+      # SAVED ONLY IF CHAPTER 5 CLOSED. A cache that can restore a half-built
+      # sysroot is worse than no cache: the failure lands somewhere else
+      # entirely and looks like a compiler bug. rungs.sh writes the marker only
+      # after rung 14 reports ok.
+      - name: 'Publish the sysroot for side experiments'
+        if: always()
+        run: |
+          set -eu
+          if [ -f box/lfs/.chapter5-complete ]; then
+            cp -a box/lfs lfs 2>/dev/null || true
+            cp -a box/prefix prefix 2>/dev/null || true
+            echo "  sysroot published: $(du -sh lfs 2>/dev/null | cut -f1) + $(du -sh prefix 2>/dev/null | cut -f1)"
+          else
+            echo "  chapter 5 did not complete -- nothing published, and that is"
+            echo "  deliberate: a restorable half-built sysroot is worse than none."
+          fi
+
+      - uses: actions/cache/save@v4
+        if: always() && hashFiles('lfs/.chapter5-complete') != ''
+        with:
+          path: |
+            lfs
+            prefix
+          key: bridge-sysroot-${{ env.GLIBC }}-${{ env.KHDR }}-v1
+
       - name: 'BUDGET: what this run borrowed from the host'
         if: always()
         run: |

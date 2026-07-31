@@ -3015,6 +3015,15 @@ if [ "$R13" = ok ]; then
   elif timeout 3600 make -j"$NP" > b.log 2>&1 \
        && make DESTDIR="$S" install > i.log 2>&1; then
     R14=ok
+    # THE MARKER, WRITTEN ONLY HERE. Chapter 5 is complete: a cross toolchain
+    # and a glibc sysroot. The workflow caches $S only when this file exists,
+    # so a half-built sysroot can never be restored as a good one -- which
+    # would fail three rungs above where the wrong thing was restored and look
+    # like a compiler bug. Same discipline as stage 4's "sysroot marked
+    # complete".
+    printf 'chapter 5 complete: binutils pass 1, gcc 15 pass 1, linux %s headers, glibc %s, libstdc++\n' \
+      "$KHDR" "$GLIBC" > "$S/.chapter5-complete"
+    say "    marked $S/.chapter5-complete"
     say "    libstdc++ installed into $S"
     ls "$S/usr/lib"/libstdc++* 2>/dev/null | sed 's/^/      /' | head -4
   else
