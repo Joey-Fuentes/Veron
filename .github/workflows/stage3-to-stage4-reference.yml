@@ -256,6 +256,57 @@ jobs:
           echo "  box laid out: $(du -sh "$BOX" | cut -f1)"
           echo "  /usr/include present? $( [ -d "$BOX/usr/include" ] && echo YES || echo no )"
 
+      - name: 'AIRLOCK: repack V7 tarballs as ustar (busybox tar requires the magic)'
+        run: |
+          set -eu
+          # MEASURED, NOT ASSUMED THIS TIME. The out-of-sandbox probe ran the
+          # box's own busybox on the same files and printed their headers:
+          #
+          #   musl-1.2.5   name: pax_global_heade  type: g  magic: ustar\0 00  -> OK
+          #   make-3.82    name: make-3.82/        type: 5  magic: \0 x8       -> FAILED
+          #   make-4.4     name: make-4.4/         type: 5  magic: \0 x8       -> FAILED
+          #
+          # GNU make's release tarballs are V7 format and carry NO ustar magic.
+          # busybox's get_header_tar requires it and refuses them; host GNU tar
+          # reads them because it handles V7. musl's is PAX/ustar, which is why
+          # exactly one archive in the set worked and the rest of this job spent
+          # six runs on it.
+          #
+          # I HAD THIS RIGHT ONCE AND THREW IT AWAY. The earlier repack was
+          # removed after a local test showed every GNU tar output format except
+          # v7 writes the magic -- which is true, and which tests what GNU tar
+          # CAN write rather than what these tarballs ARE. Wrong experiment,
+          # confident conclusion. The probe tests the actual files.
+          #
+          # Repacking changes the container, not the contents: the archive is a
+          # pinned input, host tar reads it identically either way, and the box
+          # still extracts and builds everything itself.
+          cd pins
+          for f in *.tar.gz *.tar.xz *.tar.bz2; do
+            [ -f "$f" ] || continue
+            stem=${f%%.tar.*}
+            case "$f" in
+              *.gz)  before=$(gzip  -dc "$f" | dd bs=1 skip=257 count=5 2>/dev/null) ;;
+              *.xz)  before=$(xz    -dc "$f" | dd bs=1 skip=257 count=5 2>/dev/null) ;;
+              *.bz2) before=$(bzip2 -dc "$f" | dd bs=1 skip=257 count=5 2>/dev/null) ;;
+            esac
+            if [ "$before" = "ustar" ]; then
+              printf '  %-26s already ustar -- left alone\n' "$f"
+              continue
+            fi
+            d=$(mktemp -d)
+            tar xf "$f" -C "$d"
+            ( cd "$d" && tar czf "$OLDPWD/$stem.repacked.tar.gz" --format=ustar ./* )
+            rm -rf "$d" "$f"
+            mv "$stem.repacked.tar.gz" "$stem.tar.gz"
+            after=$(gzip -dc "$stem.tar.gz" | dd bs=1 skip=257 count=5 2>/dev/null)
+            printf '  %-26s V7 -> ustar  [%s] -> [%s]  %s bytes\n' \
+              "$f" "$before" "$after" "$(wc -c < "$stem.tar.gz")"
+            [ "$after" = ustar ] || { echo "  REPACK DID NOT TAKE for $f"; exit 1; }
+          done
+          echo "  --- what the box will see in /in ---"
+          ls -1 . | sed 's/^/    /'
+
       - name: 'PROBE: the exact tar command, outside bubblewrap'
         run: |
           set -eu
