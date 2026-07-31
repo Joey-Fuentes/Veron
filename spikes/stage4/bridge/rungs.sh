@@ -1260,7 +1260,10 @@ if [ "$R5" = ok ]; then
   fi
 
   if [ "$R6" != FAIL ]; then
-    say "    stock 4.7.4: $(grep -c aarch64 "$g47/gcc/config.gcc" 2>/dev/null || echo 0) aarch64 mentions in config.gcc (expect 0)"
+    # grep -c PRINTS 0 AND EXITS 1 when there are no matches, so `|| echo 0`
+    # appended a second zero and the log read "stock 4.7.4: 0\n0 aarch64
+    # mentions". `|| true` keeps the count and drops the duplicate.
+    say "    stock 4.7.4: $(grep -c aarch64 "$g47/gcc/config.gcc" 2>/dev/null || true) aarch64 mentions in config.gcc (expect 0)"
 
     _nf=$(ls /in/gcc47-aarch64-newfiles.tar.gz 2>/dev/null | head -1)
     _pf=$(ls /in/gcc47-aarch64-changed.patch 2>/dev/null | head -1)
@@ -1276,13 +1279,23 @@ if [ "$R5" = ok ]; then
       say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_r1)"
       [ "$_r1" = 0 ] || sed 's/^/      /' /tmp/bp1.err | head -4
 
-      say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: patch -p1 -d $g47 < $_pf"
-      patch -p1 -d "$g47" < "$_pf" > /tmp/bp2.out 2>&1
+      # busybox patch HAS NO -d. That is GNU patch's "change directory first"
+      # flag; busybox's usage lists only -p, -i, -R, -N, -E and --dry-run. So
+      # cd into the tree and use -i, both of which it does have.
+      #
+      # Third flag in this job that GNU has and busybox does not, after
+      # `tr -dc '[:print:]'` and `od -j`. The pattern is worth naming: a flag
+      # working on the runner says nothing about whether it works in the box,
+      # and busybox answers an unknown flag by printing usage and exiting 1 --
+      # which reads as a failure of the operation rather than of the invocation.
+      say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: (cd $g47 && patch -p1 -i $_pf)"
+      ( cd "$g47" && patch -p1 -i "$_pf" ) > /tmp/bp2.out 2>&1
       _r2=$?
       say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_r2)"
       tail -6 /tmp/bp2.out 2>/dev/null | sed 's/^/      /'
 
-      _n=$(grep -c aarch64 "$g47/gcc/config.gcc" 2>/dev/null || echo 0)
+      _n=$(grep -c aarch64 "$g47/gcc/config.gcc" 2>/dev/null || true)
+      [ -n "$_n" ] || _n=0
       say "    after backport: $_n aarch64 mentions in config.gcc"
       say "    aarch64 backend files: $(find "$g47/gcc/config/aarch64" -type f 2>/dev/null | wc -l)"
       # THE CHECK THAT MATTERS. 0 here means the delta did not land, and
