@@ -619,6 +619,52 @@ CCAUTO="$CC $HOSTED -static"
 # and never involve libtool at all.
 LDF="-static"
 
+# A WRAPPER, BECAUSE NEITHER CC NOR LDFLAGS SURVIVED.
+#
+#   -static in CC       libtool parses the compile command, keeps what it
+#                       recognises, and builds its OWN link line. Stripped.
+#   -static in LDFLAGS  passed to configure, and binutils STILL produced a
+#                       dynamic as:
+#
+#                           interp: PRESENT -- ld-linux-aarch64.so.1
+#                           /work/prefix/bin/as  rc=126  Permission denied
+#
+# So stop trying to persuade the build system and remove the choice. cc-static
+# is a two-line script that appends -static to whatever it is handed, and it is
+# what CC points at. libtool can rewrite the argument list however it likes;
+# the flag is not in the argument list, it is in the compiler.
+#
+# This is the same move as tcc-ar: when a build system insists on calling a
+# tool by name with flags of its own choosing, give it a tool that already does
+# the right thing.
+mkdir -p "$PFX/bin"
+cat > "$PFX/bin/cc-static" <<CCWRAP
+#!/bin/sh
+exec CCBIN -B TCCDIR -I/usr/include -L/usr/lib -static "\$@"
+CCWRAP
+sed -i -e "s|CCBIN|$CC_BIN|" -e "s|-B TCCDIR|-B$TCCDIR|" "$PFX/bin/cc-static"
+chmod 0755 "$PFX/bin/cc-static"
+CCAUTO="$PFX/bin/cc-static"
+
+say ""
+say "  === the compiler every autoconf rung will use ==="
+sed 's/^/    /' "$PFX/bin/cc-static"
+# PROVE THE WRAPPER PRODUCES A STATIC BINARY before four rungs depend on it.
+( cd /tmp && rm -f w.c w.bin
+  printf '#include <stdio.h>\nint main(void){printf("wrapper ok\\n");return 0;}\n' > w.c
+  if "$CCAUTO" -o w.bin w.c 2>/tmp/w.err && ./w.bin >/tmp/w.out 2>&1; then
+    printf '    compiles and runs: %s\n' "$(cat /tmp/w.out)"
+    if grep -aq 'ld-musl\|ld-linux' w.bin; then
+      say "    STILL DYNAMIC -- the wrapper is not taking"
+    else
+      say "    statically linked: yes"
+    fi
+  else
+    say "    WRAPPER FAILED:"
+    head -3 /tmp/w.err | sed 's/^/      /'
+  fi
+  rm -f w.c w.bin )
+
 # THE LFS SHAPE: DECLARE A CROSS BUILD SO autoconf STOPS RUNNING ITS TESTS.
 #
 # make's configure died here:
@@ -1172,9 +1218,21 @@ ARSHIM
   # MAKEINFO=true: texinfo is borrowed by stage 4 and absent here. See rung 6.
   if timeout 3000 make -j"$NP" MAKEINFO=true AR="$AR" RANLIB="$RANLIB" > build.log 2>&1 \
      && make install MAKEINFO=true AR="$AR" RANLIB="$RANLIB" > /dev/null 2>&1; then
+    # ok MEANS THE TOOLS RUN, NOT THAT THE FILES EXIST. The last run reported
+    # rung 4 ok and rung 5 ok while `as` could not be executed at all, so the
+    # frontier was reported three rungs further along than it was.
     R4=ok
     for t in as ld ar ranlib; do
-      printf '    %-8s %s\n' "$t" "$( [ -x "$PFX/bin/$t" ] && wc -c < "$PFX/bin/$t" || echo ABSENT )"
+      if [ ! -x "$PFX/bin/$t" ]; then
+        printf '    %-8s ABSENT\n' "$t"; R4=FAIL; continue
+      fi
+      if "$PFX/bin/$t" --version >/dev/null 2>&1; then
+        printf '    %-8s %10s bytes  runs\n' "$t" "$(wc -c < "$PFX/bin/$t")"
+      else
+        printf '    %-8s %10s bytes  WILL NOT RUN (rc=%s)\n' "$t" \
+          "$(wc -c < "$PFX/bin/$t")" "$("$PFX/bin/$t" --version >/dev/null 2>&1; echo $?)"
+        R4=FAIL
+      fi
     done
 
     # POPULATE THE TOOLDIR gcc WILL ACTUALLY LOOK IN.
