@@ -97,12 +97,24 @@ untar() {          # $1 = path prefix, e.g. /in/musl
     # SUCCEEDED and only the log could not be opened. A dry run under dash hit
     # exactly that.
     case "$_t" in
-        *.tar.gz)  tar -zxf "$_t" 2>/tmp/untar.err ;;
-        *.tar.xz)  tar -Jxf "$_t" 2>/tmp/untar.err ;;
-        *.tar.bz2) tar -jxf "$_t" 2>/tmp/untar.err ;;
+        *.tar.gz)  _flag=-zxf ;;
+        *.tar.xz)  _flag=-Jxf ;;
+        *.tar.bz2) _flag=-jxf ;;
         *)         say "    unknown archive type: $_t"; return 1 ;;
     esac
-    if [ $? = 0 ]; then
+
+    # THE COMMAND, PRINTED BEFORE IT RUNS. Several rounds here have argued
+    # about what was being executed rather than reading it. The working
+    # directory is printed too, because `tar` extracts relative to it and a
+    # failed `cd` earlier in a rung has already sent one extraction somewhere
+    # nobody was looking.
+    say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: tar $_flag $_t"
+    say "    (cwd: $(pwd))"
+    tar "$_flag" "$_t" 2>/tmp/untar.err
+    _rc=$?
+    say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_rc)"
+
+    if [ "$_rc" = 0 ]; then
         return 0
     fi
     say "    tar refused $_t ($(wc -c < "$_t") bytes):"

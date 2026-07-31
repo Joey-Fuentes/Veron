@@ -256,6 +256,63 @@ jobs:
           echo "  box laid out: $(du -sh "$BOX" | cut -f1)"
           echo "  /usr/include present? $( [ -d "$BOX/usr/include" ] && echo YES || echo no )"
 
+      - name: 'PROBE: the exact tar command, outside bubblewrap'
+        run: |
+          set -eu
+          # THE SAME BINARY, THE SAME FILE, NO SANDBOX.
+          #
+          # In the box, `tar -zxf /in/make-4.4.tar.gz` is refused with "invalid
+          # tar magic" while the identical call opens musl-1.2.5.tar.gz. Three
+          # runs of diagnostics inside the box have not settled why, and two of
+          # those diagnostics turned out to be broken themselves. So run the
+          # command outside, where host tools are available to check the answer.
+          #
+          # This discriminates in one step:
+          #   busybox fails here too      -> busybox tar vs this tarball
+          #   busybox works here          -> something about the box, not the file
+          #   host tar fails too          -> the download is bad
+          B="$BOX/bin/busybox"
+          echo "  busybox: $("$B" 2>&1 | head -1)"
+          echo
+          for f in pins/musl-*.tar.gz pins/make-*.tar.gz; do
+            [ -f "$f" ] || continue
+            echo "  ===== $f  ($(wc -c < "$f") bytes) ====="
+            echo "    first 4 bytes: $(dd if="$f" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -s ' ')"
+
+            # 1. host GNU tar, listing only
+            if tar -tzf "$f" > /dev/null 2>/tmp/hosttar.err; then
+              echo "    host tar -tzf     : OK  ($(tar -tzf "$f" 2>/dev/null | wc -l) members)"
+            else
+              echo "    host tar -tzf     : FAILED  $(head -1 /tmp/hosttar.err)"
+            fi
+
+            # 2. the box's busybox, same flags, no sandbox
+            rm -rf /tmp/bbx && mkdir -p /tmp/bbx
+            if ( cd /tmp/bbx && "$B" tar -zxf "$OLDPWD/$f" ) 2>/tmp/bbtar.err; then
+              echo "    busybox tar -zxf  : OK  ($(ls /tmp/bbx | tr '\n' ' '))"
+            else
+              echo "    busybox tar -zxf  : FAILED  $(head -2 /tmp/bbtar.err | tr '\n' ' ')"
+            fi
+
+            # 3. busybox on the DECOMPRESSED bytes, which separates the -z path
+            #    from the archive itself
+            gzip -dc "$f" > /tmp/probe.tar
+            rm -rf /tmp/bbx2 && mkdir -p /tmp/bbx2
+            if ( cd /tmp/bbx2 && "$B" tar -xf /tmp/probe.tar ) 2>/tmp/bbtar2.err; then
+              echo "    busybox tar -xf   : OK on the decompressed file"
+            else
+              echo "    busybox tar -xf   : FAILED  $(head -2 /tmp/bbtar2.err | tr '\n' ' ')"
+            fi
+
+            # 4. the header fields, carved with dd and formatted with od
+            echo "    name  (0)   : $(dd if=/tmp/probe.tar bs=1 count=16      2>/dev/null | od -c | head -1)"
+            echo "    type  (156) : $(dd if=/tmp/probe.tar bs=1 skip=156 count=1 2>/dev/null | od -c | head -1)"
+            echo "    magic (257) : $(dd if=/tmp/probe.tar bs=1 skip=257 count=8 2>/dev/null | od -c | head -1)"
+            echo "    host tar says format: $(tar -tvf /tmp/probe.tar 2>/dev/null | head -1)"
+            rm -f /tmp/probe.tar
+            echo
+          done
+
       - name: 'SEAL: enumerate every executable in the box and enforce the budget'
         run: |
           set -eu
