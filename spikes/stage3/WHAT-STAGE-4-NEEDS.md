@@ -65,7 +65,15 @@ shape for isolating codegen and measures nothing here.
 
 ## 3. What mc-tcc is today
 
-**It has tcc's compiler and not tcc's command-line driver.** micro-c compiles
+**A note on "tcc".** The tree is tcc at pin `5ec0e6f8` **plus
+`spikes/stage3/patches/tcc-arm64-asm/`** — five patches supplying an ARM64
+assembler upstream lacks, baked into the committed tarball
+(`toolbox/README.md:77`) and re-applied by the workflows. Stage 3's deliverable
+is therefore *tcc-at-pin-plus-five-patches*, not tcc, and that delta is carried
+debt of a different kind from the host borrow list. What micro-c compiles, it
+compiles with no change made for micro-c's benefit.
+
+**It has tcc's compiler and its command-line driver.** micro-c compiles
 `libtcc.c` under `ONE_SOURCE=1`, which pulls in `tccpp.c` (4005 lines),
 `tccgen.c` (8917), `tccelf.c`, `tccasm.c`, `tccdbg.c`, `tccrun.c` and the whole
 aarch64 backend — 695 functions. That is the compiler, and it is real.
@@ -160,9 +168,13 @@ collisions, so this is neither new nor the SIGBUS cause — but it means a strin
 reference may bind to another unit's string. Invisible to every test we run,
 because the twelve programs and all 87 difftest cases are single-unit.
 
-**2. realloc.** 46 of 57 real failures in tcc's own `tests2` (see
-`MICRO-C.md`). gcc 4.7.4 is thousands of TUs; nothing at that scale compiles
-while an allocator dies on a 60-line test.
+**2. Heap corruption — the allocated list loses nodes.** Reported as
+`realloc: pointer was never returned by malloc`, which is 46 of 57 real
+failures in tcc's own `tests2`, but the message is a symptom: the block is
+allocated and its node is intact, and the list simply does not reach it. See
+`MICRO-C.md` for the measurement that settled it and the four hypotheses it
+killed. gcc 4.7.4 is thousands of TUs; nothing at that scale compiles while the
+heap corrupts on a 60-line one.
 
 **3. The libc-facing surface, entirely unmeasured.** Header search into
 `/usr/include`, `crt1.o`/`crti.o`/`crtn.o` lookup, `-L`/`-l`, linking against

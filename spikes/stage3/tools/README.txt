@@ -2066,3 +2066,60 @@ VERIFIED FROM A PRISTINE TREE at b1361a3 plus this overlay:
 WHAT IS LEFT. realloc -- step 11 now fails on it honestly rather than on a
 harness defect, and it is 46 of 57 real failures across tcc's tests2. That is
 the whole of the remaining distance to a tcc that autoconf can drive.
+
+--------------------------------------------------------------------------------
+realloc IS A SYMPTOM. The allocated list is losing nodes.
+--------------------------------------------------------------------------------
+
+Four hypotheses died before the right question got asked. The right question
+was "what is actually AT that address", which the earlier table_ident hunt had
+already used and which nothing here tried for three rounds.
+
+    realloc: bad ptr        = 5779744
+    realloc: nearest block  = 5779456      +288
+    realloc: nearest size   = 256          ptr is 32 past its end
+    realloc: ptr[-4] (next?)= 6927552
+    realloc: ptr[-3] (blk?) = 5779744      EQUALS THE BAD POINTER
+    realloc: ptr[-2] (size?)= 256
+    realloc: ptr[-1] (used?)= 1            _IN_USE
+
+The 32 bytes below the pointer are a struct _malloc_node whose block field is
+that pointer, marked in use. THE BLOCK IS ALLOCATED, ITS NODE IS INTACT, AND
+THE LIST DOES NOT REACH IT. The message was true of the LIST and false of the
+HEAP.
+
+288 IS NOT A STRUCTURE SIZE. It is the allocator's stride for a minimum block:
+a 32-byte node plus a 256-byte block. The earlier note that "288 bytes apart"
+might name a shared structure invited exactly the wrong reading, and this entry
+retracts it. A recurring number is worth a grep and is not evidence.
+
+RULED OUT BY MEASUREMENT, in the order they were tried and killed:
+
+  1. the malloc/realloc signature mismatch -- main-06 crosses that boundary and
+     passes. Written up as the answer before it was tested. Wrong.
+  2. the allocator's reuse logic -- main-07, seven shapes, all pass
+  3. use-after-free -- free-list walk silent, AND disabling free() entirely
+     reproduces it unchanged. That is the strongest of the four: with nothing
+     ever leaving the list, a stale pointer is impossible.
+  4. interior pointer / tal_header_t skip -- range walk silent
+  5. duplicate symbols -- _allocated_list, _free_list, malloc, free, realloc,
+     _malloc_insert_block all defined exactly once
+
+WHAT IT IS: a next pointer in the chain has been clobbered, so the walk stops
+early. Heap corruption by a store with a wrongly-computed address, upstream of
+the allocator entirely -- the same shape as the table_ident report, which was
+recorded as closed and probably never was.
+
+NEXT, AND NO WATCHPOINT NEEDED: a monotonic count of nodes inserted, compared
+to the reachable count at every allocator entry. The first divergence brackets
+the corruption between two allocator calls; the marker trail names the
+function from there. qemu-user's gdbstub answers Z0/Z1 and refuses Z2/Z3/Z4, so
+watchpoints are not available and this is the route.
+
+AND THE WORDING FIX OWED FROM LAST ROUND: "micro-c compiles tcc.c unmodified"
+meant "without the measurement stub", not "pristine upstream". The tcc tree is
+tcc at pin 5ec0e6f8 PLUS spikes/stage3/patches/tcc-arm64-asm/ -- five patches
+supplying an ARM64 assembler upstream lacks, applied into the committed tarball
+(toolbox/README.md:77) and re-applied by the workflows. Stage 3's deliverable is
+tcc-at-pin-plus-five-patches, not tcc. The accurate claim is that micro-c
+compiles all of tcc.c with NO change made for micro-c's benefit.

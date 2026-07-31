@@ -40,9 +40,96 @@ everything asked of it; something upstream is producing an address that was
 never a block.
 
 Costs one list walk on a path that ends in exit().
+
+--------------------------------------------------------------------------------
+SECOND ROUND: the diagnostic answered, and the answer was not what it looked
+like.
+
+The three-way split above says the pointer is not on the free list and not
+interior to a live block. Extended here to print the pointer, the nearest
+block, the signed distance, that block's size, the requested size, the whole
+allocated and free lists, and -- the one that settled it -- THE MEMORY AT THE
+POINTER AND THE FOUR WORDS BELOW IT.
+
+Measured, mc-tcc compiling tests2/00_assignment.c with tcc-test-shim:
+
+    realloc: bad ptr        = 5779744
+    realloc: nearest block  = 5779456      +288, one allocation stride
+    realloc: nearest size   = 256          so ptr is 32 bytes past its end
+    realloc: live blocks    = 15
+    realloc: ptr[-4] (next?)= 6927552
+    realloc: ptr[-3] (blk?) = 5779744      <-- EQUALS THE BAD POINTER
+    realloc: ptr[-2] (size?)= 256
+    realloc: ptr[-1] (used?)= 1            <-- _IN_USE
+
+The 32 bytes below the pointer are a `struct _malloc_node` whose `block` field
+is exactly that pointer, whose size is 256 and whose used flag says IN USE.
+
+THE BLOCK IS ALLOCATED. ITS NODE IS INTACT. THE LIST DOES NOT REACH IT.
+
+So `realloc: pointer was never returned by malloc` was true of the LIST and
+false of the HEAP, and every reading of it as an allocator bug or a caller bug
+was chasing a symptom.
+
+RULED OUT, each by measurement:
+
+  * the allocator's logic -- main-06 and main-07 pass, the latter over seven
+    reuse shapes written for this
+  * use-after-free -- the free-list walk here does not fire, AND disabling
+    free() entirely (nothing ever leaves the allocated list) reproduces the
+    failure unchanged
+  * an interior pointer or a tal header skip -- the range walk here does not
+    fire
+  * the malloc/realloc signature mismatch between M2libc and micro-c-libc --
+    real, worth tidying, and not this
+  * duplicate symbols -- _allocated_list, _free_list, malloc, free, realloc and
+    _malloc_insert_block are each defined exactly once in the link
+
+WHAT IS LEFT is that the allocated list is losing nodes: a `next` pointer
+somewhere in the chain has been clobbered, so the walk stops early and every
+node beyond it is invisible while its block stays live. That is heap
+corruption by a store with a wrongly-computed address, upstream of the
+allocator entirely -- the same shape as the earlier table_ident report, and
+288 keeps appearing because it is the allocator's stride for a minimum block
+(32-byte node + 256-byte block), not because it is a structure size.
+
+NEXT, AND IT NEEDS NO WATCHPOINT: keep a monotonic count of nodes inserted and
+compare it to the reachable count at every allocator entry. The first
+divergence brackets the corruption between two allocator calls, which is what
+the marker trail can then name. Watchpoints are unavailable under qemu-user --
+gdbstub answers Z0/Z1 and refuses Z2/Z3/Z4 -- so this is the available route.
+--------------------------------------------------------------------------------
+
 --- a/stdlib.c
 +++ b/stdlib.c
-@@ -423,9 +423,53 @@
+@@ -390,6 +390,26 @@
+ 	return ptr;
+ }
+ 
++/* A LABELLED NUMBER, straight to fd 2. stdlib.c is compiled BEFORE stdio.c and
++ * bootstrappable.c in M2libc's own build order, so fputs and int2str do not
++ * exist yet -- the same constraint the big-allocation reporter works under. */
++void _malloc_write_num(char* label, long v)
++{
++	char digits[24];
++	int at = 24;
++	int neg = 0;
++	unsigned long u;
++	int i = 0;
++	while(0 != label[i]) i = i + 1;
++	write(2, label, i);
++	if(v < 0) { neg = 1; u = -v; } else u = v;
++	if(0 == u) { at = at - 1; digits[at] = 48; }
++	while(0 != u) { at = at - 1; digits[at] = 48 + (u % 10); u = u / 10; }
++	if(neg) { at = at - 1; digits[at] = 45; }
++	write(2, digits + at, 24 - at);
++	write(2, "\n", 1);
++}
++
+ void* realloc(void* ptr, unsigned size)
+ {
+ 	if(0 == size)
+@@ -423,9 +443,123 @@
  
  	if(old_alloc_size == 0)
  	{
@@ -95,7 +182,77 @@ Costs one list walk on a path that ends in exit().
 +			if(d < best) best = d;
 +			k = k->next;
 +		}
-+		_malloc_die("realloc: not a block; bytes to the NEAREST block start is", best);
++		/* WHICH SIDE, AND HOW FAR. A distance alone cannot tell "one
++		 * allocation stride too far" from "unrelated address". The stride
++		 * here is sizeof(struct _malloc_node) + the 256-byte minimum block,
++		 * so a pointer exactly one stride ABOVE a real block is a computed
++		 * address that ran off the end of the list, and one BELOW is a
++		 * header the caller skipped. */
++		long signed_best = 0;
++		long nblocks = 0;
++		long abs_best = 0x7FFFFFFF;
++		struct _malloc_node* q = _allocated_list;
++		while(NULL != q)
++		{
++			long d = ((char*)ptr) - ((char*)q->block);
++			long ad = d;
++			if(ad < 0) ad = -ad;
++			if(ad < abs_best) { abs_best = ad; signed_best = d; }
++			nblocks = nblocks + 1;
++			q = q->next;
++		}
++		_malloc_write_num("realloc: bad ptr        = ", (long)ptr);
++		_malloc_write_num("realloc: nearest block  = ", (long)ptr - signed_best);
++		_malloc_write_num("realloc: ptr - nearest  = ", signed_best);
++		_malloc_write_num("realloc: live blocks    = ", nblocks);
++		/* IS ptr PAST THE END OF THE NEAREST BLOCK? An overrun and a stale
++		 * pointer look identical as a distance and need opposite fixes. */
++		long nsize = 0;
++		struct _malloc_node* z = _allocated_list;
++		while(NULL != z)
++		{
++			if(((char*)z->block) == (((char*)ptr) - signed_best)) nsize = z->size;
++			z = z->next;
++		}
++		_malloc_write_num("realloc: nearest size   = ", nsize);
++		_malloc_write_num("realloc: past its end by= ", signed_best - nsize);
++		_malloc_write_num("realloc: requested size = ", (long)size);
++		/* THE WHOLE LIST. If the address is a plausible block boundary but no
++		 * node claims it, the question is whether the LIST is missing an
++		 * entry -- and only the list itself can answer that. */
++		/* WHAT IS ACTUALLY THERE. The earlier table_ident hunt identified an
++		 * object by reading its first words -- token numbers meant a token
++		 * string, not a Sym. Same question here: an address that is not a
++		 * block still points at SOMETHING, and what it points at names who
++		 * computed it. */
++		long* pw = ptr;
++		_malloc_write_num("realloc: word[0] at ptr = ", pw[0]);
++		_malloc_write_num("realloc: word[1] at ptr = ", pw[1]);
++		_malloc_write_num("realloc: word[2] at ptr = ", pw[2]);
++		/* and the four words BELOW it -- a node header is next/block/size/used */
++		long* pb = ptr;
++		pb = pb - 4;
++		_malloc_write_num("realloc: ptr[-4] (next?)= ", pb[0]);
++		_malloc_write_num("realloc: ptr[-3] (blk?) = ", pb[1]);
++		_malloc_write_num("realloc: ptr[-2] (size?)= ", pb[2]);
++		_malloc_write_num("realloc: ptr[-1] (used?)= ", pb[3]);
++		write(2, "realloc: --- allocated ---\n", 27);
++		struct _malloc_node* w = _allocated_list;
++		while(NULL != w)
++		{
++			_malloc_write_num("  block = ", (long)w->block);
++			_malloc_write_num("   size = ", (long)w->size);
++			w = w->next;
++		}
++		write(2, "realloc: --- free ---\n", 22);
++		struct _malloc_node* y = _free_list;
++		while(NULL != y)
++		{
++			_malloc_write_num("  block = ", (long)y->block);
++			_malloc_write_num("   size = ", (long)y->size);
++			y = y->next;
++		}
++		_malloc_die("realloc: pointer is not a block", best);
  	}
  
  	copy_size = old_alloc_size;

@@ -885,104 +885,70 @@ the multi-TU gap instead of codegen, and reported it as 57 codegen failures.
 
 ## The next piece of work
 
-**THE OPEN FRONTIER: realloc is handed an address that was never a block.**
+**THE OPEN FRONTIER: the allocated list loses nodes. realloc is the symptom.**
 
-Reproduction, about a minute, no instrumentation:
-
-```
-    cat tests/tests2/00_assignment.c            > u.c
-    grep -v '^int main(void);$' crt.c          >> u.c
-    mc-tcc -B<tcc-src> -I<shim> -nostdlib -static -o m.bin u.c
-```
-
-### What it is not
-
-Each ruled out by measurement, and each ruling-out is cheap to redo:
-
-* **Not the allocator.** `main-06-realloc.c` passes.
-  `main-07-realloc-sequences.c` was written for this and passes too -- seven
-  shapes main-06 does not reach: a block reused from the free list, chained
-  reallocs, a grow with another block freed in between, a shrink, sixty-four
-  allocations of churn before growing the *oldest* block, twenty-four reallocs
-  interleaved with mallocs, and content survival across a move.
-* **Not a use-after-free.** m2libc patch 0011 walks `_free_list` before dying.
-  The pointer is not on it.
-* **Not an interior pointer or a header skip.** 0011 also checks whether the
-  address falls inside any live block. It does not -- so it is not
-  `((tal_header_t *)p) - 1`, which was the obvious guess.
-* **Not the malloc/realloc signature mismatch.** M2libc defines
-  `malloc(unsigned)` and `realloc(void*, unsigned)` -- four bytes since zzw --
-  while `micro-c-libc/stdlib.h` declares both with `unsigned long`. That is a
-  real disagreement and worth tidying, but it is **not this bug**: the probes
-  above cross the same boundary and pass. It was the first hypothesis here and
-  it was wrong.
-
-### What is known
-
-The address is in the heap region, is not a block start in either list, and is
-not interior to any live block. 0011 reports the distance to the nearest block
-start:
+Reproduction, about a minute:
 
 ```
-    realloc: not a block; bytes to the NEAREST block start is (288)
+    mc-tcc -B<tcc-src> -I<shim> -nostdlib -static -o t2.bin \
+        tests/tests2/00_assignment.c <shim>/crt.c
 ```
 
-**288 is not a new number in this file.** The earlier frontier -- the two-slot
-write into `table_ident`, recorded above as closed -- reported its two
-overwritten values as `288 bytes apart`. Whether that is the same structure is
-**not established**, and it must not be assumed. It is written down because the
-coincidence is worth one grep by whoever picks this up, and because "already
-closed" is exactly the reason nobody looked again. That frontier section stood
-in this file describing a fault that had stopped reproducing before the round
-that finally read it.
-
-### Where to look next
-
-The five `SIGNAL 11 during compile` failures are a separate set and may or may
-not share a cause; nothing here has looked at them. `_Generic` is a genuine
-missing feature and is the only failure in the sweep that is honestly a
-*feature* gap rather than a defect.
-
-The instrumentation loop in `local-tcc.sh` -- `INST_MODE=entry` over
-`tccpp.c` and `libtcc.c` -- is the tool for naming the call site, and it has
-not been run on this yet. Read the warnings in `tools/README.txt` first: four
-instrument bugs during the last hunt produced false negatives that were acted
-on, and three "ruled out" conclusions had to be retracted.
-
-### Multi-file input: CLOSED, and it was never a compiler fault
-
-**mc-tcc is now built from `tcc.c` -- tcc's own `main`.** EXPERIMENT-zzzf taught
-micro-c the one declaration that stood in the way, `static const ArHdr
-arhdr_init` at tcctools.c:60, and tcc.c compiles unmodified: 707 functions
-against libtcc's 695.
+m2libc patch 0011 prints the pointer, the nearest block, that block's size, the
+whole allocated and free lists, and the memory at the pointer:
 
 ```
-    $ mc-tcc --version
-    tcc version 0.9.28rc (AArch64 Linux)
+    realloc: bad ptr        = 5779744
+    realloc: nearest block  = 5779456     +288, one allocation stride
+    realloc: nearest size   = 256         ptr is 32 bytes past its end
+    realloc: live blocks    = 15
+    realloc: ptr[-4] (next?)= 6927552
+    realloc: ptr[-3] (blk?) = 5779744     <-- EQUALS THE BAD POINTER
+    realloc: ptr[-2] (size?)= 256
+    realloc: ptr[-1] (used?)= 1           <-- _IN_USE
 ```
 
-`-E`, `-c`, `-print-search-dirs` and **multiple input files** all work now,
-because they are tcc's code and always were. Two files in one invocation
-compile, link and run.
+**The 32 bytes below the pointer are a `struct _malloc_node` whose `block`
+field is exactly that pointer, marked in use.** The block is allocated. Its
+node is intact. The list does not reach it.
 
-What had looked like a codegen frontier was `micro-c-libc/impl/main-tcc.c`, a
-175-line driver of our own holding `char* input = 0;` -- one pointer, overwritten
-by each file. `stage3-hermetic-arm64` step 11 passes a test and a crt, so it
-compiled the crt alone and reported `undefined symbol 'main'`: a true message
-about an invalid test, recorded as a stage-3 failure for several rounds. That
-driver is superseded, kept only for bisecting "compiler or driver", and it now
-REFUSES a second input rather than silently keeping the last.
+So `pointer was never returned by malloc` is true of the LIST and false of the
+HEAP, and every reading of it as an allocator bug or a caller bug was chasing
+a symptom. The allocated list is losing nodes: a `next` somewhere in the chain
+has been clobbered, the walk stops early, and every node past it is invisible
+while its block stays live.
 
-**And a second fault surfaced only when tcc.c was linked.** The `.M1` join split
-two ways, at `# Program strings`, which left each unit's GLOBALS glued to its
-code. A global holding a string is arbitrary-length data between one unit's code
-and the next unit's functions -- harmless while libtcc.M1's globals happened to
-total a multiple of four, and fatal once tcc.c added
+**That is heap corruption by a store with a wrongly-computed address, upstream
+of the allocator entirely** — the same shape as the earlier `table_ident`
+report. And **288 is not a structure size**: it is the allocator's stride for a
+minimum block, a 32-byte node plus a 256-byte block. Reading it as a structure
+size, as the earlier note invited, points nowhere.
 
-    :GLOBAL_STORAGE_version   "tcc version 0.9.28rc (AArch64 Linux)\n"
+### Ruled out, each by measurement
 
-Every function after it landed misaligned: SIGBUS before `main`. The join is
-three-way now, in `local-tcc.sh` and in the workflow. It was latent in both.
+* **the allocator's logic** — `main-06-realloc.c` passes, and
+  `main-07-realloc-sequences.c`, written for this, passes over seven reuse
+  shapes: free-list reuse, chained reallocs, a grow with another block freed
+  between, a shrink, sixty-four allocations of churn before growing the
+  *oldest* block, twenty-four reallocs interleaved with mallocs, content
+  survival across a move
+* **use-after-free** — the free-list walk does not fire, and **disabling
+  `free()` entirely**, so nothing ever leaves the allocated list, reproduces
+  the failure unchanged
+* **an interior pointer or a `tal_header_t` skip** — the range walk does not
+  fire
+* **the malloc/realloc signature mismatch** between M2libc (`unsigned`) and
+  `micro-c-libc/stdlib.h` (`unsigned long`) — real, worth tidying, and not this
+* **duplicate symbols** — `_allocated_list`, `_free_list`, `malloc`, `free`,
+  `realloc` and `_malloc_insert_block` are each defined exactly once
+
+### The next probe, and it needs no watchpoint
+
+Keep a monotonic count of nodes inserted and compare it to the reachable count
+at every allocator entry. The first divergence brackets the corruption between
+two allocator calls, and the marker trail in `local-tcc.sh` can then name the
+function. Watchpoints are unavailable under qemu-user — the gdbstub answers
+`Z0`/`Z1` and refuses `Z2`/`Z3`/`Z4` — so this is the available route.
 
 ---
 
