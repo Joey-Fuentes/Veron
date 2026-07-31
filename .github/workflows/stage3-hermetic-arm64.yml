@@ -1343,42 +1343,256 @@ jobs:
           fi
           echo "    stage 3 end to end: $s3ok"
 
-          say "11. tcc's OWN TEST SUITE -- one test, compiled and run"
-          # tests2/00_assignment.c is the first file in tcc's own suite and the
-          # simplest: three printf("%d") calls and a return. It wants <stdio.h>,
-          # a printf, and something to call main() -- none of which this box
-          # has, so spikes/stage3/tcc-test-shim supplies them in C that mc-tcc
-          # compiles itself. No make, no configure, no harness: two source files
-          # in, one binary out, its output compared against the .expect file
-          # that ships with tcc.
-          if [ "$s3ok" = yes ]; then
-            SH=/src/stage3/tcc-test-shim
-            T2=/in/tcc-src/tests/tests2
-            b=00_assignment
-            set +e
-            timeout 25 /out/mc-tcc -B/in/tcc-src -I"$SH" -nostdlib -static \
-                        -o t2.bin "$T2/$b.c" "$SH/crt.c" 2>t2.err
-            c2=$?
-            set -e
-            if [ "$c2" != 0 ] || [ ! -s t2.bin ]; then
-              echo "    $b: COMPILE FAILED rc=$c2"
-              grep -av '^[A-Z][0-9]*$' t2.err | head -30 | sed 's/^/        /'
-              s3ok=no
-            else
-              chmod 0755 t2.bin
-              set +e; ./t2.bin > t2.out 2>&1; r2=$?; set -e
-              echo "    $b: exit=$r2, $(wc -c < t2.out) bytes of output"
-              echo "      got:"      ; sed 's/^/        /' t2.out
-              echo "      expected:" ; sed 's/^/        /' "$T2/$b.expect"
-              if cmp -s t2.out "$T2/$b.expect"; then
-                echo "      MATCHES tcc's OWN .expect FILE"
+          say "11. tcc's OWN TEST SUITE -- every tests2 program, compiled and run"
+          # tcc ships 129 programs in tests/tests2, each with a .expect file
+          # holding the exact output it must produce. They want <stdio.h>, a
+          # printf and something to call main() -- none of which this box has,
+          # so spikes/stage3/tcc-test-shim supplies them in C that mc-tcc
+          # compiles itself. No make, no configure, no harness: two source
+          # files in, one binary out, output compared against tcc's own file.
+          #
+          # .expect IS THE WHOLE CRITERION, AND THAT IS DELIBERATE. tcc-two-ways
+          # builds a gcc control from the same source and uses it to decide
+          # which tests are even applicable -- a test the control cannot pass is
+          # measuring a gap in the shim (no malloc, no file I/O, no floats)
+          # rather than a defect in the compiler we built. THERE IS NO CONTROL
+          # IN HERE, because a control needs gcc and gcc is not in the budget.
+          # So this step does not attribute its failures: it reports how many of
+          # tcc's own programs a seed-built tcc reproduces byte for byte, which
+          # is a number that needs no control to be true. Read the attribution
+          # off tcc-two-ways; read the count off here.
+          #
+          # 00_assignment IS STILL THE GATE. It is the simplest program in the
+          # suite and the one stage 3 has always been measured on, so it alone
+          # moves s3ok. Everything else here is measured and reported and never
+          # fails the run -- see the note on step 13 for why that is the right
+          # way round while the frontier is still moving.
+          SH=/src/stage3/tcc-test-shim
+          T2=/in/tcc-src/tests/tests2
+          if [ -s /out/mc-tcc ]; then
+            t2pass=0; t2diff=0; t2cf=0; t2n=0
+            : > t2-fail.txt
+            for c in "$T2"/*.c; do
+              [ -e "$c" ] || continue
+              b=${c##*/}; b=${b%.c}
+              [ -f "$T2/$b.expect" ] || continue
+              t2n=$((t2n + 1))
+              # REMOVED BEFORE, NOT AFTER. A failed compile leaves the PREVIOUS
+              # test's binary sitting there, `[ ! -s t2.bin ]` is then false,
+              # and the run that follows reads a stale binary and reports its
+              # output as this test's. This file already records that exact
+              # mistake costing two local results.
+              rm -f t2.bin t2.out t2.err
+              set +e
+              timeout 60 /out/mc-tcc -B/in/tcc-src -I"$SH" -nostdlib -static \
+                          -o t2.bin "$c" "$SH/crt.c" 2>t2.err
+              c2=$?
+              set -e
+              if [ "$c2" != 0 ] || [ ! -s t2.bin ]; then
+                t2cf=$((t2cf + 1))
+                why=$(grep -av '^[A-Z][0-9]*$' t2.err | head -1 | cut -c1-58)
+                [ "$c2" -gt 128 ] && why="SIGNAL $((c2 - 128)) during compile"
+                printf '    %-34s COMPILE rc=%-4s %s\n' "$b" "$c2" "$why" >> t2-fail.txt
               else
-                echo "      DIFFERS from tcc's .expect"
-                s3ok=no
+                chmod 0755 t2.bin
+                set +e; timeout 25 ./t2.bin > t2.out 2>&1; set -e
+                if cmp -s t2.out "$T2/$b.expect"; then
+                  t2pass=$((t2pass + 1))
+                else
+                  t2diff=$((t2diff + 1))
+                  printf '    %-34s RAN, output differs\n' "$b" >> t2-fail.txt
+                fi
+              fi
+              # THE GATE, measured inside the same loop so it cannot drift from
+              # the sweep the way a separately-written copy of one test would.
+              if [ "$b" = 00_assignment ]; then
+                if [ "$c2" != 0 ] || [ ! -s t2.bin ]; then
+                  echo "    00_assignment: COMPILE FAILED rc=$c2"
+                  grep -av '^[A-Z][0-9]*$' t2.err | head -30 | sed 's/^/        /'
+                  s3ok=no
+                elif cmp -s t2.out "$T2/$b.expect"; then
+                  echo "    00_assignment: exit ok, MATCHES tcc's OWN .expect FILE"
+                  sed 's/^/        /' t2.out
+                else
+                  echo "    00_assignment: DIFFERS from tcc's .expect"
+                  echo "      got:"      ; sed 's/^/        /' t2.out
+                  echo "      expected:" ; sed 's/^/        /' "$T2/$b.expect"
+                  s3ok=no
+                fi
+              fi
+            done
+            echo
+            echo "    tests2: $t2pass of $t2n reproduce tcc's own .expect byte for byte"
+            echo "            $t2diff ran with different output, $t2cf would not compile"
+            if [ -s t2-fail.txt ]; then
+              echo "    the ones that did not:"
+              head -60 t2-fail.txt
+              [ "$(wc -l < t2-fail.txt)" -gt 60 ] && echo "    ... $(( $(wc -l < t2-fail.txt) - 60 )) more"
+            fi
+          else
+            echo "    skipped: no mc-tcc was produced"
+            s3ok=no
+          fi
+
+          say "12. tcctest.c -- the file tcc's own test1/test2/test3 begin with"
+          # tcc's Makefile runs test1 as
+          #     tcc -run tcc.c -run tcctest.c
+          # so tcctest.c is the gate for all three of test1, test2 and test3:
+          # nothing downstream of it can be measured until it compiles. It is
+          # one 3,600-line file exercising most of C, which makes it a much
+          # wider net than tests2 and a single yes/no rather than a score.
+          #
+          # NOT RUN, ONLY COMPILED. Running it needs a libc this box does not
+          # have; compiling it is the part that is about our compiler.
+          if [ -s /out/mc-tcc ] && [ -f "$T2/../tcctest.c" ]; then
+            rm -f tcctest.o tt.err
+            set +e
+            timeout 120 /out/mc-tcc -B/in/tcc-src -I/in/tcc-src -I"$SH" \
+                        -w -c -o tcctest.o "$T2/../tcctest.c" 2>tt.err
+            ttrc=$?
+            set -e
+            if [ "$ttrc" = 0 ] && [ -s tcctest.o ]; then
+              echo "    tcctest.c: COMPILES -- $(wc -c < tcctest.o) byte object"
+              echo "    test1/test2/test3 are reachable; they need -run and a libc"
+            else
+              echo "    tcctest.c: does NOT compile, rc=$ttrc"
+              [ "$ttrc" -gt 128 ] && echo "      SIGNAL $((ttrc - 128))"
+              grep -av '^[A-Z][0-9]*$' tt.err | head -6 | sed 's/^/      /'
+              echo "      test1/test2/test3 cannot start until this compiles"
+            fi
+          else
+            echo "    skipped: no mc-tcc, or no tcctest.c in the pinned tree"
+          fi
+
+          say '13. SELF-COMPILATION -- toward gen2 == gen3'
+          # THE QUESTION THIS RUNG EXISTS TO ANSWER. tcc-two-ways shows the gcc
+          # side reaching a fixpoint -- gen1 builds gen2 builds gen3 and the last
+          # two are byte-identical -- and that is the property a self-hosting
+          # compiler has. Our side has never been measured against it, so this
+          # walks the same three steps and reports exactly which one it stops on.
+          #
+          # IT IS EXPECTED TO STOP, AND IT STILL RUNS EVERY TIME. A step that
+          # only runs once the thing already works tells you nothing on the way
+          # there; the useful output while a frontier is moving is WHICH step and
+          # WHAT ERROR, recorded every run so a change that moves it by one step
+          # is visible immediately. Nothing here touches s3ok.
+          if [ -s /out/mc-tcc ]; then
+            # THE INCLUDE ORDER IS PART OF THE TEST, so it is written down.
+            # tcc's OWN include/ comes first: gen1 is a real tcc and its
+            # stdarg.h is the one it is entitled to. M2libc's stdarg.h is
+            # written in M2-Planet's dialect and a real tcc cannot parse it --
+            # searched first, it fails on line 21 and the run says nothing
+            # about our compiler. micro-c-libc and M2libc follow, for the
+            # headers this box has no system copy of.
+            L=/src/stage3/micro-c-libc
+            M=/in/m2libc-veron
+            INC="-I . -I /in/tcc-src/include -I $L -I $M"
+            # A HEADER ERROR HERE IS A LIBRARY GAP, NOT A CODEGEN RESULT, and
+            # the two are worth keeping apart. micro-c-libc was written for
+            # micro-c, which has the fixed-width types built in; a real tcc
+            # wants them declared, so time.h stops on int32_t. That is a real
+            # obstacle to self-hosting and it is not a defect in gen1. Read a
+            # header error as "the runtime headers are the next piece of work".
+            echo "    gen1: mc-tcc, built by micro-c from the seed"
+            printf '      %10s bytes  %s\n' \
+              "$(wc -c < /out/mc-tcc)" "$(sha256sum /out/mc-tcc | cut -c1-16)"
+
+            # STEP A -- can gen1 compile tcc's source at all? This is the part
+            # that is purely about code generation, before any linking question.
+            # Same rule as the loop above: clear every artefact first, so a
+            # failed step cannot be read through a file an earlier one left.
+            rm -f gen2.o gen3.o gen2 gen3 rt.o sj.o
+            set +e
+            ( cd /in/tcc-src && timeout 900 /out/mc-tcc \
+                -D ONE_SOURCE=1 -D TCC_TARGET_LINUX=1 -D CONFIG_TCC_STATIC=1 \
+                -B /in/tcc-src $INC \
+                -w -c -o /work/gen2.o tcc.c ) 2>/work/gen2.err
+            g2rc=$?
+            set -e
+            if [ "$g2rc" = 0 ] && [ -s gen2.o ]; then
+              echo "    step A: gen1 COMPILES tcc.c -- $(wc -c < gen2.o) byte object"
+            else
+              echo "    step A: gen1 cannot compile tcc.c, rc=$g2rc"
+              [ "$g2rc" -gt 128 ] && echo "      SIGNAL $((g2rc - 128))"
+              grep -av '^[A-Z][0-9]*$' /work/gen2.err | head -6 | sed 's/^/      /'
+              echo "      STOPS HERE. gen2 cannot be built, so gen3 and the"
+              echo "      fixpoint are not attempted this run."
+            fi
+
+            # STEP B -- link gen2. The runtime under it is the same one mc-tcc
+            # itself stands on, compiled here by gen1 rather than by micro-c,
+            # which is the part that makes this self-compilation rather than a
+            # rebuild with someone else's libc.
+            if [ "$g2rc" = 0 ] && [ -s gen2.o ]; then
+              set +e
+              timeout 300 /out/mc-tcc -B/in/tcc-src -I"$L" -I"$M" -w -c \
+                          -o rt.o "$L/impl/runtime.c" 2>rt.err
+              rtrc=$?
+              timeout 300 /out/mc-tcc -B/in/tcc-src -I"$L" -I"$M" -w -c \
+                          -o sj.o "$L/impl/setjmp-aarch64.c" 2>sj.err
+              sjrc=$?
+              set -e
+              if [ "$rtrc" != 0 ] || [ "$sjrc" != 0 ]; then
+                echo "    step B: the runtime will not compile (runtime rc=$rtrc, setjmp rc=$sjrc)"
+                grep -av '^[A-Z][0-9]*$' rt.err | head -3 | sed 's/^/      /'
+              else
+                set +e
+                timeout 300 /out/mc-tcc -B/in/tcc-src -nostdlib -static \
+                            -o gen2 gen2.o rt.o sj.o 2>lk.err
+                lkrc=$?
+                set -e
+                if [ "$lkrc" = 0 ] && [ -s gen2 ]; then
+                  chmod 0755 gen2
+                  echo "    step B: gen2 LINKS"
+                  printf '      %10s bytes  %s\n' \
+                    "$(wc -c < gen2)" "$(sha256sum gen2 | cut -c1-16)"
+                else
+                  echo "    step B: gen2 will not link, rc=$lkrc"
+                  grep -av '^[A-Z][0-9]*$' lk.err | head -6 | sed 's/^/      /'
+                  echo "      STOPS HERE."
+                fi
+              fi
+            fi
+
+            # STEP C -- gen2 compiles tcc.c, and gen3 must match gen2 byte for
+            # byte. THE COMPARISON IS gen2 AGAINST gen3, NEVER gen1 AGAINST
+            # gen2: gen1 was built by a different compiler, so it is entitled to
+            # differ. Two successive generations from the SAME compiler are not.
+            if [ -s gen2 ] && [ -x gen2 ]; then
+              set +e
+              ( cd /in/tcc-src && timeout 900 /work/gen2 \
+                  -D ONE_SOURCE=1 -D TCC_TARGET_LINUX=1 -D CONFIG_TCC_STATIC=1 \
+                  -B /in/tcc-src $INC \
+                  -w -c -o /work/gen3.o tcc.c ) 2>/work/gen3.err
+              g3rc=$?
+              set -e
+              if [ "$g3rc" != 0 ] || [ ! -s gen3.o ]; then
+                echo "    step C: gen2 cannot compile tcc.c, rc=$g3rc"
+                grep -av '^[A-Z][0-9]*$' /work/gen3.err | head -6 | sed 's/^/      /'
+              else
+                set +e
+                timeout 300 /work/gen2 -B/in/tcc-src -nostdlib -static \
+                            -o gen3 gen3.o rt.o sj.o 2>lk3.err
+                l3rc=$?
+                set -e
+                if [ "$l3rc" = 0 ] && [ -s gen3 ]; then
+                  printf '    gen2  %10s bytes  %s\n' \
+                    "$(wc -c < gen2)" "$(sha256sum gen2 | cut -c1-16)"
+                  printf '    gen3  %10s bytes  %s\n' \
+                    "$(wc -c < gen3)" "$(sha256sum gen3 | cut -c1-16)"
+                  if cmp -s gen2 gen3; then
+                    echo "    FIXPOINT: gen2 and gen3 are byte-identical"
+                  else
+                    echo "    NO FIXPOINT: gen2 and gen3 differ"
+                  fi
+                else
+                  echo "    step C: gen3 will not link, rc=$l3rc"
+                  grep -av '^[A-Z][0-9]*$' lk3.err | head -4 | sed 's/^/      /'
+                fi
               fi
             fi
           else
-            echo "    skipped: stage 3 did not get this far"
+            echo "    skipped: no mc-tcc was produced"
           fi
 
           say 'DONE -- inside the box'
