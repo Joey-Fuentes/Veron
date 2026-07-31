@@ -663,6 +663,20 @@ jobs:
           #
           # This is the same class as `patch -d` and `tr -dc`: what busybox
           # supports is a property of THIS BINARY, not of busybox.
+          # gawk AS A WRAPPER, BECAUSE m4 AND bison BOTH PROBE FOR IT BY NAME.
+          #
+          # busybox has awk and not gawk, and a symlink will not do: it
+          # dispatches on argv[0], so a link named gawk makes it answer
+          # "gawk: applet not found". The tool-probe hit exactly that and it
+          # read like a missing tool rather than a wrong link.
+          #
+          # busybox awk handles what these configures use -- ENVIRON, -f, gsub,
+          # printf, match, all measured in tool-probe -- so the wrapper is
+          # honest rather than a stand-in for something absent.
+          printf '#!/bin/busybox sh\nexec /bin/busybox awk "$@"\n' > "$BOX/bin/gawk"
+          chmod 0755 "$BOX/bin/gawk"
+          echo "  gawk -> busybox awk (wrapper, not a symlink: argv[0] dispatch)"
+
           echo "  --- POSIX tools this busybox does NOT have ---"
           missing=""
           for a in split comm join csplit paste expand unexpand fold fmt nl \
@@ -808,7 +822,13 @@ jobs:
           printf '    %-12s %10s  %s\n' ref-tcc "$(wc -c < "$BOX/work/ref-tcc")" \
             "$(sha256sum "$BOX/work/ref-tcc" | cut -c1-16)"
 
-          printf '%s\n' $BUDGET_PATH $BUDGET_DRIVER | sort -u > /tmp/declared
+          # gawk IS DECLARED, because it is a real file in /bin rather than a
+          # symlink and the check below would otherwise fail it as undeclared.
+          # It is not a host binary: it is a two-line wrapper this workflow
+          # writes, calling the busybox we built. Saying so here keeps the SEAL
+          # meaning "nothing arrived that we did not put there" rather than
+          # quietly widening to "nothing arrived except the things we forgot".
+          printf '%s\n' $BUDGET_PATH $BUDGET_DRIVER gawk | sort -u > /tmp/declared
           find "$BOX/bin" -type f -printf '%f\n' | sort -u > /tmp/actual
           undeclared=$(comm -13 /tmp/declared /tmp/actual || true)
           if [ -n "$undeclared" ]; then
@@ -816,7 +836,10 @@ jobs:
             printf '%s\n' "$undeclared" | sed 's/^/    /'
             exit 1
           fi
-          echo "  SEALED. $(wc -l < /tmp/declared) host binaries, $(printf '%s' "$BUDGET_PATH" | wc -w) of them on the build path."
+          echo "  SEALED. $(wc -l < /tmp/declared) declared entries in /bin:"
+          echo "    busybox  -- built by this workflow from a pinned tarball"
+          echo "    gawk     -- a wrapper around it, written by this workflow"
+          echo "  $(printf '%s' "$BUDGET_PATH" | wc -w) of them on the build path."
 
       - name: 'IN THE BOX: ref-tcc -> musl -> make -> binutils -> gcc 4.7.4'
         run: |

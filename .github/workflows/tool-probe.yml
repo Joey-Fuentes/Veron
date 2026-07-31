@@ -150,9 +150,21 @@ jobs:
           # msgfmt is likewise passed through as a no-op stub rather than
           # trapped: it is gettext, every real rung passes --disable-nls, and
           # trapping it only reproduces a configuration we never use.
-          for a in gawk awk; do
-            $B --list | grep -qx awk && ln -sf "$B" "$T/$a"
-          done
+          # A WRAPPER, NOT A SYMLINK, AND THE DIFFERENCE MATTERS.
+          #
+          # `ln -sf busybox gawk` does not give you awk. busybox dispatches on
+          # argv[0], so a link named gawk makes it look for a gawk APPLET and
+          # answer "gawk: applet not found" -- which reads exactly like the
+          # missing tool the last run was trying to rule out. m4 then failed at
+          # config.status, and bison at the POSIXLY_CORRECT probe, both for a
+          # reason the real box does not have.
+          #
+          # `exec busybox awk "$@"` names the applet explicitly.
+          if $B --list | grep -qx awk; then
+            printf '#!/bin/sh\nexec %s awk "$@"\n' "$B" > "$T/gawk"
+            printf '#!/bin/sh\nexec %s awk "$@"\n' "$B" > "$T/awk"
+            chmod 0755 "$T/gawk" "$T/awk"
+          fi
           printf '#!/bin/sh\nexit 0\n' > "$T/msgfmt"; chmod 0755 "$T/msgfmt"
 
           for a in mawk nawk comm join split csplit paste expand unexpand \
@@ -204,13 +216,28 @@ jobs:
                 # --disable-nls, because every rung that builds these passes
                 # it. Without it configure reaches for msgfmt and gettext and
                 # reports a requirement we have arranged never to have.
-                timeout 420 ./configure --prefix=/tmp/x-$d --disable-nls > c.log 2>&1
+                # OUT-OF-TREE, BECAUSE glibc REFUSES ANYTHING ELSE:
+                #     configure: error: you must configure in a separate
+                #     build directory
+                # Every other package tolerates it, so all of them get the same
+                # treatment rather than glibc getting a special case.
+                mkdir -p _b && cd _b
+                timeout 420 ../configure --prefix=/tmp/x-$d --disable-nls > c.log 2>&1
               else
                 echo "    no configure script" >> "$L"; exit 0
               fi
               rc=$?
               set -e
               echo "    configure rc=$rc" >> "$L"
+              # flex AND bison BOTH NEED flex, AND THAT IS AN ORDERING FACT.
+              #     configure: error: cannot find output from flex; giving up
+              # bison's scanner ships pre-generated, so bison builds without
+              # flex -- but its CONFIGURE checks anyway and stops. flex needs
+              # flex to regenerate its own scanner. So the real chain builds
+              # flex first, and the probe cannot tell us more than that.
+              if grep -q "cannot find output from flex" c.log 2>/dev/null; then
+                echo "      ^ needs flex present; flex must be built before this" >> "$L"
+              fi
               # THE rc IS THE USEFUL COLUMN AND IT NEEDS A REASON BESIDE IT.
               # rc=0 with traps caught means the tool was OPTIONAL -- Python
               # and perl both did that. rc!=0 means something actually stopped,
