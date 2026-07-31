@@ -1386,6 +1386,32 @@ if [ "$R5" = ok ]; then
   # builds its docs. Here it is absent, and gcc's make would stop on the info
   # targets having compiled the entire compiler -- a failure about
   # documentation that reads like a failure about the compiler.
+  # WHAT xgcc WILL BE HANDED WHEN IT BUILDS libgcc.
+  #
+  # libgcc's configure runs the freshly built xgcc with
+  #
+  #     -B$PFX/aarch64-unknown-linux-gnu/bin/  -B.../lib/
+  #     -isystem .../include  -isystem .../sys-include
+  #
+  # Those four directories are gcc's idea of "the target's toolchain and
+  # headers". binutils here was configured WITHOUT --target, so it is a native
+  # binutils and installed to $PFX/bin -- nothing was ever put under
+  # $PFX/aarch64-unknown-linux-gnu/. Printing it before the build turns a
+  # "cannot compute suffix of object files" forty minutes in into one line
+  # here.
+  say "    --- what xgcc will be given for the target ---"
+  for _d in "$PFX/aarch64-unknown-linux-gnu/bin" "$PFX/aarch64-unknown-linux-gnu/lib" \
+            "$PFX/aarch64-unknown-linux-gnu/include" "$PFX/aarch64-unknown-linux-gnu/sys-include"; do
+    if [ -d "$_d" ]; then
+      printf '      %-52s %s entries\n' "${_d#$PFX/}" "$(ls "$_d" 2>/dev/null | wc -l)"
+    else
+      printf '      %-52s MISSING\n' "${_d#$PFX/}"
+    fi
+  done
+  printf '      %-52s %s\n' "as / ld reachable on PATH" \
+    "$(command -v as >/dev/null 2>&1 && echo yes || echo NO) / $(command -v ld >/dev/null 2>&1 && echo yes || echo NO)"
+  printf '      %-52s %s\n' "cc1 built" "$( [ -x gcc/cc1 ] && echo yes || echo not-yet )"
+
   if [ "$R6" != FAIL ] && timeout 5400 make -j"$NP" MAKEINFO=true > build.log 2>&1; then
     R6=ok
     say "    xgcc:    $( [ -x gcc/xgcc ] && wc -c < gcc/xgcc || echo ABSENT )"
@@ -1404,10 +1430,20 @@ if [ "$R5" = ok ]; then
       _d=$(dirname "$_cl")
       grep -q "error:" "$_cl" 2>/dev/null || continue
       say "    --- $_d/config.log ---"
-      say "        the failing test:"
-      grep -nE "^configure:[0-9]+: (error|.*conftest)" "$_cl" 2>/dev/null | tail -8 | sed 's/^/          /'
-      say "        what the compiler said:"
-      grep -aE "error:|cannot find|not found|undefined" "$_cl" 2>/dev/null | head -8 | sed 's/^/          /'
+      # PRINT THE LINES AROUND THE FAILURE, NOT EVERY ERROR IN THE FILE.
+      #
+      # Grepping the whole config.log for "error" surfaces autoconf's own
+      # harmless probes -- `-V`, `-qversion`, a deliberate `choke me` -- and
+      # buries the one message that matters. config.log is chronological: the
+      # failing conftest command, then the compiler's output, then
+      # "configure: error:". So find that last line and print what precedes it.
+      _ln=$(grep -n "^configure:[0-9]*: error:" "$_cl" 2>/dev/null | head -1 | cut -d: -f1)
+      if [ -n "$_ln" ]; then
+        _from=$((_ln - 30)); [ "$_from" -lt 1 ] && _from=1
+        sed -n "${_from},${_ln}p" "$_cl" 2>/dev/null | sed 's/^/          /'
+      else
+        tail -25 "$_cl" 2>/dev/null | sed 's/^/          /'
+      fi
     done
     say "    --- where it stopped ---"
     grep -nE "error:|internal compiler error|undefined reference" build.log 2>/dev/null \
