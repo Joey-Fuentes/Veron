@@ -1,0 +1,112 @@
+From: Veron
+Subject: [PATCH] cc_core: promote by rank, not by position in global_types
+
+promote_type walked global_types and returned the FIRST entry whose name
+matched either operand, so which type won was decided by DECLARATION ORDER
+rather than by the types. That is right whenever the wider type happens to be
+registered first. `int` is registered early, so anything that met an `int` and
+was declared later simply lost -- and every typedef is declared later:
+
+    unsigned long x;   x >> 43      shr_rax,cl     logical, correct
+    u64           x;   x >> 43      sar_rax,cl     arithmetic, WRONG
+
+Same width, same signedness, different answer, because `u64` is a typedef. The
+promoted type came back as `int` carrying is_signed = TRUE, so EVERY UNSIGNED
+TYPEDEF IN THE PROGRAM was signed as far as codegen was concerned. Division and
+comparison went the same way: a probe of shift, division and comparison returns
+42 through a typedef and 0 with the primitive spelled out.
+
+WHAT IT COST. tcc's elf.h:34 says
+
+    typedef unsigned long long int  uint64_t;
+
+so this was every uint64_t in tcc. arm64_movi encodes a value whose only set
+bit is bit 63 with
+
+    if (!(x & ~(m << 48)))
+        return 0xd2e00000 | r | x >> 43;             arm64-gen.c:184
+
+and an arithmetic shift turns 0x100000 into 0xfff00000, so the emitted word was
+0xfff00001 -- not an aarch64 encoding at all. tests2/118_switch died with
+SIGILL on the one case range in the file whose low bound is exactly LONG_MIN;
+`LONG_MIN+1 ... -1` was fine, which is what made it look like a switch bug.
+
+HOW IT WAS FOUND, because the first two answers were wrong. The README lists
+"every integer literal is truncated to 32 bits" as the known blocker and this
+looked like it -- but a direct probe of bare 64-bit literals AGREES on both
+columns, so that item is stale: zzb and the widening closed it. The second
+answer was that a typedef loses is_signed in mirror_type; instrumenting
+mirror_type shows it copying src_signed=0 correctly. Only instrumenting
+promote_type's INPUTS showed both operands arriving intact and the wrong one
+being returned. Reading the emitted instruction and then the compiler's own
+branch is what worked, again.
+
+THE RULE NOW. Wider wins; at equal width the unsigned one wins, which is C's
+rule for equal rank. A pointer is wider than an int and still wins, which is
+what the old walk produced for pointer arithmetic. Case 110 remains a declared
+KNOWN GAP: this is not the full usual arithmetic conversions, it is the
+selection rule those conversions need underneath them.
+
+---
+diff --git a/cc_core.c b/cc_core.c
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -2029,18 +2029,46 @@
+ 
+ 	if(a == b) return a;
+ 
+-	struct type* i;
+-	for(i = global_types; NULL != i; i = i->next)
+-	{
+-		if(a->name == i->name) break;
+-		if(b->name == i->name) break;
+-		if(a->name == i->indirect->name) break;
+-		if(b->name == i->indirect->name) break;
+-		if(a->name == i->indirect->indirect->name) break;
+-		if(b->name == i->indirect->indirect->name) break;
+-	}
+-	require(NULL != i, "impossible case 3 in promote_type\n");
+-	return i;
++	/* PICK BY RANK, NOT BY POSITION IN global_types.
++	 *
++	 * This used to walk global_types and return the FIRST entry whose name
++	 * matched EITHER operand, so which type won was decided by DECLARATION
++	 * ORDER rather than by the types. That is right whenever the wider type
++	 * happens to be registered first. `int` is registered early, so anything
++	 * that met an `int` and was declared later simply lost -- and every
++	 * typedef is declared later:
++	 *
++	 *     unsigned long x;   x >> 43     shr_rax,cl    logical, correct
++	 *     u64           x;   x >> 43     sar_rax,cl    arithmetic, WRONG
++	 *
++	 * Same width, same signedness, different answer, because `u64` is a
++	 * typedef. The promoted type came back as `int` carrying is_signed =
++	 * TRUE, so EVERY UNSIGNED TYPEDEF IN THE PROGRAM was signed as far as
++	 * codegen was concerned. Division and comparison went the same way.
++	 *
++	 * WHAT IT COST. tcc's elf.h:34 says
++	 *     typedef unsigned long long int  uint64_t;
++	 * so this was every uint64_t in tcc. arm64_movi encodes a value whose
++	 * only set bit is bit 63 with
++	 *     if (!(x & ~(m << 48)))
++	 *         return 0xd2e00000 | r | x >> 43;        arm64-gen.c:184
++	 * and an arithmetic shift turns 0x100000 into 0xfff00000, so the emitted
++	 * word was 0xfff00001 -- not an aarch64 encoding at all.
++	 * tests2/118_switch died with SIGILL, on the one case range in the file
++	 * whose low bound is exactly LONG_MIN. `LONG_MIN+1 ... -1` was fine,
++	 * which is what made it look like a switch bug for two rounds.
++	 *
++	 * THE RULE. Wider wins; at equal width the unsigned one wins, which is
++	 * C's rule for equal rank. A pointer is wider than an int and still wins,
++	 * which is what the old walk produced for pointer arithmetic. Case 110
++	 * stays a declared KNOWN GAP: this is not the full usual arithmetic
++	 * conversions, it is the selection rule those conversions need under
++	 * them. */
++	if(a->size > b->size) return a;
++	if(b->size > a->size) return b;
++	if(!a->is_signed) return a;
++	if(!b->is_signed) return b;
++	return a;
+ }
+ 
+ /* ADVANCE A TEMP REGISTER BY AN IMMEDIATE.
