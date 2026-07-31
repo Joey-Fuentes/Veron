@@ -223,44 +223,101 @@ jobs:
           # over is one binary and its hash, which is the same discipline the
           # oracle uses in stage3-hermetic-arm64.
 
+      # THE CACHE HOLDS dl/, NOT pins/, AND THE DIFFERENCE MATTERS.
+      #
+      # Later steps MUTATE pins: the repack rewrites V7 tarballs as ustar, and
+      # the backport derivation deletes gcc 4.8.5 and adds two derived files.
+      # Caching pins would save that mutated state and the next run would
+      # restore a directory with the donor already gone -- a cache that breaks
+      # the job on its second run and looks like a source problem.
+      #
+      # So dl/ is downloads only and is never written to after the fetch; pins/
+      # is rebuilt from it every run and is free to be mangled.
+      #
+      # Keyed on the version set, so bumping any version misses and refetches.
+      # These are pinned immutable release tarballs, so re-downloading 200 MB
+      # every run buys nothing and costs a whole run each time an upstream is
+      # briefly unreachable -- which is what happened: 134 seconds to fail to
+      # reach musl.libc.org, and the job with it.
+      - uses: actions/cache@v4
+        with:
+          path: dl
+          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-v1
+
       - name: Fetch pinned upstreams (airlock -- nothing here enters the box)
         run: |
           set -eu
-          mkdir -p pins && cd pins
-          GNU=https://ftp.gnu.org/gnu
-          get() {
-            echo "  fetching $(basename "$1")"
-            curl -fsSL --retry 3 --max-time 600 -O "$1" \
-              || { echo "  FETCH FAILED: $1"; exit 1; }
-          }
-          get "https://musl.libc.org/releases/musl-$MUSL_VER.tar.gz"
-          get "$GNU/make/make-$MAKE_VER.tar.gz"
-          get "$GNU/binutils/binutils-$BINUTILS.tar.xz"
-          get "$GNU/gmp/gmp-$GMP_VER.tar.xz"
-          get "$GNU/mpfr/mpfr-$MPFR_VER.tar.xz"
-          get "$GNU/mpc/mpc-$MPC_VER.tar.gz"
-          get "$GNU/gcc/gcc-$GCC47/gcc-$GCC47.tar.bz2"
-          get "$GNU/gcc/gcc-$GCC48/gcc-$GCC48.tar.bz2"
-          echo "  --- what came in ---"
-          sha256sum ./* | sed 's/^/    /'
-          # HASHES ARE PRINTED, NOT YET ENFORCED. sources/musl.toml already
-          # carries musl's; the others belong in sources/*.toml before this
-          # job is anything but exploratory, and saying so here is cheaper
-          # than a comment that claims they are pinned when they are not.
+          mkdir -p dl && cd dl
 
-      - name: 'AIRLOCK: tcc source for mc-tcc''s -B directory'
-        run: |
-          set -eu
-          # NOT A COMPILATION. mc-tcc needs a -B directory holding tcc's
-          # include/ and its libtcc1.a; the source tree is that directory, and
-          # it is the same pin plus the same five arm64 patches the climb used.
-          # GITHUB FIRST, verified by rev-parse -- see tools/clone-pinned.sh.
-          # repo.or.cz timed out at 133 s and failed a whole reference run.
-          . "$GITHUB_WORKSPACE/tools/clone-pinned.sh"
-          clone_pinned tccsrc "$TCC_SHA" \
-            "https://github.com/TinyCC/tinycc.git https://repo.or.cz/tinycc.git"
-          bash spikes/stage3/patches/tcc-arm64-asm/apply-series.sh tccsrc
-          echo "  -B tree ready: $(find tccsrc/include -name '*.h' 2>/dev/null | wc -l) headers"
+          # MIRRORS, AND A SHORT CONNECT TIMEOUT SO A DEAD ONE COSTS SECONDS.
+          #
+          # A run died with
+          #
+          #     curl: (28) Failed to connect to musl.libc.org port 443
+          #           after 134279 ms
+          #
+          # -- two and a half minutes to discover one host was down, and then
+          # the whole job with it. tools/clone-pinned.sh already does this for
+          # git ("the first mirror that answers"); this is the same idea for
+          # tarballs. --connect-timeout 20 means an unreachable mirror costs 20
+          # seconds, not 134.
+          #
+          # ftpmirror.gnu.org is GNU's own round-robin redirector and is tried
+          # first for that reason; ftp.gnu.org is the canonical host and goes
+          # last because it is the one that is busy.
+          GNU_MIRRORS="https://ftpmirror.gnu.org
+                       https://mirrors.kernel.org/gnu
+                       https://mirror.csclub.uwaterloo.ca/gnu
+                       https://ftp.gnu.org/gnu"
+          MUSL_MIRRORS="https://musl.libc.org/releases
+                        https://distfiles.macports.org/musl
+                        https://ftp.barfooze.de/pub/sabotage/tarballs"
+
+          fetch() {   # $1 = newline-separated mirror list, $2 = path under each
+            _out=$(basename "$2")
+            if [ -s "$_out" ]; then
+              printf '  cached  %-30s %10s bytes\n' "$_out" "$(wc -c < "$_out")"
+              return 0
+            fi
+            for _m in $1; do
+              if curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 \
+                      -o "$_out.part" "$_m/$2" 2>/dev/null; then
+                mv "$_out.part" "$_out"
+                printf '  fetched %-30s %10s bytes  from %s\n' \
+                  "$_out" "$(wc -c < "$_out")" "$_m"
+                return 0
+              fi
+              echo "    no answer from $_m"
+            done
+            rm -f "$_out.part"
+            echo "  ALL MIRRORS FAILED for $2"
+            return 1
+          }
+
+          fetch "$MUSL_MIRRORS" "musl-$MUSL_VER.tar.gz"
+          fetch "$GNU_MIRRORS"  "make/make-$MAKE_VER.tar.gz"
+          fetch "$GNU_MIRRORS"  "binutils/binutils-$BINUTILS.tar.xz"
+          fetch "$GNU_MIRRORS"  "gmp/gmp-$GMP_VER.tar.xz"
+          fetch "$GNU_MIRRORS"  "mpfr/mpfr-$MPFR_VER.tar.xz"
+          fetch "$GNU_MIRRORS"  "mpc/mpc-$MPC_VER.tar.gz"
+          fetch "$GNU_MIRRORS"  "gcc/gcc-$GCC47/gcc-$GCC47.tar.bz2"
+          fetch "$GNU_MIRRORS"  "gcc/gcc-$GCC48/gcc-$GCC48.tar.bz2"
+
+          echo "  --- what came in ---"
+          sha256sum ./*.tar.* 2>/dev/null | sed 's/^/    /'
+          # HASHES ARE PRINTED, NOT YET ENFORCED. sources/musl.toml carries
+          # musl's; the rest belong in sources/*.toml before this job is
+          # anything but exploratory. With a cache in play that matters MORE,
+          # not less -- a cache hit means nobody re-fetched the bytes, so the
+          # only thing standing between the job and a corrupted cache entry
+          # would be a hash check that does not exist yet.
+
+          # pins/ IS THE WORKING COPY. Everything downstream mutates it; dl/ is
+          # left exactly as fetched so the cache stays clean.
+          cd ..
+          rm -rf pins && mkdir -p pins
+          cp dl/*.tar.* pins/
+          echo "  pins/ rebuilt from dl/: $(ls pins | wc -l) files, $(du -sh pins | cut -f1)"
 
       - name: 'AIRLOCK: derive the aarch64 backport as PATCHES the box can apply'
         run: |
