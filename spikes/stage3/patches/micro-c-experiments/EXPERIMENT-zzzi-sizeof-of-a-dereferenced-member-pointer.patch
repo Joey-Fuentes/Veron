@@ -1,0 +1,127 @@
+A unary `*` binds looser than a postfix access -- in sizeof too.
+
+THIS IS WHY EVERY BINARY mc-tcc LINKED SEGFAULTED, and it is one line of
+precedence in a place nobody was looking.
+
+    sizeof(*p)          on a plain pointer      CORRECT, and always was
+    sizeof(*s->tab)     through a member        returned the POINTER's width
+
+`sizeof(*s->tab)` is `sizeof(*(s->tab))`. The stars were applied to the BASE
+VARIABLE's type before the member chain was walked, so it measured `(*s).tab`
+instead: it stepped State* down to State, looked `tab` up in that, and reported
+8 rather than the 16 of the struct pointed at. The two forms disagree only when
+a member sits between the star and the name, which is why a plain pointer
+tested fine every round.
+
+EXPERIMENT-zz-entry-20 fixed exactly this precedence for the ordinary
+expression path, in postfix_expr, by deferring the dereference past the postfix
+chain. sizeof kept its own copy of the rule and never learned it. That is the
+tenth "one rule, several implementations, and the copies disagree" in this
+series and the most expensive so far.
+
+WHAT IT COST. tccelf.c:815 sizes the symbol-attribute table with
+
+    tab = tcc_realloc(s1->sym_attrs, n * sizeof(*s1->sym_attrs));
+    memset(s1->sym_attrs + s1->nb_sym_attrs, 0,
+           (n - s1->nb_sym_attrs) * sizeof(*s1->sym_attrs));
+
+so the table was ALLOCATED at half the width its own indexing strides through.
+The first entries sit inside it and the later ones read whatever follows on the
+heap. Measured on tests2/00_assignment, linking the same object two ways, with
+a probe printing every input to the GOT relocation:
+
+    sym_index    control      mc-tcc
+        2        0x18         0x18
+        3        0x20         0x65007374     <-- printable ASCII, from a string
+        4        0x28         0x20
+
+got_sh_addr, addr and sym_index agree exactly; only got_offset is wrong, and
+the sequence shifts down a slot after the bad one. One GOT entry therefore
+resolved to 0x654281f0 instead of 0x420ea0 -- an ADRP page offset of 0x65028000
+against 0x20000 -- and the linked program died on its second string literal.
+
+HOW IT WAS FOUND, because five earlier attempts at this fault were wrong. The
+move that worked was not another probe or another bisection; it was splitting
+tcc's own phases and cross-linking against the control:
+
+    mc-tcc -E     rc=0        preprocessing is fine
+    mc-tcc -c     rc=0        CODE GENERATION IS FINE
+    mc-tcc -c, control links  42 / 64 / 12, 34 -- correct output
+    mc-tcc -c, mc-tcc links   42, then SIGSEGV
+
+That put the whole fault in the linker and cleared codegen in one command,
+after which byte-diffing the two binaries found a single ADRP+LDR pair and the
+probe named the one input that differed. Bisecting the SOURCE had produced two
+confident wrong answers first -- "a declaration after a statement" and "two
+printf calls" -- because both were really measuring heap layout.
+
+WHAT THIS DOES NOT COVER. `sizeof(*x[0])` and `sizeof(**s->tab)` take the same
+path and are now right for the same reason, but a dereference applied to a CALL
+result inside sizeof is untested; nothing in tcc writes one.
+
+    difftest        91 pass / 0 fail amd64, 93 / 0 aarch64, no known gaps
+    the twelve      12 / 12
+    stage-2 corpus  419 / 426, unchanged
+    tests2          pass 56, fail 1, n/a 72   -- was pass 0
+    layout sweep    16 / 16 filename lengths on the 00_assignment shape,
+                    where every length failed before; the layout dependence
+                    is gone rather than moved, which is the actual proof
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -2880,11 +2880,9 @@
+ 		require_extra_token();
+ 
+ 		struct type* a = t->type;
+-		while(num_dereferences > 0)
+-		{
+-			a = a->type;
+-			num_dereferences = num_dereferences - 1;
+-		}
++		/* THE DEREFERENCE IS APPLIED AFTER THE MEMBER CHAIN, NOT BEFORE.
++		 * See the note at the bottom of this block -- `sizeof(*s->tab)` is
++		 * `sizeof(*(s->tab))`, so the star belongs to the MEMBER. */
+ 
+ 		/* `sizeof x->y` and `sizeof x.y`. tccpp.c:1809 writes
+ 		 *     pstrcpy(file->filename, sizeof file->filename, buf);
+@@ -2933,7 +2931,39 @@
+ 			}
+ 			else break;
+ 		}
+-		if(0 != member_array)
++		/* A UNARY `*` BINDS LOOSER THAN A POSTFIX ACCESS -- IN sizeof TOO.
++		 *
++		 * The stars were applied to the BASE VARIABLE's type before the member
++		 * chain was walked, so `sizeof(*s->tab)` measured `(*s).tab` instead
++		 * of `*(s->tab)`: it stepped State* down to State, looked `tab` up in
++		 * it, and reported the POINTER's width. Eight instead of sixteen.
++		 *
++		 * `sizeof(*p)` on a plain pointer was correct and always had been,
++		 * which is why this survived -- the two forms disagree only when a
++		 * member sits between the star and the name. Entry 20 fixed exactly
++		 * this precedence for the ordinary expression path, in
++		 * postfix_expr; sizeof kept its own copy and never learned it.
++		 *
++		 * WHAT IT COST. tccelf.c:815 sizes the sym_attr table with
++		 *     tcc_realloc(s1->sym_attrs, n * sizeof(*s1->sym_attrs))
++		 * so the table was allocated at HALF the space its own indexing
++		 * strides through. The first entries are inside it and the later ones
++		 * read whatever follows on the heap -- a got_offset came back as
++		 * 0x65007374, printable ASCII from a string -- which put one GOT
++		 * relocation at a wild address and segfaulted every linked binary.
++		 *
++		 * A dereference yields the pointed-to type, so it overrides the
++		 * member and array rules below rather than being combined with them. */
++		if(num_dereferences > 0)
++		{
++			while(num_dereferences > 0)
++			{
++				a = a->type;
++				num_dereferences = num_dereferences - 1;
++			}
++			size = a->size;
++		}
++		else if(0 != member_array)
+ 		{
+ 			size = member_array;
+ 		}

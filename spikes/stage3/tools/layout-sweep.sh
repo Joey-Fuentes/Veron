@@ -35,6 +35,17 @@ MCTCC=${1:?usage: layout-sweep.sh <mc-tcc> [source.c] [max-len]}
 SRC=${2:-}
 MAX=${3:-24}
 
+# ABSOLUTE, BECAUSE THIS SCRIPT cd's INTO A TEMP DIRECTORY. A relative
+# `build/local/mc-tcc` then resolves to nothing, every compile fails to start,
+# and the sweep reports a full column of failures that say nothing about the
+# compiler -- the same shape as a harness that never ran. Resolve both paths
+# while the caller's working directory is still current.
+case "$MCTCC" in /*) ;; *) MCTCC="$(cd "$(dirname "$MCTCC")" && pwd)/$(basename "$MCTCC")" ;; esac
+if [ -n "$SRC" ]; then
+    case "$SRC" in /*) ;; *) SRC="$(cd "$(dirname "$SRC")" && pwd)/$(basename "$SRC")" ;; esac
+fi
+[ -x "$MCTCC" ] || { echo "no mc-tcc at $MCTCC"; exit 2; }
+
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
 
 # Default source: the shape of tests2/00_assignment -- a declaration, a
