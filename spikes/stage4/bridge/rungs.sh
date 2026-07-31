@@ -517,44 +517,46 @@ if [ "$R3" = ok ]; then
   # returns a redirect page or a differently-compressed tarball, that is worth
   # one line here rather than a puzzle two rungs later.
   cd /work/src
-  _mk=$(ls /in/make-*.tar.* 2>/dev/null | head -1)
-  if [ -z "$_mk" ]; then
-    say "    no make tarball in /in -- contents:"
-    ls -l /in 2>/dev/null | sed 's/^/      /'
+  # TRY THE MODERN ONE FIRST, FALL BACK TO 3.82.
+  #
+  # This is a discriminating experiment as much as a build. If 4.4 opens and
+  # 3.82 does not, the fault is in that 2010 archive; if neither opens, it is
+  # busybox tar or this invocation, and no make version will help.
+  #
+  # od -c, NOT tr -dc '[:print:]'. busybox tr does not support POSIX character
+  # classes, so the previous run's "ustar magic at offset 257: []" was the
+  # diagnostic deleting its own input rather than the field being empty. A
+  # reading of "nothing is there" that comes from a tool that always returns
+  # nothing is worse than no reading at all.
+  _got=""
+  for _mk in /in/make-$MAKE_ALT.tar.gz /in/make-$MAKE_VER.tar.gz; do
+    [ -f "$_mk" ] || continue
+    say "    --- $_mk  $(wc -c < "$_mk") bytes ---"
+    rm -f /work/make.tar
+    gzip -dc "$_mk" > /work/make.tar 2>/work/gz.err
+    _sz=$(wc -c < /work/make.tar 2>/dev/null || echo 0)
+    say "      gunzip rc=$?  ->  $_sz bytes  (512-aligned: $(( _sz % 512 == 0 )))"
+    say "      offset 0:   $(od -An -c -N16 /work/make.tar 2>/dev/null | head -1)"
+    say "      offset 257: $(od -An -c -j257 -N8 /work/make.tar 2>/dev/null | head -1)"
+    if tar xf /work/make.tar 2>/work/make-tar.err; then
+      say "      extracted"
+      _got=$(ls -d make-* 2>/dev/null | head -1)
+      [ -n "$_got" ] && break
+    else
+      say "      tar refused: $(head -1 /work/make-tar.err 2>/dev/null)"
+    fi
+  done
+  rm -f /work/make.tar
+  if [ -z "$_got" ]; then
+    say "    NO make tarball would open. Both versions refused means this is"
+    say "    busybox tar or the invocation, not the archive -- and no version"
+    say "    of make will fix it."
     R35=FAIL
   else
-    say "    tarball: $_mk  $(wc -c < "$_mk") bytes"
-    say "    magic:   $(od -An -tx1 -N4 "$_mk" | tr -s ' ')"
-    # DECOMPRESS AND DECOMPRESS ALONE, THEN LOOK AT WHAT CAME OUT.
-    #
-    # The magic is 1f 8b -- real gzip -- and busybox decompresses it and then
-    # rejects the tar inside with "invalid tar magic", while musl's tarball
-    # extracts fine with the same busybox and the same flags. So the fault is
-    # in the archive, not in the compression, and the two steps have to be
-    # separated to see which.
-    #
-    # A ustar header carries "ustar" at offset 257 of the first block. If that
-    # is present the archive is well formed and busybox is refusing something
-    # else; if it is absent the download is truncated or is not a tar at all.
-    # Either answer is one line, and neither is reachable while decompression
-    # and extraction are one command.
-    gzip -dc "$_mk" > /work/make.tar 2>/work/gz.err
-    _gzrc=$?
-    say "    gunzip rc=$_gzrc  ->  $(wc -c < /work/make.tar 2>/dev/null || echo 0) bytes"
-    [ -s /work/gz.err ] && sed 's/^/      gz: /' /work/gz.err | head -3
-    say "    ustar magic at offset 257: [$(dd if=/work/make.tar bs=1 skip=257 count=5 2>/dev/null | tr -dc '[:print:]')]"
-    say "    first member name:         [$(dd if=/work/make.tar bs=1 count=32 2>/dev/null | tr -dc '[:print:]')]"
-    if tar xf /work/make.tar 2>/work/make-tar.err; then
-      say "    extracted"
-    else
-      say "    extraction FAILED:"
-      sed 's/^/      /' /work/make-tar.err | head -4
-      R35=FAIL
-    fi
-    rm -f /work/make.tar
+    say "    building $_got"
   fi
   if [ "$R35" != FAIL ]; then
-  cd make-* 2>/dev/null || { say "    no make-* directory after extraction"; R35=FAIL; }
+  cd "$_got" 2>/dev/null || { say "    cannot enter $_got"; R35=FAIL; }
   fi
   if [ "$R35" != FAIL ]; then
   ./configure --prefix="$PFX" --disable-nls CC="$CC $HOSTED" > cfg.log 2>&1
