@@ -535,10 +535,24 @@ jobs:
           echo "  host's compiler; it is here so that a failure in the bridge arm"
           echo "  can be attributed to micro-c rather than to this harness."
 
+      # LOGS ALWAYS -- they are a few hundred KB and they are what gets read
+      # after a failure.
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: stage3-to-stage4-reference
-          path: |
-            box/out/
+          name: stage3-to-stage4-reference-logs
+          path: box/out/logs/
           if-no-files-found: warn
+
+      # THE TOOLCHAIN ONLY IF THE LADDER CLOSED. rungs.sh copies $PFX and the
+      # sysroot into /out only when rung 6 passed, so this step finds nothing
+      # on a failed run and warns instead of uploading 60 MB of half-built
+      # binaries nobody will open.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage3-to-stage4-reference-toolchain
+          path: |
+            box/out/prefix/
+            box/out/sysroot-lib/
+          if-no-files-found: ignore

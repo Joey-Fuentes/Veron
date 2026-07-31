@@ -1392,7 +1392,24 @@ if [ "$R5" = ok ]; then
     say "    cc1:     $( [ -x gcc/cc1 ]  && wc -c < gcc/cc1  || echo ABSENT )"
     say "    cc1plus: $( [ -x gcc/cc1plus ] && wc -c < gcc/cc1plus || echo ABSENT )"
   else
-    R6=FAIL; say "    --- where it stopped ---"
+    R6=FAIL
+    # THE REASON IS IN THE SUB-CONFIGURE'S config.log, NOT IN build.log.
+    #
+    # gcc builds xgcc and then uses it to configure libgcc, libstdc++ and the
+    # rest. When one of those stops at "cannot compute suffix of object files:
+    # cannot compile", build.log carries only that sentence -- the failing
+    # command and its error are in that subdirectory's own config.log, which
+    # nothing has been printing.
+    for _cl in $(find /work/bld -name config.log -newer /work/bld/Makefile 2>/dev/null); do
+      _d=$(dirname "$_cl")
+      grep -q "error:" "$_cl" 2>/dev/null || continue
+      say "    --- $_d/config.log ---"
+      say "        the failing test:"
+      grep -nE "^configure:[0-9]+: (error|.*conftest)" "$_cl" 2>/dev/null | tail -8 | sed 's/^/          /'
+      say "        what the compiler said:"
+      grep -aE "error:|cannot find|not found|undefined" "$_cl" 2>/dev/null | head -8 | sed 's/^/          /'
+    done
+    say "    --- where it stopped ---"
     grep -nE "error:|internal compiler error|undefined reference" build.log 2>/dev/null \
       | grep -v 'make\[' | head -20 | sed 's/^/      /'
     grep -oE '^[^ :]+\.(c|h):[0-9]+:[0-9]*:? *error:' build.log 2>/dev/null \
@@ -1424,10 +1441,32 @@ fi
 printf '%s %s %s %s %s %s %s %s %s\n' \
   "$ARM" "$R0" "$R1" "$R2" "$R3" "$R35" "$R4" "$R5" "$R6" > /out/rungs.txt
 
-mkdir -p /out
-cp -a "$PFX" /out/prefix 2>/dev/null || true
-cp -a "$SYS/lib" /out/sysroot-lib 2>/dev/null || true
-for l in /work/src/*/build.log /work/src/*/cfg.log \
-         /work/src/b-*/build.log /work/src/b-*/cfg.log /work/musl-fail.txt; do
-  [ -f "$l" ] && cp "$l" "/out/$(echo "$l" | tr / _)" 2>/dev/null || true
+# LOGS ALWAYS. BINARIES ONLY IF THE LADDER ACTUALLY CLOSED.
+#
+# This used to copy $PFX and $SYS/lib unconditionally -- binutils' as, ld, ar
+# and ranlib at ~15 MB each, plus gmp/mpfr/mpc, make and musl's 3.2 MB libc.a.
+# Sixty-odd megabytes uploaded on every run, INCLUDING runs that died at rung 2
+# and had nothing worth keeping. On a failure the binaries are the least useful
+# thing in the box; the logs are the only useful thing, and they are small.
+mkdir -p /out/logs
+for l in /work/src/*/config.log /work/src/*/cfg.log /work/src/*/build.log \
+         /work/src/b-*/config.log /work/src/b-*/cfg.log /work/src/b-*/build.log \
+         /work/bld/config.log /work/bld/cfg.log /work/bld/build.log \
+         /work/musl-fail.txt /work/musl-cc.err /work/make-cc.err; do
+  [ -f "$l" ] && cp "$l" "/out/logs/$(echo "${l#/work/}" | tr / _)" 2>/dev/null || true
 done
+# gcc's sub-configures each keep their own, and they are where the reason is.
+for l in $(find /work/bld -name config.log 2>/dev/null | head -20); do
+  cp "$l" "/out/logs/bld_$(echo "${l#/work/bld/}" | tr / _)" 2>/dev/null || true
+done
+say ""
+say "  logs collected: $(ls /out/logs 2>/dev/null | wc -l) files, $(du -sh /out/logs 2>/dev/null | cut -f1)"
+
+if [ "$R6" = ok ]; then
+  cp -a "$PFX" /out/prefix 2>/dev/null || true
+  cp -a "$SYS/lib" /out/sysroot-lib 2>/dev/null || true
+  say "  toolchain kept: rung 6 closed, so the binaries are worth having"
+else
+  say "  toolchain NOT kept: rung 6 did not close, so $(du -sh "$PFX" 2>/dev/null | cut -f1) of"
+  say "  half-built binaries would be uploaded for nothing. Logs only."
+fi
