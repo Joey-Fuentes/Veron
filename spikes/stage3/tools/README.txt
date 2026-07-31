@@ -1956,3 +1956,53 @@ collide when joined. Checked against the WORKING mc-tcc build: identical 80
 collisions. So it is not new and not the SIGBUS cause, but a string reference
 may bind to another unit's string. Invisible to every test we have, because
 the twelve programs and all 87 difftest cases are single-unit.
+
+--------------------------------------------------------------------------------
+A DATA-CORRUPTION BUG THAT WAS ALREADY IN THE SHIPPING BINARY.
+--------------------------------------------------------------------------------
+
+Found by grepping the joined .M1 for duplicate labels while chasing an
+unrelated SIGBUS. Not by any test, because no test could see it.
+
+declare_function resets current_count to 0 on every function. Correct for the
+eight call sites that build create_unique_id("", function->s, n) -- the
+function name disambiguates. WRONG for the one that builds
+create_unique_id("STR_", "g", n), a GLOBAL string initialiser with no function
+to name. Two globals separated by any function declaration both get STR_g_0.
+
+hex2's AddHash inserts at the HEAD and GetTarget returns the first match, so
+the LAST definition wins and the earlier global reads the later one's bytes.
+M1 and hex2 both accept duplicate labels silently.
+
+    41 colliding labels in libtcc.c alone. STR_g_0_contents was defined as
+    both "alm.?" and "%s/lib%s.so".
+
+NOT A REGRESSION FROM THIS WORK. The mc-tcc that reports 12/12 has the
+identical collisions.
+
+WHY NO TEST COULD SEE IT. A collision needs two global string initialisers
+with a function declaration between them. All 87 cases and all twelve
+end-to-end programs are a single small unit. This is the third structural
+blindness recorded in this file -- after "every array-of-pointers case used
+long*" and "a case can pass because both sides are broken identically" -- and
+it is the worst of them, because the suite was green over a live corruption in
+the binary it was certifying.
+
+THE CHECK THAT SEPARATED HARMFUL FROM BENIGN. 39 duplicate :GLOBAL_ labels
+REMAIN after the fix -- errno, file, anon_sym, char_pointer_type, reg_classes.
+Those are tentative definitions: tcc.h declares them with ST_DATA (empty under
+ONE_SOURCE) and the .c defines them again. Every one emits NULL, so references
+bind to one definition whose contents are IDENTICAL to the other's. Harmless.
+The STR_g ones were harmful precisely because their contents DIFFERED, and
+comparing contents is the test that tells the two apart. "Duplicate label" on
+its own is not a verdict.
+
+FIXED by a second counter, current_count_global, that nothing resets. NOT by
+removing the reset: it is load-bearing for the other eight sites.
+
+    difftest aarch64 87/0 -> 88/0    twelve programs 12/12 unchanged
+    joined .M1 duplicates 80 -> 39   all 39 verified identical-contents
+
+WORTH DOING ONCE, PROPERLY: a duplicate-label check on the joined .M1 as a
+build-time gate, comparing CONTENTS and failing only on a difference. That
+would have caught this the day it appeared instead of on a grep months later.

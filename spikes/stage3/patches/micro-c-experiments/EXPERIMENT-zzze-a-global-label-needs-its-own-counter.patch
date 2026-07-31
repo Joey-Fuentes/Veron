@@ -1,0 +1,95 @@
+A global-scope generated label needs its own counter.
+
+`declare_function` resets `current_count` to 0 on every function. That is
+correct for every user of the counter but one: they all build
+
+    create_unique_id("", function->s, number_string)
+
+so the FUNCTION NAME disambiguates and restarting the numbers per function is
+what keeps them short. A global string initialiser has no function to name --
+it uses the literal "g" --
+
+    create_unique_id("STR_", "g", number_string)          cc_core.c
+
+-- so the numbers restart underneath it and two globals separated by any
+function declaration both get STR_g_0.
+
+hex2's `AddHash` inserts at the HEAD of the bucket and `GetTarget` returns the
+first match, so the LAST definition wins and every earlier global with the same
+number silently reads the later one's bytes. Nothing warns: M1 and hex2 both
+accept a duplicate label without comment.
+
+MEASURED, in libtcc.c compiled by micro-c -- 41 colliding labels, e.g.
+
+    :GLOBAL_STR_g_0_contents
+    "alm.?"
+    ...
+    :GLOBAL_STR_g_0_contents
+    "%s/lib%s.so"
+
+Two different strings, one name. Every reference to the first resolves to the
+second.
+
+THIS WAS IN THE BINARY WE WERE ALREADY SHIPPING. It is not a regression from
+the narrowing-cast round; the working mc-tcc has the identical collisions. It
+was found by grepping the joined .M1 for duplicate labels while chasing an
+unrelated SIGBUS, not by any test -- because no test could see it. A collision
+needs two global string initialisers with a function declaration between them,
+and the 87-case suite and the twelve end-to-end programs are each a single
+small unit. A whole class of fault sat under a green suite.
+
+THE FIX is one more counter, `current_count_global`, that nothing resets.
+Deliberately NOT "stop resetting current_count": the reset is load-bearing for
+the eight other call sites, and removing it would grow every function-local
+label for no benefit.
+
+WHAT IS LEFT, AND WHY IT IS BENIGN. 39 duplicate :GLOBAL_ labels remain in the
+joined unit -- errno, file, anon_sym, char_pointer_type, reg_classes and so on.
+Those are TENTATIVE DEFINITIONS: tcc.h declares them with ST_DATA (empty under
+ONE_SOURCE) and the .c file defines them again. Every one emits `NULL`, so all
+references bind to one definition whose contents are identical to the other's.
+Consistent, and it costs only space. Checked rather than assumed -- the STR_g
+collisions were harmful precisely because their contents DIFFERED, and that is
+the test that separates the two cases.
+
+Case 103. Against the compiler without this patch it returns 59 -- alpha and
+beta read the wrong strings and all three addresses collide; with it, 0.
+difftest aarch64 87/0 -> 88/0; the twelve end-to-end programs stay 12/12.
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -44,6 +44,24 @@
+ char* continue_target_num;
+ struct token_list* break_frame;
+ int current_count;
++/* A SEPARATE COUNTER FOR GLOBAL-SCOPE GENERATED LABELS.
++ *
++ * current_count is reset by declare_function, which is correct for every other
++ * user of it: they all build `create_unique_id("", function->s, n)`, so the
++ * FUNCTION NAME disambiguates and restarting the numbers per function is what
++ * keeps them short. A global string initialiser has no function to name -- it
++ * uses the literal "g" -- so sharing that counter meant two globals separated
++ * by any function declaration both got STR_g_0.
++ *
++ * hex2's AddHash inserts at the head of the bucket and GetTarget returns the
++ * first match, so the LAST definition wins and the FIRST global silently reads
++ * the other's bytes. In libtcc.c alone that produced 41 colliding STR_g labels
++ * -- e.g. STR_g_0_contents defined as both "alm.?" and "%s/lib%s.so".
++ *
++ * Invisible to every test here: the case suite and the twelve end-to-end
++ * programs are each a single small unit, and a collision needs two global
++ * string initialisers with a function declaration between them. */
++int current_count_global;
+ int Address_of;
+ 
+ /* A PREFIX ++/-- WHOSE TARGET IS REACHED THROUGH `->`.
+@@ -5972,8 +5990,8 @@
+ 			 *
+ 			 * A generated id is both valid and unique. Found by ASSEMBLING the
+ 			 * output: it parsed and emitted happily for the whole run. */
+-			char* number_string = int2str(current_count, 10, TRUE);
+-			current_count = current_count + 1;
++			char* number_string = int2str(current_count_global, 10, TRUE);
++			current_count_global = current_count_global + 1;
+ 			char* name = create_unique_id("STR_", "g", number_string);
+ 			globals_list = emit("&GLOBAL_", globals_list);
+ 			globals_list = emit(name, globals_list);
