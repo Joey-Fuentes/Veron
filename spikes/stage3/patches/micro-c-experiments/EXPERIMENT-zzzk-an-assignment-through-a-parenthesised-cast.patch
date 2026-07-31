@@ -1,0 +1,99 @@
+An assignment through a parenthesised cast must not load its target.
+
+THE TENTH COPY OF ONE RULE, and the one that kept every wide literal broken.
+
+    *(int*)(p + 4) = 7;      SIGSEGV
+    *(int*)p       = 7;      always fine
+    x = *(int*)(p + 4);      always fine
+
+So it is the STORE side of the parenthesised-cast path alone. The branch
+computed the address, LOADED the int sitting there, and stored through that
+value as if it were an address. Experiments entry 17 records this exact line
+being fixed for the READ; the store kept its own copy of the rule and never
+got the `assigning` guard the other nine paths carry.
+
+WHAT IT COST. tcc writes EVERY WIDE CHARACTER through exactly this shape:
+
+    *(nwchar_t *)(cstr->data + size - sizeof(nwchar_t)) = ch;   tccpp.c:390
+
+so mc-tcc segfaulted on L'a', L'\x1234' and L"abc". tcctest.c's string_test()
+is the first function in tcc's own test file to write one, and tcctest.c is the
+first thing tcc's test1, test2 and test3 each compile -- so all three died
+before producing any output, on a construct 400 lines into a 3,600-line file.
+
+ONLY THE LAST LEVEL IS SPARED. `**(p) = v` still has to load once to reach the
+inner pointer. Same rule as zzc, zzg, zzm, zzo and zzzh: an address applies to
+the last step of a chain, never to a step that still has to be followed. The
+type is stepped either way, because the STORE takes its width from it.
+
+MEASURED. Wide literals compile:
+
+    L'a'   L'\x1234'   L"abc"        rc=0, all three, was SIGSEGV
+
+and tcctest.c advances from line 424 (string_test) to line 1103 (struct_test)
+-- 679 lines further into tcc's own test file. It does NOT compile yet; the
+next blocker is in struct_test's range and ten probes failed to reproduce it in
+isolation, so it is cumulative or not yet spotted. Recorded rather than guessed
+at.
+
+PRE-EXISTING, checked directly: the same failure appears on the series with and
+without EXPERIMENT-zzzh and zzzi, so this is not fallout from either.
+
+    difftest    92 pass / 0 fail amd64, 94 / 0 aarch64, 1 known gap (case 110)
+    the twelve  12 / 12
+    tests2      56 of 127 reproduce tcc's own .expect
+    corpus      419 / 426
+    ladder      libtcc1 7/7, musl idioms 4/4, syscalls run correctly
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -1580,6 +1580,37 @@
+ 			{
+ 				primary_expr();
+ 				current_target = cast_type;
++
++				/* AN ASSIGNMENT TARGET MUST NOT BE LOADED -- the tenth copy of
++				 * one rule, and the one that kept every wide literal broken.
++				 *
++				 * This loop loaded unconditionally, so
++				 *
++				 *     *(int*)(p + 4) = 7;
++				 *
++				 * computed the address, LOADED the int sitting there, and then
++				 * stored through that value as if it were an address. The read
++				 * form `x = *(int*)(p + 4)` was correct, and so was
++				 * `*(int*)p = 7` without the parentheses -- only this branch,
++				 * only when assigning.
++				 *
++				 * tcc writes EVERY WIDE CHARACTER through exactly this shape:
++				 *
++				 *     *(nwchar_t *)(cstr->data + size - sizeof(nwchar_t)) = ch;
++				 *                                              tccpp.c:390
++				 *
++				 * so mc-tcc segfaulted on L'a', L'\x1234' and L"abc" -- which
++				 * is where tcctest.c's string_test() stops, and tcctest.c is
++				 * the first thing tcc's own test1, test2 and test3 compile.
++				 *
++				 * ONLY THE LAST LEVEL IS SPARED. `**(p) = v` still has to load
++				 * once to reach the inner pointer. Same rule as zzc, zzg, zzm,
++				 * zzo and zzzh: an address applies to the last step of a chain,
++				 * never to a step that still has to be followed. The type is
++				 * stepped either way, because the STORE takes its width from
++				 * it. */
++				int assigning_cast = match("=", global_token->s)
++				                     || is_compound_assignment(global_token->s);
+ 				int fp_nd;
+ 				while(num_dereference > 0)
+ 				{
+@@ -1593,7 +1624,10 @@
+ 						 * had this guard all along. Without it `x = *p` for a
+ 						 * struct tried load_value(16):
+ 						 *     unsupported size 16 of type 'CType'   tccgen.c:895 */
+-						if(register_size >= current_target->size) emit_out(load_value(current_target->size, current_target->is_signed));
++						if(!(assigning_cast && (1 == num_dereference)))
++						{
++							if(register_size >= current_target->size) emit_out(load_value(current_target->size, current_target->is_signed));
++						}
+ 					}
+ 					num_dereference = num_dereference - 1;
+ 				}

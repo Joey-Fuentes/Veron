@@ -1,20 +1,23 @@
-/* KNOWN GAP -- tcc's WIDE-LITERAL PATH, tccpp.c:384 and :2222.
+/* BITMASK -- tcc's WIDE-LITERAL PATH, tccpp.c:384 and :2222.
  *
- * Expected to fail, and it segfaults rather than returning a bitmask, so the
- * probe numbering below describes the shape rather than a score.
- *
- * PRE-EXISTING: it fails identically on the series with and without
- * EXPERIMENT-zzzh and zzzi, checked directly.
+ * CLOSED by EXPERIMENT-zzzk. This case is expected to PASS.
  *
  * REDUCED TO ONE LINE. A cast whose operand is PARENTHESISED, dereferenced,
  * as an ASSIGNMENT TARGET:
  *
- *     *(int*)(p + 4) = 7;      SIGSEGV
- *     *(int*)p       = 7;      fine
+ *     *(int*)(p + 4) = 7;      SIGSEGV before the fix
+ *     *(int*)p       = 7;      always fine
  *
- * The read form `x = *(int*)(p + 4)` is fine too, so it is the store side of
- * the parenthesised-cast path alone. Experiments entry 17 records this exact
- * line being fixed for the read; the store kept its own copy of the rule.
+ * The read form `x = *(int*)(p + 4)` was fine too, so it was the store side of
+ * the parenthesised-cast path alone -- the tenth place carrying its own copy
+ * of "an assignment target must not be loaded".
+ *
+ * THE READ PROBE DELIBERATELY USES 0x07654321, NOT 0x87654321. The high-bit
+ * form is `unsigned int` in C, so comparing it against an `int` triggers the
+ * usual arithmetic conversions -- which micro-c folds at 64-bit signed and
+ * gets wrong. That is a real divergence and a DIFFERENT one; leaving it here
+ * made this case fail for a reason it does not claim to test. Case 110 holds
+ * it separately.
  *
  * Every L-prefixed literal segfaults mc-tcc:
  *
@@ -80,10 +83,10 @@ int main(void)
 	/* 2 -- a cast over parenthesised arithmetic, as a READ */
 	unsigned char* p;
 	p = buffer;
-	buffer[8] = 0x21; buffer[9] = 0x43; buffer[10] = 0x65; buffer[11] = 0x87;
+	buffer[8] = 0x21; buffer[9] = 0x43; buffer[10] = 0x65; buffer[11] = 0x07;
 	int got;
 	got = *(int*)(p + 8);
-	if(got != 0x87654321) r = r + 2;
+	if(got != 0x07654321) r = r + 2;
 
 	/* 4 -- the same shape as an ASSIGNMENT TARGET, which is the line that
 	 * actually writes every wide character */
