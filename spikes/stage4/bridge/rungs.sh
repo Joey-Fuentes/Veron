@@ -1402,6 +1402,31 @@ if [ "$R4" = ok ]; then
     if [ -z "$_m4" ] || ! cd "$_m4"; then
       say "    no make-$MAKE_ALT directory"; R45=FAIL
     else
+      # ONE DECLARED SUBSTITUTION, AND IT IS THE libc AGAIN.
+      #
+      #     glob.c:289: error: incompatible types for redefinition of 'getlogin'
+      #
+      # make 4.2.1 bundles its own glob, and that glob declares getlogin and
+      # getlogin_r ITSELF inside a `#ifndef __GNU_LIBRARY__` guard -- i.e. "if
+      # this is not glibc, assume the libc does not declare these". musl does
+      # not define __GNU_LIBRARY__ and DOES declare both, with different
+      # prototypes, so the two collide.
+      #
+      # live-bootstrap does not hit this: their pass1.sh runs `autoreconf-2.69
+      # -fi` first, which regenerates the build system. We have no autotools in
+      # this box, so the source is used as shipped and the conflict stands.
+      #
+      # The declarations are simply redundant here -- musl's unistd.h already
+      # has both -- so they are removed by content rather than by line number.
+      # Deleting a wrong declaration is smaller and more honest than defining
+      # __GNU_LIBRARY__ to make glob.c believe it is on glibc, which would turn
+      # on a dozen other paths nobody has looked at.
+      say "    --- declared substitution: glob.c's own getlogin declarations ---"
+      _before=$(grep -c "^extern .*getlogin" glob/glob.c 2>/dev/null || true)
+      sed -i '/^extern int getlogin_r/d; /^extern char \*getlogin/d' glob/glob.c 2>/dev/null || true
+      _after=$(grep -c "^extern .*getlogin" glob/glob.c 2>/dev/null || true)
+      say "      removed $_before declaration(s), $_after remain"
+
       if cfg_try "make $MAKE_ALT" --prefix="$PFX" --disable-nls; then
         # MAKEINFO=true, as live-bootstrap's own steps/make-4.2.1/pass1.sh does
         # -- texinfo is not in this box and make builds its manual otherwise.
