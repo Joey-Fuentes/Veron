@@ -55,6 +55,12 @@ name: stage3-to-stage4-reference
 
 on:
   workflow_dispatch:
+    inputs:
+      trace_applets:
+        description: 'wrap every applet to record which ones the chain actually uses'
+        type: boolean
+        required: false
+        default: false
   push:
     paths:
       - 'spikes/stage4/bridge/**'
@@ -208,6 +214,11 @@ jobs:
       # TIER 2 -- DRIVES THE BUILD, TOUCHES NO ARTIFACT BYTE. One binary,
       # exactly as stage3-hermetic-arm64 declares.
       BUDGET_DRIVER: 'busybox'
+      # OFF BY DEFAULT. Wrapping every applet in a shell script costs a fork
+      # per invocation, and a build this size invokes them tens of thousands of
+      # times -- it would roughly double the ladder. Turned on deliberately,
+      # once, to produce the applet list for the handmade config.
+      TRACE_APPLETS: ${{ inputs.trace_applets && '1' || '0' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -597,7 +608,36 @@ jobs:
               ar|strings) continue ;;
               busybox)    continue ;;
             esac
-            ln -sf busybox "$BOX/bin/$a"
+            if [ "${TRACE_APPLETS:-0}" = 1 ]; then
+              # A WRAPPER THAT LOGS ITSELF AND THEN GETS OUT OF THE WAY.
+              #
+              # The eventual goal is a handmade busybox config containing
+              # exactly the applets this chain needs -- allnoconfig plus a list,
+              # so the config file IS the declaration rather than defconfig
+              # minus a few seds.
+              #
+              # THAT LIST CANNOT BE DEDUCED FROM THE LOGS. rungs.sh invokes
+              # maybe 25 applets and they are all visible. But configure is
+              # generated shell that reaches for tr, expr, basename, sort, uniq
+              # and a dozen more in branches that depend on what it finds;
+              # Makefiles call more; the kernel's scripts/ is a small userland
+              # of its own. None of it appears unless it FAILS -- which is how
+              # split and comm were found, one round each.
+              #
+              # So measure instead. Each applet becomes a two-line wrapper that
+              # appends its name to a log and then execs the real busybox, so
+              # the chain runs exactly as it would otherwise and the log is the
+              # precise set that was invoked. Not deduced: recorded.
+              #
+              # exec, NOT a call -- the wrapper must not sit in the process tree
+              # holding a pipe open. A build this size runs applets in pipelines
+              # tens of thousands of times.
+              printf '#!/bin/busybox sh\necho %s >> /out/applets-used.txt\nexec /bin/busybox %s "$@"\n' \
+                "$a" "$a" > "$BOX/bin/$a"
+              chmod 0755 "$BOX/bin/$a"
+            else
+              ln -sf busybox "$BOX/bin/$a"
+            fi
           done
           echo "  applets linked: $(find "$BOX/bin" -type l | wc -l)"
           echo "  excluded on purpose: ar strings  (tier 1 -- rung 4 builds them)"
@@ -832,6 +872,56 @@ jobs:
             lfs
             prefix
           key: bridge-sysroot-${{ env.GLIBC }}-${{ env.KHDR }}-v1
+
+      - name: 'THE APPLET SET: what the chain actually invoked'
+        if: always()
+        run: |
+          set -eu
+          L=box/out/applets-used.txt
+          if [ "${TRACE_APPLETS:-0}" != 1 ]; then
+            echo "  tracing was off. Dispatch with trace_applets=true to record"
+            echo "  the applet set -- it roughly doubles the run, so it is a"
+            echo "  deliberate one-off rather than something every run pays for."
+            exit 0
+          fi
+          if [ ! -s "$L" ]; then
+            echo "  tracing was on but nothing was recorded. Either the box never"
+            echo "  started, or /out was not writable from inside it."
+            exit 0
+          fi
+          total=$(wc -l < "$L")
+          sort -u "$L" > /tmp/used.txt
+          used=$(wc -l < /tmp/used.txt)
+          have=$(./veron-busybox --list | wc -l)
+          echo "  invocations recorded : $total"
+          echo "  distinct applets used: $used"
+          echo "  applets compiled in  : $have"
+          echo
+          echo "  --- the set, which is the config ---"
+          tr '\n' ' ' < /tmp/used.txt | fold -w 72 -s | sed 's/^/    /'
+          echo
+          echo "  --- by frequency, most-used first ---"
+          sort "$L" | uniq -c | sort -rn | head -25 | sed 's/^/    /'
+          echo
+          echo "  --- compiled in but NEVER invoked ($((have - used))) ---"
+          ./veron-busybox --list | sort > /tmp/have.txt
+          comm -23 /tmp/have.txt /tmp/used.txt | tr '\n' ' ' | fold -w 72 -s | sed 's/^/    /'
+          echo
+          echo "  --- as a busybox config ---"
+          while read -r a; do
+            printf '    CONFIG_%s=y\n' "$(echo "$a" | tr 'a-z-' 'A-Z_')"
+          done < /tmp/used.txt | head -60
+          echo
+          echo "  READ THIS AS A FLOOR, NOT A SPEC. It records the applets the"
+          echo "  paths that RAN invoked. A rung that failed early under-reports"
+          echo "  everything above it, and a configure branch not taken this time"
+          echo "  may be taken next time -- autoconf picks tools by what it"
+          echo "  finds. The list is a measured lower bound on a set that was"
+          echo "  previously being guessed at one round per missing tool."
+          echo
+          echo "  Some names are not applets: busybox's own symbol for a few"
+          echo "  differs from the command name. Check each against --list"
+          echo "  before writing the final config."
 
       - name: 'BUDGET: what this run borrowed from the host'
         if: always()
