@@ -2426,6 +2426,51 @@ head1 "RUNG 10 -- LFS 5.2: binutils pass 1, cross to \$LFS_TGT"
 # be built, which is what spikes/livebootstrap/ORDER.md argues it is for.
 LFS_TGT=aarch64-veron-linux-gnu
 S=/work/lfs
+
+# A WRAPPER FOR gcc 10, THE SAME MOVE cc-static MADE FOR tcc.
+#
+# Everything from rung 10 up is built by gcc 10 through the tcc-built binutils
+# 2.30, whose ld writes overlapping FDEs into .eh_frame_hdr. Rungs 10 and 11
+# pass -Wl,--no-eh-frame-hdr through LDFLAGS, which autoconf honours.
+#
+# PERL DOES NOT READ LDFLAGS. Its Configure is 30,000 lines of hand-written
+# shell, not autoconf: no CC, no CFLAGS, no LDFLAGS from the environment, and
+# -Dldflags applies to linking perl itself rather than to the compiler probes
+# that run first. This one died in a probe:
+#
+#     ld: .eh_frame_hdr refers to overlapping FDEs.
+#     You need to find a working C compiler.
+#
+# -- which is a spectacularly misleading conclusion to draw from one failed
+# link, since that compiler had just built two other compilers and a binutils.
+#
+# So do what worked twice already and remove the choice. chain-cc appends the
+# flag to every invocation; nothing a build system does to its argument list
+# can drop a flag that is not in the argument list. The autoconf rungs use it
+# too, which means they stop depending on LDFLAGS being honoured -- one fewer
+# thing that has to be true.
+mkdir -p "$PFX/bin"
+cat > "$PFX/bin/chain-cc" <<CHAINCC
+#!/bin/sh
+exec CHAINCCBIN "\$@" -Wl,--no-eh-frame-hdr
+CHAINCC
+sed -i "s|CHAINCCBIN|/work/out10/bin/gcc|" "$PFX/bin/chain-cc"
+chmod 0755 "$PFX/bin/chain-cc"
+
+# PROVE IT BEFORE FIVE RUNGS DEPEND ON IT. A wrapper that silently does not
+# apply its flag looks exactly like one that does -- the same failure mode as
+# CFLAGS_EXTRA vs EXTRA_CFLAGS, which cost stage 4 two runs.
+if [ -x /work/out10/bin/gcc ]; then
+  ( cd /tmp && rm -f wc.c wc.bin
+    printf 'int main(void){return 0;}\n' > wc.c
+    if "$PFX/bin/chain-cc" -static -o wc.bin wc.c 2>/tmp/wc.err; then
+      say "  chain-cc: compiles and links ok"
+    else
+      say "  chain-cc: FAILED -- five rungs depend on this"
+      head -4 /tmp/wc.err | sed 's/^/    /'
+    fi
+    rm -f wc.c wc.bin )
+fi
 if [ "$R9" = ok ]; then
   CHAIN_CC=/work/out10/bin/gcc
   CHAIN_CXX=/work/out10/bin/g++
@@ -2469,7 +2514,7 @@ if [ "$R9" = ok ]; then
     # $LFS_TGT-ld exists, everything above uses it and this stops mattering.
     # This flag only has to carry the one link that produces that ld.
     "/work/src/$_bu/configure" \
-      CC="$CHAIN_CC -static" CXX="$CHAIN_CXX -static" \
+      CC="$PFX/bin/chain-cc -static" CXX="$CHAIN_CXX -static -Wl,--no-eh-frame-hdr" \
       LDFLAGS="-static -Wl,--no-eh-frame-hdr" \
       --prefix="$S/tools" \
       --with-sysroot="$S" \
@@ -2562,7 +2607,7 @@ if [ "$R10" = ok ]; then
     # the tcc-built ld too -- $LFS_TGT-ld exists now but is the CROSS linker
     # and is not what links the compiler itself.
     "/work/src/$g15/configure" \
-      CC="$CHAIN_CC -static" CXX="$CHAIN_CXX -static" \
+      CC="$PFX/bin/chain-cc -static" CXX="$CHAIN_CXX -static -Wl,--no-eh-frame-hdr" \
       LDFLAGS="-static -Wl,--no-eh-frame-hdr" \
       --target="$LFS_TGT" \
       --prefix="$S/tools" \
@@ -2869,7 +2914,7 @@ SPLITSH
       [ "$_n" = 2 ] && echo "      split -2: ok (2 chunks)" || echo "      split -2: made $_n chunks, expected 2"
       rm -f c1 c2 s1 xa* )
 
-    say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./Configure -des -Dprefix=$PFX -Dcc=$CHAIN_CC -Dldflags=-static -Wl,--no-eh-frame-hdr"
+    say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./Configure -des -Dprefix=$PFX -Dcc=$PFX/bin/chain-cc -Dldflags=-static"
     say "    (cwd: $(pwd))"
     # -Dprefix is $PFX, not /usr: this perl is a BUILD TOOL for the rungs above,
     # not part of the sysroot being assembled at $S. Chapter 7's perl, which is
@@ -2888,9 +2933,8 @@ SPLITSH
     # find a working C compiler" from one failed link, when gcc 10 had just
     # built two compilers and a binutils. The compiler is fine; its linker is
     # not, on this one section, and only until $LFS_TGT-ld takes over.
-    ./Configure -des -Dprefix="$PFX" -Dcc="$CHAIN_CC" \
-      -Dldflags="-static -Wl,--no-eh-frame-hdr" \
-      -Doptimize="-O2" > c.log 2>&1
+    ./Configure -des -Dprefix="$PFX" -Dcc="$PFX/bin/chain-cc" \
+      -Dldflags="-static" -Doptimize="-O2" > c.log 2>&1
     _rp=$?
     say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_rp)"
     if [ "$_rp" != 0 ]; then
