@@ -831,13 +831,45 @@ if [ "$R3" = ok ] && [ "$R35" != FAIL ]; then
   # musl ships that header. One define, applied to every compile -- harmless
   # where alloca is unused, and cheaper than reasoning about which of the 27
   # pull in make.h.
-  ALLOCA=-DHAVE_ALLOCA_H
+  # ONE ROUND PER MISSING DEFINE IS THE WRONG LOOP. alloca cost a run;
+  # strncasecmp cost the next. Both are the same shape: make.h declares a
+  # function ITSELF when the matching HAVE_* is unset, musl already declares
+  # it, and the two disagree -- make's strncasecmp takes `int n` where musl's
+  # takes size_t.
+  #
+  # The under-defining also shows up as the getopt.c warnings: "implicit
+  # declaration of strcmp / strncmp / strlen", because HAVE_STRING_H was not
+  # set so make.h never included <string.h>.
+  #
+  # SO DEFINE WHAT configure WOULD HAVE FOUND. musl is a complete POSIX libc;
+  # a real configure run against it would answer yes to essentially all of
+  # these. live-bootstrap needs only a handful because mes-libc HAS only a
+  # handful -- their short list is a description of mes-libc, not of make.
+  #
+  # OVER-DEFINING IS THE SAFER DIRECTION HERE. A HAVE_* set for something musl
+  # lacks surfaces as an undefined symbol at link time, which is one clear
+  # error naming the function. Leaving one unset surfaces as a type conflict
+  # inside a header, which is what these two rounds were.
+  MUSLDEFS="-DHAVE_ALLOCA_H -DSTDC_HEADERS
+            -DHAVE_STRING_H -DHAVE_STRINGS_H -DHAVE_STDLIB_H -DHAVE_UNISTD_H
+            -DHAVE_LIMITS_H -DHAVE_MEMORY_H -DHAVE_SYS_PARAM_H -DHAVE_SYS_WAIT_H
+            -DHAVE_SYS_TIME_H -DHAVE_TIME_H -DHAVE_LOCALE_H -DHAVE_SYS_FILE_H
+            -DHAVE_STRCASECMP -DHAVE_STRNCASECMP -DHAVE_STRERROR -DHAVE_STRSIGNAL
+            -DHAVE_STRDUP -DHAVE_STRNDUP -DHAVE_STRCHR -DHAVE_STRRCHR
+            -DHAVE_MEMCPY -DHAVE_MEMMOVE -DHAVE_MEMSET
+            -DHAVE_DUP2 -DHAVE_GETCWD -DHAVE_GETGROUPS -DHAVE_GETTIMEOFDAY
+            -DHAVE_MKSTEMP -DHAVE_MKTEMP -DHAVE_REALPATH -DHAVE_SETVBUF
+            -DHAVE_SETLINEBUF -DHAVE_SIGACTION -DHAVE_SIGSETMASK -DHAVE_ISATTY
+            -DHAVE_TTYNAME -DHAVE_ATEXIT -DHAVE_PIPE -DHAVE_FORK -DHAVE_WAITPID
+            -DHAVE_STRTOLL -DHAVE_VPRINTF -DHAVE_STDARG_H -DHAVE_ANSI_COMPILER"
+
 
   _cc_fail=0
   # $1 = the source file, rest = its flags. Named so a failure says which file.
   mk_cc() {
     _src=$1; shift
-    if ! $CC -c $ALLOCA "$@" "$_src" 2>>/work/make-cc.err; then
+    # shellcheck disable=SC2086 -- MUSLDEFS is a word list on purpose
+    if ! $CC -c $MUSLDEFS "$@" "$_src" 2>>/work/make-cc.err; then
       say "      FAILED: $_src"
       _cc_fail=$((_cc_fail + 1))
     fi
