@@ -65,7 +65,7 @@ int main(void)
    return 0;
 }
 EOF
-    grep -v '^int main(void);$' "$SH/crt.c" >> "$T/src"
+    cat "$SH/crt.c" >> "$T/src"
 else
     cat "$SRC" > "$T/src"
 fi

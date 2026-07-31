@@ -66,9 +66,19 @@ same_output() {
     [ "$_a" = "$_b" ]
 }
 
+# tests2/Makefile:59 runs 31_args with five arguments and its .expect carries
+# argc==6. Run with none, a CORRECT binary prints 1 and reads as a codegen
+# fault -- which is how the shim's missing argv was charged to the compiler.
+args_for() {
+    case $1 in
+        31_args) echo "arg1 arg2 arg3 arg4 arg5" ;;
+        *)       echo "" ;;
+    esac
+}
+
 OUT=/tmp/t2one; rm -rf $OUT; mkdir -p $OUT; cd $OUT
 
-n=0; pass=0; na=0
+n=0; pass=0; na=0; nf=0
 for c in "$T2"/*.c; do
     b=$(basename "$c" .c)
     n=$((n + 1))
@@ -81,7 +91,8 @@ for c in "$T2"/*.c; do
     # test first, then the crt with its forward declaration of main removed --
     # main is already defined by the time _start refers to it.
     cat "$c" > u.c
-    grep -v '^int main(void);$' "$SH/crt.c" >> u.c
+    cat "$SH/crt.c" >> u.c
+    a=$(args_for "$b")
 
     # --- control ---------------------------------------------------------
     "$CTL" -B"$W/tcc-work" -I"$SH" -nostdlib -static -o c.bin u.c >/dev/null 2>&1
@@ -90,7 +101,14 @@ for c in "$T2"/*.c; do
         na=$((na+1)); continue
     fi
     chmod +x c.bin
-    cout=$(timeout 20 "$Q" ./c.bin 2>&1)
+    cout=$(timeout 20 "$Q" ./c.bin $a 2>&1); crc=$?
+    # 71 is tcc-test-shim refusing a float conversion because micro-c cannot
+    # compute one. That is not a gap in the shim and is not a defect in our
+    # compiler's codegen either -- it is the float hole, named.
+    if [ "$crc" = 71 ]; then
+        printf '  %-3s %-34s skip: blocked on floating point in micro-c\n' "$n" "$b"
+        nf=$((nf+1)); continue
+    fi
     if ! same_output "$cout" "$(cat "$exp")"; then
         printf '  %-3s %-34s skip: control does not match .expect\n' "$n" "$b"
         na=$((na+1)); continue
@@ -110,7 +128,11 @@ for c in "$T2"/*.c; do
         exit 1
     fi
     chmod +x m.bin
-    mout=$(timeout 20 "$Q" ./m.bin 2>&1)
+    mout=$(timeout 20 "$Q" ./m.bin $a 2>&1); mrc2=$?
+    if [ "$mrc2" = 71 ]; then
+        printf '  %-3s %-34s skip: reached a float only under mc-tcc\n' "$n" "$b"
+        nf=$((nf+1)); continue
+    fi
     if same_output "$mout" "$cout"; then
         printf '  %-3s %-34s ok\n' "$n" "$b"; pass=$((pass+1))
     else
@@ -122,4 +144,4 @@ for c in "$T2"/*.c; do
 done
 
 echo
-echo "  reached the end: pass $pass  not-applicable $na"
+echo "  reached the end: pass $pass  needs-float $nf  not-applicable $na"

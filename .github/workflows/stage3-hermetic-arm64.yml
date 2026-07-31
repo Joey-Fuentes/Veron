@@ -1414,8 +1414,19 @@ jobs:
             [ "$_a" = "$_b" ]
           }
 
+          # tests2/Makefile:59 runs 31_args with five arguments and its .expect
+          # carries argc==6. Run with none, a CORRECT binary prints 1 and is
+          # counted against the compiler -- which is how the shim's missing
+          # argv was charged to codegen for as long as it was missing.
+          args_for() {
+            case $1 in
+              31_args) echo "arg1 arg2 arg3 arg4 arg5" ;;
+              *)       echo "" ;;
+            esac
+          }
+
           if [ -s /out/mc-tcc ]; then
-            t2pass=0; t2diff=0; t2cf=0; t2n=0
+            t2pass=0; t2diff=0; t2cf=0; t2nf=0; t2n=0
             : > t2-fail.txt
             for c in "$T2"/*.c; do
               [ -e "$c" ] || continue
@@ -1440,8 +1451,19 @@ jobs:
                 printf '    %-34s COMPILE rc=%-4s %s\n' "$b" "$c2" "$why" >> t2-fail.txt
               else
                 chmod 0755 t2.bin
-                set +e; timeout 25 ./t2.bin > t2.out 2>&1; set -e
-                if same_output t2.out "$T2/$b.expect"; then
+                set +e; timeout 25 ./t2.bin $(args_for "$b") > t2.out 2>&1; r2=$?; set -e
+                # EXIT 71 IS THE SHIM REFUSING A FLOAT, not a wrong answer.
+                # tcc-test-shim aborts 70 when IT is incomplete and 71 when the
+                # conversion is fine and micro-c cannot hold the value. Ten of
+                # these were being counted as "output differs", which reads as
+                # a codegen defect and is not one: they are the float hole,
+                # and there is nothing to fix in the shim until micro-c grows
+                # floating point. Counted separately so the number this step
+                # reports means what it says.
+                if [ "$r2" = 71 ]; then
+                  t2nf=$((t2nf + 1))
+                  printf '    %-34s blocked on floating point in micro-c\n' "$b" >> t2-fail.txt
+                elif same_output t2.out "$T2/$b.expect"; then
                   t2pass=$((t2pass + 1))
                 else
                   t2diff=$((t2diff + 1))
@@ -1469,6 +1491,7 @@ jobs:
             echo
             echo "    tests2: $t2pass of $t2n match tcc's own .expect (diff -b rules)"
             echo "            $t2diff ran with different output, $t2cf would not compile"
+            echo "            $t2nf blocked on floating point in micro-c, not on the shim"
             if [ -s t2-fail.txt ]; then
               echo "    the ones that did not:"
               head -60 t2-fail.txt
