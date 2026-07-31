@@ -2674,7 +2674,23 @@ int main(int argc, char **argv)
     int a = 0, b = 0;
     FILE *out = NULL;
     char name[16];
-    if (argc > 1 && argv[1][0] == '-' && argv[1][1] == 'l') per = atol(argv[1] + 2);
+    /* perl's Configure calls this BOTH ways -- `split -50` and `split -l 50`
+     * appear in the same script -- so all three spellings are accepted:
+     *   -lN   -l N   -N
+     * The first version handled only -lN. Its own self-test then used -2 and
+     * reported "made 0 chunks", which read as a broken split when it was a
+     * broken test of a split that was merely incomplete. */
+    if (argc > 1 && argv[1][0] == '-') {
+        char *p = argv[1] + 1;
+        if (*p == 'l') {
+            p++;
+            if (*p) per = atol(p);
+            else if (argc > 2) per = atol(argv[2]);
+        } else if (*p >= '0' && *p <= '9') {
+            per = atol(p);
+        }
+    }
+    if (per < 1) per = 1000;
     while (fgets(line, sizeof line, stdin)) {
         if (!out || n % per == 0) {
             if (out) fclose(out);
@@ -2750,10 +2766,22 @@ COMMC
     printf 'a\nb\nc\n' > f1; printf 'b\nc\nd\n' > f2
     _only1=$(comm -23 f1 f2 2>/dev/null | tr -d '\n')
     _both=$(comm -12 f1 f2 2>/dev/null | tr -d '\n')
-    printf 'l1\nl2\nl3\n' | split -l2 2>/dev/null
+    # TEST EVERY SPELLING perl USES, not just the one that happened to work.
+    # The first version tested -l2 here and -2 elsewhere, and the -2 test
+    # reported "0 chunks" against a split that genuinely did not accept it --
+    # a real gap, found by accident, reported as if the tool were broken.
+    _sp_ok=yes
+    for _f in "-l2" "-2"; do
+      rm -f x??
+      printf 'l1\nl2\nl3\n' | split $_f 2>/dev/null
+      [ -f xaa ] && [ -f xab ] || { _sp_ok="no ($_f)"; }
+    done
+    rm -f x??
+    printf 'l1\nl2\nl3\n' | split -l 2 2>/dev/null
+    [ -f xaa ] && [ -f xab ] || _sp_ok="no (-l 2)"
     _pieces=$(ls x?? 2>/dev/null | tr '\n' ' ')
     say "    comm -23: [$_only1] (expect a)   comm -12: [$_both] (expect bc)"
-    say "    split -l2: [$_pieces] (expect xaa xab)"
+    say "    split: [$_pieces] and all of -l2 / -l 2 / -2 accepted: $_sp_ok"
     [ "$_only1" = a ] && [ "$_both" = bc ] || say "    ONE OF THESE IS WRONG -- Configure will conclude something false"
     cd /tmp && rm -rf ctest )
 
@@ -2841,12 +2869,28 @@ SPLITSH
       [ "$_n" = 2 ] && echo "      split -2: ok (2 chunks)" || echo "      split -2: made $_n chunks, expected 2"
       rm -f c1 c2 s1 xa* )
 
-    say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./Configure -des -Dprefix=$PFX -Dcc=$CHAIN_CC"
+    say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./Configure -des -Dprefix=$PFX -Dcc=$CHAIN_CC -Dldflags=-static -Wl,--no-eh-frame-hdr"
     say "    (cwd: $(pwd))"
     # -Dprefix is $PFX, not /usr: this perl is a BUILD TOOL for the rungs above,
     # not part of the sysroot being assembled at $S. Chapter 7's perl, which is
     # the one the final system gets, is a different build with different paths.
-    ./Configure -des -Dprefix="$PFX" -Dcc="$CHAIN_CC" > c.log 2>&1
+    # -Dldflags, BECAUSE Configure LINKS WITH THE BARE COMPILER.
+    #
+    #     ld: .eh_frame_hdr refers to overlapping FDEs.
+    #     You need to find a working C compiler.
+    #
+    # That is the tcc-built binutils 2.30 again -- the same fault rungs 10 and
+    # 11 carry -Wl,--no-eh-frame-hdr for. Those pass it through LDFLAGS to an
+    # autoconf configure; perl is not autoconf and reads none of CC, CFLAGS or
+    # LDFLAGS from the environment. Everything has to be a -D.
+    #
+    # AND THE MESSAGE IS ACTIVELY MISLEADING. Configure concludes "You need to
+    # find a working C compiler" from one failed link, when gcc 10 had just
+    # built two compilers and a binutils. The compiler is fine; its linker is
+    # not, on this one section, and only until $LFS_TGT-ld takes over.
+    ./Configure -des -Dprefix="$PFX" -Dcc="$CHAIN_CC" \
+      -Dldflags="-static -Wl,--no-eh-frame-hdr" \
+      -Doptimize="-O2" > c.log 2>&1
     _rp=$?
     say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_rp)"
     if [ "$_rp" != 0 ]; then
