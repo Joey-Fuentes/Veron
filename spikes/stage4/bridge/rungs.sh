@@ -1147,6 +1147,52 @@ ARSHIM
     for t in as ld ar ranlib; do
       printf '    %-8s %s\n' "$t" "$( [ -x "$PFX/bin/$t" ] && wc -c < "$PFX/bin/$t" || echo ABSENT )"
     done
+
+    # POPULATE THE TOOLDIR gcc WILL ACTUALLY LOOK IN.
+    #
+    # libgcc's configure runs the freshly built xgcc with
+    #
+    #     -B$PFX/aarch64-unknown-linux-gnu/bin/  -isystem .../include
+    #     -B$PFX/aarch64-unknown-linux-gnu/lib/  -isystem .../sys-include
+    #
+    # and it died with
+    #
+    #     /work/bld/gcc/as: exec: /work/prefix/aarch64-unknown-linux-gnu/bin/as:
+    #                             Permission denied
+    #
+    # -- so something IS at that path and cannot be executed, while
+    # include/ and sys-include/ do not exist at all. binutils here is configured
+    # NATIVE, without --target, so whatever it put in the tooldir is incidental;
+    # nothing ever arranged it deliberately.
+    #
+    # THIS IS THE HALF OF LFS I SAID WE COULD SKIP. LFS builds its toolchain
+    # with --with-sysroot and a $LFS_TGT directory precisely so the target's
+    # tools and headers sit where gcc expects them. I argued the box IS the
+    # target so the layout did not matter. It matters: gcc asks for the target
+    # tooldir by construction, whether or not the target is the same machine.
+    _TD="$PFX/aarch64-unknown-linux-gnu"
+    say "    --- tooldir as binutils left it ---"
+    ls -l "$_TD/bin" 2>/dev/null | head -12 | sed 's/^/      /' || say "      (no $_TD/bin)"
+    mkdir -p "$_TD/bin" "$_TD/lib"
+    for _t in as ld ar ranlib nm objcopy objdump strip readelf strings; do
+      [ -x "$PFX/bin/$_t" ] || continue
+      rm -f "$_TD/bin/$_t"
+      ln -s "$PFX/bin/$_t" "$_TD/bin/$_t"
+    done
+    # The target's headers are musl's, installed at /usr by rung 2. gcc looks
+    # for them under the tooldir, so point it there rather than reconfiguring
+    # gcc -- one symlink instead of a different recipe from stage 4's.
+    rm -rf "$_TD/sys-include"
+    ln -s /usr/include "$_TD/sys-include"
+    say "    --- tooldir after ---"
+    ls -l "$_TD/bin" 2>/dev/null | head -12 | sed 's/^/      /'
+    printf '      %-14s %s\n' sys-include "-> $(readlink "$_TD/sys-include" 2>/dev/null)"
+    # PROVE IT EXECUTES, because "Permission denied" is what got us here.
+    if "$_TD/bin/as" --version >/dev/null 2>&1; then
+      say "      tooldir as: runs ok"
+    else
+      say "      tooldir as: STILL WILL NOT RUN -- $("$_TD/bin/as" --version 2>&1 | head -1)"
+    fi
   else
     R4=FAIL
     # ARE THE SYMBOLS IN THE ARCHIVE, OR IS THE ARCHIVE WRONG?
@@ -1411,6 +1457,13 @@ if [ "$R5" = ok ]; then
   printf '      %-52s %s\n' "as / ld reachable on PATH" \
     "$(command -v as >/dev/null 2>&1 && echo yes || echo NO) / $(command -v ld >/dev/null 2>&1 && echo yes || echo NO)"
   printf '      %-52s %s\n' "cc1 built" "$( [ -x gcc/cc1 ] && echo yes || echo not-yet )"
+  # THE ONE THAT ACTUALLY FAILED LAST TIME. Existing is not enough; libgcc's
+  # configure execs it, and it answered "Permission denied".
+  if "$PFX/aarch64-unknown-linux-gnu/bin/as" --version >/dev/null 2>&1; then
+    printf '      %-52s %s\n' "tooldir as EXECUTES" yes
+  else
+    printf '      %-52s %s\n' "tooldir as EXECUTES" "NO -- libgcc will fail"
+  fi
 
   if [ "$R6" != FAIL ] && timeout 5400 make -j"$NP" MAKEINFO=true > build.log 2>&1; then
     R6=ok
