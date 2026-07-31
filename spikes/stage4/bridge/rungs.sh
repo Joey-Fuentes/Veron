@@ -763,9 +763,24 @@ mkdir -p "$PFX/bin"
 # ONLY THE AUTOCONF RUNGS GET THIS. musl at rung 2 is compiled with $CC
 # directly, not through this wrapper, so the libc is still built against its own
 # headers and nothing else.
+#
+# THE FLAG ORDER IS LOAD-BEARING. -I/usr/include used to come BEFORE "$@", so
+# the sysroot was searched ahead of the project's own -I. and -Ilib. make 4.4
+# bundles gnulib, gnulib ships its own <glob.h>, and musl's won:
+#
+#     glob.c:379: error: '__GLOB_FLAGS' undeclared
+#
+# __GLOB_FLAGS is defined in gnulib's glob.h and in glibc's; it is not in
+# musl's, and gnulib's glob.c expects to be reading its own. Include paths are
+# searched in command-line order, so the project's directories have to precede
+# the sysroot. -L and -static are order-insensitive and stay at the end;
+# -include is processed before the main file regardless of position.
+#
+# This was shadowing every project header, not just glob.h -- anything a build
+# ships its own copy of was silently losing to the sysroot version.
 cat > "$PFX/bin/cc-static" <<CCWRAP
 #!/bin/sh
-exec CCBIN -B TCCDIR -I/usr/include -L/usr/lib -include sys/cdefs.h -static "\$@"
+exec CCBIN -B TCCDIR -include sys/cdefs.h "\$@" -I/usr/include -L/usr/lib -static
 CCWRAP
 sed -i -e "s|CCBIN|$CC_BIN|" -e "s|-B TCCDIR|-B$TCCDIR|" "$PFX/bin/cc-static"
 chmod 0755 "$PFX/bin/cc-static"
@@ -779,8 +794,13 @@ sed 's/^/    /' "$PFX/bin/cc-static"
   # The probe uses __ptr_t WITHOUT including anything, which is exactly what
   # make's dir.c does and exactly what failed twice. If the force-include is
   # not working this says so here, not four rungs later.
-  printf 'static __ptr_t p(void){return 0;}\n#include <stdio.h>\nint main(void){printf("wrapper ok %%d\\n", p()?1:0);return 0;}\n' > w.c
-  if "$CCAUTO" -o w.bin w.c 2>/tmp/w.err && ./w.bin >/tmp/w.out 2>&1; then
+  # Two things the probe has to prove, both of which have already been wrong:
+  #   __ptr_t with no include   -- the force-included shim is reaching the unit
+  #   a local stdio.h wins      -- the sysroot is NOT shadowing project headers
+  mkdir -p ownhdr
+  printf '#define VERON_OWN_HEADER 1\n' > ownhdr/probe.h
+  printf '#include <probe.h>\nstatic __ptr_t p(void){return 0;}\n#include <stdio.h>\nint main(void){printf("wrapper ok %%d %%d\\n", p()?1:0, VERON_OWN_HEADER);return 0;}\n' > w.c
+  if "$CCAUTO" -Iownhdr -o w.bin w.c 2>/tmp/w.err && ./w.bin >/tmp/w.out 2>&1; then
     printf '    compiles and runs: %s\n' "$(cat /tmp/w.out)"
     if grep -aq 'ld-musl\|ld-linux' w.bin; then
       say "    STILL DYNAMIC -- the wrapper is not taking"
@@ -791,7 +811,7 @@ sed 's/^/    /' "$PFX/bin/cc-static"
     say "    WRAPPER FAILED:"
     head -3 /tmp/w.err | sed 's/^/      /'
   fi
-  rm -f w.c w.bin )
+  rm -rf w.c w.bin ownhdr )
 
 # THE LFS SHAPE: DECLARE A CROSS BUILD SO autoconf STOPS RUNNING ITS TESTS.
 #
