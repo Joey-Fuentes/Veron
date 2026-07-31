@@ -211,6 +211,11 @@ env:
   KERNEL: '7.1.5'
   # glibc's minimum-kernel setting -- unrelated to either of the above.
   ENABLE_KERNEL: '5.4'
+  # perl IS BUILT EARLIER THAN LFS PUTS IT. The book has it in chapter 7,
+  # inside the chroot, because chapters 5 and 6 borrow the host's. This box has
+  # no host: rung 10 already printed "/bin/sh: perl: not found", and glibc and
+  # the kernel both need it. Stage 4's version and stage 4's recipe.
+  PERL_VER: '5.42.0'
 
 jobs:
 
@@ -290,7 +295,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: dl
-          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-${{ env.GCC15 }}-${{ env.GLIBC }}-${{ env.KHDR }}-v1
+          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-${{ env.GCC15 }}-${{ env.GLIBC }}-${{ env.KHDR }}-${{ env.PERL_VER }}-v1
 
       - name: Fetch pinned upstreams (airlock -- nothing here enters the box)
         run: |
@@ -357,7 +362,8 @@ jobs:
           fetch "$GNU_MIRRORS"  "glibc/glibc-$GLIBC.tar.xz"
 
           # The kernel and the two glibc patches are not on a GNU mirror.
-          for u in "https://cdn.kernel.org/pub/linux/kernel/v${KHDR%%.*}.x/linux-$KHDR.tar.xz" \
+          for u in "https://www.cpan.org/src/5.0/perl-$PERL_VER.tar.xz" \
+                   "https://cdn.kernel.org/pub/linux/kernel/v${KHDR%%.*}.x/linux-$KHDR.tar.xz" \
                    "https://www.linuxfromscratch.org/patches/lfs/13.0/glibc-fhs-1.patch" \
                    "https://www.linuxfromscratch.org/patches/lfs/13.0/glibc-$GLIBC-upstream_fixes-1.patch"; do
             b=$(basename "$u")

@@ -180,7 +180,7 @@ untar() {          # $1 = path prefix, e.g. /in/musl
 
 onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
 
-R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip; R7=skip; R8=skip; R9=skip; R10=skip; R11=skip; R12=skip; R13=skip; R14=skip
+R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip; R7=skip; R8=skip; R9=skip; R10=skip; R11=skip; R115=skip; R12=skip; R13=skip; R14=skip
 
 # WHAT IS ACTUALLY IN /in, BEFORE ANYTHING TRIES TO USE IT.
 #
@@ -2613,13 +2613,83 @@ if [ "$R10" = ok ]; then
 fi
 
 # ---------------------------------------------------------------------------
+head1 "RUNG 11.5 -- perl, because everything above this wants it"
+# NOT WHERE LFS PUTS IT, AND FOR A REASON LFS DOES NOT HAVE.
+#
+# The book builds perl in chapter 7, inside the chroot, because chapters 5 and
+# 6 can borrow the HOST's. This box has no host, and rung 10 already showed
+# what that looks like:
+#
+#     /bin/sh: perl: not found
+#     make[4]: [Makefile:2267: doc/as.1] Error 127 (ignored)
+#
+# binutils ignored it -- that was only a man page -- so it was not what stopped
+# that rung. But it stops being ignorable immediately above: glibc's build
+# scripts use perl, and the kernel needs it for kconfig and much of scripts/.
+# Building it here rather than discovering it twice more is the cheaper order.
+#
+# ONE VERSION, BUILT ONCE. live-bootstrap climbs 5.000 -> 5.003 -> 5.005_03 ->
+# 5.6.2 because they build perl BEFORE binutils and gcc, with tcc and mes-libc,
+# where modern perl cannot go. We have gcc 10 and a full binutils, so perl
+# 5.42.0 builds in one step -- which is what stage 4 does, with the same
+# tarball and a three-flag Configure. spikes/livebootstrap/ORDER.md records
+# this as one of three places their constraints were imported wrongly.
+#
+# -Dcc, NOT CC=. perl's Configure is not autoconf; it takes its compiler as a
+# -D option and ignores the environment variable. Passing CC= would look like
+# it worked and silently use whatever `cc` resolves to.
+if [ "$R11" = ok ]; then
+  cd /work/src
+  if ! untar "/in/perl-$PERL_VER"; then
+    say "    perl did not extract"; R115=FAIL
+  else
+    _pl=$(onedir "perl-$PERL_VER ./perl-$PERL_VER")
+    cd "/work/src/$_pl"
+    say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./Configure -des -Dprefix=$PFX -Dcc=$CHAIN_CC"
+    say "    (cwd: $(pwd))"
+    # -Dprefix is $PFX, not /usr: this perl is a BUILD TOOL for the rungs above,
+    # not part of the sysroot being assembled at $S. Chapter 7's perl, which is
+    # the one the final system gets, is a different build with different paths.
+    ./Configure -des -Dprefix="$PFX" -Dcc="$CHAIN_CC" > c.log 2>&1
+    _rp=$?
+    say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_rp)"
+    if [ "$_rp" != 0 ]; then
+      R115=FAIL; tail -20 c.log 2>/dev/null | sed 's/^/      /'
+    elif timeout 5400 make -j"$NP" > b.log 2>&1 && make install > i.log 2>&1; then
+      if [ -x "$PFX/bin/perl" ]; then
+        R115=ok
+        say "    perl: $("$PFX/bin/perl" --version 2>&1 | grep -o 'v5[0-9.]*' | head -1)"
+        # PROVE IT RUNS AND CAN BE FOUND BY NAME, which is how every consumer
+        # above will reach it. `perl -e` failing here is a different problem
+        # from `perl` not being on PATH, and the rungs above cannot tell them
+        # apart from a "not found".
+        if perl -e 'print "perl on PATH ok\n"' 2>/dev/null; then
+          say "    perl on PATH: yes"
+        else
+          say "    perl installed but NOT on PATH -- the rungs above will not find it"
+          R115=FAIL
+        fi
+      else
+        R115=FAIL; say "    no perl at $PFX/bin/perl"
+        tail -12 i.log 2>/dev/null | sed 's/^/      /'
+      fi
+    else
+      R115=FAIL; say "    --- errors ---"
+      grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
+      tail -25 b.log 2>/dev/null | sed 's/^/      /'
+    fi
+  fi
+  cd /work
+fi
+
+# ---------------------------------------------------------------------------
 head1 "RUNG 12 -- LFS 5.4: linux API headers"
 # TWO KERNELS, AND THEY ARE NOT THE SAME ONE. KHDR supplies the API headers
 # glibc is compiled against; KERNEL is the image that boots. A kernel may
 # always be newer than the headers its libc was built against, and stage 4
 # keeps them separate precisely so a libc/kernel disagreement can be fixed by
 # changing one number rather than rebuilding both.
-if [ "$R11" = ok ]; then
+if [ "$R115" = ok ]; then
   cd /work/src
   if ! untar "/in/linux-$KHDR"; then
     say "    linux $KHDR did not extract"; R12=FAIL
@@ -2775,6 +2845,7 @@ printf '    %-40s %s\n' "8   gcc 4.7.4 again -- stage 4 stage 2" "$R8"
 printf '    %-40s %s\n' "9   gcc 10.2.0 by g++ 4.7.4"            "$R9"
 printf '    %-40s %s\n' "10  LFS 5.2 binutils pass 1"            "$R10"
 printf '    %-40s %s\n' "11  LFS 5.3 gcc 15 pass 1"              "$R11"
+printf '    %-40s %s\n' "11.5 perl (LFS puts it in ch7)"          "$R115"
 printf '    %-40s %s\n' "12  LFS 5.4 linux API headers"          "$R12"
 printf '    %-40s %s\n' "13  LFS 5.5 glibc"                      "$R13"
 printf '    %-40s %s\n' "14  LFS 5.6 libstdc++"                  "$R14"
