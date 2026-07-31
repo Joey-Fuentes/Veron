@@ -190,6 +190,71 @@ building the next one -- stage 4 does this at every rung and the logs say so:
 *"prerequisites, rebuilt by the tcc-built gcc"*, then *"rebuilt by the stage-2
 gcc"*.
 
+## Above gcc 10: LFS chapters 5 and 6, and the traps in them
+
+`stage4-complete` uses gcc 10 as the *host* compiler for a normal LFS build --
+`CHAIN_CC=/work/out10/bin/gcc`. From there the order is the book's, and it is
+not negotiable: **headers before glibc, glibc before libstdc++, libstdc++ before
+pass 2.**
+
+```
+5.2 binutils pass 1   --target=$LFS_TGT --with-sysroot=$S --prefix=$S/tools
+5.3 gcc pass 1        --without-headers --with-newlib --disable-libstdcxx
+                      --enable-languages=c,c++   gmp/mpfr/mpc IN-TREE
+5.4 linux API headers  headers_install from KHDR
+5.5 glibc              + glibc-fhs-1.patch + glibc-2.43-upstream_fixes-1.patch
+5.6 libstdc++          from the gcc 15 tree, against the glibc just built
+ch6 binutils pass 2, gcc pass 2, and seventeen packages
+```
+
+`LFS_TGT=aarch64-veron-linux-gnu` -- a **deliberately distinct triple**, LFS's
+own device, so the new toolchain cannot silently reach the host's libraries.
+That also settles the `config.sub` question left open above: stage 4 already
+carries a custom vendor through gcc 15, so a non-standard triple is not the
+obstacle it looked like.
+
+**This is where musl leaves the chain.** Chapter 5 builds glibc into a sysroot,
+and everything above is glibc. musl was the bootstrap libc for exactly the
+stretch where nothing else could be built, which is what `ORDER.md` argues and
+this is where it comes true.
+
+### The traps, from stage 4's own comments
+
+**`t-aarch64-linux`, and it is not in the book.** LFS seds
+`gcc/config/i386/t-linux64` for x86_64; the aarch64 file that does the same job
+is `t-aarch64-linux` and *"nothing in the book covers aarch64, so this is OUR
+delta"*. Without it glibc lands in `/usr/lib` and libstdc++ in `/usr/lib64`, a
+directory the sysroot has no symlink to. **g++ still links.** The program then
+dies at exec with `error while loading shared libraries: libstdc++.so.6` --
+which reads as a broken C++ runtime rather than a misplaced file.
+
+**`limits.h` has to be reassembled by hand after gcc pass 1.**
+`--without-headers` installs a self-contained `limits.h` that knows nothing of
+the system one, so `PATH_MAX` is simply absent. binutils pass 2 then dies on
+`ld/ldmain.c:646: error: 'PATH_MAX' undeclared` -- *"which names a macro rather
+than the include chain that lost it"*. The fix is to concatenate `limitx.h`,
+`glimits.h` and `limity.h` from the gcc tree into the installed one, so it
+`#include_next`s through to glibc's once that exists.
+
+**Two kernels, not one.** `KHDR` (7.1.3) supplies the API headers at 5.4;
+`KERNEL` (7.1.5) is the one that boots. And `ENABLE_KERNEL=5.4` is glibc's
+minimum-kernel setting, unrelated to either.
+
+**Two glibc patches.** `glibc-fhs-1.patch` is LFS's own; the upstream-fixes one
+is *"THE PRICE OF LINUX 7"* -- a 2.43 glibc meeting a 7.x kernel.
+
+**gmp/mpfr/mpc go IN-TREE** for gcc here, not into a separate prefix. That is
+what the book does and it is more reliable than `--with-gmp=`.
+
+### The rule worth stealing immediately
+
+> **ASSERT THE ANCHOR.** A sed that matches nothing ships an unchanged file and
+> looks exactly like a sed that worked.
+
+Stage 4 checks the file exists, greps for the pattern, and *fails the step* if
+either is missing, before editing. Every substitution in this job should do the
+same -- several of ours currently report `removed 0` and carry on.
+
 Then, to boot:
 
 ```

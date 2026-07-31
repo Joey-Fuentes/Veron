@@ -180,7 +180,7 @@ untar() {          # $1 = path prefix, e.g. /in/musl
 
 onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
 
-R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip; R7=skip; R8=skip; R9=skip
+R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip; R7=skip; R8=skip; R9=skip; R10=skip; R11=skip
 
 # WHAT IS ACTUALLY IN /in, BEFORE ANYTHING TRIES TO USE IT.
 #
@@ -2404,6 +2404,181 @@ if [ "$R8" = ok ]; then
 fi
 
 # ---------------------------------------------------------------------------
+head1 "RUNG 10 -- LFS 5.2: binutils pass 1, cross to \$LFS_TGT"
+# FROM HERE THE ORDER IS LFS's AND IT IS NOT NEGOTIABLE.
+#
+#   5.2 binutils pass 1   5.3 gcc pass 1   5.4 linux headers
+#   5.5 glibc             5.6 libstdc++    ch6 binutils/gcc pass 2
+#
+# headers before glibc, glibc before libstdc++, libstdc++ before pass 2. Stage 4
+# runs exactly this with gcc 10 as the host compiler (CHAIN_CC=out10/bin/gcc),
+# which is the compiler rung 9 just produced.
+#
+# LFS_TGT IS DELIBERATELY NOT THE HOST TRIPLE. That is the book's device: a
+# toolchain targeting aarch64-veron-linux-gnu cannot silently reach anything
+# built for aarch64-unknown-linux-gnu, so a leak from the old sysroot becomes a
+# link error instead of a subtly wrong binary. It also settles a question left
+# open earlier in this file -- a non-standard vendor travels fine through
+# gcc 15, so config.sub was never the obstacle.
+#
+# THIS IS WHERE musl LEAVES THE CHAIN. Chapter 5 builds glibc into $S, and
+# everything above is glibc. musl carried the stretch where nothing else could
+# be built, which is what spikes/livebootstrap/ORDER.md argues it is for.
+LFS_TGT=aarch64-veron-linux-gnu
+S=/work/lfs
+if [ "$R9" = ok ]; then
+  CHAIN_CC=/work/out10/bin/gcc
+  CHAIN_CXX=/work/out10/bin/g++
+  export PATH="$S/tools/bin:$PATH"
+  mkdir -p "$S/tools"
+  say "    chapter 5 compiler: $("$CHAIN_CC" --version 2>&1 | head -1)"
+  say "    LFS_TGT: $LFS_TGT   sysroot: $S"
+
+  cd /work/src
+  # BINUTILS_LFS, NOT the 2.30 rung 4 built. 2.30 is pinned by tcc's ceiling
+  # and nothing in chapter 5 is built by tcc; stage 4 uses 2.46 here.
+  if ! untar "/in/binutils-$BINUTILS_LFS"; then
+    say "    binutils $BINUTILS_LFS did not extract"; R10=FAIL
+  else
+    _bu=$(onedir "binutils-$BINUTILS_LFS ./binutils-$BINUTILS_LFS")
+    rm -rf /work/b-binutils1 && mkdir -p /work/b-binutils1 && cd /work/b-binutils1
+    say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: binutils pass 1 configure"
+    say "    (cwd: $(pwd))"
+    "/work/src/$_bu/configure" \
+      CC="$CHAIN_CC -static" CXX="$CHAIN_CXX -static" LDFLAGS="-static" \
+      --prefix="$S/tools" \
+      --with-sysroot="$S" \
+      --target="$LFS_TGT" \
+      --disable-nls --enable-gprofng=no --disable-werror \
+      --enable-new-dtags --enable-default-hash-style=gnu \
+      > cfg.log 2>&1
+    _r10=$?
+    say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_r10)"
+    if [ "$_r10" != 0 ]; then
+      R10=FAIL; tail -20 cfg.log 2>/dev/null | sed 's/^/      /'
+    elif timeout 3600 make -j"$NP" > b.log 2>&1 && make install > i.log 2>&1; then
+      if [ -x "$S/tools/bin/$LFS_TGT-ld" ]; then
+        R10=ok
+        say "    $LFS_TGT-ld, -as, -ar installed:"
+        for b in ld as ar ranlib; do
+          printf '      %-28s %s\n' "$LFS_TGT-$b" \
+            "$( [ -x "$S/tools/bin/$LFS_TGT-$b" ] && echo present || echo missing )"
+        done
+      else
+        R10=FAIL; say "    installed no $LFS_TGT-ld"
+        tail -12 i.log 2>/dev/null | sed 's/^/      /'
+      fi
+    else
+      R10=FAIL; say "    --- errors ---"
+      grep -nE "error:|Error [0-9]|configure: error" b.log 2>/dev/null | head -12 | sed 's/^/      /'
+      tail -25 b.log 2>/dev/null | sed 's/^/      /'
+    fi
+  fi
+  cd /work
+fi
+
+# ---------------------------------------------------------------------------
+head1 "RUNG 11 -- LFS 5.3: gcc pass 1, no headers and no libc yet"
+# --without-headers/--with-newlib because there IS no libc yet; c,c++ because
+# binutils pass 2 and much else needs a C++ compiler and libstdc++ comes at 5.6.
+#
+# gmp/mpfr/mpc GO IN-TREE, not into a prefix. That is what the book does and
+# stage 4 follows it: "simpler and more reliable than a separate prefix".
+#
+# THE t-aarch64-linux SED IS OURS, NOT THE BOOK'S. LFS seds
+# gcc/config/i386/t-linux64 for x86_64; the aarch64 file doing the same job is
+# t-aarch64-linux. Without it glibc lands in /usr/lib and libstdc++ in
+# /usr/lib64 -- a directory this sysroot has no symlink to. g++ still LINKS;
+# the program dies at exec with "error while loading shared libraries:
+# libstdc++.so.6", which reads as a broken C++ runtime rather than a misplaced
+# file.
+#
+# ASSERT THE ANCHOR, which is stage 4's rule and worth adopting everywhere:
+# a sed that matches nothing ships an unchanged file and looks exactly like a
+# sed that worked. So the file must exist and the pattern must be found, or
+# this rung fails here rather than at exec time six rungs later.
+if [ "$R10" = ok ]; then
+  cd /work/src
+  if ! untar /in/gcc-15; then
+    say "    gcc 15 did not extract"; R11=FAIL
+  else
+    g15=$(onedir 'gcc-15* ./gcc-15*')
+    _t="/work/src/$g15/gcc/config/aarch64/t-aarch64-linux"
+    if [ ! -f "$_t" ]; then
+      say "    $_t is missing -- gcc has moved this file"; R11=FAIL
+    elif ! grep -q 'mabi\.lp64=' "$_t"; then
+      say "    $_t has no mabi.lp64= line. It now reads:"
+      sed 's/^/      /' "$_t"; R11=FAIL
+    else
+      sed -e '/mabi\.lp64=/s|lib64|lib|' -i.orig "$_t"
+      say "    64-bit libdir: $(grep 'mabi\.lp64=' "$_t")"
+    fi
+  fi
+
+  if [ "$R11" != FAIL ]; then
+    # In-tree prerequisites, as the book does it.
+    for pk in gmp mpfr mpc; do
+      ( cd "/work/src/$g15" && untar "/in/$pk-" \
+        && mv "$(onedir "$pk-* ./$pk-*")" "$pk" ) >/dev/null 2>&1 \
+        || { say "    $pk did not go in-tree"; R11=FAIL; }
+    done
+    say "    in-tree: $(ls -d /work/src/$g15/gmp /work/src/$g15/mpfr /work/src/$g15/mpc 2>/dev/null | wc -l) of 3"
+  fi
+
+  if [ "$R11" != FAIL ]; then
+    rm -rf /work/b-gcc1 && mkdir -p /work/b-gcc1 && cd /work/b-gcc1
+    say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: gcc 15 pass 1 configure"
+    "/work/src/$g15/configure" \
+      CC="$CHAIN_CC -static" CXX="$CHAIN_CXX -static" LDFLAGS="-static" \
+      --target="$LFS_TGT" \
+      --prefix="$S/tools" \
+      --with-glibc-version="$GLIBC" \
+      --with-sysroot="$S" \
+      --with-newlib --without-headers \
+      --enable-default-pie --enable-default-ssp \
+      --disable-nls --disable-shared --disable-multilib \
+      --disable-threads --disable-libatomic --disable-libgomp \
+      --disable-libquadmath --disable-libssp --disable-libvtv \
+      --disable-libstdcxx --enable-languages=c,c++ \
+      > cfg.log 2>&1
+    _r11=$?
+    say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_r11)"
+    if [ "$_r11" != 0 ]; then
+      R11=FAIL; tail -20 cfg.log 2>/dev/null | sed 's/^/      /'
+    elif timeout 7200 make -j"$NP" > b.log 2>&1 && make install > i.log 2>&1; then
+      # THE limits.h REASSEMBLY, AND IT IS NOT OPTIONAL.
+      #
+      # --without-headers installs a self-contained limits.h that knows nothing
+      # of the system one, so PATH_MAX is simply absent. binutils pass 2 then
+      # dies on
+      #     ld/ldmain.c:646: error: 'PATH_MAX' undeclared
+      # which names a macro rather than the include chain that lost it.
+      # Concatenating the three fragments produces the full header, which
+      # #include_next's through to glibc's once 5.5 has built one.
+      LIMH=$(dirname "$("$LFS_TGT-gcc" -print-libgcc-file-name 2>/dev/null)")
+      for d in include include-fixed; do
+        [ -d "$LIMH/$d" ] || continue
+        cat "/work/src/$g15/gcc/limitx.h" "/work/src/$g15/gcc/glimits.h" \
+            "/work/src/$g15/gcc/limity.h" > "$LIMH/$d/limits.h"
+        say "    full limits.h written to $d/ ($(wc -l < "$LIMH/$d/limits.h") lines)"
+      done
+      if [ -x "$S/tools/bin/$LFS_TGT-gcc" ]; then
+        R11=ok
+        "$S/tools/bin/$LFS_TGT-gcc" --version 2>&1 | head -1 | sed 's/^/      /'
+        "$S/tools/bin/$LFS_TGT-gcc" -dumpmachine 2>&1 | sed 's/^/      targets: /'
+      else
+        R11=FAIL; say "    no $LFS_TGT-gcc installed"
+      fi
+    else
+      R11=FAIL; say "    --- errors ---"
+      grep -nE "error:|Error [0-9]|configure: error" b.log 2>/dev/null | head -12 | sed 's/^/      /'
+      tail -30 b.log 2>/dev/null | sed 's/^/      /'
+    fi
+  fi
+  cd /work
+fi
+
+# ---------------------------------------------------------------------------
 head1 "RUNGS -- arm: $ARM"
 printf '    %-40s %s\n' "0   compiler runs, libtcc1.a"       "$R0"
 printf '    %-40s %s\n' "1   freestanding compile+link"      "$R1"
@@ -2417,8 +2592,13 @@ printf '    %-40s %s\n' "6   gcc 4.7.4 by tcc -- stage 4 stage 1" "$R6"
 printf '    %-40s %s\n' "7   gmp/mpfr/mpc rebuilt by that gcc"   "$R7"
 printf '    %-40s %s\n' "8   gcc 4.7.4 again -- stage 4 stage 2" "$R8"
 printf '    %-40s %s\n' "9   gcc 10.2.0 by g++ 4.7.4"            "$R9"
+printf '    %-40s %s\n' "10  LFS 5.2 binutils pass 1"            "$R10"
+printf '    %-40s %s\n' "11  LFS 5.3 gcc 15 pass 1"              "$R11"
 say ""
-if [ "$R9" = ok ]; then
+if [ "$R11" = ok ]; then
+  say "    REACHED LFS 5.3 -- a cross gcc 15 targeting $LFS_TGT."
+  say "    5.4 linux headers, then 5.5 glibc, are next."
+elif [ "$R9" = ok ]; then
   say "    REACHED gcc 10.2.0, built by a g++ descended from tcc."
   say "    gcc 15 is the next rung."
 elif [ "$R8" = ok ]; then

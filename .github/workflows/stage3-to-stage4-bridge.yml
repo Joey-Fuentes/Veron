@@ -196,6 +196,13 @@ env:
   # cannot be built by a C compiler at all. Stage 4's version, so the overlap
   # stays an overlap.
   GCC10: '10.2.0'
+  # CHAPTER 5 IS A DIFFERENT TOOLCHAIN. gcc 15 and a modern binutils, cross to
+  # LFS_TGT, against a glibc sysroot -- stage 4's versions so the overlap holds.
+  # BINUTILS above is 2.30 because tcc has a ceiling; nothing here is built by
+  # tcc, so chapter 5 uses 2.46 as stage 4 does.
+  GCC15: '15.2.0'
+  BINUTILS_LFS: '2.46.0'
+  GLIBC: '2.43'
 
 jobs:
 
@@ -275,7 +282,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: dl
-          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-v1
+          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-${{ env.GCC15 }}-${{ env.GLIBC }}-v1
 
       - name: Fetch pinned upstreams (airlock -- nothing here enters the box)
         run: |
@@ -337,6 +344,8 @@ jobs:
           fetch "$GNU_MIRRORS"  "gcc/gcc-$GCC47/gcc-$GCC47.tar.bz2"
           fetch "$GNU_MIRRORS"  "gcc/gcc-$GCC48/gcc-$GCC48.tar.bz2"
           fetch "$GNU_MIRRORS"  "gcc/gcc-$GCC10/gcc-$GCC10.tar.xz"
+          fetch "$GNU_MIRRORS"  "gcc/gcc-$GCC15/gcc-$GCC15.tar.xz"
+          fetch "$GNU_MIRRORS"  "binutils/binutils-$BINUTILS_LFS.tar.xz"
 
           echo "  --- what came in ---"
           sha256sum ./*.tar.* 2>/dev/null | sed 's/^/    /'
