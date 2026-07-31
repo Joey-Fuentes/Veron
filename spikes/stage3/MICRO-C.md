@@ -883,14 +883,14 @@ the multi-TU gap instead of codegen, and reported it as 57 codegen failures.
 
 ---
 
-## The corruption, found
+## The corruption, found — and the first fix for it withdrawn
 
-**A pending `*` was landing on the function's ARGUMENT.**
+**A pending `*` lands on the function's ARGUMENT.**
 
 `*f(8)` is `*(f(8))`. `primary_expr_variable` eats the stars and parks the
-count in `num_dereference_after_postfix` for the postfix walk to apply — but
-the argument list is parsed between those two points, and every argument is a
-full expression reading the same global:
+count in `num_dereference_after_postfix` for the postfix walk — but the
+argument list is parsed between those two points, and every argument is a full
+expression reading the same global:
 
 ```
     mov_x0,8            # primary expr number
@@ -901,57 +901,78 @@ full expression reading the same global:
 **tcc writes every byte of `.eh_frame` through exactly this shape** —
 `tccdbg.c:550`, `*(uint8_t*)section_ptr_add((s), 1) = (data)`. In a twelve-line
 program the bogus address is unmapped and the process dies, which is why no
-case caught it. Inside tcc the address is usually **mapped**: the access
-silently succeeds against the wrong memory, an allocator node's `next` takes a
-small value, and 62 of 79 nodes drop off the list. It surfaced much later as
-`realloc: pointer was never returned by malloc` — true of the list, false of
+case caught it. Inside tcc the address is usually **mapped**: the write
+silently lands on the wrong memory, an allocator node's `next` takes a small
+value, and 62 of 79 nodes drop off the list — surfacing much later as
+`realloc: pointer was never returned by malloc`, true of the list and false of
 the heap.
 
-EXPERIMENT-zzzg saves and restores the count around the argument list. Not
-clears: it is still owed to the result.
+### The diagnosis is solid. The fix was not.
 
-### The route that worked
+`EXPERIMENT-zzzg` saved and restored the count around the argument list. Case
+105's read forms passed, difftest stayed 89/0, the 426-corpus stayed at 419 —
+**and mc-tcc went from 12/12 to 0/12 on the end-to-end programs.** Bisected:
+the `num_dereference_after_postfix` save/restore alone does it; the
+`Address_of` half is innocent. **Withdrawn.**
 
-Four hypotheses died against the realloc message before any of this. What
-actually moved it:
+There is already a note in the file explaining why this is delicate:
+
+> `CONSUMED HERE.` This branch applies the dereference itself, so the deferred
+> count added for `*bf->buf_end` must be cleared or postfix_expr applies it a
+> **second time** — which is exactly what broke `*pal = al`.
+
+The count is cleared deliberately on at least one path, so restoring it
+unconditionally after an argument list resurrects it somewhere that had already
+consumed it. **A correct fix has to know which pending count belongs to the
+call and which belongs to an enclosing expression, and a single global cannot
+express that.** That is the structural problem this file counts eight
+implementations of, and it is the strongest argument yet for carrying the state
+on the expression rather than in a global.
+
+### What that says about the gates
+
+difftest (89 cases) and the stage-2 corpus (426 programs) were **both green**
+over a change that breaks every one of the twelve end-to-end programs. Neither
+compiles tcc. **The twelve are the only gate that exercises micro-c's output on
+a real program**, and they need a tcc build to run — so the cheap suites cannot
+stand in for them. Run the twelve before believing any codegen change.
+
+### The route that found it
+
+Four hypotheses died against the realloc message first. What moved it:
 
 1. classify the bad pointer three ways — free list, interior, neither
 2. **read the memory at it** — the 32 bytes below were a `_malloc_node` whose
    `block` field *was* the pointer. Live block, unreachable node.
-3. a node-loss detector — created vs reachable, every `malloc` and `free`,
-   bounded so a cycle reports instead of hanging. 62 lost in one store.
+3. a node-loss detector — created vs reachable, bounded so a cycle reports
+   rather than hangs. 62 lost in one store.
 4. **read the neighbour's bytes** — a DWARF CIE, augmentation `"zR"`,
    return-address register 30. `.eh_frame`.
 5. reduce the writer's shape to twelve lines and diff against gcc.
 
-Steps 2 and 4 are the same move and both were decisive. Three rounds of
-reasoning about distances produced nothing; reading the bytes produced the
-answer twice.
+Steps 2 and 4 are the same move and both were decisive.
 
 ---
 
 ## The next piece of work
 
-**TWO FAULTS REMAIN IN `*f(args)`.** Case 105 is `KNOWN GAP` until both close,
-and difftest will report loudly if it goes green early.
+**Three faults in `*f(args)`, none fixed.** Case 105 is `KNOWN GAP`.
 
-**1. The return type does not reach `current_target`, so the dereference uses
-the wrong width.** `unsigned char* give(int)` dereferenced emits a four-byte
-signed load. Worth reading the case for this one: `*give(9)` **passes** while
-`*give(8)` fails, because the bytes after `buf[9]` happen to be zero and the
-wrong-width load returns the right answer. A case built from the passing form
-would certify a broken compiler — the third time this file has recorded that
-trap.
+1. **The pending `*` lands on the argument.** Diagnosed exactly; the naive fix
+   regresses tcc. Needs the count to be owned by the expression rather than by
+   a global.
+2. **The return type does not reach `current_target`**, so the dereference uses
+   the wrong width. Cause known: under a leading `*`, `primary_expr`'s
+   direct-call fast path does not match (it tests `global_token->s`, which is
+   `*`), so the call goes through `function_call(NULL, TRUE)` with no symbol.
+   A fix that carried the symbol in another global was written and **not
+   shipped**, because it was measured against a contaminated tree and the
+   attribution was never established cleanly.
+3. **`*f(x) = v` loads through the returned pointer.** For a variable one load
+   is right; for a call result it is one step too far.
 
-**2. `*f(x) = v` loads through the returned pointer** and stores through the
-loaded value. For a *variable* the register holds the variable's address and
-one load is right; for a *call result* it already holds the pointer, so the
-load is one step too far. That asymmetry lives in the lvalue path this file
-counts eight implementations of, which is why it is not being rushed.
-
-Both are on the `.eh_frame` path, so tcc will keep corrupting its heap until
-they are closed — the argument fix removes one of three writes to the wrong
-address, not all three.
+All three are on the `.eh_frame` path, so tcc keeps corrupting its heap until
+they close.
 
 ---
 

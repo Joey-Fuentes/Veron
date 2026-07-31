@@ -1,8 +1,9 @@
 /* KNOWN GAP -- `*f(args)`, A DEREFERENCE APPLIED TO A CALL'S RESULT.
  *
- * Expected to fail, and it does. One of three faults in this shape is fixed;
- * the case stays red until all three are, and difftest reports loudly if it
- * ever goes green.
+ * Expected to fail, and it does. NOTHING in this shape is fixed: the first
+ * attempt (EXPERIMENT-zzzg) regressed mc-tcc from 12/12 to 0/12 on the
+ * end-to-end programs and was withdrawn. The case is here so the shape is
+ * measured and so difftest reports loudly if it ever goes green.
  *
  * tcc writes every byte of .eh_frame through exactly this shape:
  *

@@ -176,6 +176,9 @@ because the fault is live, and it should come out once the corruption is fixed.
 + * cheapest thing that can catch it AT THE MOMENT IT HAPPENS rather than
 + * whenever some later caller trips over a lost block. */
 +long _malloc_nodes_created;
++/* OFF BY DEFAULT. The per-call walk is O(n^2) over a run and it CHANGES THE
++ * TIMING AND THE HEAP of the program under test. Set it to 1 by hand to arm
++ * the detector; the failure-path diagnostics below cost nothing and stay on. */
 +long _malloc_check_armed;
 +void _malloc_check_lists(char* where);
 +void _malloc_write_num(char* label, long v);
@@ -195,7 +198,6 @@ because the fault is live, and it should come out once the corruption is fixed.
  
  	/* Looks like we made it home safely */
 +	_malloc_nodes_created = _malloc_nodes_created + 1;
-+	_malloc_check_armed = 1;
  	n->size = size;
  	n->next = NULL;
  	n->used = _IN_USE;

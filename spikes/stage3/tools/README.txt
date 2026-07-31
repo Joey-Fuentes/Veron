@@ -2174,7 +2174,7 @@ every malloc and free, which is O(n^2) over a run. It is in because the fault
 is live; it should come out when the corruption is fixed.
 
 --------------------------------------------------------------------------------
-THE CORRUPTION, FOUND: a pending `*` was landing on the ARGUMENT.
+THE CORRUPTION, FOUND -- AND THE FIRST FIX FOR IT WITHDRAWN.
 --------------------------------------------------------------------------------
 
     *f(8)   is   *(f(8))
@@ -2194,10 +2194,40 @@ bogus address is unmapped and it segfaults, which is why no case caught it. In
 tcc the address is usually MAPPED, the access silently succeeds against the
 wrong memory, an allocator node's `next` gets a small value, and 62 of 79 nodes
 drop off the list. It surfaced as "realloc: pointer was never returned by
-malloc" -- true of the LIST, false of the HEAP, and four hypotheses died
-against it.
+malloc" -- true of the LIST, false of the HEAP.
 
-THE ROUTE THAT WORKED, since none of the reasoning did:
+THE DIAGNOSIS IS SOLID. THE FIX WAS NOT.
+
+EXPERIMENT-zzzg saved and restored the count around the argument list. It made
+case 105's read forms pass, difftest stayed 89/0, the 426-corpus stayed at 419
+-- AND IT TOOK mc-tcc FROM 12/12 TO 0/12 ON THE END-TO-END PROGRAMS. Bisected:
+the num_dereference_after_postfix save/restore alone does it; the Address_of
+half is innocent. Withdrawn.
+
+WHAT THAT SAYS ABOUT THE GATES. difftest (89 cases) and the stage-2 corpus (426
+programs) were BOTH GREEN over a change that breaks every one of the twelve
+end-to-end programs. Neither suite compiles tcc. The twelve programs are the
+only gate that exercises micro-c's output ON A REAL PROGRAM, and they take a
+tcc build to run -- so the cheap suites cannot stand in for them. RUN THE TWELVE
+BEFORE BELIEVING ANY CODEGEN CHANGE. I ran difftest and the corpus after zzzg,
+saw green, and shipped it; the twelve were run one step later and were red.
+
+There is a note in the file already about why this is delicate:
+
+    /* CONSUMED HERE. This branch applies the dereference itself, so the
+     * deferred count added for `*bf->buf_end` must be cleared or
+     * postfix_expr applies it a SECOND time -- which is exactly what broke
+     * `*pal = al` and sent tcc backwards from line 660 to 177. */
+
+So the count is cleared deliberately on at least one path, and restoring it
+unconditionally after an argument list resurrects it somewhere that had already
+consumed it. A correct fix has to know WHICH pending count belongs to the call
+and which belongs to an enclosing expression, and the global cannot express
+that. That is the same structural problem this file counts eight
+implementations of, and it is the argument for carrying the type on the
+expression rather than in a global.
+
+THE ROUTE THAT FOUND IT, since none of the reasoning did:
 
   1. classify the bad pointer three ways (free list / interior / neither)
   2. READ THE MEMORY AT IT -- the 32 bytes below were a _malloc_node whose
@@ -2212,18 +2242,11 @@ Steps 2 and 4 are the same move and both were decisive. Three rounds of
 reasoning about distances produced nothing; reading the bytes produced the
 answer twice.
 
-TWO FAULTS IN THIS SHAPE REMAIN. Case 105 is KNOWN GAP until both close:
-
-  * the RETURN TYPE does not reach current_target, so the deref uses the wrong
-    WIDTH. `*give(9)` PASSES and `*give(8)` FAILS -- the bytes after buf[9] are
-    zero, so a four-byte load returns the right answer. A case built from the
-    passing form would certify a broken compiler. Third time this file has
-    recorded that trap.
-  * `*f(x) = v` loads through the returned pointer and stores through the
-    loaded value. For a VARIABLE the register holds the variable's address and
-    one load is right; for a CALL RESULT it already holds the pointer. That
-    asymmetry is in the lvalue path with eight implementations, and it is not
-    being rushed at the end of a long session.
+THE DETECTOR IS NOW OPT-IN. Left armed it walks both lists at every malloc and
+free, which changes the timing and the heap of the program under test -- and I
+measured a "regression" against a contaminated tree before noticing. Set
+_malloc_check_armed to 1 by hand. The failure-path diagnostics cost nothing and
+stay on.
 
 ALSO: the hermetic job truncated stderr to `head -3`, so the diagnostic that
 does all this work printed three lines and stopped. Widened to 30 in both
