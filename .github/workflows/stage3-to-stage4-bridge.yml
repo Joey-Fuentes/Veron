@@ -116,20 +116,12 @@ env:
   # They rebuild it later because 3.82 "randomly segfaults while building the
   # Linux kernel" -- irrelevant here, since this job stops at gcc 4.7.4.
   MAKE_VER: '3.82'
-  # A SECOND make, TO TELL TWO FAILURES APART. busybox tar opens musl's tarball
-  # and refuses make-3.82's, after a clean gunzip whose output is exactly
-  # 12380 x 512 bytes -- block AND record aligned, i.e. certainly a tar. So
-  # either that 2010 archive carries a format detail this busybox rejects, or
-  # the invocation is wrong. Fetching a modern make discriminates in one run:
-  # if 4.4 opens and 3.82 does not, it is the archive.
-  #
-  # AND 4.4 MAY SIMPLY BE THE BETTER PIN. 3.82 was chosen because
-  # live-bootstrap uses it, but their reason is x86 tcc-compatibility in 2021.
-  # Every GNU make ships build.sh, so "buildable without make" is not special
-  # to 3.82 -- while 3.82 DOES carry the known glob/alloca breakage against
-  # modern libc headers that LFS and live-bootstrap both patch around. There is
-  # no known tcc ceiling for make the way there is for binutils.
-  MAKE_ALT: '4.4'
+  # 3.82 AND ONLY 3.82. This is live-bootstrap's version and, more to the
+  # point, the version their steps/make-3.82/pass1.kaem command list is written
+  # against -- 27 files with per-file -D flags that stand in for a configure
+  # that cannot run here. 4.4 was fetched for a while as a second guess at a
+  # tar problem that turned out to be the archive format; it has no recipe
+  # behind it and is gone.
   # The rest are stage 4's OWN versions, copied deliberately. If they drift
   # apart the overlap stops being an overlap.
   # BINUTILS 2.30, NOT STAGE 4's 2.46, AND THAT DIVERGENCE IS DELIBERATE.
@@ -243,7 +235,6 @@ jobs:
           }
           get "https://musl.libc.org/releases/musl-$MUSL_VER.tar.gz"
           get "$GNU/make/make-$MAKE_VER.tar.gz"
-          get "$GNU/make/make-$MAKE_ALT.tar.gz"
           get "$GNU/binutils/binutils-$BINUTILS.tar.xz"
           get "$GNU/gmp/gmp-$GMP_VER.tar.xz"
           get "$GNU/mpfr/mpfr-$MPFR_VER.tar.xz"

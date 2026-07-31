@@ -771,109 +771,127 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-head1 "RUNG 3.5 -- GNU make, built by the compiler under test"
-# busybox has no make and nothing else is borrowed, so every autoconf rung
-# above depends on this one. make ships build.sh precisely for the case where
-# no make exists yet.
+head1 "RUNG 3.5 -- GNU make 3.82, by literal commands (live-bootstrap's recipe)"
+# NO configure. THIS IS steps/make-3.82/pass1.kaem, TRANSCRIBED.
 #
-# IT IS ALSO THE CHEAPEST HOSTED SIGNAL. make is small plain C touching little
-# beyond stdio, string and the process calls; it fails in minutes and for a
-# readable reason. binutils fails after a long configure, usually as a
-# consequence of something earlier.
+# make's own configure cannot run here and the reason is structural, not a
+# flag: AC_LIB_PROG_LD -- pulled in by gettext even under --disable-nls --
+# searches for an `ld` in PATH, and binutils is rung 4. tcc needs no ld, it
+# links internally, but autoconf checks anyway.
+#
+# live-bootstrap hits the same wall and does not argue with it. It never runs
+# make's configure at all: steps/make-3.82/pass1.kaem is a flat list of tcc
+# invocations, one per source file, with every setting that configure would
+# have discovered passed as a -D on the command line. `catm config.h` creates
+# an EMPTY config.h -- the file exists so #include finds it, and contains
+# nothing.
+#
+# Their file is reproduced below command for command. Their `tcc` is our $CC;
+# their ${BINDIR} and ${PREFIX} are our $PFX. NOTHING ELSE IS CHANGED --
+# not a flag, not an order, not a define. It carries no patches, which is
+# itself worth knowing: make 3.82 needs none when built this way.
+#
+# THE FLAGS ARE NOT DECORATION. -Dvfork=fork on function.c and job.c because
+# tcc's vfork semantics are not make's; -DFILE_TIMESTAMP_HI_RES=0 because
+# there is no high-resolution stat; -DSCCS_GET, -DLOCALEDIR, -DPACKAGE point
+# at names that do not need to exist. Guessing at these is what configure was
+# for, and this list is the answer configure would have produced.
 if [ "$R3" = ok ]; then
-  # EXTRACT LOUDLY. The last run printed "tar: invalid tar magic", fell through
-  # to a cd that did not happen, and then reported "./configure: not found" --
-  # three lines describing one failure, none of them naming it. If a fetch
-  # returns a redirect page or a differently-compressed tarball, that is worth
-  # one line here rather than a puzzle two rungs later.
   cd /work/src
-  # TRY THE MODERN ONE FIRST, FALL BACK TO 3.82.
-  #
-  # This is a discriminating experiment as much as a build. If 4.4 opens and
-  # 3.82 does not, the fault is in that 2010 archive; if neither opens, it is
-  # busybox tar or this invocation, and no make version will help.
-  #
-  # od -c, NOT tr -dc '[:print:]'. busybox tr does not support POSIX character
-  # classes, so the previous run's "ustar magic at offset 257: []" was the
-  # diagnostic deleting its own input rather than the field being empty. A
-  # reading of "nothing is there" that comes from a tool that always returns
-  # nothing is worse than no reading at all.
-  _got=""
-  for _v in "$MAKE_ALT" "$MAKE_VER"; do
-    if untar "/in/make-$_v"; then
-      _got=$(onedir "make-$_v ./make-$_v")
-      [ -n "$_got" ] && { say "    extracted $_got"; break; }
-    fi
-  done
-  if [ -z "$_got" ]; then
-    say "    neither make version extracted. With /in uncompressed and one"
-    say "    call shape, that is busybox tar refusing a plain tar -- which"
-    say "    would be a real finding about this box, not about make."
+  if ! untar /in/make-3.82; then
+    say "    make-3.82 did not extract"
     R35=FAIL
   else
-    say "    building $_got"
-    # WHAT ACTUALLY LANDED. `configure rc=77` followed by build.sh missing
-    # build.cfg said nothing about which of the two failed or what was on disk
-    # when it did. Print the tree.
-    say "    --- /work/src after extraction ---"
-    ls -la /work/src 2>/dev/null | sed 's/^/      /' | head -12
-    say "    --- $_got (first 25 entries) ---"
-    ls -la "/work/src/$_got" 2>/dev/null | sed 's/^/      /' | head -25
-    say "    build.sh present: $( [ -f "/work/src/$_got/build.sh" ] && echo yes || echo NO )"
-    say "    configure present: $( [ -f "/work/src/$_got/configure" ] && echo yes || echo NO )"
-  fi
-  if [ "$R35" != FAIL ]; then
-  cd "$_got" 2>/dev/null || { say "    cannot enter $_got"; R35=FAIL; }
-  fi
-  if [ "$R35" != FAIL ]; then
-  # IF THIS VERSION'S CONFIGURE WILL NOT GO, TRY THE OTHER ONE. 4.4 and 3.82
-  # are twelve years apart and do not ask autoconf for the same things; there
-  # is no reason to give up on make because one of them wanted an ld.
-  if cfg_try "make $_got" --prefix="$PFX" --disable-nls; then
-    _crc=0
-  else
-    _crc=1
-    _other=$MAKE_VER
-    [ "$_got" = "make-$MAKE_VER" ] && _other=$MAKE_ALT
-    say "    --- $_got would not configure; trying make-$_other ---"
-    cd /work/src
-    if untar "/in/make-$_other"; then
-      _got2=$(onedir "make-$_other ./make-$_other")
-      if [ -n "$_got2" ] && cd "$_got2"; then
-        _got=$_got2
-        if cfg_try "make $_got" --prefix="$PFX" --disable-nls; then _crc=0; fi
-      fi
+    _mkd=$(onedir 'make-3.82 ./make-3.82')
+    if [ -z "$_mkd" ] || ! cd "$_mkd"; then
+      say "    no make-3.82 directory after extraction"; R35=FAIL
     fi
   fi
-  [ "$_crc" = 0 ] || R35=FAIL
+fi
 
-  say "    --- $_got after configure ---"
-  ls -la . 2>/dev/null | sed 's/^/      /' | head -20
-  say "    build.cfg present: $( [ -f build.cfg ] && echo yes || echo NO )"
-  say "    Makefile present:  $( [ -f Makefile ]  && echo yes || echo NO )"
+if [ "$R3" = ok ] && [ "$R35" != FAIL ]; then
+  say "    building $(pwd) with live-bootstrap's command list"
 
-  if [ "$_crc" = 0 ]; then
-  if [ -f build.sh ]; then
-    say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: sh ./build.sh"
-    say "    (cwd: $(pwd))"
-    sh ./build.sh > build.log 2>&1
-    _brc=$?
-    say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_brc)"
-    if [ "$_brc" = 0 ] && [ -x ./make ]; then
-      cp ./make "$PFX/bin/make"; R35=ok
+  # catm config.h -- an EMPTY config.h. Every HAVE_* arrives as -D below.
+  : > config.h
+
+  _cc_fail=0
+  # $1 = the source file, rest = its flags. Named so a failure says which file.
+  mk_cc() {
+    _src=$1; shift
+    if ! $CC -c "$@" "$_src" 2>>/work/make-cc.err; then
+      say "      FAILED: $_src"
+      _cc_fail=$((_cc_fail + 1))
+    fi
+  }
+
+  say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: 26 x \$CC -c ... (pass1.kaem)"
+  say "    (cwd: $(pwd))  CC=$CC"
+
+  mk_cc getopt.c
+  mk_cc getopt1.c
+  mk_cc ar.c        -I. -Iglob -DHAVE_INTTYPES_H -DHAVE_SA_RESTART -DHAVE_STDINT_H
+  mk_cc arscan.c    -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART -DHAVE_FCNTL_H
+  mk_cc commands.c  -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART -DFILE_TIMESTAMP_HI_RES=0
+  mk_cc default.c   -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART -DSCCS_GET=\"/nullop\"
+  mk_cc dir.c       -I. -Iglob -DHAVE_INTTYPES_H -DHAVE_SA_RESTART -DHAVE_DIRENT_H
+  mk_cc expand.c    -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART
+  mk_cc file.c      -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART -DFILE_TIMESTAMP_HI_RES=0
+  mk_cc function.c  -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART -Dvfork=fork
+  mk_cc implicit.c  -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART
+  mk_cc job.c       -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART -DHAVE_DUP2 -DHAVE_STRCHR -Dvfork=fork
+  mk_cc main.c      -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART -DLOCALEDIR=\"/fake-locale\" -DPACKAGE=\"fake-make\" -DHAVE_MKTEMP -DHAVE_GETCWD
+  mk_cc misc.c      -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART -DHAVE_STRERROR -DHAVE_VPRINTF -DHAVE_ANSI_COMPILER -DHAVE_STDARG_H
+  mk_cc read.c      -I. -Iglob -DHAVE_INTTYPES_H -DHAVE_SA_RESTART -DINCLUDEDIR=\"$PFX/include\"
+  mk_cc remake.c    -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART -DFILE_TIMESTAMP_HI_RES=0 -DHAVE_FCNTL_H -DLIBDIR=\"$PFX/lib\"
+  mk_cc rule.c      -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART
+  mk_cc signame.c   -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART
+  mk_cc strcache.c  -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART
+  mk_cc variable.c  -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART
+  mk_cc version.c   -I. -DVERSION=\"3.82\"
+  mk_cc vpath.c     -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART
+  mk_cc hash.c      -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART
+  mk_cc remote-stub.c -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART
+  mk_cc getloadavg.c  -DHAVE_FCNTL_H
+  mk_cc glob/fnmatch.c -Iglob -DSTDC_HEADERS
+  mk_cc glob/glob.c    -Iglob -DHAVE_STRDUP -DHAVE_DIRENT_H
+
+  say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  ($_cc_fail of 27 failed)"
+
+  if [ "$_cc_fail" != 0 ]; then
+    R35=FAIL
+    say "    --- distinct errors, by count ---"
+    grep -a "error:" /work/make-cc.err 2>/dev/null \
+      | sed 's/^.*error:/error:/' | sort | uniq -c | sort -rn | head -12 | sed 's/^/      /'
+    say "    --- first errors verbatim ---"
+    grep -av '^[A-Z][0-9]*$' /work/make-cc.err 2>/dev/null | head -15 | sed 's/^/      /'
+  else
+    mkdir -p "$PFX/bin"
+    say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: \$CC -static -o $PFX/bin/make <27 objects>"
+    $CC -static -o "$PFX/bin/make" \
+      getopt.o getopt1.o ar.o arscan.o commands.o default.o dir.o expand.o \
+      file.o function.o implicit.o job.o main.o misc.o read.o remake.o rule.o \
+      signame.o strcache.o variable.o version.o vpath.o hash.o remote-stub.o \
+      getloadavg.o fnmatch.o glob.o 2>/work/make-ld.err
+    _lrc=$?
+    say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_lrc)"
+    if [ "$_lrc" = 0 ] && [ -x "$PFX/bin/make" ]; then
       say "    make: $(wc -c < "$PFX/bin/make") bytes"
-      "$PFX/bin/make" --version 2>&1 | head -1 | sed 's/^/    /'
+      # live-bootstrap's own test, verbatim: `make --version`
+      if "$PFX/bin/make" --version > /work/mkver.txt 2>&1; then
+        say "    --- make --version ---"
+        head -3 /work/mkver.txt | sed 's/^/      /'
+        R35=ok
+      else
+        R35=FAIL
+        say "    make built but will not run:"
+        head -5 /work/mkver.txt | sed 's/^/      /'
+      fi
     else
-      R35=FAIL; say "    --- where it stopped ---"
-      grep -nE "error:|undefined reference" build.log 2>/dev/null | head -15 | sed 's/^/      /'
-      tail -20 build.log 2>/dev/null | sed 's/^/      /'
+      R35=FAIL
+      say "    link FAILED:"
+      grep -av '^[A-Z][0-9]*$' /work/make-ld.err 2>/dev/null | head -12 | sed 's/^/      /'
     fi
-  else
-    R35=FAIL
-    say "    no build.sh in $(pwd) -- cannot bootstrap make without make"
-    ls -la . 2>/dev/null | sed 's/^/      /' | head -20
-  fi
-  fi
   fi
   cd /work
 fi
