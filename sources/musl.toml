@@ -10,18 +10,32 @@ license  = "MIT"
 # from here on is a signal, not a shrug.
 
 [substitutions]
-# Both are DECLARED, not silent. See spikes/stage3/patches/tcc-arm64-asm/README.md.
-dropped_asm = [
-  # tcc's arm64 assembler cannot assemble these; musl ships portable C for each,
-  # so the C fallback is used. Named because the result is not stock musl.
-  "src/fenv/aarch64/fenv.s", "src/ldso/aarch64/tlsdesc.s",
-  "src/process/aarch64/vfork.s", "src/setjmp/aarch64/longjmp.s",
-  "src/signal/aarch64/restore.s", "src/thread/aarch64/__set_thread_area.s",
-  "src/thread/aarch64/__unmapself.s", "src/thread/aarch64/clone.s",
-  "src/thread/aarch64/syscall_cp.s",
-]
+# DECLARED, not silent. See spikes/stage3/patches/tcc-arm64-asm/README.md.
+#
+# dropped_asm IS EMPTY, AND USED NOT TO BE. Nine aarch64 .s files were listed
+# here on the grounds that "tcc's arm64 assembler cannot assemble these; musl
+# ships portable C for each, so the C fallback is used". Measured on
+# 2026-07-31 by spikes/stage4/bridge/rungs.sh, which attempts each file rather
+# than assuming: ALL NINE ASSEMBLE. 0 refused. musl then builds 1349 of 1349
+# sources and a hosted hello world links and runs.
+#
+# BOTH HALVES OF THE OLD CLAIM WERE WRONG, and the second half was the
+# dangerous one. There is no portable C for `__set_thread_area` -- it is
+# `msr tpidr_el0, x0`, which cannot be written in C -- so dropping it left the
+# thread pointer unset, __init_tls silently did nothing, and the first access
+# to errno segfaulted. A static binary linked cleanly and died on startup:
+#
+#     rung 3: 80 KB, statically linked, no interpreter, SIGNAL 11
+#
+# That cost several rounds and looked like a codegen fault every time.
+#
+# The likely history is that this list predates the five-patch arm64 assembler
+# series in spikes/stage3/patches/tcc-arm64-asm/ and was never re-measured
+# against it. Re-measure before adding anything back here.
+dropped_asm = []
 dropped_c = ["src/complex/*.c"]   # tcc: "_Complex is not yet supported" (66 sites)
 
 [verification]
 runtime = "4-rung ladder passes: raw _start syscall, crt+libc startup, malloc, stdio"
+built   = "1349/1349 sources compile under tcc on aarch64; hosted hello world links and runs in a busybox-only box (stage3-to-stage4-reference, 2026-07-31)"
 note    = "libc.a lacks complex math. This is NOT a complete musl and must not be described as one."

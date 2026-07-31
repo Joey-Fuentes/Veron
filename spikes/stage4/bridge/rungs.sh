@@ -511,7 +511,33 @@ head1 "RUNG 3.5 -- GNU make, built by the compiler under test"
 # readable reason. binutils fails after a long configure, usually as a
 # consequence of something earlier.
 if [ "$R3" = ok ]; then
-  cd /work/src && tar xzf /in/make-*.tar.gz && cd make-*
+  # EXTRACT LOUDLY. The last run printed "tar: invalid tar magic", fell through
+  # to a cd that did not happen, and then reported "./configure: not found" --
+  # three lines describing one failure, none of them naming it. If a fetch
+  # returns a redirect page or a differently-compressed tarball, that is worth
+  # one line here rather than a puzzle two rungs later.
+  cd /work/src
+  _mk=$(ls /in/make-*.tar.* 2>/dev/null | head -1)
+  if [ -z "$_mk" ]; then
+    say "    no make tarball in /in -- contents:"
+    ls -l /in 2>/dev/null | sed 's/^/      /'
+    R35=FAIL
+  else
+    say "    tarball: $_mk  $(wc -c < "$_mk") bytes"
+    say "    magic:   $(od -An -tx1 -N4 "$_mk" | tr -s ' ')"
+    # gzip is 1f 8b, bzip2 is 42 5a, xz is fd 37. Let tar autodetect rather
+    # than forcing -z, so a differently-compressed tarball still opens.
+    tar xf "$_mk" 2>/work/make-tar.err || {
+      say "    extraction FAILED:"
+      sed 's/^/      /' /work/make-tar.err | head -4
+      say "    first bytes as text: $(head -c 60 "$_mk" | tr -dc '[:print:]')"
+      R35=FAIL
+    }
+  fi
+  if [ "$R35" != FAIL ]; then
+  cd make-* 2>/dev/null || { say "    no make-* directory after extraction"; R35=FAIL; }
+  fi
+  if [ "$R35" != FAIL ]; then
   ./configure --prefix="$PFX" --disable-nls CC="$CC $HOSTED" > cfg.log 2>&1
   say "    configure rc=$?"
   if [ -f build.sh ]; then
@@ -528,6 +554,7 @@ if [ "$R3" = ok ]; then
     R35=FAIL
     say "    configure produced no build.sh -- cannot bootstrap make without make"
     tail -12 cfg.log 2>/dev/null | sed 's/^/      /'
+  fi
   fi
   cd /work
 fi
