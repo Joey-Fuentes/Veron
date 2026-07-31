@@ -76,7 +76,11 @@ if [ "$R0" != FAIL ]; then
            armeabi.c alloca-arm.S armflush.c; do
     [ -f "$f" ] || continue
     o="/work/lt-$(basename "$f" | tr '.' '_').o"
-    if "$CC" -c -o "$o" "$f" 2>>/work/libtcc1.err; then objs="$objs $o"; fi
+    # $CC IS TWO WORDS -- the binary and its -B. Quoting it makes the shell
+    # look for a command literally named "/work/ref-tcc -B/work/tccsrc", which
+    # is what the reference run reported six times as "not found". Every other
+    # rung had it unquoted; this one did not.
+    if $CC -c -o "$o" "$f" 2>>/work/libtcc1.err; then objs="$objs $o"; fi
   done
   if [ -n "$objs" ] && "$CC_BIN" -ar rcs "$TCCDIR/libtcc1.a" $objs 2>>/work/libtcc1.err; then
     say "    libtcc1.a: $(wc -c < "$TCCDIR/libtcc1.a") bytes"
@@ -151,12 +155,40 @@ if [ "$R1" = ok ]; then
   done
   say "    generated: $(ls obj/include/bits 2>/dev/null | tr '\n' ' ')"
 
-  INC="-Iobj/include -Iarch/aarch64 -Iarch/generic -Iinclude -Isrc/include -Isrc/internal"
+  # THE INCLUDE ORDER IS THE WHOLE THING, AND GETTING IT WRONG COST A RUN.
+  #
+  # musl ships TWO features.h. include/features.h is the public one;
+  # src/include/features.h is the internal one and it is the only place
+  # `hidden` is defined. Put -Iinclude first and <features.h> resolves to the
+  # public header, `hidden` never gets defined, and
+  #
+  #     extern hidden struct __libc __libc;        src/internal/libc.h:37
+  #
+  # parses as a declaration whose type is the unknown identifier `hidden`,
+  # giving "';' expected (got 'struct')". 664 of 803 objects failed that way
+  # in the reference run and every one of them was this.
+  #
+  # This is musl's own order, from its Makefile's CFLAGS_ALL: arch, generic,
+  # the generated internal dir, src/include, src/internal, generated include,
+  # then the public include LAST.
+  #
+  # -nostdinc matters for the same class of reason: without it the compiler's
+  # own headers are on the path and a musl source file can pick up a
+  # declaration musl did not write. -D_XOPEN_SOURCE=700 is what musl compiles
+  # itself with and several files gate declarations on it.
+  mkdir -p obj/src/internal
+  printf '#define VERSION "%s"\n' "$(cat VERSION 2>/dev/null || echo 0)" \
+    > obj/src/internal/version.h
+  INC="-Iarch/aarch64 -Iarch/generic -Iobj/src/internal -Isrc/include -Isrc/internal -Iobj/include -Iinclude"
+  MUSLCF="-std=c99 -nostdinc -D_XOPEN_SOURCE=700"
   nc=0; nf=0
   : > /work/musl-fail.txt
   for f in $(find src crt -name '*.c' | sort); do
     o="obj/${f%.c}.o"; mkdir -p "$(dirname "$o")"
-    if $CC $INC -c -o "$o" "$f" 2>>/work/musl-cc.err; then
+    # musl's Makefile adds -DCRT for the crt objects; without it crt1.c
+    # compiles to something that is not a crt file.
+    case "$f" in crt/*) X=-DCRT ;; *) X= ;; esac
+    if $CC $MUSLCF $INC $X -c -o "$o" "$f" 2>>/work/musl-cc.err; then
       nc=$((nc + 1))
     else
       nf=$((nf + 1)); echo "$f" >> /work/musl-fail.txt
@@ -164,10 +196,15 @@ if [ "$R1" = ok ]; then
   done
   say "    compiled $nc objects, $nf failed"
   if [ "$nf" -gt 0 ]; then
-    say "    --- first files that would not compile ---"
+    say "    --- files that would not compile (first 10 of $nf) ---"
     head -10 /work/musl-fail.txt | sed 's/^/      /'
-    say "    --- first errors ---"
-    grep -av '^[A-Z][0-9]*$' /work/musl-cc.err 2>/dev/null | head -12 | sed 's/^/      /'
+    # DISTINCT MESSAGES, WITH COUNTS. The first twelve lines of the error log
+    # are usually twelve copies of one fault, which reads as twelve problems
+    # and sends the next round in twelve directions. 664 failures in the
+    # reference run were ONE missing macro.
+    say "    --- distinct errors, by count ---"
+    grep -a "error:" /work/musl-cc.err 2>/dev/null \
+      | sed 's/^.*error:/error:/' | sort | uniq -c | sort -rn | head -10 | sed 's/^/      /'
   fi
 
   # NO ar IN THIS BOX -- binutils is rung 4. tcc has its own archiver, which is
