@@ -117,6 +117,21 @@ stylistic choice, and not an attempt to be clever, but the direct consequence
 of having no libc before musl. It works -- 1348 of 1349 sources compile -- so
 the cost is paid once and is small.
 
+**AND IT HAS ALREADY COST ONE DEFINE.** live-bootstrap builds make 3.82 from a
+flat command list -- `steps/make-3.82/pass1.kaem`, 27 compiles, an empty
+`config.h`, no configure, no patches -- and every HAVE_* arrives as a `-D`.
+Transcribed unchanged, 22 of the 27 fail here:
+
+```
+make.h:40: error: incompatible types for redefinition of 'alloca'
+```
+
+make.h declares `char *alloca ();` itself unless `HAVE_ALLOCA_H` is set. Their
+libc at that rung is mes-libc, which does not declare it; ours is musl, which
+does. One added define -- `-DHAVE_ALLOCA_H` -- and make.h includes musl's
+`<alloca.h>` instead. That is the whole delta so far, and it exists **because
+of the ordering difference above**, not in spite of it.
+
 **The alternative, if hand-driving musl ever becomes untenable:** grow a
 mes-libc-equivalent -- enough libc to carry make, installed as headers and
 libraries -- and then follow live-bootstrap's order exactly. That is strictly

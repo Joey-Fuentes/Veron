@@ -815,11 +815,29 @@ if [ "$R3" = ok ] && [ "$R35" != FAIL ]; then
   # catm config.h -- an EMPTY config.h. Every HAVE_* arrives as -D below.
   : > config.h
 
+  # THE ONE DELTA FROM live-bootstrap's LIST, AND IT IS THE libc.
+  #
+  #     make.h:40: error: incompatible types for redefinition of 'alloca'
+  #     ... 22 of 27 files
+  #
+  # make.h declares `char *alloca ();` itself unless HAVE_ALLOCA_H is set. musl
+  # already declares `void *alloca(size_t)` via its headers, so the two
+  # collide. live-bootstrap never sees this because at their make rung the libc
+  # is MES-LIBC, not musl -- which is the divergence spikes/livebootstrap/
+  # ORDER.md already records: they build make before musl exists, we cannot,
+  # because M2libc is inside mc-tcc rather than installed and cannot carry make.
+  #
+  # HAVE_ALLOCA_H makes make.h include <alloca.h> instead of declaring it, and
+  # musl ships that header. One define, applied to every compile -- harmless
+  # where alloca is unused, and cheaper than reasoning about which of the 27
+  # pull in make.h.
+  ALLOCA=-DHAVE_ALLOCA_H
+
   _cc_fail=0
   # $1 = the source file, rest = its flags. Named so a failure says which file.
   mk_cc() {
     _src=$1; shift
-    if ! $CC -c "$@" "$_src" 2>>/work/make-cc.err; then
+    if ! $CC -c $ALLOCA "$@" "$_src" 2>>/work/make-cc.err; then
       say "      FAILED: $_src"
       _cc_fail=$((_cc_fail + 1))
     fi
