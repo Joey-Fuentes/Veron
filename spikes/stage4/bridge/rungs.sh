@@ -2143,6 +2143,11 @@ if [ "$R6" = ok ]; then
       if "$GCC1" -static -o p2.bin p2.c -I/work/prereq/include -L/work/prereq/lib \
            -lmpc -lmpfr -lgmp 2>/tmp/p2.err; then
         say "      against /work/prereq (built by tcc): LINKS"
+        say "      (stage 4 gets NO BINARY here -- undefined alloca and"
+        say "       overlapping FDEs. Everything in this box is static, so"
+        say "       --eh-frame-hdr is never emitted and that link succeeds."
+        say "       Rebuilding below anyway: linking once is not evidence the"
+        say "       archives are sound, and gcc 10 will use them for real.)"
       else
         say "      against /work/prereq (built by tcc): NO BINARY -- as expected"
         grep -aE "undefined reference|eh_frame|final link" /tmp/p2.err 2>/dev/null \
@@ -2163,16 +2168,22 @@ if [ "$R6" = ok ]; then
       # FRESH TREE, NOT `make distclean`. Stage 4's reason, verbatim: "Fresh
       # trees from the tarballs, so no object built by a different compiler
       # survives into an archive this rung attributes to stage 2's gcc."
+      # USE THE HELPER. This was `tar xf ...` and got "tar: invalid tar magic",
+      # because /in still holds COMPRESSED pins -- gmp is .tar.xz -- and
+      # busybox does not autodetect. untar picks the flag from the extension
+      # and has been doing it correctly for eight rungs; reaching past it for a
+      # raw tar was reintroducing a bug this job already fixed twice.
       rm -rf "/work/src/$pk-g1" && mkdir -p "/work/src/$pk-g1"
-      tar xf "$(ls /in/$pk-*.tar.* | head -1)" -C "/work/src/$pk-g1" --strip-components=1
-      ( cd "/work/src/$pk-g1" \
+      ( cd "/work/src/$pk-g1" && untar "/in/$pk-" ) || { r7=FAIL; say "      $pk did not extract"; break; }
+      _pd=$(cd "/work/src/$pk-g1" && onedir "$pk-* ./$pk-*")
+      ( cd "/work/src/$pk-g1/$_pd" \
         && ./configure CC="$GCC1 -static" --disable-shared $EXTRA \
           --prefix=/work/prereq2 > cfg2.log 2>&1 \
         && timeout 1800 make -j"$NP" MAKEINFO=true > build2.log 2>&1 \
         && make install MAKEINFO=true > /dev/null 2>&1 ) \
         || { r7=FAIL
              say "      $pk NOT INSTALLED"
-             tail -12 "/work/src/$pk-g1/build2.log" 2>/dev/null | sed 's/^/        /'; }
+             tail -12 "/work/src/$pk-g1/$_pd/build2.log" 2>/dev/null | sed 's/^/        /'; }
       [ "$r7" = ok ] && say "      $pk INSTALLED"
     done
     R7=$r7
@@ -2282,15 +2293,16 @@ if [ "$R8" = ok ]; then
       esac
       [ "$pk" = mpc ] && EXTRA="--with-gmp=/work/prereq3 --with-mpfr=/work/prereq3"
       rm -rf "/work/src/$pk-g2" && mkdir -p "/work/src/$pk-g2"
-      tar xf "$(ls /in/$pk-*.tar.* | head -1)" -C "/work/src/$pk-g2" --strip-components=1
-      ( cd "/work/src/$pk-g2" \
+      ( cd "/work/src/$pk-g2" && untar "/in/$pk-" ) || { r9=FAIL; say "      $pk did not extract"; break; }
+      _pd2=$(cd "/work/src/$pk-g2" && onedir "$pk-* ./$pk-*")
+      ( cd "/work/src/$pk-g2/$_pd2" \
         && ./configure CC="$GCC2 -static" --disable-shared $EXTRA \
              --prefix=/work/prereq3 > cfg3.log 2>&1 \
         && timeout 1800 make -j"$NP" MAKEINFO=true > build3.log 2>&1 \
         && make install MAKEINFO=true > /dev/null 2>&1 ) \
         || { r9=FAIL
              say "      $pk NOT INSTALLED"
-             tail -12 "/work/src/$pk-g2/build3.log" 2>/dev/null | sed 's/^/        /'; }
+             tail -12 "/work/src/$pk-g2/$_pd2/build3.log" 2>/dev/null | sed 's/^/        /'; }
       [ "$r9" = ok ] && say "      $pk INSTALLED"
     done
 
