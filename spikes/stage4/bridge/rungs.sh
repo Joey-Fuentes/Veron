@@ -597,7 +597,8 @@ if [ "$R1" = ok ]; then
  * musl omits this header deliberately: nothing in it is standard, and the
  * macros are K&R-era spelling helpers that expand to nothing useful on an
  * ANSI compiler. Old GNU source uses them anyway. Only decorative macros are
- * defined here -- no type names, and nothing that asserts a libc feature.
+ * defined here: __ptr_t is a MACRO in glibc's version too, so it introduces no
+ * type name of its own, and nothing here asserts a libc feature.
  */
 #ifndef _SYS_CDEFS_H
 #define _SYS_CDEFS_H 1
@@ -637,6 +638,25 @@ if [ "$R1" = ok ]; then
 # define __wur
 #endif
 
+/* __ptr_t IS A MACRO IN glibc's OWN <sys/cdefs.h>, and it is safe here now.
+ *
+ * It was deliberately left out while make's BUNDLED glob was being compiled:
+ * glob/glob.h contains `typedef void *__ptr_t;` under its own not-glibc guard,
+ * and a macro would have turned that into `typedef void *void *;`.
+ *
+ * make_cv_sys_gnu_glob=yes stopped that directory being built at all, so
+ * nothing typedefs it any more -- and make's own dir.c needs it:
+ *
+ *     dir.c:1181: error: ';' expected (got 'open_dirstream')
+ *
+ * which is `static __ptr_t open_dirstream (const char *);` failing to parse
+ * because the return type is an unknown identifier. On glibc it arrives
+ * through <glob.h>; musl's has no reason to carry it.
+ *
+ * A macro, not a typedef, exactly as glibc does it -- so any header that still
+ * writes `typedef ... __ptr_t` will break loudly rather than silently disagree.
+ */
+#define __ptr_t    void *
 #define __const    const
 #define __signed   signed
 #define __volatile volatile
