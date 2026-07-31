@@ -12,20 +12,38 @@ binary (`mc-tcc`) is a working-enough tcc that:
 
 ```
 mc-tcc --version              tcc version 0.9.28rc (AArch64 Linux)   tcc's own driver
-the twelve end-to-end progs   12 / 12
-tcc's own tests2              59 / 127 match tcc's .expect
-mc-tcc -c tcc.c               870,242 byte object   -- tcc compiling tcc
+the twelve end-to-end progs   12 / 12          native aarch64, in the box
+tcc's own tests2              59 / 127 match tcc's .expect (diff -b rules)
+mc-tcc -c tcc.c               870,242 byte object   UNDER QEMU ONLY -- see below
 ```
 
 **IT IS NOT SELF-HOSTING.** A fixpoint needs five things and this is the first:
 
 ```
-1. gen1 compiles tcc.c          DONE
+1. gen1 compiles tcc.c          UNDER THE EMULATOR ONLY -- see below
 2. gen2 LINKS                   no -- needs a libc; see "The libc rung"
 3. gen2 runs                    not reached
 4. gen2 compiles tcc.c -> gen3  not reached
 5. gen2 == gen3                 not reached
 ```
+
+**STEP 1 DOES NOT HOLD ON REAL HARDWARE, and that is the sharpest open lead in
+this file.** Under `qemu-aarch64-static` it succeeds -- rc=0, an 870,242 byte
+object. In `stage3-hermetic-arm64`, on a NATIVE aarch64 runner, the same
+mc-tcc (same 1,574,765 bytes) **segfaults**:
+
+```
+    step A: gen1 cannot compile tcc.c, rc=139
+      SIGNAL 11
+```
+
+Not host headers -- `-nostdinc` changes nothing locally and the box has no
+`/usr/include` at all. So it is the EMULATOR hiding something real hardware
+traps. This file already records the same asymmetry one level down:
+*"ON AMD64 AN UNALIGNED LOAD MERELY COSTS TIME. ON AARCH64 IT IS A FAULT"* --
+which hid the member-alignment bug for as long as the local suite was amd64.
+qemu-user is permissive in the same direction, so the local loop cannot see
+this class at all. **Trust CI over the local run for step 1.**
 
 `rc=0` on step 1 is not proof the object is correct. What it is worth: against
 the gcc-built control on the same source, the two objects carry the **same 705
@@ -1313,15 +1331,21 @@ Three changes, none of them large:
   not care about column alignment -- but a ZERO-padded field changes characters
   and must keep aborting.
 
-**2. `tcctest.c`'s `struct_test` blocker.** Bisect INSIDE the function by
+**2. WHY STEP A SEGFAULTS NATIVELY BUT NOT UNDER QEMU.** Newly visible and
+probably cheap: the emulator is permissive where real aarch64 traps, and the
+prime suspect is alignment, which has hidden two bugs in this project already.
+It needs a native runner to chase -- the local loop is structurally blind to
+it. Until it is closed, "mc-tcc compiles tcc.c" is a qemu-only claim.
+
+**3. `tcctest.c`'s `struct_test` blocker.** Bisect INSIDE the function by
 deleting statements, which is what cracked 00_assignment; ten probes AROUND it
 found nothing. Unblocks test1/test2/test3.
 
-**3. Floating point in micro-c.** The largest item and the one everything
+**4. Floating point in micro-c.** The largest item and the one everything
 numerical waits on. Ten tests2 differences, `sources/musl.toml`'s
 `src/complex/*.c` exclusion, and any honest claim about compiling gcc.
 
-**4. musl 1.2.5, built by mc-tcc.** Needs a runner with network. The floor is
+**5. musl 1.2.5, built by mc-tcc.** Needs a runner with network. The floor is
 clear (`tools/runtime-ladder.sh`); whether musl itself compiles is untested.
 Landing it gives gen2 something to link against, and steps 2-5 of the fixpoint
 follow.
