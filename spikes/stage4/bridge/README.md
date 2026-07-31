@@ -14,7 +14,9 @@ mc-tcc and has not been attempted yet.
 4    binutils 2.30                        ok
 4.5  make 4.4, rebuilt with real binutils ok
 5    gmp / mpfr / mpc                     ok
-6    gcc 4.7.4 -- stage 4's rung 1        ok
+6    gcc 4.7.4 by tcc  -- stage 4 stage 1 ok
+7    gmp/mpfr/mpc rebuilt by that gcc     new
+8    gcc 4.7.4 again   -- stage 4 stage 2 new
 
 xgcc     2,730,239        SEALED. 1 host binaries,
 cc1     70,483,958        0 of them on the build path.
@@ -135,7 +137,7 @@ the log as it happens.
 | make 4.4 | *(none)* | 4.2.1 was live-bootstrap's pin and cost five substitutions in its bundled glob before hitting `gl_opendir`, a `glob_t` member from GNU's `GLOB_ALTDIRFUNC` that musl has no equivalent for. **4.3 dropped the bundled glob**; 4.4 keeps it dropped and uses gnulib. |
 | gcc | `--disable-nls` | musl's gettext makes gcc build its own `intl/`, which does not compile |
 | gcc | `--disable-libmudflap` | redeclares glibc's `__assert_fail` (`unsigned int` vs musl's `int`). Removed entirely in gcc 4.9. |
-| gcc | `CFLAGS/LDFLAGS_FOR_TARGET=-static` | target configures call `xgcc` directly, not through `cc-static`. Dynamic links get `--eh-frame-hdr` and failed with *".eh_frame_hdr refers to overlapping FDEs"*. **This sidesteps the section rather than fixing it** -- musl's crt files were assembled by tcc, and if anything later needs a dynamic link it comes back. |
+| gcc | `CFLAGS/LDFLAGS_FOR_TARGET=-static` | target configures call `xgcc` directly, not through `cc-static`. Dynamic links get `--eh-frame-hdr` and failed with *".eh_frame_hdr refers to overlapping FDEs"*. **This sidesteps the section rather than fixing it**, and stage 4's log says where the defect actually is: its stage-2 preflight hits the identical error linking the *tcc-built* gmp/mpfr/mpc, **in a box that has glibc**. So it is not musl's crt files as first guessed -- it is tcc's own `.eh_frame` output, alongside `undefined reference to 'alloca'` in the same link. Rung 7 rebuilds those libraries with a compiler that does not have the defect, which is stage 4's answer too. |
 | gcc | libstdc++ `os/gnu-linux` → `os/generic` | `_IScntrl` and friends are glibc's *internal* ctype enum. gcc 4.7 predates musl -- support landed in 4.9 -- so there is no `linux-musl*` arm to fall into and no triple that would find one. |
 
 **Eleven of these are one thing:** old GNU source treating "not glibc" as "barely
@@ -173,14 +175,29 @@ the box**, and every check reports what it measured rather than a verdict.
 
 ## Next
 
-To boot, matching what `stage4-complete` does above 4.7.4:
+`stage4-complete`'s own diagram for the part above tcc:
 
 ```
-gcc 4.7.4 ──► gcc 10 ──► gcc 15
-                │
-                └─► m4, bison, flex, bc, perl
-                          │
-                          └─► kernel ──► initramfs ──► boot
+tcc ──► gcc 4.7.4 (c,c++) ──► gcc 4.7.4 again ──► gcc 10.2.0
+        stage 1               stage 2             stage 3
+```
+
+**4.7.4 is built twice, and the second one is not redundant.** The first carries
+whatever tcc got wrong; the preflight above shows what that looks like in a
+library. The second is built by the first and is what everything above depends
+on. Each stage rebuilds gmp/mpfr/mpc with the compiler it just made before
+building the next one -- stage 4 does this at every rung and the logs say so:
+*"prerequisites, rebuilt by the tcc-built gcc"*, then *"rebuilt by the stage-2
+gcc"*.
+
+Then, to boot:
+
+```
+gcc 10 ──► gcc 15
+   │
+   └─► m4, bison, flex, bc, perl
+             │
+             └─► kernel ──► initramfs ──► boot
 ```
 
 Perl is **not** live-bootstrap's four-version climb -- they build it before

@@ -175,7 +175,7 @@ untar() {          # $1 = path prefix, e.g. /in/musl
 
 onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
 
-R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip
+R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip; R7=skip; R8=skip
 
 # WHAT IS ACTUALLY IN /in, BEFORE ANYTHING TRIES TO USE IT.
 #
@@ -2010,6 +2010,141 @@ if [ "$R5" = ok ]; then
 fi
 
 # ---------------------------------------------------------------------------
+head1 "RUNG 7 -- gmp/mpfr/mpc REBUILT by the gcc we just made"
+# tcc-BUILT LIBRARIES ARE NOT USABLE BY gcc, AND STAGE 4 ALREADY PROVED IT.
+#
+# Its stage-2 preflight runs the exact check gcc's configure runs, against the
+# gmp/mpfr/mpc that tcc built, in a box that has glibc:
+#
+#     against prefix/ (built by TCC): rc=1  NO BINARY
+#         undefined reference to `alloca'
+#         /usr/bin/ld: .eh_frame_hdr refers to overlapping FDEs
+#         final link failed: bad value
+#
+# Two faults, both in tcc's output rather than in the libraries. `alloca` is
+# emitted as a call tcc never resolves, and the .eh_frame tcc writes overlaps.
+# THAT SECOND ONE IS THE ERROR RUNG 6 HIT, and seeing it here corrects a guess
+# in this job's README: it is not musl's crt files, because stage 4 has glibc
+# and hits it anyway. It is tcc-produced objects.
+#
+# Rung 6 went static to avoid --eh-frame-hdr, which got gcc built. It does not
+# make the tcc-built archives sound, and gcc 10 will link against them for
+# real. So they are rebuilt with a compiler that does not have the defect --
+# which is exactly what stage 4 does at every rung: "prerequisites, rebuilt by
+# the tcc-built gcc", then again "rebuilt by the stage-2 gcc".
+if [ "$R6" = ok ]; then
+  GCC1="$PFX/bin/gcc"
+  if [ ! -x "$GCC1" ]; then
+    say "    no gcc at $GCC1 -- rung 6 installed nothing"
+    R7=FAIL
+  else
+    say "    builder: $("$GCC1" --version 2>&1 | head -1)"
+    say "    (this is the gcc tcc built; there is no host gcc in this box)"
+
+    # PREFLIGHT, VERBATIM FROM STAGE 4: can the new gcc link at all, and can it
+    # link the tcc-built prerequisites? The second is expected to FAIL and is
+    # run anyway -- a failure here is the measurement, not an accident.
+    say "    --- preflight 1: can the tcc-built gcc link anything? ---"
+    ( cd /tmp && rm -f p1.c p1.bin
+      printf 'int main(void){return 42;}\n' > p1.c
+      "$GCC1" -static -o p1.bin p1.c 2>/tmp/p1.err
+      say "      compile+link rc=$?"
+      ./p1.bin; say "      ran: exit=$? (expect 42)"
+      rm -f p1.c p1.bin )
+
+    say "    --- preflight 2: the tcc-built gmp/mpfr/mpc, as configure checks them ---"
+    ( cd /tmp && rm -f p2.c p2.bin
+      printf '#include <mpc.h>\nint main(void){ mpc_t x; mpc_init2(x, 53); return 0; }\n' > p2.c
+      if "$GCC1" -static -o p2.bin p2.c -I/work/prereq/include -L/work/prereq/lib \
+           -lmpc -lmpfr -lgmp 2>/tmp/p2.err; then
+        say "      against /work/prereq (built by tcc): LINKS"
+      else
+        say "      against /work/prereq (built by tcc): NO BINARY -- as expected"
+        grep -aE "undefined reference|eh_frame|final link" /tmp/p2.err 2>/dev/null \
+          | head -5 | sed 's/^/        /'
+      fi
+      rm -f p2.c p2.bin )
+
+    say "    --- prerequisites, rebuilt by the tcc-built gcc ---"
+    mkdir -p /work/prereq2
+    r7=ok
+    for pk in gmp mpfr mpc; do
+      [ "$r7" = ok ] || break
+      case "$pk" in
+        gmp)  EXTRA="--disable-assembly" ;;
+        mpfr) EXTRA="--with-gmp=/work/prereq2" ;;
+        mpc)  EXTRA="--with-gmp=/work/prereq2 --with-mpfr=/work/prereq2" ;;
+      esac
+      ( cd /work/src/"$pk" && make distclean > /dev/null 2>&1
+        ./configure CC="$GCC1 -static" --disable-shared $EXTRA \
+          --prefix=/work/prereq2 > cfg2.log 2>&1 \
+        && timeout 1800 make -j"$NP" MAKEINFO=true > build2.log 2>&1 \
+        && make install MAKEINFO=true > /dev/null 2>&1 ) \
+        || { r7=FAIL
+             say "      $pk NOT INSTALLED"
+             tail -12 /work/src/"$pk"/build2.log 2>/dev/null | sed 's/^/        /'; }
+      [ "$r7" = ok ] && say "      $pk INSTALLED"
+    done
+    R7=$r7
+    [ "$R7" = ok ] && say "    prereq2/lib: $(ls /work/prereq2/lib 2>/dev/null | tr '\n' ' ')"
+  fi
+  cd /work
+fi
+
+# ---------------------------------------------------------------------------
+head1 "RUNG 8 -- gcc 4.7.4 AGAIN, built by the gcc tcc built"
+# THE SECOND 4.7.4 IS NOT REDUNDANT. Stage 4's own diagram:
+#
+#     tcc -> gcc 4.7.4 (c,c++) -> gcc 4.7.4 again -> gcc 10.2.0
+#            stage 1              stage 2            stage 3
+#
+# The first 4.7.4 is built by tcc and carries whatever tcc got wrong -- the
+# preflight above shows what that looks like in a library. The second is built
+# by the first, with a compiler that does not have those defects, and it is the
+# one anything above depends on. Nothing from here up involves tcc directly.
+#
+# 4.7 is the last gcc written in C, which is why tcc can reach it at all; its
+# C++ front end is built FROM that C, and the g++ that yields is what carries
+# the chain upward.
+if [ "$R7" = ok ]; then
+  mkdir -p /work/bld2 && cd /work/bld2
+  say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: gcc 4.7.4 configure, builder=$GCC1"
+  "/work/src/$g47/configure" \
+    CC="$GCC1 -static" CXX="$PFX/bin/g++ -static" \
+    --build=aarch64-unknown-linux-gnu \
+    --host=aarch64-unknown-linux-gnu \
+    --target=aarch64-unknown-linux-gnu \
+    --prefix=/work/out2 --enable-languages=c,c++ \
+    --disable-nls --disable-libmudflap \
+    --disable-multilib --disable-bootstrap --disable-werror \
+    --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+    --disable-libssp --disable-libatomic --disable-shared \
+    CFLAGS_FOR_TARGET="-static" LDFLAGS_FOR_TARGET="-static" \
+    --with-gmp=/work/prereq2 --with-mpfr=/work/prereq2 --with-mpc=/work/prereq2 \
+    > cfg.log 2>&1
+  _c8=$?
+  say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_c8)"
+  if [ "$_c8" != 0 ]; then
+    R8=FAIL
+    tail -20 cfg.log 2>/dev/null | sed 's/^/      /'
+  elif timeout 5400 make -j"$NP" MAKEINFO=true > build.log 2>&1 \
+       && make install MAKEINFO=true > /dev/null 2>&1; then
+    R8=ok
+    say "    --- what stage 2 produced ---"
+    for b in gcc g++ cpp; do
+      printf '      %-8s %s\n' "$b" "$( [ -x /work/out2/bin/$b ] && echo present || echo ABSENT )"
+    done
+    /work/out2/bin/gcc --version 2>&1 | head -1 | sed 's/^/      /'
+  else
+    R8=FAIL; say "    --- where it stopped ---"
+    grep -nE "error:|Error [0-9]|internal compiler error" build.log 2>/dev/null \
+      | grep -v 'make\[' | head -15 | sed 's/^/      /'
+    tail -20 build.log 2>/dev/null | sed 's/^/      /'
+  fi
+  cd /work
+fi
+
+# ---------------------------------------------------------------------------
 head1 "RUNGS -- arm: $ARM"
 printf '    %-40s %s\n' "0   compiler runs, libtcc1.a"       "$R0"
 printf '    %-40s %s\n' "1   freestanding compile+link"      "$R1"
@@ -2019,10 +2154,13 @@ printf '    %-40s %s\n' "3.5 GNU make"                       "$R35"
 printf '    %-40s %s\n' "4   binutils"                       "$R4"
 printf '    %-40s %s\n' "4.5 make rebuilt with real binutils" "$R45"
 printf '    %-40s %s\n' "5   gmp / mpfr / mpc"               "$R5"
-printf '    %-40s %s\n' "6   gcc 4.7.4 -- stage 4's rung 1"  "$R6"
+printf '    %-40s %s\n' "6   gcc 4.7.4 by tcc -- stage 4 stage 1" "$R6"
+printf '    %-40s %s\n' "7   gmp/mpfr/mpc rebuilt by that gcc"   "$R7"
+printf '    %-40s %s\n' "8   gcc 4.7.4 again -- stage 4 stage 2" "$R8"
 say ""
-if [ "$R6" = ok ]; then
-  say "    REACHED gcc 4.7.4 in a box with busybox and one compiler."
+if [ "$R8" = ok ]; then
+  say "    REACHED a self-rebuilt gcc 4.7.4 in a box with busybox and one"
+  say "    compiler. This is stage 4's stage 2; gcc 10 is the next rung."
 else
   say "    STOPPED. The first rung above that is not 'ok' is the frontier;"
   say "    everything after it was skipped, not failed."
@@ -2053,8 +2191,9 @@ done
 say ""
 say "  logs collected: $(ls /out/logs 2>/dev/null | wc -l) files, $(du -sh /out/logs 2>/dev/null | cut -f1)"
 
-if [ "$R6" = ok ]; then
-  cp -a "$PFX" /out/prefix 2>/dev/null || true
+if [ "$R8" = ok ]; then
+  cp -a "$PFX" /out/prefix
+  cp -a /work/out2 /out/out2 2>/dev/null || true 2>/dev/null || true
   cp -a "$SYS/lib" /out/sysroot-lib 2>/dev/null || true
   say "  toolchain kept: rung 6 closed, so the binaries are worth having"
 else
