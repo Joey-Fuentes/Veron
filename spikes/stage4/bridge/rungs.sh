@@ -1744,6 +1744,37 @@ if [ "$R5" = ok ]; then
     # mentions". `|| true` keeps the count and drops the duplicate.
     say "    stock 4.7.4: $(grep -c aarch64 "$g47/gcc/config.gcc" 2>/dev/null || true) aarch64 mentions in config.gcc (expect 0)"
 
+    # DECLARED SUBSTITUTION: libstdc++ MUST NOT ASSUME glibc's ctype INTERNALS.
+    #
+    #     bits/ctype_base.h:58: error: '_IScntrl' was not declared in this scope
+    #     ... _ISpunct, _ISalpha, _ISdigit
+    #
+    # Those are values from glibc's INTERNAL ctype bitmask enum. libstdc++
+    # reads them because configure.host chose os/gnu-linux for its OS config,
+    # and it chose that because the target triple ends in -gnu:
+    #
+    #     gnu* | linux* | kfreebsd*-gnu | knetbsd*-gnu)
+    #         os_include_dir="os/gnu-linux"
+    #
+    # gcc 4.7 PREDATES musl -- musl support landed in 4.9 -- so there is no
+    # musl case to fall into and no triple we could pass that would find one.
+    # os/generic is the configuration written for exactly this: a POSIX libc
+    # that is not glibc. A modern gcc reaches it through a `linux-musl*` arm
+    # that does not exist here yet.
+    #
+    # One sed, in the box, reported. Not folded into the aarch64 backport patch
+    # because it is a different thing: that patch adds a CPU gcc never knew
+    # about, this one corrects an assumption about the C library.
+    if [ -f "$g47/libstdc++-v3/configure.host" ]; then
+      _og=$(grep -c 'os_include_dir="os/gnu-linux"' "$g47/libstdc++-v3/configure.host" 2>/dev/null || true)
+      sed -i 's|os_include_dir="os/gnu-linux"|os_include_dir="os/generic"|' \
+        "$g47/libstdc++-v3/configure.host"
+      _ge=$(grep -c 'os_include_dir="os/generic"' "$g47/libstdc++-v3/configure.host" 2>/dev/null || true)
+      say "    libstdc++ os config: gnu-linux -> generic  ($_og replaced, $_ge generic entries now)"
+    else
+      say "    libstdc++-v3/configure.host not found -- cannot retarget the OS config"
+    fi
+
     _nf=$(ls /in/gcc47-aarch64-newfiles.tar.gz 2>/dev/null | head -1)
     _pf=$(ls /in/gcc47-aarch64-changed.patch 2>/dev/null | head -1)
     if [ -z "$_nf" ] || [ -z "$_pf" ]; then
