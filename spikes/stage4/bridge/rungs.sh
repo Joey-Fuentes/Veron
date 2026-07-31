@@ -175,7 +175,7 @@ untar() {          # $1 = path prefix, e.g. /in/musl
 
 onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
 
-R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip; R7=skip; R8=skip
+R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip; R7=skip; R8=skip; R9=skip
 
 # WHAT IS ACTUALLY IN /in, BEFORE ANYTHING TRIES TO USE IT.
 #
@@ -2075,14 +2075,19 @@ if [ "$R6" = ok ]; then
         mpfr) EXTRA="--with-gmp=/work/prereq2" ;;
         mpc)  EXTRA="--with-gmp=/work/prereq2 --with-mpfr=/work/prereq2" ;;
       esac
-      ( cd /work/src/"$pk" && make distclean > /dev/null 2>&1
-        ./configure CC="$GCC1 -static" --disable-shared $EXTRA \
+      # FRESH TREE, NOT `make distclean`. Stage 4's reason, verbatim: "Fresh
+      # trees from the tarballs, so no object built by a different compiler
+      # survives into an archive this rung attributes to stage 2's gcc."
+      rm -rf "/work/src/$pk-g1" && mkdir -p "/work/src/$pk-g1"
+      tar xf "$(ls /in/$pk-*.tar.* | head -1)" -C "/work/src/$pk-g1" --strip-components=1
+      ( cd "/work/src/$pk-g1" \
+        && ./configure CC="$GCC1 -static" --disable-shared $EXTRA \
           --prefix=/work/prereq2 > cfg2.log 2>&1 \
         && timeout 1800 make -j"$NP" MAKEINFO=true > build2.log 2>&1 \
         && make install MAKEINFO=true > /dev/null 2>&1 ) \
         || { r7=FAIL
              say "      $pk NOT INSTALLED"
-             tail -12 /work/src/"$pk"/build2.log 2>/dev/null | sed 's/^/        /'; }
+             tail -12 "/work/src/$pk-g1/build2.log" 2>/dev/null | sed 's/^/        /'; }
       [ "$r7" = ok ] && say "      $pk INSTALLED"
     done
     R7=$r7
@@ -2145,6 +2150,143 @@ if [ "$R7" = ok ]; then
 fi
 
 # ---------------------------------------------------------------------------
+head1 "RUNG 9 -- gcc 10.2.0, built by g++ (GCC) 4.7.4"
+# THIS IS WHAT THE WHOLE 4.7 DETOUR WAS FOR.
+#
+# 4.7 is the last gcc written in C, which is why tcc can reach it. Its C++ front
+# end is built from that C, and THAT g++ is what carries the chain upward --
+# every gcc after 4.7 is C++ and cannot be built by a C compiler at all.
+#
+#     tcc --C--> gcc 4.7.4 --C--> gcc 4.7.4 --C++--> gcc 10.2.0
+#
+# --disable-bootstrap is what makes this a MEASUREMENT of our g++ rather than
+# of a modern one: with bootstrap enabled gcc would rebuild itself with itself
+# twice and the result would say nothing about the compiler that started it.
+# Stage 4 says the same thing in the same place.
+#
+# PREREQUISITES REBUILT A THIRD TIME, by the compiler about to use them, from
+# fresh tarballs. Rung 7 proved why once; this is the same rule applied again
+# rather than an assumption that prereq2 is good enough.
+#
+# --disable-libvtv IS NEW HERE -- gcc 10 has it and 4.7 does not.
+#
+# WHAT WE DO NOT NEED THAT STAGE 4 DOES: it exports
+# LD_LIBRARY_PATH=/work/out2/lib64 because its gcc 10 binaries are linked
+# against out2's libstdc++.so and the build then RUNS them. Everything in this
+# box is --disable-shared and -static, so there is no .so to find. That is one
+# failure mode this arm cannot have.
+if [ "$R8" = ok ]; then
+  GCC2=/work/out2/bin/gcc
+  GXX2=/work/out2/bin/g++
+  if [ ! -x "$GXX2" ]; then
+    say "    no stage-2 g++ at $GXX2"
+    R9=FAIL
+  else
+    say "    builder: $("$GXX2" --version 2>&1 | head -1)"
+    say "    (descended from tcc; there is no host compiler in this box)"
+    export LD_LIBRARY_PATH=/work/out2/lib64:/work/out2/lib
+
+    say "    --- prerequisites, rebuilt by the stage-2 gcc ---"
+    mkdir -p /work/prereq3
+    r9=ok
+    for pk in gmp mpfr mpc; do
+      [ "$r9" = ok ] || break
+      case "$pk" in
+        gmp)  EXTRA="--disable-assembly" ;;
+        *)    EXTRA="--with-gmp=/work/prereq3" ;;
+      esac
+      [ "$pk" = mpc ] && EXTRA="--with-gmp=/work/prereq3 --with-mpfr=/work/prereq3"
+      rm -rf "/work/src/$pk-g2" && mkdir -p "/work/src/$pk-g2"
+      tar xf "$(ls /in/$pk-*.tar.* | head -1)" -C "/work/src/$pk-g2" --strip-components=1
+      ( cd "/work/src/$pk-g2" \
+        && ./configure CC="$GCC2 -static" --disable-shared $EXTRA \
+             --prefix=/work/prereq3 > cfg3.log 2>&1 \
+        && timeout 1800 make -j"$NP" MAKEINFO=true > build3.log 2>&1 \
+        && make install MAKEINFO=true > /dev/null 2>&1 ) \
+        || { r9=FAIL
+             say "      $pk NOT INSTALLED"
+             tail -12 "/work/src/$pk-g2/build3.log" 2>/dev/null | sed 's/^/        /'; }
+      [ "$r9" = ok ] && say "      $pk INSTALLED"
+    done
+
+    if [ "$r9" = ok ]; then
+      if ! untar /in/gcc-10; then
+        say "    gcc 10 did not extract"; r9=FAIL
+      else
+        g10=$(onedir 'gcc-10* ./gcc-10*')
+        # SAME libstdc++ RETARGET AS 4.7. gcc 10 DOES know musl -- but only
+        # through a `linux-musl*` arm, and this triple says -gnu, so it picks
+        # os/gnu-linux and reaches for glibc's internal ctype enum exactly as
+        # 4.7 did. Switching the triple would be the cleaner fix and needs
+        # config.sub to accept linux-musl; until that is checked, one sed.
+        if [ -f "$g10/libstdc++-v3/configure.host" ]; then
+          sed -i 's|os_include_dir="os/gnu-linux"|os_include_dir="os/generic"|' \
+            "$g10/libstdc++-v3/configure.host"
+          say "    libstdc++ os config: gnu-linux -> generic"
+        fi
+        mkdir -p /work/bld10 && cd /work/bld10
+        say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: gcc 10 configure, CXX=$GXX2"
+        "/work/src/$g10/configure" \
+          CC="$GCC2 -static" CXX="$GXX2 -static" \
+          --build=aarch64-unknown-linux-gnu \
+          --host=aarch64-unknown-linux-gnu \
+          --target=aarch64-unknown-linux-gnu \
+          --prefix=/work/out10 --enable-languages=c,c++ \
+          --disable-multilib --disable-bootstrap --disable-werror \
+          --disable-libsanitizer --disable-libvtv --disable-libgomp \
+          --disable-libquadmath --disable-nls --disable-shared \
+          CFLAGS_FOR_TARGET="-static" LDFLAGS_FOR_TARGET="-static" \
+          --with-gmp=/work/prereq3 \
+          --with-mpfr=/work/prereq3 \
+          --with-mpc=/work/prereq3 \
+          > conf10.log 2>&1
+        _c9=$?
+        say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_c9)"
+        if [ ! -f Makefile ]; then
+          r9=FAIL
+          say "    no Makefile -- configure tail:"
+          tail -20 conf10.log 2>/dev/null | sed 's/^/      /'
+          grep -nE "error:|cannot find|undefined reference" config.log 2>/dev/null \
+            | tail -15 | sed 's/^/      /'
+        else
+          # -k SO ONE BROKEN TARGET LIBRARY DOES NOT HIDE THE REST, and three
+          # hours because this is the longest rung in the job.
+          timeout 10800 make -k -j"$NP" -Otarget MAKEINFO=true > build10.log 2>&1
+          _m9=$?
+          say "    make rc=$_m9  ($(wc -l < build10.log) lines)"
+          make install MAKEINFO=true > /dev/null 2>&1
+          if [ -x /work/out10/bin/gcc ] && [ -x /work/out10/bin/g++ ]; then
+            r9=ok
+            say "    --- what stage 3 produced ---"
+            for b in gcc g++ cpp; do
+              printf '      %-8s %s\n' "$b" \
+                "$( [ -x /work/out10/bin/$b ] && echo present || echo missing )"
+            done
+            /work/out10/bin/gcc --version 2>&1 | head -1 | sed 's/^/      /'
+          else
+            r9=FAIL
+            # THE TWO FAILURES WORTH TELLING APART, in stage 4's words: gcc 10's
+            # own sources refusing to compile under an old C++ compiler shows up
+            # in gcc/*.c; a 2020 tree meeting a libc it does not expect shows up
+            # in the headers. Different fixes, same message.
+            say "    --- compiler diagnostics ---"
+            grep -nE "error:|internal compiler error" build10.log 2>/dev/null \
+              | grep -v 'make\[' | head -15 | sed 's/^/      /'
+            say "    --- where the errors are ---"
+            grep -oE '^[^ :]+\.(c|cc|h|H):[0-9]+:[0-9]*:? *error:' build10.log 2>/dev/null \
+              | cut -d: -f1 | sort | uniq -c | sort -rn | head -12 | sed 's/^/      /'
+            say "    --- tail ---"
+            tail -20 build10.log 2>/dev/null | sed 's/^/      /'
+          fi
+        fi
+      fi
+    fi
+    R9=$r9
+  fi
+  cd /work
+fi
+
+# ---------------------------------------------------------------------------
 head1 "RUNGS -- arm: $ARM"
 printf '    %-40s %s\n' "0   compiler runs, libtcc1.a"       "$R0"
 printf '    %-40s %s\n' "1   freestanding compile+link"      "$R1"
@@ -2157,8 +2299,12 @@ printf '    %-40s %s\n' "5   gmp / mpfr / mpc"               "$R5"
 printf '    %-40s %s\n' "6   gcc 4.7.4 by tcc -- stage 4 stage 1" "$R6"
 printf '    %-40s %s\n' "7   gmp/mpfr/mpc rebuilt by that gcc"   "$R7"
 printf '    %-40s %s\n' "8   gcc 4.7.4 again -- stage 4 stage 2" "$R8"
+printf '    %-40s %s\n' "9   gcc 10.2.0 by g++ 4.7.4"            "$R9"
 say ""
-if [ "$R8" = ok ]; then
+if [ "$R9" = ok ]; then
+  say "    REACHED gcc 10.2.0, built by a g++ descended from tcc."
+  say "    gcc 15 is the next rung."
+elif [ "$R8" = ok ]; then
   say "    REACHED a self-rebuilt gcc 4.7.4 in a box with busybox and one"
   say "    compiler. This is stage 4's stage 2; gcc 10 is the next rung."
 else
@@ -2170,33 +2316,18 @@ fi
 printf '%s %s %s %s %s %s %s %s %s\n' \
   "$ARM" "$R0" "$R1" "$R2" "$R3" "$R35" "$R4" "$R5" "$R6" > /out/rungs.txt
 
-# LOGS ALWAYS. BINARIES ONLY IF THE LADDER ACTUALLY CLOSED.
+# NOTHING IS UPLOADED, SO NOTHING IS COPIED OUT.
 #
-# This used to copy $PFX and $SYS/lib unconditionally -- binutils' as, ld, ar
-# and ranlib at ~15 MB each, plus gmp/mpfr/mpc, make and musl's 3.2 MB libc.a.
-# Sixty-odd megabytes uploaded on every run, INCLUDING runs that died at rung 2
-# and had nothing worth keeping. On a failure the binaries are the least useful
-# thing in the box; the logs are the only useful thing, and they are small.
-mkdir -p /out/logs
-for l in /work/src/*/config.log /work/src/*/cfg.log /work/src/*/build.log \
-         /work/src/b-*/config.log /work/src/b-*/cfg.log /work/src/b-*/build.log \
-         /work/bld/config.log /work/bld/cfg.log /work/bld/build.log \
-         /work/musl-fail.txt /work/musl-cc.err /work/make-cc.err; do
-  [ -f "$l" ] && cp "$l" "/out/logs/$(echo "${l#/work/}" | tr / _)" 2>/dev/null || true
-done
-# gcc's sub-configures each keep their own, and they are where the reason is.
-for l in $(find /work/bld -name config.log 2>/dev/null | head -20); do
-  cp "$l" "/out/logs/bld_$(echo "${l#/work/bld/}" | tr / _)" 2>/dev/null || true
-done
+# This used to collect logs into /out and, on success, ~60 MB of binutils, gcc,
+# make and musl. Both artifact steps are gone from the workflow, so the copy had
+# no reader -- and an unread copy of a 77 MB cc1plus is just runner time.
+#
+# Everything a failure needs is already in this log: each rung prints its own
+# configure tail, its own build errors grouped by file, and the relevant
+# config.log around the failing test. That was built up over the rounds where
+# the artifact was never the thing anyone read.
+#
+# If a toolchain is wanted later, restore the copy AND the upload together --
+# one without the other is what this was.
 say ""
-say "  logs collected: $(ls /out/logs 2>/dev/null | wc -l) files, $(du -sh /out/logs 2>/dev/null | cut -f1)"
-
-if [ "$R8" = ok ]; then
-  cp -a "$PFX" /out/prefix
-  cp -a /work/out2 /out/out2 2>/dev/null || true 2>/dev/null || true
-  cp -a "$SYS/lib" /out/sysroot-lib 2>/dev/null || true
-  say "  toolchain kept: rung 6 closed, so the binaries are worth having"
-else
-  say "  toolchain NOT kept: rung 6 did not close, so $(du -sh "$PFX" 2>/dev/null | cut -f1) of"
-  say "  half-built binaries would be uploaded for nothing. Logs only."
-fi
+say "  artifacts: none. See the rung output above; nothing is copied to /out."

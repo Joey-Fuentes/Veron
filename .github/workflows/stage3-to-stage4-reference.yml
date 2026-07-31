@@ -146,6 +146,12 @@ env:
   # 4.8 series, so 4.8.5 is no further from 4.7 while carrying ~1800 lines of
   # fixes.
   GCC48: '4.8.5'
+  # gcc 10 IS BUILT BY g++ 4.7.4, which is the entire reason 4.7 is the entry
+  # point: it is the last gcc written in C, so tcc can reach it, and its C++
+  # front end is what carries the chain upward. Every gcc after 4.7 is C++ and
+  # cannot be built by a C compiler at all. Stage 4's version, so the overlap
+  # stays an overlap.
+  GCC10: '10.2.0'
 
 jobs:
   reference:
@@ -228,7 +234,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: dl
-          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-v1
+          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-v1
 
       - name: Fetch pinned upstreams (airlock -- nothing here enters the box)
         run: |
@@ -289,6 +295,7 @@ jobs:
           fetch "$GNU_MIRRORS"  "mpc/mpc-$MPC_VER.tar.gz"
           fetch "$GNU_MIRRORS"  "gcc/gcc-$GCC47/gcc-$GCC47.tar.bz2"
           fetch "$GNU_MIRRORS"  "gcc/gcc-$GCC48/gcc-$GCC48.tar.bz2"
+          fetch "$GNU_MIRRORS"  "gcc/gcc-$GCC10/gcc-$GCC10.tar.xz"
 
           echo "  --- what came in ---"
           sha256sum ./*.tar.* 2>/dev/null | sed 's/^/    /'
@@ -374,13 +381,6 @@ jobs:
           printf '    %-34s %10s bytes\n' gcc47-aarch64-newfiles.tar.gz "$(wc -c < pins/gcc47-aarch64-newfiles.tar.gz)"
           printf '    %-34s %10s bytes\n' gcc47-aarch64-changed.patch  "$(wc -c < pins/gcc47-aarch64-changed.patch)"
           sha256sum pins/gcc47-aarch64-* | sed 's/^/    /'
-          mkdir -p backport-artifacts && cp pins/gcc47-aarch64-* backport-artifacts/
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: gcc47-aarch64-backport
-          path: backport-artifacts/
-          if-no-files-found: warn
 
       - name: Assemble the box
         run: |
@@ -633,25 +633,3 @@ jobs:
           echo "  THIS ARM SAYS NOTHING ABOUT THE SEED. ref-tcc was built by the"
           echo "  host's compiler; it is here so that a failure in the bridge arm"
           echo "  can be attributed to micro-c rather than to this harness."
-
-      # LOGS ALWAYS -- they are a few hundred KB and they are what gets read
-      # after a failure.
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: stage3-to-stage4-reference-logs
-          path: box/out/logs/
-          if-no-files-found: warn
-
-      # THE TOOLCHAIN ONLY IF THE LADDER CLOSED. rungs.sh copies $PFX and the
-      # sysroot into /out only when rung 6 passed, so this step finds nothing
-      # on a failed run and warns instead of uploading 60 MB of half-built
-      # binaries nobody will open.
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: stage3-to-stage4-reference-toolchain
-          path: |
-            box/out/prefix/
-            box/out/sysroot-lib/
-          if-no-files-found: ignore
