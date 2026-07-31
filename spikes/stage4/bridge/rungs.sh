@@ -977,6 +977,27 @@ if [ "$R35" = ok ]; then
   cd /work/src
   untar /in/binutils- || { R4=FAIL; say "    binutils did not extract"; }
   mkdir -p b-binutils && cd b-binutils
+  # AN ar AND A ranlib BEFORE binutils CAN BUILD ONE. Same move as LD= above,
+  # and the same justification as rung 2's archive: tcc IS the archiver in this
+  # box until rung 4 produces a real one. `tcc -ar` already built musl's
+  # 3.2 MB libc.a from 1277 objects, so this is a proven path rather than a
+  # hopeful one.
+  #
+  # busybox's ar is deliberately NOT linked into the box -- it can only read
+  # archives, not create them, and configure finding it would produce a build
+  # that fails later and further away.
+  #
+  # ranlib is `true`. tcc -ar writes the symbol index as it goes, so there is
+  # nothing for a separate indexing pass to do; live-bootstrap's own configure
+  # logs show `checking for ranlib... :` -- the no-op -- for the same reason.
+  mkdir -p "$PFX/bin"
+  printf '#!/bin/sh\nexec %s -ar "$@"\n' "$CC_BIN" > "$PFX/bin/ar"
+  printf '#!/bin/sh\nexit 0\n' > "$PFX/bin/ranlib"
+  chmod 0755 "$PFX/bin/ar" "$PFX/bin/ranlib"
+  PATH="$PFX/bin:$PATH"; export PATH
+  say "    ar:     $PFX/bin/ar -> $CC_BIN -ar"
+  say "    ranlib: no-op (tcc -ar indexes as it writes)"
+
   _busrc="../$(cd .. && onedir 'binutils-* ./binutils-*')"
   cfg_binutils() {
       say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: $_busrc/configure $* CC=\"$CCAUTO\""

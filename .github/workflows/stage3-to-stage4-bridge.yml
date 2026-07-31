@@ -288,11 +288,34 @@ jobs:
           while read -r l; do [ -f "$l" ] && cp -L "$l" "$BOX/lib/" || true; done < /tmp/needed
           mkdir -p "$BOX"/usr/lib && cp -a "$BOX"/lib/. "$BOX"/usr/lib/ 2>/dev/null || true
 
-          for a in sh cat cmp sha256sum wc printf mkdir cp rm mv ln chmod sed \
-                   head tail tr ls sort comm grep cut awk timeout od dd env date \
-                   find xargs basename dirname uname expr test true false tar gzip nproc; do
+          # EVERY APPLET busybox HAS, ASKED FOR RATHER THAN GUESSED.
+          #
+          # This was a hand-written list and it was short. binutils' libiberty
+          # stopped at
+          #
+          #     touch stamp-picdir
+          #     make[2]: *** [stamp-picdir] Error 127
+          #
+          # -- 127 is "command not found", and `touch` was simply not in it. A
+          # build this size will reach for dozens of ordinary utilities and
+          # guessing which ones is a round each. `busybox --list` is the
+          # authoritative answer and costs one line.
+          #
+          # TWO ARE DELIBERATELY EXCLUDED. busybox ships `ar` and `strings`,
+          # and both are tier 1 by the definition this job runs on -- they
+          # decide what bytes end up in an artifact. busybox's ar cannot even
+          # create archives, only read them, so letting configure find it would
+          # produce a build that fails later and further away. They come from
+          # rung 4 or not at all.
+          for a in $("$BOX/bin/busybox" --list); do
+            case "$a" in
+              ar|strings) continue ;;
+              busybox)    continue ;;
+            esac
             ln -sf busybox "$BOX/bin/$a"
           done
+          echo "  applets linked: $(find "$BOX/bin" -type l | wc -l)"
+          echo "  excluded on purpose: ar strings  (tier 1 -- rung 4 builds them)"
 
           # mc-tcc's -B directory: tcc's own source tree, where it looks for
           # libtcc1.a and include/. Same pin and same five arm64 patches the
