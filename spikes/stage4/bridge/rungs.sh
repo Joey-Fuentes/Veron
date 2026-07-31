@@ -386,36 +386,68 @@ int main(int argc, char **argv)
     return 0;
 }
 EOF
-  # TWO WAYS, AND THE DIFFERENCE BETWEEN THEM IS THE DIAGNOSIS.
+  # COMPILE AND RUN ARE SEPARATE QUESTIONS AND WERE BEING ASKED AS ONE.
   #
-  #   plain     what autoconf will do -- `$CC prog.c -o prog`, nothing else.
-  #   explicit  crt files named on the command line, -nostdlib, libc by path.
+  # The last run printed "plain: FAILED" with no error beneath it, because the
+  # test was `$CC ... && ./r3.bin` and only the COMPILER's stderr was captured.
+  # An empty error list there does not mean no error -- it means the compile
+  # SUCCEEDED and the binary did not run, which is a completely different
+  # finding and the more interesting one. Each step now reports its own rc.
   #
-  # If plain fails and explicit works, the libc is fine and the compiler simply
-  # cannot FIND it -- which still sinks every rung above, because configure
-  # runs hundreds of conftest cycles and will not pass paths for us. If both
-  # fail, the libc itself is wrong. Those are different problems and the last
-  # two runs could not tell them apart.
-  if $CC -static -o r3.bin r3.c 2>r3.err && ./r3.bin >r3.out 2>&1; then
-    say "    plain:    $(cat r3.out)"; R3=ok
-  else
-    say "    plain:    FAILED"
-    grep -av '^[A-Z][0-9]*$' r3.err | head -8 | sed 's/^/      /'
-    if $CC $HOSTED -nostdlib -static -o r3e.bin \
-         "$SYS/lib/crt1.o" "$SYS/lib/crti.o" r3.c -lc "$TCCDIR/libtcc1.a" \
-         "$SYS/lib/crtn.o" 2>r3e.err && ./r3e.bin >r3e.out 2>&1; then
-      R3=FAIL
-      say "    explicit: $(cat r3e.out)"
-      say ""
-      say "    THE LIBC IS GOOD AND THE COMPILER CANNOT FIND IT. That is a"
-      say "    search-path problem, not a codegen one -- but it still stops"
-      say "    every rung above, because autoconf will not pass paths."
-      say "    Compare the crt install above against -print-search-dirs."
-    else
-      R3=FAIL
-      say "    explicit: ALSO FAILED -- the libc itself is wrong"
-      grep -av '^[A-Z][0-9]*$' r3e.err | head -12 | sed 's/^/      /'
+  #   plain     what autoconf will do -- `$CC prog.c -o prog`, nothing else
+  #   explicit  crt files named on the command line, -nostdlib, libc by path
+  #
+  # If plain fails and explicit works, the libc is fine and the compiler cannot
+  # FIND it -- still fatal above, since configure will not pass paths for us.
+  try_r3() {
+    _lbl="$1"; shift
+    rm -f r3.bin r3.out r3.err
+    "$@" 2>r3.err; _crc=$?
+    if [ "$_crc" != 0 ] || [ ! -s r3.bin ]; then
+      printf '    %-9s COMPILE rc=%s\n' "$_lbl" "$_crc"
+      grep -av '^[A-Z][0-9]*$' r3.err | head -8 | sed 's/^/      /'
+      return 1
     fi
+    chmod 0755 r3.bin
+    ./r3.bin >r3.out 2>&1; _rrc=$?
+    if [ "$_rrc" = 0 ]; then
+      printf '    %-9s compiled AND ran: %s\n' "$_lbl" "$(cat r3.out)"
+      return 0
+    fi
+    # A BINARY THAT LINKS AND WILL NOT RUN. Report the signal, the first bytes
+    # of the ELF header and whether an interpreter was baked in -- a tcc that
+    # ignored -static leaves a PT_INTERP pointing at a dynamic loader this box
+    # does not have, and that looks identical to a crash from the outside.
+    if [ "$_rrc" -gt 128 ]; then
+      printf '    %-9s COMPILED, then SIGNAL %s on run\n' "$_lbl" "$((_rrc - 128))"
+    else
+      printf '    %-9s COMPILED, then exited %s\n' "$_lbl" "$_rrc"
+    fi
+    [ -s r3.out ] && sed 's/^/      /' r3.out | head -6
+    printf '      ELF:    %s\n' "$(od -An -tx1 -N16 r3.bin | tr -s ' ')"
+    printf '      size:   %s bytes\n' "$(wc -c < r3.bin)"
+    if grep -aq 'ld-musl\|ld-linux' r3.bin; then
+      printf '      interp: PRESENT -- this binary is DYNAMIC and the box has no loader\n'
+      grep -ao 'ld-[a-z0-9./-]*' r3.bin | head -2 | sed 's/^/              /'
+    else
+      printf '      interp: none found -- statically linked\n'
+    fi
+    return 1
+  }
+
+  if try_r3 "plain:" $CC -static -o r3.bin r3.c; then
+    R3=ok
+  elif try_r3 "explicit:" $CC $HOSTED -nostdlib -static -o r3.bin \
+         "$SYS/lib/crt1.o" "$SYS/lib/crti.o" r3.c -lc "$TCCDIR/libtcc1.a" \
+         "$SYS/lib/crtn.o"; then
+    R3=FAIL
+    say ""
+    say "    THE LIBC IS GOOD AND THE COMPILER CANNOT FIND IT. A search-path"
+    say "    problem, not a codegen one -- but it still stops every rung above,"
+    say "    because autoconf will not pass paths."
+  else
+    R3=FAIL
+    say "    both routes failed -- read the rc and the ELF line above"
   fi
 fi
 
@@ -465,7 +497,9 @@ if [ "$R35" = ok ]; then
     --disable-gdb --disable-gdbserver --disable-libdecnumber --disable-readline \
     CC="$CC $HOSTED" > cfg.log 2>&1
   say "    configure rc=$?"
-  if timeout 3000 make -j"$NP" > build.log 2>&1 && make install > /dev/null 2>&1; then
+  # MAKEINFO=true: texinfo is borrowed by stage 4 and absent here. See rung 6.
+  if timeout 3000 make -j"$NP" MAKEINFO=true > build.log 2>&1 \
+     && make install MAKEINFO=true > /dev/null 2>&1; then
     R4=ok
     for t in as ld ar ranlib; do
       printf '    %-8s %s\n' "$t" "$( [ -x "$PFX/bin/$t" ] && wc -c < "$PFX/bin/$t" || echo ABSENT )"
@@ -484,24 +518,40 @@ head1 "RUNG 5 -- gmp, mpfr, mpc.  gcc's arithmetic dependencies."
 # spikes/stage4/chain/rung1.sh. If they build here and there, the overlap is
 # real rather than nominal.
 if [ "$R4" = ok ]; then
+  # THESE CONFIGURE LINES ARE STAGE 4's, NOT MINE.
+  #
+  # spikes/stage4/chain/rung1.sh's header says "Every configure line here is
+  # that job's, verbatim", and the same discipline has to hold in this
+  # direction or the overlap is nominal. If this job configures gcc differently
+  # from stage 4, then "reaches gcc 4.7.4" means two different things in the two
+  # jobs and neither substitutes for the other. Copied from rung1.sh:124-138
+  # and rung1.sh:144-166; the prefix is /work/prereq there and here.
   cd /work/src
   tar xf /in/gmp-*.tar.xz  && mv gmp-*/  gmp
   tar xf /in/mpfr-*.tar.xz && mv mpfr-*/ mpfr
   tar xf /in/mpc-*.tar.gz  && mv mpc-*/  mpc
+  mkdir -p /work/prereq
   r5=ok
-  ( cd gmp && ./configure --disable-shared --disable-assembly --prefix="$PFX" \
-      CC="$CC $HOSTED" > cfg.log 2>&1 \
-    && timeout 1800 make -j"$NP" > build.log 2>&1 && make install > /dev/null 2>&1 ) \
-    || { r5=FAIL; say "    gmp NOT INSTALLED"; tail -12 gmp/build.log 2>/dev/null | sed 's/^/      /'; }
-  for p in mpfr mpc; do
+  for pk in gmp mpfr mpc; do
     [ "$r5" = ok ] || break
-    ( cd "$p" && ./configure --disable-shared --with-gmp="$PFX" --prefix="$PFX" \
-        CC="$CC $HOSTED" > cfg.log 2>&1 \
-      && timeout 1200 make -j"$NP" > build.log 2>&1 && make install > /dev/null 2>&1 ) \
-      || { r5=FAIL; say "    $p NOT INSTALLED"; tail -12 "$p/build.log" 2>/dev/null | sed 's/^/      /'; }
+    case "$pk" in
+      gmp)  EXTRA="--disable-assembly" ;;
+      mpfr) EXTRA="--with-gmp=/work/prereq" ;;
+      mpc)  EXTRA="--with-gmp=/work/prereq --with-mpfr=/work/prereq" ;;
+    esac
+    ( cd "$pk" \
+      && ./configure CC="$CC" --disable-shared $EXTRA --prefix=/work/prereq \
+           > cfg.log 2>&1 \
+      && timeout 1800 make -j"$NP" MAKEINFO=true > build.log 2>&1 \
+      && make install MAKEINFO=true > /dev/null 2>&1 ) \
+      || { r5=FAIL
+           say "    $pk NOT INSTALLED"
+           grep -nE "error:|Error [0-9]" "$pk/build.log" 2>/dev/null | head -8 | sed 's/^/      /'
+           tail -12 "$pk/build.log" 2>/dev/null | sed 's/^/      /'; }
+    [ "$r5" = ok ] && say "    $pk ok"
   done
   R5=$r5
-  [ "$R5" = ok ] && say "    prefix/lib: $(ls "$PFX/lib" 2>/dev/null | tr '\n' ' ')"
+  [ "$R5" = ok ] && say "    prereq/lib: $(ls /work/prereq/lib 2>/dev/null | tr '\n' ' ')"
   cd /work
 fi
 
@@ -513,18 +563,40 @@ head1 "RUNG 6 -- gcc 4.7.4.  THE OVERLAP WITH stage4-complete."
 # ladder.
 if [ "$R5" = ok ]; then
   cd /work/src && tar xf /in/gcc-*.tar.bz2
-  mkdir -p b-gcc && cd b-gcc
-  ../gcc-*/configure --prefix="$PFX" \
-    --with-gmp="$PFX" --with-mpfr="$PFX" --with-mpc="$PFX" \
-    --enable-languages=c --disable-shared --disable-nls \
-    --disable-multilib --disable-bootstrap --disable-libsanitizer \
-    --with-sysroot="$SYS" \
-    CC="$CC $HOSTED" > cfg.log 2>&1
+  mkdir -p /work/bld && cd /work/bld
+  # STAGE 4's configure_47, rung1.sh:144-166, VERBATIM.
+  #
+  # --enable-languages=c,c++ IS LOAD-BEARING and I had trimmed it to c. Stage
+  # 4's own comment: "All of gcc 4.7 is C, INCLUDING cc1plus, which is the
+  # whole reason 4.7 is the entry point: a C compiler yields a C++98 compiler."
+  # Building only the C frontend would reach something called gcc 4.7.4 that is
+  # not the rung stage 4 stands on.
+  #
+  # --with-sysroot is NOT here, and I had added it. With the libc installed at
+  # /usr -- where this box's compiler already looks -- a sysroot is both
+  # unnecessary and wrong: it would prefix every system path again.
+  /work/src/gcc-*/configure \
+    CC="$CC" \
+    --build=aarch64-unknown-linux-gnu \
+    --host=aarch64-unknown-linux-gnu \
+    --target=aarch64-unknown-linux-gnu \
+    --prefix="$PFX" --enable-languages=c,c++ \
+    --disable-multilib --disable-bootstrap --disable-werror \
+    --disable-libsanitizer --disable-libgomp --disable-libquadmath \
+    --disable-libssp --disable-libatomic --disable-shared \
+    --with-gmp=/work/prereq --with-mpfr=/work/prereq --with-mpc=/work/prereq \
+    > cfg.log 2>&1
   say "    configure rc=$?"
-  if timeout 5400 make -j"$NP" > build.log 2>&1; then
+  # MAKEINFO=true BECAUSE texinfo IS ON STAGE 4's BORROW LIST AND NOT IN THIS
+  # BOX. env0.sh borrows `texinfo`, so makeinfo is simply present there and gcc
+  # builds its docs. Here it is absent, and gcc's make would stop on the info
+  # targets having compiled the entire compiler -- a failure about
+  # documentation that reads like a failure about the compiler.
+  if timeout 5400 make -j"$NP" MAKEINFO=true > build.log 2>&1; then
     R6=ok
-    say "    xgcc: $( [ -x gcc/xgcc ] && wc -c < gcc/xgcc || echo ABSENT )"
-    say "    cc1:  $( [ -x gcc/cc1 ]  && wc -c < gcc/cc1  || echo ABSENT )"
+    say "    xgcc:    $( [ -x gcc/xgcc ] && wc -c < gcc/xgcc || echo ABSENT )"
+    say "    cc1:     $( [ -x gcc/cc1 ]  && wc -c < gcc/cc1  || echo ABSENT )"
+    say "    cc1plus: $( [ -x gcc/cc1plus ] && wc -c < gcc/cc1plus || echo ABSENT )"
   else
     R6=FAIL; say "    --- where it stopped ---"
     grep -nE "error:|internal compiler error|undefined reference" build.log 2>/dev/null \
