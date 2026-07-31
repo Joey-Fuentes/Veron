@@ -72,6 +72,13 @@ env:
   # They rebuild it later because 3.82 "randomly segfaults while building the
   # Linux kernel" -- irrelevant here, since this job stops at gcc 4.7.4.
   MAKE_VER: '3.82'
+  # A SECOND make, BUILT PROPERLY ONCE binutils EXISTS. 3.82 comes up first
+  # from live-bootstrap's kaem command list because nothing else can, and it is
+  # good enough to drive musl and binutils -- but it took a Bus error building
+  # libgcc, and live-bootstrap says the same thing about it: they rebuild make
+  # "using the build system and GCC, which means that it does not randomly
+  # segfault". 4.4 is that rebuild.
+  MAKE_ALT: '4.4'
   # 3.82 AND ONLY 3.82. This is live-bootstrap's version and, more to the
   # point, the version their steps/make-3.82/pass1.kaem command list is written
   # against -- 27 files with per-file -D flags that stand in for a configure
@@ -201,7 +208,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: dl
-          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-v1
+          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-v1
 
       - name: Fetch pinned upstreams (airlock -- nothing here enters the box)
         run: |
@@ -255,6 +262,7 @@ jobs:
 
           fetch "$MUSL_MIRRORS" "musl-$MUSL_VER.tar.gz"
           fetch "$GNU_MIRRORS"  "make/make-$MAKE_VER.tar.gz"
+          fetch "$GNU_MIRRORS"  "make/make-$MAKE_ALT.tar.gz"
           fetch "$GNU_MIRRORS"  "binutils/binutils-$BINUTILS.tar.xz"
           fetch "$GNU_MIRRORS"  "gmp/gmp-$GMP_VER.tar.xz"
           fetch "$GNU_MIRRORS"  "mpfr/mpfr-$MPFR_VER.tar.xz"

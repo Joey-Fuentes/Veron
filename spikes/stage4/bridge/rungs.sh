@@ -175,7 +175,7 @@ untar() {          # $1 = path prefix, e.g. /in/musl
 
 onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
 
-R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R5=skip; R6=skip
+R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip
 
 # WHAT IS ACTUALLY IN /in, BEFORE ANYTHING TRIES TO USE IT.
 #
@@ -1369,11 +1369,70 @@ ARSHIM
 fi
 
 # ---------------------------------------------------------------------------
+head1 "RUNG 4.5 -- rebuild make PROPERLY, now that binutils exists"
+# make 3.82 GOT US HERE AND CANNOT GO FURTHER.
+#
+# It came up first because it is the only one that can: live-bootstrap's kaem
+# command list compiles it with no configure, no ld and no ar, which is exactly
+# the situation at rung 3.5. It then drove musl's install, binutils and the
+# arithmetic libraries without complaint.
+#
+# Then gcc's libgcc killed it:
+#
+#     Makefile:979: warning: overriding recipe for target `crti.o'
+#     ... twenty more like it ...
+#     make[1]: *** [all-target-libgcc] Bus error (core dumped)
+#
+# 3.82 is a known-bad release -- LFS carries make-3.82-upstream_fixes-3.patch
+# for its pattern-rule handling, and live-bootstrap rebuilds it for the same
+# reason, in almost these words: "GNU make is now rebuilt properly using the
+# build system and GCC, which means that it does not randomly segfault while
+# building the Linux kernel."
+#
+# WE COULD NOT DO THIS BEFORE AND CAN NOW. 3.82 had to be hand-compiled because
+# its configure wanted an ld that rung 4 had not built yet. binutils exists now,
+# so 4.4 configures the ordinary way -- and this is the first rung where the
+# thing being built uses tools this box produced rather than tools it borrowed.
+if [ "$R4" = ok ]; then
+  cd /work/src
+  if ! untar "/in/make-$MAKE_ALT"; then
+    say "    make $MAKE_ALT did not extract"; R45=FAIL
+  else
+    _m4=$(onedir "make-$MAKE_ALT ./make-$MAKE_ALT")
+    if [ -z "$_m4" ] || ! cd "$_m4"; then
+      say "    no make-$MAKE_ALT directory"; R45=FAIL
+    else
+      if cfg_try "make $MAKE_ALT" --prefix="$PFX" --disable-nls; then
+        if timeout 1800 make -j"$NP" > build.log 2>&1 && [ -x ./make ]; then
+          # Replace the bootstrap make with the real one, and say so, because
+          # everything above this line was driven by the other binary.
+          cp ./make "$PFX/bin/make"
+          say "    make: $(wc -c < "$PFX/bin/make") bytes"
+          "$PFX/bin/make" --version 2>&1 | head -1 | sed 's/^/      /'
+          if grep -aq 'ld-musl\|ld-linux' "$PFX/bin/make"; then
+            say "    DYNAMIC -- will not run in this box"; R45=FAIL
+          else
+            R45=ok
+          fi
+        else
+          R45=FAIL; say "    --- where it stopped ---"
+          grep -nE "error:|Error [0-9]" build.log 2>/dev/null | head -10 | sed 's/^/      /'
+          tail -15 build.log 2>/dev/null | sed 's/^/      /'
+        fi
+      else
+        R45=FAIL
+      fi
+    fi
+  fi
+  cd /work
+fi
+
+# ---------------------------------------------------------------------------
 head1 "RUNG 5 -- gmp, mpfr, mpc.  gcc's arithmetic dependencies."
 # Same three, same versions, same configure shape as
 # spikes/stage4/chain/rung1.sh. If they build here and there, the overlap is
 # real rather than nominal.
-if [ "$R4" = ok ]; then
+if [ "$R45" = ok ]; then
   # THESE CONFIGURE LINES ARE STAGE 4's, NOT MINE.
   #
   # spikes/stage4/chain/rung1.sh's header says "Every configure line here is
@@ -1627,6 +1686,7 @@ printf '    %-40s %s\n' "2   musl, no make"                  "$R2"
 printf '    %-40s %s\n' "3   hosted program, real libc"      "$R3"
 printf '    %-40s %s\n' "3.5 GNU make"                       "$R35"
 printf '    %-40s %s\n' "4   binutils"                       "$R4"
+printf '    %-40s %s\n' "4.5 make rebuilt with real binutils" "$R45"
 printf '    %-40s %s\n' "5   gmp / mpfr / mpc"               "$R5"
 printf '    %-40s %s\n' "6   gcc 4.7.4 -- stage 4's rung 1"  "$R6"
 say ""
