@@ -104,9 +104,15 @@ jobs:
           # THE SAME tcc THE OTHER ARM USES. Same pin, same five arm64
           # assembler patches. A distro tcc or a different configure would stop
           # this being a control and make it a different program.
-          git clone -q https://repo.or.cz/tinycc.git tccsrc \
-            || git clone -q git://repo.or.cz/tinycc.git tccsrc
-          ( cd tccsrc && git checkout -q "$TCC_SHA" )
+          #
+          # GITHUB FIRST. repo.or.cz refused for 133 seconds and then failed
+          # the whole run; tools/clone-pinned.sh exists for exactly this and
+          # ends at a rev-parse against the pin, which is why mirror order is a
+          # speed decision rather than a trust one. It also fetches one commit
+          # rather than the history, which is the whole requirement here.
+          . "$GITHUB_WORKSPACE/tools/clone-pinned.sh"
+          clone_pinned tccsrc "$TCC_SHA" \
+            "https://github.com/TinyCC/tinycc.git https://repo.or.cz/tinycc.git"
           bash spikes/stage3/patches/tcc-arm64-asm/apply-series.sh tccsrc
           cd tccsrc
           # --cc=musl-gcc and a static link: see the header for why this is

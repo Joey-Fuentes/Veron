@@ -46,7 +46,21 @@ ARM=${ARM:-unnamed}
 say()   { printf '%s\n' "$*"; }
 head1() { say ""; say "  === $* ==="; }
 
-SYS=/work/sysroot
+# THE SYSROOT IS /usr, AND THAT IS THE FIX FOR RUNG 3.
+#
+# The reference run built crt1.o, crti.o and crtn.o correctly and then failed
+# with "file 'crt1.o' not found". -L adds LIBRARY search paths, which is where
+# -lc is resolved; tcc looks for crt files in a SEPARATE list, compiled in at
+# configure time and not reachable from the command line. So the crt files
+# existed and were unfindable.
+#
+# Rather than reconfigure each arm's compiler -- which would make the two arms
+# differ in something other than the compiler -- the libc is installed where
+# every tcc already looks: /usr/include and /usr/lib. The box is ours and
+# starts with no /usr at all, so what ends up there is only what these rungs
+# built. It also means rungs 3.5 and up get a plain working CC, which is what
+# autoconf expects: hundreds of conftest cycles will not pass -I and -L for us.
+SYS=/usr
 PFX=/work/prefix
 NP=$(nproc 2>/dev/null || echo 2)
 mkdir -p "$SYS/lib" "$SYS/include" "$PFX/bin" /work/src
@@ -181,9 +195,49 @@ if [ "$R1" = ok ]; then
     > obj/src/internal/version.h
   INC="-Iarch/aarch64 -Iarch/generic -Iobj/src/internal -Isrc/include -Isrc/internal -Iobj/include -Iinclude"
   MUSLCF="-std=c99 -nostdinc -D_XOPEN_SOURCE=700"
+  # THE FILE SET IS PER-ARCHITECTURE, AND `find` IS NOT IT.
+  #
+  # `find src crt -name '*.c'` walks into src/math/i386, src/fenv/powerpc64,
+  # src/linux/x32 and every other architecture's directory. The reference run
+  # compiled all of them and reported 57 failures -- "unknown constraint 't'",
+  # "invalid clobber register 'st'", "unrecognized opcode bsr" -- which are
+  # x86 and ppc inline asm being fed to an aarch64 compiler. None of them were
+  # about the compiler under test.
+  #
+  # WORSE THAN NOISE. musl's rule is that an arch file REPLACES the generic
+  # file of the same name, and `find` includes both. Any other-arch file that
+  # happened to compile would land in the archive beside the generic one, and
+  # which of the two a link picks up is whichever comes first. That is a wrong
+  # libc that builds cleanly.
+  #
+  # musl's Makefile:
+  #     BASE_SRCS     = src/*/*.c  ldso/*.c          -- ONE level under src/
+  #     ARCH_SRCS     = src/*/$(ARCH)/*.[csS]
+  #     REPLACED_OBJS = the generic objects those arch files replace
+  #     ALL_OBJS      = BASE - REPLACED + ARCH
+  #
+  # The 9 aarch64 .s files sources/musl.toml declares as dropped were deleted
+  # above, so the generic C is what stands in for them -- which is exactly what
+  # that declaration says happens, and it falls out of this rule for free
+  # rather than needing a second list.
+  : > /work/srclist
+  for f in src/*/*.c ldso/*.c; do
+    [ -f "$f" ] || continue
+    d=$(dirname "$f"); b=$(basename "$f" .c)
+    # replaced by an aarch64 version? then skip the generic one
+    if [ -f "$d/aarch64/$b.c" ] || [ -f "$d/aarch64/$b.s" ] || [ -f "$d/aarch64/$b.S" ]; then
+      continue
+    fi
+    echo "$f" >> /work/srclist
+  done
+  for f in src/*/aarch64/*.c crt/*.c crt/aarch64/*.c; do
+    [ -f "$f" ] && echo "$f" >> /work/srclist
+  done
+  say "    file set: $(wc -l < /work/srclist) sources (aarch64, arch files replacing generic)"
+
   nc=0; nf=0
   : > /work/musl-fail.txt
-  for f in $(find src crt -name '*.c' | sort); do
+  for f in $(sort /work/srclist); do
     o="obj/${f%.c}.o"; mkdir -p "$(dirname "$o")"
     # musl's Makefile adds -DCRT for the crt objects; without it crt1.c
     # compiles to something that is not a crt file.

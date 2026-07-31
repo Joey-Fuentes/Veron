@@ -209,9 +209,11 @@ jobs:
           # NOT A COMPILATION. mc-tcc needs a -B directory holding tcc's
           # include/ and its libtcc1.a; the source tree is that directory, and
           # it is the same pin plus the same five arm64 patches the climb used.
-          git clone -q https://repo.or.cz/tinycc.git tccsrc \
-            || git clone -q git://repo.or.cz/tinycc.git tccsrc
-          ( cd tccsrc && git checkout -q "$TCC_SHA" )
+          # GITHUB FIRST, verified by rev-parse -- see tools/clone-pinned.sh.
+          # repo.or.cz timed out at 133 s and failed a whole reference run.
+          . "$GITHUB_WORKSPACE/tools/clone-pinned.sh"
+          clone_pinned tccsrc "$TCC_SHA" \
+            "https://github.com/TinyCC/tinycc.git https://repo.or.cz/tinycc.git"
           bash spikes/stage3/patches/tcc-arm64-asm/apply-series.sh tccsrc
           echo "  -B tree ready: $(find tccsrc/include -name '*.h' 2>/dev/null | wc -l) headers"
 
