@@ -539,6 +539,31 @@ if [ "$R1" = ok ]; then
       printf '      %-20s MISSING\n' "$sym"
     fi
   done
+  # THE EMPTY STUB ARCHIVES musl's OWN install CREATES.
+  #
+  # gcc links a generator with -lm and got
+  #
+  #     tcc: error: library 'm' not found
+  #
+  # musl has no separate libm: the math lives in libc.a. But every autoconf
+  # project on earth passes -lm, so musl's Makefile makes eight EMPTY archives
+  # for exactly this --
+  #
+  #     EMPTY_LIB_NAMES = crypt dl m pthread resolv rt util xnet
+  #     $(EMPTY_LIBS): rm -f $@; $(AR) rc $@
+  #
+  # -- and a link against an empty archive succeeds and contributes nothing,
+  # which is the point.
+  #
+  # Rung 2 hand-drives musl's COMPILE, so it never ran musl's install and never
+  # made these. An empty ar archive is literally the eight bytes "!<arch>\n",
+  # so they can be written directly rather than through tcc -ar, which has no
+  # reason to be asked for an archive with no members.
+  for _l in crypt dl m pthread resolv rt util xnet; do
+    printf '!<arch>\n' > "$SYS/lib/lib$_l.a"
+  done
+  say "    empty stubs: $(ls "$SYS/lib"/lib*.a 2>/dev/null | wc -l) archives in $SYS/lib (libc.a + 8 stubs)"
+
   say "    headers: $(find "$SYS/include" -name '*.h' 2>/dev/null | wc -l) files"
   say "    crt:     $(ls "$SYS/lib"/crt*.o 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
   if [ -s "$SYS/lib/libc.a" ] && [ -f "$SYS/lib/crt1.o" ]; then R2=ok; else R2=FAIL; fi
