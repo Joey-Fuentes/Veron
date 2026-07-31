@@ -1385,6 +1385,35 @@ jobs:
           # way round while the frontier is still moving.
           SH=/src/stage3/tcc-test-shim
           T2=/in/tcc-src/tests/tests2
+
+          # COMPARE THE WAY tcc COMPARES, which is not byte for byte.
+          #
+          #     diff -Nbu $(filter %.expect,$^) $*.output      tests2/Makefile:142
+          #
+          # `-b` ignores changes in the AMOUNT of whitespace, and the .expect
+          # files rely on it: 38_multiple_array_index prints "%d " per element
+          # and so emits a trailing space its .expect does not carry, and
+          # several tests end without a final newline. Comparing with `cmp`
+          # marks all of those failed -- three of them here -- and reports a
+          # compiler defect where there is a space.
+          #
+          # busybox has no `diff`, so this normalises instead: runs of
+          # whitespace collapse to one, trailing whitespace goes, and a missing
+          # final newline stops mattering because the comparison is on the
+          # normalised text. That is `-b` for the shapes these tests produce.
+          # It is NOT a general diff -b, and it deliberately does not ignore
+          # blank lines -- `-B` is not in tcc's flags either.
+          # A FINAL NEWLINE IS PART OF IT. Several .expect files end without
+          # one and the program prints one, or the reverse; `cmp` on the
+          # normalised files still sees a byte difference. Command
+          # substitution strips trailing newlines from both sides, which is
+          # what makes the comparison agree with `diff -b` here.
+          same_output() {
+            _a=$(sed 's/[[:space:]][[:space:]]*/ /g; s/[[:space:]]*$//' "$1")
+            _b=$(sed 's/[[:space:]][[:space:]]*/ /g; s/[[:space:]]*$//' "$2")
+            [ "$_a" = "$_b" ]
+          }
+
           if [ -s /out/mc-tcc ]; then
             t2pass=0; t2diff=0; t2cf=0; t2n=0
             : > t2-fail.txt
@@ -1412,7 +1441,7 @@ jobs:
               else
                 chmod 0755 t2.bin
                 set +e; timeout 25 ./t2.bin > t2.out 2>&1; set -e
-                if cmp -s t2.out "$T2/$b.expect"; then
+                if same_output t2.out "$T2/$b.expect"; then
                   t2pass=$((t2pass + 1))
                 else
                   t2diff=$((t2diff + 1))
@@ -1426,7 +1455,7 @@ jobs:
                   echo "    00_assignment: COMPILE FAILED rc=$c2"
                   grep -av '^[A-Z][0-9]*$' t2.err | head -30 | sed 's/^/        /'
                   s3ok=no
-                elif cmp -s t2.out "$T2/$b.expect"; then
+                elif same_output t2.out "$T2/$b.expect"; then
                   echo "    00_assignment: exit ok, MATCHES tcc's OWN .expect FILE"
                   sed 's/^/        /' t2.out
                 else
@@ -1438,7 +1467,7 @@ jobs:
               fi
             done
             echo
-            echo "    tests2: $t2pass of $t2n reproduce tcc's own .expect byte for byte"
+            echo "    tests2: $t2pass of $t2n match tcc's own .expect (diff -b rules)"
             echo "            $t2diff ran with different output, $t2cf would not compile"
             if [ -s t2-fail.txt ]; then
               echo "    the ones that did not:"
