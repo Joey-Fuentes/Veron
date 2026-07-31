@@ -145,15 +145,64 @@ head1 "RUNG 2 -- musl, built WITHOUT make"
 # back to portable C, and src/complex/*.c for _Complex.
 if [ "$R1" = ok ]; then
   cd /work/src && tar xzf /in/musl-*.tar.gz && cd musl-*
+  # DO NOT DELETE THE ARCH ASSEMBLY UNTIL IT HAS ACTUALLY REFUSED TO BUILD.
+  #
+  # sources/musl.toml declares 9 aarch64 .s files dropped, on the grounds that
+  # "tcc's arm64 assembler cannot assemble these; musl ships portable C for
+  # each, so the C fallback is used". The first half was measured; THE SECOND
+  # HALF IS NOT TRUE FOR ALL NINE, and the last run is what showed it:
+  #
+  #     rung 3: static binary, 80 KB, no interpreter, SIGNAL 11 on startup
+  #
+  # A static musl binary that links and dies immediately is the signature of
+  # TLS never being set up. `__set_thread_area` sets the thread pointer --
+  # `msr tpidr_el0, x0` on aarch64 -- and that CANNOT be written in portable C,
+  # so there is no fallback for it to fall back to. Without it `__init_tls`
+  # leaves the thread pointer unset and the first touch of errno segfaults,
+  # which is exactly where a hello world dies.
+  #
+  # SO ASSEMBLE THEM AND FIND OUT. The tcc arm64 assembler this repo carries
+  # exists precisely for files like these -- five patches of it -- and the drop
+  # list may predate it or have been inherited rather than measured. Each file
+  # is attempted; only the ones that genuinely refuse are dropped, and they are
+  # named. That turns a declared substitution into a checked one.
+  say "    --- the 9 declared-dropped .s files, attempted rather than assumed ---"
+  : > /work/asm-failed.txt
+  nasm_ok=0; nasm_bad=0
   for s in src/fenv/aarch64/fenv.s src/ldso/aarch64/tlsdesc.s \
            src/process/aarch64/vfork.s src/setjmp/aarch64/longjmp.s \
            src/signal/aarch64/restore.s src/thread/aarch64/__set_thread_area.s \
            src/thread/aarch64/__unmapself.s src/thread/aarch64/clone.s \
            src/thread/aarch64/syscall_cp.s; do
-    rm -f "$s"
+    [ -f "$s" ] || continue
+    if $CC -c -o /tmp/asmprobe.o "$s" 2>/tmp/asmprobe.err; then
+      nasm_ok=$((nasm_ok + 1))
+      printf '      %-44s assembles\n' "$s"
+    else
+      nasm_bad=$((nasm_bad + 1))
+      printf '      %-44s REFUSED: %s\n' "$s" \
+        "$(grep -a 'error' /tmp/asmprobe.err 2>/dev/null | head -1 | sed 's/^.*error: //' | cut -c1-40)"
+      echo "$s" >> /work/asm-failed.txt
+      rm -f "$s"
+    fi
   done
+  say "    $nasm_ok assemble, $nasm_bad refused"
+
+  # THE ONE THAT MAKES THE LIBC UNUSABLE, CALLED OUT SEPARATELY. The others
+  # cost a feature -- setjmp, vfork, signal return, threads. This one costs
+  # every program, because nothing runs without a thread pointer.
+  if grep -q '__set_thread_area' /work/asm-failed.txt 2>/dev/null; then
+    say ""
+    say "    __set_thread_area REFUSED, AND THERE IS NO PORTABLE C FOR IT."
+    say "    The thread pointer is never set, __init_tls leaves it null, and"
+    say "    the first access to errno segfaults. EVERY hosted program built"
+    say "    against this libc dies on startup regardless of the codegen."
+    say "    sources/musl.toml's claim that all nine have a C fallback is"
+    say "    wrong for this file and should be corrected."
+  fi
+
   rm -f src/complex/*.c
-  say "    declared substitutions applied (9 .s, src/complex)"
+  say "    src/complex dropped (_Complex unsupported), as declared"
 
   # THE TWO GENERATED HEADERS. musl's Makefile builds these with sed before
   # anything compiles. Nothing includes them until they exist and every later
