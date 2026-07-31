@@ -118,13 +118,45 @@ untar() {          # $1 = path prefix, e.g. /in/musl
     esac
     _sz=$(wc -c < /tmp/probe.tar 2>/dev/null || echo 0)
     say "    decompressed: $_sz bytes  512-aligned=$(( _sz % 512 == 0 ))"
-    if dd if=/tmp/probe.tar bs=512 count=1 2>/dev/null | grep -aq ustar; then
-        say "    ustar magic:  PRESENT -- the archive is fine, busybox tar is not"
-    else
-        say "    ustar magic:  absent"
+
+    # THE HEADER, FIELD BY FIELD, AND A KNOWN-GOOD ONE BESIDE IT.
+    #
+    # musl's tarball opens with this exact call and this one does not, so the
+    # difference between their first 512 bytes IS the answer. Printing only the
+    # broken one has failed to produce it three times.
+    #
+    # dd's skip is used to carve the field rather than od's -j, because od -j
+    # is one of the flags that has already returned a confident empty reading
+    # in this job. dd carves; od only formats what it is handed.
+    _hdrfield() {   # $1 = file  $2 = offset  $3 = length
+        dd if="$1" bs=1 skip="$2" count="$3" 2>/dev/null | od -c 2>/dev/null | head -2
+    }
+    _known=$(ls /in/musl-*.tar.gz 2>/dev/null | head -1)
+    if [ -n "$_known" ]; then
+        gzip -dc "$_known" > /tmp/good.tar 2>/dev/null
+        say "    --- known-good ($_known) ---"
+        say "      name  : $(_hdrfield /tmp/good.tar 0 16 | head -1)"
+        say "      magic : $(_hdrfield /tmp/good.tar 257 8 | head -1)"
+        say "      type  : $(_hdrfield /tmp/good.tar 156 1 | head -1)"
     fi
+    say "    --- this one ---"
+    say "      name  : $(_hdrfield /tmp/probe.tar 0 16 | head -1)"
+    say "      magic : $(_hdrfield /tmp/probe.tar 257 8 | head -1)"
+    say "      type  : $(_hdrfield /tmp/probe.tar 156 1 | head -1)"
     say "    first 512 bytes:"
-    dd if=/tmp/probe.tar bs=512 count=1 2>/dev/null | od -c 2>/dev/null | head -6 | sed 's/^/      /'
+    dd if=/tmp/probe.tar bs=512 count=1 2>/dev/null | od -c 2>/dev/null | head -12 | sed 's/^/      /'
+
+    # AND DOES busybox tar OPEN IT ONCE DECOMPRESSED? If the same tar accepts
+    # the uncompressed bytes it just refused compressed, the fault is in the -z
+    # path and not in the archive at all.
+    if tar xf /tmp/probe.tar 2>/tmp/probe.err; then
+        say "    tar xf ON THE DECOMPRESSED FILE SUCCEEDED."
+        say "    So the archive is fine and busybox's -z path is what refused it."
+    else
+        say "    tar xf on the decompressed file also refused:"
+        sed 's/^/      /' /tmp/probe.err 2>/dev/null | head -2
+    fi
+    rm -f /tmp/good.tar
     rm -f /tmp/probe.tar
     return 1
 }
@@ -132,6 +164,20 @@ untar() {          # $1 = path prefix, e.g. /in/musl
 onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
 
 R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R5=skip; R6=skip
+
+# WHAT IS ACTUALLY IN /in, BEFORE ANYTHING TRIES TO USE IT.
+#
+# Three runs were spent guessing at an archive nobody had looked at. Printing
+# the inventory costs one screen and removes the guessing: name, size, and the
+# first four bytes, which say whether a thing is gzip (1f 8b), xz (fd 37),
+# bzip2 (42 5a) or something that is not compressed at all.
+say ""
+say "  === WHAT IS IN /in ==="
+for _f in /in/*; do
+    [ -f "$_f" ] || continue
+    printf '    %-30s %10s  %s\n' "${_f##*/}" "$(wc -c < "$_f")" \
+      "$(dd if="$_f" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -s ' ')"
+done
 
 say "  arm:      $ARM"
 say "  compiler: $CC_BIN  ($(wc -c < "$CC_BIN") bytes)"
