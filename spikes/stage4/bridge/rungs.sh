@@ -1072,7 +1072,61 @@ ARSHIM
       printf '    %-8s %s\n' "$t" "$( [ -x "$PFX/bin/$t" ] && wc -c < "$PFX/bin/$t" || echo ABSENT )"
     done
   else
-    R4=FAIL; say "    --- the failing command ---"
+    R4=FAIL
+    # ARE THE SYMBOLS IN THE ARCHIVE, OR IS THE ARCHIVE WRONG?
+    #
+    # 21 undefined bfd_* symbols at the as-new link, from an archive tcc-ar
+    # created. Two very different faults look identical from here: the members
+    # are missing, or they are present and the archive's SYMBOL INDEX is not.
+    # tcc's linker resolves an archive through that index, so an archive with
+    # good members and no index links like an empty one.
+    #
+    # grep on the raw archive answers it without needing nm: if the string is
+    # in the file at all, the member is there and the index is the suspect.
+    for _a in ../bfd/.libs/libbfd.a bfd/.libs/libbfd.a; do
+      [ -f "$_a" ] || continue
+      say "    --- $_a: $(wc -c < "$_a") bytes ---"
+      say "        members (first bytes of each header):"
+      "$CC_BIN" -ar t "$_a" 2>/dev/null | head -5 | sed 's/^/          /' \
+        || say "          (tcc -ar t not supported -- using grep instead)"
+      for _s in bfd_init bfd_errmsg _bfd_std_section; do
+        if grep -aq "$_s" "$_a"; then
+          say "        $_s: PRESENT in the archive bytes"
+        else
+          say "        $_s: ABSENT -- the member itself is missing"
+        fi
+      done
+      # An archive index lives in a member literally named "/" or "__.SYMDEF".
+      if head -c 200 "$_a" | grep -aq "^!<arch>"; then
+        say "        header:  !<arch> ok"
+      else
+        say "        header:  NOT an ar archive"
+      fi
+      if head -c 200 "$_a" | grep -aqE "^/ |__\.SYMDEF"; then
+        say "        index:   present"
+      else
+        say "        index:   MISSING -- tcc -ar wrote no symbol table, so the"
+        say "                 linker cannot resolve members out of it"
+      fi
+      # AND A MINIMAL REPRODUCTION, which is the thing that can be argued about
+      # afterwards. One object referencing one bfd symbol, linked against the
+      # same archive. If this fails, the fault is tcc's archive handling and
+      # has nothing to do with binutils; if it succeeds, the fault is in how
+      # libtool assembled the real link line.
+      ( cd /tmp && rm -f pb.c pb.o pb.bin
+        printf 'extern void bfd_init(void);\nint main(void){ bfd_init(); return 0; }\n' > pb.c
+        if $CC -c -o pb.o pb.c 2>/dev/null; then
+          if $CC -static -o pb.bin pb.o "$OLDPWD/$_a" 2>/tmp/pb.err; then
+            say "        minimal link against this archive: OK"
+          else
+            say "        minimal link against this archive: FAILED"
+            grep -a "error" /tmp/pb.err 2>/dev/null | head -3 | sed 's/^/          /'
+          fi
+        fi
+        rm -f pb.c pb.o pb.bin )
+      break
+    done
+    say "    --- the failing command ---"
     grep -nE "^(libtool|/bin/sh|ar |.*ar-shim)" build.log 2>/dev/null | tail -6 | sed 's/^/      /'
     say "    --- where it stopped ---"
     grep -nE "error:|Error [0-9]|undefined reference|ar-shim" build.log 2>/dev/null | head -15 | sed 's/^/      /'
