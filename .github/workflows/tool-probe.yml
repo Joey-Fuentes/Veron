@@ -241,7 +241,22 @@ jobs:
           done
           # TLS drags in code that wants glibc feature macros; a build box has
           # no use for HTTPS. Same substitution the reference job makes.
-          for sym in SSL_CLIENT FEATURE_WGET_OPENSSL TLS; do
+          #
+          # AND tc, WHICH IS 2023 CODE MEETING 2026 KERNEL HEADERS:
+          #
+          #     networking/tc.c:236: 'TCA_CBQ_MAX' undeclared
+          #     invalid application of sizeof to incomplete type 'struct tc_cbq_lssopt'
+          #
+          # CBQ traffic control was removed from the kernel and busybox 1.36.1
+          # predates that. Nothing to do with our config -- defconfig turns tc
+          # on and it cannot compile against these headers. A build sysroot has
+          # no use for traffic shaping, so the applet goes rather than the
+          # headers being patched around.
+          #
+          # THIS IS ALSO WHY WE BUILD OUR OWN. Ubuntu's busybox was compiled
+          # against whatever headers they had; ours is compiled here, and the
+          # applet list is a thing we declare rather than inherit.
+          for sym in SSL_CLIENT FEATURE_WGET_OPENSSL TLS TC; do
             sed -i "s/^CONFIG_$sym=y/# CONFIG_$sym is not set/" .config
           done
           yes '' | make oldconfig > /dev/null 2>&1
@@ -264,8 +279,17 @@ jobs:
             done
           else
             echo "  BUILD FAILED"
-            grep -nE "error:|Error [0-9]" b.log | head -12 | sed 's/^/    /'
-            tail -20 b.log | sed 's/^/    /'
+            echo "  --- distinct errors, by file ---"
+            grep -oE '^[^ :]+\.(c|h):[0-9]+:[0-9]*:? *error:' b.log 2>/dev/null \
+              | cut -d: -f1 | sort | uniq -c | sort -rn | head -8 | sed 's/^/    /'
+            grep -nE "error:" b.log | head -10 | sed 's/^/    /'
+            tail -15 b.log | sed 's/^/    /'
+            # SAY WHAT THIS COSTS THE NEXT STEP, rather than letting it fail
+            # with "cannot stat src/bb/busybox" -- which is what happened, and
+            # it reads as a missing file rather than as a build that did not
+            # finish.
+            echo
+            echo "  The HERMETIC step below needs this binary and will skip."
           fi
 
       # AND NOW BUILD ONE FOR REAL, WITH NO HOST /usr AT ALL.
@@ -320,6 +344,17 @@ jobs:
 
           # OUR busybox, from the step above. The applet list is something we
           # declared rather than something Ubuntu chose.
+          #
+          # NO FALLBACK TO UBUNTU's. If our build failed, this step reports that
+          # and stops -- substituting theirs would test a box we are not
+          # proposing to use, and the first run died on `cp: cannot stat` which
+          # reads as a missing file rather than as an upstream build failure.
+          if [ ! -x src/bb/busybox ]; then
+            echo "  our busybox did not build -- see the step above."
+            echo "  Not falling back to Ubuntu's: that would measure a box we"
+            echo "  are not proposing to ship."
+            exit 0
+          fi
           cp src/bb/busybox "$BOX/bin/busybox"
           for a in $("$BOX/bin/busybox" --list); do
             [ "$a" = busybox ] && continue
@@ -427,6 +462,69 @@ jobs:
           echo "  in-box rc=$?"
           set -e
 
+      # THE ONE FINDING THAT IS NOT COSMETIC: gawk.
+      #
+      # The trap list came back as: comm flex gawk msgfmt perl pkg-config
+      # python3 split. Most of that is noise --
+      #
+      #   perl, python3   each package checking whether a PREVIOUS version of
+      #                   itself is installed
+      #   flex            bison and flex checking for flex to REGENERATE a
+      #                   scanner that ships pre-generated in the tarball
+      #   msgfmt          gettext, reached only because the probe did not pass
+      #                   --disable-nls; every real rung does
+      #   pkg-config      optional for bc; for Python it is how openssl is found
+      #   comm, split     real, perl only, and rung 11.5 builds both
+      #
+      # gawk is different. m4 and bison BOTH run
+      #
+      #     BEGIN { if ("POSIXLY_CORRECT" in ENVIRON) print "x" }
+      #
+      # and m4 additionally runs `gawk -f subs.awk` -- autoconf's config.status
+      # substitution engine, which is not optional. ENVIRON is a POSIX awk
+      # feature busybox may not implement, and turning applets on does not add
+      # it: busybox has ONE awk.
+      #
+      # So this asks. If busybox awk handles both, gawk is another false
+      # positive and nothing changes. If it does not, gawk becomes a rung in
+      # its own right, sitting immediately before m4 -- and it cannot be
+      # written in thirty lines the way split and comm were.
+      - name: 'THE GAWK QUESTION: can busybox awk do what m4 and bison need?'
+        run: |
+          set -u
+          BB=/bin/busybox
+          [ -x src/bb/busybox ] && BB=src/bb/busybox
+          echo "  testing: $BB"
+          echo
+          echo "  --- 1. ENVIRON, which m4 and bison both probe ---"
+          out=$(POSIXLY_CORRECT=1 $BB awk 'BEGIN { if ("POSIXLY_CORRECT" in ENVIRON) print "x" }' 2>&1)
+          if [ "$out" = x ]; then
+            echo "    ENVIRON works -- prints x as gawk does"
+          else
+            echo "    ENVIRON FAILED: [$out]"
+            echo "    m4 and bison configure will not get the answer they expect."
+          fi
+          echo
+          echo "  --- 2. -f scriptfile, autoconf's config.status engine ---"
+          printf 'BEGIN { print "from a script file" }\n' > /tmp/t.awk
+          out=$($BB awk -f /tmp/t.awk </dev/null 2>&1)
+          [ "$out" = "from a script file" ] \
+            && echo "    -f works" || echo "    -f FAILED: [$out]"
+          echo
+          echo "  --- 3. the substitution shapes autoconf actually emits ---"
+          printf 'a\nb\n' > /tmp/t.txt
+          out=$($BB awk '{ gsub(/a/, "z"); print }' /tmp/t.txt 2>&1 | tr '\n' ' ')
+          echo "    gsub:      [$out] (expect: z b)"
+          out=$($BB awk 'BEGIN { printf "%s-%d\n", "n", 42 }' 2>&1)
+          echo "    printf:    [$out] (expect: n-42)"
+          out=$($BB awk 'BEGIN { s="x"; while (match(s, /x/)) { s=""; print "matched" } }' 2>&1)
+          echo "    match:     [$out] (expect: matched)"
+          echo
+          echo "  If ENVIRON works, gawk is a false positive like perl and"
+          echo "  python3 -- the probe caught a check, not a requirement."
+          echo "  If it does not, gawk is a rung, immediately before m4, and it"
+          echo "  is not a thirty-line filter the way split and comm were."
+
       - name: Verdict
         if: always()
         run: |
@@ -442,7 +540,15 @@ jobs:
           echo "     comm -- thirty lines each, auditable, compiled by the"
           echo "     chain's own gcc. Cheaper per tool, worse if the list is long."
           echo
-          echo "  The list decides. Two tools: write them. Ten: build busybox."
+          echo "  THE FIRST RUN's LIST, SORTED:"
+          echo "    comm split      real -- perl only, rung 11.5 builds both"
+          echo "    perl python3    each package looking for a previous ITSELF"
+          echo "    flex            regenerating a scanner the tarball ships"
+          echo "    msgfmt          gettext; --disable-nls removes it"
+          echo "    pkg-config      optional for bc, real for Python + openssl"
+          echo "    gawk            THE ONE THAT MATTERS -- see the step above"
+          echo
+          echo "  So the answer to \"two tools or ten\" was: one, and it is gawk."
           echo
           echo "  AND THE TWO HALVES ANSWER DIFFERENT QUESTIONS:"
           echo "    the probe   -- what does configure ASK for   (minutes, dirty)"
