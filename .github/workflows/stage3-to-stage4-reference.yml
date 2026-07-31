@@ -159,6 +159,14 @@ env:
   GCC15: '15.2.0'
   BINUTILS_LFS: '2.46.0'
   GLIBC: '2.43'
+  # TWO KERNELS. KHDR supplies the API headers glibc compiles against; KERNEL
+  # is the image that boots. A kernel may always be newer than the headers its
+  # libc was built against, and keeping them separate makes a libc/kernel
+  # disagreement a one-number change rather than a rebuild.
+  KHDR: '7.1.3'
+  KERNEL: '7.1.5'
+  # glibc's minimum-kernel setting -- unrelated to either of the above.
+  ENABLE_KERNEL: '5.4'
 
 jobs:
   reference:
@@ -241,7 +249,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: dl
-          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-${{ env.GCC15 }}-${{ env.GLIBC }}-v1
+          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-${{ env.GCC15 }}-${{ env.GLIBC }}-${{ env.KHDR }}-v1
 
       - name: Fetch pinned upstreams (airlock -- nothing here enters the box)
         run: |
@@ -305,6 +313,25 @@ jobs:
           fetch "$GNU_MIRRORS"  "gcc/gcc-$GCC10/gcc-$GCC10.tar.xz"
           fetch "$GNU_MIRRORS"  "gcc/gcc-$GCC15/gcc-$GCC15.tar.xz"
           fetch "$GNU_MIRRORS"  "binutils/binutils-$BINUTILS_LFS.tar.xz"
+          fetch "$GNU_MIRRORS"  "glibc/glibc-$GLIBC.tar.xz"
+
+          # The kernel and the two glibc patches are not on a GNU mirror.
+          for u in "https://cdn.kernel.org/pub/linux/kernel/v${KHDR%%.*}.x/linux-$KHDR.tar.xz" \
+                   "https://www.linuxfromscratch.org/patches/lfs/13.0/glibc-fhs-1.patch" \
+                   "https://www.linuxfromscratch.org/patches/lfs/13.0/glibc-$GLIBC-upstream_fixes-1.patch"; do
+            b=$(basename "$u")
+            if [ -s "$b" ]; then
+              printf '  cached  %-30s %10s bytes\n' "$b" "$(wc -c < "$b")"
+              continue
+            fi
+            if curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 -o "$b.part" "$u" 2>/dev/null; then
+              mv "$b.part" "$b"
+              printf '  fetched %-30s %10s bytes\n' "$b" "$(wc -c < "$b")"
+            else
+              rm -f "$b.part"
+              echo "  FETCH FAILED: $u"
+            fi
+          done
 
           echo "  --- what came in ---"
           sha256sum ./*.tar.* 2>/dev/null | sed 's/^/    /'
@@ -320,6 +347,11 @@ jobs:
           cd ..
           rm -rf pins && mkdir -p pins
           cp dl/*.tar.* pins/
+          # THE PATCHES ARE NOT TARBALLS. `cp dl/*.tar.*` would leave
+          # glibc-fhs-1.patch and glibc-*-upstream_fixes-1.patch behind in dl/,
+          # and rung 13 would report "not in /in -- fetch it" about files that
+          # had been fetched perfectly well.
+          cp dl/*.patch pins/ 2>/dev/null || true
           echo "  pins/ rebuilt from dl/: $(ls pins | wc -l) files, $(du -sh pins | cut -f1)"
 
       - name: 'AIRLOCK: derive the aarch64 backport as PATCHES the box can apply'

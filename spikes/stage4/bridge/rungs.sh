@@ -180,7 +180,7 @@ untar() {          # $1 = path prefix, e.g. /in/musl
 
 onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
 
-R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip; R7=skip; R8=skip; R9=skip; R10=skip; R11=skip
+R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip; R7=skip; R8=skip; R9=skip; R10=skip; R11=skip; R12=skip; R13=skip; R14=skip
 
 # WHAT IS ACTUALLY IN /in, BEFORE ANYTHING TRIES TO USE IT.
 #
@@ -2579,6 +2579,153 @@ if [ "$R10" = ok ]; then
 fi
 
 # ---------------------------------------------------------------------------
+head1 "RUNG 12 -- LFS 5.4: linux API headers"
+# TWO KERNELS, AND THEY ARE NOT THE SAME ONE. KHDR supplies the API headers
+# glibc is compiled against; KERNEL is the image that boots. A kernel may
+# always be newer than the headers its libc was built against, and stage 4
+# keeps them separate precisely so a libc/kernel disagreement can be fixed by
+# changing one number rather than rebuilding both.
+if [ "$R11" = ok ]; then
+  cd /work/src
+  if ! untar "/in/linux-$KHDR"; then
+    say "    linux $KHDR did not extract"; R12=FAIL
+  else
+    _lx=$(onedir "linux-$KHDR ./linux-$KHDR")
+    ( cd "/work/src/$_lx"
+      make mrproper > /dev/null 2>&1
+      make headers > /dev/null 2>&1
+      # Everything that is not a header is build residue; LFS deletes it
+      # rather than copy it into the sysroot.
+      find usr/include -type f ! -name '*.h' -delete
+      mkdir -p "$S/usr"
+      cp -r usr/include "$S/usr" )
+    _nh=$(find "$S/usr/include" -name '*.h' 2>/dev/null | wc -l)
+    say "    API headers from linux $KHDR (the image will be linux $KERNEL)"
+    say "    headers: $_nh files"
+    # The macro stage 4 records here, for the same reason: it makes the next
+    # libc/kernel disagreement a one-line diff rather than a rebuild.
+    grep -rn "define OPEN_TREE_CLONE" "$S/usr/include/linux/mount.h" 2>/dev/null \
+      | sed 's/^/      /' || true
+    [ "$_nh" -gt 100 ] && R12=ok || { say "    too few headers -- make headers did not run"; R12=FAIL; }
+  fi
+  cd /work
+fi
+
+# ---------------------------------------------------------------------------
+head1 "RUNG 13 -- LFS 5.5: glibc, cross-compiled into the sysroot"
+# THIS IS THE RUNG THAT DECIDES WHETHER python COMES EARLIER THAN THE BOOK PUTS
+# IT.
+#
+# LFS builds glibc twice -- chapter 5 here, chapter 8 again -- and there is a
+# Python available both times: the HOST's at chapter 5, and chapter 7's
+# (Bison, Perl, Python, Texinfo, together) before chapter 8. The book never
+# builds glibc without one; it just gets the first for free.
+#
+# This box has no host, so if chapter 5's glibc actually invokes python3, bison
+# or gawk, this fails with "not found" -- specific and legible -- and those
+# move earlier than LFS puts them, for a reason LFS never has to face. If it
+# does not, we follow the book's shape exactly.
+#
+# Either answer is one run. Nothing here should be guessed at.
+if [ "$R12" = ok ]; then
+  cd /work/src
+  if ! untar "/in/glibc-$GLIBC"; then
+    say "    glibc did not extract"; R13=FAIL
+  else
+    _gl=$(onedir "glibc-$GLIBC ./glibc-$GLIBC")
+    cd "/work/src/$_gl"
+    # BOTH PATCHES. fhs is LFS's own; upstream_fixes is stage 4's note "THE
+    # PRICE OF LINUX 7" -- a 2.43 glibc meeting a 7.x kernel.
+    for _pt in glibc-fhs-1.patch "glibc-$GLIBC-upstream_fixes-1.patch"; do
+      if [ -f "/in/$_pt" ]; then
+        if patch -Np1 -i "/in/$_pt" > /tmp/gp.log 2>&1; then
+          say "    applied $_pt"
+        else
+          say "    $_pt DID NOT APPLY:"; tail -6 /tmp/gp.log | sed 's/^/      /'
+          R13=FAIL
+        fi
+      else
+        say "    $_pt not in /in -- fetch it"; R13=FAIL
+      fi
+    done
+
+    if [ "$R13" != FAIL ]; then
+      rm -rf /work/b-glibc && mkdir -p /work/b-glibc && cd /work/b-glibc
+      say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: glibc configure"
+      "/work/src/$_gl/configure" \
+        --prefix=/usr \
+        --host="$LFS_TGT" \
+        --build="$(/work/src/$_gl/scripts/config.guess)" \
+        --enable-kernel="$ENABLE_KERNEL" \
+        --with-headers="$S/usr/include" \
+        --disable-nscd \
+        libc_cv_slibdir=/usr/lib \
+        > cfg.log 2>&1
+      _r13=$?
+      say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_r13)"
+      if [ "$_r13" != 0 ]; then
+        R13=FAIL
+        # NAME THE MISSING TOOL IF THAT IS WHAT IT IS, because that is the
+        # whole question this rung was built to answer.
+        grep -aiE "python|bison|gawk|not found|no acceptable" cfg.log 2>/dev/null \
+          | head -8 | sed 's/^/      /'
+        tail -20 cfg.log 2>/dev/null | sed 's/^/      /'
+      elif timeout 7200 make -j"$NP" > b.log 2>&1 \
+           && make DESTDIR="$S" install > i.log 2>&1; then
+        R13=ok
+        say "    glibc installed into $S"
+        say "    libc.so.6: $( [ -f "$S/usr/lib/libc.so.6" ] && wc -c < "$S/usr/lib/libc.so.6" || echo ABSENT )"
+      else
+        R13=FAIL; say "    --- errors ---"
+        grep -aiE "python|bison|gawk|command not found" b.log 2>/dev/null | head -6 | sed 's/^/      /'
+        grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
+        # Stage 4's own diagnosis for the one failure it expects here.
+        if grep -q "redefined \[-Werror\]" b.log 2>/dev/null; then
+          say "    --- this is a libc/kernel-header pairing failure ---"
+          say "    glibc $GLIBC built against linux $KHDR headers. The"
+          say "    upstream_fixes patch covers exactly this; if it applied and"
+          say "    the error is still here, it does not cover this point release."
+        fi
+        tail -25 b.log 2>/dev/null | sed 's/^/      /'
+      fi
+    fi
+  fi
+  cd /work
+fi
+
+# ---------------------------------------------------------------------------
+head1 "RUNG 14 -- LFS 5.6: libstdc++ from the gcc 15 tree"
+# gcc pass 1 was built --disable-libstdcxx because there was no libc. There is
+# one now, so libstdc++ is built on its own, against it, from the SAME gcc tree
+# -- not a separate download, which is why the book builds it here rather than
+# with the compiler.
+if [ "$R13" = ok ]; then
+  rm -rf /work/b-libstdcxx && mkdir -p /work/b-libstdcxx && cd /work/b-libstdcxx
+  say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: libstdc++ configure"
+  "/work/src/$g15/libstdc++-v3/configure" \
+    --host="$LFS_TGT" --build="$(/work/src/$g15/config.guess)" \
+    --prefix=/usr --disable-multilib --disable-nls \
+    --disable-libstdcxx-pch \
+    --with-gxx-include-dir="/tools/$LFS_TGT/include/c++/$GCC15" \
+    > cfg.log 2>&1
+  _r14=$?
+  say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_r14)"
+  if [ "$_r14" != 0 ]; then
+    R14=FAIL; tail -20 cfg.log 2>/dev/null | sed 's/^/      /'
+  elif timeout 3600 make -j"$NP" > b.log 2>&1 \
+       && make DESTDIR="$S" install > i.log 2>&1; then
+    R14=ok
+    say "    libstdc++ installed into $S"
+    ls "$S/usr/lib"/libstdc++* 2>/dev/null | sed 's/^/      /' | head -4
+  else
+    R14=FAIL; say "    --- errors ---"
+    grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
+    tail -25 b.log 2>/dev/null | sed 's/^/      /'
+  fi
+  cd /work
+fi
+
+# ---------------------------------------------------------------------------
 head1 "RUNGS -- arm: $ARM"
 printf '    %-40s %s\n' "0   compiler runs, libtcc1.a"       "$R0"
 printf '    %-40s %s\n' "1   freestanding compile+link"      "$R1"
@@ -2594,8 +2741,15 @@ printf '    %-40s %s\n' "8   gcc 4.7.4 again -- stage 4 stage 2" "$R8"
 printf '    %-40s %s\n' "9   gcc 10.2.0 by g++ 4.7.4"            "$R9"
 printf '    %-40s %s\n' "10  LFS 5.2 binutils pass 1"            "$R10"
 printf '    %-40s %s\n' "11  LFS 5.3 gcc 15 pass 1"              "$R11"
+printf '    %-40s %s\n' "12  LFS 5.4 linux API headers"          "$R12"
+printf '    %-40s %s\n' "13  LFS 5.5 glibc"                      "$R13"
+printf '    %-40s %s\n' "14  LFS 5.6 libstdc++"                  "$R14"
 say ""
-if [ "$R11" = ok ]; then
+if [ "$R14" = ok ]; then
+  say "    CHAPTER 5 COMPLETE -- a cross toolchain and a glibc sysroot,"
+  say "    from a seed-adjacent tcc. Chapter 6 is next: busybox in place of"
+  say "    its seventeen packages, then binutils and gcc pass 2."
+elif [ "$R11" = ok ]; then
   say "    REACHED LFS 5.3 -- a cross gcc 15 targeting $LFS_TGT."
   say "    5.4 linux headers, then 5.5 glibc, are next."
 elif [ "$R9" = ok ]; then
