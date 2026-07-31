@@ -2318,3 +2318,59 @@ so it builds against an m2libc carrying only patches 0001-0003. Pre-existing
 and deliberate for that job's pin, and it means its results say NOTHING about
 the aarch64 encoding fixes, the narrowing-cast macros or the realloc
 diagnostics. Do not read it as a second opinion on them.
+
+--------------------------------------------------------------------------------
+AUDIT: could a fresh reader reproduce this? Three gaps, now closed.
+--------------------------------------------------------------------------------
+
+The documented path works and is byte-reproducible: local-build.sh then
+local-tcc.sh on a clean checkout of 4ef991d produces mc-tcc at 1,575,057 bytes,
+the same size CI reports for c644e111c6c70b65.
+
+GAP 1, AND IT WAS THE BAD ONE. THE TWELVE PROGRAMS HAD NO LOCAL RUNNER. They
+existed only inside .github/workflows/stage3-hermetic-arm64.yml, so the
+instruction this file added last round --
+
+    RUN THE TWELVE BEFORE BELIEVING ANY CODEGEN CHANGE
+
+-- could not be followed without pushing to CI. That is not a documentation
+problem, it is why the instruction was not followed in the first place: zzzg
+shipped because difftest and the corpus were consulted and the twelve were not,
+and the twelve were not consulted because there was no way to. tools/twelve.sh
+now runs them from build/local.
+
+    sh spikes/stage3/tools/twelve.sh build/local     pass 12   fail 0
+
+It also CHECKS ITSELF AGAINST THE WORKFLOW. The box builds its programs with
+busybox printf and no harness, so the list exists twice, and two copies of one
+list drift. twelve.sh greps the workflow's `tc <label> <want>` lines and warns
+if they disagree, because a local pass against a drifted list is worth nothing.
+
+Two bugs in writing it, both worth recording. `timeout 120 run ...` where `run`
+was a shell function fails with "timeout: failed to run command 'run'" -- a
+function is not a command. And the drift check read `$0` AFTER the script cd's
+into the work directory, so it compared an EMPTY list against the workflow's
+twelve and reported a difference that was not there. A check that cannot see
+its own input is worse than no check; it is the same failure this file records
+about greps that could not see markers TA-TF.
+
+GAP 2. STALE COUNTS. MICRO-C.md said 87 cases and 53+10 patches; the tree has
+90 cases (89 pass, 1 known gap) and 55+11 patches. One line said 87 and another
+89, four hundred lines apart.
+
+GAP 3. tests2-sweep.sh NEEDS A CONTROL AND NOTHING SAID HOW TO BUILD ONE.
+
+    gcc -w -O1 -o /tmp/tcc-control <workdir>/tcc-work/tcc.c \
+        -I<workdir>/tcc-work -lm -ldl -lpthread
+
+The tree is configured for arm64, so that is an aarch64 CROSS compiler on an
+x86_64 host -- same source, same target, different builder, which is the whole
+point of a control. Without it the sweep reports 129 not-applicable and zero
+failures, which READS AS A CLEAN RUN and is a harness that never started.
+
+ALSO CORRECTED: spikes/stage3/README.md still described micro-c compiling
+libtcc.c to 369,255 lines, a 1.52 MB binary, and "surviving a full pass of
+macro_subst before faulting on the way back out" -- three releases out of date,
+and it contradicted the summary table directly above it. It now says what is
+true: tcc.c, 378,838 lines, 707 functions, 1.58 MB, tcc's own --version, and
+the one open fault.

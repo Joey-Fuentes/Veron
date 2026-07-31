@@ -11,9 +11,15 @@ of it) and you do not need to read it to work here.
 **To run any of this yourself**, from this repository and nothing else:
 
 ```bash
-sh spikes/stage3/tools/local-build.sh          # micro-c + the case suite, both arches
+sh spikes/stage3/tools/local-build.sh           # micro-c + the case suite, both arches
 sh spikes/stage3/tools/local-tcc.sh build/local # compile tcc with it and run it
+sh spikes/stage3/tools/twelve.sh build/local    # THE GATE -- twelve programs, compiled and run
 ```
+
+**Run `twelve.sh` before believing any codegen change.** It is the only gate
+that exercises micro-c's output on a real program; `difftest` and the 426-row
+corpus do not compile tcc, and a change has already left both green while
+breaking all twelve.
 
 Requires gcc, git, tar and python3. No network. `MICRO-C.md` explains the four
 silent traps those scripts encode — assembling the pieces by hand produces a
@@ -36,12 +42,25 @@ other already produced a binary:
 | enhanced M2-Planet → tcc directly | **compiles all of tcc, driver included; `stage3-hermetic-arm64` reports `stage 3 end to end: yes`** — twelve programs compiled and run by a seed-built tcc on native ARM64. Open frontier: a pending `*` lands on a call's argument, corrupting tcc's heap — `MICRO-C.md` |
 
 The direct route now has a name — **micro-c** — and its own file. It compiles
-`libtcc.c` to 369,255 lines of M1, assembles and links a 1.52 MB aarch64 binary,
-and that binary runs: it reports that the crt files are missing, preprocesses
-its own predefs and a real source file, interns all 980 keywords with their
-collision chains, and now survives a full pass of `macro_subst`'s substitution
-loop before faulting on the way back out of it. It is not a working tcc; it is
-a long way past "not started".
+**`tcc.c`**, tcc's whole source including its command-line driver, to 378,838
+lines of M1 across 707 functions, and links a 1.58 MB aarch64 binary that
+answers
+
+```
+$ mc-tcc --version
+tcc version 0.9.28rc (AArch64 Linux)
+```
+
+from tcc's own `main`. `-E`, `-c`, `-print-search-dirs` and multiple input
+files all work, because they are tcc's code. `stage3-hermetic-arm64` builds it
+from the seed on native ARM64 with an empty host budget and reports **`stage 3
+end to end: yes`** — twelve programs compiled and run.
+
+It is not a finished tcc. One fault stands between here and a compiler autoconf
+can drive: a pending `*` lands on a function's **argument** rather than its
+result, which is how tcc writes every byte of `.eh_frame`, so the write goes to
+a wrongly computed address and corrupts tcc's own heap. `MICRO-C.md` has the
+trail and the two reduced probes.
 
 That last step is worth reading in `MICRO-C.md` for the method rather than the
 result. The fault there was recorded for several rounds as pointer arithmetic

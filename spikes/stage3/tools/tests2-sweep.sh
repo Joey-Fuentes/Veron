@@ -7,6 +7,19 @@
 # a defect in the compiler we built. Only tests the control passes can fail
 # against us.
 #
+# THE CONTROL HAS TO BE BUILT FIRST, AND NOTHING ELSE BUILDS IT.
+#
+#     gcc -w -O1 -o /tmp/tcc-control <workdir>/tcc-work/tcc.c \
+#         -I<workdir>/tcc-work -lm -ldl -lpthread
+#
+# The tree is already configured for arm64, so that gcc build is an aarch64
+# CROSS compiler running on x86_64 -- which is exactly the control wanted: same
+# source, same target, different builder. Override the path with CTL=.
+#
+# Without it every test reports "control will not compile it" and the sweep
+# says 0 pass / 0 fail / 129 not-applicable, which looks like a clean run and
+# is a harness that never started.
+#
 # BOTH SIDES GET THE SAME SINGLE FILE. mc-tcc cannot yet take two inputs in one
 # invocation, so test.c and crt.c are concatenated first. Feeding the control
 # two files and mc-tcc one would measure the multi-TU gap instead of codegen,

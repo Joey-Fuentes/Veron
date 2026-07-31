@@ -124,7 +124,7 @@ The empty directories are Veron proper and are written against the invariants. `
 - [`AGENTS.md`](./AGENTS.md) — invariants and working rules, if you are contributing
 - [`spikes/README.md`](./spikes/README.md) — the live pipeline, and what each spike answered
 - [`spikes/stage3/README.md`](./spikes/stage3/README.md) — the open rung
-- **Want to run it, not read it?** `sh spikes/stage3/tools/local-build.sh` builds micro-c and runs the case suite on both architectures from this repository alone, no network. Then `local-tcc.sh` compiles tcc with it and runs the result under the committed emulator. See [`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md) for what those scripts encode and why doing it by hand does not work
+- **Want to run it, not read it?** `sh spikes/stage3/tools/local-build.sh` builds micro-c and runs the case suite on both architectures from this repository alone, no network. Then `local-tcc.sh` compiles tcc with it, and `twelve.sh` runs the twelve end-to-end programs through that tcc — the gate that matters, and the only one that compiles tcc at all. See [`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md) for what those scripts encode and why doing it by hand does not work
 - [`spikes/stage4/README.md`](./spikes/stage4/README.md) — everything above tcc, including the end-to-end run
 - `.github/workflows/stage3-hermetic-arm64.yml` — the native, sandboxed climb and its host budget
 - `.github/workflows/stage0-selfhost.yml` — **yes.** `stage0-as` assembles its own source; the result reproduces itself across three generations and rebuilds `stage1` byte-identically

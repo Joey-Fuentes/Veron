@@ -680,6 +680,11 @@ sh spikes/stage3/tools/local-build.sh
 sh spikes/stage3/tools/local-tcc.sh build/local
     # compile tcc with micro-c, link it, run it under the emulator
 
+sh spikes/stage3/tools/twelve.sh build/local
+    # THE GATE. The twelve end-to-end programs, compiled and run by that tcc.
+    # difftest and the corpus do not compile tcc and cannot stand in for this:
+    # EXPERIMENT-zzzg left both green and broke all twelve.
+
 sh spikes/stage3/tools/local-tcc.sh build/local tccpp.c macro_subst
     # the same, with those functions instrumented -- the last marker names
     # the statement execution reached
@@ -715,7 +720,7 @@ fresh session needs only the repository.
 
 ## Honest limits of the case suite
 
-87 cases, all passing on both architectures -- plus 423 of the
+90 cases -- 89 passing on both architectures and one KNOWN GAP -- plus 419 of the
 426 programs in stage 2's conformance corpus, borrowed because a suite written
 FROM bugs already found measures what has been fixed rather than what remains.
 Three live codegen bugs came out of that corpus in one sitting, all of them
@@ -764,10 +769,10 @@ patches/tcc-debug/            write() markers ONLY -- no logic, scratch copy, ne
 patches/tcc-arm64-asm/        pre-existing: the ARM64 assembler upstream tcc lacks
 micro-c-libc/                 headers and impl/ -- the runtime under tcc
 tools/                        difftest, vocabulary, regression, instrument, verify_defs
-tools/cases/                  one C file per construct, 87 of them
+tools/cases/                  one C file per construct, 90 of them
 ```
 
-53 patches build micro-c and 10 patch M2libc. Both workflows assert the count
+55 patches build micro-c and 11 patch M2libc. Both workflows assert the count
 with `-ge`, because a missing codegen patch looks exactly like a codegen bug.
 
 `patches/micro-c-experiments/README.txt` is the working log — every wrong turn,
@@ -879,7 +884,12 @@ BOTH SIDES GET THE SAME SINGLE FILE. mc-tcc cannot yet take two inputs in one
 invocation, so `test.c` and `crt.c` are concatenated before either compiler
 sees them. Handing the control two files and mc-tcc one would have measured
 the multi-TU gap instead of codegen, and reported it as 57 codegen failures.
-`tools/tests2-sweep.sh` encodes that.
+`tools/tests2-sweep.sh` encodes that. **It needs a control tcc built first** —
+`gcc -w -O1 -o /tmp/tcc-control <workdir>/tcc-work/tcc.c -I<workdir>/tcc-work
+-lm -ldl -lpthread`, which is an aarch64 cross compiler because the tree is
+already configured for arm64. Without it the sweep reports 129
+not-applicable and no failures, which reads as a clean run and is a harness
+that never started.
 
 ---
 
@@ -1008,7 +1018,7 @@ on the expression rather than in a global.
 
 ### What that says about the gates
 
-difftest (89 cases) and the stage-2 corpus (426 programs) were **both green**
+difftest (90 cases) and the stage-2 corpus (426 programs) were **both green**
 over a change that breaks every one of the twelve end-to-end programs. Neither
 compiles tcc. **The twelve are the only gate that exercises micro-c's output on
 a real program**, and they need a tcc build to run — so the cheap suites cannot
