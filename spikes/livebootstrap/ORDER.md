@@ -89,11 +89,41 @@ tree that asks a tcc to compile it, and tcc has a ceiling:
 2.46 was past every one of those. It would have failed rung 4 and read as a
 compiler defect.
 
-**Our ordering was already right** — musl, then make, then binutils — and now
-for a checked reason rather than a remembered one. `make 3.82` is confirmed as
-the version that builds this way.
+**WE BUILD musl BEFORE make. live-bootstrap DOES THE OPPOSITE, AND THE REASON
+IS NOT PREFERENCE.** An earlier version of this file claimed our order matched
+theirs while printing a diagram three paragraphs above showing that it does not.
+Both cannot be true. What is true:
 
-**One place we knowingly differ.** live-bootstrap builds musl **1.1.24** at the
+| | libc available when make is built |
+|---|---|
+| live-bootstrap | **mes-libc**, already installed at `/usr/lib/mes` and `/usr/include/mes` |
+| us | **nothing** |
+
+live-bootstrap builds make at #25 against mes-libc, which mes and tcc 0.9.26
+have already put on disk as headers and libraries. musl comes later, at which
+point there is a real make to drive it. That is a perfectly good order **when
+you have an intermediate libc**.
+
+Our box has none. mc-tcc is linked against M2libc, but M2libc is *inside*
+mc-tcc -- statically linked into the binary, not installed as headers and
+libraries something else could compile against. Even if it were installed it
+would not carry make: M2libc has no `FILE`, no stdio layer, and a small
+fraction of what mes-libc provides. There is no rung at which we could build
+make and no musl yet.
+
+So the order is forced the other way, and hand-driving musl is what it costs.
+That is why rung 2 is a shell loop rather than a `make` invocation: not a
+stylistic choice, and not an attempt to be clever, but the direct consequence
+of having no libc before musl. It works -- 1348 of 1349 sources compile -- so
+the cost is paid once and is small.
+
+**The alternative, if hand-driving musl ever becomes untenable:** grow a
+mes-libc-equivalent -- enough libc to carry make, installed as headers and
+libraries -- and then follow live-bootstrap's order exactly. That is strictly
+more work than the shell loop unless musl's build starts fighting us, and it is
+recorded here so it is a choice rather than a thing nobody thought of.
+
+**A second place we knowingly differ.** live-bootstrap builds musl **1.1.24** at the
 tcc rung and only reaches 1.2.5 later, under gcc. We build **1.2.5** directly
 with tcc, which is untested upstream at that position — and it works: the
 reference arm compiles 1348 of 1349 sources. Recorded because it is a
