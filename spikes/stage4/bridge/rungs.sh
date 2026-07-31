@@ -67,6 +67,41 @@ mkdir -p "$SYS/lib" "$SYS/include" "$PFX/bin" /work/src
 
 CC="$CC_BIN -B$TCCDIR"
 
+# ONE EXTRACTION CALL SHAPE, AND IT SAYS WHY IT FAILED.
+#
+# /in holds plain uncompressed .tar files -- the airlock strips the wrapper --
+# so there is no -z, -J or -j to get wrong, which is the mistake that cost six
+# runs. `tar xzf` opened musl and `tar xf` on the same archive did not, because
+# busybox does not autodetect compression here; with nothing compressed there
+# is nothing to detect.
+#
+# On failure it dumps the first 512 bytes with `dd | od -c`. No `od -j` and no
+# `tr -dc '[:print:]'`: both have already produced confident empty readings in
+# this job that were the tool failing rather than the data being absent.
+untar() {          # $1 = path prefix, e.g. /in/musl
+    _t=$(ls "$1"*.tar 2>/dev/null | head -1)
+    if [ -z "$_t" ]; then
+        say "    no archive matching $1*.tar -- /in holds:"
+        ls -1 /in 2>/dev/null | sed 's/^/      /'
+        return 1
+    fi
+    # STDERR GOES TO /tmp, NOT /work. A redirect whose target is not writable
+    # makes the whole command fail, so `tar xf ... 2>/work/x` reports failure
+    # when tar SUCCEEDED and only the log file could not be opened. A dry run
+    # under dash hit exactly that. /tmp is a tmpfs in this box and always there.
+    if tar xf "$_t" 2>/tmp/untar.err; then
+        return 0
+    fi
+    say "    tar refused $_t ($(wc -c < "$_t") bytes):"
+    sed 's/^/      /' /tmp/untar.err 2>/dev/null | head -3
+    say "    first 512 bytes:"
+    dd if="$_t" bs=512 count=1 2>/dev/null | od -c 2>/dev/null | head -6 | sed 's/^/      /'
+    return 1
+}
+
+# ls -d that survives both `name/` and `./name/` layouts and returns one path.
+onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
+
 R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R5=skip; R6=skip
 
 say "  arm:      $ARM"
@@ -144,7 +179,18 @@ head1 "RUNG 2 -- musl, built WITHOUT make"
 # sources/musl.toml declares the substitutions -- 9 aarch64 .s files that fall
 # back to portable C, and src/complex/*.c for _Complex.
 if [ "$R1" = ok ]; then
-  cd /work/src && tar xf /in/musl-*.ustar.tar.gz && cd $(ls -d musl-* ./musl-* 2>/dev/null | head -1)
+  cd /work/src
+  # A STRAY `fi` HERE CLOSED THE RUNG-1 GUARD EARLY, so rung 2 would have run
+  # even after rung 1 failed. Caught by counting if/fi rather than by trusting
+  # `sh -n`, which passed: the counts balanced, the nesting did not.
+  if ! untar /in/musl-; then R2=FAIL; fi
+  _md=$(onedir 'musl-* ./musl-*')
+  if [ "$R2" != FAIL ]; then
+    if [ -z "$_md" ] || ! cd "$_md"; then
+      say "    no musl directory after extraction"; R2=FAIL
+    fi
+  fi
+  if [ "$R2" != FAIL ]; then
   # DO NOT DELETE THE ARCH ASSEMBLY UNTIL IT HAS ACTUALLY REFUSED TO BUILD.
   #
   # sources/musl.toml declares 9 aarch64 .s files dropped, on the grounds that
@@ -409,6 +455,7 @@ if [ "$R1" = ok ]; then
   say "    headers: $(find "$SYS/include" -name '*.h' 2>/dev/null | wc -l) files"
   say "    crt:     $(ls "$SYS/lib"/crt*.o 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
   if [ -s "$SYS/lib/libc.a" ] && [ -f "$SYS/lib/crt1.o" ]; then R2=ok; else R2=FAIL; fi
+  fi
   cd /work
 fi
 
@@ -529,28 +576,16 @@ if [ "$R3" = ok ]; then
   # reading of "nothing is there" that comes from a tool that always returns
   # nothing is worse than no reading at all.
   _got=""
-  for _mk in /in/make-$MAKE_ALT.ustar.tar.gz /in/make-$MAKE_VER.ustar.tar.gz; do
-    [ -f "$_mk" ] || continue
-    say "    --- $_mk  $(wc -c < "$_mk") bytes ---"
-    rm -f /work/make.tar
-    gzip -dc "$_mk" > /work/make.tar 2>/work/gz.err
-    _sz=$(wc -c < /work/make.tar 2>/dev/null || echo 0)
-    say "      gunzip rc=$?  ->  $_sz bytes  (512-aligned: $(( _sz % 512 == 0 )))"
-    say "      offset 0:   $(od -An -c -N16 /work/make.tar 2>/dev/null | head -1)"
-    say "      offset 257: $(od -An -c -j257 -N8 /work/make.tar 2>/dev/null | head -1)"
-    if tar xf /work/make.tar 2>/work/make-tar.err; then
-      say "      extracted"
-      _got=$(ls -d make-* ./make-* 2>/dev/null | head -1 | sed "s|^\./||")
-      [ -n "$_got" ] && break
-    else
-      say "      tar refused: $(head -1 /work/make-tar.err 2>/dev/null)"
+  for _v in "$MAKE_ALT" "$MAKE_VER"; do
+    if untar "/in/make-$_v"; then
+      _got=$(onedir "make-$_v ./make-$_v")
+      [ -n "$_got" ] && { say "    extracted $_got"; break; }
     fi
   done
-  rm -f /work/make.tar
   if [ -z "$_got" ]; then
-    say "    NO make tarball would open. Both versions refused means this is"
-    say "    busybox tar or the invocation, not the archive -- and no version"
-    say "    of make will fix it."
+    say "    neither make version extracted. With /in uncompressed and one"
+    say "    call shape, that is busybox tar refusing a plain tar -- which"
+    say "    would be a real finding about this box, not about make."
     R35=FAIL
   else
     say "    building $_got"
@@ -588,9 +623,10 @@ head1 "RUNG 4 -- binutils.  BUILT, NEVER BORROWED."
 # 1 by definition and cannot come from the host. gcc cannot be built without
 # them: it emits assembly and shells out.
 if [ "$R35" = ok ]; then
-  cd /work/src && tar xf /in/binutils-*.ustar.tar.gz
+  cd /work/src
+  untar /in/binutils- || { R4=FAIL; say "    binutils did not extract"; }
   mkdir -p b-binutils && cd b-binutils
-  ../$(ls -d binutils-* ../binutils-* 2>/dev/null | head -1 | sed 's|^\.\./||')/configure --prefix="$PFX" --disable-nls --disable-werror \
+  "../$(cd .. && onedir 'binutils-* ./binutils-*')/configure" --prefix="$PFX" --disable-nls --disable-werror \
     --disable-gdb --disable-gdbserver --disable-libdecnumber --disable-readline \
     CC="$CC $HOSTED" > cfg.log 2>&1
   say "    configure rc=$?"
@@ -624,9 +660,9 @@ if [ "$R4" = ok ]; then
   # jobs and neither substitutes for the other. Copied from rung1.sh:124-138
   # and rung1.sh:144-166; the prefix is /work/prereq there and here.
   cd /work/src
-  tar xf /in/gmp-*.ustar.tar.gz  && mv ./gmp-*/  gmp 2>/dev/null || mv gmp-*/ gmp
-  tar xf /in/mpfr-*.ustar.tar.gz && mv ./mpfr-*/ mpfr 2>/dev/null || mv mpfr-*/ mpfr
-  tar xf /in/mpc-*.ustar.tar.gz  && mv ./mpc-*/  mpc 2>/dev/null || mv mpc-*/ mpc
+  untar /in/gmp-   && mv "$(onedir 'gmp-* ./gmp-*')"   gmp
+  untar /in/mpfr-  && mv "$(onedir 'mpfr-* ./mpfr-*')"  mpfr
+  untar /in/mpc-   && mv "$(onedir 'mpc-* ./mpc-*')"   mpc
   mkdir -p /work/prereq
   r5=ok
   for pk in gmp mpfr mpc; do
@@ -676,10 +712,10 @@ if [ "$R5" = ok ]; then
   # has run outside a box with bash in it. If it fails here that is a portability
   # finding about the script, not about the compiler -- so it is reported as its
   # own line rather than folded into gcc's result.
-  tar xf /in/gcc-4.7*.ustar.tar.gz
-  tar xf /in/gcc-4.8*.ustar.tar.gz
-  g47=$(ls -d gcc-4.7* ./gcc-4.7* 2>/dev/null | head -1 | sed "s|^\./||")
-  g48=$(ls -d gcc-4.8* ./gcc-4.8* 2>/dev/null | head -1 | sed "s|^\./||")
+  untar /in/gcc-4.7 || { say "    gcc 4.7 did not extract"; R6=FAIL; }
+  untar /in/gcc-4.8 || { say "    gcc 4.8 did not extract"; R6=FAIL; }
+  g47=$(onedir 'gcc-4.7* ./gcc-4.7*')
+  g48=$(onedir 'gcc-4.8* ./gcc-4.8*')
   say "    donor: $g48   target: $g47"
   say "    aarch64 in stock 4.7.4 config.gcc (expect 0): $(grep -c aarch64 "$g47/gcc/config.gcc" 2>/dev/null || echo '?')"
   if sh /src/stage4/probes/backport-aarch64.sh "$g47" "$g48" > /work/backport.log 2>&1; then
