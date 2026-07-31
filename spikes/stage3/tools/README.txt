@@ -1849,3 +1849,52 @@ the way looks like.
 NOT LOOKED AT: the five SIGNAL 11 compiles. They may or may not share the
 realloc cause; nobody has checked, and saying so is cheaper than implying they
 are covered.
+
+--------------------------------------------------------------------------------
+CORRECTION: the multi-file "bug" is our own driver, and the target was wrong.
+--------------------------------------------------------------------------------
+
+mc-tcc IS NOT tcc. It is libtcc.c compiled by micro-c plus a 175-line
+hand-written driver, micro-c-libc/impl/main-tcc.c, which holds
+
+    char* input = 0;      ...      input = argv[i];
+
+ONE POINTER, overwritten by each file. Two inputs compiles one and drops the
+other, which is exactly `undefined symbol 'main'` at step 11 of the hermetic
+job. I recorded that as a codegen frontier for a full round. It is scaffolding
+we wrote, and its own header says why it exists: micro-c cannot parse
+tcctools.c:60, a `static const ArHdr` initialised with string members, so
+tcc's real main is unavailable.
+
+PROBED, rather than assumed -- mc-tcc with -B set, under the emulator:
+
+    --version                rc=1  no input file      -B consumed as the input
+    -E                       rc=1  crt1.o not found   not implemented
+    -c to object             rc=0  1022 bytes         WORKS
+    link that object alone   rc=1  _start not defined
+    -print-search-dirs       rc=1  no input file      not implemented
+    -ar                      rc=1  crt1.o not found   not implemented
+    link against system libc rc=1  crt1.o not found
+
+Six of seven are the hand driver, not the compiler. Closing tcctools.c:60
+removes all of them at once.
+
+THE TARGET WAS WRONG TOO. tests2 was my proxy for "does mc-tcc work", and it
+is a good bug-finder and a poor definition of done. Stage 3 owes stage 4 ONE
+artifact: a tcc that can stand where rung1.sh puts `$TCC` -- as `CC` for
+./configure of gmp, mpfr, mpc and then gcc 4.7.4. That is autoconf driving a
+compiler: hundreds of conftest compile-link-RUN cycles, -E, -c, -o, -I, -D,
+-L, -l, archives, and system headers. A driver requirement first.
+
+AND "HERMETIC" IN STAGE 4 MEANS NO HOST *COMPILER*, NOT NO HOST DEPENDENCY.
+box.sh:85 binds the whole of /usr read-only and masks gcc/cc/g++/cpp to
+/dev/null; env0.sh's borrow list includes binutils, make, perl, bison, flex
+and libc6. Removing the host compiler is stage 3's job and is nearly done.
+Removing the host libc, binutils, make and perl is a much larger project that
+no rung currently owns, and calling both "hermetic" hides that.
+
+FOUR THINGS I ASSERTED ABOUT STAGE 4 IN ONE SESSION, ALL WRONG: that it has a
+userland to lend; that mc-tcc would have to build musl; that multi-TU was off
+the critical path; that multi-TU was a compiler fault. Every one came from
+grepping a file instead of reading the stage. The requirements are written out
+properly in WHAT-STAGE-4-NEEDS.md so the next round starts from evidence.

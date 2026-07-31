@@ -949,10 +949,27 @@ not been run on this yet. Read the warnings in `tools/README.txt` first: four
 instrument bugs during the last hunt produced false negatives that were acted
 on, and three "ruled out" conclusions had to be retracted.
 
-### Multi-file input, demoted
+### Multi-file input: NOT A COMPILER FAULT AT ALL
 
 An earlier draft of this section called multiple translation units the open
-frontier. That was one data point and a wrong emphasis:
+frontier. It is not a fault in micro-c or in tcc. **mc-tcc is not tcc**: it is
+`libtcc.c` plus a 175-line hand-written driver, `micro-c-libc/impl/main-tcc.c`,
+which holds
+
+    char* input = 0;      ...      input = argv[i];
+
+one pointer, overwritten by each file. Two inputs means one is compiled and the
+other's symbols are absent -- which is exactly the `undefined symbol 'main'`
+the hermetic job reports at step 11. It is scaffolding we wrote, and it exists
+because micro-c cannot yet parse `tcctools.c:60`, a `static const` struct
+initialised with string members, so tcc's own `main` is unavailable.
+
+Closing that parse gap removes the hand driver and with it `-E`, `-ar`,
+`-print-search-dirs`, `-l`, `-L`, multiple inputs and a correct `--version` in
+one step, because all of those are tcc's code and always were. See
+`WHAT-STAGE-4-NEEDS.md`, which measures the whole distance to the stage-4 join.
+
+Two further things that were wrong in that draft:
 
 * `tcc.c` and `libtcc.c` both `#define ONE_SOURCE 1`, so **self-compilation is
   a single input file** -- which is what tcc's own test1/test2/test3 do
@@ -961,10 +978,10 @@ frontier. That was one data point and a wrong emphasis:
 * Concatenating the two files makes the symptom change, not disappear, so it
   was never the thing in the way.
 
-It is still broken -- two sources in one invocation, and two objects linked
-afterwards, both report a symbol that is plainly defined as undefined -- and it
-is still on the path to a *useful* tcc. It is not on the path to a
-self-hosting one, and it is behind realloc either way.
+And the emphasis was wrong in a third way: self-hosting was never the goal.
+Stage 3 owes stage 4 a tcc that **autoconf can drive** -- `rung1.sh` hands it
+to `./configure` for gmp, mpfr, mpc and then gcc 4.7.4. That is a driver
+requirement first and a codegen requirement second.
 
 ---
 
