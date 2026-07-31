@@ -1898,7 +1898,7 @@ if [ "$R5" = ok ]; then
     --build=aarch64-unknown-linux-gnu \
     --host=aarch64-unknown-linux-gnu \
     --target=aarch64-unknown-linux-gnu \
-    --prefix="$PFX" --enable-languages=c,c++ \
+    --prefix=/work/out --enable-languages=c,c++ \
     --disable-nls --disable-libmudflap \
     --disable-multilib --disable-bootstrap --disable-werror \
     --disable-libsanitizer --disable-libgomp --disable-libquadmath \
@@ -1967,10 +1967,38 @@ if [ "$R5" = ok ]; then
   fi
 
   if [ "$R6" != FAIL ] && timeout 5400 make -j"$NP" MAKEINFO=true > build.log 2>&1; then
-    R6=ok
     say "    xgcc:    $( [ -x gcc/xgcc ] && wc -c < gcc/xgcc || echo ABSENT )"
     say "    cc1:     $( [ -x gcc/cc1 ]  && wc -c < gcc/cc1  || echo ABSENT )"
     say "    cc1plus: $( [ -x gcc/cc1plus ] && wc -c < gcc/cc1plus || echo ABSENT )"
+
+    # AND INSTALL IT, which the first version of this rung did not do.
+    #
+    # `make` alone leaves the compiler as /work/bld/gcc/xgcc and nothing else.
+    # Rung 7 then reported "no gcc at /work/prefix/bin/gcc -- rung 6 installed
+    # nothing", which was exactly right: a built compiler is not an installed
+    # one, and `R6=ok` was asserting the wrong thing. Stage 4's stage 1 ends by
+    # reporting `out/bin/g++ : present`, which is the check that matters.
+    #
+    # PREFIX IS /work/out, NOT $PFX. $PFX holds binutils and make -- the tools
+    # this box built to get here. Stage 4 keeps each compiler in its own tree:
+    # out for stage 1, out2 for stage 2, out10 for gcc 10. Installing gcc over
+    # the tools would make "which gcc built this" unanswerable the moment there
+    # are two of them.
+    make install MAKEINFO=true > install.log 2>&1
+    say "    install rc=$?"
+    say "    --- what stage 1 produced ---"
+    for b in gcc g++ cpp; do
+      printf '      %-8s %s\n' "$b" \
+        "$( [ -x /work/out/bin/$b ] && echo present || echo missing )"
+    done
+    if [ -x /work/out/bin/gcc ] && [ -x /work/out/bin/g++ ]; then
+      R6=ok
+      /work/out/bin/gcc --version 2>&1 | head -1 | sed 's/^/      /'
+    else
+      R6=FAIL
+      say "    installed no gcc/g++ -- install tail:"
+      tail -12 install.log 2>/dev/null | sed 's/^/      /'
+    fi
   else
     R6=FAIL
     # THE REASON IS IN THE SUB-CONFIGURE'S config.log, NOT IN build.log.
@@ -2033,9 +2061,9 @@ head1 "RUNG 7 -- gmp/mpfr/mpc REBUILT by the gcc we just made"
 # which is exactly what stage 4 does at every rung: "prerequisites, rebuilt by
 # the tcc-built gcc", then again "rebuilt by the stage-2 gcc".
 if [ "$R6" = ok ]; then
-  GCC1="$PFX/bin/gcc"
+  GCC1=/work/out/bin/gcc
   if [ ! -x "$GCC1" ]; then
-    say "    no gcc at $GCC1 -- rung 6 installed nothing"
+    say "    no gcc at $GCC1 -- rung 6 built one but installed nothing"
     R7=FAIL
   else
     say "    builder: $("$GCC1" --version 2>&1 | head -1)"
@@ -2115,7 +2143,7 @@ if [ "$R7" = ok ]; then
   mkdir -p /work/bld2 && cd /work/bld2
   say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: gcc 4.7.4 configure, builder=$GCC1"
   "/work/src/$g47/configure" \
-    CC="$GCC1 -static" CXX="$PFX/bin/g++ -static" \
+    CC="$GCC1 -static" CXX="/work/out/bin/g++ -static" \
     --build=aarch64-unknown-linux-gnu \
     --host=aarch64-unknown-linux-gnu \
     --target=aarch64-unknown-linux-gnu \
