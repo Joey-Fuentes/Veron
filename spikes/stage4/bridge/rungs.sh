@@ -977,75 +977,80 @@ if [ "$R35" = ok ]; then
   cd /work/src
   untar /in/binutils- || { R4=FAIL; say "    binutils did not extract"; }
   mkdir -p b-binutils && cd b-binutils
-  # AN ar AND A ranlib BEFORE binutils CAN BUILD ONE. Same move as LD= above,
-  # and the same justification as rung 2's archive: tcc IS the archiver in this
-  # box until rung 4 produces a real one. `tcc -ar` already built musl's
-  # 3.2 MB libc.a from 1277 objects, so this is a proven path rather than a
-  # hopeful one.
+  # busybox's SHELL DISPATCHES APPLETS INTERNALLY, BYPASSING PATH.
   #
-  # busybox's ar is deliberately NOT linked into the box -- it can only read
-  # archives, not create them, and configure finding it would produce a build
-  # that fails later and further away.
+  # The box deliberately does not symlink busybox's `ar` -- it can only read
+  # archives, not create them, and it is tier 1 by this job's own definition.
+  # The SEAL confirms 269 applets linked with ar excluded. And the smoke test
+  # still got:
   #
-  # ranlib is `true`. tcc -ar writes the symbol index as it goes, so there is
-  # nothing for a separate indexing pass to do; live-bootstrap's own configure
-  # logs show `checking for ranlib... :` -- the no-op -- for the same reason.
+  #     ar cru  -> FAIL ar: invalid option -- 'r'
+  #
+  # which is busybox ar's message. Ubuntu's busybox-static is built with
+  # FEATURE_SH_STANDALONE, so its ash runs any applet it knows by name without
+  # consulting PATH at all. NOT LINKING AN APPLET DOES NOT REMOVE IT. That is
+  # worth knowing well beyond this rung: every claim in this job of the form
+  # "the box does not have X" is only true if busybox does not have X.
+  #
+  # SO THE SHIM DOES NOT COMPETE FOR THE NAME. It is called tcc-ar, which
+  # busybox has no applet for, and configure is told about it explicitly with
+  # AR= and RANLIB=. libtool records whatever configure found -- the failing
+  # line was `libtool: link: ar rc .libs/libbfd.a ...`, bare `ar`, because
+  # configure had found busybox's.
+  #
+  # tcc -ar is the archiver either way: it already wrote musl's 3.2 MB libc.a
+  # from 1277 objects at rung 2.
   mkdir -p "$PFX/bin"
-  # THE SHIM TRANSLATES FLAGS; IT DOES NOT JUST FORWARD THEM.
-  #
-  # The first attempt was `exec tcc -ar "$@"` and bfd stopped at libbfd.la with
-  # an archiver usage message printed into the log. binutils' libtool does not
-  # call `ar rcs`: it calls `ar cru`, `ar cq`, `ar cr` and similar, and tcc -ar
-  # accepts `rcs` and prints usage for anything else. Forwarding the flags
-  # verbatim was the bug.
-  #
-  # Creation modes all collapse to rcs, which is what they mean here -- replace
-  # members, create if absent, write an index. Extraction modes (x, t, p) are
-  # NOT translated: tcc -ar cannot do them, and silently doing something else
-  # would corrupt a build rather than stop it. Those exit non-zero and say so.
-  cat > "$PFX/bin/ar" <<'ARSHIM'
+  cat > "$PFX/bin/tcc-ar" <<'ARSHIM'
 #!/bin/sh
-# tcc -ar stands in for binutils ar until rung 4 builds a real one.
+# tcc -ar standing in for binutils ar until rung 4 builds a real one.
+#
+# libtool calls `ar cru`, `ar cq`, `ar cr`; tcc -ar accepts `rcs` and prints
+# usage for anything else. Every creation mode means the same thing here --
+# replace members, create if absent, write an index -- so they all map to rcs.
+# Extraction modes are NOT translated: tcc cannot do them, and doing something
+# else quietly would corrupt a build rather than stop it.
 _flags=$1
 case "$_flags" in
   -*) _flags=${_flags#-} ;;
 esac
 case "$_flags" in
   *x*|*t*|*p*|*d*|*m*)
-      echo "ar-shim: tcc -ar cannot do '$_flags' (extract/list/delete)" >&2
+      echo "tcc-ar: cannot do '$_flags' (extract/list/delete)" >&2
       exit 1 ;;
 esac
 shift
 exec CCBIN -ar rcs "$@"
 ARSHIM
-  sed -i "s|CCBIN|$CC_BIN|" "$PFX/bin/ar"
-  printf '#!/bin/sh\nexit 0\n' > "$PFX/bin/ranlib"
-  chmod 0755 "$PFX/bin/ar" "$PFX/bin/ranlib"
+  sed -i "s|CCBIN|$CC_BIN|" "$PFX/bin/tcc-ar"
+  printf '#!/bin/sh\nexit 0\n' > "$PFX/bin/tcc-ranlib"
+  chmod 0755 "$PFX/bin/tcc-ar" "$PFX/bin/tcc-ranlib"
   PATH="$PFX/bin:$PATH"; export PATH
+  AR="$PFX/bin/tcc-ar";      export AR
+  RANLIB="$PFX/bin/tcc-ranlib"; export RANLIB
 
-  # SMOKE-TEST IT BEFORE A 40-MINUTE BUILD DEPENDS ON IT. The last run trusted
-  # this shim and found out inside bfd, 1700 lines into a log.
-  say "    --- ar shim smoke test ---"
+  # SMOKE-TEST THE SHIM BY ITS FULL PATH, which is how configure will call it.
+  say "    --- tcc-ar smoke test ---"
   ( cd /tmp && rm -f as.c as.o as.a
     printf 'int shim_probe(void){return 7;}\n' > as.c
     $CC -c -o as.o as.c 2>/dev/null
     for _f in cru cq cr rcs; do
       rm -f as.a
-      if ar "$_f" as.a as.o 2>/tmp/ar.err; then
-        printf '      ar %-4s -> ok   (%s bytes)\n' "$_f" "$(wc -c < as.a 2>/dev/null || echo 0)"
+      if "$AR" "$_f" as.a as.o 2>/tmp/ar.err; then
+        printf '      tcc-ar %-4s -> ok   (%s bytes)\n' "$_f" "$(wc -c < as.a 2>/dev/null || echo 0)"
       else
-        printf '      ar %-4s -> FAIL %s\n' "$_f" "$(head -1 /tmp/ar.err)"
+        printf '      tcc-ar %-4s -> FAIL %s\n' "$_f" "$(head -1 /tmp/ar.err)"
       fi
     done
     rm -f as.c as.o as.a )
-  say "    ranlib: no-op (tcc -ar indexes as it writes)"
+  say "    AR=$AR  RANLIB=$RANLIB"
 
   _busrc="../$(cd .. && onedir 'binutils-* ./binutils-*')"
   cfg_binutils() {
       say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: $_busrc/configure $* CC=\"$CCAUTO\""
       "$_busrc/configure" "$@" --prefix="$PFX" --disable-nls --disable-werror \
         --disable-gdb --disable-gdbserver --disable-libdecnumber --disable-readline \
-        CC="$CCAUTO" > cfg.log 2>&1
+        CC="$CCAUTO" AR="$AR" RANLIB="$RANLIB" > cfg.log 2>&1
       _r=$?; say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_r)"; return $_r
   }
   if cfg_binutils; then
@@ -1060,8 +1065,8 @@ ARSHIM
       grep -nE "error|cannot" config.log 2>/dev/null | head -10 | sed 's/^/      /'
   fi
   # MAKEINFO=true: texinfo is borrowed by stage 4 and absent here. See rung 6.
-  if timeout 3000 make -j"$NP" MAKEINFO=true > build.log 2>&1 \
-     && make install MAKEINFO=true > /dev/null 2>&1; then
+  if timeout 3000 make -j"$NP" MAKEINFO=true AR="$AR" RANLIB="$RANLIB" > build.log 2>&1 \
+     && make install MAKEINFO=true AR="$AR" RANLIB="$RANLIB" > /dev/null 2>&1; then
     R4=ok
     for t in as ld ar ranlib; do
       printf '    %-8s %s\n' "$t" "$( [ -x "$PFX/bin/$t" ] && wc -c < "$PFX/bin/$t" || echo ABSENT )"

@@ -301,12 +301,24 @@ jobs:
           # guessing which ones is a round each. `busybox --list` is the
           # authoritative answer and costs one line.
           #
-          # TWO ARE DELIBERATELY EXCLUDED. busybox ships `ar` and `strings`,
-          # and both are tier 1 by the definition this job runs on -- they
-          # decide what bytes end up in an artifact. busybox's ar cannot even
-          # create archives, only read them, so letting configure find it would
-          # produce a build that fails later and further away. They come from
-          # rung 4 or not at all.
+          # TWO ARE NOT LINKED -- `ar` and `strings` -- because both are tier 1
+          # by this job's definition: they decide what bytes end up in an
+          # artifact, and busybox's ar can only READ archives, never create one.
+          #
+          # NOT LINKING THEM DOES NOT REMOVE THEM, and that is worth stating
+          # plainly rather than leaving as an assumption. Ubuntu's
+          # busybox-static is built with FEATURE_SH_STANDALONE, so its ash
+          # dispatches any applet it knows BY NAME without consulting PATH.
+          # rung 4's smoke test proved it: with ar unlinked and the SEAL
+          # reporting 269 applets, `ar cru` still reached busybox and answered
+          # "ar: invalid option -- 'r'".
+          #
+          # So every claim of the form "the box does not have X" holds only if
+          # BUSYBOX does not have X. Where a real tool is needed, the answer is
+          # to give it a name busybox has no applet for and point the build at
+          # it explicitly -- which is what rung 4 does with tcc-ar and AR=.
+          # Not linking these two still helps: it keeps them off PATH for
+          # anything that is not busybox's own shell.
           for a in $("$BOX/bin/busybox" --list); do
             case "$a" in
               ar|strings) continue ;;
