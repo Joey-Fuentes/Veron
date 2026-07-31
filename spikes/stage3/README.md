@@ -42,8 +42,8 @@ other already produced a binary:
 | enhanced M2-Planet → tcc directly | **compiles all of tcc, driver included; `stage3-hermetic-arm64` reports `stage 3 end to end: yes`** — twelve programs compiled and run by a seed-built tcc on native ARM64. Open frontier: a pending `*` lands on a call's argument, corrupting tcc's heap — `MICRO-C.md` |
 
 The direct route now has a name — **micro-c** — and its own file. It compiles
-**`tcc.c`**, tcc's whole source including its command-line driver, to 378,838
-lines of M1 across 707 functions, and links a 1.58 MB aarch64 binary that
+**`tcc.c`**, tcc's whole source including its command-line driver, to 378,759
+lines of M1 across 707 functions, and links a 1.57 MB aarch64 binary that
 answers
 
 ```

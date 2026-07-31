@@ -1,13 +1,54 @@
 TOOLS
 
-difftest.sh    the same C program compiled by gcc and by micro-c, both RUN,
-               behaviour compared. Targets amd64, which is what this and most
-               development machines are, so it needs no emulation and no CI.
+Each answers ONE question. The list is here so the next reader does not write a
+fourth harness for something already measured.
 
-regression.sh  micro-c against the reference M2-Planet on the reference's own
-               sources. Replaces a check that was VACUOUS -- it compared two
-               empty files and reported success on every run for the whole of
-               this work.
+  local-build.sh    does micro-c build, and does the case suite pass
+  local-tcc.sh      does micro-c compile tcc into mc-tcc
+  twelve.sh         THE ONLY GATE THAT RUNS micro-c's OUTPUT ON A REAL PROGRAM
+  one.sh            one case, one architecture, plus the emitted M1 -- the
+                    microscope. difftest deliberately does not show you code.
+  difftest.sh       the case suite on amd64, native, no emulation
+  difftest-qemu.sh  the same suite on aarch64 under the committed emulator
+  stage2-corpus.sh  426 programs written for a DIFFERENT compiler, by someone
+                    not looking for these bugs
+  layout-sweep.sh   is a failure real, or heap-layout roulette
+  tests2-one.sh     walk tcc's own tests2 in order, stop at the first failure
+  runtime-ladder.sh can mc-tcc build the pieces a libc stands on
+  regression.sh     micro-c against reference M2-Planet on the reference's own
+                    sources. Replaces a check that was VACUOUS -- it compared
+                    two empty files and reported success on every run for the
+                    whole of this work.
+
+RUN THE TWELVE BEFORE BELIEVING ANY CODEGEN CHANGE. difftest and the 426-corpus
+were BOTH GREEN over EXPERIMENT-zzzg, which broke all twelve end-to-end
+programs. Neither compiles tcc. The twelve is the only gate that does.
+
+WHY layout-sweep.sh EXISTS, because it is the least obvious of these. While the
+heap corruption was live, the same source compiled by the same binary succeeded
+or failed on the length of its own FILENAME -- the name is stored on the heap,
+so it shifted every later allocation. A single compile was one sample from a
+distribution nobody was controlling, and bisecting the INPUT found filename
+lengths rather than language constructs. Two confident diagnoses were withdrawn
+for exactly that. The corruption is fixed; the tool stays, because the next one
+will look the same from outside.
+
+WHY tests2-one.sh AND runtime-ladder.sh NEED A CONTROL OR AN EMULATOR. Both are
+documented in their own headers. The one thing nothing else builds:
+
+    gcc -w -O1 -o /tmp/tcc-control build/local/tcc-work/tcc.c \
+        -Ibuild/local/tcc-work -lm -ldl -lpthread
+
+The tree is configured for arm64, so that is an aarch64 CROSS compiler on an
+x86_64 host: same source, same target, different builder. Without it the sweep
+reports 129 not-applicable and zero failures, which READS AS A CLEAN RUN and is
+a harness that never started.
+
+COMPARE THE WAY tcc COMPARES. tcc's tests2/Makefile:142 uses `diff -Nbu`, and
+`-b` ignores whitespace differences -- the .expect files rely on it.
+38_multiple_array_index prints "%d " per element and emits a trailing space its
+.expect does not carry. Comparing byte-for-byte marked three tests failed and
+reported a compiler defect where there was a space.
 
 WHY difftest EXISTS, AND WHY IT SHOULD HAVE EXISTED FIRST.
 

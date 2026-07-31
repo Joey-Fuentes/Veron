@@ -29,8 +29,11 @@ source has globally unique labels, so a flat label namespace has never cost it
 anything.
 
 The enhanced M2-Planet exists and is called **micro-c**. It compiles the whole
-of `libtcc.c`, assembles and links a 1.52 MB aarch64 binary, and that binary
-runs through the preprocessor and into the code generator before faulting. The
+of `tcc.c` -- the driver included -- assembles and links a 1.57 MB aarch64
+binary, and that binary answers tcc's own `--version`, runs the twelve
+end-to-end programs, matches 59 of tcc's 127 `tests2` `.expect` files, and
+compiles tcc's own source back to an object. It is not self-hosting: gen2 does
+not link yet, because it needs a libc. See `MICRO-C.md`. The
 measurement below is still the honest map of the *gap*; what has changed is
 that most of it has been closed, and the remaining problems are different in
 kind — not missing language features, but wrong code generation for features

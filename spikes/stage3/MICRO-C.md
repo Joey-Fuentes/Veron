@@ -5,12 +5,36 @@ compile tcc directly, rather than reaching tcc through Mes. That enhanced
 compiler is called **micro-c**: M2-Planet at pin `bd2fe4b` plus a patch series.
 This file is its state.
 
-**Status: it compiles all of tcc, links a 1.52 MB aarch64 binary, and that
-binary runs, reports diagnostics, preprocesses its own predefs and a real
-source file, interns the whole keyword table, and is now INSIDE macro
-expansion, having survived a full pass of `macro_subst`'s substitution loop.**
-It is not a working tcc. It is a long way past "gets into the preprocessor",
-which is what this file said before.
+**Status.** micro-c is M2-Planet at pin `bd2fe4b` plus **59 patches**. It
+compiles `tcc.c` -- tcc's whole source including its command-line driver -- to
+**378,759 lines of M1 across 707 functions**, and the linked **1.57 MB** aarch64
+binary (`mc-tcc`) is a working-enough tcc that:
+
+```
+mc-tcc --version              tcc version 0.9.28rc (AArch64 Linux)   tcc's own driver
+the twelve end-to-end progs   12 / 12
+tcc's own tests2              59 / 127 match tcc's .expect
+mc-tcc -c tcc.c               870,242 byte object   -- tcc compiling tcc
+```
+
+**IT IS NOT SELF-HOSTING.** A fixpoint needs five things and this is the first:
+
+```
+1. gen1 compiles tcc.c          DONE
+2. gen2 LINKS                   no -- needs a libc; see "The libc rung"
+3. gen2 runs                    not reached
+4. gen2 compiles tcc.c -> gen3  not reached
+5. gen2 == gen3                 not reached
+```
+
+`rc=0` on step 1 is not proof the object is correct. What it is worth: against
+the gcc-built control on the same source, the two objects carry the **same 705
+function symbols**, relocation counts within two, and sizes within 0.4%
+(870,242 against 873,890). Structurally right; unverified beyond that.
+
+**The heap corruption that dominated this file is closed** -- see "The
+corruption, and the measurement that was lying about it" below. So is the
+`.eh_frame` fault. What remains is listed under "What is still wrong".
 
 **A correction, because this file was wrong about it for several rounds.** The
 remaining fault was recorded here as `++*(p)` in tcc's token reader caused by
@@ -972,6 +996,12 @@ realloc diagnostics**, and it should not be read as a second opinion on them.
 
 ## The corruption, found — and the first fix for it withdrawn
 
+> **HISTORICAL -- this fault is CLOSED.** `EXPERIMENT-zzzh` fixed all three
+> faults in `*f(args)` and the case that guards them (105) is green. It did
+> NOT close the `realloc` corruption, which had a different cause entirely;
+> see "The corruption, and the measurement that was lying about it" below.
+> Kept because the withdrawal of `zzzg` is the reason the twelve are the gate.
+
 **A pending `*` lands on the function's ARGUMENT.**
 
 `*f(8)` is `*(f(8))`. `primary_expr_variable` eats the stars and parks the
@@ -1043,6 +1073,9 @@ Steps 2 and 4 are the same move and both were decisive.
 
 ## The next piece of work
 
+> **HISTORICAL -- superseded by "Next" below.** All three `*f(args)` faults
+> listed here are fixed (`EXPERIMENT-zzzh`); case 105 is no longer a KNOWN GAP.
+
 **Three faults in `*f(args)`, none fixed.** Case 105 is `KNOWN GAP`.
 
 1. **The pending `*` lands on the argument.** Diagnosed exactly; the naive fix
@@ -1062,6 +1095,283 @@ All three are on the `.eh_frame` path, so tcc keeps corrupting its heap until
 they close.
 
 ---
+
+---
+
+## The corruption, and the measurement that was lying about it
+
+**The `realloc: pointer was never returned by malloc` fault is closed.** It was
+`sizeof` of a dereferenced MEMBER pointer.
+
+```
+sizeof(*p)        on a plain pointer   CORRECT, and always was
+sizeof(*s->tab)   through a member     returned the POINTER's width -- 8, not 16
+```
+
+`sizeof(*s->tab)` is `sizeof(*(s->tab))`, but the stars were applied to the BASE
+VARIABLE's type before the member chain was walked, so it measured `(*s).tab`.
+The two forms disagree only when a member sits between the star and the name,
+which is why a plain pointer tested clean every round. Entry 20 fixed exactly
+this precedence in `postfix_expr`; `sizeof` kept its own copy. `EXPERIMENT-zzzi`.
+
+WHAT IT COST. `tccelf.c:815` sizes the symbol-attribute table with
+`n * sizeof(*s1->sym_attrs)`, so the table was ALLOCATED at half the width its
+own indexing strides through. Probing every input to the GOT relocation, same
+object linked two ways:
+
+```
+    sym_index    control      mc-tcc
+        2        0x18         0x18
+        3        0x20         0x65007374     <-- printable ASCII, from a string
+        4        0x28         0x20
+```
+
+One GOT entry resolved to `0x654281f0` instead of `0x420ea0`, and every linked
+binary died on its second string literal.
+
+**THE FAILURE WAS HEAP-LAYOUT DEPENDENT, AND THAT INVALIDATED TWO ROUNDS OF
+BISECTION.** The same source, same binary, succeeded or failed on the length of
+its own FILENAME:
+
+```
+a.c ab.c abc.c        rc=0    compiles
+abcd.c ... abcdefgh.c rc=1    realloc: pointer was never returned
+```
+
+The filename is stored on the heap, so its length shifts every later allocation
+and decides whether the stray write lands on a live allocator node. Bisecting
+the INPUT therefore finds filename lengths, not language constructs: two
+confident diagnoses -- "a declaration after a statement" and "two printf calls"
+-- were both really measuring layout and were withdrawn. `tools/layout-sweep.sh`
+exists so this is a swept parameter rather than an uncontrolled one; it went
+0/24 to 16/16 over the fix, which is what distinguishes a fix from displaced
+damage.
+
+WHAT ACTUALLY FOUND IT was not a probe or a bisection. It was splitting tcc's
+own phases and cross-linking against the control:
+
+```
+mc-tcc -E     rc=0    preprocessing fine
+mc-tcc -c     rc=0    CODE GENERATION FINE
+-c -> control links   42 / 64 / 12, 34   correct output
+-c -> mc-tcc links    42, then SIGSEGV
+```
+
+That cleared codegen and confined the fault to the linker in one command.
+Byte-diffing the two binaries gave a single ADRP+LDR pair, and a probe on the
+relocation inputs named the one value that differed.
+
+---
+
+## What is still wrong
+
+**1. Floating point does not work at all.** Not "is imprecise" -- a binary
+mc-tcc produced gets `double a = 12.5; (long)a == 12` FALSE. Add, multiply,
+divide and compare all fail the same way. This is micro-c's recorded
+unsoundness (float, double and long double are one word-sized integer) reaching
+the tcc it builds. It accounts for **ten of the thirteen** remaining tests2
+differences, and it is why `sources/musl.toml` will matter: nothing that
+touches a float can be trusted until this is closed.
+
+`patches/tcc-microc/0001` sets `LDOUBLE_SIZE 8` so the built tcc is at least
+CONSISTENT with itself -- tcc's own guard otherwise refuses to emit any long
+double constant, not even `0.0`. That made `tcc.c` compilable. It did not make
+floats work, and it gives long double 8 bytes where the aarch64 ABI gives 16.
+
+**2. `tcctest.c` does not compile.** It is the file tcc's own test1, test2 and
+test3 all begin with, so all three are blocked. The wide-literal fix
+(`EXPERIMENT-zzzk`) moved it from line 424 (`string_test`) to line 1103
+(`struct_test`) -- 679 lines -- and it segfaults there. **Ten probes against
+that range reproduced nothing in isolation** (`__alignof__`, zero-length
+arrays, `__attribute__` before the tag, pointer diffs with casts, `uintptr_t`,
+empty structs, unions, large locals), so it is cumulative or not yet spotted.
+The technique that worked for 00_assignment -- bisect INSIDE the function
+rather than probe around it -- has not been tried yet.
+
+**3. The usual arithmetic conversions.** Case 110, `KNOWN GAP`. An `int`
+compared against a hex literal above `INT_MAX` should convert the int to
+unsigned; micro-c folds constants as signed 64-bit (correctly, per `zzb`) and
+never applies the literal's TYPE to the other operand. Found because it made
+case 109 fail for a reason case 109 did not claim to test.
+
+---
+
+## The libc rung -- what gen2 actually needs
+
+gen2's object references **90 undefined symbols**. They are not one problem:
+
+| what | count | source | who builds it |
+|---|---|---|---|
+| `__addtf3`, `__divtf3`, `__clear_cache`, ... | ~19 | tcc's own `lib/` | **mc-tcc, proven** |
+| `memcpy`, `printf`, `malloc`, `open`, ... | ~70 | musl | not yet attempted |
+
+**NEITHER IS A HOST DEPENDENCY**, and that is the whole point of stage 3.
+`stage4-complete.yml` binds host `/usr` and masks only compilers -- its own
+header calls tcc's provenance "the one declared hole". The stage 3 box has no
+`/usr` at all, only busybox, so nothing can be borrowed.
+
+`tools/runtime-ladder.sh` measures the floor and it is CLEAR:
+
+```
+A. libtcc1 for arm64          7 of 7    including the three .S files
+B. musl's idioms              4 of 4    weak_alias, hidden, __typeof, weak
+C. register syscalls          ok        write() correct, exit(7) correct -- RUN
+```
+
+Note `libtcc1.c` is NOT in the arm64 build (`ARM64_O = lib-arm64.o $(COMMON_O)`);
+reaching for it gives a misleading "unsupported CPU type" that says nothing
+about the compiler. Rung C is executed rather than compiled because musl pins
+syscall operands to `x8`/`x0-x5` with register asm, and a compiler that accepts
+the syntax and allocates a different register makes the WRONG SYSCALL silently.
+
+**M2libc does not need to become mc-tcc-compilable, and an earlier plan here
+saying so was wrong.** live-bootstrap never compiles mes-libc with tcc either:
+the weak compiler builds the bootstrap libc, the first real compiler builds the
+real one. M2libc already plays mes-libc's part, already compiled from source
+from the seed. The next rung is **musl 1.2.5, built by mc-tcc** -- pinned in
+`sources/musl.toml`, with the 9 aarch64 `.s` files that fall back to portable C
+and `src/complex/*.c` dropped for `_Complex` already declared there. Stage 4
+proved that recipe with a HOST-BUILT tcc; whether mc-tcc clears the same bar is
+untested and needs a runner with network.
+
+---
+
+## The harness has been the dominant term, twice
+
+Both times, a number that looked like a compiler defect was the measurement.
+
+**FIRST: the comparison was stricter than tcc's own.** tcc's
+`tests2/Makefile:142` uses `diff -Nbu` -- `-b` ignores whitespace differences --
+and the `.expect` files rely on it. `38_multiple_array_index` prints `"%d "` per
+element and so emits a trailing space its `.expect` does not carry. Comparing
+with `cmp` marked three tests failed and reported a compiler defect where there
+was a space. busybox has no `diff`, so step 11 normalises instead and compares
+through command substitution, which also handles a missing final newline.
+**56 -> 59.**
+
+**SECOND: the shim mislabels a compiler defect as its own gap.** Of the
+thirteen tests2 programs that still differ:
+
+```
+10   printf %f / %g -- "[shim: ... is not implemented]"
+ 1   31_args -- _start calls main(void), so argc/argv are garbage
+ 1   134_double_to_signed -- %llu genuinely unhandled
+ 2   03_struct, 102_alignas -- a missing WARNING in the output, not wrong code
+ 0   genuinely wrong values
+```
+
+The ten are not a shim gap. mc-tcc has no working floating point, so a `%f`
+implementation would format wrong values precisely -- and the shim is itself
+compiled by mc-tcc, so its own arithmetic would be wrong too. **There is nothing
+to implement there until floats work.** The message should name floating point
+as the cause instead of this file's incompleteness. THIS IS NOT DONE; see
+"Next".
+
+The two that ARE real shim gaps -- argv and `%llu` -- are small and worth
+fixing, and the design is written out under "Next".
+
+---
+
+## Next -- in order, with the work already scoped
+
+**1. FIX THE SHIM. Designed, not written.** `spikes/stage3/tcc-test-shim/crt.c`.
+Three changes, none of them large:
+
+  a. **argc/argv.** `_start` is an ordinary C function calling `main()` with no
+     arguments, so `31_args` reads garbage. Reading `sp` from inside a C
+     function does NOT work -- the prologue has already moved it -- so the entry
+     has to be a global asm block that captures `sp` and tail-calls a C
+     function. mc-tcc assembles this; `mov x0, sp` and `b` are both covered:
+
+         __asm__(".global _start\n"
+                 "_start:\n"
+                 "    mov x0, sp\n"
+                 "    b _start_c\n");
+         void _start_c(long *sp) {
+             int argc = (int)sp[0];
+             char **argv = (char **)(sp + 1);
+             ...  /* envp follows argv's NULL */
+             sys3(93, main(argc, argv, envp), 0, 0);
+         }
+
+  b. **`%ll`.** Same width as `%l` on LP64, so consume one more `l`.
+     `134_double_to_signed` writes `%llu` and hits the abort as though the shim
+     could not print a long. Add `%zu`/`%zd` at the same time.
+
+  c. **SPLIT THE ABORT IN TWO.** This is the one that matters and it is the
+     reason the shim's numbers have been misread:
+
+         [shim: ...]        this file is missing something. Our fault.
+         [needs-float: ...] the conversion is fine and THE COMPILER is not.
+
+     Give the second a distinct exit status (71 against 70) so a harness can
+     tell them apart without parsing text, and teach the sweeps a third bucket.
+     Ten tests2 differences move from "harness gap" to "blocked on floating
+     point", which is where they belong.
+
+  Flags and width should be SKIPPED rather than interpreted -- `diff -b` does
+  not care about column alignment -- but a ZERO-padded field changes characters
+  and must keep aborting.
+
+**2. `tcctest.c`'s `struct_test` blocker.** Bisect INSIDE the function by
+deleting statements, which is what cracked 00_assignment; ten probes AROUND it
+found nothing. Unblocks test1/test2/test3.
+
+**3. Floating point in micro-c.** The largest item and the one everything
+numerical waits on. Ten tests2 differences, `sources/musl.toml`'s
+`src/complex/*.c` exclusion, and any honest claim about compiling gcc.
+
+**4. musl 1.2.5, built by mc-tcc.** Needs a runner with network. The floor is
+clear (`tools/runtime-ladder.sh`); whether musl itself compiles is untested.
+Landing it gives gen2 something to link against, and steps 2-5 of the fixpoint
+follow.
+
+### Reproducing any of this
+
+Everything below runs from the repository alone, no network, in this order:
+
+```
+sh spikes/stage3/tools/local-build.sh              micro-c + difftest + corpus
+sh spikes/stage3/tools/local-tcc.sh   build/local  compiles tcc -> mc-tcc
+sh spikes/stage3/tools/twelve.sh      build/local  the twelve; the gate that matters
+sh spikes/stage3/tools/runtime-ladder.sh           libtcc1, musl idioms, syscalls
+```
+
+`tools/tests2-one.sh` and the full tests2 sweep additionally need a **control**,
+which nothing else builds:
+
+```
+gcc -w -O1 -o /tmp/tcc-control build/local/tcc-work/tcc.c \
+    -Ibuild/local/tcc-work -lm -ldl -lpthread
+```
+
+The tree is configured for arm64, so that is an aarch64 CROSS compiler on an
+x86_64 host -- same source, same target, different builder, which is the point.
+Without it the sweep reports every test not-applicable, which reads as a clean
+run and is a harness that never started.
+
+### The tools, and which question each answers
+
+| tool | question |
+|---|---|
+| `local-build.sh` | does micro-c build, and does the case suite pass |
+| `local-tcc.sh` | does micro-c compile tcc into `mc-tcc` |
+| `twelve.sh` | **the only gate that runs micro-c's output on a real program** |
+| `one.sh` | one case, one architecture, and the emitted M1 -- the microscope |
+| `difftest.sh` / `difftest-qemu.sh` | the 95-case suite, per architecture |
+| `stage2-corpus.sh` | 426 programs written for a different compiler |
+| `layout-sweep.sh` | is a failure real, or heap-layout roulette |
+| `tests2-one.sh` | walk tcc's tests2 one at a time, stop at the first failure |
+| `runtime-ladder.sh` | can mc-tcc build the pieces a libc stands on |
+
+**RUN THE TWELVE BEFORE BELIEVING ANY CODEGEN CHANGE.** difftest and the
+426-corpus were both green over `EXPERIMENT-zzzg`, which broke all twelve.
+Neither compiles tcc; the twelve is the only gate that does.
+
+**AND CHECK BYTE-IDENTITY WHEN TOUCHING A HEADER.** `micro-c-libc/` is on
+micro-c's own build path. Recompiling the whole tcc unit before and after and
+requiring an identical `.M1` is what caught a `fcntl.h` shadow silently
+dropping M2libc's `_open` -- 95 lines -- which nothing else would have found.
 
 ## And then the structural work
 
