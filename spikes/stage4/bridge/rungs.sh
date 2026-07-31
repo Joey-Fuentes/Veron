@@ -1549,6 +1549,13 @@ if [ "$R4" = ok ]; then
       # Deleting a wrong declaration is smaller and more honest than defining
       # __GNU_LIBRARY__ to make glob.c believe it is on glibc, which would turn
       # on a dozen other paths nobody has looked at.
+      # THE glob SUBSTITUTIONS ONLY APPLY IF THERE IS A BUNDLED glob. 4.4 has
+      # none -- that is the point of using it -- so this whole block is skipped
+      # and says so, rather than silently reporting "removed 0" three times and
+      # looking like it did something.
+      if [ ! -f glob/glob.c ]; then
+        say "    no bundled glob in $_m4 -- gnulib's is used, nothing to patch"
+      else
       say "    --- declared substitutions in glob/glob.c ---"
 
       # 1. ITS OWN getlogin DECLARATIONS. Redundant on musl, and the wrong
@@ -1577,6 +1584,7 @@ if [ "$R4" = ok ]; then
       sed -i '/^typedef .*__ptr_t;$/d' glob/glob.c 2>/dev/null || true
       say "      __ptr_t typedefs removed from glob.c: $_pt"
       say "      __P now supplied by $SYS/include/sys/cdefs.h: $( [ -f "$SYS/include/sys/cdefs.h" ] && echo yes || echo MISSING )"
+      fi
 
       # STOP BUILDING THE BUNDLED glob. FIVE PATCHES IN ONE FILE IS THE SIGNAL.
       #
@@ -1602,8 +1610,10 @@ if [ "$R4" = ok ]; then
       # naming it. That is a better next log than a sixth parse error. If it
       # does stop there, make 4.3 dropped the bundled glob entirely and is the
       # next thing to try rather than a sixth patch.
-      if cfg_try "make $MAKE_ALT" --prefix="$PFX" --disable-nls \
-                 make_cv_sys_gnu_glob=yes; then
+      # make_cv_sys_gnu_glob IS GONE. It told configure musl's glob is GNU
+      # quality; dir.c then asked for gl_opendir and musl's glob_t does not
+      # have it. 4.4 does not have the question at all.
+      if cfg_try "make $MAKE_ALT" --prefix="$PFX" --disable-nls; then
         # MAKEINFO=true, as live-bootstrap's own steps/make-4.2.1/pass1.sh does
         # -- texinfo is not in this box and make builds its manual otherwise.
         if timeout 1800 make -j"$NP" MAKEINFO=true > build.log 2>&1 && [ -x ./make ]; then

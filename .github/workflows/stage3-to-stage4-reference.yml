@@ -73,24 +73,32 @@ env:
   # Linux kernel" -- irrelevant here, since this job stops at gcc 4.7.4.
   MAKE_VER: '3.82'
   # A SECOND make, BUILT PROPERLY ONCE binutils EXISTS. 3.82 comes up first
-  # from live-bootstrap's kaem command list because nothing else can, and it is
-  # good enough to drive musl and binutils -- but it took a Bus error building
-  # libgcc, and live-bootstrap says the same thing about it: they rebuild make
-  # "using the build system and GCC, which means that it does not randomly
-  # segfault".
+  # from live-bootstrap's kaem command list because nothing else can, and it
+  # drives musl and binutils fine -- then took a Bus error building libgcc.
+  # live-bootstrap rebuilds it too, "using the build system and GCC, which
+  # means that it does not randomly segfault".
   #
-  # 4.2.1, NOT 4.4, AND THAT IS THEIR CHOICE NOT A GUESS. 4.4 configured fine
-  # here and then died in its bundled gnulib:
+  # 4.4, AND THIS IS A RETURN RATHER THAN A NEW GUESS. 4.4 was tried first and
+  # failed at lib/fnmatch.c:154 on __P -- glibc's <sys/cdefs.h> macro. That is
+  # now supplied by the shim rung 2 installs and force-included by cc-static,
+  # so the one thing that blocked it is gone.
   #
-  #     fnmatch.c:154: error: ';' expected (got '__P')
+  # 4.2.1 was live-bootstrap's pin and it does not survive musl here. Its
+  # BUNDLED glob cost five substitutions -- getlogin, getlogin_r, __P, __ptr_t
+  # -- and switching to the system glob then hit the real wall:
   #
-  # __P is glibc's old-style prototype macro from <sys/cdefs.h>; musl has no
-  # such header and no such macro. live-bootstrap pins 4.2.1 for this rung
-  # (steps/make-4.2.1/) and says why in parts.rst: "A newer version of make
-  # built using autotools is much more reliable ... We do not go for the latest
-  # because of the use of automake 1.16 which we do not have yet." Their reason
-  # is autotools; ours is musl; the pin is the same.
-  MAKE_ALT: '4.2.1'
+  #     dir.c:1305: error: field not found: gl_opendir
+  #
+  # gl_opendir is a glob_t member from GNU's GLOB_ALTDIRFUNC extension. musl's
+  # glob is POSIX and has no such field, so make_cv_sys_gnu_glob=yes was
+  # asserting something untrue and the bundled glob is not optional for 4.2.1.
+  # live-bootstrap does not hit any of this because their pass1.sh runs
+  # `autoreconf -fi` first and their libc at that rung is not musl.
+  #
+  # 4.3 dropped the bundled glob entirely and 4.4 keeps it dropped, using
+  # gnulib instead -- which is GNU-complete and is what Alpine builds against
+  # musl as a matter of course.
+  MAKE_ALT: '4.4'
   # 3.82 AND ONLY 3.82. This is live-bootstrap's version and, more to the
   # point, the version their steps/make-3.82/pass1.kaem command list is written
   # against -- 27 files with per-file -D flags that stand in for a configure
