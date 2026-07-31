@@ -160,10 +160,33 @@ O(n^2) over a run and it is a DEBUGGING patch, not a shipping one -- it is here
 because the fault is live, and it should come out once the corruption is fixed.
 --------------------------------------------------------------------------------
 
+--------------------------------------------------------------------------------
+THE PER-CALL DETECTOR IS OFF BY DEFAULT.
+
+_malloc_check_lists walks both lists at every malloc and free. That is O(n^2)
+over a run and, worse, it CHANGES THE TIMING AND THE HEAP of the program under
+test -- a "regression" was measured against a tree still carrying it armed
+before that was noticed, and the wrong change was blamed for it. Set
+_malloc_check_armed to 1 by hand when hunting node loss.
+
+The failure-path diagnostics -- the three-way classification, the node
+inspection, the list dump, the nearest-block distance -- cost nothing on a
+healthy run and stay on.
+
+REGENERATED. The first attempt at making this opt-in edited the diff BODY to
+delete one `+` line, which left the hunk headers claiming a line count the
+hunk no longer had, so the patch failed to apply and local-build.sh stopped at
+
+    FAIL: 0011-realloc-says-which-kind-of-wrong-pointer.patch
+
+A patch is not a text file you can edit; it is a text file with arithmetic in
+it. Change the source and re-diff.
+--------------------------------------------------------------------------------
+
 
 --- a/stdlib.c
 +++ b/stdlib.c
-@@ -39,6 +39,18 @@
+@@ -39,6 +39,23 @@
  };
  
  struct _malloc_node* _allocated_list;
@@ -176,16 +199,18 @@ because the fault is live, and it should come out once the corruption is fixed.
 + * cheapest thing that can catch it AT THE MOMENT IT HAPPENS rather than
 + * whenever some later caller trips over a lost block. */
 +long _malloc_nodes_created;
-+/* OFF BY DEFAULT. The per-call walk is O(n^2) over a run and it CHANGES THE
-+ * TIMING AND THE HEAP of the program under test. Set it to 1 by hand to arm
-+ * the detector; the failure-path diagnostics below cost nothing and stay on. */
++/* OFF BY DEFAULT. The per-call walk is O(n^2) over a run and it changes the
++ * TIMING AND THE HEAP of the program under test -- a "regression" was measured
++ * against a tree still carrying it before that was noticed. Set this to 1 by
++ * hand to arm the detector. The failure-path diagnostics below cost nothing
++ * and stay on. */
 +long _malloc_check_armed;
 +void _malloc_check_lists(char* where);
 +void _malloc_write_num(char* label, long v);
  struct _malloc_node* _free_list;
  
  /********************************
-@@ -190,6 +202,7 @@
+@@ -190,6 +207,7 @@
   ************************************************************************/
  void free(void* ptr)
  {
@@ -193,7 +218,7 @@ because the fault is live, and it should come out once the corruption is fixed.
  /* just in case someone needs to quickly turn it off */
  #ifndef _MALLOC_DISABLE_FREE
  	/* free(NULL) IS A NO-OP. C requires it, and real code relies on it:
-@@ -293,6 +306,8 @@
+@@ -293,6 +311,7 @@
  	if(NULL == n->block) return NULL;
  
  	/* Looks like we made it home safely */
@@ -201,7 +226,7 @@ because the fault is live, and it should come out once the corruption is fixed.
  	n->size = size;
  	n->next = NULL;
  	n->used = _IN_USE;
-@@ -331,6 +346,7 @@
+@@ -331,6 +350,7 @@
   ************************************************************************/
  void* malloc(unsigned size)
  {
@@ -209,7 +234,7 @@ because the fault is live, and it should come out once the corruption is fixed.
  	/* skip allocating nothing */
  	if(0 == size) return NULL;
  
-@@ -390,6 +406,122 @@
+@@ -390,6 +410,122 @@
  	return ptr;
  }
  
@@ -332,7 +357,7 @@ because the fault is live, and it should come out once the corruption is fixed.
  void* realloc(void* ptr, unsigned size)
  {
  	if(0 == size)
-@@ -423,9 +555,123 @@
+@@ -423,9 +559,123 @@
  
  	if(old_alloc_size == 0)
  	{
