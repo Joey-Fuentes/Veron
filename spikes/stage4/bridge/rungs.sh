@@ -1820,6 +1820,21 @@ if [ "$R5" = ok ]; then
   # produce exactly this message. Going static sidesteps the section rather
   # than fixing it; if anything later needs a dynamic link, this comes back.
   #
+  # --disable-libmudflap, FORCED BY THE BOX AND COSTING NOTHING.
+  #
+  #     libmudflap/mf-runtime.c:2357:1: error: conflicting types for
+  #                                            '__assert_fail'
+  #
+  # libmudflap redeclares glibc's __assert_fail, whose third parameter is
+  # `unsigned int`; musl's is `int`. Stage 4 never sees it because its libc IS
+  # glibc and the declarations agree.
+  #
+  # libmudflap is gcc 4.7's pointer-and-bounds debugging runtime -- a
+  # -fmudflap option that was removed entirely in gcc 4.9. Nothing between here
+  # and gcc 10 uses it, and stage 4 does not build anything with it. Disabling
+  # is the whole fix; patching a declaration to match musl would be carrying a
+  # delta for a feature that is deleted two releases later.
+  #
   # --disable-nls IS NOT IN STAGE 4's LINE, AND IS FORCED BY THE BOX.
   #
   # Without it gcc builds its own bundled intl/ and stops at
@@ -1853,7 +1868,7 @@ if [ "$R5" = ok ]; then
     --host=aarch64-unknown-linux-gnu \
     --target=aarch64-unknown-linux-gnu \
     --prefix="$PFX" --enable-languages=c,c++ \
-    --disable-nls \
+    --disable-nls --disable-libmudflap \
     --disable-multilib --disable-bootstrap --disable-werror \
     --disable-libsanitizer --disable-libgomp --disable-libquadmath \
     --disable-libssp --disable-libatomic --disable-shared \
@@ -1890,9 +1905,12 @@ if [ "$R5" = ok ]; then
   printf '      %-52s %s\n' "as / ld reachable on PATH" \
     "$(command -v as >/dev/null 2>&1 && echo yes || echo NO) / $(command -v ld >/dev/null 2>&1 && echo yes || echo NO)"
   printf '      %-52s %s\n' "cc1 built" "$( [ -x gcc/cc1 ] && echo yes || echo not-yet )"
-  # CAN xgcc LINK AT ALL, EITHER WAY? Asked here rather than discovered inside
-  # a target library's configure, and asked BOTH ways so the answer separates
+  # CAN xgcc LINK AT ALL, EITHER WAY? Asked BOTH ways so the answer separates
   # "dynamic is broken" from "linking is broken".
+  #
+  # NOTE THIS RUNS BEFORE make, so on a first pass xgcc does not exist yet and
+  # the block is skipped -- which it did last run, silently. Saying so is worth
+  # a line: an absent probe reads exactly like a passing one.
   if [ -x gcc/xgcc ]; then
     ( cd /tmp && rm -f xg.c xg.bin
       printf 'int main(void){return 0;}\n' > xg.c
@@ -1905,6 +1923,8 @@ if [ "$R5" = ok ]; then
         fi
       done
       rm -f xg.c xg.bin )
+  else
+    printf '      %-52s %s\n' "xgcc link probe" "skipped -- xgcc not built yet"
   fi
 
   # THE ONE THAT ACTUALLY FAILED LAST TIME. Existing is not enough; libgcc's
