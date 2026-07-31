@@ -121,8 +121,20 @@ env:
   # good enough to drive musl and binutils -- but it took a Bus error building
   # libgcc, and live-bootstrap says the same thing about it: they rebuild make
   # "using the build system and GCC, which means that it does not randomly
-  # segfault". 4.4 is that rebuild.
-  MAKE_ALT: '4.4'
+  # segfault".
+  #
+  # 4.2.1, NOT 4.4, AND THAT IS THEIR CHOICE NOT A GUESS. 4.4 configured fine
+  # here and then died in its bundled gnulib:
+  #
+  #     fnmatch.c:154: error: ';' expected (got '__P')
+  #
+  # __P is glibc's old-style prototype macro from <sys/cdefs.h>; musl has no
+  # such header and no such macro. live-bootstrap pins 4.2.1 for this rung
+  # (steps/make-4.2.1/) and says why in parts.rst: "A newer version of make
+  # built using autotools is much more reliable ... We do not go for the latest
+  # because of the use of automake 1.16 which we do not have yet." Their reason
+  # is autotools; ours is musl; the pin is the same.
+  MAKE_ALT: '4.2.1'
   # 3.82 AND ONLY 3.82. This is live-bootstrap's version and, more to the
   # point, the version their steps/make-3.82/pass1.kaem command list is written
   # against -- 27 files with per-file -D flags that stand in for a configure

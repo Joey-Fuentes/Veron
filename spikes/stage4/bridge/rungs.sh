@@ -1403,7 +1403,9 @@ if [ "$R4" = ok ]; then
       say "    no make-$MAKE_ALT directory"; R45=FAIL
     else
       if cfg_try "make $MAKE_ALT" --prefix="$PFX" --disable-nls; then
-        if timeout 1800 make -j"$NP" > build.log 2>&1 && [ -x ./make ]; then
+        # MAKEINFO=true, as live-bootstrap's own steps/make-4.2.1/pass1.sh does
+        # -- texinfo is not in this box and make builds its manual otherwise.
+        if timeout 1800 make -j"$NP" MAKEINFO=true > build.log 2>&1 && [ -x ./make ]; then
           # Replace the bootstrap make with the real one, and say so, because
           # everything above this line was driven by the other binary.
           cp ./make "$PFX/bin/make"
