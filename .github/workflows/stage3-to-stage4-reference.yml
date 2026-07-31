@@ -207,6 +207,82 @@ jobs:
           # anything but exploratory. Saying so is cheaper than a comment that
           # claims they are pinned when they are not.
 
+      - name: 'AIRLOCK: derive the aarch64 backport as PATCHES the box can apply'
+        run: |
+          set -eu
+          # THE BOX GETS PATCHES, NOT A PRE-PATCHED TREE.
+          #
+          # Shipping an already-transplanted gcc would work and would be wrong:
+          # what enters the box should be the pinned upstream source plus a
+          # NAMED, REVIEWABLE delta, exactly as spikes/stage3/patches/ does for
+          # tcc and m2libc. A patched tarball hides the delta inside an opaque
+          # blob and there is nothing left to review.
+          #
+          # WHY THE DERIVATION IS HERE AND THE APPLICATION IS THERE.
+          # backport-aarch64.sh is ~200 lines of embedded python plus
+          # expand_int_iterators.py (306 lines) and port_gcc47_api.py; it
+          # rewrites gcc source, so it is tier 1 and cannot run in the box.
+          # Deriving a patch from pinned inputs is the same class of operation
+          # as drop_asm.py in stage3-hermetic-arm64 -- "a source edit, not a
+          # compilation". APPLYING that patch needs only busybox tar and
+          # busybox patch, which the box already has.
+          #
+          # THIS STEP IS MEANT TO BE RETIRED. The two artifacts it produces are
+          # uploaded; commit them under spikes/stage4/patches/gcc47-aarch64/
+          # and delete this step, and then no python touches the pipeline at
+          # all -- the patches become pinned inputs like every other.
+          mkdir -p bp && cd bp
+          tar -jxf "../pins/gcc-$GCC47.tar.bz2"; mv "gcc-$GCC47" stock
+          tar -jxf "../pins/gcc-$GCC47.tar.bz2"
+          tar -jxf "../pins/gcc-$GCC48.tar.bz2"
+          echo "  before: $(grep -c aarch64 "gcc-$GCC47/gcc/config.gcc" || true) aarch64 mentions in config.gcc"
+          bash "$GITHUB_WORKSPACE/spikes/stage4/probes/backport-aarch64.sh" \
+            "gcc-$GCC47" "gcc-$GCC48" | sed 's/^/    /'
+          echo "  after:  $(grep -c aarch64 "gcc-$GCC47/gcc/config.gcc" || true) aarch64 mentions in config.gcc"
+
+          # SPLIT THE DELTA IN TWO, because the two halves want different tools.
+          #   NEW files      -> a tar overlay. busybox tar is proven here; a
+          #                     unified diff creating 37 files from /dev/null
+          #                     leans on busybox patch far harder than it needs to.
+          #   CHANGED files  -> a real patch, small and readable, over the
+          #                     handful of files 4.7.4 already had.
+          : > /tmp/new.txt; : > /tmp/chg.txt
+          ( cd "gcc-$GCC47" && find . -type f | sort ) > /tmp/all.txt
+          while IFS= read -r f; do
+            if [ ! -f "stock/$f" ]; then
+              printf '%s\n' "$f" >> /tmp/new.txt
+            elif ! cmp -s "stock/$f" "gcc-$GCC47/$f"; then
+              printf '%s\n' "$f" >> /tmp/chg.txt
+            fi
+          done < /tmp/all.txt
+          echo "  new files:     $(wc -l < /tmp/new.txt)"
+          echo "  changed files: $(wc -l < /tmp/chg.txt)"
+          sed 's/^/    /' /tmp/chg.txt
+
+          tar -czf "../pins/gcc47-aarch64-newfiles.tar.gz" \
+              -C "gcc-$GCC47" -T /tmp/new.txt
+          : > "../pins/gcc47-aarch64-changed.patch"
+          while IFS= read -r f; do
+            diff -u "stock/$f" "gcc-$GCC47/$f" \
+              | sed -e "1s|^--- .*|--- a/${f#./}|" -e "2s|^+++ .*|+++ b/${f#./}|" \
+              >> "../pins/gcc47-aarch64-changed.patch" || true
+          done < /tmp/chg.txt
+
+          cd ..
+          rm -f "pins/gcc-$GCC48.tar.bz2"
+          rm -rf bp
+          echo "  --- what the box will apply ---"
+          printf '    %-34s %10s bytes\n' gcc47-aarch64-newfiles.tar.gz "$(wc -c < pins/gcc47-aarch64-newfiles.tar.gz)"
+          printf '    %-34s %10s bytes\n' gcc47-aarch64-changed.patch  "$(wc -c < pins/gcc47-aarch64-changed.patch)"
+          sha256sum pins/gcc47-aarch64-* | sed 's/^/    /'
+          mkdir -p backport-artifacts && cp pins/gcc47-aarch64-* backport-artifacts/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gcc47-aarch64-backport
+          path: backport-artifacts/
+          if-no-files-found: warn
+
       - name: Assemble the box
         run: |
           set -eu

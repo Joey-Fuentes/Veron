@@ -1236,35 +1236,65 @@ head1 "RUNG 6 -- gcc 4.7.4.  THE OVERLAP WITH stage4-complete."
 # ladder.
 if [ "$R5" = ok ]; then
   cd /work/src
-  # THE BACKPORT IS NOT OPTIONAL AND IS NOT NEW WORK.
+  # STOCK gcc PLUS TWO DECLARED PATCHES, APPLIED HERE BY busybox.
   #
-  # gcc 4.7.4 has NO aarch64 backend -- aarch64 arrived in 4.8. stage 4 logs
-  # exactly that: "4.7.4 aarch64 mentions in config.gcc (expect 0)". So every
-  # gcc 4.7.4 in this repo is 4.7.4 carrying 4.8.5's backend, transplanted by
-  # spikes/stage4/probes/backport-aarch64.sh -- a reviewed, named delta that
-  # already exists and that stage 4 already depends on. Configuring stock 4.7.4
-  # for aarch64 does not build a worse compiler; it does not configure at all.
+  # gcc 4.7.4 has no aarch64 backend of its own -- aarch64 arrived in 4.8, and
+  # stock 4.7.4 reports `aarch64 mentions in config.gcc: 0`, so configure would
+  # refuse the target outright. The delta comes in as two pinned inputs derived
+  # in the airlock and applied in here with nothing but busybox:
   #
-  # THE SCRIPT IS bash AND THIS BOX HAS busybox ash. It opens with
-  # `#!/usr/bin/env bash` and `set -euo pipefail`, and calls `bash -n` on
-  # config.host internally. ash accepts pipefail, and the internal `bash -n` is
-  # already guarded by a fallback in the script, but this is the first time it
-  # has run outside a box with bash in it. If it fails here that is a portability
-  # finding about the script, not about the compiler -- so it is reported as its
-  # own line rather than folded into gcc's result.
-  untar /in/gcc-4.7 || { say "    gcc 4.7 did not extract"; R6=FAIL; }
-  untar /in/gcc-4.8 || { say "    gcc 4.8 did not extract"; R6=FAIL; }
-  g47=$(onedir 'gcc-4.7* ./gcc-4.7*')
-  g48=$(onedir 'gcc-4.8* ./gcc-4.8*')
-  say "    donor: $g48   target: $g47"
-  say "    aarch64 in stock 4.7.4 config.gcc (expect 0): $(grep -c aarch64 "$g47/gcc/config.gcc" 2>/dev/null || echo '?')"
-  if sh /src/stage4/probes/backport-aarch64.sh "$g47" "$g48" > /work/backport.log 2>&1; then
-    say "    backport ok -- aarch64 in config.gcc now: $(grep -c aarch64 "$g47/gcc/config.gcc" 2>/dev/null || echo '?')"
-  else
-    say "    BACKPORT FAILED -- gcc cannot be configured for aarch64 without it"
-    tail -15 /work/backport.log 2>/dev/null | sed 's/^/      /'
-    R6=FAIL
+  #   gcc47-aarch64-newfiles.tar.gz   the aarch64 backend files 4.7.4 lacks
+  #   gcc47-aarch64-changed.patch     the splices into files it already had
+  #
+  # SPLIT BECAUSE THE TWO HALVES WANT DIFFERENT TOOLS. busybox tar is proven in
+  # this box -- it has already unpacked musl, make, binutils, gmp, mpfr, mpc
+  # and gcc. Asking busybox patch to create 37 files from /dev/null instead
+  # would lean on it far harder, for no benefit; the patch it does get is a
+  # handful of files and is readable as a review artifact.
+  if ! untar /in/gcc-4.7.4; then
+    say "    gcc 4.7.4 did not extract"; R6=FAIL
   fi
+  g47=$(onedir 'gcc-4.7.4 ./gcc-4.7.4')
+  if [ -z "$g47" ]; then
+    say "    no gcc-4.7.4 directory after extraction"; R6=FAIL
+  fi
+
+  if [ "$R6" != FAIL ]; then
+    say "    stock 4.7.4: $(grep -c aarch64 "$g47/gcc/config.gcc" 2>/dev/null || echo 0) aarch64 mentions in config.gcc (expect 0)"
+
+    _nf=$(ls /in/gcc47-aarch64-newfiles.tar.gz 2>/dev/null | head -1)
+    _pf=$(ls /in/gcc47-aarch64-changed.patch 2>/dev/null | head -1)
+    if [ -z "$_nf" ] || [ -z "$_pf" ]; then
+      say "    backport inputs missing from /in:"
+      ls -1 /in | sed 's/^/      /'
+      R6=FAIL
+    else
+      say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: tar -zxf $_nf  (into $g47)"
+      say "    (cwd: $(pwd))"
+      tar -zxf "$_nf" -C "$g47" 2>/tmp/bp1.err
+      _r1=$?
+      say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_r1)"
+      [ "$_r1" = 0 ] || sed 's/^/      /' /tmp/bp1.err | head -4
+
+      say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: patch -p1 -d $g47 < $_pf"
+      patch -p1 -d "$g47" < "$_pf" > /tmp/bp2.out 2>&1
+      _r2=$?
+      say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_r2)"
+      tail -6 /tmp/bp2.out 2>/dev/null | sed 's/^/      /'
+
+      _n=$(grep -c aarch64 "$g47/gcc/config.gcc" 2>/dev/null || echo 0)
+      say "    after backport: $_n aarch64 mentions in config.gcc"
+      say "    aarch64 backend files: $(find "$g47/gcc/config/aarch64" -type f 2>/dev/null | wc -l)"
+      # THE CHECK THAT MATTERS. 0 here means the delta did not land, and
+      # configure would fail 20 minutes later with a message about the target
+      # rather than about the patch.
+      if [ "$_r1" != 0 ] || [ "$_r2" != 0 ] || [ "$_n" = 0 ]; then
+        say "    BACKPORT DID NOT LAND -- gcc cannot be configured for aarch64"
+        R6=FAIL
+      fi
+    fi
+  fi
+
   mkdir -p /work/bld && cd /work/bld
   # STAGE 4's configure_47, rung1.sh:144-166, VERBATIM.
   #
