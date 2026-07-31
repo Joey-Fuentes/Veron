@@ -657,7 +657,36 @@ head1 "RUNG 6 -- gcc 4.7.4.  THE OVERLAP WITH stage4-complete."
 # make and a binutils all built inside it -- is what makes the two jobs one
 # ladder.
 if [ "$R5" = ok ]; then
-  cd /work/src && tar xf /in/gcc-*.tar.bz2
+  cd /work/src
+  # THE BACKPORT IS NOT OPTIONAL AND IS NOT NEW WORK.
+  #
+  # gcc 4.7.4 has NO aarch64 backend -- aarch64 arrived in 4.8. stage 4 logs
+  # exactly that: "4.7.4 aarch64 mentions in config.gcc (expect 0)". So every
+  # gcc 4.7.4 in this repo is 4.7.4 carrying 4.8.5's backend, transplanted by
+  # spikes/stage4/probes/backport-aarch64.sh -- a reviewed, named delta that
+  # already exists and that stage 4 already depends on. Configuring stock 4.7.4
+  # for aarch64 does not build a worse compiler; it does not configure at all.
+  #
+  # THE SCRIPT IS bash AND THIS BOX HAS busybox ash. It opens with
+  # `#!/usr/bin/env bash` and `set -euo pipefail`, and calls `bash -n` on
+  # config.host internally. ash accepts pipefail, and the internal `bash -n` is
+  # already guarded by a fallback in the script, but this is the first time it
+  # has run outside a box with bash in it. If it fails here that is a portability
+  # finding about the script, not about the compiler -- so it is reported as its
+  # own line rather than folded into gcc's result.
+  tar xf /in/gcc-4.7*.tar.bz2
+  tar xf /in/gcc-4.8*.tar.bz2
+  g47=$(ls -d gcc-4.7* 2>/dev/null | head -1)
+  g48=$(ls -d gcc-4.8* 2>/dev/null | head -1)
+  say "    donor: $g48   target: $g47"
+  say "    aarch64 in stock 4.7.4 config.gcc (expect 0): $(grep -c aarch64 "$g47/gcc/config.gcc" 2>/dev/null || echo '?')"
+  if sh /src/stage4/probes/backport-aarch64.sh "$g47" "$g48" > /work/backport.log 2>&1; then
+    say "    backport ok -- aarch64 in config.gcc now: $(grep -c aarch64 "$g47/gcc/config.gcc" 2>/dev/null || echo '?')"
+  else
+    say "    BACKPORT FAILED -- gcc cannot be configured for aarch64 without it"
+    tail -15 /work/backport.log 2>/dev/null | sed 's/^/      /'
+    R6=FAIL
+  fi
   mkdir -p /work/bld && cd /work/bld
   # STAGE 4's configure_47, rung1.sh:144-166, VERBATIM.
   #
@@ -670,7 +699,7 @@ if [ "$R5" = ok ]; then
   # --with-sysroot is NOT here, and I had added it. With the libc installed at
   # /usr -- where this box's compiler already looks -- a sysroot is both
   # unnecessary and wrong: it would prefix every system path again.
-  /work/src/gcc-*/configure \
+  "/work/src/$g47/configure" \
     CC="$CC" \
     --build=aarch64-unknown-linux-gnu \
     --host=aarch64-unknown-linux-gnu \
@@ -687,7 +716,7 @@ if [ "$R5" = ok ]; then
   # builds its docs. Here it is absent, and gcc's make would stop on the info
   # targets having compiled the entire compiler -- a failure about
   # documentation that reads like a failure about the compiler.
-  if timeout 5400 make -j"$NP" MAKEINFO=true > build.log 2>&1; then
+  if [ "$R6" != FAIL ] && timeout 5400 make -j"$NP" MAKEINFO=true > build.log 2>&1; then
     R6=ok
     say "    xgcc:    $( [ -x gcc/xgcc ] && wc -c < gcc/xgcc || echo ABSENT )"
     say "    cc1:     $( [ -x gcc/cc1 ]  && wc -c < gcc/cc1  || echo ABSENT )"
