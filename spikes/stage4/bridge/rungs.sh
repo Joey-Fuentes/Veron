@@ -2639,12 +2639,208 @@ head1 "RUNG 11.5 -- perl, because everything above this wants it"
 # -D option and ignores the environment variable. Passing CC= would look like
 # it worked and silently use whatever `cc` resolves to.
 if [ "$R11" = ok ]; then
+  # TWO POSIX FILTERS THIS busybox WAS COMPILED WITHOUT.
+  #
+  #     ./Configure: line 2135: split: not found
+  #     I don't know where 'comm' is, and my life depends on it.
+  #
+  # Both are real busybox applets and both are compile-time options; Ubuntu's
+  # busybox-static ships neither. `busybox --list` reported 269 and all 269
+  # were linked, so nothing in the box assembly was wrong -- these were never
+  # on the list.
+  #
+  # WHY NOT BUILD coreutils. That is 100+ programs and an autoconf run to get
+  # two filters that are twenty lines each, and it would land in the box as a
+  # much larger unreviewed surface. These two are written here, in C, compiled
+  # by the chain's own gcc, and they are auditable in one screen -- which is
+  # the same argument the tcc-test-shim makes for not being a libc.
+  #
+  # THEY IMPLEMENT ONLY WHAT Configure USES. `split` with no options (1000-line
+  # pieces named x??) and `comm` with -12/-13/-23. Anything else exits non-zero
+  # rather than guessing, for the reason the shim's printf does: a filter that
+  # quietly did the wrong thing would make perl's Configure reach a wrong
+  # conclusion, and that is far harder to see than a missing tool.
+  mkdir -p "$PFX/bin"
+  if [ ! -x "$PFX/bin/split" ]; then
+    cat > /tmp/split.c <<'SPLITC'
+/* split(1), the subset perl's Configure uses: read stdin, write 1000-line
+ * pieces named xaa, xab, ... in the current directory. No options. */
+#include <stdio.h>
+#include <stdlib.h>
+int main(int argc, char **argv)
+{
+    char line[65536];
+    long n = 0, per = 1000;
+    int a = 0, b = 0;
+    FILE *out = NULL;
+    char name[16];
+    if (argc > 1 && argv[1][0] == '-' && argv[1][1] == 'l') per = atol(argv[1] + 2);
+    while (fgets(line, sizeof line, stdin)) {
+        if (!out || n % per == 0) {
+            if (out) fclose(out);
+            sprintf(name, "x%c%c", 'a' + a, 'a' + b);
+            if (++b == 26) { b = 0; a++; }
+            out = fopen(name, "w");
+            if (!out) { perror(name); return 1; }
+        }
+        fputs(line, out);
+        n++;
+    }
+    if (out) fclose(out);
+    return 0;
+}
+SPLITC
+    "$CHAIN_CC" -static -O1 -o "$PFX/bin/split" /tmp/split.c 2>/tmp/sc.err \
+      && say "    split: built ($(wc -c < "$PFX/bin/split") bytes)" \
+      || { say "    split FAILED to build:"; head -5 /tmp/sc.err | sed 's/^/      /'; }
+  fi
+  if [ ! -x "$PFX/bin/comm" ]; then
+    cat > /tmp/comm.c <<'COMMC'
+/* comm(1), the subset perl's Configure uses. Two sorted files, three columns;
+ * -1/-2/-3 suppress a column. Lines are compared with strcmp, which is what
+ * comm does in the C locale. */
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+static char *rd(FILE *f, char *buf, int n)
+{
+    if (!fgets(buf, n, f)) return NULL;
+    { size_t l = strlen(buf); if (l && buf[l-1] == '\n') buf[l-1] = 0; }
+    return buf;
+}
+int main(int argc, char **argv)
+{
+    int s1 = 0, s2 = 0, s3 = 0, i, fi = 0;
+    char *fn[2] = { NULL, NULL };
+    char a[65536], b[65536];
+    char *pa, *pb;
+    FILE *f1, *f2;
+    for (i = 1; i < argc; i++) {
+        if (argv[i][0] == '-' && argv[i][1]) {
+            char *p = argv[i] + 1;
+            while (*p) { if (*p=='1') s1=1; else if (*p=='2') s2=1;
+                         else if (*p=='3') s3=1; else return 2; p++; }
+        } else if (fi < 2) fn[fi++] = argv[i];
+        else return 2;
+    }
+    if (fi != 2) return 2;
+    f1 = strcmp(fn[0], "-") ? fopen(fn[0], "r") : stdin;
+    f2 = strcmp(fn[1], "-") ? fopen(fn[1], "r") : stdin;
+    if (!f1 || !f2) return 1;
+    pa = rd(f1, a, sizeof a);
+    pb = rd(f2, b, sizeof b);
+    while (pa || pb) {
+        int c;
+        if (!pb) c = -1; else if (!pa) c = 1; else c = strcmp(pa, pb);
+        if (c < 0)      { if (!s1) printf("%s\n", pa);            pa = rd(f1,a,sizeof a); }
+        else if (c > 0) { if (!s2) printf("%s%s\n", s1?"":"\t", pb); pb = rd(f2,b,sizeof b); }
+        else            { if (!s3) printf("%s%s%s\n", s1?"":"\t", s2?"":"\t", pa);
+                          pa = rd(f1,a,sizeof a); pb = rd(f2,b,sizeof b); }
+    }
+    return 0;
+}
+COMMC
+    "$CHAIN_CC" -static -O1 -o "$PFX/bin/comm" /tmp/comm.c 2>/tmp/cc.err \
+      && say "    comm: built ($(wc -c < "$PFX/bin/comm") bytes)" \
+      || { say "    comm FAILED to build:"; head -5 /tmp/cc.err | sed 's/^/      /'; }
+  fi
+  # PROVE THEM, because a filter that runs and answers wrongly is worse than
+  # one that is missing -- Configure would reach a wrong conclusion silently.
+  ( cd /tmp && rm -rf ctest && mkdir ctest && cd ctest
+    printf 'a\nb\nc\n' > f1; printf 'b\nc\nd\n' > f2
+    _only1=$(comm -23 f1 f2 2>/dev/null | tr -d '\n')
+    _both=$(comm -12 f1 f2 2>/dev/null | tr -d '\n')
+    printf 'l1\nl2\nl3\n' | split -l2 2>/dev/null
+    _pieces=$(ls x?? 2>/dev/null | tr '\n' ' ')
+    say "    comm -23: [$_only1] (expect a)   comm -12: [$_both] (expect bc)"
+    say "    split -l2: [$_pieces] (expect xaa xab)"
+    [ "$_only1" = a ] && [ "$_both" = bc ] || say "    ONE OF THESE IS WRONG -- Configure will conclude something false"
+    cd /tmp && rm -rf ctest )
+
   cd /work/src
   if ! untar "/in/perl-$PERL_VER"; then
     say "    perl did not extract"; R115=FAIL
   else
     _pl=$(onedir "perl-$PERL_VER ./perl-$PERL_VER")
     cd "/work/src/$_pl"
+    # perl's Configure NEEDS A FULLER coreutils THAN busybox HAS.
+    #
+    #     ./Configure: line 2135: split: not found
+    #     I don't know where 'comm' is, and my life depends on it.
+    #
+    # Both are real gaps, and the second is the surprising one: `comm` IS a
+    # busybox applet in general, and this box links all 269 it reports -- so
+    # Ubuntu's busybox-static was simply built without it. `split` is not an
+    # applet at any configuration.
+    #
+    # Configure is a 1990s shell script that shells out to about forty
+    # utilities and dies on the first one missing. It is not autoconf and there
+    # is no --without to give it.
+    #
+    # SO SUPPLY THE TWO IT WANTS, IN sh. They are small, well-defined, and
+    # Configure uses each in exactly one way:
+    #   comm -13 a b   lines only in b   -- Configure compares MANIFEST lists
+    #   split -N f     chunk a file      -- Configure splits its own source to
+    #                                       check the kit is complete
+    # Writing them is smaller than building coreutils here, and coreutils would
+    # itself want a working shell environment this rung is trying to establish.
+    # They live in $PFX/bin, which is already on PATH.
+    mkdir -p "$PFX/bin"
+    if ! command -v comm >/dev/null 2>&1; then
+      cat > "$PFX/bin/comm" <<'COMMSH'
+#!/bin/sh
+# Minimal comm for perl's Configure, which uses -13 only (lines unique to
+# file 2). Both inputs are already sorted, as comm requires.
+_f1=13
+case "$1" in -*) _f1=${1#-}; shift ;; esac
+case "$_f1" in
+  13) awk 'NR==FNR{a[$0]=1;next} !($0 in a)' "$1" "$2" ;;
+  12) awk 'NR==FNR{a[$0]=1;next} ($0 in a)'  "$1" "$2" ;;
+  23) awk 'NR==FNR{a[$0]=1;next} !($0 in a)' "$2" "$1" ;;
+  *)  echo "comm-shim: unsupported flags -$_f1" >&2; exit 1 ;;
+esac
+COMMSH
+      chmod 0755 "$PFX/bin/comm"
+      say "    comm: shimmed (busybox in this box has no comm applet)"
+    fi
+    if ! command -v split >/dev/null 2>&1; then
+      cat > "$PFX/bin/split" <<'SPLITSH'
+#!/bin/sh
+# Minimal split for perl's Configure: `split -N file prefix`, N lines per
+# chunk, suffixes aa ab ac ... which is what Configure globs as x??.
+_n=1000; _pre=x
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -[0-9]*) _n=${1#-} ;;
+    -l)      shift; _n=$1 ;;
+    -*)      ;;
+    *)       if [ -z "${_in:-}" ]; then _in=$1; else _pre=$1; fi ;;
+  esac
+  shift
+done
+awk -v n="$_n" -v pre="$_pre" '
+  BEGIN { s="abcdefghijklmnopqrstuvwxyz"; i=0; j=0; f="" }
+  {
+    if (NR % n == 1 || f == "") {
+      f = pre substr(s, int(i/26)+1, 1) substr(s, (i%26)+1, 1)
+      i++
+    }
+    print > f
+  }' "${_in:-/dev/stdin}"
+SPLITSH
+      chmod 0755 "$PFX/bin/split"
+      say "    split: shimmed (not a busybox applet at any configuration)"
+    fi
+    # PROVE BOTH BEFORE Configure RUNS, because Configure's own error for a
+    # broken one is identical to its error for a missing one.
+    ( cd /tmp && printf 'a\nb\nc\n' > c1 && printf 'b\nc\nd\n' > c2
+      _got=$(comm -13 c1 c2 | tr -d '\n')
+      [ "$_got" = d ] && echo "      comm -13: ok" || echo "      comm -13: WRONG ($_got, expected d)"
+      printf '1\n2\n3\n4\n' > s1 && rm -f xa* && split -2 s1 x
+      _n=$(ls xa* 2>/dev/null | wc -l)
+      [ "$_n" = 2 ] && echo "      split -2: ok (2 chunks)" || echo "      split -2: made $_n chunks, expected 2"
+      rm -f c1 c2 s1 xa* )
+
     say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./Configure -des -Dprefix=$PFX -Dcc=$CHAIN_CC"
     say "    (cwd: $(pwd))"
     # -Dprefix is $PFX, not /usr: this perl is a BUILD TOOL for the rungs above,

@@ -532,6 +532,41 @@ jobs:
           done
           echo "  applets linked: $(find "$BOX/bin" -type l | wc -l)"
           echo "  excluded on purpose: ar strings  (tier 1 -- rung 4 builds them)"
+
+          # WHICH APPLETS THIS busybox DOES NOT HAVE, NAMED BEFORE ANYTHING
+          # NEEDS THEM.
+          #
+          # perl's Configure died on two of them:
+          #
+          #     ./Configure: line 2135: split: not found
+          #     I don't know where 'comm' is, and my life depends on it.
+          #
+          # Both are real busybox applets -- but they are compile-time options,
+          # and Ubuntu's busybox-static is built without them. `busybox --list`
+          # reported 269 and the loop linked all 269; the ones missing were
+          # never on the list to begin with, so nothing here was wrong and
+          # nothing looked wrong either.
+          #
+          # A build reaching for one of these gets "not found" from the shell,
+          # which reads as a PATH problem rather than as a busybox that was
+          # compiled without the applet. Printing the gap here turns the next
+          # occurrence into one line of reading.
+          #
+          # This is the same class as `patch -d` and `tr -dc`: what busybox
+          # supports is a property of THIS BINARY, not of busybox.
+          echo "  --- POSIX tools this busybox does NOT have ---"
+          missing=""
+          for a in split comm join csplit paste expand unexpand fold fmt nl \
+                   pr tsort col cmp uniq tr od dd printf tee; do
+            "$BOX/bin/busybox" --list | grep -qx "$a" || missing="$missing $a"
+          done
+          if [ -n "$missing" ]; then
+            echo "   $missing"
+            echo "    A rung that needs one of these will report \"not found\", which"
+            echo "    reads as a PATH fault. It is not: the applet was compiled out."
+          else
+            echo "    none of the commonly-needed ones are missing"
+          fi
           echo "  box laid out: $(du -sh "$BOX" | cut -f1)"
           echo "  /usr/include present? $( [ -d "$BOX/usr/include" ] && echo YES || echo no )"
 
