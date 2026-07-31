@@ -991,11 +991,53 @@ if [ "$R35" = ok ]; then
   # nothing for a separate indexing pass to do; live-bootstrap's own configure
   # logs show `checking for ranlib... :` -- the no-op -- for the same reason.
   mkdir -p "$PFX/bin"
-  printf '#!/bin/sh\nexec %s -ar "$@"\n' "$CC_BIN" > "$PFX/bin/ar"
+  # THE SHIM TRANSLATES FLAGS; IT DOES NOT JUST FORWARD THEM.
+  #
+  # The first attempt was `exec tcc -ar "$@"` and bfd stopped at libbfd.la with
+  # an archiver usage message printed into the log. binutils' libtool does not
+  # call `ar rcs`: it calls `ar cru`, `ar cq`, `ar cr` and similar, and tcc -ar
+  # accepts `rcs` and prints usage for anything else. Forwarding the flags
+  # verbatim was the bug.
+  #
+  # Creation modes all collapse to rcs, which is what they mean here -- replace
+  # members, create if absent, write an index. Extraction modes (x, t, p) are
+  # NOT translated: tcc -ar cannot do them, and silently doing something else
+  # would corrupt a build rather than stop it. Those exit non-zero and say so.
+  cat > "$PFX/bin/ar" <<'ARSHIM'
+#!/bin/sh
+# tcc -ar stands in for binutils ar until rung 4 builds a real one.
+_flags=$1
+case "$_flags" in
+  -*) _flags=${_flags#-} ;;
+esac
+case "$_flags" in
+  *x*|*t*|*p*|*d*|*m*)
+      echo "ar-shim: tcc -ar cannot do '$_flags' (extract/list/delete)" >&2
+      exit 1 ;;
+esac
+shift
+exec CCBIN -ar rcs "$@"
+ARSHIM
+  sed -i "s|CCBIN|$CC_BIN|" "$PFX/bin/ar"
   printf '#!/bin/sh\nexit 0\n' > "$PFX/bin/ranlib"
   chmod 0755 "$PFX/bin/ar" "$PFX/bin/ranlib"
   PATH="$PFX/bin:$PATH"; export PATH
-  say "    ar:     $PFX/bin/ar -> $CC_BIN -ar"
+
+  # SMOKE-TEST IT BEFORE A 40-MINUTE BUILD DEPENDS ON IT. The last run trusted
+  # this shim and found out inside bfd, 1700 lines into a log.
+  say "    --- ar shim smoke test ---"
+  ( cd /tmp && rm -f as.c as.o as.a
+    printf 'int shim_probe(void){return 7;}\n' > as.c
+    $CC -c -o as.o as.c 2>/dev/null
+    for _f in cru cq cr rcs; do
+      rm -f as.a
+      if ar "$_f" as.a as.o 2>/tmp/ar.err; then
+        printf '      ar %-4s -> ok   (%s bytes)\n' "$_f" "$(wc -c < as.a 2>/dev/null || echo 0)"
+      else
+        printf '      ar %-4s -> FAIL %s\n' "$_f" "$(head -1 /tmp/ar.err)"
+      fi
+    done
+    rm -f as.c as.o as.a )
   say "    ranlib: no-op (tcc -ar indexes as it writes)"
 
   _busrc="../$(cd .. && onedir 'binutils-* ./binutils-*')"
@@ -1025,8 +1067,10 @@ if [ "$R35" = ok ]; then
       printf '    %-8s %s\n' "$t" "$( [ -x "$PFX/bin/$t" ] && wc -c < "$PFX/bin/$t" || echo ABSENT )"
     done
   else
-    R4=FAIL; say "    --- where it stopped ---"
-    grep -nE "error:|Error [0-9]|undefined reference" build.log 2>/dev/null | head -15 | sed 's/^/      /'
+    R4=FAIL; say "    --- the failing command ---"
+    grep -nE "^(libtool|/bin/sh|ar |.*ar-shim)" build.log 2>/dev/null | tail -6 | sed 's/^/      /'
+    say "    --- where it stopped ---"
+    grep -nE "error:|Error [0-9]|undefined reference|ar-shim" build.log 2>/dev/null | head -15 | sed 's/^/      /'
     tail -15 build.log 2>/dev/null | sed 's/^/      /'
   fi
   cd /work
