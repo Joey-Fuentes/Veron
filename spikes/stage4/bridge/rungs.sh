@@ -598,6 +598,27 @@ HOSTED="-I$SYS/include -L$SYS/lib"
 # this binary is DYNAMIC and the box has no loader" for exactly this shape.
 CCAUTO="$CC $HOSTED -static"
 
+# -static IN CC IS NOT ENOUGH; IT HAS TO BE IN LDFLAGS TOO.
+#
+# libtool does not pass $CC's flags through to the link. It parses the compile
+# command, keeps what it recognises, and builds its own link line -- so
+# `-static` set in CC reaches every compile and none of the links. binutils'
+# `as` came out DYNAMIC, wanting /lib/ld-musl-aarch64.so.1, which this box does
+# not have because rung 2 builds libc.a and no shared library. It then failed
+# to exec with "Permission denied", which is what a shell reports for a binary
+# whose interpreter is missing:
+#
+#     /work/bld/gcc/as: exec: .../aarch64-unknown-linux-gnu/bin/as:
+#                             Permission denied
+#
+# and rung 3's own dynamic probe had already said "does NOT run (expected:
+# libc.a only, no loader in the box)" two rungs earlier.
+#
+# LDFLAGS is the variable libtool DOES honour, so -static goes there as well.
+# Belt and braces on purpose: some of these builds link through $CC directly
+# and never involve libtool at all.
+LDF="-static"
+
 # THE LFS SHAPE: DECLARE A CROSS BUILD SO autoconf STOPS RUNNING ITS TESTS.
 #
 # make's configure died here:
@@ -631,7 +652,7 @@ cfg_try() {
     _lbl=$1; shift
     say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./configure $* CC=\"$CCAUTO\""
     say "    (cwd: $(pwd))"
-    ./configure "$@" CC="$CCAUTO" > cfg.log 2>&1
+    ./configure "$@" CC="$CCAUTO" LDFLAGS="$LDF" > cfg.log 2>&1
     _cfgrc=$?
     say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_cfgrc)"
     if [ "$_cfgrc" = 0 ]; then
@@ -663,7 +684,7 @@ cfg_try() {
         say "    $_lbl: configure wants an ld and rung 4 has not built one yet"
         say "    retrying with LD pointed at the compiler (tcc links internally)"
         say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./configure $* CC=\"$CCAUTO\" LD=\"$CC_BIN\""
-        ./configure "$@" CC="$CCAUTO" LD="$CC_BIN" > cfg.log 2>&1
+        ./configure "$@" CC="$CCAUTO" LDFLAGS="$LDF" LD="$CC_BIN" > cfg.log 2>&1
         _cfgrc=$?
         say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_cfgrc)"
         if [ "$_cfgrc" = 0 ]; then
@@ -677,7 +698,7 @@ cfg_try() {
         say "    $_lbl: native configure cannot run its tests -- retrying the LFS way"
         say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./configure --build=$BUILDTRIP --host=$HOSTTRIP $* CC=\"$CCAUTO\""
         ./configure --build="$BUILDTRIP" --host="$HOSTTRIP" "$@" \
-            CC="$CCAUTO" > cfg.log 2>&1
+            CC="$CCAUTO" LDFLAGS="$LDF" > cfg.log 2>&1
         _cfgrc=$?
         say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_cfgrc)"
         if [ "$_cfgrc" = 0 ]; then
@@ -973,6 +994,14 @@ if [ "$R3" = ok ] && [ "$R35" != FAIL ]; then
     if [ "$_lrc" = 0 ] && [ -x "$PFX/bin/make" ]; then
       say "    make: $(wc -c < "$PFX/bin/make") bytes"
       # live-bootstrap's own test, verbatim: `make --version`
+      # STATIC? make links through $CC directly, not libtool, so -static in CC
+      # reaches it -- but binutils proved that assumption wrong one rung later,
+      # so it is checked rather than assumed for everything the box builds.
+      if grep -aq 'ld-musl\|ld-linux' "$PFX/bin/make" 2>/dev/null; then
+        say "    make is DYNAMIC -- it will not run in this box"
+      else
+        say "    make is static"
+      fi
       if "$PFX/bin/make" --version > /work/mkver.txt 2>&1; then
         say "    --- make --version ---"
         head -3 /work/mkver.txt | sed 's/^/      /'
@@ -1126,7 +1155,7 @@ ARSHIM
       say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: $_busrc/configure $* CC=\"$CCAUTO\""
       "$_busrc/configure" "$@" --prefix="$PFX" --disable-nls --disable-werror \
         --disable-gdb --disable-gdbserver --disable-libdecnumber --disable-readline \
-        CC="$CCAUTO" AR="$AR" RANLIB="$RANLIB" > cfg.log 2>&1
+        CC="$CCAUTO" LDFLAGS="$LDF" AR="$AR" RANLIB="$RANLIB" > cfg.log 2>&1
       _r=$?; say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_r)"; return $_r
   }
   if cfg_binutils; then
@@ -1187,11 +1216,35 @@ ARSHIM
     say "    --- tooldir after ---"
     ls -l "$_TD/bin" 2>/dev/null | head -12 | sed 's/^/      /'
     printf '      %-14s %s\n' sys-include "-> $(readlink "$_TD/sys-include" 2>/dev/null)"
-    # PROVE IT EXECUTES, because "Permission denied" is what got us here.
-    if "$_TD/bin/as" --version >/dev/null 2>&1; then
-      say "      tooldir as: runs ok"
+    # DOES binutils' as RUN AT ALL? Everything so far has only established
+    # that a 15 MB file exists with the execute bit set. `command -v as`
+    # answers yes for a file that cannot run, and the previous check threw the
+    # error away with >/dev/null 2>&1 and reported a bare NO.
+    #
+    # Two separate questions, asked separately:
+    #   does $PFX/bin/as run          -- is the binary we BUILT any good
+    #   does $_TD/bin/as run          -- did the symlink arrangement work
+    say "    --- can the assembler we built actually run? ---"
+    for _cand in "$PFX/bin/as" "$_TD/bin/as"; do
+      _out=$("$_cand" --version 2>&1); _rc=$?
+      if [ "$_rc" = 0 ]; then
+        printf '      %-46s rc=0  %s\n' "$_cand" "$(printf '%s' "$_out" | head -1)"
+      else
+        printf '      %-46s rc=%s\n' "$_cand" "$_rc"
+        printf '%s' "$_out" | head -3 | sed 's/^/        /'
+      fi
+    done
+    # AND IS IT A WELL-FORMED aarch64 ELF? "Permission denied" from exec is
+    # what a shell reports for several different faults, and a bad ELF header
+    # is one of them. e_machine 0xB7 is AArch64; e_type 2 is EXEC, 3 is DYN.
+    say "      first 20 bytes of $PFX/bin/as:"
+    dd if="$PFX/bin/as" bs=1 count=20 2>/dev/null | od -An -tx1 | sed 's/^/        /'
+    printf '      %-20s %s\n' "size" "$(wc -c < "$PFX/bin/as")"
+    if grep -aq 'ld-musl\|ld-linux' "$PFX/bin/as" 2>/dev/null; then
+      say "      interp: PRESENT -- as is DYNAMIC and this box has no loader"
+      grep -ao 'ld-[a-z0-9./-]*' "$PFX/bin/as" | head -1 | sed 's/^/        /'
     else
-      say "      tooldir as: STILL WILL NOT RUN -- $("$_TD/bin/as" --version 2>&1 | head -1)"
+      say "      interp: none -- statically linked"
     fi
   else
     R4=FAIL
@@ -1415,7 +1468,7 @@ if [ "$R5" = ok ]; then
   # as make's did. The difference is forced by the box, not a drift from stage
   # 4's recipe.
   "/work/src/$g47/configure" \
-    CC="$CCAUTO" \
+    CC="$CCAUTO" LDFLAGS="$LDF" \
     --build=aarch64-unknown-linux-gnu \
     --host=aarch64-unknown-linux-gnu \
     --target=aarch64-unknown-linux-gnu \
