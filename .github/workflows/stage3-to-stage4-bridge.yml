@@ -55,11 +55,25 @@
 # stops binutils reappearing by accident through a configure script that finds
 # it on PATH.
 #
-# `make` IS in tier 2, and that is new debt this job declares rather than
-# hides. busybox has no make and autoconf projects need one. It selects which
-# commands run; it does not put bytes in an object. Building make in-chain is
-# possible (it compiles without make) and is left for later, named here so it
-# cannot drift into being assumed.
+# TIER 2 IS ONE BINARY -- busybox -- exactly as stage 3 declares it. make is
+# not borrowed either, and that costs an ordering decision rather than a line
+# in a budget.
+#
+# THE CIRCULARITY, AND HOW live-bootstrap BREAKS IT. make is an ordinary C
+# program, so it needs a libc; musl's own build is driven by make. Neither can
+# go first. live-bootstrap's answer is that the early rungs are not driven by
+# make at all -- `kaem` reads a flat list of literal commands with no Makefile,
+# no variables and no dependency graph, and it is one of the mescc-tools
+# binaries this repo already vendors at the pin stage 3 uses
+# (spikes/reference/mescc-tools/Kaem; mes-rung.yml drives the whole mes build
+# with it). Only once a libc exists does live-bootstrap build GNU make, after
+# which ordinary autoconf builds work.
+#
+# Rung 2 does the same thing in shell rather than in kaem, because busybox sh
+# is already declared and kaem would have to be built first to save nothing.
+# musl's build is a compile of every .c in the tree, an `ar`, three crt files
+# and two generated headers -- small enough to spell out, which is precisely
+# why it can be the rung that comes before make.
 #
 # ---------------------------------------------------------------------------
 # WHY THE CLIMB IS `uses:` AND NOT COPIED
@@ -93,6 +107,10 @@ env:
   # its declared substitutions (9 aarch64 .s files fall back to portable C,
   # src/complex/*.c dropped for _Complex).
   MUSL_VER: 1.2.5
+  # make is built in-chain because busybox has none and nothing else is
+  # borrowed. 3.82 is live-bootstrap's pin; confirm against their manifest
+  # before treating this as pinned rather than chosen.
+  MAKE_VER: 3.82
   # The rest are stage 4's OWN versions, copied deliberately. If they drift
   # apart the overlap stops being an overlap.
   BINUTILS: 2.46.0
@@ -123,9 +141,10 @@ jobs:
       # TIER 1 -- ON THE BUILD PATH. STAYS EMPTY. No compiler, no assembler,
       # no linker, no archiver. binutils is built at rung 4, never borrowed.
       BUDGET_PATH: ''
-      # TIER 2 -- DRIVES THE BUILD, TOUCHES NO ARTIFACT BYTE. `make` is
-      # declared debt; see the header.
-      BUDGET_DRIVER: 'busybox make'
+      # TIER 2 -- DRIVES THE BUILD, TOUCHES NO ARTIFACT BYTE. ONE BINARY,
+      # exactly as stage3-hermetic-arm64 declares. make is NOT here: it is
+      # built at rung 3, and rung 2 is hand-driven so that it can be.
+      BUDGET_DRIVER: 'busybox'
     steps:
       - uses: actions/checkout@v5
 
@@ -170,6 +189,7 @@ jobs:
               || { echo "  FETCH FAILED: $1"; exit 1; }
           }
           get "https://musl.libc.org/releases/musl-$MUSL_VER.tar.gz"
+          get "$GNU/make/make-$MAKE_VER.tar.gz"
           get "$GNU/binutils/binutils-$BINUTILS.tar.xz"
           get "$GNU/gmp/gmp-$GMP_VER.tar.xz"
           get "$GNU/mpfr/mpfr-$MPFR_VER.tar.xz"
@@ -270,7 +290,7 @@ jobs:
 
           # Rung verdicts. Printed together at the end so the summary is one
           # block rather than something to reassemble from a scrolling log.
-          R1=skip; R2=skip; R3=skip; R4=skip; R5=skip; R6=skip
+          R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R5=skip; R6=skip
 
           # ------------------------------------------------------------------
           head1 "RUNG 0 -- the compiler the climb handed us"
@@ -300,13 +320,21 @@ jobs:
           fi
 
           # ------------------------------------------------------------------
-          head1 "RUNG 2 -- musl, built by mc-tcc"
-          # THE LIBC RUNG. Nothing above this can link without it: binutils and
-          # gcc are ordinary C programs and need a libc for their own binaries.
+          head1 "RUNG 2 -- musl, built by mc-tcc, WITHOUT make"
+          # THE LIBC RUNG, AND IT IS HAND-DRIVEN ON PURPOSE. Nothing above can
+          # link without a libc -- binutils, make and gcc are all ordinary C
+          # programs needing one for their own binaries -- and make cannot come
+          # first because it needs the libc too. live-bootstrap breaks that
+          # circle with kaem, a flat command list and no Makefile. This does the
+          # same in busybox sh, which is already declared.
+          #
+          # musl's build is small enough to spell out: two generated headers,
+          # every .c in the tree compiled once, an ar, and three crt files.
           # sources/musl.toml declares the substitutions -- 9 aarch64 .s files
           # that fall back to portable C, and src/complex/*.c for _Complex.
           if [ "$R1" = ok ]; then
             cd /work/src && tar xzf /in/musl-*.tar.gz && cd musl-*
+            MUSLD=$(pwd)
             for s in src/fenv/aarch64/fenv.s src/ldso/aarch64/tlsdesc.s \
                      src/process/aarch64/vfork.s src/setjmp/aarch64/longjmp.s \
                      src/signal/aarch64/restore.s src/thread/aarch64/__set_thread_area.s \
@@ -316,23 +344,67 @@ jobs:
             done
             rm -f src/complex/*.c
             say "    declared substitutions applied (9 .s, src/complex)"
-            ./configure --prefix="$SYS" --disable-shared \
-                        CC="$MC" CFLAGS="-B/work/tccsrc" > cfg.log 2>&1
-            say "    configure rc=$?"
-            if timeout 2400 make -j"$NP" > build.log 2>&1 && make install > /dev/null 2>&1; then
-              R2=ok
-              say "    libc.a: $(wc -c < "$SYS/lib/libc.a" 2>/dev/null || echo 0) bytes"
-              say "    headers: $(find "$SYS/include" -name '*.h' 2>/dev/null | wc -l) files"
-              say "    crt: $(ls "$SYS/lib"/crt*.o 2>/dev/null | tr '\n' ' ')"
-            else
-              R2=FAIL
-              say "    --- where it stopped ---"
-              grep -nE "error:|Error [0-9]" build.log 2>/dev/null | head -12 | sed 's/^/      /'
-              tail -15 build.log 2>/dev/null | sed 's/^/      /'
+
+            # THE TWO GENERATED HEADERS. musl's Makefile builds these with sed
+            # before anything else compiles; nothing includes them until they
+            # exist, and every later compile fails obscurely if they do not.
+            mkdir -p obj/include/bits
+            sed -f tools/mkalltypes.sed arch/aarch64/bits/alltypes.h.in \
+                include/alltypes.h.in > obj/include/bits/alltypes.h 2>/dev/null \
+              || say "    WARN: alltypes.h not generated"
+            sed -n 's/__NR_/SYS_/p' arch/aarch64/bits/syscall.h.in \
+                > obj/include/bits/syscall.h 2>/dev/null
+            cat arch/aarch64/bits/syscall.h.in >> obj/include/bits/syscall.h 2>/dev/null
+            say "    generated: $(ls obj/include/bits 2>/dev/null | tr '\n' ' ')"
+
+            INC="-Iobj/include -Iarch/aarch64 -Iarch/generic -Iinclude -Isrc/include -Isrc/internal"
+            CC="$MC -B/work/tccsrc"
+            nc=0; nf=0
+            : > /work/musl-fail.txt
+            for f in $(find src crt -name '*.c' | sort); do
+              o="obj/${f%.c}.o"; mkdir -p "$(dirname "$o")"
+              if $CC $INC -c -o "$o" "$f" 2>>/work/musl-fail.txt; then
+                nc=$((nc + 1))
+              else
+                nf=$((nf + 1)); echo "$f" >> /work/musl-fail.txt
+              fi
+            done
+            say "    compiled $nc objects, $nf failed"
+
+            # THE COUNT IS THE MEASUREMENT. A partial libc still archives and
+            # still links some programs, so "libc.a exists" proves nothing on
+            # its own -- rung 3 is what decides whether it is usable.
+            if [ "$nf" -gt 0 ]; then
+              say "    --- first failures ---"
+              grep -av '^[A-Z][0-9]*$' /work/musl-fail.txt | head -15 | sed 's/^/      /'
             fi
+
+            mkdir -p "$SYS/lib" "$SYS/include"
+            # ar comes from binutils, which is not in this box and is rung 4.
+            # mc-tcc has tcc's own archiver built in, which is the whole reason
+            # -ar exists in tcc: `tcc -ar` writes a System V archive.
+            find obj/src -name '*.o' > /work/objlist.txt
+            if "$MC" -ar rcs "$SYS/lib/libc.a" $(cat /work/objlist.txt) 2>/work/ar.err; then
+              say "    libc.a: $(wc -c < "$SYS/lib/libc.a") bytes from $(wc -l < /work/objlist.txt) objects"
+            else
+              say "    ar FAILED -- tcc -ar is the only archiver in this box"
+              grep -av '^[A-Z][0-9]*$' /work/ar.err | head -5 | sed 's/^/      /'
+            fi
+            for c in crt1 crti crtn Scrt1 rcrt1; do
+              [ -f "obj/crt/aarch64/$c.o" ] && cp "obj/crt/aarch64/$c.o" "$SYS/lib/" 2>/dev/null
+              [ -f "obj/crt/$c.o" ]         && cp "obj/crt/$c.o"         "$SYS/lib/" 2>/dev/null
+            done
+            cp -a include/. "$SYS/include/" 2>/dev/null || true
+            cp -a arch/aarch64/bits "$SYS/include/" 2>/dev/null || true
+            cp -a arch/generic/bits "$SYS/include/" 2>/dev/null || true
+            cp -a obj/include/bits/. "$SYS/include/bits/" 2>/dev/null || true
+
+            say "    headers: $(find "$SYS/include" -name '*.h' 2>/dev/null | wc -l) files"
+            say "    crt:     $(ls "$SYS/lib"/crt*.o 2>/dev/null | tr '\n' ' ')"
+            if [ -s "$SYS/lib/libc.a" ] && [ -f "$SYS/lib/crt1.o" ]; then R2=ok; else R2=FAIL; fi
+            cd /work
           fi
 
-          # ------------------------------------------------------------------
           head1 "RUNG 3 -- a HOSTED program: #include <stdio.h>, real crt, real libc"
           # THE PIVOT. Everything stage 3 ever measured was -nostdlib -static
           # single-file freestanding. This is the first time mc-tcc has to
@@ -361,11 +433,47 @@ jobs:
           fi
 
           # ------------------------------------------------------------------
+          head1 "RUNG 3.5 -- GNU make, built by mc-tcc.  NOT BORROWED EITHER."
+          # busybox has no make and this box borrows nothing else, so every
+          # autoconf rung above depends on this one. make ships build.sh
+          # exactly for this case -- it is how make is bootstrapped where no
+          # make exists yet -- so configure runs under busybox sh and build.sh
+          # does the compiling.
+          #
+          # THIS IS ALSO THE CHEAPEST HOSTED-LIBC SIGNAL. make is small plain C
+          # touching little more than stdio, string and the process calls. If
+          # it fails here it fails in minutes, and it fails for a reason that is
+          # readable -- unlike binutils, where the first error arrives after a
+          # long configure and is usually a consequence of something earlier.
+          if [ "$R3" = ok ]; then
+            cd /work/src && tar xzf /in/make-*.tar.gz && cd make-*
+            ./configure --prefix="$PFX" --disable-nls \
+              CC="$MC -B/work/tccsrc -I$SYS/include -L$SYS/lib" > cfg.log 2>&1
+            say "    configure rc=$?"
+            if [ -f build.sh ]; then
+              if sh ./build.sh > build.log 2>&1 && [ -x ./make ]; then
+                mkdir -p "$PFX/bin" && cp ./make "$PFX/bin/make"
+                R35=ok; say "    make: $(wc -c < "$PFX/bin/make") bytes"
+                "$PFX/bin/make" --version 2>&1 | head -1 | sed 's/^/    /'
+              else
+                R35=FAIL; say "    --- where it stopped ---"
+                grep -nE "error:|undefined reference" build.log 2>/dev/null | head -15 | sed 's/^/      /'
+                tail -15 build.log 2>/dev/null | sed 's/^/      /'
+              fi
+            else
+              R35=FAIL
+              say "    configure produced no build.sh -- cannot bootstrap make without make"
+              tail -10 cfg.log 2>/dev/null | sed 's/^/      /'
+            fi
+            cd /work
+          fi
+
           head1 "RUNG 4 -- binutils, built by mc-tcc.  NOT BORROWED."
           # as, ld, ar and ranlib decide what bytes end up in an object, so
           # they are tier 1 by definition and cannot come from the host. gcc
           # cannot be built without them: it emits assembly and shells out.
-          if [ "$R3" = ok ]; then
+          if [ "$R35" = ok ]; then
+            PATH="$PFX/bin:$PATH"; export PATH
             cd /work/src && tar xf /in/binutils-*.tar.xz && cd binutils-*
             mkdir -p ../b-binutils && cd ../b-binutils
             ../binutils-*/configure --prefix="$PFX" --disable-nls --disable-werror \
@@ -450,6 +558,7 @@ jobs:
           printf '    %-38s %s\n' "1  freestanding compile+link"      "$R1"
           printf '    %-38s %s\n' "2  musl built by mc-tcc"           "$R2"
           printf '    %-38s %s\n' "3  hosted program, real libc"      "$R3"
+          printf '    %-38s %s\n' "3.5 GNU make built by mc-tcc"     "$R35"
           printf '    %-38s %s\n' "4  binutils built by mc-tcc"       "$R4"
           printf '    %-38s %s\n' "5  gmp / mpfr / mpc"               "$R5"
           printf '    %-38s %s\n' "6  gcc 4.7.4 -- stage 4's rung 1"  "$R6"
@@ -504,9 +613,11 @@ jobs:
           echo "    /usr/lib       crt1.o, libc            -- absent"
           echo "    binutils       as, ld, ar, ranlib      -- absent (built at rung 4)"
           echo ""
-          echo "  \`make\` is declared debt. It selects which commands run and"
-          echo "  puts no bytes in an object, so it is tier 2 -- but it is a"
-          echo "  host binary and building it in-chain is unowned work."
+          echo "    make           GNU make               -- absent (built at rung 3.5)"
+          echo ""
+          echo "  busybox is the only host binary in this box, which is exactly"
+          echo "  what stage3-hermetic-arm64 declares. Removing it is the same"
+          echo "  unowned work it is there."
 
       - uses: actions/upload-artifact@v4
         if: always()
