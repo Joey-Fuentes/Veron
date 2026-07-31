@@ -2444,8 +2444,33 @@ if [ "$R9" = ok ]; then
     rm -rf /work/b-binutils1 && mkdir -p /work/b-binutils1 && cd /work/b-binutils1
     say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: binutils pass 1 configure"
     say "    (cwd: $(pwd))"
+    # THE eh_frame OVERLAP IS ld's, NOT THE COMPILER's, AND THIS RUNG PROVED IT.
+    #
+    #     CCLD  as-new
+    #     ld: .eh_frame_hdr refers to overlapping FDEs.
+    #     ld: final link failed: Bad value
+    #
+    # Every object in that link was compiled by gcc 10. The linker was
+    # binutils 2.30 -- the one tcc built at rung 4, reached through gcc 10's
+    # own -B path. So the malformed section is not something tcc emitted into
+    # an object; it is something tcc's binutils emits when it MERGES them.
+    #
+    # That corrects the note in this file's README twice over: it is not musl's
+    # crt files, and it is not tcc's .eh_frame either. Rung 6 hid it by going
+    # -static, which suppresses --eh-frame-hdr; here the link is static too and
+    # it still fires, because gas's own objects carry enough CFI to trip it.
+    #
+    # --disable-werror ALONE IS NOT ENOUGH -- this is a link failure, not a
+    # warning. -Wl,--no-eh-frame-hdr tells the driver not to build the section
+    # at all. Nothing in a static binary reads it: it exists so a dynamic
+    # unwinder can find FDEs quickly, and there is no loader in this box.
+    #
+    # THE REAL FIX IS UPWARD. Chapter 5 is building a NEW binutils; once
+    # $LFS_TGT-ld exists, everything above uses it and this stops mattering.
+    # This flag only has to carry the one link that produces that ld.
     "/work/src/$_bu/configure" \
-      CC="$CHAIN_CC -static" CXX="$CHAIN_CXX -static" LDFLAGS="-static" \
+      CC="$CHAIN_CC -static" CXX="$CHAIN_CXX -static" \
+      LDFLAGS="-static -Wl,--no-eh-frame-hdr" \
       --prefix="$S/tools" \
       --with-sysroot="$S" \
       --target="$LFS_TGT" \
@@ -2456,7 +2481,12 @@ if [ "$R9" = ok ]; then
     say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_r10)"
     if [ "$_r10" != 0 ]; then
       R10=FAIL; tail -20 cfg.log 2>/dev/null | sed 's/^/      /'
-    elif timeout 3600 make -j"$NP" > b.log 2>&1 && make install > i.log 2>&1; then
+    # MAKEINFO=true AND THE perl WARNINGS. `/bin/sh: perl: not found` and
+    # `pod2man: not found` appear above the real error and are IGNORED by
+    # binutils itself -- "Error 127 (ignored)" -- because they only build man
+    # pages. Worth naming so the next reader does not chase perl: it is a real
+    # missing tool, and it is not what stopped this rung.
+    elif timeout 3600 make -j"$NP" MAKEINFO=true > b.log 2>&1 && make install > i.log 2>&1; then
       if [ -x "$S/tools/bin/$LFS_TGT-ld" ]; then
         R10=ok
         say "    $LFS_TGT-ld, -as, -ar installed:"
@@ -2528,8 +2558,12 @@ if [ "$R10" = ok ]; then
   if [ "$R11" != FAIL ]; then
     rm -rf /work/b-gcc1 && mkdir -p /work/b-gcc1 && cd /work/b-gcc1
     say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: gcc 15 pass 1 configure"
+    # SAME FLAG AS RUNG 10, SAME REASON. gcc 15's own binaries are linked by
+    # the tcc-built ld too -- $LFS_TGT-ld exists now but is the CROSS linker
+    # and is not what links the compiler itself.
     "/work/src/$g15/configure" \
-      CC="$CHAIN_CC -static" CXX="$CHAIN_CXX -static" LDFLAGS="-static" \
+      CC="$CHAIN_CC -static" CXX="$CHAIN_CXX -static" \
+      LDFLAGS="-static -Wl,--no-eh-frame-hdr" \
       --target="$LFS_TGT" \
       --prefix="$S/tools" \
       --with-glibc-version="$GLIBC" \
