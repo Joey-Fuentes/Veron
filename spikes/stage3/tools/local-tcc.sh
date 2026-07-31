@@ -73,6 +73,27 @@ fi
 
 rm -rf tcc-work && cp -r tcc-src tcc-work
 
+# --- tcc patches for the micro-c build --------------------------------------
+# APPLIED TO tcc-work, NEVER TO tcc-src, so a re-run starts from the pristine
+# tarball rather than stacking a patch onto an already-patched tree. That is
+# the same discipline the m2libc and m2-planet series use, and the reason is
+# the same: a patch that applies twice is a patch that has stopped meaning
+# what it says.
+#
+# The tarball is already patched for the arm64 assembler; this series is the
+# small set of changes that only the MICRO-C build wants -- currently the
+# eight-byte long double, which is what micro-c's float model actually gives
+# the tcc it builds. See the patch preamble.
+tp=0
+for p in "$ROOT"/spikes/stage3/patches/tcc-microc/[0-9]*.patch; do
+    [ -e "$p" ] || continue
+    ( cd tcc-work && git apply --ignore-whitespace "$p" 2>/dev/null ) \
+        || patch -p1 -d tcc-work -i "$p" >/dev/null \
+        || { echo "FAIL: $(basename "$p") does not apply to tcc"; exit 1; }
+    tp=$((tp + 1))
+done
+echo "  tcc-microc patches applied: $tp"
+
 # --- optional instrumentation -----------------------------------------------
 if [ -n "$INST_FILE" ] && [ -n "$INST_FUNCS" ]; then
     echo "== instrumenting $INST_FILE: $INST_FUNCS =="

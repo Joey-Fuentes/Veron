@@ -520,6 +520,22 @@ jobs:
             tap=$((tap + 1))
           done
           [ "$tap" -ge 5 ] || { echo "FAIL: only $tap tcc-arm64-asm patches, expected >= 5"; exit 1; }
+
+          # THE MICRO-C-ONLY tcc PATCHES. Small, and separate from the arm64
+          # assembler series because they are not about the target -- they are
+          # about the compiler doing the building. Currently one: long double
+          # is eight bytes, which is what micro-c's float model actually gives
+          # the tcc it builds, and without which tcc's own guard refuses to
+          # emit any long double constant at all. See the patch preamble.
+          tmp=0
+          for p in spikes/stage3/patches/tcc-microc/[0-9]*.patch; do
+            [ -e "$p" ] || continue
+            git -C pins/tcc-src apply --ignore-whitespace "$PWD/$p" 2>/dev/null \
+              || patch -p1 -d pins/tcc-src -i "$PWD/$p" >/dev/null \
+              || { echo "FAIL: $(basename "$p") does not apply to tcc"; exit 1; }
+            tmp=$((tmp + 1))
+          done
+          echo "  tcc-microc patches: $tmp"
           echo "  tcc-src ready: $(ls pins/tcc-src/*.c | wc -l) .c files, $tap asm patches"
 
           # THE TABLES COME FROM spikes/reference/m2libc, PATCHED -- NOT FROM

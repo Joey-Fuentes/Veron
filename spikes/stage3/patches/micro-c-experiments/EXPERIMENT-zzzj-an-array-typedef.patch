@@ -1,0 +1,99 @@
+An array typedef -- `typedef T name[N];`.
+
+micro-c had no form of this. The name was consumed, `[` reached the `;` check,
+and the declaration died with "ERROR in typedef statement".
+
+WHAT NEEDED IT. micro-c-libc/setjmp.h has carried a workaround and a note
+saying so since it was written:
+
+    NOT `typedef struct {...} jmp_buf[1];`, which is how real libcs write it
+    so the name decays to a pointer when passed. micro-c cannot parse a
+    typedef of an ARRAY type ... the array typedef is then a real micro-c gap
+    rather than a self-inflicted one.
+
+Something needed it. tcc writes
+
+    jmp_buf main_jb;                       tcc.h
+    tcc_setjmp(s1, main_jb, ...)           tccrun.c:250
+
+and a plain struct does not decay, so mc-tcc compiling tcc's own source
+stopped with "cannot convert 'struct __jmp_buf' to 'void *'".
+
+A POINTER TYPEDEF WOULD ALSO HAVE COMPILED AND WOULD HAVE BEEN WORSE. It makes
+`jmp_buf main_jb;` reserve eight bytes rather than 256, so setjmp writes
+through an uninitialised pointer -- compiles, links, wrong only at run time,
+which is the single failure class this project exists to avoid. Rejected on
+those grounds rather than tried and reverted.
+
+THE SIZE IS THE WHOLE IMPLEMENTATION, and that is not a shortcut. micro-c
+already treats anything wider than a register as living at an ADDRESS rather
+than in one -- the same rule that makes struct arguments, struct assignment and
+member access work. So a typedef whose size is N elements wide gets both halves
+for free: a declaration reserves N elements, and passing the name yields its
+address rather than a load. Nothing else had to change.
+
+WHAT IT DOES NOT DO. The element type is not recorded, so INDEXING through such
+a typedef would stride by the whole array rather than by one element. Nothing
+in tcc subscripts one -- jmp_buf is passed and never indexed -- and closing that
+would want a case first. Recorded rather than discovered later.
+
+VERIFIED against gcc on both architectures: sizeof(jb) where `typedef long
+jb[32]` is 256, a local and a global both reserve it, and passing either to a
+`long*` parameter and filling all 32 slots reads back correctly.
+
+    difftest    91 pass / 0 fail amd64, 93 / 0 aarch64, 1 known gap
+    the twelve  12 / 12
+    tcc unit    micro-c's output is unchanged -- nothing in tcc used an array
+                typedef before this, so the feature is additive and inert
+                until a header asks for it
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -6007,6 +6007,47 @@
+ 		type_size = mirror_type(type_size);
+ 		global_token = global_token->next;
+ 
++		/* AN ARRAY TYPEDEF, `typedef T name[N];`.
++		 *
++		 * micro-c had no form of this at all -- the name was consumed, `[`
++		 * reached the `;` check, and the whole declaration died with
++		 * "ERROR in typedef statement". micro-c-libc/setjmp.h says so in its
++		 * own header note and works around it with a plain struct, adding that
++		 * the array typedef becomes "a real micro-c gap rather than a
++		 * self-inflicted one" the moment something needs it. Something does:
++		 * tcc writes
++		 *
++		 *     jmp_buf main_jb;                       tcc.h
++		 *     tcc_setjmp(s1, main_jb, ...)           tccrun.c:250
++		 *
++		 * and a plain struct does not decay, so the call failed with
++		 * "cannot convert 'struct __jmp_buf' to 'void *'".
++		 *
++		 * THE SIZE IS THE WHOLE IMPLEMENTATION, and that is not a shortcut.
++		 * micro-c already treats anything wider than a register as living at
++		 * an ADDRESS rather than in one -- that is the same rule that makes
++		 * struct arguments, struct assignment and member access work. So a
++		 * typedef whose size is N elements wide gets both halves for free: a
++		 * declaration reserves N elements, and passing the name yields its
++		 * address rather than a load. Nothing else has to know.
++		 *
++		 * WHAT IT DOES NOT DO. The element type is not recorded, so INDEXING
++		 * through such a typedef would stride by the whole array rather than
++		 * by one element. Nothing in tcc indexes one -- jmp_buf is passed and
++		 * never subscripted -- and a case would be needed before that changed.
++		 * Recorded rather than discovered later. */
++		if(NULL != global_token)
++		{
++			if(global_token->s[0] == '[')
++			{
++				require_extra_token();
++				int elements = constant_expression();
++				require_match("ERROR in typedef statement\nMissing ]\n", "]");
++				require(0 < elements, "An array typedef needs a positive size\n");
++				type_size->size = type_size->size * elements;
++			}
++		}
++
+ 		/* EXPERIMENT: FUNCTION-TYPE typedef, `typedef T name(args);`.
+ 		 * The branch above handles `typedef T (*name)(args)` -- a function
+ 		 * POINTER -- but not the plain function type, which libtcc.h uses three
