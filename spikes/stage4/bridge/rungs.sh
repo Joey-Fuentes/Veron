@@ -2933,8 +2933,36 @@ SPLITSH
     # find a working C compiler" from one failed link, when gcc 10 had just
     # built two compilers and a binutils. The compiler is fine; its linker is
     # not, on this one section, and only until $LFS_TGT-ld takes over.
+    # -Doptimize="-O0", AND THIS IS NOT ABOUT SPEED.
+    #
+    # At -O2 perl configures, compiles, links miniperl, RUNS it -- and then:
+    #
+    #     Perl v8.0.0 required--this is only v5.42.0, stopped at
+    #     dist/constant/lib/constant.pm line 2.
+    #
+    # Line 2 of constant.pm is `use 5.008;` -- perl 5.8. Something read 5.008
+    # as v8.0.0. That comparison is done by miniperl against $], and getting it
+    # wrong means the freshly built interpreter is computing a version
+    # comparison incorrectly -- which is a MISCOMPILE, not a missing tool.
+    #
+    # perl is unusually exposed to this: its numeric conversion, its string-to
+    # -version parsing and its integer arithmetic all go through code that
+    # aggressive optimisation is known to break on compilers that mishandle
+    # strict-aliasing or signed overflow. perl's own hints files disable
+    # optimisation for exactly this reason on compilers it does not trust, and
+    # this gcc 10 was built by a gcc 4.7 that was built by tcc.
+    #
+    # -O0 removes the variable. If perl then builds, the fault is optimisation
+    # on this toolchain and is worth knowing precisely; if it fails the same
+    # way, the fault is elsewhere and -O0 has cost only build time on a package
+    # that is a BUILD TOOL -- nothing ships it and nothing measures its speed.
+    #
+    # -fno-strict-aliasing is what perl's own Configure adds for gcc and what
+    # every distribution builds it with; leaving it to chance here would be
+    # relying on Configure detecting a compiler it has never seen.
     ./Configure -des -Dprefix="$PFX" -Dcc="$PFX/bin/chain-cc" \
-      -Dldflags="-static" -Doptimize="-O2" > c.log 2>&1
+      -Dldflags="-static" \
+      -Doptimize="-O0 -fno-strict-aliasing -fwrapv" > c.log 2>&1
     _rp=$?
     say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_rp)"
     if [ "$_rp" != 0 ]; then
@@ -2942,6 +2970,15 @@ SPLITSH
     elif timeout 5400 make -j"$NP" > b.log 2>&1 && make install > i.log 2>&1; then
       if [ -x "$PFX/bin/perl" ]; then
         R115=ok
+        # THE EXACT COMPARISON THAT FAILED, ASKED DIRECTLY. `use 5.008` is
+        # implemented as a numeric compare against $], so if the interpreter
+        # gets this right the miscompile is gone; if it gets it wrong while
+        # still building, we would have a perl that works until something
+        # compares versions -- far worse than one that fails loudly.
+        say "    --- the comparison that failed at -O2 ---"
+        "$PFX/bin/perl" -e 'printf("      $] = %s\n", $]);' 2>&1
+        "$PFX/bin/perl" -e 'print "      use 5.008 ok\n"' -e 'BEGIN{ require 5.008 }' 2>&1 \
+          || say "      require 5.008 STILL FAILS -- the miscompile is not optimisation"
         say "    perl: $("$PFX/bin/perl" --version 2>&1 | grep -o 'v5[0-9.]*' | head -1)"
         # PROVE IT RUNS AND CAN BE FOUND BY NAME, which is how every consumer
         # above will reach it. `perl -e` failing here is a different problem
@@ -2959,6 +2996,16 @@ SPLITSH
       fi
     else
       R115=FAIL; say "    --- errors ---"
+      # THE VERSION MESSAGE IS A MISCOMPILE, NOT A VERSION PROBLEM. Say so
+      # here, because "Perl v8.0.0 required--this is only v5.42.0" reads like a
+      # dependency and sends the next round looking for a newer perl.
+      if grep -q "required--this is only" b.log 2>/dev/null; then
+        say "    ^ miniperl parsed a version wrongly -- `use 5.008` read as"
+        say "      v8.0.0. That is the interpreter we just built computing a"
+        say "      comparison incorrectly, i.e. a codegen fault in the chain,"
+        say "      not a missing or too-old perl."
+        grep -a "required--this is only" b.log | head -2 | sed 's/^/      /'
+      fi
       grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
       tail -25 b.log 2>/dev/null | sed 's/^/      /'
     fi
