@@ -942,13 +942,59 @@ size, as the earlier note invited, points nowhere.
 * **duplicate symbols** — `_allocated_list`, `_free_list`, `malloc`, `free`,
   `realloc` and `_malloc_insert_block` are each defined exactly once
 
-### The next probe, and it needs no watchpoint
+### The detector, built and firing
 
-Keep a monotonic count of nodes inserted and compare it to the reachable count
-at every allocator entry. The first divergence brackets the corruption between
-two allocator calls, and the marker trail in `local-tcc.sh` can then name the
-function. Watchpoints are unavailable under qemu-user — the gdbstub answers
-`Z0`/`Z1` and refuses `Z2`/`Z3`/`Z4` — so this is the available route.
+m2libc patch 0011 now carries it. A node is created exactly once and afterwards
+only *moves* between the two lists, so reachable(allocated) + reachable(free)
+must always equal the number created. Checked at every `malloc` and `free`,
+with both walks bounded so a chain clobbered into a **cycle** reports rather
+than hangs:
+
+```
+    MALLOC CHECK: NODES LOST at malloc
+      nodes created    = 79
+      nodes reachable  = 17
+      lost             = 62
+      last node addr   = 6877408
+      its block        = 6877440   size 512
+      its next (BAD)   = 0         <-- clobbered to NULL
+```
+
+**62 nodes cut off in one store**, so the break is near the head of the chain.
+`next` is at offset 0 of the node, 32 bytes before its block — exactly where
+the *previous* allocation's data ends. This is an **overrun of the neighbouring
+block**, not a stray write at a random address.
+
+### And the neighbour is identified
+
+```
+      OVERRUN SOURCE blk = 6877152   size 256
+       word[0]           = 16
+       word[1]           = 0x011e780400527a01
+```
+
+`01 7a 52 00 04 78 1e 01` — version 1, augmentation `"zR"`, code alignment 4,
+data alignment `0x78` (SLEB −8), return-address register 30. That is a **DWARF
+CIE for aarch64**, and the block's tail holds CFA opcodes. **The overrunning
+block is tcc's `.eh_frame` section data.**
+
+### Ruled out since, by reducing the logic and diffing against gcc
+
+* **`CString` growth** — `cstr_cat`'s `if (size > cstr->size_allocated)` gate,
+  `cstr_realloc`'s doubling, and the 16-byte struct layout. Correct.
+* **`section_add`** — `offset = (sec->data_offset + align - 1) & -align` with a
+  4-byte `int` align against 8-byte `unsigned long` offsets, the growth gate,
+  and 400 iterations checking allocated never falls behind offset. Correct,
+  including that the mask sign-extends rather than clearing the top half.
+
+So the section bookkeeping is right and something writes past the end anyway.
+**The next question is who writes `.eh_frame`**: a pointer taken from
+`section_ptr_add` and held across a later `section_realloc` would write through
+a stale base, which is the classic shape and is not covered by either probe.
+
+Watchpoints remain unavailable under qemu-user — the gdbstub answers `Z0`/`Z1`
+and refuses `Z2`/`Z3`/`Z4` — so the marker trail in `local-tcc.sh` is the route
+from here.
 
 ---
 

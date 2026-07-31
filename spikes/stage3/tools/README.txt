@@ -2123,3 +2123,52 @@ supplying an ARM64 assembler upstream lacks, applied into the committed tarball
 (toolbox/README.md:77) and re-applied by the workflows. Stage 3's deliverable is
 tcc-at-pin-plus-five-patches, not tcc. The accurate claim is that micro-c
 compiles all of tcc.c with NO change made for micro-c's benefit.
+
+--------------------------------------------------------------------------------
+THE DETECTOR FIRES: 62 nodes lost in one store, and the neighbour is .eh_frame.
+--------------------------------------------------------------------------------
+
+A node is created once and afterwards only MOVES between lists, so
+reachable(allocated) + reachable(free) == created, always. m2libc 0011 checks
+that at every malloc and free, with bounded walks so a chain clobbered into a
+CYCLE reports instead of hanging.
+
+    MALLOC CHECK: NODES LOST at malloc
+      nodes created = 79   reachable = 17   lost = 62
+      last node addr = 6877408   its block = 6877440 (512)
+      its next (BAD) = 0
+
+62 cut off in ONE store, so the break is near the head. `next` sits at offset 0
+of the node, 32 bytes before its block -- exactly where the PREVIOUS block's
+data ends. An overrun of the neighbour, not a stray write.
+
+THE NEIGHBOUR, IDENTIFIED FROM ITS CONTENTS:
+
+      OVERRUN SOURCE blk = 6877152 (256)
+       word[1] = 0x011e780400527a01
+               = 01 7a 52 00 04 78 1e 01
+                 version 1, augmentation "zR", code align 4,
+                 data align SLEB -8, return-address register 30
+
+A DWARF CIE for aarch64, with CFA opcodes in the tail. THE OVERRUNNING BLOCK IS
+tcc's .eh_frame SECTION DATA. Reading the bytes named the owner in one step;
+three rounds of reasoning about distances had not.
+
+RULED OUT SINCE, each by reducing the logic to a small program and diffing the
+exit code against gcc -- no tcc build, seconds per round:
+
+  * CString growth: the `size > cstr->size_allocated` gate, cstr_realloc's
+    doubling, the 16-byte layout. Correct.
+  * section_add: `(sec->data_offset + align - 1) & -align` with a 4-byte int
+    align against 8-byte unsigned long offsets, the growth gate, 400 iterations
+    checking allocated never falls behind offset, and that the mask
+    sign-extends rather than clearing the top half of a 64-bit value. Correct.
+
+So the bookkeeping is right and something writes past the end anyway. NEXT: who
+writes .eh_frame. A pointer taken from section_ptr_add and held across a later
+section_realloc writes through a STALE BASE -- the classic shape, and not
+covered by either probe above.
+
+THE DETECTOR IS A DEBUGGING PATCH, NOT A SHIPPING ONE. It walks both lists at
+every malloc and free, which is O(n^2) over a run. It is in because the fault
+is live; it should come out when the corruption is fixed.

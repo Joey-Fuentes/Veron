@@ -100,9 +100,114 @@ the marker trail can then name. Watchpoints are unavailable under qemu-user --
 gdbstub answers Z0/Z1 and refuses Z2/Z3/Z4 -- so this is the available route.
 --------------------------------------------------------------------------------
 
+--------------------------------------------------------------------------------
+THIRD ROUND: a node-loss detector, and what it caught.
+
+The diagnostics above identify the pointer as a live block whose node the list
+does not reach. This adds the check that catches that AT THE MOMENT IT
+HAPPENS: a node is created exactly once, in _malloc_add_new, and afterwards
+only MOVES between the two lists -- so reachable(allocated) + reachable(free)
+must always equal _malloc_nodes_created. _malloc_check_lists() compares them at
+every malloc and free, and both walks are bounded so a chain clobbered into a
+CYCLE reports rather than hangs.
+
+It fires, and it brackets the damage to a single allocator interval:
+
+    MALLOC CHECK: NODES LOST at malloc
+      nodes created    = 79
+      nodes reachable  = 17
+      lost             = 62
+      allocated depth  = 13
+      last node addr   = 6877408
+      its block        = 6877440
+      its size         = 512
+      its next (BAD)   = 0        <-- clobbered to NULL
+
+62 nodes cut off in one store, so the break is near the HEAD of the chain.
+
+`next` is at offset 0 of the node, which is 32 bytes before its block -- and
+that is exactly where the PREVIOUS allocation's data ends. So this is an
+OVERRUN of the neighbouring block, not a stray write at a random address. The
+patch now names that neighbour:
+
+      OVERRUN SOURCE blk = 6877152
+       its size          = 256
+       word[0]           = 16
+       word[1]           = 0x011e780400527a01
+
+word[1] is `01 7a 52 00 04 78 1e 01` -- version 1, augmentation string "zR",
+code alignment 4, data alignment 0x78 (SLEB -8), return-address register 30.
+That is a DWARF CIE for aarch64, and the block's tail holds CFA opcodes. THE
+OVERRUNNING BLOCK IS tcc's .eh_frame SECTION DATA.
+
+RULED OUT SINCE, both by compiling the reduced logic and diffing against gcc:
+
+  * CString growth -- cstr_cat's `if (size > cstr->size_allocated)` gate, the
+    doubling in cstr_realloc, and the 16-byte struct layout. Correct.
+  * section_add -- `offset = (sec->data_offset + align - 1) & -align` with a
+    4-byte `int` align against 8-byte `unsigned long` offsets, the growth gate
+    `offset1 > sec->data_allocated`, and 400 iterations checking that
+    allocated never falls behind offset. Correct, including that the mask
+    sign-extends and does not clear the top half of a 64-bit offset.
+
+So the section bookkeeping is right and something writes past the end anyway.
+The next question is who writes .eh_frame: a pointer from section_ptr_add held
+across a later section_realloc would write through a stale base, which is the
+classic shape and is not covered by either probe above.
+
+NOTE ON COST. The check walks both lists at every malloc and free. That is
+O(n^2) over a run and it is a DEBUGGING patch, not a shipping one -- it is here
+because the fault is live, and it should come out once the corruption is fixed.
+--------------------------------------------------------------------------------
+
+
 --- a/stdlib.c
 +++ b/stdlib.c
-@@ -390,6 +390,26 @@
+@@ -39,6 +39,18 @@
+ };
+ 
+ struct _malloc_node* _allocated_list;
++/* HOW MANY NODES HAVE EVER BEEN CREATED. A node is created exactly once, in
++ * _malloc_add_new, and after that it only MOVES between the two lists -- so
++ * reachable(_allocated_list) + reachable(_free_list) must always equal this.
++ * When it does not, a `next` in one of the chains has been clobbered and every
++ * node past it is invisible while its block stays live. That is the failure
++ * behind "realloc: pointer was never returned by malloc", and this is the
++ * cheapest thing that can catch it AT THE MOMENT IT HAPPENS rather than
++ * whenever some later caller trips over a lost block. */
++long _malloc_nodes_created;
++long _malloc_check_armed;
++void _malloc_check_lists(char* where);
++void _malloc_write_num(char* label, long v);
+ struct _malloc_node* _free_list;
+ 
+ /********************************
+@@ -190,6 +202,7 @@
+  ************************************************************************/
+ void free(void* ptr)
+ {
++	_malloc_check_lists("free    ");
+ /* just in case someone needs to quickly turn it off */
+ #ifndef _MALLOC_DISABLE_FREE
+ 	/* free(NULL) IS A NO-OP. C requires it, and real code relies on it:
+@@ -293,6 +306,8 @@
+ 	if(NULL == n->block) return NULL;
+ 
+ 	/* Looks like we made it home safely */
++	_malloc_nodes_created = _malloc_nodes_created + 1;
++	_malloc_check_armed = 1;
+ 	n->size = size;
+ 	n->next = NULL;
+ 	n->used = _IN_USE;
+@@ -331,6 +346,7 @@
+  ************************************************************************/
+ void* malloc(unsigned size)
+ {
++	_malloc_check_lists("malloc  ");
+ 	/* skip allocating nothing */
+ 	if(0 == size) return NULL;
+ 
+@@ -390,6 +406,122 @@
  	return ptr;
  }
  
@@ -126,10 +231,106 @@ gdbstub answers Z0/Z1 and refuses Z2/Z3/Z4 -- so this is the available route.
 +	write(2, "\n", 1);
 +}
 +
++/* WALK BOTH LISTS AND COMPARE. Bounded, so a chain clobbered into a CYCLE
++ * reports rather than hangs -- an infinite loop here would look like the
++ * compiler wedging, which is the least informative failure available. */
++void _malloc_check_lists(char* where)
++{
++	if(0 == _malloc_check_armed) return;
++
++	long seen = 0;
++	long guard = 0;
++	struct _malloc_node* i = _allocated_list;
++	while(NULL != i)
++	{
++		seen = seen + 1;
++		guard = guard + 1;
++		if(guard > 100000)
++		{
++			write(2, "MALLOC CHECK: allocated list is a CYCLE at ", 42);
++			write(2, where, 8);
++			write(2, "\n", 1);
++			exit(9);
++		}
++		i = i->next;
++	}
++	i = _free_list;
++	while(NULL != i)
++	{
++		seen = seen + 1;
++		guard = guard + 1;
++		if(guard > 100000)
++		{
++			write(2, "MALLOC CHECK: free list is a CYCLE at ", 37);
++			write(2, where, 8);
++			write(2, "\n", 1);
++			exit(9);
++		}
++		i = i->next;
++	}
++
++	if(seen != _malloc_nodes_created)
++	{
++		/* WHICH NODE ENDS THE CHAIN. The last node the walk reaches is the one
++		 * whose `next` was clobbered, and its block is the memory the wild
++		 * store was aimed near. Print the node, its block, and the words
++		 * around the break so the shape of the write is visible. */
++		struct _malloc_node* lastok = NULL;
++		struct _malloc_node* w = _allocated_list;
++		long depth = 0;
++		while(NULL != w) { lastok = w; depth = depth + 1; w = w->next; }
++		write(2, "MALLOC CHECK: NODES LOST at ", 28);
++		write(2, where, 8);
++		write(2, "\n", 1);
++		_malloc_write_num("  nodes created   = ", _malloc_nodes_created);
++		_malloc_write_num("  nodes reachable = ", seen);
++		_malloc_write_num("  lost            = ", _malloc_nodes_created - seen);
++		_malloc_write_num("  allocated depth  = ", depth);
++		if(NULL != lastok)
++		{
++			_malloc_write_num("  last node addr   = ", (long)lastok);
++			_malloc_write_num("  its block        = ", (long)lastok->block);
++			_malloc_write_num("  its size         = ", (long)lastok->size);
++			_malloc_write_num("  its used         = ", (long)lastok->used);
++			_malloc_write_num("  its next (BAD)   = ", (long)lastok->next);
++			/* the first words of its block: what tcc put there names the user */
++			long* bw = lastok->block;
++			_malloc_write_num("  block word[0]    = ", bw[0]);
++			_malloc_write_num("  block word[1]    = ", bw[1]);
++			_malloc_write_num("  block word[2]    = ", bw[2]);
++			/* WHO OWNS THE MEMORY THAT ENDS WHERE THE BROKEN next LIVES.
++			 * lastok->next sits at (char*)lastok + 0, which is 32 bytes
++			 * before its block -- exactly where the PREVIOUS allocation's
++			 * data ends. An overrun of that block writes here. */
++			struct _malloc_node* pv = _allocated_list;
++			long found = 0;
++			while(NULL != pv)
++			{
++				if((((char*)pv->block) + pv->size) == ((char*)lastok))
++				{
++					found = 1;
++					_malloc_write_num("  OVERRUN SOURCE blk= ", (long)pv->block);
++					_malloc_write_num("   its size         = ", (long)pv->size);
++					long* ow = pv->block;
++					_malloc_write_num("   word[0]          = ", ow[0]);
++					_malloc_write_num("   word[1]          = ", ow[1]);
++					long* tail = pv->block;
++					tail = tail + ((pv->size / 8) - 2);
++					_malloc_write_num("   tail[-2]         = ", tail[0]);
++					_malloc_write_num("   tail[-1]         = ", tail[1]);
++				}
++				pv = pv->next;
++			}
++			if(0 == found) write(2, "  no live block ends there\n", 27);
++		}
++		exit(9);
++	}
++}
++
  void* realloc(void* ptr, unsigned size)
  {
  	if(0 == size)
-@@ -423,9 +443,123 @@
+@@ -423,9 +555,123 @@
  
  	if(old_alloc_size == 0)
  	{
