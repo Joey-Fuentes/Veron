@@ -49,14 +49,29 @@ int fseek(FILE* stream, long offset, int origin);
 void rewind(FILE* stream);
 int remove(char* filename);
 
-/* The printf family -- the reason this file exists. */
-int printf(char* format);
-int fprintf(FILE* stream, char* format);
-int sprintf(char* buffer, char* format);
-int snprintf(char* buffer, size_t count, char* format);
-int vprintf(char* format, va_list ap);
-int vfprintf(FILE* stream, char* format, va_list ap);
-int vsnprintf(char* buffer, size_t count, char* format, va_list ap);
+/* The printf family -- the reason this file exists.
+ *
+ * THE ELLIPSIS IS LOAD-BEARING AND WAS MISSING. These were declared with
+ * their fixed parameters only, which micro-c accepts because it does not
+ * check argument counts against a prototype. mc-tcc is a real tcc and does:
+ *
+ *     tccpp.c:545: error: too many arguments to function
+ *
+ * on `sprintf(p, "%llu", cv->i)` -- the first line of tcc's own source that
+ * self-compilation reached, once the headers stopped stopping it earlier.
+ * Every call in tcc that passes a format argument would have been rejected.
+ *
+ * micro-c parses `...` (M2-Planet has the __va_start/__va_arg intrinsics
+ * behind it), and the emitted .M1 for the whole tcc unit is byte-identical
+ * either way -- checked, because a header on the build path is exactly where
+ * a silent change would be worst. */
+int printf(const char* format, ...);
+int fprintf(FILE* stream, const char* format, ...);
+int sprintf(char* buffer, const char* format, ...);
+int snprintf(char* buffer, size_t count, const char* format, ...);
+int vprintf(const char* format, va_list ap);
+int vfprintf(FILE* stream, const char* format, va_list ap);
+int vsnprintf(char* buffer, size_t count, const char* format, va_list ap);
 void perror(char* str);
 
 #endif

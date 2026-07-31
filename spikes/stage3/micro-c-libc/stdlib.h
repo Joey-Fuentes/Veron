@@ -30,13 +30,32 @@ void* memset(void* dest, int c, unsigned long n);
 char* getenv(char* name);
 int atoi(char* str);
 
-long strtol(char* nptr, char** endptr, int base);
-unsigned long strtoul(char* nptr, char** endptr, int base);
-long long strtoll(char* nptr, char** endptr, int base);
-unsigned long long strtoull(char* nptr, char** endptr, int base);
-double strtod(char* nptr, char** endptr);
-double strtold(char* nptr, char** endptr);
-float strtof(char* nptr, char** endptr);
+/* THE const AND THE RETURN TYPES ARE LOAD-BEARING, and they were wrong.
+ *
+ * micro-c ignores both, so this file read `char*` and `double strtold` for as
+ * long as micro-c was the only compiler that saw it. mc-tcc is a real tcc and
+ * checks: tcc.h:49-50 declares these itself, for exactly the non-ISOC99 case
+ * this header is standing in for, and a mismatch is an error rather than a
+ * warning --
+ *
+ *     tcc.h:49: error: incompatible types for redefinition of 'strtof'
+ *
+ * which stopped self-compilation before any code was generated. `const char*`
+ * against `char*` is the strtof half; `long double` against `double` is the
+ * strtold half.
+ *
+ * `long double` STILL IS `double` UNDERNEATH -- micro-c maps them to one
+ * type, so a built tcc parses long-double literals at double precision. What
+ * changes here is only the SPELLING, so the declaration agrees with tcc's own
+ * and with the C standard. The precision note in math.h is unchanged and
+ * still applies. */
+long strtol(const char* nptr, char** endptr, int base);
+unsigned long strtoul(const char* nptr, char** endptr, int base);
+long long strtoll(const char* nptr, char** endptr, int base);
+unsigned long long strtoull(const char* nptr, char** endptr, int base);
+double strtod(const char* nptr, char** endptr);
+long double strtold(const char* nptr, char** endptr);
+float strtof(const char* nptr, char** endptr);
 
 void qsort(void* base, unsigned long n, unsigned long size, void* compar);
 

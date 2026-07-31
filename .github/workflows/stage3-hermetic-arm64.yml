@@ -1487,6 +1487,18 @@ jobs:
             L=/src/stage3/micro-c-libc
             M=/in/m2libc-veron
             INC="-I . -I /in/tcc-src/include -I $L -I $M"
+            # LONG DOUBLE IS double HERE, AND tcc HAS A SWITCH FOR SAYING SO.
+            # micro-c maps float, double and long double to one word-sized
+            # type, so the tcc it builds cannot represent a long double and
+            # tcc's own guard fires on its own source:
+            #     tccpp.c:2398: error: can't cross compile long double constants
+            # TCC_USING_DOUBLE_FOR_LDOUBLE selects the double-based branch that
+            # tcc already carries for exactly this case. It is honest rather
+            # than a workaround -- it makes the build say what is true -- and
+            # it is NOT sufficient on its own: more long-double constants
+            # follow at tccgen.c:2580. Left in so the reported stopping point
+            # is the real capability gap and not the first spelling of it.
+            LD1="-D TCC_USING_DOUBLE_FOR_LDOUBLE=1"
             # A HEADER ERROR HERE IS A LIBRARY GAP, NOT A CODEGEN RESULT, and
             # the two are worth keeping apart. micro-c-libc was written for
             # micro-c, which has the fixed-width types built in; a real tcc
