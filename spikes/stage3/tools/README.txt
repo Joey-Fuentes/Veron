@@ -19,6 +19,30 @@ fourth harness for something already measured.
                     sources. Replaces a check that was VACUOUS -- it compared
                     two empty files and reported success on every run for the
                     whole of this work.
+  imm-identity.sh   did widening the immediate path move anything it should
+                    not have. Runs inside local-build.sh; takes the two
+                    micro-c binaries it leaves behind.
+  vocabulary.sh     does the emitted M1 stay inside M2libc's macro set
+  verify-imm64.sh   the 64-bit immediate macros, per architecture
+
+WRITING A NEW CASE -- TWO MARKERS THE TOOLS READ, AND WHERE THEY MUST SIT.
+Both are grepped out of the top of the file, so a marker further down is a
+marker that does not exist:
+
+  KNOWN GAP        within the FIRST 5 LINES     difftest.sh
+                   the case is expected to FAIL. A gap that starts passing is
+                   reported loudly, because that means either the gap closed
+                   or the case stopped testing what it claims.
+
+  WIDE CONSTANTS   within the FIRST 8 LINES     imm-identity.sh
+                   the case uses a constant outside 0..0x7FFFFFFF and is
+                   therefore EXPECTED to emit different code either side of
+                   EXPERIMENT-zzb. Undeclared, it is reported as the widening
+                   leaking into code that should not have moved.
+
+Cases 107 and 110 were added without the second and imm-identity reported four
+undeclared moves -- a guard correctly catching a case author, which is what it
+is for. If a new case uses a big hex mask, declare it.
 
 RUN THE TWELVE BEFORE BELIEVING ANY CODEGEN CHANGE. difftest and the 426-corpus
 were BOTH GREEN over EXPERIMENT-zzzg, which broke all twelve end-to-end

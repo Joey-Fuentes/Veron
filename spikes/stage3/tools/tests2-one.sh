@@ -43,6 +43,29 @@ FROM=${1:-0}
 [ -x "$CTL" ] || { echo "no control at $CTL -- see the header"; exit 2; }
 [ -x "$W/mc-tcc" ] || { echo "no mc-tcc at $W/mc-tcc"; exit 2; }
 
+# COMPARE THE WAY tcc COMPARES, which is not byte for byte.
+#
+#     diff -Nbu $(filter %.expect,$^) $*.output       tests2/Makefile:142
+#
+# `-b` ignores changes in the AMOUNT of whitespace and the .expect files rely
+# on it: 38_multiple_array_index prints "%d " per element and so emits a
+# trailing space its .expect does not carry, and several tests end without a
+# final newline.
+#
+# GETTING THIS WRONG COST TWICE OVER. Comparing ours against the control
+# strictly reports a compiler defect where there is a space. Comparing the
+# CONTROL against .expect strictly is worse: the test is then marked
+# "control does not match .expect" and SKIPPED, so it silently leaves the
+# measurement altogether. 38 was being skipped for exactly that reason.
+#
+# Command substitution strips trailing newlines, so the final-newline case is
+# handled by the comparison itself; the sed handles the rest.
+same_output() {
+    _a=$(printf '%s' "$1" | sed 's/[[:space:]][[:space:]]*/ /g; s/[[:space:]]*$//')
+    _b=$(printf '%s' "$2" | sed 's/[[:space:]][[:space:]]*/ /g; s/[[:space:]]*$//')
+    [ "$_a" = "$_b" ]
+}
+
 OUT=/tmp/t2one; rm -rf $OUT; mkdir -p $OUT; cd $OUT
 
 n=0; pass=0; na=0
@@ -68,7 +91,7 @@ for c in "$T2"/*.c; do
     fi
     chmod +x c.bin
     cout=$(timeout 20 "$Q" ./c.bin 2>&1)
-    if [ "$cout" != "$(cat "$exp")" ]; then
+    if ! same_output "$cout" "$(cat "$exp")"; then
         printf '  %-3s %-34s skip: control does not match .expect\n' "$n" "$b"
         na=$((na+1)); continue
     fi
@@ -88,7 +111,7 @@ for c in "$T2"/*.c; do
     fi
     chmod +x m.bin
     mout=$(timeout 20 "$Q" ./m.bin 2>&1)
-    if [ "$mout" = "$cout" ]; then
+    if same_output "$mout" "$cout"; then
         printf '  %-3s %-34s ok\n' "$n" "$b"; pass=$((pass+1))
     else
         printf '  %-3s %-34s FAIL  ran, output differs\n' "$n" "$b"

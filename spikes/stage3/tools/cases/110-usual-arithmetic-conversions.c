@@ -1,5 +1,9 @@
 /* KNOWN GAP -- THE USUAL ARITHMETIC CONVERSIONS, for an unsigned literal.
  *
+ * WIDE CONSTANTS -- 0x87654321 is past INT_MAX and does not fit an immediate
+ * field, so this case is expected to move across EXPERIMENT-zzb. That is the
+ * whole subject of the case. See imm-identity.sh.
+ *
  * Expected to fail. Found while writing case 109, where it masqueraded as a
  * codegen bug: that case compared an `int` against 0x87654321 and failed for
  * this reason rather than the one it was testing. Split out so each case fails

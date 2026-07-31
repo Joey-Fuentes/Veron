@@ -1,5 +1,8 @@
 /* BITMASK -- THE AArch64 GOT RELOCATION ARITHMETIC, arm64-link.c:299.
  *
+ * WIDE CONSTANTS -- 0x1234567890ab does not fit an immediate field, so this
+ * case is expected to move across EXPERIMENT-zzb. See imm-identity.sh.
+ *
  * This is the expression that decides where every ADRP+LDR pair points, and
  * mc-tcc gets it wrong. Compiling tests2/00_assignment with mc-tcc and linking
  * the SAME object two ways:
