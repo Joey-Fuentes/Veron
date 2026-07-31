@@ -1,5 +1,11 @@
 /* BITMASK -- one bit per probe, 0 means every probe passed.
  *
+ * WIDE CONSTANTS -- 0x8000000000000000 and 0x2AAAAAAAAAAAAAAA are past
+ * INT_MAX and do not fit an immediate field, so this case is expected to
+ * move across EXPERIMENT-zzb. It has to carry them: the bug is that a
+ * typedef'd unsigned value was shifted ARITHMETICALLY, which is only
+ * visible when the top bit is set. See imm-identity.sh.
+ *
  * promote_type picked the winning type by POSITION IN global_types, so a
  * typedef -- always registered after the primitives -- lost to whatever it met.
  * Meeting an `int` returned `int`, carrying is_signed = TRUE, and every
