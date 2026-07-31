@@ -67,39 +67,68 @@ mkdir -p "$SYS/lib" "$SYS/include" "$PFX/bin" /work/src
 
 CC="$CC_BIN -B$TCCDIR"
 
-# ONE EXTRACTION CALL SHAPE, AND IT SAYS WHY IT FAILED.
+# EXTRACT THE TARBALL AS SHIPPED, WITH THE FLAG ITS EXTENSION ASKS FOR.
 #
-# /in holds plain uncompressed .tar files -- the airlock strips the wrapper --
-# so there is no -z, -J or -j to get wrong, which is the mistake that cost six
-# runs. `tar xzf` opened musl and `tar xf` on the same archive did not, because
-# busybox does not autodetect compression here; with nothing compressed there
-# is nothing to detect.
+# `tar -zxf` is all this ever needed. It extracted musl on every run; the one
+# time it failed was when I renamed the pins and wrote `tar xf`, dropping the
+# -z, which broke the only rung that had been passing. Everything built on top
+# of that -- an od probe that lied, a ustar repack on a theory since disproved,
+# an airlock decompress step -- was scaffolding around a mistake, and is gone.
 #
-# On failure it dumps the first 512 bytes with `dd | od -c`. No `od -j` and no
-# `tr -dc '[:print:]'`: both have already produced confident empty readings in
-# this job that were the tool failing rather than the data being absent.
+# THE ONE THING STILL UNEXPLAINED is why this same call opened musl-1.2.5.tar.gz
+# and was refused on make-3.82.tar.gz: correct flag, valid gzip, and a GNU
+# tarball which -- verified locally against every GNU tar format -- does carry
+# the ustar magic busybox checks for. That is a real unknown about this box and
+# it deserves an answer rather than a workaround, so on failure this dumps the
+# first 512 bytes and the tar header fields rather than routing around it.
+#
+# No `od -j` and no `tr -dc '[:print:]'` in the dump: both have already
+# produced confident empty readings in this job that were the tool failing
+# rather than the data being absent.
 untar() {          # $1 = path prefix, e.g. /in/musl
-    _t=$(ls "$1"*.tar 2>/dev/null | head -1)
+    _t=$(ls "$1"*.tar.gz "$1"*.tar.xz "$1"*.tar.bz2 2>/dev/null | head -1)
     if [ -z "$_t" ]; then
-        say "    no archive matching $1*.tar -- /in holds:"
+        say "    no tarball matching $1* -- /in holds:"
         ls -1 /in 2>/dev/null | sed 's/^/      /'
         return 1
     fi
-    # STDERR GOES TO /tmp, NOT /work. A redirect whose target is not writable
-    # makes the whole command fail, so `tar xf ... 2>/work/x` reports failure
-    # when tar SUCCEEDED and only the log file could not be opened. A dry run
-    # under dash hit exactly that. /tmp is a tmpfs in this box and always there.
-    if tar xf "$_t" 2>/tmp/untar.err; then
+    # STDERR TO /tmp, NOT /work. A redirect whose target is not writable makes
+    # the whole command fail, so `tar ... 2>/work/x` reports failure when tar
+    # SUCCEEDED and only the log could not be opened. A dry run under dash hit
+    # exactly that.
+    case "$_t" in
+        *.tar.gz)  tar -zxf "$_t" 2>/tmp/untar.err ;;
+        *.tar.xz)  tar -Jxf "$_t" 2>/tmp/untar.err ;;
+        *.tar.bz2) tar -jxf "$_t" 2>/tmp/untar.err ;;
+        *)         say "    unknown archive type: $_t"; return 1 ;;
+    esac
+    if [ $? = 0 ]; then
         return 0
     fi
     say "    tar refused $_t ($(wc -c < "$_t") bytes):"
     sed 's/^/      /' /tmp/untar.err 2>/dev/null | head -3
+    # DECOMPRESS SEPARATELY AND LOOK AT THE HEADER. If gunzip is clean and the
+    # first block is a well-formed tar header, the fault is in busybox's tar
+    # and not in the archive -- which is the question three runs failed to
+    # settle.
+    case "$_t" in
+        *.tar.gz)  gzip  -dc "$_t" > /tmp/probe.tar 2>/dev/null ;;
+        *.tar.xz)  xz    -dc "$_t" > /tmp/probe.tar 2>/dev/null ;;
+        *.tar.bz2) bzip2 -dc "$_t" > /tmp/probe.tar 2>/dev/null ;;
+    esac
+    _sz=$(wc -c < /tmp/probe.tar 2>/dev/null || echo 0)
+    say "    decompressed: $_sz bytes  512-aligned=$(( _sz % 512 == 0 ))"
+    if dd if=/tmp/probe.tar bs=512 count=1 2>/dev/null | grep -aq ustar; then
+        say "    ustar magic:  PRESENT -- the archive is fine, busybox tar is not"
+    else
+        say "    ustar magic:  absent"
+    fi
     say "    first 512 bytes:"
-    dd if="$_t" bs=512 count=1 2>/dev/null | od -c 2>/dev/null | head -6 | sed 's/^/      /'
+    dd if=/tmp/probe.tar bs=512 count=1 2>/dev/null | od -c 2>/dev/null | head -6 | sed 's/^/      /'
+    rm -f /tmp/probe.tar
     return 1
 }
 
-# ls -d that survives both `name/` and `./name/` layouts and returns one path.
 onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
 
 R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R5=skip; R6=skip
