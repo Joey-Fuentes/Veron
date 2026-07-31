@@ -107,7 +107,7 @@ env:
   # its declared substitutions (9 aarch64 .s files fall back to portable C,
   # src/complex/*.c dropped for _Complex).
   TCC_SHA: 5ec0e6f84b47ebd8c269b581712666313f5edaef
-  MUSL_VER: 1.2.5
+  MUSL_VER: '1.2.5'
   # make is built in-chain because busybox has none and nothing else is
   # borrowed. 3.82 is live-bootstrap's pin; confirm against their manifest
   # before treating this as pinned rather than chosen.
@@ -115,7 +115,7 @@ env:
   # tcc, before binutils exists) and is the version known to build this way.
   # They rebuild it later because 3.82 "randomly segfaults while building the
   # Linux kernel" -- irrelevant here, since this job stops at gcc 4.7.4.
-  MAKE_VER: 3.82
+  MAKE_VER: '3.82'
   # The rest are stage 4's OWN versions, copied deliberately. If they drift
   # apart the overlap stops being an overlap.
   # BINUTILS 2.30, NOT STAGE 4's 2.46, AND THAT DIVERGENCE IS DELIBERATE.
@@ -138,11 +138,16 @@ env:
   # free to satisfy its own way -- stage 4 by borrowing, this job by building.
   # Pinning a version no tcc has been shown to compile would have failed rung 4
   # and looked like a compiler defect.
-  BINUTILS: 2.30
-  GMP_VER: 6.3.0
-  MPFR_VER: 4.2.2
-  MPC_VER: 1.3.1
-  GCC47: 4.7.4
+  # QUOTED, BECAUSE YAML READS 2.30 AS A NUMBER. Unquoted it becomes the float
+  # 2.3, the trailing zero is gone, and the fetch asks ftp.gnu.org for
+  # binutils-2.3.tar.xz and gets a 404. 2.46.0 survived only because two dots
+  # make it a string. Every version below is quoted so none of them depends on
+  # how many dots it happens to have.
+  BINUTILS: '2.30'
+  GMP_VER: '6.3.0'
+  MPFR_VER: '4.2.2'
+  MPC_VER: '1.3.1'
+  GCC47: '4.7.4'
 
 jobs:
 
