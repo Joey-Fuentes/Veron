@@ -106,6 +106,7 @@ env:
   # musl: the bootstrap libc. Pinned in sources/musl.toml with its sha256 and
   # its declared substitutions (9 aarch64 .s files fall back to portable C,
   # src/complex/*.c dropped for _Complex).
+  TCC_SHA: 5ec0e6f84b47ebd8c269b581712666313f5edaef
   MUSL_VER: 1.2.5
   # make is built in-chain because busybox has none and nothing else is
   # borrowed. 3.82 is live-bootstrap's pin; confirm against their manifest
@@ -153,7 +154,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            bubblewrap busybox-static make curl xz-utils file
+            bubblewrap busybox-static git curl xz-utils file
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
 
       - name: Take mc-tcc from the climb
@@ -202,6 +203,18 @@ jobs:
           # job is anything but exploratory, and saying so here is cheaper
           # than a comment that claims they are pinned when they are not.
 
+      - name: 'AIRLOCK: tcc source for mc-tcc''s -B directory'
+        run: |
+          set -eu
+          # NOT A COMPILATION. mc-tcc needs a -B directory holding tcc's
+          # include/ and its libtcc1.a; the source tree is that directory, and
+          # it is the same pin plus the same five arm64 patches the climb used.
+          git clone -q https://repo.or.cz/tinycc.git tccsrc \
+            || git clone -q git://repo.or.cz/tinycc.git tccsrc
+          ( cd tccsrc && git checkout -q "$TCC_SHA" )
+          bash spikes/stage3/patches/tcc-arm64-asm/apply-series.sh tccsrc
+          echo "  -B tree ready: $(find tccsrc/include -name '*.h' 2>/dev/null | wc -l) headers"
+
       - name: Assemble the box
         run: |
           set -eu
@@ -230,10 +243,15 @@ jobs:
 
           for a in sh cat cmp sha256sum wc printf mkdir cp rm mv ln chmod sed \
                    head tail tr ls sort comm grep cut awk timeout od dd env date \
-                   find xargs basename dirname uname expr test true false tar gzip; do
+                   find xargs basename dirname uname expr test true false tar gzip nproc; do
             ln -sf busybox "$BOX/bin/$a"
           done
 
+          # mc-tcc's -B directory: tcc's own source tree, where it looks for
+          # libtcc1.a and include/. Same pin and same five arm64 patches the
+          # climb compiled. libtcc1.a is BUILT at rung 0 by mc-tcc itself.
+          cp -a tccsrc "$BOX/work/tccsrc"
+          rm -f "$BOX/work/tccsrc/libtcc1.a"
           cp -L climb-out/mc-tcc "$BOX/work/mc-tcc"
           chmod 0755 "$BOX/work/mc-tcc"
 
@@ -272,315 +290,6 @@ jobs:
           fi
           echo "  SEALED. $(wc -l < /tmp/declared) host binaries, $(printf '%s' "$BUDGET_PATH" | wc -w) of them on the build path."
 
-      - name: Write the in-box script
-        run: |
-          set -eu
-          cat > "$BOX/work/bridge.sh" <<'INBOX'
-          #!/bin/sh
-          # Runs with NOTHING on PATH but busybox, make and mc-tcc.
-          set -u
-          say()  { printf '%s\n' "$*"; }
-          head1() { say ""; say "  === $* ==="; }
-
-          MC=/work/mc-tcc
-          SYS=/work/sysroot
-          PFX=/work/prefix
-          NP=$(nproc 2>/dev/null || echo 2)
-          mkdir -p "$SYS" "$PFX" /work/src
-
-          # Rung verdicts. Printed together at the end so the summary is one
-          # block rather than something to reassemble from a scrolling log.
-          R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R5=skip; R6=skip
-
-          # ------------------------------------------------------------------
-          head1 "RUNG 0 -- the compiler the climb handed us"
-          "$MC" --version 2>&1 | head -2 | sed 's/^/    /'
-
-          # ------------------------------------------------------------------
-          head1 "RUNG 1 -- freestanding compile and link, no libc at all"
-          # The shape every stage-3 test used. If this fails the binary did not
-          # survive the trip and nothing below means anything.
-          cd /work
-          cat > r1.c <<'EOF'
-          static long sys3(long n, long a, long b, long c)
-          {
-              register long x8 __asm__("x8") = n;
-              register long x0 __asm__("x0") = a;
-              register long x1 __asm__("x1") = b;
-              register long x2 __asm__("x2") = c;
-              __asm__ __volatile__("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
-              return x0;
-          }
-          void _start(void) { sys3(64, 1, (long)"rung1\n", 6); sys3(93, 0, 0, 0); }
-          EOF
-          if "$MC" -B/work/tccsrc -nostdlib -static -o r1.bin r1.c 2>r1.err && ./r1.bin >r1.out 2>&1; then
-            say "    $(cat r1.out)"; R1=ok
-          else
-            R1=FAIL; say "    FAILED"; grep -av '^[A-Z][0-9]*$' r1.err | head -5 | sed 's/^/      /'
-          fi
-
-          # ------------------------------------------------------------------
-          head1 "RUNG 2 -- musl, built by mc-tcc, WITHOUT make"
-          # THE LIBC RUNG, AND IT IS HAND-DRIVEN ON PURPOSE. Nothing above can
-          # link without a libc -- binutils, make and gcc are all ordinary C
-          # programs needing one for their own binaries -- and make cannot come
-          # first because it needs the libc too. live-bootstrap breaks that
-          # circle with kaem, a flat command list and no Makefile. This does the
-          # same in busybox sh, which is already declared.
-          #
-          # musl's build is small enough to spell out: two generated headers,
-          # every .c in the tree compiled once, an ar, and three crt files.
-          # sources/musl.toml declares the substitutions -- 9 aarch64 .s files
-          # that fall back to portable C, and src/complex/*.c for _Complex.
-          if [ "$R1" = ok ]; then
-            cd /work/src && tar xzf /in/musl-*.tar.gz && cd musl-*
-            MUSLD=$(pwd)
-            for s in src/fenv/aarch64/fenv.s src/ldso/aarch64/tlsdesc.s \
-                     src/process/aarch64/vfork.s src/setjmp/aarch64/longjmp.s \
-                     src/signal/aarch64/restore.s src/thread/aarch64/__set_thread_area.s \
-                     src/thread/aarch64/__unmapself.s src/thread/aarch64/clone.s \
-                     src/thread/aarch64/syscall_cp.s; do
-              rm -f "$s"
-            done
-            rm -f src/complex/*.c
-            say "    declared substitutions applied (9 .s, src/complex)"
-
-            # THE TWO GENERATED HEADERS. musl's Makefile builds these with sed
-            # before anything else compiles; nothing includes them until they
-            # exist, and every later compile fails obscurely if they do not.
-            mkdir -p obj/include/bits
-            sed -f tools/mkalltypes.sed arch/aarch64/bits/alltypes.h.in \
-                include/alltypes.h.in > obj/include/bits/alltypes.h 2>/dev/null \
-              || say "    WARN: alltypes.h not generated"
-            sed -n 's/__NR_/SYS_/p' arch/aarch64/bits/syscall.h.in \
-                > obj/include/bits/syscall.h 2>/dev/null
-            cat arch/aarch64/bits/syscall.h.in >> obj/include/bits/syscall.h 2>/dev/null
-            say "    generated: $(ls obj/include/bits 2>/dev/null | tr '\n' ' ')"
-
-            INC="-Iobj/include -Iarch/aarch64 -Iarch/generic -Iinclude -Isrc/include -Isrc/internal"
-            CC="$MC -B/work/tccsrc"
-            nc=0; nf=0
-            : > /work/musl-fail.txt
-            for f in $(find src crt -name '*.c' | sort); do
-              o="obj/${f%.c}.o"; mkdir -p "$(dirname "$o")"
-              if $CC $INC -c -o "$o" "$f" 2>>/work/musl-fail.txt; then
-                nc=$((nc + 1))
-              else
-                nf=$((nf + 1)); echo "$f" >> /work/musl-fail.txt
-              fi
-            done
-            say "    compiled $nc objects, $nf failed"
-
-            # THE COUNT IS THE MEASUREMENT. A partial libc still archives and
-            # still links some programs, so "libc.a exists" proves nothing on
-            # its own -- rung 3 is what decides whether it is usable.
-            if [ "$nf" -gt 0 ]; then
-              say "    --- first failures ---"
-              grep -av '^[A-Z][0-9]*$' /work/musl-fail.txt | head -15 | sed 's/^/      /'
-            fi
-
-            mkdir -p "$SYS/lib" "$SYS/include"
-            # ar comes from binutils, which is not in this box and is rung 4.
-            # mc-tcc has tcc's own archiver built in, which is the whole reason
-            # -ar exists in tcc: `tcc -ar` writes a System V archive.
-            find obj/src -name '*.o' > /work/objlist.txt
-            if "$MC" -ar rcs "$SYS/lib/libc.a" $(cat /work/objlist.txt) 2>/work/ar.err; then
-              say "    libc.a: $(wc -c < "$SYS/lib/libc.a") bytes from $(wc -l < /work/objlist.txt) objects"
-            else
-              say "    ar FAILED -- tcc -ar is the only archiver in this box"
-              grep -av '^[A-Z][0-9]*$' /work/ar.err | head -5 | sed 's/^/      /'
-            fi
-            for c in crt1 crti crtn Scrt1 rcrt1; do
-              [ -f "obj/crt/aarch64/$c.o" ] && cp "obj/crt/aarch64/$c.o" "$SYS/lib/" 2>/dev/null
-              [ -f "obj/crt/$c.o" ]         && cp "obj/crt/$c.o"         "$SYS/lib/" 2>/dev/null
-            done
-            cp -a include/. "$SYS/include/" 2>/dev/null || true
-            cp -a arch/aarch64/bits "$SYS/include/" 2>/dev/null || true
-            cp -a arch/generic/bits "$SYS/include/" 2>/dev/null || true
-            cp -a obj/include/bits/. "$SYS/include/bits/" 2>/dev/null || true
-
-            say "    headers: $(find "$SYS/include" -name '*.h' 2>/dev/null | wc -l) files"
-            say "    crt:     $(ls "$SYS/lib"/crt*.o 2>/dev/null | tr '\n' ' ')"
-            if [ -s "$SYS/lib/libc.a" ] && [ -f "$SYS/lib/crt1.o" ]; then R2=ok; else R2=FAIL; fi
-            cd /work
-          fi
-
-          head1 "RUNG 3 -- a HOSTED program: #include <stdio.h>, real crt, real libc"
-          # THE PIVOT. Everything stage 3 ever measured was -nostdlib -static
-          # single-file freestanding. This is the first time mc-tcc has to
-          # resolve a real header, pull crt1.o, and link a libc -- which is
-          # what rung 1 of stage 4 asks of $TCC on every one of its hundreds of
-          # conftest cycles.
-          if [ "$R2" = ok ]; then
-            cd /work
-            cat > r3.c <<'EOF'
-          #include <stdio.h>
-          #include <string.h>
-          int main(int argc, char **argv) {
-              char b[32];
-              strcpy(b, "hosted");
-              printf("%s ok argc=%d\n", b, argc);
-              return 0;
-          }
-          EOF
-            if "$MC" -B/work/tccsrc -I"$SYS/include" -L"$SYS/lib" \
-                     -static -o r3.bin r3.c 2>r3.err && ./r3.bin >r3.out 2>&1; then
-              say "    $(cat r3.out)"; R3=ok
-            else
-              R3=FAIL; say "    FAILED -- this is the frontier if rung 2 passed"
-              grep -av '^[A-Z][0-9]*$' r3.err | head -12 | sed 's/^/      /'
-            fi
-          fi
-
-          # ------------------------------------------------------------------
-          head1 "RUNG 3.5 -- GNU make, built by mc-tcc.  NOT BORROWED EITHER."
-          # busybox has no make and this box borrows nothing else, so every
-          # autoconf rung above depends on this one. make ships build.sh
-          # exactly for this case -- it is how make is bootstrapped where no
-          # make exists yet -- so configure runs under busybox sh and build.sh
-          # does the compiling.
-          #
-          # THIS IS ALSO THE CHEAPEST HOSTED-LIBC SIGNAL. make is small plain C
-          # touching little more than stdio, string and the process calls. If
-          # it fails here it fails in minutes, and it fails for a reason that is
-          # readable -- unlike binutils, where the first error arrives after a
-          # long configure and is usually a consequence of something earlier.
-          if [ "$R3" = ok ]; then
-            cd /work/src && tar xzf /in/make-*.tar.gz && cd make-*
-            ./configure --prefix="$PFX" --disable-nls \
-              CC="$MC -B/work/tccsrc -I$SYS/include -L$SYS/lib" > cfg.log 2>&1
-            say "    configure rc=$?"
-            if [ -f build.sh ]; then
-              if sh ./build.sh > build.log 2>&1 && [ -x ./make ]; then
-                mkdir -p "$PFX/bin" && cp ./make "$PFX/bin/make"
-                R35=ok; say "    make: $(wc -c < "$PFX/bin/make") bytes"
-                "$PFX/bin/make" --version 2>&1 | head -1 | sed 's/^/    /'
-              else
-                R35=FAIL; say "    --- where it stopped ---"
-                grep -nE "error:|undefined reference" build.log 2>/dev/null | head -15 | sed 's/^/      /'
-                tail -15 build.log 2>/dev/null | sed 's/^/      /'
-              fi
-            else
-              R35=FAIL
-              say "    configure produced no build.sh -- cannot bootstrap make without make"
-              tail -10 cfg.log 2>/dev/null | sed 's/^/      /'
-            fi
-            cd /work
-          fi
-
-          head1 "RUNG 4 -- binutils, built by mc-tcc.  NOT BORROWED."
-          # as, ld, ar and ranlib decide what bytes end up in an object, so
-          # they are tier 1 by definition and cannot come from the host. gcc
-          # cannot be built without them: it emits assembly and shells out.
-          if [ "$R35" = ok ]; then
-            PATH="$PFX/bin:$PATH"; export PATH
-            cd /work/src && tar xf /in/binutils-*.tar.xz && cd binutils-*
-            mkdir -p ../b-binutils && cd ../b-binutils
-            ../binutils-*/configure --prefix="$PFX" --disable-nls --disable-werror \
-              --disable-gdb --disable-gdbserver --disable-libdecnumber --disable-readline \
-              CC="$MC -B/work/tccsrc -I$SYS/include -L$SYS/lib" > cfg.log 2>&1
-            say "    configure rc=$?"
-            if timeout 3000 make -j"$NP" > build.log 2>&1 && make install > /dev/null 2>&1; then
-              R4=ok
-              for t in as ld ar ranlib; do
-                printf '    %-8s %s\n' "$t" "$( [ -x "$PFX/bin/$t" ] && wc -c < "$PFX/bin/$t" || echo ABSENT )"
-              done
-            else
-              R4=FAIL
-              say "    --- where it stopped ---"
-              grep -nE "error:|Error [0-9]|undefined reference" build.log 2>/dev/null | head -15 | sed 's/^/      /'
-              tail -15 build.log 2>/dev/null | sed 's/^/      /'
-            fi
-          fi
-
-          # ------------------------------------------------------------------
-          head1 "RUNG 5 -- gmp, mpfr, mpc.  gcc's arithmetic dependencies."
-          # Same three, same versions, same configure shape as
-          # spikes/stage4/chain/rung1.sh. If these build here and there, the
-          # overlap is real rather than nominal.
-          if [ "$R4" = ok ]; then
-            PATH="$PFX/bin:$PATH"; export PATH
-            CC="$MC -B/work/tccsrc -I$SYS/include -L$SYS/lib"; export CC
-            cd /work/src
-            tar xf /in/gmp-*.tar.xz   && mv gmp-*/  gmp
-            tar xf /in/mpfr-*.tar.xz  && mv mpfr-*/ mpfr
-            tar xf /in/mpc-*.tar.gz   && mv mpc-*/  mpc
-            r5=ok
-            ( cd gmp && ./configure --disable-shared --disable-assembly \
-                --prefix="$PFX" CC="$CC" > cfg.log 2>&1 \
-              && timeout 1800 make -j"$NP" > build.log 2>&1 && make install > /dev/null 2>&1 ) \
-              || { r5=FAIL; say "    gmp NOT INSTALLED"; tail -12 gmp/build.log 2>/dev/null | sed 's/^/      /'; }
-            for p in mpfr mpc; do
-              [ "$r5" = ok ] || break
-              ( cd "$p" && ./configure --disable-shared --with-gmp="$PFX" \
-                  --prefix="$PFX" CC="$CC" > cfg.log 2>&1 \
-                && timeout 1200 make -j"$NP" > build.log 2>&1 && make install > /dev/null 2>&1 ) \
-                || { r5=FAIL; say "    $p NOT INSTALLED"; tail -12 "$p/build.log" 2>/dev/null | sed 's/^/      /'; }
-            done
-            R5=$r5
-            [ "$R5" = ok ] && say "    prefix/lib: $(ls "$PFX/lib" 2>/dev/null | tr '\n' ' ')"
-          fi
-
-          # ------------------------------------------------------------------
-          head1 "RUNG 6 -- gcc 4.7.4.  THE OVERLAP WITH stage4-complete."
-          # This is the rung stage 4 already reaches with a host-gcc-built tcc
-          # against host glibc and host binutils. Reaching it here, from the
-          # seed, with a libc and a binutils built in the same box, is what
-          # makes the two jobs one ladder.
-          if [ "$R5" = ok ]; then
-            PATH="$PFX/bin:$PATH"; export PATH
-            cd /work/src && tar xf /in/gcc-*.tar.bz2 && cd gcc-*
-            mkdir -p ../b-gcc && cd ../b-gcc
-            ../gcc-*/configure --prefix="$PFX" \
-              --with-gmp="$PFX" --with-mpfr="$PFX" --with-mpc="$PFX" \
-              --enable-languages=c --disable-shared --disable-nls \
-              --disable-multilib --disable-bootstrap --disable-libsanitizer \
-              --with-sysroot="$SYS" \
-              CC="$MC -B/work/tccsrc -I$SYS/include -L$SYS/lib" > cfg.log 2>&1
-            say "    configure rc=$?"
-            if timeout 5400 make -j"$NP" > build.log 2>&1; then
-              R6=ok
-              say "    xgcc: $( [ -x gcc/xgcc ] && wc -c < gcc/xgcc || echo ABSENT )"
-              say "    cc1:  $( [ -x gcc/cc1 ]  && wc -c < gcc/cc1  || echo ABSENT )"
-            else
-              R6=FAIL
-              say "    --- where it stopped ---"
-              grep -nE "error:|internal compiler error|undefined reference" build.log 2>/dev/null \
-                | grep -v 'make\[' | head -20 | sed 's/^/      /'
-              grep -oE '^[^ :]+\.(c|h):[0-9]+:[0-9]*:? *error:' build.log 2>/dev/null \
-                | cut -d: -f1 | sort | uniq -c | sort -rn | head -10 | sed 's/^/      /'
-              tail -20 build.log 2>/dev/null | sed 's/^/      /'
-            fi
-          fi
-
-          # ------------------------------------------------------------------
-          head1 "THE BRIDGE, RUNG BY RUNG"
-          printf '    %-38s %s\n' "1  freestanding compile+link"      "$R1"
-          printf '    %-38s %s\n' "2  musl built by mc-tcc"           "$R2"
-          printf '    %-38s %s\n' "3  hosted program, real libc"      "$R3"
-          printf '    %-38s %s\n' "3.5 GNU make built by mc-tcc"     "$R35"
-          printf '    %-38s %s\n' "4  binutils built by mc-tcc"       "$R4"
-          printf '    %-38s %s\n' "5  gmp / mpfr / mpc"               "$R5"
-          printf '    %-38s %s\n' "6  gcc 4.7.4 -- stage 4's rung 1"  "$R6"
-          say ""
-          if [ "$R6" = ok ]; then
-            say "    BRIDGED. The seed reaches the rung stage 4 starts from."
-            say "    stage3-hermetic-arm64 and stage4-complete now describe one"
-            say "    ladder and can be merged."
-          else
-            say "    NOT BRIDGED YET. The first rung above that is not 'ok' is"
-            say "    the frontier; everything after it was skipped, not failed."
-          fi
-
-          cp -a "$PFX" /out/prefix 2>/dev/null || true
-          cp -a "$SYS" /out/sysroot 2>/dev/null || true
-          for l in /work/src/*/build.log /work/src/*/cfg.log /work/src/b-*/build.log /work/src/b-*/cfg.log; do
-            [ -f "$l" ] && cp "$l" "/out/$(echo "$l" | tr / _)" 2>/dev/null || true
-          done
-          INBOX
-          chmod 0755 "$BOX/work/bridge.sh"
-          echo "  in-box script written: $(wc -l < "$BOX/work/bridge.sh") lines"
-
       - name: 'IN THE BOX: mc-tcc -> musl -> binutils -> gmp/mpfr/mpc -> gcc 4.7.4'
         run: |
           set -eu
@@ -593,13 +302,16 @@ jobs:
             --setenv TERM dumb \
             --setenv SOURCE_DATE_EPOCH 0 \
             --setenv LD_LIBRARY_PATH /lib \
+            --setenv CC_BIN /work/mc-tcc \
+            --setenv TCCDIR /work/tccsrc \
+            --setenv ARM mc-tcc \
             --bind "$BOX" / \
             --ro-bind "$PWD/spikes" /src \
             --ro-bind "$PWD/pins" /in \
             --bind "$BOX/out" /out \
             --proc /proc --dev /dev --tmpfs /tmp \
             --chdir /work \
-            /bin/sh /work/bridge.sh
+            /bin/sh /src/stage4/bridge/rungs.sh
 
       - name: 'BUDGET: what this run still borrowed from the host'
         if: always()

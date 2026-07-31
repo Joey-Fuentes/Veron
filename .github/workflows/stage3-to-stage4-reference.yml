@@ -1,0 +1,274 @@
+# THE REFERENCE ARM. The same bridge, with a compiler nobody doubts.
+#
+# WHY THIS EXISTS. stage3-to-stage4-bridge.yml runs a brand-new harness: a
+# hand-driven musl build, an archiver nothing has exercised, busybox sh driving
+# autoconf, a sysroot layout invented for the purpose. If that job fails at
+# rung 2 there is no way to tell whether micro-c miscompiled tcc or whether the
+# harness is wrong. This job removes that ambiguity by running the SAME rungs
+# with a tcc built by the host.
+#
+# spikes/stage3/README.md already argues the pattern, about tcc-two-ways:
+#
+#     The control runs FIRST on purpose: if the harness is wrong, that is where
+#     it shows, on a compiler nobody doubts. The first version of that job
+#     reported "0 differing lines" against a reference file that did not exist,
+#     and the control is what caught it.
+#
+# ---------------------------------------------------------------------------
+# WHAT GOES IN THE BOX, AND NOTHING ELSE
+#
+#   busybox     the driver. Tier 2 -- selects which commands run, puts no bytes
+#               in any artifact. The last host binary standing, and replaceable
+#               later by a hand-written kaem the same way `as` and `ld` were.
+#   ref-tcc     tcc at pin 5ec0e6f8 plus spikes/stage3/patches/tcc-arm64-asm,
+#               built on the host and linked STATICALLY AGAINST musl.
+#
+# That is the whole list. No /usr, no glibc headers, no crt files, no libc to
+# link against, no binutils, no make, no ar.
+#
+# STATIC AGAINST musl IS LOAD-BEARING, NOT A STYLE CHOICE. A glibc-linked tcc
+# needs glibc's shared objects present to execute, so the box would have to
+# carry them -- and then the box is no longer busybox-only and the job has
+# quietly reintroduced the exact thing it exists to remove. Static means the
+# binary is self-contained and the box stays clean. If the link below is not
+# static this job is not measuring what it claims and the check after it fails
+# the run rather than letting the number stand.
+#
+# ---------------------------------------------------------------------------
+# WHAT THIS ARM PROVES, AND WHAT IT DOES NOT
+#
+# PROVES: that the recipe reaches gcc 4.7.4 in a box containing busybox and one
+# tcc. That is a real result about the ladder, and it is the reference the
+# other arm is measured against.
+#
+# DOES NOT PROVE: anything about the seed. This tcc was built by the host's
+# compiler. "The seed reaches gcc 4.7.4" is only ever the bridge arm's claim
+# and no amount of green here gets you there. Stage 4 makes the same
+# distinction about its own tcc -- "the one declared hole".
+#
+# THE TWO ARMS SHARE ONE RUNG SCRIPT, spikes/stage4/bridge/rungs.sh, mounted
+# read-only from /src and run unchanged. They differ in one input. A second
+# copy of those rungs would drift and the comparison would stop meaning
+# anything.
+
+name: stage3-to-stage4-reference
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'spikes/stage4/bridge/**'
+      - '.github/workflows/stage3-to-stage4-reference.yml'
+
+concurrency:
+  group: bridge-reference-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  TCC_SHA: 5ec0e6f84b47ebd8c269b581712666313f5edaef
+  MUSL_VER: 1.2.5
+  MAKE_VER: 3.82
+  # stage 4's OWN versions, copied deliberately. If they drift apart the
+  # overlap with stage4-complete stops being an overlap.
+  BINUTILS: 2.46.0
+  GMP_VER: 6.3.0
+  MPFR_VER: 4.2.2
+  MPC_VER: 1.3.1
+  GCC47: 4.7.4
+
+jobs:
+  reference:
+    runs-on: ubuntu-24.04-arm          # NATIVE aarch64, no emulation
+    timeout-minutes: 330
+    env:
+      # TIER 1 -- ON THE BUILD PATH. EMPTY. No compiler, no assembler, no
+      # linker, no archiver from the host. binutils is built at rung 4.
+      BUDGET_PATH: ''
+      # TIER 2 -- DRIVES THE BUILD, TOUCHES NO ARTIFACT BYTE. One binary,
+      # exactly as stage3-hermetic-arm64 declares.
+      BUDGET_DRIVER: 'busybox'
+    steps:
+      - uses: actions/checkout@v5
+
+      # --- AIRLOCK: everything needing a network happens here -------------
+      - name: Install (airlock only -- none of this enters the box)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bubblewrap busybox-static musl-tools gcc make git curl xz-utils file
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+
+      - name: 'AIRLOCK: build the reference tcc, static against musl'
+        run: |
+          set -eu
+          # THE SAME tcc THE OTHER ARM USES. Same pin, same five arm64
+          # assembler patches. A distro tcc or a different configure would stop
+          # this being a control and make it a different program.
+          git clone -q https://repo.or.cz/tinycc.git tccsrc \
+            || git clone -q git://repo.or.cz/tinycc.git tccsrc
+          ( cd tccsrc && git checkout -q "$TCC_SHA" )
+          bash spikes/stage3/patches/tcc-arm64-asm/apply-series.sh tccsrc
+          cd tccsrc
+          # --cc=musl-gcc and a static link: see the header for why this is
+          # load-bearing rather than cosmetic.
+          ./configure --cc=musl-gcc --prefix=/work/tccsrc \
+                      --extra-ldflags=-static > cfg.log 2>&1
+          make -j"$(nproc)" > build.log 2>&1 || { tail -30 build.log; exit 1; }
+          echo "  ref-tcc: $(wc -c < tcc) bytes"
+          echo "  $(file -b tcc)"
+
+      - name: 'GATE: the reference tcc must be STATIC'
+        run: |
+          set -eu
+          # If it is dynamic, the box would need shared objects and would stop
+          # being busybox-only. Fail here rather than let a number stand that
+          # was measured in a different box from the one described.
+          if file -b tccsrc/tcc | grep -q 'dynamically linked'; then
+            echo "  ref-tcc is DYNAMICALLY linked -- the box cannot stay busybox-only"
+            file -b tccsrc/tcc
+            ldd tccsrc/tcc || true
+            exit 1
+          fi
+          echo "  static. The box needs no shared objects for it."
+          ./tccsrc/tcc -v 2>&1 | head -1 | sed 's/^/  /'
+
+      - name: Fetch pinned upstreams (airlock -- nothing here enters the box)
+        run: |
+          set -eu
+          mkdir -p pins && cd pins
+          GNU=https://ftp.gnu.org/gnu
+          get() {
+            echo "  fetching $(basename "$1")"
+            curl -fsSL --retry 3 --max-time 600 -O "$1" \
+              || { echo "  FETCH FAILED: $1"; exit 1; }
+          }
+          get "https://musl.libc.org/releases/musl-$MUSL_VER.tar.gz"
+          get "$GNU/make/make-$MAKE_VER.tar.gz"
+          get "$GNU/binutils/binutils-$BINUTILS.tar.xz"
+          get "$GNU/gmp/gmp-$GMP_VER.tar.xz"
+          get "$GNU/mpfr/mpfr-$MPFR_VER.tar.xz"
+          get "$GNU/mpc/mpc-$MPC_VER.tar.gz"
+          get "$GNU/gcc/gcc-$GCC47/gcc-$GCC47.tar.bz2"
+          echo "  --- what came in ---"
+          sha256sum ./* | sed 's/^/    /'
+          # HASHES ARE PRINTED, NOT YET ENFORCED. sources/musl.toml carries
+          # musl's; the rest belong in sources/*.toml before this job is
+          # anything but exploratory. Saying so is cheaper than a comment that
+          # claims they are pinned when they are not.
+
+      - name: Assemble the box
+        run: |
+          set -eu
+          BOX="$PWD/box"; echo "BOX=$BOX" >> "$GITHUB_ENV"
+          mkdir -p "$BOX"/bin "$BOX"/lib "$BOX"/work "$BOX"/out \
+                   "$BOX"/src "$BOX"/in "$BOX"/tmp "$BOX"/proc "$BOX"/dev
+
+          # Tier 1 is empty, so this copies nothing. It stays because the SEAL
+          # reads the same variable and the two must not describe different sets.
+          for t in $BUDGET_PATH;   do cp -L "$(command -v "$t")" "$BOX/bin/$t"; done
+          for t in $BUDGET_DRIVER; do cp -L "$(command -v "$t")" "$BOX/bin/$t"; done
+
+          # tcc's -B directory: its own source tree, which is where it looks
+          # for libtcc1.a and its include/. libtcc1.a is BUILT at rung 0 by the
+          # compiler under test, not copied in.
+          cp -a tccsrc "$BOX/work/tccsrc"
+          rm -f "$BOX/work/tccsrc/libtcc1.a"
+          cp -L tccsrc/tcc "$BOX/work/ref-tcc"
+          chmod 0755 "$BOX/work/ref-tcc"
+
+          # Only what the tier-2 binaries need to EXECUTE. Both are static, so
+          # this should find nothing -- and the count is printed rather than
+          # assumed.
+          for b in "$BOX"/bin/* "$BOX/work/ref-tcc"; do
+            ldd "$b" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i ~ /^\//) print $i}'
+          done | sort -u > /tmp/needed
+          n=0
+          while read -r l; do
+            [ -f "$l" ] && cp -L "$l" "$BOX/lib/" && n=$((n+1))
+          done < /tmp/needed
+          echo "  shared objects the box needs: $n"
+
+          for a in sh cat cmp sha256sum wc printf mkdir cp rm mv ln chmod sed \
+                   head tail tr ls sort comm grep cut awk timeout od dd env date \
+                   find xargs basename dirname uname expr test true false tar gzip nproc; do
+            ln -sf busybox "$BOX/bin/$a"
+          done
+          echo "  box laid out: $(du -sh "$BOX" | cut -f1)"
+          echo "  /usr/include present? $( [ -d "$BOX/usr/include" ] && echo YES || echo no )"
+
+      - name: 'SEAL: enumerate every executable in the box and enforce the budget'
+        run: |
+          set -eu
+          echo "  === TIER 1: ON THE BUILD PATH ==="
+          if [ -z "$BUDGET_PATH" ]; then
+            echo "    EMPTY -- no compiler, no assembler, no linker, no archiver."
+            echo "    binutils is BUILT at rung 4. If it appears below, a"
+            echo "    configure script found it and this run is void."
+          fi
+          echo "  === TIER 2: DRIVER (touches no artifact byte) ==="
+          for t in $BUDGET_DRIVER; do
+            printf '    %-12s %10s  %s\n' "$t" "$(wc -c < "$BOX/bin/$t")" \
+              "$(sha256sum "$BOX/bin/$t" | cut -c1-16)"
+          done
+          echo "  === TIER 3: THE COMPILER UNDER TEST ==="
+          printf '    %-12s %10s  %s\n' ref-tcc "$(wc -c < "$BOX/work/ref-tcc")" \
+            "$(sha256sum "$BOX/work/ref-tcc" | cut -c1-16)"
+
+          printf '%s\n' $BUDGET_PATH $BUDGET_DRIVER | sort -u > /tmp/declared
+          find "$BOX/bin" -type f -printf '%f\n' | sort -u > /tmp/actual
+          undeclared=$(comm -13 /tmp/declared /tmp/actual || true)
+          if [ -n "$undeclared" ]; then
+            echo "  UNDECLARED EXECUTABLES IN THE BOX:"
+            printf '%s\n' "$undeclared" | sed 's/^/    /'
+            exit 1
+          fi
+          echo "  SEALED. $(wc -l < /tmp/declared) host binaries, $(printf '%s' "$BUDGET_PATH" | wc -w) of them on the build path."
+
+      - name: 'IN THE BOX: ref-tcc -> musl -> make -> binutils -> gcc 4.7.4'
+        run: |
+          set -eu
+          bwrap \
+            --unshare-all \
+            --die-with-parent \
+            --setenv PATH /bin \
+            --setenv HOME /work \
+            --setenv LC_ALL POSIX \
+            --setenv TERM dumb \
+            --setenv SOURCE_DATE_EPOCH 0 \
+            --setenv LD_LIBRARY_PATH /lib \
+            --setenv CC_BIN /work/ref-tcc \
+            --setenv TCCDIR /work/tccsrc \
+            --setenv ARM reference \
+            --bind "$BOX" / \
+            --ro-bind "$PWD/spikes" /src \
+            --ro-bind "$PWD/pins" /in \
+            --bind "$BOX/out" /out \
+            --proc /proc --dev /dev --tmpfs /tmp \
+            --chdir /work \
+            /bin/sh /src/stage4/bridge/rungs.sh
+
+      - name: 'BUDGET: what this run borrowed from the host'
+        if: always()
+        run: |
+          set -eu
+          echo "  on the build path : ${BUDGET_PATH:-EMPTY -- nothing}"
+          echo "  driving the build : $BUDGET_DRIVER"
+          echo "  under test        : ref-tcc (host-built, static against musl)"
+          echo ""
+          echo "  NOT in the box, and that is the difference from stage 4:"
+          echo "    /usr/include   host glibc headers   -- absent"
+          echo "    /usr/lib       crt1.o, libc         -- absent"
+          echo "    binutils       as, ld, ar, ranlib   -- absent (rung 4)"
+          echo "    make           GNU make             -- absent (rung 3.5)"
+          echo ""
+          echo "  THIS ARM SAYS NOTHING ABOUT THE SEED. ref-tcc was built by the"
+          echo "  host's compiler; it is here so that a failure in the bridge arm"
+          echo "  can be attributed to micro-c rather than to this harness."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage3-to-stage4-reference
+          path: |
+            box/out/
+          if-no-files-found: warn
