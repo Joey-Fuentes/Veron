@@ -1317,6 +1317,23 @@ if [ "$R5" = ok ]; then
   # Building only the C frontend would reach something called gcc 4.7.4 that is
   # not the rung stage 4 stands on.
   #
+  # --disable-nls IS NOT IN STAGE 4's LINE, AND IS FORCED BY THE BOX.
+  #
+  # Without it gcc builds its own bundled intl/ and stops at
+  #
+  #     intl/gettext.c:58: error: 'LC_MESSAGES' undeclared
+  #
+  # gcc's configure decides to build that copy when the libc's gettext does not
+  # satisfy it. Stage 4 never sees this because its box has glibc, whose full
+  # NLS support makes the bundled intl unnecessary; musl's is minimal, so gcc
+  # falls back to its own and that copy does not compile here.
+  #
+  # This is the same category as -static and MAKEINFO=true: a difference the
+  # box forces, not a drift from stage 4's recipe. It also matches what LFS
+  # and live-bootstrap both do for an early toolchain -- neither wants message
+  # catalogues from a compiler that exists to build the next compiler. binutils
+  # above already carries it for the same reason.
+  #
   # --with-sysroot is NOT here, and I had added it. With the libc installed at
   # /usr -- where this box's compiler already looks -- a sysroot is both
   # unnecessary and wrong: it would prefix every system path again.
@@ -1332,6 +1349,7 @@ if [ "$R5" = ok ]; then
     --host=aarch64-unknown-linux-gnu \
     --target=aarch64-unknown-linux-gnu \
     --prefix="$PFX" --enable-languages=c,c++ \
+    --disable-nls \
     --disable-multilib --disable-bootstrap --disable-werror \
     --disable-libsanitizer --disable-libgomp --disable-libquadmath \
     --disable-libssp --disable-libatomic --disable-shared \
