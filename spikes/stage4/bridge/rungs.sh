@@ -115,6 +115,11 @@ untar() {          # $1 = path prefix, e.g. /in/musl
     say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_rc)"
 
     if [ "$_rc" = 0 ]; then
+        # WHAT LANDED, AND WHERE. The cwd line above says where tar was TOLD to
+        # write; this says what actually appeared. gcc 10 extracted with rc=0
+        # into /work instead of /work/src and nothing noticed until a configure
+        # path four lines later spelled the other directory out.
+        say "    -> $(ls -dt */ 2>/dev/null | head -1) in $(pwd)"
         return 0
     fi
     say "    tar refused $_t ($(wc -c < "$_t") bytes):"
@@ -2307,19 +2312,34 @@ if [ "$R8" = ok ]; then
     done
 
     if [ "$r9" = ok ]; then
+      # cd FIRST. Rung 8 ends at /work, so this extracted gcc 10 into /work
+      # while every path below assumed /work/src -- the tar reported rc=0 and
+      # the sed on configure.host even worked, because that was resolved
+      # relative to the same wrong directory. Only the configure call, which
+      # spells the path out, disagreed:
+      #
+      #     tar -Jxf /in/gcc-10.2.0.tar.xz   (cwd: /work)
+      #     /work/src/gcc-10.2.0/configure: not found
+      #
+      # The `(cwd: ...)` line the JOE markers print is what made that one line
+      # of reading rather than a round.
+      cd /work/src
       if ! untar /in/gcc-10; then
         say "    gcc 10 did not extract"; r9=FAIL
       else
         g10=$(onedir 'gcc-10* ./gcc-10*')
+        say "    tree: /work/src/$g10"
         # SAME libstdc++ RETARGET AS 4.7. gcc 10 DOES know musl -- but only
         # through a `linux-musl*` arm, and this triple says -gnu, so it picks
         # os/gnu-linux and reaches for glibc's internal ctype enum exactly as
         # 4.7 did. Switching the triple would be the cleaner fix and needs
         # config.sub to accept linux-musl; until that is checked, one sed.
-        if [ -f "$g10/libstdc++-v3/configure.host" ]; then
+        if [ -f "/work/src/$g10/libstdc++-v3/configure.host" ]; then
           sed -i 's|os_include_dir="os/gnu-linux"|os_include_dir="os/generic"|' \
-            "$g10/libstdc++-v3/configure.host"
+            "/work/src/$g10/libstdc++-v3/configure.host"
           say "    libstdc++ os config: gnu-linux -> generic"
+        else
+          say "    NO libstdc++-v3/configure.host under /work/src/$g10"
         fi
         mkdir -p /work/bld10 && cd /work/bld10
         say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: gcc 10 configure, CXX=$GXX2"
