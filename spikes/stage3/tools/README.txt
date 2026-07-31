@@ -44,6 +44,35 @@ Cases 107 and 110 were added without the second and imm-identity reported four
 undeclared moves -- a guard correctly catching a case author, which is what it
 is for. If a new case uses a big hex mask, declare it.
 
+THE LOCAL LOOP IS BLINDER THAN CI, IN TWO KNOWN WAYS. Both are structural, not
+bugs, and a case can pass here and fail on the runner because of either.
+
+  1. THE REFERENCE IS BUILT BY THE HOST'S gcc, NOT A NATIVE ONE.
+     difftest-qemu.sh compiles the case with whatever gcc is on the development
+     machine -- x86-64 -- and runs only the SUBJECT under the emulator. So a
+     case that encodes anything TARGET-DEPENDENT agrees with itself locally and
+     disagrees on an aarch64 runner, where gcc is native.
+
+     PLAIN `char` IS THE ONE THAT BIT. Its signedness is
+     implementation-defined: SIGNED on x86-64, UNSIGNED on aarch64. Case 101
+     wrote `(char)-32` and expected -32; on the runner gcc returned 224 and
+     difftest reported "CASE IS BROKEN: gcc build returns 32" -- correctly
+     refusing to measure against a reference that disagrees with itself across
+     targets. Write `signed char` or `unsigned char` when the sign matters.
+
+     CHECK IT LOCALLY, it costs nothing -- `-funsigned-char` makes the host gcc
+     use aarch64's convention:
+
+         gcc -w -O0            -o a case.c && ./a ; echo $?
+         gcc -w -O0 -funsigned-char -o b case.c && ./b ; echo $?
+
+     The two exit statuses must agree. Sweeping all 95 cases this way found
+     exactly one, which is now fixed; a new case should not add a second.
+
+  2. qemu-user DOES NOT TRAP WHAT REAL AARCH64 TRAPS. Unaligned access is the
+     known example, and it is why mc-tcc compiles tcc.c under the emulator and
+     segfaults natively. Nothing local can see that class. See MICRO-C.md.
+
 RUN THE TWELVE BEFORE BELIEVING ANY CODEGEN CHANGE. difftest and the 426-corpus
 were BOTH GREEN over EXPERIMENT-zzzg, which broke all twelve end-to-end
 programs. Neither compiles tcc. The twelve is the only gate that does.

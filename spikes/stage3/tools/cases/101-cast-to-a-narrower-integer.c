@@ -33,7 +33,22 @@ int main(void)
 	if(s != -32) r = r + 8;
 	s = (short)v;
 	if(s != -32) r = r + 16;
-	s = (char)v;
+	/* `signed char`, NOT `char`. Plain char's signedness is
+	 * implementation-defined and the two targets disagree: it is SIGNED on
+	 * x86-64 and UNSIGNED on aarch64, so `(char)-32` is -32 on one and 224
+	 * on the other. Written as plain `char` this case encoded the
+	 * DEVELOPMENT MACHINE's answer, passed against an x86-64 gcc, and made
+	 * gcc itself return 32 on a native aarch64 runner -- reported as
+	 * "CASE IS BROKEN: gcc build returns 32", which is difftest correctly
+	 * refusing to measure anything against a reference that disagrees with
+	 * itself across targets.
+	 *
+	 * It was invisible locally because difftest-qemu.sh builds the REFERENCE
+	 * with the host's x86-64 gcc and runs only the SUBJECT under the
+	 * emulator. Only a natively-aarch64 gcc sees it. The narrowing being
+	 * tested here is about WIDTH, so pinning the signedness loses nothing --
+	 * `(unsigned char)` above already covers the other half. */
+	s = (signed char)v;
 	if(s != -32) r = r + 32;
 
 	/* a value that does NOT fit re-reads as the truncated pattern */

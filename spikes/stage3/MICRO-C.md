@@ -38,12 +38,34 @@ mc-tcc (same 1,574,765 bytes) **segfaults**:
 ```
 
 Not host headers -- `-nostdinc` changes nothing locally and the box has no
-`/usr/include` at all. So it is the EMULATOR hiding something real hardware
-traps. This file already records the same asymmetry one level down:
-*"ON AMD64 AN UNALIGNED LOAD MERELY COSTS TIME. ON AARCH64 IT IS A FAULT"* --
-which hid the member-alignment bug for as long as the local suite was amd64.
-qemu-user is permissive in the same direction, so the local loop cannot see
-this class at all. **Trust CI over the local run for step 1.**
+`/usr/include` at all. `tcc-two-ways` reproduces it independently
+(`gen2 died on SIGNAL 11`), so it is not the hermetic box either.
+
+**AND IT DISAPPEARS UNDER INSTRUMENTATION**, which is the part that decides how
+to chase it. `tcc-two-ways` step 26 builds the same tcc with a marker after
+every statement:
+
+```
+    instrumented binary: 1571918 bytes
+    exit 0 -- NO SIGNAL under instrumentation.
+    THAT IS THE FINDING: the fault is sensitive to code size or
+    layout, and reducing it by construct will not work.
+    LAST STATEMENT THAT COMPLETED: E02  tccelf.c:116  free_section: ENTRY
+```
+
+A fault that vanishes when you add code is a fault about LAYOUT, not about a
+construct. That is the same shape as the heap corruption chapter above, where
+the failure moved with the length of the input's FILENAME and bisecting by
+construct produced two confident wrong answers. **So do not reduce this one by
+deleting statements** -- that is the move that works for a construct bug and
+wastes rounds on a layout bug. `tools/layout-sweep.sh` is the instrument for
+this class.
+
+Alignment remains the leading hypothesis, because this file already records the
+same asymmetry one level down: *"ON AMD64 AN UNALIGNED LOAD MERELY COSTS TIME.
+ON AARCH64 IT IS A FAULT"* -- which hid the member-alignment bug for as long as
+the local suite was amd64. qemu-user is permissive in the same direction.
+**Trust CI over the local run for step 1.**
 
 `rc=0` on step 1 is not proof the object is correct. What it is worth: against
 the gcc-built control on the same source, the two objects carry the **same 705
@@ -1290,6 +1312,34 @@ fixing, and the design is written out under "Next".
 
 ---
 
+---
+
+## CI, and what each job is worth
+
+All three green as of `fff3b7d`. They answer different questions and none of
+them subsumes another.
+
+| job | what it proves |
+|---|---|
+| `stage3-hermetic-arm64` | the climb, in the sealed box, `BUDGET_PATH` empty. GATE 1: our seed-built M2-Planet emits **byte-identical** output to upstream's (`2947903`, `dc38e13e4ceaeecb`). Then `stage 3 end to end: yes`, the twelve, and the full tests2 sweep |
+| `tcc-two-ways` | the same compiler measured against a **gcc-built control from the same source**. The control decides which tests count; it also reaches `FIXPOINT: gen2 and gen3 byte-identical`, which is the bar our side has to clear |
+| `micro-c-builds-tcc` | the link-set ladder, every rung `MAIN RAN (exit 42)`. Note it **skips m2libc patches 0004-0011 as "other revision"**, so it says nothing about the aarch64 encoding fixes, the narrowing-cast macros or the realloc diagnostics -- do not read it as a second opinion on those |
+
+**THE HERMETIC JOB IS THE ONE WITH NO CONTROL IN IT**, because a control needs
+gcc and gcc is not in the budget. That is why step 11 there reports how many of
+tcc's own programs match `.expect` and does NOT attribute the failures.
+Attribution lives in `tcc-two-ways`; the count lives in the box.
+
+TWO THINGS CI CAUGHT THAT LOCAL RUNS DID NOT, both recorded above and both
+structural rather than bad luck:
+
+  * `imm-identity` went red on cases 107 and 110 carrying undeclared wide
+    constants. The guard was right and the case author was wrong.
+  * `101-cast-to-a-narrower-integer` was BROKEN on the runner -- plain `char`
+    is signed on x86-64 and unsigned on aarch64, and the local reference is
+    built by an x86-64 gcc. See `tools/README.txt` for the `-funsigned-char`
+    check that catches this class before it reaches CI.
+
 ## Next -- in order, with the work already scoped
 
 **1. FIX THE SHIM. Designed, not written.** `spikes/stage3/tcc-test-shim/crt.c`.
@@ -1331,11 +1381,13 @@ Three changes, none of them large:
   not care about column alignment -- but a ZERO-padded field changes characters
   and must keep aborting.
 
-**2. WHY STEP A SEGFAULTS NATIVELY BUT NOT UNDER QEMU.** Newly visible and
-probably cheap: the emulator is permissive where real aarch64 traps, and the
-prime suspect is alignment, which has hidden two bugs in this project already.
-It needs a native runner to chase -- the local loop is structurally blind to
-it. Until it is closed, "mc-tcc compiles tcc.c" is a qemu-only claim.
+**2. WHY STEP A SEGFAULTS NATIVELY BUT NOT UNDER QEMU.** The emulator is
+permissive where real aarch64 traps, and alignment has hidden two bugs in this
+project already. It needs a native runner: the local loop is structurally blind
+to it. Until it closes, "mc-tcc compiles tcc.c" is a qemu-only claim.
+
+DO NOT REDUCE IT BY CONSTRUCT. It disappears under instrumentation, so it is a
+layout fault; see the note under the status block. Sweep layout instead.
 
 **3. `tcctest.c`'s `struct_test` blocker.** Bisect INSIDE the function by
 deleting statements, which is what cracked 00_assignment; ten probes AROUND it
