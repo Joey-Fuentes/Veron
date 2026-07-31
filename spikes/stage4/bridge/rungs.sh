@@ -853,7 +853,8 @@ if [ "$R3" = ok ] && [ "$R35" != FAIL ]; then
   MUSLDEFS="-DHAVE_ALLOCA_H -DSTDC_HEADERS
             -DHAVE_STRING_H -DHAVE_STRINGS_H -DHAVE_STDLIB_H -DHAVE_UNISTD_H
             -DHAVE_LIMITS_H -DHAVE_MEMORY_H -DHAVE_SYS_PARAM_H -DHAVE_SYS_WAIT_H
-            -DHAVE_SYS_TIME_H -DHAVE_TIME_H -DHAVE_LOCALE_H -DHAVE_SYS_FILE_H
+            -DHAVE_SYS_TIME_H -DHAVE_TIME_H -DTIME_WITH_SYS_TIME=1
+            -DHAVE_LOCALE_H -DHAVE_SYS_FILE_H
             -DHAVE_STRCASECMP -DHAVE_STRNCASECMP -DHAVE_STRERROR -DHAVE_STRSIGNAL
             -DHAVE_STRDUP -DHAVE_STRNDUP -DHAVE_STRCHR -DHAVE_STRRCHR
             -DHAVE_MEMCPY -DHAVE_MEMMOVE -DHAVE_MEMSET
@@ -903,8 +904,27 @@ if [ "$R3" = ok ] && [ "$R35" != FAIL ]; then
   mk_cc hash.c      -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART
   mk_cc remote-stub.c -I. -DHAVE_INTTYPES_H -DHAVE_SA_RESTART
   mk_cc getloadavg.c  -DHAVE_FCNTL_H
-  mk_cc glob/fnmatch.c -Iglob -DSTDC_HEADERS
-  mk_cc glob/glob.c    -Iglob -DHAVE_STRDUP -DHAVE_DIRENT_H
+  # THE glob FILES DO NOT GET MUSLDEFS, AND live-bootstrap SAYS WHY BY OMISSION.
+  #
+  # Their line for glob.c is `-Iglob -DHAVE_STRDUP -DHAVE_DIRENT_H` -- no
+  # STDC_HEADERS, while fnmatch.c right above it has it. That asymmetry is
+  # deliberate: glob.c guards `#include <stdlib.h>` on STDC_HEADERS, and
+  # pulling musl's stdlib.h in gives
+  #
+  #     /usr/include/bits/alltypes.h:15: error: incompatible redefinition
+  #                                            of 'wchar_t'
+  #
+  # because glob.c has already established a wchar_t of its own. Blanket-
+  # applying MUSLDEFS re-broke a file that was compiling, which is the cost of
+  # treating their per-file flags as noise rather than as answers.
+  #
+  # HAVE_ALLOCA_H still applies -- glob.c needed it and got it in the round
+  # before this one. Everything else is theirs, verbatim.
+  mk_cc_glob() { _s=$1; shift
+    if ! $CC -c -DHAVE_ALLOCA_H "$@" "$_s" 2>>/work/make-cc.err; then
+      say "      FAILED: $_s"; _cc_fail=$((_cc_fail + 1)); fi; }
+  mk_cc_glob glob/fnmatch.c -Iglob -DSTDC_HEADERS
+  mk_cc_glob glob/glob.c    -Iglob -DHAVE_STRDUP -DHAVE_DIRENT_H
 
   say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  ($_cc_fail of 27 failed)"
 
