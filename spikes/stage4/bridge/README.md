@@ -191,6 +191,34 @@ building the next one -- stage 4 does this at every rung and the logs say so:
 *"prerequisites, rebuilt by the tcc-built gcc"*, then *"rebuilt by the stage-2
 gcc"*.
 
+## Which book, and where we leave it
+
+`spikes/stage4/books/LFS-BOOK-r13_0-156-systemd` -- the **development
+snapshot**, not the stable 13.0 beside it. It specifies:
+
+```
+Linux 7.1.3    Perl 5.42.2    Glibc 2.43    Binutils 2.46.0    GCC 15.2.0
+```
+
+Two versions had drifted and were corrected: perl was 5.42.0, which is the
+*stable* book's number, and the kernel was 7.1.5 from nowhere in particular.
+Mixing books is how a pairing nobody tested becomes the thing being debugged --
+glibc 2.43's `upstream_fixes` patch exists precisely to reconcile a libc with a
+kernel it was not shipped against, and stage 4 calls it *"THE PRICE OF LINUX
+7"*.
+
+**One divergence is kept deliberately: `KERNEL 7.1.5` against `KHDR 7.1.3`.**
+`stage4-complete` already builds and boots that exact pairing, so it is tested
+rather than hoped for, and a kernel may always be newer than the headers its
+libc was compiled against -- the syscall ABI is stable forward. The reverse is
+what breaks. Keeping them as two variables makes that a property stated rather
+than one obtained by accident, and it is the shape every later bump takes:
+linux-next against a released glibc is the same question with a bigger gap.
+
+When it does break it looks like `redefined [-Werror]` on a type both the
+kernel headers and the libc declare. Rung 13 greps for that specifically,
+because the message names a symbol rather than the pairing that caused it.
+
 ## Above gcc 10: LFS chapters 5 and 6, and the traps in them
 
 `stage4-complete` uses gcc 10 as the *host* compiler for a normal LFS build --
