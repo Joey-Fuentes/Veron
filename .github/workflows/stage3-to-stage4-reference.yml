@@ -216,6 +216,53 @@ jobs:
           # anything but exploratory. Saying so is cheaper than a comment that
           # claims they are pinned when they are not.
 
+      - name: 'AIRLOCK: normalise every tarball to ustar (busybox cannot read the GNU format)'
+        run: |
+          set -eu
+          # BUSYBOX tar REQUIRES THE ustar MAGIC AND GNU RELEASE TARBALLS DO NOT
+          # CARRY IT. Measured, not guessed -- both make tarballs decompress
+          # cleanly to exactly block- and record-aligned archives with correct
+          # member names at offset 0 and EIGHT NUL BYTES at offset 257, where
+          # "ustar" belongs:
+          #
+          #     make-4.4    offset 0: m a k e - 4 . 4 /    offset 257: \0 x8
+          #     make-3.82   offset 0: m a k e - 3 . 8 2 /  offset 257: \0 x8
+          #
+          # busybox's get_header_tar refuses on exactly that check, which is why
+          # both versions failed identically while musl-1.2.5.tar.gz -- packed
+          # differently -- opens fine with the same call.
+          #
+          # THIS WAS NEVER ABOUT make. binutils, gmp, mpfr, mpc and both gcc
+          # tarballs are GNU releases too and would have failed the same way,
+          # one rung at a time, each looking like a new problem.
+          #
+          # SO REPACK IN THE AIRLOCK, WHERE HOST tar ALREADY IS. This is the
+          # same class of operation as fetching: the archive is a pinned input
+          # and this changes its container, not its contents. Nothing enters the
+          # box that did not come from the pinned tarball, and the box still
+          # extracts and builds everything itself. The alternative -- extracting
+          # on the host and shipping directories -- would move real work outside
+          # the box, which this does not.
+          cd pins
+          for f in *.tar.gz *.tar.xz *.tar.bz2; do
+            [ -f "$f" ] || continue
+            stem=${f%%.tar.*}
+            d=$(mktemp -d)
+            tar xf "$f" -C "$d"
+            ( cd "$d" && tar czf "$OLDPWD/$stem.ustar.tar.gz" --format=ustar ./* )
+            rm -rf "$d"
+            printf '  %-28s -> %s.ustar.tar.gz  %s bytes\n' "$f" "$stem" \
+              "$(wc -c < "$stem.ustar.tar.gz")"
+            rm -f "$f"
+          done
+          echo "  --- what the box will see ---"
+          ls -1 . | sed 's/^/    /'
+          echo "  --- proof: ustar magic now present ---"
+          for f in *.ustar.tar.gz; do
+            printf '    %-34s [%s]\n' "$f" \
+              "$(gzip -dc "$f" | dd bs=1 skip=257 count=5 2>/dev/null)"
+          done
+
       - name: Assemble the box
         run: |
           set -eu
