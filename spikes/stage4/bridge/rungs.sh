@@ -1405,6 +1405,46 @@ ARSHIM
     # tools and headers sit where gcc expects them. I argued the box IS the
     # target so the layout did not matter. It matters: gcc asks for the target
     # tooldir by construction, whether or not the target is the same machine.
+    # THE SHIM RETIRES HERE. binutils just built a real ar; keep using tcc-ar
+    # and the next rung finds out the hard way:
+    #
+    #     libtool: link: (cd .libs/libstdc++.lax/... && tcc-ar x "...convenience.a")
+    #     tcc-ar: cannot do 'x' (extract/list/delete)
+    #
+    # libtool merges "convenience" archives by EXTRACTING their members and
+    # re-archiving them, and tcc -ar cannot extract. The shim refuses rather
+    # than guessing, which is why that reads clearly instead of producing a
+    # libstdc++.a with the wrong contents.
+    #
+    # tcc-ar existed for exactly one reason: to build binutils when there was
+    # no ar. That reason is now gone. Leaving a bootstrap tool in place after
+    # the real one exists is how a limitation outlives its cause -- and this
+    # one would have been blamed on gcc, four rungs from where it was set.
+    AR="$PFX/bin/ar";         export AR
+    RANLIB="$PFX/bin/ranlib"; export RANLIB
+    say "    AR/RANLIB now the real binutils: $AR"
+    if "$AR" --version >/dev/null 2>&1; then
+      say "      $("$AR" --version 2>&1 | head -1)"
+    else
+      say "      but it will not run -- keeping tcc-ar"
+      AR="$PFX/bin/tcc-ar"; RANLIB="$PFX/bin/tcc-ranlib"; export AR RANLIB
+    fi
+    # And prove the thing tcc-ar could not do now works, since that is the
+    # capability the next rung needs and nothing has ever exercised it.
+    ( cd /tmp && rm -rf arx && mkdir -p arx/out && cd arx
+      printf 'int q(void){return 1;}\n' > q.c
+      $CC -c -o q.o q.c 2>/dev/null
+      "$AR" rcs qq.a q.o 2>/dev/null
+      # Extract into an EMPTY directory, or the member that was already there
+      # passes the test for you. The first version of this checked for q.o in
+      # the same directory it had just compiled q.o into.
+      if ( cd out && "$AR" x ../qq.a 2>/dev/null ) && [ -f out/q.o ]; then
+        say "      ar x: works (libtool needs it for convenience archives)"
+      else
+        say "      ar x: FAILED -- libstdc++ will not link"
+      fi
+      cd /tmp && rm -rf arx )
+
     _TD="$PFX/aarch64-unknown-linux-gnu"
     say "    --- tooldir as binutils left it ---"
     ls -l "$_TD/bin" 2>/dev/null | head -12 | sed 's/^/      /' || say "      (no $_TD/bin)"
@@ -1419,6 +1459,23 @@ ARSHIM
     # gcc -- one symlink instead of a different recipe from stage 4's.
     rm -rf "$_TD/sys-include"
     ln -s /usr/include "$_TD/sys-include"
+    # THE SAME TOOLDIR UNDER EACH gcc PREFIX. gcc looks in $prefix/$target/,
+    # and rung 6 installs gcc to /work/out, so populating only $PFX's leaves
+    # gcc looking at an empty directory. That is exactly what happened when
+    # gcc moved off $PFX: libstdc++'s libtool stopped finding a real `ar` and
+    # fell back to the AR in the environment.
+    for _p in /work/out /work/out2 /work/out10; do
+      mkdir -p "$_p/aarch64-unknown-linux-gnu/bin" "$_p/aarch64-unknown-linux-gnu/lib"
+      for _t in as ld ar ranlib nm objcopy objdump strip readelf strings; do
+        [ -x "$PFX/bin/$_t" ] || continue
+        rm -f "$_p/aarch64-unknown-linux-gnu/bin/$_t"
+        ln -s "$PFX/bin/$_t" "$_p/aarch64-unknown-linux-gnu/bin/$_t"
+      done
+      rm -rf "$_p/aarch64-unknown-linux-gnu/sys-include"
+      ln -s /usr/include "$_p/aarch64-unknown-linux-gnu/sys-include"
+    done
+    say "    tooldirs populated: $PFX and /work/out{,2,10}"
+
     say "    --- tooldir after ---"
     ls -l "$_TD/bin" 2>/dev/null | head -12 | sed 's/^/      /'
     printf '      %-14s %s\n' sys-include "-> $(readlink "$_TD/sys-include" 2>/dev/null)"
