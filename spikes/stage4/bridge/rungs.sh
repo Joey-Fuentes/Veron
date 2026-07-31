@@ -525,14 +525,33 @@ if [ "$R3" = ok ]; then
   else
     say "    tarball: $_mk  $(wc -c < "$_mk") bytes"
     say "    magic:   $(od -An -tx1 -N4 "$_mk" | tr -s ' ')"
-    # gzip is 1f 8b, bzip2 is 42 5a, xz is fd 37. Let tar autodetect rather
-    # than forcing -z, so a differently-compressed tarball still opens.
-    tar xf "$_mk" 2>/work/make-tar.err || {
+    # DECOMPRESS AND DECOMPRESS ALONE, THEN LOOK AT WHAT CAME OUT.
+    #
+    # The magic is 1f 8b -- real gzip -- and busybox decompresses it and then
+    # rejects the tar inside with "invalid tar magic", while musl's tarball
+    # extracts fine with the same busybox and the same flags. So the fault is
+    # in the archive, not in the compression, and the two steps have to be
+    # separated to see which.
+    #
+    # A ustar header carries "ustar" at offset 257 of the first block. If that
+    # is present the archive is well formed and busybox is refusing something
+    # else; if it is absent the download is truncated or is not a tar at all.
+    # Either answer is one line, and neither is reachable while decompression
+    # and extraction are one command.
+    gzip -dc "$_mk" > /work/make.tar 2>/work/gz.err
+    _gzrc=$?
+    say "    gunzip rc=$_gzrc  ->  $(wc -c < /work/make.tar 2>/dev/null || echo 0) bytes"
+    [ -s /work/gz.err ] && sed 's/^/      gz: /' /work/gz.err | head -3
+    say "    ustar magic at offset 257: [$(dd if=/work/make.tar bs=1 skip=257 count=5 2>/dev/null | tr -dc '[:print:]')]"
+    say "    first member name:         [$(dd if=/work/make.tar bs=1 count=32 2>/dev/null | tr -dc '[:print:]')]"
+    if tar xf /work/make.tar 2>/work/make-tar.err; then
+      say "    extracted"
+    else
       say "    extraction FAILED:"
       sed 's/^/      /' /work/make-tar.err | head -4
-      say "    first bytes as text: $(head -c 60 "$_mk" | tr -dc '[:print:]')"
       R35=FAIL
-    }
+    fi
+    rm -f /work/make.tar
   fi
   if [ "$R35" != FAIL ]; then
   cd make-* 2>/dev/null || { say "    no make-* directory after extraction"; R35=FAIL; }
