@@ -93,6 +93,13 @@ on:
       - '!spikes/*.md'
       - '!spikes/**/*.md'
   workflow_dispatch:
+  # CALLED BY stage3-to-stage4-bridge.yml, which continues this climb up to
+  # gcc 4.7.4. It calls rather than copies: the in-box script below is ~1000
+  # lines and a second copy of it would drift from this one, which is the
+  # failure this repo already records for a list kept beside the thing it
+  # describes. Adding this trigger changes nothing about how the job runs on
+  # push or dispatch.
+  workflow_call:
 
 # Long jobs queue instead of cancelling -- one push to fix a typo must not kill
 # an in-flight run.
