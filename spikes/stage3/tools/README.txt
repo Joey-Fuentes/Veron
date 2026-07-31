@@ -1898,3 +1898,61 @@ userland to lend; that mc-tcc would have to build musl; that multi-TU was off
 the critical path; that multi-TU was a compiler fault. Every one came from
 grepping a file instead of reading the stage. The requirements are written out
 properly in WHAT-STAGE-4-NEEDS.md so the next round starts from evidence.
+
+--------------------------------------------------------------------------------
+MEASURED: tcc.c compiles. One initialiser stands between us and a real driver.
+--------------------------------------------------------------------------------
+
+With tcctools.c:60 stubbed FOR MEASUREMENT ONLY, the whole of tcc.c compiles:
+707 functions against libtcc's 695. That is the only parse blocker in the
+entire front end -- not the first of many, which is what it could have been.
+
+IT CANNOT STAY STUBBED, and the reason came from being corrected mid-round.
+The argument for stubbing was "stage 4 borrows binutils, so a real ar exists".
+That is true of the CURRENT borrow list and false of the goal: gcc needs an
+assembler and linker, so binutils must be built by tcc, and building binutils
+means creating libbfd.a and libiberty.a before any ar exists. `tcc -ar` is the
+answer to that chicken-and-egg, so tcctools.c must compile properly.
+
+And zeroing it does not even degrade gracefully: ar_name is "/               "
+and ar_fmag is ARFMAG, both format-critical magic. A zeroed initialiser writes
+INVALID archives, not archives with poor metadata.
+
+WHAT THE FEATURE ACTUALLY IS. micro-c has a string-literal path for globals,
+but only `if(type_is_pointer(type_size))`. A `char[16]` MEMBER needs its bytes
+laid out INLINE -- no pointer indirection -- because tcc memcpys the struct
+into a file and the layout must be exact. Note also that micro-c's global
+array model emits a POINTER plus separate storage (`&GLOBAL_STORAGE_name %0`),
+which is not what a struct member can be.
+
+gettimeofday. tcc.c:283 calls it, libtcc.c never did, M2libc has no time
+syscall. Added to runtime.c returning constant zero.
+
+DETERMINISM, AUDITED RATHER THAN ASSUMED. The first version of that stub's
+comment said "the only consumers are the -bench counters". That was a guess
+that happened to be right, and it was written as though it were a finding.
+Every clock source in the tcc tree, checked:
+
+    gettimeofday   tcc.c:283 ONLY -- -bench, printed to stderr, read by nothing
+    time()         tccpp.c:3425, expanding __DATE__/__TIME__ -- this one DOES
+                   reach emitted bytes, and runtime.c already stubs it to 0
+    ar_date        NOT clock-derived: tcctools.c initialises it to the literal
+                   "0           ". tcc's -ar is deterministic by construction.
+                   I claimed the opposite before checking.
+    tccpe.c:761    TimeDateStamp, commented out upstream; PE is not a target
+
+So the clock surface is clean. A wider audit of the same shape -- getpid,
+uname, environment, directory order -- has NOT been done and is worth one pass
+rather than one function at a time. rung1.sh already fights one instance of it
+in its DW_AT_comp_dir note.
+
+IT LINKS AND THEN SIGBUSES. 1,564,793 bytes, faults immediately. NOT
+DIAGNOSED. Recorded as open rather than guessed at.
+
+AND A FINDING THAT AFFECTS THE BINARY SHIPPING TODAY. The joined .M1 has 80
+duplicate :GLOBAL_ labels, including :GLOBAL_STR_g_0_contents twice -- micro-c
+numbers generated string labels from zero PER COMPILATION UNIT, so units
+collide when joined. Checked against the WORKING mc-tcc build: identical 80
+collisions. So it is not new and not the SIGBUS cause, but a string reference
+may bind to another unit's string. Invisible to every test we have, because
+the twelve programs and all 87 difftest cases are single-unit.

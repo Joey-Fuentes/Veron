@@ -65,8 +65,14 @@ shape for isolating codegen and measures nothing here.
 
 ## 3. What mc-tcc is today
 
-**It is not tcc.** It is `libtcc.c` compiled by micro-c, linked with M2libc and
-a **175-line hand-written driver**, `micro-c-libc/impl/main-tcc.c`, whose own
+**It has tcc's compiler and not tcc's command-line driver.** micro-c compiles
+`libtcc.c` under `ONE_SOURCE=1`, which pulls in `tccpp.c` (4005 lines),
+`tccgen.c` (8917), `tccelf.c`, `tccasm.c`, `tccdbg.c`, `tccrun.c` and the whole
+aarch64 backend — 695 functions. That is the compiler, and it is real.
+
+What is missing is `tcc.c` (428 lines of `main` and option parsing) and
+`tcctools.c` (651 lines of `-ar`/`-impdef`/`-m`). In their place is a
+**175-line hand-written driver**, `micro-c-libc/impl/main-tcc.c`, whose own
 header says why:
 
 > tcc.c has its own main, but tcc.c pulls in tcctools.c which micro-c cannot
@@ -106,7 +112,9 @@ scaffolding we wrote.
 ## 4. The gap, in order
 
 **1. micro-c must compile `tcc.c`, so mc-tcc has tcc's real driver.**
-One named blocker, `tcctools.c:60`:
+MEASURED: with the blocking initialiser stubbed *for measurement only*, the
+whole of `tcc.c` compiles — **707 functions against libtcc's 695**. So this is
+the *only* parse blocker in the entire front end. The blocker, `tcctools.c:60`:
 
 ```c
     static const ArHdr arhdr_init = {
@@ -115,11 +123,41 @@ One named blocker, `tcctools.c:60`:
         ...
 ```
 
-a `static const` struct initialised with string members. Closing that removes
-the hand driver and with it `-E`, `-ar`, `-print-search-dirs`, `-l`, `-L`,
-multiple inputs and correct `--version` **in one step**, because they are
-tcc's code and always were. This is the highest-leverage item on the list and
-it is a parser gap, not a codegen one.
+a `static const` struct initialised with string members. micro-c has a
+string-literal path for globals but only when the target is a pointer; a
+`char[16]` *member* needs the bytes laid out **inline**, which is a feature it
+does not have. Closing it removes the hand driver and with it `-E`, `-ar`,
+`-print-search-dirs`, `-l`, `-L`, multiple inputs and correct `--version` **in
+one step**, because they are tcc's code and always were. Highest-leverage item
+on the list, and a parser gap rather than a codegen one.
+
+**IT CANNOT BE STUBBED.** `tcc -ar` is on the critical path: tcc needs no
+binutils to run — it has its own assembler and linker — but **gcc does**, so
+binutils must be built by tcc, and building it means creating `libbfd.a` and
+`libiberty.a` before any `ar` exists. `tcc -ar` is the answer to that
+chicken-and-egg. And the initialiser's contents are format-critical:
+`ar_name` is `"/               "` and `ar_fmag` is `ARFMAG`, so zeroing them
+produces invalid archives rather than degraded ones.
+
+**2a. `gettimeofday`.** `tcc.c:283` calls it and `libtcc.c` never did, so
+nothing needed it until the front end was compiled; M2libc has no time syscall
+wrapper. Added to `micro-c-libc/impl/runtime.c` returning a constant zero —
+see the comment there for the audit of every clock source in the tcc tree, and
+why zero is the right answer rather than a degraded one.
+
+**2b. It links and then SIGBUSes.** With both of the above, `tcc.c` links at
+1,564,793 bytes and faults immediately on start. **Not diagnosed.** This is
+the next investigation and nothing here should be read as predicting its
+cause.
+
+**2c. A separate finding, and it affects the binary shipping today.** The
+joined `.M1` carries **80 duplicate `:GLOBAL_` labels**, including
+`:GLOBAL_STR_g_0_contents` defined twice. micro-c numbers its generated string
+labels from zero *per compilation unit*, so any two units collide when joined.
+Checked against the **working** mc-tcc build: it has the identical 80
+collisions, so this is neither new nor the SIGBUS cause — but it means a string
+reference may bind to another unit's string. Invisible to every test we run,
+because the twelve programs and all 87 difftest cases are single-unit.
 
 **2. realloc.** 46 of 57 real failures in tcc's own `tests2` (see
 `MICRO-C.md`). gcc 4.7.4 is thousands of TUs; nothing at that scale compiles

@@ -260,6 +260,47 @@ long time(long* t)
 	return 0;
 }
 
+/* gettimeofday -- REQUIRED TO LINK tcc's REAL DRIVER, AND IT RETURNS A
+ * CONSTANT ON PURPOSE.
+ *
+ * tcc.c's main() calls it; libtcc.c does not, which is why nothing needed it
+ * until the front end was compiled. M2libc has no time syscall wrapper.
+ *
+ * ZERO IS THE ANSWER, NOT A DEGRADED ONE. A build must be a pure function of
+ * its inputs, so nothing on the build path may read a clock. Returning a real
+ * time here would be a reproducibility hole disguised as a courtesy: two
+ * builds of identical source would differ, which is the invariant the whole
+ * ladder exists to defend.
+ *
+ * AUDITED RATHER THAN ASSUMED. The first version of this comment claimed the
+ * only consumer was `-bench`. That was a guess. Every clock source reachable
+ * in the tcc tree, checked:
+ *
+ *   gettimeofday   tcc.c:283 ONLY -- the -bench counters, printed to stderr
+ *                  and read by nothing. The guess was right; it was still a
+ *                  guess when it was written down.
+ *   time()         tccpp.c:3425, expanding __DATE__ and __TIME__ -- and this
+ *                  one DOES reach emitted bytes. Already stubbed to 0 above,
+ *                  so those macros are already deterministic here.
+ *   ar_date        NOT clock-derived. tcctools.c initialises it to the
+ *                  literal "0           ", so tcc's own -ar is deterministic
+ *                  by construction. Claimed otherwise here before checking.
+ *   tccpe.c:761    TimeDateStamp, commented out upstream, and PE is not a
+ *                  target of this ladder.
+ *
+ * A consumer that wants a real time is a reproducibility bug, and should fail
+ * visibly rather than be quietly satisfied. */
+int gettimeofday(void* tv, void* tz)
+{
+	long* p = tv;
+	if(NULL != p)
+	{
+		p[0] = 0;
+		p[1] = 0;
+	}
+	return 0;
+}
+
 void* localtime(long* t) { return NULL; }
 
 char* realpath(char* path, char* resolved)
