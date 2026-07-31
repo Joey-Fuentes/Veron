@@ -500,6 +500,74 @@ jobs:
           printf '    %-34s %10s bytes\n' gcc47-aarch64-changed.patch  "$(wc -c < pins/gcc47-aarch64-changed.patch)"
           sha256sum pins/gcc47-aarch64-* | sed 's/^/    /'
 
+      - name: 'AIRLOCK: build the busybox this box will use'
+        run: |
+          set -eu
+          # OUR busybox, NOT UBUNTU's, AND THE PROBE MEASURED WHY.
+          #
+          #     ours: 400 applets, 2.18 MB, statically linked
+          #     Ubuntu's: 272
+          #       split   ours=yes  ubuntu=no
+          #       comm    ours=yes  ubuntu=no
+          #       tsort   ours=yes  ubuntu=no
+          #
+          # split and comm cost two full rounds at rung 11.5 -- perl's
+          # Configure needs both, Ubuntu's build has neither, and the failure
+          # reads as "not found", which looks like a PATH fault rather than an
+          # applet that was compiled out. rungs.sh still builds its own split
+          # and comm, and with this they become belt-and-braces rather than the
+          # only source.
+          #
+          # THE REAL POINT IS DECLARATION. The box's single host binary was
+          # whatever Ubuntu happened to ship; now it is one we built from a
+          # pinned tarball with a config in this file. "The box has no split"
+          # stops being a discovery.
+          #
+          # CONFIG_TC IS OFF because busybox 1.36.1's tc.c is 2023 code against
+          # 2026 kernel headers -- TCA_CBQ_MAX and struct tc_cbq_lssopt were
+          # removed upstream. A build sysroot has no use for traffic shaping.
+          BB=1.36.1
+          mkdir -p dl && cd dl
+          [ -s "busybox-$BB.tar.bz2" ] || \
+            curl -fsSL --connect-timeout 20 --retry 2 \
+              -O "https://busybox.net/downloads/busybox-$BB.tar.bz2"
+          cd ..
+          rm -rf bbsrc && mkdir bbsrc
+          tar xf "dl/busybox-$BB.tar.bz2" -C bbsrc --strip-components=1
+          cd bbsrc
+          make defconfig > /dev/null 2>&1
+          sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+          for sym in SPLIT COMM JOIN PASTE EXPAND UNEXPAND FOLD NL TSORT \
+                     CMP DIFF PATCH AWK SED GREP SORT UNIQ TR CUT; do
+            sed -i "s/^# CONFIG_$sym is not set/CONFIG_$sym=y/" .config
+            grep -q "^CONFIG_$sym=y" .config || echo "CONFIG_$sym=y" >> .config
+          done
+          for sym in SSL_CLIENT FEATURE_WGET_OPENSSL TLS TC; do
+            sed -i "s/^CONFIG_$sym=y/# CONFIG_$sym is not set/" .config
+          done
+          yes '' | make oldconfig > /dev/null 2>&1 || true
+          # VERIFY AFTER oldconfig -- it re-derives symbols and has undone
+          # exactly this edit before, in this repository, three runs running.
+          _bad=0
+          for sym in STATIC SPLIT COMM; do
+            grep -q "^CONFIG_$sym=y" .config || { echo "  CONFIG_$sym did not survive oldconfig"; _bad=1; }
+          done
+          [ "$_bad" = 0 ] || exit 1
+          make -j"$(nproc)" > b.log 2>&1 || {
+            echo "  --- errors ---"
+            grep -oE '^[^ :]+\.(c|h):[0-9]+' b.log | cut -d: -f1 | sort | uniq -c | sort -rn | head -6 | sed 's/^/    /'
+            tail -20 b.log | sed 's/^/    /'; exit 1; }
+          cd ..
+          cp bbsrc/busybox veron-busybox
+          echo "  busybox: $(wc -c < veron-busybox) bytes, $(./veron-busybox --list | wc -l) applets"
+          echo "  static:  $(file -b veron-busybox | grep -o 'statically linked' || echo NO)"
+          echo "  --- the two that cost rounds ---"
+          for a in split comm; do
+            printf '    %-6s ours=%-3s ubuntu=%s\n' "$a" \
+              "$(./veron-busybox --list | grep -qx "$a" && echo yes || echo no)" \
+              "$(/bin/busybox --list | grep -qx "$a" && echo yes || echo no)"
+          done
+
       - name: Assemble the box
         run: |
           set -eu
@@ -735,6 +803,9 @@ jobs:
               "$(sha256sum "$BOX/bin/$t" | cut -c1-16)"
           done
           echo "  === TIER 2: DRIVER (touches no artifact byte) ==="
+          echo "    busybox is now one WE BUILT, from a pinned tarball with the"
+          echo "    config in this file -- not whatever the runner's distro"
+          echo "    shipped. Its applet list is declared rather than inherited."
           for t in $BUDGET_DRIVER; do
             printf '    %-12s %10s  %s\n' "$t" "$(wc -c < "$BOX/bin/$t")" \
               "$(sha256sum "$BOX/bin/$t" | cut -c1-16)"

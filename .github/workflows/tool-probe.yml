@@ -234,8 +234,15 @@ jobs:
           # be the wrong direction; defconfig plus these is the smallest change
           # that answers the question.
           sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
-          for sym in SPLIT COMM JOIN CSPLIT PASTE EXPAND UNEXPAND FOLD FMT NL \
-                     PR TSORT CMP DIFF PATCH AWK SED GREP SORT UNIQ TR CUT; do
+          # THE ONES busybox 1.36.1 SIMPLY DOES NOT HAVE, measured rather than
+          # assumed: csplit, fmt and pr are not applets at any config -- the
+          # symbols do not exist, so setting them is a no-op that looks like a
+          # decision. join DOES exist and was off in Ubuntu's build.
+          #
+          # If a package ever needs csplit, fmt or pr, the answer is a small C
+          # program like split and comm, not a busybox flag.
+          for sym in SPLIT COMM JOIN PASTE EXPAND UNEXPAND FOLD NL \
+                     TSORT CMP DIFF PATCH AWK SED GREP SORT UNIQ TR CUT; do
             sed -i "s/^# CONFIG_$sym is not set/CONFIG_$sym=y/" .config
             grep -q "^CONFIG_$sym=y" .config || echo "CONFIG_$sym=y" >> .config
           done
@@ -272,11 +279,13 @@ jobs:
             echo "  applets: $(./busybox --list | wc -l)  (Ubuntu's: $(/bin/busybox --list | wc -l))"
             echo "  static: $(file -b busybox | grep -o 'statically linked' || echo NO)"
             echo "  --- the ones Ubuntu's lacked ---"
-            for a in split comm join csplit paste expand unexpand fold fmt nl pr tsort; do
+            for a in split comm join paste expand unexpand fold nl tsort; do
               printf '    %-10s ours=%-3s ubuntu=%s\n' "$a" \
                 "$(./busybox --list | grep -qx "$a" && echo yes || echo no)" \
                 "$(/bin/busybox --list | grep -qx "$a" && echo yes || echo no)"
             done
+            echo "  --- not applets at any config; a C program if ever needed ---"
+            echo "    csplit fmt pr"
           else
             echo "  BUILD FAILED"
             echo "  --- distinct errors, by file ---"
