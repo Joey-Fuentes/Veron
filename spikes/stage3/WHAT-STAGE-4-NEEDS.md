@@ -176,11 +176,28 @@ allocated and its node is intact, and the list simply does not reach it. See
 killed. gcc 4.7.4 is thousands of TUs; nothing at that scale compiles while the
 heap corrupts on a 60-line one.
 
-**3. The libc-facing surface, entirely unmeasured.** Header search into
-`/usr/include`, `crt1.o`/`crti.o`/`crtn.o` lookup, `-L`/`-l`, linking against
-`libc.a`, and whether tcc's own `libtcc1.a` builds and links. The first honest
-message from that side is `tcc: error: file 'crt1.o' not found`, which means
-the driver logic is right and only the inputs are missing.
+**3. The libc-facing surface — first measurement taken, and it fails.**
+Header search into `/usr/include`, `crt1.o`/`crti.o`/`crtn.o` lookup, `-L`/`-l`,
+linking against `libc.a`, and whether tcc's own `libtcc1.a` builds and links.
+
+`tcc-two-ways` step 21 now reaches this: it compiles a trivial program and
+links it against the system crt and glibc, borrowing `libtcc1.a` from the
+control, and reports
+
+```
+    SIGNAL 11 -- past the link inputs, crashing in output
+    D5 reached: the input file was added
+    tcc_set_output_type completed; lost on the way back
+```
+
+So the driver logic and the search paths work — it gets as far as writing the
+output — and it dies there. That is the same corruption item 2 describes,
+reached by a different route, and it is the only measurement stage 3 has of
+this surface. Everything else is `-nostdlib -static` single-file.
+
+Note the borrow: `libtcc1.a` comes from the gcc-built control. **Building
+`libtcc1.a` with mc-tcc is a separate and required goal** — it is one of the
+archives item 1 needs `tcc -ar` for.
 
 **4. Running what it builds.** `configure` compiles a program, runs it, and
 reads the exit code. A binary that links but does not start makes configure

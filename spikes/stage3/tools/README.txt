@@ -2251,3 +2251,70 @@ stay on.
 ALSO: the hermetic job truncated stderr to `head -3`, so the diagnostic that
 does all this work printed three lines and stopped. Widened to 30 in both
 places. A diagnostic nobody can read is not a diagnostic.
+
+--------------------------------------------------------------------------------
+CI, commit 5bf4bac: all three jobs green, and stage 3 says "end to end: yes".
+--------------------------------------------------------------------------------
+
+stage3-hermetic-arm64, run 82972144199 -- GREEN.
+
+    micro-c (ours)                   422320  083abe4a65edf263
+    mc-tcc (ours, end to end)       1575057  c644e111c6c70b65
+    00-does-it-start            rc=0  tcc version 0.9.28rc (AArch64 Linux)
+    01..12                            all ok
+    stage 3 end to end: yes
+
+That version line is tcc's OWN driver, from a tcc built by the seed ladder.
+GATE 1 passed in the same run -- ours-gen1.M1 == ref-gen1.M1, 2947903 bytes,
+dc38e13e4ceaeecb -- with BUDGET_PATH EMPTY, busybox the only driver, NO
+EMULATOR (native aarch64) and no network.
+
+STEP 11'S DIAGNOSTIC NOW PRINTS, and the native heap reproduces the local
+finding exactly:
+
+    realloc: bad ptr        = 165789984
+    realloc: nearest block  = 165787968      +2016
+    realloc: nearest size   = 256
+    realloc: ptr[-3] (blk?) = 165789984      EQUALS THE BAD POINTER
+    realloc: ptr[-2] (size?)= 256
+    realloc: ptr[-1] (used?)= 1
+
+The DISTANCE differs from the local run -- 2016 rather than 288, because the
+runner's heap is laid out differently -- and THE NODE SIGNATURE IS IDENTICAL.
+Two different allocator layouts, same fault: a live block whose node is intact
+and unreachable. That is worth more than either measurement alone, and it is
+the answer to the earlier temptation to read 288 as a structure size.
+
+tcc-two-ways, run 82971079942 -- GREEN, and much further than run 82952884599,
+which died at imm-identity before reaching any subject step.
+
+    byte-identical 170   moved 8 (declared 8, undeclared 0)
+    difftest clean on aarch64
+    aarch64  426 rows: pass 419
+    realloc GROWS AND PRESERVES correctly      (the standalone probe)
+    SIGNAL 11 -- past the link inputs, crashing in output      (step 21)
+
+STEP 21 IS NEW GROUND, NOT A REGRESSION. It compiles a trivial program and
+LINKS IT AGAINST THE SYSTEM crt AND glibc, borrowing libtcc1.a from the
+control, and crashes inside tcc_output_file after the input file was added.
+Everything else stage 3 measures is -nostdlib -static single-file, so this is
+the FIRST measurement of the libc-facing surface -- the one WHAT-STAGE-4-NEEDS
+lists as entirely unmeasured. The previous run never got there.
+
+A PREDICTION OF MINE THAT WAS RIGHT FOR THE WRONG REASON. I said tcc-two-ways
+would stay green after the hermetic job moved to tcc.c and the three-way join,
+having tested only that the old-shape binary answers --version. It is green,
+but --version was the wrong test: the step that matters is a full LINK, and
+both shapes compile a file to an object fine locally. The old shape's alignment
+safety is still luck, and that job still builds libtcc.c + main-tcc.c with the
+TWO-way join.
+
+micro-c-builds-tcc, run 82971079882 -- GREEN. Every link set runs to exit 42,
+tcc_new completes. BUT IT REPORTS
+
+    skipped 0004-... -- other revision        (and 0005 through 0011)
+
+so it builds against an m2libc carrying only patches 0001-0003. Pre-existing
+and deliberate for that job's pin, and it means its results say NOTHING about
+the aarch64 encoding fixes, the narrowing-cast macros or the realloc
+diagnostics. Do not read it as a second opinion on them.

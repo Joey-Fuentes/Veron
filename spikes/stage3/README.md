@@ -33,7 +33,7 @@ other already produced a binary:
 | route | state |
 |---|---|
 | M2-Planet → Mes → tcc (live-bootstrap's) | Mes rung in progress, three rungs out |
-| enhanced M2-Planet → tcc directly | **compiles all of tcc; the binary compiles and runs all twelve end-to-end programs.** Open frontier: more than one translation unit per invocation — `MICRO-C.md` |
+| enhanced M2-Planet → tcc directly | **compiles all of tcc, driver included; `stage3-hermetic-arm64` reports `stage 3 end to end: yes`** — twelve programs compiled and run by a seed-built tcc on native ARM64. Open frontier: a pending `*` lands on a call's argument, corrupting tcc's heap — `MICRO-C.md` |
 
 The direct route now has a name — **micro-c** — and its own file. It compiles
 `libtcc.c` to 369,255 lines of M1, assembles and links a 1.52 MB aarch64 binary,

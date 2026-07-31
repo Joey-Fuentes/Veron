@@ -883,6 +883,83 @@ the multi-TU gap instead of codegen, and reported it as 57 codegen failures.
 
 ---
 
+## Confirmed in CI, on real hardware, in the box
+
+`stage3-hermetic-arm64`, run 82972144199, commit `5bf4bac` — **green**, and
+stage 3 reports `end to end: yes` for the first time.
+
+```
+    micro-c (ours)                   422320  083abe4a65edf263
+    mc-tcc (ours, end to end)       1575057  c644e111c6c70b65
+    00-does-it-start            rc=0  tcc version 0.9.28rc (AArch64 Linux)
+    01..12                            all ok
+    stage 3 end to end: yes
+```
+
+The driver line is the one to read: that is **tcc's own `--version`**, not our
+175-line stub, produced by a tcc compiled from the seed. `GATE 1` passed in the
+same run — `ours-gen1.M1` and `ref-gen1.M1` both 2,947,903 bytes,
+`dc38e13e4ceaeecb` — with `BUDGET_PATH` empty, busybox as the only driver, **no
+emulator** (native aarch64) and no network.
+
+### And step 11's diagnostic now prints
+
+The `head -3` truncation is gone, so the full trail is in the log — and the
+native heap reproduces the local finding exactly:
+
+```
+    realloc: bad ptr        = 165789984
+    realloc: nearest block  = 165787968     +2016
+    realloc: nearest size   = 256
+    realloc: live blocks    = 16
+    realloc: ptr[-3] (blk?) = 165789984     <-- EQUALS THE BAD POINTER
+    realloc: ptr[-2] (size?)= 256
+    realloc: ptr[-1] (used?)= 1
+```
+
+The distance differs from the local run — 2016 rather than 288, because the
+heap is laid out differently on the runner — **and the node signature is
+identical**. A live block whose node is intact and unreachable. That the same
+signature appears under a different allocator layout is worth more than either
+measurement alone: the fault is in what the list contains, not in where the
+heap happens to sit.
+
+### The other two jobs
+
+`tcc-two-ways` (82971079942) is **green**, and it now gets much further than
+the run that opened this round — that one died at `imm-identity` before
+reaching any of the subject steps. It reports:
+
+```
+    byte-identical 170   moved 8 (declared 8, undeclared 0)
+    difftest clean on aarch64
+    aarch64  426 rows: pass 419
+    realloc GROWS AND PRESERVES correctly       (the standalone probe)
+    SIGNAL 11 -- past the link inputs, crashing in output   (step 21)
+```
+
+**Step 21 is the first measurement of the libc-facing surface**, and it is not
+a regression — the previous run never reached it. It compiles a trivial program
+and **links it against the system crt and glibc**, borrowing `libtcc1.a` from
+the control. It crashes inside `tcc_output_file`, past the point where the
+input file was added. Everything else stage 3 has measured is
+`-nostdlib -static` single-file, so this is new ground rather than a step
+backwards.
+
+`micro-c-builds-tcc` (82971079882) is **green**: every link set runs to exit
+42, `tcc_new` completes. One thing to know about it — it reports
+
+```
+    skipped 0004-...  -- other revision       (and 0005 through 0011)
+```
+
+so it builds against an m2libc carrying only patches 0001–0003. That is
+pre-existing and deliberate for that job's pin, but it means **its results say
+nothing about the aarch64 encoding fixes, the narrowing-cast macros, or the
+realloc diagnostics**, and it should not be read as a second opinion on them.
+
+---
+
 ## The corruption, found — and the first fix for it withdrawn
 
 **A pending `*` lands on the function's ARGUMENT.**
