@@ -1796,6 +1796,30 @@ if [ "$R5" = ok ]; then
   # Building only the C frontend would reach something called gcc 4.7.4 that is
   # not the rung stage 4 stands on.
   #
+  # CFLAGS_FOR_TARGET / LDFLAGS_FOR_TARGET, ALSO FORCED BY THE BOX.
+  #
+  # gcc builds xgcc, then uses it to configure its TARGET libraries -- libgcc,
+  # libmudflap, libstdc++. Those configures call xgcc directly, not through
+  # cc-static, so nothing was making their link tests static, and:
+  #
+  #     ld: .eh_frame_hdr refers to overlapping FDEs.
+  #     ld: final link failed: Bad value
+  #     configure: error: C compiler cannot create executables
+  #
+  # then every later target configure inherited GCC_NO_EXECUTABLES and refused
+  # to run link tests at all, which is what stopped libstdc++.
+  #
+  # gcc emits --eh-frame-hdr for a DYNAMIC link and not for a static one, so
+  # the section that is being rejected is only built on the path this box
+  # cannot use anyway: there is no loader here, so a dynamic conftest could not
+  # have run even if it linked. *_FOR_TARGET are the variables gcc passes down
+  # to exactly those configures.
+  #
+  # WHETHER THE OVERLAP IS ALSO A REAL DEFECT IS STILL OPEN. musl's crt files
+  # were assembled by tcc, and malformed .eh_frame in crti.o/crtn.o would
+  # produce exactly this message. Going static sidesteps the section rather
+  # than fixing it; if anything later needs a dynamic link, this comes back.
+  #
   # --disable-nls IS NOT IN STAGE 4's LINE, AND IS FORCED BY THE BOX.
   #
   # Without it gcc builds its own bundled intl/ and stops at
@@ -1824,6 +1848,7 @@ if [ "$R5" = ok ]; then
   # 4's recipe.
   "/work/src/$g47/configure" \
     CC="$CCAUTO" LDFLAGS="$LDF" \
+    CFLAGS_FOR_TARGET="-static" LDFLAGS_FOR_TARGET="-static" \
     --build=aarch64-unknown-linux-gnu \
     --host=aarch64-unknown-linux-gnu \
     --target=aarch64-unknown-linux-gnu \
@@ -1865,6 +1890,23 @@ if [ "$R5" = ok ]; then
   printf '      %-52s %s\n' "as / ld reachable on PATH" \
     "$(command -v as >/dev/null 2>&1 && echo yes || echo NO) / $(command -v ld >/dev/null 2>&1 && echo yes || echo NO)"
   printf '      %-52s %s\n' "cc1 built" "$( [ -x gcc/cc1 ] && echo yes || echo not-yet )"
+  # CAN xgcc LINK AT ALL, EITHER WAY? Asked here rather than discovered inside
+  # a target library's configure, and asked BOTH ways so the answer separates
+  # "dynamic is broken" from "linking is broken".
+  if [ -x gcc/xgcc ]; then
+    ( cd /tmp && rm -f xg.c xg.bin
+      printf 'int main(void){return 0;}\n' > xg.c
+      for _m in "" "-static"; do
+        if "$OLDPWD/gcc/xgcc" -B"$OLDPWD/gcc/" $_m -o xg.bin xg.c 2>/tmp/xg.err; then
+          printf '      %-52s ok\n' "xgcc link ${_m:-dynamic}"
+        else
+          printf '      %-52s FAILED\n' "xgcc link ${_m:-dynamic}"
+          grep -aE "error|overlapping|Bad value" /tmp/xg.err | head -2 | sed 's/^/        /'
+        fi
+      done
+      rm -f xg.c xg.bin )
+  fi
+
   # THE ONE THAT ACTUALLY FAILED LAST TIME. Existing is not enough; libgcc's
   # configure execs it, and it answered "Permission denied".
   if "$PFX/aarch64-unknown-linux-gnu/bin/as" --version >/dev/null 2>&1; then
