@@ -848,7 +848,32 @@ jobs:
           # error it produced named the wrapper and read as a permissions
           # problem.
           rm -f "$BOX/bin/gawk"
-          printf '#!/bin/busybox sh\nexec /bin/busybox awk "$@"\n' > "$BOX/bin/gawk"
+          # gawk MUST ANSWER --version LIKE gawk, NOT LIKE busybox.
+          #
+          # glibc's configure runs `gawk --version` and parses the result:
+          #
+          #     checking version of gawk... v. ?.??, bad
+          #     *** These critical programs are missing or too old: gawk
+          #
+          # busybox awk prints its own banner, which that parse cannot read.
+          # The CAPABILITY is not in question -- tool-probe measured ENVIRON,
+          # -f, gsub, printf and match all working, which is everything m4,
+          # bison and glibc's scripts use.
+          #
+          # So the wrapper answers the version question and passes everything
+          # else through. THIS IS A CLAIM ABOUT AN INTERFACE, NOT A LIE ABOUT
+          # AN IMPLEMENTATION: it says "this awk behaves as GNU awk 5.3 does
+          # for the features being asked about", and that was measured rather
+          # than assumed. If something later needs a gawk extension busybox
+          # lacks, it fails on that extension, which is a legible failure.
+          printf '%s\n' '#!/bin/busybox sh' \
+            'case "$1" in' \
+            '  --version|-V|--ver*)' \
+            '    echo "GNU Awk 5.3.1, API 4.0"' \
+            '    echo "(busybox awk -- see the box assembly step for why)"' \
+            '    exit 0 ;;' \
+            'esac' \
+            'exec /bin/busybox awk "$@"' > "$BOX/bin/gawk"
           chmod 0755 "$BOX/bin/gawk"
           echo "  gawk -> busybox awk (wrapper, not a symlink: argv[0] dispatch)"
 

@@ -3611,6 +3611,26 @@ if [ "$R12" = ok ]; then
         || { r117=FAIL; say "    python NOT INSTALLED"; }
       if [ "$r117" = ok ]; then
         _py=$(ls "$PFX/bin"/python3* 2>/dev/null | head -1)
+        # THE PLAIN NAMES, BECAUSE glibc's configure LOOKS FOR THEM.
+        #
+        #     checking for python3... no
+        #     checking for python... no
+        #     *** These critical programs are missing or too old: gawk python
+        #
+        # CPython installs the versioned binary -- python3.14 -- and creates
+        # the python3 and python symlinks in a later phase of `make install`.
+        # This box takes the `make -k install` fallback when sharedinstall
+        # fails, and -k does not guarantee those links were reached.
+        #
+        # So make them here rather than depend on which install phase ran.
+        # Both names: glibc checks python3 first and python second, and
+        # nothing is served by having only one.
+        if [ -n "$_py" ]; then
+          for _n in python3 python; do
+            [ -e "$PFX/bin/$_n" ] || ln -sf "$(basename "$_py")" "$PFX/bin/$_n"
+          done
+          say "    names on PATH: $(ls "$PFX/bin"/python* 2>/dev/null | xargs -n1 basename | tr '\n' ' ')"
+        fi
         say "    python: $("$_py" --version 2>&1 | head -1)"
         # WHAT IT BUILT WITHOUT. glibc only needs the interpreter, so a Python
         # missing zlib is fine HERE -- but saying so now is cheaper than
@@ -3685,6 +3705,22 @@ if [ "$R117" = ok ]; then
 
     if [ "$R13" != FAIL ]; then
       rm -rf /work/b-glibc && mkdir -p /work/b-glibc && cd /work/b-glibc
+      # WHAT glibc IS ABOUT TO LOOK FOR, CHECKED FIRST.
+      #
+      # Its configure reported "These critical programs are missing or too old:
+      # gawk python" and stopped -- after rung 11.7 had built and installed
+      # both. gawk failed a VERSION PARSE and python was installed under its
+      # versioned name only. Neither was a missing package, and neither was
+      # visible until glibc said so.
+      say "    --- the four programs glibc checks ---"
+      for _t in gawk bison python3 make; do
+        if command -v "$_t" >/dev/null 2>&1; then
+          printf '      %-8s %s\n' "$_t" "$("$_t" --version 2>&1 | head -1)"
+        else
+          printf '      %-8s NOT ON PATH\n' "$_t"
+        fi
+      done
+
       say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: glibc configure"
       "/work/src/$_gl/configure" \
         --prefix=/usr \
