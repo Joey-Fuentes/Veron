@@ -3958,130 +3958,6 @@ if [ "$R13" = ok ]; then
 fi
 
 # ---------------------------------------------------------------------------
-head1 "RUNG 15 -- LFS chapter 6: busybox, in place of seventeen packages"
-# A DECLARED SUBSTITUTION, AND IT IS STAGE 4's. LFS chapter 6 builds seventeen
-# packages -- m4, ncurses, bash, coreutils, diffutils, file, findutils, gawk,
-# grep, gzip, make, patch, sed, tar, xz -- to get a shell and the text tools.
-# BusyBox is one package that supplies sh, sed, grep, awk, tar and the
-# coreutils, and tcc-userland-arm64 already proved it builds and boots.
-#
-# This box has been driven by the HOST's busybox since rung 0. The one built
-# here is different: it goes in the SYSROOT, cross-compiled by $LFS_TGT-gcc,
-# and it is what the booted kernel runs. Building it also means the box could
-# stop borrowing the host's -- BUDGET_DRIVER reaching empty is a later rung,
-# but this is the piece that makes it possible.
-#
-# THE TWO TRAPS ARE STAGE 4's, RECORDED AFTER IT HIT BOTH:
-#
-#   ORDER. Seds must come AFTER `make oldconfig`, not before -- oldconfig
-#   re-derives selected symbols and CONFIG_TLS came straight back, failing
-#   identically. Configure first, disable second, then VERIFY.
-#
-#   CFLAGS_EXTRA, NOT EXTRA_CFLAGS. BusyBox's Makefile.flags does
-#   `CFLAGS += $(CFLAGS_EXTRA)`; there is no EXTRA_CFLAGS anywhere in its build
-#   system. Two consecutive "fixes" spelled into a variable nothing reads did
-#   nothing at all, and the same error came back verbatim each time. A flag
-#   that is silently ignored looks exactly like a flag that did not help.
-if [ "$R14" = ok ]; then
-  cd /work/src
-  if ! untar /in/busybox-; then
-    say "    busybox did not extract"; R15=FAIL
-  else
-    _bb=$(onedir 'busybox-* ./busybox-*')
-    cd "/work/src/$_bb"
-    make ARCH=arm64 CROSS_COMPILE="$LFS_TGT-" defconfig > /dev/null 2>&1
-    yes '' | make ARCH=arm64 CROSS_COMPILE="$LFS_TGT-" oldconfig > /dev/null 2>&1
-    # CONFIG_SSL_CLIENT is the applet that drags in networking/tls*.c, which
-    # reaches for LONG_BIT without the feature macro. A build sysroot has no
-    # use for HTTPS; drop the applet rather than patch a feature-test mismatch.
-    # AND CONFIG_TC, WHICH THE AIRLOCK BUSYBOX BUILD ALREADY DISABLES.
-    #
-    #     networking/tc.c:236: 'TCA_CBQ_MAX' undeclared
-    #     invalid application of 'sizeof' to incomplete type 'struct tc_cbq_lssopt'
-    #
-    # CBQ traffic control was removed from the kernel and busybox 1.36.1
-    # predates that, so tc.c cannot compile against linux 7.1.5 headers at all.
-    # The airlock step that builds the box's own busybox disables it and has
-    # done since that failure was first seen -- this build did not, because the
-    # two configurations are written out separately and only one was fixed.
-    #
-    # Same shape as the -isystem flag that took three rounds: a fix applied to
-    # one of two places that need it. Both busybox configurations should be
-    # read together whenever either changes.
-    for _sym in SSL_CLIENT FEATURE_WGET_OPENSSL TLS TC; do
-      sed -i "s/^CONFIG_$_sym=y/# CONFIG_$_sym is not set/" .config
-    done
-    # VERIFY AFTER, because a sed that matches nothing is silent and
-    # oldconfig is what undid the same edit three runs running.
-    if grep -qE "^CONFIG_(SSL_CLIENT|TLS)=y" .config; then
-      say "    TLS symbols came back after oldconfig:"
-      grep -E "^CONFIG_(SSL_CLIENT|TLS|FEATURE_WGET_OPENSSL)" .config | sed 's/^/      /'
-      R15=FAIL
-    fi
-    if [ "$R15" != FAIL ]; then
-      # THE TWO BUSYBOX CONFIGURATIONS DIFFER ON PURPOSE, AND ONLY HERE.
-      #
-      #   airlock  the box's own toolbox. Turns SPLIT, COMM, JOIN, PASTE and a
-      #            dozen others ON, because the BUILD needs them -- perl's
-      #            Configure wants split and comm, and Ubuntu's busybox has
-      #            neither.
-      #   rung 15  the initramfs. Needs an init, a shell and enough to prove
-      #            the kernel booted. defconfig covers that.
-      #
-      # What they must NOT differ on is what cannot COMPILE: TLS and TC are
-      # disabled in both, and this rung failed because TC was fixed in one of
-      # them only.
-      #
-      # CONFIG_STATIC: the initramfs has no loader and no libc of its own.
-      sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
-      if timeout 3600 make ARCH=arm64 CROSS_COMPILE="$LFS_TGT-" \
-           CFLAGS_EXTRA="-D_GNU_SOURCE" -j"$NP" > b.log 2>&1 && [ -x busybox ]; then
-        mkdir -p "$S/usr/bin"
-        cp busybox "$S/usr/bin/busybox"
-        # --install, WHICH THE SYSROOT IS USELESS WITHOUT.
-        #
-        # Copying the binary gives the sysroot ONE file called busybox. Every
-        # other name -- sh, cat, mount, mkdir -- is a symlink to it, and
-        # nothing creates those symlinks except this.
-        #
-        # Rungs 16 and 17 run configure scripts INSIDE the sysroot, and a
-        # configure script is a shell script: without /usr/bin/sh there is
-        # nothing to run it with. stage4-complete does this immediately after
-        # the copy and asserts the count; we copied and did not.
-        #
-        # It must run with the sysroot as /, because --install writes symlinks
-        # relative to the running binary's idea of the filesystem. Here that
-        # means invoking it through the cross-built binary directly with a
-        # target directory, which busybox supports.
-        ( cd "$S/usr/bin" && ./busybox --install -s . 2>/dev/null ) || \
-          ( cd "$S/usr/bin" && for _a in $(./busybox --list 2>/dev/null); do
-              [ "$_a" = busybox ] || ln -sf busybox "$_a"
-            done )
-        _n=$(ls "$S/usr/bin" | wc -l)
-        say "    applets linked into the sysroot: $_n"
-        if [ "$_n" -lt 100 ]; then
-          say "    TOO FEW -- the sysroot has no shell, and rungs 16 and 17"
-          say "    run configure scripts inside it. Not continuing."
-          R15=FAIL
-        fi
-        # THE ONE THAT MATTERS MOST, NAMED. Everything above this rung uses
-        # the box's /bin; everything below uses the sysroot's.
-        [ -e "$S/usr/bin/sh" ] || say "    NO /usr/bin/sh IN THE SYSROOT"
-        R15=ok
-        say "    busybox: $(wc -c < busybox) bytes"
-        say "    applets: $(./busybox --list 2>/dev/null | wc -l)"
-        say "    static:  $(grep -aq 'ld-linux\|ld-musl' busybox && echo NO || echo yes)"
-      else
-        R15=FAIL; say "    --- errors ---"
-        grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
-        tail -25 b.log 2>/dev/null | sed 's/^/      /'
-      fi
-    fi
-  fi
-  cd /work
-fi
-
-# ---------------------------------------------------------------------------
 head1 "RUNG 16 -- LFS 6.x: binutils pass 2 and gcc pass 2"
 # PASS 2 IS BUILT BY THE CROSS TOOLCHAIN, FOR THE SYSROOT. Pass 1 produced a
 # cross compiler running on this box; pass 2 produces the tools the SYSTEM has,
@@ -4092,7 +3968,7 @@ head1 "RUNG 16 -- LFS 6.x: binutils pass 2 and gcc pass 2"
 # which names a macro rather than the include chain that lost it. That is why
 # rung 11 concatenates limitx.h/glimits.h/limity.h instead of leaving gcc's
 # --without-headers stub in place.
-if [ "$R15" = ok ]; then
+if [ "$R14" = ok ]; then
   rm -rf /work/b-binutils2 && mkdir -p /work/b-binutils2 && cd /work/b-binutils2
   # make INTO THE SYSROOT FIRST, BECAUSE EVERYTHING BELOW NEEDS ONE.
   #
@@ -4188,6 +4064,163 @@ if [ "$R15" = ok ]; then
 fi
 
 # ---------------------------------------------------------------------------
+in_sysroot() {
+    # $S/usr/bin first so the sysroot's gcc, binutils and busybox win; the
+    # box's $PFX stays reachable behind them for anything genuinely absent.
+    PATH="$S/usr/bin:$S/usr/sbin:$PFX/bin:/bin" \
+    CC="$S/usr/bin/gcc" \
+    "$@"
+}
+
+# ---------------------------------------------------------------------------
+head1 "RUNG 15 -- LFS chapter 6: busybox, in place of seventeen packages"
+# A DECLARED SUBSTITUTION, AND IT IS STAGE 4's. LFS chapter 6 builds seventeen
+# packages -- m4, ncurses, bash, coreutils, diffutils, file, findutils, gawk,
+# grep, gzip, make, patch, sed, tar, xz -- to get a shell and the text tools.
+# BusyBox is one package that supplies sh, sed, grep, awk, tar and the
+# coreutils, and tcc-userland-arm64 already proved it builds and boots.
+#
+# This box has been driven by the HOST's busybox since rung 0. The one built
+# here is different: it goes in the SYSROOT, cross-compiled by $LFS_TGT-gcc,
+# and it is what the booted kernel runs. Building it also means the box could
+# stop borrowing the host's -- BUDGET_DRIVER reaching empty is a later rung,
+# but this is the piece that makes it possible.
+#
+# THE TWO TRAPS ARE STAGE 4's, RECORDED AFTER IT HIT BOTH:
+#
+#   ORDER. Seds must come AFTER `make oldconfig`, not before -- oldconfig
+#   re-derives selected symbols and CONFIG_TLS came straight back, failing
+#   identically. Configure first, disable second, then VERIFY.
+#
+#   CFLAGS_EXTRA, NOT EXTRA_CFLAGS. BusyBox's Makefile.flags does
+#   `CFLAGS += $(CFLAGS_EXTRA)`; there is no EXTRA_CFLAGS anywhere in its build
+#   system. Two consecutive "fixes" spelled into a variable nothing reads did
+#   nothing at all, and the same error came back verbatim each time. A flag
+#   that is silently ignored looks exactly like a flag that did not help.
+if [ "$R16" = ok ]; then
+  cd /work/src
+  if ! untar /in/busybox-; then
+    say "    busybox did not extract"; R15=FAIL
+  else
+    _bb=$(onedir 'busybox-* ./busybox-*')
+    cd "/work/src/$_bb"
+    in_sysroot make ARCH=arm64 defconfig > /dev/null 2>&1
+    yes '' | in_sysroot make ARCH=arm64 oldconfig > /dev/null 2>&1
+    # CONFIG_SSL_CLIENT is the applet that drags in networking/tls*.c, which
+    # reaches for LONG_BIT without the feature macro. A build sysroot has no
+    # use for HTTPS; drop the applet rather than patch a feature-test mismatch.
+    # AND CONFIG_TC, WHICH THE AIRLOCK BUSYBOX BUILD ALREADY DISABLES.
+    #
+    #     networking/tc.c:236: 'TCA_CBQ_MAX' undeclared
+    #     invalid application of 'sizeof' to incomplete type 'struct tc_cbq_lssopt'
+    #
+    # CBQ traffic control was removed from the kernel and busybox 1.36.1
+    # predates that, so tc.c cannot compile against linux 7.1.5 headers at all.
+    # The airlock step that builds the box's own busybox disables it and has
+    # done since that failure was first seen -- this build did not, because the
+    # two configurations are written out separately and only one was fixed.
+    #
+    # Same shape as the -isystem flag that took three rounds: a fix applied to
+    # one of two places that need it. Both busybox configurations should be
+    # read together whenever either changes.
+    for _sym in SSL_CLIENT FEATURE_WGET_OPENSSL TLS TC; do
+      sed -i "s/^CONFIG_$_sym=y/# CONFIG_$_sym is not set/" .config
+    done
+    # VERIFY AFTER, because a sed that matches nothing is silent and
+    # oldconfig is what undid the same edit three runs running.
+    if grep -qE "^CONFIG_(SSL_CLIENT|TLS)=y" .config; then
+      say "    TLS symbols came back after oldconfig:"
+      grep -E "^CONFIG_(SSL_CLIENT|TLS|FEATURE_WGET_OPENSSL)" .config | sed 's/^/      /'
+      R15=FAIL
+    fi
+    if [ "$R15" != FAIL ]; then
+      # THE TWO BUSYBOX CONFIGURATIONS DIFFER ON PURPOSE, AND ONLY HERE.
+      #
+      #   airlock  the box's own toolbox. Turns SPLIT, COMM, JOIN, PASTE and a
+      #            dozen others ON, because the BUILD needs them -- perl's
+      #            Configure wants split and comm, and Ubuntu's busybox has
+      #            neither.
+      #   rung 15  the initramfs. Needs an init, a shell and enough to prove
+      #            the kernel booted. defconfig covers that.
+      #
+      # What they must NOT differ on is what cannot COMPILE: TLS and TC are
+      # disabled in both, and this rung failed because TC was fixed in one of
+      # them only.
+      #
+      # CONFIG_STATIC, ASSERTED. The last run reported "static: NO" and this
+      # sed is why: it rewrites "# CONFIG_STATIC is not set", and if oldconfig
+      # has already written "CONFIG_STATIC=n" -- or written nothing at all --
+      # it matches nothing and says nothing. A sed that matches nothing ships
+      # an unchanged file and looks exactly like one that worked, which is the
+      # rule this file states three rungs earlier and did not apply here.
+      sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
+      grep -q '^CONFIG_STATIC=y' .config || echo 'CONFIG_STATIC=y' >> .config
+      # AND AGAIN AFTER oldconfig RE-DERIVES, which is what undid the TLS
+      # symbols three runs running.
+      yes '' | in_sysroot make ARCH=arm64 oldconfig > /dev/null 2>&1
+      if ! grep -q '^CONFIG_STATIC=y' .config; then
+        say "    CONFIG_STATIC did not survive oldconfig:"
+        grep -E '^(# )?CONFIG_STATIC' .config | sed 's/^/      /'
+        say "    A dynamic busybox in the initramfs needs a loader and a libc"
+        say "    that the initramfs does not contain, so it cannot run at all."
+        R15=FAIL
+      fi
+      if timeout 3600 in_sysroot make ARCH=arm64 \
+           CFLAGS_EXTRA="-D_GNU_SOURCE" -j"$NP" > b.log 2>&1 && [ -x busybox ]; then
+        mkdir -p "$S/usr/bin"
+        cp busybox "$S/usr/bin/busybox"
+        # --install, WHICH THE SYSROOT IS USELESS WITHOUT.
+        #
+        # Copying the binary gives the sysroot ONE file called busybox. Every
+        # other name -- sh, cat, mount, mkdir -- is a symlink to it, and
+        # nothing creates those symlinks except this.
+        #
+        # Rungs 16 and 17 run configure scripts INSIDE the sysroot, and a
+        # configure script is a shell script: without /usr/bin/sh there is
+        # nothing to run it with. stage4-complete does this immediately after
+        # the copy and asserts the count; we copied and did not.
+        #
+        # It must run with the sysroot as /, because --install writes symlinks
+        # relative to the running binary's idea of the filesystem. Here that
+        # means invoking it through the cross-built binary directly with a
+        # target directory, which busybox supports.
+        ( cd "$S/usr/bin" && ./busybox --install -s . 2>/dev/null ) || \
+          ( cd "$S/usr/bin" && for _a in $(./busybox --list 2>/dev/null); do
+              [ "$_a" = busybox ] || ln -sf busybox "$_a"
+            done )
+        _n=$(ls "$S/usr/bin" | wc -l)
+        say "    applets linked into the sysroot: $_n"
+        if [ "$_n" -lt 100 ]; then
+          say "    TOO FEW -- the sysroot has no shell, and rungs 16 and 17"
+          say "    run configure scripts inside it. Not continuing."
+          R15=FAIL
+        fi
+        # THE ONE THAT MATTERS MOST, NAMED. Everything above this rung uses
+        # the box's /bin; everything below uses the sysroot's.
+        [ -e "$S/usr/bin/sh" ] || say "    NO /usr/bin/sh IN THE SYSROOT"
+        R15=ok
+        say "    busybox: $(wc -c < busybox) bytes"
+        say "    applets: $(./busybox --list 2>/dev/null | wc -l)"
+        # THE BINARY ITSELF, not a grep for a substring. A static ELF has no
+        # PT_INTERP program header; readelf says so exactly.
+        if "$S/tools/bin/$LFS_TGT-readelf" -l busybox 2>/dev/null | grep -q "interpreter"; then
+          say "    static:  NO -- this busybox needs a dynamic loader"
+          "$S/tools/bin/$LFS_TGT-readelf" -l busybox 2>/dev/null \
+            | grep -A1 "interpreter" | head -2 | sed 's/^/      /'
+          R15=FAIL
+        else
+          say "    static:  yes (no PT_INTERP)"
+        fi
+      else
+        R15=FAIL; say "    --- errors ---"
+        grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
+        tail -25 b.log 2>/dev/null | sed 's/^/      /'
+      fi
+    fi
+  fi
+  cd /work
+fi
+
 # ===========================================================================
 # EVERYTHING FROM HERE RUNS IN THE SYSROOT, NOT THE BOX.
 #
@@ -4218,13 +4251,6 @@ fi
 # the box's musl-static chain-cc. That is why rung 15 must run
 # `busybox --install` -- without a /usr/bin/sh in the sysroot, none of these
 # configure scripts can run at all.
-in_sysroot() {
-    # $S/usr/bin first so the sysroot's gcc, binutils and busybox win; the
-    # box's $PFX stays reachable behind them for anything genuinely absent.
-    PATH="$S/usr/bin:$S/usr/sbin:$PFX/bin:/bin" \
-    CC="$S/usr/bin/gcc" \
-    "$@"
-}
 
 head1 "RUNG 17 -- the kernel's own prerequisites, built IN the sysroot"
 # THE SYSROOT MUST BE USABLE BEFORE ANY OF THIS RUNS.
@@ -4234,7 +4260,7 @@ head1 "RUNG 17 -- the kernel's own prerequisites, built IN the sysroot"
 # rungs -- gcc pass 2 from 16, sh and friends from 15's `busybox --install` --
 # and if any is missing every configure below fails in a way that names the
 # package rather than the cause.
-if [ "$R16" = ok ]; then
+if [ "$R15" = ok ]; then
   say "    --- is the sysroot usable? ---"
   _sr_ok=yes
   for _need in gcc sh make ld; do
@@ -4279,7 +4305,7 @@ fi
 # is built to avoid". So it is declared and built.
 #
 # perl came at rung 11.5 because glibc wanted it too.
-if [ "$R16" = ok ] && [ "${R17:-}" != FAIL ]; then
+if [ "$R15" = ok ] && [ "${R17:-}" != FAIL ]; then
   r17=ok
   # THREE OF THESE FOUR ARE ALREADY BUILT.
   #
@@ -4529,9 +4555,9 @@ printf '    %-40s %s\n' "12  LFS 5.4 linux API headers"          "$R12"
 printf '    %-40s %s\n' "11.7 m4/flex/bison/python (after 12)"   "$R117"
 printf '    %-40s %s\n' "13  LFS 5.5 glibc"                      "$R13"
 printf '    %-40s %s\n' "14  LFS 5.6 libstdc++"                  "$R14"
-printf '    %-40s %s\n' "15  ch6 busybox (for 17 packages)"      "$R15"
 printf '    %-40s %s\n' "16  ch6 binutils + gcc pass 2"          "$R16"
-printf '    %-40s %s\n' "17  m4 / bc / bison / flex"             "$R17"
+printf '    %-40s %s\n' "15  busybox, BY gcc pass 2 (after 16)"  "$R15"
+printf '    %-40s %s\n' "17  m4/bc/bison/flex/openssl in sysroot" "$R17"
 printf '    %-40s %s\n' "18  linux $KERNEL"                      "$R18"
 printf '    %-40s %s\n' "19  initramfs"                          "$R19"
 printf '    %-40s %s\n' "20  Image handed out for boot"          "$R20"
