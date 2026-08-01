@@ -30,12 +30,16 @@ on:
   workflow_dispatch:
 
 env:
-  GLIBC: '2.43'
+  GLIBC: '2.44'
   PYTHON_VER: '3.14.6'
   # The digests recorded in spikes/stage4/books/LFS-BOOK-r13_0-156-systemd.
   # Compared and reported, never enforced: the development book revises its
   # patches in place, so a mismatch means "it moved on", not "it is corrupt".
   MD5_FHS: '9a5997c3452909b1769918c759eff8a2'
+  # THE upstream_fixes PATCH IS GONE FROM THE BOOK. It reconciled glibc 2.43
+  # with a 7.x kernel; r13.0-167 uses glibc 2.44, which needs no such patch,
+  # and section 3.3 no longer lists it. Kept here only so a run against an
+  # OLDER book can still recognise it.
   MD5_UPSTREAM: '1f5074a1dce85a72d2ea465ca76e420b'
 
 jobs:
@@ -59,7 +63,7 @@ jobs:
       - name: 'THE BOOK: what does 3.3 Needed Patches actually list?'
         run: |
           set -u
-          B=spikes/stage4/books/LFS-BOOK-r13_0-156-systemd_tar.bz2
+          B=spikes/stage4/books/LFS-BOOK-r13_0-167_tar.xz
           [ -f "$B" ] || { echo "  no vendored book at $B"; exit 0; }
           rm -rf /tmp/book && mkdir -p /tmp/book
           tar xf "$B" -C /tmp/book

@@ -3518,9 +3518,18 @@ if [ "$R117" = ok ]; then
   else
     _gl=$(onedir "glibc-$GLIBC ./glibc-$GLIBC")
     cd "/work/src/$_gl"
-    # BOTH PATCHES. fhs is LFS's own; upstream_fixes is stage 4's note "THE
-    # PRICE OF LINUX 7" -- a 2.43 glibc meeting a 7.x kernel.
-    for _pt in glibc-fhs-1.patch "glibc-$GLIBC-upstream_fixes-1.patch"; do
+    # ONE PATCH NOW, AND THE OTHER ONE'S DISAPPEARANCE IS THE STORY.
+    #
+    # glibc-2.43-upstream_fixes-1.patch was "THE PRICE OF LINUX 7" -- it
+    # reconciled a 2.43 glibc with a 7.x kernel's headers. Two runs died
+    # fetching it with a 404 while every other file came down from the same
+    # directory, and the newer book says why: r13.0-167 moved to GLIBC 2.44,
+    # which needs no such reconciliation, and dropped the patch from section
+    # 3.3 entirely.
+    #
+    # So the fix for a missing patch was to stop needing it. glibc-fhs-1.patch
+    # is still listed, still the same digest, and still downloads.
+    for _pt in glibc-fhs-1.patch; do
       if [ -f "/in/$_pt" ]; then
         if patch -Np1 -i "/in/$_pt" > /tmp/gp.log 2>&1; then
           say "    applied $_pt"
@@ -3567,8 +3576,11 @@ if [ "$R117" = ok ]; then
         if grep -q "redefined \[-Werror\]" b.log 2>/dev/null; then
           say "    --- this is a libc/kernel-header pairing failure ---"
           say "    glibc $GLIBC built against linux $KHDR headers. The"
-          say "    upstream_fixes patch covers exactly this; if it applied and"
-          say "    the error is still here, it does not cover this point release."
+          say "    glibc $GLIBC is the version the book pairs with linux $KHDR,"
+          say "    so this pairing is the one upstream tests. If it still fails,"
+          say "    the fault is ours rather than a version mismatch -- the"
+          say "    2.43-era upstream_fixes patch no longer exists because 2.44"
+          say "    does not need it."
         fi
         tail -25 b.log 2>/dev/null | sed 's/^/      /'
       fi

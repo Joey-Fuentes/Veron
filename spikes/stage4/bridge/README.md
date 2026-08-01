@@ -193,6 +193,34 @@ gcc"*.
 
 ## Which book, and where we leave it
 
+**Updated to `LFS-BOOK-r13_0-167`**, and the update was forced by a 404 rather
+than chosen. `glibc-2.43-upstream_fixes-1.patch` stopped being served while
+every other file came down from the same directory; the newer book explains it:
+r13.0-167 moved to **glibc 2.44**, which needs no reconciliation with a 7.x
+kernel, and dropped the patch from section 3.3 entirely.
+
+```
+                r13.0-156      r13.0-167
+Glibc           2.43           2.44
+Binutils        2.46.0         2.47
+GCC             15.2.0         16.1.0
+Linux           7.1.3          7.1.5   (headers AND image)
+Perl            5.42.2         5.44.0
+Python          3.14.6         3.14.6
+glibc patches   fhs + upstream fhs only
+```
+
+**The 7.1.5 divergence is no longer a divergence.** It was carried as a stated
+exception because `stage4-complete` boots that kernel; r13.0-167 now uses it
+for both the API headers and the image, so `KHDR` and `KERNEL` agree with the
+book and with each other.
+
+**GCC 16.1.0 is not adopted.** The chain reaches gcc 15 through gcc 10 through
+gcc 4.7, and each of those hops is a measured result. Moving the top of the
+ladder is a separate experiment from moving the libc under it.
+
+
+
 `spikes/stage4/books/LFS-BOOK-r13_0-156-systemd` -- the **development
 snapshot**, not the stable 13.0 beside it. It specifies:
 
