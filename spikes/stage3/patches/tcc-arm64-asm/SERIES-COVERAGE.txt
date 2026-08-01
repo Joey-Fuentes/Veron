@@ -71,3 +71,29 @@ uxtb
 uxth
 uxtw
 uxtx
+
+
+0006-tccgen-convert-long-double-constants-when-cross-compiling.patch
+    NOT PART OF THE FEBRUARY SERIES. Ours, found while chasing a printf("%f")
+    that produced 8.000000 for 5.008 in the stage3-to-stage4 bridge.
+
+    init_putv picks how to emit a long double constant by comparing SIZES, and
+    x86_64 and arm64 both have sizeof(long double) == 16 with completely
+    different formats -- x87 80-bit versus IEEE binary128. A cross-compiling
+    tcc therefore memcpy's host x87 bytes into a binary128 slot, and every
+    long double constant in the program is silently wrong. f3_unpack then
+    reads the exponent from the wrong word, finds 0, and __trunctfdf2 returns
+    ZERO for every value.
+
+    Measured and fixed locally: x86_64 host, arm64 target, output verified
+    under spikes/toolbox/qemu-aarch64-static.
+
+        (double)5.008L   before 0x0000000000000000   after 0x4014083126e978d5
+        (double)1.5L     before 0x0000000000000000   after 0x3ff8000000000000
+
+    THIS IS PROBABLY NOT THE BRIDGE'S BUG. The bridge builds on a NATIVE arm64
+    runner, where sizeof matches AND the formats agree, so the guard is false
+    and the original path is taken unchanged. It is a real tcc bug on the
+    cross path and worth carrying and reporting, but the vfprintf.c miscompile
+    measured in CI -- swap one gcc-built object and every value is correct --
+    is a separate fault still to be found.

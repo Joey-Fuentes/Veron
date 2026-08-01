@@ -1,0 +1,107 @@
+From: Veron <spikes/stage3/patches>
+Subject: [PATCH] tccgen: a long double constant is not the host's bytes
+
+init_putv chooses how to emit a long double constant by comparing SIZES:
+
+    if (sizeof(long double) == LDOUBLE_SIZE)
+        memcpy(ptr, &vtop->c.ld, LDOUBLE_SIZE);
+
+On an x86_64 host targeting arm64 that is TRUE -- both are 16 -- and it copies
+the host's x87 bytes verbatim into a slot the target reads as IEEE binary128.
+The formats disagree completely:
+
+    x87 80-bit   64-bit mantissa with an EXPLICIT leading 1, 16-bit exponent,
+                 padded to 16 bytes
+    binary128    15-bit exponent at the top, 112-bit mantissa, IMPLICIT
+                 leading 1
+
+MEASURED. `long double f(void){ return 5.008L; }` compiled by an x86_64-hosted
+arm64 tcc, reading .data.ro out of the object:
+
+    before   f0a7c64b 378941a0 01400000 00000000
+    after    00000000 0000e04f 8d976e12 83400140
+
+and the consequence, run under qemu-aarch64:
+
+    (double)5.008L    before 0x0000000000000000    after 0x4014083126e978d5
+    (double)1.5L      before 0x0000000000000000    after 0x3ff8000000000000
+
+Zero, not a mangled value: f3_unpack reads the exponent from the high word,
+finds 0 because x87 put it in the low one, takes the underflow branch and
+returns zero. Every long double constant in a cross-compiled program is
+silently wrong, and nothing notices until something reads one back.
+
+The existing code anticipates this -- "may not work for cross compilers" --
+and handles the cases where the sizes DIFFER. What was missing is the case
+where the sizes MATCH and the formats do not.
+
+SIZE CANNOT IDENTIFY A FORMAT. LDBL_MANT_DIG can: 64 for x87, 113 for
+binary128, 53 for double. When the host is x87 and the target wants
+binary128, convert instead of copying -- frexpl the value apart and rebuild
+the target encoding. x87 has 64 mantissa bits and binary128 has 113, so this
+direction is exact and loses nothing.
+
+NOT ATTEMPTED: a binary128 host emitting x87 constants. Nothing here
+cross-compiles that way, and a wrong guess would be silent in exactly the
+same manner. It still reaches the existing tcc_error.
+
+TESTED: x86_64 host, arm64 target, output run under qemu-aarch64-static.
+NOT TESTED: a native arm64 tcc, where sizeof(long double) == LDOUBLE_SIZE is
+true AND the formats agree -- there the guard is false and the original
+memcpy path is taken unchanged.
+
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -20,6 +20,8 @@
+ 
+ #define USING_GLOBALS
+ #include "tcc.h"
++#include <math.h>
++#include <float.h>
+ 
+ /********************************************************/
+ /* global variables */
+@@ -7894,8 +7896,43 @@
+ #endif
+                 /* For other platforms it should work natively, but may not work
+                    for cross compilers */
++#if defined LDBL_MANT_DIG && LDBL_MANT_DIG == 64
++                if (LDOUBLE_SIZE == 16) {
++                    long double v = vtop->c.ld;
++                    int e = 0, neg = 0;
++                    unsigned long long hi = 0, lo = 0;
++                    if (v != v) {
++                        hi = 0x7fff800000000000ULL;
++                    } else if (v != 0 && v * 0.5L == v) {
++                        hi = 0x7fff000000000000ULL;
++                        if (v < 0) neg = 1;
++                    } else if (v != 0) {
++                        unsigned long long m;
++                        if (v < 0) { neg = 1; v = -v; }
++                        v = frexpl(v, &e);
++                        v = v * 18446744073709551616.0L;
++                        m = (unsigned long long)v;
++                        e = e - 1 + 16383;
++                        /* m holds 64 mantissa bits with x87's EXPLICIT leading
++                           1 at bit 63. binary128's field is 112 bits with an
++                           IMPLICIT leading 1, so drop the top bit and place the
++                           remaining 63 at the top of 112: the high word takes
++                           the first 48, the low word the remaining 15 shifted
++                           to ITS top. */
++                        unsigned long long f = m << 1;   /* drop implicit bit */
++                        hi = ((unsigned long long)e << 48) | (f >> 16);
++                        lo = f << 48;
++                    }
++                    if (neg) hi |= 0x8000000000000000ULL;
++                    write64le(ptr, lo);
++                    write64le(ptr + 8, hi);
++                }
++                else if (sizeof(long double) == LDOUBLE_SIZE)
++                    memcpy(ptr, &vtop->c.ld, LDOUBLE_SIZE);
++#else
+                 if (sizeof(long double) == LDOUBLE_SIZE)
+                     memcpy(ptr, &vtop->c.ld, LDOUBLE_SIZE);
++#endif
+                 else if (sizeof(double) == LDOUBLE_SIZE)
+                     *(double*)ptr = (double)vtop->c.ld;
+                 else if (0 == memcmp(ptr, &vtop->c.ld, LDOUBLE_SIZE))
