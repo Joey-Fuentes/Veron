@@ -1,0 +1,972 @@
+Submitted By:            Xi Ruoyao <xry111 at xry111 dot site>
+Date:                    2026-05-11
+Initial Package Version: 3.14.5
+Upstream Status:         Applied
+Origin:                  Upstream, see the cherry picked from labels for
+                         SHA.  The changes to kTLS (which is only
+                         supported since 3.15) are dropped.  The 4th
+                         change is edited to avoid the conflict with
+                         "fix reference leaks in `ssl.SSLContext` objects":
+                         the latter is already in both 3.15 (1decc7ee20cf)
+                         and 3.14.5 (3a2a686cc45d), but in 3.15 it's before
+                         our 4th change, so the different order causes a
+                         conflict.
+Description:             Fix build failure and runtime issues with
+                         OpenSSL 4.0.
+
+Updated By:              Bruce Dubbs <bdubbs@linuxfromscratch.org>
+Date:                    2026-05-27
+Initial Package Version: 3.14.6
+Upstream Status:         Applied
+Origin:                  As above plus
+                         https://github.com/python/cpython/pull/151545 CVE-2026-12003
+                            Allow builds of Python to be run from an in-tree layout
+                         https://github.com/python/cpython/pull/143929 CVE-2026-0864
+                            Do not allow carriage return characters (\r) when
+                            using the "configparser" module to write configuration files
+                         https://github.com/python/cpython/pull/151559 CVE-2026-11940
+                            Do not allow tarfile.extractall() with the 'data' or 'tar' 
+                            filter to be bypassed
+
+diff -Naur Python-3.14.6/Lib/configparser.py Python-3.14.6-patched/Lib/configparser.py
+--- Python-3.14.6/Lib/configparser.py	2026-06-10 05:03:53.000000000 -0500
++++ Python-3.14.6-patched/Lib/configparser.py	2026-06-27 19:25:32.364624182 -0500
+@@ -992,7 +992,9 @@
+             value = self._interpolation.before_write(self, section_name, key,
+                                                      value)
+             if value is not None or not self._allow_no_value:
+-                value = delimiter + str(value).replace('\n', '\n\t')
++                # Convert all possible line-endings into '\n\t'
++                value = (delimiter + str(value).replace('\r\n', '\n')
++                         .replace('\r', '\n').replace('\n', '\n\t'))
+             else:
+                 value = ""
+             fp.write("{}{}\n".format(key, value))
+diff -Naur Python-3.14.6/Lib/tarfile.py Python-3.14.6-patched/Lib/tarfile.py
+--- Python-3.14.6/Lib/tarfile.py	2026-06-10 05:03:53.000000000 -0500
++++ Python-3.14.6-patched/Lib/tarfile.py	2026-06-27 19:25:55.886332255 -0500
+@@ -2782,6 +2782,9 @@
+                     "makelink_with_filter: if filter_function is not None, "
+                     + "extraction_root must also not be None")
+             try:
++                filter_function(
++                    unfiltered.replace(name=tarinfo.name, deep=False),
++                    extraction_root)
+                 filtered = filter_function(unfiltered, extraction_root)
+             except _FILTER_ERRORS as cause:
+                 raise LinkFallbackError(tarinfo, unfiltered.name) from cause
+diff -Naur Python-3.14.6/Lib/test/test_configparser.py Python-3.14.6-patched/Lib/test/test_configparser.py
+--- Python-3.14.6/Lib/test/test_configparser.py	2026-06-10 05:03:53.000000000 -0500
++++ Python-3.14.6-patched/Lib/test/test_configparser.py	2026-06-27 19:25:32.365231633 -0500
+@@ -526,6 +526,17 @@
+             cf.get(self.default_section, "Foo"), "Bar",
+             "could not locate option, expecting case-insensitive defaults")
+ 
++    def test_crlf_normalization(self):
++        cf = self.newconfig({"key1": "a\nb","key2": "a\rb", "key3": "a\r\nb", "key4": "a\r\nb"})
++        buf = io.StringIO()
++        cf.write(buf)
++        cf_str = buf.getvalue()
++        self.assertNotIn("\r", cf_str)
++        self.assertNotIn("\r\n", cf_str)
++        self.assertEqual(cf_str.count("\n"), 10)
++        self.assertEqual(cf_str.count("\n\t"), 4)
++        self.assertTrue(cf_str.endswith("\n\n"))
++
+     def test_parse_errors(self):
+         cf = self.newconfig()
+         self.parse_error(cf, configparser.ParsingError,
+diff -Naur Python-3.14.6/Lib/test/test_ssl.py Python-3.14.6-patched/Lib/test/test_ssl.py
+--- Python-3.14.6/Lib/test/test_ssl.py	2026-06-10 05:03:53.000000000 -0500
++++ Python-3.14.6-patched/Lib/test/test_ssl.py	2026-06-27 19:26:20.623259319 -0500
+@@ -396,7 +396,7 @@
+         ssl.OP_NO_COMPRESSION
+         self.assertEqual(ssl.HAS_SNI, True)
+         self.assertEqual(ssl.HAS_ECDH, True)
+-        self.assertEqual(ssl.HAS_TLSv1_2, True)
++        self.assertIsInstance(ssl.HAS_TLSv1_2, bool)
+         self.assertEqual(ssl.HAS_TLSv1_3, True)
+         ssl.OP_NO_SSLv2
+         ssl.OP_NO_SSLv3
+@@ -587,11 +587,11 @@
+         # Some sanity checks follow
+         # >= 1.1.1
+         self.assertGreaterEqual(n, 0x10101000)
+-        # < 4.0
+-        self.assertLess(n, 0x40000000)
++        # < 5.0
++        self.assertLess(n, 0x50000000)
+         major, minor, fix, patch, status = t
+         self.assertGreaterEqual(major, 1)
+-        self.assertLess(major, 4)
++        self.assertLess(major, 5)
+         self.assertGreaterEqual(minor, 0)
+         self.assertLess(minor, 256)
+         self.assertGreaterEqual(fix, 0)
+@@ -657,12 +657,14 @@
+             ssl.OP_NO_TLSv1_2,
+             ssl.OP_NO_TLSv1_3
+         ]
+-        protocols = [
+-            ssl.PROTOCOL_TLSv1,
+-            ssl.PROTOCOL_TLSv1_1,
+-            ssl.PROTOCOL_TLSv1_2,
+-            ssl.PROTOCOL_TLS
+-        ]
++        protocols = []
++        if hasattr(ssl, 'PROTOCOL_TLSv1'):
++            protocols.append(ssl.PROTOCOL_TLSv1)
++        if hasattr(ssl, 'PROTOCOL_TLSv1_1'):
++            protocols.append(ssl.PROTOCOL_TLSv1_1)
++        if hasattr(ssl, 'PROTOCOL_TLSv1_2'):
++            protocols.append(ssl.PROTOCOL_TLSv1_2)
++        protocols.append(ssl.PROTOCOL_TLS)
+         versions = [
+             ssl.TLSVersion.SSLv3,
+             ssl.TLSVersion.TLSv1,
+@@ -1156,6 +1158,7 @@
+                 ssl.TLSVersion.TLSv1,
+                 ssl.TLSVersion.TLSv1_1,
+                 ssl.TLSVersion.TLSv1_2,
++                ssl.TLSVersion.TLSv1_3,
+                 ssl.TLSVersion.SSLv3,
+             }
+         )
+@@ -1169,7 +1172,7 @@
+         with self.assertRaises(ValueError):
+             ctx.minimum_version = 42
+ 
+-        if has_tls_protocol(ssl.PROTOCOL_TLSv1_1):
++        if has_tls_protocol('PROTOCOL_TLSv1_1'):
+             ctx = ssl.SSLContext(ssl.PROTOCOL_TLSv1_1)
+ 
+             self.assertIn(
+@@ -1717,23 +1720,24 @@
+         self.assertFalse(ctx.check_hostname)
+         self._assert_context_options(ctx)
+ 
+-        if has_tls_protocol(ssl.PROTOCOL_TLSv1):
++        if has_tls_protocol('PROTOCOL_TLSv1'):
+             with warnings_helper.check_warnings():
+                 ctx = ssl._create_stdlib_context(ssl.PROTOCOL_TLSv1)
+             self.assertEqual(ctx.protocol, ssl.PROTOCOL_TLSv1)
+             self.assertEqual(ctx.verify_mode, ssl.CERT_NONE)
+             self._assert_context_options(ctx)
+ 
+-        with warnings_helper.check_warnings():
+-            ctx = ssl._create_stdlib_context(
+-                ssl.PROTOCOL_TLSv1_2,
+-                cert_reqs=ssl.CERT_REQUIRED,
+-                check_hostname=True
+-            )
+-        self.assertEqual(ctx.protocol, ssl.PROTOCOL_TLSv1_2)
+-        self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
+-        self.assertTrue(ctx.check_hostname)
+-        self._assert_context_options(ctx)
++        if has_tls_protocol('PROTOCOL_TLSv1_2'):
++            with warnings_helper.check_warnings():
++                ctx = ssl._create_stdlib_context(
++                    ssl.PROTOCOL_TLSv1_2,
++                    cert_reqs=ssl.CERT_REQUIRED,
++                    check_hostname=True
++                )
++            self.assertEqual(ctx.protocol, ssl.PROTOCOL_TLSv1_2)
++            self.assertEqual(ctx.verify_mode, ssl.CERT_REQUIRED)
++            self.assertTrue(ctx.check_hostname)
++            self._assert_context_options(ctx)
+ 
+         ctx = ssl._create_stdlib_context(purpose=ssl.Purpose.CLIENT_AUTH)
+         self.assertEqual(ctx.protocol, ssl.PROTOCOL_TLS_SERVER)
+@@ -2760,6 +2764,36 @@
+     def stop(self):
+         self.active = False
+ 
++class TestEOFServer(threading.Thread):
++    def __init__(self):
++        super().__init__()
++        self.listening = threading.Event()
++        self.address = None
++
++    def run(self):
++        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
++        context.load_cert_chain(CERTFILE)
++        server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++        with server_sock:
++            server_sock.settimeout(support.SHORT_TIMEOUT)
++            server_sock.bind((HOST, 0))
++            server_sock.listen(5)
++
++            self.address = server_sock.getsockname()
++            self.listening.set()
++
++            sock, addr = server_sock.accept()
++            sslconn = context.wrap_socket(sock, server_side=True)
++            with sslconn:
++                request = b''
++                while chunk := sslconn.recv(1024):
++                    request += chunk
++                    if b'\n' in chunk:
++                        break
++
++                sslconn.sendall(b'server\n')
++                sslconn.shutdown(socket.SHUT_WR)
++
+ class AsyncoreEchoServer(threading.Thread):
+ 
+     # this one's based on asyncore.dispatcher
+@@ -3629,10 +3663,10 @@
+                            client_options=ssl.OP_NO_TLSv1_2)
+ 
+         try_protocol_combo(ssl.PROTOCOL_TLS, ssl.PROTOCOL_TLSv1_2, 'TLSv1.2')
+-        if has_tls_protocol(ssl.PROTOCOL_TLSv1):
++        if has_tls_protocol('PROTOCOL_TLSv1'):
+             try_protocol_combo(ssl.PROTOCOL_TLSv1_2, ssl.PROTOCOL_TLSv1, False)
+             try_protocol_combo(ssl.PROTOCOL_TLSv1, ssl.PROTOCOL_TLSv1_2, False)
+-        if has_tls_protocol(ssl.PROTOCOL_TLSv1_1):
++        if has_tls_protocol('PROTOCOL_TLSv1_1'):
+             try_protocol_combo(ssl.PROTOCOL_TLSv1_2, ssl.PROTOCOL_TLSv1_1, False)
+             try_protocol_combo(ssl.PROTOCOL_TLSv1_1, ssl.PROTOCOL_TLSv1_2, False)
+ 
+@@ -4794,6 +4828,58 @@
+                     if cm.exc_value is not None:
+                         raise cm.exc_value
+ 
++    def test_got_eof(self):
++        # gh-148292: Test that _ssl._SSLSocket behaves the same on all OpenSSL
++        # versions on calling methods after EOF (after the first SSLEOFError).
++
++        server = TestEOFServer()
++        server.start()
++        if not server.listening.wait(support.SHORT_TIMEOUT):
++            raise RuntimeError("server took too long")
++        self.addCleanup(server.join)
++
++        context = ssl.create_default_context(cafile=CERTFILE)
++        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++        sock.settimeout(support.SHORT_TIMEOUT)
++        sock.connect(server.address)
++        sslsock = context.wrap_socket(sock, server_hostname='localhost')
++        with sslsock:
++            sslsock.sendall(b'client\n')
++            # test the _ssl._SSLSocket object, not ssl.SSLSocket
++            sslobj = sslsock._sslobj
++
++            data = sslobj.read(1024)
++            self.assertEqual(data, b'server\n')
++
++            # The second read gets EOF error and sets got_eof_error to 1
++            with self.assertRaises(ssl.SSLEOFError):
++                sslobj.read(1024)
++
++            # Following read(), sendfile(), write() and do_handshake() calls
++            # must raise SSLEOFError
++            with self.assertRaises(ssl.SSLEOFError):
++                # The _SSLSocket remembers the previous EOF error
++                # and raises again SSLEOFError
++                sslobj.read(1024)
++            if hasattr(sslobj, 'sendfile'):
++                with open(__file__, "rb") as fp:
++                    with self.assertRaises(ssl.SSLEOFError):
++                        sslobj.sendfile(fp.fileno(), 0, 1)
++            with self.assertRaises(ssl.SSLEOFError):
++                sslobj.write(b'client2\n')
++            with self.assertRaises(ssl.SSLEOFError):
++                sslsock.do_handshake()
++
++            self.assertEqual(sslsock.pending(), 0)
++            try:
++                sslsock.shutdown(socket.SHUT_WR)
++            except OSError as exc:
++                self.assertEqual(exc.errno, errno.ENOTCONN)
++            else:
++                # On Windows and on OpenSSL 1.1.1, shutdown() doesn't
++                # raise an error
++                pass
++
+ 
+ @unittest.skipUnless(has_tls_version('TLSv1_3') and ssl.HAS_PHA,
+                      "Test needs TLS 1.3 PHA")
+@@ -5220,6 +5306,20 @@
+         with self.assertRaises(TypeError):
+             client_context._msg_callback = object()
+ 
++    def test_msg_callback_exception(self):
++        client_context, server_context, hostname = testing_context()
++
++        def msg_cb(conn, direction, version, content_type, msg_type, data):
++            raise RuntimeError("msg_cb exception")
++
++        client_context._msg_callback = msg_cb
++        server = ThreadedEchoServer(context=server_context, chatty=False)
++        with server:
++            with client_context.wrap_socket(socket.socket(),
++                                            server_hostname=hostname) as s:
++                with self.assertRaisesRegex(RuntimeError, "msg_cb exception"):
++                    s.connect((HOST, server.port))
++
+     def test_msg_callback_tls12(self):
+         client_context, server_context, hostname = testing_context()
+         client_context.maximum_version = ssl.TLSVersion.TLSv1_2
+diff -Naur Python-3.14.6/Lib/test/test_tarfile.py Python-3.14.6-patched/Lib/test/test_tarfile.py
+--- Python-3.14.6/Lib/test/test_tarfile.py	2026-06-10 05:03:53.000000000 -0500
++++ Python-3.14.6-patched/Lib/test/test_tarfile.py	2026-06-27 19:25:55.886689848 -0500
+@@ -4345,6 +4345,30 @@
+                     self.expect_file("c", symlink_to='b')
+ 
+     @symlink_test
++    def test_sneaky_hardlink_fallback_deep(self):
++        # (CVE-2026-11940)
++        with ArchiveMaker() as arc:
++            arc.add("a/b/s", symlink_to=os.path.join("..", "escape"))
++            arc.add("s", hardlink_to=os.path.join("a", "b", "s"))
++
++        with self.check_context(arc.open(), 'data'):
++            e = self.expect_exception(
++                tarfile.LinkFallbackError,
++                "link 's' would be extracted as a copy of "
++                + "'a/b/s', which was rejected")
++            self.assertIsInstance(e.__cause__,
++                                  tarfile.LinkOutsideDestinationError)
++
++        for filter in 'tar', 'fully_trusted':
++            with self.subTest(filter), self.check_context(arc.open(), filter):
++                if not os_helper.can_symlink():
++                    self.expect_file("a/")
++                    self.expect_file("a/b/")
++                else:
++                    self.expect_file("a/b/s", symlink_to=os.path.join('..', 'escape'))
++                    self.expect_file("s", symlink_to=os.path.join('..', 'escape'))
++
++    @symlink_test
+     def test_exfiltration_via_symlink(self):
+         # (CVE-2025-4138)
+         # Test changing symlinks that result in a symlink pointing outside
+diff -Naur Python-3.14.6/Makefile.pre.in Python-3.14.6-patched/Makefile.pre.in
+--- Python-3.14.6/Makefile.pre.in	2026-06-10 05:03:53.000000000 -0500
++++ Python-3.14.6-patched/Makefile.pre.in	2026-06-27 19:25:45.149174104 -0500
+@@ -1679,6 +1679,8 @@
+ _bootstrap_python: $(LIBRARY_OBJS_OMIT_FROZEN) Programs/_bootstrap_python.o Modules/getpath.o Modules/Setup.local
+ 	$(LINKCC) $(PY_LDFLAGS_NOLTO) -o $@ $(LIBRARY_OBJS_OMIT_FROZEN) \
+ 		Programs/_bootstrap_python.o Modules/getpath.o $(LIBS) $(MODLIBS) $(SYSLIBS)
++	# Dummy pybuilddir.txt  is needed for _bootstrap_python to be runnable
++	@echo "none" > ./pybuilddir.txt
+ 
+ 
+ ############################################################################
+diff -Naur Python-3.14.6/Misc/NEWS.d/next/Library/2025-12-08-18-12-44.gh-issue-142438.UF_0nd.rst Python-3.14.6-patched/Misc/NEWS.d/next/Library/2025-12-08-18-12-44.gh-issue-142438.UF_0nd.rst
+--- Python-3.14.6/Misc/NEWS.d/next/Library/2025-12-08-18-12-44.gh-issue-142438.UF_0nd.rst	1969-12-31 18:00:00.000000000 -0600
++++ Python-3.14.6-patched/Misc/NEWS.d/next/Library/2025-12-08-18-12-44.gh-issue-142438.UF_0nd.rst	2026-06-27 19:26:20.621995065 -0500
+@@ -0,0 +1 @@
++Fixed a possible leaked GIL in _PySSL_keylog_callback.
+diff -Naur Python-3.14.6/Misc/NEWS.d/next/Library/2026-04-28-17-47-55.gh-issue-148292.oIq3ml.rst Python-3.14.6-patched/Misc/NEWS.d/next/Library/2026-04-28-17-47-55.gh-issue-148292.oIq3ml.rst
+--- Python-3.14.6/Misc/NEWS.d/next/Library/2026-04-28-17-47-55.gh-issue-148292.oIq3ml.rst	1969-12-31 18:00:00.000000000 -0600
++++ Python-3.14.6-patched/Misc/NEWS.d/next/Library/2026-04-28-17-47-55.gh-issue-148292.oIq3ml.rst	2026-06-27 19:26:20.623462484 -0500
+@@ -0,0 +1,7 @@
++:mod:`ssl`: Update :class:`ssl.SSLSocket` and :class:`ssl.SSLObject` for
++OpenSSL 4. The classes now remember if they get a :exc:`ssl.SSLEOFError`. In this
++case, following :meth:`~ssl.SSLSocket.read`, :meth:`!sendfile`,
++:meth:`~ssl.SSLSocket.write`, and :meth:`~ssl.SSLSocket.do_handshake` calls
++raise :exc:`ssl.SSLEOFError` without calling the underlying OpenSSL function.
++Thanks to that, :class:`ssl.SSLSocket` behaves the same on all OpenSSL versions
++on EOF.  Patch by Victor Stinner.
+diff -Naur Python-3.14.6/Misc/NEWS.d/next/Security/2026-01-16-11-58-19.gh-issue-143927.aviFeG.rst Python-3.14.6-patched/Misc/NEWS.d/next/Security/2026-01-16-11-58-19.gh-issue-143927.aviFeG.rst
+--- Python-3.14.6/Misc/NEWS.d/next/Security/2026-01-16-11-58-19.gh-issue-143927.aviFeG.rst	1969-12-31 18:00:00.000000000 -0600
++++ Python-3.14.6-patched/Misc/NEWS.d/next/Security/2026-01-16-11-58-19.gh-issue-143927.aviFeG.rst	2026-06-27 19:25:32.365334556 -0500
+@@ -0,0 +1,2 @@
++Normalize all line endings (CR, CRLF, and LF) to LF+TAB when writing
++multi-line configparser values.
+diff -Naur Python-3.14.6/Misc/NEWS.d/next/Security/2026-06-10-13-08-19.gh-issue-151558.mL74i2.rst Python-3.14.6-patched/Misc/NEWS.d/next/Security/2026-06-10-13-08-19.gh-issue-151558.mL74i2.rst
+--- Python-3.14.6/Misc/NEWS.d/next/Security/2026-06-10-13-08-19.gh-issue-151558.mL74i2.rst	1969-12-31 18:00:00.000000000 -0600
++++ Python-3.14.6-patched/Misc/NEWS.d/next/Security/2026-06-10-13-08-19.gh-issue-151558.mL74i2.rst	2026-06-27 19:25:55.885857628 -0500
+@@ -0,0 +1,3 @@
++Fixed an vulnerability in the :mod:`tarfile` ``data`` and ``tar`` extraction
++filters where crafted archives could create a symlink pointing outside the
++destination directory. This was a bypass of :cve:`2025-4330`.
+diff -Naur Python-3.14.6/Misc/NEWS.d/next/Security/2026-06-16-14-58-02.gh-issue-151544._bexVy.rst Python-3.14.6-patched/Misc/NEWS.d/next/Security/2026-06-16-14-58-02.gh-issue-151544._bexVy.rst
+--- Python-3.14.6/Misc/NEWS.d/next/Security/2026-06-16-14-58-02.gh-issue-151544._bexVy.rst	1969-12-31 18:00:00.000000000 -0600
++++ Python-3.14.6-patched/Misc/NEWS.d/next/Security/2026-06-16-14-58-02.gh-issue-151544._bexVy.rst	2026-06-27 19:25:45.148527980 -0500
+@@ -0,0 +1,4 @@
++:file:`Modules/Setup.local` is no longer used as a landmark to discover
++whether Python is running in a source tree, as it could potentially affect
++actual installs. The :file:`pybuilddir.txt` file is now the sole indicator
++of running in a source tree.
+diff -Naur Python-3.14.6/Modules/getpath.py Python-3.14.6-patched/Modules/getpath.py
+--- Python-3.14.6/Modules/getpath.py	2026-06-10 05:03:53.000000000 -0500
++++ Python-3.14.6-patched/Modules/getpath.py	2026-06-27 19:25:45.148621944 -0500
+@@ -129,8 +129,7 @@
+ # checked by looking for the BUILDDIR_TXT file, which contains the
+ # relative path to the platlib dir. The executable_dir value is
+ # derived from joining the VPATH preprocessor variable to the
+-# directory containing pybuilddir.txt. If it is not found, the
+-# BUILD_LANDMARK file is found, which is part of the source tree.
++# directory containing pybuilddir.txt.
+ # prefix is then found by searching up for a file that should only
+ # exist in the source tree, and the stdlib dir is set to prefix/Lib.
+ 
+@@ -177,7 +176,6 @@
+ 
+ if os_name == 'posix' or os_name == 'darwin':
+     BUILDDIR_TXT = 'pybuilddir.txt'
+-    BUILD_LANDMARK = 'Modules/Setup.local'
+     DEFAULT_PROGRAM_NAME = f'python{VERSION_MAJOR}'
+     STDLIB_SUBDIR = f'{platlibdir}/python{VERSION_MAJOR}.{VERSION_MINOR}{ABI_THREAD}'
+     STDLIB_LANDMARKS = [f'{STDLIB_SUBDIR}/os.py', f'{STDLIB_SUBDIR}/os.pyc']
+@@ -190,7 +188,6 @@
+ 
+ elif os_name == 'nt':
+     BUILDDIR_TXT = 'pybuilddir.txt'
+-    BUILD_LANDMARK = f'{VPATH}\\Modules\\Setup.local'
+     DEFAULT_PROGRAM_NAME = f'python'
+     STDLIB_SUBDIR = 'Lib'
+     STDLIB_LANDMARKS = [f'{STDLIB_SUBDIR}\\os.py', f'{STDLIB_SUBDIR}\\os.pyc']
+@@ -512,13 +509,9 @@
+         platstdlib_dir = real_executable_dir
+         build_prefix = joinpath(real_executable_dir, VPATH)
+     except (FileNotFoundError, PermissionError):
+-        if isfile(joinpath(real_executable_dir, BUILD_LANDMARK)):
+-            build_prefix = joinpath(real_executable_dir, VPATH)
+-            if os_name == 'nt':
+-                # QUIRK: Windows builds need platstdlib_dir to be the executable
+-                # dir. Normally the builddir marker handles this, but in this
+-                # case we need to correct manually.
+-                platstdlib_dir = real_executable_dir
++        # We used to check for an alternate landmark here, but now we require
++        # BUILDDIR_TXT to exist. (gh-151544; CVE-2026-12003)
++        pass
+ 
+     if build_prefix:
+         if os_name == 'nt':
+diff -Naur Python-3.14.6/Modules/_ssl/cert.c Python-3.14.6-patched/Modules/_ssl/cert.c
+--- Python-3.14.6/Modules/_ssl/cert.c	2026-06-10 05:03:53.000000000 -0500
++++ Python-3.14.6-patched/Modules/_ssl/cert.c	2026-06-27 19:26:20.621111999 -0500
+@@ -128,7 +128,8 @@
+ }
+ 
+ static PyObject*
+-_x509name_print(_sslmodulestate *state, X509_NAME *name, int indent, unsigned long flags)
++_x509name_print(_sslmodulestate *state, const X509_NAME *name,
++                int indent, unsigned long flags)
+ {
+     PyObject *res;
+     BIO *biobuf;
+diff -Naur Python-3.14.6/Modules/_ssl/debughelpers.c Python-3.14.6-patched/Modules/_ssl/debughelpers.c
+--- Python-3.14.6/Modules/_ssl/debughelpers.c	2026-06-10 05:03:53.000000000 -0500
++++ Python-3.14.6-patched/Modules/_ssl/debughelpers.c	2026-06-27 19:26:20.623070745 -0500
+@@ -26,6 +26,8 @@
+         return;
+     }
+ 
++    PyObject *exc = PyErr_GetRaisedException();
++
+     PyObject *ssl_socket;  /* ssl.SSLSocket or ssl.SSLObject */
+     if (ssl_obj->owner)
+         PyWeakref_GetRef(ssl_obj->owner, &ssl_socket);
+@@ -73,13 +75,13 @@
+         version, content_type, msg_type,
+         buf, len
+     );
+-    if (res == NULL) {
+-        ssl_obj->exc = PyErr_GetRaisedException();
+-    } else {
+-        Py_DECREF(res);
+-    }
++    Py_XDECREF(res);
+     Py_XDECREF(ssl_socket);
+ 
++    if (exc != NULL) {
++        _PyErr_ChainExceptions1(exc);
++    }
++
+     PyGILState_Release(threadstate);
+ }
+ 
+@@ -122,16 +124,19 @@
+ {
+     PyGILState_STATE threadstate;
+     PySSLSocket *ssl_obj = NULL;  /* ssl._SSLSocket, borrowed ref */
++    PyObject *exc;
+     int res, e;
+ 
+     threadstate = PyGILState_Ensure();
+ 
++    exc = PyErr_GetRaisedException();
++
+     ssl_obj = (PySSLSocket *)SSL_get_app_data(ssl);
+     assert(Py_IS_TYPE(ssl_obj, get_state_sock(ssl_obj)->PySSLSocket_Type));
+     PyThread_type_lock lock = get_state_sock(ssl_obj)->keylog_lock;
+     assert(lock != NULL);
+     if (ssl_obj->ctx->keylog_bio == NULL) {
+-        return;
++        goto done;
+     }
+     /*
+      * The lock is neither released on exit nor on fork(). The lock is
+@@ -153,7 +158,11 @@
+         errno = e;
+         PyErr_SetFromErrnoWithFilenameObject(PyExc_OSError,
+                                              ssl_obj->ctx->keylog_filename);
+-        ssl_obj->exc = PyErr_GetRaisedException();
++    }
++
++done:
++    if (exc != NULL) {
++        _PyErr_ChainExceptions1(exc);
+     }
+     PyGILState_Release(threadstate);
+ }
+diff -Naur Python-3.14.6/Modules/_ssl.c Python-3.14.6-patched/Modules/_ssl.c
+--- Python-3.14.6/Modules/_ssl.c	2026-06-10 05:03:53.000000000 -0500
++++ Python-3.14.6-patched/Modules/_ssl.c	2026-06-27 19:26:20.623794346 -0500
+@@ -135,6 +135,17 @@
+ #error Unsupported OpenSSL version
+ #endif
+ 
++#if (OPENSSL_VERSION_NUMBER >= 0x40000000L)
++#  define OPENSSL_NO_SSL3
++#  define OPENSSL_NO_TLS1
++#  define OPENSSL_NO_TLS1_1
++#  define OPENSSL_NO_TLS1_2
++#  define OPENSSL_NO_SSL3_METHOD
++#  define OPENSSL_NO_TLS1_METHOD
++#  define OPENSSL_NO_TLS1_1_METHOD
++#  define OPENSSL_NO_TLS1_2_METHOD
++#endif
++
+ /* OpenSSL API 1.1.0+ does not include version methods */
+ #ifndef OPENSSL_NO_SSL3_METHOD
+ extern const SSL_METHOD *SSLv3_method(void);
+@@ -334,12 +345,16 @@
+     enum py_ssl_server_or_client socket_type;
+     PyObject *owner; /* weakref to Python level "owner" passed to servername callback */
+     PyObject *server_hostname;
+-    _PySSLError err; /* last seen error from various sources */
+-    /* Some SSL callbacks don't have error reporting. Callback wrappers
+-     * store exception information on the socket. The handshake, read, write,
+-     * and shutdown methods check for chained exceptions.
+-     */
+-    PyObject *exc;
++    // gh-148292: If non-zero, read(), sendfile(), write() and do_handshake()
++    // methods raise SSLEOFError without calling the underlying OpenSSL
++    // function. Set to 1 on PY_SSL_ERROR_EOF error.
++    //
++    // On OpenSSL 4, if SSL_read_ex() fails with
++    // SSL_R_UNEXPECTED_EOF_WHILE_READING, the following SSL_read_ex() call
++    // fails with a generic protocol error (ERR_peek_last_error() returns 0).
++    // Use got_eof_error to have the same behavior on OpenSSL 4 and newer and
++    // on OpenSSL 3 and older.
++    int got_eof_error;
+ } PySSLSocket;
+ 
+ #define PySSLSocket_CAST(op)    ((PySSLSocket *)(op))
+@@ -487,6 +502,10 @@
+     PyObject *init_value, *msg, *key;
+     PyUnicodeWriter *writer = NULL;
+ 
++    if (ssl_errno == PY_SSL_ERROR_EOF && sslsock != NULL) {
++        sslsock->got_eof_error = 1;
++    }
++
+     if (errcode != 0) {
+         int lib, reason;
+ 
+@@ -632,22 +651,27 @@
+     PyUnicodeWriter_Discard(writer);
+ }
+ 
+-static int
+-PySSL_ChainExceptions(PySSLSocket *sslsock) {
+-    if (sslsock->exc == NULL)
+-        return 0;
+ 
+-    _PyErr_ChainExceptions1(sslsock->exc);
+-    sslsock->exc = NULL;
+-    return -1;
++static void
++set_eof_error(PySSLSocket *sslsock)
++{
++    _sslmodulestate *state = get_state_sock(sslsock);
++    fill_and_set_sslerror(state, sslsock, state->PySSLEOFErrorObject,
++                          PY_SSL_ERROR_EOF,
++                          "EOF occurred in violation of protocol",
++                          __LINE__, 0);
+ }
+ 
++
++// Set the appropriate SSL error exception.
++// err - error information from SSL and libc
++// exc - if not NULL, an exception from _debughelpers.c callback to be chained
+ static PyObject *
+-PySSL_SetError(PySSLSocket *sslsock, const char *filename, int lineno)
++PySSL_SetError(PySSLSocket *sslsock, _PySSLError err, PyObject *exc,
++               const char *filename, int lineno)
+ {
+     PyObject *type;
+     char *errstr = NULL;
+-    _PySSLError err;
+     enum py_ssl_error p = PY_SSL_ERROR_NONE;
+     unsigned long e = 0;
+ 
+@@ -660,8 +684,6 @@
+     e = ERR_peek_last_error();
+ 
+     if (sslsock->ssl != NULL) {
+-        err = sslsock->err;
+-
+         switch (err.ssl) {
+         case SSL_ERROR_ZERO_RETURN:
+             errstr = "TLS/SSL connection has been closed (EOF)";
+@@ -754,7 +776,7 @@
+     }
+     fill_and_set_sslerror(state, sslsock, type, p, errstr, lineno, e);
+     ERR_clear_error();
+-    PySSL_ChainExceptions(sslsock);
++    _PyErr_ChainExceptions1(exc);  // chain any exceptions from callbacks
+     return NULL;
+ }
+ 
+@@ -859,7 +881,6 @@
+ {
+     PySSLSocket *self;
+     SSL_CTX *ctx = sslctx->ctx;
+-    _PySSLError err = { 0 };
+ 
+     if ((socket_type == PY_SSL_SERVER) &&
+         (sslctx->protocol == PY_SSL_VERSION_TLS_CLIENT)) {
+@@ -887,8 +908,7 @@
+     self->shutdown_seen_zero = 0;
+     self->owner = NULL;
+     self->server_hostname = NULL;
+-    self->err = err;
+-    self->exc = NULL;
++    self->got_eof_error = 0;
+ 
+     /* Make sure the SSL error state is initialized */
+     ERR_clear_error();
+@@ -1009,6 +1029,7 @@
+ {
+     int ret;
+     _PySSLError err;
++    PyObject *exc = NULL;
+     int sockstate, nonblocking;
+     PySocketSockObject *sock = GET_SOCKET(self);
+     PyTime_t timeout, deadline = 0;
+@@ -1029,6 +1050,11 @@
+         BIO_set_nbio(SSL_get_wbio(self->ssl), nonblocking);
+     }
+ 
++    if (self->got_eof_error) {
++        set_eof_error(self);
++        goto error;
++    }
++
+     timeout = GET_SOCKET_TIMEOUT(sock);
+     has_timeout = (timeout > 0);
+     if (has_timeout) {
+@@ -1043,7 +1069,12 @@
+         err = _PySSL_errno(ret < 1, self->ssl, ret);
+         Py_END_ALLOW_THREADS;
+         _PySSL_FIX_ERRNO;
+-        self->err = err;
++
++        // Get any exception that occurred in a debughelpers.c callback
++        exc = PyErr_GetRaisedException();
++        if (exc != NULL) {
++            break;
++        }
+ 
+         if (PyErr_CheckSignals())
+             goto error;
+@@ -1079,13 +1110,15 @@
+     Py_XDECREF(sock);
+ 
+     if (ret < 1)
+-        return PySSL_SetError(self, __FILE__, __LINE__);
+-    if (PySSL_ChainExceptions(self) < 0)
++        return PySSL_SetError(self, err, exc, __FILE__, __LINE__);
++    if (exc != NULL) {
++        PyErr_SetRaisedException(exc);
+         return NULL;
++    }
+     Py_RETURN_NONE;
+ error:
++    assert(exc == NULL);
+     Py_XDECREF(sock);
+-    PySSL_ChainExceptions(self);
+     return NULL;
+ }
+ 
+@@ -1134,7 +1167,7 @@
+ 
+ static PyObject *
+ _create_tuple_for_attribute(_sslmodulestate *state,
+-                            ASN1_OBJECT *name, ASN1_STRING *value)
++                            const ASN1_OBJECT *name, const ASN1_STRING *value)
+ {
+     Py_ssize_t buflen;
+     PyObject *pyattr;
+@@ -1163,16 +1196,16 @@
+ }
+ 
+ static PyObject *
+-_create_tuple_for_X509_NAME (_sslmodulestate *state, X509_NAME *xname)
++_create_tuple_for_X509_NAME(_sslmodulestate *state, const X509_NAME *xname)
+ {
+     PyObject *dn = NULL;    /* tuple which represents the "distinguished name" */
+     PyObject *rdn = NULL;   /* tuple to hold a "relative distinguished name" */
+     PyObject *rdnt;
+     PyObject *attr = NULL;   /* tuple to hold an attribute */
+     int entry_count = X509_NAME_entry_count(xname);
+-    X509_NAME_ENTRY *entry;
+-    ASN1_OBJECT *name;
+-    ASN1_STRING *value;
++    const X509_NAME_ENTRY *entry;
++    const ASN1_OBJECT *name;
++    const ASN1_STRING *value;
+     int index_counter;
+     int rdn_level = -1;
+     int retcode;
+@@ -2337,9 +2370,7 @@
+ static int
+ PySSL_traverse(PyObject *op, visitproc visit, void *arg)
+ {
+-    PySSLSocket *self = PySSLSocket_CAST(op);
+-    Py_VISIT(self->exc);
+-    Py_VISIT(Py_TYPE(self));
++    Py_VISIT(Py_TYPE(op));
+     return 0;
+ }
+ 
+@@ -2351,7 +2382,6 @@
+     Py_CLEAR(self->ctx);
+     Py_CLEAR(self->owner);
+     Py_CLEAR(self->server_hostname);
+-    Py_CLEAR(self->exc);
+     return 0;
+ }
+ 
+@@ -2471,6 +2501,7 @@
+     int retval;
+     int sockstate;
+     _PySSLError err;
++    PyObject *exc = NULL;
+     int nonblocking;
+     PySocketSockObject *sock = GET_SOCKET(self);
+     PyTime_t timeout, deadline = 0;
+@@ -2493,6 +2524,11 @@
+         BIO_set_nbio(SSL_get_wbio(self->ssl), nonblocking);
+     }
+ 
++    if (self->got_eof_error) {
++        set_eof_error(self);
++        goto error;
++    }
++
+     timeout = GET_SOCKET_TIMEOUT(sock);
+     has_timeout = (timeout > 0);
+     if (has_timeout) {
+@@ -2520,7 +2556,11 @@
+         err = _PySSL_errno(retval == 0, self->ssl, retval);
+         Py_END_ALLOW_THREADS;
+         _PySSL_FIX_ERRNO;
+-        self->err = err;
++
++        exc = PyErr_GetRaisedException();
++        if (exc != NULL) {
++            break;
++        }
+ 
+         if (PyErr_CheckSignals())
+             goto error;
+@@ -2553,13 +2593,15 @@
+ 
+     Py_XDECREF(sock);
+     if (retval == 0)
+-        return PySSL_SetError(self, __FILE__, __LINE__);
+-    if (PySSL_ChainExceptions(self) < 0)
++        return PySSL_SetError(self, err, exc, __FILE__, __LINE__);
++    if (exc != NULL) {
++        PyErr_SetRaisedException(exc);
+         return NULL;
++    }
+     return PyLong_FromSize_t(count);
+ error:
++    assert(exc == NULL);
+     Py_XDECREF(sock);
+-    PySSL_ChainExceptions(self);
+     return NULL;
+ }
+ 
+@@ -2582,10 +2624,9 @@
+     err = _PySSL_errno(count < 0, self->ssl, count);
+     Py_END_ALLOW_THREADS;
+     _PySSL_FIX_ERRNO;
+-    self->err = err;
+ 
+     if (count < 0)
+-        return PySSL_SetError(self, __FILE__, __LINE__);
++        return PySSL_SetError(self, err, NULL, __FILE__, __LINE__);
+     else
+         return PyLong_FromLong(count);
+ }
+@@ -2613,6 +2654,7 @@
+     int retval;
+     int sockstate;
+     _PySSLError err;
++    PyObject *exc = NULL;
+     int nonblocking;
+     PySocketSockObject *sock = GET_SOCKET(self);
+     PyTime_t timeout, deadline = 0;
+@@ -2633,6 +2675,11 @@
+         Py_INCREF(sock);
+     }
+ 
++    if (self->got_eof_error) {
++        set_eof_error(self);
++        goto error;
++    }
++
+     if (!group_right_1) {
+         dest = PyBytes_FromStringAndSize(NULL, len);
+         if (dest == NULL)
+@@ -2677,7 +2724,11 @@
+         err = _PySSL_errno(retval == 0, self->ssl, retval);
+         Py_END_ALLOW_THREADS;
+         _PySSL_FIX_ERRNO;
+-        self->err = err;
++
++        exc = PyErr_GetRaisedException();
++        if (exc != NULL) {
++            break;
++        }
+ 
+         if (PyErr_CheckSignals())
+             goto error;
+@@ -2710,13 +2761,18 @@
+              err.ssl == SSL_ERROR_WANT_WRITE);
+ 
+     if (retval == 0) {
+-        PySSL_SetError(self, __FILE__, __LINE__);
++        PySSL_SetError(self, err, exc, __FILE__, __LINE__);
++        exc = NULL;
+         goto error;
+     }
+-    if (self->exc != NULL)
++    else if (exc != NULL) {
++        PyErr_SetRaisedException(exc);
++        exc = NULL;
+         goto error;
++    }
+ 
+ done:
++    assert(exc == NULL);
+     Py_XDECREF(sock);
+     if (!group_right_1) {
+         _PyBytes_Resize(&dest, count);
+@@ -2727,7 +2783,7 @@
+     }
+ 
+ error:
+-    PySSL_ChainExceptions(self);
++    assert(exc == NULL);
+     Py_XDECREF(sock);
+     if (!group_right_1)
+         Py_XDECREF(dest);
+@@ -2746,6 +2802,7 @@
+ /*[clinic end generated code: output=ca1aa7ed9d25ca42 input=98d9635cd4e16514]*/
+ {
+     _PySSLError err;
++    PyObject *exc = NULL;
+     int sockstate, nonblocking, ret;
+     int zeros = 0;
+     PySocketSockObject *sock = GET_SOCKET(self);
+@@ -2790,7 +2847,11 @@
+         err = _PySSL_errno(ret < 0, self->ssl, ret);
+         Py_END_ALLOW_THREADS;
+         _PySSL_FIX_ERRNO;
+-        self->err = err;
++
++        exc = PyErr_GetRaisedException();
++        if (exc != NULL) {
++            break;
++        }
+ 
+         /* If err == 1, a secure shutdown with SSL_shutdown() is complete */
+         if (ret > 0)
+@@ -2838,11 +2899,14 @@
+     }
+     if (ret < 0) {
+         Py_XDECREF(sock);
+-        PySSL_SetError(self, __FILE__, __LINE__);
++        PySSL_SetError(self, err, exc, __FILE__, __LINE__);
++        return NULL;
++    }
++    else if (exc != NULL) {
++        Py_XDECREF(sock);
++        PyErr_SetRaisedException(exc);
+         return NULL;
+     }
+-    if (self->exc != NULL)
+-        goto error;
+     if (sock)
+         /* It's already INCREF'ed */
+         return (PyObject *) sock;
+@@ -2850,8 +2914,8 @@
+         Py_RETURN_NONE;
+ 
+ error:
++    assert(exc == NULL);
+     Py_XDECREF(sock);
+-    PySSL_ChainExceptions(self);
+     return NULL;
+ }
+ 
+@@ -3054,7 +3118,6 @@
+     {Py_tp_getset, ssl_getsetlist},
+     {Py_tp_dealloc, PySSL_dealloc},
+     {Py_tp_traverse, PySSL_traverse},
+-    {Py_tp_clear, PySSL_clear},
+     {0, 0},
+ };
+ 
+@@ -6513,9 +6576,15 @@
+     ADD_INT_CONST("PROTOCOL_TLS", PY_SSL_VERSION_TLS);
+     ADD_INT_CONST("PROTOCOL_TLS_CLIENT", PY_SSL_VERSION_TLS_CLIENT);
+     ADD_INT_CONST("PROTOCOL_TLS_SERVER", PY_SSL_VERSION_TLS_SERVER);
++#ifndef OPENSSL_NO_TLS1
+     ADD_INT_CONST("PROTOCOL_TLSv1", PY_SSL_VERSION_TLS1);
++#endif
++#ifndef OPENSSL_NO_TLS1_1
+     ADD_INT_CONST("PROTOCOL_TLSv1_1", PY_SSL_VERSION_TLS1_1);
++#endif
++#ifndef OPENSSL_NO_TLS1_2
+     ADD_INT_CONST("PROTOCOL_TLSv1_2", PY_SSL_VERSION_TLS1_2);
++#endif
+ 
+ #define ADD_OPTION(NAME, VALUE) if (sslmodule_add_option(m, NAME, (VALUE)) < 0) return -1
+ 
+diff -Naur Python-3.14.6/Tools/ssl/multissltests.py Python-3.14.6-patched/Tools/ssl/multissltests.py
+--- Python-3.14.6/Tools/ssl/multissltests.py	2026-06-10 05:03:53.000000000 -0500
++++ Python-3.14.6-patched/Tools/ssl/multissltests.py	2026-06-27 19:26:20.621164308 -0500
+@@ -414,9 +414,11 @@
+     def _post_install(self):
+         if self.version.startswith("3."):
+             self._post_install_3xx()
++        elif self.version.startswith("4."):
++            self._post_install_4xx()
+ 
+     def _build_src(self, config_args=()):
+-        if self.version.startswith("3."):
++        if self.version.startswith(("3.", "4.")):
+             config_args += ("enable-fips",)
+         super()._build_src(config_args)
+ 
+@@ -432,6 +434,9 @@
+             lib64 = self.lib_dir + "64"
+             os.symlink(lib64, self.lib_dir)
+ 
++    def _post_install_4xx(self):
++        self._post_install_3xx()
++
+     @property
+     def short_version(self):
+         """Short version for OpenSSL download URL"""

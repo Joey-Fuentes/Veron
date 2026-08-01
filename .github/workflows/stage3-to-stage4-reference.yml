@@ -482,7 +482,7 @@ jobs:
           # than the request. The file had been removed.
           #
           # A pinned input should not come from a mutable directory. Both
-          # patches now live in spikes/stage4/patches/glibc/ and are copied,
+          # patches now live in spikes/stage4/patches/lfs/ and are copied,
           # not downloaded. See the README there for the digests and for how
           # to refresh one deliberately.
           #
@@ -499,7 +499,7 @@ jobs:
               echo "  fetched   $_pf"
               continue
             fi
-            _v="$GITHUB_WORKSPACE/spikes/stage4/patches/glibc/$_pf"
+            _v="$GITHUB_WORKSPACE/spikes/stage4/patches/lfs/$_pf"
             if [ -s "$_v" ]; then
               cp "$_v" "$_pf"
               printf '  vendored  %-42s %s bytes\n' "$_pf" "$(wc -c < "$_pf")"
@@ -514,7 +514,7 @@ jobs:
               echo "  on a -Werror redefinition between the libc and the kernel"
               echo "  headers, which reads as a glibc bug and is not one."
               echo
-              echo "  Put a copy in spikes/stage4/patches/glibc/ -- that"
+              echo "  Put a copy in spikes/stage4/patches/lfs/ -- that"
               echo "  directory's README has the digests and the source URL."
               exit 1
             fi
