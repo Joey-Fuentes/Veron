@@ -450,14 +450,29 @@ jobs:
                    "https://www.python.org/ftp/python/$PYTHON_VER/Python-$PYTHON_VER.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KHDR%%.*}.x/linux-$KHDR.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL%%.*}.x/linux-$KERNEL.tar.xz" \
-                   "https://www.linuxfromscratch.org/patches/lfs/development/glibc-fhs-1.patch" \
+                   "https://www.linuxfromscratch.org/patches/lfs/13.0/glibc-fhs-1.patch" \
                    "https://www.linuxfromscratch.org/patches/lfs/development/glibc-$GLIBC-upstream_fixes-1.patch"; do
             b=$(basename "$u")
             if [ -s "$b" ]; then
               printf '  cached  %-30s %10s bytes\n' "$b" "$(wc -c < "$b")"
               continue
             fi
-            if curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 -o "$b.part" "$u" 2>/dev/null; then
+            # STAGE 4's curl FLAGS, VERBATIM, AND THEY ARE NOT DECORATION.
+            #
+            # This fetched sixteen tarballs and glibc-fhs-1.patch from the same
+            # host and directory, then failed on
+            # glibc-2.43-upstream_fixes-1.patch alone. The URL is byte-identical
+            # to the one stage4-complete has been using successfully for weeks,
+            # so it is the request, not the address.
+            #
+            #   --http1.1          linuxfromscratch.org's HTTP/2 upsets curl
+            #                      on some connections; stage 4 pins 1.1
+            #   --retry-all-errors retries a 5xx or a reset, which plain
+            #                      --retry does NOT -- it only retries
+            #                      transient TRANSPORT errors
+            #   --retry-delay 3    gives the far end a moment
+            if curl -fsSL --http1.1 --retry 3 --retry-all-errors --retry-delay 3 \
+                    --connect-timeout 20 --max-time 900 -o "$b.part" "$u" 2>/dev/null; then
               mv "$b.part" "$b"
               printf '  fetched %-30s %10s bytes\n' "$b" "$(wc -c < "$b")"
             else
@@ -471,13 +486,53 @@ jobs:
           # assembling a box that could not possibly finish -- rung 13 would
           # have stopped on a glibc patch that was never downloaded.
           #
-          # It cost a whole run to a URL typo: the patches live under
-          # patches/lfs/DEVELOPMENT/, not patches/lfs/13.0/, because
-          # r13.0-156-systemd is a development snapshot. Failing here says so
-          # in the first minute.
+          # THE TWO glibc PATCHES COME FROM DIFFERENT DIRECTORIES, and that is
+          # stage4-complete's arrangement rather than an inconsistency:
+          #
+          #   glibc-fhs-1.patch        lfs/13.0/         both books ship the
+          #                                              identical file
+          #   glibc-2.43-upstream...   lfs/development/  exists ONLY there,
+          #                                              because only the
+          #                                              development book pairs
+          #                                              glibc 2.43 with a 7.x
+          #                                              kernel -- which is what
+          #                                              this box does
+          #
+          # A run was lost to putting both under 13.0, and another to putting
+          # both under development. Failing here rather than four rungs later
+          # is what makes that one minute instead of forty.
           [ "${_fetchfail:-0}" = 0 ] || {
             echo "  one or more pinned inputs did not download; not continuing."
             exit 1; }
+
+          # THE PATCH DIGESTS, RECORDED AND COMPARED BUT NOT ENFORCED.
+          #
+          # /patches/lfs/development/ is a MOVING directory -- it tracks
+          # whatever the development book currently is, and those patches are
+          # revised in place. Pinning a digest would turn a legitimate upstream
+          # update into a red build; pinning nothing would let a substitution
+          # through unnoticed.
+          #
+          # So print what arrived and compare it to the digest in the book
+          # vendored under spikes/stage4/books. THE REAL GATE IS `patch`
+          # ITSELF: a truncated or substituted patch does not apply cleanly to
+          # glibc 2.43, and rung 13 refuses to continue when it does not.
+          # Same reasoning, same digests, as stage4-complete.
+          for _pd in "glibc-fhs-1.patch 9a5997c3452909b1769918c759eff8a2" \
+                     "glibc-$GLIBC-upstream_fixes-1.patch 1f5074a1dce85a72d2ea465ca76e420b"; do
+            set -- $_pd
+            [ -f "$1" ] || continue
+            _got=$(md5sum "$1" | cut -d' ' -f1)
+            if [ "$_got" = "$2" ]; then
+              printf '  %-42s md5 matches the vendored book\n' "$1"
+            else
+              printf '  %-42s md5 DIFFERS from the vendored book\n' "$1"
+              echo "      vendored r13.0-156 : $2"
+              echo "      fetched now        : $_got"
+              echo "    Not fatal -- the development book moves. But if glibc"
+              echo "    fails after this, THIS LINE IS THE FIRST THING TO READ."
+            fi
+          done
 
           echo "  --- what came in ---"
           sha256sum ./*.tar.* 2>/dev/null | sed 's/^/    /'
