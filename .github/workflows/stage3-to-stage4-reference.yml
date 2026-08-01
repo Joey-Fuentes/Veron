@@ -242,6 +242,10 @@ env:
   # busybox does not implement. The measurement was right about what it
   # measured and the inference beyond it was wrong.
   GAWK_VER: '5.3.2'
+  # OPENSSL: the kernel's scripts/sign-file.c includes <openssl/bio.h>, and
+  # arm64 defconfig turns CONFIG_MODULE_SIG on. stage4-complete builds it for
+  # exactly this reason and we had none.
+  OPENSSL_VER: '3.5.4'
   M4_VER: '1.4.21'
   BC_VER: '7.0.3'
   BISON_VER: '3.8.2'
@@ -350,7 +354,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: dl
-          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-${{ env.GCC15 }}-${{ env.GLIBC }}-${{ env.KHDR }}-${{ env.PERL_VER }}-${{ env.KERNEL }}-${{ env.PYTHON_VER }}-${{ env.GAWK_VER }}-v6
+          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-${{ env.GCC15 }}-${{ env.GLIBC }}-${{ env.KHDR }}-${{ env.PERL_VER }}-${{ env.KERNEL }}-${{ env.PYTHON_VER }}-${{ env.GAWK_VER }}-${{ env.OPENSSL_VER }}-v7
 
       - name: Fetch pinned upstreams (airlock -- nothing here enters the box)
         run: |
@@ -424,6 +428,7 @@ jobs:
                    "https://github.com/gavinhoward/bc/releases/download/$BC_VER/bc-$BC_VER.tar.xz" \
                    "https://github.com/westes/flex/releases/download/v$FLEX_VER/flex-$FLEX_VER.tar.gz" \
                    "https://busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2" \
+                   "https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VER/openssl-$OPENSSL_VER.tar.gz" \
                    "https://www.python.org/ftp/python/$PYTHON_VER/Python-$PYTHON_VER.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KHDR%%.*}.x/linux-$KHDR.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL%%.*}.x/linux-$KERNEL.tar.xz" \
@@ -1121,6 +1126,7 @@ jobs:
             --setenv PERL_VER "$PERL_VER" \
             --setenv PYTHON_VER "$PYTHON_VER" \
             --setenv GAWK_VER "$GAWK_VER" \
+            --setenv OPENSSL_VER "$OPENSSL_VER" \
             --setenv M4_VER "$M4_VER" \
             --setenv BC_VER "$BC_VER" \
             --setenv BISON_VER "$BISON_VER" \

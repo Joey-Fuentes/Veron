@@ -4038,6 +4038,35 @@ if [ "$R14" = ok ]; then
            CFLAGS_EXTRA="-D_GNU_SOURCE" -j"$NP" > b.log 2>&1 && [ -x busybox ]; then
         mkdir -p "$S/usr/bin"
         cp busybox "$S/usr/bin/busybox"
+        # --install, WHICH THE SYSROOT IS USELESS WITHOUT.
+        #
+        # Copying the binary gives the sysroot ONE file called busybox. Every
+        # other name -- sh, cat, mount, mkdir -- is a symlink to it, and
+        # nothing creates those symlinks except this.
+        #
+        # Rungs 16 and 17 run configure scripts INSIDE the sysroot, and a
+        # configure script is a shell script: without /usr/bin/sh there is
+        # nothing to run it with. stage4-complete does this immediately after
+        # the copy and asserts the count; we copied and did not.
+        #
+        # It must run with the sysroot as /, because --install writes symlinks
+        # relative to the running binary's idea of the filesystem. Here that
+        # means invoking it through the cross-built binary directly with a
+        # target directory, which busybox supports.
+        ( cd "$S/usr/bin" && ./busybox --install -s . 2>/dev/null ) || \
+          ( cd "$S/usr/bin" && for _a in $(./busybox --list 2>/dev/null); do
+              [ "$_a" = busybox ] || ln -sf busybox "$_a"
+            done )
+        _n=$(ls "$S/usr/bin" | wc -l)
+        say "    applets linked into the sysroot: $_n"
+        if [ "$_n" -lt 100 ]; then
+          say "    TOO FEW -- the sysroot has no shell, and rungs 16 and 17"
+          say "    run configure scripts inside it. Not continuing."
+          R15=FAIL
+        fi
+        # THE ONE THAT MATTERS MOST, NAMED. Everything above this rung uses
+        # the box's /bin; everything below uses the sysroot's.
+        [ -e "$S/usr/bin/sh" ] || say "    NO /usr/bin/sh IN THE SYSROOT"
         R15=ok
         say "    busybox: $(wc -c < busybox) bytes"
         say "    applets: $(./busybox --list 2>/dev/null | wc -l)"
@@ -4065,6 +4094,39 @@ head1 "RUNG 16 -- LFS 6.x: binutils pass 2 and gcc pass 2"
 # --without-headers stub in place.
 if [ "$R15" = ok ]; then
   rm -rf /work/b-binutils2 && mkdir -p /work/b-binutils2 && cd /work/b-binutils2
+  # make INTO THE SYSROOT FIRST, BECAUSE EVERYTHING BELOW NEEDS ONE.
+  #
+  # stage4-complete builds make 4.4.1 in chapter 6 and we did not. Rung 4.5's
+  # make lives in $PFX and runs in the BOX; the sysroot has no make at all, and
+  # rungs 17 and 18 run `make` inside it -- the kernel build is nothing but
+  # make. busybox has no make applet and never has.
+  #
+  # Cross-built like everything else here: --host=$LFS_TGT so it runs in the
+  # sysroot, --build from config.guess so configure knows it is cross.
+  if [ "$R16" != FAIL ]; then
+    cd /work/src
+    if ! untar "/in/make-$MAKE_ALT"; then
+      say "    make did not extract"; R16=FAIL
+    else
+      _mk=$(onedir "make-$MAKE_ALT ./make-$MAKE_ALT")
+      rm -rf /work/b-make2 && mkdir -p /work/b-make2 && cd /work/b-make2
+      if "/work/src/$_mk/configure" --prefix=/usr \
+           --host="$LFS_TGT" \
+           --build="$("/work/src/$_mk/build-aux/config.guess")" \
+           --disable-nls > c.log 2>&1 \
+         && timeout 1800 make -j"$NP" > b.log 2>&1 \
+         && make DESTDIR="$S" install > i.log 2>&1; then
+        say "    make $MAKE_ALT installed into $S"
+      else
+        say "    make pass 2 NOT INSTALLED"
+        tail -12 c.log 2>/dev/null | sed 's/^/      /'
+        tail -12 b.log 2>/dev/null | sed 's/^/      /'
+        R16=FAIL
+      fi
+      cd /work
+    fi
+  fi
+
   say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: binutils pass 2 configure"
   "/work/src/$_bu/configure" \
     --prefix=/usr \
@@ -4126,7 +4188,87 @@ if [ "$R15" = ok ]; then
 fi
 
 # ---------------------------------------------------------------------------
-head1 "RUNG 17 -- the kernel's own prerequisites: m4, bc, bison, flex"
+# ===========================================================================
+# EVERYTHING FROM HERE RUNS IN THE SYSROOT, NOT THE BOX.
+#
+# Rungs 0-16 build a toolchain in /work using the box's own tools. Rung 16
+# finishes LFS chapter 6 with binutils pass 2 and gcc pass 2 installed into
+# $S -- a compiler that RUNS in the sysroot and links against the glibc rung
+# 13 built.
+#
+# THAT COMPILER MUST BUILD THE KERNEL. An earlier version of these rungs
+# cross-compiled it from /work with $LFS_TGT-gcc, which is rung 11's gcc 15
+# PASS 1 -- built --without-headers --with-newlib, before glibc existed. It
+# produces a working freestanding kernel, and it is the wrong claim: the point
+# is that this chain built a compiler capable of building Linux, not that an
+# intermediate cross compiler three rungs from the end could.
+#
+# stage4-complete gets this right and we did not. Its box15.sh binds the
+# sysroot as / with PATH=/usr/bin:/usr/sbin and runs `make ARCH=arm64` with no
+# CROSS_COMPILE at all, which is LFS chapter 10.
+#
+# HOW WE DO IT WITHOUT A NESTED SANDBOX. rungs.sh already runs inside bwrap,
+# so there is no second bwrap to nest. `in_sysroot` below runs a command with
+# the sysroot's PATH and its compiler ahead of everything else -- which is what
+# actually matters here, because the difference is WHICH gcc and WHICH libc,
+# not filesystem isolation. The isolation is already provided by the outer box.
+#
+# WHAT THIS CHANGES DOWNSTREAM: the prerequisites in rung 17 are built INTO
+# the sysroot with the sysroot's gcc, glibc-linked, rather than into $PFX with
+# the box's musl-static chain-cc. That is why rung 15 must run
+# `busybox --install` -- without a /usr/bin/sh in the sysroot, none of these
+# configure scripts can run at all.
+in_sysroot() {
+    # $S/usr/bin first so the sysroot's gcc, binutils and busybox win; the
+    # box's $PFX stays reachable behind them for anything genuinely absent.
+    PATH="$S/usr/bin:$S/usr/sbin:$PFX/bin:/bin" \
+    CC="$S/usr/bin/gcc" \
+    "$@"
+}
+
+head1 "RUNG 17 -- the kernel's own prerequisites, built IN the sysroot"
+# THE SYSROOT MUST BE USABLE BEFORE ANY OF THIS RUNS.
+#
+# in_sysroot puts $S/usr/bin first on PATH and expects to find a compiler, a
+# shell and the coreutils busybox provides there. All three come from earlier
+# rungs -- gcc pass 2 from 16, sh and friends from 15's `busybox --install` --
+# and if any is missing every configure below fails in a way that names the
+# package rather than the cause.
+if [ "$R16" = ok ]; then
+  say "    --- is the sysroot usable? ---"
+  _sr_ok=yes
+  for _need in gcc sh make ld; do
+    if [ -x "$S/usr/bin/$_need" ] || [ -L "$S/usr/bin/$_need" ]; then
+      printf '      %-6s yes\n' "$_need"
+    else
+      printf '      %-6s MISSING from %s/usr/bin\n' "$_need" "$S"
+      _sr_ok=no
+    fi
+  done
+  if [ "$_sr_ok" != yes ]; then
+    say "    The sysroot cannot run a configure script. gcc comes from rung 16,"
+    say "    sh from rung 15's busybox --install, make from rung 16."
+    R17=FAIL
+  else
+    say "    gcc in the sysroot: $(in_sysroot gcc --version 2>&1 | head -1)"
+  fi
+fi
+# OPENSSL IS ON THIS LIST BECAUSE THE KERNEL ASKS FOR IT BY NAME.
+#
+# stage4-complete builds it here and asserts the header afterwards:
+#
+#     [ -f /usr/include/openssl/bio.h ] || {
+#       echo "  openssl/bio.h did not install -- this is the header the
+#             kernel asked for by name"; exit 1; }
+#
+# It is needed by scripts/sign-file.c, which the kernel builds for module
+# signing whenever CONFIG_MODULE_SIG is on -- and arm64 defconfig turns it on.
+# Without it the build stops partway through with a missing openssl/bio.h,
+# which reads as a kernel problem and is not one.
+#
+# INSTALL_LIBS IS EDITED OUT, as stage 4 does: `make install_sw` otherwise
+# tries to install libcrypto.a and libssl.a, and the shared build produced
+# neither.
 # THE TOOLCHAIN IS NOT ENOUGH TO BUILD A KERNEL, in stage 4's words: kconfig is
 # generated by flex and bison, and m4 comes first because both need it.
 #
@@ -4137,24 +4279,86 @@ head1 "RUNG 17 -- the kernel's own prerequisites: m4, bc, bison, flex"
 # is built to avoid". So it is declared and built.
 #
 # perl came at rung 11.5 because glibc wanted it too.
-if [ "$R16" = ok ]; then
+if [ "$R16" = ok ] && [ "${R17:-}" != FAIL ]; then
   r17=ok
+  # THREE OF THESE FOUR ARE ALREADY BUILT.
+  #
+  # Rung 11.7 installs gawk, m4, flex, bison and python into $PFX because
+  # glibc's configure names them. This rung was written before that one
+  # existed and still lists m4, bison and flex -- so only bc is genuinely new
+  # here, and rebuilding the other three costs several minutes to produce
+  # identical binaries.
+  #
+  # Skipped rather than deleted: if rung 11.7 ever stops building one of them,
+  # this rung still covers it, and the log says which path was taken.
   for pk in m4 bc bison flex; do
     [ "$r17" = ok ] || break
+    # NOT SKIPPED ANY MORE. Rung 11.7 built m4, flex and bison into $PFX with
+    # the box's musl-static compiler, for glibc's benefit. These are different
+    # binaries for a different place: /usr in the SYSROOT, glibc-linked, built
+    # by gcc pass 2, because the kernel build below runs there.
+    if [ -x "$S/usr/bin/$pk" ]; then
+      say "    $pk: already in the sysroot"
+      continue
+    fi
     cd /work/src
     rm -rf "/work/src/$pk-k" && mkdir -p "/work/src/$pk-k"
     ( cd "/work/src/$pk-k" && untar "/in/$pk-" ) || { r17=FAIL; say "    $pk did not extract"; break; }
     _kd=$(cd "/work/src/$pk-k" && onedir "$pk-* ./$pk-*")
     ( cd "/work/src/$pk-k/$_kd" \
-      && ./configure --prefix="$PFX" CC="$CHAIN_CC -static" \
-           LDFLAGS="-static -Wl,--no-eh-frame-hdr" > cfg.log 2>&1 \
-      && timeout 1800 make -j"$NP" MAKEINFO=true > b.log 2>&1 \
-      && make install MAKEINFO=true > /dev/null 2>&1 ) \
+      && in_sysroot ./configure --prefix=/usr > cfg.log 2>&1 \
+      && in_sysroot make -j"$NP" MAKEINFO=true > b.log 2>&1 \
+      && in_sysroot make DESTDIR="$S" install MAKEINFO=true > /dev/null 2>&1 ) \
       || { r17=FAIL
            say "    $pk NOT INSTALLED"
            tail -15 "/work/src/$pk-k/$_kd/b.log" 2>/dev/null | sed 's/^/      /'; }
-    [ "$r17" = ok ] && say "    $pk: $( [ -x "$PFX/bin/$pk" ] && echo installed || echo 'built, no binary' )"
+    [ "$r17" = ok ] && say "    $pk: $( [ -x "$S/usr/bin/$pk" ] && echo 'installed into the sysroot' || echo 'built, no binary' )"
   done
+  # OPENSSL, WHICH THE KERNEL ASKS FOR BY NAME.
+  #
+  # arm64 defconfig turns CONFIG_MODULE_SIG on, and the kernel then builds
+  # scripts/sign-file.c, which includes <openssl/bio.h>. Without it the build
+  # stops partway through with a missing header that reads as a kernel problem.
+  # stage4-complete builds openssl here for exactly this and asserts the header
+  # afterwards; we had no openssl at all.
+  #
+  # BUILT INTO THE SYSROOT, because the kernel build runs there and its
+  # HOSTCC is the sysroot's gcc. An openssl in $PFX would be musl-linked and
+  # invisible to it.
+  #
+  # install_sw, NOT install: the full target builds documentation, which wants
+  # perl modules we do not have. And INSTALL_LIBS is edited out because a
+  # shared build produces no libcrypto.a for it to install -- stage 4's sed,
+  # for stage 4's reason.
+  if [ "$r17" = ok ]; then
+    cd /work/src
+    rm -rf /work/src/ossl && mkdir -p /work/src/ossl
+    if ! ( cd /work/src/ossl && untar "/in/openssl-" ); then
+      say "    openssl did not extract -- is it in the fetch list?"
+      r17=FAIL
+    else
+      _od=$(cd /work/src/ossl && onedir "openssl-* ./openssl-*")
+      ( cd "/work/src/ossl/$_od" \
+        && in_sysroot ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib \
+             shared no-tests > c.log 2>&1 \
+        && in_sysroot make -j"$NP" > b.log 2>&1 \
+        && sed -i "/INSTALL_LIBS/s/libcrypto.a libssl.a//" Makefile \
+        && in_sysroot make DESTDIR="$S" install_sw > i.log 2>&1 ) \
+        || { r17=FAIL; say "    openssl NOT INSTALLED"
+             tail -12 "/work/src/ossl/$_od/c.log" 2>/dev/null | sed 's/^/      /'
+             tail -12 "/work/src/ossl/$_od/b.log" 2>/dev/null | sed 's/^/      /'; }
+      # ASSERT THE HEADER, which is the whole reason this is here.
+      if [ -f "$S/usr/include/openssl/bio.h" ]; then
+        say "    openssl: installed into the sysroot"
+        say "      openssl/bio.h present -- scripts/sign-file.c can build"
+      else
+        say "      openssl/bio.h DID NOT INSTALL -- the kernel will stop on it"
+        r17=FAIL
+      fi
+    fi
+    cd /work
+  fi
+
   R17=$r17
   [ "$R17" = ok ] && say "    m4 $(m4 --version 2>&1 | head -1 | grep -o '[0-9.]*$')  bison $(bison --version 2>&1 | head -1 | grep -oE '[0-9.]+$')"
   cd /work
@@ -4186,7 +4390,7 @@ if [ "$R17" = ok ]; then
   _kx=$(cd /work/src/klinux && onedir "linux-$KERNEL ./linux-$KERNEL")
   if [ "$R18" != FAIL ] && [ -n "$_kx" ]; then
     cd "/work/src/klinux/$_kx"
-    make ARCH=arm64 CROSS_COMPILE="$LFS_TGT-" defconfig > /dev/null 2>&1
+    in_sysroot make ARCH=arm64 defconfig > /dev/null 2>&1
     set_cfg() {
       if [ "$2" = n ]; then
         sed -i "s/^CONFIG_$1=y/# CONFIG_$1 is not set/" .config
@@ -4201,7 +4405,7 @@ if [ "$R17" = ok ]; then
     set_cfg NET_9P y
     set_cfg NET_9P_VIRTIO y
     set_cfg 9P_FS y
-    make ARCH=arm64 CROSS_COMPILE="$LFS_TGT-" olddefconfig > /dev/null 2>&1
+    in_sysroot make ARCH=arm64 olddefconfig > /dev/null 2>&1
     _bad=0
     grep -q "^CONFIG_WERROR=y" .config && { say "    WERROR came back on after olddefconfig"; _bad=1; }
     grep -q "^CONFIG_DEVTMPFS=y" .config || { say "    DEVTMPFS did not take"; _bad=1; }
@@ -4211,7 +4415,10 @@ if [ "$R17" = ok ]; then
       R18=FAIL
     else
       say "    config ready: defconfig, WERROR off, devtmpfs automounted"
-      if timeout 7200 make ARCH=arm64 CROSS_COMPILE="$LFS_TGT-" -j"$NP" Image > b.log 2>&1 \
+      # WHICH COMPILER IS ABOUT TO BUILD THE KERNEL, ON THE RECORD.
+      say "    building with: $(in_sysroot gcc --version 2>&1 | head -1)"
+      say "    from:          $(in_sysroot command -v gcc)"
+      if timeout 7200 in_sysroot make ARCH=arm64 -j"$NP" Image > b.log 2>&1 \
          && [ -f arch/arm64/boot/Image ]; then
         cp arch/arm64/boot/Image /work/Image
         R18=ok
