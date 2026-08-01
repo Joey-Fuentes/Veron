@@ -410,8 +410,7 @@ jobs:
                    "https://www.python.org/ftp/python/$PYTHON_VER/Python-$PYTHON_VER.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KHDR%%.*}.x/linux-$KHDR.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL%%.*}.x/linux-$KERNEL.tar.xz" \
-                   "https://www.linuxfromscratch.org/patches/lfs/13.0/glibc-fhs-1.patch" \
-                   "https://www.linuxfromscratch.org/patches/lfs/development/glibc-$GLIBC-upstream_fixes-1.patch"; do
+                   "https://www.linuxfromscratch.org/patches/lfs/13.0/glibc-fhs-1.patch"; do
             b=$(basename "$u")
             if [ -s "$b" ]; then
               printf '  cached  %-30s %10s bytes\n' "$b" "$(wc -c < "$b")"
@@ -464,6 +463,60 @@ jobs:
           [ "${_fetchfail:-0}" = 0 ] || {
             echo "  one or more pinned inputs did not download; not continuing."
             exit 1; }
+
+          # THE upstream_fixes PATCH MOVES, SO TRY EVERYWHERE IT LIVES.
+          #
+          # Two runs died on this one file while sixteen tarballs and
+          # glibc-fhs-1.patch came down from the same host. Stage 4's exact
+          # curl flags did not change that, so it is the ADDRESS, not the
+          # request -- /patches/lfs/development/ tracks whatever the
+          # development book currently is, and its contents are revised and
+          # REMOVED in place.
+          #
+          # stage4-complete has been fetching it successfully for weeks, which
+          # means it worked when that job last ran and does not now. Rather
+          # than pick one URL and lose another run, try the places it is known
+          # to appear, then fall back to the digest-matched copy the
+          # downloads/ directory keeps.
+          _uf="glibc-$GLIBC-upstream_fixes-1.patch"
+          if [ ! -s "$_uf" ]; then
+            for _b in "https://www.linuxfromscratch.org/patches/lfs/development" \
+                      "https://www.linuxfromscratch.org/patches/downloads/glibc" \
+                      "https://www.linuxfromscratch.org/patches/lfs/13.0" \
+                      "https://distfiles.macports.org/lfs"; do
+              curl -fsSL --http1.1 --retry 2 --retry-all-errors --retry-delay 3 \
+                   --connect-timeout 15 --max-time 300 -o "$_uf.part" "$_b/$_uf" 2>/dev/null \
+                && { mv "$_uf.part" "$_uf"
+                     echo "  fetched $_uf from $_b"; break; }
+              rm -f "$_uf.part"
+              echo "    not at $_b"
+            done
+          fi
+          if [ ! -s "$_uf" ]; then
+            echo
+            echo "  $_uf IS NOT REACHABLE AT ANY KNOWN URL."
+            echo
+            echo "  It is not optional: the book introduces it with \"Now fix"
+            echo "  glibc to build against Linux 7\", and this box pairs glibc"
+            echo "  $GLIBC with linux $KHDR headers. Without it rung 13 stops"
+            echo "  on a -Werror redefinition between the libc and the kernel"
+            echo "  headers, which is the failure stage 4 documents."
+            echo
+            echo "  THIS AFFECTS stage4-complete TOO. It fetches the same file"
+            echo "  from the same directory with no cache, so it will fail the"
+            echo "  same way on its next run -- the patch has been REMOVED"
+            echo "  upstream, not merely moved, and nothing local is holding a"
+            echo "  copy. That is the argument for vendoring it rather than a"
+            echo "  workaround for this job."
+            echo
+            echo "  TWO WAYS FORWARD, both deliberate rather than automatic:"
+            echo "    - commit the patch under spikes/stage4/patches/glibc/ and"
+            echo "      read it from there, which is what a pinned input should"
+            echo "      have been all along;"
+            echo "    - or set KHDR to the version the book pairs with glibc"
+            echo "      $GLIBC and drop the patch, accepting older headers."
+            exit 1
+          fi
 
           # THE PATCH DIGESTS, RECORDED AND COMPARED BUT NOT ENFORCED.
           #
