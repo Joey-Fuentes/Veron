@@ -513,6 +513,18 @@ if [ "$B5" = ok ]; then
     _bad=0
     grep -q "^CONFIG_WERROR=y" .config && { say "    WERROR came back after olddefconfig"; _bad=1; }
     grep -q "^CONFIG_DEVTMPFS_MOUNT=y" .config || { say "    DEVTMPFS_MOUNT did not take"; _bad=1; }
+    # EACH 9p SYMBOL BY NAME. stage4-complete does this, and the reason is that
+    # "9p unavailable" in the guest is the same message whether the kernel
+    # lacks the protocol, the transport or the filesystem -- three different
+    # fixes behind one string. NOT fatal: the in-guest compiler test is a
+    # bonus and a kernel that boots is a good result without it.
+    for _sym in NET_9P NET_9P_VIRTIO 9P_FS; do
+      if grep -q "^CONFIG_$_sym=y" .config; then
+        printf '    9p: CONFIG_%-14s on\n' "$_sym"
+      else
+        printf '    9p: CONFIG_%-14s NOT SET -- in-guest gcc test will be skipped\n' "$_sym"
+      fi
+    done
     if [ "$_bad" != 0 ]; then
       grep -E "^(# )?CONFIG_(WERROR|DEVTMPFS)" .config | sed 's/^/      /'; B6=FAIL
     else
@@ -536,8 +548,90 @@ head1 "RUNG B7 -- initramfs"
 # The busybox from B5 plus an init script. cpio newc, gzipped, which is what
 # the kernel unpacks.
 if [ "$B6" = ok ]; then
-  rm -rf "$W/ir" && mkdir -p "$W/ir/bin" "$W/ir/dev" "$W/ir/proc" "$W/ir/sys" "$W/ir/sysroot"
+  rm -rf "$W/ir" && mkdir -p "$W/ir/bin" "$W/ir/dev" "$W/ir/proc" "$W/ir/sys" \
+                             "$W/ir/mnt/sysroot" "$W/ir/tmp" "$W/ir/tests"
   cp /usr/bin/busybox "$W/ir/bin/busybox"
+
+  # BINARIES FOR THE GUEST TO RUN, COMPILED BY THE FINAL COMPILER.
+  #
+  # "Reaching userspace is not the same as being a good build" is
+  # stage4-complete's phrasing, and its boot step fails the job when these
+  # fail. A kernel that reaches a shell proves the kernel; it proves nothing
+  # about the compiler that built the userland beside it. These do, and
+  # without them a miscompiling gcc produces a green run.
+  #
+  # STATIC, NECESSARILY: the initramfs has no loader and no libc, so anything
+  # dynamic cannot run there at all. That also makes this an exercise of the
+  # final gcc's static link path, libstdc++.a and libm.a included.
+  #
+  # Each exits 0 on success, so init counts instead of parsing.
+  _tsrc=$W/tsrc; rm -rf "$_tsrc"; mkdir -p "$_tsrc"
+  cat > "$_tsrc/t_printf.c" <<'EOF'
+#include <stdio.h>
+int main(void){ char b[64]; snprintf(b,sizeof b,"%d-%s-%.2f",7,"x",1.5);
+  return !(b[0]=='7' && b[2]=='x'); }
+EOF
+  cat > "$_tsrc/t_malloc.c" <<'EOF'
+#include <stdlib.h>
+#include <string.h>
+int main(void){ char *p=malloc(1<<20); if(!p) return 1; memset(p,0xA5,1<<20);
+  int bad=(unsigned char)p[(1<<20)-1]!=0xA5; free(p); return bad; }
+EOF
+  cat > "$_tsrc/t_string.c" <<'EOF'
+#include <string.h>
+int main(void){ char b[32]="veron"; strcat(b,"-ok");
+  return !(strcmp(b,"veron-ok")==0 && strlen(b)==8 && strstr(b,"-ok")!=0); }
+EOF
+  cat > "$_tsrc/t_math.c" <<'EOF'
+#include <math.h>
+int main(void){ double r=sqrt(2.0);
+  return !(r>1.41421 && r<1.41422 && fabs(pow(2.0,10.0)-1024.0)<1e-9); }
+EOF
+  cat > "$_tsrc/t_file.c" <<'EOF'
+#include <stdio.h>
+#include <string.h>
+int main(void){ char b[16]={0}; FILE*f=fopen("/tmp/t","w"); if(!f) return 1;
+  fputs("veron",f); fclose(f); f=fopen("/tmp/t","r"); if(!f) return 2;
+  if(!fgets(b,sizeof b,f)) return 3; fclose(f); return strcmp(b,"veron")!=0; }
+EOF
+  cat > "$_tsrc/t_fork.c" <<'EOF'
+#include <sys/wait.h>
+#include <unistd.h>
+int main(void){ pid_t p=fork(); if(p<0) return 1; if(p==0) _exit(7);
+  int st=0; if(waitpid(p,&st,0)<0) return 2;
+  return !(WIFEXITED(st) && WEXITSTATUS(st)==7); }
+EOF
+  cat > "$_tsrc/t_time.c" <<'EOF'
+#include <time.h>
+int main(void){ struct timespec ts;
+  if(clock_gettime(CLOCK_MONOTONIC,&ts)) return 1; return !(time(0)>0); }
+EOF
+  cat > "$_tsrc/t_cxx.cc" <<'EOF'
+#include <string>
+#include <vector>
+#include <stdexcept>
+int main(){ std::vector<std::string> v{"a","b"}; v.push_back("c");
+  int caught=0;
+  try { throw std::runtime_error("x"); } catch (const std::exception&) { caught=1; }
+  return !(v.size()==3 && v[2]=="c" && caught); }
+EOF
+  _tn=0
+  for _t in "$_tsrc"/t_*.c; do
+    _tb=$(basename "$_t" .c)
+    if gcc -static -O2 "$_t" -o "$W/ir/tests/$_tb" -lm 2>/dev/null; then
+      _tn=$((_tn+1))
+    else
+      say "    could not build $_tb -- the guest will run one test fewer"
+    fi
+  done
+  # C++ SEPARATELY, because a failure here is a different fact: it says
+  # libstdc++.a or the static exception tables are wrong, not that C is.
+  if g++ -static -O2 "$_tsrc/t_cxx.cc" -o "$W/ir/tests/t_cxx" 2>/dev/null; then
+    _tn=$((_tn+1))
+  else
+    say "    could not build t_cxx -- static libstdc++ or EH tables are missing"
+  fi
+  say "    guest test binaries: $_tn, static, by gcc $(gcc -dumpversion)"
   ( cd "$W/ir" && ./bin/busybox --list > /tmp/applets.txt 2>/dev/null
     while read -r a; do ln -sf busybox "bin/$a" 2>/dev/null; done < /tmp/applets.txt )
   if ( cd "$W/ir" && mknod dev/console c 5 1 2>/dev/null ); then
@@ -545,26 +639,61 @@ if [ "$B6" = ok ]; then
   else
     say "    no mknod here -- /dev/console comes from CONFIG_DEVTMPFS_MOUNT"
   fi
-  cat > "$W/ir/init" <<'INIT'
+cat > "$W/ir/init" <<'INIT'
 #!/bin/sh
-mount -t proc  none /proc  2>/dev/null
-mount -t sysfs none /sys   2>/dev/null
+mount -t proc  none /proc 2>/dev/null
+mount -t sysfs none /sys  2>/dev/null
+mount -t tmpfs none /tmp  2>/dev/null
 echo
 echo "================================================"
 echo "  VERON-BRIDGE: the guest, reporting on itself"
 echo "================================================"
-echo "  uname: $(uname -a)"
-echo "  init : busybox $(busybox 2>&1 | head -1 | cut -c1-40)"
-if mount -t 9p -o trans=virtio,version=9p2000.L veronsysroot /sysroot 2>/dev/null; then
-  echo "  9p   : sysroot mounted"
-  if [ -x /sysroot/usr/bin/gcc ]; then
-    echo "  === VERON-GCC-IN-GUEST ==="
-    chroot /sysroot /usr/bin/gcc --version 2>&1 | head -1
+echo "VERON-BOOT-OK $(uname -srm)"
+# /proc/version CARRIES BOTH TOOLCHAIN VERSIONS -- the gcc and the GNU ld that
+# built this kernel. That is the single most useful line in the whole boot,
+# because it is the kernel itself saying which compiler produced it.
+echo "VERON-COMPILER $(cat /proc/version)"
+
+echo "=== VERON-TESTS: binaries this chain compiled, run under this kernel ==="
+tp=0; tf=0
+for t in /tests/*; do
+  [ -x "$t" ] || continue
+  if "$t"; then
+    echo "   $(basename "$t") PASS"; tp=$((tp+1))
+  else
+    echo "   $(basename "$t") FAIL rc=$?"; tf=$((tf+1))
+  fi
+done
+echo "VERON-TESTS pass=$tp fail=$tf"
+
+echo "=== VERON-GCC-IN-GUEST: the compiler, inside the kernel it built ==="
+# OPTIONAL AND NON-FATAL. qemu offers the sysroot over 9p; if the share is
+# absent, or 9p is not in this kernel, this is skipped and the boot still
+# counts. The share is READ-ONLY, so the compile cannot write into it --
+# a tmpfs is bound over the chroot's /tmp for the output.
+if mount -t 9p -o trans=virtio,version=9p2000.L,ro,msize=262144 \
+         veronsysroot /mnt/sysroot 2>/dev/null; then
+  echo "   9p sysroot mounted read-only"
+  if [ -x /mnt/sysroot/usr/bin/gcc ]; then
+    mkdir -p /tmp/out
+    mount --bind /tmp/out /mnt/sysroot/tmp 2>/dev/null
+    printf 'int main(void){return 42;}\n' > /tmp/out/g.c
+    if chroot /mnt/sysroot /usr/bin/gcc /tmp/g.c -o /tmp/g 2>/tmp/out/g.err; then
+      chroot /mnt/sysroot /tmp/g
+      echo "VERON-GCC-IN-GUEST ok compiled and ran, rc=$? (expect 42)"
+    else
+      echo "VERON-GCC-IN-GUEST compile failed: $(head -1 /tmp/out/g.err)"
+    fi
+  else
+    echo "VERON-GCC-IN-GUEST skipped: no gcc in the shared sysroot"
   fi
 else
-  echo "  9p   : not available (not a gate)"
+  echo "VERON-GCC-IN-GUEST skipped: no 9p share offered or 9p not in the kernel"
 fi
-echo "  VERON-BOOT-OK"
+
+# THE LAST LINE, AND THE BOOT STEP GATES ON IT. Without it there is no way to
+# tell a guest that finished from one that died silently after the tests.
+echo "VERON-DONE"
 echo
 poweroff -f 2>/dev/null || { sync; echo o > /proc/sysrq-trigger; }
 INIT
