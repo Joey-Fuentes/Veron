@@ -3359,6 +3359,52 @@ COMMC
 fi
 
 # ---------------------------------------------------------------------------
+head1 "RUNG 12 -- LFS 5.4: linux API headers"
+# THIS RUNS BEFORE 11.7 NOW, AND m4 IS WHY.
+#
+#     stackvma.c:327: fatal error: linux/fs.h: No such file or directory
+#
+# m4's bundled gnulib includes <linux/fs.h> to use PROCMAP_QUERY. Those are
+# the API headers this rung installs, so m4 was being built one rung too
+# early. The numbering is left alone -- 11.7 still reads as "the packages
+# glibc demands" and 12 as "LFS 5.4" -- because renumbering would break every
+# reference to them in the logs and the README for no gain.
+#
+# LFS DOES NOT HIT THIS: chapter 5.4 comes before anything in chapter 6 that
+# could want kernel headers, and its m4 is chapter 6. Ours moved earlier
+# because glibc's configure names it, so it landed on the wrong side of 5.4.
+# TWO KERNELS, AND THEY ARE NOT THE SAME ONE. KHDR supplies the API headers
+# glibc is compiled against; KERNEL is the image that boots. A kernel may
+# always be newer than the headers its libc was built against, and stage 4
+# keeps them separate precisely so a libc/kernel disagreement can be fixed by
+# changing one number rather than rebuilding both.
+if [ "$R115" = ok ]; then
+  cd /work/src
+  if ! untar "/in/linux-$KHDR"; then
+    say "    linux $KHDR did not extract"; R12=FAIL
+  else
+    _lx=$(onedir "linux-$KHDR ./linux-$KHDR")
+    ( cd "/work/src/$_lx"
+      make mrproper > /dev/null 2>&1
+      make headers > /dev/null 2>&1
+      # Everything that is not a header is build residue; LFS deletes it
+      # rather than copy it into the sysroot.
+      find usr/include -type f ! -name '*.h' -delete
+      mkdir -p "$S/usr"
+      cp -r usr/include "$S/usr" )
+    _nh=$(find "$S/usr/include" -name '*.h' 2>/dev/null | wc -l)
+    say "    API headers from linux $KHDR (the image will be linux $KERNEL)"
+    say "    headers: $_nh files"
+    # The macro stage 4 records here, for the same reason: it makes the next
+    # libc/kernel disagreement a one-line diff rather than a rebuild.
+    grep -rn "define OPEN_TREE_CLONE" "$S/usr/include/linux/mount.h" 2>/dev/null \
+      | sed 's/^/      /' || true
+    [ "$_nh" -gt 100 ] && R12=ok || { say "    too few headers -- make headers did not run"; R12=FAIL; }
+  fi
+  cd /work
+fi
+
+# ---------------------------------------------------------------------------
 head1 "RUNG 11.7 -- m4, flex, bison, python: what glibc's configure demands"
 # MEASURED, NOT INFERRED. glibc 2.43's own configure, run by tool-probe in a
 # box with a controlled PATH:
@@ -3387,7 +3433,7 @@ head1 "RUNG 11.7 -- m4, flex, bison, python: what glibc's configure demands"
 # and openssl for modules that matter later, and this box has none of them.
 # It will configure without them and quietly build less; the check afterwards
 # names which modules are missing rather than letting that pass as success.
-if [ "$R115" = ok ]; then
+if [ "$R12" = ok ]; then
   r117=ok
   for pk in m4 flex bison; do
     [ "$r117" = ok ] || break
@@ -3450,39 +3496,6 @@ for m in ("zlib","ssl","ctypes","readline","sqlite3","bz2","lzma"):
 fi
 
 # ---------------------------------------------------------------------------
-head1 "RUNG 12 -- LFS 5.4: linux API headers"
-# TWO KERNELS, AND THEY ARE NOT THE SAME ONE. KHDR supplies the API headers
-# glibc is compiled against; KERNEL is the image that boots. A kernel may
-# always be newer than the headers its libc was built against, and stage 4
-# keeps them separate precisely so a libc/kernel disagreement can be fixed by
-# changing one number rather than rebuilding both.
-if [ "$R117" = ok ]; then
-  cd /work/src
-  if ! untar "/in/linux-$KHDR"; then
-    say "    linux $KHDR did not extract"; R12=FAIL
-  else
-    _lx=$(onedir "linux-$KHDR ./linux-$KHDR")
-    ( cd "/work/src/$_lx"
-      make mrproper > /dev/null 2>&1
-      make headers > /dev/null 2>&1
-      # Everything that is not a header is build residue; LFS deletes it
-      # rather than copy it into the sysroot.
-      find usr/include -type f ! -name '*.h' -delete
-      mkdir -p "$S/usr"
-      cp -r usr/include "$S/usr" )
-    _nh=$(find "$S/usr/include" -name '*.h' 2>/dev/null | wc -l)
-    say "    API headers from linux $KHDR (the image will be linux $KERNEL)"
-    say "    headers: $_nh files"
-    # The macro stage 4 records here, for the same reason: it makes the next
-    # libc/kernel disagreement a one-line diff rather than a rebuild.
-    grep -rn "define OPEN_TREE_CLONE" "$S/usr/include/linux/mount.h" 2>/dev/null \
-      | sed 's/^/      /' || true
-    [ "$_nh" -gt 100 ] && R12=ok || { say "    too few headers -- make headers did not run"; R12=FAIL; }
-  fi
-  cd /work
-fi
-
-# ---------------------------------------------------------------------------
 head1 "RUNG 13 -- LFS 5.5: glibc, cross-compiled into the sysroot"
 # THIS IS THE RUNG THAT DECIDES WHETHER python COMES EARLIER THAN THE BOOK PUTS
 # IT.
@@ -3498,7 +3511,7 @@ head1 "RUNG 13 -- LFS 5.5: glibc, cross-compiled into the sysroot"
 # does not, we follow the book's shape exactly.
 #
 # Either answer is one run. Nothing here should be guessed at.
-if [ "$R12" = ok ]; then
+if [ "$R117" = ok ]; then
   cd /work/src
   if ! untar "/in/glibc-$GLIBC"; then
     say "    glibc did not extract"; R13=FAIL
@@ -3939,8 +3952,8 @@ printf '    %-40s %s\n' "9   gcc 10.2.0 by g++ 4.7.4"            "$R9"
 printf '    %-40s %s\n' "10  LFS 5.2 binutils pass 1"            "$R10"
 printf '    %-40s %s\n' "11  LFS 5.3 gcc 15 pass 1"              "$R11"
 printf '    %-40s %s\n' "11.5 perl (LFS puts it in ch7)"          "$R115"
-printf '    %-40s %s\n' "11.7 m4 / flex / bison / python"         "$R117"
 printf '    %-40s %s\n' "12  LFS 5.4 linux API headers"          "$R12"
+printf '    %-40s %s\n' "11.7 m4/flex/bison/python (after 12)"   "$R117"
 printf '    %-40s %s\n' "13  LFS 5.5 glibc"                      "$R13"
 printf '    %-40s %s\n' "14  LFS 5.6 libstdc++"                  "$R14"
 printf '    %-40s %s\n' "15  ch6 busybox (for 17 packages)"      "$R15"
