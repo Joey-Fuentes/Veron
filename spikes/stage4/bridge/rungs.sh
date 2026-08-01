@@ -3605,6 +3605,34 @@ if [ "$R12" = ok ]; then
         # So: configure first, then take the module lines configure generated
         # and re-declare every one of them static.
         :
+        # MODULE_BUILDTYPE=static IS THE SUPPORTED SWITCH, AND IT IS ONE WORD.
+        #
+        # Read out of CPython's configure.ac:
+        #
+        #     MODULE_BUILDTYPE=${MODULE_BUILDTYPE:-shared}     (line 8311)
+        #
+        #     if WASI or MODULE_BUILDTYPE = static:
+        #         LIBHACL_LDEPS_LIBTYPE=STATIC     -> an .a archive
+        #     else
+        #         LIBHACL_LDEPS_LIBTYPE=SHARED     -> raw .o files  (line 8568)
+        #
+        # It reads the ENVIRONMENT, generates Modules/Setup.stdlib with every
+        # module already under *static*, AND switches the HACL* crypto sources
+        # to link as archives rather than loose objects.
+        #
+        # THAT SECOND PART IS WHY HAND-EDITING Setup.local FAILED. Rewriting
+        # *shared* to *static* moved the modules but left LIBHACL_*_LDFLAGS
+        # pointing at the raw objects configure had already chosen, so each
+        # one arrived on the link line twice:
+        #
+        #     Modules/_hacl/Hacl_Hash_Blake2b.o: multiple definition of
+        #     '_Py_LibHacl_Hacl_Hash_Blake2b_hash_with_key'
+        #
+        # My diagnosis then was "static _hacl modules cannot work", and that
+        # was wrong -- a normal Ubuntu python has _blake2, _sha3, _md5, _sha1
+        # and _sha2 all built in. The modules were never the problem; editing
+        # one half of a two-part configure decision was.
+        MODULE_BUILDTYPE=static \
         ax_cv_c_float_words_bigendian=no \
         ./configure --prefix="$PFX" --without-ensurepip --disable-test-modules \
           --disable-shared \
@@ -3619,83 +3647,18 @@ if [ "$R12" = ok ]; then
         # extension module with its sources. Copying those lines under a
         # *static* marker is CPython's own documented way to link them into
         # the interpreter instead of emitting .so files.
-        # HOW A MODULE BECOMES BUILT-IN, PROPERLY.
-        #
-        # CPython 3.12+ generates Modules/Setup.stdlib at configure time. It is
-        # a sectioned file:
-        #
-        #     *static*      modules linked into the interpreter
-        #     *shared*      modules built as .so and dlopen'd
-        #     *disabled*    modules not built at all
-        #
-        # and each section lists "name source.c" lines. makesetup reads
-        # Setup.local FIRST and the first definition of a module wins, so
-        # copying the file with *shared* rewritten to *static* moves every
-        # dlopen'd module into the interpreter and leaves the rest alone.
-        #
-        # THE *disabled* SECTION MUST SURVIVE. An earlier version of this
-        # stripped every line beginning with '*', which would have swept
-        # zlib, ssl and readline -- disabled because this box has no such
-        # libraries -- into the static section, where they would fail to link.
-        # Rewriting one marker is the whole edit.
-        #
-        # NO config.status RERUN IS NEEDED. CPython's Makefile lists
-        # Modules/Setup.local as a prerequisite of the makesetup rule, and
-        # configure creates it empty, so writing it here makes it newer than
-        # the Makefile and makesetup re-runs on its own.
+        # (Setup.local is no longer written by hand -- MODULE_BUILDTYPE
+        # below does the whole job coherently. See the configure line.)
         if [ -f Modules/Setup.stdlib ]; then
-          # NOT EVERY MODULE. THE _hacl ONES MUST STAY SHARED.
-          #
-          # Forcing all 48 static built, then failed to link:
-          #
-          #     Modules/_hacl/Hacl_Hash_Blake2b.o: multiple definition of
-          #     '_Py_LibHacl_Hacl_Hash_Blake2b_hash_with_key'
-          #     first defined here
-          #
-          # _blake2, _sha3, _md5, _sha1, _sha2 and _hashlib share sources under
-          # Modules/_hacl, and CPython's Makefile already compiles and links
-          # those objects through its own LIBHACL_* variables. Listing the same
-          # .c files in Setup.local makes makesetup emit rules for them too, so
-          # each object arrives on the link line twice.
-          #
-          # WE DO NOT NEED THEM ANYWAY. glibc's scripts import subprocess,
-          # struct, collections, argparse, json, re, os and sys -- no hashing
-          # at all. Leaving the crypto modules shared costs nothing: they are
-          # built, they are simply not importable from a static interpreter,
-          # exactly like zlib and readline already are.
-          #
-          # THE RULE IS "STATIC UNLESS IT LIVES IN _hacl", which is one awk
-          # condition rather than a list of module names I would have to keep
-          # right.
-          awk '
-            /^\*shared\*/  { mode="shared"; print "*static*"; next }
-            /^\*static\*/  { mode="static"; print; next }
-            /^\*disabled\*/{ mode="disabled"; print; next }
-            /_hacl\// {
-                # RETURN TO THE SECTION WE WERE IN, not unconditionally to
-                # *static*. An _hacl line inside the *disabled* section would
-                # otherwise be followed by a *static* marker, silently
-                # enabling every disabled module after it -- zlib and readline
-                # among them, which have no library to link against.
-                print "*shared*"; print
-                if (mode == "disabled") print "*disabled*"
-                else                    print "*static*"
-                next
-            }
-            { print }
-          ' Modules/Setup.stdlib > Modules/Setup.local
-          echo "      Setup.local written: $(grep -cE '^[a-zA-Z_]' Modules/Setup.local) module lines"
-          echo "        static now : $(awk '/^\*static\*/{m=1;next} /^\*/{m=0} m&&/^[a-zA-Z_]/{n++} END{print n+0}' Modules/Setup.local)"
-          echo "        still off  : $(awk '/^\*disabled\*/{m=1;next} /^\*/{m=0} m&&/^[a-zA-Z_]/{printf "%s ",$1}' Modules/Setup.local)"
-          echo "        left shared: $(awk '/^\*shared\*/{m=1;next} /^\*/{m=0} m&&/^[a-zA-Z_]/{printf "%s ",$1}' Modules/Setup.local)"
+          echo "      Setup.stdlib sections, as configure generated them:"
+          for _sec in static shared disabled; do
+            printf '        %-9s %s\n' "$_sec" \
+              "$(awk -v s="\\*$_sec\\*" '$0~s{m=1;next} /^\*/{m=0} m&&/^[a-zA-Z_]/{n++} END{print n+0}' Modules/Setup.stdlib) modules"
+          done
           # THE ONE THAT SENT US HERE. glibc's scripts/glibcextract.py imports
           # subprocess, which does `from _posixsubprocess import fork_exec`.
-          grep -q '^_posixsubprocess' Modules/Setup.local \
-            && echo "        _posixsubprocess: will be built in" \
-            || echo "        _posixsubprocess: NOT LISTED -- glibc will fail again"
-        else
-          echo "      no Modules/Setup.stdlib -- this CPython predates it;"
-          echo "      extension modules follow configure's own decisions."
+          printf '        _posixsubprocess is: %s\n' \
+            "$(awk '/^\*/{sec=$0} /^_posixsubprocess/{print sec; exit}' Modules/Setup.stdlib)"
         fi
         timeout 3600 make -j"$NP" > b.log 2>&1
         _m=$?; echo "      make rc=$_m"
