@@ -332,6 +332,95 @@ jobs:
             echo "    no tcc-built musl"
           fi
 
+      # THE ANSWER IS __trunctfdf2, AND THIS ISOLATES IT.
+      #
+      # The matrix came back:
+      #
+      #   program by tcc, libc by tcc:
+      #     raw bits           40140831 26e978d5   CORRECT
+      #     L*1000 as int      5008                CORRECT
+      #     L > 5.007L         1                   CORRECT
+      #     (double)L          8.000000            WRONG
+      #
+      # Everything that keeps the value in quad, or turns it into an integer,
+      # is right. The one operation that is wrong is QUAD TO DOUBLE -- which is
+      # `__trunctfdf2` in libtcc1.a.
+      #
+      # And that is exactly the path %f takes: musl's vfprintf reads a variadic
+      # double through pop_arg, and the long double machinery in fmt_fp
+      # converts down to double to print. So one broken conversion routine
+      # explains every symptom, including why the exponent survives -- the
+      # exponent field copies across correctly and the 112-bit mantissa is
+      # being truncated to 52 bits wrongly.
+      #
+      # THE OTHER TWO CELLS DID NOT LINK, and that is informative rather than a
+      # failure: gcc emits calls to __multf3/__fixtfsi/__gttf2/__trunctfdf2 and
+      # then cannot find them, because libgcc is not on the link line when
+      # -nostdlib is used with a musl sysroot. It confirms these routines are
+      # NOT in musl -- they are the compiler's to supply, and libtcc1.a is where
+      # tcc supplies them.
+      - name: 'THE ROUTINE: which soft-float conversion is wrong?'
+        run: |
+          set -u
+          set +e
+          # Each conversion tested on its own, with the result printed as
+          # INTEGER BITS rather than as a number -- so a broken printf cannot
+          # hide a broken conversion, which is the trap this whole
+          # investigation started in.
+          cat > /tmp/tf.c <<'TFC'
+          #include <stdio.h>
+          int main(void)
+          {
+              long double L = 5.008L;
+              double d;
+              float f;
+              union { double d; unsigned long long u; } db;
+              union { float f;  unsigned int u; }       fb;
+              union { long double L; unsigned long long u[2]; } lb;
+          
+              lb.L = L;
+              printf("  long double bits     %016llx %016llx\n", lb.u[1], lb.u[0]);
+          
+              d = (double)L;
+              db.d = d;
+              printf("  __trunctfdf2         %016llx\n", db.u);
+          
+              db.d = 5.008;
+              printf("  double literal       %016llx   <- must match the line above\n", db.u);
+          
+              f = (float)L;
+              fb.f = f;
+              printf("  __trunctfsf2         %08x\n", fb.u);
+              fb.f = 5.008f;
+              printf("  float literal        %08x           <- must match\n", fb.u);
+          
+              L = (long double)5.008;
+              lb.L = L;
+              printf("  __extenddftf2        %016llx %016llx\n", lb.u[1], lb.u[0]);
+          
+              printf("  (long)L              %ld\n", (long)L);
+              printf("  (long)(L*1000)       %ld\n", (long)(L*1000.0L));
+              return 0;
+          }
+          TFC
+          sed -i 's/^          //' /tmp/tf.c
+          sed -i 's/^          //' /tmp/tf.c
+          echo "  === host gcc: what these should be ==="
+          gcc -O0 -o /tmp/tf-gcc /tmp/tf.c && /tmp/tf-gcc
+          echo
+          echo "  === tcc, against musl built by tcc ==="
+          if [ -f /tmp/sys-tcc/lib/libc.a ]; then
+            ./tccsrc/tcc -B"$PWD/tccsrc" -static \
+              -I/tmp/sys-tcc/include -L/tmp/sys-tcc/lib \
+              -o /tmp/tf-tcc /tmp/tf.c 2>/tmp/tf.err && /tmp/tf-tcc \
+              || { echo "    would not build:"; head -5 /tmp/tf.err | sed 's/^/      /'; }
+          fi
+          echo
+          echo "  IF __trunctfdf2 IS THE ONLY WRONG LINE, the fix is one"
+          echo "  routine in tcc's lib/lib-arm64.c -- upstream code, not"
+          echo "  anything this repository patched. That is worth reporting"
+          echo "  upstream as well as working around."
+
       - name: Verdict
         if: always()
         run: |
