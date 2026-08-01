@@ -8,6 +8,20 @@ Aleksi Hannula, posted to `tinycc-devel` on **5 Feb 2026**, three patches:
 | `0002` | `asm`: pass `ASMOperand` to the `subst_asm_operand` backend hook |
 | `0003` | the assembler itself — `arm64-asm.c` +2579, new `arm64-tok.h` |
 
+Plus two of ours, added later and not part of the posted series:
+
+| | |
+|---|---|
+| `0006` | `tccgen`: convert long double constants when cross-compiling |
+| `0007` | `tccgen`: `gvtst_set` must not fold a register as a constant |
+
+**Both are real tcc bugs and both are upstream-reportable.** `0007` is the one
+that mattered: `if (some_long_double)` was always FALSE on arm64, which meant
+musl's `fmt_fp` never extracted a digit and `printf("%.6f", 5.008)` printed
+`8.000000`. Every explicit comparison was correct and only the implicit truth
+test failed, which is why it took five wrong theories to find. See
+`spikes/stage3/MICRO-C.md` for the full account.
+
 Author's own summary: *"Partial implementation, but enough to compile musl
 1.2.5."* That is exactly the claim `tcc-userland-arm64` is testing, so this is
 the patch that spike is written around.

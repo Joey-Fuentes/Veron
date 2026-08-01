@@ -169,10 +169,55 @@ Kept because each cost a round and the shape recurs.
   so on a first pass xgcc does not exist. An absent probe reads exactly like a
   passing one.
 
+* **A `sed` that matched nothing** -- `CONFIG_STATIC=y` was applied to
+  `# CONFIG_STATIC is not set`, `oldconfig` had already written something else,
+  and the rung reported `static: NO` for a busybox that was supposed to be
+  static. `sed` succeeds either way. So does `rm -f` on a path that does not
+  exist, which is how `src/complex/*.c` was "dropped" while every file stayed.
+* **A fix applied to one of two places** -- `CONFIG_TC` was disabled in the
+  airlock busybox and not the initramfs one; `-isystem` went to one of rung
+  11.7's two configure lines. Both look identical to a fix that worked, until
+  the untouched half runs.
+* **`onedir` globs the whole of `/work/src`** -- by rung 16 that holds a dozen
+  unpacked packages, so `onedir "make-4.4"` returned `busybox-1.36.1` and the
+  log said "extracting make" while naming busybox. Every rung that unpacks a
+  second copy now uses a private directory.
+* **A comment inside a line continuation** -- a `#` line after `\` is not a
+  comment; bwrap received the prose as arguments and printed its usage, with no
+  error message at all.
+
 The rule the job now follows: **a flag working on the runner says nothing about
 the box**, and every check reports what it measured rather than a verdict.
 
+And the rule that would have prevented most of the above: **read the line
+before changing it.** Nearly every entry here is a ten-second check -- `grep`
+for the variable, look at what `onedir` does, print the PATH -- skipped in
+favour of an assumption about what the code did.
+
 ---
+
+## Where the ladder stands
+
+```
+0-9    tcc -> musl -> make -> binutils -> gcc 4.7.4 x2 -> gcc 10   ok
+10     LFS 5.2 binutils pass 1                                     ok
+11     LFS 5.3 gcc 15 pass 1                                       ok
+11.5   perl                                                        ok
+12     LFS 5.4 linux 7.1.5 API headers                             ok
+11.7   gawk, m4, flex, bison, python  (glibc's prerequisites)      ok
+13     LFS 5.5 glibc 2.44                                          ok
+14     LFS 5.6 libstdc++                                           ok
+16     LFS 6.x make, binutils pass 2, gcc pass 2                   in progress
+15     busybox, BY gcc pass 2                                      never run in this order
+17     m4/bc/bison/flex/openssl, in the sysroot                    never run
+18     linux 7.1.5, natively in the sysroot                        never run
+19-20  initramfs, and the Image handed out                         never run
+```
+
+**Chapter 5 is complete** -- a cross toolchain and a glibc sysroot, both built
+from tcc. Rung 16 is the current wall: its three defects (a colliding make
+tree, a missing build-side C++14 compiler, and `onedir` picking the wrong
+directory) are fixed and unverified.
 
 ## Next
 
@@ -293,6 +338,93 @@ not run -- and is what the gawk wrapper is expected to fix.
 
 **bc returns 127**, meaning its configure script did not execute at all. Its
 own shell requirement, and not yet diagnosed.
+
+## Which compiler builds what, and why it matters
+
+The ladder produces four compilers. Confusing them cost several runs, so this
+is the table.
+
+| compiler | where | built by | its job |
+|---|---|---|---|
+| tcc | `/work/tccsrc` | the airlock | build musl, make, binutils, gcc 4.7.4 |
+| gcc 4.7.4 | `/work/out`, `/work/out2` | tcc, then itself | build gcc 10 |
+| gcc 10.2.0 | `/work/out10` | g++ 4.7.4 | build binutils and gcc 15 pass 1 |
+| **gcc 15 pass 1** | `$S/tools/bin/$LFS_TGT-*` | gcc 10 | build glibc, and everything in chapter 6 |
+| **gcc 15 pass 2** | `$S/usr/bin/gcc` | pass 1 | **build everything that ships** |
+
+**The rule: anything that ends up in the boot artefacts is built by pass 2.**
+That is busybox in the initramfs, the kernel Image, and the prerequisites they
+need. Pass 1 exists to build glibc and then to build pass 2; its output must
+not ship, because it was configured `--without-headers --with-newlib` before a
+libc existed.
+
+Three rungs had this wrong and were moved or rewired:
+
+* **rung 15 (busybox)** ran before rung 16 and used `$LFS_TGT-gcc`, i.e. pass
+  1 -- and its output goes straight into the initramfs. It now runs *after*
+  rung 16 and builds with pass 2. The rung order is
+  `13 → 14 → 16 → 15 → 17 → 18`.
+* **rung 17 (prerequisites)** built into `$PFX` with `chain-cc`, which is
+  gcc 10 against **musl**. It now builds into the sysroot with pass 2.
+* **rung 18 (the kernel)** cross-compiled with `CROSS_COMPILE=$LFS_TGT-`,
+  again pass 1. It now runs natively in the sysroot with no `CROSS_COMPILE` at
+  all, which is what LFS chapter 10 does.
+
+**The build-side compiler in chapter 6 is pass 1, and that is correct.**
+configure needs two compilers for a cross build: `--host` for the programs
+being built, `--build` for the test programs and generators it runs during the
+build. It finds `$LFS_TGT-gcc` for the host side by itself and falls back to
+bare `gcc`/`g++` for the build side -- which in this box is **gcc 4.7.4** from
+rung 6:
+
+```
+checking whether aarch64-veron-linux-gnu-g++ supports C++14 ... yes
+checking whether g++ supports C++14 ... no
+configure: error: A compiler with support for C++14 is required
+```
+
+So rung 16 passes `CC_FOR_BUILD`/`CXX_FOR_BUILD` explicitly, at pass 1 -- the
+newest compiler that exists at that moment. `--build` is
+`aarch64-unknown-linux-gnu` and `--host` is `aarch64-veron-linux-gnu`; they
+differ only in the vendor field, so pass 1's output runs on the build machine.
+
+**`stage4-complete` never hits this**, and the reason is worth recording: its
+chapters 5 and 6 run on the bare GitHub runner, where `g++` is Ubuntu's gcc 13.
+It enters a box only for the kernel and the boot. Ours is inside the box for
+the whole ladder, so every compiler must come from the ladder. That is a place
+where the reference job is stricter than stage 4 and stage 4's flags cannot be
+copied.
+
+---
+
+## Where the box's tools differ from the sysroot's
+
+Two sets of tools exist and they are not interchangeable.
+
+**`$PFX/bin` -- the box's tools.** musl-linked, static, built by `chain-cc`
+(gcc 10). make, binutils 2.30, gawk, m4, flex, bison, python, perl. These run
+*during* the build and never ship. Rung 11.7 builds most of them because
+glibc's configure names them:
+
+```
+*** These critical programs are missing or too old: make gawk bison python
+```
+
+**`$S/usr/bin` -- the sysroot's tools.** glibc-linked, built by pass 2. This is
+LFS chapter 6's product: busybox, make, binutils pass 2, gcc pass 2, and rung
+17's m4, bc, bison, flex and openssl.
+
+**Rung 15 must run `busybox --install`.** Copying the binary gives the sysroot
+one file called `busybox`; every other name is a symlink to it. Rung 17 runs
+configure scripts inside the sysroot, and a configure script is a shell script
+-- without `/usr/bin/sh` there is nothing to run it with.
+
+**openssl is on rung 17's list because the kernel asks for it by name.** arm64
+defconfig enables `CONFIG_MODULE_SIG`, the kernel then builds
+`scripts/sign-file.c`, and that includes `<openssl/bio.h>`. Without it the
+build stops partway through on a missing header that reads as a kernel problem.
+
+---
 
 ## Above gcc 10: LFS chapters 5 and 6, and the traps in them
 

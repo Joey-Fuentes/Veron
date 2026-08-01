@@ -115,16 +115,25 @@ where that tcc comes from — `./configure --cc=gcc`. But its box also binds hos
 accounting says so plainly: *"the guarantee stage 4 currently makes is 'no host
 compiler', not 'no host dependencies'."*
 
-`stage3-to-stage4-reference` removes the rest, and **it closes**. Eight rungs
-from one static tcc to a working gcc 4.7.4 with a C++ compiler, in a sandbox
-whose entire host inventory is one busybox:
+`stage3-to-stage4-reference` removes the rest, and **chapter 5 of Linux From
+Scratch now closes**: from one static tcc to a glibc sysroot with its own
+cross toolchain, in a sandbox whose entire host inventory is one busybox that
+the job itself builds.
 
 ```
-musl ──► make 3.82 ──► binutils 2.30 ──► make 4.4 ──► gmp/mpfr/mpc ──► gcc 4.7.4
+musl ─► make 3.82 ─► binutils 2.30 ─► make 4.4 ─► gmp/mpfr/mpc ─► gcc 4.7.4 ×2
+    ─► gcc 10.2.0 ─► binutils 2.47 ─► gcc 15.2.0 pass 1 ─► perl ─► linux headers
+    ─► gawk/m4/flex/bison/python ─► glibc 2.44 ─► libstdc++
 
-xgcc 2.7 MB   cc1 70 MB   cc1plus 77 MB
-SEALED. 1 host binaries, 0 of them on the build path.
+CHAPTER 5 COMPLETE -- a cross toolchain and a glibc sysroot.
+SEALED. 2 declared entries in /bin, both built by this workflow.
 ```
+
+Chapter 6 and the boot are in progress: binutils and gcc pass 2, then busybox,
+the kernel prerequisites, linux 7.1.5 and an initramfs. **Everything that ends
+up in the boot artefacts is built by gcc 15 pass 2** — the compiler that was
+itself built against the glibc this chain produced. `spikes/stage4/bridge/`
+has the compiler table and the rung order.
 
 musl is compiled by a shell loop because there is no make yet; make 3.82 by 27
 literal commands because there is no `ld` for its configure to find; binutils by
