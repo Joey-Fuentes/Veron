@@ -471,15 +471,36 @@ jobs:
           # reference job repacks in its airlock for exactly this, and a probe
           # that skipped it would fail at rung 3.5 for a reason that has
           # nothing to do with the package under test.
+          # DECOMPRESS TO A FILE, THEN READ IT. Piping the whole tarball into
+          # `dd count=5` makes the decompressor die on a broken pipe as soon as
+          # dd has its five bytes:
+          #
+          #     gzip: stdout: Broken pipe
+          #     warning: command substitution: ignored null byte in input
+          #
+          # and under `set -eu` inside $( ) the value comes back EMPTY. Empty
+          # is not "ustar", so the check said V7 for every archive and the run
+          # repacked bison and mpfr -- xz tarballs that were already ustar and
+          # that the reference job correctly leaves alone.
+          #
+          # A magic check that answers "not ustar" for everything looks exactly
+          # like one that works, because repacking an already-ustar archive
+          # produces an ustar archive. It cost nothing here except time; the
+          # same shape in a check that GATES something would be silent.
           ( cd pins
             for f in *.tar.gz *.tar.xz *.tar.bz2; do
               [ -f "$f" ] || continue
               case "$f" in
-                *.gz)  m=$(gzip  -dc "$f" | dd bs=1 skip=257 count=5 2>/dev/null) ;;
-                *.xz)  m=$(xz    -dc "$f" | dd bs=1 skip=257 count=5 2>/dev/null) ;;
-                *.bz2) m=$(bzip2 -dc "$f" | dd bs=1 skip=257 count=5 2>/dev/null) ;;
+                *.gz)  gzip  -dc "$f" > /tmp/hdr.tar 2>/dev/null ;;
+                *.xz)  xz    -dc "$f" > /tmp/hdr.tar 2>/dev/null ;;
+                *.bz2) bzip2 -dc "$f" > /tmp/hdr.tar 2>/dev/null ;;
               esac
-              [ "$m" = ustar ] && continue
+              m=$(dd if=/tmp/hdr.tar bs=1 skip=257 count=5 2>/dev/null)
+              rm -f /tmp/hdr.tar
+              if [ "$m" = ustar ]; then
+                echo "  already ustar: $f"
+                continue
+              fi
               stem=${f%%.tar.*}
               d=$(mktemp -d); tar xf "$f" -C "$d"
               ( cd "$d" && tar czf "$OLDPWD/$stem.repack.tar.gz" --format=ustar ./* )

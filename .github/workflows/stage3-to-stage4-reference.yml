@@ -770,11 +770,26 @@ jobs:
           for f in *.tar.gz *.tar.xz *.tar.bz2; do
             [ -f "$f" ] || continue
             stem=${f%%.tar.*}
+            # DECOMPRESS TO A FILE FIRST. Piping into `dd count=5` kills the
+            # decompressor with a broken pipe the moment dd has its bytes, and
+            # the reported magic comes back as [] even for archives that have
+            # it -- visible in this step's own output as
+            #     make-3.82.tar.gz  V7 -> ustar  [] -> [ustar]
+            # where the [] should have been the eight NULs that make it V7.
+            #
+            # The DECISION here was still right, because [] is not "ustar"
+            # either -- but only by luck, and tool-probe's copy of this loop
+            # repacked bison and mpfr, which are already ustar, for exactly
+            # this reason. A check that answers "not ustar" for everything
+            # looks identical to one that works.
             case "$f" in
-              *.gz)  before=$(gzip  -dc "$f" | dd bs=1 skip=257 count=5 2>/dev/null) ;;
-              *.xz)  before=$(xz    -dc "$f" | dd bs=1 skip=257 count=5 2>/dev/null) ;;
-              *.bz2) before=$(bzip2 -dc "$f" | dd bs=1 skip=257 count=5 2>/dev/null) ;;
+              *.gz)  gzip  -dc "$f" > /tmp/hdr.tar 2>/dev/null ;;
+              *.xz)  xz    -dc "$f" > /tmp/hdr.tar 2>/dev/null ;;
+              *.bz2) bzip2 -dc "$f" > /tmp/hdr.tar 2>/dev/null ;;
             esac
+            before=$(dd if=/tmp/hdr.tar bs=1 skip=257 count=5 2>/dev/null)
+            [ -n "$before" ] || before="(8 NULs -- V7)"
+            rm -f /tmp/hdr.tar
             if [ "$before" = "ustar" ]; then
               printf '  %-26s already ustar -- left alone\n' "$f"
               continue
