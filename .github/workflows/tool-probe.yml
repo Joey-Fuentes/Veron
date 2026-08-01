@@ -439,16 +439,78 @@ jobs:
           cp -L tccsrc/tcc "$BOX/work/ref-tcc"
           chmod 0755 "$BOX/work/ref-tcc"
 
-          mkdir -p pins && cp dl/*.tar.* pins/ 2>/dev/null || true
+          # THE BOTTOM RUNGS NEED THEIR OWN PINS, AND THIS STEP FETCHED NONE
+          # OF THEM. src/ holds perl, python, m4, bison, flex, bc and glibc --
+          # the packages under TEST. rungs.sh 0-5 wants musl, make 3.82,
+          # binutils 2.30, make 4.4, gmp, mpfr and mpc, and would have reported
+          # "no tarball matching /in/musl-" on a run that otherwise looked
+          # correctly assembled.
+          #
+          # Same versions as the reference job, because the sysroot this builds
+          # is meant to be the one that job produces -- a different musl here
+          # would make every answer conditional on which musl.
+          mkdir -p pins && cd pins
+          GNU=https://ftpmirror.gnu.org
+          for u in "https://musl.libc.org/releases/musl-1.2.5.tar.gz" \
+                   "$GNU/make/make-3.82.tar.gz" \
+                   "$GNU/make/make-4.4.tar.gz" \
+                   "$GNU/binutils/binutils-2.30.tar.xz" \
+                   "$GNU/gmp/gmp-6.3.0.tar.xz" \
+                   "$GNU/mpfr/mpfr-4.2.2.tar.xz" \
+                   "$GNU/mpc/mpc-1.3.1.tar.gz"; do
+            b=$(basename "$u")
+            [ -s "$b" ] && { echo "  cached  $b"; continue; }
+            curl -fsSL --connect-timeout 20 --retry 2 -O "$u" \
+              && echo "  fetched $b" || echo "  FAILED  $u"
+          done
+          cd ..
+          cp dl/*.tar.* pins/ 2>/dev/null || true
           cp src/*.tar.* pins/ 2>/dev/null || true
+
+          # GNU RELEASE TARBALLS ARE V7 AND busybox tar REFUSES THEM -- the
+          # reference job repacks in its airlock for exactly this, and a probe
+          # that skipped it would fail at rung 3.5 for a reason that has
+          # nothing to do with the package under test.
+          ( cd pins
+            for f in *.tar.gz *.tar.xz *.tar.bz2; do
+              [ -f "$f" ] || continue
+              case "$f" in
+                *.gz)  m=$(gzip  -dc "$f" | dd bs=1 skip=257 count=5 2>/dev/null) ;;
+                *.xz)  m=$(xz    -dc "$f" | dd bs=1 skip=257 count=5 2>/dev/null) ;;
+                *.bz2) m=$(bzip2 -dc "$f" | dd bs=1 skip=257 count=5 2>/dev/null) ;;
+              esac
+              [ "$m" = ustar ] && continue
+              stem=${f%%.tar.*}
+              d=$(mktemp -d); tar xf "$f" -C "$d"
+              ( cd "$d" && tar czf "$OLDPWD/$stem.repack.tar.gz" --format=ustar ./* )
+              rm -rf "$d" "$f"; mv "$stem.repack.tar.gz" "$stem.tar.gz"
+              echo "  repacked V7 -> ustar: $f"
+            done )
 
           echo "  --- the box ---"
           echo "    applets    : $(find "$BOX/bin" -type l | wc -l)"
           echo "    /usr       : $( [ -d "$BOX/usr" ] && echo present || echo ABSENT )"
           echo "    real files : $(find "$BOX/bin" -type f -printf '%f ')"
 
+          # --unshare-all WITHOUT --share-net BRINGS UP LOOPBACK, AND THAT CAN
+          # FAIL. bwrap configures lo inside the new network namespace and this
+          # runner refused:
+          #
+          #     bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+          #
+          # The reference job uses the identical flag and works, so it is not
+          # the flag -- it is whatever else is holding a namespace on the runner
+          # at that moment. Rather than depend on that, ask for the namespaces
+          # individually and skip the network one entirely: --unshare-net alone
+          # gives an isolated stack without configuring an address in it.
+          #
+          # ISOLATION IS UNCHANGED. --unshare-all is user+ipc+pid+net+uts+cgroup;
+          # this asks for exactly those. What is dropped is bwrap's attempt to
+          # bring lo UP, which nothing in the box uses -- the whole point is
+          # that it cannot reach the network.
           set +e
-          bwrap --unshare-all --die-with-parent \
+          bwrap --unshare-user --unshare-ipc --unshare-pid --unshare-net \
+            --unshare-uts --unshare-cgroup --die-with-parent \
             --setenv PATH /bin --setenv HOME /work --setenv LC_ALL POSIX \
             --setenv CC_BIN /work/ref-tcc --setenv TCCDIR /work/tccsrc \
             --setenv ARM "probe-$PKG" --setenv STOP_AFTER 5 \
@@ -504,7 +566,8 @@ jobs:
           echo
           echo "  === THE PACKAGE, IN THE BOX ==="
           set +e
-          bwrap --unshare-all --die-with-parent \
+          bwrap --unshare-user --unshare-ipc --unshare-pid --unshare-net \
+            --unshare-uts --unshare-cgroup --die-with-parent \
             --setenv PATH /work/prefix/bin:/bin --setenv HOME /work --setenv LC_ALL POSIX \
             --bind "$BOX" / \
             --ro-bind "$PWD/spikes" /src --ro-bind "$PWD/pins" /in \
