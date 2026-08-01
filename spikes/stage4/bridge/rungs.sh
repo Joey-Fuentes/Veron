@@ -2709,9 +2709,29 @@ S=/work/lfs
 mkdir -p "$PFX/bin"
 cat > "$PFX/bin/chain-cc" <<CHAINCC
 #!/bin/sh
+# THE SYSROOT'S HEADERS, IF RUNG 12 HAS INSTALLED THEM YET.
+#
+# Rung 12 puts 1003 linux API headers in SYSROOT/usr/include. gcc 10 does not
+# look there -- it searches its own /usr/include, which is the musl sysroot
+# from rung 2 with no kernel headers at all. m4's gnulib wants <linux/fs.h>
+# and failed three runs running: once for ordering, once because installing
+# them is not the same as finding them, and once because I added the flag to
+# one of two configure lines and did not check which.
+#
+# Putting it in the WRAPPER ends that: every consumer gets it, present or
+# absent, and there is no second line to forget. The test is what makes it
+# safe to do unconditionally -- rungs 10 and 11 run before rung 12 and simply
+# see nothing there.
+#
+# -isystem rather than -I: these are system headers, and -isystem keeps them
+# out of the warning and dependency paths where a project's own -I belongs.
+if [ -d SYSROOTINC ]; then
+    exec CHAINCCBIN "\$@" -isystem SYSROOTINC -Wl,--no-eh-frame-hdr
+fi
 exec CHAINCCBIN "\$@" -Wl,--no-eh-frame-hdr
 CHAINCC
-sed -i "s|CHAINCCBIN|/work/out10/bin/gcc|" "$PFX/bin/chain-cc"
+sed -i -e "s|CHAINCCBIN|/work/out10/bin/gcc|g" \
+       -e "s|SYSROOTINC|$S/usr/include|g" "$PFX/bin/chain-cc"
 chmod 0755 "$PFX/bin/chain-cc"
 
 # PROVE IT BEFORE FIVE RUNGS DEPEND ON IT. A wrapper that silently does not
@@ -3423,20 +3443,9 @@ head1 "RUNG 11.7 -- m4, flex, bison, python: what glibc's configure demands"
 # measured) with a gawk wrapper in the box. glibc names gawk because it runs
 # `gawk --version` and parses the number.
 #
-# -isystem $S/usr/include, BECAUSE THE HEADERS ARE IN THE SYSROOT AND THE
-# COMPILER DOES NOT LOOK THERE.
-#
-# Rung 12 now runs first and installs 1003 kernel headers into $S/usr/include
-# -- and m4 still failed with
-#
-#     stackvma.c:327: fatal error: linux/fs.h: No such file or directory
-#
-# because chain-cc wraps gcc 10 and passes no -I at all, so it searches its own
-# /usr/include: the musl sysroot from rung 2, which has no kernel headers.
-# Reordering the rungs was necessary and not sufficient.
-#
-# -isystem rather than -I, because these are system headers: it keeps them out
-# of the warning and dependency paths where a project's own -I belongs.
+# THE SYSROOT HEADERS COME FROM chain-cc ITSELF, not from a flag here -- see
+# the wrapper's own comment. Three runs were lost to this: ordering, then
+# "installed is not found", then adding the flag to one of two configure lines.
 #
 # THE ORDER IS FORCED. m4 first, because bison and flex both need it. flex
 # before bison, because BOTH stop at
@@ -3485,8 +3494,7 @@ if [ "$R12" = ok ]; then
       done
       ( cd "/work/src/py/$_pyd" \
         && ./configure --prefix="$PFX" --without-ensurepip --disable-test-modules \
-             CC="$PFX/bin/chain-cc -static -isystem $S/usr/include" \
-             LDFLAGS="-static" > cfg.log 2>&1 \
+             CC="$PFX/bin/chain-cc -static" LDFLAGS="-static" > cfg.log 2>&1 \
         && timeout 3600 make -j"$NP" > b.log 2>&1 \
         && make install > /dev/null 2>&1 ) \
         || { r117=FAIL
