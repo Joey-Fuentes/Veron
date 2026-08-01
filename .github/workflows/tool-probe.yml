@@ -413,7 +413,7 @@ jobs:
             || { echo "  tcc is not static -- the box would need a loader"; exit 1; }
           echo "  tcc: $(wc -c < tccsrc/tcc) bytes, static"
 
-      - name: 'HERMETIC: build the sysroot, then the package, with no host /usr'
+      - name: 'Assemble the probe box'
         run: |
           set -eu
           PKG="${{ github.event.inputs.pkg }}"
@@ -513,31 +513,50 @@ jobs:
           echo "    /usr       : $( [ -d "$BOX/usr" ] && echo present || echo ABSENT )"
           echo "    real files : $(find "$BOX/bin" -type f -printf '%f ')"
 
-          # NO NETWORK NAMESPACE, AND THIS IS A REAL WEAKENING -- SAY SO.
+
+      # A SEPARATE STEP TO ENTER IT, WHICH IS THE ONE STRUCTURAL DIFFERENCE
+      # FROM THE REFERENCE JOB THAT WAS LEFT.
+      #
+      # That job assembles the box in one step and runs bwrap in the next; this
+      # did both in one. bwrap's first failure here was
+      #     bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+      # which the reference job never sees with the identical flag. Whether the
+      # step boundary is what matters is not established -- but it is the only
+      # remaining difference, and matching it costs nothing.
+      - name: 'HERMETIC: build the sysroot, then the package, with no host /usr'
+        run: |
+          set -eu
+          PKG="${{ github.event.inputs.pkg }}"
+          [ -n "$PKG" ] || PKG=perl
+          BOX="$PWD/pbox"
+          # --unshare-all, EXACTLY AS THE REFERENCE JOB DOES IT.
           #
-          #     bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+          # Three attempts at being clever here, three different failures:
           #
-          # bwrap brings `lo` UP inside a new network namespace, and this
-          # runner refuses. Asking for the namespaces individually did not help,
-          # because --unshare-net is the one that triggers the setup. The
-          # reference job uses --unshare-all on the same runner image and works,
-          # so something differs about when in the job it runs; that is not yet
-          # understood.
+          #   --unshare-all                  loopback: Failed RTM_NEWADDR
+          #   individual, incl --unshare-net loopback: Failed RTM_NEWADDR
+          #   individual, no --unshare-net   setting up uid map: Permission denied
           #
-          # WHAT THIS COSTS. Without --unshare-net the box shares the runner's
-          # network stack, so a configure that wanted to reach the internet
-          # COULD. The reference job's isolation is not weakened -- this is only
-          # tool-probe, whose job is to answer questions rather than to make
-          # hermeticity claims -- but a package that quietly downloads something
-          # would go unnoticed here and fail in the real box.
+          # The last one is the tell. --unshare-user ALONE cannot write the uid
+          # map on this runner; --unshare-all can, because bwrap takes a
+          # different path when it owns every namespace. So the flags were never
+          # the problem -- decomposing them was.
           #
-          # SO THE STEP CHECKS. After the build it looks for the artefacts of a
-          # network fetch, and the verdict says the probe is not a hermetic
-          # result. The reference job remains the thing that proves that.
+          # The reference job has run --unshare-all on this image dozens of
+          # times without complaint. The remaining difference is that it binds
+          # a box assembled in an earlier STEP, while this one assembles and
+          # enters in the same step; if that matters it will show as the
+          # loopback error again, and then the answer is to split the step
+          # rather than to weaken the sandbox.
+          #
+          # NO MORE VARIANTS. Copy what works.
           set +e
-          bwrap --unshare-user --unshare-ipc --unshare-pid \
-            --unshare-uts --unshare-cgroup --die-with-parent \
+          bwrap \
+            --unshare-all \
+            --die-with-parent \
             --setenv PATH /bin --setenv HOME /work --setenv LC_ALL POSIX \
+            --setenv TERM dumb --setenv SOURCE_DATE_EPOCH 0 \
+            --setenv LD_LIBRARY_PATH /lib \
             --setenv CC_BIN /work/ref-tcc --setenv TCCDIR /work/tccsrc \
             --setenv ARM "probe-$PKG" --setenv STOP_AFTER 5 \
             --bind "$BOX" / \
@@ -601,9 +620,11 @@ jobs:
           echo
           echo "  === THE PACKAGE, IN THE BOX ==="
           set +e
-          bwrap --unshare-user --unshare-ipc --unshare-pid \
-            --unshare-uts --unshare-cgroup --die-with-parent \
+          bwrap \
+            --unshare-all \
+            --die-with-parent \
             --setenv PATH /work/prefix/bin:/bin --setenv HOME /work --setenv LC_ALL POSIX \
+            --setenv TERM dumb --setenv SOURCE_DATE_EPOCH 0 \
             --bind "$BOX" / \
             --ro-bind "$PWD/spikes" /src --ro-bind "$PWD/pins" /in \
             --proc /proc --dev /dev --tmpfs /tmp --chdir /work \
