@@ -3453,10 +3453,25 @@ head1 "RUNG 11.7 -- m4, flex, bison, python: what glibc's configure demands"
 # -- bison's scanner ships pre-generated so it would BUILD without flex, but
 # its configure checks anyway and there is no --without to give it.
 #
-# Python last, and it is the one genuinely new package: it wants zlib, libffi
-# and openssl for modules that matter later, and this box has none of them.
-# It will configure without them and quietly build less; the check afterwards
-# names which modules are missing rather than letting that pass as success.
+# Python last, and A STRIPPED PYTHON IS ENOUGH -- measured, not assumed.
+#
+# tool-probe read glibc's own source: every python script its makefiles invoke,
+# and every module those import. The whole set is
+#
+#     argparse collections difflib inspect itertools json os re string struct
+#     subprocess sys time unicodedata
+#     + glibc's own glibcelf, glibcpp, glibcextract, abnf, unicode_utils
+#
+# Not one needs zlib, ssl, ctypes, libffi or anything else this box does not
+# build. So python configures without those four, builds ~36 modules, reports
+# "Could not build the ssl module", and is still exactly what glibc needs.
+#
+# "48 failed on import" in that build summary is not an error either: a static
+# python cannot dlopen its shared extension modules, so they are reported
+# unimportable and the interpreter works without them.
+#
+# The check after install still names what is missing. Being right about this
+# once does not make it true forever, and a later rung may want more.
 if [ "$R12" = ok ]; then
   r117=ok
   for pk in m4 flex bison; do

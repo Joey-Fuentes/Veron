@@ -904,11 +904,18 @@ jobs:
               zlib|ssl|ctypes|_ctypes|sqlite3|bz2|lzma|readline|curses|hashlib)
                 printf '    %-18s NEEDS A LIBRARY -- this box has none of them\n' "$_m" ;;
               *)
-                # Ask the runner's python whether it is built in.
-                if python3 -c "import sys,importlib.util as u; s=u.find_spec('$_m'); sys.exit(0 if s and not (s.origin or '').endswith('.so') else 1)" 2>/dev/null; then
+                # IS IT ONE OF glibc's OWN MODULES? The first run flagged
+                # glibcelf, glibcpp, glibcextract, abnf, unicode_utils and
+                # Unicode as "extension module -- CHECK THIS ONE", and every
+                # one of them is a .py file in glibc's own tree. A module the
+                # runner's python does not have is not necessarily an
+                # extension; it may simply not be python's at all.
+                if find "$d" -name "$_m.py" 2>/dev/null | grep -q .; then
+                  printf '    %-18s glibc ships this itself\n' "$_m"
+                elif python3 -c "import sys,importlib.util as u; s=u.find_spec('$_m'); sys.exit(0 if s and not (s.origin or '').endswith('.so') else 1)" 2>/dev/null; then
                   printf '    %-18s pure python or built in\n' "$_m"
                 else
-                  printf '    %-18s extension module -- CHECK THIS ONE\n' "$_m"
+                  printf '    %-18s NOT FOUND -- neither stdlib nor glibc's\n' "$_m"
                 fi ;;
             esac
           done
