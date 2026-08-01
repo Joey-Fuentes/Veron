@@ -711,9 +711,18 @@ jobs:
             # exists in a sealed box.
             case "$PKG" in
               Python*|python*)
+                # --with-build-python IS NOT A YES/NO FLAG:
+                #     configure: error: invalid --with-build-python option:
+                #     expected path or "yes", not "no"
+                # It names a python to run during a CROSS build. This is a
+                # native build, so it does not apply at all and passing it was
+                # my mistake rather than a requirement.
+                #
+                # --without-ensurepip and --disable-test-modules DO apply:
+                # ensurepip wants the network, and the test modules want an
+                # ssl this box does not have.
                 ./configure --prefix=/work/out/pkg CC="$CC" \
-                  --without-ensurepip --disable-test-modules \
-                  --with-build-python=no > c.log 2>&1 ;;
+                  --without-ensurepip --disable-test-modules > c.log 2>&1 ;;
               *)
                 ./configure --prefix=/work/out/pkg --disable-nls CC="$CC" > c.log 2>&1 ;;
             esac
@@ -725,6 +734,12 @@ jobs:
               | sort -u | head -15 | sed 's/^/    /'
             exit 1
           fi
+          # WHAT configure DECIDED, IN ITS OWN WORDS. Python prints a
+          # "necessary bits not found" summary near the end; everything else
+          # it drops silently. Both are worth having, because the second is
+          # what turns into a missing module later.
+          grep -aiE "could not be found|necessary bits|not be built|skipping" c.log \
+            2>/dev/null | sort -u | head -10 | sed 's/^/    /'
           echo "  --- disabled for want of a library ---"
           grep -aiE "not found|will not be built|disabl" c.log \
             | grep -aviE "checking" | sort -u | head -12 | sed 's/^/    /'

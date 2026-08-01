@@ -279,7 +279,12 @@ env:
   #   *** These critical programs are missing or too old: make gawk bison python
   # LFS builds it in chapter 7 for the chroot and never needs it at chapter 5,
   # because chapter 5 runs on a host that has one. We have no host.
-  PYTHON_VER: '3.14.3'
+  # 3.14.6, WHICH IS WHAT THE BOOK WE FOLLOW SPECIFIES. We had 3.14.3 from
+  # nowhere in particular -- the same drift that put perl at 5.42.0 and the
+  # kernel at 7.1.5. r13.0-156-systemd also carries
+  # Python-3.14.6-consolidated_fixes-1.patch, so the version and its patch
+  # have to move together.
+  PYTHON_VER: '3.14.6'
 
 jobs:
 
@@ -369,7 +374,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: dl
-          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-${{ env.GCC15 }}-${{ env.GLIBC }}-${{ env.KHDR }}-${{ env.PERL_VER }}-${{ env.KERNEL }}-${{ env.PYTHON_VER }}-v4
+          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-${{ env.GCC15 }}-${{ env.GLIBC }}-${{ env.KHDR }}-${{ env.PERL_VER }}-${{ env.KERNEL }}-${{ env.PYTHON_VER }}-v5
 
       - name: Fetch pinned upstreams (airlock -- nothing here enters the box)
         run: |
@@ -445,8 +450,8 @@ jobs:
                    "https://www.python.org/ftp/python/$PYTHON_VER/Python-$PYTHON_VER.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KHDR%%.*}.x/linux-$KHDR.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL%%.*}.x/linux-$KERNEL.tar.xz" \
-                   "https://www.linuxfromscratch.org/patches/lfs/13.0/glibc-fhs-1.patch" \
-                   "https://www.linuxfromscratch.org/patches/lfs/13.0/glibc-$GLIBC-upstream_fixes-1.patch"; do
+                   "https://www.linuxfromscratch.org/patches/lfs/development/glibc-fhs-1.patch" \
+                   "https://www.linuxfromscratch.org/patches/lfs/development/glibc-$GLIBC-upstream_fixes-1.patch"; do
             b=$(basename "$u")
             if [ -s "$b" ]; then
               printf '  cached  %-30s %10s bytes\n' "$b" "$(wc -c < "$b")"
@@ -458,8 +463,21 @@ jobs:
             else
               rm -f "$b.part"
               echo "  FETCH FAILED: $u"
+              _fetchfail=1
             fi
           done
+          # A MISSING PIN IS NOT A WARNING. This loop used to print
+          # "FETCH FAILED" and carry on, and the run then spent its time
+          # assembling a box that could not possibly finish -- rung 13 would
+          # have stopped on a glibc patch that was never downloaded.
+          #
+          # It cost a whole run to a URL typo: the patches live under
+          # patches/lfs/DEVELOPMENT/, not patches/lfs/13.0/, because
+          # r13.0-156-systemd is a development snapshot. Failing here says so
+          # in the first minute.
+          [ "${_fetchfail:-0}" = 0 ] || {
+            echo "  one or more pinned inputs did not download; not continuing."
+            exit 1; }
 
           echo "  --- what came in ---"
           sha256sum ./*.tar.* 2>/dev/null | sed 's/^/    /'
