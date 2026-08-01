@@ -160,11 +160,29 @@ jobs:
           # reason the real box does not have.
           #
           # `exec busybox awk "$@"` names the applet explicitly.
+          # rm FIRST. `>` FOLLOWS A SYMLINK AND WRITES THROUGH IT.
+          #
+          # The loop above symlinks $T/awk -> the busybox binary. Redirecting
+          # into $T/awk therefore did not replace the link -- it TRUNCATED
+          # BUSYBOX ITSELF, and the next command died with
+          #
+          #     /tmp/traps/awk: Permission denied
+          #
+          # on a file that was now zero bytes. The message names the wrapper,
+          # so it reads as a chmod problem; the chmod was right and the target
+          # was the runner's busybox.
+          #
+          # This is the same shape as `patch -d` and the gawk symlink itself:
+          # an operation that looks like it replaces a name and instead acts on
+          # what the name points at.
           if $B --list | grep -qx awk; then
-            printf '#!/bin/sh\nexec %s awk "$@"\n' "$B" > "$T/gawk"
-            printf '#!/bin/sh\nexec %s awk "$@"\n' "$B" > "$T/awk"
-            chmod 0755 "$T/gawk" "$T/awk"
+            for _w in gawk awk; do
+              rm -f "$T/$_w"
+              printf '#!/bin/sh\nexec %s awk "$@"\n' "$B" > "$T/$_w"
+              chmod 0755 "$T/$_w"
+            done
           fi
+          rm -f "$T/msgfmt"
           printf '#!/bin/sh\nexit 0\n' > "$T/msgfmt"; chmod 0755 "$T/msgfmt"
 
           for a in mawk nawk comm join split csplit paste expand unexpand \
@@ -175,6 +193,7 @@ jobs:
             # printf, not a heredoc. A heredoc terminator has to sit at
             # column 0, which ends the YAML block scalar and breaks the file --
             # the first version of this job would not parse.
+            rm -f "$T/$a"
             printf '#!/bin/sh\necho "$PKG NEEDS: %s $*" >> /tmp/missing.log\nexit 127\n' \
               "$a" > "$T/$a"
             chmod 0755 "$T/$a"

@@ -707,6 +707,14 @@ jobs:
           # busybox awk handles what these configures use -- ENVIRON, -f, gsub,
           # printf, match, all measured in tool-probe -- so the wrapper is
           # honest rather than a stand-in for something absent.
+          # rm FIRST, EVEN THOUGH IT IS SAFE TODAY. busybox has no gawk applet,
+          # so the loop above creates no symlink here and `>` has nothing to
+          # write through. But that is a fact about busybox's applet list, not
+          # about this code -- and in tool-probe the identical line truncated
+          # the busybox BINARY, because there the name was symlinked first. The
+          # error it produced named the wrapper and read as a permissions
+          # problem.
+          rm -f "$BOX/bin/gawk"
           printf '#!/bin/busybox sh\nexec /bin/busybox awk "$@"\n' > "$BOX/bin/gawk"
           chmod 0755 "$BOX/bin/gawk"
           echo "  gawk -> busybox awk (wrapper, not a symlink: argv[0] dispatch)"
