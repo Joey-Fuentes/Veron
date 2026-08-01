@@ -205,6 +205,29 @@ untar() {          # $1 = path prefix, e.g. /in/musl
 
 onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
 
+# WHERE IT FAILED, NOT WHAT FINISHED LAST.
+#
+# Every rung ends its failure path with `tail -25 b.log`, and under `make -j`
+# that is whatever module happened to finish last -- not the one that failed.
+# A run died in gcc's build-side fixincludes and printed twenty-five lines of
+# gmp's libtool SUCCEEDING, so the actual ld message at line 3831 never
+# reached the log and the round after it had nothing to work from.
+#
+# This finds the first real error line and prints the window around it, which
+# is where a compiler or linker puts the message that names the cause.
+whyfail() {        # $1 = logfile
+    [ -s "$1" ] || { say "      (no $1)"; return; }
+    _n=$(grep -nE "error:|undefined reference|cannot find|No such file|Error [0-9]" "$1" 2>/dev/null | head -1 | cut -d: -f1)
+    if [ -n "$_n" ]; then
+        _from=1; [ "$_n" -gt 30 ] && _from=$(( _n - 30 ))
+        say "      --- $1, around the first error (line $_n) ---"
+        sed -n "${_from},$(( _n + 8 ))p" "$1" | sed 's/^/      /'
+    else
+        say "      --- $1, last 25 lines (nothing matched an error pattern) ---"
+        tail -25 "$1" | sed 's/^/      /'
+    fi
+}
+
 R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip; R7=skip; R8=skip; R9=skip; R10=skip; R11=skip; R115=skip; R117=skip; R12=skip; R13=skip; R14=skip; R15=skip; R16=skip; R17=skip; R18=skip; R19=skip; R20=skip
 
 # WHAT IS ACTUALLY IN /in, BEFORE ANYTHING TRIES TO USE IT.
@@ -2745,11 +2768,16 @@ done
 mkdir -p "$PFX/bin"
 cat > "$PFX/bin/chain-cc" <<CHAINCC
 #!/bin/sh
-# THE SYSROOT'S HEADERS, IF RUNG 12 HAS INSTALLED THEM YET.
+# THE KERNEL HEADERS, IF RUNG 12 HAS INSTALLED THEM YET.
 #
-# Rung 12 puts 1003 linux API headers in SYSROOT/usr/include. gcc 10 does not
-# look there -- it searches its own /usr/include, which is the musl sysroot
-# from rung 2 with no kernel headers at all. m4's gnulib wants <linux/fs.h>
+# Rung 12 puts 1003 linux API headers in the box's own include directory. gcc
+# 10 does not find them otherwise -- it searches its own /usr/include, which is
+# the musl sysroot from rung 2 with no kernel headers at all.
+#
+# THIS DIRECTORY HOLDS KERNEL HEADERS AND NOTHING ELSE, deliberately. It used
+# to be the sysroot's include tree, which was true until glibc was installed
+# into it and every build-side compile started seeing glibc's headers while
+# linking musl. m4's gnulib wants <linux/fs.h>
 # and failed three runs running: once for ordering, once because installing
 # them is not the same as finding them, and once because I added the flag to
 # one of two configure lines and did not check which.
@@ -2766,8 +2794,27 @@ if [ -d SYSROOTINC ]; then
 fi
 exec CHAINCCBIN "\$@" -Wl,--no-eh-frame-hdr
 CHAINCC
+# $PFX/include, NOT $S/usr/include, AND THE DIFFERENCE IS A LIBC.
+#
+# This pointed at the sysroot when rung 12 was the only thing that had ever
+# written there -- 1003 kernel headers and nothing else, which is exactly what
+# the box needed and could not otherwise find.
+#
+# RUNG 13 THEN FILLS THE SAME DIRECTORY WITH GLIBC'S ENTIRE HEADER TREE.
+# stdio.h, features.h, stdlib.h, all of it. From that rung on, every chain-cc
+# compile was getting GLIBC headers -- ahead of the default search path,
+# because -isystem precedes it -- while still linking against MUSL in
+# /usr/lib. Headers from one libc, libraries from another.
+#
+# Nothing before rung 16 could have shown it: rung 11.7 is the only other
+# heavy chain-cc consumer and it runs before glibc is installed. Rung 16's
+# build side is the first thing to compile against the mixture, and it is
+# where the run stopped.
+#
+# So the kernel headers get a private copy that only the box uses, and the
+# sysroot's include tree stops being on the box compiler's search path at all.
 sed -i -e "s|CHAINCCBIN|/work/out10/bin/gcc|g" \
-       -e "s|SYSROOTINC|$S/usr/include|g" "$PFX/bin/chain-cc"
+       -e "s|SYSROOTINC|$PFX/include|g" "$PFX/bin/chain-cc"
 chmod 0755 "$PFX/bin/chain-cc"
 
 # PROVE IT BEFORE FIVE RUNGS DEPEND ON IT. A wrapper that silently does not
@@ -3447,8 +3494,19 @@ if [ "$R115" = ok ]; then
       # rather than copy it into the sysroot.
       find usr/include -type f ! -name '*.h' -delete
       mkdir -p "$S/usr"
-      cp -r usr/include "$S/usr" )
+      cp -r usr/include "$S/usr"
+      # A SECOND COPY, FOR THE BOX, KEPT APART FROM THE SYSROOT'S.
+      #
+      # $S/usr/include is the SYSROOT's include tree and rung 13 is about to
+      # put the whole of glibc in it. chain-cc -- the box's gcc 10, linking
+      # musl -- must not see that, so it gets these headers at $PFX/include
+      # where nothing else is ever installed.
+      mkdir -p "$PFX/include"
+      cp -r usr/include/. "$PFX/include/" )
     _nh=$(find "$S/usr/include" -name '*.h' 2>/dev/null | wc -l)
+    _nb=$(find "$PFX/include" -name '*.h' 2>/dev/null | wc -l)
+    say "    box copy at $PFX/include: $_nb headers (chain-cc reads these,"
+    say "    and NOT the sysroot tree, which glibc is about to fill)"
     say "    API headers from linux $KHDR (the image will be linux $KERNEL)"
     say "    headers: $_nh files"
     # The macro stage 4 records here, for the same reason: it makes the next
@@ -4100,6 +4158,20 @@ if [ "$R14" = ok ]; then
   #     checking whether g++ supports C++14 ... no
   #     configure: error: A compiler with support for C++14 is required
   #
+  # --disable-fixincludes, AND IT IS THE BOOK'S FLAG FOR THE MODULE THAT FAILED.
+  #
+  #     make[1]: *** [Makefile:3114: all-build-fixincludes] Error 2
+  #
+  # fixincludes exists to rewrite a HOST DISTRO's broken system headers. There
+  # is no host distro here, so the module has nothing to do and its build-side
+  # binary is pure cost. LFS r13.0-167 passes --disable-fixincludes on gcc
+  # pass 1 AND on pass 2; this rung had it on neither.
+  #
+  # WHAT THIS DOES NOT CLAIM. The underlying ld error was never printed -- the
+  # failure path tailed a parallel build and caught gmp finishing instead --
+  # so this removes the module that failed rather than repairing a fault
+  # anyone has read. whyfail() exists so the next one is legible.
+  #
   # A PREVIOUS REVISION SET CC_FOR_BUILD=$LFS_TGT-gcc AND THAT CANNOT WORK.
   # Pass 1 was configured --with-sysroot=$S, so what it emits is glibc-linked
   # against the sysroot and carries /lib/ld-linux-aarch64.so.1 as its
@@ -4181,6 +4253,7 @@ if [ "$R14" = ok ] && [ "$R16" != FAIL ]; then
       --prefix=/usr \
       --with-build-sysroot="$S" \
       --enable-default-pie --enable-default-ssp \
+      --disable-fixincludes \
       --disable-nls --disable-multilib --disable-libatomic \
       --disable-libgomp --disable-libquadmath --disable-libsanitizer \
       --disable-libssp --disable-libvtv --enable-languages=c,c++ \
@@ -4255,13 +4328,13 @@ if [ "$R14" = ok ] && [ "$R16" != FAIL ]; then
     else
       R16=FAIL; say "    --- gcc pass 2 errors ---"
       grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
-      tail -25 b.log 2>/dev/null | sed 's/^/      /'
+      whyfail b.log
     fi
   else
     R16=FAIL; say "    --- binutils pass 2 errors ---"
     grep -aE "PATH_MAX" b.log 2>/dev/null | head -3 | sed 's/^/      /'
     grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
-    tail -25 b.log 2>/dev/null | sed 's/^/      /'
+    whyfail b.log
   fi
   cd /work
 fi
