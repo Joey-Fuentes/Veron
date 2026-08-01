@@ -584,6 +584,140 @@ jobs:
           echo "  the value or the callee reading it. musl is then innocent, and"
           echo "  so is every soft-float routine measured above."
 
+      # BOTH THEORIES ARE DEAD. WHAT IS LEFT IS INSIDE fmt_fp.
+      #
+      #   soft-float routines   byte-identical to host gcc, both directions
+      #   long double arithmetic every result correct
+      #   va_arg(double)        correct, three shapes, three columns
+      #   the value itself      correct
+      #
+      # And printf("%f", 5.008) still gives 8.000000. So the double arrives at
+      # musl intact and is destroyed by musl's own formatting code as tcc
+      # compiled it.
+      #
+      # WHAT fmt_fp DOES THAT NOTHING ABOVE TESTED: it takes the double apart
+      # with frexpl and bit manipulation, and it uses a UNION and an ARRAY of
+      # uint32_t as a big-decimal accumulator. Specifically:
+      #
+      #   union {double f; uint64_t i;} u = {y};        type punning
+      #   e2 = (int)(u.i>>52 & 0x7ff) - 0x3ff;          exponent extraction
+      #   y = frexpl(y, &e2) * 2;                        library call
+      #   uint32_t big[(LDBL_MANT_DIG+28)/29 + 1 + ...]  a 30+ element array
+      #
+      # The symptom -- exponent right, mantissa gone -- is what you get if the
+      # EXPONENT is extracted correctly and the mantissa accumulation produces
+      # zeros. That points at the big[] loop rather than at any single value.
+      #
+      # THIS TESTS THOSE PIECES, one at a time, with integer output only.
+      - name: 'INSIDE fmt_fp: the pieces musl uses to take a double apart'
+        run: |
+          set -u
+          set +e
+          cat > /tmp/fm.c <<'FMC'
+          #include <stdio.h>
+          #include <math.h>
+          #include <stdint.h>
+          
+          int main(void)
+          {
+              double y = 5.008;
+              union { double f; uint64_t i; } u;
+              int e2 = 0;
+              long double L;
+              uint32_t big[16];
+              int i;
+          
+              u.f = y;
+              printf("  union double->u64   %016llx   expect 4014083126e978d5\n",
+                     (unsigned long long)u.i);
+              printf("  exponent field      %d          expect 1025\n",
+                     (int)(u.i >> 52 & 0x7ff));
+              printf("  mantissa low 32     %08x       expect 26e978d5\n",
+                     (unsigned)(u.i & 0xffffffffull));
+          
+              y = frexp(5.008, &e2);
+              u.f = y;
+              printf("  frexp mantissa      %016llx   expect 3fe40831 26e978d5\n",
+                     (unsigned long long)u.i);
+              printf("  frexp exponent      %d             expect 3\n", e2);
+          
+              e2 = 0;
+              L = frexpl(5.008L, &e2);
+              printf("  frexpl exponent     %d             expect 3\n", e2);
+              printf("  frexpl val *8000    %d          expect 5008\n", (int)(L * 8000.0L));
+          
+              for (i = 0; i < 16; i++) big[i] = 0;
+              big[0] = 5008;
+              for (i = 0; i < 4; i++) {
+                  uint64_t carry = 0;
+                  int j;
+                  for (j = 0; j < 16; j++) {
+                      uint64_t t = (uint64_t)big[j] * 10 + carry;
+                      big[j] = (uint32_t)(t % 1000000000);
+                      carry = t / 1000000000;
+                  }
+              }
+              printf("  big[] after *10^4   %u %u      expect 50080000 0\n", big[0], big[1]);
+              return 0;
+          }
+          FMC
+          sed -i 's/^          //' /tmp/fm.c
+          echo "  === host gcc, host glibc (the control) ==="
+          gcc -O0 -o /tmp/fm-gcc /tmp/fm.c -lm && /tmp/fm-gcc
+          echo
+          echo "  === tcc, against musl built by tcc ==="
+          if [ -f /tmp/sys-tcc/lib/libc.a ]; then
+            ./tccsrc/tcc -B"$PWD/tccsrc" -static \
+              -I/tmp/sys-tcc/include -L/tmp/sys-tcc/lib \
+              -o /tmp/fm-tcc /tmp/fm.c 2>/tmp/fm.err \
+              && /tmp/fm-tcc || { echo "    would not build:"; head -5 /tmp/fm.err | sed 's/^/      /'; }
+          fi
+          echo
+          echo "  The first wrong line names the operation. If they are all"
+          echo "  right, the fault is in how those pieces COMBINE in vfprintf.c"
+          echo "  -- and the next step is to compile that one file with gcc and"
+          echo "  relink, which would prove it in a single object."
+
+      - name: 'THE ONE-FILE TEST: musl by tcc, except vfprintf.c by gcc'
+        run: |
+          set -u
+          set +e
+          # THE DECISIVE EXPERIMENT, AND IT NEEDS NO THEORY AT ALL.
+          #
+          # Take the musl that tcc built, replace exactly ONE object --
+          # vfprintf.o, compiled by gcc from the same source -- and relink. If
+          # %f then works, the bug is tcc compiling that file and the file is
+          # named. If it still fails, vfprintf.c is innocent and the fault is
+          # somewhere else in the libc.
+          #
+          # One object, one variable.
+          [ -f /tmp/sys-tcc/lib/libc.a ] || { echo "  no tcc-built musl"; exit 0; }
+          cp /tmp/sys-tcc/lib/libc.a /tmp/libc-mixed.a
+          ( cd m-tcc && gcc -c -std=c99 -nostdinc -ffreestanding \
+              -D_XOPEN_SOURCE=700 -I./arch/aarch64 -I./arch/generic \
+              -Iobj/src/internal -I./src/include -I./src/internal \
+              -Iobj/include -I./include -O0 \
+              -o /tmp/vfprintf-gcc.o src/stdio/vfprintf.c 2>/tmp/vf.err ) \
+            && echo "  vfprintf.c compiled by gcc: ok" \
+            || { echo "  gcc could not compile vfprintf.c:"; head -6 /tmp/vf.err | sed 's/^/    /'; exit 0; }
+          ar d /tmp/libc-mixed.a vfprintf.o 2>/dev/null
+          ar r /tmp/libc-mixed.a /tmp/vfprintf-gcc.o 2>/dev/null
+          echo "  swapped vfprintf.o into a copy of the tcc-built libc.a"
+          mkdir -p /tmp/sys-mixed/lib /tmp/sys-mixed/include
+          cp -a /tmp/sys-tcc/include/. /tmp/sys-mixed/include/
+          cp -a /tmp/sys-tcc/lib/. /tmp/sys-mixed/lib/
+          cp /tmp/libc-mixed.a /tmp/sys-mixed/lib/libc.a
+          echo
+          echo "  === tcc, against musl(tcc) with ONE gcc-built vfprintf.o ==="
+          ./tccsrc/tcc -B"$PWD/tccsrc" -static \
+            -I/tmp/sys-mixed/include -L/tmp/sys-mixed/lib \
+            -o /tmp/fp-mixed /tmp/fp.c 2>/tmp/mixed.err \
+            && /tmp/fp-mixed \
+            || { echo "    would not link:"; head -6 /tmp/mixed.err | sed 's/^/      /'; }
+          echo
+          echo "  %f RIGHT HERE  -> tcc miscompiles src/stdio/vfprintf.c, named."
+          echo "  %f STILL WRONG -> vfprintf.c is innocent; look at what it calls."
+
       - name: Verdict
         if: always()
         run: |
