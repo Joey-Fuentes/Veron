@@ -438,6 +438,57 @@ a 200-operator file from 83 MB to 3.4 MB.
 
 ---
 
+## The chain cannot print a double, and only printing is wrong
+
+Found at rung 11.5 of `stage3-to-stage4-reference`, where perl refused to build
+with `Perl v8.0.0 required--this is only v5.42.2`. That message names a version
+and is not about versions: `use 5.008` compares against `$]`, and perl builds
+`$]` by **formatting** a double.
+
+A probe compiled by gcc 10 -- four compilers above tcc -- answers:
+
+```
+literal 5.008      = 8.000000   (expect 5.008000)
+snprintf %.6f      = 8.000000
+(double)5 printed  = 8.0
+two doubles        = 2.000 4.000   (expect 1.500 2.500)
+int then double    = 7 4.000       (expect 7 3.500)
+
+manual whole.frac  = 5.008000   CORRECT
+(int)(5.008*1000)  = 5008       CORRECT
+5.008 > 5.007      = 1          CORRECT
+```
+
+**Every printed value is the next power of two at or above the real one.**
+1.5 → 2, 2.5 → 4, 3.5 → 4, 5.0 → 8, 5.008 → 8. The exponent field arrives
+intact and the mantissa does not.
+
+**The double itself is sound.** `(long)a` and `(a - whole) * 1000000` both give
+the right answer, so the value is correct in memory and correct through
+arithmetic. It is damaged between the caller and `printf`.
+
+**And the integer in the same call is fine** -- `int then double = 7 4.000`
+gets the 7 right. On aarch64 variadic doubles travel in `v0-v7` and integers in
+`x0-x7`; the general-purpose path works and the SIMD one does not.
+
+That is why nothing noticed for four compilers: every operation in a compiler
+build is integer or pointer work. gcc built gcc built gcc without ever
+formatting a float where the answer mattered.
+
+**Whose fault it is remains open.** musl's `vfprintf.c` was compiled by tcc at
+rung 2 and could be reading the va_list wrongly; or the caller places the value
+wrongly. `sources/musl.toml` drops only `src/complex/*.c`, so the formatting
+code is all present, and rung 2 reports 1349/1349 compiled. The rung now builds
+the same probe with tcc as well as gcc: if tcc's binary formats correctly
+against the same musl, the formatting code is sound and the calling convention
+is the suspect.
+
+**It is adjacent to a known gap.** `MICRO-C.md` records that micro-c has no
+working floating point at all -- `double a = 12.5; (long)a == 12` is false in a
+binary mc-tcc produces. This is the REFERENCE arm, so mc-tcc is not in this
+chain; but tcc's own soft-float helpers from `libtcc1.a` are, underneath
+everything.
+
 ## What is still wrong
 
 | gap | consequence |

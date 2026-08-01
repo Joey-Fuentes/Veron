@@ -2949,7 +2949,12 @@ COMMC
   # are wrong, the fault is underneath both -- in the libc that rung 2 built.
   say "    --- the same program, compiled by tcc rather than gcc 10 ---"
   ( cd /tmp && rm -f fpt.bin
-    if "$CC" $HOSTED -static -o fpt.bin fp.c 2>/tmp/fpt.err && ./fpt.bin 2>&1 | head -3; then
+    # $CC IS "path -B dir", TWO WORDS. Quoting it made the shell look for a
+    # file literally named `/work/ref-tcc -B/work/tccsrc`:
+    #     line 2952: /work/ref-tcc -B/work/tccsrc: not found
+    # Unquoted here on purpose -- it is a command line, not a filename.
+    # shellcheck disable=SC2086
+    if $CC $HOSTED -static -o fpt.bin fp.c 2>/tmp/fpt.err && ./fpt.bin 2>&1 | head -4; then
       :
     else
       say "      tcc could not build it:"
@@ -2957,6 +2962,36 @@ COMMC
     fi
     rm -f fpt.bin fp.c )
 
+  # THE ANSWER: THE MANTISSA IS LOST, THE EXPONENT SURVIVES.
+  #
+  #     manual whole.frac  = 5.008000   CORRECT -- the double is intact
+  #     snprintf %.6f      = 8.000000
+  #     (double)5 printed  = 8.0
+  #     two doubles        = 2.000 4.000   (expect 1.500 2.500)
+  #     int then double    = 7 4.000       (expect 7 3.500)
+  #
+  # Every printed value is the next POWER OF TWO at or above the real one:
+  # 1.5 -> 2, 2.5 -> 4, 3.5 -> 4, 5.0 -> 8, 5.008 -> 8. The exponent field
+  # arrives correctly and the mantissa does not.
+  #
+  # AND THE MANUAL DECOMPOSITION IS RIGHT, which is what makes this precise:
+  # `(long)a` and `(a - whole) * 1000000` both give the correct answer, so the
+  # double in memory is sound. It is damaged between the caller and printf --
+  # i.e. in variadic argument passing, where aarch64 puts doubles in v0-v7 and
+  # the callee reads them back through the va_list.
+  #
+  # `int then double = 7 4.000` narrows it further: the INTEGER argument is
+  # correct in the same call that mangles the double. So the general-purpose
+  # register path works and only the SIMD one is wrong -- which is why every
+  # non-printing operation in the whole chain has been fine, and why gcc built
+  # gcc built gcc without noticing.
+  #
+  # WHO IS AT FAULT IS STILL OPEN, and the tcc comparison below is what
+  # separates them: musl's vfprintf.c reading the va_list wrongly, or the
+  # caller placing the value wrongly. musl was compiled by tcc at rung 2;
+  # everything above was compiled by gcc. If tcc's own binary formats
+  # correctly against the same musl, the formatting code is sound.
+  #
   # THE ANSWER, FROM THE RUN THAT FIRST ASKED:
   #
   #     literal 5.008      = 8.000000   (expect 5.008000)
@@ -3024,6 +3059,21 @@ int main(void)
         printf("      (double)5 printed  = %.1f       (expect 5.0)\n", (double)5);
         printf("      two doubles        = %.3f %.3f  (expect 1.500 2.500)\n", 1.5, 2.5);
         printf("      int then double    = %d %.3f     (expect 7 3.500)\n", 7, 3.5);
+
+        /* THE BITS, WHICH SAY WHETHER IT IS THE VALUE OR THE PATH.
+         *
+         * Printed as two 32-bit integers through the INTEGER argument path,
+         * which the line above shows is working. If these are the correct IEEE
+         * 754 bits for 5.008 then the double is intact everywhere except the
+         * variadic float path, and the fault is the calling convention. If
+         * they are wrong, the value itself was damaged earlier and every
+         * comparison above was coincidence. */
+        {
+            union { double d; unsigned int u[2]; } bits;
+            bits.d = 5.008;
+            printf("      5.008 raw bits     = %08x %08x\n", bits.u[1], bits.u[0]);
+            printf("      (expect              40140831 26e978d5)\n");
+        }
     }
     return 0;
 }
