@@ -3485,7 +3485,24 @@ head1 "RUNG 11.7 -- m4, flex, bison, python: what glibc's configure demands"
 # once does not make it true forever, and a later rung may want more.
 if [ "$R12" = ok ]; then
   r117=ok
-  for pk in m4 flex bison; do
+  # GAWK FIRST, AND IT IS NOT OPTIONAL.
+  #
+  # The box ships a gawk wrapper around busybox awk. tool-probe measured that
+  # busybox awk handles ENVIRON, -f, gsub, printf and match -- everything m4
+  # and bison probe for -- and that measurement was correct. The inference
+  # beyond it was not: glibc 2.44's own build scripts use more.
+  #
+  #     awk: bad regex '\/[^': Invalid regular expression
+  #     awk: scripts/sysd-rules.awk:31: Call to undefined function
+  #
+  # A regex busybox's engine rejects, and a function it does not implement.
+  # There is no flag for either.
+  #
+  # $PFX/bin PRECEDES /bin ON PATH, so the real gawk built here shadows the
+  # wrapper automatically and nothing else needs changing. The wrapper stays
+  # for the rungs below this one, which run before gawk exists and only need
+  # what busybox awk genuinely provides.
+  for pk in gawk m4 flex bison; do
     [ "$r117" = ok ] || break
     cd /work/src
     rm -rf "/work/src/$pk-t" && mkdir -p "/work/src/$pk-t"
@@ -3715,11 +3732,57 @@ if [ "$R117" = ok ]; then
       say "    --- the four programs glibc checks ---"
       for _t in gawk bison python3 make; do
         if command -v "$_t" >/dev/null 2>&1; then
-          printf '      %-8s %s\n' "$_t" "$("$_t" --version 2>&1 | head -1)"
+          printf '      %-8s %-34s %s\n' "$_t" \
+            "$("$_t" --version 2>&1 | head -1)" "$(command -v "$_t")"
         else
           printf '      %-8s NOT ON PATH\n' "$_t"
         fi
       done
+
+      # AND IS THAT gawk A REAL ONE? The version string is not enough: the box
+      # ships a wrapper that ANSWERS "GNU Awk 5.3.1" while being busybox awk,
+      # and glibc's configure accepted it and then its build died on
+      #
+      #     awk: bad regex '\/[^': Invalid regular expression
+      #     awk: scripts/sysd-rules.awk:31: Call to undefined function
+      #
+      # So exercise the two things that failed rather than trusting the
+      # banner.
+      #
+      # THESE ARE WEAK PROBES AND THAT IS WORTH SAYING. Both constructs pass
+      # on mawk, which is not gawk either -- they discriminate against an awk
+      # MORE limited than mawk, which is what busybox's is. They would not
+      # catch a missing gawk-only extension like gensub or asort.
+      #
+      # The strong check is the one below it: is the gawk on PATH the one rung
+      # 11.7 built, or the wrapper the box assembly wrote. That is exact, and
+      # these two are the cheap confirmation that it behaves.
+      say "    --- is that gawk real, or the wrapper? ---"
+      # THE EXACT QUESTION: which file is it. The wrapper lives in /bin and
+      # the built gawk in $PFX/bin, which precedes it on PATH.
+      _gp=$(command -v gawk 2>/dev/null)
+      case "$_gp" in
+        "$PFX"/bin/*) say "      $_gp -- the gawk rung 11.7 built" ;;
+        *)            say "      $_gp -- THE WRAPPER, not a real gawk."
+                      say "      rung 11.7 did not install one, and glibc's"
+                      say "      build scripts will fail on regex and function"
+                      say "      support busybox awk does not have."
+                      R13=FAIL ;;
+      esac
+      if echo | gawk 'function f(x) { return x + 1 } { print f(1) }' 2>/dev/null | grep -qx 2; then
+        say "      user-defined functions: yes"
+      else
+        say "      user-defined functions: NO -- this is not a usable gawk"
+        say "      glibc will fail at scripts/sysd-rules.awk"
+        R13=FAIL
+      fi
+      if echo 'a/b' | gawk '/[^\/]/ { print "ok" }' 2>/dev/null | grep -qx ok; then
+        say "      bracket expressions with escaped slash: yes"
+      else
+        say "      bracket expressions with escaped slash: NO"
+        say "      glibc will fail at scripts/gen-sorted.awk"
+        R13=FAIL
+      fi
 
       say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: glibc configure"
       "/work/src/$_gl/configure" \
