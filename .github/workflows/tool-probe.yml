@@ -746,6 +746,28 @@ jobs:
                 # --without-ensurepip and --disable-test-modules DO apply:
                 # ensurepip wants the network, and the test modules want an
                 # ssl this box does not have.
+                # ax_cv_c_float_words_bigendian, PRESET BECAUSE THE PROBE
+                # CANNOT RUN HERE.
+                #
+                #     configure: error: Unknown float word ordering. You need
+                #     to manually preset ax_cv_c_float_words_bigendian=no
+                #
+                # That autoconf macro compiles a file containing a magic
+                # string and greps the OBJECT for it to see which order the
+                # words came out. tcc lays the constant out differently enough
+                # that the grep finds nothing, so the macro cannot decide --
+                # and it says so, with the answer.
+                #
+                # aarch64 is little-endian and so is its float word order, so
+                # =no is not a guess. The reference job never needs this
+                # because rung 11.7 builds python with gcc 10, whose output
+                # the macro recognises.
+                #
+                # THIS IS THE PROBE'S SCOPE WORKING AS INTENDED: a compiler
+                # difference, surfaced in a minute, that tells us nothing bad
+                # about python and would have told us nothing at all if we had
+                # built nine rungs of gcc first.
+                ax_cv_c_float_words_bigendian=no \
                 ./configure --prefix=/work/out/pkg CC="$CC" \
                   --without-ensurepip --disable-test-modules > c.log 2>&1 ;;
               *)

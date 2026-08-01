@@ -3520,6 +3520,20 @@ if [ "$R12" = ok ]; then
       # cannot dlopen its shared extension modules, so they are reported as
       # unimportable and the interpreter is fine without them.
       ( cd "/work/src/py/$_pyd"
+        # ax_cv_c_float_words_bigendian IS PRESET HERE TOO, and it is cheap
+        # insurance rather than a known need.
+        #
+        # tool-probe hit "Unknown float word ordering" building python with
+        # tcc: the macro compiles a magic string and greps the object for it,
+        # and tcc's layout defeats the grep. gcc 10 is expected to be fine --
+        # but "expected" is what the last several rounds have been made of,
+        # and the value is not a guess: aarch64 is little-endian in both word
+        # and byte order.
+        #
+        # A preset autoconf cache variable is skipped, not overridden, when
+        # the probe would have succeeded -- so this costs nothing if gcc 10
+        # never needed it.
+        ax_cv_c_float_words_bigendian=no \
         ./configure --prefix="$PFX" --without-ensurepip --disable-test-modules \
           CC="$PFX/bin/chain-cc -static" LDFLAGS="-static" > cfg.log 2>&1
         _c=$?; echo "      configure rc=$_c"
