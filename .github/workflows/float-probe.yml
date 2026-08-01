@@ -480,6 +480,110 @@ jobs:
             && /tmp/tf-pin \
             || { echo "    would not build:"; head -5 /tmp/pin.err | sed 's/^/      /'; }
 
+      # THE ROUTINES ARE FINE. IT IS THE va_arg SIDE.
+      #
+      # Everything measured so far is correct, byte for byte against host gcc:
+      #
+      #   __trunctfdf2   4014083126e978d5   identical
+      #   __trunctfsf2   40a04189           identical
+      #   __extenddftf2  40014083126e978d 5000000000000000  identical
+      #   every long double arithmetic result                identical
+      #
+      # So the value is intact right up to the printf CALL, and the corruption
+      # happens in passing it or in reading it back. musl's vfprintf does
+      #
+      #     case DBL:  arg->f = va_arg(*ap, double);
+      #
+      # in pop_arg(), and on aarch64 va_arg for a double has to read the
+      # FLOATING-POINT save area of the va_list, not the general-purpose one.
+      # Reading the wrong area gives a value with the right exponent and a
+      # wrong mantissa, which is exactly the symptom.
+      #
+      # THIS TESTS IT WITHOUT printf AT ALL. A hand-written variadic function
+      # takes a double, and reports its raw bits through the INTEGER path. If
+      # those bits are wrong, tcc's va_arg is broken for doubles and musl is an
+      # innocent bystander -- which would also explain why it survives four
+      # compilers: nothing in a compiler build passes a float to a variadic
+      # function.
+      - name: 'THE va_arg TEST: no printf involved'
+        run: |
+          set -u
+          set +e
+          cat > /tmp/va.c <<'VAC'
+          #include <stdarg.h>
+          #include <stdio.h>
+          
+          static unsigned long long take_double(int n, ...)
+          {
+              va_list ap;
+              union { double d; unsigned long long u; } b;
+              va_start(ap, n);
+              b.d = va_arg(ap, double);
+              va_end(ap);
+              return b.u;
+          }
+          
+          static unsigned long long int_then_double(int n, ...)
+          {
+              va_list ap;
+              int i;
+              union { double d; unsigned long long u; } b;
+              va_start(ap, n);
+              i = va_arg(ap, int);
+              b.d = va_arg(ap, double);
+              va_end(ap);
+              (void)i;
+              return b.u;
+          }
+          
+          static unsigned long long second_double(int n, ...)
+          {
+              va_list ap;
+              union { double d; unsigned long long u; } a, b;
+              va_start(ap, n);
+              a.d = va_arg(ap, double);
+              b.d = va_arg(ap, double);
+              va_end(ap);
+              (void)a;
+              return b.u;
+          }
+          
+          int main(void)
+          {
+              union { double d; unsigned long long u; } x;
+          
+              x.d = 5.008;
+              printf("  5.008 not passed        %016llx\n", x.u);
+              printf("  va_arg(double)          %016llx   <- must match\n", take_double(1, 5.008));
+              printf("  int then va_arg(double) %016llx   <- must match\n", int_then_double(2, 7, 5.008));
+          
+              x.d = 2.5;
+              printf("  2.5 not passed          %016llx\n", x.u);
+              printf("  second of two doubles   %016llx   <- must match\n", second_double(2, 1.5, 2.5));
+              return 0;
+          }
+          VAC
+          sed -i 's/^          //' /tmp/va.c
+          echo "  === host gcc, host glibc (the control) ==="
+          gcc -O0 -o /tmp/va-gcc /tmp/va.c && /tmp/va-gcc
+          echo
+          echo "  === tcc (our pin), host libc ==="
+          ./tccsrc/tcc -B"$PWD/tccsrc" -o /tmp/va-pin /tmp/va.c 2>/tmp/va.err \
+            && /tmp/va-pin || { echo "    would not build:"; head -4 /tmp/va.err | sed 's/^/      /'; }
+          echo
+          echo "  === tcc, against musl built by tcc ==="
+          if [ -f /tmp/sys-tcc/lib/libc.a ]; then
+            ./tccsrc/tcc -B"$PWD/tccsrc" -static \
+              -I/tmp/sys-tcc/include -L/tmp/sys-tcc/lib \
+              -o /tmp/va-musl /tmp/va.c 2>/tmp/vam.err \
+              && /tmp/va-musl || { echo "    would not build:"; head -4 /tmp/vam.err | sed 's/^/      /'; }
+          fi
+          echo
+          echo "  IF va_arg(double) DOES NOT MATCH, the fault is tcc's variadic"
+          echo "  handling for floating point on aarch64 -- the caller placing"
+          echo "  the value or the callee reading it. musl is then innocent, and"
+          echo "  so is every soft-float routine measured above."
+
       - name: Verdict
         if: always()
         run: |
