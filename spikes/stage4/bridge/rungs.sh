@@ -2931,6 +2931,60 @@ COMMC
   # floating point, so what matters is whether string-to-double, double
   # arithmetic and double-to-integer all agree with the same operations on a
   # compiler nobody doubts.
+  # WHICH printf IS THIS? ASK BEFORE INTERPRETING THE NUMBERS.
+  #
+  # Two candidates and they need different fixes:
+  #
+  #   musl's, compiled by TCC at rung 2. src/stdio/vfprintf.c is present --
+  #   sources/musl.toml drops only src/complex/*.c and rung 2 reports
+  #   1349/1349 compiled -- so if this is the fault it is tcc miscompiling
+  #   float formatting, and it would be a stage 3 bug visible here.
+  #
+  #   the ABI, in which case musl's code is correct and the double never
+  #   arrives where the callee looks for it.
+  #
+  # THE SAME PROGRAM COMPILED BY tcc DIRECTLY tells them apart from the other
+  # end: if tcc's own output formats correctly against the same musl, the
+  # formatting code is sound and gcc 10's variadic path is the suspect. If both
+  # are wrong, the fault is underneath both -- in the libc that rung 2 built.
+  say "    --- the same program, compiled by tcc rather than gcc 10 ---"
+  ( cd /tmp && rm -f fpt.bin
+    if "$CC" $HOSTED -static -o fpt.bin fp.c 2>/tmp/fpt.err && ./fpt.bin 2>&1 | head -3; then
+      :
+    else
+      say "      tcc could not build it:"
+      head -3 /tmp/fpt.err 2>/dev/null | sed 's/^/        /'
+    fi
+    rm -f fpt.bin fp.c )
+
+  # THE ANSWER, FROM THE RUN THAT FIRST ASKED:
+  #
+  #     literal 5.008      = 8.000000   (expect 5.008000)
+  #     strtod("5.008")    = 8.000000   (expect 5.008000)
+  #     (int)(5.008*1000)  = 5008       correct
+  #     5.008 > 5.007      = 1          correct
+  #     5.008 == strtod    = 1          correct
+  #
+  # THE VALUE IS FINE. It is stored, multiplied, truncated and compared
+  # correctly -- every operation that keeps the double in a register or
+  # converts it to an integer gives the right answer. Only PRINTING it is
+  # wrong, and it is wrong by losing the integer part.
+  #
+  # That is not codegen. It is the VARIADIC CALLING CONVENTION: on aarch64 a
+  # double passed to a `...` function goes in v0-v7, not x0-x7, and the callee
+  # walks the va_list expecting it there. Getting 8.000000 from 5.008 is what a
+  # printf reading the wrong register file produces.
+  #
+  # WHICH EXPLAINS PERL EXACTLY. `use 5.008` compares against $], and perl
+  # builds $] by FORMATTING a double. The version string is printed wrongly, so
+  # the comparison is against v8.0.0 -- and every other perl operation works,
+  # which is why it got as far as running miniperl.
+  #
+  # WHERE IT COMES FROM IS STILL OPEN. gcc 10 built these objects, but its
+  # libgcc soft-float helpers descend from tcc's, and musl's printf is compiled
+  # by the same chain. The probe below now separates those: if snprintf into a
+  # buffer is also wrong the fault is in musl's formatting code, and if only
+  # the variadic path is wrong it is the ABI.
   say "    --- can this compiler do floating point? ---"
   ( cd /tmp && rm -f fp.c fp.bin
     cat > fp.c <<'FPC'
@@ -2947,6 +3001,30 @@ int main(void)
     printf("      (long)12.5         = %ld       (expect 12)\n", (long)c);
     printf("      5.008 > 5.007      = %d        (expect 1)\n", a > 5.007);
     printf("      5.008 == strtod    = %d        (expect 1)\n", a == b);
+
+    /* IS IT THE VARIADIC ABI OR THE FORMATTING CODE?
+     *
+     * printf is variadic: a double goes in v0-v7 on aarch64 and the callee
+     * reads the va_list expecting it there. snprintf is variadic too, so both
+     * exercise the same path -- but vsnprintf called through an explicit
+     * va_list, and a manual decomposition that uses no formatting at all,
+     * do not.
+     *
+     * If the manual decomposition is right while %f is wrong, the double is
+     * intact in memory and only the ARGUMENT PASSING is broken. If the
+     * decomposition is also wrong, the value itself is damaged and the earlier
+     * comparisons were lucky. */
+    {
+        char buf[64];
+        long whole = (long)a;
+        long frac  = (long)((a - (double)whole) * 1000000.0 + 0.5);
+        snprintf(buf, sizeof buf, "%.6f", a);
+        printf("      snprintf %%.6f     = %s  (expect 5.008000)\n", buf);
+        printf("      manual whole.frac  = %ld.%06ld  (expect 5.008000)\n", whole, frac);
+        printf("      (double)5 printed  = %.1f       (expect 5.0)\n", (double)5);
+        printf("      two doubles        = %.3f %.3f  (expect 1.500 2.500)\n", 1.5, 2.5);
+        printf("      int then double    = %d %.3f     (expect 7 3.500)\n", 7, 3.5);
+    }
     return 0;
 }
 FPC
@@ -2956,7 +3034,7 @@ FPC
       say "      the float probe would not build or run:"
       head -5 /tmp/fp.err 2>/dev/null | sed 's/^/        /'
     fi
-    rm -f fp.c fp.bin )
+    rm -f fp.bin )
 
   cd /work/src
   if ! untar "/in/perl-$PERL_VER"; then
