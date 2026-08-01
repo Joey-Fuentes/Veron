@@ -3644,11 +3644,50 @@ if [ "$R12" = ok ]; then
         # configure creates it empty, so writing it here makes it newer than
         # the Makefile and makesetup re-runs on its own.
         if [ -f Modules/Setup.stdlib ]; then
-          awk '/^\*shared\*/ { print "*static*"; next } { print }' \
-            Modules/Setup.stdlib > Modules/Setup.local
+          # NOT EVERY MODULE. THE _hacl ONES MUST STAY SHARED.
+          #
+          # Forcing all 48 static built, then failed to link:
+          #
+          #     Modules/_hacl/Hacl_Hash_Blake2b.o: multiple definition of
+          #     '_Py_LibHacl_Hacl_Hash_Blake2b_hash_with_key'
+          #     first defined here
+          #
+          # _blake2, _sha3, _md5, _sha1, _sha2 and _hashlib share sources under
+          # Modules/_hacl, and CPython's Makefile already compiles and links
+          # those objects through its own LIBHACL_* variables. Listing the same
+          # .c files in Setup.local makes makesetup emit rules for them too, so
+          # each object arrives on the link line twice.
+          #
+          # WE DO NOT NEED THEM ANYWAY. glibc's scripts import subprocess,
+          # struct, collections, argparse, json, re, os and sys -- no hashing
+          # at all. Leaving the crypto modules shared costs nothing: they are
+          # built, they are simply not importable from a static interpreter,
+          # exactly like zlib and readline already are.
+          #
+          # THE RULE IS "STATIC UNLESS IT LIVES IN _hacl", which is one awk
+          # condition rather than a list of module names I would have to keep
+          # right.
+          awk '
+            /^\*shared\*/  { mode="shared"; print "*static*"; next }
+            /^\*static\*/  { mode="static"; print; next }
+            /^\*disabled\*/{ mode="disabled"; print; next }
+            /_hacl\// {
+                # RETURN TO THE SECTION WE WERE IN, not unconditionally to
+                # *static*. An _hacl line inside the *disabled* section would
+                # otherwise be followed by a *static* marker, silently
+                # enabling every disabled module after it -- zlib and readline
+                # among them, which have no library to link against.
+                print "*shared*"; print
+                if (mode == "disabled") print "*disabled*"
+                else                    print "*static*"
+                next
+            }
+            { print }
+          ' Modules/Setup.stdlib > Modules/Setup.local
           echo "      Setup.local written: $(grep -cE '^[a-zA-Z_]' Modules/Setup.local) module lines"
           echo "        static now : $(awk '/^\*static\*/{m=1;next} /^\*/{m=0} m&&/^[a-zA-Z_]/{n++} END{print n+0}' Modules/Setup.local)"
           echo "        still off  : $(awk '/^\*disabled\*/{m=1;next} /^\*/{m=0} m&&/^[a-zA-Z_]/{printf "%s ",$1}' Modules/Setup.local)"
+          echo "        left shared: $(awk '/^\*shared\*/{m=1;next} /^\*/{m=0} m&&/^[a-zA-Z_]/{printf "%s ",$1}' Modules/Setup.local)"
           # THE ONE THAT SENT US HERE. glibc's scripts/glibcextract.py imports
           # subprocess, which does `from _posixsubprocess import fork_exec`.
           grep -q '^_posixsubprocess' Modules/Setup.local \

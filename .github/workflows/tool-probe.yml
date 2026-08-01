@@ -1063,8 +1063,19 @@ jobs:
 
           echo
           echo "  --- apply the transform rung 11.7 uses ---"
-          awk '/^\*shared\*/ { print "*static*"; next } { print }' \
-            Modules/Setup.stdlib > Modules/Setup.local
+          # SAME TRANSFORM AS RUNG 11.7, INCLUDING THE _hacl EXCLUSION.
+          # Forcing every module static failed to link: _blake2, _sha3 and
+          # friends share sources under Modules/_hacl that CPython's Makefile
+          # already compiles, so each object arrived on the link line twice.
+          awk '
+            /^\*shared\*/  { mode="shared"; print "*static*"; next }
+            /^\*static\*/  { mode="static"; print; next }
+            /^\*disabled\*/{ mode="disabled"; print; next }
+            /_hacl\// { print "*shared*"; print
+                        if (mode == "disabled") print "*disabled*"
+                        else                    print "*static*"; next }
+            { print }
+          ' Modules/Setup.stdlib > Modules/Setup.local
           for _sec in static disabled; do
             printf '    %-9s %s\n' "$_sec" \
               "$(awk -v s="\\*$_sec\\*" '$0~s{m=1;next} /^\*/{m=0} m&&/^[a-zA-Z_]/{n++} END{print n+0}' Modules/Setup.local) modules"
@@ -1091,6 +1102,21 @@ jobs:
               printf '      %-18s not in the table\n' "$_m"
             fi
           done
+          echo
+          # AND DOES IT LINK? config.c says the module will be built in;
+          # it does not say the link succeeds. The last failure was a DUPLICATE
+          # SYMBOL at link time, which no amount of reading config.c would have
+          # caught. Building the freeze tool is the smallest thing that links
+          # the static module set.
+          echo
+          echo "  --- does the static module set actually link? ---"
+          if make Programs/_freeze_module > /tmp/fz.log 2>&1; then
+            echo "    _freeze_module linked -- no duplicate symbols"
+          else
+            echo "    LINK FAILED:"
+            grep -aE "multiple definition|undefined reference|collect2" /tmp/fz.log \
+              | head -8 | sed 's/^/      /'
+          fi
           echo
           if grep -q 'PyInit__posixsubprocess\b' Modules/config.c; then
             echo "    VERDICT: the transform works. A python built this way has"
