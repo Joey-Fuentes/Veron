@@ -42,6 +42,13 @@
 #
 # A parse error here is probably tcc. A missing header or library is the box,
 # and that IS the answer this job exists for.
+#
+# ONE STEP IS DELIBERATELY NOT HERMETIC: "THE STATIC-MODULE TEST" runs on the
+# bare runner with the host gcc, because it asks whether a BUILD TECHNIQUE
+# works -- does makesetup honour Setup.local -- and that does not depend on
+# which compiler or libc is present. The probe's own box cannot answer it: tcc
+# cannot build python 3.14 at all. Marked here so the exception stays an
+# exception.
 
 name: tool-probe
 
@@ -1006,6 +1013,93 @@ jobs:
             echo "    Nothing glibc's build imports needs zlib, ssl, ctypes or"
             echo "    any other absent library. A stripped python is enough,"
             echo "    and rung 11.7 does not need more than it already builds."
+          fi
+
+      # DOES THE Setup.local TRANSFORM ACTUALLY MAKE MODULES BUILT-IN?
+      #
+      # Rung 11.7 rewrites *shared* to *static* in Modules/Setup.local so that
+      # _posixsubprocess and its siblings are linked into the interpreter
+      # rather than dlopen'd -- a static python cannot dlopen anything, and
+      # glibc's scripts/glibcextract.py imports subprocess, which needs it.
+      #
+      # THIS TESTS THE TECHNIQUE, NOT THE BOX, and that is a different kind of
+      # question from the rest of this job. It runs on the bare runner with the
+      # host gcc on purpose:
+      #
+      #   - the probe's box has only tcc, and tcc cannot build python 3.14 at
+      #     all (pyatomic.h: no C11 atomics on aarch64 -- measured earlier)
+      #   - "does makesetup honour Setup.local" does not depend on which
+      #     compiler or libc is present
+      #
+      # AND IT DOES NOT COMPILE PYTHON. makesetup generates Modules/config.c,
+      # the table of built-in module init functions. If _posixsubprocess is in
+      # that table it will be linked in. Checking the table is seconds;
+      # building the interpreter to find out is ten minutes and answers the
+      # same question.
+      - name: 'THE STATIC-MODULE TEST: does Setup.local put _posixsubprocess in?'
+        run: |
+          set -u
+          set +e
+          d=$(ls -d src/Python-* 2>/dev/null | grep -v tar | head -1)
+          [ -n "$d" ] || { echo "  no unpacked Python in src/"; exit 0; }
+          cd "$d"
+
+          echo "  --- configure (host gcc, no box -- see above) ---"
+          ./configure --prefix=/tmp/pyx --without-ensurepip \
+            --disable-test-modules --disable-shared > /tmp/pc.log 2>&1
+          echo "    rc=$?"
+          [ -f Modules/Setup.stdlib ] || {
+            echo "    no Modules/Setup.stdlib -- this CPython predates the"
+            echo "    sectioned file and the transform does not apply."; exit 0; }
+
+          echo
+          echo "  --- what configure decided, BEFORE the transform ---"
+          for _sec in static shared disabled; do
+            printf '    %-9s %s\n' "$_sec" \
+              "$(awk -v s="\\*$_sec\\*" '$0~s{m=1;next} /^\*/{m=0} m&&/^[a-zA-Z_]/{n++} END{print n+0}' Modules/Setup.stdlib) modules"
+          done
+          printf '    _posixsubprocess is currently: %s\n' \
+            "$(awk '/^\*/{sec=$0} /^_posixsubprocess/{print sec; exit}' Modules/Setup.stdlib)"
+
+          echo
+          echo "  --- apply the transform rung 11.7 uses ---"
+          awk '/^\*shared\*/ { print "*static*"; next } { print }' \
+            Modules/Setup.stdlib > Modules/Setup.local
+          for _sec in static disabled; do
+            printf '    %-9s %s\n' "$_sec" \
+              "$(awk -v s="\\*$_sec\\*" '$0~s{m=1;next} /^\*/{m=0} m&&/^[a-zA-Z_]/{n++} END{print n+0}' Modules/Setup.local) modules"
+          done
+          echo "    still disabled: $(awk '/^\*disabled\*/{m=1;next} /^\*/{m=0} m&&/^[a-zA-Z_]/{printf "%s ",$1}' Modules/Setup.local)"
+
+          echo
+          echo "  --- the only test that matters: is it in Modules/config.c? ---"
+          # makesetup writes config.c, the table of built-in module init
+          # functions. Nothing needs compiling to read it.
+          rm -f Modules/config.c
+          make Modules/config.c > /tmp/ms.log 2>&1
+          if [ ! -f Modules/config.c ]; then
+            echo "    makesetup did not run:"
+            tail -8 /tmp/ms.log | sed 's/^/      /'
+            exit 0
+          fi
+          echo "    built-in modules in the table: $(grep -c 'extern PyObject\* PyInit_' Modules/config.c)"
+          for _m in _posixsubprocess _struct select array math time \
+                    _random binascii _socket unicodedata; do
+            if grep -q "PyInit_$_m\b" Modules/config.c; then
+              printf '      %-18s BUILT IN\n' "$_m"
+            else
+              printf '      %-18s not in the table\n' "$_m"
+            fi
+          done
+          echo
+          if grep -q 'PyInit__posixsubprocess\b' Modules/config.c; then
+            echo "    VERDICT: the transform works. A python built this way has"
+            echo "    _posixsubprocess linked in, so import subprocess -- and"
+            echo "    therefore glibc's scripts/glibcextract.py -- will work."
+          else
+            echo "    VERDICT: _posixsubprocess is NOT in the table. Rung 11.7"
+            echo "    will fail the same way again, and the Setup.local"
+            echo "    mechanism is not doing what it is supposed to."
           fi
 
       - name: 'THE GAWK QUESTION: can busybox awk do what m4 and bison need?'
