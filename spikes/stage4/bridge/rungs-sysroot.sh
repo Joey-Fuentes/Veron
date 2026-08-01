@@ -457,6 +457,17 @@ if [ "$B4" = ok ]; then
         B5=FAIL
       else
         install -m 0755 busybox /usr/bin/busybox
+        # THE SHA OF WHAT THE FINAL COMPILER JUST BUILT, RECORDED FOR B7.
+        #
+        # Phase A also installs a busybox here -- cross-compiled by gcc 15
+        # PASS 1, purely so this sandbox had a /usr/bin/sh to run a configure
+        # script with. It is a chapter 6 tool and it must not ship.
+        #
+        # Control flow already prevents that: B7 is gated on B6, B6 on B5, so
+        # a failed rebuild produces no initramfs at all rather than one
+        # holding the pass-1 copy. But that is an ARGUMENT, and this file
+        # holds everything else to a measurement. B7 compares against this.
+        sha256sum busybox | cut -d" " -f1 > "$W/busybox.sha"
         ( cd /usr/bin && ./busybox --install -s . 2>/dev/null ) || \
           ( cd /usr/bin && for _a in $(./busybox --list 2>/dev/null); do
               [ "$_a" = busybox ] || ln -sf busybox "$_a"; done )
@@ -551,6 +562,26 @@ if [ "$B6" = ok ]; then
   rm -rf "$W/ir" && mkdir -p "$W/ir/bin" "$W/ir/dev" "$W/ir/proc" "$W/ir/sys" \
                              "$W/ir/mnt/sysroot" "$W/ir/tmp" "$W/ir/tests"
   cp /usr/bin/busybox "$W/ir/bin/busybox"
+  # IS THIS THE ONE B5 BUILT, OR THE PASS-1 COPY PHASE A LEFT?
+  #
+  # Asked of the bytes rather than inferred from which rungs ran. If these
+  # differ, something overwrote /usr/bin/busybox between B5 and here and the
+  # initramfs would ship a binary from the wrong compiler -- the single thing
+  # this phase exists to prevent.
+  _want=$(cat "$W/busybox.sha" 2>/dev/null || echo missing)
+  _got=$(sha256sum "$W/ir/bin/busybox" | cut -d' ' -f1)
+  if [ "$_want" = "$_got" ]; then
+    say "    busybox in the initramfs is B5's: $(echo "$_got" | cut -c1-16)"
+  else
+    say "    THE BUSYBOX BEING PACKED IS NOT THE ONE B5 BUILT."
+    say "      B5 built:  $_want"
+    say "      packing:   $_got"
+    say "    That is the pass-1 cross copy or something else entirely, and it"
+    say "    must not ship. Stopping."
+    B7=FAIL
+  fi
+fi
+if [ "$B6" = ok ] && [ "$B7" != FAIL ]; then
 
   # BINARIES FOR THE GUEST TO RUN, COMPILED BY THE FINAL COMPILER.
   #
