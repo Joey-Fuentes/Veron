@@ -180,7 +180,7 @@ untar() {          # $1 = path prefix, e.g. /in/musl
 
 onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
 
-R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip; R7=skip; R8=skip; R9=skip; R10=skip; R11=skip; R115=skip; R12=skip; R13=skip; R14=skip; R15=skip; R16=skip; R17=skip; R18=skip; R19=skip; R20=skip
+R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip; R7=skip; R8=skip; R9=skip; R10=skip; R11=skip; R115=skip; R117=skip; R12=skip; R13=skip; R14=skip; R15=skip; R16=skip; R17=skip; R18=skip; R19=skip; R20=skip
 
 # WHAT IS ACTUALLY IN /in, BEFORE ANYTHING TRIES TO USE IT.
 #
@@ -3087,13 +3087,104 @@ FPC
 fi
 
 # ---------------------------------------------------------------------------
+head1 "RUNG 11.7 -- m4, flex, bison, python: what glibc's configure demands"
+# MEASURED, NOT INFERRED. glibc 2.43's own configure, run by tool-probe in a
+# box with a controlled PATH:
+#
+#     *** These critical programs are missing or too old:
+#         make gawk bison python
+#
+# LFS builds Python in chapter 7, for the chroot, before chapter 8's glibc --
+# and never needs it at chapter 5 because chapter 5 runs on the HOST, which has
+# one. We have no host at either point, so it moves here. That is the third
+# time this chain has had to leave the book for the same reason, and the first
+# time we had a measurement rather than an argument.
+#
+# make and gawk are already answered: rung 4.5 built make 4.4, and busybox awk
+# handles what these configures use (ENVIRON, -f, gsub, printf, match, all
+# measured) with a gawk wrapper in the box. glibc names gawk because it runs
+# `gawk --version` and parses the number.
+#
+# THE ORDER IS FORCED. m4 first, because bison and flex both need it. flex
+# before bison, because BOTH stop at
+#     configure: error: cannot find output from flex; giving up
+# -- bison's scanner ships pre-generated so it would BUILD without flex, but
+# its configure checks anyway and there is no --without to give it.
+#
+# Python last, and it is the one genuinely new package: it wants zlib, libffi
+# and openssl for modules that matter later, and this box has none of them.
+# It will configure without them and quietly build less; the check afterwards
+# names which modules are missing rather than letting that pass as success.
+if [ "$R115" = ok ]; then
+  r117=ok
+  for pk in m4 flex bison; do
+    [ "$r117" = ok ] || break
+    cd /work/src
+    rm -rf "/work/src/$pk-t" && mkdir -p "/work/src/$pk-t"
+    ( cd "/work/src/$pk-t" && untar "/in/$pk-" ) || { r117=FAIL; say "    $pk did not extract"; break; }
+    _td=$(cd "/work/src/$pk-t" && onedir "$pk-* ./$pk-*")
+    ( cd "/work/src/$pk-t/$_td" \
+      && ./configure --prefix="$PFX" --disable-nls \
+           CC="$PFX/bin/chain-cc -static" LDFLAGS="-static" > cfg.log 2>&1 \
+      && timeout 2400 make -j"$NP" MAKEINFO=true > b.log 2>&1 \
+      && make install MAKEINFO=true > /dev/null 2>&1 ) \
+      || { r117=FAIL
+           say "    $pk NOT INSTALLED"
+           tail -12 "/work/src/$pk-t/$_td/cfg.log" 2>/dev/null | sed 's/^/      /'
+           tail -12 "/work/src/$pk-t/$_td/b.log" 2>/dev/null | sed 's/^/      /'; }
+    if [ "$r117" = ok ]; then
+      # RUN IT, not just check the file. Three rungs in this job reported ok
+      # for a binary that could not execute.
+      say "    $pk: $("$PFX/bin/$pk" --version 2>&1 | head -1)"
+    fi
+  done
+
+  if [ "$r117" = ok ]; then
+    cd /work/src
+    rm -rf /work/src/py && mkdir -p /work/src/py
+    ( cd /work/src/py && untar "/in/Python-$PYTHON_VER" ) || { r117=FAIL; say "    python did not extract"; }
+    _pyd=$(cd /work/src/py && onedir "Python-* ./Python-*")
+    if [ "$r117" = ok ] && [ -n "$_pyd" ]; then
+      say "    --- libraries python wants that this box does not have ---"
+      for _l in libz libffi libssl libcrypto; do
+        ls "$SYS/usr/lib/$_l"* "/usr/lib/$_l"* >/dev/null 2>&1 \
+          || printf '      %s\n' "$_l"
+      done
+      ( cd "/work/src/py/$_pyd" \
+        && ./configure --prefix="$PFX" --without-ensurepip --disable-test-modules \
+             CC="$PFX/bin/chain-cc -static" LDFLAGS="-static" > cfg.log 2>&1 \
+        && timeout 3600 make -j"$NP" > b.log 2>&1 \
+        && make install > /dev/null 2>&1 ) \
+        || { r117=FAIL
+             say "    python NOT INSTALLED"
+             grep -aiE "error|cannot|not found" "/work/src/py/$_pyd/cfg.log" 2>/dev/null \
+               | tail -8 | sed 's/^/      /'
+             tail -15 "/work/src/py/$_pyd/b.log" 2>/dev/null | sed 's/^/      /'; }
+      if [ "$r117" = ok ]; then
+        _py=$(ls "$PFX/bin"/python3* 2>/dev/null | head -1)
+        say "    python: $("$_py" --version 2>&1 | head -1)"
+        # WHAT IT BUILT WITHOUT. glibc only needs the interpreter, so a Python
+        # missing zlib is fine HERE -- but saying so now is cheaper than
+        # discovering it when something above wants to read a .zip.
+        say "    --- modules that did NOT build ---"
+        "$_py" -c 'import importlib.util as u
+for m in ("zlib","ssl","ctypes","readline","sqlite3","bz2","lzma"):
+    print("     ", m) if not u.find_spec(m) else None' 2>&1 | head -8
+      fi
+    fi
+  fi
+  R117=$r117
+  cd /work
+fi
+
+# ---------------------------------------------------------------------------
 head1 "RUNG 12 -- LFS 5.4: linux API headers"
 # TWO KERNELS, AND THEY ARE NOT THE SAME ONE. KHDR supplies the API headers
 # glibc is compiled against; KERNEL is the image that boots. A kernel may
 # always be newer than the headers its libc was built against, and stage 4
 # keeps them separate precisely so a libc/kernel disagreement can be fixed by
 # changing one number rather than rebuilding both.
-if [ "$R115" = ok ]; then
+if [ "$R117" = ok ]; then
   cd /work/src
   if ! untar "/in/linux-$KHDR"; then
     say "    linux $KHDR did not extract"; R12=FAIL
@@ -3576,6 +3667,7 @@ printf '    %-40s %s\n' "9   gcc 10.2.0 by g++ 4.7.4"            "$R9"
 printf '    %-40s %s\n' "10  LFS 5.2 binutils pass 1"            "$R10"
 printf '    %-40s %s\n' "11  LFS 5.3 gcc 15 pass 1"              "$R11"
 printf '    %-40s %s\n' "11.5 perl (LFS puts it in ch7)"          "$R115"
+printf '    %-40s %s\n' "11.7 m4 / flex / bison / python"         "$R117"
 printf '    %-40s %s\n' "12  LFS 5.4 linux API headers"          "$R12"
 printf '    %-40s %s\n' "13  LFS 5.5 glibc"                      "$R13"
 printf '    %-40s %s\n' "14  LFS 5.6 libstdc++"                  "$R14"

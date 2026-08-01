@@ -219,6 +219,53 @@ When it does break it looks like `redefined [-Werror]` on a type both the
 kernel headers and the libc declare. Rung 13 greps for that specifically,
 because the message names a symbol rather than the pairing that caused it.
 
+## What glibc actually requires, measured
+
+`tool-probe` ran each package's own configure in a box with a controlled PATH.
+glibc answered the question this document had been arguing from the book's
+table of contents for several rounds:
+
+```
+glibc-2.43  configure: error:
+  *** These critical programs are missing or too old: make gawk bison python
+```
+
+**Python is required at LFS chapter 5, not just chapter 8.** LFS never notices
+because chapters 5 and 6 run on the host, which has one; its chapter 7 builds
+Python for the *chroot*, before chapter 8's glibc. We have no host at either
+point, so Python moves earlier -- for a reason the book does not have.
+
+That also settles `gawk`, which the trap log flagged three times: busybox awk
+handles everything m4 and bison use -- `ENVIRON`, `-f`, `gsub`, `printf`,
+`match`, all measured -- so glibc naming it is a version check against
+`gawk --version`, not a capability gap. A `gawk` wrapper around busybox awk is
+in both boxes.
+
+The rest of the set, and what each turned out to be:
+
+| tool | verdict |
+|---|---|
+| **python3** | **real, and earlier than the book puts it** -- glibc 5.5 |
+| **bison** | **real** -- glibc names it; and bison needs flex before it |
+| **flex** | **real** -- both flex and bison stop at *"cannot find output from flex"*. bison's scanner ships pre-generated, but its *configure* checks anyway |
+| **perl** | **real** -- rung 11.5, already built |
+| **split, comm** | **real** -- not busybox applets at any configuration; written in C |
+| makeinfo | texinfo; `MAKEINFO=true` disposes of it |
+| pkg-config | optional for bc; for Python it is how openssl is found |
+| gawk | false positive -- busybox awk suffices, wrapper supplied |
+
+**perl configures cleanly** (`rc=0`) with a long list of headers it did not
+find -- `db.h`, `gdbm.h`, `ndbm.h`, `bfd.h`. Those are optional modules, not
+requirements, which is why the rc is 0. Worth knowing that a package can pass
+configure while quietly building less than it would elsewhere.
+
+**m4 fails at `config.status: Something went wrong bootstrapping makefile
+fragments`**, which is autoconf's message for a substitution engine that could
+not run -- and is what the gawk wrapper is expected to fix.
+
+**bc returns 127**, meaning its configure script did not execute at all. Its
+own shell requirement, and not yet diagnosed.
+
 ## Above gcc 10: LFS chapters 5 and 6, and the traps in them
 
 `stage4-complete` uses gcc 10 as the *host* compiler for a normal LFS build --

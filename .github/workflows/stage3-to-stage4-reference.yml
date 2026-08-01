@@ -231,6 +231,11 @@ env:
   BISON_VER: '3.8.2'
   FLEX_VER: '2.6.4'
   BUSYBOX_VER: '1.36.1'
+  # PYTHON IS REQUIRED BY glibc's CONFIGURE, measured by tool-probe:
+  #   *** These critical programs are missing or too old: make gawk bison python
+  # LFS builds it in chapter 7 for the chroot and never needs it at chapter 5,
+  # because chapter 5 runs on a host that has one. We have no host.
+  PYTHON_VER: '3.14.3'
 
 jobs:
   reference:
@@ -324,7 +329,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: dl
-          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-${{ env.GCC15 }}-${{ env.GLIBC }}-${{ env.KHDR }}-${{ env.PERL_VER }}-${{ env.KERNEL }}-v3
+          key: pins-${{ env.MUSL_VER }}-${{ env.MAKE_VER }}-${{ env.MAKE_ALT }}-${{ env.BINUTILS }}-${{ env.GMP_VER }}-${{ env.MPFR_VER }}-${{ env.MPC_VER }}-${{ env.GCC47 }}-${{ env.GCC48 }}-${{ env.GCC10 }}-${{ env.GCC15 }}-${{ env.GLIBC }}-${{ env.KHDR }}-${{ env.PERL_VER }}-${{ env.KERNEL }}-${{ env.PYTHON_VER }}-v4
 
       - name: Fetch pinned upstreams (airlock -- nothing here enters the box)
         run: |
@@ -397,6 +402,7 @@ jobs:
                    "https://github.com/gavinhoward/bc/releases/download/$BC_VER/bc-$BC_VER.tar.xz" \
                    "https://github.com/westes/flex/releases/download/v$FLEX_VER/flex-$FLEX_VER.tar.gz" \
                    "https://busybox.net/downloads/busybox-$BUSYBOX_VER.tar.bz2" \
+                   "https://www.python.org/ftp/python/$PYTHON_VER/Python-$PYTHON_VER.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KHDR%%.*}.x/linux-$KHDR.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL%%.*}.x/linux-$KERNEL.tar.xz" \
                    "https://www.linuxfromscratch.org/patches/lfs/13.0/glibc-fhs-1.patch" \
