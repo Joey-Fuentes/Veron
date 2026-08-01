@@ -972,6 +972,31 @@ jobs:
             esac
           done
           echo
+          # A .py FILE CAN STILL NEED A C EXTENSION, AND THAT IS WHAT THE
+          # FIRST VERSION OF THIS AUDIT MISSED.
+          #
+          # It reported `subprocess` as "pure python -- always present", which
+          # is true of the FILE and false of what it needs: subprocess.py does
+          # `from _posixsubprocess import fork_exec`, and glibc's build died on
+          # exactly that in a statically linked python.
+          #
+          # One level down, for the stdlib wrappers where this class lives.
+          echo "  --- C extensions those modules pull in (one level down) ---"
+          for _m in $(cat /tmp/pymods.txt); do
+            case "$_m" in
+              subprocess) echo "    subprocess     needs _posixsubprocess" ;;
+              os)         echo "    os             needs posix (built in)" ;;
+              random)     echo "    random         needs _random, _sha2" ;;
+              hashlib)    echo "    hashlib        needs _hashlib or _sha2" ;;
+              json)       echo "    json           needs _json (optional)" ;;
+              struct)     echo "    struct         needs _struct" ;;
+              time)       echo "    time           IS an extension" ;;
+              collections) echo "    collections    needs _collections" ;;
+            esac
+          done
+          echo "    (a python built without these cannot import the module above)"
+          echo
+
           echo "  THE VERDICT LINE:"
           if grep -qxE 'zlib|ssl|ctypes|_ctypes|sqlite3|bz2|lzma' /tmp/pymods.txt; then
             echo "    glibc's build imports a module that needs a library this"
