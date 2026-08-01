@@ -513,24 +513,29 @@ jobs:
           echo "    /usr       : $( [ -d "$BOX/usr" ] && echo present || echo ABSENT )"
           echo "    real files : $(find "$BOX/bin" -type f -printf '%f ')"
 
-          # --unshare-all WITHOUT --share-net BRINGS UP LOOPBACK, AND THAT CAN
-          # FAIL. bwrap configures lo inside the new network namespace and this
-          # runner refused:
+          # NO NETWORK NAMESPACE, AND THIS IS A REAL WEAKENING -- SAY SO.
           #
           #     bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
           #
-          # The reference job uses the identical flag and works, so it is not
-          # the flag -- it is whatever else is holding a namespace on the runner
-          # at that moment. Rather than depend on that, ask for the namespaces
-          # individually and skip the network one entirely: --unshare-net alone
-          # gives an isolated stack without configuring an address in it.
+          # bwrap brings `lo` UP inside a new network namespace, and this
+          # runner refuses. Asking for the namespaces individually did not help,
+          # because --unshare-net is the one that triggers the setup. The
+          # reference job uses --unshare-all on the same runner image and works,
+          # so something differs about when in the job it runs; that is not yet
+          # understood.
           #
-          # ISOLATION IS UNCHANGED. --unshare-all is user+ipc+pid+net+uts+cgroup;
-          # this asks for exactly those. What is dropped is bwrap's attempt to
-          # bring lo UP, which nothing in the box uses -- the whole point is
-          # that it cannot reach the network.
+          # WHAT THIS COSTS. Without --unshare-net the box shares the runner's
+          # network stack, so a configure that wanted to reach the internet
+          # COULD. The reference job's isolation is not weakened -- this is only
+          # tool-probe, whose job is to answer questions rather than to make
+          # hermeticity claims -- but a package that quietly downloads something
+          # would go unnoticed here and fail in the real box.
+          #
+          # SO THE STEP CHECKS. After the build it looks for the artefacts of a
+          # network fetch, and the verdict says the probe is not a hermetic
+          # result. The reference job remains the thing that proves that.
           set +e
-          bwrap --unshare-user --unshare-ipc --unshare-pid --unshare-net \
+          bwrap --unshare-user --unshare-ipc --unshare-pid \
             --unshare-uts --unshare-cgroup --die-with-parent \
             --setenv PATH /bin --setenv HOME /work --setenv LC_ALL POSIX \
             --setenv CC_BIN /work/ref-tcc --setenv TCCDIR /work/tccsrc \
@@ -542,6 +547,15 @@ jobs:
             /bin/sh /src/stage4/bridge/rungs.sh
           echo "  sysroot rc=$?"
           set -e
+          # DID ANYTHING REACH THE NETWORK? The box shares the runner's stack
+          # (see above), so this is the check that replaces the namespace.
+          # A rung that silently downloaded something would otherwise look
+          # exactly like one that did not.
+          if [ -d "$BOX/work/src" ]; then
+            _n=$(find "$BOX/work" -newer "$BOX/bin/busybox" -name '*.tar.*' 2>/dev/null | wc -l)
+            [ "$_n" = 0 ] && echo "  no tarballs appeared during the build" \
+                          || echo "  $_n NEW tarball(s) in the box -- something fetched"
+          fi
 
           d=$(ls -d src/$PKG* 2>/dev/null | grep -v tar | head -1)
           [ -n "$d" ] || { echo "  no unpacked $PKG in src/"; exit 0; }
@@ -587,7 +601,7 @@ jobs:
           echo
           echo "  === THE PACKAGE, IN THE BOX ==="
           set +e
-          bwrap --unshare-user --unshare-ipc --unshare-pid --unshare-net \
+          bwrap --unshare-user --unshare-ipc --unshare-pid \
             --unshare-uts --unshare-cgroup --die-with-parent \
             --setenv PATH /work/prefix/bin:/bin --setenv HOME /work --setenv LC_ALL POSIX \
             --bind "$BOX" / \
