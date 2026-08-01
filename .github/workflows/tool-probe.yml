@@ -28,6 +28,21 @@
 # in scripts/, glibc wants python for gen-tunable-list.py -- so a clean result
 # here is not a promise. It is a much shorter list of surprises.
 
+# THE SCOPE, BECAUSE THIS JOB HAS DRIFTED TOWARD BEING A SECOND REFERENCE JOB
+# MORE THAN ONCE.
+#
+#   IN SCOPE   what does a package's configure REACH FOR, and what does it
+#              silently disable when it is not there. Answered with the least
+#              box that can ask -- musl, make, binutils, rung 5, one minute.
+#
+#   OUT OF SCOPE  does the package BUILD CORRECTLY. That needs the compiler the
+#              ladder actually uses, which is gcc 10 at rung 9, and building
+#              nine rungs here would make this a slow copy of
+#              stage3-to-stage4-reference answering nothing new.
+#
+# A parse error here is probably tcc. A missing header or library is the box,
+# and that IS the answer this job exists for.
+
 name: tool-probe
 
 on:
@@ -660,19 +675,29 @@ jobs:
           # in-box script reads has to be passed explicitly.
           export PATH=/work/prefix/bin:/bin
           cd /work/pkg
+          # THE COMPILER IS tcc, AND THE PROBE STOPS AT RUNG 5 ON PURPOSE.
+          #
+          # This is not a small reference job. It exists to answer one question
+          # about one component with the LEAST box that can ask it -- musl,
+          # make, binutils, in about a minute. Building nine rungs first so the
+          # package could be compiled by gcc 10 would make it a slow duplicate
+          # of the reference job and answer nothing the reference job does not.
+          #
+          # WHAT THAT MEANS FOR THE ANSWER. A failure here is "this package
+          # against a musl sysroot and tcc", which is exactly right for
+          # questions about MISSING TOOLS AND LIBRARIES -- what does configure
+          # reach for, what does it silently disable, what is absent from the
+          # box. Those do not depend on which compiler is used.
+          #
+          # IT IS THE WRONG TOOL FOR A CODEGEN QUESTION. perl failed here at
+          # dquote.c:61 with "'{' expected", which is tcc parsing C99 it does
+          # not handle -- and the reference job builds perl with gcc 10 at rung
+          # 11.5 without trouble. That is a real tcc finding and a useless perl
+          # finding. Read failures with that in mind: a PARSE error is probably
+          # the compiler, a MISSING HEADER OR LIBRARY is the box.
           CC=/work/prefix/bin/cc-static
           [ -x "$CC" ] || CC=/work/ref-tcc
-          echo "  cc: $CC"
-          # THE LIST BELOW IS THE ANSWER, NOT A WARNING.
-          #
-          # The question "what does Python need hermetically" is answered by
-          # running it against a box that has ONLY what our chain built. Every
-          # library named here is one the real ladder would have to add a rung
-          # for -- so a short list is good news and a long one is scope.
-          #
-          # STOP_AFTER=5 gives musl, make, binutils and the arithmetic
-          # libraries. Nothing else. That is deliberate: adding zlib to make
-          # Python happier would answer a different, easier question.
+          echo "  cc: $CC  (tcc -- see the note above before blaming the package)"
           echo "  --- libraries this box does NOT have ---"
           for l in libz libffi libssl libcrypto libncurses libreadline libexpat libgdbm; do
             ls /usr/lib/$l* >/dev/null 2>&1 || printf '    %s\n' "$l"
@@ -804,6 +829,100 @@ jobs:
             /bin/sh /work/pkg.sh
           echo "  package rc=$?"
           set -e
+
+      # WHAT DOES glibc ACTUALLY ASK OF python? GREP IT, DO NOT GUESS.
+      #
+      # Rung 11.7 builds a python missing zlib, ssl, ctypes and libffi, and
+      # "is that enough for glibc" has now been answered by reasoning three
+      # times -- mine, and it has been the same reasoning each time. The source
+      # is downloaded a few steps above and this takes seconds.
+      #
+      # IT DOES NOT NEED THE SANDBOX. That is why it lives here rather than in
+      # the hermetic step below: reading a source tree is not a build, and
+      # making it wait on a sealed box that has never completed would be the
+      # same mistake as putting it at rung 13, forty minutes into a ladder,
+      # AFTER python is already built.
+      - name: 'WHAT glibc ASKS OF python: read the source, not the tea leaves'
+        run: |
+          set -u
+          set +e
+          d=$(ls -d src/glibc-* 2>/dev/null | grep -v tar | head -1)
+          [ -n "$d" ] || { echo "  no unpacked glibc in src/"; exit 0; }
+          echo "  reading $d"
+          echo
+
+          # 1. WHICH SCRIPTS THE BUILD RUNS. Makefiles invoke them as
+          #    $(PYTHON) something.py; maintainer scripts that are never run by
+          #    a build do not appear this way, which is the point.
+          echo "  --- python scripts the makefiles invoke ---"
+          grep -rhoE '\$\(PYTHON[^)]*\)[^;|]*\.py|python3? [^;|]*\.py' \
+            "$d"/Makefile* "$d"/*/Makefile* "$d"/*/*/Makefile* 2>/dev/null \
+            | grep -oE '[A-Za-z0-9_/.-]+\.py' | sort -u > /tmp/pyscripts.txt
+          if [ -s /tmp/pyscripts.txt ]; then
+            sed 's/^/    /' /tmp/pyscripts.txt
+          else
+            echo "    none found -- either the build runs no python, or the"
+            echo "    makefiles spell it differently. Checking scripts/ anyway."
+            ls "$d"/scripts/*.py 2>/dev/null | xargs -n1 basename 2>/dev/null \
+              | sed 's/^/    (in scripts\/) /' | head -20
+          fi
+          echo
+
+          # 2. WHAT THEY IMPORT. Only the scripts the build actually runs, or
+          #    every one in scripts/ if the makefile grep found nothing -- the
+          #    second is the pessimistic answer and that is the right default.
+          echo "  --- modules those scripts import ---"
+          : > /tmp/pymods.txt
+          if [ -s /tmp/pyscripts.txt ]; then
+            _list=$(cat /tmp/pyscripts.txt)
+          else
+            _list=$(ls "$d"/scripts/*.py 2>/dev/null)
+          fi
+          for _s in $_list; do
+            _f="$d/$_s"
+            [ -f "$_f" ] || _f="$_s"
+            [ -f "$_f" ] || _f=$(find "$d" -name "$(basename "$_s")" 2>/dev/null | head -1)
+            [ -f "$_f" ] || continue
+            grep -hoE '^[[:space:]]*(import|from)[[:space:]]+[A-Za-z0-9_.]+' "$_f" 2>/dev/null \
+              | awk '{print $2}' | cut -d. -f1
+          done | sort -u > /tmp/pymods.txt
+          sed 's/^/    /' /tmp/pymods.txt
+          echo
+
+          # 3. CAN A STRIPPED PYTHON IMPORT THEM? The runner's python is not
+          #    the one we build, but it can answer which of these are STDLIB
+          #    PURE -- present in any interpreter -- versus extension modules
+          #    that need a library we do not have.
+          echo "  --- which of those need a C extension, and which do not ---"
+          for _m in $(cat /tmp/pymods.txt); do
+            case "$_m" in
+              __future__|abc|argparse|ast|collections|copy|csv|difflib|enum|\
+              functools|glob|io|itertools|json|keyword|linecache|os|pprint|re|\
+              shlex|shutil|string|subprocess|sys|textwrap|tempfile|traceback|\
+              types|typing|warnings)
+                printf '    %-18s pure python -- always present\n' "$_m" ;;
+              zlib|ssl|ctypes|_ctypes|sqlite3|bz2|lzma|readline|curses|hashlib)
+                printf '    %-18s NEEDS A LIBRARY -- this box has none of them\n' "$_m" ;;
+              *)
+                # Ask the runner's python whether it is built in.
+                if python3 -c "import sys,importlib.util as u; s=u.find_spec('$_m'); sys.exit(0 if s and not (s.origin or '').endswith('.so') else 1)" 2>/dev/null; then
+                  printf '    %-18s pure python or built in\n' "$_m"
+                else
+                  printf '    %-18s extension module -- CHECK THIS ONE\n' "$_m"
+                fi ;;
+            esac
+          done
+          echo
+          echo "  THE VERDICT LINE:"
+          if grep -qxE 'zlib|ssl|ctypes|_ctypes|sqlite3|bz2|lzma' /tmp/pymods.txt; then
+            echo "    glibc's build imports a module that needs a library this"
+            echo "    box does not build. That library becomes a rung BEFORE"
+            echo "    python, and the line above names it."
+          else
+            echo "    Nothing glibc's build imports needs zlib, ssl, ctypes or"
+            echo "    any other absent library. A stripped python is enough,"
+            echo "    and rung 11.7 does not need more than it already builds."
+          fi
 
       - name: 'THE GAWK QUESTION: can busybox awk do what m4 and bison need?'
         run: |
