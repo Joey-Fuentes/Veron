@@ -1,0 +1,101 @@
+From: Veron <spikes/stage3/patches>
+Subject: [PATCH] tccgen: gvtst_set must not fold a register as a constant
+
+`if (some_long_double)` is always FALSE on arm64. Every explicit comparison
+is correct -- ==, !=, <, >, <=, >= all pass -- and only the implicit truth
+test fails, which is what made it look like a comparison bug for several
+rounds when it is not one.
+
+WHY. gvtst_set turns a value into a condition:
+
+    if (vtop->r != VT_CMP) {
+        vpushi(0);
+        gen_op(TOK_NE);
+        if (vtop->r != VT_CMP) /* must be VT_CONST then */
+            vset_VT_CMP(vtop->c.i != 0);
+    }
+
+The comment is the bug. On arm64 a long double comparison is performed by
+calling a helper -- __netf2 and friends in lib-arm64.c -- and turning its
+result into 0/1 with cset, so gen_op leaves a real INTEGER REGISTER, neither
+VT_CMP nor VT_CONST. vtop->c.i is then the constant field of a
+register-resident value: garbage, in practice zero. The condition folds to a
+compile-time false and NO BRANCH IS EMITTED.
+
+Measured, `int g(long double L){ if (L) return 1; return 0; }` on aarch64:
+
+    bl   __netf2
+    cmp  w0, #0
+    cset w0, ne
+    nop              <- the conditional branch that should be here
+    mov  w0, #0      <- so the function always returns 0
+
+`A != B` works because it is consumed as a VALUE, where the cset result in w0
+is exactly right. Only the condition path is affected.
+
+WHAT IT COSTS. musl's fmt_fp is built on `for (; y; y = ...)` and `if (y)`,
+so the digit-extraction loop exits before its first iteration and nothing
+formats a float at all. printf("%.6f", 5.008) gives 8.000000 -- the exponent
+survives and the mantissa never gets written. Every value comes out as the
+next power of two at or above itself: 1.5 -> 2, 2.5 -> 4, 5.008 -> 8.
+
+Nothing notices for a long time, because compiler builds do not format
+floats. It surfaced building perl, where `use 5.008` compares against $] and
+perl builds $] by FORMATTING a double -- so the version string read as
+v8.0.0 and perl refused to build against itself.
+
+THE FIX. Fold only when the value really is a constant. A value already in a
+register is tested the ordinary way, which every backend can already do:
+gjmp_cond's integer path emits cbz/cbnz on it.
+
+TESTED on aarch64 under qemu-aarch64-static, with an x86_64-hosted arm64 tcc:
+
+    before: if(A) 0   after: if(A) 1     (A = 5.0L)
+    and all of ==, !=, <, >, <=, >=, !, if(0.0L) unchanged and correct
+    the fmt_fp digit loop goes from 0 digits extracted to 8
+
+Regression-tested: if() on int, long, double, float, pointer, function call,
+&&, ||, while() -- all unchanged. tcc's own `make test` passes, including
+ret_longdouble_test and stdarg_test.
+
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -1065,8 +1065,36 @@
+     if (vtop->r != VT_CMP) {
+         vpushi(0);
+         gen_op(TOK_NE);
+-        if (vtop->r != VT_CMP) /* must be VT_CONST then */
+-            vset_VT_CMP(vtop->c.i != 0);
++        if (vtop->r != VT_CMP) {
++            /* THE COMMENT USED TO SAY "must be VT_CONST then" AND IT IS NOT
++               ALWAYS TRUE.
++ 
++               On arm64 a long double comparison is done by calling a helper
++               (__netf2 and friends) and turning its result into 0/1 with
++               cset, so gen_op leaves a real INTEGER REGISTER rather than
++               VT_CMP or VT_CONST. Reading vtop->c.i in that case reads the
++               constant field of a register-resident value -- garbage, and in
++               practice zero -- so `if (some_long_double)` folded to a
++               compile-time FALSE and no branch was emitted at all.
++ 
++               Measured on aarch64: every explicit comparison was correct and
++               only `if (x)` failed, which is what made it look like a
++               comparison bug rather than a truth-test one. musl's fmt_fp is
++               built on `for (; y; y = ...)` loops, so nothing ever formatted
++               a float: 5.008 printed as 8.000000, the exponent alone.
++ 
++               So only fold when it really is a constant. A value already in
++               a register is tested the ordinary way, which every backend can
++               already do -- gjmp_cond's integer path emits cbz/cbnz on it. */
++            if ((vtop->r & (VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST)
++                vset_VT_CMP(vtop->c.i != 0);
++            else {
++                /* A register holding 0/1: compare it against zero so the
++                   flags are set, and record that as the comparison. */
++                vpushi(0);
++                gen_op(TOK_NE);
++            }
++        }
+     }
+ 
+     p = inv ? &vtop->jfalse : &vtop->jtrue;

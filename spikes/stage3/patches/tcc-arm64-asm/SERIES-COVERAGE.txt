@@ -97,3 +97,39 @@ uxtx
     cross path and worth carrying and reporting, but the vfprintf.c miscompile
     measured in CI -- swap one gcc-built object and every value is correct --
     is a separate fault still to be found.
+
+
+0007-tccgen-gvtst_set-must-not-fold-a-register-as-a-constant.patch
+    OURS. The bug that actually stopped the bridge at perl.
+
+    `if (some_long_double)` was always FALSE. Every explicit comparison was
+    correct -- ==, !=, <, >, <=, >= all pass -- and only the implicit truth
+    test failed, which is what made it look like a comparison bug for several
+    rounds when it is not one.
+
+    gvtst_set assumed that if gen_op does not leave VT_CMP it "must be
+    VT_CONST then" and read vtop->c.i. On arm64 a long double comparison
+    calls __netf2 and csets the result, leaving a real INTEGER REGISTER --
+    neither. c.i was then the constant field of a register-resident value,
+    in practice zero, so the condition folded to a compile-time false and no
+    branch was emitted at all:
+
+        bl __netf2 ; cmp w0,#0 ; cset w0,ne ; nop ; mov w0,#0
+
+    musl's fmt_fp is built on `for (; y; y = ...)` loops, so no float was
+    ever formatted: printf("%.6f", 5.008) gave 8.000000, the exponent alone.
+
+    0006 AND 0007 ARE BOTH NEEDED, measured on a clean tree: 0007 alone fixes
+    if(A) but leaves !Z wrong, because that needs 0.0L to be a correct
+    constant, which is 0006. Together all thirteen cases in the local test
+    pass.
+
+    Verified with an x86_64-hosted arm64 tcc under
+    spikes/toolbox/qemu-aarch64-static. Regression-tested against if() on
+    int, long, double, float, pointer, function call, &&, ||, while(). tcc's
+    own `make test` passes, including ret_longdouble_test and stdarg_test.
+
+    STILL UNVERIFIED: whether this is the bridge's bug. The one-file swap in
+    CI showed that a gcc-built vfprintf.o fixes everything, which is
+    consistent -- but the bridge builds NATIVELY on arm64 where 0006 is inert,
+    so if 0007 alone is enough there, it will show in the next reference run.
