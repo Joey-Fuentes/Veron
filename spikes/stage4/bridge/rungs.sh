@@ -3423,6 +3423,21 @@ head1 "RUNG 11.7 -- m4, flex, bison, python: what glibc's configure demands"
 # measured) with a gawk wrapper in the box. glibc names gawk because it runs
 # `gawk --version` and parses the number.
 #
+# -isystem $S/usr/include, BECAUSE THE HEADERS ARE IN THE SYSROOT AND THE
+# COMPILER DOES NOT LOOK THERE.
+#
+# Rung 12 now runs first and installs 1003 kernel headers into $S/usr/include
+# -- and m4 still failed with
+#
+#     stackvma.c:327: fatal error: linux/fs.h: No such file or directory
+#
+# because chain-cc wraps gcc 10 and passes no -I at all, so it searches its own
+# /usr/include: the musl sysroot from rung 2, which has no kernel headers.
+# Reordering the rungs was necessary and not sufficient.
+#
+# -isystem rather than -I, because these are system headers: it keeps them out
+# of the warning and dependency paths where a project's own -I belongs.
+#
 # THE ORDER IS FORCED. m4 first, because bison and flex both need it. flex
 # before bison, because BOTH stop at
 #     configure: error: cannot find output from flex; giving up
@@ -3470,7 +3485,8 @@ if [ "$R12" = ok ]; then
       done
       ( cd "/work/src/py/$_pyd" \
         && ./configure --prefix="$PFX" --without-ensurepip --disable-test-modules \
-             CC="$PFX/bin/chain-cc -static" LDFLAGS="-static" > cfg.log 2>&1 \
+             CC="$PFX/bin/chain-cc -static -isystem $S/usr/include" \
+             LDFLAGS="-static" > cfg.log 2>&1 \
         && timeout 3600 make -j"$NP" > b.log 2>&1 \
         && make install > /dev/null 2>&1 ) \
         || { r117=FAIL
