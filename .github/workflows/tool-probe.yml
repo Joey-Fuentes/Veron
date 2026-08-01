@@ -625,6 +625,9 @@ jobs:
             --setenv LD_LIBRARY_PATH /lib \
             --setenv CC_BIN /work/ref-tcc --setenv TCCDIR /work/tccsrc \
             --setenv ARM "probe-$PKG" --setenv STOP_AFTER 5 \
+            --setenv MAKE_VER 3.82 --setenv MAKE_ALT 4.4 \
+            --setenv MUSL_VER 1.2.5 --setenv BINUTILS 2.30 \
+            --setenv GMP_VER 6.3.0 --setenv MPFR_VER 4.2.2 --setenv MPC_VER 1.3.1 \
             --bind "$BOX" / \
             --ro-bind "$PWD/spikes" /src --ro-bind "$PWD/pins" /in \
             --bind "$BOX/out" /out \
@@ -661,6 +664,18 @@ jobs:
           done
           echo
           if [ -x ./Configure ]; then
+            # A `gcc` ON PATH, BECAUSE perl's Configure WRITES SCRIPTS THAT
+            # CALL IT BY NAME.
+            #
+            #     ./Configure: ./UU/checkcc: line 10: gcc: not found
+            #
+            # -Dcc sets the compiler for the probes Configure runs directly,
+            # but checkcc and several of its siblings are generated shell that
+            # spell `gcc` literally. There is no -D for that. A symlink is the
+            # smallest honest answer: it points at the SAME compiler -Dcc
+            # names, so nothing is being substituted -- only reached under a
+            # second name.
+            ln -sf "$CC" /work/prefix/bin/gcc 2>/dev/null || true
             ./Configure -des -Dprefix=/work/out/pkg -Dcc="$CC" > c.log 2>&1
           else
             ./configure --prefix=/work/out/pkg --disable-nls CC="$CC" > c.log 2>&1

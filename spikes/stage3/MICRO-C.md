@@ -438,6 +438,82 @@ a 200-operator file from 83 MB to 3.4 MB.
 
 ---
 
+## FIXED: `if (long double)` was always false, and it stopped perl
+
+**`gvtst_set` folded a register as if it were a constant.** Two patches, both
+in `spikes/stage3/patches/tcc-arm64-asm/`, and the probe on a native arm64
+runner now formats every value correctly with no gcc object anywhere:
+
+```
+                      before        after
+literal 5.008         8.000000      5.008000
+1.5 2.5 3.5           2.000 4.000   1.500 2.500 3.500
+(double)L             8.000000      5.008000
+```
+
+### The bug
+
+`tccgen.c`'s `gvtst_set` turns a value into a condition:
+
+```c
+if (vtop->r != VT_CMP) {
+    vpushi(0); gen_op(TOK_NE);
+    if (vtop->r != VT_CMP) /* must be VT_CONST then */
+        vset_VT_CMP(vtop->c.i != 0);
+}
+```
+
+The comment is the bug. On arm64 a long double comparison calls `__netf2` and
+turns the result into 0/1 with `cset`, so `gen_op` leaves a real **integer
+register** -- neither `VT_CMP` nor `VT_CONST`. `c.i` is then the constant field
+of a register-resident value, in practice zero, and the condition folds to a
+compile-time false. No branch is emitted at all:
+
+```
+bl __netf2 ; cmp w0,#0 ; cset w0,ne ; nop ; mov w0,#0
+```
+
+`A != B` works because it is consumed as a *value*, where the `cset` result is
+exactly right. **Only the condition path breaks** -- which is why every
+explicit comparison passed and only `if (x)` failed, and why it took five wrong
+theories to find.
+
+musl's `fmt_fp` is built on `for (; y; y = ...)` and `if (y)`. Every one exits
+before its first iteration, no digits are extracted, and the value prints as
+its exponent alone: 1.5 → 2, 2.5 → 4, 5.008 → 8.
+
+### Two patches, both needed
+
+**0007** is the fix above. **0006** corrects long double *constant emission*
+when cross-compiling: `init_putv` chose its path by comparing **sizes**, and
+x86_64 and arm64 are both 16 bytes with completely different formats -- x87
+80-bit versus IEEE binary128 -- so a cross tcc memcpy'd host x87 bytes into a
+binary128 slot and `__trunctfdf2` returned zero for everything.
+
+Measured on a clean tree: 0007 alone fixes `if(A)` but leaves `!Z` wrong,
+because that needs `0.0L` to be a correct constant. 0006 is inert on a native
+arm64 build, which is why the CI fix needed only 0007.
+
+### How it was found, after five wrong theories
+
+| theory | how it died |
+|---|---|
+| optimisation | `-O0` changed nothing |
+| `libtcc1.a` missing f128 helpers | all 22 quad routines present |
+| `__trunctfdf2` wrong | byte-identical to host gcc, both directions |
+| variadic ABI / `va_arg(double)` | correct in three shapes, three columns |
+| `__trunctfdf2` returning zero locally | a **cross-compilation artefact** -- 0006, a real bug, but not this one |
+
+What broke the loop was building tcc locally and running its output under
+`spikes/toolbox/qemu-aarch64-static` -- seconds per iteration instead of a
+twenty-minute CI round. That emulator has been in the repository the whole
+time.
+
+And the step that actually located it was instrumenting `gjmp_cond` with a
+`fprintf` and finding it **was never called** for the failing case. Every round
+spent reading code and reasoning about mechanisms produced a wrong answer;
+the first measurement produced the right one.
+
 ## tcc miscompiles musl's vfprintf.c, and one object swap proves it
 
 **The bug is `src/stdio/vfprintf.c` compiled by tcc.** Take the musl tcc built,

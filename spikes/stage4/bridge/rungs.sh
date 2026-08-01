@@ -3247,6 +3247,17 @@ COMMC
     # -fno-strict-aliasing is what perl's own Configure adds for gcc and what
     # every distribution builds it with; leaving it to chance here would be
     # relying on Configure detecting a compiler it has never seen.
+    # A `gcc` ON PATH TOO. perl's Configure writes helper scripts -- UU/checkcc
+    # and siblings -- that spell `gcc` literally, and there is no -D for those:
+    #
+    #     ./Configure: ./UU/checkcc: line 10: gcc: not found
+    #
+    # NOTHING IS CLOBBERED. Rung 6 installs its gcc into /work/out/bin and
+    # rung 8 into /work/out2/bin -- never $PFX/bin, which holds the tools
+    # (binutils, make) rather than any compiler. So this name is free, and
+    # pointing it at chain-cc means every path perl takes reaches the SAME
+    # compiler -Dcc already names.
+    ln -sf "$PFX/bin/chain-cc" "$PFX/bin/gcc" 2>/dev/null || true
     ./Configure -des -Dprefix="$PFX" -Dcc="$PFX/bin/chain-cc" \
       -Dldflags="-static" \
       -Doptimize="-O0 -fno-strict-aliasing -fwrapv" > c.log 2>&1
