@@ -75,6 +75,23 @@ jobs:
           # nothing to eliminate.
           sudo apt-get install -y --no-install-recommends \
             busybox-static curl xz-utils gcc bubblewrap musl-tools file git make
+          # THE LINE THAT WAS MISSING, AND THE ONLY ONE THAT MATTERED.
+          #
+          # Ubuntu 24.04 restricts unprivileged user namespaces through
+          # AppArmor, so bwrap cannot bring up loopback and reports
+          #
+          #     bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+          #
+          # stage3-to-stage4-reference has had this sysctl since it was
+          # written, one line under its apt-get. Five rounds went into flag
+          # variations, namespace decomposition, step splitting and install
+          # ordering -- all of which were the same in both jobs -- because I
+          # compared the bwrap INVOCATIONS instead of diffing the whole steps.
+          #
+          # The gate below is what found it, by printing what the runner allows
+          # rather than another theory:
+          #     apparmor userns restrict: 1
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
 
       # DOES bwrap WORK AT ALL, IN THIS JOB, RIGHT NOW?
       #

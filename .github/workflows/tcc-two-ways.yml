@@ -29,6 +29,12 @@ on:
   push:
     paths:
       - 'spikes/stage3/**'
+      # DOCUMENTATION DOES NOT CHANGE A COMPILER. stage3-hermetic-arm64 has
+      # excluded markdown since it was written; these two never did, so an
+      # edit to spikes/stage3/MICRO-C.md fired both of them -- three runs for
+      # a paragraph. Same pattern, same reason.
+      - '!spikes/**/*.md'
+      - '!spikes/*.md'
       - '.github/workflows/tcc-two-ways.yml'
   workflow_dispatch:
 

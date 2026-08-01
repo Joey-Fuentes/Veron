@@ -1038,7 +1038,179 @@ EOF
     R3=FAIL
     say "    both routes failed -- read the rc and the ELF line above"
   fi
+
+  # ---- FLOATING POINT, ASKED HERE RATHER THAN AT RUNG 11.5 ----
+  #
+  # This probe used to live in the perl rung, forty minutes into the ladder,
+  # because that is where the symptom appeared: perl refused to build with
+  # "Perl v8.0.0 required--this is only v5.42.2", which is `use 5.008` compared
+  # against a $] that was FORMATTED from a double.
+  #
+  # Nothing in it depends on anything above rung 3. It needs a compiler, a libc
+  # and the ability to link a hosted program, all of which exist right here. So
+  # it asks in the first minute instead of the fortieth, and a regression shows
+  # up next to the thing that caused it.
+  #
+  # AT THIS RUNG THERE IS ONLY tcc, which is the useful half: musl's
+  # vfprintf.c was compiled by tcc, so if a tcc-built program formats wrongly
+  # against it the fault is in the formatting code and no gcc is needed to say
+  # so. The gcc comparison still happens later, where a gcc exists.
+  # WHICH printf IS THIS? ASK BEFORE INTERPRETING THE NUMBERS.
+  #
+  # Two candidates and they need different fixes:
+  #
+  #   musl's, compiled by TCC at rung 2. src/stdio/vfprintf.c is present --
+  #   sources/musl.toml drops only src/complex/*.c and rung 2 reports
+  #   1349/1349 compiled -- so if this is the fault it is tcc miscompiling
+  #   float formatting, and it would be a stage 3 bug visible here.
+  #
+  #   the ABI, in which case musl's code is correct and the double never
+  #   arrives where the callee looks for it.
+  #
+  # THE SAME PROGRAM COMPILED BY tcc DIRECTLY tells them apart from the other
+  # end: if tcc's own output formats correctly against the same musl, the
+  # formatting code is sound and gcc 10's variadic path is the suspect. If both
+  # are wrong, the fault is underneath both -- in the libc that rung 2 built.
+  say "    --- compiled by tcc, against the musl tcc built ---"
+  ( cd /tmp && rm -f fpt.bin
+    # $CC IS "path -B dir", TWO WORDS. Quoting it made the shell look for a
+    # file literally named `/work/ref-tcc -B/work/tccsrc`:
+    #     line 2952: /work/ref-tcc -B/work/tccsrc: not found
+    # Unquoted here on purpose -- it is a command line, not a filename.
+    # shellcheck disable=SC2086
+    if $CC $HOSTED -static -o fpt.bin fp.c 2>/tmp/fpt.err && ./fpt.bin 2>&1 | head -4; then
+      :
+    else
+      say "      tcc could not build it:"
+      head -3 /tmp/fpt.err 2>/dev/null | sed 's/^/        /'
+    fi
+    rm -f fpt.bin fp.c )
+
+  # THE ANSWER: THE MANTISSA IS LOST, THE EXPONENT SURVIVES.
+  #
+  #     manual whole.frac  = 5.008000   CORRECT -- the double is intact
+  #     snprintf %.6f      = 8.000000
+  #     (double)5 printed  = 8.0
+  #     two doubles        = 2.000 4.000   (expect 1.500 2.500)
+  #     int then double    = 7 4.000       (expect 7 3.500)
+  #
+  # Every printed value is the next POWER OF TWO at or above the real one:
+  # 1.5 -> 2, 2.5 -> 4, 3.5 -> 4, 5.0 -> 8, 5.008 -> 8. The exponent field
+  # arrives correctly and the mantissa does not.
+  #
+  # AND THE MANUAL DECOMPOSITION IS RIGHT, which is what makes this precise:
+  # `(long)a` and `(a - whole) * 1000000` both give the correct answer, so the
+  # double in memory is sound. It is damaged between the caller and printf --
+  # i.e. in variadic argument passing, where aarch64 puts doubles in v0-v7 and
+  # the callee reads them back through the va_list.
+  #
+  # `int then double = 7 4.000` narrows it further: the INTEGER argument is
+  # correct in the same call that mangles the double. So the general-purpose
+  # register path works and only the SIMD one is wrong -- which is why every
+  # non-printing operation in the whole chain has been fine, and why gcc built
+  # gcc built gcc without noticing.
+  #
+  # WHO IS AT FAULT IS STILL OPEN, and the tcc comparison below is what
+  # separates them: musl's vfprintf.c reading the va_list wrongly, or the
+  # caller placing the value wrongly. musl was compiled by tcc at rung 2;
+  # everything above was compiled by gcc. If tcc's own binary formats
+  # correctly against the same musl, the formatting code is sound.
+  #
+  # THE ANSWER, FROM THE RUN THAT FIRST ASKED:
+  #
+  #     literal 5.008      = 8.000000   (expect 5.008000)
+  #     strtod("5.008")    = 8.000000   (expect 5.008000)
+  #     (int)(5.008*1000)  = 5008       correct
+  #     5.008 > 5.007      = 1          correct
+  #     5.008 == strtod    = 1          correct
+  #
+  # THE VALUE IS FINE. It is stored, multiplied, truncated and compared
+  # correctly -- every operation that keeps the double in a register or
+  # converts it to an integer gives the right answer. Only PRINTING it is
+  # wrong, and it is wrong by losing the integer part.
+  #
+  # That is not codegen. It is the VARIADIC CALLING CONVENTION: on aarch64 a
+  # double passed to a `...` function goes in v0-v7, not x0-x7, and the callee
+  # walks the va_list expecting it there. Getting 8.000000 from 5.008 is what a
+  # printf reading the wrong register file produces.
+  #
+  # WHICH EXPLAINS PERL EXACTLY. `use 5.008` compares against $], and perl
+  # builds $] by FORMATTING a double. The version string is printed wrongly, so
+  # the comparison is against v8.0.0 -- and every other perl operation works,
+  # which is why it got as far as running miniperl.
+  #
+  # WHERE IT COMES FROM IS STILL OPEN. gcc 10 built these objects, but its
+  # libgcc soft-float helpers descend from tcc's, and musl's printf is compiled
+  # by the same chain. The probe below now separates those: if snprintf into a
+  # buffer is also wrong the fault is in musl's formatting code, and if only
+  # the variadic path is wrong it is the ABI.
+  say "    --- can this compiler do floating point? ---"
+  ( cd /tmp && rm -f fp.c fp.bin
+    cat > fp.c <<'FPC'
+#include <stdio.h>
+#include <stdlib.h>
+int main(void)
+{
+    double a = 5.008;
+    double b = strtod("5.008", 0);
+    double c = 12.5;
+    printf("      literal 5.008      = %.6f  (expect 5.008000)\n", a);
+    printf("      strtod(\"5.008\")    = %.6f  (expect 5.008000)\n", b);
+    printf("      (int)(5.008*1000)  = %d       (expect 5008)\n", (int)(a * 1000.0));
+    printf("      (long)12.5         = %ld       (expect 12)\n", (long)c);
+    printf("      5.008 > 5.007      = %d        (expect 1)\n", a > 5.007);
+    printf("      5.008 == strtod    = %d        (expect 1)\n", a == b);
+
+    /* IS IT THE VARIADIC ABI OR THE FORMATTING CODE?
+     *
+     * printf is variadic: a double goes in v0-v7 on aarch64 and the callee
+     * reads the va_list expecting it there. snprintf is variadic too, so both
+     * exercise the same path -- but vsnprintf called through an explicit
+     * va_list, and a manual decomposition that uses no formatting at all,
+     * do not.
+     *
+     * If the manual decomposition is right while %f is wrong, the double is
+     * intact in memory and only the ARGUMENT PASSING is broken. If the
+     * decomposition is also wrong, the value itself is damaged and the earlier
+     * comparisons were lucky. */
+    {
+        char buf[64];
+        long whole = (long)a;
+        long frac  = (long)((a - (double)whole) * 1000000.0 + 0.5);
+        snprintf(buf, sizeof buf, "%.6f", a);
+        printf("      snprintf %%.6f     = %s  (expect 5.008000)\n", buf);
+        printf("      manual whole.frac  = %ld.%06ld  (expect 5.008000)\n", whole, frac);
+        printf("      (double)5 printed  = %.1f       (expect 5.0)\n", (double)5);
+        printf("      two doubles        = %.3f %.3f  (expect 1.500 2.500)\n", 1.5, 2.5);
+        printf("      int then double    = %d %.3f     (expect 7 3.500)\n", 7, 3.5);
+
+        /* THE BITS, WHICH SAY WHETHER IT IS THE VALUE OR THE PATH.
+         *
+         * Printed as two 32-bit integers through the INTEGER argument path,
+         * which the line above shows is working. If these are the correct IEEE
+         * 754 bits for 5.008 then the double is intact everywhere except the
+         * variadic float path, and the fault is the calling convention. If
+         * they are wrong, the value itself was damaged earlier and every
+         * comparison above was coincidence. */
+        {
+            union { double d; unsigned int u[2]; } bits;
+            bits.d = 5.008;
+            printf("      5.008 raw bits     = %08x %08x\n", bits.u[1], bits.u[0]);
+            printf("      (expect              40140831 26e978d5)\n");
+        }
+    }
+    return 0;
+}
+FPC
+    if $CC $HOSTED -static -o fp.bin fp.c 2>/tmp/fp.err && ./fp.bin; then
+      :
+    else
+      say "      the float probe would not build or run:"
+      head -5 /tmp/fp.err 2>/dev/null | sed 's/^/        /'
+    fi
+    rm -f fp.bin )
 fi
+
 
 # ---------------------------------------------------------------------------
 head1 "RUNG 3.5 -- GNU make 3.82, by literal commands (live-bootstrap's recipe)"
@@ -2931,161 +3103,6 @@ COMMC
   # floating point, so what matters is whether string-to-double, double
   # arithmetic and double-to-integer all agree with the same operations on a
   # compiler nobody doubts.
-  # WHICH printf IS THIS? ASK BEFORE INTERPRETING THE NUMBERS.
-  #
-  # Two candidates and they need different fixes:
-  #
-  #   musl's, compiled by TCC at rung 2. src/stdio/vfprintf.c is present --
-  #   sources/musl.toml drops only src/complex/*.c and rung 2 reports
-  #   1349/1349 compiled -- so if this is the fault it is tcc miscompiling
-  #   float formatting, and it would be a stage 3 bug visible here.
-  #
-  #   the ABI, in which case musl's code is correct and the double never
-  #   arrives where the callee looks for it.
-  #
-  # THE SAME PROGRAM COMPILED BY tcc DIRECTLY tells them apart from the other
-  # end: if tcc's own output formats correctly against the same musl, the
-  # formatting code is sound and gcc 10's variadic path is the suspect. If both
-  # are wrong, the fault is underneath both -- in the libc that rung 2 built.
-  say "    --- the same program, compiled by tcc rather than gcc 10 ---"
-  ( cd /tmp && rm -f fpt.bin
-    # $CC IS "path -B dir", TWO WORDS. Quoting it made the shell look for a
-    # file literally named `/work/ref-tcc -B/work/tccsrc`:
-    #     line 2952: /work/ref-tcc -B/work/tccsrc: not found
-    # Unquoted here on purpose -- it is a command line, not a filename.
-    # shellcheck disable=SC2086
-    if $CC $HOSTED -static -o fpt.bin fp.c 2>/tmp/fpt.err && ./fpt.bin 2>&1 | head -4; then
-      :
-    else
-      say "      tcc could not build it:"
-      head -3 /tmp/fpt.err 2>/dev/null | sed 's/^/        /'
-    fi
-    rm -f fpt.bin fp.c )
-
-  # THE ANSWER: THE MANTISSA IS LOST, THE EXPONENT SURVIVES.
-  #
-  #     manual whole.frac  = 5.008000   CORRECT -- the double is intact
-  #     snprintf %.6f      = 8.000000
-  #     (double)5 printed  = 8.0
-  #     two doubles        = 2.000 4.000   (expect 1.500 2.500)
-  #     int then double    = 7 4.000       (expect 7 3.500)
-  #
-  # Every printed value is the next POWER OF TWO at or above the real one:
-  # 1.5 -> 2, 2.5 -> 4, 3.5 -> 4, 5.0 -> 8, 5.008 -> 8. The exponent field
-  # arrives correctly and the mantissa does not.
-  #
-  # AND THE MANUAL DECOMPOSITION IS RIGHT, which is what makes this precise:
-  # `(long)a` and `(a - whole) * 1000000` both give the correct answer, so the
-  # double in memory is sound. It is damaged between the caller and printf --
-  # i.e. in variadic argument passing, where aarch64 puts doubles in v0-v7 and
-  # the callee reads them back through the va_list.
-  #
-  # `int then double = 7 4.000` narrows it further: the INTEGER argument is
-  # correct in the same call that mangles the double. So the general-purpose
-  # register path works and only the SIMD one is wrong -- which is why every
-  # non-printing operation in the whole chain has been fine, and why gcc built
-  # gcc built gcc without noticing.
-  #
-  # WHO IS AT FAULT IS STILL OPEN, and the tcc comparison below is what
-  # separates them: musl's vfprintf.c reading the va_list wrongly, or the
-  # caller placing the value wrongly. musl was compiled by tcc at rung 2;
-  # everything above was compiled by gcc. If tcc's own binary formats
-  # correctly against the same musl, the formatting code is sound.
-  #
-  # THE ANSWER, FROM THE RUN THAT FIRST ASKED:
-  #
-  #     literal 5.008      = 8.000000   (expect 5.008000)
-  #     strtod("5.008")    = 8.000000   (expect 5.008000)
-  #     (int)(5.008*1000)  = 5008       correct
-  #     5.008 > 5.007      = 1          correct
-  #     5.008 == strtod    = 1          correct
-  #
-  # THE VALUE IS FINE. It is stored, multiplied, truncated and compared
-  # correctly -- every operation that keeps the double in a register or
-  # converts it to an integer gives the right answer. Only PRINTING it is
-  # wrong, and it is wrong by losing the integer part.
-  #
-  # That is not codegen. It is the VARIADIC CALLING CONVENTION: on aarch64 a
-  # double passed to a `...` function goes in v0-v7, not x0-x7, and the callee
-  # walks the va_list expecting it there. Getting 8.000000 from 5.008 is what a
-  # printf reading the wrong register file produces.
-  #
-  # WHICH EXPLAINS PERL EXACTLY. `use 5.008` compares against $], and perl
-  # builds $] by FORMATTING a double. The version string is printed wrongly, so
-  # the comparison is against v8.0.0 -- and every other perl operation works,
-  # which is why it got as far as running miniperl.
-  #
-  # WHERE IT COMES FROM IS STILL OPEN. gcc 10 built these objects, but its
-  # libgcc soft-float helpers descend from tcc's, and musl's printf is compiled
-  # by the same chain. The probe below now separates those: if snprintf into a
-  # buffer is also wrong the fault is in musl's formatting code, and if only
-  # the variadic path is wrong it is the ABI.
-  say "    --- can this compiler do floating point? ---"
-  ( cd /tmp && rm -f fp.c fp.bin
-    cat > fp.c <<'FPC'
-#include <stdio.h>
-#include <stdlib.h>
-int main(void)
-{
-    double a = 5.008;
-    double b = strtod("5.008", 0);
-    double c = 12.5;
-    printf("      literal 5.008      = %.6f  (expect 5.008000)\n", a);
-    printf("      strtod(\"5.008\")    = %.6f  (expect 5.008000)\n", b);
-    printf("      (int)(5.008*1000)  = %d       (expect 5008)\n", (int)(a * 1000.0));
-    printf("      (long)12.5         = %ld       (expect 12)\n", (long)c);
-    printf("      5.008 > 5.007      = %d        (expect 1)\n", a > 5.007);
-    printf("      5.008 == strtod    = %d        (expect 1)\n", a == b);
-
-    /* IS IT THE VARIADIC ABI OR THE FORMATTING CODE?
-     *
-     * printf is variadic: a double goes in v0-v7 on aarch64 and the callee
-     * reads the va_list expecting it there. snprintf is variadic too, so both
-     * exercise the same path -- but vsnprintf called through an explicit
-     * va_list, and a manual decomposition that uses no formatting at all,
-     * do not.
-     *
-     * If the manual decomposition is right while %f is wrong, the double is
-     * intact in memory and only the ARGUMENT PASSING is broken. If the
-     * decomposition is also wrong, the value itself is damaged and the earlier
-     * comparisons were lucky. */
-    {
-        char buf[64];
-        long whole = (long)a;
-        long frac  = (long)((a - (double)whole) * 1000000.0 + 0.5);
-        snprintf(buf, sizeof buf, "%.6f", a);
-        printf("      snprintf %%.6f     = %s  (expect 5.008000)\n", buf);
-        printf("      manual whole.frac  = %ld.%06ld  (expect 5.008000)\n", whole, frac);
-        printf("      (double)5 printed  = %.1f       (expect 5.0)\n", (double)5);
-        printf("      two doubles        = %.3f %.3f  (expect 1.500 2.500)\n", 1.5, 2.5);
-        printf("      int then double    = %d %.3f     (expect 7 3.500)\n", 7, 3.5);
-
-        /* THE BITS, WHICH SAY WHETHER IT IS THE VALUE OR THE PATH.
-         *
-         * Printed as two 32-bit integers through the INTEGER argument path,
-         * which the line above shows is working. If these are the correct IEEE
-         * 754 bits for 5.008 then the double is intact everywhere except the
-         * variadic float path, and the fault is the calling convention. If
-         * they are wrong, the value itself was damaged earlier and every
-         * comparison above was coincidence. */
-        {
-            union { double d; unsigned int u[2]; } bits;
-            bits.d = 5.008;
-            printf("      5.008 raw bits     = %08x %08x\n", bits.u[1], bits.u[0]);
-            printf("      (expect              40140831 26e978d5)\n");
-        }
-    }
-    return 0;
-}
-FPC
-    if "$PFX/bin/chain-cc" -static -O0 -o fp.bin fp.c 2>/tmp/fp.err && ./fp.bin; then
-      :
-    else
-      say "      the float probe would not build or run:"
-      head -5 /tmp/fp.err 2>/dev/null | sed 's/^/        /'
-    fi
-    rm -f fp.bin )
-
   cd /work/src
   if ! untar "/in/perl-$PERL_VER"; then
     say "    perl did not extract"; R115=FAIL
