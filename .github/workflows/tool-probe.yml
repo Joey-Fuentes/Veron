@@ -658,6 +658,16 @@ jobs:
           CC=/work/prefix/bin/cc-static
           [ -x "$CC" ] || CC=/work/ref-tcc
           echo "  cc: $CC"
+          # THE LIST BELOW IS THE ANSWER, NOT A WARNING.
+          #
+          # The question "what does Python need hermetically" is answered by
+          # running it against a box that has ONLY what our chain built. Every
+          # library named here is one the real ladder would have to add a rung
+          # for -- so a short list is good news and a long one is scope.
+          #
+          # STOP_AFTER=5 gives musl, make, binutils and the arithmetic
+          # libraries. Nothing else. That is deliberate: adding zlib to make
+          # Python happier would answer a different, easier question.
           echo "  --- libraries this box does NOT have ---"
           for l in libz libffi libssl libcrypto libncurses libreadline libexpat libgdbm; do
             ls /usr/lib/$l* >/dev/null 2>&1 || printf '    %s\n' "$l"
@@ -682,7 +692,26 @@ jobs:
             ./Configure -des -Dprefix=/work/out/pkg -Dcc="$CC" \
               -Dusedl=undef -Dldflags=-static > c.log 2>&1
           else
-            ./configure --prefix=/work/out/pkg --disable-nls CC="$CC" > c.log 2>&1
+            # PYTHON NEEDS MORE THAN A COMPILER, AND THE POINT IS TO SEE
+            # WHICH PARTS IT SILENTLY DROPS.
+            #
+            # It configures happily without zlib, libffi and openssl and
+            # builds an interpreter missing zlib, ctypes and ssl -- no error,
+            # no warning that survives to the end. glibc only needs the
+            # interpreter, so that may be fine; but "fine" should be measured
+            # rather than assumed, which is what the module check below does.
+            #
+            # --without-ensurepip and --disable-test-modules cut the parts
+            # that need network access or a working ssl, neither of which
+            # exists in a sealed box.
+            case "$PKG" in
+              Python*|python*)
+                ./configure --prefix=/work/out/pkg CC="$CC" \
+                  --without-ensurepip --disable-test-modules \
+                  --with-build-python=no > c.log 2>&1 ;;
+              *)
+                ./configure --prefix=/work/out/pkg --disable-nls CC="$CC" > c.log 2>&1 ;;
+            esac
           fi
           rc=$?
           echo "  configure rc=$rc"
@@ -696,8 +725,46 @@ jobs:
             | grep -aviE "checking" | sort -u | head -12 | sed 's/^/    /'
           echo
           make -j"$(nproc 2>/dev/null || echo 2)" > b.log 2>&1
-          echo "  make rc=$?"
-          tail -12 b.log | sed 's/^/    /'
+          rc=$?
+          echo "  make rc=$rc"
+          if [ "$rc" != 0 ]; then
+            # ld's own message lives on the line ABOVE collect2; a grep for
+            # "error:" alone drops it.
+            grep -B3 -a "collect2: error" b.log 2>/dev/null | grep -avE "^--|collect2" \
+              | tail -6 | sed 's/^/    /'
+            grep -aE "error:|Error [0-9]" b.log | head -10 | sed 's/^/    /'
+          fi
+          tail -8 b.log | sed 's/^/    /'
+
+          # ASK THE INTERPRETER WHAT IT ACTUALLY HAS.
+          #
+          # A Python that builds is not the same as a Python that works. The
+          # modules below are the ones a missing library removes silently:
+          #
+          #   zlib      -> no .zip, no gzip, no wheel
+          #   ssl       -> no https, so no pip and no downloads
+          #   ctypes    -> needs libffi; a lot of packages assume it
+          #   sqlite3   -> needs libsqlite3
+          #   readline  -> interactive only, harmless here
+          #
+          # glibc's configure runs scripts/gen-tunable-list.py, which is plain
+          # Python and needs none of them -- so a stripped interpreter is very
+          # likely enough for OUR purposes. Printing the list means we know
+          # that rather than hope it.
+          for _py in /work/out/pkg/bin/python3 ./python; do
+            [ -x "$_py" ] || continue
+            echo "  --- what this python has ---"
+            "$_py" -c 'import sys;print("    version:", sys.version.split()[0])' 2>&1
+            # ONE LINE, NOT A HEREDOC. A heredoc terminator has to sit at
+            # column 0, which ends the YAML block scalar -- this file has
+            # failed to parse that way six times now. -c with semicolons is
+            # uglier and cannot break the file.
+            "$_py" -c 'import importlib.util as u; w=("zlib","ssl","ctypes","sqlite3","readline","bz2","lzma","hashlib","socket","select","math","json","re"); h=[m for m in w if u.find_spec(m)]; k=[m for m in w if not u.find_spec(m)]; print("    present:"," ".join(h) or "(none)"); print("    MISSING:"," ".join(k) or "(none)")' 2>&1
+            # AND THE ONE THING glibc ACTUALLY ASKS OF IT.
+            echo "    can it run a glibc-style script:"
+            "$_py" -c 'import re,json,sys;print("      yes --", len(json.dumps({"a":1})), "bytes")' 2>&1
+            break
+          done
           INBOX
           sed -i 's/^          //' "$BOX/work/pkg.sh"
           chmod 0755 "$BOX/work/pkg.sh"
