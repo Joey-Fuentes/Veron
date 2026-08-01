@@ -1055,37 +1055,6 @@ EOF
   # vfprintf.c was compiled by tcc, so if a tcc-built program formats wrongly
   # against it the fault is in the formatting code and no gcc is needed to say
   # so. The gcc comparison still happens later, where a gcc exists.
-  # WHICH printf IS THIS? ASK BEFORE INTERPRETING THE NUMBERS.
-  #
-  # Two candidates and they need different fixes:
-  #
-  #   musl's, compiled by TCC at rung 2. src/stdio/vfprintf.c is present --
-  #   sources/musl.toml drops only src/complex/*.c and rung 2 reports
-  #   1349/1349 compiled -- so if this is the fault it is tcc miscompiling
-  #   float formatting, and it would be a stage 3 bug visible here.
-  #
-  #   the ABI, in which case musl's code is correct and the double never
-  #   arrives where the callee looks for it.
-  #
-  # THE SAME PROGRAM COMPILED BY tcc DIRECTLY tells them apart from the other
-  # end: if tcc's own output formats correctly against the same musl, the
-  # formatting code is sound and gcc 10's variadic path is the suspect. If both
-  # are wrong, the fault is underneath both -- in the libc that rung 2 built.
-  say "    --- compiled by tcc, against the musl tcc built ---"
-  ( cd /tmp && rm -f fpt.bin
-    # $CC IS "path -B dir", TWO WORDS. Quoting it made the shell look for a
-    # file literally named `/work/ref-tcc -B/work/tccsrc`:
-    #     line 2952: /work/ref-tcc -B/work/tccsrc: not found
-    # Unquoted here on purpose -- it is a command line, not a filename.
-    # shellcheck disable=SC2086
-    if $CC $HOSTED -static -o fpt.bin fp.c 2>/tmp/fpt.err && ./fpt.bin 2>&1 | head -4; then
-      :
-    else
-      say "      tcc could not build it:"
-      head -3 /tmp/fpt.err 2>/dev/null | sed 's/^/        /'
-    fi
-    rm -f fpt.bin fp.c )
-
   # THE ANSWER: THE MANTISSA IS LOST, THE EXPONENT SURVIVES.
   #
   #     manual whole.frac  = 5.008000   CORRECT -- the double is intact
@@ -1145,7 +1114,12 @@ EOF
   # buffer is also wrong the fault is in musl's formatting code, and if only
   # the variadic path is wrong it is the ABI.
   say "    --- can this compiler do floating point? ---"
-  ( cd /tmp && rm -f fp.c fp.bin
+  # fp.c SURVIVES THIS SUBSHELL. The tcc comparison below compiles the SAME
+  # file, and it used to run first -- before this heredoc had written it:
+  #     tcc: error: file 'fp.c' not found
+  # It only looked like it worked at rung 11.5 because a leftover fp.c from an
+  # earlier round was still in /tmp.
+  ( cd /tmp && rm -f fp.bin
     cat > fp.c <<'FPC'
 #include <stdio.h>
 #include <stdlib.h>
@@ -1209,6 +1183,39 @@ FPC
       head -5 /tmp/fp.err 2>/dev/null | sed 's/^/        /'
     fi
     rm -f fp.bin )
+
+  # WHICH printf IS THIS? ASK BEFORE INTERPRETING THE NUMBERS.
+  #
+  # Two candidates and they need different fixes:
+  #
+  #   musl's, compiled by TCC at rung 2. src/stdio/vfprintf.c is present --
+  #   sources/musl.toml drops only src/complex/*.c and rung 2 reports
+  #   1349/1349 compiled -- so if this is the fault it is tcc miscompiling
+  #   float formatting, and it would be a stage 3 bug visible here.
+  #
+  #   the ABI, in which case musl's code is correct and the double never
+  #   arrives where the callee looks for it.
+  #
+  # THE SAME PROGRAM COMPILED BY tcc DIRECTLY tells them apart from the other
+  # end: if tcc's own output formats correctly against the same musl, the
+  # formatting code is sound and gcc 10's variadic path is the suspect. If both
+  # are wrong, the fault is underneath both -- in the libc that rung 2 built.
+  # THE gcc COMPARISON HAPPENS WHERE A gcc EXISTS, NOT HERE.
+  #
+  # This block used to recompile the same file with $CC and call it "the tcc
+  # comparison". At rung 3 that IS $CC -- there is no other compiler in the box
+  # yet -- so it compiled the identical program with the identical compiler and
+  # proved nothing. It also ran before the heredoc above had written fp.c:
+  #     tcc: error: file 'fp.c' not found
+  #
+  # The useful comparison is tcc's answer HERE against gcc 10's answer at rung
+  # 9, and the two numbers are already printed in the same log. Keep the file
+  # so a later rung can reuse it rather than pretending to compare now.
+  cp /tmp/fp.c /work/fp.c 2>/dev/null || true
+  say "    (the same probe runs again at rung 9, compiled by gcc 10 --"
+  say "     if these numbers differ, the fault is the calling convention;"
+  say "     if they agree, it is musl's formatting as tcc compiled it)"
+  rm -f /tmp/fp.c
 fi
 
 
@@ -2599,6 +2606,31 @@ if [ "$R8" = ok ]; then
                 "$( [ -x /work/out10/bin/$b ] && echo present || echo missing )"
             done
             /work/out10/bin/gcc --version 2>&1 | head -1 | sed 's/^/      /'
+
+            # THE SAME FLOAT PROBE, NOW COMPILED BY gcc 10.
+            #
+            # Rung 3 ran this source with tcc against the musl tcc built. This
+            # runs the identical file with gcc 10 against the same musl, and
+            # that pair is what decides:
+            #
+            #   both wrong      -> musl's vfprintf.c, as tcc compiled it
+            #   only gcc wrong  -> the variadic calling convention
+            #   only tcc wrong  -> tcc's own float codegen, and gcc 10 is clean
+            #
+            # Both numbers now land in one log, four rungs apart, instead of
+            # being compared across runs from memory.
+            if [ -f /work/fp.c ]; then
+              say "    --- the float probe, compiled by gcc 10 this time ---"
+              ( cd /tmp && rm -f fpg.bin
+                if /work/out10/bin/gcc -static -O0 -o fpg.bin /work/fp.c 2>/tmp/fpg.err \
+                   && ./fpg.bin 2>&1 | sed 's/^/    /'; then
+                  :
+                else
+                  say "      would not build with gcc 10:"
+                  head -4 /tmp/fpg.err 2>/dev/null | sed 's/^/        /'
+                fi
+                rm -f fpg.bin )
+            fi
           else
             r9=FAIL
             # THE TWO FAILURES WORTH TELLING APART, in stage 4's words: gcc 10's
