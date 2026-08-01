@@ -3170,7 +3170,7 @@ COMMC
     # showing "no -Doptimize" was the marker being stale, not the flag being
     # absent, and it cost a round of reading. Built from the same variables the
     # command uses.
-    _pcfg="-des -Dprefix=$PFX -Dcc=$PFX/bin/chain-cc -Dldflags=-static -Doptimize=-O0 -fno-strict-aliasing -fwrapv"
+    _pcfg="-des -Dprefix=$PFX -Dcc=$PFX/bin/chain-cc -Dusedl=undef -Dldflags=-static -Doptimize=-O0 -fno-strict-aliasing -fwrapv"
     say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./Configure $_pcfg"
     say "    (cwd: $(pwd))"
     # -Dprefix is $PFX, not /usr: this perl is a BUILD TOOL for the rungs above,
@@ -3258,7 +3258,29 @@ COMMC
     # pointing it at chain-cc means every path perl takes reaches the SAME
     # compiler -Dcc already names.
     ln -sf "$PFX/bin/chain-cc" "$PFX/bin/gcc" 2>/dev/null || true
+    # -Dusedl=undef: NO DYNAMIC EXTENSIONS, BECAUSE THERE IS NO LOADER.
+    #
+    # perl configured, built miniperl, ran it, processed the Unicode tables --
+    # and then died building lib/auto/B/B.so and its siblings:
+    #
+    #     collect2: error: ld returned 1 exit status
+    #     make[1]: *** [Makefile:482: ../../lib/auto/B/B.so] Error 1
+    #
+    # Those are perl's extension modules, built as SHARED OBJECTS. Everything
+    # in this box is static -- rung 2 builds musl as libc.a with no libc.so,
+    # and rung 3 measures that a dynamic binary cannot run here at all. A .so
+    # could not be loaded even if it linked.
+    #
+    # usedl=undef makes perl link every extension INTO the interpreter instead.
+    # That is what a static perl is, it is what every embedded and bootstrap
+    # perl does, and the result is a single binary rather than a binary plus a
+    # tree of .so files nothing can open.
+    #
+    # THE FLAGS BELOW ARE NOT REDUNDANT WITH IT. usedl controls extensions;
+    # -Dldflags=-static controls how perl itself links. Both are needed and
+    # they answer different questions.
     ./Configure -des -Dprefix="$PFX" -Dcc="$PFX/bin/chain-cc" \
+      -Dusedl=undef \
       -Dldflags="-static" \
       -Doptimize="-O0 -fno-strict-aliasing -fwrapv" > c.log 2>&1
     _rp=$?
@@ -3322,6 +3344,13 @@ COMMC
         say "      not a missing or too-old perl."
         grep -a "required--this is only" b.log | head -2 | sed 's/^/      /'
       fi
+      # THE LINE ABOVE collect2 IS THE ONE THAT SAYS WHY. `collect2: error: ld
+      # returned 1 exit status` is the driver reporting that the linker failed;
+      # ld's own message -- "cannot find -lfoo", "undefined reference",
+      # "relocation R_... against ..." -- is printed immediately before it and
+      # was being dropped by a grep that only matched "error:".
+      grep -B3 -a "collect2: error" b.log 2>/dev/null | grep -avE "^--|collect2" \
+        | tail -8 | sed 's/^/      /'
       grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
       tail -25 b.log 2>/dev/null | sed 's/^/      /'
     fi

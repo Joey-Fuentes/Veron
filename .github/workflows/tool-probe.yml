@@ -676,7 +676,11 @@ jobs:
             # names, so nothing is being substituted -- only reached under a
             # second name.
             ln -sf "$CC" /work/prefix/bin/gcc 2>/dev/null || true
-            ./Configure -des -Dprefix=/work/out/pkg -Dcc="$CC" > c.log 2>&1
+            # -Dusedl=undef, matching rung 11.5: this box is static
+            # throughout and cannot load a .so, so extensions link into the
+            # interpreter instead of becoming lib/auto/*/*.so.
+            ./Configure -des -Dprefix=/work/out/pkg -Dcc="$CC" \
+              -Dusedl=undef -Dldflags=-static > c.log 2>&1
           else
             ./configure --prefix=/work/out/pkg --disable-nls CC="$CC" > c.log 2>&1
           fi
