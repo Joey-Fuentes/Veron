@@ -410,7 +410,7 @@ jobs:
                    "https://www.python.org/ftp/python/$PYTHON_VER/Python-$PYTHON_VER.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KHDR%%.*}.x/linux-$KHDR.tar.xz" \
                    "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL%%.*}.x/linux-$KERNEL.tar.xz" \
-                   "https://www.linuxfromscratch.org/patches/lfs/13.0/glibc-fhs-1.patch"; do
+                   "https://www.linuxfromscratch.org/patches/lfs/development/glibc-fhs-1.patch"; do
             b=$(basename "$u")
             if [ -s "$b" ]; then
               printf '  cached  %-30s %10s bytes\n' "$b" "$(wc -c < "$b")"
@@ -454,8 +454,9 @@ jobs:
           # THE TWO glibc PATCHES COME FROM DIFFERENT DIRECTORIES, and that is
           # stage4-complete's arrangement rather than an inconsistency:
           #
-          #   glibc-fhs-1.patch        lfs/13.0/         both books ship the
-          #                                              identical file
+          #   glibc-fhs-1.patch        lfs/development/  section 3.3 of the
+          #                                              vendored book names
+          #                                              this exact URL
           #   glibc-2.43-upstream...   lfs/development/  exists ONLY there,
           #                                              because only the
           #                                              development book pairs
@@ -485,11 +486,14 @@ jobs:
           # not downloaded. See the README there for the digests and for how
           # to refresh one deliberately.
           #
-          # THE NETWORK COPY IS STILL TRIED FIRST for the fhs patch only,
-          # because /patches/lfs/13.0/ IS a released directory and taking the
-          # upstream copy when it is reachable keeps us honest about what the
-          # book actually ships. If it is unreachable the vendored copy stands
-          # in, which is the point of having it.
+          # THE NETWORK COPY IS TRIED FIRST for both, because taking upstream's
+          # file when it is reachable keeps us honest about what the book
+          # actually ships. The vendored copy stands in when it is not, which
+          # is the point of having one.
+          #
+          # SECTION 3.3 OF THE VENDORED BOOK NAMES BOTH UNDER development/ with
+          # these digests -- an earlier version of this file split them across
+          # two directories on a guess, and stage4-complete does the same.
           for _pf in glibc-fhs-1.patch "glibc-$GLIBC-upstream_fixes-1.patch"; do
             if [ -s "$_pf" ]; then
               echo "  fetched   $_pf"

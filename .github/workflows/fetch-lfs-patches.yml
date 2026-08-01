@@ -45,6 +45,44 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # THE BOOK IS THE AUTHORITY, AND IT IS IN THIS REPOSITORY.
+      #
+      # Section 3.3 "Needed Patches" of spikes/stage4/books/
+      # LFS-BOOK-r13_0-156-systemd lists every patch with its URL and its MD5.
+      # Reading it beats hardcoding a list: if the book names a patch we do not
+      # fetch, or names a different revision, that shows up here rather than as
+      # a build failure.
+      #
+      # It also settles a question the last two runs got wrong in both
+      # directions: BOTH glibc patches are under development/, not one there
+      # and one under 13.0.
+      - name: 'THE BOOK: what does 3.3 Needed Patches actually list?'
+        run: |
+          set -u
+          B=spikes/stage4/books/LFS-BOOK-r13_0-156-systemd_tar.bz2
+          [ -f "$B" ] || { echo "  no vendored book at $B"; exit 0; }
+          rm -rf /tmp/book && mkdir -p /tmp/book
+          tar xf "$B" -C /tmp/book
+          P=$(find /tmp/book -path '*chapter03/patches.html' | head -1)
+          [ -n "$P" ] || { echo "  no chapter03/patches.html in the book"; exit 0; }
+          echo "  book: $(find /tmp/book -maxdepth 1 -mindepth 1 -type d | head -1 | xargs basename)"
+          echo
+          echo "  --- every patch 3.3 lists, with its digest ---"
+          : > /tmp/book-patches.txt
+          sed 's/<[^>]*>//g' "$P" | tr -d '\r' \
+            | grep -oE 'https://[^ ]*\.patch|[0-9a-f]{32}' \
+            | awk '/^https/{n=split($0,a,"/"); f=a[n]; next}
+                   /^[0-9a-f]{32}$/{ if(f){ printf "%s %s\n", f, $0; f="" } }' \
+            > /tmp/book-patches.txt
+          sed 's/^/    /' /tmp/book-patches.txt
+          echo
+          echo "  --- the base URL the book uses ---"
+          sed 's/<[^>]*>//g' "$P" | grep -oE 'https://[^ ]*/patches/[^ ]*/' \
+            | sort -u | sed 's/^/    /'
+          echo
+          echo "  --- the ones this chain needs ---"
+          grep -iE 'glibc|python' /tmp/book-patches.txt | sed 's/^/    /' || echo "    none"
+
       - name: 'WHERE DOES LFS KEEP PATCHES? List the directories.'
         run: |
           set -u
@@ -128,14 +166,28 @@ jobs:
             echo
           }
 
-          grab "glibc-fhs-1.patch"                      "$MD5_FHS"
-          grab "glibc-$GLIBC-upstream_fixes-1.patch"    "$MD5_UPSTREAM"
-          # Revisions, in case -1 was superseded rather than removed.
+          # DRIVEN BY THE BOOK, NOT BY A LIST I TYPED.
+          #
+          # The step above extracted every patch 3.3 names, with the digest the
+          # book records, into /tmp/book-patches.txt. Fetching exactly that set
+          # means a patch the book adds or renames is picked up without anyone
+          # noticing it should be -- which is the failure mode that cost the
+          # last two runs, in the other direction.
+          if [ -s /tmp/book-patches.txt ]; then
+            while read -r _f _md5; do
+              [ -n "$_f" ] || continue
+              grab "$_f" "$_md5"
+            done < /tmp/book-patches.txt
+          else
+            echo "  no book list -- falling back to the ones this chain needs"
+            grab "glibc-fhs-1.patch"                   "$MD5_FHS"
+            grab "glibc-$GLIBC-upstream_fixes-1.patch" "$MD5_UPSTREAM"
+          fi
+          # AND THE REVISIONS, in case -1 was superseded rather than removed.
+          # The book names -1; if the server has only -2, that is the answer to
+          # "where did it go" and the digest will differ, which is expected.
           grab "glibc-$GLIBC-upstream_fixes-2.patch"    ""
           grab "glibc-$GLIBC-upstream_fixes-3.patch"    ""
-          # The book also carries this one and we do not fetch it yet; grabbing
-          # it now means one artifact rather than two trips.
-          grab "Python-$PYTHON_VER-consolidated_fixes-1.patch" ""
 
       - name: 'WHAT CAME BACK'
         if: always()
