@@ -718,6 +718,71 @@ jobs:
           echo "  %f RIGHT HERE  -> tcc miscompiles src/stdio/vfprintf.c, named."
           echo "  %f STILL WRONG -> vfprintf.c is innocent; look at what it calls."
 
+      # NARROW IT FROM A FILE TO A FUNCTION.
+      #
+      # The one-file swap named src/stdio/vfprintf.c. That file is ~700 lines
+      # and contains fmt_fp (the float formatter), pop_arg, printf_core and a
+      # handful of helpers. Only one of them needs to be wrong.
+      #
+      # fmt_fp IS THE ONLY FLOAT CODE IN IT, so this compiles the file twice
+      # with each compiler and diffs the ASSEMBLY for that function. A
+      # miscompile shows up as different instructions for the same source --
+      # and the first place they diverge is the thing to reduce to a difftest
+      # case.
+      #
+      # THE OUTPUT IS A DIFF, NOT A VERDICT. This step does not decide anything;
+      # it produces the material for a human to read. Every attempt in this
+      # investigation to have a script decide has cost a round.
+      - name: 'NARROW IT: what does tcc emit for fmt_fp that gcc does not?'
+        run: |
+          set -u
+          set +e
+          [ -d m-tcc ] || { echo "  no musl source tree"; exit 0; }
+          cd m-tcc
+          INC="-nostdinc -ffreestanding -D_XOPEN_SOURCE=700 \
+               -I./arch/aarch64 -I./arch/generic -Iobj/src/internal \
+               -I./src/include -I./src/internal -Iobj/include -I./include"
+
+          # tcc has no -S that matches gcc's, so compile to objects and
+          # disassemble both -- same tool, same format, only the compiler
+          # differs.
+          gcc -c -O0 -std=c99 $INC -o /tmp/vf-gcc.o src/stdio/vfprintf.c 2>/dev/null
+          "$GITHUB_WORKSPACE/tccsrc/tcc" -B"$GITHUB_WORKSPACE/tccsrc" \
+            -c -std=c99 $INC -o /tmp/vf-tcc.o src/stdio/vfprintf.c 2>/tmp/vf2.err
+          for o in /tmp/vf-gcc.o /tmp/vf-tcc.o; do
+            [ -f "$o" ] && echo "  $o: $(wc -c < "$o") bytes" || echo "  $o: NOT BUILT"
+          done
+
+          echo
+          echo "  --- symbols each object defines ---"
+          for o in gcc tcc; do
+            echo "    $o: $(nm "/tmp/vf-$o.o" 2>/dev/null | grep -cE ' [TtWw] ') defined"
+          done
+          echo "  --- in gcc's object but not tcc's ---"
+          comm -23 <(nm /tmp/vf-gcc.o 2>/dev/null | grep -E ' [TtWw] ' | awk '{print $3}' | sort) \
+                   <(nm /tmp/vf-tcc.o 2>/dev/null | grep -E ' [TtWw] ' | awk '{print $3}' | sort) \
+            | sed 's/^/    /'
+          echo "  --- and the reverse ---"
+          comm -13 <(nm /tmp/vf-gcc.o 2>/dev/null | grep -E ' [TtWw] ' | awk '{print $3}' | sort) \
+                   <(nm /tmp/vf-tcc.o 2>/dev/null | grep -E ' [TtWw] ' | awk '{print $3}' | sort) \
+            | sed 's/^/    /'
+
+          echo
+          echo "  --- what each object CALLS that it does not define ---"
+          echo "    (a missing call is how a miscompile usually shows in nm)"
+          for o in gcc tcc; do
+            echo "    == $o =="
+            nm "/tmp/vf-$o.o" 2>/dev/null | grep -E ' U ' | awk '{print "      " $2}' | sort
+          done
+
+          echo
+          echo "  --- fmt_fp, disassembled, first 40 instructions each ---"
+          for o in gcc tcc; do
+            echo "    == $o =="
+            objdump -d "/tmp/vf-$o.o" 2>/dev/null \
+              | awk '/<fmt_fp>:/{f=1} f&&/^$/{exit} f' | head -40 | sed 's/^/      /'
+          done
+
       - name: Verdict
         if: always()
         run: |

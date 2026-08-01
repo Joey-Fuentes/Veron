@@ -438,6 +438,71 @@ a 200-operator file from 83 MB to 3.4 MB.
 
 ---
 
+## tcc miscompiles musl's vfprintf.c, and one object swap proves it
+
+**The bug is `src/stdio/vfprintf.c` compiled by tcc.** Take the musl tcc built,
+replace exactly one object with a gcc-compiled `vfprintf.o` from the same
+source, relink, and every value is correct:
+
+```
+                        tcc-built vfprintf.o      one gcc-built object
+literal 5.008           8.000000                  5.008000
+1.5 2.5 3.5             2.000 4.000 4.000         1.500 2.500 3.500
+(double)L               8.000000                  5.008000
+```
+
+One variable, no theory required.
+
+### Four theories died first, and each one narrowed it
+
+| suspected | measured |
+|---|---|
+| optimisation | `-O0` changes nothing; the compiles carry no `-O` at all |
+| `libtcc1.a` missing f128 helpers | all 22 quad routines present -- `__addtf3` through `__trunctfdf2` |
+| `__trunctfdf2` wrong | **byte-identical to host gcc**, both directions, as are `__trunctfsf2` and `__extenddftf2` |
+| variadic ABI / `va_arg(double)` | correct in three shapes and three columns: double alone, int-then-double, second of two |
+
+Every piece `fmt_fp` uses is also correct in isolation: union type-punning,
+exponent extraction, `frexp`, `frexpl`, and the `uint32_t big[]`
+multiply-and-carry accumulator. So the fault is in how they **combine** in that
+one translation unit -- which is what a miscompile looks like from outside.
+
+### Why nothing noticed for four compilers
+
+The symptom is exponent-preserved, mantissa-destroyed: `1.5 → 2`, `2.5 → 4`,
+`5.008 → 8`. Every value becomes the next power of two at or above itself.
+
+Nothing in a compiler build formats a float. gcc built gcc built gcc without
+the code being reached where the answer mattered. It surfaced at perl, because
+`use 5.008` compares against `$]` and perl builds `$]` by **formatting** a
+double -- so the version string read as v8.0.0 and perl refused to build
+against itself.
+
+### It is not upstream's, and it is not fixed upstream
+
+Current tinycc HEAD is 101 commits ahead of our pin, four of them touching
+`lib/lib-arm64.c`. Both compilers give **identical, correct** conversion
+results, so there is nothing to backport for this. The bug is in code
+generation for that file, not in the soft-float library.
+
+`d9a6d9ae "reverts (11/2025 - 04/2026)"` is worth a look separately: a bulk
+revert spanning five months, landing after our December pin. Our tree may
+contain something upstream later removed.
+
+### What to do about it
+
+Three options, in increasing order of honesty:
+
+1. **Nothing.** Nothing between here and a booting kernel formats a float
+   except perl, and perl only needs it for `$]`. Provable by continuing.
+2. **Ship a gcc-built `vfprintf.o`**, as this experiment does. Fast, and a
+   declared substitution -- but it means one object in the libc did not come
+   from the chain, which is exactly the kind of hole this project exists to
+   close.
+3. **Find the miscompile.** Bisect `vfprintf.c` by compiling halves with each
+   compiler until one function is named, then reduce that to a case for the
+   difftest suite. Slowest, and the only one that fixes the compiler.
+
 ## The chain cannot print a double, and only printing is wrong
 
 Found at rung 11.5 of `stage3-to-stage4-reference`, where perl refused to build
