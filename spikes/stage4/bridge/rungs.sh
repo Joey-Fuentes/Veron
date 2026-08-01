@@ -3969,6 +3969,20 @@ head1 "RUNG 16 -- LFS 6.x: binutils pass 2 and gcc pass 2"
 # rung 11 concatenates limitx.h/glimits.h/limity.h instead of leaving gcc's
 # --without-headers stub in place.
 if [ "$R14" = ok ]; then
+  # BOTH HALVES MUST EXIST BEFORE ANY configure ASKS FOR THEM. gcc 15 pass 1
+  # was built --enable-languages=c,c++, so $LFS_TGT-g++ should be there; a
+  # missing one would otherwise surface as configure's "no C++14 compiler",
+  # which is the message that sent this rung looking in the wrong place twice.
+  for _c in "$LFS_TGT-gcc" "$LFS_TGT-g++"; do
+    if command -v "$_c" > /dev/null 2>&1; then
+      printf '    %-28s %s\n' "$_c" "$("$_c" --version 2>&1 | head -1)"
+    else
+      say "    $_c IS NOT ON PATH -- chapter 6 has no build-side compiler."
+      say "    It comes from rung 11 (gcc 15 pass 1, --enable-languages=c,c++)"
+      say "    and lives in $S/tools/bin."
+      R16=FAIL
+    fi
+  done
   rm -rf /work/b-binutils2 && mkdir -p /work/b-binutils2 && cd /work/b-binutils2
   # make INTO THE SYSROOT FIRST, BECAUSE EVERYTHING BELOW NEEDS ONE.
   #
@@ -3980,15 +3994,27 @@ if [ "$R14" = ok ]; then
   # Cross-built like everything else here: --host=$LFS_TGT so it runs in the
   # sysroot, --build from config.guess so configure knows it is cross.
   if [ "$R16" != FAIL ]; then
-    cd /work/src
-    if ! untar "/in/make-$MAKE_ALT"; then
+    # ITS OWN EXTRACTION DIRECTORY. Rung 4.5 already built make 4.4 IN TREE
+    # under /work/src, so extracting there again gave configure a tree that
+    # had been configured once already:
+    #
+    #     configure: error: source directory already configured;
+    #     run "make distclean" there first
+    #
+    # And `onedir` globs /work/src, which by now holds a dozen unpacked
+    # packages -- it returned busybox-1.36.1, so the untar line reported
+    # extracting make and named busybox. Every other rung that unpacks a
+    # second copy uses a private directory; this one did not.
+    rm -rf /work/src/make-p2 && mkdir -p /work/src/make-p2
+    if ! ( cd /work/src/make-p2 && untar "/in/make-$MAKE_ALT" ); then
       say "    make did not extract"; R16=FAIL
     else
-      _mk=$(onedir "make-$MAKE_ALT ./make-$MAKE_ALT")
+      _mk=$(cd /work/src/make-p2 && onedir "make-$MAKE_ALT ./make-$MAKE_ALT")
       rm -rf /work/b-make2 && mkdir -p /work/b-make2 && cd /work/b-make2
-      if "/work/src/$_mk/configure" --prefix=/usr \
+      if "/work/src/make-p2/$_mk/configure" --prefix=/usr \
            --host="$LFS_TGT" \
-           --build="$("/work/src/$_mk/build-aux/config.guess")" \
+           --build="$("/work/src/make-p2/$_mk/build-aux/config.guess")" \
+           CC_FOR_BUILD="$LFS_TGT-gcc" \
            --disable-nls > c.log 2>&1 \
          && timeout 1800 make -j"$NP" > b.log 2>&1 \
          && make DESTDIR="$S" install > i.log 2>&1; then
@@ -4003,11 +4029,36 @@ if [ "$R14" = ok ]; then
     fi
   fi
 
+  # THE BUILD-SIDE COMPILER IS gcc 15 PASS 1, WHICH IS THE NEWEST THING HERE.
+  #
+  # configure needs two compilers for a cross build: one for --host (the
+  # programs being built) and one for --build (the little test programs and
+  # generators it runs during the build). It finds $LFS_TGT-gcc for the host
+  # side on its own, because $S/tools/bin is on PATH -- and falls back to bare
+  # `gcc`/`g++` for the build side, which in this box is gcc 4.7.4 from rung 6:
+  #
+  #     checking whether aarch64-veron-linux-gnu-g++ supports C++14 ... yes
+  #     checking whether g++ supports C++14 ... no
+  #     configure: error: A compiler with support for C++14 is required
+  #
+  # $LFS_TGT-gcc SERVES BOTH SIDES. --build is aarch64-unknown-linux-gnu and
+  # --host is aarch64-veron-linux-gnu; they differ only in the vendor field,
+  # which is what LFS_TGT exists to do. Its output runs here.
+  #
+  # NOT gcc 10, WHICH IS WHAT I REACHED FOR FIRST. gcc 10 built gcc 15 and its
+  # job ended there. Using it to build chapter 6 would mean the final toolchain
+  # was assembled by a compiler the chain had already superseded -- the same
+  # mistake as building busybox with pass 1.
+  #
+  # stage4-complete does not need this because its chapter 6 runs on the bare
+  # runner, where `g++` is Ubuntu's gcc 13. Ours is inside the box, where the
+  # only compilers are the ones this ladder built.
   say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: binutils pass 2 configure"
   "/work/src/$_bu/configure" \
     --prefix=/usr \
     --build="$(/work/src/$_bu/config.guess)" \
     --host="$LFS_TGT" \
+    CC_FOR_BUILD="$LFS_TGT-gcc" CXX_FOR_BUILD="$LFS_TGT-g++" \
     --disable-nls --enable-shared --enable-gprofng=no \
     --disable-werror --enable-64-bit-bfd --enable-new-dtags \
     --enable-default-hash-style=gnu \
@@ -4028,6 +4079,7 @@ if [ "$R14" = ok ]; then
       --build="$(/work/src/$g15/config.guess)" \
       --host="$LFS_TGT" \
       --target="$LFS_TGT" \
+      CC_FOR_BUILD="$LFS_TGT-gcc" CXX_FOR_BUILD="$LFS_TGT-g++" \
       LDFLAGS_FOR_TARGET="-L$PWD/$LFS_TGT/libgcc" \
       --prefix=/usr \
       --with-build-sysroot="$S" \
