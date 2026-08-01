@@ -1,0 +1,277 @@
+# WHY CAN'T THIS CHAIN PRINT A DOUBLE, AND WHY DOES ANYONE ELSE'S WORK?
+#
+# stage3-to-stage4-reference cannot format a float. `printf("%.6f", 5.008)`
+# gives 8.000000, and every value comes out as the next power of two at or
+# above the real one -- exponent intact, mantissa gone. Both tcc and gcc 10
+# produce it, against the same musl, so the fault is in the shared component:
+# musl's src/stdio/vfprintf.c as tcc compiled it at rung 2.
+#
+# BUT tcc HAS BUILT WHOLE DISTRIBUTIONS. If its printf were broken this would
+# be well known rather than something we found on a Tuesday. So the far more
+# likely explanation is that WE are doing something unusual, and this job is
+# meant to find what.
+#
+# THE LEADING CANDIDATE IS long double. musl's fmt_fp() does its digit
+# extraction in `long double`, and on aarch64 that is 128-bit QUAD PRECISION --
+# not the 80-bit x87 format tcc was designed around, and not something the
+# hardware does either. Every operation on it becomes a call into soft-float
+# helpers: __addtf3, __multf3, __subtf3, __fixtfsi, __trunctfdf2 and friends.
+#
+# THOSE HELPERS LIVE IN libtcc1.a, WHICH RUNG 0 BUILDS. If they are absent the
+# link fails loudly; if they are present but wrong, arithmetic silently
+# produces garbage -- and garbage in the mantissa while the exponent survives
+# is exactly what a broken __multf3 or __fixtfsi looks like.
+#
+# WHICH WOULD EXPLAIN EVERYTHING ELSE BEING FINE. Nothing in a compiler build
+# touches long double. gcc built gcc built gcc without one going near it. It
+# takes a printf of a float to reach that code at all.
+#
+# THIS JOB ASKS FOUR QUESTIONS, SMALLEST FIRST:
+#   1. does musl's own printf work when musl is built by GCC?      (is it musl?)
+#   2. does it work when musl is built by TCC?                     (is it tcc?)
+#   3. do the long double soft-float routines give right answers?  (is it f128?)
+#   4. which symbols does libtcc1.a actually define?               (is it missing?)
+#
+# Each is a few seconds. Together they say which component to fix.
+
+name: float-probe
+
+on:
+  workflow_dispatch:
+
+env:
+  MUSL_VER: '1.2.5'
+  TCC_PIN: '5ec0e6f84b47ebd8c269b581712666313f5edaef'
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            gcc make git curl xz-utils file musl-tools bubblewrap binutils
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+
+      - name: 'CONTROL: does %f work with the HOST toolchain at all?'
+        run: |
+          set -eu
+          # THE CONTROL RUNS FIRST, ON PURPOSE. If the probe program is wrong,
+          # this is where it shows -- on a compiler and a libc nobody doubts.
+          # Every number below is what the other columns are compared against.
+          # THE HEREDOC BODY IS INDENTED AND STRIPPED BACK BELOW.
+          # A heredoc terminator has to sit at column 0, which ENDS the YAML
+          # block scalar -- the file then fails to parse, and it did. Indenting
+          # the body keeps it inside the block; sed removes the indent before
+          # the compiler sees it.
+          cat > /tmp/fp.c <<'FPC'
+          #include <stdio.h>
+          #include <stdlib.h>
+          int main(void)
+          {
+              double a = 5.008;
+              double b = strtod("5.008", 0);
+              long double L = 5.008L;
+              union { double d; unsigned int u[2]; } bits;
+          
+              printf("  literal 5.008      %.6f      expect 5.008000\n", a);
+              printf("  strtod  5.008      %.6f      expect 5.008000\n", b);
+              printf("  1.5 2.5 3.5        %.3f %.3f %.3f   expect 1.500 2.500 3.500\n",
+                     1.5, 2.5, 3.5);
+              printf("  int then double    %d %.3f        expect 7 3.500\n", 7, 3.5);
+          
+              bits.d = 5.008;
+              printf("  raw bits           %08x %08x   expect 40140831 26e978d5\n",
+                     bits.u[1], bits.u[0]);
+          
+              /* THE long double PATH, WHICH IS WHAT musl's fmt_fp USES.
+               * On aarch64 this is 128-bit quad precision and every operation is a call
+               * into soft-float support. If these are wrong and the double ones are
+               * right, the fault is f128 arithmetic rather than printf. */
+              printf("  sizeof(long double) %d          expect 16\n", (int)sizeof(long double));
+              printf("  long double 5.008  %.6Lf      expect 5.008000\n", L);
+              printf("  L*1000 as int      %d          expect 5008\n", (int)(L * 1000.0L));
+              printf("  L > 5.007L         %d           expect 1\n", L > 5.007L);
+              printf("  (double)L          %.6f      expect 5.008000\n", (double)L);
+              return 0;
+          }
+          FPC
+          sed -i 's/^          //' /tmp/fp.c
+          gcc -O0 -o /tmp/fp-hostgcc /tmp/fp.c
+          echo "  === host gcc, host glibc ==="
+          /tmp/fp-hostgcc
+
+          echo
+          echo "  === host gcc, MUSL (musl-gcc) ==="
+          # Same compiler, different libc. If this is right and ours is wrong,
+          # musl's source is fine and the difference is who compiled it.
+          musl-gcc -O0 -static -o /tmp/fp-muslgcc /tmp/fp.c 2>/dev/null \
+            && /tmp/fp-muslgcc || echo "    musl-gcc could not build it"
+
+      - name: 'Build tcc, exactly as the bridge does'
+        run: |
+          set -eu
+          . "$GITHUB_WORKSPACE/tools/clone-pinned.sh"
+          clone_pinned tccsrc "$TCC_PIN" \
+            "https://github.com/TinyCC/tinycc.git https://repo.or.cz/tinycc.git"
+          bash spikes/stage3/patches/tcc-arm64-asm/apply-series.sh tccsrc
+          ( cd tccsrc && ./configure --cc=musl-gcc --prefix=/usr \
+              --extra-ldflags=-static > cfg.log 2>&1 && make -j"$(nproc)" > b.log 2>&1 )
+          echo "  tcc: $(wc -c < tccsrc/tcc) bytes"
+          echo "  libtcc1.a: $( [ -f tccsrc/libtcc1.a ] && wc -c < tccsrc/libtcc1.a || echo ABSENT )"
+
+      - name: 'QUESTION 4: what does libtcc1.a actually define?'
+        run: |
+          set -eu
+          # THE SOFT-FLOAT SYMBOLS, ENUMERATED. musl's fmt_fp does long double
+          # arithmetic; on aarch64 that is 128-bit and the compiler emits calls
+          # to __*tf* helpers. If they are missing the link fails; if they are
+          # present the question becomes whether they are CORRECT.
+          #
+          # Printed rather than asserted, because "which of these exist" is
+          # exactly the thing nobody has looked at.
+          echo "  --- __*tf* (128-bit / quad) routines in libtcc1.a ---"
+          nm tccsrc/libtcc1.a 2>/dev/null | grep -E ' [TtWw] .*tf' | awk '{print "    " $3}' | sort -u
+          echo "  --- and the double/float ones, for comparison ---"
+          nm tccsrc/libtcc1.a 2>/dev/null | grep -E ' [TtWw] __(add|sub|mul|div|fix|float|trunc|extend)' \
+            | awk '{print "    " $3}' | sort -u | head -30
+          echo "  --- total symbols defined ---"
+          nm tccsrc/libtcc1.a 2>/dev/null | grep -cE ' [TtWw] ' | sed 's/^/    /'
+
+      - name: 'QUESTION 1 and 2: musl built by gcc, and musl built by tcc'
+        run: |
+          set -eu
+          curl -fsSL --retry 3 -O "https://musl.libc.org/releases/musl-$MUSL_VER.tar.gz"
+          # TWO SYSROOTS FROM ONE SOURCE. Same musl, same configure, different
+          # compiler -- which is the only variable that matters here.
+          for cc in gcc tcc; do
+            rm -rf "m-$cc" && mkdir "m-$cc"
+            tar xf "musl-$MUSL_VER.tar.gz" -C "m-$cc" --strip-components=1
+            if [ "$cc" = tcc ]; then
+              CCBIN="$PWD/tccsrc/tcc -B$PWD/tccsrc"
+            else
+              CCBIN=gcc
+            fi
+            ( cd "m-$cc" \
+              && ./configure --prefix="/tmp/sys-$cc" --disable-shared \
+                   CC="$CCBIN" > cfg.log 2>&1 \
+              && make -j"$(nproc)" > b.log 2>&1 \
+              && make install > i.log 2>&1 ) \
+              && echo "  musl built by $cc: installed" \
+              || { echo "  musl built by $cc: FAILED"
+                   tail -15 "m-$cc/b.log" 2>/dev/null | sed 's/^/    /'; }
+          done
+
+          echo
+          # FOUR COMBINATIONS, AND EACH ONE RULES SOMETHING IN OR OUT:
+          #   gcc  + musl(gcc)   both known-good        -- the baseline
+          #   gcc  + musl(tcc)   only the libc differs  -- is it tcc's musl?
+          #   tcc  + musl(gcc)   only the caller differs -- is it tcc's codegen?
+          #   tcc  + musl(tcc)   what the bridge has    -- the failing case
+          for prog in gcc tcc; do
+            for lib in gcc tcc; do
+              [ -f "/tmp/sys-$lib/lib/libc.a" ] || continue
+              out="/tmp/fp-$prog-$lib"
+              if [ "$prog" = gcc ]; then
+                gcc -O0 -static -nostdinc -nostdlib \
+                  -I"/tmp/sys-$lib/include" -o "$out" /tmp/fp.c \
+                  "/tmp/sys-$lib/lib/crt1.o" "/tmp/sys-$lib/lib/crti.o" \
+                  "/tmp/sys-$lib/lib/libc.a" "/tmp/sys-$lib/lib/crtn.o" 2>/dev/null
+              else
+                ./tccsrc/tcc -B"$PWD/tccsrc" -static \
+                  -I"/tmp/sys-$lib/include" -L"/tmp/sys-$lib/lib" \
+                  -o "$out" /tmp/fp.c 2>/dev/null
+              fi
+              echo "  === program by $prog, libc by $lib ==="
+              if [ -x "$out" ]; then "$out" 2>&1 | sed 's/^/  /' || echo "    it did not run"
+              else echo "    would not link"; fi
+              echo
+            done
+          done
+
+      - name: 'QUESTION 3: are the 128-bit soft-float routines correct?'
+        run: |
+          set -eu
+          # THE ARITHMETIC UNDERNEATH fmt_fp, WITHOUT ANY printf INVOLVED.
+          #
+          # Every result is turned into an INTEGER before printing, because
+          # printing a float is the thing under suspicion. If these integers
+          # are wrong the fault is the soft-float routines themselves; if they
+          # are right, f128 arithmetic works and fmt_fp is failing for some
+          # other reason.
+          # THE HEREDOC BODY IS INDENTED AND STRIPPED BACK BELOW.
+          # A heredoc terminator has to sit at column 0, which ENDS the YAML
+          # block scalar -- the file then fails to parse, and it did. Indenting
+          # the body keeps it inside the block; sed removes the indent before
+          # the compiler sees it.
+          cat > /tmp/ld.c <<'LDC'
+          #include <stdio.h>
+          int main(void)
+          {
+              long double a = 5.008L, b = 1000.0L, c;
+              double d;
+              long i;
+          
+              printf("  sizeof(long double)  %d      expect 16\n", (int)sizeof(long double));
+          
+              c = a * b;               i = (long)c;
+              printf("  (long)(5.008L*1000)  %ld    expect 5008\n", i);
+          
+              c = a + b;               i = (long)c;
+              printf("  (long)(5.008L+1000)  %ld    expect 1005\n", i);
+          
+              c = b - a;               i = (long)c;
+              printf("  (long)(1000-5.008L)  %ld     expect 994\n", i);
+          
+              c = b / a;               i = (long)c;
+              printf("  (long)(1000/5.008L)  %ld     expect 199\n", i);
+          
+              d = (double)a;           i = (long)(d * 1000.0);
+              printf("  (long)((double)L*1e3) %ld   expect 5008\n", i);
+          
+              a = (long double)0.5;    i = (long)(a * 8.0L);
+              printf("  (long)(0.5L*8)       %ld       expect 4\n", i);
+          
+              printf("  5.008L > 5.007L      %d       expect 1\n", (int)(5.008L > 5.007L));
+              printf("  5.008L == 5.008L     %d       expect 1\n", (int)(5.008L == 5.008L));
+              return 0;
+          }
+          LDC
+          sed -i 's/^          //' /tmp/ld.c
+          echo "  === host gcc, host glibc (the control) ==="
+          gcc -O0 -o /tmp/ld-gcc /tmp/ld.c && /tmp/ld-gcc
+
+          echo
+          echo "  === tcc, against musl built by tcc ==="
+          if [ -f /tmp/sys-tcc/lib/libc.a ]; then
+            ./tccsrc/tcc -B"$PWD/tccsrc" -static \
+              -I/tmp/sys-tcc/include -L/tmp/sys-tcc/lib \
+              -o /tmp/ld-tcc /tmp/ld.c 2>/tmp/ld.err \
+              && /tmp/ld-tcc || { echo "    would not build:"; head -5 /tmp/ld.err | sed 's/^/      /'; }
+          else
+            echo "    no tcc-built musl"
+          fi
+
+      - name: Verdict
+        if: always()
+        run: |
+          echo "  READ THE FOUR BLOCKS AS A TRUTH TABLE:"
+          echo
+          echo "    gcc+musl(gcc) right, tcc+musl(tcc) wrong   -- expected, tells you nothing yet"
+          echo "    gcc+musl(tcc) WRONG                        -- tcc miscompiled musl"
+          echo "    tcc+musl(gcc) WRONG                        -- tcc's own codegen or its libtcc1"
+          echo "    both mixed cases right                     -- the two faults only combine"
+          echo
+          echo "  AND QUESTION 3 SEPARATELY:"
+          echo "    long double arithmetic wrong  -- the __*tf* soft-float routines"
+          echo "    long double arithmetic right  -- fmt_fp fails for another reason"
+          echo
+          echo "  WHY THIS MATTERS BEYOND THE BUG: tcc has built entire"
+          echo "  distributions. A broken printf would be famous. So the"
+          echo "  likeliest answer is that this chain does something unusual --"
+          echo "  aarch64 long double is 128-bit quad, which x86 tcc never"
+          echo "  exercises, and libtcc1.a has to supply every operation on it."
