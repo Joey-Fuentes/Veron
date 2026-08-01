@@ -1080,6 +1080,21 @@ jobs:
       - name: 'IN THE BOX: mc-tcc -> musl -> binutils -> gmp/mpfr/mpc -> gcc 4.7.4'
         run: |
           set -eu
+          # EVERY VERSION THE RUNGS READ IS PASSED WITH --setenv BELOW.
+          #
+          # bwrap gives the box its own environment: a variable in this
+          # workflow's env: block is NOT visible inside. Rungs 0 through 11.5
+          # never noticed because their versions are spelled out in rungs.sh;
+          # everything from 11.7 up uses $GLIBC, $KHDR, $PERL_VER, $PYTHON_VER,
+          # $KERNEL, $GCC15 and $BINUTILS_LFS, and would have died on the first
+          # one under `set -u`.
+          #
+          # THE COMMENTS LIVE HERE, NOT AMONG THE FLAGS. A `#` line inside a
+          # backslash continuation is not a comment -- the continuation joins
+          # it to the command, and bwrap received the prose as arguments and
+          # printed its usage. That cost a run, and the log gave no message
+          # beyond the usage text because bwrap has nothing more specific to
+          # say about "--setenv EVERY VERSION THE".
           bwrap \
             --unshare-all \
             --die-with-parent \
@@ -1092,20 +1107,6 @@ jobs:
             --setenv CC_BIN /work/mc-tcc \
             --setenv TCCDIR /work/tccsrc \
             --setenv ARM mc-tcc \
-            # EVERY VERSION THE RUNGS READ, PASSED EXPLICITLY.
-            #
-            # bwrap gives the box its own environment: a variable in this
-            # workflow's env: block is NOT visible inside. Rungs 0 through 11.5
-            # never noticed because their versions are spelled out in
-            # rungs.sh; everything from 11.7 up uses $GLIBC, $KHDR, $PERL_VER,
-            # $PYTHON_VER, $KERNEL, $GCC15 and $BINUTILS_LFS, and would have
-            # died on the first one under `set -u` --
-            #
-            #     rungs.sh: line NNNN: GLIBC: parameter not set
-            #
-            # which is exactly how tool-probe failed twice today, once for
-            # MAKE_ALT and once for PKG. Same class, third occurrence: if the
-            # in-box script reads it, it has to be passed.
             --setenv MUSL_VER "$MUSL_VER" \
             --setenv MAKE_VER "$MAKE_VER" \
             --setenv MAKE_ALT "$MAKE_ALT" \
