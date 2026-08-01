@@ -101,6 +101,10 @@ jobs:
           }
           FPC
           sed -i 's/^          //' /tmp/fp.c
+          # THE CONTROL MAY NOT FAIL. If host gcc against host glibc cannot
+          # print 5.008 then the probe program is wrong, and every column below
+          # is meaningless -- so this one keeps `set -e` deliberately. It is the
+          # only step in this job that should stop everything if it breaks.
           gcc -O0 -o /tmp/fp-hostgcc /tmp/fp.c
           echo "  === host gcc, host glibc ==="
           /tmp/fp-hostgcc
@@ -226,23 +230,38 @@ jobs:
           #   gcc  + musl(tcc)   only the libc differs  -- is it tcc's musl?
           #   tcc  + musl(gcc)   only the caller differs -- is it tcc's codegen?
           #   tcc  + musl(tcc)   what the bridge has    -- the failing case
+          # set +e FOR THE MATRIX. The step runs under `bash -e`, so the first
+          # compile that fails -- and some of these SHOULD fail, that is what a
+          # matrix is for -- kills the step before anything is printed. The
+          # last run built both musls successfully and then died here with no
+          # output at all.
+          #
+          # Every cell reports its own result instead.
+          set +e
+          [ -f /tmp/fp.c ] || { echo "  /tmp/fp.c is missing -- the CONTROL step did not write it"; exit 0; }
           for prog in gcc tcc; do
             for lib in gcc tcc; do
               [ -f "/tmp/sys-$lib/lib/libc.a" ] || continue
               out="/tmp/fp-$prog-$lib"
+              # STDERR IS KEPT, NOT DISCARDED. A cell that will not link is a
+              # result, and "would not link" without the reason is the kind of
+              # empty diagnostic this job has produced too many of.
               if [ "$prog" = gcc ]; then
                 gcc -O0 -static -nostdinc -nostdlib \
                   -I"/tmp/sys-$lib/include" -o "$out" /tmp/fp.c \
                   "/tmp/sys-$lib/lib/crt1.o" "/tmp/sys-$lib/lib/crti.o" \
-                  "/tmp/sys-$lib/lib/libc.a" "/tmp/sys-$lib/lib/crtn.o" 2>/dev/null
+                  "/tmp/sys-$lib/lib/libc.a" "/tmp/sys-$lib/lib/crtn.o" 2>/tmp/link.err
               else
                 ./tccsrc/tcc -B"$PWD/tccsrc" -static \
                   -I"/tmp/sys-$lib/include" -L"/tmp/sys-$lib/lib" \
-                  -o "$out" /tmp/fp.c 2>/dev/null
+                  -o "$out" /tmp/fp.c 2>/tmp/link.err
               fi
               echo "  === program by $prog, libc by $lib ==="
               if [ -x "$out" ]; then "$out" 2>&1 | sed 's/^/  /' || echo "    it did not run"
-              else echo "    would not link"; fi
+              else
+                echo "    would not link:"
+                head -6 /tmp/link.err 2>/dev/null | sed 's/^/      /'
+              fi
               echo
             done
           done
@@ -296,6 +315,9 @@ jobs:
           }
           LDC
           sed -i 's/^          //' /tmp/ld.c
+          # set +e HERE TOO. Same reason as the matrix: a probe whose job is to
+          # find a broken toolchain must not stop the step when it finds one.
+          set +e
           echo "  === host gcc, host glibc (the control) ==="
           gcc -O0 -o /tmp/ld-gcc /tmp/ld.c && /tmp/ld-gcc
 
