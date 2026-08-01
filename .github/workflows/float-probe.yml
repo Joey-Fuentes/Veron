@@ -190,8 +190,23 @@ jobs:
               # The dropped files are complex math. fmt_fp does not use them,
               # so removing them changes nothing about what is being measured
               # here; it just gets musl to build the way the bridge builds it.
-              rm -f src/complex/*.c
-              echo "  dropped src/complex (tcc has no _Complex -- see sources/musl.toml)"
+              # THE PATH IS RELATIVE TO THE JOB DIRECTORY, NOT THE SOURCE
+              # TREE. This was `rm -f src/complex/*.c` and the cd into m-$cc
+              # does not happen until the subshell two lines below -- so it
+              # deleted nothing, silently, and musl compiled __cexp.c exactly
+              # as before. `rm -f` on a path that does not exist succeeds,
+              # which is why it looked like it had worked.
+              # ASSERT THE ANCHOR, which is stage 4's rule and the one this
+              # step just broke: a removal that matches nothing looks exactly
+              # like one that worked, because `rm -f` succeeds either way.
+              _n=$(ls "m-$cc"/src/complex/*.c 2>/dev/null | wc -l)
+              if [ "$_n" = 0 ]; then
+                echo "  NO src/complex/*.c to drop -- musl has moved them,"
+                echo "  or this path is wrong again. Not continuing quietly."
+                exit 1
+              fi
+              rm -f "m-$cc"/src/complex/*.c
+              echo "  dropped $_n files from src/complex ($(ls "m-$cc"/src/complex/*.c 2>/dev/null | wc -l) left)"
             else
               CCBIN=gcc
             fi
