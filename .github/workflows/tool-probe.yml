@@ -61,7 +61,57 @@ jobs:
       - name: Install
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends busybox-static curl xz-utils gcc
+          # bubblewrap AND musl-tools GO IN HERE, NOT LATER.
+          #
+          # They used to be installed mid-job, in the AIRLOCK step. bwrap then
+          # failed with "loopback: Failed RTM_NEWADDR: Operation not permitted"
+          # in every variant tried -- while the reference job, which installs
+          # bubblewrap in its FIRST step alongside everything else, has never
+          # seen it.
+          #
+          # Whether the install position is the cause is not proven. It is the
+          # last difference between the two jobs after flags, namespaces and
+          # step boundaries were all matched and all failed, and it costs
+          # nothing to eliminate.
+          sudo apt-get install -y --no-install-recommends \
+            busybox-static curl xz-utils gcc bubblewrap musl-tools file git make
+
+      # DOES bwrap WORK AT ALL, IN THIS JOB, RIGHT NOW?
+      #
+      # Four rounds were spent on "loopback: Failed RTM_NEWADDR", each finding
+      # out four steps deep and after a busybox build, a tcc build and a
+      # sysroot fetch. Every one of those is wasted if the sandbox cannot open.
+      #
+      # This asks in two seconds, with the exact flags the real step uses, and
+      # prints what it got. A failure here is a fact about the runner rather
+      # than about anything this job builds -- which is precisely the confusion
+      # that made the last four rounds expensive.
+      - name: 'GATE: can bwrap open a sandbox here?'
+        run: |
+          set -u
+          T=$(mktemp -d)
+          mkdir -p "$T/bin"
+          cp /bin/busybox "$T/bin/busybox"
+          ln -sf busybox "$T/bin/sh"
+          set +e
+          bwrap --unshare-all --die-with-parent \
+            --bind "$T" / --proc /proc --dev /dev --tmpfs /tmp \
+            /bin/sh -c 'echo "  bwrap --unshare-all: ok"'
+          rc=$?
+          set -e
+          if [ "$rc" != 0 ]; then
+            echo "  bwrap --unshare-all FAILED rc=$rc"
+            echo "  --- what the runner allows ---"
+            echo "    unprivileged_userns_clone: $(cat /proc/sys/kernel/unprivileged_userns_clone 2>/dev/null || echo 'n/a')"
+            echo "    max_user_namespaces:       $(cat /proc/sys/user/max_user_namespaces 2>/dev/null || echo 'n/a')"
+            echo "    apparmor userns restrict:  $(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 'n/a')"
+            echo "    bwrap: $(bwrap --version 2>&1)"
+            echo "    id: $(id)"
+            echo
+            echo "  Every step below that enters a box will fail the same way."
+            echo "  That is a property of this runner, not of anything built here."
+          fi
+          rm -rf "$T"
 
       - name: 'What this busybox has, and what it does not'
         run: |
@@ -400,7 +450,6 @@ jobs:
       - name: 'AIRLOCK: a tcc to build the sysroot with'
         run: |
           set -eu
-          sudo apt-get install -y --no-install-recommends musl-tools bubblewrap
           . "$GITHUB_WORKSPACE/tools/clone-pinned.sh"
           clone_pinned tccsrc 5ec0e6f84b47ebd8c269b581712666313f5edaef \
             "https://github.com/TinyCC/tinycc.git https://repo.or.cz/tinycc.git"
