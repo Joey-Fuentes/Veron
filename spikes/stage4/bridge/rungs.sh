@@ -2712,34 +2712,59 @@ if [ "$R11" = ok ]; then
  * pieces named xaa, xab, ... in the current directory. No options. */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 int main(int argc, char **argv)
 {
     char line[65536];
     long n = 0, per = 1000;
     int a = 0, b = 0;
     FILE *out = NULL;
-    char name[16];
+    FILE *in = stdin;
+    const char *pre = "x";
+    char name[64];
     /* perl's Configure calls this BOTH ways -- `split -50` and `split -l 50`
      * appear in the same script -- so all three spellings are accepted:
      *   -lN   -l N   -N
      * The first version handled only -lN. Its own self-test then used -2 and
      * reported "made 0 chunks", which read as a broken split when it was a
      * broken test of a split that was merely incomplete. */
-    if (argc > 1 && argv[1][0] == '-') {
-        char *p = argv[1] + 1;
-        if (*p == 'l') {
-            p++;
-            if (*p) per = atol(p);
-            else if (argc > 2) per = atol(argv[2]);
-        } else if (*p >= '0' && *p <= '9') {
-            per = atol(p);
+    /* THE FILE AND PREFIX ARGUMENTS ARE NOT OPTIONAL, AND OMITTING THEM HUNG.
+     *
+     * The first version read stdin unconditionally and ignored everything that
+     * was not an option. Given `split -2 s1 x` it therefore blocked on a stdin
+     * nobody was writing to -- forever. The self-test reported "made 0 chunks",
+     * which reads as a split that produced nothing rather than one that never
+     * returned, and that is a much worse failure to have in a rung: a hang has
+     * no error message at all.
+     *
+     * perl's Configure uses both forms -- the trap log from tool-probe shows
+     * `split -50` and `split -l 50` -- and coreutils split takes an optional
+     * file and an optional prefix after the options. All of it is handled. */
+    {
+        int i = 1;
+        while (i < argc && argv[i][0] == '-' && argv[i][1]) {
+            char *p = argv[i] + 1;
+            if (*p == 'l') {
+                p++;
+                if (*p) per = atol(p);
+                else if (i + 1 < argc) per = atol(argv[++i]);
+            } else if (*p >= '0' && *p <= '9') {
+                per = atol(p);
+            }
+            i++;
         }
+        if (i < argc && strcmp(argv[i], "-") != 0) {
+            in = fopen(argv[i], "r");
+            if (!in) { perror(argv[i]); return 1; }
+        }
+        if (i < argc) i++;
+        if (i < argc) pre = argv[i];
     }
     if (per < 1) per = 1000;
-    while (fgets(line, sizeof line, stdin)) {
+    while (fgets(line, sizeof line, in)) {
         if (!out || n % per == 0) {
             if (out) fclose(out);
-            sprintf(name, "x%c%c", 'a' + a, 'a' + b);
+            sprintf(name, "%.32s%c%c", pre, 'a' + a, 'a' + b);
             if (++b == 26) { b = 0; a++; }
             out = fopen(name, "w");
             if (!out) { perror(name); return 1; }
@@ -2748,6 +2773,7 @@ int main(int argc, char **argv)
         n++;
     }
     if (out) fclose(out);
+    if (in != stdin) fclose(in);
     return 0;
 }
 SPLITC
@@ -2824,11 +2850,58 @@ COMMC
     rm -f x??
     printf 'l1\nl2\nl3\n' | split -l 2 2>/dev/null
     [ -f xaa ] && [ -f xab ] || _sp_ok="no (-l 2)"
-    _pieces=$(ls x?? 2>/dev/null | tr '\n' ' ')
+    # AND THE FILE FORM, WHICH IS THE ONE THAT HUNG. Every test above pipes
+    # stdin, so none of them could have caught a split that ignores its file
+    # argument and blocks forever. `timeout` and `</dev/null` are both here on
+    # purpose: without them a regression stops the rung with no message rather
+    # than failing it with one.
+    rm -f x?? pfx??
+    printf 'l1\nl2\nl3\nl4\n' > sf
+    timeout 10 split -2 sf pfx </dev/null 2>/dev/null
+    [ -f pfxaa ] && [ -f pfxab ] || _sp_ok="no (file + prefix)"
+    rm -f sf
+    _pieces=$(ls x?? pfx?? 2>/dev/null | tr '\n' ' ')
     say "    comm -23: [$_only1] (expect a)   comm -12: [$_both] (expect bc)"
     say "    split: [$_pieces] and all of -l2 / -l 2 / -2 accepted: $_sp_ok"
     [ "$_only1" = a ] && [ "$_both" = bc ] || say "    ONE OF THESE IS WRONG -- Configure will conclude something false"
     cd /tmp && rm -rf ctest )
+
+  # DOES THIS COMPILER GET DOUBLES RIGHT? ASKED BEFORE perl, NOT AFTER.
+  #
+  # perl's failure is a version comparison, which is a double comparison, and
+  # the answer to "is floating point sound" should not depend on perl building
+  # successfully -- that is the thing being explained.
+  #
+  # 5.008 is the exact value perl compares. It is not representable in binary
+  # floating point, so what matters is whether string-to-double, double
+  # arithmetic and double-to-integer all agree with the same operations on a
+  # compiler nobody doubts.
+  say "    --- can this compiler do floating point? ---"
+  ( cd /tmp && rm -f fp.c fp.bin
+    cat > fp.c <<'FPC'
+#include <stdio.h>
+#include <stdlib.h>
+int main(void)
+{
+    double a = 5.008;
+    double b = strtod("5.008", 0);
+    double c = 12.5;
+    printf("      literal 5.008      = %.6f  (expect 5.008000)\n", a);
+    printf("      strtod(\"5.008\")    = %.6f  (expect 5.008000)\n", b);
+    printf("      (int)(5.008*1000)  = %d       (expect 5008)\n", (int)(a * 1000.0));
+    printf("      (long)12.5         = %ld       (expect 12)\n", (long)c);
+    printf("      5.008 > 5.007      = %d        (expect 1)\n", a > 5.007);
+    printf("      5.008 == strtod    = %d        (expect 1)\n", a == b);
+    return 0;
+}
+FPC
+    if "$PFX/bin/chain-cc" -static -O0 -o fp.bin fp.c 2>/tmp/fp.err && ./fp.bin; then
+      :
+    else
+      say "      the float probe would not build or run:"
+      head -5 /tmp/fp.err 2>/dev/null | sed 's/^/        /'
+    fi
+    rm -f fp.c fp.bin )
 
   cd /work/src
   if ! untar "/in/perl-$PERL_VER"; then
@@ -2836,85 +2909,37 @@ COMMC
   else
     _pl=$(onedir "perl-$PERL_VER ./perl-$PERL_VER")
     cd "/work/src/$_pl"
-    # perl's Configure NEEDS A FULLER coreutils THAN busybox HAS.
+    # perl's Configure NEEDS TWO TOOLS busybox DOES NOT HAVE.
     #
     #     ./Configure: line 2135: split: not found
     #     I don't know where 'comm' is, and my life depends on it.
-    #
-    # Both are real gaps, and the second is the surprising one: `comm` IS a
-    # busybox applet in general, and this box links all 269 it reports -- so
-    # Ubuntu's busybox-static was simply built without it. `split` is not an
-    # applet at any configuration.
     #
     # Configure is a 1990s shell script that shells out to about forty
     # utilities and dies on the first one missing. It is not autoconf and there
     # is no --without to give it.
     #
-    # SO SUPPLY THE TWO IT WANTS, IN sh. They are small, well-defined, and
-    # Configure uses each in exactly one way:
-    #   comm -13 a b   lines only in b   -- Configure compares MANIFEST lists
-    #   split -N f     chunk a file      -- Configure splits its own source to
-    #                                       check the kit is complete
-    # Writing them is smaller than building coreutils here, and coreutils would
-    # itself want a working shell environment this rung is trying to establish.
-    # They live in $PFX/bin, which is already on PATH.
+    # ONE IMPLEMENTATION OF EACH, AND THAT IS THE POINT OF THIS COMMENT.
+    # Three accumulated here across three rounds -- a C split, an awk split, an
+    # sh comm -- because each round added one without deleting the last. The
+    # awk split was dead code (the C one is built first, so its branch never
+    # ran) but its SELF-TEST still ran, against a form the C version did not
+    # accept. That is where "split -2: made 0 chunks" came from: not a broken
+    # split, but a test of one implementation aimed at another.
+    #
+    # Worse, the form it tested -- `split -2 s1 x`, with a FILE -- made the C
+    # version block on a stdin nobody was writing to. It did not produce zero
+    # chunks; it never returned. A hang has no error message at all, and the
+    # only reason the rung continued is that the subshell had no stdin.
+    #
+    # So: one split, one comm, both C, both handling every form Configure uses.
     mkdir -p "$PFX/bin"
-    if ! command -v comm >/dev/null 2>&1; then
-      cat > "$PFX/bin/comm" <<'COMMSH'
-#!/bin/sh
-# Minimal comm for perl's Configure, which uses -13 only (lines unique to
-# file 2). Both inputs are already sorted, as comm requires.
-_f1=13
-case "$1" in -*) _f1=${1#-}; shift ;; esac
-case "$_f1" in
-  13) awk 'NR==FNR{a[$0]=1;next} !($0 in a)' "$1" "$2" ;;
-  12) awk 'NR==FNR{a[$0]=1;next} ($0 in a)'  "$1" "$2" ;;
-  23) awk 'NR==FNR{a[$0]=1;next} !($0 in a)' "$2" "$1" ;;
-  *)  echo "comm-shim: unsupported flags -$_f1" >&2; exit 1 ;;
-esac
-COMMSH
-      chmod 0755 "$PFX/bin/comm"
-      say "    comm: shimmed (busybox in this box has no comm applet)"
-    fi
-    if ! command -v split >/dev/null 2>&1; then
-      cat > "$PFX/bin/split" <<'SPLITSH'
-#!/bin/sh
-# Minimal split for perl's Configure: `split -N file prefix`, N lines per
-# chunk, suffixes aa ab ac ... which is what Configure globs as x??.
-_n=1000; _pre=x
-while [ $# -gt 0 ]; do
-  case "$1" in
-    -[0-9]*) _n=${1#-} ;;
-    -l)      shift; _n=$1 ;;
-    -*)      ;;
-    *)       if [ -z "${_in:-}" ]; then _in=$1; else _pre=$1; fi ;;
-  esac
-  shift
-done
-awk -v n="$_n" -v pre="$_pre" '
-  BEGIN { s="abcdefghijklmnopqrstuvwxyz"; i=0; j=0; f="" }
-  {
-    if (NR % n == 1 || f == "") {
-      f = pre substr(s, int(i/26)+1, 1) substr(s, (i%26)+1, 1)
-      i++
-    }
-    print > f
-  }' "${_in:-/dev/stdin}"
-SPLITSH
-      chmod 0755 "$PFX/bin/split"
-      say "    split: shimmed (not a busybox applet at any configuration)"
-    fi
-    # PROVE BOTH BEFORE Configure RUNS, because Configure's own error for a
-    # broken one is identical to its error for a missing one.
-    ( cd /tmp && printf 'a\nb\nc\n' > c1 && printf 'b\nc\nd\n' > c2
-      _got=$(comm -13 c1 c2 | tr -d '\n')
-      [ "$_got" = d ] && echo "      comm -13: ok" || echo "      comm -13: WRONG ($_got, expected d)"
-      printf '1\n2\n3\n4\n' > s1 && rm -f xa* && split -2 s1 x
-      _n=$(ls xa* 2>/dev/null | wc -l)
-      [ "$_n" = 2 ] && echo "      split -2: ok (2 chunks)" || echo "      split -2: made $_n chunks, expected 2"
-      rm -f c1 c2 s1 xa* )
-
-    say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./Configure -des -Dprefix=$PFX -Dcc=$PFX/bin/chain-cc -Dldflags=-static"
+    # THE MARKER MUST MATCH THE COMMAND. This said -Dldflags=-static and
+    # nothing about -Doptimize, while the command below passed both -- so a log
+    # showing "no -Doptimize" was the marker being stale, not the flag being
+    # absent, and it cost a round of reading. Built from the same variables the
+    # command uses.
+    _pcfg="-des -Dprefix=$PFX -Dcc=$PFX/bin/chain-cc -Dldflags=-static -Doptimize=-O0 -fno-strict-aliasing -fwrapv"
+    say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: ./Configure $_pcfg"
     say "    (cwd: $(pwd))"
     # -Dprefix is $PFX, not /usr: this perl is a BUILD TOOL for the rungs above,
     # not part of the sysroot being assembled at $S. Chapter 7's perl, which is
@@ -2933,6 +2958,36 @@ SPLITSH
     # find a working C compiler" from one failed link, when gcc 10 had just
     # built two compilers and a binutils. The compiler is fine; its linker is
     # not, on this one section, and only until $LFS_TGT-ld takes over.
+    # -O0 DID NOT FIX IT, AND THAT IS THE USEFUL RESULT.
+    #
+    # The compiles came out as
+    #     chain-cc -c -DPERL_CORE -fwrapv -fno-strict-aliasing -pipe ...
+    # with no -O at all, so the flag took -- and miniperl still read
+    # `use 5.008` as v8.0.0. Optimisation is ruled out. A miscompile that
+    # survives -O0 is in code generation itself, not in an optimiser pass.
+    #
+    # WHAT `use 5.008` ACTUALLY DOES: it is `require 5.008`, and perl
+    # implements that by comparing a DOUBLE against $]. 5.008 is not
+    # representable exactly in binary floating point, so the comparison depends
+    # on the exact double produced by string-to-number conversion. Reading it
+    # as v8.0.0 is what happens when the integer part is lost -- which is the
+    # shape of a floating-point conversion fault, not an integer one.
+    #
+    # THAT MATTERS BECAUSE OF WHERE THIS gcc CAME FROM. It descends from
+    # tcc through gcc 4.7, and MICRO-C.md records that micro-c has no working
+    # floating point at all -- `double a = 12.5; (long)a == 12` is false in a
+    # binary mc-tcc produces. This is the REFERENCE arm, so mc-tcc is not in
+    # this chain -- but tcc's own soft-float helpers in libtcc1.a are, and
+    # every gcc above was built by something built by tcc.
+    #
+    # So the probe below asks perl directly about the arithmetic rather than
+    # about versions. If 5.008 does not round-trip, the answer is floating
+    # point and it is a compiler question; if it does, the fault is in perl's
+    # version parsing and is a different investigation entirely.
+    #
+    # -Doptimize IS KEPT. It costs nothing on a build tool, and it removes a
+    # variable from every future reading of this rung.
+    #
     # -Doptimize="-O0", AND THIS IS NOT ABOUT SPEED.
     #
     # At -O2 perl configures, compiles, links miniperl, RUNS it -- and then:
@@ -2977,8 +3032,20 @@ SPLITSH
         # compares versions -- far worse than one that fails loudly.
         say "    --- the comparison that failed at -O2 ---"
         "$PFX/bin/perl" -e 'printf("      $] = %s\n", $]);' 2>&1
-        "$PFX/bin/perl" -e 'print "      use 5.008 ok\n"' -e 'BEGIN{ require 5.008 }' 2>&1 \
-          || say "      require 5.008 STILL FAILS -- the miscompile is not optimisation"
+        # ONE -e, AND THE require FIRST. Two -e blocks are concatenated in
+        # order, so the previous form printed "ok" before testing anything.
+        if "$PFX/bin/perl" -e 'require 5.008; print "      require 5.008 ok\n"' 2>&1; then
+          :
+        else
+          say "      require 5.008 STILL FAILS -- not an optimisation problem"
+        fi
+        # AND THE ARITHMETIC UNDERNEATH IT, because "5.008 read as v8.0.0" is a
+        # symptom and this is the operation. If these disagree with the
+        # expected values the fault is in numeric conversion, which is a
+        # codegen answer rather than a perl one.
+        "$PFX/bin/perl" -e 'printf("      5.008 as a number: %s (expect 5.008)\n", 5.008)' 2>&1
+        "$PFX/bin/perl" -e 'printf("      int(5.008*1000):   %s (expect 5008)\n", int(5.008*1000))' 2>&1
+        "$PFX/bin/perl" -e 'printf("      sprintf %%vd 5.8.0:  %s (expect 5.8.0)\n", sprintf("%vd", v5.8.0))' 2>&1
         say "    perl: $("$PFX/bin/perl" --version 2>&1 | grep -o 'v5[0-9.]*' | head -1)"
         # PROVE IT RUNS AND CAN BE FOUND BY NAME, which is how every consumer
         # above will reach it. `perl -e` failing here is a different problem
@@ -3000,7 +3067,13 @@ SPLITSH
       # here, because "Perl v8.0.0 required--this is only v5.42.0" reads like a
       # dependency and sends the next round looking for a newer perl.
       if grep -q "required--this is only" b.log 2>/dev/null; then
-        say "    ^ miniperl parsed a version wrongly -- `use 5.008` read as"
+        # NO BACKTICKS IN A say STRING. The first version wrote `use 5.008`
+        # with backticks for emphasis and the shell RAN it:
+        #     rungs.sh: line 2661: use: not found
+        # -- and the message then printed with an empty gap where the text
+        # should have been. A diagnostic that mangles itself is the third one
+        # in this job, after tr -dc and od -j.
+        say "    ^ miniperl parsed a version wrongly: use 5.008 read as"
         say "      v8.0.0. That is the interpreter we just built computing a"
         say "      comparison incorrectly, i.e. a codegen fault in the chain,"
         say "      not a missing or too-old perl."
