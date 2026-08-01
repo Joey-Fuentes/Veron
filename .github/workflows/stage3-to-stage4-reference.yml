@@ -1140,6 +1140,84 @@ jobs:
             --chdir /work \
             /bin/sh /src/stage4/bridge/rungs.sh
 
+      # ------------------------------------------------------------------
+      # PHASE B: THE SYSROOT IS THE FILESYSTEM.
+      #
+      # This is the second bwrap, not a nested one. Phase A ran with the box
+      # as /, where /usr is musl; the final toolchain was built --prefix=/usr
+      # into /work/lfs and only functions when that really IS the root,
+      # because PT_INTERP, the library search path and the header search path
+      # are all absolute.
+      #
+      # An earlier revision tried to do this from inside phase A with a helper
+      # that set PATH and nothing else. PATH does not move an interpreter.
+      #
+      # THE SHAPE IS box15.sh's, from hermetic-gcc15.yml, which already does
+      # exactly this and works: "No /usr bind. No /etc bind. The sysroot IS
+      # the filesystem."
+      #
+      # PATH HAS NO /tools/bin, DELIBERATELY. That is where phase A's cross
+      # toolchain lives, and both halves of it are musl-static so they would
+      # run in here perfectly well. LFS drops the same directory entering its
+      # chroot -- "the cross toolchain will no longer be used" -- and for us
+      # it is what turns "the image was built by the final compiler" from a
+      # convention into something the sandbox enforces.
+      #
+      # /build IS SCRATCH AND IS NOT THE SYSROOT. Sources are unpacked and
+      # built there so that a rebuild does not litter the root that is about
+      # to be hashed.
+      #
+      # GUARDED ON THE MARKER. rungs.sh writes .phase-a-complete only after
+      # checking that sh, make, gcc, g++, ld and as all EXIST in the sysroot.
+      # Starting a sandbox whose / has no shell fails on its first command
+      # with "sh: not found", which reads as a missing package.
+      - name: 'PHASE B: the final system, built by the final toolchain'
+        if: always()
+        run: |
+          set -eu
+          if [ ! -f "$BOX/work/lfs/.phase-a-complete" ]; then
+            echo "  phase A did not complete -- $BOX/work/lfs is not enterable."
+            echo "  Skipped rather than attempted: a sandbox rooted at a"
+            echo "  half-built sysroot fails on its first command in a way"
+            echo "  that names the wrong thing."
+            exit 0
+          fi
+          mkdir -p "$BOX/pb"
+          bwrap \
+            --unshare-all \
+            --die-with-parent \
+            --new-session \
+            --clearenv \
+            --setenv PATH /usr/bin:/usr/sbin \
+            --setenv HOME /build \
+            --setenv LC_ALL POSIX \
+            --setenv TERM dumb \
+            --setenv SOURCE_DATE_EPOCH 0 \
+            --setenv ARM reference \
+            --setenv LFS_TGT aarch64-veron-linux-gnu \
+            --setenv GLIBC "$GLIBC" \
+            --setenv GCC15 "$GCC15" \
+            --setenv BINUTILS_LFS "$BINUTILS_LFS" \
+            --setenv KERNEL "$KERNEL" \
+            --setenv ENABLE_KERNEL "$ENABLE_KERNEL" \
+            --setenv PERL_VER "$PERL_VER" \
+            --setenv PYTHON_VER "$PYTHON_VER" \
+            --setenv GAWK_VER "$GAWK_VER" \
+            --setenv OPENSSL_VER "$OPENSSL_VER" \
+            --setenv M4_VER "$M4_VER" \
+            --setenv BC_VER "$BC_VER" \
+            --setenv BISON_VER "$BISON_VER" \
+            --setenv FLEX_VER "$FLEX_VER" \
+            --setenv BUSYBOX_VER "$BUSYBOX_VER" \
+            --bind "$BOX/work/lfs" / \
+            --bind "$BOX/pb" /build \
+            --ro-bind "$PWD/spikes" /src \
+            --ro-bind "$PWD/pins" /in \
+            --bind "$BOX/out" /out \
+            --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
+            --chdir /build \
+            /usr/bin/sh /src/stage4/bridge/rungs-sysroot.sh
+
       # PUBLISH THE SYSROOT SO SIDE EXPERIMENTS CAN START FROM IT.
       #
       # tool-probe can build one package hermetically -- no host /usr, our
@@ -1155,9 +1233,18 @@ jobs:
         if: always()
         run: |
           set -eu
-          if [ -f box/lfs/.chapter5-complete ]; then
-            cp -a box/lfs lfs 2>/dev/null || true
-            cp -a box/prefix prefix 2>/dev/null || true
+          # box/work/lfs, NOT box/lfs, AND THAT WAS A REAL BUG RATHER THAN A
+          # TIDY-UP. rungs.sh sets S=/work/lfs and PFX=/work/prefix, and the
+          # box is bound with `--bind "$BOX" /` -- so /work is $BOX/work and
+          # the sysroot lands at box/work/lfs. This step looked at box/lfs,
+          # which has never existed, so it took the else branch on every run
+          # and printed "chapter 5 did not complete" for runs in which it
+          # had. The cache save below is keyed on the same marker and has
+          # therefore never fired, which is why tool-probe still has no
+          # sysroot to start from.
+          if [ -f box/work/lfs/.chapter5-complete ]; then
+            cp -a box/work/lfs lfs 2>/dev/null || true
+            cp -a box/work/prefix prefix 2>/dev/null || true
             echo "  sysroot published: $(du -sh lfs 2>/dev/null | cut -f1) + $(du -sh prefix 2>/dev/null | cut -f1)"
           else
             echo "  chapter 5 did not complete -- nothing published, and that is"
@@ -1230,6 +1317,13 @@ jobs:
           echo "  driving the build : $BUDGET_DRIVER"
           echo "  under test        : ref-tcc (host-built, static against musl)"
           echo ""
+          echo "  PHASE B borrowed nothing further. It runs in a second bwrap"
+          echo "  rooted at the sysroot phase A built, with PATH=/usr/bin:"
+          echo "  /usr/sbin and NO /tools/bin -- so the cross toolchain that"
+          echo "  produced that sysroot is unreachable while the image is"
+          echo "  built, and 'built by the final compiler' is enforced by the"
+          echo "  sandbox rather than asserted in a comment."
+          echo ""
           echo "  NOT in the box, and that is the difference from stage 4:"
           echo "    /usr/include   host glibc headers   -- absent"
           echo "    /usr/lib       crt1.o, libc         -- absent"
@@ -1246,12 +1340,12 @@ jobs:
           set -u
           # qemu IS A VERIFIER, NOT A BUILD TOOL, and it stays outside the box
           # for the same reason stage 4 keeps it outside: nothing it does
-          # contributes a byte to any artifact. It reads what rung 20 left in
-          # /out and reports whether that boots.
+          # contributes a byte to any artifact. It reads what phase B's rung B8
+          # left in /out and reports whether that boots.
           IMG=box/out/Image
           IRD=box/out/initramfs.cpio.gz
           if [ ! -s "$IMG" ] || [ ! -s "$IRD" ]; then
-            echo "  no Image or initramfs -- the rungs did not reach 20"
+            echo "  no Image or initramfs -- phase B did not reach B8"
             exit 0
           fi
           echo "  Image:     $(stat -c%s "$IMG") bytes"

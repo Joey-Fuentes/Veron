@@ -2684,6 +2684,42 @@ head1 "RUNG 10 -- LFS 5.2: binutils pass 1, cross to \$LFS_TGT"
 LFS_TGT=aarch64-veron-linux-gnu
 S=/work/lfs
 
+# THE SYSROOT HAS TO BE SHAPED LIKE A ROOT, AND NOTHING HERE WAS DOING IT.
+#
+# $S is not just a staging directory. Phase B binds it AS `/` and runs the
+# toolchain natively inside it, which is the only way a glibc toolchain built
+# --prefix=/usr can function: its PT_INTERP, its library search path and its
+# header search path are all absolute and all assume it is the root.
+#
+# glibc installs its loader to $S/usr/lib (libc_cv_slibdir=/usr/lib, rung 13),
+# but every binary it links carries the interpreter as /lib/ld-linux-aarch64.so.1.
+# Without $S/lib -> usr/lib that path does not exist even once $S IS the root,
+# and every dynamic binary fails to exec with ENOENT -- which a shell reports
+# as "gcc: not found", the message for a missing PROGRAM.
+#
+# This is LFS 4.2 and it is also hermetic-gcc15.yml's layout step, which does
+# the identical thing beside box15.sh:
+#
+#     for i in bin lib sbin; do ln -sfnv usr/$i "$S/$i"; done
+#
+# That job binds the sysroot as / and works. This one wrote in_sysroot instead
+# -- a PATH -- and skipped the layout, so neither half was present.
+#
+# NO /usr/lib64, DELIBERATELY, and the book is blunt about why: "The LFS editors
+# have deliberately decided not to use a /usr/lib64 directory ... If for any
+# reason this directory appears it may break your system." aarch64 has no lib64
+# in the first place; the note matters because gcc's t-aarch64-linux is what
+# would create one, and rung 11 already patches it for that reason.
+mkdir -p "$S/etc" "$S/var" "$S/usr/bin" "$S/usr/lib" "$S/usr/sbin" "$S/tools"
+for _i in bin lib sbin; do
+  [ -e "$S/$_i" ] || ln -sfn "usr/$_i" "$S/$_i"
+done
+say ""
+say "  sysroot layout at $S:"
+for _i in bin lib sbin; do
+  printf '    /%-5s -> %s\n' "$_i" "$(readlink "$S/$_i" 2>/dev/null || echo 'NOT A SYMLINK')"
+done
+
 # A WRAPPER FOR gcc 10, THE SAME MOVE cc-static MADE FOR tcc.
 #
 # Everything from rung 10 up is built by gcc 10 through the tcc-built binutils
@@ -3984,6 +4020,29 @@ if [ "$R14" = ok ]; then
     fi
   done
   rm -rf /work/b-binutils2 && mkdir -p /work/b-binutils2 && cd /work/b-binutils2
+
+  # THE BUILD TRIPLE, ASKED ONCE, FROM A TREE THAT IS KNOWN TO BE THERE.
+  #
+  # Every --build below used to call a DIFFERENT config.guess, each at a path
+  # assumed rather than checked -- make's at build-aux/config.guess, which is
+  # where make 4.4 keeps it and where 3.82 does not, and where nothing in this
+  # script had ever looked. A `$(...)` on a missing file is not an error under
+  # `set -u`: it is the empty string, so the flag becomes a bare `--build=`
+  # and configure stops on "invalid value" three screens later, naming the
+  # option rather than the missing file.
+  #
+  # binutils' config.guess is at the top of its tree, rung 10 already ran it,
+  # and every package here is being built for the same machine -- so one
+  # answer serves all of them and the assumption is made once, out loud.
+  _BUILD_TRIPLE=$("/work/src/$_bu/config.guess" 2>/dev/null || true)
+  if [ -z "$_BUILD_TRIPLE" ]; then
+    say "    config.guess produced nothing at /work/src/$_bu/config.guess"
+    say "    Every --build below would have been passed empty. Stopping here"
+    say "    rather than letting three configures fail on the same cause."
+    R16=FAIL
+  else
+    say "    build triple: $_BUILD_TRIPLE   host: $LFS_TGT"
+  fi
   # make INTO THE SYSROOT FIRST, BECAUSE EVERYTHING BELOW NEEDS ONE.
   #
   # stage4-complete builds make 4.4.1 in chapter 6 and we did not. Rung 4.5's
@@ -4013,8 +4072,8 @@ if [ "$R14" = ok ]; then
       rm -rf /work/b-make2 && mkdir -p /work/b-make2 && cd /work/b-make2
       if "/work/src/make-p2/$_mk/configure" --prefix=/usr \
            --host="$LFS_TGT" \
-           --build="$("/work/src/make-p2/$_mk/build-aux/config.guess")" \
-           CC_FOR_BUILD="$LFS_TGT-gcc" \
+           --build="$_BUILD_TRIPLE" \
+           CC_FOR_BUILD="$PFX/bin/chain-cc -static" \
            --disable-nls > c.log 2>&1 \
          && timeout 1800 make -j"$NP" > b.log 2>&1 \
          && make DESTDIR="$S" install > i.log 2>&1; then
@@ -4029,7 +4088,7 @@ if [ "$R14" = ok ]; then
     fi
   fi
 
-  # THE BUILD-SIDE COMPILER IS gcc 15 PASS 1, WHICH IS THE NEWEST THING HERE.
+  # THE BUILD-SIDE COMPILER IS gcc 10, AND PASS 1 IS THE WRONG ANSWER HERE.
   #
   # configure needs two compilers for a cross build: one for --host (the
   # programs being built) and one for --build (the little test programs and
@@ -4041,24 +4100,61 @@ if [ "$R14" = ok ]; then
   #     checking whether g++ supports C++14 ... no
   #     configure: error: A compiler with support for C++14 is required
   #
-  # $LFS_TGT-gcc SERVES BOTH SIDES. --build is aarch64-unknown-linux-gnu and
-  # --host is aarch64-veron-linux-gnu; they differ only in the vendor field,
-  # which is what LFS_TGT exists to do. Its output runs here.
+  # A PREVIOUS REVISION SET CC_FOR_BUILD=$LFS_TGT-gcc AND THAT CANNOT WORK.
+  # Pass 1 was configured --with-sysroot=$S, so what it emits is glibc-linked
+  # against the sysroot and carries /lib/ld-linux-aarch64.so.1 as its
+  # interpreter. Build-side programs are generators -- genmodes, gengtype,
+  # genattrtab -- that gcc RUNS DURING THIS BUILD, on this side, where that
+  # path does not resolve. The build would die on its own generators.
   #
-  # NOT gcc 10, WHICH IS WHAT I REACHED FOR FIRST. gcc 10 built gcc 15 and its
-  # job ended there. Using it to build chapter 6 would mean the final toolchain
-  # was assembled by a compiler the chain had already superseded -- the same
-  # mistake as building busybox with pass 1.
+  # The build side must produce binaries that run in THE BOX, and the box's
+  # native libc is musl. chain-cc is gcc 10.2.0 driving musl, statically
+  # linked, and it has built every rung from 10 up. gcc 10 does C++14, which is
+  # the only thing the error below was actually complaining about:
   #
-  # stage4-complete does not need this because its chapter 6 runs on the bare
-  # runner, where `g++` is Ubuntu's gcc 13. Ours is inside the box, where the
-  # only compilers are the ones this ladder built.
+  #     checking whether aarch64-veron-linux-gnu-g++ supports C++14 ... yes
+  #     checking whether g++ supports C++14 ... no
+  #     configure: error: A compiler with support for C++14 is required
+  #
+  # gcc 4.7.4 is what bare `g++` resolves to here, and 4.7 predates C++14. The
+  # fix is to name a build-side compiler, not to reach for the newest one.
+  #
+  # THIS DOES NOT TAINT THE OUTPUT. Build-side generators emit source and
+  # tables consumed by the host-side compile; none of them ends up in an
+  # artifact, and the host side is $LFS_TGT-gcc throughout. LFS uses the HOST
+  # DISTRO's gcc for this same role -- Ubuntu's 13, entirely outside the chain
+  # -- so using gcc 10 from our own ladder is strictly stricter than the book.
+  # THE BUILD DIRECTORY, RE-ENTERED, AND THIS IS A FIX RATHER THAN A FLOURISH.
+  #
+  # /work/b-binutils2 is created and entered ~70 lines above, before the make
+  # pass-2 block. That block then does `cd /work/b-make2` and, on its way out,
+  # `cd /work` -- so by the time this configure ran the working directory was
+  # /work, not the build directory. binutils would have configured and built
+  # IN THE WORK ROOT, beside src/ and out/ and lfs/, with cfg.log and b.log
+  # written where the failure paths below do not look for them.
+  #
+  # It is the same shape as `onedir` returning busybox: the rung names one
+  # directory and operates on another, and nothing in the output says so. Rung
+  # 10 prints its cwd for this reason; so does this one now.
+  if ! cd /work/b-binutils2; then
+    say "    could not enter /work/b-binutils2"; R16=FAIL
+  fi
+fi
+
+# GUARDED, BECAUSE A FAILED make pass 2 USED TO FALL THROUGH INTO AN HOUR OF
+# binutils. The make block above sets R16=FAIL and the two configures below
+# were outside every check of it, so a run that had already lost its make went
+# on to build binutils and gcc against it and reported the later, less useful
+# failure.
+if [ "$R14" = ok ] && [ "$R16" != FAIL ]; then
   say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: binutils pass 2 configure"
+  say "    (cwd: $(pwd))"
   "/work/src/$_bu/configure" \
     --prefix=/usr \
-    --build="$(/work/src/$_bu/config.guess)" \
+    --build="$_BUILD_TRIPLE" \
     --host="$LFS_TGT" \
-    CC_FOR_BUILD="$LFS_TGT-gcc" CXX_FOR_BUILD="$LFS_TGT-g++" \
+    CC_FOR_BUILD="$PFX/bin/chain-cc -static" \
+    CXX_FOR_BUILD="$CHAIN_CXX -static -Wl,--no-eh-frame-hdr" \
     --disable-nls --enable-shared --enable-gprofng=no \
     --disable-werror --enable-64-bit-bfd --enable-new-dtags \
     --enable-default-hash-style=gnu \
@@ -4076,10 +4172,11 @@ if [ "$R14" = ok ]; then
     rm -rf /work/b-gcc2 && mkdir -p /work/b-gcc2 && cd /work/b-gcc2
     say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: gcc pass 2 configure"
     "/work/src/$g15/configure" \
-      --build="$(/work/src/$g15/config.guess)" \
+      --build="$_BUILD_TRIPLE" \
       --host="$LFS_TGT" \
       --target="$LFS_TGT" \
-      CC_FOR_BUILD="$LFS_TGT-gcc" CXX_FOR_BUILD="$LFS_TGT-g++" \
+      CC_FOR_BUILD="$PFX/bin/chain-cc -static" \
+      CXX_FOR_BUILD="$CHAIN_CXX -static -Wl,--no-eh-frame-hdr" \
       LDFLAGS_FOR_TARGET="-L$PWD/$LFS_TGT/libgcc" \
       --prefix=/usr \
       --with-build-sysroot="$S" \
@@ -4098,9 +4195,63 @@ if [ "$R14" = ok ]; then
       # LFS's own final step: cc as a name for gcc, which many builds assume.
       ln -sf gcc "$S/usr/bin/cc" 2>/dev/null || true
       say "    gcc pass 2 installed into $S"
-      for b in gcc g++ cc ld as; do
-        printf '      %-6s %s\n' "$b" "$( [ -e "$S/usr/bin/$b" ] && echo present || echo missing )"
+
+      # PRESENT IS NOT THE SAME AS RUNS, AND THIS RUNG WAS ONLY ASKING THE
+      # FIRST QUESTION.
+      #
+      # This file already records the failure: "rung 4 = ok meant the files
+      # existed, not that they ran. It reported ok, and rung 5 after it, while
+      # `as` could not be executed at all." The check below was `[ -e ]`, which
+      # is that same check again, one chapter higher.
+      #
+      # It matters here more than it did there. Everything rung 16 installs is
+      # DYNAMIC and glibc-linked -- that is the point of pass 2 -- so each of
+      # these binaries carries an absolute PT_INTERP, normally
+      # /lib/ld-linux-aarch64.so.1. Rungs 15, 17 and 18 then invoke them
+      # in PHASE B, where the sysroot is bound as / and the path resolves. On
+      # THIS side it cannot: the kernel resolves PT_INTERP against the root
+      # the process is running in, which is the box, and the box's /lib holds
+      # nothing at all -- the workflow's own count says "shared objects the
+      # box needs: 0", both tier-2 binaries being static.
+      #
+      # An exec of such a binary fails with ENOENT, and busybox sh reports
+      # that as "gcc: not found" -- the message for a missing PROGRAM. Rung 15
+      # sends its make output to /dev/null, so the first visible symptom would
+      # have been busybox failing to configure, three rungs from the cause.
+      #
+      # So: run them. If they run, this costs four lines of log and asserts
+      # something real. If they do not, the run stops HERE, on the rung that
+      # built them, with the interpreter named.
+      _sysroot_runs=yes
+      for b in gcc g++ ld as; do
+        if [ ! -e "$S/usr/bin/$b" ]; then
+          printf '      %-6s MISSING\n' "$b"; _sysroot_runs=no; continue
+        fi
+        if "$S/usr/bin/$b" --version > /dev/null 2>&1; then
+          printf '      %-6s runs -- %s\n' "$b" \
+            "$("$S/usr/bin/$b" --version 2>&1 | head -1)"
+        else
+          printf '      %-6s present but WILL NOT EXECUTE\n' "$b"
+          _sysroot_runs=no
+        fi
       done
+      if [ "$_sysroot_runs" != yes ]; then
+        R16=FAIL
+        say ""
+        say "    --- what the interpreter says ---"
+        "$S/tools/bin/$LFS_TGT-readelf" -l "$S/usr/bin/gcc" 2>/dev/null \
+          | grep -A1 -i "interpreter" | head -4 | sed 's/^/      /'
+        say "      box root has: $(ls /lib 2>/dev/null | tr '\n' ' ')"
+        say ""
+        say "    THIS IS NOT A COMPILER DEFECT AND NOT A MISSING FILE. Chapter"
+        say "    6's output is glibc-linked by design and its loader lives at"
+        say "    $S/usr/lib, reachable as /lib only when the SYSROOT is /."
+        say "    LFS enters a chroot for exactly this; stage4-complete binds"
+        say "    the sysroot as / in box15.sh. This script does neither -- it"
+        say "    Phase B binds $S as / for exactly this reason."
+        say ""
+        say "    If this fires, phase B cannot start. See REVIEW-103.md."
+      fi
     else
       R16=FAIL; say "    --- gcc pass 2 errors ---"
       grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
@@ -4115,14 +4266,6 @@ if [ "$R14" = ok ]; then
   cd /work
 fi
 
-# ---------------------------------------------------------------------------
-in_sysroot() {
-    # $S/usr/bin first so the sysroot's gcc, binutils and busybox win; the
-    # box's $PFX stays reachable behind them for anything genuinely absent.
-    PATH="$S/usr/bin:$S/usr/sbin:$PFX/bin:/bin" \
-    CC="$S/usr/bin/gcc" \
-    "$@"
-}
 
 # ---------------------------------------------------------------------------
 head1 "RUNG 15 -- LFS chapter 6: busybox, in place of seventeen packages"
@@ -4149,15 +4292,37 @@ head1 "RUNG 15 -- LFS chapter 6: busybox, in place of seventeen packages"
 #   system. Two consecutive "fixes" spelled into a variable nothing reads did
 #   nothing at all, and the same error came back verbatim each time. A flag
 #   that is silently ignored looks exactly like a flag that did not help.
-if [ "$R16" = ok ]; then
+# THIS BUSYBOX IS A CHAPTER 6 PACKAGE, AND IT IS NOT THE ONE THAT SHIPS.
+#
+# It is CROSS-compiled by $LFS_TGT-gcc -- gcc 15 pass 1 -- and installed into
+# the sysroot, and it is never executed on this side. That is exactly what LFS
+# chapter 6 is: "Those utilities are installed into their final location, but
+# cannot be used yet ... Using the utilities will be possible in the next
+# chapter after entering the chroot environment."
+#
+# Its only job is to give phase B a shell. Phase B runs configure scripts with
+# the sysroot bound as /, and a configure script is a shell script: without
+# /usr/bin/sh there is nothing to run one with. `busybox --install -s` is what
+# creates that name, and copying the binary alone does not.
+#
+# THE ONE THAT SHIPS IS BUILT IN PHASE B, by the final gcc, and overwrites this
+# one. Do not read this rung as the initramfs busybox. An earlier revision
+# tried to build the shipping copy here with pass 2 and could not, because pass
+# 2 does not execute on this side of the boundary at all.
+#
+# make IS THE BOX's, NOT THE SYSROOT's. $PFX/bin/make is the musl-static 4.4
+# from rung 4.5 and it runs here; the sysroot's make is glibc-linked and does
+# not. Only the COMPILER is the cross one.
+if [ "$R14" = ok ]; then
   cd /work/src
   if ! untar /in/busybox-; then
     say "    busybox did not extract"; R15=FAIL
   else
     _bb=$(onedir 'busybox-* ./busybox-*')
     cd "/work/src/$_bb"
-    in_sysroot make ARCH=arm64 defconfig > /dev/null 2>&1
-    yes '' | in_sysroot make ARCH=arm64 oldconfig > /dev/null 2>&1
+    _BBMAKE="make ARCH=arm64 CROSS_COMPILE=$LFS_TGT- HOSTCC=$PFX/bin/chain-cc"
+    $_BBMAKE defconfig > /dev/null 2>&1
+    yes '' | $_BBMAKE oldconfig > /dev/null 2>&1
     # CONFIG_SSL_CLIENT is the applet that drags in networking/tls*.c, which
     # reaches for LONG_BIT without the feature macro. A build sysroot has no
     # use for HTTPS; drop the applet rather than patch a feature-test mismatch.
@@ -4209,7 +4374,7 @@ if [ "$R16" = ok ]; then
       grep -q '^CONFIG_STATIC=y' .config || echo 'CONFIG_STATIC=y' >> .config
       # AND AGAIN AFTER oldconfig RE-DERIVES, which is what undid the TLS
       # symbols three runs running.
-      yes '' | in_sysroot make ARCH=arm64 oldconfig > /dev/null 2>&1
+      yes '' | $_BBMAKE oldconfig > /dev/null 2>&1
       if ! grep -q '^CONFIG_STATIC=y' .config; then
         say "    CONFIG_STATIC did not survive oldconfig:"
         grep -E '^(# )?CONFIG_STATIC' .config | sed 's/^/      /'
@@ -4217,7 +4382,7 @@ if [ "$R16" = ok ]; then
         say "    that the initramfs does not contain, so it cannot run at all."
         R15=FAIL
       fi
-      if timeout 3600 in_sysroot make ARCH=arm64 \
+      if timeout 3600 $_BBMAKE \
            CFLAGS_EXTRA="-D_GNU_SOURCE" -j"$NP" > b.log 2>&1 && [ -x busybox ]; then
         mkdir -p "$S/usr/bin"
         cp busybox "$S/usr/bin/busybox"
@@ -4273,316 +4438,35 @@ if [ "$R16" = ok ]; then
   cd /work
 fi
 
-# ===========================================================================
-# EVERYTHING FROM HERE RUNS IN THE SYSROOT, NOT THE BOX.
+# ---------------------------------------------------------------------------
+# PHASE A ENDS HERE, AND THE MARKER IS WHAT PHASE B READS.
 #
-# Rungs 0-16 build a toolchain in /work using the box's own tools. Rung 16
-# finishes LFS chapter 6 with binutils pass 2 and gcc pass 2 installed into
-# $S -- a compiler that RUNS in the sysroot and links against the glibc rung
-# 13 built.
+# Everything above ran with the BOX as /. What exists now is a cross toolchain
+# in $S/tools, a glibc sysroot in $S, binutils pass 2 and gcc pass 2 in
+# $S/usr, and a cross-built busybox providing $S/usr/bin/sh.
 #
-# THAT COMPILER MUST BUILD THE KERNEL. An earlier version of these rungs
-# cross-compiled it from /work with $LFS_TGT-gcc, which is rung 11's gcc 15
-# PASS 1 -- built --without-headers --with-newlib, before glibc existed. It
-# produces a working freestanding kernel, and it is the wrong claim: the point
-# is that this chain built a compiler capable of building Linux, not that an
-# intermediate cross compiler three rungs from the end could.
+# Nothing above has executed a single glibc-linked binary, and that is correct
+# rather than a limitation -- LFS chapter 6 says the same of its own output:
+# "installed into their final location, but cannot be used yet."
 #
-# stage4-complete gets this right and we did not. Its box15.sh binds the
-# sysroot as / with PATH=/usr/bin:/usr/sbin and runs `make ARCH=arm64` with no
-# CROSS_COMPILE at all, which is LFS chapter 10.
-#
-# HOW WE DO IT WITHOUT A NESTED SANDBOX. rungs.sh already runs inside bwrap,
-# so there is no second bwrap to nest. `in_sysroot` below runs a command with
-# the sysroot's PATH and its compiler ahead of everything else -- which is what
-# actually matters here, because the difference is WHICH gcc and WHICH libc,
-# not filesystem isolation. The isolation is already provided by the outer box.
-#
-# WHAT THIS CHANGES DOWNSTREAM: the prerequisites in rung 17 are built INTO
-# the sysroot with the sysroot's gcc, glibc-linked, rather than into $PFX with
-# the box's musl-static chain-cc. That is why rung 15 must run
-# `busybox --install` -- without a /usr/bin/sh in the sysroot, none of these
-# configure scripts can run at all.
-
-head1 "RUNG 17 -- the kernel's own prerequisites, built IN the sysroot"
-# THE SYSROOT MUST BE USABLE BEFORE ANY OF THIS RUNS.
-#
-# in_sysroot puts $S/usr/bin first on PATH and expects to find a compiler, a
-# shell and the coreutils busybox provides there. All three come from earlier
-# rungs -- gcc pass 2 from 16, sh and friends from 15's `busybox --install` --
-# and if any is missing every configure below fails in a way that names the
-# package rather than the cause.
-if [ "$R15" = ok ]; then
-  say "    --- is the sysroot usable? ---"
-  _sr_ok=yes
-  for _need in gcc sh make ld; do
-    if [ -x "$S/usr/bin/$_need" ] || [ -L "$S/usr/bin/$_need" ]; then
-      printf '      %-6s yes\n' "$_need"
-    else
-      printf '      %-6s MISSING from %s/usr/bin\n' "$_need" "$S"
-      _sr_ok=no
-    fi
+# WRITTEN ONLY IF THE SYSROOT CAN ACTUALLY BE ENTERED. Phase B needs a shell,
+# a make, a compiler and a linker in $S/usr/bin. If any is missing the marker
+# is withheld and the workflow skips phase B rather than starting a second
+# sandbox that dies on its first command with "sh: not found".
+if [ "$R16" = ok ] && [ "$R15" = ok ]; then
+  _pa=yes
+  for _n in sh make gcc g++ ld as; do
+    [ -e "$S/usr/bin/$_n" ] || { say "  phase A: $S/usr/bin/$_n MISSING"; _pa=no; }
   done
-  if [ "$_sr_ok" != yes ]; then
-    say "    The sysroot cannot run a configure script. gcc comes from rung 16,"
-    say "    sh from rung 15's busybox --install, make from rung 16."
-    R17=FAIL
+  if [ "$_pa" = yes ]; then
+    printf 'phase A complete: cross toolchain, glibc %s, gcc %s pass 2, busybox\n' \
+      "$GLIBC" "$GCC15" > "$S/.phase-a-complete"
+    say ""
+    say "  PHASE A COMPLETE -- $S is ready to be entered."
+    say "  The workflow now runs phase B with $S bound as /."
   else
-    say "    gcc in the sysroot: $(in_sysroot gcc --version 2>&1 | head -1)"
-  fi
-fi
-# OPENSSL IS ON THIS LIST BECAUSE THE KERNEL ASKS FOR IT BY NAME.
-#
-# stage4-complete builds it here and asserts the header afterwards:
-#
-#     [ -f /usr/include/openssl/bio.h ] || {
-#       echo "  openssl/bio.h did not install -- this is the header the
-#             kernel asked for by name"; exit 1; }
-#
-# It is needed by scripts/sign-file.c, which the kernel builds for module
-# signing whenever CONFIG_MODULE_SIG is on -- and arm64 defconfig turns it on.
-# Without it the build stops partway through with a missing openssl/bio.h,
-# which reads as a kernel problem and is not one.
-#
-# INSTALL_LIBS IS EDITED OUT, as stage 4 does: `make install_sw` otherwise
-# tries to install libcrypto.a and libssl.a, and the shared build produced
-# neither.
-# THE TOOLCHAIN IS NOT ENOUGH TO BUILD A KERNEL, in stage 4's words: kconfig is
-# generated by flex and bison, and m4 comes first because both need it.
-#
-# bc IS NOT OPTIONAL. kernel/time/Makefile generates timeconst.h by piping
-# CONFIG_HZ through bc; without one the kernel does not build. Stage 4 notes
-# that BusyBox's bc applet had been silently answering to `bc` -- "it may well
-# work, but nothing here declared it, which is the failure mode this repository
-# is built to avoid". So it is declared and built.
-#
-# perl came at rung 11.5 because glibc wanted it too.
-if [ "$R15" = ok ] && [ "${R17:-}" != FAIL ]; then
-  r17=ok
-  # THREE OF THESE FOUR ARE ALREADY BUILT.
-  #
-  # Rung 11.7 installs gawk, m4, flex, bison and python into $PFX because
-  # glibc's configure names them. This rung was written before that one
-  # existed and still lists m4, bison and flex -- so only bc is genuinely new
-  # here, and rebuilding the other three costs several minutes to produce
-  # identical binaries.
-  #
-  # Skipped rather than deleted: if rung 11.7 ever stops building one of them,
-  # this rung still covers it, and the log says which path was taken.
-  for pk in m4 bc bison flex; do
-    [ "$r17" = ok ] || break
-    # NOT SKIPPED ANY MORE. Rung 11.7 built m4, flex and bison into $PFX with
-    # the box's musl-static compiler, for glibc's benefit. These are different
-    # binaries for a different place: /usr in the SYSROOT, glibc-linked, built
-    # by gcc pass 2, because the kernel build below runs there.
-    if [ -x "$S/usr/bin/$pk" ]; then
-      say "    $pk: already in the sysroot"
-      continue
-    fi
-    cd /work/src
-    rm -rf "/work/src/$pk-k" && mkdir -p "/work/src/$pk-k"
-    ( cd "/work/src/$pk-k" && untar "/in/$pk-" ) || { r17=FAIL; say "    $pk did not extract"; break; }
-    _kd=$(cd "/work/src/$pk-k" && onedir "$pk-* ./$pk-*")
-    ( cd "/work/src/$pk-k/$_kd" \
-      && in_sysroot ./configure --prefix=/usr > cfg.log 2>&1 \
-      && in_sysroot make -j"$NP" MAKEINFO=true > b.log 2>&1 \
-      && in_sysroot make DESTDIR="$S" install MAKEINFO=true > /dev/null 2>&1 ) \
-      || { r17=FAIL
-           say "    $pk NOT INSTALLED"
-           tail -15 "/work/src/$pk-k/$_kd/b.log" 2>/dev/null | sed 's/^/      /'; }
-    [ "$r17" = ok ] && say "    $pk: $( [ -x "$S/usr/bin/$pk" ] && echo 'installed into the sysroot' || echo 'built, no binary' )"
-  done
-  # OPENSSL, WHICH THE KERNEL ASKS FOR BY NAME.
-  #
-  # arm64 defconfig turns CONFIG_MODULE_SIG on, and the kernel then builds
-  # scripts/sign-file.c, which includes <openssl/bio.h>. Without it the build
-  # stops partway through with a missing header that reads as a kernel problem.
-  # stage4-complete builds openssl here for exactly this and asserts the header
-  # afterwards; we had no openssl at all.
-  #
-  # BUILT INTO THE SYSROOT, because the kernel build runs there and its
-  # HOSTCC is the sysroot's gcc. An openssl in $PFX would be musl-linked and
-  # invisible to it.
-  #
-  # install_sw, NOT install: the full target builds documentation, which wants
-  # perl modules we do not have. And INSTALL_LIBS is edited out because a
-  # shared build produces no libcrypto.a for it to install -- stage 4's sed,
-  # for stage 4's reason.
-  if [ "$r17" = ok ]; then
-    cd /work/src
-    rm -rf /work/src/ossl && mkdir -p /work/src/ossl
-    if ! ( cd /work/src/ossl && untar "/in/openssl-" ); then
-      say "    openssl did not extract -- is it in the fetch list?"
-      r17=FAIL
-    else
-      _od=$(cd /work/src/ossl && onedir "openssl-* ./openssl-*")
-      ( cd "/work/src/ossl/$_od" \
-        && in_sysroot ./config --prefix=/usr --openssldir=/etc/ssl --libdir=lib \
-             shared no-tests > c.log 2>&1 \
-        && in_sysroot make -j"$NP" > b.log 2>&1 \
-        && sed -i "/INSTALL_LIBS/s/libcrypto.a libssl.a//" Makefile \
-        && in_sysroot make DESTDIR="$S" install_sw > i.log 2>&1 ) \
-        || { r17=FAIL; say "    openssl NOT INSTALLED"
-             tail -12 "/work/src/ossl/$_od/c.log" 2>/dev/null | sed 's/^/      /'
-             tail -12 "/work/src/ossl/$_od/b.log" 2>/dev/null | sed 's/^/      /'; }
-      # ASSERT THE HEADER, which is the whole reason this is here.
-      if [ -f "$S/usr/include/openssl/bio.h" ]; then
-        say "    openssl: installed into the sysroot"
-        say "      openssl/bio.h present -- scripts/sign-file.c can build"
-      else
-        say "      openssl/bio.h DID NOT INSTALL -- the kernel will stop on it"
-        r17=FAIL
-      fi
-    fi
-    cd /work
-  fi
-
-  R17=$r17
-  [ "$R17" = ok ] && say "    m4 $(m4 --version 2>&1 | head -1 | grep -o '[0-9.]*$')  bison $(bison --version 2>&1 | head -1 | grep -oE '[0-9.]+$')"
-  cd /work
-fi
-
-# ---------------------------------------------------------------------------
-head1 "RUNG 18 -- the kernel"
-# A FRESH TREE, NOT THE ONE RUNG 12 USED. That one was mrproper'd and had
-# `make headers` run in it; stage 4's rule is that nothing built inside the box
-# should start from a tree another compiler has already been in.
-#
-# THE CONFIG EDITS, AND WHY EACH ONE:
-#   WERROR n            a 2026 gcc warns about 2026 kernel code; -Werror turns
-#                       every one into a build failure
-#   DEVTMPFS + _MOUNT   bwrap is unprivileged so the initramfs cannot mknod
-#                       /dev/console. The kernel mounts devtmpfs before running
-#                       init, so /dev/console exists by the time it opens it.
-#   9P + 9P_VIRTIO      lets qemu hand the sysroot to the guest read-only, so
-#                       the booted kernel can run the compiler that built it.
-#                       Verified softly: a kernel that boots is a good result
-#                       whether or not 9p is available.
-#
-# VERIFY AFTER olddefconfig, which is what undid the same edit three runs
-# running in stage 4. A sed that matches nothing is silent.
-if [ "$R17" = ok ]; then
-  cd /work/src
-  rm -rf /work/src/klinux && mkdir -p /work/src/klinux
-  ( cd /work/src/klinux && untar "/in/linux-$KERNEL" ) || { say "    kernel did not extract"; R18=FAIL; }
-  _kx=$(cd /work/src/klinux && onedir "linux-$KERNEL ./linux-$KERNEL")
-  if [ "$R18" != FAIL ] && [ -n "$_kx" ]; then
-    cd "/work/src/klinux/$_kx"
-    in_sysroot make ARCH=arm64 defconfig > /dev/null 2>&1
-    set_cfg() {
-      if [ "$2" = n ]; then
-        sed -i "s/^CONFIG_$1=y/# CONFIG_$1 is not set/" .config
-      else
-        sed -i "s/^# CONFIG_$1 is not set/CONFIG_$1=y/" .config
-        grep -q "^CONFIG_$1=y" .config || echo "CONFIG_$1=y" >> .config
-      fi
-    }
-    set_cfg WERROR n
-    set_cfg DEVTMPFS y
-    set_cfg DEVTMPFS_MOUNT y
-    set_cfg NET_9P y
-    set_cfg NET_9P_VIRTIO y
-    set_cfg 9P_FS y
-    in_sysroot make ARCH=arm64 olddefconfig > /dev/null 2>&1
-    _bad=0
-    grep -q "^CONFIG_WERROR=y" .config && { say "    WERROR came back on after olddefconfig"; _bad=1; }
-    grep -q "^CONFIG_DEVTMPFS=y" .config || { say "    DEVTMPFS did not take"; _bad=1; }
-    grep -q "^CONFIG_DEVTMPFS_MOUNT=y" .config || { say "    DEVTMPFS_MOUNT did not take"; _bad=1; }
-    if [ "$_bad" != 0 ]; then
-      grep -E "^(# )?CONFIG_(WERROR|DEVTMPFS)" .config | sed 's/^/      /'
-      R18=FAIL
-    else
-      say "    config ready: defconfig, WERROR off, devtmpfs automounted"
-      # WHICH COMPILER IS ABOUT TO BUILD THE KERNEL, ON THE RECORD.
-      say "    building with: $(in_sysroot gcc --version 2>&1 | head -1)"
-      say "    from:          $(in_sysroot command -v gcc)"
-      if timeout 7200 in_sysroot make ARCH=arm64 -j"$NP" Image > b.log 2>&1 \
-         && [ -f arch/arm64/boot/Image ]; then
-        cp arch/arm64/boot/Image /work/Image
-        R18=ok
-        say "    Image: $(wc -c < /work/Image) bytes"
-      else
-        R18=FAIL; say "    --- errors ---"
-        grep -nE "error:|Error [0-9]|No rule to make" b.log 2>/dev/null | head -15 | sed 's/^/      /'
-        tail -25 b.log 2>/dev/null | sed 's/^/      /'
-      fi
-    fi
-  fi
-  cd /work
-fi
-
-# ---------------------------------------------------------------------------
-head1 "RUNG 19 -- initramfs"
-# The busybox from rung 15 plus an init script. cpio newc, gzipped, which is
-# what the kernel unpacks.
-if [ "$R18" = ok ]; then
-  rm -rf /work/ir && mkdir -p /work/ir/bin /work/ir/dev /work/ir/proc /work/ir/sys /work/ir/sysroot
-  cp "$S/usr/bin/busybox" /work/ir/bin/busybox
-  ( cd /work/ir && ./bin/busybox --list > /tmp/applets.txt 2>/dev/null
-    _n=$(wc -l < /tmp/applets.txt)
-    if [ "$_n" -lt 100 ]; then
-      echo "  too few applets -- --list did not run"
-    fi
-    while read -r a; do ln -sf busybox "bin/$a" 2>/dev/null; done < /tmp/applets.txt )
-  # bwrap is unprivileged so mknod is unavailable; CONFIG_DEVTMPFS_MOUNT is
-  # what carries /dev/console. Try anyway and say which one is doing it.
-  if ( cd /work/ir && mknod dev/console c 5 1 2>/dev/null ); then
-    say "    /dev/console created in the image"
-  else
-    say "    no mknod in the box -- /dev/console comes from CONFIG_DEVTMPFS_MOUNT"
-  fi
-  cat > /work/ir/init <<'INIT'
-#!/bin/sh
-mount -t proc  none /proc  2>/dev/null
-mount -t sysfs none /sys   2>/dev/null
-echo
-echo "================================================"
-echo "  VERON-BRIDGE: the guest, reporting on itself"
-echo "================================================"
-echo "  uname: $(uname -a)"
-echo "  init : busybox $(busybox 2>&1 | head -1 | cut -c1-40)"
-# The sysroot over 9p, if the kernel has it: chroot in and run the compiler
-# this chain built, inside the kernel it built.
-if mount -t 9p -o trans=virtio,version=9p2000.L veronsysroot /sysroot 2>/dev/null; then
-  echo "  9p   : sysroot mounted"
-  if [ -x /sysroot/usr/bin/gcc ]; then
-    echo "  === VERON-GCC-IN-GUEST ==="
-    chroot /sysroot /usr/bin/gcc --version 2>&1 | head -1
-  fi
-else
-  echo "  9p   : not available (not a gate)"
-fi
-echo "  VERON-BOOT-OK"
-echo
-poweroff -f 2>/dev/null || { sync; echo o > /proc/sysrq-trigger; }
-INIT
-  chmod 0755 /work/ir/init
-  ( cd /work/ir && find . | cpio -o -H newc 2>/dev/null | gzip -9 > /work/initramfs.cpio.gz )
-  if [ -s /work/initramfs.cpio.gz ]; then
-    R19=ok
-    say "    initramfs: $(wc -c < /work/initramfs.cpio.gz) bytes"
-  else
-    R19=FAIL; say "    cpio produced nothing"
-  fi
-  cd /work
-fi
-
-# ---------------------------------------------------------------------------
-head1 "RUNG 20 -- hand the Image and initramfs out for the boot"
-# THE BOOT ITSELF CANNOT HAPPEN IN HERE. qemu-system-aarch64 is not in this box
-# and should not be: it is a VERIFIER, not a build tool, exactly as stage 4
-# treats it. The workflow runs it outside, on what this rung leaves behind.
-if [ "$R19" = ok ]; then
-  mkdir -p /out
-  cp /work/Image /out/Image 2>/dev/null
-  cp /work/initramfs.cpio.gz /out/initramfs.cpio.gz 2>/dev/null
-  if [ -s /out/Image ] && [ -s /out/initramfs.cpio.gz ]; then
-    R20=ok
-    say "    /out/Image             $(wc -c < /out/Image) bytes"
-    say "    /out/initramfs.cpio.gz $(wc -c < /out/initramfs.cpio.gz) bytes"
-    say "    the workflow boots these outside the box"
-  else
-    R20=FAIL; say "    nothing landed in /out"
+    say ""
+    say "  PHASE A INCOMPLETE -- $S cannot be entered, so phase B is skipped."
   fi
 fi
 
@@ -4609,10 +4493,6 @@ printf '    %-40s %s\n' "13  LFS 5.5 glibc"                      "$R13"
 printf '    %-40s %s\n' "14  LFS 5.6 libstdc++"                  "$R14"
 printf '    %-40s %s\n' "16  ch6 binutils + gcc pass 2"          "$R16"
 printf '    %-40s %s\n' "15  busybox, BY gcc pass 2 (after 16)"  "$R15"
-printf '    %-40s %s\n' "17  m4/bc/bison/flex/openssl in sysroot" "$R17"
-printf '    %-40s %s\n' "18  linux $KERNEL"                      "$R18"
-printf '    %-40s %s\n' "19  initramfs"                          "$R19"
-printf '    %-40s %s\n' "20  Image handed out for boot"          "$R20"
 say ""
 if [ "$R20" = ok ]; then
   say "    EVERYTHING BUILT. The kernel and initramfs are in /out and the"
