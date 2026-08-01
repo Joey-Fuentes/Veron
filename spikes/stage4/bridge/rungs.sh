@@ -3466,6 +3466,17 @@ head1 "RUNG 11.7 -- m4, flex, bison, python: what glibc's configure demands"
 # build. So python configures without those four, builds ~36 modules, reports
 # "Could not build the ssl module", and is still exactly what glibc needs.
 #
+# CONFIRMED FROM THE OTHER DIRECTION TOO. tool-probe ran python's own configure
+# in a sealed box with libz, libffi, libssl and libcrypto all absent, and it
+# returned rc=0 -- python does not merely tolerate their absence, it does not
+# stop for it. Two independent measurements, one reading glibc's source and one
+# running python's configure, agreeing that these four are not needed here.
+#
+# (That probe then failed to COMPILE, on
+#     pyatomic.h:588: #error "no available pyatomic implementation"
+#  -- python 3.14 requires C11 atomics and tcc has none on aarch64. That is a
+#  fact about tcc, not about this rung, which uses gcc 10.)
+#
 # "48 failed on import" in that build summary is not an error either: a static
 # python cannot dlopen its shared extension modules, so they are reported
 # unimportable and the interpreter works without them.
@@ -3533,8 +3544,32 @@ if [ "$R12" = ok ]; then
         # A preset autoconf cache variable is skipped, not overridden, when
         # the probe would have succeeded -- so this costs nothing if gcc 10
         # never needed it.
+        # --disable-shared AND Setup.local: NO EXTENSION MODULES AS .so.
+        #
+        # The build succeeded and `make install` did not:
+        #
+        #     install: can't stat 'Modules/array.cpython-314.so': No such file
+        #     make: *** [Makefile:2528: sharedinstall] Error 1
+        #     ModuleNotFoundError: No module named '_struct'
+        #
+        # sharedinstall installs extension modules as .so files, and a static
+        # python never produced any -- they are linked INTO the interpreter.
+        # The ModuleNotFoundError is the same thing from the other side: the
+        # install step runs the new python to byte-compile the stdlib, and it
+        # cannot dlopen _struct because there is nothing to open.
+        #
+        # This is exactly perl's -Dusedl=undef one package later, and the same
+        # reason: rung 2 builds musl as libc.a with no libc.so, and rung 3
+        # measures that a dynamic binary cannot run in this box at all.
+        #
+        # Modules/Setup.local with "*static*" tells the build to link every
+        # module in rather than emit .so files, which is what CPython's own
+        # instructions say for a static interpreter. --disable-shared stops
+        # libpython itself being shared.
+        printf '*static*\n' > Modules/Setup.local
         ax_cv_c_float_words_bigendian=no \
         ./configure --prefix="$PFX" --without-ensurepip --disable-test-modules \
+          --disable-shared \
           CC="$PFX/bin/chain-cc -static" LDFLAGS="-static" > cfg.log 2>&1
         _c=$?; echo "      configure rc=$_c"
         [ "$_c" = 0 ] || { grep -aiE "error|cannot find|not found" cfg.log \
@@ -3554,9 +3589,20 @@ if [ "$R12" = ok ]; then
         # build summary reports. If the install trips on that, the answer is
         # to skip the byte-compilation rather than to make python dynamic,
         # because this box has no loader at all.
+        # THE FALLBACKS ARE AIMED AT THE TWO THINGS THAT ACTUALLY FAILED.
+        #
+        #   sharedinstall  installs .so modules a static build never made
+        #   libinstall     byte-compiles the stdlib by RUNNING the new python
+        #
+        # If Setup.local did its job neither arises. If it did not, skipping
+        # them still yields a working interpreter -- byte-compilation is a
+        # speed optimisation, and there are no .so files to miss.
         make install > i.log 2>&1 \
           || make install COMPILEALL_OPTS=-x'.*' > i.log 2>&1 \
-          || make install PYTHONDONTWRITEBYTECODE=1 > i.log 2>&1
+          || { make -k install > i.log 2>&1
+               # -k keeps going past sharedinstall; the interpreter and the
+               # stdlib are installed by other targets and are what we need.
+               [ -x "$PFX/bin/python3" ] || [ -x "$PFX/bin/python3.14" ]; }
         _i=$?; echo "      install rc=$_i"
         [ "$_i" = 0 ] || { grep -aiE "error|cannot|permission|no such" i.log \
                              | tail -10 | sed 's/^/        /'

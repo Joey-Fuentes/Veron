@@ -767,9 +767,15 @@ jobs:
                 # difference, surfaced in a minute, that tells us nothing bad
                 # about python and would have told us nothing at all if we had
                 # built nine rungs of gcc first.
+                # Setup.local + --disable-shared, matching rung 11.7: this box
+                # has no loader, so extension modules link INTO the interpreter
+                # rather than becoming .so files that install would then fail
+                # to find.
+                printf '*static*\n' > Modules/Setup.local
                 ax_cv_c_float_words_bigendian=no \
                 ./configure --prefix=/work/out/pkg CC="$CC" \
-                  --without-ensurepip --disable-test-modules > c.log 2>&1 ;;
+                  --without-ensurepip --disable-test-modules \
+                  --disable-shared > c.log 2>&1 ;;
               *)
                 ./configure --prefix=/work/out/pkg --disable-nls CC="$CC" > c.log 2>&1 ;;
             esac
@@ -787,6 +793,30 @@ jobs:
           # what turns into a missing module later.
           grep -aiE "could not be found|necessary bits|not be built|skipping" c.log \
             2>/dev/null | sort -u | head -10 | sed 's/^/    /'
+          # A HARD COMPILER REQUIREMENT LOOKS LIKE THIS, AND IT IS NOT A
+          # LIBRARY PROBLEM:
+          #
+          #     Include/cpython/pyatomic.h:588: error: #error "no available
+          #     pyatomic implementation for this platform/compiler"
+          #
+          # Python 3.14 needs C11 atomics -- GCC/Clang __atomic builtins or
+          # <stdatomic.h> -- and tcc has neither on aarch64. There is no
+          # configure flag for it and no library to add: the interpreter
+          # cannot be built by this compiler at all.
+          #
+          # THAT IS A FINDING ABOUT tcc, NOT ABOUT THE BOX. The reference job
+          # builds python with gcc 10 at rung 11.7 and has no such problem, so
+          # nothing here needs adding to the ladder. What the probe was asked
+          # -- which LIBRARIES python wants -- was already answered above:
+          # configure rc=0 with libz, libffi, libssl and libcrypto all absent.
+          if grep -aq "no available pyatomic implementation" b.log 2>/dev/null; then
+            echo "  --- this is a COMPILER limit, not a missing library ---"
+            echo "    Python 3.14 requires C11 atomics; tcc provides none on"
+            echo "    aarch64. No flag or library fixes it. The ladder builds"
+            echo "    python with gcc 10, where the question does not arise."
+            echo "    The library answer -- configure rc=0 without libz, libffi,"
+            echo "    libssl, libcrypto -- is above and is the one that matters."
+          fi
           echo "  --- disabled for want of a library ---"
           grep -aiE "not found|will not be built|disabl" c.log \
             | grep -aviE "checking" | sort -u | head -12 | sed 's/^/    /'
