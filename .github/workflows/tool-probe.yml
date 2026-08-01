@@ -380,203 +380,139 @@ jobs:
             echo "  The HERMETIC step below needs this binary and will skip."
           fi
 
-      # AND NOW BUILD ONE FOR REAL, WITH NO HOST /usr AT ALL.
+      # BUILD THE SYSROOT HERE, RATHER THAN WAITING FOR ONE.
       #
-      # An earlier version of this step copied the host's /usr/include,
-      # /usr/lib and gcc into the box. That is not a sealed box, it is a box
-      # that looks sealed: Python would find the host's zlib, libffi and
-      # openssl, report success, and tell us nothing about a chain that has
-      # none of them. The whole failure mode this repository exists to avoid.
+      # This step used to restore the reference job's cached sysroot and skip
+      # if it was cold. It was ALWAYS cold: that cache is written after rung
+      # 14, and the reference job has never got past rung 11.5 -- because of
+      # the very questions this step exists to answer. A question that can only
+      # be asked after the thing it answers is not a question.
       #
-      # SO THE BOX GETS WHAT THE REFERENCE CHAIN WOULD GIVE IT AND NOTHING
-      # ELSE: our busybox, and a toolchain restored from the reference job's
-      # own cache. If that cache is cold this step SKIPS and says so, rather
-      # than substituting the host's and producing a green result that means
-      # the opposite of what it appears to.
+      # So the probe builds its own. spikes/stage4/bridge/rungs.sh with
+      # STOP_AFTER=5 gives musl, make, binutils and the arithmetic libraries in
+      # about a minute, using the same script the real chain uses rather than a
+      # second copy that would drift from it.
       #
-      # THAT IS THE POINT OF THE CACHE, not just speed. A warm sysroot makes
-      # "test one package against the real constraints" a two-minute question
-      # instead of a ninety-minute one -- the fast loop and the honest loop
-      # become the same loop.
-      - uses: actions/cache/restore@v4
-        id: sysroot
-        with:
-          path: |
-            lfs
-            prefix
-          key: bridge-sysroot-${{ env.GLIBC }}-${{ env.KHDR }}-v1
+      # THE COMPILER IS A HOST-BUILT tcc, exactly as the reference arm's is.
+      # This proves what a PACKAGE needs against a musl sysroot with no host
+      # /usr; it proves nothing about the seed. Same distinction the reference
+      # arm makes about itself.
+      - name: 'AIRLOCK: a tcc to build the sysroot with'
+        run: |
+          set -eu
+          sudo apt-get install -y --no-install-recommends musl-tools bubblewrap
+          . "$GITHUB_WORKSPACE/tools/clone-pinned.sh"
+          clone_pinned tccsrc 5ec0e6f84b47ebd8c269b581712666313f5edaef \
+            "https://github.com/TinyCC/tinycc.git https://repo.or.cz/tinycc.git"
+          bash spikes/stage3/patches/tcc-arm64-asm/apply-series.sh tccsrc
+          ( cd tccsrc && ./configure --cc=musl-gcc --prefix=/work/tccsrc \
+              --extra-ldflags=-static > cfg.log 2>&1 \
+            && make -j"$(nproc)" > b.log 2>&1 ) \
+            || { echo "  tcc did not build"; tail -20 tccsrc/b.log; exit 1; }
+          file -b tccsrc/tcc | grep -q "statically linked" \
+            || { echo "  tcc is not static -- the box would need a loader"; exit 1; }
+          echo "  tcc: $(wc -c < tccsrc/tcc) bytes, static"
 
-      - name: 'HERMETIC: build the package with our toolchain and no host /usr'
+      - name: 'HERMETIC: build the sysroot, then the package, with no host /usr'
         run: |
           set -eu
           PKG="${{ github.event.inputs.pkg }}"
           [ -n "$PKG" ] || PKG=perl
-
-          if [ "${{ steps.sysroot.outputs.cache-hit }}" != "true" ]; then
-            echo "  NO CACHED SYSROOT -- this step is skipped, deliberately."
-            echo
-            echo "  It could fall back to the host's gcc and /usr, and an"
-            echo "  earlier version did. That produces a green result about a"
-            echo "  box that had the host's zlib, libffi and openssl in it --"
-            echo "  which is the opposite of what this step claims to measure."
-            echo "  Python is exactly where that would mislead."
-            echo
-            echo "  The reference job populates this cache after rung 14."
-            echo "  Run it once and this step becomes a two-minute question."
-            exit 0
-          fi
+          echo "  package under test: $PKG"
 
           BOX="$PWD/pbox"
           rm -rf "$BOX"
-          mkdir -p "$BOX"/bin "$BOX"/lib "$BOX"/work "$BOX"/tmp "$BOX"/proc "$BOX"/dev
+          mkdir -p "$BOX"/bin "$BOX"/lib "$BOX"/work "$BOX"/tmp "$BOX"/out \
+                   "$BOX"/src "$BOX"/in "$BOX"/proc "$BOX"/dev
 
-          # OUR busybox, from the step above. The applet list is something we
-          # declared rather than something Ubuntu chose.
-          #
-          # NO FALLBACK TO UBUNTU's. If our build failed, this step reports that
-          # and stops -- substituting theirs would test a box we are not
-          # proposing to use, and the first run died on `cp: cannot stat` which
-          # reads as a missing file rather than as an upstream build failure.
-          if [ ! -x src/bb/busybox ]; then
-            echo "  our busybox did not build -- see the step above."
-            echo "  Not falling back to Ubuntu's: that would measure a box we"
-            echo "  are not proposing to ship."
-            exit 0
-          fi
           cp src/bb/busybox "$BOX/bin/busybox"
           for a in $("$BOX/bin/busybox" --list); do
             [ "$a" = busybox ] && continue
             ln -sf busybox "$BOX/bin/$a"
           done
+          rm -f "$BOX/bin/gawk"
+          printf '#!/bin/busybox sh\nexec /bin/busybox awk "$@"\n' > "$BOX/bin/gawk"
+          chmod 0755 "$BOX/bin/gawk"
 
-          # THE SYSROOT AND THE TOOLCHAIN, BOTH OURS. lfs/ is what rungs 10-14
-          # built: glibc, its headers, libstdc++. prefix/ is make, binutils and
-          # the compilers. Nothing from /usr.
-          cp -a lfs "$BOX/lfs"
-          cp -a prefix "$BOX/prefix"
-          mkdir -p "$BOX/usr"
-          cp -a "$BOX/lfs/usr/include" "$BOX/usr/" 2>/dev/null || true
-          cp -a "$BOX/lfs/usr/lib"     "$BOX/usr/" 2>/dev/null || true
+          cp -a tccsrc "$BOX/work/tccsrc"
+          rm -f "$BOX/work/tccsrc/libtcc1.a"
+          cp -L tccsrc/tcc "$BOX/work/ref-tcc"
+          chmod 0755 "$BOX/work/ref-tcc"
 
-          echo "  --- what is in the box ---"
-          echo "    busybox applets : $(find "$BOX/bin" -type l | wc -l)"
-          echo "    /usr/include    : $(find "$BOX/usr/include" -name '*.h' 2>/dev/null | wc -l) headers"
-          echo "    /usr/lib        : $(ls "$BOX/usr/lib" 2>/dev/null | wc -l) entries"
-          echo "    host /usr bound : no"
-          echo "    real executables in /bin:"
-          find "$BOX/bin" -type f -printf '      %f\n' | sort
-          # THE LIBRARIES THE BOX DOES NOT HAVE, named up front. Python wants
-          # zlib, libffi and openssl; if they are not here its configure will
-          # disable modules quietly rather than fail, and a "successful" build
-          # would be missing the parts that matter.
-          echo "  --- libraries a package might want and this box lacks ---"
-          for l in libz libffi libssl libcrypto libncurses libreadline libexpat libgdbm; do
-            ls "$BOX/usr/lib/$l"* >/dev/null 2>&1 || printf '      %s\n' "$l"
-          done
+          mkdir -p pins && cp dl/*.tar.* pins/ 2>/dev/null || true
+          cp src/*.tar.* pins/ 2>/dev/null || true
+
+          echo "  --- the box ---"
+          echo "    applets    : $(find "$BOX/bin" -type l | wc -l)"
+          echo "    /usr       : $( [ -d "$BOX/usr" ] && echo present || echo ABSENT )"
+          echo "    real files : $(find "$BOX/bin" -type f -printf '%f ')"
+
+          set +e
+          bwrap --unshare-all --die-with-parent \
+            --setenv PATH /bin --setenv HOME /work --setenv LC_ALL POSIX \
+            --setenv CC_BIN /work/ref-tcc --setenv TCCDIR /work/tccsrc \
+            --setenv ARM "probe-$PKG" --setenv STOP_AFTER 5 \
+            --bind "$BOX" / \
+            --ro-bind "$PWD/spikes" /src --ro-bind "$PWD/pins" /in \
+            --bind "$BOX/out" /out \
+            --proc /proc --dev /dev --tmpfs /tmp --chdir /work \
+            /bin/sh /src/stage4/bridge/rungs.sh
+          echo "  sysroot rc=$?"
+          set -e
 
           d=$(ls -d src/$PKG* 2>/dev/null | grep -v tar | head -1)
-          if [ -z "$d" ]; then echo "  no unpacked $PKG in src/"; exit 0; fi
-          cp -a "$d" "$BOX/work/pkg"
-          ( cd "$BOX/work/pkg" && rm -rf UU config.log config.status Makefile 2>/dev/null || true )
+          [ -n "$d" ] || { echo "  no unpacked $PKG in src/"; exit 0; }
+          rm -rf "$BOX/work/pkg" && cp -a "$d" "$BOX/work/pkg"
+          ( cd "$BOX/work/pkg" && rm -rf UU _b config.log config.status Makefile 2>/dev/null || true )
 
-          cat > "$BOX/work/build.sh" <<'INBOX'
+          cat > "$BOX/work/pkg.sh" <<'INBOX'
           #!/bin/sh
           set -u
-          export PATH=/prefix/bin:/bin
+          export PATH=/work/prefix/bin:/bin
           cd /work/pkg
-          CC=$(command -v gcc || command -v cc || echo NONE)
+          CC=/work/prefix/bin/cc-static
+          [ -x "$CC" ] || CC=/work/ref-tcc
           echo "  cc: $CC"
-          [ "$CC" = NONE ] && { echo "  no compiler in the box"; exit 1; }
-          "$CC" --version 2>&1 | head -1 | sed 's/^/  /'
+          echo "  --- libraries this box does NOT have ---"
+          for l in libz libffi libssl libcrypto libncurses libreadline libexpat libgdbm; do
+            ls /usr/lib/$l* >/dev/null 2>&1 || printf '    %s\n' "$l"
+          done
           echo
           if [ -x ./Configure ]; then
-            echo "  === ./Configure -des ==="
-            ./Configure -des -Dprefix=/work/out -Dcc="$CC" > c.log 2>&1
+            ./Configure -des -Dprefix=/work/out/pkg -Dcc="$CC" > c.log 2>&1
           else
-            echo "  === ./configure ==="
-            ./configure --prefix=/work/out > c.log 2>&1
+            ./configure --prefix=/work/out/pkg --disable-nls CC="$CC" > c.log 2>&1
           fi
           rc=$?
           echo "  configure rc=$rc"
           if [ "$rc" != 0 ]; then
-            echo "  --- what it could not find ---"
-            grep -aiE "not found|no acceptable|my life depends|missing|cannot find" c.log \
+            grep -aiE "not found|no acceptable|my life depends|cannot find|error" c.log \
               | sort -u | head -15 | sed 's/^/    /'
-            tail -20 c.log | sed 's/^/    /'
             exit 1
           fi
-          # WHAT configure DECIDED TO LEAVE OUT. A package can configure
-          # cleanly and silently disable half of itself for want of a library --
-          # Python does exactly this with zlib and openssl. A build that
-          # succeeds without them is not the build we need.
-          echo "  --- modules or features configure disabled ---"
-          grep -aiE "not found|disabl|will not be built|no .* found" c.log \
+          echo "  --- disabled for want of a library ---"
+          grep -aiE "not found|will not be built|disabl" c.log \
             | grep -aviE "checking" | sort -u | head -12 | sed 's/^/    /'
           echo
-          echo "  === make ==="
           make -j"$(nproc 2>/dev/null || echo 2)" > b.log 2>&1
-          rc=$?
-          echo "  make rc=$rc"
-          if [ "$rc" != 0 ]; then
-            grep -aiE "not found|error:|Error [0-9]" b.log | head -15 | sed 's/^/    /'
-            tail -20 b.log | sed 's/^/    /'
-            exit 1
-          fi
-          make install > i.log 2>&1
-          echo "  install rc=$?"
-          # BUILT IS NOT WORKING -- three rungs in the reference job reported ok
-          # for a binary that could not execute. Run it.
-          if [ -x /work/out/bin/perl ]; then
-            /work/out/bin/perl -e 'print "  perl runs: 2+2=", 2+2, "\n"' 2>&1
-          fi
-          if [ -x /work/out/bin/python3 ]; then
-            /work/out/bin/python3 -c 'print("  python runs: 2+2 =", 2+2)' 2>&1
-            echo "  --- modules that did NOT build ---"
-            /work/out/bin/python3 -c 'import sys;[print("   ",m) for m in ("zlib","ssl","ctypes","readline","sqlite3")if not __import__("importlib.util",fromlist=["x"]).find_spec(m)]' 2>&1
-          fi
+          echo "  make rc=$?"
+          tail -12 b.log | sed 's/^/    /'
           INBOX
-          sed -i 's/^          //' "$BOX/work/build.sh"
-          chmod 0755 "$BOX/work/build.sh"
+          sed -i 's/^          //' "$BOX/work/pkg.sh"
+          chmod 0755 "$BOX/work/pkg.sh"
 
           echo
-          echo "  === IN THE BOX ==="
+          echo "  === THE PACKAGE, IN THE BOX ==="
           set +e
           bwrap --unshare-all --die-with-parent \
-            --setenv PATH /prefix/bin:/bin --setenv HOME /work --setenv LC_ALL POSIX \
+            --setenv PATH /work/prefix/bin:/bin --setenv HOME /work --setenv LC_ALL POSIX \
             --bind "$BOX" / \
-            --proc /proc --dev /dev --tmpfs /tmp \
-            --chdir /work \
-            /bin/sh /work/build.sh
-          echo "  in-box rc=$?"
+            --ro-bind "$PWD/spikes" /src --ro-bind "$PWD/pins" /in \
+            --proc /proc --dev /dev --tmpfs /tmp --chdir /work \
+            /bin/sh /work/pkg.sh
+          echo "  package rc=$?"
           set -e
 
-      # THE ONE FINDING THAT IS NOT COSMETIC: gawk.
-      #
-      # The trap list came back as: comm flex gawk msgfmt perl pkg-config
-      # python3 split. Most of that is noise --
-      #
-      #   perl, python3   each package checking whether a PREVIOUS version of
-      #                   itself is installed
-      #   flex            bison and flex checking for flex to REGENERATE a
-      #                   scanner that ships pre-generated in the tarball
-      #   msgfmt          gettext, reached only because the probe did not pass
-      #                   --disable-nls; every real rung does
-      #   pkg-config      optional for bc; for Python it is how openssl is found
-      #   comm, split     real, perl only, and rung 11.5 builds both
-      #
-      # gawk is different. m4 and bison BOTH run
-      #
-      #     BEGIN { if ("POSIXLY_CORRECT" in ENVIRON) print "x" }
-      #
-      # and m4 additionally runs `gawk -f subs.awk` -- autoconf's config.status
-      # substitution engine, which is not optional. ENVIRON is a POSIX awk
-      # feature busybox may not implement, and turning applets on does not add
-      # it: busybox has ONE awk.
-      #
-      # So this asks. If busybox awk handles both, gawk is another false
-      # positive and nothing changes. If it does not, gawk becomes a rung in
-      # its own right, sitting immediately before m4 -- and it cannot be
-      # written in thirty lines the way split and comm were.
       - name: 'THE GAWK QUESTION: can busybox awk do what m4 and bison need?'
         run: |
           set -u

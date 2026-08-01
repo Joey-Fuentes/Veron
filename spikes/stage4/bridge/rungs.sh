@@ -43,6 +43,31 @@ CC_BIN=${CC_BIN:?CC_BIN must be set}
 TCCDIR=${TCCDIR:?TCCDIR must be set}
 ARM=${ARM:-unnamed}
 
+# STOP_AFTER LETS A CALLER TAKE THE BOTTOM OF THE LADDER AND NOTHING ELSE.
+#
+# tool-probe wants a real sysroot -- musl, make, binutils, no host /usr -- so
+# it can build one package against the constraints the chain actually has. It
+# used to restore that from the reference job's cache, which meant it could not
+# run until the reference job had passed the rungs the probe exists to unblock.
+# A question that can only be answered after the thing it answers is not a
+# question.
+#
+# Rungs 0-5 produce that sysroot in about a minute, and they are the most
+# proven part of this script. So the probe runs THIS FILE with STOP_AFTER=5
+# rather than growing a second musl build that would drift from this one.
+#
+# Empty means run everything, which is what both bridge jobs do.
+STOP_AFTER=${STOP_AFTER:-}
+stop_here() {
+    [ -n "$STOP_AFTER" ] || return 1
+    # Rung numbers are not integers -- 3.5, 4.5, 11.7 -- so compare as decimals
+    # by scaling. `expr` is in busybox; awk would also work but this is one
+    # fewer thing that has to be present.
+    _a=$(printf '%s' "$1" | awk -F. '{printf "%d", $1*10 + ($2 ? substr($2 "0",1,1) : 0)}')
+    _b=$(printf '%s' "$STOP_AFTER" | awk -F. '{printf "%d", $1*10 + ($2 ? substr($2 "0",1,1) : 0)}')
+    [ "$_a" -gt "$_b" ]
+}
+
 say()   { printf '%s\n' "$*"; }
 head1() { say ""; say "  === $* ==="; }
 
@@ -1770,6 +1795,10 @@ if [ "$R45" = ok ]; then
 fi
 
 # ---------------------------------------------------------------------------
+if stop_here 6; then
+  say ""
+  say "  === stopping after rung $STOP_AFTER, as asked ==="
+else
 head1 "RUNG 6 -- gcc 4.7.4.  THE OVERLAP WITH stage4-complete."
 # The rung stage 4 already reaches with a host-gcc-built tcc, against host
 # glibc and host binutils. Reaching it here -- from this box, with a libc, a
@@ -2099,7 +2128,13 @@ if [ "$R5" = ok ]; then
   cd /work
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if stop_here 7; then
+  say ""
+  say "  === stopping after rung $STOP_AFTER, as asked ==="
+else
 head1 "RUNG 7 -- gmp/mpfr/mpc REBUILT by the gcc we just made"
 # tcc-BUILT LIBRARIES ARE NOT USABLE BY gcc, AND STAGE 4 ALREADY PROVED IT.
 #
@@ -2197,7 +2232,13 @@ if [ "$R6" = ok ]; then
   cd /work
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if stop_here 8; then
+  say ""
+  say "  === stopping after rung $STOP_AFTER, as asked ==="
+else
 head1 "RUNG 8 -- gcc 4.7.4 AGAIN, built by the gcc tcc built"
 # THE SECOND 4.7.4 IS NOT REDUNDANT. Stage 4's own diagram:
 #
@@ -2250,7 +2291,13 @@ if [ "$R7" = ok ]; then
   cd /work
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if stop_here 9; then
+  say ""
+  say "  === stopping after rung $STOP_AFTER, as asked ==="
+else
 head1 "RUNG 9 -- gcc 10.2.0, built by g++ (GCC) 4.7.4"
 # THIS IS WHAT THE WHOLE 4.7 DETOUR WAS FOR.
 #
@@ -2403,7 +2450,13 @@ if [ "$R8" = ok ]; then
   cd /work
 fi
 
+fi
+
 # ---------------------------------------------------------------------------
+if stop_here 10; then
+  say ""
+  say "  === stopping after rung $STOP_AFTER, as asked ==="
+else
 head1 "RUNG 10 -- LFS 5.2: binutils pass 1, cross to \$LFS_TGT"
 # FROM HERE THE ORDER IS LFS's AND IT IS NOT NEGOTIABLE.
 #
@@ -2550,6 +2603,8 @@ if [ "$R9" = ok ]; then
     fi
   fi
   cd /work
+fi
+
 fi
 
 # ---------------------------------------------------------------------------
