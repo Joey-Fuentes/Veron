@@ -3492,22 +3492,64 @@ if [ "$R12" = ok ]; then
         ls "$SYS/usr/lib/$_l"* "/usr/lib/$_l"* >/dev/null 2>&1 \
           || printf '      %s\n' "$_l"
       done
-      ( cd "/work/src/py/$_pyd" \
-        && ./configure --prefix="$PFX" --without-ensurepip --disable-test-modules \
-             CC="$PFX/bin/chain-cc -static" LDFLAGS="-static" > cfg.log 2>&1 \
-        && timeout 3600 make -j"$NP" > b.log 2>&1 \
-        && make install > /dev/null 2>&1 ) \
-        || { r117=FAIL
-             say "    python NOT INSTALLED"
-             grep -aiE "error|cannot|not found" "/work/src/py/$_pyd/cfg.log" 2>/dev/null \
-               | tail -8 | sed 's/^/      /'
-             tail -15 "/work/src/py/$_pyd/b.log" 2>/dev/null | sed 's/^/      /'; }
+      # EACH PHASE REPORTS ITS OWN RESULT.
+      #
+      # The previous version chained configure && make && install and printed
+      # the tail of b.log on any failure. The last run showed Python's module
+      # SUMMARY -- "Checked 114 modules ... 48 failed on import" -- which is
+      # what the end of a SUCCESSFUL build looks like, and no error at all. So
+      # make had worked and `make install` was the thing that failed, and the
+      # log said nothing about it.
+      #
+      # "48 failed on import" is also not an error: a statically linked Python
+      # cannot dlopen its shared extension modules, so they are reported as
+      # unimportable and the interpreter is fine without them.
+      ( cd "/work/src/py/$_pyd"
+        ./configure --prefix="$PFX" --without-ensurepip --disable-test-modules \
+          CC="$PFX/bin/chain-cc -static" LDFLAGS="-static" > cfg.log 2>&1
+        _c=$?; echo "      configure rc=$_c"
+        [ "$_c" = 0 ] || { grep -aiE "error|cannot find|not found" cfg.log \
+                             | tail -8 | sed 's/^/        /'; exit 1; }
+        timeout 3600 make -j"$NP" > b.log 2>&1
+        _m=$?; echo "      make rc=$_m"
+        if [ "$_m" != 0 ]; then
+          grep -aE "^[^ ]*error:|Error [0-9]|undefined reference" b.log \
+            | head -10 | sed 's/^/        /'
+          tail -10 b.log | sed 's/^/        /'
+          exit 1
+        fi
+        # `make install` NOT `make install`, DELIBERATELY: altinstall and the
+        # ensurepip/compileall phases both RUN the interpreter that was just
+        # built, and a statically linked python cannot dlopen its shared
+        # extension modules -- which is exactly the "48 failed on import" the
+        # build summary reports. If the install trips on that, the answer is
+        # to skip the byte-compilation rather than to make python dynamic,
+        # because this box has no loader at all.
+        make install > i.log 2>&1 \
+          || make install COMPILEALL_OPTS=-x'.*' > i.log 2>&1 \
+          || make install PYTHONDONTWRITEBYTECODE=1 > i.log 2>&1
+        _i=$?; echo "      install rc=$_i"
+        [ "$_i" = 0 ] || { grep -aiE "error|cannot|permission|no such" i.log \
+                             | tail -10 | sed 's/^/        /'
+                           tail -10 i.log | sed 's/^/        /'; exit 1; }
+        exit 0 ) \
+        || { r117=FAIL; say "    python NOT INSTALLED"; }
       if [ "$r117" = ok ]; then
         _py=$(ls "$PFX/bin"/python3* 2>/dev/null | head -1)
         say "    python: $("$_py" --version 2>&1 | head -1)"
         # WHAT IT BUILT WITHOUT. glibc only needs the interpreter, so a Python
         # missing zlib is fine HERE -- but saying so now is cheaper than
         # discovering it when something above wants to read a .zip.
+        # WHAT glibc ASKS OF THIS PYTHON, ASKED DIRECTLY.
+        #
+        # glibc 2.44 runs scripts/gen-tunable-list.py during its build. That
+        # script uses re, os and sys and nothing else -- no zlib, no ssl, no
+        # ctypes. So a python missing 48 importable extension modules is very
+        # likely still enough, and this is the test that says so rather than
+        # leaving it to the module count.
+        say "    --- can it run what glibc will run? ---"
+        "$_py" -c 'import re,os,sys; print("      re/os/sys ok, python", sys.version.split()[0])' 2>&1 \
+          | sed 's/^/  /' || say "      IT CANNOT -- glibc will fail at gen-tunable-list.py"
         say "    --- modules that did NOT build ---"
         "$_py" -c 'import importlib.util as u
 for m in ("zlib","ssl","ctypes","readline","sqlite3","bz2","lzma"):
