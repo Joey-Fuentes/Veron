@@ -653,6 +653,11 @@ jobs:
           cat > "$BOX/work/pkg.sh" <<'INBOX'
           #!/bin/sh
           set -u
+          # PKG COMES IN VIA --setenv. bwrap gives the box its own environment,
+          # so a variable set in the workflow step is NOT visible here -- the
+          # case below reads it and died with "PKG: parameter not set" under
+          # set -u. Same class as MAKE_ALT one step earlier: anything the
+          # in-box script reads has to be passed explicitly.
           export PATH=/work/prefix/bin:/bin
           cd /work/pkg
           CC=/work/prefix/bin/cc-static
@@ -777,6 +782,7 @@ jobs:
             --die-with-parent \
             --setenv PATH /work/prefix/bin:/bin --setenv HOME /work --setenv LC_ALL POSIX \
             --setenv TERM dumb --setenv SOURCE_DATE_EPOCH 0 \
+            --setenv PKG "$PKG" \
             --bind "$BOX" / \
             --ro-bind "$PWD/spikes" /src --ro-bind "$PWD/pins" /in \
             --proc /proc --dev /dev --tmpfs /tmp --chdir /work \

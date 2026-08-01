@@ -965,6 +965,42 @@ jobs:
             --setenv CC_BIN /work/mc-tcc \
             --setenv TCCDIR /work/tccsrc \
             --setenv ARM mc-tcc \
+            # EVERY VERSION THE RUNGS READ, PASSED EXPLICITLY.
+            #
+            # bwrap gives the box its own environment: a variable in this
+            # workflow's env: block is NOT visible inside. Rungs 0 through 11.5
+            # never noticed because their versions are spelled out in
+            # rungs.sh; everything from 11.7 up uses $GLIBC, $KHDR, $PERL_VER,
+            # $PYTHON_VER, $KERNEL, $GCC15 and $BINUTILS_LFS, and would have
+            # died on the first one under `set -u` --
+            #
+            #     rungs.sh: line NNNN: GLIBC: parameter not set
+            #
+            # which is exactly how tool-probe failed twice today, once for
+            # MAKE_ALT and once for PKG. Same class, third occurrence: if the
+            # in-box script reads it, it has to be passed.
+            --setenv MUSL_VER "$MUSL_VER" \
+            --setenv MAKE_VER "$MAKE_VER" \
+            --setenv MAKE_ALT "$MAKE_ALT" \
+            --setenv BINUTILS "$BINUTILS" \
+            --setenv BINUTILS_LFS "$BINUTILS_LFS" \
+            --setenv GMP_VER "$GMP_VER" \
+            --setenv MPFR_VER "$MPFR_VER" \
+            --setenv MPC_VER "$MPC_VER" \
+            --setenv GCC47 "$GCC47" \
+            --setenv GCC10 "$GCC10" \
+            --setenv GCC15 "$GCC15" \
+            --setenv GLIBC "$GLIBC" \
+            --setenv KHDR "$KHDR" \
+            --setenv KERNEL "$KERNEL" \
+            --setenv ENABLE_KERNEL "$ENABLE_KERNEL" \
+            --setenv PERL_VER "$PERL_VER" \
+            --setenv PYTHON_VER "$PYTHON_VER" \
+            --setenv M4_VER "$M4_VER" \
+            --setenv BC_VER "$BC_VER" \
+            --setenv BISON_VER "$BISON_VER" \
+            --setenv FLEX_VER "$FLEX_VER" \
+            --setenv BUSYBOX_VER "$BUSYBOX_VER" \
             --bind "$BOX" / \
             --ro-bind "$PWD/spikes" /src \
             --ro-bind "$PWD/pins" /in \
