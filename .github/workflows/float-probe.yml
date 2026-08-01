@@ -421,6 +421,65 @@ jobs:
           echo "  anything this repository patched. That is worth reporting"
           echo "  upstream as well as working around."
 
+      # IS THIS OURS, OR IS IT UPSTREAM's, AND IS IT ALREADY FIXED?
+      #
+      # Everything above uses our pin, 5ec0e6f8 (2025-12-21). sources/tcc.toml
+      # explains why it is not mob HEAD: mob's own arm64 assembler rejects
+      # instructions musl needs -- bic, svc, adrp and seventeen others -- and
+      # the Feb-2026 assembler series was written against this exact tree.
+      #
+      # SO A BUMP IS NOT FREE. But whether the bug EXISTS upstream is a
+      # different question from whether we can move, and it decides what to do:
+      #
+      #   upstream is correct -> a fix landed since December; find the commit
+      #                          and backport the routine, which is far smaller
+      #                          than moving the pin
+      #   upstream is wrong   -> a real, current tcc bug on aarch64, worth
+      #                          reporting rather than only working around
+      #
+      # THE ASSEMBLER PROBLEM DOES NOT BLOCK THIS TEST. lib-arm64.c is compiled
+      # by the HOST compiler when libtcc1.a is built, and the probe below is C
+      # with no inline asm -- so mob's assembler limitations never come up here
+      # even though they would in a real bootstrap.
+      - name: 'UPSTREAM: is __trunctfdf2 wrong in current tcc too?'
+        run: |
+          set -u
+          set +e
+          rm -rf tccmob
+          git clone --depth 50 https://github.com/TinyCC/tinycc.git tccmob 2>/dev/null \
+            || git clone --depth 50 https://repo.or.cz/tinycc.git tccmob 2>/dev/null
+          if [ ! -d tccmob ]; then echo "  could not clone upstream"; exit 0; fi
+          echo "  upstream HEAD: $(cd tccmob && git rev-parse HEAD)"
+          echo "  our pin:       $TCC_PIN"
+          echo "  dated:         $(cd tccmob && git log -1 --format=%ci)"
+          echo
+          # WHAT CHANGED IN THE SOFT-FLOAT FILE SINCE OUR PIN. If the answer is
+          # "nothing", upstream has the same bug and there is nothing to
+          # backport.
+          echo "  --- commits touching lib/lib-arm64.c since our pin ---"
+          ( cd tccmob && git log --oneline "$TCC_PIN"..HEAD -- lib/lib-arm64.c 2>/dev/null ) \
+            | sed 's/^/    /' || echo "    (pin not in this shallow clone -- fetching deeper)"
+          ( cd tccmob && git fetch --unshallow 2>/dev/null || true
+            git log --oneline "$TCC_PIN"..HEAD -- lib/lib-arm64.c 2>/dev/null | sed 's/^/    /'
+            echo "    total commits since the pin: $(git rev-list --count "$TCC_PIN"..HEAD 2>/dev/null || echo unknown)" )
+          echo
+          ( cd tccmob && ./configure --cc=gcc --prefix=/usr > cfg.log 2>&1 \
+              && make -j"$(nproc)" > b.log 2>&1 ) \
+            || { echo "  upstream tcc did not build:"; tail -10 tccmob/b.log | sed 's/^/    /'; exit 0; }
+          echo "  upstream tcc built: $(wc -c < tccmob/tcc) bytes"
+          echo
+          echo "  === the same conversion test, upstream tcc, host libc ==="
+          # Host libc here rather than musl: the question is the COMPILER's
+          # soft-float, and glibc is a known-good libc to link against.
+          ./tccmob/tcc -B"$PWD/tccmob" -o /tmp/tf-mob /tmp/tf.c 2>/tmp/mob.err \
+            && /tmp/tf-mob \
+            || { echo "    would not build:"; head -5 /tmp/mob.err | sed 's/^/      /'; }
+          echo
+          echo "  === and OUR pin, host libc, for the same comparison ==="
+          ./tccsrc/tcc -B"$PWD/tccsrc" -o /tmp/tf-pin /tmp/tf.c 2>/tmp/pin.err \
+            && /tmp/tf-pin \
+            || { echo "    would not build:"; head -5 /tmp/pin.err | sed 's/^/      /'; }
+
       - name: Verdict
         if: always()
         run: |
@@ -434,6 +493,17 @@ jobs:
           echo "  AND QUESTION 3 SEPARATELY:"
           echo "    long double arithmetic wrong  -- the __*tf* soft-float routines"
           echo "    long double arithmetic right  -- fmt_fp fails for another reason"
+          echo
+          echo "  AND THE UPSTREAM COLUMN DECIDES WHAT TO DO ABOUT IT:"
+          echo "    upstream correct, our pin wrong -> a fix landed after"
+          echo "      2025-12-21. Backport that ONE routine; do not move the"
+          echo "      pin, because sources/tcc.toml explains that mob's arm64"
+          echo "      assembler rejects instructions musl needs."
+          echo "    both wrong -> a live tcc bug on aarch64. Worth reporting,"
+          echo "      and we carry a patch in spikes/stage3/patches/ either way."
+          echo "    both right -> the fault is not the routine in isolation but"
+          echo "      how OUR build of libtcc1.a differs, which is a narrower"
+          echo "      and more surprising search."
           echo
           echo "  WHY THIS MATTERS BEYOND THE BUG: tcc has built entire"
           echo "  distributions. A broken printf would be famous. So the"
