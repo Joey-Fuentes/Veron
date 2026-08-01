@@ -3994,7 +3994,21 @@ if [ "$R14" = ok ]; then
     # CONFIG_SSL_CLIENT is the applet that drags in networking/tls*.c, which
     # reaches for LONG_BIT without the feature macro. A build sysroot has no
     # use for HTTPS; drop the applet rather than patch a feature-test mismatch.
-    for _sym in SSL_CLIENT FEATURE_WGET_OPENSSL TLS; do
+    # AND CONFIG_TC, WHICH THE AIRLOCK BUSYBOX BUILD ALREADY DISABLES.
+    #
+    #     networking/tc.c:236: 'TCA_CBQ_MAX' undeclared
+    #     invalid application of 'sizeof' to incomplete type 'struct tc_cbq_lssopt'
+    #
+    # CBQ traffic control was removed from the kernel and busybox 1.36.1
+    # predates that, so tc.c cannot compile against linux 7.1.5 headers at all.
+    # The airlock step that builds the box's own busybox disables it and has
+    # done since that failure was first seen -- this build did not, because the
+    # two configurations are written out separately and only one was fixed.
+    #
+    # Same shape as the -isystem flag that took three rounds: a fix applied to
+    # one of two places that need it. Both busybox configurations should be
+    # read together whenever either changes.
+    for _sym in SSL_CLIENT FEATURE_WGET_OPENSSL TLS TC; do
       sed -i "s/^CONFIG_$_sym=y/# CONFIG_$_sym is not set/" .config
     done
     # VERIFY AFTER, because a sed that matches nothing is silent and
@@ -4005,6 +4019,19 @@ if [ "$R14" = ok ]; then
       R15=FAIL
     fi
     if [ "$R15" != FAIL ]; then
+      # THE TWO BUSYBOX CONFIGURATIONS DIFFER ON PURPOSE, AND ONLY HERE.
+      #
+      #   airlock  the box's own toolbox. Turns SPLIT, COMM, JOIN, PASTE and a
+      #            dozen others ON, because the BUILD needs them -- perl's
+      #            Configure wants split and comm, and Ubuntu's busybox has
+      #            neither.
+      #   rung 15  the initramfs. Needs an init, a shell and enough to prove
+      #            the kernel booted. defconfig covers that.
+      #
+      # What they must NOT differ on is what cannot COMPILE: TLS and TC are
+      # disabled in both, and this rung failed because TC was fixed in one of
+      # them only.
+      #
       # CONFIG_STATIC: the initramfs has no loader and no libc of its own.
       sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
       if timeout 3600 make ARCH=arm64 CROSS_COMPILE="$LFS_TGT-" \
