@@ -476,8 +476,14 @@ jobs:
               printf '  fetched %-30s %10s bytes\n' "$b" "$(wc -c < "$b")"
             else
               rm -f "$b.part"
-              echo "  FETCH FAILED: $u"
-              _fetchfail=1
+              # A MISSING glibc PATCH IS NOT FATAL HERE. The vendored copy is
+              # taken a few lines below, and that path prints "vendored" so the
+              # log says which source was used. Everything else IS fatal:
+              # a missing tarball cannot be substituted.
+              case "$b" in
+                glibc-*.patch) echo "  not upstream: $b (will use the vendored copy)" ;;
+                *)             echo "  FETCH FAILED: $u"; _fetchfail=1 ;;
+              esac
             fi
           done
           # A MISSING PIN IS NOT A WARNING. This loop used to print
@@ -504,59 +510,51 @@ jobs:
             echo "  one or more pinned inputs did not download; not continuing."
             exit 1; }
 
-          # THE upstream_fixes PATCH MOVES, SO TRY EVERYWHERE IT LIVES.
+          # THE glibc PATCHES ARE VENDORED, NOT FETCHED.
           #
-          # Two runs died on this one file while sixteen tarballs and
-          # glibc-fhs-1.patch came down from the same host. Stage 4's exact
-          # curl flags did not change that, so it is the ADDRESS, not the
-          # request -- /patches/lfs/development/ tracks whatever the
+          # /patches/lfs/development/ is not an archive: it tracks whatever the
           # development book currently is, and its contents are revised and
-          # REMOVED in place.
+          # REMOVED in place. Two runs died on
+          # glibc-2.43-upstream_fixes-1.patch while sixteen tarballs and
+          # glibc-fhs-1.patch came down from the same host in the same run --
+          # with stage4-complete's own curl flags, so it was the address rather
+          # than the request. The file had been removed.
           #
-          # stage4-complete has been fetching it successfully for weeks, which
-          # means it worked when that job last ran and does not now. Rather
-          # than pick one URL and lose another run, try the places it is known
-          # to appear, then fall back to the digest-matched copy the
-          # downloads/ directory keeps.
-          _uf="glibc-$GLIBC-upstream_fixes-1.patch"
-          if [ ! -s "$_uf" ]; then
-            for _b in "https://www.linuxfromscratch.org/patches/lfs/development" \
-                      "https://www.linuxfromscratch.org/patches/downloads/glibc" \
-                      "https://www.linuxfromscratch.org/patches/lfs/13.0" \
-                      "https://distfiles.macports.org/lfs"; do
-              curl -fsSL --http1.1 --retry 2 --retry-all-errors --retry-delay 3 \
-                   --connect-timeout 15 --max-time 300 -o "$_uf.part" "$_b/$_uf" 2>/dev/null \
-                && { mv "$_uf.part" "$_uf"
-                     echo "  fetched $_uf from $_b"; break; }
-              rm -f "$_uf.part"
-              echo "    not at $_b"
-            done
-          fi
-          if [ ! -s "$_uf" ]; then
-            echo
-            echo "  $_uf IS NOT REACHABLE AT ANY KNOWN URL."
-            echo
-            echo "  It is not optional: the book introduces it with \"Now fix"
-            echo "  glibc to build against Linux 7\", and this box pairs glibc"
-            echo "  $GLIBC with linux $KHDR headers. Without it rung 13 stops"
-            echo "  on a -Werror redefinition between the libc and the kernel"
-            echo "  headers, which is the failure stage 4 documents."
-            echo
-            echo "  THIS AFFECTS stage4-complete TOO. It fetches the same file"
-            echo "  from the same directory with no cache, so it will fail the"
-            echo "  same way on its next run -- the patch has been REMOVED"
-            echo "  upstream, not merely moved, and nothing local is holding a"
-            echo "  copy. That is the argument for vendoring it rather than a"
-            echo "  workaround for this job."
-            echo
-            echo "  TWO WAYS FORWARD, both deliberate rather than automatic:"
-            echo "    - commit the patch under spikes/stage4/patches/glibc/ and"
-            echo "      read it from there, which is what a pinned input should"
-            echo "      have been all along;"
-            echo "    - or set KHDR to the version the book pairs with glibc"
-            echo "      $GLIBC and drop the patch, accepting older headers."
-            exit 1
-          fi
+          # A pinned input should not come from a mutable directory. Both
+          # patches now live in spikes/stage4/patches/glibc/ and are copied,
+          # not downloaded. See the README there for the digests and for how
+          # to refresh one deliberately.
+          #
+          # THE NETWORK COPY IS STILL TRIED FIRST for the fhs patch only,
+          # because /patches/lfs/13.0/ IS a released directory and taking the
+          # upstream copy when it is reachable keeps us honest about what the
+          # book actually ships. If it is unreachable the vendored copy stands
+          # in, which is the point of having it.
+          for _pf in glibc-fhs-1.patch "glibc-$GLIBC-upstream_fixes-1.patch"; do
+            if [ -s "$_pf" ]; then
+              echo "  fetched   $_pf"
+              continue
+            fi
+            _v="$GITHUB_WORKSPACE/spikes/stage4/patches/glibc/$_pf"
+            if [ -s "$_v" ]; then
+              cp "$_v" "$_pf"
+              printf '  vendored  %-42s %s bytes\n' "$_pf" "$(wc -c < "$_pf")"
+            else
+              echo
+              echo "  $_pf IS NEITHER REACHABLE NOR VENDORED."
+              echo
+              echo "  It is not optional: the book introduces the upstream_fixes"
+              echo "  patch with \"Now fix glibc to build against Linux 7\", and"
+              echo "  this box pairs glibc $GLIBC with linux $KHDR headers --"
+              echo "  exactly the pairing it exists for. Without it rung 13 stops"
+              echo "  on a -Werror redefinition between the libc and the kernel"
+              echo "  headers, which reads as a glibc bug and is not one."
+              echo
+              echo "  Put a copy in spikes/stage4/patches/glibc/ -- that"
+              echo "  directory's README has the digests and the source URL."
+              exit 1
+            fi
+          done
 
           # THE PATCH DIGESTS, RECORDED AND COMPARED BUT NOT ENFORCED.
           #

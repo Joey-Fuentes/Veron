@@ -1,0 +1,187 @@
+# FETCH THE LFS PATCHES SO THEY CAN BE VENDORED ONCE AND NEVER FETCHED AGAIN.
+#
+# /patches/lfs/development/ is not an archive. It tracks whatever the
+# development book currently is, and its contents are revised and REMOVED in
+# place. Two runs of stage3-to-stage4-reference died on
+#
+#     FETCH FAILED: .../lfs/development/glibc-2.43-upstream_fixes-1.patch
+#
+# while sixteen tarballs and glibc-fhs-1.patch came down from the same host in
+# the same run, with stage4-complete's own curl flags. The address was the
+# problem, not the request -- the file had moved or been removed.
+#
+# stage4-complete fetches the same file from the same directory with no cache,
+# so it will fail the same way on its next run. Vendoring fixes both jobs.
+#
+# THIS JOB DOES NOT GUESS AT ONE URL. It tries every place LFS has kept
+# patches, prints what it found at each, verifies the md5 against the digest
+# recorded in the vendored book, and uploads whatever it got. Download the
+# artifact, drop the files into spikes/stage4/patches/glibc/, and the fetch
+# stops being a network dependency.
+#
+# IT ALSO LISTS THE DIRECTORIES, which is the part that answers "where did it
+# go" rather than just "it is not here". If the file has been renamed -- a -2
+# revision, say -- the listing shows that and the digest tells you whether it
+# is the same content.
+
+name: fetch-lfs-patches
+
+on:
+  workflow_dispatch:
+
+env:
+  GLIBC: '2.43'
+  PYTHON_VER: '3.14.6'
+  # The digests recorded in spikes/stage4/books/LFS-BOOK-r13_0-156-systemd.
+  # Compared and reported, never enforced: the development book revises its
+  # patches in place, so a mismatch means "it moved on", not "it is corrupt".
+  MD5_FHS: '9a5997c3452909b1769918c759eff8a2'
+  MD5_UPSTREAM: '1f5074a1dce85a72d2ea465ca76e420b'
+
+jobs:
+  fetch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'WHERE DOES LFS KEEP PATCHES? List the directories.'
+        run: |
+          set -u
+          # THE LISTING IS THE POINT. "Not found" says nothing about where it
+          # went; a directory index says whether the file was renamed, moved to
+          # a revision subdirectory, or genuinely withdrawn.
+          for d in "https://www.linuxfromscratch.org/patches/lfs/development/" \
+                   "https://www.linuxfromscratch.org/patches/lfs/13.0/" \
+                   "https://www.linuxfromscratch.org/patches/downloads/glibc/" \
+                   "https://www.linuxfromscratch.org/patches/downloads/Python/"; do
+            echo "================================================================"
+            echo "  $d"
+            echo "================================================================"
+            if curl -fsSL --http1.1 --connect-timeout 15 --max-time 60 "$d" \
+                 > /tmp/idx.html 2>/dev/null; then
+              # Anything that looks like a patch name, whatever the index format.
+              grep -oE '[A-Za-z0-9_.+-]+\.patch' /tmp/idx.html \
+                | sort -u | sed 's/^/    /' | head -40
+              n=$(grep -oE '[A-Za-z0-9_.+-]+\.patch' /tmp/idx.html | sort -u | wc -l)
+              echo "    ($n patches listed)"
+              echo "    --- the ones we care about ---"
+              grep -oE '[A-Za-z0-9_.+-]*(glibc|Python)[A-Za-z0-9_.+-]*\.patch' /tmp/idx.html \
+                | sort -u | sed 's/^/      /' || echo "      none"
+            else
+              echo "    directory not readable"
+            fi
+            echo
+          done
+
+      - name: 'FETCH: try every location, report each one'
+        run: |
+          set -u
+          mkdir -p out
+          cd out
+
+          # $1 = filename, $2 = expected md5 (or "" for none recorded)
+          grab() {
+            f=$1; want=$2
+            echo "================================================================"
+            echo "  $f"
+            echo "================================================================"
+            for b in "https://www.linuxfromscratch.org/patches/lfs/development" \
+                     "https://www.linuxfromscratch.org/patches/lfs/13.0" \
+                     "https://www.linuxfromscratch.org/patches/downloads/glibc" \
+                     "https://www.linuxfromscratch.org/patches/downloads/Python" \
+                     "https://www.linuxfromscratch.org/patches/lfs/12.4" \
+                     "https://www.linuxfromscratch.org/patches/lfs/12.3"; do
+              if curl -fsSL --http1.1 --retry 2 --retry-all-errors --retry-delay 2 \
+                      --connect-timeout 15 --max-time 120 -o "$f.try" "$b/$f" 2>/dev/null; then
+                got=$(md5sum "$f.try" | cut -d' ' -f1)
+                sz=$(wc -c < "$f.try")
+                printf '    FOUND at %-60s %s bytes\n' "$b" "$sz"
+                printf '      md5 %s' "$got"
+                if [ -z "$want" ]; then
+                  echo "   (no digest recorded)"
+                elif [ "$got" = "$want" ]; then
+                  echo "   MATCHES the vendored book"
+                else
+                  echo "   differs from the vendored book ($want)"
+                  echo "      The development book has moved on. Read the patch"
+                  echo "      before vendoring it -- a revision is fine, a"
+                  echo "      substitution is not."
+                fi
+                # KEEP THE FIRST ONE THAT MATCHES THE DIGEST, otherwise the
+                # first one found. A directory that still has the exact file
+                # the book records is a better source than one that has a
+                # newer revision, and this is the only place that preference
+                # can be expressed.
+                if [ ! -s "$f" ] || { [ -n "$want" ] && [ "$got" = "$want" ]; }; then
+                  mv "$f.try" "$f"
+                  echo "      -> kept this copy"
+                else
+                  rm -f "$f.try"
+                fi
+              else
+                printf '    not at   %s\n' "$b"
+              fi
+            done
+            [ -s "$f" ] && echo "    RESULT: have it, $(wc -c < "$f") bytes" \
+                        || echo "    RESULT: NOT FOUND ANYWHERE"
+            echo
+          }
+
+          grab "glibc-fhs-1.patch"                      "$MD5_FHS"
+          grab "glibc-$GLIBC-upstream_fixes-1.patch"    "$MD5_UPSTREAM"
+          # Revisions, in case -1 was superseded rather than removed.
+          grab "glibc-$GLIBC-upstream_fixes-2.patch"    ""
+          grab "glibc-$GLIBC-upstream_fixes-3.patch"    ""
+          # The book also carries this one and we do not fetch it yet; grabbing
+          # it now means one artifact rather than two trips.
+          grab "Python-$PYTHON_VER-consolidated_fixes-1.patch" ""
+
+      - name: 'WHAT CAME BACK'
+        if: always()
+        run: |
+          set -u
+          cd out 2>/dev/null || { echo "  nothing fetched"; exit 0; }
+          echo "  --- files ---"
+          ls -l *.patch 2>/dev/null | sed 's/^/    /' || echo "    none"
+          echo
+          echo "  --- digests, for the vendored README ---"
+          md5sum *.patch 2>/dev/null | sed 's/^/    /' || true
+          sha256sum *.patch 2>/dev/null | sed 's/^/    /' || true
+          echo
+          # A PATCH IS TEXT. Print the head of each so a wrong file -- an HTML
+          # error page saved as .patch, say -- is visible here rather than at
+          # rung 13 forty minutes into a build.
+          echo "  --- first lines of each, to prove they are patches ---"
+          for f in *.patch; do
+            [ -f "$f" ] || continue
+            echo "    == $f =="
+            head -4 "$f" | sed 's/^/      /'
+            echo "      ($(grep -c '^--- \|^+++ ' "$f") diff headers, $(wc -l < "$f") lines)"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lfs-patches
+          path: out/*.patch
+          if-no-files-found: warn
+
+      - name: What to do with the artifact
+        if: always()
+        run: |
+          echo "  Download the lfs-patches artifact, then:"
+          echo
+          echo "    unzip lfs-patches.zip -d spikes/stage4/patches/glibc/"
+          echo "    git add spikes/stage4/patches/glibc/"
+          echo "    git commit -m 'vendor the LFS glibc patches'"
+          echo
+          echo "  The reference and bridge jobs already prefer a vendored copy"
+          echo "  and only fall back to the network, so this removes the"
+          echo "  dependency rather than adding a step."
+          echo
+          echo "  IF A FILE CAME BACK WITH A DIFFERENT DIGEST, read it before"
+          echo "  committing. The development book revises patches in place, so"
+          echo "  a newer revision is expected and fine -- but record the new"
+          echo "  digest in the README there and say which revision it came"
+          echo "  from, rather than replacing the number silently."
