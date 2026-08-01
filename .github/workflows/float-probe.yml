@@ -141,6 +141,30 @@ jobs:
             | awk '{print "    " $3}' | sort -u | head -30
           echo "  --- total symbols defined ---"
           nm tccsrc/libtcc1.a 2>/dev/null | grep -cE ' [TtWw] ' | sed 's/^/    /'
+          echo
+          # THE FIRST RUN ANSWERED THIS AND THE ANSWER IS: NOTHING IS MISSING.
+          #
+          # All 22 quad-precision routines are present -- __addtf3, __subtf3,
+          # __multf3, __divtf3, the six comparisons, both extends, both
+          # truncates, and every fix/float conversion in both signednesses.
+          #
+          # So "libtcc1.a lacks the f128 helpers" is ruled out. If long double
+          # arithmetic is wrong it is because these implementations are wrong,
+          # not because the linker could not find them -- and a missing one
+          # would have failed the link loudly rather than printed 8.000000.
+          #
+          # Which moves the question to QUESTION 3 below: do they compute the
+          # right answers? That is asked with integers, so printf cannot
+          # confound it.
+          echo "  --- are any of the ones musl needs ABSENT? ---"
+          _miss=""
+          for sym in __addtf3 __subtf3 __multf3 __divtf3 __fixtfsi __fixtfdi \
+                     __floatsitf __floatditf __extenddftf2 __trunctfdf2 \
+                     __eqtf2 __netf2 __lttf2 __getf2; do
+            nm tccsrc/libtcc1.a 2>/dev/null | grep -qE " [TtWw] $sym\$" || _miss="$_miss $sym"
+          done
+          [ -z "$_miss" ] && echo "    none -- the full quad set is there" \
+                          || echo "    MISSING:$_miss"
 
       - name: 'QUESTION 1 and 2: musl built by gcc, and musl built by tcc'
         run: |
@@ -153,6 +177,21 @@ jobs:
             tar xf "musl-$MUSL_VER.tar.gz" -C "m-$cc" --strip-components=1
             if [ "$cc" = tcc ]; then
               CCBIN="$PWD/tccsrc/tcc -B$PWD/tccsrc"
+              # DROP src/complex, WHICH IS WHAT sources/musl.toml DECLARES.
+              #
+              #     ./include/complex.h:16: error: _Complex is not yet supported
+              #
+              # tcc has no _Complex, 66 sites reach for it, and the bridge's
+              # rung 2 removes those files by name. This probe built musl
+              # straight from upstream and hit it immediately -- reproducing a
+              # known, declared limitation instead of the one under
+              # investigation.
+              #
+              # The dropped files are complex math. fmt_fp does not use them,
+              # so removing them changes nothing about what is being measured
+              # here; it just gets musl to build the way the bridge builds it.
+              rm -f src/complex/*.c
+              echo "  dropped src/complex (tcc has no _Complex -- see sources/musl.toml)"
             else
               CCBIN=gcc
             fi
