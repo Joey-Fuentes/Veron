@@ -1,0 +1,135 @@
+an array member's alignment is its ELEMENT's, not its total size.
+
+MEASURED, and the numbers are the whole argument:
+
+    struct { char a[3]; }    micro-c 4    C says 3
+    struct { char a[8]; }    micro-c 8    C says 8     (agrees by luck)
+    struct { char a[10]; }   micro-c 16   C says 10
+    ArHdr                    micro-c 64   C says 60
+
+largest_member_size drives the struct's own alignment, and the struct's SIZE
+is rounded up to it at the bottom of create_struct. Counting `char a[16]` as a
+sixteen-byte member rounded that to eight, so a struct of nothing but char
+arrays came out a multiple of eight bytes long. An array is aligned to its
+ELEMENT, and this file already records both numbers: `i->size` is
+count * element, `i->type->size` is the element.
+
+WHAT IT BROKE, WHICH IS NOT A ROUNDING ERROR. ArHdr is tcctools.c's `ar`
+member header -- a BYTE-EXACT file format:
+
+    typedef struct {
+        char ar_name[16]; char ar_date[12]; char ar_uid[6];
+        char ar_gid[6];   char ar_mode[8];  char ar_size[10];
+        char ar_fmag[2];
+    } ArHdr;                                        tcctools.c:36
+
+tcc writes it with `fwrite(&arhdr, sizeof(arhdr), 1, fh)`, so mc-tcc wrote
+SIXTY-FOUR bytes where sixty belong and four stray bytes landed exactly where
+the archive's symbol table starts. The archive mc-tcc produced, mc-tcc then
+rejected:
+
+    mc-tcc -ar libh.a h1.o     ->  1190 bytes
+    mc-tcc ... libh.a          ->  libh.a: error: invalid archive
+
+`tcc -ar` is on stage 4's critical path and WHAT-STAGE-4-NEEDS says why it
+cannot be stubbed: binutils has to be built by tcc, and building it means
+creating libbfd.a and libiberty.a before any `ar` exists.
+
+FOUND BY COMPARING AGAINST THE CONTROL, byte for byte. The gcc-built tcc's
+archive and mc-tcc's differ in the symbol-table member:
+
+    control   00000001 | 00000054 | "helper\0" \0
+    mc-tcc    00000000 00000001 | 00000058 | "help"        -- four bytes long
+
+and hofs, printed from inside mc-tcc, read 88 where 8 + 60 + 7 + 8 = 84 is
+right. Four bytes, in one place, from one sizeof.
+
+NON-ARRAY MEMBERS ARE UNTOUCHED: for those, `i->size` and `i->type->size` are
+the same number, so the rule only moves what it is about. The rounding itself
+stays -- it was added because a struct whose size is not a multiple of its
+alignment puts every array element after the first at a misaligned address,
+and the comment above it records that. What changes is the input.
+
+MEASURED, LOCALLY, EITHER SIDE:
+
+    difftest amd64        98 pass, 0 fail, 2 known gaps      unchanged
+    difftest aarch64     100 pass, 0 fail, 2 known gaps      unchanged
+    stage 2 corpus       419 of 426                          unchanged
+
+    archive              1190 -> 1182 bytes, the control's size exactly
+    symbol table         byte-identical to the control's
+
+NOT YET FIXED, AND IT IS A DIFFERENT LAYER. The archive is still rejected: the
+object member's own sixty-byte header is lost when tcc copies its temp file
+back --
+
+    fseek(fo, 0, SEEK_END); fsize = ftell(fo);
+    fseek(fo, 0, SEEK_SET); fread(buf, fsize, 1, fo);
+    fwrite(buf, fsize, 1, fh);                      tcctools.c:317
+
+-- and M2libc's ftell returns `stream->bufpos`, a position within the buffer
+rather than in the file, with `/* No ftell for you */` where the real answer
+belongs. That is a runtime gap of the same kind as realpath's ownership bug,
+not a compiler defect, and it wants its own change.
+
+--- a/cc_types.c
++++ b/cc_types.c
+@@ -1001,7 +1001,40 @@ struct type* create_struct(int is_union)
+ 		}
+ 
+ 		offset = offset + member_size;
+-		if(member_size > largest_member_size)
++		/* AN ARRAY'S ALIGNMENT IS ITS ELEMENT'S, NOT ITS TOTAL SIZE.
++		 *
++		 * largest_member_size drives the struct's own alignment, and the
++		 * struct's SIZE is rounded up to it at the bottom of this function.
++		 * Counting `char ar_name[16]` as a 16-byte member therefore rounded
++		 * to eight and made a struct of nothing but char arrays a multiple
++		 * of eight bytes long:
++		 *
++		 *     char a[3]   ->  4       char a[10]  ->  16
++		 *     ArHdr       ->  64, and C says 60
++		 *
++		 * ArHdr is tcctools.c's `ar` member header, a BYTE-EXACT file
++		 * format. tcc writes it with `fwrite(&arhdr, sizeof(arhdr), 1, fh)`,
++		 * so mc-tcc wrote 64 bytes where 60 belong and four stray bytes
++		 * landed exactly where the archive's symbol table starts. The
++		 * archive it produced, it then rejected itself:
++		 *     libh.a: error: invalid archive
++		 * `tcc -ar` is on stage 4's critical path -- binutils must be built
++		 * by tcc, and that means creating libbfd.a and libiberty.a before
++		 * any ar exists.
++		 *
++		 * The ELEMENT size is what an array is aligned to, and this file
++		 * already records it: i->size is count * element for an array, and
++		 * i->type->size is the element. Using the element leaves every
++		 * non-array member exactly as it was, since for those the two are
++		 * the same number. */
++		if(last->is_array)
++		{
++			if(last->type->size > largest_member_size)
++			{
++				largest_member_size = last->type->size;
++			}
++		}
++		else if(member_size > largest_member_size)
+ 		{
+ 			largest_member_size = member_size;
+ 		}
+@@ -1093,7 +1126,15 @@ struct type* create_struct(int is_union)
+ 			last = extra;
+ 
+ 			offset = offset + extra->size;
+-			if(extra->size > largest_member_size)
++			/* Same rule for the comma-declarator members. */
++			if(extra->is_array)
++			{
++				if(extra->type->size > largest_member_size)
++				{
++					largest_member_size = extra->type->size;
++				}
++			}
++			else if(extra->size > largest_member_size)
+ 			{
+ 				largest_member_size = extra->size;
+ 			}
