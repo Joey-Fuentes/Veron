@@ -1846,7 +1846,7 @@ jobs:
             echo "    skipped: no mc-tcc, or no tcctest.c in the pinned tree"
           fi
 
-          say '13. SELF-COMPILATION -- toward gen2 == gen3'
+          say '13. SELF-COMPILATION -- gen1 to gen4, and the fixpoint'
           # THE QUESTION THIS RUNG EXISTS TO ANSWER. tcc-two-ways shows the gcc
           # side reaching a fixpoint -- gen1 builds gen2 builds gen3 and the last
           # two are byte-identical -- and that is the property a self-hosting
@@ -1913,86 +1913,50 @@ jobs:
               echo "      fixpoint are not attempted this run."
             fi
 
-            # STEP B -- link gen2. The runtime under it is the same one mc-tcc
-            # itself stands on, compiled here by gen1 rather than by micro-c,
-            # which is the part that makes this self-compilation rather than a
-            # rebuild with someone else's libc.
+            # STEP B -- link gen2. gen2.o is tcc compiled by gen1; what it
+            # needs under it is a runtime, and step 13's own census says
+            # exactly which symbols: 49 after libtcc1, all libc.
             #
-            # SETJMP IS THE ONE FILE THAT CANNOT WORK AS WRITTEN, and it is
-            # worth saying why here rather than reading rc=1 as a codegen
-            # result. impl/setjmp-aarch64.c is written in M2libc's MACRO
-            # dialect --
-            #     asm("mov_x0,x17" "sub_x0,x0,8" "ldr_x0,[x0]")
-            # -- which are names in aarch64_defs.M1, not aarch64 mnemonics.
-            # Only micro-c can compile that file, by construction; its own
-            # header says so. gen1 is a real tcc with a real arm64 inline
-            # assembler and will reject every line of it.
+            # THIRTY OF THE FORTY-NINE WERE ALREADY IN THE TREE. crt.c (the
+            # tests2 shim) and micro-c-libc/impl/runtime.c supply them between
+            # them; gen2-extra.c is the other nineteen, written for this and
+            # compiled by mc-tcc like everything else here. A runtime built by
+            # something else would make gen2 a hybrid and the comparison below
+            # meaningless.
             #
-            # It also saves the wrong registers for gen2. That file saves
-            # x13/x17/x18/lr because that is micro-c's calling convention.
-            # gen2.o is compiled by mc-tcc, which emits ordinary AAPCS, so
-            # what gen2 needs is an ordinary aarch64 setjmp: x19-x28, d8-d15,
-            # fp, lr and sp.
-            #
-            # So the step prefers impl/setjmp-aarch64-tcc.c when that file
-            # exists and falls back to the micro-c one otherwise, reporting
-            # which it used. Dropping the tcc-dialect version in is then the
-            # whole change -- no edit here.
+            # THIS IS A BOOTSTRAP LIBC AND NOT THE musl RUNG. MICRO-C.md is
+            # right that mc-tcc does not need to build a libc and that musl is
+            # the next rung. What this is for is the FIXPOINT -- stage 3's own
+            # steps 2 through 5 -- which had never been attempted because gen2
+            # would not link. live-bootstrap puts a small libc in exactly this
+            # position: the weak compiler gets one, the first real compiler
+            # builds the real one.
             if [ "$g2rc" = 0 ] && [ -s gen2.o ]; then
-              SJ="$L/impl/setjmp-aarch64.c"
-              sjnote="micro-c dialect -- cannot compile under a real tcc, see below"
-              if [ -f "$L/impl/setjmp-aarch64-tcc.c" ]; then
-                SJ="$L/impl/setjmp-aarch64-tcc.c"
-                sjnote="tcc dialect, AAPCS"
-              fi
-              echo "    step B: setjmp source is $(basename "$SJ") ($sjnote)"
               set +e
               timeout 300 /out/mc-tcc -B/in/tcc-src -I"$L" -I"$M" -w -c \
                           -o rt.o "$L/impl/runtime.c" 2>rt.err
               rtrc=$?
-              timeout 300 /out/mc-tcc -B/in/tcc-src -I"$L" -I"$M" -w -c \
-                          -o sj.o "$SJ" 2>sj.err
-              sjrc=$?
+              timeout 300 /out/mc-tcc -B/in/tcc-src -I"$SH" -w -c \
+                          -o crt.o "$SH/crt.c" 2>crt.err
+              crtrc=$?
+              timeout 300 /out/mc-tcc -B/in/tcc-src -I"$SH" -w -c \
+                          -o g2x.o "$SH/gen2-extra.c" 2>g2x.err
+              g2xrc=$?
               set -e
-              if [ "$rtrc" != 0 ] || [ "$sjrc" != 0 ]; then
-                echo "    step B: runtime rc=$rtrc, setjmp rc=$sjrc"
-                # THE ERROR FILE HAS TO MATCH THE RUNG THAT FAILED. This
-                # printed rt.err unconditionally, so the run that stopped on
-                # setjmp reported three blank lines: runtime had succeeded and
-                # its error file was empty. A diagnostic that names the wrong
-                # file is worse than none, because it reads as "no output".
-                if [ "$rtrc" != 0 ]; then
-                  grep -av '^[A-Z][0-9]*$' rt.err | head -3 | sed 's/^/      runtime: /'
+              echo "    step B: runtime rc=$rtrc  crt rc=$crtrc  gen2-extra rc=$g2xrc"
+              for pair in rt:rt.err crt:crt.err g2x:g2x.err; do
+                nm=${pair%%:*}; ef=${pair#*:}
+                if [ -s "$ef" ]; then
+                  grep -av '^[A-Z][0-9]*$' "$ef" | head -2 | sed "s/^/      $nm: /"
                 fi
-                if [ "$sjrc" != 0 ]; then
-                  grep -av '^[A-Z][0-9]*$' sj.err | head -3 | sed 's/^/      setjmp:  /'
-                fi
-              fi
+              done
 
-              # THE LINK IS ATTEMPTED EITHER WAY, AND THAT IS THE POINT OF THIS
-              # REWRITE.
-              #
-              # The step used to stop here when a runtime piece failed to
-              # compile, which threw away the only measurement it could still
-              # take. gen2 needs about ninety symbols; setjmp is ONE of them,
-              # so even a perfect setjmp does not link gen2 and stopping on it
-              # answers nothing. What the link failure carries is the LIST --
-              # tcc's linker names every unresolved symbol before it errors --
-              # and that list is the specification for the next rung.
-              #
-              # So: link with whatever objects exist, and census what is
-              # missing. A shorter object list only makes the census longer,
-              # which is harmless, because the census is the deliverable and
-              # the binary is not.
               objs="gen2.o"
-              if [ -s rt.o ]; then objs="$objs rt.o"; fi
-              if [ -s sj.o ]; then objs="$objs sj.o"; fi
-              # AND libtcc1, which step 10b built with this same compiler.
-              # Eighteen of the sixty-seven undefined symbols were in that
-              # bucket; the census below now reports what is genuinely left.
+              for o in rt.o crt.o g2x.o; do
+                if [ -s "$o" ]; then objs="$objs $o"; fi
+              done
               objs="$objs$LIBTCC1"
               rtobjs=${objs#gen2.o}
-              echo "    step B: linking gen2 from $objs"
               set +e
               timeout 300 /out/mc-tcc -B/in/tcc-src -nostdlib -static \
                           -o gen2 $objs 2>lk.err
@@ -2000,49 +1964,32 @@ jobs:
               set -e
               if [ "$lkrc" = 0 ] && [ -s gen2 ]; then
                 chmod 0755 gen2
-                echo "    step B: gen2 LINKS"
-                printf '      %10s bytes  %s\n' \
+                printf '    step B: gen2 LINKS -- %s bytes  %s\n' \
                   "$(wc -c < gen2)" "$(sha256sum gen2 | cut -c1-16)"
               else
                 echo "    step B: gen2 will not link, rc=$lkrc"
                 # WHAT IS MISSING, BUCKETED, BECAUSE THE TWO BUCKETS HAVE
-                # DIFFERENT OWNERS.
-                #
-                #   tcc's own lib/  -- the soft-float quad helpers (__addtf3
-                #     and the rest of the *tf* family), __clear_cache, the
-                #     __builtin_/__atomic_ helpers and alloca. ARM64_O is
-                #     `lib-arm64.o $(COMMON_O)`, and runtime-ladder.sh already
-                #     reports 7 of 7 of those compiling under mc-tcc. This
-                #     bucket is BUILDABLE TODAY and needs no new rung.
-                #
-                #   everything else -- memcpy, printf, malloc, open and their
-                #     kind. That is the musl rung, pinned in sources/musl.toml
-                #     and not yet attempted with mc-tcc.
-                #
-                # Reporting one number for both hid the fact that the first
-                # bucket is work already proven and the second is the actual
-                # frontier.
+                # DIFFERENT OWNERS: tcc's own lib/ (step 10b builds it) and a
+                # libc (the musl rung).
                 grep -a "undefined symbol" lk.err \
                   | sed "s/.*undefined symbol '\\([^']*\\)'.*/\\1/" \
                   | sort -u > lk.syms
                 : > lk.libtcc1; : > lk.libc
-                while read -r s; do
-                  case "$s" in
-                    __*tf2|__*tf3|__fix*tf*|__float*tf|__trunctf*|__extend*tf2) echo "$s" >> lk.libtcc1 ;;
-                    __clear_cache|__builtin_*|__atomic_*|alloca|__bound_alloca*) echo "$s" >> lk.libtcc1 ;;
-                    *) echo "$s" >> lk.libc ;;
+                while read -r sy; do
+                  case "$sy" in
+                    __*tf2|__*tf3|__fix*tf*|__float*tf|__trunctf*|__extend*tf2) echo "$sy" >> lk.libtcc1 ;;
+                    __clear_cache|__builtin_*|__atomic_*|alloca|__bound_alloca*) echo "$sy" >> lk.libtcc1 ;;
+                    *) echo "$sy" >> lk.libc ;;
                   esac
                 done < lk.syms
                 echo "      undefined: $(wc -l < lk.syms) total" \
                      "-- $(wc -l < lk.libtcc1) from tcc's own lib/," \
                      "$(wc -l < lk.libc) from a libc"
                 if [ -s lk.libtcc1 ]; then
-                  echo "      tcc's lib/ (ARM64_O = lib-arm64.o + COMMON_O, mc-tcc builds these):"
-                  wrap lk.libtcc1
+                  echo "      tcc's lib/ (step 10b builds these):"; wrap lk.libtcc1
                 fi
                 if [ -s lk.libc ]; then
-                  echo "      libc (the musl rung, sources/musl.toml):"
-                  wrap lk.libc
+                  echo "      libc:"; wrap lk.libc
                 fi
                 if [ ! -s lk.syms ]; then
                   echo "      not an undefined-symbol failure:"
@@ -2051,40 +1998,95 @@ jobs:
               fi
             fi
 
-            # STEP C -- gen2 compiles tcc.c, and gen3 must match gen2 byte for
-            # byte. THE COMPARISON IS gen2 AGAINST gen3, NEVER gen1 AGAINST
-            # gen2: gen1 was built by a different compiler, so it is entitled to
-            # differ. Two successive generations from the SAME compiler are not.
+            # STEP C -- THE FIXPOINT, AND IT TAKES FOUR GENERATIONS RATHER
+            # THAN THREE.
+            #
+            # gen1 is mc-tcc, compiled by micro-c. gen2 is tcc compiled by
+            # gen1, gen3 by gen2, gen4 by gen3. The comparison that means
+            # something is gen3 against gen4 -- NOT gen2 against gen3 -- and
+            # the reason is measured rather than assumed:
+            #
+            #     gen2.o  ... e803000000000000 ...   = 1000, an integer
+            #     gen3.o  ... 00000000408f4000 ...   = 1000.0, the IEEE double
+            #
+            # Ten bytes out of 874,610, both beside the string ".1f MB/s".
+            # gen1 cannot emit a floating-point constant, because ITS constant
+            # scanner was compiled by micro-c, which has no floating point
+            # (step 11b). gen2's scanner was compiled by mc-tcc, which has
+            # correct float codegen -- so gen2 gets it right and every
+            # generation after it agrees. The chain HEALS at generation two
+            # and is a fixpoint from generation three.
+            #
+            # That is why tcc's own suite has test1, test2 AND test3, and it
+            # is the shape a bootstrap is supposed to have: the last defect of
+            # the weak compiler is carried one generation and no further.
             if [ -s gen2 ] && [ -x gen2 ]; then
-              set +e
-              ( cd /in/tcc-src && timeout 900 /work/gen2 \
-                  -D ONE_SOURCE=1 -D TCC_TARGET_LINUX=1 -D CONFIG_TCC_STATIC=1 \
-                  -B /in/tcc-src $INC \
-                  -w -c -o /work/gen3.o tcc.c ) 2>/work/gen3.err
-              g3rc=$?
-              set -e
-              if [ "$g3rc" != 0 ] || [ ! -s gen3.o ]; then
-                echo "    step C: gen2 cannot compile tcc.c, rc=$g3rc"
-                grep -av '^[A-Z][0-9]*$' /work/gen3.err | head -6 | sed 's/^/      /'
-              else
+              build_gen() {   # $1 = compiler, $2 = object out, $3 = binary out
                 set +e
-                timeout 300 /work/gen2 -B/in/tcc-src -nostdlib -static \
-                            -o gen3 gen3.o $rtobjs 2>lk3.err
-                l3rc=$?
+                ( cd /in/tcc-src && timeout 900 "$1" \
+                    -D ONE_SOURCE=1 -D TCC_TARGET_LINUX=1 -D CONFIG_TCC_STATIC=1 \
+                    -B /in/tcc-src $INC -w -c -o "/work/$2" tcc.c ) 2>"/work/$2.err"
+                _c=$?
                 set -e
-                if [ "$l3rc" = 0 ] && [ -s gen3 ]; then
-                  printf '    gen2  %10s bytes  %s\n' \
-                    "$(wc -c < gen2)" "$(sha256sum gen2 | cut -c1-16)"
-                  printf '    gen3  %10s bytes  %s\n' \
-                    "$(wc -c < gen3)" "$(sha256sum gen3 | cut -c1-16)"
-                  if cmp -s gen2 gen3; then
-                    echo "    FIXPOINT: gen2 and gen3 are byte-identical"
+                if [ "$_c" != 0 ] || [ ! -s "/work/$2" ]; then
+                  echo "    $1 could not compile tcc.c, rc=$_c"
+                  grep -av '^[A-Z][0-9]*$' "/work/$2.err" | head -4 | sed 's/^/      /'
+                  return 1
+                fi
+                set +e
+                timeout 300 "$1" -B/in/tcc-src -nostdlib -static \
+                            -o "/work/$3" "/work/$2" $rtobjs 2>"/work/$3.err"
+                _l=$?
+                set -e
+                if [ "$_l" != 0 ] || [ ! -s "/work/$3" ]; then
+                  echo "    $1 could not link $3, rc=$_l"
+                  grep -av '^[A-Z][0-9]*$' "/work/$3.err" | head -4 | sed 's/^/      /'
+                  return 1
+                fi
+                chmod 0755 "/work/$3"
+                return 0
+              }
+
+              if build_gen /work/gen2 gen3.o gen3; then
+                if build_gen /work/gen3 gen4.o gen4; then
+                  for g in gen2 gen3 gen4; do
+                    printf '    %-5s %9s bytes  %s\n' "$g" \
+                      "$(wc -c < /work/$g)" "$(sha256sum /work/$g | cut -c1-16)"
+                  done
+                  if cmp -s gen3.o gen4.o; then
+                    echo "    FIXPOINT: gen3 and gen4 compile tcc.c to identical objects"
                   else
-                    echo "    NO FIXPOINT: gen2 and gen3 differ"
+                    echo "    NO FIXPOINT: gen3.o and gen4.o differ"
                   fi
-                else
-                  echo "    step C: gen3 will not link, rc=$l3rc"
-                  grep -av '^[A-Z][0-9]*$' lk3.err | head -4 | sed 's/^/      /'
+                  if cmp -s gen3 gen4; then
+                    echo "    FIXPOINT: the gen3 and gen4 BINARIES are byte-identical"
+                    echo "    self-compilation: steps 1-5 complete"
+                  else
+                    echo "    gen3 and gen4 binaries differ"
+                  fi
+                  # AND THE ONE-GENERATION DELTA, NAMED. gen2 is expected to
+                  # differ from gen3 -- see the note above -- so it is
+                  # reported rather than failed.
+                  if cmp -s gen2.o gen3.o; then
+                    echo "    gen2.o == gen3.o as well (gen1 emitted its float constants)"
+                  else
+                    echo "    gen2.o vs gen3.o: $(cmp -l gen2.o gen3.o | wc -l) bytes" \
+                         "-- gen1's float constants, healed at generation 2"
+                  fi
+                  # DOES THE LAST ONE STILL WORK. A fixpoint between two
+                  # broken compilers is still a fixpoint, so this asks.
+                  printf 'int main(void) { return 7; }\n' > s4.c
+                  set +e
+                  timeout 60 /work/gen4 -B/in/tcc-src -I"$SH" -nostdlib -static \
+                              -o s4.bin s4.c "$SH/crt.c" $LIBTCC1 2>/dev/null
+                  set -e
+                  if [ -s s4.bin ]; then
+                    chmod 0755 s4.bin
+                    set +e; ./s4.bin; s4rc=$?; set -e
+                    echo "    gen4 compiles and runs a program: rc=$s4rc (want 7)"
+                  else
+                    echo "    gen4 could not compile a trivial program"
+                  fi
                 fi
               fi
             fi

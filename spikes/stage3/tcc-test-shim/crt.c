@@ -525,17 +525,53 @@ void abort(void) { flushit(); sys3(93, 134, 0, 0); }
  * being tested. If a program ever exhausts this it gets a NULL rather than
  * silent corruption.
  */
-static char heap[1048576];
-static unsigned long heap_used;
+/* brk, NOT A FIXED ARRAY, AND A SIZE HEADER SO realloc CAN BE RIGHT.
+ *
+ * This was `static char heap[1048576]` with a bump pointer, which is ample
+ * for a tests2 program and nowhere near enough for a compiler: gen2 -- tcc
+ * linked against this runtime -- answered `--version` and then died with
+ * "memory full" on the first file it was asked to compile. Growing the array
+ * would work and would also put the number in the wrong place; brk asks the
+ * kernel for what is needed and costs nothing when little is needed.
+ *
+ * THE HEADER IS WHAT MAKES realloc CORRECT. The old realloc copied the NEW
+ * size out of the old block, reading past its end whenever a block grew --
+ * harmless inside one big static array, and not harmless against a brk region
+ * whose end is a real boundary. Sixteen bytes keeps every returned pointer
+ * 16-aligned, which the old code was careful about too.
+ *
+ * free STAYS A NO-OP. These programs are single-shot; a free list would be
+ * more code than the thing being tested, and the note that used to be here
+ * said so. What changed is only where the memory comes from. */
+static long heap_cur;
+static long heap_end;
 
 void *malloc(unsigned long n)
 {
-    char *r;
+    long r;
+    long want;
+    long got;
+
     n = (n + 15) & ~15UL;              /* keep every block 16-aligned */
-    if (heap_used + n > 1048576) return 0;
-    r = heap + heap_used;
-    heap_used = heap_used + n;
-    return (void *)r;
+    n = n + 16;                        /* room for the size header */
+
+    if (heap_cur == 0) {
+        heap_cur = sys3(214, 0, 0, 0); /* brk(0) -- where the break is now */
+        heap_end = heap_cur;
+        if (heap_cur <= 0) return 0;
+    }
+    if (heap_cur + (long)n > heap_end) {
+        /* ASK FOR A MEGABYTE MORE THAN NEEDED. One syscall per megabyte
+         * rather than one per allocation. */
+        want = heap_cur + (long)n + 1048576;
+        got = sys3(214, want, 0, 0);
+        if (got < want) return 0;
+        heap_end = got;
+    }
+    r = heap_cur;
+    heap_cur = heap_cur + (long)n;
+    *(unsigned long *)r = n - 16;      /* the usable size */
+    return (void *)(r + 16);
 }
 
 void *calloc(unsigned long a, unsigned long b)
@@ -551,8 +587,14 @@ void free(void *p) { }
 void *realloc(void *p, unsigned long n)
 {
     void *q;
+    unsigned long old;
     q = malloc(n);
-    if (q && p) memcpy(q, p, n);
+    if (!q) return 0;
+    if (p) {
+        old = *(unsigned long *)((char *)p - 16);
+        if (old > n) old = n;          /* never read past the old block */
+        memcpy(q, p, old);
+    }
     return q;
 }
 
