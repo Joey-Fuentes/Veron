@@ -30,6 +30,7 @@
  * safe there and only there.
  */
 #include <stdarg.h>
+#include <stdio.h>
 
 static long sys3(long n, long a, long b, long c)
 {
@@ -38,6 +39,45 @@ static long sys3(long n, long a, long b, long c)
     register long x1 __asm__("x1") = b;
     register long x2 __asm__("x2") = c;
     __asm__ __volatile__("svc #0" : "+r"(x0) : "r"(x8), "r"(x1), "r"(x2) : "memory");
+    return x0;
+}
+
+/* FOUR AND SIX ARGUMENTS, BECAUSE openat AND mmap NEED THEM.
+ *
+ * There is no open(2) on aarch64 -- the syscall table has openat(56) only, and
+ * a path that does not start with / is resolved against the dirfd. AT_FDCWD is
+ * -100, which makes it behave as open(2) did. mmap(222) takes six.
+ *
+ * SAME SHAPE AS sys3, WHICH IS THE POINT. The register-asm form is what musl
+ * uses and what runtime-ladder.sh rung C already verifies mc-tcc honours: a
+ * compiler that accepts the syntax and then allocates a different register
+ * makes the wrong syscall silently, so this is not a place to write something
+ * new when something proven is available.
+ */
+static long sys4(long n, long a, long b, long c, long d)
+{
+    register long x8 __asm__("x8") = n;
+    register long x0 __asm__("x0") = a;
+    register long x1 __asm__("x1") = b;
+    register long x2 __asm__("x2") = c;
+    register long x3 __asm__("x3") = d;
+    __asm__ __volatile__("svc #0" : "+r"(x0)
+                         : "r"(x8), "r"(x1), "r"(x2), "r"(x3) : "memory");
+    return x0;
+}
+
+static long sys6(long n, long a, long b, long c, long d, long e, long f)
+{
+    register long x8 __asm__("x8") = n;
+    register long x0 __asm__("x0") = a;
+    register long x1 __asm__("x1") = b;
+    register long x2 __asm__("x2") = c;
+    register long x3 __asm__("x3") = d;
+    register long x4 __asm__("x4") = e;
+    register long x5 __asm__("x5") = f;
+    __asm__ __volatile__("svc #0" : "+r"(x0)
+                         : "r"(x8), "r"(x1), "r"(x2), "r"(x3), "r"(x4), "r"(x5)
+                         : "memory");
     return x0;
 }
 
@@ -625,6 +665,7 @@ __asm__(".global _start\n"
  */
 int main();
 typedef int (*shim_mainfn)();
+static void _shim_stdio_init(void);
 
 void _start_c(long *sp)
 {
@@ -642,6 +683,11 @@ void _start_c(long *sp)
     while (argv[i]) i = i + 1;
     envp = argv + i + 1;
 
+    /* BEFORE THE CONSTRUCTORS, because a constructor may print. stdin,
+     * stdout and stderr are pointers into a static table rather than
+     * compile-time constants, so something has to set them and it has to be
+     * the first thing that runs. */
+    _shim_stdio_init();
     m = (shim_mainfn)main;
     run_ctors(argc, argv, envp);
     r = m(argc, argv, envp);
@@ -650,4 +696,261 @@ void _start_c(long *sp)
      * them but the ones that call exit() explicitly, and 108_constructor is
      * one of the former. exit() runs them once and flushes. */
     exit(r);
+}
+
+/* ===================================================================
+ * FILE I/O, mmap, AND fprintf
+ *
+ * Added for four tests2 programs that were failing on the shim rather than on
+ * the compiler: 40_stdio (opens a file and reads it back four ways),
+ * 42_function_pointer (needs the TYPE FILE and a real fprintf),
+ * 97_utf8_string_literal (wchar_t) and 119_random_stuff (mmap).
+ *
+ * aarch64 SYSCALL NUMBERS, from the kernel's asm-generic table:
+ *     unlinkat 35   openat 56   close 57   lseek 62   read 63   write 64
+ *     munmap 215    mmap 222    exit 93
+ * There is no open(2) and no unlink(2) on this architecture; both are the *at
+ * forms with AT_FDCWD, which is -100.
+ * =================================================================== */
+
+#define SHIM_AT_FDCWD (-100)
+#define SHIM_O_RDONLY 0
+#define SHIM_O_WRONLY 1
+#define SHIM_O_RDWR   2
+#define SHIM_O_CREAT  0100
+#define SHIM_O_TRUNC  01000
+#define SHIM_O_APPEND 02000
+
+/* EIGHT SLOTS AND NO malloc. The heap here is a bump allocator that never
+ * reclaims, so handing FILEs out of it would make a program that opens and
+ * closes in a loop run out of memory for a reason that has nothing to do with
+ * the compiler. 40_stdio holds one open at a time and opens four times. */
+static struct _shim_file _shim_fslots[8];
+static struct _shim_file _shim_std[3];
+
+FILE *stdin;
+FILE *stdout;
+FILE *stderr;
+
+static void _shim_stdio_init(void)
+{
+    _shim_std[0].fd = 0; _shim_std[0].used = 1;
+    _shim_std[1].fd = 1; _shim_std[1].used = 1;
+    _shim_std[2].fd = 2; _shim_std[2].used = 1;
+    stdin  = &_shim_std[0];
+    stdout = &_shim_std[1];
+    stderr = &_shim_std[2];
+}
+
+FILE *fopen(const char *path, const char *mode)
+{
+    int i;
+    int flags;
+    long fd;
+    struct _shim_file *f;
+
+    if (!mode) return 0;
+    /* THE MODE STRING IS READ FOR ITS FIRST LETTER AND A '+', which is every
+     * shape tests2 uses: "w", "r", "wb", "rb". Anything else is refused rather
+     * than guessed -- a silently wrong open mode would make a test fail as
+     * though the compiler had produced wrong code. */
+    if (mode[0] == 'r') flags = SHIM_O_RDONLY;
+    else if (mode[0] == 'w') flags = SHIM_O_WRONLY | SHIM_O_CREAT | SHIM_O_TRUNC;
+    else if (mode[0] == 'a') flags = SHIM_O_WRONLY | SHIM_O_CREAT | SHIM_O_APPEND;
+    else return 0;
+    if (mode[1] == '+' || (mode[1] != 0 && mode[2] == '+'))
+        flags = (flags & ~(SHIM_O_RDONLY | SHIM_O_WRONLY)) | SHIM_O_RDWR;
+
+    f = 0;
+    i = 0;
+    while (i < 8) { if (!_shim_fslots[i].used) { f = &_shim_fslots[i]; break; } i = i + 1; }
+    if (!f) return 0;
+
+    fd = sys4(56, SHIM_AT_FDCWD, (long)path, (long)flags, 0666);
+    if (fd < 0) return 0;
+
+    f->fd = (int)fd;
+    f->eof = 0;
+    f->err = 0;
+    f->used = 1;
+    return f;
+}
+
+int fclose(FILE *f)
+{
+    if (!f || !f->used) return EOF;
+    flushit();
+    sys3(57, f->fd, 0, 0);
+    f->used = 0;
+    return 0;
+}
+
+/* STDOUT GOES THROUGH obuf, EVERYTHING ELSE STRAIGHT TO THE DESCRIPTOR.
+ * printf and puts buffer into obuf and flush on newline; a write to fd 1 that
+ * bypassed that would interleave wrongly with them, and 40_stdio's expected
+ * output is an exact interleaving of printf calls. */
+static long _shim_wr(struct _shim_file *f, const char *p, unsigned long n)
+{
+    if (f->fd == 1) {
+        unsigned long i;
+        i = 0;
+        while (i < n) { emit(p[i]); i = i + 1; }
+        flushit();
+        return (long)n;
+    }
+    return sys3(64, f->fd, (long)p, (long)n);
+}
+
+unsigned long fwrite(const void *p, unsigned long sz, unsigned long n, FILE *f)
+{
+    long r;
+    if (!f || !f->used || sz == 0) return 0;
+    r = _shim_wr(f, (const char *)p, sz * n);
+    if (r < 0) { f->err = 1; return 0; }
+    return ((unsigned long)r) / sz;
+}
+
+unsigned long fread(void *p, unsigned long sz, unsigned long n, FILE *f)
+{
+    unsigned long want;
+    unsigned long got;
+    long r;
+    char *b;
+
+    if (!f || !f->used || sz == 0) return 0;
+    b = (char *)p;
+    want = sz * n;
+    got = 0;
+    /* A SHORT read(2) IS NOT end-of-file. Looping until the kernel returns 0
+     * is what makes `fread(buf, 1, 6, f) != 6` mean what the test thinks it
+     * means. */
+    while (got < want) {
+        r = sys3(63, f->fd, (long)(b + got), (long)(want - got));
+        if (r < 0) { f->err = 1; break; }
+        if (r == 0) { f->eof = 1; break; }
+        got = got + (unsigned long)r;
+    }
+    return got / sz;
+}
+
+int fgetc(FILE *f)
+{
+    char c;
+    long r;
+    if (!f || !f->used) return EOF;
+    r = sys3(63, f->fd, (long)&c, 1);
+    if (r < 0) { f->err = 1; return EOF; }
+    if (r == 0) { f->eof = 1; return EOF; }
+    /* UNSIGNED, AND THAT MATTERS. A byte of 0xFF returned as a signed char is
+     * -1, which is EOF, and the read loop in 40_stdio would stop early on any
+     * high byte. Every real getc returns 0-255. */
+    return (int)(unsigned char)c;
+}
+
+int getc(FILE *f) { return fgetc(f); }
+
+char *fgets(char *s, int n, FILE *f)
+{
+    int i;
+    int c;
+    if (!s || n <= 0) return 0;
+    i = 0;
+    while (i < n - 1) {
+        c = fgetc(f);
+        if (c == EOF) break;
+        s[i] = (char)c;
+        i = i + 1;
+        if (c == '\n') break;
+    }
+    s[i] = 0;
+    if (i == 0) return 0;
+    return s;
+}
+
+int fputc(int c, FILE *f)
+{
+    char b;
+    b = (char)c;
+    if (_shim_wr(f, &b, 1) != 1) return EOF;
+    return c;
+}
+
+int fputs(const char *s, FILE *f)
+{
+    unsigned long n;
+    n = strlen(s);
+    if (_shim_wr(f, s, n) < 0) return EOF;
+    return 0;
+}
+
+int feof(FILE *f)   { if (!f) return 0; return f->eof; }
+int ferror(FILE *f) { if (!f) return 0; return f->err; }
+int fflush(FILE *f) { flushit(); return 0; }
+
+int remove(const char *path) { return (int)sys3(35, SHIM_AT_FDCWD, (long)path, 0); }
+
+/* fprintf: A THIRD COPY OF THE DISPATCH, AND THE REASON IS RECORDED.
+ *
+ * printf and sprintf already carry one each, because collapsing them needs a
+ * va_list passed to a helper and this file's header says why that has not been
+ * done. This is the third and it is deliberately the SMALLEST of the three:
+ * 42_function_pointer is the only tests2 program that calls fprintf, and it
+ * calls it once, with "%d\n". Everything outside that reaches shim_gap rather
+ * than being guessed, so a program that needs more fails loudly HERE and is
+ * not mistaken for a codegen fault.
+ *
+ * COLLAPSING ALL THREE is worth doing once a va_list pass-through is measured
+ * under this compiler. Doing it now would put printf -- the thing 84 passing
+ * tests depend on -- behind an unmeasured mechanism, to save thirty lines.
+ */
+int fprintf(FILE *f, const char *fmt, ...)
+{
+    va_list ap;
+    const char *p;
+    char nb[32];
+    int n;
+
+    if (!f || !f->used) return -1;
+    n = 0;
+    va_start(ap, fmt);
+    p = fmt;
+    while (*p) {
+        if (*p != '%') { fputc(*p, f); n = n + 1; p = p + 1; continue; }
+        p = p + 1;
+        if (*p == 'd' || *p == 'i') {
+            sprintf(nb, "%d", va_arg(ap, int));
+            fputs(nb, f); n = n + (int)strlen(nb);
+        } else if (*p == 'u') {
+            sprintf(nb, "%u", va_arg(ap, unsigned int));
+            fputs(nb, f); n = n + (int)strlen(nb);
+        } else if (*p == 'x') {
+            sprintf(nb, "%x", va_arg(ap, unsigned int));
+            fputs(nb, f); n = n + (int)strlen(nb);
+        } else if (*p == 'c') {
+            fputc(va_arg(ap, int), f); n = n + 1;
+        } else if (*p == 's') {
+            const char *s;
+            s = va_arg(ap, char *);
+            fputs(s, f); n = n + (int)strlen(s);
+        } else if (*p == '%') {
+            fputc('%', f); n = n + 1;
+        } else {
+            va_end(ap);
+            shim_gap("fprintf conversion");
+        }
+        p = p + 1;
+    }
+    va_end(ap);
+    return n;
+}
+
+void *mmap(void *addr, unsigned long len, int prot, int flags, int fd, long off)
+{
+    return (void *)sys6(222, (long)addr, (long)len, (long)prot, (long)flags,
+                        (long)fd, off);
+}
+
+int munmap(void *addr, unsigned long len)
+{
+    return (int)sys3(215, (long)addr, (long)len, 0);
 }

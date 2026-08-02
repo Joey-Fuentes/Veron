@@ -1,0 +1,95 @@
+realloc returns the SAME block when the one it has is already big enough.
+
+WHAT THIS IS ACTUALLY TESTING. Patch 0011's third round ends with a named
+hypothesis and no way to choose between it and its alternative:
+
+    "a pointer from section_ptr_add held across a later section_realloc would
+     write through a stale base, which is the classic shape"
+
+The reason that shape is worth suspecting HERE and not in tcc generally is an
+asymmetry between this allocator and glibc's, and it is total:
+
+    glibc realloc     grows IN PLACE whenever the chunk has room, which for a
+                      doubling growth pattern is most of the time
+    M2libc realloc    ALWAYS allocates a new block, copies, and frees the old
+                      -- unconditionally, on every call, even a SHRINK
+
+So a caller that holds a pointer across a realloc is correct-by-luck under
+glibc and wrong on every single call under M2libc. That is exactly the
+difference between the gcc-built control, which passes tcc's whole suite, and
+mc-tcc, which corrupts its heap -- from the SAME SOURCE. Nothing else in the
+comparison differs that way.
+
+WHY THIS IS A FIX AND NOT A MASK. M2libc rounds every allocation up to a power
+of two at or above 256:
+
+    size_t used = 256;
+    while(used < size) used = used << 1;
+
+so a node's block is nearly always larger than what was asked for, and a
+`realloc` that grows from 300 to 400 bytes is asking for room the block
+ALREADY HAS. Returning it is what every production allocator does, it is
+permitted by ISO C, and it is what the node's own `size` field is for. The
+current code allocates 512 bytes, copies 300, and frees 512 -- for nothing.
+
+It also costs: tcc's `tal_realloc_impl` and `cstr_realloc` both grow by
+doubling, so every CString and every section in the compile currently pays a
+full copy per growth, and every copy is a chance for the fault above to fire.
+
+WHAT IT DOES NOT DO. It does not shrink the block. Nothing here needs the
+memory back and a shrink that reported a smaller size would then have to
+handle a later grow across the old boundary, which is more bookkeeping than
+this allocator has anywhere else. A shrink returns the same pointer with the
+size unchanged, which is exactly what a rounding allocator does anyway.
+
+READ THE NEXT RUN EITHER WAY, AND THAT IS THE POINT OF LANDING IT:
+
+  * if the corruption GOES AWAY, the fault was a pointer held across a
+    realloc, 0011's hypothesis is confirmed, and the remaining work is to find
+    and fix that caller in tcc rather than to keep the allocator quiet
+  * if the corruption REMAINS, a stale realloc pointer is ruled out -- the
+    class cannot fire any more -- and the node-loss detector's bracket is
+    still there to name what does
+
+Neither outcome is ambiguous, which is more than the current state offers.
+
+--- a/stdlib.c
++++ b/stdlib.c
+@@ -534,6 +534,37 @@ void* realloc(void* ptr, unsigned size)
+ 		return NULL;
+ 	}
+ 
++	/* IF THE BLOCK WE ALREADY HAVE IS BIG ENOUGH, KEEP IT.
++	 *
++	 * Every allocation here is rounded up to a power of two at or above
++	 * 256, so the block behind `ptr` is usually much larger than what was
++	 * asked for and a growth within that headroom needs no move at all.
++	 *
++	 * THIS HAS TO HAPPEN BEFORE malloc(), not after. Checking it later
++	 * would allocate the replacement block first and then leak it on
++	 * every in-place realloc, which on tcc's doubling growth is most of
++	 * them.
++	 *
++	 * Moving unconditionally is what made a caller holding a pointer
++	 * across a realloc fail on EVERY call under this allocator while the
++	 * same source is correct under glibc, which grows in place. See the
++	 * patch preamble.
++	 */
++	if(NULL != ptr)
++	{
++		struct _malloc_node* have = _allocated_list;
++		while(NULL != have)
++		{
++			if(have->block == ptr)
++			{
++				if(have->size >= size) return ptr;
++				break;
++			}
++
++			have = have->next;
++		}
++	}
++
+ 	void* new_alloc = malloc(size);
+ 
+ 	if(ptr == NULL || new_alloc == NULL)
