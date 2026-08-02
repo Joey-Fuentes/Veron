@@ -84,15 +84,26 @@ onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
 # succeeding, and the real ld message was never logged.
 whyfail() {        # $1 = logfile
     [ -s "$1" ] || { say "      (no $1)"; return; }
-    _n=$(grep -nE "error:|undefined reference|cannot find|No such file|Error [0-9]" "$1" 2>/dev/null | head -1 | cut -d: -f1)
+    # ANCHOR PATTERNS, NARROWED. This used to include "No such file" and
+    # "cannot find", both of which fire constantly in healthy build output --
+    # glibc's own build probes /sys/kernel/mm/transparent_hugepage/enabled
+    # with grep and gets "No such file or directory" every time. B2 anchored
+    # on that, printed the window around a harmless line, and the real
+    # failure never reached the log.
+    _n=$(grep -nE "error:|Error [0-9]|\*\*\* |undefined reference" "$1" 2>/dev/null | head -1 | cut -d: -f1)
     if [ -n "$_n" ]; then
         _from=1; [ "$_n" -gt 30 ] && _from=$(( _n - 30 ))
-        say "      --- $1, around the first error (line $_n) ---"
+        say "      --- $1, around the first error (line $_n of $(wc -l < "$1")) ---"
         sed -n "${_from},$(( _n + 8 ))p" "$1" | sed 's/^/      /'
     else
-        say "      --- $1, last 25 lines (nothing matched an error pattern) ---"
-        tail -25 "$1" | sed 's/^/      /'
+        say "      --- $1: no line matched an error pattern ---"
     fi
+    # AND THE TAIL, ALWAYS. Under `make -j` the failing recipe is usually the
+    # last thing written, and an anchor that guesses wrong has now cost three
+    # rounds. Two windows cannot both miss.
+    say "      --- $1, last 25 lines ---"
+    tail -25 "$1" | sed 's/^/      /'
+    say "      (full log uploaded as the buildlogs artifact)"
 }
 
 ARM=${ARM:-unnamed}

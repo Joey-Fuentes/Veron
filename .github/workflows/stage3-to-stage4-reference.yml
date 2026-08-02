@@ -1239,6 +1239,53 @@ jobs:
       # sysroot is worse than no cache: the failure lands somewhere else
       # entirely and looks like a compiler bug. rungs.sh writes the marker only
       # after rung 14 reports ok.
+      # EVERY BUILD LOG, KEPT, BECAUSE THE ANSWER HAS BEEN ON DISK EACH TIME.
+      #
+      # Each rung writes c.log, b.log and i.log beside its build tree and then
+      # prints a WINDOW of one of them on failure. Three rounds have now been
+      # spent because the window missed: rung 16 tailed a parallel build and
+      # caught gmp SUCCEEDING while gcc's ld error sat at b.log:3831, and B2's
+      # glibc failure anchored on a benign "No such file or directory" from a
+      # transparent_hugepage probe and cut off eight lines later.
+      #
+      # In all three the file with the answer existed on the runner for the
+      # rest of the job and was destroyed unread. /build is bound from
+      # $BOX/pb and /work is inside $BOX, so both survive the sandbox; only
+      # nothing was collecting them.
+      #
+      # This does not put a byte into any artifact -- these are logs, not
+      # inputs, and no rung reads them back. It is the cheapest possible
+      # insurance against a diagnostic that guesses wrong.
+      - name: 'Collect every build log'
+        if: always()
+        run: |
+          set -u
+          mkdir -p buildlogs
+          # Phase A builds in $BOX/work/b-*; phase B in $BOX/pb.
+          for src in "$BOX/work" "$BOX/pb"; do
+            [ -d "$src" ] || continue
+            find "$src" -name '*.log' -type f 2>/dev/null | while read -r f; do
+              rel=$(printf '%s' "$f" | sed "s|^$BOX/||; s|/|__|g")
+              # tail rather than head: a build log's failure is at the END,
+              # and gcc's can reach tens of megabytes.
+              tail -c 20000000 "$f" > "buildlogs/$rel" 2>/dev/null || true
+            done
+          done
+          n=$(ls buildlogs 2>/dev/null | wc -l)
+          echo "  collected $n build logs"
+          if [ "$n" -gt 0 ]; then
+            du -sh buildlogs | sed 's/^/    /'
+            ls -S buildlogs | head -10 | sed 's/^/    /'
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: buildlogs-reference
+          path: buildlogs/
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: 'Publish the sysroot for side experiments'
         if: always()
         run: |

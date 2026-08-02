@@ -217,15 +217,26 @@ onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
 # is where a compiler or linker puts the message that names the cause.
 whyfail() {        # $1 = logfile
     [ -s "$1" ] || { say "      (no $1)"; return; }
-    _n=$(grep -nE "error:|undefined reference|cannot find|No such file|Error [0-9]" "$1" 2>/dev/null | head -1 | cut -d: -f1)
+    # ANCHOR PATTERNS, NARROWED. This used to include "No such file" and
+    # "cannot find", both of which fire constantly in healthy build output --
+    # glibc's own build probes /sys/kernel/mm/transparent_hugepage/enabled
+    # with grep and gets "No such file or directory" every time. B2 anchored
+    # on that, printed the window around a harmless line, and the real
+    # failure never reached the log.
+    _n=$(grep -nE "error:|Error [0-9]|\*\*\* |undefined reference" "$1" 2>/dev/null | head -1 | cut -d: -f1)
     if [ -n "$_n" ]; then
         _from=1; [ "$_n" -gt 30 ] && _from=$(( _n - 30 ))
-        say "      --- $1, around the first error (line $_n) ---"
+        say "      --- $1, around the first error (line $_n of $(wc -l < "$1")) ---"
         sed -n "${_from},$(( _n + 8 ))p" "$1" | sed 's/^/      /'
     else
-        say "      --- $1, last 25 lines (nothing matched an error pattern) ---"
-        tail -25 "$1" | sed 's/^/      /'
+        say "      --- $1: no line matched an error pattern ---"
     fi
+    # AND THE TAIL, ALWAYS. Under `make -j` the failing recipe is usually the
+    # last thing written, and an anchor that guesses wrong has now cost three
+    # rounds. Two windows cannot both miss.
+    say "      --- $1, last 25 lines ---"
+    tail -25 "$1" | sed 's/^/      /'
+    say "      (full log uploaded as the buildlogs artifact)"
 }
 
 R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip; R7=skip; R8=skip; R9=skip; R10=skip; R11=skip; R115=skip; R117=skip; R12=skip; R13=skip; R14=skip; R15=skip; R16=skip; R17=skip; R18=skip; R19=skip; R20=skip
