@@ -100,14 +100,22 @@ int main(void)
 	c1.t = T_PTR; c1.ref = &sym_a;
 	c2.t = T_PTR; c2.ref = &sym_b;
 
-	/* 1 -- SELF-CONSISTENT, NOT SIXTEEN. micro-c does not align struct
-	 * members, so `int t` followed by a pointer is twelve bytes here and
-	 * sixteen under gcc -- and that difference is declared, not a defect.
-	 * Asserting the number would fire on every run and bury the probes
-	 * that mean something. What must hold either way is that sizeof
-	 * agrees with the stride the compiler indexes at: a struct copied at
-	 * one width and indexed at another is the failure this case is
-	 * looking for, and that is measurable without knowing the number. */
+	/* 1 -- SELF-CONSISTENT, AND THE LAYOUT ITSELF IS CASE 115's JOB.
+	 *
+	 * `int t` followed by a pointer is TWELVE bytes under micro-c and
+	 * sixteen under gcc: it inserts no alignment padding, so `ref` sits at
+	 * offset 4. That is measured, not assumed -- EXPERIMENT-zzw records
+	 * corpus row 122 returning 12 where the corpus expects 24, which is
+	 * this shape exactly.
+	 *
+	 * Asserting 16 here would fire on every run and bury the probes that
+	 * mean something; asserting nothing would be a test written so it
+	 * cannot fail. So the layout is asserted in 115, on its own, where a
+	 * failure says "every mixed-width struct in tcc is suspect" rather
+	 * than being lost inside a case about conditionals. What 113 needs is
+	 * only that sizeof agrees with the stride the compiler indexes at --
+	 * a struct copied at one width and indexed at another is the failure
+	 * this case is looking for, and that is measurable either way. */
 	struct CType arr[4];
 	unsigned long e0;
 	unsigned long e1;
