@@ -1,0 +1,128 @@
+Address_of does not escape an argument list.
+
+MEASURED, and the two lines differ only in the ARGUMENT:
+
+    struct CType* give(struct Sym* s) { return &s->type; }
+
+    give(sp)->t       42          correct
+    give(&sym)->t     <address>   the offset is added, the load is not
+
+unary_expr sets Address_of when an expression begins with `&` and clears it
+when it does not. An argument list is parsed in the middle of the postfix
+chain, so an argument like `&sym` leaves the flag TRUE, and postfix_expr_arrow
+then reads it:
+
+    ... && (TRUE != Address_of || chain_continues)
+
+and skips the load -- because a `&` at the end of a chain wants the address
+rather than the value. The `&` belonged to the argument and was applied to the
+member.
+
+WHAT IT COST, AND WHY IT SURVIVED. tcc writes
+
+    #define pointed_type(t)  (&(t)->ref->type)
+    ...
+    ((pointed_type(&p->type)->t & VT_BTYPE) == VT_VOID) &&
+    0 == (pointed_type(&p->type)->t & (VT_CONSTANT | VT_VOLATILE))
+                                                       tccgen.c:2807
+
+-- an argument beginning with `&`, then `->t` on the result. That is the THIRD
+clause of is_null_pointer, the one that recognises `(void*)0`, and it was
+reading a pointer where VT_VOID belongs. So mc-tcc accepted
+
+    (c ? 0 : s)->i          bare 0 -- caught by the FIRST clause
+
+and rejected
+
+    (c ? (void*)0 : s)->i   `error: struct or union expected`
+
+which is tests2/33_ternary_op.c:37 and tests/tcctest.c:4082 -- the file test1,
+test2 and test3 all begin with. It never faults: pointed_type is used
+throughout tccgen for every pointer comparison and every type merge, and each
+use quietly answers with an address instead of a type flag, far from where it
+was asked.
+
+HOW IT WAS FOUND. Not by reduction -- every hand-written model of the failing
+construct passed, including the anonymous-union layout of Sym, pointed_type as
+a real function, and the nested ternary inside the && chain. It took a probe
+compiled INTO mc-tcc, printing that expression as 6897904 where 0 belongs, and
+then printing 0 when the same expression was rewritten through a local.
+
+SAME BOUNDARY AS THE COUNT ABOVE IT, and for the same reason. function_call
+already saves and clears num_dereference_after_postfix across the argument
+list, with a comment explaining that an argument list is a separate expression
+context and is the only region that must not see the caller's pending state.
+Address_of is the same hazard through the same door and gets the same
+treatment. Saving the current value rather than restoring a constant keeps
+`&f(x)->m` working, where the caller really did ask for an address.
+
+MEASURED AFTER, locally:
+
+    difftest amd64      97 pass, 0 fail     case 117 goes from KNOWN GAP to pass
+    difftest aarch64    99 pass, 0 fail
+    corpus  aarch64     419 of 426          unchanged
+    33_ternary_op       compiles and RUNS, output matches tcc's .expect
+    tcctest.c           COMPILES -- 4082 is gone. It now reaches the LINKER and
+                        stops on __extendsftf2, strtof and __extenddftf2, which
+                        are libtcc1's soft-float family and a libc symbol: the
+                        two buckets the gen2 census already names, not a parse
+                        or codegen gap.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -564,6 +564,47 @@ void function_call(struct token_list* s, int is_function_pointer)
+ 	int pending_deref = num_dereference_after_postfix;
+ 	num_dereference_after_postfix = 0;
+ 
++	/* AND Address_of IS THE SAME HAZARD, THROUGH THE SAME DOOR.
++	 *
++	 * unary_expr sets Address_of when it sees a leading `&` and clears it
++	 * when it does not -- so an ARGUMENT that begins with `&` leaves the
++	 * flag TRUE, and nothing between here and the postfix walk clears it.
++	 * postfix_expr_arrow then reads it:
++	 *
++	 *     ... && (TRUE != Address_of || chain_continues)
++	 *
++	 * and SKIPS THE LOAD, because a `&` at the end of a chain wants the
++	 * address rather than the value. Measured, and the two lines differ
++	 * only in the argument:
++	 *
++	 *     give(sp)->t     42          correct
++	 *     give(&sym)->t   <address>   the offset is added, the load is not
++	 *
++	 * WHAT IT COST. tcc writes
++	 *
++	 *     #define pointed_type(t) (&(t)->ref->type)
++	 *     ... (pointed_type(&p->type)->t & VT_BTYPE) == VT_VOID ...
++	 *                                               tccgen.c:2807
++	 *
++	 * -- an argument that starts with `&`, then `->t` on the result. That
++	 * expression is the THIRD clause of is_null_pointer, the one that
++	 * recognises `(void*)0`, and it was reading an address where VT_VOID
++	 * belongs. So mc-tcc accepted `(c ? 0 : s)->i` and rejected
++	 * `(c ? (void*)0 : s)->i` -- which is tests2/33_ternary_op.c:37 and
++	 * tcctest.c:4082, the file test1, test2 and test3 all begin with.
++	 *
++	 * It never faults. pointed_type is used throughout tccgen for every
++	 * pointer comparison and every type merge, and each use quietly answers
++	 * with a pointer value instead of a type flag.
++	 *
++	 * SAME BOUNDARY AS THE COUNT ABOVE, and for the same reason: the
++	 * argument list is a separate expression context, and it is the only
++	 * region that must not see the caller's flag. Saving the current value
++	 * rather than restoring a constant keeps `&f(x)->m` working, where the
++	 * caller really did ask for an address. */
++	int pending_address_of = Address_of;
++	Address_of = FALSE;
++
+ 	/* TAKEN INTO A LOCAL BEFORE THE ARGUMENTS ARE PARSED. An argument may be
+ 	 * `*other(3)`, which parks its own designator through the same global, so
+ 	 * reading it after the list would take the innermost call's return type
+@@ -586,6 +627,7 @@ void function_call(struct token_list* s, int is_function_pointer)
+ 	}
+ 
+ 	num_dereference_after_postfix = pending_deref;
++	Address_of = pending_address_of;
+ 
+ 	require_match("ERROR in process_expression_list\nNo ) was found\n", ")");
+ 
