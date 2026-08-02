@@ -1,5 +1,9 @@
 /* is_null_pointer, tccgen.c:2807 -- THE TEST THAT DECIDES THE MERGE.
  *
+ * WIDE CONSTANTS -- 0x1234567890abcdef and 0xffffffff00000000 do not fit an
+ * immediate field, so this case is expected to move across EXPERIMENT-zzb.
+ * See imm-identity.sh.
+ *
  * Case 113 covers what combine_types does once it has decided. This covers the
  * deciding. If this predicate answers wrongly for a bare `0`, the conditional
  * `(cond ? 0 : s)` never reaches the null-pointer branch at all and the merge

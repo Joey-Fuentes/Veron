@@ -1,5 +1,8 @@
 /* AN EIGHT-BYTE MEMBER AT AN OFFSET THAT IS NOT A MULTIPLE OF EIGHT.
  *
+ * WIDE CONSTANTS -- 0x1122334455667788 does not fit an immediate field, so
+ * this case is expected to move across EXPERIMENT-zzb. See imm-identity.sh.
+ *
  * THIS CASE EXISTS BECAUSE A PREVIOUS ONE HEDGED. Case 113 checks the CType
  * copy without asserting CType's size, on the grounds that micro-c's layout
  * differs from gcc's by design. That is true and it is also exactly the kind
