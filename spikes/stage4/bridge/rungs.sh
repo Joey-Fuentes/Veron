@@ -1143,6 +1143,18 @@ EOF
     _r3rung "print then _Exit(0)" '    printf("p\n"); _Exit(0);'
     _r3rung "print then return 0" '    printf("p\n"); return 0;'
     _r3rung "malloc/free, _Exit"  '    void *q = malloc(32); free(q); _Exit(0);'
+    # AND IF THE HEAP IS THE ONE THAT FAILS, WHICH HALF. musl's allocator is
+    # mallocng: a size-class table, a bitmap per group and a meta area reached
+    # through it. malloc alone touches the group machinery; free walks back to
+    # the meta and updates the bitmap, so the two fail for different reasons
+    # and want different reductions. Printing between them also says whether
+    # the pointer that came back is usable at all.
+    _r3rung "malloc only, _Exit"  '    void *q = malloc(32); if (!q) return 9; _Exit(0);'
+    _r3rung "malloc + write"      '    char *q = malloc(32); if (!q) return 9; q[0] = 1; q[31] = 2; _Exit(q[0] + q[31] - 3);'
+    _r3rung "malloc then free"    '    void *q = malloc(32); free(q); return 0;'
+    _r3rung "two mallocs, no free" '    void *a = malloc(32); void *b = malloc(64); if (!a || !b) return 9; _Exit(0);'
+    _r3rung "malloc large, _Exit" '    void *q = malloc(200000); if (!q) return 9; _Exit(0);'
+    _r3rung "calloc/free"         '    void *q = calloc(4, 8); free(q); _Exit(0);'
     rm -f r3n.c r3n.bin r3n.out
   fi
 
