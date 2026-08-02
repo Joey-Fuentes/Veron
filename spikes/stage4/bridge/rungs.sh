@@ -1204,6 +1204,23 @@ EOF
     _r3rung "two mallocs, no free" '    void *a = malloc(32); void *b = malloc(64); if (!a || !b) return 9; _Exit(0);'
     _r3rung "malloc large, _Exit" '    void *q = malloc(200000); if (!q) return 9; _Exit(0);'
     _r3rung "calloc/free"         '    void *q = calloc(4, 8); free(q); _Exit(0);'
+    # AND WHICH free. mallocng has two entirely separate paths: a small
+    # allocation lives in a GROUP and free walks an in-band header back to the
+    # meta; a large one is its own mmap and free unmaps it. free(0) is
+    # required to be a no-op and touches neither. Splitting them says whether
+    # the fault is in the group bookkeeping, in the unmap, or in getting into
+    # free at all.
+    #
+    # THE SIGNAL ALREADY RULES ONE THING OUT. mallocng crashes DELIBERATELY on
+    # its own consistency checks, through a_crash(), which on aarch64 is
+    # `brk 0` and raises SIGTRAP -- signal 5. Every failure here is signal 11.
+    # So this is not musl noticing corruption and stopping; it is a genuine
+    # wild dereference, and the bookkeeping it walks through is the thing to
+    # look at rather than the check that would have caught it.
+    _r3rung "free(0)"             '    free(0); _Exit(0);'
+    _r3rung "free a LARGE block"  '    void *q = malloc(200000); if (!q) return 9; free(q); _Exit(0);'
+    _r3rung "malloc, write, free" '    char *q = malloc(32); if (!q) return 9; q[0] = 1; q[31] = 2; free(q); _Exit(0);'
+    _r3rung "realloc then free"   '    void *q = malloc(32); q = realloc(q, 64); if (!q) return 9; free(q); _Exit(0);'
     rm -f r3n.c r3n.bin r3n.out
   fi
 
