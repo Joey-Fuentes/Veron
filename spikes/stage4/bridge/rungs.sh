@@ -404,6 +404,55 @@ if [ "$R1" = ok ]; then
   done
   say "    generated: $(ls obj/include/bits 2>/dev/null | tr '\n' ' ')"
 
+  # LONG DOUBLE IS EIGHT BYTES IN THIS COMPILER, AND musl's HEADER SAYS 113.
+  #
+  # tcc-microc patch 0001 sets LDOUBLE_SIZE to 8 and predicts this in as many
+  # words: "a program using long double and linking against a normally-built
+  # libc would disagree about the size". musl is not normally built here -- it
+  # is built BY that compiler -- so its long double really is eight bytes, and
+  # only its header disagrees:
+  #
+  #     mc-tcc        sizeof(long double) == 8
+  #     musl/arch/aarch64/bits/float.h    LDBL_MANT_DIG 113
+  #
+  # musl branches on that macro throughout. frexpl, fmodl, scalbnl and the
+  # float printer each carry a `#if LDBL_MANT_DIG == 113` arm, so a 113-bit
+  # algorithm ran over a 64-bit value and printf("%f") produced 0.000000 for a
+  # number whose bits were exactly right -- measured, with the same value
+  # reported correctly as `5.008 raw bits = 40140831 26e978d5` two lines above.
+  #
+  # THE REPLACEMENT IS musl's OWN, not something invented here. Every
+  # architecture where long double is double -- arm, i386's soft variants,
+  # riscv32 -- ships exactly these values, and every `#if LDBL_MANT_DIG == 53`
+  # arm in musl's math is written for it. So this selects a configuration musl
+  # already supports rather than inventing a fourth one.
+  #
+  # DECLARED, LIKE sys/cdefs.h. It is a substitution and it is reported, so it
+  # cannot pass for something that came out of the tarball.
+  if [ -f arch/aarch64/bits/float.h ]; then
+    cat > arch/aarch64/bits/float.h <<'FLOATH'
+#define FLT_EVAL_METHOD 0
+
+#define LDBL_TRUE_MIN 4.94065645841246544177e-324L
+#define LDBL_MIN 2.22507385850720138309e-308L
+#define LDBL_MAX 1.79769313486231570815e+308L
+#define LDBL_EPSILON 2.22044604925031308085e-16L
+
+#define LDBL_MANT_DIG 53
+#define LDBL_MIN_EXP (-1021)
+#define LDBL_MAX_EXP 1024
+
+#define LDBL_DIG 15
+#define LDBL_MIN_10_EXP (-307)
+#define LDBL_MAX_10_EXP 308
+
+#define DECIMAL_DIG 17
+FLOATH
+    say "    bits/float.h: long double declared as double (LDBL_MANT_DIG 53)"
+    say "                  -- matches this compiler's 8-byte long double,"
+    say "                     declared substitution, see the note in rungs.sh"
+  fi
+
   # THE INCLUDE ORDER IS THE WHOLE THING, AND GETTING IT WRONG COST A RUN.
   #
   # musl ships TWO features.h. include/features.h is the public one;
@@ -1240,6 +1289,7 @@ EOF
   # earlier round was still in /tmp.
   ( cd /tmp && rm -f fp.bin
     cat > fp.c <<'FPC'
+#include <float.h>
 #include <stdio.h>
 #include <stdlib.h>
 int main(void)
@@ -1291,6 +1341,15 @@ int main(void)
             printf("      5.008 raw bits     = %08x %08x\n", bits.u[1], bits.u[0]);
             printf("      (expect              40140831 26e978d5)\n");
         }
+        /* THE SIZE AND THE HEADER, SIDE BY SIDE. When the bits above are
+         * exact and printf still says 0.000000, the value is right and the
+         * FORMATTER is wrong -- and the reason is almost always that musl's
+         * long double branches were compiled for a width this compiler does
+         * not have. Two numbers say so immediately; without them it took a
+         * ladder and a round to get here. */
+        printf("      sizeof(long double) = %d, LDBL_MANT_DIG = %d\n",
+               (int)sizeof(long double), (int)LDBL_MANT_DIG);
+        printf("      (8 and 53 agree; 8 and 113 do not, and %%f will be wrong)\n");
     }
     return 0;
 }
