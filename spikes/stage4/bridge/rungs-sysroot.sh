@@ -257,7 +257,23 @@ if [ "$B0" = ok ]; then
     # perl and openssl do not use autoconf; each gets its own line.
     case "$pk" in
       perl)
+        # -Dcc, NOT CC=. perl's Configure is not autoconf and takes its
+        # compiler as a -D flag; CC= in the environment is ignored. Rung 11.5
+        # records that.
+        #
+        # ITS Configure NEEDS split AND comm, WHICH busybox LACKS AT DEFCONFIG.
+        # Rung 11.5 hit "./Configure: line 2135: split: not found" and wrote
+        # both in C into $PFX. $PFX is not on this PATH and must not be, so
+        # rung 15 now compiles the SPLIT and COMM applets into the sysroot's
+        # busybox instead. If this rung dies naming either, that is where to
+        # look -- not here.
+        #
+        # -Doptimize IS PASSED EXPLICITLY because Configure otherwise picks
+        # its own; rung 11.5 pins it for the same reason. No -Dusedl=undef
+        # and no -Dldflags=-static here: those made a static perl for a
+        # loader-less box, and this sysroot has a loader.
         ( cd "$_d" && ./Configure -des -Dprefix=/usr -Dvendorprefix=/usr \
+              -Dcc=gcc -Doptimize="-O2 -fno-strict-aliasing -fwrapv" \
               > c.log 2>&1 && make -j"$NP" > b.log 2>&1 && make install > i.log 2>&1 ) ;;
       openssl)
         # install_sw, NOT install: the full target builds documentation, which
@@ -282,10 +298,27 @@ if [ "$B0" = ok ]; then
         # install phase runs the freshly built interpreter over bundled
         # wheels. Nothing in the chain imports it; glibc only wants python3
         # to exist and answer --version.
-        ( cd "$_d" && ./configure --prefix=/usr --without-ensurepip > c.log 2>&1 \
+        # --disable-test-modules IS RUNG 11.7's, and it removes a large part
+        # of a build nothing here runs. --without-ensurepip because pip's
+        # install phase runs the interpreter over bundled wheels for no
+        # consumer.
+        #
+        # NOT --disable-shared, AND THAT IS THE ONE DELIBERATE DIVERGENCE.
+        # Rung 11.7 forces a fully static interpreter with a hand-written
+        # Setup.local because the BOX is musl and its python had to run with
+        # no loader. This sysroot has glibc and a real dynamic loader, so an
+        # ordinary shared build is correct here and the whole Setup.local
+        # apparatus does not apply.
+        ( cd "$_d" && ./configure --prefix=/usr --without-ensurepip \
+              --disable-test-modules > c.log 2>&1 \
           && make -j"$NP" > b.log 2>&1 && make install > i.log 2>&1 ) ;;
       *)
-        ( cd "$_d" && ./configure --prefix=/usr > c.log 2>&1 \
+        # --disable-nls AND MAKEINFO=true ARE RUNG 11.7's, NOT GUESSES. It
+        # builds gawk, m4, flex and bison with exactly this line; texinfo is
+        # not in this sysroot either, so MAKEINFO=true disposes of the manuals
+        # the same way. The only difference here is the prefix and the
+        # compiler, which is the point of the rung.
+        ( cd "$_d" && ./configure --prefix=/usr --disable-nls > c.log 2>&1 \
           && make -j"$NP" MAKEINFO=true > b.log 2>&1 \
           && make install MAKEINFO=true > i.log 2>&1 ) ;;
     esac
@@ -512,12 +545,24 @@ if [ "$B4" = ok ]; then
     for _sym in SSL_CLIENT FEATURE_WGET_OPENSSL TLS TC; do
       sed -i "s/^CONFIG_$_sym=y/# CONFIG_$_sym is not set/" .config
     done
+    # THE SAME BUILD APPLET LIST AS RUNG 15's, AND FOR A REASON THAT OUTLIVES
+    # THE INITRAMFS: this busybox OVERWRITES the sysroot's, so from here on it
+    # is what B6's kernel build shells out to. A kernel build calls sed, awk,
+    # sort, cut, tr, find and xargs constantly. Shipping a defconfig busybox
+    # here would break B6 rather than the image.
+    for _sym in SPLIT COMM JOIN PASTE EXPAND UNEXPAND FOLD NL TSORT CMP DIFF PATCH AWK SED GREP SORT UNIQ TR CUT XARGS FIND WHICH ENV BASENAME DIRNAME; do
+      sed -i "s/^# CONFIG_$_sym is not set/CONFIG_$_sym=y/" .config
+      grep -q "^CONFIG_$_sym=y" .config || echo "CONFIG_$_sym=y" >> .config
+    done
     sed -i 's/^# CONFIG_STATIC is not set/CONFIG_STATIC=y/' .config
     grep -q '^CONFIG_STATIC=y' .config || echo 'CONFIG_STATIC=y' >> .config
     yes '' | make oldconfig > /dev/null 2>&1
     _bad=0
     grep -q '^CONFIG_STATIC=y' .config || { say "    CONFIG_STATIC did not survive oldconfig"; _bad=1; }
     grep -qE '^CONFIG_(TLS|SSL_CLIENT|TC)=y' .config && { say "    TLS/TC came back after oldconfig"; _bad=1; }
+    for _sym in SPLIT COMM AWK SED GREP SORT CUT TR FIND XARGS; do
+      grep -q "^CONFIG_$_sym=y" .config || { say "    build applet $_sym missing"; _bad=1; }
+    done
     if [ "$_bad" != 0 ]; then
       grep -E '^(# )?CONFIG_(STATIC|TLS|SSL_CLIENT|TC)' .config | sed 's/^/      /'
       B5=FAIL

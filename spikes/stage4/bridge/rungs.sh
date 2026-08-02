@@ -4127,8 +4127,38 @@ if [ "$R14" = ok ]; then
     for _sym in SSL_CLIENT FEATURE_WGET_OPENSSL TLS TC; do
       sed -i "s/^CONFIG_$_sym=y/# CONFIG_$_sym is not set/" .config
     done
+    # THE BUILD APPLETS, AND THIS IS THE SAME LIST THE AIRLOCK busybox USES.
+    #
+    # defconfig was right when this busybox only had to be an initramfs shell.
+    # It is now the SYSROOT's entire userland: phase B runs configure scripts
+    # with $S bound as /, and a configure script shells out to dozens of
+    # ordinary utilities.
+    #
+    # split AND comm ARE THE NAMED CASE, and phase A already paid for it.
+    # perl's Configure is a 1990s shell script that calls both, busybox has
+    # NEITHER at defconfig, and rung 11.5 had to write them in C into $PFX to
+    # get past "./Configure: line 2135: split: not found". $PFX is not on
+    # phase B's PATH and must not be -- so the applets have to be here.
+    #
+    # ASSERTED AFTER oldconfig, because oldconfig re-derives symbols and has
+    # silently undone edits in this file before.
+    for _sym in SPLIT COMM JOIN PASTE EXPAND UNEXPAND FOLD NL TSORT CMP DIFF PATCH AWK SED GREP SORT UNIQ TR CUT XARGS FIND WHICH ENV BASENAME DIRNAME; do
+      sed -i "s/^# CONFIG_$_sym is not set/CONFIG_$_sym=y/" .config
+      grep -q "^CONFIG_$_sym=y" .config || echo "CONFIG_$_sym=y" >> .config
+    done
     # VERIFY AFTER, because a sed that matches nothing is silent and
     # oldconfig is what undid the same edit three runs running.
+    _missing=""
+    for _sym in SPLIT COMM AWK SED GREP SORT CUT TR FIND XARGS; do
+      grep -q "^CONFIG_$_sym=y" .config || _missing="$_missing $_sym"
+    done
+    if [ -n "$_missing" ]; then
+      say "    THESE BUILD APPLETS DID NOT SURVIVE oldconfig:$_missing"
+      say "    perl's Configure needs split and comm; the rest are what any"
+      say "    configure script shells out to. Phase B would fail on the"
+      say "    first package and name the package, not the missing applet."
+      R15=FAIL
+    fi
     if grep -qE "^CONFIG_(SSL_CLIENT|TLS)=y" .config; then
       say "    TLS symbols came back after oldconfig:"
       grep -E "^CONFIG_(SSL_CLIENT|TLS|FEATURE_WGET_OPENSSL)" .config | sed 's/^/      /'
