@@ -970,8 +970,10 @@ done
 if [ -n "$MALLOCNG" ]; then
   mkdir -p "$PFX/lib/mallocng"
   for _f in $MALLOCNG; do cp "$_f" "$PFX/lib/mallocng/"; done
+  NGOBJ="$(ls "$PFX"/lib/mallocng/*.o 2>/dev/null | tr '\n' ' ')"
   say "  mallocng: $(ls "$PFX/lib/mallocng" | wc -l) objects named on every link"
 else
+  NGOBJ=""
   say "  mallocng: NO objects found -- malloc and free will disagree, see rungs.sh"
 fi
 
@@ -1200,10 +1202,17 @@ EOF
   fi
   rm -f r3dyn.bin
 
-  if try_r3 "plain:" $CC -static -o r3.bin r3.c; then
+  # $NGOBJ ON BOTH ROUTES, AND THIS IS WHY THE LAST FIX DID NOTHING.
+  #
+  # The mallocng objects were added to the cc-static WRAPPER, which is what
+  # configure gets as CC. These two lines use $CC directly -- the raw compiler
+  # -- so they never saw it, and rung 3 failed exactly as before while the
+  # wrapper above reported "6 objects named on every link". The measurement and
+  # the fix were looking at different compilers.
+  if try_r3 "plain:" $CC -static -o r3.bin r3.c $NGOBJ; then
     R3=ok
   elif try_r3 "explicit:" $CC $HOSTED -nostdlib -static -o r3.bin \
-         "$SYS/lib/crt1.o" "$SYS/lib/crti.o" r3.c -lc "$TCCDIR/libtcc1.a" \
+         "$SYS/lib/crt1.o" "$SYS/lib/crti.o" r3.c $NGOBJ -lc "$TCCDIR/libtcc1.a" \
          "$SYS/lib/crtn.o"; then
     R3=FAIL
     say ""
@@ -1241,7 +1250,9 @@ EOF
         printf 'int main(void)\n{\n%s\n}\n' "$_body"
       } > r3n.c
       rm -f r3n.bin r3n.out
-      if ! $CC -static -o r3n.bin r3n.c 2>/dev/null || [ ! -s r3n.bin ]; then
+      # $NGOBJ here too: the ladder must link the same way rung 3 does, or it
+      # measures a different program from the one that failed.
+      if ! $CC -static -o r3n.bin r3n.c $NGOBJ 2>/dev/null || [ ! -s r3n.bin ]; then
         printf '      %-26s did not compile\n' "$_n"
         return
       fi
