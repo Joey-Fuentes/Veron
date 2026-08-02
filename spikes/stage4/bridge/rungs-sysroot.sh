@@ -164,7 +164,19 @@ for _n in sh make gcc g++ ld as ar; do
   if ! command -v "$_n" > /dev/null 2>&1; then
     printf '    %-5s NOT ON PATH\n' "$_n"; _ok=no; continue
   fi
-  if "$_n" --version > /dev/null 2>&1 || [ "$_n" = sh ]; then
+  # sh HAS NO --version. busybox ash answers non-zero and prints nothing, so
+  # the old line reported a blank and the `|| [ "$_n" = sh ]` escape hatch let
+  # it pass without measuring anything. Exercise it instead.
+  if [ "$_n" = sh ]; then
+    sh -c 'exit 7'; _sr=$?
+    if [ "$_sr" = 7 ]; then
+      printf '    %-5s runs (sh -c "exit 7" -> 7)\n' "$_n"
+    else
+      printf '    %-5s DOES NOT RUN (rc=%s)\n' "$_n" "$_sr"; _ok=no
+    fi
+    continue
+  fi
+  if "$_n" --version > /dev/null 2>&1; then
     printf '    %-5s %s\n' "$_n" "$("$_n" --version 2>&1 | head -1)"
   else
     printf '    %-5s present, DOES NOT EXECUTE\n' "$_n"; _ok=no
@@ -173,13 +185,34 @@ done
 # AND THAT THE CROSS TOOLCHAIN IS UNREACHABLE, which is the property the PATH
 # is enforcing. Reported rather than assumed, because a PATH is easy to widen
 # by accident and the consequence -- an artifact built by pass 1 -- is silent.
-if command -v "${LFS_TGT:-aarch64-veron-linux-gnu}-gcc" > /dev/null 2>&1; then
-  say "    THE CROSS COMPILER IS ON PATH. /tools/bin must not be reachable"
-  say "    here, or 'built by the final toolchain' stops being enforced."
-  _ok=no
-else
-  say "    cross toolchain unreachable: yes (this is the point)"
-fi
+# ASK WHERE IT RESOLVES, NOT WHETHER THE NAME EXISTS.
+#
+# This used to be `command -v $LFS_TGT-gcc` and it failed run 120 on a
+# correctly built sysroot. gcc pass 2 is configured --target=$LFS_TGT, so it
+# installs its driver under BOTH names: /usr/bin/gcc and
+# /usr/bin/aarch64-veron-linux-gnu-gcc. The prefixed name is the SYSROOT's
+# own final compiler, not pass 1 -- the check matched on a name the right
+# answer also has.
+#
+# What actually matters is that nothing resolves into /tools, where pass 1
+# lives. Both halves of pass 1 are musl-static and would run in here quite
+# happily, so this is the only thing keeping "built by the final toolchain"
+# enforced rather than assumed.
+_xp=$(command -v "${LFS_TGT:-aarch64-veron-linux-gnu}-gcc" 2>/dev/null || true)
+case "$_xp" in
+  /tools/*) say "    $_xp RESOLVES INTO /tools -- that is pass 1, the cross"
+            say "    compiler. Everything below would be built by the wrong"
+            say "    toolchain. Not proceeding."
+            _ok=no ;;
+  "")       say "    no ${LFS_TGT:-aarch64-veron-linux-gnu}-gcc on PATH" ;;
+  *)        say "    ${LFS_TGT:-aarch64-veron-linux-gnu}-gcc -> $_xp"
+            say "      (the sysroot's own gcc pass 2 under its target name,"
+            say "       not /tools -- gcc installs both names)" ;;
+esac
+case ":$PATH:" in
+  *:/tools/bin:*) say "    /tools/bin IS ON PATH -- pass 1 is reachable"; _ok=no ;;
+  *)              say "    /tools/bin not on PATH: correct (this is the point)" ;;
+esac
 # A REAL COMPILE AND A REAL RUN, because --version only proves the driver execs.
 cat > /tmp/b0.c <<'EOF'
 #include <stdio.h>
