@@ -1096,6 +1096,54 @@ EOF
   else
     R3=FAIL
     say "    both routes failed -- read the rc and the ELF line above"
+    # WHICH PART, and the ladder is ordered so the first failure names it.
+    #
+    # r3.c does malloc, strcpy, printf, free and then RETURNS. When it prints
+    # its line correctly and dies afterwards, main ran and the fault is in what
+    # musl does on the way out: __funcs_on_exit, __libc_exit_fini and
+    # __stdio_exit, none of which a freestanding test has ever reached. Each
+    # rung below removes one of those, so the first one that RUNS is the
+    # boundary.
+    #
+    #   bare        crt1 -> main -> exit, and nothing else
+    #   _Exit       skips atexit handlers, _fini and the stdio flush entirely
+    #   print+_Exit stdio on the way in, none of it on the way out
+    #   print+ret   stdio both ways -- the flush is the only thing added
+    #   heap+_Exit  malloc and free, without the exit path
+    #
+    # A _Exit that runs where a return does not is musl's exit path. A bare
+    # return that does not run is crt1 or _fini and nothing to do with stdio.
+    say "    --- narrowing: the same program with pieces removed ---"
+    _r3rung() {
+      _n="$1"; _body="$2"
+      # THE HEADERS MATTER HERE MORE THAN USUAL. An implicit malloc returns
+      # int, so the pointer is truncated to 32 bits and the crash that follows
+      # is the test's own and not the compiler's.
+      { echo '#include <stdio.h>'
+        echo '#include <stdlib.h>'
+        printf 'int main(void)\n{\n%s\n}\n' "$_body"
+      } > r3n.c
+      rm -f r3n.bin r3n.out
+      if ! $CC -static -o r3n.bin r3n.c 2>/dev/null || [ ! -s r3n.bin ]; then
+        printf '      %-26s did not compile\n' "$_n"
+        return
+      fi
+      chmod 0755 r3n.bin
+      ./r3n.bin >r3n.out 2>&1; _q=$?
+      if [ "$_q" = 0 ]; then
+        printf '      %-26s RAN ok  %s\n' "$_n" "$(head -1 r3n.out)"
+      elif [ "$_q" -gt 128 ]; then
+        printf '      %-26s SIGNAL %s  %s\n' "$_n" "$((_q - 128))" "$(head -1 r3n.out)"
+      else
+        printf '      %-26s exit %s  %s\n' "$_n" "$_q" "$(head -1 r3n.out)"
+      fi
+    }
+    _r3rung "bare return 0"       '    return 0;'
+    _r3rung "_Exit(0)"            '    _Exit(0);'
+    _r3rung "print then _Exit(0)" '    printf("p\n"); _Exit(0);'
+    _r3rung "print then return 0" '    printf("p\n"); return 0;'
+    _r3rung "malloc/free, _Exit"  '    void *q = malloc(32); free(q); _Exit(0);'
+    rm -f r3n.c r3n.bin r3n.out
   fi
 
   # ---- FLOATING POINT, ASKED HERE RATHER THAN AT RUNG 11.5 ----
