@@ -1674,6 +1674,69 @@ all macOS or Windows and all behind `#ifdef`s that never fire here -- so it is
 a NOTE rather than a failure, but the next one arrives named, in the airlock,
 instead of as three truncated lines of stderr four hundred lines later.
 
+**RE-VERIFIED GREEN**, and the run says more than "back to where we were":
+
+```
+    micro-c (ours)                    423964  30b8f25f9ddc00b8
+    libtcc.M1: 378836 lines, 707 functions
+    mc-tcc (ours, end to end)        1575057  99a6a3608a34c1d3
+    00-does-it-start   rc=0  tcc version 0.9.28rc (AArch64 Linux)
+    stage 3 end to end: yes
+    tests2: 77 of 127 match tcc's own .expect (diff -b rules)
+    step A: gen1 COMPILES tcc.c -- 874610 byte object
+```
+
+**Step A now holds on real ARM64.** It used to be a `qemu-aarch64`-only result
+that segfaulted natively, and nothing in micro-c changed between then and now —
+the two long-double patches did it. That is the second time this quarter that
+the float work moved a result nobody was pointing it at.
+
+## Step B, and the setjmp that can never compile
+
+Step B reported
+
+```
+    step B: the runtime will not compile (runtime rc=0, setjmp rc=1)
+```
+
+followed by three blank lines, because the step printed `rt.err` whichever rung
+failed and `runtime` had *succeeded* — its error file was empty. A diagnostic
+naming the wrong file is worse than no diagnostic, because it reads as "no
+output" rather than as "wrong file". Each rung now prints its own.
+
+**The setjmp failure is structural and was always going to happen.**
+`impl/setjmp-aarch64.c` is written in M2libc's **macro** dialect:
+
+```c
+asm("mov_x0,x17"  "sub_x0,x0,8"  "ldr_x0,[x0]")
+```
+
+Those are names in `aarch64_defs.M1`, not aarch64 mnemonics. Only micro-c can
+compile that file — its own header says so in as many words — and gen1 is a
+real tcc with a real arm64 inline assembler, which will reject every line.
+
+It is also the wrong setjmp for gen2 twice over. That file saves
+`x13`/`x17`/`x18`/`lr` because those are micro-c's convention; `gen2.o` is
+compiled by mc-tcc, which emits ordinary AAPCS, and needs `x19`-`x28`, `d8`-`d15`,
+`fp`, `lr` and `sp`.
+
+**WHAT THE FIX LOOKS LIKE, AND WHY IT IS NOT IN THIS COMMIT.**
+`impl/setjmp-aarch64-tcc.c`: a file-scope `__asm__` block defining `setjmp`,
+`longjmp` and `_setjmp` in real mnemonics. tcc's arm64 assembler already knows
+every instruction it needs — `stp`, `ldp`, `mov`, `add`, `br`, `ret`, `cmp`,
+`csinc` are all in `arm64-tok.h` — and it has to be file-scope rather than
+inline because setjmp must control its own prologue and `sp`, which no
+constraint syntax will give it.
+
+It is not written here because it cannot be *assembled* here: there is no
+aarch64 assembler on this machine and no network to fetch one, so it could only
+be shipped unvalidated into the one step that would then be blamed for the
+result. That is precisely the loop the harness section above is about. The
+workflow now **prefers `impl/setjmp-aarch64-tcc.c` when the file exists** and
+falls back to the micro-c one otherwise, reporting which it used — so writing
+and validating that file is the entire remaining change, with no edit to the
+job.
+
 ---
 
 ---

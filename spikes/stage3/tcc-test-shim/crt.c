@@ -416,7 +416,62 @@ int write(int fd, void *buf, int n)
     return (int)sys3(64, fd, (long)buf, (long)n);
 }
 
-void exit(int code) { flushit(); sys3(93, code, 0, 0); }
+/* CONSTRUCTORS AND DESTRUCTORS, WHICH tcc EMITS AND NOTHING WAS RUNNING.
+ *
+ * `__attribute__((constructor))` becomes a pointer in `.init_array` and
+ * `((destructor))` one in `.fini_array` -- tccgen.c:8525. tccelf.c always
+ * defines the four bracketing symbols, even when the sections are empty
+ * (add_init_array_defines is called unconditionally at tccelf.c:1876-1878 and
+ * points start and end at text_section with a zero span when there is no
+ * section), so declaring them here is safe for every program in the suite and
+ * not only for the one that uses them.
+ *
+ * SHAPE TAKEN FROM tcc's OWN lib/runmain.c, including the direction: ctors run
+ * forward from _start, dtors run BACKWARD from _end. 108_constructor is the
+ * only program in tests2 that exercises this, and its .expect is ordered
+ *     constructor / main / destructor
+ * so getting the order wrong is visible rather than silent.
+ *
+ * THE POINTERS TAKE ARGUMENTS. glibc passes (argc, argv, envp) to init_array
+ * entries and runmain.c declares them that way. 108_constructor's own
+ * constructor takes (void), which is fine in the same way main is called here:
+ * an aarch64 callee reads the argument registers it declared and ignores the
+ * rest.
+ */
+extern void (*__init_array_start[])(int, char **, char **);
+extern void (*__init_array_end[])(int, char **, char **);
+extern void (*__fini_array_start[])(void);
+extern void (*__fini_array_end[])(void);
+
+static int shim_dtors_done;
+
+static void run_ctors(int argc, char **argv, char **envp)
+{
+    int i;
+    i = 0;
+    while (&__init_array_start[i] != __init_array_end) {
+        (*__init_array_start[i])(argc, argv, envp);
+        i = i + 1;
+    }
+}
+
+/* ONCE, WHICHEVER ROUTE REACHES IT. A program can leave main by returning or
+ * by calling exit(), and both have to run the destructors -- but a program
+ * that calls exit() from inside main must not run them twice.
+ */
+static void run_dtors(void)
+{
+    int i;
+    if (shim_dtors_done) return;
+    shim_dtors_done = 1;
+    i = 0;
+    while (&__fini_array_end[i] != __fini_array_start) {
+        i = i - 1;
+        (*__fini_array_end[i])();
+    }
+}
+
+void exit(int code) { run_dtors(); flushit(); sys3(93, code, 0, 0); }
 
 /* A real abort raises SIGABRT and a shell reports 134. Nothing in tests2
  * inspects the status -- 117_builtins calls it only on a failed assertion, so
@@ -588,7 +643,11 @@ void _start_c(long *sp)
     envp = argv + i + 1;
 
     m = (shim_mainfn)main;
+    run_ctors(argc, argv, envp);
     r = m(argc, argv, envp);
-    flushit();
-    sys3(93, r, 0, 0);
+    /* THROUGH exit(), NOT PAST IT. Leaving by a bare syscall here skipped the
+     * destructors for every program that returns from main -- which is all of
+     * them but the ones that call exit() explicitly, and 108_constructor is
+     * one of the former. exit() runs them once and flushes. */
+    exit(r);
 }

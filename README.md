@@ -108,14 +108,30 @@ has no system include path to fall back on, so tcc stopped preprocessing at
 that line. Ten of the twelve jobs that apply the same patch series build tcc
 with the host compiler and never saw it, and the local gate had never applied
 the series at all — so it was compiling a *different* tccgen.c from the one CI
-compiles, differing exactly where the fault was. The header is written, the
-local gate now builds CI's tree, and the airlock checks every angle-bracket
-include against the three directories micro-c is actually given. See
+compiles, differing exactly where the fault was. **Closed and re-verified
+green:** the header is written, the local gate now builds CI's tree, and the
+airlock checks every angle-bracket include against the three directories
+micro-c is actually given. See
 [`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md).
 
 **The heap corruption is closed.** It was `sizeof` of a dereferenced *member* pointer — `sizeof(*s->tab)` returned the pointer's width, not the struct's, so `tccelf.c` allocated the symbol-attribute table at half the width its own indexing strides through, and later entries read past it into string data. One GOT relocation then resolved to a wild address and every linked binary died on its second string literal. The same construct through a plain pointer was always correct, which is why it survived: the two forms disagree only when a member sits between the star and the name.
 
-**mc-tcc compiles tcc's own source back to an object under the emulator** — 870,242 bytes against the gcc-built control's 873,890, with the same 705 function symbols and relocation counts within two. **On real ARM64 it segfaults**, so read that narrowly: it is step 1 of the five a fixpoint needs, it holds only under `qemu-aarch64`, and **it is not self-hosting**. Steps 2–5 are: link gen2, run it, build gen3, and compare gen2 against gen3. gen2 does not link yet because it needs a libc, and the next rung is a libc built in-chain — see [`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md).
+**mc-tcc compiles tcc's own source back to an object on real ARM64**, inside
+the sealed box, with no emulator: 874,610 bytes against the gcc-built control's
+873,890, from a gen1 of 1,575,057 bytes. That is a change — it used to hold only
+under `qemu-aarch64` and segfault natively, and the two long-double patches
+(`0b07e37`, `2a8bf60`) are what moved it. Read it narrowly all the same: it is
+step 1 of the five a fixpoint needs, and **it is not self-hosting**. Steps 2–5
+are: link gen2, run it, build gen3, and compare gen2 against gen3.
+
+Step 2 now has a named blocker rather than an unknown one. gen2 needs a
+`setjmp`, and the one in the tree — `impl/setjmp-aarch64.c` — is written in
+M2libc's *macro* dialect (`asm("mov_x0,x17")`, names in `aarch64_defs.M1`
+rather than aarch64 mnemonics) and saves micro-c's four registers, not the
+AAPCS callee-saved set. Only micro-c can compile it, by construction. gen2.o is
+ordinary AAPCS code, so what it needs is an ordinary aarch64 setjmp; after that
+the rung is a libc built in-chain — see
+[`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md).
 
 **Close those two and the chain is continuous from hand-read assembly to a booting GNU/Linux.** What stands between here and a rough-draft OS is that, plus re-applying the invariants — the spike track suspends every one of them.
 

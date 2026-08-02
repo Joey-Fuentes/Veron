@@ -1435,32 +1435,97 @@ jobs:
           SH=/src/stage3/tcc-test-shim
           T2=/in/tcc-src/tests/tests2
 
-          # COMPARE THE WAY tcc COMPARES, which is not byte for byte.
+          # COMPARE THE WAY tcc COMPARES, which is not byte for byte and is
+          # not the program's stdout alone.
           #
-          #     diff -Nbu $(filter %.expect,$^) $*.output      tests2/Makefile:142
+          #     T3 = $(FILTER) >$*.output 2>&1 ... diff -Nbu %.expect $*.output
+          #     FILTER = 2>&1 | sed -e 's,$(SRC)/,,g'      tests2/Makefile:126,142
           #
-          # `-b` ignores changes in the AMOUNT of whitespace, and the .expect
-          # files rely on it: 38_multiple_array_index prints "%d " per element
-          # and so emits a trailing space its .expect does not carry, and
-          # several tests end without a final newline. Comparing with `cmp`
-          # marks all of those failed -- three of them here -- and reports a
-          # compiler defect where there is a space.
+          # TWO THINGS FOLLOW FROM THAT AND NEITHER WAS BEING DONE.
           #
-          # busybox has no `diff`, so this normalises instead: runs of
-          # whitespace collapse to one, trailing whitespace goes, and a missing
-          # final newline stops mattering because the comparison is on the
-          # normalised text. That is `-b` for the shapes these tests produce.
-          # It is NOT a general diff -b, and it deliberately does not ignore
-          # blank lines -- `-B` is not in tcc's flags either.
-          # A FINAL NEWLINE IS PART OF IT. Several .expect files end without
-          # one and the program prints one, or the reverse; `cmp` on the
-          # normalised files still sees a byte difference. Command
-          # substitution strips trailing newlines from both sides, which is
-          # what makes the comparison agree with `diff -b` here.
+          # 1. THE COMPILER'S OWN DIAGNOSTICS ARE PART OF THE EXPECTED OUTPUT.
+          # tcc runs one command -- `tcc -run prog.c` -- and captures compile
+          # warnings and program output into the same file, in that order.
+          # Three .expect files begin with a warning line:
+          #     03_struct.expect     03_struct.c:14: warning: attribute ...
+          #     102_alignas.expect   102_alignas.c:4: warning: type defaults to int
+          #     33_ternary_op.expect 33_ternary_op.c:26: warning: pointer/integer ...
+          # This step compiled to t2.err and ran to t2.out and compared only
+          # t2.out, so all three were reported as "RAN, output differs" -- which
+          # reads as wrong codegen and is a missing warning line. mc-tcc emits
+          # the warnings; nothing was looking at them.
+          #
+          # 2. THE SOURCE DIRECTORY IS STRIPPED. tcc's tests run out of tree and
+          # its FILTER removes $(SRC)/ from every path, so the .expect files
+          # carry bare filenames. Here the compiler is handed
+          # /in/tcc-src/tests/tests2/03_struct.c, so both its diagnostics and
+          # any __FILE__ the program prints carry that prefix -- which is why
+          # 129_scopes differed on all thirty of its lines while every
+          # assertion in it said `ok`.
+          #
+          # The whitespace rule below is unchanged and is `diff -b`: runs of
+          # whitespace collapse, trailing whitespace goes, and command
+          # substitution strips the trailing newline so a missing final one
+          # stops mattering. It is NOT a general diff -b, and it deliberately
+          # does not ignore blank lines -- `-B` is not in tcc's flags either.
+          norm() {
+            sed -e "s;$T2/;;g" \
+                -e 's/[[:space:]][[:space:]]*/ /g' \
+                -e 's/[[:space:]]*$//' "$1"
+          }
           same_output() {
-            _a=$(sed 's/[[:space:]][[:space:]]*/ /g; s/[[:space:]]*$//' "$1")
-            _b=$(sed 's/[[:space:]][[:space:]]*/ /g; s/[[:space:]]*$//' "$2")
+            _a=$(norm "$1")
+            _b=$(norm "$2")
             [ "$_a" = "$_b" ]
+          }
+
+          # THE COMPILER'S OUTPUT, MINUS micro-c's MARKER TRAIL. Instrumented
+          # builds print bare markers to stderr; they are not diagnostics and
+          # must not enter the comparison.
+          diagnostics() {
+            grep -av '^[A-Z][0-9]*$' "$1" 2>/dev/null || true
+          }
+
+          # NOT APPLICABLE IN THIS BOX -- AND EVERY LINE CITES tcc's OWN
+          # Makefile RATHER THAN OUR JUDGEMENT.
+          #
+          # tcc does not run all 127 of these either. Its Makefile skips some by
+          # architecture and gives others flags that need a runtime this box
+          # does not have: -b wants bcheck out of libtcc1.a, -dt is a -run mode
+          # that needs the in-memory loader, -pthread and -lm want libraries,
+          # 113_btdll builds two shared objects. Running them anyway and
+          # counting the failures made the denominator mean nothing: 34 is
+          # listed here because tcc SKIPS it -- "array assignment is not in C
+          # standard", Makefile:11 -- so mc-tcc rejecting it was CORRECT and was
+          # being scored as a defect.
+          #
+          # These are reported by name with the reason and are out of the
+          # denominator. Nothing here is excluded for failing; each is excluded
+          # for needing something the box does not have, decided before the run.
+          not_applicable() {
+            case "$1" in
+              34_array_assignment)
+                echo "tcc skips it too -- Makefile:11, array assignment is not in C" ;;
+              98_al_ax_extend|99_fastcall)
+                echo "i386 only -- Makefile:16" ;;
+              85_asm-outside-function|127_asm_goto)
+                echo "hardcodes x86 asm -- Makefile:19-20" ;;
+              112_backtrace|114_bound_signal|115_bound_setjmp|116_bound_setjmp2|126_bound_global|132_bound_test)
+                echo "needs -b, and bcheck lives in libtcc1.a -- Makefile:102,116-118,131,134" ;;
+              113_btdll)
+                echo "builds two shared libraries -- Makefile:106-110" ;;
+              60_errors_and_warnings|96_nodata_wanted|125_atomic_misc|128_run_atexit)
+                echo "needs -dt, which is a -run mode -- Makefile:75-76,130,133" ;;
+              117_builtins)
+                echo "runs twice under -run -- Makefile:119" ;;
+              106_versym|124_atomic_counter)
+                echo "needs -pthread -- Makefile:92,132" ;;
+              22_floating_point|24_math_library)
+                echo "needs -lm -- Makefile:70-71" ;;
+              46_grep)
+                echo "args name a file it opens; the shim has no file I/O -- Makefile:60" ;;
+              *) echo "" ;;
+            esac
           }
 
           # tests2/Makefile:59 runs 31_args with five arguments and its .expect
@@ -1475,32 +1540,69 @@ jobs:
           }
 
           if [ -s /out/mc-tcc ]; then
-            t2pass=0; t2diff=0; t2cf=0; t2nf=0; t2n=0
+            t2pass=0; t2diff=0; t2cf=0; t2nf=0; t2n=0; t2na=0
             : > t2-fail.txt
+            : > t2-na.txt
             for c in "$T2"/*.c; do
               [ -e "$c" ] || continue
               b=${c##*/}; b=${b%.c}
               [ -f "$T2/$b.expect" ] || continue
+              na=$(not_applicable "$b")
+              if [ -n "$na" ]; then
+                t2na=$((t2na + 1))
+                printf '    %-34s %s\n' "$b" "$na" >> t2-na.txt
+                continue
+              fi
               t2n=$((t2n + 1))
+              # THE SECOND TRANSLATION UNIT, WHERE THERE IS ONE. Two tests are
+              # built from two files:
+              #     104_inline.test : FLAGS += $(subst 104,104+,$1)   Makefile:86
+              #     120_alias.test  : FLAGS += $(subst 120,120+,$1)   Makefile:90
+              # so 104_inline.c is compiled with 104+_inline.c and 120_alias.c
+              # with 120+_alias.c. Handing over only the first file left the
+              # second unit's symbols undefined, and the link failed with
+              #     undefined symbol 'check_exports'      (104)
+              #     undefined symbol 'inunit2'            (120)
+              # which was recorded as a link defect. It is a missing file, and
+              # supplying it makes these two the only multi-unit tests in the
+              # sweep -- which is worth having, because stage 4 is nothing but
+              # multi-unit builds.
+              extra=""
+              if [ -f "$T2/${b%%_*}+_${b#*_}.c" ]; then
+                extra="$T2/${b%%_*}+_${b#*_}.c"
+              fi
               # REMOVED BEFORE, NOT AFTER. A failed compile leaves the PREVIOUS
               # test's binary sitting there, `[ ! -s t2.bin ]` is then false,
               # and the run that follows reads a stale binary and reports its
               # output as this test's. This file already records that exact
               # mistake costing two local results.
-              rm -f t2.bin t2.out t2.err
+              rm -f t2.bin t2.out t2.err t2.all
               set +e
               timeout 60 /out/mc-tcc -B/in/tcc-src -I"$SH" -nostdlib -static \
-                          -o t2.bin "$c" "$SH/crt.c" 2>t2.err
+                          -o t2.bin "$c" $extra "$SH/crt.c" 2>t2.err
               c2=$?
               set -e
               if [ "$c2" != 0 ] || [ ! -s t2.bin ]; then
                 t2cf=$((t2cf + 1))
-                why=$(grep -av '^[A-Z][0-9]*$' t2.err | head -1 | cut -c1-58)
-                [ "$c2" -gt 128 ] && why="SIGNAL $((c2 - 128)) during compile"
-                printf '    %-34s COMPILE rc=%-4s %s\n' "$b" "$c2" "$why" >> t2-fail.txt
+                # THE WHOLE MESSAGE, NOT 58 COLUMNS OF IT. Every one of these
+                # was truncated mid-word, so "error: include fi" and "error:
+                # type 'con" were the entire diagnosis and each one needed a
+                # local reproduction to read. Three lines, untruncated, costs
+                # nothing and is usually the answer.
+                printf '    %-34s COMPILE rc=%s\n' "$b" "$c2" >> t2-fail.txt
+                if [ "$c2" -gt 128 ]; then
+                  printf '        SIGNAL %s during compile\n' "$((c2 - 128))" >> t2-fail.txt
+                else
+                  diagnostics t2.err | head -3 | sed "s;$T2/;;g; s/^/        /" >> t2-fail.txt
+                fi
               else
                 chmod 0755 t2.bin
                 set +e; timeout 25 ./t2.bin $(args_for "$b") > t2.out 2>&1; r2=$?; set -e
+                # DIAGNOSTICS FIRST, THEN THE PROGRAM -- the order tcc's own
+                # single `-run` invocation produces, and the order the .expect
+                # files carry.
+                diagnostics t2.err > t2.all
+                cat t2.out >> t2.all
                 # EXIT 71 IS THE SHIM REFUSING A FLOAT, not a wrong answer.
                 # tcc-test-shim aborts 70 when IT is incomplete and 71 when the
                 # conversion is fine and micro-c cannot hold the value. Ten of
@@ -1512,11 +1614,22 @@ jobs:
                 if [ "$r2" = 71 ]; then
                   t2nf=$((t2nf + 1))
                   printf '    %-34s blocked on floating point in micro-c\n' "$b" >> t2-fail.txt
-                elif same_output t2.out "$T2/$b.expect"; then
+                elif same_output t2.all "$T2/$b.expect"; then
                   t2pass=$((t2pass + 1))
                 else
                   t2diff=$((t2diff + 1))
                   printf '    %-34s RAN, output differs\n' "$b" >> t2-fail.txt
+                  # THE FIRST DIFFERING LINE, BOTH SIDES. "output differs" on
+                  # its own is a fact with no lead in it; two lines here is
+                  # the difference between knowing which test to reproduce and
+                  # knowing what it did.
+                  norm t2.all           | head -40 > t2.a
+                  norm "$T2/$b.expect"  | head -40 > t2.b
+                  awk 'NR==FNR{e[NR]=$0;next}
+                       {if ($0 != e[FNR]) {
+                          printf "        got     : %s\n", $0
+                          printf "        expected: %s\n", e[FNR]
+                          exit } }' t2.b t2.a >> t2-fail.txt
                 fi
               fi
               # THE GATE, measured inside the same loop so it cannot drift from
@@ -1524,27 +1637,32 @@ jobs:
               if [ "$b" = 00_assignment ]; then
                 if [ "$c2" != 0 ] || [ ! -s t2.bin ]; then
                   echo "    00_assignment: COMPILE FAILED rc=$c2"
-                  grep -av '^[A-Z][0-9]*$' t2.err | head -30 | sed 's/^/        /'
+                  diagnostics t2.err | head -30 | sed 's/^/        /'
                   s3ok=no
-                elif same_output t2.out "$T2/$b.expect"; then
+                elif same_output t2.all "$T2/$b.expect"; then
                   echo "    00_assignment: exit ok, MATCHES tcc's OWN .expect FILE"
-                  sed 's/^/        /' t2.out
+                  sed 's/^/        /' t2.all
                 else
                   echo "    00_assignment: DIFFERS from tcc's .expect"
-                  echo "      got:"      ; sed 's/^/        /' t2.out
+                  echo "      got:"      ; sed 's/^/        /' t2.all
                   echo "      expected:" ; sed 's/^/        /' "$T2/$b.expect"
                   s3ok=no
                 fi
               fi
             done
             echo
-            echo "    tests2: $t2pass of $t2n match tcc's own .expect (diff -b rules)"
+            echo "    tests2: $t2pass of $t2n APPLICABLE programs match tcc's own .expect"
             echo "            $t2diff ran with different output, $t2cf would not compile"
             echo "            $t2nf blocked on floating point in micro-c, not on the shim"
+            echo "            $t2na not applicable in this box, by tcc's own Makefile"
             if [ -s t2-fail.txt ]; then
               echo "    the ones that did not:"
-              head -60 t2-fail.txt
-              [ "$(wc -l < t2-fail.txt)" -gt 60 ] && echo "    ... $(( $(wc -l < t2-fail.txt) - 60 )) more"
+              head -120 t2-fail.txt
+              [ "$(wc -l < t2-fail.txt)" -gt 120 ] && echo "    ... $(( $(wc -l < t2-fail.txt) - 120 )) more"
+            fi
+            if [ -s t2-na.txt ]; then
+              echo "    not applicable, and why:"
+              cat t2-na.txt
             fi
           else
             echo "    skipped: no mc-tcc was produced"
@@ -1652,18 +1770,56 @@ jobs:
             # itself stands on, compiled here by gen1 rather than by micro-c,
             # which is the part that makes this self-compilation rather than a
             # rebuild with someone else's libc.
+            #
+            # SETJMP IS THE ONE FILE THAT CANNOT WORK AS WRITTEN, and it is
+            # worth saying why here rather than reading rc=1 as a codegen
+            # result. impl/setjmp-aarch64.c is written in M2libc's MACRO
+            # dialect --
+            #     asm("mov_x0,x17" "sub_x0,x0,8" "ldr_x0,[x0]")
+            # -- which are names in aarch64_defs.M1, not aarch64 mnemonics.
+            # Only micro-c can compile that file, by construction; its own
+            # header says so. gen1 is a real tcc with a real arm64 inline
+            # assembler and will reject every line of it.
+            #
+            # It also saves the wrong registers for gen2. That file saves
+            # x13/x17/x18/lr because that is micro-c's calling convention.
+            # gen2.o is compiled by mc-tcc, which emits ordinary AAPCS, so
+            # what gen2 needs is an ordinary aarch64 setjmp: x19-x28, d8-d15,
+            # fp, lr and sp.
+            #
+            # So the step prefers impl/setjmp-aarch64-tcc.c when that file
+            # exists and falls back to the micro-c one otherwise, reporting
+            # which it used. Dropping the tcc-dialect version in is then the
+            # whole change -- no edit here.
             if [ "$g2rc" = 0 ] && [ -s gen2.o ]; then
+              SJ="$L/impl/setjmp-aarch64.c"
+              sjnote="micro-c dialect -- cannot compile under a real tcc, see below"
+              if [ -f "$L/impl/setjmp-aarch64-tcc.c" ]; then
+                SJ="$L/impl/setjmp-aarch64-tcc.c"
+                sjnote="tcc dialect, AAPCS"
+              fi
+              echo "    step B: setjmp source is $(basename "$SJ") ($sjnote)"
               set +e
               timeout 300 /out/mc-tcc -B/in/tcc-src -I"$L" -I"$M" -w -c \
                           -o rt.o "$L/impl/runtime.c" 2>rt.err
               rtrc=$?
               timeout 300 /out/mc-tcc -B/in/tcc-src -I"$L" -I"$M" -w -c \
-                          -o sj.o "$L/impl/setjmp-aarch64.c" 2>sj.err
+                          -o sj.o "$SJ" 2>sj.err
               sjrc=$?
               set -e
               if [ "$rtrc" != 0 ] || [ "$sjrc" != 0 ]; then
                 echo "    step B: the runtime will not compile (runtime rc=$rtrc, setjmp rc=$sjrc)"
-                grep -av '^[A-Z][0-9]*$' rt.err | head -3 | sed 's/^/      /'
+                # THE ERROR FILE HAS TO MATCH THE RUNG THAT FAILED. This
+                # printed rt.err unconditionally, so the run that stopped on
+                # setjmp reported three blank lines: runtime had succeeded and
+                # its error file was empty. A diagnostic that names the wrong
+                # file is worse than none, because it reads as "no output".
+                if [ "$rtrc" != 0 ]; then
+                  grep -av '^[A-Z][0-9]*$' rt.err | head -3 | sed 's/^/      runtime: /'
+                fi
+                if [ "$sjrc" != 0 ]; then
+                  grep -av '^[A-Z][0-9]*$' sj.err | head -3 | sed 's/^/      setjmp:  /'
+                fi
               else
                 set +e
                 timeout 300 /out/mc-tcc -B/in/tcc-src -nostdlib -static \
