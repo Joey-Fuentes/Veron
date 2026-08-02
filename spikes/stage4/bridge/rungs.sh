@@ -916,11 +916,79 @@ mkdir -p "$PFX/bin"
 #
 # This was shadowing every project header, not just glob.h -- anything a build
 # ships its own copy of was silently losing to the sysroot version.
+# mallocng's OBJECTS ARE NAMED, NOT LEFT TO THE ARCHIVE.
+#
+# musl selects its allocator with a #define, not a filename:
+#
+#     #define malloc __libc_malloc_impl      mallocng/glue.h:23
+#
+# so mallocng/malloc.o defines __libc_malloc_impl STRONGLY, while
+# lite_malloc.o carries `weak_alias(__simple_malloc, __libc_malloc_impl)` and
+# the only definition of the public `malloc` (a weak alias to default_malloc,
+# which calls __libc_malloc_impl). A real linker lets the strong definition
+# win. tcc binds the weak one, and nothing in the archive can fix that:
+# extraction is driven by `malloc`, which ONLY lite_malloc.o defines, so
+# mallocng/malloc.o is never pulled in and reordering the archive changes
+# nothing. Both were tried.
+#
+# THE RESULT IS TWO ALLOCATORS IN ONE PROGRAM. malloc comes from
+# __simple_malloc -- a bump allocator that writes no mallocng header -- and
+# free comes from mallocng, which reads that header, walks to a null meta
+# pointer and dereferences it:
+#
+#     LITE-default_malloc          <- traced with the real musl, locally
+#     LITE-simple_malloc
+#     p=43a000 off=0 base=439ff0 meta=0000000000000000   SIGSEGV
+#
+# That is rung 3's crash, and the heap ladder's shape follows exactly: malloc
+# alone is fine, malloc+write is fine, and every rung that frees dies.
+#
+# THIS IS NOT A DEFECT IN mc-tcc. The gcc-built tcc control, same pin and same
+# arm64 patches, produces the identical crash from the identical archive -- so
+# it is a tcc limitation both arms share, and the reference arm has been
+# passing rung 3 on the ordering of `find`.
+#
+# Naming the six mallocng objects on the link line puts their strong
+# definitions in before the archive is searched. Measured on pristine musl
+# 1.2.5 at its pinned sha256:
+#
+#     archive only              malloc then free   SIGNAL 11
+#     mallocng named            malloc then free   RAN ok
+#                               free a LARGE block RAN ok
+#                               calloc/free        RAN ok
+#                               realloc then free  RAN ok
+#                               the rung-3 program RAN ok, "hosted ok argc=1"
+#
+# ONLY WHEN LINKING. A -c, -E or -S run must not be handed object files, and
+# autoconf compiles far more than it links.
+MALLOCNG=""
+for _o in malloc free realloc aligned_alloc malloc_usable_size donate; do
+  if [ -f "/work/src/musl-$MUSL_VER/obj/src/malloc/mallocng/$_o.o" ]; then
+    MALLOCNG="$MALLOCNG /work/src/musl-$MUSL_VER/obj/src/malloc/mallocng/$_o.o"
+  fi
+done
+if [ -n "$MALLOCNG" ]; then
+  mkdir -p "$PFX/lib/mallocng"
+  for _f in $MALLOCNG; do cp "$_f" "$PFX/lib/mallocng/"; done
+  say "  mallocng: $(ls "$PFX/lib/mallocng" | wc -l) objects named on every link"
+else
+  say "  mallocng: NO objects found -- malloc and free will disagree, see rungs.sh"
+fi
+
 cat > "$PFX/bin/cc-static" <<CCWRAP
 #!/bin/sh
-exec CCBIN -B TCCDIR -include sys/cdefs.h "\$@" -I/usr/include -L/usr/lib -static
+# See the note in rungs.sh: mallocng's objects are named explicitly because
+# tcc does not let a strong definition override a weak one from an archive.
+for a in "\$@"; do
+  case "\$a" in
+    -c|-E|-S) exec CCBIN -B TCCDIR -include sys/cdefs.h "\$@" -I/usr/include -L/usr/lib -static ;;
+  esac
+done
+exec CCBIN -B TCCDIR -include sys/cdefs.h "\$@" -I/usr/include -L/usr/lib -static MALLOCNGOBJS
 CCWRAP
-sed -i -e "s|CCBIN|$CC_BIN|" -e "s|-B TCCDIR|-B$TCCDIR|" "$PFX/bin/cc-static"
+sed -i -e "s|CCBIN|$CC_BIN|g" -e "s|-B TCCDIR|-B$TCCDIR|g" \
+       -e "s|MALLOCNGOBJS|$(ls "$PFX"/lib/mallocng/*.o 2>/dev/null | tr '\n' ' ')|" \
+       "$PFX/bin/cc-static"
 chmod 0755 "$PFX/bin/cc-static"
 CCAUTO="$PFX/bin/cc-static"
 

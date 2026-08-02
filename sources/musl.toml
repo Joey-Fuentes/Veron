@@ -35,6 +35,27 @@ license  = "MIT"
 dropped_asm = []
 dropped_c = ["src/complex/*.c"]   # tcc: "_Complex is not yet supported" (66 sites)
 
+# arch/aarch64/bits/float.h IS REWRITTEN, and that was not recorded here until
+# now. mc-tcc's long double is eight bytes (tcc-microc patch 0001); musl's
+# aarch64 header declares LDBL_MANT_DIG 113. Every `#if LDBL_MANT_DIG == 113`
+# arm in musl's math then runs a 113-bit algorithm over a 64-bit value. The
+# replacement is musl's OWN long-double-is-double configuration -- the values
+# every architecture where that holds already ships -- so this selects a
+# configuration musl supports rather than inventing a fourth. Written by
+# spikes/stage4/bridge/rungs.sh at rung 2.
+rewritten_headers = ["arch/aarch64/bits/float.h"]
+
+# mallocng's OBJECTS ARE NAMED ON THE LINK LINE, not left to libc.a. musl
+# selects its allocator with `#define malloc __libc_malloc_impl`
+# (mallocng/glue.h:23), so mallocng defines that symbol STRONGLY while
+# lite_malloc.c has a weak_alias for it and the only definition of the public
+# `malloc`. tcc binds the weak one, so malloc came from __simple_malloc -- a
+# bump allocator writing no header -- while free came from mallocng, which
+# read that header and dereferenced a null meta pointer. Measured with the
+# gcc-built tcc control as well: it does the same, so this is a tcc
+# limitation both arms share and not a defect in mc-tcc.
+link_order = ["src/malloc/mallocng/*.o named explicitly, ahead of libc.a"]
+
 [verification]
 runtime = "4-rung ladder passes: raw _start syscall, crt+libc startup, malloc, stdio"
 built   = "1349/1349 sources compile under tcc on aarch64; hosted hello world links and runs in a busybox-only box (stage3-to-stage4-reference, 2026-07-31)"
