@@ -1,0 +1,199 @@
+a compound assignment to a bitfield is a read-modify-write.
+
+IT LOADED THE WHOLE UNIT, APPLIED THE OPERATOR, AND STORED THE WHOLE UNIT:
+
+    str_x1,[x18,-8]!    # compound operator
+    ldr_x1,[x1]         # the whole unit, not the field
+    orr_x0,x1,x0
+    ldr_x1,[x18],8      # compound operator
+    strh_w0,[x1]        # no mask, no shift
+
+so `field |= x` landed on BIT ZERO of the unit instead of on the field. The
+plain `=` path has masked and shifted for a long time; only `|=`, `&=`, `+=`
+and the rest were missing it -- which is why the emitted code AROUND them
+looked correct and this took several passes to see.
+
+WHAT IT COST, AND IT IS THREE SYMBOLS IN ONE LINK. tcc merges symbol
+attributes with
+
+    sa->weak |= sa1->weak;                      tccgen.c, merge_symattr
+
+and `weak` is bit 6 of a sixteen-bit unit, so the bit never arrived and
+put_extern_sym2 chose STB_GLOBAL over STB_WEAK. musl declares three symbols
+hidden in a header and weak-aliases each in one translation unit while another
+defines it for real:
+
+    __acquire_ptc     pthread_impl.h + pthread_create.c + lock_ptc.c
+    __release_ptc     pthread_impl.h + pthread_create.c + lock_ptc.c
+    __malloc_atfork   fork.c + mallocng/glue.h
+
+With the weak attribute lost, all three were emitted GLOBAL and collided:
+
+    libc.a: error: '__acquire_ptc' defined twice
+                   '__release_ptc' defined twice
+                   '__malloc_atfork' defined twice
+
+That is where GNU make stopped at rung 3.5 of the stage-4 ladder, with all 27
+of its objects compiled and only the link left.
+
+MEASURED, on the four-line reduction, either side:
+
+    __attribute__((__visibility__("hidden"))) void __acquire_ptc(void);
+    static void dummy_0(void) { }
+    extern __typeof(dummy_0) __acquire_ptc __attribute__((__weak__, __alias__("dummy_0")));
+
+    gcc-built tcc, same pin and patches   WEAK
+    mc-tcc before                         GLOBAL
+    mc-tcc after                          WEAK
+
+AND IT IS NOT ONLY tcc's ATTRIBUTES. Every `|=`, `&=`, `^=`, `+=`, `-=` on a
+bitfield anywhere was writing to the wrong bits, silently. tcc keeps its
+function attributes in the same shape, and so does mallocng's struct meta.
+
+WHY THE FIX IS SHAPED LIKE THIS. The field description is captured BEFORE the
+right-hand side is evaluated, because evaluating it may touch another bitfield
+and overwrite the globals -- the same reason the plain assignment captures
+them first. The old field is then extracted into REGISTER_ONE without
+disturbing REGISTER_ZERO, so the operator sees exactly the two operands it
+would for an ordinary member, and the store is the same read-modify-write the
+plain path emits.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -4861,6 +4861,65 @@ void expression(void)
+ 		struct type* last_type = current_target;
+ 		int is_array_indexed = match("]", global_token->prev->s);
+ 
++		/* A COMPOUND ASSIGNMENT TO A BITFIELD IS ALSO A READ-MODIFY-WRITE,
++		 * and this path did not know that. It loaded the WHOLE unit, applied
++		 * the operator to it, and stored the WHOLE unit back:
++		 *
++		 *     str_x1,[x18,-8]!    # compound operator
++		 *     ldr_x1,[x1]         # the whole unit, not the field
++		 *     orr_x0,x1,x0
++		 *     ldr_x1,[x18],8      # compound operator
++		 *     strh_w0,[x1]        # no mask, no shift
++		 *
++		 * so `field |= x` landed on BIT ZERO of the unit instead of on the
++		 * field. The plain `=` path has done the masking and shifting for a
++		 * long time; only `|=`, `&=`, `+=` and the rest were missing it, which
++		 * is why the emitted code around them looked correct.
++		 *
++		 * WHAT IT COST. tcc merges symbol attributes with
++		 *
++		 *     sa->weak |= sa1->weak;                    tccgen.c, merge_symattr
++		 *
++		 * and `weak` is bit 6 of a sixteen-bit unit, so the bit never arrived
++		 * and put_extern_sym2 chose STB_GLOBAL over STB_WEAK. musl declares
++		 * __acquire_ptc, __release_ptc and __malloc_atfork hidden in a header
++		 * and weak-aliases each in one translation unit while another defines
++		 * it for real, so all three collided:
++		 *
++		 *     libc.a: error: '__acquire_ptc' defined twice
++		 *                    '__release_ptc' defined twice
++		 *                    '__malloc_atfork' defined twice
++		 *
++		 * which is where GNU make stopped at rung 3.5 of the stage-4 ladder.
++		 * A gcc-built tcc of the same pin emits WEAK for the same source.
++		 *
++		 * CAPTURED BEFORE THE RIGHT-HAND SIDE IS EVALUATED, for the same
++		 * reason the plain assignment captures them: evaluating it may touch
++		 * another bitfield and overwrite the globals. */
++		int cbf_off = pending_bitfield_offset;
++		int cbf_width = pending_bitfield_width;
++		int cbf_size = pending_bitfield_size;
++		int cbf_mask = 0;
++		long cbf_all;
++		long cbf_clear = 0;
++		pending_bitfield_width = 0;
++		if(0 != cbf_width)
++		{
++			cbf_mask = (1 << cbf_width) - 1;
++			/* `1 << 64` is 1, not zero -- see the note in the plain
++			 * assignment path. A full-width unit needs no extra masking. */
++			if((cbf_size * 8) >= 64)
++			{
++				cbf_clear = ~(((long)cbf_mask) << cbf_off);
++			}
++			else
++			{
++				cbf_all = 1;
++				cbf_all = (cbf_all << (cbf_size * 8)) - 1;
++				cbf_clear = (~(((long)cbf_mask) << cbf_off)) & cbf_all;
++			}
++		}
++
+ 		if(!is_array_indexed || !match("char*", current_target->name))
+ 		{
+ 			if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture)) load = "LOAD R1 R1 0\n";
+@@ -4901,6 +4960,27 @@ void expression(void)
+ 		emit_push(REGISTER_ONE, "compound operator");
+ 		emit_out(load);
+ 
++		if(0 != cbf_width)
++		{
++			/* REGISTER_ONE holds the whole unit and REGISTER_ZERO the
++			 * right-hand side. Extract the FIELD into REGISTER_ONE without
++			 * disturbing REGISTER_ZERO, so the operator below sees the same
++			 * two operands it would for an ordinary member. */
++			emit_move(REGISTER_TEMP2, REGISTER_ZERO, "compound bitfield: park the rhs");
++			emit_move(REGISTER_ZERO, REGISTER_ONE, "compound bitfield: unit via x0");
++			if(0 != cbf_off)
++			{
++				emit_move(REGISTER_ONE, REGISTER_ZERO, "compound bitfield: value");
++				emit_load_immediate(REGISTER_ZERO, cbf_off, "compound bitfield: shift");
++				emit_out("lsr_x0,x1,x0\n");
++			}
++			emit_move(REGISTER_ONE, REGISTER_ZERO, "compound bitfield: value");
++			emit_load_immediate(REGISTER_ZERO, cbf_mask, "compound bitfield: mask");
++			emit_out("and_x0,x1,x0\n");
++			emit_move(REGISTER_ONE, REGISTER_ZERO, "compound bitfield: old field");
++			emit_move(REGISTER_ZERO, REGISTER_TEMP2, "compound bitfield: rhs back");
++		}
++
+ 		if(should_apply_pointer_arithmetic) {
+ 			multiply_by_object_size(object_size);
+ 		}
+@@ -4908,7 +4988,41 @@ void expression(void)
+ 		operation = compound_operation(operator, current_target->is_signed);
+ 		emit_out(operation);
+ 		emit_pop(REGISTER_ONE, "compound operator");
+-		emit_out(store);
++		if(0 != cbf_width)
++		{
++			/* The same read-modify-write the plain assignment does:
++			 *     unit = (unit & ~(mask << off)) | ((value & mask) << off)
++			 * REGISTER_ZERO holds the new field value, REGISTER_ONE the
++			 * address. */
++			emit_move(REGISTER_TEMP2, REGISTER_ZERO, "bitfield: park the new value");
++			emit_move(REGISTER_ZERO, REGISTER_ONE, "bitfield: address via x0");
++			emit_move(REGISTER_TEMP, REGISTER_ZERO, "bitfield: address");
++			emit_move(REGISTER_ZERO, REGISTER_TEMP2, "bitfield: new value via x0");
++			emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: new value");
++			emit_load_immediate(REGISTER_ZERO, cbf_mask, "bitfield: mask");
++			emit_out("and_x0,x1,x0\n");
++			if(0 != cbf_off)
++			{
++				emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: new value");
++				emit_load_immediate(REGISTER_ZERO, cbf_off, "bitfield: shift");
++				emit_out("lsl_x0,x1,x0\n");
++			}
++			emit_move(REGISTER_TEMP2, REGISTER_ZERO, "bitfield: new bits in place");
++			emit_move(REGISTER_ZERO, REGISTER_TEMP, "bitfield: address");
++			emit_out(load_value(cbf_size, FALSE));
++			emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: old unit");
++			emit_load_immediate(REGISTER_ZERO, cbf_clear, "bitfield: clear mask");
++			emit_out("and_x0,x1,x0\n");
++			emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: cleared unit");
++			emit_move(REGISTER_ZERO, REGISTER_TEMP2, "bitfield: new bits");
++			emit_out("orr_x0,x1,x0\n");
++			emit_move(REGISTER_ONE, REGISTER_TEMP, "bitfield: address");
++			emit_out(store_value(cbf_size));
++		}
++		else
++		{
++			emit_out(store);
++		}
+ 		current_target = integer;
+ 	}
+ }

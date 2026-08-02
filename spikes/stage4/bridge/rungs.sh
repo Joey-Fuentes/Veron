@@ -938,61 +938,32 @@ mkdir -p "$PFX/bin"
 #
 # This was shadowing every project header, not just glob.h -- anything a build
 # ships its own copy of was silently losing to the sysroot version.
-# mallocng's OBJECTS ARE NAMED, NOT LEFT TO THE ARCHIVE.
+# mallocng NEEDED ITS OBJECTS NAMED HERE, AND NO LONGER DOES.
 #
 # musl selects its allocator with `#define malloc __libc_malloc_impl`
-# (mallocng/glue.h:23), so mallocng/malloc.o defines that symbol strongly while
-# lite_malloc.o carries `weak_alias(__simple_malloc, __libc_malloc_impl)` and
-# the only definition of the public `malloc`. mc-tcc emits that weak alias as
-# GLOBAL where a gcc-built tcc of the same pin emits WEAK -- measured, four
-# lines, in this repo's notes -- so the weak definition satisfied the
-# reference, mallocng's strong one was never pulled, and a program got malloc
-# from __simple_malloc (a bump allocator writing no header) and free from
-# mallocng, which read that header and dereferenced a null meta pointer.
+# (mallocng/glue.h:23), so mallocng defines that symbol strongly while
+# lite_malloc.c carries a weak_alias for it. mc-tcc emitted the weak alias as
+# GLOBAL, so it satisfied the reference, mallocng was never pulled from the
+# archive, and a program got malloc from a bump allocator and free from
+# mallocng -- rung 3's SIGSEGV. Naming the six objects worked around it.
 #
-# THAT IS RUNG 3's SIGSEGV, and the heap ladder's shape follows exactly: malloc
-# alone fine, malloc+write fine, every rung that frees dead. Naming the six
-# objects puts their strong definitions in before the archive is searched.
-# Measured on pristine musl 1.2.5 at its pinned sha256: without them
-# malloc-then-free is SIGNAL 11, with them rung 3's own program prints
-# "hosted ok argc=1" and exits 0.
+# THE CAUSE IS FIXED, in micro-c, by EXPERIMENT-zzzv: a compound assignment to
+# a bitfield is a read-modify-write, and `sa->weak |= sa1->weak` had been
+# landing on bit zero. The workaround is gone. Measured on pristine musl 1.2.5
+# at its pinned sha256, from a plain libc.a with nothing named:
 #
-# THIS IS A WORKAROUND AND IT IS WAITING ON A REAL FIX. The cause is micro-c
-# losing __attribute__((weak)) on a symbol that was declared before it was
-# weak-aliased. Until that is reduced and fixed in micro-c, this is what keeps
-# the ladder moving -- and it is harmless to the reference arm, whose compiler
-# gets the binding right and for which these objects are simply named twice
-# over a definition it would have chosen anyway.
-MALLOCNG=""
-for _o in malloc free realloc aligned_alloc malloc_usable_size donate; do
-  if [ -f "/work/src/musl-$MUSL_VER/obj/src/malloc/mallocng/$_o.o" ]; then
-    MALLOCNG="$MALLOCNG /work/src/musl-$MUSL_VER/obj/src/malloc/mallocng/$_o.o"
-  fi
-done
-if [ -n "$MALLOCNG" ]; then
-  mkdir -p "$PFX/lib/mallocng"
-  for _f in $MALLOCNG; do cp "$_f" "$PFX/lib/mallocng/"; done
-  NGOBJ="$(ls "$PFX"/lib/mallocng/*.o 2>/dev/null | tr '\n' ' ')"
-  say "  mallocng: $(ls "$PFX/lib/mallocng" | wc -l) objects named on every link"
-else
-  NGOBJ=""
-  say "  mallocng: NO objects found -- malloc and free may disagree, see rungs.sh"
-fi
+#     __acquire_ptc     lock_ptc.o GLOBAL, pthread_create.o WEAK
+#     __release_ptc     lock_ptc.o GLOBAL, pthread_create.o WEAK
+#     __malloc_atfork   mallocng GLOBAL,   fork.o WEAK
+#     malloc/free, calloc/realloc, fork, pthread_create+join, printf %f
+#                       all link and run
+NGOBJ=""
 
-# AND THE WRAPPER TOO, because configure links as well as compiles. A -c, -E
-# or -S run must not be handed object files, and autoconf compiles far more
-# than it links.
 cat > "$PFX/bin/cc-static" <<CCWRAP
 #!/bin/sh
-for a in "\$@"; do
-  case "\$a" in
-    -c|-E|-S) exec CCBIN -B TCCDIR -include sys/cdefs.h "\$@" -I/usr/include -L/usr/lib -static ;;
-  esac
-done
-exec CCBIN -B TCCDIR -include sys/cdefs.h "\$@" -I/usr/include -L/usr/lib -static MALLOCNGOBJS
+exec CCBIN -B TCCDIR -include sys/cdefs.h "\$@" -I/usr/include -L/usr/lib -static
 CCWRAP
-sed -i -e "s|CCBIN|$CC_BIN|g" -e "s|-B TCCDIR|-B$TCCDIR|g" \
-       -e "s|MALLOCNGOBJS|$NGOBJ|" "$PFX/bin/cc-static"
+sed -i -e "s|CCBIN|$CC_BIN|g" -e "s|-B TCCDIR|-B$TCCDIR|g" "$PFX/bin/cc-static"
 chmod 0755 "$PFX/bin/cc-static"
 CCAUTO="$PFX/bin/cc-static"
 
@@ -1204,13 +1175,11 @@ EOF
   fi
   rm -f r3dyn.bin
 
-  # $NGOBJ ON BOTH ROUTES, AND THIS IS WHY THE LAST FIX DID NOTHING.
-  #
-  # The mallocng objects were added to the cc-static WRAPPER, which is what
-  # configure gets as CC. These two lines use $CC directly -- the raw compiler
-  # -- so they never saw it, and rung 3 failed exactly as before while the
-  # wrapper above reported "6 objects named on every link". The measurement and
-  # the fix were looking at different compilers.
+  # $NGOBJ IS EMPTY NOW and stays on the line deliberately: when it held the
+  # mallocng objects it was added to the cc-static WRAPPER only, which is what
+  # configure gets as CC, while these two lines use $CC directly. Rung 3 then
+  # failed exactly as before while the log reported "6 objects named on every
+  # link" -- the measurement and the fix were looking at different compilers.
   if try_r3 "plain:" $CC -static -o r3.bin r3.c $NGOBJ; then
     R3=ok
   elif try_r3 "explicit:" $CC $HOSTED -nostdlib -static -o r3.bin \
@@ -1253,7 +1222,7 @@ EOF
       } > r3n.c
       rm -f r3n.bin r3n.out
       # $NGOBJ here too: the ladder must link the same way rung 3 does, or it
-      # measures a different program from the one that failed.
+      # measures a different program from the one that failed. Empty now.
       if ! $CC -static -o r3n.bin r3n.c $NGOBJ 2>/dev/null || [ ! -s r3n.bin ]; then
         printf '      %-26s did not compile\n' "$_n"
         return
