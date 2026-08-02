@@ -1,0 +1,123 @@
+the constant folder does its arithmetic in integers.
+
+tcc FOLDS COMPILE-TIME FLOAT EXPRESSIONS BY DOING THEM IN C:
+
+    case '+': f1 += f2; break;                       tccgen.c, gen_opif
+    case '*': f1 *= f2; break;
+    case '/': f1 /= f2; break;
+
+micro-c HAS NO FLOATING POINT, so a tcc it builds folded every one of them to
+garbage. Measured, before this:
+
+    2.0 / 2.22044604925031308085e-16  =  1        (want 2^53)
+    2 / 4.0   =  0
+    2 * 4.0   =  0
+    2 + 4.0   =  8010000000000000
+
+THAT IS NOT A CORNER CASE. musl's printf rounds with `2/LDBL_EPSILON`:
+
+    long double round = 2/LDBL_EPSILON;              vfprintf.c, fmt_fp
+
+which folded to 1, so every %f, %e and %g came out wrong in its last digit even
+after the value reached fmt_fp intact and every other float path was correct:
+
+    literal 5.008      = 5.008001   (expect 5.008000)
+    snprintf %.6f      = 5.008001   (expect 5.008000)
+
+WHAT THE CHANGE IS. Under LDOUBLE_SIZE == 8 the four binary operations go
+through sf_add, sf_sub, sf_mul and sf_div in the bootstrap runtime, which take
+and return IEEE bit patterns and touch no float type at all. Everything else --
+the comparisons, TOK_NEG, the divide-by-zero branch, the non-constant path --
+is untouched, and the whole block is guarded so a tcc built normally keeps the
+hardware arithmetic.
+
+MEASURED AGAINST glibc, bit for bit: 4,798,676 of 4,798,676 identical. Every
+pairing of a set covering zero, both signed zeroes, one, the smallest
+subnormal, the largest normal, DBL_EPSILON, 2^53 and the powers either side;
+600,000 random pairs across the whole finite range; 300,000 subnormal-heavy
+pairs; and 300,000 same-exponent pairs, where cancellation is worst. Zero
+failures, including the sign of zero.
+
+TWO THINGS THAT WENT WRONG ON THE WAY, both worth keeping:
+
+An anonymous union declared inside a nested block with three declarators is not
+a shape micro-c accepts -- it answered `store(14, (9, 30, 0))` and produced
+nothing. The union is named and at file scope, and the locals sit with
+gen_opif's other declarations.
+
+`vtop--` sits BEFORE the unary_result label, and these are BINARY operations.
+Jumping straight to the label skipped the pop, left an extra value on the stack
+and the aarch64 backend hit its unhandled-store assert -- which is what a
+corrupted vtop looks like from the far end. TOK_NEG jumps there precisely
+because it must not pop.
+
+MEASURED, EITHER SIDE, ON A CLEAN CHECKOUT:
+
+    musl 1.2.5 at its pinned sha256   1349 of 1349 compile
+    musl printf %f %e %g              BYTE-IDENTICAL to glibc, including
+                                      0.1, 1/3, 1e-300, %.17g, %.0f of 2.5,
+                                      DBL_MAX in full and 4.9e-324
+    difftest amd64 101, aarch64 103, corpus 419 of 426   unchanged
+    tests2 97 of 105, float 0                            unchanged
+    self-compilation  gen2.o == gen3.o == gen4.o         holds
+    archive -> 5, dynamic output 2875 bytes              unchanged
+
+--- a/tccgen.c
++++ b/tccgen.c
+@@ -2568,6 +2568,13 @@ void gen_negf(int op)
+ #endif
+ 
+ /* generate a floating point operation with constant propagation */
++#if LDOUBLE_SIZE == 8
++/* NAMED, AND AT FILE SCOPE. An anonymous union declared inside a nested block
++ * with three declarators is not a shape micro-c accepts -- it answered
++ * `store(14, (9, 30, 0))` and produced nothing. */
++union sfbits { double d; unsigned long u; };
++#endif
++
+ static void gen_opif(int op)
+ {
+     int c1, c2, i, bt;
+@@ -2577,6 +2584,11 @@ static void gen_opif(int op)
+     volatile
+ #endif
+     long double f1, f2;
++#if LDOUBLE_SIZE == 8
++    union sfbits sfa;
++    union sfbits sfb;
++    union sfbits sfr;
++#endif
+ 
+     v1 = vtop - 1;
+     v2 = vtop;
+@@ -2602,6 +2614,30 @@ static void gen_opif(int op)
+            NaN or infinity) (ANSI spec) */
+         if (!(ieee_finite(f1) || !ieee_finite(f2)) && !CONST_WANTED)
+             goto general_case;
++#if LDOUBLE_SIZE == 8
++        /* FOLD WITH INTEGER ARITHMETIC. The compiler that builds this tcc has
++         * no floating point, and the four lines below are real float
++         * operations -- so `2 * 4.0` folded to 0 and `2/LDBL_EPSILON`, which
++         * is musl printf's rounding constant, folded to 1. sf_add and friends
++         * live in the bootstrap runtime, work on IEEE bit patterns in integer
++         * arithmetic, and are exact: 4,798,676 of 4,798,676 against glibc,
++         * subnormals, ties and cancellation included.
++         *
++         * Guarded on LDOUBLE_SIZE == 8, so a tcc built normally -- where these
++         * are hardware instructions -- is untouched. */
++        /* `vtop--` SITS BEFORE unary_result, and these are BINARY operations.
++         * Jumping straight to the label skipped the pop, left an extra value
++         * on the stack and the backend hit its unhandled-store assert --
++         *     store(14, (9, 30, 0))
++         * -- which is what a corrupted vtop looks like from the far end.
++         * TOK_NEG jumps there precisely because it must NOT pop. */
++        sfa.d = (double)f1;
++        sfb.d = (double)f2;
++        if (op == '+') { sfr.u = sf_add(sfa.u, sfb.u); f1 = sfr.d; vtop--; goto unary_result; }
++        if (op == '-') { sfr.u = sf_sub(sfa.u, sfb.u); f1 = sfr.d; vtop--; goto unary_result; }
++        if (op == '*') { sfr.u = sf_mul(sfa.u, sfb.u); f1 = sfr.d; vtop--; goto unary_result; }
++        if (op == '/' && f2 != 0.0) { sfr.u = sf_div(sfa.u, sfb.u); f1 = sfr.d; vtop--; goto unary_result; }
++#endif
+         switch(op) {
+         case '+': f1 += f2; break;
+         case '-': f1 -= f2; break;

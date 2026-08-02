@@ -60,3 +60,13 @@ float strtof(const char* nptr, char** endptr);
 void qsort(void* base, unsigned long n, unsigned long size, void* compar);
 
 #endif
+
+/* SOFT-FLOAT FOR tcc's CONSTANT FOLDER. Declared here because tccgen.c reaches
+ * for them through the ordinary headers; the definitions are in impl/runtime.c
+ * and operate on IEEE bit patterns in integer arithmetic. See the note there
+ * for why tcc cannot use its own `f1 * f2` when micro-c is the compiler. */
+unsigned long sf_add(unsigned long a, unsigned long b);
+unsigned long sf_sub(unsigned long a, unsigned long b);
+unsigned long sf_mul(unsigned long a, unsigned long b);
+unsigned long sf_div(unsigned long a, unsigned long b);
+unsigned long sf_neg(unsigned long a);
