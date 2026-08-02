@@ -2733,7 +2733,16 @@ S=/work/lfs
 # reason this directory appears it may break your system." aarch64 has no lib64
 # in the first place; the note matters because gcc's t-aarch64-linux is what
 # would create one, and rung 11 already patches it for that reason.
-mkdir -p "$S/etc" "$S/var" "$S/usr/bin" "$S/usr/lib" "$S/usr/sbin" "$S/tools"
+# $S/tmp IS IN THIS LIST FOR A REASON THAT ONLY SHOWS UP AT BOOT.
+#
+# qemu shares this sysroot with the guest over 9p READ-ONLY, and the guest
+# mounts a tmpfs over its /tmp so the in-guest compile has somewhere to
+# write. `mount -t tmpfs none /mnt/sysroot/tmp` needs that directory to
+# EXIST on disk -- a mount point cannot be created on a read-only tree.
+# Without it the guest reports "skipped: no tmpfs for output" and the
+# VERON-GCC-IN-GUEST test silently never runs, which reads as a 9p problem.
+mkdir -p "$S/etc" "$S/var" "$S/usr/bin" "$S/usr/lib" "$S/usr/sbin" \
+         "$S/tools" "$S/tmp"
 for _i in bin lib sbin; do
   [ -e "$S/$_i" ] || ln -sfn "usr/$_i" "$S/$_i"
 done
@@ -4086,7 +4095,7 @@ head1 "RUNG 15 -- LFS chapter 6: busybox, in place of seventeen packages"
 #
 # Its only job is to give phase B a shell. Phase B runs configure scripts with
 # the sysroot bound as /, and a configure script is a shell script: without
-# /usr/bin/sh there is nothing to run one with. `busybox --install -s` is what
+# /usr/bin/sh there is nothing to run one with. The applet symlink loop is what
 # creates that name, and copying the binary alone does not.
 #
 # THE ONE THAT SHIPS IS BUILT IN PHASE B, by the final gcc, and overwrites this
@@ -4211,25 +4220,102 @@ if [ "$R14" = ok ]; then
         # nothing to run it with. stage4-complete does this immediately after
         # the copy and asserts the count; we copied and did not.
         #
-        # It must run with the sysroot as /, because --install writes symlinks
-        # relative to the running binary's idea of the filesystem. Here that
-        # means invoking it through the cross-built binary directly with a
-        # target directory, which busybox supports.
-        ( cd "$S/usr/bin" && ./busybox --install -s . 2>/dev/null ) || \
-          ( cd "$S/usr/bin" && for _a in $(./busybox --list 2>/dev/null); do
-              [ "$_a" = busybox ] || ln -sf busybox "$_a"
-            done )
+        # NOT `busybox --install`, AND THAT IS THE WHOLE OF THIS FIX.
+        #
+        # `busybox --install -s DIR` does not write the literal string
+        # "busybox" as each link's target. It resolves its OWN path first --
+        # xmalloc_readlink(bb_busybox_exec_path), i.e. /proc/self/exe -- and
+        # records that. Run from this box, every applet link came out
+        # pointing at /work/lfs/usr/bin/busybox.
+        #
+        # That path is correct HERE and nowhere else. Phase B binds the
+        # sysroot AS /, so the same file is /usr/bin/busybox and /work/lfs
+        # does not exist. Runs 117, 118 and 119 all died at
+        #
+        #     bwrap: execvp /usr/bin/sh: No such file or directory
+        #
+        # before a single phase B rung ran -- a symlink that exists but whose
+        # target does not resolve gives exactly ENOENT on exec. Phase A never
+        # noticed because `[ -e ]` FOLLOWS the link, and in this box the
+        # target does resolve.
+        #
+        # hermetic-gcc15.yml uses --install and is fine, which stalled the
+        # diagnosis for two rounds: it runs the command from INSIDE box15.sh,
+        # where the sysroot is already /, so the path it records is correct
+        # in the namespace that later uses it. Same command, different
+        # sandbox, opposite result.
+        #
+        # `ln -sf busybox "$_a"` writes the literal target and resolves
+        # against the link's own directory in ANY root. That is what the
+        # initramfs loop in hermetic-gcc15.yml does, for the same reason.
+        #
+        # SKIP THE busybox ENTRY. It IS in --list, and `ln -sf busybox
+        # busybox` would replace the real binary with a link to itself --
+        # the whole sysroot userland gone in one loop iteration.
+        # DO NOT LINK OVER A REAL BINARY THAT IS ALREADY THERE.
+        #
+        # Rung 13 installed glibc into this directory ~18 binaries ago, and
+        # busybox has an applet called `ldd` -- so an unguarded loop replaces
+        # glibc's ldd with a busybox symlink. `--install` did that too, which
+        # made it easy to wave through as "not a regression"; it is still a
+        # package's file being silently replaced by a different program.
+        #
+        # The guard is general rather than an ldd special case: anything that
+        # is already a regular file here was installed by a rung that meant
+        # it, and an applet must not shadow it. Symlinks ARE overwritten, so
+        # re-running over a restored sysroot still refreshes the farm.
+        ( cd "$S/usr/bin"
+          _kept=""
+          for _a in $(./busybox --list 2>/dev/null); do
+            [ "$_a" = busybox ] && continue
+            if [ -e "$_a" ] && [ ! -L "$_a" ]; then
+              _kept="$_kept $_a"; continue
+            fi
+            ln -sf busybox "$_a"
+          done
+          [ -n "$_kept" ] && printf '    kept, already real binaries:%s\n' "$_kept"
+          : )
+        # R15=ok GOES HERE, BEFORE THE CHECKS, NOT AFTER THEM.
+        #
+        # It used to sit below the applet-count test, so a run that linked
+        # nothing set R15=FAIL and then had it overwritten by R15=ok two
+        # lines later. Every check from here down can override it, which is
+        # what the static test below has always assumed.
+        R15=ok
         _n=$(ls "$S/usr/bin" | wc -l)
         say "    applets linked into the sysroot: $_n"
         if [ "$_n" -lt 100 ]; then
-          say "    TOO FEW -- the sysroot has no shell, and rungs 16 and 17"
-          say "    run configure scripts inside it. Not continuing."
+          say "    TOO FEW -- the sysroot has no shell, and phase B runs"
+          say "    configure scripts inside it. Not continuing."
           R15=FAIL
         fi
-        # THE ONE THAT MATTERS MOST, NAMED. Everything above this rung uses
-        # the box's /bin; everything below uses the sysroot's.
-        [ -e "$S/usr/bin/sh" ] || say "    NO /usr/bin/sh IN THE SYSROOT"
-        R15=ok
+        # THE ONE THAT MATTERS MOST, AND `-e` IS THE WRONG QUESTION.
+        #
+        # This was `[ -e "$S/usr/bin/sh" ]`, which FOLLOWS the symlink and so
+        # answered yes about a sysroot phase B could not enter. Read the
+        # TARGET instead: it must be relative, or it is only valid in this
+        # box. Set after R15=ok, matching the static check below.
+        _lt=$(readlink "$S/usr/bin/sh" 2>/dev/null || true)
+        case "$_lt" in
+          busybox)
+            say "    /usr/bin/sh -> busybox   (relative; resolves in any root)" ;;
+          "")
+            say "    /usr/bin/sh IS NOT A SYMLINK -- the applet loop did not run"
+            R15=FAIL ;;
+          /*)
+            say "    /usr/bin/sh -> $_lt"
+            say "    ABSOLUTE, so it names a path that exists only in this box."
+            say "    Phase B binds the sysroot as / and bwrap cannot exec it."
+            R15=FAIL ;;
+          *)
+            say "    /usr/bin/sh -> $_lt   (unexpected target)"
+            R15=FAIL ;;
+        esac
+        # AND THE BINARY EVERY ONE OF THOSE LINKS POINTS AT.
+        if [ ! -f "$S/usr/bin/busybox" ] || [ -L "$S/usr/bin/busybox" ]; then
+          say "    /usr/bin/busybox is not a regular file -- it was overwritten"
+          R15=FAIL
+        fi
         say "    busybox: $(wc -c < busybox) bytes"
         say "    applets: $(./busybox --list 2>/dev/null | wc -l)"
         # THE BINARY ITSELF, not a grep for a substring. A static ELF has no
@@ -4611,6 +4697,16 @@ if [ "$R16" = ok ] && [ "$R15" = ok ]; then
   for _n in sh make gcc g++ ld as; do
     [ -e "$S/usr/bin/$_n" ] || { say "  phase A: $S/usr/bin/$_n MISSING"; _pa=no; }
   done
+  # AND THAT THE SHELL IS REACHABLE FROM A DIFFERENT ROOT, which is the only
+  # thing phase B needs from this directory before it can run at all. `-e`
+  # above follows the link and cannot tell; three runs wrote this marker over
+  # a sysroot whose /usr/bin/sh pointed at a path that exists only here.
+  case "$(readlink "$S/usr/bin/sh" 2>/dev/null || true)" in
+    busybox) : ;;
+    *) say "  phase A: /usr/bin/sh does not point at busybox relatively --"
+       say "  phase B would fail to exec a shell. Marker withheld."
+       _pa=no ;;
+  esac
   if [ "$_pa" = yes ]; then
     printf 'phase A complete: cross toolchain, glibc %s, gcc %s pass 2, busybox\n' \
       "$GLIBC" "$GCC15" > "$S/.phase-a-complete"
@@ -4644,8 +4740,8 @@ printf '    %-40s %s\n' "12  LFS 5.4 linux API headers"          "$R12"
 printf '    %-40s %s\n' "11.7 m4/flex/bison/python (after 12)"   "$R117"
 printf '    %-40s %s\n' "13  LFS 5.5 glibc"                      "$R13"
 printf '    %-40s %s\n' "14  LFS 5.6 libstdc++"                  "$R14"
-printf '    %-40s %s\n' "16  ch6 binutils + gcc pass 2"          "$R16"
 printf '    %-40s %s\n' "15  busybox, cross by pass 1 (replaced in B)" "$R15"
+printf '    %-40s %s\n' "16  ch6 binutils + gcc pass 2"          "$R16"
 say ""
 if [ "$R20" = ok ]; then
   say "    EVERYTHING BUILT. The kernel and initramfs are in /out and the"

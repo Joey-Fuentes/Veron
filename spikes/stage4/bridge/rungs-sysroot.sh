@@ -235,7 +235,7 @@ if [ "$B0" = ok ]; then
     case "$pk" in openssl) _vflag=version ;; *) _vflag=--version ;; esac
     # A SYMLINK IS NOT AN INSTALLED PACKAGE, AND THIS IS WHERE busybox LIES.
     #
-    # Rung 15 ends with `busybox --install -s .`, which puts a symlink in
+    # Rung 15 ends with an applet symlink loop, which puts a symlink in
     # /usr/bin for EVERY applet busybox has -- and busybox has bc, dc, patch,
     # awk and more. A probe of "does the name exist and answer --version"
     # therefore reports the applet as the package, and the real one is never
@@ -470,7 +470,12 @@ if [ "$B2" = ok ]; then
   if fetch "/in/binutils-$BINUTILS_LFS" binutils; then
     _d=$FDIR
     rm -rf "$W/b-binutils" && mkdir -p "$W/b-binutils" && cd "$W/b-binutils"
-    if "$_d/configure" --prefix=/usr --enable-gold=no --enable-ld=default \
+    # NO --enable-gold AND NO --enable-ld. An earlier revision passed
+    # --enable-gold=no --enable-ld=default; neither stage4-complete nor
+    # hermetic-gcc15 passes either flag, and neither does the book. It was
+    # mine, unsourced, and binutils' own defaults are what the working jobs
+    # rely on.
+    if "$_d/configure" --prefix=/usr \
          --enable-plugins --enable-shared --disable-werror \
          --enable-64-bit-bfd --enable-new-dtags --enable-gprofng=no \
          --disable-nls > c.log 2>&1 \
@@ -632,10 +637,42 @@ if [ "$B4" = ok ]; then
         # holding the pass-1 copy. But that is an ARGUMENT, and this file
         # holds everything else to a measurement. B7 compares against this.
         sha256sum busybox | cut -d" " -f1 > "$W/busybox.sha"
-        ( cd /usr/bin && ./busybox --install -s . 2>/dev/null ) || \
-          ( cd /usr/bin && for _a in $(./busybox --list 2>/dev/null); do
-              [ "$_a" = busybox ] || ln -sf busybox "$_a"; done )
-        B5=ok
+        # THE SAME RELATIVE-SYMLINK LOOP AS RUNG 15, AND FOR ONE REASON MORE.
+        #
+        # `busybox --install` records its own RESOLVED path as each link's
+        # target, so the links only work in the root it ran in. Here that
+        # root is the sysroot, so /usr/bin/busybox would be correct in this
+        # sandbox and in the guest's chroot over 9p -- this is not the bug
+        # that stopped runs 117-119, which was rung 15 running --install from
+        # the BOX.
+        #
+        # It is changed anyway, because this sysroot outlives this sandbox:
+        # the workflow caches it, and tool-probe restores it somewhere else.
+        # Relative links are correct everywhere absolute ones are, and
+        # correct in more places. Two rungs writing the same directory two
+        # different ways is also how the next reader gets misled.
+        # SAME GUARD AS RUNG 15's. By this rung /usr/bin holds glibc's
+        # binaries, binutils pass 2, gcc pass 2, make, and everything B1
+        # built -- and busybox has applets named ldd, ar and strings. An
+        # unguarded farm would shadow real programs with applets, and the
+        # kernel build in B6 runs immediately after.
+        ( cd /usr/bin
+          _kept=""
+          for _a in $(./busybox --list 2>/dev/null); do
+            [ "$_a" = busybox ] && continue
+            if [ -e "$_a" ] && [ ! -L "$_a" ]; then
+              _kept="$_kept $_a"; continue
+            fi
+            ln -sf busybox "$_a"
+          done
+          [ -n "$_kept" ] && printf '    kept, already real binaries:%s\n' "$_kept"
+          : )
+        if [ ! -f /usr/bin/busybox ] || [ -L /usr/bin/busybox ]; then
+          say "    /usr/bin/busybox is not a regular file -- it was overwritten"
+          B5=FAIL
+        else
+          B5=ok
+        fi
         say "    busybox: $(wc -c < busybox) bytes, static, $(./busybox --list | wc -l) applets"
         say "    built by: $(gcc --version 2>&1 | head -1)"
       fi
@@ -888,19 +925,29 @@ echo "=== VERON-GCC-IN-GUEST: the compiler, inside the kernel it built ==="
 # OPTIONAL AND NON-FATAL. qemu offers the sysroot over 9p; if the share is
 # absent, or 9p is not in this kernel, this is skipped and the boot still
 # counts. The share is READ-ONLY, so the compile cannot write into it --
-# a tmpfs is bound over the chroot's /tmp for the output.
+# a tmpfs is mounted OVER the read-only tree's /tmp for the output. The VFS
+# allows that even on a ro mount, which is stage4-complete's note and its
+# construct -- an earlier revision here used `mount --bind` from a scratch
+# directory, which was invented rather than taken from the job that boots.
+#
+# msize=262144 matters: the default 9p transfer unit is small and gcc reads
+# several hundred files over this mount. Without it the compile is slow
+# enough under TCG to look like a hang.
 if mount -t 9p -o trans=virtio,version=9p2000.L,ro,msize=262144 \
          veronsysroot /mnt/sysroot 2>/dev/null; then
   echo "   9p sysroot mounted read-only"
   if [ -x /mnt/sysroot/usr/bin/gcc ]; then
-    mkdir -p /tmp/out
-    mount --bind /tmp/out /mnt/sysroot/tmp 2>/dev/null
-    printf 'int main(void){return 42;}\n' > /tmp/out/g.c
-    if chroot /mnt/sysroot /usr/bin/gcc /tmp/g.c -o /tmp/g 2>/tmp/out/g.err; then
-      chroot /mnt/sysroot /tmp/g
-      echo "VERON-GCC-IN-GUEST ok compiled and ran, rc=$? (expect 42)"
+    if mount -t tmpfs none /mnt/sysroot/tmp 2>/dev/null; then
+      printf 'int main(void){return 42;}\n' > /mnt/sysroot/tmp/g.c
+      echo "   gcc        : $(chroot /mnt/sysroot /usr/bin/gcc --version 2>&1 | head -1)"
+      if chroot /mnt/sysroot /usr/bin/gcc -O2 -o /tmp/g /tmp/g.c 2>/mnt/sysroot/tmp/g.err; then
+        chroot /mnt/sysroot /tmp/g
+        echo "VERON-GCC-IN-GUEST ok compiled and ran, rc=$? (expect 42)"
+      else
+        echo "VERON-GCC-IN-GUEST compile failed: $(head -1 /mnt/sysroot/tmp/g.err)"
+      fi
     else
-      echo "VERON-GCC-IN-GUEST compile failed: $(head -1 /tmp/out/g.err)"
+      echo "VERON-GCC-IN-GUEST skipped: no tmpfs for output"
     fi
   else
     echo "VERON-GCC-IN-GUEST skipped: no gcc in the shared sysroot"

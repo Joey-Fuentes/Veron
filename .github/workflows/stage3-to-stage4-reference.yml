@@ -1183,6 +1183,16 @@ jobs:
             exit 0
           fi
           mkdir -p "$BOX/pb"
+          # THE ENTRY POINT, READ ON THE HOST, BEFORE ANY NAMESPACE EXISTS.
+          #
+          # Three runs died on `bwrap: execvp /usr/bin/sh: No such file or
+          # directory` with no way to tell WHY from the log: bwrap says the
+          # path failed, not what the path pointed at. Reading it out here
+          # costs one line and shows the symlink target itself, so a repeat
+          # names its own cause instead of needing another round.
+          echo "  sysroot entry point, as it exists on the host:"
+          ls -ld box/work/lfs/usr/bin/sh box/work/lfs/usr/bin/busybox 2>&1 \
+            | sed 's/^/    /'
           bwrap \
             --unshare-all \
             --die-with-parent \
