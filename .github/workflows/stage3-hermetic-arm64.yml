@@ -1419,6 +1419,69 @@ jobs:
           fi
           echo "    stage 3 end to end: $s3ok"
 
+          say '10b. libtcc1 for arm64 -- OUR tcc builds its own runtime'
+          # THE COMPILER-SUPPORT LIBRARY, BUILT BY THE COMPILER IT SUPPORTS.
+          #
+          # Step 13's census splits gen2's undefined symbols into two buckets
+          # with different owners, and this is the one that needs no new rung:
+          #
+          #     __addtf3 __divtf3 __eqtf2 __extenddftf2 __extendsftf2
+          #     __fixtfdi __fixunstfdi __floatunditf __floatunsitf __getf2
+          #     __gttf2 __letf2 __lttf2 __multf3 __netf2 __subtf3
+          #     __trunctfdf2 __trunctfsf2
+          #
+          # -- eighteen soft-float quad helpers that live in tcc's own lib/,
+          # plus the __atomic_ and __builtin_ helpers beside them. The Makefile
+          # names the set for this target:
+          #
+          #     ARM64_O  = lib-arm64.o $(COMMON_O)
+          #     COMMON_O = stdatomic.o atomic.o builtin.o alloca.o alloca-bt.o
+          #                                                    lib/Makefile:41,43
+          #
+          # ALL BUT ONE OF THEM. alloca-bt.S is the BOUNDS-CHECKING alloca and
+          # references __bound_new_region, which lives in bcheck.o and is only
+          # built for -b. Linking it in makes every program fail with an
+          # undefined symbol that has nothing to do with the program -- which
+          # is exactly what it did on the first attempt here. The plain
+          # alloca.S is the one this configuration wants.
+          #
+          # THE .S FILES GO THROUGH THE SAME COMPILER. tcc preprocesses and
+          # assembles them itself, using the arm64 assembler the patch series
+          # supplies, so atomic.S and alloca.S are built by mc-tcc like the
+          # rest. Nothing here is borrowed.
+          LIBTCC1=""
+          if [ -s /out/mc-tcc ]; then
+            l1ok=yes
+            for f in lib/lib-arm64.c lib/stdatomic.c lib/builtin.c \
+                     lib/atomic.S lib/alloca.S; do
+              o=/work/l1-$(basename "$f" | tr './' '__').o
+              set +e
+              timeout 120 /out/mc-tcc -B/in/tcc-src -I/in/tcc-src \
+                          -I/in/tcc-src/include -c -o "$o" "/in/tcc-src/$f" \
+                          2>/work/l1.err
+              lrc=$?
+              set -e
+              if [ "$lrc" = 0 ] && [ -s "$o" ]; then
+                printf '    %-20s %8s bytes\n' "$(basename "$f")" "$(wc -c < "$o")"
+                LIBTCC1="$LIBTCC1 $o"
+              else
+                printf '    %-20s DID NOT BUILD rc=%s\n' "$(basename "$f")" "$lrc"
+                grep -av '^[A-Z][0-9]*$' /work/l1.err | head -2 | sed 's/^/        /'
+                l1ok=no
+              fi
+            done
+            # NON-GATING, like the rungs around it. If a piece is missing the
+            # suite below simply links without it and the tests that needed it
+            # report the symbol by name, which is more useful than stopping.
+            if [ "$l1ok" = yes ]; then
+              echo "    libtcc1: 5 of 5 objects, all built by mc-tcc"
+            else
+              echo "    libtcc1: incomplete -- the suite links without it"
+            fi
+          else
+            echo "    skipped: no mc-tcc was produced"
+          fi
+
           say "11. tcc's OWN TEST SUITE -- every tests2 program, compiled and run"
           # tcc ships 129 programs in tests/tests2, each with a .expect file
           # holding the exact output it must produce. They want <stdio.h>, a
@@ -1589,8 +1652,16 @@ jobs:
               # mistake costing two local results.
               rm -f t2.bin t2.out t2.err t2.all
               set +e
+              # LINKED AGAINST OUR OWN libtcc1 (step 10b). Two programs
+              # failed for want of it and named the symbols:
+              #   111_conversion       __fixunstfsi
+              #   136_atomic_gcc_style __atomic_store_4, __atomic_load_4,
+              #                        __atomic_compare_exchange_4
+              # Those are compiler-support routines, not library calls the
+              # test makes, so their absence measured the harness rather than
+              # the compiler.
               timeout 60 /out/mc-tcc -B/in/tcc-src -I"$SH" -nostdlib -static \
-                          -o t2.bin "$c" $extra "$SH/crt.c" 2>t2.err
+                          -o t2.bin "$c" $extra "$SH/crt.c" $LIBTCC1 2>t2.err
               c2=$?
               set -e
               if [ "$c2" != 0 ] || [ ! -s t2.bin ]; then
@@ -1851,6 +1922,10 @@ jobs:
               objs="gen2.o"
               if [ -s rt.o ]; then objs="$objs rt.o"; fi
               if [ -s sj.o ]; then objs="$objs sj.o"; fi
+              # AND libtcc1, which step 10b built with this same compiler.
+              # Eighteen of the sixty-seven undefined symbols were in that
+              # bucket; the census below now reports what is genuinely left.
+              objs="$objs$LIBTCC1"
               rtobjs=${objs#gen2.o}
               echo "    step B: linking gen2 from $objs"
               set +e
