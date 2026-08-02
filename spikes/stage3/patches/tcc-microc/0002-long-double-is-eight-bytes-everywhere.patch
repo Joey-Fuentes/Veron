@@ -1,0 +1,212 @@
+long double is eight bytes EVERYWHERE, not only in its size.
+
+PATCH 0001 CHANGED THE SIZE AND LEFT FIVE PLACES BEHIND. It sets LDOUBLE_SIZE
+to 8 so the compiler is consistent with the eight-byte long double micro-c
+gives it, and says why at length. arm64-gen.c went on deciding five separate
+things as though the type were binary128:
+
+  arm64_type_size    answered 4 -- a log2 size meaning SIXTEEN bytes -- so a
+                     long double argument got a Q register and sixteen bytes
+                     of stack for an eight-byte value
+  load               moved it with `mov v.16b, v.16b` instead of `fmov d,d`
+  gen_opf            sent every arithmetic operation and comparison to
+                     __addtf3, __lttf2 and the rest
+  gen_cvt_itof       sent int -> long double to __floatunsitf
+  gen_cvt_ftoi       sent long double -> int to __fixunstfsi
+  gen_cvt_ftof       sent double <-> long double to __extenddftf2/__trunctfdf2
+
+Each reads or writes sixteen bytes of a type that occupies eight.
+
+MEASURED, and every failure is silent rather than loud:
+
+    long double y = x;          x = 5.008
+    y                           5000000000000000
+    (expect)                    4014083126e978d5
+
+WHERE IT BIT. musl's printf reads every floating-point argument into a long
+double member --
+
+    case DBL: arg->f = va_arg(*ap, double); break;      vfprintf.c, pop_arg
+
+-- so printf("%f", 5.008) formatted garbage and gave 0.000000, and __floatscan
+returns long double on the way out of strtod, so strtod("5.008") did not
+compare equal to its own literal. Both measured at rung 3 of the stage-4
+ladder:
+
+    literal 5.008      = 0.000000  (expect 5.008000)
+    5.008 == strtod    = 0         (expect 1)
+    snprintf %.6f      = 0.000000  (expect 5.008000)
+
+while three lines below, the same value's bits were exact and the same value
+arrived through varargs intact:
+
+    5.008 raw bits     = 40140831 26e978d5
+    through varargs    = 40140831 26e978d5
+
+THAT PAIR IS WHAT NAMED IT, and it is why the probe was added: printf cannot
+distinguish "the value never arrived" from "the formatter is broken", because
+both print 0.000000. With the constant right and the argument passing right,
+only the relationship between the two float types was left -- and that is the
+one thing patch 0001 changed and did not finish changing.
+
+FIXING ONE SITE AT A TIME WOULD HAVE SHIPPED FOUR BROKEN COMPILERS. Correcting
+gen_cvt_ftof alone left long double PARAMETERS wrong, because conversion and
+classification are separate decisions. Correcting those two broke the
+SELF-COMPILATION FIXPOINT: tcc folds an integer constant into a float with
+
+    vtop->c.ld = (uint32_t)vtop->c.i;                   tccgen.c:3303
+
+so a tcc COMPILED BY mc-tcc ran that through __floatunsitf and every
+`(double)1000` it folded came out zero -- while mc-tcc itself, compiled by
+micro-c, got it right. gen2.o and gen3.o then disagreed by exactly those two
+constants, at the same offset the float gap has always shown up at. The five
+sites are one change and are made together.
+
+WHAT THE CHANGE IS. With the two types identical in representation, double to
+long double is a no-op, float to long double is the ordinary fcvt, arithmetic
+is the ordinary double path, and the size is three rather than four. Every
+guard is on LDOUBLE_SIZE == 8, so a tcc built normally -- where long double
+really is binary128 -- keeps the helpers and the wide classification.
+
+IT ALSO REMOVES A DEPENDENCY. Before this, `long double y = x;` in any program
+mc-tcc compiled emitted a call to __extenddftf2 and would not link without
+libtcc1.a. It now needs neither.
+
+MEASURED, ON A CLEAN CHECKOUT OF main, EITHER SIDE:
+
+    difftest amd64       101 pass, 0 fail, 3 known gaps      unchanged
+    difftest aarch64     103 pass, 0 fail, 3 known gaps      unchanged
+    stage 2 corpus       419 of 426                          unchanged
+    macro encodings, 64-bit immediates, the zzb widening     unchanged
+    tests2 through mc-tcc 96 of 105, 0 float-blocked         unchanged
+    self-compilation     gen2.o == gen3.o == gen4.o          restored
+    archive, dynamic output, hosted link                     unchanged
+
+    long double conversions, all five directions             now correct
+    (double)1000 folded by gen2                              now correct
+
+--- a/arm64-gen.c
++++ b/arm64-gen.c
+@@ -272,7 +272,18 @@ static int arm64_type_size(int t)
+     case VT_STRUCT: return 3;
+     case VT_FLOAT: return 2;
+     case VT_DOUBLE: return 3;
++#if LDOUBLE_SIZE == 8
++    /* EIGHT BYTES, LIKE THE SIZE SAYS. This is a log2 size and every caller
++     * uses it to lay out arguments and returns: 4 means sixteen bytes, so a
++     * long double parameter was given a Q register and sixteen bytes of stack
++     * while the value occupies eight. Passing a double where a long double was
++     * declared then arrived as garbage even after gen_cvt_ftof was corrected,
++     * because the conversion is a no-op and the CLASSIFICATION was still the
++     * binary128 one. */
++    case VT_LDOUBLE: return 3;
++#else
+     case VT_LDOUBLE: return 4;
++#endif
+     case VT_BOOL: return 0;
+     case VT_VOID: return 0;
+     }
+@@ -557,7 +568,12 @@ ST_FUNC void load(int r, SValue *sv)
+ 
+     if (svr < VT_CONST) {
+         if (IS_FREG(r) && IS_FREG(svr))
++#if LDOUBLE_SIZE == 8
++            /* an 8-byte long double moves with fmov d,d like a double */
++            if (0)
++#else
+             if (svtt == VT_LDOUBLE)
++#endif
+                 o(0x4ea01c00 | fltr(r) | fltr(svr) << 5);
+                     // mov v(r).16b,v(svr).16b
+             else
+@@ -1849,7 +1865,16 @@ ST_FUNC void gen_opf(int op)
+ {
+     uint32_t x, a, b, dbl;
+ 
++#if LDOUBLE_SIZE == 8
++    /* NOT THE BINARY128 HELPERS -- see the note in gen_cvt_ftof. Every
++     * arithmetic operation and every comparison on a long double went to
++     * __addtf3, __lttf2 and the rest, which take sixteen-byte operands. The
++     * ordinary double path below is already right for an eight-byte type; it
++     * only had to be reached. */
++    if (0) {
++#else
+     if (vtop[0].type.t == VT_LDOUBLE) {
++#endif
+         CType type = vtop[0].type;
+         int func = 0;
+         int cond = -1;
+@@ -1880,7 +1905,7 @@ ST_FUNC void gen_opf(int op)
+         return;
+     }
+ 
+-    dbl = vtop[0].type.t != VT_FLOAT;
++    dbl = vtop[0].type.t != VT_FLOAT;   /* long double lands here too, as 8 */
+     gv2(RC_FLOAT, RC_FLOAT);
+     assert(vtop[-1].r < VT_CONST && vtop[0].r < VT_CONST);
+     a = fltr(vtop[-1].r);
+@@ -1964,6 +1989,17 @@ ST_FUNC void gen_cvt_csti(int t)
+ 
+ ST_FUNC void gen_cvt_itof(int t)
+ {
++#if LDOUBLE_SIZE == 8
++    /* int -> long double is int -> double here. This is the one that broke
++     * the self-compilation fixpoint: tcc folds an integer constant into a
++     * float with
++     *     vtop->c.ld = (uint32_t)vtop->c.i;          tccgen.c:3303
++     * so a tcc COMPILED BY mc-tcc ran that through __floatunsitf and every
++     * `(double)1000` it folded came out zero -- while mc-tcc itself, compiled
++     * by micro-c, got it right. gen2 and gen3 disagreed by exactly those two
++     * constants. */
++    if (t == VT_LDOUBLE) t = VT_DOUBLE;
++#endif
+     if (t == VT_LDOUBLE) {
+         int f = vtop->type.t;
+         int func = (f & VT_BTYPE) == VT_LLONG ?
+@@ -1993,6 +2029,11 @@ ST_FUNC void gen_cvt_itof(int t)
+ 
+ ST_FUNC void gen_cvt_ftoi(int t)
+ {
++#if LDOUBLE_SIZE == 8
++    /* long double -> int is double -> int here. Same reason. */
++    if ((vtop->type.t & VT_BTYPE) == VT_LDOUBLE)
++        vtop->type.t = (vtop->type.t & ~VT_BTYPE) | VT_DOUBLE;
++#endif
+     if ((vtop->type.t & VT_BTYPE) == VT_LDOUBLE) {
+         int func = (t & VT_BTYPE) == VT_LLONG ?
+           (t & VT_UNSIGNED ? TOK___fixunstfdi : TOK___fixtfdi) :
+@@ -2027,6 +2068,34 @@ ST_FUNC void gen_cvt_ftof(int t)
+     if (t == f)
+         return;
+ 
++#if LDOUBLE_SIZE == 8
++    /* LONG DOUBLE IS DOUBLE HERE, AND THE CONVERSION HAS TO AGREE.
++     *
++     * tcc-microc patch 0001 sets LDOUBLE_SIZE to 8 so the compiler is
++     * consistent with the eight-byte long double micro-c gives it. This
++     * function was left routing every long double conversion through the
++     * binary128 helpers -- __extenddftf2, __trunctfdf2 -- which read and write
++     * SIXTEEN bytes for a type that now occupies eight. Measured:
++     *
++     *     long double y = x;   x = 5.008
++     *     y                    5000000000000000, not 4014083126e978d5
++     *
++     * That is exactly what musl's printf does with every %f argument
++     * (`arg->f = va_arg(*ap, double)` into a long double member), and what
++     * __floatscan does on the way out of strtod -- so printf("%f") produced
++     * 0.000000 and strtod returned a value that did not compare equal to its
++     * own literal, while the literal's bits were exact and the argument
++     * arrived through varargs intact.
++     *
++     * With the two types identical in representation, double <-> long double
++     * is a no-op and float <-> long double is the ordinary fcvt the branch
++     * below already emits. */
++    if (t == VT_LDOUBLE) t = VT_DOUBLE;
++    if (f == VT_LDOUBLE) f = VT_DOUBLE;
++    if (t == f)
++        return;
++#endif
++
+     if (t == VT_LDOUBLE || f == VT_LDOUBLE) {
+         int func = (t == VT_LDOUBLE) ?
+             (f == VT_FLOAT ? TOK___extendsftf2 : TOK___extenddftf2) :
