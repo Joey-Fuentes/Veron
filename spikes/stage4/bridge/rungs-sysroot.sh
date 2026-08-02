@@ -481,24 +481,67 @@ if [ "$B1" = ok ]; then
          --enable-kernel="${ENABLE_KERNEL:-5.4}" \
          libc_cv_slibdir=/usr/lib > c.log 2>&1 \
        && timeout 7200 make -j"$NP" > b.log 2>&1 \
-       && make install > i.log 2>&1; then
+       && make install PERL=/bin/true > i.log 2>&1; then
       B2=ok
       say "    glibc rebuilt natively: $(/usr/bin/ldd --version 2>&1 | head -1)"
+
+      # PERL=/bin/true, AND IT IS A DECISION WITH NO PRECEDENT IN THIS REPO.
+      #
+      # glibc's install ends by running its own sanity script:
+      #
+      #   LD_SO=... CC="gcc" $(PERL) scripts/test-installation.pl ...
+      #     ld: cannot find -lnsl
+      #     ld: cannot find -lnss_dns
+      #     ld: cannot find -lunwind
+      #   make[1]: *** [Makefile:111: install] Error 1
+      #
+      # It links against every library glibc COULD produce. libnsl was split
+      # out of glibc years ago and needs --enable-obsolete-nsl; libnss_dns
+      # needs NSS modules we do not configure; libunwind is a different
+      # project entirely and NO glibc build produces it. The library set is
+      # right and the test is wrong for a build this small -- and it cannot
+      # be satisfied, because no flag makes libunwind appear.
+      #
+      # WHY NOTHING ELSE HERE HITS IT. Every other glibc build in this
+      # repository -- stage4-complete, hermetic-gcc10/15/47/16,
+      # chain/rung2.sh, and phase A's own rung 13 -- passes --host=$LFS_TGT.
+      # glibc guards this check on $(cross-compiling), so a cross build never
+      # runs it. B2 is the first NATIVE glibc build in the project, so there
+      # was no working example to copy from.
+      #
+      # PERL= RATHER THAN A PATCH OR A BLANKET SKIP: run 122's i.log has
+      # exactly ONE perl invocation in 3086 lines and it is this script, so
+      # neutering $(PERL) for the install disables that and nothing else.
+      # Measured, not assumed.
+      say "    glibc's post-install self-test was skipped (PERL=/bin/true):"
+      say "    it links -lnsl -lnss_dns -lunwind, none of which this build"
+      say "    produces. Asserting the install directly instead --"
+
+      # BECAUSE WE JUST DISABLED GLIBC'S ASSERTION, WE MAKE OUR OWN.
+      _lc=/usr/lib/libc.so.6
+      if [ -f "$_lc" ]; then
+        say "      $_lc  $(wc -c < "$_lc") bytes"
+        say "      says: $("$_lc" 2>&1 | head -1)"
+      else
+        say "      $_lc IS MISSING -- the install did not land"; B2=FAIL
+      fi
       # THE TOOLCHAIN MUST STILL WORK AFTER THE LIBC UNDER IT WAS REPLACED.
-      # If this fails, nothing below can run and the reason is here rather
-      # than three rungs up.
       gcc /tmp/b0.c -o /tmp/b2 2>/dev/null && /tmp/b2 > /dev/null 2>&1
       if [ $? = 42 ]; then
-        say "    the compiler still runs against the libc it just replaced"
+        say "      compiled, linked and ran against the libc just installed"
       else
-        say "    THE COMPILER NO LONGER RUNS after the glibc install."
+        say "      THE COMPILER NO LONGER RUNS after the glibc install."
         B2=FAIL
       fi
     else
       B2=FAIL; say "    --- glibc errors ---"
-      grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
       whyfail c.log
       whyfail b.log
+      # i.log WAS THE ONE THAT MATTERED AND WAS NEVER PRINTED. glibc's make
+      # succeeded and its INSTALL failed; this path showed c.log and b.log
+      # and stopped, so run 122 reported a failure with no error anywhere in
+      # it. Every rung that runs `make install` needs this line.
+      whyfail i.log
     fi
     cd /
   else B2=FAIL; say "    glibc did not unpack"; fi
@@ -528,8 +571,11 @@ if [ "$B2" = ok ]; then
       B3=ok; say "    binutils: $(ld --version 2>&1 | head -1)"
     else
       B3=FAIL; say "    --- binutils errors ---"
-      grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
       whyfail b.log
+      # i.log TOO: a rung whose make succeeds and whose install fails would
+      # otherwise report a failure with no error in the log at all, which is
+      # exactly how B2 cost a round.
+      whyfail i.log
     fi
     cd /
   else B3=FAIL; say "    binutils did not unpack"; fi
@@ -607,8 +653,11 @@ if [ "$B3" = ok ]; then
       fi
     else
       B4=FAIL; say "    --- gcc errors ---"
-      grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
       whyfail b.log
+      # i.log TOO: a rung whose make succeeds and whose install fails would
+      # otherwise report a failure with no error in the log at all, which is
+      # exactly how B2 cost a round.
+      whyfail i.log
     fi
     cd /
   else B4=FAIL; say "    gcc did not unpack"; fi
