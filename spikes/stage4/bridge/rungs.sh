@@ -429,7 +429,29 @@ if [ "$R1" = ok ]; then
   #
   # DECLARED, LIKE sys/cdefs.h. It is a substitution and it is reported, so it
   # cannot pass for something that came out of the tarball.
-  if [ -f arch/aarch64/bits/float.h ]; then
+  # ASK THE COMPILER, DO NOT ASSUME IT. This file is shared by three ladders:
+  # stage3-to-stage4-reference runs it with a HOST-BUILT tcc whose long double
+  # really is binary128, and stage0-stage4-complete runs it with mc-tcc, whose
+  # long double is eight bytes. Rewriting the header unconditionally fixes the
+  # second and BREAKS THE FIRST -- it would tell musl 53 bits while the
+  # compiler gives 113, the same mismatch in the other direction.
+  #
+  # A compile-only probe answers it: the array size is negative, and the
+  # translation unit therefore invalid, unless long double is eight bytes.
+  # Nothing needs to run, so this works at rung 2 where nothing is linkable
+  # yet.
+  printf 'int _ldprobe[sizeof(long double) == 8 ? 1 : -1];\n' > /tmp/ldsize.c
+  if $CC -c -o /tmp/ldsize.o /tmp/ldsize.c 2>/dev/null; then
+    LD_IS_DOUBLE=yes
+  else
+    LD_IS_DOUBLE=no
+  fi
+  rm -f /tmp/ldsize.c /tmp/ldsize.o
+  if [ "$LD_IS_DOUBLE" = no ]; then
+    say "    bits/float.h: LEFT ALONE -- this compiler's long double is not 8"
+    say "                  bytes, so musl's own aarch64 header already matches"
+  fi
+  if [ "$LD_IS_DOUBLE" = yes ] && [ -f arch/aarch64/bits/float.h ]; then
     cat > arch/aarch64/bits/float.h <<'FLOATH'
 #define FLT_EVAL_METHOD 0
 
@@ -918,49 +940,29 @@ mkdir -p "$PFX/bin"
 # ships its own copy of was silently losing to the sysroot version.
 # mallocng's OBJECTS ARE NAMED, NOT LEFT TO THE ARCHIVE.
 #
-# musl selects its allocator with a #define, not a filename:
-#
-#     #define malloc __libc_malloc_impl      mallocng/glue.h:23
-#
-# so mallocng/malloc.o defines __libc_malloc_impl STRONGLY, while
+# musl selects its allocator with `#define malloc __libc_malloc_impl`
+# (mallocng/glue.h:23), so mallocng/malloc.o defines that symbol strongly while
 # lite_malloc.o carries `weak_alias(__simple_malloc, __libc_malloc_impl)` and
-# the only definition of the public `malloc` (a weak alias to default_malloc,
-# which calls __libc_malloc_impl). A real linker lets the strong definition
-# win. tcc binds the weak one, and nothing in the archive can fix that:
-# extraction is driven by `malloc`, which ONLY lite_malloc.o defines, so
-# mallocng/malloc.o is never pulled in and reordering the archive changes
-# nothing. Both were tried.
+# the only definition of the public `malloc`. mc-tcc emits that weak alias as
+# GLOBAL where a gcc-built tcc of the same pin emits WEAK -- measured, four
+# lines, in this repo's notes -- so the weak definition satisfied the
+# reference, mallocng's strong one was never pulled, and a program got malloc
+# from __simple_malloc (a bump allocator writing no header) and free from
+# mallocng, which read that header and dereferenced a null meta pointer.
 #
-# THE RESULT IS TWO ALLOCATORS IN ONE PROGRAM. malloc comes from
-# __simple_malloc -- a bump allocator that writes no mallocng header -- and
-# free comes from mallocng, which reads that header, walks to a null meta
-# pointer and dereferences it:
+# THAT IS RUNG 3's SIGSEGV, and the heap ladder's shape follows exactly: malloc
+# alone fine, malloc+write fine, every rung that frees dead. Naming the six
+# objects puts their strong definitions in before the archive is searched.
+# Measured on pristine musl 1.2.5 at its pinned sha256: without them
+# malloc-then-free is SIGNAL 11, with them rung 3's own program prints
+# "hosted ok argc=1" and exits 0.
 #
-#     LITE-default_malloc          <- traced with the real musl, locally
-#     LITE-simple_malloc
-#     p=43a000 off=0 base=439ff0 meta=0000000000000000   SIGSEGV
-#
-# That is rung 3's crash, and the heap ladder's shape follows exactly: malloc
-# alone is fine, malloc+write is fine, and every rung that frees dies.
-#
-# THIS IS NOT A DEFECT IN mc-tcc. The gcc-built tcc control, same pin and same
-# arm64 patches, produces the identical crash from the identical archive -- so
-# it is a tcc limitation both arms share, and the reference arm has been
-# passing rung 3 on the ordering of `find`.
-#
-# Naming the six mallocng objects on the link line puts their strong
-# definitions in before the archive is searched. Measured on pristine musl
-# 1.2.5 at its pinned sha256:
-#
-#     archive only              malloc then free   SIGNAL 11
-#     mallocng named            malloc then free   RAN ok
-#                               free a LARGE block RAN ok
-#                               calloc/free        RAN ok
-#                               realloc then free  RAN ok
-#                               the rung-3 program RAN ok, "hosted ok argc=1"
-#
-# ONLY WHEN LINKING. A -c, -E or -S run must not be handed object files, and
-# autoconf compiles far more than it links.
+# THIS IS A WORKAROUND AND IT IS WAITING ON A REAL FIX. The cause is micro-c
+# losing __attribute__((weak)) on a symbol that was declared before it was
+# weak-aliased. Until that is reduced and fixed in micro-c, this is what keeps
+# the ladder moving -- and it is harmless to the reference arm, whose compiler
+# gets the binding right and for which these objects are simply named twice
+# over a definition it would have chosen anyway.
 MALLOCNG=""
 for _o in malloc free realloc aligned_alloc malloc_usable_size donate; do
   if [ -f "/work/src/musl-$MUSL_VER/obj/src/malloc/mallocng/$_o.o" ]; then
@@ -974,13 +976,14 @@ if [ -n "$MALLOCNG" ]; then
   say "  mallocng: $(ls "$PFX/lib/mallocng" | wc -l) objects named on every link"
 else
   NGOBJ=""
-  say "  mallocng: NO objects found -- malloc and free will disagree, see rungs.sh"
+  say "  mallocng: NO objects found -- malloc and free may disagree, see rungs.sh"
 fi
 
+# AND THE WRAPPER TOO, because configure links as well as compiles. A -c, -E
+# or -S run must not be handed object files, and autoconf compiles far more
+# than it links.
 cat > "$PFX/bin/cc-static" <<CCWRAP
 #!/bin/sh
-# See the note in rungs.sh: mallocng's objects are named explicitly because
-# tcc does not let a strong definition override a weak one from an archive.
 for a in "\$@"; do
   case "\$a" in
     -c|-E|-S) exec CCBIN -B TCCDIR -include sys/cdefs.h "\$@" -I/usr/include -L/usr/lib -static ;;
@@ -989,8 +992,7 @@ done
 exec CCBIN -B TCCDIR -include sys/cdefs.h "\$@" -I/usr/include -L/usr/lib -static MALLOCNGOBJS
 CCWRAP
 sed -i -e "s|CCBIN|$CC_BIN|g" -e "s|-B TCCDIR|-B$TCCDIR|g" \
-       -e "s|MALLOCNGOBJS|$(ls "$PFX"/lib/mallocng/*.o 2>/dev/null | tr '\n' ' ')|" \
-       "$PFX/bin/cc-static"
+       -e "s|MALLOCNGOBJS|$NGOBJ|" "$PFX/bin/cc-static"
 chmod 0755 "$PFX/bin/cc-static"
 CCAUTO="$PFX/bin/cc-static"
 
