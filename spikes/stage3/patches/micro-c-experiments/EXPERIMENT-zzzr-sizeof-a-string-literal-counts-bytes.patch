@@ -1,0 +1,119 @@
+sizeof a string literal counts BYTES, not the characters used to spell it.
+
+MEASURED:
+
+    sizeof("abc")        4    correct
+    sizeof("a\nb")       5    should be 4
+    sizeof("\t\t")       5    should be 3
+    sizeof("\\")         3    should be 2
+    sizeof("!<arch>\n")  10   should be 9
+
+Every literal WITHOUT an escape was already right, which is why this survived:
+sizeof used string_length on the raw token, and the comment there explains the
+trick -- the token keeps its OPENING QUOTE and drops the closing one, so the
+quote stands in for the terminating NUL. Exact for "abc". An escape, though,
+is several source characters and one byte, and nothing collapsed them.
+
+THE LAST LINE IS ARMAG. tcc starts reading an archive at
+
+    file_offset = sizeof ARMAG - 1;                 tccelf.c:3540
+
+so mc-tcc began ONE BYTE INTO the first member header. Probed from inside:
+
+    AR-READ off=9 len=60 sizeof=60 fmag=0a00 name=               0
+
+fmag came out 0a00 -- the '\n' of the magic followed by the first byte of the
+name field -- instead of "`\n", and read_ar_header returned -1. mc-tcc
+therefore rejected EVERY archive, including ones it had just written itself
+and ones the system `ar` reads without complaint.
+
+THE WALK IS THE ONE THE STRING EMITTER ALREADY DOES.
+amount_of_escaped_chars_to_skip knows how wide each escape is -- \xNN, an
+octal run, or a single character -- and this counts with it instead of
+emitting. A literal with no escapes takes the same path and comes out the same
+number it always did.
+
+THREE BUGS STOOD BETWEEN mc-tcc AND A USABLE ARCHIVE, in three layers, and
+each hid the next:
+
+  1  EXPERIMENT-zzzq   an array member's alignment made sizeof(ArHdr) 64
+                       instead of 60, so the header written was four bytes long
+  2  m2libc 0014       fopen ignored '+', so the copy-back read nothing and
+                       silently emitted stale heap
+  3  this              sizeof ARMAG was 10, so the reader started one byte late
+
+MEASURED AFTER ALL THREE:
+
+    mc-tcc links against its own single-object archive   -> 5, correct
+    mc-tcc links against its own three-object archive    -> 6, correct
+    system `ar t` and `nm` read them
+
+    difftest amd64        98 pass, 0 fail, 2 known gaps      unchanged
+    difftest aarch64     100 pass, 0 fail, 2 known gaps      unchanged
+    stage 2 corpus       419 of 426                          unchanged
+    tests2 through mc-tcc 90 of 105                          unchanged
+    self-compilation      gen2.o == gen3.o == gen4.o         unchanged
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -286,6 +286,7 @@ void maybe_bootstrap_error(char* feature)
+ 	}
+ }
+ 
++int string_size(char* string);
+ int unary_expr_sizeof(void);
+ struct type* lookup_member(struct type* parent, char* name);
+ 
+@@ -3007,7 +3008,7 @@ int unary_expr_sizeof(void)
+ 		{
+ 			/* string_length (strlen) doesn't include the null terminator but the
+ 			 * token starts with a quotation mark so the count will be correct. */
+-			int length = string_length(global_token->s);
++			int length = string_size(global_token->s);
+ 
+ 			require_extra_token();
+ 
+--- a/cc_strings.c
++++ b/cc_strings.c
+@@ -99,6 +99,41 @@ int amount_of_escaped_chars_to_skip(char* string)
+ 	return 1;
+ }
+ 
++/* HOW MANY BYTES A STRING LITERAL OCCUPIES, which is not how many characters
++ * were written to spell it.
++ *
++ * sizeof used string_length on the raw token, and the comment there explains
++ * why that worked: the token keeps its OPENING QUOTE and drops the closing
++ * one, so the quote stands in for the terminating NUL. That is exact for a
++ * literal with no escapes and wrong for every literal with one, because an
++ * escape is several source characters and one byte:
++ *
++ *     sizeof("abc")        4    correct
++ *     sizeof("a\nb")       5    should be 4
++ *     sizeof("!<arch>\n")  10   should be 9
++ *
++ * The last one is ARMAG, and tcc starts reading an archive at
++ *     file_offset = sizeof ARMAG - 1;              tccelf.c:3540
++ * so mc-tcc began one byte into the first member header, read a header whose
++ * fmag was 0a00 instead of "`\n", and rejected every archive -- including the
++ * ones it had just written itself.
++ *
++ * amount_of_escaped_chars_to_skip already knows how wide each escape is; this
++ * is the same walk the string emitter does, counting instead of emitting. */
++int amount_of_escaped_chars_to_skip(char* string);
++int string_size(char* string)
++{
++	int n = 0;
++	int i = 1;                 /* skip the opening quote */
++	while(0 != string[i])
++	{
++		if('\\' == string[i]) i = i + amount_of_escaped_chars_to_skip(string + i);
++		i = i + 1;
++		n = n + 1;
++	}
++	return n + 1;              /* the terminating NUL */
++}
++
+ int escape_lookup(char* c);
+ int weird(char* string)
+ {

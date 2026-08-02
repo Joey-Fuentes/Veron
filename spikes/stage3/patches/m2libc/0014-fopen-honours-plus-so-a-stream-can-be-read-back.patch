@@ -1,0 +1,159 @@
+fopen honours '+', so a stream can be written and then read.
+
+MEASURED. tcc's `ar` writes its members to a scratch file and copies them
+back:
+
+    fo = fopen(tfile, "wb+");                       tcctools.c:184
+    ...
+    fseek(fo, 0, SEEK_END); fsize = ftell(fo);
+    fseek(fo, 0, SEEK_SET); fread(buf, fsize, 1, fo);
+    fwrite(buf, fsize, 1, fh);                      tcctools.c:317
+
+fopen looked only at mode[0], so "wb+" opened O_WRONLY. fgetc refuses a
+write-mode stream outright --
+
+    if(O_WRONLY == f->bufmode) return EOF;
+
+-- so fread returned 0 and never touched `buf`. NOTHING REPORTED AN ERROR
+ANYWHERE. tcc then wrote out whatever `buf` happened to contain, and because
+the previous allocation had just been freed and both sizes round into the same
+power-of-two class, that was the OBJECT FILE MINUS ITS SIXTY-BYTE MEMBER
+HEADER. The archive came out the right length, structurally wrong, and mc-tcc
+rejected its own output:
+
+    mc-tcc -ar libh.a h1.o   ->  1182 bytes, the control's size exactly
+    mc-tcc ... libh.a        ->  libh.a: error: invalid archive
+
+A silent read failure that produces plausible bytes is the worst shape a
+runtime gap can have, which is why this is written down at length.
+
+WHAT '+' NOW MEANS HERE. A third bufmode, O_RDWR: output still goes through
+the buffer exactly as before, and reads go straight to the descriptor after a
+flush. Reading out of the buffer would hand back the bytes waiting to be
+written, and flushing first also makes the descriptor's position mean what
+ftell and fseek report.
+
+  fgetc   flush, then read(2) one byte from the descriptor
+  ftell   flush, then lseek(fd, 0, SEEK_CUR) -- file_pos counts only what was
+          written, and this stream is also being read
+  fseek   flush, then lseek, the same route O_WRONLY already took
+
+ONLY 'w+' AND 'a+'. A read stream here slurps the whole file into a buffer at
+open time, so "r+" would have to write back through that buffer as well -- a
+different design, and nothing on this path needs it. It is unchanged.
+
+MEASURED AFTER, with micro-c's sizeof fix beside it (EXPERIMENT-zzzr):
+
+    system `ar t` lists the members, `nm` finds the symbols
+    mc-tcc links against its own single-object archive   -> 5, correct
+    mc-tcc links against its own three-object archive    -> 6, correct
+
+    difftest amd64        98 pass, 0 fail, 2 known gaps      unchanged
+    difftest aarch64     100 pass, 0 fail, 2 known gaps      unchanged
+    stage 2 corpus       419 of 426                          unchanged
+    tests2 through mc-tcc 90 of 105                          unchanged
+    self-compilation      gen2.o == gen3.o == gen4.o         unchanged
+
+--- a/stdio.c
++++ b/stdio.c
+@@ -83,6 +83,18 @@ int fgetc(FILE* f)
+ 	/* Only read on read buffers */
+ 	if(O_WRONLY == f->bufmode) return EOF;
+ 
++	/* A '+' STREAM IS WRITTEN THROUGH THE BUFFER AND READ THROUGH THE
++	 * DESCRIPTOR. Its buffer holds pending output, so reading out of it
++	 * would hand back the bytes waiting to be written. Flushing first also
++	 * makes the descriptor's position mean what the caller thinks it does. */
++	if(O_RDWR == f->bufmode)
++	{
++		char one;
++		fflush(f);
++		if(1 != read(f->fd, &one, 1)) return EOF;
++		return one & 0xFF;
++	}
++
+ 	/* Deal with stdin */
+ 	if(STDIN_FILENO == f->fd)
+ 	{
+@@ -218,8 +230,41 @@ FILE* fopen(char const* filename, char const* mode)
+ 	int f;
+ 	int size;
+ 
+-	if('w' == mode[0]) f = open(filename, O_WRONLY|O_CREAT|O_TRUNC, 00600);
+-	else if('a' == mode[0]) f = open(filename, O_WRONLY|O_CREAT|O_APPEND, 00600);
++	/* '+' MEANS THE STREAM IS READ AS WELL AS WRITTEN, and ignoring it
++	 * opened tcc's archive scratch file WRITE-ONLY:
++	 *     fo = fopen(tfile, "wb+");            tcctools.c:184
++	 *     ...
++	 *     fseek(fo, 0, SEEK_SET); fread(buf, fsize, 1, fo);
++	 * fgetc refuses a write-mode stream, so fread returned 0 and left `buf`
++	 * holding whatever the allocator last put there -- which, because the
++	 * previous block was freed and the sizes fall in the same power-of-two
++	 * class, was the OBJECT FILE minus its sixty-byte member header. The
++	 * archive came out the right length with the header missing and sixty
++	 * stray bytes at the end, and mc-tcc rejected its own output:
++	 *     libh.a: error: invalid archive
++	 * Nothing reported an error anywhere along that path.
++	 *
++	 * ONLY 'w+' AND 'a+' ARE HANDLED. A read stream here slurps the whole
++	 * file into a buffer at open time, and "r+" would have to write through
++	 * that buffer as well -- a different design, and nothing needs it. It
++	 * stays exactly as it was. */
++	int rw = 0;
++	if(0 != mode[1])
++	{
++		if('+' == mode[1]) rw = 1;
++		else if('+' == mode[2]) rw = 1;
++	}
++
++	if('w' == mode[0])
++	{
++		if(rw) f = open(filename, O_RDWR|O_CREAT|O_TRUNC, 00600);
++		else f = open(filename, O_WRONLY|O_CREAT|O_TRUNC, 00600);
++	}
++	else if('a' == mode[0])
++	{
++		if(rw) f = open(filename, O_RDWR|O_CREAT|O_APPEND, 00600);
++		else f = open(filename, O_WRONLY|O_CREAT|O_APPEND, 00600);
++	}
+ 	else f = open(filename, 0, 0); /* Everything else is a read */
+ 
+ 	/* Negative numbers are error codes */
+@@ -246,7 +291,11 @@ FILE* fopen(char const* filename, char const* mode)
+ 			return 0;
+ 		}
+ 		fi->buflen = BUFSIZ;
+-		fi->bufmode = O_WRONLY;
++		/* O_RDWR marks the buffered-write stream that may also be read.
++		 * fputc already writes for anything that is not O_RDONLY; fgetc,
++		 * fseek and ftell below each take the descriptor route for it. */
++		if(rw) fi->bufmode = O_RDWR;
++		else fi->bufmode = O_WRONLY;
+ 	}
+ 	else
+ 	{
+@@ -415,6 +464,15 @@ long ftell(FILE* stream)
+ 	/* No ftell for you */
+ 	if(2 >= stream->fd) return 0;
+ 
++	/* A '+' stream's position is the descriptor's, once the pending output
++	 * has gone out. file_pos only counts what was written, and this stream
++	 * is also being read. */
++	if(O_RDWR == stream->bufmode)
++	{
++		fflush(stream);
++		return lseek(stream->fd, 0, SEEK_CUR);
++	}
++
+ 	/* Deal with buffered output */
+ 	if(O_WRONLY == stream->bufmode) return stream->file_pos + stream->bufpos;
+ 
+@@ -430,7 +488,7 @@ int fseek(FILE* f, long offset, int whence)
+ 	if(2 >= f->fd) return 0;
+ 
+ 	/* Deal with ugly case */
+-	if(O_WRONLY == f->bufmode)
++	if(O_WRONLY == f->bufmode || O_RDWR == f->bufmode)
+ 	{
+ 		fflush(f);
+ 		return lseek(f->fd, offset, whence);
