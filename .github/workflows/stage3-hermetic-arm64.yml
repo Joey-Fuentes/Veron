@@ -1751,6 +1751,71 @@ jobs:
             s3ok=no
           fi
 
+          say "11b. FLOATING POINT -- where the boundary actually is"
+          # "BLOCKED ON FLOATING POINT" IS TWELVE ENTRIES ABOVE AND IT WAS
+          # NEVER MEASURED, only assumed. It is much narrower than it reads.
+          #
+          # mc-tcc's floating-point CODE GENERATION IS CORRECT. It emits
+          # fcvtzs, scvtf, fadd, fmul and fcmp with the right encodings, and a
+          # double built at run time from integers is exact: 7/2 truncates to
+          # 3, times 2 gives 7 back, 7*7 is 49, and comparisons order
+          # correctly. Verified by disassembling the object and by running it.
+          #
+          # WHAT FAILS IS CONSTANTS, AND ONLY CONSTANTS. Every floating-point
+          # literal in the source comes out as 0.0 -- the eight bytes are
+          # reserved in .data.ro and left zero:
+          #
+          #     double f(void) { return 3.0; }
+          #     .data.ro   0000000000000000     (3.0 is 0000000000000840)
+          #
+          # THE CAUSE IS ONE RUNG DOWN. tcc parses "3.0" with its own decimal
+          # scanner, in double arithmetic, and stores the result in vtop->c.d
+          # for init_putv to write out (tccgen.c:7796). That scanner is tcc's
+          # C, compiled by micro-c -- which maps float, double and long double
+          # onto one word-sized INTEGER type. So the arithmetic that turns the
+          # digits into a value is integer arithmetic, and the value it
+          # produces is zero. mc-tcc never had a wrong number to emit; it had
+          # no number.
+          #
+          # WHY THAT MATTERS FOR THE ORDER OF WORK. It says the remaining
+          # float gap is not "teach mc-tcc floating point" -- mc-tcc has it --
+          # it is "give micro-c enough floating point to run tcc's constant
+          # scanner". That is a smaller and differently-shaped job, and it is
+          # the only thing standing between here and the fifteen tests2
+          # programs above.
+          if [ -s /out/mc-tcc ]; then
+            : > fp.c
+            printf '%s\n' 'union fpbits { double d; unsigned long u; };'      >> fp.c
+            printf '%s\n' 'int printf(const char*, ...);'                     >> fp.c
+            printf '%s\n' 'int main(void) {'                                  >> fp.c
+            printf '%s\n' '    int a; int b; a = 7; b = 2;'                   >> fp.c
+            printf '%s\n' '    double x; double y; x = a; y = b;'             >> fp.c
+            printf '%s\n' '    double q; q = x / y;'                          >> fp.c
+            printf '%s\n' '    int rt; rt = 0;'                               >> fp.c
+            printf '%s\n' '    if ((int)q != 3) rt = rt + 1;'                 >> fp.c
+            printf '%s\n' '    if ((int)(q * y) != 7) rt = rt + 2;'           >> fp.c
+            printf '%s\n' '    if ((int)(x * x) != 49) rt = rt + 4;'          >> fp.c
+            printf '%s\n' '    union fpbits f; f.d = 2.0;'                    >> fp.c
+            printf '%s\n' '    printf("      arithmetic from integers: %s\n", rt ? "WRONG" : "exact");' >> fp.c
+            printf '%s\n' '    printf("      the literal 2.0 reads as: %lx  (4000000000000000 is right)\n", f.u);' >> fp.c
+            printf '%s\n' '    return 0;'                                     >> fp.c
+            printf '%s\n' '}'                                                 >> fp.c
+            set +e
+            timeout 60 /out/mc-tcc -B/in/tcc-src -I"$SH" -nostdlib -static \
+                        -o fp.bin fp.c "$SH/crt.c" $LIBTCC1 2>fp.err
+            fprc=$?
+            set -e
+            if [ "$fprc" = 0 ] && [ -s fp.bin ]; then
+              chmod 0755 fp.bin
+              set +e; timeout 20 ./fp.bin; set -e
+            else
+              echo "      the probe did not build, rc=$fprc"
+              grep -av '^[A-Z][0-9]*$' fp.err | head -2 | sed 's/^/        /'
+            fi
+          else
+            echo "    skipped: no mc-tcc was produced"
+          fi
+
           say "12. tcctest.c -- the file tcc's own test1/test2/test3 begin with"
           # tcc's Makefile runs test1 as
           #     tcc -run tcc.c -run tcctest.c
