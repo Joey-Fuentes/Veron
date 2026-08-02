@@ -4144,7 +4144,11 @@ if [ "$R14" = ok ]; then
     # Same shape as the -isystem flag that took three rounds: a fix applied to
     # one of two places that need it. Both busybox configurations should be
     # read together whenever either changes.
-    for _sym in SSL_CLIENT FEATURE_WGET_OPENSSL TLS TC; do
+    # FEATURE_WGET_HTTPS IS IN THIS LIST BECAUSE IT *select*s TLS.
+    # Disabling SSL_CLIENT and TLS is not enough: Kconfig re-derives a
+    # selected symbol on the next `oldconfig`, so TLS came straight back and
+    # B5's check caught it. Kill what selects it, not just the symbol.
+    for _sym in SSL_CLIENT FEATURE_WGET_OPENSSL FEATURE_WGET_HTTPS TLS TC; do
       sed -i "s/^CONFIG_$_sym=y/# CONFIG_$_sym is not set/" .config
     done
     # THE BUILD APPLETS, AND THIS IS THE SAME LIST THE AIRLOCK busybox USES.
@@ -4179,11 +4183,6 @@ if [ "$R14" = ok ]; then
       say "    first package and name the package, not the missing applet."
       R15=FAIL
     fi
-    if grep -qE "^CONFIG_(SSL_CLIENT|TLS)=y" .config; then
-      say "    TLS symbols came back after oldconfig:"
-      grep -E "^CONFIG_(SSL_CLIENT|TLS|FEATURE_WGET_OPENSSL)" .config | sed 's/^/      /'
-      R15=FAIL
-    fi
     if [ "$R15" != FAIL ]; then
       # THE TWO BUSYBOX CONFIGURATIONS DIFFER ON PURPOSE, AND ONLY HERE.
       #
@@ -4209,6 +4208,17 @@ if [ "$R14" = ok ]; then
       # AND AGAIN AFTER oldconfig RE-DERIVES, which is what undid the TLS
       # symbols three runs running.
       yes '' | $_BBMAKE oldconfig > /dev/null 2>&1
+      # THE TLS CHECK LIVES HERE NOW, AFTER THE LAST oldconfig.
+      #
+      # It used to run BEFORE this line and therefore passed while oldconfig
+      # re-enabled TLS behind it -- a check that reported on a .config which
+      # no longer existed by the time the build read it. B5 asks the same
+      # question after its final oldconfig and caught what this one missed.
+      if grep -qE "^CONFIG_(SSL_CLIENT|TLS)=y" .config; then
+        say "    TLS symbols came back after the final oldconfig:"
+        grep -E "^(# )?CONFIG_(SSL_CLIENT|TLS|FEATURE_WGET_OPENSSL|FEATURE_WGET_HTTPS)" .config | sed 's/^/      /'
+        R15=FAIL
+      fi
       if ! grep -q '^CONFIG_STATIC=y' .config; then
         say "    CONFIG_STATIC did not survive oldconfig:"
         grep -E '^(# )?CONFIG_STATIC' .config | sed 's/^/      /'

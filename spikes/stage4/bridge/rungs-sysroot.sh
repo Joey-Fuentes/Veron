@@ -721,7 +721,11 @@ if [ "$B4" = ok ]; then
     cd "$_d"
     make defconfig > /dev/null 2>&1
     yes '' | make oldconfig > /dev/null 2>&1
-    for _sym in SSL_CLIENT FEATURE_WGET_OPENSSL TLS TC; do
+    # FEATURE_WGET_HTTPS IS IN THIS LIST BECAUSE IT *select*s TLS.
+    # Disabling SSL_CLIENT and TLS is not enough: Kconfig re-derives a
+    # selected symbol on the next `oldconfig`, so TLS came straight back and
+    # B5's check caught it. Kill what selects it, not just the symbol.
+    for _sym in SSL_CLIENT FEATURE_WGET_OPENSSL FEATURE_WGET_HTTPS TLS TC; do
       sed -i "s/^CONFIG_$_sym=y/# CONFIG_$_sym is not set/" .config
     done
     # THE SAME BUILD APPLET LIST AS RUNG 15's, AND FOR A REASON THAT OUTLIVES
@@ -743,7 +747,7 @@ if [ "$B4" = ok ]; then
       grep -q "^CONFIG_$_sym=y" .config || { say "    build applet $_sym missing"; _bad=1; }
     done
     if [ "$_bad" != 0 ]; then
-      grep -E '^(# )?CONFIG_(STATIC|TLS|SSL_CLIENT|TC)' .config | sed 's/^/      /'
+      grep -E '^(# )?CONFIG_(STATIC|TLS|SSL_CLIENT|TC|FEATURE_WGET_HTTPS)' .config | sed 's/^/      /'
       B5=FAIL
     elif timeout 3600 make CFLAGS_EXTRA="-D_GNU_SOURCE" -j"$NP" > b.log 2>&1 \
          && [ -x busybox ]; then
