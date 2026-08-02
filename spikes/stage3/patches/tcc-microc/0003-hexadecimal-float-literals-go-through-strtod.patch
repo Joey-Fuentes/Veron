@@ -1,0 +1,126 @@
+hexadecimal float literals go through strtod.
+
+tcc COMPUTES THEM BY HAND, AND SAYS WHY:
+
+    /* NOTE: strtox should support that for hexa numbers, but
+       non ISOC99 libcs do not support it, so we prefer to do
+       it by hand */                                    tccpp.c
+
+The libc micro-c builds tcc against DOES support it -- strtod there is exact
+for hex and assembles the IEEE bits in integer arithmetic. What it cannot do is
+the line this replaces:
+
+    d = (double)bn[1] * 4294967296.0 + (double)bn[0];
+    d = ldexp(d, exp_val - frac_bits);
+
+That is a floating-point multiply and an ldexp, and micro-c has no floating
+point at all -- ldexpl in the bootstrap runtime is `return 0;`. So EVERY
+HEXADECIMAL FLOAT LITERAL WAS 0.0.
+
+ONE OF THEM IS LOAD-BEARING:
+
+    if (y) y *= 0x1p28, e2-=28;              musl vfprintf.c, fmt_fp
+
+so printf("%f") scaled its argument to zero and printed 0.000000 for a value
+that arrived exactly right. Traced inside the box's own musl, with the bits
+printed at each step:
+
+    INfp   = 4014083126e978d5      the argument, exact
+    FREXPm = 3fe4083126e978d5      frexpl, correct
+    Yx2    = 3ff4083126e978d5      the doubling, correct
+    PRE28  = 3ff4083126e978d5
+    POST28 = 0000000000000000      <- y *= 0x1p28
+
+The value is bn[1]*2^32 + bn[0] scaled by 2^(exp_val - frac_bits): both
+integers. The literal is rebuilt as "0x<hex>p<exp>" and handed to strtod, which
+is exact for it. Built by hand rather than with snprintf so it does not depend
+on which conversions the bootstrap libc's formatter implements, and with every
+local declared at the top of one block -- an earlier draft declared arrays
+inside nested `else` branches and micro-c segfaulted on eighteen of musl's math
+sources.
+
+MEASURED, EITHER SIDE:
+
+    0x1p28   0000000000000000  ->  41b0000000000000
+    0x1.8p3  0000000000000000  ->  4028000000000000
+
+    musl printf("%.6f", 5.008)   0.000000  ->  5.008001
+             printf("%e")        0.000000e+00 -> 5.008001e+00
+             printf("%g")        0         ->  5.00801
+             printf("%f", 1.5)   0.000000  ->  1.500000   (exact)
+
+    musl 1.2.5 at its pinned sha256:  1349 of 1349 compile, unchanged
+    difftest amd64 101, aarch64 103, corpus 419 of 426, all unchanged
+    tests2 97 of 105, self-compilation fixpoint holds
+
+THE LAST DIGIT IS STILL WRONG AND THIS PATCH DOES NOT FIX IT. fmt_fp rounds
+with `2/LDBL_EPSILON`, and tcc folds that constant at compile time using
+long double arithmetic written in C -- which micro-c cannot do either:
+
+    2.0 / 2.22044604925031308085e-16   =  1     (want 2^53)
+    2 / 4.0                            =  0     (want 0.5)
+    2 * 4.0                            =  0     (want 8.0)
+    2 + 4.0                            =  garbage
+
+So EVERY compile-time floating-point operation is wrong, not just hex literals.
+That is the real hole and it wants soft-float add/sub/mul/div in the runtime,
+in integer arithmetic, the way strtod is done -- not another patch here.
+
+--- a/tccpp.c
++++ b/tccpp.c
+@@ -2391,9 +2391,52 @@ static void parse_number(const char *p)
+             
+             /* now we can generate the number */
+             /* XXX: should patch directly float number */
+-#ifdef TCC_USING_DOUBLE_FOR_LDOUBLE
+-            d = (double)bn[1] * 4294967296.0 + (double)bn[0];
+-            d = ldexp(d, exp_val - frac_bits);
++#if LDOUBLE_SIZE == 8 || defined TCC_USING_DOUBLE_FOR_LDOUBLE
++            {
++                unsigned long hm;
++                int he;
++                int hi;
++                int hn;
++                int hd;
++                char hbuf[80];
++                char htmp[40];
++                hm = bn[1];
++                hm = (hm << 32) | bn[0];
++                he = exp_val - frac_bits;
++                hn = 0;
++                if (hm == 0) {
++                    htmp[0] = 48;
++                    hn = 1;
++                } else {
++                    while (hm != 0) {
++                        hd = (int)(hm & 15);
++                        if (hd < 10) htmp[hn] = (char)(48 + hd);
++                        else htmp[hn] = (char)(87 + hd);
++                        hn = hn + 1;
++                        hm = hm >> 4;
++                    }
++                }
++                hi = 0;
++                hbuf[hi] = 48; hi = hi + 1;
++                hbuf[hi] = 120; hi = hi + 1;
++                while (hn > 0) { hn = hn - 1; hbuf[hi] = htmp[hn]; hi = hi + 1; }
++                hbuf[hi] = 112; hi = hi + 1;
++                if (he < 0) { hbuf[hi] = 45; hi = hi + 1; he = 0 - he; }
++                hn = 0;
++                if (he == 0) {
++                    htmp[0] = 48;
++                    hn = 1;
++                } else {
++                    while (he != 0) {
++                        htmp[hn] = (char)(48 + (he % 10));
++                        hn = hn + 1;
++                        he = he / 10;
++                    }
++                }
++                while (hn > 0) { hn = hn - 1; hbuf[hi] = htmp[hn]; hi = hi + 1; }
++                hbuf[hi] = 0;
++                d = strtod(hbuf, 0);
++            }
+ #else
+             d = (long double)bn[3] * 79228162514264337593543950336.0L +
+ 	        (long double)bn[2] * 18446744073709551616.0L +
