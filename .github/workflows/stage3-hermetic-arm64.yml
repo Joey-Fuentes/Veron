@@ -746,6 +746,17 @@ jobs:
           cd /work
 
           say() { printf '\n  === %s ===\n' "$1"; }
+          # EIGHT NAMES A LINE. busybox has no `fold` and the applet list is
+          # the budget's inventory, so this is awk rather than one more entry
+          # on it. A ninety-symbol census on one line is unreadable in a log.
+          wrap() {
+            tr '\n' ' ' < "$1" | awk '{ n=0; line="";
+              for (i = 1; i <= NF; i++) {
+                line = line $i " "; n = n + 1
+                if (n == 8) { printf "        %s\n", line; line=""; n=0 }
+              }
+              if (n > 0) printf "        %s\n", line }'
+          }
           art() { printf '    %-28s %10s  %s\n' "$1" \
                     "$(wc -c < "$2" 2>/dev/null || echo -)" \
                     "$(sha256sum "$2" 2>/dev/null | cut -c1-16 || echo -)"; }
@@ -1808,7 +1819,7 @@ jobs:
               sjrc=$?
               set -e
               if [ "$rtrc" != 0 ] || [ "$sjrc" != 0 ]; then
-                echo "    step B: the runtime will not compile (runtime rc=$rtrc, setjmp rc=$sjrc)"
+                echo "    step B: runtime rc=$rtrc, setjmp rc=$sjrc"
                 # THE ERROR FILE HAS TO MATCH THE RUNG THAT FAILED. This
                 # printed rt.err unconditionally, so the run that stopped on
                 # setjmp reported three blank lines: runtime had succeeded and
@@ -1820,21 +1831,82 @@ jobs:
                 if [ "$sjrc" != 0 ]; then
                   grep -av '^[A-Z][0-9]*$' sj.err | head -3 | sed 's/^/      setjmp:  /'
                 fi
+              fi
+
+              # THE LINK IS ATTEMPTED EITHER WAY, AND THAT IS THE POINT OF THIS
+              # REWRITE.
+              #
+              # The step used to stop here when a runtime piece failed to
+              # compile, which threw away the only measurement it could still
+              # take. gen2 needs about ninety symbols; setjmp is ONE of them,
+              # so even a perfect setjmp does not link gen2 and stopping on it
+              # answers nothing. What the link failure carries is the LIST --
+              # tcc's linker names every unresolved symbol before it errors --
+              # and that list is the specification for the next rung.
+              #
+              # So: link with whatever objects exist, and census what is
+              # missing. A shorter object list only makes the census longer,
+              # which is harmless, because the census is the deliverable and
+              # the binary is not.
+              objs="gen2.o"
+              if [ -s rt.o ]; then objs="$objs rt.o"; fi
+              if [ -s sj.o ]; then objs="$objs sj.o"; fi
+              rtobjs=${objs#gen2.o}
+              echo "    step B: linking gen2 from $objs"
+              set +e
+              timeout 300 /out/mc-tcc -B/in/tcc-src -nostdlib -static \
+                          -o gen2 $objs 2>lk.err
+              lkrc=$?
+              set -e
+              if [ "$lkrc" = 0 ] && [ -s gen2 ]; then
+                chmod 0755 gen2
+                echo "    step B: gen2 LINKS"
+                printf '      %10s bytes  %s\n' \
+                  "$(wc -c < gen2)" "$(sha256sum gen2 | cut -c1-16)"
               else
-                set +e
-                timeout 300 /out/mc-tcc -B/in/tcc-src -nostdlib -static \
-                            -o gen2 gen2.o rt.o sj.o 2>lk.err
-                lkrc=$?
-                set -e
-                if [ "$lkrc" = 0 ] && [ -s gen2 ]; then
-                  chmod 0755 gen2
-                  echo "    step B: gen2 LINKS"
-                  printf '      %10s bytes  %s\n' \
-                    "$(wc -c < gen2)" "$(sha256sum gen2 | cut -c1-16)"
-                else
-                  echo "    step B: gen2 will not link, rc=$lkrc"
-                  grep -av '^[A-Z][0-9]*$' lk.err | head -6 | sed 's/^/      /'
-                  echo "      STOPS HERE."
+                echo "    step B: gen2 will not link, rc=$lkrc"
+                # WHAT IS MISSING, BUCKETED, BECAUSE THE TWO BUCKETS HAVE
+                # DIFFERENT OWNERS.
+                #
+                #   tcc's own lib/  -- the soft-float quad helpers (__addtf3
+                #     and the rest of the *tf* family), __clear_cache, the
+                #     __builtin_/__atomic_ helpers and alloca. ARM64_O is
+                #     `lib-arm64.o $(COMMON_O)`, and runtime-ladder.sh already
+                #     reports 7 of 7 of those compiling under mc-tcc. This
+                #     bucket is BUILDABLE TODAY and needs no new rung.
+                #
+                #   everything else -- memcpy, printf, malloc, open and their
+                #     kind. That is the musl rung, pinned in sources/musl.toml
+                #     and not yet attempted with mc-tcc.
+                #
+                # Reporting one number for both hid the fact that the first
+                # bucket is work already proven and the second is the actual
+                # frontier.
+                grep -a "undefined symbol" lk.err \
+                  | sed "s/.*undefined symbol '\\([^']*\\)'.*/\\1/" \
+                  | sort -u > lk.syms
+                : > lk.libtcc1; : > lk.libc
+                while read -r s; do
+                  case "$s" in
+                    __*tf2|__*tf3|__fix*tf*|__float*tf|__trunctf*|__extend*tf2) echo "$s" >> lk.libtcc1 ;;
+                    __clear_cache|__builtin_*|__atomic_*|alloca|__bound_alloca*) echo "$s" >> lk.libtcc1 ;;
+                    *) echo "$s" >> lk.libc ;;
+                  esac
+                done < lk.syms
+                echo "      undefined: $(wc -l < lk.syms) total" \
+                     "-- $(wc -l < lk.libtcc1) from tcc's own lib/," \
+                     "$(wc -l < lk.libc) from a libc"
+                if [ -s lk.libtcc1 ]; then
+                  echo "      tcc's lib/ (ARM64_O = lib-arm64.o + COMMON_O, mc-tcc builds these):"
+                  wrap lk.libtcc1
+                fi
+                if [ -s lk.libc ]; then
+                  echo "      libc (the musl rung, sources/musl.toml):"
+                  wrap lk.libc
+                fi
+                if [ ! -s lk.syms ]; then
+                  echo "      not an undefined-symbol failure:"
+                  grep -av '^[A-Z][0-9]*$' lk.err | head -6 | sed 's/^/        /'
                 fi
               fi
             fi
@@ -1857,7 +1929,7 @@ jobs:
               else
                 set +e
                 timeout 300 /work/gen2 -B/in/tcc-src -nostdlib -static \
-                            -o gen3 gen3.o rt.o sj.o 2>lk3.err
+                            -o gen3 gen3.o $rtobjs 2>lk3.err
                 l3rc=$?
                 set -e
                 if [ "$l3rc" = 0 ] && [ -s gen3 ]; then
