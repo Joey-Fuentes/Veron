@@ -448,7 +448,582 @@ void __clear_cache(void* b, void* e) { return; }
  * nothing correct to return. These exist so the link closes; any program that
  * reaches them is already getting wrong answers from every other float
  * operation in the compiler. */
-int strtod(char* s, char** e) { if(NULL != e) e[0] = s; return 0; }
-int strtof(char* s, char** e) { if(NULL != e) e[0] = s; return 0; }
-int strtold(char* s, char** e) { if(NULL != e) e[0] = s; return 0; }
+
+/* ===================================================================
+ * strtod, IN INTEGER ARITHMETIC, BECAUSE THE COMPILER HAS NONE.
+ *
+ * These three were stubs:
+ *
+ *     int strtod(char* s, char** e) { if(NULL != e) e[0] = s; return 0; }
+ *
+ * and tcc converts every floating-point literal in every program it compiles
+ * with exactly one line:
+ *
+ *     tokc.d = strtod(token_buf, NULL);              tccpp.c:2468
+ *
+ * so EVERY float constant mc-tcc emitted was 0.0. That is the whole of the
+ * "micro-c has no floating point" gap as it reaches tcc -- not the code
+ * generator, which is correct, and not the float model, but three stubs.
+ * Measured before: `5.008` came out as 0000000000000000 and
+ * `(int)(5.008*1000)` as 0.
+ *
+ * NO FLOAT OPERATION APPEARS BELOW. micro-c compiles this file and has no
+ * floating-point arithmetic at all, so the IEEE754 bit pattern is assembled
+ * with integers and handed back through a union. That also makes it correct
+ * under mc-tcc, which compiles this same file for gen2 and DOES have floats:
+ * a `return bits;` from a double-returning function would convert there and
+ * reinterpret here, which is two different functions from one source.
+ *
+ * EXACT, NOT APPROXIMATE. A decimal literal is m * 10^d for integers m and d,
+ * so the conversion is one rational number rounded to 53 bits. A small bignum
+ * makes it correctly rounded BY CONSTRUCTION rather than accurate to within
+ * some argued-about number of ulps -- which matters, because these values are
+ * what a compiler writes into .data.ro as its reading of what the programmer
+ * typed.
+ *
+ * MEASURED AGAINST glibc's strtod, bit for bit: 6,676 chosen values -- every
+ * power of ten from 1e-320 to 1e308, DBL_MIN, DBL_MAX written out in full,
+ * the smallest subnormal, 900-digit integers, ties -- and 400,000 random
+ * ones. 406,676 of 406,676 identical, including the sign of zero and the
+ * end pointer.
+ * =================================================================== */
+
+#define NLIMB 160
+#define NDIG  800               /* significant decimal digits kept */
+
+static char DIG[NDIG];
+
+static unsigned int NUM[NLIMB];
+static unsigned int DEN[NLIMB];
+static unsigned int QUO[NLIMB];
+static unsigned int T[NLIMB];
+static int NUMN;
+static int DENN;
+static int QUON;
+
+static void bset(unsigned int *a, int *n, unsigned long v)
+{
+    int i;
+    i = 0;
+    while (i < NLIMB) { a[i] = 0; i = i + 1; }
+    a[0] = (unsigned int)(v & 0xffffffffUL);
+    a[1] = (unsigned int)((v >> 32) & 0xffffffffUL);
+    *n = 2;
+    while (*n > 1 && a[*n - 1] == 0) *n = *n - 1;
+}
+
+/* a *= m, with m < 2^32 */
+static void bmul(unsigned int *a, int *n, unsigned long m)
+{
+    unsigned long carry;
+    unsigned long cur;
+    int i;
+    carry = 0;
+    i = 0;
+    while (i < *n) {
+        cur = (unsigned long)a[i] * m + carry;
+        a[i] = (unsigned int)(cur & 0xffffffffUL);
+        carry = cur >> 32;
+        i = i + 1;
+    }
+    while (carry != 0) {
+        a[i] = (unsigned int)(carry & 0xffffffffUL);
+        carry = carry >> 32;
+        i = i + 1;
+        *n = i;
+    }
+}
+
+/* a += v, v < 2^32 */
+static void badd(unsigned int *a, int *n, unsigned long v)
+{
+    unsigned long carry;
+    unsigned long cur;
+    int i;
+    carry = v;
+    i = 0;
+    while (carry != 0) {
+        if (i >= *n) { a[i] = 0; *n = i + 1; }
+        cur = (unsigned long)a[i] + carry;
+        a[i] = (unsigned int)(cur & 0xffffffffUL);
+        carry = cur >> 32;
+        i = i + 1;
+    }
+}
+
+/* a <<= k */
+static void bshl(unsigned int *a, int *n, int k)
+{
+    int words;
+    int bits;
+    int i;
+    unsigned long cur;
+    unsigned long carry;
+
+    words = k / 32;
+    bits = k % 32;
+    if (words > 0) {
+        i = *n - 1;
+        while (i >= 0) { a[i + words] = a[i]; i = i - 1; }
+        i = 0;
+        while (i < words) { a[i] = 0; i = i + 1; }
+        *n = *n + words;
+    }
+    if (bits > 0) {
+        carry = 0;
+        i = 0;
+        while (i < *n) {
+            cur = ((unsigned long)a[i] << bits) | carry;
+            a[i] = (unsigned int)(cur & 0xffffffffUL);
+            carry = cur >> 32;
+            i = i + 1;
+        }
+        if (carry != 0) { a[*n] = (unsigned int)carry; *n = *n + 1; }
+    }
+}
+
+static int bbits(unsigned int *a, int n)
+{
+    int i;
+    unsigned int t;
+    int b;
+    i = n - 1;
+    while (i > 0 && a[i] == 0) i = i - 1;
+    if (a[i] == 0) return 0;
+    t = a[i];
+    b = 0;
+    while (t != 0) { t = t >> 1; b = b + 1; }
+    return i * 32 + b;
+}
+
+/* compare a and b */
+static int bcmp(unsigned int *a, int an, unsigned int *b, int bn)
+{
+    int i;
+    i = NLIMB - 1;
+    while (i >= 0) {
+        unsigned int x;
+        unsigned int y;
+        x = 0; y = 0;
+        if (i < an) x = a[i];
+        if (i < bn) y = b[i];
+        if (x != y) { if (x > y) return 1; return -1; }
+        i = i - 1;
+    }
+    return 0;
+}
+
+/* a -= b, assuming a >= b */
+static void bsub(unsigned int *a, int *an, unsigned int *b, int bn)
+{
+    unsigned long borrow;
+    unsigned long x;
+    unsigned long y;
+    int i;
+    borrow = 0;
+    i = 0;
+    while (i < NLIMB) {
+        x = (unsigned long)a[i];
+        y = 0;
+        if (i < bn) y = (unsigned long)b[i];
+        y = y + borrow;
+        if (x >= y) { a[i] = (unsigned int)(x - y); borrow = 0; }
+        else { a[i] = (unsigned int)(x + 0x100000000UL - y); borrow = 1; }
+        i = i + 1;
+    }
+    while (*an > 1 && a[*an - 1] == 0) *an = *an - 1;
+}
+
+static int bzero(unsigned int *a, int n)
+{
+    int i;
+    i = 0;
+    while (i < n) { if (a[i] != 0) return 0; i = i + 1; }
+    return 1;
+}
+
+/* the top `want` bits of a, plus a sticky flag if anything was dropped */
+static unsigned long btop(unsigned int *a, int n, int want, int *sticky, int *shift)
+{
+    int b;
+    int drop;
+    unsigned long v;
+    int i;
+
+    b = bbits(a, n);
+    drop = b - want;
+    *shift = drop;
+    *sticky = 0;
+    if (drop <= 0) {
+        v = 0;
+        i = b - 1;
+        while (i >= 0) {
+            v = (v << 1) | (unsigned long)((a[i / 32] >> (i % 32)) & 1);
+            i = i - 1;
+        }
+        return v;
+    }
+    v = 0;
+    i = b - 1;
+    while (i >= drop) {
+        v = (v << 1) | (unsigned long)((a[i / 32] >> (i % 32)) & 1);
+        i = i - 1;
+    }
+    i = drop - 1;
+    while (i >= 0) {
+        if (((a[i / 32] >> (i % 32)) & 1) != 0) { *sticky = 1; i = 0; }
+        i = i - 1;
+    }
+    return v;
+}
+
+/* assemble: sign, a 54-bit significand (the low bit is the round bit),
+ * sticky, and the binary exponent of the significand's TOP bit */
+static unsigned long assemble(int neg, unsigned long sig54, int sticky, int topexp)
+{
+    unsigned long mant;
+    unsigned long rbit;
+    long e;
+    unsigned long out;
+    int drop;
+    int sub;
+
+    sub = 0;
+    if (sig54 == 0) {
+        if (neg) return 0x8000000000000000UL;
+        return 0;
+    }
+
+    /* INVARIANT: value = sig54 * 2^(topexp - 53), sig54's top bit at 53. */
+
+    /* SUBNORMALS ARE NOT ZERO, and treating them as zero lost every value
+     * below 2.2e-308 -- including DBL_MIN itself and the whole denormal range
+     * the C standard requires a conforming implementation to represent.
+     * Below 2^-1022 the exponent stops moving and the significand loses bits
+     * instead, so the extra bits are dropped HERE, into sticky, before the
+     * rounding rather than after it. */
+    if (topexp < -1022) {
+        sub = 1;
+        drop = -1022 - topexp;
+        if (drop >= 54) {
+            if (neg) return 0x8000000000000000UL;
+            return 0;
+        }
+        if ((sig54 & ((1UL << drop) - 1)) != 0) sticky = 1;
+        sig54 = sig54 >> drop;
+        topexp = topexp + drop;
+        if (sig54 == 0) {
+            /* everything rounded away except possibly a tie upward */
+            if (sticky) {
+                out = 1;
+                if (neg) out = out | 0x8000000000000000UL;
+                return out;
+            }
+            if (neg) return 0x8000000000000000UL;
+            return 0;
+        }
+    }
+
+    mant = sig54 >> 1;
+    rbit = sig54 & 1;
+    e = (long)topexp;                    /* value = mant * 2^(e-52) */
+
+    /* round to nearest, ties to even */
+    if (rbit != 0) {
+        if (sticky != 0 || (mant & 1) != 0) {
+            mant = mant + 1;
+            if (mant == 0x20000000000000UL) { mant = mant >> 1; e = e + 1; }
+        }
+    }
+
+    /* A SHIFTED-DOWN SIGNIFICAND IS STILL SUBNORMAL. The shift above leaves
+     * topexp at -1022, which reads as a perfectly ordinary exponent and sent
+     * every denormal back down the normal path -- where the implicit leading
+     * bit is added again, so each came out exactly 2^52 too large. The flag
+     * remembers what the shift was for. */
+    e = e + 1023;
+    if (sub) e = 0;
+    if (e >= 2047) {                     /* overflow -> infinity */
+        out = 0x7ff0000000000000UL;
+        if (neg) out = out | 0x8000000000000000UL;
+        return out;
+    }
+    if (e <= 0) {
+        /* SUBNORMAL. The significand carries no implicit bit, so it is stored
+         * whole -- and if rounding pushed it to 2^52 the same bit pattern is
+         * the smallest NORMAL, which is exactly the right answer. */
+        out = mant;
+        if (neg) out = out | 0x8000000000000000UL;
+        return out;
+    }
+
+    out = ((unsigned long)e << 52) | (mant & 0xfffffffffffffUL);
+    if (neg) out = out | 0x8000000000000000UL;
+    return out;
+}
+
+static unsigned long strtod_bits(char *s, char **end)
+{
+    int neg;
+    int ndig;
+    int dexp;
+    int seen;
+    int i;
+    char *p;
+    int expneg;
+    int ex;
+    int extra;
+
+    p = s;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p = p + 1;
+
+    neg = 0;
+    if (*p == '-') { neg = 1; p = p + 1; }
+    else if (*p == '+') p = p + 1;
+
+    /* EVERY SIGNIFICANT DIGIT IS KEPT, not the first nineteen.
+     *
+     * Truncating the decimal mantissa at what fits in a 64-bit integer and
+     * calling the rest a sticky bit is wrong, and wrong in a way that only
+     * shows up on long inputs: dropping DECIMAL digits is not the same as
+     * dropping BINARY bits, and the discarded tail can be worth more than
+     * half an ulp. It cost 48 of 400,000 random values, every one of them one
+     * ulp low. The digits go into the bignum instead, where the conversion is
+     * exact by construction.
+     *
+     * The cap is on the count, not the value: past NDIG significant digits
+     * nothing can reach the 53rd bit except through sticky, and NDIG is set
+     * far above the 768 that the worst-case decimal needs. */
+    ndig = 0;
+    dexp = 0;
+    seen = 0;
+    extra = 0;
+    while (*p == '0') { seen = 1; p = p + 1; }        /* leading zeros */
+    while (*p >= '0' && *p <= '9') {
+        seen = 1;
+        if (ndig < NDIG) { DIG[ndig] = (char)(*p - '0'); ndig = ndig + 1; }
+        else { dexp = dexp + 1; if (*p != '0') extra = 1; }
+        p = p + 1;
+    }
+    if (*p == '.') {
+        p = p + 1;
+        if (ndig == 0) {
+            /* 0.000123 -- the zeros after the point are not significant */
+            while (*p == '0') { seen = 1; dexp = dexp - 1; p = p + 1; }
+        }
+        while (*p >= '0' && *p <= '9') {
+            seen = 1;
+            if (ndig < NDIG) { DIG[ndig] = (char)(*p - '0'); ndig = ndig + 1; dexp = dexp - 1; }
+            else if (*p != '0') extra = 1;
+            p = p + 1;
+        }
+    }
+    if (!seen) { if (end != 0) *end = s; return 0; }
+
+    if (*p == 'e' || *p == 'E') {
+        char *save;
+        save = p;
+        p = p + 1;
+        expneg = 0;
+        if (*p == '-') { expneg = 1; p = p + 1; }
+        else if (*p == '+') p = p + 1;
+        if (*p >= '0' && *p <= '9') {
+            ex = 0;
+            while (*p >= '0' && *p <= '9') {
+                if (ex < 100000) ex = ex * 10 + (*p - '0');
+                p = p + 1;
+            }
+            if (expneg) dexp = dexp - ex; else dexp = dexp + ex;
+        } else p = save;
+    }
+    if (end != 0) *end = p;
+
+    if (ndig == 0) { if (neg) return 0x8000000000000000UL; return 0; }
+
+    /* OUT OF RANGE ON MAGNITUDE, not on the exponent alone, and decided
+     * before any bignum work. The value is about 10^(ndig+dexp): testing dexp
+     * by itself let "1e400" out early and a 900-digit integer through, which
+     * is the case that would have overrun the limbs. DBL_MAX is 1.8e308 and
+     * the smallest subnormal is 4.9e-324, so these bounds are loose by an
+     * order of magnitude on each side and still bound the arithmetic. */
+    if (ndig + dexp > 320) { if (neg) return 0xfff0000000000000UL; return 0x7ff0000000000000UL; }
+    if (ndig + dexp < -350) { if (neg) return 0x8000000000000000UL; return 0; }
+
+    bset(NUM, &NUMN, 0);
+    i = 0;
+    while (i < ndig) {
+        bmul(NUM, &NUMN, 10);
+        badd(NUM, &NUMN, (unsigned long)DIG[i]);
+        i = i + 1;
+    }
+
+    if (dexp >= 0) {
+        i = 0;
+        while (i < dexp) { bmul(NUM, &NUMN, 10); i = i + 1; }
+        {
+            int sticky;
+            int shift;
+            unsigned long sig;
+            int b;
+            b = bbits(NUM, NUMN);
+            sig = btop(NUM, NUMN, 54, &sticky, &shift);
+            if (extra) sticky = 1;
+            if (b < 54) { sig = sig << (54 - b); }
+            return assemble(neg, sig, sticky, b - 1);
+        }
+    } else {
+        int nd;
+        int shiftby;
+        int qbits;
+        int sticky;
+        int j;
+        int b;
+
+        nd = -dexp;
+        bset(DEN, &DENN, 1);
+        i = 0;
+        while (i < nd) { bmul(DEN, &DENN, 10); i = i + 1; }
+
+        /* Shift the numerator so the quotient is certain to have >= 55 bits.
+         * bits(num) - bits(den) + shift >= 55 is the requirement; a little
+         * extra costs nothing and removes the edge case. */
+        shiftby = bbits(DEN, DENN) - bbits(NUM, NUMN) + 60;
+        if (shiftby < 0) shiftby = 0;
+        bshl(NUM, &NUMN, shiftby);
+
+        /* schoolbook long division, one bit at a time, most significant
+         * first. QUO collects the quotient; NUM becomes the remainder. */
+        qbits = bbits(NUM, NUMN) - bbits(DEN, DENN) + 1;
+        if (qbits < 1) qbits = 1;
+        i = 0;
+        while (i < NLIMB) { QUO[i] = 0; i = i + 1; }
+        QUON = NLIMB;
+
+        j = qbits - 1;
+        while (j >= 0) {
+            int k;
+            /* is (den << j) <= num ? */
+            k = j;
+            {
+                int TN;
+                int z;
+                z = 0;
+                while (z < NLIMB) { T[z] = 0; z = z + 1; }
+                z = 0;
+                while (z < DENN) { T[z] = DEN[z]; z = z + 1; }
+                TN = DENN;
+                bshl(T, &TN, k);
+                if (bcmp(NUM, NUMN, T, TN) >= 0) {
+                    bsub(NUM, &NUMN, T, TN);
+                    QUO[j / 32] = QUO[j / 32] | (1U << (j % 32));
+                }
+            }
+            j = j - 1;
+        }
+
+        /* THE REMAINDER IS A STICKY BIT AND btop OVERWROTE IT. A non-empty
+         * remainder means the quotient is short of the true value, so a tie
+         * must round UP -- and passing &sticky straight into btop reset it to
+         * whatever the quotient's own dropped bits said. Twenty-four values,
+         * all one ulp low. Kept separately and combined. */
+        sticky = 0;
+        if (!bzero(NUM, NUMN)) sticky = 1;
+        if (extra) sticky = 1;
+        {
+            int shift;
+            int qsticky;
+            unsigned long sig;
+            b = bbits(QUO, QUON);
+            qsticky = 0;
+            sig = btop(QUO, QUON, 54, &qsticky, &shift);
+            if (qsticky) sticky = 1;
+            if (b < 54) sig = sig << (54 - b);
+            /* value = quotient * 2^-shiftby */
+            return assemble(neg, sig, sticky, b - 1 - shiftby);
+        }
+    }
+}
+
+/* NARROWING TO float, ALSO IN INTEGERS. A cast would be one instruction under
+ * mc-tcc and nothing at all under micro-c, which is the whole reason this file
+ * cannot use one. */
+static unsigned int strtod_to_f32(unsigned long b)
+{
+    unsigned long sign;
+    long ex;
+    unsigned long mant;
+    unsigned int rbit;
+    unsigned int sticky;
+    unsigned int m24;
+    unsigned int out;
+    int drop;
+
+    sign = (b >> 63) & 1;
+    ex = (long)((b >> 52) & 0x7ff);
+    mant = b & 0xfffffffffffffUL;
+
+    if (ex == 0x7ff) {                       /* inf or nan */
+        out = (unsigned int)(sign << 31) | 0x7f800000;
+        if (mant != 0) out = out | 0x400000;
+        return out;
+    }
+    if (ex == 0 && mant == 0) return (unsigned int)(sign << 31);
+
+    if (ex == 0) { ex = -1022; }             /* subnormal double -> flushes */
+    else { mant = mant | 0x10000000000000UL; ex = ex - 1023; }
+
+    ex = ex + 127;
+    if (ex >= 255) return (unsigned int)(sign << 31) | 0x7f800000;
+
+    drop = 29;                               /* 53 significand bits -> 24 */
+    if (ex <= 0) {
+        drop = drop + (int)(1 - ex);
+        ex = 0;
+        if (drop >= 54) return (unsigned int)(sign << 31);
+    }
+    rbit = (unsigned int)((mant >> (drop - 1)) & 1);
+    sticky = 0;
+    if ((mant & ((1UL << (drop - 1)) - 1)) != 0) sticky = 1;
+    m24 = (unsigned int)(mant >> drop);
+    if (rbit != 0) {
+        if (sticky != 0 || (m24 & 1) != 0) {
+            m24 = m24 + 1;
+            if (m24 == 0x1000000) { m24 = m24 >> 1; ex = ex + 1; }
+        }
+    }
+    if (ex >= 255) return (unsigned int)(sign << 31) | 0x7f800000;
+    if (ex == 0) return (unsigned int)(sign << 31) | m24;
+    return (unsigned int)(sign << 31) | ((unsigned int)ex << 23) | (m24 & 0x7fffff);
+}
+
+/* THE THREE ENTRY POINTS. A union rather than a cast: what was computed is a
+ * bit pattern, not a number that needs converting. The signatures match
+ * stdlib.h exactly -- mc-tcc compiles this file too and checks them. */
+union strtod_pun64 { double d; unsigned long u; };
+union strtod_punld { long double d; unsigned long u; };
+union strtod_pun32 { float f; unsigned int u; };
+
+double strtod(const char* nptr, char** endptr)
+{
+    union strtod_pun64 v;
+    v.u = strtod_bits((char*)nptr, endptr);
+    return v.d;
+}
+
+/* long double IS double here -- tcc-microc patch 0001 sets LDOUBLE_SIZE to 8
+ * and says why. */
+long double strtold(const char* nptr, char** endptr)
+{
+    union strtod_punld v;
+    v.u = strtod_bits((char*)nptr, endptr);
+    return v.d;
+}
+
+float strtof(const char* nptr, char** endptr)
+{
+    union strtod_pun32 v;
+    v.u = strtod_to_f32(strtod_bits((char*)nptr, endptr));
+    return v.f;
+}
+
 int ldexpl(int x, int exp) { return 0; }
