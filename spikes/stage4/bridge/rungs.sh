@@ -4485,34 +4485,67 @@ if [ "$R14" = ok ] && [ "$R16" != FAIL ]; then
           R16=FAIL
         fi
       done
+      # PRESENT AND NOT EXECUTABLE IS THE CORRECT OUTCOME HERE, AND AN
+      # EARLIER REVISION OF THIS CHECK FAILED THE RUNG FOR IT.
+      #
+      # I wrote that version when `in_sysroot` was the design and nothing
+      # could ever enter the sysroot -- at that point a pass-2 binary that
+      # would not run WAS a dead end. Phase B replaced that design and asks
+      # the same question at B0, where the sysroot is bound as / and where a
+      # negative answer is real. This copy was left behind still setting
+      # R16=FAIL, so run #115 built and installed gcc pass 2 correctly and
+      # then failed the rung for it.
+      #
+      # What chapter 6 produces is glibc-linked and cross-built. LFS says so
+      # plainly: "installed into their final location, but cannot be used
+      # yet ... using the utilities will be possible in the next chapter
+      # after entering the chroot environment."
+      #
+      # So this now MEASURES AND REPORTS rather than gates. Both answers are
+      # informative and neither is a failure:
+      #   does not execute -> normal, and the interpreter line proves why
+      #   executes         -> it was linked statically or against the box's
+      #                       musl, which would mean --host did not take
+      _ran=0; _didnt=0
       for b in gcc g++ ld as; do
         if [ ! -e "$S/usr/bin/$b" ]; then
           printf '      %-6s MISSING\n' "$b"; _sysroot_runs=no; continue
         fi
         if "$S/usr/bin/$b" --version > /dev/null 2>&1; then
-          printf '      %-6s runs -- %s\n' "$b" \
+          printf '      %-6s runs here -- %s\n' "$b" \
             "$("$S/usr/bin/$b" --version 2>&1 | head -1)"
+          _ran=$((_ran+1))
         else
-          printf '      %-6s present but WILL NOT EXECUTE\n' "$b"
-          _sysroot_runs=no
+          printf '      %-6s installed, does not run in the box (expected)\n' "$b"
+          _didnt=$((_didnt+1))
         fi
       done
       if [ "$_sysroot_runs" != yes ]; then
+        # Only a MISSING file gets here now, and that is a real failure: it
+        # means the install did not put the tool where phase B will look.
         R16=FAIL
+        say "    A chapter 6 tool is missing from $S/usr/bin, so phase B"
+        say "    would start in a sysroot that cannot build anything."
+      elif [ "$_didnt" -gt 0 ]; then
         say ""
-        say "    --- what the interpreter says ---"
+        say "    --- why they do not run HERE, which is the point ---"
         "$S/tools/bin/$LFS_TGT-readelf" -l "$S/usr/bin/gcc" 2>/dev/null \
           | grep -A1 -i "interpreter" | head -4 | sed 's/^/      /'
-        say "      box root has: $(ls /lib 2>/dev/null | tr '\n' ' ')"
+        say "      box /lib holds: $(ls /lib 2>/dev/null | tr '\n' ' ')"
         say ""
-        say "    THIS IS NOT A COMPILER DEFECT AND NOT A MISSING FILE. Chapter"
-        say "    6's output is glibc-linked by design and its loader lives at"
-        say "    $S/usr/lib, reachable as /lib only when the SYSROOT is /."
-        say "    LFS enters a chroot for exactly this; stage4-complete binds"
-        say "    the sysroot as / in box15.sh. This script does neither -- it"
-        say "    Phase B binds $S as / for exactly this reason."
+        say "    That interpreter lives at $S/usr/lib, and the box's /lib is"
+        say "    musl's. These are cross-built chapter 6 tools and they are"
+        say "    MEANT to be unrunnable on this side -- LFS: \"installed into"
+        say "    their final location, but cannot be used yet\"."
+        say "    Phase B binds $S as / and runs them there. B0 is the check"
+        say "    that matters; a failure there would be real."
+      elif [ "$_ran" -gt 0 ]; then
         say ""
-        say "    If this fires, phase B cannot start. See REVIEW-103.md."
+        say "    ALL FOUR RAN IN THE BOX, WHICH IS SUSPICIOUS RATHER THAN GOOD."
+        say "    Chapter 6 output should be glibc-dynamic against $S. If it"
+        say "    runs here it was linked statically or against the box's musl,"
+        say "    which would mean --host=$LFS_TGT did not take and phase B"
+        say "    would be testing the wrong binaries."
       fi
     else
       R16=FAIL; say "    --- gcc pass 2 errors ---"

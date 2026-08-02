@@ -77,6 +77,24 @@ say()   { printf '%s\n' "$*"; }
 head1() { say ""; say "  === $* ==="; }
 onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
 
+# WHERE IT FAILED, NOT WHAT FINISHED LAST -- the same helper phase A grew, and
+# for the same reason: under `make -j` a tail lands on whichever module
+# finished last, which is by definition one that SUCCEEDED. A gcc build that
+# died in build-fixincludes printed twenty-five lines of gmp's libtool
+# succeeding, and the real ld message was never logged.
+whyfail() {        # $1 = logfile
+    [ -s "$1" ] || { say "      (no $1)"; return; }
+    _n=$(grep -nE "error:|undefined reference|cannot find|No such file|Error [0-9]" "$1" 2>/dev/null | head -1 | cut -d: -f1)
+    if [ -n "$_n" ]; then
+        _from=1; [ "$_n" -gt 30 ] && _from=$(( _n - 30 ))
+        say "      --- $1, around the first error (line $_n) ---"
+        sed -n "${_from},$(( _n + 8 ))p" "$1" | sed 's/^/      /'
+    else
+        say "      --- $1, last 25 lines (nothing matched an error pattern) ---"
+        tail -25 "$1" | sed 's/^/      /'
+    fi
+}
+
 ARM=${ARM:-unnamed}
 NP=$(nproc 2>/dev/null || echo 2)
 W=/build                       # scratch, bound by the workflow; NOT the sysroot
@@ -212,7 +230,10 @@ if [ "$B0" = ok ]; then
       openssl) _bin=openssl ;;
       *)       _bin=$pk ;;
     esac
-    if command -v "$_bin" > /dev/null 2>&1 && "$_bin" --version > /dev/null 2>&1; then
+    # openssl ANSWERS `version`, NOT `--version`, so probing with --version
+    # reports a perfectly good openssl as absent and rebuilds it every run.
+    case "$pk" in openssl) _vflag=version ;; *) _vflag=--version ;; esac
+    if command -v "$_bin" > /dev/null 2>&1 && "$_bin" "$_vflag" > /dev/null 2>&1; then
       say "    $pk: already in the sysroot and runs"
       continue
     fi
@@ -256,6 +277,13 @@ if [ "$B0" = ok ]; then
         ( cd "$_d" && { [ -f ./configure.sh ] && sh ./configure.sh --prefix=/usr \
                         || ./configure --prefix=/usr; } > c.log 2>&1 \
           && make -j"$NP" > b.log 2>&1 && make install > i.log 2>&1 ) ;;
+      python)
+        # --without-ensurepip: pip is not needed by anything here, and its
+        # install phase runs the freshly built interpreter over bundled
+        # wheels. Nothing in the chain imports it; glibc only wants python3
+        # to exist and answer --version.
+        ( cd "$_d" && ./configure --prefix=/usr --without-ensurepip > c.log 2>&1 \
+          && make -j"$NP" > b.log 2>&1 && make install > i.log 2>&1 ) ;;
       *)
         ( cd "$_d" && ./configure --prefix=/usr > c.log 2>&1 \
           && make -j"$NP" MAKEINFO=true > b.log 2>&1 \
@@ -263,7 +291,7 @@ if [ "$B0" = ok ]; then
     esac
     _rc=$?
     if [ "$_rc" = 0 ] && command -v "$_bin" > /dev/null 2>&1; then
-      say "    $pk: installed -- $("$_bin" --version 2>&1 | head -1)"
+      say "    $pk: installed -- $("$_bin" "$_vflag" 2>&1 | head -1)"
     else
       b1=FAIL; say "    $pk NOT INSTALLED"
       tail -12 "$_d/c.log" 2>/dev/null | sed 's/^/      /'
@@ -309,9 +337,25 @@ head1 "RUNG B2 -- glibc, rebuilt NATIVELY by gcc pass 2"
 if [ "$B1" = ok ]; then
   if fetch "/in/glibc-$GLIBC" glibc; then
     _d=$FDIR
+    # glibc-fhs-1.patch, THE SAME ONE RUNG 13 APPLIES. LFS applies it to the
+    # chapter 8 build as well as chapter 5's, and this is a fresh unpack, so
+    # it arrives unpatched. It moves the FHS-noncompliant directories glibc
+    # would otherwise create.
+    if [ -f /in/glibc-fhs-1.patch ]; then
+      if ( cd "$_d" && patch -Np1 -i /in/glibc-fhs-1.patch ) > /tmp/gp.log 2>&1; then
+        say "    applied glibc-fhs-1.patch"
+      else
+        say "    glibc-fhs-1.patch DID NOT APPLY:"
+        tail -6 /tmp/gp.log | sed 's/^/      /'; B2=FAIL
+      fi
+    else
+      say "    glibc-fhs-1.patch not in /in"; B2=FAIL
+    fi
     rm -rf "$W/b-glibc" && mkdir -p "$W/b-glibc" && cd "$W/b-glibc"
     echo "rootsbindir=/usr/sbin" > configparms
-    if "$_d/configure" --prefix=/usr --disable-nscd \
+    if [ "$B2" = FAIL ]; then
+      say "    not configuring -- the patch above did not apply"
+    elif "$_d/configure" --prefix=/usr --disable-nscd \
          --enable-kernel="${ENABLE_KERNEL:-5.4}" \
          libc_cv_slibdir=/usr/lib > c.log 2>&1 \
        && timeout 7200 make -j"$NP" > b.log 2>&1 \
@@ -331,8 +375,8 @@ if [ "$B1" = ok ]; then
     else
       B2=FAIL; say "    --- glibc errors ---"
       grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
-      tail -20 c.log 2>/dev/null | sed 's/^/      /'
-      tail -20 b.log 2>/dev/null | sed 's/^/      /'
+      whyfail c.log
+      whyfail b.log
     fi
     cd /
   else B2=FAIL; say "    glibc did not unpack"; fi
@@ -358,7 +402,7 @@ if [ "$B2" = ok ]; then
     else
       B3=FAIL; say "    --- binutils errors ---"
       grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
-      tail -20 b.log 2>/dev/null | sed 's/^/      /'
+      whyfail b.log
     fi
     cd /
   else B3=FAIL; say "    binutils did not unpack"; fi
@@ -379,6 +423,32 @@ head1 "RUNG B4 -- gcc, rebuilt NATIVELY.  THIS IS THE FINAL COMPILER."
 if [ "$B3" = ok ]; then
   if fetch "/in/gcc-$GCC15" gcc; then
     _d=$FDIR
+    # THE t-aarch64-linux SED, AND THIS TREE IS A FRESH ONE.
+    #
+    # Rung 11 applies this to the tree PHASE A unpacked. B4 unpacks its own
+    # copy from /in, so it arrives unpatched and the edit has to happen again
+    # -- a fresh tarball carries none of phase A's source edits.
+    #
+    # LFS seds gcc/config/i386/t-linux64 for x86_64; the aarch64 file doing
+    # the same job is t-aarch64-linux, and nothing in the book covers aarch64
+    # so this is ours. Without it libstdc++ installs into /usr/lib64, a
+    # directory this sysroot has no symlink to. g++ still LINKS -- the program
+    # dies at exec with "error while loading shared libraries: libstdc++.so.6",
+    # which reads as a broken C++ runtime rather than a misplaced file.
+    #
+    # ASSERT THE ANCHOR. A sed that matches nothing ships an unchanged file
+    # and looks exactly like a sed that worked, so this fails here rather
+    # than at exec time in the guest.
+    _t="$_d/gcc/config/aarch64/t-aarch64-linux"
+    if [ ! -f "$_t" ]; then
+      say "    $_t is missing -- gcc has moved this file"; B4=FAIL
+    elif ! grep -q 'mabi\.lp64=' "$_t"; then
+      say "    $_t has no mabi.lp64= line. It now reads:"
+      sed 's/^/      /' "$_t"; B4=FAIL
+    else
+      sed -e '/mabi\.lp64=/s|lib64|lib|' -i.orig "$_t"
+      say "    64-bit libdir: $(grep 'mabi\.lp64=' "$_t")"
+    fi
     for _lib in gmp mpfr mpc; do
       if fetch "/in/$_lib-" "il-$_lib"; then
         mv "$FDIR" "$_d/$_lib" 2>/dev/null \
@@ -388,7 +458,11 @@ if [ "$B3" = ok ]; then
       fi
     done
     rm -rf "$W/b-gcc" && mkdir -p "$W/b-gcc" && cd "$W/b-gcc"
-    if "$_d/configure" --prefix=/usr --disable-multilib --disable-bootstrap \
+    # LD=ld IS THE BOOK'S, and it stops gcc's configure picking a linker other
+    # than the binutils B3 just installed.
+    if [ "$B4" = FAIL ]; then
+      say "    not configuring -- the source edit above did not take"
+    elif "$_d/configure" --prefix=/usr LD=ld --disable-multilib --disable-bootstrap \
          --disable-fixincludes --enable-default-pie \
          --enable-default-ssp --disable-nls --enable-languages=c,c++ \
          > c.log 2>&1 \
@@ -407,7 +481,7 @@ if [ "$B3" = ok ]; then
     else
       B4=FAIL; say "    --- gcc errors ---"
       grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
-      tail -25 b.log 2>/dev/null | sed 's/^/      /'
+      whyfail b.log
     fi
     cd /
   else B4=FAIL; say "    gcc did not unpack"; fi
@@ -478,7 +552,7 @@ if [ "$B4" = ok ]; then
     else
       B5=FAIL; say "    --- errors ---"
       grep -nE "error:|Error [0-9]" b.log 2>/dev/null | head -12 | sed 's/^/      /'
-      tail -20 b.log 2>/dev/null | sed 's/^/      /'
+      whyfail b.log
     fi
     cd /
   else B5=FAIL; say "    busybox did not unpack"; fi
@@ -547,7 +621,7 @@ if [ "$B5" = ok ]; then
       else
         B6=FAIL; say "    --- errors ---"
         grep -nE "error:|Error [0-9]|No rule to make" b.log 2>/dev/null | head -15 | sed 's/^/      /'
-        tail -25 b.log 2>/dev/null | sed 's/^/      /'
+      whyfail b.log
       fi
     fi
     cd /
