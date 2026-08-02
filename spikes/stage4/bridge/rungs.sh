@@ -217,26 +217,15 @@ onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
 # is where a compiler or linker puts the message that names the cause.
 whyfail() {        # $1 = logfile
     [ -s "$1" ] || { say "      (no $1)"; return; }
-    # ANCHOR PATTERNS, NARROWED. This used to include "No such file" and
-    # "cannot find", both of which fire constantly in healthy build output --
-    # glibc's own build probes /sys/kernel/mm/transparent_hugepage/enabled
-    # with grep and gets "No such file or directory" every time. B2 anchored
-    # on that, printed the window around a harmless line, and the real
-    # failure never reached the log.
-    _n=$(grep -nE "error:|Error [0-9]|\*\*\* |undefined reference" "$1" 2>/dev/null | head -1 | cut -d: -f1)
+    _n=$(grep -nE "error:|undefined reference|cannot find|No such file|Error [0-9]" "$1" 2>/dev/null | head -1 | cut -d: -f1)
     if [ -n "$_n" ]; then
         _from=1; [ "$_n" -gt 30 ] && _from=$(( _n - 30 ))
-        say "      --- $1, around the first error (line $_n of $(wc -l < "$1")) ---"
+        say "      --- $1, around the first error (line $_n) ---"
         sed -n "${_from},$(( _n + 8 ))p" "$1" | sed 's/^/      /'
     else
-        say "      --- $1: no line matched an error pattern ---"
+        say "      --- $1, last 25 lines (nothing matched an error pattern) ---"
+        tail -25 "$1" | sed 's/^/      /'
     fi
-    # AND THE TAIL, ALWAYS. Under `make -j` the failing recipe is usually the
-    # last thing written, and an anchor that guesses wrong has now cost three
-    # rounds. Two windows cannot both miss.
-    say "      --- $1, last 25 lines ---"
-    tail -25 "$1" | sed 's/^/      /'
-    say "      (full log uploaded as the buildlogs artifact)"
 }
 
 R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=skip; R7=skip; R8=skip; R9=skip; R10=skip; R11=skip; R115=skip; R117=skip; R12=skip; R13=skip; R14=skip; R15=skip; R16=skip; R17=skip; R18=skip; R19=skip; R20=skip
@@ -505,6 +494,7 @@ if [ "$R1" = ok ]; then
 
   nc=0; nf=0
   : > /work/musl-fail.txt
+  : > /work/musl-why.txt
   for f in $(sort /work/srclist); do
     # .c, .s and .S all land on the same object name, which is how musl's own
     # REPLACED_OBJS rule collapses an arch file onto the generic one it stands
@@ -513,10 +503,30 @@ if [ "$R1" = ok ]; then
     # musl's Makefile adds -DCRT for the crt objects; without it crt1.c
     # compiles to something that is not a crt file.
     case "$f" in crt/*) X=-DCRT ;; *) X= ;; esac
-    if $CC $MUSLCF $INC $X -c -o "$o" "$f" 2>>/work/musl-cc.err; then
+    # PER-FILE STDERR AND EXIT STATUS, NOT ONE SHARED LOG.
+    #
+    # This appended every message to one file and reported the distinct
+    # `error:` lines from it. That is right when a compile FAILS and says why,
+    # and silent when it CRASHES -- a signal writes nothing. Nine musl files
+    # would not compile and the error summary printed nothing at all, so the
+    # log said "9 failed" and gave no way to tell a missing macro from a
+    # segfault. Recording the status per file separates them.
+    if $CC $MUSLCF $INC $X -c -o "$o" "$f" 2>/work/one.err; then
       nc=$((nc + 1))
+      cat /work/one.err >> /work/musl-cc.err
     else
+      _rc=$?
       nf=$((nf + 1)); echo "$f" >> /work/musl-fail.txt
+      cat /work/one.err >> /work/musl-cc.err
+      _msg=$(grep -a "error:" /work/one.err 2>/dev/null | head -1 | sed 's/^.*error:/error:/')
+      if [ -z "$_msg" ]; then
+        if [ "$_rc" -gt 128 ]; then
+          _msg="SIGNAL $((_rc - 128)) -- no diagnostic"
+        else
+          _msg="rc=$_rc, no diagnostic"
+        fi
+      fi
+      printf '%s\t%s\n' "$f" "$_msg" >> /work/musl-why.txt
     fi
   done
   say "    compiled $nc objects, $nf failed"
@@ -526,8 +536,9 @@ if [ "$R1" = ok ]; then
     # the generic C stands in, and that generic C is inline asm tcc does not
     # parse. It costs the thread-exit unmapping path, which nothing below gcc
     # exercises. Named here so it stops looking like a finding every run.
-    say "    --- files that would not compile (first 10 of $nf) ---"
-    head -10 /work/musl-fail.txt | sed 's/^/      /'
+    say "    --- files that would not compile, and why (first 12 of $nf) ---"
+    head -12 /work/musl-why.txt 2>/dev/null \
+      | awk -F'\t' '{ printf "      %-34s %s\n", $1, substr($2,1,58) }'
     # DISTINCT MESSAGES, WITH COUNTS. The first twelve lines of the error log
     # are usually twelve copies of one fault, which reads as twelve problems
     # and sends the next round in twelve directions. 664 failures in the
@@ -732,6 +743,20 @@ CDEFS
 
   say "    headers: $(find "$SYS/include" -name '*.h' 2>/dev/null | wc -l) files"
   say "    crt:     $(ls "$SYS/lib"/crt*.o 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')"
+  # SAY WHICH HALF IS MISSING, HERE, RATHER THAN LETTING THE WRAPPER SAY IT
+  # FIFTEEN LINES LATER. The first seed-built run of this rung produced a
+  # 3.2 MB libc.a from 1273 objects and no crt1.o, and the only visible
+  # consequence was `tcc: error: file 'crt1.o' not found` under a heading about
+  # the compiler wrapper -- which reads as a path problem and is a compile
+  # failure in crt/crt1.c.
+  if [ ! -s "$SYS/lib/libc.a" ]; then
+    say "    RUNG 2 STOPS HERE: no libc.a was produced"
+  elif [ ! -f "$SYS/lib/crt1.o" ]; then
+    say "    RUNG 2 STOPS HERE: libc.a is present and crt1.o is NOT."
+    say "      crt1.o comes from crt/crt1.c. Nothing can be LINKED without it,"
+    say "      so every rung above this one fails at the link and not at the"
+    say "      compile. Look for crt/crt1.c in the failure list above."
+  fi
   if [ -s "$SYS/lib/libc.a" ] && [ -f "$SYS/lib/crt1.o" ]; then R2=ok; else R2=FAIL; fi
   fi
   cd /work
@@ -4144,11 +4169,7 @@ if [ "$R14" = ok ]; then
     # Same shape as the -isystem flag that took three rounds: a fix applied to
     # one of two places that need it. Both busybox configurations should be
     # read together whenever either changes.
-    # FEATURE_WGET_HTTPS IS IN THIS LIST BECAUSE IT *select*s TLS.
-    # Disabling SSL_CLIENT and TLS is not enough: Kconfig re-derives a
-    # selected symbol on the next `oldconfig`, so TLS came straight back and
-    # B5's check caught it. Kill what selects it, not just the symbol.
-    for _sym in SSL_CLIENT FEATURE_WGET_OPENSSL FEATURE_WGET_HTTPS TLS TC; do
+    for _sym in SSL_CLIENT FEATURE_WGET_OPENSSL TLS TC; do
       sed -i "s/^CONFIG_$_sym=y/# CONFIG_$_sym is not set/" .config
     done
     # THE BUILD APPLETS, AND THIS IS THE SAME LIST THE AIRLOCK busybox USES.
@@ -4183,6 +4204,11 @@ if [ "$R14" = ok ]; then
       say "    first package and name the package, not the missing applet."
       R15=FAIL
     fi
+    if grep -qE "^CONFIG_(SSL_CLIENT|TLS)=y" .config; then
+      say "    TLS symbols came back after oldconfig:"
+      grep -E "^CONFIG_(SSL_CLIENT|TLS|FEATURE_WGET_OPENSSL)" .config | sed 's/^/      /'
+      R15=FAIL
+    fi
     if [ "$R15" != FAIL ]; then
       # THE TWO BUSYBOX CONFIGURATIONS DIFFER ON PURPOSE, AND ONLY HERE.
       #
@@ -4208,17 +4234,6 @@ if [ "$R14" = ok ]; then
       # AND AGAIN AFTER oldconfig RE-DERIVES, which is what undid the TLS
       # symbols three runs running.
       yes '' | $_BBMAKE oldconfig > /dev/null 2>&1
-      # THE TLS CHECK LIVES HERE NOW, AFTER THE LAST oldconfig.
-      #
-      # It used to run BEFORE this line and therefore passed while oldconfig
-      # re-enabled TLS behind it -- a check that reported on a .config which
-      # no longer existed by the time the build read it. B5 asks the same
-      # question after its final oldconfig and caught what this one missed.
-      if grep -qE "^CONFIG_(SSL_CLIENT|TLS)=y" .config; then
-        say "    TLS symbols came back after the final oldconfig:"
-        grep -E "^(# )?CONFIG_(SSL_CLIENT|TLS|FEATURE_WGET_OPENSSL|FEATURE_WGET_HTTPS)" .config | sed 's/^/      /'
-        R15=FAIL
-      fi
       if ! grep -q '^CONFIG_STATIC=y' .config; then
         say "    CONFIG_STATIC did not survive oldconfig:"
         grep -E '^(# )?CONFIG_STATIC' .config | sed 's/^/      /'
