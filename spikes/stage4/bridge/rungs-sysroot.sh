@@ -483,7 +483,14 @@ if [ "$B1" = ok ]; then
        && timeout 7200 make -j"$NP" > b.log 2>&1 \
        && make install PERL=/bin/true > i.log 2>&1; then
       B2=ok
-      say "    glibc rebuilt natively: $(/usr/bin/ldd --version 2>&1 | head -1)"
+      # NOT ldd --version. glibc installs /usr/bin/ldd as a script with a
+      # #!/bin/bash line, and there is no bash in this sysroot -- busybox
+      # provides sh, not bash. The last run printed
+      #   "glibc rebuilt natively: /usr/bin/ldd: not found"
+      # which is a check reporting the absence of an interpreter as though it
+      # were the glibc version. libc.so.6 states its own version when run,
+      # and it is the file that matters.
+      say "    glibc rebuilt natively:"
 
       # PERL=/bin/true, AND IT IS A DECISION WITH NO PRECEDENT IN THIS REPO.
       #
@@ -635,9 +642,38 @@ if [ "$B3" = ok ]; then
     # than the binutils B3 just installed.
     if [ "$B4" = FAIL ]; then
       say "    not configuring -- the source edit above did not take"
+    # THE TARGET LIBRARIES RUNG 16 ALREADY DISABLES, DISABLED HERE TOO.
+    #
+    # B4 disabled none of them and libgomp stopped the build:
+    #
+    #   libgomp/affinity-fmt.c:330:25: error: initialization discards 'const'
+    #     qualifier from pointer target type [-Werror=discarded-qualifiers]
+    #     330 |   char *q = strchr (p + 1, '}');
+    #
+    # That is VERSION SKEW, not a broken toolchain. glibc 2.44 makes the
+    # string functions const-correct in C, so strchr() on a const char *
+    # returns const char *; gcc 15.2.0 predates that and libgomp assigns the
+    # result to char *. libgomp builds with -Werror, so a warning is fatal.
+    # Nothing else in the tree failed -- libgcc, libstdc++, libatomic and the
+    # rest all got through, and the only *** line was libgomp's.
+    #
+    # THE LIST IS RUNG 16's, VERBATIM, which is LFS's for gcc pass 2. It is
+    # precedented one rung down in this same chain rather than invented here,
+    # and it disables exactly the six libraries that are optional runtimes.
+    #
+    # WHAT THIS COSTS, SAID OUT LOUD: the final compiler has no OpenMP, no
+    # sanitizers, no __float128, no libssp and no vtable verification.
+    # --enable-default-ssp still works because glibc provides the stack
+    # protector symbols -- LFS pairs those two flags for that reason. Nothing
+    # stage 4 builds uses any of the six, and stage 4's claim is a kernel and
+    # a busybox that boot. STAGE 5 SHOULD REVISIT THIS: a complete system
+    # wants a complete compiler, and by then gcc will have caught up with
+    # glibc's headers, or the skew will need a real fix rather than a flag.
     elif "$_d/configure" --prefix=/usr LD=ld --disable-multilib --disable-bootstrap \
          --disable-fixincludes --enable-default-pie \
          --enable-default-ssp --disable-nls --enable-languages=c,c++ \
+         --disable-libatomic --disable-libgomp --disable-libquadmath \
+         --disable-libsanitizer --disable-libssp --disable-libvtv \
          > c.log 2>&1 \
        && timeout 14400 make -j"$NP" > b.log 2>&1 \
        && make install > i.log 2>&1; then
