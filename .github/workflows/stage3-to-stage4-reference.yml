@@ -1346,6 +1346,26 @@ jobs:
           IRD=box/out/initramfs.cpio.gz
           if [ ! -s "$IMG" ] || [ ! -s "$IRD" ]; then
             echo "  no Image or initramfs -- phase B did not reach B8"
+            # GREEN ONLY IF PHASE B WAS NEVER SUPPOSED TO RUN.
+            #
+            # This step used to `exit 0` unconditionally, so a phase B that
+            # died at B2 left the whole job green with no image -- the same
+            # shape stage4-complete records against itself: "a failed build
+            # inside the box went green and the damage showed up later
+            # somewhere else."
+            #
+            # The rungs deliberately never exit non-zero; the gates live out
+            # here. So: if phase A did not complete, a missing image is
+            # expected and this stays green, which preserves the "partial
+            # progress reports rather than fails" contract phase A has always
+            # had. If phase A DID complete, phase B was supposed to produce an
+            # image and did not, and that is a failure.
+            if [ -f "$BOX/work/lfs/.phase-a-complete" ]; then
+              echo "  phase A completed, so phase B was expected to produce one."
+              echo "  See the PHASE B step above for the first FAIL."
+              exit 1
+            fi
+            echo "  phase A did not complete either -- nothing to boot yet."
             exit 0
           fi
           echo "  Image:     $(stat -c%s "$IMG") bytes"

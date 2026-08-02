@@ -233,10 +233,25 @@ if [ "$B0" = ok ]; then
     # openssl ANSWERS `version`, NOT `--version`, so probing with --version
     # reports a perfectly good openssl as absent and rebuilds it every run.
     case "$pk" in openssl) _vflag=version ;; *) _vflag=--version ;; esac
-    if command -v "$_bin" > /dev/null 2>&1 && "$_bin" "$_vflag" > /dev/null 2>&1; then
-      say "    $pk: already in the sysroot and runs"
+    # A SYMLINK IS NOT AN INSTALLED PACKAGE, AND THIS IS WHERE busybox LIES.
+    #
+    # Rung 15 ends with `busybox --install -s .`, which puts a symlink in
+    # /usr/bin for EVERY applet busybox has -- and busybox has bc, dc, patch,
+    # awk and more. A probe of "does the name exist and answer --version"
+    # therefore reports the applet as the package, and the real one is never
+    # built. stage4-complete names that outcome precisely: BusyBox's bc "may
+    # well work, but nothing here declared it, which is the failure mode this
+    # repository is built to avoid."
+    #
+    # So the skip requires a REGULAR FILE. An applet symlink falls through to
+    # the build, which is what we want.
+    _p=$(command -v "$_bin" 2>/dev/null || true)
+    if [ -n "$_p" ] && [ ! -L "$_p" ] && "$_bin" "$_vflag" > /dev/null 2>&1; then
+      say "    $pk: already in the sysroot as a real binary, and runs"
       continue
     fi
+    [ -n "$_p" ] && [ -L "$_p" ] && \
+      say "    $pk: /usr/bin/$_bin is a busybox applet symlink -- building the real one"
     # THE PREFIX IS VERSION-PINNED WHERE /in HOLDS MORE THAN ONE MATCH, and
     # Python's tarball is capital-P. "/in/python-" matches nothing at all;
     # "/in/binutils-" matches BOTH 2.30 and 2.47 and `head -1` takes 2.30 --
@@ -272,8 +287,11 @@ if [ "$B0" = ok ]; then
         # its own; rung 11.5 pins it for the same reason. No -Dusedl=undef
         # and no -Dldflags=-static here: those made a static perl for a
         # loader-less box, and this sysroot has a loader.
-        ( cd "$_d" && ./Configure -des -Dprefix=/usr -Dvendorprefix=/usr \
-              -Dcc=gcc -Doptimize="-O2 -fno-strict-aliasing -fwrapv" \
+        # stage4-complete's line, which boots: ./Configure -des -Dprefix=/usr
+        # -Dcc=gcc. An earlier revision of this rung added -Doptimize and
+        # -Dvendorprefix from nowhere -- rung 11.5 passes -Doptimize because
+        # its perl is a static build for a musl box, which this is not.
+        ( cd "$_d" && ./Configure -des -Dprefix=/usr -Dcc=gcc \
               > c.log 2>&1 && make -j"$NP" > b.log 2>&1 && make install > i.log 2>&1 ) ;;
       openssl)
         # install_sw, NOT install: the full target builds documentation, which
@@ -286,12 +304,28 @@ if [ "$B0" = ok ]; then
           && sed -i "/INSTALL_LIBS/s/libcrypto.a libssl.a//" Makefile \
           && make install_sw > i.log 2>&1 ) ;;
       bc)
-        # NOT AUTOCONF. bc 7.x is Gavin Howard's rewrite and ships
-        # configure.sh; ./configure does not exist, so the shell answers 127.
-        # The bridge README records exactly that -- "bc returns 127, meaning
-        # its configure script did not execute at all ... not yet diagnosed."
-        ( cd "$_d" && { [ -f ./configure.sh ] && sh ./configure.sh --prefix=/usr \
-                        || ./configure --prefix=/usr; } > c.log 2>&1 \
+        # DELETE THE APPLET SYMLINKS FIRST, AND NOT FOR TIDINESS.
+        #
+        # This is stage4-complete's block and its reason is the sharp one:
+        # /usr/bin/bc and /usr/bin/dc are symlinks to busybox left by
+        # `busybox --install`, so a `make install` that writes to /usr/bin/bc
+        # writes THROUGH the link and lands on /usr/bin/busybox -- "which is
+        # the shell, ls, sed, grep and tar this box is made of." Unlink, then
+        # install.
+        #
+        # dc MATTERS AS MUCH AS bc AND IS EASIER TO MISS: bc's package
+        # installs both, and nothing above probes for dc at all.
+        rm -f /usr/bin/bc /usr/bin/dc
+        # LFS 8.15 is CC="gcc -std=c99" ./configure --prefix=/usr -G -O3 -r.
+        # -r enables readline and this sysroot has none -- LFS builds it
+        # earlier in chapter 8 and we build far fewer packages than the book.
+        # Dropping -r is a DECLARED SUBSTITUTION: bc here has no line
+        # editing, and nothing in a kernel build types at it. stage4-complete
+        # drops it for the same reason. Everything else is the book verbatim.
+        #
+        # -std=c99 IS LOAD-BEARING, not decoration; it is in the book's line.
+        ( cd "$_d" && CC="gcc -std=c99" ./configure --prefix=/usr -G -O3 \
+              > c.log 2>&1 \
           && make -j"$NP" > b.log 2>&1 && make install > i.log 2>&1 ) ;;
       python)
         # --without-ensurepip: pip is not needed by anything here, and its
@@ -331,6 +365,17 @@ if [ "$B0" = ok ]; then
       tail -12 "$_d/b.log" 2>/dev/null | sed 's/^/      /'
     fi
   done
+  # ASSERT bc IS THE REAL ONE. stage4-complete checks exactly this, because
+  # if the install did not land the applet is still answering and the
+  # substitution is silent again.
+  if [ "$b1" = ok ]; then
+    if [ -f /usr/bin/bc ] && [ ! -L /usr/bin/bc ]; then
+      say "    bc: $(bc --version 2>&1 | head -1)  (a regular file, not an applet)"
+    else
+      say "    /usr/bin/bc is not a regular file -- busybox still owns it"
+      b1=FAIL
+    fi
+  fi
   # ASSERT THE HEADER, which is the whole reason openssl is on the list.
   if [ "$b1" = ok ]; then
     if [ -f /usr/include/openssl/bio.h ]; then
@@ -627,6 +672,28 @@ if [ "$B5" = ok ]; then
   if fetch "/in/linux-$KERNEL" linux; then
     _d=$FDIR
     cd "$_d"
+    # bc AGAINST THE KERNEL'S OWN timeconst.bc, BEFORE BUILDING ANYTHING.
+    #
+    # kernel/time/Makefile generates timeconst.h by piping CONFIG_HZ through
+    # bc. B1 asserted that /usr/bin/bc is a regular file; this asserts it can
+    # do the one job the kernel needs, using the kernel's own script rather
+    # than a synthetic expression. stage4-complete runs the identical check.
+    # It is here rather than in B1 because this is where the kernel tree
+    # first exists -- unpacking 158 MB earlier just to test bc would be a
+    # worse trade.
+    if [ -f kernel/time/timeconst.bc ]; then
+      _tc=$(echo 250 | bc -q kernel/time/timeconst.bc 2>/dev/null | head -1)
+      if [ -n "$_tc" ]; then
+        say "    timeconst check: $_tc"
+      else
+        say "    bc PRODUCED NOTHING from the kernel's own timeconst.bc."
+        say "    The build would fail generating timeconst.h, naming the"
+        say "    header rather than bc."
+        B6=FAIL
+      fi
+    else
+      say "    kernel/time/timeconst.bc absent -- the kernel has moved it"
+    fi
     make ARCH=arm64 defconfig > /dev/null 2>&1
     set_cfg() {   # $1 = symbol without CONFIG_, $2 = y|n
       sed -i "/^CONFIG_$1=/d; /^# CONFIG_$1 is not set/d" .config
@@ -641,6 +708,7 @@ if [ "$B5" = ok ]; then
     set_cfg 9P_FS y
     make ARCH=arm64 olddefconfig > /dev/null 2>&1
     _bad=0
+    [ "$B6" = FAIL ] && _bad=1
     grep -q "^CONFIG_WERROR=y" .config && { say "    WERROR came back after olddefconfig"; _bad=1; }
     grep -q "^CONFIG_DEVTMPFS_MOUNT=y" .config || { say "    DEVTMPFS_MOUNT did not take"; _bad=1; }
     # EACH 9p SYMBOL BY NAME. stage4-complete does this, and the reason is that
