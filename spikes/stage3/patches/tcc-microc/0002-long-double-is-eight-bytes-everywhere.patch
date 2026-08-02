@@ -2,9 +2,18 @@ long double is eight bytes EVERYWHERE, not only in its size.
 
 PATCH 0001 CHANGED THE SIZE AND LEFT FIVE PLACES BEHIND. It sets LDOUBLE_SIZE
 to 8 so the compiler is consistent with the eight-byte long double micro-c
-gives it, and says why at length. arm64-gen.c went on deciding five separate
-things as though the type were binary128:
+gives it, and says why at length. the file went on deciding six separate things
+as though the type were binary128:
 
+  LDOUBLE_ALIGN      stayed 16. An eight-byte type with sixteen-byte alignment
+                     is not a coherent type: every struct or union containing
+                     a long double is rounded and padded to sixteen, and tcc's
+                     own va_arg rounds the argument offset to sixteen for a
+                     value the caller pushed as eight. musl's printf carries
+                     exactly such a union --
+                         union arg { uintmax_t i; long double f; void *p; };
+                     -- which came out SIXTEEN bytes wide while
+                     sizeof(long double) reported eight
   arm64_type_size    answered 4 -- a log2 size meaning SIXTEEN bytes -- so a
                      long double argument got a Q register and sixteen bytes
                      of stack for an eight-byte value
@@ -84,10 +93,35 @@ MEASURED, ON A CLEAN CHECKOUT OF main, EITHER SIDE:
 
     long double conversions, all five directions             now correct
     (double)1000 folded by gen2                              now correct
+    sizeof(union arg) as musl declares it       16 -> 8, matching the type
+
+MEASURED IN THE BOX, ACROSS TWO RUNS. The first four sites alone took
+musl's strtod from broken to correct at rung 3 --
+
+    5.008 == strtod    0  ->  1
+
+-- and left printf("%f") at 0.000000, which is what named the alignment.
 
 --- a/arm64-gen.c
 +++ b/arm64-gen.c
-@@ -272,7 +272,18 @@ static int arm64_type_size(int t)
+@@ -34,7 +34,15 @@
+ #define PTR_SIZE 8
+ 
+ #define LDOUBLE_SIZE 8
+-#define LDOUBLE_ALIGN 16
++/* AND THE ALIGNMENT WITH IT. An eight-byte type with sixteen-byte alignment is
++ * not a coherent type: every struct or union containing a long double is
++ * rounded and padded to sixteen, and tcc's own va_arg rounds the argument
++ * offset to sixteen for a value the caller pushed as eight. musl's printf
++ * carries exactly such a union --
++ *     union arg { uintmax_t i; long double f; void *p; };   vfprintf.c
++ * -- which came out sixteen bytes wide while sizeof(long double) reported
++ * eight. */
++#define LDOUBLE_ALIGN 8
+ 
+ #define MAX_ALIGN 16
+ 
+@@ -272,7 +280,18 @@ static int arm64_type_size(int t)
      case VT_STRUCT: return 3;
      case VT_FLOAT: return 2;
      case VT_DOUBLE: return 3;
@@ -106,7 +140,7 @@ MEASURED, ON A CLEAN CHECKOUT OF main, EITHER SIDE:
      case VT_BOOL: return 0;
      case VT_VOID: return 0;
      }
-@@ -557,7 +568,12 @@ ST_FUNC void load(int r, SValue *sv)
+@@ -557,7 +576,12 @@ ST_FUNC void load(int r, SValue *sv)
  
      if (svr < VT_CONST) {
          if (IS_FREG(r) && IS_FREG(svr))
@@ -119,7 +153,7 @@ MEASURED, ON A CLEAN CHECKOUT OF main, EITHER SIDE:
                  o(0x4ea01c00 | fltr(r) | fltr(svr) << 5);
                      // mov v(r).16b,v(svr).16b
              else
-@@ -1849,7 +1865,16 @@ ST_FUNC void gen_opf(int op)
+@@ -1849,7 +1873,16 @@ ST_FUNC void gen_opf(int op)
  {
      uint32_t x, a, b, dbl;
  
@@ -136,7 +170,7 @@ MEASURED, ON A CLEAN CHECKOUT OF main, EITHER SIDE:
          CType type = vtop[0].type;
          int func = 0;
          int cond = -1;
-@@ -1880,7 +1905,7 @@ ST_FUNC void gen_opf(int op)
+@@ -1880,7 +1913,7 @@ ST_FUNC void gen_opf(int op)
          return;
      }
  
@@ -145,7 +179,7 @@ MEASURED, ON A CLEAN CHECKOUT OF main, EITHER SIDE:
      gv2(RC_FLOAT, RC_FLOAT);
      assert(vtop[-1].r < VT_CONST && vtop[0].r < VT_CONST);
      a = fltr(vtop[-1].r);
-@@ -1964,6 +1989,17 @@ ST_FUNC void gen_cvt_csti(int t)
+@@ -1964,6 +1997,17 @@ ST_FUNC void gen_cvt_csti(int t)
  
  ST_FUNC void gen_cvt_itof(int t)
  {
@@ -163,7 +197,7 @@ MEASURED, ON A CLEAN CHECKOUT OF main, EITHER SIDE:
      if (t == VT_LDOUBLE) {
          int f = vtop->type.t;
          int func = (f & VT_BTYPE) == VT_LLONG ?
-@@ -1993,6 +2029,11 @@ ST_FUNC void gen_cvt_itof(int t)
+@@ -1993,6 +2037,11 @@ ST_FUNC void gen_cvt_itof(int t)
  
  ST_FUNC void gen_cvt_ftoi(int t)
  {
@@ -175,7 +209,7 @@ MEASURED, ON A CLEAN CHECKOUT OF main, EITHER SIDE:
      if ((vtop->type.t & VT_BTYPE) == VT_LDOUBLE) {
          int func = (t & VT_BTYPE) == VT_LLONG ?
            (t & VT_UNSIGNED ? TOK___fixunstfdi : TOK___fixtfdi) :
-@@ -2027,6 +2068,34 @@ ST_FUNC void gen_cvt_ftof(int t)
+@@ -2027,6 +2076,34 @@ ST_FUNC void gen_cvt_ftof(int t)
      if (t == f)
          return;
  
