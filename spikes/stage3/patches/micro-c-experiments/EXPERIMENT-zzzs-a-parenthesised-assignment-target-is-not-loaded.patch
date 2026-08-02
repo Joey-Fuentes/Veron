@@ -1,0 +1,207 @@
+a parenthesised assignment target must not be loaded.
+
+FOUR CHARACTERS, AND THE SECOND ONE SEGFAULTED:
+
+    ln += 4;      correct, and always was
+    (ln) += 4;    the variable was LOADED and the store wrote through its
+                  VALUE as if that were an address
+
+Every load decision in cc_core.c blanks the load when an assignment follows,
+and each finds out by looking at the NEXT TOKEN. For `(ln) += 4` the next
+token is the closing parenthesis, so not one of them saw it. This is the
+seventh copy of that rule -- zzc, zzg, zzm, zzo, zzzh and zzzk are the others,
+and every one was found separately, in CI.
+
+WHAT IT COST. tcc reaches it through a macro, which is why the spelling is
+parenthesised at all -- parentheses are how a macro parameter is written
+safely:
+
+    #define dwarf_read_4(ln,end) \
+        ((ln) + 3 < (end) ? read32le(((ln)+=4) - 4) : 0)      tcc.h:1863
+
+tcc_eh_frame_hdr walks .eh_frame with that macro, and it runs for EVERY
+DYNAMIC OUTPUT:
+
+    mc-tcc -nostdlib -static ...   fine
+    mc-tcc -nostdlib ...           SIGSEGV
+    mc-tcc -nostdlib -shared ...   SIGSEGV
+
+That is the whole libc-facing surface stage 4 needs, and it is the crash
+tcc-two-ways reports at "SUBJECT does it compile anything at all". The
+hermetic job never sees it because that job is `-nostdlib -static` end to end.
+
+HOW IT WAS FOUND. Bracketed inside mc-tcc with printf probes:
+elf_output_file -> bind_libs_dynsyms (clean, all 177 symbols) ->
+tcc_eh_frame_hdr -> crash on the FIRST loop iteration -> the macro. Then
+reduced from the outside until the whole thing was three lines. The control
+matters here: a gcc-built tcc given the identical command answers
+`error: _start not defined` -- a clean diagnostic, no fault -- so the source
+is fine and the fault is ours.
+
+TWO GUARDS, AND BOTH ARE THE SAME RULE THE FILE ALREADY CARRIES.
+
+  A DEREFERENCE OUTSIDE THE PARENTHESES CANCELS IT. In `*(t) = v`, `t` is NOT
+  the target -- what it points at is -- so t must be loaded to be followed.
+  The first attempt at this patch suppressed that load too and broke case 49,
+  which has covered `*(t) = v` since before this flag existed.
+  num_dereference_after_postfix is zero exactly when the parentheses are the
+  whole target.
+
+  NESTED PARENTHESES INHERIT IT. `((k)) += 2` enters the branch twice; the
+  inner parenthesis sees only a `)` after itself and would clear what the
+  outer one set. Saved and restored, the same shape Address_of uses four
+  lines above.
+
+WHAT IT DOES NOT CLAIM. `*(p)++` -- dwarf_read_1, on the same walk -- is a
+DIFFERENT defect wearing the same parentheses: it needs the address for the
+increment and the pre-increment value for the dereference, and suppressing the
+load fixes the advance while breaking the value. Case 119 carries it as a
+declared gap. tcc_eh_frame_hdr now reads a byte without advancing rather than
+faulting, which is progress and is not a fix.
+
+MEASURED, LOCALLY, EITHER SIDE:
+
+    difftest amd64        98 -> 99 pass, 0 fail, 2 known gaps   (case 118 new)
+    difftest aarch64     100 -> 101 pass, 0 fail, 2 known gaps
+    stage 2 corpus       419 of 426                             unchanged
+    tests2 through mc-tcc 90 of 105                             unchanged
+    self-compilation      gen2.o == gen3.o == gen4.o            unchanged
+    archive round trip    still links and runs                  unchanged
+
+    mc-tcc -nostdlib          21821-byte dynamic executable
+    mc-tcc -nostdlib -shared   2875-byte shared object
+
+and the shared object is structurally identical to the gcc-built control's --
+same dynamic section offset, the same thirteen entries, the same values.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -1407,6 +1407,7 @@ void primary_expr_variable(void)
+ 	}
+ 	num_dereference_after_postfix = num_dereference;
+ 
++
+ 	/* IS THIS THE OPERAND OF A PREFIX ++ / -- ?
+ 	 *
+ 	 * `++*p` is `++(*p)`: an LVALUE. The increment wants the address the
+@@ -1874,7 +1875,13 @@ void primary_expr_variable(void)
+ 	int is_assignment = match("=", global_token->s);
+ 	int is_compound_operator = is_compound_assignment(global_token->s);
+ 
+-	if(!is_assignment && !is_compound_operator && !is_local_array)
++	/* AND `(x) = v` IS STILL AN ASSIGNMENT. is_assignment and
++	 * is_compound_operator look at the NEXT TOKEN, which for a parenthesised
++	 * target is the closing paren, so this loaded the variable and the store
++	 * then wrote through its VALUE. See primary_expr's paren branch for the
++	 * measurement and for why tcc writes the parenthesised spelling. */
++	if(!is_assignment && !is_compound_operator && !is_local_array
++	   && !assign_through_parens)
+ 	{
+ 		/* A GLOBAL SCALAR IS ITS OWN STORAGE, SO IT LOADS AT ITS OWN WIDTH.
+ 		 *
+@@ -2892,7 +2899,7 @@ void postfix_expr_array(void)
+ 	int arrow_follows = match("->", global_token->s);
+ 	if(!arrow_follows)
+ 	{
+-		if(match("=", global_token->s) || is_compound_assignment(global_token->s) || match(".", global_token->s) || is_prefix_operator || is_postfix_operator || was_address_of)
++		if(match("=", global_token->s) || is_compound_assignment(global_token->s) || match(".", global_token->s) || is_prefix_operator || is_postfix_operator || was_address_of || assign_through_parens)
+ 		{
+ 			assign = "";
+ 		}
+@@ -4051,11 +4058,58 @@ void primary_expr(void)
+ 				if(0 == paren_depth) break;
+ 				scan = scan->next;
+ 			}
++			int assign_after_parens = FALSE;
+ 			if(NULL != scan && NULL != scan->next)
+ 			{
+ 				chain_after_parens = match("->", scan->next->s)
+ 				                  || match(".", scan->next->s)
+ 				                  || match("[", scan->next->s);
++				/* AN ASSIGNMENT TARGET MUST NOT BE LOADED, and the
++				 * parentheses hid that from the only place that checks.
++				 *
++				 * postfix_expr_variable blanks the load when the NEXT token
++				 * is `=` or a compound assignment. For `(ln) += 4` the next
++				 * token is `)`, so it loaded ln and the store then wrote
++				 * through the VALUE as if it were an address.
++				 *
++				 *     ln += 4       correct
++				 *     (ln) += 4     wrong, and SIGSEGV through a pointer
++				 *
++				 * tcc reaches it through a macro, which is why the spelling
++				 * is parenthesised at all:
++				 *
++				 *     #define dwarf_read_4(ln,end) \
++				 *         ((ln) + 3 < (end) ? read32le(((ln)+=4) - 4) : 0)
++				 *                                            tcc.h:1863
++				 *
++				 * tcc_eh_frame_hdr walks .eh_frame with that macro, and it
++				 * is called for every DYNAMIC output -- so mc-tcc segfaulted
++				 * on any link that was not -static, which is the whole
++				 * libc-facing surface stage 4 needs. -static never reaches
++				 * it, which is why the hermetic job is green.
++				 *
++				 * Same rule as zzc, zzg, zzm, zzo, zzzh and zzzk: an address
++				 * applies to the last step of a chain. This is the paren
++				 * spelling of it.
++				 *
++				 * NOT ++/-- HERE. dwarf_read_1 is `*(ln)++`, which parses as
++				 * `*((ln)++)` and is wrong under micro-c in its own way --
++				 * the value, not the advance. Suppressing the load fixes the
++				 * advance and leaves the value wrong, so it is a different
++				 * defect wearing the same parentheses and it is left named
++				 * rather than half-moved. Case 118 carries it. */
++				/* A DEREFERENCE OUTSIDE THE PARENS CANCELS IT. In
++				 *     *(t) = v
++				 * `t` is NOT the target -- what it points at is -- so t must
++				 * be LOADED to be followed, and case 49 has said so since
++				 * before this flag existed. num_dereference_after_postfix is
++				 * the count of stars the enclosing unary expression ate, so
++				 * zero means these parentheses are the whole target. Same
++				 * rule as everywhere else here: an address applies to the
++				 * last step of a chain, never to one still to be followed. */
++				assign_after_parens = (0 == num_dereference_after_postfix)
++				                   && (match("=", scan->next->s)
++				                       || is_compound_assignment(scan->next->s));
+ 			}
+ 
+ 			if(chain_after_parens)
+@@ -4069,7 +4123,16 @@ void primary_expr(void)
+ 			else
+ 			{
+ 				address_of_through_parens = Address_of;
++				/* INHERITED, NOT OVERWRITTEN. `((k)) += 2` enters this
++				 * branch twice: the outer parenthesis sees the `+=` and sets
++				 * the flag, and the inner one sees only a `)` after itself
++				 * and would clear it again -- leaving the variable loaded and
++				 * the store writing through its value. Saving and restoring
++				 * is the same shape Address_of uses four lines up. */
++				int saved_atp = assign_through_parens;
++				assign_through_parens = assign_after_parens || saved_atp;
+ 				comma_expression();
++				assign_through_parens = saved_atp;
+ 				require_match("Error in Primary expression\nDidn't get )\n", ")");
+ 			}
+ 		}
+--- a/cc_globals.c
++++ b/cc_globals.c
+@@ -97,5 +97,9 @@ int indexing_an_array;
+  * carried rather than recomputed from a type that cannot express it. */
+ int indexed_element_size;
+ int address_of_through_parens;
++/* An assignment follows the closing paren of a parenthesised target, so the
++ * thing inside must yield its ADDRESS rather than be loaded. See
++ * primary_expr's paren branch and postfix_expr_variable. */
++int assign_through_parens;
+ 
+ int extern_declaration;
+--- a/cc_globals.h
++++ b/cc_globals.h
+@@ -91,5 +91,6 @@ extern int pending_bitfield_size;
+ extern int indexing_an_array;
+ extern int indexed_element_size;
+ extern int address_of_through_parens;
++extern int assign_through_parens;
+ 
+ extern int extern_declaration;
