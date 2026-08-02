@@ -1,0 +1,108 @@
+sizeof a dereferenced array does not step the type twice.
+
+MEASURED, and only one of three spellings was wrong:
+
+    static char* pa[3];
+    sizeof(pa)      24        right
+    sizeof(pa[0])    8        right
+    sizeof(*pa)      1        WRONG -- should be 8
+
+A declaration `T name[N]` records T in the symbol's type and N in
+array_modifier, so the type held there is the ELEMENT before any star is
+applied. Stepping once more gave what the element points AT -- char, for an
+array of char*.
+
+AN ARRAY OF long HID IT. `sizeof(*arr)` on `long arr[3]` came out 8 and
+correct, because long's own ->type is long: the extra step lands back where it
+started. Only an array whose element is a POINTER shows it, and case 108 --
+written for exactly this family after tccelf.c's sym_attr table -- uses a
+pointer VARIABLE rather than an array of them.
+
+WHAT IT COST. tcc chooses its library-search format like this:
+
+    static const char * const libs[] = { "%s/lib%s.so", "%s/lib%s.a", NULL };
+    ...
+    if (s->static_link)
+        pp += sizeof(libs) / sizeof(*libs) - 2;             libtcc.c:1130
+
+24/1 - 2 is 22, so `pp` landed far past the array and `*pp` was a pointer into
+unrelated data. Probed from inside mc-tcc, every -l search built a path one
+character long:
+
+    LIB fmt=P path=/usr/lib name=c   ->  [P]
+    LIB fmt=P path=/lib     name=c   ->  [P]
+
+so mc-tcc segfaulted on any link that resolved a library BY NAME. Explicit
+paths worked, which is why it survived every -nostdlib test: those pass their
+objects outright. Only a HOSTED link takes that branch -- rung 3 of the
+stage-4 ladder, the first rung that needs `-lc`, and the same crash
+tcc-two-ways has reported for weeks at "does it compile anything at all".
+
+GREATER THAN ONE, NOT NON-ZERO, and this is the part worth keeping. The first
+version of the fix tested `t->array_modifier != 0`. array_modifier DEFAULTS to
+1 for every symbol (cc_core.c:186) and only an actual array sets it higher --
+which is why the sites at 1765 and 1940 test `> 1` and `<= 1`. The `!= 0`
+version fired for plain pointers too and made `sizeof(*p)` 8 instead of 16.
+Case 108 caught it in the same minute.
+
+MEASURED, LOCALLY, EITHER SIDE:
+
+    difftest amd64       99 -> 100 pass, 0 fail   (case 121 new)
+    difftest aarch64    101 -> 102 pass, 0 fail
+    stage 2 corpus      419 of 426                unchanged
+    tests2 via mc-tcc    90 of 105                unchanged
+    self-compilation     gen2.o == gen3.o         unchanged
+
+    a HOSTED static link -- crt1.o, libc.a and -lc resolved by name --
+    now produces an executable BYTE-IDENTICAL to the gcc-built control's,
+    1896 bytes, and it runs.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -3132,6 +3132,46 @@ int unary_expr_sizeof(void)
+ 		 * member and array rules below rather than being combined with them. */
+ 		if(num_dereferences > 0)
+ 		{
++			/* AN ARRAY NAME IS ALREADY ITS ELEMENT TYPE, so the first star
++			 * has nothing to step.
++			 *
++			 *     static const char * const libs[] = { ... };
++			 *     sizeof(*libs)      8, a char*      -- micro-c said 1
++			 *     sizeof(libs[0])    8               -- always right
++			 *     sizeof(*arr)       8, a long       -- right by ACCIDENT:
++			 *                        long->type is long, so the extra step
++			 *                        lands back where it started
++			 *
++			 * A declaration `T name[N]` records T in the symbol's type and N
++			 * in array_modifier, so `a` is the ELEMENT before any star is
++			 * applied. Stepping once more gave what the element points at --
++			 * char, for an array of char* -- and only an array whose element
++			 * is self-referential hid it.
++			 *
++			 * WHAT IT COST. tcc picks its library-search format with
++			 *     pp += sizeof(libs) / sizeof(*libs) - 2;   libtcc.c:1130
++			 * and 24/1 - 2 is 22, so `pp` landed far past the array and *pp
++			 * was a pointer into unrelated data. The format string came out
++			 * as "P" and every -l search built a path of one character:
++			 *     LIB fmt=P path=/usr/lib name=c   ->  [P]
++			 * so mc-tcc segfaulted on any link that resolved a library by
++			 * name. That is rung 3 of the stage-4 ladder -- the first HOSTED
++			 * link, where -static takes exactly that branch.
++			 *
++			 * NOT WHEN THE ARRAY WAS INDEXED. `sizeof(*arr[0])` has already
++			 * decayed through the subscript, so the star there is a real
++			 * dereference and must step.
++			 *
++			 * GREATER THAN ONE, NOT NON-ZERO. array_modifier defaults to 1
++			 * for every symbol (cc_core.c:186) and only an actual array sets
++			 * it higher -- which is why the sites at 1765 and 1940 test `> 1`
++			 * and `<= 1`. Testing `!= 0` here was true for every pointer as
++			 * well, and `sizeof(*p)` on a plain struct pointer came back 8
++			 * instead of 16. Case 108 caught it. */
++			if((t->array_modifier > 1) && (0 == indexed))
++			{
++				num_dereferences = num_dereferences - 1;
++			}
+ 			while(num_dereferences > 0)
+ 			{
+ 				a = a->type;
