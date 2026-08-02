@@ -442,7 +442,24 @@ jobs:
           ../micro-c --architecture aarch64 --expand-includes --max-string 65536 \
             -D ONE_SOURCE=1 -D TCC_TARGET_LINUX=1 \
             -D CONFIG_TCC_STATIC=1 -I . -I "$L" -I ../m2/M2libc \
-            -f libtcc.c -o ../libtcc.M1
+            -f tcc.c -o ../libtcc.M1
+          # AND libtcc.c SEPARATELY, FOR THE PROBE DRIVERS ONLY.
+          #
+          # mc-tcc-bin is now built from tcc.c -- tcc's OWN main -- exactly as
+          # stage3-hermetic-arm64 and stage0-stage4-complete build it. It used
+          # to be libtcc.c plus impl/main-tcc.c, a driver whose own header says
+          # "SUPERSEDED ... It is NOT what ships", so this job has been
+          # comparing the reference against a program no other job builds.
+          # That is the whole purpose of this job undone: the two arms were not
+          # the same program.
+          #
+          # main-compile-only.c still needs a libtcc WITHOUT tcc's main, or
+          # there would be two, so libtcc.c is compiled once more under its own
+          # name for that probe.
+          ../micro-c --architecture aarch64 --expand-includes --max-string 65536 \
+            -D ONE_SOURCE=1 -D TCC_TARGET_LINUX=1 \
+            -D CONFIG_TCC_STATIC=1 -I . -I "$L" -I ../m2/M2libc \
+            -f libtcc.c -o ../libtcconly.M1
           cd ..
 
           H="-f $M/stdarg.h -f $M/sys/types.h -f $M/stddef.h -f $M/signal.h -f $M/sys/utsname.h"
@@ -549,15 +566,36 @@ jobs:
           # a multiple of four and every call to it is SIGBUS.
           join() {
             out="$1"; shift
-            : > "$out.code"; : > "$out.strs"
+            # THREE SECTIONS, NOT TWO, and this job had two.
+            #
+            # micro-c emits "# Core program", then "# Program global
+            # variables", then "# Program strings". Splitting only at the
+            # strings marker leaves each unit's GLOBALS glued to its code, and
+            # a global holding a string is arbitrary-length data between one
+            # unit's code and the next unit's functions. A function can then
+            # land on an address that is not a multiple of four, and every call
+            # to it is SIGBUS on aarch64.
+            #
+            # That was survivable while this job compiled libtcc.c, whose
+            # globals happened to total a multiple of four. tcc.c adds
+            #     :GLOBAL_STORAGE_version "tcc version 0.9.28rc (AArch64 Linux)"
+            # and everything after it misaligns. stage3-hermetic-arm64 hit
+            # exactly this and records it at its own join; the two must match,
+            # so the switch to tcc.c above and this change are one change.
+            : > "$out.code"; : > "$out.glob"; : > "$out.strs"
             for f in "$@"; do
-              sed '/^# Program strings$/,$d' "$f" >> "$out.code"
+              sed '/^# Program global variables$/,$d' "$f" >> "$out.code"
+              sed -n '/^# Program global variables$/,/^# Program strings$/p' "$f" \
+                | sed '/^# Program strings$/d' >> "$out.glob"
               sed -n '/^# Program strings$/,$p' "$f" >> "$out.strs"
             done
-            cat "$out.code" "$out.strs" > "$out"; rm -f "$out.code" "$out.strs"
+            cat "$out.code" "$out.glob" "$out.strs" > "$out"
+            rm -f "$out.code" "$out.glob" "$out.strs"
           }
-          join all.M1 libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1 maintcc.M1
-          join co.M1  libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1 compileonly.M1
+          # NO maintcc.M1 -- tcc.c brings its own main, and joining the driver
+          # too would define main twice.
+          join all.M1 libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1
+          join co.M1  libtcconly.M1 m2libc.M1 runtime.M1 setjmp.M1 compileonly.M1
           # The realloc probe needs NO libtcc -- it is 58 KB and tests only the
           # allocator, so a failure there cannot be blamed on tcc.
           join rl.M1  m2libc.M1 runtime.M1 setjmp.M1 realloc.M1
@@ -1460,14 +1498,22 @@ jobs:
               -D CONFIG_TCC_STATIC=1 -I . -I "$L" -I ../m2/M2libc \
               -f libtcc.c -o ../inst-libtcc.M1 )
 
+          # THE SAME THREE-SECTION JOIN as the one above. This copy split only
+          # at the strings marker, so the instrumented binary was laid out
+          # differently from the one it is meant to explain -- and the fault
+          # this step exists to locate is layout-sensitive, which is exactly
+          # the thing a different layout hides.
           join2() {
             out="$1"; shift
-            : > "$out.code"; : > "$out.strs"
+            : > "$out.code"; : > "$out.glob"; : > "$out.strs"
             for f in "$@"; do
-              sed '/^# Program strings$/,$d' "$f" >> "$out.code"
+              sed '/^# Program global variables$/,$d' "$f" >> "$out.code"
+              sed -n '/^# Program global variables$/,/^# Program strings$/p' "$f" \
+                | sed '/^# Program strings$/d' >> "$out.glob"
               sed -n '/^# Program strings$/,$p' "$f" >> "$out.strs"
             done
-            cat "$out.code" "$out.strs" > "$out"; rm -f "$out.code" "$out.strs"
+            cat "$out.code" "$out.glob" "$out.strs" > "$out"
+            rm -f "$out.code" "$out.glob" "$out.strs"
           }
           join2 inst-all.M1 inst-libtcc.M1 m2libc.M1 runtime.M1 setjmp.M1 maintcc.M1
           D=m2libc-patched/aarch64
