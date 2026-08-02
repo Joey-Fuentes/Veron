@@ -893,12 +893,22 @@ jobs:
           if [ "$rc" -gt 128 ]; then
             echo "  SIGNAL $((rc - 128)) -- past the link inputs, crashing in output"
           fi
-          grep -q '^D5' /tmp/marks.txt || {
-            echo "  FAIL: D5 not reached -- the input file was not even added."
-            echo "        That is a regression; it has been reached since the"
-            echo "        crt search was fixed."
-            exit 1; }
-          echo "  D5 reached: the input file was added"
+          # THE D MARKERS ARE GONE, AND THAT IS THE POINT.
+          #
+          # D1..D6 came from spikes/stage3/micro-c-libc/impl/main-tcc.c, the
+          # driver this job used to bolt onto libtcc.c. mc-tcc-bin is now built
+          # from tcc.c -- tcc's OWN main -- exactly as stage3-hermetic-arm64
+          # and stage0-stage4-complete build it, so there is no driver and no D
+          # markers. Asserting on them turned a successful change into a
+          # reported regression.
+          #
+          # The T markers, which come from inside libtcc, are unaffected and
+          # still say how far the compilation got.
+          if grep -q '^D5' /tmp/marks.txt; then
+            echo "  D5 reached: the input file was added"
+            echo "  (a D marker means an OLD driver-based binary -- mc-tcc-bin"
+            echo "   should be built from tcc.c and have no D markers at all)"
+          fi
           # D markers come from our driver, T markers from inside libtcc.
           echo "  last libtcc marker: $(grep -aoE '^T[0-9A-F]' /tmp/marks.txt | tail -1)"
           # A marker names the last point that EXECUTED. If the next one did
