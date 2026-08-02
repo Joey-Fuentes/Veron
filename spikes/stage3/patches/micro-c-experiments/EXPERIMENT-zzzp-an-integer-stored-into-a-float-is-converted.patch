@@ -1,0 +1,162 @@
+an integer stored into a float is converted, not copied.
+
+THIS IS WHAT gen2 == gen3 WAS WAITING ON, and it is one conversion.
+
+The self-compilation chain reached a fixpoint at gen3 == gen4 but not at
+gen2 == gen3, and the entire difference was ten bytes out of 874,610:
+
+    gen2.o   e803000000000000    the integer 1000
+    gen3.o   0000000000408f40    1000.0, the IEEE double
+
+tcc.c contains exactly TWO floating-point constants, both in tcc_print_stats:
+
+    (double)total_time/1000
+    (double)total_bytes/1000/total_time
+
+`1000` is an INT literal. tcc promotes it to double at COMPILE time, in its
+own constant folder (tccgen.c:3303):
+
+    vtop->c.ld = (uint32_t)vtop->c.i;
+    vtop->c.d  = (double)vtop->c.ld;
+
+micro-c gives float, double and long double one word-sized INTEGER
+representation, so both lines were plain moves: the integer landed in the
+double's slot and init_putv wrote it into .data.ro as though it were an IEEE
+value. gen2's own copy of that folder is compiled by mc-tcc, which has correct
+float codegen, so gen2 got it right and every generation after it agreed --
+the chain healed at generation two and was a fixpoint from three.
+
+WHAT THIS ADDS, AND WHAT IT DELIBERATELY DOES NOT. A TO_FLOAT flag on the
+float and double primitives, and one rule: when the DESTINATION of an
+assignment is a floating type and the value is not, convert instead of
+copying. That is all.
+
+  * no arithmetic -- fadd and friends are still absent from the vocabulary
+  * no double-to-int
+  * no float LITERALS. micro-c's scanner still cannot read "1.5", and
+    `double g(void){ return 1000.0; }` still yields zero. The hermetic job's
+    step 11b reports that unchanged, which is the honest state.
+
+The second line above needs nothing: after the first, `vtop->c.ld` holds a
+double, so `c.d = (double)c.ld` is float-to-float, a move, and correct as
+written. And init_putv reads `vtop->c.i`, which aliases `c.d` through CValue,
+so the bytes it writes are the ones this produced. One conversion closes the
+whole path.
+
+THE VOCABULARY HAD TO MOVE FIRST. m2libc patch 0013 adds the four
+instructions -- aarch64 scvtf/fmov, amd64 cvtsi2sd/movq -- because the
+aarch64 table carried 2,323 macros and not one floating-point instruction.
+Every encoding there is verified rather than remembered, the aarch64 pair by
+EXECUTING it under qemu including a negative value.
+
+MEASURED, LOCALLY, EITHER SIDE OF THIS PATCH:
+
+    difftest amd64        98 pass, 0 fail, 2 known gaps      unchanged
+    difftest aarch64     100 pass, 0 fail, 2 known gaps      unchanged
+    stage 2 corpus       419 of 426                          unchanged
+    tests2 through mc-tcc 90 of 105                          unchanged
+
+    gen2  542900 bytes  18264202c5766aba
+    gen3  542900 bytes  18264202c5766aba
+    gen4  542900 bytes  18264202c5766aba
+    gen4 compiles and runs a program: 7
+
+gen2 now lands on the same bytes the converged compiler produces, so the
+weak compiler's last constant defect is gone rather than carried a
+generation. That is the bar the gcc-built control meets, and it is now met
+from the seed.
+
+--- a/cc.h
++++ b/cc.h
+@@ -119,6 +119,11 @@ void emit_pop(int, char*);
+ enum
+ {
+ 	TO_FUNCTION_POINTER = 1,
++	/* A FLOATING-POINT TYPE. micro-c still gives float, double and long
++	 * double one word-sized representation; this only records WHICH types
++	 * are floating, so that an integer stored into one is converted rather
++	 * than copied. See the assignment in cc_core.c. */
++	TO_FLOAT = 2,
+ };
+ 
+ struct type
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -2214,6 +2214,51 @@ void logical_recursion(FUNCTION f, int is_and, char* name, FUNCTION iterate)
+ struct type* operand_left_type;
+ struct type* operand_right_type;
+ 
++/* AN INTEGER STORED INTO A FLOAT IS CONVERTED, NOT COPIED.
++ *
++ * micro-c gives float, double and long double one word-sized representation,
++ * and every operation on them is an integer operation on float bits -- which
++ * the type table says plainly. This is the ONE place that is not good enough,
++ * because tcc folds its floating-point constants at compile time:
++ *
++ *     vtop->c.ld = (uint32_t)vtop->c.i;      tccgen.c:3303
++ *     vtop->c.d  = (double)vtop->c.ld;
++ *
++ * As integer moves those leave the INTEGER in the double's slot, and
++ * init_putv then writes it into .data.ro as if it were an IEEE value. That is
++ * the whole of the gen2 != gen3 difference: tcc.c has exactly two
++ * floating-point constants, both `(double)<int literal>` from
++ * tcc_print_stats, and both came out as the integer 1000 instead of 1000.0.
++ *
++ * ONLY THE STORE, AND ONLY THIS DIRECTION. No arithmetic, no double-to-int,
++ * no float literals -- micro-c's scanner still cannot read "1.5" and that is
++ * unchanged. What this buys is the conversion tcc's constant folder needs,
++ * which is the only float path tcc.c's own constants take.
++ *
++ * TWO ARCHITECTURES, because those are the two the vocabulary has
++ * instructions for (m2libc patch 0013) and the two difftest runs. Anywhere
++ * else this does nothing, which is what it did before.
++ */
++int type_is_float(struct type* t)
++{
++	if(NULL == t) return FALSE;
++	return t->options & TO_FLOAT;
++}
++
++void emit_int_to_double(void)
++{
++	if(AARCH64 == Architecture)
++	{
++		emit_out("scvtf_d0,x0\t# integer -> double\n");
++		emit_out("fmov_x0,d0\t# and back into the value register\n");
++	}
++	else if(AMD64 == Architecture)
++	{
++		emit_out("cvtsi2sd_xmm0,rax\t# integer -> double\n");
++		emit_out("movq_rax,xmm0\t# and back into the value register\n");
++	}
++}
++
+ void common_recursion(FUNCTION f)
+ {
+ 	emit_push(REGISTER_ZERO, "_common_recursion");
+@@ -4673,6 +4718,12 @@ void expression(void)
+ 		}
+ 
+ 		common_recursion(expression);
++		/* operand_left_type is the DESTINATION and operand_right_type the
++		 * value, both recorded by common_recursion just above. */
++		if(type_is_float(operand_left_type) && !type_is_float(operand_right_type))
++		{
++			emit_int_to_double();
++		}
+ 		emit_out(store);
+ 		current_target = integer;
+ 	}
+--- a/cc_types.c
++++ b/cc_types.c
+@@ -199,8 +199,10 @@ void initialize_types(void)
+ 	 * parse. This is not a fix: arithmetic on them would be integer ops on
+ 	 * float bits, silently wrong. Here to measure how far tcc gets. */
+ 	hold = new_primitive("float", "float*", "float**", register_size, FALSE);
++	hold->options = hold->options | TO_FLOAT;
+ 	prim_types = add_primitive(hold);
+ 	hold = new_primitive("double", "double*", "double**", register_size, FALSE);
++	hold->options = hold->options | TO_FLOAT;
+ 	prim_types = add_primitive(hold);
+ 
+ 	if(BOOTSTRAP_MODE)

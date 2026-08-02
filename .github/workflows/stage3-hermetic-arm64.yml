@@ -1846,7 +1846,7 @@ jobs:
             echo "    skipped: no mc-tcc, or no tcctest.c in the pinned tree"
           fi
 
-          say '13. SELF-COMPILATION -- gen1 to gen4, and the fixpoint'
+          say '13. SELF-COMPILATION -- gen2 == gen3 == gen4'
           # THE QUESTION THIS RUNG EXISTS TO ANSWER. tcc-two-ways shows the gcc
           # side reaching a fixpoint -- gen1 builds gen2 builds gen3 and the last
           # two are byte-identical -- and that is the property a self-hosting
@@ -1998,28 +1998,34 @@ jobs:
               fi
             fi
 
-            # STEP C -- THE FIXPOINT, AND IT TAKES FOUR GENERATIONS RATHER
-            # THAN THREE.
+            # STEP C -- THE FIXPOINT. gen2 == gen3 IS THE BAR.
             #
             # gen1 is mc-tcc, compiled by micro-c. gen2 is tcc compiled by
-            # gen1, gen3 by gen2, gen4 by gen3. The comparison that means
-            # something is gen3 against gen4 -- NOT gen2 against gen3 -- and
-            # the reason is measured rather than assumed:
+            # gen1, gen3 by gen2, gen4 by gen3. The gcc-built control reaches
+            # gen2 == gen3 and so must this, so that is what is asserted;
+            # gen4 is built as well because a fixpoint claimed from two
+            # generations is weaker than one shown over three.
             #
-            #     gen2.o  ... e803000000000000 ...   = 1000, an integer
-            #     gen3.o  ... 00000000408f4000 ...   = 1000.0, the IEEE double
+            # IT DID NOT ALWAYS HOLD, and the reason is worth keeping. gen2
+            # and gen3 once differed by exactly ten bytes out of 874,610,
+            # both beside the string ".1f MB/s":
             #
-            # Ten bytes out of 874,610, both beside the string ".1f MB/s".
-            # gen1 cannot emit a floating-point constant, because ITS constant
-            # scanner was compiled by micro-c, which has no floating point
-            # (step 11b). gen2's scanner was compiled by mc-tcc, which has
-            # correct float codegen -- so gen2 gets it right and every
-            # generation after it agrees. The chain HEALS at generation two
-            # and is a fixpoint from generation three.
+            #     gen2.o   e803000000000000    the integer 1000
+            #     gen3.o   0000000000408f40    1000.0, the IEEE double
             #
-            # That is why tcc's own suite has test1, test2 AND test3, and it
-            # is the shape a bootstrap is supposed to have: the last defect of
-            # the weak compiler is carried one generation and no further.
+            # tcc.c has exactly two floating-point constants, both
+            # `(double)<int literal>` in tcc_print_stats, and tcc folds them
+            # at compile time through
+            #     vtop->c.ld = (uint32_t)vtop->c.i;      tccgen.c:3303
+            # which micro-c compiled as an integer move. EXPERIMENT-zzzp
+            # converts instead of copying, m2libc patch 0013 supplies the four
+            # instructions that needed, and gen2 now lands on the same bytes
+            # the converged compiler produces.
+            #
+            # NOTE WHAT THAT DOES NOT MEAN. micro-c still has no float
+            # literals and no float arithmetic -- step 11b reports both, and
+            # `return 1000.0;` still yields zero. What closed is the one
+            # conversion tcc's own constants take.
             if [ -s gen2 ] && [ -x gen2 ]; then
               build_gen() {   # $1 = compiler, $2 = object out, $3 = binary out
                 set +e
@@ -2053,25 +2059,28 @@ jobs:
                     printf '    %-5s %9s bytes  %s\n' "$g" \
                       "$(wc -c < /work/$g)" "$(sha256sum /work/$g | cut -c1-16)"
                   done
-                  if cmp -s gen3.o gen4.o; then
-                    echo "    FIXPOINT: gen3 and gen4 compile tcc.c to identical objects"
-                  else
-                    echo "    NO FIXPOINT: gen3.o and gen4.o differ"
-                  fi
-                  if cmp -s gen3 gen4; then
-                    echo "    FIXPOINT: the gen3 and gen4 BINARIES are byte-identical"
-                    echo "    self-compilation: steps 1-5 complete"
-                  else
-                    echo "    gen3 and gen4 binaries differ"
-                  fi
-                  # AND THE ONE-GENERATION DELTA, NAMED. gen2 is expected to
-                  # differ from gen3 -- see the note above -- so it is
-                  # reported rather than failed.
+                  fixok=yes
                   if cmp -s gen2.o gen3.o; then
-                    echo "    gen2.o == gen3.o as well (gen1 emitted its float constants)"
+                    echo "    gen2 and gen3 compile tcc.c to IDENTICAL objects"
                   else
-                    echo "    gen2.o vs gen3.o: $(cmp -l gen2.o gen3.o | wc -l) bytes" \
-                         "-- gen1's float constants, healed at generation 2"
+                    echo "    NOT A FIXPOINT: gen2.o and gen3.o differ by" \
+                         "$(cmp -l gen2.o gen3.o | wc -l) bytes"
+                    fixok=no
+                  fi
+                  if cmp -s gen3.o gen4.o; then
+                    echo "    gen3 and gen4 agree as well"
+                  else
+                    echo "    NOT A FIXPOINT: gen3.o and gen4.o differ"
+                    fixok=no
+                  fi
+                  if cmp -s gen2 gen3 && cmp -s gen3 gen4; then
+                    echo "    FIXPOINT: the gen2, gen3 and gen4 BINARIES are byte-identical"
+                  else
+                    echo "    the binaries are not all identical"
+                    fixok=no
+                  fi
+                  if [ "$fixok" = yes ]; then
+                    echo "    self-compilation: steps 1-5 complete, from the seed"
                   fi
                   # DOES THE LAST ONE STILL WORK. A fixpoint between two
                   # broken compilers is still a fixpoint, so this asks.

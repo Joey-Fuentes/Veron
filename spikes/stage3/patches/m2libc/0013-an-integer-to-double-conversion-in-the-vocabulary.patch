@@ -1,0 +1,75 @@
+the vocabulary gets an integer-to-double conversion.
+
+WHAT IT IS FOR. The self-compilation chain reaches a fixpoint at gen3 == gen4
+but NOT at gen2 == gen3, and the whole difference is ten bytes:
+
+    gen2.o   e803000000000000    the integer 1000
+    gen3.o   00000000408f4000    1000.0, the IEEE double
+
+tcc.c contains exactly two floating-point constants, both in tcc_print_stats:
+
+    (double)total_time/1000
+    (double)total_bytes/1000/total_time
+
+`1000` is an INT literal, promoted to double at COMPILE time by tcc's own
+constant folder (tccgen.c:3303):
+
+    vtop->c.ld = (uint32_t)vtop->c.i;
+    vtop->c.d  = (double)vtop->c.ld;
+
+micro-c maps float, double and long double onto one word-sized INTEGER type,
+so both lines are plain moves and gen1 writes the integer where the double
+belongs. gen2's own copy of that folder is compiled by mc-tcc, which has
+correct float codegen, so gen2 gets it right and every generation after agrees
+-- which is why the chain heals at generation two and is a fixpoint from
+three. Closing the gap means teaching micro-c the ONE conversion tcc's
+constants actually need.
+
+WHY THE TABLE HAD TO MOVE FIRST. It carried 2,323 aarch64 macros and NOT ONE
+floating-point instruction, so micro-c could not have emitted a conversion
+even if it wanted to. Two per architecture is the whole requirement: convert
+the integer, then get the resulting bits back into the general register
+micro-c keeps its values in.
+
+    aarch64   scvtf d0, x0        9e620000
+              fmov  x0, d0        9e660000
+    amd64     cvtsi2sd %rax,%xmm0 f2480f2ac0
+              movq     %xmm0,%rax 66480f7ec0
+
+EVERY ENCODING IS VERIFIED RATHER THAN REMEMBERED, and the aarch64 pair was
+verified by RUNNING it -- mc-tcc's own assembler does not know the mnemonic
+`scvtf`, so the words were placed with `.int` and executed under
+qemu-aarch64:
+
+    conv(1000) = 408f400000000000    conv(1)  = 3ff0000000000000
+    conv(0)    = 0                   conv(-2) = c000000000000000
+
+including the negative case, which is where a wrong rmode field would show.
+The amd64 pair was assembled by the host assembler and read back with
+objdump. This matters because an earlier reading of a load offset in this
+same investigation was wrong by an imm-scale factor, and a wrong DEFINE is
+the failure verify_defs.py exists to catch: it assembles, it links, and it
+computes garbage.
+
+NOTE ON `.word`. tcc's arm64 assembler emits TWO bytes for `.word`, so the
+verification above misaligned every branch after it until the directive was
+changed to `.int`. Written down because the symptom was
+`R_AARCH64_(JUMP|CALL)26 relocation failed`, which names neither the
+directive nor the alignment.
+
+--- a/aarch64/aarch64_defs.M1
++++ b/aarch64/aarch64_defs.M1
+@@ -2432,3 +2432,5 @@ DEFINE sxtw_x0,w0 007c4093
+ DEFINE uxtb_w0,w0 001c0053
+ DEFINE uxth_w0,w0 003c0053
+ DEFINE mov_w0,w0 e003002a
++DEFINE scvtf_d0,x0 0000629e
++DEFINE fmov_x0,d0 0000669e
+--- a/amd64/amd64_defs.M1
++++ b/amd64/amd64_defs.M1
+@@ -350,3 +350,5 @@ DEFINE movsx_rax,ax 480FBFC0
+ DEFINE movzx_rax,ax 480FB7C0
+ DEFINE movsx_rax,eax 4863C0
+ DEFINE mov_eax,eax 89C0
++DEFINE cvtsi2sd_xmm0,rax F2480F2AC0
++DEFINE movq_rax,xmm0 66480F7EC0
