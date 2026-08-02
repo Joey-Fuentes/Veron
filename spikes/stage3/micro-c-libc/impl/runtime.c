@@ -303,11 +303,132 @@ int gettimeofday(void* tv, void* tz)
 
 void* localtime(long* t) { return NULL; }
 
+/* WITH resolved == NULL, THE CALLER OWNS THE RESULT AND WILL FREE IT.
+ *
+ * This returned `path` itself, which has the right VALUE for an already
+ * absolute path -- the note above says so and it is true -- but the wrong
+ * OWNERSHIP, and tcc frees what it is handed:
+ *
+ *     if (!!(p1 = realpath(f1, NULL))) {
+ *         if (!!(p2 = realpath(f2, NULL))) {
+ *             ret = PATHCMP(p1, p2);
+ *             libc_free(p2);                    // realpath() requirement
+ *         }
+ *         libc_free(p1);
+ *     }                                              libtcc.c:492
+ *
+ * so the caller's own buffer went to free(). One of the two is
+ * `e->filename` inside a CachedInclude --
+ *
+ *     typedef struct CachedInclude {
+ *         int ifndef_macro; int once; int hash_next; char filename[1];
+ *     } CachedInclude;
+ *
+ * -- whose `filename` sits at offset 12, and the allocator said exactly that:
+ *
+ *     M2libc: free: INTERIOR pointer into a live block (12)
+ *
+ * ONE PATH REACHES IT, WHICH IS WHY IT LOOKED LIKE A HEAP BUG.
+ * normalized_PATHCMP is called from search_cached_include only when a cached
+ * entry has `once` set -- so it needs a header with `#pragma once` included a
+ * SECOND time. tests2/18_include.c does that three ways over two lines, and
+ * it was the last program in the suite failing for a reason that was not
+ * floating point. Nothing else in tcc calls realpath, so nothing else showed
+ * it, and the damage surfaced as a corrupt-looking free far from its cause.
+ *
+ * POSIX is explicit: with a null second argument the result is obtained as
+ * though by malloc and the caller frees it. A copy is what that costs. */
+/* AND IT HAS TO CANONICALISE, not just copy.
+ *
+ * With the ownership fixed, 18_include still printed
+ *     counter 0 / counter 1 / counter 2
+ * where tcc prints `counter 0` once: the header carries `#pragma once` and is
+ * included three times, spelled
+ *     "18_include2.h"   "./18_include2.h"   "../tests2/18_include2.h"
+ * search_cached_include only recognises the second and third as the same file
+ * if realpath maps them onto the first, and a copy does not.
+ *
+ * LEXICAL IS ENOUGH HERE, AND THE REASON IS IN parse_include. Every path this
+ * is asked about was built as `include_dir + "/" + name`, so it is already
+ * ABSOLUTE by the time it arrives -- "/x/tests2/./18_include2.h" and
+ * "/x/tests2/../tests2/18_include2.h". Collapsing "." and ".." over an
+ * absolute path needs no filesystem access, which matters in a box with no
+ * getcwd and no symlink resolution.
+ *
+ * WHAT IT DOES NOT DO, PLAINLY: it does not resolve symlinks, and a RELATIVE
+ * path is returned copied but uncollapsed, because making one absolute needs
+ * a working directory this runtime does not have. Neither is reachable from
+ * tcc's single call site. Said here rather than discovered later. */
 char* realpath(char* path, char* resolved)
 {
-	if(NULL == resolved) return path;
-	unsigned long n = strlen(path);
-	memcpy(resolved, path, n + 1);
+	unsigned long n;
+	unsigned long i;
+	unsigned long w;
+
+	n = strlen(path);
+	if(NULL == resolved)
+	{
+		resolved = malloc(n + 1);
+		if(NULL == resolved) return NULL;
+	}
+
+	if('/' != path[0])
+	{
+		memcpy(resolved, path, n + 1);
+		return resolved;
+	}
+
+	/* Walk the source a component at a time, writing the kept ones. `w`
+	 * always points just past the last '/' written. */
+	w = 0;
+	i = 0;
+	while(i < n)
+	{
+		if('/' == path[i])
+		{
+			/* collapse a run of slashes */
+			if((w > 0) && ('/' == resolved[w - 1])) { i = i + 1; continue; }
+			resolved[w] = '/';
+			w = w + 1;
+			i = i + 1;
+			continue;
+		}
+
+		/* a component starts at i; find its end */
+		unsigned long j = i;
+		while((j < n) && ('/' != path[j])) j = j + 1;
+
+		if((j - i == 1) && ('.' == path[i]))
+		{
+			/* "." -- drop it, and the slash we just wrote */
+			i = j + 1;
+			continue;
+		}
+		if((j - i == 2) && ('.' == path[i]) && ('.' == path[i + 1]))
+		{
+			/* ".." -- drop the previous component too, but never
+			 * walk above the root. */
+			if(w > 1)
+			{
+				w = w - 1;                       /* the trailing '/' */
+				while((w > 1) && ('/' != resolved[w - 1])) w = w - 1;
+			}
+			i = j + 1;
+			continue;
+		}
+
+		while(i < j)
+		{
+			resolved[w] = path[i];
+			w = w + 1;
+			i = i + 1;
+		}
+	}
+
+	/* a trailing slash on a non-root path is not part of the name */
+	if((w > 1) && ('/' == resolved[w - 1])) w = w - 1;
+	if(0 == w) { resolved[0] = '/'; w = 1; }
+	resolved[w] = 0;
 	return resolved;
 }
 
