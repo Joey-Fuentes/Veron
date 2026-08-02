@@ -55,7 +55,13 @@ jobs:
         run: |
           set -eu
           sudo apt-get update -qq
-          sudo apt-get install -y -qq build-essential git >/dev/null
+          # gdb, BECAUSE THIS JOB IS NOT HERMETIC AND THE CRASH IS NOT READABLE.
+          # tcc-two-ways compares two compilers on a host that may install
+          # whatever it likes -- nothing it installs enters an artifact. Step 21
+          # has reported "SIGNAL 11" and a marker trail for weeks, and step 26
+          # established that instrumenting makes the fault vanish, so more
+          # markers cannot reach it. A faulting address and a backtrace can.
+          sudo apt-get install -y -qq build-essential git gdb >/dev/null
           gcc --version | head -1
 
       - name: 'GATE: the instrument must be sound before anything trusts it'
@@ -561,6 +567,17 @@ jobs:
           grep -q 'max_string = 262144,' mescc/M1-macro.c || { echo "FAIL: sed did not apply"; exit 1; }
           gcc -w -o M1 mescc/M1-macro.c mescc/stringify.c mescc/M2libc/bootstrappable.c
           gcc -w -o hex2 mescc/hex2_linker.c mescc/hex2_word.c mescc/hex2.c mescc/M2libc/bootstrappable.c
+          # blood-elf, WHICH IS WHAT GIVES A hex2 BINARY A SYMBOL TABLE.
+          #
+          # mc-tcc-bin is produced by hex2 and has no section headers and no
+          # symbols, so a debugger can only report a bare address. blood-elf is
+          # mescc-tools' answer to exactly that: it reads the .M1 and emits a
+          # footer of :symbol labels, which M1 and hex2 then place, so the
+          # result carries a real symbol table. Built here and used for the
+          # DEBUG binary only -- the binary under test stays byte-for-byte what
+          # it was, because a symbol table changes the layout and this fault is
+          # layout-sensitive.
+          gcc -w -o blood-elf mescc/blood-elf.c mescc/stringify.c mescc/M2libc/bootstrappable.c
 
           # Code before strings, or a function lands on an address that is not
           # a multiple of four and every call to it is SIGBUS.
@@ -612,6 +629,19 @@ jobs:
           ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
                  -f $D/ELF-aarch64.hex2 -f all.hex2 -o mc-tcc-bin
           chmod +x mc-tcc-bin
+          # THE DEBUG TWIN. Same inputs, plus blood-elf's symbol footer and
+          # hex2's --exec_enable, so gdb can name a function instead of an
+          # address. It is NOT the binary any step measures.
+          if ./blood-elf -f all.M1 --little-endian --64 -o all-footer.M1 2>/dev/null; then
+            ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f all.M1 -f all-footer.M1 \
+                 --little-endian --architecture aarch64 -o all-dbg.hex2 2>/dev/null \
+              && ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
+                   -f $D/ELF-aarch64.hex2 -f all-dbg.hex2 -o mc-tcc-dbg 2>/dev/null \
+              && chmod +x mc-tcc-dbg \
+              && printf '  debug twin: %s bytes (symbols for gdb only)\n' "$(stat -c%s mc-tcc-dbg)"
+          fi
+          [ -x mc-tcc-dbg ] || echo "  no debug twin -- blood-elf did not produce one"
+
           ./M1 -f $D/aarch64_defs.M1 -f $D/libc-full.M1 -f co.M1 \
                --little-endian --architecture aarch64 -o co.hex2
           ./hex2 --architecture aarch64 --little-endian --base-address 0x400000 \
@@ -892,6 +922,31 @@ jobs:
           # loudly and does not fail the step, until linking works at all.
           if [ "$rc" -gt 128 ]; then
             echo "  SIGNAL $((rc - 128)) -- past the link inputs, crashing in output"
+            # WHERE, NOT JUST THAT. Markers cannot answer this: step 26 shows
+            # the fault vanishes under instrumentation, so anything that adds
+            # code moves it. gdb adds none -- it runs the SAME binary and reads
+            # the registers after the fault.
+            #
+            # Two runs, because they answer different questions. The binary
+            # under test gives the true faulting address and the true layout;
+            # the debug twin gives names, and may not fault in the same place
+            # precisely because its layout differs. Disagreement between them is
+            # itself the finding, so both are printed rather than one chosen.
+            echo "  --- where it faulted, from the binary under test ---"
+            gdb -q -batch \
+                -ex 'run' \
+                -ex 'printf "  fault at pc=%p  sp=%p\n", $pc, $sp' \
+                -ex 'info registers pc sp x0 x1 x2' \
+                -ex 'x/4i $pc' \
+                --args ./mc-tcc-bin $BFLAG /tmp/trivial.c -o /tmp/trivial-out \
+                2>&1 | sed -n '/fault at\|Program received\|=>\|pc  *0x\|sp  *0x\|x0  *0x\|x1  *0x\|x2  *0x/p' \
+                | head -14 | sed 's/^/    /'
+            if [ -x ./mc-tcc-dbg ]; then
+              echo "  --- and with symbols, from the debug twin ---"
+              gdb -q -batch -ex 'run' -ex 'bt 12' \
+                  --args ./mc-tcc-dbg $BFLAG /tmp/trivial.c -o /tmp/trivial-dbg \
+                  2>&1 | sed -n '/^#[0-9]\|Program received/p' | head -14 | sed 's/^/    /'
+            fi
           fi
           # THE D MARKERS ARE GONE, AND THAT IS THE POINT.
           #
