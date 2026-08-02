@@ -1,0 +1,172 @@
+a conditional's type is not whichever arm parsed last.
+
+MEASURED, and the two lines differ only in the ORDER OF THE ARMS:
+
+    struct S { int i; };
+    (c ? 0 : s)->i      accepted
+    (c ? s : 0)->i      ERROR in lookup_member int->i does not exist
+
+Both arms of a ternary call expression(), each of which leaves its own type in
+current_target, and nothing put them back together. So the type of the whole
+conditional was whatever the FALSE arm happened to leave -- which is right by
+accident when the pointer is written second and wrong when it is written
+first.
+
+WHERE IT BITES. tcc writes all four orders on consecutive lines, in the two
+files that gate the most:
+
+    tests/tests2/33_ternary_op.c:37     int i1 = (i != 0 ? 0 : s)->i;
+                                :38     int i2 = (i == 0 ? s : 0)->i;
+                                :39     int i3 = (i != 0 ? (void*)0 : s)->i;
+                                :40     int i4 = (i == 0 ? s : (void*)0)->i;
+    tests/tcctest.c:4080-4083           the same four
+
+tcctest.c is the file test1, test2 and test3 all begin with, so this is the
+gate on tcc's own test suite. The gcc-built control passes both files from the
+identical source, which is what says the fault is here and not in tcc.
+
+C 6.5.15p6: when one arm is a NULL POINTER CONSTANT, the type of the
+conditional is the OTHER arm's. micro-c cannot see whether an expression is
+constant, and it does not need to -- a null pointer constant has exactly two
+spellings and each is decided by what it leaves in current_target:
+
+    integer 0    promote_type ALREADY decides this correctly. Its rule is that
+                 the wider type wins, and a pointer is wider than an int on
+                 every architecture here. The ternary simply never called it.
+
+    (void*)0     ties with a struct pointer on width, so promote_type falls
+                 through to its signedness tie-break and returns whichever
+                 came first. Compared by IDENTITY against the type object
+                 initialize_types built -- not by name, so a user typedef
+                 called "void*" cannot collide with it.
+
+WHAT THIS IS PERMISSIVE ABOUT, SAID PLAINLY. A conditional between a genuine
+void* VALUE and an object pointer has type void* in C, and gets the object
+pointer's type here; there is no constant information to tell that apart from
+(void*)0. The effect is that micro-c ACCEPTS `(c ? vp : s)->i`, which C
+rejects. It cannot miscompile anything -- both are eight-byte addresses, and
+the type only decides which member offsets apply, which C would not let you
+ask for at all. Accepting slightly too much is the right direction for a
+bootstrap compiler; rejecting valid C is what stopped tcc.
+
+MEASURED AFTER, locally, amd64 native:
+
+    difftest    96 pass, 0 fail, 1 known gap    unchanged
+    corpus      419 of 426                      unchanged
+
+Case 113 covers it. A SECOND and INDEPENDENT defect sits directly behind this
+one and is NOT fixed here -- dereferencing the result of a conditional
+segfaults, minimally
+
+    int v = *(1 ? p1 : p2);
+
+with plain int pointers and no struct in sight. It reproduces identically
+under the UNPATCHED compiler, so it predates this change; it was simply
+unreachable while the type error stopped the parse first. Case 116 carries it
+as a declared KNOWN GAP, with the reduction.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -4308,6 +4308,7 @@ void expression(void)
+ 		emit_jump_if_zero(REGISTER_ZERO, "TERNARY_ELSE_", unique_id, "ternary: false arm");
+ 
+ 		expression();
++		struct type* ternary_true_type = current_target;
+ 		emit_unconditional_jump("_END_TERNARY_", unique_id, "ternary: skip false arm");
+ 
+ 		require_match("ERROR in ternary\nMISSING :\n", ":");
+@@ -4315,6 +4316,60 @@ void expression(void)
+ 		expression();
+ 		emit_label("_END_TERNARY_", unique_id);
+ 
++		/* THE RESULT TYPE IS NOT THE SECOND ARM'S JUST BECAUSE IT PARSED
++		 * LAST.
++		 *
++		 * Both arms call expression(), each leaves its own type in
++		 * current_target, and nothing put them back together -- so whatever
++		 * the FALSE arm happened to leave became the type of the whole
++		 * conditional. Measured:
++		 *
++		 *     (c ? 0 : s)->i     accepted      the pointer parsed last
++		 *     (c ? s : 0)->i     ERROR in lookup_member int->i does not exist
++		 *
++		 * from the same struct pointer, differing only in arm order. tcc's
++		 * own tests2/33_ternary_op and tests/tcctest.c both write all four
++		 * orders on consecutive lines, which is why both stop there.
++		 *
++		 * C 6.5.15p6: when one arm is a NULL POINTER CONSTANT, the type of
++		 * the conditional is the OTHER arm's. micro-c cannot see whether an
++		 * expression is a constant, but a null pointer constant has only two
++		 * spellings -- an integer 0, and that cast to void* -- and each is
++		 * handled here by what it leaves in current_target rather than by
++		 * proving it was constant:
++		 *
++		 *   integer 0    promote_type already decides this correctly. Its
++		 *                rule is that the wider type wins, and a pointer is
++		 *                wider than an int on every architecture here.
++		 *
++		 *   (void*)0     ties with a struct pointer on width, so promote_type
++		 *                falls through to its signedness tie-break and
++		 *                returns whichever came first. `void*` is compared by
++		 *                IDENTITY against the type object initialize_types
++		 *                built, not by name, so a user typedef cannot collide
++		 *                with it.
++		 *
++		 * WHAT THIS IS PERMISSIVE ABOUT, SAID PLAINLY. A conditional between
++		 * a genuine void* VALUE and an object pointer has type void* in C,
++		 * and gets the object pointer's type here -- there is no constant
++		 * information to tell that apart from (void*)0. The effect is that
++		 * micro-c ACCEPTS `(c ? vp : s)->i`, which C rejects. It cannot
++		 * miscompile anything: both are eight-byte addresses and the type
++		 * only decides which member offsets apply, which C would not let you
++		 * ask for in the first place. Accepting slightly too much is the
++		 * right direction for a bootstrap compiler; rejecting valid C is
++		 * what stopped tcc. */
++		if(NULL == current_target) current_target = ternary_true_type;
++		else if(NULL != ternary_true_type)
++		{
++			if(void_pointer == current_target) current_target = ternary_true_type;
++			else if(void_pointer == ternary_true_type)
++			{
++				/* keep the false arm's type */
++			}
++			else current_target = promote_type(current_target, ternary_true_type);
++		}
++
+ 		emit_pop(REGISTER_TEMP, "restore the temp register after ?:");
+ 		return;
+ 	}
+--- a/cc_globals.c
++++ b/cc_globals.c
+@@ -50,6 +50,9 @@ char* return_instruction;
+ 
+ int MAX_STRING;
+ struct type* integer;
++/* `void*`, kept so a conditional can recognise (void*)0 by IDENTITY rather
++ * than by name. See the ternary in cc_core.c. */
++struct type* void_pointer;
+ struct type* unsigned_integer;
+ struct type* character;
+ struct type* signed_char;
+--- a/cc_globals.h
++++ b/cc_globals.h
+@@ -19,6 +19,7 @@
+ /* What types we have */
+ extern struct type* global_types;
+ extern struct type* prim_types;
++extern struct type* void_pointer;
+ 
+ extern struct include_path_list* include_paths;
+ 
+--- a/cc_types.c
++++ b/cc_types.c
+@@ -79,6 +79,9 @@ void initialize_types(void)
+ 	/* Define void */
+ 	struct type* hold = new_primitive("void", "void*", "void**", register_size, FALSE);
+ 	prim_types = add_primitive(hold);
++	/* new_primitive links base -> indirect -> `void*`, so this is the exact
++	 * type object every (void*) cast resolves to. */
++	void_pointer = hold->indirect;
+ 
+ 	/* Define unsigned LONG */
+ 	hold = new_primitive("SCM","SCM*", "SCM**", register_size, FALSE);

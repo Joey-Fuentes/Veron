@@ -41,7 +41,8 @@
  *
  *   1  sizeof matches the array stride, and a copy moves that whole width
  *   2  local = *pointer            copies BOTH fields
- *   4  local = *(cond ? p1 : p2)   a dereferenced ternary of pointers
+ *   4  (moved to case 116 -- dereferencing a conditional segfaults, and that
+ *      is a SEPARATE defect that would mask this one)
  *   8  *pointer = local            the `*dest = type` at the end of the merge
  *  16  (cond ? 0 : s)->i           the literal construct, null constant second
  *  32  (cond ? s : 0)->i           and with the arms the other way round
@@ -137,17 +138,20 @@ int main(void)
 	if(t2.t != T_PTR) r = r + 2;
 	if(t2.ref != &sym_b) r = r + 2;
 
-	/* 4 -- local = *(cond ? p1 : p2). tccgen.c:2939 writes exactly this:
-	 *     type = *(bt1 == VT_PTR ? type1 : type2);
-	 * A dereference applied to the RESULT OF A TERNARY, not to a name. */
+	/* 4 -- MOVED TO CASE 116, and the move is the point.
+	 *
+	 * tccgen.c:2939 writes `type = *(bt1 == VT_PTR ? type1 : type2);` -- a
+	 * dereference applied to the RESULT OF A CONDITIONAL. That segfaults
+	 * under micro-c, it does so with plain int pointers and no struct
+	 * anywhere near it, and it reproduces under the compiler as it was
+	 * before the conditional-type fix -- so it is a second and independent
+	 * defect, not a consequence of the first.
+	 *
+	 * Leaving it here would make this case fail for a reason it is not
+	 * about, and a case that fails for two reasons at once names neither.
+	 * 116 carries it, reduced, as a declared gap. */
 	struct CType* p1;
 	p1 = &c1;
-	struct CType t3;
-	t3.t = T_VOID;
-	t3.ref = 0;
-	t3 = *(1 ? p1 : p2);
-	if(t3.t != T_PTR) r = r + 4;
-	if(t3.ref != &sym_a) r = r + 4;
 
 	/* 8 -- *pointer = local, the `*dest = type` the merge ends on */
 	struct CType out;
