@@ -527,6 +527,26 @@ jobs:
             tap=$((tap + 1))
           done
           [ "$tap" -ge 5 ] || { echo "FAIL: only $tap tcc-arm64-asm patches, expected >= 5"; exit 1; }
+          # AND THE OTHER HALF, WHICH IS THE ONE THAT WOULD HAVE CAUGHT THIS.
+          # "$tap patches applied" is not "the fix is in the tree" -- the same
+          # distinction TRAP 3 draws for the m2libc defs below. The tarball is
+          # already patched for 0001-0005, so five of those seven applications
+          # are no-ops and the counter cannot tell. 0006 and 0007 are the two
+          # that really change the tree, and 0006 is the reason this step now
+          # asserts anything at all: it added
+          #     #include <math.h>
+          #     #include <float.h>
+          # to tccgen.c, micro-c's include set had no float.h, and step 10
+          # reported nothing but
+          #     tccgen.c:25:Unable to find include file: float.h
+          #     stage 3 end to end: no
+          # 400 lines later. Every other job that applies this series builds
+          # tcc with the HOST compiler and has a host float.h, so nothing else
+          # went red.
+          grep -q '#include <float.h>' pins/tcc-src/tccgen.c \
+            || { echo "FAIL: patch 0006 is not in tccgen.c"; exit 1; }
+          grep -q 'VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST' pins/tcc-src/tccgen.c \
+            || { echo "FAIL: patch 0007 is not in tccgen.c"; exit 1; }
 
           # THE MICRO-C-ONLY tcc PATCHES. Small, and separate from the arm64
           # assembler series because they are not about the target -- they are
@@ -592,6 +612,28 @@ jobs:
           grep -q 'define va_copy(ap1, ap2) ap1 = ap2' pins/m2libc-veron/stdarg.h \
             || { echo "FAIL: va_copy is still reversed"; exit 1; }
           echo "  m2libc (ours) = reference + $mn patches, $(grep -c '^DEFINE' pins/m2libc-veron/aarch64/aarch64_defs.M1) DEFINEs"
+
+          # EVERY ANGLE-BRACKET INCLUDE tcc's SOURCE REACHES FOR HAS TO BE
+          # RESOLVABLE FROM THE INCLUDE PATH STEP 10 PASSES, which is
+          # -I . -I micro-c-libc -I m2libc-veron and nothing else. There is no
+          # system include path in the box, so a header that is merely usual is
+          # a header that is missing. Non-fatal on purpose -- some of these sit
+          # behind #ifdefs that never fire on this target -- but it prints the
+          # name here, in the airlock, rather than leaving it to be read out of
+          # three truncated lines of stderr 400 lines later.
+          miss=
+          for h in $(sed -n 's/^#include <\([a-z0-9_/]*\.h\)>.*/\1/p' \
+                       pins/tcc-src/*.c pins/tcc-src/*.h | sort -u); do
+            [ -f "pins/tcc-src/$h" ] && continue
+            [ -f "spikes/stage3/micro-c-libc/$h" ] && continue
+            [ -f "pins/m2libc-veron/$h" ] && continue
+            miss="$miss $h"
+          done
+          if [ -n "$miss" ]; then
+            echo "  NOTE: angle includes not on micro-c's path:$miss"
+          else
+            echo "  every angle include in tcc's source resolves on micro-c's path"
+          fi
 
           # The -f list is the oracle's, exactly as G0/G1 use it.
           cp pins/flist.txt pins/microc-srcs.txt

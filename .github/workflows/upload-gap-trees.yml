@@ -71,7 +71,8 @@ jobs:
             git -C tcc apply --ignore-whitespace "../$p"
             n=$((n + 1))
           done
-          [ "$n" = 5 ] || { echo "FAIL: applied $n patches, expected 5"; exit 1; }
+          # A FLOOR, NOT A COUNT -- the series is seven now. See micro-c-builds-tcc.
+          [ "$n" -ge 5 ] || { echo "FAIL: applied $n patches, expected >= 5"; exit 1; }
           # configure emits config.h, which the sources expect to exist. Doing
           # it here means the uploaded tree is the one the probe measures,
           # rather than one that still needs a step nobody remembers.

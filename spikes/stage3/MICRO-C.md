@@ -1602,6 +1602,80 @@ fixing, and the design is written out under "Next".
 
 ---
 
+## A THIRD TIME: a header, and a local gate that could not see it
+
+`stage3-hermetic-arm64` at `e01bc10` reported
+
+```
+    micro-c could not compile libtcc.c (rc=1)
+      tccgen.c:25:Unable to find include file: float.h
+    stage 3 end to end: no
+```
+
+after two consecutive green runs, and nothing about micro-c had changed. The
+cause is two commits from the float work: `0b07e37` and `2a8bf60` added
+`tcc-arm64-asm` patches 0006 and 0007, and 0006 opens with
+
+```c
+ #define USING_GLOBALS
+ #include "tcc.h"
++#include <math.h>
++#include <float.h>
+```
+
+`micro-c-libc` had `math.h`. It had no `float.h`, so tccgen.c stopped
+preprocessing at the second line and every rung above it -- tests2, tcctest.c,
+self-compilation -- reported `skipped: no mc-tcc was produced`.
+
+**WHY NOTHING ELSE WENT RED.** Twelve jobs apply that series. Ten of them build
+tcc with the HOST compiler, and a host has a `float.h`; the include is
+invisible there. Only `stage3-hermetic-arm64` and `micro-c-builds-tcc` put
+*micro-c* behind that `#include`, with an include path of `-I . -I
+micro-c-libc -I m2libc-veron` and no system directory at all. A patch tested
+against a host toolchain landed on the one path that has no host.
+
+**WHY local-tcc.sh STAYED GREEN, WHICH IS THE WORSE HALF.** It never applied
+the `tcc-arm64-asm` series -- the pinned tarball is pre-patched for 0001-0005,
+so skipping it was correct right up until the series grew. From `0b07e37`
+onward the local gate compiled a tccgen.c with no `#include <float.h>` in it:
+a different tree from the one CI compiles, differing precisely at the fault.
+The script now applies whichever patches in that series are not already in the
+tarball -- two today, five skipped -- and asserts the two float patches are
+present in the file afterwards, because "the patch ran" and "the fix is there"
+are the different claims TRAP 3 already separates for the m2libc defs.
+
+**THE FIX.** `spikes/stage3/micro-c-libc/float.h`, integer macros only, saying
+what micro-c's float model actually is: one eight-byte type, so `FLT_`, `DBL_`
+and `LDBL_` all carry the IEEE double values. That makes 0006's own guard
+
+```c
+#if defined LDBL_MANT_DIG && LDBL_MANT_DIG == 64
+```
+
+false, and its x87-to-binary128 conversion -- written for an x86_64 host
+cross-compiling to arm64, which micro-c is not -- compiles out. The header
+declines to define `FLT_EPSILON`, `DBL_MAX` and the rest of the value macros:
+the whole pinned tcc tree references exactly one name from `float.h`
+(`FLT_ROUNDS`) and 0006 adds one more (`LDBL_MANT_DIG`), neither of them a
+float literal, and this directory's rule is measured rather than complete.
+
+Two exact-count guards went with it. `micro-c-builds-tcc` and
+`upload-gap-trees` both asserted `[ "$n" = 5 ]` over a series that is now
+seven, which would have failed those jobs for the arithmetic rather than for
+anything about tcc. Both are floors now, like the other four.
+
+**THE GENERAL SHAPE, WHICH IS THE POINT.** micro-c has no system include path,
+so any patch that adds an `#include <...>` to tcc's source is a change to
+micro-c's libc whether or not its author was thinking about micro-c. The
+airlock now sweeps every angle-bracket include in the patched tree against the
+three directories step 10 actually passes and prints the ones that do not
+resolve. Four do not -- `dispatch/dispatch.h`, `glob.h`, `io.h`, `process.h`,
+all macOS or Windows and all behind `#ifdef`s that never fire here -- so it is
+a NOTE rather than a failure, but the next one arrives named, in the airlock,
+instead of as three truncated lines of stderr four hundred lines later.
+
+---
+
 ---
 
 ## CI, and what each job is worth

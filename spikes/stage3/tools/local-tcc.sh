@@ -84,6 +84,40 @@ rm -rf tcc-work && cp -r tcc-src tcc-work
 # small set of changes that only the MICRO-C build wants -- currently the
 # eight-byte long double, which is what micro-c's float model actually gives
 # the tcc it builds. See the patch preamble.
+# THE ARM64 SERIES FIRST, AND ONLY THE PART THE TARBALL DOES NOT ALREADY
+# CARRY. This script used to skip the series entirely on the grounds that the
+# tarball is pre-patched -- which was true for 0001-0005 and stopped being true
+# the moment 0006 and 0007 were added. The consequence was a local gate that
+# built a DIFFERENT tcc from the one CI builds, and the difference was exactly
+# where the next failure lived: 0006 adds `#include <float.h>` to tccgen.c,
+# micro-c had no float.h, and stage3-hermetic-arm64 went to
+# `stage 3 end to end: no` while this script stayed green. A gate that cannot
+# see the tree CI compiles is not a gate.
+#
+# APPLY WHAT APPLIES, COUNT WHAT DOES NOT. 0002 and 0003 are in the tarball
+# already but have drifted from the patch files, so they apply neither forward
+# nor in reverse; failing on that would only re-break this script for a
+# difference that does not exist in the tree. The assertions below are what
+# actually holds the line -- "the patch ran" and "the fix is there" are
+# different claims, and only the second one matters.
+ta=0; ts=0
+for p in "$ROOT"/spikes/stage3/patches/tcc-arm64-asm/[0-9]*.patch; do
+    [ -e "$p" ] || continue
+    if ( cd tcc-work && git apply --ignore-whitespace --check "$p" 2>/dev/null ); then
+        ( cd tcc-work && git apply --ignore-whitespace "$p" 2>/dev/null )
+        ta=$((ta + 1))
+    else
+        ts=$((ts + 1))
+    fi
+done
+echo "  tcc-arm64-asm: $ta applied, $ts already in the tarball"
+grep -q '#include <float.h>' tcc-work/tccgen.c \
+    || { echo "FAIL: patch 0006 is not in tccgen.c"; exit 1; }
+grep -q 'VT_VALMASK | VT_LVAL | VT_SYM)) == VT_CONST' tcc-work/tccgen.c \
+    || { echo "FAIL: patch 0007 is not in tccgen.c"; exit 1; }
+[ -f "$L/float.h" ] \
+    || { echo "FAIL: micro-c has no float.h -- tccgen.c will not compile"; exit 1; }
+
 tp=0
 for p in "$ROOT"/spikes/stage3/patches/tcc-microc/[0-9]*.patch; do
     [ -e "$p" ] || continue

@@ -141,7 +141,10 @@ jobs:
             git -C tcc apply --ignore-whitespace "../$p"
             n=$((n + 1))
           done
-          [ "$n" = 5 ] || { echo "FAIL: applied $n tcc patches, expected 5"; exit 1; }
+          # A FLOOR, NOT A COUNT. This was `= 5` and the series grew to seven when
+          # the two long-double patches landed, which would have failed the job
+          # for the arithmetic rather than for anything about tcc.
+          [ "$n" -ge 5 ] || { echo "FAIL: applied $n tcc patches, expected >= 5"; exit 1; }
 
           cd tcc
           ./configure --cpu=arm64 >/dev/null 2>&1 || true

@@ -101,6 +101,18 @@ where tcc compares with `diff -b`, and never passed `31_args` its arguments.
 Two of the remaining differences are real and named — `134_double_to_signed`
 waits on floating point, `94_generic` on `_Generic` type matching.
 
+That verdict regressed to `no` for two commits and is worth recording, because
+the cause was not the compiler. The float work added `#include <float.h>` to
+tccgen.c; micro-c's include set had a `math.h` and no `float.h`, and micro-c
+has no system include path to fall back on, so tcc stopped preprocessing at
+that line. Ten of the twelve jobs that apply the same patch series build tcc
+with the host compiler and never saw it, and the local gate had never applied
+the series at all — so it was compiling a *different* tccgen.c from the one CI
+compiles, differing exactly where the fault was. The header is written, the
+local gate now builds CI's tree, and the airlock checks every angle-bracket
+include against the three directories micro-c is actually given. See
+[`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md).
+
 **The heap corruption is closed.** It was `sizeof` of a dereferenced *member* pointer — `sizeof(*s->tab)` returned the pointer's width, not the struct's, so `tccelf.c` allocated the symbol-attribute table at half the width its own indexing strides through, and later entries read past it into string data. One GOT relocation then resolved to a wild address and every linked binary died on its second string literal. The same construct through a plain pointer was always correct, which is why it survived: the two forms disagree only when a member sits between the star and the name.
 
 **mc-tcc compiles tcc's own source back to an object under the emulator** — 870,242 bytes against the gcc-built control's 873,890, with the same 705 function symbols and relocation counts within two. **On real ARM64 it segfaults**, so read that narrowly: it is step 1 of the five a fixpoint needs, it holds only under `qemu-aarch64`, and **it is not self-hosting**. Steps 2–5 are: link gen2, run it, build gen3, and compare gen2 against gen3. gen2 does not link yet because it needs a libc, and the next rung is a libc built in-chain — see [`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md).
