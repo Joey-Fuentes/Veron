@@ -1292,6 +1292,22 @@ EOF
 #include <float.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdarg.h>
+/* THE SAME VARIADIC PATH musl's printf TAKES: a double passed through `...`,
+ * read back with va_arg through a POINTER, exactly as pop_arg does. */
+static void vgrab(unsigned int *hi, unsigned int *lo, ...)
+{
+    va_list ap;
+    union { double d; unsigned int u[2]; } v;
+    va_start(ap, lo);
+    v.d = va_arg(ap, double);
+    va_end(ap);
+    *hi = v.u[1];
+    *lo = v.u[0];
+}
+static unsigned int vbits_hi(double d) { unsigned int a, b; vgrab(&a, &b, d); return a; }
+static unsigned int vbits_lo(double d) { unsigned int a, b; vgrab(&a, &b, d); return b; }
+
 int main(void)
 {
     double a = 5.008;
@@ -1350,6 +1366,16 @@ int main(void)
         printf("      sizeof(long double) = %d, LDBL_MANT_DIG = %d\n",
                (int)sizeof(long double), (int)LDBL_MANT_DIG);
         printf("      (8 and 53 agree; 8 and 113 do not, and %%f will be wrong)\n");
+        /* DOES THE DOUBLE ARRIVE, OR IS THE FORMATTER WRONG? Those are the
+         * only two possibilities left and printf cannot tell them apart --
+         * both look like 0.000000. This receives a double through the same
+         * variadic path musl's printf uses and reports its BITS with integer
+         * formatting, which is known to work. Bits right means the value
+         * arrived and musl's fmt_fp is at fault; bits wrong means the
+         * argument never got there and printf is innocent. */
+        printf("      through varargs   = %08x %08x\n",
+               vbits_hi(5.008), vbits_lo(5.008));
+        printf("      (expect             40140831 26e978d5)\n");
     }
     return 0;
 }
