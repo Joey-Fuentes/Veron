@@ -1,5 +1,9 @@
 /* `-p->v` -- A UNARY OPERATOR APPLIES TO THE WHOLE UNARY EXPRESSION.
  *
+ * WIDE CONSTANTS -- 0xfffffffffffffff0 and its neighbours do not fit an
+ * immediate field, so this case is expected to move across EXPERIMENT-zzb.
+ * See imm-identity.sh.
+ *
  * MEASURED, and the difference is which side of the arrow the minus lands on:
  *
  *     g.v  = -g.v;      fine      -- a member of a plain variable
