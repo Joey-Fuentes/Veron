@@ -481,15 +481,40 @@ void __clear_cache(void* b, void* e) { return; }
  * what a compiler writes into .data.ro as its reading of what the programmer
  * typed.
  *
+ * HEXADECIMAL FLOATS TOO, and leaving them out cost a round. C99 requires
+ * strtod to accept 0x1p28 and tcc hands it the whole literal, so a strtod that
+ * stops at the 'x' returns 0.0. musl's printf scales with exactly that
+ * constant --
+ *     if (y) y *= 0x1p28, e2-=28;              vfprintf.c, fmt_fp
+ * -- so every %f, %e and %g printed 0.000000 while the value reaching fmt_fp
+ * was provably exact. Traced inside the box's own musl: the argument arrived
+ * as 4014083126e978d5 and that one line turned it into zero.
+ *
  * MEASURED AGAINST glibc's strtod, bit for bit: 6,676 chosen values -- every
  * power of ten from 1e-320 to 1e308, DBL_MIN, DBL_MAX written out in full,
- * the smallest subnormal, 900-digit integers, ties -- and 400,000 random
- * ones. 406,676 of 406,676 identical, including the sign of zero and the
+ * the smallest subnormal, 900-digit integers, ties -- 400,000 random decimal
+ * ones, and 82,209 hexadecimal ones covering every power of two from 2^-1100
+ * to 2^1100. 488,885 of 488,885 identical, including the sign of zero and the
  * end pointer.
  * =================================================================== */
 
 #define NLIMB 160
 #define NDIG  800               /* significant decimal digits kept */
+
+static int ishex(int c)
+{
+    if (c >= '0' && c <= '9') return 1;
+    if (c >= 'a' && c <= 'f') return 1;
+    if (c >= 'A' && c <= 'F') return 1;
+    return 0;
+}
+
+static int hexval(int c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return c - 'A' + 10;
+}
 
 static char DIG[NDIG];
 
@@ -780,6 +805,85 @@ static unsigned long strtod_bits(char *s, char **end)
     neg = 0;
     if (*p == '-') { neg = 1; p = p + 1; }
     else if (*p == '+') p = p + 1;
+
+    /* HEXADECIMAL FLOATS ARE A DIFFERENT NUMBER, not a different spelling.
+     *
+     * C99 requires strtod to accept 0x1p28, and tcc hands it the whole literal
+     * -- so a strtod that stops at the 'x' returns 0.0 for it. musl's printf
+     * scales with exactly that constant:
+     *
+     *     if (y) y *= 0x1p28, e2-=28;              vfprintf.c, fmt_fp
+     *
+     * so every %f, %e and %g printed 0.000000 while the value reaching fmt_fp
+     * was exact -- traced, with the argument arriving as 4014083126e978d5 and
+     * the scale step turning it into zero. Nine of nine hex forms were wrong.
+     *
+     * The mantissa is base 16 and the exponent after 'p' is a power of TWO, so
+     * no decimal scaling is involved at all: shift the digits into place and
+     * assemble. Exact by construction, like the decimal path. */
+    if (*p == '0' && (p[1] == 'x' || p[1] == 'X')
+        && (ishex(p[2]) || (p[2] == '.' && ishex(p[3])))) {
+        unsigned long m;
+        int bexp;
+        int any;
+        int sticky2;
+        p = p + 2;
+        m = 0;
+        bexp = 0;
+        any = 0;
+        sticky2 = 0;
+        while (ishex(*p)) {
+            any = 1;
+            if (m < 0x1000000000000000UL) m = (m << 4) | (unsigned long)hexval(*p);
+            else { bexp = bexp + 4; if (hexval(*p) != 0) sticky2 = 1; }
+            p = p + 1;
+        }
+        if (*p == '.') {
+            p = p + 1;
+            while (ishex(*p)) {
+                any = 1;
+                if (m < 0x1000000000000000UL) { m = (m << 4) | (unsigned long)hexval(*p); bexp = bexp - 4; }
+                else if (hexval(*p) != 0) sticky2 = 1;
+                p = p + 1;
+            }
+        }
+        if (*p == 'p' || *p == 'P') {
+            char *save2;
+            int en;
+            int eneg;
+            save2 = p;
+            p = p + 1;
+            eneg = 0;
+            if (*p == '-') { eneg = 1; p = p + 1; }
+            else if (*p == '+') p = p + 1;
+            if (*p >= '0' && *p <= '9') {
+                en = 0;
+                while (*p >= '0' && *p <= '9') { if (en < 100000) en = en * 10 + (*p - '0'); p = p + 1; }
+                if (eneg) bexp = bexp - en; else bexp = bexp + en;
+            } else p = save2;
+        }
+        if (end != 0) *end = p;
+        if (m == 0) { if (neg) return 0x8000000000000000UL; return 0; }
+        /* normalise to 54 significant bits, folding the rest into sticky */
+        {
+            int b;
+            unsigned long t;
+            t = m; b = 0;
+            while (t) { t = t >> 1; b = b + 1; }
+            if (b > 54) {
+                int drop2;
+                drop2 = b - 54;
+                if ((m & ((1UL << drop2) - 1)) != 0) sticky2 = 1;
+                m = m >> drop2;
+                bexp = bexp + drop2;
+            } else if (b < 54) {
+                m = m << (54 - b);
+                bexp = bexp - (54 - b);
+            }
+            /* value = m * 2^bexp, m has bit 53 as its top */
+            return assemble(neg, m, sticky2, bexp + 53);
+        }
+    }
 
     /* EVERY SIGNIFICANT DIGIT IS KEPT, not the first nineteen.
      *
