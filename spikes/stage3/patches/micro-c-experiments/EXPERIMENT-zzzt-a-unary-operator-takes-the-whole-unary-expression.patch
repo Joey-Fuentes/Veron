@@ -1,0 +1,90 @@
+a unary operator applies to the whole unary expression that follows.
+
+ONE CALL, AND IT WAS THE ONLY UNARY OPERATOR THAT NEVER GOT THE RULE. The
+unary-minus branch called primary_expr; the `!` branch twenty lines below it
+calls postfix_expr, and the cast branch carries the same correction in the same
+words. So `-p->v` consumed only `p` and left `->v` to the caller:
+
+    g.v  = -g.v;      fine      -- a member of a plain variable
+    p->v = -(p->v);   fine      -- the parentheses group it by hand
+    t    = -p->v;     SIGSEGV
+
+WHERE IT BIT, AND IT IS NOT A CORNER. tcc's assembler negates an immediate with
+one line, through a pointer:
+
+    if (op == '-') pe->v = -pe->v;                      tccasm.c:178
+
+so mc-tcc segfaulted on EVERY NEGATIVE IMMEDIATE IN ASSEMBLY, while every
+positive one assembled:
+
+    stp x29,x30,[sp,-16]!   crash        stp x29,x30,[sp,16]!   fine
+    ldr x0,[sp,-8]          crash        ldr x0,[sp,8]          fine
+    mov x0,-16              crash        mov x0,16              fine
+
+HOW IT SURFACED. stage0-stage4-complete puts the seed's mc-tcc where the
+reference arm puts a host-built tcc, and its first run reached RUNG 2 of the
+stage-4 ladder: 1340 of musl's 1349 sources compiled, a 3.2 MB libc.a from 1273
+objects, and no crt1.o. Nine files would not compile and every one of them
+reported
+
+    SIGNAL 11 -- no diagnostic
+
+so there was nothing to read and the shape had to be found instead. Seven of
+the nine are assembly or pull in a file-scope asm block: crt/aarch64/crti.s,
+src/string/aarch64/memcpy.S, src/string/aarch64/memset.S among them. No crt1.o
+means nothing can be LINKED, so rung 2 stops the entire climb.
+
+THE CONTROL IS WHAT MADE IT ATTRIBUTABLE. A gcc-hosted tcc, built from the same
+tarball with the same tcc-arm64-asm series and configured --cpu=arm64,
+assembles all of those. The assembler is right; the compiler that built it was
+not. With this patch mc-tcc assembles musl's crti.s to an object BYTE-IDENTICAL
+to that control's, and the same holds for each instruction above.
+
+MEASURED, LOCALLY, EITHER SIDE:
+
+    difftest amd64        99 -> 99 pass, 0 fail   (case 120 new, and passes)
+    difftest aarch64     101 -> 101 pass, 0 fail
+    stage 2 corpus       419 of 426               unchanged
+    tests2 through mc-tcc 90 of 105               unchanged
+    self-compilation      gen2.o == gen3.o        unchanged
+    archive round trip    links and runs -> 5     unchanged
+    dynamic output        2875-byte shared object unchanged
+
+    musl crti.s           byte-identical to the gcc-built control, 1035 bytes
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -3876,10 +3876,31 @@ void primary_expr(void)
+ 		 * Setting current_target to integer first only MOVED the problem --
+ 		 * promote_type(SValue*, integer) picks integer. A unary operator must
+ 		 * not promote at ALL: the result has the operand's type. So this does
+-		 * common_recursion's push/parse/pop without its final promotion. */
++		 * common_recursion's push/parse/pop without its final promotion.
++		 *
++		 * postfix_expr, NOT primary_expr, AND THE `!` BRANCH TWENTY LINES
++		 * BELOW ALREADY SAYS SO. A unary operator applies to the whole unary
++		 * expression that follows, so `-p->v` is `-(p->v)`. Calling
++		 * primary_expr consumed only `p` and left `->v` to the caller, and
++		 * the result was a segfault rather than a diagnostic:
++		 *
++		 *     g.v = -g.v;     fine        -- a member of a plain variable
++		 *     p->v = -(p->v); fine        -- the parentheses do it by hand
++		 *     t   = -p->v;    SIGSEGV
++		 *
++		 * The cast branch carries this same correction already, in the same
++		 * words, for the same reason.
++		 *
++		 * WHERE IT BIT. tcc's assembler negates an immediate with
++		 *     if (op == '-') pe->v = -pe->v;          tccasm.c:178
++		 * so mc-tcc segfaulted on EVERY negative immediate in assembly --
++		 *     stp x29,x30,[sp,-16]!      mov x0,-16      ldr x0,[sp,-8]
++		 * -- while the positive forms assembled. That is musl's crti.s,
++		 * memcpy.S and memset.S, and it is nine of the nine files that would
++		 * not compile at rung 2 of the stage-4 ladder. */
+ 		emit_push(REGISTER_ZERO, "_common_recursion");
+ 		require_extra_token();
+-		primary_expr();
++		postfix_expr();
+ 		emit_pop(REGISTER_ONE, "_common_recursion");
+ 
+ 		if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture)) emit_out("NEG R0 R0\n");
