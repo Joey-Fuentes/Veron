@@ -944,13 +944,31 @@ int fprintf(FILE *f, const char *fmt, ...)
     return n;
 }
 
+/* A RAW SYSCALL RETURNS -errno, NOT -1, AND THAT SEGFAULTED A TEST.
+ *
+ * 119_random_stuff asks for a MAP_FIXED|MAP_ANONYMOUS mapping and passes
+ * neither MAP_PRIVATE nor MAP_SHARED, which Linux rejects with EINVAL. A libc
+ * turns that into MAP_FAILED; the bare syscall hands back -22. The test's
+ * guard is
+ *     if (addr != (void *) -1) { *(int *)0x20000000 += 42; ... }
+ * so -22 passed the guard and the program wrote to an unmapped constant
+ * address and died -- reported as "RAN, output differs / Segmentation fault",
+ * which reads as a codegen fault and was mine.
+ *
+ * The kernel's convention is that a return in [-4095, -1] is an error. That
+ * range, not a test against -1, is what a libc checks. */
 void *mmap(void *addr, unsigned long len, int prot, int flags, int fd, long off)
 {
-    return (void *)sys6(222, (long)addr, (long)len, (long)prot, (long)flags,
-                        (long)fd, off);
+    long r;
+    r = sys6(222, (long)addr, (long)len, (long)prot, (long)flags, (long)fd, off);
+    if (r < 0 && r > -4096) return (void *)-1;
+    return (void *)r;
 }
 
 int munmap(void *addr, unsigned long len)
 {
-    return (int)sys3(215, (long)addr, (long)len, 0);
+    long r;
+    r = sys3(215, (long)addr, (long)len, 0);
+    if (r < 0 && r > -4096) return -1;
+    return (int)r;
 }

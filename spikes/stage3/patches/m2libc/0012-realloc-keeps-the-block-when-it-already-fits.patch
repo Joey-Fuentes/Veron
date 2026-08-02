@@ -1,24 +1,23 @@
 realloc returns the SAME block when the one it has is already big enough.
 
-WHAT THIS IS ACTUALLY TESTING. Patch 0011's third round ends with a named
-hypothesis and no way to choose between it and its alternative:
+WHAT THIS IS TESTING. Patch 0011's third round ends with a named hypothesis
+and no way to choose between it and its alternative:
 
     "a pointer from section_ptr_add held across a later section_realloc would
      write through a stale base, which is the classic shape"
 
-The reason that shape is worth suspecting HERE and not in tcc generally is an
-asymmetry between this allocator and glibc's, and it is total:
+The reason to suspect that HERE and not in tcc generally is an asymmetry
+between this allocator and glibc's, and it is total:
 
     glibc realloc     grows IN PLACE whenever the chunk has room, which for a
                       doubling growth pattern is most of the time
     M2libc realloc    ALWAYS allocates a new block, copies, and frees the old
                       -- unconditionally, on every call, even a SHRINK
 
-So a caller that holds a pointer across a realloc is correct-by-luck under
-glibc and wrong on every single call under M2libc. That is exactly the
-difference between the gcc-built control, which passes tcc's whole suite, and
-mc-tcc, which corrupts its heap -- from the SAME SOURCE. Nothing else in the
-comparison differs that way.
+So a caller holding a pointer across a realloc is correct-by-luck under glibc
+and wrong on every single call under M2libc. That is the difference between
+the gcc-built control, which passes tcc's whole suite, and mc-tcc, which
+corrupts its heap -- from the SAME SOURCE.
 
 WHY THIS IS A FIX AND NOT A MASK. M2libc rounds every allocation up to a power
 of two at or above 256:
@@ -27,35 +26,63 @@ of two at or above 256:
     while(used < size) used = used << 1;
 
 so a node's block is nearly always larger than what was asked for, and a
-`realloc` that grows from 300 to 400 bytes is asking for room the block
-ALREADY HAS. Returning it is what every production allocator does, it is
-permitted by ISO C, and it is what the node's own `size` field is for. The
-current code allocates 512 bytes, copies 300, and frees 512 -- for nothing.
-
-It also costs: tcc's `tal_realloc_impl` and `cstr_realloc` both grow by
-doubling, so every CString and every section in the compile currently pays a
-full copy per growth, and every copy is a chance for the fault above to fire.
+`realloc` growing from 300 to 400 bytes is asking for room the block ALREADY
+HAS. Returning it is what every production allocator does, it is permitted by
+ISO C, and it is what the node's own `size` field is for. The current code
+allocates 512 bytes, copies 300, and frees 512 -- for nothing. tcc's
+`tal_realloc_impl` and `cstr_realloc` both grow by doubling, so every CString
+and every section in a compile currently pays a full copy per growth.
 
 WHAT IT DOES NOT DO. It does not shrink the block. Nothing here needs the
-memory back and a shrink that reported a smaller size would then have to
-handle a later grow across the old boundary, which is more bookkeeping than
-this allocator has anywhere else. A shrink returns the same pointer with the
-size unchanged, which is exactly what a rounding allocator does anyway.
+memory back, and a shrink that recorded a smaller size would then have to
+handle a later grow across the old boundary -- more bookkeeping than this
+allocator has anywhere else.
 
-READ THE NEXT RUN EITHER WAY, AND THAT IS THE POINT OF LANDING IT:
+--------------------------------------------------------------------------------
+FIRST OUTING, AND WHAT IT ANSWERED.
 
-  * if the corruption GOES AWAY, the fault was a pointer held across a
-    realloc, 0011's hypothesis is confirmed, and the remaining work is to find
-    and fix that caller in tcc rather than to keep the allocator quiet
-  * if the corruption REMAINS, a stale realloc pointer is ruled out -- the
-    class cannot fire any more -- and the node-loss detector's bracket is
-    still there to name what does
+Landed alone against an otherwise identical tree -- micro-c byte-identical at
+`30b8f25f9ddc00b8`, the same microc.c, only mc-tcc changed, 1575057 -> 1575389
+bytes. So everything below is attributable to this patch and nothing else.
 
-Neither outcome is ambiguous, which is more than the current state offers.
+    18_include        UNCHANGED -- still "free: pointer was never returned"
+    33_ternary_op     REGRESSED -- compiled in the two previous runs, now
+                      fails at line 37 with "struct or union expected"
+
+THE FIRST HALF IS THE ANSWER THE PATCH WAS LANDED FOR, and it is a negative
+one: **a pointer held across a realloc is ruled out.** That class cannot fire
+any more -- a growth inside the block's headroom no longer moves anything --
+and the corruption is unchanged. 0011's closing hypothesis is wrong, and the
+node loss is caused by something else.
+
+THE SECOND HALF IS WORTH MORE THAN IT LOOKS. 33_ternary_op:37 is
+
+    int i1 = (i != 0 ? 0 : s)->i;
+
+a conditional whose arms are a null pointer constant and a struct pointer.
+tcctest.c:4082 is the SAME CONSTRUCT and has failed with the SAME MESSAGE in
+every run this spike has recorded, back to before any of this. So the
+corruption is not landing randomly: it damages whatever backs that
+construct's type resolution, and moving the heap moved it onto a second
+witness of the same thing. Two witnesses of one fault is a better position
+than one, and tcctest.c is the gate step 12 is waiting on.
+
+WHAT CHANGED HERE SINCE THAT RUN. The comparison is done at ONE WIDTH.
+`size` is realloc's `unsigned` parameter -- four bytes -- and `have->size` is
+a size_t; comparing them directly is a mixed-width comparison, and this
+compiler has a recorded history of getting exactly those wrong
+(EXPERIMENT-zzzc, -zzza, -zzzw). Backwards, it would hand back a block TOO
+SMALL, and the caller would write past its end into the next node's `next`
+field -- which is precisely the corruption shape 0011 measured. That would
+make this patch a CAUSE rather than a probe. One `size_t want = size;`
+removes the possibility; if 33_ternary_op comes back with it, the mixed-width
+comparison was the regression and the patch stands. If 33 still fails, the
+patch is a perturbation of a fault that is upstream of the allocator either
+way, and the thing to chase is the ternary type path both witnesses share.
 
 --- a/stdlib.c
 +++ b/stdlib.c
-@@ -534,6 +534,37 @@ void* realloc(void* ptr, unsigned size)
+@@ -534,6 +534,44 @@ void* realloc(void* ptr, unsigned size)
  		return NULL;
  	}
  
@@ -65,24 +92,31 @@ Neither outcome is ambiguous, which is more than the current state offers.
 +	 * 256, so the block behind `ptr` is usually much larger than what was
 +	 * asked for and a growth within that headroom needs no move at all.
 +	 *
-+	 * THIS HAS TO HAPPEN BEFORE malloc(), not after. Checking it later
-+	 * would allocate the replacement block first and then leak it on
-+	 * every in-place realloc, which on tcc's doubling growth is most of
-+	 * them.
++	 * BEFORE malloc(), NOT AFTER. Checking later would allocate the
++	 * replacement block first and then leak it on every in-place realloc,
++	 * which on tcc's doubling growth is most of them.
 +	 *
-+	 * Moving unconditionally is what made a caller holding a pointer
-+	 * across a realloc fail on EVERY call under this allocator while the
-+	 * same source is correct under glibc, which grows in place. See the
-+	 * patch preamble.
++	 * `want` IS A size_t AND THAT IS NOT DECORATION. `size` is the
++	 * `unsigned` parameter -- four bytes -- and `have->size` is a size_t.
++	 * Comparing them directly is a mixed-width comparison, and this
++	 * compiler has a documented history of getting exactly those wrong:
++	 * EXPERIMENT-zzzc (a cast to a narrower integer truncates),
++	 * EXPERIMENT-zzza (a global scalar loads at its own width) and
++	 * EXPERIMENT-zzzw (int is four bytes) are all that class. If the
++	 * comparison came out backwards the block would be handed back TOO
++	 * SMALL and the caller would write past its end into the next node's
++	 * `next` field -- which is the exact corruption shape patch 0011
++	 * measured. One assignment removes the risk entirely.
 +	 */
 +	if(NULL != ptr)
 +	{
++		size_t want = size;
 +		struct _malloc_node* have = _allocated_list;
 +		while(NULL != have)
 +		{
 +			if(have->block == ptr)
 +			{
-+				if(have->size >= size) return ptr;
++				if(have->size >= want) return ptr;
 +				break;
 +			}
 +
