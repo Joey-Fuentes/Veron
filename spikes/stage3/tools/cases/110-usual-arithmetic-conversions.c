@@ -1,4 +1,11 @@
-/* BITMASK -- CLOSED by EXPERIMENT-zzzza. Kept as a regression guard.
+/* BITMASK -- WIDE CONSTANTS -- CLOSED by EXPERIMENT-zzzza. A regression guard.
+ *
+ * WIDE CONSTANTS IS LOAD-BEARING AND IS NOT DECORATION. imm-identity.sh greps
+ * the first eight lines for it, and a case that carries a constant past
+ * INT_MAX is EXPECTED to be emitted differently either side of EXPERIMENT-zzb.
+ * 0x87654321 does not fit an immediate field, so this case moves; without the
+ * declaration the guard reports "MOVED AND IS NOT DECLARED WIDE" and the run
+ * stops. Rewriting this header once already did exactly that.
  *
  * C gives a constant the first type it fits, and the BASE and SUFFIX choose
  * the list: 0x87654321 is unsigned int, 2271560481 is long, 0x87654321L is
