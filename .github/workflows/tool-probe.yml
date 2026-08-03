@@ -391,10 +391,16 @@ jobs:
         run: |
           set -eu
           BB=1.36.1
+          # PINNED BY BYTES, like the three build jobs that fetch the same
+          # tarball. A probe that builds a different busybox from the one the
+          # ladder builds is measuring a different box.
+          BB_SHA=b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314
           cd src
           [ -s "busybox-$BB.tar.bz2" ] || \
             curl -fsSL --connect-timeout 20 --retry 2 \
               -O "https://busybox.net/downloads/busybox-$BB.tar.bz2"
+          _got=$(sha256sum "busybox-$BB.tar.bz2" | cut -d' ' -f1)
+          [ "$_got" = "$BB_SHA" ] || { echo "  FAIL: busybox tarball does not match its pin"; exit 1; }
           rm -rf bb && mkdir bb && tar xf "busybox-$BB.tar.bz2" -C bb --strip-components=1
           cd bb
           make defconfig > /dev/null 2>&1

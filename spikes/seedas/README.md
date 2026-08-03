@@ -2,7 +2,7 @@
 
 **Invariants SUSPENDED.** `seed-as.aarch64.s` is a throwaway spike: a hex0-style
 loader written in one shot in ordinary ARM64 assembly and built by the GNU
-assembler. It is **not** the real, hand-encoded, bijective seed. It exists only
+assembler. It is **not** the audited, bijectively-encoded seed. It exists only
 to prove that a program *we* wrote in ARM64 assembly can read input and emit a
 runnable binary on our qemu-user CI setup.
 
@@ -29,8 +29,11 @@ the decoding.)
 
 ## Where this goes next
 
-The real `seed-as` (in `seed/aarch64/`, invariants ON) would be hand-encoded
-byte-by-byte and round-trip-verified, and would emit a full ELF wrapper rather
-than raw bytes. This spike deliberately skips all of that to answer one
+The `seed-as` that `seed/aarch64/` would carry with invariants ON is
+bijectively encoded and round-trip-verified, and emits a full ELF wrapper
+rather than raw bytes. That verification is the property that matters, and
+`stage0-as` and `elf` already have it: committed, re-derived from their own
+source on every push under two independent disassemblers, with the whole
+linked ELF reconstructed and compared byte for byte. This spike deliberately skips all of that to answer one
 question: *can we build an input-consuming, binary-emitting program in ARM64
 assembly on this setup?* If the demo prints `Hello`, the answer is yes.

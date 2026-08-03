@@ -19,8 +19,8 @@ name: stage3-hermetic-arm64
 #   TIER 2, THE DRIVER (moves and compares files; touches no artifact byte):
 #       busybox         <- one static binary. sh, cat, cmp, sha256sum, ...
 #
-# Tier 1 is the number that must go to zero. When spikes/seedas/ becomes the
-# real hand-encoded seed, `as` and `ld` come out of BUDGET_PATH below and the
+# Tier 1 is the number that must go to zero. `as` and `ld` are out of
+# BUDGET_PATH: stage0-as and elf are committed, round-trip-verified binaries, and the
 # box builds from a committed, round-trip-verifiable seed with NOTHING entering
 # it. That is a one-line edit to this file, which is the point of writing the
 # budget as a variable instead of as prose.
@@ -2170,8 +2170,11 @@ jobs:
           echo "  emulator          : none -- native $(uname -m)"
           echo "  network in the box: none -- --unshare-all"
           echo
-          echo "  When spikes/seedas/ becomes the real hand-encoded seed, remove"
-          echo "  \`as ld\` from BUDGET_PATH and the SEAL step will hold the line."
+          echo "  \`as\` and \`ld\` are OUT of BUDGET_PATH: stage0-as and elf are"
+          echo "  committed binaries, re-derived from their own source on every"
+          echo "  push under two independent disassemblers, with the whole ELF"
+          echo "  reconstructed and compared byte for byte. The SEAL step fails"
+          echo "  the run if either reappears in the box."
 
       - uses: actions/upload-artifact@v4
         if: always()

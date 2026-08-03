@@ -727,10 +727,29 @@ jobs:
           # 2026 kernel headers -- TCA_CBQ_MAX and struct tc_cbq_lssopt were
           # removed upstream. A build sysroot has no use for traffic shaping.
           BB=1.36.1
+          # PINNED BY BYTES, NOT JUST BY VERSION STRING.
+          #
+          # Every other upstream in this job is fetched and then checked
+          # against a recorded sha256; this one was fetched and trusted. That
+          # made "pinned source" mean a pinned VERSION -- nothing asserted the
+          # contents, so a compromised or re-rolled tarball at that URL would
+          # have walked straight into the box as the one binary that drives
+          # the whole build.
+          #
+          # busybox 1.36.1, from busybox.net's own SHA256SUMS.
+          BB_SHA=b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314
           mkdir -p dl && cd dl
           [ -s "busybox-$BB.tar.bz2" ] || \
             curl -fsSL --connect-timeout 20 --retry 2 \
               -O "https://busybox.net/downloads/busybox-$BB.tar.bz2"
+          _got=$(sha256sum "busybox-$BB.tar.bz2" | cut -d' ' -f1)
+          if [ "$_got" != "$BB_SHA" ]; then
+            echo "  FAIL: busybox-$BB.tar.bz2 does not match its pin"
+            echo "    expected $BB_SHA"
+            echo "    got      $_got"
+            exit 1
+          fi
+          echo "  busybox-$BB.tar.bz2 matches its pin ($BB_SHA)"
           cd ..
           rm -rf bbsrc && mkdir bbsrc
           tar xf "dl/busybox-$BB.tar.bz2" -C bbsrc --strip-components=1

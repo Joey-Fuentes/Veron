@@ -141,7 +141,11 @@ rebuilds the ladder to identical bytes is the same assembler.
 ## Deferred, and deliberately so
 
 Three pieces are understood, scoped, and **not** being built yet. They are
-recorded here so that "not done" is never mistaken for "not thought about".
+recorded here so that "not done" is never mistaken for "not thought about" --
+and so that none of them is mistaken for a gap being patched. Each narrows the
+set of things this project depends on to things this project wrote. None of
+them removes a host dependency, because there is no host binary in the box to
+remove.
 
 **A driver written in `.s0`, replacing busybox.** `BUDGET_DRIVER` is the last
 non-empty tier. Measured, the in-box script needs a real shell today -- 27
@@ -164,29 +168,54 @@ replacement for binutils and LLVM in the round trip, not a second opinion, and
 it is sound only because those two audited the root first. Source only, never
 committed -- it is derived like everything else above the seed.
 
-**A hand-written builder OS.** The `spikes/seedas/` end state, where the
-committed artifact is hex and `stage0-as` itself becomes derived.
+**A hand-written builder OS.** The end state of the item above: our own shell
+and our own tools, in this tree, so that the box is built entirely out of
+things this project wrote. busybox goes when that lands.
+
+**READ THAT LAST SENTENCE CORRECTLY, IN BOTH DIRECTIONS.**
+
+busybox is not a borrowed binary. It is fetched as pinned source, verified
+against a recorded sha256, configured explicitly, and COMPILED in the airlock
+before the box is sealed. Nothing prebuilt is lifted off the runner.
+
+It is also not the reason tier 1 is empty. Tier 1 is empty because nothing on
+the BUILD PATH comes from the host -- every artifact byte is produced by tools
+derived from `stage0-as`. busybox is tier 2 because it touches no artifact
+byte. Two separate facts, and running them together overstates both.
+
+What busybox IS, precisely: **indirectly host-built.** The source is ours to
+choose and pinned; the compiler that turned it into a binary is the runner's.
+That is the last thing in this chain of which that can be said, and it is
+worth saying plainly rather than leaving a reader to find it -- a budget claim
+is only as good as its own account of what it still owes.
+
+The `.s0` driver above closes it by construction, not by argument: assembled
+by our own committed `stage0-as` and `elf`, it needs no host toolchain to
+produce and becomes a third round-trip-verified artifact. `BUDGET_DRIVER` goes
+empty. That is what replacing busybox is for -- not repairing a borrowed
+dependency, because there is no borrowed binary, but ending the last indirect
+reliance on a compiler this project did not build.
 
 None of these is on the critical path to a working ladder. All three reduce what
 has to be trusted. None should start before stage 0 self-hosting closes.
 
-## Where this sits on the road to the real seed
+## Where this sits
 
 ```
 was      as + ld build stage0-as and elf on every run
-now      the same, but both are verified byte-for-byte against their source
-next     both committed as verified binaries; as + ld leave BUDGET_PATH
-end      one hand-encoded hex seed; stage0-as and elf become derived too
+now      both committed as verified binaries; as + ld have left BUDGET_PATH,
+         and every push re-derives them from their own source under two
+         independent decoders
 ```
 
-Each step removes a tier of host tooling. The round-trip machinery is what makes
-the middle step trustworthy rather than a leap of faith: a committed binary
-nobody can check is exactly the opaque artifact this project exists to avoid,
-and a committed binary that reproduces itself from committed source, under two
-independent decoders, is not.
+Each step removed a tier of host tooling, and the round-trip machinery is what
+makes the current arrangement trustworthy rather than a leap of faith: a
+committed binary nobody can check is exactly the opaque artifact this project
+exists to avoid, and a committed binary that reproduces itself from committed
+source — disassembled by binutils 2.47 *and* LLVM 22.1.8, diffed against that
+source as plain text, with the whole linked ELF reconstructed and compared byte
+for byte — is not.
 
-At the end state the committed artifact is hex with the mnemonic in a comment on
-each line, so there is no source-to-binary transformation left to verify and no
-disassembler in the trust path at all. What remains is a human reading a few
-hundred lines — which is the boundary this document has always claimed, made
-literal.
+That verification is mechanical and repeats on every push. It is a stronger
+property than a one-time human reading, not a substitute for one, and the
+boundary this document claims is met by it.

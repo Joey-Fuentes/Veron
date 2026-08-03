@@ -2313,8 +2313,11 @@ jobs:
           echo "  emulator          : none -- native $(uname -m)"
           echo "  network in the box: none -- --unshare-all"
           echo
-          echo "  When spikes/seedas/ becomes the real hand-encoded seed, remove"
-          echo "  \`as ld\` from BUDGET_PATH and the SEAL step will hold the line."
+          echo "  \`as\` and \`ld\` are OUT of BUDGET_PATH: stage0-as and elf are"
+          echo "  committed binaries, re-derived from their own source on every"
+          echo "  push under two independent disassemblers, with the whole ELF"
+          echo "  reconstructed and compared byte for byte. The SEAL step fails"
+          echo "  the run if either reappears in the box."
 
       - name: 'HAND THE COMPILER FORWARD: mc-tcc and the tree it was built from'
         run: |
@@ -2808,10 +2811,29 @@ jobs:
           # 2026 kernel headers -- TCA_CBQ_MAX and struct tc_cbq_lssopt were
           # removed upstream. A build sysroot has no use for traffic shaping.
           BB=1.36.1
+          # PINNED BY BYTES, NOT JUST BY VERSION STRING.
+          #
+          # Every other upstream in this job is fetched and then checked
+          # against a recorded sha256; this one was fetched and trusted. That
+          # made "pinned source" mean a pinned VERSION -- nothing asserted the
+          # contents, so a compromised or re-rolled tarball at that URL would
+          # have walked straight into the box as the one binary that drives
+          # the whole build.
+          #
+          # busybox 1.36.1, from busybox.net's own SHA256SUMS.
+          BB_SHA=b8cc24c9574d809e7279c3be349795c5d5ceb6fdf19ca709f80cde50e47de314
           mkdir -p dl && cd dl
           [ -s "busybox-$BB.tar.bz2" ] || \
             curl -fsSL --connect-timeout 20 --retry 2 \
               -O "https://busybox.net/downloads/busybox-$BB.tar.bz2"
+          _got=$(sha256sum "busybox-$BB.tar.bz2" | cut -d' ' -f1)
+          if [ "$_got" != "$BB_SHA" ]; then
+            echo "  FAIL: busybox-$BB.tar.bz2 does not match its pin"
+            echo "    expected $BB_SHA"
+            echo "    got      $_got"
+            exit 1
+          fi
+          echo "  busybox-$BB.tar.bz2 matches its pin ($BB_SHA)"
           cd ..
           rm -rf bbsrc && mkdir bbsrc
           tar xf "dl/busybox-$BB.tar.bz2" -C bbsrc --strip-components=1
