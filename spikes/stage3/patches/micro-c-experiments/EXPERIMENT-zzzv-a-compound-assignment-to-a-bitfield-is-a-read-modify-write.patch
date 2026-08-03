@@ -50,6 +50,20 @@ AND IT IS NOT ONLY tcc's ATTRIBUTES. Every `|=`, `&=`, `^=`, `+=`, `-=` on a
 bitfield anywhere was writing to the wrong bits, silently. tcc keeps its
 function attributes in the same shape, and so does mallocng's struct meta.
 
+WHAT THIS DOES NOT DO, measured afterwards and recorded because the first
+account of it was wrong: it does not make musl use mallocng. With markers
+compiled into both allocators, a statically linked malloc/free prints
+
+    A LITE B C
+
+so `malloc` resolves to __simple_malloc in lite_malloc.c and mallocng's
+malloc.o is never extracted at all -- extraction is driven by undefined
+symbols, and `malloc` is defined weakly in lite_malloc.o before mallocng is
+considered. What this patch buys is CONSISTENCY: malloc and free now come from
+the same allocator, which is why rung 3 and GNU make's link went green.
+mallocng itself has still never run here, and the first thing to reach it --
+tcc's -run, which resolves symbols differently -- crashes immediately.
+
 AND EVERY BITFIELD EMIT NOW GOES THROUGH THE ARCHITECTURE HELPERS. Both the
 plain and the compound store emitted `and_x0,x1,x0`, `orr_x0,x1,x0`,
 `lsl_x0,x1,x0` and `lsr_x0,x1,x0` LITERALLY -- fourteen sites -- so a bitfield

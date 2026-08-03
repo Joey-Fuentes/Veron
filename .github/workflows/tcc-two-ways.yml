@@ -160,6 +160,76 @@ jobs:
       # once the same steps have succeeded on a compiler nobody doubts.
       # Nothing enforced that: every control step was continue-on-error, so a
       # broken yardstick produced a green run and unreadable numbers below it.
+      - name: 'SUBJECT: the SAME full test suite, every target attempted'
+        continue-on-error: true
+        timeout-minutes: 30
+        run: |
+          set -u
+          # THE POINT OF THIS JOB IS TWO WAYS, AND ONLY ONE WAY WAS BEING TESTED.
+          #
+          # The control runs `make test` -- thirteen suites. The subject ran a
+          # handful of hand-written probes and then stopped at the first
+          # segfault, so the same segfault was reported round after round while
+          # the other twelve suites were never attempted at all.
+          #
+          # This runs the control's own targets against mc-tcc. Every one is
+          # attempted, every one is timed out on its own, and NOTHING here
+          # aborts the step: a target that fails prints why and the next one
+          # starts. Pass or fail is not the point yet -- coverage is.
+          #
+          # HOW mc-tcc IS PRESENTED TO tcc's OWN Makefile: a copy of the
+          # control's built tree with the tcc binary replaced. The support
+          # files in that tree -- libtcc1.a, runmain.o, the include directory --
+          # are the CONTROL's, and that is a borrow, declared here as it is at
+          # the compile probe above. It isolates the compiler, which is the
+          # comparison this job exists to make.
+          rm -rf mc-tree
+          cp -r gcc-tcc mc-tree
+          cp mc-tcc-bin mc-tree/tcc
+          chmod +x mc-tree/tcc
+          printf '  subject tcc: %s bytes  sha %s\n' \
+            "$(stat -c%s mc-tree/tcc)" "$(sha256sum mc-tree/tcc | cut -c1-16)"
+
+          # test.ref is gcc's expected output and is a PREREQUISITE, not a test.
+          make -C mc-tree/tests test.ref >/dev/null 2>&1 || true
+
+          : > /tmp/suite.tsv
+          for t in hello-exe hello-run libtest test1 test2 test3 \
+                   abitest asm-c-connect-test vla_test-run tests2-dir \
+                   pp-dir memtest dlltest cross-test btest test1b tccb; do
+            echo ""
+            echo "  ============ $t ============"
+            set +e
+            timeout 300 make -C mc-tree/tests "$t" > /tmp/t.log 2>&1
+            rc=$?
+            set -e
+            # The tail is what tcc's own harness prints; 25 lines is enough to
+            # see "Auto Test OK" or the first real error, and short enough that
+            # seventeen of them stay readable.
+            tail -25 /tmp/t.log | sed 's/^/    /'
+            if [ "$rc" = 0 ]; then
+              verdict=ok
+            elif [ "$rc" = 124 ]; then
+              verdict="TIMED OUT after 300s"
+            elif [ "$rc" -gt 128 ]; then
+              verdict="SIGNAL $((rc - 128))"
+            else
+              verdict="rc=$rc"
+            fi
+            echo "    -> $t: $verdict"
+            printf '%s\t%s\n' "$t" "$verdict" >> /tmp/suite.tsv
+          done
+
+          echo ""
+          echo "  === EVERY TARGET, ONE LINE EACH ==="
+          while IFS="$(printf '\t')" read -r t v; do
+            printf '    %-22s %s\n' "$t" "$v"
+          done < /tmp/suite.tsv
+          echo ""
+          printf '    %s of %s targets ok\n' \
+            "$(grep -c 'ok$' /tmp/suite.tsv || echo 0)" "$(wc -l < /tmp/suite.tsv)"
+          echo "    (this step never fails the job -- it is a measurement, not a gate)"
+
       - name: 'CONTROL: self-compilation, sizes and hashes'
         run: |
           set -eu

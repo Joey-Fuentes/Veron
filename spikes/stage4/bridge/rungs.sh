@@ -285,6 +285,28 @@ if [ "$R0" != FAIL ]; then
   #
   # dsohandle.c IS worth having: adding it took tests2 from 105 to 107.
   objs=""
+  # SOFT FLOAT GOES IN TOO, and it is not one of tcc's own files.
+  #
+  # tcc-microc patch 0004 makes tcc's constant folder do floating-point
+  # arithmetic in integers, because micro-c has none, which puts calls to
+  # sf_add and friends into tcc.c. mc-tcc satisfies them from the bootstrap
+  # runtime and gen2/gen3 link runtime.o, so the ordinary build and the
+  # self-compilation fixpoint were both fine. `tcc -run tcc.c` links neither:
+  #     tcc: error: undefined symbol 'sf_add'
+  # and that is tcc's own test1, test2 and test3, all three of which are
+  # `tcc -run tcc.c ... -run tcctest.c`.
+  #
+  # libtcc1 is the right home -- tcc links it into every program it builds,
+  # -run included, and soft float is what libgcc and libtcc1 exist to hold.
+  if [ -f /src/stage3/micro-c-libc/impl/libtcc1-softfloat.c ]; then
+    if $CC -c -o /work/lt-softfloat.o \
+           /src/stage3/micro-c-libc/impl/libtcc1-softfloat.c 2>>/work/libtcc1.err
+    then
+      objs="$objs /work/lt-softfloat.o"
+    else
+      say "    soft float did NOT build -- tcc -run tcc.c will not link"
+    fi
+  fi
   for f in lib-arm64.c stdatomic.c atomic.c builtin.c va_list.c alloca.S \
            dsohandle.c \
            armeabi.c alloca-arm.S armflush.c; do
@@ -977,9 +999,26 @@ mkdir -p "$PFX/bin"
 # musl selects its allocator with `#define malloc __libc_malloc_impl`
 # (mallocng/glue.h:23), so mallocng defines that symbol strongly while
 # lite_malloc.c carries a weak_alias for it. mc-tcc emitted the weak alias as
-# GLOBAL, so it satisfied the reference, mallocng was never pulled from the
-# archive, and a program got malloc from a bump allocator and free from
-# mallocng -- rung 3's SIGSEGV. Naming the six objects worked around it.
+# GLOBAL, so malloc and free could come from different allocators and rung 3
+# segfaulted. Naming the six objects worked around it.
+#
+# AND A CORRECTION, BECAUSE THE FIRST EXPLANATION HERE WAS WRONG. It said the
+# fix made mallocng get used. It does not. Measured afterwards, with markers
+# compiled into both allocators:
+#
+#     static malloc/free   ->  A LITE B C
+#
+# `malloc` still resolves to __simple_malloc in lite_malloc.c -- a bump
+# allocator -- and mallocng's malloc.o is never extracted from the archive at
+# all. Extraction is driven by undefined symbols, `malloc` is defined (weakly)
+# in lite_malloc.o, and that satisfies it before mallocng is ever considered.
+#
+# What the weak/strong fix actually bought is CONSISTENCY: malloc and free now
+# come from the same place. That is why rung 3 and the GNU make link started
+# passing, and the measurements below are unaffected. But mallocng has never
+# run in this project, and the first thing to reach it -- tcc's -run, which
+# resolves symbols differently -- crashes immediately. Recorded here so the
+# next person does not re-derive it from a wrong premise.
 #
 # THE CAUSE IS FIXED, in micro-c, by EXPERIMENT-zzzv: a compound assignment to
 # a bitfield is a read-modify-write, and `sa->weak |= sa1->weak` had been
