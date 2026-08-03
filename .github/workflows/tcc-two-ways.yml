@@ -1192,6 +1192,66 @@ jobs:
                                || echo "      subject cannot link dynamically" )
           echo ""
 
+          # DOES THE SUBJECT READ A SHARED OBJECT AT ALL? BISECTED.
+          #
+          # Defect 2 is recorded as "glibc's shared objects are rejected ...
+          # unrecognized file type". Locally, against mc-tcc under
+          # qemu-aarch64-static, that symptom does not reproduce for ANY
+          # ET_DYN that can be constructed without a glibc:
+          #
+          #   an x86-64 libc.so.6      -> "bad architecture", so the DYN type
+          #                               was recognised and tcc_load_dll ran
+          #   an aarch64 .so BUILT BY  -> links, only `_start not defined`
+          #     mc-tcc ITSELF
+          #   a linker script -> that  -> same, so the script path works
+          #     .so
+          #   GROUP with an archive
+          #     and AS_NEEDED          -> same, so glibc's exact script shape
+          #                               is not the problem
+          #
+          # and case 123 shows micro-c compiles tcc_object_type correctly on
+          # aarch64. So the type detection, the linker-script parser and the
+          # DYL load path are all sound for objects we can make.
+          #
+          # WHAT COULD NOT BE TESTED LOCALLY is the only thing left: the real
+          # glibc file, on a machine that has one. This runner does. The probe
+          # below runs the SAME link twice -- once against a shared object
+          # mc-tcc builds here, once against the system glibc -- so the next
+          # log says which of those two differ rather than restating the
+          # symptom.
+          #
+          # If the self-built arm links and the glibc arm does not, the fault
+          # is specific to that file or to the crt/search path around it, and
+          # NOT to the DYN path. If both fail, the local result and this one
+          # disagree and the difference is the environment, which is worth
+          # knowing before another round is spent on the compiler.
+          echo "  --- can the subject read a shared object it built itself? ---"
+          ( cd mc-tree
+            printf 'int shared_fn(int x){ return x + 1; }\n' > /tmp/sl.c
+            printf 'int shared_fn(int);\nint main(void){ return shared_fn(41); }\n' > /tmp/su.c
+            rm -f /tmp/selftest.so /tmp/su.o
+            ./tcc-real -B. -nostdlib -shared -o /tmp/selftest.so /tmp/sl.c 2>&1 \
+              | head -3 | sed 's/^/      /'
+            if [ -s /tmp/selftest.so ]; then
+              printf '      built a shared object: %s bytes, e_type=%s\n' \
+                "$(wc -c < /tmp/selftest.so)" \
+                "$(od -A n -t u2 -j 16 -N 2 /tmp/selftest.so | tr -d ' ')"
+              ./tcc-real -B. -nostdlib -c -o /tmp/su.o /tmp/su.c 2>/dev/null
+              echo "      linking against it:"
+              ./tcc-real -B. -nostdlib -o /tmp/su.out /tmp/su.o /tmp/selftest.so 2>&1 \
+                | head -3 | sed 's/^/        /'
+              echo "      (\`_start not defined\` here is EXPECTED and is a PASS --"
+              echo "       it means the shared object was read and linked.)"
+            else
+              echo "      the subject cannot BUILD a shared object -- that is"
+              echo "      upstream of anything about reading glibc's"
+            fi )
+          echo "  --- and the same link against the system glibc ---"
+          ( cd mc-tree
+            ./tcc-real -B. -nostdlib -o /tmp/sg.out /tmp/su.o \
+              /lib/aarch64-linux-gnu/libc.so.6 2>&1 | head -4 | sed 's/^/      /' )
+          echo ""
+
           # THE tcc_object_type PROBE IS GONE, AND IT ANSWERED FIRST.
           #
           # It compiled tcc_object_type's body with both compilers and ran them

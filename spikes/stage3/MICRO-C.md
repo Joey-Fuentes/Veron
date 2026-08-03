@@ -1579,47 +1579,55 @@ so the `libtcc1.a` built by the subject is assembled from `lib-arm64.c`,
 `stdatomic.c`, `atomic.S`, `builtin.c`, `alloca.S` and `dsohandle.c` only. It
 links and `-run` works without it, so nothing has needed it yet.
 
-**2. glibc's shared objects are rejected.** `libc.so.6` and
-`ld-linux-aarch64.so.1` both give `unrecognized file type`, from
-`tcc_object_type` in `tccelf.c`. This gates every dynamic link: `hello-exe`,
+**2. glibc's shared objects are rejected -- and the symptom does not reproduce
+against anything but glibc.** Recorded as `unrecognized file type` from
+`tcc_object_type` in `tccelf.c`, gating every dynamic link: `hello-exe`,
 `tests2-dir`, `dlltest`, and the `dynamic:` line at rung 3.
 
-**SPLIT, AND THE ANSWER IS NOT THE COMPILER.**
+**FIRST NARROWING: it is not the compiler's codegen for that function.**
 `cases/123-elf-header-type-discrimination.c` compiles `tcc_object_type`'s body
-with micro-c itself -- freestanding, header built in memory, through M1 and
-hex2 with no libc -- and **passes all seven probes natively on aarch64**, and
-on amd64. `sizeof *h` on a parameter pointer, `ELFMAG`'s octal escape, the
-two-byte member read at both ET_REL and ET_DYN, the ET_REL arm, the ET_DYN
-arm, the fallthrough: every one correct.
+with micro-c -- freestanding, header built in memory, through M1 and hex2 --
+and passes all seven probes natively on aarch64 as well as on amd64. `sizeof
+*h` on a parameter pointer, `ELFMAG`'s octal escape, the two-byte member read
+at both `ET_REL` and `ET_DYN`, both arms, the fallthrough: every one correct.
 
-So micro-c compiles this function correctly and **the fault is past its
-return** -- the caller, the linker-script path, or `tcc_load_dll`. That is
-where the next round looks, and it is a different part of the tree from where
-five rounds went last time.
-
-The measured file facts, which stand:
+**SECOND NARROWING: the whole dynamic path works on every ET_DYN that can be
+built without a glibc.** Measured against mc-tcc under `qemu-aarch64-static`:
 
 ```
-/usr/lib/aarch64-linux-gnu/libc.so   2f 2a 20 47   ASCII text (a linker script)
-/lib/aarch64-linux-gnu/libc.so.6     7f 45 4c 46   ELF shared object, e_type=3
-/lib/ld-linux-aarch64.so.1           7f 45 4c 46   ELF shared object, e_type=3
+an x86-64 libc.so.6 fed to mc-tcc      "bad architecture"
+                                       -- so DYN WAS recognised and
+                                          tcc_load_dll ran
+an aarch64 .so built by mc-tcc itself  links; only `_start not defined`
+a linker script pointing at that .so   same -- the script path works
+GROUP with an archive and AS_NEEDED,   same -- glibc's exact script shape
+  glibc's exact structure                 is not the problem
 ```
 
-`libc.so` being a linker script is normal and the subject gets past it -- the
-name in the error is the file the SCRIPT POINTS AT. **And the control links
-dynamically in the same tree**, which was the open question: measured yes, so
-the environment is not at fault and the subject's `M50 M51 M52 M53 T1` marker
-trail before failure is the thing to read next.
+So type detection, the linker-script parser, `GROUP`, `AS_NEEDED` and
+`tcc_load_dll` are all sound for objects we can make. mc-tcc both **builds** a
+valid aarch64 `ET_DYN` (`e_type=3`, `e_machine=183`) and **links against one**.
 
-**A probe that could not work, removed, and worth recording.** A second probe
-compiled the same transcription with mc-tcc and with the control and ran both
-against the real files. It used `-static`, which confused the compiler's own
-linkage with the linkage of what it emits. Neither tcc can `-static`-link a
-glibc program in this tree -- `Unknown relocation type for got: 541` and `542`,
-`R_AARCH64_ADR_GOT_PAGE` and `R_AARCH64_LD64_GOT_LO12_NC` -- and without
-`-static` the subject needs the dynamic path, which is the defect. Circular one
-way, blocked the other. It failed loudly on its first run rather than quietly
-over several, which is the only good thing about it.
+**WHAT IS LEFT, AND WHY IT NEEDS THE RUNNER.** The only untested thing is the
+real glibc file on a machine that has one, plus the crt search path -- `-B`
+sets the lib path, not the crt prefix, so a full non-`-nostdlib` link could not
+be exercised locally either. `tcc-two-ways` now runs the SAME link twice, once
+against a shared object mc-tcc builds on the spot and once against the system
+`libc.so.6`, so the next log says which of the two differs instead of
+restating the symptom.
+
+Read the outcome this way:
+
+- self-built links, glibc does not -> the fault is that file or the search
+  path around it, and NOT the DYN path
+- both fail -> the local result and CI disagree, and the difference is the
+  environment; worth knowing before another round goes into the compiler
+
+**A caution about the recorded evidence.** The `unrecognized file type` message
+is quoted from an older run. The most recent `tcc-two-ways` log shows the
+dynamic hello-world failing with a marker trail (`M50 M51 M52 M53 T1`) rather
+than that message, so part of this entry may already be stale. Marker trails
+bracket; they do not name -- this file has paid for reading them otherwise.
 
 **3. `tcc-two-ways` step 21.** A null dereference -- `ldrsw x0, [x0]` with
 `x0 = 0`, at `pc=0x4d4e34` -- only against real glibc. **Plausibly the same
