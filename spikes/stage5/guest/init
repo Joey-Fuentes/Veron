@@ -1,0 +1,77 @@
+#!/bin/busybox sh
+# Stage 5's init. PID 1 in the guest.
+#
+# WHY STAGE 5 HAS ITS OWN. Stage 4's initramfs (spikes/stage4/bridge/
+# rungs-sysroot.sh L1180) mounts the sysroot over 9p, runs ITS OWN eight
+# t_* tests and a gcc-in-guest check, and exits. It knows nothing about
+# stage 5, and teaching it would invert the dependency -- stage 4's job ends
+# at "a booting system". So the stage-5 tests ran only under bwrap, and the
+# QEMU output was entirely stage 4's.
+#
+# This also lets the guest boot the EXT4 IMAGE AS A DISK rather than only
+# over a 9p share. That matters: the disk is the artifact a user would flash,
+# and 9p is a development convenience. If virtio-blk or ext4 are missing from
+# the kernel, this falls back to 9p and says so rather than failing.
+#
+# busybox is STATICALLY linked in the sysroot, so this initramfs is one
+# binary and this script -- no loader, no libc, nothing to keep in sync.
+
+/bin/busybox --install -s /bin 2>/dev/null
+
+mount -t proc     none /proc  2>/dev/null
+mount -t sysfs    none /sys   2>/dev/null
+mount -t devtmpfs none /dev   2>/dev/null
+
+echo "VERON-STAGE5-INIT"
+echo "  kernel: $(uname -sr)"
+
+ROOT=/mnt/root
+mkdir -p "$ROOT"
+VIA=none
+
+# ---- 1. the real image, as a disk -------------------------------------
+# The strongest available claim: this is the artifact, mounted the way a
+# machine would mount it.
+for dev in /dev/vda /dev/sda /dev/vdb; do
+    [ -b "$dev" ] || continue
+    if mount -t ext4 -o ro "$dev" "$ROOT" 2>/dev/null; then
+        VIA="disk($dev)"
+        echo "VERON-IMAGE-MOUNT-OK  $dev mounted ext4 read-only"
+        break
+    fi
+done
+
+# ---- 2. fall back to the 9p share --------------------------------------
+if [ "$VIA" = none ]; then
+    echo "VERON-IMAGE-MOUNT-SKIP  no ext4 block device -- virtio-blk or ext4"
+    echo "  may not be in this kernel. Falling back to 9p, which proves the"
+    echo "  TREE rather than the IMAGE."
+    # msize matters: the default 9p transfer unit is small and the tools read
+    # large files. Stage 4 learned this the same way.
+    if mount -t 9p -o trans=virtio,version=9p2000.L,ro,msize=262144 \
+             veronsysroot "$ROOT" 2>/dev/null; then
+        VIA=9p
+        echo "  9p sysroot mounted read-only"
+    fi
+fi
+
+if [ "$VIA" = none ]; then
+    echo "VERON-STAGE5-GUEST-FAIL  no root to test: neither disk nor 9p"
+    poweroff -f
+fi
+
+# ---- 3. run the stage 5 tests in it ------------------------------------
+mkdir -p "$ROOT/proc" "$ROOT/tmp" 2>/dev/null
+mount -t proc  none "$ROOT/proc" 2>/dev/null
+mount -t tmpfs none "$ROOT/tmp"  2>/dev/null
+
+if [ -x "$ROOT/usr/bin/veron-stage5-test" ]; then
+    echo "=== VERON-STAGE5-GUEST: the packages, under the kernel this chain built ==="
+    echo "  root via: $VIA"
+    chroot "$ROOT" /usr/bin/veron-stage5-test
+else
+    echo "VERON-STAGE5-GUEST-FAIL  no /usr/bin/veron-stage5-test in the root"
+fi
+
+echo "VERON-STAGE5-GUEST-DONE"
+poweroff -f

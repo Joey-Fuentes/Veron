@@ -180,6 +180,10 @@ jobs:
         run: |
           set -eu
           cd spikes/stage5/out
+          # e2fsprogs honours SOURCE_DATE_EPOCH for superblock and inode
+          # timestamps. It was exported into the BOX but never here, and this
+          # step runs outside it -- so every mke2fs stamped wall-clock time.
+          export SOURCE_DATE_EPOCH=0
           SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
           build_img() {
             rm -f "$1"
@@ -231,28 +235,49 @@ jobs:
           run-id: ${{ steps.s4.outputs.run_id }}
           github-token: ${{ github.token }}
 
-      - name: 'Boot the stage-5 system'
+      # STAGE 5 OWNS ITS BOOT. Stage 4's initramfs runs stage 4's tests and
+      # knows nothing about stage 5 -- so the QEMU output was entirely stage
+      # 4's while the stage-5 tests ran only under bwrap. Teaching stage 4's
+      # init about stage 5 would invert the dependency; stage 4's job ends at
+      # "a booting system". This is also the first small piece of the init
+      # work group 2 needs for a login prompt.
+      - name: 'Build stage 5 initramfs'
+        if: '!inputs.skip_boot'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 guest/mkinitramfs.py sysroot out/initramfs.cpio.gz
+
+      - name: 'Boot the stage-5 system and run its own tests'
         if: '!inputs.skip_boot'
         run: |
           set -eu
           [ -s boot/Image ] || { echo "VERON-BOOT-SKIP  no kernel artifact"; exit 0; }
           set +e
+          # The DISK is offered first: init prefers /dev/vda so the test runs
+          # against the ext4 image a user would flash, not a 9p share. 9p is
+          # still offered as the fallback if virtio-blk or ext4 are absent
+          # from this kernel.
           timeout 600 qemu-system-aarch64 \
             -M virt -cpu cortex-a57 -smp 2 -m 2048 \
             -nographic -no-reboot -nic none \
+            -drive file=spikes/stage5/out/rootfs.img,format=raw,if=virtio \
             -fsdev local,id=vs,path="$PWD/spikes/stage5/sysroot",security_model=none,readonly=on \
             -device virtio-9p-pci,fsdev=vs,mount_tag=veronsysroot \
-            -kernel boot/Image -initrd boot/initramfs.cpio.gz \
+            -kernel boot/Image -initrd spikes/stage5/out/initramfs.cpio.gz \
             -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7" \
             > boot.log 2>&1
           echo "  qemu rc=$?"
           set -e
-          if grep -q VERON-BOOT-OK boot.log; then
-            sed -n '/VERON-BOOT-OK/,$p' boot.log | sed 's/^/    /'
-            echo "VERON-STAGE5-BOOT-OK"
+          if grep -q VERON-STAGE5-INIT boot.log; then
+            sed -n '/VERON-STAGE5-INIT/,$p' boot.log | sed 's/^/    /'
           else
-            tail -30 boot.log | sed 's/^/    /'; exit 1
+            tail -40 boot.log | sed 's/^/    /'
+            echo "  the stage-5 init never reached userspace"; exit 1
           fi
+          grep -q "VERON-STAGE5-OK" boot.log \
+            && echo "VERON-STAGE5-BOOT-OK  the packages ran under the kernel" \
+            || { echo "VERON-STAGE5-BOOT-FAIL  init ran, tests did not pass"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         if: always()

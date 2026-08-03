@@ -5,7 +5,33 @@
 # after someone reports a diff is worth much less than the same list published
 # before.
 
-# Empty at n=2, and expected to gain entries the first time an image is built
-# twice. The image CONTAINER -- not the packages -- is where divergence will
-# show up: filesystem UUID, ext4 directory hash seed, inode allocation order,
-# GPT disk and partition GUIDs, free-space contents.
+# ---------------------------------------------------------------------------
+# RESOLVED -- kept as a record of what the check caught and what fixed it.
+# ---------------------------------------------------------------------------
+
+[[resolved]]
+what  = "ext4 image: superblock and inode timestamps"
+found = "VERON-IMAGE-REPRO-DIFF, differing bytes at offsets 1024-2048 and in the inode table, values incrementing between the two builds"
+cause = """
+SOURCE_DATE_EPOCH was exported into the build box but the image step runs \
+OUTSIDE it, so mke2fs stamped s_mkfs_time, s_mtime and the inode ctimes with \
+wall-clock time. The determinism knobs that WERE set -- fixed UUID, fixed \
+directory hash seed -- do not cover timestamps."""
+fix   = "export SOURCE_DATE_EPOCH=0 in the image step; e2fsprogs honours it"
+
+[[resolved]]
+what  = "initramfs: gzip FNAME field"
+found = "two archives with byte-identical cpio content produced different .gz bytes"
+cause = """
+Python's GzipFile stores fileobj.name in the header unless filename is given, \
+so writing to ir1.cpio.gz and ir2.cpio.gz embedded different names. This is \
+the field `gzip -n` suppresses, and the comment claimed -n behaviour while \
+the code did not implement it."""
+fix   = "GzipFile(filename=\"\", mtime=0)"
+
+# ---------------------------------------------------------------------------
+# OPEN -- differences accepted, with a reason.
+# ---------------------------------------------------------------------------
+
+# None yet. An entry here means "this differs and we know why and we accept
+# it", which is a much weaker claim than the two above, and should stay rare.
