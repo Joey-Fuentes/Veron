@@ -25,17 +25,12 @@ on:
         required: false
         default: 'sysroot-mc-tcc-2.44-7.1.5-v2-'
       trim:
-        description: 'Also run the trim (on the restored copy only)'
-        type: boolean
-        required: false
-        default: false
-      trim_cross:
-        description: 'Trim: remove the cross triplet'
+        description: 'Run the trim (on the restored copy only)'
         type: boolean
         required: false
         default: true
-      trim_strip:
-        description: 'Trim: strip debug info'
+      trim_archives:
+        description: 'Trim: also strip static .a archives'
         type: boolean
         required: false
         default: true
@@ -112,9 +107,10 @@ jobs:
         if: inputs.trim
         run: |
           set -eu
+          # Every cut on by default; each has its own switch in the script
+          # so a failure can be isolated to one of them.
           VERON_TRIM=1 \
-          VERON_TRIM_CROSS=${{ inputs.trim_cross && '1' || '0' }} \
-          VERON_TRIM_STRIP=${{ inputs.trim_strip && '1' || '0' }} \
+          TRIM_STRIP_ARCHIVES=${{ inputs.trim_archives && '1' || '0' }} \
           TRIM_LOG=report/trim.txt \
             sh spikes/stage4/bridge/sysroot-trim.sh lfs
 
@@ -148,8 +144,16 @@ jobs:
           sed -n '/ELF ANATOMY/,/BYTE-IDENTICAL/p' \
             report/anatomy-tools.txt 2>/dev/null || true
           if [ -s report/trim.txt ]; then
-            echo "==================== TRIM =================================="
-            tail -20 report/trim.txt
+            echo "==================== TRIM: PER-CUT ========================="
+            grep -E '^\s+(---|-> )' report/trim.txt || true
+            echo "==================== TRIM: TOTAL ==========================="
+            tail -8 report/trim.txt
+            echo "==================== AFTER: TOP-LEVEL ======================"
+            sed -n '/BY TOP-LEVEL DIRECTORY/,/BY SECOND LEVEL/p' \
+              report/inventory-after.txt 2>/dev/null || true
+            echo "==================== AFTER: LARGEST ========================"
+            sed -n '/LARGEST FILES/,/TRIPLET/p' \
+              report/inventory-after.txt 2>/dev/null | head -20 || true
           fi
 
       - uses: actions/upload-artifact@v4
