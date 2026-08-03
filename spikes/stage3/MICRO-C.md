@@ -1506,13 +1506,78 @@ conflated before, and they do not cost the same to fix.
 
 ### Compiler defects -- eight open
 
-**1. `-run` crashes on `free`.** `malloc`, `calloc`, `realloc` and returning
-from `main` all work; anything that frees faults, including stdio's exit-time
-buffer release. **There is no working explanation.** The obvious one -- malloc
-and free coming from different allocators -- is contradicted by the addresses,
-which resolve identically under `-run` and static linking. Recorded as unknown
-rather than guessed at, because the last three explanations offered here for
-this family were wrong.
+**1. `-run` cannot call anything outside the program. EXPLAINED** -- and the
+description this entry carried for several rounds was wrong in a way that
+mattered: it is not about `free`, and `malloc` does not work either.
+
+Two separate facts, measured locally against mc-tcc under `qemu-aarch64-static`:
+
+**Only four symbols can resolve at all.** micro-c-libc has no `dlfcn.h`, so
+`local-tcc.sh` and `tcc-two-ways` both compile tcc with `-D
+CONFIG_TCC_STATIC=1`. That selects tcc's own stub resolver in `tccrun.c`, whose
+`dlopen` returns NULL and whose table is, in full:
+
+```
+static TCCSyms tcc_syms[] = {
+    TCCSYM(printf) TCCSYM(fprintf) TCCSYM(fopen) TCCSYM(fclose)
+    { NULL, NULL },
+};
+```
+
+Upstream's own comment above it is "add the symbol you want here if no dynamic
+linking is done". `malloc`, `calloc`, `realloc` and `free` are not on it, and
+`relocate_syms` says so plainly once the harness gives `-lc` something to
+resolve against:
+
+```
+mc-tcc -B. -L. -run t.c      tcc: error: undefined symbol 'malloc'
+                             tcc: error: undefined symbol 'free'
+```
+
+The second dlsym loop over `s1->loaded_dlls` cannot help, because `dlopen` is
+the dummy -- and defect 2 would stop a real one anyway.
+
+**The four that DO resolve cannot be called.** They point at micro-c-compiled
+functions, and `-run` code is TCC-generated, which follows AAPCS64. micro-c
+does not:
+
+```
+caller   str_x0,[x18,-8]!     arguments PUSHED, x18 is micro-c's stack pointer
+         mov_x17,x16          x17 is the new base pointer
+callee   sub_x0,x17,8         parameter 1 read from MEMORY at [x17-8]
+         sub_x0,x17,16        parameter 2 at [x17-16]
+```
+
+AAPCS64 passes arguments in x0-x7, uses the real `sp`, and reserves x18 as the
+platform register. So a JIT'd call into any of the four reads its arguments
+from wherever x17 happens to point. Both `printf` (varargs) and `fopen` (two
+arguments, not varargs) segfault, which rules varargs out as the cause.
+
+**What does work, and it is the control that makes the above a diagnosis
+rather than a guess:** a `-run` program that calls nothing outside itself. A
+freestanding program with its own allocator, `-nostdlib -run`, returns the
+correct value. The JIT, the relocations, the entry into TCC-generated code and
+the return from `main` are all sound. The boundary is the only broken thing.
+
+**So the fix is a fork, not a patch.** Either
+
+- give `-run` a real dynamic libc, which means closing defect 2 first and
+  giving micro-c-libc a `dlfcn.h` -- after which `CONFIG_TCC_STATIC` comes
+  back out and none of this applies; or
+- keep the static resolver, extend `tcc_syms`, and put an AAPCS64 trampoline
+  in front of every entry: save state, move x0-x7 into micro-c's argument
+  area, set x17, call, restore. `impl/setjmp-tcc-aarch64.c` is the precedent
+  for writing exactly that -- tcc's own assembler syntax, AAPCS64 registers,
+  compiled by mc-tcc rather than micro-c -- and its header already records
+  this same convention split.
+
+The second is self-contained and the first makes it unnecessary, which is why
+it is worth deciding rather than starting.
+
+**A smaller finding alongside:** `lib/libtcc1.c` will not compile under mc-tcc,
+so the `libtcc1.a` built by the subject is assembled from `lib-arm64.c`,
+`stdatomic.c`, `atomic.S`, `builtin.c`, `alloca.S` and `dsohandle.c` only. It
+links and `-run` works without it, so nothing has needed it yet.
 
 **2. glibc's shared objects are rejected.** `libc.so.6` and
 `ld-linux-aarch64.so.1` both give `unrecognized file type`, from
