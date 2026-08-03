@@ -1674,6 +1674,31 @@ base and suffix choose which of C89's four candidate lists it fits into), the
 CONVERSION that type forces on the other operand, and the RESULT being modulo
 the chosen type rather than modulo the register.
 
+**IT SHIPPED BROKEN ONCE, AND THE SWEEP DID NOT CATCH IT.** The first version
+narrowed a result to whatever `promote_type` returned, without the four-byte
+guard its sibling function has. The integer promotions run first, so there is
+no `unsigned char` arithmetic in C -- both operands become int and so does the
+result -- and `promote_type` picks BETWEEN the operands rather than promoting
+past both:
+
+```
+unsigned char a = 200, b = 100;   a + b    C says 300, micro-c said 44
+```
+
+mc-tcc then segfaulted assembling musl's aarch64 `memset.S` and `memcpy.S`,
+because tcc's ARM64 assembler builds instruction words out of narrow unsigned
+fields. `libc.a` came out with no `memset` and no `memcpy`, every hosted link
+failed on `undefined symbol`, and the stage-4 ladder stopped at rung 3 having
+previously reached rung 6.
+
+**Two holes in the sweep let it through, and both are closed.** Every point
+paired a variable with a LITERAL, and a literal is never narrower than int, so
+the narrow-pair case was outside the space entirely. And each point was reduced
+to `(x op lit) ? 1 : 0` -- a PREDICATE, so 300 and 44 both read as true. The
+sweep now folds the actual value to five bits and has a second phase over pairs
+of VARIABLES; against the compiler that shipped, it reports
+`(unsigned char)1 + (unsigned char)-1` on its first run.
+
 **The case is not the measurement, and this is the clearest example in the file
 of why.** Case 110's four probes were written from the bug. With them green,
 `tools/uac-sweep.sh` -- which generates the space rather than sampling it --
@@ -1735,6 +1760,25 @@ identifier called with parentheses as a function returning int; that is now
 implemented, guarded on a following `(` so a bare unknown name is still a
 compile error. The corpus goes 419 -> 420 of 426, and the six that remain are
 the documented stale rows.
+
+**10. The integer promotions, for two narrow operands. CLOSED**
+(`EXPERIMENT-zzzza`). C89 3.2.1.1 converts every operand of rank below `int`
+to `int` first, because every char and short value fits one -- so a mixed-sign
+pair of narrow types has no unsigned type left to pick:
+
+```
+short s = -1; unsigned short t = 0;     s < t  is TRUE in C
+```
+
+`promote_type` returned `unsigned short`, the comparison went unsigned, and -1
+became 65535. Every mixed-sign narrow pair was wrong the same way.
+
+**Older than all of the conversion work** -- it reproduces identically on the
+70-patch compiler -- and invisible until `uac-sweep.sh` grew a second phase
+that pairs two VARIABLES. The first phase pairs a variable with a literal, and
+a literal is never narrower than `int`, so `promote_type` always had a
+four-byte operand to pick and this was outside the space. 31 of the sweep's
+396 programs disagreed with gcc on exactly this, all on relational operators.
 
 **9. `(*p)++` segfaults.** Parentheses around the DEREFERENCE, so the increment
 applies to the byte. Found while checking the neighbours of defect 7 and

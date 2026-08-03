@@ -30,6 +30,30 @@
 # processes. Each program here carries CHUNK points, so the whole space costs
 # about 64 compiles per side.
 #
+# FIVE BITS PER POINT, NOT SIX, AND THE REASON IS A BACKSLASH. The fold was
+# `48 + (h & 63)`, which spans characters 48..111 -- and 92 is `\`. gcc's
+# oracle printed it happily; baking it into the subject's `char* expected`
+# started an escape sequence and the program silently stopped matching. It
+# showed up as "micro-c WILL NOT COMPILE IT" on two chunks out of twelve,
+# which reads as a compiler limitation and is a quoting bug in this file.
+# 48..79 contains no backslash and no quote.
+#
+# IT COMPARES THE VALUE, NOT WHETHER THE VALUE IS TRUE. The first version
+# reduced each point to `(x op lit) ? 1 : 0`, and 12,960 points agreed while
+# the compiler was silently truncating arithmetic:
+#
+#     unsigned char a = 200, b = 100;   a + b   C says 300, micro-c said 44
+#
+# Both are non-zero, so every boolean matched. That shipped, and mc-tcc then
+# segfaulted assembling musl's memset.S -- tcc's ARM64 assembler builds
+# instruction words out of narrow unsigned fields. A differential suite that
+# compares a predicate instead of a result is not measuring the operator.
+#
+# Each point now folds the full result down to six bits --
+# `v ^ (v>>6) ^ (v>>12) ^ (v>>18)` -- for BOTH operand orders, so a
+# difference anywhere in the low eighteen bits changes the character. 300 and
+# 44 differ; the boolean form could not tell them apart.
+#
 # HOW A POINT IS CHECKED. gcc is the oracle: C defines the answer and gcc
 # agrees with C on integer conversions. The gcc build PRINTS its answers; those
 # are baked into a second program as a string, and the micro-c build
@@ -128,10 +152,11 @@ for t in $TYPES; do
     {
       echo '#include <stdio.h>'
       echo 'int main(void) {'
-      printf '\t%s x; int a; int b;\n' "$T_C"
+      printf '\t%s x; long a; long b; long h;\n' "$T_C"
       while IFS='~' read -r v lit op; do
-        printf '\tx = (%s)(%s); a = (x %s %s) ? 1 : 0; b = (%s %s x) ? 1 : 0; putchar(48 + a + 2*b);\n' \
+        printf '\tx = (%s)(%s); a = (x %s %s); b = (%s %s x);\n' \
                "$T_C" "$v" "$op" "$lit" "$lit" "$op"
+        printf '\th = (a^(a>>6)^(a>>12)^(a>>18)) + 7*(b^(b>>6)^(b>>12)^(b>>18)); putchar(48 + (h & 31));\n'
       done < "$T/chunk"
       echo '        return 0;'
       echo '}'
@@ -146,12 +171,13 @@ for t in $TYPES; do
     {
       printf 'char* expected = "%s";\n' "$exp"
       echo 'int main(void) {'
-      printf '\t%s x; int a; int b;\n' "$T_C"
+      printf '\t%s x; long a; long b; long h;\n' "$T_C"
       i=0
       while IFS='~' read -r v lit op; do
-        printf '\tx = (%s)(%s); a = (x %s %s) ? 1 : 0; b = (%s %s x) ? 1 : 0;\n' \
+        printf '\tx = (%s)(%s); a = (x %s %s); b = (%s %s x);\n' \
                "$T_C" "$v" "$op" "$lit" "$lit" "$op"
-        printf '\tif(a + 2*b != expected[%s] - 48) return %s;\n' "$i" "$((i + 1))"
+        printf '\th = (a^(a>>6)^(a>>12)^(a>>18)) + 7*(b^(b>>6)^(b>>12)^(b>>18));\n'
+        printf '\tif((h & 31) != expected[%s] - 48) return %s;\n' "$i" "$((i + 1))"
         i=$((i + 1))
       done < "$T/chunk"
       echo '        return 0;'
@@ -206,6 +232,117 @@ for t in $TYPES; do
         [ -z "$first" ] && first="$T_C  x=$bv  $bo  $bl"
     fi
     off=$((off + CHUNK))
+  done
+done
+
+# PHASE 2: TWO VARIABLES, BECAUSE PHASE 1 CANNOT REACH THE NARROW PAIRS.
+#
+# Every point above pairs a variable with a LITERAL, and a literal is never
+# narrower than int -- so promote_type always had a four-byte operand to pick
+# and the result was always at least int-wide. The bug that shipped needed
+# BOTH operands narrow:
+#
+#     unsigned char a = 200, b = 100;   a + b   C says 300, micro-c said 44
+#
+# 12,960 points agreed while that was live. The space had a hole in it exactly
+# where the integer promotions do their work, which is the part of the usual
+# arithmetic conversions this sweep exists to check.
+VALS2="0 1 -1 200 100 60000 -32768 2147483647"
+
+for t1 in $TYPES; do
+  A_C=$(ctype "$t1")
+  for t2 in $TYPES; do
+    B_C=$(ctype "$t2")
+    : > "$T/pts2"
+    for v1 in $VALS2; do
+      for v2 in $VALS2; do
+        for op in $OPS; do
+          echo "$v1~$v2~$op" >> "$T/pts2"
+        done
+      done
+    done
+    n2=$(wc -l < "$T/pts2")
+    off=0
+    while [ "$off" -lt "$n2" ]; do
+      chunks=$((chunks + 1))
+      sed -n "$((off + 1)),$((off + CHUNK))p" "$T/pts2" > "$T/c2"
+      nc=$(wc -l < "$T/c2")
+
+      {
+        echo '#include <stdio.h>'
+        echo 'int main(void) {'
+        printf '\t%s x; %s y; long a; long h;\n' "$A_C" "$B_C"
+        while IFS='~' read -r v1 v2 op; do
+          printf '\tx = (%s)(%s); y = (%s)(%s); a = (x %s y);\n' \
+                 "$A_C" "$v1" "$B_C" "$v2" "$op"
+          printf '\th = a^(a>>6)^(a>>12)^(a>>18); putchar(48 + (h & 31));\n'
+        done < "$T/c2"
+        echo '        return 0;'
+        echo '}'
+      } > "$T/o2.c"
+
+      if ! gcc -w -O0 -o "$T/o2" "$T/o2.c" 2>/dev/null; then
+          skipped=$((skipped + nc)); off=$((off + CHUNK)); continue
+      fi
+      exp2=$("$T/o2")
+
+      {
+        printf 'char* expected = "%s";\n' "$exp2"
+        echo 'int main(void) {'
+        printf '\t%s x; %s y; long a; long h;\n' "$A_C" "$B_C"
+        i=0
+        while IFS='~' read -r v1 v2 op; do
+          printf '\tx = (%s)(%s); y = (%s)(%s); a = (x %s y);\n' \
+                 "$A_C" "$v1" "$B_C" "$v2" "$op"
+          printf '\th = a^(a>>6)^(a>>12)^(a>>18);\n'
+          printf '\tif((h & 31) != expected[%s] - 48) return %s;\n' "$i" "$((i + 1))"
+          i=$((i + 1))
+        done < "$T/c2"
+        echo '        return 0;'
+        echo '}'
+      } > "$T/s2.c"
+
+      set +e
+      "$MICROC" --architecture "$ARCH" --max-string 65536 -f "$T/s2.c" -o "$T/s2.M1" 2>/dev/null
+      c=$?
+      set -e
+      if [ "$c" != 0 ]; then
+          echo "  $A_C op $B_C chunk at $off: micro-c WILL NOT COMPILE IT"
+          bad=$((bad + 1)); [ -z "$first" ] && first="$A_C op $B_C @$off"
+          off=$((off + CHUNK)); total=$((total + nc)); continue
+      fi
+      set +e
+      "$MESCC/M1" -f "$D/${ARCH}_defs.M1" -f "$D/libc-core.M1" -f "$T/s2.M1" \
+                  --little-endian --architecture "$ARCH" -o "$T/s2.hex2" 2>/dev/null
+      a1=$?
+      "$MESCC/hex2" --architecture "$ARCH" --little-endian --base-address "$BASE" \
+                    -f "$D/ELF-$ARCH.hex2" -f "$T/s2.hex2" -o "$T/s2.bin" 2>/dev/null
+      h2=$?
+      set -e
+      if [ "$a1" != 0 ] || [ "$h2" != 0 ] || [ ! -s "$T/s2.bin" ]; then
+          echo "  $A_C op $B_C chunk at $off: DOES NOT ASSEMBLE OR LINK"
+          bad=$((bad + 1)); [ -z "$first" ] && first="$A_C op $B_C @$off"
+          off=$((off + CHUNK)); total=$((total + nc)); continue
+      fi
+      chmod +x "$T/s2.bin"
+      set +e
+      if [ -n "$Q" ]; then "$Q" "$T/s2.bin" >/dev/null 2>&1; else "$T/s2.bin" >/dev/null 2>&1; fi
+      rc=$?
+      set -e
+      total=$((total + nc))
+      if [ "$rc" = 0 ]; then
+          agree=$((agree + nc))
+      else
+          pt=$(sed -n "${rc}p" "$T/c2")
+          p1=$(echo "$pt" | cut -d'~' -f1); p2=$(echo "$pt" | cut -d'~' -f2); po=$(echo "$pt" | cut -d'~' -f3)
+          printf '  (%s)%s %s (%s)%s   gcc=%s  micro-c disagrees\n' \
+                 "$A_C" "$p1" "$po" "$B_C" "$p2" "$(printf '%s' "$exp2" | cut -c"$rc")"
+          agree=$((agree + rc - 1))
+          bad=$((bad + 1))
+          [ -z "$first" ] && first="($A_C)$p1 $po ($B_C)$p2"
+      fi
+      off=$((off + CHUNK))
+    done
   done
 done
 

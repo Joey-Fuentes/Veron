@@ -27,6 +27,24 @@ Three things were missing, and only the first is what case 110 probes.
 3. THE RESULT. unsigned int arithmetic is modulo 2^32, and a 64-bit register
    keeps bits the type does not have.
 
+   AND FOUR BYTES ONLY, WHICH THIS PATCH GOT WRONG ONCE AND SHIPPED. The
+   integer promotions run first, so there is no `unsigned char` arithmetic in
+   C -- both operands become int and so does the result. promote_type picks
+   BETWEEN the operands and cannot promote past both, so for two narrow
+   operands it returns the narrow type, and narrowing the result to it threw
+   away every bit above the eighth:
+
+       unsigned char a = 200, b = 100;   a + b   C says 300, micro-c said 44
+
+   mc-tcc then SEGFAULTED assembling musl's aarch64 memset.S and memcpy.S --
+   tcc's ARM64 assembler builds instruction words out of narrow unsigned
+   fields. libc.a came out with no memset and no memcpy, every hosted link
+   failed on `undefined symbol`, and the stage-4 ladder stopped at rung 3
+   having previously reached rung 6.
+   emit_usual_arithmetic_conversion always had the four-byte guard;
+   emit_result_in_chosen_type was written from it and the line did not carry
+   over.
+
 WHAT FOUND THEM, AND WHY THE CASE COULD NOT. Case 110 has four probes and was
 written FROM this bug, so it passing proves little -- MICRO-C.md's own note is
 that "a test suite written from bugs already found measures what has been
@@ -34,6 +52,14 @@ fixed, not what remains". tools/uac-sweep.sh generates the space instead:
 every combination of nine operand types, fifteen literal spellings, twelve
 operators and eight values, with gcc as the oracle. 12,960 points per
 architecture, about ninety seconds.
+
+AND THE SWEEP DID NOT CATCH THE ONE THAT SHIPPED, which is the sharper lesson.
+Every point paired a variable with a LITERAL, and a literal is never narrower
+than int -- so promote_type always had a four-byte operand and the narrow-pair
+case was outside the space. It also compared `(x op lit) ? 1 : 0`, a
+PREDICATE, so 300 and 44 both read as true. Both holes are closed: the sweep
+now folds the actual value to five bits and has a second phase over pairs of
+VARIABLES.
 
 It found four things after case 110 was already green, in this order:
 
@@ -74,8 +100,11 @@ than being handed an encoding nobody has assembled.
 
 MEASURED, EITHER SIDE:
 
-    uac-sweep amd64     12,960 points, 12,960 agree
-    uac-sweep aarch64   12,960 points, 12,960 agree
+    uac-sweep amd64     both phases, 0 mismatches
+    uac-sweep aarch64   both phases, 0 mismatches
+    musl 1.2.5          400 sources through mc-tcc, 0 crashes
+    memset.S memcpy.S   compile (they segfaulted before the guard)
+    ilogb.c ilogbf.c    compile
     case 110            bitmask 3 -> 0
     difftest amd64      105 pass, 0 fail, 0 known gaps
     difftest aarch64    107 pass, 0 fail, 0 known gaps
@@ -166,7 +195,53 @@ much on its own.
  }
  
  /* IS THIS NAME A VARIABLE? Asked WITHOUT emitting anything.
-@@ -2339,6 +2402,111 @@
+@@ -2186,6 +2249,45 @@
+ 	 * stays a declared KNOWN GAP: this is not the full usual arithmetic
+ 	 * conversions, it is the selection rule those conversions need under
+ 	 * them. */
++	/* THE INTEGER PROMOTIONS COME FIRST, AND THEY ERASE SIGNEDNESS.
++	 *
++	 * C89 3.2.1.1: any operand whose rank is below `int` is converted to
++	 * `int` before anything else happens, because every value of a char or a
++	 * short fits one. So when BOTH operands are narrower than int there is no
++	 * unsigned type left for the rule below to pick:
++	 *
++	 *     short s = -1; unsigned short t = 0;    s < t   is TRUE in C
++	 *
++	 * -- both become int, and -1 < 0. This returned `unsigned short`, the
++	 * comparison went unsigned, and -1 became 65535. Same for every mixed-sign
++	 * pair of narrow types.
++	 *
++	 * Found by uac-sweep.sh's second phase, which pairs two VARIABLES; the
++	 * first phase pairs a variable with a literal, and a literal is never
++	 * narrower than int, so this was outside the space it could reach. 31 of
++	 * its 396 programs disagreed with gcc on exactly this, and the fault is
++	 * older than the sweep -- it reproduces identically on the compiler from
++	 * before any of the conversion work.
++	 *
++	 * ONLY SCALARS. A struct can be smaller than four bytes and is not an
++	 * integer; a pointer is register-width and never reaches this. */
++	if(NULL == a->members)
++	{
++		if(NULL == b->members)
++		{
++			if(0 == (a->options & TO_FUNCTION_POINTER))
++			{
++				if(0 == (b->options & TO_FUNCTION_POINTER))
++				{
++					if(a->size < 4)
++					{
++						if(b->size < 4) return integer;
++					}
++				}
++			}
++		}
++	}
++
+ 	if(a->size > b->size) return a;
+ 	if(b->size > a->size) return b;
+ 	if(!a->is_signed) return a;
+@@ -2339,6 +2441,135 @@
  	}
  }
  
@@ -272,13 +347,37 @@ much on its own.
 +{
 +	if(NULL == current_target) return;
 +	if(current_target->is_signed) return;
++
++	/* FOUR BYTES ONLY. THE INTEGER PROMOTIONS RUN FIRST, so there is no such
++	 * thing as `unsigned char` arithmetic in C: both operands become `int` and
++	 * the RESULT is an int.
++	 *
++	 *     unsigned char a = 200, b = 100;       a + b  is 300, not 44
++	 *     unsigned short s = 60000, t = 10000;  s + t  is 70000, not 4464
++	 *
++	 * promote_type picks BETWEEN the operands and has no notion of promoting
++	 * past both, so for two narrow operands it returns the narrow type. Without
++	 * this guard the result was narrowed with `uxtb_w0,w0` and every bit above
++	 * the eighth was lost.
++	 *
++	 * WHAT IT COST, because this shipped for one CI round. mc-tcc SEGFAULTED
++	 * assembling musl's aarch64 memset.S and memcpy.S -- tcc's ARM64 assembler
++	 * builds instruction words out of narrow unsigned fields -- so libc.a came
++	 * out with no memset and no memcpy, every hosted link failed on `undefined
++	 * symbol`, and the stage-4 ladder stopped at rung 3 having previously
++	 * reached rung 6.
++	 *
++	 * emit_usual_arithmetic_conversion has always had this guard; this function
++	 * was written from it and the one line did not carry over. */
++	if(4 != current_target->size) return;
++
 +	emit_narrowing_cast(current_target);
 +}
 +
  void common_recursion(FUNCTION f)
  {
  	emit_push(REGISTER_ZERO, "_common_recursion");
-@@ -2359,7 +2527,9 @@
+@@ -2359,7 +2590,9 @@
  	if(match(name, global_token->s))
  	{
  		common_recursion(f);
@@ -288,7 +387,7 @@ much on its own.
  		iterate();
  	}
  }
-@@ -2414,6 +2584,7 @@
+@@ -2414,6 +2647,7 @@
  	if(match(name, global_token->s))
  	{
  		common_recursion(f);
@@ -296,7 +395,7 @@ much on its own.
  		if(NULL == current_target)
  		{
  			emit_out(s1);
-@@ -2426,6 +2597,7 @@
+@@ -2426,6 +2660,7 @@
  		{
  			emit_out(s2);
  		}
@@ -304,7 +403,7 @@ much on its own.
  		iterate();
  	}
  }
-@@ -3590,6 +3762,12 @@
+@@ -3590,6 +3825,12 @@
  	if(match("+", global_token->s))
  	{
  		common_recursion(additive_expr_a);
@@ -317,7 +416,7 @@ much on its own.
  		struct type* lhs = operand_left_type;
  		struct type* rhs = operand_right_type;
  		int left_element = pointer_element_size(lhs);
-@@ -3618,11 +3796,22 @@
+@@ -3618,11 +3859,22 @@
  			 * need nothing. Both keep the promoted type. */
  			emit_add(REGISTER_ZERO, REGISTER_ONE, is_signed, NULL);
  		}
