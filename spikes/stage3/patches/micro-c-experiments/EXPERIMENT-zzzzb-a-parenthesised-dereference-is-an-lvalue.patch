@@ -1,0 +1,96 @@
+a parenthesised dereference is an lvalue.
+
+`(*p)++` SEGFAULTED, while `p[0]++` and `*p += 1` were always correct:
+
+    p = buf + 8;  (*p)++;
+
+    mov_rax,[rax]              p
+    movzx_rax,BYTE_PTR_[rax]   the byte -- 0
+    # postfix inc/dec
+    movzx_rax,BYTE_PTR_[rax]   dereference 0            SIGSEGV
+
+The parentheses are around the DEREFERENCE, so the increment applies to what p
+points at and the last dereference has to yield an ADDRESS. It loaded instead,
+and the postfix handler then treated the byte's VALUE as its address.
+
+THE ELEVENTH COPY OF THE ONE RULE. is_assignment and is_compound_operator read
+the NEXT TOKEN, and for a parenthesised target that token is `)`. zzzs, zzzw
+and zzzz are the same rule at three other spellings; this is the fourth.
+assign_through_parens is already set by primary_expr's paren branch when an
+assignment or a postfix ++/-- follows the closing paren -- it had simply never
+reached this decision.
+
+ONLY WHEN `)` IS NEXT, because the flag belongs to the whole parenthesised
+expression and not to every dereference inside it. In `(a[*p]) = v` the `*p` is
+a sub-expression that must still load, and the token after it is `]`. Same
+guard shape as zzzs's num_dereference_after_postfix test: an lvalue applies to
+the last step of a chain, never to one still to be followed. Bit 16 of case 125
+covers the other half -- `**(pp)` still has to load once to reach the inner
+pointer.
+
+FOUND BY LOOKING AT THE NEIGHBOURS of case 119, and it predates all of that
+work: it fails identically on the compiler from before EXPERIMENT-zzzw.
+
+WORTH ONE LINE, BECAUSE A COMMENT CAUSED IT. cc_core.c's paren_lvalue site
+names this exact spelling as one it handles -- "`(*p)++` the same thing written
+the other way round". It does not. That site is the `*(...)` path, where the
+star is OUTSIDE the parentheses, and it never sees this shape at all. The
+comment is why nobody looked.
+
+WHAT IT DOES NOT CLAIM. `++(*p)` -- the PREFIX spelling -- still segfaults.
+prefix_lvalue is computed from the token in front of the STARS, which for that
+shape is `(`, so nothing inside the parentheses can see the operator; the only
+place it is still visible is the token before the open paren, which is a
+different site. Attempted and reverted rather than half-moved. Case 125 stops
+at the postfix and compound forms and says so.
+
+MEASURED, EITHER SIDE:
+
+    case 125            new, 0
+    difftest amd64      107 -> 108 pass, 0 fail
+    difftest aarch64    109 -> 110 pass, 0 fail
+    stage 2 corpus      420 of 426                    unchanged
+    mc-tcc              builds, 1,651,897 bytes
+    twelve.sh           12 of 12
+    musl memset.S/memcpy.S/ilogb.c/ilogbf.c compile
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -2010,6 +2010,37 @@
+ 	int is_assignment = match("=", global_token->s);
+ 	int is_compound_operator = is_compound_assignment(global_token->s);
+ 
++	/* AND A PARENTHESISED TARGET IS ONE TOO. `(*p)++` is an lvalue: the
++	 * parentheses are around the DEREFERENCE, so the increment applies to what
++	 * p points at and the last dereference must yield an ADDRESS.
++	 *
++	 * Both flags above read the NEXT TOKEN, which here is `)`, so this took
++	 * the rvalue branch, loaded the byte, and the postfix handler then
++	 * dereferenced that value as if it were an address:
++	 *
++	 *     mov_rax,[rax]              p
++	 *     movzx_rax,BYTE_PTR_[rax]   the byte -- 0
++	 *     # postfix inc/dec
++	 *     movzx_rax,BYTE_PTR_[rax]   dereference 0        SIGSEGV
++	 *
++	 * assign_through_parens is already set by primary_expr's paren branch when
++	 * an assignment or a postfix ++/-- follows the closing paren; it had not
++	 * reached this decision.
++	 *
++	 * ONLY WHEN `)` IS NEXT, because the flag belongs to the whole
++	 * parenthesised expression rather than to every dereference inside it. In
++	 * `(a[*p]) = v` the `*p` is a sub-expression that must still load, and the
++	 * token after it is `]`. Same rule as everywhere else here: an lvalue
++	 * applies to the last step of a chain, never to one still to be followed.
++	 *
++	 * The comment at the paren_lvalue site names `(*p)++` as a spelling it
++	 * handles. It does not; that site is the `*(...)` path, where the star is
++	 * OUTSIDE the parentheses. */
++	if(assign_through_parens)
++	{
++		if(match(")", global_token->s)) is_assignment = TRUE;
++	}
++
+ 	/* AND `(x) = v` IS STILL AN ASSIGNMENT. is_assignment and
+ 	 * is_compound_operator look at the NEXT TOKEN, which for a parenthesised
+ 	 * target is the closing paren, so this loaded the variable and the store

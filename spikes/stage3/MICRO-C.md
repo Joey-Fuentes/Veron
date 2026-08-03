@@ -5,8 +5,8 @@ compile tcc directly, rather than reaching tcc through Mes. That enhanced
 compiler is called **micro-c**: M2-Planet at pin `bd2fe4b` plus a patch series.
 This file is its state.
 
-**Status.** micro-c is M2-Planet at pin `bd2fe4b` plus **75 patches** (4 base +
-71 experiments). It compiles `tcc.c` -- tcc's whole source including its
+**Status.** micro-c is M2-Planet at pin `bd2fe4b` plus **76 patches** (4 base +
+72 experiments). It compiles `tcc.c` -- tcc's whole source including its
 command-line driver -- and the linked **1.63 MB** aarch64 binary (`mc-tcc`) is
 a working tcc:
 
@@ -1760,6 +1760,42 @@ identifier called with parentheses as a function returning int; that is now
 implemented, guarded on a following `(` so a bare unknown name is still a
 compile error. The corpus goes 419 -> 420 of 426, and the six that remain are
 the documented stale rows.
+
+**10. The integer promotions, for two narrow operands. CLOSED**
+(`EXPERIMENT-zzzza`). C89 3.2.1.1 converts every operand of rank below `int`
+to `int` first, because every char and short value fits one -- so a mixed-sign
+pair of narrow types has no unsigned type left to pick:
+
+```
+short s = -1; unsigned short t = 0;     s < t  is TRUE in C
+```
+
+`promote_type` returned `unsigned short`, the comparison went unsigned, and -1
+became 65535. Every mixed-sign narrow pair was wrong the same way.
+
+**Older than all of the conversion work** -- it reproduces identically on the
+70-patch compiler -- and invisible until `uac-sweep.sh` grew a second phase
+that pairs two VARIABLES. The first phase pairs a variable with a literal, and
+a literal is never narrower than `int`, so `promote_type` always had a
+four-byte operand to pick and this was outside the space. 31 of the sweep's
+396 programs disagreed with gcc on exactly this, all on relational operators.
+
+**9. `(*p)++`. CLOSED** (`EXPERIMENT-zzzzb`). Parentheses around the
+DEREFERENCE, so the increment applies to the byte and the last dereference had
+to yield an address; it loaded, and the postfix handler dereferenced the
+byte's VALUE. The eleventh copy of the next-token rule -- `is_assignment` sees
+`)`. Predates all the defect-7 work.
+
+**A comment is why nobody looked.** `cc_core.c`'s `paren_lvalue` site names
+this exact spelling as one it handles: "`(*p)++` the same thing written the
+other way round". It does not -- that site is the `*(...)` path, where the star
+is outside the parentheses, and it never sees this shape.
+
+**11. `++(*p)` segfaults.** The PREFIX spelling of 9, and a different site:
+`prefix_lvalue` is computed from the token in front of the STARS, which here is
+`(`, so nothing inside the parentheses can see the operator. The only place it
+is still visible is the token before the open paren. Attempted while closing 9
+and reverted rather than half-moved.
 
 **10. The integer promotions, for two narrow operands. CLOSED**
 (`EXPERIMENT-zzzza`). C89 3.2.1.1 converts every operand of rank below `int`
