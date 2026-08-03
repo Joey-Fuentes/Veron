@@ -1085,10 +1085,61 @@ jobs:
           fi
           rm -rf mc-tree
           cp -r gcc-tcc mc-tree
-          cp mc-tcc-bin mc-tree/tcc
+
+          # COUNT THE INVOCATIONS, because "ok" does not mean the subject ran.
+          #
+          # Only the tcc BINARY is swapped here; everything else in the copied
+          # tree is the control's. Three separate things follow from that, and
+          # they are not the same kind of thing:
+          #
+          #   1. Some targets are gcc BY DESIGN. tests/Makefile:61 says
+          #          test.ref abitest : CC = gcc
+          #      so `abitest ok` says nothing about either compiler's codegen.
+          #
+          #   2. Some link libtcc as a LIBRARY -- libtest, libtest_mt, and
+          #      abitest-tcc all build against libtcc.c/libtcc.a. We do not
+          #      build a libtcc.a with micro-c at all, so the one in the tree is
+          #      gcc's. Those targets test the control's library.
+          #
+          #   3. libtcc1.a and runmain.o are the control's too. That one is a
+          #      deliberate borrow -- it isolates the compiler, which is the
+          #      comparison this job exists to make -- but it is still a borrow
+          #      and is now built by the subject instead, below.
+          #
+          # A real tcc that is never called cannot be distinguished from one
+          # that passes, so the binary is wrapped in a counter and every target
+          # reports how many times the subject was actually asked to compile
+          # anything. A target that is "ok" with zero invocations is not a pass.
+          mv mc-tcc-bin mc-tree/tcc-real 2>/dev/null || cp mc-tcc-bin mc-tree/tcc-real
+          chmod +x mc-tree/tcc-real
+          # printf, not a heredoc: a heredoc terminator has to sit at column
+          # zero, and inside a YAML block scalar that ends the block.
+          printf '%s\n' '#!/bin/sh' \
+                         'echo x >> /tmp/subject-calls' \
+                         'exec "$(dirname "$0")/tcc-real" "$@"' > mc-tree/tcc
           chmod +x mc-tree/tcc
           printf '  subject tcc: %s bytes  sha %s\n' \
-            "$(stat -c%s mc-tree/tcc)" "$(sha256sum mc-tree/tcc | cut -c1-16)"
+            "$(stat -c%s mc-tree/tcc-real)" "$(sha256sum mc-tree/tcc-real | cut -c1-16)"
+
+          # THE SUBJECT'S OWN libtcc1.a, not the control's. rungs.sh builds one
+          # this way at rung 0; there is no reason this job should borrow when
+          # it can build. If any object refuses, the control's archive is left
+          # in place and that is said out loud rather than passed off as a pass.
+          ( cd mc-tree && objs=""
+            for f in lib/lib-arm64.c lib/stdatomic.c lib/atomic.S lib/builtin.c \
+                     lib/alloca.S lib/dsohandle.c; do
+              [ -f "$f" ] || continue
+              o="/tmp/s-$(basename "$f" | tr './' '__').o"
+              ./tcc-real -B. -I. -Iinclude -c -o "$o" "$f" 2>/dev/null && objs="$objs $o"
+            done
+            if [ -n "$objs" ] && ./tcc-real -B. -ar rcs /tmp/subject-libtcc1.a $objs 2>/dev/null; then
+              cp /tmp/subject-libtcc1.a libtcc1.a
+              ./tcc-real -B. -I. -Iinclude -c -o runmain.o lib/runmain.c 2>/dev/null \
+                && echo "  libtcc1.a and runmain.o: built BY THE SUBJECT" \
+                || echo "  libtcc1.a built by the subject; runmain.o refused -- control's kept"
+            else
+              echo "  libtcc1.a: the subject could not build it -- the CONTROL's is in use"
+            fi )
 
           # test.ref is gcc's expected output and is a PREREQUISITE, not a test.
           make -C mc-tree/tests test.ref >/dev/null 2>&1 || true
@@ -1099,10 +1150,12 @@ jobs:
                    pp-dir memtest dlltest cross-test btest test1b tccb; do
             echo ""
             echo "  ============ $t ============"
+            : > /tmp/subject-calls
             set +e
             timeout 300 make -C mc-tree/tests "$t" > /tmp/t.log 2>&1
             rc=$?
             set -e
+            calls=$(wc -l < /tmp/subject-calls 2>/dev/null || echo 0)
             # The tail is what tcc's own harness prints; 25 lines is enough to
             # see "Auto Test OK" or the first real error, and short enough that
             # seventeen of them stay readable.
@@ -1116,14 +1169,17 @@ jobs:
             else
               verdict="rc=$rc"
             fi
-            echo "    -> $t: $verdict"
-            printf '%s\t%s\n' "$t" "$verdict" >> /tmp/suite.tsv
+            if [ "$calls" = 0 ]; then
+              verdict="$verdict  [SUBJECT NEVER INVOKED]"
+            fi
+            echo "    -> $t: $verdict   (subject called $calls times)"
+            printf '%s\t%s\t%s\n' "$t" "$verdict" "$calls" >> /tmp/suite.tsv
           done
 
           echo ""
           echo "  === EVERY TARGET, ONE LINE EACH ==="
-          while IFS="$(printf '\t')" read -r t v; do
-            printf '    %-22s %s\n' "$t" "$v"
+          while IFS="$(printf '\t')" read -r t v c; do
+            printf '    %-22s %-8s calls=%s\n' "$t" "$v" "$c"
           done < /tmp/suite.tsv
           echo ""
           printf '    %s of %s targets ok\n' \
