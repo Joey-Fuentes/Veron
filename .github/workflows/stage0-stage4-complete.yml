@@ -67,6 +67,11 @@ on:
         required: false
         default: false
   push:
+    # BRANCHES ONLY -- NEVER TAGS, and `paths:` does NOT cover this. Evidence:
+    # run #42 fired on the tag `src/pkgconf-3.0.5.tar.xz` even though that
+    # commit did not touch this file and paths already listed only this file.
+    # Tag pushes ignore paths, so one `gh release create` runs the whole ladder.
+    branches: ['**']
     paths:
       - '.github/workflows/stage0-stage4-complete.yml'
 
