@@ -1,47 +1,23 @@
-/* KNOWN GAP -- THE USUAL ARITHMETIC CONVERSIONS, for an unsigned literal.
+/* BITMASK -- CLOSED by EXPERIMENT-zzzza. Kept as a regression guard.
  *
- * WIDE CONSTANTS -- 0x87654321 is past INT_MAX and does not fit an immediate
- * field, so this case is expected to move across EXPERIMENT-zzb. That is the
- * whole subject of the case. See imm-identity.sh.
+ * C gives a constant the first type it fits, and the BASE and SUFFIX choose
+ * the list: 0x87654321 is unsigned int, 2271560481 is long, 0x87654321L is
+ * long. Everything was typed `integer`, so an int compared against such a
+ * literal gave the opposite answer from C.
  *
- * Expected to fail. Found while writing case 109, where it masqueraded as a
- * codegen bug: that case compared an `int` against 0x87654321 and failed for
- * this reason rather than the one it was testing. Split out so each case fails
- * for its own reason.
+ * THIS CASE IS NOT THE MEASUREMENT, and should not be read as one. Its four
+ * probes were written FROM the bug, so passing them proves very little -- the
+ * same trap this file records elsewhere as "a test suite written from bugs
+ * already found measures what has been fixed, not what remains". With this
+ * case green, tools/uac-sweep.sh then found four more faults: the l/L suffix,
+ * the u/L combination, operands narrower than int, and the result of `*` and
+ * `+` keeping bits unsigned int does not have.
  *
- * C GIVES A HEXADECIMAL LITERAL THE FIRST TYPE IT FITS, from int, unsigned
- * int, long, unsigned long. 0x87654321 is 2,271,560,481 -- past INT_MAX, so it
- * is `unsigned int`. Comparing it against an `int` therefore converts the INT
- * to unsigned, and the comparison succeeds:
- *
- *     int got = (int)0x87654321;    // -2023406815
- *     got != 0x87654321             // FALSE in C: both become 0x87654321
- *
- * micro-c folds constants as SIGNED 64-BIT (see EXPERIMENT-zzb, which made
- * that deliberate and correct for the widening it was solving). So the literal
- * stays +2,271,560,481, the int sign-extends to -2,023,406,815, and the
- * comparison is TRUE -- the opposite answer.
- *
- * WHY IT IS NOT SIMPLY "zzb WAS WRONG". zzb fixed a real and much larger
- * problem: every constant above 2^31 was being truncated or sign-extended by
- * hand at three separate chokepoints. Sixty-four-bit signed folding is right
- * for representing the VALUE. What is missing is the separate rule about the
- * literal's TYPE, and the conversion that type forces on the other operand.
- * Two different questions that happen to meet at the same constant.
- *
- * WHERE tcc HITS IT. Anywhere a mask or a flag word is written in hex above
- * 2^31 and compared against a signed value -- and tcc is full of both. It has
- * not yet been shown to cause a specific tcc failure, which is why this is a
- * measured gap rather than a fix: the cases that would settle it are here, and
- * closing it means implementing the usual arithmetic conversions properly
- * rather than patching one comparison.
- *
- * Probes, one bit each:
- *
- *   1  an int compared against an unsigned-int literal converts the int
- *   2  the same through a variable, so it is not constant folding alone
- *   4  0x7FFFFFFF stays signed and is unaffected -- the boundary
- *   8  an explicit (unsigned) cast agrees, which is why case 109 uses one
+ * The sweep generates the space -- nine operand types, fifteen literal
+ * spellings, twelve operators, eight values, gcc as the oracle, 12,960 points
+ * per architecture in about ninety seconds. That is what says the conversions
+ * are implemented. This file is the cheap guard that runs with every other
+ * case.
  */
 int main(void)
 {

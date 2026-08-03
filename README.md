@@ -84,7 +84,7 @@ Stage 4 already **has** a tcc — pinned, patched, and used. What stage 3 owes i
 | route | state |
 |---|---|
 | M2-Planet → Mes → tcc | Mes rung in progress, three rungs out |
-| **enhanced M2-Planet → tcc directly** | **the enhanced compiler exists.** It is called micro-c — M2-Planet at pin `bd2fe4b` plus 73 patches — and it compiles `tcc.c`, tcc's whole source *including its driver*, links a 1.63 MB aarch64 binary, and **that binary compiles and runs all twelve end-to-end programs**, all 107 applicable tests2 programs, and musl 1.2.5 entire. It compiles tcc's source *back* to an object, and that object is a **fixpoint**: gen2 == gen3 == gen4 — see below |
+| **enhanced M2-Planet → tcc directly** | **the enhanced compiler exists.** It is called micro-c — M2-Planet at pin `bd2fe4b` plus 75 patches — and it compiles `tcc.c`, tcc's whole source *including its driver*, links a 1.63 MB aarch64 binary, and **that binary compiles and runs all twelve end-to-end programs**, all 107 applicable tests2 programs, and musl 1.2.5 entire. It compiles tcc's source *back* to an object, and that object is a **fixpoint**: gen2 == gen3 == gen4 — see below |
 
 The direct route is the shorter one: extend M2-Planet's C subset far enough to compile real tcc, skipping the intermediate rungs entirely. The thesis behind it is that much of what the bootstrap ecosystem carries is *incidental* complexity — build plumbing, script-calling-script — rather than real capability gaps, and that the two can be separated by measuring instead of estimating. See [`spikes/stage3/ROADMAP.md`](./spikes/stage3/ROADMAP.md) for the plan and [`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md) for the state.
 

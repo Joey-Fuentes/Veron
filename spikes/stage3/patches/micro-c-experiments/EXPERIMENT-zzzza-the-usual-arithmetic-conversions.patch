@@ -1,0 +1,342 @@
+the usual arithmetic conversions, and the literal types they act on.
+
+promote_type answers "which type wins" -- wider first, unsigned at equal width
+-- and its own note says that is "not the full usual arithmetic conversions, it
+is the selection rule those conversions need under them". This is the part that
+was under them.
+
+Three things were missing, and only the first is what case 110 probes.
+
+1. A CONSTANT'S TYPE. C89 3.1.3.2 gives a constant the first type it fits, and
+   the BASE and SUFFIX choose which list it fits into:
+
+       decimal, no suffix     int, long, unsigned long
+       hex/octal, no suffix   int, unsigned int, long, unsigned long
+       u/U                    unsigned int, unsigned long
+       l/L                    long, unsigned long
+       u and l                unsigned long
+
+   unsigned int is on two of those lists and absent from two, which is the
+   whole subtlety: 0x87654321 is unsigned int, 2271560481 is long, and
+   0x87654321L is long. Everything was typed `integer` regardless.
+
+2. THE CONVERSION ITSELF. Having chosen the type, both operands have to BE it
+   before the operator runs. An int against an unsigned int must keep its low
+   32 bits; micro-c left it sign-extended in a 64-bit register.
+
+3. THE RESULT. unsigned int arithmetic is modulo 2^32, and a 64-bit register
+   keeps bits the type does not have.
+
+WHAT FOUND THEM, AND WHY THE CASE COULD NOT. Case 110 has four probes and was
+written FROM this bug, so it passing proves little -- MICRO-C.md's own note is
+that "a test suite written from bugs already found measures what has been
+fixed, not what remains". tools/uac-sweep.sh generates the space instead:
+every combination of nine operand types, fifteen literal spellings, twelve
+operators and eight values, with gcc as the oracle. 12,960 points per
+architecture, about ninety seconds.
+
+It found four things after case 110 was already green, in this order:
+
+    0x87654321L        typed unsigned int, so the other operand zero-extended
+                       where C sign-extends -- the OPPOSITE answer, and the
+                       same defect 110 is about, one suffix over
+    0x87654321UL       the same for the unsigned-long list
+    char vs UINT_MAX   the integer promotions run FIRST, so an operand
+                       narrower than int converts with everything else; the
+                       first version required size 4 exactly and missed all of
+                       char, signed char, unsigned char, short, unsigned short
+    char * 0x80000000  the product kept bits unsigned int does not have
+    char + 0xFFFFFFFF  + and - have their own path for pointer scaling and
+                       never reached the conversion at all
+
+SCOPE, WHICH WAS WRONG ONCE AND LOUDLY. The conversion first went into
+common_recursion. Ten sites call that, and in most of them REGISTER_ONE does
+not hold a VALUE: assignment leaves the destination ADDRESS there, and so do
+array indexing and the pointer-scaling paths. Truncating a stack address to 32
+bits made `local.n = 5` on a struct segfault. It belongs to the operators
+whose contract is "two values in, one value out" -- general_recursion,
+arithmetic_recursion, and the two additive branches by name.
+
+The guards are what keep it off everything else: both operands must be four
+bytes or narrower, so pointers are excluded by being register-width and
+structs by having members; the chosen type must be a four-byte unsigned
+integer, so the pointer results the additive branches set deliberately pass
+straight through emit_result_in_chosen_type untouched.
+
+VOCABULARY. REGISTER_ONE is the left operand and neither table could narrow
+it. `mov_ebx,ebx` and `mov_w1,w1` are added by the m2libc series alongside
+this. Which side is signed is not fixed -- `got != LIT` and `LIT != got` are
+both legal C -- so both registers are converted rather than one guessed at.
+
+SILENT ON THE OTHER ARCHITECTURES, deliberately. micro-c targets amd64 and
+aarch64 here; x86, armv7l and riscv keep exactly the behaviour they had rather
+than being handed an encoding nobody has assembled.
+
+MEASURED, EITHER SIDE:
+
+    uac-sweep amd64     12,960 points, 12,960 agree
+    uac-sweep aarch64   12,960 points, 12,960 agree
+    case 110            bitmask 3 -> 0
+    difftest amd64      105 pass, 0 fail, 0 known gaps
+    difftest aarch64    107 pass, 0 fail, 0 known gaps
+    stage 2 corpus      420 of 426                       unchanged
+    mc-tcc              builds, 1,651,969 bytes
+    twelve.sh           12 of 12
+
+The last two matter most: this fires on every arithmetic and relational
+operator in the program being compiled, and tcc is full of hex masks above
+2^31 compared against signed values. A green case suite would not have said
+much on its own.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -1161,10 +1161,73 @@
+  * Setting it is what C says and it is also the smaller lie: a leftover type is
+  * wrong in a way that varies with context, which is the class of bug this
+  * compiler keeps producing. */
++/* A CONSTANT GETS THE FIRST TYPE IT FITS, AND THE BASE AND SUFFIX CHOOSE THE
++ * LIST IT FITS INTO. C89 3.1.3.2:
++ *
++ *     decimal, no suffix     int, long, unsigned long
++ *     hex/octal, no suffix   int, unsigned int, long, unsigned long
++ *     u/U                    unsigned int, unsigned long
++ *     l/L                    long, unsigned long
++ *     u and l                unsigned long
++ *
++ * unsigned int is on two of those lists and absent from two, which is the
++ * whole subtlety: 0x87654321 is unsigned int, 2271560481 is long, and
++ * 0x87654321L is long. Everything used to be typed `integer` regardless, so an
++ * int compared against any of them gave C's answer only by luck.
++ *
++ * The first version of this returned a yes/no for "is it unsigned int" and
++ * checked only u/U, so it typed 0x87654321L as unsigned int and got the
++ * OPPOSITE answer from C. uac-sweep.sh found that, and then found that UL was
++ * wrong too. Returning the type rather than a flag is what makes the four
++ * lists expressible at all. */
++struct type* literal_type(char* s, long long v)
++{
++	int has_u = FALSE;
++	int has_l = FALSE;
++	int is_hex_or_octal = FALSE;
++	int i = 0;
++
++	while(0 != s[i])
++	{
++		if('u' == s[i]) has_u = TRUE;
++		if('U' == s[i]) has_u = TRUE;
++		if('l' == s[i]) has_l = TRUE;
++		if('L' == s[i]) has_l = TRUE;
++		i = i + 1;
++	}
++
++	if('0' == s[0])
++	{
++		if('x' == s[1]) is_hex_or_octal = TRUE;
++		else if('X' == s[1]) is_hex_or_octal = TRUE;
++		else if(0 != s[1]) is_hex_or_octal = TRUE;   /* octal */
++	}
++
++	/* A NEGATIVE VALUE HERE IS A LITERAL TOO BIG FOR long long, or the unary
++	 * minus applied elsewhere; either way it is not an unsigned int. */
++	if(v < 0) return signed_long;
++
++	if(has_u && has_l) return unsigned_long;
++	if(has_u)
++	{
++		if(v <= 4294967295) return unsigned_integer;
++		return unsigned_long;
++	}
++	if(has_l) return signed_long;
++
++	if(v <= 2147483647) return integer;
++	if(is_hex_or_octal)
++	{
++		if(v <= 4294967295) return unsigned_integer;
++	}
++	return signed_long;
++}
++
+ void primary_expr_number(char* s)
+ {
+-	emit_load_immediate(REGISTER_ZERO, strtolong(s), "primary expr number");
+-	current_target = integer;
++	long long v = strtolong(s);
++	emit_load_immediate(REGISTER_ZERO, v, "primary expr number");
++	current_target = literal_type(s, v);
+ }
+ 
+ /* IS THIS NAME A VARIABLE? Asked WITHOUT emitting anything.
+@@ -2339,6 +2402,111 @@
+ 	}
+ }
+ 
++/* THE CONVERSION promote_type ONLY SELECTS.
++ *
++ * promote_type answers "which type wins" -- wider first, unsigned at equal
++ * width -- and its own note says that is "not the full usual arithmetic
++ * conversions, it is the selection rule those conversions need under them".
++ * This is the part that was under them: having chosen the type, both operands
++ * have to BE that type before the operator runs.
++ *
++ * Only the equal-rank int / unsigned int case is emitted, because that is the
++ * only one where micro-c's registers disagree with C. Everything narrower is
++ * already promoted to int by the load; everything wider is register-width and
++ * needs nothing. When both operands are the same width and the same
++ * signedness there is nothing to do either.
++ *
++ *     int      -> unsigned int    keep the low 32 bits
++ *     unsigned -> unsigned int    already so, and the move is harmless
++ *
++ * A 32-bit register write zeroes the top half on both targets, so the
++ * zero-extending move IS `mov w,w` / `mov e,e` -- the same reasoning that
++ * gave the unsigned four-byte entry in emit_narrowing_cast its odd name.
++ *
++ * REGISTER_ONE IS THE LEFT OPERAND, and needed vocabulary that did not exist:
++ * `mov_ebx,ebx` and `mov_w1,w1` are added by the m2libc series alongside this.
++ * Which side is signed is not fixed -- `got != LIT` and `LIT != got` are both
++ * legal -- so both registers are converted rather than guessing.
++ *
++ * CALLED FROM general_recursion AND arithmetic_recursion ONLY, never from
++ * common_recursion itself. Ten sites call common_recursion, and in most of
++ * them REGISTER_ONE does not hold a VALUE at all: assignment leaves the
++ * destination ADDRESS there, and so do array indexing and the additive paths
++ * that do pointer scaling. Putting this in common_recursion truncated a stack
++ * address to 32 bits, and `local.n = 5` on a struct segfaulted. The two
++ * helpers here are the ones whose contract is "two values in, one value out".
++ *
++ * SILENT ON THE OTHER ARCHITECTURES, deliberately. micro-c targets amd64 and
++ * aarch64 here; x86, armv7l and riscv keep exactly the behaviour they had
++ * rather than being given an encoding nobody has assembled. */
++void emit_usual_arithmetic_conversion(struct type* left, struct type* right)
++{
++	if(NULL == left) return;
++	if(NULL == right) return;
++	if(NULL == current_target) return;
++
++	/* the chosen type must be a four-byte unsigned integer */
++	if(4 != current_target->size) return;
++	if(current_target->is_signed) return;
++	if(NULL != current_target->members) return;
++	if(current_target->options & TO_FUNCTION_POINTER) return;
++
++	/* THE INTEGER PROMOTIONS HAPPEN FIRST, so an operand NARROWER than int is
++	 * already an int by the time the usual conversions look at it and must be
++	 * converted with everything else. Requiring size 4 exactly missed all of
++	 * them, and uac-sweep found 22 points saying so -- every one a char
++	 * against UINT_MAX:
++	 *
++	 *     char x = -1;   x == 0xFFFFFFFF     gcc 1, micro-c 0
++	 *
++	 * because x promotes to int -1, the literal is unsigned int, and the int
++	 * then converts to 0xFFFFFFFF. Size 8 is still excluded: pointers are
++	 * register-width and need nothing, and a long is wider than the chosen
++	 * type so it could not have been chosen. */
++	if(left->size > 4) return;
++	if(right->size > 4) return;
++	if(0 == left->size) return;
++	if(0 == right->size) return;
++	if(NULL != left->members) return;
++	if(NULL != right->members) return;
++	if(left->options & TO_FUNCTION_POINTER) return;
++	if(right->options & TO_FUNCTION_POINTER) return;
++
++	/* and at least one of them must actually be changing */
++	if(!left->is_signed && !right->is_signed) return;
++
++	if(AARCH64 == Architecture)
++	{
++		emit_out("mov_w0,w0\n");
++		emit_out("mov_w1,w1\n");
++	}
++	else if(AMD64 == Architecture)
++	{
++		emit_out("mov_eax,eax\n");
++		emit_out("mov_ebx,ebx\n");
++	}
++}
++
++/* THE RESULT IS MODULO THE CHOSEN TYPE, NOT THE REGISTER.
++ *
++ * Converting the operands is only half of it. `unsigned int` arithmetic in C
++ * is modulo 2^32, and micro-c multiplies in a 64-bit register, so the product
++ * kept bits the type does not have:
++ *
++ *     char x = -1431655766;  x * 0x80000000    gcc 0, micro-c non-zero
++ *
++ * emit_narrowing_cast already knows how to reduce REGISTER_ZERO to a type and
++ * returns early for anything register-width, so a pointer result -- which the
++ * additive paths set deliberately -- passes through untouched. Comparisons
++ * yield 0 or 1 and are unaffected by being narrowed, so this does not need to
++ * know which operator it follows. */
++void emit_result_in_chosen_type(void)
++{
++	if(NULL == current_target) return;
++	if(current_target->is_signed) return;
++	emit_narrowing_cast(current_target);
++}
++
+ void common_recursion(FUNCTION f)
+ {
+ 	emit_push(REGISTER_ZERO, "_common_recursion");
+@@ -2359,7 +2527,9 @@
+ 	if(match(name, global_token->s))
+ 	{
+ 		common_recursion(f);
++		emit_usual_arithmetic_conversion(operand_left_type, operand_right_type);
+ 		emit_out(s);
++		emit_result_in_chosen_type();
+ 		iterate();
+ 	}
+ }
+@@ -2414,6 +2584,7 @@
+ 	if(match(name, global_token->s))
+ 	{
+ 		common_recursion(f);
++		emit_usual_arithmetic_conversion(operand_left_type, operand_right_type);
+ 		if(NULL == current_target)
+ 		{
+ 			emit_out(s1);
+@@ -2426,6 +2597,7 @@
+ 		{
+ 			emit_out(s2);
+ 		}
++		emit_result_in_chosen_type();
+ 		iterate();
+ 	}
+ }
+@@ -3590,6 +3762,12 @@
+ 	if(match("+", global_token->s))
+ 	{
+ 		common_recursion(additive_expr_a);
++		/* + AND - HAVE THEIR OWN PATH, for the pointer scaling below, and so
++		 * they never reached general_recursion's conversion. uac-sweep found
++		 * it as `char - 0xFFFFFFFF`: gcc 0, micro-c non-zero. The guard in
++		 * the conversion excludes anything register-width, so the pointer
++		 * cases here -- whose operand IS eight bytes -- are untouched. */
++		emit_usual_arithmetic_conversion(operand_left_type, operand_right_type);
+ 		struct type* lhs = operand_left_type;
+ 		struct type* rhs = operand_right_type;
+ 		int left_element = pointer_element_size(lhs);
+@@ -3618,11 +3796,22 @@
+ 			 * need nothing. Both keep the promoted type. */
+ 			emit_add(REGISTER_ZERO, REGISTER_ONE, is_signed, NULL);
+ 		}
++		/* AND THE SUM IS MODULO THE CHOSEN TYPE. `char x = 1; x + 0xFFFFFFFF`
++		 * is 4294967296, which is 0 in unsigned int and non-zero in a 64-bit
++		 * register. The pointer branches above set current_target to a
++		 * pointer, which is register-width, so this is a no-op for them. */
++		emit_result_in_chosen_type();
+ 		additive_expr_stub_b();
+ 	}
+ 	else if(match("-", global_token->s))
+ 	{
+ 		common_recursion(additive_expr_a);
++		/* + AND - HAVE THEIR OWN PATH, for the pointer scaling below, and so
++		 * they never reached general_recursion's conversion. uac-sweep found
++		 * it as `char - 0xFFFFFFFF`: gcc 0, micro-c non-zero. The guard in
++		 * the conversion excludes anything register-width, so the pointer
++		 * cases here -- whose operand IS eight bytes -- are untouched. */
++		emit_usual_arithmetic_conversion(operand_left_type, operand_right_type);
+ 		struct type* lhs = operand_left_type;
+ 		struct type* rhs = operand_right_type;
+ 		int left_element = pointer_element_size(lhs);

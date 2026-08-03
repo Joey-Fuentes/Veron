@@ -1,47 +1,27 @@
-/* BITMASK -- KNOWN GAP: `*(p)++` advances wrongly, where `*p++` does not.
+/* BITMASK -- CLOSED, in two halves. Kept as a regression guard.
  *
- * BIT 8 IS CLOSED (EXPERIMENT-zzzw): `(p)++` on its own now advances. The
- * bitmask moved 44 -> 36 and the rest of this note stands unchanged -- bits 4
- * and 16 are the `*(p)++` half, which is the harder edit described below.
+ *     (p)++     EXPERIMENT-zzzw   the parentheses are the target
+ *     *(p)++    EXPERIMENT-zzzz   the increment precedes the dereference
  *
- * MEASURED, three spellings of one expression:
+ * micro-c read `*(p)++` as `(*p)++` -- a different program: the byte moved and
+ * the pointer did not. C reads it as `*((p)++)`, because a postfix operator
+ * binds tighter than unary `*`.
  *
- *     c = *p++;      value 8, p advances by 1     correct
- *     c = *(p++);    value 8, p advances by 1     correct
- *     c = *(p)++;    value 8, p DOES NOT advance  wrong
+ * The compiler already knew the right order: `*p++` increments, then applies
+ * the pending star LAST. The parenthesised path walked the dereference itself
+ * and then cleared the pending count, so the postfix handler got a value where
+ * it wanted an address and had no star left to apply. The fix hands the star
+ * on instead of spending it.
  *
- * `*(p)++` parses as `*((p)++)`, so the parenthesised thing is the target of a
- * postfix operator and must yield p's ADDRESS for the increment while the
- * expression as a whole yields the OLD value for the dereference. Case 118's
- * flag suppresses the load, which fixes the advance and then breaks the value
- * -- so it is a different defect wearing the same parentheses, and 118
- * deliberately does not claim it.
- *
- * WHERE tcc WRITES IT, on the same line of the same walk as case 118:
- *
+ * WHERE tcc WRITES IT, the other half of the pair zzzs closed:
  *     #define dwarf_read_1(ln,end) ((ln) < (end) ? *(ln)++ : 0)   tcc.h:1859
+ * tcc_eh_frame_hdr uses dwarf_read_1 and dwarf_read_4 together; zzzs stopped
+ * the segfault, this stops the walk seeing the same byte forever.
  *
- * tcc_eh_frame_hdr uses dwarf_read_1 and dwarf_read_4 together. 118 fixes the
- * one that segfaulted; this one reads a byte and fails to advance, so the
- * walk sees the same byte repeatedly rather than crashing. A wrong answer
- * where there used to be a fault is progress and is not a fix.
- *
- * WHY IT IS A GAP RATHER THAN A FAILURE. The cause is named and the shape is
- * reduced, but the change is not: the postfix handler needs the address to
- * increment through AND the pre-increment value as the result, and the paths
- * that carry the "do not load an assignment target" rule each decide by
- * looking at the next token. Making the postfix case work through parentheses
- * means giving it both, which is a different edit from 118's. Marked KNOWN GAP
- * so the suite stays meaningful, and so difftest says so loudly when it starts
- * passing.
- *
- * Probes, one bit each:
- *
- *   1  `*p++` -- the control, value and advance
- *   2  `*(p++)` -- parenthesised the other way, also correct
- *   4  `*(p)++` -- the gap
- *   8  `(p)++` on its own, no dereference
- *  16  the dwarf_read_1 macro end to end
+ * A NEIGHBOUR THAT IS STILL OPEN: `(*p)++`, parentheses around the
+ * dereference, segfaults -- and did so before any of this. The comment at
+ * cc_core.c's paren_lvalue site names that spelling as one it handles; it does
+ * not.
  */
 
 unsigned char buf[32];

@@ -1,0 +1,63 @@
+The vocabulary for narrowing REGISTER_ONE.
+
+EXPERIMENT-zzzza implements the usual arithmetic conversions, which means both
+operands of a binary operator have to be reduced to the chosen type before the
+operator runs. emit_narrowing_cast already did that for REGISTER_ZERO;
+REGISTER_ONE is the LEFT operand and neither table could touch it.
+
+Which side is signed is not fixed -- `got != 0x87654321` and `0x87654321 !=
+got` are both legal C and reach different registers -- so guessing one is not
+an option.
+
+Only the four-byte unsigned entry is added, because that is the only
+conversion zzzza emits. Adding the other five by symmetry would put five
+encodings in the tables that nothing has assembled, which is the mistake
+recorded against `add_x16,x14,x16` in emit_advance_temp: emitted output that
+"parsed and looked plausible for eighty walls and had never been assembled".
+
+amd64. `mov %ebx,%ebx` is 89 /r with mod=11, reg=EBX, rm=EBX -- ModRM 0xDB --
+so 89DB, next to the 89C0 that is already there for eax. Verified by
+disassembly:
+
+    89 c0    mov %eax,%eax
+    89 db    mov %ebx,%ebx
+
+aarch64. ORR Wd,WZR,Wm, the same encoding the existing `mov_w0,w0` uses:
+
+    0x2A000000 | (Wm << 16) | (WZR << 5) | Wd
+
+    mov_w0,w0    Wm=0 Wd=0    0x2A0003E0   e003002a   (already present)
+    mov_w1,w1    Wm=1 Wd=1    0x2A0103E1   e103012a
+
+There is no `uxtw` on either target and none is wanted: a 32-bit register
+write zeroes the top half of the 64-bit register, so `mov w,w` and `mov e,e`
+ARE the zero-extending moves. That is the same reasoning that gave the
+unsigned four-byte entry in patch 0010 its odd name.
+
+VERIFICATION IS UNEVEN AND SAYS SO. The amd64 entry is byte-anchored by
+objdump above. The aarch64 entry is anchored by construction against the
+mov_w0,w0 entry it mirrors, and then functionally: with it, uac-sweep.sh runs
+12,960 points on aarch64 under qemu and agrees with gcc on all of them, which
+it cannot do if the encoding is anything other than what its name says.
+tcc-two-ways' "byte-anchored against real as" step is what will close the gap
+properly, and it runs on a machine that has an aarch64 assembler.
+
+--- a/amd64/amd64_defs.M1
++++ b/amd64/amd64_defs.M1
+@@ -350,5 +350,6 @@
+ DEFINE movzx_rax,ax 480FB7C0
+ DEFINE movsx_rax,eax 4863C0
+ DEFINE mov_eax,eax 89C0
++DEFINE mov_ebx,ebx 89DB
+ DEFINE cvtsi2sd_xmm0,rax F2480F2AC0
+ DEFINE movq_rax,xmm0 66480F7EC0
+--- a/aarch64/aarch64_defs.M1
++++ b/aarch64/aarch64_defs.M1
+@@ -2432,6 +2432,7 @@
+ DEFINE uxtb_w0,w0 001c0053
+ DEFINE uxth_w0,w0 003c0053
+ DEFINE mov_w0,w0 e003002a
++DEFINE mov_w1,w1 e103012a
+ DEFINE scvtf_d0,x0 0000629e
+ DEFINE fmov_x0,d0 0000669e
+ DEFINE mov_x8,226 481c80d2

@@ -5,8 +5,8 @@ compile tcc directly, rather than reaching tcc through Mes. That enhanced
 compiler is called **micro-c**: M2-Planet at pin `bd2fe4b` plus a patch series.
 This file is its state.
 
-**Status.** micro-c is M2-Planet at pin `bd2fe4b` plus **73 patches** (4 base +
-69 experiments). It compiles `tcc.c` -- tcc's whole source including its
+**Status.** micro-c is M2-Planet at pin `bd2fe4b` plus **75 patches** (4 base +
+71 experiments). It compiles `tcc.c` -- tcc's whole source including its
 command-line driver -- and the linked **1.63 MB** aarch64 binary (`mc-tcc`) is
 a working tcc:
 
@@ -1595,15 +1595,27 @@ in the `buildlogs-stage0-stage4-complete` artifact, which is why this entry
 could be corrected at all -- the fourth time the harness, not the compiler,
 has been the thing standing in the way.
 
-**5. Case 110, `KNOWN GAP`. Attempted and deliberately not patched.** Bits 1
-and 2 fail: an `int` compared against a hex literal above `INT_MAX` should
-convert the int to `unsigned int`, and micro-c folds signed 64-bit instead.
-Bits 4 and 8 -- the `0x7FFFFFFF` boundary and the explicit `u` suffix -- pass,
-so the gap is exactly the literal's TYPE and the conversion it forces, not the
-value. Closing it means implementing the usual arithmetic conversions rather
-than patching one comparison, and it still has no demonstrated tcc failure
-behind it. Left open on purpose: a partial conversion rule risks the suite and
-the self-compilation fixpoint for a defect nothing is waiting on.
+**5. Case 110. CLOSED** (`EXPERIMENT-zzzza`, plus `m2libc/0017`). Three things
+were missing and only the first is what the case probes: a constant's TYPE (the
+base and suffix choose which of C89's four candidate lists it fits into), the
+CONVERSION that type forces on the other operand, and the RESULT being modulo
+the chosen type rather than modulo the register.
+
+**The case is not the measurement, and this is the clearest example in the file
+of why.** Case 110's four probes were written from the bug. With them green,
+`tools/uac-sweep.sh` -- which generates the space rather than sampling it --
+found four more faults: `0x87654321L` typed unsigned int where C says long,
+the same for `UL`, operands narrower than `int` never converting because the
+integer promotions run first, and `*` and `+` keeping bits the type does not
+have. The sweep is 12,960 points per architecture in about ninety seconds:
+nine operand types, fifteen literal spellings, twelve operators, eight values,
+gcc as the oracle. Both columns now agree on all of them.
+
+Scope was wrong once and loudly: the conversion first went into
+`common_recursion`, which ten sites call, and in most of them `REGISTER_ONE`
+holds an ADDRESS. Truncating a stack address to 32 bits made `local.n = 5`
+segfault. It belongs to the operators whose contract is two values in, one
+value out.
 
 **6. Case 116. CLOSED** (`EXPERIMENT-zzzx`). Dereferencing the result of a
 conditional segfaulted -- and the ternary was not the cause. A pending `*` is
@@ -1616,8 +1628,19 @@ its condition is parsed before `?` is seen. Bracketing `comma_expression()`
 alone closes it; `zzzg` widened this same restore to a whole call and cost
 12/12 -> 0/12.
 
-**7. Case 119, `KNOWN GAP`.** `*(p)++` advances wrongly, where `*p++` does not.
-**Half closed** by `EXPERIMENT-zzzw`: the plainer `(p)++` underneath it -- no
+**7. Case 119. CLOSED**, in two halves -- `EXPERIMENT-zzzw` for `(p)++` and
+`EXPERIMENT-zzzz` for `*(p)++`.
+
+The second half was an ORDER problem, not a flag problem. micro-c read
+`*(p)++` as `(*p)++`: the byte moved and the pointer did not. The compiler
+already knew the right order -- `*p++` increments and applies the pending star
+LAST -- but the parenthesised path walked the dereference itself and then
+cleared the pending count, so the postfix handler received a value where it
+expects an address and had no star left to apply. The fix hands the star on
+instead of spending it. Removing the `paren_lvalue` postfix branch instead --
+the line that makes it mean `(*p)++` -- does not fix it, it segfaults.
+
+The first half, for the record: `EXPERIMENT-zzzw`, the plainer `(p)++` underneath it -- no
 dereference at all, and never separated from `*(p)++` before -- advanced
 nothing, because postfix_expr_variable's `is_postfix_operator` check sees `)`
 and not `++`. That is the ninth copy of zzzs's rule and it needed nothing new.
@@ -1639,6 +1662,14 @@ identifier called with parentheses as a function returning int; that is now
 implemented, guarded on a following `(` so a bare unknown name is still a
 compile error. The corpus goes 419 -> 420 of 426, and the six that remain are
 the documented stale rows.
+
+**9. `(*p)++` segfaults.** Parentheses around the DEREFERENCE, so the increment
+applies to the byte. Found while checking the neighbours of defect 7 and
+confirmed to predate all of that work -- it fails identically on the compiler
+before `zzzw`. It is worth recording precisely because the comment at
+`cc_core.c`'s `paren_lvalue` site names that spelling as one it handles:
+"`(*p)++` the same thing written the other way round". It does not. Not folded
+into `zzzz`, so that patch measures one thing.
 
 ### Latent -- recorded so they are not rediscovered
 

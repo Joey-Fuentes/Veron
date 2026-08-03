@@ -1,0 +1,160 @@
+a postfix ++ through parentheses is applied before the dereference, not after.
+
+EXPERIMENT-zzzw closed `(p)++`. This closes the rest of case 119: `*(p)++`,
+which micro-c read as `(*p)++` -- a different program.
+
+    p = buf + 8;  c = *(p)++;
+
+    c == 8          correct
+    p == buf + 8    WRONG, the pointer never moved
+    buf[8] == 9     WRONG, the increment landed on the byte
+
+C reads `*(p)++` as `*((p)++)`, because a postfix operator binds tighter than
+unary `*`. The increment applies to p and the dereference applies to what the
+increment RETURNED.
+
+THE COMPILER ALREADY KNEW HOW TO DO THIS. `*p++` -- no parentheses -- is
+correct and always was, and the emitted code says exactly why:
+
+    lea_rax,[r13-8]            address of p
+    # postfix inc/dec
+    mov_rax,[rax]              load p
+    push_rax                   keep the OLD p
+    add_rax,BYTE '01'          p + 1
+    mov_[rbx],rax              store it back
+    pop_rax                    the old p again
+    movzx_rax,BYTE_PTR_[rax]   THE STAR, applied after the increment
+    # postfix inc/dec end
+
+The postfix handler applies whatever num_dereference_after_postfix is still
+carrying, and it applies it LAST. That is the whole of the correct order.
+
+WHAT THE PARENTHESISED PATH DID INSTEAD. It walked the dereference itself,
+before the increment, and then set num_dereference_after_postfix to 0 -- so the
+postfix handler received p's VALUE where it expects an address, incremented the
+byte at it, and had no star left to apply:
+
+    lea_rax,[r13-8]            address of p
+    mov_rax,[rax]              LOAD p -- the paren path's own walk
+    # postfix inc/dec
+    movzx_rax,BYTE_PTR_[rax]   treats p's value as the variable
+    add_rax,BYTE '01'
+    mov_[rbx],al               stores the byte back
+    # postfix inc/dec end      no dereference, the count was cleared
+
+So the fix is to spend nothing and hand the star on: return with the count
+intact and let the one handler that knows the right order do both halves. Two
+edits, and the second is what makes the first possible.
+
+  THE PARENTHESES ARE THE TARGET, so primary_expr must leave p's ADDRESS
+  rather than its value. assign_after_parens already arranges that for `=` and
+  compound assignment, under a guard that the enclosing expression has no
+  pending stars -- correct for `*(t) = v`, where the star is OUTSIDE the
+  assignment and t really must be loaded and followed. A postfix ++/-- is the
+  opposite: it binds tighter than the star, so the parentheses are the target
+  whatever is pending. The two are separated rather than sharing a condition.
+
+  THE DEREFERENCE WALK IS SKIPPED, by returning before it when a postfix
+  follows. paren_lvalue is left exactly as it was and still covers the OTHER
+  spelling, `(*p)++`, where the parentheses are around the dereference and the
+  increment really does apply to it.
+
+WHAT WAS TRIED AND DID NOT WORK, because the comment at that site claims
+otherwise. Removing the `paren_lvalue = TRUE` branch for postfix -- the line
+that is what makes `*(p)++` mean `(*p)++` -- does not fix it, it SEGFAULTS:
+without it the dereference loads and the increment stores through the loaded
+value. The order has to be corrected, not the flag.
+
+WHERE tcc WRITES IT, the other half of the pair zzzs closed:
+
+    #define dwarf_read_1(ln,end) ((ln) < (end) ? *(ln)++ : 0)   tcc.h:1859
+
+tcc_eh_frame_hdr walks .eh_frame with dwarf_read_1 and dwarf_read_4 together.
+zzzs stopped the segfault; this stops the walk seeing the same byte forever.
+
+MEASURED, EITHER SIDE:
+
+    case 119            bitmask 36 -> 0, all five probes
+    difftest amd64      105 pass, 0 fail
+    difftest aarch64    107 pass, 0 fail
+    stage 2 corpus      420 of 426                    unchanged
+    mc-tcc              builds, 1,651,969 bytes
+    twelve.sh           12 of 12
+
+A KNOWN NEIGHBOUR, NOT CLOSED AND NOT CAUSED BY THIS. `(*p)++` -- parentheses
+around the dereference -- segfaults, and does so identically on the compiler
+before this patch. The comment at cc_core.c's paren_lvalue site names that
+spelling as one it handles; it does not. Recorded rather than folded in, so
+that this patch measures one thing.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -1591,10 +1654,41 @@
+ 			 * is skipped, not the dereference. Getting that half wrong is what
+ 			 * made the increment scale by the pointer's own width instead of
+ 			 * its element's. */
++			/* A POSTFIX ++/-- OWNS THE PARENTHESES, AND THE STAR COMES AFTER IT.
++			 *
++			 * `*(p)++` is `*((p)++)` -- postfix binds tighter than unary `*` --
++			 * so the increment applies to p and the dereference applies to the
++			 * value the increment RETURNED. That is precisely what `*p++` does,
++			 * and the postfix handler already does it: it increments, then
++			 * applies whatever num_dereference_after_postfix is still carrying.
++			 *
++			 * This branch was doing neither half. It walked the dereference
++			 * HERE, before the increment, and then cleared the count -- so the
++			 * postfix handler received p's VALUE where it expects an address,
++			 * incremented the byte at it, and never dereferenced anything:
++			 *
++			 *     c = *(p)++;   c == 8 correct, p unmoved, buf[8] == 9
++			 *
++			 * which is `(*p)++` -- a different program. So hand the star on
++			 * rather than spending it: return with the count intact and let the
++			 * one handler that knows the right order do both. primary_expr has
++			 * already left p's ADDRESS, because assign_after_parens now treats a
++			 * following postfix as a target regardless of pending stars.
++			 *
++			 * paren_lvalue below is untouched and still covers the OTHER
++			 * spelling, `(*p)++`, where the parentheses are around the
++			 * dereference and the increment really does apply to it. */
++			if(NULL != global_token)
++			{
++				if(match("++", global_token->s) || match("--", global_token->s))
++				{
++					return;
++				}
++			}
++
+ 			int paren_lvalue = prefix_lvalue;
+ 			if(NULL != global_token)
+ 			{
+-				if(match("++", global_token->s) || match("--", global_token->s)) paren_lvalue = TRUE;
+ 				/* AND AN ASSIGNMENT TARGET, which is the same rule again and
+ 				 * the eighth place in this file to carry its own copy of it.
+ 				 * `*(t) = 7` loaded through the pointer and stored at the
+@@ -4247,11 +4467,19 @@
+ 				 * unchanged and is what keeps this off `*(p)++`, which is a
+ 				 * different defect: there the ++ belongs to `(p)` but micro-c
+ 				 * reads the whole thing as `(*p)++`. Case 119 holds it. */
+-				assign_after_parens = (0 == num_dereference_after_postfix)
+-				                   && (match("=", scan->next->s)
+-				                       || is_compound_assignment(scan->next->s)
+-				                       || match("++", scan->next->s)
+-				                       || match("--", scan->next->s));
++				/* A POSTFIX ++/-- BINDS TIGHTER THAN THE OUTER STAR, so it is
++				 * NOT subject to the num_dereference_after_postfix guard above.
++				 * C reads `*(p)++` as `*((p)++)`: the increment applies to p,
++				 * which therefore needs its ADDRESS, exactly as in `*p++`.
++				 * `*(t) = v` is the opposite -- there the star is outside the
++				 * assignment, so t is loaded and followed -- which is why the
++				 * two are separated here rather than sharing one condition. */
++				int postfix_after_parens = match("++", scan->next->s)
++				                        || match("--", scan->next->s);
++				assign_after_parens = postfix_after_parens
++				                   || ((0 == num_dereference_after_postfix)
++				                       && (match("=", scan->next->s)
++				                           || is_compound_assignment(scan->next->s)));
+ 			}
+ 
+ 			if(chain_after_parens)
+
