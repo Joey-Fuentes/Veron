@@ -6,18 +6,31 @@
 # before.
 
 # ---------------------------------------------------------------------------
-# RESOLVED -- kept as a record of what the check caught and what fixed it.
+# RESOLVED -- kept as a record of what the check caught, what was WRONG about
+# the first diagnosis, and what actually fixed it.
 # ---------------------------------------------------------------------------
 
 [[resolved]]
 what  = "ext4 image: superblock and inode timestamps"
-found = "VERON-IMAGE-REPRO-DIFF, differing bytes at offsets 1024-2048 and in the inode table, values incrementing between the two builds"
-cause = """
-SOURCE_DATE_EPOCH was exported into the build box but the image step runs \
-OUTSIDE it, so mke2fs stamped s_mkfs_time, s_mtime and the inode ctimes with \
-wall-clock time. The determinism knobs that WERE set -- fixed UUID, fixed \
-directory hash seed -- do not cover timestamps."""
-fix   = "export SOURCE_DATE_EPOCH=0 in the image step; e2fsprogs honours it"
+found = """
+VERON-IMAGE-REPRO-DIFF. Two builds seconds apart differed at cmp -l positions \
+1073, 1089, 1289 (superblock +48 s_wtime, +64 s_lastcheck, +264 s_mkfs_time), \
+2045-2048 (+1020 s_checksum, following from those three) and 57353 onward \
+(inode table i_ctime/i_crtime)."""
+first_guess = """
+WRONG. The first fix exported SOURCE_DATE_EPOCH into the image step, on the \
+assumption that e2fsprogs honours it. It does not -- reproduced locally \
+against mke2fs 1.47.0 with the variable set, and the same offsets still \
+differed. Recorded because the wrong diagnosis is worth knowing: the fields \
+look exactly like the ones SOURCE_DATE_EPOCH governs elsewhere."""
+fix = """
+tools/normalize-ext4.sh, run after each mke2fs. Rewrites the three superblock \
+timestamps and every inode's ctime/atime/mtime/crtime to a fixed date using \
+debugfs, which RECOMPUTES THE CHECKSUMS -- patching the bytes directly would \
+leave s_checksum wrong, and a filesystem failing its own checksum is worse \
+than one that does not reproduce. Verified: two images built two seconds \
+apart converge on one hash, and e2fsck -fn passes clean afterwards. Costs \
+about a second per 50,000 inodes."""
 
 [[resolved]]
 what  = "initramfs: gzip FNAME field"
@@ -25,13 +38,22 @@ found = "two archives with byte-identical cpio content produced different .gz by
 cause = """
 Python's GzipFile stores fileobj.name in the header unless filename is given, \
 so writing to ir1.cpio.gz and ir2.cpio.gz embedded different names. This is \
-the field `gzip -n` suppresses, and the comment claimed -n behaviour while \
-the code did not implement it."""
-fix   = "GzipFile(filename=\"\", mtime=0)"
+the field `gzip -n` suppresses, and the code's own comment claimed -n \
+behaviour while not implementing it."""
+fix   = 'GzipFile(filename="", mtime=0)'
+
+[[resolved]]
+what  = "initramfs: silently empty archive"
+found = "a 20-byte .cpio.gz reported as success"
+cause = """
+The shell builder piped to cpio with 2>/dev/null, so on a machine without \
+cpio the error vanished and gzip compressed nothing. A silently empty \
+initramfs panics several steps later, far from the cause."""
+fix   = "written in Python (newc directly), no host cpio, hard-fails under 4 KB"
 
 # ---------------------------------------------------------------------------
 # OPEN -- differences accepted, with a reason.
 # ---------------------------------------------------------------------------
 
-# None yet. An entry here means "this differs and we know why and we accept
-# it", which is a much weaker claim than the two above, and should stay rare.
+# None. An entry here means "this differs, we know why, we accept it" -- a
+# much weaker claim than anything above, and it should stay rare.

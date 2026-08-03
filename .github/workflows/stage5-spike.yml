@@ -180,10 +180,11 @@ jobs:
         run: |
           set -eu
           cd spikes/stage5/out
-          # e2fsprogs honours SOURCE_DATE_EPOCH for superblock and inode
-          # timestamps. It was exported into the BOX but never here, and this
-          # step runs outside it -- so every mke2fs stamped wall-clock time.
-          export SOURCE_DATE_EPOCH=0
+          # SOURCE_DATE_EPOCH DOES NOT WORK HERE. That was the first guess and
+          # it was wrong -- reproduced locally against mke2fs 1.47.0 with the
+          # variable set, and the same three superblock timestamps still
+          # differed. The image is normalised afterwards instead; see
+          # tools/normalize-ext4.sh for the byte offsets and the reasoning.
           SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
           build_img() {
             rm -f "$1"
@@ -192,6 +193,10 @@ jobs:
               -E hash_seed=00000000-0000-4000-8000-000000000002 \
               -O ^has_journal,^resize_inode,^dir_index \
               -m 0 -b 4096 "$1" "${SZ}M"
+            # DECLARED TRANSFORMATION, not a silent fixup: rewrites the three
+            # superblock timestamps and every inode's times, with debugfs so
+            # the checksums are recomputed rather than left wrong.
+            sh ../tools/normalize-ext4.sh "$1"
           }
           build_img rootfs.img
           sha256sum rootfs.img | tee IMAGE-SHA256
