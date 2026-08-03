@@ -1305,6 +1305,80 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+      # THE SAME COLLECTION THE mc-tcc ARM DOES, UNDER -reference NAMES.
+      #
+      # This arm exists to be compared against. Uploading its Image, initramfs
+      # and toolchain is what makes the comparison possible at all -- otherwise
+      # the only way to ask "does the seed-built toolchain produce the same
+      # system as the host-built one" is to grep two logs for a handful of
+      # curated hashes, which is exactly how a real difference went unnoticed
+      # for four runs.
+      - name: 'Collect the bootable artifacts'
+        if: always()
+        run: |
+          set -u
+          mkdir -p boot
+          for f in Image initramfs.cpio.gz; do
+            [ -s "box/out/$f" ] && cp "box/out/$f" boot/ || echo "  box/out/$f ABSENT"
+          done
+          [ -d boot ] && ( cd boot && sha256sum ./* 2>/dev/null | tee SHA256SUMS | sed 's/^/    /' ) || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: veron-boot-reference
+          path: boot/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: 'Collect the final toolchain'
+        if: always()
+        run: |
+          set -u
+          mkdir -p toolchain
+          S=box/work/lfs
+          for f in usr/bin/gcc usr/bin/ld usr/bin/as usr/lib/libc.so.6 usr/bin/busybox; do
+            [ -s "$S/$f" ] && cp "$S/$f" "toolchain/$(basename "$f")" 2>/dev/null || true
+          done
+          if [ -d "$S/usr/libexec/gcc" ]; then
+            tar -C "$S/usr/libexec" -c gcc 2>/dev/null \
+              | gzip -9n > toolchain/libexec-gcc.tar.gz || true
+          fi
+          if [ -n "$(ls -A toolchain 2>/dev/null)" ]; then
+            ( cd toolchain && sha256sum ./* 2>/dev/null | tee SHA256SUMS | sed 's/^/    /' )
+            du -sh toolchain | sed 's/^/    /'
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: veron-toolchain-reference
+          path: toolchain/
+          retention-days: 30
+          if-no-files-found: ignore
+
+      - name: 'Collect the sysroot manifest'
+        if: always()
+        run: |
+          set -u
+          mkdir -p manifest
+          cp box/out/manifest.tsv manifest/ 2>/dev/null || true
+          if [ -s manifest/manifest.tsv ]; then
+            echo "  $(wc -l < manifest/manifest.tsv) entries"
+            printf '  sysroot digest: %s\n' \
+              "$(LC_ALL=C sort manifest/manifest.tsv | sha256sum | cut -d' ' -f1)"
+          else
+            echo "  no manifest.tsv -- the run did not reach B8"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sysroot-manifest-reference
+          path: manifest/
+          retention-days: 30
+          if-no-files-found: ignore
+
       - name: 'Publish the sysroot for side experiments'
         if: always()
         run: |
@@ -1322,6 +1396,12 @@ jobs:
             cp -a box/work/lfs lfs 2>/dev/null || true
             cp -a box/work/prefix prefix 2>/dev/null || true
             echo "  sysroot published: $(du -sh lfs 2>/dev/null | cut -f1) + $(du -sh prefix 2>/dev/null | cut -f1)"
+            # 6 GB, compressed and uploaded on every run, and NOTHING restores
+            # it. It is kept because a restorable sysroot is what makes a side
+            # experiment cheap -- but if a quarter passes with no restore, this
+            # step and its cache should go rather than be paid for out of
+            # habit. Restore with the prefix `sysroot-<arm>-<glibc>-<khdr>-v2-`.
+            echo "  (nothing restores this today -- restore by prefix if you need it)"
           else
             echo "  chapter 5 did not complete -- nothing published, and that is"
             echo "  deliberate: a restorable half-built sysroot is worse than none."
@@ -1333,7 +1413,24 @@ jobs:
           path: |
             lfs
             prefix
-          key: bridge-sysroot-${{ env.GLIBC }}-${{ env.KHDR }}-v1
+          # UNIQUE PER RUN, AND PER ARM. Two faults were live here:
+          #
+          #   1. GitHub cache keys are IMMUTABLE. Once
+          #      `bridge-sysroot-2.44-7.1.5-v1` existed, every later save with
+          #      that key failed with "another job may be creating this
+          #      cache" -- which reads as a race and is actually "this key is
+          #      already taken, forever". The 6.2 GB was compressed and thrown
+          #      away on every run since.
+          #
+          #   2. BOTH ARMS USED ONE KEY. Nothing restores this cache today, so
+          #      no harm has been done -- but the moment a restore is added,
+          #      the mc-tcc arm could restore the REFERENCE arm's sysroot and
+          #      the experiment would be silently comparing a thing to itself.
+          #      The arm belongs in the key whether or not anything reads it.
+          #
+          # `${{ github.run_id }}` makes each save unique; restore by the
+          # prefix `sysroot-ARM-GLIBC-KHDR-v2-` to get the most recent.
+          key: sysroot-reference-${{ env.GLIBC }}-${{ env.KHDR }}-v2-${{ github.run_id }}
 
       - name: 'THE APPLET SET: what the chain actually invoked'
         if: always()

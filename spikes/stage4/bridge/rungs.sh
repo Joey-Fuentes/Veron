@@ -110,6 +110,17 @@ hashout() {
     printf '%s\t%s\t%s\t%s\n' "$1" "$_p" "$_sz" "$_sh" >> "$MANIFEST" 2>/dev/null || true
 }
 
+# An INPUT, recorded silently -- the caller has already printed it. Kept
+# separate from hashout so the manifest distinguishes what a rung CONSUMED
+# from what it PRODUCED, which is the distinction a derivation record is
+# built on and which cannot be recovered later from a flat list of hashes.
+hashin() {
+    [ -e "$2" ] || return 0
+    printf '%s\t%s\t%s\t%s\n' "$1" "$2" \
+        "$(wc -c < "$2" 2>/dev/null || echo 0)" \
+        "$(sha256sum "$2" 2>/dev/null | cut -d" " -f1)" >> "$MANIFEST" 2>/dev/null || true
+}
+
 # Every regular file under a tree, for whole-sysroot manifesting. Sorted, so
 # two runs produce comparable files rather than filesystem-order noise.
 hashtree() {
@@ -123,7 +134,53 @@ hashtree() {
     printf '    %-44s %14s files manifested\n' "$2" \
         "$(find "$2" -type f 2>/dev/null | wc -l)"
 }
-head1() { say ""; say "  === $* ==="; }
+# head1 SETS THE CURRENT RUNG, so hashout and hashin do not have to be told
+# which one they are in. Before this, every manifest line would have needed the
+# label passed by hand at every call site, and the first one anybody forgot
+# would silently attribute an artifact to the wrong rung.
+RUNG=start
+head1() {
+    RUNG=$(printf '%s' "$*" | sed -n 's/^RUNG \([0-9.]*\).*/\1/p')
+    [ -n "$RUNG" ] || RUNG=misc
+    say ""
+    say "  === $* ==="
+}
+
+# WHAT A RUNG PRODUCED: printed with its exact size and full sha256, and
+# recorded. This replaces lines of the form
+#
+#     say "    make: $(wc -c < "$PFX/bin/make") bytes"
+#
+# which gave a size and no hash -- enough to notice something changed size,
+# useless for noticing it changed content, and impossible to trace. A rung's
+# outputs are the only thing another rung consumes, so they are the edges of
+# the whole graph.
+produced() {
+    for _o in "$@"; do
+        if [ -e "$_o" ]; then
+            printf '    -> %-40s %12s  %s\n' "$_o" \
+                "$(wc -c < "$_o" 2>/dev/null || echo 0)" \
+                "$(sha256sum "$_o" 2>/dev/null | cut -d' ' -f1)"
+            printf 'OUT.%s\t%s\t%s\t%s\n' "$RUNG" "$_o" \
+                "$(wc -c < "$_o" 2>/dev/null || echo 0)" \
+                "$(sha256sum "$_o" 2>/dev/null | cut -d" " -f1)" >> "$MANIFEST" 2>/dev/null || true
+        else
+            printf '    -> %-40s %12s\n' "$_o" "ABSENT"
+        fi
+    done
+}
+
+# WHAT A RUNG CONSUMED. Recorded, not printed -- the tarball list is already
+# printed once at the top and repeating twenty-six sha256 lines per rung would
+# bury the build. The record is what `veron why` walks.
+consumed() {
+    for _i in "$@"; do
+        [ -e "$_i" ] || continue
+        printf 'IN.%s\t%s\t%s\t%s\n' "$RUNG" "$_i" \
+            "$(wc -c < "$_i" 2>/dev/null || echo 0)" \
+            "$(sha256sum "$_i" 2>/dev/null | cut -d" " -f1)" >> "$MANIFEST" 2>/dev/null || true
+    done
+}
 
 # THE SYSROOT IS /usr, AND THAT IS THE FIX FOR RUNG 3.
 #
@@ -181,6 +238,12 @@ untar() {          # $1 = path prefix, e.g. /in/musl
         *.tar.bz2) _flag=-jxf ;;
         *)         say "    unknown archive type: $_t"; return 1 ;;
     esac
+
+    # RECORDED HERE, ONCE, RATHER THAN AT EVERY CALL SITE. Every rung that
+    # consumes an upstream reaches it through untar, so hooking the record in
+    # here means no rung can forget to declare its input -- which is the
+    # failure mode of asking twenty call sites to remember.
+    consumed "$_t"
 
     # THE COMMAND, PRINTED BEFORE IT RUNS. Several rounds here have argued
     # about what was being executed rather than reading it. The working
@@ -291,15 +354,27 @@ R0=skip; R1=skip; R2=skip; R3=skip; R35=skip; R4=skip; R45=skip; R5=skip; R6=ski
 # first four bytes, which say whether a thing is gzip (1f 8b), xz (fd 37),
 # bzip2 (42 5a) or something that is not compressed at all.
 say ""
+# EVERY INPUT, WITH ITS FULL sha256. This printed the first four bytes of each
+# file -- the magic number, `fd 37 7a 58` for xz and `1f 8b 08 00` for gzip.
+# That is a format check, and it was standing where a hash belongs: four bytes
+# that are IDENTICAL for every xz file in the list tell you nothing about which
+# tarball you got.
+#
+# These are the roots of the whole graph. If the sha256 of an input is not in
+# the log, nothing built from it can be traced, and the pins in the workflow
+# are a claim rather than a record.
 say "  === WHAT IS IN /in ==="
+printf '    %-32s %12s  %s\n' "file" "bytes" "sha256"
 for _f in /in/*; do
     [ -f "$_f" ] || continue
-    printf '    %-30s %10s  %s\n' "${_f##*/}" "$(wc -c < "$_f")" \
-      "$(dd if="$_f" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -s ' ')"
+    printf '    %-32s %12s  %s\n' "${_f##*/}" "$(wc -c < "$_f")" \
+      "$(sha256sum "$_f" | cut -d' ' -f1)"
+    hashin IN "$_f"
 done
 
+say ""
 say "  arm:      $ARM"
-say "  compiler: $CC_BIN  ($(wc -c < "$CC_BIN") bytes)"
+hashout SEED "$CC_BIN"
 say "  -B dir:   $TCCDIR"
 
 # ---------------------------------------------------------------------------
@@ -376,13 +451,15 @@ if [ "$R0" != FAIL ]; then
   # name when -run is given, exactly as its own Makefile arranges.
   if [ -f runmain.c ]; then
     if $CC -c -o "$TCCDIR/runmain.o" runmain.c 2>>/work/libtcc1.err; then
-      say "    runmain.o: $(wc -c < "$TCCDIR/runmain.o") bytes -- -run can start"
+      say "    runmain.o built -- -run can start"
+      produced "$TCCDIR/runmain.o"
     else
       say "    runmain.o: does NOT build -- -run will not start"
     fi
   fi
   if [ -n "$objs" ] && "$CC_BIN" -ar rcs "$TCCDIR/libtcc1.a" $objs 2>>/work/libtcc1.err; then
-    say "    libtcc1.a: $(wc -c < "$TCCDIR/libtcc1.a") bytes from $(echo $objs | wc -w) objects"
+    say "    libtcc1.a from $(echo $objs | wc -w) objects"
+    produced "$TCCDIR/libtcc1.a"
     R0=ok
   else
     R0=FAIL
@@ -734,7 +811,8 @@ FLOATH
   # failure here is a finding rather than a surprise.
   find obj/src -name '*.o' > /work/objlist.txt
   if "$CC_BIN" -ar rcs "$SYS/lib/libc.a" $(cat /work/objlist.txt) 2>/work/ar.err; then
-    say "    libc.a: $(wc -c < "$SYS/lib/libc.a") bytes from $(wc -l < /work/objlist.txt) objects"
+    say "    libc.a from $(wc -l < /work/objlist.txt) objects"
+    produced "$SYS/lib/libc.a"
   else
     say "    ar FAILED"
     grep -av '^[A-Z][0-9]*$' /work/ar.err | head -6 | sed 's/^/      /'
@@ -1839,7 +1917,7 @@ if [ "$R3" = ok ] && [ "$R35" != FAIL ]; then
     _lrc=$?
     say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_lrc)"
     if [ "$_lrc" = 0 ] && [ -x "$PFX/bin/make" ]; then
-      say "    make: $(wc -c < "$PFX/bin/make") bytes"
+      produced "$PFX/bin/make"
       # live-bootstrap's own test, verbatim: `make --version`
       # STATIC? make links through $CC directly, not libtool, so -static in CC
       # reaches it -- but binutils proved that assumption wrong one rung later,
@@ -2350,7 +2428,7 @@ if [ "$R4" = ok ]; then
           # Replace the bootstrap make with the real one, and say so, because
           # everything above this line was driven by the other binary.
           cp ./make "$PFX/bin/make"
-          say "    make: $(wc -c < "$PFX/bin/make") bytes"
+          produced "$PFX/bin/make"
           "$PFX/bin/make" --version 2>&1 | head -1 | sed 's/^/      /'
           if grep -aq 'ld-musl\|ld-linux' "$PFX/bin/make"; then
             say "    DYNAMIC -- will not run in this box"; R45=FAIL
@@ -4811,7 +4889,7 @@ if [ "$R14" = ok ]; then
           say "    /usr/bin/busybox is not a regular file -- it was overwritten"
           R15=FAIL
         fi
-        say "    busybox: $(wc -c < busybox) bytes"
+        produced busybox
         say "    applets: $(./busybox --list 2>/dev/null | wc -l)"
         # THE BINARY ITSELF, not a grep for a substring. A static ELF has no
         # PT_INTERP program header; readelf says so exactly.

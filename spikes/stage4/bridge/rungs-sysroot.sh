@@ -115,6 +115,34 @@ hashout() {
     printf '%s\t%s\t%s\t%s\n' "$1" "$_p" "$_sz" "$_sh" >> "$MANIFEST" 2>/dev/null || true
 }
 
+# The phase-B half of the same pair. head1 sets RUNG; produced prints an
+# artifact with its exact size and full sha256 and records it; consumed records
+# an input silently. See rungs.sh for why the label is derived rather than
+# passed.
+RUNG=B
+produced() {
+    for _o in "$@"; do
+        if [ -e "$_o" ]; then
+            printf '    -> %-40s %12s  %s\n' "$_o" \
+                "$(wc -c < "$_o" 2>/dev/null || echo 0)" \
+                "$(sha256sum "$_o" 2>/dev/null | cut -d' ' -f1)"
+            printf 'OUT.%s\t%s\t%s\t%s\n' "$RUNG" "$_o" \
+                "$(wc -c < "$_o" 2>/dev/null || echo 0)" \
+                "$(sha256sum "$_o" 2>/dev/null | cut -d" " -f1)" >> "$MANIFEST" 2>/dev/null || true
+        else
+            printf '    -> %-40s %12s\n' "$_o" "ABSENT"
+        fi
+    done
+}
+consumed() {
+    for _i in "$@"; do
+        [ -e "$_i" ] || continue
+        printf 'IN.%s\t%s\t%s\t%s\n' "$RUNG" "$_i" \
+            "$(wc -c < "$_i" 2>/dev/null || echo 0)" \
+            "$(sha256sum "$_i" 2>/dev/null | cut -d" " -f1)" >> "$MANIFEST" 2>/dev/null || true
+    done
+}
+
 # Every regular file under a tree, for whole-sysroot manifesting. Sorted, so
 # two runs produce comparable files rather than filesystem-order noise.
 hashtree() {
@@ -957,7 +985,11 @@ if [ "$B5" = ok ]; then
       # Four runs produced four different Images of identical size, which is
       # exactly the signature of fixed-width values written into fixed slots.
       # SOURCE_DATE_EPOCH is already 0 in this box; kbuild wants its own names.
-      export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-@0}"
+      # A LITERAL DATE STRING, NOT `@0`. kbuild embeds this value verbatim, so
+      # `@0` produced a banner reading `#1 SMP PREEMPT @0` -- deterministic,
+      # and it looks like a bug every time someone reads it. The kernel does
+      # not parse it, so a plain fixed string is both stable and legible.
+      export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-Thu Jan  1 00:00:00 UTC 1970}"
       export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-veron}"
       export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-veron}"
       if timeout 7200 make ARCH=arm64 -j"$NP" Image > b.log 2>&1 \
@@ -1168,11 +1200,27 @@ INIT
   #
   # Size varying is the tell: different mtimes compress to different lengths.
   # Normalise all three -- mtimes to the epoch, order by sort, gzip -n.
-  find "$W/ir" -exec touch -h -d @0 {} + 2>/dev/null || true
+  # busybox `touch` does not accept `-d @0` in every build, and a silent
+  # failure here looks exactly like the fix not working. Try the portable
+  # forms in order and say which one took, so the next reader is not left
+  # guessing whether the normalisation happened.
+  if find "$W/ir" -exec touch -h -d "1970-01-01 00:00:00" {} + 2>/dev/null; then
+    say "    mtimes normalised (touch -d)"
+  elif find "$W/ir" -exec touch -h -t 197001010000.00 {} + 2>/dev/null; then
+    say "    mtimes normalised (touch -t)"
+  else
+    say "    WARNING: could not normalise mtimes -- initramfs will not be reproducible"
+  fi
   ( cd "$W/ir" && find . | LC_ALL=C sort | cpio -o -H newc 2>/dev/null \
       | gzip -9n > "$W/initramfs.cpio.gz" )
   if [ -s "$W/initramfs.cpio.gz" ]; then
-    B7=ok; say "    initramfs: $(wc -c < "$W/initramfs.cpio.gz") bytes"
+    B7=ok
+    RUNG=B7; produced "$W/initramfs.cpio.gz"
+    # IF THE ARCHIVE VARIES, IS IT THE ARCHIVE OR ITS CONTENTS? The initramfs
+    # holds busybox plus the guest test binaries, and a non-deterministic test
+    # binary would move the archive's size just as an mtime would. Manifest
+    # the inputs so the two cases are distinguishable without another run.
+    hashtree B7 "$W/ir"
   else
     B7=FAIL; say "    cpio produced nothing"
   fi

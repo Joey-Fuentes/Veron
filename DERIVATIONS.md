@@ -189,6 +189,105 @@ Three findings from that:
   Different mtimes compress to different lengths. Fixed by normalising mtimes
   to the epoch, sorting the file list, and `gzip -9n`.
 
+**The cc1 question turned out not to be a defect at all.** With full paths
+printed, the two are:
+
+```
+/usr/libexec/gcc/aarch64-unknown-linux-gnu/15.2.0/cc1   397051128
+/usr/libexec/gcc/aarch64-veron-linux-gnu/15.2.0/cc1     397720192
+```
+
+Different **triplets** -- the cross compiler from rung 11 and the native one
+from B4. Two different compilers correctly having different bytes. The basename
+`${f##*/}` printed both as `cc1`, and for four runs that read as a
+reproducibility failure. **A report that cannot distinguish two artifacts is
+worse than no report**, because it manufactures a defect that has to be
+investigated before it can be dismissed.
+
+**And nothing here has actually been measured for reproducibility yet.** Every
+comparison so far has been across different commits, and in one case across
+different arms. Two runs of the *same commit* have never been compared. The
+`KBUILD_BUILD_*` fix is confirmed working -- the banner went from
+`(@runnervma9114) ... Mon Aug 3 09:46:45 UTC 2026` to `(veron@veron)` -- but
+whether `Image` is now stable is unknown and will stay unknown until two runs
+of one commit are diffed. That is what the artifacts below are for.
+
+### Per-rung inputs and outputs
+
+Until now a rung reported its work in prose:
+
+```
+=== RUNG 4.5 -- rebuild make PROPERLY, now that binutils exists ===
+    make 4.4: configured NATIVE (-static was enough)
+    make: 1378984 bytes
+```
+
+A size and no hash -- enough to notice something changed size, useless for
+noticing it changed content, and impossible to trace. And the input list at the
+top of the run printed each tarball's **first four bytes**:
+
+```
+gcc-15.2.0.tar.xz     101056276   fd 37 7a 58
+linux-7.1.5.tar.xz    158401920   fd 37 7a 58
+```
+
+`fd 37 7a 58` is xz's magic number. It is identical for every xz file in the
+list, so it says the file is xz and nothing about *which* tarball arrived. A
+format check standing where a hash belongs.
+
+Both are fixed. `/in` now prints the full sha256 of every input, and each rung
+declares what it consumed and produced:
+
+```
+=== RUNG 4.5 -- rebuild make PROPERLY, now that binutils exists ===
+    make 4.4: configured NATIVE (-static was enough)
+    -> /work/prefix/bin/make            1378984  9f3c…64 hex chars…
+```
+
+with the manifest carrying both sides, separated:
+
+```
+IN.4.5    /in/make-4.4.tar.gz          2382023   40980ac4…
+OUT.4.5   /work/prefix/bin/make        1378984   9f3c1d2e…
+```
+
+Two details that matter more than the format:
+
+- **The rung label is derived from `head1`, not passed by hand.** Twenty call
+  sites asked to remember a label is twenty chances to attribute an artifact to
+  the wrong rung, silently.
+- **`consumed` is hooked into `untar`, not called per rung.** Every rung
+  reaches its upstream through that one function, so no rung can forget to
+  declare its input.
+
+### What each run now publishes
+
+```
+veron-boot            Image + initramfs.cpio.gz + SHA256SUMS      ~55 MB
+veron-toolchain       gcc ld as libc.so.6 busybox, and both
+                      gcc installs as libexec-gcc.tar.gz
+sysroot-manifest      manifest.tsv -- one line per file:
+                      label, path, exact size, full sha256
+buildlogs-…           every build log
+```
+
+and the same four from the reference arm under `-reference` names, so the two
+arms are comparable rather than merely both green.
+
+Three things this enables that were not possible before:
+
+- **Boot it somewhere else.** `Image` and `initramfs.cpio.gz` were hashed in
+  the log and discarded with the runner. Nobody outside could boot them or
+  check the sha256 the log claimed.
+- **Compare two runs without log archaeology.** `diff` two `manifest.tsv`
+  files and every differing artifact is named. The step also prints a **sysroot
+  digest** -- one sha256 over the sorted manifest -- so two runs can be
+  compared by quoting one value before downloading anything.
+- **Compare the two arms.** Does the seed-built toolchain produce the same
+  system as the host-built one? That is the sharpest question this project can
+  ask about itself, and until both arms published manifests it could only be
+  answered by grepping two logs for a handful of curated hashes.
+
 And one worth keeping in mind when choosing what to hash: **`/usr/bin/gcc` was
 stable while `cc1` was not.** The driver is a thin wrapper; the compiler proper
 is behind it. A check against a curated list of binaries would have called this
