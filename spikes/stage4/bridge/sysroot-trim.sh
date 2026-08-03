@@ -114,12 +114,59 @@ for d in "$ROOT/usr/lib/bfd-plugins/"*; do
     esac
 done
 
-LA=$(find "$ROOT" -name '*.la' 2>/dev/null | wc -l)
-emit "    $LA .la files present"
-if [ "$LA" -gt 0 ]; then
-    n=$(find "$ROOT" -name '*.la' -exec grep -l "$CROSS" {} + 2>/dev/null | wc -l)
-    emit "    $n reference $CROSS"
-    [ "$n" -gt 0 ] && { emit "      UNSAFE: .la files point into the cross tree"; UNSAFE=1; }
+# .la FILES: libtool archives hardcode toolchain paths, and they fail late
+# and confusingly. But the check has to distinguish two cases that the first
+# version of it did not:
+#
+#   INSIDE a tree that is being removed  -- harmless. The .la goes with it.
+#   OUTSIDE, pointing IN                 -- the real hazard.
+#
+# Counting all of them and refusing was a false-positive generator: /tools is
+# entirely the cross toolchain, so every .la in it naturally names the cross
+# triplet. Naming the files matters as much as counting them -- "5 reference
+# the cross tree" is not actionable, and a gate nobody can act on gets forced
+# past, which is worse than no gate.
+LA_ALL=$(find "$ROOT" -name '*.la' 2>/dev/null | wc -l)
+emit "    $LA_ALL .la files present"
+
+# The loop below runs in a subshell (it is fed by a pipe), so a variable set
+# inside it does not survive. A flag file is the portable way to get one bit
+# back out.
+TMPFLAG=${TMPDIR:-/tmp}/trim-la.$$
+: > "$TMPFLAG"
+
+# Which trees are actually going away this run?
+DOOMED=""
+[ "$T_BUILD" = 1 ] && DOOMED="$DOOMED $ROOT/tools $ROOT/prefix"
+[ "$T_CROSS" = 1 ] && DOOMED="$DOOMED $ROOT/usr/libexec/gcc/$CROSS $ROOT/usr/lib/gcc/$CROSS $ROOT/usr/$CROSS"
+
+is_doomed() {
+    for d in $DOOMED; do
+        case "$1" in "$d"/*|"$d") return 0 ;; esac
+    done
+    return 1
+}
+
+la_bad=0
+find "$ROOT" -name '*.la' 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
+    grep -q "$CROSS" "$f" 2>/dev/null || continue
+    if is_doomed "$f"; then
+        printf '      ok   %-50s (inside a removed tree)\n' "${f#$ROOT}" | tee -a "$LOG"
+    else
+        printf '      BAD  %s\n' "${f#$ROOT}" | tee -a "$LOG"
+        # Show WHAT it points at -- the actionable part.
+        grep -o "[^ '\"]*$CROSS[^ '\"]*" "$f" 2>/dev/null | sort -u | head -4 \
+          | sed 's/^/             -> /' | tee -a "$LOG"
+        echo bad >> "$TMPFLAG"
+    fi
+done
+[ -s "$TMPFLAG" ] && la_bad=1
+rm -f "$TMPFLAG" 2>/dev/null || true
+if [ "$la_bad" = 1 ]; then
+    emit "      UNSAFE: .la files OUTSIDE the removed trees point INTO them"
+    UNSAFE=1
+else
+    emit "      no .la file outside a removed tree references $CROSS"
 fi
 
 if [ "$UNSAFE" = 1 ] && [ "${VERON_TRIM_FORCE:-0}" != 1 ]; then
