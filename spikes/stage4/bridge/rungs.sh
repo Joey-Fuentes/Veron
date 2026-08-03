@@ -260,8 +260,33 @@ head1 "RUNG 0 -- the compiler runs, and libtcc1.a for it to link against"
 # about the compiler. MICRO-C.md records that trap.
 cd "$TCCDIR/lib" 2>/dev/null || { say "    no lib/ under $TCCDIR"; R0=FAIL; }
 if [ "$R0" != FAIL ]; then
+  # THE LIST WAS SHORT BY THREE, and one of them is why -run did not work.
+  #
+  # tcc's own lib/Makefile builds, for arm64:
+  #     ARM64_O  = lib-arm64.o $(COMMON_O)
+  #     COMMON_O = stdatomic.o atomic.o builtin.o alloca.o alloca-bt.o
+  #     LIN_O    = dsohandle.o
+  #     $(Nat)COMMON_O += runmain.o tcov.o
+  # and keeps runmain.o BESIDE the archive rather than in it:
+  #     EXTRA_O = runmain.o ...        # not in libtcc1.a
+  #
+  # We built five of those. Without runmain.o, `-run` cannot start at all:
+  #     tcc: error: file 'runmain.o' not found
+  #     tcc: error: _runmain not defined
+  # which made tcc's test1, test2, test3, hello-run and vla_test-run -- all of
+  # which are `tcc -run` -- look unavailable when the file simply had not been
+  # compiled. It compiles fine, and so do dsohandle.c and alloca-bt.S.
+  #
+  # alloca-bt.S AND tcov.c ARE LEFT OUT ON PURPOSE, and both were measured.
+  # alloca-bt.S is the bounds-checking alloca and pulls __bound_new_region out
+  # of bcheck.o, which this build does not make; adding it broke every link
+  # with `undefined symbol '__bound_new_region'`. tcov.c includes <stdio.h>
+  # and there is no libc at rung 0; it is only needed for -ftest-coverage.
+  #
+  # dsohandle.c IS worth having: adding it took tests2 from 105 to 107.
   objs=""
   for f in lib-arm64.c stdatomic.c atomic.c builtin.c va_list.c alloca.S \
+           dsohandle.c \
            armeabi.c alloca-arm.S armflush.c; do
     [ -f "$f" ] || continue
     o="/work/lt-$(basename "$f" | tr '.' '_').o"
@@ -271,8 +296,17 @@ if [ "$R0" != FAIL ]; then
     # rung had it unquoted; this one did not.
     if $CC -c -o "$o" "$f" 2>>/work/libtcc1.err; then objs="$objs $o"; fi
   done
+  # runmain.o goes NEXT TO the archive, not inside it -- tcc looks it up by
+  # name when -run is given, exactly as its own Makefile arranges.
+  if [ -f runmain.c ]; then
+    if $CC -c -o "$TCCDIR/runmain.o" runmain.c 2>>/work/libtcc1.err; then
+      say "    runmain.o: $(wc -c < "$TCCDIR/runmain.o") bytes -- -run can start"
+    else
+      say "    runmain.o: does NOT build -- -run will not start"
+    fi
+  fi
   if [ -n "$objs" ] && "$CC_BIN" -ar rcs "$TCCDIR/libtcc1.a" $objs 2>>/work/libtcc1.err; then
-    say "    libtcc1.a: $(wc -c < "$TCCDIR/libtcc1.a") bytes"
+    say "    libtcc1.a: $(wc -c < "$TCCDIR/libtcc1.a") bytes from $(echo $objs | wc -w) objects"
     R0=ok
   else
     R0=FAIL
