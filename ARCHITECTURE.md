@@ -35,6 +35,16 @@ This is not a defense against a maliciously backdoored global ecosystem, and it 
 
 The governing rule: **add exactly one new abstraction per stage, and write each stage in the language the stage below just produced.** Readability climbs monotonically; the only cryptic layer is the first one, which is also the smallest.
 
+> **The stage numbers in this table are disputed and are not canonical.**
+> [`AGENTS.md`](./AGENTS.md) §4 numbers the ladder **0–5** with the flavor fork
+> between 3 and 4; this table numbers it **1–7** with no fork line. The two
+> disagree, and `stages/` on disk follows AGENTS.
+>
+> [`DERIVATIONS.md`](./DERIVATIONS.md) recommends resolving this **before** any
+> ledger record is written, because a content-addressed store keys derivations
+> by stage identity — migrating work into `stages/` under two competing schemes
+> would bake the ambiguity into every record and every path.
+
 | Stage | Name | Written in | Adds | What it proves |
 |-------|------|-----------|------|---|
 | 1 | `seed-as` | **readable per-arch assembly** (x86-64 / ARM64 / RV64I) | line-oriented assembly → static ELF; labels, `.byte`/`.ascii` | Round-trip auditable hand-written root |

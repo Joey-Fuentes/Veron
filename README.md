@@ -42,7 +42,7 @@ Everything below lives under [`spikes/`](./spikes) and is a **feasibility tracer
 | `stage1-as` | two-pass numeric label resolver, written in *stage 0's own language* | **works** — gives the ladder unbounded multi-character labels |
 | `stage2-pico-c` | C-subset compiler, written in *stage 1's language* | **works** — 220 KB of upstream C in, 81,893 instructions out |
 | `stage3` | M2-Planet, compiled by stage 2. There is no separately-written stage 3 — M2-Planet *is* stage 3. | **hand-off proven** — our build reproduces upstream's M2-Planet **byte for byte**, stable over five generations |
-| `stage4` | everything tcc is used to build: gcc, a userland, a kernel, a boot | **works** — `tcc → 4.7.4 → 10.2.0 → 15.2.0 → linux 7.1.5 → boot`, 61 min, one job. With **mc-tcc substituted** for the reference compiler the same ladder now builds gcc 4.7.4 and climbs past it: musl (1349 of 1349 sources), GNU make, binutils, gmp/mpfr/mpc, and a working gcc 4.7.4 — rung 6, which stood as the frontier for many rounds, is closed |
+| `stage4` | everything tcc is used to build: gcc, a userland, a kernel, a boot | **works** — `tcc → 4.7.4 → 10.2.0 → 15.2.0 → linux 7.1.5 → boot`, 61 min, one job. With **mc-tcc substituted** for the reference compiler the same ladder runs end to end: every rung 0–16, every phase-B rung, and **it boots** — `VERON-BOOT-OK`, 8 of 8 guest tests, and the gcc this chain produced compiling and running a program inside the kernel this chain produced |
 
 The stage-2 → stage-3 hand-off is the sharpest single result:
 
@@ -148,9 +148,14 @@ byte in `.rela.data.ro`. Every case suite in the tree was green while it was
 live, including the `gen2 == gen3 == gen4` fixpoint — **a fixpoint proves a
 compiler is stable, not correct.**
 
-What remains between here and a booting GNU/Linux built entirely this way is
-the rungs above gcc 4.7.4, plus re-applying the invariants, which the spike
-track suspends every one of.
+**It boots.** The mc-tcc arm runs every rung to the end and the kernel it
+built comes up under qemu: `VERON-BOOT-OK`, 8 of 8 guest tests, and
+`VERON-GCC-IN-GUEST` — the gcc this chain produced compiling and running a
+program inside the kernel this same chain produced.
+
+What remains is re-applying the invariants, which the spike track suspends —
+and the derivation phase in [`DERIVATIONS.md`](./DERIVATIONS.md), which turns a
+green run into an auditable one.
 
 ### 3½. The bridge — what stage 4 borrows, built instead
 
@@ -224,6 +229,8 @@ The empty directories are Veron proper and are written against the invariants. `
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — the founding design: ladder, fork, audit criteria, trust boundary
 - [`AGENTS.md`](./AGENTS.md) — invariants and working rules, if you are contributing
 - [`spikes/README.md`](./spikes/README.md) — the live pipeline, and what each spike answered
+- [`TRUST-BOUNDARY.md`](./TRUST-BOUNDARY.md) — what is trusted, what is verified, and the order that makes it a chain rather than a circle
+- [`AUDIT.md`](./AUDIT.md) — the seven audit criteria and where the ledger record schema will live
 - [`STAGE5.md`](./STAGE5.md) — the package set: ~150 upstreams in dependency order, the five that are most of the work, networking, and the firmware-blob problem
 - [`DERIVATIONS.md`](./DERIVATIONS.md) — the derivation phase: content-addressed inputs and outputs, one script for laptop and runner, the reproducibility check, and a provenance graph that expands from any installed file down to the exact commands and back to the seed
 - [`spikes/builder/DESIGN.md`](./spikes/builder/DESIGN.md) — the driver shell and the bare-metal ARM64 builder: measured surface, syscall inventory, boot protocol, test targets

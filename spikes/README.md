@@ -1,10 +1,24 @@
 # spikes/ — feasibility tracers (invariants SUSPENDED)
 
-A spike is a throwaway/experimental program used to answer one question fast,
-run under QEMU user-mode on CI. Spikes deliberately drop Veron's invariants
-(bijective encoding, reproducibility, hermeticity, audit, no-committed-binaries)
-— they are a proving ground, not Veron proper. See `PROGRESS.md` for the full
+A spike is a throwaway/experimental program used to answer one question fast.
+Spikes are a proving ground, not Veron proper. See `PROGRESS.md` for the full
 story and current state of the bootstrap toolkit.
+
+**Which invariants are suspended, precisely.** The blanket phrasing this line
+used to carry — "spikes drop bijective encoding, reproducibility, hermeticity,
+audit and no-committed-binaries" — reads as a wholesale exemption and
+understates what actually holds. Per invariant:
+
+| invariant | in the spike track |
+|---|---|
+| bijective encoding | **holds at stage 0.** `stage0-as` and `elf` are re-derived from their own source every push, under two independent disassemblers, with the whole ELF reconstructed and compared byte for byte |
+| hermeticity | **holds.** sealed bwrap box, `--unshare-all`, pinned inputs, tier-1 budget empty and enforced by `SEAL` |
+| reproducibility | **the property is largely there; the CHECK is not.** `SOURCE_DATE_EPOCH 0`, pinned inputs, `gen1==gen2==gen3` for the seed and `gen2==gen3==gen4` for mc-tcc. What is missing is two runs of one commit compared — see `DERIVATIONS.md` |
+| audit ledger | **not built.** `ledger/` and `lib/` are scaffolding; the schema is designed in `DERIVATIONS.md` |
+| no committed binaries | **deliberately not held.** `stage0-as` and `elf` are committed, and verified rather than trusted — see `TRUST-BOUNDARY.md` for why that is the stronger arrangement, not a lapse |
+
+The round-trip audit does not extend above the committed artifacts, and that is
+by design: everything above them is derived.
 
 ## Bootstrap toolkit (live)
 

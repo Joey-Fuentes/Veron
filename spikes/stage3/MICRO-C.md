@@ -44,21 +44,54 @@ since in the `-run` work: *a fault that vanishes when you add code is a fault
 about LAYOUT, not about a construct*, and *a marker trail brackets between
 probe points -- it does not name a fault.*
 
-**WHERE THE LADDER STANDS.** `stage0-stage4-complete` runs the sixteen-rung
-ladder with mc-tcc substituted for the reference compiler:
+**WHERE THE LADDER STANDS: ALL OF IT, AND IT BOOTS.**
+`stage0-stage4-complete` runs the whole ladder with mc-tcc substituted for the
+reference compiler, and every rung passes.
 
 ```
 0    compiler runs, libtcc1.a             ok
 1    freestanding compile+link            ok
 2    musl, no make                        ok      1349 of 1349 sources
 3    hosted program, real libc            ok
-3.5  GNU make                             ok
 4    binutils                             ok
-4.5  make rebuilt with real binutils      ok
 5    gmp / mpfr / mpc                     ok
-6    gcc 4.7.4 by tcc                     ok      <-- CLOSED
-7..                                       climbing
+6    gcc 4.7.4 by tcc -- stage 1          ok
+7    gmp/mpfr/mpc rebuilt by that gcc     ok
+8    gcc 4.7.4 again -- stage 2           ok      <-- the wash
+9    gcc 10.2.0 by g++ 4.7.4              ok
+10   LFS 5.2 binutils pass 1              ok
+11   LFS 5.3 gcc 15 pass 1                ok
+12   LFS 5.4 linux API headers            ok
+13   LFS 5.5 glibc                        ok
+14   LFS 5.6 libstdc++                    ok
+15   busybox, cross by pass 1             ok
+16   ch6 binutils + gcc pass 2            ok
+
+B0   sysroot usable                       ok
+B1   prerequisites by gcc pass 2          ok
+B2   glibc, native                        ok
+B3   binutils, native                     ok
+B4   gcc, native -- FINAL COMPILER        ok
+B5   busybox, by the final compiler       ok
+B6   linux, by the final compiler         ok
+B7   initramfs                            ok
+B8   handed out                           ok
+
+VERON-BOOT-OK        Linux 7.1.5 aarch64
+VERON-COMPILER       gcc (GCC) 15.2.0, GNU ld (GNU Binutils) 2.47.20260726
+VERON-TESTS          pass=8 fail=0
+VERON-GCC-IN-GUEST   compiled and ran inside the guest, rc=42
+VERON-DONE
 ```
+
+**RUNG 8 IS THE ONE THAT MATTERS STRUCTURALLY.** gcc 4.7.4 rebuilt by itself:
+from there the compiler lineage is gcc's own codegen, not micro-c's. Everything
+above rung 8 was built by compilers that mc-tcc only *started*.
+
+**And the last line of the boot is the closure.** `VERON-GCC-IN-GUEST` means
+the gcc this chain produced compiled and ran a program inside the kernel this
+same chain produced. Not "we built a kernel" but "the compiler and the kernel
+come from one lineage and they work together".
 
 **RUNG 6 IS CLOSED, AND IT WAS ONE BUG.** For many rounds this section read
 that the gcc mc-tcc builds is miscompiled, with a large unexplored surface
@@ -1802,6 +1835,17 @@ implemented, guarded on a following `(` so a bare unknown name is still a
 compile error. The corpus goes 419 -> 420 of 426, and the six that remain are
 the documented stale rows.
 
+**9. `(*p)++`. CLOSED** (`EXPERIMENT-zzzzb`). Parentheses around the
+DEREFERENCE, so the increment applies to the byte and the last dereference had
+to yield an address; it loaded, and the postfix handler dereferenced the
+byte's VALUE. The eleventh copy of the next-token rule -- `is_assignment` sees
+`)`. Predates all the defect-7 work.
+
+**A comment is why nobody looked.** `cc_core.c`'s `paren_lvalue` site names
+this exact spelling as one it handles: "`(*p)++` the same thing written the
+other way round". It does not -- that site is the `*(...)` path, where the star
+is outside the parentheses, and it never sees this shape.
+
 **10. The integer promotions, for two narrow operands. CLOSED**
 (`EXPERIMENT-zzzza`). C89 3.2.1.1 converts every operand of rank below `int`
 to `int` first, because every char and short value fits one -- so a mixed-sign
@@ -1820,17 +1864,6 @@ that pairs two VARIABLES. The first phase pairs a variable with a literal, and
 a literal is never narrower than `int`, so `promote_type` always had a
 four-byte operand to pick and this was outside the space. 31 of the sweep's
 396 programs disagreed with gcc on exactly this, all on relational operators.
-
-**9. `(*p)++`. CLOSED** (`EXPERIMENT-zzzzb`). Parentheses around the
-DEREFERENCE, so the increment applies to the byte and the last dereference had
-to yield an address; it loaded, and the postfix handler dereferenced the
-byte's VALUE. The eleventh copy of the next-token rule -- `is_assignment` sees
-`)`. Predates all the defect-7 work.
-
-**A comment is why nobody looked.** `cc_core.c`'s `paren_lvalue` site names
-this exact spelling as one it handles: "`(*p)++` the same thing written the
-other way round". It does not -- that site is the `*(...)` path, where the star
-is outside the parentheses, and it never sees this shape.
 
 **11. `++(*p)` segfaults.** The PREFIX spelling of 9, and a different site:
 `prefix_lvalue` is computed from the token in front of the STARS, which here is
