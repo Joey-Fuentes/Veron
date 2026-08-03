@@ -88,6 +88,17 @@ run  = [["make", "-j$J"]]
 [[steps]]
 name = "check"
 cwd  = "$S"
+# THE TEST HARNESS INVOKES THE TOOL BY BARE NAME. `make check` runs
+# `tool-dir="" ./t/cli`, which calls `pkgconf` and expects PATH to find it --
+# so the freshly built binary in the source directory has to be on PATH:
+#
+#     sh: pkgconf: not found
+#     exitcode 127 does not match expected 0
+#
+# Recorded as a DECLARED environment override rather than worked around with
+# a shell step, because "the suite needs the build dir on PATH" is a fact
+# about this package that a reader should be able to see in the plan.
+env  = { PATH = "$S:/usr/bin:/usr/sbin" }
 run  = [["make", "check"]]
 
 [[steps]]

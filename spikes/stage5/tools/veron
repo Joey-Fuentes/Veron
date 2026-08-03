@@ -170,13 +170,16 @@ def expand(recipes, policy, roots):
                     "shell": subst(s["shell"], env),
                     "why": s["why"],
                     "cwd": subst(s.get("cwd", "$S"), env),
+                    "env": {k: subst(v, env) for k, v in s.get("env", {}).items()},
                 })
             else:
+                senv = {k: subst(v, env) for k, v in s.get("env", {}).items()}
                 for argv in s["run"]:
                     steps.append({
                         "name": s["name"],
                         "argv": [subst(a, env) for a in argv],
                         "cwd": subst(s.get("cwd", "$S"), env),
+                        "env": senv,
                     })
         plan.append({"pkg": name, "recipe": r, "env": env, "steps": steps})
     return plan
@@ -252,6 +255,8 @@ def render_plan(plan, policy):
         for i, s in enumerate(p["steps"], 1):
             L.append(f"    [{i:02d}] {s['name']}")
             L.append(f"         cwd  {s['cwd']}")
+            for k in sorted(s.get("env", {})):
+                L.append(f"         env  {k}={s['env'][k]}")
             if "shell" in s:
                 L.append(f"         SHELL (declared) why={s['why']}")
                 for line in s["shell"].strip().splitlines():
@@ -377,13 +382,19 @@ def run_step(s, logf, dry):
     else:
         printed = " ".join(s["argv"])
         argv, shell = s["argv"], False
+    for k in sorted(s.get("env", {})):
+        logf.write(f"+ env {k}={s['env'][k]}\n")
     logf.write(f"+ cwd={s['cwd']}\n+ {printed}\n")
     logf.flush()
     print(f"    + {printed}")
     if dry:
         logf.write("  rc=0 (dry-run)\n")
         return 0
-    p = subprocess.run(argv, cwd=s["cwd"], shell=shell)
+    e = None
+    if s.get("env"):
+        e = dict(os.environ)
+        e.update(s["env"])
+    p = subprocess.run(argv, cwd=s["cwd"], shell=shell, env=e)
     logf.write(f"  rc={p.returncode}\n")
     logf.flush()
     return p.returncode

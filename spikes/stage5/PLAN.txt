@@ -62,7 +62,7 @@ package hello 2.12.3
 package pkgconf 3.0.5
   group        build-substrate
   license      ISC
-  recipe-sha   7f95ddf409954c3742d66ce84528e0d4b8d1fbf1b8edb2dee5ee270997b2a8c6
+  recipe-sha   b1ac6facf5a57541d4dab37d152fb7049d810687ed73c6bc2af51a5c805f450a
 
   source
     url        https://github.com/pkgconf/pkgconf/releases/download/pkgconf-3.0.5/pkgconf-3.0.5.tar.xz
@@ -90,6 +90,7 @@ package pkgconf 3.0.5
          argv ["make", "-j1"]
     [04] check
          cwd  build/pkgconf-3.0.5/pkgconf-3.0.5
+         env  PATH=build/pkgconf-3.0.5/pkgconf-3.0.5:/usr/bin:/usr/sbin
          argv ["make", "check"]
     [05] install
          cwd  build/pkgconf-3.0.5/pkgconf-3.0.5
