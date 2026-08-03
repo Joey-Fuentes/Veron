@@ -73,5 +73,20 @@ else
     echo "VERON-STAGE5-GUEST-FAIL  no /usr/bin/veron-stage5-test in the root"
 fi
 
+# ---- 4. the self-rebuild gate ------------------------------------------
+# The tier-1 claim: the system rebuilds itself, on itself, from source. Run
+# LAST because it is the slow part and because a failure here is a different
+# and weaker kind of bad news than the package tests failing -- those say the
+# system is broken, this says some byte depends on the environment.
+#
+# The root is mounted read-only, so the rebuild needs writable scratch; the
+# gate mounts its own tmpfs at the same paths the runner used.
+if [ "${VERON_SELFREBUILD:-1}" = 1 ] && [ -x "$ROOT/veron/selfrebuild.sh" ]; then
+    mount -o remount,rw "$ROOT" 2>/dev/null || true
+    chroot "$ROOT" /veron/selfrebuild.sh
+else
+    echo "VERON-SELFREBUILD-SKIP  not present or disabled"
+fi
+
 echo "VERON-STAGE5-GUEST-DONE"
 poweroff -f

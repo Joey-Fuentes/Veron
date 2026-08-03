@@ -161,6 +161,18 @@ jobs:
           install -D -m644 guest/fixtures/veron-a.pc sysroot/usr/lib/pkgconfig/veron-a.pc
           install -D -m644 guest/fixtures/veron-b.pc sysroot/usr/lib/pkgconfig/veron-b.pc
           install -D -m755 guest/test.sh sysroot/usr/bin/veron-stage5-test
+
+          # THE SELF-REBUILD PAYLOAD. Everything the image needs to rebuild
+          # itself with no network: the pinned tarballs, the recipes, the
+          # policy, the driver, and the runner's manifest as the thing to
+          # compare against. This is also what makes the shipped system able
+          # to rebuild a package a user removed -- the same data, used the
+          # same way.
+          mkdir -p sysroot/veron/expected sysroot/build sysroot/dest sysroot/out
+          cp -a dl sysroot/veron/dl
+          cp -a packages policy tools sysroot/veron/
+          cp out/files.tsv sysroot/veron/expected/files.tsv
+          install -D -m755 guest/selfrebuild.sh sysroot/veron/selfrebuild.sh
           du -sh sysroot | sed 's/^/    /'
 
       # Native aarch64, so these are the real binaries executing.
@@ -258,15 +270,20 @@ jobs:
         run: |
           set -eu
           [ -s boot/Image ] || { echo "VERON-BOOT-SKIP  no kernel artifact"; exit 0; }
+          # BOOT A COPY. The gate remounts the root read-write to get scratch
+          # space, so booting the published image directly would mutate the
+          # artifact whose hash was just recorded -- and the reproducibility
+          # claim with it.
+          cp spikes/stage5/out/rootfs.img spikes/stage5/out/rootfs-boot.img
           set +e
           # The DISK is offered first: init prefers /dev/vda so the test runs
           # against the ext4 image a user would flash, not a 9p share. 9p is
           # still offered as the fallback if virtio-blk or ext4 are absent
           # from this kernel.
-          timeout 600 qemu-system-aarch64 \
-            -M virt -cpu cortex-a57 -smp 2 -m 2048 \
+          timeout 2400 qemu-system-aarch64 \
+            -M virt -cpu cortex-a57 -smp 4 -m 4096 \
             -nographic -no-reboot -nic none \
-            -drive file=spikes/stage5/out/rootfs.img,format=raw,if=virtio \
+            -drive file=spikes/stage5/out/rootfs-boot.img,format=raw,if=virtio \
             -fsdev local,id=vs,path="$PWD/spikes/stage5/sysroot",security_model=none,readonly=on \
             -device virtio-9p-pci,fsdev=vs,mount_tag=veronsysroot \
             -kernel boot/Image -initrd spikes/stage5/out/initramfs.cpio.gz \
@@ -283,6 +300,22 @@ jobs:
           grep -q "VERON-STAGE5-OK" boot.log \
             && echo "VERON-STAGE5-BOOT-OK  the packages ran under the kernel" \
             || { echo "VERON-STAGE5-BOOT-FAIL  init ran, tests did not pass"; exit 1; }
+
+          # THE TIER-1 CLAIM. Reported separately from the boot, because they
+          # are different claims: the boot says the packages work, the gate
+          # says the system can rebuild them. A DIFF here is a finding worth
+          # having, not a broken system -- so it is surfaced loudly and does
+          # not fail the run while the spike is still learning what varies.
+          if grep -q "VERON-SELFREBUILD-OK" boot.log; then
+            echo "VERON-SELFHOST-OK  rebuilt inside the image, byte-identical"
+          elif grep -q "VERON-SELFREBUILD-DIFF" boot.log; then
+            echo "VERON-SELFHOST-DIFF  it rebuilt, and some bytes differ."
+            echo "  That is a reproducibility finding across two genuinely"
+            echo "  different environments -- see the diff above and record"
+            echo "  each cause in policy/expected-differences.toml."
+          else
+            echo "VERON-SELFHOST-ABSENT  the gate did not run"
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()
