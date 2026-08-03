@@ -303,8 +303,33 @@ fi
 # rewrites artifact bytes, so the tool doing it belongs to the chain being
 # recorded, not to the host.
 STRIP=""
-for cand in "$ROOT/usr/bin/strip" "$(command -v strip 2>/dev/null || true)"; do
-    [ -n "$cand" ] && [ -x "$cand" ] || continue
+STRIP_WRAP=""
+# CANDIDATE 1: the sysroot's OWN strip, run under bwrap with the sysroot as /.
+#
+# Running it directly does not work and the reason is worth stating: its
+# PT_INTERP is /lib/ld-linux-aarch64.so.1, which from outside resolves against
+# the RUNNER's root, so it loads the runner's glibc rather than the one it was
+# built against. Inside bwrap the path resolves to the sysroot's own loader.
+#
+# This matters beyond convenience. Stripping REWRITES ARTIFACT BYTES, so the
+# tool doing it should belong to the chain being recorded. "our binutils
+# stripped this" and "Ubuntu's binutils stripped this" are different
+# provenance claims, and only the first one is ours to make.
+if command -v bwrap >/dev/null 2>&1 && [ -x "$ROOT/usr/bin/strip" ]; then
+    STRIP_WRAP="bwrap --die-with-parent --bind $ROOT / --proc /proc --dev /dev --tmpfs /tmp --setenv PATH /usr/bin:/bin --chdir /"
+fi
+
+try_strip() { # $1 = probe file path relative to ROOT
+    if [ -n "$STRIP_WRAP" ]; then
+        $STRIP_WRAP /usr/bin/strip --strip-debug "$1" 2>/dev/null
+    else
+        return 1
+    fi
+}
+
+for cand in OWN "$(command -v strip 2>/dev/null || true)"; do
+    [ "$cand" = OWN ] || { [ -n "$cand" ] && [ -x "$cand" ]; } || continue
+    [ "$cand" = OWN ] && [ -z "$STRIP_WRAP" ] && continue
     # PROBE IT on a real file from this sysroot rather than trusting that it
     # exists. Wrong architecture, missing loader and wrong binutils version
     # all present as "exists and is executable".
@@ -312,17 +337,39 @@ for cand in "$ROOT/usr/bin/strip" "$(command -v strip 2>/dev/null || true)"; do
     [ -n "$probe" ] || continue
     cp "$probe" "$ROOT/.strip-probe" 2>/dev/null || continue
     b=$(wc -c < "$ROOT/.strip-probe")
-    if "$cand" --strip-debug "$ROOT/.strip-probe" 2>/dev/null && \
-       [ "$(wc -c < "$ROOT/.strip-probe")" -lt "$b" ]; then
-        STRIP="$cand"
+    if [ "$cand" = OWN ]; then
+        try_strip /.strip-probe
+    else
+        "$cand" --strip-debug "$ROOT/.strip-probe" 2>/dev/null
+    fi
+    if [ "$(wc -c < "$ROOT/.strip-probe")" -lt "$b" ]; then
         rm -f "$ROOT/.strip-probe"
-        emit ""
-        emit "  strip: $cand (probed OK)"
+        if [ "$cand" = OWN ]; then
+            STRIP=OWN
+            emit ""
+            emit "  strip: the sysroot's own /usr/bin/strip, under bwrap (probed OK)"
+            emit "         our binutils rewrites the bytes, not the host's"
+        else
+            STRIP="$cand"
+            emit ""
+            emit "  strip: $cand (probed OK)"
+            emit "         NOTE: this is a HOST tool rewriting artifact bytes."
+            emit "         The sysroot's own strip is preferred and was not usable."
+        fi
         break
     fi
     rm -f "$ROOT/.strip-probe"
     emit "  strip candidate rejected: $cand (probe did not shrink a test file)"
 done
+
+do_strip() { # $1 = extra args ... last arg = file
+    if [ "$STRIP" = OWN ]; then
+        f=$1; shift 2>/dev/null || true
+        $STRIP_WRAP /usr/bin/strip "$@" "${f#$ROOT}"
+    else
+        "$STRIP" "$@"
+    fi
+}
 if [ -z "$STRIP" ] && { [ "$T_STRIP" = 1 ] || [ "$T_ARCHIVES" = 1 ]; }; then
     emit ""
     emit "  NO WORKING strip FOUND, and stripping is the largest single cut"
@@ -346,7 +393,8 @@ if [ "$T_STRIP" = 1 ] && [ -x "$STRIP" ]; then
         case "$f" in *.py|*.sh|*.pl) continue ;; esac
         head -c4 "$f" 2>/dev/null | od -An -c 2>/dev/null | grep -q 'E   L   F' || continue
         s1=$(wc -c < "$f"); h1=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
-        if ! "$STRIP" --strip-debug "$f" 2>"$TMPERR"; then
+        chmod u+w "$f" 2>/dev/null || true
+        if ! do_strip "$f" --strip-debug 2>"$TMPERR"; then
             printf '    FAILED %-44s %s\n' "${f#$ROOT}" "$(head -1 "$TMPERR")" | tee -a "$LOG"
             echo failed >> "$TMPFAIL"
             continue
@@ -372,7 +420,8 @@ if [ "$T_ARCHIVES" = 1 ] && [ -x "$STRIP" ]; then
     find "$ROOT/usr/lib" -name '*.a' -size +512k 2>/dev/null | LC_ALL=C sort \
       | while IFS= read -r f; do
         s1=$(wc -c < "$f")
-        if ! "$STRIP" -D --strip-debug "$f" 2>"$TMPERR"; then
+        chmod u+w "$f" 2>/dev/null || true
+        if ! do_strip "$f" -D --strip-debug 2>"$TMPERR"; then
             printf '    FAILED %-44s %s\n' "${f#$ROOT}" "$(head -1 "$TMPERR")" | tee -a "$LOG"
             echo failed >> "$TMPFAIL"
             continue

@@ -61,6 +61,14 @@ jobs:
           set -eu
           sudo apt-get update -qq
           sudo apt-get install -y -qq bubblewrap qemu-system-arm qemu-utils
+          # UBUNTU 24.04 RESTRICTS UNPRIVILEGED USER NAMESPACES via AppArmor,
+          # and bwrap's --unshare-all then fails setting up loopback in the new
+          # net namespace: "loopback: Failed RTM_NEWADDR: Operation not
+          # permitted". Several workflows in this repo already carry this line
+          # (hermetic-gcc10/15/16, float-probe); this one did not, and every
+          # smoke test failed for a reason that had nothing to do with the
+          # sysroot under test.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
 
       # ---------------------------------------------------------------
       # THE TRIMMED SYSROOT
@@ -138,6 +146,23 @@ jobs:
               --chdir /work "$@"
           }
 
+          # PROVE THE SANDBOX WORKS BEFORE BLAMING THE SYSROOT. The first run
+          # of this job reported VERON-SMOKE-LTO FAIL with a confident message
+          # about the lto plugin resolving through the removed cross tree --
+          # and the real cause was bwrap refusing to start at all. A test that
+          # cannot distinguish "the thing under test is broken" from "the
+          # harness never ran" produces false findings, which is worse than no
+          # finding. This is the same lesson the marker-trail bug already cost
+          # five rounds.
+          if ! run_in /usr/bin/true 2>/tmp/bw.err && \
+             ! run_in /bin/sh -c 'exit 0' 2>>/tmp/bw.err; then
+            echo "  VERON-SANDBOX-FAIL -- bwrap could not start:"
+            sed 's/^/    /' /tmp/bw.err | head -5
+            echo "  Nothing below was run. This says NOTHING about the sysroot."
+            exit 1
+          fi
+          echo "  VERON-SANDBOX-OK"
+
           fail=0
           echo "  --- gcc --version ---"
           run_in /usr/bin/gcc --version | head -1 | sed 's/^/    /' || fail=1
@@ -157,10 +182,13 @@ jobs:
             echo "    $out"; echo "    VERON-SMOKE-LTO ok"
           else
             echo "    VERON-SMOKE-LTO FAIL"
-            echo "    THIS IS THE ONE THAT MATTERS: it means the lto plugin"
-            echo "    resolved through the removed cross tree. Re-run the trim"
-            echo "    with TRIM_CROSS=0 to confirm, then fix where the plugin"
-            echo "    is installed rather than keeping 1.2 GB to work around it."
+            echo "    The sandbox started and C compiled, so this is a real"
+            echo "    -flto failure. The likeliest cause is the lto plugin"
+            echo "    resolving through the removed cross tree -- confirm by"
+            echo "    re-running the trim with TRIM_CROSS=0. Do not assume it:"
+            echo "    the plugin is present under the native triplet, so it"
+            echo "    could equally be how ld is searching for it."
+            run_in /usr/bin/gcc -O2 -flto -o /work/tl lto.c 2>&1 | head -10 | sed 's/^/      /'
             fail=1
           fi
 
