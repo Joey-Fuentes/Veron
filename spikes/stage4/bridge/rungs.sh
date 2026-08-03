@@ -2712,7 +2712,23 @@ if [ "$R5" = ok ]; then
     #
     # Searched for rather than hardcoded, so it keeps working when the line
     # moves or a different ICE appears.
-    _ice=$(grep -oE 'internal compiler error: in [^,]*, at [^ :]+:[0-9]+' build.log 2>/dev/null | head -1)
+    # SEARCH THE config.log FILES TOO, NOT JUST build.log.
+    #
+    # The first version looked only in build.log and matched only the
+    # `in FUNC, at FILE:LINE` form. Both halves were wrong for this failure:
+    #
+    #   build.log            <built-in>:0:0: internal compiler error:
+    #                        Segmentation fault          -- no FILE:LINE at all
+    #   libgcc/config.log    <built-in>:0:0: internal compiler error:
+    #                        in ?, at config/aarch64/aarch64-builtins.c:944
+    #
+    # so the one message carrying a source location was in a file this never
+    # opened, and the window printed nothing. Both are the same fault -- xgcc
+    # dying at <built-in>:0:0 on empty input, before a line of real source is
+    # read -- but only one of them names a line.
+    _ice=$( { grep -hoE 'internal compiler error: in [^,]*, at [^ :]+:[0-9]+' build.log 2>/dev/null
+              find /work/bld -name config.log -exec grep -hoE 'internal compiler error: in [^,]*, at [^ :]+:[0-9]+' {} + 2>/dev/null
+            } | head -1 )
     if [ -n "$_ice" ]; then
       _if=$(printf '%s' "$_ice" | sed 's/.* at \([^ :]*\):[0-9]*$/\1/')
       _il=$(printf '%s' "$_ice" | sed 's/.*:\([0-9]*\)$/\1/')
@@ -2729,6 +2745,27 @@ if [ "$R5" = ok ]; then
       else
         say "      $_if not found under /work/src"
       fi
+    fi
+
+    # THE SMALLEST FAILING INVOCATION, RUN AGAIN ON PURPOSE.
+    #
+    # build.log shows xgcc dying on
+    #     echo | xgcc -B... -E -dM -
+    # which is EMPTY INPUT, preprocess-only, dump macros. No source, no
+    # codegen, no libgcc -- so whatever is broken is broken before gcc reads
+    # anything. That is a much smaller thing to debug than "gcc miscompiles
+    # libgcc", and it costs one command to confirm rather than inferring it
+    # from a build log.
+    _xg=/work/bld/gcc/xgcc
+    if [ -x "$_xg" ]; then
+      say "    --- the smallest failing xgcc invocation ---"
+      say "      echo | xgcc -E -dM -   (empty input, no codegen)"
+      echo | "$_xg" -B/work/bld/gcc/ -E -dM - > /tmp/dM.out 2>/tmp/dM.err
+      say "      rc=$?  stdout=$(wc -l < /tmp/dM.out) lines"
+      head -3 /tmp/dM.err 2>/dev/null | sed 's/^/        /'
+      say "      and with -v, to see how far it gets:"
+      echo | "$_xg" -B/work/bld/gcc/ -v -E -dM - > /dev/null 2>/tmp/dMv.err
+      tail -12 /tmp/dMv.err 2>/dev/null | sed 's/^/        /'
     fi
   fi
   cd /work

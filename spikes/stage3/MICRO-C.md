@@ -1658,8 +1658,42 @@ bracket; they do not name -- this file has paid for reading them otherwise.
 `x0 = 0`, at `pc=0x4d4e34` -- only against real glibc. **Plausibly the same
 defect as 2**, which would make this list seven.
 
-**4. Rung 6: the gcc mc-tcc builds is miscompiled. STILL OPEN.** It configures
-and links `xgcc`; that gcc then fails building libgcc.
+**4. Rung 6: the gcc mc-tcc builds is miscompiled. STILL OPEN**, and now
+reduced to something much smaller than "gcc miscompiles libgcc".
+
+**The smallest failing invocation takes no source at all.** `build.log` shows
+xgcc dying on
+
+```
+echo | /work/bld/./gcc/xgcc -B/work/bld/./gcc/ -E -dM -
+<built-in>:0:0: internal compiler error: Segmentation fault
+```
+
+Empty input, preprocess-only, dump macros. No codegen, no libgcc, no
+conftest. Whatever is wrong is wrong before gcc reads a line.
+
+**Two messages, one fault, and they live in different files** -- which is why
+the first version of the ICE window printed nothing:
+
+```
+build.log            internal compiler error: Segmentation fault
+                       -- no FILE:LINE at all
+libgcc/config.log    internal compiler error: in ?, at
+                       config/aarch64/aarch64-builtins.c:944
+```
+
+Both are `<built-in>:0:0`. Only one carries a source location, and it is in a
+file the diagnostic never opened. Fixed: it now searches every `config.log`
+under `/work/bld` as well as `build.log`, and re-runs the `-E -dM` invocation
+directly with `-v` so the next log shows how far gcc gets before it dies.
+
+**What the object diff says about where to look.** mc-tcc's integer codegen is
+byte-identical to a gcc-built tcc across 1175 musl objects; every one of the
+131 divergences is floating point. So the gcc mc-tcc builds differs from the
+gcc the control builds mostly in float-shaped code -- and `aarch64-builtins.c`
+is where gcc registers SIMD and floating-point builtin types. The eight-byte
+`long double` the `tcc-microc` series gives mc-tcc is the first thing to
+suspect, ahead of any new integer defect.
 
 **A correction about how this was nearly mis-read.** A run reaching gcc 15 was
 taken as evidence that rung 6 had been fixed by the defect 5/10 work. It was
