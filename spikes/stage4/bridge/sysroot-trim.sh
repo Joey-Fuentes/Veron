@@ -52,6 +52,10 @@ emit() { printf '%s\n' "$*" | tee -a "$LOG"; }
 sz()   { du -s "$1" 2>/dev/null | awk '{print $1*1024}'; }
 mb()   { awk -v b="$1" 'BEGIN{printf "%.0f", b/1048576}'; }
 
+TMPERR=${TMPDIR:-/tmp}/trim-err.$$
+TMPFAIL=${TMPDIR:-/tmp}/trim-fail.$$
+: > "$TMPFAIL"
+
 BEFORE=$(sz "$ROOT")
 emit "VERON SYSROOT TRIM"
 emit "  root:   $ROOT"
@@ -285,7 +289,50 @@ if [ "${TRIM_LIBCC1:-1}" = 1 ]; then
 fi
 
 # ------------------------------------------------------------ 5 strip
-STRIP=$(command -v strip 2>/dev/null || echo "$ROOT/usr/bin/strip")
+# WHICH strip, AND DOES IT ACTUALLY WORK.
+#
+# The first version took `command -v strip` and fell back to the sysroot's,
+# then swallowed every failure with `|| continue`. On an x86_64 runner that
+# meant the host's x86_64 strip could not read an aarch64 ELF, every single
+# file failed, and the step reported "0 MB removed" with no error at all --
+# the ~1 GB cut silently did nothing. A cut that cannot fail loudly is worse
+# than no cut.
+#
+# PREFER THE SYSROOT'S OWN strip. This runs on a native aarch64 runner, so
+# our binutils executes directly. That matters beyond convenience: stripping
+# rewrites artifact bytes, so the tool doing it belongs to the chain being
+# recorded, not to the host.
+STRIP=""
+for cand in "$ROOT/usr/bin/strip" "$(command -v strip 2>/dev/null || true)"; do
+    [ -n "$cand" ] && [ -x "$cand" ] || continue
+    # PROBE IT on a real file from this sysroot rather than trusting that it
+    # exists. Wrong architecture, missing loader and wrong binutils version
+    # all present as "exists and is executable".
+    probe=$(find "$ROOT/usr/bin" -type f -size +512k 2>/dev/null | head -1)
+    [ -n "$probe" ] || continue
+    cp "$probe" "$ROOT/.strip-probe" 2>/dev/null || continue
+    b=$(wc -c < "$ROOT/.strip-probe")
+    if "$cand" --strip-debug "$ROOT/.strip-probe" 2>/dev/null && \
+       [ "$(wc -c < "$ROOT/.strip-probe")" -lt "$b" ]; then
+        STRIP="$cand"
+        rm -f "$ROOT/.strip-probe"
+        emit ""
+        emit "  strip: $cand (probed OK)"
+        break
+    fi
+    rm -f "$ROOT/.strip-probe"
+    emit "  strip candidate rejected: $cand (probe did not shrink a test file)"
+done
+if [ -z "$STRIP" ] && { [ "$T_STRIP" = 1 ] || [ "$T_ARCHIVES" = 1 ]; }; then
+    emit ""
+    emit "  NO WORKING strip FOUND, and stripping is the largest single cut"
+    emit "  (88-89% of cc1/cc1plus/lto1 measured by readelf). Refusing to"
+    emit "  report a size that silently omits ~1 GB of it."
+    emit "  On an x86_64 runner the host strip cannot read aarch64 ELF -- this"
+    emit "  job belongs on ubuntu-24.04-arm."
+    emit "VERON-TRIM-NO-STRIP"
+    exit 1
+fi
 if [ "$T_STRIP" = 1 ] && [ -x "$STRIP" ]; then
     emit ""
     emit "  --- strip executables (--strip-debug, keeps the symbol table) ---"
@@ -299,7 +346,11 @@ if [ "$T_STRIP" = 1 ] && [ -x "$STRIP" ]; then
         case "$f" in *.py|*.sh|*.pl) continue ;; esac
         head -c4 "$f" 2>/dev/null | od -An -c 2>/dev/null | grep -q 'E   L   F' || continue
         s1=$(wc -c < "$f"); h1=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
-        "$STRIP" --strip-debug "$f" 2>/dev/null || continue
+        if ! "$STRIP" --strip-debug "$f" 2>"$TMPERR"; then
+            printf '    FAILED %-44s %s\n' "${f#$ROOT}" "$(head -1 "$TMPERR")" | tee -a "$LOG"
+            echo failed >> "$TMPFAIL"
+            continue
+        fi
         s2=$(wc -c < "$f"); h2=$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)
         [ "$s2" -lt "$s1" ] || continue
         printf '    %-46s %5s -> %-5s MB\n' "${f#$ROOT}" "$(mb "$s1")" "$(mb "$s2")" | tee -a "$LOG"
@@ -321,7 +372,11 @@ if [ "$T_ARCHIVES" = 1 ] && [ -x "$STRIP" ]; then
     find "$ROOT/usr/lib" -name '*.a' -size +512k 2>/dev/null | LC_ALL=C sort \
       | while IFS= read -r f; do
         s1=$(wc -c < "$f")
-        "$STRIP" -D --strip-debug "$f" 2>/dev/null || continue
+        if ! "$STRIP" -D --strip-debug "$f" 2>"$TMPERR"; then
+            printf '    FAILED %-44s %s\n' "${f#$ROOT}" "$(head -1 "$TMPERR")" | tee -a "$LOG"
+            echo failed >> "$TMPFAIL"
+            continue
+        fi
         s2=$(wc -c < "$f")
         [ "$s2" -lt "$s1" ] || continue
         printf '    %-46s %5s -> %-5s MB\n' "${f#$ROOT}" "$(mb "$s1")" "$(mb "$s2")" | tee -a "$LOG"
@@ -330,6 +385,12 @@ if [ "$T_ARCHIVES" = 1 ] && [ -x "$STRIP" ]; then
 fi
 
 # ------------------------------------------------------------ result
+if [ -s "$TMPFAIL" ]; then
+    emit ""
+    emit "  $(wc -l < "$TMPFAIL") file(s) FAILED to strip -- see FAILED lines above."
+fi
+rm -f "$TMPERR" "$TMPFAIL" 2>/dev/null || true
+
 AFTER=$(sz "$ROOT")
 emit ""
 emit "  ============================================================"
