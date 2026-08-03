@@ -171,6 +171,26 @@ for c in "$CASES"/*.c; do
         if [ "$m_rc" = 0 ]; then
             printf '  %-28s KNOWN GAP NOW PASSES -- close it or fix the case\n' "$name"
             gap_passed=$((gap_passed + 1))
+        elif is_bitmask "$c"; then
+            # A KNOWN GAP IS STILL A MEASUREMENT, AND IT WAS BEING DISCARDED.
+            #
+            # "known gap (expected)" says a case failed as predicted. For a
+            # bitmask case that throws away the only thing it produces: WHICH
+            # probes failed. A gap is closed by watching its bits go out one
+            # at a time -- 100-elf-header-type-discrimination is precisely
+            # that shape, where bit 16 and bit 32 firing together means
+            # something different from bit 32 firing alone.
+            #
+            # The verdict does not change and the run stays green; only the
+            # diagnosis is kept rather than dropped.
+            if [ "$m_rc" -gt 127 ]; then
+                printf '  %-28s known gap -- BITMASK %s IS OUT OF RANGE, fix the case\n' \
+                    "$name" "$m_rc"
+            else
+                printf '  %-28s known gap (expected), bitmask %s -- failing probes:%s\n' \
+                    "$name" "$m_rc" "$(decode_bits "$m_rc")"
+            fi
+            gap_failed=$((gap_failed + 1))
         else
             printf '  %-28s known gap (expected)\n' "$name"
             gap_failed=$((gap_failed + 1))

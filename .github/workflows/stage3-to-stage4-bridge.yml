@@ -1161,6 +1161,42 @@ jobs:
             --chdir /work \
             /bin/sh /src/stage4/bridge/rungs.sh
 
+      # EVERY BUILD LOG, KEPT. Same step as stage3-to-stage4-reference's, and
+      # it was missing from both mc-tcc arms while the arm that passes had it.
+      #
+      # rungs.sh prints a WINDOW of one log per failing rung, and the window
+      # has guessed wrong three times -- the reference arm's copy of this
+      # comment names the rounds. This arm is the experiment that matters and
+      # is the one expected to stop partway, so the log it stops on is the
+      # output, not a byproduct.
+      - name: 'Collect every build log'
+        if: always()
+        run: |
+          set -u
+          mkdir -p buildlogs
+          for src in "$BOX/work" "$BOX/pb"; do
+            [ -d "$src" ] || continue
+            find "$src" -name '*.log' -type f 2>/dev/null | while read -r f; do
+              rel=$(printf '%s' "$f" | sed "s|^$BOX/||; s|/|__|g")
+              # tail rather than head: a build log's failure is at the END.
+              tail -c 20000000 "$f" > "buildlogs/$rel" 2>/dev/null || true
+            done
+          done
+          n=$(ls buildlogs 2>/dev/null | wc -l)
+          echo "  collected $n build logs"
+          if [ "$n" -gt 0 ]; then
+            du -sh buildlogs | sed 's/^/    /'
+            ls -S buildlogs | head -10 | sed 's/^/    /'
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: buildlogs-bridge
+          path: buildlogs/
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: 'THE APPLET SET: what the chain actually invoked'
         if: always()
         run: |

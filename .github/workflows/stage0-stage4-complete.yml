@@ -47,7 +47,20 @@
 # =====================================================================
 
 on:
+  # DECLARED BECAUSE THE stage4 JOB ALREADY READS IT. Its env: block has
+  # always said `TRACE_APPLETS: ${{ inputs.trace_applets && '1' || '0' }}`,
+  # copied from stage3-to-stage4-reference along with the rest of the arm --
+  # but the input itself was not copied with it. An undeclared input is not an
+  # error in Actions, it is the empty string, so the expression was constant-0
+  # and the option silently did not exist. Declaring it makes the knob real
+  # rather than removing a line that looked live.
   workflow_dispatch:
+    inputs:
+      trace_applets:
+        description: 'wrap every applet to record which ones the chain actually uses'
+        type: boolean
+        required: false
+        default: false
   push:
     paths:
       - '.github/workflows/stage0-stage4-complete.yml'
@@ -3189,6 +3202,16 @@ jobs:
       - name: 'IN THE BOX: mc-tcc -> musl -> make -> binutils -> gcc 4.7.4'
         run: |
           set -eu
+          # ARM NAMES THIS ARM, AND IT USED TO SAY `reference`.
+          #
+          # rungs.sh writes $ARM as the first field of /out/rungs.txt, whose
+          # whole stated purpose is "so the workflow can diff two arms without
+          # parsing prose" -- and it heads the PHASE A and PHASE B banners in
+          # both scripts. With both arms labelled `reference` the two rows are
+          # indistinguishable, so the one comparison this job exists to make
+          # could not be made from its own output. stage3-to-stage4-bridge has
+          # always passed `mc-tcc` here; this now matches it.
+          #
           # EVERY VERSION THE RUNGS READ IS PASSED WITH --setenv BELOW.
           #
           # bwrap gives the box its own environment: a variable in this
@@ -3215,7 +3238,7 @@ jobs:
             --setenv LD_LIBRARY_PATH /lib \
             --setenv CC_BIN /work/mc-tcc \
             --setenv TCCDIR /work/tccsrc \
-            --setenv ARM reference \
+            --setenv ARM mc-tcc \
             --setenv MUSL_VER "$MUSL_VER" \
             --setenv MAKE_VER "$MAKE_VER" \
             --setenv MAKE_ALT "$MAKE_ALT" \
@@ -3311,7 +3334,7 @@ jobs:
             --setenv LC_ALL POSIX \
             --setenv TERM dumb \
             --setenv SOURCE_DATE_EPOCH 0 \
-            --setenv ARM reference \
+            --setenv ARM mc-tcc \
             --setenv LFS_TGT aarch64-veron-linux-gnu \
             --setenv GLIBC "$GLIBC" \
             --setenv GCC15 "$GCC15" \
@@ -3347,6 +3370,62 @@ jobs:
       # sysroot is worse than no cache: the failure lands somewhere else
       # entirely and looks like a compiler bug. rungs.sh writes the marker only
       # after rung 14 reports ok.
+      # EVERY BUILD LOG, KEPT, AND THIS JOB NEEDS IT MORE THAN THE REFERENCE
+      # ARM DOES RATHER THAN LESS.
+      #
+      # This step and its upload exist in stage3-to-stage4-reference and were
+      # missing here, which inverted the point of the pair: the arm that PASSES
+      # kept its logs, and the two arms that run mc-tcc -- this one and
+      # stage3-to-stage4-bridge -- kept none. Rung 6 is a known FAIL here, and
+      # this job's own header says a rung that fails is the deliverable. The
+      # deliverable was being destroyed unread.
+      #
+      # The reference arm's comment records three rounds lost exactly this way:
+      # each rung prints a WINDOW of one of its logs on failure, and the window
+      # missed -- rung 16 tailed a parallel build and caught gmp SUCCEEDING
+      # while gcc's ld error sat at b.log:3831. In all three the file with the
+      # answer was on the runner for the rest of the job.
+      #
+      # rungs-sysroot.sh also PRINTS "(full log uploaded as the buildlogs
+      # artifact)" on every failure, in both arms. Here that sentence was a
+      # lie, which is worse than silence: it sends the reader to an artifact
+      # that was never created.
+      #
+      # This puts no byte into any artifact the build reads back -- these are
+      # logs, and no rung consumes them.
+      - name: 'Collect every build log'
+        if: always()
+        run: |
+          set -u
+          mkdir -p buildlogs
+          # Phase A builds in $BOX/work/b-*; phase B in $BOX/pb.
+          for src in "$BOX/work" "$BOX/pb"; do
+            [ -d "$src" ] || continue
+            find "$src" -name '*.log' -type f 2>/dev/null | while read -r f; do
+              rel=$(printf '%s' "$f" | sed "s|^$BOX/||; s|/|__|g")
+              # tail rather than head: a build log's failure is at the END,
+              # and gcc's can reach tens of megabytes.
+              tail -c 20000000 "$f" > "buildlogs/$rel" 2>/dev/null || true
+            done
+          done
+          n=$(ls buildlogs 2>/dev/null | wc -l)
+          echo "  collected $n build logs"
+          if [ "$n" -gt 0 ]; then
+            du -sh buildlogs | sed 's/^/    /'
+            ls -S buildlogs | head -10 | sed 's/^/    /'
+          fi
+
+      # NAMED FOR THE ARM, NOT FOR THE STEP. `buildlogs-reference` is taken by
+      # the other job, and two artifacts with one name is how a comparison
+      # quietly reads the wrong side.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: buildlogs-stage0-stage4-complete
+          path: buildlogs/
+          retention-days: 14
+          if-no-files-found: ignore
+
       - name: 'Publish the sysroot for side experiments'
         if: always()
         run: |

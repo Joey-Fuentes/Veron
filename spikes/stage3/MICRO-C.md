@@ -1539,6 +1539,50 @@ probe reported "control ALSO fails", which read as evidence about the
 environment when it was only the probe's own command line. Fixed; unanswered
 until the next run.
 
+**The shape is worth stating precisely, because it constrains the answer.**
+Two verdicts come out of ONE member read compared against two constants:
+
+```
+if (h->e_type == ET_REL) return AFF_BINTYPE_REL;    /* 1 -- works */
+if (h->e_type == ET_DYN) return AFF_BINTYPE_DYN;    /* 3 -- does not */
+```
+
+`ET_REL` demonstrably works: mc-tcc links the objects it compiles, and the
+`gen2 == gen3 == gen4` fixpoint goes through this function every time. So
+either the read is right and the SECOND `if` is never reached, or the read is
+wrong and `ET_REL` survives it by accident. **Those are different bugs**, and
+neither the error message nor the target verdicts can tell them apart --
+`tcc_object_type` returns one integer and the caller turns every non-match into
+the same sentence.
+
+Two measurements now split it, and they are deliberately on opposite sides of
+the compiler:
+
+- **`tools/cases/100-elf-header-type-discrimination.c`** compiles the
+  function's body with micro-c itself, freestanding, header built in memory --
+  no libc, no file I/O, no emulator, both columns, under a second. Seven bits:
+  `sizeof *h` on a parameter pointer, `ELFMAG`'s octal escape, the member read
+  at each of the two values, the `ET_REL` arm as its own control, the `ET_DYN`
+  arm, and the fallthrough. Marked `KNOWN GAP`, so it does not redden the
+  differential gate and announces itself when it starts passing.
+- **`tcc-two-ways`** compiles the same transcription with **mc-tcc** and with
+  the control, and runs both against the real `libc.so.6`, `ld-linux`, and an
+  `ET_REL` object, printing every intermediate.
+
+**The split they produce.** Subject says `UNRECOGNISED` where the control says
+`DYN` → micro-c miscompiles this function and the fault is in the compiler.
+Both say `DYN` → the function is fine and defect 2 lives past its return, in
+the caller, the linker-script path, or `tcc_load_dll`. Those send the search to
+opposite ends of the tree, which is the reason for measuring rather than
+theorising: the last defect cost five rounds to a marker trail read as though
+it named a fault when it only bracketed one.
+
+**`ELFMAG` is named separately for a reason.** tcc spells the magic
+`"\177ELF"`, and M2-Planet's `escape_lookup` special-cases `\0` and `\x` and
+has never had general octal. Nothing else in the tree depends on that form, so
+a gap there would fail everywhere at once and read as a codegen fault. Bit 2
+of the case exists so it cannot.
+
 **3. `tcc-two-ways` step 21.** A null dereference -- `ldrsw x0, [x0]` with
 `x0 = 0`, at `pc=0x4d4e34` -- only against real glibc. **Plausibly the same
 defect as 2**, which would make this list seven.
