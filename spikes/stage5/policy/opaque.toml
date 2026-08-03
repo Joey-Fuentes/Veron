@@ -1,0 +1,16 @@
+# Things that cannot be built at all. Counted separately by `veron status`,
+# because a system with three firmware blobs and 4,182 verified files is an
+# honest description and one that omits them is not.
+#
+# Empty in this spike -- neither pkgconf nor hello has an opaque input, and an
+# Ethernet-only install has zero, which is worth being able to state.
+#
+# Known members for the real package set, each with a REASON, because they are
+# not the same kind of thing:
+#
+#   linux-firmware      no source exists
+#   ca-certificates     source exists; it is a POLICY blob -- a trust store
+#                       extracted from NSS that decides who you trust on the
+#                       network. Arguably sharper than firmware, and it
+#                       becomes load-bearing once gpg fetches from keyservers.
+#   dejavu / noto       source exists, nobody builds it

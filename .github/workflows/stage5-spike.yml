@@ -1,0 +1,269 @@
+name: stage5-spike
+
+# MINIMAL STAGE 5: two packages, built on the proven entry contract, merged
+# into an image, booted.
+#
+# WHAT CHANGED SINCE THIS WAS FIRST WRITTEN. The original restored the stage-4
+# sysroot by cache PREFIX and named VERON-ENTRY-ABSENT as its expected first
+# failure, because stage 4 published no sysroot. That gap is closed:
+# sysroot-inventory.yml publishes `veron-sysroot-trimmed` (481 MB, named,
+# hashed, deterministically packed) and stage5-entry.yml has PROVEN it
+# compiles C, C++, -flto and -static, and boots. So this consumes a pinned
+# artifact rather than guessing a cache key.
+#
+# NO BUILD LOGIC IN THIS FILE. Every `run:` is environment setup or a call to
+# spikes/stage5/tools/veron. If build logic reappears here, that is the
+# regression -- DERIVATIONS.md Decision 3.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sysroot_run_id:
+        description: 'sysroot-inventory run id (blank = latest successful)'
+        required: false
+        default: ''
+      skip_boot:
+        description: 'Build and test, but do not boot'
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: stage5-spike-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  spike:
+    runs-on: ubuntu-24.04-arm      # NATIVE aarch64 -- the sysroot IS aarch64,
+                                   # so packages build AND RUN unemulated
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Airlock deps (tier 2 -- drives the build, touches no artifact byte)'
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap qemu-system-arm e2fsprogs
+          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor and
+          # bwrap then fails on loopback setup. hermetic-gcc10/15/16 and
+          # float-probe already carry this; stage5-entry lost a run to its
+          # absence and reported it as a compiler fault.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          python3 -c 'import tomllib' || { echo "python 3.11+ required"; exit 1; }
+
+      - name: 'VERON-PLAN-OK -- regenerate and diff'
+        run: cd spikes/stage5 && python3 tools/veron plan --check
+
+      - name: 'Find the sysroot-inventory run'
+        id: inv
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          id="${{ inputs.sysroot_run_id }}"
+          [ -n "$id" ] || id=$(gh run list --workflow=sysroot-inventory.yml \
+                --status=success --limit=1 --json databaseId \
+                --jq '.[0].databaseId' 2>/dev/null || true)
+          [ -n "$id" ] && [ "$id" != null ] || { echo "no sysroot-inventory run"; exit 1; }
+          echo "run_id=$id" >> "$GITHUB_OUTPUT"; echo "  using run $id"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: veron-sysroot-trimmed
+          path: dl-sysroot
+          run-id: ${{ steps.inv.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: 'Unpack the sysroot and verify its published hash'
+        run: |
+          set -eu
+          want=$(awk '{print $1}' dl-sysroot/report/SYSROOT-SHA256)
+          got=$(sha256sum dl-sysroot/sysroot.tar | cut -d' ' -f1)
+          [ "$want" = "$got" ] || { echo "SYSROOT HASH MISMATCH"; exit 1; }
+          mkdir -p spikes/stage5/sysroot
+          tar -xf dl-sysroot/sysroot.tar -C spikes/stage5/sysroot
+          du -sh spikes/stage5/sysroot | sed 's/^/    /'
+          echo "VERON-ENTRY-OK  $got"
+
+      # AIRLOCK. Network lives here and nowhere else. Fetch goes through the
+      # mirror so a dead upstream costs a fallback rather than the run.
+      - name: 'Fetch pinned sources through the mirror'
+        run: |
+          set -eu
+          cd spikes/stage5
+          mkdir -p dl
+          fail=0
+          python3 ../../tools/mirror.py fetch \
+            3acd3a8a3cce65a8d620321855d92fb602e026cbe8e13ee36bdec58483b59ace \
+            pkgconf-3.0.5.tar.xz --dest dl || fail=1
+          # hello's pin is deliberately PENDING. GNU publishes a signature, not
+          # a checksum, so the hash is COMPUTED once by a human after
+          # gpg --verify. Until then this fails, and that failure is the design
+          # working rather than a bug to route around.
+          if grep -q PENDING packages/hello/recipe.toml; then
+            echo "  hello: pin is PENDING-HUMAN-VERIFICATION -- see the recipe."
+            fail=1
+          fi
+          [ "$fail" = 0 ] || { echo "VERON-FETCH-INCOMPLETE"; exit 1; }
+
+      - name: 'VERON-FETCH-OK -- sha256 against the manifest'
+        run: cd spikes/stage5 && python3 tools/veron fetch
+
+      # BUILD. bwrap with the SYSROOT AS THE FILESYSTEM -- no host /usr, no
+      # host /etc. Same shape as phase B and hermetic-gcc15's box15.sh, and the
+      # reason it is worth anything: if a host header were reachable, a missing
+      # one in the sysroot would not show up.
+      - name: 'VERON-SEAL + build both packages'
+        run: |
+          set -eu
+          cd spikes/stage5
+          mkdir -p build dest out logs
+          bwrap --unshare-all --die-with-parent \
+            --bind sysroot / \
+            --bind "$PWD/build" /build --bind "$PWD/dest" /dest \
+            --bind "$PWD/dl" /dl --bind "$PWD/logs" /logs --bind "$PWD/out" /out \
+            --ro-bind "$PWD/packages" /packages \
+            --ro-bind "$PWD/policy" /policy --ro-bind "$PWD/tools" /tools \
+            --proc /proc --dev /dev --tmpfs /tmp \
+            --setenv PATH /usr/bin:/usr/sbin \
+            --setenv LC_ALL C --setenv TZ UTC --setenv SOURCE_DATE_EPOCH 0 \
+            --chdir / \
+            /usr/bin/python3 /tools/veron \
+              --dl /dl --build-dir /build --dest /dest --logs /logs --out /out \
+              build
+
+      - name: 'VERON-MANIFEST-OK + VERON-LEDGER-OK'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 tools/veron manifest
+          python3 tools/veron ledger
+          python3 tools/veron status
+
+      # MERGE. The sysroot IS the base of the final system, not merely the
+      # build environment -- so the image is the entry contract plus what
+      # stage 5 installed on top of it.
+      - name: 'Merge the DESTDIRs into the system'
+        run: |
+          set -eu
+          cd spikes/stage5
+          for d in dest/*/; do
+            [ -d "$d" ] || continue
+            echo "  merging $(basename "$d")"
+            cp -a "$d". sysroot/
+          done
+          # Two .pc fixtures, one requiring the other, so pkgconf's transitive
+          # resolution and search-path pinning are EXERCISED rather than the
+          # binary merely being installed.
+          install -D -m644 guest/fixtures/veron-a.pc sysroot/usr/lib/pkgconfig/veron-a.pc
+          install -D -m644 guest/fixtures/veron-b.pc sysroot/usr/lib/pkgconfig/veron-b.pc
+          install -D -m755 guest/test.sh sysroot/usr/bin/veron-stage5-test
+          du -sh sysroot | sed 's/^/    /'
+
+      # Native aarch64, so these are the real binaries executing.
+      - name: 'VERON-STAGE5-OK -- hello and pkgconf in the system they belong to'
+        run: |
+          set -eu
+          cd spikes/stage5
+          bwrap --unshare-all --die-with-parent \
+            --bind sysroot / --proc /proc --dev /dev --tmpfs /tmp \
+            --setenv PATH /usr/bin:/usr/sbin --setenv LC_ALL C \
+            --chdir / /usr/bin/veron-stage5-test
+
+      # IMAGE. Every determinism knob explicit, because each defaults to
+      # something that VARIES. A first run failing to reproduce is the spike
+      # working; the divergence goes on the declared list.
+      - name: 'Build the image and probe reproducibility'
+        run: |
+          set -eu
+          cd spikes/stage5/out
+          SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
+          build_img() {
+            rm -f "$1"
+            /sbin/mke2fs -q -t ext4 -d ../sysroot \
+              -U 00000000-0000-4000-8000-000000000001 \
+              -E hash_seed=00000000-0000-4000-8000-000000000002 \
+              -O ^has_journal,^resize_inode,^dir_index \
+              -m 0 -b 4096 "$1" "${SZ}M"
+          }
+          build_img rootfs.img
+          sha256sum rootfs.img | tee IMAGE-SHA256
+          cp rootfs.img /tmp/img1
+          build_img rootfs.img
+          if cmp -s /tmp/img1 rootfs.img; then
+            echo "VERON-IMAGE-REPRO-OK  two builds, identical bytes"
+          else
+            echo "VERON-IMAGE-REPRO-DIFF  the CONTAINER did not reproduce."
+            echo "  The packages may still be byte-identical; a filesystem is"
+            echo "  full of exactly the metadata that varies. Record the cause"
+            echo "  in policy/expected-differences.toml or fix the knob."
+            cmp -l /tmp/img1 rootfs.img | head -20 || true
+          fi
+
+      # BOOT. The ladder's initramfs already mounts mount_tag veronsysroot over
+      # 9p and runs gcc inside it, so pointing 9p at OUR merged tree reuses that
+      # test unchanged against the stage-5 system.
+      #
+      # STATED PLAINLY: this proves the merged system boots and compiles under
+      # the real kernel. It does NOT run the hello/pkgconf tests in the guest --
+      # the initramfs is stage 4's and calls its own. Those ran above, natively,
+      # on real aarch64 binaries. Two claims, two places.
+      - name: 'Find the latest stage-4 run'
+        id: s4
+        if: '!inputs.skip_boot'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          id=$(gh run list --workflow=stage0-stage4-complete.yml --status=success \
+                 --limit=1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          echo "run_id=${id:-}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        if: ${{ !inputs.skip_boot && steps.s4.outputs.run_id != '' }}
+        continue-on-error: true
+        with:
+          name: veron-boot
+          path: boot
+          run-id: ${{ steps.s4.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: 'Boot the stage-5 system'
+        if: '!inputs.skip_boot'
+        run: |
+          set -eu
+          [ -s boot/Image ] || { echo "VERON-BOOT-SKIP  no kernel artifact"; exit 0; }
+          set +e
+          timeout 600 qemu-system-aarch64 \
+            -M virt -cpu cortex-a57 -smp 2 -m 2048 \
+            -nographic -no-reboot -nic none \
+            -fsdev local,id=vs,path="$PWD/spikes/stage5/sysroot",security_model=none,readonly=on \
+            -device virtio-9p-pci,fsdev=vs,mount_tag=veronsysroot \
+            -kernel boot/Image -initrd boot/initramfs.cpio.gz \
+            -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7" \
+            > boot.log 2>&1
+          echo "  qemu rc=$?"
+          set -e
+          if grep -q VERON-BOOT-OK boot.log; then
+            sed -n '/VERON-BOOT-OK/,$p' boot.log | sed 's/^/    /'
+            echo "VERON-STAGE5-BOOT-OK"
+          else
+            tail -30 boot.log | sed 's/^/    /'; exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage5-spike
+          path: |
+            spikes/stage5/out/
+            spikes/stage5/ledger/
+            spikes/stage5/logs/
+            spikes/stage5/PLAN.txt
+            boot.log
+          retention-days: 30

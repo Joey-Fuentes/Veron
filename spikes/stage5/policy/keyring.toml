@@ -1,0 +1,20 @@
+# Fingerprints Veron vouches for.
+#
+# THIS IS A TRUST CLAIM, NOT DATA. Shipping a fingerprint asserts "this is the
+# real upstream key", which is sourced from somewhere and vouched for by
+# someone. Scattering keys across recipes makes the claim invisible, which is
+# the failure mode this project exists to avoid -- so it lives in one file,
+# reviewed line by line, each entry recording where it came from and who
+# cross-checked it.
+#
+# Used by a human in the airlock at pin time, and later by the running system
+# once GnuPG is in the package set. NEVER on the build path: builds verify
+# sha256 and nothing else, which needs hashlib and no gpg, and avoids the
+# circularity of needing gpg to verify the sources that build gpg.
+
+[[key]]
+upstream    = "gnu"
+purpose     = "GNU release tarballs, incl. hello"
+source      = "https://ftp.gnu.org/gnu/gnu-keyring.gpg"
+fingerprint = "PENDING -- record the specific signing key after verifying hello"
+crosschecked_against = []

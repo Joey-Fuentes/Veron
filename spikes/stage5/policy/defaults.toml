@@ -1,0 +1,27 @@
+# Global build policy. Small, cross-cutting, rarely edited, and worth reading
+# whole -- which is why it is ONE file while recipes are many.
+
+[build]
+prefix     = "/usr"
+flavor     = "glibc"
+jobs       = 1          # PINNED, NOT DETECTED. Parallelism changes output
+                        # bytes for some builds. `nproc` would make the image
+                        # depend on the runner it happened to land on.
+path       = "/usr/bin:/bin"
+sysroot_id = "stage4"
+
+[env]
+# CONSTRUCTED, NEVER INHERITED. Anything the box can detect decides the output
+# bytes, so nothing arrives by accident.
+SOURCE_DATE_EPOCH = "0"
+LC_ALL            = "C"
+LANG              = "C"
+TZ                = "UTC"
+TERM              = "dumb"
+
+[docs]
+# ONE POLICY, NOT 200 DECISIONS. Documentation toolchains -- docbook-xml,
+# docbook-xsl, libxslt, gtk-doc, sphinx, doxygen, asciidoc -- are most of the
+# gap between the 150-upstream estimate and the 200-package budget, and none
+# of it ships in the image. Off globally.
+enabled = false

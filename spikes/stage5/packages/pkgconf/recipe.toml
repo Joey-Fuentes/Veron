@@ -1,0 +1,104 @@
+name    = "pkgconf"
+version = "3.0.5"
+group   = "build-substrate"
+license = "ISC"
+
+# THE FLOOR PACKAGE. Nearly everything in groups 4-7 asks pkgconf what flags
+# it needs to build against a library, so it goes first -- not because things
+# link against it, but because they cannot finish ./configure without it.
+#
+# It builds without pkgconf, which is what qualifies it to go first.
+
+[source]
+url    = "https://github.com/pkgconf/pkgconf/releases/download/pkgconf-3.0.5/pkgconf-3.0.5.tar.xz"
+sha256 = "3acd3a8a3cce65a8d620321855d92fb602e026cbe8e13ee36bdec58483b59ace"
+
+# A MAINTAINER-UPLOADED RELEASE ASSET, not a GitHub auto-generated "Source
+# code (tar.gz)". The latter is generated on the fly and its checksum has
+# shifted under the whole ecosystem before; never pin one.
+signature = "UNKNOWN -- spike finding: does pkgconf sign releases?"
+
+# The commit is provenance metadata, NOT an alternative way to build this.
+# A git checkout has no ./configure -- it has configure.ac, and turning one
+# into the other needs autoconf, automake, libtool, m4 and perl, all of which
+# are group 1 and therefore ABOVE this package. At the floor the shipped
+# generated files are irreducibly trusted.
+git_commit     = "3086e5dfc16b8cf9a9b66f6827868af4aa85e9bd"
+correspondence = "unverified"
+residue        = "configure, Makefile.in, aclocal.m4, m4/*.m4 -- autotools output, not in git"
+
+# WHY THIS FIELD EXISTS. The 2024 xz backdoor lived in exactly this residue:
+# generated build machinery present in the release tarball and absent from the
+# repository. Anyone who diffed the *source* saw nothing. Recording which of
+# the three correspondence strengths a package achieved -- structural,
+# regenerated, none -- is criterion 4 and 6 applied to a surface neither
+# currently names.
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+configure_flags = [
+  "--with-system-libdir",
+  "--with-system-includedir",
+  "--with-pkg-config-dir",
+]
+verification = "make check (upstream suite)"
+deferral = """
+Internals not reviewed. Upstream test suite only. Release tarball's generated \
+autotools files are trusted without regeneration: autoconf is group 1 and does \
+not exist at this rung. Signature status unresolved -- see source.signature."""
+
+# ------------------------------------------------------------------ steps
+#
+# Every command literal. No template, no implicit phases. At 200 packages this
+# is repetitive and that is the point: the 3% that differs is visible because
+# nothing is hidden behind a default.
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/pkgconf-3.0.5.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+# THE SEARCH PATH IS PINNED, NOT DETECTED. This is the hermeticity control
+# point for the whole package set: pkgconf searches a path for .pc files, and
+# if it finds host ones then a package silently links against a host library
+# and the build looks fine. Every one of these three would otherwise be
+# guessed from the box contents.
+run  = [[
+  "./configure",
+  "--prefix=$PREFIX",
+  "--disable-static",
+  "--with-system-libdir=$PREFIX/lib",
+  "--with-system-includedir=$PREFIX/include",
+  "--with-pkg-config-dir=$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig",
+]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "check"
+cwd  = "$S"
+run  = [["make", "check"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+
+[[steps]]
+name = "install-pkg-config-alias"
+cwd  = "$S"
+# pkgconf ships as a drop-in for pkg-config, and build systems look for that
+# name. Declared here rather than left to the package's own install, because
+# whether upstream creates it has changed across releases.
+run  = [["ln", "-sf", "pkgconf", "$D$PREFIX/bin/pkg-config"]]

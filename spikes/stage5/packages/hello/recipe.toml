@@ -1,0 +1,89 @@
+name    = "hello"
+version = "2.12.3"
+group   = "spike-probe"
+license = "GPL-3.0-or-later"
+
+# NOT A STAGE 5 PACKAGE. group = "spike-probe" marks it as an instrument, not
+# a member of the package set, so it is visibly not smuggled in.
+#
+# It is here because this spike tests the HARNESS, and the harness must not be
+# confusable with the package. The repo has paid for that confusion twice:
+# "Six of the first seven runs found harness bugs, not compiler bugs", and the
+# reference arm exists so a failure is "attributable to micro-c rather than to
+# the harness". hello is the instrument with no moving parts -- autoconf
+# configure, a real `make check`, DESTDIR install, and a binary that RUNS in
+# the guest, so success is observed rather than inferred.
+#
+# Bisect with hello alone if a run fails.
+
+[source]
+url = "https://ftp.gnu.org/gnu/hello/hello-2.12.3.tar.gz"
+
+# DELIBERATELY NOT FILLED IN.
+#
+# GNU does not publish sha256 files for hello -- the detached signature IS the
+# verification mechanism, and there is no digest inside a .sig to extract. So
+# this hash cannot be copied from anywhere; it is COMPUTED, once, by a human,
+# and only after the signature checks out:
+#
+#     gpg --import gnu-keyring.gpg      # ftp.gnu.org/gnu/gnu-keyring.gpg
+#     gpg --verify hello-2.12.3.tar.gz.sig hello-2.12.3.tar.gz
+#     sha256sum hello-2.12.3.tar.gz     # <- paste result here
+#
+# ORDER MATTERS. Verify first, hash second. The other way round pins whatever
+# you happened to download. That one command is the entire trust event for
+# this package; everything after it is mechanical.
+#
+# A digest lifted off a web page is laundered provenance -- it looks like
+# verification and is a second unverified source. `veron fetch` fails loudly
+# while this placeholder is here, which is the correct behaviour.
+sha256 = "PENDING-HUMAN-VERIFICATION"
+
+signature      = "https://ftp.gnu.org/gnu/hello/hello-2.12.3.tar.gz.sig"
+correspondence = "none"
+residue        = "configure, Makefile.in, gnulib, po/* -- autotools + gnulib output"
+
+[deps]
+build = []
+link  = []
+# THE optional-off KIND, LIVE ON THE FIRST PACKAGE. hello's configure will
+# happily enable NLS if it detects gettext, which means the same source
+# produces different binaries depending on what happened to be in the box.
+# Disabling it is a DECLARATION, not a convenience.
+optional_off = ["gettext"]
+
+[declared]
+configure_flags = ["--disable-nls"]
+verification    = "make check (upstream suite)"
+deferral = """
+Internals not reviewed. Upstream test suite only. Generated autotools and \
+gnulib files trusted without regeneration. Signature verified once by a human \
+outside the build; the running system cannot re-verify it, because GnuPG is \
+not yet in the package set."""
+
+# ------------------------------------------------------------------ steps
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/hello-2.12.3.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=$PREFIX", "--disable-nls"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "check"
+cwd  = "$S"
+run  = [["make", "check"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
