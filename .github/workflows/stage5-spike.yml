@@ -184,19 +184,19 @@ jobs:
           # it was wrong -- reproduced locally against mke2fs 1.47.0 with the
           # variable set, and the same three superblock timestamps still
           # differed. The image is normalised afterwards instead; see
-          # tools/normalize-ext4.sh for the byte offsets and the reasoning.
+          # tools/normalize-ext4.py for the byte offsets and the reasoning.
           SZ=$(du -sm ../sysroot | cut -f1); SZ=$((SZ + 200))
           build_img() {
             rm -f "$1"
             /sbin/mke2fs -q -t ext4 -d ../sysroot \
               -U 00000000-0000-4000-8000-000000000001 \
               -E hash_seed=00000000-0000-4000-8000-000000000002 \
-              -O ^has_journal,^resize_inode,^dir_index \
+              -O ^has_journal,^resize_inode,^dir_index,^metadata_csum \
               -m 0 -b 4096 "$1" "${SZ}M"
             # DECLARED TRANSFORMATION, not a silent fixup: rewrites the three
             # superblock timestamps and every inode's times, with debugfs so
             # the checksums are recomputed rather than left wrong.
-            sh ../tools/normalize-ext4.sh "$1"
+            python3 ../tools/normalize-ext4.py "$1"
           }
           build_img rootfs.img
           sha256sum rootfs.img | tee IMAGE-SHA256

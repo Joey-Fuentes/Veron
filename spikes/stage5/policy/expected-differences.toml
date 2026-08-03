@@ -6,40 +6,61 @@
 # before.
 
 # ---------------------------------------------------------------------------
-# RESOLVED -- kept as a record of what the check caught, what was WRONG about
-# the first diagnosis, and what actually fixed it.
+# RESOLVED -- including the two diagnoses that were WRONG, because both looked
+# right and the next person will reach for them too.
 # ---------------------------------------------------------------------------
 
 [[resolved]]
 what  = "ext4 image: superblock and inode timestamps"
 found = """
-VERON-IMAGE-REPRO-DIFF. Two builds seconds apart differed at cmp -l positions \
-1073, 1089, 1289 (superblock +48 s_wtime, +64 s_lastcheck, +264 s_mkfs_time), \
-2045-2048 (+1020 s_checksum, following from those three) and 57353 onward \
-(inode table i_ctime/i_crtime)."""
-first_guess = """
-WRONG. The first fix exported SOURCE_DATE_EPOCH into the image step, on the \
-assumption that e2fsprogs honours it. It does not -- reproduced locally \
-against mke2fs 1.47.0 with the variable set, and the same offsets still \
-differed. Recorded because the wrong diagnosis is worth knowing: the fields \
-look exactly like the ones SOURCE_DATE_EPOCH governs elsewhere."""
+VERON-IMAGE-REPRO-DIFF. cmp -l positions 1073, 1089, 1289 (superblock +48 \
+s_wtime, +64 s_lastcheck, +264 s_mkfs_time), 2045-2048 (+1020 s_checksum, \
+following from those) and 57353 onward (inode i_ctime/i_crtime)."""
+
+wrong_guess_1 = """
+SOURCE_DATE_EPOCH. e2fsprogs does not honour it for these fields -- verified \
+by reproducing the failure locally against mke2fs 1.47.0 with the variable \
+exported. The fields look exactly like the ones it governs elsewhere, which \
+is why it is worth recording as tried and failed."""
+
+wrong_guess_2 = """
+A debugfs `ssv` pass. It fixed a small image and NOT a real one, for two \
+reasons that only appear at scale: (a) BACKUP SUPERBLOCKS -- a 600 MB \
+filesystem has copies at blocks 32768 and 98304 and `ssv` writes only the \
+primary, leaving diffs at 32768*4096+49; (b) DEBUGFS RE-STAMPS s_wtime WHEN \
+IT CLOSES a write session, so a later inode pass re-dirtied the field the \
+earlier pass had just set."""
+
 fix = """
-tools/normalize-ext4.sh, run after each mke2fs. Rewrites the three superblock \
-timestamps and every inode's ctime/atime/mtime/crtime to a fixed date using \
-debugfs, which RECOMPUTES THE CHECKSUMS -- patching the bytes directly would \
-leave s_checksum wrong, and a filesystem failing its own checksum is worse \
-than one that does not reproduce. Verified: two images built two seconds \
-apart converge on one hash, and e2fsck -fn passes clean afterwards. Costs \
-about a second per 50,000 inodes."""
+tools/normalize-ext4.py, run after each mke2fs. Inode pass FIRST (debugfs, \
+one -f session for every inode), superblock patch LAST and written directly \
+to every copy including backups. Verified at 38,400 inodes: two images built \
+two seconds apart converge on one hash, e2fsck -fn passes clean, files still \
+read. About a second per 50,000 inodes."""
+
+# ---------------------------------------------------------------------------
+# OPEN -- accepted, with a reason. This section should stay short.
+# ---------------------------------------------------------------------------
+
+[[open]]
+what   = "metadata_csum is disabled on the image"
+why    = """
+Patching the superblock invalidates s_checksum (crc32c over the first 1020 \
+bytes). e2fsck cannot repair it into a reproducible state -- it stamps its \
+own timestamps while repairing, so two images never converge. Rather than \
+ship an unverified crc32c implementation, the feature is turned off at mkfs \
+time, consistent with has_journal, dir_index and resize_inode already being \
+off for determinism."""
+cost   = "the image has no metadata checksumming -- a real reduction, not a free one"
+reopen = "implement and verify crc32c for the superblock, then drop ^metadata_csum"
 
 [[resolved]]
 what  = "initramfs: gzip FNAME field"
-found = "two archives with byte-identical cpio content produced different .gz bytes"
+found = "byte-identical cpio content produced different .gz bytes"
 cause = """
-Python's GzipFile stores fileobj.name in the header unless filename is given, \
-so writing to ir1.cpio.gz and ir2.cpio.gz embedded different names. This is \
-the field `gzip -n` suppresses, and the code's own comment claimed -n \
-behaviour while not implementing it."""
+GzipFile stores fileobj.name unless filename is given, so writing to \
+ir1.cpio.gz and ir2.cpio.gz embedded different names -- the field `gzip -n` \
+suppresses, which the code's own comment claimed to implement and did not."""
 fix   = 'GzipFile(filename="", mtime=0)'
 
 [[resolved]]
@@ -50,10 +71,3 @@ The shell builder piped to cpio with 2>/dev/null, so on a machine without \
 cpio the error vanished and gzip compressed nothing. A silently empty \
 initramfs panics several steps later, far from the cause."""
 fix   = "written in Python (newc directly), no host cpio, hard-fails under 4 KB"
-
-# ---------------------------------------------------------------------------
-# OPEN -- differences accepted, with a reason.
-# ---------------------------------------------------------------------------
-
-# None. An entry here means "this differs, we know why, we accept it" -- a
-# much weaker claim than anything above, and it should stay rare.
