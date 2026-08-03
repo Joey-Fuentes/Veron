@@ -133,7 +133,9 @@ emit "    $LA_ALL .la files present"
 # inside it does not survive. A flag file is the portable way to get one bit
 # back out.
 TMPFLAG=${TMPDIR:-/tmp}/trim-la.$$
+TMPSTALE=${TMPDIR:-/tmp}/trim-stale.$$
 : > "$TMPFLAG"
+: > "$TMPSTALE"
 
 # Which trees are actually going away this run?
 DOOMED=""
@@ -151,22 +153,50 @@ la_bad=0
 find "$ROOT" -name '*.la' 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
     grep -q "$CROSS" "$f" 2>/dev/null || continue
     if is_doomed "$f"; then
-        printf '      ok   %-50s (inside a removed tree)\n' "${f#$ROOT}" | tee -a "$LOG"
-    else
-        printf '      BAD  %s\n' "${f#$ROOT}" | tee -a "$LOG"
-        # Show WHAT it points at -- the actionable part.
-        grep -o "[^ '\"]*$CROSS[^ '\"]*" "$f" 2>/dev/null | sort -u | head -4 \
-          | sed 's/^/             -> /' | tee -a "$LOG"
-        echo bad >> "$TMPFLAG"
+        printf '      ok    %-48s (inside a removed tree)\n' "${f#$ROOT}" | tee -a "$LOG"
+        continue
     fi
+    # THREE OUTCOMES, NOT TWO. Matching the triplet STRING is not the same as
+    # referencing a path we are about to remove -- the first version conflated
+    # them and reported three files as blockers when they were something else
+    # entirely. Classify each referenced path:
+    #
+    #   BAD    resolves under $ROOT into a tree being removed -- a real blocker
+    #   STALE  does not exist in the sysroot at all -- typically a leftover
+    #          BUILD-DIRECTORY path (libtool keeps -L entries from the build
+    #          tree when a library is not relinked at install). Already broken
+    #          before any trim, so it is a separate bug, not a reason to stop.
+    bad_here=0; stale_here=0
+    for ref in $(grep -o "[^ '\"]*$CROSS[^ '\"]*" "$f" 2>/dev/null | sed 's/^-L//' | sort -u); do
+        case "$ref" in /*) ;; *) continue ;; esac
+        if [ -e "$ROOT$ref" ] || [ -e "$ref" ]; then
+            if is_doomed "$ROOT$ref"; then
+                printf '      BAD   %s\n             -> %s (in a removed tree)\n' \
+                    "${f#$ROOT}" "$ref" | tee -a "$LOG"
+                bad_here=1
+            fi
+        else
+            printf '      STALE %s\n             -> %s (does not exist)\n' \
+                "${f#$ROOT}" "$ref" | tee -a "$LOG"
+            stale_here=1
+        fi
+    done
+    [ "$bad_here" = 1 ] && echo bad >> "$TMPFLAG"
+    [ "$stale_here" = 1 ] && echo stale >> "$TMPSTALE"
 done
 [ -s "$TMPFLAG" ] && la_bad=1
-rm -f "$TMPFLAG" 2>/dev/null || true
+STALE_N=$( [ -f "$TMPSTALE" ] && wc -l < "$TMPSTALE" || echo 0 )
+rm -f "$TMPFLAG" "$TMPSTALE" 2>/dev/null || true
+if [ "$STALE_N" -gt 0 ]; then
+    emit "      $STALE_N .la reference(s) point at paths that DO NOT EXIST."
+    emit "      Not a trim blocker -- they were already dangling. Usually"
+    emit "      libtool keeping build-tree -L entries through install."
+fi
 if [ "$la_bad" = 1 ]; then
     emit "      UNSAFE: .la files OUTSIDE the removed trees point INTO them"
     UNSAFE=1
 else
-    emit "      no .la file outside a removed tree references $CROSS"
+    emit "      no .la file outside a removed tree points into one"
 fi
 
 if [ "$UNSAFE" = 1 ] && [ "${VERON_TRIM_FORCE:-0}" != 1 ]; then
@@ -231,6 +261,27 @@ if [ "$T_PYSTATIC" = 1 ]; then
     emit "    NOTE: the two copies were NOT hardlinked, which upstream intends."
     emit "    Dropping them makes this instance moot but not the cause -- ld"
     emit "    and ld.bfd appear four times in /tools with the same shape."
+fi
+
+# ------------------------------------------------------------ 4b libcc1
+if [ "${TRIM_LIBCC1:-1}" = 1 ]; then
+    emit ""
+    emit '  --- libcc1 (gdb compile-in-context support) ---'
+    emit "  libcc1, libcc1plugin and libcp1plugin exist so gdb can compile code"
+    emit "  in the debuggee's context. Nothing else links them, and gdb is not"
+    emit "  in the package set. Their .la files are ALSO the ones carrying"
+    emit "  stale /work/b-gcc2 build paths, so they are broken as well as"
+    emit "  unused -- dropping them removes the defect rather than fixing a"
+    emit "  path nothing reads."
+    b=$(sz "$ROOT")
+    for f in "$ROOT"/usr/lib/libcc1.* \
+             "$ROOT"/usr/lib/gcc/*/*/plugin/libcc1plugin.* \
+             "$ROOT"/usr/lib/gcc/*/*/plugin/libcp1plugin.*; do
+        [ -e "$f" ] || continue
+        emit "    rm ${f#$ROOT}"
+        rm -f "$f"
+    done
+    report "libcc1" "$b"
 fi
 
 # ------------------------------------------------------------ 5 strip
