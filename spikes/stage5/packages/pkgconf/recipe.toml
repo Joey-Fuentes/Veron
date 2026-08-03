@@ -113,3 +113,15 @@ cwd  = "$S"
 # name. Declared here rather than left to the package's own install, because
 # whether upstream creates it has changed across releases.
 run  = [["ln", "-sf", "pkgconf", "$D$PREFIX/bin/pkg-config"]]
+
+# ------------------------------------------------------------------ guest
+[guest]
+# The transitive query is the one that matters: it exercises .pc resolution
+# and the pinned search path rather than proving the binary starts. The two
+# fixture .pc files are installed alongside.
+test = [
+  ["/usr/bin/pkgconf", "--version"],
+  ["/usr/bin/pkgconf", "--cflags", "veron-b"],
+  ["/usr/bin/pkgconf", "--libs", "veron-b"],
+]
+expect = ["3.0.5", "veron-a", "-lveron-a"]

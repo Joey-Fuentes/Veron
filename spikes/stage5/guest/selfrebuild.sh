@@ -74,8 +74,13 @@ fi
 echo "  --- comparing against the runner's manifest ---"
 # Per-file, so a mismatch names the file rather than just failing a hash.
 if cmp -s "$EXPECT" /out/files.tsv; then
-    echo "  every file identical: $(wc -l < /out/files.tsv) paths"
-    echo "VERON-SELFREBUILD-OK  the system rebuilt itself, byte for byte"
+    N=$(cut -f2 /out/files.tsv | sort -u | wc -l)
+    # THE COUNT IS IN THE MARKER. "the system rebuilt itself" overstates what
+    # two small packages prove; "2/2 packages" is honest at every value of n
+    # and needs no rewording when the set is 60. The toolchain itself came
+    # from stage 4 and is a declared input, not something this rebuilds.
+    echo "  $(wc -l < /out/files.tsv) files identical across $N package(s)"
+    echo "VERON-SELFREBUILD-OK  $N/$N packages rebuilt in the image, byte-identical"
     exit 0
 fi
 

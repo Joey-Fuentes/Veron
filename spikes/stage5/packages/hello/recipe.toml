@@ -87,3 +87,13 @@ run  = [["make", "check"]]
 name = "install"
 cwd  = "$S"
 run  = [["make", "DESTDIR=$D", "install"]]
+
+# ------------------------------------------------------------------ guest
+# SANITY ONLY. Does the installed thing work, under the real kernel. Whether
+# it REPRODUCES is G3's question, answered on the runner at native speed;
+# whether the system can rebuild it is the self-rebuild gate's. Three
+# questions, three places, and only this one has to scale to 150 packages
+# inside an emulated boot -- so it stays one command.
+[guest]
+test   = [["/usr/bin/hello"]]
+expect = ["Hello, world!"]

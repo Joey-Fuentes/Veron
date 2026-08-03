@@ -133,7 +133,7 @@ jobs:
             --chdir / \
             /usr/bin/python3 /tools/veron \
               --dl /dl --build-dir /build --dest /dest --logs /logs --out /out \
-              build
+              build --clean
 
       - name: 'VERON-MANIFEST-OK + VERON-LEDGER-OK'
         run: |
@@ -146,6 +146,44 @@ jobs:
       # MERGE. The sysroot IS the base of the final system, not merely the
       # build environment -- so the image is the entry contract plus what
       # stage 5 installed on top of it.
+      # ---------------------------------------------------------------
+      # G3 -- REPRODUCIBILITY, ON THE RUNNER.
+      #
+      # THE GAP THIS CLOSES. Everything proven so far was about CONTAINERS:
+      # the ext4 image reproduces, the initramfs reproduces. No package had
+      # ever been built twice and compared -- while the ledger was already
+      # writing reproducibility.output_hash with attestations: 1, asserting
+      # something nothing had checked.
+      #
+      # ON THE RUNNER, NATIVE, deliberately. Emulated rebuilds do not scale
+      # past a proof of concept, and this has to work at 150 packages. The
+      # in-guest gate answers a different question and stays at n=2.
+      #
+      # --clean is load-bearing: without it the second build reuses the
+      # first's objects and DESTDIR, compares a build against itself, and
+      # reports reproducibility it never tested.
+      # ---------------------------------------------------------------
+      - name: 'G3: build everything a second time and compare'
+        run: |
+          set -eu
+          cd spikes/stage5
+          cp out/files.tsv out/files-run1.tsv
+          bwrap --unshare-all --die-with-parent \
+            --bind sysroot / \
+            --bind "$PWD/build" /build --bind "$PWD/dest" /dest \
+            --bind "$PWD/dl" /dl --bind "$PWD/logs" /logs --bind "$PWD/out" /out \
+            --ro-bind "$PWD/packages" /packages \
+            --ro-bind "$PWD/policy" /policy --ro-bind "$PWD/tools" /tools \
+            --proc /proc --dev /dev --tmpfs /tmp \
+            --setenv PATH /usr/bin:/usr/sbin \
+            --setenv LC_ALL C --setenv TZ UTC --setenv SOURCE_DATE_EPOCH 0 \
+            --chdir / \
+            /usr/bin/python3 /tools/veron \
+              --dl /dl --build-dir /build --dest /dest --logs /logs --out /out \
+              build --clean
+          python3 tools/veron manifest
+          python3 tools/veron compare out/files-run1.tsv out/files.tsv
+
       - name: 'Merge the DESTDIRs into the system'
         run: |
           set -eu
@@ -160,7 +198,10 @@ jobs:
           # binary merely being installed.
           install -D -m644 guest/fixtures/veron-a.pc sysroot/usr/lib/pkgconfig/veron-a.pc
           install -D -m644 guest/fixtures/veron-b.pc sysroot/usr/lib/pkgconfig/veron-b.pc
-          install -D -m755 guest/test.sh sysroot/usr/bin/veron-stage5-test
+          # GENERATED FROM THE RECIPES. guest/test.sh hardcoded both packages;
+          # at 150 that is a file nobody maintains. Adding a package now adds
+          # its test, in the same file as its pin and its flags.
+          python3 tools/veron guest-tests --out sysroot/usr/bin/veron-stage5-test
 
           # THE SELF-REBUILD PAYLOAD. Everything the image needs to rebuild
           # itself with no network: the pinned tarballs, the recipes, the
