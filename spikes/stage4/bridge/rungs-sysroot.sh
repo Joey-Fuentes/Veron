@@ -777,24 +777,45 @@ if [ "$B3" = ok ]; then
       # identical size -- 397720192 bytes both times, f31f0cd9 then 24de3e05 --
       # while the CROSS cc1 from rung 11 is byte-identical. Everything findable
       # from one binary has been ruled out: no __DATE__, no build-id, comp_dir
-      # is a fixed /work path, and all 1590 embedded paths are constant. What
-      # remains needs two builds compared, and downloading two 400 MB binaries
-      # to do it by hand is the wrong shape.
+      # is a fixed /work path, and all 1590 embedded paths are constant.
       #
-      # SAME RUN, SAME BOX, SAME INPUTS, so a difference here cannot be blamed
-      # on the runner, the commit, or the arm. It is the compiler or nothing.
+      # HOLD EVERY VARIABLE BUT THE BUILD ITSELF. The first version of this
+      # check did not, and produced a result that could not be read:
       #
-      # WHERE TO LOOK FIRST. cc1 is 397 MB of which .debug_info alone is 225 MB
-      # and .text is 25 MB. A difference is an order of magnitude more likely
-      # to be in debug metadata than in code, and those are very different
-      # findings -- repro-diff.sh reports which.
+      #     A  /usr/libexec/gcc/.../cc1        397720192   installed
+      #     B  /work/gcc-repro2/gcc/cc1        397339896   build tree
+      #     SIZES DIFFER by -380296 bytes
+      #
+      # Two things changed at once -- a different build DIRECTORY, and
+      # installed-versus-build-tree -- so the 380 KB says nothing about
+      # reproducibility. A comparison that alters what it is measuring is
+      # worse than no comparison, because it manufactures a number.
+      #
+      # So: keep build one's binaries, delete its tree, and rebuild in THE
+      # SAME PATH. Then compare build tree against build tree. The only
+      # difference left is that the build happened twice.
+      #
+      # WHERE TO LOOK IN THE RESULT. cc1 is 397 MB of which .debug_info alone
+      # is 225 MB and .text is 25 MB, so a difference is an order of magnitude
+      # more likely to be metadata than code -- and those are different
+      # findings. repro-diff.sh reports differing bytes per section.
       #
       # OFF BY DEFAULT: it costs a second full gcc build. Set REPRO_GCC=1.
       if [ "${REPRO_GCC:-0}" = 1 ] && [ "$B4" = ok ]; then
         say ""
-        say "  --- REPRO: building the final gcc a SECOND time, same inputs ---"
-        _r2=/work/gcc-repro2
-        rm -rf "$_r2" && mkdir -p "$_r2" && cd "$_r2"
+        say "  --- REPRO: building the final gcc a SECOND time, same path ---"
+        _keep=/work/repro-b1
+        rm -rf "$_keep" && mkdir -p "$_keep"
+        for _c in cc1 cc1plus; do
+          [ -f "$W/b-gcc/gcc/$_c" ] && cp "$W/b-gcc/gcc/$_c" "$_keep/$_c"
+        done
+        say "    kept build 1 from the build tree:"
+        for _c in cc1 cc1plus; do
+          [ -f "$_keep/$_c" ] && printf '      %-10s %12s  %s\n' "$_c" \
+            "$(wc -c < "$_keep/$_c")" "$(sha256sum "$_keep/$_c" | cut -c1-16)…"
+        done
+
+        rm -rf "$W/b-gcc" && mkdir -p "$W/b-gcc" && cd "$W/b-gcc"
         # THE SAME FLAGS, WRITTEN OUT RATHER THAN REFERENCED. A second build
         # configured even slightly differently proves nothing, and a shared
         # variable read from two places is how they drift apart. If the list
@@ -808,14 +829,14 @@ if [ "$B3" = ok ]; then
              > c2.log 2>&1 \
            && timeout 14400 make -j"$NP" > b2.log 2>&1; then
           for _c in cc1 cc1plus; do
-            _a=$(ls /usr/libexec/gcc/*/*/"$_c" 2>/dev/null | tail -1)
-            _b=$(find "$_r2" -name "$_c" -type f 2>/dev/null | head -1)
-            if [ -n "$_a" ] && [ -n "$_b" ]; then
+            _a="$_keep/$_c"
+            _b="$W/b-gcc/gcc/$_c"
+            if [ -f "$_a" ] && [ -f "$_b" ]; then
               say ""
-              say "  --- $_c: build 1 vs build 2 ---"
+              say "  --- $_c: build 1 vs build 2, same path, same flags ---"
               sh /src/stage4/bridge/repro-diff.sh "$_a" "$_b" 2>&1 | sed 's/^/  /'
             else
-              say "    $_c: could not locate both builds ($_a / $_b)"
+              say "    $_c: missing one side ($_a / $_b)"
             fi
           done
         else

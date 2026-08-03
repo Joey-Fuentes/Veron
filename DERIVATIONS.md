@@ -242,11 +242,48 @@ hide. Worth doing regardless -- but not as the *answer*, because a compiler
 that is not byte-reproducible is telling us something real even when the
 evidence sits in a section we do not ship.
 
-**What settles it: `REPRO_GCC=1`.** A dispatch input that builds the final gcc
-a second time in the same run, same box, same inputs, and diffs the two `cc1`
-binaries in place. A difference there cannot be blamed on the runner, the
-commit or the arm, and it costs no artifact transfer -- the byte offsets and
-their sections appear in the log.
+**The first attempt at settling it measured the wrong thing**, and is worth
+recording because the failure is a general one. `REPRO_GCC=1` ran and reported:
+
+```
+A  /usr/libexec/gcc/.../cc1     397720192   installed
+B  /work/gcc-repro2/gcc/cc1     397339896   build tree
+SIZES DIFFER by -380296 bytes
+```
+
+Two variables moved at once -- a different build **directory**, and
+**installed** against **build tree** -- so the 380 KB says nothing about
+reproducibility. **A comparison that alters what it is measuring is worse than
+no comparison, because it manufactures a number** that then has to be
+investigated and dismissed. The same shape as `${f##*/}` printing two `cc1`
+lines with no way to tell them apart.
+
+Fixed by keeping build one's binaries, deleting its tree, and rebuilding in the
+**same path** with the same flags, then comparing build tree against build
+tree. The only difference left is that the build happened twice.
+
+**What settles it: `repro-compilers`.** Every completed run already uploads its
+compilers as `veron-toolchain`, so the comparison needs no build at all. The
+workflow resolves the last two successful runs, downloads both artifacts, and
+diffs every `cc1` and `cc1plus` pair. Minutes, no compute, and it works
+retroactively on runs that have already happened.
+
+Two things it does that the earlier attempts did not:
+
+- **Pairs by full path, not basename.** There are two `cc1` binaries under
+  different triplets; pairing by name would compare the cross compiler against
+  the native one and report a difference that is only "these are different
+  compilers".
+- **Prints both commits.** Two runs of different commits can differ for
+  ordinary reasons, and a comparison that does not record which commits it used
+  cannot be read later -- which is exactly how an `Image` difference was nearly
+  blamed on non-determinism when the cause was a `KBUILD_BUILD_TIMESTAMP`
+  change between the two commits.
+
+`REPRO_GCC=1` remains for the case where two runs are not available or the
+question is about one run in isolation: it builds the final gcc a second time
+in the same box, same path, same flags, and diffs build tree against build
+tree.
 
 **The cc1 question turned out not to be a defect at all.** With full paths
 printed, the two are:

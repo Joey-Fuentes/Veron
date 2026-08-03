@@ -1,0 +1,172 @@
+# =====================================================================
+# ARE TWO RUNS OF THE SAME COMMIT PRODUCING THE SAME COMPILER?
+#
+# The question that has been open for six runs, answered from data already
+# collected rather than by building anything.
+#
+# WHAT IS KNOWN GOING IN. The native cc1 -- aarch64-veron-linux-gnu, built at
+# B4 -- has come out different on every run measured, at identical size:
+#
+#     397720192 bytes   f31f0cd9…   24de3e05…   5f878077…
+#
+# while the CROSS cc1 from rung 11 is byte-identical every time. Everything
+# findable from a single binary is ruled out: no __DATE__, no build-id,
+# comp_dir is a fixed /work path, and all 1590 embedded build paths are
+# constant. What remains needs two builds compared.
+#
+# WHY NOT REBUILD. `REPRO_GCC=1` builds the final gcc a second time inside the
+# run, which works but costs a whole extra gcc build -- and every completed run
+# has ALREADY uploaded its compilers as `veron-toolchain`. Comparing two
+# existing artifacts costs minutes and no compute.
+#
+# WHY THIS IS A FAIR COMPARISON, WHICH THE FIRST ATTEMPT WAS NOT. An earlier
+# in-run check compared an INSTALLED binary against a BUILD-TREE one, from
+# different build directories, and reported a 380 KB difference that meant
+# nothing. Here both sides come from the same place in their respective runs --
+# the installed tree, packaged identically by the same step -- so the only
+# variable is which run produced them.
+#
+# WHAT THE RESULT MEANS. cc1 is 397 MB of which .debug_info alone is 225 MB and
+# .text is 25 MB, so repro-diff.sh reports differing bytes per section:
+#
+#   differs only in .debug_*   metadata. The compiler works; its self-
+#                              description varies. -g0 or a strip removes the
+#                              whole surface.
+#   differs in .text           a genuinely different compiler. The serious
+#                              case, and the one worth a round.
+#   identical                  the earlier differences were something about
+#                              those specific runs, and this is now the check
+#                              that keeps it that way.
+# =====================================================================
+
+name: repro-compilers
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_a:
+        description: 'run id (blank = second most recent successful run)'
+        required: false
+        default: ''
+      run_b:
+        description: 'run id (blank = most recent successful run)'
+        required: false
+        default: ''
+      workflow:
+        description: 'which workflow to take runs from'
+        required: false
+        default: 'stage0-stage4-complete.yml'
+      artifact:
+        description: 'artifact name holding the compilers'
+        required: false
+        default: 'veron-toolchain'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Pick the two runs'
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          A='${{ inputs.run_a }}'
+          B='${{ inputs.run_b }}'
+          if [ -z "$A" ] || [ -z "$B" ]; then
+            # MOST RECENT FIRST, so B is newer than A and the diff reads
+            # forwards. Only successful runs -- a failed run's artifacts are
+            # partial and comparing against them invents differences.
+            gh run list --workflow '${{ inputs.workflow }}' \
+                        --status success --limit 20 \
+                        --json databaseId,createdAt,headSha \
+              > runs.json
+            echo "  recent successful runs:"
+            jq -r '.[] | "    \(.databaseId)  \(.createdAt)  \(.headSha[0:12])"' runs.json | head -10
+            [ -z "$B" ] && B=$(jq -r '.[0].databaseId' runs.json)
+            [ -z "$A" ] && A=$(jq -r '.[1].databaseId' runs.json)
+          fi
+          [ -n "$A" ] && [ -n "$B" ] && [ "$A" != "null" ] && [ "$B" != "null" ] \
+            || { echo "FAIL: could not resolve two runs"; exit 1; }
+          echo "a=$A" >> "$GITHUB_OUTPUT"
+          echo "b=$B" >> "$GITHUB_OUTPUT"
+
+          # THE COMMITS, PRINTED. Two runs of DIFFERENT commits can differ for
+          # ordinary reasons, and a comparison that does not say which commits
+          # it used cannot be read later. This is exactly how an Image
+          # difference got blamed on non-determinism when the cause was a
+          # KBUILD_BUILD_TIMESTAMP change between the two commits.
+          for r in "$A" "$B"; do
+            gh run view "$r" --json databaseId,headSha,createdAt,displayTitle \
+              --jq '"    run \(.databaseId)  \(.headSha[0:12])  \(.createdAt)  \(.displayTitle)"' || true
+          done
+
+      - name: 'Download both toolchains'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          for side in a b; do
+            case "$side" in a) r='${{ steps.pick.outputs.a }}' ;; b) r='${{ steps.pick.outputs.b }}' ;; esac
+            mkdir -p "$side"
+            if ! gh run download "$r" -n '${{ inputs.artifact }}' -D "$side" 2>/dev/null; then
+              echo "FAIL: run $r has no '${{ inputs.artifact }}' artifact."
+              echo "  Artifacts expire (30 day retention) and older runs predate the"
+              echo "  step that uploads them. Pass run ids explicitly, or re-run one."
+              exit 1
+            fi
+            ls -la "$side" | sed 's/^/    /'
+            [ -f "$side/libexec-gcc.tar.gz" ] && tar -C "$side" -xzf "$side/libexec-gcc.tar.gz"
+          done
+
+      - name: 'Compare every compiler, pair by pair'
+        run: |
+          set -eu
+          chmod +x spikes/stage4/bridge/repro-diff.sh
+          rc=0
+          # PAIRED BY PATH, NOT BY NAME. There are two cc1 binaries under
+          # different triplets -- the cross one from rung 11 and the native one
+          # from B4 -- and comparing them by basename would pair the wrong two
+          # and report a difference that is simply "these are different
+          # compilers". The full path is what disambiguates them.
+          ( cd a && find gcc -type f \( -name cc1 -o -name cc1plus \) | sort ) > pairs.txt
+          [ -s pairs.txt ] || { echo "FAIL: no cc1/cc1plus found in a/"; exit 1; }
+          while IFS= read -r p; do
+            echo
+            echo "=== $p ==="
+            if [ ! -f "b/$p" ]; then
+              echo "  present in A, absent in B -- the two runs built different triplets"
+              rc=1
+              continue
+            fi
+            sh spikes/stage4/bridge/repro-diff.sh "a/$p" "b/$p" || rc=1
+          done < pairs.txt
+
+          echo
+          echo "=== the small binaries, for completeness ==="
+          for f in gcc ld as libc.so.6 busybox; do
+            if [ -f "a/$f" ] && [ -f "b/$f" ]; then
+              if cmp -s "a/$f" "b/$f"; then
+                printf '    %-14s identical\n' "$f"
+              else
+                printf '    %-14s DIFFERS\n' "$f"
+                sh spikes/stage4/bridge/repro-diff.sh "a/$f" "b/$f" | sed 's/^/      /' || rc=1
+              fi
+            fi
+          done
+
+          echo
+          if [ "$rc" = 0 ]; then
+            echo "  EVERY COMPILER IS BYTE-IDENTICAL ACROSS THE TWO RUNS."
+          else
+            echo "  Differences above. Read the per-section summary: .debug_* is"
+            echo "  metadata and .text is code, and they are different findings."
+          fi
+          exit "$rc"
