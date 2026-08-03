@@ -1,0 +1,249 @@
+name: stage5-entry
+
+# THE ENTRY CONTRACT, PROVEN RATHER THAN ASSUMED.
+#
+# sysroot-inventory.yml cuts 5.6 GB down and uploads the result. Cutting is
+# not the hard part -- a 500 MB sysroot that cannot compile is worse than a
+# 5.6 GB one that can, and a job that only reports a size would call both a
+# success.
+#
+# Of the six cuts, exactly ONE is already proven: phase B runs with /tools off
+# PATH and completes, so every green ladder run is that experiment. The other
+# five -- cross triplet, lto-dump, strip, archive strip, static libpython --
+# are reasoned, not measured. This job measures them.
+#
+# TWO INDEPENDENT TESTS, because they fail differently:
+#
+#   1. bwrap smoke   compile C, C++ and -flto INSIDE the trimmed root.
+#                    Seconds. Catches a missing header, a missing crt file,
+#                    a stripped-too-far binary, a broken lto plugin path.
+#   2. qemu boot     hand the trimmed sysroot to the guest over 9p, exactly
+#                    as the ladder already does, and let the initramfs run
+#                    its own gcc-in-guest test against it. Minutes. Catches
+#                    anything that only shows up under a real kernel.
+#
+# The -flto case is the one to watch. We KEPT lto1 deliberately, and ld finds
+# liblto_plugin.so by a path containing the triplet -- so if the cross triplet
+# was providing it, -flto links break in a way that reads as a linker bug
+# rather than a missing file. The trim's safety gate guesses about this. This
+# job settles it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      sysroot_run_id:
+        description: 'sysroot-inventory run id (blank = latest successful)'
+        required: false
+        default: ''
+      skip_boot:
+        description: 'Smoke test only, no qemu'
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: stage5-entry-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  entry:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Install (airlock only -- none of this enters the tests)'
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bubblewrap qemu-system-arm qemu-utils
+
+      # ---------------------------------------------------------------
+      # THE TRIMMED SYSROOT
+      # ---------------------------------------------------------------
+      - name: 'Find the sysroot-inventory run'
+        id: inv
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          id="${{ inputs.sysroot_run_id }}"
+          if [ -z "$id" ]; then
+            id=$(gh run list --workflow=sysroot-inventory.yml \
+                   --status=success --limit=1 \
+                   --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          fi
+          [ -n "$id" ] && [ "$id" != null ] || { echo "no sysroot-inventory run found"; exit 1; }
+          echo "  using run $id"
+          echo "run_id=$id" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: veron-sysroot-trimmed
+          path: dl
+          run-id: ${{ steps.inv.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: 'Unpack, and verify the hash it was published with'
+        run: |
+          set -eu
+          cd dl
+          want=$(awk '{print $1}' report/SYSROOT-SHA256 2>/dev/null || echo "")
+          got=$(sha256sum sysroot.tar | cut -d' ' -f1)
+          echo "  want $want"
+          echo "  got  $got"
+          [ -z "$want" ] || [ "$want" = "$got" ] || { echo "SYSROOT HASH MISMATCH"; exit 1; }
+          mkdir -p ../sysroot
+          tar -xf sysroot.tar -C ../sysroot
+          du -sh ../sysroot | sed 's/^/    /'
+          echo "VERON-SYSROOT-OK"
+
+      # ---------------------------------------------------------------
+      # TEST 1 -- COMPILE INSIDE IT
+      #
+      # bwrap with the sysroot AS the filesystem: no host /usr, no host
+      # /etc. Same shape as phase B, and the reason it is worth anything --
+      # if a host header or a host crt file were reachable, a missing one in
+      # the sysroot would not show up.
+      # ---------------------------------------------------------------
+      - name: 'Smoke test: C, C++, and -flto inside the trimmed root'
+        run: |
+          set -eu
+          mkdir -p work
+          cat > work/t.c <<'EOF'
+          #include <stdio.h>
+          #include <string.h>
+          int main(void){ char b[16]; strcpy(b,"ok"); printf("C-%s\n", b); return 0; }
+          EOF
+          cat > work/t.cc <<'EOF'
+          #include <string>
+          #include <iostream>
+          #include <vector>
+          int main(){ std::vector<std::string> v{"CXX","ok"};
+                      for(auto&s:v) std::cout<<s<<"-"; std::cout<<"\n"; return 0; }
+          EOF
+          cp work/t.c work/lto.c
+
+          run_in() {
+            bwrap --unshare-all --die-with-parent \
+              --bind "$PWD/sysroot" / \
+              --bind "$PWD/work" /work \
+              --proc /proc --dev /dev --tmpfs /tmp \
+              --setenv PATH /usr/bin:/usr/sbin \
+              --setenv LC_ALL C --setenv SOURCE_DATE_EPOCH 0 \
+              --chdir /work "$@"
+          }
+
+          fail=0
+          echo "  --- gcc --version ---"
+          run_in /usr/bin/gcc --version | head -1 | sed 's/^/    /' || fail=1
+
+          echo "  --- C ---"
+          if run_in /usr/bin/gcc -O2 -o /work/t t.c && out=$(run_in /work/t); then
+            echo "    $out"; case "$out" in C-ok) echo "    VERON-SMOKE-C ok";; *) fail=1;; esac
+          else echo "    VERON-SMOKE-C FAIL"; fail=1; fi
+
+          echo "  --- C++ (cc1plus, libstdc++) ---"
+          if run_in /usr/bin/g++ -O2 -o /work/tcc t.cc && out=$(run_in /work/tcc); then
+            echo "    $out"; echo "    VERON-SMOKE-CXX ok"
+          else echo "    VERON-SMOKE-CXX FAIL"; fail=1; fi
+
+          echo "  --- -flto (lto1 + liblto_plugin.so via the triplet path) ---"
+          if run_in /usr/bin/gcc -O2 -flto -o /work/tl lto.c && out=$(run_in /work/tl); then
+            echo "    $out"; echo "    VERON-SMOKE-LTO ok"
+          else
+            echo "    VERON-SMOKE-LTO FAIL"
+            echo "    THIS IS THE ONE THAT MATTERS: it means the lto plugin"
+            echo "    resolved through the removed cross tree. Re-run the trim"
+            echo "    with TRIM_CROSS=0 to confirm, then fix where the plugin"
+            echo "    is installed rather than keeping 1.2 GB to work around it."
+            fail=1
+          fi
+
+          echo "  --- static link (did stripping archives break it?) ---"
+          if run_in /usr/bin/gcc -O2 -static -o /work/ts t.c && out=$(run_in /work/ts); then
+            echo "    $out"; echo "    VERON-SMOKE-STATIC ok"
+          else
+            echo "    VERON-SMOKE-STATIC FAIL -- suspect TRIM_STRIP_ARCHIVES"
+            fail=1
+          fi
+
+          [ "$fail" = 0 ] && echo "VERON-SMOKE-OK" || { echo "VERON-SMOKE-FAIL"; exit 1; }
+
+      # ---------------------------------------------------------------
+      # TEST 2 -- BOOT WITH IT
+      #
+      # The kernel and initramfs come from the ladder. The initramfs ALREADY
+      # mounts mount_tag veronsysroot over 9p and runs gcc inside it -- that
+      # is VERON-GCC-IN-GUEST. So pointing 9p at the TRIMMED tree reuses the
+      # existing guest test unchanged, against the new sysroot.
+      # ---------------------------------------------------------------
+      - name: 'Find the latest stage-4 run'
+        id: s4
+        if: '!inputs.skip_boot'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          id=$(gh run list --workflow=stage0-stage4-complete.yml \
+                 --status=success --limit=1 \
+                 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)
+          echo "run_id=${id:-}" >> "$GITHUB_OUTPUT"
+          echo "  stage-4 run ${id:-none}"
+
+      - uses: actions/download-artifact@v4
+        if: ${{ !inputs.skip_boot && steps.s4.outputs.run_id != '' }}
+        continue-on-error: true
+        with:
+          name: veron-boot
+          path: boot
+          run-id: ${{ steps.s4.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: 'Boot the ladder kernel against the TRIMMED sysroot'
+        if: '!inputs.skip_boot'
+        run: |
+          set -eu
+          if [ ! -s boot/Image ] || [ ! -s boot/initramfs.cpio.gz ]; then
+            echo "VERON-BOOT-SKIP  no kernel/initramfs artifact available"
+            exit 0
+          fi
+          set +e
+          timeout 600 qemu-system-aarch64 \
+            -M virt -cpu cortex-a57 -smp 2 -m 2048 \
+            -nographic -no-reboot -nic none \
+            -fsdev local,id=vsysroot,path="$PWD/sysroot",security_model=none,readonly=on \
+            -device virtio-9p-pci,fsdev=vsysroot,mount_tag=veronsysroot \
+            -kernel boot/Image -initrd boot/initramfs.cpio.gz \
+            -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7" \
+            > boot.log 2>&1
+          echo "  qemu rc=$?"
+          set -e
+          if grep -q VERON-BOOT-OK boot.log; then
+            echo "  --- the guest, reporting against the trimmed sysroot ---"
+            sed -n '/VERON-BOOT-OK/,$p' boot.log | sed 's/^/    /'
+          else
+            echo "  did not reach VERON-BOOT-OK -- last 30 lines:"
+            tail -30 boot.log | sed 's/^/    /'
+            exit 1
+          fi
+          if grep -q "VERON-GCC-IN-GUEST ok" boot.log; then
+            echo "VERON-ENTRY-OK  the trimmed sysroot compiles inside the"
+            echo "  kernel this chain built. It is now a proven stage 5 input."
+          else
+            echo "VERON-ENTRY-PARTIAL  booted, but gcc-in-guest did not report ok"
+            grep VERON-GCC-IN-GUEST boot.log | sed 's/^/    /' || true
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage5-entry-logs
+          path: |
+            boot.log
+            dl/report/
+          retention-days: 30

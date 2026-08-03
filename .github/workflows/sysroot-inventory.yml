@@ -156,6 +156,42 @@ jobs:
               report/inventory-after.txt 2>/dev/null | head -20 || true
           fi
 
+      # ---------------------------------------------------------------
+      # PUBLISH THE TRIMMED SYSROOT. This is what stage 5 consumes, so it
+      # leaves as a NAMED, HASHED artifact rather than a per-run cache key
+      # that the next job has to guess at by prefix.
+      #
+      # DETERMINISTIC TAR, every knob explicit, because each one defaults to
+      # something that varies: sorted member order, mtime 0, uid/gid 0,
+      # numeric owner. A directory walk instead of --sort=name is the single
+      # most common way a "reproducible" archive is not.
+      #
+      # Uncompressed on purpose: upload-artifact already zips, and double
+      # compression costs time while making the hash depend on the gzip
+      # implementation.
+      # ---------------------------------------------------------------
+      - name: 'Pack the trimmed sysroot'
+        if: inputs.trim
+        run: |
+          set -eu
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+              --format=gnu -cf sysroot.tar -C lfs .
+          sha256sum sysroot.tar | tee report/SYSROOT-SHA256
+          ls -l sysroot.tar | awk '{printf "  %.0f MB\n", $5/1048576}'
+          echo ""
+          echo "  This tarball is the stage 5 ENTRY CONTRACT candidate."
+          echo "  It is NOT yet proven: nothing here compiles with it. See"
+          echo "  stage5-entry.yml, which smoke-tests and boots it."
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.trim
+        with:
+          name: veron-sysroot-trimmed
+          path: |
+            sysroot.tar
+            report/SYSROOT-SHA256
+          retention-days: 30
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
