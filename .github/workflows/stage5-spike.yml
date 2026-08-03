@@ -97,18 +97,16 @@ jobs:
           set -eu
           cd spikes/stage5
           mkdir -p dl
+          # ITERATE, NEVER HARDCODE. The first version of this step carried
+          # pkgconf's sha256 as a literal and special-cased hello -- so the
+          # moment hello's pin stopped being PENDING, the check passed and
+          # nothing fetched it. `veron sources` emits every pin, so adding a
+          # package changes one recipe and nothing else.
           fail=0
-          python3 ../../tools/mirror.py fetch \
-            3acd3a8a3cce65a8d620321855d92fb602e026cbe8e13ee36bdec58483b59ace \
-            pkgconf-3.0.5.tar.xz --dest dl || fail=1
-          # hello's pin is deliberately PENDING. GNU publishes a signature, not
-          # a checksum, so the hash is COMPUTED once by a human after
-          # gpg --verify. Until then this fails, and that failure is the design
-          # working rather than a bug to route around.
-          if grep -q PENDING packages/hello/recipe.toml; then
-            echo "  hello: pin is PENDING-HUMAN-VERIFICATION -- see the recipe."
-            fail=1
-          fi
+          python3 tools/veron sources | while IFS="$(printf '\t')" read -r sha name url; do
+            python3 ../../tools/mirror.py fetch "$sha" "$name" --url "$url" --dest dl \
+              || { echo "  FAILED $name"; exit 1; }
+          done || fail=1
           [ "$fail" = 0 ] || { echo "VERON-FETCH-INCOMPLETE"; exit 1; }
 
       - name: 'VERON-FETCH-OK -- sha256 against the manifest'

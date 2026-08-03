@@ -309,6 +309,22 @@ def cmd_plan(a):
     return 0
 
 
+def cmd_sources(a):
+    """Every pin, as sha256/name/url -- so callers iterate instead of hardcode.
+
+    The stage 5 workflow hardcoded one package's sha256 in a `run:` block and
+    special-cased the other. That is exactly the build logic that is not
+    supposed to live in YAML, and it broke the moment the second pin became
+    real: the check for PENDING passed and nothing ever fetched the tarball.
+    """
+    recipes = load_recipes()
+    for name in topo_order(recipes):
+        src = recipes[name]["source"]
+        fn = src["url"].rsplit("/", 1)[-1]
+        print(f"{src['sha256']}\t{fn}\t{src['url']}")
+    return 0
+
+
 def cmd_fetch(a):
     """AIRLOCK ONLY. Network lives here and nowhere else.
 
@@ -598,6 +614,9 @@ def main():
     p.add_argument("--write", action="store_true", help="write PLAN.txt")
     p.add_argument("--check", action="store_true", help="regenerate and diff")
     p.set_defaults(fn=cmd_plan)
+
+    p = sub.add_parser("sources", help="sha256/name/url per recipe, for the fetcher")
+    p.set_defaults(fn=cmd_sources)
 
     p = sub.add_parser("fetch", help="airlock: verify sha256 against the manifest")
     p.set_defaults(fn=cmd_fetch)

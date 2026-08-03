@@ -1,0 +1,22 @@
+name: lint
+
+# Cheap checks for mistakes that are expensive to rediscover.
+#
+# The branches-filter rule exists because one `gh release create src/<tarball>`
+# started 19 workflows at once: `on: push` with only a `paths:` filter still
+# fires on TAG pushes, since a tag carries the whole commit.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: 'Workflow rules'
+        run: python3 tools/lint-workflows.py

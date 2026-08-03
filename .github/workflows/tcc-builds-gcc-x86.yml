@@ -80,6 +80,12 @@ name: tcc-builds-gcc-x86
 
 on:
   push:
+    # BRANCHES ONLY -- NEVER TAGS. Without this a `push:` with only a
+    # `paths:` filter still fires on TAG pushes, because a tag carries the
+    # whole commit and its paths match. Creating one mirror release tag
+    # (`gh release create src/<tarball>`) therefore kicked off 19 workflows
+    # at once. `branches: ['**']` matches every branch and no tag.
+    branches: ['**']
     paths:
       - '.github/workflows/tcc-builds-gcc-x86.yml'
   workflow_dispatch:
