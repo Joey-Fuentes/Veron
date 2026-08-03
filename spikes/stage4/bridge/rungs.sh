@@ -2079,6 +2079,7 @@ ARSHIM
   cfg_binutils() {
       say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: $_busrc/configure $* CC=\"$CCAUTO\""
       "$_busrc/configure" "$@" --prefix="$PFX" --disable-nls --disable-werror \
+        --enable-deterministic-archives \
         --disable-gdb --disable-gdbserver --disable-libdecnumber --disable-readline \
         CC="$CCAUTO" LDFLAGS="$LDF" AR="$AR" RANLIB="$RANLIB" > cfg.log 2>&1
       _r=$?; say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_r)"; return $_r
@@ -3462,6 +3463,7 @@ if [ "$R9" = ok ]; then
       --with-sysroot="$S" \
       --target="$LFS_TGT" \
       --disable-nls --enable-gprofng=no --disable-werror \
+      --enable-deterministic-archives \
       --enable-new-dtags --enable-default-hash-style=gnu \
       > cfg.log 2>&1
     _r10=$?

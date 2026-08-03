@@ -651,8 +651,29 @@ if [ "$B2" = ok ]; then
     # hermetic-gcc15 passes either flag, and neither does the book. It was
     # mine, unsourced, and binutils' own defaults are what the working jobs
     # rely on.
+    # --enable-deterministic-archives MAKES `ar` ZERO THE MEMBER HEADERS.
+    #
+    # This is the fix for the only thing that was not reproducible in the whole
+    # ladder. Two runs produced a native cc1 differing in exactly 16 bytes, one
+    # contiguous run, in .rodata -- and `nm` names it: `executable_checksum`,
+    # gcc's MD5 of its own components, used to decide whether a precompiled
+    # header matches the compiler reading it.
+    #
+    # WHY ONLY THAT. genchecksum hashes the object files AND the archives --
+    # libbackend.a, libcommon.a, libcpp.a, libiberty.a. An `ar` member header
+    # carries an mtime, uid, gid and mode, so the archives differ between runs
+    # even when every object in them is byte-identical. The linker copies only
+    # object CONTENTS into the executable, never the archive headers, so the
+    # binary came out identical everywhere except the digest computed over data
+    # that never entered it.
+    #
+    # `D` zeroes mtime, uid, gid and mode. Set here at the binutils that BUILDS
+    # everything above it, rather than as AR_FLAGS on each package, so it holds
+    # for every archive the system ever creates instead of the ones someone
+    # remembered to flag.
     if "$_d/configure" --prefix=/usr \
          --enable-plugins --enable-shared --disable-werror \
+         --enable-deterministic-archives \
          --enable-64-bit-bfd --enable-new-dtags --enable-gprofng=no \
          --disable-nls > c.log 2>&1 \
        && timeout 5400 make -j"$NP" MAKEINFO=true > b.log 2>&1 \
@@ -770,6 +791,26 @@ if [ "$B3" = ok ]; then
         say "    THE FINAL COMPILER DOES NOT PRODUCE A WORKING BINARY"; B4=FAIL
       fi
       produced /usr/libexec/gcc/*/*/cc1 /usr/libexec/gcc/*/*/cc1plus
+
+      # gcc's SELF-CHECKSUM, PRINTED, because it was the one thing in the whole
+      # ladder that varied between runs and it took six runs and an artifact
+      # download to find. Sixteen bytes in .rodata out of 397 MB.
+      #
+      # It is an MD5 over gcc's own objects AND ARCHIVES, used to decide
+      # whether a precompiled header matches the compiler reading it. `ar`
+      # member headers carry mtimes, so the archives differed run to run while
+      # every object in them was identical -- and the linker never copies those
+      # headers into the executable, so the binary matched everywhere except
+      # the digest computed over data that never entered it.
+      # --enable-deterministic-archives on binutils is the fix; this line is
+      # how a regression announces itself in the log instead of in an artifact.
+      for _c in /usr/libexec/gcc/*/*/cc1 /usr/libexec/gcc/*/*/cc1plus; do
+        [ -f "$_c" ] || continue
+        _sym=$(nm "$_c" 2>/dev/null | grep -w executable_checksum | cut -d' ' -f1)
+        if [ -n "$_sym" ]; then
+          printf '    %-46s executable_checksum @ 0x%s\n' "${_c##*/}" "$_sym"
+        fi
+      done
 
       # BUILD IT A SECOND TIME AND DIFF, IN THE SAME RUN.
       #

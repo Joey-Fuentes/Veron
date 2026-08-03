@@ -189,7 +189,57 @@ Three findings from that:
   Different mtimes compress to different lengths. Fixed by normalising mtimes
   to the epoch, sorting the file list, and `gzip -9n`.
 
-### The native gcc is not reproducible, and here is what is ruled out
+### The native gcc WAS not reproducible. It was sixteen bytes, and they are not code.
+
+**Found, diagnosed, fixed.** `repro-compilers` compared two runs' artifacts and
+localised it immediately:
+
+```
+cross    cc1, cc1plus       IDENTICAL
+native   cc1        16 bytes differ, ONE run, offset 32071232, .rodata
+native   cc1plus    16 bytes differ, ONE run, offset 34267680, .rodata
+ld  as  libc.so.6  busybox  IDENTICAL
+```
+
+Sixteen bytes out of 397 MB, contiguous, in `.rodata`. `nm` names it:
+
+```
+0000000002295e40 R executable_checksum
+cb ed 28 fc 13 9c 52 fa 3a 53 9e 1e 07 f8 90 a3
+```
+
+gcc's MD5 of its own components, used to decide whether a precompiled header
+matches the compiler reading it.
+
+**Why only that byte range could differ.** `genchecksum` hashes the object
+files **and the archives** -- `libbackend.a`, `libcommon.a`, `libcpp.a`,
+`libiberty.a`. An `ar` member header carries an mtime, uid, gid and mode, so
+the archives differed run to run even though every object inside them was
+byte-identical. The linker copies object *contents* into the executable and
+never the archive headers -- so the binary came out identical everywhere except
+a digest computed over data that never entered it.
+
+That also explains why the *cross* compiler was always stable: rung 11 builds
+it through a different path.
+
+**The fix is one flag, at the right place.** `--enable-deterministic-archives`
+on binutils -- rung 4, rung 10 and B3 -- makes `ar` zero mtime, uid, gid and
+mode. Set at the binutils that builds everything above it rather than as
+`AR_FLAGS` per package, so it holds for every archive the system ever creates
+instead of the ones somebody remembered to flag.
+
+**What this was not.** Not codegen, not `-frandom-seed`, not debug info, not a
+timestamp in the binary. **Every byte that affects what the compiler compiles
+was already identical between runs.** The ladder was reproducible; its
+self-description was not.
+
+**And the method is the transferable part.** Six runs of log-reading produced a
+list of suspects. One artifact comparison produced a byte offset, a section
+name, and a symbol. The instrument that mattered was the one that needed no
+expected values -- compare two things that should be equal, and let the
+disagreement point at itself.
+
+### What was ruled out along the way, and how
 
 Two runs of the mc-tcc arm, compared:
 
