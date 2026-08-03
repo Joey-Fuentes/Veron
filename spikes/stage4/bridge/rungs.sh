@@ -1491,6 +1491,52 @@ fi
 
 
 # ---------------------------------------------------------------------------
+# === RUNG 3.2 -- tcctest.c, WHICH IS test1, test2 AND test3 ===
+#
+# tcc's own suite begins with this one file. stage3-hermetic-arm64 has only
+# ever COMPILED it, and said so plainly:
+#
+#     tcctest.c: COMPILES -- 264818 byte object
+#     test1/test2/test3 are reachable; they need -run and a libc
+#
+# They needed a libc, and rung 2 has just built one. This is the first place
+# tcctest.c can be LINKED and RUN, and running it exercises far more of the
+# compiler than the whole of tests2: variadics, promotions, bitfields, long
+# long, structs by value, casts, computed goto.
+#
+# REPORTED, NOT A GATE. The diff against gcc contains tcc-versus-gcc
+# differences that tcc's own Makefile filters and this does not, so a raw count
+# would fail forever for the wrong reason. The line to watch is whether it runs
+# to completion at all, and then whether the count comes down.
+if [ "$R3" = ok ] && [ -f /in/tcc-src/tests/tcctest.c ]; then
+  head1 "RUNG 3.2 -- tcctest.c, the file test1, test2 and test3 all begin with"
+  ( cd /work && rm -f tt.bin tt.out tt.err
+    set +e
+    timeout 300 $CC -I/in/tcc-src -w -static -o tt.bin \
+            /in/tcc-src/tests/tcctest.c > tt.err 2>&1
+    _rc=$?
+    set -e
+    if [ "$_rc" = 0 ] && [ -s tt.bin ]; then
+      echo "    links: $(wc -c < tt.bin) bytes"
+      chmod +x tt.bin
+      set +e
+      timeout 300 ./tt.bin > tt.out 2>&1
+      _rr=$?
+      set -e
+      if [ "$_rr" = 0 ]; then
+        echo "    RUNS to completion: $(wc -l < tt.out) lines of output"
+      elif [ "$_rr" -gt 128 ]; then
+        echo "    ran and died: SIGNAL $((_rr - 128)) after $(wc -l < tt.out) lines"
+      else
+        echo "    ran, exit $_rr, $(wc -l < tt.out) lines"
+      fi
+      echo "    last line: $(tail -1 tt.out | cut -c1-60)"
+    else
+      echo "    does NOT link, rc=$_rc"
+      head -4 tt.err | sed "s/^/      /"
+    fi )
+fi
+
 head1 "RUNG 3.5 -- GNU make 3.82, by literal commands (live-bootstrap's recipe)"
 # NO configure. THIS IS steps/make-3.82/pass1.kaem, TRANSCRIBED.
 #

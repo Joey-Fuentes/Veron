@@ -39,6 +39,19 @@ local declared at the top of one block -- an earlier draft declared arrays
 inside nested `else` branches and micro-c segfaulted on eighteen of musl's math
 sources.
 
+AND BN_SIZE BELONGS IN THE SAME CONDITION. The file already knows a
+double-only build needs 64 bits of mantissa, but it keyed that on
+TCC_USING_DOUBLE_FOR_LDOUBLE, which tcc.h defines only for PE, macOS/arm64 and
+Win32. This build therefore kept 128 bits in bn[], and the code above -- which
+reads bn[1]:bn[0] -- silently ignored the top half. Two literals in tcc's own
+tests2 have mantissas long enough to reach it:
+
+    0x1.00000000000000000000000000000000000000000000p+12    0.0, want 4096
+    0x1000000000000000000000000000000000000000000000p-140   0.0, want 2^40
+
+With 64 bits, bn_lshift stops shifting once the top would overflow and
+frac_bits compensates -- which is exactly what a 53-bit mantissa wants.
+
 MEASURED, EITHER SIDE:
 
     0x1p28   0000000000000000  ->  41b0000000000000
@@ -49,6 +62,7 @@ MEASURED, EITHER SIDE:
              printf("%g")        0         ->  5.00801
              printf("%f", 1.5)   0.000000  ->  1.500000   (exact)
 
+    tests2 70_floating_point_literals                        now passes
     musl 1.2.5 at its pinned sha256:  1349 of 1349 compile, unchanged
     difftest amd64 101, aarch64 103, corpus 419 of 426, all unchanged
     tests2 97 of 105, self-compilation fixpoint holds
@@ -68,7 +82,28 @@ in integer arithmetic, the way strtod is done -- not another patch here.
 
 --- a/tccpp.c
 +++ b/tccpp.c
-@@ -2391,9 +2391,52 @@ static void parse_number(const char *p)
+@@ -2234,8 +2234,19 @@ static void parse_string(const char *s, int len)
+     }
+ }
+ 
+-#ifdef TCC_USING_DOUBLE_FOR_LDOUBLE
++#if defined TCC_USING_DOUBLE_FOR_LDOUBLE || LDOUBLE_SIZE == 8
+ /* we use 64 bit (52 needed) numbers */
++/* LDOUBLE_SIZE == 8 BELONGS IN THIS CONDITION. The file already knows a
++ * double-only build needs 64 bits, but it keyed that on a symbol tcc.h defines
++ * only for PE, macOS/arm64 and Win32 -- so this build kept 128, and the
++ * hexadecimal-float path below, which reads bn[1]:bn[0], silently ignored the
++ * top half. Two literals in tcc's own tests2 have mantissas long enough to
++ * reach it:
++ *     0x1.00000000000000000000000000000000000000000000p+12   -> 0.0, want 4096
++ *     0x1000000000000000000000000000000000000000000000p-140  -> 0.0, want 2^40
++ * With 64 bits, bn_lshift stops shifting once the top would overflow and
++ * frac_bits compensates, which is exactly the behaviour a 53-bit mantissa
++ * wants. */
+ #define BN_SIZE 2
+ #else
+ /* we use 128 bit (64/112 needed) numbers */
+@@ -2391,9 +2402,52 @@ static void parse_number(const char *p)
              
              /* now we can generate the number */
              /* XXX: should patch directly float number */
