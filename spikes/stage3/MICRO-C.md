@@ -1608,20 +1608,26 @@ So type detection, the linker-script parser, `GROUP`, `AS_NEEDED` and
 `tcc_load_dll` are all sound for objects we can make. mc-tcc both **builds** a
 valid aarch64 `ET_DYN` (`e_type=3`, `e_machine=183`) and **links against one**.
 
-**WHAT IS LEFT, AND WHY IT NEEDS THE RUNNER.** The only untested thing is the
-real glibc file on a machine that has one, plus the crt search path -- `-B`
-sets the lib path, not the crt prefix, so a full non-`-nostdlib` link could not
-be exercised locally either. `tcc-two-ways` now runs the SAME link twice, once
-against a shared object mc-tcc builds on the spot and once against the system
-`libc.so.6`, so the next log says which of the two differs instead of
-restating the symptom.
+**THIRD NARROWING: it does not reproduce against a REAL glibc either, and no
+runner was needed to find that out.** The only thing stopping mc-tcc from
+parsing this machine's x86-64 `libc.so.6` was the `e_machine` check, so
+patching that one field to 183 hands it a genuine, full-size glibc -- real
+dynamic section, real `.dynsym`, real version tables. Measured:
 
-Read the outcome this way:
+```
+real glibc, e_machine patched        links; only `_start not defined`
+glibc's exact script shape over it   same (GROUP + archive + AS_NEEDED loader)
+FULL dynamic link, no -nostdlib      an aarch64 ELF executable,
+  with crt objects staged              interpreter /lib/ld-linux-aarch64.so.1
+a program that CALLS printf          links -- the symbol is resolved from the
+                                       shared object's dynsym
+```
 
-- self-built links, glibc does not -> the fault is that file or the search
-  path around it, and NOT the DYN path
-- both fail -> the local result and CI disagree, and the difference is the
-  environment; worth knowing before another round goes into the compiler
+So the type detection, the linker-script parser, `tcc_load_dll`, dynamic symbol
+resolution, the interpreter and the crt path all work. **Defect 2 as written
+does not exist.** `-B` sets the lib path and not the crt prefix, which is why
+the full link looked untestable at first; the crt prefix is just `/usr/lib`,
+and staging objects there is enough.
 
 **A caution about the recorded evidence.** The `unrecognized file type` message
 is quoted from an older run. The most recent `tcc-two-ways` log shows the
@@ -1659,6 +1665,20 @@ Three things follow, and none of them were visible before:
 
 "Miscompiled gcc, large unexplored surface" was true and unusable. A
 deterministic ICE at one line, on the empty program, is a starting point.
+
+**THE SOURCE LINE IS NOW PRINTED, from our own tree.** The ICE names
+`FILE:LINE`, and that file is the tree we BUILD -- 4.7.4 plus the aarch64
+backport -- sitting under `/work/src` in the box the whole time. It looked like
+it needed gcc 4.8.5 fetched from outside purely because nothing printed it.
+`rungs.sh` now finds the file the ICE names, prints a 34-line window with the
+failing line marked, and recovers the ENCLOSING FUNCTION by reading the text --
+which is the one thing `in ?` could not tell us. Searched for rather than
+hardcoded, so it survives the line moving or a different ICE appearing.
+
+(For the record on provenance: `aarch64-builtins.c` does not exist in 4.7.4 --
+that release has zero aarch64 support -- so it arrives as a *new* file from the
+4.8.5 donor and the changed-files patch never touches it. Our patching is real,
+it just lands elsewhere.)
 
 **How it was found is the point.** The job's own failure window printed the
 tails of eleven `config.log` files, every one ending `configure: exit 0`. The

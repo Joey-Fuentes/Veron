@@ -2693,6 +2693,43 @@ if [ "$R5" = ok ]; then
     grep -oE '^[^ :]+\.(c|h):[0-9]+:[0-9]*:? *error:' build.log 2>/dev/null \
       | cut -d: -f1 | sort | uniq -c | sort -rn | head -10 | sed 's/^/      /'
     tail -20 build.log 2>/dev/null | sed 's/^/      /'
+
+    # AN ICE NAMES ITS OWN SOURCE LINE. PRINT IT.
+    #
+    # gcc aborts with `internal compiler error: in FUNC, at FILE:LINE`, and
+    # FILE:LINE is a line of the tree WE BUILT -- 4.7.4 plus the aarch64
+    # backport -- which is sitting under /work/src right here. Reading it
+    # looked like it needed a donor tarball fetched from outside only because
+    # nothing ever printed it.
+    #
+    # This matters more than usual for the rung 6 ICE, which reports
+    #     internal compiler error: in ?, at config/aarch64/aarch64-builtins.c:944
+    # `?` is what fancy_abort substitutes when its __FUNCTION__ argument is
+    # NULL, so the one field that would name the failing path is itself
+    # missing -- plausibly a second defect in the gcc mc-tcc built. The source
+    # window is the way round it: the enclosing function is visible in the
+    # text even when the binary could not name it.
+    #
+    # Searched for rather than hardcoded, so it keeps working when the line
+    # moves or a different ICE appears.
+    _ice=$(grep -oE 'internal compiler error: in [^,]*, at [^ :]+:[0-9]+' build.log 2>/dev/null | head -1)
+    if [ -n "$_ice" ]; then
+      _if=$(printf '%s' "$_ice" | sed 's/.* at \([^ :]*\):[0-9]*$/\1/')
+      _il=$(printf '%s' "$_ice" | sed 's/.*:\([0-9]*\)$/\1/')
+      say "    --- the ICE names $_if:$_il -- here it is, from OUR tree ---"
+      _src=$(find /work/src -path "*/$_if" -type f 2>/dev/null | head -1)
+      if [ -n "$_src" ]; then
+        _a=$((_il - 25)); [ "$_a" -lt 1 ] && _a=1
+        _b=$((_il + 8))
+        sed -n "${_a},${_b}p" "$_src" 2>/dev/null \
+          | awk -v n="$_a" -v hit="$_il" '{ printf "      %s%5d  %s\n", (n==hit ? ">>" : "  "), n, $0; n++ }'
+        say "    --- the enclosing function, which \`in ?\` did not name ---"
+        awk -v hit="$_il" 'NR<=hit && /^[A-Za-z_].*\(/ { l=NR": "$0 } END { print "      " l }' \
+          "$_src" 2>/dev/null
+      else
+        say "      $_if not found under /work/src"
+      fi
+    fi
   fi
   cd /work
 fi
