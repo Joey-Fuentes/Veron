@@ -1,44 +1,30 @@
-/* BITMASK -- KNOWN GAP -- AARCH64 ONLY
- * measured passing under micro-c on amd64, so the gap is the aarch64 column's
+/* BITMASK -- a regression guard, and the measurement that split defect 2.
  *
- * MICRO-C.md defect 2. mc-tcc rejects glibc's shared
- * objects with `unrecognized file type`, which gates every dynamic link:
- * hello-exe, tests2-dir, dlltest, and the `dynamic:` line at rung 3. This
- * case is the freestanding half of that measurement; tcc-two-ways runs the
- * other half against the real files.
+ * ANSWERED. This ran on aarch64 in tcc-two-ways and PASSED, all seven probes,
+ * on the column where defect 2 actually lives -- and on amd64 as well. So
+ * micro-c compiles tcc_object_type CORRECTLY, and defect 2 is not this
+ * function's codegen. The fault is past its return: the caller, the
+ * linker-script path, or tcc_load_dll. It was a declared gap for exactly one
+ * run, which is what that marker is for.
  *
- * WHY THE SHAPE IS WORTH ISOLATING. Two verdicts come out of ONE member read
- * compared against two constants, in tcc_object_type (tccelf.c):
+ * WHY IT STAYS. tcc_object_type is the gate every dynamic link goes through,
+ * and the constructs below -- `sizeof *h` on a parameter pointer, a two-byte
+ * unsigned member read at two values, ELFMAG's octal escape, two consecutive
+ * ifs sharing a fallthrough -- are ones micro-c has broken in neighbouring
+ * spellings before. This is now a guard rather than a question.
  *
- *     if (h->e_type == ET_REL) return AFF_BINTYPE_REL;   //  1  -- works
- *     if (h->e_type == ET_DYN) return AFF_BINTYPE_DYN;   //  3  -- does not
+ * WHAT IT IS STILL ABOUT. tcc_object_type returns one integer and the caller
+ * turns every non-match into the same sentence, so nothing in a CI log could
+ * tell "the read is wrong" from "the second if is unreached". ET_REL
+ * demonstrably works -- mc-tcc links the objects it compiles, and the
+ * gen2 == gen3 == gen4 fixpoint goes through here every time -- so those two
+ * were the live alternatives. Bit 16 is the ET_REL control for bit 32, and
+ * both passing is what makes the answer a real split rather than a shrug.
  *
- * ET_REL demonstrably works -- mc-tcc links the objects it compiles, and the
- * gen2 == gen3 == gen4 fixpoint goes through this function every time. So
- * either the read is right and the SECOND `if` is never reached, or the read
- * is wrong and ET_REL survives it by accident. Those are different bugs and
- * the CI log cannot tell them apart, which is why this is one bit per link in
- * the chain rather than one verdict for the function.
- *
- * Freestanding on purpose: no libc, no file I/O, no includes. The header is
- * built in memory, so this runs on both columns in under a second and needs
- * neither an emulator nor a glibc to be present.
- *
- * SEVEN BITS, MAX 127, deliberately. difftest.sh reads the exit code, and a
- * bitmask that reaches 128 is indistinguishable from a signal at the shell.
- *
- * WHY BOTH MARKERS. Run against micro-c on amd64 this case PASSES -- all
- * seven probes, measured, not assumed. So on that column it is a permanent
- * "KNOWN GAP NOW PASSES", which difftest.sh's own notes call a false alarm
- * and the reason AARCH64 ONLY exists. It is skipped there WITH THE REASON
- * PRINTED. On aarch64, where defect 2 actually is, it runs and is expected to
- * fail until the defect closes.
- *
- * AND THAT AMD64 PASS IS ITSELF A RESULT. It says micro-c compiles this
- * function correctly on at least one target, which makes "micro-c miscompiles
- * tcc_object_type" the LESS likely half of the split unless aarch64 differs.
- * It does not settle it -- the defect is aarch64's and only the aarch64
- * column can answer -- but it is the first evidence either way.
+ * Freestanding on purpose: no libc, no file I/O, no includes, so it needs
+ * neither an emulator nor a glibc. SEVEN BITS, MAX 127 -- difftest.sh reads
+ * the exit code, and a bitmask reaching 128 is indistinguishable from a
+ * signal at the shell.
  */
 
 /* Elf64_Ehdr, laid out exactly: e_type is an unsigned short at offset 16 and

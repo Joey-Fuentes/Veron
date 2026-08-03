@@ -84,7 +84,7 @@ Stage 4 already **has** a tcc — pinned, patched, and used. What stage 3 owes i
 | route | state |
 |---|---|
 | M2-Planet → Mes → tcc | Mes rung in progress, three rungs out |
-| **enhanced M2-Planet → tcc directly** | **the enhanced compiler exists.** It is called micro-c — M2-Planet at pin `bd2fe4b` plus 71 patches — and it compiles `tcc.c`, tcc's whole source *including its driver*, links a 1.63 MB aarch64 binary, and **that binary compiles and runs all twelve end-to-end programs**, all 107 applicable tests2 programs, and musl 1.2.5 entire. It compiles tcc's source *back* to an object, and that object is a **fixpoint**: gen2 == gen3 == gen4 — see below |
+| **enhanced M2-Planet → tcc directly** | **the enhanced compiler exists.** It is called micro-c — M2-Planet at pin `bd2fe4b` plus 73 patches — and it compiles `tcc.c`, tcc's whole source *including its driver*, links a 1.63 MB aarch64 binary, and **that binary compiles and runs all twelve end-to-end programs**, all 107 applicable tests2 programs, and musl 1.2.5 entire. It compiles tcc's source *back* to an object, and that object is a **fixpoint**: gen2 == gen3 == gen4 — see below |
 
 The direct route is the shorter one: extend M2-Planet's C subset far enough to compile real tcc, skipping the intermediate rungs entirely. The thesis behind it is that much of what the bootstrap ecosystem carries is *incidental* complexity — build plumbing, script-calling-script — rather than real capability gaps, and that the two can be separated by measuring instead of estimating. See [`spikes/stage3/ROADMAP.md`](./spikes/stage3/ROADMAP.md) for the plan and [`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md) for the state.
 
@@ -135,7 +135,9 @@ such: M1's macro vocabulary has no d-register load or store at all.
 **The chain is continuous from hand-read assembly to a self-hosting C
 compiler that builds musl, GNU make, binutils and gmp/mpfr/mpc.** What stands
 between here and a booting GNU/Linux built entirely this way is rung 6 — the
-gcc mc-tcc produces miscompiles libgcc — plus re-applying the invariants, which
+gcc mc-tcc produces fails building libgcc with a deterministic ICE at
+`config/aarch64/aarch64-builtins.c:944`, on the empty program, during builtin
+setup — not the segfault this line used to claim — plus re-applying the invariants, which
 the spike track suspends every one of.
 
 ### 3½. The bridge — what stage 4 borrows, built instead

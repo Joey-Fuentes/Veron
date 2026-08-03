@@ -1,0 +1,91 @@
+an undeclared function called with parentheses is an implicit declaration.
+
+MUTUAL RECURSION COULD NOT BE WRITTEN IN ITS NATURAL ORDER:
+
+    int ev(int n){ if(n) return od(n-1); return 1; }
+    int od(int n){ if(n) return ev(n-1); return 0; }
+    int main(void){ return ev(10); }
+
+    micro-c: od is not a defined symbol
+
+od is not seen until after ev needs it, and there is no way to say so first --
+micro-c has no prototype form that registers a function without defining it.
+That is stage 2 conformance corpus row 118, and it is the last of the six
+"wrong answer" rows that was actually a compiler limitation rather than stale
+corpus data.
+
+C89 6.3.2.2 says a call to an undeclared identifier declares it implicitly as
+a function returning int with external linkage. This implements that and
+nothing more.
+
+ONLY WHEN A '(' FOLLOWS, which is the guard the function-designator branch
+twenty lines above already uses, for exactly this reason. A bare unknown NAME
+is still a typo and still an error here, where it is cheap and precise to say
+so:
+
+    x = nosuchvar;      nosuchvar is not a defined symbol      (unchanged)
+    return nosuchfn(1); Target label FUNCTION_nosuchfn is not valid
+
+The second is a link-time failure out of hex2 rather than a parse error --
+later and less precise, which is the same trade C itself makes. Without the
+guard a designator used as a VALUE would mint a bogus function on every typo.
+
+The symbol is minted with sym_declare into global_function_list rather than
+looked up, so everything downstream -- pending_function_designator, the call
+sequence, current_target -- finds it exactly as it would a real forward
+declaration. No new path, one new producer of an existing one.
+
+MEASURED, EITHER SIDE:
+
+    stage 2 corpus amd64   419 -> 420 of 426        (row 118 closed)
+    difftest amd64         103 pass, 0 fail          unchanged
+    difftest aarch64       104 pass, 0 fail          unchanged
+
+The six remaining corpus rows are the documented stale ones: 121, 122, 123 and
+352 expect sizeof(int) == 8, and 364 and 368 assume a FILE* indexes as bytes.
+None of them is a compiler defect and this patch does not touch them.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -1276,6 +1276,41 @@
+ 		return variable;
+ 	}
+ 
++	/* AN UNKNOWN NAME FOLLOWED BY '(' IS AN IMPLICIT FUNCTION DECLARATION.
++	 *
++	 * C89 6.3.2.2: a call to an undeclared identifier declares it as a
++	 * function returning int with external linkage. micro-c rejected it, so
++	 * mutual recursion could not be written in its natural order --
++	 *
++	 *     int ev(int n){ if(n) return od(n-1); return 1; }
++	 *     int od(int n){ if(n) return ev(n-1); return 0; }
++	 *
++	 * -- failed with "od is not a defined symbol" at the first function,
++	 * because od is not seen until the second. That is stage 2 corpus row 118.
++	 *
++	 * ONLY WHEN A '(' FOLLOWS, which is the same guard the function-designator
++	 * branch above uses and for the same reason: a bare unknown NAME is still
++	 * a typo and must still be an error here, where it is cheap to say so.
++	 * With the guard, the only thing this accepts is a call, and a call to a
++	 * name that genuinely does not exist still fails -- at link time, from
++	 * hex2, as "Target label FUNCTION_od is not valid". Later and less
++	 * precise, which is the trade C makes too.
++	 *
++	 * The symbol is minted rather than looked up, so the call path downstream
++	 * finds it exactly as it would a real forward declaration. */
++	if(NULL != global_token)
++	{
++		if(global_token->s[0] == '(')
++		{
++			struct token_list* implicit = sym_declare(s, integer, global_function_list, TLO_FUNCTION);
++			global_function_list = implicit;
++			pending_function_designator = implicit;
++			emit_load_named_immediate(REGISTER_ZERO, "FUNCTION_", s, "implicit function load");
++			current_target = function_pointer;
++			return implicit;
++		}
++	}
++
+ 	line_error();
+ 	fputs(s ,stderr);
+ 	fputs(" is not a defined symbol\n", stderr);

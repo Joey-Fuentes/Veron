@@ -1,0 +1,98 @@
+a parenthesised sub-expression must not inherit a pending dereference.
+
+DEREFERENCING THE RESULT OF A CONDITIONAL SEGFAULTED, and the star landed on
+the CONDITION:
+
+    v = *(1 ? p1 : p2);
+
+    mov_rax, %1                  # the condition, the literal 1
+    movsx_rax,DWORD_PTR_[rax]    # THE STAR, applied to 1 as an address
+    # TERNARY_main_0
+    test_rax,rax                 # and the garbage load became the condition
+    ...
+    movsx_rax,DWORD_PTR_[rax]    # the real dereference, emitted correctly
+
+Two loads for one star. The second is right; the first reads address 1.
+
+THIS IS EXACTLY function_call's ARGUMENT-LIST HAZARD, ONE DOOR OVER, and that
+function already carries the fix and the reasoning: "A pending `*` is parked in
+num_dereference_after_postfix when the stars are eaten, for the postfix walk to
+apply once the chain is resolved... The count belongs to the expression that
+parked it, never to a sub-expression." Its worked example is `*give(8)`, where
+the star landed on the literal 8 -- the same two lines of M1, the same wrong
+operand, a different pair of brackets.
+
+A parenthesised expression is a separate expression context for the same
+reason an argument list is: it is parsed BETWEEN the star being eaten and the
+postfix walk that consumes the count, and everything inside reads the same
+global. The ternary is simply the most visible way in, because its CONDITION
+is parsed before `?` is seen -- so the stray load is already emitted by the
+time anything knows a ternary is being parsed, and no edit to the ternary
+handler can reach it.
+
+WHERE tcc WRITES IT. tccgen.c:2939, inside combine_types:
+
+    type = *(bt1 == VT_PTR ? type1 : type2);
+
+combine_types decides the type of every binary operator and every conditional
+in the program being compiled, so this is on the path of essentially every
+expression tcc parses.
+
+THE BOUNDARY IS THE PARENTHESES, NOT SOMETHING LARGER. EXPERIMENT-zzzg
+restored this same count around a whole call rather than around the argument
+list and took mc-tcc from 12/12 to 0/12. The region that must not see the
+count is the sub-expression itself and nothing more, so the save/clear/restore
+brackets comma_expression() alone and sits inside the existing
+assign_through_parens save/restore rather than replacing it.
+
+It is also why the local count is untouched: the `*(` path in the dereference
+handler counts its stars in a LOCAL num_dereference and applies them after
+primary_expr returns, so `*(p)` still dereferences p exactly as before. Only
+the global that sub-expressions can see is cleared.
+
+MEASURED, EITHER SIDE (vendored pin + full series):
+
+    difftest amd64      103 pass, 0 fail, 2 known gaps   (116 closed)
+    difftest aarch64    104 pass, 0 fail, 2 known gaps   (116 closed)
+    case 116            SIGSEGV -> 0, all five probes
+    case 113            passes                            unchanged
+    case 22  ternary in an arglist   passes               unchanged
+    case 105 dereferenced call result passes              unchanged
+
+The three neighbouring cases are named because they are what a wrong version
+of this breaks: 22 is a ternary inside an argument list, where both this
+bracket and function_call's are live at once; 105 is the `*give(8)` shape
+itself; 113 is the conditional's type.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -4221,9 +4221,29 @@ void primary_expr(void)
+ 				 * branch twice: the outer parenthesis sees the `+=` and sets
+ 				 * the flag, and the inner one sees only a `)` after itself
+ 				 * and would clear it again -- leaving the variable loaded and
+ 				 * the store writing through its value. Saving and restoring
+ 				 * is the same shape Address_of uses four lines up. */
+ 				int saved_atp = assign_through_parens;
+ 				assign_through_parens = assign_after_parens || saved_atp;
++				/* AND A PENDING `*` BELONGS TO US, NOT TO WHAT IS INSIDE.
++				 *
++				 * num_dereference_after_postfix parks a star that has been
++				 * eaten but not yet applied. Everything parsed in here is a
++				 * sub-expression that reads the same global, so in
++				 *     v = *(1 ? p1 : p2)
++				 * the star landed on the CONDITION and loaded address 1.
++				 *
++				 * Identical to the argument-list hazard function_call
++				 * documents at the top of this file -- `*give(8)`, the same
++				 * two lines of M1, a different pair of brackets. The ternary
++				 * is the loudest way in because its condition is parsed
++				 * before `?` is seen, so no edit to the ternary handler can
++				 * reach it.
++				 *
++				 * comma_expression() ALONE, deliberately: zzzg widened this
++				 * same restore to a whole call and cost 12/12 -> 0/12. */
++				int paren_pending_deref = num_dereference_after_postfix;
++				num_dereference_after_postfix = 0;
+ 				comma_expression();
++				num_dereference_after_postfix = paren_pending_deref;
+ 				assign_through_parens = saved_atp;

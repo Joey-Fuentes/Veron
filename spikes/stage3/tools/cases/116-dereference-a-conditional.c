@@ -1,54 +1,21 @@
-/* KNOWN GAP -- dereferencing the RESULT of a conditional segfaults.
+/* BITMASK -- CLOSED by EXPERIMENT-zzzx. Kept as a regression guard.
  *
- * REDUCED TO THIS, with plain int pointers and no struct anywhere:
+ * It was: `int v = *(1 ? p1 : p2);` SIGSEGV, while the same selection through
+ * a variable was fine. The cause was not the ternary. A pending `*` is parked
+ * in num_dereference_after_postfix, and a parenthesised sub-expression read
+ * that same global -- so the star landed on the CONDITION and loaded address
+ * 1. Identical to the argument-list hazard function_call already documents
+ * for `*give(8)`; a different pair of brackets.
  *
- *     int v = *(1 ? p1 : p2);        SIGSEGV
+ * The ternary is only the loudest way in: its condition is parsed before `?`
+ * is seen, so the stray load is already emitted before anything knows a
+ * ternary is being parsed.
  *
- * And the shape that WORKS, which is what makes it a compiler defect rather
- * than a missing feature:
- *
- *     int* p3 = (1 ? p1 : p2);       fine
- *     int  v  = *p3;                 fine
- *
- * Same two pointers, same selection, same load. Putting the `*` directly on
- * the conditional is the only difference.
- *
- * WHERE tcc WRITES IT. tccgen.c:2939, inside combine_types -- the function
- * that decides the type of every binary operator and every conditional in the
- * program it is compiling:
- *
+ * WHY IT STAYS. tccgen.c:2939 in combine_types is
  *     type = *(bt1 == VT_PTR ? type1 : type2);
- *
- * so this is on the path of essentially every expression tcc parses.
- *
- * FOUND BY SPLITTING CASE 113. That case was written for the conditional's
- * TYPE, hit this on its way, and would have failed for a reason it is not
- * about -- a case that fails two ways at once names neither. This is the
- * second half, on its own.
- *
- * IT IS NOT CAUSED BY THE TYPE FIX. EXPERIMENT-zzzn corrects the conditional's
- * result type; this reproduces identically under the compiler built WITHOUT
- * that patch. It was simply unreachable before, because the type error stopped
- * the parse first. Two independent defects on the same construct, which is why
- * one CI symptom had two causes.
- *
- * WHY IT IS A GAP AND NOT A FAILURE. The cause is not yet named. The ternary
- * pushes and pops REGISTER_TEMP around both arms to protect the aarch64 far
- * jump, and the prefix `*` emits its load afterwards; whether the fault is in
- * that pairing, in what the arms leave in REGISTER_ZERO, or in the prefix
- * operator's idea of what it is applied to, is exactly what a marker trail
- * through emit_pop and the deref path should settle. Marked KNOWN GAP so the
- * suite stays meaningful while that is done -- and so that difftest reports it
- * loudly the moment it starts passing.
- *
- * Probes, one bit each:
- *
- *   1  int* through a variable first -- the shape that works, so a failure
- *      here means something much broader than this gap
- *   2  *(cond ? p1 : p2) on int pointers -- the reduction
- *   4  the same with the arms swapped
- *   8  a struct copy from a dereferenced conditional, which is tcc's line
- *  16  a member read through a dereferenced conditional
+ * which is on the path of every binary operator and every conditional tcc
+ * parses. Bit 1 is the through-a-variable control; if it ever fires, something
+ * much broader than this has broken.
  */
 
 struct Sym { int id; int pad; };

@@ -110,8 +110,18 @@ for c in "$CASES"/*.c; do
     # BEFORE ANYTHING ELSE. Checked first because the construct may not
     # assemble on this column at all, and a skip decided after the attempt is
     # not a skip -- it is a failure with an excuse printed next to it.
-    if is_arch_only "$c"; then
-        printf '  %-28s SKIPPED on amd64: %s\n' "$name" \
+    # AND ONLY ON THE OTHER COLUMN. This checked the MARKER and not the ARCH,
+    # so an AARCH64 ONLY case was skipped on aarch64 too -- which is the one
+    # column it exists to run on. Cases 73 and 91 have therefore never run
+    # anywhere, on either architecture, since the marker was introduced: the
+    # aarch64 log says "SKIPPED on amd64" and nobody reads a skip.
+    #
+    # That is the same failure mode the marker was invented to prevent, in the
+    # other direction. A silent skip is how a suite quietly stops testing
+    # something; a skip that names the wrong architecture is how it stops
+    # while looking deliberate.
+    if is_arch_only "$c" && [ "$ARCH" != "aarch64" ]; then
+        printf '  %-28s SKIPPED on %s: %s\n' "$name" "$ARCH" \
             "$(head -8 "$c" | sed -n '2p' | sed 's|^ *\* *||')"
         continue
     fi

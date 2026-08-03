@@ -5,8 +5,8 @@ compile tcc directly, rather than reaching tcc through Mes. That enhanced
 compiler is called **micro-c**: M2-Planet at pin `bd2fe4b` plus a patch series.
 This file is its state.
 
-**Status.** micro-c is M2-Planet at pin `bd2fe4b` plus **71 patches** (4 base +
-67 experiments). It compiles `tcc.c` -- tcc's whole source including its
+**Status.** micro-c is M2-Planet at pin `bd2fe4b` plus **73 patches** (4 base +
+69 experiments). It compiles `tcc.c` -- tcc's whole source including its
 command-line driver -- and the linked **1.63 MB** aarch64 binary (`mc-tcc`) is
 a working tcc:
 
@@ -1516,13 +1516,23 @@ this family were wrong.
 
 **2. glibc's shared objects are rejected.** `libc.so.6` and
 `ld-linux-aarch64.so.1` both give `unrecognized file type`, from
-`tcc_object_type` in `tccelf.c` -- a function whose whole body is a read, a
-`memcmp` against `ELFMAG`, and a comparison of `e_type` against `ET_DYN`. This
-gates every dynamic link: `hello-exe`, `tests2-dir`, `dlltest`, and the
-`dynamic:` line at rung 3.
+`tcc_object_type` in `tccelf.c`. This gates every dynamic link: `hello-exe`,
+`tests2-dir`, `dlltest`, and the `dynamic:` line at rung 3.
 
-The files themselves are not the problem, and that is measured rather than
-assumed -- `tcc-two-ways` prints their headers:
+**SPLIT, AND THE ANSWER IS NOT THE COMPILER.**
+`cases/123-elf-header-type-discrimination.c` compiles `tcc_object_type`'s body
+with micro-c itself -- freestanding, header built in memory, through M1 and
+hex2 with no libc -- and **passes all seven probes natively on aarch64**, and
+on amd64. `sizeof *h` on a parameter pointer, `ELFMAG`'s octal escape, the
+two-byte member read at both ET_REL and ET_DYN, the ET_REL arm, the ET_DYN
+arm, the fallthrough: every one correct.
+
+So micro-c compiles this function correctly and **the fault is past its
+return** -- the caller, the linker-script path, or `tcc_load_dll`. That is
+where the next round looks, and it is a different part of the tree from where
+five rounds went last time.
+
+The measured file facts, which stand:
 
 ```
 /usr/lib/aarch64-linux-gnu/libc.so   2f 2a 20 47   ASCII text (a linker script)
@@ -1531,76 +1541,80 @@ assumed -- `tcc-two-ways` prints their headers:
 ```
 
 `libc.so` being a linker script is normal and the subject gets past it -- the
-name in the error is the file the SCRIPT POINTS AT. The other two are valid
-`ET_DYN`. What is not yet established is whether the control links dynamically
-in the same tree: the first version of that probe invoked both compilers
-without `-B`, so the control failed with `file 'libtcc1.a' not found` and the
-probe reported "control ALSO fails", which read as evidence about the
-environment when it was only the probe's own command line. Fixed; unanswered
-until the next run.
+name in the error is the file the SCRIPT POINTS AT. **And the control links
+dynamically in the same tree**, which was the open question: measured yes, so
+the environment is not at fault and the subject's `M50 M51 M52 M53 T1` marker
+trail before failure is the thing to read next.
 
-**The shape is worth stating precisely, because it constrains the answer.**
-Two verdicts come out of ONE member read compared against two constants:
-
-```
-if (h->e_type == ET_REL) return AFF_BINTYPE_REL;    /* 1 -- works */
-if (h->e_type == ET_DYN) return AFF_BINTYPE_DYN;    /* 3 -- does not */
-```
-
-`ET_REL` demonstrably works: mc-tcc links the objects it compiles, and the
-`gen2 == gen3 == gen4` fixpoint goes through this function every time. So
-either the read is right and the SECOND `if` is never reached, or the read is
-wrong and `ET_REL` survives it by accident. **Those are different bugs**, and
-neither the error message nor the target verdicts can tell them apart --
-`tcc_object_type` returns one integer and the caller turns every non-match into
-the same sentence.
-
-Two measurements now split it, and they are deliberately on opposite sides of
-the compiler:
-
-- **`tools/cases/123-elf-header-type-discrimination.c`** compiles the
-  function's body with micro-c itself, freestanding, header built in memory --
-  no libc, no file I/O, no emulator, both columns, under a second. Seven bits:
-  `sizeof *h` on a parameter pointer, `ELFMAG`'s octal escape, the member read
-  at each of the two values, the `ET_REL` arm as its own control, the `ET_DYN`
-  arm, and the fallthrough. **It PASSES on amd64** -- all seven probes,
-  measured against the vendored pin plus the full series. So it carries
-  `AARCH64 ONLY` as well as `KNOWN GAP`: skipped with the reason printed on
-  the column where it passes, run and expected to fail on the column where
-  defect 2 lives. That amd64 pass is the first evidence either way, and it
-  points AWAY from "micro-c miscompiles this function" unless aarch64
-  differs -- it does not settle it, because only the aarch64 column can.
-- **`tcc-two-ways`** compiles the same transcription with **mc-tcc** and with
-  the control, and runs both against the real `libc.so.6`, `ld-linux`, and an
-  `ET_REL` object, printing every intermediate.
-
-**The split they produce.** Subject says `UNRECOGNISED` where the control says
-`DYN` → micro-c miscompiles this function and the fault is in the compiler.
-Both say `DYN` → the function is fine and defect 2 lives past its return, in
-the caller, the linker-script path, or `tcc_load_dll`. Those send the search to
-opposite ends of the tree, which is the reason for measuring rather than
-theorising: the last defect cost five rounds to a marker trail read as though
-it named a fault when it only bracketed one.
-
-**`ELFMAG` is named separately for a reason.** tcc spells the magic
-`"\177ELF"`, and M2-Planet's `escape_lookup` special-cases `\0` and `\x` and
-has never had general octal. Nothing else in the tree depends on that form, so
-a gap there would fail everywhere at once and read as a codegen fault. Bit 2
-of the case exists so it cannot.
+**A probe that could not work, removed, and worth recording.** A second probe
+compiled the same transcription with mc-tcc and with the control and ran both
+against the real files. It used `-static`, which confused the compiler's own
+linkage with the linkage of what it emits. Neither tcc can `-static`-link a
+glibc program in this tree -- `Unknown relocation type for got: 541` and `542`,
+`R_AARCH64_ADR_GOT_PAGE` and `R_AARCH64_LD64_GOT_LO12_NC` -- and without
+`-static` the subject needs the dynamic path, which is the defect. Circular one
+way, blocked the other. It failed loudly on its first run rather than quietly
+over several, which is the only good thing about it.
 
 **3. `tcc-two-ways` step 21.** A null dereference -- `ldrsw x0, [x0]` with
 `x0 = 0`, at `pc=0x4d4e34` -- only against real glibc. **Plausibly the same
 defect as 2**, which would make this list seven.
 
 **4. Rung 6: the gcc mc-tcc builds is miscompiled.** It configures and links
-`xgcc`; that gcc then segfaults compiling libgcc. A large unexplored surface,
-and possibly several defects wearing one hat.
+`xgcc`; that gcc then fails building libgcc.
 
-**5. Case 110, `KNOWN GAP`.** The usual arithmetic conversions for an unsigned
-literal.
+**CORRECTED, AND THE CORRECTION IS THE USEFUL PART. It is not a segfault.**
+This file and the README have said "segfaults compiling libgcc" for several
+rounds. The first run that kept its build logs shows something far narrower:
 
-**6. Case 116, `KNOWN GAP`.** Dereferencing the result of a conditional
-segfaults.
+```
+<built-in>:0:0: internal compiler error: in ?, at config/aarch64/aarch64-builtins.c:944
+```
+
+Three things follow, and none of them were visible before:
+
+- **It is a named source location**, not an unattributed fault. `aarch64-builtins.c`
+  is one of the files the 4.8.5 backport brings in, so the failing code is in
+  the borrowed backend rather than anywhere in gcc's shared middle end.
+- **The input is `int main(){return 0;}`** -- libgcc's configure probe, not
+  libgcc itself. The reported location is `<built-in>:0:0`, so it fails during
+  builtin setup, before a line of real source is read. Anything that reaches
+  the compiler at all reaches this.
+- **`in ?` means the function name printed empty.** gcc's `fancy_abort`
+  substitutes `?` when its `__FUNCTION__` argument is NULL, so the ICE message
+  is itself likely carrying a second mc-tcc defect. Recorded, not chased.
+
+"Miscompiled gcc, large unexplored surface" was true and unusable. A
+deterministic ICE at one line, on the empty program, is a starting point.
+
+**How it was found is the point.** The job's own failure window printed the
+tails of eleven `config.log` files, every one ending `configure: exit 0`. The
+real message was in `bld/aarch64-unknown-linux-gnu/libgcc/config.log`, which
+the window never reached and which existed on the runner the whole time. It is
+in the `buildlogs-stage0-stage4-complete` artifact, which is why this entry
+could be corrected at all -- the fourth time the harness, not the compiler,
+has been the thing standing in the way.
+
+**5. Case 110, `KNOWN GAP`. Attempted and deliberately not patched.** Bits 1
+and 2 fail: an `int` compared against a hex literal above `INT_MAX` should
+convert the int to `unsigned int`, and micro-c folds signed 64-bit instead.
+Bits 4 and 8 -- the `0x7FFFFFFF` boundary and the explicit `u` suffix -- pass,
+so the gap is exactly the literal's TYPE and the conversion it forces, not the
+value. Closing it means implementing the usual arithmetic conversions rather
+than patching one comparison, and it still has no demonstrated tcc failure
+behind it. Left open on purpose: a partial conversion rule risks the suite and
+the self-compilation fixpoint for a defect nothing is waiting on.
+
+**6. Case 116. CLOSED** (`EXPERIMENT-zzzx`). Dereferencing the result of a
+conditional segfaulted -- and the ternary was not the cause. A pending `*` is
+parked in `num_dereference_after_postfix`, and a parenthesised sub-expression
+read that same global, so in `*(1 ? p1 : p2)` the star landed on the CONDITION
+and loaded address 1. That is `function_call`'s argument-list hazard through a
+different pair of brackets; that function has carried the fix, and the
+reasoning, since `*give(8)`. The ternary was only the loudest way in, because
+its condition is parsed before `?` is seen. Bracketing `comma_expression()`
+alone closes it; `zzzg` widened this same restore to a whole call and cost
+12/12 -> 0/12.
 
 **7. Case 119, `KNOWN GAP`.** `*(p)++` advances wrongly, where `*p++` does not.
 **Half closed** by `EXPERIMENT-zzzw`: the plainer `(p)++` underneath it -- no
@@ -1618,8 +1632,13 @@ the increment stores through the loaded value. The handler needs the ADDRESS
 to increment through AND the pre-increment value as the result, from paths
 that each decide on one next-token look.
 
-**8. Corpus row 118.** Mutual recursion where the callee is used before it is
-declared.
+**8. Corpus row 118. CLOSED** (`EXPERIMENT-zzzy`). Mutual recursion could not
+be written in its natural order, because micro-c has no prototype form that
+registers a function without defining it. C89 6.3.2.2 declares an undeclared
+identifier called with parentheses as a function returning int; that is now
+implemented, guarded on a following `(` so a bare unknown name is still a
+compile error. The corpus goes 419 -> 420 of 426, and the six that remain are
+the documented stale rows.
 
 ### Latent -- recorded so they are not rediscovered
 
