@@ -224,6 +224,7 @@ The empty directories are Veron proper and are written against the invariants. `
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — the founding design: ladder, fork, audit criteria, trust boundary
 - [`AGENTS.md`](./AGENTS.md) — invariants and working rules, if you are contributing
 - [`spikes/README.md`](./spikes/README.md) — the live pipeline, and what each spike answered
+- [`STAGE5.md`](./STAGE5.md) — the package set: ~150 upstreams in dependency order, the five that are most of the work, networking, and the firmware-blob problem
 - [`DERIVATIONS.md`](./DERIVATIONS.md) — the derivation phase: content-addressed inputs and outputs, one script for laptop and runner, the reproducibility check, and a provenance graph that expands from any installed file down to the exact commands and back to the seed
 - [`spikes/builder/DESIGN.md`](./spikes/builder/DESIGN.md) — the driver shell and the bare-metal ARM64 builder: measured surface, syscall inventory, boot protocol, test targets
 - [`spikes/stage3/README.md`](./spikes/stage3/README.md) — the open rung

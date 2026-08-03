@@ -612,12 +612,19 @@ it was built by* is the feature -- same query, honest result.
 veron status
   4,182 files  verified to seed attestation 2e7f04ba91c6
     611 files  installed via nix -- not verified
+      3 files  opaque -- vendor firmware, no source
       0 files  unknown
 ```
 
 A number that can go down over time, and an `unknown` category that should
-always be zero. Anything neither Veron-built nor Nix-installed is a real
-problem, and this is what surfaces it.
+always be zero. Anything in none of the other categories is a real problem, and
+this is what surfaces it.
+
+**`opaque` is for things that cannot be built at all**, principally WiFi
+firmware -- see [`STAGE5.md`](./STAGE5.md). They are declared with their hash
+and license and counted separately, because a system with three firmware blobs
+and 4,182 verified files is an honest description and one that omits them is
+not. An Ethernet-only install has zero, which is worth being able to state.
 
 **Store paths are disjoint.** Nix owns `/nix/store`; Veron owns its own prefix.
 No shared `/usr/lib`. That is what makes attribution exact rather than

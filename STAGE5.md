@@ -1,0 +1,229 @@
+# Stage 5 — the package set
+
+The target: a system that browses the web, on Wayland, that can rebuild itself
+from source with no host. Roughly **130–150 upstreams**, and 200+ is the honest
+budget once dependency tails are resolved rather than estimated.
+
+Counts below are from reading dependency graphs, not from building them. Treat
+them as planning numbers.
+
+---
+
+## The shape
+
+```
+tier 1   self-hosting CLI system          ~60 upstreams   the real milestone
+tier 2   Wayland + graphics               ~35             a demo
+tier 3   Qt6, SDDM, Ladybird              ~35             a hard package
+```
+
+**Tier 1 is the goal that matters.** A system that rebuilds itself, on itself,
+from source, closes the loop this project is about. Tiers 2 and 3 are
+demonstrations that the toolchain is real.
+
+### Five packages are most of the work
+
+`llvm`, `qtbase`, `mesa`, `icu`, `skia`. Each rivals gcc. The other ~140 are
+mostly an afternoon each, and estimating by package count badly misleads.
+
+**`llvm` arrives through mesa, not by choice** — llvmpipe for software
+rendering. If a target has a driver that does not need it, or software
+rendering is acceptable without llvmpipe, one of the five giants disappears.
+Worth establishing early: it is the difference between the plan above and the
+plan above minus a month.
+
+---
+
+## Dependency order
+
+Each group depends only on groups above it.
+
+### Already built by stage 4
+
+```
+binutils  gcc  glibc  musl  linux  busybox  make  gmp  mpfr  mpc
+m4  bison  flex  perl  python  gawk  openssl  bc
+```
+
+### 1 — build substrate
+
+```
+pkgconf  autoconf  automake  libtool  gettext  texinfo
+zlib  xz  bzip2  zstd  libffi  ncurses  readline  expat  pcre2  libxml2
+ninja  meson  cmake  git
+```
+
+`cmake` is a large C++ build and needs bootstrapping; `meson` needs python.
+Both are required before anything in tier 2.
+
+### 2 — system
+
+```
+util-linux  e2fsprogs  dosfstools  shadow  tzdata  ca-certificates
+init: dinit          (or s6 + skalibs + execline)
+```
+
+`dinit` is the smaller decision; `s6` is three packages and a different model.
+Either avoids systemd, which would pull dbus, kmod, libcap and a large policy
+surface.
+
+### 3 — networking
+
+```
+iproute2  dhcpcd  curl  wpa_supplicant
+```
+
+See the networking section below — this group is small and carries the
+project's sharpest unresolved question.
+
+### 4 — graphics substrate
+
+```
+libdrm  llvm  mesa
+libinput  libevdev  mtdev  libxkbcommon  xkeyboard-config  seatd
+```
+
+`seatd` is what makes logind — and therefore systemd — avoidable. `labwc`,
+`cage` and `sway` all support it.
+
+### 5 — text and rendering
+
+```
+freetype  fontconfig  harfbuzz  brotli  graphite2  fribidi
+libpng  libjpeg-turbo  pixman  glib  cairo  pango
+a font (dejavu or noto)
+```
+
+`glib` is a heavier dependency than its position suggests and arrives via
+cairo/pango.
+
+### 6 — Wayland
+
+```
+wayland  wayland-protocols  wlroots  labwc
+foot  fcft  tllist
+```
+
+`foot` is the terminal even though Qt is present later: C, Wayland-native, no
+toolkit, and one of the smallest serious terminals there is.
+
+### 7 — Qt and session
+
+```
+double-conversion  qtbase  qtdeclarative  qtsvg
+sddm
+lxqt-build-tools  libfm-qt  pcmanfm-qt
+```
+
+**Conditional on Ladybird needing Qt.** If Ladybird has moved to its own UI,
+this group collapses: no SDDM, no pcmanfm-qt, and the login becomes `agetty
+--autologin` with `exec labwc` from the profile, with `nnn` in `foot` as the
+file manager. That is a much smaller system and the recommendation if Qt is not
+otherwise required.
+
+### 8 — Ladybird
+
+```
+icu  simdutf  woff2  libavif  sqlite  skia  ladybird
+```
+
+**Ladybird uses vcpkg**, which vendors its dependencies. A hermetic build means
+unbundling that and supplying each one from the ledger. This is why the tier-3
+estimate is the softest number in this document.
+
+Chosen over Firefox for one reason: **it is C++, not Rust.** Firefox would put
+the mrustc chain — rustc bootstrapped through a long series of its own
+versions — on the critical path. Ladybird is an ordinary hard package instead
+of a second bootstrap problem, and it shares this project's thesis: an
+independent engine written from scratch because the incumbents are too large to
+be understood.
+
+---
+
+## Networking, and the firmware problem
+
+### Ethernet
+
+`iproute2` + `dhcpcd`. Most wired NICs need no firmware. This works and raises
+nothing.
+
+### WiFi — three parts, and the third is the problem
+
+**1. The driver** is in the kernel already.
+
+**2. The supplicant** is `wpa_supplicant`, and it is the right choice
+specifically because it does **not** need dbus. Its control interface is a Unix
+socket, and `wpa_cli` talks to it directly. `iwd` is more modern and wants dbus
+for anything convenient; NetworkManager and connman want dbus and polkit. On a
+system built to avoid dbus, `wpa_supplicant` is the only one that fits.
+
+**3. The firmware is a binary blob, and it does not trace to the seed.**
+
+Nearly every WiFi chipset requires a vendor firmware image loaded at runtime —
+`linux-firmware`, redistributable but not source. It cannot be built, only
+copied.
+
+This is the sharpest conflict in the project between "works on a laptop" and
+"every file traces to the seed". It should be handled the way the flavor fork
+is handled: **declared, not hidden.**
+
+```
+veron why /lib/firmware/iwlwifi-so-a0-gf-a0-83.ucode
+
+  NOT BUILDABLE -- vendor binary firmware
+  source     linux-firmware, rev a3f91c…
+  sha256     7d2e…
+  license    redistributable, no source available
+  traces to  nothing. This is a declared opaque input.
+```
+
+`veron status` should count it in its own category — neither "verified" nor
+"via nix" but **"opaque"** — so the number is visible rather than absent. A
+system with three firmware blobs and 4,182 verified files is an honest
+description; one that quietly omits them is not.
+
+Ethernet-only installs have zero opaque inputs, which is worth being able to
+state.
+
+### How a user actually connects
+
+No GUI. `labwc` has no tray, and every graphical WiFi applet routes through
+NetworkManager and therefore dbus.
+
+```
+wpa_passphrase MYSSID 'my password' >> /etc/wpa_supplicant/wpa_supplicant.conf
+wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant/wpa_supplicant.conf
+dhcpcd wlan0
+```
+
+Worth wrapping in one script — scan, prompt, append, restart — which is thirty
+lines of shell and better than importing dbus for a text field. If a graphical
+one is wanted later, that is the point at which taking dbus becomes a
+deliberate decision rather than a transitive dependency.
+
+---
+
+## Decisions this set encodes
+
+- **No systemd.** `dinit` or `s6`; `seatd` instead of logind.
+- **No dbus, no polkit.** Costs automount and graphical network config. A file
+  manager can browse without udisks2; mounting is manual, or dbus is taken
+  deliberately later.
+- **No X11 and no XWayland**, until something needs it.
+- **No PAM**, if there is no display manager. If SDDM lands, PAM likely
+  follows.
+- **Two libcs on the system** if Nix is installed alongside — see
+  `DERIVATIONS.md`. Nix packages use nixpkgs' own glibc; nothing links across.
+
+## Open questions to settle before building
+
+1. **Does Ladybird still require Qt6?** Decides whether group 7 exists at all,
+   and therefore whether the login is SDDM or autologin. Largest single fork in
+   this plan.
+2. **Can mesa be built without llvm** for the target hardware? One of the five
+   giants.
+3. **Does the musl flavor go to tier 2?** mesa and most desktop software assume
+   glibc; Alpine carries real patch sets to make them work on musl. If the musl
+   branch is meant to reach a desktop, that patch burden is where it lives.
+4. **Where do firmware blobs live in the ledger**, and does `veron status`
+   grow an `opaque` category? Recommended above; not yet decided.
