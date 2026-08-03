@@ -5,72 +5,64 @@ compile tcc directly, rather than reaching tcc through Mes. That enhanced
 compiler is called **micro-c**: M2-Planet at pin `bd2fe4b` plus a patch series.
 This file is its state.
 
-**Status.** micro-c is M2-Planet at pin `bd2fe4b` plus **59 patches**. It
-compiles `tcc.c` -- tcc's whole source including its command-line driver -- to
-**378,759 lines of M1 across 707 functions**, and the linked **1.57 MB** aarch64
-binary (`mc-tcc`) is a working-enough tcc that:
+**Status.** micro-c is M2-Planet at pin `bd2fe4b` plus **70 patches** (4 base +
+66 experiments). It compiles `tcc.c` -- tcc's whole source including its
+command-line driver -- and the linked **1.63 MB** aarch64 binary (`mc-tcc`) is
+a working tcc:
 
 ```
-mc-tcc --version              tcc version 0.9.28rc (AArch64 Linux)   tcc's own driver
+mc-tcc --version              tcc version 0.9.28rc (AArch64 Linux)
 the twelve end-to-end progs   12 / 12          native aarch64, in the box
-tcc's own tests2              59 / 127 match tcc's .expect (diff -b rules)
-mc-tcc -c tcc.c               870,242 byte object   UNDER QEMU ONLY -- see below
+tcc's own tests2              107 / 107 of the applicable set
+musl 1.2.5 at its pinned sha  1349 / 1349 sources compile
+self-compilation              gen2.o == gen3.o == gen4.o, byte-identical
 ```
 
-**IT IS NOT SELF-HOSTING.** A fixpoint needs five things and this is the first:
+**IT IS SELF-HOSTING.** All five steps hold. The list is kept because this file
+spent a long time saying they did not:
 
 ```
-1. gen1 compiles tcc.c          UNDER THE EMULATOR ONLY -- see below
-2. gen2 LINKS                   no -- needs a libc; see "The libc rung"
-3. gen2 runs                    not reached
-4. gen2 compiles tcc.c -> gen3  not reached
-5. gen2 == gen3                 not reached
+1. gen1 compiles tcc.c          yes, natively and under the emulator
+2. gen2 LINKS                   yes -- the libc rung is built
+3. gen2 runs                    yes
+4. gen2 compiles tcc.c -> gen3  yes
+5. gen2 == gen3 == gen4         yes, byte-identical objects AND binaries
 ```
 
-**STEP 1 DOES NOT HOLD ON REAL HARDWARE, and that is the sharpest open lead in
-this file.** Under `qemu-aarch64-static` it succeeds -- rc=0, an 870,242 byte
-object. In `stage3-hermetic-arm64`, on a NATIVE aarch64 runner, the same
-mc-tcc (same 1,574,765 bytes) **segfaults**:
+**THE NATIVE SEGFAULT THIS SECTION USED TO DOCUMENT IS CLOSED.** It read, for
+many rounds, that step 1 failed on real hardware while succeeding under qemu,
+that the fault vanished under instrumentation, and that alignment was the
+leading hypothesis. That is historical now; the chapters below record how each
+piece went. Two methodological points survive it, and both were re-learned
+since in the `-run` work: *a fault that vanishes when you add code is a fault
+about LAYOUT, not about a construct*, and *a marker trail brackets between
+probe points -- it does not name a fault.*
+
+**WHERE THE LADDER STANDS.** `stage0-stage4-complete` runs the sixteen-rung
+ladder with mc-tcc substituted for the reference compiler:
 
 ```
-    step A: gen1 cannot compile tcc.c, rc=139
-      SIGNAL 11
+0    compiler runs, libtcc1.a             ok
+1    freestanding compile+link            ok
+2    musl, no make                        ok
+3    hosted program, real libc            ok
+3.5  GNU make                             ok
+4    binutils                             ok
+4.5  make rebuilt with real binutils      ok
+5    gmp / mpfr / mpc                     ok
+6    gcc 4.7.4 by tcc                     FAIL
+7..16                                     skip
 ```
 
-Not host headers -- `-nostdinc` changes nothing locally and the box has no
-`/usr/include` at all. `tcc-two-ways` reproduces it independently
-(`gen2 died on SIGNAL 11`), so it is not the hermetic box either.
-
-**AND IT DISAPPEARS UNDER INSTRUMENTATION**, which is the part that decides how
-to chase it. `tcc-two-ways` step 26 builds the same tcc with a marker after
-every statement:
+Rung 6 is the frontier and it is further than "FAIL" suggests: gcc 4.7.4
+CONFIGURES and `xgcc` LINKS. What fails is that the gcc mc-tcc just built
+segfaults compiling libgcc --
 
 ```
-    instrumented binary: 1571918 bytes
-    exit 0 -- NO SIGNAL under instrumentation.
-    THAT IS THE FINDING: the fault is sensitive to code size or
-    layout, and reducing it by construct will not work.
-    LAST STATEMENT THAT COMPLETED: E02  tccelf.c:116  free_section: ENTRY
+<built-in>:0:0: internal compiler error: Segmentation fault
 ```
 
-A fault that vanishes when you add code is a fault about LAYOUT, not about a
-construct. That is the same shape as the heap corruption chapter above, where
-the failure moved with the length of the input's FILENAME and bisecting by
-construct produced two confident wrong answers. **So do not reduce this one by
-deleting statements** -- that is the move that works for a construct bug and
-wastes rounds on a layout bug. `tools/layout-sweep.sh` is the instrument for
-this class.
-
-Alignment remains the leading hypothesis, because this file already records the
-same asymmetry one level down: *"ON AMD64 AN UNALIGNED LOAD MERELY COSTS TIME.
-ON AARCH64 IT IS A FAULT"* -- which hid the member-alignment bug for as long as
-the local suite was amd64. qemu-user is permissive in the same direction.
-**Trust CI over the local run for step 1.**
-
-`rc=0` on step 1 is not proof the object is correct. What it is worth: against
-the gcc-built control on the same source, the two objects carry the **same 705
-function symbols**, relocation counts within two, and sizes within 0.4%
-(870,242 against 873,890). Structurally right; unverified beyond that.
+-- which is a miscompiled gcc, not a failure to produce one.
 
 **The heap corruption that dominated this file is closed** -- see "The
 corruption, and the measurement that was lying about it" below. So is the
@@ -630,7 +622,13 @@ binary mc-tcc produces. This is the REFERENCE arm, so mc-tcc is not in this
 chain; but tcc's own soft-float helpers from `libtcc1.a` are, underneath
 everything.
 
-## What is still wrong
+## What was wrong, as a table -- the historical ledger
+
+(The CURRENT inventory is further down, under the second heading of this name.
+Two sections carried the same title for a long time, which is how a scripted
+edit to "the" open-issues section deleted eight hundred lines of this file in
+one go. They are distinct now: this one is the closed ledger, that one is the
+state.)
 
 | gap | consequence |
 |---|---|
@@ -1495,36 +1493,142 @@ relocation inputs named the one value that differed.
 
 ## What is still wrong
 
-**1. Floating point does not work at all.** Not "is imprecise" -- a binary
-mc-tcc produced gets `double a = 12.5; (long)a == 12` FALSE. Add, multiply,
-divide and compare all fail the same way. This is micro-c's recorded
-unsoundness (float, double and long double are one word-sized integer) reaching
-the tcc it builds. It accounts for **ten of the thirteen** remaining tests2
-differences, and it is why `sources/musl.toml` will matter: nothing that
-touches a float can be trusted until this is closed.
+The two items this section used to lead with are CLOSED. **Floating point
+works**: `tcc-microc` 0002 gives the built tcc an eight-byte long double
+consistently in all six places that decide it, 0003 routes hexadecimal float
+literals through `strtod`, and 0004 makes tcc's constant folder do its
+arithmetic in integers -- because micro-c has none and the folder does
+`f1 * f2` in C. `printf("%f")` through real musl is byte-identical to glibc.
+**`tcctest.c` compiles**, links, and runs to completion: 971 lines of output.
 
-`patches/tcc-microc/0001` sets `LDOUBLE_SIZE 8` so the built tcc is at least
-CONSISTENT with itself -- tcc's own guard otherwise refuses to emit any long
-double constant, not even `0.0`. That made `tcc.c` compilable. It did not make
-floats work, and it gives long double 8 bytes where the aarch64 ABI gives 16.
+What follows is the current inventory, separated by kind. These have been
+conflated before, and they do not cost the same to fix.
 
-**2. `tcctest.c` does not compile.** It is the file tcc's own test1, test2 and
-test3 all begin with, so all three are blocked. The wide-literal fix
-(`EXPERIMENT-zzzk`) moved it from line 424 (`string_test`) to line 1103
-(`struct_test`) -- 679 lines -- and it segfaults there. **Ten probes against
-that range reproduced nothing in isolation** (`__alignof__`, zero-length
-arrays, `__attribute__` before the tag, pointer diffs with casts, `uintptr_t`,
-empty structs, unions, large locals), so it is cumulative or not yet spotted.
-The technique that worked for 00_assignment -- bisect INSIDE the function
-rather than probe around it -- has not been tried yet.
+### Compiler defects -- eight open
 
-**3. The usual arithmetic conversions.** Case 110, `KNOWN GAP`. An `int`
-compared against a hex literal above `INT_MAX` should convert the int to
-unsigned; micro-c folds constants as signed 64-bit (correctly, per `zzb`) and
-never applies the literal's TYPE to the other operand. Found because it made
-case 109 fail for a reason case 109 did not claim to test.
+**1. `-run` crashes on `free`.** `malloc`, `calloc`, `realloc` and returning
+from `main` all work; anything that frees faults, including stdio's exit-time
+buffer release. **There is no working explanation.** The obvious one -- malloc
+and free coming from different allocators -- is contradicted by the addresses,
+which resolve identically under `-run` and static linking. Recorded as unknown
+rather than guessed at, because the last three explanations offered here for
+this family were wrong.
+
+**2. glibc's shared objects are rejected.** `libc.so.6` and
+`ld-linux-aarch64.so.1` both give `unrecognized file type`, from
+`tcc_object_type` in `tccelf.c` -- a function whose whole body is a read, a
+`memcmp` against `ELFMAG`, and a comparison of `e_type` against `ET_DYN`. This
+gates every dynamic link: `hello-exe`, `tests2-dir`, `dlltest`, and the
+`dynamic:` line at rung 3.
+
+The files themselves are not the problem, and that is measured rather than
+assumed -- `tcc-two-ways` prints their headers:
+
+```
+/usr/lib/aarch64-linux-gnu/libc.so   2f 2a 20 47   ASCII text (a linker script)
+/lib/aarch64-linux-gnu/libc.so.6     7f 45 4c 46   ELF shared object, e_type=3
+/lib/ld-linux-aarch64.so.1           7f 45 4c 46   ELF shared object, e_type=3
+```
+
+`libc.so` being a linker script is normal and the subject gets past it -- the
+name in the error is the file the SCRIPT POINTS AT. The other two are valid
+`ET_DYN`. What is not yet established is whether the control links dynamically
+in the same tree: the first version of that probe invoked both compilers
+without `-B`, so the control failed with `file 'libtcc1.a' not found` and the
+probe reported "control ALSO fails", which read as evidence about the
+environment when it was only the probe's own command line. Fixed; unanswered
+until the next run.
+
+**3. `tcc-two-ways` step 21.** A null dereference -- `ldrsw x0, [x0]` with
+`x0 = 0`, at `pc=0x4d4e34` -- only against real glibc. **Plausibly the same
+defect as 2**, which would make this list seven.
+
+**4. Rung 6: the gcc mc-tcc builds is miscompiled.** It configures and links
+`xgcc`; that gcc then segfaults compiling libgcc. A large unexplored surface,
+and possibly several defects wearing one hat.
+
+**5. Case 110, `KNOWN GAP`.** The usual arithmetic conversions for an unsigned
+literal.
+
+**6. Case 116, `KNOWN GAP`.** Dereferencing the result of a conditional
+segfaults.
+
+**7. Case 119, `KNOWN GAP`.** `*(p)++` advances wrongly, where `*p++` does not.
+
+**8. Corpus row 118.** Mutual recursion where the callee is used before it is
+declared.
+
+### Latent -- recorded so they are not rediscovered
+
+**`d8`-`d15` are not saved by `setjmp`.** AAPCS64 makes the low half of the
+vector registers callee-saved. `setjmp` now saves x19-x28, the frame pointer
+and the real `sp` -- which `-run` needed, because the code it jumps into is
+tcc-generated and follows AAPCS64, not micro-c's four-register convention. But
+M1's vocabulary has no d-register load or store at all, and adding them is the
+same exercise as the twenty-eight integer defines in `patches/m2libc/0016`. A
+JIT'd program holding a double in `d8` across a call to `exit` would corrupt it.
+
+**`tcov.c` will not build**, because it includes the host's `<stdio.h>`. Only
+needed for `-ftest-coverage`; excluded from `libtcc1.a` deliberately, alongside
+`alloca-bt.S`, which pulls `__bound_new_region` out of a `bcheck.o` this build
+does not make.
+
+### tcc's own suite, run against mc-tcc -- where it stands
+
+`tcc-two-ways` now runs the CONTROL's own `make test` targets against the
+subject, every one attempted, none gating. The first full run:
+
+```
+hello-exe            rc=2   calls=2       hello-run     rc=2   calls=2
+libtest              ok     calls=0  [SUBJECT NEVER INVOKED]
+test1 test2 test3    rc=2   calls=1       abitest       ok     calls=0  [NEVER]
+asm-c-connect-test   rc=2   calls=1       tests2-dir    rc=2   calls=122
+pp-dir               ok     calls=24      memtest       ok     calls=0  [NEVER]
+dlltest cross-test   rc=2                 btest test1b tccb    rc=2
+
+1 of 17 targets ok;  3 never invoked the subject at all
+```
+
+**Read the call counts, not the verdicts.** Three of the four apparent passes
+never asked mc-tcc to compile anything -- `abitest` is `CC = gcc` by design
+(`tests/Makefile:61`), `libtest` links libtcc as a library we do not build, and
+`memtest` likewise. `pp-dir` is the one real pass: 24 invocations, green.
+`tests2-dir` is the one genuinely hammered: 122 invocations.
+
+Most of the red is ONE cause. `test1`, `test2`, `test3`, `hello-run` and
+`vla_test-run` are all `tcc -run`, which is defect 1. `hello-exe`,
+`tests2-dir` and `dlltest` need dynamic linking, which is defect 2. Counting
+targets overstates how many distinct things are wrong.
+
+### Harness gaps -- not compiler defects, but they distort the numbers
+
+**We never build `libtcc.a` with micro-c.** mc-tcc is one monolithic binary
+built from `tcc.c`. Any test that links libtcc as a LIBRARY -- `libtest`,
+`libtest_mt`, `abitest-tcc` -- cannot exercise the subject at all, and in
+`tcc-two-ways` it silently tested the CONTROL's library. That is now visible:
+the subject binary is wrapped in a counter, and a target reporting `ok` with
+`calls=0` is flagged `[SUBJECT NEVER INVOKED]`. Three of the four apparent
+passes in the first full-suite run were that.
+
+**Our tests2 harness compares program OUTPUT.** Any test whose `.expect` holds
+compiler DIAGNOSTICS cannot pass as we run it, however correct the compiler is:
+`33_ternary_op` waits on a warning we do not emit, `34_array_assignment` on an
+error message, and `60_errors_and_warnings` is excluded for the same reason.
+**So "107 of 107" measures a narrower thing than the suite name suggests.**
+
+**`hello-exe` asserts `ldd` on the compiler binary.** mc-tcc is statically
+linked by construction -- hex2 output, no interpreter -- so that target fails
+on a property of the binary and never reaches codegen.
+
+### Stale test data -- five corpus rows that encode an older micro-c
+
+Rows 121, 122, 123 and 352 expect `sizeof(int) == 8`. micro-c now agrees with
+gcc, so the CORPUS is wrong, not the compiler -- the same family as the "29
+rows where gcc gives a different answer from the corpus (int width)" the runner
+already prints. Rows 364 and 368 assume a `FILE*` indexes as bytes.
 
 ---
+
 
 ## The libc rung -- what gen2 actually needs
 

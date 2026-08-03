@@ -42,7 +42,7 @@ Everything below lives under [`spikes/`](./spikes) and is a **feasibility tracer
 | `stage1-as` | two-pass numeric label resolver, written in *stage 0's own language* | **works** — gives the ladder unbounded multi-character labels |
 | `stage2-pico-c` | C-subset compiler, written in *stage 1's language* | **works** — 220 KB of upstream C in, 81,893 instructions out |
 | `stage3` | M2-Planet, compiled by stage 2. There is no separately-written stage 3 — M2-Planet *is* stage 3. | **hand-off proven** — our build reproduces upstream's M2-Planet **byte for byte**, stable over five generations |
-| `stage4` | everything tcc is used to build: gcc, a userland, a kernel, a boot | **works** — `tcc → 4.7.4 → 10.2.0 → 15.2.0 → linux 7.1.5 → boot`, 61 min, one job |
+| `stage4` | everything tcc is used to build: gcc, a userland, a kernel, a boot | **works** — `tcc → 4.7.4 → 10.2.0 → 15.2.0 → linux 7.1.5 → boot`, 61 min, one job. With **mc-tcc substituted** for the reference compiler the same ladder reaches rung 6: musl, GNU make, binutils, gmp/mpfr/mpc all build, and gcc 4.7.4 configures and links `xgcc` before that gcc miscompiles libgcc |
 
 The stage-2 → stage-3 hand-off is the sharpest single result:
 
@@ -84,7 +84,7 @@ Stage 4 already **has** a tcc — pinned, patched, and used. What stage 3 owes i
 | route | state |
 |---|---|
 | M2-Planet → Mes → tcc | Mes rung in progress, three rungs out |
-| **enhanced M2-Planet → tcc directly** | **the enhanced compiler exists.** It is called micro-c — M2-Planet at pin `bd2fe4b` plus 61 patches — and it compiles `tcc.c`, tcc's whole source *including its driver*, to 378,759 lines of M1 across 707 functions, links a 1.57 MB aarch64 binary, and **that binary compiles and runs all twelve end-to-end programs** and 73 of tcc's own tests2 programs. It also compiles tcc's source *back* to an object — see below |
+| **enhanced M2-Planet → tcc directly** | **the enhanced compiler exists.** It is called micro-c — M2-Planet at pin `bd2fe4b` plus 70 patches — and it compiles `tcc.c`, tcc's whole source *including its driver*, links a 1.63 MB aarch64 binary, and **that binary compiles and runs all twelve end-to-end programs**, all 107 applicable tests2 programs, and musl 1.2.5 entire. It compiles tcc's source *back* to an object, and that object is a **fixpoint**: gen2 == gen3 == gen4 — see below |
 
 The direct route is the shorter one: extend M2-Planet's C subset far enough to compile real tcc, skipping the intermediate rungs entirely. The thesis behind it is that much of what the bootstrap ecosystem carries is *incidental* complexity — build plumbing, script-calling-script — rather than real capability gaps, and that the two can be separated by measuring instead of estimating. See [`spikes/stage3/ROADMAP.md`](./spikes/stage3/ROADMAP.md) for the plan and [`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md) for the state.
 
@@ -94,7 +94,7 @@ Eleven codegen bugs have been closed since, and the two worth carrying up here a
 
 The second is that a test suite written *from* bugs already found measures what has been fixed, not what remains. Borrowing stage 2's 426-program conformance corpus — written for a different compiler, by someone not looking for these bugs — turned up three live codegen faults in one sitting, including an array of `char*` loading one signed byte of an eight-byte pointer. The stage-3 case suite had been green over that one every round, because every array-of-pointers case in it used `long*`, where the element width and the pointed-at width are both 8.
 
-micro-c compiles **tcc's whole source, driver included**, and `stage3-hermetic-arm64` reports **`stage 3 end to end: yes`** — a 1.57 MB tcc built from the seed on native ARM64 inside the sealed box, answering `tcc version 0.9.28rc (AArch64 Linux)` from tcc's own driver, with all twelve end-to-end programs compiling and running and **77 of tcc's own 127 `tests2` programs matching tcc's `.expect` files** — a
+micro-c compiles **tcc's whole source, driver included**, and `stage3-hermetic-arm64` reports **`stage 3 end to end: yes`** — a 1.63 MB tcc built from the seed on native ARM64 inside the sealed box, answering `tcc version 0.9.28rc (AArch64 Linux)` from tcc's own driver, with all twelve end-to-end programs compiling and running, **all 107 applicable `tests2` programs matching tcc's `.expect` files**, and a self-compilation fixpoint: `gen2 == gen3 == gen4`, byte-identical. It builds musl 1.2.5 at its pinned sha256 — 1349 of 1349 sources — and drives stage 4's ladder as far as gcc 4.7.4. That number was for a long time 77 of 127 — a
 number that moved from 59 mostly because the *harness* was wrong, not the
 compiler: the sweep ran an aarch64 binary with no emulator, compared strictly
 where tcc compares with `diff -b`, and never passed `31_args` its arguments.
@@ -121,19 +121,22 @@ the sealed box, with no emulator: 874,610 bytes against the gcc-built control's
 873,890, from a gen1 of 1,575,057 bytes. That is a change — it used to hold only
 under `qemu-aarch64` and segfault natively, and the two long-double patches
 (`0b07e37`, `2a8bf60`) are what moved it. Read it narrowly all the same: it is
-step 1 of the five a fixpoint needs, and **it is not self-hosting**. Steps 2–5
-are: link gen2, run it, build gen3, and compare gen2 against gen3.
+step 1 of the five a fixpoint needs. **All five now hold**: gen2 links, runs,
+builds gen3, and `gen2 == gen3 == gen4` byte-identically, objects and binaries.
+micro-c's tcc is self-hosting.
 
-Step 2 now has a named blocker rather than an unknown one. gen2 needs a
-`setjmp`, and the one in the tree — `impl/setjmp-aarch64.c` — is written in
-M2libc's *macro* dialect (`asm("mov_x0,x17")`, names in `aarch64_defs.M1`
-rather than aarch64 mnemonics) and saves micro-c's four registers, not the
-AAPCS callee-saved set. Only micro-c can compile it, by construction. gen2.o is
-ordinary AAPCS code, so what it needs is an ordinary aarch64 setjmp; after that
-the rung is a libc built in-chain — see
-[`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md).
+The `setjmp` this section used to name as the blocker is written and in the
+tree. It was the four-register micro-c one; it now saves the AAPCS64
+callee-saved set as well — x19–x28, the frame pointer and the real `sp` —
+because tcc's `-run` jumps into TCC-generated code, which follows AAPCS64 and
+not micro-c's convention. `d8`–`d15` are still outstanding and recorded as
+such: M1's macro vocabulary has no d-register load or store at all.
 
-**Close those two and the chain is continuous from hand-read assembly to a booting GNU/Linux.** What stands between here and a rough-draft OS is that, plus re-applying the invariants — the spike track suspends every one of them.
+**The chain is continuous from hand-read assembly to a self-hosting C
+compiler that builds musl, GNU make, binutils and gmp/mpfr/mpc.** What stands
+between here and a booting GNU/Linux built entirely this way is rung 6 — the
+gcc mc-tcc produces miscompiles libgcc — plus re-applying the invariants, which
+the spike track suspends every one of.
 
 ### 3½. The bridge — what stage 4 borrows, built instead
 

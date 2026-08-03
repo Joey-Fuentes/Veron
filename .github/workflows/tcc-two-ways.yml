@@ -1173,13 +1173,21 @@ jobs:
               printf '    %-42s MISSING\n' "$f"
             fi
           done
-          echo "  --- and the control, on the same files ---"
-          ( cd gcc-tcc && printf 'int main(void){return 0;}\n' > /tmp/hw.c
-            ./tcc -o /tmp/hw-ctl /tmp/hw.c 2>&1 | head -3 | sed 's/^/      /'
+          # -B ON BOTH, which the first version of this probe forgot. Without
+          # it tcc looks for libtcc1.a under its INSTALL prefix rather than the
+          # build tree, so the control failed with `file 'libtcc1.a' not found`
+          # and the probe reported "control ALSO fails" -- which read as
+          # evidence that the environment was at fault when it was only the
+          # probe's own command line.
+          printf 'int main(void){return 0;}\n' > /tmp/hw.c
+          echo "  --- the control, linking dynamically ---"
+          ( cd gcc-tcc && rm -f /tmp/hw-ctl
+            ./tcc -B. -o /tmp/hw-ctl /tmp/hw.c 2>&1 | head -3 | sed 's/^/      /'
             [ -s /tmp/hw-ctl ] && echo "      control links dynamically: yes" \
-                               || echo "      control ALSO fails -- not a subject defect" )
-          echo "  --- and the subject, same command ---"
-          ( cd mc-tree && ./tcc-real -o /tmp/hw-sub /tmp/hw.c 2>&1 | head -3 | sed 's/^/      /'
+                               || echo "      control ALSO fails -- then it is the environment, not the subject" )
+          echo "  --- the subject, same command ---"
+          ( cd mc-tree && rm -f /tmp/hw-sub
+            ./tcc-real -B. -o /tmp/hw-sub /tmp/hw.c 2>&1 | head -5 | sed 's/^/      /'
             [ -s /tmp/hw-sub ] && echo "      subject links dynamically: yes" \
                                || echo "      subject cannot link dynamically" )
           echo ""
