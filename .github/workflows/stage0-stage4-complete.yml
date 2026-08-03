@@ -61,6 +61,11 @@ on:
         type: boolean
         required: false
         default: false
+      repro_gcc:
+        description: 'build the final gcc TWICE and diff the two cc1 binaries'
+        type: boolean
+        required: false
+        default: false
   push:
     paths:
       - '.github/workflows/stage0-stage4-complete.yml'
@@ -2391,6 +2396,9 @@ jobs:
       # times -- it would roughly double the ladder. Turned on deliberately,
       # once, to produce the applet list for the handmade config.
       TRACE_APPLETS: ${{ inputs.trace_applets && '1' || '0' }}
+      # THE SECOND-BUILD REPRODUCIBILITY CHECK. Off by default because it costs
+      # a whole extra gcc build; on when there is a difference to explain.
+      REPRO_GCC: ${{ inputs.repro_gcc && '1' || '0' }}
     steps:
       - uses: actions/checkout@v5
 
@@ -3261,6 +3269,7 @@ jobs:
             --setenv CC_BIN /work/mc-tcc \
             --setenv TCCDIR /work/tccsrc \
             --setenv ARM mc-tcc \
+            --setenv REPRO_GCC "$REPRO_GCC" \
             --setenv MUSL_VER "$MUSL_VER" \
             --setenv MAKE_VER "$MAKE_VER" \
             --setenv MAKE_ALT "$MAKE_ALT" \
@@ -3357,6 +3366,7 @@ jobs:
             --setenv TERM dumb \
             --setenv SOURCE_DATE_EPOCH 0 \
             --setenv ARM mc-tcc \
+            --setenv REPRO_GCC "$REPRO_GCC" \
             --setenv LFS_TGT aarch64-veron-linux-gnu \
             --setenv GLIBC "$GLIBC" \
             --setenv GCC15 "$GCC15" \

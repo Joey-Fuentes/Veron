@@ -189,6 +189,65 @@ Three findings from that:
   Different mtimes compress to different lengths. Fixed by normalising mtimes
   to the epoch, sorting the file list, and `gzip -9n`.
 
+### The native gcc is not reproducible, and here is what is ruled out
+
+Two runs of the mc-tcc arm, compared:
+
+```
+cc1  aarch64-unknown-linux-gnu (cross, rung 11)   3e905d2f == 3e905d2f   stable
+cc1plus  unknown-linux-gnu                        7772daae == 7772daae   stable
+cc1  aarch64-veron-linux-gnu (native, B4)         f31f0cd9 != 24de3e05   DIFFERS
+cc1plus  veron-linux-gnu                          7ac160d5 != f5a2b578   DIFFERS
+```
+
+Same size both times -- 397,720,192 bytes -- so nothing structural changed;
+values differ in fixed slots. And it is specific: the compiler built by gcc 10
+at rung 11 is byte-identical, the one built by gcc pass 2 at B4 is not.
+
+**Ruled out by inspecting a single artifact**, which is worth recording so
+nobody repeats it:
+
+- **no `__DATE__`/`__TIME__`** -- the only date-shaped string is a SARIF schema
+  URL
+- **no build-id** -- neither binary has a `.note.gnu.build-id` at all
+- **build paths are constant** -- 1,590 occurrences of `/work/src/gcc-15.2.0`,
+  the same fixed path inside the sealed box every run
+- **`comp_dir` is fixed** -- `/work/src/glibc-2.44/csu`, from `.debug_str`
+- **the artifact transfers intact** -- the downloaded `cc1` hashes to
+  `24de3e05…`, matching the run log exactly. The `SHA256SUMS` check earned its
+  place.
+
+**Where it probably is.** `cc1` is 397 MB, of which `.debug_info` alone is
+225 MB and `.text` is 25 MB:
+
+```
+225,326,203  .debug_info        57%
+ 59,865,249  .debug_loclists
+ 36,774,760  .debug_line
+ 25,558,288  .text               6%
+ 16,896,227  .debug_str
+```
+
+Debug metadata is ~85% of the binary. A difference is an order of magnitude
+more likely to land there than in code by volume alone, and debug info carries
+line tables and DWARF strings, historically the least reproducible part of any
+build. **`.debug_*` and `.text` are a metadata bug and a codegen bug
+respectively**, and `repro-diff.sh` now reports differing bytes per section so
+the two are never confused.
+
+**And it suggests a cheaper move than chasing it.** Every producer line carries
+`-g`. Nobody debugs the bootstrap compiler; `-g0` or a strip would take `cc1`
+from 397 MB to roughly 50 MB and remove most of the surface where this can
+hide. Worth doing regardless -- but not as the *answer*, because a compiler
+that is not byte-reproducible is telling us something real even when the
+evidence sits in a section we do not ship.
+
+**What settles it: `REPRO_GCC=1`.** A dispatch input that builds the final gcc
+a second time in the same run, same box, same inputs, and diffs the two `cc1`
+binaries in place. A difference there cannot be blamed on the runner, the
+commit or the arm, and it costs no artifact transfer -- the byte offsets and
+their sections appear in the log.
+
 **The cc1 question turned out not to be a defect at all.** With full paths
 printed, the two are:
 

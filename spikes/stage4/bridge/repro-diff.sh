@@ -82,11 +82,32 @@ if readelf -S "$A" >/dev/null 2>&1; then
         printf '    offset %-12s len %-8s %s\n' "$off" "$len" "${sec:-<no section>}"
     done < /tmp/rd-runs.txt | head -20
     echo
+    # WHICH SECTIONS HOLD THE DIFFERENCES, BY VOLUME. On a gcc built with -g
+    # this matters more than the offset list: .debug_info alone is 225 MB of a
+    # 397 MB cc1 and .text is 25 MB, so a difference is ~9x more likely to land
+    # in debug metadata than in code by chance alone. "Differs in .debug_info"
+    # and "differs in .text" are a metadata bug and a codegen bug respectively,
+    # and they get completely different attention.
+    echo "  --- differing bytes per section ---"
+    while read -r first last len; do
+        off=$((first - 1))
+        sec=$(awk -v o="$off" '$2 <= o && o < $2 + $3 { print $1; exit }' /tmp/rd-secs.txt)
+        printf '%s %s\n' "${sec:-<none>}" "$len"
+    done < /tmp/rd-runs.txt \
+      | awk '{ n[$1]+=$2; c[$1]++ } END { for (s in n) printf "    %-24s %10d bytes in %d run(s)\n", s, n[s], c[s] }' \
+      | sort -k2 -rn
+    echo
     echo "  READ IT THIS WAY:"
-    echo "    .note.gnu.build-id  the id is derived FROM content -- content"
-    echo "                        differed first, this is a symptom"
+    echo "    .debug_*            METADATA, not code. The compiler still works;"
+    echo "                        the recorded line tables or DWARF strings vary."
+    echo "                        Check -fdebug-prefix-map, and note that -g0 or"
+    echo "                        a strip removes the whole surface."
+    echo "    .text               CODE. A different compiler, not just a"
+    echo "                        differently-described one. This is the"
+    echo "                        serious case."
     echo "    .rodata .strtab     symbol names -- try -frandom-seed=<fixed>"
-    echo "    .text               codegen ordering"
+    echo "    .note.gnu.build-id  derived FROM content -- content differed"
+    echo "                        first, this is a symptom"
     echo "    .comment            toolchain version strings"
     echo "    one short run only  a timestamp; find what embeds it"
 fi

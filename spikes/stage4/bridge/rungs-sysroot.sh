@@ -769,6 +769,61 @@ if [ "$B3" = ok ]; then
       else
         say "    THE FINAL COMPILER DOES NOT PRODUCE A WORKING BINARY"; B4=FAIL
       fi
+      produced /usr/libexec/gcc/*/*/cc1 /usr/libexec/gcc/*/*/cc1plus
+
+      # BUILD IT A SECOND TIME AND DIFF, IN THE SAME RUN.
+      #
+      # THE PROBLEM THIS SOLVES. The native cc1 differs between runs at
+      # identical size -- 397720192 bytes both times, f31f0cd9 then 24de3e05 --
+      # while the CROSS cc1 from rung 11 is byte-identical. Everything findable
+      # from one binary has been ruled out: no __DATE__, no build-id, comp_dir
+      # is a fixed /work path, and all 1590 embedded paths are constant. What
+      # remains needs two builds compared, and downloading two 400 MB binaries
+      # to do it by hand is the wrong shape.
+      #
+      # SAME RUN, SAME BOX, SAME INPUTS, so a difference here cannot be blamed
+      # on the runner, the commit, or the arm. It is the compiler or nothing.
+      #
+      # WHERE TO LOOK FIRST. cc1 is 397 MB of which .debug_info alone is 225 MB
+      # and .text is 25 MB. A difference is an order of magnitude more likely
+      # to be in debug metadata than in code, and those are very different
+      # findings -- repro-diff.sh reports which.
+      #
+      # OFF BY DEFAULT: it costs a second full gcc build. Set REPRO_GCC=1.
+      if [ "${REPRO_GCC:-0}" = 1 ] && [ "$B4" = ok ]; then
+        say ""
+        say "  --- REPRO: building the final gcc a SECOND time, same inputs ---"
+        _r2=/work/gcc-repro2
+        rm -rf "$_r2" && mkdir -p "$_r2" && cd "$_r2"
+        # THE SAME FLAGS, WRITTEN OUT RATHER THAN REFERENCED. A second build
+        # configured even slightly differently proves nothing, and a shared
+        # variable read from two places is how they drift apart. If the list
+        # above changes, this must change with it -- which is why they sit
+        # twenty lines apart rather than in separate functions.
+        if "$_d/configure" --prefix=/usr LD=ld --disable-multilib --disable-bootstrap \
+             --disable-fixincludes --enable-default-pie \
+             --enable-default-ssp --disable-nls --enable-languages=c,c++ \
+             --disable-libatomic --disable-libgomp --disable-libquadmath \
+             --disable-libsanitizer --disable-libssp --disable-libvtv \
+             > c2.log 2>&1 \
+           && timeout 14400 make -j"$NP" > b2.log 2>&1; then
+          for _c in cc1 cc1plus; do
+            _a=$(ls /usr/libexec/gcc/*/*/"$_c" 2>/dev/null | tail -1)
+            _b=$(find "$_r2" -name "$_c" -type f 2>/dev/null | head -1)
+            if [ -n "$_a" ] && [ -n "$_b" ]; then
+              say ""
+              say "  --- $_c: build 1 vs build 2 ---"
+              sh /src/stage4/bridge/repro-diff.sh "$_a" "$_b" 2>&1 | sed 's/^/  /'
+            else
+              say "    $_c: could not locate both builds ($_a / $_b)"
+            fi
+          done
+        else
+          say "    the second build did not complete -- see c2.log / b2.log"
+          whyfail b2.log
+        fi
+        cd /work
+      fi
     else
       B4=FAIL; say "    --- gcc errors ---"
       whyfail b.log
