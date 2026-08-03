@@ -351,7 +351,7 @@ veron attest stage0
   10  gen2       stage0-as.s0   → gen3    91c7e0a3b5d2         fixpoint
   11  gen1       stage1.s0      → stage1  c4a8f13e6072         == reference
 
-  ROOT AUDIT   one-time, external, recorded              8b40e27fc1a5
+  CROSS-CHECK  same steps, external decoders            8b40e27fc1a5
   ATTESTATION                                            2e7f04ba91c6
 ```
 
@@ -359,7 +359,7 @@ Every hash on that chart is ours: our artifacts, our sources, our assembler,
 our ELF writer, our disassembler. `BUDGET_PATH` is empty here in the same sense
 it is empty for the ladder.
 
-### Why the ROOT AUDIT line stays
+### Why the CROSS-CHECK line stays
 
 Steps 1–11 are self-referential on purpose: our disassembler audits our
 assembler, and our assembler built our disassembler. On its own that is a
@@ -373,13 +373,17 @@ was character-identical to the source under two decoders from different
 vendors. It could not have passed that step while hiding anything, so a
 disassembler it later builds is not subverted by construction.
 
-So the root audit is **a recorded historical event, not a running dependency**:
+So the external decoders are run **every push, alongside ours** -- not as a
+dependency of the chain, but as an independent second opinion on the same
+artifacts. Ours prove the chain needs no host tools; theirs prove ours are
+telling the truth. Neither is load-bearing for the other, and a disagreement
+between them is the most interesting failure this project could produce.
 
 ```
-veron attest stage0 --root
+veron attest stage0 --cross-check
 
-  ROOT AUDIT                                             8b40e27fc1a5
-  performed once, against these exact artifacts:
+  CROSS-CHECK                                            8b40e27fc1a5
+  the same assertions, re-run every push against these artifacts:
     stage0-as                   6f123c57d94a
     elf                         8c04e1d9f273
   by two decoders sharing no code:
@@ -391,16 +395,15 @@ veron attest stage0 --root
     the whole linked ELF reconstructed from disassembly, byte for byte
 ```
 
-It is pinned to those artifact hashes. **If `stage0-as` or `elf` ever change,
-the root audit no longer covers them and must be redone** — which is the
-correct behaviour, and is why the line carries the artifact hashes rather than
-just a date.
+It is pinned to those artifact hashes, so it always states exactly what it
+covers.
 
-That is the honest structure: a one-time external audit at the root, our own
-tools from there on. Presenting the chart without the root line would look
-cleaner and would be a circle; presenting the host decoders as if they run
-every time would understate what has been achieved. The chart shows both, with
-the historical one clearly marked as historical.
+That is the honest structure, and it is stronger than either half alone. The
+chain runs on our tools, so `BUDGET_PATH` is empty and a third party needs no
+toolchain to reproduce it. The cross-check runs on two decoders sharing no code
+with ours or with each other, so the chain cannot be self-consistently wrong.
+Presenting only ours would be a circle; presenting only theirs would understate
+what the seed does unaided.
 
 ### Reproducing it without trusting the tool
 
@@ -412,10 +415,10 @@ names:
 veron attest stage0 --script > verify-seed.sh
 ```
 
-Steps 1–11 need only our three binaries, so a third party reproduces the live
-chain with no toolchain at all. Redoing the ROOT AUDIT needs binutils and LLVM,
-and that is the one place a reproducer supplies their own — which is the point
-of it being external.
+Steps 1–11 need only our three binaries, so a third party reproduces the chain
+with no toolchain at all. `--cross-check --script` emits the external version
+for anyone who would rather use decoders they already trust. Both are offered
+because they answer different questions, and CI runs both on every push.
 
 **A human never audits an encoding.** They read `stage0-as.s0`, judge whether
 that program is correct, and let the steps carry the judgement to the bytes.
@@ -460,6 +463,213 @@ provenance graph nobody can check is the same failure mode as a committed
 binary nobody can disassemble.
 
 ---
+
+## How this relates to Nix
+
+The model is Nix's and the mapping is close:
+
+| Nix | here |
+|---|---|
+| derivation | derivation record in `ledger/` |
+| store path `/nix/store/<hash>-name` | `output_hash`, short form `07184a9f2b6c` |
+| `inputDrvs` | `inputs.derivations` |
+| `inputSrcs` | `inputs.sources`, with sha256 and SPDX |
+| `nix why-depends` | `veron why` |
+| `nix derivation show` | `veron show` |
+| `nix-store --query --tree` | the `why` tree |
+| sandboxed builder | the bwrap box, `--unshare-all` |
+| binary cache keyed on input hash | `lib/cache` |
+
+So the question is not whether the model fits — it does — but whether to run on
+Nix's implementation of it.
+
+### The reason not to, and it is structural
+
+**Nix would see the ladder as one derivation, or force it to be twenty.**
+
+A Nix derivation is a black box: inputs in, output out, nothing observable in
+between. The interesting content here is *inside* — rung 0 builds mc-tcc, rung
+6 builds gcc 4.7.4 with it, rung 8 rebuilds gcc with itself. Expressing that as
+one derivation makes the provenance graph exactly one node wide and throws away
+everything this design is for.
+
+Expressing each rung as its own derivation is the alternative, and it fights
+the current shape: the box is assembled once, sealed once, and every rung runs
+inside it against the sysroot the previous rung left. Nix would tear that down
+and rebuild it per rung, re-entering the sandbox twenty times and materialising
+a full sysroot per step. That is a different build, and the one property most
+worth protecting -- `SEAL` enforcing box contents against a declared list -- is
+ours, not Nix's.
+
+### Three things Nix does not have
+
+- **Command capture.** Nix records the derivation -- builder, args, env -- not
+  the argv of every exec inside the build. Expanding a node to its 11,204
+  compile commands is outside the model and would live alongside regardless.
+- **`builder` as a first-class field.** In Nix the compiler is just another
+  input. It is recoverable, but "which gcc built this, and which gcc built
+  that one" is a filtered view we would have to write anyway.
+- **The seed attestation.** A round trip with a self-hosting fixpoint and an
+  external cross-check is not a build, and there is no derivation shaped like
+  it.
+
+### Two things worth being explicit about
+
+**Nix is input-addressed by default**; content-addressed derivations are still
+experimental. This design keys on the *output* hash, which is what makes
+"independent rebuilders diff their outputs" work as `lib/README.md` describes.
+
+**Nix's own bootstrap is a binary tarball.** It sits outside the box, so the
+tier-1 budget survives -- but using a prebuilt binary as the engine that proves
+no prebuilt binaries were used is an awkward sentence to have to write, and
+this project has been careful about exactly that kind of sentence.
+
+### The objection is about the ladder, not about stage 5
+
+The black-box argument above applies to stages 0–4 and does not extend upward.
+The two halves have opposite shapes:
+
+| | ladder, stages 0–4 | package set, stage 5+ |
+|---|---|---|
+| nodes | ~20 | hundreds to thousands |
+| shape | strictly sequential | wide, mostly independent DAG |
+| what matters | what happens *inside* a rung | the graph *between* packages |
+| build style | one sealed box, incremental sysroot | one sandbox per package |
+| variants | none | musl/BusyBox vs glibc/GNU, per package |
+| frequency | rarely, hours | constantly, cached |
+
+**For stage 5, black-box is the correct abstraction**, not a loss. A package
+genuinely is sources in, files out; nobody needs to expand `zlib` to its
+compile commands the way they need to expand gcc 4.7.4 pass 1. And the flavor
+fork this project already has — musl/BusyBox against glibc/GNU, parameterised
+rather than duplicated — is precisely what a derivation language with overrides
+is for.
+
+So the boundary is natural, and it is the one the architecture already draws:
+**stage 4 produces a toolchain; stage 5 consumes it.** That is exactly the
+interface a Nix or Guix bootstrap expects, with our output standing where
+`bootstrap-tools` normally does — a well-trodden pattern, and the same thing
+Guix's reduced binary seed work is aimed at.
+
+**What such an engine would and would not give us.** It would not give us
+packages: nixpkgs assumes its own bootstrap, so the definitions get written
+here either way. What it would give is the language for expressing variants and
+overrides, and the store, garbage collection, profiles and rollback — which for
+a distribution is not incidental, it is most of the product, and it is a great
+deal to reimplement well.
+
+**The requirement that must survive the boundary is `veron why`.** If stage 5
+runs on a different engine, the provenance walk has to cross from that engine's
+graph into the ladder's and terminate at the seed attestation. That is the
+strongest argument for `veron export --nix`: one graph format spanning both
+halves, so a query about an installed file does not stop at the toolchain.
+
+### The stage-5 decision: cross-consumption, with a visible boundary
+
+**Nix runs alongside Veron. It does not build on Veron, and Veron does not
+evaluate it.** Users get both `veron` and `nix`. Everything Veron installs is
+traceable to the seed; everything Nix installs is not, and the system says so.
+
+The reasoning is not that Veron-built packages are traceable -- it is that
+**the boundary is visible and countable**. A user can ask which half of their
+system is verified and get an exact answer. That is worth more than a system
+where everything is nominally traceable but the chain quietly passes through a
+`stdenv` and a nixpkgs bootstrap nobody here audited. Two honest halves beat
+one dishonest whole.
+
+The two routes not taken, and why:
+
+- **Veron as a nixpkgs bootstrap** (our stage-4 toolchain replacing
+  `bootstrap-tools`). Best user experience -- `nix build nixpkgs#hello` just
+  works -- and it makes `veron why` worse, not better: the chain would run
+  through `stdenv`, bash setup hooks and a bootstrap we did not audit. True,
+  and far less meaningful than the chain we have.
+- **Veron evaluating nixpkgs recipes and running them itself.** Looks simpler
+  than it is. nixpkgs derivations are meaningless without `stdenv` -- take them
+  without it and the builder is a pointer into machinery we did not import.
+  That is reimplementing setup hooks and phase machinery against a moving
+  target we do not control.
+
+### What makes it work rather than merely coexist
+
+**`veron why` answers for Nix-installed files. It does not fail on them.**
+
+```
+veron why /nix/store/…-firefox-…/bin/firefox
+
+  NOT VERIFIED BY VERON -- installed via nix
+  nixpkgs rev   a3f91c…
+  toolchain     nixpkgs stdenv, not Veron's
+  traceable to  nixpkgs' own bootstrap, which Veron does not audit
+```
+
+Refusing to answer looks like a bug. Answering *not covered, and here is what
+it was built by* is the feature -- same query, honest result.
+
+**The split is countable.**
+
+```
+veron status
+  4,182 files  verified to seed attestation 2e7f04ba91c6
+    611 files  installed via nix -- not verified
+      0 files  unknown
+```
+
+A number that can go down over time, and an `unknown` category that should
+always be zero. Anything neither Veron-built nor Nix-installed is a real
+problem, and this is what surfaces it.
+
+**Store paths are disjoint.** Nix owns `/nix/store`; Veron owns its own prefix.
+No shared `/usr/lib`. That is what makes attribution exact rather than
+heuristic, and it is the part that is painful to retrofit.
+
+### Nix packages use nixpkgs' own libc, not ours
+
+The consequence that decides the shape: **which half owns the C library.**
+
+Veron owns the system libc and the kernel -- that is the entire ladder. If Nix
+packages linked against a glibc our chain built, every nixpkgs substituter
+would be useless, because their binaries are built against nixpkgs' glibc.
+Users would compile everything from source, and the pitch becomes "Nix works
+here, and it compiles."
+
+So Nix packages use **nixpkgs' own glibc from its own store, fully
+self-contained, touching nothing of ours.** Two libcs on the system, each
+owning its own half.
+
+It is uglier, and it is the right trade:
+
+- the binary cache works, so Nix is genuinely usable rather than nominally
+  supported
+- the boundary stays exact -- no Nix package links against a Veron artifact, so
+  no Veron artifact's verification status depends on a Nix one
+- `veron status` stays honest, because there is no partially-verified category
+  to invent a name for
+
+The alternative -- sharing our libc -- buys a smaller disk footprint and costs
+both the cache and the clean split. Not worth it.
+
+### What this leaves open
+
+Whether Veron eventually grows its own package set large enough that Nix
+becomes unnecessary. Cross-consumption is deliberately a *first* step: it makes
+nixpkgs available on day one and shows which packages users actually reach for,
+which is the evidence needed before committing to writing recipes for them.
+The records designed here are the right shape either way.
+
+### The recommendation for the ladder: emit Nix, do not run on it
+
+Implement the model here, and add `veron export --nix` producing `.drv` files
+from the ledger. That gives:
+
+- our records as the source of truth, at rung granularity, with command logs
+  and the attestation
+- a Nix view for anyone who already has that tooling and wants `why-depends`,
+  a store, or a cache
+- no runtime dependency, and no argument about which engine is authoritative
+
+The export is a serialiser over records that already exist. If it later turns
+out that running on Nix is worth it, the records are already the right shape.
 
 ## Order of work
 
