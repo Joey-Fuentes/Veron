@@ -27,6 +27,11 @@ on:
         type: boolean
         required: false
         default: false
+      selfrebuild:
+        description: 'Rebuild the packages INSIDE the guest (slow: ~12 min for two)'
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: stage5-spike-${{ github.ref }}
@@ -311,6 +316,15 @@ jobs:
         run: |
           set -eu
           [ -s boot/Image ] || { echo "VERON-BOOT-SKIP  no kernel artifact"; exit 0; }
+          # The in-guest rebuild is opt-in and off by default: twelve minutes
+          # for two packages under TCG, answering a question G3 already
+          # answers natively in seconds. Passed on the KERNEL CMDLINE so the
+          # image contents -- and therefore its hash -- do not depend on it.
+          SR=""; QEMU_TIMEOUT=900
+          if [ "${{ inputs.selfrebuild }}" = "true" ]; then
+            SR=" veron.selfrebuild=1"; QEMU_TIMEOUT=2400
+          fi
+
           # BOOT A COPY. The gate remounts the root read-write to get scratch
           # space, so booting the published image directly would mutate the
           # artifact whose hash was just recorded -- and the reproducibility
@@ -321,14 +335,14 @@ jobs:
           # against the ext4 image a user would flash, not a 9p share. 9p is
           # still offered as the fallback if virtio-blk or ext4 are absent
           # from this kernel.
-          timeout 2400 qemu-system-aarch64 \
+          timeout ${QEMU_TIMEOUT:-900} qemu-system-aarch64 \
             -M virt -cpu cortex-a57 -smp 4 -m 4096 \
             -nographic -no-reboot -nic none \
             -drive file=spikes/stage5/out/rootfs-boot.img,format=raw,if=virtio \
             -fsdev local,id=vs,path="$PWD/spikes/stage5/sysroot",security_model=none,readonly=on \
             -device virtio-9p-pci,fsdev=vs,mount_tag=veronsysroot \
             -kernel boot/Image -initrd spikes/stage5/out/initramfs.cpio.gz \
-            -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7" \
+            -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7${SR}" \
             > boot.log 2>&1
           echo "  qemu rc=$?"
           set -e
@@ -354,8 +368,13 @@ jobs:
             echo "  That is a reproducibility finding across two genuinely"
             echo "  different environments -- see the diff above and record"
             echo "  each cause in policy/expected-differences.toml."
+          elif grep -q "VERON-SELFREBUILD-SKIP" boot.log; then
+            echo "VERON-SELFHOST-SKIPPED  in-guest rebuild is off by default."
+            echo "  Reproducibility is answered by G3 above, natively and in"
+            echo "  seconds. Re-run with selfrebuild=true for the in-guest"
+            echo "  confirmation -- about 12 minutes for two packages."
           else
-            echo "VERON-SELFHOST-ABSENT  the gate did not run"
+            echo "VERON-SELFHOST-ABSENT  the gate did not run and did not skip"
           fi
 
       - uses: actions/upload-artifact@v4

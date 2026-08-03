@@ -81,11 +81,24 @@ fi
 #
 # The root is mounted read-only, so the rebuild needs writable scratch; the
 # gate mounts its own tmpfs at the same paths the runner used.
-if [ "${VERON_SELFREBUILD:-1}" = 1 ] && [ -x "$ROOT/veron/selfrebuild.sh" ]; then
+# OPT-IN, AND VIA THE KERNEL COMMAND LINE rather than by leaving the script
+# out of the image. If a test option changed what the image CONTAINS, the
+# image hash would depend on it -- and the reproducibility claim is about the
+# artifact, not about how it was exercised. So the payload always ships and
+# the cmdline decides whether to use it.
+#
+# DEFAULT OFF. Rebuilding two small packages under TCG took twelve minutes.
+# That does not scale, and it answers a question the runner already answers
+# faster: G3 builds twice natively. This gate is for occasional confirmation,
+# not for every push.
+SELFREBUILD=0
+grep -q 'veron.selfrebuild=1' /proc/cmdline 2>/dev/null && SELFREBUILD=1
+
+if [ "$SELFREBUILD" = 1 ] && [ -x "$ROOT/veron/selfrebuild.sh" ]; then
     mount -o remount,rw "$ROOT" 2>/dev/null || true
     chroot "$ROOT" /veron/selfrebuild.sh
 else
-    echo "VERON-SELFREBUILD-SKIP  not present or disabled"
+    echo "VERON-SELFREBUILD-SKIP  off by default (boot with veron.selfrebuild=1)"
 fi
 
 echo "VERON-STAGE5-GUEST-DONE"
