@@ -163,6 +163,18 @@ round-trip-verified artifact and `BUDGET_DRIVER` goes empty. Do the
 verification-moves-out-of-the-box refactor first -- it measures the exact
 command list rather than estimating it, and it is a pure refactor.
 
+**MEASURED, AND THE ESTIMATE ABOVE IS TOO OPTIMISTIC AS THE SCRIPTS STAND.**
+`shell-surface.sh` counts what the in-box scripts actually use. The reporting
+refactor is real -- it removes 82% of pipelines and 73% of command
+substitutions, and commands split about four to one -- but what survives is not
+kaem-shaped: 276 conditionals, 209 short-circuits, 161 output redirects, 135
+globs, 71 loops, 21 here-documents, 19 `case`.
+
+Driving only as far as **busybox** is a different and much smaller question,
+and is the plan. See [`spikes/builder/DESIGN.md`](spikes/builder/DESIGN.md) for
+the full measurement, the kaem comparison, the language decision and the
+syscall inventory.
+
 **A disassembler of our own.** See the verification chain above: it is a
 replacement for binutils and LLVM in the round trip, not a second opinion, and
 it is sound only because those two audited the root first. Source only, never
@@ -170,7 +182,9 @@ committed -- it is derived like everything else above the seed.
 
 **A hand-written builder OS.** The end state of the item above: our own shell
 and our own tools, in this tree, so that the box is built entirely out of
-things this project wrote. busybox goes when that lands.
+things this project wrote. Design, including a bare-metal ARM64 image that
+boots under QEMU and on hardware, is in
+[`spikes/builder/DESIGN.md`](spikes/builder/DESIGN.md).
 
 **READ THAT LAST SENTENCE CORRECTLY, IN BOTH DIRECTIONS.**
 
