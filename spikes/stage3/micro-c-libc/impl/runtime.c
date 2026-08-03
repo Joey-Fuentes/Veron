@@ -432,7 +432,32 @@ char* realpath(char* path, char* resolved)
 	return resolved;
 }
 
-int mprotect(void* addr, unsigned long len, int prot) { return 0; }
+/* mprotect, FOR REAL. This was `return 0;` -- a stub that reported success
+ * and changed nothing.
+ *
+ * tcc's -run allocates with tcc_malloc, which gives read-write pages, and then
+ * calls protect_pages -> mprotect to make the text executable before jumping
+ * to it. With the stub the pages stayed non-executable, mprotect said it had
+ * worked, and the jump segfaulted with no diagnostic at all. The note above
+ * this block had already predicted it: "only needed to run JIT-compiled code
+ * in memory" -- which is exactly what -run is.
+ *
+ * That mattered more than one flag: tcc's own test1, test2, test3, hello-run
+ * and vla_test-run are all `tcc -run`, so the whole of its self-hosting test
+ * suite was unreachable behind this one line.
+ *
+ * aarch64 Linux mprotect is syscall 226. The argument shuffle is m2libc's
+ * idiom: micro-c puts the nth argument at x17-8n. */
+int mprotect(void* addr, unsigned long len, int prot)
+{
+	asm("mov_x0,x17" "sub_x0,x0,24" "ldr_x0,[x0]"
+	    "mov_x2,x0"
+	    "mov_x0,x17" "sub_x0,x0,16" "ldr_x0,[x0]"
+	    "mov_x1,x0"
+	    "mov_x0,x17" "sub_x0,x0,8" "ldr_x0,[x0]"
+	    "mov_x8,226"
+	    "svc_0");
+}
 void* freopen(char* f, char* m, void* s) { return NULL; }
 int sem_init(void* s, int p, int v) { return 0; }
 int sem_wait(void* s) { return 0; }

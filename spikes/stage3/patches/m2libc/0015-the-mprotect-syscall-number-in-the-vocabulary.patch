@@ -1,0 +1,33 @@
+mov_x8,226 -- the mprotect syscall number.
+
+M1 ASSEMBLES FROM A FIXED VOCABULARY, one DEFINE per immediate, and 226 was
+not in it. The runtime needs it because mprotect had been a stub:
+
+    int mprotect(void* addr, unsigned long len, int prot) { return 0; }
+
+which reported success and changed nothing. tcc's -run allocates with
+tcc_malloc -- read-write pages -- and then calls protect_pages -> mprotect to
+make the text executable before jumping to it. With the stub the pages stayed
+non-executable, mprotect said it had worked, and the jump segfaulted with no
+diagnostic.
+
+THAT ONE LINE HELD BACK tcc's WHOLE SELF-HOSTING SUITE. test1, test2, test3,
+hello-run and vla_test-run are all `tcc -run`, so none of them could be
+attempted. With this and a real mprotect:
+
+    mc-tcc -run 'int main(void){return 7;}'      before: SIGSEGV   after: 7
+    mc-tcc -run hello.c                          prints "hello from -run"
+
+THE ENCODING IS movz x8,#imm = 0xd2800008 | (imm << 5), little-endian. Checked
+against four entries already in the table rather than asserted:
+
+    mov_x8,63    computed e80780d2   in the table e80780d2
+    mov_x8,64    computed 080880d2   in the table 080880d2
+    mov_x8,214   computed c81a80d2   in the table c81a80d2
+    mov_x8,260   computed 882080d2   in the table 882080d2
+    mov_x8,226   computed 481c80d2   <- added
+
+--- a/aarch64/aarch64_defs.M1
++++ b/aarch64/aarch64_defs.M1
+@@ -1101,0 +1102 @@
++DEFINE mov_x8,226 481c80d2
