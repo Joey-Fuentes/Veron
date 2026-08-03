@@ -86,9 +86,16 @@ jobs:
           set -eu
           mkdir -p report
           INVENTORY=report/inventory.txt \
-          MANIFEST=nonexistent.tsv \
           TOPN=60 \
             sh spikes/stage4/bridge/sysroot-inventory.sh lfs
+
+      - name: 'ELF anatomy: /tools -- the chapter-5 cross toolchain'
+        run: |
+          set -eu
+          INVENTORY=report/anatomy-tools.txt \
+          ANATOMY_DIR=lfs/tools \
+          TOPN=1 MINDUP=999999999999 \
+            sh spikes/stage4/bridge/sysroot-inventory.sh lfs/tools || true
 
       - name: 'Inventory the prefix tree too'
         run: |
@@ -131,6 +138,15 @@ jobs:
           echo "==================== TRIPLETS =============================="
           sed -n '/TRIPLET DUPLICATION/,/DEBUG INFO/p' \
             report/inventory.txt 2>/dev/null || true
+          echo "============ ELF ANATOMY: /usr/libexec (the 2.3 GB) ========"
+          sed -n '/ELF ANATOMY/,/BYTE-IDENTICAL/p' \
+            report/inventory.txt 2>/dev/null || true
+          echo "==================== DUPLICATED CONTENT ===================="
+          sed -n '/BYTE-IDENTICAL/,/STATIC LIBRARIES/p' \
+            report/inventory.txt 2>/dev/null || true
+          echo "==================== /tools ANATOMY ========================"
+          sed -n '/ELF ANATOMY/,/BYTE-IDENTICAL/p' \
+            report/anatomy-tools.txt 2>/dev/null || true
           if [ -s report/trim.txt ]; then
             echo "==================== TRIM =================================="
             tail -20 report/trim.txt

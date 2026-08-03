@@ -152,7 +152,7 @@ if [ -x "$RE" ]; then
         dsz=$(awk -F'\t' '{s+=$1} END{print s+0}' "$TMP.dbg")
         dct=$(wc -l < "$TMP.dbg")
         emit "    $dct large files carry .debug_* sections, $(human "$dsz") of file size"
-        emit "    (file size, not section size -- run `strip` to get the true delta)"
+        emit '    (file size, not section size -- see the ELF ANATOMY section)'
         head -15 "$TMP.dbg" | while IFS="$(printf '\t')" read -r sz f; do
             printf '      %-12s %s\n' "$(human "$sz")" "$f" | tee -a "$OUT"
         done
@@ -164,18 +164,74 @@ else
     emit "    stripped norm of 30-50 MB is the signature regardless."
 fi
 
+# ---------------------------------------------------------------- anatomy
+hr "ELF ANATOMY -- DEBUG vs CODE, EXACTLY"
+emit "  Section sizes from readelf, so this is the real strippable number"
+emit "  rather than an inference from file size. If a large binary turns out"
+emit "  NOT to be mostly .debug_*, that is a different and more interesting"
+emit "  problem than 'nobody ran strip'."
+emit ""
+ANAT=${ANATOMY_DIR:-$ROOT/usr/libexec}
+emit "  scanning: $ANAT (override with ANATOMY_DIR)"
+emit ""
+printf '    %-46s %10s %10s %10s %6s\n' FILE TOTAL DEBUG ALLOC 'DBG%' | tee -a "$OUT"
+if [ -x "$RE" ]; then
+    find "$ANAT" -type f -size +${ANATOMY_MINK:-1000}k 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
+        # -W for wide output so long section names are not truncated; strip the
+        # "[nn]" index column so awk's field numbering is stable.
+        "$RE" -S -W "$f" 2>/dev/null | sed 's/\[[ 0-9]*\]//' | awk -v file="$f" '
+            # strtonum() is a GAWK EXTENSION. mawk (Ubuntu default) and
+            # busybox awk both lack it, and this has to run in the box where
+            # busybox is all there is -- so convert by hand.
+            function hex2dec(s,   i, c, d, v) {
+                s = tolower(s); v = 0
+                for (i = 1; i <= length(s); i++) {
+                    d = index("0123456789abcdef", substr(s, i, 1)) - 1
+                    if (d >= 0) v = v * 16 + d
+                }
+                return v
+            }
+            NF >= 6 && $3 ~ /^[0-9a-f]+$/ {
+                name = $1; size = hex2dec($5); flags = $7
+                total += size
+                if (name ~ /^\.debug/ || name ~ /^\.zdebug/) dbg += size
+                else if (flags ~ /A/) alloc += size
+                else other += size
+            }
+            END {
+                pct = (total ? dbg * 100 / total : 0)
+                nm = file
+                if (length(nm) > 46) nm = "..." substr(nm, length(nm) - 42)
+                printf "    %-46s %10.1f %10.1f %10.1f %5.1f%%\n",
+                    nm, total/1048576, dbg/1048576, alloc/1048576, pct
+            }' | tee -a "$OUT"
+    done
+else
+    emit "    readelf unavailable -- skipped"
+fi
+
 # ---------------------------------------------------------------- dupes
 hr "BYTE-IDENTICAL FILES"
-emit "  Same content at two paths. Free to detect and often free to hardlink."
-MAN=${MANIFEST:-/out/manifest.tsv}
-if [ -s "$MAN" ]; then
-    awk -F'\t' 'NF>=4 && $4 != "" { c[$4]++; s[$4]=$3; if (c[$4]==2) dup[$4]=1 }
-                END { t=0; n=0; for (h in dup) { t += s[h]*(c[h]-1); n++ }
-                      printf "    %d duplicated hashes, %d wasted bytes\n", n, t }' "$MAN" \
-      | tee -a "$OUT"
-else
-    emit "    no manifest.tsv -- skipped (it carries the hashes already)"
-fi
+emit "  Same content at two paths -- across /tools, /usr and the triplets."
+emit "  Hashed here directly rather than read from manifest.tsv, because the"
+emit "  manifest only covers /usr and /lib and so cannot see cross-tree"
+emit "  duplication at all. That was a real gap: the previous run skipped this"
+emit "  section entirely and the duplicated libpython3.14.a had to be spotted"
+emit "  by eye in the largest-files list."
+: > "$TMP.hashes"
+MINDUP=${MINDUP:-1048576}
+awk -F'\t' -v m="$MINDUP" '$1 >= m {print}' "$TMP.rows" \
+  | while IFS="$(printf '\t')" read -r sz f; do
+        printf '%s\t%s\t%s\n' "$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)" "$sz" "$f"
+    done >> "$TMP.hashes"
+awk -F'\t' '
+{ c[$1]++; s[$1]=$2; if (c[$1] > 1) { dup[$1]=1; paths[$1] = paths[$1] "\n      " $3 } else first[$1]=$3 }
+END {
+    t = 0; n = 0
+    for (h in dup) { t += s[h] * (c[h] - 1); n++ }
+    printf "    %d duplicated contents, %.1f MB reclaimable by hardlink\n", n, t/1048576
+    for (h in dup) printf "    %.1f MB x%d\n      %s%s\n", s[h]/1048576, c[h], first[h], paths[h]
+}' "$TMP.hashes" | head -40 | tee -a "$OUT"
 
 # ---------------------------------------------------------------- statics
 hr "STATIC LIBRARIES AND SHARE"
