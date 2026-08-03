@@ -70,3 +70,5 @@ unsigned long sf_sub(unsigned long a, unsigned long b);
 unsigned long sf_mul(unsigned long a, unsigned long b);
 unsigned long sf_div(unsigned long a, unsigned long b);
 unsigned long sf_neg(unsigned long a);
+long sf_to_int(unsigned long a, int is_unsigned);
+unsigned long sf_from_int(long v, int is_unsigned);

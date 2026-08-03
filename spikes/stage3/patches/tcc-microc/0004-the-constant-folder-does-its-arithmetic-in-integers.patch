@@ -24,14 +24,40 @@ after the value reached fmt_fp intact and every other float path was correct:
     literal 5.008      = 5.008001   (expect 5.008000)
     snprintf %.6f      = 5.008001   (expect 5.008000)
 
-WHAT THE CHANGE IS. Under LDOUBLE_SIZE == 8 the four binary operations go
-through sf_add, sf_sub, sf_mul and sf_div in the bootstrap runtime, which take
-and return IEEE bit patterns and touch no float type at all. Everything else --
-the comparisons, TOK_NEG, the divide-by-zero branch, the non-constant path --
-is untouched, and the whole block is guarded so a tcc built normally keeps the
+WHAT THE CHANGE IS. Under LDOUBLE_SIZE == 8, every folding step that is
+really a float operation goes through the bootstrap runtime, which works on
+IEEE bit patterns and touches no float type at all:
+
+    + - * /        sf_add, sf_sub, sf_mul, sf_div        gen_opif
+    unary minus    sf_neg                                gen_opif, TOK_NEG
+    float -> int   sf_to_int                             gen_cast, constant
+    int -> float   sf_from_int                           gen_cast, constant
+
+UNARY MINUS AND THE CASTS WERE THE SECOND HALF, and leaving them out left a
+compiler that looked nearly right:
+
+    1.0     3ff0000000000000   correct
+    -1.0    c010000000000000   that is -4.0
+    -3.5    bff4000000000000   that is -1.25
+    0.0 - 1.0                  correct all along, it went through sf_sub
+
+so every NEGATIVE float constant was wrong while every positive one was right.
+And a cast is a float operation too --
+
+    vtop->c.i = (int64_t)vtop->c.ld;          gen_cast, constant case
+    vtop->c.ld = vtop->c.i;
+
+-- so `(int)-1.0` folded to 0 and `(unsigned)3.5` to 0 while the RUNTIME
+conversion of the same values was correct, which is a confusing shape to read
+from a test failure. tests2 134_double_to_signed is exactly this.
+
+The comparisons, the divide-by-zero branch and the non-constant path are
+untouched, and every block is guarded so a tcc built normally keeps the
 hardware arithmetic.
 
-MEASURED AGAINST glibc, bit for bit: 4,798,676 of 4,798,676 identical. Every
+MEASURED AGAINST glibc, bit for bit: 4,798,676 of 4,798,676 for the
+arithmetic and a further 611,764 of 611,764 for the two integer conversions.
+Every
 pairing of a set covering zero, both signed zeroes, one, the smallest
 subnormal, the largest normal, DBL_EPSILON, 2^53 and the powers either side;
 600,000 random pairs across the whole finite range; 300,000 subnormal-heavy
@@ -58,16 +84,18 @@ MEASURED, EITHER SIDE, ON A CLEAN CHECKOUT:
                                       0.1, 1/3, 1e-300, %.17g, %.0f of 2.5,
                                       DBL_MAX in full and 4.9e-324
     difftest amd64 101, aarch64 103, corpus 419 of 426   unchanged
-    tests2 97 of 105, float 0                            unchanged
+    tests2                            97 -> 98 of 105, float 0
+    134_double_to_signed              now passes
     self-compilation  gen2.o == gen3.o == gen4.o         holds
     archive -> 5, dynamic output 2875 bytes              unchanged
 
 --- a/tccgen.c
 +++ b/tccgen.c
-@@ -2568,6 +2568,13 @@ void gen_negf(int op)
- #endif
+@@ -20,6 +20,14 @@
  
- /* generate a floating point operation with constant propagation */
+ #define USING_GLOBALS
+ #include "tcc.h"
++
 +#if LDOUBLE_SIZE == 8
 +/* NAMED, AND AT FILE SCOPE. An anonymous union declared inside a nested block
 + * with three declarators is not a shape micro-c accepts -- it answered
@@ -75,10 +103,18 @@ MEASURED, EITHER SIDE, ON A CLEAN CHECKOUT:
 +union sfbits { double d; unsigned long u; };
 +#endif
 +
+ #include <math.h>
+ #include <float.h>
+ 
+@@ -2568,6 +2576,7 @@ void gen_negf(int op)
+ #endif
+ 
+ /* generate a floating point operation with constant propagation */
++
  static void gen_opif(int op)
  {
      int c1, c2, i, bt;
-@@ -2577,6 +2584,11 @@ static void gen_opif(int op)
+@@ -2577,6 +2586,11 @@ static void gen_opif(int op)
      volatile
  #endif
      long double f1, f2;
@@ -90,7 +126,7 @@ MEASURED, EITHER SIDE, ON A CLEAN CHECKOUT:
  
      v1 = vtop - 1;
      v2 = vtop;
-@@ -2602,6 +2614,30 @@ static void gen_opif(int op)
+@@ -2602,6 +2616,30 @@ static void gen_opif(int op)
             NaN or infinity) (ANSI spec) */
          if (!(ieee_finite(f1) || !ieee_finite(f2)) && !CONST_WANTED)
              goto general_case;
@@ -121,3 +157,93 @@ MEASURED, EITHER SIDE, ON A CLEAN CHECKOUT:
          switch(op) {
          case '+': f1 += f2; break;
          case '-': f1 -= f2; break;
+@@ -2627,8 +2665,23 @@ static void gen_opif(int op)
+             f1 /= f2;
+             break;
+         case TOK_NEG:
++#if LDOUBLE_SIZE == 8
++            /* `-f1` IS A FLOAT OPERATION TOO, and leaving it out of the
++             * integer path made every negative float constant wrong while
++             * every positive one was right:
++             *      1.0   3ff0000000000000   correct
++             *     -1.0   c010000000000000   that is -4.0
++             *     -3.5   bff4000000000000   that is -1.25
++             * `0.0 - 1.0` was correct all along, because subtraction already
++             * went through sf_sub. */
++            sfa.d = (double)f1;
++            sfr.u = sf_neg(sfa.u);
++            f1 = sfr.d;
++            goto unary_result;
++#else
+             f1 = -f1;
+             goto unary_result;
++#endif
+         case TOK_EQ:
+             i = f1 == f2;
+ 	make_int:
+@@ -3275,6 +3328,10 @@ static void gen_cast_s(int t)
+ /* cast 'vtop' to 'type'. Casting to bitfields is forbidden. */
+ static void gen_cast(CType *type)
+ {
++#if LDOUBLE_SIZE == 8
++    union sfbits sfa;
++    union sfbits sfr;
++#endif
+     int sbt, dbt, sf, df, c;
+     int dbt_bt, sbt_bt, ds, ss, bits, trunc;
+ 
+@@ -3323,6 +3380,22 @@ error:
+                 vtop->c.ld = vtop->c.d;
+ 
+             if (df) {
++#if LDOUBLE_SIZE == 8
++                /* and the other direction, for the same reason */
++                if (sbt_bt == VT_LLONG) {
++                    if ((sbt & VT_UNSIGNED) || !(vtop->c.i >> 63))
++                        sfr.u = sf_from_int((long)vtop->c.i, 1);
++                    else
++                        sfr.u = sf_from_int((long)vtop->c.i, 0);
++                    vtop->c.ld = sfr.d;
++                } else if(!sf) {
++                    if ((sbt & VT_UNSIGNED) || !(vtop->c.i >> 31))
++                        sfr.u = sf_from_int((long)(uint32_t)vtop->c.i, 1);
++                    else
++                        sfr.u = sf_from_int((long)(int)(uint32_t)vtop->c.i, 0);
++                    vtop->c.ld = sfr.d;
++                }
++#else
+                 if (sbt_bt == VT_LLONG) {
+                     if ((sbt & VT_UNSIGNED) || !(vtop->c.i >> 63))
+                         vtop->c.ld = vtop->c.i;
+@@ -3334,6 +3407,7 @@ error:
+                     else
+                         vtop->c.ld = -(long double)-(uint32_t)vtop->c.i;
+                 }
++#endif
+ 
+                 if (dbt == VT_FLOAT)
+                     vtop->c.f = (float)vtop->c.ld;
+@@ -3343,10 +3417,23 @@ error:
+                 vtop->c.i = (vtop->c.ld != 0);
+             } else {
+                 if(sf) {
++#if LDOUBLE_SIZE == 8
++                    /* A CAST IS A FLOAT OPERATION TOO. These two lines are
++                     * float-to-integer conversions written in C, so a compiler
++                     * without floating point folded `(int)-1.0` to 0 and
++                     * `(unsigned)3.5` to 0 while the runtime conversion was
++                     * right. sf_to_int truncates toward zero, in integers. */
++                    sfa.d = (double)vtop->c.ld;
++                    if (dbt & VT_UNSIGNED)
++                        vtop->c.i = (uint64_t)sf_to_int(sfa.u, 1);
++                    else
++                        vtop->c.i = (uint64_t)sf_to_int(sfa.u, 0);
++#else
+                     if (dbt & VT_UNSIGNED)
+                         vtop->c.i = (uint64_t)vtop->c.ld;
+                     else
+                         vtop->c.i = (int64_t)vtop->c.ld;
++#endif
+                 }
+                 else if (sbt_bt == VT_LLONG || (PTR_SIZE == 8 && sbt == VT_PTR))
+                     ;
