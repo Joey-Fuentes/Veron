@@ -18,6 +18,12 @@ musl 1.2.5 at its pinned sha  1349 / 1349 sources compile
 self-compilation              gen2.o == gen3.o == gen4.o, byte-identical
 ```
 
+**AND IT BUILDS gcc.** With `EXPERIMENT-zzzzc` the stage-4 ladder gets past
+rung 6 -- musl, GNU make, binutils, gmp/mpfr/mpc and a working gcc 4.7.4, all
+from a compiler grown out of a hand-written assembler. Rung 6 stood as the
+frontier for many rounds; it was one preprocessor bug, described under defect
+4 and defect 12 below.
+
 **IT IS SELF-HOSTING.** All five steps hold. The list is kept because this file
 spent a long time saying they did not:
 
@@ -44,25 +50,40 @@ ladder with mc-tcc substituted for the reference compiler:
 ```
 0    compiler runs, libtcc1.a             ok
 1    freestanding compile+link            ok
-2    musl, no make                        ok
+2    musl, no make                        ok      1349 of 1349 sources
 3    hosted program, real libc            ok
 3.5  GNU make                             ok
 4    binutils                             ok
 4.5  make rebuilt with real binutils      ok
 5    gmp / mpfr / mpc                     ok
-6    gcc 4.7.4 by tcc                     FAIL
-7..16                                     skip
+6    gcc 4.7.4 by tcc                     ok      <-- CLOSED
+7..                                       climbing
 ```
 
-Rung 6 is the frontier and it is further than "FAIL" suggests: gcc 4.7.4
-CONFIGURES and `xgcc` LINKS. What fails is that the gcc mc-tcc just built
-segfaults compiling libgcc --
+**RUNG 6 IS CLOSED, AND IT WAS ONE BUG.** For many rounds this section read
+that the gcc mc-tcc builds is miscompiled, with a large unexplored surface
+behind it and "possibly several defects wearing one hat". It was one:
+`EXPERIMENT-zzzzc`, the `#if` that expanded a macro only one level. That
+compiled `rel->r_addend = addend;` out of tccelf.c, so every static
+initialiser of the form `pointer = array + N` aimed at element 0 -- and gcc's
+builtin registration is table-driven, which is exactly how you reach a
+`gcc_unreachable()` at `<built-in>:0:0` before a line of source is read. Both
+symptoms had the same cause:
 
 ```
-<built-in>:0:0: internal compiler error: Segmentation fault
+xgcc -E -dM -            <built-in>:0:0: ICE: Segmentation fault
+xgcc -c conftest.c       <built-in>:0:0: ICE: in ?, at
+                           config/aarch64/aarch64-builtins.c:944
 ```
 
--- which is a miscompiled gcc, not a failure to produce one.
+**A prediction that was wrong, recorded because the reasoning is instructive.**
+With the addend fixed, the object diff showed every remaining divergence from
+a gcc-built tcc was floating point -- 128 of 131 in `src/math` -- so the ICE
+was predicted to be float-related, and `aarch64-builtins.c` registering
+floating-point builtin types made that read well. It was the wrong inference
+from a true measurement: the correct reading was that the ONE non-float
+divergence already found and fixed was the whole story. A residual set does
+not tell you where the last fault was, only where the next one might be.
 
 **The heap corruption that dominated this file is closed** -- see "The
 corruption, and the measurement that was lying about it" below. So is the
@@ -1504,11 +1525,12 @@ arithmetic in integers -- because micro-c has none and the folder does
 What follows is the current inventory, separated by kind. These have been
 conflated before, and they do not cost the same to fix.
 
-### Compiler defects -- twelve found, seven closed
+### Compiler defects -- twelve found, eight closed
 
-Numbered in the order they were found, not by severity. 5, 6, 7, 8, 9, 10 and
-12 are closed; 1, 2, 3, 4 and 11 are open, and two of those five cannot affect
-the ladder at all.
+Numbered in the order they were found, not by severity. 4, 5, 6, 7, 8, 9, 10
+and 12 are closed; 1, 2, 3 and 11 are open, and **three of those four cannot
+affect the ladder at all** -- 1 and 2/3 because stage 4 is `-static` end to
+end, and 11 because the construct appears zero times in tcc's source.
 
 **Where a defect can and cannot reach.** micro-c compiles tcc, so a micro-c
 defect changes the mc-tcc BINARY, and mc-tcc then builds musl, binutils,
@@ -1658,110 +1680,34 @@ bracket; they do not name -- this file has paid for reading them otherwise.
 `x0 = 0`, at `pc=0x4d4e34` -- only against real glibc. **Plausibly the same
 defect as 2**, which would make this list seven.
 
-**4. Rung 6: the gcc mc-tcc builds is miscompiled. STILL OPEN**, and now
-reduced to something much smaller than "gcc miscompiles libgcc".
+**4. Rung 6: the gcc mc-tcc builds is miscompiled. CLOSED** -- by defect 12,
+not by anything aimed at it.
 
-**The smallest failing invocation takes no source at all.** `build.log` shows
-xgcc dying on
+It stood for many rounds as "a large unexplored surface, and possibly several
+defects wearing one hat". It was one defect, and not a codegen defect at all:
+the `#if` that expanded a macro only one level compiled the addend store out
+of `tccelf.c`, so every `pointer = array + N` static initialiser aimed at
+element 0. gcc's builtin registration is table-driven, which is how that
+reaches a `gcc_unreachable()` during initialisation, before any source is
+read.
 
-```
-echo | /work/bld/./gcc/xgcc -B/work/bld/./gcc/ -E -dM -
-<built-in>:0:0: internal compiler error: Segmentation fault
-```
-
-Empty input, preprocess-only, dump macros. No codegen, no libgcc, no
-conftest. Whatever is wrong is wrong before gcc reads a line.
-
-**Two messages, one fault, and they live in different files** -- which is why
-the first version of the ICE window printed nothing:
+Two symptoms, one cause, and they lived in different files -- which is why the
+first version of the ICE window printed nothing:
 
 ```
-build.log            internal compiler error: Segmentation fault
-                       -- no FILE:LINE at all
-libgcc/config.log    internal compiler error: in ?, at
+build.log            <built-in>:0:0: ICE: Segmentation fault
+                       -- from `echo | xgcc -E -dM -`, EMPTY INPUT
+libgcc/config.log    <built-in>:0:0: ICE: in ?, at
                        config/aarch64/aarch64-builtins.c:944
 ```
 
-Both are `<built-in>:0:0`. Only one carries a source location, and it is in a
-file the diagnostic never opened. Fixed: it now searches every `config.log`
-under `/work/bld` as well as `build.log`, and re-runs the `-E -dM` invocation
-directly with `-v` so the next log shows how far gcc gets before it dies.
-
-**THE SOURCE IS NOW PUBLISHABLE ON ITS OWN.**
-`.github/workflows/publish-gcc47-backport.yml` fetches the two gcc tarballs,
-runs the same `backport-aarch64.sh` the ladder runs, and uploads the derived
-`gcc/config/aarch64/` directory plus the two artefacts the box applies. It
-builds nothing and takes minutes rather than hours.
-
-This exists because the tree rung 6 compiles is **derived, not downloadable**.
-gcc 4.7.4 has zero aarch64 support -- `stock 4.7.4: 0 aarch64 mentions in
-config.gcc` -- so the backend is transplanted from 4.8.5 at build time. Asking
-for "the file from 4.8.5" is nearly right and not exactly right, and "nearly"
-is how a round gets spent reading a line that moved.
-
-Both jobs print `sha256sum` of the two derived artefacts, so the logs can be
-compared directly rather than the equivalence being asserted here.
-
-**What the object diff says about where to look.** mc-tcc's integer codegen is
-byte-identical to a gcc-built tcc across 1175 musl objects; every one of the
-131 divergences is floating point. So the gcc mc-tcc builds differs from the
-gcc the control builds mostly in float-shaped code -- and `aarch64-builtins.c`
-is where gcc registers SIMD and floating-point builtin types. The eight-byte
-`long double` the `tcc-microc` series gives mc-tcc is the first thing to
-suspect, ahead of any new integer defect.
-
-**A correction about how this was nearly mis-read.** A run reaching gcc 15 was
-taken as evidence that rung 6 had been fixed by the defect 5/10 work. It was
-`stage3-to-stage4-reference` -- the arm whose tcc is built by the HOST's
-musl-gcc, which proves the ladder and says nothing about the seed. The last
-actual mc-tcc data point is still rung 3, from before the narrow-unsigned fix.
-Nothing has washed out on the mc-tcc side yet.
-
-**CORRECTED, AND THE CORRECTION IS THE USEFUL PART. It is not a segfault.**
-This file and the README have said "segfaults compiling libgcc" for several
-rounds. The first run that kept its build logs shows something far narrower:
-
-```
-<built-in>:0:0: internal compiler error: in ?, at config/aarch64/aarch64-builtins.c:944
-```
-
-Three things follow, and none of them were visible before:
-
-- **It is a named source location**, not an unattributed fault. `aarch64-builtins.c`
-  is one of the files the 4.8.5 backport brings in, so the failing code is in
-  the borrowed backend rather than anywhere in gcc's shared middle end.
-- **The input is `int main(){return 0;}`** -- libgcc's configure probe, not
-  libgcc itself. The reported location is `<built-in>:0:0`, so it fails during
-  builtin setup, before a line of real source is read. Anything that reaches
-  the compiler at all reaches this.
-- **`in ?` means the function name printed empty.** gcc's `fancy_abort`
-  substitutes `?` when its `__FUNCTION__` argument is NULL, so the ICE message
-  is itself likely carrying a second mc-tcc defect. Recorded, not chased.
-
-"Miscompiled gcc, large unexplored surface" was true and unusable. A
-deterministic ICE at one line, on the empty program, is a starting point.
-
-**THE SOURCE LINE IS NOW PRINTED, from our own tree.** The ICE names
-`FILE:LINE`, and that file is the tree we BUILD -- 4.7.4 plus the aarch64
-backport -- sitting under `/work/src` in the box the whole time. It looked like
-it needed gcc 4.8.5 fetched from outside purely because nothing printed it.
-`rungs.sh` now finds the file the ICE names, prints a 34-line window with the
-failing line marked, and recovers the ENCLOSING FUNCTION by reading the text --
-which is the one thing `in ?` could not tell us. Searched for rather than
-hardcoded, so it survives the line moving or a different ICE appearing.
-
-(For the record on provenance: `aarch64-builtins.c` does not exist in 4.7.4 --
-that release has zero aarch64 support -- so it arrives as a *new* file from the
-4.8.5 donor and the changed-files patch never touches it. Our patching is real,
-it just lands elsewhere.)
-
-**How it was found is the point.** The job's own failure window printed the
-tails of eleven `config.log` files, every one ending `configure: exit 0`. The
-real message was in `bld/aarch64-unknown-linux-gnu/libgcc/config.log`, which
-the window never reached and which existed on the runner the whole time. It is
-in the `buildlogs-stage0-stage4-complete` artifact, which is why this entry
-could be corrected at all -- the fourth time the harness, not the compiler,
-has been the thing standing in the way.
+**`in ?` was never chased and did not need to be.** gcc's `fancy_abort`
+prints `?` when its `__FUNCTION__` argument is NULL, which looked like a
+second mc-tcc defect sitting on top of the first. It may still be one. But the
+fault underneath was found by comparing object bytes, not by reading the ICE,
+and the source line at 944 was never needed. Recorded so the next reader does
+not spend a round on it: **an ICE naming its own location is not necessarily
+the cheapest way in.**
 
 **5. Case 110. CLOSED** (`EXPERIMENT-zzzza`, plus `m2libc/0017`). Three things
 were missing and only the first is what the case probes: a constant's TYPE (the
@@ -1922,7 +1868,15 @@ very next line, `if (SHT_RELX != SHT_RELA && addend) tcc_error_noabort(...)`,
 never fired: the compiled code agreed the two were equal, and only the
 preprocessor did not.
 
-**Every case suite in this tree was green while it was live.**
+**Every case suite in this tree was green while it was live** -- 108/110
+differential, 420 of 426 corpus, `twelve.sh` 12 of 12, tests2, and the
+`gen2 == gen3 == gen4` fixpoint.
+
+**AND IT IS THE DEFECT THAT WAS HOLDING RUNG 6.** Fixing it took the ladder
+past gcc 4.7.4 -- the frontier this file had described for many rounds as a
+miscompiled gcc with a large unexplored surface behind it. One four-line
+change in the preprocessor's `#if` evaluator, found by comparing object bytes
+against a gcc-built control.
 
 ### The instrument that found it, and what it is worth
 
@@ -1951,13 +1905,17 @@ which is expected and declared: micro-c has no floats at all, and the
 So **mc-tcc's integer codegen is byte-identical to a gcc-built tcc across 1175
 real objects.** Anything outside the float set is a defect.
 
-**AND THAT NARROWS RUNG 6.** The control tcc builds gcc 4.7.4; mc-tcc's gcc
-ICEs during builtin initialisation. If the two compilers agree on every
-non-float byte of 1175 objects, the difference between the gcc they produce is
-concentrated in floating point -- and `aarch64-builtins.c` is where gcc
-registers SIMD and floating-point builtin types. An eight-byte `long double`
-in the compiler that built gcc is the first thing to suspect, not a new
-integer codegen defect.
+**AND IT CLOSED RUNG 6.** The one non-float divergence it found -- a single
+byte in `.rela.data.ro` -- was the whole of what had been recorded as a
+miscompiled gcc. Every other instrument in the tree was green.
+
+**A caution about how to read the residual, because it was misread once.** With the addend fixed, every remaining
+divergence is floating point, and that was taken as evidence the ICE must be
+float-related too -- `aarch64-builtins.c` registers floating-point builtin
+types, so it read well. It was wrong. The correct reading was that the one
+non-float divergence *already fixed* was the cause, and the residual set said
+nothing about it. **A residual tells you where the NEXT fault might be, not
+where the last one was.**
 
 ### Latent -- recorded so they are not rediscovered
 

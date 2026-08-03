@@ -42,7 +42,7 @@ Everything below lives under [`spikes/`](./spikes) and is a **feasibility tracer
 | `stage1-as` | two-pass numeric label resolver, written in *stage 0's own language* | **works** — gives the ladder unbounded multi-character labels |
 | `stage2-pico-c` | C-subset compiler, written in *stage 1's language* | **works** — 220 KB of upstream C in, 81,893 instructions out |
 | `stage3` | M2-Planet, compiled by stage 2. There is no separately-written stage 3 — M2-Planet *is* stage 3. | **hand-off proven** — our build reproduces upstream's M2-Planet **byte for byte**, stable over five generations |
-| `stage4` | everything tcc is used to build: gcc, a userland, a kernel, a boot | **works** — `tcc → 4.7.4 → 10.2.0 → 15.2.0 → linux 7.1.5 → boot`, 61 min, one job. With **mc-tcc substituted** for the reference compiler the same ladder reaches rung 6: musl, GNU make, binutils, gmp/mpfr/mpc all build, and gcc 4.7.4 configures and links `xgcc` before that gcc miscompiles libgcc |
+| `stage4` | everything tcc is used to build: gcc, a userland, a kernel, a boot | **works** — `tcc → 4.7.4 → 10.2.0 → 15.2.0 → linux 7.1.5 → boot`, 61 min, one job. With **mc-tcc substituted** for the reference compiler the same ladder now builds gcc 4.7.4 and climbs past it: musl (1349 of 1349 sources), GNU make, binutils, gmp/mpfr/mpc, and a working gcc 4.7.4 — rung 6, which stood as the frontier for many rounds, is closed |
 
 The stage-2 → stage-3 hand-off is the sharpest single result:
 
@@ -133,12 +133,24 @@ not micro-c's convention. `d8`–`d15` are still outstanding and recorded as
 such: M1's macro vocabulary has no d-register load or store at all.
 
 **The chain is continuous from hand-read assembly to a self-hosting C
-compiler that builds musl, GNU make, binutils and gmp/mpfr/mpc.** What stands
-between here and a booting GNU/Linux built entirely this way is rung 6 — the
-gcc mc-tcc produces fails building libgcc with a deterministic ICE at
-`config/aarch64/aarch64-builtins.c:944`, on the empty program, during builtin
-setup — not the segfault this line used to claim — plus re-applying the invariants, which
-the spike track suspends every one of.
+compiler that builds musl, GNU make, binutils, gmp/mpfr/mpc and gcc 4.7.4.**
+Rung 6 — the gcc mc-tcc produces failing to build libgcc, which stood as the
+frontier for many rounds and was recorded as "a large unexplored surface,
+possibly several defects wearing one hat" — was **one bug**, and not a codegen
+bug: a preprocessor `#if` that expanded a macro only one level, which compiled
+the addend store out of `tccelf.c` and made every `pointer = array + N` static
+initialiser aim at element 0. gcc's builtin registration is table-driven, so
+it died during initialisation before reading a line of source.
+
+It was found by building a control tcc with gcc from the same source and
+comparing object bytes over musl: 1175 identical, one differing by a single
+byte in `.rela.data.ro`. Every case suite in the tree was green while it was
+live, including the `gen2 == gen3 == gen4` fixpoint — **a fixpoint proves a
+compiler is stable, not correct.**
+
+What remains between here and a booting GNU/Linux built entirely this way is
+the rungs above gcc 4.7.4, plus re-applying the invariants, which the spike
+track suspends every one of.
 
 ### 3½. The bridge — what stage 4 borrows, built instead
 

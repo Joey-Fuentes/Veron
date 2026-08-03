@@ -6,23 +6,31 @@
 #     <built-in>:0:0: internal compiler error: in ?, at
 #                     config/aarch64/aarch64-builtins.c:944
 #
-# and reading line 944 needed the SOURCE. That source is not in this
-# repository and is not any released tarball either: gcc 4.7.4 has ZERO
-# aarch64 support, so `gcc/config/aarch64/` is transplanted from 4.8.5 by
-# spikes/stage4/probes/backport-aarch64.sh and the result is DERIVED at build
-# time inside stage0-stage4-complete. Asking for "the file from gcc 4.8.5" is
-# nearly right and not exactly right, and "nearly" is how a round gets spent
-# reading a line that moved.
+# and reading line 944 needs the source of the tree the ladder compiles.
 #
-# stage0-stage4-complete derives it too, but that job runs for hours and the
-# derivation is over in minutes. This is the same two tarballs and the same
-# script, on their own, so the tree can be read without waiting for a ladder.
+# THIS IS A CONVENIENCE, NOT A NECESSITY, and the distinction is worth keeping
+# straight. gcc 4.7.4 has zero aarch64 support, so backport-aarch64.sh copies
+# 4.8.5's `gcc/config/aarch64/` into the 4.7.4 tree -- a `cp -r`, plus one
+# `sed` on an unwind file. Nothing is computed. aarch64-builtins.c is untouched
+# by the script, so its line 944 is 4.8.5's line 944 verbatim and can be read
+# straight out of that tarball.
 #
-# IDENTICAL BY CONSTRUCTION, AND CHECKED RATHER THAN CLAIMED. The pins and the
-# script are the ones the complete job uses. Both jobs print
-# `sha256sum` of the two derived artefacts, so the two logs can be compared
-# directly -- if they ever differ, this job is lying and the comparison says
-# so rather than leaving it to be discovered.
+# What this job buys is that nobody has to know the above to read the line: it
+# hands over the exact directory the box applies, with no ambiguity about which
+# release, which file, or whether anything was spliced -- and it makes the
+# "untouched" claim checkable instead of a comment. stage0-stage4-complete
+# derives the same thing, but that job runs for hours and this takes minutes.
+#
+# SAME PINS, SAME SCRIPT, AND CHECKED RATHER THAN CLAIMED. Both jobs print
+# `sha256sum` of the two derived artefacts, so the logs can be compared
+# directly -- if they ever differ, this job is publishing a tree the ladder
+# does not compile, and the comparison says so rather than leaving it to be
+# discovered.
+#
+# THE ICE THAT PROMPTED IT IS CLOSED. Rung 6 was defect 12 -- a preprocessor
+# `#if` that dropped relocation addends -- found by comparing object bytes,
+# not by reading line 944, which was never needed. This is kept because the
+# next ICE will want the same thing and it now costs nothing.
 #
 # WHAT IT PUBLISHES:
 #   gcc47-backend-aarch64   the aarch64 backend as the box sees it -- the
