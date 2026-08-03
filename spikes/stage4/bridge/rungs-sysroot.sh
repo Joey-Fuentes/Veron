@@ -74,6 +74,60 @@
 set -u
 
 say()   { printf '%s\n' "$*"; }
+
+# HASH AND SIZE FOR EVERY OUTPUT, LOGGED AND RECORDED.
+#
+# Two consumers, one call. The log line is for a human reading the run; the
+# TSV in /out is the machine-readable half and is the seed of the `files`
+# manifest DERIVATIONS.md specifies for a ledger record.
+#
+# THE PRINTED HASH IS TRUNCATED AND SAYS SO. The previous reporting used
+# `sha256sum | cut -c1-32`, and 32 hex characters is exactly MD5's length --
+# so the log showed what read as an md5, was a truncated sha256, and could be
+# checked as neither without already knowing the trick. Sixteen characters plus
+# an ellipsis cannot be mistaken for a whole hash, and the untruncated value
+# goes in the manifest. Artifacts that leave the sandbox get their full sha256
+# printed too, because those are the ones someone outside will verify.
+#
+# WHY SIZE AS WELL AS HASH. A hash says two things differ; a size says by how
+# much, and that is often the whole diagnosis. Two gcc builds differing by
+# 0.17% are the same version configured differently; two differing by 30% are
+# different versions. Without the size that distinction costs a round.
+#
+# FULL PATHS, NEVER BASENAMES. `${f##*/}` printed two `cc1` lines with
+# different hashes and no way to tell which install each came from -- the
+# report looked like a reproducibility failure and was a stripped path. If a
+# name can collide, print what disambiguates it.
+MANIFEST=${MANIFEST:-/out/manifest.tsv}
+# Columns: path, exact size in bytes, first 16 hex of sha256 followed by an
+# ellipsis. The ellipsis is deliberate -- it makes truncation visible at a
+# glance. Full sha256 for every entry is in $MANIFEST.
+hashout() {
+    # $1 = label (stage/rung), $2 = path
+    _p="$2"
+    if [ ! -e "$_p" ]; then
+        printf '    %-44s %14s\n' "$_p" "ABSENT"
+        return 0
+    fi
+    _sz=$(wc -c < "$_p" 2>/dev/null || echo 0)
+    _sh=$(sha256sum "$_p" 2>/dev/null | cut -d" " -f1)
+    printf '    %-44s %14s  %s…\n' "$_p" "$_sz" "$(printf '%s' "$_sh" | cut -c1-16)"
+    printf '%s\t%s\t%s\t%s\n' "$1" "$_p" "$_sz" "$_sh" >> "$MANIFEST" 2>/dev/null || true
+}
+
+# Every regular file under a tree, for whole-sysroot manifesting. Sorted, so
+# two runs produce comparable files rather than filesystem-order noise.
+hashtree() {
+    # $1 = label, $2 = root
+    [ -d "$2" ] || return 0
+    find "$2" -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r _f; do
+        printf '%s\t%s\t%s\t%s\n' "$1" "$_f" \
+            "$(wc -c < "$_f" 2>/dev/null || echo 0)" \
+            "$(sha256sum "$_f" 2>/dev/null | cut -d" " -f1)" >> "$MANIFEST" 2>/dev/null || true
+    done
+    printf '    %-44s %14s files manifested\n' "$2" \
+        "$(find "$2" -type f 2>/dev/null | wc -l)"
+}
 head1() { say ""; say "  === $* ==="; }
 onedir() { ls -d $1 2>/dev/null | head -1 | sed 's|^\./||'; }
 
@@ -897,6 +951,15 @@ if [ "$B5" = ok ]; then
       grep -E "^(# )?CONFIG_(WERROR|DEVTMPFS)" .config | sed 's/^/      /'; B6=FAIL
     else
       say "    building with: $(gcc --version 2>&1 | head -1)"
+      # DETERMINISM: the kernel embeds the build user, host and timestamp
+      # unless told otherwise, and the boot banner proves it --
+      #   Linux version 7.1.5 (@runnervma9114) ... Mon Aug  3 09:46:45 UTC 2026
+      # Four runs produced four different Images of identical size, which is
+      # exactly the signature of fixed-width values written into fixed slots.
+      # SOURCE_DATE_EPOCH is already 0 in this box; kbuild wants its own names.
+      export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-@0}"
+      export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-veron}"
+      export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-veron}"
       if timeout 7200 make ARCH=arm64 -j"$NP" Image > b.log 2>&1 \
          && [ -f arch/arm64/boot/Image ]; then
         cp arch/arm64/boot/Image "$W/Image"; B6=ok
@@ -1096,7 +1159,18 @@ echo
 poweroff -f 2>/dev/null || { sync; echo o > /proc/sysrq-trigger; }
 INIT
   chmod 0755 "$W/ir/init"
-  ( cd "$W/ir" && find . | cpio -o -H newc 2>/dev/null | gzip -9 > "$W/initramfs.cpio.gz" )
+  # DETERMINISM, THREE SOURCES, AND THIS ONE VARIED IN SIZE AS WELL AS HASH
+  # across four runs (11945418 / 11945925 / 11945457 / 11945530):
+  #
+  #   cpio  records each file's mtime in the archive header
+  #   find  emits directory order, which is not stable across filesystems
+  #   gzip  without -n embeds a timestamp AND the original filename
+  #
+  # Size varying is the tell: different mtimes compress to different lengths.
+  # Normalise all three -- mtimes to the epoch, order by sort, gzip -n.
+  find "$W/ir" -exec touch -h -d @0 {} + 2>/dev/null || true
+  ( cd "$W/ir" && find . | LC_ALL=C sort | cpio -o -H newc 2>/dev/null \
+      | gzip -9n > "$W/initramfs.cpio.gz" )
   if [ -s "$W/initramfs.cpio.gz" ]; then
     B7=ok; say "    initramfs: $(wc -c < "$W/initramfs.cpio.gz") bytes"
   else
@@ -1129,23 +1203,51 @@ fi
 say ""
 say "  --- THE FINAL TOOLCHAIN, HASHED ---"
 for f in /usr/bin/gcc /usr/bin/ld /usr/bin/as /usr/lib/libc.so.6 /usr/bin/busybox; do
-  if [ -f "$f" ]; then
-    printf '    %-24s %12s  %s\n' "$f" "$(wc -c < "$f")" "$(sha256sum "$f" | cut -c1-32)"
-  else
-    printf '    %-24s %12s\n' "$f" "ABSENT"
-  fi
+  hashout B8 "$f"
 done
 # cc1/cc1plus are the compiler proper; the driver is a thin wrapper and two
 # different cc1s behind an identical gcc would compare equal above.
+#
+# FULL PATH, NOT BASENAME. This printed `${f##*/}`, so two installs under
+# /usr/libexec/gcc/<triplet>/<version>/ both showed as `cc1` with different
+# hashes and nothing to tell them apart -- which reads as a reproducibility
+# failure and is two different compilers correctly having different bytes.
+# The path carries the triplet and the version, which is exactly the missing
+# information.
 for f in $(ls /usr/libexec/gcc/*/*/cc1 /usr/libexec/gcc/*/*/cc1plus 2>/dev/null); do
-  printf '    %-24s %12s  %s\n' "${f##*/}" "$(wc -c < "$f")" "$(sha256sum "$f" | cut -c1-32)"
+  hashout B8 "$f"
 done
+# AND SAY WHAT EACH INSTALL IS, since the path alone leaves the reader to infer
+# it. If two versions or two triplets are present, this is the line that says
+# so outright.
+say ""
+say "  --- gcc INSTALLS PRESENT ---"
+for d in $(ls -d /usr/libexec/gcc/*/*/ 2>/dev/null); do
+  _t=$(basename "$(dirname "$d")")
+  _v=$(basename "$d")
+  printf '    %-30s triplet %-28s version %s\n' "$d" "$_t" "$_v"
+done
+# THE WHOLE SYSROOT, MANIFESTED. Every regular file with its size and hash.
+# This is the `files` field DERIVATIONS.md specifies, and it is what makes
+# `veron why <file>` possible at all -- without a per-file manifest the graph
+# stops at derivations and cannot reach an installed path.
+say ""
+say "  --- SYSROOT MANIFEST ---"
+hashtree B8 /usr
+hashtree B8 /lib
+say "    manifest: $MANIFEST"
+
 say ""
 say "  --- WHAT LEFT THE SANDBOX ---"
 for f in /out/Image /out/initramfs.cpio.gz; do
-  if [ -f "$f" ]; then
-    printf '    %-24s %12s  %s\n' "${f##*/}" "$(wc -c < "$f")" "$(sha256sum "$f" | cut -c1-32)"
-  fi
+  hashout B8 "$f"
+done
+# FULL sha256 FOR THE TWO ARTIFACTS THAT LEAVE, because these are the ones
+# someone outside will check, and a truncated hash cannot be checked.
+say ""
+say "  --- FULL sha256, FOR VERIFICATION OUTSIDE THIS RUN ---"
+for f in /out/Image /out/initramfs.cpio.gz; do
+  [ -f "$f" ] && sha256sum "$f" | sed 's/^/    /'
 done
 
 # ---------------------------------------------------------------------------

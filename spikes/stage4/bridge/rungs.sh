@@ -69,6 +69,60 @@ stop_here() {
 }
 
 say()   { printf '%s\n' "$*"; }
+
+# HASH AND SIZE FOR EVERY OUTPUT, LOGGED AND RECORDED.
+#
+# Two consumers, one call. The log line is for a human reading the run; the
+# TSV in /out is the machine-readable half and is the seed of the `files`
+# manifest DERIVATIONS.md specifies for a ledger record.
+#
+# THE PRINTED HASH IS TRUNCATED AND SAYS SO. The previous reporting used
+# `sha256sum | cut -c1-32`, and 32 hex characters is exactly MD5's length --
+# so the log showed what read as an md5, was a truncated sha256, and could be
+# checked as neither without already knowing the trick. Sixteen characters plus
+# an ellipsis cannot be mistaken for a whole hash, and the untruncated value
+# goes in the manifest. Artifacts that leave the sandbox get their full sha256
+# printed too, because those are the ones someone outside will verify.
+#
+# WHY SIZE AS WELL AS HASH. A hash says two things differ; a size says by how
+# much, and that is often the whole diagnosis. Two gcc builds differing by
+# 0.17% are the same version configured differently; two differing by 30% are
+# different versions. Without the size that distinction costs a round.
+#
+# FULL PATHS, NEVER BASENAMES. `${f##*/}` printed two `cc1` lines with
+# different hashes and no way to tell which install each came from -- the
+# report looked like a reproducibility failure and was a stripped path. If a
+# name can collide, print what disambiguates it.
+MANIFEST=${MANIFEST:-/out/manifest.tsv}
+# Columns: path, exact size in bytes, first 16 hex of sha256 followed by an
+# ellipsis. The ellipsis is deliberate -- it makes truncation visible at a
+# glance. Full sha256 for every entry is in $MANIFEST.
+hashout() {
+    # $1 = label (stage/rung), $2 = path
+    _p="$2"
+    if [ ! -e "$_p" ]; then
+        printf '    %-44s %14s\n' "$_p" "ABSENT"
+        return 0
+    fi
+    _sz=$(wc -c < "$_p" 2>/dev/null || echo 0)
+    _sh=$(sha256sum "$_p" 2>/dev/null | cut -d" " -f1)
+    printf '    %-44s %14s  %s…\n' "$_p" "$_sz" "$(printf '%s' "$_sh" | cut -c1-16)"
+    printf '%s\t%s\t%s\t%s\n' "$1" "$_p" "$_sz" "$_sh" >> "$MANIFEST" 2>/dev/null || true
+}
+
+# Every regular file under a tree, for whole-sysroot manifesting. Sorted, so
+# two runs produce comparable files rather than filesystem-order noise.
+hashtree() {
+    # $1 = label, $2 = root
+    [ -d "$2" ] || return 0
+    find "$2" -type f 2>/dev/null | LC_ALL=C sort | while IFS= read -r _f; do
+        printf '%s\t%s\t%s\t%s\n' "$1" "$_f" \
+            "$(wc -c < "$_f" 2>/dev/null || echo 0)" \
+            "$(sha256sum "$_f" 2>/dev/null | cut -d" " -f1)" >> "$MANIFEST" 2>/dev/null || true
+    done
+    printf '    %-44s %14s files manifested\n' "$2" \
+        "$(find "$2" -type f 2>/dev/null | wc -l)"
+}
 head1() { say ""; say "  === $* ==="; }
 
 # THE SYSROOT IS /usr, AND THAT IS THE FIX FOR RUNG 3.

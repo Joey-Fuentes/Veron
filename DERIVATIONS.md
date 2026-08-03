@@ -166,7 +166,36 @@ Anything that can change the output. The ones that leak silently:
 
 ### What is allowed to differ
 
-Declared, not discovered. The usual offenders:
+Declared, not discovered. **Measured across four reference runs**, not
+theorised:
+
+```
+byte-identical every run    gcc  ld  as  libc.so.6  busybox  cc1#1  cc1plus#1
+different every run         cc1#2  cc1plus#2  Image  initramfs.cpio.gz
+```
+
+Three findings from that:
+
+- **Same size, different hash** (cc1#2, cc1plus#2, Image) means nothing
+  structural changed -- no reordering, no different inputs. Something wrote
+  different values into fixed-width slots. That is a small, enumerable set of
+  causes, and `repro-diff.sh` localises it by byte offset and ELF section.
+- **The kernel confessed in its own boot banner**: `Linux version 7.1.5
+  (@runnervma9114) ... Mon Aug 3 09:46:45 UTC 2026`. Build user, host and
+  timestamp, embedded. Fixed with `KBUILD_BUILD_TIMESTAMP/USER/HOST`.
+- **initramfs varied in SIZE as well** -- 11945418 / 11945925 / 11945457 /
+  11945530 -- which points elsewhere: `cpio` records mtimes, `find` emits
+  directory order, and `gzip` without `-n` embeds a timestamp and filename.
+  Different mtimes compress to different lengths. Fixed by normalising mtimes
+  to the epoch, sorting the file list, and `gzip -9n`.
+
+And one worth keeping in mind when choosing what to hash: **`/usr/bin/gcc` was
+stable while `cc1` was not.** The driver is a thin wrapper; the compiler proper
+is behind it. A check against a curated list of binaries would have called this
+reproducible. That is the argument for manifesting the whole sysroot rather
+than a chosen few.
+
+The usual offenders, in general:
 
 - `ar` archive member timestamps — normalise with `D` (deterministic mode)
 - ELF build IDs — pin or strip
