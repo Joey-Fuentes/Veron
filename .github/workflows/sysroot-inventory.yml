@@ -1,0 +1,144 @@
+name: sysroot-inventory
+
+# WHERE THE 5.6 GB IS -- without re-running the ladder.
+#
+# The 2026-08-03 run fixed the `box/lfs` vs `box/work/lfs` bug in the publish
+# step, so `actions/cache/save` fired for the first time and there is now a
+# real sysroot in the cache:
+#
+#     sysroot-mc-tcc-2.44-7.1.5-v2-30838793499     5.6G lfs + 596M prefix
+#
+# This job restores it and measures it. Minutes, not the hours a full
+# stage0-stage4-complete run costs, and it touches nothing that run does.
+#
+# TRIM IS DEFAULT OFF and, when enabled here, operates on the RESTORED COPY --
+# so it reports what a trimmed sysroot would weigh and whether the safety
+# checks pass, without changing what phase B actually built. Proving that
+# phase B still completes without the cross triplet is a different and later
+# experiment, and it belongs inside the box.
+
+on:
+  workflow_dispatch:
+    inputs:
+      cache_prefix:
+        description: 'Sysroot cache key prefix to restore'
+        required: false
+        default: 'sysroot-mc-tcc-2.44-7.1.5-v2-'
+      trim:
+        description: 'Also run the trim (on the restored copy only)'
+        type: boolean
+        required: false
+        default: false
+      trim_cross:
+        description: 'Trim: remove the cross triplet'
+        type: boolean
+        required: false
+        default: true
+      trim_strip:
+        description: 'Trim: strip debug info'
+        type: boolean
+        required: false
+        default: true
+
+concurrency:
+  group: sysroot-inventory-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  inventory:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Restore the published sysroot'
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            lfs
+            prefix
+          key: ${{ inputs.cache_prefix }}
+          restore-keys: |
+            ${{ inputs.cache_prefix }}
+
+      - name: 'What came back'
+        run: |
+          set -eu
+          if [ ! -d lfs ]; then
+            echo "NO SYSROOT MATCHED '${{ inputs.cache_prefix }}'."
+            echo ""
+            echo "  The cache save only started working on the run that fixed"
+            echo "  box/lfs -> box/work/lfs in the publish step. If that run has"
+            echo "  aged out, or the prefix is wrong, run stage0-stage4-complete"
+            echo "  once and retry -- the key is"
+            echo "    sysroot-mc-tcc-<glibc>-<khdr>-v2-<run_id>"
+            exit 1
+          fi
+          echo "  matched: ${{ steps.restore.outputs.cache-matched-key }}"
+          du -sh lfs prefix 2>/dev/null | sed 's/^/    /'
+
+      # ---------------------------------------------------------------
+      # THE MEASUREMENT. Analysis only -- this step cannot change anything.
+      # ---------------------------------------------------------------
+      - name: 'Inventory the sysroot'
+        run: |
+          set -eu
+          mkdir -p report
+          INVENTORY=report/inventory.txt \
+          MANIFEST=nonexistent.tsv \
+          TOPN=60 \
+            sh spikes/stage4/bridge/sysroot-inventory.sh lfs
+
+      - name: 'Inventory the prefix tree too'
+        run: |
+          set -eu
+          INVENTORY=report/inventory-prefix.txt TOPN=30 \
+            sh spikes/stage4/bridge/sysroot-inventory.sh prefix || true
+
+      # ---------------------------------------------------------------
+      # THE TRIM, on the restored copy. Default off. Enabling it here answers
+      # "how much would this save, and do the safety checks pass" without
+      # touching what phase B built.
+      # ---------------------------------------------------------------
+      - name: 'Trim (restored copy only)'
+        if: inputs.trim
+        run: |
+          set -eu
+          VERON_TRIM=1 \
+          VERON_TRIM_CROSS=${{ inputs.trim_cross && '1' || '0' }} \
+          VERON_TRIM_STRIP=${{ inputs.trim_strip && '1' || '0' }} \
+          TRIM_LOG=report/trim.txt \
+            sh spikes/stage4/bridge/sysroot-trim.sh lfs
+
+      - name: 'Re-inventory after the trim'
+        if: inputs.trim
+        run: |
+          set -eu
+          INVENTORY=report/inventory-after.txt TOPN=40 \
+            sh spikes/stage4/bridge/sysroot-inventory.sh lfs
+
+      - name: 'Summary'
+        if: always()
+        run: |
+          set -eu
+          echo "==================== TOP-LEVEL BREAKDOWN ===================="
+          sed -n '/BY TOP-LEVEL DIRECTORY/,/BY SECOND LEVEL/p' \
+            report/inventory.txt 2>/dev/null || true
+          echo "==================== LARGEST FILES ========================="
+          sed -n '/LARGEST FILES/,/TRIPLET DUPLICATION/p' \
+            report/inventory.txt 2>/dev/null | head -30 || true
+          echo "==================== TRIPLETS =============================="
+          sed -n '/TRIPLET DUPLICATION/,/DEBUG INFO/p' \
+            report/inventory.txt 2>/dev/null || true
+          if [ -s report/trim.txt ]; then
+            echo "==================== TRIM =================================="
+            tail -20 report/trim.txt
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sysroot-inventory
+          path: report/
+          retention-days: 30
