@@ -1,0 +1,72 @@
+the callee-saved registers, so setjmp can cross a convention boundary.
+
+M1 ASSEMBLES FROM A FIXED VOCABULARY and had no load or store for x19-x28 at
+all -- not one form, for any base register. That was fine while setjmp only had
+to serve micro-c, whose convention uses x13, x17, x18 and lr and nothing else.
+
+IT STOPPED BEING FINE AT tcc's -run. The program tcc compiles into memory is
+TCC-generated, so it follows AAPCS64 and freely uses x19-x28, the frame pointer
+and the real sp. When it calls exit, tccrun.c's rt_exit longjmps back to a
+setjmp made in micro-c-compiled code, across the boundary between the two
+conventions. Restoring four registers left the other twelve holding whatever
+the JIT'd program had put there:
+
+    mc-tcc -run hello.c    ->  "hello from -run", then SIGSEGV on the way out
+
+setjmp-aarch64.c had predicted this in its own header -- "Linking this against
+code from any other compiler would be wrong, and that is worth stating plainly
+rather than discovering later."
+
+WHAT IS ADDED. Stores through x1 and loads through x14, which is how setjmp and
+longjmp already address the buffer, for x19 through x29 at offsets 32..112, the
+real stack pointer at 120, and the four words longjmp reads back through x14.
+Twenty-eight defines.
+
+THE ENCODINGS ARE DERIVED, NOT GUESSED:
+
+    str xN,[xM,#off]   0xF9000000 | (off/8 << 10) | (M << 5) | N
+    ldr xN,[xM,#off]   0xF9400000 | (off/8 << 10) | (M << 5) | N
+
+both little-endian. The formula was checked against eight entries ALREADY in
+this table before a single new line was written, and reproduced all eight:
+
+    str_x0,[x1,8]    computed 200400f9   in the table 200400f9
+    str_x0,[x1,16]   computed 200800f9   in the table 200800f9
+    ... eight of eight, zero mismatches
+
+d8-d15 ARE NOT HERE. AAPCS64 makes the low half of those callee-saved too, and
+this table has no d-register load or store either. A JIT'd program keeping a
+double in d8 across a call to exit would still corrupt it. Recorded rather than
+left to be found.
+
+--- a/aarch64/aarch64_defs.M1
++++ b/aarch64/aarch64_defs.M1
+@@ -1101,0 +1102,28 @@
++DEFINE str_x19,[x1,32] 331000f9
++DEFINE ldr_x19,[x14,32] d31140f9
++DEFINE str_x20,[x1,40] 341400f9
++DEFINE ldr_x20,[x14,40] d41540f9
++DEFINE str_x21,[x1,48] 351800f9
++DEFINE ldr_x21,[x14,48] d51940f9
++DEFINE str_x22,[x1,56] 361c00f9
++DEFINE ldr_x22,[x14,56] d61d40f9
++DEFINE str_x23,[x1,64] 372000f9
++DEFINE ldr_x23,[x14,64] d72140f9
++DEFINE str_x24,[x1,72] 382400f9
++DEFINE ldr_x24,[x14,72] d82540f9
++DEFINE str_x25,[x1,80] 392800f9
++DEFINE ldr_x25,[x14,80] d92940f9
++DEFINE str_x26,[x1,88] 3a2c00f9
++DEFINE ldr_x26,[x14,88] da2d40f9
++DEFINE str_x27,[x1,96] 3b3000f9
++DEFINE ldr_x27,[x14,96] db3140f9
++DEFINE str_x28,[x1,104] 3c3400f9
++DEFINE ldr_x28,[x14,104] dc3540f9
++DEFINE str_x29,[x1,112] 3d3800f9
++DEFINE ldr_x29,[x14,112] dd3940f9
++DEFINE str_x0,[x1,120] 203c00f9
++DEFINE ldr_x0,[x14,120] c03d40f9
++DEFINE ldr_x0,[x14,0] c00140f9
++DEFINE ldr_x0,[x14,8] c00540f9
++DEFINE ldr_x0,[x14,16] c00940f9
++DEFINE ldr_x0,[x14,24] c00d40f9

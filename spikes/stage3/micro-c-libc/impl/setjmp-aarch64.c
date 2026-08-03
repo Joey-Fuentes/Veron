@@ -17,22 +17,44 @@
  *     x18  stack pointer
  *     lr   return address
  *
- * and everything else lives on the x18 stack. So saving those four is
- * sufficient FOR CODE THIS COMPILER GENERATES, which is all of it here.
+ * and everything else lives on the x18 stack. Saving those four is sufficient
+ * for code THIS COMPILER generates.
  *
- * Linking this against code from any other compiler would be wrong, and that
- * is worth stating plainly rather than discovering later.
+ * IT IS NO LONGER ALL OF IT, AND THE OLD NOTE HERE PREDICTED THIS EXACTLY:
+ * "Linking this against code from any other compiler would be wrong, and that
+ * is worth stating plainly rather than discovering later." Later arrived with
+ * tcc's -run. The program tcc compiles into memory is TCC-generated, so it
+ * follows AAPCS64 and freely uses x19-x28, the frame pointer and the real sp.
+ * When it calls exit, tccrun.c's rt_exit longjmps back to a setjmp made in
+ * micro-c-compiled code -- across the boundary between the two conventions.
+ * Restoring four registers left the other twelve holding whatever the JIT'd
+ * program had put there, and `-run` printed its output and then segfaulted on
+ * the way out:
+ *
+ *     mc-tcc -run hello.c    ->  "hello from -run", then SIGSEGV
+ *
+ * So this now saves the full AAPCS64 callee-saved set as well as micro-c's
+ * four. That is what tcc's test1, test2 and test3 need, all three being
+ * `tcc -run tcc.c ... -run tcctest.c`.
+ *
+ * d8-d15 ARE NOT SAVED YET. AAPCS64 makes the low half of those callee-saved
+ * too, and M1's vocabulary has no d-register load or store at all -- adding
+ * them is the same exercise as the twenty-eight integer defines this needed.
+ * It is recorded here rather than left to be discovered: a JIT'd program that
+ * keeps a double in d8 across the call to exit would still corrupt it.
  *
  * WHY IT IS WRITTEN THIS WAY. M2libc's aarch64 macro vocabulary is much
  * narrower than the instruction set. There is no mov_x0,lr and no br_x0; there
  * IS mov_x16,x0 and br_x16, and mov_x17,x1 and mov_x18,x17. The sequences
  * below are shaped by what exists, not by what would be natural.
  *
- * The jmp_buf layout, four words:
- *     [0]  x18   stack pointer at the setjmp call
- *     [1]  x17   base pointer
- *     [2]  x13   locals pointer
- *     [3]  lr    where to resume
+ * The jmp_buf layout, sixteen words of the thirty-two jmp_buf reserves:
+ *     [0]   x18   micro-c stack pointer at the setjmp call
+ *     [1]   x17   micro-c base pointer
+ *     [2]   x13   micro-c locals pointer
+ *     [3]   lr    where to resume
+ *     [4..14] x19-x29, the AAPCS64 callee-saved integer set
+ *     [15]  sp    the REAL stack pointer, which tcc-generated code uses
  */
 
 /* Saving lr needs it in a general register, and there is no mov_x0,lr. Pushing
@@ -41,34 +63,38 @@
 
 int setjmp(void* env)
 {
-	asm("mov_x0,x17"          /* base pointer */
+	asm("mov_x0,x17"
 	    "sub_x0,x0,8"
-	    "ldr_x0,[x0]"         /* x0 = env */
-	    "mov_x1,x0"           /* x1 = env, the store base */
+	    "ldr_x0,[x0]"
+	    "mov_x1,x0"
 
-	    "mov_x0,x18"          /* [0] = stack pointer */
+	    "mov_x0,x18"          /* [0]  micro-c stack pointer */
 	    "str_x0,[x1]"
-
-	    "mov_x0,x17"          /* [1] = base pointer */
+	    "mov_x0,x17"          /* [1]  micro-c base pointer  */
 	    "str_x0,[x1,8]"
-
-	    "mov_x0,x13"          /* [2] = locals pointer */
+	    "mov_x0,x13"          /* [2]  micro-c locals        */
 	    "str_x0,[x1,16]"
-
-	    "str_lr,[x18,-8]!"    /* [3] = return address, via the stack because */
-	    "ldr_x0,[x18],8"      /*       there is no mov_x0,lr */
+	    "str_lr,[x18,-8]!"    /* [3]  return address        */
+	    "ldr_x0,[x18],8"
 	    "str_x0,[x1,24]"
 
-	    "mov_x0,0");          /* setjmp returns 0 when called directly */
-}
+	    "str_x19,[x1,32]"     /* [4..14] AAPCS64 callee-saved */
+	    "str_x20,[x1,40]"
+	    "str_x21,[x1,48]"
+	    "str_x22,[x1,56]"
+	    "str_x23,[x1,64]"
+	    "str_x24,[x1,72]"
+	    "str_x25,[x1,80]"
+	    "str_x26,[x1,88]"
+	    "str_x27,[x1,96]"
+	    "str_x28,[x1,104]"
+	    "str_x29,[x1,112]"
 
-/* longjmp does not return. It restores the four registers and branches to the
- * saved return address, which lands exactly where setjmp's own return would
- * have -- so the caller's epilogue runs normally from there.
- *
- * ORDER MATTERS. x18 has to be restored through x17 (mov_x17,x1 then
- * mov_x18,x17 -- there is no mov_x18,x0), so x17 is clobbered on the way and
- * must be restored AFTER x18, not before. */
+	    "mov_x0,sp"           /* [15] the REAL stack pointer */
+	    "str_x0,[x1,120]"
+
+	    "mov_x0,0");
+}
 
 void longjmp(void* env, int val)
 {
@@ -85,7 +111,28 @@ void longjmp(void* env, int val)
 	    "ldr_x0,[x0]"
 	    "mov_x15,x0"          /* x15 = val */
 
-	    /* x18 first, and only through x17: there is no mov_x18,x0. That
+	    /* THE AAPCS64 SET FIRST, while x14 still points at the buffer and
+	     * before x17 and x18 are disturbed. These registers belong to the
+	     * tcc-generated code that called us; restoring them is the whole
+	     * point of the wider buffer. */
+	    "ldr_x19,[x14,32]"
+	    "ldr_x20,[x14,40]"
+	    "ldr_x21,[x14,48]"
+	    "ldr_x22,[x14,56]"
+	    "ldr_x23,[x14,64]"
+	    "ldr_x24,[x14,72]"
+	    "ldr_x25,[x14,80]"
+	    "ldr_x26,[x14,88]"
+	    "ldr_x27,[x14,96]"
+	    "ldr_x28,[x14,104]"
+	    "ldr_x29,[x14,112]"
+
+	    /* the real stack pointer, which micro-c never touches but
+	     * tcc-generated code does */
+	    "ldr_x0,[x14,120]"
+	    "mov_sp,x0"
+
+	    /* x18 next, and only through x17: there is no mov_x18,x0. That
 	     * clobbers x17, which is why x17 is restored after it and not
 	     * before. */
 	    "mov_x0,x14"
