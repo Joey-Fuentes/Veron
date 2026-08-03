@@ -5,8 +5,8 @@ compile tcc directly, rather than reaching tcc through Mes. That enhanced
 compiler is called **micro-c**: M2-Planet at pin `bd2fe4b` plus a patch series.
 This file is its state.
 
-**Status.** micro-c is M2-Planet at pin `bd2fe4b` plus **76 patches** (4 base +
-72 experiments). It compiles `tcc.c` -- tcc's whole source including its
+**Status.** micro-c is M2-Planet at pin `bd2fe4b` plus **77 patches** (4 base +
+73 experiments). It compiles `tcc.c` -- tcc's whole source including its
 command-line driver -- and the linked **1.63 MB** aarch64 binary (`mc-tcc`) is
 a working tcc:
 
@@ -1504,7 +1504,26 @@ arithmetic in integers -- because micro-c has none and the folder does
 What follows is the current inventory, separated by kind. These have been
 conflated before, and they do not cost the same to fix.
 
-### Compiler defects -- eight open
+### Compiler defects -- twelve found, seven closed
+
+Numbered in the order they were found, not by severity. 5, 6, 7, 8, 9, 10 and
+12 are closed; 1, 2, 3, 4 and 11 are open, and two of those five cannot affect
+the ladder at all.
+
+**Where a defect can and cannot reach.** micro-c compiles tcc, so a micro-c
+defect changes the mc-tcc BINARY, and mc-tcc then builds musl, binutils,
+gmp/mpfr/mpc and gcc 4.7.4. Each of those is later rebuilt by something better
+-- gcc 4.7.4 by itself at rung 8, binutils at rung 10, musl by glibc in phase
+B -- so mc-tcc's codegen leaves the lineage at known points. For a defect to
+reach a booting kernel it would have to produce a tool that is silently wrong
+in a way that survives its own rebuild, which is the trusting-trust shape and
+does not happen by accident. Every failure so far has been loud: an ICE, a
+segfault, a link error.
+
+The two that never touch the ladder are 1 and 2/3: the stage-4 ladder is
+`-static` end to end, so `-run` and dynamic linking are never exercised. They
+matter for the claim that mc-tcc is a COMPLETE tcc, not for the climb.
+
 
 **1. `-run` cannot call anything outside the program. EXPLAINED** -- and the
 description this entry carried for several rounds was wrong in a way that
@@ -1639,8 +1658,15 @@ bracket; they do not name -- this file has paid for reading them otherwise.
 `x0 = 0`, at `pc=0x4d4e34` -- only against real glibc. **Plausibly the same
 defect as 2**, which would make this list seven.
 
-**4. Rung 6: the gcc mc-tcc builds is miscompiled.** It configures and links
-`xgcc`; that gcc then fails building libgcc.
+**4. Rung 6: the gcc mc-tcc builds is miscompiled. STILL OPEN.** It configures
+and links `xgcc`; that gcc then fails building libgcc.
+
+**A correction about how this was nearly mis-read.** A run reaching gcc 15 was
+taken as evidence that rung 6 had been fixed by the defect 5/10 work. It was
+`stage3-to-stage4-reference` -- the arm whose tcc is built by the HOST's
+musl-gcc, which proves the ladder and says nothing about the seed. The last
+actual mc-tcc data point is still rung 3, from before the narrow-unsigned fix.
+Nothing has washed out on the mc-tcc side yet.
 
 **CORRECTED, AND THE CORRECTION IS THE USEFUL PART. It is not a segfault.**
 This file and the README have said "segfaults compiling libgcc" for several
@@ -1817,32 +1843,72 @@ is outside the parentheses, and it never sees this shape.
 is still visible is the token before the open paren. Attempted while closing 9
 and reverted rather than half-moved.
 
-**10. The integer promotions, for two narrow operands. CLOSED**
-(`EXPERIMENT-zzzza`). C89 3.2.1.1 converts every operand of rank below `int`
-to `int` first, because every char and short value fits one -- so a mixed-sign
-pair of narrow types has no unsigned type left to pick:
+**It cannot affect the ladder.** `++(*p)` and `--(*p)` appear zero times in
+tcc's source, so mc-tcc is built identically with or without this. A real
+defect with no consequence for anything above it.
+
+**12. `#if` expanded a macro only one level. CLOSED** (`EXPERIMENT-zzzzc`).
+Not a codegen bug -- it DELETED A LINE OF tcc.
 
 ```
-short s = -1; unsigned short t = 0;     s < t  is TRUE in C
+#define SHT_RELA 4
+#define SHT_RELX SHT_RELA          tcc.h
+#if SHT_RELX == SHT_RELA           evaluated FALSE
+    rel->r_addend = addend;        tccelf.c -- never compiled
+#endif
 ```
 
-`promote_type` returned `unsigned short`, the comparison went unsigned, and -1
-became 65535. Every mixed-sign narrow pair was wrong the same way.
+So mc-tcc wrote a zero addend into every relocation, and every static
+initialiser of the form `pointer = array + N` aimed at element 0:
 
-**Older than all of the conversion work** -- it reproduces identically on the
-70-patch compiler -- and invisible until `uac-sweep.sh` grew a second phase
-that pairs two VARIABLES. The first phase pairs a variable with a literal, and
-a literal is never narrower than `int`, so `promote_type` always had a
-four-byte operand to pick and this was outside the space. 31 of the sweep's
-396 programs disagreed with gcc on exactly this, all on relational operators.
+```
+static const int32_t *const ptable = table + 128;    musl __ctype_b_loc.c
+control:  R_AARCH64_ABS64   table + 200
+mc-tcc:   R_AARCH64_ABS64   table + 0
+```
 
-**9. `(*p)++` segfaults.** Parentheses around the DEREFERENCE, so the increment
-applies to the byte. Found while checking the neighbours of defect 7 and
-confirmed to predate all of that work -- it fails identically on the compiler
-before `zzzw`. It is worth recording precisely because the comment at
-`cc_core.c`'s `paren_lvalue` site names that spelling as one it handles:
-"`(*p)++` the same thing written the other way round". It does not. Not folded
-into `zzzz`, so that patch measures one thing.
+Silent, systematic, and it survived `gen2 == gen3 == gen4` untouched -- **a
+fixpoint proves a compiler is STABLE, not correct.** The runtime guard on the
+very next line, `if (SHT_RELX != SHT_RELA && addend) tcc_error_noabort(...)`,
+never fired: the compiled code agreed the two were equal, and only the
+preprocessor did not.
+
+**Every case suite in this tree was green while it was live.**
+
+### The instrument that found it, and what it is worth
+
+`tools/objdiff-corpus.sh`. Build a CONTROL tcc with gcc from the same
+`tcc-work` tree, run it and mc-tcc over a large real corpus, and `cmp` the
+objects. tcc's source is fixed; the compiler that compiles it is the variable,
+so any differing byte means one of the two is wrong -- and it is not the one
+gcc built. It needs no expected values, which is why it sees things a suite
+written from known bugs cannot.
+
+It found the addend in one run: one object in 250 differed, by a single byte,
+in `.rela.data.ro`.
+
+**The number it now reports is the strongest correctness evidence in the
+spike.** Over musl 1.2.5's 1312 sources:
+
+```
+identical 1175   differ 131   subject-only failures 0
+```
+
+and **128 of the 131 are `src/math`**; the other three are `floatscan.c`,
+`vfprintf.c` and `getloadavg.c`. Every remaining divergence is floating point,
+which is expected and declared: micro-c has no floats at all, and the
+`tcc-microc` series gives the tcc it builds an eight-byte long double.
+
+So **mc-tcc's integer codegen is byte-identical to a gcc-built tcc across 1175
+real objects.** Anything outside the float set is a defect.
+
+**AND THAT NARROWS RUNG 6.** The control tcc builds gcc 4.7.4; mc-tcc's gcc
+ICEs during builtin initialisation. If the two compilers agree on every
+non-float byte of 1175 objects, the difference between the gcc they produce is
+concentrated in floating point -- and `aarch64-builtins.c` is where gcc
+registers SIMD and floating-point builtin types. An eight-byte `long double`
+in the compiler that built gcc is the first thing to suspect, not a new
+integer codegen defect.
 
 ### Latent -- recorded so they are not rediscovered
 
@@ -1853,6 +1919,12 @@ tcc-generated and follows AAPCS64, not micro-c's four-register convention. But
 M1's vocabulary has no d-register load or store at all, and adding them is the
 same exercise as the twenty-eight integer defines in `patches/m2libc/0016`. A
 JIT'd program holding a double in `d8` across a call to `exit` would corrupt it.
+
+**`lib/libtcc1.c` will not compile under mc-tcc** -- `#error unsupported CPU
+type` at line 143, because no CPU macro is defined for it. The `libtcc1.a` the
+subject builds is assembled from `lib-arm64.c`, `stdatomic.c`, `atomic.S`,
+`builtin.c`, `alloca.S` and `dsohandle.c` only. It links and `-run` works
+without it, so nothing has needed it yet.
 
 **`tcov.c` will not build**, because it includes the host's `<stdio.h>`. Only
 needed for `-ftest-coverage`; excluded from `libtcc1.a` deliberately, alongside
@@ -2244,6 +2316,11 @@ Without it the sweep reports every test not-applicable, which reads as a clean
 run and is a harness that never started.
 
 ### The tools, and which question each answers
+
+`objdiff-corpus.sh` is the one to reach for first when something above tcc
+misbehaves and every suite is green. It asks the only question that needs no
+expected values: does micro-c's tcc emit the same bytes as gcc's tcc?
+
 
 | tool | question |
 |---|---|

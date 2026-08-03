@@ -1,0 +1,143 @@
+an #if expands a macro until it is a number, not once.
+
+A MACRO WHOSE BODY IS ANOTHER MACRO NAME EVALUATED TO ZERO in a preprocessor
+conditional:
+
+    #define SHT_RELA 4
+    #define SHT_RELX SHT_RELA
+    #if SHT_RELX == SHT_RELA        FALSE -- strtoint("SHT_RELA") is 0
+
+macro_variable looked the name up once and handed the expansion token straight
+to strtoint. One level was enough for almost everything, which is why it
+survived: `SHT_RELA == 4` was always right, and `SHT_RELY == SHT_RELX` compared
+two unexpanded names and matched by accident.
+
+WHAT IT COST, AND IT IS NOT A CODEGEN BUG -- IT DELETED A LINE OF tcc.
+tcc.h has exactly that pair:
+
+    # define SHT_RELX SHT_RELA
+
+and tccelf.c guards the addend store with it:
+
+    #if SHT_RELX == SHT_RELA
+        rel->r_addend = addend;
+    #endif
+
+So mc-tcc compiled OUT the line that writes a relocation's addend. Every static
+initialiser of the form `pointer = array + N` lost its offset:
+
+    static const int32_t *const ptable = table + 128;      musl, __ctype_b_loc.c
+
+    control:  R_AARCH64_ABS64   table + 200
+    mc-tcc:   R_AARCH64_ABS64   table + 0
+
+The pointer aimed at element 0. Silent, systematic, and it survived the
+gen2 == gen3 == gen4 fixpoint untouched -- a fixpoint proves a compiler is
+STABLE, not correct.
+
+THE RUNTIME GUARD ON THE NEXT LINE NEVER FIRED, and that is the tell:
+
+    if (SHT_RELX != SHT_RELA && addend)
+        tcc_error_noabort("non-zero addend on REL architecture");
+
+The compiled code agreed the two were equal. Only the preprocessor did not.
+
+HOW IT WAS FOUND, because the method is the transferable part. Not by reading
+tcc, and not by any of the case suites -- they were all green. A gcc-built
+CONTROL tcc was built from the same source, both compilers were run over
+musl's 1312 sources, and the object files were compared with `cmp`. 244 of the
+first 250 were byte-identical; one of the six differed by a single byte, in
+`.rela.data.ro`, and that byte was the addend. From there it was three
+instrumented rebuilds to the `#if`.
+
+BOUNDED, because a macro may name itself. M2-Planet's blue paint covers
+expansion in the body of the program; this is a separate evaluator with its own
+walk, so it carries its own limit rather than borrowing that one.
+
+MEASURED, EITHER SIDE:
+
+    the reduced case          #if SHT_RELX == SHT_RELA   FALSE -> TRUE
+    ctype addend              table + 0 -> table + 200, matching the control
+    musl object diff          1175 identical, 131 differ, 0 subject-only
+                              failures -- and 128 of the 131 are src/math,
+                              the other three are floatscan, vfprintf and
+                              getloadavg. EVERY REMAINING DIVERGENCE IS
+                              FLOATING POINT.
+    difftest amd64            108 pass, 0 fail
+    difftest aarch64          110 pass, 0 fail
+    stage 2 corpus            420 of 426
+    mc-tcc                    builds, twelve.sh 12 of 12
+
+That last measurement is the one worth keeping: with this patch in, mc-tcc's
+INTEGER codegen is byte-identical to a gcc-built tcc across 1175 real objects.
+
+--- a/cc_macro.c
++++ b/cc_macro.c
+@@ -303,11 +303,46 @@
+ }
+ 
+ int macro_expression(void);
++/* A MACRO IN AN #if EXPANDS UNTIL IT IS A NUMBER, NOT ONCE.
++ *
++ * This read the expansion token and handed it straight to strtoint, so a macro
++ * whose body is ANOTHER MACRO NAME evaluated to zero:
++ *
++ *     #define SHT_RELA 4
++ *     #define SHT_RELX SHT_RELA
++ *     #if SHT_RELX == SHT_RELA        -- FALSE, because strtoint("SHT_RELA")
++ *
++ * One level worked, which is why this survived: `SHT_RELA == 4` was always
++ * right, and `SHT_RELY == SHT_RELX` compared two unexpanded names and matched
++ * by accident.
++ *
++ * WHAT IT COST. tcc.h has exactly that pair, and tccelf.c guards the addend
++ * store with it:
++ *
++ *     #if SHT_RELX == SHT_RELA
++ *         rel->r_addend = addend;
++ *     #endif
++ *
++ * So mc-tcc compiled OUT the line that writes a relocation's addend. Every
++ * static initialiser of the form `pointer = array + N` lost its offset --
++ *
++ *     static const int32_t *const ptable = table + 128;
++ *     control:  R_AARCH64_ABS64  table + 200
++ *     mc-tcc:   R_AARCH64_ABS64  table + 0
++ *
++ * -- and pointed at element 0 instead. The runtime guard on the next line,
++ * `if (SHT_RELX != SHT_RELA && addend) tcc_error_noabort(...)`, never fired,
++ * because the COMPILER agreed they were equal; only the preprocessor did not.
++ *
++ * BOUNDED, because a macro may name itself. M2-Planet's blue paint covers
++ * expansion in the body of the program; this is a separate evaluator with its
++ * own walk, so it carries its own limit rather than borrowing that one. */
+ int macro_variable(void)
+ {
+ 	int value = 0;
+ 	struct macro_list* hold = lookup_macro(macro_token);
+-	if (NULL != hold)
++	int depth = 0;
++	while (NULL != hold)
+ 	{
+ 		if(NULL == hold->expansion)
+ 		{
+@@ -315,6 +350,19 @@
+ 			fputs("hold->expansion is a null\n", stderr);
+ 			exit(EXIT_FAILURE);
+ 		}
++
++		/* Only an IDENTIFIER can expand further; lookup_macro returns NULL
++		 * for a number, which ends the walk on the common case. */
++		struct macro_list* next = lookup_macro(hold->expansion);
++		if(NULL == next) break;
++		if(next == hold) break;
++		depth = depth + 1;
++		if(depth > 64) break;
++		hold = next;
++	}
++
++	if (NULL != hold)
++	{
+ 		value = strtoint(hold->expansion->s);
+ 	}
+ 	eat_current_token();
