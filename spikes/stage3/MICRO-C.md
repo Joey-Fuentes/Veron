@@ -5,8 +5,8 @@ compile tcc directly, rather than reaching tcc through Mes. That enhanced
 compiler is called **micro-c**: M2-Planet at pin `bd2fe4b` plus a patch series.
 This file is its state.
 
-**Status.** micro-c is M2-Planet at pin `bd2fe4b` plus **70 patches** (4 base +
-66 experiments). It compiles `tcc.c` -- tcc's whole source including its
+**Status.** micro-c is M2-Planet at pin `bd2fe4b` plus **71 patches** (4 base +
+67 experiments). It compiles `tcc.c` -- tcc's whole source including its
 command-line driver -- and the linked **1.63 MB** aarch64 binary (`mc-tcc`) is
 a working tcc:
 
@@ -1558,13 +1558,18 @@ the same sentence.
 Two measurements now split it, and they are deliberately on opposite sides of
 the compiler:
 
-- **`tools/cases/100-elf-header-type-discrimination.c`** compiles the
+- **`tools/cases/123-elf-header-type-discrimination.c`** compiles the
   function's body with micro-c itself, freestanding, header built in memory --
   no libc, no file I/O, no emulator, both columns, under a second. Seven bits:
   `sizeof *h` on a parameter pointer, `ELFMAG`'s octal escape, the member read
   at each of the two values, the `ET_REL` arm as its own control, the `ET_DYN`
-  arm, and the fallthrough. Marked `KNOWN GAP`, so it does not redden the
-  differential gate and announces itself when it starts passing.
+  arm, and the fallthrough. **It PASSES on amd64** -- all seven probes,
+  measured against the vendored pin plus the full series. So it carries
+  `AARCH64 ONLY` as well as `KNOWN GAP`: skipped with the reason printed on
+  the column where it passes, run and expected to fail on the column where
+  defect 2 lives. That amd64 pass is the first evidence either way, and it
+  points AWAY from "micro-c miscompiles this function" unless aarch64
+  differs -- it does not settle it, because only the aarch64 column can.
 - **`tcc-two-ways`** compiles the same transcription with **mc-tcc** and with
   the control, and runs both against the real `libc.so.6`, `ld-linux`, and an
   `ET_REL` object, printing every intermediate.
@@ -1598,6 +1603,20 @@ literal.
 segfaults.
 
 **7. Case 119, `KNOWN GAP`.** `*(p)++` advances wrongly, where `*p++` does not.
+**Half closed** by `EXPERIMENT-zzzw`: the plainer `(p)++` underneath it -- no
+dereference at all, and never separated from `*(p)++` before -- advanced
+nothing, because postfix_expr_variable's `is_postfix_operator` check sees `)`
+and not `++`. That is the ninth copy of zzzs's rule and it needed nothing new.
+The bitmask moved 44 -> 36; bits 4 and 16 remain.
+
+What remains is measured and is not the same edit. micro-c parses `*(p)++` as
+`(*p)++` -- postfix binds tighter than unary `*`, so C reads `*((p)++)` -- and
+the increment lands on the POINTED-AT BYTE: `c == 8` correct, `p` unmoved,
+`buf[8] == 9`. Removing the paren_lvalue postfix branch at `cc_core.c:1562`
+does not fix it, it SEGFAULTS: without that branch the dereference loads and
+the increment stores through the loaded value. The handler needs the ADDRESS
+to increment through AND the pre-increment value as the result, from paths
+that each decide on one next-token look.
 
 **8. Corpus row 118.** Mutual recursion where the callee is used before it is
 declared.

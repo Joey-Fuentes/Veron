@@ -1,0 +1,88 @@
+a postfix ++ or -- through parentheses targets the variable.
+
+FOUR CHARACTERS AGAIN, AND THIS TIME THE POINTER SIMPLY DID NOT MOVE:
+
+    p++;      advances p                        correct, and always was
+    (p)++;    advances NOTHING                  wrong
+
+This is the ninth copy of the one rule this file keeps rediscovering: an
+assignment target must not be LOADED, and every place that decides finds out
+by looking at the NEXT TOKEN. zzzs closed the `=` and compound-assignment
+spelling of it; a postfix ++/-- is the same shape and was left out, because
+case 119 named `*(p)++` as the open item and the plainer `(p)++` underneath it
+was never separated from it.
+
+Separating them is the whole of this patch. `(p)++` has no dereference at all
+and needs nothing that `(p) += 1` does not already get.
+
+WHERE tcc WRITES IT, on the same walk and in the same macro pair as zzzs:
+
+    #define dwarf_read_1(ln,end) ((ln) < (end) ? *(ln)++ : 0)   tcc.h:1859
+
+WHAT IT DOES NOT CLAIM, AND THE MEASUREMENT IS EXPLICIT ABOUT IT. `*(p)++`
+is still wrong, and it is wrong in a way this patch cannot reach. micro-c
+parses it as `(*p)++` -- postfix ++ binds tighter than unary `*`, so C reads
+`*((p)++)`, and micro-c increments the POINTED-AT BYTE instead of the pointer:
+
+    p = buf + 8;  c = *(p)++;
+      c == 8        correct
+      p == buf + 8  WRONG, it did not advance
+      buf[8] == 9   WRONG, the increment landed on the byte
+
+That is measured rather than inferred: removing the postfix branch at
+cc_core.c:1562 -- which sets paren_lvalue when ++ follows the parens, and so
+is what makes it mean `(*p)++` -- does not fix it, it SEGFAULTS. Without that
+branch the dereference loads and the increment then stores through the loaded
+value. The reason is the one case 119 already states: the postfix handler
+needs the ADDRESS to increment through AND the pre-increment value as the
+result, and the paths carrying the do-not-load rule each decide from a single
+next-token look. Giving one path both is a different edit and is not attempted
+here.
+
+So case 119 stays a declared KNOWN GAP. Its bitmask moves rather than clearing:
+
+    before   44   = 4 + 8 + 16 twice
+    after    36   = 4 + 16 twice
+
+bit 8 -- `(p)++` on its own -- is closed; bit 4 and bit 16 are the `*(p)++`
+half and are unchanged. A wrong answer where there used to be no motion is
+progress and is not a fix, and the case says so in its own words.
+
+MEASURED, LOCALLY, EITHER SIDE (amd64 column, vendored pin + full series):
+
+    difftest amd64        102 pass, 0 fail, 3 known gaps      unchanged
+    case 119 bitmask      44 -> 36
+    case 49  `*(t) = 7`   passes                              unchanged
+    case 118 `(ln) += 4`  passes                              unchanged
+
+The two neighbouring cases are called out because they are what a wrong
+version of this patch breaks: 49 is the dereference outside the parens that
+must still load, and 118 is zzzs's own case.
+
+--- a/cc_core.c
++++ b/cc_core.c
+@@ -4200,10 +4200,23 @@ void primary_expr(void)
+ 				 * the count of stars the enclosing unary expression ate, so
+ 				 * zero means these parentheses are the whole target. Same
+ 				 * rule as everywhere else here: an address applies to the
+ 				 * last step of a chain, never to one still to be followed. */
++				/* AND A POSTFIX ++/-- IS AN ASSIGNMENT TOO. `(p)++` reaches
++				 * this the same way `(p) += 1` does -- the token after the
++				 * closing paren is what decides, and postfix_expr_variable's
++				 * own is_postfix_operator check sees `)` and not `++`. So the
++				 * variable was loaded, the increment was applied to the VALUE,
++				 * and p did not move at all.
++				 *
++				 * The num_dereference_after_postfix guard above carries over
++				 * unchanged and is what keeps this off `*(p)++`, which is a
++				 * different defect: there the ++ belongs to `(p)` but micro-c
++				 * reads the whole thing as `(*p)++`. Case 119 holds it. */
+ 				assign_after_parens = (0 == num_dereference_after_postfix)
+ 				                   && (match("=", scan->next->s)
+-				                       || is_compound_assignment(scan->next->s));
++				                       || is_compound_assignment(scan->next->s)
++				                       || match("++", scan->next->s)
++				                       || match("--", scan->next->s));
+ 			}
+ 
+ 			if(chain_after_parens)

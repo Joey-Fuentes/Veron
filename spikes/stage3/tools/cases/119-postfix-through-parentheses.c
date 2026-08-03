@@ -1,4 +1,8 @@
-/* KNOWN GAP -- `*(p)++` advances wrongly, where `*p++` does not.
+/* BITMASK -- KNOWN GAP: `*(p)++` advances wrongly, where `*p++` does not.
+ *
+ * BIT 8 IS CLOSED (EXPERIMENT-zzzw): `(p)++` on its own now advances. The
+ * bitmask moved 44 -> 36 and the rest of this note stands unchanged -- bits 4
+ * and 16 are the `*(p)++` half, which is the harder edit described below.
  *
  * MEASURED, three spellings of one expression:
  *
