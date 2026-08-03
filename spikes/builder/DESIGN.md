@@ -198,7 +198,9 @@ and labels, verified by round-trip disassembly under two independent decoders.
 
 `TRUST-BOUNDARY.md` already makes the comparison: builder-hex0's README
 concedes you must trust that the hex represents the opcodes in the comments —
-the correspondence there is **assumed**; here it is **verified**.
+the correspondence there is **assumed**; here it is **verified**, and once the
+disassembler lands it is verified by our own tools with no host decoder in the
+loop.
 
 Writing the ARM64 builder in hex would discard the one place this project is
 already ahead. It should be `.s0`, assembled by `stage0-as`.

@@ -15,4 +15,9 @@ This ledger — not the package internals — is what makes Veron end-to-end
 auditable, and doubles as an always-current SBOM + GPL corresponding-source
 manifest.
 
-See `ARCHITECTURE.md` §3.
+Two fields beyond the seven, both needed for the provenance graph: `builder`
+(the hash of the compiler that produced this output) and `files` (a manifest of
+installed paths), plus a per-derivation command log so any edge expands to the
+exact argv that ran.
+
+See `ARCHITECTURE.md` §3 and [`DERIVATIONS.md`](../DERIVATIONS.md).

@@ -180,6 +180,15 @@ replacement for binutils and LLVM in the round trip, not a second opinion, and
 it is sound only because those two audited the root first. Source only, never
 committed -- it is derived like everything else above the seed.
 
+When it lands, the round trip runs on **our assembler, our ELF writer and our
+disassembler, and nothing else**. binutils and LLVM stop being a per-push
+dependency and become a one-time recorded root audit, pinned to the artifact
+hashes they actually examined -- so if `stage0-as` or `elf` change, that audit
+no longer covers them and has to be redone. The attestation format in
+[`DERIVATIONS.md`](DERIVATIONS.md) carries both lines for exactly that reason:
+dropping the root line would make the chart a circle, and running the host
+decoders every push would understate what the seed can do on its own.
+
 **A hand-written builder OS.** The end state of the item above: our own shell
 and our own tools, in this tree, so that the box is built entirely out of
 things this project wrote. Design, including a bare-metal ARM64 image that
@@ -233,3 +242,9 @@ for byte — is not.
 That verification is mechanical and repeats on every push. It is a stronger
 property than a one-time human reading, not a substitute for one, and the
 boundary this document claims is met by it.
+
+The nine steps are designed as a single citable block in
+[`DERIVATIONS.md`](DERIVATIONS.md) -- artifacts, sources, both decoders, both
+assemblers, the round trip and the self-host fixpoint, reduced to one twelve
+character attestation hash, with `--script` emitting a runnable copy so a third
+party can redo it without trusting anything here.

@@ -224,6 +224,7 @@ The empty directories are Veron proper and are written against the invariants. `
 - [`ARCHITECTURE.md`](./ARCHITECTURE.md) — the founding design: ladder, fork, audit criteria, trust boundary
 - [`AGENTS.md`](./AGENTS.md) — invariants and working rules, if you are contributing
 - [`spikes/README.md`](./spikes/README.md) — the live pipeline, and what each spike answered
+- [`DERIVATIONS.md`](./DERIVATIONS.md) — the derivation phase: content-addressed inputs and outputs, one script for laptop and runner, the reproducibility check, and a provenance graph that expands from any installed file down to the exact commands and back to the seed
 - [`spikes/builder/DESIGN.md`](./spikes/builder/DESIGN.md) — the driver shell and the bare-metal ARM64 builder: measured surface, syscall inventory, boot protocol, test targets
 - [`spikes/stage3/README.md`](./spikes/stage3/README.md) — the open rung
 - **Want to run it, not read it?** `sh spikes/stage3/tools/local-build.sh` builds micro-c and runs the case suite on both architectures from this repository alone, no network. Then `local-tcc.sh` compiles tcc with it, and `twelve.sh` runs the twelve end-to-end programs through that tcc — the gate that matters, and the only one that compiles tcc at all. See [`spikes/stage3/MICRO-C.md`](./spikes/stage3/MICRO-C.md) for what those scripts encode and why doing it by hand does not work

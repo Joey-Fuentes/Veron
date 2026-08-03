@@ -7,8 +7,11 @@
 - **cache** — binary-cache client keyed by input hash; independent rebuilders
   diff their outputs against it (reproducibility as a distributed property).
 
-**Open decision:** build *on* Nix/Guix (inherit the derivation engine, store,
-and sandbox) vs. implement the model here. This choice affects only this
-directory; the ladder, fork, and ledger are engine-agnostic.
+**Decision: implement the model here**, taking Nix's *format* -- content-addressed
+outputs, a derivation as a pure function from hashed inputs -- without the
+dependency. The reasoning is in [`DERIVATIONS.md`](../DERIVATIONS.md): the hard
+parts (sandbox, pinned inputs, `SOURCE_DATE_EPOCH`, an enforced budget) are
+already done, what remains is bookkeeping, and a tracing engine nobody in this
+project audited sits badly under a claim that every file is traceable.
 
 See `ARCHITECTURE.md` §5.
