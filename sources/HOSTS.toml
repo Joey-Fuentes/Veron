@@ -1,0 +1,79 @@
+# Mirror hosts.
+#
+# THE HASH IS THE IDENTITY; A HOST IS ONLY A ROUTE TO IT. Recipes name a
+# sha256 and their upstream URL as provenance. No recipe ever names a mirror,
+# so adding, dropping or replacing a host touches this file and MIRRORS.tsv --
+# never the 150 recipes, never the ledger.
+#
+# TWO KINDS OF HOST, and the design needs both or it locks you in:
+#
+#   derivable  the locator is a FUNCTION of the hash and filename, so it can
+#              be computed and never needs storing. GitHub releases, R2,
+#              Codeberg, SourceForge.
+#   opaque     the locator is ASSIGNED by the host and cannot be computed --
+#              Zenodo's DOI, IPFS's CID, Software Heritage's SWHID. These must
+#              be recorded per artifact in MIRRORS.tsv.
+#
+# A template-only design cannot express the second kind, and retrofitting it
+# means rewriting the resolver. That is why the table is canonical and
+# templates are only a generator for the rows they can produce.
+#
+# NO HOST IS TRUSTED. Every fetch verifies sha256 before the bytes are used,
+# so a hostile or broken mirror can waste time and nothing else. That is what
+# makes "add any host you like" an availability decision rather than a
+# security one.
+
+[host.upstream]
+kind     = "provenance"
+priority = 0
+note     = "where the bytes came from originally. Tried first so normal fetches never touch our mirror; recorded even when unreachable, because it is provenance rather than a route."
+
+[host.github]
+kind     = "derivable"
+priority = 10
+repo     = "OWNER/Veron"
+# One release per package keeps the asset list navigable and makes deletion
+# granular. `src/` prefixes the tag so mirror tags are visibly a different
+# namespace from stage 6's actual release tags.
+tag      = "src/{name}"
+template = "https://github.com/{repo}/releases/download/src/{name}/{sha8}-{name}"
+put      = ["gh", "release", "upload", "{tag}", "{staged}", "--clobber"]
+create   = ["gh", "release", "create", "{tag}", "--title", "{name}", "--notes", "pinned source mirror"]
+
+[host.r2]
+kind     = "derivable"
+priority = 20
+enabled  = false
+bucket   = "veron-sources"
+template = "https://{bucket}.example.invalid/sha256/{sha256}/{name}"
+put      = ["rclone", "copyto", "{file}", "r2:{bucket}/sha256/{sha256}/{name}"]
+
+[host.zenodo]
+kind     = "opaque"
+priority = 30
+enabled  = false
+note     = "CERN-operated, EU-funded, built for long-term archival. Assigns a DOI, so the locator cannot be computed and must be recorded."
+
+[host.swh]
+kind     = "opaque"
+priority = 40
+enabled  = false
+note     = "Software Heritage. A durability backstop rather than a fetch path -- the API is not built for build-time retrieval."
+
+[host.ipfs]
+kind     = "opaque"
+priority = 50
+enabled  = false
+note     = "a CID IS a content hash, so the model fits exactly. Gateway retrieval is slow enough that it is a third mirror, not a first."
+
+[policy]
+# A dead host should cost seconds, not minutes. A run once died taking 134
+# seconds to fail reaching one host; tools/clone-pinned.sh already does
+# first-mirror-that-answers for git, and this is the same idea for tarballs.
+connect_timeout = 20
+retries         = 2
+# DURABILITY IS N HETEROGENEOUS HOSTS, NOT ONE GOOD ONE. Two repos on one
+# account are not two hosts. Different operators, funding models and
+# jurisdictions are what make the claim survive any single one changing terms.
+min_hosts_warn  = 2
+

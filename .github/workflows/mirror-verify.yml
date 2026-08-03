@@ -1,0 +1,65 @@
+name: mirror-verify
+
+# LINK ROT ON A SCHEDULE, NOT WHEN A USER'S BUILD FAILS.
+#
+# Once the shipped system can rebuild a package by fetching its pinned source,
+# the mirror stops being a release chore and becomes a RUNTIME DEPENDENCY: a
+# user runs `veron build qtbase`, the tarball 404s, and the self-hosting claim
+# fails on their machine. That is a different severity from "a stranger cannot
+# re-derive in ten years", and it is why this runs weekly rather than at
+# release time.
+#
+# It also catches the case nothing else can: a host quietly serving DIFFERENT
+# bytes under the same name. Every other check reads the local copy; only this
+# one re-reads the remote.
+
+on:
+  schedule:
+    # Weekly. Upstream URLs rot on a scale of years, not days -- this is about
+    # noticing within a week rather than within a release cycle.
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+    inputs:
+      offline:
+        description: 'Only check mirror counts, do not download'
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: mirror-verify
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Re-download every pin and re-verify its sha256'
+        run: |
+          set -eu
+          python3 tools/mirror.py check \
+            ${{ inputs.offline && '--offline' || '' }} \
+            --tmp "$RUNNER_TEMP/mirror" | tee mirror-check.txt
+
+      - name: 'What this found'
+        if: always()
+        run: |
+          set -eu
+          echo "  DEAD    -- the route no longer resolves. Add a mirror, or the"
+          echo "             package becomes unbuildable on a user's machine."
+          echo "  CHANGED -- the host served different bytes under the same"
+          echo "             name. The pin caught it; investigate the host."
+          echo "  THIN    -- fewer than min_hosts_warn mirrors. Durability is N"
+          echo "             HETEROGENEOUS hosts: two repos on one account are"
+          echo "             not two hosts. Different operators, funding models"
+          echo "             and jurisdictions are what survive a terms change."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mirror-check
+          path: mirror-check.txt
+          retention-days: 90
