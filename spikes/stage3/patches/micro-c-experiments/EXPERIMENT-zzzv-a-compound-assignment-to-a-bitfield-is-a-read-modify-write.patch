@@ -50,6 +50,16 @@ AND IT IS NOT ONLY tcc's ATTRIBUTES. Every `|=`, `&=`, `^=`, `+=`, `-=` on a
 bitfield anywhere was writing to the wrong bits, silently. tcc keeps its
 function attributes in the same shape, and so does mallocng's struct meta.
 
+AND EVERY BITFIELD EMIT NOW GOES THROUGH THE ARCHITECTURE HELPERS. Both the
+plain and the compound store emitted `and_x0,x1,x0`, `orr_x0,x1,x0`,
+`lsl_x0,x1,x0` and `lsr_x0,x1,x0` LITERALLY -- fourteen sites -- so a bitfield
+write emitted aarch64 mnemonics on every architecture. Nothing in the corpus
+wrote a bitfield, so amd64 never noticed: the case added with this patch is the
+first, and it failed there until the strings were routed through
+bitwise_and_instruction, bitwise_or_instruction and two new shift helpers whose
+per-architecture strings are the ones compound_operation already selects for
+`<<` and unsigned `>>`.
+
 WHY THE FIX IS SHAPED LIKE THIS. The field description is captured BEFORE the
 right-hand side is evaluated, because evaluating it may touch another bitfield
 and overwrite the globals -- the same reason the plain assignment captures
@@ -60,7 +70,111 @@ plain path emits.
 
 --- a/cc_core.c
 +++ b/cc_core.c
-@@ -4861,6 +4861,65 @@ void expression(void)
+@@ -130,6 +130,12 @@ struct type* fallible_type_name(void);
+ struct type* type_name(void);
+ 
+ char* parse_function_pointer(void);
++/* The bitfield READ path is above the definitions of these, and an implicit
++ * declaration makes them return int. */
++char* bitwise_and_instruction(void);
++char* bitwise_or_instruction(void);
++char* shift_left_instruction(void);
++char* shift_right_logical_instruction(void);
+ 
+ void flush_output_buffer(FILE* destination_file)
+ {
+@@ -2405,11 +2411,11 @@ void postfix_expr_arrow(void)
+ 			{
+ 				emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: value");
+ 				emit_load_immediate(REGISTER_ZERO, i->bit_offset, "bitfield: shift");
+-				emit_out("lsr_x0,x1,x0\n");
++				emit_out(shift_right_logical_instruction());
+ 			}
+ 			emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: value");
+ 			emit_load_immediate(REGISTER_ZERO, (1 << i->bit_width) - 1, "bitfield: mask");
+-			emit_out("and_x0,x1,x0\n");
++			emit_out(bitwise_and_instruction());
+ 			pending_bitfield_width = 0;
+ 			current_target = integer;
+ 			return;
+@@ -2645,11 +2651,11 @@ void postfix_expr_dot(void)
+ 			{
+ 				emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: value");
+ 				emit_load_immediate(REGISTER_ZERO, i->bit_offset, "bitfield: shift");
+-				emit_out("lsr_x0,x1,x0\n");
++				emit_out(shift_right_logical_instruction());
+ 			}
+ 			emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: value");
+ 			emit_load_immediate(REGISTER_ZERO, (1 << i->bit_width) - 1, "bitfield: mask");
+-			emit_out("and_x0,x1,x0\n");
++			emit_out(bitwise_and_instruction());
+ 			pending_bitfield_width = 0;
+ 			current_target = integer;
+ 			return;
+@@ -3763,6 +3769,33 @@ char* bitwise_xor_instruction(void)
+ 	return "";
+ }
+ 
++/* THE BITFIELD PATHS NEEDED THESE, and there were none. Both the plain and the
++ * compound bitfield store emitted `lsl_x0,x1,x0` and `lsr_x0,x1,x0` literally,
++ * so a bitfield WRITE emitted aarch64 mnemonics on every architecture. Nothing
++ * in the corpus wrote a bitfield, so amd64 never noticed. The strings are the
++ * same ones compound_operation already selects for `<<` and unsigned `>>`. */
++char* shift_left_instruction(void)
++{
++	if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture)) return "SAL R0 R1 R0\n";
++	else if(X86 == Architecture) return "mov_ecx,eax\nmov_eax,ebx\nshl_eax,cl\n";
++	else if(AMD64 == Architecture) return "mov_rcx,rax\nmov_rax,rbx\nshl_rax,cl\n";
++	else if(ARMV7L == Architecture) return "LEFT R1 R0 R0 SHIFT AUX_ALWAYS\n";
++	else if(AARCH64 == Architecture) return "lsl_x0,x1,x0\n";
++	else if(Architecture & ARCH_FAMILY_RISCV) return "rd_a0 rs1_a1 rs2_a0 sll\n";
++	return "";
++}
++
++char* shift_right_logical_instruction(void)
++{
++	if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture)) return "SR0 R0 R1 R0\n";
++	else if(X86 == Architecture) return "mov_ecx,eax\nmov_eax,ebx\nshr_eax,cl\n";
++	else if(AMD64 == Architecture) return "mov_rcx,rax\nmov_rax,rbx\nshr_rax,cl\n";
++	else if(ARMV7L == Architecture) return "RIGHT R1 R0 R0 SHIFT AUX_ALWAYS\n";
++	else if(AARCH64 == Architecture) return "lsr_x0,x1,x0\n";
++	else if(Architecture & ARCH_FAMILY_RISCV) return "rd_a0 rs1_a1 rs2_a0 srl\n";
++	return "";
++}
++
+ char* bitwise_or_instruction(void)
+ {
+ 	if(Architecture & ARCH_FAMILY_KNIGHT) return "OR R0 R0 R1\n";
+@@ -4698,12 +4731,12 @@ void expression(void)
+ 			emit_move(REGISTER_ZERO, REGISTER_TEMP2, "bitfield: new value via x0");
+ 			emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: new value");
+ 			emit_load_immediate(REGISTER_ZERO, bf_mask, "bitfield: mask");
+-			emit_out("and_x0,x1,x0\n");
++			emit_out(bitwise_and_instruction());
+ 			if(0 != bf_off)
+ 			{
+ 				emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: new value");
+ 				emit_load_immediate(REGISTER_ZERO, bf_off, "bitfield: shift");
+-				emit_out("lsl_x0,x1,x0\n");
++				emit_out(shift_left_instruction());
+ 			}
+ 			emit_move(REGISTER_TEMP2, REGISTER_ZERO, "bitfield: new bits in place");
+ 
+@@ -4711,11 +4744,11 @@ void expression(void)
+ 			emit_out(load_value(bf_size, FALSE));
+ 			emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: old unit");
+ 			emit_load_immediate(REGISTER_ZERO, bf_clear, "bitfield: clear mask");
+-			emit_out("and_x0,x1,x0\n");
++			emit_out(bitwise_and_instruction());
+ 
+ 			emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: cleared unit");
+ 			emit_move(REGISTER_ZERO, REGISTER_TEMP2, "bitfield: new bits");
+-			emit_out("orr_x0,x1,x0\n");
++			emit_out(bitwise_or_instruction());
+ 
+ 			emit_move(REGISTER_ONE, REGISTER_TEMP, "bitfield: address");
+ 			emit_out(store_value(bf_size));
+@@ -4861,6 +4894,65 @@ void expression(void)
  		struct type* last_type = current_target;
  		int is_array_indexed = match("]", global_token->prev->s);
  
@@ -126,7 +240,7 @@ plain path emits.
  		if(!is_array_indexed || !match("char*", current_target->name))
  		{
  			if((KNIGHT_POSIX == Architecture) || (KNIGHT_NATIVE == Architecture)) load = "LOAD R1 R1 0\n";
-@@ -4901,6 +4960,27 @@ void expression(void)
+@@ -4901,6 +4993,27 @@ void expression(void)
  		emit_push(REGISTER_ONE, "compound operator");
  		emit_out(load);
  
@@ -142,11 +256,11 @@ plain path emits.
 +			{
 +				emit_move(REGISTER_ONE, REGISTER_ZERO, "compound bitfield: value");
 +				emit_load_immediate(REGISTER_ZERO, cbf_off, "compound bitfield: shift");
-+				emit_out("lsr_x0,x1,x0\n");
++				emit_out(shift_right_logical_instruction());
 +			}
 +			emit_move(REGISTER_ONE, REGISTER_ZERO, "compound bitfield: value");
 +			emit_load_immediate(REGISTER_ZERO, cbf_mask, "compound bitfield: mask");
-+			emit_out("and_x0,x1,x0\n");
++			emit_out(bitwise_and_instruction());
 +			emit_move(REGISTER_ONE, REGISTER_ZERO, "compound bitfield: old field");
 +			emit_move(REGISTER_ZERO, REGISTER_TEMP2, "compound bitfield: rhs back");
 +		}
@@ -154,7 +268,7 @@ plain path emits.
  		if(should_apply_pointer_arithmetic) {
  			multiply_by_object_size(object_size);
  		}
-@@ -4908,7 +4988,41 @@ void expression(void)
+@@ -4908,7 +5021,41 @@ void expression(void)
  		operation = compound_operation(operator, current_target->is_signed);
  		emit_out(operation);
  		emit_pop(REGISTER_ONE, "compound operator");
@@ -171,22 +285,22 @@ plain path emits.
 +			emit_move(REGISTER_ZERO, REGISTER_TEMP2, "bitfield: new value via x0");
 +			emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: new value");
 +			emit_load_immediate(REGISTER_ZERO, cbf_mask, "bitfield: mask");
-+			emit_out("and_x0,x1,x0\n");
++			emit_out(bitwise_and_instruction());
 +			if(0 != cbf_off)
 +			{
 +				emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: new value");
 +				emit_load_immediate(REGISTER_ZERO, cbf_off, "bitfield: shift");
-+				emit_out("lsl_x0,x1,x0\n");
++				emit_out(shift_left_instruction());
 +			}
 +			emit_move(REGISTER_TEMP2, REGISTER_ZERO, "bitfield: new bits in place");
 +			emit_move(REGISTER_ZERO, REGISTER_TEMP, "bitfield: address");
 +			emit_out(load_value(cbf_size, FALSE));
 +			emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: old unit");
 +			emit_load_immediate(REGISTER_ZERO, cbf_clear, "bitfield: clear mask");
-+			emit_out("and_x0,x1,x0\n");
++			emit_out(bitwise_and_instruction());
 +			emit_move(REGISTER_ONE, REGISTER_ZERO, "bitfield: cleared unit");
 +			emit_move(REGISTER_ZERO, REGISTER_TEMP2, "bitfield: new bits");
-+			emit_out("orr_x0,x1,x0\n");
++			emit_out(bitwise_or_instruction());
 +			emit_move(REGISTER_ONE, REGISTER_TEMP, "bitfield: address");
 +			emit_out(store_value(cbf_size));
 +		}
