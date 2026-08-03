@@ -1144,6 +1144,46 @@ jobs:
           # test.ref is gcc's expected output and is a PREREQUISITE, not a test.
           make -C mc-tree/tests test.ref >/dev/null 2>&1 || true
 
+          # WHY THE SUBJECT CANNOT READ glibc's SHARED OBJECTS.
+          #
+          # Most of the red below is one message:
+          #     /usr/lib/aarch64-linux-gnu/libc.so: error:
+          #       /lib/aarch64-linux-gnu/libc.so.6: unrecognized file type
+          # It comes from tcc_object_type (tccelf.c), which reads an ELF header
+          # and returns AFF_BINTYPE_DYN for ET_DYN. The CONTROL reads the same
+          # files from the same paths without complaint, so the same source is
+          # answering differently -- and that gates hello-exe, tests2-dir,
+          # dlltest and the dynamic route everywhere else.
+          #
+          # This says what the files actually are before anyone theorises. Note
+          # libc.so is usually a LINKER SCRIPT, not ELF -- the subject clearly
+          # got past that one, because the name in the error is the file the
+          # script POINTS AT.
+          echo "  --- what the rejected files actually are ---"
+          for f in /usr/lib/aarch64-linux-gnu/libc.so \
+                   /lib/aarch64-linux-gnu/libc.so.6 \
+                   /lib/ld-linux-aarch64.so.1; do
+            if [ -e "$f" ]; then
+              printf '    %-42s %s\n' "$f" "$(head -c 4 "$f" | od -A n -t x1 | tr -s ' ')"
+              printf '      %s\n' "$(file -b "$f" 2>/dev/null | cut -c1-70)"
+              # e_type is a 2-byte little-endian field at offset 16; 3 is ET_DYN
+              printf '      e_type=%s (3 = ET_DYN)\n' \
+                "$(od -A n -t u2 -j 16 -N 2 "$f" 2>/dev/null | tr -d ' ')"
+            else
+              printf '    %-42s MISSING\n' "$f"
+            fi
+          done
+          echo "  --- and the control, on the same files ---"
+          ( cd gcc-tcc && printf 'int main(void){return 0;}\n' > /tmp/hw.c
+            ./tcc -o /tmp/hw-ctl /tmp/hw.c 2>&1 | head -3 | sed 's/^/      /'
+            [ -s /tmp/hw-ctl ] && echo "      control links dynamically: yes" \
+                               || echo "      control ALSO fails -- not a subject defect" )
+          echo "  --- and the subject, same command ---"
+          ( cd mc-tree && ./tcc-real -o /tmp/hw-sub /tmp/hw.c 2>&1 | head -3 | sed 's/^/      /'
+            [ -s /tmp/hw-sub ] && echo "      subject links dynamically: yes" \
+                               || echo "      subject cannot link dynamically" )
+          echo ""
+
           : > /tmp/suite.tsv
           for t in hello-exe hello-run libtest test1 test2 test3 \
                    abitest asm-c-connect-test vla_test-run tests2-dir \
@@ -1182,8 +1222,13 @@ jobs:
             printf '    %-22s %-8s calls=%s\n' "$t" "$v" "$c"
           done < /tmp/suite.tsv
           echo ""
-          printf '    %s of %s targets ok\n' \
-            "$(grep -c 'ok$' /tmp/suite.tsv || echo 0)" "$(wc -l < /tmp/suite.tsv)"
+          # COUNT THE SECOND FIELD, not the end of the line. `grep -c 'ok$'`
+          # stopped matching the moment the call count was appended, so a run
+          # with a genuine pass reported "0 of 17".
+          _ok=$(awk -F'\t' '$2=="ok"' /tmp/suite.tsv | wc -l)
+          _hollow=$(awk -F'\t' '$3==0' /tmp/suite.tsv | wc -l)
+          printf '    %s of %s targets ok\n' "$_ok" "$(wc -l < /tmp/suite.tsv)"
+          printf '    %s never invoked the subject at all -- those are not results\n' "$_hollow"
           echo "    (this step never fails the job -- it is a measurement, not a gate)"
 
       - name: 'SUBJECT: self-compilation, sizes and hashes'
