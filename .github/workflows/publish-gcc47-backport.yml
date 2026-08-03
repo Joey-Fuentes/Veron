@@ -1,0 +1,168 @@
+# =====================================================================
+# THE gcc 4.7.4 TREE THE LADDER ACTUALLY COMPILES, PUBLISHED ON ITS OWN.
+#
+# WHY THIS EXISTS. Rung 6 fails with
+#
+#     <built-in>:0:0: internal compiler error: in ?, at
+#                     config/aarch64/aarch64-builtins.c:944
+#
+# and reading line 944 needed the SOURCE. That source is not in this
+# repository and is not any released tarball either: gcc 4.7.4 has ZERO
+# aarch64 support, so `gcc/config/aarch64/` is transplanted from 4.8.5 by
+# spikes/stage4/probes/backport-aarch64.sh and the result is DERIVED at build
+# time inside stage0-stage4-complete. Asking for "the file from gcc 4.8.5" is
+# nearly right and not exactly right, and "nearly" is how a round gets spent
+# reading a line that moved.
+#
+# stage0-stage4-complete derives it too, but that job runs for hours and the
+# derivation is over in minutes. This is the same two tarballs and the same
+# script, on their own, so the tree can be read without waiting for a ladder.
+#
+# IDENTICAL BY CONSTRUCTION, AND CHECKED RATHER THAN CLAIMED. The pins and the
+# script are the ones the complete job uses. Both jobs print
+# `sha256sum` of the two derived artefacts, so the two logs can be compared
+# directly -- if they ever differ, this job is lying and the comparison says
+# so rather than leaving it to be discovered.
+#
+# WHAT IT PUBLISHES:
+#   gcc47-backend-aarch64   the aarch64 backend as the box sees it -- the
+#                           directory the ICE names, readable without
+#                           unpacking anything
+#   gcc47-aarch64-backport  the two artefacts the box actually applies:
+#                           the newfiles tarball and the changed-files patch
+#
+# It builds nothing. Fetch, copy, diff, upload.
+# =====================================================================
+
+name: publish-gcc47-backport
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/publish-gcc47-backport.yml'
+      - 'spikes/stage4/probes/backport-aarch64.sh'
+
+env:
+  # THE SAME PINS AS stage0-stage4-complete. If these drift, the published
+  # tree stops being the tree the ladder compiles, which is the one property
+  # this job has.
+  GCC47: '4.7.4'
+  GCC48: '4.8.5'
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch the two gcc tarballs
+        run: |
+          set -eu
+          mkdir -p pins && cd pins
+          GNU_MIRRORS="https://ftpmirror.gnu.org
+                       https://mirrors.kernel.org/gnu
+                       https://mirror.csclub.uwaterloo.ca/gnu
+                       https://ftp.gnu.org/gnu"
+          fetch() {
+            _out=$(basename "$2")
+            if [ -s "$_out" ]; then
+              printf '  cached  %-30s %10s bytes\n' "$_out" "$(wc -c < "$_out")"
+              return 0
+            fi
+            for _m in $1; do
+              if curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 \
+                      -o "$_out.part" "$_m/$2" 2>/dev/null; then
+                mv "$_out.part" "$_out"
+                printf '  fetched %-30s %10s bytes  from %s\n' \
+                  "$_out" "$(wc -c < "$_out")" "$_m"
+                return 0
+              fi
+              echo "    no answer from $_m"
+            done
+            echo "  FAIL: could not fetch $2"
+            return 1
+          }
+          fetch "$GNU_MIRRORS" "gcc/gcc-$GCC47/gcc-$GCC47.tar.bz2"
+          fetch "$GNU_MIRRORS" "gcc/gcc-$GCC48/gcc-$GCC48.tar.bz2"
+
+      - name: 'Derive the backport -- the same script the ladder runs'
+        run: |
+          set -eu
+          # BYTE FOR BYTE THE COMMANDS stage0-stage4-complete's AIRLOCK STEP
+          # RUNS. Kept in step with it deliberately; if one changes the other
+          # must, and the sha256 lines at the end are what will notice.
+          mkdir -p bp && cd bp
+          tar -jxf "../pins/gcc-$GCC47.tar.bz2"; mv "gcc-$GCC47" stock
+          tar -jxf "../pins/gcc-$GCC47.tar.bz2"
+          tar -jxf "../pins/gcc-$GCC48.tar.bz2"
+          echo "  before: $(grep -c aarch64 "gcc-$GCC47/gcc/config.gcc" || true) aarch64 mentions in config.gcc"
+          bash "$GITHUB_WORKSPACE/spikes/stage4/probes/backport-aarch64.sh" \
+            "gcc-$GCC47" "gcc-$GCC48" | sed 's/^/    /'
+          echo "  after:  $(grep -c aarch64 "gcc-$GCC47/gcc/config.gcc" || true) aarch64 mentions in config.gcc"
+
+          : > /tmp/new.txt; : > /tmp/chg.txt
+          ( cd "gcc-$GCC47" && find . -type f | sort ) > /tmp/all.txt
+          while IFS= read -r f; do
+            if [ ! -f "stock/$f" ]; then
+              printf '%s\n' "$f" >> /tmp/new.txt
+            elif ! cmp -s "stock/$f" "gcc-$GCC47/$f"; then
+              printf '%s\n' "$f" >> /tmp/chg.txt
+            fi
+          done < /tmp/all.txt
+          echo "  new files:     $(wc -l < /tmp/new.txt)"
+          echo "  changed files: $(wc -l < /tmp/chg.txt)"
+          sed 's/^/    /' /tmp/chg.txt
+
+          mkdir -p ../out
+          tar -czf "../out/gcc47-aarch64-newfiles.tar.gz" \
+              -C "gcc-$GCC47" -T /tmp/new.txt
+          : > "../out/gcc47-aarch64-changed.patch"
+          while IFS= read -r f; do
+            diff -u "stock/$f" "gcc-$GCC47/$f" \
+              >> "../out/gcc47-aarch64-changed.patch" || true
+          done < /tmp/chg.txt
+
+          # THE BACKEND, LOOSE, so it can be read in the artifact browser
+          # without unpacking a tarball. This is the directory the ICE names.
+          mkdir -p ../out/backend
+          cp -a "gcc-$GCC47/gcc/config/aarch64/." ../out/backend/
+
+          echo "  --- the line rung 6 dies on, if it is still 944 ---"
+          _f="gcc-$GCC47/gcc/config/aarch64/aarch64-builtins.c"
+          if [ -f "$_f" ]; then
+            echo "      $_f: $(wc -l < "$_f") lines"
+            sed -n '915,950p' "$_f" | awk '{ printf "      %s%5d  %s\n", (NR+914==944 ? ">>" : "  "), NR+914, $0 }'
+            echo "      --- the enclosing function ---"
+            awk 'NR<=944 && /^[A-Za-z_].*\(/ { l=NR": "$0 } END { print "      " l }' "$_f"
+          else
+            echo "      aarch64-builtins.c is NOT in the derived tree -- that is"
+            echo "      itself the answer, and a different one than expected"
+          fi
+
+      - name: 'The same sha256 lines the complete job prints'
+        run: |
+          set -eu
+          # COMPARE THESE AGAINST stage0-stage4-complete's AIRLOCK STEP. Same
+          # pins, same script, so they must match; if they do not, this job is
+          # publishing a tree the ladder does not compile and the two logs say
+          # so without anyone having to trust this comment.
+          sha256sum out/gcc47-aarch64-* | sed 's/^/    /'
+          printf '    %-34s %10s bytes\n' gcc47-aarch64-newfiles.tar.gz "$(wc -c < out/gcc47-aarch64-newfiles.tar.gz)"
+          printf '    %-34s %10s bytes\n' gcc47-aarch64-changed.patch  "$(wc -c < out/gcc47-aarch64-changed.patch)"
+          printf '    %-34s %10s files\n' backend/ "$(ls out/backend | wc -l)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gcc47-backend-aarch64
+          path: out/backend/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gcc47-aarch64-backport
+          path: |
+            out/gcc47-aarch64-newfiles.tar.gz
+            out/gcc47-aarch64-changed.patch
+          if-no-files-found: error

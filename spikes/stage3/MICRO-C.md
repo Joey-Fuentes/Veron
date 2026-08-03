@@ -1687,6 +1687,21 @@ file the diagnostic never opened. Fixed: it now searches every `config.log`
 under `/work/bld` as well as `build.log`, and re-runs the `-E -dM` invocation
 directly with `-v` so the next log shows how far gcc gets before it dies.
 
+**THE SOURCE IS NOW PUBLISHABLE ON ITS OWN.**
+`.github/workflows/publish-gcc47-backport.yml` fetches the two gcc tarballs,
+runs the same `backport-aarch64.sh` the ladder runs, and uploads the derived
+`gcc/config/aarch64/` directory plus the two artefacts the box applies. It
+builds nothing and takes minutes rather than hours.
+
+This exists because the tree rung 6 compiles is **derived, not downloadable**.
+gcc 4.7.4 has zero aarch64 support -- `stock 4.7.4: 0 aarch64 mentions in
+config.gcc` -- so the backend is transplanted from 4.8.5 at build time. Asking
+for "the file from 4.8.5" is nearly right and not exactly right, and "nearly"
+is how a round gets spent reading a line that moved.
+
+Both jobs print `sha256sum` of the two derived artefacts, so the logs can be
+compared directly rather than the equivalence being asserted here.
+
 **What the object diff says about where to look.** mc-tcc's integer codegen is
 byte-identical to a gcc-built tcc across 1175 musl objects; every one of the
 131 divergences is floating point. So the gcc mc-tcc builds differs from the
