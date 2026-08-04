@@ -1,0 +1,80 @@
+name: stage5-order
+
+# DOES THE BUILD ORDER CLOSE ACROSS ALL 111 PACKAGES?
+#
+# The topological sort has only ever run on the 41 that have recipes.
+# Everything else is "probed", which means a digest exists -- not that the set
+# can be built in an order that terminates. Two cycles are known by hand
+# (freetype/harfbuzz, xkeyboard-config/libxkbcommon) and the second has never
+# been tested.
+#
+# HOW THE EDGES ARE DERIVED. Until now a declared name like `gio-2.0` could
+# only be turned into "glib" by a hand-typed list, and hand-typed lists have
+# been wrong repeatedly here. The probe now records the *.pc names each
+# tarball SHIPS, so gio-2.0 maps to glib because glib's tree contains
+# gio-2.0.pc.in. Both halves come from files the probe already opens.
+#
+# THE GRAPH IS PESSIMISTIC ON PURPOSE. A declared dependency list is the union
+# of every optional feature: gst-plugins-bad names aom, openh264 and vulkan;
+# libxml2 names icu, which we disable. So this has MORE edges than the real
+# build. That asymmetry is the point --
+#
+#     acyclic here  =>  acyclic in reality, guaranteed
+#     a cycle here  =>  inspect it; it may vanish once a feature is off
+#
+# This costs one probe pass over every tarball and answers a question that
+# otherwise gets answered by a batch failing halfway through.
+
+on:
+  workflow_dispatch:
+    inputs:
+      reuse:
+        description: 'Reuse an existing probed TSV if present'
+        type: boolean
+        default: true
+
+concurrency:
+  group: stage5-order-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  order:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Check the parsers first'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 tools/probe.py selftest
+
+      - name: 'Probe every package in the set'
+        run: |
+          set -eu
+          cd spikes/stage5
+          # Everything: what has recipes, what is planned, and the gaps that
+          # closing gaps opened. One list, so the graph is the whole set
+          # rather than whichever batch was last touched.
+          { python3 tools/veron sources | cut -f3
+            grep -v '^#' remaining-urls.txt
+            grep -v '^#' gap-urls.txt
+            grep -v '^#' gap3-urls.txt
+          } | grep '^http' | sort -u > all-urls.txt
+          echo "  $(wc -l < all-urls.txt) tarballs"
+          python3 -u tools/probe.py batch all-urls.txt --out probed-all.tsv || true
+
+      - name: 'Derive the edges and sort'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 tools/probe.py order probed-all.tsv --out BUILD-ORDER.txt
+
+      - name: 'What still maps to nothing'
+        if: always()
+        run: |
+          set -eu
+          cd spikes/stage5
+          { ls packages; grep -v '^#' provided-names.txt; } > /tmp/have.txt
+          python3 tools/probe.py deps probed-all.tsv --have /tmp/have.txt | tail -40

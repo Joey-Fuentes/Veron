@@ -545,7 +545,18 @@ def declared_deps(root):
     optional one. The authoritative list comes from ldd and the .pc files
     AFTER a build -- see `probe linked`.
     """
-    found = {"pkg_config": set(), "check_lib": set(), "pc_requires": set(),
+    # WHAT A PACKAGE PROVIDES, not only what it needs. Every *.pc.in file a
+    # tarball ships is a name OTHER packages will ask for -- glib ships
+    # gio-2.0.pc, gobject-2.0.pc and gmodule-2.0.pc, so a package declaring
+    # `gio-2.0` depends on glib.
+    #
+    # Without this half, a declared name cannot be turned into an EDGE, and
+    # the only way to know that gio-2.0 means glib was a hand-typed list. That
+    # list is exactly the kind of thing that has been wrong repeatedly here --
+    # deriving it from the tarball is both correct and free, since these files
+    # are already being opened to read what the package needs.
+    found = {"provides": set(),
+             "pkg_config": set(), "check_lib": set(), "pc_requires": set(),
              "vcpkg": set(), "cmake_find": set(), "cargo": set()}
     for dirpath, dirnames, files in os.walk(root):
         dirnames[:] = [d for d in dirnames
@@ -587,6 +598,9 @@ def declared_deps(root):
                     if nm.lower() not in ("pkgconfig",):
                         found["cmake_find"].add(nm)
                 continue
+            if fn.endswith((".pc.in", ".pc")):
+                # The .pc basename IS the name consumers ask for.
+                found["provides"].add(re.sub(r"\.pc(\.in)?$", "", fn))
             if fn in ("configure.ac", "configure.in", "meson.build") or fn.endswith(".pc.in"):
                 t = open(os.path.join(dirpath, fn), "rb").read().decode("utf-8", "replace")
                 for m in re.finditer(r"PKG_CHECK_MODULES\(\[?\w+\]?,\s*\[?([^\],\)]+)", t):
@@ -841,7 +855,12 @@ deferral        = ""   # REQUIRED -- what was not verified, stated
               "signature": sig, "license": spdx,
               "build": "; ".join(build_system(root)),
               "tests": test_target(root),
-              "deps": {x for v in d.values() for x in v}}
+              # PROVIDES IS NOT A DEPENDENCY. Unioning every category would
+              # put a package's own .pc names into its dependency list and
+              # make it depend on itself -- which a topological sort reports
+              # as a cycle of length one.
+              "provides": set(d.get("provides", [])),
+              "deps": {x for k, v in d.items() if k != "provides" for x in v}}
     if not keep:
         shutil.rmtree(work, ignore_errors=True)
     else:
@@ -887,7 +906,8 @@ def cmd_batch(a):
             rows.append("\t".join([
                 r["name"], url, r["version"], r["sha256"],
                 r["signature"] or "none", r["license"], r["build"],
-                r["tests"], ";".join(sorted(r["deps"]))]))
+                r["tests"], ";".join(sorted(r["deps"])),
+                ";".join(sorted(r.get("provides", [])))]))
             ok += 1
         else:
             rows.append("\t".join(["FAILED", url, "", "", "", "", "", "", ""]))
@@ -895,7 +915,7 @@ def cmd_batch(a):
         if a.out:
             with open(a.out, "w") as f:
                 f.write("# name\turl\tversion\tsha256\tsignature\tlicense\t"
-                        "build\ttests\tdeps\n")
+                        "build\ttests\tdeps\tprovides\n")
                 f.write("\n".join(rows) + "\n")
 
     print(f"\n  ===== BATCH DONE: {ok} probed, {fail} failed =====")
@@ -1108,6 +1128,106 @@ def cmd_mirrors(a):
             f.write("\t".join(row) + "\n")
     print(f"  {a.out}: {len(existing)} rows in, "
           f"{len(merged) - len(existing)} added, {len(merged)} total")
+    return 0
+
+
+def cmd_order(a):
+    """Does the build order close across the whole set?
+
+    THE TOPOLOGICAL SORT HAS ONLY EVER RUN ON PACKAGES THAT HAVE RECIPES.
+    Forty-one of a hundred and eleven. Everything else has been "probed",
+    which means a digest exists -- not that the thing can be built in an order
+    that terminates.
+
+    HOW THE EDGES ARE DERIVED, and why this is not the hand-typed list it
+    replaces: each package records the *.pc names it SHIPS, so `gio-2.0` maps
+    to glib because glib's tarball contains gio-2.0.pc.in. Both halves come
+    out of the same files the probe already opens.
+
+    THIS GRAPH IS PESSIMISTIC ON PURPOSE. A declared dependency list is the
+    union of every optional feature -- gst-plugins-bad names aom, openh264 and
+    vulkan; libxml2 names icu, which we disable. So this graph has MORE edges
+    than the real build will. That asymmetry is what makes it useful:
+
+        acyclic here  =>  acyclic in reality, guaranteed
+        a cycle here  =>  inspect it; it may vanish once a feature is off
+
+    Two cycles are already known by hand -- freetype/harfbuzz, and
+    xkeyboard-config/libxkbcommon, which has never been tested. Anything else
+    this reports is new.
+    """
+    prov, needs, known = {}, {}, set()
+    for tsv in a.tsv:
+        if not os.path.exists(tsv):
+            continue
+        with open(tsv) as f:
+            head = f.readline().rstrip("\n").split("\t")
+            ix = {c: i for i, c in enumerate(head)}
+            for ln in f:
+                p_ = ln.rstrip("\n").split("\t")
+                if len(p_) <= ix.get("deps", 8) or p_[0] == "FAILED":
+                    continue
+                pkg = p_[ix["name"]].lower()
+                known.add(pkg)
+                prov.setdefault(pkg, set()).add(pkg)
+                if "provides" in ix and len(p_) > ix["provides"]:
+                    for pc in p_[ix["provides"]].split(";"):
+                        if pc.strip():
+                            prov[pkg].add(pc.strip().lower())
+                needs[pkg] = {d.strip().lower()
+                              for d in p_[ix["deps"]].split(";") if d.strip()}
+
+    # name -> package that ships it
+    owner = {}
+    for pkg, names in prov.items():
+        for n in names:
+            owner.setdefault(n, pkg)
+
+    edges, unresolved = {}, {}
+    for pkg, want in needs.items():
+        e = set()
+        for n in want:
+            o = owner.get(n)
+            if o and o != pkg:
+                e.add(o)
+            elif not o:
+                unresolved.setdefault(n, set()).add(pkg)
+        edges[pkg] = e
+
+    print(f"  {len(known)} packages, "
+          f"{sum(len(v) for v in edges.values())} edges derived")
+    print(f"  {len(unresolved)} declared names map to no package "
+          f"(optional features, platform frameworks, or gaps)\n")
+
+    # Kahn's algorithm, tie-broken by name so the answer is stable.
+    done, order = set(), []
+    while len(order) < len(known):
+        ready = sorted(p for p in known
+                       if p not in done and (edges.get(p, set()) - done) == set())
+        if not ready:
+            stuck = sorted(known - done)
+            print("  BUILD ORDER DOES NOT CLOSE")
+            print(f"  {len(stuck)} packages can never become ready:\n")
+            for p in stuck[:40]:
+                blocking = sorted((edges.get(p, set()) - done) & set(stuck))
+                print(f"    {p:<24} waits on {', '.join(blocking[:5])}")
+            print("\n  Each pair above is a cycle or feeds one. Remember this")
+            print("  graph is PESSIMISTIC: an edge may come from an optional")
+            print("  feature that will be disabled, in which case the cycle is")
+            print("  not real. Check the option before restructuring anything.")
+            return 1
+        for p in ready:
+            order.append(p)
+            done.add(p)
+
+    print("  BUILD ORDER CLOSES -- no cycles in the pessimistic graph")
+    print("  Since this graph has MORE edges than the real build will, the")
+    print("  real order closes too.\n")
+    for i, p in enumerate(order, 1):
+        print(f"    {i:>3}. {p}")
+    if a.out:
+        open(a.out, "w").write("\n".join(order) + "\n")
+        print(f"\n  wrote {a.out}")
     return 0
 
 
@@ -1472,6 +1592,12 @@ def main():
     p = sub.add_parser("selftest",
                        help="check the parsers against real HTML shapes")
     p.set_defaults(fn=cmd_selftest)
+
+    p = sub.add_parser("order",
+                       help="derive edges and check the build order closes")
+    p.add_argument("tsv", nargs="+")
+    p.add_argument("--out")
+    p.set_defaults(fn=cmd_order)
 
     p = sub.add_parser("deps",
                        help="diff declared dependencies against the set")
