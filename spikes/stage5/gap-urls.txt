@@ -1,0 +1,33 @@
+# Packages the declared-dependency scan found missing, plus three URLs that
+# were simply wrong.
+#
+# WHAT THE SCAN FOUND. `probe deps` read the dependencies every remaining
+# package declares -- a column `probe batch` had been writing all along and
+# nothing had ever read -- and the biggest result was that FOUR packages want
+# libudev and nothing provides it:
+#
+#     libudev   4x   libinput, mesa, wlroots, yambar
+#
+# busybox does not cover this. Its `mdev` is a hotplug helper that creates
+# device nodes; what these four link against is libudev.so, a C library with
+# udev_enumerate_scan_devices() and udev_monitor_receive_device(). libinput's
+# whole device model is udev-based, so no libudev means no input, which means
+# no compositor. libudev-zero implements that API with no daemon, reading
+# /sys directly -- written for exactly this case.
+
+# batch: gaps
+https://github.com/illiliti/libudev-zero/archive/1.0.3/libudev-zero-1.0.3.tar.gz
+https://github.com/google/brotli/archive/v1.1.0/brotli-1.1.0.tar.gz
+https://gitlab.com/libidn/libidn2/-/archive/v2.3.7/libidn2-v2.3.7.tar.gz
+https://github.com/json-c/json-c/archive/json-c-0.18-20240915/json-c-0.18.tar.gz
+https://gstreamer.freedesktop.org/src/orc/orc-0.4.41.tar.xz
+https://github.com/JuliaStrings/utf8proc/releases/download/v2.11.3/utf8proc-2.11.3.tar.gz
+
+# batch: fixes
+# Three URLs from the last run were wrong -- the packages are fine.
+#   mtdev        is not on GitHub; upstream is bitmath.org
+#   libxkbcommon moved to freedesktop GitLab
+#   nss          the mozilla archive layout differs from what I guessed
+http://bitmath.org/code/mtdev/mtdev-1.1.7.tar.bz2
+https://gitlab.freedesktop.org/xorg/lib/libxkbcommon/-/archive/xkbcommon-1.13.2/libxkbcommon-xkbcommon-1.13.2.tar.gz
+https://ftp.mozilla.org/pub/security/nss/releases/NSS_3_112_RTM/src/nss-3.112-with-nspr-4.37.tar.gz

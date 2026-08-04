@@ -1,0 +1,112 @@
+name: stage5-probe-gaps2
+
+# THE PACKAGES THE DEPENDENCY SCAN FOUND, AND THE URLS THAT WERE WRONG.
+#
+# `probe deps` read what every remaining package declares and produced one
+# finding that changes the plan: FOUR packages want libudev and nothing in any
+# batch provides it. busybox does not cover it -- `mdev` creates device nodes,
+# while libinput, mesa, wlroots and yambar link libudev.so and call
+# udev_enumerate_scan_devices(). No libudev means no input, which means no
+# compositor. libudev-zero implements that API with no daemon.
+#
+# Also here: brotli (gnutls, libsoup, nghttp2 -- and freetype's WOFF2, which
+# was deferred with a note to revisit), libidn2, json-c, orc, libutf8proc, and
+# three URLs that were simply wrong last time.
+#
+# AND THE TWO THAT PUBLISH NO TARBALL. libsfdo and dinit only push git tags.
+# Both halves of pinning them are automatic and neither was being recorded:
+# `probe source` reads the repository URL out of Arch's PKGBUILD, and
+# `git ls-remote refs/tags/<tag>^{}` resolves the tag to the commit it names.
+# The ^{} matters -- without it an annotated tag resolves to the TAG OBJECT,
+# a different hash than the commit, and `git archive` would produce something
+# else entirely.
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: 'Which group to probe'
+        type: choice
+        options: ['all', 'gaps', 'fixes']
+        default: 'all'
+
+concurrency:
+  group: stage5-probe-gaps2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Select'
+        run: |
+          set -eu
+          cd spikes/stage5
+          awk -v want="${{ inputs.batch }}" '
+            /^# batch:/ { cur = $3; next }
+            /^#/ || /^[[:space:]]*$/ { next }
+            (want == "all" || want == cur) { print }
+          ' gap-urls.txt > gap.txt
+          echo "  $(wc -l < gap.txt) URLs"
+          sed 's|^|    |' gap.txt
+
+      - name: 'Probe them'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 -u tools/probe.py batch gap.txt --out probed-gaps2.tsv || true
+
+      - name: 'Find the repository for the two with no tarball'
+        run: |
+          set -eu
+          cd spikes/stage5
+          # THE REPOSITORY URL IS DISCOVERABLE, not something to hardcode:
+          # Arch's PKGBUILD records it, and `probe source` already reads it.
+          python3 -u tools/probe.py source libsfdo dinit utf8proc || true
+
+      - name: 'Resolve their tags to commits'
+        run: |
+          set -eu
+          echo ""
+          echo "  === GIT-PINNED RECIPES ==="
+          for spec in \
+            'https://gitlab.freedesktop.org/vyivel/libsfdo.git#v0.1.4' \
+            'https://github.com/davmac314/dinit.git#v0.22.1'; do
+            url="${spec%%#*}"; tag="${spec##*#}"
+            out=$(git ls-remote "$url" "refs/tags/$tag" "refs/tags/$tag^{}" 2>&1 || true)
+            # ^{} dereferences an annotated tag to the commit it points at.
+            # Without it the answer is the tag OBJECT's hash, which is not
+            # what git archive takes and not what the tree hashes to.
+            c=$(echo "$out" | awk '/\^\{\}$/{print $1}' | head -1)
+            [ -n "$c" ] || c=$(echo "$out" | awk 'NR==1{print $1}')
+            if [ -z "$c" ]; then echo "  could not resolve $url @ $tag"; continue; fi
+            echo ""
+            echo "  # $url @ $tag"
+            echo "  [source]"
+            echo "  kind   = \"git\""
+            echo "  url    = \"$url\""
+            echo "  commit = \"$c\""
+            echo "  tag    = \"$tag\"   # informational -- the commit is the pin"
+          done
+
+      - name: 'The table'
+        if: always()
+        run: |
+          set -eu
+          cd spikes/stage5
+          [ -s probed-gaps2.tsv ] || { echo "  nothing probed"; exit 0; }
+          echo "  === PROBED ==="
+          awk -F'\t' 'NR>1 {printf "  %-24s %-12s %-18s %s\n", $1, $3, substr($4,1,16), $6}' probed-gaps2.tsv
+          echo ""
+          echo "  === NO SIGNATURE ==="
+          awk -F'\t' 'NR>1 && $5=="none" {print "    " $1}' probed-gaps2.tsv
+          echo ""
+          echo "  === FAILED ==="
+          awk -F'\t' '$1=="FAILED" {print "    " $2}' probed-gaps2.tsv
+          echo ""
+          echo "  === WHAT THESE DECLARE ==="
+          { ls packages; grep -v '^#' provided-names.txt; } > /tmp/have.txt
+          python3 tools/probe.py deps probed-gaps2.tsv --have /tmp/have.txt | tail -25
