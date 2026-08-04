@@ -36,7 +36,7 @@ between this file and the recipes fails the run.
 package bzip2 1.0.8
   group        build-substrate
   license      bzip2-1.0.6
-  recipe-sha   f93be056f7f998af75d9f4f72e1b29ab1b6ec1bfdfc992bffb05004bc5b38fea
+  recipe-sha   a50bbe5269893739e37f7e6f891bdcfd8c8e5223b5b61d68d80884cb34213fd1
 
   source
     url        https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
@@ -69,6 +69,10 @@ package bzip2 1.0.8
     [06] install
          cwd  build/bzip2-1.0.8/bzip2-1.0.8
          argv ["make", "PREFIX=dest/bzip2/usr", "install"]
+    [07] relative-symlinks
+         cwd  dest/bzip2/usr/bin
+         SHELL (declared) why=rewriting a set of symlinks in place is a loop over readlink, not an argv
+         | for l in *; do [ -L "$l" ] || continue; t=$(readlink "$l"); case "$t" in /*) ln -sf "$(basename "$t")" "$l"; echo "  relinked $l -> $(basename "$t")";; esac; done; ls -l | head -12
 
 ======================================================================
 package file 5.48

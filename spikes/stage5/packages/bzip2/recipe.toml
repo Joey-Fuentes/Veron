@@ -77,6 +77,19 @@ name = "install"
 cwd  = "$S"
 run  = [["make", "PREFIX=$D/usr", "install"]]
 
+[[steps]]
+# ABSOLUTE SYMLINKS INTO THE DESTDIR ARE A TRAP. bzip2's Makefile creates its
+# aliases with `ln -s -f $(PREFIX)/bin/bzip2`, and PREFIX is the DESTDIR here,
+# so bunzip2 and bzcat end up pointing at /dest/bzip2/usr/bin/bzip2 -- a path
+# that exists during the build and nowhere else. Relative links point at the
+# right file in the DESTDIR, in the staged build root, and in the final image
+# alike.
+name = "relative-symlinks"
+cwd  = "$D/usr/bin"
+timeout = 60
+why = "rewriting a set of symlinks in place is a loop over readlink, not an argv"
+shell = "for l in *; do [ -L \"$l\" ] || continue; t=$(readlink \"$l\"); case \"$t\" in /*) ln -sf \"$(basename \"$t\")\" \"$l\"; echo \"  relinked $l -> $(basename \"$t\")\";; esac; done; ls -l | head -12"
+
 [guest]
 test   = [["/usr/bin/bzip2", "--help"]]
 expect = ["1.0.8"]

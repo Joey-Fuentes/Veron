@@ -471,7 +471,41 @@ def run_step(s, logf, dry):
         beat.set()
     logf.write(f"  rc={rc}  ({int(time.time() - start)}s)\n")
     logf.flush()
+    if rc != 0:
+        step_context(s, rc)
     return rc
+
+
+def step_context(s, rc):
+    """When a step fails, say what the box looked like.
+
+    `tar -xf /dl/file-5.48.tar.gz` returned 1 and printed NOTHING -- no error,
+    no message -- and the only way to guess why was to reason about what the
+    previous package might have changed. A failing command that says nothing
+    is the worst case to debug remotely, and every one of these round trips
+    has cost a full CI run.
+
+    So: whenever a step fails, print the few facts that distinguish the usual
+    causes -- a missing input, an unresolvable interpreter, a cwd that is not
+    what the recipe thought, a tool shadowed by something just staged.
+    """
+    argv0 = (s["argv"][0] if "argv" in s else "sh")
+    print(f"    --- context for rc={rc} ---")
+    try:
+        print(f"    cwd {s['cwd']} exists={os.path.isdir(s['cwd'])}")
+        which = shutil.which(argv0, path=os.environ.get("PATH", ""))
+        print(f"    {argv0} -> {which or 'NOT ON PATH'}")
+        if which and os.path.islink(which):
+            print(f"    {which} is a symlink -> {os.readlink(which)}")
+        for tok in (s.get("argv") or [])[1:]:
+            if tok.startswith("/") and not tok.startswith("/dev"):
+                ok = os.path.exists(tok)
+                extra = ""
+                if ok and os.path.isfile(tok):
+                    extra = f" ({os.path.getsize(tok)} bytes)"
+                print(f"    arg {tok} exists={ok}{extra}")
+    except Exception as e:
+        print(f"    (context unavailable: {type(e).__name__})")
 
 
 def stage_into(destdir, sysroot):
