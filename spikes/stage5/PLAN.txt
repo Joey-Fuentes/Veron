@@ -33,19 +33,32 @@ between this file and the recipes fails the run.
   12. xz
   13. zlib
   14. autoconf
-  15. libtool
-  16. readline
-  17. zstd
-  18. automake
-  19. curl
-  20. libarchive
-  21. libxml2
-  22. python
-  23. sqlite
-  24. git
-  25. ninja
-  26. cmake
+  15. libpng
+  16. libtool
+  17. readline
+  18. zstd
+  19. automake
+  20. curl
+  21. freetype-bootstrap
+  22. libarchive
+  23. libxml2
+  24. python
+  25. sqlite
+  26. git
   27. meson
+  28. ninja
+  29. cmake
+  30. fribidi
+  31. glib
+  32. pixman
+  33. graphite2
+  34. libjpeg-turbo
+  35. harfbuzz
+  36. libwebp
+  37. freetype
+  38. fontconfig
+  39. cairo
+  40. pango
 
 ======================================================================
 package bzip2 1.0.8
@@ -509,6 +522,38 @@ package autoconf 2.73
          argv ["make", "DESTDIR=dest/autoconf", "install"]
 
 ======================================================================
+package libpng 1.6.55
+  group        text-rendering
+  license      libpng-2.0
+  recipe-sha   a594cac267900fa0f6dc0057ebc379cdf9bca9e764dc8f3b2380e55decc7d9dc
+
+  source
+    url        https://downloads.sourceforge.net/libpng/libpng-1.6.55.tar.xz
+    sha256     d925722864837ad5ae2a82070d4b2e0603dc72af44bd457c3962298258b8e82d
+    signature  none -- sourceforge mirrors publish no detached signature
+    correspond none
+
+  deps
+    build        zlib
+    link         zlib
+    runtime      zlib
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libpng-1.6.55
+         argv ["tar", "-xf", "dl/libpng-1.6.55.tar.xz", "-C", "build/libpng-1.6.55"]
+    [02] configure
+         cwd  build/libpng-1.6.55/libpng-1.6.55
+         argv ["./configure", "--prefix=/usr", "--disable-static"]
+    [03] build
+         cwd  build/libpng-1.6.55/libpng-1.6.55
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/libpng-1.6.55/libpng-1.6.55
+         argv ["make", "DESTDIR=dest/libpng", "install"]
+
+======================================================================
 package libtool 2.6.2
   group        build-substrate
   license      GPL-2.0-or-later
@@ -664,6 +709,38 @@ package curl 8.18.0
     [04] install
          cwd  build/curl-8.18.0/curl-8.18.0
          argv ["make", "DESTDIR=dest/curl", "install"]
+
+======================================================================
+package freetype-bootstrap 2.14.1
+  group        text-rendering
+  license      FTL-or-GPL-2.0
+  recipe-sha   6f793e35629b513fb0be33c6c87bad302303ad680c68896352bb38b87f8e5f60
+
+  source
+    url        https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz
+    sha256     32427e8c471ac095853212a37aef816c60b42052d4d9e48230bab3bdf2936ccc
+    signature  https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz.sig
+    correspond none
+
+  deps
+    build        libpng, zlib
+    link         libpng, zlib
+    runtime      libpng, zlib
+    optional_off brotli, bzip2, harfbuzz
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/freetype-bootstrap-2.14.1
+         argv ["tar", "-xf", "dl/freetype-2.14.1.tar.xz", "-C", "build/freetype-bootstrap-2.14.1"]
+    [02] configure
+         cwd  build/freetype-bootstrap-2.14.1/freetype-2.14.1
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--without-harfbuzz", "--without-brotli", "--enable-freetype-config"]
+    [03] build
+         cwd  build/freetype-bootstrap-2.14.1/freetype-2.14.1
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/freetype-bootstrap-2.14.1/freetype-2.14.1
+         argv ["make", "DESTDIR=dest/freetype-bootstrap", "install"]
 
 ======================================================================
 package libarchive 3.8.5
@@ -834,6 +911,37 @@ package git 2.53.0
          argv ["make", "DESTDIR=dest/git", "NO_PERL=1", "NO_PYTHON=1", "NO_GETTEXT=1", "install"]
 
 ======================================================================
+package meson 1.10.1
+  group        build-substrate
+  license      Apache-2.0
+  recipe-sha   4621b2bf1d5ac77f369515ab93aa2b47fa57c9d446b2d8ba3b285645683574f1
+
+  source
+    url        https://github.com/mesonbuild/meson/releases/download/1.10.1/meson-1.10.1.tar.gz
+    sha256     c42296f12db316a4515b9375a5df330f2e751ccdd4f608430d41d7d6210e4317
+    signature  none -- no .asc or .sig published beside the release
+    correspond none
+
+  deps
+    build        python
+    link         -
+    runtime      ninja, python
+    optional_off pip, setuptools, wheel
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/meson-1.10.1
+         argv ["tar", "-xf", "dl/meson-1.10.1.tar.gz", "-C", "build/meson-1.10.1"]
+    [02] install
+         cwd  build/meson-1.10.1/meson-1.10.1
+         SHELL (declared) why=copying a python package tree and writing an entry point is not an argv
+         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo "site-packages: $SITE"; mkdir -p "dest/meson$SITE" dest/meson/usr/bin; cp -a mesonbuild "dest/meson$SITE/"; cp -a meson.py dest/meson/usr/bin/meson; chmod 755 dest/meson/usr/bin/meson; sed -i '1s|.*|#!/usr/bin/python3|' dest/meson/usr/bin/meson; head -1 dest/meson/usr/bin/meson
+    [03] verify-install
+         cwd  build/meson-1.10.1/meson-1.10.1
+         SHELL (declared) why=this is a check on a filesystem layout, expressed as two probes
+         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo '--- import from the install location ---'; PYTHONPATH="dest/meson$SITE" python3 -c 'import mesonbuild; print("  mesonbuild from", mesonbuild.__file__)'; echo '--- run the installed script ---'; PYTHONPATH="dest/meson$SITE" python3 dest/meson/usr/bin/meson --version; echo '--- what the shebang points at ---'; head -1 dest/meson/usr/bin/meson; ls -l /usr/bin/python3
+
+======================================================================
 package ninja 1.13.2
   group        build-substrate
   license      Apache-2.0
@@ -896,33 +1004,363 @@ package cmake 4.2.3
          argv ["ninja", "install"]
 
 ======================================================================
-package meson 1.10.1
-  group        build-substrate
-  license      Apache-2.0
-  recipe-sha   4621b2bf1d5ac77f369515ab93aa2b47fa57c9d446b2d8ba3b285645683574f1
+package fribidi 1.0.16
+  group        text-rendering
+  license      LGPL-2.1-or-later
+  recipe-sha   c3e607304e0d68a18dac588d849f767c291544953f5d4fc79b1871f47ae907fd
 
   source
-    url        https://github.com/mesonbuild/meson/releases/download/1.10.1/meson-1.10.1.tar.gz
-    sha256     c42296f12db316a4515b9375a5df330f2e751ccdd4f608430d41d7d6210e4317
-    signature  none -- no .asc or .sig published beside the release
+    url        https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz
+    sha256     1b1cde5b235d40479e91be2f0e88a309e3214c8ab470ec8a2744d82a5a9ea05c
+    signature  none -- no detached signature published beside the release
     correspond none
 
   deps
-    build        python
+    build        meson, ninja
     link         -
-    runtime      ninja, python
-    optional_off pip, setuptools, wheel
+    runtime      -
+    optional_off docs
 
   commands (literal; this is exactly what runs)
     [01] unpack
-         cwd  build/meson-1.10.1
-         argv ["tar", "-xf", "dl/meson-1.10.1.tar.gz", "-C", "build/meson-1.10.1"]
-    [02] install
-         cwd  build/meson-1.10.1/meson-1.10.1
-         SHELL (declared) why=copying a python package tree and writing an entry point is not an argv
-         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo "site-packages: $SITE"; mkdir -p "dest/meson$SITE" dest/meson/usr/bin; cp -a mesonbuild "dest/meson$SITE/"; cp -a meson.py dest/meson/usr/bin/meson; chmod 755 dest/meson/usr/bin/meson; sed -i '1s|.*|#!/usr/bin/python3|' dest/meson/usr/bin/meson; head -1 dest/meson/usr/bin/meson
-    [03] verify-install
-         cwd  build/meson-1.10.1/meson-1.10.1
-         SHELL (declared) why=this is a check on a filesystem layout, expressed as two probes
-         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo '--- import from the install location ---'; PYTHONPATH="dest/meson$SITE" python3 -c 'import mesonbuild; print("  mesonbuild from", mesonbuild.__file__)'; echo '--- run the installed script ---'; PYTHONPATH="dest/meson$SITE" python3 dest/meson/usr/bin/meson --version; echo '--- what the shebang points at ---'; head -1 dest/meson/usr/bin/meson; ls -l /usr/bin/python3
+         cwd  build/fribidi-1.0.16
+         argv ["tar", "-xf", "dl/fribidi-1.0.16.tar.xz", "-C", "build/fribidi-1.0.16"]
+    [02] setup
+         cwd  build/fribidi-1.0.16/fribidi-1.0.16
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Ddocs=false", "-Dbin=true"]
+    [03] build
+         cwd  build/fribidi-1.0.16/fribidi-1.0.16
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/fribidi-1.0.16/fribidi-1.0.16
+         env  DESTDIR=dest/fribidi
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package glib 2.86.4
+  group        text-rendering
+  license      LGPL-2.1-or-later
+  recipe-sha   38821863e681dce53469d4cda341fb3a73eb0710c82ab95acd001fdc2642184a
+
+  source
+    url        https://download.gnome.org/sources/glib/2.86/glib-2.86.4.tar.xz
+    sha256     d4e2b5d791d5015ffd8c6971ad8e975a0a55c1a14926cdb25cf843ff00682260
+    signature  none -- download.gnome.org publishes no detached signature
+    correspond none
+
+  deps
+    build        libffi, meson, ninja, pcre2, python, zlib
+    link         libffi, pcre2, zlib
+    runtime      libffi, pcre2, zlib
+    optional_off dtrace, gtk_doc, introspection, libmount, man-pages, selinux, sysprof, systemtap, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/glib-2.86.4
+         argv ["tar", "-xf", "dl/glib-2.86.4.tar.xz", "-C", "build/glib-2.86.4"]
+    [02] setup
+         cwd  build/glib-2.86.4/glib-2.86.4
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false", "-Dintrospection=disabled", "-Dselinux=disabled", "-Dlibmount=disabled", "-Dsysprof=disabled"]
+    [03] build
+         cwd  build/glib-2.86.4/glib-2.86.4
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/glib-2.86.4/glib-2.86.4
+         env  DESTDIR=dest/glib
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package pixman 0.46.4
+  group        text-rendering
+  license      MIT
+  recipe-sha   3bc8671f81bfb217b6558ea9ab5c10192ede5cfde8385beae09989c2b087276c
+
+  source
+    url        https://www.cairographics.org/releases/pixman-0.46.4.tar.gz
+    sha256     d09c44ebc3bd5bee7021c79f922fe8fb2fb57f7320f55e97ff9914d2346a591c
+    signature  none -- cairographics.org publishes no detached signature
+    correspond none
+
+  deps
+    build        libpng, meson, ninja
+    link         libpng
+    runtime      libpng
+    optional_off demos, gtk, openmp, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/pixman-0.46.4
+         argv ["tar", "-xf", "dl/pixman-0.46.4.tar.gz", "-C", "build/pixman-0.46.4"]
+    [02] setup
+         cwd  build/pixman-0.46.4/pixman-0.46.4
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dtests=disabled", "-Ddemos=disabled", "-Dgtk=disabled", "-Dlibpng=enabled"]
+    [03] build
+         cwd  build/pixman-0.46.4/pixman-0.46.4
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/pixman-0.46.4/pixman-0.46.4
+         env  DESTDIR=dest/pixman
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package graphite2 1.3.14
+  group        text-rendering
+  license      LGPL-2.1-or-later
+  recipe-sha   453f7837857cff6d1875e0c5c1b6c1471a4fcd1c5c7be8731b074e47a78b3ded
+
+  source
+    url        https://github.com/silnrsi/graphite/releases/download/1.3.14/graphite2-1.3.14.tgz
+    sha256     f99d1c13aa5fa296898a181dff9b82fb25f6cc0933dbaa7a475d8109bd54209d
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        cmake, ninja
+    link         -
+    runtime      -
+    optional_off comparerenderer, docs, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/graphite2-1.3.14
+         argv ["tar", "-xf", "dl/graphite2-1.3.14.tgz", "-C", "build/graphite2-1.3.14"]
+    [02] configure
+         cwd  build/graphite2-1.3.14/graphite2-1.3.14
+         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=ON", "-DGRAPHITE2_COMPARE_RENDERER=OFF"]
+    [03] build
+         cwd  build/graphite2-1.3.14/graphite2-1.3.14
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/graphite2-1.3.14/graphite2-1.3.14
+         env  DESTDIR=dest/graphite2
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package libjpeg-turbo 3.1.3
+  group        text-rendering
+  license      IJG-and-BSD-3-Clause
+  recipe-sha   e78b3b399699f54c8fbaa3e7847fb58a4575ec07613c9e9ed3e5d0d878ea32aa
+
+  source
+    url        https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.1.3/libjpeg-turbo-3.1.3.tar.gz
+    sha256     075920b826834ac4ddf97661cc73491047855859affd671d52079c6867c1c6c0
+    signature  https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.1.3/libjpeg-turbo-3.1.3.tar.gz.sig
+    correspond none
+
+  deps
+    build        cmake, ninja
+    link         -
+    runtime      -
+    optional_off java, static, turbojpeg-java
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libjpeg-turbo-3.1.3
+         argv ["tar", "-xf", "dl/libjpeg-turbo-3.1.3.tar.gz", "-C", "build/libjpeg-turbo-3.1.3"]
+    [02] configure
+         cwd  build/libjpeg-turbo-3.1.3/libjpeg-turbo-3.1.3
+         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release", "-DENABLE_STATIC=OFF", "-DCMAKE_INSTALL_DEFAULT_LIBDIR=lib", "-DWITH_JPEG8=ON"]
+    [03] build
+         cwd  build/libjpeg-turbo-3.1.3/libjpeg-turbo-3.1.3
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/libjpeg-turbo-3.1.3/libjpeg-turbo-3.1.3
+         env  DESTDIR=dest/libjpeg-turbo
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package harfbuzz 12.3.2
+  group        text-rendering
+  license      MIT
+  recipe-sha   f7fd0d842452a0a878cd9d3fcb09c240e56a8a8e5c4cc516d067c9cf15af5e07
+
+  source
+    url        https://github.com/harfbuzz/harfbuzz/releases/download/12.3.2/harfbuzz-12.3.2.tar.xz
+    sha256     6f6db164359a2da5a84ef826615b448b33e6306067ad829d85d5b0bf936f1bb8
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        freetype-bootstrap, glib, graphite2, icu, meson, ninja
+    link         freetype-bootstrap, glib, graphite2, icu
+    runtime      freetype, glib, graphite2, icu
+    optional_off cairo, chafa, docs, introspection, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/harfbuzz-12.3.2
+         argv ["tar", "-xf", "dl/harfbuzz-12.3.2.tar.xz", "-C", "build/harfbuzz-12.3.2"]
+    [02] setup
+         cwd  build/harfbuzz-12.3.2/harfbuzz-12.3.2
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dgraphite2=enabled", "-Dfreetype=enabled", "-Dglib=enabled", "-Dicu=enabled", "-Dcairo=disabled", "-Dtests=disabled", "-Ddocs=disabled", "-Dintrospection=disabled"]
+    [03] build
+         cwd  build/harfbuzz-12.3.2/harfbuzz-12.3.2
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/harfbuzz-12.3.2/harfbuzz-12.3.2
+         env  DESTDIR=dest/harfbuzz
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package libwebp 1.6.0
+  group        text-rendering
+  license      BSD-3-Clause
+  recipe-sha   d8c4fd3a76e78251ac8ad9a54c2880275c740ed2b4862d3592cef99c30df87d9
+
+  source
+    url        https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz
+    sha256     e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564
+    signature  https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz.asc
+    correspond none
+
+  deps
+    build        libjpeg-turbo, libpng
+    link         libjpeg-turbo, libpng
+    runtime      libjpeg-turbo, libpng
+    optional_off gif, gl, sdl, tiff
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libwebp-1.6.0
+         argv ["tar", "-xf", "dl/libwebp-1.6.0.tar.gz", "-C", "build/libwebp-1.6.0"]
+    [02] configure
+         cwd  build/libwebp-1.6.0/libwebp-1.6.0
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--enable-libwebpmux", "--enable-libwebpdemux", "--disable-gl"]
+    [03] build
+         cwd  build/libwebp-1.6.0/libwebp-1.6.0
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/libwebp-1.6.0/libwebp-1.6.0
+         argv ["make", "DESTDIR=dest/libwebp", "install"]
+
+======================================================================
+package freetype 2.14.1
+  group        text-rendering
+  license      FTL-or-GPL-2.0
+  recipe-sha   f3e7477958bef6a29b0526396f1e14cf5b85ea4b63a549b21038ae480a9a8ef9
+
+  source
+    url        https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz
+    sha256     32427e8c471ac095853212a37aef816c60b42052d4d9e48230bab3bdf2936ccc
+    signature  https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz.sig
+    correspond none
+
+  deps
+    build        harfbuzz, libpng, zlib
+    link         harfbuzz, libpng, zlib
+    runtime      harfbuzz, libpng, zlib
+    optional_off brotli, bzip2
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/freetype-2.14.1
+         argv ["tar", "-xf", "dl/freetype-2.14.1.tar.xz", "-C", "build/freetype-2.14.1"]
+    [02] configure
+         cwd  build/freetype-2.14.1/freetype-2.14.1
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--with-harfbuzz", "--without-brotli", "--enable-freetype-config"]
+    [03] build
+         cwd  build/freetype-2.14.1/freetype-2.14.1
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/freetype-2.14.1/freetype-2.14.1
+         argv ["make", "DESTDIR=dest/freetype", "install"]
+
+======================================================================
+package fontconfig 2.17.1
+  group        text-rendering
+  license      MIT
+  recipe-sha   2e6e7a0f169c64bc0304c58ff92b2212bf9e54be764486eb4840af9e7c29b432
+
+  source
+    url        https://gitlab.freedesktop.org/api/v4/projects/890/packages/generic/fontconfig/2.17.1/fontconfig-2.17.1.tar.xz
+    sha256     9f5cae93f4fffc1fbc05ae99cdfc708cd60dfd6612ffc0512827025c026fa541
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        expat, freetype, gperf, libxml2, meson, ninja
+    link         expat, freetype, libxml2
+    runtime      expat, freetype, libxml2
+    optional_off cache-build, doc, nls, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/fontconfig-2.17.1
+         argv ["tar", "-xf", "dl/fontconfig-2.17.1.tar.xz", "-C", "build/fontconfig-2.17.1"]
+    [02] setup
+         cwd  build/fontconfig-2.17.1/fontconfig-2.17.1
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Ddoc=disabled", "-Dtests=disabled", "-Dtools=enabled", "-Dnls=disabled", "-Dcache-build=disabled"]
+    [03] build
+         cwd  build/fontconfig-2.17.1/fontconfig-2.17.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/fontconfig-2.17.1/fontconfig-2.17.1
+         env  DESTDIR=dest/fontconfig
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package cairo 1.18.4
+  group        text-rendering
+  license      LGPL-2.1-or-later-or-MPL-1.1
+  recipe-sha   5279749143c58377e1c07ef67d59ea4145b9d145b258a0368606b798525b6f79
+
+  source
+    url        https://www.cairographics.org/releases/cairo-1.18.4.tar.xz
+    sha256     445ed8208a6e4823de1226a74ca319d3600e83f6369f99b14265006599c32ccb
+    signature  none -- cairographics.org publishes no detached signature
+    correspond none
+
+  deps
+    build        fontconfig, freetype, glib, libpng, meson, ninja, pixman, zlib
+    link         fontconfig, freetype, glib, libpng, pixman, zlib
+    runtime      fontconfig, freetype, glib, libpng, pixman, zlib
+    optional_off gtk2-utils, quartz, spectre, symbol-lookup, tests, xcb, xlib
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/cairo-1.18.4
+         argv ["tar", "-xf", "dl/cairo-1.18.4.tar.xz", "-C", "build/cairo-1.18.4"]
+    [02] setup
+         cwd  build/cairo-1.18.4/cairo-1.18.4
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dxlib=disabled", "-Dxcb=disabled", "-Dtests=disabled", "-Dspectre=disabled", "-Dsymbol-lookup=disabled", "-Dglib=enabled", "-Dfreetype=enabled", "-Dfontconfig=enabled", "-Dpng=enabled", "-Dzlib=enabled"]
+    [03] build
+         cwd  build/cairo-1.18.4/cairo-1.18.4
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/cairo-1.18.4/cairo-1.18.4
+         env  DESTDIR=dest/cairo
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package pango 1.57.0
+  group        text-rendering
+  license      LGPL-2.1-or-later
+  recipe-sha   9bf028867b1bf29bf3692627bc262c7b5357e8bc63685d6aa2a8ffdb2485c358
+
+  source
+    url        https://download.gnome.org/sources/pango/1.57/pango-1.57.0.tar.xz
+    sha256     890640c841dae77d3ae3d8fe8953784b930fa241b17423e6120c7bfdf8b891e7
+    signature  none -- download.gnome.org publishes no detached signature
+    correspond none
+
+  deps
+    build        cairo, fontconfig, freetype, fribidi, glib, harfbuzz, meson, ninja
+    link         cairo, fontconfig, freetype, fribidi, glib, harfbuzz
+    runtime      cairo, fontconfig, freetype, fribidi, glib, harfbuzz
+    optional_off build-testsuite, documentation, introspection, libthai, xft
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/pango-1.57.0
+         argv ["tar", "-xf", "dl/pango-1.57.0.tar.xz", "-C", "build/pango-1.57.0"]
+    [02] setup
+         cwd  build/pango-1.57.0/pango-1.57.0
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dintrospection=disabled", "-Ddocumentation=false", "-Dbuild-testsuite=false", "-Dxft=disabled", "-Dcairo=enabled", "-Dfreetype=enabled", "-Dfontconfig=enabled"]
+    [03] build
+         cwd  build/pango-1.57.0/pango-1.57.0
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/pango-1.57.0/pango-1.57.0
+         env  DESTDIR=dest/pango
+         argv ["ninja", "-C", "_b", "install"]
 

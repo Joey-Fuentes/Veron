@@ -1,0 +1,67 @@
+name    = "freetype-bootstrap"
+version = "2.14.1"
+group   = "text-rendering"
+license = "FTL-or-GPL-2.0"
+# The tarball is the same as `freetype`'s -- same URL, same digest. What
+# differs is the configuration, and that is the whole point.
+srcdir  = "freetype-2.14.1"
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz"
+sha256    = "32427e8c471ac095853212a37aef816c60b42052d4d9e48230bab3bdf2936ccc"
+signature = "https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["zlib", "libpng"]
+link         = ["zlib", "libpng"]
+runtime      = ["zlib", "libpng"]
+optional_off = ["harfbuzz", "brotli", "bzip2"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--without-harfbuzz", "--without-brotli", "--enable-freetype-config"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+FREETYPE AND HARFBUZZ DEPEND ON EACH OTHER. freetype can use harfbuzz to \
+improve auto-hinting of complex scripts; harfbuzz needs freetype to read the \
+font files it shapes. Neither can be built first with both features on.
+
+THE BREAK IS TWO SEPARATE RECIPES, NOT A FLAG ON ONE. `freetype-bootstrap` \
+builds without harfbuzz, harfbuzz builds against it, then `freetype` rebuilds \
+with harfbuzz enabled and replaces it. They are genuinely two different \
+artifacts with different bytes and different capabilities, so they get two \
+names, two ledger records, and the topological sort handles them with no \
+special case. A `pass = 1/2` field would have needed driver support and made \
+one name mean two things.
+
+THIS BUILD IS NOT WHAT SHIPS. It exists only so harfbuzz has something to \
+link against, and the `freetype` package overwrites it. Its ledger record \
+describes an artifact that is deliberately transient, which is unusual enough \
+to be worth saying rather than leaving someone to work out why two records \
+name the same version."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/freetype-2.14.1.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--without-harfbuzz", "--without-brotli", "--enable-freetype-config"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+[guest]
+# No guest test: this build is REPLACED by the `freetype` package before the
+# image is assembled, so testing it in the guest would test the wrong binary.
+test   = []
+expect = []

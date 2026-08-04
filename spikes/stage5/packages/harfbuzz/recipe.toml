@@ -1,0 +1,68 @@
+name    = "harfbuzz"
+version = "12.3.2"
+group   = "text-rendering"
+license = "MIT"
+
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://github.com/harfbuzz/harfbuzz/releases/download/12.3.2/harfbuzz-12.3.2.tar.xz"
+sha256    = "6f6db164359a2da5a84ef826615b448b33e6306067ad829d85d5b0bf936f1bb8"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "freetype-bootstrap", "graphite2", "glib", "icu"]
+link         = ["freetype-bootstrap", "graphite2", "glib", "icu"]
+runtime      = ["freetype", "graphite2", "glib", "icu"]
+optional_off = ["cairo", "tests", "docs", "introspection", "chafa"]
+
+[declared]
+configure_flags = ["-Dgraphite2=enabled", "-Dfreetype=enabled", "-Dglib=enabled", "-Dicu=enabled", "-Dcairo=disabled"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+FREETYPE AND HARFBUZZ DEPEND ON EACH OTHER. freetype can use harfbuzz to \
+improve auto-hinting of complex scripts; harfbuzz needs freetype to read the \
+font files it shapes. Neither can be built first with both features on.
+
+THE BREAK IS TWO SEPARATE RECIPES, NOT A FLAG ON ONE. `freetype-bootstrap` \
+builds without harfbuzz, harfbuzz builds against it, then `freetype` rebuilds \
+with harfbuzz enabled and replaces it. They are genuinely two different \
+artifacts with different bytes and different capabilities, so they get two \
+names, two ledger records, and the topological sort handles them with no \
+special case. A `pass = 1/2` field would have needed driver support and made \
+one name mean two things.
+
+-Dcairo=disabled BREAKS A SECOND CYCLE: cairo wants freetype and harfbuzz, \
+and harfbuzz can optionally use cairo for its test rendering utilities. Those \
+utilities ship nothing, so disabling is free.
+
+deps.link names freetype-bootstrap because that is what exists when this \
+builds; deps.runtime names freetype because that is what will be installed \
+when this runs. The distinction is real and the two fields are the only \
+place it can be said."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/harfbuzz-12.3.2.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Dgraphite2=enabled", "-Dfreetype=enabled", "-Dglib=enabled", "-Dicu=enabled", "-Dcairo=disabled", "-Dtests=disabled", "-Ddocs=disabled", "-Dintrospection=disabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "harfbuzz"]]
+expect = ["12.3.2"]

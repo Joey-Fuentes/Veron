@@ -109,11 +109,24 @@ def topo_order(recipes):
     deps = {}
     for n, r in recipes.items():
         d = r.get("deps", {})
-        need = set(d.get("build", [])) | set(d.get("link", [])) | set(d.get("runtime", []))
-        for m in sorted(need):
+        # RUNTIME DEPS DO NOT CONSTRAIN BUILD ORDER. Only build and link do.
+        #
+        # This was merging all three, which made harfbuzz -> freetype ->
+        # harfbuzz a cycle: harfbuzz links freetype-bootstrap at BUILD time and
+        # runs against the final freetype at RUN time, and both statements are
+        # true. Ordering the build by a runtime fact turned an accurate
+        # description into a contradiction.
+        #
+        # A runtime dependency says what must be INSTALLED alongside, which
+        # matters to the image and the ledger and not to the order things
+        # compile in. Every name is still validated, so a typo in a runtime
+        # dep is still an error -- it just is not an edge.
+        order = set(d.get("build", [])) | set(d.get("link", []))
+        named = order | set(d.get("runtime", []))
+        for m in sorted(named):
             if m not in recipes:
                 die(f"{n}: depends on '{m}', which has no recipe")
-        deps[n] = need
+        deps[n] = order
 
     ordered, done = [], set()
     while len(ordered) < len(recipes):

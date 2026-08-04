@@ -1,0 +1,49 @@
+name    = "libwebp"
+version = "1.6.0"
+group   = "text-rendering"
+license = "BSD-3-Clause"
+
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz"
+sha256    = "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564"
+signature = "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz.asc"
+crosschecked_against = []
+
+[deps]
+build        = ["libpng", "libjpeg-turbo"]
+link         = ["libpng", "libjpeg-turbo"]
+runtime      = ["libpng", "libjpeg-turbo"]
+optional_off = ["gl", "sdl", "tiff", "gif"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--enable-libwebpmux", "--enable-libwebpdemux", "--disable-gl"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. The mux and demux libraries are what animated WebP \
+needs, and a browser will want them. GL, SDL, TIFF and GIF affect only the \
+example conversion tools."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libwebp-1.6.0.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--enable-libwebpmux", "--enable-libwebpdemux", "--disable-gl"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libwebp"]]
+expect = ["1.6.0"]

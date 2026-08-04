@@ -1,0 +1,54 @@
+name    = "graphite2"
+version = "1.3.14"
+group   = "text-rendering"
+license = "LGPL-2.1-or-later"
+srcdir  = "graphite2-1.3.14"
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://github.com/silnrsi/graphite/releases/download/1.3.14/graphite2-1.3.14.tgz"
+sha256    = "f99d1c13aa5fa296898a181dff9b82fb25f6cc0933dbaa7a475d8109bd54209d"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["cmake", "ninja"]
+link         = []
+runtime      = []
+optional_off = ["comparerenderer", "docs", "tests"]
+
+[declared]
+configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DBUILD_SHARED_LIBS=ON", "-DGRAPHITE2_COMPARE_RENDERER=OFF"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. Smart-font shaping for scripts harfbuzz cannot handle \
+alone; harfbuzz links it. COMPARE_RENDERER is a test harness that wants \
+freetype and libicu and produces nothing that ships."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/graphite2-1.3.14.tgz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+# CMAKE, NOT AUTOTOOLS. graphite2 ships only a CMakeLists, which is why it
+# sits after cmake in the order despite being a small library.
+run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
+         "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release",
+         "-DBUILD_SHARED_LIBS=ON", "-DGRAPHITE2_COMPARE_RENDERER=OFF"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "graphite2"]]
+expect = ["1.3.14"]

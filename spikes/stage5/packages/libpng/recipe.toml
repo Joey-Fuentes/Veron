@@ -1,0 +1,49 @@
+name    = "libpng"
+version = "1.6.55"
+group   = "text-rendering"
+license = "libpng-2.0"
+
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://downloads.sourceforge.net/libpng/libpng-1.6.55.tar.xz"
+sha256    = "d925722864837ad5ae2a82070d4b2e0603dc72af44bd457c3962298258b8e82d"
+signature = "none -- sourceforge mirrors publish no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = ["zlib"]
+link         = ["zlib"]
+runtime      = ["zlib"]
+optional_off = []
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. Fetched through a SourceForge mirror redirect, which \
+publishes no signature -- the pin rests on the digest alone and \
+crosschecked_against is empty."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libpng-1.6.55.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libpng16"]]
+expect = ["1.6.55"]

@@ -1,0 +1,52 @@
+name    = "pango"
+version = "1.57.0"
+group   = "text-rendering"
+license = "LGPL-2.1-or-later"
+
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://download.gnome.org/sources/pango/1.57/pango-1.57.0.tar.xz"
+sha256    = "890640c841dae77d3ae3d8fe8953784b930fa241b17423e6120c7bfdf8b891e7"
+signature = "none -- download.gnome.org publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "cairo", "harfbuzz", "fribidi", "fontconfig", "freetype", "glib"]
+link         = ["cairo", "harfbuzz", "fribidi", "fontconfig", "freetype", "glib"]
+runtime      = ["cairo", "harfbuzz", "fribidi", "fontconfig", "freetype", "glib"]
+optional_off = ["introspection", "documentation", "build-testsuite", "xft", "libthai"]
+
+[declared]
+configure_flags = ["-Dintrospection=disabled", "-Ddocumentation=false", "-Dbuild-testsuite=false", "-Dxft=disabled", "-Dcairo=enabled"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. -Dxft=disabled removes the X11 font backend, matching \
+cairo. libthai is off: Thai word-breaking would be a further dependency for \
+one script, and it can be added when someone needs it. labwc uses pango for \
+titlebar text."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/pango-1.57.0.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Dintrospection=disabled", "-Ddocumentation=false", "-Dbuild-testsuite=false", "-Dxft=disabled", "-Dcairo=enabled", "-Dfreetype=enabled", "-Dfontconfig=enabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "pango"]]
+expect = ["1.57.0"]

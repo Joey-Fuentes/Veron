@@ -1,0 +1,52 @@
+name    = "cairo"
+version = "1.18.4"
+group   = "text-rendering"
+license = "LGPL-2.1-or-later-or-MPL-1.1"
+
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://www.cairographics.org/releases/cairo-1.18.4.tar.xz"
+sha256    = "445ed8208a6e4823de1226a74ca319d3600e83f6369f99b14265006599c32ccb"
+signature = "none -- cairographics.org publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pixman", "freetype", "fontconfig", "libpng", "glib", "zlib"]
+link         = ["pixman", "freetype", "fontconfig", "libpng", "glib", "zlib"]
+runtime      = ["pixman", "freetype", "fontconfig", "libpng", "glib", "zlib"]
+optional_off = ["xlib", "xcb", "tests", "spectre", "symbol-lookup", "gtk2-utils", "quartz"]
+
+[declared]
+configure_flags = ["-Dxlib=disabled", "-Dxcb=disabled", "-Dglib=enabled", "-Dfreetype=enabled", "-Dfontconfig=enabled", "-Dpng=enabled", "-Dzlib=enabled"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. -Dxlib and -Dxcb DISABLED is the load-bearing pair: \
+cairo would otherwise detect and link X11, and there is no X11 here by \
+policy. labwc uses cairo for window decorations, which is why it is in the \
+set at all."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/cairo-1.18.4.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Dxlib=disabled", "-Dxcb=disabled", "-Dtests=disabled", "-Dspectre=disabled", "-Dsymbol-lookup=disabled", "-Dglib=enabled", "-Dfreetype=enabled", "-Dfontconfig=enabled", "-Dpng=enabled", "-Dzlib=enabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "cairo"]]
+expect = ["1.18.4"]

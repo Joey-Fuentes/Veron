@@ -1,0 +1,62 @@
+name    = "freetype"
+version = "2.14.1"
+group   = "text-rendering"
+license = "FTL-or-GPL-2.0"
+srcdir  = "freetype-2.14.1"
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz"
+sha256    = "32427e8c471ac095853212a37aef816c60b42052d4d9e48230bab3bdf2936ccc"
+signature = "https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["zlib", "libpng", "harfbuzz"]
+link         = ["zlib", "libpng", "harfbuzz"]
+runtime      = ["zlib", "libpng", "harfbuzz"]
+optional_off = ["brotli", "bzip2"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--with-harfbuzz", "--without-brotli", "--enable-freetype-config"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+FREETYPE AND HARFBUZZ DEPEND ON EACH OTHER. freetype can use harfbuzz to \
+improve auto-hinting of complex scripts; harfbuzz needs freetype to read the \
+font files it shapes. Neither can be built first with both features on.
+
+THE BREAK IS TWO SEPARATE RECIPES, NOT A FLAG ON ONE. `freetype-bootstrap` \
+builds without harfbuzz, harfbuzz builds against it, then `freetype` rebuilds \
+with harfbuzz enabled and replaces it. They are genuinely two different \
+artifacts with different bytes and different capabilities, so they get two \
+names, two ledger records, and the topological sort handles them with no \
+special case. A `pass = 1/2` field would have needed driver support and made \
+one name mean two things.
+
+THIS IS THE ONE THAT SHIPS. It overwrites freetype-bootstrap's install when \
+staged. --without-brotli drops WOFF2 font decompression: brotli is in the \
+planned set for the browser, and this should be revisited then, because a \
+browser without WOFF2 cannot load a large fraction of web fonts."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/freetype-2.14.1.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--with-harfbuzz", "--without-brotli", "--enable-freetype-config"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "freetype2"]]
+expect = ["27.6.1"]

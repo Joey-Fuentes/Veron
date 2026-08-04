@@ -1,0 +1,51 @@
+name    = "fribidi"
+version = "1.0.16"
+group   = "text-rendering"
+license = "LGPL-2.1-or-later"
+
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz"
+sha256    = "1b1cde5b235d40479e91be2f0e88a309e3214c8ab470ec8a2744d82a5a9ea05c"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja"]
+link         = []
+runtime      = []
+optional_off = ["docs"]
+
+[declared]
+configure_flags = ["-Ddocs=false", "-Dbin=true"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. Bidirectional text -- Arabic and Hebrew -- and pango \
+requires it. Docs need c2man, which is not here and would be a documentation \
+toolchain rather than a library."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/fribidi-1.0.16.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Ddocs=false", "-Dbin=true"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "fribidi"]]
+expect = ["1.0.16"]

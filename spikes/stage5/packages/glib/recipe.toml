@@ -1,0 +1,54 @@
+name    = "glib"
+version = "2.86.4"
+group   = "text-rendering"
+license = "LGPL-2.1-or-later"
+
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://download.gnome.org/sources/glib/2.86/glib-2.86.4.tar.xz"
+sha256    = "d4e2b5d791d5015ffd8c6971ad8e975a0a55c1a14926cdb25cf843ff00682260"
+signature = "none -- download.gnome.org publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "libffi", "pcre2", "zlib", "python"]
+link         = ["libffi", "pcre2", "zlib"]
+runtime      = ["libffi", "pcre2", "zlib"]
+optional_off = ["introspection", "selinux", "libmount", "sysprof", "man-pages", "gtk_doc", "tests", "dtrace", "systemtap"]
+
+[declared]
+configure_flags = ["-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false", "-Dintrospection=disabled", "-Dselinux=disabled", "-Dlibmount=disabled", "-Dsysprof=disabled"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. GLIB IS UNAVOIDABLE: WPE WebKit requires it, harfbuzz \
+uses it, and libsoup is built on it. -Dintrospection=disabled is deliberate \
+-- gobject-introspection needs a working python module stack and produces \
+typelibs nothing here consumes. -Dlibmount=disabled avoids util-linux, which \
+is not in the set. GIO will still expose a D-Bus API surface at build time; \
+that is glib being glib, and nothing here runs a bus."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/glib-2.86.4.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false", "-Dintrospection=disabled", "-Dselinux=disabled", "-Dlibmount=disabled", "-Dsysprof=disabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "glib-2.0"]]
+expect = ["2.86.4"]

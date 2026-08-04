@@ -1,0 +1,51 @@
+name    = "pixman"
+version = "0.46.4"
+group   = "text-rendering"
+license = "MIT"
+
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://www.cairographics.org/releases/pixman-0.46.4.tar.gz"
+sha256    = "d09c44ebc3bd5bee7021c79f922fe8fb2fb57f7320f55e97ff9914d2346a591c"
+signature = "none -- cairographics.org publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "libpng"]
+link         = ["libpng"]
+runtime      = ["libpng"]
+optional_off = ["tests", "demos", "gtk", "openmp"]
+
+[declared]
+configure_flags = ["-Dtests=disabled", "-Ddemos=disabled", "-Dgtk=disabled", "-Dlibpng=enabled"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. Pixel manipulation for cairo, and wlroots uses it for \
+its software renderer. -Dgtk=disabled matters: pixman's demos would otherwise \
+pull GTK in, and GTK leads to librsvg and therefore Rust."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/pixman-0.46.4.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Dtests=disabled", "-Ddemos=disabled", "-Dgtk=disabled", "-Dlibpng=enabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "pixman-1"]]
+expect = ["0.46.4"]

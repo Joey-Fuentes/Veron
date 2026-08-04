@@ -1,0 +1,54 @@
+name    = "fontconfig"
+version = "2.17.1"
+group   = "text-rendering"
+license = "MIT"
+
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://gitlab.freedesktop.org/api/v4/projects/890/packages/generic/fontconfig/2.17.1/fontconfig-2.17.1.tar.xz"
+sha256    = "9f5cae93f4fffc1fbc05ae99cdfc708cd60dfd6612ffc0512827025c026fa541"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "freetype", "expat", "gperf", "libxml2"]
+link         = ["freetype", "expat", "libxml2"]
+runtime      = ["freetype", "expat", "libxml2"]
+optional_off = ["doc", "tests", "nls", "cache-build"]
+
+[declared]
+configure_flags = ["-Ddoc=disabled", "-Dtests=disabled", "-Dtools=enabled", "-Dnls=disabled", "-Dcache-build=disabled"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. gperf is a build dependency here and nowhere else in \
+the set -- fontconfig generates a perfect hash for its property table with \
+it, which is why gperf was added in the first place. -Dcache-build=disabled \
+skips building the font cache at install time: there are no fonts in the \
+DESTDIR to cache, and doing it would write a file whose contents depend on \
+what happened to be installed."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/fontconfig-2.17.1.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Ddoc=disabled", "-Dtests=disabled", "-Dtools=enabled", "-Dnls=disabled", "-Dcache-build=disabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "fontconfig"]]
+expect = ["2.17.1"]
