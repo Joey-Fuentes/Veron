@@ -1,0 +1,126 @@
+name: stage5-license
+
+# WHAT IS EACH PACKAGE ACTUALLY LICENSED UNDER, AND WHERE DOES IT SAY SO?
+#
+# The detector this replaces checked six exact filenames in the top-level
+# directory, read the first 4000 bytes, matched fourteen prose regexes, and
+# returned the FIRST hit as a single string. It reported seven packages as
+# having no licence at all (freetype's LICENSE.TXT, cmake's Copyright.txt,
+# libjpeg-turbo's LICENSE.md, nettle's COPYINGv3, ffmpeg's three files), seven
+# more as "PRESENT but unrecognised", and -- worst -- confidently returned
+# "Zlib" for bzip2, because both texts contain "altered source versions must
+# be plainly marked as such".
+#
+# A CONFIDENT WRONG ANSWER IS WORSE THAN NO ANSWER, especially in a field that
+# a corresponding-source manifest depends on.
+#
+# THIS JOB DECIDES NOTHING. It proposes, with evidence, for a human to confirm
+# once. The confirmed answer then goes into the recipe together with the
+# sha256 of each licence file, so an upstream relicensing breaks the build
+# instead of passing silently -- which is Yocto's LIC_FILES_CHKSUM model and
+# the only part of this with real compliance value.
+
+on:
+  workflow_dispatch:
+    inputs:
+      corpus_ref:
+        description: 'spdx/license-list-data tag to pin'
+        required: false
+        default: 'v3.28.0'
+      threshold:
+        description: 'Similarity below which it says NEEDS REVIEW instead of guessing'
+        required: false
+        default: '0.98'
+      only:
+        description: 'Restrict to these packages (blank = all)'
+        required: false
+        default: ''
+
+concurrency:
+  group: stage5-license-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Pin the SPDX licence corpus'
+        run: |
+          set -eu
+          # THE SAME CORPUS askalono AND THE SPDX REFERENCE MATCHER USE. A few
+          # MB of plain text, no dependencies, pinned by tag like any other
+          # source. ScanCode's ~35,000 rules exist for the long tail; a
+          # curated set of a hundred well-known packages does not need them,
+          # and ScanCode's C extensions -- intbitset, pyahocorasick, lxml,
+          # pycryptodome -- are exactly what this project avoids.
+          git clone --quiet --depth 1 --branch "${{ inputs.corpus_ref }}" \
+            https://github.com/spdx/license-list-data.git /tmp/spdx
+          cd /tmp/spdx && echo "  corpus commit $(git rev-parse HEAD)"
+          echo "  $(ls text/*.txt | wc -l) licence texts, $(du -sh text | cut -f1)"
+
+      - name: 'Fetch every pinned source'
+        run: |
+          set -eu
+          cd spikes/stage5
+          mkdir -p dl
+          python3 tools/veron sources | while IFS=$'\t' read -r sha name url; do
+            [ -n "$sha" ] || continue
+            python3 ../../tools/mirror.py fetch "$sha" "$name" --dest dl --url "$url" \
+              >/dev/null 2>&1 || echo "  fetch failed: $name"
+          done
+          echo "  $(ls dl | wc -l) tarballs"
+
+      - name: 'Detect, per package'
+        run: |
+          set -eu
+          cd spikes/stage5
+          mkdir -p /tmp/lic /tmp/unpack
+          : > /tmp/summary.txt
+          for t in dl/*; do
+            [ -f "$t" ] || continue
+            base=$(basename "$t")
+            if [ -n "${{ inputs.only }}" ]; then
+              case " ${{ inputs.only }} " in *" ${base%%-*} "*) ;; *) continue ;; esac
+            fi
+            rm -rf /tmp/unpack/* 2>/dev/null || true
+            tar -xf "$t" -C /tmp/unpack 2>/dev/null || { echo "  unpack failed: $base"; continue; }
+            top=$(ls /tmp/unpack | head -1)
+            echo ""
+            echo "############ $base"
+            python3 tools/license.py "/tmp/unpack/$top" \
+              --corpus /tmp/spdx/text --threshold ${{ inputs.threshold }} \
+              | tee -a /tmp/summary.txt
+            python3 tools/license.py "/tmp/unpack/$top" \
+              --corpus /tmp/spdx/text --threshold ${{ inputs.threshold }} \
+              --json > "/tmp/lic/${base}.json" 2>/dev/null || true
+          done
+
+      - name: 'What needs a human'
+        if: always()
+        run: |
+          set -eu
+          echo "  === RESOLVED ==="
+          grep -h "proposed:" /tmp/summary.txt 2>/dev/null | grep -v UNRESOLVED | sort | uniq -c | sort -rn | head -30
+          echo ""
+          echo "  === UNRESOLVED -- no licence file matched ==="
+          grep -c "proposed: UNRESOLVED" /tmp/summary.txt 2>/dev/null || echo 0
+          echo ""
+          echo "  === DISAGREEMENTS -- the evidence conflicts ==="
+          grep -A3 "DISAGREEMENT" /tmp/summary.txt 2>/dev/null | head -40
+          echo ""
+          echo "  Every UNRESOLVED and every DISAGREEMENT is a package to curate"
+          echo "  ONCE, by hand, with the evidence above. Nothing here is"
+          echo "  written into a recipe automatically -- a detector that is"
+          echo "  load-bearing is a detector that cannot say 'I do not know'."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage5-license
+          path: |
+            /tmp/lic/
+            /tmp/summary.txt
+          retention-days: 30
