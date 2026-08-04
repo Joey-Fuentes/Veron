@@ -27,6 +27,19 @@ on:
         description: 'Print what would be uploaded, change nothing'
         type: boolean
         default: true
+        # ASSETS DO NOT ENTER GIT. `gh release upload` writes to GitHub
+        # Releases, which is separate storage: the object database is
+        # untouched, a clone does not fetch them, and the repository's size
+        # and clone time are unchanged. The only thing this commits is
+        # sources/MIRRORS.tsv -- one line per route -- which is exactly why
+        # HOSTS.toml calls the table "generated and committed" and keeps
+        # locators in text rather than blobs.
+        #
+        # ONE RELEASE PER PACKAGE, under the `src/` tag prefix, is HOSTS.toml's
+        # deliberate choice: it keeps each asset list navigable and makes
+        # withdrawing a single artifact possible without touching the others.
+        # The prefix is what keeps this namespace visibly separate from real
+        # release tags.
       only:
         description: 'Restrict to these package names (blank = all)'
         required: false
@@ -59,7 +72,12 @@ jobs:
             if [ -n "${{ inputs.only }}" ]; then
               case " ${{ inputs.only }} " in *" ${name%%-*} "*) ;; *) continue ;; esac
             fi
-            python3 ../../tools/mirror.py fetch --sha256 "$sha" --dest dl --url "$url" \
+            # POSITIONAL, NOT FLAGS. `mirror fetch <sha256> <name>` -- a
+            # first attempt passed --sha256 and every one of 40 fetches failed
+            # with an argparse usage error. The CLI-surface selftest checks
+            # that the FLAGS exist, which they do; nothing was checking the
+            # positionals, so the guard passed while the call was wrong.
+            python3 ../../tools/mirror.py fetch "$sha" "$name" --dest dl --url "$url" \
               || echo "  FETCH FAILED $name"
           done
           echo ""
@@ -79,7 +97,11 @@ jobs:
           for f in dl/*; do
             [ -f "$f" ] || continue
             echo "== $(basename "$f")"
-            python3 ../../tools/mirror.py add --host github --file "$f" $DRY \
+            # POSITIONAL AGAIN: `mirror add <host> <file>`. Both calls in
+            # this workflow were written from memory of a flag-shaped CLI that
+            # never existed, and the selftest only checked option strings --
+            # so nothing caught either until every fetch failed identically.
+            python3 ../../tools/mirror.py add github "$f" $DRY \
               || echo "  ADD FAILED $(basename "$f")"
           done
         env:

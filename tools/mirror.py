@@ -309,6 +309,15 @@ def cmd_list(a):
     return 0
 
 
+# POSITIONAL ARGUMENTS COUNT AS SURFACE TOO. A caller passed --sha256 to
+# `fetch`, which takes sha256 and name positionally, and all 40 fetches died
+# with an argparse usage error -- while this selftest reported the CLI intact,
+# because it only ever looked at option strings.
+REQUIRED_POSITIONAL = {
+    "fetch": ["sha256", "name"],
+    "add": ["host", "file"],
+}
+
 REQUIRED_SURFACE = {
     "fetch": ["--dest", "--url"],
     "add": ["--locator", "--dry-run"],
@@ -330,6 +339,14 @@ def cmd_selftest(a):
             print(f"  FAIL  subcommand missing: {name}")
             ok = False
             continue
+        positional = [act.dest for act in subs[name]._actions
+                      if not act.option_strings]
+        for want in REQUIRED_POSITIONAL.get(name, []):
+            if want in positional:
+                print(f"  ok    {name} takes {want} positionally")
+            else:
+                print(f"  FAIL  {name} no longer takes {want} positionally")
+                ok = False
         have = {o for act in subs[name]._actions for o in act.option_strings}
         for f in flags:
             if f in have:
