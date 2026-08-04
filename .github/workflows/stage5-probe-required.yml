@@ -1,0 +1,100 @@
+name: stage5-probe-required
+
+# THE PACKAGES THAT ARE ACTUALLY REQUIRED, AND WHAT THEY IN TURN REQUIRE.
+#
+# `probe deps` read every remaining package's declared dependencies and found
+# 231 names not in the set. Almost all are optional -- platform frameworks,
+# disabled features, test harnesses, sub-libraries of packages we have. Six
+# are not:
+#
+#   gmp     nettle's hogweed needs it, gnutls needs hogweed: no gmp, no TLS
+#   libelf  mesa requires it; the mesa spike found this and nothing acted
+#   libcap  bubblewrap needs it, and bubblewrap is WPE's sandbox
+#   ogg     the container, and
+#   vorbis  its codec -- gst-plugins-base's basic audio path
+#   scdoc   foot, fuzzel and seatd build their man pages with it
+#
+# THE POINT OF THIS JOB IS THE SECOND HALF OF ITS NAME. Every package added to
+# close a gap gets its OWN declarations read in the same run, because adding
+# one has repeatedly opened another: glib needed bash, wlroots needed hwdata
+# and libdisplay-info, gst-plugins-base needed alsa. A package added without
+# reading what it declares is simply the next gap, found later and at the cost
+# of a build.
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: 'Which group'
+        type: choice
+        options: ['all', 'required']
+        default: 'all'
+
+concurrency:
+  group: stage5-probe-required-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Check the parsers before touching the network'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 tools/probe.py selftest
+
+      - name: 'Select'
+        run: |
+          set -eu
+          cd spikes/stage5
+          awk -v want="${{ inputs.batch }}" '
+            /^# batch:/ { cur = $3; next }
+            /^#/ || /^[[:space:]]*$/ { next }
+            (want == "all" || want == cur) { print }
+          ' gap3-urls.txt > gap3.txt
+          echo "  $(wc -l < gap3.txt) URLs"
+          sed 's|^|    |' gap3.txt
+
+      - name: 'Probe them, digests and declarations both'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 -u tools/probe.py batch gap3.txt --out probed-required.tsv || true
+
+      - name: 'AND CHECK WHAT THEY THEMSELVES REQUIRE'
+        if: always()
+        run: |
+          set -eu
+          cd spikes/stage5
+          # The have-list is every package with a recipe, every package
+          # already pinned and planned, and the names the set provides through
+          # sub-libraries. Anything left after that is a NEW gap opened by
+          # closing these six -- which is the thing this job exists to catch
+          # before it costs a build.
+          { ls packages
+            grep -v '^#' provided-names.txt
+            echo "gmp elfutils libelf libcap ogg vorbis scdoc"
+          } > /tmp/have.txt
+          python3 tools/probe.py deps probed-required.tsv --have /tmp/have.txt
+
+      - name: 'The table'
+        if: always()
+        run: |
+          set -eu
+          cd spikes/stage5
+          [ -s probed-required.tsv ] || { echo "  nothing probed"; exit 0; }
+          echo "  === PROBED ==="
+          awk -F'\t' 'NR>1 {printf "  %-22s %-12s %-18s %s\n", $1, $3, substr($4,1,16), $6}' probed-required.tsv
+          echo ""
+          echo "  === NO SIGNATURE ==="
+          awk -F'\t' 'NR>1 && $5=="none" {print "    " $1}' probed-required.tsv
+          echo ""
+          echo "  === FAILED ==="
+          awk -F'\t' '$1=="FAILED" {print "    " $2}' probed-required.tsv
+          echo ""
+          echo "  Anything under NAMED BY SOMETHING above is a gap these six"
+          echo "  opened. Decide it now rather than in the middle of a batch."
