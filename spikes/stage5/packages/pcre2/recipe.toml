@@ -1,0 +1,59 @@
+name    = "pcre2"
+version = "10.47"
+group   = "build-substrate"
+license = "BSD-3-Clause-with-exception"
+
+# Version, digest, licence and build system all measured by `probe url`,
+# from the URL the LFS book records. The book supplies a route; the pin is
+# ours.
+
+[source]
+url       = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.bz2"
+sha256    = "47fe8c99461250d42f89e6e8fdaeba9da057855d06eb7fc08d9ca03fd08d7bc7"
+signature = "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.bz2.sig"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = ["readline", "bzip2", "zlib", "valgrind"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--enable-unicode", "--enable-jit", "--enable-pcre2-16", "--enable-pcre2-32"]
+# TESTS ARE NOT RUN, BY POLICY. Suites in series do not scale past a handful
+# of packages and the set is heading for 150+. Evidence comes from the guest
+# sanity test below, against the booted image.
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. The 16- and 32-bit libraries are built because glib \
+needs them. readline, bzip2 and zlib support in pcre2grep is disabled: all \
+three are in this same set, so leaving them detected would make pcre2's \
+output depend on build order. The probe reported the licence as \
+"PRESENT but unrecognised" -- it is BSD-3-Clause with the standard PCRE2 \
+exception, read rather than guessed."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/pcre2-10.47.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static",
+         "--enable-unicode", "--enable-jit",
+         "--enable-pcre2-16", "--enable-pcre2-32"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libpcre2-8"]]
+expect = ["10.47"]

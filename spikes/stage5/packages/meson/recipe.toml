@@ -1,0 +1,66 @@
+name    = "meson"
+version = "1.10.1"
+group   = "build-substrate"
+license = "Apache-2.0"
+
+# Version, digest, licence and build system all measured by `probe url`,
+# from the URL the LFS book records. The book supplies a route; the pin is
+# ours.
+
+[source]
+url       = "https://github.com/mesonbuild/meson/releases/download/1.10.1/meson-1.10.1.tar.gz"
+sha256    = "c42296f12db316a4515b9375a5df330f2e751ccdd4f608430d41d7d6210e4317"
+signature = "none -- no .asc or .sig published beside the release"
+crosschecked_against = []
+
+# PYTHON COMES FROM THE SYSROOT, NOT FROM A RECIPE, so it cannot appear in
+# deps.build -- the driver rightly refuses a dependency with no recipe. That
+# is a modelling gap worth naming: this package genuinely requires python3 at
+# build time, and nothing in the graph records it. If stage 4 ever stops
+# shipping python, this breaks with no edge to have warned anyone.
+sysroot_requires = ["python3"]
+
+[deps]
+build        = []
+link         = []
+runtime      = ["ninja"]
+optional_off = ["pip", "setuptools", "wheel"]
+
+[declared]
+configure_flags = []
+# TESTS ARE NOT RUN, BY POLICY. Suites in series do not scale past a handful
+# of packages and the set is heading for 150+. Evidence comes from the guest
+# sanity test below, against the booted image.
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. NOT INSTALLED THE WAY UPSTREAM OR LFS DOES IT: both \
+use pip to build a wheel, which would require pip, setuptools and wheel in a \
+sysroot that has none of them. meson is pure Python, so the package tree is \
+copied onto the interpreter path and the entry point installed directly. The \
+consequence is that meson is not registered with any Python package database \
+-- nothing here queries one, but a future tool that does would not see it."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/meson-1.10.1.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+# INSTALLED FROM THE SOURCE TREE, NOT THROUGH pip.
+#
+# LFS builds meson with `pip3 wheel` then `pip3 install`, which needs pip,
+# setuptools and wheel. This sysroot has python3 and an empty site-packages --
+# no pip at all -- so the LFS path would mean adding a Python packaging stack
+# to the base just to reach one tool.
+#
+# meson is PURE PYTHON with nothing compiled, and upstream supports running it
+# straight from a checkout. So: copy the package onto the interpreter's path
+# and install the entry point. No new dependencies, no network, and the result
+# is the same interpreter running the same code.
+why  = "copying a python package tree and writing an entry point is not an argv"
+shell = "PY=$(python3 -c 'import sys; print(f\"python{sys.version_info.major}.{sys.version_info.minor}\")') && SITE=$D/usr/lib/$PY/site-packages && mkdir -p \"$SITE\" $D/usr/bin && cp -a mesonbuild \"$SITE/\" && cp -a meson.py $D/usr/bin/meson && chmod 755 $D/usr/bin/meson && sed -i '1s|.*|#!/usr/bin/python3|' $D/usr/bin/meson && install -Dm644 data/shell-completions/bash/meson $D/usr/share/bash-completion/completions/meson 2>/dev/null; echo \"installed to $SITE and $D/usr/bin/meson\"; head -1 $D/usr/bin/meson"
+[guest]
+test   = [["/usr/bin/meson", "--version"]]
+expect = ["1.10.1"]

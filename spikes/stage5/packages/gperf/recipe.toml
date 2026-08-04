@@ -1,0 +1,53 @@
+name    = "gperf"
+version = "3.3"
+group   = "build-substrate"
+license = "GPL-3.0-or-later"
+
+# Version, digest, licence and build system all measured by `probe url`,
+# from the URL the LFS book records. The book supplies a route; the pin is
+# ours.
+
+[source]
+url       = "https://ftp.gnu.org/gnu/gperf/gperf-3.3.tar.gz"
+sha256    = "fd87e0aba7e43ae054837afd6cd4db03a3f2693deb3619085e6ed9d8d9604ad8"
+signature = "https://ftp.gnu.org/gnu/gperf/gperf-3.3.tar.gz.sig"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+configure_flags = ["--prefix=/usr", "--docdir=/usr/share/doc/gperf-3.3"]
+# TESTS ARE NOT RUN, BY POLICY. Suites in series do not scale past a handful
+# of packages and the set is heading for 150+. Evidence comes from the guest
+# sanity test below, against the booted image.
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. Needed because fontconfig generates code with it; \
+nothing else in the set uses it and busybox has no equivalent."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/gperf-3.3.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--docdir=/usr/share/doc/gperf-3.3"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+[guest]
+test   = [["/usr/bin/gperf", "--version"]]
+expect = ["3.3"]

@@ -1,0 +1,60 @@
+name    = "libffi"
+version = "3.5.2"
+group   = "build-substrate"
+license = "MIT"
+
+# Version, digest, licence and build system all measured by `probe url`,
+# from the URL the LFS book records. The book supplies a route; the pin is
+# ours.
+
+[source]
+url       = "https://github.com/libffi/libffi/releases/download/v3.5.2/libffi-3.5.2.tar.gz"
+sha256    = "f3a3082a23b37c293a4fcd1053147b371f2ff91fa7ea1b2a52e335676bac82dc"
+signature = "none -- no .asc or .sig published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = ["exec-static-tramp"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--with-gcc-arch=native", "--disable-exec-static-tramp"]
+# TESTS ARE NOT RUN, BY POLICY. Suites in series do not scale past a handful
+# of packages and the set is heading for 150+. Evidence comes from the guest
+# sanity test below, against the booted image.
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. --with-gcc-arch=native IS A REPRODUCIBILITY RISK \
+worth naming: it lets the compiler tune for the machine doing the build, so \
+two builders with different CPUs could produce different bytes. It is used \
+here because LFS does and because the runners are uniform; if G3 ever \
+disagrees across machines, this flag is the first thing to remove."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libffi-3.5.2.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+# --disable-exec-static-tramp: static trampolines need a writable+executable
+# mapping, which is exactly what a hardened kernel refuses. Off by choice
+# rather than by whatever the build host's kernel happened to allow.
+run  = [["./configure", "--prefix=/usr", "--disable-static",
+         "--with-gcc-arch=native", "--disable-exec-static-tramp"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libffi"]]
+expect = ["3.5.2"]

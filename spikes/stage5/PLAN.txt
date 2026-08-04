@@ -20,17 +20,24 @@ between this file and the recipes fails the run.
 -- resolved order --------------------------------------------------
   derived from deps, tie-broken by name; never authored
   1. bzip2
-  2. file
-  3. hello
-  4. m4
-  5. ncurses
-  6. pkgconf
-  7. xz
-  8. zlib
-  9. autoconf
-  10. libtool
-  11. zstd
-  12. automake
+  2. expat
+  3. file
+  4. gperf
+  5. hello
+  6. libffi
+  7. m4
+  8. ncurses
+  9. ninja
+  10. pcre2
+  11. pkgconf
+  12. xz
+  13. zlib
+  14. autoconf
+  15. libtool
+  16. meson
+  17. readline
+  18. zstd
+  19. automake
 
 ======================================================================
 package bzip2 1.0.8
@@ -72,6 +79,38 @@ package bzip2 1.0.8
          | for l in *; do [ -L "$l" ] || continue; t=$(readlink "$l"); case "$t" in /*) ln -sf "$(basename "$t")" "$l"; echo "  relinked $l -> $(basename "$t")";; esac; done; ls -l | head -12
 
 ======================================================================
+package expat 2.7.4
+  group        build-substrate
+  license      MIT
+  recipe-sha   1fac85f54c2b230dedecd82b84229690f9d56c6b6be7566391e6235a32a394ea
+
+  source
+    url        https://github.com/libexpat/libexpat/releases/download/R_2_7_4/expat-2.7.4.tar.xz
+    sha256     9e9cabb457c1e09de91db2706d8365645792638eb3be1f94dbb2149301086ac0
+    signature  none -- no .asc or .sig published beside the release
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off docbook
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/expat-2.7.4
+         argv ["tar", "-xf", "dl/expat-2.7.4.tar.xz", "-C", "build/expat-2.7.4"]
+    [02] configure
+         cwd  build/expat-2.7.4/expat-2.7.4
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--without-docbook"]
+    [03] build
+         cwd  build/expat-2.7.4/expat-2.7.4
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/expat-2.7.4/expat-2.7.4
+         argv ["make", "DESTDIR=dest/expat", "install"]
+
+======================================================================
 package file 5.48
   group        build-substrate
   license      ISC
@@ -102,6 +141,38 @@ package file 5.48
     [04] install
          cwd  build/file-5.48/file-5.48
          argv ["make", "DESTDIR=dest/file", "install"]
+
+======================================================================
+package gperf 3.3
+  group        build-substrate
+  license      GPL-3.0-or-later
+  recipe-sha   2c6e61d7c5b00ea0b1981776782ec6d0c1df8eca5b91100fd5ba7ca4899bd752
+
+  source
+    url        https://ftp.gnu.org/gnu/gperf/gperf-3.3.tar.gz
+    sha256     fd87e0aba7e43ae054837afd6cd4db03a3f2693deb3619085e6ed9d8d9604ad8
+    signature  https://ftp.gnu.org/gnu/gperf/gperf-3.3.tar.gz.sig
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/gperf-3.3
+         argv ["tar", "-xf", "dl/gperf-3.3.tar.gz", "-C", "build/gperf-3.3"]
+    [02] configure
+         cwd  build/gperf-3.3/gperf-3.3
+         argv ["./configure", "--prefix=/usr", "--docdir=/usr/share/doc/gperf-3.3"]
+    [03] build
+         cwd  build/gperf-3.3/gperf-3.3
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/gperf-3.3/gperf-3.3
+         argv ["make", "DESTDIR=dest/gperf", "install"]
 
 ======================================================================
 package hello 2.12.3
@@ -135,6 +206,38 @@ package hello 2.12.3
     [04] install
          cwd  build/hello-2.12.3/hello-2.12.3
          argv ["make", "DESTDIR=dest/hello", "install"]
+
+======================================================================
+package libffi 3.5.2
+  group        build-substrate
+  license      MIT
+  recipe-sha   4a8f76d58753fb80b41f27ce956e3c947a21bf8b26cd5347322ff391fd4642bb
+
+  source
+    url        https://github.com/libffi/libffi/releases/download/v3.5.2/libffi-3.5.2.tar.gz
+    sha256     f3a3082a23b37c293a4fcd1053147b371f2ff91fa7ea1b2a52e335676bac82dc
+    signature  none -- no .asc or .sig published beside the release
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off exec-static-tramp
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libffi-3.5.2
+         argv ["tar", "-xf", "dl/libffi-3.5.2.tar.gz", "-C", "build/libffi-3.5.2"]
+    [02] configure
+         cwd  build/libffi-3.5.2/libffi-3.5.2
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--with-gcc-arch=native", "--disable-exec-static-tramp"]
+    [03] build
+         cwd  build/libffi-3.5.2/libffi-3.5.2
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/libffi-3.5.2/libffi-3.5.2
+         argv ["make", "DESTDIR=dest/libffi", "install"]
 
 ======================================================================
 package m4 1.4.21
@@ -199,6 +302,68 @@ package ncurses 6.6
     [04] install
          cwd  build/ncurses-6.6/ncurses-6.6
          argv ["make", "DESTDIR=dest/ncurses", "install"]
+
+======================================================================
+package ninja 1.13.2
+  group        build-substrate
+  license      Apache-2.0
+  recipe-sha   4776c11c52305d0c5425526d1208493a5cbb8aebb985e64118c595e921f9e663
+
+  source
+    url        https://github.com/ninja-build/ninja/archive/v1.13.2/ninja-1.13.2.tar.gz
+    sha256     974d6b2f4eeefa25625d34da3cb36bdcebe7fbce40f4c16ac0835fd1c0cbae17
+    signature  none -- GitHub archive tarball, no signature published
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/ninja-1.13.2
+         argv ["tar", "-xf", "dl/ninja-1.13.2.tar.gz", "-C", "build/ninja-1.13.2"]
+    [02] bootstrap
+         cwd  build/ninja-1.13.2/ninja-1.13.2
+         argv ["python3", "configure.py", "--bootstrap"]
+    [03] install
+         cwd  build/ninja-1.13.2/ninja-1.13.2
+         SHELL (declared) why=installing one binary and one man page is two copies, not a make target
+         | install -Dm755 ninja dest/ninja/usr/bin/ninja && install -Dm644 misc/ninja.vim dest/ninja/usr/share/vim/vimfiles/syntax/ninja.vim 2>/dev/null; install -Dm644 doc/manual.asciidoc dest/ninja/usr/share/doc/ninja-1.13.2/manual.asciidoc 2>/dev/null; ls -l dest/ninja/usr/bin/ninja
+
+======================================================================
+package pcre2 10.47
+  group        build-substrate
+  license      BSD-3-Clause-with-exception
+  recipe-sha   30f676f121a924034a618f038483e168ffca813517de9ced8b19f85e6ad8b575
+
+  source
+    url        https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.bz2
+    sha256     47fe8c99461250d42f89e6e8fdaeba9da057855d06eb7fc08d9ca03fd08d7bc7
+    signature  https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.bz2.sig
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off bzip2, readline, valgrind, zlib
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/pcre2-10.47
+         argv ["tar", "-xf", "dl/pcre2-10.47.tar.bz2", "-C", "build/pcre2-10.47"]
+    [02] configure
+         cwd  build/pcre2-10.47/pcre2-10.47
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--enable-unicode", "--enable-jit", "--enable-pcre2-16", "--enable-pcre2-32"]
+    [03] build
+         cwd  build/pcre2-10.47/pcre2-10.47
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/pcre2-10.47/pcre2-10.47
+         argv ["make", "DESTDIR=dest/pcre2", "install"]
 
 ======================================================================
 package pkgconf 3.0.5
@@ -364,6 +529,65 @@ package libtool 2.6.2
     [04] install
          cwd  build/libtool-2.6.2/libtool-2.6.2
          argv ["make", "DESTDIR=dest/libtool", "install"]
+
+======================================================================
+package meson 1.10.1
+  group        build-substrate
+  license      Apache-2.0
+  recipe-sha   7e83f5d3707a068dbf393f8a5b6d2d4561713f5e2c09eb73072b52b85e899a57
+
+  source
+    url        https://github.com/mesonbuild/meson/releases/download/1.10.1/meson-1.10.1.tar.gz
+    sha256     c42296f12db316a4515b9375a5df330f2e751ccdd4f608430d41d7d6210e4317
+    signature  none -- no .asc or .sig published beside the release
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      ninja
+    optional_off pip, setuptools, wheel
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/meson-1.10.1
+         argv ["tar", "-xf", "dl/meson-1.10.1.tar.gz", "-C", "build/meson-1.10.1"]
+    [02] install
+         cwd  build/meson-1.10.1/meson-1.10.1
+         SHELL (declared) why=copying a python package tree and writing an entry point is not an argv
+         | PY=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}")') && SITE=dest/meson/usr/lib/$PY/site-packages && mkdir -p "$SITE" dest/meson/usr/bin && cp -a mesonbuild "$SITE/" && cp -a meson.py dest/meson/usr/bin/meson && chmod 755 dest/meson/usr/bin/meson && sed -i '1s|.*|#!/usr/bin/python3|' dest/meson/usr/bin/meson && install -Dm644 data/shell-completions/bash/meson dest/meson/usr/share/bash-completion/completions/meson 2>/dev/null; echo "installed to $SITE and dest/meson/usr/bin/meson"; head -1 dest/meson/usr/bin/meson
+
+======================================================================
+package readline 8.3
+  group        build-substrate
+  license      GPL-3.0-or-later
+  recipe-sha   3c2d60c13d8bb1511ca16c27d2e9ba9b05ed9422229cf450a76c24810ad3d0dd
+
+  source
+    url        https://ftp.gnu.org/gnu/readline/readline-8.3.tar.gz
+    sha256     fe5383204467828cd495ee8d1d3c037a7eba1389c22bc6a041f627976f9061cc
+    signature  https://ftp.gnu.org/gnu/readline/readline-8.3.tar.gz.sig
+    correspond none
+
+  deps
+    build        ncurses
+    link         -
+    runtime      ncurses
+    optional_off termcap
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/readline-8.3
+         argv ["tar", "-xf", "dl/readline-8.3.tar.gz", "-C", "build/readline-8.3"]
+    [02] configure
+         cwd  build/readline-8.3/readline-8.3
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--with-curses", "--enable-multibyte"]
+    [03] build
+         cwd  build/readline-8.3/readline-8.3
+         argv ["make", "-j1", "SHLIB_LIBS=-lncursesw"]
+    [04] install
+         cwd  build/readline-8.3/readline-8.3
+         argv ["make", "DESTDIR=dest/readline", "SHLIB_LIBS=-lncursesw", "install"]
 
 ======================================================================
 package zstd 1.5.7

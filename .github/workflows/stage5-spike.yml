@@ -436,14 +436,7 @@ jobs:
             2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
           [ -n "$NEWEST" ] && { echo "    $NEWEST"; tail -30 "$NEWEST" | sed 's/^/    /'; }
 
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: stage5-spike
-          path: |
-            spikes/stage5/out/
-            spikes/stage5/ledger/
-            spikes/stage5/logs/
-            spikes/stage5/PLAN.txt
-            boot.log
-          retention-days: 30
+      # ARTIFACT UPLOAD REMOVED. It was a 395 MB zip on every run, and the
+      # things worth keeping -- the markers, the manifest counts, the ledger
+      # -- are all in the job log. Restore it when there is something that
+      # needs downloading rather than reading.

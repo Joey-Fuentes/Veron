@@ -1,0 +1,55 @@
+name    = "expat"
+version = "2.7.4"
+group   = "build-substrate"
+license = "MIT"
+
+# Version, digest, licence and build system all measured by `probe url`,
+# from the URL the LFS book records. The book supplies a route; the pin is
+# ours.
+
+[source]
+url       = "https://github.com/libexpat/libexpat/releases/download/R_2_7_4/expat-2.7.4.tar.xz"
+sha256    = "9e9cabb457c1e09de91db2706d8365645792638eb3be1f94dbb2149301086ac0"
+signature = "none -- no .asc or .sig published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = ["docbook"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--without-docbook"]
+# TESTS ARE NOT RUN, BY POLICY. Suites in series do not scale past a handful
+# of packages and the set is heading for 150+. Evidence comes from the guest
+# sanity test below, against the booted image.
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. expat ships both autotools and cmake; the autotools \
+path is used, since adding cmake as a build dependency of a phase-0 package \
+would invert the order it is needed in. --without-docbook drops the xmlwf man \
+page, which needs docbook2x -- a documentation toolchain, not a library."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/expat-2.7.4.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--without-docbook"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "expat"]]
+expect = ["2.7.4"]

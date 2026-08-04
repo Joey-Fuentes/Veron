@@ -1,0 +1,62 @@
+name    = "ninja"
+version = "1.13.2"
+group   = "build-substrate"
+license = "Apache-2.0"
+
+# Version, digest, licence and build system all measured by `probe url`,
+# from the URL the LFS book records. The book supplies a route; the pin is
+# ours.
+
+[source]
+url       = "https://github.com/ninja-build/ninja/archive/v1.13.2/ninja-1.13.2.tar.gz"
+sha256    = "974d6b2f4eeefa25625d34da3cb36bdcebe7fbce40f4c16ac0835fd1c0cbae17"
+signature = "none -- GitHub archive tarball, no signature published"
+crosschecked_against = []
+
+# PYTHON COMES FROM THE SYSROOT, NOT FROM A RECIPE, so it cannot appear in
+# deps.build -- the driver rightly refuses a dependency with no recipe. That
+# is a modelling gap worth naming: this package genuinely requires python3 at
+# build time, and nothing in the graph records it. If stage 4 ever stops
+# shipping python, this breaks with no edge to have warned anyone.
+sysroot_requires = ["python3"]
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+configure_flags = []
+# TESTS ARE NOT RUN, BY POLICY. Suites in series do not scale past a handful
+# of packages and the set is heading for 150+. Evidence comes from the guest
+# sanity test below, against the booted image.
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. Built via configure.py --bootstrap rather than its \
+own CMakeLists, because cmake is built later in this set and needs ninja: \
+using cmake here would be a dependency cycle. No signature is published for \
+the GitHub archive tarball, so the pin rests on the digest alone."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/ninja-1.13.2.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "bootstrap"
+cwd  = "$S"
+# NINJA IS BUILT WITHOUT CMAKE, DELIBERATELY. ninja's own CMakeLists exists,
+# but cmake is built later in this set and needs ninja to be quick -- using it
+# here would be a cycle. configure.py --bootstrap compiles ninja with the C++
+# compiler directly and is upstream's supported path for exactly this case.
+run  = [["python3", "configure.py", "--bootstrap"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+why  = "installing one binary and one man page is two copies, not a make target"
+shell = "install -Dm755 ninja $D/usr/bin/ninja && install -Dm644 misc/ninja.vim $D/usr/share/vim/vimfiles/syntax/ninja.vim 2>/dev/null; install -Dm644 doc/manual.asciidoc $D/usr/share/doc/ninja-1.13.2/manual.asciidoc 2>/dev/null; ls -l $D/usr/bin/ninja"
+[guest]
+test   = [["/usr/bin/ninja", "--version"]]
+expect = ["1.13.2"]

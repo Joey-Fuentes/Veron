@@ -1,0 +1,60 @@
+name    = "readline"
+version = "8.3"
+group   = "build-substrate"
+license = "GPL-3.0-or-later"
+
+# Version, digest, licence and build system all measured by `probe url`,
+# from the URL the LFS book records. The book supplies a route; the pin is
+# ours.
+
+[source]
+url       = "https://ftp.gnu.org/gnu/readline/readline-8.3.tar.gz"
+sha256    = "fe5383204467828cd495ee8d1d3c037a7eba1389c22bc6a041f627976f9061cc"
+signature = "https://ftp.gnu.org/gnu/readline/readline-8.3.tar.gz.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["ncurses"]
+link         = []
+runtime      = ["ncurses"]
+optional_off = ["termcap"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--with-curses", "--enable-multibyte"]
+# TESTS ARE NOT RUN, BY POLICY. Suites in series do not scale past a handful
+# of packages and the set is heading for 150+. Evidence comes from the guest
+# sanity test below, against the booted image.
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. Links ncursesw explicitly rather than whatever \
+terminal library configure happens to find."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/readline-8.3.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+# --with-curses is explicit because readline will otherwise link termcap if it
+# finds one, and ncurses is already in this set -- leaving it to detection
+# makes the result depend on build order.
+run  = [["./configure", "--prefix=/usr", "--disable-static",
+         "--with-curses", "--enable-multibyte"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+# SHLIB_LIBS is load-bearing: without it libreadline.so records no dependency
+# on ncurses and every consumer has to link it themselves, which fails late
+# and confusingly.
+run  = [["make", "-j$J", "SHLIB_LIBS=-lncursesw"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "SHLIB_LIBS=-lncursesw", "install"]]
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "readline"]]
+expect = ["8.3"]
