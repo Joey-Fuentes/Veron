@@ -195,7 +195,7 @@ Three findings from that:
 all four compilers  cc1, cc1plus, cross and native      IDENTICAL
 ld  as  libc.so.6  busybox                              IDENTICAL
 Image                                                   IDENTICAL
-initramfs.cpio.gz                                       differs -- fix did not run
+initramfs.cpio.gz                                       fix now RUNS -- one run so far
 ```
 
 Measured by `repro-compilers`, most recently across runs `30873921583` and
@@ -211,6 +211,26 @@ Three causes were found, and each was one field:
 | `Image` | build timestamp in the kernel's **built-in** initramfs cpio headers | `KBUILD_BUILD_TIMESTAMP` in a form the box's `date` can parse |
 | `initramfs.cpio.gz` | the **inode** field in newc headers | `gen_init_cpio` |
 
+**The `Image` non-determinism was self-inflicted, and the hashes prove it.**
+
+```
+b4a145a6…   early runs, KBUILD_BUILD_TIMESTAMP="@0"        stable
+39442a32…   after the change to "Thu Jan  1 00:00:00 UTC 1970"   varying
+b4a145a6…   once the parse check fell back to "@0"          stable again
+```
+
+`@0` was the original value and it worked. It was changed to a long date string
+**purely so the boot banner would read as a date rather than `@0`** -- a
+cosmetic change to a log line. busybox's `date -d` cannot parse the long form,
+`gen_initramfs.sh` swallowed the failure with `|| :`, and the built-in
+initramfs went back to stamping wall-clock time. Four rounds to find again.
+
+The lesson is not "check your date formats". It is that **a change made for
+legibility altered behaviour in a component nobody associated with it**, and
+the only visible effect was in an artifact hash nobody was comparing yet. The
+fix now tries three forms in order -- long, ISO 8601, `@0` -- and says which
+one took, so the banner is legible when it can be and correct always.
+
 **The initramfs fix was written and did not run.** The lookup for the kernel
 source hardcoded `$W/src/linux-$KERNEL`; `fetch` unpacks to `$SRC/linux/<dir>`.
 The test failed, the fallback path ran, and the archive came back with 419
@@ -222,6 +242,19 @@ signal was one line in a log nobody re-read. It now searches for the file and
 reports which of the three states it is in -- found and compiled, found and
 failed to compile, or not found -- because "gen_init_cpio unavailable" covered
 all three.
+
+**With the search in place it runs**, and the log says so:
+
+```
+gen_init_cpio built from /build/src/linux/linux-7.1.5 -- deterministic inodes
+initramfs spec: 418 entries
+initramfs: 11945869 bytes
+```
+
+and the result still boots: `VERON-BOOT-OK`, `VERON-TESTS pass=8 fail=0`,
+`VERON-GCC-IN-GUEST`. Whether it is byte-identical needs a second run to
+compare against; one run cannot answer that, and the previous three attempts
+all failed at exactly that step.
 
 **initramfs -- diagnosed.** `cpio -H newc` records an **inode number** in every
 file header, and it comes from the filesystem's allocator. mtimes were

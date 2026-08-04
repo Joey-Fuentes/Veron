@@ -1134,14 +1134,27 @@ if [ "$B5" = ok ]; then
       # was passed to gen_init_cpio, and it used the current time. The banner
       # worked because the banner uses the string verbatim and never parses it.
       #
-      # So: check that the box's own date can parse the value, and fall back to
-      # a form it can. Silent fallback is what cost this round; this one says
-      # which form took.
+      # AND THE LONG FORM WAS A SELF-INFLICTED REGRESSION. This value used to be
+      # `@0`, which busybox parses, and the Image was reproducible. It was
+      # changed to "Thu Jan  1 00:00:00 UTC 1970" purely so the boot banner
+      # would read as a date instead of `@0` -- a cosmetic change to a log
+      # line, which busybox's `date -d` cannot parse, which silently
+      # un-fixed the built-in initramfs and cost four rounds to find again.
+      # The Image hash is the proof: b4a145a6 under `@0` before the change,
+      # 39442a32 and varying under the long form, b4a145a6 again once the
+      # fallback restored it.
+      #
+      # So: check that the box's own date can parse the value, try progressively
+      # cruder forms, and SAY WHICH ONE TOOK. Silent fallback is what cost the
+      # round; a legible banner is worth having only if it is also correct.
       if [ "$(date -d "$KBUILD_BUILD_TIMESTAMP" +%s 2>/dev/null)" = 0 ]; then
         say "    KBUILD_BUILD_TIMESTAMP parses to 0 -- built-in initramfs is deterministic"
+      elif [ "$(date -d "1970-01-01 00:00:00 UTC" +%s 2>/dev/null)" = 0 ]; then
+        export KBUILD_BUILD_TIMESTAMP="1970-01-01 00:00:00 UTC"
+        say "    long form unparseable; using ISO 8601, which this date accepts"
       elif [ "$(date -d @0 +%s 2>/dev/null)" = 0 ]; then
         export KBUILD_BUILD_TIMESTAMP="@0"
-        say "    date cannot parse the long form; using @0 (banner reads '@0')"
+        say "    only @0 parses here; banner will read '@0'"
       else
         say "    WARNING: no date form this box parses to 0 --"
         say "    the built-in initramfs will carry wall-clock mtimes and Image"
