@@ -55,8 +55,13 @@ run  = [["make", "-j$J"]]
 [[steps]]
 # NAME THE NEXT TEST WITHOUT RUNNING IT. The suite stops after
 # `PASS: test-error.sh` every time. The order is not alphabetical guesswork --
-# it is the TESTS variable in tests/Makefile. Printing the entries after
-# test-error identifies the culprit in one second, with no hang required.
+# it is the TESTS variable in tests/Makefile.
+#
+# ANSWERED: the entries after test-error are
+#     test-execute-main  test-execute-child  test-execute-script
+# so the hang is gnulib's `execute` module, which spawns child processes and
+# waits on them. Kept as a step because the order shifts between gnulib
+# vintages and the next package to hang should not need this rediscovered.
 name = "which-test-is-next"
 cwd  = "$S/tests"
 timeout = 60
@@ -74,7 +79,13 @@ cwd  = "$S"
 # A gnulib unit test that needs more than 60 seconds is already a bug, so this
 # does not mask a slow machine -- it converts a hang into evidence.
 timeout = 1800
-env = { LOG_COMPILER = "timeout", LOG_FLAGS = "-v 60" }
+# BUSYBOX SYNTAX, NOT GNU. The sysroot's `timeout` is a busybox applet:
+#   timeout [-s SIG] [-k KILL_SECS] SECS PROG ARGS
+# GNU's `-v` does not exist there, and passing it made every single test fail
+# instantly with "invalid option -- 'v'" -- instrumentation that broke the
+# thing it was measuring. This is the busybox-vs-GNU difference in practice:
+# not a missing applet, a thinner one.
+env = { LOG_COMPILER = "timeout", LOG_FLAGS = "60" }
 run  = [["make", "check", "VERBOSE=yes"]]
 
 [[steps]]
