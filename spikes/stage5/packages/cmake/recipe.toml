@@ -1,0 +1,58 @@
+name    = "cmake"
+version = "4.2.3"
+group   = "build-substrate"
+license = "BSD-3-Clause"
+
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://cmake.org/files/v4.2/cmake-4.2.3.tar.gz"
+sha256    = "7efaccde8c5a6b2968bad6ce0fe60e19b6e10701a12fce948c2bf79bac8a11e9"
+signature = "none -- cmake.org publishes hashes on the download page, not a signature"
+crosschecked_against = []
+
+[deps]
+build        = ["ninja", "zlib", "bzip2", "xz", "zstd", "curl", "expat", "libarchive"]
+link         = ["zlib", "bzip2", "xz", "zstd", "curl", "expat", "libarchive"]
+runtime      = ["zlib", "bzip2", "xz", "zstd", "curl", "expat", "libarchive"]
+optional_off = ["qt-gui", "ccache", "sphinx", "vendored-libs"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--system-libs", "--no-qt-gui", "--generator=Ninja"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. --system-libs is the load-bearing flag: without it \
+cmake builds and statically links its own copies of zlib, bzip2, xz, zstd, \
+curl, expat and libarchive, so the image would carry two of each and the \
+ledger would describe only one. Every one of those is already a package here, \
+which is why cmake sits this late in the order. DESTDIR is passed through \
+ninja install rather than a configure flag because there is no configure."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/cmake-4.2.3.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "bootstrap"
+cwd  = "$S"
+# CMAKE BUILDS ITSELF. There is no configure script -- bootstrap compiles a
+# minimal cmake with the C++ compiler, then that cmake configures the real
+# one. --system-libs uses the zlib, bzip2, xz, zstd, curl and expat already
+# built here rather than the copies vendored in the tarball, which is the
+# difference between six libraries and twelve.
+run  = [["./bootstrap", "--prefix=/usr", "--system-libs",
+         "--parallel=$J", "--no-qt-gui", "--generator=Ninja"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "install"]]
+[guest]
+test   = [["/usr/bin/cmake", "--version"]]
+expect = ["4.2.3"]

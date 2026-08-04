@@ -1,0 +1,53 @@
+name    = "libxml2"
+version = "2.15.1"
+group   = "build-substrate"
+license = "MIT"
+
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.1.tar.xz"
+sha256    = "c008bac08fd5c7b4a87f7b8a71f283fa581d80d80ff8d2efd3b26224c39bc54c"
+signature = "none -- download.gnome.org publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = ["zlib", "xz", "readline"]
+link         = ["zlib", "xz", "readline"]
+runtime      = ["zlib", "xz", "readline"]
+optional_off = ["python", "icu", "lzma-static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--with-history", "--without-python", "--without-icu"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. --without-python because the python bindings would \
+install into site-packages and make libxml2 a python dependency in the other \
+direction; nothing here imports them. --without-icu even though icu is built \
+in this same batch: libxml2 only uses it for a non-default encoding path, and \
+enabling it would make libxml2 depend on a 30 MB library for a feature no \
+consumer here asks for. --with-history is the readline integration in \
+xmllint's shell, which is why readline appears above."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libxml2-2.15.1.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--with-history", "--without-python", "--without-icu"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+[guest]
+test   = [["/usr/bin/xml2-config", "--version"]]
+expect = ["2.15.1"]

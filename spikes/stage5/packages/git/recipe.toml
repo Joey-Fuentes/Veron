@@ -1,0 +1,55 @@
+name    = "git"
+version = "2.53.0"
+group   = "build-substrate"
+license = "GPL-2.0-only"
+
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://www.kernel.org/pub/software/scm/git/git-2.53.0.tar.xz"
+sha256    = "5818bd7d80b061bbbdfec8a433d609dc8818a05991f731ffc4a561e2ca18c653"
+signature = "none -- kernel.org publishes .sign files for some trees but not this one"
+crosschecked_against = []
+
+[deps]
+build        = ["curl", "expat", "zlib"]
+link         = ["curl", "expat", "zlib"]
+runtime      = ["curl", "expat", "zlib"]
+optional_off = ["tcltk", "iconv", "perl", "python", "gettext", "gnu-completion"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--with-curl", "--with-expat", "--with-openssl", "--without-tcltk", "--without-iconv"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. NO_PERL AND NO_PYTHON ARE REAL LOSSES, not tidying: \
+they remove git-send-email, git-svn, add--interactive's perl implementation \
+and the python remote helpers. The core porcelain and plumbing are C and \
+unaffected. Perl exists in the sysroot but is a toolchain perl, and shipping \
+git subcommands that depend on it would repeat the mistake python taught. \
+TLS comes from the sysroot's openssl, the same undeclared edge curl carries \
+-- see that recipe for why it is acceptable and where it is recorded."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/git-2.53.0.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--with-curl", "--with-expat",
+         "--with-openssl", "--without-tcltk", "--without-iconv"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J", "NO_PERL=1", "NO_PYTHON=1", "NO_GETTEXT=1"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "NO_PERL=1", "NO_PYTHON=1", "NO_GETTEXT=1",
+         "install"]]
+[guest]
+test   = [["/usr/bin/git", "--version"]]
+expect = ["2.53.0"]

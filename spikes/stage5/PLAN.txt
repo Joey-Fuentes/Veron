@@ -24,21 +24,28 @@ between this file and the recipes fails the run.
   3. file
   4. gperf
   5. hello
-  6. libffi
-  7. m4
-  8. ncurses
-  9. pcre2
-  10. pkgconf
-  11. xz
-  12. zlib
-  13. autoconf
-  14. libtool
-  15. readline
-  16. zstd
-  17. automake
-  18. python
-  19. ninja
-  20. meson
+  6. icu
+  7. libffi
+  8. m4
+  9. ncurses
+  10. pcre2
+  11. pkgconf
+  12. xz
+  13. zlib
+  14. autoconf
+  15. libtool
+  16. readline
+  17. zstd
+  18. automake
+  19. curl
+  20. libarchive
+  21. libxml2
+  22. python
+  23. sqlite
+  24. git
+  25. ninja
+  26. cmake
+  27. meson
 
 ======================================================================
 package bzip2 1.0.8
@@ -207,6 +214,38 @@ package hello 2.12.3
     [04] install
          cwd  build/hello-2.12.3/hello-2.12.3
          argv ["make", "DESTDIR=dest/hello", "install"]
+
+======================================================================
+package icu 78.2
+  group        build-substrate
+  license      ICU
+  recipe-sha   661491a6b42cb69315625d4d6f7176c54042e6fd516387a4b52d8ada1f3939cf
+
+  source
+    url        https://github.com/unicode-org/icu/releases/download/release-78.2/icu4c-78.2-sources.tgz
+    sha256     3e99687b5c435d4b209630e2d2ebb79906c984685e78635078b672e03c89df35
+    signature  https://github.com/unicode-org/icu/releases/download/release-78.2/icu4c-78.2-sources.tgz.asc
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off icuio-static, samples, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/icu-78.2
+         argv ["tar", "-xf", "dl/icu4c-78.2-sources.tgz", "-C", "build/icu-78.2"]
+    [02] configure
+         cwd  build/icu-78.2/icu/source
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--disable-samples", "--disable-tests"]
+    [03] build
+         cwd  build/icu-78.2/icu/source
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/icu-78.2/icu/source
+         argv ["make", "DESTDIR=dest/icu", "install"]
 
 ======================================================================
 package libffi 3.5.2
@@ -595,6 +634,102 @@ package automake 1.18.1
          argv ["make", "DESTDIR=dest/automake", "install"]
 
 ======================================================================
+package curl 8.18.0
+  group        build-substrate
+  license      curl
+  recipe-sha   63213b4e884da6264cbff0c31723d80bf18064853dd58fe85a0b995732872be4
+
+  source
+    url        https://curl.se/download/curl-8.18.0.tar.xz
+    sha256     40df79166e74aa20149365e11ee4c798a46ad57c34e4f68fd13100e2c9a91946
+    signature  https://curl.se/download/curl-8.18.0.tar.xz.asc
+    correspond none
+
+  deps
+    build        zlib, zstd
+    link         zlib, zstd
+    runtime      zlib, zstd
+    optional_off brotli, gssapi, ldap, libidn2, libpsl, librtmp, libssh2, nghttp2
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/curl-8.18.0
+         argv ["tar", "-xf", "dl/curl-8.18.0.tar.xz", "-C", "build/curl-8.18.0"]
+    [02] configure
+         cwd  build/curl-8.18.0/curl-8.18.0
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--with-openssl", "--with-zlib", "--with-zstd", "--without-libpsl", "--without-libidn2", "--without-brotli", "--without-nghttp2", "--without-librtmp", "--enable-threaded-resolver"]
+    [03] build
+         cwd  build/curl-8.18.0/curl-8.18.0
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/curl-8.18.0/curl-8.18.0
+         argv ["make", "DESTDIR=dest/curl", "install"]
+
+======================================================================
+package libarchive 3.8.5
+  group        build-substrate
+  license      BSD-2-Clause
+  recipe-sha   4d9bab90210a95219469fa7475e700905ccb882421a555cd06588b26d5e30ad1
+
+  source
+    url        https://github.com/libarchive/libarchive/releases/download/v3.8.5/libarchive-3.8.5.tar.xz
+    sha256     d68068e74beee3a0ec0dd04aee9037d5757fcc651591a6dcf1b6d542fb15a703
+    signature  https://github.com/libarchive/libarchive/releases/download/v3.8.5/libarchive-3.8.5.tar.xz.asc
+    correspond none
+
+  deps
+    build        bzip2, xz, zlib, zstd
+    link         bzip2, xz, zlib, zstd
+    runtime      bzip2, xz, zlib, zstd
+    optional_off acl, attr, expat, lz4, nettle, openssl, xml2
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libarchive-3.8.5
+         argv ["tar", "-xf", "dl/libarchive-3.8.5.tar.xz", "-C", "build/libarchive-3.8.5"]
+    [02] configure
+         cwd  build/libarchive-3.8.5/libarchive-3.8.5
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--without-xml2", "--without-expat", "--without-openssl"]
+    [03] build
+         cwd  build/libarchive-3.8.5/libarchive-3.8.5
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/libarchive-3.8.5/libarchive-3.8.5
+         argv ["make", "DESTDIR=dest/libarchive", "install"]
+
+======================================================================
+package libxml2 2.15.1
+  group        build-substrate
+  license      MIT
+  recipe-sha   13b24f92f5f016c124e28dd11a3948ab3125557aff8efae3670da1ef6f593fc3
+
+  source
+    url        https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.1.tar.xz
+    sha256     c008bac08fd5c7b4a87f7b8a71f283fa581d80d80ff8d2efd3b26224c39bc54c
+    signature  none -- download.gnome.org publishes no detached signature
+    correspond none
+
+  deps
+    build        readline, xz, zlib
+    link         readline, xz, zlib
+    runtime      readline, xz, zlib
+    optional_off icu, lzma-static, python
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libxml2-2.15.1
+         argv ["tar", "-xf", "dl/libxml2-2.15.1.tar.xz", "-C", "build/libxml2-2.15.1"]
+    [02] configure
+         cwd  build/libxml2-2.15.1/libxml2-2.15.1
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--with-history", "--without-python", "--without-icu"]
+    [03] build
+         cwd  build/libxml2-2.15.1/libxml2-2.15.1
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/libxml2-2.15.1/libxml2-2.15.1
+         argv ["make", "DESTDIR=dest/libxml2", "install"]
+
+======================================================================
 package python 3.14.6
   group        build-substrate
   license      PSF-2.0
@@ -635,6 +770,70 @@ package python 3.14.6
          | set -eu; PYBIN=dest/python/usr/bin/python3.14; PYLIB=dest/python/usr/lib; echo "interpreter: $PYBIN"; fail=0; for m in zlib bz2 lzma ctypes readline curses pyexpat; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  MISSING  $m"; fail=1; fi; done; for m in compression.zstd; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  absent   $m (3.14 feature, not fatal)"; fi; done; echo; echo '--- known-absent until their packages exist ---'; for m in sqlite3 ssl; do LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null && echo "  ok   $m (unexpected -- update optional_off)" || echo "  absent   $m (expected)"; done; [ "$fail" = 0 ] || { echo; echo 'A module this package exists to provide is missing.'; exit 1; }
 
 ======================================================================
+package sqlite 3.53.4
+  group        build-substrate
+  license      public-domain
+  recipe-sha   9d6848456b00864b74f4a65e4cdd3a6e82fc63b3ed5bb47f8b517a3312a4a0cc
+
+  source
+    url        https://www.sqlite.org/2026/sqlite-autoconf-3530400.tar.gz
+    sha256     0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c
+    signature  none -- sqlite.org publishes sha3 sums on the download page, not a signature
+    correspond none
+
+  deps
+    build        readline, zlib
+    link         readline, zlib
+    runtime      readline, zlib
+    optional_off icu, tcl
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/sqlite-3.53.4
+         argv ["tar", "-xf", "dl/sqlite-autoconf-3530400.tar.gz", "-C", "build/sqlite-3.53.4"]
+    [02] configure
+         cwd  build/sqlite-3.53.4/sqlite-autoconf-3530400
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--enable-readline", "--enable-fts5"]
+    [03] build
+         cwd  build/sqlite-3.53.4/sqlite-autoconf-3530400
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/sqlite-3.53.4/sqlite-autoconf-3530400
+         argv ["make", "DESTDIR=dest/sqlite", "install"]
+
+======================================================================
+package git 2.53.0
+  group        build-substrate
+  license      GPL-2.0-only
+  recipe-sha   890168e43fab35d7ee85d7dcc48ae6b78020ee1c824681d103462afb06fd2384
+
+  source
+    url        https://www.kernel.org/pub/software/scm/git/git-2.53.0.tar.xz
+    sha256     5818bd7d80b061bbbdfec8a433d609dc8818a05991f731ffc4a561e2ca18c653
+    signature  none -- kernel.org publishes .sign files for some trees but not this one
+    correspond none
+
+  deps
+    build        curl, expat, zlib
+    link         curl, expat, zlib
+    runtime      curl, expat, zlib
+    optional_off gettext, gnu-completion, iconv, perl, python, tcltk
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/git-2.53.0
+         argv ["tar", "-xf", "dl/git-2.53.0.tar.xz", "-C", "build/git-2.53.0"]
+    [02] configure
+         cwd  build/git-2.53.0/git-2.53.0
+         argv ["./configure", "--prefix=/usr", "--with-curl", "--with-expat", "--with-openssl", "--without-tcltk", "--without-iconv"]
+    [03] build
+         cwd  build/git-2.53.0/git-2.53.0
+         argv ["make", "-j1", "NO_PERL=1", "NO_PYTHON=1", "NO_GETTEXT=1"]
+    [04] install
+         cwd  build/git-2.53.0/git-2.53.0
+         argv ["make", "DESTDIR=dest/git", "NO_PERL=1", "NO_PYTHON=1", "NO_GETTEXT=1", "install"]
+
+======================================================================
 package ninja 1.13.2
   group        build-substrate
   license      Apache-2.0
@@ -663,6 +862,38 @@ package ninja 1.13.2
          cwd  build/ninja-1.13.2/ninja-1.13.2
          SHELL (declared) why=installing one binary and one man page is two copies, not a make target
          | install -Dm755 ninja dest/ninja/usr/bin/ninja && install -Dm644 misc/ninja.vim dest/ninja/usr/share/vim/vimfiles/syntax/ninja.vim 2>/dev/null; install -Dm644 doc/manual.asciidoc dest/ninja/usr/share/doc/ninja-1.13.2/manual.asciidoc 2>/dev/null; ls -l dest/ninja/usr/bin/ninja
+
+======================================================================
+package cmake 4.2.3
+  group        build-substrate
+  license      BSD-3-Clause
+  recipe-sha   1b524fe229824a62da38cdb744b4340425f78e503552769a7eb5c144722053f3
+
+  source
+    url        https://cmake.org/files/v4.2/cmake-4.2.3.tar.gz
+    sha256     7efaccde8c5a6b2968bad6ce0fe60e19b6e10701a12fce948c2bf79bac8a11e9
+    signature  none -- cmake.org publishes hashes on the download page, not a signature
+    correspond none
+
+  deps
+    build        bzip2, curl, expat, libarchive, ninja, xz, zlib, zstd
+    link         bzip2, curl, expat, libarchive, xz, zlib, zstd
+    runtime      bzip2, curl, expat, libarchive, xz, zlib, zstd
+    optional_off ccache, qt-gui, sphinx, vendored-libs
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/cmake-4.2.3
+         argv ["tar", "-xf", "dl/cmake-4.2.3.tar.gz", "-C", "build/cmake-4.2.3"]
+    [02] bootstrap
+         cwd  build/cmake-4.2.3/cmake-4.2.3
+         argv ["./bootstrap", "--prefix=/usr", "--system-libs", "--parallel=1", "--no-qt-gui", "--generator=Ninja"]
+    [03] build
+         cwd  build/cmake-4.2.3/cmake-4.2.3
+         argv ["ninja"]
+    [04] install
+         cwd  build/cmake-4.2.3/cmake-4.2.3
+         argv ["ninja", "install"]
 
 ======================================================================
 package meson 1.10.1

@@ -1,0 +1,53 @@
+name    = "icu"
+version = "78.2"
+group   = "build-substrate"
+license = "ICU"
+# THE TARBALL UNPACKS TO icu/, AND THE BUILD LIVES ONE LEVEL DOWN in
+# icu/source. Neither matches the package name, so both have to be stated.
+srcdir  = "icu/source"
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://github.com/unicode-org/icu/releases/download/release-78.2/icu4c-78.2-sources.tgz"
+sha256    = "3e99687b5c435d4b209630e2d2ebb79906c984685e78635078b672e03c89df35"
+signature = "https://github.com/unicode-org/icu/releases/download/release-78.2/icu4c-78.2-sources.tgz.asc"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = ["samples", "tests", "icuio-static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--disable-samples", "--disable-tests"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. ICU IS LARGE -- roughly 30 MB of data tables -- and \
+it is here because harfbuzz, WPE WebKit and anything doing real text \
+segmentation need it. --disable-samples and --disable-tests remove build \
+targets, not features."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/icu4c-78.2-sources.tgz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static",
+         "--disable-samples", "--disable-tests"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "icu-uc"]]
+expect = ["78.2"]

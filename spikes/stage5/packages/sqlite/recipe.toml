@@ -1,0 +1,54 @@
+name    = "sqlite"
+version = "3.53.4"
+group   = "build-substrate"
+license = "public-domain"
+# The autoconf tarball unpacks to a directory named after the encoded
+# version, not the package.
+srcdir  = "sqlite-autoconf-3530400"
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://www.sqlite.org/2026/sqlite-autoconf-3530400.tar.gz"
+sha256    = "0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c"
+signature = "none -- sqlite.org publishes sha3 sums on the download page, not a signature"
+crosschecked_against = []
+
+[deps]
+build        = ["readline", "zlib"]
+link         = ["readline", "zlib"]
+runtime      = ["readline", "zlib"]
+optional_off = ["tcl", "icu"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--enable-readline", "--enable-fts5"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. FTS5 is on because WPE WebKit's history and the \
+browser shell will want full-text search; it costs a few hundred KB. \
+sqlite.org publishes SHA3 sums on its download page rather than a detached \
+signature, so provenance rests on the digest and on the cross-check, which is \
+still empty. Public domain rather than a licence: sqlite's authors dedicate \
+it, which is not the same as a grant and is worth stating precisely."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/sqlite-autoconf-3530400.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--enable-readline", "--enable-fts5"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+[guest]
+test   = [["/usr/bin/sqlite3", "--version"]]
+expect = ["3.53.4"]

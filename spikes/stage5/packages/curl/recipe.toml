@@ -1,0 +1,67 @@
+name    = "curl"
+version = "8.18.0"
+group   = "build-substrate"
+license = "curl"
+
+# Version, digest, signature and build system measured by `probe url`.
+
+[source]
+url       = "https://curl.se/download/curl-8.18.0.tar.xz"
+sha256    = "40df79166e74aa20149365e11ee4c798a46ad57c34e4f68fd13100e2c9a91946"
+signature = "https://curl.se/download/curl-8.18.0.tar.xz.asc"
+crosschecked_against = []
+
+[deps]
+build        = ["zlib", "zstd"]
+link         = ["zlib", "zstd"]
+runtime      = ["zlib", "zstd"]
+optional_off = ["libpsl", "libidn2", "brotli", "nghttp2", "librtmp", "libssh2", "gssapi", "ldap"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--with-openssl", "--with-zlib", "--with-zstd", "--without-libpsl", "--without-libidn2", "--without-brotli", "--without-nghttp2", "--without-librtmp", "--enable-threaded-resolver"]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed.
+
+TLS COMES FROM THE SYSROOT'S OPENSSL, NOT FROM A RECIPE, and that edge is \
+invisible to the dependency graph -- the same modelling gap python briefly \
+had. Stage 4 builds openssl 3.6.1 with `./config --prefix=/usr \
+--openssldir=/etc/ssl --libdir=lib shared` and `make install_sw`, both \
+recorded there, with two declared substitutions from LFS 8.49: zlib-dynamic \
+dropped (no zlib existed at that rung) and install_sw instead of the full \
+install (no man reader in the box).
+
+THAT IS NOT THE PYTHON SITUATION. python's modules were silently omitted \
+because configure could not find libraries; openssl was configured \
+deliberately and the only losses are TLS compression -- deprecated, and a \
+CRIME vector, so no loss -- and man pages. So curl links it rather than \
+building a second libcrypto that would differ only by having zlib.
+
+libpsl, libidn2, brotli and nghttp2 are all OFF and all of them are real \
+losses: no public-suffix cookie checks, no internationalised domain names, no \
+brotli content-encoding, no HTTP/2. libpsl and nghttp2 are in the planned set \
+and this should be revisited when they exist -- HTTP/2 in particular is not \
+optional for much of the modern web."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/curl-8.18.0.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--with-openssl", "--with-zlib", "--with-zstd", "--without-libpsl", "--without-libidn2", "--without-brotli", "--without-nghttp2", "--without-librtmp", "--enable-threaded-resolver"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+[guest]
+test   = [["/usr/bin/curl", "--version"]]
+expect = ["8.18.0"]
