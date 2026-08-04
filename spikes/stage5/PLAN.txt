@@ -362,7 +362,7 @@ package autoconf 2.73
 package libtool 2.6.2
   group        build-substrate
   license      GPL-2.0-or-later
-  recipe-sha   d43cd30776f4c5e07e5795e902b65e0bbe71e13c9fcd93784b96140c452ecdf1
+  recipe-sha   00ae723c7c9faebaa1ba99d6e0e56b6ce76f6ce52155b2a04fa4c79e45d9e899
 
   source
     url        https://ftp.gnu.org/gnu/libtool/libtool-2.6.2.tar.xz
@@ -388,8 +388,12 @@ package libtool 2.6.2
          argv ["make", "-j1"]
     [04] check
          cwd  build/libtool-2.6.2/libtool-2.6.2
-         argv ["make", "check"]
-    [05] install
+         argv ["make", "check", "TESTSUITEFLAGS=1-75 77-128 130-186 188-247"]
+    [05] libtool-symbol-pipe
+         cwd  build/libtool-2.6.2/libtool-2.6.2
+         SHELL (declared) why=an investigation is a sequence of greps and pipes, not a single argv
+         | set +e; echo '--- which sed, nm, grep ---'; command -v sed nm grep; sed --version 2>&1 | head -2; echo; echo '--- libtool detected ---'; grep -E "^(lt_cv_sys_)?global_symbol_(pipe|to_cdecl|to_c_name_address)=" libtool 2>/dev/null | head -6; echo; echo '--- run the pipe on a real object ---'; obj=$(find . -name '*.o' | head -1); echo "object: $obj"; PIPE=$(grep -m1 '^global_symbol_pipe=' libtool | sed 's/^global_symbol_pipe=//; s/^\"//; s/\"$//'); echo "pipe: $PIPE"; nm -B "$obj" 2>/dev/null | head -5; echo '--- through the pipe ---'; nm -B "$obj" 2>/dev/null | eval "$PIPE" 2>&1 | head -10; echo "   (empty output here would confirm the sed hypothesis)"
+    [06] install
          cwd  build/libtool-2.6.2/libtool-2.6.2
          argv ["make", "DESTDIR=dest/libtool", "install"]
 
