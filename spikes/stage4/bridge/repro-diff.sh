@@ -83,6 +83,16 @@ while read -r first last len; do
         "$(dd if="$A" bs=1 skip="$off" count="$len" 2>/dev/null | od -An -tx1 | tr -s ' ' | tr -d '\n')"
     printf '    %-12s %-8s B: %s\n' "" "" \
         "$(dd if="$B" bs=1 skip="$off" count="$len" 2>/dev/null | od -An -tx1 | tr -s ' ' | tr -d '\n')"
+
+    # THE SURROUNDING TEXT, WHICH IS USUALLY WHAT NAMES IT. Differing bytes
+    # answer "what shape"; the string they sit inside answers "what thing".
+    # Four ASCII hex characters could be anything; the same four inside
+    # `...-g31EF` or `srcversion=...` identify themselves immediately, and the
+    # alternative is a round of guessing at kernel internals.
+    _ctx=$(( off > 56 ? off - 56 : 0 ))
+    printf '    %-12s %-8s …: %s\n' "" "" \
+        "$(dd if="$A" bs=1 skip="$_ctx" count=160 2>/dev/null \
+           | tr -c '[:print:]' '.' | tr -s '.')"
     _shown=$((_shown + 1))
 done < /tmp/rd-runs.txt
 echo "    20 bytes of entropy is a SHA-1; 16 is an MD5; 4 that decode as an"
