@@ -1328,8 +1328,63 @@ INIT
   else
     say "    WARNING: could not normalise mtimes -- initramfs will not be reproducible"
   fi
-  ( cd "$W/ir" && find . | LC_ALL=C sort | cpio -o -H newc 2>/dev/null \
-      | gzip -9n > "$W/initramfs.cpio.gz" )
+  # cpio newc RECORDS THE INODE NUMBER, AND THAT IS WHY THIS STILL VARIED.
+  #
+  # B7 normalises mtimes and sorts the file list, and the archive STILL came
+  # out different every run -- 11945631, 11946088, 11946040 bytes. The header
+  # is fixed-width, so a varying field cannot change the cpio's length; what
+  # changes is its CONTENT, and gzip then compresses it to a different length.
+  #
+  # newc header, after the `070701` magic, is thirteen 8-hex fields:
+  #
+  #     ino mode uid gid nlink mtime filesize devmaj devmin rdevmaj rdevmin
+  #     namesize check
+  #
+  # `ino` is first. It comes from the filesystem's allocator and has no reason
+  # to repeat between runs. GNU cpio has --reproducible for exactly this;
+  # busybox's does not, and busybox is what is in the box.
+  #
+  # THE KERNEL SHIPS THE RIGHT TOOL. usr/gen_init_cpio.c builds a newc archive
+  # from a text spec with a deterministic inode counter and a fixed mtime -- it
+  # is what kbuild uses for CONFIG_INITRAMFS_SOURCE. Compiling it with the
+  # compiler this chain just built costs one gcc invocation, and the source is
+  # already unpacked because B6 built the kernel from it.
+  _gic=""
+  _ksrc=$(ls -d "$W/src/linux-$KERNEL" 2>/dev/null | head -1)
+  if [ -n "$_ksrc" ] && [ -f "$_ksrc/usr/gen_init_cpio.c" ]; then
+    if gcc -O2 -o "$W/gen_init_cpio" "$_ksrc/usr/gen_init_cpio.c" 2>/dev/null; then
+      _gic="$W/gen_init_cpio"
+      say "    gen_init_cpio built -- deterministic inodes"
+    fi
+  fi
+
+  if [ -n "$_gic" ]; then
+    # THE SPEC, GENERATED FROM THE TREE. Sorted, so the order is ours and not
+    # the filesystem's. Modes are read from the tree so an executable stays
+    # executable; uid and gid are forced to 0 because the builder's identity is
+    # not a property of the image.
+    _spec="$W/initramfs.spec"; : > "$_spec"
+    ( cd "$W/ir" && find . -mindepth 1 | LC_ALL=C sort ) | while IFS= read -r _p; do
+      _rel=${_p#.}
+      _full="$W/ir$_rel"
+      _mode=$(stat -c '%a' "$_full" 2>/dev/null || echo 644)
+      if [ -L "$_full" ]; then
+        printf 'slink %s %s %s 0 0\n' "$_rel" "$(readlink "$_full")" "$_mode" >> "$_spec"
+      elif [ -d "$_full" ]; then
+        printf 'dir %s %s 0 0\n' "$_rel" "$_mode" >> "$_spec"
+      elif [ -f "$_full" ]; then
+        printf 'file %s %s %s 0 0\n' "$_rel" "$_full" "$_mode" >> "$_spec"
+      fi
+    done
+    say "    initramfs spec: $(wc -l < "$_spec") entries"
+    "$_gic" "$_spec" 2>/dev/null | gzip -9n > "$W/initramfs.cpio.gz"
+  else
+    # FALLBACK, AND IT IS KNOWN NOT TO BE REPRODUCIBLE. Said out loud rather
+    # than left for someone to rediscover from three differing sizes.
+    say "    gen_init_cpio unavailable -- falling back to cpio (inodes will vary)"
+    ( cd "$W/ir" && find . | LC_ALL=C sort | cpio -o -H newc 2>/dev/null \
+        | gzip -9n > "$W/initramfs.cpio.gz" )
+  fi
   if [ -s "$W/initramfs.cpio.gz" ]; then
     B7=ok
     RUNG=B7; produced "$W/initramfs.cpio.gz"

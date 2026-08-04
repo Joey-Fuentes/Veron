@@ -108,6 +108,72 @@ jobs:
               --jq '"    run \(.databaseId)  \(.headSha[0:12])  \(.createdAt)  \(.displayTitle)"' || true
           done
 
+      - name: 'Download both boot pairs'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          # THE KERNEL AND THE INITRAMFS ARE THE OTHER TWO THINGS THAT VARY,
+          # and they are the artifacts a third party would actually boot. The
+          # compilers were solved by localising 16 bytes; the same instrument
+          # applies here and there is no reason to guess instead.
+          for side in a b; do
+            case "$side" in a) r='${{ steps.pick.outputs.a }}' ;; b) r='${{ steps.pick.outputs.b }}' ;; esac
+            mkdir -p "boot-$side"
+            gh run download "$r" -n veron-boot -D "boot-$side" 2>/dev/null \
+              || echo "  run $r has no veron-boot artifact"
+          done
+
+      - name: 'Compare Image and initramfs'
+        run: |
+          set -eu
+          chmod +x spikes/stage4/bridge/repro-diff.sh
+          for f in Image initramfs.cpio.gz; do
+            if [ -f "boot-a/$f" ] && [ -f "boot-b/$f" ]; then
+              echo
+              echo "=== $f ==="
+              sh spikes/stage4/bridge/repro-diff.sh "boot-a/$f" "boot-b/$f" || true
+            else
+              echo "  $f: missing on one side, skipped"
+            fi
+          done
+
+          # THE CPIO, UNCOMPRESSED. Diffing a .gz tells you almost nothing --
+          # one changed byte early in the stream moves everything after it, so
+          # the report is "differs everywhere" and names no cause. The cpio
+          # underneath has fixed-width header fields, so a difference there
+          # lands on a specific field and can be read.
+          #
+          # newc headers carry: ino, mode, uid, gid, nlink, mtime, filesize,
+          # devmajor/minor, rdevmajor/minor, namesize, check. mtimes are
+          # normalised by B7; INODE NUMBERS ARE NOT, and they come from the
+          # filesystem's allocator, which has no reason to repeat itself.
+          if [ -f boot-a/initramfs.cpio.gz ] && [ -f boot-b/initramfs.cpio.gz ]; then
+            echo
+            echo "=== initramfs, decompressed ==="
+            gzip -dc boot-a/initramfs.cpio.gz > a.cpio 2>/dev/null || true
+            gzip -dc boot-b/initramfs.cpio.gz > b.cpio 2>/dev/null || true
+            if [ -s a.cpio ] && [ -s b.cpio ]; then
+              sh spikes/stage4/bridge/repro-diff.sh a.cpio b.cpio || true
+              echo
+              echo "  --- first differing newc header, decoded ---"
+              # Each newc header is 110 ASCII-hex bytes starting at "070701".
+              # Print the two around the first difference so the varying field
+              # is visible rather than inferred.
+              off=$(cmp -l a.cpio b.cpio 2>/dev/null | head -1 | awk '{print $1-1}')
+              if [ -n "$off" ]; then
+                st=$(( off > 128 ? off - 128 : 0 ))
+                echo "    first difference at byte $off"
+                echo "    A: $(dd if=a.cpio bs=1 skip=$st count=128 2>/dev/null | tr -c '[:print:]' '.')"
+                echo "    B: $(dd if=b.cpio bs=1 skip=$st count=128 2>/dev/null | tr -c '[:print:]' '.')"
+                echo
+                echo "    newc field order after the 070701 magic:"
+                echo "      ino mode uid gid nlink mtime filesize devmaj devmin rdevmaj rdevmin namesize check"
+                echo "      each 8 ASCII-hex characters. Count from the magic to name the field."
+              fi
+            fi
+          fi
+
       - name: 'Download both toolchains'
         env:
           GH_TOKEN: ${{ github.token }}

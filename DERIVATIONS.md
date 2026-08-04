@@ -189,6 +189,42 @@ Three findings from that:
   Different mtimes compress to different lengths. Fixed by normalising mtimes
   to the epoch, sorting the file list, and `gzip -9n`.
 
+### Reproducibility: where it stands
+
+```
+all four compilers  cc1, cc1plus, cross and native      IDENTICAL
+ld  as  libc.so.6  busybox                              IDENTICAL
+Image                                                   differs, same size
+initramfs.cpio.gz                                       differs, size varies
+```
+
+Confirmed by `repro-compilers` across runs `30860512461` and `30861400365`:
+**EVERY COMPILER IS BYTE-IDENTICAL ACROSS THE TWO RUNS.**
+
+**initramfs -- diagnosed.** `cpio -H newc` records an **inode number** in every
+file header, and it comes from the filesystem's allocator. mtimes were
+normalised and the list sorted; inodes were not, and could not be -- GNU cpio
+has `--reproducible` for exactly this and busybox's cpio does not.
+
+The header is fixed-width, so a varying field cannot change the archive's
+length. What changes is its content, and gzip then compresses it to a different
+length -- which is why the SIZE moved (11945631, 11946088, 11946040) and looked
+like content varying when it was one 8-hex field per file.
+
+Fixed with the kernel's own `usr/gen_init_cpio.c`: a deterministic inode
+counter and a fixed mtime, built from a generated spec with uid and gid forced
+to 0. It is what kbuild uses for `CONFIG_INITRAMFS_SOURCE`, the source is
+already unpacked because B6 built the kernel from it, and it costs one gcc
+invocation. The old path stays as a fallback that says out loud that it is not
+reproducible.
+
+**Image -- still open, and being measured rather than guessed at.** Same size
+every run, so it is values in fixed slots, like the compiler checksum was.
+`KBUILD_BUILD_TIMESTAMP/USER/HOST` are set and the banner proves they took.
+`repro-compilers` now diffs `Image` and the *decompressed* cpio as well --
+diffing a `.gz` is useless because one early changed byte moves everything
+after it, so the report is "differs everywhere" and names nothing.
+
 ### The native gcc WAS not reproducible. It was sixteen bytes, and they are not code.
 
 **Found, diagnosed, fixed.** `repro-compilers` compared two runs' artifacts and
