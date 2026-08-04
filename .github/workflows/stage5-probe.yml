@@ -1,0 +1,81 @@
+name: stage5-probe
+
+# FIND OUT WHAT A PACKAGE IS, instead of guessing.
+#
+# A recipe needs a version, a digest, a build system, a license, a test target
+# and a dependency list. Every one is a FACT about the tarball, and every one
+# is something an author is tempted to supply from memory. A digest from
+# memory is laundered provenance; a dependency list from memory is a build
+# failure three packages later.
+#
+# THIS DOES NOT WRITE RECIPES. The skeleton it prints is deliberately
+# incomplete: which optional feature to disable is a policy decision about the
+# system being built, not a property of the tarball. The probe lists what
+# COULD be turned off and leaves the choosing to a person.
+#
+# AIRLOCK ONLY. Network lives here, nothing it emits enters a build unread.
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: 'Tarball URLs to probe (space-separated)'
+        required: false
+        default: ''
+      latest:
+        description: 'Find newest releases: gnu:<project> or <owner>/<repo>, space-separated'
+        required: false
+        default: 'gnu:m4 gnu:autoconf gnu:automake gnu:libtool gnu:ncurses'
+
+concurrency:
+  group: stage5-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'What is the newest release?'
+        if: inputs.latest != ''
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 tools/probe.py latest ${{ inputs.latest }} | tee /tmp/latest.txt
+
+      - name: 'Probe each tarball'
+        if: inputs.urls != ''
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 tools/probe.py url ${{ inputs.urls }} | tee /tmp/probe.txt
+
+      - name: 'What this does and does not settle'
+        if: always()
+        run: |
+          echo "  SETTLED by this run: version, sha256, whether a signature"
+          echo "    exists, build system, license, whether a check target"
+          echo "    exists, and which optional features the package offers."
+          echo ""
+          echo "  NOT SETTLED, and deliberately left to a person:"
+          echo "    - WHICH options to disable. Every --disable is a policy"
+          echo "      decision about the system being built."
+          echo "    - The REAL dependency list. Static inspection sees what"
+          echo "      the build system asks for; it cannot tell a hard"
+          echo "      requirement from one that silently detected off. Run"
+          echo "      'probe linked <destdir>' after a build for that."
+          echo "    - Whether the digest is TRUSTWORTHY. The probe computes"
+          echo "      what it downloaded. Cross-check it against independent"
+          echo "      packagers before pinning, especially where no signature"
+          echo "      exists."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage5-probe
+          path: |
+            /tmp/latest.txt
+            /tmp/probe.txt
+          retention-days: 30
