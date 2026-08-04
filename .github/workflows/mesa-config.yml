@@ -87,12 +87,61 @@ jobs:
           echo "  sha256 $(sha256sum mesa.tar.xz | cut -d' ' -f1)"
           tar xf mesa.tar.xz && mv "mesa-$V" src
 
-      - name: 'Every option mesa offers, and its default'
+      # STOP HAND-MAINTAINING A FLAG LIST AGAINST A MOVING TARGET. The first
+      # attempt passed -Dgallium-vdpau, which mesa 26 removed, and configure
+      # refused the whole command. Guessing the next one wrong costs another
+      # round trip, and the option set changes every release.
+      #
+      # So: read what mesa declares, and filter the flags to it.
+      - name: 'Every option mesa declares'
         run: |
           set -eu
-          echo "  --- meson.options / meson_options.txt ---"
           F=src/meson.options; [ -f "$F" ] || F=src/meson_options.txt
-          grep -E "^option\(|^ *'" "$F" | head -120 || true
+          # The name is on the line AFTER `option(`, not on it.
+          grep -A1 '^option(' "$F" | grep -oE "^ *'[a-z0-9_-]+'" \
+            | tr -d " '" | sort -u > valid-options.txt
+          echo "  $(wc -l < valid-options.txt) options declared by mesa ${{ inputs.version }}"
+          tr '\n' ' ' < valid-options.txt | fold -w 74 -s | sed 's/^/    /'
+
+      - name: 'Which of our flags still exist'
+        run: |
+          set -eu
+          # Every -D we intend to pass, checked against the declaration.
+          cat > wanted.txt <<'EOF'
+          platforms=wayland
+          egl-native-platform=drm
+          vulkan-drivers=
+          glx=disabled
+          egl=enabled
+          gbm=enabled
+          gles1=disabled
+          gles2=enabled
+          shared-glapi=enabled
+          gallium-va=disabled
+          gallium-vdpau=disabled
+          gallium-xa=disabled
+          gallium-nine=false
+          gallium-opencl=disabled
+          gallium-rusticl=false
+          video-codecs=
+          valgrind=disabled
+          libunwind=disabled
+          lmsensors=disabled
+          build-tests=false
+          tools=
+          osmesa=false
+          EOF
+          : > flags.txt
+          while IFS= read -r kv; do
+            k=${kv%%=*}
+            if grep -qx "$k" valid-options.txt; then
+              printf -- "-D%s\n" "$kv" >> flags.txt
+            else
+              echo "  DROPPED (no longer exists in ${{ inputs.version }}): $k"
+            fi
+          done < wanted.txt
+          echo ""
+          echo "  passing $(wc -l < flags.txt) flags"
 
       - name: 'Configure with the Veron options'
         id: cfg
@@ -101,22 +150,14 @@ jobs:
           LLVM='${{ inputs.llvm }}'
           [ "$LLVM" = "true" ] && L=enabled || L=disabled
           set +e
+          # gallium-drivers and llvm are passed unconditionally: if either has
+          # been renamed, that is a finding worth failing on rather than
+          # silently dropping.
           meson setup build src \
             --prefix=/usr --buildtype=release \
-            -Dplatforms=wayland \
-            -Degl-native-platform=drm \
             -Dgallium-drivers='${{ inputs.drivers }}' \
-            -Dvulkan-drivers= \
             -Dllvm=$L \
-            -Dglx=disabled \
-            -Degl=enabled -Dgbm=enabled \
-            -Dgles1=disabled -Dgles2=enabled -Dshared-glapi=enabled \
-            -Dgallium-va=disabled -Dgallium-vdpau=disabled \
-            -Dgallium-xa=disabled -Dgallium-nine=false \
-            -Dgallium-opencl=disabled -Dgallium-rusticl=false \
-            -Dvideo-codecs= \
-            -Dvalgrind=disabled -Dlibunwind=disabled -Dlmsensors=disabled \
-            -Dbuild-tests=false -Dtools= -Dosmesa=false \
+            $(tr '\n' ' ' < flags.txt) \
             2>&1 | tee configure.log
           echo "RC=${PIPESTATUS[0]}" >> "$GITHUB_ENV"
           set -e
@@ -159,18 +200,13 @@ jobs:
         run: |
           set -eu
           set +e
+          # SAME validated flag set -- a second hand-maintained copy would
+          # drift out of date on its own schedule.
           meson setup build-nollvm src \
             --prefix=/usr --buildtype=release \
-            -Dplatforms=wayland -Degl-native-platform=drm \
             -Dgallium-drivers=softpipe,v3d,vc4,freedreno,lima,etnaviv \
-            -Dvulkan-drivers= -Dllvm=disabled -Dglx=disabled \
-            -Degl=enabled -Dgbm=enabled -Dgles1=disabled -Dgles2=enabled \
-            -Dshared-glapi=enabled -Dgallium-va=disabled \
-            -Dgallium-vdpau=disabled -Dgallium-xa=disabled \
-            -Dgallium-nine=false -Dgallium-opencl=disabled \
-            -Dgallium-rusticl=false -Dvideo-codecs= -Dvalgrind=disabled \
-            -Dlibunwind=disabled -Dlmsensors=disabled -Dbuild-tests=false \
-            -Dtools= -Dosmesa=false > configure-nollvm.log 2>&1
+            -Dllvm=disabled \
+            $(tr '\n' ' ' < flags.txt) > configure-nollvm.log 2>&1
           echo "  no-llvm meson rc=$?"
           set -e
           echo ""
