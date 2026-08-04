@@ -218,6 +218,41 @@ already unpacked because B6 built the kernel from it, and it costs one gcc
 invocation. The old path stays as a fallback that says out loud that it is not
 reproducible.
 
+**initramfs -- diagnosis CONFIRMED by measurement, not inference.** The
+decompressed cpio comparison landed exactly where the header layout predicts:
+
+```
+SAME SIZE, 2514 differing bytes in 419 contiguous runs
+    9    14    6
+  121   126    6
+  237   242    6      one 6-byte run per archive entry
+```
+
+419 runs of 6 bytes, one per file, at offsets 8-13 -- inside `ino`, which
+occupies bytes 6-13 of the newc header. Nothing else in a 27 MB archive
+differs. `gen_init_cpio` replaces the field with a counter.
+
+**Image -- 32 bytes in 4 runs, and the shape is suggestive.**
+
+```
+  34301121  34301140   20 bytes
+  36884559  36884562    4
+  36884675  36884678    4
+  36884799  36884802    4
+```
+
+A 20-byte run is SHA-1-shaped; three 4-byte runs nearby are not. No section
+mapping printed, because a raw arm64 `Image` has no ELF section table -- and
+the tool said nothing at all about that, which reads as "no sections differed".
+Both fixed: `repro-diff.sh` now prints **the differing bytes themselves** for
+runs under 64 bytes, and says outright when a file has no section table.
+
+That byte dump is the lesson from the compiler round. Sixteen bytes of entropy
+in `.rodata` were identified only after downloading a 400 MB artifact and
+running `dd` by hand. Twenty bytes of entropy is a SHA-1, sixteen is an MD5,
+four that decode as an epoch is a timestamp, and printable bytes name
+themselves -- so print them, and skip the artifact round entirely.
+
 **Image -- still open, and being measured rather than guessed at.** Same size
 every run, so it is values in fixed slots, like the compiler checksum was.
 `KBUILD_BUILD_TIMESTAMP/USER/HOST` are set and the banner proves they took.

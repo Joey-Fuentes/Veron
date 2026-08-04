@@ -64,6 +64,31 @@ head -20 /tmp/rd-runs.txt
 [ "$R" -gt 20 ] && echo "    … $((R - 20)) more"
 echo
 
+# THE ACTUAL BYTES, FOR SHORT RUNS. An offset says where; the bytes usually say
+# what. Twenty contiguous bytes of high-entropy binary is a SHA-1; sixteen is an
+# MD5; four that read as a plausible epoch is a timestamp; anything printable is
+# a string and names itself. This was learned the slow way -- the compiler's
+# sixteen bytes were identified only after downloading a 400 MB artifact and
+# running `dd` by hand, and that whole round is avoided by printing them here.
+#
+# Short runs only: a diff scattered over megabytes is not read byte by byte, and
+# dumping it would bury the summary that follows.
+echo "  --- the differing bytes ---"
+_shown=0
+while read -r first last len; do
+    [ "$len" -le 64 ] || continue
+    [ "$_shown" -lt 8 ] || { echo "    …"; break; }
+    off=$((first - 1))
+    printf '    @%-10s len %-4s A: %s\n' "$off" "$len" \
+        "$(dd if="$A" bs=1 skip="$off" count="$len" 2>/dev/null | od -An -tx1 | tr -s ' ' | tr -d '\n')"
+    printf '    %-12s %-8s B: %s\n' "" "" \
+        "$(dd if="$B" bs=1 skip="$off" count="$len" 2>/dev/null | od -An -tx1 | tr -s ' ' | tr -d '\n')"
+    _shown=$((_shown + 1))
+done < /tmp/rd-runs.txt
+echo "    20 bytes of entropy is a SHA-1; 16 is an MD5; 4 that decode as an"
+echo "    epoch is a timestamp; printable bytes name themselves."
+echo
+
 # Map each run onto an ELF section, which is what turns an offset into a cause.
 if readelf -S "$A" >/dev/null 2>&1; then
     echo "  --- which ELF section each run falls in ---"
@@ -110,6 +135,13 @@ if readelf -S "$A" >/dev/null 2>&1; then
     echo "                        first, this is a symptom"
     echo "    .comment            toolchain version strings"
     echo "    one short run only  a timestamp; find what embeds it"
+else
+    # NOT AN ELF -- say so, rather than silently printing nothing. A raw arm64
+    # `Image` has no section table, and the first version of this tool skipped
+    # the whole block without a word, which reads as "no sections differed".
+    echo "  --- no ELF section table ---"
+    echo "    $A is not an ELF (a raw arm64 Image, an archive, a disk image…),"
+    echo "    so offsets cannot be mapped to sections. Read the bytes above."
 fi
 
 exit 1
