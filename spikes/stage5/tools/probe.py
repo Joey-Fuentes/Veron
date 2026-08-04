@@ -139,6 +139,38 @@ def latest_gitlab(path, host="gitlab.com"):
             "published": r.get("released_at", "")}
 
 
+def latest_forgejo(path, host="codeberg.org"):
+    """Newest release on a Forgejo/Gitea instance.
+
+    Five of the packages this desktop needs -- foot, fcft, tllist, fuzzel,
+    yambar -- are all by the same author on Codeberg, which is neither GitHub
+    nor GitLab. A probe that only knew the big two would have sent us to
+    mirrors or to guessing, which is the exact failure the bzip2/GitLab case
+    already demonstrated once.
+    """
+    d = try_get(f"https://{host}/api/v1/repos/{path}/releases?limit=1")
+    if not d:
+        return None
+    try:
+        j = json.loads(d)
+    except Exception:
+        return None
+    if not j:
+        return None
+    r = j[0]
+    assets = [{"name": a.get("name", ""), "url": a.get("browser_download_url", "")}
+              for a in r.get("assets", [])]
+    if not assets:
+        # Forgejo serves generated archives when a project publishes no
+        # assets. Same hazard as GitHub's "Source code (tar.gz)" -- flagged,
+        # not silently pinned.
+        tag = r.get("tag_name", "")
+        assets = [{"name": f"AUTO-GENERATED {tag}.tar.gz -- verify before pinning",
+                   "url": f"https://{host}/{path}/archive/{tag}.tar.gz"}]
+    return {"version": r.get("tag_name", ""), "assets": assets,
+            "published": r.get("published_at", "")}
+
+
 def latest_gnu(project):
     """GNU projects publish a directory index; read it rather than guess."""
     d = base = None
@@ -608,7 +640,16 @@ def cmd_latest(a):
         # whole to the GNU lookup, which fetched /gnu/gnu:m4/ and reported
         # "could not determine" -- the doubled "gnu:gnu:" in the output was
         # the tell. Accept the documented form, a bare name, and owner/repo.
-        if spec.startswith("gitlab:"):
+        if spec.startswith("codeberg:"):
+            name = spec[9:]
+            r, src = latest_forgejo(name), f"codeberg:{name}"
+        elif spec.startswith("fdo:"):
+            # gitlab.freedesktop.org hosts libinput, libevdev, wayland,
+            # mesa, libdrm, drm -- enough of the graphics stack to be worth
+            # its own prefix rather than a --host flag nobody remembers.
+            name = spec[4:]
+            r, src = latest_gitlab(name, host="gitlab.freedesktop.org"), f"fdo:{name}"
+        elif spec.startswith("gitlab:"):
             name = spec[7:]
             r, src = latest_gitlab(name), f"gitlab:{name}"
         elif spec.startswith("gnu:"):

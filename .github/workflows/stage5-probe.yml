@@ -21,7 +21,12 @@ on:
       urls:
         description: 'Tarball URLs to probe (space-separated)'
         required: false
-        default: 'https://github.com/LadybirdBrowser/ladybird/archive/refs/heads/master.tar.gz'
+        default: ''
+        # Projects with only a plain file index and no release API:
+        #   iproute2  https://www.kernel.org/pub/linux/utils/net/iproute2/
+        #   sqlite    https://www.sqlite.org/  (versioned URLs, needs a look)
+        #   mtdev     http://bitmath.org/code/mtdev/
+        #   tzdata    https://data.iana.org/time-zones/releases/
         # zlib, bzip2, xz and zstd are not GNU projects, so the `latest`
         # lookup above cannot find them from a GNU index. zstd and zlib have
         # GitHub releases; bzip2 (sourceware) and xz (tukaani) publish
@@ -29,7 +34,14 @@ on:
       latest:
         description: 'Find newest releases: gnu:<project> or <owner>/<repo>, space-separated'
         required: false
-        default: 'LadybirdBrowser/ladybird google/skia'
+        default: >-
+          codeberg:dnkl/foot codeberg:dnkl/fcft codeberg:dnkl/tllist
+          codeberg:dnkl/fuzzel codeberg:dnkl/yambar
+          labwc/labwc swaywm/swaybg jarun/nnn davmac314/dinit
+          NetworkConfiguration/dhcpcd dosfstools/dosfstools
+          dejavu-fonts/dejavu-fonts
+          fdo:libinput/libinput fdo:libevdev/libevdev fdo:wayland/wayland
+          fdo:mesa/mesa fdo:mesa/drm
 
 concurrency:
   group: stage5-probe-${{ github.ref }}
