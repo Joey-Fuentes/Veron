@@ -1,0 +1,192 @@
+name: wpe-timing
+
+# HOW LONG DOES WPE WEBKIT ACTUALLY TAKE? A measurement, not a build.
+#
+# The browser decision rests on a number nobody has: whether WPE fits a hosted
+# runner at all. Estimates range from "a few hours" to "a full day on a Pi",
+# which is not good enough to plan around -- and the answer decides whether
+# stage 5 needs self-hosted runners, which is a bigger commitment than any
+# package.
+#
+# DELIBERATELY NOT HERMETIC. Dependencies come from apt, because the question
+# is "how long does the ENGINE take to compile", not "can we bootstrap its
+# dependency tree" -- and mixing the two would measure neither. WPE itself is
+# built from a pinned source tarball, since that is the part being timed.
+#
+# Nothing here enters the ladder, nothing is published as an artifact for
+# building against, and the BUDGET claim does not apply. This is a stopwatch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'WPE WebKit version'
+        required: false
+        default: '2.52.5'
+      gstreamer:
+        description: 'Build with GStreamer (media). Off = no video/audio, fewer deps'
+        type: boolean
+        default: false
+      build_type:
+        description: 'CMake build type'
+        type: choice
+        options: [Release, RelWithDebInfo, MinSizeRel]
+        default: Release
+      jobs:
+        description: 'Parallel jobs (blank = nproc)'
+        required: false
+        default: ''
+
+concurrency:
+  group: wpe-timing-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    # The hosted cap is 6h. 350 gives the reporting steps room to run even if
+    # the compile is still going -- a run that dies at the cap with no numbers
+    # would answer nothing.
+    timeout-minutes: 350
+    steps:
+      - name: 'What this runner is'
+        run: |
+          set -eu
+          echo "  arch      $(uname -m)"
+          echo "  cpus      $(nproc)"
+          echo "  memory    $(awk '/MemTotal/{printf "%.1f GB\n", $2/1048576}' /proc/meminfo)"
+          echo "  disk free $(df -h --output=avail / | tail -1 | tr -d ' ')"
+          echo "  gcc       $(gcc --version | head -1)"
+          echo ""
+          echo "  DISK IS THE CONSTRAINT TO WATCH. A WebKit build tree runs to"
+          echo "  several GB and a hosted runner has limited free space; a"
+          echo "  build that dies on ENOSPC at hour three still answers the"
+          echo "  question, but only if the number above is recorded."
+
+      - name: 'Dependencies from apt (NOT hermetic -- see the header)'
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            build-essential cmake ninja-build pkg-config \
+            ruby perl python3 gperf bison flex unifdef \
+            libglib2.0-dev libsoup-3.0-dev libicu-dev libharfbuzz-dev \
+            libfreetype-dev libfontconfig-dev libxml2-dev libxslt1-dev \
+            libsqlite3-dev libpng-dev libjpeg-dev libwebp-dev zlib1g-dev \
+            libgcrypt20-dev libtasn1-6-dev libepoxy-dev \
+            libwayland-dev wayland-protocols libxkbcommon-dev \
+            libegl-dev libgles-dev libgbm-dev libdrm-dev libinput-dev libudev-dev \
+            libatk1.0-dev libatk-bridge2.0-dev \
+            libseccomp-dev libsysprof-capture-4-dev libbacktrace-dev \
+            libwpe-1.0-dev libwpebackend-fdo-1.0-dev
+          if [ "${{ inputs.gstreamer }}" = "true" ]; then
+            sudo apt-get install -y -qq \
+              libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+              libgstreamer-plugins-bad1.0-dev
+          fi
+          echo "  apt done"
+
+      - name: 'Fetch the pinned WPE source tarball'
+        id: src
+        run: |
+          set -eu
+          V='${{ inputs.version }}'
+          URL="https://wpewebkit.org/releases/wpewebkit-$V.tar.xz"
+          echo "  $URL"
+          # IPv4: ftp.gnu.org taught us that an AAAA record plus no IPv6 route
+          # fails instantly with ENETUNREACH rather than timing out.
+          curl -4 -fL --connect-timeout 20 --retry 3 -o wpe.tar.xz "$URL"
+          SHA=$(sha256sum wpe.tar.xz | cut -d' ' -f1)
+          echo "  bytes  $(stat -c%s wpe.tar.xz)"
+          echo "  sha256 $SHA"
+          echo "  ^ RECORD THIS. It is the pin a recipe would use, and it is"
+          echo "    the one useful artifact of a non-hermetic run."
+          tar xf wpe.tar.xz
+          mv "wpewebkit-$V" src
+          echo "  source lines (rough): $(find src -name '*.cpp' -o -name '*.h' -o -name '*.c' | wc -l) files"
+
+      - name: 'Configure'
+        run: |
+          set -eu
+          S=$(date +%s)
+          cmake -S src -B build -G Ninja \
+            -DPORT=WPE \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DENABLE_WPE_PLATFORM=ON \
+            -DENABLE_JOURNALD_LOG=OFF \
+            -DENABLE_INTROSPECTION=OFF \
+            -DENABLE_DOCUMENTATION=OFF \
+            -DENABLE_SPELLCHECK=OFF \
+            -DENABLE_GAMEPAD=OFF \
+            -DENABLE_WEBDRIVER=OFF \
+            -DUSE_LIBSECRET=OFF \
+            -DUSE_AVIF=OFF \
+            -DUSE_JPEGXL=OFF \
+            -DUSE_LCMS=OFF \
+            -DENABLE_MINIBROWSER=ON \
+            $( [ "${{ inputs.gstreamer }}" = "true" ] || echo "-DUSE_GSTREAMER=OFF" ) \
+            2>&1 | tee configure.log || true
+          echo "CONFIGURE_SECONDS=$(( $(date +%s) - S ))" >> "$GITHUB_ENV"
+          echo ""
+          echo "  --- what configure decided ---"
+          grep -iE "^-- (Enabling|Disabling)|error|not found" configure.log | head -40 || true
+
+      - name: 'Build, with progress'
+        run: |
+          set -eu
+          J='${{ inputs.jobs }}'; [ -n "$J" ] || J=$(nproc)
+          echo "  ninja -j$J"
+          S=$(date +%s)
+          # A background ticker, because ninja's own output is quiet for long
+          # stretches and a silent hour is indistinguishable from a hang --
+          # the same lesson the probe taught when tee made it look stuck.
+          ( while true; do sleep 300
+              echo "  [tick $(( ($(date +%s) - S) / 60 ))m] disk free $(df -h --output=avail / | tail -1 | tr -d ' ')"
+            done ) &
+          TICKER=$!
+          set +e
+          ninja -C build -j"$J" 2>&1 | tail -c 2000000 > build.log
+          RC=${PIPESTATUS[0]}
+          set -e
+          kill $TICKER 2>/dev/null || true
+          echo "BUILD_SECONDS=$(( $(date +%s) - S ))" >> "$GITHUB_ENV"
+          echo "BUILD_RC=$RC" >> "$GITHUB_ENV"
+          echo "  ninja rc=$RC"
+          tail -25 build.log
+
+      - name: 'THE NUMBERS'
+        if: always()
+        run: |
+          set -eu
+          echo "  =============================================="
+          echo "  runner        ubuntu-24.04-arm, $(nproc) cpus"
+          echo "  version       ${{ inputs.version }}"
+          echo "  build type    ${{ inputs.build_type }}"
+          echo "  gstreamer     ${{ inputs.gstreamer }}"
+          echo "  configure     ${CONFIGURE_SECONDS:-?} s"
+          echo "  build         $(( ${BUILD_SECONDS:-0} / 60 )) min  (rc=${BUILD_RC:-?})"
+          echo "  build tree    $(du -sh build 2>/dev/null | cut -f1)"
+          echo "  disk free     $(df -h --output=avail / | tail -1 | tr -d ' ')"
+          echo "  =============================================="
+          echo ""
+          if [ "${BUILD_RC:-1}" = 0 ]; then
+            echo "  IT FITS. A hosted runner can build WPE, so stage 5 does not"
+            echo "  need self-hosted CI for the browser -- which removes the"
+            echo "  largest piece of infrastructure the plan was carrying."
+            ls -la build/bin build/lib 2>/dev/null | head -12 || true
+          else
+            echo "  IT DID NOT FINISH. Read the cause before concluding it does"
+            echo "  not fit: ENOSPC and the 6h cap are different answers, and"
+            echo "  only one of them means self-hosted runners."
+            grep -iE "no space|ENOSPC|virtual memory exhausted|Killed|internal compiler" build.log | head -5 || true
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: wpe-timing
+          path: |
+            configure.log
+            build.log
+          retention-days: 30
