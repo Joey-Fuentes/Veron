@@ -51,7 +51,7 @@ jobs:
         run: |
           set -eu
           cd spikes/stage5
-          python3 tools/probe.py latest ${{ inputs.latest }} | tee /tmp/latest.txt
+          python3 -u tools/probe.py latest ${{ inputs.latest }} | tee /tmp/latest.txt
 
       - name: 'Newest tarball in a plain directory listing'
         if: inputs.index != ''
@@ -60,7 +60,7 @@ jobs:
           cd spikes/stage5
           for spec in ${{ inputs.index }}; do
             name="${spec%%=*}"; url="${spec#*=}"
-            python3 tools/probe.py index "$url" --name "$name"
+            python3 -u tools/probe.py index "$url" --name "$name"
           done | tee /tmp/index.txt
 
       - name: 'Probe each tarball'
@@ -68,7 +68,7 @@ jobs:
         run: |
           set -eu
           cd spikes/stage5
-          python3 tools/probe.py url ${{ inputs.urls }} | tee /tmp/probe.txt
+          python3 -u tools/probe.py url ${{ inputs.urls }} | tee /tmp/probe.txt
 
       - name: 'What this does and does not settle'
         if: always()

@@ -33,16 +33,31 @@ import urllib.request
 UA = {"User-Agent": "veron-probe"}
 
 
-def get(url, timeout=30):
+def get(url, timeout=20):
     req = urllib.request.Request(url, headers=UA)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
 
 
-def try_get(url):
+def try_get(url, timeout=20, quiet=False):
+    """Fetch, or say why not -- and say WHICH url, while it is happening.
+
+    Every print in this tool goes to a pipe under CI (`| tee`), and Python
+    block-buffers a pipe: the job looked hung for minutes with no output while
+    it was working normally. flush=True on progress lines is what makes a slow
+    fetch distinguishable from a stuck one.
+
+    A short timeout matters for the same reason a dead mirror should cost
+    seconds rather than a run -- the airlock fetch already learned this after
+    a run died taking 134 seconds to fail reaching one host.
+    """
+    if not quiet:
+        print(f"   .. {url}", flush=True)
     try:
-        return get(url)
+        return get(url, timeout=timeout)
     except Exception as e:
+        if not quiet:
+            print(f"      {type(e).__name__}: {str(e)[:70]}", flush=True)
         return None
 
 
@@ -353,14 +368,14 @@ def crosscheck(name, version):
     """
     out = {}
     arch = try_get("https://gitlab.archlinux.org/archlinux/packaging/packages/"
-                   f"{name}/-/raw/main/PKGBUILD")
+                   f"{name}/-/raw/main/PKGBUILD", quiet=True)
     if arch:
         t = arch.decode("utf-8", "replace")
         m = re.search(r"^pkgver=(\S+)", t, re.M)
         out["arch"] = {"version": m.group(1) if m else None,
                        "sha256": re.findall(r"[0-9a-f]{64}", t)[:4]}
     alp = try_get("https://gitlab.alpinelinux.org/alpine/aports/-/raw/master/"
-                  f"main/{name}/APKBUILD")
+                  f"main/{name}/APKBUILD", quiet=True)
     if alp:
         t = alp.decode("utf-8", "replace")
         m = re.search(r"^pkgver=(\S+)", t, re.M)
@@ -389,7 +404,7 @@ def probe(url, keep=False):
     # and belongs in the record as a declared deferral, not as silence.
     sig = sig_blob = None
     for ext in (".sig", ".asc", ".sign"):
-        b = try_get(url + ext)
+        b = try_get(url + ext, quiet=True)
         if b is not None:
             sig, sig_blob = url + ext, b
             break
@@ -606,4 +621,11 @@ def main():
 
 
 if __name__ == "__main__":
+    # RECONFIGURE RATHER THAN RELY ON `python3 -u`. The caller should not have
+    # to know that this tool prints progress, and a workflow that forgets the
+    # flag looks hung rather than slow.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     main()
