@@ -94,12 +94,46 @@ def try_get(url, timeout=20, quiet=False):
 # ------------------------------------------------------------ discovery
 
 
+PRERELEASE = re.compile(r"(?:^|[-._])(?:alpha|beta|rc|pre|dev|snapshot)"
+                        r"[-._]?\d*$", re.I)
+
+
 def latest_github(repo):
-    """Newest release tag and its assets."""
+    """Newest STABLE release and its assets.
+
+    GITHUB'S "LATEST" IS NOT NECESSARILY STABLE. Asked for libxkbcommon it
+    returned xkbcommon-1.14.0-beta1 -- a pre-release, with no uploaded assets,
+    only the auto-generated archive that must never be pinned. Pinning a beta
+    into a distribution because an API called it "latest" is exactly the kind
+    of quiet wrong answer this whole probe exists to prevent.
+    
+    The directory-listing path already filtered pre-releases -- it dropped 53
+    of them when resolving mesa -- and this path never did. Same mistake, two
+    code paths, one of them fixed a month ago.
+    """
     d = try_get(f"https://api.github.com/repos/{repo}/releases/latest")
-    if not d:
+    j = json.loads(d) if d else None
+
+    if j is None or j.get("prerelease") or PRERELEASE.search(j.get("tag_name", "")):
+        # Walk the full list and take the newest release that is neither
+        # flagged as a pre-release nor named like one.
+        d2 = try_get(f"https://api.github.com/repos/{repo}/releases?per_page=100")
+        if not d2:
+            return None
+        for cand in json.loads(d2):
+            if cand.get("draft") or cand.get("prerelease"):
+                continue
+            if PRERELEASE.search(cand.get("tag_name", "")):
+                continue
+            if j is not None and cand["tag_name"] != j.get("tag_name"):
+                print(f"   skipped pre-release {j.get('tag_name')}, "
+                      f"using {cand['tag_name']}")
+            j = cand
+            break
+        else:
+            return None
+    if j is None:
         return None
-    j = json.loads(d)
     assets = [{"name": a["name"], "url": a["browser_download_url"]}
               for a in j.get("assets", [])]
     if not assets and j.get("tarball_url"):

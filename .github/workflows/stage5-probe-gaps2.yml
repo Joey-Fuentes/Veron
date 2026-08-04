@@ -72,16 +72,23 @@ jobs:
           python3 -u tools/probe.py latest github:xkbcommon/libxkbcommon \
             | tee /tmp/xkb.txt || true
           echo ""
-          python3 -u tools/probe.py index \
-            https://ftp.mozilla.org/pub/security/nss/releases/ --name nss \
-            | tee /tmp/nss-dir.txt || true
+          # ftp.mozilla.org returned nothing the index parser could read.
+          # archive.mozilla.org serves the same tree with a plain listing, so
+          # try both rather than assuming which one answers -- guessing a URL
+          # is what has failed four times here already.
+          for host in https://archive.mozilla.org https://ftp.mozilla.org; do
+            python3 -u tools/probe.py index \
+              "$host/pub/security/nss/releases/" --name nss \
+              | tee -a /tmp/nss-dir.txt || true
+          done
           echo ""
           # NSPR TOO. The plan lists nspr and nss as separate packages, so the
           # plain nss tarball is the right one -- but that leaves nspr with no
           # URL anywhere, which would have surfaced as a missing pin later.
-          python3 -u tools/probe.py index \
-            https://ftp.mozilla.org/pub/nspr/releases/ --name nspr \
-            | tee /tmp/nspr-dir.txt || true
+          for host in https://archive.mozilla.org https://ftp.mozilla.org; do
+            python3 -u tools/probe.py index "$host/pub/nspr/releases/" \
+              --name nspr | tee -a /tmp/nspr-dir.txt || true
+          done
 
       - name: 'Probe whatever they said'
         run: |
@@ -90,24 +97,39 @@ jobs:
           : > found.txt
           # The asset line from `latest` is "    asset  <name>" then a URL on
           # the following line; take any https URL that names a tarball.
-          grep -ohE 'https://\S+\.(tar\.(gz|xz|bz2)|tgz)' /tmp/xkb.txt \
-            | grep -v 'AUTO-GENERATED' | head -1 >> found.txt || true
+          # Skip the auto-generated archive; if that is all there is, fall
+          # back to xkbcommon.org, which publishes real signed tarballs.
+          u=$(grep -B1 -ohE 'https://\S+\.(tar\.(gz|xz|bz2)|tgz)' /tmp/xkb.txt \
+              | grep -v 'api.github.com/repos' | head -1 || true)
+          v=$(grep -ohE 'xkbcommon-[0-9]+\.[0-9]+\.[0-9]+' /tmp/xkb.txt \
+              | grep -v beta | head -1 | sed 's/xkbcommon-//' || true)
+          if [ -n "$u" ]; then echo "$u" >> found.txt
+          elif [ -n "$v" ]; then
+            echo "https://xkbcommon.org/download/libxkbcommon-$v.tar.xz" >> found.txt
+          fi
           # NSS publishes a release DIRECTORY per version; the tarball lives
           # one level further down in src/. Resolve that rather than assuming
           # which NSPR version it is paired with -- the pairing is exactly
           # what was guessed wrong last time.
           rel=$(grep -ohE 'NSS_[0-9_]+_RTM' /tmp/nss-dir.txt | sort -V | tail -1 || true)
           if [ -n "$rel" ]; then
-            base="https://ftp.mozilla.org/pub/security/nss/releases/$rel/src/"
+            host=$(grep -ohE 'https://(archive|ftp)\.mozilla\.org' /tmp/nss-dir.txt | head -1)
+            host=${host:-https://archive.mozilla.org}
+            base="$host/pub/security/nss/releases/$rel/src/"
             echo "  newest NSS release directory: $rel"
             python3 -u tools/probe.py index "$base" --name nss \
               | tee /tmp/nss-src.txt || true
-            grep -ohE "https://\S+nss-[0-9.]+(-with-nspr-[0-9.]+)?\.tar\.gz" \
-              /tmp/nss-src.txt | sort | tail -1 >> found.txt || true
+              # The PLAIN nss tarball, not the -with-nspr- bundle: the plan
+            # lists nspr and nss as separate packages, and the bundle would
+            # make one tarball answer for two ledger records.
+            grep -ohE "https://\S+nss-[0-9.]+\.tar\.gz" /tmp/nss-src.txt \
+              | grep -v with-nspr | sort -V | tail -1 >> found.txt || true
           fi
           nrel=$(grep -ohE 'v4\.[0-9]+' /tmp/nspr-dir.txt | sort -V | tail -1 || true)
           if [ -n "$nrel" ]; then
-            nbase="https://ftp.mozilla.org/pub/nspr/releases/$nrel/src/"
+            nhost=$(grep -ohE 'https://(archive|ftp)\.mozilla\.org' /tmp/nspr-dir.txt | head -1)
+            nhost=${nhost:-https://archive.mozilla.org}
+            nbase="$nhost/pub/nspr/releases/$nrel/src/"
             echo "  newest NSPR release directory: $nrel"
             python3 -u tools/probe.py index "$nbase" --name nspr \
               | tee /tmp/nspr-src.txt || true
