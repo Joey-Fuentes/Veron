@@ -112,8 +112,17 @@ jobs:
           echo "  === PROBABLE -- named, needs one human confirmation ==="
           grep -h "probable but unconfirmed" /tmp/summary.txt 2>/dev/null | sort | uniq -c | sort -rn | head -20
           echo ""
-          echo "  === UNRESOLVED -- nothing matched at all ==="
-          grep -c "proposed: UNRESOLVED" /tmp/summary.txt 2>/dev/null || echo 0
+          echo "  === COMPOSITE -- the file holds several licences ==="
+          grep -h "composite" /tmp/summary.txt 2>/dev/null | wc -l
+          echo ""
+          # "UNRESOLVED" counted packages whose only evidence was `probable`,
+          # so a licence named right above it still showed as unknown. Count
+          # what genuinely produced no candidate at all.
+          echo "  === NOTHING AT ALL -- no candidate of any kind ==="
+          awk '/^############/{p=$2; has=0}
+               /probable|matched|composite/{has=1}
+               /proposed: UNRESOLVED/{if(!has) print "    " p}' \
+            /tmp/summary.txt 2>/dev/null || true
           echo ""
           echo "  === DISAGREEMENTS -- the evidence conflicts ==="
           grep -A3 "DISAGREEMENT" /tmp/summary.txt 2>/dev/null | head -40

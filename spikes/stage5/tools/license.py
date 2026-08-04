@@ -286,18 +286,92 @@ def scan_manifest(root):
 
 # ------------------------------------------------------------------ detect
 
+def paragraphs(text):
+    out, cur = [], []
+    for line in text.splitlines():
+        if not line.strip():
+            if cur:
+                out.append("\n".join(cur))
+                cur = []
+        else:
+            cur.append(line)
+    if cur:
+        out.append("\n".join(cur))
+    return out
+
+
+def sections(text, min_words=30, max_words=900, max_paras=60):
+    """Every plausible contiguous run of paragraphs.
+
+    NINE PACKAGES MATCHED NOTHING AT ALL, and they share a shape: their
+    licence file is not a licence. freetype's LICENSE.TXT points at FTL.TXT
+    and the GPL; icu's LICENSE carries the ICU terms plus a dozen third-party
+    notices; libjpeg-turbo's LICENSE.md is a summary naming three licences.
+    Scoring a whole document against one licence cannot work when the document
+    contains several -- the shared bigrams are diluted by everything else.
+
+    FIXED-SIZE CHUNKS DO NOT WORK EITHER, which a fixture proved: merging
+    paragraphs until a word count is reached glued the end of one licence to
+    the start of the next, and only one of the two was found. A licence
+    boundary does not fall where an arithmetic threshold does.
+
+    So: sliding windows. Every contiguous run of paragraphs within a size
+    range is a candidate. Quadratic in paragraph count, which is why it is
+    bounded -- these are documents of tens of paragraphs, not thousands.
+    """
+    paras = paragraphs(text)[:max_paras]
+    counts = [len(p.split()) for p in paras]
+    out = []
+    for i in range(len(paras)):
+        total = 0
+        for j in range(i, len(paras)):
+            total += counts[j]
+            if total < min_words:
+                continue
+            if total > max_words:
+                break
+            out.append("\n\n".join(paras[i:j + 1]))
+    return out
+
+
+def best_match(norm, bg, corpus, top_n=3):
+    scored = []
+    for spdx, (cn, cb) in corpus.items():
+        sc = dice(bg, cb)
+        if sc > 0.30 and phrase_ok(spdx, norm):
+            scored.append((sc, spdx))
+    scored.sort(reverse=True)
+    return scored[:top_n]
+
+
 def detect(root, corpus, threshold, probable=0.85, top_n=3):
     files = find_license_files(root)
     results = []
     for f in files:
         norm = normalise(f["text"])
         bg = bigrams(norm)
-        scored = []
-        for spdx, (cn, cb) in corpus.items():
-            s = dice(bg, cb)
-            if s > 0.30 and phrase_ok(spdx, norm):
-                scored.append((s, spdx))
-        scored.sort(reverse=True)
+        scored = best_match(norm, bg, corpus, top_n)
+
+        # IF THE WHOLE FILE DOES NOT MATCH, TRY ITS PARTS. A composite
+        # document dilutes every individual licence's bigrams; its sections
+        # do not.
+        section_hits = []
+        if not scored or scored[0][0] < threshold:
+            for blk in sections(f["text"]):
+                bn = normalise(blk)
+                if len(bn.split()) < 30:
+                    continue
+                sh = best_match(bn, bigrams(bn), corpus, 1)
+                if sh and sh[0][0] >= probable:
+                    section_hits.append({"spdx": sh[0][1],
+                                         "score": round(sh[0][0], 4)})
+            # Deduplicate, keeping the best score per licence.
+            byid = {}
+            for h in section_hits:
+                if h["spdx"] not in byid or h["score"] > byid[h["spdx"]]["score"]:
+                    byid[h["spdx"]] = h
+            section_hits = sorted(byid.values(), key=lambda h: -h["score"])
+
         best = scored[0] if scored else (0.0, None)
         # TWO THRESHOLDS, BECAUSE ONE WAS ANSWERING THE WRONG QUESTION.
         #
@@ -330,12 +404,21 @@ def detect(root, corpus, threshold, probable=0.85, top_n=3):
             "candidates": [{"spdx": s, "score": round(v, 4)}
                            for v, s in scored[:top_n]],
             "verdict": verdict,
+            "sections": section_hits or None,
         })
 
     headers = scan_headers(root)
     manifest = scan_manifest(root)
+    # A COMPOSITE DOCUMENT'S SECTIONS ARE EVIDENCE TOO. When the whole file
+    # matched nothing but three of its blocks each matched a licence cleanly,
+    # the honest reading is that all three apply.
+    for r in results:
+        if r["verdict"] in ("NEEDS REVIEW", "NO MATCH") and r["sections"]:
+            r["verdict"] = "composite"
+            r["spdx"] = " AND ".join(sorted(h["spdx"] for h in r["sections"]))
+
     ids = sorted({r["spdx"] for r in results
-                  if r["spdx"] and r["verdict"] == "matched"})
+                  if r["spdx"] and r["verdict"] in ("matched", "composite")})
     probables = sorted({r["spdx"] for r in results
                         if r["spdx"] and r["verdict"] == "probable"})
     # AND, NOT A SINGLE STRING. Several licence files in one tarball means
@@ -438,6 +521,10 @@ def main():
               + (f"   ({f['score']:.4f})" if f['spdx'] else ""))
         for c in f["candidates"]:
             print(f"      {c['score']:.4f}  {c['spdx']}")
+        if f.get("sections"):
+            print("      sections of this file matched:")
+            for h in f["sections"]:
+                print(f"        {h['score']:.4f}  {h['spdx']}")
     if r["spdx_headers"]:
         print("\n  SPDX headers in source:")
         for k, v in sorted(r["spdx_headers"].items(),
