@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import threading
@@ -909,7 +910,17 @@ def cmd_guesttests(a):
             L.append(f'none "{name}"')
             continue
         for i, argv in enumerate(g["test"]):
-            cmd = " ".join(argv)
+            # QUOTE EVERY ARGUMENT. Joining argv with spaces produces valid
+            # shell only while no argument contains anything the shell cares
+            # about. python's test passes
+            #     -c "import zlib,bz2,lzma,ctypes; print('modules ok')"
+            # which unquoted became a bare `;` and a bare `(` in the middle of
+            # a generated script:
+            #     /usr/bin/veron-stage5-test: line 69: syntax error:
+            #     unexpected word (expecting ")")
+            # -- and took the whole test file down with it, not just that one
+            # test. shlex.quote is what turns an argv back into shell.
+            cmd = " ".join(shlex.quote(x) for x in argv)
             want = g.get("expect", [])
             w = want[i] if isinstance(want, list) and i < len(want) else (
                 want if isinstance(want, str) else "")
@@ -1041,6 +1052,42 @@ def cmd_selftest(a):
         ok = False
     else:
         print("  ok    no shell step assigns a name the expander owns")
+
+    # THE GENERATED GUEST TEST MUST BE VALID SHELL. This driver writes that
+    # file and never runs it, so a quoting bug in it surfaces only inside a
+    # booted guest -- as "line 69: syntax error: unexpected word", which took
+    # down the entire test file rather than the one test that caused it.
+    # `sh -n` parses without executing, which is exactly the check that was
+    # missing.
+    try:
+        import contextlib as _c, io as _i, subprocess as _sp, tempfile as _tf
+        with _tf.NamedTemporaryFile("w", suffix=".sh", delete=False) as f:
+            buf = _i.StringIO()
+            with _c.redirect_stdout(buf):
+                class _G:
+                    out = None
+                cmd_guesttests(_G())
+            f.write(buf.getvalue())
+            path = f.name
+        r = _sp.run(["sh", "-n", path], capture_output=True, text=True)
+        os.unlink(path)
+        if r.returncode == 0:
+            print("  ok    the generated guest test parses as shell")
+        else:
+            print(f"  FAIL  generated guest test is not valid shell: "
+                  f"{r.stderr.strip()[:70]}")
+            ok = False
+    except FileNotFoundError:
+        # No `sh` available. Genuinely not checkable, and said plainly.
+        print("  --    guest-test syntax check needs sh, which is absent here")
+    except Exception as e:
+        # ANY OTHER FAILURE IS THE CHECK BEING BROKEN, not the check being
+        # inapplicable. The first version swallowed an UnboundLocalError and
+        # printed "ok ... skipped" on every run -- a gate that reads green and
+        # verifies nothing is worse than no gate.
+        print(f"  FAIL  guest-test syntax check itself failed: "
+              f"{type(e).__name__}: {e}")
+        ok = False
 
     for name in ("plan", "fetch", "build", "manifest", "ledger",
                  "compare", "guest-tests", "status"):
