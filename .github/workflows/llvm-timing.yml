@@ -1,0 +1,199 @@
+name: llvm-timing
+
+# HOW LONG DOES LLVM TAKE? The second half of the same question wpe-timing
+# asks.
+#
+# LLVM is now certain rather than optional: llvmpipe is the only usable
+# software rasterizer, and without it a machine with no supported GPU cannot
+# run the browser at all. STAGE5.md predicted this -- "llvm arrives through
+# mesa, not by choice" -- and the escape hatch it named (accept software
+# rendering without llvmpipe) is closed, because softpipe is upstream's own
+# "slow but accurate, mostly useful for testing".
+#
+# So the remaining question is only whether it FITS. LLVM and WPE are the two
+# multi-hour builds in stage 5, and if their sum exceeds a hosted runner then
+# self-hosted CI stops being optional -- a bigger commitment than any package
+# in the set.
+#
+# DELIBERATELY NOT HERMETIC, same as wpe-timing: apt supplies the toolchain,
+# LLVM comes from a pinned tarball, and the answer being measured is compile
+# time. Nothing here enters the ladder.
+#
+# WHAT IS BUILT IS WHAT MESA NEEDS, NOT ALL OF LLVM. llvmpipe wants the core
+# libraries and the native target only -- no clang, no lld, no lldb, no
+# compiler-rt, and one target rather than the two dozen LLVM builds by
+# default. Building all of LLVM would measure a number nobody needs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'LLVM version'
+        required: false
+        default: '21.1.8'
+      targets:
+        description: 'LLVM_TARGETS_TO_BUILD (native only is what llvmpipe needs)'
+        required: false
+        default: 'AArch64'
+      build_type:
+        description: 'CMake build type'
+        type: choice
+        options: [Release, MinSizeRel, RelWithDebInfo]
+        default: Release
+      full:
+        description: 'Build ALL targets and projects (the pessimistic number)'
+        type: boolean
+        default: false
+      jobs:
+        description: 'Parallel jobs (blank = nproc)'
+        required: false
+        default: ''
+
+concurrency:
+  group: llvm-timing-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 350
+    steps:
+      - name: 'What this runner is'
+        run: |
+          set -eu
+          echo "  arch      $(uname -m)"
+          echo "  cpus      $(nproc)"
+          echo "  memory    $(awk '/MemTotal/{printf "%.1f GB\n", $2/1048576}' /proc/meminfo)"
+          echo "  disk free $(df -h --output=avail / | tail -1 | tr -d ' ')"
+          echo "  gcc       $(gcc --version | head -1)"
+          echo ""
+          echo "  MEMORY MATTERS MORE HERE THAN FOR WPE. LLVM's linker steps are"
+          echo "  memory-hungry, and a parallel build that exhausts RAM dies with"
+          echo "  a compiler 'Killed' rather than an out-of-memory message. If"
+          echo "  this fails, check for Killed before assuming it is too slow."
+
+      - name: 'Toolchain from apt (NOT hermetic -- see the header)'
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          need() {
+            for p in "$@"; do
+              if apt-cache show "$p" >/dev/null 2>&1; then echo "$p"
+              else echo "  NOT AVAILABLE: $p" >&2; fi
+            done
+          }
+          # One wrong name must not cost the run -- the wpe-timing lesson.
+          sudo apt-get install -y -qq $(need \
+            build-essential cmake ninja-build python3 pkg-config \
+            zlib1g-dev libzstd-dev libxml2-dev)
+          echo "  apt done"
+
+      - name: 'Fetch the pinned LLVM source'
+        run: |
+          set -eu
+          V='${{ inputs.version }}'
+          URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-$V/llvm-$V.src.tar.xz"
+          echo "  $URL"
+          curl -4 -fL --connect-timeout 20 --retry 3 -o llvm.tar.xz "$URL"
+          echo "  bytes  $(stat -c%s llvm.tar.xz)"
+          echo "  sha256 $(sha256sum llvm.tar.xz | cut -d' ' -f1)"
+          echo "  ^ RECORD THIS -- the pin a recipe would use, and the one"
+          echo "    durable artifact of a non-hermetic run."
+          tar xf llvm.tar.xz && mv "llvm-$V.src" src
+          # llvm-*.src.tar.xz needs the cmake modules from the same release.
+          CURL="https://github.com/llvm/llvm-project/releases/download/llvmorg-$V/cmake-$V.src.tar.xz"
+          if curl -4 -fL --connect-timeout 20 -o cmake.tar.xz "$CURL" 2>/dev/null; then
+            tar xf cmake.tar.xz && mv "cmake-$V.src" cmake
+            echo "  fetched the companion cmake modules (llvm-*.src needs them)"
+          fi
+
+      - name: 'Configure'
+        run: |
+          set -eu
+          S=$(date +%s)
+          if [ "${{ inputs.full }}" = "true" ]; then
+            EXTRA="-DLLVM_TARGETS_TO_BUILD=all"
+          else
+            # WHAT MESA ACTUALLY NEEDS. llvmpipe uses the core libraries and
+            # the native target; everything below is off because it is not on
+            # mesa's path, and leaving it on would measure a build nobody in
+            # this project would run.
+            EXTRA="-DLLVM_TARGETS_TO_BUILD=${{ inputs.targets }}"
+          fi
+          cmake -S src -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
+            -DCMAKE_INSTALL_PREFIX=/usr \
+            -DLLVM_ENABLE_PROJECTS= \
+            -DLLVM_ENABLE_RUNTIMES= \
+            -DLLVM_BUILD_LLVM_DYLIB=ON \
+            -DLLVM_LINK_LLVM_DYLIB=ON \
+            -DLLVM_ENABLE_RTTI=ON \
+            -DLLVM_INCLUDE_TESTS=OFF \
+            -DLLVM_INCLUDE_EXAMPLES=OFF \
+            -DLLVM_INCLUDE_BENCHMARKS=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF \
+            -DLLVM_ENABLE_BINDINGS=OFF \
+            -DLLVM_ENABLE_TERMINFO=OFF \
+            -DLLVM_ENABLE_LIBXML2=OFF \
+            -DLLVM_ENABLE_ZSTD=OFF \
+            $EXTRA 2>&1 | tee configure.log
+          RC=${PIPESTATUS[0]}
+          echo "CONFIGURE_SECONDS=$(( $(date +%s) - S ))" >> "$GITHUB_ENV"
+          if [ "$RC" != 0 ]; then
+            echo ""
+            echo "  CONFIGURE FAILED -- nothing was measured. The cause:"
+            grep -B2 -A6 "CMake Error" configure.log | head -30
+            exit 1
+          fi
+
+      - name: 'Build, with progress'
+        run: |
+          set -eu
+          J='${{ inputs.jobs }}'; [ -n "$J" ] || J=$(nproc)
+          echo "  ninja -j$J"
+          S=$(date +%s)
+          ( while true; do sleep 300
+              echo "  [tick $(( ($(date +%s) - S) / 60 ))m] disk $(df -h --output=avail / | tail -1 | tr -d ' ')  mem $(awk '/MemAvailable/{printf "%.1fG", $2/1048576}' /proc/meminfo)"
+            done ) &
+          TICKER=$!
+          set +e
+          ninja -C build -j"$J" 2>&1 | tail -c 2000000 > build.log
+          RC=${PIPESTATUS[0]}
+          set -e
+          kill $TICKER 2>/dev/null || true
+          echo "BUILD_SECONDS=$(( $(date +%s) - S ))" >> "$GITHUB_ENV"
+          echo "BUILD_RC=$RC" >> "$GITHUB_ENV"
+          echo "  ninja rc=$RC"
+          tail -25 build.log
+
+      - name: 'THE NUMBERS'
+        if: always()
+        run: |
+          set -eu
+          echo "  =============================================="
+          echo "  runner        ubuntu-24.04-arm, $(nproc) cpus"
+          echo "  llvm          ${{ inputs.version }}"
+          echo "  targets       ${{ inputs.targets }}${{ inputs.full && ' (FULL: all targets)' || '' }}"
+          echo "  build type    ${{ inputs.build_type }}"
+          echo "  configure     ${CONFIGURE_SECONDS:-?} s"
+          echo "  build         $(( ${BUILD_SECONDS:-0} / 60 )) min  (rc=${BUILD_RC:-?})"
+          echo "  build tree    $(du -sh build 2>/dev/null | cut -f1)"
+          echo "  =============================================="
+          echo ""
+          if [ "${BUILD_RC:-1}" = 0 ]; then
+            echo "  ADD THIS TO wpe-timing's NUMBER. Together they are the two"
+            echo "  multi-hour builds in stage 5, and their sum against 6 hours"
+            echo "  is what decides whether hosted runners suffice."
+          else
+            grep -iE "no space|ENOSPC|Killed|virtual memory exhausted|internal compiler" build.log | head -5 || true
+            echo "  'Killed' means MEMORY, not time -- retry with fewer jobs."
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: llvm-timing
+          path: |
+            configure.log
+            build.log
+          retention-days: 30

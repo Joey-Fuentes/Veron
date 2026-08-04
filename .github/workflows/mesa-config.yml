@@ -1,0 +1,179 @@
+name: mesa-config
+
+# WHAT DOES MESA ACTUALLY REQUIRE? A configure run, not a reading.
+#
+# Two sources disagree and neither is authoritative for us:
+#   - BLFS lists Xorg Libraries as REQUIRED and LLVM as merely RECOMMENDED.
+#     But BLFS builds a conventional X11 desktop, so its "required" means
+#     "required for the way BLFS builds it".
+#   - A static scan of mesa's meson.build found ~90 dependency() names --
+#     x11, xcb-*, llvm, android-*, appleframeworks, and a dozen Rust crates.
+#     That is not a dependency list either: it is the union of every optional
+#     dependency across every platform and driver, because meson writes
+#     `dependency('x11', required: get_option('platforms').contains('x11'))`
+#     and a static scan cannot see the condition.
+#
+# So the only way to know is to run `meson setup` with the options Veron will
+# actually use and read what it resolves. That is what this does. It does NOT
+# build mesa -- configure answers the dependency question in seconds, and the
+# build time is a separate measurement.
+#
+# THE ANSWER MATTERS BECAUSE IT SIZES PHASE 4. If X11 is genuinely required,
+# the no-X11 policy costs a dozen packages. If LLVM is avoidable, one of the
+# giants disappears. Neither should be decided from prose.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Mesa version'
+        required: false
+        default: '26.1.6'
+      drivers:
+        description: 'Gallium drivers (llvmpipe is the only usable software one)'
+        required: false
+        default: 'llvmpipe,softpipe,v3d,vc4,freedreno,lima,etnaviv'
+      llvm:
+        description: 'Enable LLVM (required by llvmpipe)'
+        type: boolean
+        default: true
+      also_try_no_llvm:
+        description: 'Also configure a second time WITHOUT llvm, to price the difference'
+        type: boolean
+        default: true
+
+concurrency:
+  group: mesa-config-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  configure:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: 'Toolchain and candidate dependencies from apt'
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          need() {
+            for p in "$@"; do
+              if apt-cache show "$p" >/dev/null 2>&1; then echo "$p"
+              else echo "  NOT AVAILABLE: $p" >&2; fi
+            done
+          }
+          # DELIBERATELY NO X11 PACKAGES. If mesa genuinely requires them with
+          # -Dplatforms=wayland, configure must FAIL -- and that failure is the
+          # answer. Installing them "just in case" would hide exactly the fact
+          # this job exists to establish.
+          sudo apt-get install -y -qq $(need \
+            build-essential meson ninja-build pkg-config python3 \
+            python3-mako python3-yaml python3-pycparser bison flex \
+            libdrm-dev libwayland-dev wayland-protocols \
+            libwayland-egl-backend-dev libexpat1-dev zlib1g-dev libzstd-dev \
+            llvm-dev libclang-dev libelf-dev)
+          echo "  apt done"
+
+      - name: 'Fetch the pinned mesa source'
+        run: |
+          set -eu
+          V='${{ inputs.version }}'
+          URL="https://archive.mesa3d.org/mesa-$V.tar.xz"
+          echo "  $URL"
+          curl -4 -fL --connect-timeout 20 --retry 3 -o mesa.tar.xz "$URL"
+          echo "  sha256 $(sha256sum mesa.tar.xz | cut -d' ' -f1)"
+          tar xf mesa.tar.xz && mv "mesa-$V" src
+
+      - name: 'Every option mesa offers, and its default'
+        run: |
+          set -eu
+          echo "  --- meson.options / meson_options.txt ---"
+          F=src/meson.options; [ -f "$F" ] || F=src/meson_options.txt
+          grep -E "^option\(|^ *'" "$F" | head -120 || true
+
+      - name: 'Configure with the Veron options'
+        id: cfg
+        run: |
+          set -eu
+          LLVM='${{ inputs.llvm }}'
+          [ "$LLVM" = "true" ] && L=enabled || L=disabled
+          set +e
+          meson setup build src \
+            --prefix=/usr --buildtype=release \
+            -Dplatforms=wayland \
+            -Degl-native-platform=drm \
+            -Dgallium-drivers='${{ inputs.drivers }}' \
+            -Dvulkan-drivers= \
+            -Dllvm=$L \
+            -Dglx=disabled \
+            -Degl=enabled -Dgbm=enabled \
+            -Dgles1=disabled -Dgles2=enabled -Dshared-glapi=enabled \
+            -Dgallium-va=disabled -Dgallium-vdpau=disabled \
+            -Dgallium-xa=disabled -Dgallium-nine=false \
+            -Dgallium-opencl=disabled -Dgallium-rusticl=false \
+            -Dvideo-codecs= \
+            -Dvalgrind=disabled -Dlibunwind=disabled -Dlmsensors=disabled \
+            -Dbuild-tests=false -Dtools= -Dosmesa=false \
+            2>&1 | tee configure.log
+          echo "RC=${PIPESTATUS[0]}" >> "$GITHUB_ENV"
+          set -e
+          echo "  meson rc=${RC:-?}"
+
+      - name: 'THE ANSWER'
+        if: always()
+        run: |
+          set -eu
+          echo "  =============================================="
+          if grep -qiE "x11|xcb|xorg" configure.log; then
+            echo "  X11 APPEARS IN THE CONFIGURE OUTPUT:"
+            grep -inE "x11|xcb|xorg" configure.log | head -10
+            echo "  ^ read these carefully -- a mention is not a requirement."
+          else
+            echo "  NO X11/XCB ANYWHERE in the configure output."
+            echo "  BLFS lists Xorg Libraries as REQUIRED for mesa. With"
+            echo "  -Dplatforms=wayland it is not, and that is now measured"
+            echo "  rather than argued."
+          fi
+          echo ""
+          echo "  --- dependencies meson actually resolved ---"
+          grep -E "^(Run-time dependency|Library|Program|Dependency) " configure.log \
+            | sed 's/^/    /' | head -60 || true
+          echo ""
+          echo "  --- what it could NOT find ---"
+          grep -iE "not found|NO$|ERROR" configure.log | head -20 || true
+          echo "  =============================================="
+
+      - name: 'And again without LLVM, to price the difference'
+        if: always() && inputs.also_try_no_llvm
+        run: |
+          set -eu
+          set +e
+          meson setup build-nollvm src \
+            --prefix=/usr --buildtype=release \
+            -Dplatforms=wayland -Degl-native-platform=drm \
+            -Dgallium-drivers=softpipe,v3d,vc4,freedreno,lima,etnaviv \
+            -Dvulkan-drivers= -Dllvm=disabled -Dglx=disabled \
+            -Degl=enabled -Dgbm=enabled -Dgles1=disabled -Dgles2=enabled \
+            -Dshared-glapi=enabled -Dgallium-va=disabled \
+            -Dgallium-vdpau=disabled -Dgallium-xa=disabled \
+            -Dgallium-nine=false -Dgallium-opencl=disabled \
+            -Dgallium-rusticl=false -Dvideo-codecs= -Dvalgrind=disabled \
+            -Dlibunwind=disabled -Dlmsensors=disabled -Dbuild-tests=false \
+            -Dtools= -Dosmesa=false > configure-nollvm.log 2>&1
+          echo "  no-llvm meson rc=$?"
+          set -e
+          echo ""
+          echo "  THE PRICE OF DROPPING LLVM: llvmpipe goes, and softpipe is"
+          echo "  upstream's own 'slow but accurate, mostly useful for"
+          echo "  testing'. That is why LLVM is on the list despite being one"
+          echo "  of the giants -- a machine with no supported GPU otherwise"
+          echo "  cannot run the browser at all."
+          tail -20 configure-nollvm.log || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mesa-config
+          path: |
+            configure.log
+            configure-nollvm.log
+          retention-days: 30
