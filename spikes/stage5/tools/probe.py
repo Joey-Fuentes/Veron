@@ -63,6 +63,38 @@ def latest_github(repo):
     }
 
 
+def latest_gitlab(path, host="gitlab.com"):
+    """Newest release on a GitLab instance.
+
+    bzip2's canonical home is now gitlab.com/bzip2/bzip2, not sourceware --
+    so a probe that only knew GNU and GitHub would quietly send you to a
+    stale mirror. Three forges is not a pattern worth abstracting yet, but
+    "wherever upstream actually lives" is, so each gets its own lookup rather
+    than a guess.
+    """
+    import urllib.parse
+    pid = urllib.parse.quote(path, safe="")
+    d = try_get(f"https://{host}/api/v4/projects/{pid}/releases")
+    if not d:
+        return None
+    j = json.loads(d)
+    if not j:
+        return None
+    r = j[0]
+    assets = []
+    # MAINTAINER-UPLOADED LINKS FIRST. GitLab's `sources` are auto-generated
+    # archives regenerated on demand -- the same hazard as GitHub's "Source
+    # code (tar.gz)", whose checksums shifted under the whole ecosystem when
+    # the compression settings changed. Never pin one.
+    for a in r.get("assets", {}).get("links", []):
+        assets.append({"name": a.get("name", ""), "url": a.get("url", "")})
+    for a in r.get("assets", {}).get("sources", []):
+        assets.append({"name": f"AUTO-GENERATED {a.get('format')} -- DO NOT PIN",
+                       "url": a.get("url", "")})
+    return {"version": r.get("tag_name", ""), "assets": assets,
+            "published": r.get("released_at", "")}
+
+
 def latest_gnu(project):
     """GNU projects publish a directory index; read it rather than guess."""
     d = try_get(f"https://ftp.gnu.org/gnu/{project}/")
@@ -468,7 +500,10 @@ def cmd_latest(a):
         # whole to the GNU lookup, which fetched /gnu/gnu:m4/ and reported
         # "could not determine" -- the doubled "gnu:gnu:" in the output was
         # the tell. Accept the documented form, a bare name, and owner/repo.
-        if spec.startswith("gnu:"):
+        if spec.startswith("gitlab:"):
+            name = spec[7:]
+            r, src = latest_gitlab(name), f"gitlab:{name}"
+        elif spec.startswith("gnu:"):
             name = spec[4:]
             r, src = latest_gnu(name), f"gnu:{name}"
         elif spec.startswith("github:"):

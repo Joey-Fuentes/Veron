@@ -27,13 +27,13 @@ on:
         # GitHub releases; bzip2 (sourceware) and xz (tukaani) publish
         # elsewhere and their URLs go here directly.
       index:
-        description: 'name=dir-URL pairs for non-GNU, non-GitHub projects'
+        description: 'name=dir-URL pairs, for projects with only a plain file index'
         required: false
-        default: 'bzip2=https://sourceware.org/pub/bzip2/ xz=https://tukaani.org/xz/'
+        default: ''
       latest:
-        description: 'Find newest releases: gnu:<project> or <owner>/<repo>, space-separated'
+        description: 'Newest releases: gnu:<proj>, <owner>/<repo>, gitlab:<group>/<proj>'
         required: false
-        default: 'gnu:m4 gnu:autoconf gnu:automake gnu:libtool gnu:ncurses facebook/zstd madler/zlib'
+        default: 'gnu:m4 gnu:autoconf gnu:automake gnu:libtool gnu:ncurses facebook/zstd madler/zlib tukaani-project/xz gitlab:bzip2/bzip2'
 
 concurrency:
   group: stage5-probe-${{ github.ref }}
