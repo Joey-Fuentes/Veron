@@ -170,7 +170,7 @@ def step_env(pkg, r, policy, roots):
 # between the recipe and the plan -- `timeout` and `on_failure` both were,
 # and a per-step timeout that never reaches run_step is worse than none,
 # because the recipe says it is protected and it is not.
-CARRIED_KEYS = ("timeout", "on_failure")
+CARRIED_KEYS = ("timeout", "on_failure", "optional")
 
 
 def carried(s):
@@ -512,6 +512,10 @@ def cmd_build(a):
             for s in p["steps"]:
                 if s.get("on_failure"):
                     continue          # only runs when something else fails
+                if s.get("optional") and not a.optional:
+                    print(f"    - skipped (optional): {s['name']}")
+                    logf.write(f"+ SKIPPED optional step: {s['name']}\n")
+                    continue
                 rc = run_step(s, logf, a.dry_run)
                 if rc != 0:
                     print(f"VERON-BUILD-FAIL  {name}: step '{s['name']}' rc={rc}",
@@ -979,6 +983,8 @@ def main():
     p = sub.add_parser("build", help="execute exactly the plan")
     p.add_argument("pkg", nargs="*")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--optional", action="store_true",
+                   help="also run steps marked optional (investigations)")
     p.add_argument("--clean", action="store_true",
                    help="wipe build/ and dest/ first -- required for a real second build")
     p.set_defaults(fn=cmd_build)

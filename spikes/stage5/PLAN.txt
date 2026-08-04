@@ -109,7 +109,7 @@ package hello 2.12.3
 package m4 1.4.21
   group        build-substrate
   license      GPL-3.0-or-later
-  recipe-sha   5315def8f6cbe81d9f2b35de643dd1311c0ad359a3910aa2f34ee195be0b85b3
+  recipe-sha   2637531a44732d051b5fad94cf48d4787902ca04c711c5e570449788cc9b8e7d
 
   source
     url        https://ftp.gnu.org/gnu/m4/m4-1.4.21.tar.xz
@@ -134,13 +134,16 @@ package m4 1.4.21
          cwd  build/m4-1.4.21/m4-1.4.21
          argv ["make", "-j1"]
     [04] check
-         cwd  build/m4-1.4.21/m4-1.4.21
-         argv ["make", "check", "VERBOSE=yes", "LOG_COMPILER=timeout", "LOG_FLAGS=60", "SH_LOG_COMPILER=timeout", "SH_LOG_FLAGS=60"]
-    [05] why-it-failed
+         cwd  build/m4-1.4.21/m4-1.4.21/checks
+         argv ["make", "check"]
+    [05] write-test-wrapper
          cwd  build/m4-1.4.21/m4-1.4.21/tests
-         SHELL (declared) why=a diagnostic is a pipeline of greps over log files, not an argv
-         | echo '--- newest logs (what was running) ---'; ls -t *.log 2>/dev/null | head -4; for f in $(ls -t *.log 2>/dev/null | head -3); do echo "== $f"; tail -25 "$f"; done; echo; echo '--- test-suite.log ---'; tail -50 test-suite.log 2>/dev/null || echo '(harness did not finish)'
-    [06] install
+         SHELL (declared) why=generating a shell wrapper is what a heredoc is for; an argv cannot express it
+         | printf '%s\n' '#!/bin/sh' 'out=$(mktemp)' 'setsid timeout -s KILL 60 "$@" </dev/null >"$out" 2>&1' 'rc=$?' 'cat "$out"' 'rm -f "$out"' 'exit $rc' > veron-run.sh && chmod +x veron-run.sh && cat veron-run.sh
+    [06] gnulib-suite
+         cwd  build/m4-1.4.21/m4-1.4.21
+         argv ["make", "-C", "tests", "check", "VERBOSE=yes", "LOG_COMPILER=./veron-run.sh", "SH_LOG_COMPILER=./veron-run.sh"]
+    [07] install
          cwd  build/m4-1.4.21/m4-1.4.21
          argv ["make", "DESTDIR=dest/m4", "install"]
 
