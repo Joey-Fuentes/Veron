@@ -29,6 +29,7 @@ import socket
 import subprocess
 import sys
 import tarfile
+import urllib.error
 import urllib.request
 
 UA = {"User-Agent": "veron-probe"}
@@ -865,6 +866,293 @@ def cmd_batch(a):
     return 1 if fail else 0
 
 
+# ---------------------------------------------------------------- mirrors
+
+# ALTERNATE ROUTES TO THE SAME BYTES, derived from the upstream URL.
+#
+# Every one of these is a host family that publishes the same file at more
+# than one name. None requires uploading anything: they are rewrites, so the
+# cost of adding a route is zero and the benefit is that one slow host stops
+# costing a run.
+#
+# THIS IS NOT A TRUST DECISION. Every candidate below is downloaded and its
+# sha256 compared against the pin before it is written to the table, so a
+# hostile or broken mirror can waste time and nothing else. That is exactly
+# what sources/HOSTS.toml's header claims and what makes "add any host you
+# like" an availability question.
+MIRROR_FAMILIES = [
+    # kernel.org. A `git` fetch died on www.kernel.org timing out while both
+    # of these carried the same tarball, and stage 4 already rewrites
+    # cdn -> mirrors.edge for the same reason.
+    ("https://www.kernel.org/pub/",   ["https://cdn.kernel.org/pub/",
+                                       "https://mirrors.edge.kernel.org/pub/"]),
+    ("https://cdn.kernel.org/pub/",   ["https://www.kernel.org/pub/",
+                                       "https://mirrors.edge.kernel.org/pub/"]),
+    # GNU. ftpmirror redirects to whichever mirror is closest and alive, and
+    # ftp.gnu.org is the canonical host -- each is the other's fallback.
+    ("https://ftp.gnu.org/gnu/",      ["https://ftpmirror.gnu.org/",
+                                       "https://mirrors.kernel.org/gnu/"]),
+    ("https://ftpmirror.gnu.org/",    ["https://ftp.gnu.org/gnu/",
+                                       "https://mirrors.kernel.org/gnu/"]),
+    # SourceForge is handled separately -- see sourceforge_candidates(). A
+    # prefix rewrite does not work: downloads.sourceforge.net/<proj>/<file>
+    # and <mirror>.dl.sourceforge.net/project/<proj>/<subdirs>/<file> are
+    # different path shapes, so rewriting produces a 404 that looks like a
+    # dead mirror rather than a wrong URL.
+    # GNOME.
+    ("https://download.gnome.org/",   ["https://ftp.acc.umu.se/pub/gnome/"]),
+    # Xiph.
+    ("https://downloads.xiph.org/releases/",
+                                      ["https://ftp.osuosl.org/pub/xiph/releases/"]),
+]
+
+
+def sourceforge_candidates(url):
+    """SourceForge alternates, via the mirror parameter rather than a rewrite.
+
+    `downloads.sourceforge.net` is a redirector that picks a mirror for you,
+    and its TLS handshake can simply time out -- which is how a freetype fetch
+    died. Naming a mirror with ?use_mirror= keeps the path exactly as it is
+    and removes the redirect step, so it works where a prefix rewrite cannot.
+    """
+    if "sourceforge.net" not in url:
+        return []
+    base = url.split("?")[0]
+    return [f"{base}?use_mirror={m}"
+            for m in ("netcologne", "master", "phoenixnap", "altushost-swe")]
+
+
+def mirror_candidates(url, name):
+    """Alternate URLs for the same artifact, by host family."""
+    out = sourceforge_candidates(url)
+    for prefix, alts in MIRROR_FAMILIES:
+        if url.startswith(prefix):
+            tail = url[len(prefix):]
+            for a in alts:
+                if a.endswith("/project/") and "/project/" not in tail:
+                    # SourceForge's named mirrors want the /project/ form,
+                    # which the redirector hides. Without this the rewrite
+                    # produces a 404 that looks like a dead mirror.
+                    continue
+                out.append(a + tail)
+    return out
+
+
+def head(url, timeout=8):
+    """Status and Content-Length, with no body.
+
+    A HEAD is all a route table needs. The question here is "is the artifact
+    there", not "are the bytes right" -- `mirror fetch` verifies sha256 before
+    anything uses them, which is the property HOSTS.toml states outright: no
+    host is trusted, so a broken mirror wastes time and nothing else.
+    Downloading every candidate to re-establish that was work nobody needed.
+
+    EIGHT SECONDS, NOT FORTY-FIVE. A mirror that cannot answer a HEAD in eight
+    seconds is not a mirror worth recording. The first version waited 45s per
+    candidate and the job crawled for minutes at a time on hosts that were
+    simply not going to answer.
+    """
+    req = urllib.request.Request(url, headers=UA, method="HEAD")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            n = r.headers.get("Content-Length")
+            return r.status, (int(n) if n and n.isdigit() else None), None
+    except urllib.error.HTTPError as e:
+        return e.code, None, None
+    except Exception as e:
+        return None, None, f"{type(e).__name__}"
+
+
+def cmd_mirrors(a):
+    """Find alternate routes for every pinned artifact, by asking not fetching.
+
+    A package is not properly pinned until there is more than one place to get
+    it. Until this existed every recipe had exactly one working route plus a
+    template pointing at a mirror nothing was uploaded to, and it cost two runs
+    in a row -- git timed out at kernel.org, then freetype's SourceForge
+    handshake timed out. Different package each time, same cause, and in both
+    cases the bytes were sitting on a mirror the fetch never tried.
+
+    WHAT THIS CHECKS AND WHAT IT DOES NOT. It checks that a URL exists and
+    returns the same Content-Length as upstream. It does NOT verify the bytes,
+    because `mirror fetch` already does that before use and doing it twice
+    means downloading the whole set several times over. A route that lies
+    about its length is caught here; a route that serves the wrong bytes at
+    the right length is caught at fetch time, harmlessly.
+    """
+    import tomllib
+    from concurrent.futures import ThreadPoolExecutor
+
+    rows, checked, found = [], 0, 0
+    for pkg in sorted(os.listdir(a.packages)):
+        rp = os.path.join(a.packages, pkg, "recipe.toml")
+        if not os.path.exists(rp):
+            continue
+        r = tomllib.load(open(rp, "rb"))
+        src = r.get("source", {})
+        if src.get("kind") == "git" or "sha256" not in src:
+            continue
+        sha, url = src["sha256"], src["url"]
+        fname = os.path.basename(url)
+
+        cands = mirror_candidates(url, fname)
+        d = packager_source(r["name"])
+        for who, v in sorted(d.items()):
+            for u in v.get("urls", []):
+                if u.startswith(("http://", "https://")) and "$" not in u \
+                        and u.endswith((".tar.gz", ".tar.xz", ".tar.bz2",
+                                        ".tgz", ".zip")):
+                    cands.append(u)
+        cands = [c for c in dict.fromkeys(cands) if c != url]
+        if not cands:
+            print(f"== {r['name']} {r['version']}: upstream only", flush=True)
+            continue
+
+        print(f"\n== {r['name']} {r['version']}  ({fname})", flush=True)
+
+        # ONE HEAD TO UPSTREAM for the canonical size. Without it there is
+        # nothing to compare a candidate's Content-Length against, and a host
+        # serving a stub or an error page would look like a working route.
+        _, want_len, _ = head(url, a.timeout)
+        if want_len is None:
+            print("   upstream gave no Content-Length -- length cannot be compared")
+
+        # CANDIDATES IN PARALLEL. They are independent, and doing them one at
+        # a time means the slowest host sets the pace for every package.
+        with ThreadPoolExecutor(max_workers=a.jobs) as ex:
+            results = list(ex.map(lambda c: (c,) + head(c, a.timeout), cands))
+
+        for c, status, length, err in results:
+            checked += 1
+            if err:
+                print(f"   unreachable  {c}   ({err})")
+            elif status != 200:
+                print(f"   HTTP {status:<8} {c}")
+            elif want_len is not None and length is not None and length != want_len:
+                # SAME NAME, DIFFERENT SIZE. Not a mirror -- a repackaged
+                # tarball, a different release, or an error page with a
+                # 200. Either way it must not go in the table.
+                print(f"   WRONG SIZE   {c}")
+                print(f"                {length} bytes, upstream has {want_len}")
+            else:
+                print(f"   ok           {c}")
+                rows.append((sha, fname, "mirror", c))
+                found += 1
+
+    print(f"\n  === {found} routes recorded from {checked} candidates ===")
+    print("  Existence and length only. Correctness is `mirror fetch`'s job,")
+    print("  and it verifies sha256 before any byte is used.")
+    if not a.out:
+        return 0
+
+    # MERGE INTO THE CANONICAL TABLE, DO NOT WRITE BESIDE IT. A first version
+    # wrote to a separate file and nothing read it, so freetype had four
+    # verified routes recorded while `mirror fetch` still saw only the
+    # redirector -- and the next run died on its TLS handshake.
+    existing, header = [], []
+    if os.path.exists(a.out):
+        for ln in open(a.out):
+            if ln.startswith("#"):
+                header.append(ln.rstrip("\n"))
+            elif ln.strip():
+                existing.append(tuple(ln.rstrip("\n").split("\t")))
+    if not header:
+        header = ["# sha256\tname\thost\tlocator",
+                  "# Generated and committed. Regenerate, never hand-merge."]
+    merged = list(dict.fromkeys(existing + [tuple(x) for x in rows]))
+    with open(a.out, "w") as f:
+        f.write("\n".join(header) + "\n")
+        for row in sorted(merged, key=lambda r: (r[1], r[2], r[3])):
+            f.write("\t".join(row) + "\n")
+    print(f"  {a.out}: {len(existing)} rows in, "
+          f"{len(merged) - len(existing)} added, {len(merged)} total")
+    return 0
+
+
+def cmd_deps(a):
+    """Diff what every package DECLARES against what the set contains.
+
+    "PROBED" HAS MEANT "WE HAVE A DIGEST", WHICH IS NOT THE SAME AS KNOWING
+    WHAT A PACKAGE NEEDS. Three dependencies have surfaced only by reading a
+    tarball rather than planning:
+
+      gst-plugins-ugly wants dvdread and nothing a browser needs -- which
+        dropped it, and took x264, the one package with no release tarball at
+        all, out of the set entirely
+      gst-plugins-base declares alsa, so audio output needs a library that
+        was in no batch
+      wlroots needs hwdata and libdisplay-info for its DRM backend's EDID
+        parsing, and neither was on any list
+
+    `probe batch` already fetches, unpacks and records the declared
+    dependencies of each package in column 9. Nothing has ever READ that
+    column. This does, across the whole remaining set at once, so the gaps
+    appear before recipes are written rather than in the middle of a batch.
+
+    READ THE OUTPUT AS "COULD REACH FOR", NOT "REQUIRES". meson and autotools
+    list every optional dependency of every feature, so some of what appears
+    is something we will explicitly disable. The value is that none of it is
+    invisible.
+    """
+    have = set()
+    if a.have:
+        for w in open(a.have).read().split():
+            w = w.strip().lower()
+            if w and not w.startswith("#"):
+                have.add(w)
+
+    wanted, per_pkg = {}, {}
+    for tsv in a.tsv:
+        if not os.path.exists(tsv):
+            print(f"  no such file: {tsv}", file=sys.stderr)
+            continue
+        with open(tsv) as f:
+            head = f.readline().rstrip("\n").split("\t")
+            try:
+                i_name = head.index("name")
+                i_deps = head.index("deps")
+            except ValueError:
+                i_name, i_deps = 0, 8
+            for ln in f:
+                p_ = ln.rstrip("\n").split("\t")
+                if len(p_) <= i_deps or p_[i_name] == "FAILED":
+                    continue
+                pkg = p_[i_name]
+                names = [d for d in p_[i_deps].split(";") if d.strip()]
+                per_pkg[pkg] = names
+                for d in names:
+                    base = re.split(r"[-_ >=<(]", d.strip())[0].lower()
+                    if base:
+                        wanted.setdefault(base, set()).add(pkg)
+
+    print(f"  {len(per_pkg)} packages read, {len(wanted)} distinct names declared")
+    print(f"  {len(have)} names already in the set\n")
+
+    unknown = {k: v for k, v in wanted.items() if k not in have}
+    print("  ======================================================")
+    print("  NAMED BY SOMETHING, PRESENT IN NOTHING")
+    print("  ======================================================")
+    print("  Each is a name some package asked for that the set does not")
+    print("  contain. Some are features to disable, some are packages we do")
+    print("  not have. Both need a decision, and neither should be discovered")
+    print("  halfway through writing a batch.\n")
+    for base in sorted(unknown, key=lambda k: (-len(unknown[k]), k)):
+        who = sorted(unknown[base])
+        shown = ", ".join(w.split("-")[0].split("_")[0] for w in who[:4])
+        more = f" (+{len(who) - 4})" if len(who) > 4 else ""
+        print(f"    {base:<26} {len(who):>2}x  {shown}{more}")
+    print(f"\n  {len(unknown)} distinct names not in the set")
+
+    if a.out:
+        with open(a.out, "w") as f:
+            f.write("# name\twanted_by_count\twanted_by\n")
+            for base in sorted(unknown, key=lambda k: (-len(unknown[k]), k)):
+                f.write(f"{base}\t{len(unknown[base])}\t"
+                        f"{','.join(sorted(unknown[base]))}\n")
+        print(f"  wrote {a.out}")
+    return 0
+
+
 def cmd_probe(a):
     for url in a.url:
         probe(url, a.keep)
@@ -1012,6 +1300,23 @@ def main():
     p.add_argument("--out", help="TSV to write (and resume from)")
     p.add_argument("--quiet", action="store_true")
     p.set_defaults(fn=cmd_batch)
+
+    p = sub.add_parser("deps",
+                       help="diff declared dependencies against the set")
+    p.add_argument("tsv", nargs="+", help="TSV files written by `probe batch`")
+    p.add_argument("--have", help="file listing names already in the set")
+    p.add_argument("--out", help="TSV of unmet names to write")
+    p.set_defaults(fn=cmd_deps)
+
+    p = sub.add_parser("mirrors",
+                       help="find and verify alternate routes for every pin")
+    p.add_argument("--packages", default="packages")
+    p.add_argument("--out", help="MIRRORS.tsv to write")
+    p.add_argument("--timeout", type=int, default=8,
+                   help="per-request seconds; a slower mirror is not a mirror")
+    p.add_argument("--jobs", type=int, default=8,
+                   help="candidates checked in parallel")
+    p.set_defaults(fn=cmd_mirrors)
 
     p = sub.add_parser("linked", help="the real deps: what a built DESTDIR links")
     p.add_argument("destdir")

@@ -1,0 +1,116 @@
+name: stage5-probe-remaining
+
+# PROBE EVERYTHING THAT IS LEFT, AND READ WHAT IT DECLARES.
+#
+# 41 packages have recipes. 64 remain. Of those, 61 have a digest and 3 do
+# not -- but "has a digest" has been standing in for "we understand this
+# package", and it does not. Three dependencies have been found only by
+# reading a tarball, never by planning:
+#
+#   gst-plugins-ugly wanted dvdread and nothing a browser needs, which
+#     dropped it and took x264 -- the one package with no release tarball at
+#     all -- out of the set entirely
+#   gst-plugins-base declares alsa, so audio needs a library in no batch
+#   wlroots needs hwdata and libdisplay-info for DRM EDID parsing
+#
+# `probe batch` has been recording every package's declared dependencies in
+# column 9 of its output this whole time, and nothing has ever read that
+# column. This job probes the remaining set and then reads it.
+#
+# THE THREE UNPINNED ONES ARE HANDLED SEPARATELY. libutf8proc simply never
+# had its URL probed. libsfdo and dinit publish no tarballs at all -- only git
+# tags -- so they go through tools/fetch-git.sh, where the pin is the COMMIT
+# and the tarball is one we generate deterministically.
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: 'Which batches to probe'
+        type: choice
+        options: ['all', 'B5-graphics', 'B6-system', 'B7-desktop', 'B8-browser']
+        default: 'all'
+
+concurrency:
+  group: stage5-probe-remaining-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Select what to probe'
+        run: |
+          set -eu
+          cd spikes/stage5
+          B="${{ inputs.batch }}"
+          # The list is a committed data file, one URL per line, with
+          # "# batch:" markers. Keeping it out of the workflow means changing
+          # a pin is a diff on a list rather than an edit to YAML -- and it
+          # was YAML that broke first, because a heredoc's contents at column
+          # 0 are not a valid block scalar.
+          awk -v want="$B" '
+            /^# batch:/ { cur = $3; next }
+            /^#/ || /^[[:space:]]*$/ { next }
+            (want == "all" || want == cur) { print }
+          ' remaining-urls.txt > remaining.txt
+          echo "  batch $B -> $(wc -l < remaining.txt) URLs"
+          sed 's|^|    |' remaining.txt
+
+      - name: 'Probe every one'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 -u tools/probe.py batch remaining.txt --out probed-remaining.tsv || true
+
+      - name: 'Resolve the two that publish no tarball'
+        run: |
+          set -eu
+          # libsfdo and dinit only ever push git tags. A tag is a moving
+          # label; the commit it names is a Merkle hash over the whole tree
+          # and cannot be regenerated differently -- so the commit is the pin
+          # and tools/fetch-git.sh makes the tarball. ^{} dereferences an
+          # annotated tag to the commit, without which an annotated tag
+          # resolves to the TAG OBJECT, a different hash entirely.
+          for spec in \
+            'https://gitlab.freedesktop.org/vyivel/libsfdo.git#v0.1.4' \
+            'https://github.com/davmac314/dinit.git#v0.22.1'; do
+            url="${spec%%#*}"; tag="${spec##*#}"
+            out=$(git ls-remote "$url" "refs/tags/$tag" "refs/tags/$tag^{}" 2>&1 || true)
+            c=$(echo "$out" | awk '/\^\{\}$/{print $1}' | head -1)
+            [ -n "$c" ] || c=$(echo "$out" | awk 'NR==1{print $1}')
+            echo "== $url @ $tag"
+            echo "   kind   = \"git\""
+            echo "   url    = \"$url\""
+            echo "   commit = \"$c\""
+          done
+
+      - name: 'What is declared but not in the set'
+        if: always()
+        run: |
+          set -eu
+          cd spikes/stage5
+          # Everything with a recipe, plus the sub-libraries a package
+          # provides itself (wayland ships wayland-client, wayland-server and
+          # so on) which would otherwise read as missing.
+          { ls packages; grep -v '^#' provided-names.txt; } > /tmp/have.txt
+          python3 tools/probe.py deps probed-remaining.tsv \
+            --have /tmp/have.txt --out /tmp/unmet.tsv
+
+      - name: 'The table'
+        if: always()
+        run: |
+          set -eu
+          cd spikes/stage5
+          [ -s probed-remaining.tsv ] || exit 0
+          echo "  === PROBED ==="
+          awk -F'\t' 'NR>1 {printf "  %-26s %-10s %-18s %s\n", $1, $3, substr($4,1,16), $6}' probed-remaining.tsv
+          echo ""
+          echo "  === NO SIGNATURE ==="
+          awk -F'\t' 'NR>1 && $5=="none" {print "    " $1}' probed-remaining.tsv
+          echo ""
+          echo "  === FAILED -- needs a human ==="
+          awk -F'\t' '$1=="FAILED" {print "    " $2}' probed-remaining.tsv

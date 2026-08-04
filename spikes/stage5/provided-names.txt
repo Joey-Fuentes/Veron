@@ -1,0 +1,22 @@
+# Names a package may declare that the set already provides.
+#
+# Two kinds, and both matter or the unmet-dependency report is useless noise:
+#
+#   SUB-LIBRARIES a package ships itself -- wayland provides wayland-client,
+#     wayland-server, wayland-egl and wayland-cursor, so a package declaring
+#     any of those is satisfied by wayland
+#   SYSTEM NAMES that come from libc, the toolchain or the sysroot -- m, dl,
+#     pthread, rt, iconv, openssl
+#
+# Without these every report would list forty names that are already covered
+# and the real gaps -- alsa, hwdata, libdisplay-info -- would be buried.
+#
+# DATA, NOT WORKFLOW: this lived in a shell heredoc whose contents sat at
+# column 0 and broke the YAML block scalar.
+wayland-client wayland-server wayland-egl wayland-cursor wayland-scanner
+wayland-protocols gio gobject gmodule gthread glib-2.0 egl glesv2 gbm gl
+threads atomic m dl pthread rt c stdc iconv intl libseat drm xkbcommon
+gstreamer-1.0 gstreamer-base gstreamer-video gstreamer-audio gstreamer-gl
+freetype2 fontconfig harfbuzz fribidi cairo pango pixman-1 libpng16
+libjpeg libwebp icu-uc icu-i18n zlib liblzma libzstd bzip2 openssl libssl
+libcrypto libxml-2.0 sqlite3 libffi libpcre2 readline ncursesw expat
