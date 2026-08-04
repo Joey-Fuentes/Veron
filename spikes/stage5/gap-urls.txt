@@ -29,5 +29,7 @@ https://github.com/JuliaStrings/utf8proc/releases/download/v2.11.3/utf8proc-2.11
 #   libxkbcommon moved to freedesktop GitLab
 #   nss          the mozilla archive layout differs from what I guessed
 http://bitmath.org/code/mtdev/mtdev-1.1.7.tar.bz2
-https://gitlab.freedesktop.org/xorg/lib/libxkbcommon/-/archive/xkbcommon-1.13.2/libxkbcommon-xkbcommon-1.13.2.tar.gz
-https://ftp.mozilla.org/pub/security/nss/releases/NSS_3_112_RTM/src/nss-3.112-with-nspr-4.37.tar.gz
+# libxkbcommon and nss are NOT probed by URL here, because guessing their URL
+# has now failed twice each. Four of the last six URL failures in this project
+# were invented paths, not missing packages, so this job ASKS the forge and
+# the directory listing instead -- see the two steps below.
