@@ -1391,13 +1391,26 @@ INIT
   # is what kbuild uses for CONFIG_INITRAMFS_SOURCE. Compiling it with the
   # compiler this chain just built costs one gcc invocation, and the source is
   # already unpacked because B6 built the kernel from it.
+  # FOUND BY SEARCHING, NOT BY GUESSING THE PATH. The first version looked in
+  # "$W/src/linux-$KERNEL", and `fetch` actually unpacks to "$SRC/linux/<dir>",
+  # so the test failed, the fallback ran, and the only sign was one line in a
+  # log nobody re-read -- the archive came back byte-for-byte as
+  # non-reproducible as before, 419 six-byte runs in exactly the same places.
+  #
+  # A hardcoded path that is wrong fails the same way as a tool that is
+  # missing, which is why this searches and then says which it found.
   _gic=""
-  _ksrc=$(ls -d "$W/src/linux-$KERNEL" 2>/dev/null | head -1)
+  _ksrc=$(find "$SRC" -type f -path '*/usr/gen_init_cpio.c' 2>/dev/null | head -1)
+  _ksrc=${_ksrc%/usr/gen_init_cpio.c}
   if [ -n "$_ksrc" ] && [ -f "$_ksrc/usr/gen_init_cpio.c" ]; then
     if gcc -O2 -o "$W/gen_init_cpio" "$_ksrc/usr/gen_init_cpio.c" 2>/dev/null; then
       _gic="$W/gen_init_cpio"
-      say "    gen_init_cpio built -- deterministic inodes"
+      say "    gen_init_cpio built from $_ksrc -- deterministic inodes"
+    else
+      say "    gen_init_cpio FAILED TO COMPILE from $_ksrc"
     fi
+  else
+    say "    gen_init_cpio.c NOT FOUND under $SRC"
   fi
 
   if [ -n "$_gic" ]; then

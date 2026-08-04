@@ -194,12 +194,34 @@ Three findings from that:
 ```
 all four compilers  cc1, cc1plus, cross and native      IDENTICAL
 ld  as  libc.so.6  busybox                              IDENTICAL
-Image                                                   differs, same size
-initramfs.cpio.gz                                       differs, size varies
+Image                                                   IDENTICAL
+initramfs.cpio.gz                                       differs -- fix did not run
 ```
 
-Confirmed by `repro-compilers` across runs `30860512461` and `30861400365`:
-**EVERY COMPILER IS BYTE-IDENTICAL ACROSS THE TWO RUNS.**
+Measured by `repro-compilers`, most recently across runs `30873921583` and
+`30874357692`. **Everything the ladder produces is now byte-identical between
+two runs of the same commit except the initramfs**, and that one is a harness
+fault rather than an open question.
+
+Three causes were found, and each was one field:
+
+| artifact | cause | fix |
+|---|---|---|
+| `cc1`, `cc1plus` | gcc's MD5 self-checksum, computed over `ar` archives whose member headers carry mtimes | `--enable-deterministic-archives` |
+| `Image` | build timestamp in the kernel's **built-in** initramfs cpio headers | `KBUILD_BUILD_TIMESTAMP` in a form the box's `date` can parse |
+| `initramfs.cpio.gz` | the **inode** field in newc headers | `gen_init_cpio` |
+
+**The initramfs fix was written and did not run.** The lookup for the kernel
+source hardcoded `$W/src/linux-$KERNEL`; `fetch` unpacks to `$SRC/linux/<dir>`.
+The test failed, the fallback path ran, and the archive came back with 419
+six-byte differences in exactly the same places as before -- identical evidence,
+which is what made it obvious the fix had not executed rather than not worked.
+
+**A wrong hardcoded path fails exactly like a missing tool**, and the only
+signal was one line in a log nobody re-read. It now searches for the file and
+reports which of the three states it is in -- found and compiled, found and
+failed to compile, or not found -- because "gen_init_cpio unavailable" covered
+all three.
 
 **initramfs -- diagnosed.** `cpio -H newc` records an **inode number** in every
 file header, and it comes from the filesystem's allocator. mtimes were
@@ -253,7 +275,10 @@ running `dd` by hand. Twenty bytes of entropy is a SHA-1, sixteen is an MD5,
 four that decode as an epoch is a timestamp, and printable bytes name
 themselves -- so print them, and skip the artifact round entirely.
 
-**Image -- FOUND. A timestamp in the kernel's own built-in initramfs.**
+**Image -- FIXED AND CONFIRMED.** `repro-compilers` reports `IDENTICAL` across
+runs `30873921583` and `30874357692`. What it was:
+
+**A timestamp in the kernel's own built-in initramfs.**
 
 Two 43 MB kernels differed in 32 bytes, four runs. Three of them were printable
 ASCII, and the surrounding context named the whole thing at once:

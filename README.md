@@ -162,15 +162,18 @@ commit, compared byte for byte:
 |---|---|
 | `cc1`, `cc1plus` — cross **and** native | identical |
 | `ld`, `as`, `libc.so.6`, `busybox` | identical |
-| `initramfs.cpio.gz` | diagnosed and fixed, awaiting confirmation |
-| `Image` | diagnosed and fixed, awaiting confirmation |
+| `Image` | identical |
+| `initramfs.cpio.gz` | one field, fix written but not yet executed |
 
-Three defects were found and each was one field, not a class of problem: gcc's
-own **MD5 self-checksum**, computed over `ar` archives whose member headers
-carry mtimes; the **inode field** in cpio's newc headers; and a **build
-timestamp** in the kernel's built-in initramfs, which leaked through because
-`gen_initramfs.sh` swallows a `date` parse failure with `|| :`. All three are
+Three defects were found and each was **one field**, not a class of problem:
+gcc's own **MD5 self-checksum**, computed over `ar` archives whose member
+headers carry mtimes; a **build timestamp** in the kernel's built-in initramfs,
+which leaked through because `gen_initramfs.sh` swallows a `date` parse failure
+with `|| :`; and the **inode field** in cpio's newc headers. All three are
 recorded with their evidence in [`DERIVATIONS.md`](./DERIVATIONS.md).
+
+Every artifact the ladder produces is now byte-identical between two runs of
+the same commit except the initramfs, whose fix is written and awaiting a run.
 
 What remains is re-applying the invariants, which the spike track suspends —
 and the derivation phase in [`DERIVATIONS.md`](./DERIVATIONS.md), which turns a
