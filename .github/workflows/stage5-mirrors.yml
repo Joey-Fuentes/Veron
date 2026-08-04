@@ -37,6 +37,9 @@ on:
         # and the next run died on its TLS handshake. A route the fetcher
         # cannot see is not a route.
 
+permissions:
+  contents: write
+
 concurrency:
   group: stage5-mirrors-${{ github.ref }}
   cancel-in-progress: true
@@ -50,6 +53,11 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
+        with:
+          # The default checkout is a detached commit with no
+          # branch, so a push has nothing to push to.
+          ref: ${{ github.ref_name }}
+          persist-credentials: true
 
       - name: 'Find and verify alternate routes'
         run: |
@@ -57,6 +65,47 @@ jobs:
           cd spikes/stage5
           python3 -u tools/probe.py mirrors --packages packages \
             --out "$GITHUB_WORKSPACE/${{ inputs.out }}" | tee /tmp/mirrors.txt
+
+      # COMMIT THE TABLE. IT IS THE POINT OF THE JOB.
+      #
+      # Until now this wrote sources/MIRRORS.tsv into the runner's workspace,
+      # uploaded it as an artifact, and threw the workspace away -- so the
+      # asset existed on Releases and NOTHING POINTED AT IT. Closing the loop
+      # meant a human downloading a zip, finding the file inside it, copying
+      # it over, and committing. That is not a workflow, it is a chore with a
+      # workflow attached, and it has already been forgotten once: freetype
+      # had four verified routes sitting in an artifact while the next run
+      # died fetching it.
+      #
+      # sources/HOSTS.toml calls this file "Generated and committed", which
+      # implies a generator that can write. This is that generator.
+      - name: 'Commit the routes'
+        run: |
+          set -eu
+          if git diff --quiet -- sources/MIRRORS.tsv; then
+            echo "  no new routes -- table unchanged"
+            exit 0
+          fi
+          echo "  --- what changed ---"
+          git --no-pager diff --stat -- sources/MIRRORS.tsv
+          git --no-pager diff -- sources/MIRRORS.tsv | grep '^+' | grep -v '^+++' \
+            | head -20 | sed 's/^/    /'
+          git config user.name  "veron-mirror[bot]"
+          git config user.email "veron-mirror@users.noreply.github.com"
+          git add sources/MIRRORS.tsv
+          n=$(git diff --cached --numstat -- sources/MIRRORS.tsv | awk '{print $1}')
+          git commit -m "mirrors: +${n:-0} routes (stage5-mirrors)"
+          # PUSH WITH A REBASE, NOT --force. Two mirror jobs racing, or a
+          # human commit landing mid-run, must not lose work -- and the table
+          # is sorted and deduped on write, so a rebase merges cleanly.
+          for i in 1 2 3; do
+            git pull --rebase --quiet origin "${GITHUB_REF_NAME}" && \
+              git push origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            echo "  push race, retrying ($i)"
+            sleep $((i * 3))
+          done
+          echo "  could not push the table after three attempts"
+          exit 1
 
       - name: 'What this changes'
         if: always()
@@ -75,12 +124,3 @@ jobs:
           echo "  Those are the ones a slow host can still cost a run, and"
           echo "  they need either a host family adding to MIRROR_FAMILIES or"
           echo "  an upload to our own mirror."
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: stage5-mirrors
-          path: |
-            ${{ inputs.out }}
-            /tmp/mirrors.txt
-          retention-days: 30

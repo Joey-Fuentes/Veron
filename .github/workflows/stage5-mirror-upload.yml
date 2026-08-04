@@ -58,6 +58,11 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
+        with:
+          # The default checkout is a detached commit with no
+          # branch, so a push has nothing to push to.
+          ref: ${{ github.ref_name }}
+          persist-credentials: true
 
       - name: 'Fetch every pinned source from upstream'
         run: |
@@ -82,6 +87,19 @@ jobs:
           done
           echo ""
           echo "  $(ls dl | wc -l) tarballs in dl/"
+
+      # FIND THE FREE ROUTES FIRST. A rewrite of the upstream URL costs
+      # nothing -- no upload, no storage -- so it should be tried before
+      # spending bandwidth on our own mirror. Running this in the same job as
+      # the upload is the whole point: they write the same table, need the
+      # same sources, and as separate workflows meant two clicks and two
+      # chances to forget the second.
+      - name: 'Discover free routes by rewriting the upstream URL'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 -u tools/probe.py mirrors --packages packages \
+            --out "$GITHUB_WORKSPACE/sources/MIRRORS.tsv" || true
 
       - name: 'Upload each to the mirror and record the locator'
         run: |
@@ -125,6 +143,48 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      # COMMIT THE TABLE. IT IS THE POINT OF THE JOB.
+      #
+      # Until now this wrote sources/MIRRORS.tsv into the runner's workspace,
+      # uploaded it as an artifact, and threw the workspace away -- so the
+      # asset existed on Releases and NOTHING POINTED AT IT. Closing the loop
+      # meant a human downloading a zip, finding the file inside it, copying
+      # it over, and committing. That is not a workflow, it is a chore with a
+      # workflow attached, and it has already been forgotten once: freetype
+      # had four verified routes sitting in an artifact while the next run
+      # died fetching it.
+      #
+      # sources/HOSTS.toml calls this file "Generated and committed", which
+      # implies a generator that can write. This is that generator.
+      - name: 'Commit the routes'
+        if: inputs.dry_run != true
+        run: |
+          set -eu
+          if git diff --quiet -- sources/MIRRORS.tsv; then
+            echo "  no new routes -- table unchanged"
+            exit 0
+          fi
+          echo "  --- what changed ---"
+          git --no-pager diff --stat -- sources/MIRRORS.tsv
+          git --no-pager diff -- sources/MIRRORS.tsv | grep '^+' | grep -v '^+++' \
+            | head -20 | sed 's/^/    /'
+          git config user.name  "veron-mirror[bot]"
+          git config user.email "veron-mirror@users.noreply.github.com"
+          git add sources/MIRRORS.tsv
+          n=$(git diff --cached --numstat -- sources/MIRRORS.tsv | awk '{print $1}')
+          git commit -m "mirrors: +${n:-0} routes (stage5-mirror-upload)"
+          # PUSH WITH A REBASE, NOT --force. Two mirror jobs racing, or a
+          # human commit landing mid-run, must not lose work -- and the table
+          # is sorted and deduped on write, so a rebase merges cleanly.
+          for i in 1 2 3; do
+            git pull --rebase --quiet origin "${GITHUB_REF_NAME}" && \
+              git push origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            echo "  push race, retrying ($i)"
+            sleep $((i * 3))
+          done
+          echo "  could not push the table after three attempts"
+          exit 1
+
       - name: 'What the table says now'
         if: always()
         run: |
@@ -136,10 +196,3 @@ jobs:
           echo "  THIN means one route. After this every artifact should have"
           echo "  at least two: upstream as provenance, and ours as a route"
           echo "  that does not depend on anyone else's uptime."
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: stage5-mirror-table
-          path: sources/MIRRORS.tsv
-          retention-days: 30
