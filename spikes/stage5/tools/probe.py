@@ -361,8 +361,16 @@ def latest_index(url, name=None, include_pre=False):
     if not d:
         return None
     html = d.decode("utf-8", "replace")
-    pat = rf'href="({re.escape(name)}-[0-9][^"]*\.tar\.(?:gz|xz|bz2|lz))"' if name \
-        else r'href="([A-Za-z0-9_.+-]+-[0-9][^"]*\.tar\.(?:gz|xz|bz2|lz))"'
+    # AN HREF MAY CARRY A PATH. This required a BARE FILENAME, and
+    # archive.mozilla.org serves
+    #   href="/pub/nspr/releases/v4.39/src/nspr-4.39.tar.gz"
+    # so every entry was rejected and a directory full of tarballs reported
+    # "no tarball found in that listing". Exactly the bug already fixed in
+    # list_dirs and not here -- the same wrong assumption, twice, in two
+    # functions parsing the same HTML.
+    pat = (rf'href="(?:[^"]*/)?({re.escape(name)}-[0-9][^"/]*\.tar\.(?:gz|xz|bz2|lz))"'
+           if name else
+           r'href="(?:[^"]*/)?([A-Za-z0-9_.+-]+-[0-9][^"/]*\.tar\.(?:gz|xz|bz2|lz))"')
     names = sorted(set(re.findall(pat, html)))
     if not names:
         return None
@@ -1369,6 +1377,68 @@ def cmd_index(a):
     return 0
 
 
+def cmd_selftest(a):
+    """Check the parsers against the HTML shapes hosts actually serve.
+
+    THE SAME WRONG ASSUMPTION APPEARED TWICE, A WEEK APART, in two functions
+    reading the same HTML. Both list_dirs and latest_index required an href to
+    be a BARE FILENAME, while archive.mozilla.org writes
+        href="/pub/nspr/releases/v4.39/src/nspr-4.39.tar.gz"
+    so a directory full of tarballs reported "no tarball found in that
+    listing" and a listing full of releases reported nothing at all. Four runs
+    went into concluding Mozilla was returning nothing when it was returning
+    everything.
+
+    A fixture is cheap and does not depend on a host being up.
+    """
+    global try_get
+    saved, ok = try_get, True
+
+    for label, html, base in (
+        ("an absolute path",
+         '<a href="/pub/nspr/releases/v4.39/src/nspr-4.39.tar.gz">x</a>',
+         "https://archive.mozilla.org/pub/nspr/releases/v4.39/src/"),
+        ("a bare filename",
+         '<a href="nspr-4.39.tar.gz">x</a>', "https://example.org/releases/"),
+        ("a full url",
+         '<a href="https://example.org/releases/nspr-4.39.tar.gz">x</a>',
+         "https://example.org/releases/"),
+    ):
+        try_get = lambda u, timeout=20, quiet=False, _h=html: _h.encode()
+        r = latest_index(base, "nspr")
+        if r and r["version"] == "4.39":
+            print(f"  ok    latest_index reads an href given as {label}")
+        else:
+            print(f"  FAIL  latest_index misses an href given as {label}")
+            ok = False
+
+    try_get = lambda u, timeout=20, quiet=False: (
+        b'<a href="/pub/nspr/releases/v4.39/">v4.39/</a>'
+        b'<a href="/pub/nspr/releases/v4.40-beta1/">b</a>'
+        b'<a href="/pub/">nav</a><a href="/">root</a>')
+    d = list_dirs("https://archive.mozilla.org/pub/nspr/releases/")
+    if d == ["v4.39", "v4.40-beta1"]:
+        print("  ok    list_dirs reads absolute paths and drops navigation")
+    else:
+        print(f"  FAIL  list_dirs returned {d}")
+        ok = False
+
+    # A pre-release must never be offered as the thing to pin: GitHub called
+    # xkbcommon-1.14.0-beta1 "latest" and the probe would have pinned it.
+    for tag, want in (("xkbcommon-1.14.0-beta1", True), ("v1.13.2", False),
+                      ("1.5.0-rc1", True), ("0.9.3", False),
+                      ("24.0.0-dev", True), ("v2.11.3", False)):
+        if bool(PRERELEASE.search(tag)) != want:
+            print(f"  FAIL  pre-release check wrong for {tag}")
+            ok = False
+    else:
+        print("  ok    pre-releases are recognised by name")
+
+    try_get = saved
+    print("VERON-PROBE-SELFTEST-OK" if ok else "VERON-PROBE-SELFTEST-FAIL")
+    return 0 if ok else 1
+
+
 def main():
     ap = argparse.ArgumentParser(prog="probe")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1398,6 +1468,10 @@ def main():
     p.add_argument("--out", help="TSV to write (and resume from)")
     p.add_argument("--quiet", action="store_true")
     p.set_defaults(fn=cmd_batch)
+
+    p = sub.add_parser("selftest",
+                       help="check the parsers against real HTML shapes")
+    p.set_defaults(fn=cmd_selftest)
 
     p = sub.add_parser("deps",
                        help="diff declared dependencies against the set")

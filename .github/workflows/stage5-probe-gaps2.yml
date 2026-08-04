@@ -41,6 +41,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # THE PARSERS BEFORE THE NETWORK. Four runs were spent concluding that
+      # archive.mozilla.org returned nothing when it returned everything --
+      # the href parsing was wrong, not the host. A fixture answers that in a
+      # second and does not need anyone to be up.
+      - name: 'Check the probe parses what hosts actually serve'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 tools/probe.py selftest
+
       - name: 'Select'
         run: |
           set -eu
