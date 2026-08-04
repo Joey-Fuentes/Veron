@@ -1012,7 +1012,7 @@ package ninja 1.13.2
 package cmake 4.2.3
   group        build-substrate
   license      BSD-3-Clause
-  recipe-sha   1b524fe229824a62da38cdb744b4340425f78e503552769a7eb5c144722053f3
+  recipe-sha   51af7f34a67ad92bd080da1260a36f11413ab14e4e725f7b6e772ac57c746e81
 
   source
     url        https://cmake.org/files/v4.2/cmake-4.2.3.tar.gz
@@ -1032,7 +1032,7 @@ package cmake 4.2.3
          argv ["tar", "-xf", "dl/cmake-4.2.3.tar.gz", "-C", "build/cmake-4.2.3"]
     [02] bootstrap
          cwd  build/cmake-4.2.3/cmake-4.2.3
-         argv ["./bootstrap", "--prefix=/usr", "--system-libs", "--parallel=1", "--no-qt-gui", "--generator=Ninja"]
+         argv ["./bootstrap", "--prefix=/usr", "--system-curl", "--system-expat", "--system-zlib", "--system-bzip2", "--system-liblzma", "--system-zstd", "--system-libarchive", "--parallel=1", "--no-qt-gui", "--generator=Ninja"]
     [03] build
          cwd  build/cmake-4.2.3/cmake-4.2.3
          argv ["ninja"]

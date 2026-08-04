@@ -18,15 +18,25 @@ runtime      = ["zlib", "bzip2", "xz", "zstd", "curl", "expat", "libarchive"]
 optional_off = ["qt-gui", "ccache", "sphinx", "vendored-libs"]
 
 [declared]
-configure_flags = ["--prefix=/usr", "--system-libs", "--no-qt-gui", "--generator=Ninja"]
+configure_flags = ["--prefix=/usr", "--system-curl", "--system-expat", "--system-zlib", "--system-bzip2", "--system-liblzma", "--system-zstd", "--system-libarchive", "--no-qt-gui", "--generator=Ninja"]
 verification    = "none -- upstream suites are not run"
 deferral        = """
-Internals not reviewed. --system-libs is the load-bearing flag: without it \
-cmake builds and statically links its own copies of zlib, bzip2, xz, zstd, \
-curl, expat and libarchive, so the image would carry two of each and the \
-ledger would describe only one. Every one of those is already a package here, \
-which is why cmake sits this late in the order. DESTDIR is passed through \
-ninja install rather than a configure flag because there is no configure."""
+Internals not reviewed. THE SIX --system-* FLAGS ARE LOAD-BEARING: without them cmake builds and \
+statically links its own copies of zlib, bzip2, xz, zstd, curl, expat and \
+libarchive, so the image would carry two of each and the ledger would \
+describe only one. Every one of those is already a package here, which is why \
+cmake sits this late in the order.
+
+THE BLANKET --system-libs DOES NOT WORK, and the failure is worth recording \
+rather than just fixing: it turns on every system library cmake can use, \
+including LIBRHASH, JSONCPP, LIBUV and CPPDAP, and configure then refuses \
+because they are absent. Those four stay VENDORED -- statically linked copies \
+inside the cmake binary, covered by our tarball digest but not itemised in \
+the ledger as packages. That is a real, if small, gap in the corresponding- \
+source picture and it is named here rather than left implicit.
+
+DESTDIR is passed through ninja install rather than a configure flag because \
+there is no configure."""
 
 [[steps]]
 name = "unpack"
@@ -41,7 +51,23 @@ cwd  = "$S"
 # one. --system-libs uses the zlib, bzip2, xz, zstd, curl and expat already
 # built here rather than the copies vendored in the tarball, which is the
 # difference between six libraries and twelve.
-run  = [["./bootstrap", "--prefix=/usr", "--system-libs",
+# THIS FIX WAS MADE ONCE AND THEN LOST, which is worth recording because the
+# cause was not the recipe. A later zip was assembled by copying packages/
+# from an older tree, so a corrected file was silently replaced by its
+# predecessor and the identical failure came back a week later. Rebuilding a
+# deliverable from a mixed set of trees is how that happens; the fix is to
+# carry one tree forward, not to remember harder.
+#
+# --system-libs IS ALL-OR-NOTHING AND THAT IS WHY IT FAILED.
+#     CMAKE_USE_SYSTEM_LIBRHASH is ON but LibRHash is not found!
+# It turns on EVERY system library cmake can use, including librhash,
+# jsoncpp, libuv and cppdap -- none of which are in this set and none of
+# which anything else here wants. Naming the six we actually build is the
+# difference between "use what exists" and "require everything".
+run  = [["./bootstrap", "--prefix=/usr",
+         "--system-curl", "--system-expat", "--system-zlib",
+         "--system-bzip2", "--system-liblzma", "--system-zstd",
+         "--system-libarchive",
          "--parallel=$J", "--no-qt-gui", "--generator=Ninja"]]
 
 [[steps]]
