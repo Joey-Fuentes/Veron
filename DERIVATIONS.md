@@ -195,7 +195,7 @@ Three findings from that:
 all four compilers  cc1, cc1plus, cross and native      IDENTICAL
 ld  as  libc.so.6  busybox                              IDENTICAL
 Image                                                   IDENTICAL
-initramfs.cpio.gz                                       fix now RUNS -- one run so far
+initramfs.cpio.gz                                       differs -- now self-checked in-run
 ```
 
 Measured by `repro-compilers`, most recently across runs `30873921583` and
@@ -242,6 +242,99 @@ signal was one line in a log nobody re-read. It now searches for the file and
 reports which of the three states it is in -- found and compiled, found and
 failed to compile, or not found -- because "gen_init_cpio unavailable" covered
 all three.
+
+**And then it ran and was still not reproducible**, because the tool was chosen
+on a half-remembered fact. `gen_init_cpio` does use a deterministic inode
+counter -- the 419 six-byte inode differences disappeared -- but its `main()`
+does `default_mtime = time(NULL)` unless `-t` is passed. The archive traded a
+varying inode for a varying mtime: 11945869 bytes one run, 11945933 the next.
+
+```
+Image              b4a145a6…  ==  b4a145a6…   IDENTICAL
+initramfs.cpio.gz  5961d7e8…  !=  e4e5194d…   still differs
+```
+
+**That is the fourth time this artifact has been declared fixed and found
+broken.** The pattern is the same each time: a change is made, one run is
+inspected, the run *looks* right, and the difference only appears two runs
+later in a job that runs separately. A single build cannot show reproducibility,
+and no amount of care in writing the change substitutes for measuring it.
+
+So the fix no longer rests on being right about the tool. B7 now **builds the
+cpio twice from the same spec and compares them in the same run**:
+
+```
+cpio is byte-identical across two invocations
+```
+
+or, if not:
+
+```
+WARNING: two cpio invocations from one spec DIFFER --
+the archive is not reproducible and the cause is still inside it
+```
+
+`gen_init_cpio` is deterministic given a spec, so two invocations differ only
+if something in the archive is still time- or environment-derived -- which is
+exactly the question, and it costs two seconds to ask rather than two runs and
+a separate job. `-t 0` is passed, and if the tool rejects it that is reported
+rather than assumed away.
+
+### Verified against primary sources, and it moved two things
+
+The `gen_init_cpio` claims above were asserted from memory and were half wrong,
+so they were checked against the kernel source, GCC's `Make-lang.in`, binutils
+documentation and reproducible-builds.org. What that changed:
+
+**Confirmed.** `usr/gen_init_cpio.c` does use a deterministic inode counter --
+`static unsigned int ino = 721;` -- and `main()` does set
+`default_mtime = time(NULL)` unless `-t` is given. `-t <seconds>` is the right
+option, and it does more than expected: it also sets `do_file_mtime`, so
+*regular files* take the fixed mtime instead of preserving their on-disk one.
+
+**Confirmed, and worse than assumed.** `usr/gen_initramfs.sh` really does
+
+```
+timestamp="$(date -d"$1" +%s || :)"
+```
+
+and the `|| :` really does convert "this `date` cannot parse your string" into
+"no timestamp was requested". Two separate silent-fallback bugs in this project
+came through that one line.
+
+**Corrected.** There is no `-d` option in `gen_init_cpio` -- the getopt string
+is `"t:cho:a:"`. `-d <date>` belongs to the wrapper script. And
+`gen_init_cpio` does **not** read `SOURCE_DATE_EPOCH` in any mainline version;
+that was proposed in 2010 and rejected in review in favour of an explicit flag.
+
+**A trap this had already walked into.** Exporting `SOURCE_DATE_EPOCH` was
+added on the reasoning that "newer kbuild prefers it". The top-level Makefile
+does
+
+```
+ifeq ("$(origin SOURCE_DATE_EPOCH)", "environment")
+KBUILD_BUILD_TIMESTAMP := $(shell LC_TIME=C date -u -d@$(SOURCE_DATE_EPOCH))
+```
+
+which **overrides** whatever `KBUILD_BUILD_TIMESTAMP` was set to, replacing a
+working `@0` with that date's long formatted output -- which
+`gen_initramfs.sh` then hands back to `date -d`, which busybox cannot parse.
+The canonical advice is right for a GNU userland and actively harmful in a
+busybox box. It is now exported only if `date` can read back what `date`
+writes, tested at run time, with the failure reported rather than assumed away.
+
+**Also adopted from the research:** `LC_ALL=C` for the kernel build, because
+`date -d` parsing is locale-sensitive and every timestamp path here runs
+through it.
+
+**Still outstanding.** A same-run double build is a recognised smoke test but
+catches only intra-run nondeterminism. It cannot see build path, date, locale,
+timezone, hostname, uid, kernel version, readdir order, umask or CPU count --
+which is what `reprotest` varies deliberately. Claiming reproducibility properly
+means a rebuild on a different machine, date and path. `--enable-deterministic-archives`
+was confirmed as the standard fix, and worth noting: GCC never fixed the
+checksum-over-archives issue upstream -- Debian, Arch and Nix all fix it at the
+binutils layer, which is where this project now fixes it too.
 
 **With the search in place it runs**, and the log says so:
 

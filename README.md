@@ -163,7 +163,7 @@ commit, compared byte for byte:
 | `cc1`, `cc1plus` — cross **and** native | identical |
 | `ld`, `as`, `libc.so.6`, `busybox` | identical |
 | `Image` | identical |
-| `initramfs.cpio.gz` | one field, fix written but not yet executed |
+| `initramfs.cpio.gz` | still differs — now checked inside the run rather than two runs later |
 
 Three defects were found and each was **one field**, not a class of problem:
 gcc's own **MD5 self-checksum**, computed over `ar` archives whose member

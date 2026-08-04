@@ -1101,7 +1101,8 @@ if [ "$B5" = ok ]; then
       #   Linux version 7.1.5 (@runnervma9114) ... Mon Aug  3 09:46:45 UTC 2026
       # Four runs produced four different Images of identical size, which is
       # exactly the signature of fixed-width values written into fixed slots.
-      # SOURCE_DATE_EPOCH is already 0 in this box; kbuild wants its own names.
+      # kbuild wants its own names; SOURCE_DATE_EPOCH is handled below, and
+      # conditionally, because in this box it can do more harm than good.
       # A LITERAL DATE STRING, NOT `@0`. kbuild embeds this value verbatim, so
       # `@0` produced a banner reading `#1 SMP PREEMPT @0` -- deterministic,
       # and it looks like a bug every time someone reads it. The kernel does
@@ -1160,10 +1161,38 @@ if [ "$B5" = ok ]; then
         say "    the built-in initramfs will carry wall-clock mtimes and Image"
         say "    will not be reproducible. Pass -t to gen_init_cpio instead."
       fi
-      # SOURCE_DATE_EPOCH TOO, because newer kbuild prefers it and it needs no
-      # parsing at all -- it is already the seconds the other path is trying to
-      # compute.
-      export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
+      # SOURCE_DATE_EPOCH ONLY IF IT SURVIVES THE ROUND TRIP, AND IN THIS BOX
+      # IT MAY NOT. Exporting it unconditionally -- which this did -- would have
+      # silently re-broken what the block above just fixed.
+      #
+      # The kernel's top-level Makefile does
+      #
+      #     ifeq ("$(origin SOURCE_DATE_EPOCH)", "environment")
+      #     KBUILD_BUILD_TIMESTAMP := $(shell LC_TIME=C date -u -d@$(SOURCE_DATE_EPOCH))
+      #
+      # which OVERRIDES whatever KBUILD_BUILD_TIMESTAMP we set, replacing our
+      # `@0` with that date's formatted output -- a long string. usr/gen_initramfs.sh
+      # then feeds that string back to `date -d`, and busybox cannot parse the
+      # long form. Same `|| :`, same silent fallback, same wall-clock mtime.
+      #
+      # So the value only helps if `date` can read back what `date` writes.
+      # Test the round trip instead of assuming it: convert epoch to string and
+      # the string back to epoch, and require 0.
+      _sde_str=$(LC_TIME=C date -u -d@0 2>/dev/null)
+      if [ -n "$_sde_str" ] && [ "$(date -d "$_sde_str" +%s 2>/dev/null)" = 0 ]; then
+        export SOURCE_DATE_EPOCH=0
+        say "    SOURCE_DATE_EPOCH=0 exported -- date round-trips cleanly"
+      else
+        unset SOURCE_DATE_EPOCH 2>/dev/null || true
+        say "    SOURCE_DATE_EPOCH NOT exported: this date writes '$_sde_str'"
+        say "    and cannot read it back, so kbuild would override our timestamp"
+        say "    with a string gen_initramfs.sh then fails to parse."
+      fi
+
+      # LC_ALL=C for the kernel build. `date -d` parsing is locale-sensitive --
+      # the documented failure is `date -d"$(date)"` under a non-C locale -- and
+      # every timestamp path above runs through it.
+      export LC_ALL=C
       if timeout 7200 make ARCH=arm64 -j"$NP" Image > b.log 2>&1 \
          && [ -f arch/arm64/boot/Image ]; then
         cp arch/arm64/boot/Image "$W/Image"; B6=ok
@@ -1445,7 +1474,44 @@ INIT
       fi
     done
     say "    initramfs spec: $(wc -l < "$_spec") entries"
-    "$_gic" "$_spec" 2>/dev/null | gzip -9n > "$W/initramfs.cpio.gz"
+
+    # -t 0, AND THE REASON IS A MISTAKE WORTH NOT REPEATING.
+    #
+    # gen_init_cpio was chosen for its deterministic INODE counter, and that
+    # part worked -- the 419 six-byte inode differences went away. But its
+    # main() does `default_mtime = time(NULL)` unless -t is given, so the
+    # archive simply traded a varying inode for a varying mtime and came out
+    # just as unreproducible: 11945869 bytes one run, 11945933 the next.
+    #
+    # That was asserted from memory rather than checked, which is why the
+    # block below exists: the fix no longer depends on anyone being right
+    # about what the tool does by default.
+    if "$_gic" -t 0 "$_spec" > "$W/ir1.cpio" 2>/dev/null && [ -s "$W/ir1.cpio" ]; then
+        _tflag="-t 0"
+    else
+        say "    gen_init_cpio does not accept -t; mtimes will be wall-clock"
+        _tflag=""
+        "$_gic" "$_spec" > "$W/ir1.cpio" 2>/dev/null
+    fi
+
+    # BUILT TWICE AND COMPARED, IN THIS RUN. Every previous attempt at this
+    # archive was declared fixed and found still broken two runs later, because
+    # a single build cannot show reproducibility and the check lived in a
+    # separate job that ran days apart. gen_init_cpio is deterministic given
+    # the same spec, so two invocations here differ only if something in the
+    # archive is still time- or environment-derived -- which is exactly the
+    # question, and it costs two seconds to ask.
+    "$_gic" $_tflag "$_spec" > "$W/ir2.cpio" 2>/dev/null
+    if cmp -s "$W/ir1.cpio" "$W/ir2.cpio"; then
+        say "    cpio is byte-identical across two invocations"
+    else
+        say "    WARNING: two cpio invocations from one spec DIFFER --"
+        say "    the archive is not reproducible and the cause is still inside it"
+        cmp -l "$W/ir1.cpio" "$W/ir2.cpio" 2>/dev/null | head -3 | sed 's/^/      /'
+    fi
+    rm -f "$W/ir2.cpio"
+    gzip -9nc "$W/ir1.cpio" > "$W/initramfs.cpio.gz"
+    rm -f "$W/ir1.cpio"
   else
     # FALLBACK, AND IT IS KNOWN NOT TO BE REPRODUCIBLE. Said out loud rather
     # than left for someone to rediscover from three differing sizes.
