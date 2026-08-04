@@ -1,0 +1,119 @@
+name: stage5-probe-media
+
+# THE GSTREAMER STACK, AND WHAT IT ACTUALLY PULLS IN.
+#
+# Five plugin packages were on the list with their codec edges never traced.
+# What is known: plugins-bad wants dav1d for AV1, plugins-ugly wants x264
+# which is NOT in the set at all, and gst-libav wants ffmpeg. What is not
+# known is how many more codec libraries hide behind those three, and finding
+# out mid-batch is the expensive way.
+#
+# This probes the whole media stack in one pass -- the framework, the five
+# plugin sets, and every codec library they are likely to reach for -- so the
+# edges can be drawn before a single recipe is written.
+#
+# WPE WEBKIT IS WHY THIS MATTERS. GStreamer is WebKit's only media backend:
+# no gstreamer means no <video>, no <audio>, no MSE, and therefore no YouTube.
+# The 136-minute WPE build measured earlier had media ON, so these packages
+# are on the critical path rather than optional extras.
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: 'Media tarballs to probe'
+        required: false
+        default: >-
+          https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.28.1.tar.xz
+          https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.28.1.tar.xz
+          https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.28.1.tar.xz
+          https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.28.1.tar.xz
+          https://gstreamer.freedesktop.org/src/gst-plugins-ugly/gst-plugins-ugly-1.28.1.tar.xz
+          https://gstreamer.freedesktop.org/src/gst-libav/gst-libav-1.28.1.tar.xz
+      codecs:
+        description: 'Codec libraries the plugins reach for'
+        required: false
+        default: >-
+          https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
+          https://github.com/webmproject/libvpx/archive/v1.16.0/libvpx-1.16.0.tar.gz
+          https://downloads.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz
+          https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz
+          https://code.videolan.org/videolan/x264/-/archive/master/x264-master.tar.bz2
+          https://downloads.xiph.org/releases/ogg/libogg-1.3.6.tar.xz
+          https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.xz
+          https://downloads.xiph.org/releases/theora/libtheora-1.2.0.tar.xz
+      latest:
+        description: 'Version lookups for the ones with no stable URL'
+        required: false
+        default: 'videolan/x264 xiph/opus'
+
+concurrency:
+  group: stage5-probe-media-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Versions for the ones without a stable URL'
+        if: inputs.latest != ''
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 -u tools/probe.py latest ${{ inputs.latest }} || true
+
+      - name: 'Probe the framework and the plugin sets'
+        run: |
+          set -eu
+          cd spikes/stage5
+          for u in ${{ inputs.urls }}; do echo "$u"; done > media-urls.txt
+          python3 -u tools/probe.py batch media-urls.txt --out probed-media.tsv || true
+
+      - name: 'Probe the codec libraries'
+        if: inputs.codecs != ''
+        run: |
+          set -eu
+          cd spikes/stage5
+          for u in ${{ inputs.codecs }}; do echo "$u"; done > codec-urls.txt
+          python3 -u tools/probe.py batch codec-urls.txt --out probed-codecs.tsv || true
+
+      - name: 'What the plugins actually declare'
+        if: always()
+        run: |
+          set -eu
+          cd spikes/stage5
+          echo "  === EVERYTHING PROBED ==="
+          for f in probed-media.tsv probed-codecs.tsv; do
+            [ -s "$f" ] || continue
+            awk -F'\t' 'NR>1 {printf "  %-22s %-10s %-18s %s\n", $1, $3, substr($4,1,16), $6}' "$f"
+          done
+          echo ""
+          echo "  === THE EDGES: what each plugin set names as a dependency ==="
+          echo "  (meson dependency() calls -- the union across all options,"
+          echo "   so read it as 'could reach for', not 'requires')"
+          for f in probed-media.tsv probed-codecs.tsv; do
+            [ -s "$f" ] || continue
+            awk -F'\t' 'NR>1 && $9 != "" {print "\n  " $1 ":"; n=split($9,a,";"); for(i=1;i<=n;i++) printf "    %s\n", a[i]}' "$f"
+          done
+          echo ""
+          echo "  === NO SIGNATURE ==="
+          for f in probed-media.tsv probed-codecs.tsv; do
+            [ -s "$f" ] || continue
+            awk -F'\t' 'NR>1 && $5=="none" {print "    " $1}' "$f"
+          done
+          echo ""
+          echo "  === FAILED ==="
+          for f in probed-media.tsv probed-codecs.tsv; do
+            [ -s "$f" ] || continue
+            awk -F'\t' '$1=="FAILED" {print "    " $2}' "$f"
+          done
+          echo ""
+          echo "  x264 IS THE ONE TO WATCH. It is not in the planned set, it"
+          echo "  has no release tarballs at all (only a git snapshot), and"
+          echo "  gst-plugins-ugly wants it for H.264 encoding. Decoding H.264"
+          echo "  comes from ffmpeg via gst-libav, so the question is whether"
+          echo "  ENCODING is needed -- a browser does not need it unless it"
+          echo "  is doing WebRTC, which is disabled."

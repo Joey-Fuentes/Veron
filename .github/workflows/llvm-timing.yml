@@ -100,27 +100,12 @@ jobs:
           echo "  ^ RECORD THIS -- the pin a recipe would use, and the one"
           echo "    durable artifact of a non-hermetic run."
           tar xf llvm.tar.xz && mv "llvm-$V.src" src
-
-          # THE SPLIT TARBALLS NEED THREE PIECES, LAID OUT AS SIBLINGS.
-          # llvm-*.src.tar.xz alone does not build: its CMake reaches out to
-          # ../cmake for the shared modules and ../third-party for vendored
-          # code. The first attempt fetched only cmake, and the build ran 110
-          # files before dying on
-          #     SipHash.cpp:15: fatal error: siphash/SipHash.h: No such file
-          # -- a missing sibling directory reported as a missing header, 24
-          # seconds in.
-          BASE="https://github.com/llvm/llvm-project/releases/download/llvmorg-$V"
-          for part in cmake third-party; do
-            if curl -4 -fL --connect-timeout 20 --retry 2 \
-                 -o "$part.tar.xz" "$BASE/$part-$V.src.tar.xz" 2>/dev/null; then
-              tar xf "$part.tar.xz" && mv "$part-$V.src" "$part"
-              echo "  fetched companion: $part"
-            else
-              echo "  WARNING: could not fetch $part-$V.src.tar.xz -- the build"
-              echo "  will likely fail on a missing header from that tree."
-            fi
-          done
-          echo "  layout: $(ls -d src cmake third-party 2>/dev/null | tr '\n' ' ')"
+          # llvm-*.src.tar.xz needs the cmake modules from the same release.
+          CURL="https://github.com/llvm/llvm-project/releases/download/llvmorg-$V/cmake-$V.src.tar.xz"
+          if curl -4 -fL --connect-timeout 20 -o cmake.tar.xz "$CURL" 2>/dev/null; then
+            tar xf cmake.tar.xz && mv "cmake-$V.src" cmake
+            echo "  fetched the companion cmake modules (llvm-*.src needs them)"
+          fi
 
       - name: 'Configure'
         run: |
@@ -180,6 +165,55 @@ jobs:
           echo "BUILD_RC=$RC" >> "$GITHUB_ENV"
           echo "  ninja rc=$RC"
           tail -25 build.log
+
+      # DOES THIS BUILD ACTUALLY SATISFY MESA? The configure spike showed mesa
+      # asking for twelve LLVM modules by name:
+      #   bitwriter core engine executionengine instcombine mcdisassembler
+      #   mcjit native scalaropts transformutils coroutines lto
+      # Ten are core libraries or come with LLVM_TARGETS_TO_BUILD=AArch64.
+      # Two are worth checking rather than reasoning about: mcdisassembler
+      # needs AArch64Disassembler, and lto needs LLVMLTO -- and this build sets
+      # LLVM_ENABLE_PROJECTS to nothing.
+      #
+      # If either is missing, LLVM has to grow and the 27-minute number moves,
+      # which is exactly the kind of thing that should be found here and not
+      # three batches later when mesa refuses to configure.
+      - name: 'Does this LLVM satisfy mesa?'
+        if: always()
+        run: |
+          set -eu
+          LC=$(find build/bin -name llvm-config -type f 2>/dev/null | head -1)
+          [ -n "$LC" ] || { echo "  no llvm-config -- the build did not get that far"; exit 0; }
+          echo "  llvm-config: $LC"
+          echo "  version:     $("$LC" --version)"
+          echo ""
+          HAVE=$("$LC" --components)
+          fail=0
+          for m in bitwriter core engine executionengine instcombine                    mcdisassembler mcjit native scalaropts transformutils                    coroutines lto; do
+            case " $HAVE " in
+              *" $m "*) echo "  ok       $m" ;;
+              *) echo "  MISSING  $m"; fail=1 ;;
+            esac
+          done
+          echo ""
+          # The real test: ask llvm-config to resolve the exact set mesa asks
+          # for. A component can be listed and still fail to link.
+          if "$LC" --libs bitwriter core engine executionengine instcombine                    mcdisassembler mcjit native scalaropts transformutils                    coroutines lto > /dev/null 2>&1; then
+            echo "  ok       llvm-config resolves mesa's full module list"
+          else
+            echo "  FAILED   llvm-config cannot resolve mesa's module list:"
+            "$LC" --libs bitwriter core engine executionengine instcombine                   mcdisassembler mcjit native scalaropts transformutils                   coroutines lto 2>&1 | head -5
+            fail=1
+          fi
+          echo ""
+          if [ "$fail" = 0 ]; then
+            echo "  THE SCOPED BUILD IS ENOUGH FOR MESA. core + AArch64, no"
+            echo "  clang, no lld, no lldb -- and the 27-minute number stands."
+          else
+            echo "  THIS BUILD IS NOT ENOUGH FOR MESA. Whatever is missing has"
+            echo "  to be enabled, and the build time will move with it."
+            exit 1
+          fi
 
       - name: 'THE NUMBERS'
         if: always()
