@@ -125,8 +125,15 @@ run  = [["make", "DESTDIR=$D", "install"]]
 name = "verify-modules"
 cwd  = "$S"
 timeout = 300
+# SHELL VARIABLE NAMES MUST NOT COLLIDE WITH RECIPE VARIABLES. This step
+# originally used `P=` and `"$P"`, and $P is the recipe's PATCHES DIRECTORY --
+# so the expansion replaced the interpreter path with a path to patches/, and
+# because that path is absolute it also differed between a laptop and the
+# runner, breaking the plan gate. The gate caught it before the build ran,
+# which is what it is for. Recipe variables are single letters: B D S P J V N
+# DL SYSROOT PREFIX. Shell variables inside a step should not look like them.
 why = "importing a list of modules and reporting which failed is a loop"
-shell = "set -eu; P=$D/usr/bin/python3.14; L=$D/usr/lib; echo \"interpreter: $P\"; fail=0; for m in zlib bz2 lzma ctypes readline curses _expat; do if LD_LIBRARY_PATH=$L PYTHONHOME=$D/usr \"$P\" -c \"import $m\" 2>/dev/null; then echo \"  ok   $m\"; else echo \"  MISSING  $m\"; fail=1; fi; done; for m in compression.zstd; do if LD_LIBRARY_PATH=$L PYTHONHOME=$D/usr \"$P\" -c \"import $m\" 2>/dev/null; then echo \"  ok   $m\"; else echo \"  absent   $m (3.14 feature, not fatal)\"; fi; done; echo; echo '--- known-absent until their packages exist ---'; for m in sqlite3 ssl; do LD_LIBRARY_PATH=$L PYTHONHOME=$D/usr \"$P\" -c \"import $m\" 2>/dev/null && echo \"  ok   $m (unexpected -- update optional_off)\" || echo \"  absent   $m (expected)\"; done; [ \"$fail\" = 0 ] || { echo; echo 'A module this package exists to provide is missing.'; exit 1; }"
+shell = "set -eu; PYBIN=$D/usr/bin/python3.14; PYLIB=$D/usr/lib; echo \"interpreter: $PYBIN\"; fail=0; for m in zlib bz2 lzma ctypes readline curses pyexpat; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=$D/usr \"$PYBIN\" -c \"import $m\" 2>/dev/null; then echo \"  ok   $m\"; else echo \"  MISSING  $m\"; fail=1; fi; done; for m in compression.zstd; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=$D/usr \"$PYBIN\" -c \"import $m\" 2>/dev/null; then echo \"  ok   $m\"; else echo \"  absent   $m (3.14 feature, not fatal)\"; fi; done; echo; echo '--- known-absent until their packages exist ---'; for m in sqlite3 ssl; do LD_LIBRARY_PATH=$PYLIB PYTHONHOME=$D/usr \"$PYBIN\" -c \"import $m\" 2>/dev/null && echo \"  ok   $m (unexpected -- update optional_off)\" || echo \"  absent   $m (expected)\"; done; [ \"$fail\" = 0 ] || { echo; echo 'A module this package exists to provide is missing.'; exit 1; }"
 
 [guest]
 test   = [["/usr/bin/python3", "-c", "import zlib,bz2,lzma,ctypes; print('modules ok')"]]

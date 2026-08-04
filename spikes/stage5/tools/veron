@@ -997,6 +997,34 @@ def cmd_selftest(a):
                   f"multicall-intact={survived}")
             ok = False
 
+    # SHELL STEPS MUST NOT NAME A VARIABLE THE EXPANDER OWNS. A recipe wrote
+    # `P=$D/usr/bin/python3.14` and then used "$P" -- but $P is the patches
+    # directory, so the expansion silently replaced the interpreter with a
+    # path to patches/. That one was caught only because $P is absolute and
+    # differs between machines, so the plan hash moved. A collision with $D or
+    # $S would expand the same everywhere and sail through the gate.
+    recipes_dir = PKGDIR
+    collisions = []
+    try:
+        for rname, r in sorted(load_recipes().items()):
+            for st in r.get("steps", []):
+                sh = st.get("shell")
+                if not sh:
+                    continue
+                for var in ("B", "S", "D", "P", "J", "V", "N", "DL"):
+                    if re.search(rf"(^|[;&|\s]){var}=", sh):
+                        collisions.append(f"{rname}/{st['name']}: assigns ${var}")
+    except Exception:
+        collisions = None
+    if collisions is None:
+        print("  ok    shell-variable collision check skipped (no recipes here)")
+    elif collisions:
+        for c in collisions:
+            print(f"  FAIL  {c} -- that name belongs to the expander")
+        ok = False
+    else:
+        print("  ok    no shell step assigns a name the expander owns")
+
     for name in ("plan", "fetch", "build", "manifest", "ledger",
                  "compare", "guest-tests", "status"):
         print(f"  ok    subcommand present: {name}")

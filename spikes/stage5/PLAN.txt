@@ -598,7 +598,7 @@ package automake 1.18.1
 package python 3.14.6
   group        build-substrate
   license      PSF-2.0
-  recipe-sha   1b855c849cc128bbd94abd690084d52a5a6713e6404a293b5bfc5ec758cf9669
+  recipe-sha   cd503a0ad8cbcd0c3bc9320af6f70817e141168d69bf3d9a6e85e4f30f4f5ac8
 
   source
     url        https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tar.xz
@@ -632,7 +632,7 @@ package python 3.14.6
     [06] verify-modules
          cwd  build/python-3.14.6/python-3.14.6
          SHELL (declared) why=importing a list of modules and reporting which failed is a loop
-         | set -eu; P=dest/python/usr/bin/python3.14; L=dest/python/usr/lib; echo "interpreter: /home/claude/work/w5/spikes/stage5/packages/python/patches"; fail=0; for m in zlib bz2 lzma ctypes readline curses _expat; do if LD_LIBRARY_PATH=$L PYTHONHOME=dest/python/usr "/home/claude/work/w5/spikes/stage5/packages/python/patches" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  MISSING  $m"; fail=1; fi; done; for m in compression.zstd; do if LD_LIBRARY_PATH=$L PYTHONHOME=dest/python/usr "/home/claude/work/w5/spikes/stage5/packages/python/patches" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  absent   $m (3.14 feature, not fatal)"; fi; done; echo; echo '--- known-absent until their packages exist ---'; for m in sqlite3 ssl; do LD_LIBRARY_PATH=$L PYTHONHOME=dest/python/usr "/home/claude/work/w5/spikes/stage5/packages/python/patches" -c "import $m" 2>/dev/null && echo "  ok   $m (unexpected -- update optional_off)" || echo "  absent   $m (expected)"; done; [ "$fail" = 0 ] || { echo; echo 'A module this package exists to provide is missing.'; exit 1; }
+         | set -eu; PYBIN=dest/python/usr/bin/python3.14; PYLIB=dest/python/usr/lib; echo "interpreter: $PYBIN"; fail=0; for m in zlib bz2 lzma ctypes readline curses pyexpat; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  MISSING  $m"; fail=1; fi; done; for m in compression.zstd; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  absent   $m (3.14 feature, not fatal)"; fi; done; echo; echo '--- known-absent until their packages exist ---'; for m in sqlite3 ssl; do LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null && echo "  ok   $m (unexpected -- update optional_off)" || echo "  absent   $m (expected)"; done; [ "$fail" = 0 ] || { echo; echo 'A module this package exists to provide is missing.'; exit 1; }
 
 ======================================================================
 package ninja 1.13.2
