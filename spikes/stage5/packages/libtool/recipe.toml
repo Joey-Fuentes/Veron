@@ -28,7 +28,7 @@ optional_off = []
 
 [declared]
 configure_flags = ["--prefix=/usr", "--disable-static"]
-verification    = "make check, 244 of 247 (76/129/187 excluded -- see deferral)"
+verification    = "make check, 184 of 187 (76/129/187 excluded -- see deferral)"
 deferral        = """
 Internals not reviewed; upstream test suite only. libtool installs .la files \
 into every package that uses it, and those files HARDCODE PATHS -- the stage-4 \
@@ -87,8 +87,16 @@ cwd  = "$S"
 # EXCLUDED FOR NOW, NOT DISMISSED. The libtool-symbol-pipe step below gathers
 # the evidence, and automake -- the only package in this set never yet reached
 # -- is behind this one. Sequencing, not hiding.
+# THE SUITE HAS 187 TESTS, AND 187 IS THE LAST ONE. A first attempt ended the
+# range at 247 and autotest refused the whole run with "invalid test group:
+# 188". Since 187 is itself excluded, the range simply stops at 186.
+#
+# DERIVE THE TOTAL, DO NOT GUESS IT: the suite prints "147 tests were run" and
+# "40 tests were skipped", and 147 + 40 = 187. The same arithmetic gives
+# autoconf 549 + 80 = 629 -- a number this recipe's neighbour got wrong in the
+# other direction, truncating at 549 and silently dropping eighty tests.
 timeout = 2400
-run  = [["make", "check", "TESTSUITEFLAGS=1-75 77-128 130-186 188-247"]]
+run  = [["make", "check", "TESTSUITEFLAGS=1-75 77-128 130-186"]]
 
 [[steps]]
 # WHAT LIBTOOL ACTUALLY DETECTED, and whether busybox sed can run it.
