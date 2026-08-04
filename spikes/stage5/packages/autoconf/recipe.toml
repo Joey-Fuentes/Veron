@@ -86,8 +86,12 @@ cwd  = "$S"
 #
 # The other 4 failures the suite reports are autoconf's own declared expected
 # failures (autoupdate tests 31, 34, 35, 36) and are not excluded here.
+# THE RANGE IS 1-629, NOT 1-549. "549 tests were run, 80 tests were skipped"
+# is a count of what EXECUTED; the suite's highest test number is 629 (the
+# last is `629: autoscan`). A first attempt used 1-247 249-549 and silently
+# dropped eighty real tests off the end -- reading a run count as a total.
 timeout = 2400
-run  = [["make", "check", "TESTSUITEFLAGS=1-247 249-549"]]
+run  = [["make", "check", "TESTSUITEFLAGS=1-247 249-629"]]
 
 [[steps]]
 name = "install"
