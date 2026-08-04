@@ -865,6 +865,33 @@ def cmd_selftest(a):
                  "compare", "guest-tests", "status"):
         print(f"  ok    subcommand present: {name}")
 
+    # `veron sources` feeds a shell loop that splits every line into
+    # sha256/name/url. Anything else on stdout becomes a fetch for a file
+    # named "" -- which is how a status message turned into
+    # "IsADirectoryError: 'dl/'" and cost a run.
+    import io as _io, contextlib as _ctx
+
+    class _A:
+        pass
+
+    buf = _io.StringIO()
+    try:
+        with _ctx.redirect_stdout(buf):
+            cmd_sources(_A())
+        # TAB-separated, exactly three fields: sha256, name, url. Splitting
+        # on whitespace instead let a four-word status line pass the check --
+        # a guard that agrees with the bug is worse than no guard.
+        bad = [ln for ln in buf.getvalue().splitlines()
+               if ln.strip() and len(ln.split("\t")) != 3]
+        if bad:
+            print(f"  FAIL  `sources` wrote {len(bad)} unparseable line(s) to "
+                  f"stdout: {bad[0][:50]!r}")
+            ok = False
+        else:
+            print("  ok    `sources` stdout is machine-parseable")
+    except Exception as e:
+        print(f"  ok    `sources` not checkable here ({type(e).__name__})")
+
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 
@@ -913,8 +940,15 @@ def reset_inherited_signals():
         try:
             if signal.getsignal(sig) == signal.SIG_IGN:
                 signal.signal(sig, signal.SIG_DFL)
+                # STDERR, NOT STDOUT. `veron sources` output is a data
+                # channel -- the workflow's fetch loop parses it line by line
+                # -- so a status line printed to stdout becomes a row with an
+                # empty filename and mirror.py is handed the directory `dl/`.
+                # This is the second time a progress message has been written
+                # to a pipe someone was parsing; blfs.py did the same thing
+                # with its "book: N pages" line.
                 print(f"  reset {name} from SIG_IGN to SIG_DFL "
-                      f"(inherited from the caller)")
+                      f"(inherited from the caller)", file=sys.stderr)
         except (OSError, ValueError):
             pass
 
