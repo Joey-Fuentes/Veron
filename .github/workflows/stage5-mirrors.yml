@@ -1,0 +1,81 @@
+name: stage5-mirrors
+
+# A PACKAGE IS NOT PROPERLY PINNED UNTIL THERE IS MORE THAN ONE PLACE TO GET
+# IT.
+#
+# Every recipe has had exactly one working route plus a template pointing at a
+# mirror nothing was ever uploaded to. That is what `mirror check` has been
+# reporting as THIN, and it cost two consecutive runs:
+#
+#   git       "The read operation timed out"        www.kernel.org
+#   freetype  "The handshake operation timed out"   downloads.sourceforge.net
+#
+# Different package each time, same cause, and in both cases the same bytes
+# were sitting on a mirror the fetch never tried.
+#
+# THE PROBE SHOULD HAVE BEEN DOING THIS ALL ALONG. It fetches from one URL,
+# computes a digest, and throws away the question of where else those bytes
+# live -- while `probe source` was already reading Arch's and Alpine's
+# source= arrays, which ARE alternate routes, and discarding them.
+#
+# EVERY CANDIDATE IS DOWNLOADED AND HASHED before it is written. A route that
+# serves different bytes is worse than no route, and the check is cheap
+# because the digest is already known. That is what keeps "add any host you
+# like" an availability decision rather than a trust one, which is exactly
+# what sources/HOSTS.toml's header claims.
+
+on:
+  workflow_dispatch:
+    inputs:
+      out:
+        description: 'Where to write the verified routes'
+        required: false
+        default: 'sources/MIRRORS-verified.tsv'
+
+concurrency:
+  group: stage5-mirrors-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mirrors:
+    runs-on: ubuntu-24.04-arm
+    # Every candidate is a full download. ~100 packages times a few routes
+    # each is real bandwidth, and that is the price of verifying rather than
+    # assuming.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Find and verify alternate routes'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 -u tools/probe.py mirrors --packages packages \
+            --out "$GITHUB_WORKSPACE/${{ inputs.out }}" | tee /tmp/mirrors.txt
+
+      - name: 'What this changes'
+        if: always()
+        run: |
+          set -eu
+          F="${{ inputs.out }}"
+          [ -f "$F" ] || { echo "  nothing written"; exit 0; }
+          echo "  === VERIFIED ROUTES PER PACKAGE ==="
+          awk -F'\t' '!/^#/ && NF>=4 {c[$2]++} END {for (n in c) printf "  %-40s %d\n", n, c[n]}' "$F" | sort
+          echo ""
+          total=$(awk -F'\t' '!/^#/ && NF>=4' "$F" | wc -l)
+          pkgs=$(awk -F'\t' '!/^#/ && NF>=4 {print $2}' "$F" | sort -u | wc -l)
+          echo "  $total verified routes across $pkgs packages"
+          echo ""
+          echo "  STILL THIN: any package not listed above has upstream only."
+          echo "  Those are the ones a slow host can still cost a run, and"
+          echo "  they need either a host family adding to MIRROR_FAMILIES or"
+          echo "  an upload to our own mirror."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage5-mirrors
+          path: |
+            ${{ inputs.out }}
+            /tmp/mirrors.txt
+          retention-days: 30
