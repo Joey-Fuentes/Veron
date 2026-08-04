@@ -109,7 +109,7 @@ package hello 2.12.3
 package m4 1.4.21
   group        build-substrate
   license      GPL-3.0-or-later
-  recipe-sha   9e6251229f54f4fdc4f5ded93cd2bb990db6871f77f8578872a86033e40f07fa
+  recipe-sha   97b83a039bbf72b8bb8f2632171a10c97e0396d62e948e386953c5d1513264e0
 
   source
     url        https://ftp.gnu.org/gnu/m4/m4-1.4.21.tar.xz
@@ -139,13 +139,11 @@ package m4 1.4.21
          | tr ' ' '\n' < Makefile | grep -n 'test-[a-z0-9-]*' | sed -n '/test-error/,+10p'
     [05] check
          cwd  build/m4-1.4.21/m4-1.4.21
-         env  LOG_COMPILER=timeout
-         env  LOG_FLAGS=60
-         argv ["make", "check", "VERBOSE=yes"]
+         argv ["make", "check", "VERBOSE=yes", "LOG_COMPILER=timeout", "LOG_FLAGS=60", "SH_LOG_COMPILER=timeout", "SH_LOG_FLAGS=60"]
     [06] why-it-failed
          cwd  build/m4-1.4.21/m4-1.4.21/tests
          SHELL (declared) why=a diagnostic is a pipeline of greps over log files, not an argv
-         | echo '=== test-suite.log ==='; tail -80 test-suite.log 2>/dev/null; echo; echo '=== non-passing test logs ==='; grep -lE '^(FAIL|ERROR)' *.log 2>/dev/null | head -10 | while read f; do echo "--- $f"; tail -30 "$f"; done
+         | echo '=== newest .log files, i.e. what was running ==='; ls -t *.log 2>/dev/null | head -5; echo; for f in $(ls -t *.log 2>/dev/null | head -3); do echo "--- $f"; tail -25 "$f"; done; echo; echo '=== test-suite.log (absent if the harness never finished) ==='; tail -60 test-suite.log 2>/dev/null || echo '(none)'; echo; echo '=== still-running processes ==='; ps -o pid,ppid,stat,etime,args 2>/dev/null | head -25 || true
     [07] install
          cwd  build/m4-1.4.21/m4-1.4.21
          argv ["make", "DESTDIR=dest/m4", "install"]
