@@ -1,0 +1,93 @@
+name    = "file"
+version = "5.48"
+group   = "build-substrate"
+license = "ISC"
+
+# WHY THIS PACKAGE EXISTS IN THE SET: zstd's `make check` invokes file(1).
+#
+# That dependency is invisible to every source we had. BLFS records runtime
+# dependencies and does not carry zstd at all; Arch's PKGBUILD lists what zstd
+# LINKS; `probe linked` reads DT_NEEDED from the built binaries. A
+# TEST-SUITE-ONLY BUILD DEPENDENCY appears in none of them -- only running the
+# tests finds it, which it did:
+#     make[1]: file: No such file or directory
+#     make[1]: *** [Makefile:355: test-zstd] Error 127
+# busybox has no `file` applet, so nothing was providing it.
+
+[source]
+url       = "https://astron.com/pub/file/file-5.48.tar.gz"
+sha256    = "ed14656883b23a364b4057c05595d93252da9bc473d30106519519d0da141283"
+signature = "https://astron.com/pub/file/file-5.48.tar.gz.asc"
+# Read from the signature itself with an empty keyring. Compare against
+# Christos Zoulas's published fingerprint before treating the pin as trusted.
+signing_key = "BE04995BA8F90ED0C0C176C471112AB16CB33B3A"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+# EVERY COMPRESSION BACKEND IS OFF, AND ONE OF THEM MATTERS MORE THAN THE
+# REST. file autodetects zlib, bz2lib, liblzma, ZSTDLIB, liblz and liblrzip --
+# and we build zlib, bzip2, xz and zstd earlier in this very group. Left to
+# detect, file's output would depend on what happened to be installed when it
+# was configured, which is the whole reason this field exists.
+#
+# ZSTD IS THE ONE THAT WOULD BITE: zstd needs file to run its tests, and file
+# can link zstd. Enable it and the set has a genuine dependency CYCLE that
+# would only surface once both were present. Disabling it keeps the edge
+# one-directional and is why this list is not merely tidy-mindedness.
+optional_off = ["zlib", "bzlib", "xzlib", "zstdlib", "lzlib", "lrziplib",
+                "libseccomp", "landlock"]
+
+[declared]
+configure_flags = [
+  "--prefix=/usr", "--disable-static",
+  "--disable-zlib", "--disable-bzlib", "--disable-xzlib",
+  "--disable-zstdlib", "--disable-lzlib", "--disable-lrziplib",
+  "--disable-libseccomp", "--disable-landlock",
+]
+verification = "make check"
+deferral = """
+Internals not reviewed; upstream test suite only. The compression backends \
+are all disabled, so this file(1) cannot look inside compressed archives -- \
+that is a deliberate narrowing to keep the dependency graph acyclic and the \
+build deterministic, and it is a real functional reduction rather than a \
+neutral flag choice. libseccomp and Landlock sandboxing are also off: both \
+would make file's behaviour depend on kernel features that differ between \
+the build box and the target."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/file-5.48.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static",
+         "--disable-zlib", "--disable-bzlib", "--disable-xzlib",
+         "--disable-zstdlib", "--disable-lzlib", "--disable-lrziplib",
+         "--disable-libseccomp", "--disable-landlock"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "check"
+cwd  = "$S"
+# Time-boxed like every other suite here. file's tests are small; if this ever
+# runs long it is a signal, not something to wait out.
+timeout = 600
+run  = [["make", "check"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+
+[guest]
+test   = [["/usr/bin/file", "--version"]]
+expect = ["file-5.48"]

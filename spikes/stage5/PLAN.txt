@@ -20,16 +20,17 @@ between this file and the recipes fails the run.
 -- resolved order --------------------------------------------------
   derived from deps, tie-broken by name; never authored
   1. bzip2
-  2. hello
-  3. m4
-  4. ncurses
-  5. pkgconf
-  6. xz
-  7. zlib
-  8. zstd
+  2. file
+  3. hello
+  4. m4
+  5. ncurses
+  6. pkgconf
+  7. xz
+  8. zlib
   9. autoconf
   10. libtool
-  11. automake
+  11. zstd
+  12. automake
 
 ======================================================================
 package bzip2 1.0.8
@@ -68,6 +69,41 @@ package bzip2 1.0.8
     [06] install
          cwd  build/bzip2-1.0.8/bzip2-1.0.8
          argv ["make", "PREFIX=dest/bzip2/usr", "install"]
+
+======================================================================
+package file 5.48
+  group        build-substrate
+  license      ISC
+  recipe-sha   c3a2284296ea888af2db1bfd6095bf2a714ff607e4cd9aba964128bd566eeeb5
+
+  source
+    url        https://astron.com/pub/file/file-5.48.tar.gz
+    sha256     ed14656883b23a364b4057c05595d93252da9bc473d30106519519d0da141283
+    signature  https://astron.com/pub/file/file-5.48.tar.gz.asc
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off bzlib, landlock, libseccomp, lrziplib, lzlib, xzlib, zlib, zstdlib
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/file-5.48
+         argv ["tar", "-xf", "dl/file-5.48.tar.gz", "-C", "build/file-5.48"]
+    [02] configure
+         cwd  build/file-5.48/file-5.48
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--disable-zlib", "--disable-bzlib", "--disable-xzlib", "--disable-zstdlib", "--disable-lzlib", "--disable-lrziplib", "--disable-libseccomp", "--disable-landlock"]
+    [03] build
+         cwd  build/file-5.48/file-5.48
+         argv ["make", "-j1"]
+    [04] check
+         cwd  build/file-5.48/file-5.48
+         argv ["make", "check"]
+    [05] install
+         cwd  build/file-5.48/file-5.48
+         argv ["make", "DESTDIR=dest/file", "install"]
 
 ======================================================================
 package hello 2.12.3
@@ -288,38 +324,6 @@ package zlib 1.3.2
          argv ["make", "DESTDIR=dest/zlib", "install"]
 
 ======================================================================
-package zstd 1.5.7
-  group        build-substrate
-  license      GPL-2.0-or-later
-  recipe-sha   2d4ae50e53cb286ece08fd482546a32e019ec0162cabf1941d9a929b5f53cc52
-
-  source
-    url        https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
-    sha256     eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
-    signature  https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz.sig
-    correspond none
-
-  deps
-    build        -
-    link         -
-    runtime      -
-    optional_off lz4, lzma, zlib
-
-  commands (literal; this is exactly what runs)
-    [01] unpack
-         cwd  build/zstd-1.5.7
-         argv ["tar", "-xf", "dl/zstd-1.5.7.tar.gz", "-C", "build/zstd-1.5.7"]
-    [02] build
-         cwd  build/zstd-1.5.7/zstd-1.5.7
-         argv ["make", "-j1", "PREFIX=/usr", "HAVE_ZLIB=0", "HAVE_LZMA=0", "HAVE_LZ4=0"]
-    [03] check
-         cwd  build/zstd-1.5.7/zstd-1.5.7
-         argv ["make", "check"]
-    [04] install
-         cwd  build/zstd-1.5.7/zstd-1.5.7
-         argv ["make", "PREFIX=/usr", "DESTDIR=dest/zstd", "install"]
-
-======================================================================
 package autoconf 2.73
   group        build-substrate
   license      GPL-2.0-or-later
@@ -388,6 +392,38 @@ package libtool 2.6.2
     [05] install
          cwd  build/libtool-2.6.2/libtool-2.6.2
          argv ["make", "DESTDIR=dest/libtool", "install"]
+
+======================================================================
+package zstd 1.5.7
+  group        build-substrate
+  license      GPL-2.0-or-later
+  recipe-sha   a114560b6094cd83cb56ce54b0fa3921cda034b335a5a513592c35ac7e4fb6fe
+
+  source
+    url        https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+    sha256     eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+    signature  https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz.sig
+    correspond none
+
+  deps
+    build        file
+    link         -
+    runtime      -
+    optional_off lz4, lzma, zlib
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/zstd-1.5.7
+         argv ["tar", "-xf", "dl/zstd-1.5.7.tar.gz", "-C", "build/zstd-1.5.7"]
+    [02] build
+         cwd  build/zstd-1.5.7/zstd-1.5.7
+         argv ["make", "-j1", "PREFIX=/usr", "HAVE_ZLIB=0", "HAVE_LZMA=0", "HAVE_LZ4=0"]
+    [03] check
+         cwd  build/zstd-1.5.7/zstd-1.5.7
+         argv ["make", "check"]
+    [04] install
+         cwd  build/zstd-1.5.7/zstd-1.5.7
+         argv ["make", "PREFIX=/usr", "DESTDIR=dest/zstd", "install"]
 
 ======================================================================
 package automake 1.18.1

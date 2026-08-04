@@ -21,7 +21,16 @@ signing_key = "4EF4AC63455FC9F4545D9B7DEF8FE99528B52FFD"
 crosschecked_against = []   # name the packagers whose digest you compared
 
 [deps]
-build        = []
+# DISCOVERED BY BUILDING, NOT BY READING. zstd's `make check` invokes file(1)
+# and died with "file: No such file or directory" -- Error 127 out of
+# tests/Makefile:355. No source we consult would have said so: BLFS does not
+# carry zstd, Arch's PKGBUILD lists what zstd LINKS, and `probe linked` reads
+# DT_NEEDED from the built binaries. A test-suite-only build dependency is
+# invisible to all three, and busybox has no `file` applet to fall back on.
+#
+# This is the argument for keeping test suites enabled rather than deferring
+# them: the suite is what found the missing package.
+build        = ["file"]
 link         = []
 runtime      = []
 # The zstd CLI links lz4, zlib and lzma IF IT FINDS THEM, which would make
