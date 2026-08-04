@@ -211,7 +211,7 @@ def latest_gnu(project):
              for n in names if key(n) == key(names[-1])]}
 
 
-def latest_index(url, name=None):
+def latest_index(url, name=None, include_pre=False):
     """Newest tarball in any HTML directory listing.
 
     bzip2 (sourceware) and xz (tukaani) are neither GNU nor on GitHub, so the
@@ -228,6 +228,20 @@ def latest_index(url, name=None):
     if not names:
         return None
 
+    # PRE-RELEASES ARE NOT RELEASES. mesa's archive listed 26.2.0-rc1/rc2/rc3
+    # alongside stable 26.1.x, and the version key read "26.2.0" out of the
+    # rc names -- so the newest STABLE release lost to a release candidate and
+    # the probe offered three rcs as the thing to pin. A directory index has
+    # no metadata saying which is which; the name is the only signal.
+    PRE = re.compile(r"-(rc|alpha|beta|pre|dev|snapshot)[0-9.]*\.tar\.", re.I)
+    stable = [n for n in names if not PRE.search(n)]
+    dropped = len(names) - len(stable)
+    if stable:
+        names = stable
+    elif not include_pre:
+        return {"version": None, "prerelease_only": True,
+                "assets": [], "dropped": dropped}
+
     def key(n):
         m = re.search(r"-([0-9]+(?:\.[0-9]+)*)", n)
         return [int(x) for x in m.group(1).split(".")] if m else [0]
@@ -236,6 +250,7 @@ def latest_index(url, name=None):
     base = url if url.endswith("/") else url + "/"
     top = key(names[-1])
     return {"version": ".".join(str(x) for x in top),
+            "dropped": dropped,
             "assets": [{"name": n, "url": base + n}
                        for n in names if key(n) == top]}
 
@@ -762,12 +777,18 @@ def cmd_linked(a):
 
 
 def cmd_index(a):
-    r = latest_index(a.url, a.name)
+    r = latest_index(a.url, a.name, a.include_pre)
     print(f"== {a.url}")
     if not r:
         print("   no tarball found in that listing")
         return 1
+    if r.get("prerelease_only"):
+        print("   ONLY PRE-RELEASES found -- nothing stable to pin here.")
+        print("   Re-run with --include-pre if that is genuinely what you want.")
+        return 1
     print(f"   latest    {r['version']}")
+    if r.get("dropped"):
+        print(f"   ({r['dropped']} pre-release file(s) ignored -- rc/alpha/beta)")
     for asset in r["assets"]:
         print(f"   asset     {asset['name']}")
         print(f"             {asset['url']}")
@@ -790,6 +811,8 @@ def main():
     p = sub.add_parser("index", help="newest tarball in any directory listing")
     p.add_argument("url")
     p.add_argument("--name", help="restrict to this project name")
+    p.add_argument("--include-pre", action="store_true",
+                   help="do not filter out rc/alpha/beta/dev tarballs")
     p.set_defaults(fn=cmd_index)
 
     p = sub.add_parser("linked", help="the real deps: what a built DESTDIR links")
