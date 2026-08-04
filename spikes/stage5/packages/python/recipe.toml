@@ -1,6 +1,11 @@
 name    = "python"
 version = "3.14.6"
 group   = "build-substrate"
+# THE TARBALL UNPACKS TO Python-3.14.6, NOT python-3.14.6. The driver derives
+# the source directory from the package name, which is right for almost every
+# package and wrong for the handful that capitalise. Without this, $S points
+# at a directory that does not exist.
+srcdir  = "Python-3.14.6"
 license = "PSF-2.0"
 
 # WHY STAGE 5 BUILDS A PYTHON WHEN STAGE 4 ALREADY SHIPS ONE.
@@ -69,9 +74,13 @@ deferral = """
 Internals not reviewed. NO --enable-optimizations: PGO profiles depend on the \
 order the training workload executes, which is exactly the kind of input that \
 makes two builds differ, and no one has measured what the speed would be \
-worth. --without-ensurepip keeps pip, setuptools and wheel out of the base, \
-consistent with meson being installed from its source tree rather than \
-through a packaging stack.
+worth. NO PIP, AND NOT MERELY FOR CONSISTENCY. pip fetches unpinned code from the \
+network at runtime into a system whose entire premise is that every byte \
+traces to a recorded source -- `veron status` could not count what came \
+through it. Worse, ensurepip ships as VENDORED WHEELS inside the python \
+tarball: blobs our digest covers but our ledger never itemises, which is \
+exactly what the ledger exists to make visible. Anyone who wants pip can add \
+it deliberately; it will not arrive by default.
 
 THIS REPLACES THE TOOLCHAIN PYTHON IN THE BUILD ROOT, because both live at \
 /usr/bin/python3 and staging copies over it. The driver is itself running on \

@@ -408,8 +408,25 @@ def cmd_fetch(a):
 DEFAULT_STEP_TIMEOUT = 1800
 
 
-def run_step(s, logf, dry):
-    os.makedirs(s["cwd"], exist_ok=True) if not os.path.isdir(s["cwd"]) else None
+def run_step(s, logf, dry, may_create=False):
+    # CREATING A MISSING cwd HIDES THE ERROR THAT MATTERS. Python's tarball
+    # unpacks to Python-3.14.6 while the driver derived python-3.14.6 from the
+    # package name -- so the configure step's cwd did not exist, this happily
+    # created an empty one, and the failure surfaced as
+    # "FileNotFoundError: ./configure" with no hint that the source tree was
+    # somewhere else entirely.
+    #
+    # The FIRST step of a package legitimately needs its directory made; every
+    # later one is standing in a tree the earlier steps produced, and a
+    # missing directory there means something upstream did not do what the
+    # recipe thinks.
+    if not os.path.isdir(s["cwd"]):
+        if may_create:
+            os.makedirs(s["cwd"], exist_ok=True)
+        else:
+            die(f"step {s['name']!r}: cwd {s['cwd']!r} does not exist. "
+                f"If the tarball unpacks to a differently-named directory, "
+                f"set `srcdir` in the recipe.")
     if "shell" in s:
         printed = f"sh -c {s['shell']!r}"
         argv, shell = s["shell"], True
@@ -618,7 +635,7 @@ def cmd_build(a):
                     print(f"    - skipped (optional): {s['name']}")
                     logf.write(f"+ SKIPPED optional step: {s['name']}\n")
                     continue
-                rc = run_step(s, logf, a.dry_run)
+                rc = run_step(s, logf, a.dry_run, may_create=(s is p["steps"][0]))
                 if rc != 0:
                     print(f"VERON-BUILD-FAIL  {name}: step '{s['name']}' rc={rc}",
                           file=sys.stderr)
