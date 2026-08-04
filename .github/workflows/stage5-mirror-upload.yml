@@ -94,15 +94,23 @@ jobs:
           # `gh release create` is idempotent enough here: it fails loudly if
           # the tag exists, which the || true absorbs, and the upload then
           # --clobbers whatever was there.
+          # The upstream URL per artifact, so `add` can record provenance
+          # next to the route it just created.
+          python3 tools/veron sources > /tmp/srcmap.tsv
           for f in dl/*; do
             [ -f "$f" ] || continue
-            echo "== $(basename "$f")"
+            base=$(basename "$f")
+            # Staged copies are named <sha8>-<name>; the table wants <name>.
+            plain=${base#*-}
+            up=$(awk -F'\t' -v n="$plain" '$2==n {print $3; exit}' /tmp/srcmap.tsv)
+            echo "== $base"
             # POSITIONAL AGAIN: `mirror add <host> <file>`. Both calls in
             # this workflow were written from memory of a flag-shaped CLI that
             # never existed, and the selftest only checked option strings --
             # so nothing caught either until every fetch failed identically.
-            python3 ../../tools/mirror.py add github "$f" $DRY \
-              || echo "  ADD FAILED $(basename "$f")"
+            python3 ../../tools/mirror.py add github "$f" \
+              ${up:+--upstream "$up"} $DRY \
+              || echo "  ADD FAILED $base"
           done
         env:
           GH_TOKEN: ${{ github.token }}

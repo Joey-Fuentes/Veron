@@ -30,7 +30,12 @@ on:
       out:
         description: 'Where to write the verified routes'
         required: false
-        default: 'sources/MIRRORS-verified.tsv'
+        default: 'sources/MIRRORS.tsv'
+        # THE CANONICAL TABLE, not a file beside it. Written to a side file
+        # first, and nothing read it: freetype had four verified SourceForge
+        # routes recorded while `mirror fetch` still saw only the redirector,
+        # and the next run died on its TLS handshake. A route the fetcher
+        # cannot see is not a route.
 
 concurrency:
   group: stage5-mirrors-${{ github.ref }}

@@ -244,6 +244,18 @@ def cmd_add(a):
                             f"route that does not work")
 
     rows.append({"sha256": sha, "name": name, "host": a.host, "locator": loc})
+
+    # RECORD PROVENANCE ALONGSIDE THE ROUTE. `upstream` is where the bytes
+    # came from originally, and HOSTS.toml calls it provenance rather than a
+    # mirror -- but it belongs in the table so `mirror list` and `mirror check`
+    # can see it. Without this every artifact reads as having ONE route when
+    # it has two, which is exactly the THIN report that has been misleading
+    # us: pkgconf showed 2 only because its upstream row was added by hand.
+    if a.upstream and not any(r["sha256"] == sha and r["host"] == "upstream"
+                              for r in rows):
+        rows.append({"sha256": sha, "name": name, "host": "upstream",
+                     "locator": a.upstream})
+        print(f"  recorded upstream: {a.upstream}")
     if not a.dry_run:
         save_table(rows)
     print(f"  recorded {a.host}: {loc}")
@@ -372,6 +384,8 @@ def build_parser():
     p = sub.add_parser("add", help="upload to a host and record the locator")
     p.add_argument("host")
     p.add_argument("file")
+    p.add_argument("--upstream",
+                   help="the provenance URL, recorded alongside the route")
     p.add_argument("--locator", help="required for opaque hosts (DOI, CID, SWHID)")
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_add)
