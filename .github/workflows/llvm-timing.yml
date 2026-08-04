@@ -100,12 +100,27 @@ jobs:
           echo "  ^ RECORD THIS -- the pin a recipe would use, and the one"
           echo "    durable artifact of a non-hermetic run."
           tar xf llvm.tar.xz && mv "llvm-$V.src" src
-          # llvm-*.src.tar.xz needs the cmake modules from the same release.
-          CURL="https://github.com/llvm/llvm-project/releases/download/llvmorg-$V/cmake-$V.src.tar.xz"
-          if curl -4 -fL --connect-timeout 20 -o cmake.tar.xz "$CURL" 2>/dev/null; then
-            tar xf cmake.tar.xz && mv "cmake-$V.src" cmake
-            echo "  fetched the companion cmake modules (llvm-*.src needs them)"
-          fi
+
+          # THE SPLIT TARBALLS NEED THREE PIECES, LAID OUT AS SIBLINGS.
+          # llvm-*.src.tar.xz alone does not build: its CMake reaches out to
+          # ../cmake for the shared modules and ../third-party for vendored
+          # code. The first attempt fetched only cmake, and the build ran 110
+          # files before dying on
+          #     SipHash.cpp:15: fatal error: siphash/SipHash.h: No such file
+          # -- a missing sibling directory reported as a missing header, 24
+          # seconds in.
+          BASE="https://github.com/llvm/llvm-project/releases/download/llvmorg-$V"
+          for part in cmake third-party; do
+            if curl -4 -fL --connect-timeout 20 --retry 2 \
+                 -o "$part.tar.xz" "$BASE/$part-$V.src.tar.xz" 2>/dev/null; then
+              tar xf "$part.tar.xz" && mv "$part-$V.src" "$part"
+              echo "  fetched companion: $part"
+            else
+              echo "  WARNING: could not fetch $part-$V.src.tar.xz -- the build"
+              echo "  will likely fail on a missing header from that tree."
+            fi
+          done
+          echo "  layout: $(ls -d src cmake third-party 2>/dev/null | tr '\n' ' ')"
 
       - name: 'Configure'
         run: |
