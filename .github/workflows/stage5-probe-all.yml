@@ -21,14 +21,17 @@ on:
       book:
         description: 'Path to the unpacked BLFS book in the repo'
         required: false
-        default: 'spikes/stage5/blfs-book'
+        default: 'blfs-book'
+        # RELATIVE TO spikes/stage5, because the step cd's there first.
+        # The previous default was repo-root-relative and produced
+        # spikes/stage5/spikes/stage5/blfs-book -- reported as "no book".
       extra_urls:
         description: 'Extra URLs to probe (space-separated), for non-BLFS packages'
         required: false
         default: >-
+          https://www.iana.org/time-zones/repository/releases/tzdata2026c.tar.gz
+          https://www.iana.org/time-zones/repository/releases/tzcode2026c.tar.gz
           https://www.sqlite.org/2026/sqlite-autoconf-3530400.tar.gz
-          https://data.iana.org/time-zones/releases/tzdata2026c.tar.gz
-          https://data.iana.org/time-zones/releases/tzcode2026c.tar.gz
 
 concurrency:
   group: stage5-probe-all-${{ github.ref }}

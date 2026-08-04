@@ -709,15 +709,20 @@ def probe(url, keep=False, quiet_report=False):
     # form silently failed for m4, emitting version = "m4-1.4.21".
     pname, _, pver = top.rpartition("-")
     if not pname:
-        pname, pver = top, ""
+        # NO TOP-LEVEL DIRECTORY. tzdata and tzcode extract flat into the
+        # current directory, so there is no "name-version/" to split. Fall
+        # back to the filename, which is the only naming information there is.
+        base = re.sub(r"\.tar\.[a-z]+$|\.tgz$|\.zip$", "", name)
+        m = re.match(r"^([A-Za-z_+-]*[A-Za-z_+])[-_]?([0-9][0-9A-Za-z.]*)$", base)
+        pname, pver = (m.group(1), m.group(2)) if m else (base, "")
     xc = crosscheck(pname, pver)
     print("\n   independent packagers (corroboration, not proof)")
     if not xc:
         print("     none found -- cross-check by hand before pinning")
-    for who, d in sorted(xc.items()):
-        agree = "SAME" if d.get("version") == pver else f"DIFFERENT ({d.get('version')})"
+    for who, xd in sorted(xc.items()):
+        agree = "SAME" if xd.get("version") == pver else f"DIFFERENT ({xd.get('version')})"
         print(f"     {who:<8} version {agree}")
-        for h in d.get("sha256", []):
+        for h in xd.get("sha256") or []:
             print(f"              sha256 {h} {'<-- MATCHES' if h == digest else ''}")
 
     print("\n   --- recipe skeleton (INCOMPLETE BY DESIGN) ---")
