@@ -78,7 +78,7 @@ package bzip2 1.0.8
 package file 5.48
   group        build-substrate
   license      ISC
-  recipe-sha   c3a2284296ea888af2db1bfd6095bf2a714ff607e4cd9aba964128bd566eeeb5
+  recipe-sha   1a5b579b8c48fa2f428d2237638bf7357ca84c8db463d3273b27c5706eca0a26
 
   source
     url        https://astron.com/pub/file/file-5.48.tar.gz
@@ -96,16 +96,20 @@ package file 5.48
     [01] unpack
          cwd  build/file-5.48
          argv ["tar", "-xf", "dl/file-5.48.tar.gz", "-C", "build/file-5.48"]
-    [02] configure
+    [02] why-unpack-failed
+         cwd  build/file-5.48
+         SHELL (declared) why=trying four decompression paths and reporting which works is a script
+         | set +e; T=dl/file-5.48.tar.gz; echo '--- what tar is this ---'; tar --help 2>&1 | head -3; echo; echo '--- 1. tar -tf (list only) ---'; tar -tf "$T" 2>&1 | head -3; echo "   rc=$?"; echo '--- 2. explicit -z ---'; tar -xzf "$T" -C . 2>&1 | head -3; echo "   rc=$?"; echo '--- 3. gzip -dc piped into tar ---'; gzip -dc "$T" 2>/dev/null | tar -xf - -C . 2>&1 | head -3; echo "   rc=$?"; echo '--- 4. python tarfile ---'; python3 -c "import tarfile,sys; t=tarfile.open(sys.argv[1]); print(' first:', t.getnames()[0]); print(' format:', t.format); t.extractall('.', filter='data')" "$T" 2>&1 | head -5; echo "   rc=$?"; echo; echo '--- what landed ---'; ls -la | head -6
+    [03] configure
          cwd  build/file-5.48/file-5.48
          argv ["./configure", "--prefix=/usr", "--disable-static", "--disable-zlib", "--disable-bzlib", "--disable-xzlib", "--disable-zstdlib", "--disable-lzlib", "--disable-lrziplib", "--disable-libseccomp", "--disable-landlock"]
-    [03] build
+    [04] build
          cwd  build/file-5.48/file-5.48
          argv ["make", "-j1"]
-    [04] check
+    [05] check
          cwd  build/file-5.48/file-5.48
          argv ["make", "check"]
-    [05] install
+    [06] install
          cwd  build/file-5.48/file-5.48
          argv ["make", "DESTDIR=dest/file", "install"]
 
