@@ -61,6 +61,15 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
           python3 -c 'import tomllib' || { echo "python 3.11+ required"; exit 1; }
 
+      # THE PLAN GATE CANNOT CATCH A DRIVER THAT LOST A FEATURE -- it
+      # regenerates PLAN.txt with the same driver, so the file agrees with
+      # itself. A build of this tool assembled from an older copy silently
+      # dropped per-step `env`; the recipes still declared PATH, the driver
+      # ignored it, and pkgconf's suite failed looking like a package fault.
+      # This checks BEHAVIOUR against a fixture instead.
+      - name: 'VERON-SELFTEST-OK -- the driver honours what recipes declare'
+        run: cd spikes/stage5 && python3 tools/veron selftest
+
       - name: 'VERON-PLAN-OK -- regenerate and diff'
         run: cd spikes/stage5 && python3 tools/veron plan --check
 

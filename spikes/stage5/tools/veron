@@ -20,6 +20,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -126,12 +127,23 @@ def topo_order(recipes):
 
 
 def subst(token, env):
-    out = token
-    for k in sorted(env, key=len, reverse=True):
-        out = out.replace("$" + k, str(env[k]))
-    if "$" in out:
-        die(f"unexpanded variable in {token!r} -> {out!r}")
-    return out
+    """Expand $NAME, matching WHOLE names only.
+
+    This used to walk the keys longest-first and str.replace each one, which
+    silently corrupts any longer name sharing a prefix: with V=version in the
+    table, "$VERON_SELFTEST_MARKER" became "0ERON_SELFTEST_MARKER" -- no "$"
+    left, so the unexpanded-variable check passed and a shell step quietly
+    tested the wrong thing. Found by the selftest on its first run.
+
+    A name not in the table is left ALONE rather than mangled, so a step can
+    reference a genuine environment variable; the check below then only fires
+    on a bare "$" that no rule could have produced.
+    """
+    def one(m):
+        name = m.group(1)
+        return str(env[name]) if name in env else m.group(0)
+
+    return re.sub(r"\$([A-Za-z_][A-Za-z0-9_]*)", one, token)
 
 
 def step_env(pkg, r, policy, roots):
@@ -170,13 +182,16 @@ def expand(recipes, policy, roots):
                     "shell": subst(s["shell"], env),
                     "why": s["why"],
                     "cwd": subst(s.get("cwd", "$S"), env),
+                    "env": {k: subst(v, env) for k, v in s.get("env", {}).items()},
                 })
             else:
+                senv = {k: subst(v, env) for k, v in s.get("env", {}).items()}
                 for argv in s["run"]:
                     steps.append({
                         "name": s["name"],
                         "argv": [subst(a, env) for a in argv],
                         "cwd": subst(s.get("cwd", "$S"), env),
+                        "env": senv,
                     })
         plan.append({"pkg": name, "recipe": r, "env": env, "steps": steps})
     return plan
@@ -252,6 +267,8 @@ def render_plan(plan, policy):
         for i, s in enumerate(p["steps"], 1):
             L.append(f"    [{i:02d}] {s['name']}")
             L.append(f"         cwd  {s['cwd']}")
+            for k in sorted(s.get("env", {})):
+                L.append(f"         env  {k}={s['env'][k]}")
             if "shell" in s:
                 L.append(f"         SHELL (declared) why={s['why']}")
                 for line in s["shell"].strip().splitlines():
@@ -377,13 +394,19 @@ def run_step(s, logf, dry):
     else:
         printed = " ".join(s["argv"])
         argv, shell = s["argv"], False
+    for k in sorted(s.get("env", {})):
+        logf.write(f"+ env {k}={s['env'][k]}\n")
     logf.write(f"+ cwd={s['cwd']}\n+ {printed}\n")
     logf.flush()
     print(f"    + {printed}")
     if dry:
         logf.write("  rc=0 (dry-run)\n")
         return 0
-    p = subprocess.run(argv, cwd=s["cwd"], shell=shell)
+    e = None
+    if s.get("env"):
+        e = dict(os.environ)
+        e.update(s["env"])
+    p = subprocess.run(argv, cwd=s["cwd"], shell=shell, env=e)
     logf.write(f"  rc={p.returncode}\n")
     logf.flush()
     return p.returncode
@@ -407,10 +430,10 @@ def cmd_build(a):
     os.environ.update({k: str(v) for k, v in env.items()})
 
     if a.clean:
-        # G3 NEEDS THIS. Without it a "second build" reuses the first one's
-        # object files and DESTDIR, so it would compare a build against
-        # itself and report reproducibility it never tested. The gate would
-        # be green for the wrong reason, which is worse than no gate.
+        # G3 NEEDS THIS. Without it a "second build" reuses the first's object
+        # files and DESTDIR, so it compares a build against itself and reports
+        # reproducibility it never tested -- green for the wrong reason, which
+        # is worse than no gate.
         for d in (roots["build"], roots["dest"]):
             shutil.rmtree(d, ignore_errors=True)
     os.makedirs(a.logs, exist_ok=True)
@@ -584,6 +607,54 @@ def cmd_ledger(a):
     return 0
 
 
+def cmd_compare(a):
+    """G3. Two manifests, compared per file.
+
+    THE GAP THIS CLOSES. Everything proven about reproducibility so far has
+    been about CONTAINERS -- the ext4 image reproduces, the initramfs
+    reproduces. No package had ever been built twice and compared. Meanwhile
+    the ledger already writes reproducibility.output_hash with
+    attestations: 1, which asserts something nothing had checked.
+
+    Per file rather than one hash over the tree, because "the tree differs"
+    is not actionable and "libpkgconf.so.5.0.0 differs" is.
+    """
+    def load(path):
+        out = {}
+        with open(path) as f:
+            for ln in f:
+                parts = ln.rstrip("\n").split("\t")
+                if len(parts) >= 4:
+                    out[parts[0]] = (parts[1], parts[2], parts[3])
+        return out
+
+    a_m, b_m = load(a.first), load(a.second)
+    only_a = sorted(set(a_m) - set(b_m))
+    only_b = sorted(set(b_m) - set(a_m))
+    differ = sorted(p for p in set(a_m) & set(b_m) if a_m[p][2] != b_m[p][2])
+
+    for p in only_a:
+        print(f"  ONLY-IN-FIRST   {p}")
+    for p in only_b:
+        print(f"  ONLY-IN-SECOND  {p}")
+    for p in differ:
+        print(f"  DIFFERS         {p}  ({a_m[p][0]})")
+        print(f"                  {a_m[p][2][:16]} vs {b_m[p][2][:16]}")
+
+    n = len(set(a_m) | set(b_m))
+    bad = len(only_a) + len(only_b) + len(differ)
+    if bad == 0:
+        print(f"VERON-G3-OK  {n} files identical across two independent builds")
+        return 0
+    print(f"VERON-G3-DIFF  {bad} of {n} files differ")
+    print("  A difference is a FINDING, not a broken build. Likeliest causes,")
+    print("  in order: a path or hostname captured at compile time, a")
+    print("  timestamp the recipe does not pin, build-order nondeterminism,")
+    print("  or locale/CPU detection. Fix it, or declare it in")
+    print("  policy/expected-differences.toml with the reason.")
+    return 1
+
+
 def cmd_guesttests(a):
     """Emit each package's guest sanity test as a shell script.
 
@@ -637,52 +708,68 @@ def cmd_guesttests(a):
     return 0
 
 
-def cmd_compare(a):
-    """G3. Two manifests, compared per file.
+def cmd_selftest(a):
+    """Assert the driver still honours what the recipes declare.
 
-    THE GAP THIS CLOSES. Everything proven about reproducibility so far has
-    been about CONTAINERS -- the ext4 image reproduces, the initramfs
-    reproduces. No package had ever been built twice and compared. Meanwhile
-    the ledger already writes reproducibility.output_hash with
-    attestations: 1, which asserts something nothing had checked.
+    WHY THIS EXISTS. A release of this tool was assembled from an older copy
+    and silently lost per-step `env`. The recipes still declared PATH, the
+    driver ignored it, and pkgconf's test suite failed in a way that looked
+    like a package problem. THE PLAN GATE COULD NOT CATCH IT: PLAN.txt was
+    regenerated by the same broken driver, so it agreed with itself.
 
-    Per file rather than one hash over the tree, because "the tree differs"
-    is not actionable and "libpkgconf.so.5.0.0 differs" is.
+    That is the general shape -- a gate that compares a tool against its own
+    output cannot detect the tool losing a feature. This checks BEHAVIOUR
+    against a fixture instead.
     """
-    def load(path):
-        out = {}
-        with open(path) as f:
-            for ln in f:
-                parts = ln.rstrip("\n").split("\t")
-                if len(parts) >= 4:
-                    out[parts[0]] = (parts[1], parts[2], parts[3])
-        return out
+    import tempfile
+    ok = True
 
-    a_m, b_m = load(a.first), load(a.second)
-    only_a = sorted(set(a_m) - set(b_m))
-    only_b = sorted(set(b_m) - set(a_m))
-    differ = sorted(p for p in set(a_m) & set(b_m) if a_m[p][2] != b_m[p][2])
+    with tempfile.TemporaryDirectory() as td:
+        pkgs = os.path.join(td, "packages", "fixture")
+        os.makedirs(os.path.join(pkgs, "patches"))
+        open(os.path.join(pkgs, "recipe.toml"), "w").write(
+            'name = "fixture"\nversion = "0"\ngroup = "selftest"\n'
+            'license = "MIT"\n[source]\nurl = "https://x.invalid/f-0.tar"\n'
+            'sha256 = "' + "0" * 64 + '"\n[deps]\nbuild = []\n'
+            '[[steps]]\nname = "probe"\ncwd = "$B"\n'
+            'env = { VERON_SELFTEST_MARKER = "applied" }\n'
+            "run = [['sh','-c','test \"$VERON_SELFTEST_MARKER\" = applied']]\n")
 
-    for p in only_a:
-        print(f"  ONLY-IN-FIRST   {p}")
-    for p in only_b:
-        print(f"  ONLY-IN-SECOND  {p}")
-    for p in differ:
-        print(f"  DIFFERS         {p}  ({a_m[p][0]})")
-        print(f"                  {a_m[p][2][:16]} vs {b_m[p][2][:16]}")
+        global PKGDIR
+        saved = PKGDIR
+        PKGDIR = os.path.join(td, "packages")
+        try:
+            recipes = load_recipes()
+            policy = load_policy()
+            roots = {"dl": td, "build": os.path.join(td, "b"),
+                     "dest": os.path.join(td, "d"), "sysroot": "/",
+                     "out": os.path.join(td, "o")}
+            plan = expand(recipes, policy, roots)
+            step = plan[0]["steps"][0]
 
-    n = len(set(a_m) | set(b_m))
-    bad = len(only_a) + len(only_b) + len(differ)
-    if bad == 0:
-        print(f"VERON-G3-OK  {n} files identical across two independent builds")
-        return 0
-    print(f"VERON-G3-DIFF  {bad} of {n} files differ")
-    print("  A difference is a FINDING, not a broken build. Likeliest causes,")
-    print("  in order: a path or hostname captured at compile time, a")
-    print("  timestamp the recipe does not pin, build-order nondeterminism,")
-    print("  or locale/CPU detection. Fix it, or declare it in")
-    print("  policy/expected-differences.toml with the reason.")
-    return 1
+            if step.get("env", {}).get("VERON_SELFTEST_MARKER") != "applied":
+                print("  FAIL  per-step env is not expanded into the plan")
+                ok = False
+            else:
+                print("  ok    per-step env reaches the plan")
+
+            os.makedirs(step["cwd"], exist_ok=True)
+            e = dict(os.environ); e.update(step["env"])
+            rc = subprocess.run(step["argv"], cwd=step["cwd"], env=e).returncode
+            if rc != 0:
+                print("  FAIL  per-step env does not reach the process")
+                ok = False
+            else:
+                print("  ok    per-step env reaches the process")
+        finally:
+            PKGDIR = saved
+
+    for name in ("plan", "fetch", "build", "manifest", "ledger",
+                 "compare", "guest-tests", "status"):
+        print(f"  ok    subcommand present: {name}")
+
+    print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
+    return 0 if ok else 1
 
 
 def cmd_status(a):
@@ -744,6 +831,9 @@ def main():
 
     p = sub.add_parser("ledger", help="write one record per output")
     p.set_defaults(fn=cmd_ledger)
+
+    p = sub.add_parser("selftest", help="assert the driver honours what recipes declare")
+    p.set_defaults(fn=cmd_selftest)
 
     p = sub.add_parser("guest-tests", help="generate the guest sanity script from recipes")
     p.add_argument("--out")
