@@ -67,7 +67,26 @@ jobs:
         run: |
           set -eu
           sudo apt-get update -qq
-          sudo apt-get install -y -qq \
+
+          # ONE WRONG NAME MUST NOT COST THE EXPERIMENT. The first attempt
+          # died on three packages that do not exist on Ubuntu 24.04 arm64
+          # (libbacktrace-dev is part of gcc, not a package; the libwpe ones
+          # are not published for this arch) -- and `apt-get install` fails
+          # the whole set atomically, so a five-hour measurement was lost to a
+          # typo before a single file compiled. Install what exists, report
+          # what does not, and let configure be the thing that decides whether
+          # a missing library actually matters.
+          need() {
+            for p in "$@"; do
+              if apt-cache show "$p" >/dev/null 2>&1; then
+                echo "$p"
+              else
+                echo "  NOT AVAILABLE: $p" >&2
+              fi
+            done
+          }
+
+          PKGS=$(need \
             build-essential cmake ninja-build pkg-config \
             ruby perl python3 gperf bison flex unifdef \
             libglib2.0-dev libsoup-3.0-dev libicu-dev libharfbuzz-dev \
@@ -75,15 +94,19 @@ jobs:
             libsqlite3-dev libpng-dev libjpeg-dev libwebp-dev zlib1g-dev \
             libgcrypt20-dev libtasn1-6-dev libepoxy-dev \
             libwayland-dev wayland-protocols libxkbcommon-dev \
-            libegl-dev libgles-dev libgbm-dev libdrm-dev libinput-dev libudev-dev \
+            libegl-dev libgles-dev libgbm-dev libdrm-dev \
+            libinput-dev libudev-dev \
             libatk1.0-dev libatk-bridge2.0-dev \
-            libseccomp-dev libsysprof-capture-4-dev libbacktrace-dev \
-            libwpe-1.0-dev libwpebackend-fdo-1.0-dev
+            libseccomp-dev libsysprof-capture-4-dev \
+            libwpe-1.0-dev libwpebackend-fdo-1.0-dev)
+
           if [ "${{ inputs.gstreamer }}" = "true" ]; then
-            sudo apt-get install -y -qq \
-              libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-              libgstreamer-plugins-bad1.0-dev
+            PKGS="$PKGS $(need libgstreamer1.0-dev \
+              libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev)"
           fi
+
+          echo "  installing $(echo "$PKGS" | wc -w) packages"
+          sudo apt-get install -y -qq $PKGS
           echo "  apt done"
 
       - name: 'Fetch the pinned WPE source tarball'
@@ -105,6 +128,12 @@ jobs:
           mv "wpewebkit-$V" src
           echo "  source lines (rough): $(find src -name '*.cpp' -o -name '*.h' -o -name '*.c' | wc -l) files"
 
+      # ENABLE_WPE_LEGACY_API=OFF is what makes libwpe and WPEBackend-fdo
+      # unnecessary: 2.52 added building exclusively on WPEPlatform. Neither
+      # library is packaged for Ubuntu arm64, so this is the configuration
+      # that can actually be measured here -- and it is also the one Igalia
+      # recommends new projects adopt, since the legacy path is deprecated
+      # when WPEPlatform becomes default in 2.54.
       - name: 'Configure'
         run: |
           set -eu
@@ -114,6 +143,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DENABLE_WPE_PLATFORM=ON \
+            -DENABLE_WPE_LEGACY_API=OFF \
             -DENABLE_JOURNALD_LOG=OFF \
             -DENABLE_INTROSPECTION=OFF \
             -DENABLE_DOCUMENTATION=OFF \
