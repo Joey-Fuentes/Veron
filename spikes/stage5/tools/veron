@@ -549,11 +549,27 @@ def stage_into(destdir, sysroot):
         for fn in files:
             src = os.path.join(dirpath, fn)
             dst = os.path.join(target, fn)
+            # ALWAYS UNLINK FIRST. THIS DESTROYED BUSYBOX.
+            #
+            # shutil.copy2 opens the destination for writing, and if that
+            # destination is a SYMLINK it follows it. The build root's
+            # /usr/bin is almost entirely symlinks to /usr/bin/busybox, so
+            # staging bzip2 -- whose install writes bzcat, bunzip2 and friends
+            # -- wrote the bzip2 binary THROUGH those links and over busybox
+            # itself.
+            #
+            # Everything downstream then failed inexplicably: `tar` is a
+            # busybox symlink, so `tar -xf foo.tar.gz` became the bzip2 binary
+            # and exited 1 while printing bzip2's usage. Several rounds went
+            # into theories about PAX headers and archive formats, when the
+            # extractor had simply been overwritten.
+            #
+            # Unlinking replaces the LINK instead of writing through it, which
+            # is what installing a package over a busybox alias should do.
+            if os.path.lexists(dst):
+                os.unlink(dst)
             if os.path.islink(src):
-                link = os.readlink(src)
-                if os.path.lexists(dst):
-                    os.unlink(dst)
-                os.symlink(link, dst)
+                os.symlink(os.readlink(src), dst)
             else:
                 shutil.copy2(src, dst)
             n += 1
@@ -962,14 +978,23 @@ def cmd_selftest(a):
         # A REAL BUILD ROOT, because the guard rejects anything else -- and
         # it caught this fixture the moment it was added, which is the guard
         # working rather than the fixture being unlucky.
-        root = os.path.join(td, "root"); os.makedirs(os.path.join(root, "usr", "bin"))
+        root = os.path.join(td, "root"); rb = os.path.join(root, "usr", "bin")
+        os.makedirs(rb)
+        # THE FIXTURE MUST LOOK LIKE THE REAL BUILD ROOT: a multi-call binary
+        # with a crowd of symlinks pointing at it. Staging into an EMPTY root
+        # cannot reproduce writing through a link, which is why the first
+        # version of this test passed while staging was destroying busybox.
+        open(os.path.join(rb, "multicall"), "w").write("INTACT")
+        os.symlink("multicall", os.path.join(rb, "t"))
         n = stage_into(d, root)
         staged = os.path.exists(os.path.join(root, "usr", "bin", "t"))
         linked = os.path.islink(os.path.join(root, "usr", "bin", "t2"))
-        if n == 2 and staged and linked:
-            print("  ok    installed packages are staged into the build root")
+        survived = open(os.path.join(rb, "multicall")).read() == "INTACT"
+        if n == 2 and staged and linked and survived:
+            print("  ok    staging replaces symlinks without writing through them")
         else:
-            print(f"  FAIL  staging copied {n} paths, file={staged} link={linked}")
+            print(f"  FAIL  staged={n} file={staged} link={linked} "
+                  f"multicall-intact={survived}")
             ok = False
 
     for name in ("plan", "fetch", "build", "manifest", "ledger",
