@@ -99,12 +99,17 @@ def latest_github(repo):
     if not d:
         return None
     j = json.loads(d)
-    return {
-        "version": j.get("tag_name", ""),
-        "assets": [{"name": a["name"], "url": a["browser_download_url"]}
-                   for a in j.get("assets", [])],
-        "published": j.get("published_at", ""),
-    }
+    assets = [{"name": a["name"], "url": a["browser_download_url"]}
+              for a in j.get("assets", [])]
+    if not assets and j.get("tarball_url"):
+        # NO UPLOADED ASSETS. GitHub still serves an auto-generated archive,
+        # and saying so beats printing a version with nothing under it -- but
+        # these are regenerated on demand and their checksums have shifted
+        # under the whole ecosystem before, so they are flagged, not pinned.
+        assets = [{"name": f"AUTO-GENERATED {j.get('tag_name','')} -- DO NOT PIN",
+                   "url": j["tarball_url"]}]
+    return {"version": j.get("tag_name", ""), "assets": assets,
+            "published": j.get("published_at", "")}
 
 
 def latest_gitlab(path, host="gitlab.com"):
@@ -233,6 +238,39 @@ def latest_index(url, name=None):
     return {"version": ".".join(str(x) for x in top),
             "assets": [{"name": n, "url": base + n}
                        for n in names if key(n) == top]}
+
+
+def latest_tag(spec):
+    """Newest git tag, for projects that tag but publish no releases.
+
+    dinit, libevdev, mesa and libdrm all do this. The tag gives the version;
+    it does NOT give a pinnable artifact, because the archive a forge builds
+    from a tag is generated on demand. So this reports the version and says
+    plainly that the download URL still has to be found.
+    """
+    kind, _, path = spec.partition(":")
+    if kind == "codeberg":
+        url = f"https://codeberg.org/api/v1/repos/{path}/tags?limit=5"
+    elif kind == "fdo":
+        import urllib.parse
+        pid = urllib.parse.quote(path, safe="")
+        url = ("https://gitlab.freedesktop.org/api/v4/projects/"
+               f"{pid}/repository/tags?per_page=5")
+    elif kind == "gitlab":
+        import urllib.parse
+        pid = urllib.parse.quote(path, safe="")
+        url = f"https://gitlab.com/api/v4/projects/{pid}/repository/tags?per_page=5"
+    else:
+        url = f"https://api.github.com/repos/{spec}/tags?per_page=5"
+    d = try_get(url)
+    if not d:
+        return None
+    try:
+        j = json.loads(d)
+    except Exception:
+        return None
+    names = [t.get("name", "") for t in j if t.get("name")]
+    return names or None
 
 
 # ------------------------------------------------------------ inspection
@@ -664,7 +702,15 @@ def cmd_latest(a):
             r, src = latest_gnu(spec), f"gnu:{spec}"
         print(f"== {src}")
         if not r:
-            print("   could not determine -- check the project's release page by hand")
+            tags = latest_tag(spec)
+            if tags:
+                print(f"   no RELEASES, but tagged: {', '.join(tags[:5])}")
+                print("   ^ the version is known; the download URL is not.")
+                print("     Find the project's own archive (many freedesktop")
+                print("     projects publish to a plain directory index) and")
+                print("     probe that with `probe index`.")
+            else:
+                print("   could not determine -- check the release page by hand")
             continue
         print(f"   latest    {r['version']}")
         for asset in r["assets"]:

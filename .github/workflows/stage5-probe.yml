@@ -22,17 +22,21 @@ on:
         description: 'Tarball URLs to probe (space-separated)'
         required: false
         default: ''
-        # Projects with only a plain file index and no release API:
-        #   iproute2  https://www.kernel.org/pub/linux/utils/net/iproute2/
-        #   sqlite    https://www.sqlite.org/  (versioned URLs, needs a look)
-        #   mtdev     http://bitmath.org/code/mtdev/
-        #   tzdata    https://data.iana.org/time-zones/releases/
         # zlib, bzip2, xz and zstd are not GNU projects, so the `latest`
         # lookup above cannot find them from a GNU index. zstd and zlib have
         # GitHub releases; bzip2 (sourceware) and xz (tukaani) publish
         # elsewhere and their URLs go here directly.
+      index:
+        description: 'name=dir-URL pairs for non-GNU, non-GitHub projects'
+        required: false
+        default: >-
+          mesa=https://archive.mesa3d.org/
+          libdrm=https://dri.freedesktop.org/libdrm/
+          libevdev=https://www.freedesktop.org/software/libevdev/
+          iproute2=https://www.kernel.org/pub/linux/utils/net/iproute2/
+          mtdev=http://bitmath.org/code/mtdev/
       latest:
-        description: 'Find newest releases: gnu:<project> or <owner>/<repo>, space-separated'
+        description: 'gnu: / codeberg: / gitlab: / fdo: / bare owner-repo for GitHub'
         required: false
         default: >-
           codeberg:dnkl/foot codeberg:dnkl/fcft codeberg:dnkl/tllist
@@ -41,7 +45,6 @@ on:
           NetworkConfiguration/dhcpcd dosfstools/dosfstools
           dejavu-fonts/dejavu-fonts
           fdo:libinput/libinput fdo:libevdev/libevdev fdo:wayland/wayland
-          fdo:mesa/mesa fdo:mesa/drm
 
 concurrency:
   group: stage5-probe-${{ github.ref }}
@@ -60,6 +63,16 @@ jobs:
           set -eu
           cd spikes/stage5
           python3 tools/probe.py latest ${{ inputs.latest }} | tee /tmp/latest.txt
+
+      - name: 'Newest tarball in a plain directory listing'
+        if: inputs.index != ''
+        run: |
+          set -eu
+          cd spikes/stage5
+          for spec in ${{ inputs.index }}; do
+            name="${spec%%=*}"; url="${spec#*=}"
+            python3 tools/probe.py index "$url" --name "$name"
+          done | tee /tmp/index.txt
 
       - name: 'Probe each tarball'
         if: inputs.urls != ''
@@ -82,10 +95,14 @@ jobs:
           echo "      the build system asks for; it cannot tell a hard"
           echo "      requirement from one that silently detected off. Run"
           echo "      'probe linked <destdir>' after a build for that."
-          echo "    - Whether the digest is TRUSTWORTHY. The probe computes"
-          echo "      what it downloaded. Cross-check it against independent"
-          echo "      packagers before pinning, especially where no signature"
-          echo "      exists."
+          echo "    - Whether the SIGNATURE is good. The probe names the key"
+          echo "      that signed the tarball; it deliberately does not import"
+          echo "      that key, because a key fetched alongside the artifact it"
+          echo "      signs proves nothing. Compare the id against the"
+          echo "      project's published fingerprint, then verify locally."
+          echo "    - Whether the digest is TRUSTWORTHY. Independent packagers"
+          echo "      are reported as corroboration; agreement is evidence, not"
+          echo "      proof, and a version match is weaker than a digest match."
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -94,4 +111,5 @@ jobs:
           path: |
             /tmp/latest.txt
             /tmp/probe.txt
+            /tmp/index.txt
           retention-days: 30
