@@ -195,6 +195,13 @@ def load_corpus(path):
     for fn in sorted(os.listdir(path)):
         if not fn.endswith(".txt"):
             continue
+        # SKIP DEPRECATED IDENTIFIERS. license-list-data ships the retired
+        # ones as deprecated_GPL-2.0+.txt alongside the current
+        # GPL-2.0-or-later.txt, and their texts are near-identical -- so the
+        # matcher kept proposing `deprecated_GPL-2.0+`, which is a real SPDX
+        # id and the wrong one to write into a manifest.
+        if fn.startswith("deprecated_"):
+            continue
         spdx = fn[:-4]
         try:
             raw = open(os.path.join(path, fn), encoding="utf-8",
@@ -279,7 +286,7 @@ def scan_manifest(root):
 
 # ------------------------------------------------------------------ detect
 
-def detect(root, corpus, threshold, top_n=3):
+def detect(root, corpus, threshold, probable=0.85, top_n=3):
     files = find_license_files(root)
     results = []
     for f in files:
@@ -292,21 +299,45 @@ def detect(root, corpus, threshold, top_n=3):
                 scored.append((s, spdx))
         scored.sort(reverse=True)
         best = scored[0] if scored else (0.0, None)
+        # TWO THRESHOLDS, BECAUSE ONE WAS ANSWERING THE WRONG QUESTION.
+        #
+        # At a single 0.98 cutoff the run reported NEEDS REVIEW for bzip2
+        # (0.9631 against bzip2-1.0.6), libpng (0.9080 against libpng-1.6.35)
+        # and harfbuzz (0.8592 against MIT-Modern-Variant) -- every one of
+        # them the CORRECT licence, missed because the shipped file differs
+        # from SPDX's canonical text by a version number or a contact line.
+        # That is why GitHub shows "unknown" so often: licensee uses the same
+        # cutoff and gets the same result.
+        #
+        # So: `matched` still means near-certain, and `probable` names the
+        # licence with its score for a human to confirm. Telling a curator
+        # "this is almost certainly bzip2-1.0.6" is useful; telling them
+        # "NEEDS REVIEW" with no candidate is not.
+        if best[0] >= threshold:
+            verdict, spdx = "matched", best[1]
+        elif best[0] >= probable:
+            verdict, spdx = "probable", best[1]
+        elif scored:
+            verdict, spdx = "NEEDS REVIEW", None
+        else:
+            verdict, spdx = "NO MATCH", None
         results.append({
             "path": f["path"],
             "sha256": f["sha256"],
             "bytes": f["bytes"],
-            "spdx": best[1] if best[0] >= threshold else None,
+            "spdx": spdx,
             "score": round(best[0], 4),
             "candidates": [{"spdx": s, "score": round(v, 4)}
                            for v, s in scored[:top_n]],
-            "verdict": ("matched" if best[0] >= threshold
-                        else ("NEEDS REVIEW" if scored else "NO MATCH")),
+            "verdict": verdict,
         })
 
     headers = scan_headers(root)
     manifest = scan_manifest(root)
-    ids = sorted({r["spdx"] for r in results if r["spdx"]})
+    ids = sorted({r["spdx"] for r in results
+                  if r["spdx"] and r["verdict"] == "matched"})
+    probables = sorted({r["spdx"] for r in results
+                        if r["spdx"] and r["verdict"] == "probable"})
     # AND, NOT A SINGLE STRING. Several licence files in one tarball means
     # several sets of terms apply -- which is the honest reading for xz and
     # ffmpeg. A genuine OR (cairo) cannot be inferred from file presence and
@@ -321,6 +352,19 @@ def detect(root, corpus, threshold, top_n=3):
     # package that is really -or-later, every time, and the header scan is the
     # only thing that can contradict it. Roughly half this package set is GPL.
     flags = []
+    # SEVERAL LICENCE FILES DOES NOT MEAN "AND". cairo ships MPL-1.1 and
+    # LGPL-2.1 and is licensed under EITHER -- a genuine SPDX `OR`. ffmpeg
+    # ships GPL and LGPL texts and which one applies depends on ./configure.
+    # File presence cannot distinguish those from xz, where several licences
+    # really do apply at once. So AND is proposed as the conservative reading
+    # and the ambiguity is stated rather than hidden.
+    if len(ids) > 1:
+        flags.append(f"{len(ids)} licence files matched -- AND is a GUESS. "
+                     f"Dual-licensed projects (cairo: MPL OR LGPL) and "
+                     f"configure-dependent ones (ffmpeg) need a human to say "
+                     f"which operator applies")
+    if probables:
+        flags.append(f"probable but unconfirmed: {', '.join(probables)}")
     hdr_ids = set()
     for tag in headers:
         hdr_ids.update(re.split(r"\s+(?:AND|OR|WITH)\s+", tag))
@@ -329,9 +373,12 @@ def detect(root, corpus, threshold, top_n=3):
         flags.append(f"source headers say {sorted(hdr_ids)} but the licence "
                      f"files match {sorted(file_ids)}")
     for tag in sorted(hdr_ids):
-        base = tag.replace("-or-later", "").replace("-only", "")
+        # STRIP THE SUFFIX, NOT A SUBSTRING. `.replace("-only", "")` turned
+        # Apache-2.0 into "Apache-2." and printed a flag naming a licence that
+        # does not exist.
+        base = re.sub(r"-(?:or-later|only)$", "", tag)
         for fid in file_ids:
-            if fid.startswith(base) and fid != tag:
+            if fid != tag and re.sub(r"-(?:or-later|only)$", "", fid) == base:
                 flags.append(f"headers say {tag}, licence file matched {fid} "
                              f"-- the texts are identical, trust the header")
     if manifest and expr:
@@ -360,6 +407,8 @@ def main():
     # was reported as a clean match at 0.90 -- but SPDX B.3.3 says added text
     # means it is NOT the same licence. A high threshold turns that into
     # NEEDS REVIEW, which is the honest answer and the whole point.
+    ap.add_argument("--probable", type=float, default=0.85,
+                    help="above this, name the licence as probable")
     ap.add_argument("--threshold", type=float, default=0.98,
                     help="below this, report NEEDS REVIEW rather than guess")
     ap.add_argument("--json", action="store_true")
@@ -370,7 +419,7 @@ def main():
         print(f"  no corpus at {a.corpus} -- nothing to match against",
               file=sys.stderr)
         return 2
-    r = detect(a.root, corpus, a.threshold)
+    r = detect(a.root, corpus, a.threshold, a.probable)
 
     if a.json:
         print(json.dumps(r, indent=2))
@@ -385,7 +434,8 @@ def main():
     for f in r["license_files"]:
         print(f"\n  {f['path']}  ({f['bytes']} bytes)")
         print(f"    sha256 {f['sha256']}")
-        print(f"    {f['verdict']:<12} {f['spdx'] or ''}")
+        print(f"    {f['verdict']:<12} {f['spdx'] or ''}"
+              + (f"   ({f['score']:.4f})" if f['spdx'] else ""))
         for c in f["candidates"]:
             print(f"      {c['score']:.4f}  {c['spdx']}")
     if r["spdx_headers"]:
