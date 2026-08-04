@@ -25,12 +25,41 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
 import urllib.request
 
 UA = {"User-Agent": "veron-probe"}
+
+# FORCE IPv4.
+#
+# ftp.gnu.org publishes an AAAA record. Python prefers IPv6 when the resolver
+# offers it, and a runner with no IPv6 route then fails INSTANTLY with
+# "[Errno 101] Network is unreachable" -- not a timeout, so retrying and
+# waiting do not help. Five of the nine group-1 packages live on ftp.gnu.org,
+# and the failure is intermittent because it depends on what the resolver
+# happens to return, which is the worst kind: it works until it does not, and
+# looks like the site is down.
+#
+# GitHub kept working through the same failure, which is how the cause was
+# isolated -- a general outage would have taken both.
+_real_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_only(host, port, family=0, type=0, proto=0, flags=0):
+    return _real_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+
+if os.environ.get("VERON_ALLOW_IPV6") != "1":
+    socket.getaddrinfo = _ipv4_only
+
+# THE FIRST MIRROR THAT ANSWERS. tools/clone-pinned.sh already does this for
+# git and the airlock fetch does it for tarballs, after a run died taking 134
+# seconds to fail reaching one host. ftpmirror.gnu.org redirects to whichever
+# mirror is closest and alive.
+GNU_HOSTS = ("https://ftp.gnu.org/gnu", "https://ftpmirror.gnu.org/gnu")
 
 
 def get(url, timeout=20):
@@ -112,7 +141,12 @@ def latest_gitlab(path, host="gitlab.com"):
 
 def latest_gnu(project):
     """GNU projects publish a directory index; read it rather than guess."""
-    d = try_get(f"https://ftp.gnu.org/gnu/{project}/")
+    d = base = None
+    for host in GNU_HOSTS:
+        d = try_get(f"{host}/{project}/")
+        if d:
+            base = f"{host}/{project}"
+            break
     if not d:
         return None
     html = d.decode("utf-8", "replace")
@@ -136,7 +170,7 @@ def latest_gnu(project):
     # VERSION AS A STRING. This returned the sort key -- a list of ints -- so
     # the report printed "[1, 4, 20]" where a version belonged.
     return {"version": ver(names[-1]), "assets":
-            [{"name": n, "url": f"https://ftp.gnu.org/gnu/{project}/{n}"}
+            [{"name": n, "url": f"{base}/{n}"}
              for n in names if key(n) == key(names[-1])]}
 
 

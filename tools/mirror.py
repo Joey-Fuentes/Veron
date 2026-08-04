@@ -21,8 +21,24 @@ import os
 import shutil
 import subprocess
 import sys
+import socket
 import tomllib
 import urllib.request
+
+# FORCE IPv4. ftp.gnu.org publishes an AAAA record; a runner with no IPv6
+# route fails INSTANTLY with "[Errno 101] Network is unreachable" rather than
+# timing out, so retries and mirrors do not help. Intermittent, because it
+# depends on what the resolver returns -- the worst kind of failure, since it
+# works until it does not and looks like the site is down.
+_real_getaddrinfo = socket.getaddrinfo
+
+
+def _ipv4_only(host, port, family=0, type=0, proto=0, flags=0):
+    return _real_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+
+if os.environ.get("VERON_ALLOW_IPV6") != "1":
+    socket.getaddrinfo = _ipv4_only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -149,11 +165,6 @@ def cmd_fetch(a):
         return 0
 
     routes = locators(a.sha256, a.name, rows, hosts)
-    if a.url and not any(u == a.url for _, u in routes):
-        # THE RECIPE'S OWN UPSTREAM, tried first. A package that has not been
-        # mirrored yet still has provenance, and refusing to fetch it would
-        # make mirroring a PREREQUISITE for building rather than a fallback.
-        routes.insert(0, ("upstream", a.url))
     if not routes:
         die(f"no route to {a.sha256[:12]} ({a.name})")
 
@@ -287,7 +298,6 @@ def main():
     p.add_argument("sha256")
     p.add_argument("name")
     p.add_argument("--dest", default="dl")
-    p.add_argument("--url", help="upstream URL from the recipe, used if the table has no row")
     p.set_defaults(fn=cmd_fetch)
 
     p = sub.add_parser("add", help="upload to a host and record the locator")
@@ -299,9 +309,7 @@ def main():
 
     p = sub.add_parser("check", help="re-download everything and re-verify")
     p.add_argument("--offline", action="store_true", help="only check mirror counts")
-    p.add_argument("--tmp", default=os.path.join(
-        os.environ.get("TMPDIR") or ("/tmp" if os.access("/tmp", os.W_OK) else
-                                     os.path.expanduser("~")), "veron-mirror"))
+    p.add_argument("--tmp", default="/tmp/veron-mirror")
     p.set_defaults(fn=cmd_check)
 
     p = sub.add_parser("list", help="every artifact and every route to it")
