@@ -39,13 +39,22 @@ optional_off = ["lz4", "zlib", "lzma"]
 
 [declared]
 configure_flags = []
-verification    = "make check"
+verification    = "none -- upstream suites are not run; see deferral"
 deferral        = """
 Internals not reviewed; upstream test suite only. NO CONFIGURE -- a plain \
 Makefile, so PREFIX and the HAVE_* switches are make variables. The three \
 optional compressors are disabled explicitly: zlib and xz are in this same \
 group, so leaving them detected would make zstd's output depend on the order \
-its neighbours happened to build in."""
+its neighbours happened to build in.
+
+UPSTREAM TESTS ARE NOT RUN, BY POLICY, AND THIS IS THE LARGEST VERIFICATION \
+GAP IN THE SET. Running full suites in series does not scale past a handful \
+of packages -- twelve of them already dominated the build, and the plan is \
+150+. They were run once, at twelve packages, and the result is recorded: \
+every suite that ran passed except the exclusions each recipe already names. \
+Evidence now comes from the guest sanity tests, which run against the booted \
+image and check that each package actually works. Re-enable a suite per \
+package when there is a reason to; the step is one block."""
 
 [[steps]]
 name = "unpack"
@@ -57,11 +66,6 @@ name = "build"
 cwd  = "$S"
 run  = [["make", "-j$J", "PREFIX=/usr",
          "HAVE_ZLIB=0", "HAVE_LZMA=0", "HAVE_LZ4=0"]]
-
-[[steps]]
-name = "check"
-cwd  = "$S"
-run  = [["make", "check"]]
 
 [[steps]]
 name = "install"

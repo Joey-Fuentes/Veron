@@ -31,14 +31,23 @@ configure_flags = ["--prefix=/usr"]
 # NOT RUN, AND SAID SO. automake's suite is famously long -- it drives
 # autoconf and make thousands of times. Declaring it skipped is a criterion-6
 # deferral; omitting the field would look like nobody considered it.
-verification = "make check NOT RUN -- see deferral"
+verification    = "none -- upstream suites are not run; see deferral"
 deferral     = """
 Internals not reviewed. THE UPSTREAM TEST SUITE IS DELIBERATELY NOT RUN: it \
 drives autoconf and make several thousand times and takes hours, which does \
 not fit a per-push gate. This is the largest single verification gap in group \
 1 and it is a schedule decision, not a technical one -- it belongs in a \
 periodic rotation. Until then automake's only evidence is that packages built \
-with it work."""
+with it work.
+
+UPSTREAM TESTS ARE NOT RUN, BY POLICY, AND THIS IS THE LARGEST VERIFICATION \
+GAP IN THE SET. Running full suites in series does not scale past a handful \
+of packages -- twelve of them already dominated the build, and the plan is \
+150+. They were run once, at twelve packages, and the result is recorded: \
+every suite that ran passed except the exclusions each recipe already names. \
+Evidence now comes from the guest sanity tests, which run against the booted \
+image and check that each package actually works. Re-enable a suite per \
+package when there is a reason to; the step is one block."""
 
 [[steps]]
 name = "unpack"

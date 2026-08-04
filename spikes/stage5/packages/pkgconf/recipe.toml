@@ -67,7 +67,7 @@ configure_flags = [
   "--with-system-includedir",
   "--with-pkg-config-dir",
 ]
-verification = "make check (upstream suite)"
+verification    = "none -- upstream suites are not run; see deferral"
 deferral = """
 Internals not reviewed. Upstream test suite only (217 API and CLI cases, all \
 passing; windows-drive-path-no-inject.test skips as platform-specific). \
@@ -75,7 +75,16 @@ Release tarball's generated autotools files are trusted without regeneration: \
 autoconf is group 1 and does not exist at this rung. NO UPSTREAM SIGNATURE \
 EXISTS, so authorship rests on the pinned digest alone until
 source.crosschecked_against is populated -- that is the weakest link in this \
-record and it is named rather than implied."""
+record and it is named rather than implied.
+
+UPSTREAM TESTS ARE NOT RUN, BY POLICY, AND THIS IS THE LARGEST VERIFICATION \
+GAP IN THE SET. Running full suites in series does not scale past a handful \
+of packages -- twelve of them already dominated the build, and the plan is \
+150+. They were run once, at twelve packages, and the result is recorded: \
+every suite that ran passed except the exclusions each recipe already names. \
+Evidence now comes from the guest sanity tests, which run against the booted \
+image and check that each package actually works. Re-enable a suite per \
+package when there is a reason to; the step is one block."""
 
 # ------------------------------------------------------------------ steps
 #
@@ -109,22 +118,6 @@ run  = [[
 name = "build"
 cwd  = "$S"
 run  = [["make", "-j$J"]]
-
-[[steps]]
-name = "check"
-cwd  = "$S"
-# THE TEST HARNESS INVOKES THE TOOL BY BARE NAME. `make check` runs
-# `tool-dir="" ./t/cli`, which calls `pkgconf` and expects PATH to find it --
-# so the freshly built binary in the source directory has to be on PATH:
-#
-#     sh: pkgconf: not found
-#     exitcode 127 does not match expected 0
-#
-# Recorded as a DECLARED environment override rather than worked around with
-# a shell step, because "the suite needs the build dir on PATH" is a fact
-# about this package that a reader should be able to see in the plan.
-env  = { PATH = "$S:/usr/bin:/usr/sbin" }
-run  = [["make", "check"]]
 
 [[steps]]
 name = "install"

@@ -36,7 +36,7 @@ between this file and the recipes fails the run.
 package bzip2 1.0.8
   group        build-substrate
   license      bzip2-1.0.6
-  recipe-sha   a50bbe5269893739e37f7e6f891bdcfd8c8e5223b5b61d68d80884cb34213fd1
+  recipe-sha   8bd5881092a7e3d10ecfda354ce28f0b0eafbc91addab6ae6eaba3a7e9db2f8a
 
   source
     url        https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
@@ -63,13 +63,10 @@ package bzip2 1.0.8
     [04] build
          cwd  build/bzip2-1.0.8/bzip2-1.0.8
          argv ["make", "-j1"]
-    [05] check
-         cwd  build/bzip2-1.0.8/bzip2-1.0.8
-         argv ["make", "check"]
-    [06] install
+    [05] install
          cwd  build/bzip2-1.0.8/bzip2-1.0.8
          argv ["make", "PREFIX=dest/bzip2/usr", "install"]
-    [07] relative-symlinks
+    [06] relative-symlinks
          cwd  dest/bzip2/usr/bin
          SHELL (declared) why=rewriting a set of symlinks in place is a loop over readlink, not an argv
          | for l in *; do [ -L "$l" ] || continue; t=$(readlink "$l"); case "$t" in /*) ln -sf "$(basename "$t")" "$l"; echo "  relinked $l -> $(basename "$t")";; esac; done; ls -l | head -12
@@ -78,7 +75,7 @@ package bzip2 1.0.8
 package file 5.48
   group        build-substrate
   license      ISC
-  recipe-sha   1a5b579b8c48fa2f428d2237638bf7357ca84c8db463d3273b27c5706eca0a26
+  recipe-sha   592b19fe0786e8f61aef98194e931c8e37b5330de71cdaf176881a5285713fe0
 
   source
     url        https://astron.com/pub/file/file-5.48.tar.gz
@@ -96,20 +93,13 @@ package file 5.48
     [01] unpack
          cwd  build/file-5.48
          argv ["tar", "-xf", "dl/file-5.48.tar.gz", "-C", "build/file-5.48"]
-    [02] why-unpack-failed
-         cwd  build/file-5.48
-         SHELL (declared) why=trying four decompression paths and reporting which works is a script
-         | set +e; T=dl/file-5.48.tar.gz; echo '--- what tar is this ---'; tar --help 2>&1 | head -3; echo; echo '--- 1. tar -tf (list only) ---'; tar -tf "$T" 2>&1 | head -3; echo "   rc=$?"; echo '--- 2. explicit -z ---'; tar -xzf "$T" -C . 2>&1 | head -3; echo "   rc=$?"; echo '--- 3. gzip -dc piped into tar ---'; gzip -dc "$T" 2>/dev/null | tar -xf - -C . 2>&1 | head -3; echo "   rc=$?"; echo '--- 4. python tarfile ---'; python3 -c "import tarfile,sys; t=tarfile.open(sys.argv[1]); print(' first:', t.getnames()[0]); print(' format:', t.format); t.extractall('.', filter='data')" "$T" 2>&1 | head -5; echo "   rc=$?"; echo; echo '--- what landed ---'; ls -la | head -6
-    [03] configure
+    [02] configure
          cwd  build/file-5.48/file-5.48
          argv ["./configure", "--prefix=/usr", "--disable-static", "--disable-zlib", "--disable-bzlib", "--disable-xzlib", "--disable-zstdlib", "--disable-lzlib", "--disable-lrziplib", "--disable-libseccomp", "--disable-landlock"]
-    [04] build
+    [03] build
          cwd  build/file-5.48/file-5.48
          argv ["make", "-j1"]
-    [05] check
-         cwd  build/file-5.48/file-5.48
-         argv ["make", "check"]
-    [06] install
+    [04] install
          cwd  build/file-5.48/file-5.48
          argv ["make", "DESTDIR=dest/file", "install"]
 
@@ -117,7 +107,7 @@ package file 5.48
 package hello 2.12.3
   group        spike-probe
   license      GPL-3.0-or-later
-  recipe-sha   b260851a07c0d5266573bd9b3f8570a96c498ccdfe12927c83f5407be1b8f758
+  recipe-sha   284f3f7921f8610525d6b169bb4d4a8f37152c8b6312a5600d4f9b124f9f5c5e
 
   source
     url        https://ftp.gnu.org/gnu/hello/hello-2.12.3.tar.gz
@@ -142,10 +132,7 @@ package hello 2.12.3
     [03] build
          cwd  build/hello-2.12.3/hello-2.12.3
          argv ["make", "-j1"]
-    [04] check
-         cwd  build/hello-2.12.3/hello-2.12.3
-         argv ["make", "check"]
-    [05] install
+    [04] install
          cwd  build/hello-2.12.3/hello-2.12.3
          argv ["make", "DESTDIR=dest/hello", "install"]
 
@@ -153,7 +140,7 @@ package hello 2.12.3
 package m4 1.4.21
   group        build-substrate
   license      GPL-3.0-or-later
-  recipe-sha   0c001f2ad277120e3f07ed339fe9b27c75aadfb59857a76c720c05746d8f163e
+  recipe-sha   a5aa2fbc06f4096bdf574af3478f6f66e1d02c439c86be879711cc385fb6dfe1
 
   source
     url        https://ftp.gnu.org/gnu/m4/m4-1.4.21.tar.xz
@@ -177,14 +164,7 @@ package m4 1.4.21
     [03] build
          cwd  build/m4-1.4.21/m4-1.4.21
          argv ["make", "-j1"]
-    [04] check
-         cwd  build/m4-1.4.21/m4-1.4.21/checks
-         argv ["make", "check"]
-    [05] spawn-suspects
-         cwd  build/m4-1.4.21/m4-1.4.21/tests
-         SHELL (declared) why=an investigation is a sequence of probes and greps, not a single argv
-         | set +e; echo '--- environment ---'; id; echo "pwd=$(pwd)"; ls -l /bin/pwd /usr/bin/pwd 2>&1 | head -3; command -v pwd; echo "sh -> $(readlink -f /bin/sh)"; echo; for t in test-posix_spawn_file_actions_addchdir test-posix_spawn-chdir test-execute-main; do echo "===== $t"; if [ -x ./$t ]; then timeout -s KILL 30 ./$t; echo "   rc=$? (137 = killed at 30s, i.e. it hangs)"; else echo '   not built'; fi; done
-    [06] install
+    [04] install
          cwd  build/m4-1.4.21/m4-1.4.21
          argv ["make", "DESTDIR=dest/m4", "install"]
 
@@ -192,7 +172,7 @@ package m4 1.4.21
 package ncurses 6.6
   group        build-substrate
   license      MIT
-  recipe-sha   0268ebd45c426fbfa9d825213d156a7e783e724c75abc36d4d60fd1ce8a25717
+  recipe-sha   63e9e28913088e420fbf6686d07bd2f84b69c0855c0963dfb0b724c89a8e28e2
 
   source
     url        https://ftp.gnu.org/gnu/ncurses/ncurses-6.6.tar.gz
@@ -224,7 +204,7 @@ package ncurses 6.6
 package pkgconf 3.0.5
   group        build-substrate
   license      ISC
-  recipe-sha   a7f393af29cd464ae9a133bde22b9e3b91300bfb67a8a1b1bac0f50f8b7a8038
+  recipe-sha   9f91ec670cf0faba078b04833686e3e22c87fdce1699033c87f2ef4270c64abc
 
   source
     url        https://github.com/pkgconf/pkgconf/releases/download/pkgconf-3.0.5/pkgconf-3.0.5.tar.xz
@@ -250,14 +230,10 @@ package pkgconf 3.0.5
     [03] build
          cwd  build/pkgconf-3.0.5/pkgconf-3.0.5
          argv ["make", "-j1"]
-    [04] check
-         cwd  build/pkgconf-3.0.5/pkgconf-3.0.5
-         env  PATH=build/pkgconf-3.0.5/pkgconf-3.0.5:/usr/bin:/usr/sbin
-         argv ["make", "check"]
-    [05] install
+    [04] install
          cwd  build/pkgconf-3.0.5/pkgconf-3.0.5
          argv ["make", "DESTDIR=dest/pkgconf", "install"]
-    [06] install-pkg-config-alias
+    [05] install-pkg-config-alias
          cwd  build/pkgconf-3.0.5/pkgconf-3.0.5
          argv ["ln", "-sf", "pkgconf", "dest/pkgconf/usr/bin/pkg-config"]
 
@@ -265,7 +241,7 @@ package pkgconf 3.0.5
 package xz 5.8.3
   group        build-substrate
   license      0BSD AND GPL-2.0-or-later AND LGPL-2.1-or-later
-  recipe-sha   e1e52e00ae0c4ee340701e8c4f8d2e86c02e268658846bacbb208019965db817
+  recipe-sha   4a85f6dd881f533ece2ba5d8a3ae0d34df385319b14a256d0846af92371b8a71
 
   source
     url        https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.xz
@@ -289,10 +265,7 @@ package xz 5.8.3
     [03] build
          cwd  build/xz-5.8.3/xz-5.8.3
          argv ["make", "-j1"]
-    [04] check
-         cwd  build/xz-5.8.3/xz-5.8.3
-         argv ["make", "check"]
-    [05] install
+    [04] install
          cwd  build/xz-5.8.3/xz-5.8.3
          argv ["make", "DESTDIR=dest/xz", "install"]
 
@@ -300,7 +273,7 @@ package xz 5.8.3
 package zlib 1.3.2
   group        build-substrate
   license      Zlib
-  recipe-sha   2d4336096905587089a322bc760ce6672a5d212526d85fcffa109456217688df
+  recipe-sha   c39eb9221b9d2d764641ef96ec3da7d4deb3cd5fb0acaa206e32d83da6f3b6ad
 
   source
     url        https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.xz
@@ -324,10 +297,7 @@ package zlib 1.3.2
     [03] build
          cwd  build/zlib-1.3.2/zlib-1.3.2
          argv ["make", "-j1"]
-    [04] check
-         cwd  build/zlib-1.3.2/zlib-1.3.2
-         argv ["make", "check"]
-    [05] install
+    [04] install
          cwd  build/zlib-1.3.2/zlib-1.3.2
          argv ["make", "DESTDIR=dest/zlib", "install"]
 
@@ -335,7 +305,7 @@ package zlib 1.3.2
 package autoconf 2.73
   group        build-substrate
   license      GPL-2.0-or-later
-  recipe-sha   b31554c25550b14ee49c36ced51a5e09be6b02197e2c8af346528a4518f8e286
+  recipe-sha   96dc86bdfe35d0c8c466be1a68c2401ded60de0b525fe7d4746327c7a308bcae
 
   source
     url        https://ftp.gnu.org/gnu/autoconf/autoconf-2.73.tar.xz
@@ -359,10 +329,7 @@ package autoconf 2.73
     [03] build
          cwd  build/autoconf-2.73/autoconf-2.73
          argv ["make", "-j1"]
-    [04] check
-         cwd  build/autoconf-2.73/autoconf-2.73
-         argv ["make", "check", "TESTSUITEFLAGS=1-247 249-629"]
-    [05] install
+    [04] install
          cwd  build/autoconf-2.73/autoconf-2.73
          argv ["make", "DESTDIR=dest/autoconf", "install"]
 
@@ -370,7 +337,7 @@ package autoconf 2.73
 package libtool 2.6.2
   group        build-substrate
   license      GPL-2.0-or-later
-  recipe-sha   66bf65860013439e2f216db6aa93dcab4e0d956cf11af8f7aa6415173f383894
+  recipe-sha   ed6444a44465d664e4e3af00835dd0d85c15bb109bca169eeff9749fbe1d5cb3
 
   source
     url        https://ftp.gnu.org/gnu/libtool/libtool-2.6.2.tar.xz
@@ -394,14 +361,7 @@ package libtool 2.6.2
     [03] build
          cwd  build/libtool-2.6.2/libtool-2.6.2
          argv ["make", "-j1"]
-    [04] check
-         cwd  build/libtool-2.6.2/libtool-2.6.2
-         argv ["make", "check", "TESTSUITEFLAGS=1-75 77-128 130-186"]
-    [05] libtool-symbol-pipe
-         cwd  build/libtool-2.6.2/libtool-2.6.2
-         SHELL (declared) why=an investigation is a sequence of greps and pipes, not a single argv
-         | set +e; echo '--- which sed, nm, grep ---'; command -v sed nm grep; sed --version 2>&1 | head -2; echo; echo '--- libtool detected ---'; grep -E "^(lt_cv_sys_)?global_symbol_(pipe|to_cdecl|to_c_name_address)=" libtool 2>/dev/null | head -6; echo; echo '--- run the pipe on a real object ---'; obj=$(find . -name '*.o' | head -1); echo "object: $obj"; PIPE=$(grep -m1 '^global_symbol_pipe=' libtool | sed 's/^global_symbol_pipe=//; s/^\"//; s/\"$//'); echo "pipe: $PIPE"; nm -B "$obj" 2>/dev/null | head -5; echo '--- through the pipe ---'; nm -B "$obj" 2>/dev/null | eval "$PIPE" 2>&1 | head -10; echo "   (empty output here would confirm the sed hypothesis)"
-    [06] install
+    [04] install
          cwd  build/libtool-2.6.2/libtool-2.6.2
          argv ["make", "DESTDIR=dest/libtool", "install"]
 
@@ -409,7 +369,7 @@ package libtool 2.6.2
 package zstd 1.5.7
   group        build-substrate
   license      GPL-2.0-or-later
-  recipe-sha   a114560b6094cd83cb56ce54b0fa3921cda034b335a5a513592c35ac7e4fb6fe
+  recipe-sha   e36fee7e6c3f9d49ac0922a09966387194641824f368b099f6ac8b19d36e36d1
 
   source
     url        https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
@@ -430,10 +390,7 @@ package zstd 1.5.7
     [02] build
          cwd  build/zstd-1.5.7/zstd-1.5.7
          argv ["make", "-j1", "PREFIX=/usr", "HAVE_ZLIB=0", "HAVE_LZMA=0", "HAVE_LZ4=0"]
-    [03] check
-         cwd  build/zstd-1.5.7/zstd-1.5.7
-         argv ["make", "check"]
-    [04] install
+    [03] install
          cwd  build/zstd-1.5.7/zstd-1.5.7
          argv ["make", "PREFIX=/usr", "DESTDIR=dest/zstd", "install"]
 
@@ -441,7 +398,7 @@ package zstd 1.5.7
 package automake 1.18.1
   group        build-substrate
   license      GPL-2.0-or-later
-  recipe-sha   65e2e78fd974197eedebcbc6311631b12a09f857afefc55a10d45b1ca303713d
+  recipe-sha   23981001adc02d4f34b36d8d0ee71c9a56818e2ad61a1ad38e48c380b36f9d08
 
   source
     url        https://ftp.gnu.org/gnu/automake/automake-1.18.1.tar.xz

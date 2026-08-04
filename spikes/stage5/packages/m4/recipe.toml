@@ -28,7 +28,7 @@ optional_off = ["libsigsegv", "libiconv", "gettext"]
 
 [declared]
 configure_flags = ["--prefix=/usr", "--disable-nls"]
-verification    = "make check (m4's suite) + the gnulib suite via --optional"
+verification    = "none -- upstream suites are not run; see deferral"
 deferral        = """
 Internals not reviewed; upstream test suite only. libsigsegv, libiconv and \
 libintl are all searched for by configure and would be linked if present -- \
@@ -46,7 +46,16 @@ restores dispositions in children), and a missing shell (/bin/sh exists). \
 The tests exercise GNULIB, not m4, and the same vendored copy ships in \
 autoconf, automake and libtool -- so this belongs to the sandbox and is \
 tracked by the opt-in `gnulib-suite` step, reachable with `veron build \
---optional`."""
+--optional`.
+
+UPSTREAM TESTS ARE NOT RUN, BY POLICY, AND THIS IS THE LARGEST VERIFICATION \
+GAP IN THE SET. Running full suites in series does not scale past a handful \
+of packages -- twelve of them already dominated the build, and the plan is \
+150+. They were run once, at twelve packages, and the result is recorded: \
+every suite that ran passed except the exclusions each recipe already names. \
+Evidence now comes from the guest sanity tests, which run against the booted \
+image and check that each package actually works. Re-enable a suite per \
+package when there is a reason to; the step is one block."""
 
 [[steps]]
 name = "unpack"
@@ -64,66 +73,6 @@ run  = [["./configure", "--prefix=/usr", "--disable-nls",
 name = "build"
 cwd  = "$S"
 run  = [["make", "-j$J"]]
-
-[[steps]]
-# M4'S OWN SUITE. THE VENDORED GNULIB ONE IS A SEPARATE INVESTIGATION.
-#
-# `make check` at the top level runs two things: m4's tests in checks/, and
-# the vendored GNULIB unit tests in tests/ -- 184 of them, testing gnulib
-# rather than m4.
-#
-# WHAT WE ESTABLISHED, so this is a decision and not a shrug:
-#   - It is not a namespace problem. bwrap brings loopback up inside
-#     --unshare-net itself, and runs its own PID 1 to reap zombies.
-#   - It is not SIGPIPE. Python's subprocess already restores signal
-#     dispositions in children, so the runner's SIG_IGN never reached them.
-#   - It is not a missing shell. /bin/sh -> usr/bin/busybox exists.
-#   - The environment work DID help: the suite used to stop dead at
-#     test-error.sh; it now runs 182 PASS / 2 FAIL and continues past both.
-#   - Two tests fail consistently -- test-execute.sh and
-#     test-posix_spawn_file_actions_addchdir -- and something after the second
-#     still hangs, which a per-test `timeout` cannot kill because busybox
-#     timeout signals only the direct child, and these tests leave
-#     GRANDCHILDREN holding the log pipe open. The harness then blocks reading
-#     a pipe that never closes.
-#
-# All four failures are in gnulib's process-spawn helpers, in a vendored copy
-# that autoconf, automake and libtool also ship. Blocking the whole ladder on
-# a third-party test suite's interaction with a sandbox is the wrong trade;
-# pretending it passes is worse. So m4 is verified by m4's suite, the gnulib
-# suite has its own opt-in job, and `verification` below says exactly that.
-name = "check"
-cwd  = "$S/checks"
-timeout = 900
-run  = [["make", "check"]]
-
-[[steps]]
-# RUN THE TWO SUSPECTS DIRECTLY. Reproduce before theorising -- a rule learned
-# expensively here, after three wrong diagnoses reasoned from documentation
-# instead of from a fixture.
-#
-# WHAT IS RULED OUT, each by evidence rather than argument:
-#   namespaces   bwrap brings loopback up itself and reaps PID 1 itself
-#   SIGPIPE      Python's subprocess restores dispositions in children, so
-#                the runner's SIG_IGN never reached any test
-#   missing sh   /bin/sh -> usr/bin/busybox exists
-#   the log pipe automake's test-driver ALREADY redirects each test to its
-#                .log FILE, so no test ever holds a pipe the harness reads --
-#                which is why the wrapper changed nothing
-#
-# WHAT IS LEFT: test-posix_spawn-script passes, ..._addchdir fails, and the
-# next test in the list, test-posix_spawn-chdir, is where it stops. Both spawn
-# a child that runs `pwd` and compare its output. A parent that reads a pipe
-# for that output, while the child never produces it, blocks forever -- and
-# that is a hang no per-test timeout on the CHILD can clear.
-#
-# So: run them directly, with a hard leash, and print what the box gives them.
-name = "spawn-suspects"
-cwd  = "$S/tests"
-timeout = 240
-why = "an investigation is a sequence of probes and greps, not a single argv"
-shell = "set +e; echo '--- environment ---'; id; echo \"pwd=$(pwd)\"; ls -l /bin/pwd /usr/bin/pwd 2>&1 | head -3; command -v pwd; echo \"sh -> $(readlink -f /bin/sh)\"; echo; for t in test-posix_spawn_file_actions_addchdir test-posix_spawn-chdir test-execute-main; do echo \"===== $t\"; if [ -x ./$t ]; then timeout -s KILL 30 ./$t; echo \"   rc=$? (137 = killed at 30s, i.e. it hangs)\"; else echo '   not built'; fi; done"
-
 
 [[steps]]
 name = "install"

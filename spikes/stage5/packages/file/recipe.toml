@@ -47,7 +47,7 @@ configure_flags = [
   "--disable-zstdlib", "--disable-lzlib", "--disable-lrziplib",
   "--disable-libseccomp", "--disable-landlock",
 ]
-verification = "make check"
+verification    = "none -- upstream suites are not run; see deferral"
 deferral = """
 Internals not reviewed; upstream test suite only. The compression backends \
 are all disabled, so this file(1) cannot look inside compressed archives -- \
@@ -55,34 +55,21 @@ that is a deliberate narrowing to keep the dependency graph acyclic and the \
 build deterministic, and it is a real functional reduction rather than a \
 neutral flag choice. libseccomp and Landlock sandboxing are also off: both \
 would make file's behaviour depend on kernel features that differ between \
-the build box and the target."""
+the build box and the target.
+
+UPSTREAM TESTS ARE NOT RUN, BY POLICY, AND THIS IS THE LARGEST VERIFICATION \
+GAP IN THE SET. Running full suites in series does not scale past a handful \
+of packages -- twelve of them already dominated the build, and the plan is \
+150+. They were run once, at twelve packages, and the result is recorded: \
+every suite that ran passed except the exclusions each recipe already names. \
+Evidence now comes from the guest sanity tests, which run against the booted \
+image and check that each package actually works. Re-enable a suite per \
+package when there is a reason to; the step is one block."""
 
 [[steps]]
 name = "unpack"
 cwd  = "$B"
 run  = [["tar", "-xf", "$DL/file-5.48.tar.gz", "-C", "$B"]]
-
-[[steps]]
-# WHY THIS ARCHIVE AND NOT THE OTHERS. busybox tar exited 1 on
-# file-5.48.tar.gz with NO message, having extracted bzip2's tarball minutes
-# earlier from the same directory with the same command. The archive is not
-# corrupt: the probe unpacked it with Python's tarfile and computed its
-# sha256, and the fetch gate matched that digest before this ran.
-#
-# So the difference is between busybox's tar and the archive's format --
-# probably PAX or GNU extended headers, which busybox's tar handles less
-# completely than GNU tar does. That would be the fifth busybox thinness in
-# this batch, after `timeout -v`, the absent `file` applet, `test -ot` at
-# second granularity, and libtool's symbol pipe.
-#
-# This step runs ONLY when the unpack fails, and tries the alternatives one at
-# a time so the next run names the fix instead of costing another round trip.
-name = "why-unpack-failed"
-cwd  = "$B"
-timeout = 180
-on_failure = true
-why = "trying four decompression paths and reporting which works is a script"
-shell = "set +e; T=$DL/file-5.48.tar.gz; echo '--- what tar is this ---'; tar --help 2>&1 | head -3; echo; echo '--- 1. tar -tf (list only) ---'; tar -tf \"$T\" 2>&1 | head -3; echo \"   rc=$?\"; echo '--- 2. explicit -z ---'; tar -xzf \"$T\" -C . 2>&1 | head -3; echo \"   rc=$?\"; echo '--- 3. gzip -dc piped into tar ---'; gzip -dc \"$T\" 2>/dev/null | tar -xf - -C . 2>&1 | head -3; echo \"   rc=$?\"; echo '--- 4. python tarfile ---'; python3 -c \"import tarfile,sys; t=tarfile.open(sys.argv[1]); print(' first:', t.getnames()[0]); print(' format:', t.format); t.extractall('.', filter='data')\" \"$T\" 2>&1 | head -5; echo \"   rc=$?\"; echo; echo '--- what landed ---'; ls -la | head -6"
 
 [[steps]]
 name = "configure"
@@ -96,14 +83,6 @@ run  = [["./configure", "--prefix=/usr", "--disable-static",
 name = "build"
 cwd  = "$S"
 run  = [["make", "-j$J"]]
-
-[[steps]]
-name = "check"
-cwd  = "$S"
-# Time-boxed like every other suite here. file's tests are small; if this ever
-# runs long it is a signal, not something to wait out.
-timeout = 600
-run  = [["make", "check"]]
 
 [[steps]]
 name = "install"

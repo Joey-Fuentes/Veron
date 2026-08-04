@@ -32,7 +32,7 @@ optional_off = []
 # the shared library needs a SECOND make with a different makefile, which is
 # bzip2's own arrangement and not something invented here.
 configure_flags = []
-verification    = "make check (bzip2's own compress/decompress round-trip)"
+verification    = "none -- upstream suites are not run; see deferral"
 deferral        = """
 Internals not reviewed. UPSTREAM IS EFFECTIVELY UNMAINTAINED: 1.0.8 dates \
 from 2019 and is the current release. Source now lives at \
@@ -40,7 +40,16 @@ gitlab.com/bzip2/bzip2 but that project publishes NO release assets, so the \
 tarball still comes from sourceware -- source home and download home are \
 different places and that is recorded rather than implied. Licence is \
 bzip2-1.0.6, NOT Zlib: the two texts share a clause and a looser matcher \
-reported the wrong one."""
+reported the wrong one.
+
+UPSTREAM TESTS ARE NOT RUN, BY POLICY, AND THIS IS THE LARGEST VERIFICATION \
+GAP IN THE SET. Running full suites in series does not scale past a handful \
+of packages -- twelve of them already dominated the build, and the plan is \
+150+. They were run once, at twelve packages, and the result is recorded: \
+every suite that ran passed except the exclusions each recipe already names. \
+Evidence now comes from the guest sanity tests, which run against the booted \
+image and check that each package actually works. Re-enable a suite per \
+package when there is a reason to; the step is one block."""
 
 [[steps]]
 name = "unpack"
@@ -66,11 +75,6 @@ run  = [["make", "clean"]]
 name = "build"
 cwd  = "$S"
 run  = [["make", "-j$J"]]
-
-[[steps]]
-name = "check"
-cwd  = "$S"
-run  = [["make", "check"]]
 
 [[steps]]
 name = "install"

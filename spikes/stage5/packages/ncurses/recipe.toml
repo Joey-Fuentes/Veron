@@ -34,7 +34,7 @@ configure_flags = [
 # NO TEST SUITE EXISTS. The probe found no check target, and this is stated
 # rather than omitted: "verification: none" is a declared deferral, whereas
 # an absent field looks like nobody thought about it.
-verification = "none -- upstream ships no check target (confirmed by probe)"
+verification    = "none -- upstream suites are not run; see deferral"
 deferral = """
 Internals not reviewed and THERE IS NO UPSTREAM TEST SUITE to defer to, which \
 makes this the weakest verification in group 1. The only evidence it works is \
@@ -42,7 +42,16 @@ the guest sanity test below and whatever links against it later.
 
 --enable-widec builds libncursesw, not libncurses; consumers that ask for the \
 narrow name need compatibility links. 157 configure options were offered and \
-the seven above are choices, not defaults."""
+the seven above are choices, not defaults.
+
+UPSTREAM TESTS ARE NOT RUN, BY POLICY, AND THIS IS THE LARGEST VERIFICATION \
+GAP IN THE SET. Running full suites in series does not scale past a handful \
+of packages -- twelve of them already dominated the build, and the plan is \
+150+. They were run once, at twelve packages, and the result is recorded: \
+every suite that ran passed except the exclusions each recipe already names. \
+Evidence now comes from the guest sanity tests, which run against the booted \
+image and check that each package actually works. Re-enable a suite per \
+package when there is a reason to; the step is one block."""
 
 [[steps]]
 name = "unpack"

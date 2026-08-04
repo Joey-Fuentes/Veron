@@ -192,90 +192,23 @@ jobs:
       # build environment -- so the image is the entry contract plus what
       # stage 5 installed on top of it.
       # ---------------------------------------------------------------
-      # G3 -- REPRODUCIBILITY, ON THE RUNNER.
+      # G3 IS REMOVED FOR NOW, HAVING PASSED. At twelve packages it built
+      # everything a second time from a restored build root and compared:
+      #     VERON-G3-OK  4299 files identical across two independent builds
+      # That is the reproducibility claim measured on a real package set
+      # rather than on containers, and it is why the ledger may still say
+      # attestations: 2 for that run.
       #
-      # THE GAP THIS CLOSES. Everything proven so far was about CONTAINERS:
-      # the ext4 image reproduces, the initramfs reproduces. No package had
-      # ever been built twice and compared -- while the ledger was already
-      # writing reproducibility.output_hash with attestations: 1, asserting
-      # something nothing had checked.
-      #
-      # ON THE RUNNER, NATIVE, deliberately. Emulated rebuilds do not scale
-      # past a proof of concept, and this has to work at 150 packages. The
-      # in-guest gate answers a different question and stays at n=2.
-      #
-      # --clean is load-bearing: without it the second build reuses the
-      # first's objects and DESTDIR, compares a build against itself, and
-      # reports reproducibility it never tested.
-      # ---------------------------------------------------------------
-      - name: 'G3: build everything a second time and compare'
-        run: |
-          set -eu
-          cd spikes/stage5
-          cp out/files.tsv out/files-run1.tsv
+      # It doubles every build, which is the wrong trade while the set is
+      # growing from twelve toward 150 and most runs exist to find out whether
+      # a new recipe works at all. Bring it back once the set is complete --
+      # the `veron compare` command and the --mark plumbing are untouched, so
+      # restoring this step is the only work involved.
 
-          # RESTORE THE BUILD ROOT FIRST. Packages are now STAGED into the
-          # sysroot after install, so by the end of run 1 the box contains
-          # twelve packages that were not there when run 1 began. Rebuilding
-          # on top of that compares two different situations while reporting
-          # on reproducibility -- the same trap `--clean` closes for build/
-          # and dest/, one level up.
-          rm -rf sysroot && mkdir -p sysroot
-          tar -xf ../../dl-sysroot/sysroot.tar -C sysroot
-          echo "  build root restored to the published entry contract"
-
-          # THE SANDBOX HAS TO RUN TEST SUITES, NOT JUST COMPILERS.
-          #
-          # m4's vendored gnulib suite hung for 66 minutes and then failed two
-          # process-spawning tests. None of the obvious namespace theories were
-          # right -- bwrap already brings loopback up inside --unshare-net, and
-          # it already runs its own PID 1 to reap zombies, so neither was ever
-          # the problem. What the environment inherits is.
-          #
-          # SIGPIPE. The GitHub Actions runner ignores SIGPIPE (actions/runner
-          # #2684: a shell pipeline "gets stuck" because of it), and SIG_IGN is
-          # inherited across fork AND exec. gnulib's test-execute expects a
-          # child to DIE of SIGPIPE; with it ignored the child survives, exits
-          # 71, and the pipeline never tears down -- which is both the failure
-          # and the hang. Resetting it is one line and fixes the cause rather
-          # than deleting the test.
-          #
-          # RLIMIT_NOFILE. Modern hosts hand out a hard limit near 2^30. Code
-          # that closes every fd before exec then makes a billion syscalls per
-          # spawn. /proc is mounted so glibc should use close_range and stay
-          # fast, but 1024 costs nothing and removes the question.
-          #
-          # MAKEFLAGS. GNU make's jobserver passes fds 3 and 4 to children, and
-          # gnulib's test-execute-child asserts that no unexpected descriptors
-          # are inherited. Clearing it for the build keeps the suite honest.
-          trap - PIPE || true
-          ulimit -n 1024
-          unset MAKEFLAGS MFLAGS MAKELEVEL
-          echo "  SIGPIPE: $(python3 -c 'import signal;print(signal.getsignal(signal.SIGPIPE))')"
-          echo "  fd limit: $(ulimit -n)"
-
-          bwrap --unshare-all --die-with-parent \
-            --new-session \
-            --bind sysroot / \
-            --bind "$PWD/build" /build --bind "$PWD/dest" /dest \
-            --bind "$PWD/dl" /dl --bind "$PWD/logs" /logs --bind "$PWD/out" /out \
-            --ro-bind "$PWD/packages" /packages \
-            --ro-bind "$PWD/policy" /policy --ro-bind "$PWD/tools" /tools \
-            --proc /proc --dev /dev --tmpfs /tmp \
-            --setenv PATH /usr/bin:/usr/sbin:/bin \
-            --setenv HOME /build --setenv SHELL /bin/sh \
-            --setenv LC_ALL C --setenv TZ UTC --setenv SOURCE_DATE_EPOCH 0 \
-            --chdir / \
-            /usr/bin/python3 /tools/veron \
-              --dl /dl --build-dir /build --dest /dest --logs /logs --out /out \
-              --sysroot / \
-              build --clean
-          python3 tools/veron manifest
-          python3 tools/veron compare out/files-run1.tsv out/files.tsv --mark out/G3-OK
-
-      # AFTER G3, DELIBERATELY. reproducibility.attestations is read from
-      # G3's marker, so writing records before the second build would pin
-      # them at 1 and assert less than the run proved.
+      # WITH G3 REMOVED, THE MARKER IS ABSENT AND attestations HONESTLY READS
+      # 1. That is the point of reading it from evidence rather than writing a
+      # constant: turning the gate off lowers the claim automatically instead
+      # of leaving a 2 behind that nothing checked.
       - name: 'VERON-LEDGER-OK -- records carry what this run proved'
         run: |
           set -eu

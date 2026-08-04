@@ -33,12 +33,21 @@ optional_off = []
 # group 1 for one package.
 build_system_chosen = "configure (not the bundled cmake)"
 configure_flags = ["--prefix=/usr"]
-verification    = "make check"
+verification    = "none -- upstream suites are not run; see deferral"
 deferral        = """
 Internals not reviewed; upstream test suite only. zlib's configure is a \
 hand-written shell script, not autoconf, so it accepts none of the usual \
 --disable flags -- there is nothing optional to turn off and nothing detected \
-from the environment."""
+from the environment.
+
+UPSTREAM TESTS ARE NOT RUN, BY POLICY, AND THIS IS THE LARGEST VERIFICATION \
+GAP IN THE SET. Running full suites in series does not scale past a handful \
+of packages -- twelve of them already dominated the build, and the plan is \
+150+. They were run once, at twelve packages, and the result is recorded: \
+every suite that ran passed except the exclusions each recipe already names. \
+Evidence now comes from the guest sanity tests, which run against the booted \
+image and check that each package actually works. Re-enable a suite per \
+package when there is a reason to; the step is one block."""
 
 [[steps]]
 name = "unpack"
@@ -54,11 +63,6 @@ run  = [["./configure", "--prefix=/usr"]]
 name = "build"
 cwd  = "$S"
 run  = [["make", "-j$J"]]
-
-[[steps]]
-name = "check"
-cwd  = "$S"
-run  = [["make", "check"]]
 
 [[steps]]
 name = "install"

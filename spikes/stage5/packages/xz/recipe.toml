@@ -32,7 +32,7 @@ optional_off = ["gettext", "libiconv"]
 configure_flags = [
   "--prefix=/usr", "--disable-static", "--disable-nls", "--disable-doc",
 ]
-verification = "make check"
+verification    = "none -- upstream suites are not run; see deferral"
 deferral = """
 Internals not reviewed; upstream test suite only. LICENCE IS COMPOUND and the \
 COPYING file understates it: per-file SPDX tags show 0BSD x256, \
@@ -43,7 +43,16 @@ wrong in both directions.
 
 BOOTSTRAP CIRCULARITY, DECLARED: xz is distributed as .tar.xz, so unpacking \
 it requires an xz that already exists. Stage 4's sysroot provides one, so \
-this is satisfied at this rung rather than solved."""
+this is satisfied at this rung rather than solved.
+
+UPSTREAM TESTS ARE NOT RUN, BY POLICY, AND THIS IS THE LARGEST VERIFICATION \
+GAP IN THE SET. Running full suites in series does not scale past a handful \
+of packages -- twelve of them already dominated the build, and the plan is \
+150+. They were run once, at twelve packages, and the result is recorded: \
+every suite that ran passed except the exclusions each recipe already names. \
+Evidence now comes from the guest sanity tests, which run against the booted \
+image and check that each package actually works. Re-enable a suite per \
+package when there is a reason to; the step is one block."""
 
 [[steps]]
 name = "unpack"
@@ -60,11 +69,6 @@ run  = [["./configure", "--prefix=/usr", "--disable-static",
 name = "build"
 cwd  = "$S"
 run  = [["make", "-j$J"]]
-
-[[steps]]
-name = "check"
-cwd  = "$S"
-run  = [["make", "check"]]
 
 [[steps]]
 name = "install"

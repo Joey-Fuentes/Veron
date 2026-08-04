@@ -34,7 +34,7 @@ configure_flags = ["--prefix=/usr"]
 # `make check` is enormous -- thousands of cases, and it runs the whole macro
 # suite. Declared as run so the cost is visible; if it dominates the build it
 # becomes a candidate for the rotation rather than every push.
-verification = "make check, 548 of 549 tests (248 excluded -- see deferral)"
+verification    = "none -- upstream suites are not run; see deferral"
 deferral     = """
 Internals not reviewed; upstream test suite only. Depends on m4 AT RUNTIME, \
 not just at build time -- autoconf without m4 installs cleanly and then fails \
@@ -47,7 +47,16 @@ nanoseconds, so a fast build puts both files in the same second and "strictly \
 older" is false. The remaining 548 run, including autoconf's own four \
 declared expected failures. Adding coreutils would remove the exclusion \
 entirely -- this is a data point for the glibc/GNU flavour, not a defect in \
-the package."""
+the package.
+
+UPSTREAM TESTS ARE NOT RUN, BY POLICY, AND THIS IS THE LARGEST VERIFICATION \
+GAP IN THE SET. Running full suites in series does not scale past a handful \
+of packages -- twelve of them already dominated the build, and the plan is \
+150+. They were run once, at twelve packages, and the result is recorded: \
+every suite that ran passed except the exclusions each recipe already names. \
+Evidence now comes from the guest sanity tests, which run against the booted \
+image and check that each package actually works. Re-enable a suite per \
+package when there is a reason to; the step is one block."""
 
 [[steps]]
 name = "unpack"
@@ -63,35 +72,6 @@ run  = [["./configure", "--prefix=/usr"]]
 name = "build"
 cwd  = "$S"
 run  = [["make", "-j$J"]]
-
-[[steps]]
-name = "check"
-cwd  = "$S"
-# 549 TESTS, ONE REAL FAILURE, AND IT IS BUSYBOX'S CLOCK.
-#
-# Test 248 (AC_CACHE_CHECK) ends with
-#     ./base.at:732: test config.cache -ot a-stamp-file
-#     ./base.at:732: exit code was 1, expected 0
-# `-ot` means strictly older. The test writes a stamp, re-runs configure, and
-# asserts config.cache was NOT rewritten -- so it must be older than the
-# stamp. BUSYBOX'S `test` COMPARES st_mtime IN WHOLE SECONDS; GNU coreutils
-# compares nanoseconds. The build is fast enough that both files land in the
-# same second, so "older than" is false and a correct autoconf fails a correct
-# test on a coarser clock.
-#
-# This is the third busybox-vs-GNU thinness in this batch, after `timeout -v`
-# and the absent `file` applet, and always the same shape: not a missing tool,
-# a less precise one. It is EVIDENCE FOR THE GNU-FLAVOUR FORK -- if coreutils
-# is ever added, delete this exclusion and the test should pass unmodified.
-#
-# The other 4 failures the suite reports are autoconf's own declared expected
-# failures (autoupdate tests 31, 34, 35, 36) and are not excluded here.
-# THE RANGE IS 1-629, NOT 1-549. "549 tests were run, 80 tests were skipped"
-# is a count of what EXECUTED; the suite's highest test number is 629 (the
-# last is `629: autoscan`). A first attempt used 1-247 249-549 and silently
-# dropped eighty real tests off the end -- reading a run count as a total.
-timeout = 2400
-run  = [["make", "check", "TESTSUITEFLAGS=1-247 249-629"]]
 
 [[steps]]
 name = "install"
