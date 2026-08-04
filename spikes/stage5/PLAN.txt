@@ -109,7 +109,7 @@ package hello 2.12.3
 package m4 1.4.21
   group        build-substrate
   license      GPL-3.0-or-later
-  recipe-sha   2637531a44732d051b5fad94cf48d4787902ca04c711c5e570449788cc9b8e7d
+  recipe-sha   0c001f2ad277120e3f07ed339fe9b27c75aadfb59857a76c720c05746d8f163e
 
   source
     url        https://ftp.gnu.org/gnu/m4/m4-1.4.21.tar.xz
@@ -136,14 +136,11 @@ package m4 1.4.21
     [04] check
          cwd  build/m4-1.4.21/m4-1.4.21/checks
          argv ["make", "check"]
-    [05] write-test-wrapper
+    [05] spawn-suspects
          cwd  build/m4-1.4.21/m4-1.4.21/tests
-         SHELL (declared) why=generating a shell wrapper is what a heredoc is for; an argv cannot express it
-         | printf '%s\n' '#!/bin/sh' 'out=$(mktemp)' 'setsid timeout -s KILL 60 "$@" </dev/null >"$out" 2>&1' 'rc=$?' 'cat "$out"' 'rm -f "$out"' 'exit $rc' > veron-run.sh && chmod +x veron-run.sh && cat veron-run.sh
-    [06] gnulib-suite
-         cwd  build/m4-1.4.21/m4-1.4.21
-         argv ["make", "-C", "tests", "check", "VERBOSE=yes", "LOG_COMPILER=./veron-run.sh", "SH_LOG_COMPILER=./veron-run.sh"]
-    [07] install
+         SHELL (declared) why=an investigation is a sequence of probes and greps, not a single argv
+         | set +e; echo '--- environment ---'; id; echo "pwd=$(pwd)"; ls -l /bin/pwd /usr/bin/pwd 2>&1 | head -3; command -v pwd; echo "sh -> $(readlink -f /bin/sh)"; echo; for t in test-posix_spawn_file_actions_addchdir test-posix_spawn-chdir test-execute-main; do echo "===== $t"; if [ -x ./$t ]; then timeout -s KILL 30 ./$t; echo "   rc=$? (137 = killed at 30s, i.e. it hangs)"; else echo '   not built'; fi; done
+    [06] install
          cwd  build/m4-1.4.21/m4-1.4.21
          argv ["make", "DESTDIR=dest/m4", "install"]
 

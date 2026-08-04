@@ -98,42 +98,32 @@ timeout = 900
 run  = [["make", "check"]]
 
 [[steps]]
-# THE HARNESS WRAPPER. This is the fix for the hang, applied once instead of
-# patched into every vendored test script.
+# RUN THE TWO SUSPECTS DIRECTLY. Reproduce before theorising -- a rule learned
+# expensively here, after three wrong diagnoses reasoned from documentation
+# instead of from a fixture.
 #
-# THE MECHANISM: automake gives each test its stdout as a PIPE, and reads that
-# pipe until EOF to build the .log file. A test that leaves a GRANDCHILD alive
-# leaves the write end of that pipe open, so the harness blocks on read()
-# forever -- with nothing hung, nothing zombied, and no signal to forward. That
-# is why a per-test `timeout` does not help: busybox timeout signals the direct
-# child, and the fd is held by something else. It is also why tini or dumb-init
-# would not help; bwrap already reaps PID 1, and reaping does not close an fd.
+# WHAT IS RULED OUT, each by evidence rather than argument:
+#   namespaces   bwrap brings loopback up itself and reaps PID 1 itself
+#   SIGPIPE      Python's subprocess restores dispositions in children, so
+#                the runner's SIG_IGN never reached any test
+#   missing sh   /bin/sh -> usr/bin/busybox exists
+#   the log pipe automake's test-driver ALREADY redirects each test to its
+#                .log FILE, so no test ever holds a pipe the harness reads --
+#                which is why the wrapper changed nothing
 #
-# THE FIX: never hand the harness pipe to the test at all. Run the test with
-# its output going to a FILE, in its own session so the whole group can be
-# killed, then cat the file back and exit. Whatever the test leaks, it leaks a
-# descriptor on a regular file, which blocks nobody.
+# WHAT IS LEFT: test-posix_spawn-script passes, ..._addchdir fails, and the
+# next test in the list, test-posix_spawn-chdir, is where it stops. Both spawn
+# a child that runs `pwd` and compare its output. A parent that reads a pipe
+# for that output, while the child never produces it, blocks forever -- and
+# that is a hang no per-test timeout on the CHILD can clear.
 #
-# Patching gnulib's test scripts to redirect their background jobs would work
-# too, but it would be four patches -- m4, autoconf, automake, libtool all
-# vendor this -- regenerated on every gnulib vintage. One wrapper is cheaper
-# and does not fork upstream.
-name = "write-test-wrapper"
+# So: run them directly, with a hard leash, and print what the box gives them.
+name = "spawn-suspects"
 cwd  = "$S/tests"
-timeout = 60
-why = "generating a shell wrapper is what a heredoc is for; an argv cannot express it"
-shell = "printf '%s\\n' '#!/bin/sh' 'out=$(mktemp)' 'setsid timeout -s KILL 60 \"$@\" </dev/null >\"$out\" 2>&1' 'rc=$?' 'cat \"$out\"' 'rm -f \"$out\"' 'exit $rc' > veron-run.sh && chmod +x veron-run.sh && cat veron-run.sh"
+timeout = 240
+why = "an investigation is a sequence of probes and greps, not a single argv"
+shell = "set +e; echo '--- environment ---'; id; echo \"pwd=$(pwd)\"; ls -l /bin/pwd /usr/bin/pwd 2>&1 | head -3; command -v pwd; echo \"sh -> $(readlink -f /bin/sh)\"; echo; for t in test-posix_spawn_file_actions_addchdir test-posix_spawn-chdir test-execute-main; do echo \"===== $t\"; if [ -x ./$t ]; then timeout -s KILL 30 ./$t; echo \"   rc=$? (137 = killed at 30s, i.e. it hangs)\"; else echo '   not built'; fi; done"
 
-[[steps]]
-# The gnulib suite, opt-in and time-boxed, through the wrapper above. 182 of
-# its 184 tests already pass; this exists to find out whether the remaining
-# two fail for a real reason once the pipe is out of the picture.
-name = "gnulib-suite"
-cwd  = "$S"
-timeout = 1500
-optional = true
-run  = [["make", "-C", "tests", "check", "VERBOSE=yes",
-         "LOG_COMPILER=./veron-run.sh", "SH_LOG_COMPILER=./veron-run.sh"]]
 
 [[steps]]
 name = "install"

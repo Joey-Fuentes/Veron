@@ -182,7 +182,7 @@ jobs:
             --chdir / \
             /usr/bin/python3 /tools/veron \
               --dl /dl --build-dir /build --dest /dest --logs /logs --out /out \
-              build --clean --optional
+              build --clean
 
       - name: 'VERON-MANIFEST-OK'
         run: cd spikes/stage5 && python3 tools/veron manifest
@@ -256,7 +256,7 @@ jobs:
             --chdir / \
             /usr/bin/python3 /tools/veron \
               --dl /dl --build-dir /build --dest /dest --logs /logs --out /out \
-              build --clean --optional
+              build --clean
           python3 tools/veron manifest
           python3 tools/veron compare out/files-run1.tsv out/files.tsv --mark out/G3-OK
 
