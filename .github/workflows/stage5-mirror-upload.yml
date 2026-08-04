@@ -64,40 +64,75 @@ jobs:
           ref: ${{ github.ref_name }}
           persist-credentials: true
 
-      - name: 'Fetch every pinned source from upstream'
+      - name: 'Fetch everything in the set, recipe or not'
         run: |
           set -eu
           cd spikes/stage5
           mkdir -p dl
-          # The same fetch the build uses, so what gets mirrored is exactly
-          # what a build would have consumed -- not a re-download from some
-          # other route that happens to match.
-          python3 tools/veron sources | while IFS=$'\t' read -r sha name url; do
-            [ -n "$sha" ] || continue
+
+          # EVERY PACKAGE, NOT ONLY THE ONES WITH RECIPES.
+          #
+          # This iterated `veron sources`, which reads recipes -- so a package
+          # could not be mirrored until it was written. That is backwards: a
+          # package needs a second route MOST while it is being probed
+          # repeatedly, before anyone writes anything. The result was 40 of
+          # 111 mirrored and the other 71 sitting on a single upstream host,
+          # which the order run then demonstrated:
+          #     TimeoutError, HTTP 502 Bad Gateway, urlopen timed out  x7
+          # The three that recovered -- m4, ncurses, readline -- recovered
+          # because they were among the 40.
+          #
+          # The URL lists are already committed and already the probe's input,
+          # so they are the right source of truth here too.
+          { python3 tools/veron sources | awk -F'\t' '{print $1 "\t" $2 "\t" $3}'
+            for f in remaining-urls.txt gap-urls.txt gap3-urls.txt; do
+              [ -f "$f" ] || continue
+              grep '^http' "$f" | while read -r u; do
+                # No digest for these yet -- they have no recipe. mirror.py
+                # needs one, so fetch directly and hash what arrives. The
+                # upload records OUR digest of OUR copy, which is exactly what
+                # a mirror row means.
+                printf -- '-\t%s\t%s\n' "$(basename "$u")" "$u"
+              done
+            done
+          } | sort -u -k2,2 > /tmp/all-sources.tsv
+          echo "  $(wc -l < /tmp/all-sources.tsv) artifacts in the set"
+
+          while IFS=$'\t' read -r sha name url; do
+            [ -n "$name" ] || continue
             if [ -n "${{ inputs.only }}" ]; then
               case " ${{ inputs.only }} " in *" ${name%%-*} "*) ;; *) continue ;; esac
             fi
-            # POSITIONAL, NOT FLAGS. `mirror fetch <sha256> <name>` -- a
-            # first attempt passed --sha256 and every one of 40 fetches failed
-            # with an argparse usage error. The CLI-surface selftest checks
-            # that the FLAGS exist, which they do; nothing was checking the
-            # positionals, so the guard passed while the call was wrong.
-            python3 ../../tools/mirror.py fetch "$sha" "$name" --dest dl --url "$url" \
-              || echo "  FETCH FAILED $name"
-          done
+            [ -f "dl/$name" ] && continue
+            if [ "$sha" != "-" ]; then
+              # POSITIONAL, NOT FLAGS: `mirror fetch <sha256> <name>`.
+              python3 ../../tools/mirror.py fetch "$sha" "$name" --dest dl --url "$url" \
+                || echo "  FETCH FAILED $name"
+            else
+              # curl, not an inline heredoc: a heredoc body sits at column 0
+              # and a YAML block scalar cannot contain it -- the same trap
+              # that broke two earlier workflows in this repository.
+              #
+              # --http1.1 and --retry-all-errors are stage 4's lessons: h2
+              # stream errors are not on curl's default retry list, and long
+              # transfers on shared runners fail that way.
+              curl -fsSL --http1.1 --retry 3 --retry-all-errors \
+                   --connect-timeout 20 --max-time 300 \
+                   -o "dl/$name" "$url" || echo "  FETCH FAILED $name"
+            fi
+          done < /tmp/all-sources.tsv
           echo ""
           echo "  $(ls dl | wc -l) tarballs in dl/"
 
-      # FIND THE FREE ROUTES FIRST. A rewrite of the upstream URL costs
-      # nothing -- no upload, no storage -- so it should be tried before
-      # spending bandwidth on our own mirror. Running this in the same job as
-      # the upload is the whole point: they write the same table, need the
-      # same sources, and as separate workflows meant two clicks and two
-      # chances to forget the second.
       - name: 'Discover free routes by rewriting the upstream URL'
         run: |
           set -eu
           cd spikes/stage5
+          # `probe mirrors` walks packages/, so it finds rewrites only for
+          # packages that have recipes -- the same recipes-only assumption
+          # that left 71 artifacts on a single host. It still only covers the
+          # 41 here; the other 67 get their second route from the upload
+          # below, which is the route that does not depend on anyone else.
           python3 -u tools/probe.py mirrors --packages packages \
             --out "$GITHUB_WORKSPACE/sources/MIRRORS.tsv" || true
 
@@ -114,7 +149,11 @@ jobs:
           # --clobbers whatever was there.
           # The upstream URL per artifact, so `add` can record provenance
           # next to the route it just created.
-          python3 tools/veron sources > /tmp/srcmap.tsv
+          # THE SAME LIST THE FETCH USED, not `veron sources` again -- that
+          # reads recipes, so the 67 artifacts that have no recipe yet would
+          # get a mirror row and no provenance row, and the table would say
+          # they came from nowhere.
+          awk -F'\t' '{print $1 "\t" $2 "\t" $3}' /tmp/all-sources.tsv > /tmp/srcmap.tsv
           for f in dl/*; do
             [ -f "$f" ] || continue
             base=$(basename "$f")
