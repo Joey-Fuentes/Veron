@@ -19,8 +19,55 @@ between this file and the recipes fails the run.
 
 -- resolved order --------------------------------------------------
   derived from deps, tie-broken by name; never authored
-  1. hello
-  2. pkgconf
+  1. bzip2
+  2. hello
+  3. m4
+  4. ncurses
+  5. pkgconf
+  6. xz
+  7. zlib
+  8. zstd
+  9. autoconf
+  10. libtool
+  11. automake
+
+======================================================================
+package bzip2 1.0.8
+  group        build-substrate
+  license      bzip2-1.0.6
+  recipe-sha   f93be056f7f998af75d9f4f72e1b29ab1b6ec1bfdfc992bffb05004bc5b38fea
+
+  source
+    url        https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
+    sha256     ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269
+    signature  https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz.sig
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/bzip2-1.0.8
+         argv ["tar", "-xf", "dl/bzip2-1.0.8.tar.gz", "-C", "build/bzip2-1.0.8"]
+    [02] build-shared
+         cwd  build/bzip2-1.0.8/bzip2-1.0.8
+         argv ["make", "-f", "Makefile-libbz2_so"]
+    [03] clean-objects
+         cwd  build/bzip2-1.0.8/bzip2-1.0.8
+         argv ["make", "clean"]
+    [04] build
+         cwd  build/bzip2-1.0.8/bzip2-1.0.8
+         argv ["make", "-j1"]
+    [05] check
+         cwd  build/bzip2-1.0.8/bzip2-1.0.8
+         argv ["make", "check"]
+    [06] install
+         cwd  build/bzip2-1.0.8/bzip2-1.0.8
+         argv ["make", "PREFIX=dest/bzip2/usr", "install"]
 
 ======================================================================
 package hello 2.12.3
@@ -59,10 +106,77 @@ package hello 2.12.3
          argv ["make", "DESTDIR=dest/hello", "install"]
 
 ======================================================================
+package m4 1.4.21
+  group        build-substrate
+  license      GPL-3.0-or-later
+  recipe-sha   790fb19de519c6a644b1e5c269d6de9d44a6eab2799ed08f4daa261cc6b8df5e
+
+  source
+    url        https://ftp.gnu.org/gnu/m4/m4-1.4.21.tar.xz
+    sha256     f25c6ab51548a73a75558742fb031e0625d6485fe5f9155949d6486a2408ab66
+    signature  https://ftp.gnu.org/gnu/m4/m4-1.4.21.tar.xz.sig
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off gettext, libiconv, libsigsegv
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/m4-1.4.21
+         argv ["tar", "-xf", "dl/m4-1.4.21.tar.xz", "-C", "build/m4-1.4.21"]
+    [02] configure
+         cwd  build/m4-1.4.21/m4-1.4.21
+         argv ["./configure", "--prefix=/usr", "--disable-nls", "--without-libsigsegv-prefix", "--without-libiconv-prefix", "--without-libintl-prefix"]
+    [03] build
+         cwd  build/m4-1.4.21/m4-1.4.21
+         argv ["make", "-j1"]
+    [04] check
+         cwd  build/m4-1.4.21/m4-1.4.21
+         argv ["make", "check"]
+    [05] install
+         cwd  build/m4-1.4.21/m4-1.4.21
+         argv ["make", "DESTDIR=dest/m4", "install"]
+
+======================================================================
+package ncurses 6.6
+  group        build-substrate
+  license      MIT
+  recipe-sha   0268ebd45c426fbfa9d825213d156a7e783e724c75abc36d4d60fd1ce8a25717
+
+  source
+    url        https://ftp.gnu.org/gnu/ncurses/ncurses-6.6.tar.gz
+    sha256     355b4cbbed880b0381a04c46617b7656e362585d52e9cf84a67e2009b749ff11
+    signature  https://ftp.gnu.org/gnu/ncurses/ncurses-6.6.tar.gz.sig
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off ada, gpm, libtool
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/ncurses-6.6
+         argv ["tar", "-xf", "dl/ncurses-6.6.tar.gz", "-C", "build/ncurses-6.6"]
+    [02] configure
+         cwd  build/ncurses-6.6/ncurses-6.6
+         argv ["./configure", "--prefix=/usr", "--with-shared", "--without-debug", "--without-ada", "--enable-widec", "--enable-pc-files", "--without-normal", "--with-pkg-config-libdir=/usr/lib/pkgconfig"]
+    [03] build
+         cwd  build/ncurses-6.6/ncurses-6.6
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/ncurses-6.6/ncurses-6.6
+         argv ["make", "DESTDIR=dest/ncurses", "install"]
+
+======================================================================
 package pkgconf 3.0.5
   group        build-substrate
   license      ISC
-  recipe-sha   4a16f17315b1e4cdddef286d71285c9d7f680b82b5462c8cb76c60b1ffa46f38
+  recipe-sha   a7f393af29cd464ae9a133bde22b9e3b91300bfb67a8a1b1bac0f50f8b7a8038
 
   source
     url        https://github.com/pkgconf/pkgconf/releases/download/pkgconf-3.0.5/pkgconf-3.0.5.tar.xz
@@ -98,4 +212,208 @@ package pkgconf 3.0.5
     [06] install-pkg-config-alias
          cwd  build/pkgconf-3.0.5/pkgconf-3.0.5
          argv ["ln", "-sf", "pkgconf", "dest/pkgconf/usr/bin/pkg-config"]
+
+======================================================================
+package xz 5.8.3
+  group        build-substrate
+  license      0BSD AND GPL-2.0-or-later AND LGPL-2.1-or-later
+  recipe-sha   e1e52e00ae0c4ee340701e8c4f8d2e86c02e268658846bacbb208019965db817
+
+  source
+    url        https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.xz
+    sha256     fff1ffcf2b0da84d308a14de513a1aa23d4e9aa3464d17e64b9714bfdd0bbfb6
+    signature  https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.xz.sig
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off gettext, libiconv
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/xz-5.8.3
+         argv ["tar", "-xf", "dl/xz-5.8.3.tar.xz", "-C", "build/xz-5.8.3"]
+    [02] configure
+         cwd  build/xz-5.8.3/xz-5.8.3
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--disable-nls", "--disable-doc"]
+    [03] build
+         cwd  build/xz-5.8.3/xz-5.8.3
+         argv ["make", "-j1"]
+    [04] check
+         cwd  build/xz-5.8.3/xz-5.8.3
+         argv ["make", "check"]
+    [05] install
+         cwd  build/xz-5.8.3/xz-5.8.3
+         argv ["make", "DESTDIR=dest/xz", "install"]
+
+======================================================================
+package zlib 1.3.2
+  group        build-substrate
+  license      Zlib
+  recipe-sha   2d4336096905587089a322bc760ce6672a5d212526d85fcffa109456217688df
+
+  source
+    url        https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.xz
+    sha256     d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3
+    signature  https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.xz.asc
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/zlib-1.3.2
+         argv ["tar", "-xf", "dl/zlib-1.3.2.tar.xz", "-C", "build/zlib-1.3.2"]
+    [02] configure
+         cwd  build/zlib-1.3.2/zlib-1.3.2
+         argv ["./configure", "--prefix=/usr"]
+    [03] build
+         cwd  build/zlib-1.3.2/zlib-1.3.2
+         argv ["make", "-j1"]
+    [04] check
+         cwd  build/zlib-1.3.2/zlib-1.3.2
+         argv ["make", "check"]
+    [05] install
+         cwd  build/zlib-1.3.2/zlib-1.3.2
+         argv ["make", "DESTDIR=dest/zlib", "install"]
+
+======================================================================
+package zstd 1.5.7
+  group        build-substrate
+  license      GPL-2.0-or-later
+  recipe-sha   2d4ae50e53cb286ece08fd482546a32e019ec0162cabf1941d9a929b5f53cc52
+
+  source
+    url        https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
+    sha256     eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+    signature  https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz.sig
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off lz4, lzma, zlib
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/zstd-1.5.7
+         argv ["tar", "-xf", "dl/zstd-1.5.7.tar.gz", "-C", "build/zstd-1.5.7"]
+    [02] build
+         cwd  build/zstd-1.5.7/zstd-1.5.7
+         argv ["make", "-j1", "PREFIX=/usr", "HAVE_ZLIB=0", "HAVE_LZMA=0", "HAVE_LZ4=0"]
+    [03] check
+         cwd  build/zstd-1.5.7/zstd-1.5.7
+         argv ["make", "check"]
+    [04] install
+         cwd  build/zstd-1.5.7/zstd-1.5.7
+         argv ["make", "PREFIX=/usr", "DESTDIR=dest/zstd", "install"]
+
+======================================================================
+package autoconf 2.73
+  group        build-substrate
+  license      GPL-2.0-or-later
+  recipe-sha   3ea63c10fc5c57c4b3fd36bd3ec1292b5caa82ef577fccea7b27fd3b628fba6f
+
+  source
+    url        https://ftp.gnu.org/gnu/autoconf/autoconf-2.73.tar.xz
+    sha256     9fd672b1c8425fac2fa67fa0477b990987268b90ff36d5f016dae57be0d6b52e
+    signature  https://ftp.gnu.org/gnu/autoconf/autoconf-2.73.tar.xz.sig
+    correspond none
+
+  deps
+    build        m4
+    link         -
+    runtime      m4
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/autoconf-2.73
+         argv ["tar", "-xf", "dl/autoconf-2.73.tar.xz", "-C", "build/autoconf-2.73"]
+    [02] configure
+         cwd  build/autoconf-2.73/autoconf-2.73
+         argv ["./configure", "--prefix=/usr"]
+    [03] build
+         cwd  build/autoconf-2.73/autoconf-2.73
+         argv ["make", "-j1"]
+    [04] check
+         cwd  build/autoconf-2.73/autoconf-2.73
+         argv ["make", "check"]
+    [05] install
+         cwd  build/autoconf-2.73/autoconf-2.73
+         argv ["make", "DESTDIR=dest/autoconf", "install"]
+
+======================================================================
+package libtool 2.6.2
+  group        build-substrate
+  license      GPL-2.0-or-later
+  recipe-sha   d43cd30776f4c5e07e5795e902b65e0bbe71e13c9fcd93784b96140c452ecdf1
+
+  source
+    url        https://ftp.gnu.org/gnu/libtool/libtool-2.6.2.tar.xz
+    sha256     2ef1067c16c97db930fd740cc9bc3d3ba9a583804ae5ac42cc3e8719e49e191e
+    signature  https://ftp.gnu.org/gnu/libtool/libtool-2.6.2.tar.xz.sig
+    correspond none
+
+  deps
+    build        m4
+    link         -
+    runtime      m4
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libtool-2.6.2
+         argv ["tar", "-xf", "dl/libtool-2.6.2.tar.xz", "-C", "build/libtool-2.6.2"]
+    [02] configure
+         cwd  build/libtool-2.6.2/libtool-2.6.2
+         argv ["./configure", "--prefix=/usr", "--disable-static"]
+    [03] build
+         cwd  build/libtool-2.6.2/libtool-2.6.2
+         argv ["make", "-j1"]
+    [04] check
+         cwd  build/libtool-2.6.2/libtool-2.6.2
+         argv ["make", "check"]
+    [05] install
+         cwd  build/libtool-2.6.2/libtool-2.6.2
+         argv ["make", "DESTDIR=dest/libtool", "install"]
+
+======================================================================
+package automake 1.18.1
+  group        build-substrate
+  license      GPL-2.0-or-later
+  recipe-sha   65e2e78fd974197eedebcbc6311631b12a09f857afefc55a10d45b1ca303713d
+
+  source
+    url        https://ftp.gnu.org/gnu/automake/automake-1.18.1.tar.xz
+    sha256     168aa363278351b89af56684448f525a5bce5079d0b6842bd910fdd3f1646887
+    signature  https://ftp.gnu.org/gnu/automake/automake-1.18.1.tar.xz.sig
+    correspond none
+
+  deps
+    build        autoconf, m4
+    link         -
+    runtime      autoconf, m4
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/automake-1.18.1
+         argv ["tar", "-xf", "dl/automake-1.18.1.tar.xz", "-C", "build/automake-1.18.1"]
+    [02] configure
+         cwd  build/automake-1.18.1/automake-1.18.1
+         argv ["./configure", "--prefix=/usr"]
+    [03] build
+         cwd  build/automake-1.18.1/automake-1.18.1
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/automake-1.18.1/automake-1.18.1
+         argv ["make", "DESTDIR=dest/automake", "install"]
 

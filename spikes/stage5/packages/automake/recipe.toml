@@ -1,0 +1,65 @@
+name    = "automake"
+version = "1.18.1"
+group   = "build-substrate"
+license = "GPL-2.0-or-later"
+
+# EVERY FACT BELOW WAS MEASURED, NOT REMEMBERED. Version, digest, signing key,
+# licence and build system come from `probe url https://ftp.gnu.org/gnu/automake/automake-1.18.1.tar.xz`.
+# Nine versions were probed and all nine differed from what would have been
+# written from memory, so nothing here is typed from recall.
+
+[source]
+url       = "https://ftp.gnu.org/gnu/automake/automake-1.18.1.tar.xz"
+sha256    = "168aa363278351b89af56684448f525a5bce5079d0b6842bd910fdd3f1646887"
+signature = "https://ftp.gnu.org/gnu/automake/automake-1.18.1.tar.xz.sig"
+# The key that made that signature, read from the signature itself with an
+# EMPTY keyring -- the probe deliberately does not import a key fetched
+# alongside the artifact it signs, because that proves nothing. Compare this
+# against the project's published fingerprint, then verify locally, before
+# treating the pin as trusted.
+signing_key = "17D3311B14BC0F248267BF020716748A30D155AD"
+crosschecked_against = []   # name the packagers whose digest you compared
+
+[deps]
+build        = ["autoconf", "m4"]
+link         = []
+runtime      = ["autoconf", "m4"]
+optional_off = []
+
+[declared]
+configure_flags = ["--prefix=/usr"]
+# NOT RUN, AND SAID SO. automake's suite is famously long -- it drives
+# autoconf and make thousands of times. Declaring it skipped is a criterion-6
+# deferral; omitting the field would look like nobody considered it.
+verification = "make check NOT RUN -- see deferral"
+deferral     = """
+Internals not reviewed. THE UPSTREAM TEST SUITE IS DELIBERATELY NOT RUN: it \
+drives autoconf and make several thousand times and takes hours, which does \
+not fit a per-push gate. This is the largest single verification gap in group \
+1 and it is a schedule decision, not a technical one -- it belongs in a \
+periodic rotation. Until then automake's only evidence is that packages built \
+with it work."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/automake-1.18.1.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+
+[guest]
+test   = [["/usr/bin/automake", "--version"]]
+expect = ["1.18.1"]

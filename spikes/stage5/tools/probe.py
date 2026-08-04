@@ -204,7 +204,13 @@ def license_of(root):
                 # granted to anyone to use", which a looser MIT pattern would
                 # swallow. zlib-1.3.2 came back "PRESENT but unrecognised"
                 # precisely because this list did not know it.
-                (r"altered source versions must be plainly marked", "Zlib"),
+                # DISCRIMINATE BEFORE GENERALISING. bzip2 and zlib share the
+                # "altered source versions must be plainly marked" clause, so
+                # the distinctive names come first -- otherwise bzip2 is
+                # reported as Zlib, confidently and wrongly.
+                (r"Julian Seward", "bzip2-1.0.6"),
+                (r"Jean-loup Gailly|Mark Adler", "Zlib"),
+                (r"altered source versions must be plainly marked", "Zlib-or-bzip2-like -- READ IT"),
                 (r"GNU GENERAL PUBLIC LICENSE.*Version 3", "GPL-3.0-or-later"),
                 (r"GNU GENERAL PUBLIC LICENSE.*Version 2", "GPL-2.0-or-later"),
                 (r"GNU LESSER GENERAL PUBLIC LICENSE.*Version 3", "LGPL-3.0-or-later"),
@@ -458,8 +464,11 @@ def probe(url, keep=False):
         if len(opts) > 40:
             print(f"     ... and {len(opts) - 40} more")
 
-    pname = top.rsplit("-", 1)[0]
-    pver = re.sub(r"^[a-zA-Z_+-]*-", "", top)
+    # SPLIT ON THE LAST DASH, not on a leading-letters pattern: the pattern
+    # form silently failed for m4, emitting version = "m4-1.4.21".
+    pname, _, pver = top.rpartition("-")
+    if not pname:
+        pname, pver = top, ""
     xc = crosscheck(pname, pver)
     print("\n   independent packagers (corroboration, not proof)")
     if not xc:
@@ -471,10 +480,9 @@ def probe(url, keep=False):
             print(f"              sha256 {h} {'<-- MATCHES' if h == digest else ''}")
 
     print("\n   --- recipe skeleton (INCOMPLETE BY DESIGN) ---")
-    ver = pver
     print(f'''
 name    = "{pname}"
-version = "{ver}"
+version = "{pver}"
 group   = "build-substrate"
 license = "{spdx}"
 

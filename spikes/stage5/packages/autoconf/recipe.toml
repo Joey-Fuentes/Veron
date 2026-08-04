@@ -1,0 +1,70 @@
+name    = "autoconf"
+version = "2.73"
+group   = "build-substrate"
+license = "GPL-2.0-or-later"
+
+# EVERY FACT BELOW WAS MEASURED, NOT REMEMBERED. Version, digest, signing key,
+# licence and build system come from `probe url https://ftp.gnu.org/gnu/autoconf/autoconf-2.73.tar.xz`.
+# Nine versions were probed and all nine differed from what would have been
+# written from memory, so nothing here is typed from recall.
+
+[source]
+url       = "https://ftp.gnu.org/gnu/autoconf/autoconf-2.73.tar.xz"
+sha256    = "9fd672b1c8425fac2fa67fa0477b990987268b90ff36d5f016dae57be0d6b52e"
+signature = "https://ftp.gnu.org/gnu/autoconf/autoconf-2.73.tar.xz.sig"
+# The key that made that signature, read from the signature itself with an
+# EMPTY keyring -- the probe deliberately does not import a key fetched
+# alongside the artifact it signs, because that proves nothing. Compare this
+# against the project's published fingerprint, then verify locally, before
+# treating the pin as trusted.
+signing_key = "82F854F3CE73174B8B63174091FCC32B6769AA64"
+crosschecked_against = []   # name the packagers whose digest you compared
+
+[deps]
+# THE FIRST REAL EDGES IN THE SET. autoconf is m4 with a large macro library
+# on top -- it invokes m4 at runtime, not merely to build. perl comes from
+# stage 4's sysroot and is a declared input rather than a package here.
+build        = ["m4"]
+link         = []
+runtime      = ["m4"]
+optional_off = []
+
+[declared]
+configure_flags = ["--prefix=/usr"]
+# `make check` is enormous -- thousands of cases, and it runs the whole macro
+# suite. Declared as run so the cost is visible; if it dominates the build it
+# becomes a candidate for the rotation rather than every push.
+verification = "make check (large: exercises the full macro suite)"
+deferral     = """
+Internals not reviewed; upstream test suite only. Depends on m4 AT RUNTIME, \
+not just at build time -- autoconf without m4 installs cleanly and then fails \
+on first use, which is why m4 appears in both build and runtime."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/autoconf-2.73.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "check"
+cwd  = "$S"
+run  = [["make", "check"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+
+[guest]
+test   = [["/usr/bin/autoconf", "--version"]]
+expect = ["2.73"]

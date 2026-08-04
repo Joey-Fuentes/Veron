@@ -1,0 +1,70 @@
+name    = "zlib"
+version = "1.3.2"
+group   = "build-substrate"
+license = "Zlib"
+
+# EVERY FACT BELOW WAS MEASURED, NOT REMEMBERED. Version, digest, signing key,
+# licence and build system come from `probe url https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.xz`.
+# Nine versions were probed and all nine differed from what would have been
+# written from memory, so nothing here is typed from recall.
+
+[source]
+url       = "https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.xz"
+sha256    = "d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3"
+signature = "https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.xz.asc"
+# The key that made that signature, read from the signature itself with an
+# EMPTY keyring -- the probe deliberately does not import a key fetched
+# alongside the artifact it signs, because that proves nothing. Compare this
+# against the project's published fingerprint, then verify locally, before
+# treating the pin as trusted.
+signing_key = "5ED46A6721D365587791E2AA783FCD8E58BCAFBA"
+crosschecked_against = []   # name the packagers whose digest you compared
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+# zlib ships BOTH autotools and cmake. Choosing matters and is recorded: the
+# hand-written configure is what upstream documents and what every distro
+# uses, and adding cmake here would put a second large build system into
+# group 1 for one package.
+build_system_chosen = "configure (not the bundled cmake)"
+configure_flags = ["--prefix=/usr"]
+verification    = "make check"
+deferral        = """
+Internals not reviewed; upstream test suite only. zlib's configure is a \
+hand-written shell script, not autoconf, so it accepts none of the usual \
+--disable flags -- there is nothing optional to turn off and nothing detected \
+from the environment."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/zlib-1.3.2.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "check"
+cwd  = "$S"
+run  = [["make", "check"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "zlib"]]
+expect = ["1.3.2"]

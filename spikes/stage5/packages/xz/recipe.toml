@@ -1,0 +1,76 @@
+name    = "xz"
+version = "5.8.3"
+group   = "build-substrate"
+license = "0BSD AND GPL-2.0-or-later AND LGPL-2.1-or-later"
+
+# EVERY FACT BELOW WAS MEASURED, NOT REMEMBERED. Version, digest, signing key,
+# licence and build system come from `probe url https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.xz`.
+# Nine versions were probed and all nine differed from what would have been
+# written from memory, so nothing here is typed from recall.
+
+[source]
+url       = "https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.xz"
+sha256    = "fff1ffcf2b0da84d308a14de513a1aa23d4e9aa3464d17e64b9714bfdd0bbfb6"
+signature = "https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.xz.sig"
+# The key that made that signature, read from the signature itself with an
+# EMPTY keyring -- the probe deliberately does not import a key fetched
+# alongside the artifact it signs, because that proves nothing. Compare this
+# against the project's published fingerprint, then verify locally, before
+# treating the pin as trusted.
+signing_key = "3690C240CE51B4670D30AD1C38EE757D69184620"
+crosschecked_against = []   # name the packagers whose digest you compared
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+# NLS and iconv are DETECTED. Left alone they make the output depend on what
+# happened to be in the box, which is the whole reason this field exists.
+optional_off = ["gettext", "libiconv"]
+
+[declared]
+configure_flags = [
+  "--prefix=/usr", "--disable-static", "--disable-nls", "--disable-doc",
+]
+verification = "make check"
+deferral = """
+Internals not reviewed; upstream test suite only. LICENCE IS COMPOUND and the \
+COPYING file understates it: per-file SPDX tags show 0BSD x256, \
+GPL-2.0-or-later x2 and LGPL-2.1-or-later x9. liblzma is 0BSD; the \
+command-line tools carry the GPL parts. Recorded in full because a \
+corresponding-source manifest that says only "GPL-3.0-or-later" would be \
+wrong in both directions.
+
+BOOTSTRAP CIRCULARITY, DECLARED: xz is distributed as .tar.xz, so unpacking \
+it requires an xz that already exists. Stage 4's sysroot provides one, so \
+this is satisfied at this rung rather than solved."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/xz-5.8.3.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static",
+         "--disable-nls", "--disable-doc"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "check"
+cwd  = "$S"
+run  = [["make", "check"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+
+[guest]
+test   = [["/usr/bin/xz", "--version"]]
+expect = ["5.8.3"]

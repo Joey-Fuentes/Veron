@@ -1,0 +1,72 @@
+name    = "ncurses"
+version = "6.6"
+group   = "build-substrate"
+license = "MIT"
+
+# EVERY FACT BELOW WAS MEASURED, NOT REMEMBERED. Version, digest, signing key,
+# licence and build system come from `probe url https://ftp.gnu.org/gnu/ncurses/ncurses-6.6.tar.gz`.
+# Nine versions were probed and all nine differed from what would have been
+# written from memory, so nothing here is typed from recall.
+
+[source]
+url       = "https://ftp.gnu.org/gnu/ncurses/ncurses-6.6.tar.gz"
+sha256    = "355b4cbbed880b0381a04c46617b7656e362585d52e9cf84a67e2009b749ff11"
+signature = "https://ftp.gnu.org/gnu/ncurses/ncurses-6.6.tar.gz.sig"
+# The key that made that signature, read from the signature itself with an
+# EMPTY keyring -- the probe deliberately does not import a key fetched
+# alongside the artifact it signs, because that proves nothing. Compare this
+# against the project's published fingerprint, then verify locally, before
+# treating the pin as trusted.
+signing_key = "19882D92DDA4C400C22C0D56CC2AF4472167BE03"
+crosschecked_against = []   # name the packagers whose digest you compared
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = ["gpm", "libtool", "ada"]
+
+[declared]
+configure_flags = [
+  "--prefix=/usr", "--with-shared", "--without-debug", "--without-ada",
+  "--enable-widec", "--enable-pc-files", "--without-normal",
+]
+# NO TEST SUITE EXISTS. The probe found no check target, and this is stated
+# rather than omitted: "verification: none" is a declared deferral, whereas
+# an absent field looks like nobody thought about it.
+verification = "none -- upstream ships no check target (confirmed by probe)"
+deferral = """
+Internals not reviewed and THERE IS NO UPSTREAM TEST SUITE to defer to, which \
+makes this the weakest verification in group 1. The only evidence it works is \
+the guest sanity test below and whatever links against it later.
+
+--enable-widec builds libncursesw, not libncurses; consumers that ask for the \
+narrow name need compatibility links. 157 configure options were offered and \
+the seven above are choices, not defaults."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/ncurses-6.6.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--with-shared", "--without-debug",
+         "--without-ada", "--enable-widec", "--enable-pc-files",
+         "--without-normal",
+         "--with-pkg-config-libdir=/usr/lib/pkgconfig"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "ncursesw"]]
+expect = ["6.6"]

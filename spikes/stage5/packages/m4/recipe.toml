@@ -1,0 +1,67 @@
+name    = "m4"
+version = "1.4.21"
+group   = "build-substrate"
+license = "GPL-3.0-or-later"
+
+# EVERY FACT BELOW WAS MEASURED, NOT REMEMBERED. Version, digest, signing key,
+# licence and build system come from `probe url https://ftp.gnu.org/gnu/m4/m4-1.4.21.tar.xz`.
+# Nine versions were probed and all nine differed from what would have been
+# written from memory, so nothing here is typed from recall.
+
+[source]
+url       = "https://ftp.gnu.org/gnu/m4/m4-1.4.21.tar.xz"
+sha256    = "f25c6ab51548a73a75558742fb031e0625d6485fe5f9155949d6486a2408ab66"
+signature = "https://ftp.gnu.org/gnu/m4/m4-1.4.21.tar.xz.sig"
+# The key that made that signature, read from the signature itself with an
+# EMPTY keyring -- the probe deliberately does not import a key fetched
+# alongside the artifact it signs, because that proves nothing. Compare this
+# against the project's published fingerprint, then verify locally, before
+# treating the pin as trusted.
+signing_key = "71C2CC22B1C4602927D2F3AAA7A16B4A2527436A"
+crosschecked_against = []   # name the packagers whose digest you compared
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = ["libsigsegv", "libiconv", "gettext"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-nls"]
+verification    = "make check"
+deferral        = """
+Internals not reviewed; upstream test suite only. libsigsegv, libiconv and \
+libintl are all searched for by configure and would be linked if present -- \
+none is in this system, so disabling them makes the absence a decision rather \
+than an accident of what the box contained."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/m4-1.4.21.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-nls",
+         "--without-libsigsegv-prefix", "--without-libiconv-prefix",
+         "--without-libintl-prefix"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "check"
+cwd  = "$S"
+run  = [["make", "check"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+
+[guest]
+test   = [["/usr/bin/m4", "--version"]]
+expect = ["1.4.21"]

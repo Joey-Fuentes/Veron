@@ -1,0 +1,66 @@
+name    = "libtool"
+version = "2.6.2"
+group   = "build-substrate"
+license = "GPL-2.0-or-later"
+
+# EVERY FACT BELOW WAS MEASURED, NOT REMEMBERED. Version, digest, signing key,
+# licence and build system come from `probe url https://ftp.gnu.org/gnu/libtool/libtool-2.6.2.tar.xz`.
+# Nine versions were probed and all nine differed from what would have been
+# written from memory, so nothing here is typed from recall.
+
+[source]
+url       = "https://ftp.gnu.org/gnu/libtool/libtool-2.6.2.tar.xz"
+sha256    = "2ef1067c16c97db930fd740cc9bc3d3ba9a583804ae5ac42cc3e8719e49e191e"
+signature = "https://ftp.gnu.org/gnu/libtool/libtool-2.6.2.tar.xz.sig"
+# The key that made that signature, read from the signature itself with an
+# EMPTY keyring -- the probe deliberately does not import a key fetched
+# alongside the artifact it signs, because that proves nothing. Compare this
+# against the project's published fingerprint, then verify locally, before
+# treating the pin as trusted.
+signing_key = "FA26CA784BE188927F22B99F6570EA01146F7354"
+crosschecked_against = []   # name the packagers whose digest you compared
+
+[deps]
+build        = ["m4"]
+link         = []
+runtime      = ["m4"]
+optional_off = []
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static"]
+verification    = "make check"
+deferral        = """
+Internals not reviewed; upstream test suite only. libtool installs .la files \
+into every package that uses it, and those files HARDCODE PATHS -- the stage-4 \
+sysroot already carries three with dead build-tree paths in them. Worth \
+watching as the set grows: a .la pointing at a removed tree fails late and \
+confusingly."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libtool-2.6.2.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "check"
+cwd  = "$S"
+run  = [["make", "check"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+
+[guest]
+test   = [["/usr/bin/libtool", "--version"]]
+expect = ["2.6.2"]

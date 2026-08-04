@@ -1,0 +1,82 @@
+name    = "bzip2"
+version = "1.0.8"
+group   = "build-substrate"
+license = "bzip2-1.0.6"
+
+# EVERY FACT BELOW WAS MEASURED, NOT REMEMBERED. Version, digest, signing key,
+# licence and build system come from `probe url https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz`.
+# Nine versions were probed and all nine differed from what would have been
+# written from memory, so nothing here is typed from recall.
+
+[source]
+url       = "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
+sha256    = "ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
+signature = "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz.sig"
+# The key that made that signature, read from the signature itself with an
+# EMPTY keyring -- the probe deliberately does not import a key fetched
+# alongside the artifact it signs, because that proves nothing. Compare this
+# against the project's published fingerprint, then verify locally, before
+# treating the pin as trusted.
+signing_key = "12768A96795990107A0D2FDFFC57E3CCACD99A78"
+crosschecked_against = []   # name the packagers whose digest you compared
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+# NO CONFIGURE AT ALL -- a plain Makefile, so every choice that would normally
+# be a flag is a make variable instead. PREFIX is passed at install time, and
+# the shared library needs a SECOND make with a different makefile, which is
+# bzip2's own arrangement and not something invented here.
+configure_flags = []
+verification    = "make check (bzip2's own compress/decompress round-trip)"
+deferral        = """
+Internals not reviewed. UPSTREAM IS EFFECTIVELY UNMAINTAINED: 1.0.8 dates \
+from 2019 and is the current release. Source now lives at \
+gitlab.com/bzip2/bzip2 but that project publishes NO release assets, so the \
+tarball still comes from sourceware -- source home and download home are \
+different places and that is recorded rather than implied. Licence is \
+bzip2-1.0.6, NOT Zlib: the two texts share a clause and a looser matcher \
+reported the wrong one."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/bzip2-1.0.8.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "build-shared"
+cwd  = "$S"
+# bzip2 builds its shared library from a separate makefile. Skipping this
+# leaves only libbz2.a, and every consumer that expects libbz2.so.1 fails
+# much later with a link error that does not mention bzip2.
+run  = [["make", "-f", "Makefile-libbz2_so"]]
+
+[[steps]]
+name = "clean-objects"
+cwd  = "$S"
+# The shared build leaves PIC objects behind; the static build reuses object
+# names and would silently link the wrong ones.
+run  = [["make", "clean"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "check"
+cwd  = "$S"
+run  = [["make", "check"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "PREFIX=$D/usr", "install"]]
+
+[guest]
+test   = [["/usr/bin/bzip2", "--help"]]
+expect = ["1.0.8"]

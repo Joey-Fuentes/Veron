@@ -144,9 +144,16 @@ run  = [["ln", "-sf", "pkgconf", "$D$PREFIX/bin/pkg-config"]]
 # The transitive query is the one that matters: it exercises .pc resolution
 # and the pinned search path rather than proving the binary starts. The two
 # fixture .pc files are installed alongside.
+# THE ALIAS CHECK IS BACK. Moving these tests out of the hand-written
+# guest/test.sh dropped it, and the count fell 5 -> 4 without anything
+# flagging the loss -- a coverage regression hidden inside a refactor. The
+# install step creates this symlink deliberately, because build systems look
+# for `pkg-config` and not `pkgconf`, so it is exactly the kind of thing that
+# breaks silently and takes a group-4 package down with it.
 test = [
   ["/usr/bin/pkgconf", "--version"],
+  ["/usr/bin/pkg-config", "--version"],
   ["/usr/bin/pkgconf", "--cflags", "veron-b"],
   ["/usr/bin/pkgconf", "--libs", "veron-b"],
 ]
-expect = ["3.0.5", "veron-a", "-lveron-a"]
+expect = ["3.0.5", "3.0.5", "veron-a", "-lveron-a"]

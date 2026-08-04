@@ -1,0 +1,64 @@
+name    = "zstd"
+version = "1.5.7"
+group   = "build-substrate"
+license = "GPL-2.0-or-later"
+
+# EVERY FACT BELOW WAS MEASURED, NOT REMEMBERED. Version, digest, signing key,
+# licence and build system come from `probe url https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz`.
+# Nine versions were probed and all nine differed from what would have been
+# written from memory, so nothing here is typed from recall.
+
+[source]
+url       = "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz"
+sha256    = "eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3"
+signature = "https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz.sig"
+# The key that made that signature, read from the signature itself with an
+# EMPTY keyring -- the probe deliberately does not import a key fetched
+# alongside the artifact it signs, because that proves nothing. Compare this
+# against the project's published fingerprint, then verify locally, before
+# treating the pin as trusted.
+signing_key = "4EF4AC63455FC9F4545D9B7DEF8FE99528B52FFD"
+crosschecked_against = []   # name the packagers whose digest you compared
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+# The zstd CLI links lz4, zlib and lzma IF IT FINDS THEM, which would make
+# this package's output depend on build order within its own group.
+optional_off = ["lz4", "zlib", "lzma"]
+
+[declared]
+configure_flags = []
+verification    = "make check"
+deferral        = """
+Internals not reviewed; upstream test suite only. NO CONFIGURE -- a plain \
+Makefile, so PREFIX and the HAVE_* switches are make variables. The three \
+optional compressors are disabled explicitly: zlib and xz are in this same \
+group, so leaving them detected would make zstd's output depend on the order \
+its neighbours happened to build in."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/zstd-1.5.7.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J", "PREFIX=/usr",
+         "HAVE_ZLIB=0", "HAVE_LZMA=0", "HAVE_LZ4=0"]]
+
+[[steps]]
+name = "check"
+cwd  = "$S"
+run  = [["make", "check"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "PREFIX=/usr", "DESTDIR=$D", "install"]]
+
+[guest]
+test   = [["/usr/bin/zstd", "--version"]]
+expect = ["1.5.7"]
