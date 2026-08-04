@@ -1286,11 +1286,55 @@ def cmd_linked(a):
     return 0
 
 
+def list_dirs(url):
+    """Subdirectories in an HTTP directory listing.
+
+    SOME PROJECTS PUT A DIRECTORY PER RELEASE, not a tarball per release.
+    Mozilla is the case in point: /pub/security/nss/releases/ contains
+    NSS_3_112_RTM/ and the tarball lives another level down in src/. Asked to
+    find a tarball there, `index` correctly reported "no tarball found in that
+    listing" -- and because it printed nothing else, the caller had nothing to
+    walk into. Two runs were spent grepping for directory names in output that
+    never contained any.
+    """
+    d = try_get(url)
+    if not d:
+        return []
+    html = d.decode("utf-8", "replace")
+    out, seen = [], set()
+    for m in re.finditer(r'href="([^"?#]+/)"', html):
+        href = m.group(1)
+        if href.startswith(("http", "//", "..", "/")) and not href.startswith(url):
+            continue
+        name = href.rstrip("/").split("/")[-1]
+        if not name or name in seen or name.startswith("."):
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
 def cmd_index(a):
     r = latest_index(a.url, a.name, a.include_pre)
     print(f"== {a.url}")
     if not r:
         print("   no tarball found in that listing")
+        # SAY WHAT IS THERE INSTEAD OF STOPPING. A listing of directories is
+        # a perfectly good answer to "where is this published" -- it just is
+        # not the answer to "which tarball". Printing them lets a caller
+        # descend rather than guess the layout.
+        dirs = list_dirs(a.url)
+        if dirs:
+            stable = [d for d in dirs if not PRERELEASE.search(d)]
+            print(f"   {len(dirs)} subdirector{'y' if len(dirs) == 1 else 'ies'}"
+                  f" -- the release is probably one level down")
+            # Sort by the numbers in the name, so NSS_3_112_RTM beats
+            # NSS_3_99_RTM -- a lexical sort would put 99 last.
+            def vkey(n):
+                return [int(x) for x in re.findall(r"\d+", n)] or [0]
+            for d in sorted(stable, key=vkey)[-8:]:
+                print(f"   dir       {d}")
+                print(f"             {a.url.rstrip('/')}/{d}/")
         return 1
     if r.get("prerelease_only"):
         print("   ONLY PRE-RELEASES found -- nothing stable to pin here.")

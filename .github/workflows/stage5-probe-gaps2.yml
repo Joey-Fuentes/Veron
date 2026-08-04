@@ -111,7 +111,9 @@ jobs:
           # one level further down in src/. Resolve that rather than assuming
           # which NSPR version it is paired with -- the pairing is exactly
           # what was guessed wrong last time.
-          rel=$(grep -ohE 'NSS_[0-9_]+_RTM' /tmp/nss-dir.txt | sort -V | tail -1 || true)
+          # `index` now prints the subdirectories it found, newest last, so
+          # this reads its output instead of guessing Mozilla's layout.
+          rel=$(awk '/^ *dir /{print $2}' /tmp/nss-dir.txt | tail -1 || true)
           if [ -n "$rel" ]; then
             host=$(grep -ohE 'https://(archive|ftp)\.mozilla\.org' /tmp/nss-dir.txt | head -1)
             host=${host:-https://archive.mozilla.org}
@@ -125,7 +127,7 @@ jobs:
             grep -ohE "https://\S+nss-[0-9.]+\.tar\.gz" /tmp/nss-src.txt \
               | grep -v with-nspr | sort -V | tail -1 >> found.txt || true
           fi
-          nrel=$(grep -ohE 'v4\.[0-9]+' /tmp/nspr-dir.txt | sort -V | tail -1 || true)
+          nrel=$(awk '/^ *dir /{print $2}' /tmp/nspr-dir.txt | tail -1 || true)
           if [ -n "$nrel" ]; then
             nhost=$(grep -ohE 'https://(archive|ftp)\.mozilla\.org' /tmp/nspr-dir.txt | head -1)
             nhost=${nhost:-https://archive.mozilla.org}
