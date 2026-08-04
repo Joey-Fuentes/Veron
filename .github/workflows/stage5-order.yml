@@ -72,6 +72,11 @@ jobs:
           echo "  $(wc -l < all-urls.txt) tarballs"
           python3 -u tools/probe.py batch all-urls.txt --out probed-all.tsv || true
 
+      # SORT EVEN IF SOME FETCHES FAILED. The previous run probed 108
+      # tarballs, lost four to unreachable hosts, and then died on a KeyError
+      # before printing anything -- so 40 minutes of probing produced no
+      # answer at all. A partial graph is still worth sorting, and the four
+      # missing packages are named above.
       - name: 'Derive the edges and sort'
         run: |
           set -eu

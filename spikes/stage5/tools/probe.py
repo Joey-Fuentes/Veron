@@ -1214,8 +1214,17 @@ def cmd_order(a):
         if not os.path.exists(tsv):
             continue
         with open(tsv) as f:
-            head = f.readline().rstrip("\n").split("\t")
+            # THE HEADER IS COMMENTED. `batch` writes "# name\turl\t..." so
+            # the first column is literally "# name" and a lookup for "name"
+            # raises KeyError -- which is exactly how this died after probing
+            # 108 tarballs. cmd_deps silently fell back to fixed indices and
+            # so never noticed; the same file, two readers, one of them
+            # tolerant by accident.
+            head = [c.strip().lstrip("#").strip()
+                    for c in f.readline().rstrip("\n").split("\t")]
             ix = {c: i for i, c in enumerate(head)}
+            if "name" not in ix or "deps" not in ix:
+                die(f"{tsv}: header has no name/deps column: {head}")
             for ln in f:
                 p_ = ln.rstrip("\n").split("\t")
                 if len(p_) <= ix.get("deps", 8) or p_[0] == "FAILED":
@@ -1322,12 +1331,16 @@ def cmd_deps(a):
             print(f"  no such file: {tsv}", file=sys.stderr)
             continue
         with open(tsv) as f:
-            head = f.readline().rstrip("\n").split("\t")
+            # Same commented-header handling as cmd_order. The silent
+            # fallback to fixed indices that used to live here is why the
+            # problem stayed invisible until another reader hit it.
+            head = [c.strip().lstrip("#").strip()
+                    for c in f.readline().rstrip("\n").split("\t")]
             try:
                 i_name = head.index("name")
                 i_deps = head.index("deps")
             except ValueError:
-                i_name, i_deps = 0, 8
+                die(f"{tsv}: header has no name/deps column: {head}")
             for ln in f:
                 p_ = ln.rstrip("\n").split("\t")
                 if len(p_) <= i_deps or p_[i_name] == "FAILED":
