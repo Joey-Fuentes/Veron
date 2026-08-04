@@ -493,6 +493,20 @@ def stage_into(destdir, sysroot):
     restored from the verified sysroot artifact at the start of every run, so
     the mutation does not accumulate across runs.
     """
+    # THE TARGET MUST BE A ROOT, AND SAYING SO IS THE WHOLE POINT. Staging
+    # reported "staged 11 paths" into /sysroot -- a directory that did not
+    # exist until os.makedirs created it -- because inside the sandbox the
+    # build root is mounted at "/" and nothing passed --sysroot. Copying into
+    # a fresh empty directory succeeds perfectly and helps nobody: zstd still
+    # could not find file(1), and the log said staging had worked.
+    #
+    # A real build root has /usr/bin in it. Anything else is a typo with a
+    # success message attached.
+    if not os.path.isdir(os.path.join(sysroot, "usr", "bin")):
+        die(f"stage target {sysroot!r} has no usr/bin -- it is not a build "
+            f"root. Pass --sysroot with the path the packages should be "
+            f"visible in ('/' inside the sandbox).")
+
     n = 0
     for dirpath, _, files in os.walk(destdir):
         rel = os.path.relpath(dirpath, destdir)
@@ -911,7 +925,10 @@ def cmd_selftest(a):
         d = os.path.join(td, "dest", "p"); os.makedirs(os.path.join(d, "usr", "bin"))
         open(os.path.join(d, "usr", "bin", "t"), "w").write("x")
         os.symlink("t", os.path.join(d, "usr", "bin", "t2"))
-        root = os.path.join(td, "root"); os.makedirs(root)
+        # A REAL BUILD ROOT, because the guard rejects anything else -- and
+        # it caught this fixture the moment it was added, which is the guard
+        # working rather than the fixture being unlucky.
+        root = os.path.join(td, "root"); os.makedirs(os.path.join(root, "usr", "bin"))
         n = stage_into(d, root)
         staged = os.path.exists(os.path.join(root, "usr", "bin", "t"))
         linked = os.path.islink(os.path.join(root, "usr", "bin", "t2"))
@@ -1022,7 +1039,11 @@ def main():
     ap.add_argument("--out", default="out")
     ap.add_argument("--logs", default="logs")
     ap.add_argument("--ledger", default="ledger")
-    ap.add_argument("--sysroot", default="/sysroot")
+    # NO DEFAULT WORTH TRUSTING. "/sysroot" was wrong inside the sandbox and
+    # wrong outside it, and the wrongness was silent. Required, so it is
+    # always a decision.
+    ap.add_argument("--sysroot", default="/sysroot",
+                    help="the root installed packages must become visible in")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("plan", help="expand every step to literal argv")
