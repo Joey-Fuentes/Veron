@@ -93,6 +93,35 @@ def latest_gnu(project):
              for n in names if key(n) == key(names[-1])]}
 
 
+def latest_index(url, name=None):
+    """Newest tarball in any HTML directory listing.
+
+    bzip2 (sourceware) and xz (tukaani) are neither GNU nor on GitHub, so the
+    two specific lookups cannot reach them. Rather than special-case each
+    project forever, read whatever index the URL serves.
+    """
+    d = try_get(url if url.endswith("/") else url + "/")
+    if not d:
+        return None
+    html = d.decode("utf-8", "replace")
+    pat = rf'href="({re.escape(name)}-[0-9][^"]*\.tar\.(?:gz|xz|bz2|lz))"' if name \
+        else r'href="([A-Za-z0-9_.+-]+-[0-9][^"]*\.tar\.(?:gz|xz|bz2|lz))"'
+    names = sorted(set(re.findall(pat, html)))
+    if not names:
+        return None
+
+    def key(n):
+        m = re.search(r"-([0-9]+(?:\.[0-9]+)*)", n)
+        return [int(x) for x in m.group(1).split(".")] if m else [0]
+
+    names.sort(key=key)
+    base = url if url.endswith("/") else url + "/"
+    top = key(names[-1])
+    return {"version": ".".join(str(x) for x in top),
+            "assets": [{"name": n, "url": base + n}
+                       for n in names if key(n) == top]}
+
+
 # ------------------------------------------------------------ inspection
 
 
@@ -124,17 +153,57 @@ def license_of(root):
         if os.path.exists(p):
             head = open(p, "rb").read(4000).decode("utf-8", "replace")
             for pat, spdx in (
+                # ORDER MATTERS: the zlib licence contains "Permission is
+                # granted to anyone to use", which a looser MIT pattern would
+                # swallow. zlib-1.3.2 came back "PRESENT but unrecognised"
+                # precisely because this list did not know it.
+                (r"altered source versions must be plainly marked", "Zlib"),
                 (r"GNU GENERAL PUBLIC LICENSE.*Version 3", "GPL-3.0-or-later"),
                 (r"GNU GENERAL PUBLIC LICENSE.*Version 2", "GPL-2.0-or-later"),
+                (r"GNU LESSER GENERAL PUBLIC LICENSE.*Version 3", "LGPL-3.0-or-later"),
                 (r"GNU LESSER GENERAL", "LGPL-2.1-or-later"),
+                (r"Apache License.*Version 2\.0", "Apache-2.0"),
+                (r"Mozilla Public License.*2\.0", "MPL-2.0"),
+                (r"THIS SOFTWARE IS PROVIDED.*ISC", "ISC"),
+                (r"Permission to use, copy, modify, and/or distribute", "ISC"),
                 (r"Permission to use, copy, modify, and distribute", "ISC-or-MIT-like"),
-                (r"Redistribution and use in source and binary", "BSD-like"),
+                (r"Redistribution and use in source and binary.*3\. Neither", "BSD-3-Clause"),
+                (r"Redistribution and use in source and binary", "BSD-2-or-3-Clause"),
                 (r"Permission is hereby granted, free of charge", "MIT"),
+                (r"public domain", "public-domain-claimed -- read it"),
             ):
                 if re.search(pat, head, re.S | re.I):
                     return n, spdx
             return n, "PRESENT but unrecognised -- read it"
     return None, "NO LICENSE FILE FOUND -- read the source headers"
+
+
+def spdx_tags(root, limit=4000):
+    """SPDX-License-Identifier tags in the source.
+
+    A COPYING file says what the project ships under; per-file tags say what
+    each part is, and a package with several is worth knowing about before it
+    reaches a GPL corresponding-source manifest.
+    """
+    seen = {}
+    n = 0
+    for dirpath, dirnames, files in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d != ".git"]
+        for fn in files:
+            if n >= limit:
+                break
+            if not fn.endswith((".c", ".h", ".cc", ".cpp", ".sh", ".am", ".ac", ".py")):
+                continue
+            n += 1
+            try:
+                head = open(os.path.join(dirpath, fn), "rb").read(2048)
+            except OSError:
+                continue
+            m = re.search(rb"SPDX-License-Identifier:\s*([^\r\n*/]+)", head)
+            if m:
+                tag = m.group(1).decode("utf-8", "replace").strip()
+                seen[tag] = seen.get(tag, 0) + 1
+    return seen
 
 
 def test_target(root):
@@ -192,6 +261,82 @@ def configure_options(root):
     return opts
 
 
+def signature_key(url, sig_url, blob, sig_blob):
+    """WHICH KEY signed it -- not merely that a signature exists.
+
+    "a .sig is present" is nearly worthless on its own: anyone can upload a
+    signature made by any key. The useful fact is the key id, because that is
+    what a human compares against the project's published fingerprint before
+    pinning.
+
+    gpg reports the key id even with an EMPTY KEYRING -- it says "using RSA
+    key X" and then "No public key". So this deliberately does NOT import
+    anything: importing a key fetched alongside the artifact it signs proves
+    nothing, and doing it automatically would manufacture a green check out of
+    circular evidence. Verification stays a human step; this just names the
+    key to check.
+    """
+    if sig_blob is None:
+        return None
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        f = os.path.join(td, "a"); open(f, "wb").write(blob)
+        sf = os.path.join(td, "a.sig"); open(sf, "wb").write(sig_blob)
+        env = dict(os.environ, GNUPGHOME=td)
+        try:
+            p = subprocess.run(["gpg", "--batch", "--status-fd", "1",
+                                "--verify", sf, f],
+                               capture_output=True, text=True, env=env, timeout=60)
+        except FileNotFoundError:
+            return {"key": None, "note": "gpg not available on this runner"}
+        out = p.stdout + p.stderr
+        key = None
+        m = re.search(r"using \w+ key ([0-9A-Fa-f]{16,40})", out)
+        if m:
+            key = m.group(1)
+        m = re.search(r"NO_PUBKEY ([0-9A-Fa-f]+)", out)
+        if not key and m:
+            key = m.group(1)
+        good = "GOODSIG" in out
+        return {"key": key, "good": good,
+                "note": ("VERIFIED against a key already in this keyring"
+                         if good else
+                         "key not held here -- compare this id with the "
+                         "project's published fingerprint, then verify locally")}
+
+
+def crosscheck(name, version):
+    """What independent packagers recorded for this release.
+
+    A checksum published beside a tarball protects against nothing that could
+    replace the tarball. Independent packagers downloaded at different times,
+    from different networks, without knowing about each other -- agreement
+    between them is real evidence. This is diverse double-compilation applied
+    to provenance, the same reasoning the seed already uses with two
+    disassemblers.
+
+    IT REPORTS, IT DOES NOT DECIDE. A version match is weaker than a digest
+    match, and both are weaker than a signature. All three are printed so a
+    person can weigh them.
+    """
+    out = {}
+    arch = try_get("https://gitlab.archlinux.org/archlinux/packaging/packages/"
+                   f"{name}/-/raw/main/PKGBUILD")
+    if arch:
+        t = arch.decode("utf-8", "replace")
+        m = re.search(r"^pkgver=(\S+)", t, re.M)
+        out["arch"] = {"version": m.group(1) if m else None,
+                       "sha256": re.findall(r"[0-9a-f]{64}", t)[:4]}
+    alp = try_get("https://gitlab.alpinelinux.org/alpine/aports/-/raw/master/"
+                  f"main/{name}/APKBUILD")
+    if alp:
+        t = alp.decode("utf-8", "replace")
+        m = re.search(r"^pkgver=(\S+)", t, re.M)
+        out["alpine"] = {"version": m.group(1) if m else None,
+                         "sha512": re.findall(r"[0-9a-f]{128}", t)[:2]}
+    return out
+
+
 # ------------------------------------------------------------ report
 
 
@@ -210,12 +355,18 @@ def probe(url, keep=False):
 
     # A signature, if upstream publishes one. Absence is a criterion-1 gap
     # and belongs in the record as a declared deferral, not as silence.
-    sig = None
+    sig = sig_blob = None
     for ext in (".sig", ".asc", ".sign"):
-        if try_get(url + ext) is not None:
-            sig = url + ext
+        b = try_get(url + ext)
+        if b is not None:
+            sig, sig_blob = url + ext, b
             break
     print(f"   signature {sig or 'NONE FOUND (.sig/.asc/.sign) -- declare the deferral'}")
+    if sig:
+        k = signature_key(url, sig, blob, sig_blob)
+        if k:
+            print(f"   signed by {k.get('key') or 'could not determine'}")
+            print(f"             {k['note']}")
 
     work = os.path.join(os.environ.get("TMPDIR", "/tmp"), "veron-probe", name)
     shutil.rmtree(work, ignore_errors=True)
@@ -238,6 +389,10 @@ def probe(url, keep=False):
 
     lf, spdx = license_of(root)
     print(f"\n   license   {spdx}" + (f"  (from {lf})" if lf else ""))
+    tags = spdx_tags(root)
+    if tags:
+        print("   spdx tags in source: "
+              + ", ".join(f"{k} x{v}" for k, v in sorted(tags.items())))
     print(f"   tests     {test_target(root)}")
 
     d = declared_deps(root)
@@ -256,10 +411,22 @@ def probe(url, keep=False):
         if len(opts) > 40:
             print(f"     ... and {len(opts) - 40} more")
 
+    pname = top.rsplit("-", 1)[0]
+    pver = re.sub(r"^[a-zA-Z_+-]*-", "", top)
+    xc = crosscheck(pname, pver)
+    print("\n   independent packagers (corroboration, not proof)")
+    if not xc:
+        print("     none found -- cross-check by hand before pinning")
+    for who, d in sorted(xc.items()):
+        agree = "SAME" if d.get("version") == pver else f"DIFFERENT ({d.get('version')})"
+        print(f"     {who:<8} version {agree}")
+        for h in d.get("sha256", []):
+            print(f"              sha256 {h} {'<-- MATCHES' if h == digest else ''}")
+
     print("\n   --- recipe skeleton (INCOMPLETE BY DESIGN) ---")
-    ver = re.sub(r"^[a-zA-Z_+-]*-", "", top)
+    ver = pver
     print(f'''
-name    = "{top.rsplit('-', 1)[0]}"
+name    = "{pname}"
 version = "{ver}"
 group   = "build-substrate"
 license = "{spdx}"
@@ -364,6 +531,19 @@ def cmd_linked(a):
     return 0
 
 
+def cmd_index(a):
+    r = latest_index(a.url, a.name)
+    print(f"== {a.url}")
+    if not r:
+        print("   no tarball found in that listing")
+        return 1
+    print(f"   latest    {r['version']}")
+    for asset in r["assets"]:
+        print(f"   asset     {asset['name']}")
+        print(f"             {asset['url']}")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(prog="probe")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -376,6 +556,11 @@ def main():
     p.add_argument("url", nargs="+")
     p.add_argument("--keep", action="store_true", help="keep the unpacked tree")
     p.set_defaults(fn=cmd_probe)
+
+    p = sub.add_parser("index", help="newest tarball in any directory listing")
+    p.add_argument("url")
+    p.add_argument("--name", help="restrict to this project name")
+    p.set_defaults(fn=cmd_index)
 
     p = sub.add_parser("linked", help="the real deps: what a built DESTDIR links")
     p.add_argument("destdir")

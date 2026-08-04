@@ -26,6 +26,10 @@ on:
         # lookup above cannot find them from a GNU index. zstd and zlib have
         # GitHub releases; bzip2 (sourceware) and xz (tukaani) publish
         # elsewhere and their URLs go here directly.
+      index:
+        description: 'name=dir-URL pairs for non-GNU, non-GitHub projects'
+        required: false
+        default: 'bzip2=https://sourceware.org/pub/bzip2/ xz=https://tukaani.org/xz/'
       latest:
         description: 'Find newest releases: gnu:<project> or <owner>/<repo>, space-separated'
         required: false
@@ -49,6 +53,16 @@ jobs:
           cd spikes/stage5
           python3 tools/probe.py latest ${{ inputs.latest }} | tee /tmp/latest.txt
 
+      - name: 'Newest tarball in a plain directory listing'
+        if: inputs.index != ''
+        run: |
+          set -eu
+          cd spikes/stage5
+          for spec in ${{ inputs.index }}; do
+            name="${spec%%=*}"; url="${spec#*=}"
+            python3 tools/probe.py index "$url" --name "$name"
+          done | tee /tmp/index.txt
+
       - name: 'Probe each tarball'
         if: inputs.urls != ''
         run: |
@@ -70,10 +84,14 @@ jobs:
           echo "      the build system asks for; it cannot tell a hard"
           echo "      requirement from one that silently detected off. Run"
           echo "      'probe linked <destdir>' after a build for that."
-          echo "    - Whether the digest is TRUSTWORTHY. The probe computes"
-          echo "      what it downloaded. Cross-check it against independent"
-          echo "      packagers before pinning, especially where no signature"
-          echo "      exists."
+          echo "    - Whether the SIGNATURE is good. The probe names the key"
+          echo "      that signed the tarball; it deliberately does not import"
+          echo "      that key, because a key fetched alongside the artifact it"
+          echo "      signs proves nothing. Compare the id against the"
+          echo "      project's published fingerprint, then verify locally."
+          echo "    - Whether the digest is TRUSTWORTHY. Independent packagers"
+          echo "      are reported as corroboration; agreement is evidence, not"
+          echo "      proof, and a version match is weaker than a digest match."
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -82,4 +100,5 @@ jobs:
           path: |
             /tmp/latest.txt
             /tmp/probe.txt
+            /tmp/index.txt
           retention-days: 30
