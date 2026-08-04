@@ -128,6 +128,11 @@ jobs:
           mv "wpewebkit-$V" src
           echo "  source lines (rough): $(find src -name '*.cpp' -o -name '*.h' -o -name '*.c' | wc -l) files"
 
+      # USE_LIBHYPHEN defaults ON and hard-fails configure without libhyphen
+      # -- "libhyphen is needed for USE_LIBHYPHEN". It only provides CSS
+      # hyphenation of justified text, so it is off here; if you want that
+      # quality later, libhyphen is one small C library, not a stack.
+      #
       # ENABLE_WPE_LEGACY_API=OFF is what makes libwpe and WPEBackend-fdo
       # unnecessary: 2.52 added building exclusively on WPEPlatform. Neither
       # library is packaged for Ubuntu arm64, so this is the configuration
@@ -154,10 +159,22 @@ jobs:
             -DUSE_AVIF=OFF \
             -DUSE_JPEGXL=OFF \
             -DUSE_LCMS=OFF \
+            -DUSE_LIBHYPHEN=OFF \
             -DENABLE_MINIBROWSER=ON \
             $( [ "${{ inputs.gstreamer }}" = "true" ] || echo "-DUSE_GSTREAMER=OFF" ) \
-            2>&1 | tee configure.log || true
+            2>&1 | tee configure.log
+          RC=${PIPESTATUS[0]}
           echo "CONFIGURE_SECONDS=$(( $(date +%s) - S ))" >> "$GITHUB_ENV"
+          if [ "$RC" != 0 ]; then
+            # FAIL LOUDLY HERE. `|| true` let a broken configure hand ninja an
+            # empty tree, which reported as "build 0 min, rc=1" -- indis-
+            # tinguishable from a compile failure, and pointing at the wrong
+            # step entirely.
+            echo ""
+            echo "  CONFIGURE FAILED -- nothing was measured. The cause:"
+            grep -B2 -A6 "CMake Error" configure.log | head -30
+            exit 1
+          fi
           echo ""
           echo "  --- what configure decided ---"
           grep -iE "^-- (Enabling|Disabling)|error|not found" configure.log | head -40 || true
