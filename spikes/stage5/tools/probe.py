@@ -714,6 +714,44 @@ def crosscheck(name, version):
 MIRROR_FALLBACK = [("https://ftpmirror.gnu.org/", "https://ftp.gnu.org/gnu/")]
 
 
+def mirror_routes(name, root=None):
+    """Every recorded route to an artifact, from sources/MIRRORS.tsv.
+
+    THE PROBE HAS BEEN IGNORING THE MIRROR TABLE ENTIRELY. Days went into
+    finding and verifying 105 routes so that one slow host stops costing a
+    run -- and `probe batch` fetches with its own try_get, straight at
+    upstream, with a single MIRROR_FALLBACK rewrite and nothing else. Every
+    one of those routes was available and unused.
+
+    The table is four tab-separated columns: sha256, name, host, locator. It
+    is found relative to this file, since the probe runs from spikes/stage5
+    and the table lives at the repository root.
+    """
+    # THE PATH IS AN ARGUMENT, not a derivation from __file__. Deriving it
+    # made the function untestable without faking module globals, and a
+    # fixture that cannot be written is a check that does not get written.
+    base = root or os.path.dirname(os.path.abspath(__file__))
+    for rel in ("../../sources/MIRRORS.tsv", "../../../sources/MIRRORS.tsv",
+                "sources/MIRRORS.tsv", "MIRRORS.tsv"):
+        path = os.path.normpath(os.path.join(base, rel))
+        if os.path.exists(path):
+            break
+    else:
+        return []
+    out = []
+    try:
+        for ln in open(path):
+            if ln.startswith("#") or not ln.strip():
+                continue
+            f = ln.rstrip("\n").split("\t")
+            if len(f) == 4 and f[1] == name:
+                # upstream last: it is the route already tried and failed.
+                out.append((0 if f[2] != "upstream" else 1, f[3]))
+    except OSError:
+        return []
+    return [u for _, u in sorted(out)]
+
+
 def probe(url, keep=False, quiet_report=False):
     name = url.rsplit("/", 1)[-1]
     print(f"== {name}")
@@ -730,7 +768,22 @@ def probe(url, keep=False, quiet_report=False):
                     url = alt
                 break
     if blob is None:
-        print("   FETCH FAILED -- cannot probe what cannot be downloaded")
+        # THE ROUTES WE ALREADY VERIFIED. Every artifact in the set has at
+        # least two, and one has six -- freetype, precisely because its
+        # SourceForge redirector kept timing out. Not consulting them here
+        # meant the probe failed on exactly the hosts the mirror work was
+        # done to survive.
+        for alt in mirror_routes(name):
+            if alt == url:
+                continue
+            print(f"   trying a recorded mirror: {alt}")
+            blob = try_get(alt)
+            if blob is not None:
+                url = alt
+                break
+    if blob is None:
+        print("   FETCH FAILED -- upstream, the canonical-host rewrite, and "
+              "every recorded mirror")
         return None
     digest = sha256_bytes(blob)
     print(f"\n   sha256    {digest}")
@@ -1553,6 +1606,23 @@ def cmd_selftest(a):
             ok = False
     else:
         print("  ok    pre-releases are recognised by name")
+
+    # THE MIRROR TABLE MUST BE CONSULTED. 105 verified routes existed and the
+    # probe used none of them -- invisible for as long as upstream answered,
+    # and a whole run lost the day it did not.
+    import tempfile as _tf
+    _d = _tf.mkdtemp()
+    os.makedirs(os.path.join(_d, "sources"), exist_ok=True)
+    open(os.path.join(_d, "sources", "MIRRORS.tsv"), "w").write(
+        "# sha256\tname\thost\tlocator\n"
+        "aaa\tdemo-1.0.tar.gz\tgithub\thttps://mirror.invalid/demo-1.0.tar.gz\n"
+        "aaa\tdemo-1.0.tar.gz\tupstream\thttps://up.invalid/demo-1.0.tar.gz\n")
+    r = mirror_routes("demo-1.0.tar.gz", root=_d)
+    if r and r[0].startswith("https://mirror.invalid") and len(r) == 2:
+        print("  ok    mirror routes are read, mirrors before upstream")
+    else:
+        print(f"  FAIL  mirror_routes returned {r}")
+        ok = False
 
     try_get = saved
     print("VERON-PROBE-SELFTEST-OK" if ok else "VERON-PROBE-SELFTEST-FAIL")

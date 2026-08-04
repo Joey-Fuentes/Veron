@@ -50,6 +50,13 @@ jobs:
           cd spikes/stage5
           python3 tools/probe.py selftest
 
+      # THE PROBE NOW USES THE MIRROR TABLE. It did not: `probe batch` fetched
+      # with its own try_get, straight at upstream, with one canonical-host
+      # rewrite and nothing else -- while 105 verified routes sat in
+      # sources/MIRRORS.tsv being used only by the build. A pass over 111
+      # tarballs touches every flaky host in the set at once, so this is the
+      # difference between the job finishing and the job dying on whichever
+      # mirror is slow today.
       - name: 'Probe every package in the set'
         run: |
           set -eu
