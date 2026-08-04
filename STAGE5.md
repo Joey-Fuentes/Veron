@@ -9,6 +9,39 @@ them as planning numbers.
 
 ---
 
+## What exists now, and what each job answers
+
+This file was written as a plan. Several of its open questions have since been
+turned into measurements, and the jobs are the current source of truth where
+they disagree with the estimates below.
+
+| job | the question it answers |
+|---|---|
+| `sysroot-inventory` | where the 5.6 GB is, without re-running the ladder |
+| `stage5-entry` | **the entry contract** — does the trimmed sysroot still compile C, C++ and `-flto`, and still boot? Cutting is easy; a 500 MB sysroot that cannot compile is worse than a 5.6 GB one that can |
+| `stage5-probe` | what a package actually is — its real dependencies and flags — instead of guessing |
+| `stage5-spike` | two packages (`pkgconf`, `hello`) built on the proven entry contract, merged, booted |
+| `stage5-closure` | the package set mapped **backwards**: name what the system must do, and let the closure say what it costs |
+| `wpe-timing` | how long WPE WebKit takes to compile — a stopwatch, deliberately not hermetic |
+
+Two of those change how this document should be read.
+
+**`stage5-closure` supersedes the group list below.** The groups were written by
+reading dependency graphs by hand. A forward list discovers what it is missing
+when a build fails, one package at a time, at the bottom of a stack. Backwards
+is cheaper, and it prices the *deliberate exclusions* too — which is the number
+nobody had. Arch's and Alpine's dependencies follow their configure flags, and
+Veron disables more, so the real closure should be smaller than the estimates
+here. Every difference is a flag decision not yet made.
+
+**`stage5-entry` is the precondition for all of it.** Of the six sysroot cuts,
+exactly one was already proven — phase B runs with `/tools` off `PATH`, so
+every green ladder run is that experiment. The other five were reasoned rather
+than measured, and the job measures them with two tests that fail differently:
+a bwrap smoke test that compiles inside the trimmed root, and a real qemu boot.
+
+---
+
 ## The shape
 
 ```
@@ -138,6 +171,31 @@ of a second bootstrap problem, and it shares this project's thesis: an
 independent engine written from scratch because the incumbents are too large to
 be understood.
 
+### 8b — WPE WebKit, the other candidate
+
+`wpe-timing` measures WPE WebKit rather than Ladybird, and the reason is worth
+recording: **the browser decision rests on a number nobody has.** Estimates for
+how long a modern engine takes to compile range from a few hours to a full day
+on a Pi, and that gap decides something much larger than a package — whether
+stage 5 needs **self-hosted runners**, which is a bigger commitment than any
+recipe in this file.
+
+WPE is also C++ and also avoids Rust, so it sits in the same bracket as
+Ladybird on the bootstrap question. Where they differ:
+
+- **WPE is production WebKit**, so it renders the real web today. Ladybird is
+  an independent engine and does not yet.
+- **WPE is larger and has a heavier dependency tail** — GStreamer, ICU, and a
+  long list this file has not priced.
+- **Ladybird is the better thesis fit**: from scratch, because the incumbents
+  are too large to understand. That is this project's own argument one layer up.
+
+Neither is chosen. The measurement comes first, which is why `wpe-timing` is
+explicitly **not hermetic** — dependencies come from apt because the question is
+how long the *engine* takes, not whether its dependency tree can be
+bootstrapped. Mixing the two would measure neither. Nothing it produces enters
+the ladder and the budget claim does not apply to it. It is a stopwatch.
+
 ---
 
 ## Networking, and the firmware problem
@@ -217,6 +275,8 @@ deliberate decision rather than a transitive dependency.
 
 ## Open questions to settle before building
 
+0. **Ladybird or WPE?** Blocked on `wpe-timing`. The answer decides whether
+   stage 5 needs self-hosted runners, which outranks every other question here.
 1. **Does Ladybird still require Qt6?** Decides whether group 7 exists at all,
    and therefore whether the login is SDDM or autologin. Largest single fork in
    this plan.

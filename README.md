@@ -34,7 +34,9 @@ Veron is an independent exploration / proving-ground OS — a place to test what
 
 ## Where the ladder stands
 
-Everything below lives under [`spikes/`](./spikes) and is a **feasibility tracer**, not Veron proper. Spikes deliberately suspend the invariants — bijective encoding, reproducibility, hermeticity, the round-trip audit, no-committed-binaries — to answer one question cheaply: *can the ladder be built at all on this setup?* Nothing here should be copied into `seed/` or `stages/` without re-applying them. Stage numbering below is the spike track's own.
+Everything below lives under [`spikes/`](./spikes) and is a **feasibility tracer**, not Veron proper, answering one question cheaply: *can the ladder be built at all on this setup?* Nothing here should be copied into `seed/` or `stages/` without re-applying the invariants. Stage numbering below is the spike track's own.
+
+Which invariants actually hold there is worth stating per-invariant rather than as a blanket suspension — see [`spikes/README.md`](./spikes/README.md). In short: **bijective encoding holds at stage 0** (both committed artifacts re-derived from source every push under two independent disassemblers), **hermeticity holds** (sealed box, pinned inputs, tier-1 budget empty and enforced), **the audit ledger is not built**, and **committed binaries are deliberate** rather than a lapse. Reproducibility is measured below.
 
 | rung | what it is | state |
 |---|---|---|
@@ -153,6 +155,23 @@ built comes up under qemu: `VERON-BOOT-OK`, 8 of 8 guest tests, and
 `VERON-GCC-IN-GUEST` — the gcc this chain produced compiling and running a
 program inside the kernel this same chain produced.
 
+**And it is reproducible, measured rather than asserted.** Two runs of the same
+commit, compared byte for byte:
+
+| | |
+|---|---|
+| `cc1`, `cc1plus` — cross **and** native | identical |
+| `ld`, `as`, `libc.so.6`, `busybox` | identical |
+| `initramfs.cpio.gz` | diagnosed and fixed, awaiting confirmation |
+| `Image` | diagnosed and fixed, awaiting confirmation |
+
+Three defects were found and each was one field, not a class of problem: gcc's
+own **MD5 self-checksum**, computed over `ar` archives whose member headers
+carry mtimes; the **inode field** in cpio's newc headers; and a **build
+timestamp** in the kernel's built-in initramfs, which leaked through because
+`gen_initramfs.sh` swallows a `date` parse failure with `|| :`. All three are
+recorded with their evidence in [`DERIVATIONS.md`](./DERIVATIONS.md).
+
 What remains is re-applying the invariants, which the spike track suspends —
 and the derivation phase in [`DERIVATIONS.md`](./DERIVATIONS.md), which turns a
 green run into an auditable one.
@@ -231,7 +250,7 @@ The empty directories are Veron proper and are written against the invariants. `
 - [`spikes/README.md`](./spikes/README.md) — the live pipeline, and what each spike answered
 - [`TRUST-BOUNDARY.md`](./TRUST-BOUNDARY.md) — what is trusted, what is verified, and the order that makes it a chain rather than a circle
 - [`AUDIT.md`](./AUDIT.md) — the seven audit criteria and where the ledger record schema will live
-- [`STAGE5.md`](./STAGE5.md) — the package set: ~150 upstreams in dependency order, the five that are most of the work, networking, and the firmware-blob problem
+- [`STAGE5.md`](./STAGE5.md) — the package set, and which jobs now answer its open questions: ~150 upstreams in dependency order, the five that are most of the work, networking, and the firmware-blob problem
 - [`DERIVATIONS.md`](./DERIVATIONS.md) — the derivation phase: content-addressed inputs and outputs, one script for laptop and runner, the reproducibility check, and a provenance graph that expands from any installed file down to the exact commands and back to the seed
 - [`spikes/builder/DESIGN.md`](./spikes/builder/DESIGN.md) — the driver shell and the bare-metal ARM64 builder: measured surface, syscall inventory, boot protocol, test targets
 - [`spikes/stage3/README.md`](./spikes/stage3/README.md) — the open rung
