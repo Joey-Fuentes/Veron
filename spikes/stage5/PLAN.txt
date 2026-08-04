@@ -534,7 +534,7 @@ package libtool 2.6.2
 package meson 1.10.1
   group        build-substrate
   license      Apache-2.0
-  recipe-sha   7e83f5d3707a068dbf393f8a5b6d2d4561713f5e2c09eb73072b52b85e899a57
+  recipe-sha   9a4496bf3ce39fea3668941f47157837ba9ec95478070eecf6d0551a5d2f40e8
 
   source
     url        https://github.com/mesonbuild/meson/releases/download/1.10.1/meson-1.10.1.tar.gz
@@ -555,7 +555,11 @@ package meson 1.10.1
     [02] install
          cwd  build/meson-1.10.1/meson-1.10.1
          SHELL (declared) why=copying a python package tree and writing an entry point is not an argv
-         | PY=$(python3 -c 'import sys; print(f"python{sys.version_info.major}.{sys.version_info.minor}")') && SITE=dest/meson/usr/lib/$PY/site-packages && mkdir -p "$SITE" dest/meson/usr/bin && cp -a mesonbuild "$SITE/" && cp -a meson.py dest/meson/usr/bin/meson && chmod 755 dest/meson/usr/bin/meson && sed -i '1s|.*|#!/usr/bin/python3|' dest/meson/usr/bin/meson && install -Dm644 data/shell-completions/bash/meson dest/meson/usr/share/bash-completion/completions/meson 2>/dev/null; echo "installed to $SITE and dest/meson/usr/bin/meson"; head -1 dest/meson/usr/bin/meson
+         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo "site-packages: $SITE"; mkdir -p "dest/meson$SITE" dest/meson/usr/bin; cp -a mesonbuild "dest/meson$SITE/"; cp -a meson.py dest/meson/usr/bin/meson; chmod 755 dest/meson/usr/bin/meson; sed -i '1s|.*|#!/usr/bin/python3|' dest/meson/usr/bin/meson; head -1 dest/meson/usr/bin/meson
+    [03] verify-install
+         cwd  build/meson-1.10.1/meson-1.10.1
+         SHELL (declared) why=this is a check on a filesystem layout, expressed as two probes
+         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo '--- import from the install location ---'; PYTHONPATH="dest/meson$SITE" python3 -c 'import mesonbuild; print("  mesonbuild from", mesonbuild.__file__)'; echo '--- run the installed script ---'; PYTHONPATH="dest/meson$SITE" python3 dest/meson/usr/bin/meson --version; echo '--- what the shebang points at ---'; head -1 dest/meson/usr/bin/meson; ls -l /usr/bin/python3
 
 ======================================================================
 package readline 8.3

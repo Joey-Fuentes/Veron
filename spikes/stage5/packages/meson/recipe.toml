@@ -51,16 +51,30 @@ cwd  = "$S"
 # INSTALLED FROM THE SOURCE TREE, NOT THROUGH pip.
 #
 # LFS builds meson with `pip3 wheel` then `pip3 install`, which needs pip,
-# setuptools and wheel. This sysroot has python3 and an empty site-packages --
+# setuptools and wheel. This sysroot has python3 and an EMPTY site-packages --
 # no pip at all -- so the LFS path would mean adding a Python packaging stack
-# to the base just to reach one tool.
+# to the base to reach one tool.
 #
-# meson is PURE PYTHON with nothing compiled, and upstream supports running it
+# meson is pure Python with nothing compiled, and upstream supports running it
 # straight from a checkout. So: copy the package onto the interpreter's path
-# and install the entry point. No new dependencies, no network, and the result
-# is the same interpreter running the same code.
+# and install the entry point.
 why  = "copying a python package tree and writing an entry point is not an argv"
-shell = "PY=$(python3 -c 'import sys; print(f\"python{sys.version_info.major}.{sys.version_info.minor}\")') && SITE=$D/usr/lib/$PY/site-packages && mkdir -p \"$SITE\" $D/usr/bin && cp -a mesonbuild \"$SITE/\" && cp -a meson.py $D/usr/bin/meson && chmod 755 $D/usr/bin/meson && sed -i '1s|.*|#!/usr/bin/python3|' $D/usr/bin/meson && install -Dm644 data/shell-completions/bash/meson $D/usr/share/bash-completion/completions/meson 2>/dev/null; echo \"installed to $SITE and $D/usr/bin/meson\"; head -1 $D/usr/bin/meson"
+shell = "set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo \"site-packages: $SITE\"; mkdir -p \"$D$SITE\" $D/usr/bin; cp -a mesonbuild \"$D$SITE/\"; cp -a meson.py $D/usr/bin/meson; chmod 755 $D/usr/bin/meson; sed -i '1s|.*|#!/usr/bin/python3|' $D/usr/bin/meson; head -1 $D/usr/bin/meson"
+
+[[steps]]
+name = "verify-install"
+cwd  = "$S"
+# RUN WHAT WAS JUST INSTALLED. A hand-rolled install has no `make install` to
+# be wrong in a familiar way, so the first run put meson somewhere the
+# interpreter did not look and nothing noticed until the guest reported
+# "/usr/bin/meson --version did not run" -- a whole build later, in a chroot,
+# with no way to see why.
+#
+# Two checks, because they fail differently: can the interpreter IMPORT the
+# package from where it was placed, and does the installed SCRIPT run.
+why  = "this is a check on a filesystem layout, expressed as two probes"
+shell = "set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo '--- import from the install location ---'; PYTHONPATH=\"$D$SITE\" python3 -c 'import mesonbuild; print(\"  mesonbuild from\", mesonbuild.__file__)'; echo '--- run the installed script ---'; PYTHONPATH=\"$D$SITE\" python3 $D/usr/bin/meson --version; echo '--- what the shebang points at ---'; head -1 $D/usr/bin/meson; ls -l /usr/bin/python3"
+
 [guest]
 test   = [["/usr/bin/meson", "--version"]]
 expect = ["1.10.1"]
