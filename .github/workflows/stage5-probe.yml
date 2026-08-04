@@ -26,6 +26,10 @@ on:
         # lookup above cannot find them from a GNU index. zstd and zlib have
         # GitHub releases; bzip2 (sourceware) and xz (tukaani) publish
         # elsewhere and their URLs go here directly.
+      source:
+        description: 'Ask Arch and Alpine where they fetch these packages from'
+        required: false
+        default: 'libinput dinit labwc mtdev sqlite tzdata'
       index:
         description: 'name=dir-URL pairs for non-GNU, non-GitHub projects'
         required: false
@@ -63,6 +67,19 @@ jobs:
           set -eu
           cd spikes/stage5
           python3 tools/probe.py latest ${{ inputs.latest }} | tee /tmp/latest.txt
+
+      # WHERE DOES EVERYONE ELSE GET IT? For packages whose forge publishes
+      # no release assets, the canonical download is not discoverable from the
+      # forge -- libinput has tags but no releases, and the freedesktop.org
+      # directory that looks canonical is FOUR YEARS STALE (1.19.4 against a
+      # 1.30.4 tag). Distro packagers already solved this and wrote the answer
+      # into their build files.
+      - name: 'Where distro packagers fetch these from'
+        if: inputs.source != ''
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 -u tools/probe.py source ${{ inputs.source }} | tee /tmp/source.txt
 
       - name: 'Newest tarball in a plain directory listing'
         if: inputs.index != ''
@@ -112,4 +129,5 @@ jobs:
             /tmp/latest.txt
             /tmp/probe.txt
             /tmp/index.txt
+            /tmp/source.txt
           retention-days: 30

@@ -211,6 +211,61 @@ def latest_gnu(project):
              for n in names if key(n) == key(names[-1])]}
 
 
+def packager_source(name):
+    """Where do Arch and Alpine actually FETCH this from?
+
+    Some projects publish no release assets at all -- libinput is the case
+    that forced this: its GitLab has tags but no releases, and the
+    freedesktop.org software directory that looks canonical is stale by four
+    years (1.19.4 against a 1.30.4 tag). Guessing a URL from that situation is
+    how you pin a four-year-old version or an auto-generated archive whose
+    checksum moves.
+    
+    Distro packagers had to solve this already, and they wrote the answer
+    down. Two independent packagers agreeing on a URL is real evidence; it is
+    the same corroboration argument the digest cross-check uses.
+    """
+    out = {}
+    arch = try_get("https://gitlab.archlinux.org/archlinux/packaging/packages/"
+                   f"{name}/-/raw/main/PKGBUILD", quiet=True)
+    if arch:
+        t = arch.decode("utf-8", "replace")
+        ver = re.search(r"^pkgver=(\S+)", t, re.M)
+        urls = re.findall(r"(?:https?|ftp)://[^\s\"')]+", t)
+        out["arch"] = {"version": ver.group(1) if ver else None,
+                       "urls": sorted(set(u for u in urls if "://" in u))[:6]}
+    for repo in ("main", "community"):
+        alp = try_get("https://gitlab.alpinelinux.org/alpine/aports/-/raw/master/"
+                      f"{repo}/{name}/APKBUILD", quiet=True)
+        if alp:
+            t = alp.decode("utf-8", "replace")
+            ver = re.search(r"^pkgver=(\S+)", t, re.M)
+            urls = re.findall(r"(?:https?|ftp)://[^\s\"')]+", t)
+            out["alpine"] = {"version": ver.group(1) if ver else None,
+                             "urls": sorted(set(urls))[:6]}
+            break
+    return out
+
+
+def cmd_source(a):
+    for name in a.name:
+        print(f"== {name}")
+        d = packager_source(name)
+        if not d:
+            print("   neither Arch nor Alpine packages this under that name")
+            continue
+        for who, v in sorted(d.items()):
+            print(f"   {who}  version {v['version']}")
+            for u in v["urls"]:
+                mark = ""
+                if "/-/archive/" in u or "/archive/refs/" in u:
+                    mark = "   <-- AUTO-GENERATED, checksum can move"
+                print(f"          {u}{mark}")
+        print("   ^ AGREEMENT between two independent packagers is the evidence.")
+        print("     A URL only one of them uses is a lead, not an answer.")
+    return 0
+
+
 def latest_index(url, name=None, include_pre=False):
     """Newest tarball in any HTML directory listing.
 
@@ -807,6 +862,10 @@ def main():
     p.add_argument("url", nargs="+")
     p.add_argument("--keep", action="store_true", help="keep the unpacked tree")
     p.set_defaults(fn=cmd_probe)
+
+    p = sub.add_parser("source", help="where Arch and Alpine actually fetch a package from")
+    p.add_argument("name", nargs="+")
+    p.set_defaults(fn=cmd_source)
 
     p = sub.add_parser("index", help="newest tarball in any directory listing")
     p.add_argument("url")
