@@ -212,6 +212,17 @@ jobs:
           set -eu
           cd spikes/stage5
           cp out/files.tsv out/files-run1.tsv
+
+          # RESTORE THE BUILD ROOT FIRST. Packages are now STAGED into the
+          # sysroot after install, so by the end of run 1 the box contains
+          # twelve packages that were not there when run 1 began. Rebuilding
+          # on top of that compares two different situations while reporting
+          # on reproducibility -- the same trap `--clean` closes for build/
+          # and dest/, one level up.
+          rm -rf sysroot && mkdir -p sysroot
+          tar -xf ../../dl-sysroot/sysroot.tar -C sysroot
+          echo "  build root restored to the published entry contract"
+
           # THE SANDBOX HAS TO RUN TEST SUITES, NOT JUST COMPILERS.
           #
           # m4's vendored gnulib suite hung for 66 minutes and then failed two

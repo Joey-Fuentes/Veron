@@ -474,6 +474,44 @@ def run_step(s, logf, dry):
     return rc
 
 
+def stage_into(destdir, sysroot):
+    """Make an installed package visible to the ones built after it.
+
+    WITHOUT THIS, `deps.build` IS DECORATION. Each package installs into its
+    own DESTDIR and nothing puts that on PATH, so a dependency edge orders the
+    build correctly and then does nothing. zstd's test suite calls file(1);
+    file built, installed to dest/file/usr/bin/file, and zstd still died with
+    "file: No such file or directory" -- the edge was right and the binary was
+    unreachable.
+
+    Every package so far was self-contained, which is why this survived twelve
+    of them before surfacing.
+
+    The DESTDIR remains the authority for the manifest and for G3: staging
+    COPIES into the build root and never reads back from it, so what a package
+    produced is still exactly what its own dest/ holds. The build root is
+    restored from the verified sysroot artifact at the start of every run, so
+    the mutation does not accumulate across runs.
+    """
+    n = 0
+    for dirpath, _, files in os.walk(destdir):
+        rel = os.path.relpath(dirpath, destdir)
+        target = sysroot if rel == "." else os.path.join(sysroot, rel)
+        os.makedirs(target, exist_ok=True)
+        for fn in files:
+            src = os.path.join(dirpath, fn)
+            dst = os.path.join(target, fn)
+            if os.path.islink(src):
+                link = os.readlink(src)
+                if os.path.lexists(dst):
+                    os.unlink(dst)
+                os.symlink(link, dst)
+            else:
+                shutil.copy2(src, dst)
+            n += 1
+    return n
+
+
 def cmd_build(a):
     recipes = load_recipes()
     policy = load_policy()
@@ -531,6 +569,10 @@ def cmd_build(a):
                             print(f"  --- diagnostic: {d['name']} ---")
                             run_step(d, logf, a.dry_run)
                     return 1
+            if a.stage and not a.dry_run:
+                n = stage_into(os.path.join(roots["dest"], name),
+                               roots["sysroot"])
+                print(f"    staged {n} paths into the build root")
         print(f"  VERON-PKG-BUILT  {name}")
     print("\nVERON-BUILD-OK  every package built")
     return 0
@@ -865,6 +907,20 @@ def cmd_selftest(a):
         finally:
             PKGDIR = saved
 
+    with tempfile.TemporaryDirectory() as td:
+        d = os.path.join(td, "dest", "p"); os.makedirs(os.path.join(d, "usr", "bin"))
+        open(os.path.join(d, "usr", "bin", "t"), "w").write("x")
+        os.symlink("t", os.path.join(d, "usr", "bin", "t2"))
+        root = os.path.join(td, "root"); os.makedirs(root)
+        n = stage_into(d, root)
+        staged = os.path.exists(os.path.join(root, "usr", "bin", "t"))
+        linked = os.path.islink(os.path.join(root, "usr", "bin", "t2"))
+        if n == 2 and staged and linked:
+            print("  ok    installed packages are staged into the build root")
+        else:
+            print(f"  FAIL  staging copied {n} paths, file={staged} link={linked}")
+            ok = False
+
     for name in ("plan", "fetch", "build", "manifest", "ledger",
                  "compare", "guest-tests", "status"):
         print(f"  ok    subcommand present: {name}")
@@ -983,6 +1039,8 @@ def main():
     p = sub.add_parser("build", help="execute exactly the plan")
     p.add_argument("pkg", nargs="*")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--no-stage", dest="stage", action="store_false", default=True,
+                   help="do not copy each package into the build root after install")
     p.add_argument("--optional", action="store_true",
                    help="also run steps marked optional (investigations)")
     p.add_argument("--clean", action="store_true",
