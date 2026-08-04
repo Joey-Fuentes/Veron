@@ -507,6 +507,44 @@ def run_step(s, logf, dry, may_create=False):
     return rc
 
 
+# EVERY BUILD SYSTEM WRITES ITS OWN LOG, AND NONE OF THEM PRINT IT.
+#
+# meson dies with "ERROR: Unhandled python exception / This is a Meson bug"
+# and puts the traceback in meson-logs/meson-log.txt. autotools prints
+# "configure: error: ..." and puts the test that actually failed in
+# config.log. cmake says "Configuring incomplete" and writes CMakeError.log.
+# In every case the console shows the symptom and the file holds the cause.
+#
+# THIS WAS BEING SOLVED ONE PACKAGE AT A TIME. m4 got a bespoke on_failure
+# step, then libtool got one, then glib needed another -- each written after a
+# failure, each costing a whole run to surface something the build had already
+# written down. A fixed list of filenames covers all 111 packages and every
+# build system in the set.
+BUILD_LOGS = (
+    "meson-logs/meson-log.txt",
+    "_b/meson-logs/meson-log.txt",
+    "config.log",
+    "CMakeFiles/CMakeError.log",
+    "CMakeFiles/CMakeOutput.log",
+    "_b/CMakeFiles/CMakeError.log",
+)
+
+
+def build_log_tail(cwd, lines=40):
+    """The build system's own explanation of what went wrong."""
+    out = []
+    for rel in BUILD_LOGS:
+        path = os.path.join(cwd, rel)
+        if not os.path.isfile(path):
+            continue
+        try:
+            text = open(path, errors="replace").read().splitlines()
+        except OSError:
+            continue
+        out.append((rel, len(text), text[-lines:]))
+    return out
+
+
 def step_context(s, rc):
     """When a step fails, say what the box looked like.
 
@@ -537,6 +575,21 @@ def step_context(s, rc):
                 print(f"    arg {tok} exists={ok}{extra}")
     except Exception as e:
         print(f"    (context unavailable: {type(e).__name__})")
+
+    # AND WHAT THE BUILD SYSTEM ITSELF SAID, inline. A failure that needs a
+    # second run to explain itself costs more than the run that produced it.
+    try:
+        logs = build_log_tail(s["cwd"])
+        if not logs:
+            # A step may fail before any log exists -- an unpack, say -- and
+            # saying so beats silence that reads like nothing was looked for.
+            print(f"    --- no build-system log under {s['cwd']} ---")
+        for rel, total, tail in logs:
+            print(f"    --- {rel}  (last {len(tail)} of {total} lines) ---")
+            for ln in tail:
+                print(f"    | {ln}")
+    except Exception as e:
+        print(f"    (build log unavailable: {type(e).__name__})")
 
 
 def stage_into(destdir, sysroot):

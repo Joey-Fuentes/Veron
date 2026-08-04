@@ -427,31 +427,30 @@ jobs:
       # before the upload, throwing that away every time. Two runs were spent
       # watching m4 stop after `PASS: test-error.sh` without ever learning
       # which test came next.
-      - name: 'Collect test logs from a failed build'
+      - name: 'Collect what a failed build wrote down'
         if: failure()
         run: |
           set -eu
           cd spikes/stage5
-          mkdir -p out/testlogs
-          # test-suite.log names the failures; the per-test logs say why. The
-          # LAST-MODIFIED one is the test that was running when time ran out.
-          find build -name 'test-suite.log' -o -name '*.log' -path '*tests*' \
-            2>/dev/null | head -400 | while read -r f; do
-              d=out/testlogs/$(echo "$f" | tr / _)
-              cp "$f" "$d" 2>/dev/null || true
+          mkdir -p out/logs
+          # NOT JUST TEST LOGS. This collected test-suite.log and per-test
+          # logs, which answered nothing when a package failed at CONFIGURE --
+          # and configure is where most of them fail. meson's traceback lives
+          # in meson-logs/meson-log.txt, autotools' actual failing test in
+          # config.log, cmake's in CMakeError.log. Each was previously chased
+          # with a bespoke on_failure step written after the run that needed
+          # it: m4, then libtool, then glib.
+          for pat in 'meson-log.txt' 'config.log' 'CMakeError.log' \
+                     'CMakeOutput.log' 'test-suite.log'; do
+            find build -name "$pat" 2>/dev/null | head -200 | while read -r f; do
+              cp "$f" "out/logs/$(echo "$f" | tr / _)" 2>/dev/null || true
             done
-          echo "  collected $(ls out/testlogs 2>/dev/null | wc -l) test logs"
-          echo ""
-          echo "  --- most recently written, i.e. what was running ---"
-          find build -path '*tests*' -name '*.log' -printf '%T@ %p\n' 2>/dev/null \
-            | sort -rn | head -5 | cut -d' ' -f2- | sed 's/^/    /'
-          echo ""
-          echo "  --- and the tail of the newest one ---"
-          NEWEST=$(find build -path '*tests*' -name '*.log' -printf '%T@ %p\n' \
-            2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
-          [ -n "$NEWEST" ] && { echo "    $NEWEST"; tail -30 "$NEWEST" | sed 's/^/    /'; }
+          done
+          # Per-test logs too, for the suites that write one file per test.
+          find build -name '*.log' -path '*tests*' 2>/dev/null | head -300 \
+            | while read -r f; do
+              cp "$f" "out/logs/$(echo "$f" | tr / _)" 2>/dev/null || true
+            done
+          echo "  collected $(ls out/logs 2>/dev/null | wc -l) log files"
+          ls out/logs 2>/dev/null | head -20 | sed 's|^|    |'
 
-      # ARTIFACT UPLOAD REMOVED. It was a 395 MB zip on every run, and the
-      # things worth keeping -- the markers, the manifest counts, the ledger
-      # -- are all in the job log. Restore it when there is something that
-      # needs downloading rather than reading.
