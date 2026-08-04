@@ -66,12 +66,16 @@ jobs:
           # answer. Installing them "just in case" would hide exactly the fact
           # this job exists to establish.
           sudo apt-get install -y -qq $(need \
-            build-essential meson ninja-build pkg-config python3 \
+            build-essential ninja-build pkg-config python3 python3-pip \
             python3-mako python3-yaml python3-pycparser bison flex \
             libdrm-dev libwayland-dev wayland-protocols \
             libwayland-egl-backend-dev libexpat1-dev zlib1g-dev libzstd-dev \
             llvm-dev libclang-dev libelf-dev)
-          echo "  apt done"
+          # UBUNTU 24.04 SHIPS MESON 1.3.2 AND MESA NEEDS >= 1.4.0. apt's
+          # meson is simply too old, and the previous run died at meson.build
+          # line 9 without resolving a single dependency.
+          sudo pip3 install --break-system-packages --quiet --upgrade meson
+          echo "  meson $(meson --version)  ninja $(ninja --version)"
 
       - name: 'Fetch the pinned mesa source'
         run: |
@@ -123,6 +127,14 @@ jobs:
         run: |
           set -eu
           echo "  =============================================="
+          if [ "${RC:-1}" != 0 ]; then
+            echo "  CONFIGURE FAILED -- NOTHING WAS MEASURED."
+            echo "  No conclusion about X11 or LLVM can be drawn from this run."
+            echo "  The cause:"
+            grep -iE "ERROR|not found" configure.log | head -10 | sed 's/^/    /'
+            echo "  =============================================="
+            exit 1
+          fi
           if grep -qiE "x11|xcb|xorg" configure.log; then
             echo "  X11 APPEARS IN THE CONFIGURE OUTPUT:"
             grep -inE "x11|xcb|xorg" configure.log | head -10
@@ -143,7 +155,7 @@ jobs:
           echo "  =============================================="
 
       - name: 'And again without LLVM, to price the difference'
-        if: always() && inputs.also_try_no_llvm
+        if: env.RC == '0' && inputs.also_try_no_llvm
         run: |
           set -eu
           set +e
