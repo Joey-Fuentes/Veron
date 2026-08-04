@@ -1,0 +1,93 @@
+name: stage5-closure
+
+# MAP THE PACKAGE SET BACKWARDS, before writing any more recipes.
+#
+# STAGE5.md's groups were written by reading dependency graphs by hand, and it
+# says so: "counts below are from reading dependency graphs, not from building
+# them... 200+ is the honest budget once dependency tails are resolved rather
+# than estimated." A forward list finds what it is missing when a build fails,
+# one package at a time, at the bottom of a stack.
+#
+# Backwards is cheaper. Name what the system must DO, and let the closure say
+# what that costs -- including what the deliberate exclusions cost, which is
+# the number nobody has.
+#
+# THIS WRITES NO RECIPES AND CHANGES NO BUILD. It produces a map to argue
+# with: Arch's and Alpine's dependencies follow THEIR configure flags, and
+# Veron disables more, so the real closure should be smaller. Every difference
+# is a flag decision that has not been made yet.
+
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: 'What the system must do, as packages'
+        required: false
+        default: 'labwc foot mesa wpa_supplicant dhcpcd curl util-linux e2fsprogs shadow'
+      source:
+        description: 'Whose dependency metadata to believe'
+        type: choice
+        options: [arch, alpine]
+        default: arch
+      build_deps:
+        description: 'Follow makedepends too (much larger closure)'
+        type: boolean
+        default: false
+      exclude:
+        description: 'Excluded by POLICY, not by absence'
+        required: false
+        default: 'systemd,dbus,polkit,elogind,libx11,xorg-server,libxcb,wayland-protocols-x11'
+
+concurrency:
+  group: stage5-closure-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  closure:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Walk the closure'
+        run: |
+          set -eu
+          cd spikes/stage5
+          # WHAT WE ALREADY HAVE, in the metadata source's package names.
+          # Everything stage 4 provides, plus group 1 as built. Anything in
+          # this list stops the walk, so getting it wrong inflates the answer.
+          HAVE=gcc,glibc,linux,busybox,make,gmp,mpfr,libmpc,m4,bison,flex,perl,python,gawk,openssl,bc,binutils,zlib,xz,bzip2,zstd,ncurses,pkgconf,autoconf,automake,libtool
+          python3 -u tools/closure.py ${{ inputs.targets }} \
+            --have "$HAVE" \
+            --exclude '${{ inputs.exclude }}' \
+            --source ${{ inputs.source }} \
+            ${{ inputs.build_deps && '--build-deps' || '' }} \
+            --json closure.json | tee closure.txt
+
+      - name: 'How to read this'
+        if: always()
+        run: |
+          echo "  CLOSURE        every package the targets reach, in build order."
+          echo "                 Compare it with STAGE5.md's groups: what it adds"
+          echo "                 is what the hand-written list missed, and what it"
+          echo "                 omits is a package nothing actually needs."
+          echo ""
+          echo "  CYCLES         real bootstrap loops, found by SCC rather than by"
+          echo "                 'the sort got stuck'. Each needs a two-pass build"
+          echo "                 or an edge broken by a flag."
+          echo ""
+          echo "  EXCLUDED       the cost of the no-systemd/no-dbus/no-X11 choices,"
+          echo "                 as a list of who reaches for them. This is the"
+          echo "                 section that turns a policy into a number."
+          echo ""
+          echo "  NOT FOUND      a distro-specific name, a virtual provider, or"
+          echo "                 genuinely absent. Each needs a human look."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage5-closure
+          path: |
+            spikes/stage5/closure.txt
+            spikes/stage5/closure.json
+          retention-days: 30
