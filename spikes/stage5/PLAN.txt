@@ -109,7 +109,7 @@ package hello 2.12.3
 package m4 1.4.21
   group        build-substrate
   license      GPL-3.0-or-later
-  recipe-sha   92243dc43521f0f1cb1aac5ad78813b1ef666774be41253bd7557564a0c18c4a
+  recipe-sha   3db0c7cbc217f4f0cf7cb4a27b44d126313fe02991c9cb65b0aaaf4760472b57
 
   source
     url        https://ftp.gnu.org/gnu/m4/m4-1.4.21.tar.xz
@@ -133,10 +133,20 @@ package m4 1.4.21
     [03] build
          cwd  build/m4-1.4.21/m4-1.4.21
          argv ["make", "-j1"]
-    [04] check
+    [04] which-test-is-next
+         cwd  build/m4-1.4.21/m4-1.4.21/tests
+         SHELL (declared) why=reading the TESTS order out of a Makefile is grep work, not an argv
+         | tr ' ' '\n' < Makefile | grep -n 'test-[a-z0-9-]*' | sed -n '/test-error/,+10p'
+    [05] check
          cwd  build/m4-1.4.21/m4-1.4.21
+         env  LOG_COMPILER=timeout
+         env  LOG_FLAGS=-v 60
          argv ["make", "check", "VERBOSE=yes"]
-    [05] install
+    [06] why-it-failed
+         cwd  build/m4-1.4.21/m4-1.4.21/tests
+         SHELL (declared) why=a diagnostic is a pipeline of greps over log files, not an argv
+         | echo '=== test-suite.log ==='; tail -80 test-suite.log 2>/dev/null; echo; echo '=== non-passing test logs ==='; grep -lE '^(FAIL|ERROR)' *.log 2>/dev/null | head -10 | while read f; do echo "--- $f"; tail -30 "$f"; done
+    [07] install
          cwd  build/m4-1.4.21/m4-1.4.21
          argv ["make", "DESTDIR=dest/m4", "install"]
 

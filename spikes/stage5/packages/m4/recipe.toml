@@ -53,19 +53,40 @@ cwd  = "$S"
 run  = [["make", "-j$J"]]
 
 [[steps]]
+# NAME THE NEXT TEST WITHOUT RUNNING IT. The suite stops after
+# `PASS: test-error.sh` every time. The order is not alphabetical guesswork --
+# it is the TESTS variable in tests/Makefile. Printing the entries after
+# test-error identifies the culprit in one second, with no hang required.
+name = "which-test-is-next"
+cwd  = "$S/tests"
+timeout = 60
+why = "reading the TESTS order out of a Makefile is grep work, not an argv"
+shell = "tr ' ' '\\n' < Makefile | grep -n 'test-[a-z0-9-]*' | sed -n '/test-error/,+10p'"
+
+[[steps]]
 name = "check"
 cwd  = "$S"
-# THIS IS THE STEP THAT HUNG. m4's suite runs the full gnulib unit tests, and
-# a run sat on one line for 66 MINUTES after `PASS: test-error.sh` before a
-# human cancelled it. 20 minutes is comfortably more than the suite needs and
-# short enough that the next hang names itself rather than costing an
-# afternoon of someone watching a log that has stopped moving.
-timeout = 1200
-# VERBOSE=yes makes automake's harness print each test's log inline as it
-# finishes, so the console shows what the .log files say without waiting for
-# the artifact -- and the test that hangs is then the one whose output never
-# arrives, named rather than inferred from what came before it.
+# 60 SECONDS PER TEST, NOT PER SUITE. automake runs every test through
+# LOG_COMPILER, so `timeout -v 60` turns a hanging test into an ordinary FAIL
+# with an exit status and a .log file. The suite then RUNS TO COMPLETION and
+# names every hanging test at once, instead of one per CI round trip.
+#
+# A gnulib unit test that needs more than 60 seconds is already a bug, so this
+# does not mask a slow machine -- it converts a hang into evidence.
+timeout = 1800
+env = { LOG_COMPILER = "timeout", LOG_FLAGS = "-v 60" }
 run  = [["make", "check", "VERBOSE=yes"]]
+
+[[steps]]
+# WHATEVER FAILED, SAY WHAT IT WAS. Runs only when a previous step failed,
+# which is exactly when the evidence exists and when the run would otherwise
+# have thrown it away.
+name = "why-it-failed"
+cwd  = "$S/tests"
+timeout = 120
+on_failure = true
+why = "a diagnostic is a pipeline of greps over log files, not an argv"
+shell = "echo '=== test-suite.log ==='; tail -80 test-suite.log 2>/dev/null; echo; echo '=== non-passing test logs ==='; grep -lE '^(FAIL|ERROR)' *.log 2>/dev/null | head -10 | while read f; do echo \"--- $f\"; tail -30 \"$f\"; done"
 
 [[steps]]
 name = "install"

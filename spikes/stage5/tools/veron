@@ -164,6 +164,18 @@ def step_env(pkg, r, policy, roots):
     }
 
 
+# KEYS A RECIPE MAY SET THAT THE PLAN MUST CARRY. expand() builds each step
+# from a fixed set of keys, so anything not listed here is silently dropped
+# between the recipe and the plan -- `timeout` and `on_failure` both were,
+# and a per-step timeout that never reaches run_step is worse than none,
+# because the recipe says it is protected and it is not.
+CARRIED_KEYS = ("timeout", "on_failure")
+
+
+def carried(s):
+    return {k: s[k] for k in CARRIED_KEYS if k in s}
+
+
 def expand(recipes, policy, roots):
     """Recipes -> the fully literal step list. This is the whole plan."""
     plan = []
@@ -185,6 +197,7 @@ def expand(recipes, policy, roots):
                     "why": s["why"],
                     "cwd": subst(s.get("cwd", "$S"), env),
                     "env": {k: subst(v, env) for k, v in s.get("env", {}).items()},
+                    **carried(s),
                 })
             else:
                 senv = {k: subst(v, env) for k, v in s.get("env", {}).items()}
@@ -194,6 +207,7 @@ def expand(recipes, policy, roots):
                         "argv": [subst(a, env) for a in argv],
                         "cwd": subst(s.get("cwd", "$S"), env),
                         "env": senv,
+                        **carried(s),
                     })
         plan.append({"pkg": name, "recipe": r, "env": env, "steps": steps})
     return plan
@@ -495,10 +509,22 @@ def cmd_build(a):
         with open(os.path.join(a.logs, f"{name}.log"), "w") as logf:
             logf.write(f"package {name} {p['recipe']['version']}\n")
             for s in p["steps"]:
+                if s.get("on_failure"):
+                    continue          # only runs when something else fails
                 rc = run_step(s, logf, a.dry_run)
                 if rc != 0:
                     print(f"VERON-BUILD-FAIL  {name}: step '{s['name']}' rc={rc}",
                           file=sys.stderr)
+                    # DIAGNOSE BEFORE DYING. A failing step usually leaves the
+                    # evidence on disk -- a test suite's .log files, a config.log
+                    # -- and aborting immediately throws it away. Two rounds were
+                    # spent watching m4's suite stop at the same line without
+                    # ever seeing which test came next, because the run died
+                    # before anything could look.
+                    for d in p["steps"]:
+                        if d.get("on_failure"):
+                            print(f"  --- diagnostic: {d['name']} ---")
+                            run_step(d, logf, a.dry_run)
                     return 1
         print(f"  VERON-PKG-BUILT  {name}")
     print("\nVERON-BUILD-OK  every package built")
