@@ -68,19 +68,29 @@ def latest_gnu(project):
     d = try_get(f"https://ftp.gnu.org/gnu/{project}/")
     if not d:
         return None
-    names = re.findall(rf'href="({re.escape(project)}-[0-9][^"]*\.tar\.[gx]z)"',
-                       d.decode("utf-8", "replace"))
+    html = d.decode("utf-8", "replace")
+    # .tar.lz and .tar.bz2 are common on ftp.gnu.org too; the first pattern
+    # only matched gz/xz and would have silently reported "not found" for a
+    # project that publishes neither.
+    names = re.findall(
+        rf'href="({re.escape(project)}-[0-9][^"]*\.tar\.(?:gz|xz|bz2|lz))"', html)
     if not names:
         return None
 
+    def ver(n):
+        # The trailing dot matters: "[0-9][0-9.]*" greedily eats the "." in
+        # ".tar.xz" and yields "1.4.20." -- which then sorts and prints wrong.
+        return re.search(rf"{re.escape(project)}-([0-9]+(?:\.[0-9]+)*)", n).group(1)
+
     def key(n):
-        v = re.search(rf"{re.escape(project)}-([0-9.]+)", n).group(1)
-        return [int(x) for x in v.strip(".").split(".") if x.isdigit()]
+        return [int(x) for x in ver(n).strip(".").split(".") if x.isdigit()]
 
     names = sorted(set(names), key=key)
-    return {"version": key(names[-1]), "assets":
+    # VERSION AS A STRING. This returned the sort key -- a list of ints -- so
+    # the report printed "[1, 4, 20]" where a version belonged.
+    return {"version": ver(names[-1]), "assets":
             [{"name": n, "url": f"https://ftp.gnu.org/gnu/{project}/{n}"}
-             for n in names[-3:]]}
+             for n in names if key(n) == key(names[-1])]}
 
 
 # ------------------------------------------------------------ inspection
@@ -287,12 +297,20 @@ def cmd_probe(a):
 
 def cmd_latest(a):
     for spec in a.spec:
-        if "/" in spec:
-            r = latest_github(spec)
-            src = f"github:{spec}"
+        # THE PREFIX WAS DOCUMENTED AND NEVER PARSED. "gnu:m4" was passed
+        # whole to the GNU lookup, which fetched /gnu/gnu:m4/ and reported
+        # "could not determine" -- the doubled "gnu:gnu:" in the output was
+        # the tell. Accept the documented form, a bare name, and owner/repo.
+        if spec.startswith("gnu:"):
+            name = spec[4:]
+            r, src = latest_gnu(name), f"gnu:{name}"
+        elif spec.startswith("github:"):
+            name = spec[7:]
+            r, src = latest_github(name), f"github:{name}"
+        elif "/" in spec:
+            r, src = latest_github(spec), f"github:{spec}"
         else:
-            r = latest_gnu(spec)
-            src = f"gnu:{spec}"
+            r, src = latest_gnu(spec), f"gnu:{spec}"
         print(f"== {src}")
         if not r:
             print("   could not determine -- check the project's release page by hand")

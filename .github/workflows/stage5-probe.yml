@@ -22,10 +22,14 @@ on:
         description: 'Tarball URLs to probe (space-separated)'
         required: false
         default: ''
+        # zlib, bzip2, xz and zstd are not GNU projects, so the `latest`
+        # lookup above cannot find them from a GNU index. zstd and zlib have
+        # GitHub releases; bzip2 (sourceware) and xz (tukaani) publish
+        # elsewhere and their URLs go here directly.
       latest:
         description: 'Find newest releases: gnu:<project> or <owner>/<repo>, space-separated'
         required: false
-        default: 'gnu:m4 gnu:autoconf gnu:automake gnu:libtool gnu:ncurses'
+        default: 'gnu:m4 gnu:autoconf gnu:automake gnu:libtool gnu:ncurses facebook/zstd madler/zlib'
 
 concurrency:
   group: stage5-probe-${{ github.ref }}
