@@ -128,6 +128,11 @@ jobs:
           mv "wpewebkit-$V" src
           echo "  source lines (rough): $(find src -name '*.cpp' -o -name '*.h' -o -name '*.c' | wc -l) files"
 
+      # USE_LIBBACKTRACE also defaults ON and hard-fails without libbacktrace,
+      # which Ubuntu does not package at all (it ships inside gcc). It only
+      # improves crash backtraces. USE_SYSPROF_CAPTURE is pre-emptively off
+      # for the same reason -- profiling, not function.
+      #
       # USE_LIBHYPHEN defaults ON and hard-fails configure without libhyphen
       # -- "libhyphen is needed for USE_LIBHYPHEN". It only provides CSS
       # hyphenation of justified text, so it is off here; if you want that
@@ -139,6 +144,22 @@ jobs:
       # that can actually be measured here -- and it is also the one Igalia
       # recommends new projects adopt, since the legacy path is deprecated
       # when WPEPlatform becomes default in 2.54.
+      # THE WHOLE MENU, BEFORE GUESSING AT IT. Two runs were spent finding
+      # one default-ON option at a time -- USE_LIBHYPHEN, then
+      # USE_LIBBACKTRACE -- each costing a round trip to learn a single line
+      # of OptionsWPE.cmake. The file lists every option and its default; read
+      # it once and the guessing stops.
+      - name: 'Every build option WPE offers, and its default'
+        run: |
+          set -eu
+          echo "  --- options declared in OptionsWPE.cmake ---"
+          grep -hoE '(WEBKIT_OPTION_DEFINE|WEBKIT_OPTION_DEFAULT_PORT_VALUE)\([A-Z_]+ [^)]*' \
+            src/Source/cmake/OptionsWPE.cmake 2>/dev/null \
+            | sed 's/WEBKIT_OPTION_[A-Z_]*(//' | sort -u | head -80 || true
+          echo ""
+          echo "  --- options that HARD-FAIL when their library is absent ---"
+          grep -nE 'is (required|needed) for' src/Source/cmake/OptionsWPE.cmake || true
+
       - name: 'Configure'
         run: |
           set -eu
@@ -160,6 +181,8 @@ jobs:
             -DUSE_JPEGXL=OFF \
             -DUSE_LCMS=OFF \
             -DUSE_LIBHYPHEN=OFF \
+            -DUSE_LIBBACKTRACE=OFF \
+            -DUSE_SYSPROF_CAPTURE=OFF \
             -DENABLE_MINIBROWSER=ON \
             $( [ "${{ inputs.gstreamer }}" = "true" ] || echo "-DUSE_GSTREAMER=OFF" ) \
             2>&1 | tee configure.log
