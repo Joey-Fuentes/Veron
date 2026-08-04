@@ -236,6 +236,9 @@ def main():
     p = sub.add_parser("show", help="one package, as the book states it")
     p.add_argument("pkg", nargs="+")
 
+    p = sub.add_parser("urls", help="download URL per package, for the batch probe")
+    p.add_argument("pkg", nargs="+")
+
     p = sub.add_parser("closure", help="backward closure over the book")
     p.add_argument("targets", nargs="+")
     p.add_argument("--have", default="")
@@ -247,6 +250,21 @@ def main():
     a = ap.parse_args()
     idx = load(a.book)
     print(f"  book: {len(idx)} package pages", flush=True)
+
+    if a.cmd == "urls":
+        # The book already knows every download URL. Typing 46 of them by
+        # hand is how a wrong one gets pinned, so they come from the data.
+        missing = 0
+        for key in a.pkg:
+            page = resolve(idx, key)
+            if not page or not idx[page]["url"]:
+                print(f"# NOT FOUND: {key}", file=sys.stderr)
+                missing += 1
+                continue
+            print(idx[page]["url"])
+        if missing:
+            print(f"# {missing} package(s) had no URL in the book", file=sys.stderr)
+        return 0
 
     if a.cmd == "show":
         for key in a.pkg:

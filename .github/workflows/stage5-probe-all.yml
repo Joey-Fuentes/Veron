@@ -1,0 +1,125 @@
+name: stage5-probe-all
+
+# EVERY REMAINING PACKAGE, IN ONE SEQUENTIAL PASS.
+#
+# 46 packages still have only a BLFS version and MD5 -- no sha256 of our own,
+# no signature status, no licence check, no declared dependencies. That is the
+# bulk of the remaining work and it is entirely mechanical, so it should be
+# one run rather than 46 decisions.
+#
+# THE URLS COME FROM THE BOOK, NOT FROM TYPING. `blfs urls` emits the download
+# URL for each named package; typing 46 URLs by hand is how a wrong one gets
+# pinned.
+#
+# ONE BAD URL MUST NOT COST THE OTHER 45. Every probe is isolated: failures
+# are written as rows and the run continues. The TSV is also resumable, so a
+# cancelled or timed-out job costs only what it had not reached.
+
+on:
+  workflow_dispatch:
+    inputs:
+      book:
+        description: 'Path to the unpacked BLFS book in the repo'
+        required: false
+        default: 'spikes/stage5/blfs-book'
+      extra_urls:
+        description: 'Extra URLs to probe (space-separated), for non-BLFS packages'
+        required: false
+        default: >-
+          https://www.sqlite.org/2026/sqlite-autoconf-3530400.tar.gz
+          https://data.iana.org/time-zones/releases/tzdata2026c.tar.gz
+          https://data.iana.org/time-zones/releases/tzcode2026c.tar.gz
+
+concurrency:
+  group: stage5-probe-all-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Build the URL list from the book'
+        run: |
+          set -eu
+          cd spikes/stage5
+          if [ ! -d "${{ inputs.book }}" ]; then
+            echo "  NO BOOK AT ${{ inputs.book }}"
+            echo "  The BLFS book is not in the repo. Unpack it there, or"
+            echo "  pass every URL through extra_urls instead. This step is"
+            echo "  deliberately not downloading the book: it is a 14 MB"
+            echo "  pinned snapshot and it belongs in the tree, not fetched"
+            echo "  fresh on every run."
+            : > urls.txt
+          else
+            # THE 46. Grouped as they appear in the build order, so a failure
+            # is easy to place. Names are BLFS page names, resolved case-
+            # insensitively by the reader.
+            # NINE PACKAGES ARE NOT IN STABLE BLFS 13.0 and are handled
+            # separately rather than left to fail:
+            #   ninja meson gperf libffi pcre2 expat readline  -- these are
+            #     LFS packages, not BLFS; BLFS assumes them present.
+            #   seatd wlroots  -- new in the DEVELOPMENT book only. The whole
+            #     wlroots compositor stack therefore has no stable-book
+            #     corroboration, which is worth knowing: labwc, foot, fuzzel
+            #     and yambar were already uncorroborated, and so is the layer
+            #     beneath them.
+            # Probe those with stage5-probe `latest`:
+            #   ninja-build/ninja mesonbuild/meson libexpat/libexpat
+            #   libffi/libffi PCRE2Project/pcre2 gnu:readline gnu:gperf
+            #   fdo:wlroots/wlroots  (seatd is on sourcehut -- no API yet)
+            python3 tools/blfs.py --book "${{ inputs.book }}" urls \
+              libxml2 \
+              libarchive icu curl cmake git \
+              freetype fribidi graphite2 harfbuzz fontconfig \
+              libpng libjpeg-turbo libwebp pixman glib cairo pango \
+              libepoxy xkeyboard-config libxkbcommon \
+              libgpg-error libgcrypt libtasn1 nettle gnutls libpsl \
+              nghttp2 glib-networking libsoup3 p11-kit nspr nss make-ca \
+              opus libvpx dav1d ffmpeg gstreamer \
+              gst10-plugins-base gst10-plugins-good gst10-plugins-bad \
+              gst10-plugins-ugly gst10-libav \
+              bubblewrap ruby libyaml unifdef llvm \
+              > urls.txt 2> notfound.txt || true
+            echo "  --- packages the book had no URL for ---"
+            cat notfound.txt || true
+          fi
+          for u in ${{ inputs.extra_urls }}; do echo "$u" >> urls.txt; done
+          echo ""
+          echo "  $(wc -l < urls.txt) URLs to probe"
+
+      - name: 'Probe every one of them'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 -u tools/probe.py batch urls.txt --out probed.tsv || true
+
+      - name: 'The table'
+        if: always()
+        run: |
+          set -eu
+          cd spikes/stage5
+          [ -s probed.tsv ] || { echo "  nothing probed"; exit 0; }
+          echo "  === RESULTS ==="
+          awk -F'\t' 'NR>1 {printf "  %-22s %-12s %-16s %s\n", $1, $3, substr($4,1,14), $6}' probed.tsv
+          echo ""
+          echo "  === NO SIGNATURE (criterion 1 gap, declare the deferral) ==="
+          awk -F'\t' 'NR>1 && $5=="none" {print "    " $1}' probed.tsv
+          echo ""
+          echo "  === NO TEST SUITE (declare verification as none) ==="
+          awk -F'\t' 'NR>1 && $8 ~ /NONE/ {print "    " $1}' probed.tsv
+          echo ""
+          echo "  === FAILED, needs a human ==="
+          awk -F'\t' '$1=="FAILED" {print "    " $2}' probed.tsv
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage5-probed
+          path: |
+            spikes/stage5/probed.tsv
+            spikes/stage5/urls.txt
+            spikes/stage5/notfound.txt
+          retention-days: 30

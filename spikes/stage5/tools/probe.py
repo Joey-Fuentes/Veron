@@ -211,6 +211,18 @@ def latest_gnu(project):
              for n in names if key(n) == key(names[-1])]}
 
 
+def _looks_like_html(b):
+    """A 404 page is not a build file.
+
+    GitLab serves a full HTML error page with HTTP 200-looking content for a
+    missing raw file, and the URL regex scraped it -- dinit was reported as
+    sourced from about.gitlab.com and forum.gitlab.com. Anything that opens
+    with a doctype or an html tag is not a PKGBUILD.
+    """
+    head = b[:400].lower()
+    return b"<!doctype" in head or b"<html" in head
+
+
 def packager_source(name):
     """Where do Arch and Alpine actually FETCH this from?
 
@@ -228,7 +240,7 @@ def packager_source(name):
     out = {}
     arch = try_get("https://gitlab.archlinux.org/archlinux/packaging/packages/"
                    f"{name}/-/raw/main/PKGBUILD", quiet=True)
-    if arch:
+    if arch and not _looks_like_html(arch):
         t = arch.decode("utf-8", "replace")
         ver = re.search(r"^pkgver=(\S+)", t, re.M)
         urls = re.findall(r"(?:https?|ftp)://[^\s\"')]+", t)
@@ -237,7 +249,7 @@ def packager_source(name):
     for repo in ("main", "community"):
         alp = try_get("https://gitlab.alpinelinux.org/alpine/aports/-/raw/master/"
                       f"{repo}/{name}/APKBUILD", quiet=True)
-        if alp:
+        if alp and not _looks_like_html(alp):
             t = alp.decode("utf-8", "replace")
             ver = re.search(r"^pkgver=(\S+)", t, re.M)
             urls = re.findall(r"(?:https?|ftp)://[^\s\"')]+", t)
@@ -261,8 +273,12 @@ def cmd_source(a):
                 if "/-/archive/" in u or "/archive/refs/" in u:
                     mark = "   <-- AUTO-GENERATED, checksum can move"
                 print(f"          {u}{mark}")
-        print("   ^ AGREEMENT between two independent packagers is the evidence.")
-        print("     A URL only one of them uses is a lead, not an answer.")
+        if len(d) > 1:
+            print("   ^ TWO independent packagers -- agreement here is real evidence.")
+        else:
+            print(f"   ^ ONLY {list(d)[0]} answered. One packager is a LEAD, not")
+            print("     corroboration -- the whole point of asking two is that")
+            print("     they downloaded at different times from different networks.")
     return 0
 
 
@@ -605,7 +621,7 @@ def crosscheck(name, version):
 # ------------------------------------------------------------ report
 
 
-def probe(url, keep=False):
+def probe(url, keep=False, quiet_report=False):
     name = url.rsplit("/", 1)[-1]
     print(f"== {name}")
     print(f"   {url}")
@@ -728,11 +744,75 @@ configure_flags = []   # JUDGEMENT: the probe lists options, you choose
 verification    = ""   # what `make check` actually reports, once run
 deferral        = ""   # REQUIRED -- what was not verified, stated
 ''')
+    result = {"name": pname, "version": pver, "sha256": digest,
+              "signature": sig, "license": spdx,
+              "build": "; ".join(build_system(root)),
+              "tests": test_target(root),
+              "deps": {x for v in d.values() for x in v}}
     if not keep:
         shutil.rmtree(work, ignore_errors=True)
     else:
         print(f"   (unpacked tree kept at {root})")
-    return digest
+    return result
+
+
+def cmd_batch(a):
+    """Probe a list of URLs sequentially, isolating every failure.
+
+    46 packages in one pass, and the point is that ONE bad URL must not cost
+    the other 45 -- the apt step already taught that lesson when a single
+    wrong package name killed a five-hour measurement. Each probe is wrapped,
+    failures are recorded as rows rather than exceptions, and the run
+    continues.
+
+    RESUMABLE. A partial TSV is read back on start and already-probed URLs
+    are skipped, so a timeout or a cancelled job costs only what it had not
+    reached yet.
+    """
+    done = {}
+    if a.out and os.path.exists(a.out):
+        for ln in open(a.out):
+            f = ln.rstrip("\n").split("\t")
+            if len(f) > 1 and not ln.startswith("#"):
+                done[f[1]] = ln
+        print(f"  resuming: {len(done)} already probed", flush=True)
+
+    urls = [u.strip() for u in open(a.list) if u.strip() and not u.startswith("#")]
+    rows = []
+    ok = fail = 0
+    for i, url in enumerate(urls, 1):
+        if url in done:
+            rows.append(done[url].rstrip("\n"))
+            continue
+        print(f"\n===== [{i}/{len(urls)}] {url}", flush=True)
+        try:
+            r = probe(url, keep=False, quiet_report=a.quiet)
+        except Exception as e:
+            print(f"   PROBE RAISED: {type(e).__name__}: {str(e)[:120]}", flush=True)
+            r = None
+        if r:
+            rows.append("\t".join([
+                r["name"], url, r["version"], r["sha256"],
+                r["signature"] or "none", r["license"], r["build"],
+                r["tests"], ";".join(sorted(r["deps"]))]))
+            ok += 1
+        else:
+            rows.append("\t".join(["FAILED", url, "", "", "", "", "", "", ""]))
+            fail += 1
+        if a.out:
+            with open(a.out, "w") as f:
+                f.write("# name\turl\tversion\tsha256\tsignature\tlicense\t"
+                        "build\ttests\tdeps\n")
+                f.write("\n".join(rows) + "\n")
+
+    print(f"\n  ===== BATCH DONE: {ok} probed, {fail} failed =====")
+    if fail:
+        print("  Failures are ROWS, not a stopped run -- each one needs a look,")
+        print("  and the other results are already written.")
+        for r in rows:
+            if r.startswith("FAILED"):
+                print(f"    {r.split(chr(9))[1]}")
+    return 1 if fail else 0
 
 
 def cmd_probe(a):
@@ -873,6 +953,12 @@ def main():
     p.add_argument("--include-pre", action="store_true",
                    help="do not filter out rc/alpha/beta/dev tarballs")
     p.set_defaults(fn=cmd_index)
+
+    p = sub.add_parser("batch", help="probe a file of URLs sequentially, resumable")
+    p.add_argument("list", help="file with one URL per line")
+    p.add_argument("--out", help="TSV to write (and resume from)")
+    p.add_argument("--quiet", action="store_true")
+    p.set_defaults(fn=cmd_batch)
 
     p = sub.add_parser("linked", help="the real deps: what a built DESTDIR links")
     p.add_argument("destdir")
