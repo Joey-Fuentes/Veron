@@ -98,6 +98,7 @@ jobs:
             libinput-dev libudev-dev \
             libatk1.0-dev libatk-bridge2.0-dev \
             libseccomp-dev libsysprof-capture-4-dev \
+            bubblewrap xdg-dbus-proxy \
             libwpe-1.0-dev libwpebackend-fdo-1.0-dev)
 
           if [ "${{ inputs.gstreamer }}" = "true" ]; then
@@ -128,6 +129,13 @@ jobs:
           mv "wpewebkit-$V" src
           echo "  source lines (rough): $(find src -name '*.cpp' -o -name '*.h' -o -name '*.c' | wc -l) files"
 
+      # THE SANDBOX STAYS ON. bwrap is a program rather than a library, and
+      # this project already runs its whole ladder inside a bubblewrap box --
+      # so bubblewrap ships in the OS regardless, for users to rebuild Veron
+      # on Veron. That makes WebKit's sandbox free: no new dependency, and
+      # browsing the open web without process isolation is not a trade worth
+      # making to save a package that is already there.
+      #
       # USE_LIBBACKTRACE also defaults ON and hard-fails without libbacktrace,
       # which Ubuntu does not package at all (it ships inside gcc). It only
       # improves crash backtraces. USE_SYSPROF_CAPTURE is pre-emptively off
@@ -157,8 +165,11 @@ jobs:
             src/Source/cmake/OptionsWPE.cmake 2>/dev/null \
             | sed 's/WEBKIT_OPTION_[A-Z_]*(//' | sort -u | head -80 || true
           echo ""
-          echo "  --- options that HARD-FAIL when their library is absent ---"
-          grep -nE 'is (required|needed) for' src/Source/cmake/OptionsWPE.cmake || true
+          echo "  --- everything that HARD-FAILS when its dependency is absent ---"
+          echo "  (all of Source/cmake, not just OptionsWPE.cmake -- the bwrap"
+          echo "   check lives in BubblewrapSandboxChecks.cmake and was missed)"
+          grep -rnE 'FATAL_ERROR "[^"]*(is (required|needed)|needs)' \
+            src/Source/cmake/ 2>/dev/null | sed 's|src/Source/cmake/||' || true
 
       - name: 'Configure'
         run: |
