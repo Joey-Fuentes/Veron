@@ -396,6 +396,36 @@ jobs:
             echo "VERON-SELFHOST-ABSENT  the gate did not run and did not skip"
           fi
 
+      # WHEN A TEST SUITE HANGS, THE ANSWER IS ALREADY ON DISK. automake's
+      # harness writes a .log per test as it runs, so the test that hung has
+      # a log file sitting in the build tree -- and the run has been dying
+      # before the upload, throwing that away every time. Two runs were spent
+      # watching m4 stop after `PASS: test-error.sh` without ever learning
+      # which test came next.
+      - name: 'Collect test logs from a failed build'
+        if: failure()
+        run: |
+          set -eu
+          cd spikes/stage5
+          mkdir -p out/testlogs
+          # test-suite.log names the failures; the per-test logs say why. The
+          # LAST-MODIFIED one is the test that was running when time ran out.
+          find build -name 'test-suite.log' -o -name '*.log' -path '*tests*' \
+            2>/dev/null | head -400 | while read -r f; do
+              d=out/testlogs/$(echo "$f" | tr / _)
+              cp "$f" "$d" 2>/dev/null || true
+            done
+          echo "  collected $(ls out/testlogs 2>/dev/null | wc -l) test logs"
+          echo ""
+          echo "  --- most recently written, i.e. what was running ---"
+          find build -path '*tests*' -name '*.log' -printf '%T@ %p\n' 2>/dev/null \
+            | sort -rn | head -5 | cut -d' ' -f2- | sed 's/^/    /'
+          echo ""
+          echo "  --- and the tail of the newest one ---"
+          NEWEST=$(find build -path '*tests*' -name '*.log' -printf '%T@ %p\n' \
+            2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+          [ -n "$NEWEST" ] && { echo "    $NEWEST"; tail -30 "$NEWEST" | sed 's/^/    /'; }
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

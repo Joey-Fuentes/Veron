@@ -61,7 +61,11 @@ cwd  = "$S"
 # short enough that the next hang names itself rather than costing an
 # afternoon of someone watching a log that has stopped moving.
 timeout = 1200
-run  = [["make", "check"]]
+# VERBOSE=yes makes automake's harness print each test's log inline as it
+# finishes, so the console shows what the .log files say without waiting for
+# the artifact -- and the test that hangs is then the one whose output never
+# arrives, named rather than inferred from what came before it.
+run  = [["make", "check", "VERBOSE=yes"]]
 
 [[steps]]
 name = "install"

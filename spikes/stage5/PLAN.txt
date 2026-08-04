@@ -109,7 +109,7 @@ package hello 2.12.3
 package m4 1.4.21
   group        build-substrate
   license      GPL-3.0-or-later
-  recipe-sha   824053b02019f5824924674a8163e614dbafa4ac3246ea9762c91604c1959934
+  recipe-sha   92243dc43521f0f1cb1aac5ad78813b1ef666774be41253bd7557564a0c18c4a
 
   source
     url        https://ftp.gnu.org/gnu/m4/m4-1.4.21.tar.xz
@@ -135,7 +135,7 @@ package m4 1.4.21
          argv ["make", "-j1"]
     [04] check
          cwd  build/m4-1.4.21/m4-1.4.21
-         argv ["make", "check"]
+         argv ["make", "check", "VERBOSE=yes"]
     [05] install
          cwd  build/m4-1.4.21/m4-1.4.21
          argv ["make", "DESTDIR=dest/m4", "install"]
