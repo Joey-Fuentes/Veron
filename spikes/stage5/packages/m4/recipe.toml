@@ -55,6 +55,12 @@ run  = [["make", "-j$J"]]
 [[steps]]
 name = "check"
 cwd  = "$S"
+# THIS IS THE STEP THAT HUNG. m4's suite runs the full gnulib unit tests, and
+# a run sat on one line for 66 MINUTES after `PASS: test-error.sh` before a
+# human cancelled it. 20 minutes is comfortably more than the suite needs and
+# short enough that the next hang names itself rather than costing an
+# afternoon of someone watching a log that has stopped moving.
+timeout = 1200
 run  = [["make", "check"]]
 
 [[steps]]

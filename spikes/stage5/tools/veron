@@ -22,6 +22,8 @@ import json
 import os
 import re
 import shutil
+import threading
+import time
 import subprocess
 import sys
 import tarfile
@@ -386,6 +388,11 @@ def cmd_fetch(a):
     return 0
 
 
+# Long enough for a real test suite, short enough that a hang is caught in
+# one coffee rather than one afternoon. Overridable per step in a recipe.
+DEFAULT_STEP_TIMEOUT = 1800
+
+
 def run_step(s, logf, dry):
     os.makedirs(s["cwd"], exist_ok=True) if not os.path.isdir(s["cwd"]) else None
     if "shell" in s:
@@ -406,10 +413,50 @@ def run_step(s, logf, dry):
     if s.get("env"):
         e = dict(os.environ)
         e.update(s["env"])
-    p = subprocess.run(argv, cwd=s["cwd"], shell=shell, env=e)
-    logf.write(f"  rc={p.returncode}\n")
+    # THREE THINGS A BUILD STEP MUST NOT DO: read stdin, run forever, or go
+    # silent. A run of this spike sat on one line of m4's gnulib test suite
+    # for SIXTY-SIX MINUTES before a human cancelled it, and the log gave no
+    # way to tell a hang from a slow test.
+    #
+    # stdin=DEVNULL: no build step should ever read stdin. If one does, EOF
+    # immediately is the right answer -- inheriting the parent's stdin means
+    # a test that reads it blocks until the job is killed.
+    #
+    # timeout: a hung step should cost that step, not the run. The plan
+    # already prints every argv, so a timeout can name exactly what hung.
+    #
+    # heartbeat: silence and work look identical from outside. This is the
+    # same lesson `tee` taught the probe and the ticker taught wpe-timing.
+    limit = s.get("timeout", DEFAULT_STEP_TIMEOUT)
+    start = time.time()
+    beat = threading.Event()
+
+    def tick():
+        while not beat.wait(300):
+            mins = int((time.time() - start) / 60)
+            print(f"      [{mins}m] still running: {printed[:60]}", flush=True)
+
+    t = threading.Thread(target=tick, daemon=True)
+    t.start()
+    try:
+        p = subprocess.run(argv, cwd=s["cwd"], shell=shell, env=e,
+                           stdin=subprocess.DEVNULL, timeout=limit)
+        rc = p.returncode
+    except subprocess.TimeoutExpired:
+        rc = 124
+        mins = int(limit / 60)
+        msg = (f"TIMED OUT after {mins} min: {printed}\n"
+               f"  A step that hangs is a BUG, not a slow build -- the usual\n"
+               f"  causes are a test reading stdin, waiting on a device the\n"
+               f"  sandbox does not provide, or a signal that never arrives.\n"
+               f"  Raise `timeout` in the step if it is genuinely this slow.")
+        print(f"    {msg}")
+        logf.write(f"  {msg}\n")
+    finally:
+        beat.set()
+    logf.write(f"  rc={rc}  ({int(time.time() - start)}s)\n")
     logf.flush()
-    return p.returncode
+    return rc
 
 
 def cmd_build(a):
