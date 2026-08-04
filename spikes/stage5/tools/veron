@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import threading
 import time
 import subprocess
@@ -890,7 +891,36 @@ def cmd_status(a):
 # ---------------------------------------------------------------- main
 
 
+def reset_inherited_signals():
+    """SIG_IGN is inherited across fork AND exec. Undo what the CI gave us.
+
+    The GitHub Actions runner ignores SIGPIPE (actions/runner #2684, where a
+    shell pipeline "gets stuck" for exactly this reason), and an ignored
+    disposition propagates into every child this driver spawns. gnulib's
+    test-execute expects a child to DIE of SIGPIPE; with it ignored the child
+    survives, exits 71, and the pipeline never tears down -- which is both the
+    failure and the 66-minute hang we spent several rounds chasing.
+
+    A shell `trap - PIPE` does not reliably undo an inherited SIG_IGN, so the
+    reset belongs here, in the process that actually spawns the builds.
+    SIGXFSZ and SIGXCPU get the same treatment: both are occasionally ignored
+    by CI harnesses and both are supposed to be fatal.
+    """
+    for name in ("SIGPIPE", "SIGXFSZ", "SIGXCPU"):
+        sig = getattr(signal, name, None)
+        if sig is None:
+            continue
+        try:
+            if signal.getsignal(sig) == signal.SIG_IGN:
+                signal.signal(sig, signal.SIG_DFL)
+                print(f"  reset {name} from SIG_IGN to SIG_DFL "
+                      f"(inherited from the caller)")
+        except (OSError, ValueError):
+            pass
+
+
 def main():
+    reset_inherited_signals()
     ap = argparse.ArgumentParser(prog="veron")
     ap.add_argument("--dl", default="dl")
     ap.add_argument("--build-dir", default="build")

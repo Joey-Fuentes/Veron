@@ -138,14 +138,46 @@ jobs:
           set -eu
           cd spikes/stage5
           mkdir -p build dest out logs
+          # THE SANDBOX HAS TO RUN TEST SUITES, NOT JUST COMPILERS.
+          #
+          # m4's vendored gnulib suite hung for 66 minutes and then failed two
+          # process-spawning tests. None of the obvious namespace theories were
+          # right -- bwrap already brings loopback up inside --unshare-net, and
+          # it already runs its own PID 1 to reap zombies, so neither was ever
+          # the problem. What the environment inherits is.
+          #
+          # SIGPIPE. The GitHub Actions runner ignores SIGPIPE (actions/runner
+          # #2684: a shell pipeline "gets stuck" because of it), and SIG_IGN is
+          # inherited across fork AND exec. gnulib's test-execute expects a
+          # child to DIE of SIGPIPE; with it ignored the child survives, exits
+          # 71, and the pipeline never tears down -- which is both the failure
+          # and the hang. Resetting it is one line and fixes the cause rather
+          # than deleting the test.
+          #
+          # RLIMIT_NOFILE. Modern hosts hand out a hard limit near 2^30. Code
+          # that closes every fd before exec then makes a billion syscalls per
+          # spawn. /proc is mounted so glibc should use close_range and stay
+          # fast, but 1024 costs nothing and removes the question.
+          #
+          # MAKEFLAGS. GNU make's jobserver passes fds 3 and 4 to children, and
+          # gnulib's test-execute-child asserts that no unexpected descriptors
+          # are inherited. Clearing it for the build keeps the suite honest.
+          trap - PIPE || true
+          ulimit -n 1024
+          unset MAKEFLAGS MFLAGS MAKELEVEL
+          echo "  SIGPIPE: $(python3 -c 'import signal;print(signal.getsignal(signal.SIGPIPE))')"
+          echo "  fd limit: $(ulimit -n)"
+
           bwrap --unshare-all --die-with-parent \
+            --new-session \
             --bind sysroot / \
             --bind "$PWD/build" /build --bind "$PWD/dest" /dest \
             --bind "$PWD/dl" /dl --bind "$PWD/logs" /logs --bind "$PWD/out" /out \
             --ro-bind "$PWD/packages" /packages \
             --ro-bind "$PWD/policy" /policy --ro-bind "$PWD/tools" /tools \
             --proc /proc --dev /dev --tmpfs /tmp \
-            --setenv PATH /usr/bin:/usr/sbin \
+            --setenv PATH /usr/bin:/usr/sbin:/bin \
+            --setenv HOME /build --setenv SHELL /bin/sh \
             --setenv LC_ALL C --setenv TZ UTC --setenv SOURCE_DATE_EPOCH 0 \
             --chdir / \
             /usr/bin/python3 /tools/veron \
@@ -180,14 +212,46 @@ jobs:
           set -eu
           cd spikes/stage5
           cp out/files.tsv out/files-run1.tsv
+          # THE SANDBOX HAS TO RUN TEST SUITES, NOT JUST COMPILERS.
+          #
+          # m4's vendored gnulib suite hung for 66 minutes and then failed two
+          # process-spawning tests. None of the obvious namespace theories were
+          # right -- bwrap already brings loopback up inside --unshare-net, and
+          # it already runs its own PID 1 to reap zombies, so neither was ever
+          # the problem. What the environment inherits is.
+          #
+          # SIGPIPE. The GitHub Actions runner ignores SIGPIPE (actions/runner
+          # #2684: a shell pipeline "gets stuck" because of it), and SIG_IGN is
+          # inherited across fork AND exec. gnulib's test-execute expects a
+          # child to DIE of SIGPIPE; with it ignored the child survives, exits
+          # 71, and the pipeline never tears down -- which is both the failure
+          # and the hang. Resetting it is one line and fixes the cause rather
+          # than deleting the test.
+          #
+          # RLIMIT_NOFILE. Modern hosts hand out a hard limit near 2^30. Code
+          # that closes every fd before exec then makes a billion syscalls per
+          # spawn. /proc is mounted so glibc should use close_range and stay
+          # fast, but 1024 costs nothing and removes the question.
+          #
+          # MAKEFLAGS. GNU make's jobserver passes fds 3 and 4 to children, and
+          # gnulib's test-execute-child asserts that no unexpected descriptors
+          # are inherited. Clearing it for the build keeps the suite honest.
+          trap - PIPE || true
+          ulimit -n 1024
+          unset MAKEFLAGS MFLAGS MAKELEVEL
+          echo "  SIGPIPE: $(python3 -c 'import signal;print(signal.getsignal(signal.SIGPIPE))')"
+          echo "  fd limit: $(ulimit -n)"
+
           bwrap --unshare-all --die-with-parent \
+            --new-session \
             --bind sysroot / \
             --bind "$PWD/build" /build --bind "$PWD/dest" /dest \
             --bind "$PWD/dl" /dl --bind "$PWD/logs" /logs --bind "$PWD/out" /out \
             --ro-bind "$PWD/packages" /packages \
             --ro-bind "$PWD/policy" /policy --ro-bind "$PWD/tools" /tools \
             --proc /proc --dev /dev --tmpfs /tmp \
-            --setenv PATH /usr/bin:/usr/sbin \
+            --setenv PATH /usr/bin:/usr/sbin:/bin \
+            --setenv HOME /build --setenv SHELL /bin/sh \
             --setenv LC_ALL C --setenv TZ UTC --setenv SOURCE_DATE_EPOCH 0 \
             --chdir / \
             /usr/bin/python3 /tools/veron \

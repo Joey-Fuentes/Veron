@@ -53,58 +53,37 @@ cwd  = "$S"
 run  = [["make", "-j$J"]]
 
 [[steps]]
-# NAME THE NEXT TEST WITHOUT RUNNING IT. The suite stops after
-# `PASS: test-error.sh` every time. The order is not alphabetical guesswork --
-# it is the TESTS variable in tests/Makefile.
+# THE FULL SUITE, WITH THE CAUSE FIXED RATHER THAN THE TEST DELETED.
 #
-# ANSWERED: the entries after test-error are
-#     test-execute-main  test-execute-child  test-execute-script
-# so the hang is gnulib's `execute` module, which spawns child processes and
-# waits on them. Kept as a step because the order shifts between gnulib
-# vintages and the next package to hang should not need this rediscovered.
-name = "which-test-is-next"
-cwd  = "$S/tests"
-timeout = 60
-why = "reading the TESTS order out of a Makefile is grep work, not an argv"
-shell = "tr ' ' '\\n' < Makefile | grep -n 'test-[a-z0-9-]*' | sed -n '/test-error/,+10p'"
-
-[[steps]]
+# This hung for 66 minutes and then failed test-execute.sh and
+# test-posix_spawn_file_actions_addchdir. The cause was not m4, and not any of
+# the namespace theories: bwrap already brings loopback up inside
+# --unshare-net, and it already runs its own PID 1 to reap zombies. It was
+# SIGPIPE arriving as SIG_IGN from the CI runner and being inherited into
+# every child. gnulib's test-execute needs a child to DIE of SIGPIPE; ignored,
+# the child survives, exits 71, and the pipe never tears down -- which is both
+# the failure and the hang. The driver now resets it before spawning anything.
+#
+# The per-test timeout stays as a SAFETY NET, not as the fix. If something
+# still hangs it fails in 60 seconds with a name rather than stalling a job,
+# and a gnulib unit test needing over a minute is a bug either way.
 name = "check"
 cwd  = "$S"
-# 60 SECONDS PER TEST, NOT PER SUITE. automake runs every test through
-# LOG_COMPILER, so `timeout -v 60` turns a hanging test into an ordinary FAIL
-# with an exit status and a .log file. The suite then RUNS TO COMPLETION and
-# names every hanging test at once, instead of one per CI round trip.
-#
-# A gnulib unit test that needs more than 60 seconds is already a bug, so this
-# does not mask a slow machine -- it converts a hang into evidence.
-timeout = 720
-# BUSYBOX SYNTAX, NOT GNU. The sysroot's `timeout` is a busybox applet:
-#   timeout [-s SIG] [-k KILL_SECS] SECS PROG ARGS
-# GNU's `-v` does not exist there, and passing it made every single test fail
-# instantly with "invalid option -- 'v'" -- instrumentation that broke the
-# thing it was measuring. This is the busybox-vs-GNU difference in practice:
-# not a missing applet, a thinner one.
-# ON THE COMMAND LINE, NOT IN THE ENVIRONMENT. This is plain make semantics
-# and it cost a run: a variable set in the environment does NOT override one
-# assigned inside the Makefile, and automake assigns LOG_COMPILER itself. The
-# env form was silently ignored, so the per-test timeout never applied and the
-# suite hung exactly as before -- instrumentation that looks present and does
-# nothing. A command-line assignment overrides unconditionally.
+timeout = 900
 run  = [["make", "check", "VERBOSE=yes",
          "LOG_COMPILER=timeout", "LOG_FLAGS=60",
          "SH_LOG_COMPILER=timeout", "SH_LOG_FLAGS=60"]]
 
 [[steps]]
-# WHATEVER FAILED, SAY WHAT IT WAS. Runs only when a previous step failed,
-# which is exactly when the evidence exists and when the run would otherwise
-# have thrown it away.
+# Runs only if check fails. The newest .log files are what was executing when
+# time ran out; test-suite.log is absent when the harness never finished, so
+# this reads both and assumes neither.
 name = "why-it-failed"
 cwd  = "$S/tests"
 timeout = 120
 on_failure = true
 why = "a diagnostic is a pipeline of greps over log files, not an argv"
-shell = "echo '=== newest .log files, i.e. what was running ==='; ls -t *.log 2>/dev/null | head -5; echo; for f in $(ls -t *.log 2>/dev/null | head -3); do echo \"--- $f\"; tail -25 \"$f\"; done; echo; echo '=== test-suite.log (absent if the harness never finished) ==='; tail -60 test-suite.log 2>/dev/null || echo '(none)'; echo; echo '=== still-running processes ==='; ps -o pid,ppid,stat,etime,args 2>/dev/null | head -25 || true"
+shell = "echo '--- newest logs (what was running) ---'; ls -t *.log 2>/dev/null | head -4; for f in $(ls -t *.log 2>/dev/null | head -3); do echo \"== $f\"; tail -25 \"$f\"; done; echo; echo '--- test-suite.log ---'; tail -50 test-suite.log 2>/dev/null || echo '(harness did not finish)'"
 
 [[steps]]
 name = "install"
