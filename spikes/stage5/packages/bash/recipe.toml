@@ -1,0 +1,104 @@
+name    = "bash"
+version = "5.3"
+group   = "build-substrate"
+license = "GPL-3.0-or-later"
+
+# WHY BASH IS HERE. glib's meson.build looks for bash and crashes when it is
+# absent:
+#     Program bash found: NO
+#     meson.build:2549:16: ERROR: Unhandled python exception
+# It was on the original list of things the sysroot lacks and was dropped as
+# "unknown whether needed". This is the concrete need, and it will not be the
+# last: autotools packages generally tolerate a POSIX shell, while meson-based
+# ones increasingly assume bash for completions and test wrappers.
+
+[source]
+url       = "https://ftp.gnu.org/gnu/bash/bash-5.3.tar.gz"
+sha256    = "0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba"
+signature = "https://ftp.gnu.org/gnu/bash/bash-5.3.tar.gz.sig"
+# Chet Ramey's key. Compare against the fingerprint published on the bash
+# home page before treating this pin as trusted.
+signing_key = "7C0135FB088AAF6C66C650B9BB5869F064EA74AB"
+crosschecked_against = []
+
+[deps]
+build        = ["ncurses", "readline"]
+link         = ["ncurses", "readline"]
+runtime      = ["ncurses", "readline"]
+# --with-installed-readline is the point: without it bash builds and links its
+# own bundled copy of readline, and the image carries two while the ledger
+# describes one. Same argument as cmake's --system-* flags.
+optional_off = ["bundled-readline", "nls", "bash-malloc"]
+
+[declared]
+configure_flags = [
+  "--prefix=/usr", "--without-bash-malloc", "--with-installed-readline",
+  "--disable-nls",
+]
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed.
+
+BASH AND BUSYBOX LIVE SIDE BY SIDE, which is the normal arrangement -- Debian \
+ships dash as /bin/sh and bash as /bin/bash for the same reasons. The rule \
+that makes it work is that /bin/sh MUST REMAIN BUSYBOX: every #!/bin/sh \
+script then runs under the small shell, and anything needing bash says so in \
+its shebang. Pointing /bin/sh at bash is the mistake, because it silently \
+admits bashisms into scripts that claim to be POSIX.
+
+THE INSTALL STEP DELETES bash's OWN sh. `make install` writes /usr/bin/sh, \
+and staging copies a package's DESTDIR over the build root -- so that file \
+would replace the busybox symlink and quietly change which shell the whole \
+system runs. Staging has already destroyed busybox once, by writing through a \
+symlink, so this is a known hazard with a measured cost rather than a \
+hypothetical one.
+
+--without-bash-malloc uses the system allocator: bash's own is faster on some \
+platforms and has caused alignment faults on others, and glibc's is the \
+better-tested path here."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/bash-5.3.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--without-bash-malloc",
+         "--with-installed-readline", "--disable-nls"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+
+[[steps]]
+# DO NOT LET BASH BECOME /bin/sh.
+#
+# `make install` writes an `sh` alongside `bash`. Staging copies this DESTDIR
+# over the build root, where /usr/bin/sh is a symlink to busybox -- so leaving
+# it would replace the system's POSIX shell with bash, silently, and every
+# #!/bin/sh script in the image would start running under a different shell
+# than it was tested with.
+#
+# Removing it here rather than fixing it later is deliberate: the DESTDIR is
+# the authority for the manifest, so what is removed here is genuinely never
+# shipped, rather than shipped and then patched over.
+name = "keep-sh-as-busybox"
+cwd  = "$D/usr/bin"
+timeout = 60
+why = "removing an installed file and proving it is gone is not an argv"
+shell = "rm -f sh; echo 'files this package installs into /usr/bin:'; ls -1; if [ -e sh ]; then echo 'FAIL: bash still installs an sh'; exit 1; fi; echo 'ok: /bin/sh is left to busybox'"
+
+[guest]
+# Both shells, and the crucial one -- that /bin/sh is STILL busybox after
+# this package was staged over the build root.
+test   = [["/usr/bin/bash", "--version"],
+          ["/bin/sh", "-c", "echo $0"]]
+expect = ["5.3", "sh"]

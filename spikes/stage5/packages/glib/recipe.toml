@@ -12,7 +12,14 @@ signature = "none -- download.gnome.org publishes no detached signature"
 crosschecked_against = []
 
 [deps]
-build        = ["meson", "ninja", "libffi", "pcre2", "zlib", "python"]
+# BASH IS A BUILD DEPENDENCY, discovered by building: glib's meson.build
+# looks for it and crashes outright when it is missing --
+#   Program bash found: NO
+#   meson.build:2549:16: ERROR: Unhandled python exception
+# Nothing in BLFS, Arch or the declared-dependency scan mentions it, because
+# it is a build-time tool rather than a library. Only running the build finds
+# this class of edge.
+build        = ["meson", "ninja", "libffi", "pcre2", "zlib", "python", "bash"]
 link         = ["libffi", "pcre2", "zlib"]
 runtime      = ["libffi", "pcre2", "zlib"]
 optional_off = ["introspection", "selinux", "libmount", "sysprof", "man-pages", "gtk_doc", "tests", "dtrace", "systemtap"]

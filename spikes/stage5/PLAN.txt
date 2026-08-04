@@ -38,27 +38,28 @@ between this file and the recipes fails the run.
   17. readline
   18. zstd
   19. automake
-  20. curl
-  21. freetype-bootstrap
-  22. libarchive
-  23. libxml2
-  24. python
-  25. sqlite
-  26. git
-  27. meson
-  28. ninja
-  29. cmake
-  30. fribidi
-  31. glib
-  32. pixman
-  33. graphite2
-  34. libjpeg-turbo
-  35. harfbuzz
-  36. libwebp
-  37. freetype
-  38. fontconfig
-  39. cairo
-  40. pango
+  20. bash
+  21. curl
+  22. freetype-bootstrap
+  23. libarchive
+  24. libxml2
+  25. python
+  26. sqlite
+  27. git
+  28. meson
+  29. ninja
+  30. cmake
+  31. fribidi
+  32. glib
+  33. pixman
+  34. graphite2
+  35. libjpeg-turbo
+  36. harfbuzz
+  37. libwebp
+  38. freetype
+  39. fontconfig
+  40. cairo
+  41. pango
 
 ======================================================================
 package bzip2 1.0.8
@@ -679,6 +680,42 @@ package automake 1.18.1
          argv ["make", "DESTDIR=dest/automake", "install"]
 
 ======================================================================
+package bash 5.3
+  group        build-substrate
+  license      GPL-3.0-or-later
+  recipe-sha   eac6101abcbe7c51d2704ef25d8323e6bf88df6aea78cb9c75d4d062036fc4d4
+
+  source
+    url        https://ftp.gnu.org/gnu/bash/bash-5.3.tar.gz
+    sha256     0d5cd86965f869a26cf64f4b71be7b96f90a3ba8b3d74e27e8e9d9d5550f31ba
+    signature  https://ftp.gnu.org/gnu/bash/bash-5.3.tar.gz.sig
+    correspond none
+
+  deps
+    build        ncurses, readline
+    link         ncurses, readline
+    runtime      ncurses, readline
+    optional_off bash-malloc, bundled-readline, nls
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/bash-5.3
+         argv ["tar", "-xf", "dl/bash-5.3.tar.gz", "-C", "build/bash-5.3"]
+    [02] configure
+         cwd  build/bash-5.3/bash-5.3
+         argv ["./configure", "--prefix=/usr", "--without-bash-malloc", "--with-installed-readline", "--disable-nls"]
+    [03] build
+         cwd  build/bash-5.3/bash-5.3
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/bash-5.3/bash-5.3
+         argv ["make", "DESTDIR=dest/bash", "install"]
+    [05] keep-sh-as-busybox
+         cwd  dest/bash/usr/bin
+         SHELL (declared) why=removing an installed file and proving it is gone is not an argv
+         | rm -f sh; echo 'files this package installs into /usr/bin:'; ls -1; if [ -e sh ]; then echo 'FAIL: bash still installs an sh'; exit 1; fi; echo 'ok: /bin/sh is left to busybox'
+
+======================================================================
 package curl 8.18.0
   group        build-substrate
   license      curl
@@ -975,7 +1012,7 @@ package ninja 1.13.2
 package cmake 4.2.3
   group        build-substrate
   license      BSD-3-Clause
-  recipe-sha   dfb6f3a857ed94e712117923b7f954f62942626b3d7452817d850ddc60a00676
+  recipe-sha   1b524fe229824a62da38cdb744b4340425f78e503552769a7eb5c144722053f3
 
   source
     url        https://cmake.org/files/v4.2/cmake-4.2.3.tar.gz
@@ -995,7 +1032,7 @@ package cmake 4.2.3
          argv ["tar", "-xf", "dl/cmake-4.2.3.tar.gz", "-C", "build/cmake-4.2.3"]
     [02] bootstrap
          cwd  build/cmake-4.2.3/cmake-4.2.3
-         argv ["./bootstrap", "--prefix=/usr", "--system-curl", "--system-expat", "--system-zlib", "--system-bzip2", "--system-liblzma", "--system-zstd", "--system-libarchive", "--parallel=1", "--no-qt-gui", "--generator=Ninja"]
+         argv ["./bootstrap", "--prefix=/usr", "--system-libs", "--parallel=1", "--no-qt-gui", "--generator=Ninja"]
     [03] build
          cwd  build/cmake-4.2.3/cmake-4.2.3
          argv ["ninja"]
@@ -1040,7 +1077,7 @@ package fribidi 1.0.16
 package glib 2.86.4
   group        text-rendering
   license      LGPL-2.1-or-later
-  recipe-sha   38821863e681dce53469d4cda341fb3a73eb0710c82ab95acd001fdc2642184a
+  recipe-sha   e39c7ce998140bd679efb318e81ee2929677bfd0a77893e8861590d9466ebff3
 
   source
     url        https://download.gnome.org/sources/glib/2.86/glib-2.86.4.tar.xz
@@ -1049,7 +1086,7 @@ package glib 2.86.4
     correspond none
 
   deps
-    build        libffi, meson, ninja, pcre2, python, zlib
+    build        bash, libffi, meson, ninja, pcre2, python, zlib
     link         libffi, pcre2, zlib
     runtime      libffi, pcre2, zlib
     optional_off dtrace, gtk_doc, introspection, libmount, man-pages, selinux, sysprof, systemtap, tests

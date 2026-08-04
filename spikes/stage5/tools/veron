@@ -59,26 +59,6 @@ def load_policy():
         return tomllib.load(f)
 
 
-def source_kind(r):
-    """tarball or git. A recipe says which by what it pins.
-
-    SOME PROJECTS PUBLISH NO TARBALL AT ALL. libsfdo and dinit only ever push
-    git tags; the "archive" a forge offers is synthesised on request by running
-    git archive against the tag, using that forge's git version, its
-    compression settings and its export-subst handling. Those change under you
-    -- GitHub's generated tarballs shifted for the whole ecosystem when their
-    gzip settings changed -- so pinning one is pinning something nobody here
-    controls.
-    
-    A COMMIT IS A STRONGER PIN THAN A TARBALL DIGEST. It is a Merkle hash over
-    the whole tree and its history, it cannot be regenerated differently, and
-    tools/clone-pinned.sh already verifies one with a rev-parse. So a git
-    source records the commit, and the tarball this fetch GENERATES is a
-    derived artifact whose digest is recorded as ours, not upstream's.
-    """
-    return r["source"].get("kind", "tarball")
-
-
 def load_recipes():
     """Every packages/*/recipe.toml, keyed by name.
 
@@ -374,16 +354,6 @@ def cmd_plan(a):
         return 0
 
     sys.stdout.write(text)
-    return 0
-
-
-def cmd_git_sources(a):
-    """Emit the git-pinned sources: commit, name, url. Machine-parsed."""
-    for name, r in sorted(load_recipes().items()):
-        if source_kind(r) != "git":
-            continue
-        src = r["source"]
-        print(f"{src['commit']}\t{name}-{r['version']}\t{src['url']}")
     return 0
 
 
@@ -1247,10 +1217,6 @@ def main():
 
     p = sub.add_parser("sources", help="sha256/name/url per recipe, for the fetcher")
     p.set_defaults(fn=cmd_sources)
-
-    p = sub.add_parser("git-sources",
-                       help="commit/name/url for every git-pinned recipe")
-    p.set_defaults(fn=cmd_git_sources)
 
     p = sub.add_parser("fetch", help="airlock: verify sha256 against the manifest")
     p.set_defaults(fn=cmd_fetch)
