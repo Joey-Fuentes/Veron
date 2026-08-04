@@ -21,19 +21,15 @@ on:
       urls:
         description: 'Tarball URLs to probe (space-separated)'
         required: false
-        default: ''
+        default: 'https://github.com/LadybirdBrowser/ladybird/archive/refs/heads/master.tar.gz'
         # zlib, bzip2, xz and zstd are not GNU projects, so the `latest`
         # lookup above cannot find them from a GNU index. zstd and zlib have
         # GitHub releases; bzip2 (sourceware) and xz (tukaani) publish
         # elsewhere and their URLs go here directly.
-      index:
-        description: 'name=dir-URL pairs, for projects with only a plain file index'
-        required: false
-        default: ''
       latest:
-        description: 'Newest releases: gnu:<proj>, <owner>/<repo>, gitlab:<group>/<proj>'
+        description: 'Find newest releases: gnu:<project> or <owner>/<repo>, space-separated'
         required: false
-        default: 'gnu:m4 gnu:autoconf gnu:automake gnu:libtool gnu:ncurses facebook/zstd madler/zlib tukaani-project/xz gitlab:bzip2/bzip2'
+        default: 'LadybirdBrowser/ladybird google/skia'
 
 concurrency:
   group: stage5-probe-${{ github.ref }}
@@ -51,24 +47,14 @@ jobs:
         run: |
           set -eu
           cd spikes/stage5
-          python3 -u tools/probe.py latest ${{ inputs.latest }} | tee /tmp/latest.txt
-
-      - name: 'Newest tarball in a plain directory listing'
-        if: inputs.index != ''
-        run: |
-          set -eu
-          cd spikes/stage5
-          for spec in ${{ inputs.index }}; do
-            name="${spec%%=*}"; url="${spec#*=}"
-            python3 -u tools/probe.py index "$url" --name "$name"
-          done | tee /tmp/index.txt
+          python3 tools/probe.py latest ${{ inputs.latest }} | tee /tmp/latest.txt
 
       - name: 'Probe each tarball'
         if: inputs.urls != ''
         run: |
           set -eu
           cd spikes/stage5
-          python3 -u tools/probe.py url ${{ inputs.urls }} | tee /tmp/probe.txt
+          python3 tools/probe.py url ${{ inputs.urls }} | tee /tmp/probe.txt
 
       - name: 'What this does and does not settle'
         if: always()
@@ -84,14 +70,10 @@ jobs:
           echo "      the build system asks for; it cannot tell a hard"
           echo "      requirement from one that silently detected off. Run"
           echo "      'probe linked <destdir>' after a build for that."
-          echo "    - Whether the SIGNATURE is good. The probe names the key"
-          echo "      that signed the tarball; it deliberately does not import"
-          echo "      that key, because a key fetched alongside the artifact it"
-          echo "      signs proves nothing. Compare the id against the"
-          echo "      project's published fingerprint, then verify locally."
-          echo "    - Whether the digest is TRUSTWORTHY. Independent packagers"
-          echo "      are reported as corroboration; agreement is evidence, not"
-          echo "      proof, and a version match is weaker than a digest match."
+          echo "    - Whether the digest is TRUSTWORTHY. The probe computes"
+          echo "      what it downloaded. Cross-check it against independent"
+          echo "      packagers before pinning, especially where no signature"
+          echo "      exists."
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -100,5 +82,4 @@ jobs:
           path: |
             /tmp/latest.txt
             /tmp/probe.txt
-            /tmp/index.txt
           retention-days: 30

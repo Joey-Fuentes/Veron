@@ -313,10 +313,48 @@ def declared_deps(root):
     optional one. The authoritative list comes from ldd and the .pc files
     AFTER a build -- see `probe linked`.
     """
-    found = {"pkg_config": set(), "check_lib": set(), "pc_requires": set()}
+    found = {"pkg_config": set(), "check_lib": set(), "pc_requires": set(),
+             "vcpkg": set(), "cmake_find": set(), "cargo": set()}
     for dirpath, dirnames, files in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in (".git", "tests", "test")]
+        dirnames[:] = [d for d in dirnames
+                       if d not in (".git", "tests", "test", "Tests")]
         for fn in files:
+            # VCPKG MANIFESTS ARE THE ONLY HONEST SOURCE FOR SOME PROJECTS.
+            # Ladybird has no distro packaging and is not in BLFS, so nothing
+            # corroborates its dependency list -- but it DECLARES one, in
+            # vcpkg.json, and that file is the closest thing to authoritative
+            # there is. STAGE5.md calls the tier-3 estimate "the softest
+            # number in this document" precisely because vcpkg vendors these;
+            # reading the manifest is what turns the guess into a list.
+            if fn == "vcpkg.json":
+                try:
+                    j = json.loads(open(os.path.join(dirpath, fn),
+                                        encoding="utf-8", errors="replace").read())
+                except Exception:
+                    continue
+                for d in j.get("dependencies", []):
+                    found["vcpkg"].add(d if isinstance(d, str) else d.get("name", ""))
+                for ov in j.get("overrides", []):
+                    nm, v = ov.get("name", ""), ov.get("version", "")
+                    if nm:
+                        found["vcpkg"].add(f"{nm}=={v}" if v else nm)
+                continue
+            if fn == "Cargo.toml":
+                t = open(os.path.join(dirpath, fn), "rb").read().decode("utf-8", "replace")
+                m = re.search(r"^\[dependencies\](.*?)(^\[|\Z)", t, re.M | re.S)
+                if m:
+                    for line in m.group(1).splitlines():
+                        mm = re.match(r"\s*([A-Za-z0-9_-]+)\s*=", line)
+                        if mm:
+                            found["cargo"].add(mm.group(1))
+                continue
+            if fn == "CMakeLists.txt" or fn.endswith(".cmake"):
+                t = open(os.path.join(dirpath, fn), "rb").read().decode("utf-8", "replace")
+                for m in re.finditer(r"find_package\s*\(\s*([A-Za-z0-9_.+-]+)", t):
+                    nm = m.group(1)
+                    if nm.lower() not in ("pkgconfig",):
+                        found["cmake_find"].add(nm)
+                continue
             if fn in ("configure.ac", "configure.in", "meson.build") or fn.endswith(".pc.in"):
                 t = open(os.path.join(dirpath, fn), "rb").read().decode("utf-8", "replace")
                 for m in re.finditer(r"PKG_CHECK_MODULES\(\[?\w+\]?,\s*\[?([^\],\)]+)", t):
@@ -485,8 +523,21 @@ def probe(url, keep=False):
     d = declared_deps(root)
     print("\n   dependencies the SOURCE declares")
     print("     (static only -- run `probe linked` after a build for the real list)")
+    WORTH = {
+        "vcpkg":      "AUTHORITATIVE where it exists -- the project's own manifest",
+        "pkg_config": "hard link deps, usually reliable",
+        "pc_requires": "becomes a dep of everything that consumes this",
+        "cmake_find": "may be optional -- find_package without REQUIRED is a hint",
+        "check_lib":  "probed, often optional",
+        "cargo":      "crates, not system packages -- a separate bootstrap problem",
+    }
     for k, v in d.items():
-        print(f"     {k:<12} {', '.join(v) if v else '-'}")
+        if not v:
+            continue
+        print(f"     {k:<12} {', '.join(v)}")
+        print(f"     {'':<12} ^ {WORTH.get(k, '')}")
+    if not any(d.values()):
+        print("     nothing declared -- either a leaf, or it vendors everything")
 
     opts = configure_options(root)
     if opts is None:
