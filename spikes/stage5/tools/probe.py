@@ -621,12 +621,24 @@ def crosscheck(name, version):
 # ------------------------------------------------------------ report
 
 
+MIRROR_FALLBACK = [("https://ftpmirror.gnu.org/", "https://ftp.gnu.org/gnu/")]
+
+
 def probe(url, keep=False, quiet_report=False):
     name = url.rsplit("/", 1)[-1]
     print(f"== {name}")
     print(f"   {url}")
 
     blob = try_get(url)
+    if blob is None:
+        for frm, to in MIRROR_FALLBACK:
+            if url.startswith(frm):
+                alt = url.replace(frm, to, 1)
+                print(f"   retrying via the canonical host: {alt}")
+                blob = try_get(alt)
+                if blob is not None:
+                    url = alt
+                break
     if blob is None:
         print("   FETCH FAILED -- cannot probe what cannot be downloaded")
         return None

@@ -249,7 +249,7 @@ def main():
 
     a = ap.parse_args()
     idx = load(a.book)
-    print(f"  book: {len(idx)} package pages", flush=True)
+    print(f"  book: {len(idx)} package pages", flush=True, file=sys.stderr)
 
     if a.cmd == "urls":
         # The book already knows every download URL. Typing 46 of them by
