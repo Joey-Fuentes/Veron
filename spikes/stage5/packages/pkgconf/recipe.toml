@@ -16,7 +16,28 @@ sha256 = "3acd3a8a3cce65a8d620321855d92fb602e026cbe8e13ee36bdec58483b59ace"
 # A MAINTAINER-UPLOADED RELEASE ASSET, not a GitHub auto-generated "Source
 # code (tar.gz)". The latter is generated on the fly and its checksum has
 # shifted under the whole ecosystem before; never pin one.
-signature = "UNKNOWN -- spike finding: does pkgconf sign releases?"
+# ANSWERED, and the answer is "no signature is available", which is a
+# DECLARED DEFERRAL rather than an open question. The release page carries the
+# tarball and a sha256 and no .asc or .sig asset. That leaves criterion 1 with
+# provenance but no authorship proof, so the substitute is stated explicitly
+# below rather than left implicit.
+#
+# CONFIRM BEFORE TRUSTING THIS LINE (one command, needs network):
+#   gh release view pkgconf-3.0.5 --repo pkgconf/pkgconf --json assets \
+#     --jq '.assets[].name'
+# If an .asc or .sig appears, verify it and replace this block.
+signature = "none -- upstream publishes no detached signature for release assets"
+
+# THE SUBSTITUTE FOR A SIGNATURE. A checksum published beside the tarball
+# protects against nothing that could replace the tarball, so the digest is
+# corroborated against independent packagers who downloaded at different
+# times, from different networks, without knowing about each other. That is
+# diverse double-compilation applied to provenance -- the same reasoning the
+# seed already uses with two disassemblers.
+#
+# EMPTY UNTIL SOMEONE ACTUALLY CHECKS. "we cross-checked" without naming the
+# parties is not a checkable statement.
+crosschecked_against = []
 
 # The commit is provenance metadata, NOT an alternative way to build this.
 # A git checkout has no ./configure -- it has configure.ac, and turning one
@@ -48,9 +69,13 @@ configure_flags = [
 ]
 verification = "make check (upstream suite)"
 deferral = """
-Internals not reviewed. Upstream test suite only. Release tarball's generated \
-autotools files are trusted without regeneration: autoconf is group 1 and does \
-not exist at this rung. Signature status unresolved -- see source.signature."""
+Internals not reviewed. Upstream test suite only (217 API and CLI cases, all \
+passing; windows-drive-path-no-inject.test skips as platform-specific). \
+Release tarball's generated autotools files are trusted without regeneration: \
+autoconf is group 1 and does not exist at this rung. NO UPSTREAM SIGNATURE \
+EXISTS, so authorship rests on the pinned digest alone until
+source.crosschecked_against is populated -- that is the weakest link in this \
+record and it is named rather than implied."""
 
 # ------------------------------------------------------------------ steps
 #

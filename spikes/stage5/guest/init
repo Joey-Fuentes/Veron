@@ -61,9 +61,16 @@ if [ "$VIA" = none ]; then
 fi
 
 # ---- 3. run the stage 5 tests in it ------------------------------------
-mkdir -p "$ROOT/proc" "$ROOT/tmp" 2>/dev/null
+mkdir -p "$ROOT/proc" "$ROOT/tmp" "$ROOT/dev" 2>/dev/null
 mount -t proc  none "$ROOT/proc" 2>/dev/null
 mount -t tmpfs none "$ROOT/tmp"  2>/dev/null
+# /dev MATTERS, and its absence was silently costing a test. GNU hello's
+# atexit-1 needs /dev/full to provoke a write error; without it the suite
+# reports SKIP rather than FAIL, so the guest quietly ran one fewer test than
+# the runner -- 5 pass 2 skip against 6 pass 1 skip -- and nothing said why.
+# A skip that nobody can explain is worth less than a failure that can be.
+mount -t devtmpfs none "$ROOT/dev" 2>/dev/null \
+    || mount --bind /dev "$ROOT/dev" 2>/dev/null
 
 if [ -x "$ROOT/usr/bin/veron-stage5-test" ]; then
     echo "=== VERON-STAGE5-GUEST: the packages, under the kernel this chain built ==="

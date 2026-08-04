@@ -54,7 +54,16 @@ optional_off = ["gettext"]
 
 [declared]
 configure_flags = ["--disable-nls"]
-verification    = "make check (upstream suite)"
+# THE SKIPS ARE NAMED. "5 pass 2 skip" in a ledger is weaker than it looks if
+# nobody knows which two or why -- a skip nobody can explain is worth less
+# than a failure that can be.
+#   greeting-2  needs NLS; we build --disable-nls, so it is permanently
+#               skipped and that is a consequence of a declared flag.
+#   atexit-1    needs /dev/full to provoke a write error. It PASSES on the
+#               runner and used to skip in the guest, because the chroot had
+#               no /dev -- an environment gap, now fixed in guest/init, not a
+#               property of the package.
+verification    = "make check: 6 pass, 1 skip (greeting-2, NLS disabled)"
 deferral = """
 Internals not reviewed. Upstream test suite only. Generated autotools and \
 gnulib files trusted without regeneration. Signature verified once by a human \

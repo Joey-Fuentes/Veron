@@ -553,6 +553,20 @@ def cmd_ledger(a):
     policy = load_policy()
     roots = roots_from_args(a)
     os.makedirs(a.ledger, exist_ok=True)
+
+    # EVIDENCE, NOT A CONSTANT. G3 builds everything a second time in a clean
+    # tree and compares per file; its marker is the only thing that can
+    # honestly raise this above 1. Independent REBUILDERS -- other machines,
+    # other people -- are what would raise it further, and none exist yet.
+    g3 = os.path.join(roots["out"], "G3-OK")
+    if os.path.exists(g3):
+        attestations = 2
+        attest_note = ("two independent builds on one runner, compared per "
+                       "file (G3). No third-party rebuilder has attested.")
+    else:
+        attestations = 1
+        attest_note = "one build; G3 has not passed for this output"
+
     written = 0
     for name in topo_order(recipes):
         r = recipes[name]
@@ -578,8 +592,8 @@ def cmd_ledger(a):
             },
             "reproducibility": {
                 "output_hash": outhash,
-                "attestations": 1,
-                "note": "one build in this spike; independent rebuilds not yet run",
+                "attestations": attestations,
+                "note": attest_note,
             },
             "inputs": {
                 "recipe_sha256": r["_recipe_sha256"],
@@ -644,6 +658,15 @@ def cmd_compare(a):
     n = len(set(a_m) | set(b_m))
     bad = len(only_a) + len(only_b) + len(differ)
     if bad == 0:
+        # THE LEDGER READS THIS. reproducibility.attestations was hardcoded to
+        # 1, which asserted less than the pipeline could prove once G3 existed
+        # -- and would have kept asserting it after G3 started passing. A
+        # marker written only on success means the record follows the
+        # evidence instead of a constant someone has to remember to bump.
+        if a.mark:
+            with open(a.mark, "w") as f:
+                f.write(f"{n}\n")
+            print(f"  wrote {a.mark}")
         print(f"VERON-G3-OK  {n} files identical across two independent builds")
         return 0
     print(f"VERON-G3-DIFF  {bad} of {n} files differ")
@@ -842,6 +865,7 @@ def main():
     p = sub.add_parser("compare", help="G3: diff two file manifests, per file")
     p.add_argument("first")
     p.add_argument("second")
+    p.add_argument("--mark", help="on success, write this file for the ledger to read")
     p.set_defaults(fn=cmd_compare)
 
     p = sub.add_parser("status", help="verified / nix / opaque / unknown")

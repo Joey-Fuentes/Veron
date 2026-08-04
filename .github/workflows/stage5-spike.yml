@@ -149,13 +149,8 @@ jobs:
               --dl /dl --build-dir /build --dest /dest --logs /logs --out /out \
               build --clean
 
-      - name: 'VERON-MANIFEST-OK + VERON-LEDGER-OK'
-        run: |
-          set -eu
-          cd spikes/stage5
-          python3 tools/veron manifest
-          python3 tools/veron ledger
-          python3 tools/veron status
+      - name: 'VERON-MANIFEST-OK'
+        run: cd spikes/stage5 && python3 tools/veron manifest
 
       # MERGE. The sysroot IS the base of the final system, not merely the
       # build environment -- so the image is the entry contract plus what
@@ -196,7 +191,19 @@ jobs:
               --dl /dl --build-dir /build --dest /dest --logs /logs --out /out \
               build --clean
           python3 tools/veron manifest
-          python3 tools/veron compare out/files-run1.tsv out/files.tsv
+          python3 tools/veron compare out/files-run1.tsv out/files.tsv --mark out/G3-OK
+
+      # AFTER G3, DELIBERATELY. reproducibility.attestations is read from
+      # G3's marker, so writing records before the second build would pin
+      # them at 1 and assert less than the run proved.
+      - name: 'VERON-LEDGER-OK -- records carry what this run proved'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 tools/veron ledger
+          python3 tools/veron status
+          echo "  attestations:"
+          grep -h '"attestations"' ledger/*.json | sed 's/^/    /'
 
       - name: 'Merge the DESTDIRs into the system'
         run: |
