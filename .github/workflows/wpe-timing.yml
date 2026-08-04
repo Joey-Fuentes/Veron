@@ -145,6 +145,14 @@ jobs:
           mv "wpewebkit-$V" src
           echo "  source lines (rough): $(find src -name '*.cpp' -o -name '*.h' -o -name '*.c' | wc -l) files"
 
+      # THE CASCADE RUNS BOTH WAYS, which cost a run. With USE_GSTREAMER=OFF,
+      # configure auto-disabled ENABLE_SPEECH_SYNTHESIS and eight other
+      # features -- so a whole set of options was quietly riding on media
+      # being off. Turning media ON revived them, and SPEECH_SYNTHESIS then
+      # hard-failed for want of Flite or Spiel. It was already on the
+      # hard-fail list extracted two runs earlier; nobody re-read the list
+      # after changing the thing the list depended on.
+      #
       # MEDIA IS ON, AND IT IS THE LARGEST SINGLE DEPENDENCY DECISION HERE.
       # GStreamer is WebKit's only media backend -- there is no lighter path
       # to <video>/<audio>. Turning it on brings gstreamer plus plugins-base,
@@ -215,6 +223,7 @@ jobs:
             -DENABLE_DOCUMENTATION=OFF \
             -DENABLE_SPELLCHECK=OFF \
             -DENABLE_GAMEPAD=OFF \
+            -DENABLE_SPEECH_SYNTHESIS=OFF \
             -DENABLE_WEBDRIVER=OFF \
             -DUSE_LIBSECRET=OFF \
             -DUSE_AVIF=OFF \
@@ -241,8 +250,11 @@ jobs:
             exit 1
           fi
           echo ""
-          echo "  --- what configure decided ---"
-          grep -iE "^-- (Enabling|Disabling)|error|not found" configure.log | head -40 || true
+          echo "  --- what configure decided (the cascade) ---"
+          grep -iE "^-- (Enabling|Disabling)" configure.log | head -40 || true
+          echo ""
+          echo "  --- anything it could not find ---"
+          grep -iE "Could NOT find|not found" configure.log | head -20 || true
 
       - name: 'Build, with progress'
         run: |
