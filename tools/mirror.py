@@ -28,8 +28,9 @@ import urllib.request
 # FORCE IPv4. ftp.gnu.org publishes an AAAA record; a runner with no IPv6
 # route fails INSTANTLY with "[Errno 101] Network is unreachable" rather than
 # timing out, so retries and mirrors do not help. Intermittent, because it
-# depends on what the resolver returns -- the worst kind of failure, since it
-# works until it does not and looks like the site is down.
+# depends on what the resolver returns -- which is the worst kind: it works
+# until it does not, and looks like the site is down. Five of the nine
+# group-1 packages live on ftp.gnu.org.
 _real_getaddrinfo = socket.getaddrinfo
 
 
@@ -165,6 +166,11 @@ def cmd_fetch(a):
         return 0
 
     routes = locators(a.sha256, a.name, rows, hosts)
+    if a.url and not any(u == a.url for _, u in routes):
+        # THE RECIPE'S OWN UPSTREAM, tried first. A package that has not been
+        # mirrored yet still has provenance, and refusing to fetch it would
+        # make mirroring a PREREQUISITE for building rather than a fallback.
+        routes.insert(0, ("upstream", a.url))
     if not routes:
         die(f"no route to {a.sha256[:12]} ({a.name})")
 
@@ -290,7 +296,39 @@ def cmd_list(a):
     return 0
 
 
-def main():
+REQUIRED_SURFACE = {
+    "fetch": ["--dest", "--url"],
+    "add": ["--locator", "--dry-run"],
+    "check": ["--offline", "--tmp"],
+    "list": [],
+}
+
+
+def cmd_selftest(a):
+    """Assert every documented subcommand and flag still exists."""
+    ok = True
+    ap = build_parser()
+    subs = {}
+    for act in ap._actions:
+        if hasattr(act, "choices") and act.choices:
+            subs = act.choices
+    for name, flags in sorted(REQUIRED_SURFACE.items()):
+        if name not in subs:
+            print(f"  FAIL  subcommand missing: {name}")
+            ok = False
+            continue
+        have = {o for act in subs[name]._actions for o in act.option_strings}
+        for f in flags:
+            if f in have:
+                print(f"  ok    {name} {f}")
+            else:
+                print(f"  FAIL  {name} lost the {f} flag")
+                ok = False
+    print("VERON-MIRROR-SELFTEST-OK" if ok else "VERON-MIRROR-SELFTEST-FAIL")
+    return 0 if ok else 1
+
+
+def build_parser():
     ap = argparse.ArgumentParser(prog="mirror")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -298,6 +336,7 @@ def main():
     p.add_argument("sha256")
     p.add_argument("name")
     p.add_argument("--dest", default="dl")
+    p.add_argument("--url", help="upstream URL from the recipe, used if the table has no row")
     p.set_defaults(fn=cmd_fetch)
 
     p = sub.add_parser("add", help="upload to a host and record the locator")
@@ -309,12 +348,22 @@ def main():
 
     p = sub.add_parser("check", help="re-download everything and re-verify")
     p.add_argument("--offline", action="store_true", help="only check mirror counts")
-    p.add_argument("--tmp", default="/tmp/veron-mirror")
+    p.add_argument("--tmp", default=os.path.join(
+        os.environ.get("TMPDIR") or ("/tmp" if os.access("/tmp", os.W_OK) else
+                                     os.path.expanduser("~")), "veron-mirror"))
     p.set_defaults(fn=cmd_check)
 
     p = sub.add_parser("list", help="every artifact and every route to it")
     p.set_defaults(fn=cmd_list)
 
+    p = sub.add_parser("selftest", help="assert the documented CLI surface exists")
+    p.set_defaults(fn=cmd_selftest)
+
+    return ap
+
+
+def main():
+    ap = build_parser()
     a = ap.parse_args()
     sys.exit(a.fn(a))
 

@@ -67,8 +67,11 @@ jobs:
       # dropped per-step `env`; the recipes still declared PATH, the driver
       # ignored it, and pkgconf's suite failed looking like a package fault.
       # This checks BEHAVIOUR against a fixture instead.
-      - name: 'VERON-SELFTEST-OK -- the driver honours what recipes declare'
-        run: cd spikes/stage5 && python3 tools/veron selftest
+      - name: 'VERON-SELFTEST-OK -- the tools honour what callers depend on'
+        run: |
+          set -eu
+          cd spikes/stage5 && python3 tools/veron selftest
+          cd ../.. && python3 tools/mirror.py selftest
 
       - name: 'VERON-PLAN-OK -- regenerate and diff'
         run: cd spikes/stage5 && python3 tools/veron plan --check
