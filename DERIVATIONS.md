@@ -336,6 +336,41 @@ was confirmed as the standard fix, and worth noting: GCC never fixed the
 checksum-over-archives issue upstream -- Debian, Arch and Nix all fix it at the
 binutils layer, which is where this project now fixes it too.
 
+### The self-check worked, and it eliminated the archiver
+
+One run answers what three runs could not, which is what the in-run check was
+for:
+
+```
+only @0 parses here; banner will read '@0'
+SOURCE_DATE_EPOCH NOT exported: this date writes 'Thu Jan  1 00:00:00 UTC 1970'
+gen_init_cpio built from /build/src/linux/linux-7.1.5 -- deterministic inodes
+initramfs spec: 418 entries
+cpio is byte-identical across two invocations
+```
+
+Every guard fired, including the round-trip test, which caught busybox writing
+a date string it cannot read back -- exactly the failure predicted from the
+kernel source.
+
+**And the archive still differs between runs**: `e4e5194d…` then `d84606f3…`,
+11945933 then 11945875 bytes. `Image` is now identical across three runs.
+
+**That is progress, not a failure.** `cpio is byte-identical across two
+invocations` proves the archiver is deterministic given a spec, so the cause is
+no longer inside `gen_init_cpio` -- it is an **input**. The archive has 418
+entries but only **ten regular files**: busybox, eight guest test binaries, and
+init. Everything else is a directory or a busybox applet symlink. Whatever
+differs is one of those ten, or a mode, or a symlink target.
+
+**Why one log could not say which.** `hashtree B7` records every input's hash
+to `manifest.tsv`, and the manifest is uploaded -- but nothing printed it, so
+reading it meant downloading an artifact from each of two runs. The log now
+carries an **initramfs input digest**: one sha256 over every entry's path, mode,
+link target and content hash, plus the per-file list beneath it. Two log lines
+from two runs now settle whether the inputs or the archiver is at fault, with
+nothing to download.
+
 **With the search in place it runs**, and the log says so:
 
 ```

@@ -1527,6 +1527,34 @@ INIT
     # binary would move the archive's size just as an mtime would. Manifest
     # the inputs so the two cases are distinguishable without another run.
     hashtree B7 "$W/ir"
+    # AND PRINT THEM, because a hash written only to a TSV cannot be read from
+    # a log. The initramfs has ~418 entries but only ten REGULAR FILES --
+    # busybox, eight guest test binaries and init; everything else is a
+    # directory or a busybox applet symlink. When the archive differs between
+    # runs and `cpio is byte-identical across two invocations` has already
+    # cleared the archiver, the cause is one of these ten, and naming them in
+    # the log makes two consecutive logs enough to find it.
+    # ONE LINE THAT ANSWERS IT. A digest over every input's path, mode, link
+    # target and content hash. If this matches between two runs and the archive
+    # still differs, the fault is in gen_init_cpio or gzip; if it differs, the
+    # fault is upstream in whatever produced that file -- and the per-file list
+    # below says which. Two log lines from two runs, no artifacts to download.
+    ( cd "$W/ir" && find . -mindepth 1 2>/dev/null | LC_ALL=C sort | while IFS= read -r _e; do
+        if [ -L "$_e" ]; then printf 'l %s %s\n' "$_e" "$(readlink "$_e")"
+        elif [ -d "$_e" ]; then printf 'd %s %s\n' "$_e" "$(stat -c '%a' "$_e" 2>/dev/null)"
+        else printf 'f %s %s %s\n' "$_e" "$(stat -c '%a' "$_e" 2>/dev/null)" \
+             "$(sha256sum "$_e" 2>/dev/null | cut -d' ' -f1)"
+        fi
+      done ) > "$W/ir-inputs.txt"
+    say "    initramfs input digest: $(sha256sum "$W/ir-inputs.txt" | cut -c1-32)"
+    say "    ($(wc -l < "$W/ir-inputs.txt") entries: $(grep -c '^f ' "$W/ir-inputs.txt") files, $(grep -c '^l ' "$W/ir-inputs.txt") symlinks, $(grep -c '^d ' "$W/ir-inputs.txt") dirs)"
+
+    say "    --- the ten files that go in ---"
+    ( cd "$W/ir" && find . -type f 2>/dev/null | LC_ALL=C sort ) | while IFS= read -r _f; do
+      printf '      %-32s %10s  %s\n' "${_f#./}" \
+        "$(wc -c < "$W/ir/$_f" 2>/dev/null || echo 0)" \
+        "$(sha256sum "$W/ir/$_f" 2>/dev/null | cut -c1-32)"
+    done
   else
     B7=FAIL; say "    cpio produced nothing"
   fi
