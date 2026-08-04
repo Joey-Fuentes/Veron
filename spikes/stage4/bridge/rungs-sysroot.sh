@@ -1109,6 +1109,48 @@ if [ "$B5" = ok ]; then
       export KBUILD_BUILD_TIMESTAMP="${KBUILD_BUILD_TIMESTAMP:-Thu Jan  1 00:00:00 UTC 1970}"
       export KBUILD_BUILD_USER="${KBUILD_BUILD_USER:-veron}"
       export KBUILD_BUILD_HOST="${KBUILD_BUILD_HOST:-veron}"
+
+      # THE BANNER IS NOT THE ONLY THING THAT TIMESTAMP FEEDS, AND THE OTHER
+      # CONSUMER WAS SILENTLY FAILING.
+      #
+      # The kernel builds a small BUILT-IN initramfs -- `dev`, `dev/console`,
+      # `root` -- straight into the Image, and its cpio headers carry an mtime.
+      # Two Images differed in exactly 32 bytes, and three of the four runs
+      # were printable:
+      #
+      #   070701 000002D1 000041ED ... 6A7131EF 00000000 ...  dev
+      #   magic  ino      mode         mtime
+      #
+      # 0x6A7131EF is 1786773487 -- wall-clock build time. The fourth run was
+      # twenty bytes of entropy, a build-id derived from the content, so the
+      # mtime was the cause and the digest followed it.
+      #
+      # WHY IT LEAKED THROUGH. `usr/gen_initramfs.sh` does roughly
+      #
+      #     timestamp="$(date -d"$KBUILD_BUILD_TIMESTAMP" +%s || :)"
+      #
+      # and `|| :` swallows the failure. busybox's `date -d` does not parse
+      # "Thu Jan  1 00:00:00 UTC 1970", so `timestamp` came out empty, no `-t`
+      # was passed to gen_init_cpio, and it used the current time. The banner
+      # worked because the banner uses the string verbatim and never parses it.
+      #
+      # So: check that the box's own date can parse the value, and fall back to
+      # a form it can. Silent fallback is what cost this round; this one says
+      # which form took.
+      if [ "$(date -d "$KBUILD_BUILD_TIMESTAMP" +%s 2>/dev/null)" = 0 ]; then
+        say "    KBUILD_BUILD_TIMESTAMP parses to 0 -- built-in initramfs is deterministic"
+      elif [ "$(date -d @0 +%s 2>/dev/null)" = 0 ]; then
+        export KBUILD_BUILD_TIMESTAMP="@0"
+        say "    date cannot parse the long form; using @0 (banner reads '@0')"
+      else
+        say "    WARNING: no date form this box parses to 0 --"
+        say "    the built-in initramfs will carry wall-clock mtimes and Image"
+        say "    will not be reproducible. Pass -t to gen_init_cpio instead."
+      fi
+      # SOURCE_DATE_EPOCH TOO, because newer kbuild prefers it and it needs no
+      # parsing at all -- it is already the seconds the other path is trying to
+      # compute.
+      export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-0}"
       if timeout 7200 make ARCH=arm64 -j"$NP" Image > b.log 2>&1 \
          && [ -f arch/arm64/boot/Image ]; then
         cp arch/arm64/boot/Image "$W/Image"; B6=ok

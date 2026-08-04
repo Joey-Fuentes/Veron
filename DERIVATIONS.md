@@ -253,38 +253,45 @@ running `dd` by hand. Twenty bytes of entropy is a SHA-1, sixteen is an MD5,
 four that decode as an epoch is a timestamp, and printable bytes name
 themselves -- so print them, and skip the artifact round entirely.
 
-**Image -- narrowed to four ASCII characters, cause not yet named.**
+**Image -- FOUND. A timestamp in the kernel's own built-in initramfs.**
+
+Two 43 MB kernels differed in 32 bytes, four runs. Three of them were printable
+ASCII, and the surrounding context named the whole thing at once:
 
 ```
-@34301120  len 20   A:  be 70 20 95 43 fc e2 04 40 29 d5 97 06 89 84 b6 8c c1 d9 31
-                    B:  c8 72 91 fb 9f 38 60 b0 37 aa 35 e9 88 8f 11 86 5c 71 06 3f
-@36884558  len 4    A:  33 31 45 46      "31EF"
-                    B:  34 42 33 43      "4B3C"
-@36884674  len 4    same pair again
-@36884798  len 4    same pair again
+070701 000002D1 000041ED 00000000 00000000 00000002 6A7131EF 00000000 … dev
+magic  ino      mode     uid      gid      nlink    mtime    filesize
+                                                    ^^^^ 6A71|31EF -> 6A71|4B3C
 ```
 
-Three of the four runs are **printable ASCII**: four uppercase hex characters,
-the same value at three sites 116 and 124 bytes apart. The fourth is twenty
-bytes of entropy -- SHA-1 shaped, and almost certainly a build-id **derived
-from** the content, which makes the ASCII the cause and the digest a symptom.
+The Image contains a **cpio archive** -- the kernel's built-in initramfs, with
+`dev`, `dev/console` and `root` -- and `0x6A7131EF` is 1786773487, wall-clock
+build time. The differing four characters are the low half of the mtime, in
+three headers. The fourth run, twenty bytes of entropy, is a build-id derived
+from the content: the mtime was the cause and the digest followed it.
 
-So the whole difference between two 43 MB kernels is one four-character token
-appearing three times.
+**Why `KBUILD_BUILD_TIMESTAMP` did not stop it.** `usr/gen_initramfs.sh` does
+roughly
 
-**What is still missing is the string it sits inside.** Four hex characters
-could be anything; the same four inside `-g31EF` or `srcversion=` name
-themselves. `repro-diff.sh` now prints 160 bytes of printable context around
-each differing run for exactly this -- differing bytes answer *what shape*, the
-surrounding text answers *what thing*, and the alternative is a round of
-guessing at kernel internals.
+```
+timestamp="$(date -d"$KBUILD_BUILD_TIMESTAMP" +%s || :)"
+```
 
-**Image -- still open, and being measured rather than guessed at.** Same size
-every run, so it is values in fixed slots, like the compiler checksum was.
-`KBUILD_BUILD_TIMESTAMP/USER/HOST` are set and the banner proves they took.
-`repro-compilers` now diffs `Image` and the *decompressed* cpio as well --
-diffing a `.gz` is useless because one early changed byte moves everything
-after it, so the report is "differs everywhere" and names nothing.
+and `|| :` swallows the failure. busybox's `date -d` does not parse
+`Thu Jan  1 00:00:00 UTC 1970`, so `timestamp` came out empty, no `-t` reached
+`gen_init_cpio`, and it used the current time. **The banner worked because the
+banner uses the string verbatim and never parses it** -- which is why the fix
+looked confirmed for three rounds while half of it was silently failing.
+
+Fixed by checking, inside the box, that the box's own `date` parses the value
+to 0, falling back to `@0` if not, and saying which form took. `SOURCE_DATE_EPOCH`
+is exported too, since newer kbuild prefers it and it needs no parsing at all.
+
+**The general lesson, and it has now cost three rounds twice.** A setting that
+feeds two consumers can be confirmed working by one of them while failing in
+the other. `|| :` on a parse is the specific hazard: it converts "this box
+cannot read your date" into "no timestamp requested", which is indistinguishable
+from not having asked.
 
 ### The native gcc WAS not reproducible. It was sixteen bytes, and they are not code.
 
