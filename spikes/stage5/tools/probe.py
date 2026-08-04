@@ -1301,12 +1301,32 @@ def list_dirs(url):
     if not d:
         return []
     html = d.decode("utf-8", "replace")
+    # ABSOLUTE-PATH HREFS ARE THE COMMON CASE, not the exception. Mozilla's
+    # archive lists /pub/nspr/releases/v4.39/ -- a path, not a full URL -- and
+    # rejecting anything starting with "/" unless it began with the full URL
+    # meant every entry was discarded and the listing looked empty. Two runs
+    # were spent concluding Mozilla "returned nothing" when it had returned
+    # everything.
+    from urllib.parse import urlparse
+    base_path = urlparse(url).path.rstrip("/") + "/"
     out, seen = [], set()
     for m in re.finditer(r'href="([^"?#]+/)"', html):
         href = m.group(1)
-        if href.startswith(("http", "//", "..", "/")) and not href.startswith(url):
+        if href.startswith(("http://", "https://", "//")):
+            if not href.startswith(url):
+                continue
+            href = href[len(url):]
+        elif href.startswith("/"):
+            # A path from the server root. Keep it only if it is BELOW the
+            # directory being listed -- otherwise "/" and "/pub/" come back
+            # as navigation links and read as releases.
+            if not href.startswith(base_path) or href == base_path:
+                continue
+            href = href[len(base_path):]
+        if ".." in href or not href.strip("/"):
             continue
-        name = href.rstrip("/").split("/")[-1]
+        # One level only: a listing entry is a child, not a grandchild.
+        name = href.strip("/").split("/")[0]
         if not name or name in seen or name.startswith("."):
             continue
         seen.add(name)

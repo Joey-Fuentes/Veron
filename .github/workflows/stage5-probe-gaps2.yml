@@ -65,84 +65,84 @@ jobs:
       # guessed paths. `latest` asks the forge what it published; `index`
       # reads the directory listing. Then the URLs those return are probed
       # for real, in the same run, so nothing needs re-entering by hand.
-      - name: 'Ask where libxkbcommon and nss actually live'
+      # ASK THE FORGE. Guessing URLs for these has now failed seven times
+      # across five runs -- xkbcommon.org twice, Mozilla's ftp layout twice,
+      # a GitHub archive path, and an NSS version that was three years stale.
+      # Every one of those was an invented path rather than a missing package.
+      - name: 'Ask where nss and nspr are published'
         run: |
           set -eu
           cd spikes/stage5
-          python3 -u tools/probe.py latest github:xkbcommon/libxkbcommon \
-            | tee /tmp/xkb.txt || true
+          # NSS IS ON GITHUB, which nothing here had established -- and asking
+          # immediately corrected the version too: NSS_3_126_RTM, not the
+          # 3.112 that had been assumed and typed into a URL twice.
+          python3 -u tools/probe.py latest github:mozilla/nss \
+            | tee /tmp/nss.txt || true
           echo ""
-          # ftp.mozilla.org returned nothing the index parser could read.
-          # archive.mozilla.org serves the same tree with a plain listing, so
-          # try both rather than assuming which one answers -- guessing a URL
-          # is what has failed four times here already.
-          for host in https://archive.mozilla.org https://ftp.mozilla.org; do
-            python3 -u tools/probe.py index \
-              "$host/pub/security/nss/releases/" --name nss \
-              | tee -a /tmp/nss-dir.txt || true
-          done
+          python3 -u tools/probe.py latest github:nss-dev/nspr \
+            | tee /tmp/nspr.txt || true
           echo ""
-          # NSPR TOO. The plan lists nspr and nss as separate packages, so the
-          # plain nss tarball is the right one -- but that leaves nspr with no
-          # URL anywhere, which would have surfaced as a missing pin later.
-          for host in https://archive.mozilla.org https://ftp.mozilla.org; do
-            python3 -u tools/probe.py index "$host/pub/nspr/releases/" \
-              --name nspr | tee -a /tmp/nspr-dir.txt || true
-          done
+          # And where the packagers fetch them, as a second opinion on both.
+          python3 -u tools/probe.py source nss nspr libxkbcommon \
+            | tee /tmp/src.txt || true
 
-      - name: 'Probe whatever they said'
+      # WALK THE DIRECTORY TREE. archive.mozilla.org publishes a directory
+      # per release with the tarball and its sha files in src/ one level
+      # down -- confirmed at /pub/nspr/releases/v4.39/src/. `index` now reads
+      # those listings, so this descends instead of guessing the layout.
+      - name: 'Descend into the Mozilla release directories'
+        run: |
+          set -eu
+          cd spikes/stage5
+          : > moz.txt
+          for what in security/nss nspr; do
+            top="https://archive.mozilla.org/pub/$what/releases/"
+            python3 -u tools/probe.py index "$top" --name "${what##*/}" \
+              > /tmp/top.txt 2>&1 || true
+            sed 's|^|    |' /tmp/top.txt
+            rel=$(awk '/^ *dir /{print $2}' /tmp/top.txt | tail -1 || true)
+            [ -n "$rel" ] || { echo "  no release directory under $top"; continue; }
+            echo "  newest: $rel"
+            python3 -u tools/probe.py index "$top$rel/src/" \
+              --name "${what##*/}" > /tmp/src.txt 2>&1 || true
+            sed 's|^|    |' /tmp/src.txt
+            # Take real tarballs only, and for NSS prefer the plain one over
+            # the -with-nspr- bundle: the plan lists nspr and nss separately,
+            # and a bundle would make one tarball answer for two records.
+            grep -ohE 'https://\S+\.tar\.(gz|xz|bz2)' /tmp/src.txt \
+              | grep -v with-nspr | sort -V | tail -1 >> moz.txt || true
+          done
+          echo "  --- mozilla tarballs ---"
+          sed 's|^|    |' moz.txt
+
+      - name: 'Probe whatever real assets they named'
         run: |
           set -eu
           cd spikes/stage5
           : > found.txt
-          # The asset line from `latest` is "    asset  <name>" then a URL on
-          # the following line; take any https URL that names a tarball.
-          # Skip the auto-generated archive; if that is all there is, fall
-          # back to xkbcommon.org, which publishes real signed tarballs.
-          u=$(grep -B1 -ohE 'https://\S+\.(tar\.(gz|xz|bz2)|tgz)' /tmp/xkb.txt \
-              | grep -v 'api.github.com/repos' | head -1 || true)
-          v=$(grep -ohE 'xkbcommon-[0-9]+\.[0-9]+\.[0-9]+' /tmp/xkb.txt \
-              | grep -v beta | head -1 | sed 's/xkbcommon-//' || true)
-          if [ -n "$u" ]; then echo "$u" >> found.txt
-          elif [ -n "$v" ]; then
-            echo "https://xkbcommon.org/download/libxkbcommon-$v.tar.xz" >> found.txt
-          fi
-          # NSS publishes a release DIRECTORY per version; the tarball lives
-          # one level further down in src/. Resolve that rather than assuming
-          # which NSPR version it is paired with -- the pairing is exactly
-          # what was guessed wrong last time.
-          # `index` now prints the subdirectories it found, newest last, so
-          # this reads its output instead of guessing Mozilla's layout.
-          rel=$(awk '/^ *dir /{print $2}' /tmp/nss-dir.txt | tail -1 || true)
-          if [ -n "$rel" ]; then
-            host=$(grep -ohE 'https://(archive|ftp)\.mozilla\.org' /tmp/nss-dir.txt | head -1)
-            host=${host:-https://archive.mozilla.org}
-            base="$host/pub/security/nss/releases/$rel/src/"
-            echo "  newest NSS release directory: $rel"
-            python3 -u tools/probe.py index "$base" --name nss \
-              | tee /tmp/nss-src.txt || true
-              # The PLAIN nss tarball, not the -with-nspr- bundle: the plan
-            # lists nspr and nss as separate packages, and the bundle would
-            # make one tarball answer for two ledger records.
-            grep -ohE "https://\S+nss-[0-9.]+\.tar\.gz" /tmp/nss-src.txt \
-              | grep -v with-nspr | sort -V | tail -1 >> found.txt || true
-          fi
-          nrel=$(awk '/^ *dir /{print $2}' /tmp/nspr-dir.txt | tail -1 || true)
-          if [ -n "$nrel" ]; then
-            nhost=$(grep -ohE 'https://(archive|ftp)\.mozilla\.org' /tmp/nspr-dir.txt | head -1)
-            nhost=${nhost:-https://archive.mozilla.org}
-            nbase="$nhost/pub/nspr/releases/$nrel/src/"
-            echo "  newest NSPR release directory: $nrel"
-            python3 -u tools/probe.py index "$nbase" --name nspr \
-              | tee /tmp/nspr-src.txt || true
-            grep -ohE "https://\S+nspr-[0-9.]+\.tar\.gz" /tmp/nspr-src.txt \
-              | sort -V | tail -1 >> found.txt || true
-          fi
-
-          echo "  --- resolved ---"
+          # ONLY REAL UPLOADED ASSETS. An AUTO-GENERATED line is a forge
+          # rebuilding a tarball on demand, and its checksum has shifted under
+          # the whole ecosystem before -- pinning one would be pinning
+          # something nobody controls.
+          for f in /tmp/nss.txt /tmp/nspr.txt; do
+            [ -f "$f" ] || continue
+            grep -v 'AUTO-GENERATED' "$f" \
+              | grep -ohE 'https://\S+\.(tar\.(gz|xz|bz2)|tgz)' \
+              | grep -v 'api.github.com' >> found.txt || true
+          done
+          # Packager URLs as a fallback, since they point at whatever actually
+          # serves these today.
+          grep -ohE 'https://\S+\.(tar\.(gz|xz|bz2)|tgz)' /tmp/src.txt 2>/dev/null \
+            | grep -v '\$' >> found.txt || true
+          [ -f moz.txt ] && cat moz.txt >> found.txt || true
+          sort -u found.txt -o found.txt
+          echo "  --- real assets found ---"
           sed 's|^|    |' found.txt
-          [ -s found.txt ] && python3 -u tools/probe.py batch found.txt \
-            --out probed-found.tsv || echo "  nothing resolved"
+          if [ -s found.txt ]; then
+            python3 -u tools/probe.py batch found.txt --out probed-found.tsv || true
+          else
+            echo "  none -- these publish no pinnable tarball either"
+          fi
 
       - name: 'Find the repository for the two with no tarball'
         run: |
@@ -157,9 +157,15 @@ jobs:
           set -eu
           echo ""
           echo "  === GIT-PINNED RECIPES ==="
+          # libxkbcommon JOINS THESE TWO. It publishes no tarball anywhere
+          # we can reach, so the commit is the pin and tools/fetch-git.sh
+          # generates the tarball deterministically -- same treatment, same
+          # reasoning, and strictly stronger than pinning an archive a forge
+          # regenerates on request.
           for spec in \
             'https://gitlab.freedesktop.org/vyivel/libsfdo.git#v0.1.4' \
-            'https://github.com/davmac314/dinit.git#v0.22.1'; do
+            'https://github.com/davmac314/dinit.git#v0.22.1' \
+            'https://github.com/xkbcommon/libxkbcommon.git#xkbcommon-1.13.2'; do
             url="${spec%%#*}"; tag="${spec##*#}"
             out=$(git ls-remote "$url" "refs/tags/$tag" "refs/tags/$tag^{}" 2>&1 || true)
             # ^{} dereferences an annotated tag to the commit it points at.

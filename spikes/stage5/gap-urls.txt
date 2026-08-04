@@ -29,14 +29,14 @@ https://github.com/JuliaStrings/utf8proc/releases/download/v2.11.3/utf8proc-2.11
 #   libxkbcommon moved to freedesktop GitLab
 #   nss          the mozilla archive layout differs from what I guessed
 http://bitmath.org/code/mtdev/mtdev-1.1.7.tar.bz2
-# xkbcommon-1.13.2 HAS NO UPLOADED GITHUB ASSETS -- only the auto-generated
-# archive, which must never be pinned. Its real home is xkbcommon.org, so that
-# is listed directly here; an earlier failure fetching it was a timeout, not a
-# wrong path. nss and nspr are still resolved by asking, because Mozilla puts
-# a DIRECTORY per release and the tarball is a level further down.
-https://xkbcommon.org/download/libxkbcommon-1.13.2.tar.xz
-
-# nss is NOT probed by URL here, because guessing its URL
-# has now failed twice. Four of the last six URL failures in this project
+# libxkbcommon HAS NO PINNABLE TARBALL. Its GitHub releases carry only the
+# auto-generated archive and an attestation, and xkbcommon.org/download/
+# failed for BOTH 1.13.2 and 1.14.0 -- the host, not the version. That is not
+# a URL to keep guessing at; it is a package that publishes no artifact, which
+# is precisely the case tools/fetch-git.sh was built for. It is resolved to a
+# COMMIT below, alongside libsfdo and dinit.
+#
+# nss and nspr are resolved by asking too -- and the asking already corrected
+# a guess: NSS is at NSS_3_126_RTM, not the 3.112 that was assumed here. Four of the last six URL failures in this project
 # were invented paths, not missing packages, so this job ASKS the forge and
 # the directory listing instead -- see the two steps below.
