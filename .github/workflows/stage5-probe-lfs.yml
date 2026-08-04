@@ -1,0 +1,75 @@
+name: stage5-probe-lfs
+
+# THE LFS HALF OF THE PACKAGE SET.
+#
+# BLFS puts a download URL on each package's own page. LFS puts them all on
+# chapter03/packages.html, in a flat run of "Name (version) ... Download: URL
+# ... MD5 sum: HEX". tools/blfs.py therefore reads LFS titles happily and
+# returns url=None for every one of them -- which is how expat, readline,
+# ninja, meson, gperf, libffi and pcre2 came to be missing from a batch that
+# was supposed to be complete. tools/lfs.py reads the list page instead.
+#
+# THE BOOK IS NOT THE PIN. It supplies a URL and an MD5; this job fetches the
+# tarball and computes our own sha256, checks for a signature, reads the
+# licence and the build system. Where the book and upstream disagree, that is
+# a decision to make rather than a discrepancy to inherit -- LFS 13.0 pins
+# file at 5.46 while we measured and pinned 5.48.
+
+on:
+  workflow_dispatch:
+    inputs:
+      book:
+        description: 'LFS book archive under spikes/stage4/books/'
+        required: false
+        default: 'LFS-BOOK-13_0_tar.xz'
+      packages:
+        description: 'LFS package names to probe'
+        required: false
+        default: 'expat readline ninja meson gperf libffi pcre2'
+
+concurrency:
+  group: stage5-probe-lfs-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Unpack the LFS book and build the URL list'
+        run: |
+          set -eu
+          mkdir -p /tmp/lfs && tar -xf "spikes/stage4/books/${{ inputs.book }}" -C /tmp/lfs
+          BOOK=$(find /tmp/lfs -maxdepth 2 -name chapter03 -type d | head -1 | xargs dirname)
+          echo "  book at $BOOK"
+          cd spikes/stage5
+          # --canonical rewrites ftpmirror.gnu.org to ftp.gnu.org: the
+          # redirector already failed outright for libtasn1 and nettle, and a
+          # recipe should pin a host that answers rather than one that picks.
+          python3 -u tools/lfs.py --book "$BOOK" --canonical urls \
+            ${{ inputs.packages }} > lfs-urls.txt
+          echo "  $(wc -l < lfs-urls.txt) URLs"
+          cat lfs-urls.txt | sed 's/^/    /'
+
+      - name: 'Probe every one of them'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 -u tools/probe.py batch lfs-urls.txt --out probed-lfs.tsv || true
+
+      - name: 'The table'
+        if: always()
+        run: |
+          set -eu
+          cd spikes/stage5
+          [ -s probed-lfs.tsv ] || { echo "  nothing probed"; exit 0; }
+          echo "  === RESULTS ==="
+          awk -F'\t' 'NR>1 {printf "  %-14s %-10s %-18s %-22s %s\n", $1, $3, substr($4,1,16), $6, $7}' probed-lfs.tsv
+          echo ""
+          echo "  === NO SIGNATURE (criterion 1 gap) ==="
+          awk -F'\t' 'NR>1 && $5=="none" {print "    " $1}' probed-lfs.tsv
+          echo ""
+          echo "  === FAILED, needs a human ==="
+          awk -F'\t' '$1=="FAILED" {print "    " $2}' probed-lfs.tsv
