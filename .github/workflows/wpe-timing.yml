@@ -26,7 +26,7 @@ on:
       gstreamer:
         description: 'Build with GStreamer (media). Off = no video/audio, fewer deps'
         type: boolean
-        default: false
+        default: true
       build_type:
         description: 'CMake build type'
         type: choice
@@ -102,8 +102,24 @@ jobs:
             libwpe-1.0-dev libwpebackend-fdo-1.0-dev)
 
           if [ "${{ inputs.gstreamer }}" = "true" ]; then
-            PKGS="$PKGS $(need libgstreamer1.0-dev \
-              libgstreamer-plugins-base1.0-dev libgstreamer-plugins-bad1.0-dev)"
+            # WHAT YOUTUBE ACTUALLY NEEDS, which is more than "gstreamer":
+            #   MSE          YouTube streams via Media Source Extensions, not
+            #                a plain <video src>. ENABLE_MEDIA_SOURCE follows
+            #                ENABLE_VIDEO, which follows USE_GSTREAMER.
+            #   VP9 + Opus   the default WebM codecs -- plugins-good (libvpx)
+            #                and plugins-base (opus).
+            #   AV1          increasingly the default -- dav1d, in -bad.
+            #   H.264 + AAC  fallback and most non-YouTube video -- libav
+            #                (ffmpeg) and -ugly.
+            # The -dev packages are what the build links against; the runtime
+            # plugin packages are what actually decode, and both are installed
+            # so the result can be tested rather than only compiled.
+            PKGS="$PKGS $(need \
+              libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+              libgstreamer-plugins-bad1.0-dev \
+              gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+              gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly \
+              gstreamer1.0-libav gstreamer1.0-gl)"
           fi
 
           echo "  installing $(echo "$PKGS" | wc -w) packages"
@@ -129,6 +145,19 @@ jobs:
           mv "wpewebkit-$V" src
           echo "  source lines (rough): $(find src -name '*.cpp' -o -name '*.h' -o -name '*.c' | wc -l) files"
 
+      # MEDIA IS ON, AND IT IS THE LARGEST SINGLE DEPENDENCY DECISION HERE.
+      # GStreamer is WebKit's only media backend -- there is no lighter path
+      # to <video>/<audio>. Turning it on brings gstreamer plus plugins-base,
+      # -good, -bad, -ugly and -libav (ffmpeg), which is comfortably more
+      # packages than the entire rest of WPE's dependency list.
+      #
+      # A RISK WORTH CHECKING RATHER THAN ASSUMING: some newer GStreamer
+      # codecs live only in gst-plugins-rs, which is written in Rust. If a
+      # codec YouTube needs turns out to be there and nowhere else, Rust comes
+      # back in through the media stack rather than the engine -- which would
+      # be an ugly way to discover it. The -dev/-libav set below is chosen to
+      # stay on the C side; verify against what actually decodes.
+      #
       # THE SANDBOX STAYS ON. bwrap is a program rather than a library, and
       # this project already runs its whole ladder inside a bubblewrap box --
       # so bubblewrap ships in the OS regardless, for users to rebuild Veron
@@ -195,7 +224,9 @@ jobs:
             -DUSE_LIBBACKTRACE=OFF \
             -DUSE_SYSPROF_CAPTURE=OFF \
             -DENABLE_MINIBROWSER=ON \
-            $( [ "${{ inputs.gstreamer }}" = "true" ] || echo "-DUSE_GSTREAMER=OFF" ) \
+            $( [ "${{ inputs.gstreamer }}" = "true" ] \
+                 && echo "-DUSE_GSTREAMER=ON -DENABLE_VIDEO=ON -DENABLE_WEB_AUDIO=ON -DENABLE_MEDIA_SOURCE=ON -DUSE_GSTREAMER_GL=ON" \
+                 || echo "-DUSE_GSTREAMER=OFF" ) \
             2>&1 | tee configure.log
           RC=${PIPESTATUS[0]}
           echo "CONFIGURE_SECONDS=$(( $(date +%s) - S ))" >> "$GITHUB_ENV"
