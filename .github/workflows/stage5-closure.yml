@@ -34,9 +34,15 @@ on:
         type: boolean
         default: false
       exclude:
-        description: 'Excluded by POLICY, not by absence'
+        # THE NAMES MUST BE THE METADATA SOURCE'S NAMES. The first run
+        # excluded "systemd" and "dbus" and the closure still contained
+        # systemd-libs, libsystemd, libudev.so, libdbus and
+        # libpolkit-gobject-1 -- the same components under the names Arch
+        # actually uses. An exclusion that does not match is worse than none:
+        # it reads as enforced and is not.
+        description: 'Excluded by POLICY, using the metadata source package names'
         required: false
-        default: 'systemd,dbus,polkit,elogind,libx11,xorg-server,libxcb,wayland-protocols-x11'
+        default: 'systemd,systemd-libs,libsystemd,libudev,dbus,libdbus,dbus-broker,polkit,libpolkit-gobject-1,elogind,libx11,libxcb,xorgproto,xorg-server,libxext,libxrender,libxft,audit,libaudit,pambase,pam'
 
 concurrency:
   group: stage5-closure-${{ github.ref }}

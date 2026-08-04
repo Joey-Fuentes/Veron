@@ -63,22 +63,36 @@ def fetch(url, timeout=20):
     return data or None
 
 
+SONAME = re.compile(r"\.so(\.[0-9.]+)?$")
+
+
 def bash_array(text, name):
-    """Pull `name=(a b c)` out of a PKGBUILD/APKBUILD, multiline included."""
-    m = re.search(rf"^{name}=\(([^)]*)\)", text, re.M | re.S)
-    if not m:
-        m = re.search(rf"^{name}=\"([^\"]*)\"", text, re.M | re.S)
-    if not m:
-        return []
-    body = re.sub(r"#.*", "", m.group(1))
+    """Every `name=(a b c)`, INCLUDING the indented ones inside package_*().
+
+    THE ANCHORED VERSION WAS WRONG FOR SPLIT PACKAGES. Arch's mesa, foot and
+    util-linux define no top-level `depends=`; the real lists live indented
+    inside package_mesa(), package_foot() and so on. With `^depends=` those
+    packages parsed as having NO dependencies, and the closure reported
+    curl, mesa and foot as leaves -- an answer that looks plausible and is
+    completely wrong.
+
+    All occurrences are merged: a split PKGBUILD may declare several, and
+    which subpackage we want is not something this can decide.
+    """
     out = []
-    for tok in body.split():
-        tok = tok.strip("'\"")
-        # Strip version constraints and Alpine's !conflict / package:subpkg.
-        tok = re.split(r"[<>=]", tok)[0]
-        if not tok or tok.startswith("!") or tok.startswith("$"):
-            continue
-        out.append(tok)
+    for m in re.finditer(rf"^[ \t]*{name}\+?=\(([^)]*)\)", text, re.M | re.S):
+        body = re.sub(r"#.*", "", m.group(1))
+        for tok in body.split():
+            tok = tok.strip("'\"")
+            tok = re.split(r"[<>=:]", tok)[0]
+            if not tok or tok.startswith("!") or tok.startswith("$"):
+                continue
+            out.append(tok)
+    for m in re.finditer(rf"^[ \t]*{name}=\"([^\"]*)\"", text, re.M):
+        for tok in m.group(1).split():
+            tok = re.split(r"[<>=:]", tok.strip("'\""))[0]
+            if tok and not tok.startswith(("!", "$")):
+                out.append(tok)
     return out
 
 
@@ -107,6 +121,13 @@ def walk(targets, have, exclude, source, max_depth, include_build):
     """Breadth-first from the targets down to things already provided."""
     getter = {"arch": arch_deps, "alpine": alpine_deps}[source]
     seen, unknown, pruned, edges = {}, set(), {}, {}
+    # SONAMES ARE NOT PACKAGES. Arch lists entries like `libsystemd.so` and
+    # `libgcc_s.so` in depends -- those are virtual providers resolved through
+    # a provides index, not things to build. Treating them as packages put
+    # twelve fictional entries in an 87-package closure and, worse, hid real
+    # systemd and polkit dependencies behind names the exclude list never
+    # matched. Bucketed separately so the count means something.
+    sonames = {}
     frontier = [(t, 0) for t in targets]
     while frontier:
         pkg, depth = frontier.pop(0)
@@ -127,12 +148,16 @@ def walk(targets, have, exclude, source, max_depth, include_build):
         deps = list(d["runtime"]) + (list(d["build"]) if include_build else [])
         edges[pkg] = sorted(set(deps))
         for x in edges[pkg]:
+            if SONAME.search(x):
+                sonames.setdefault(x, set()).add(pkg)
+                continue
             if x in exclude:
                 pruned.setdefault(x, set()).add(pkg)
                 continue
             if x not in seen and x not in have:
                 frontier.append((x, depth + 1))
-    return seen, edges, unknown, pruned
+        edges[pkg] = [x for x in edges[pkg] if not SONAME.search(x)]
+    return seen, edges, unknown, pruned, sonames
 
 
 def sccs(nodes, edges):
@@ -228,8 +253,9 @@ def main():
     print(f"  build deps  {'followed' if a.build_deps else 'NOT followed (runtime only)'}")
     print()
 
-    seen, edges, unknown, pruned = walk(a.targets, have, exclude, a.source,
-                                        a.max_depth, a.build_deps)
+    seen, edges, unknown, pruned, sonames = walk(a.targets, have, exclude,
+                                                 a.source, a.max_depth,
+                                                 a.build_deps)
     ordered, cyclic = order(seen, edges, have, exclude)
 
     print(f"  === CLOSURE: {len(seen)} packages ===")
@@ -256,6 +282,17 @@ def main():
         for p, wanted_by in sorted(pruned.items()):
             print(f"    {p:<24} wanted by: {', '.join(sorted(wanted_by)) or '(a target)'}")
 
+    if sonames:
+        print(f"\n  === SONAME DEPENDENCIES: {len(sonames)} ===")
+        print("    Virtual providers, not packages -- resolved through a")
+        print("    provides index. Listed rather than counted, because some")
+        print("    of these are EXCLUDED THINGS WEARING ANOTHER NAME:")
+        print("    libsystemd.so and libudev.so are systemd; libdbus is dbus.")
+        for so, by in sorted(sonames.items()):
+            flag = "  <-- an excluded component" if re.search(
+                r"systemd|udev|dbus|polkit|elogind", so) else ""
+            print(f"    {so:<28} {', '.join(sorted(by))[:44]}{flag}")
+
     if unknown:
         print(f"\n  === NOT FOUND: {len(unknown)} ===")
         print("    No metadata under that name -- a distro-specific name, a")
@@ -265,6 +302,7 @@ def main():
 
     if a.json:
         json.dump({"order": ordered, "edges": edges, "cyclic": cyclic,
+                   "sonames": {k: sorted(v) for k, v in sonames.items()},
                    "pruned": {k: sorted(v) for k, v in pruned.items()},
                    "unknown": sorted(unknown)}, open(a.json, "w"), indent=2)
         print(f"\n  graph written to {a.json}")
