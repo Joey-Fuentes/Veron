@@ -1,0 +1,115 @@
+name: stage5-probe-gaps
+
+# THE EIGHT PACKAGES NOTHING HAS A DIGEST FOR.
+#
+# 27 of 97 are built and 62 of the remaining 70 are fully probed. These eight
+# are the whole gap, and they got there three different ways:
+#
+#   libtasn1, nettle       failed on ftpmirror.gnu.org -- the redirector that
+#                          also broke readline and gperf. The probe now falls
+#                          back to ftp.gnu.org, so these just need re-running.
+#
+#   wayland-protocols      never put on a list. libhyphen and wpa_supplicant
+#   libhyphen              the same. Not a tooling limit, an oversight.
+#   wpa_supplicant
+#
+#   wlroots, seatd, dinit  the real ones. wlroots and dinit TAG without ever
+#                          publishing a release, so the releases API returns
+#                          nothing. seatd is on SOURCEHUT, which no probe
+#                          spoke until now. wlroots and seatd are also absent
+#                          from stable BLFS 13.0 -- they are development-book
+#                          only -- so probe-all never saw them either.
+#
+# A tag gives a version, not a pinnable artifact: the archive a forge builds
+# from a tag is generated on demand and its checksum can move. So for those
+# three, expect a version and a URL that still needs a human to confirm.
+
+on:
+  workflow_dispatch:
+    inputs:
+      latest:
+        description: 'Version lookups for the forge-hosted gaps'
+        required: false
+        default: >-
+          fdo:wayland/wayland-protocols
+          fdo:wlroots/wlroots
+          sourcehut:~kennylevinsen/seatd
+          davmac314/dinit
+          hunspell/hyphen
+      urls:
+        description: 'Tarballs to probe directly'
+        required: false
+        default: >-
+          https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.21.0.tar.gz
+          https://ftp.gnu.org/gnu/nettle/nettle-3.10.2.tar.gz
+          https://w1.fi/releases/wpa_supplicant-2.11.tar.gz
+      index:
+        description: 'Directory listings, for projects with no release API'
+        required: false
+        default: >-
+          wpa_supplicant=https://w1.fi/releases/
+          wayland-protocols=https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases
+
+concurrency:
+  group: stage5-probe-gaps-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Versions from the forges'
+        if: inputs.latest != ''
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 -u tools/probe.py latest ${{ inputs.latest }} | tee /tmp/gap-latest.txt
+
+      - name: 'Directory listings'
+        if: inputs.index != ''
+        run: |
+          set -eu
+          cd spikes/stage5
+          for spec in ${{ inputs.index }}; do
+            name="${spec%%=*}"; url="${spec#*=}"
+            python3 -u tools/probe.py index "$url" --name "$name" || true
+          done | tee /tmp/gap-index.txt
+
+      - name: 'Where distro packagers fetch the awkward ones'
+        run: |
+          set -eu
+          cd spikes/stage5
+          # For a package that only tags, the packagers already had to decide
+          # where to fetch from. Two of them agreeing is the evidence.
+          python3 -u tools/probe.py source wlroots seatd dinit hyphen \
+            wayland-protocols wpa_supplicant | tee /tmp/gap-source.txt
+
+      - name: 'Probe the tarballs we can name'
+        if: inputs.urls != ''
+        run: |
+          set -eu
+          cd spikes/stage5
+          for u in ${{ inputs.urls }}; do echo "$u"; done > gap-urls.txt
+          python3 -u tools/probe.py batch gap-urls.txt --out probed-gaps.tsv || true
+
+      - name: 'What is still missing after this'
+        if: always()
+        run: |
+          set -eu
+          cd spikes/stage5
+          if [ -s probed-gaps.tsv ]; then
+            echo "  === PROBED ==="
+            awk -F'\t' 'NR>1 {printf "  %-18s %-10s %-18s %s\n", $1, $3, substr($4,1,16), $6}' probed-gaps.tsv
+            echo ""
+            echo "  === FAILED ==="
+            awk -F'\t' '$1=="FAILED" {print "    " $2}' probed-gaps.tsv
+          fi
+          echo ""
+          echo "  A TAG IS NOT A PIN. wlroots, seatd and dinit publish tags and"
+          echo "  no release assets, so anything above for them is a version and"
+          echo "  a generated-archive URL whose checksum can move. Confirm the"
+          echo "  project's real download location before writing the recipe --"
+          echo "  the packager-source output above is the best evidence for it."

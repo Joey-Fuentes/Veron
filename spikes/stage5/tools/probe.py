@@ -176,6 +176,39 @@ def latest_forgejo(path, host="codeberg.org"):
             "published": r.get("published_at", "")}
 
 
+def latest_sourcehut(path, host="git.sr.ht"):
+    """Newest tag on a sourcehut repository.
+
+    seatd lives on git.sr.ht/~kennylevinsen/seatd and nowhere else -- not
+    GitHub, not GitLab, not Codeberg. It is a required piece of the compositor
+    stack (labwc's session management), so "the probe does not speak this
+    forge" would mean pinning it by hand, which is how a wrong digest gets in.
+    Sourcehut has no releases concept at all, only tags, so this returns tags
+    and says plainly that the download URL still needs finding.
+    """
+    owner, _, repo = path.partition("/")
+    if not owner.startswith("~"):
+        owner = "~" + owner
+    d = try_get(f"https://{host}/{owner}/{repo}/refs")
+    if not d:
+        return None
+    html = d.decode("utf-8", "replace")
+    tags = re.findall(rf'/{re.escape(owner)}/{re.escape(repo)}/refs/([0-9][^"/]*)"', html)
+    if not tags:
+        tags = re.findall(r'refs/tags/([0-9][^"/<]*)', html)
+    if not tags:
+        return None
+    seen, out = set(), []
+    for t in tags:
+        if t not in seen:
+            seen.add(t); out.append(t)
+    top = out[0]
+    return {"version": top,
+            "assets": [{"name": f"{repo}-{top}.tar.gz",
+                        "url": f"https://{host}/{owner}/{repo}/archive/{top}.tar.gz"}],
+            "published": ""}
+
+
 def latest_gnu(project):
     """GNU projects publish a directory index; read it rather than guess."""
     d = base = None
@@ -845,7 +878,10 @@ def cmd_latest(a):
         # whole to the GNU lookup, which fetched /gnu/gnu:m4/ and reported
         # "could not determine" -- the doubled "gnu:gnu:" in the output was
         # the tell. Accept the documented form, a bare name, and owner/repo.
-        if spec.startswith("codeberg:"):
+        if spec.startswith("sourcehut:") or spec.startswith("srht:"):
+            name = spec.split(":", 1)[1]
+            r, src = latest_sourcehut(name), f"sourcehut:{name}"
+        elif spec.startswith("codeberg:"):
             name = spec[9:]
             r, src = latest_forgejo(name), f"codeberg:{name}"
         elif spec.startswith("fdo:"):
