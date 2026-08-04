@@ -1,0 +1,53 @@
+name: stage5-resolve-commits
+
+# TAG -> COMMIT, so a git-pinned recipe can name something immutable.
+#
+# libsfdo and dinit publish no release tarballs, only tags. A tag is a moving
+# label -- it can be deleted and repointed -- while the commit it currently
+# names is a Merkle hash over the whole tree and cannot be. So the recipe pins
+# the commit, and this resolves which commit a tag means today.
+#
+# `git ls-remote` is the whole mechanism: it asks the server what a ref points
+# at without cloning anything.
+
+on:
+  workflow_dispatch:
+    inputs:
+      refs:
+        description: 'url#tag pairs to resolve'
+        required: false
+        default: >-
+          https://gitlab.freedesktop.org/vyivel/libsfdo.git#v0.1.4
+          https://github.com/davmac314/dinit.git#v0.22.1
+
+jobs:
+  resolve:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - name: 'Resolve each tag to a commit'
+        run: |
+          set -eu
+          for spec in ${{ inputs.refs }}; do
+            url="${spec%%#*}"; tag="${spec##*#}"
+            echo "== $url  @  $tag"
+            # ^{} dereferences an annotated tag to the commit it points at.
+            # Without it an annotated tag resolves to the TAG OBJECT, which is
+            # a different hash and not what git archive wants.
+            out=$(git ls-remote "$url" "refs/tags/$tag" "refs/tags/$tag^{}" 2>&1 || true)
+            echo "$out" | sed 's/^/   /'
+            commit=$(echo "$out" | awk '/\^\{\}$/{print $1}' | head -1)
+            [ -n "$commit" ] || commit=$(echo "$out" | awk 'NR==1{print $1}')
+            if [ -n "$commit" ]; then
+              echo "   -> commit = $commit"
+              echo "   recipe:"
+              echo "     [source]"
+              echo "     kind   = \"git\""
+              echo "     url    = \"$url\""
+              echo "     commit = \"$commit\""
+              echo "     tag    = \"$tag\"   # informational -- the commit is the pin"
+            else
+              echo "   could not resolve -- check the tag name"
+            fi
+            echo ""
+          done
