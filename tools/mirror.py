@@ -228,7 +228,20 @@ def cmd_add(a):
                            h, sha, name) for x in cmd]
             print("  +", " ".join(argv))
             if not a.dry_run:
-                subprocess.run(argv, check=False)
+                r = subprocess.run(argv, capture_output=True, text=True)
+                if r.returncode != 0:
+                    # A `create` that fails because the tag already exists is
+                    # the normal second-run case and must not look like an
+                    # error. Anything else is worth seeing -- the previous
+                    # code discarded both alike, so a genuinely failed upload
+                    # was recorded in the table as though it had worked.
+                    msg = (r.stderr or r.stdout or "").strip()
+                    if "already exists" in msg or "already_exists" in msg:
+                        print("    (release already exists)")
+                    else:
+                        print(f"    FAILED rc={r.returncode}: {msg[:200]}")
+                        die(f"{a.host}: upload failed, refusing to record a "
+                            f"route that does not work")
 
     rows.append({"sha256": sha, "name": name, "host": a.host, "locator": loc})
     if not a.dry_run:

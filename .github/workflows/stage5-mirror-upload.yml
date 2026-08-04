@@ -1,0 +1,105 @@
+name: stage5-mirror-upload
+
+# GIVE EVERY PIN A SECOND ROUTE, INCLUDING THE ONES NO REWRITE CAN REACH.
+#
+# `probe mirrors` found 26 verified routes for 11 packages by rewriting known
+# host families -- GNU, kernel.org, SourceForge. That leaves most of the set
+# with exactly one place to get it: GitHub releases, freedesktop GitLab,
+# Codeberg, curl.se, sqlite.org, cairographics.org, astron.com. There is no
+# rewrite that reaches those, because they have no mirrors to rewrite to.
+#
+# THE ANSWER IS THE ONE HOSTS.toml WAS DESIGNED FOR: upload the bytes to our
+# own release namespace and record the locator. The `github` host is
+# `derivable` -- its URL is a function of the hash and the name -- so the
+# route needs no table row to be computed, only an asset to exist. Only
+# pkgconf was ever uploaded, which is why the template has been resolving to
+# 404s all along and why the fallback never helped when kernel.org timed out.
+#
+# THIS IS AN AVAILABILITY MECHANISM AND NOT A TRUST ONE. Every fetch verifies
+# sha256 before the bytes are used, so our mirror serving something wrong
+# costs time and nothing else. That property is what makes uploading
+# everything a reasonable thing to do rather than a claim about us.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Print what would be uploaded, change nothing'
+        type: boolean
+        default: true
+      only:
+        description: 'Restrict to these package names (blank = all)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write        # gh release upload writes to this repository
+
+concurrency:
+  group: stage5-mirror-upload
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Fetch every pinned source from upstream'
+        run: |
+          set -eu
+          cd spikes/stage5
+          mkdir -p dl
+          # The same fetch the build uses, so what gets mirrored is exactly
+          # what a build would have consumed -- not a re-download from some
+          # other route that happens to match.
+          python3 tools/veron sources | while IFS=$'\t' read -r sha name url; do
+            [ -n "$sha" ] || continue
+            if [ -n "${{ inputs.only }}" ]; then
+              case " ${{ inputs.only }} " in *" ${name%%-*} "*) ;; *) continue ;; esac
+            fi
+            python3 ../../tools/mirror.py fetch --sha256 "$sha" --dest dl --url "$url" \
+              || echo "  FETCH FAILED $name"
+          done
+          echo ""
+          echo "  $(ls dl | wc -l) tarballs in dl/"
+
+      - name: 'Upload each to the mirror and record the locator'
+        run: |
+          set -eu
+          cd spikes/stage5
+          DRY=""
+          [ "${{ inputs.dry_run }}" = "true" ] && DRY="--dry-run"
+          # THE TAG IS PER PACKAGE, so a release page stays navigable and a
+          # single artifact can be withdrawn without touching the others.
+          # `gh release create` is idempotent enough here: it fails loudly if
+          # the tag exists, which the || true absorbs, and the upload then
+          # --clobbers whatever was there.
+          for f in dl/*; do
+            [ -f "$f" ] || continue
+            echo "== $(basename "$f")"
+            python3 ../../tools/mirror.py add --host github --file "$f" $DRY \
+              || echo "  ADD FAILED $(basename "$f")"
+          done
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: 'What the table says now'
+        if: always()
+        run: |
+          set -eu
+          echo "  === ROUTES PER ARTIFACT ==="
+          awk -F'\t' '!/^#/ && NF>=4 {c[$2]++} END {for (n in c) printf "  %-42s %d\n", n, c[n]}' \
+            sources/MIRRORS.tsv 2>/dev/null | sort || echo "  (no table yet)"
+          echo ""
+          echo "  THIN means one route. After this every artifact should have"
+          echo "  at least two: upstream as provenance, and ours as a route"
+          echo "  that does not depend on anyone else's uptime."
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stage5-mirror-table
+          path: sources/MIRRORS.tsv
+          retention-days: 30
