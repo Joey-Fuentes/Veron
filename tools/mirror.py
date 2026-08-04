@@ -84,9 +84,16 @@ def save_table(rows):
     # SORTED AND DEDUPED. This file is generated-and-committed, so it must
     # regenerate identically or the diff gate produces false failures and
     # someone turns it off. Same discipline as PLAN.txt.
+    # THE LOCATOR IS PART OF THE IDENTITY. Deduping on (sha256, host) alone
+    # assumes one URL per host per artifact, which is false the moment a
+    # "host" names a FAMILY of mirrors: freetype had four verified SourceForge
+    # routes, all recorded under host `mirror`, and this silently collapsed
+    # them to one. The table went from four routes to one without a word, and
+    # the artifact that had just cost a run went straight back to being thin.
     seen, out = set(), []
-    for r in sorted(rows, key=lambda r: (r["name"], r["sha256"], r["host"])):
-        k = (r["sha256"], r["host"])
+    for r in sorted(rows, key=lambda r: (r["name"], r["sha256"], r["host"],
+                                         r["locator"])):
+        k = (r["sha256"], r["host"], r["locator"])
         if k in seen:
             continue
         seen.add(k)
@@ -366,6 +373,35 @@ def cmd_selftest(a):
             else:
                 print(f"  FAIL  {name} lost the {f} flag")
                 ok = False
+    # THE TABLE MUST NOT LOSE A ROUTE. save_table deduped on
+    # (sha256, host), which collapsed four verified SourceForge mirrors --
+    # all correctly recorded under host `mirror` -- into one, and said
+    # nothing. A generated-and-committed file that quietly discards rows is
+    # worse than one that refuses to write.
+    import tempfile as _tf
+    global TABLE
+    _saved = TABLE
+    try:
+        _d = _tf.mkdtemp()
+        TABLE = os.path.join(_d, "t.tsv")
+        want = [{"sha256": "a" * 64, "name": "x.tar.gz", "host": "mirror",
+                 "locator": f"https://m{i}/x"} for i in range(4)]
+        want.append({"sha256": "a" * 64, "name": "x.tar.gz",
+                     "host": "upstream", "locator": "https://up/x"})
+        kept = save_table(list(want))
+        again = load_table()
+        if len(kept) == len(want) == len(again):
+            print(f"  ok    the table keeps all {len(want)} routes on a round-trip")
+        else:
+            print(f"  FAIL  {len(want)} routes in, {len(kept)} kept, "
+                  f"{len(again)} read back")
+            ok = False
+    except Exception as e:
+        print(f"  FAIL  round-trip check itself failed: {type(e).__name__}: {e}")
+        ok = False
+    finally:
+        TABLE = _saved
+
     print("VERON-MIRROR-SELFTEST-OK" if ok else "VERON-MIRROR-SELFTEST-FAIL")
     return 0 if ok else 1
 

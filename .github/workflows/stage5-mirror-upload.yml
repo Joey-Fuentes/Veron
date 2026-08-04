@@ -100,10 +100,20 @@ jobs:
           for f in dl/*; do
             [ -f "$f" ] || continue
             base=$(basename "$f")
-            # Staged copies are named <sha8>-<name>; the table wants <name>.
-            plain=${base#*-}
-            up=$(awk -F'\t' -v n="$plain" '$2==n {print $3; exit}' /tmp/srcmap.tsv)
+            # SKIP THE STAGED COPIES. `mirror add` writes a <sha8>-<name>
+            # copy next to the original so the uploaded asset matches the
+            # derivable template, so dl/ ends up holding both. Iterating over
+            # both uploaded everything twice and, worse, a first attempt
+            # stripped the prefix with ${base#*-} on EVERY name -- turning
+            # autoconf-2.73.tar.xz into 2.73.tar.xz, matching nothing, and
+            # silently recording no upstream row for any package.
+            case "$base" in
+              [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-*)
+                continue ;;
+            esac
+            up=$(awk -F'\t' -v n="$base" '$2==n {print $3; exit}' /tmp/srcmap.tsv)
             echo "== $base"
+            [ -n "$up" ] || echo "  (no upstream URL found for $base)"
             # POSITIONAL AGAIN: `mirror add <host> <file>`. Both calls in
             # this workflow were written from memory of a flag-shaped CLI that
             # never existed, and the selftest only checked option strings --
