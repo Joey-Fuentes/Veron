@@ -155,25 +155,28 @@ built comes up under qemu: `VERON-BOOT-OK`, 8 of 8 guest tests, and
 `VERON-GCC-IN-GUEST` — the gcc this chain produced compiling and running a
 program inside the kernel this same chain produced.
 
-**And it is reproducible, measured rather than asserted.** Two runs of the same
-commit, compared byte for byte:
+**And it is reproducible, measured rather than asserted.** Two independent runs
+of the same commit, compared byte for byte — **every artifact identical**:
 
 | | |
 |---|---|
 | `cc1`, `cc1plus` — cross **and** native | identical |
 | `ld`, `as`, `libc.so.6`, `busybox` | identical |
 | `Image` | identical |
-| `initramfs.cpio.gz` | still differs — now checked inside the run rather than two runs later |
+| `initramfs.cpio.gz` | identical |
 
 Three defects were found and each was **one field**, not a class of problem:
-gcc's own **MD5 self-checksum**, computed over `ar` archives whose member
-headers carry mtimes; a **build timestamp** in the kernel's built-in initramfs,
-which leaked through because `gen_initramfs.sh` swallows a `date` parse failure
-with `|| :`; and the **inode field** in cpio's newc headers. All three are
-recorded with their evidence in [`DERIVATIONS.md`](./DERIVATIONS.md).
+gcc's own **MD5 self-checksum**, hashed over `ar` archives whose member headers
+carry mtimes; a **build timestamp** in the kernel's built-in initramfs, leaking
+through a `date` parse failure that `gen_initramfs.sh` swallows with `|| :`;
+and `gen_init_cpio` stamping `time(NULL)` without `-t`. All three are recorded
+with their evidence in [`DERIVATIONS.md`](./DERIVATIONS.md), along with the
+four rounds lost to comparing runs that were not the same build.
 
-Every artifact the ladder produces is now byte-identical between two runs of
-the same commit except the initramfs, whose fix is written and awaiting a run.
+This is same-platform reproducibility — the same inputs produce the same bytes,
+every time, across the whole chain. It is not yet a `reprotest`-style claim
+varying build path, locale, timezone and hostname; that distinction is stated
+plainly in [`DERIVATIONS.md`](./DERIVATIONS.md).
 
 What remains is re-applying the invariants, which the spike track suspends —
 and the derivation phase in [`DERIVATIONS.md`](./DERIVATIONS.md), which turns a
@@ -253,6 +256,7 @@ The empty directories are Veron proper and are written against the invariants. `
 - [`spikes/README.md`](./spikes/README.md) — the live pipeline, and what each spike answered
 - [`TRUST-BOUNDARY.md`](./TRUST-BOUNDARY.md) — what is trusted, what is verified, and the order that makes it a chain rather than a circle
 - [`AUDIT.md`](./AUDIT.md) — the seven audit criteria and where the ledger record schema will live
+- [`sources/MIRROR.md`](./sources/MIRROR.md) — the pinned-source mirror: 105 routes, every artifact reachable from at least two places, hash-verified on every fetch
 - [`STAGE5.md`](./STAGE5.md) — the package set, and which jobs now answer its open questions: ~150 upstreams in dependency order, the five that are most of the work, networking, and the firmware-blob problem
 - [`DERIVATIONS.md`](./DERIVATIONS.md) — the derivation phase: content-addressed inputs and outputs, one script for laptop and runner, the reproducibility check, and a provenance graph that expands from any installed file down to the exact commands and back to the seed
 - [`spikes/builder/DESIGN.md`](./spikes/builder/DESIGN.md) — the driver shell and the bare-metal ARM64 builder: measured surface, syscall inventory, boot protocol, test targets

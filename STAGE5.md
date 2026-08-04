@@ -23,6 +23,9 @@ they disagree with the estimates below.
 | `stage5-spike` | two packages (`pkgconf`, `hello`) built on the proven entry contract, merged, booted |
 | `stage5-closure` | the package set mapped **backwards**: name what the system must do, and let the closure say what it costs |
 | `wpe-timing` | how long WPE WebKit takes to compile — a stopwatch, deliberately not hermetic |
+| `llvm-timing` | the same question for LLVM, which arrives through mesa whether or not anyone chose it |
+| `stage5-license` | what licence each package actually carries, detected against the SPDX guidelines rather than guessed from a filename |
+| `mirror-verify` | that every pinned tarball is still reachable from more than one place, and still hashes to its pin |
 
 Two of those change how this document should be read.
 
@@ -287,3 +290,21 @@ deliberate decision rather than a transitive dependency.
    branch is meant to reach a desktop, that patch burden is where it lives.
 4. **Where do firmware blobs live in the ledger**, and does `veron status`
    grow an `opaque` category? Recommended above; not yet decided.
+
+## Two things this file predicted and the work has since changed
+
+**The source mirror became load-bearing, not just an obligation.** It was
+scoped as a stage 6 item — "reproducible from pinned sources" is false the day
+an upstream tarball moves. It is now the reason a shipped Veron does **not**
+need to carry every build-only package: a user with a network rebuilds any
+package from its recipe, same pins, same commands, same hashes. See
+[`sources/MIRROR.md`](./sources/MIRROR.md). 105 routes, every artifact reachable
+from at least two.
+
+**Licensing moved from a ledger field to its own detector.** `ledger/README.md`
+asks for an SPDX id per source, and this file assumed that was a lookup. It is
+not: composite documents match per-section, ids get deprecated, and `AND`
+versus `OR` in a compound expression changes what a distributor must do.
+`spikes/stage5/tools/license.py` detects against the SPDX guidelines and
+reports **two confidence tiers** rather than one answer, which is the honest
+shape for a field that will be wrong sometimes.
