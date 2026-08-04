@@ -27,17 +27,18 @@ between this file and the recipes fails the run.
   6. libffi
   7. m4
   8. ncurses
-  9. ninja
-  10. pcre2
-  11. pkgconf
-  12. xz
-  13. zlib
-  14. autoconf
-  15. libtool
-  16. meson
-  17. readline
-  18. zstd
-  19. automake
+  9. pcre2
+  10. pkgconf
+  11. xz
+  12. zlib
+  13. autoconf
+  14. libtool
+  15. readline
+  16. zstd
+  17. automake
+  18. python
+  19. ninja
+  20. meson
 
 ======================================================================
 package bzip2 1.0.8
@@ -304,36 +305,6 @@ package ncurses 6.6
          argv ["make", "DESTDIR=dest/ncurses", "install"]
 
 ======================================================================
-package ninja 1.13.2
-  group        build-substrate
-  license      Apache-2.0
-  recipe-sha   4776c11c52305d0c5425526d1208493a5cbb8aebb985e64118c595e921f9e663
-
-  source
-    url        https://github.com/ninja-build/ninja/archive/v1.13.2/ninja-1.13.2.tar.gz
-    sha256     974d6b2f4eeefa25625d34da3cb36bdcebe7fbce40f4c16ac0835fd1c0cbae17
-    signature  none -- GitHub archive tarball, no signature published
-    correspond none
-
-  deps
-    build        -
-    link         -
-    runtime      -
-    optional_off -
-
-  commands (literal; this is exactly what runs)
-    [01] unpack
-         cwd  build/ninja-1.13.2
-         argv ["tar", "-xf", "dl/ninja-1.13.2.tar.gz", "-C", "build/ninja-1.13.2"]
-    [02] bootstrap
-         cwd  build/ninja-1.13.2/ninja-1.13.2
-         argv ["python3", "configure.py", "--bootstrap"]
-    [03] install
-         cwd  build/ninja-1.13.2/ninja-1.13.2
-         SHELL (declared) why=installing one binary and one man page is two copies, not a make target
-         | install -Dm755 ninja dest/ninja/usr/bin/ninja && install -Dm644 misc/ninja.vim dest/ninja/usr/share/vim/vimfiles/syntax/ninja.vim 2>/dev/null; install -Dm644 doc/manual.asciidoc dest/ninja/usr/share/doc/ninja-1.13.2/manual.asciidoc 2>/dev/null; ls -l dest/ninja/usr/bin/ninja
-
-======================================================================
 package pcre2 10.47
   group        build-substrate
   license      BSD-3-Clause-with-exception
@@ -531,37 +502,6 @@ package libtool 2.6.2
          argv ["make", "DESTDIR=dest/libtool", "install"]
 
 ======================================================================
-package meson 1.10.1
-  group        build-substrate
-  license      Apache-2.0
-  recipe-sha   9a4496bf3ce39fea3668941f47157837ba9ec95478070eecf6d0551a5d2f40e8
-
-  source
-    url        https://github.com/mesonbuild/meson/releases/download/1.10.1/meson-1.10.1.tar.gz
-    sha256     c42296f12db316a4515b9375a5df330f2e751ccdd4f608430d41d7d6210e4317
-    signature  none -- no .asc or .sig published beside the release
-    correspond none
-
-  deps
-    build        -
-    link         -
-    runtime      ninja
-    optional_off pip, setuptools, wheel
-
-  commands (literal; this is exactly what runs)
-    [01] unpack
-         cwd  build/meson-1.10.1
-         argv ["tar", "-xf", "dl/meson-1.10.1.tar.gz", "-C", "build/meson-1.10.1"]
-    [02] install
-         cwd  build/meson-1.10.1/meson-1.10.1
-         SHELL (declared) why=copying a python package tree and writing an entry point is not an argv
-         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo "site-packages: $SITE"; mkdir -p "dest/meson$SITE" dest/meson/usr/bin; cp -a mesonbuild "dest/meson$SITE/"; cp -a meson.py dest/meson/usr/bin/meson; chmod 755 dest/meson/usr/bin/meson; sed -i '1s|.*|#!/usr/bin/python3|' dest/meson/usr/bin/meson; head -1 dest/meson/usr/bin/meson
-    [03] verify-install
-         cwd  build/meson-1.10.1/meson-1.10.1
-         SHELL (declared) why=this is a check on a filesystem layout, expressed as two probes
-         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo '--- import from the install location ---'; PYTHONPATH="dest/meson$SITE" python3 -c 'import mesonbuild; print("  mesonbuild from", mesonbuild.__file__)'; echo '--- run the installed script ---'; PYTHONPATH="dest/meson$SITE" python3 dest/meson/usr/bin/meson --version; echo '--- what the shebang points at ---'; head -1 dest/meson/usr/bin/meson; ls -l /usr/bin/python3
-
-======================================================================
 package readline 8.3
   group        build-substrate
   license      GPL-3.0-or-later
@@ -653,4 +593,105 @@ package automake 1.18.1
     [04] install
          cwd  build/automake-1.18.1/automake-1.18.1
          argv ["make", "DESTDIR=dest/automake", "install"]
+
+======================================================================
+package python 3.14.6
+  group        build-substrate
+  license      PSF-2.0
+  recipe-sha   1b855c849cc128bbd94abd690084d52a5a6713e6404a293b5bfc5ec758cf9669
+
+  source
+    url        https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tar.xz
+    sha256     143b1dddefaec3bd2e21e3b839b34a2b7fb9842272883c576420d605e9f30c63
+    signature  https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tar.xz.sig
+    correspond none
+
+  deps
+    build        bzip2, expat, libffi, ncurses, readline, xz, zlib, zstd
+    link         bzip2, expat, libffi, ncurses, readline, xz, zlib, zstd
+    runtime      bzip2, expat, libffi, ncurses, readline, xz, zlib, zstd
+    optional_off gdbm, libedit, openssl, sqlite3, tkinter, x11
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/python-3.14.6
+         argv ["tar", "-xf", "dl/Python-3.14.6.tar.xz", "-C", "build/python-3.14.6"]
+    [02] configure
+         cwd  build/python-3.14.6/python-3.14.6
+         argv ["./configure", "--prefix=/usr", "--enable-shared", "--with-system-expat", "--without-ensurepip", "--disable-test-modules"]
+    [03] which-modules
+         cwd  build/python-3.14.6/python-3.14.6
+         SHELL (declared) why=reading configure's own summary of what it will skip is a grep, not an argv
+         | echo '--- modules configure could NOT build ---'; sed -n '/Could not build/,/^$/p' config.log 2>/dev/null | head -20; grep -iE 'MODULE_(ZLIB|BZ2|LZMA|ZSTD|CTYPES|READLINE|CURSES|PYEXPAT)_STATE' Makefile 2>/dev/null | head -12
+    [04] build
+         cwd  build/python-3.14.6/python-3.14.6
+         argv ["make", "-j1"]
+    [05] install
+         cwd  build/python-3.14.6/python-3.14.6
+         argv ["make", "DESTDIR=dest/python", "install"]
+    [06] verify-modules
+         cwd  build/python-3.14.6/python-3.14.6
+         SHELL (declared) why=importing a list of modules and reporting which failed is a loop
+         | set -eu; P=dest/python/usr/bin/python3.14; L=dest/python/usr/lib; echo "interpreter: /home/claude/work/w5/spikes/stage5/packages/python/patches"; fail=0; for m in zlib bz2 lzma ctypes readline curses _expat; do if LD_LIBRARY_PATH=$L PYTHONHOME=dest/python/usr "/home/claude/work/w5/spikes/stage5/packages/python/patches" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  MISSING  $m"; fail=1; fi; done; for m in compression.zstd; do if LD_LIBRARY_PATH=$L PYTHONHOME=dest/python/usr "/home/claude/work/w5/spikes/stage5/packages/python/patches" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  absent   $m (3.14 feature, not fatal)"; fi; done; echo; echo '--- known-absent until their packages exist ---'; for m in sqlite3 ssl; do LD_LIBRARY_PATH=$L PYTHONHOME=dest/python/usr "/home/claude/work/w5/spikes/stage5/packages/python/patches" -c "import $m" 2>/dev/null && echo "  ok   $m (unexpected -- update optional_off)" || echo "  absent   $m (expected)"; done; [ "$fail" = 0 ] || { echo; echo 'A module this package exists to provide is missing.'; exit 1; }
+
+======================================================================
+package ninja 1.13.2
+  group        build-substrate
+  license      Apache-2.0
+  recipe-sha   071dbad64fc985c289dc7bc9acaca470692449a7d37d0844a24da10345a5ea35
+
+  source
+    url        https://github.com/ninja-build/ninja/archive/v1.13.2/ninja-1.13.2.tar.gz
+    sha256     974d6b2f4eeefa25625d34da3cb36bdcebe7fbce40f4c16ac0835fd1c0cbae17
+    signature  none -- GitHub archive tarball, no signature published
+    correspond none
+
+  deps
+    build        python
+    link         -
+    runtime      -
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/ninja-1.13.2
+         argv ["tar", "-xf", "dl/ninja-1.13.2.tar.gz", "-C", "build/ninja-1.13.2"]
+    [02] bootstrap
+         cwd  build/ninja-1.13.2/ninja-1.13.2
+         argv ["python3", "configure.py", "--bootstrap"]
+    [03] install
+         cwd  build/ninja-1.13.2/ninja-1.13.2
+         SHELL (declared) why=installing one binary and one man page is two copies, not a make target
+         | install -Dm755 ninja dest/ninja/usr/bin/ninja && install -Dm644 misc/ninja.vim dest/ninja/usr/share/vim/vimfiles/syntax/ninja.vim 2>/dev/null; install -Dm644 doc/manual.asciidoc dest/ninja/usr/share/doc/ninja-1.13.2/manual.asciidoc 2>/dev/null; ls -l dest/ninja/usr/bin/ninja
+
+======================================================================
+package meson 1.10.1
+  group        build-substrate
+  license      Apache-2.0
+  recipe-sha   4621b2bf1d5ac77f369515ab93aa2b47fa57c9d446b2d8ba3b285645683574f1
+
+  source
+    url        https://github.com/mesonbuild/meson/releases/download/1.10.1/meson-1.10.1.tar.gz
+    sha256     c42296f12db316a4515b9375a5df330f2e751ccdd4f608430d41d7d6210e4317
+    signature  none -- no .asc or .sig published beside the release
+    correspond none
+
+  deps
+    build        python
+    link         -
+    runtime      ninja, python
+    optional_off pip, setuptools, wheel
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/meson-1.10.1
+         argv ["tar", "-xf", "dl/meson-1.10.1.tar.gz", "-C", "build/meson-1.10.1"]
+    [02] install
+         cwd  build/meson-1.10.1/meson-1.10.1
+         SHELL (declared) why=copying a python package tree and writing an entry point is not an argv
+         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo "site-packages: $SITE"; mkdir -p "dest/meson$SITE" dest/meson/usr/bin; cp -a mesonbuild "dest/meson$SITE/"; cp -a meson.py dest/meson/usr/bin/meson; chmod 755 dest/meson/usr/bin/meson; sed -i '1s|.*|#!/usr/bin/python3|' dest/meson/usr/bin/meson; head -1 dest/meson/usr/bin/meson
+    [03] verify-install
+         cwd  build/meson-1.10.1/meson-1.10.1
+         SHELL (declared) why=this is a check on a filesystem layout, expressed as two probes
+         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo '--- import from the install location ---'; PYTHONPATH="dest/meson$SITE" python3 -c 'import mesonbuild; print("  mesonbuild from", mesonbuild.__file__)'; echo '--- run the installed script ---'; PYTHONPATH="dest/meson$SITE" python3 dest/meson/usr/bin/meson --version; echo '--- what the shebang points at ---'; head -1 dest/meson/usr/bin/meson; ls -l /usr/bin/python3
 

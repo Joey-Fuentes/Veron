@@ -1,0 +1,133 @@
+name    = "python"
+version = "3.14.6"
+group   = "build-substrate"
+license = "PSF-2.0"
+
+# WHY STAGE 5 BUILDS A PYTHON WHEN STAGE 4 ALREADY SHIPS ONE.
+#
+# They are not the same thing serving the same purpose. Stage 4 is a
+# TOOLCHAIN: its python exists to run build scripts, it has 48 extension
+# modules, and it has none of zlib, bz2, lzma, ssl or ctypes because those
+# libraries did not exist yet at the rung where it was built. For a toolchain
+# that is correct, not deficient -- stage 4 could be musl/busybox throughout
+# and still hand off everything stage 5 needs.
+#
+# Stage 5 builds a FULL GLIBC SYSTEM, and its packages assume a complete
+# interpreter. The gap surfaced when meson failed with
+#     File "/usr/lib/python3.14/gzip.py", line 15, in <module>
+#         import zlib
+#     ModuleNotFoundError: No module named 'zlib'
+# and it would have surfaced again for anything importing tarfile, zipfile,
+# ssl or ctypes. So this is stage 5 providing a system python, not stage 5
+# repairing a stage 4 mistake.
+#
+# SAME VERSION AS THE TOOLCHAIN'S, DELIBERATELY. The sysroot carries 3.14.6;
+# LFS 13.0 pins 3.14.3. Matching 3.14.6 means the only difference between the
+# two is the module set -- same interpreter, complete this time -- rather than
+# a downgrade nobody asked for.
+
+[source]
+url       = "https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tar.xz"
+sha256    = "143b1dddefaec3bd2e21e3b839b34a2b7fb9842272883c576420d605e9f30c63"
+signature = "https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tar.xz.sig"
+# The probe could not read a key id out of this signature. That is unresolved
+# rather than absent: python.org does publish release signatures, so the
+# question is why gpg would not name the key, and it should be answered before
+# the signature is treated as provenance.
+signing_key = "UNRESOLVED -- probe could not determine the key id"
+crosschecked_against = []
+
+[deps]
+# EVERY ONE OF THESE IS A MODULE THAT IS CURRENTLY MISSING. This is not a
+# generic dependency list -- it is the reason the package exists:
+#   zlib     -> zlib, gzip, tarfile, zipfile
+#   bzip2    -> bz2
+#   xz       -> lzma
+#   zstd     -> compression.zstd (new in 3.14, and we build zstd)
+#   libffi   -> ctypes
+#   ncurses  -> curses
+#   readline -> readline, and the interactive prompt
+#   expat    -> xml.parsers.expat, via the system copy rather than a vendored one
+build        = ["zlib", "bzip2", "xz", "zstd", "libffi", "ncurses",
+                "readline", "expat"]
+link         = ["zlib", "bzip2", "xz", "zstd", "libffi", "ncurses",
+                "readline", "expat"]
+runtime      = ["zlib", "bzip2", "xz", "zstd", "libffi", "ncurses",
+                "readline", "expat"]
+# sqlite and openssl are NOT in the set yet, so _sqlite3 and _ssl will be
+# absent from this build too. Named here so their absence is a known state
+# rather than a second surprise; sqlite arrives in the next batch.
+optional_off = ["sqlite3", "openssl", "gdbm", "tkinter", "libedit", "x11"]
+
+[declared]
+configure_flags = [
+  "--prefix=/usr", "--enable-shared", "--with-system-expat",
+  "--without-ensurepip", "--disable-test-modules",
+]
+verification = "none -- upstream suites are not run; the module check below is the evidence"
+deferral = """
+Internals not reviewed. NO --enable-optimizations: PGO profiles depend on the \
+order the training workload executes, which is exactly the kind of input that \
+makes two builds differ, and no one has measured what the speed would be \
+worth. --without-ensurepip keeps pip, setuptools and wheel out of the base, \
+consistent with meson being installed from its source tree rather than \
+through a packaging stack.
+
+THIS REPLACES THE TOOLCHAIN PYTHON IN THE BUILD ROOT, because both live at \
+/usr/bin/python3 and staging copies over it. The driver is itself running on \
+that interpreter; its modules are already mapped, so it should survive being \
+replaced underneath, but that is a claim this build tests rather than one \
+anybody has proven.
+
+_sqlite3 and _ssl will be missing until sqlite and openssl are in the set."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/Python-3.14.6.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--enable-shared",
+         "--with-system-expat", "--without-ensurepip",
+         "--disable-test-modules"]]
+
+[[steps]]
+# WHAT CONFIGURE DECIDED TO BUILD, BEFORE SPENDING TWENTY MINUTES ON IT.
+# Python does not fail when it cannot find a library for an extension module;
+# it prints a note and carries on, which is precisely how the toolchain python
+# came to have no zlib and nobody noticed for four rungs.
+name = "which-modules"
+cwd  = "$S"
+timeout = 120
+why = "reading configure's own summary of what it will skip is a grep, not an argv"
+shell = "echo '--- modules configure could NOT build ---'; sed -n '/Could not build/,/^$/p' config.log 2>/dev/null | head -20; grep -iE 'MODULE_(ZLIB|BZ2|LZMA|ZSTD|CTYPES|READLINE|CURSES|PYEXPAT)_STATE' Makefile 2>/dev/null | head -12"
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "DESTDIR=$D", "install"]]
+
+[[steps]]
+# THE POINT OF THE PACKAGE, CHECKED WHERE IT IS CHEAP TO FIX.
+#
+# Every module below is one this build exists to provide. Python imports them
+# lazily, so a missing one is silent until some package three batches later
+# imports gzip and dies in a chroot -- which is exactly how this package came
+# to be written. Importing them here turns that into a build failure with a
+# name.
+name = "verify-modules"
+cwd  = "$S"
+timeout = 300
+why = "importing a list of modules and reporting which failed is a loop"
+shell = "set -eu; P=$D/usr/bin/python3.14; L=$D/usr/lib; echo \"interpreter: $P\"; fail=0; for m in zlib bz2 lzma ctypes readline curses _expat; do if LD_LIBRARY_PATH=$L PYTHONHOME=$D/usr \"$P\" -c \"import $m\" 2>/dev/null; then echo \"  ok   $m\"; else echo \"  MISSING  $m\"; fail=1; fi; done; for m in compression.zstd; do if LD_LIBRARY_PATH=$L PYTHONHOME=$D/usr \"$P\" -c \"import $m\" 2>/dev/null; then echo \"  ok   $m\"; else echo \"  absent   $m (3.14 feature, not fatal)\"; fi; done; echo; echo '--- known-absent until their packages exist ---'; for m in sqlite3 ssl; do LD_LIBRARY_PATH=$L PYTHONHOME=$D/usr \"$P\" -c \"import $m\" 2>/dev/null && echo \"  ok   $m (unexpected -- update optional_off)\" || echo \"  absent   $m (expected)\"; done; [ \"$fail\" = 0 ] || { echo; echo 'A module this package exists to provide is missing.'; exit 1; }"
+
+[guest]
+test   = [["/usr/bin/python3", "-c", "import zlib,bz2,lzma,ctypes; print('modules ok')"]]
+expect = ["modules ok"]

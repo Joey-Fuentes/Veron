@@ -13,15 +13,14 @@ sha256    = "974d6b2f4eeefa25625d34da3cb36bdcebe7fbce40f4c16ac0835fd1c0cbae17"
 signature = "none -- GitHub archive tarball, no signature published"
 crosschecked_against = []
 
-# PYTHON COMES FROM THE SYSROOT, NOT FROM A RECIPE, so it cannot appear in
-# deps.build -- the driver rightly refuses a dependency with no recipe. That
-# is a modelling gap worth naming: this package genuinely requires python3 at
-# build time, and nothing in the graph records it. If stage 4 ever stops
-# shipping python, this breaks with no edge to have warned anyone.
-sysroot_requires = ["python3"]
-
+# PYTHON IS A REAL EDGE NOW. It was briefly recorded in a sysroot_requires
+# field the driver ignores, because stage 4's toolchain python was the only
+# one available and had no recipe to point at. Stage 5 builds a system python,
+# so the dependency can be stated where the topological sort will act on it --
+# which matters here, since this package needs the COMPLETE interpreter, not
+# the 48-module toolchain one.
 [deps]
-build        = []
+build        = ["python"]
 link         = []
 runtime      = []
 optional_off = []
