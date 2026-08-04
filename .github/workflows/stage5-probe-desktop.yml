@@ -1,0 +1,125 @@
+name: stage5-probe-desktop
+
+# READ THE DEPENDENCIES INSTEAD OF GUESSING THEM.
+#
+# The media probe worked by fetching each tarball and reading what its build
+# files DECLARE, and it immediately paid for itself: gst-plugins-ugly turned
+# out to want dvdread and nothing a browser needs, which dropped it and took
+# x264 -- the one package with no release tarball at all -- out of the set.
+#
+# The same treatment has never been applied to the compositor and desktop
+# half, and guesses there have already been wrong twice in one sitting:
+#   - gst-plugins-base declares alsa, so audio output needs a library that is
+#     in no batch.
+#   - wlroots needs hwdata and libdisplay-info for the DRM backend's EDID
+#     parsing, and neither was on any list.
+# Both were found by reading, not by planning. There are probably more.
+#
+# So: fetch every remaining compositor, desktop and system package, print what
+# each one names, and let the gaps show themselves before the recipes are
+# written rather than in the middle of a batch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      urls:
+        description: 'Compositor and desktop tarballs'
+        required: false
+        default: >-
+          https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/0.20.2/downloads/wlroots-0.20.2.tar.gz
+          https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/1.49/downloads/wayland-protocols-1.49.tar.xz
+          https://github.com/kennylevinsen/seatd/archive/0.9.3/seatd-0.9.3.tar.gz
+          https://github.com/labwc/labwc/archive/refs/tags/0.9.1.tar.gz
+          https://codeberg.org/dnkl/foot/releases/download/1.27.0/foot-1.27.0.tar.gz
+          https://codeberg.org/dnkl/fuzzel/releases/download/1.14.1/fuzzel-1.14.1.tar.gz
+          https://codeberg.org/dnkl/yambar/releases/download/1.11.0/yambar-1.11.0.tar.gz
+          https://github.com/swaywm/swaybg/releases/download/v1.2.2/swaybg-1.2.2.tar.gz
+      candidates:
+        description: 'Packages the reading suggests are missing'
+        required: false
+        default: >-
+          https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.14.tar.bz2
+          https://github.com/vcrhonek/hwdata/archive/v0.410/hwdata-0.410.tar.gz
+          https://gitlab.freedesktop.org/emersion/libdisplay-info/-/releases/0.4.0/downloads/libdisplay-info-0.4.0.tar.xz
+          https://github.com/mm2/Little-CMS/releases/download/lcms2.19.1/lcms2-2.19.1.tar.gz
+          https://download.gnome.org/sources/graphene/1.10/graphene-1.10.8.tar.xz
+      latest:
+        description: 'Version lookups for anything without a stable URL'
+        required: false
+        default: 'alsa-project/alsa-lib vcrhonek/hwdata mm2/Little-CMS'
+
+concurrency:
+  group: stage5-probe-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Versions for the ones without a stable URL'
+        if: inputs.latest != ''
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 -u tools/probe.py latest ${{ inputs.latest }} || true
+
+      - name: 'Probe the compositor and desktop packages'
+        run: |
+          set -eu
+          cd spikes/stage5
+          for u in ${{ inputs.urls }}; do echo "$u"; done > desk-urls.txt
+          python3 -u tools/probe.py batch desk-urls.txt --out probed-desktop.tsv || true
+
+      - name: 'Probe the packages the reading suggests are missing'
+        if: inputs.candidates != ''
+        run: |
+          set -eu
+          cd spikes/stage5
+          for u in ${{ inputs.candidates }}; do echo "$u"; done > cand-urls.txt
+          python3 -u tools/probe.py batch cand-urls.txt --out probed-candidates.tsv || true
+
+      - name: 'What is declared, and what we do not have'
+        if: always()
+        run: |
+          set -eu
+          cd spikes/stage5
+          echo "  === PROBED ==="
+          for f in probed-desktop.tsv probed-candidates.tsv; do
+            [ -s "$f" ] || continue
+            awk -F'\t' 'NR>1 {printf "  %-20s %-10s %-18s %s\n", $1, $3, substr($4,1,16), $6}' "$f"
+          done
+
+          # WHAT WE ALREADY BUILD. Anything a package names that is not in
+          # this list and not obviously a sub-library of itself is a gap.
+          cat > /tmp/have.txt <<'HAVE'
+          zlib xz bzip2 zstd ncurses m4 autoconf automake libtool pkgconf file
+          expat readline libffi pcre2 gperf ninja meson python icu sqlite curl
+          cmake git libxml2 libarchive freetype fribidi graphite2 harfbuzz
+          fontconfig libpng libjpeg libwebp pixman glib cairo pango
+          wayland wayland-protocols wayland-client wayland-server wayland-egl
+          wayland-cursor wayland-scanner libdrm libinput libevdev mtdev
+          libxkbcommon xkeyboard-config libepoxy mesa egl glesv2 gbm gl
+          gstreamer opus libvpx dav1d ffmpeg threads atomic gio gobject
+          gmodule libseat seatd
+          HAVE
+          echo ""
+          echo "  === NAMED BUT NOT IN THE SET ==="
+          echo "  (read as 'could reach for' -- meson lists every option's"
+          echo "   dependency, so some of these are features we will disable)"
+          for f in probed-desktop.tsv probed-candidates.tsv; do
+            [ -s "$f" ] || continue
+            awk -F'\t' 'NR>1 && $9 != "" {n=split($9,a,";"); for(i=1;i<=n;i++) print $1 "\t" a[i]}' "$f"
+          done | while IFS=$'\t' read -r pkg dep; do
+            base=$(echo "$dep" | sed 's/[-_].*//' | tr 'A-Z' 'a-z')
+            grep -qiw -- "$base" /tmp/have.txt || printf "  %-20s %s\n" "$pkg" "$dep"
+          done | sort -u | head -60
+
+          echo ""
+          echo "  === FAILED ==="
+          for f in probed-desktop.tsv probed-candidates.tsv; do
+            [ -s "$f" ] || continue
+            awk -F'\t' '$1=="FAILED" {print "    " $2}' "$f"
+          done
