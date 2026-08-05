@@ -53,7 +53,27 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  # contents: write ONLY BECAUSE THE CHECKPOINT IS PUBLISHED TO RELEASES.
+  #
+  # This job spent 48 packages of build time and then died with
+  #     HTTP 403: Resource not accessible by integration (.../releases)
+  # because `gh release create` writes to the repository and this workflow was
+  # read-only. Same shape as the git-pinned mirror step missing GH_TOKEN: a
+  # step that writes was added to a job that could not.
+  #
+  # THE ESCALATION IS REAL AND WORTH NAMING. GitHub scopes permissions per
+  # JOB, not per step, so every step in the spike now runs with write access
+  # to this repository -- including the ones that execute upstream build
+  # systems. The sandbox is what contains those: the build runs under bwrap
+  # with --unshare-all and no network, and the token is not in its
+  # environment. That containment is the reason this is acceptable rather than
+  # the permission being small.
+  #
+  # Checkpoints are a CACHE and never evidence, so nothing signed or attested
+  # depends on this write; the worst a compromised step could do here is
+  # publish a bad cache, which the prefix key and the ledger's attestations=0
+  # both already account for.
+  contents: write
   actions: read
 
 jobs:
@@ -348,9 +368,27 @@ jobs:
           fi
           tar --zstd -cf dest.tar.zst dest
           echo "  $(du -h dest.tar.zst | cut -f1) for $(ls dest | wc -l) package(s)"
-          gh release create "ckpt/$KEY" --title "checkpoint $KEY" \
-            --notes 'build checkpoint -- a CACHE, not evidence' || true
-          gh release upload "ckpt/$KEY" dest.tar.zst --clobber
+          # A FAILED CACHE PUBLISH MUST NOT FAIL THE RUN, and this one did.
+          #
+          # The 403 above landed after 48 packages had built, and took the
+          # manifest, the ledger, the merge, the image and the boot down with
+          # it -- none of which depend on a checkpoint existing. The cost of
+          # not publishing is that the NEXT run rebuilds; the cost of aborting
+          # here is the whole run.
+          #
+          # NOT the same judgement as the mirror, and the difference is what
+          # the artifact is FOR. A failed mirror upload leaves a source
+          # unreachable, which is correctness; a failed checkpoint leaves a
+          # cache absent, which is time. Loud either way -- the marker below
+          # is greppable and the step still prints the error.
+          if gh release create "ckpt/$KEY" --title "checkpoint $KEY" \
+               --notes 'build checkpoint -- a CACHE, not evidence' 2>&1 \
+             && gh release upload "ckpt/$KEY" dest.tar.zst --clobber; then
+            echo "VERON-CHECKPOINT-PUBLISHED  $KEY"
+          else
+            echo "VERON-CHECKPOINT-UNPUBLISHED  $KEY -- the next run rebuilds"
+            echo "  a checkpoint is a cache; nothing downstream depends on it"
+          fi
           rm -f dest.tar.zst
 
       # SEED [installs] FROM A BUILD THAT PASSED, AND UPLOAD IT.

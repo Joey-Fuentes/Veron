@@ -952,7 +952,7 @@ package libarchive 3.8.5
 package libxml2 2.15.1
   group        build-substrate
   license      MIT
-  recipe-sha   a70fb5e91ff8a616ba0d5266391cb1b83980133cf308540cf8562304bbccbee2
+  recipe-sha   980e8916719fc13f2f11dc6770b31634235e5dafceefc6792db238db31344d4c
 
   source
     url        https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.1.tar.xz
@@ -961,10 +961,10 @@ package libxml2 2.15.1
     correspond none
 
   deps
-    build        readline, xz, zlib
-    link         readline, xz, zlib
-    runtime      readline, xz, zlib
-    optional_off icu, lzma-static, meson, python
+    build        readline
+    link         readline
+    runtime      readline
+    optional_off icu, lzma, lzma-static, meson, python, zlib
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -1242,7 +1242,7 @@ package pyyaml 6.0.3
 package cmake 4.2.3
   group        build-substrate
   license      BSD-3-Clause
-  recipe-sha   1ebede955861d84771452570446dc57ee10cd258bd2348f3e92bc06c18d89af0
+  recipe-sha   8ab61df5ef52147bd752ff45ba1d3dbdc6a6a58407e4614186e61360c6c3394d
 
   source
     url        https://cmake.org/files/v4.2/cmake-4.2.3.tar.gz
@@ -1252,7 +1252,7 @@ package cmake 4.2.3
 
   deps
     build        bzip2, curl, expat, libarchive, ninja, xz, zlib, zstd
-    link         bzip2, curl, expat, libarchive, xz, zlib, zstd
+    link         bzip2, curl, expat, libarchive, zlib
     runtime      bzip2, curl, expat, libarchive, xz, zlib, zstd
     optional_off ccache, qt-gui, sphinx, vendored-libs
 
@@ -1517,7 +1517,7 @@ package mako 1.4.0
 package pixman 0.46.4
   group        text-rendering
   license      MIT
-  recipe-sha   3bc8671f81bfb217b6558ea9ab5c10192ede5cfde8385beae09989c2b087276c
+  recipe-sha   781e9487a5f9ac97313ef903b9ee55e51096fd05ba6e435fefc898eebc8f186c
 
   source
     url        https://www.cairographics.org/releases/pixman-0.46.4.tar.gz
@@ -1526,10 +1526,10 @@ package pixman 0.46.4
     correspond none
 
   deps
-    build        libpng, meson, ninja
-    link         libpng
-    runtime      libpng
-    optional_off demos, gtk, openmp, tests
+    build        meson, ninja
+    link         -
+    runtime      -
+    optional_off demos, gtk, libpng, openmp, tests
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -1538,7 +1538,7 @@ package pixman 0.46.4
     [02] setup
          cwd  build/pixman-0.46.4/pixman-0.46.4
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dtests=disabled", "-Ddemos=disabled", "-Dgtk=disabled", "-Dlibpng=enabled"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dtests=disabled", "-Ddemos=disabled", "-Dgtk=disabled", "-Dlibpng=disabled"]
     [03] build
          cwd  build/pixman-0.46.4/pixman-0.46.4
          argv ["ninja", "-C", "_b"]

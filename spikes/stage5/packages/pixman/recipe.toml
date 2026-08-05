@@ -12,13 +12,17 @@ signature = "none -- cairographics.org publishes no detached signature"
 crosschecked_against = []
 
 [deps]
-build        = ["meson", "ninja", "libpng"]
-link         = ["libpng"]
-runtime      = ["libpng"]
-optional_off = ["tests", "demos", "gtk", "openmp"]
+build        = ["meson", "ninja"]
+# libpng WAS DECLARED AND IS NOT LINKED. -Dlibpng=enabled was passed, and
+# pixman uses libpng ONLY in its tests and demos -- both of which this recipe
+# disables. So the option enabled a feature whose every consumer was off, and
+# the declaration was true about the flag and false about the binary.
+link         = []
+runtime      = []
+optional_off = ["tests", "demos", "gtk", "openmp", "libpng"]
 
 [declared]
-configure_flags = ["-Dtests=disabled", "-Ddemos=disabled", "-Dgtk=disabled", "-Dlibpng=enabled"]
+configure_flags = ["-Dtests=disabled", "-Ddemos=disabled", "-Dgtk=disabled", "-Dlibpng=disabled"]
 verification    = "none -- upstream suites are not run"
 deferral        = """
 Internals not reviewed. Pixel manipulation for cairo, and wlroots uses it for \
@@ -34,7 +38,7 @@ run  = [["tar", "-xf", "$DL/pixman-0.46.4.tar.gz", "-C", "$B"]]
 name = "setup"
 cwd  = "$S"
 run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
-         "-Dtests=disabled", "-Ddemos=disabled", "-Dgtk=disabled", "-Dlibpng=enabled"]]
+         "-Dtests=disabled", "-Ddemos=disabled", "-Dgtk=disabled", "-Dlibpng=disabled"]]
 
 [[steps]]
 name = "build"

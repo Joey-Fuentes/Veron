@@ -12,14 +12,19 @@ signature = "none -- download.gnome.org publishes no detached signature"
 crosschecked_against = []
 
 [deps]
-build        = ["zlib", "xz", "readline"]
-link         = ["zlib", "xz", "readline"]
-runtime      = ["zlib", "xz", "readline"]
+build        = ["readline"]
+# zlib AND xz WERE DECLARED AND ARE NOT LINKED, measured by `veron linked`.
+# The configure line passes --with-history (readline, which IS linked) and
+# nothing enabling either compressor -- libxml2 uses them only to read
+# compressed XML documents, and nothing here feeds it one. The declaration
+# described an intention the flags never carried out.
+link         = ["readline"]
+runtime      = ["readline"]
 # CORROBORATIVE DECLINE. Arch has moved libxml2 to meson; upstream still
 # ships autotools and this recipe uses it. Their meson.build is never read
 # here, which is also why every finding from that file is declined in
 # [undeclarable] rather than acted on.
-optional_off = ["python", "icu", "lzma-static", "meson"]
+optional_off = ["python", "icu", "lzma-static", "meson", "zlib", "lzma"]
 
 [declared]
 configure_flags = ["--prefix=/usr", "--disable-static", "--with-history", "--without-python", "--without-icu"]

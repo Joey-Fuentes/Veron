@@ -13,7 +13,16 @@ crosschecked_against = []
 
 [deps]
 build        = ["ninja", "zlib", "bzip2", "xz", "zstd", "curl", "expat", "libarchive"]
-link         = ["zlib", "bzip2", "xz", "zstd", "curl", "expat", "libarchive"]
+# xz AND zstd ARE NOT LINKED BY cmake ITSELF, measured by `veron linked`.
+# --system-liblzma and --system-zstd are passed and are real BUILD
+# dependencies -- cmake's configure looks for both -- but the code that calls
+# them is libarchive's, and --system-libarchive means we use the system copy.
+# So the edge is cmake -> libarchive -> xz/zstd, and declaring it as a direct
+# link made the ledger claim a dependency the binary does not have.
+#
+# bzip2 stays: it IS linked, statically, because bzip2's recipe builds only
+# libbz2.a. `veron linked` reports that separately rather than as a mismatch.
+link         = ["zlib", "bzip2", "curl", "expat", "libarchive"]
 runtime      = ["zlib", "bzip2", "xz", "zstd", "curl", "expat", "libarchive"]
 optional_off = ["qt-gui", "ccache", "sphinx", "vendored-libs"]
 
