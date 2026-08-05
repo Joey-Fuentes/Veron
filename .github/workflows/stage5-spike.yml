@@ -216,6 +216,24 @@ jobs:
               --sysroot / \
               build --clean
 
+      # WHAT THE BUILD ACTUALLY LINKED, AGAINST WHAT THE RECIPES CLAIM.
+      #
+      # The other two detectors read intent: the static scan reads what a
+      # build file ASKS for, the distro half reads what another packager
+      # DECLARES. This reads the ELF that was just produced, and it is the
+      # only one that can see a library picked up from the sysroot by a
+      # configure script nobody told to look -- a real runtime dependency that
+      # no record mentions, in a build that is green.
+      #
+      # warn FIRST, for the same reason the reconciler warns: a gate nobody
+      # has read the output of is a gate that gets switched off. `--mode fail`
+      # is one word away once the first sweep is understood.
+      - name: 'VERON-LINKED -- DT_NEEDED against deps.link'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 tools/veron --dest dest linked --mode warn
+
       - name: 'VERON-MANIFEST-OK'
         run: cd spikes/stage5 && python3 tools/veron manifest
 

@@ -456,10 +456,37 @@ the collector that printed "collected 32 log files" and preserved none, and as
 third instance of the same shape and the first where two steps had it at
 once.**
 
+**The observed detector is wired: `veron linked`.** DT_NEEDED against
+`deps.link`, both directions, after the build. It is the only one of the three
+that measures what happened rather than what a file says, and the only one
+that can see the direction the others structurally cannot -- **a library
+picked up from the sysroot by a configure script nobody told to look**, now a
+real runtime dependency that no record mentions, in a build that is green.
+
+**The ELF reader is pure Python, deliberately.** `probe linked` shells out to
+`readelf`, which is fine on a runner and wrong in the two places that matter:
+the build sandbox is busybox with no binutils, and `guest/selfrebuild.sh` runs
+inside the booted image where the same is true. A check on what the system
+actually links must not need a tool the system does not have. Validated
+against `readelf` on **300 real binaries: 246 with a dynamic section, 246
+matching, 0 mismatches**, and the selftest re-checks it against the running
+interpreter -- because a parser that silently returns nothing would make every
+package look clean.
+
+Both directions verified on a fixture built for the purpose: one package
+linking another's `.so` without declaring it, and one declaring a name it
+links nothing of. `libc.so.6` is reported as **from the stage-4 sysroot**
+rather than as a gap -- a separate count, the way `veron status` treats opaque.
+
+**What it cannot see, stated so the absence is not read as a clean bill:**
+static archives leave no DT_NEEDED, `dlopen` is invisible to every detector
+this project has, and build-time tools are not linked at all -- those live in
+`deps.build`, which this does not check.
+
 **Still to do:**
 
+- Read the first sweep's output, then `--mode fail`
 - The 21 corroborative declines
-- Then `--mode fail`
 - Write the 21 corroborative declines
 - Then `--mode fail`, which is the point of the exercise
 - Write the `[undeclarable]` blocks that sweep calls for, per recipe

@@ -1312,6 +1312,223 @@ def build_only(recipes, name):
     return bool(recipes.get(name, {}).get("build_only", False))
 
 
+# ---------------------------------------------------------------- DT_NEEDED
+
+
+def elf_dynamic(path):
+    """(soname, [needed]) from an ELF's dynamic section. Pure Python.
+
+    WHY NOT readelf. `probe linked` shells out to it, which is fine on a
+    runner and wrong everywhere else: the build sandbox is busybox with no
+    binutils, and guest/selfrebuild.sh runs inside the booted image where the
+    same is true. A check on what the system actually links must not need a
+    tool the system does not have -- that is how a gate ends up running in one
+    place and quietly skipped in the two that matter.
+
+    The format is fixed and small. The only fiddly part is that DT_STRTAB is a
+    VIRTUAL ADDRESS, so it has to be mapped back to a file offset through the
+    PT_LOAD segments; reading it as an offset works on most binaries and is
+    wrong on exactly the ones that are laid out unusually.
+
+    Returns (None, []) for anything that is not an ELF, rather than raising --
+    a DESTDIR is full of scripts, headers and data.
+    """
+    try:
+        with open(path, "rb") as f:
+            b = f.read()
+    except OSError:
+        return None, []
+    if len(b) < 64 or b[:4] != b"\x7fELF":
+        return None, []
+
+    bits, endian = b[4], b[5]
+    e = "<" if endian == 1 else ">"
+    W = 8 if bits == 2 else 4
+
+    def u(off, size):
+        return int.from_bytes(b[off:off + size], "little" if e == "<" else "big")
+
+    # Program headers: e_phoff, e_phentsize, e_phnum
+    if bits == 2:
+        phoff, phentsize, phnum = u(0x20, 8), u(0x36, 2), u(0x38, 2)
+        PT_OFF, PT_VADDR, PT_FILESZ = 0x08, 0x10, 0x20
+    else:
+        phoff, phentsize, phnum = u(0x1C, 4), u(0x2A, 2), u(0x2C, 2)
+        PT_OFF, PT_VADDR, PT_FILESZ = 0x04, 0x08, 0x10
+
+    loads, dyn = [], None
+    for i in range(phnum):
+        p = phoff + i * phentsize
+        if p + phentsize > len(b):
+            return None, []
+        ptype = u(p, 4)
+        off = u(p + PT_OFF, W)
+        vaddr = u(p + PT_VADDR, W)
+        filesz = u(p + PT_FILESZ, W)
+        if ptype == 1:                      # PT_LOAD
+            loads.append((vaddr, off, filesz))
+        elif ptype == 2:                    # PT_DYNAMIC
+            dyn = (off, filesz)
+    if not dyn:
+        return None, []
+
+    def v2o(vaddr):
+        """Virtual address -> file offset, through PT_LOAD."""
+        for lv, lo, lsz in loads:
+            if lv <= vaddr < lv + lsz:
+                return lo + (vaddr - lv)
+        return None
+
+    strtab = strsz = None
+    entries = []
+    off, size = dyn
+    step = W * 2
+    for p in range(off, min(off + size, len(b) - step + 1), step):
+        tag = u(p, W)
+        val = u(p + W, W)
+        if tag == 0:                        # DT_NULL
+            break
+        entries.append((tag, val))
+        if tag == 5:                        # DT_STRTAB
+            strtab = val
+        elif tag == 10:                     # DT_STRSZ
+            strsz = val
+    if strtab is None:
+        return None, []
+    base = v2o(strtab)
+    if base is None:
+        return None, []
+    end = base + (strsz or 0)
+
+    def s(idx):
+        i = base + idx
+        if i >= len(b):
+            return ""
+        j = b.find(b"\x00", i, end if strsz else len(b))
+        return b[i:j if j > 0 else i].decode("utf-8", "replace")
+
+    soname, needed = None, []
+    for tag, val in entries:
+        if tag == 1:                        # DT_NEEDED
+            needed.append(s(val))
+        elif tag == 14:                     # DT_SONAME
+            soname = s(val)
+    return soname, needed
+
+
+def cmd_linked(a):
+    """DT_NEEDED against deps.link, in both directions.
+
+    THE ONLY DETECTOR THAT MEASURES WHAT HAPPENED. The static scan reads what
+    a build file ASKS for and the distro half reads what someone else
+    DECLARES; both are statements about intent. This reads the ELF a build
+    actually produced, and it is the only one that can catch the direction the
+    others structurally cannot:
+
+        LINKED BUT NOT DECLARED -- a library that was sitting in the sysroot
+        for another package's sake, found by a configure script nobody told to
+        look, and now a real runtime dependency that no record mentions.
+
+    That is the case where the build is green and the ledger is wrong, which
+    is the one an audit claim cannot survive.
+
+    DECLARED BUT NOT LINKED is the other direction and is milder: fontconfig
+    declared libxml2 and links expat. Milder because it over-states rather
+    than under-states -- but it still means `veron why` would answer with a
+    dependency that does not exist.
+
+    WHAT IT CANNOT SEE, stated so the absence is not read as a clean bill:
+      - static archives. A .a linked into a binary leaves no DT_NEEDED.
+      - dlopen. A plugin loaded at runtime is invisible here and in every
+        other detector this project has.
+      - header-only and build-tool dependencies. Those belong in deps.build,
+        which this does not check, because a compiler is not linked.
+    """
+    recipes = load_recipes()
+    roots = roots_from_args(a)
+    dest = roots["dest"]
+    if not os.path.isdir(dest):
+        die(f"no DESTDIRs at {dest} -- run `veron build` first")
+
+    # WHO PROVIDES WHAT, from the built artifacts rather than from a name.
+    # A package provides a soname if one of its own ELFs declares it, and
+    # also under any .so filename it installs -- symlinks included, because
+    # `libfoo.so.1` is usually a link to `libfoo.so.1.2.3` and DT_NEEDED
+    # names the link.
+    provider, elfs = {}, {}
+    for pkg in sorted(os.listdir(dest)):
+        d = os.path.join(dest, pkg)
+        if not os.path.isdir(d):
+            continue
+        mine = []
+        for dirpath, _, files in os.walk(d):
+            for fn in files:
+                p = os.path.join(dirpath, fn)
+                if os.path.islink(p):
+                    if ".so" in fn:
+                        provider.setdefault(fn, pkg)
+                    continue
+                soname, needed = elf_dynamic(p)
+                if soname:
+                    provider.setdefault(soname, pkg)
+                if ".so" in fn:
+                    provider.setdefault(fn, pkg)
+                if needed:
+                    mine.append((os.path.relpath(p, d), needed))
+        elfs[pkg] = mine
+
+    problems, sysroot_libs = 0, {}
+    for pkg in sorted(elfs):
+        r = recipes.get(pkg)
+        if r is None:
+            continue
+        declared = set(r.get("deps", {}).get("link", []))
+        linked, where = set(), {}
+        for rel, needed in elfs[pkg]:
+            for so in needed:
+                owner = provider.get(so)
+                if owner is None:
+                    # NOT A GAP -- the base image. libc, libm, libstdc++ and
+                    # friends come from the stage-4 sysroot, which no stage-5
+                    # recipe owns. Counted separately so the number is visible
+                    # rather than absent, the way `veron status` treats opaque.
+                    sysroot_libs.setdefault(so, set()).add(pkg)
+                    continue
+                if owner == pkg:
+                    continue
+                linked.add(owner)
+                where.setdefault(owner, (so, rel))
+
+        undeclared = sorted(linked - declared)
+        unlinked = sorted(declared - linked)
+        if not undeclared and not unlinked:
+            continue
+        print(f"== {pkg}")
+        for u in undeclared:
+            so, rel = where[u]
+            problems += 1
+            print(f"  {'LINKED-UNDECLARED' if a.mode == 'fail' else 'linked-undeclared'}"
+                  f"  {pkg} links {u} ({so} via {rel}) and deps.link does not "
+                  f"say so")
+        for u in unlinked:
+            problems += 1
+            print(f"  {'DECLARED-UNLINKED' if a.mode == 'fail' else 'declared-unlinked'}"
+                  f"  {pkg} declares {u} in deps.link and links nothing it "
+                  f"provides")
+
+    if sysroot_libs:
+        print(f"\n  {len(sysroot_libs)} soname(s) come from the stage-4 "
+              f"sysroot, owned by no stage-5 recipe:")
+        for so in sorted(sysroot_libs):
+            users = sorted(sysroot_libs[so])
+            more = f" (+{len(users) - 3} more)" if len(users) > 3 else ""
+            print(f"    {so:<24} {', '.join(users[:3])}{more}")
+
+    print(f"\nVERON-LINKED-{'FAIL' if (problems and a.mode == 'fail') else 'OK'}"
+          f"  {problems} mismatch(es) across {len(elfs)} package(s)")
+    return 1 if (problems and a.mode == "fail") else 0
+
+
 def cmd_manifest(a):
     recipes = load_recipes()
     roots = roots_from_args(a)
@@ -1876,7 +2093,7 @@ def cmd_selftest(a):
     KNOWN = ("plan", "fetch", "build", "manifest", "rootfs", "ledger",
              "selftest", "guest-tests", "compare", "status", "sources",
              "git-sources", "collect", "build-only-names", "merge",
-             "tarball-names")
+             "tarball-names", "linked")
     called = set()
     wfdir = os.path.join(HERE, "..", "..", ".github", "workflows")
     if os.path.isdir(wfdir):
@@ -2011,6 +2228,33 @@ def cmd_selftest(a):
     else:
         print("  FAIL  found no workflow veron invocations to check")
         ok = False
+    # THE ELF READER, AGAINST A BINARY THIS INTERPRETER IS RUNNING ON.
+    #
+    # It replaces a readelf subprocess, so nothing external can corroborate it
+    # at runtime -- which is the point (busybox has no binutils) and also the
+    # risk. python3 itself is a dynamically linked ELF with a known shape: it
+    # must report libc, and its DT_NEEDED list must be non-empty. A parser
+    # that silently returns nothing would otherwise make every package look
+    # like it links nothing at all, and the check would pass everywhere.
+    try:
+        me = os.path.realpath(sys.executable)
+        soname, needed = elf_dynamic(me)
+        if needed and any(n.startswith("libc.") for n in needed):
+            print(f"  ok    the ELF reader finds DT_NEEDED ({len(needed)} on "
+                  f"this interpreter)")
+        else:
+            print(f"  FAIL  ELF reader returned {needed!r} for {me} -- a "
+                  f"parser that finds nothing makes every package look clean")
+            ok = False
+        if elf_dynamic(os.path.abspath(__file__))[1]:
+            print("  FAIL  ELF reader returned DT_NEEDED for a shell script")
+            ok = False
+        else:
+            print("  ok    the ELF reader ignores non-ELF files")
+    except Exception as e:
+        print(f"  FAIL  ELF reader raised: {type(e).__name__}: {e}")
+        ok = False
+
     # NO WORKFLOW MAY DECLARE THE SAME STEP NAME TWICE.
     #
     # stage5-reconcile ran its git-pinned generation step TWICE, and the run
@@ -2174,6 +2418,11 @@ def build_parser():
 
     p = sub.add_parser("merge", help="merge every DESTDIR into the system root")
     p.set_defaults(fn=cmd_merge)
+
+    p = sub.add_parser("linked",
+                       help="DT_NEEDED against deps.link, both directions")
+    p.add_argument("--mode", choices=["warn", "fail"], default="warn")
+    p.set_defaults(fn=cmd_linked)
 
     p = sub.add_parser("tarball-names",
                        help="package -> the tarball filename its recipe pins")
