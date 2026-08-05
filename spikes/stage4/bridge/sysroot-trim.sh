@@ -44,7 +44,7 @@ set -u
 ROOT=${1:-/}
 LOG=${TRIM_LOG:-/out/trim.txt}
 NATIVE=${NATIVE_TRIPLET:-aarch64-unknown-linux-gnu}
-CROSS=${CROSS_TRIPLET:-aarch64-veron-linux-gnu}
+CROSS=${CROSS_TRIPLET:-aarch64-toolchain-linux-gnu}
 
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
 : > "$LOG"

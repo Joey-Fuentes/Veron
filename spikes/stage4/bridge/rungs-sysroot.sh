@@ -41,7 +41,7 @@
 # For us it is stronger than hygiene. The claim this job exists to make is that
 # what ships was built by the FINAL toolchain, and a PATH that cannot reach the
 # earlier one turns that from a convention into a property the sandbox enforces.
-# If something below reaches for $LFS_TGT-gcc it fails loudly instead of
+# If something below reaches for $VERON_TOOLCHAIN_TGT-gcc it fails loudly instead of
 # quietly producing an artifact from the wrong compiler.
 #
 # ---------------------------------------------------------------------------
@@ -280,8 +280,8 @@ done
 # by accident and the consequence -- an artifact built by pass 1 -- is silent.
 # ASK WHERE IT RESOLVES, NOT WHETHER THE NAME EXISTS.
 #
-# This used to be `command -v $LFS_TGT-gcc` and it failed run 120 on a
-# correctly built sysroot. gcc pass 2 is configured --target=$LFS_TGT, so it
+# This used to be `command -v $VERON_TOOLCHAIN_TGT-gcc` and it failed run 120 on a
+# correctly built sysroot. gcc pass 2 is configured --target=$VERON_TOOLCHAIN_TGT, so it
 # installs its driver under BOTH names: /usr/bin/gcc and
 # /usr/bin/aarch64-veron-linux-gnu-gcc. The prefixed name is the SYSROOT's
 # own final compiler, not pass 1 -- the check matched on a name the right
@@ -291,14 +291,14 @@ done
 # lives. Both halves of pass 1 are musl-static and would run in here quite
 # happily, so this is the only thing keeping "built by the final toolchain"
 # enforced rather than assumed.
-_xp=$(command -v "${LFS_TGT:-aarch64-veron-linux-gnu}-gcc" 2>/dev/null || true)
+_xp=$(command -v "${VERON_TOOLCHAIN_TGT:-aarch64-toolchain-linux-gnu}-gcc" 2>/dev/null || true)
 case "$_xp" in
   /tools/*) say "    $_xp RESOLVES INTO /tools -- that is pass 1, the cross"
             say "    compiler. Everything below would be built by the wrong"
             say "    toolchain. Not proceeding."
             _ok=no ;;
-  "")       say "    no ${LFS_TGT:-aarch64-veron-linux-gnu}-gcc on PATH" ;;
-  *)        say "    ${LFS_TGT:-aarch64-veron-linux-gnu}-gcc -> $_xp"
+  "")       say "    no ${VERON_TOOLCHAIN_TGT:-aarch64-toolchain-linux-gnu}-gcc on PATH" ;;
+  *)        say "    ${VERON_TOOLCHAIN_TGT:-aarch64-toolchain-linux-gnu}-gcc -> $_xp"
             say "      (the sysroot's own gcc pass 2 under its target name,"
             say "       not /tools -- gcc installs both names)" ;;
 esac
@@ -593,7 +593,7 @@ if [ "$B1" = ok ]; then
       #
       # WHY NOTHING ELSE HERE HITS IT. Every other glibc build in this
       # repository -- stage4-complete, hermetic-gcc10/15/47/16,
-      # chain/rung2.sh, and phase A's own rung 13 -- passes --host=$LFS_TGT.
+      # chain/rung2.sh, and phase A's own rung 13 -- passes --host=$VERON_TOOLCHAIN_TGT.
       # glibc guards this check on $(cross-compiling), so a cross build never
       # runs it. B2 is the first NATIVE glibc build in the project, so there
       # was no working example to copy from.
@@ -772,7 +772,26 @@ if [ "$B3" = ok ]; then
     # a busybox that boot. STAGE 5 SHOULD REVISIT THIS: a complete system
     # wants a complete compiler, and by then gcc will have caught up with
     # glibc's headers, or the skew will need a real fix rather than a flag.
-    elif "$_d/configure" --prefix=/usr LD=ld --disable-multilib --disable-bootstrap \
+    # --build/--host/--target ARE THE SYSTEM'S NAME, AND THIS IS THE gcc THAT
+    # SHIPS. Phase A's gcc pass 2 is configured --target=$VERON_TOOLCHAIN_TGT, but rung
+    # B4 rebuilds gcc natively and OVERWRITES it -- so config.guess decided
+    # the triplet and answered aarch64-unknown-linux-gnu. Measured: 678
+    # occurrences of that string in a stage-5 diagnostic bundle and no other.
+    #
+    # A system that does not know its own name is what `gcc -dumpmachine`
+    # then reports, and the string is in every path under /usr/lib/gcc/<t>/,
+    # /usr/include/c++/<v>/<t>/ and /usr/lib/<t>/. Naming it here is the
+    # difference between a distribution and a build directory.
+    #
+    # THE SCAFFOLDING IS RENAMED IN THE OPPOSITE DIRECTION, in the same
+    # change: $VERON_TOOLCHAIN_TGT becomes aarch64-toolchain-linux-gnu, because a cross
+    # compiler in /tools called aarch64-veron-linux-gnu-gcc reads as THE Veron
+    # compiler and is precisely the one that is not.
+    elif "$_d/configure" --prefix=/usr LD=ld \
+           --build=aarch64-veron-linux-gnu \
+           --host=aarch64-veron-linux-gnu \
+           --target=aarch64-veron-linux-gnu \
+           --disable-multilib --disable-bootstrap \
          --disable-fixincludes --enable-default-pie \
          --enable-default-ssp --disable-nls --enable-languages=c,c++ \
          --disable-libatomic --disable-libgomp --disable-libquadmath \
@@ -1021,7 +1040,7 @@ fi
 head1 "RUNG B6 -- the kernel, BY THE FINAL COMPILER"
 # NATIVELY, WITH NO CROSS_COMPILE AT ALL, which is what LFS chapter 10 does and
 # what stage4-complete's box15.sh does. An earlier revision cross-compiled this
-# with $LFS_TGT-gcc -- pass 1, built --without-headers before a libc existed --
+# with $VERON_TOOLCHAIN_TGT-gcc -- pass 1, built --without-headers before a libc existed --
 # which produces a working kernel and the wrong claim.
 #
 # A FRESH TREE, not the one phase A ran `headers_install` in: that one was
@@ -1075,11 +1094,79 @@ if [ "$B5" = ok ]; then
     set_cfg NET_9P y
     set_cfg NET_9P_VIRTIO y
     set_cfg 9P_FS y
+    # DRM AND INPUT, BUILT IN, BECAUSE =m IS THE SAME AS =n IN THIS SYSTEM.
+    #
+    # Only arch/arm64/boot/Image leaves this build -- `make modules_install`
+    # never runs, no /lib/modules ships, and there is no kmod and no modprobe.
+    # So a symbol arm64 defconfig leaves at =m does not merely fail to load,
+    # it does not exist. hwdata's stage-5 recipe already declines its
+    # modprobe.d file for the same reason.
+    #
+    # MEASURED, NOT ASSUMED. stage5-spike boots qemu with -device
+    # virtio-gpu-pci -device virtio-keyboard-pci and the guest reports what it
+    # can see. It said:
+    #
+    #   VERON-DRM-ABSENT    no /dev/dri/card0
+    #   drm modules:        (empty -- nothing in /sys/class/drm)
+    #   VERON-EVDEV-OK      1 event node(s)
+    #
+    # So evdev was already fine and DRM was absent entirely. wlroots with
+    # -Dbackends=drm would have built green and found no device to open: the
+    # same failure shape as -Dbackends=auto, one layer down and arriving from
+    # the kernel rather than from a recipe.
+    #
+    # INPUT_EVDEV and VIRTIO_INPUT are set even though the probe found an
+    # event node, because "it happened to work" and "we chose it" are
+    # different claims and only the second survives a defconfig change.
+    set_cfg DRM y
+    set_cfg DRM_VIRTIO_GPU y
+    set_cfg DRM_FBDEV_EMULATION y
+    set_cfg INPUT_EVDEV y
+    set_cfg VIRTIO_INPUT y
+    # THE WRITABLE LAYER. Stage 5's first-boot design is a read-only base plus
+    # an overlay, so the image stays byte-identical and `veron compare`
+    # against files.tsv keeps working on a RUNNING system -- everything
+    # written after boot is visibly in the upper layer by construction.
+    # Without OVERLAY_FS the only alternative is a read-write root, which
+    # gives up that property.
+    set_cfg OVERLAY_FS y
+    # EFI, SO THE IMAGE CAN BOOT ITSELF. Today qemu is handed -kernel and
+    # -initrd, which means the image is not bootable on its own and never
+    # will be on real hardware. CONFIG_EFI brings the arm64 stub, and
+    # EFI_PARTITION is GPT -- without it the kernel cannot even read the
+    # partition table an ESP lives in.
+    set_cfg EFI y
+    set_cfg EFI_STUB y
+    set_cfg EFI_PARTITION y
+    set_cfg EFIVAR_FS y
+    # NETWORKING, AHEAD OF NEED AND DELIBERATELY SO. Nothing in stage 5 uses
+    # it yet; STAGE5.md lists it as open and a browser cannot exist without
+    # it. The rule elsewhere in this project is to leave out what nothing
+    # uses -- this is the exception, and the reason is arithmetic: a kernel
+    # symbol costs nothing at runtime and a full chain rerun to add one costs
+    # an hour plus everything downstream. PACKET is what a DHCP client needs
+    # to see raw frames before an address exists.
+    set_cfg VIRTIO_NET y
+    set_cfg PACKET y
     make ARCH=arm64 olddefconfig > /dev/null 2>&1
     _bad=0
     [ "$B6" = FAIL ] && _bad=1
     grep -q "^CONFIG_WERROR=y" .config && { say "    WERROR came back after olddefconfig"; _bad=1; }
     grep -q "^CONFIG_DEVTMPFS_MOUNT=y" .config || { say "    DEVTMPFS_MOUNT did not take"; _bad=1; }
+    # HARD, AND =y RATHER THAN MERELY PRESENT. olddefconfig can quietly turn a
+    # requested =y into =m when a dependency is modular, and in this system
+    # those two are indistinguishable at runtime -- so only a grep for "=y"
+    # tells success from silent demotion.
+    #
+    # Fatal, unlike the 9p symbols below: a missing 9p costs one skipped
+    # in-guest test, a missing DRM costs a compositor that builds green and
+    # opens nothing.
+    for _sym in DRM DRM_VIRTIO_GPU DRM_FBDEV_EMULATION INPUT_EVDEV \
+                VIRTIO_INPUT OVERLAY_FS EFI EFI_STUB EFI_PARTITION \
+                EFIVAR_FS VIRTIO_NET PACKET; do
+      grep -q "^CONFIG_$_sym=y" .config || {
+        say "    CONFIG_$_sym is not built in (=y)"; _bad=1; }
+    done
     # EACH 9p SYMBOL BY NAME. stage4-complete does this, and the reason is that
     # "9p unavailable" in the guest is the same message whether the kernel
     # lacks the protocol, the transport or the filesystem -- three different

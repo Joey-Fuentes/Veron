@@ -100,28 +100,21 @@ jobs:
             || { echo "this bwrap has no --overlay-src"; exit 1; }
           echo "  --overlay-src present"
 
-      - name: 'Find the sysroot-inventory run'
-        id: inv
+      # SAME SOURCE AS THE SPIKE: the stage4/latest release, not another
+      # job's artifact. See stage5-spike.yml for why.
+      - name: 'Download the stage-4 sysroot from its release'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          id=$(gh run list --workflow=sysroot-inventory.yml --status=success \
-                 --limit=1 --json databaseId --jq '.[0].databaseId')
-          [ -n "$id" ] || { echo "no sysroot-inventory run"; exit 1; }
-          echo "run_id=$id" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: veron-sysroot-trimmed
-          path: dl-sysroot
-          run-id: ${{ steps.inv.outputs.run_id }}
-          github-token: ${{ github.token }}
-
-      - name: 'Unpack the sysroot and verify its published hash'
-        run: |
-          set -eu
-          want=$(awk '{print $1}' dl-sysroot/report/SYSROOT-SHA256)
+          mkdir -p dl-sysroot
+          gh release download stage4/latest \
+            --pattern 'sysroot.tar' --pattern 'SYSROOT-SHA256' \
+            --dir dl-sysroot || {
+            echo "No stage4/latest release -- dispatch stage0-stage4-complete once."
+            exit 1
+          }
+          want=$(awk '{print $1}' dl-sysroot/SYSROOT-SHA256)
           got=$(sha256sum dl-sysroot/sysroot.tar | cut -d' ' -f1)
           [ "$want" = "$got" ] || { echo "SYSROOT HASH MISMATCH"; exit 1; }
           mkdir -p spikes/stage5/sysroot

@@ -24,9 +24,9 @@ S=/work/sysroot
 say() { printf '%s\n' "$*"; }
 die() { say "  $*"; exit 1; }
 
-export LFS_TGT=${LFS_TGT:-aarch64-veron-linux-gnu}
+export VERON_TOOLCHAIN_TGT=${VERON_TOOLCHAIN_TGT:-aarch64-veron-linux-gnu}
 export PATH="$S/tools/bin:$PATH"
-CROSS="$LFS_TGT-"
+CROSS="$VERON_TOOLCHAIN_TGT-"
 [ -x "$S/tools/bin/${CROSS}gcc" ] || die "no ${CROSS}gcc -- rung 2's sysroot did not arrive"
 say "  builder: $(${CROSS}gcc --version | head -1)"
 

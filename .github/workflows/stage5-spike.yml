@@ -6,10 +6,15 @@ name: stage5-spike
 # WHAT CHANGED SINCE THIS WAS FIRST WRITTEN. The original restored the stage-4
 # sysroot by cache PREFIX and named VERON-ENTRY-ABSENT as its expected first
 # failure, because stage 4 published no sysroot. That gap is closed:
-# sysroot-inventory.yml publishes `veron-sysroot-trimmed` (481 MB, named,
-# hashed, deterministically packed) and stage5-entry.yml has PROVEN it
-# compiles C, C++, -flto and -static, and boots. So this consumes a pinned
-# artifact rather than guessing a cache key.
+# stage0-stage4-complete now trims the sysroot (~481 MB, hashed and
+# deterministically packed) and publishes it to the `stage4/latest` RELEASE on
+# every green run, and stage5-entry.yml has PROVEN it compiles C, C++, -flto
+# and -static, and boots.
+#
+# A release rather than an artifact, because the previous route ran through a
+# hand-dispatched workflow and a GitHub Actions cache that expires after seven
+# idle days -- so a quiet week broke stage 5 and the repair was an hour of
+# chain. A release asset does not expire and anyone can download the same file.
 #
 # NO BUILD LOGIC IN THIS FILE. Every `run:` is environment setup or a call to
 # spikes/stage5/tools/veron. If build logic reappears here, that is the
@@ -18,10 +23,6 @@ name: stage5-spike
 on:
   workflow_dispatch:
     inputs:
-      sysroot_run_id:
-        description: 'sysroot-inventory run id (blank = latest successful)'
-        required: false
-        default: ''
       skip_boot:
         description: 'Build and test, but do not boot'
         type: boolean
@@ -126,40 +127,47 @@ jobs:
       - name: 'VERON-PLAN-OK -- regenerate and diff'
         run: cd spikes/stage5 && python3 tools/veron plan --check
 
-      - name: 'Find the sysroot-inventory run'
-        id: inv
+      # THE SYSROOT COMES FROM A RELEASE, NOT FROM ANOTHER JOB'S ARTIFACT.
+      #
+      # This used to find the latest successful sysroot-inventory run and
+      # download its artifact -- which meant stage 5 depended on a workflow
+      # someone had to dispatch by hand with a checkbox ticked, and that
+      # workflow in turn restored a 6 GB sysroot from a GitHub Actions CACHE.
+      # Actions caches are evicted after seven idle days, so a quiet week
+      # broke the link and the only repair was rerunning the whole chain.
+      #
+      # stage0-stage4-complete now trims and publishes on every green run.
+      # A release asset does not expire, needs no dispatch, and is the same
+      # file anyone else can download and boot.
+      - name: 'Download the stage-4 sysroot from its release'
+        id: sysroot
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          id="${{ inputs.sysroot_run_id }}"
-          [ -n "$id" ] || id=$(gh run list --workflow=sysroot-inventory.yml \
-                --status=success --limit=1 --json databaseId \
-                --jq '.[0].databaseId' 2>/dev/null || true)
-          [ -n "$id" ] && [ "$id" != null ] || { echo "no sysroot-inventory run"; exit 1; }
-          echo "run_id=$id" >> "$GITHUB_OUTPUT"; echo "  using run $id"
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: veron-sysroot-trimmed
-          path: dl-sysroot
-          run-id: ${{ steps.inv.outputs.run_id }}
-          github-token: ${{ github.token }}
-
-      - name: 'Unpack the sysroot and verify its published hash'
-        id: sysroot
-        run: |
-          set -eu
-          want=$(awk '{print $1}' dl-sysroot/report/SYSROOT-SHA256)
+          mkdir -p dl-sysroot
+          gh release download stage4/latest \
+            --pattern 'sysroot.tar' --pattern 'SYSROOT-SHA256' \
+            --pattern 'PROVENANCE' --dir dl-sysroot || {
+            echo "No stage4/latest release. stage0-stage4-complete publishes it"
+            echo "on every green run; if none has run since this step landed,"
+            echo "dispatch that workflow once."
+            exit 1
+          }
+          # THE DIGEST IS CHECKED BEFORE THE TARBALL IS OPENED, exactly as it
+          # was against the artifact. A release is a friendlier delivery
+          # mechanism and not a more trusted one.
+          want=$(awk '{print $1}' dl-sysroot/SYSROOT-SHA256)
           got=$(sha256sum dl-sysroot/sysroot.tar | cut -d' ' -f1)
           [ "$want" = "$got" ] || { echo "SYSROOT HASH MISMATCH"; exit 1; }
+          sed 's/^/    /' dl-sysroot/PROVENANCE 2>/dev/null || true
           mkdir -p spikes/stage5/sysroot
           tar -xf dl-sysroot/sysroot.tar -C spikes/stage5/sysroot
           du -sh spikes/stage5/sysroot | sed 's/^/    /'
           echo "VERON-ENTRY-OK  $got"
-          # THE CHECKPOINT BASE. Already verified against the published
-          # digest one line above, so it is the strongest identity this run
-          # has for the image everything is built on top of.
+          # THE CHECKPOINT BASE. Verified against the published digest one
+          # line above, so it is the strongest identity this run has for the
+          # image everything is built on top of.
           echo "sysroot_sha=$got" >> "$GITHUB_OUTPUT"
 
       # AIRLOCK. Network lives here and nowhere else. Fetch goes through the

@@ -76,6 +76,9 @@ on:
       - '.github/workflows/stage0-stage4-complete.yml'
 
 # A run of this length must never be cancelled by the next push.
+permissions:
+  contents: write        # `gh release upload` publishes the stage-4 artefacts
+
 concurrency:
   group: stage0-stage4-complete-${{ github.ref }}
   cancel-in-progress: false
@@ -173,7 +176,7 @@ env:
   # stays an overlap.
   GCC10: '10.2.0'
   # CHAPTER 5 IS A DIFFERENT TOOLCHAIN. gcc 15 and a modern binutils, cross to
-  # LFS_TGT, against a glibc sysroot -- stage 4's versions so the overlap holds.
+  # VERON_TOOLCHAIN_TGT, against a glibc sysroot -- stage 4's versions so the overlap holds.
   # BINUTILS above is 2.30 because tcc has a ceiling; nothing here is built by
   # tcc, so chapter 5 uses 2.46 as stage 4 does.
   GCC15: '15.2.0'
@@ -3372,7 +3375,7 @@ jobs:
             --setenv SOURCE_DATE_EPOCH 0 \
             --setenv ARM mc-tcc \
             --setenv REPRO_GCC "$REPRO_GCC" \
-            --setenv LFS_TGT aarch64-veron-linux-gnu \
+            --setenv VERON_TOOLCHAIN_TGT aarch64-toolchain-linux-gnu \
             --setenv GLIBC "$GLIBC" \
             --setenv GCC15 "$GCC15" \
             --setenv BINUTILS_LFS "$BINUTILS_LFS" \
@@ -3627,6 +3630,65 @@ jobs:
           # `${{ github.run_id }}` makes each save unique; restore by the
           # prefix `sysroot-ARM-GLIBC-KHDR-v2-` to get the most recent.
           key: sysroot-mc-tcc-${{ env.GLIBC }}-${{ env.KHDR }}-v2-${{ github.run_id }}
+
+      # TRIM AND PUBLISH, SO STAGE 5 STOPS DEPENDING ON A MANUAL JOB.
+      #
+      # Until now the trim lived only in sysroot-inventory.yml -- a separate
+      # workflow, dispatched by hand, with the trim behind an opt-in checkbox.
+      # stage5-spike then downloaded that job's artifact. So the link from
+      # stage 4 to stage 5 ran through a 6 GB GitHub Actions CACHE, and
+      # Actions caches are evicted after seven idle days: let a week pass and
+      # there is no path to a trimmed sysroot until the full chain reruns.
+      # Nothing said so anywhere.
+      #
+      # A RELEASE, NOT AN ARTIFACT. Artifacts expire in 30 days and need a
+      # login and knowledge of which run to look in -- so nobody, including
+      # us, could download stage 4 and try it. Release assets are permanent,
+      # public, and the same three files qemu already boots.
+      - name: 'Trim the sysroot and publish it'
+        if: always() && hashFiles('lfs/.chapter5-complete') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          before=$(du -sm lfs | cut -f1)
+          VERON_TRIM=1 TRIM_STRIP_ARCHIVES=0 \
+            /bin/sh spikes/stage4/bridge/sysroot-trim.sh lfs 2>&1 | sed 's/^/    /'
+          after=$(du -sm lfs | cut -f1)
+          echo "  trimmed: ${before} MB -> ${after} MB"
+          mkdir -p rel
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+              --format=gnu -cf rel/sysroot.tar -C lfs .
+          sha256sum rel/sysroot.tar | tee rel/SYSROOT-SHA256
+          for f in Image initramfs.cpio.gz; do
+            [ -s "boot/$f" ] && cp "boot/$f" rel/ || true
+          done
+          [ -s box/out/manifest.tsv ] && cp box/out/manifest.tsv rel/ || true
+          # PROVENANCE IN THE RELEASE, because the tag is moving. Someone who
+          # downloads this a month from now must be able to say which commit
+          # produced it without guessing from the date.
+          {
+            echo "commit   ${GITHUB_SHA}"
+            echo "run      ${GITHUB_RUN_ID}"
+            echo "built    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "sysroot  $(cut -d' ' -f1 rel/SYSROOT-SHA256)"
+          } > rel/PROVENANCE
+          ls -l rel/ | sed 's/^/    /'
+          # ONE MOVING TAG, CLOBBERED. Per-run tags would give a release per
+          # green run and nothing would ever link to them; the commit is
+          # recorded in PROVENANCE and in manifest.tsv, so history is not lost
+          # by having one download URL that always works.
+          gh release create stage4/latest --title 'Veron stage 4' \
+            --notes 'The bootable stage-4 system: trimmed sysroot, kernel and initramfs. See PROVENANCE for the commit.' \
+            2>/dev/null || true
+          if gh release upload stage4/latest rel/* --clobber; then
+            echo "VERON-STAGE4-PUBLISHED  $(cut -d' ' -f1 rel/SYSROOT-SHA256)"
+          else
+            # A FAILED PUBLISH MUST NOT FAIL THE CHAIN. The build is the
+            # result; the release is a convenience, and losing it costs a
+            # re-dispatch rather than an hour.
+            echo "VERON-STAGE4-UNPUBLISHED -- the build stands, the release does not"
+          fi
 
       - name: 'THE APPLET SET: what the chain actually invoked'
         if: always()

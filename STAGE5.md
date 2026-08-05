@@ -413,6 +413,41 @@ two more need patches, that is a pattern wanting a systemic answer rather than
 one patch per package. B5 is also the first time `fetch-git.sh` runs in anger,
 for `libxkbcommon`.
 
+**The system does not know its own name, and the toolchain wears it instead.**
+`gcc -dumpmachine` reports `aarch64-unknown-linux-gnu` — measured, 678
+occurrences in a stage-5 diagnostic bundle and no other triplet — while the
+cross toolchain that built it is `aarch64-veron-linux-gnu`. The scaffolding is
+named for the project and the project is named `unknown`.
+
+The decided end state is `aarch64-toolchain-linux-{gnu,musl}` for the
+scaffolding and **`aarch64-veron-linux-gnu` for the system**, recorded in
+`spikes/stage4/README.md`. It moves every triplet-bearing path in
+`manifest.tsv` and `files.tsv`, so it breaks the run-to-run comparison once,
+deliberately — which is a reason to do it **before** stage 5's install digests
+are pinned harder, and in the same chain rerun as the kernel change.
+
+**The kernel had no DRM, and a probe found it before six recipes were written
+against it.** stage5-spike boots QEMU with `-device virtio-gpu-pci` and the
+guest reports what it can see:
+
+```
+VERON-DRM-ABSENT    no /dev/dri/card0
+drm modules:        (empty)
+VERON-EVDEV-OK      1 event node(s)
+```
+
+arm64 defconfig leaves DRM out of a build that ships only
+`arch/arm64/boot/Image` — no `modules_install`, no `/lib/modules`, no kmod, so
+**a symbol at `=m` is indistinguishable from `=n` here**. wlroots with
+`-Dbackends=drm` would have built green and found no device to open: the same
+shape as `-Dbackends=auto`, one layer down and arriving from the kernel rather
+than the recipe.
+
+`DRM`, `DRM_VIRTIO_GPU`, `INPUT_EVDEV` and `VIRTIO_INPUT` are now set in
+stage4-complete and **verified as `=y`, hard** — `olddefconfig` can silently
+demote a symbol to `=m`, and only a `grep "=y"` tells that from success.
+**This requires a stage 0–4 rerun before wlroots is worth writing.**
+
 **B5.5 — it boots to a login.** Not packages, and the biggest unknown in the
 project: dinit service definitions, the `/etc` skeleton, getty autologin, the
 kernel installed into the image, the EFI stub. The first three now exist as a

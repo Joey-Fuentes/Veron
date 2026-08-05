@@ -2,7 +2,7 @@
 # gate-gcc15.sh -- a compiler that RUNS IN the sysroot, not one that targets it.
 #
 # The distinction the previous revision collapsed: gcc pass 1's compiler runs on
-# the HOST and merely targets LFS_TGT. What the guest needs is one linked
+# the HOST and merely targets VERON_TOOLCHAIN_TGT. What the guest needs is one linked
 # against the sysroot's own glibc. These binaries are ALSO handed to the guest
 # so the same programs can be run again inside QEMU.
 set -u
@@ -19,13 +19,13 @@ say() { printf '%s\n' "$*"; }
 fail=0
 bad() { say "    ^^ FAIL: $*"; fail=1; }
 S=/work/sysroot
-CC="$S/tools/bin/$LFS_TGT-gcc"
+CC="$S/tools/bin/$VERON_TOOLCHAIN_TGT-gcc"
 
 [ -x "$CC" ] || { say "  no $CC -- gcc pass 2 did not install"; exit 1; }
 say "  compiler: $($CC --version 2>&1 | head -1)"
 case "$($CC -dumpmachine 2>/dev/null)" in
-  *"$LFS_TGT"*) say "  cross compiler confirmed: $($CC -dumpmachine)" ;;
-  *)            bad "dumpmachine is $($CC -dumpmachine), not $LFS_TGT" ;;
+  *"$VERON_TOOLCHAIN_TGT"*) say "  cross compiler confirmed: $($CC -dumpmachine)" ;;
+  *)            bad "dumpmachine is $($CC -dumpmachine), not $VERON_TOOLCHAIN_TGT" ;;
 esac
 
 mkdir -p "$S/work/guest"
@@ -47,7 +47,7 @@ say "  --- staging the compiler into the guest tree ---"
 for d in bin libexec lib include; do
   [ -d "$S/tools/$d" ] && cp -a "$S/tools/$d" "$S/work/guest/" 2>/dev/null || true
 done
-[ -x "$S/work/guest/bin/$LFS_TGT-gcc" ] || bad "compiler did not stage into the guest tree"
+[ -x "$S/work/guest/bin/$VERON_TOOLCHAIN_TGT-gcc" ] || bad "compiler did not stage into the guest tree"
 
 [ "$fail" -eq 0 ] || { say ""; say "  GATE FAILED"; exit 1; }
 say ""

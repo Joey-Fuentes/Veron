@@ -1215,7 +1215,7 @@ sed 's/^/    /' "$PFX/bin/cc-static"
 #
 # --host MUST DIFFER FROM --build AS A STRING. If they match, autoconf decides
 # the build is native and runs the tests anyway, which is the failure above.
-# aarch64-veron-linux-musl differs from aarch64-unknown-linux-gnu, and it is
+# aarch64-toolchain-linux-musl differs from aarch64-unknown-linux-gnu, and it is
 # also honest about the libc, which several configure scripts key on.
 #
 # BOTH ANSWERS ARE TRIED, in this order, and the log says which worked:
@@ -1223,8 +1223,15 @@ sed 's/^/    /' "$PFX/bin/cc-static"
 #                           does run here; letting configure measure beats
 #                           letting it guess
 #   2. LFS cross triplets   for anything -static does not save
+# BUILDTRIP IS THE BOX, NOT THE PRODUCT, AND STAYS `unknown` DELIBERATELY.
+# It is what phase A tells configure the BUILD machine is, and phase A's box
+# is a scratch environment with no identity worth asserting. The system's name
+# is set where the system is built -- rung B4 in rungs-sysroot.sh, which
+# configures gcc --build/--host/--target=aarch64-veron-linux-gnu. The paths at
+# $PFX/aarch64-unknown-linux-gnu/ below belong to phase A's own gcc 4.7 and
+# are thrown away with the box.
 BUILDTRIP=aarch64-unknown-linux-gnu
-HOSTTRIP=aarch64-veron-linux-musl
+HOSTTRIP=aarch64-toolchain-linux-musl
 
 # Run configure natively; on the specific "cannot run" failure, retry the LFS
 # way. $1 is a label, the rest are the package's own configure arguments.
@@ -2133,7 +2140,7 @@ ARSHIM
     # nothing ever arranged it deliberately.
     #
     # THIS IS THE HALF OF LFS I SAID WE COULD SKIP. LFS builds its toolchain
-    # with --with-sysroot and a $LFS_TGT directory precisely so the target's
+    # with --with-sysroot and a $VERON_TOOLCHAIN_TGT directory precisely so the target's
     # tools and headers sit where gcc expects them. I argued the box IS the
     # target so the layout did not matter. It matters: gcc asks for the target
     # tooldir by construction, whether or not the target is the same machine.
@@ -3258,7 +3265,7 @@ if stop_here 10; then
   say ""
   say "  === stopping after rung $STOP_AFTER, as asked ==="
 else
-head1 "RUNG 10 -- LFS 5.2: binutils pass 1, cross to \$LFS_TGT"
+head1 "RUNG 10 -- LFS 5.2: binutils pass 1, cross to \$VERON_TOOLCHAIN_TGT"
 # FROM HERE THE ORDER IS LFS's AND IT IS NOT NEGOTIABLE.
 #
 #   5.2 binutils pass 1   5.3 gcc pass 1   5.4 linux headers
@@ -3268,7 +3275,7 @@ head1 "RUNG 10 -- LFS 5.2: binutils pass 1, cross to \$LFS_TGT"
 # runs exactly this with gcc 10 as the host compiler (CHAIN_CC=out10/bin/gcc),
 # which is the compiler rung 9 just produced.
 #
-# LFS_TGT IS DELIBERATELY NOT THE HOST TRIPLE. That is the book's device: a
+# VERON_TOOLCHAIN_TGT IS DELIBERATELY NOT THE HOST TRIPLE. That is the book's device: a
 # toolchain targeting aarch64-veron-linux-gnu cannot silently reach anything
 # built for aarch64-unknown-linux-gnu, so a leak from the old sysroot becomes a
 # link error instead of a subtly wrong binary. It also settles a question left
@@ -3278,7 +3285,7 @@ head1 "RUNG 10 -- LFS 5.2: binutils pass 1, cross to \$LFS_TGT"
 # THIS IS WHERE musl LEAVES THE CHAIN. Chapter 5 builds glibc into $S, and
 # everything above is glibc. musl carried the stretch where nothing else could
 # be built, which is what spikes/livebootstrap/ORDER.md argues it is for.
-LFS_TGT=aarch64-veron-linux-gnu
+VERON_TOOLCHAIN_TGT=aarch64-toolchain-linux-gnu
 S=/work/lfs
 
 # THE SYSROOT HAS TO BE SHAPED LIKE A ROOT, AND NOTHING HERE WAS DOING IT.
@@ -3420,7 +3427,7 @@ if [ "$R9" = ok ]; then
   export PATH="$S/tools/bin:$PATH"
   mkdir -p "$S/tools"
   say "    chapter 5 compiler: $("$CHAIN_CC" --version 2>&1 | head -1)"
-  say "    LFS_TGT: $LFS_TGT   sysroot: $S"
+  say "    VERON_TOOLCHAIN_TGT: $VERON_TOOLCHAIN_TGT   sysroot: $S"
 
   cd /work/src
   # BINUTILS_LFS, NOT the 2.30 rung 4 built. 2.30 is pinned by tcc's ceiling
@@ -3454,14 +3461,14 @@ if [ "$R9" = ok ]; then
     # unwinder can find FDEs quickly, and there is no loader in this box.
     #
     # THE REAL FIX IS UPWARD. Chapter 5 is building a NEW binutils; once
-    # $LFS_TGT-ld exists, everything above uses it and this stops mattering.
+    # $VERON_TOOLCHAIN_TGT-ld exists, everything above uses it and this stops mattering.
     # This flag only has to carry the one link that produces that ld.
     "/work/src/$_bu/configure" \
       CC="$PFX/bin/chain-cc -static" CXX="$CHAIN_CXX -static -Wl,--no-eh-frame-hdr" \
       LDFLAGS="-static -Wl,--no-eh-frame-hdr" \
       --prefix="$S/tools" \
       --with-sysroot="$S" \
-      --target="$LFS_TGT" \
+      --target="$VERON_TOOLCHAIN_TGT" \
       --disable-nls --enable-gprofng=no --disable-werror \
       --enable-deterministic-archives \
       --enable-new-dtags --enable-default-hash-style=gnu \
@@ -3476,15 +3483,15 @@ if [ "$R9" = ok ]; then
     # pages. Worth naming so the next reader does not chase perl: it is a real
     # missing tool, and it is not what stopped this rung.
     elif timeout 3600 make -j"$NP" MAKEINFO=true > b.log 2>&1 && make install > i.log 2>&1; then
-      if [ -x "$S/tools/bin/$LFS_TGT-ld" ]; then
+      if [ -x "$S/tools/bin/$VERON_TOOLCHAIN_TGT-ld" ]; then
         R10=ok
-        say "    $LFS_TGT-ld, -as, -ar installed:"
+        say "    $VERON_TOOLCHAIN_TGT-ld, -as, -ar installed:"
         for b in ld as ar ranlib; do
-          printf '      %-28s %s\n' "$LFS_TGT-$b" \
-            "$( [ -x "$S/tools/bin/$LFS_TGT-$b" ] && echo present || echo missing )"
+          printf '      %-28s %s\n' "$VERON_TOOLCHAIN_TGT-$b" \
+            "$( [ -x "$S/tools/bin/$VERON_TOOLCHAIN_TGT-$b" ] && echo present || echo missing )"
         done
       else
-        R10=FAIL; say "    installed no $LFS_TGT-ld"
+        R10=FAIL; say "    installed no $VERON_TOOLCHAIN_TGT-ld"
         tail -12 i.log 2>/dev/null | sed 's/^/      /'
       fi
     else
@@ -3550,12 +3557,12 @@ if [ "$R10" = ok ]; then
     rm -rf /work/b-gcc1 && mkdir -p /work/b-gcc1 && cd /work/b-gcc1
     say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: gcc 15 pass 1 configure"
     # SAME FLAG AS RUNG 10, SAME REASON. gcc 15's own binaries are linked by
-    # the tcc-built ld too -- $LFS_TGT-ld exists now but is the CROSS linker
+    # the tcc-built ld too -- $VERON_TOOLCHAIN_TGT-ld exists now but is the CROSS linker
     # and is not what links the compiler itself.
     "/work/src/$g15/configure" \
       CC="$PFX/bin/chain-cc -static" CXX="$CHAIN_CXX -static -Wl,--no-eh-frame-hdr" \
       LDFLAGS="-static -Wl,--no-eh-frame-hdr" \
-      --target="$LFS_TGT" \
+      --target="$VERON_TOOLCHAIN_TGT" \
       --prefix="$S/tools" \
       --with-glibc-version="$GLIBC" \
       --with-sysroot="$S" \
@@ -3580,19 +3587,19 @@ if [ "$R10" = ok ]; then
       # which names a macro rather than the include chain that lost it.
       # Concatenating the three fragments produces the full header, which
       # #include_next's through to glibc's once 5.5 has built one.
-      LIMH=$(dirname "$("$LFS_TGT-gcc" -print-libgcc-file-name 2>/dev/null)")
+      LIMH=$(dirname "$("$VERON_TOOLCHAIN_TGT-gcc" -print-libgcc-file-name 2>/dev/null)")
       for d in include include-fixed; do
         [ -d "$LIMH/$d" ] || continue
         cat "/work/src/$g15/gcc/limitx.h" "/work/src/$g15/gcc/glimits.h" \
             "/work/src/$g15/gcc/limity.h" > "$LIMH/$d/limits.h"
         say "    full limits.h written to $d/ ($(wc -l < "$LIMH/$d/limits.h") lines)"
       done
-      if [ -x "$S/tools/bin/$LFS_TGT-gcc" ]; then
+      if [ -x "$S/tools/bin/$VERON_TOOLCHAIN_TGT-gcc" ]; then
         R11=ok
-        "$S/tools/bin/$LFS_TGT-gcc" --version 2>&1 | head -1 | sed 's/^/      /'
-        "$S/tools/bin/$LFS_TGT-gcc" -dumpmachine 2>&1 | sed 's/^/      targets: /'
+        "$S/tools/bin/$VERON_TOOLCHAIN_TGT-gcc" --version 2>&1 | head -1 | sed 's/^/      /'
+        "$S/tools/bin/$VERON_TOOLCHAIN_TGT-gcc" -dumpmachine 2>&1 | sed 's/^/      targets: /'
       else
-        R11=FAIL; say "    no $LFS_TGT-gcc installed"
+        R11=FAIL; say "    no $VERON_TOOLCHAIN_TGT-gcc installed"
       fi
     else
       R11=FAIL; say "    --- errors ---"
@@ -3876,7 +3883,7 @@ COMMC
     # AND THE MESSAGE IS ACTIVELY MISLEADING. Configure concludes "You need to
     # find a working C compiler" from one failed link, when gcc 10 had just
     # built two compilers and a binutils. The compiler is fine; its linker is
-    # not, on this one section, and only until $LFS_TGT-ld takes over.
+    # not, on this one section, and only until $VERON_TOOLCHAIN_TGT-ld takes over.
     # -O0 DID NOT FIX IT, AND THAT IS THE USEFUL RESULT.
     #
     # The compiles came out as
@@ -4552,7 +4559,7 @@ if [ "$R117" = ok ]; then
       say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: glibc configure"
       "/work/src/$_gl/configure" \
         --prefix=/usr \
-        --host="$LFS_TGT" \
+        --host="$VERON_TOOLCHAIN_TGT" \
         --build="$(/work/src/$_gl/scripts/config.guess)" \
         --enable-kernel="$ENABLE_KERNEL" \
         --with-headers="$S/usr/include" \
@@ -4604,10 +4611,10 @@ if [ "$R13" = ok ]; then
   rm -rf /work/b-libstdcxx && mkdir -p /work/b-libstdcxx && cd /work/b-libstdcxx
   say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: libstdc++ configure"
   "/work/src/$g15/libstdc++-v3/configure" \
-    --host="$LFS_TGT" --build="$(/work/src/$g15/config.guess)" \
+    --host="$VERON_TOOLCHAIN_TGT" --build="$(/work/src/$g15/config.guess)" \
     --prefix=/usr --disable-multilib --disable-nls \
     --disable-libstdcxx-pch \
-    --with-gxx-include-dir="/tools/$LFS_TGT/include/c++/$GCC15" \
+    --with-gxx-include-dir="/tools/$VERON_TOOLCHAIN_TGT/include/c++/$GCC15" \
     > cfg.log 2>&1
   _r14=$?
   say "END JOE: JUST COMPLETED EXECUTING THE COMMAND  (rc=$_r14)"
@@ -4644,7 +4651,7 @@ head1 "RUNG 15 -- LFS chapter 6: busybox, in place of seventeen packages"
 # coreutils, and tcc-userland-arm64 already proved it builds and boots.
 #
 # This box has been driven by the HOST's busybox since rung 0. The one built
-# here is different: it goes in the SYSROOT, cross-compiled by $LFS_TGT-gcc,
+# here is different: it goes in the SYSROOT, cross-compiled by $VERON_TOOLCHAIN_TGT-gcc,
 # and it is what the booted kernel runs. Building it also means the box could
 # stop borrowing the host's -- BUDGET_DRIVER reaching empty is a later rung,
 # but this is the piece that makes it possible.
@@ -4662,7 +4669,7 @@ head1 "RUNG 15 -- LFS chapter 6: busybox, in place of seventeen packages"
 #   that is silently ignored looks exactly like a flag that did not help.
 # THIS BUSYBOX IS A CHAPTER 6 PACKAGE, AND IT IS NOT THE ONE THAT SHIPS.
 #
-# It is CROSS-compiled by $LFS_TGT-gcc -- gcc 15 pass 1 -- and installed into
+# It is CROSS-compiled by $VERON_TOOLCHAIN_TGT-gcc -- gcc 15 pass 1 -- and installed into
 # the sysroot, and it is never executed on this side. That is exactly what LFS
 # chapter 6 is: "Those utilities are installed into their final location, but
 # cannot be used yet ... Using the utilities will be possible in the next
@@ -4688,7 +4695,7 @@ if [ "$R14" = ok ]; then
   else
     _bb=$(onedir 'busybox-* ./busybox-*')
     cd "/work/src/$_bb"
-    _BBMAKE="make ARCH=arm64 CROSS_COMPILE=$LFS_TGT- HOSTCC=$PFX/bin/chain-cc"
+    _BBMAKE="make ARCH=arm64 CROSS_COMPILE=$VERON_TOOLCHAIN_TGT- HOSTCC=$PFX/bin/chain-cc"
     $_BBMAKE defconfig > /dev/null 2>&1
     yes '' | $_BBMAKE oldconfig > /dev/null 2>&1
     # CONFIG_SSL_CLIENT is the applet that drags in networking/tls*.c, which
@@ -4895,9 +4902,9 @@ if [ "$R14" = ok ]; then
         say "    applets: $(./busybox --list 2>/dev/null | wc -l)"
         # THE BINARY ITSELF, not a grep for a substring. A static ELF has no
         # PT_INTERP program header; readelf says so exactly.
-        if "$S/tools/bin/$LFS_TGT-readelf" -l busybox 2>/dev/null | grep -q "interpreter"; then
+        if "$S/tools/bin/$VERON_TOOLCHAIN_TGT-readelf" -l busybox 2>/dev/null | grep -q "interpreter"; then
           say "    static:  NO -- this busybox needs a dynamic loader"
-          "$S/tools/bin/$LFS_TGT-readelf" -l busybox 2>/dev/null \
+          "$S/tools/bin/$VERON_TOOLCHAIN_TGT-readelf" -l busybox 2>/dev/null \
             | grep -A1 "interpreter" | head -2 | sed 's/^/      /'
           R15=FAIL
         else
@@ -4926,10 +4933,10 @@ head1 "RUNG 16 -- LFS 6.x: binutils pass 2 and gcc pass 2"
 # --without-headers stub in place.
 if [ "$R14" = ok ]; then
   # BOTH HALVES MUST EXIST BEFORE ANY configure ASKS FOR THEM. gcc 15 pass 1
-  # was built --enable-languages=c,c++, so $LFS_TGT-g++ should be there; a
+  # was built --enable-languages=c,c++, so $VERON_TOOLCHAIN_TGT-g++ should be there; a
   # missing one would otherwise surface as configure's "no C++14 compiler",
   # which is the message that sent this rung looking in the wrong place twice.
-  for _c in "$LFS_TGT-gcc" "$LFS_TGT-g++"; do
+  for _c in "$VERON_TOOLCHAIN_TGT-gcc" "$VERON_TOOLCHAIN_TGT-g++"; do
     if command -v "$_c" > /dev/null 2>&1; then
       printf '    %-28s %s\n' "$_c" "$("$_c" --version 2>&1 | head -1)"
     else
@@ -4961,7 +4968,7 @@ if [ "$R14" = ok ]; then
     say "    rather than letting three configures fail on the same cause."
     R16=FAIL
   else
-    say "    build triple: $_BUILD_TRIPLE   host: $LFS_TGT"
+    say "    build triple: $_BUILD_TRIPLE   host: $VERON_TOOLCHAIN_TGT"
   fi
   # make INTO THE SYSROOT FIRST, BECAUSE EVERYTHING BELOW NEEDS ONE.
   #
@@ -4970,7 +4977,7 @@ if [ "$R14" = ok ]; then
   # rungs 17 and 18 run `make` inside it -- the kernel build is nothing but
   # make. busybox has no make applet and never has.
   #
-  # Cross-built like everything else here: --host=$LFS_TGT so it runs in the
+  # Cross-built like everything else here: --host=$VERON_TOOLCHAIN_TGT so it runs in the
   # sysroot, --build from config.guess so configure knows it is cross.
   if [ "$R16" != FAIL ]; then
     # ITS OWN EXTRACTION DIRECTORY. Rung 4.5 already built make 4.4 IN TREE
@@ -4991,7 +4998,7 @@ if [ "$R14" = ok ]; then
       _mk=$(cd /work/src/make-p2 && onedir "make-$MAKE_ALT ./make-$MAKE_ALT")
       rm -rf /work/b-make2 && mkdir -p /work/b-make2 && cd /work/b-make2
       if "/work/src/make-p2/$_mk/configure" --prefix=/usr \
-           --host="$LFS_TGT" \
+           --host="$VERON_TOOLCHAIN_TGT" \
            --build="$_BUILD_TRIPLE" \
            CC_FOR_BUILD="$PFX/bin/chain-cc -static" \
            --disable-nls > c.log 2>&1 \
@@ -5012,7 +5019,7 @@ if [ "$R14" = ok ]; then
   #
   # configure needs two compilers for a cross build: one for --host (the
   # programs being built) and one for --build (the little test programs and
-  # generators it runs during the build). It finds $LFS_TGT-gcc for the host
+  # generators it runs during the build). It finds $VERON_TOOLCHAIN_TGT-gcc for the host
   # side on its own, because $S/tools/bin is on PATH -- and falls back to bare
   # `gcc`/`g++` for the build side, which in this box is gcc 4.7.4 from rung 6:
   #
@@ -5034,7 +5041,7 @@ if [ "$R14" = ok ]; then
   # so this removes the module that failed rather than repairing a fault
   # anyone has read. whyfail() exists so the next one is legible.
   #
-  # A PREVIOUS REVISION SET CC_FOR_BUILD=$LFS_TGT-gcc AND THAT CANNOT WORK.
+  # A PREVIOUS REVISION SET CC_FOR_BUILD=$VERON_TOOLCHAIN_TGT-gcc AND THAT CANNOT WORK.
   # Pass 1 was configured --with-sysroot=$S, so what it emits is glibc-linked
   # against the sysroot and carries /lib/ld-linux-aarch64.so.1 as its
   # interpreter. Build-side programs are generators -- genmodes, gengtype,
@@ -5055,7 +5062,7 @@ if [ "$R14" = ok ]; then
   #
   # THIS DOES NOT TAINT THE OUTPUT. Build-side generators emit source and
   # tables consumed by the host-side compile; none of them ends up in an
-  # artifact, and the host side is $LFS_TGT-gcc throughout. LFS uses the HOST
+  # artifact, and the host side is $VERON_TOOLCHAIN_TGT-gcc throughout. LFS uses the HOST
   # DISTRO's gcc for this same role -- Ubuntu's 13, entirely outside the chain
   # -- so using gcc 10 from our own ladder is strictly stricter than the book.
   # THE BUILD DIRECTORY, RE-ENTERED, AND THIS IS A FIX RATHER THAN A FLOURISH.
@@ -5086,7 +5093,7 @@ if [ "$R14" = ok ] && [ "$R16" != FAIL ]; then
   "/work/src/$_bu/configure" \
     --prefix=/usr \
     --build="$_BUILD_TRIPLE" \
-    --host="$LFS_TGT" \
+    --host="$VERON_TOOLCHAIN_TGT" \
     CC_FOR_BUILD="$PFX/bin/chain-cc -static" \
     CXX_FOR_BUILD="$CHAIN_CXX -static -Wl,--no-eh-frame-hdr" \
     --disable-nls --enable-shared --enable-gprofng=no \
@@ -5107,11 +5114,11 @@ if [ "$R14" = ok ] && [ "$R16" != FAIL ]; then
     say "START JOE: THIS IS THE COMMAND IM ABOUT TO DO: gcc pass 2 configure"
     "/work/src/$g15/configure" \
       --build="$_BUILD_TRIPLE" \
-      --host="$LFS_TGT" \
-      --target="$LFS_TGT" \
+      --host="$VERON_TOOLCHAIN_TGT" \
+      --target="$VERON_TOOLCHAIN_TGT" \
       CC_FOR_BUILD="$PFX/bin/chain-cc -static" \
       CXX_FOR_BUILD="$CHAIN_CXX -static -Wl,--no-eh-frame-hdr" \
-      LDFLAGS_FOR_TARGET="-L$PWD/$LFS_TGT/libgcc" \
+      LDFLAGS_FOR_TARGET="-L$PWD/$VERON_TOOLCHAIN_TGT/libgcc" \
       --prefix=/usr \
       --with-build-sysroot="$S" \
       --enable-default-pie --enable-default-ssp \
@@ -5220,7 +5227,7 @@ if [ "$R14" = ok ] && [ "$R16" != FAIL ]; then
       elif [ "$_didnt" -gt 0 ]; then
         say ""
         say "    --- why they do not run HERE, which is the point ---"
-        "$S/tools/bin/$LFS_TGT-readelf" -l "$S/usr/bin/gcc" 2>/dev/null \
+        "$S/tools/bin/$VERON_TOOLCHAIN_TGT-readelf" -l "$S/usr/bin/gcc" 2>/dev/null \
           | grep -A1 -i "interpreter" | head -4 | sed 's/^/      /'
         say "      box /lib holds: $(ls /lib 2>/dev/null | tr '\n' ' ')"
         say ""
@@ -5235,7 +5242,7 @@ if [ "$R14" = ok ] && [ "$R16" != FAIL ]; then
         say "    ALL FOUR RAN IN THE BOX, WHICH IS SUSPICIOUS RATHER THAN GOOD."
         say "    Chapter 6 output should be glibc-dynamic against $S. If it"
         say "    runs here it was linked statically or against the box's musl,"
-        say "    which would mean --host=$LFS_TGT did not take and phase B"
+        say "    which would mean --host=$VERON_TOOLCHAIN_TGT did not take and phase B"
         say "    would be testing the wrong binaries."
       fi
     else
@@ -5326,7 +5333,7 @@ elif [ "$R14" = ok ]; then
   say "    from a seed-adjacent tcc. Chapter 6 is next: busybox in place of"
   say "    its seventeen packages, then binutils and gcc pass 2."
 elif [ "$R11" = ok ]; then
-  say "    REACHED LFS 5.3 -- a cross gcc 15 targeting $LFS_TGT."
+  say "    REACHED LFS 5.3 -- a cross gcc 15 targeting $VERON_TOOLCHAIN_TGT."
   say "    5.4 linux headers, then 5.5 glibc, are next."
 elif [ "$R9" = ok ]; then
   say "    REACHED gcc 10.2.0, built by a g++ descended from tcc."

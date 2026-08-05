@@ -115,7 +115,7 @@ emit "  Two installs of the SAME gcc 15.2.0. The cross triplet is scaffolding:"
 emit "  its job is recorded in the ledger, so it does not need to survive. It is"
 emit "  also a DETECTION HAZARD -- a triplet-prefixed gcc on the path is how a"
 emit "  configure script silently decides it is cross-compiling."
-for t in aarch64-unknown-linux-gnu aarch64-veron-linux-gnu; do
+for t in aarch64-veron-linux-gnu aarch64-toolchain-linux-gnu aarch64-unknown-linux-gnu; do
     sz=$(awk -F'\t' -v t="$t" '$2 ~ t {s+=$1; c++} END{printf "%s %s", s+0, c+0}' "$TMP.rows")
     b=$(echo "$sz" | cut -d' ' -f1); c=$(echo "$sz" | cut -d' ' -f2)
     printf '    %-32s %-12s %6s files\n' "$t" "$(human "$b")" "$c" | tee -a "$OUT"

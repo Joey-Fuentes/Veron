@@ -338,9 +338,90 @@ Veron's lower half is live-bootstrap-shaped and its upper half is LFS-shaped.
 provenance; above it, isolation.
 
 The isolation is **not static linking** — three runs were lost to that before
-the book was read properly. It is a triplet the host does not have
-(`aarch64-veron-linux-gnu`), `--with-sysroot`, and a libc cross-compiled into
-the sysroot so the tools find their loader inside it.
+the book was read properly. It is a triplet the host does not have,
+`--with-sysroot`, and a libc cross-compiled into the sysroot so the tools find
+their loader inside it.
+
+## The triplets, and which one the system wears
+
+**DECIDED, NOT YET IMPLEMENTED.** The names below are what the chain should
+produce; what it produces today is at the bottom of this section. Nothing in
+this repository recorded the intent before now, which is why the current state
+drifted into being backwards without anyone noticing.
+
+| role | triplet |
+|---|---|
+| the cross toolchain that builds the system | `aarch64-toolchain-linux-gnu` |
+| the string that forces autoconf into cross mode | `aarch64-toolchain-linux-musl` |
+| **the system itself** | **`aarch64-veron-linux-gnu`** |
+
+**The scaffolding must be visibly scaffolding.** A cross toolchain exists to be
+thrown away — it is the thing LFS chapter 5 builds and chapter 8 replaces. It
+should not wear the project's name, because a compiler in `/tools` called
+`aarch64-veron-linux-gnu-gcc` reads as *the* Veron compiler and is precisely
+the one that is not.
+
+**The system must say what it is.** `gcc -dumpmachine` on the built system is
+the shortest answer to "what am I running", and it is currently
+`aarch64-unknown-linux-gnu` — a system that does not know its own name. Every
+path under `/usr/lib/gcc/<triplet>/`, `/usr/include/c++/<version>/<triplet>/`
+and `/usr/lib/<triplet>/` carries the same string, so this is not cosmetic: it
+is several hundred paths in `manifest.tsv` and in stage 5's `files.tsv`.
+
+**`-musl` on the middle one is not decoration either.** Its whole job is to
+differ from `--build` as a *string*, because autoconf decides a build is native
+by string comparison and then runs target binaries it cannot run. The libc
+suffix has to be truthful for the configure scripts that key on it, so this
+name is only correct while the half it configures is musl — see the open
+question below.
+
+### What the chain does today
+
+| variable | value | where |
+|---|---|---|
+| `LFS_TGT` | `aarch64-veron-linux-gnu` | the hermetic boxes' cross toolchain |
+| `HOSTTRIP` | `aarch64-veron-linux-musl` | phase B's autoconf cross trick |
+| `BUILDTRIP` | `aarch64-unknown-linux-gnu` | phase B's `--build` |
+| the built system | `aarch64-unknown-linux-gnu` | measured: 678 occurrences in a stage-5 diagnostic bundle, and no other triplet |
+
+So **`veron` names the scaffolding twice and the system not at all.** The
+native path wins for most of phase B — `cfg_try` attempts native-plus-`-static`
+first — which is why `HOSTTRIP` does not appear in the output despite being
+passed on every `configure` line.
+
+### What the rename costs
+
+Every triplet-bearing path moves, so the run-to-run manifest comparison breaks
+**once, deliberately**. That is an argument for doing it before stage 5's
+install digests are pinned harder, not after — and for doing it in the same
+chain rerun as the kernel's DRM symbols, since neither is worth a full rebuild
+alone.
+
+### Which half is which, since the `-musl` looked wrong and is not
+
+`HOSTTRIP`'s comment says `-musl` is *"honest about the libc, which several
+configure scripts key on"*, and `policy/defaults.toml` records
+`flavor = "glibc"` — which reads like a contradiction. It is not:
+
+- **`HOSTTRIP` lives in `rungs.sh`, and `rungs.sh` is PHASE A.** Phase A is the
+  musl half — it hand-builds musl and carries the chain to gcc 15.
+- **Phase B runs `rungs-sysroot.sh`, which never mentions `HOSTTRIP`** — zero
+  occurrences — and is the glibc half.
+
+So the `-musl` is truthful about the half that uses it, and `flavor = "glibc"`
+is truthful about the system that comes out. Two different halves, two correct
+statements, and the appearance of conflict came from reading one variable
+without checking which script owns it.
+
+`aarch64-toolchain-linux-musl` is therefore the right name for it: it keeps the
+libc truthful for the configure scripts that key on it, and stops the vendor
+field claiming the scaffolding is Veron.
+
+**And it never reaches the output.** A full-chain log contains 22 occurrences
+of `aarch64-veron-linux-gnu`, 13 of `aarch64-unknown-linux-gnu`, and **none of
+`aarch64-veron-linux-musl`** — because `cfg_try` attempts native-plus-`-static`
+first and that path wins for everything phase A builds. The triplet exists for
+the fallback, which is exactly when a package cannot be measured natively.
 
 ## The ladder, and the box that owns each rung
 

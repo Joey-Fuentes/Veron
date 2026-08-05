@@ -71,5 +71,17 @@ run  = [["make", "install", "PREFIX=/usr", "CC=gcc"]]
 env  = { DESTDIR = "$D" }
 
 [guest]
+# 251, NOT THE PACKAGE VERSION AND NOT A GUESS. libudev.pc reports the
+# systemd libudev API version it emulates -- Makefile:46 substitutes
+# @VERSION@ with a literal 251 -- and consumers version-check against that,
+# not against libudev-zero's own 1.0.3.
+#
+# The 243 that was here before came from neither: I wrote a plausible systemd
+# version without opening the Makefile, and the booted image said so:
+#
+#   FAIL  libudev-zero: got [251], want [243]
+#
+# Same as this package's licence, which I recorded as MIT when the LICENSE
+# file, the Makefile header and every SPDX tag say ISC.
 test   = [["/usr/bin/pkgconf", "--modversion", "libudev"]]
-expect = ["243"]
+expect = ["251"]

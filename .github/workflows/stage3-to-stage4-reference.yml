@@ -176,7 +176,7 @@ env:
   # stays an overlap.
   GCC10: '10.2.0'
   # CHAPTER 5 IS A DIFFERENT TOOLCHAIN. gcc 15 and a modern binutils, cross to
-  # LFS_TGT, against a glibc sysroot -- stage 4's versions so the overlap holds.
+  # VERON_TOOLCHAIN_TGT, against a glibc sysroot -- stage 4's versions so the overlap holds.
   # BINUTILS above is 2.30 because tcc has a ceiling; nothing here is built by
   # tcc, so chapter 5 uses 2.46 as stage 4 does.
   GCC15: '15.2.0'
@@ -1229,7 +1229,7 @@ jobs:
             --setenv TERM dumb \
             --setenv SOURCE_DATE_EPOCH 0 \
             --setenv ARM reference \
-            --setenv LFS_TGT aarch64-veron-linux-gnu \
+            --setenv VERON_TOOLCHAIN_TGT aarch64-veron-linux-gnu \
             --setenv GLIBC "$GLIBC" \
             --setenv GCC15 "$GCC15" \
             --setenv BINUTILS_LFS "$BINUTILS_LFS" \
