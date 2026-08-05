@@ -37,6 +37,11 @@ on:
         type: boolean
         required: false
         default: false
+      seed_installs:
+        description: 'seed_installs -- write [installs] blocks and installs.txt from this build, and upload them'
+        type: boolean
+        required: false
+        default: false
       selfrebuild:
         description: 'Rebuild the packages INSIDE the guest (slow: ~12 min for two)'
         type: boolean
@@ -347,6 +352,43 @@ jobs:
             --notes 'build checkpoint -- a CACHE, not evidence' || true
           gh release upload "ckpt/$KEY" dest.tar.zst --clobber
           rm -f dest.tar.zst
+
+      # SEED [installs] FROM A BUILD THAT PASSED, AND UPLOAD IT.
+      #
+      # The digest is only worth pinning if it came from a build that is
+      # known good, and the listing can only be computed where dest/ exists --
+      # on the runner, which is then destroyed. Without this step a run
+      # computes all 48 and throws them away.
+      #
+      # It runs AFTER the linked and installs checks deliberately: seeding
+      # from a build whose own gates have not run yet would pin whatever
+      # happened, which is how a cache becomes evidence.
+      - name: 'Seed [installs] from this build'
+        if: ${{ inputs.seed_installs }}
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 tools/veron --dest dest installs --propose --write \
+            | tee out/installs-propose.txt
+          # PLAN.txt CARRIES recipe-sha PER PACKAGE, so writing a block into
+          # every recipe moves 48 of them. Regenerating here means the
+          # artifact is a drop-in rather than something that fails plan-check
+          # the moment it lands.
+          python3 tools/veron plan --write
+          python3 tools/veron selftest
+          echo "  $(ls packages/*/installs.txt | wc -l) listing(s) written"
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.seed_installs }}
+        with:
+          name: veron-stage5-installs-${{ github.run_id }}
+          path: |
+            spikes/stage5/packages/*/installs.txt
+            spikes/stage5/packages/*/recipe.toml
+            spikes/stage5/PLAN.txt
+            spikes/stage5/out/installs-propose.txt
+          if-no-files-found: error
+          retention-days: 30
 
       - name: 'VERON-MANIFEST-OK'
         run: cd spikes/stage5 && python3 tools/veron manifest

@@ -2032,7 +2032,28 @@ def cmd_installs(a):
             listing = os.path.join(recipes[pkg]["_dir"], "installs.txt")
             with open(listing, "w") as f:
                 f.write("\n".join(lines) + ("\n" if lines else ""))
-            print(f"# wrote {listing} ({len(lines)} paths)\n")
+            print(f"# wrote {listing} ({len(lines)} paths)")
+            if a.write:
+                # WRITTEN IN, NOT PASTED IN. Forty-eight blocks transcribed by
+                # hand is forty-eight chances to put the right digest under the
+                # wrong package -- and the whole value of the digest is that it
+                # is the one this build measured. The recipe is the only place
+                # it can be edited by hand afterwards, and git diff is the
+                # review.
+                block = (f"[installs]\nprefixes = [{lst}]\n"
+                         f"files    = {len(lines)}\n"
+                         f'digest   = "{digest}"\n')
+                rp = os.path.join(recipes[pkg]["_dir"], "recipe.toml")
+                t = open(rp).read()
+                m = re.search(r"^\[installs\]\n(?:(?!^\[).*\n)*", t, re.M)
+                if m:
+                    t = t[:m.start()] + block + t[m.end():]
+                else:
+                    i = t.index("\n[[steps]]")
+                    t = t[:i] + "\n" + block + t[i:]
+                open(rp, "w").write(t)
+                print(f"# wrote {rp}")
+            print()
             continue
         if declared is None:
             missing.append(pkg)
@@ -3314,6 +3335,8 @@ def build_parser():
                        help="what each package installs, against what it declares")
     p.add_argument("--propose", action="store_true",
                    help="emit [installs] blocks from a real build")
+    p.add_argument("--write", action="store_true",
+                   help="with --propose, also write the block into each recipe")
     p.add_argument("--mode", choices=["warn", "fail"], default="warn")
     p.set_defaults(fn=cmd_installs)
 
