@@ -681,3 +681,55 @@ because writing 48 of these from memory is how they end up wrong.
 The count of **unchecked** packages is printed alongside the count of
 problems: a zero over an unchecked set is the reassuring number this project
 keeps catching.
+
+
+---
+
+## The isolate spike
+
+**`stage5-isolate.yml` — can each package build from its declared dependencies
+alone?**
+
+Each package gets the stage-4 sysroot plus the DESTDIRs of the packages it
+**declares**, stacked as bubblewrap `--overlay-src` layers, and nothing else.
+An undeclared dependency stops being a *finding* and becomes a build failure
+that names itself.
+
+**Direct dependencies, not the closure.** glib sees pcre2 because it declares
+pcre2; it does not see zlib because pcre2 happened to be built after zlib.
+That is the strict reading and it is the one that finds things — a failure
+that turns out to be *"we should have declared this"* is the finding, not
+noise.
+
+**It keeps going and it is never a gate.** The main spike stops at the first
+failure because its job is a working image. This one's deliverable is the
+*list* of packages that cannot build in isolation and why, so it exits 0 with
+a report.
+
+**It builds our own bubblewrap rather than taking apt's.** bubblewrap 0.11.0
+is already pinned and mirrored here with two routes, and the entire result
+depends on whether `--overlay-src` exists — which is a property of the
+*version*. Taking the runner's binary would make the answer depend on what
+Ubuntu happened to ship. The job fetches it through the same mirror every
+other source comes through, builds it, and **checks that `--overlay-src` is
+present** rather than assuming.
+
+What remains from apt is bubblewrap's own build surface — meson, ninja,
+libcap headers, pkg-config — which is smaller and more declarable than an
+opaque binary, and stated rather than implied.
+
+**Overlay rather than copying** means nothing is duplicated and no build can
+mutate the shared sysroot even by accident: `stage_into`'s whole mutation
+model is absent here rather than merely unused.
+
+**What it cannot isolate**, so the result is not over-read: the stage-4
+sysroot is in every root, so bison, gcc, perl and m4 stay reachable by
+everything. This tightens stage 5 against itself, not against its base — which
+is exactly what `[undeclarable]` exists to record.
+
+**Untested locally.** There is no bwrap in the environment these recipes are
+written in, so the layer stack was verified by inspecting the composed argv
+(sysroot plus glib's seven declared deps, nothing else) and the overlay
+mechanics are the first run's experiment. Unprivileged overlayfs is a kernel
+property; the job prints `uname -r` so a failure there is attributable rather
+than looking like a bubblewrap bug.

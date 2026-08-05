@@ -1775,6 +1775,130 @@ def cmd_installs(a):
     return 1 if (problems and a.mode == "fail") else 0
 
 
+def cmd_isolate(a):
+    """Build each package in a root composed of ONLY its declared dependencies.
+
+    THE QUESTION THIS ANSWERS. `stage_into` copies every package into one
+    shared root, so by the time glib builds, all thirty-odd predecessors are
+    visible to it. `deps.build` therefore ORDERS the build correctly and
+    proves nothing about what a package can reach -- which is why an
+    undeclared dependency is currently detectable (probe, reconcile,
+    DT_NEEDED) but never impossible.
+
+    Here each package gets: the stage-4 sysroot, plus the DESTDIRs of the
+    packages it DECLARES, and nothing else. An undeclared dependency stops
+    being a finding and becomes a build failure that names itself.
+
+    OVERLAY, NOT COPYING, AND OUR OWN bwrap. The layers are stacked with
+    bubblewrap's --overlay-src, so nothing is copied and no build can mutate
+    the shared sysroot even by accident -- which also means stage_into's whole
+    mutation model is absent here rather than merely unused.
+    bubblewrap 0.11.0 is already pinned and mirrored in this repository with
+    two routes, and the airlock builds it: the alternative was apt's binary,
+    whose version decides whether --overlay-src exists at all. A spike whose
+    result depends on what the runner happened to ship is a spike about the
+    runner.
+
+    DIRECT DEPENDENCIES, NOT THE CLOSURE. glib sees pcre2 because it declares
+    pcre2; it does not see zlib because pcre2 was built after zlib. That is
+    the strict reading and it is the one that finds things -- a failure that
+    turns out to be "we should have declared this" is the finding, not noise.
+
+    IT KEEPS GOING. The main spike stops at the first failure because its job
+    is a working image. This one's deliverable is the LIST of packages that
+    cannot build in isolation and why, so stopping at package 9 would throw
+    away the measurement. It is therefore never a gate.
+
+    WHAT IT CANNOT ISOLATE, stated so the result is not over-read: the stage-4
+    sysroot is in every root. bison, gcc, perl and m4 come from there and stay
+    reachable by everything. This tightens stage 5 against itself, not against
+    its base -- which is exactly what [undeclarable] records.
+    """
+    recipes = load_recipes()
+    roots = roots_from_args(a)
+    order = topo_order(recipes)
+    if a.pkg:
+        order = [n for n in order if n in a.pkg]
+
+    results, missing_bwrap = [], not (a.dry_run or os.path.exists(a.bwrap))
+    if missing_bwrap:
+        die(f"no bwrap at {a.bwrap} -- the airlock builds it from the pinned "
+            f"bubblewrap tarball; pass --bwrap or --dry-run")
+
+    for name in order:
+        r = recipes[name]
+        deps = sorted(set(r.get("deps", {}).get("build", []))
+                      | set(r.get("deps", {}).get("link", [])))
+        layers, absent = [], []
+        for d in deps:
+            dd = os.path.join(roots["dest"], d)
+            (layers if os.path.isdir(dd) else absent).append(dd if os.path.isdir(dd) else d)
+        if absent:
+            # A DECLARED DEPENDENCY WITH NO DESTDIR means it has not been
+            # built yet in this run -- which under --pkg is expected and
+            # otherwise is a plan bug. Said either way rather than silently
+            # producing a thinner root than the recipe asked for.
+            print(f"== {name}: SKIPPED, declared deps not built here: "
+                  f"{', '.join(absent)}")
+            results.append((name, "skipped", ",".join(absent)))
+            continue
+
+        mine = os.path.join(roots["dest"], name)
+        os.makedirs(mine, exist_ok=True)
+        os.makedirs(roots["build"], exist_ok=True)
+        os.makedirs(a.logs, exist_ok=True)
+
+        argv = [a.bwrap, "--unshare-all", "--die-with-parent", "--new-session",
+                "--overlay-src", roots["sysroot"]]
+        for l in layers:
+            argv += ["--overlay-src", l]
+        argv += ["--tmp-overlay", "/",
+                 "--bind", os.path.abspath(roots["build"]), "/build",
+                 "--bind", os.path.abspath(mine), f"/dest/{name}",
+                 "--bind", os.path.abspath(roots["dl"]), "/dl",
+                 "--bind", os.path.abspath(a.logs), "/logs",
+                 "--ro-bind", os.path.abspath(PKGDIR), "/packages",
+                 "--ro-bind", os.path.abspath(POLICY), "/policy",
+                 "--ro-bind", os.path.abspath(os.path.dirname(
+                     os.path.abspath(__file__))), "/tools",
+                 "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+                 "--setenv", "PATH", "/usr/bin:/usr/sbin:/bin",
+                 "--setenv", "HOME", "/build", "--setenv", "SHELL", "/bin/sh",
+                 "--chdir", "/",
+                 "/usr/bin/python3", "/tools/veron",
+                 "--dl", "/dl", "--build-dir", "/build", "--dest", "/dest",
+                 "--logs", "/logs", "--out", "/build/out", "--sysroot", "/",
+                 # NO STAGING. Staging exists to make a package visible to the
+                 # ones after it in a SHARED root; here the layers do that,
+                 # and writing into an overlay tmpfs would vanish anyway.
+                 "build", "--pkg", name, "--no-stage"]
+
+        print(f"== {name}  ({len(layers)} declared dep layer(s))")
+        if a.dry_run:
+            print("   " + " ".join(argv))
+            results.append((name, "dry-run", ""))
+            continue
+        p = subprocess.run(argv)
+        state = "ok" if p.returncode == 0 else f"FAILED rc={p.returncode}"
+        print(f"   {state}")
+        results.append((name, "ok" if p.returncode == 0 else "failed",
+                        "" if p.returncode == 0 else str(p.returncode)))
+
+    ok_n = sum(1 for _, s, _ in results if s == "ok")
+    failed = [(n, d) for n, s, d in results if s == "failed"]
+    skipped = [n for n, s, _ in results if s == "skipped"]
+    print(f"\n  {ok_n} built in isolation, {len(failed)} failed, "
+          f"{len(skipped)} skipped")
+    for n, d in failed:
+        print(f"    FAILED   {n}  ({d})")
+    for n in skipped:
+        print(f"    skipped  {n}")
+    print(f"\nVERON-ISOLATE-DONE  {len(failed)} package(s) could not build "
+          f"from their declared dependencies alone")
+    # NEVER A GATE. The failures are the deliverable.
+    return 0
+
+
 def cmd_manifest(a):
     recipes = load_recipes()
     roots = roots_from_args(a)
@@ -2353,7 +2477,8 @@ def cmd_selftest(a):
              "selftest", "guest-tests", "compare", "status", "sources",
              "git-sources", "collect", "build-only-names", "merge",
              "tarball-names", "linked",
-             "keys", "checkpoint", "installs")
+             "keys", "checkpoint", "installs",
+             "isolate")
     called = set()
     wfdir = os.path.join(HERE, "..", "..", ".github", "workflows")
     if os.path.isdir(wfdir):
@@ -2837,6 +2962,16 @@ def build_parser():
 
     p = sub.add_parser("merge", help="merge every DESTDIR into the system root")
     p.set_defaults(fn=cmd_merge)
+
+    p = sub.add_parser("isolate",
+                       help="build each package from its declared deps alone")
+    p.add_argument("pkg", nargs="*", help="packages (default: all)")
+    p.add_argument("--bwrap", default="/usr/local/bin/bwrap",
+                   help="the bubblewrap WE built, not the runner's")
+    p.add_argument("--dry-run", action="store_true",
+                   help="print each composed root instead of building")
+    p.add_argument("--logs", dest="logs", default="logs")
+    p.set_defaults(fn=cmd_isolate)
 
     p = sub.add_parser("installs",
                        help="what each package installs, against what it declares")

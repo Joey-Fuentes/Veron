@@ -1,0 +1,179 @@
+name: stage5-isolate
+
+# CAN EACH PACKAGE BUILD FROM ITS DECLARED DEPENDENCIES ALONE?
+#
+# The main spike stages every package into one shared root, so by the time
+# glib builds, thirty-odd predecessors are visible to it. `deps.build`
+# therefore orders the build correctly and proves nothing about what a package
+# can REACH -- which is why an undeclared dependency is currently detectable
+# (probe, reconcile, DT_NEEDED) and never impossible.
+#
+# Here each package gets the stage-4 sysroot plus the DESTDIRs of the packages
+# it DECLARES, stacked as overlay layers, and nothing else. An undeclared
+# dependency stops being a finding and becomes a build failure that names
+# itself.
+#
+# THIS IS A MEASUREMENT AND NEVER A GATE. It keeps going past failures and
+# exits 0 with a list, because the list IS the deliverable. Stopping at
+# package 9 would throw away everything after it.
+#
+# WHAT IT CANNOT ISOLATE, so the result is not over-read: the stage-4 sysroot
+# is in every root. bison, gcc, perl and m4 come from there and stay reachable
+# by everything -- which is exactly what [undeclarable] records. This tightens
+# stage 5 against itself, not against its base.
+#
+# NO BUILD LOGIC IN THIS FILE. Every `run:` is environment setup or a call to
+# spikes/stage5/tools.
+
+on:
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: 'packages -- space-separated names (blank = all)'
+        required: false
+        default: ''
+
+concurrency:
+  group: stage5-isolate-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  isolate:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'Airlock deps -- and NOT bubblewrap'
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          # bubblewrap is DELIBERATELY ABSENT from this list. It is pinned and
+          # mirrored in this repository with two routes, and the whole result
+          # of this job depends on whether --overlay-src exists -- which is a
+          # property of the VERSION. Taking apt's binary would make the answer
+          # depend on what the runner happened to ship, and a spike whose
+          # result depends on the runner is a spike about the runner.
+          #
+          # What remains from apt is bubblewrap's own build surface: meson,
+          # ninja, libcap headers and pkg-config. Smaller and more declarable
+          # than an opaque binary, and stated rather than implied.
+          sudo apt-get install -y -qq meson ninja-build libcap-dev pkg-config
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+          python3 -c 'import tomllib' || { echo "python 3.11+ required"; exit 1; }
+          # OVERLAYFS IN A USER NAMESPACE is what the layer stacking needs,
+          # and it is a kernel property. Stated up front so a failure here is
+          # attributable rather than looking like a bubblewrap bug.
+          echo "  kernel $(uname -r)"
+
+      - name: 'VERON-SELFTEST-OK'
+        run: |
+          set -eu
+          cd spikes/stage5 && python3 tools/veron selftest
+
+      - name: 'Build the pinned bubblewrap'
+        run: |
+          set -eu
+          cd spikes/stage5
+          mkdir -p dl
+          # THE SAME MIRROR EVERY OTHER SOURCE COMES THROUGH. bubblewrap is
+          # already in sources/MIRRORS.tsv with two routes; there is no reason
+          # for the sandbox itself to be the one thing fetched differently.
+          python3 ../../tools/mirror.py fetch \
+            988fd6b232dafa04b8b8198723efeaccdb3c6aa9c1c7936219d5791a8b7a8646 \
+            bubblewrap-0.11.0.tar.xz --dest dl
+          mkdir -p bw && tar -xf dl/bubblewrap-0.11.0.tar.xz -C bw
+          cd bw/bubblewrap-0.11.0
+          meson setup _b --prefix=/usr/local --buildtype=release \
+            -Dtests=false -Dman=disabled -Dpython=/usr/bin/python3
+          ninja -C _b
+          sudo ninja -C _b install
+          echo "  ours: $(/usr/local/bin/bwrap --version)"
+          # THE FEATURE THIS JOB EXISTS FOR. If --overlay-src is absent the
+          # composed roots silently become something else, so it is checked
+          # rather than assumed.
+          /usr/local/bin/bwrap --help 2>&1 | grep -q -- '--overlay-src' \
+            || { echo "this bwrap has no --overlay-src"; exit 1; }
+          echo "  --overlay-src present"
+
+      - name: 'Find the sysroot-inventory run'
+        id: inv
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          id=$(gh run list --workflow=sysroot-inventory.yml --status=success \
+                 --limit=1 --json databaseId --jq '.[0].databaseId')
+          [ -n "$id" ] || { echo "no sysroot-inventory run"; exit 1; }
+          echo "run_id=$id" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: veron-sysroot-trimmed
+          path: dl-sysroot
+          run-id: ${{ steps.inv.outputs.run_id }}
+          github-token: ${{ github.token }}
+
+      - name: 'Unpack the sysroot and verify its published hash'
+        run: |
+          set -eu
+          want=$(awk '{print $1}' dl-sysroot/report/SYSROOT-SHA256)
+          got=$(sha256sum dl-sysroot/sysroot.tar | cut -d' ' -f1)
+          [ "$want" = "$got" ] || { echo "SYSROOT HASH MISMATCH"; exit 1; }
+          mkdir -p spikes/stage5/sysroot
+          tar -xf dl-sysroot/sysroot.tar -C spikes/stage5/sysroot
+          echo "VERON-ENTRY-OK  $got"
+
+      - name: 'Fetch pinned sources through the mirror'
+        run: |
+          set -eu
+          cd spikes/stage5
+          mkdir -p dl
+          fail=0
+          python3 tools/veron sources | while IFS="$(printf '\t')" read -r sha name url; do
+            python3 ../../tools/mirror.py fetch "$sha" "$name" --url "$url" --dest dl \
+              || { echo "  FAILED $name"; exit 1; }
+          done || fail=1
+          [ "$fail" = 0 ] || { echo "VERON-FETCH-INCOMPLETE"; exit 1; }
+
+      - name: 'Generate the git-pinned sources'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 tools/veron git-sources \
+            | while IFS="$(printf '\t')" read -r commit name url want; do
+            [ -n "$commit" ] || continue
+            sh ../../tools/fetch-git.sh "$commit" "$name" "$url" dl ${want:+"$want"}
+          done
+
+      - name: 'VERON-ISOLATE -- each package from its declared deps alone'
+        run: |
+          set -eu
+          cd spikes/stage5
+          mkdir -p build dest logs out
+          python3 tools/veron \
+            --dl dl --build-dir build --dest dest --logs logs \
+            --out out --sysroot sysroot \
+            isolate ${{ inputs.packages }} --bwrap /usr/local/bin/bwrap \
+            2>&1 | tee out/isolate.txt
+
+      - name: 'VERON-COLLECT -- preserve the evidence'
+        if: always()
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 tools/veron --logs logs --out out --build-dir build collect
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: veron-stage5-isolate-${{ github.run_id }}
+          path: |
+            spikes/stage5/out/isolate.txt
+            spikes/stage5/out/diag
+          if-no-files-found: error
+          retention-days: 30
