@@ -45,7 +45,22 @@ jobs:
   spike:
     runs-on: ubuntu-24.04-arm      # NATIVE aarch64 -- the sysroot IS aarch64,
                                    # so packages build AND RUN unemulated
-    timeout-minutes: 90
+    # THE JOB MUST OUTLIVE THE BUILD, OR THE COLLECTOR NEVER RUNS.
+    #
+    # A JOB timeout is a CANCELLATION: GitHub stops the job and `if: always()`
+    # steps do not run. So the diagnostics work added below would be defeated
+    # by the one failure mode it exists to prevent -- a long build running out
+    # of clock and taking its own evidence with it.
+    #
+    # A STEP timeout is an ordinary step failure, and every `if: always()`
+    # step after it still runs. So the build gets a step budget strictly
+    # smaller than the job's, and the difference is the collector's.
+    #
+    # 33 minutes bought 31 packages and glib's configure in run 52. The nine
+    # packages after glib include its own compile, harfbuzz, cairo and pango,
+    # none of which has ever run here, at jobs=1. 90 was going to be tight
+    # and silent about it.
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v5
 
@@ -149,6 +164,7 @@ jobs:
       # reason it is worth anything: if a host header were reachable, a missing
       # one in the sysroot would not show up.
       - name: 'VERON-SEAL + build both packages'
+        timeout-minutes: 150      # < the job's 180. See the note above.
         run: |
           set -eu
           cd spikes/stage5
