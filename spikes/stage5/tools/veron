@@ -369,6 +369,39 @@ def cmd_plan(a):
     return 0
 
 
+def source_kind(r):
+    """tarball or git -- a recipe says which by what it pins.
+
+    SOME UPSTREAMS PUBLISH NO TARBALL AT ALL. libsfdo, dinit and libxkbcommon
+    only push git tags, and the "archive" a forge offers is synthesised on
+    request using that forge's git, gzip settings and export-subst handling --
+    all of which change without notice. GitHub's generated tarballs shifted
+    for the whole ecosystem once already. A commit cannot move: it is a Merkle
+    hash over the tree and its history.
+    """
+    return r["source"].get("kind", "tarball")
+
+
+def cmd_git_sources(a):
+    """commit / name / url for every git-pinned recipe, machine-parsed.
+
+    THE WORKFLOW HAS BEEN CALLING THIS AND THE DRIVER HAS NOT HAD IT:
+
+        veron: error: argument cmd: invalid choice: 'git-sources'
+
+    Harmless so far only because no recipe uses kind = "git" yet -- the three
+    that will are not written. It was lost rebuilding a deliverable from a
+    mixed set of trees, which is the same way cmake's --system-* flags were
+    lost and then restored.
+    """
+    for name, r in sorted(load_recipes().items()):
+        if source_kind(r) != "git":
+            continue
+        src = r["source"]
+        print(f"{src['commit']}\t{name}-{r['version']}\t{src['url']}")
+    return 0
+
+
 def cmd_sources(a):
     """Every pin, as sha256/name/url -- so callers iterate instead of hardcode.
 
@@ -545,57 +578,48 @@ BUILD_LOGS = (
 def apply_patches(pkgdir, srcdir, dry):
     """Apply patches/*.patch after unpack, in sorted order.
 
-    NOT A RECIPE STEP, and the reason is a gate catching it. A patch step has
-    to name the patches directory, and $P expands to an ABSOLUTE path -- so
-    PLAN.txt held /home/claude/... on one machine and /home/runner/... on the
-    other, and `plan --check` failed before a single package built. That is
-    the gate working, and it is also the wrong place for the mechanism.
+    BUSYBOX PATCH, NOT GNU PATCH. Inside the sandbox /usr/bin/patch is a
+    busybox applet, and busybox's patch takes only -p, -i, -R, -N, -E and -f.
+    A first version passed --batch --forward --dry-run, which GNU accepts and
+    busybox rejects as unknown options -- so the probe exited non-zero and the
+    code read that as "the patch does not apply", failing a build against a
+    tree the patch fitted perfectly. It applied cleanly on a laptop every
+    time, which is exactly why it took a run to find.
 
-    Yocto and Buildroot both apply patches automatically rather than making
-    each recipe spell it out. The plan then records WHICH patches applied --
-    a fact about the build -- instead of a path that happens to be where the
-    tree was checked out.
+    -N is busybox's spelling of --forward: skip a hunk that is already
+    applied. There is no dry run, so there is no probe -- and none is needed,
+    because builds here are --clean and every one starts from a fresh unpack.
 
-    Applied after the first step, which is always the unpack, and failing here
-    is fatal: a patch that does not apply means the source is not what the
-    recipe was written against, and building anyway produces something nobody
-    described.
+    NOT A RECIPE STEP. A step would have to name the patches directory, and
+    that path is absolute -- so PLAN.txt held /home/claude/... on one machine
+    and /home/runner/... on the other, and `plan --check` failed before
+    anything built. The plan records WHICH patches apply, which is a fact
+    about the build, rather than where the tree happens to live.
+
+    Failing here is fatal: a patch that does not apply means the source is not
+    what the recipe was written against, and building anyway produces
+    something nobody described.
     """
     pdir = os.path.join(pkgdir, "patches")
     if not os.path.isdir(pdir):
         return []
     names = sorted(f for f in os.listdir(pdir) if f.endswith(".patch"))
     for fn in names:
-        # ABSOLUTE. `patch` runs with cwd=srcdir, so a path relative to the
-        # driver's cwd resolves to nothing there -- and with --dry-run that
-        # reads as "already applied" rather than as a missing file. A fresh
-        # tree reported the patch as already applied and built unpatched.
+        # ABSOLUTE: patch runs with cwd=srcdir, so a path relative to the
+        # driver's cwd resolves to nothing there.
         full = os.path.abspath(os.path.join(pdir, fn))
         print(f"    patch {fn}")
         if dry:
             continue
-        # --dry-run first, so an already-applied patch is reported rather than
-        # failing and leaving a .rej behind.
-        probe_rc = subprocess.run(
-            ["patch", "-p1", "--batch", "--forward", "--dry-run", "-i", full],
-            cwd=srcdir, capture_output=True, text=True).returncode
-        if probe_rc != 0:
-            # Distinguish the two cases the dry run conflates, because one is
-            # benign and the other means the source is not what the recipe
-            # was written against.
-            rev = subprocess.run(
-                ["patch", "-p1", "--batch", "--reverse", "--dry-run", "-i", full],
-                cwd=srcdir, capture_output=True, text=True).returncode
-            if rev == 0:
+        r = subprocess.run(["patch", "-p1", "-N", "-i", full],
+                           cwd=srcdir, capture_output=True, text=True)
+        out = (r.stdout or "") + (r.stderr or "")
+        if r.returncode != 0:
+            if "already applied" in out.lower() or "reversed" in out.lower():
                 print(f"      already applied: {fn}")
                 continue
-            die(f"patch {fn} does not apply in {srcdir} -- the source is not "
-                f"what this recipe was written against")
-        r = subprocess.run(["patch", "-p1", "--batch", "--forward", "-i", full],
-                           cwd=srcdir, capture_output=True, text=True)
-        if r.returncode != 0:
-            die(f"patch {fn} failed to apply in {srcdir}:\n"
-                f"{(r.stderr or r.stdout).strip()[:400]}")
+            die(f"patch {fn} does not apply in {srcdir}:\n"
+                f"{out.strip()[:500]}")
     return names
 
 
@@ -1268,9 +1292,61 @@ def cmd_selftest(a):
               f"{type(e).__name__}: {e}")
         ok = False
 
-    for name in ("plan", "fetch", "build", "manifest", "ledger",
-                 "compare", "guest-tests", "status"):
-        print(f"  ok    subcommand present: {name}")
+    # EVERY SUBCOMMAND THE WORKFLOWS ACTUALLY CALL. A hand-kept list drifts:
+    # `git-sources` was called by stage5-spike.yml and absent from this
+    # driver, and the run died with
+    #     invalid choice: 'git-sources'
+    # while this check reported the CLI intact -- because git-sources was not
+    # on the list.
+    #
+    # Only names that ARE subcommands are looked for. A first version reported
+    # every word following the string "veron" and produced eight false alarms
+    # from prose and file paths; a check that cries wolf is a check people
+    # stop reading.
+    KNOWN = ("plan", "fetch", "build", "manifest", "rootfs", "ledger",
+             "selftest", "guest-tests", "compare", "status", "sources",
+             "git-sources")
+    called = set()
+    wfdir = os.path.join(HERE, "..", "..", ".github", "workflows")
+    if os.path.isdir(wfdir):
+        for fn in sorted(os.listdir(wfdir)):
+            if not fn.endswith((".yml", ".yaml")):
+                continue
+            try:
+                text = open(os.path.join(wfdir, fn), errors="replace").read()
+            except OSError:
+                continue
+            for k in KNOWN:
+                if re.search(rf"veron[^\n]*\s{re.escape(k)}\b", text):
+                    called.add(k)
+
+    # ASK THE PARSER, DO NOT PRINT A LIST. This loop printed "ok subcommand
+    # present" for every name it was given and checked nothing -- renaming
+    # git-sources in the parser left it reporting ok. A decorative gate is
+    # worse than none: it occupies the place where a real one would go.
+    # The parser is built inside main(), and calling main() would parse
+    # sys.argv and exit -- so read the registrations from this file instead.
+    # Less elegant than asking argparse, and it works without side effects.
+    parser_names = set()
+    try:
+        src = open(os.path.abspath(__file__), errors="replace").read()
+        parser_names = set(re.findall(r'sub\.add_parser\(\s*"([a-z-]+)"', src))
+        if not parser_names:
+            print("  FAIL  found no subcommand registrations to check against")
+            ok = False
+    except OSError as e:
+        print(f"  FAIL  could not read this file: {e}")
+        ok = False
+
+    for name in sorted(called | {"plan", "fetch", "build", "manifest",
+                                 "ledger", "compare", "guest-tests",
+                                 "status"}):
+        if name in parser_names:
+            print(f"  ok    subcommand present: {name}")
+        else:
+            print(f"  FAIL  `veron {name}` is called but the parser has no "
+                  f"such subcommand")
+            ok = False
 
     # `veron sources` feeds a shell loop that splits every line into
     # sha256/name/url. Anything else on stdout becomes a fetch for a file
@@ -1383,6 +1459,10 @@ def main():
 
     p = sub.add_parser("sources", help="sha256/name/url per recipe, for the fetcher")
     p.set_defaults(fn=cmd_sources)
+
+    p = sub.add_parser("git-sources",
+                       help="commit/name/url for every git-pinned recipe")
+    p.set_defaults(fn=cmd_git_sources)
 
     p = sub.add_parser("fetch", help="airlock: verify sha256 against the manifest")
     p.set_defaults(fn=cmd_fetch)
