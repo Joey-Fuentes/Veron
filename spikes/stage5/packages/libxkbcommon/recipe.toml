@@ -88,6 +88,30 @@ dep to exist. Recorded here so the absence is a known state rather than a \
 surprise the first time a compositor cannot map a key. The build-time lookup \
 is `required: false` and only supplies a default config path."""
 
+[undeclarable]
+# Lookups no .pc name can answer, disclosed per ROADMAP.md rule 4. Each was
+# reported by `probe.py reconcile` with a file and line, and each is answered
+# from the tarball rather than from a guess.
+#
+# meson.build:320  bison (REQUIRED, >= 3.6)
+#
+# THE ONE THAT MATTERS. libxkbcommon genuinely requires bison to build -- it
+# generates its keymap parser -- and this recipe declares no dependency on it,
+# because it CANNOT: bison has no stage-5 recipe. It comes from the stage-4
+# sysroot, which STAGE5.md lists among "already built by stage 4" alongside
+# m4, flex and perl. So the build finds it and nothing records why.
+#
+# That is a real gap in the audit story, not a false alarm: a REQUIRED tool
+# satisfied silently by the base image. It is fine today and it is exactly
+# what would break if the sysroot were trimmed further -- stage5-entry cuts
+# six things from that image already. Written down so the next trim has to
+# consider it.
+"program:bison" = "REQUIRED, and provided by the stage-4 sysroot rather than by any stage-5 recipe. Generates the keymap parser. No bison package exists here to declare."
+"program:doxygen" = "Docs only; -Denable-docs=false, and it is the default."
+"program:Xvfb" = "X11 test harness. -Denable-x11=false, and there is no X11 in this system by policy."
+"program:xkbcomp" = "X11 keymap compiler, used only by the X11 tests. Same reason as Xvfb."
+"program:valgrind" = "Instrumentation for the test suite. Upstream suites are not run here."
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

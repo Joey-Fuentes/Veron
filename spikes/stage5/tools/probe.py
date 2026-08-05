@@ -928,11 +928,25 @@ def _unresolvable(text, rel):
     # a .py/.sh is the project's own script; a bare name is a tool the system
     # must already provide.
     for line, body in _calls(text, "find_program"):
+        # MESON JOINS PATHS WITH `/` BETWEEN STRINGS, and matching only the
+        # first quoted argument reads `find_program('scripts' / 'x.py')` as a
+        # program called "scripts". libxkbcommon does exactly that.
+        nm = re.match(r"\s*'([^']+)'\s*/", body)
+        if nm:
+            continue
         nm = re.match(r"\s*'([^']+)'", body)
         if not nm:
             continue
         prog = nm.group(1)
-        if prog.startswith(("./", "../")) or prog.endswith((".py", ".sh")):
+        # A NAME WITH A PATH SEPARATOR IS A FILE IN THE TARBALL, NOT A SYSTEM
+        # TOOL. libxkbcommon does find_program('scripts/map-to-def') and
+        # find_program('scripts/doxygen-wrapper') -- neither has an extension
+        # and neither starts with ./, so the old filter reported both as
+        # programs the system must provide. Three of that package's eight
+        # findings were its own scripts, which is the kind of noise that
+        # teaches people to skim the report.
+        if ("/" in prog or prog.startswith(("./", "../"))
+                or prog.endswith((".py", ".sh", ".pl", ".rb"))):
             continue
         # THREE STATES, NOT TWO. Calling anything without `required: false`
         # REQUIRED is the same mistake as reading a ternary's condition as its

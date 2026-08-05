@@ -43,6 +43,11 @@ on:
         type: boolean
         required: false
         default: false
+      propose:
+        description: 'Emit draft [undeclarable] blocks instead of a report'
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: stage5-reconcile-${{ github.ref }}
@@ -101,6 +106,43 @@ jobs:
           done || fail=1
           [ "$fail" = 0 ] || { echo "VERON-FETCH-INCOMPLETE"; exit 1; }
 
+      # GIT-PINNED SOURCES HAVE TO BE GENERATED BEFORE THEY CAN BE UNPACKED.
+      # `veron sources` deliberately omits them -- their bytes do not exist
+      # upstream -- so without this the unpack step reported
+      #     no tarball for libsfdo (libsfdo.git)
+      # and the static half was silently skipped for all three. The sweep then
+      # said 82 findings across 48 packages while having read 45 of them.
+      - name: 'Generate the git-pinned sources'
+        if: ${{ !inputs.skip_sources }}
+        run: |
+          set -eu
+          cd spikes/stage5
+          mkdir -p dl
+          python3 tools/veron git-sources \
+            | while IFS="$(printf '\t')" read -r commit name url want; do
+            [ -n "$commit" ] || continue
+            sh ../../tools/fetch-git.sh "$commit" "$name" "$url" dl ${want:+"$want"}
+          done
+
+      # GIT-PINNED SOURCES HAVE TO BE GENERATED FIRST. `veron sources` omits
+      # them deliberately -- their bytes do not exist upstream -- so without
+      # this the sweep reported
+      #     no tarball for libsfdo (libsfdo.git)
+      #     3 package(s) had NO UNPACKED SOURCE
+      # and silently checked nothing for all three. The spike has had this
+      # step since git pins were designed; this workflow was written from the
+      # spike's fetch step alone and inherited only half of it.
+      - name: 'Generate the git-pinned sources'
+        if: ${{ !inputs.skip_sources }}
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 tools/veron git-sources \
+            | while IFS="$(printf '\t')" read -r commit name url want; do
+            [ -n "$commit" ] || continue
+            sh ../../tools/fetch-git.sh "$commit" "$name" "$url" dl ${want:+"$want"}
+          done
+
       - name: 'Unpack each tarball as src/<package>'
         if: ${{ !inputs.skip_sources }}
         run: |
@@ -147,8 +189,10 @@ jobs:
           SRC=""
           if [ -d src ]; then SRC="--src src"; fi
           mkdir -p out
+          PROPOSE=""
+          if [ "${{ inputs.propose }}" = "true" ]; then PROPOSE="--propose"; fi
           python3 tools/probe.py reconcile ${{ inputs.packages }} \
-            $SRC --mode "${{ inputs.mode }}" 2>&1 | tee out/reconcile.txt
+            $SRC --mode "${{ inputs.mode }}" $PROPOSE 2>&1 | tee out/reconcile.txt
           echo ""
           echo "  --- summary ---"
           grep -cE '^  (unaccounted|undisclosed|UNACCOUNTED|UNDISCLOSED)' \

@@ -341,9 +341,42 @@ findings, while leaving `latest` and `attestations` alone — both contain the
 substring and neither is a test directory. Verifying a parser against input
 you designed for it is the same mistake as a gate that agrees with the bug.
 
+**`--propose` had no way to be switched on.** It existed on the CLI and the
+workflow had no input for it, so the sweep everyone was running could never
+emit a draft. Added.
+
+**And the sweep was silently checking nothing for the three git-pinned
+packages.** `stage5-reconcile` was written from the spike's tarball fetch step
+and inherited only half of it — no `fetch-git.sh` call — so their archives were
+never generated. On top of that, `cmd_tarball_names` still derived a filename
+from the URL, which for a git remote is the REPOSITORY:
+
+```
+no tarball for libsfdo (libsfdo.git)
+3 package(s) had NO UNPACKED SOURCE
+```
+
+`cmd_fetch` had been fixed to use `source_filename()` and this call site was
+missed. One helper, every caller.
+
+**Two scanner false positives, both from libxkbcommon.** It calls
+`find_program('scripts/map-to-def')` and `find_program('scripts' / 'x.py')` —
+the first is a path with no extension and no `./`, the second is meson's path
+JOIN operator, so the scanner reported a program named `scripts`. Three of
+that package's eight findings were its own files. Names containing a separator
+are in-tree; the join idiom is skipped.
+
+**The first real disclosure block is written, and it found something.**
+libxkbcommon requires **bison >= 3.6** to generate its keymap parser, and the
+recipe cannot declare it: bison has no stage-5 recipe, it comes from the
+stage-4 sysroot. A REQUIRED tool satisfied silently by the base image is a
+genuine gap in the audit story rather than a false alarm — fine today, and
+exactly what breaks if that sysroot is trimmed further, which `stage5-entry`
+already does six times.
+
 **Still to do:**
 
-- Run `--propose` over all 45, review the drafts, paste them in
+- Run `--propose` over all 48 with the fixes, review the drafts, paste them in
 - Write the 21 corroborative declines
 - Then `--mode fail`, which is the point of the exercise
 - Write the `[undeclarable]` blocks that sweep calls for, per recipe

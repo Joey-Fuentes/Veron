@@ -1063,8 +1063,16 @@ def cmd_tarball_names(a):
     the recipes already carry, which is the defect this repository keeps
     finding in its own gates.
     """
+    # source_filename(), NOT THE URL -- AND THIS CALL SITE WAS MISSED ONCE.
+    # cmd_fetch was fixed to use it and this was not, so stage5-reconcile
+    # reported
+    #     no tarball for libsfdo (libsfdo.git)
+    #     no tarball for libxkbcommon (libxkbcommon.git)
+    # and skipped the static half for all three git-pinned packages. A git
+    # remote's last path component is the REPOSITORY, never the archive
+    # fetch-git.sh writes. One helper, every caller.
     for name, r in sorted(load_recipes().items()):
-        print(f"{name}\t{r['source']['url'].rsplit('/', 1)[-1]}")
+        print(f"{name}\t{source_filename(name, r)}")
     return 0
 
 
