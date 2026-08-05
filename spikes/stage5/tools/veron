@@ -419,6 +419,23 @@ def source_kind(r):
     return r["source"].get("kind", "tarball")
 
 
+def source_filename(name, r):
+    """The file this recipe's source arrives as, for BOTH kinds of pin.
+
+    A TARBALL PIN NAMES ITS FILE; A COMMIT PIN DOES NOT. `cmd_fetch` derived
+    the filename from the URL's last path component, which for a git remote is
+    the repository -- `libxkbcommon.git`, not `libxkbcommon-1.13.0.tar.gz`. So
+    the moment a recipe used kind = "git", fetch would look for a file
+    fetch-git.sh never writes and report it missing. That was latent rather
+    than broken only because no recipe uses a commit pin yet.
+
+    fetch-git.sh writes `<name>-<version>.tar.gz`, so that is the name here.
+    """
+    if source_kind(r) == "git":
+        return f"{name}-{r['version']}.tar.gz"
+    return r["source"]["url"].rsplit("/", 1)[-1]
+
+
 def cmd_git_sources(a):
     """commit / name / url for every git-pinned recipe, machine-parsed.
 
@@ -435,7 +452,12 @@ def cmd_git_sources(a):
         if source_kind(r) != "git":
             continue
         src = r["source"]
-        print(f"{src['commit']}\t{name}-{r['version']}\t{src['url']}")
+        # THE ARCHIVE DIGEST TOO, WHEN THE RECIPE HAS ONE. The commit is the
+        # provenance; the sha256 is of the artifact fetch-git.sh derives from
+        # it, and a pin nothing compares against is the llvm mistake again --
+        # fetch-git.sh has been PRINTING that digest and no caller checked it.
+        print(f"{src['commit']}\t{name}-{r['version']}\t{src['url']}\t"
+              f"{src.get('sha256', '')}")
     return 0
 
 
@@ -449,9 +471,16 @@ def cmd_sources(a):
     """
     recipes = load_recipes()
     for name in topo_order(recipes):
-        src = recipes[name]["source"]
-        fn = src["url"].rsplit("/", 1)[-1]
-        print(f"{src['sha256']}\t{fn}\t{src['url']}")
+        r = recipes[name]
+        src = r["source"]
+        # GIT-PINNED SOURCES ARE NOT FETCHABLE FROM THIS LIST. Their bytes do
+        # not exist upstream -- they are generated from a commit by
+        # tools/fetch-git.sh -- so emitting a URL here would send the mirror
+        # to a git remote expecting a tarball. `veron git-sources` is the
+        # list for those, and stage5-mirror-upload iterates both.
+        if source_kind(r) == "git":
+            continue
+        print(f"{src['sha256']}\t{source_filename(name, r)}\t{src['url']}")
     return 0
 
 
@@ -469,7 +498,7 @@ def cmd_fetch(a):
     bad = 0
     for name in topo_order(recipes):
         src = recipes[name]["source"]
-        fn = os.path.join(a.dl, src["url"].rsplit("/", 1)[-1])
+        fn = os.path.join(a.dl, source_filename(name, recipes[name]))
         if src["sha256"].startswith("PENDING"):
             # NOT A BUG. The pin is a human trust decision that has not been
             # made yet, and the tool must refuse rather than invent one.

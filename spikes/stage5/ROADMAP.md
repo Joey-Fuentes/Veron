@@ -328,6 +328,19 @@ an empty dict is falsy, so it could never fire on the first finding and
 therefore never at all. `--propose` printed an ordinary report and exited 0,
 which is indistinguishable from a set with nothing to propose. Fixture added.
 
+**The test-directory exclusion was verified against a fixture I wrote, and the
+real tarball showed it incomplete.** meson 1.10.1 contains **1421**
+`meson.build` files and every one is under a test directory — but one of those
+directories is `manual tests`, which does not *start* with "test", so it
+survived the prefix match and contributed a `find_program` plus five
+pkg-config names (`lua`, `sdl2`, `libpng`, `zlib`, `threads`) that meson does
+not need at all.
+
+Matching "test" as a **word** rather than a prefix takes meson to zero
+findings, while leaving `latest` and `attestations` alone — both contain the
+substring and neither is a test directory. Verifying a parser against input
+you designed for it is the same mistake as a gate that agrees with the bug.
+
 **Still to do:**
 
 - Run `--propose` over all 45, review the drafts, paste them in

@@ -265,6 +265,41 @@ source URLs and digests. **Arch's mesa PKGBUILD lists `python-mako` in
 `makedepends`.** See [`ROADMAP.md`](./ROADMAP.md) for the three-detector design
 that follows from this.
 
+**Git-pinned sources were never stored anywhere.** `libxkbcommon`, `dinit` and
+`libsfdo` publish no tarball; `fetch-git.sh` clones the pinned commit and
+generates one, and every run threw it away. `stage5-mirror-upload` had zero
+references to `git-sources`, so those three had exactly one route — a clone of
+the forge — and a deleted repo or force-pushed tag left nowhere to go.
+
+**What we generate is better provenance than a forge archive, not worse.** The
+commit is a Merkle hash over the whole tree; `git archive` with a fixed prefix
+and `gzip -n` is byte-identical across runs, which two generations here
+confirm. A forge archive is synthesised on request with that forge's git and
+gzip, and GitHub moved every one of theirs once already. So the generated
+tarball is uploaded and mirrored like anything else, with the pin still the
+commit and the sha256 recorded as of *our* derived artifact.
+
+**Two bugs surfaced while wiring it, both latent because no recipe uses a
+commit pin yet.**
+
+`fetch-git.sh` used `$DEST` after `cd "$WORK/r"`, so a relative `--dest` — and
+the spike passes `dl` — resolved *inside the temporary clone*, which the EXIT
+trap then deleted. It printed `wrote <name>.tar.gz (N bytes)`, exited 0, and
+left nothing on disk. **The same shape as the collector that printed "collected
+32 log files" and preserved none:** a step that reports success and produces
+nothing, invisible until something downstream cannot find a file nobody thinks
+is missing. Each of the three would have failed at unpack, three rungs later.
+
+And `cmd_fetch` derived the filename from the URL's last path component, which
+for a git remote is the repository — `libxkbcommon.git`, not
+`libxkbcommon-1.13.0.tar.gz`. `source_filename()` now answers for both kinds.
+
+**fetch-git.sh also verifies the digest it prints**, which it had only been
+printing — the llvm mistake exactly. `git archive` is deterministic for a given
+git and gzip, and both are the *runner's*, so a change in either moves the
+bytes while the commit stays identical. That is the drift a recipe's sha256
+exists to catch and it can only be caught there.
+
 **45 packages built** — the four Python modules landed and mesa's configure-time
 requirement is satisfied before LLVM's 27 minutes are ever spent. The run then
 died three steps later on a malformed command line:

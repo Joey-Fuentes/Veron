@@ -157,6 +157,47 @@ jobs:
           echo ""
           echo "  $(ls dl | wc -l) tarballs in dl/"
 
+      # GIT-PINNED SOURCES ARE GENERATED, THEN MIRRORED LIKE ANYTHING ELSE.
+      #
+      # libxkbcommon, dinit and libsfdo publish NO TARBALL. `veron sources`
+      # deliberately omits them -- their bytes do not exist upstream -- so
+      # every mirror run so far has left them with exactly ONE route: a clone
+      # of the forge. A deleted repo, a renamed project or a force-pushed tag
+      # and there is nowhere else to go.
+      #
+      # WHAT WE UPLOAD IS BETTER PROVENANCE THAN A FORGE ARCHIVE, not worse.
+      # fetch-git.sh verifies HEAD against the pinned commit -- a Merkle hash
+      # over the whole tree -- then runs `git archive` with a fixed prefix and
+      # `gzip -n` so no timestamp or filename lands in the header. Two runs of
+      # that against one commit are byte-identical. A forge archive, by
+      # contrast, is synthesised on request with that forge's git and gzip;
+      # GitHub moved every one of theirs once already.
+      #
+      # THE PIN STAYS THE COMMIT. The sha256 recorded here is of OUR derived
+      # artifact, and fetch-git.sh now compares it rather than printing it --
+      # which is the one thing llvm-timing.yml did wrong for three runs.
+      - name: 'Generate and mirror the git-pinned sources'
+        run: |
+          set -eu
+          cd spikes/stage5
+          mkdir -p dl
+          # EACH STEP IS ITS OWN SHELL, so DRY has to be derived here too --
+          # and with a real `if`, not an and-list, for the reason the upload
+          # step records: under `set -e` a false test as the last command
+          # exits 1.
+          DRY=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
+          python3 tools/veron git-sources \
+            | while IFS="$(printf '\t')" read -r commit name url want; do
+            [ -n "$commit" ] || continue
+            echo "== $name (commit pin)"
+            sh ../../tools/fetch-git.sh "$commit" "$name" "$url" dl ${want:+"$want"}
+            f="dl/$name.tar.gz"
+            [ -f "$f" ] || { echo "  fetch-git.sh wrote nothing"; exit 1; }
+            python3 ../../tools/mirror.py add github "$f" \
+              --upstream "$url@$commit" $DRY || echo "  ADD FAILED $name"
+          done
+
       - name: 'Upload each to the mirror and record the locator'
         run: |
           set -eu

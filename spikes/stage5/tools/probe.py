@@ -679,6 +679,35 @@ def test_target(root):
     return "NONE FOUND -- declare verification as none rather than omitting it"
 
 
+def _is_excluded_dir(d):
+    """Directories whose build files are not this package's dependencies.
+
+    THE FIRST VERSION ANCHORED ON THE START OF THE NAME and I verified it
+    against a fixture I wrote, which is the same mistake as testing a parser
+    on the input you designed it for. meson's real tarball has 1421
+    meson.build files and EVERY ONE is under a test directory -- but one of
+    those directories is `manual tests`, which does not START with "test", so
+    it survived and contributed `nonexistprog` plus five pkg-config names
+    (lua, sdl2, libpng, zlib, threads) that meson does not need at all.
+
+    Matching "test" as a WORD rather than a prefix catches `test cases`,
+    `manual tests` and `test`, while leaving `latest` and `attestations`
+    alone -- both of which contain the substring and neither of which is a
+    test directory.
+
+    subprojects/ is excluded for a different reason: we never build one.
+    Refusing the wrap fallbacks is what --wrap-mode is for, so a vendored
+    tree is not this package's dependency surface. pango vendors fontconfig
+    sources and 15 of its findings were fontconfig's build file.
+    """
+    if d in (".git", ".github", "subprojects"):
+        return True
+    low = d.lower()
+    if low in ("unittests", "testsuite", "test-suite", "testing"):
+        return True
+    return bool(re.search(r"(^|[^a-z])tests?([^a-z]|$)", low))
+
+
 def declared_deps(root):
     """Dependencies the SOURCE declares. Not the whole story, and says so.
 
@@ -742,10 +771,7 @@ def declared_deps(root):
         #
         # A test fixture's dependency is not the package's dependency, and
         # neither is a vendored copy we decline to build.
-        dirnames[:] = [d for d in dirnames
-                       if d not in (".git", "subprojects")
-                       and not re.match(r"^(tests?|Tests?)([ _-]|$)", d)
-                       and d not in ("testsuite", "test-suite")]
+        dirnames[:] = [d for d in dirnames if not _is_excluded_dir(d)]
         for fn in files:
             # VCPKG MANIFESTS ARE THE ONLY HONEST SOURCE FOR SOME PROJECTS.
             # Ladybird has no distro packaging and is not in BLFS, so nothing
@@ -2486,6 +2512,30 @@ if Version(mako.__version__) < Version("0.8.0"):
     else:
         print(f"  FAIL  run_command import missed -- {got}")
         ok = False
+
+    # TEST DIRECTORIES ARE MATCHED AS A WORD, NOT A PREFIX. The first version
+    # anchored on the start of the name and was verified against a fixture I
+    # wrote myself -- which is the same mistake as testing a parser on the
+    # input it was designed for. meson's real tarball has 1421 meson.build
+    # files, every one under a test directory, and one of those directories is
+    # `manual tests`. It survived and contributed a find_program plus five
+    # pkg-config names meson does not need.
+    for d in ("test", "tests", "test cases", "manual tests", "unittests",
+              "testsuite", "subprojects", ".git"):
+        if not _is_excluded_dir(d):
+            print(f"  FAIL  {d!r} should be excluded from the dependency walk")
+            ok = False
+            break
+    else:
+        # AND THE NEAR-MISSES MUST SURVIVE. "latest" and "attestations" both
+        # contain the substring; a prefix or substring rule would drop real
+        # source directories to fix a test one.
+        if any(_is_excluded_dir(d) for d in ("latest", "attestations",
+                                             "src", "docs", "contest")):
+            print("  FAIL  a directory merely containing 'test' was excluded")
+            ok = False
+        else:
+            print("  ok    test directories match as a word, not a substring")
 
     # AN EMPTY COLLECTION IS FALSY, AND THAT SILENTLY DISABLED --propose.
     # The caller hands reconcile() a dict that starts empty and the branch
