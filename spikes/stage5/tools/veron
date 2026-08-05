@@ -331,7 +331,10 @@ def render_plan(plan, policy):
         if source_kind(r) == "git":
             L.append(f"    kind       git")
             L.append(f"    commit     {src['commit']}")
-            L.append(f"    sha256     {src['sha256']}  (of OUR generated archive)")
+                # OF THE TAR, AND THE PLAN SHOULD NOT LET ANYONE ASSUME
+            # OTHERWISE. gzip output is not portable; the tar is.
+            L.append(f"    sha256     {src['sha256']}  "
+                     f"(of the UNCOMPRESSED tar we derive)")
         else:
             L.append(f"    sha256     {src['sha256']}")
         L.append(f"    signature  {src.get('signature', 'none')}")
@@ -526,7 +529,19 @@ def cmd_fetch(a):
             print(f"           fetch from {src['url']}")
             bad += 1
             continue
-        got = sha256_file(fn)
+        # A GIT SOURCE'S PIN IS OVER THE UNCOMPRESSED TAR. Hashing the
+        # .tar.gz here would compare against a digest of something else and
+        # fail on every runner whose gzip differs from the one that pinned it
+        # -- which is exactly what the first mirror run did.
+        if source_kind(recipes[name]) == "git":
+            import gzip as _gz
+            h = hashlib.sha256()
+            with _gz.open(fn, "rb") as g:
+                for chunk in iter(lambda: g.read(1 << 20), b""):
+                    h.update(chunk)
+            got = h.hexdigest()
+        else:
+            got = sha256_file(fn)
         ok = got == src["sha256"]
         print(f"  {'ok  ' if ok else 'BAD '}  {os.path.basename(fn)}")
         print(f"           want {src['sha256']}")

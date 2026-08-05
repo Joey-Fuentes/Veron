@@ -62,5 +62,16 @@ name = "install"
 cwd  = "$S"
 run  = [["make", "DESTDIR=$D", "install"]]
 [guest]
+# 26.4.20, NOT 27.6.1 -- AND THE OLD VALUE WAS NEVER MEASURED. freetype2.pc
+# carries the LIBTOOL version, not the release: freetype 2.14.1 reports
+# 26.4.20. The 27.6.1 in this field was a plausible-looking number that
+# nothing had ever checked, and it was then quoted elsewhere as though it were
+# evidence -- including in this project's own reading of harfbuzz's and
+# cairo's version constraints.
+#
+# THE CONCLUSIONS STILL HOLD, which is luck rather than method: harfbuzz needs
+# `freetype2 >= 12.0.6`, cairo needs `>= 23.0.17` and `>= 25.0.19` for COLRv1,
+# and 26.4.20 clears all three. A wrong number that happens to satisfy every
+# constraint is the kind of error that survives for a long time.
 test   = [["/usr/bin/pkgconf", "--modversion", "freetype2"]]
-expect = ["27.6.1"]
+expect = ["26.4.20"]

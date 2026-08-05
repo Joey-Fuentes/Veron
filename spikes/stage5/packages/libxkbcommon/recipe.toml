@@ -28,8 +28,15 @@ srcdir  = "libxkbcommon-1.13.2"
 kind      = "git"
 url       = "https://github.com/xkbcommon/libxkbcommon.git"
 commit    = "d1442aaa6b635551182e83c3b55037f4c118c962"
-sha256    = "8956282268db8884c76fc564361d5d74fe3ff8a1d1818dc184de6de9a3c3a4b6"
-signature = "none -- the commit IS the provenance; the sha256 is of our derived archive"
+sha256    = "ffc7e2c3e94e866679fbe7cdb6dc5bfe7ad0ae0358c6d96a7ab705e55c3880c3"
+# THE SHA256 IS OF THE UNCOMPRESSED TAR, NOT THE .tar.gz, and that was
+# measured rather than chosen. The first mirror run failed on this package
+# with a digest mismatch while the COMMIT verified -- same tree, different
+# bytes. Decompressing the phone-generated tarball and recompressing it with
+# the runner's gzip reproduced the runner's file exactly: `git archive
+# --format=tar` is reproducible across machines, gzip is not. Hashing the
+# compressed file made a portable artifact look unportable.
+signature = "none -- the commit IS the provenance; the sha256 is of the tar we derive from it"
 crosschecked_against = []
 
 [deps]

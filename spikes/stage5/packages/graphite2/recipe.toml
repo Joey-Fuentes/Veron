@@ -73,5 +73,13 @@ cwd  = "$S"
 run  = [["ninja", "-C", "_b", "install"]]
 env  = { DESTDIR = "$D" }
 [guest]
+# 3.0.1, NOT 1.3.14 -- MEASURED BY THE BOOT, NOT ASSUMED. `pkgconf
+# --modversion graphite2` reports the ABI version, set at CMakeLists.txt:91
+# as `set(version 3.0.1)`, which is what lands in graphite2.pc. The release
+# version 1.3.14 appears nowhere in the .pc file.
+#
+# harfbuzz asks for `graphite2 >= 1.2.0` and 3.0.1 satisfies it, so nothing
+# downstream changes -- but the guest test asserted a number this package
+# never publishes, and only a booted image with the full set could say so.
 test   = [["/usr/bin/pkgconf", "--modversion", "graphite2"]]
-expect = ["1.3.14"]
+expect = ["3.0.1"]

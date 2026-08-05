@@ -55,7 +55,16 @@ DEST=$(cd "$DEST" && pwd)
 OUT="$DEST/$NAME.tar.gz"
 if [ -f "$OUT" ]; then
     echo "  cached  $NAME.tar.gz"
-    sha256sum "$OUT" | sed 's/^/          /'
+    # THE CACHED CHECK MUST HASH THE SAME THING THE PIN IS OVER. Hashing the
+    # compressed file here would report a digest nothing compares against.
+    CACHED_TAR=$(gzip -dc "$OUT" | sha256sum | cut -d' ' -f1)
+    echo "          tar $CACHED_TAR"
+    if [ "${5:-}" != "" ] && [ "$CACHED_TAR" != "$5" ]; then
+        echo "  CACHED ARCHIVE DOES NOT MATCH THE PIN"
+        echo "    wanted $5"
+        echo "    got    $CACHED_TAR"
+        exit 1
+    fi
     exit 0
 fi
 
@@ -102,18 +111,35 @@ if [ "$GOT" != "$COMMIT" ]; then
 fi
 echo "  verified HEAD is $COMMIT"
 
-# DETERMINISTIC ARCHIVE. --format=tar with a fixed prefix, then gzip -n so no
-# timestamp or original filename lands in the header. Two runs of this against
-# the same commit produce byte-identical output, which is what lets the digest
-# below be a pin rather than an observation.
+# THE PIN IS OVER THE TAR, NOT THE TAR.GZ, AND THAT WAS MEASURED.
+#
+# The first version hashed the compressed file and the first real run failed:
+#
+#     wanted a464bff6...  (generated on a phone, gzip from Termux)
+#     got    3ad317bc...  (generated on the runner, gzip 1.12)
+#     414836 bytes vs 414922
+#
+# The COMMIT verified both times, so the source tree was identical. Taking the
+# phone's tarball, decompressing it and re-compressing with a different gzip
+# reproduced the runner's bytes EXACTLY -- same size, same digest. So:
+#
+#     `git archive --format=tar` IS reproducible across machines.
+#     gzip IS NOT -- its output depends on the implementation and version.
+#
+# Hashing the compressed file made a portable artifact look unportable and
+# would have forced a repin every time a runner image changed its gzip. The
+# tar digest is the honest pin; the gzip is packaging.
 mkdir -p "$DEST"
-git archive --format=tar --prefix="$NAME/" "$COMMIT" \
-    | gzip -n -9 > "$OUT.tmp"
+git archive --format=tar --prefix="$NAME/" "$COMMIT" > "$OUT.tar"
+TAR_SHA=$(sha256sum "$OUT.tar" | cut -d' ' -f1)
+gzip -n -9 < "$OUT.tar" > "$OUT.tmp"
+rm -f "$OUT.tar"
 mv "$OUT.tmp" "$OUT"
 
 echo "  wrote   $NAME.tar.gz  ($(wc -c < "$OUT") bytes)"
-GOT_SHA=$(sha256sum "$OUT" | cut -d' ' -f1)
-echo "          $GOT_SHA"
+GOT_SHA="$TAR_SHA"
+echo "          tar    $TAR_SHA   <- THE PIN, compressor-independent"
+echo "          tar.gz $(sha256sum "$OUT" | cut -d' ' -f1)   <- varies with gzip"
 echo "  ^ THIS DIGEST IS OURS, not upstream's. It is derived from the commit"
 echo "    above by a documented, deterministic transformation. The commit is"
 echo "    the provenance; this is the artifact."
@@ -127,12 +153,13 @@ echo "    the provenance; this is the artifact."
 # drift a recipe's sha256 exists to catch, and it can only be caught here.
 if [ "${5:-}" != "" ]; then
     if [ "$GOT_SHA" != "$5" ]; then
-        echo "  ARCHIVE DIGEST MISMATCH for $NAME"
+        echo "  ARCHIVE TAR DIGEST MISMATCH for $NAME"
         echo "    wanted $5"
         echo "    got    $GOT_SHA"
-        echo "  The COMMIT verified, so the source tree is right. What moved is"
-        echo "  the archive: a different git or gzip on this runner, or a change"
-        echo "  to the flags above. Do not repin without knowing which."
+        echo "  The COMMIT verified, so the source tree is right, and this"
+        echo "  digest is of the UNCOMPRESSED tar -- so gzip is not the cause."
+        echo "  A different git version writing different tar headers is, or a"
+        echo "  change to the flags above. Do not repin without knowing which."
         exit 1
     fi
     echo "  verified the archive digest against the recipe"

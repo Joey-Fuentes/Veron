@@ -21,8 +21,15 @@ srcdir  = "libsfdo-0.1.4"
 kind      = "git"
 url       = "https://gitlab.freedesktop.org/vyivel/libsfdo.git"
 commit    = "82115b19317f065ea3c4f52e62549bec81521203"
-sha256    = "8296010d31663ffea9e1d26e99d4b90b9b7724c1d54d135c85d7ca07a4989565"
-signature = "none -- the commit IS the provenance; the sha256 is of our derived archive"
+sha256    = "d53d69eb15b8e0cf2c0e92e9d34064b896a2ddc7b06bb811b2c06ae4f12d1fb3"
+# THE SHA256 IS OF THE UNCOMPRESSED TAR, NOT THE .tar.gz, and that was
+# measured rather than chosen. The first mirror run failed on this package
+# with a digest mismatch while the COMMIT verified -- same tree, different
+# bytes. Decompressing the phone-generated tarball and recompressing it with
+# the runner's gzip reproduced the runner's file exactly: `git archive
+# --format=tar` is reproducible across machines, gzip is not. Hashing the
+# compressed file made a portable artifact look unportable.
+signature = "none -- the commit IS the provenance; the sha256 is of the tar we derive from it"
 crosschecked_against = []
 
 [deps]

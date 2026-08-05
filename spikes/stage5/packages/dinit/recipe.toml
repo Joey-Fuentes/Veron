@@ -18,8 +18,15 @@ srcdir  = "dinit-0.22.1"
 kind      = "git"
 url       = "https://github.com/davmac314/dinit.git"
 commit    = "b3ba792ca723e2c137cbc64d8967387039dbac16"
-sha256    = "a464bff67a00d2f5b317b5176208407504ab99d202bd58057ff9821d099b69d9"
-signature = "none -- the commit IS the provenance; the sha256 is of our derived archive"
+sha256    = "d33a44bb856db2fc91fac90e9ec4428ded057547612c1f3e7b5788466cb88494"
+# THE SHA256 IS OF THE UNCOMPRESSED TAR, NOT THE .tar.gz, and that was
+# measured rather than chosen. The first mirror run failed on this package
+# with a digest mismatch while the COMMIT verified -- same tree, different
+# bytes. Decompressing the phone-generated tarball and recompressing it with
+# the runner's gzip reproduced the runner's file exactly: `git archive
+# --format=tar` is reproducible across machines, gzip is not. Hashing the
+# compressed file made a portable artifact look unportable.
+signature = "none -- the commit IS the provenance; the sha256 is of the tar we derive from it"
 crosschecked_against = []
 
 [deps]

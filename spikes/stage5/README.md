@@ -265,6 +265,34 @@ source URLs and digests. **Arch's mesa PKGBUILD lists `python-mako` in
 `makedepends`.** See [`ROADMAP.md`](./ROADMAP.md) for the three-detector design
 that follows from this.
 
+**IT BOOTS, AND THE IMAGE REPRODUCES.** At 48 packages:
+
+```
+VERON-IMAGE-REPRO-OK  two builds, identical bytes
+VERON-STAGE5-TESTS    pass=46 fail=2 none=1
+```
+
+Two independent image builds byte-identical, the kernel comes up, `init` runs,
+and the generated guest tests execute *inside the booted system*. That is the
+whole spike shape working end to end for the first time on a complete set.
+
+**Both failures were the test being wrong, not the package** — and both are the
+same mistake: **a `.pc` Version is an ABI version, not a release version.**
+
+- `graphite2` reports **3.0.1**, set at `CMakeLists.txt:91` as
+  `set(version 3.0.1)`. The release number 1.3.14 appears nowhere in the
+  `.pc` file.
+- `freetype` reports **26.4.20** — freetype2.pc carries the libtool version.
+  The `27.6.1` in that field had never been measured, and it was then quoted
+  *elsewhere in this work as evidence*, including in the reading of harfbuzz's
+  and cairo's version constraints.
+
+Those conclusions survive — harfbuzz needs `>= 12.0.6`, cairo `>= 23.0.17` and
+`>= 25.0.19`, and 26.4.20 clears all three — but that is luck, not method. **A
+wrong number that happens to satisfy every constraint is the kind of error that
+survives for a long time**, and only a booted image running the full set found
+it.
+
 **The three git-pinned packages have recipes: 48.** libxkbcommon 1.13.2,
 libsfdo 0.1.4 and dinit 0.22.1, each read from the tree `fetch-git.sh`
 generated rather than from a guess.
@@ -295,6 +323,25 @@ dependencies are absent rather than degrading; `enable-xkbregistry` is true and
 does `dependency('libxml-2.0')` with no `required:false` at all. dinit's
 configure probes pkg-config for libcap and links it if found — the `auto`
 failure again, so `--disable-capabilities` is stated rather than inherited.
+
+**The git-pinned pin was over the wrong bytes, and the first mirror run said
+so.** `fetch-git.sh` hashed the compressed archive, and dinit failed with the
+commit verifying and the digest not:
+
+```
+wanted a464bff6…   414836 bytes   (a phone, Termux's gzip)
+got    3ad317bc…   414922 bytes   (the runner, gzip 1.12)
+```
+
+Decompressing the phone's tarball and recompressing it with a different gzip
+reproduced the runner's file **exactly** — same size, same digest. So
+`git archive --format=tar` **is** reproducible across machines and gzip **is
+not**. Hashing the compressed file made a portable artifact look unportable
+and would have forced a repin every time a runner image changed its gzip.
+
+The pin is the **uncompressed tar** now; the gzip is packaging. `veron fetch`
+decompresses before hashing for git sources, and all three verify against the
+archives generated on a completely different machine.
 
 **Git-pinned sources were never stored anywhere.** `libxkbcommon`, `dinit` and
 `libsfdo` publish no tarball; `fetch-git.sh` clones the pinned commit and
