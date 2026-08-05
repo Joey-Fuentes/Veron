@@ -1077,7 +1077,7 @@ package fribidi 1.0.16
 package glib 2.86.4
   group        text-rendering
   license      LGPL-2.1-or-later
-  recipe-sha   e39c7ce998140bd679efb318e81ee2929677bfd0a77893e8861590d9466ebff3
+  recipe-sha   77365bbb7fc52f821b019edeb469b2876aa5c707d2c405403ac8470d2ebfd9b3
 
   source
     url        https://download.gnome.org/sources/glib/2.86/glib-2.86.4.tar.xz
@@ -1095,13 +1095,16 @@ package glib 2.86.4
     [01] unpack
          cwd  build/glib-2.86.4
          argv ["tar", "-xf", "dl/glib-2.86.4.tar.xz", "-C", "build/glib-2.86.4"]
-    [02] setup
+    [02] patch
+         cwd  build/glib-2.86.4/glib-2.86.4
+         argv ["sh", "-c", "for p in /home/claude/work/D/spikes/stage5/packages/glib/patches/*.patch; do [ -e \"$p\" ] || continue; if patch -p1 --batch --forward --dry-run < \"$p\" >/dev/null 2>&1; then echo \"  applying $(basename $p)\"; patch -p1 --batch --forward < \"$p\"; else echo \"  already applied: $(basename $p)\"; fi; done"]
+    [03] setup
          cwd  build/glib-2.86.4/glib-2.86.4
          argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false", "-Dintrospection=disabled", "-Dselinux=disabled", "-Dlibmount=disabled", "-Dsysprof=disabled"]
-    [03] build
+    [04] build
          cwd  build/glib-2.86.4/glib-2.86.4
          argv ["ninja", "-C", "_b"]
-    [04] install
+    [05] install
          cwd  build/glib-2.86.4/glib-2.86.4
          env  DESTDIR=dest/glib
          argv ["ninja", "-C", "_b", "install"]

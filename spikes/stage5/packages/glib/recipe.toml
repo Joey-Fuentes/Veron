@@ -41,10 +41,35 @@ cwd  = "$B"
 run  = [["tar", "-xf", "$DL/glib-2.86.4.tar.xz", "-C", "$B"]]
 
 [[steps]]
+# APPLIED BEFORE CONFIGURE, and it fails loudly if it does not apply -- a
+# patch that silently misses is worse than no patch, because the build then
+# fails somewhere else for a reason that looks unrelated.
+name = "patch"
+cwd  = "$S"
+# A dry run first, so an already-applied patch is REPORTED rather than
+# failing the step and leaving a .rej file behind. Builds here are --clean so
+# it should never happen; a step that breaks confusingly on the one occasion
+# it does is not worth the two extra words.
+run  = [["sh", "-c", "for p in $P/*.patch; do [ -e \"$p\" ] || continue; if patch -p1 --batch --forward --dry-run < \"$p\" >/dev/null 2>&1; then echo \"  applying $(basename $p)\"; patch -p1 --batch --forward < \"$p\"; else echo \"  already applied: $(basename $p)\"; fi; done"]]
+
+[[steps]]
 name = "setup"
 cwd  = "$S"
+# WHAT MAKES THIS BUILD IS THE PATCH, NOT A FLAG. See
+# patches/0001-bash-completion-pkg-config-only.patch: glib's bash-completion
+# lookup falls through to meson's CMake backend, which dies parsing cmake
+# 4.2.3's trace output. There is NO -Dbash_completion option -- that was
+# shipped as a fix and was wrong, and reading the tarball is what settled it.
+#
+# THIS WILL RECUR. Every meson package reaches the same backend the moment an
+# optional dependency is missing, and most of what remains is meson: mesa,
+# wlroots, pango, cairo, harfbuzz, gstreamer, foot, fuzzel. A patch per
+# package does not scale; whether meson 1.10 and cmake 4.x can coexist is the
+# question this raises and does not answer.
 run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
-         "-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false", "-Dintrospection=disabled", "-Dselinux=disabled", "-Dlibmount=disabled", "-Dsysprof=disabled"]]
+         "-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false",
+         "-Dintrospection=disabled", "-Dselinux=disabled",
+         "-Dlibmount=disabled", "-Dsysprof=disabled"]]
 
 [[steps]]
 name = "build"

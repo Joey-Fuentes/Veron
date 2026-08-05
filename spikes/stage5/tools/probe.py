@@ -614,6 +614,45 @@ def declared_deps(root):
     return {k: sorted(v) for k, v in found.items()}
 
 
+def meson_options(root):
+    """Options a meson package declares, from meson_options.txt / meson.options.
+
+    THE RECIPE TEMPLATE SAYS "the probe lists options, you choose", AND FOR
+    MESON PACKAGES IT DID NOT. Only `configure --help` was read, so every
+    autotools package got its options listed and every meson package got
+    nothing -- while most of what remains is meson: mesa, wlroots, pango,
+    cairo, harfbuzz, gstreamer, foot, fuzzel.
+
+    The cost of that gap was concrete. glib crashed meson outright, and the
+    reason was a `bash-completion` lookup falling through to meson's CMake
+    backend, which then failed parsing cmake 4.2.3's trace output. Whether
+    glib exposes an option to disable that lookup could not be answered from
+    any probe output -- it had to be guessed or discovered by another build.
+    """
+    for name in ("meson.options", "meson_options.txt"):
+        path = os.path.join(root, name)
+        if os.path.exists(path):
+            break
+    else:
+        return None
+    try:
+        text = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return None
+    out = []
+    # option('name', type: 'feature', value: 'auto', description: '...')
+    for m in re.finditer(
+            r"option\s*\(\s*['\"]([\w.-]+)['\"](.*?)\)", text, re.S):
+        name, rest = m.group(1), m.group(2)
+        typ = (re.search(r"type\s*:\s*['\"](\w+)['\"]", rest) or [None, "?"])[1]
+        val = re.search(r"value\s*:\s*['\"]?([\w.-]+)", rest)
+        desc = re.search(r"description\s*:\s*['\"](.*?)['\"]", rest, re.S)
+        d = (desc.group(1).replace("\n", " ").strip()[:58]) if desc else ""
+        out.append(f"-D{name:<26}{typ:<9}"
+                   f"{('=' + val.group(1)) if val else '':<10}{d}")
+    return out
+
+
 def configure_options(root):
     """What COULD be turned off. Choosing is judgement, not a fact."""
     cfg = os.path.join(root, "configure")
@@ -852,7 +891,18 @@ def probe(url, keep=False, quiet_report=False):
 
     opts = configure_options(root)
     if opts is None:
-        print("\n   configure --help: no configure script to ask")
+        mo = meson_options(root)
+        if mo:
+            # AUTO IS THE DANGEROUS DEFAULT. A meson feature set to 'auto' is
+            # enabled if its dependency happens to be present, so what the
+            # package becomes depends on what else was installed first --
+            # exactly what optional_off exists to prevent.
+            auto = [o for o in mo if "=auto" in o]
+            print(f"\n   meson options ({len(mo)}, {len(auto)} default to auto)")
+            for o in mo:
+                print(f"      {o}")
+        else:
+            print("\n   configure --help: no configure script to ask")
     else:
         print(f"\n   {len(opts)} optional features -- EACH IS A DECISION, not a default")
         for o in opts[:40]:

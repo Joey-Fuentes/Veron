@@ -1,0 +1,46 @@
+Restrict the bash-completion lookup to pkg-config.
+
+WHY: glib asks for `bash-completion` with required: false. It is absent here,
+so meson falls back to its CMAKE dependency backend, runs
+
+    cmake --trace-expand --trace-format=json-v1
+
+and dies parsing the output of cmake 4.2.3:
+
+    meson.build:2549:16: ERROR: Unhandled python exception
+    This is a Meson bug and should be reported!
+
+The console showed only that. The cause came out of
+_b/meson-logs/meson-log.txt, which nothing printed until the driver began
+collecting build-system logs on any step failure.
+
+WHY THIS AND NOT AN OPTION: there is no option. `grep bash meson.options`
+returns nothing -- the dependency() call is unconditional, so
+-Dbash_completion=disabled would fail with "Unknown option", a different error
+rather than a fix. That was verified by reading the tarball, after shipping
+exactly that wrong flag.
+
+WHY IT IS SAFE: the dependency only chooses an install DIRECTORY, and glib
+already has a fallback for not finding it --
+
+    if bash_comp_inst_dir == ''
+      message('... fallback to a predefined path')
+      bash_comp_inst_dir = join_paths(get_option('datadir'), 'bash-completion/completions')
+
+-- so the completions still install, at the standard path. Nothing is lost.
+
+`method: 'pkg-config'` is a documented meson kwarg. It says where to look, not
+whether to require, so this is the smallest change that stops meson reaching
+for cmake at all.
+
+--- a/meson.build
++++ b/meson.build
+@@ -2546,7 +2546,7 @@
+ # Determine which user environment-dependent files that we want to install
+ bash = find_program('bash', required : false)
+ have_bash = bash.found() # For completion scripts
+-bash_comp_dep = dependency('bash-completion', version: '>=2.0', required: false)
++bash_comp_dep = dependency('bash-completion', version: '>=2.0', required: false, method: 'pkg-config')
+ have_sh = find_program('sh', required : false).found() # For glib-gettextize
+ have_pkg_config = find_program('pkg-config', required: false).found()
+ 
