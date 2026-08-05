@@ -18,7 +18,7 @@ prediction held, and this is the rewrite.
 | packages pinned | **111** | `probe batch` — digest, signature, licence and declared dependencies read from each tarball |
 | recipes written | **41** | `packages/*/recipe.toml`, ordered by `veron plan` |
 | built, installed, staged | **31** | `stage5-spike`, blocked at `glib` |
-| artifacts with ≥2 fetch routes | **107** | `sources/MIRRORS.tsv`, 134 routes |
+| artifacts with ≥2 fetch routes | **107** | `sources/MIRRORS.tsv`, 239 routes |
 | git-pinned (no tarball exists) | **3** | libsfdo, dinit, libxkbcommon |
 
 **What is proven, not asserted:**
@@ -49,6 +49,14 @@ plumbing are untouched.
 | `../../tools/mirror.py` | every route to an artifact, verified before it is recorded |
 | `../../tools/fetch-git.sh` | a commit turned into a tarball we generate, for upstreams that publish none |
 
+**Patches are applied by the driver, not by a recipe step.** `packages/<pkg>/
+patches/*.patch` run in sorted order straight after the unpack, and a patch
+that does not apply is fatal — the source is not what the recipe was written
+against, and building anyway produces something nobody described. `PLAN.txt`
+records which patches apply, not where they live: a step would have to name
+the patches directory, and that path differs between a laptop and a runner,
+which broke `plan --check` before anything built.
+
 Python 3.11+ (`tomllib`), standard library only.
 
 ```sh
@@ -73,8 +81,23 @@ Invisible to BLFS (which does not carry zstd), to Arch (which lists what zstd
 tests finds a test-suite-only build dependency — which is the argument for
 keeping suites on when they are affordable.
 
-**`glib` requires `bash`**, and crashes meson outright without it. A build-time
-*tool*, not a library, so again undeclared anywhere.
+**`glib` requires `bash`** — and that was only half of it. With bash present
+it still crashed, and the console said nothing but *"This is a Meson bug and
+should be reported!"*. The cause was in `_b/meson-logs/meson-log.txt`, which
+nothing printed: glib looks up `bash-completion`, it is absent, meson falls
+back to its **CMake dependency backend**, and dies parsing cmake 4.2.3's trace
+output. Three runs went into theories about bash before that log was visible.
+
+The fix is a one-kwarg patch — `method: 'pkg-config'`, which says where to
+look rather than whether to require — and it is safe because the dependency
+only picks an install directory and glib already has a fallback. **There is no
+option for it**; `-Dbash_completion=disabled` was shipped as a fix and was
+wrong, which reading the tarball settled.
+
+**This one will recur.** Every meson package reaches that backend the moment an
+optional dependency is missing, and most of what remains is meson: mesa,
+wlroots, pango, cairo, harfbuzz, gstreamer, foot, fuzzel. A patch per package
+does not scale, and whether meson 1.10 and cmake 4.x can coexist is unanswered.
 
 **`deps.build` was decoration.** Each package installed into its own DESTDIR
 and nothing put that on `PATH`, so an edge ordered the build correctly and did
@@ -91,11 +114,32 @@ cover this: `mdev` creates device nodes, while libinput, mesa, wlroots and
 yambar link `libudev.so`. No libudev means no input, which means no
 compositor. Found by reading declared dependencies, not by planning.
 
+**`patch` is busybox, not GNU.** The glib patch applied cleanly on a laptop
+every time and failed on the runner, because busybox's patch takes only
+`-p -i -R -N -E -f` and rejected `--batch --forward --dry-run` as unknown
+options — which the driver then read as *"the patch does not apply"*. A build
+was failed against a tree the patch fitted perfectly. The sandbox is busybox
+throughout, and GNU-flavoured options are a recurring way to be wrong in it:
+`timeout -v`, `test -ot`'s second granularity, the absent `file` applet, and
+now this.
+
 **The pessimistic dependency graph does not close**, and that is expected: a
 declared dependency list is the union of every optional feature, so `cairo ↔
 pango` and `file ↔ zstd` appear as cycles that our own flag choices remove.
 `probe order` proves the useful direction — acyclic there would guarantee
 acyclic in reality.
+
+**Three gates were decorative.** `ok subcommand present: …` printed for every
+name in a hardcoded list and checked nothing — renaming a subcommand in the
+parser left it reporting ok, while a workflow calling `veron git-sources` died
+with `invalid choice`. A plan-path check printed `ok … not runnable here` on
+every run. A `sources` check split on whitespace where the format is tabs, so a
+four-word status line passed it. Each now fails when it should, and the
+subcommand list is derived from what the workflows actually call rather than
+maintained by hand.
+
+**A gate that cannot fail is worse than no gate**, because it occupies the
+place where a real one would go.
 
 ---
 

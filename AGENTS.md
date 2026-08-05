@@ -130,6 +130,60 @@ inherits. Treat divergence between docs and reality as a bug.
 
 ---
 
+## 2c. A gate that cannot fail is worse than no gate
+
+Every check in this repository must be shown to **fail when it should**, not
+just to pass when things are fine. This is not a style preference; it is the
+single most expensive lesson stage 5 has produced so far.
+
+Four real examples, each of which reported green while verifying nothing:
+
+- `ok subcommand present: <name>` printed for every name in a hardcoded list
+  and checked nothing at all. Renaming a subcommand in the parser left it
+  saying ok, while a workflow calling `veron git-sources` died with
+  `invalid choice`.
+- A plan-path check printed `ok … not runnable here` on **every** run, because
+  an exception handler turned a broken check into a passing one.
+- A `sources` output check split on whitespace where the format is
+  tab-separated, so a four-word status line satisfied it.
+- A CLI-surface check asserted the **flags** a tool takes and never its
+  **positional** arguments, so forty fetches failed with an argparse usage
+  error while the guard reported the interface intact.
+
+The rules that follow from this:
+
+- **Prove the failure.** After writing a check, break the thing it guards and
+  confirm it goes red. If you cannot make it fail, you have not written a
+  check.
+- **Never write `except Exception: print("ok")`.** A check that could not run
+  is a check that is not running. Say so and fail. Only a genuinely
+  inapplicable case (no `sh` on the machine, say) may be skipped, and it must
+  be reported as skipped rather than as passing.
+- **Fixtures must have the shape of the real thing.** Staging into an *empty*
+  directory passed while staging into a real build root destroyed busybox,
+  because an empty directory has no symlinks to write through.
+- **Derive, do not maintain.** The subcommand list now comes from what the
+  workflows actually call; the mirror-route names come from the URL; the
+  dependency graph comes from the `.pc` files each tarball ships. Hand-kept
+  lists drift, and they drift silently.
+
+## 2d. Reproduce before theorising
+
+A hang in m4's test suite produced four confident diagnoses — PID namespaces,
+loopback, SIGPIPE, an inherited log pipe — and all four were wrong. The actual
+cause was reproducible locally in eight seconds with a `sleep 300 &` fixture.
+
+When something looks environmental, **build the smallest thing that shows the
+symptom before reading any more documentation**. And when the build system has
+written a log, read the log: `meson-logs/meson-log.txt`, `config.log`,
+`CMakeError.log` are collected automatically now for exactly this reason.
+
+Related: **the sandbox is busybox**, not GNU. `timeout -v`, `patch --dry-run`,
+`test -ot` at sub-second granularity and a `file` applet all do not exist
+there. Options that work on a laptop are not evidence.
+
+---
+
 ## 3. Repository map
 
 ```

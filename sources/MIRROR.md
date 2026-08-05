@@ -109,7 +109,7 @@ Release assets give the storage without any of it.
 
 ## Where it stands
 
-**134 routes across 107 artifacts, and nothing is THIN.** Every artifact has
+**239 routes across 107 artifacts, and nothing is THIN.** Every artifact has
 its upstream recorded as provenance plus at least one route that does not
 depend on anyone else's uptime.
 
@@ -135,9 +135,13 @@ second route from our own release namespace.
   `tools/fetch-git.sh`. A commit is a stronger pin than a tarball digest — but
   if the forge is down they cannot be fetched. Uploading the generated tarball
   as a derived artifact would close that.
-- **Some assets are keyed by a bare version.** Codeberg and GitHub archive URLs
-  end in the tag rather than the project, so labwc's mirror is
-  `src/0.9.1.tar.gz`. Unnavigable, and two projects tagging the same version
-  would collide.
+- ~~Assets keyed by a bare version.~~ **Fixed.** Codeberg, GitHub and
+  sourcehut archive URLs end in the tag rather than the project, so a plain
+  basename produced `src/3.3.1.tar.gz`, `src/0.9.1.tar.gz`, `src/1.1.0.tar.gz`
+  and `src/1.11.3.tar.gz` — unidentifiable, and colliding the moment two
+  projects tag the same version. `mirror.artifact_name()` reads the project
+  out of the path instead, giving `fcft-3.3.1.tar.gz` and so on, and the
+  selftest gates it. The four original releases are orphaned and can be
+  deleted.
 - **Which host is second** is undecided. It must be a different operator, not
   a second repo.

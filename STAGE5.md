@@ -296,6 +296,41 @@ deliberate decision rather than a transitive dependency.
 - **Two libcs on the system** if Nix is installed alongside — see
   `DERIVATIONS.md`. Nix packages use nixpkgs' own glibc; nothing links across.
 
+## The order the rest is built in, and why
+
+**B5 — graphics and Wayland (15).** Next, and not for size. It settles the two
+things nothing else can: **whether mesa builds without Rust** — `rustc`,
+`zerocopy` and `syn` are all in mesa 26's declarations, and configure returning
+`rc=0` is not the same as compiling — and **whether meson-plus-cmake-4 is a
+general problem**. glib needed a patch to stop its dependency lookup falling
+through to meson's CMake backend; mesa, wlroots and libinput are all meson. If
+two more need patches, that is a pattern wanting a systemic answer rather than
+one patch per package. B5 is also the first time `fetch-git.sh` runs in anger,
+for `libxkbcommon`.
+
+**B5.5 — it boots to a login.** Not packages, and the biggest unknown in the
+project: dinit service definitions, the `/etc` skeleton, getty autologin, the
+kernel installed into the image, the EFI stub. Doing it here rather than after
+the browser means a system that boots and logs in at **~57 packages instead of
+~100**, with everything after it additive — and it turns the guest tests from a
+harness into a real session.
+
+**B6 — system, network, TLS (18).** After which `curl https://example.com` from
+the booted image is a genuinely strong end-to-end signal: DNS, TCP, TLS and the
+`make-ca` trust store in one command.
+
+**B7 — desktop (16).** labwc, foot, fuzzel, yambar, and the libudev-zero
+underneath them.
+
+**B8 — the browser (14).** Last, and the longest: WPE alone is 136 minutes.
+The **browser shell does not exist** and is ours to write — MiniBrowser has
+keyboard shortcuts and no URL bar — which is worth starting during B7 rather
+than discovering at B8.
+
+**What changes when B5 lands:** LLVM is 27 minutes by itself, so a spike run
+stops being something to do casually. That is a workflow decision, not a recipe
+one, and it has not been made.
+
 ## Open questions
 
 Four of the five that were here are answered, and the answers are recorded
