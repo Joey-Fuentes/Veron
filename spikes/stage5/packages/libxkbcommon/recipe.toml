@@ -49,8 +49,12 @@ runtime      = []
 #   wayland      -> wayland-client, wayland-protocols, wayland-scanner, none
 #                   of which are built yet; also errors when absent
 #   xkbregistry  -> dependency('libxml-2.0') with NO required:false at all
-optional_off = ["x11", "wayland", "xkbregistry", "docs", "bash-completion",
-                "cool-uris", "tools"]
+# CORROBORATIVE DECLINE, ALREADY IMPLIED BY A FLAG. libxml2 is required --
+# no `required: false` at all -- by libxkbregistry, and this recipe passes
+# -Denable-xkbregistry=false. Named here as well as by that flag, because
+# `xkbregistry` is the feature and `libxml2` is the package, and the
+# reconciler compares package names.
+optional_off = ["x11", "wayland", "xkbregistry", "docs", "bash-completion", "cool-uris", "tools", "libxml2"]
 
 [declared]
 configure_flags = ["-Denable-x11=false", "-Denable-wayland=false",

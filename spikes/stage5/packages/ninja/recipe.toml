@@ -23,7 +23,10 @@ crosschecked_against = []
 build        = ["python"]
 link         = []
 runtime      = []
-optional_off = []
+# CORROBORATIVE DECLINE. Arch bootstraps ninja with cmake. This recipe uses
+# ninja's own configure.py --bootstrap, which needs only python and a C++
+# compiler -- and must, since cmake is built AFTER ninja and needs it.
+optional_off = ["cmake"]
 
 [declared]
 configure_flags = []

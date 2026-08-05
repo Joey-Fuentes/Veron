@@ -147,7 +147,7 @@ package dinit 0.22.1
 package expat 2.7.4
   group        build-substrate
   license      MIT
-  recipe-sha   1fac85f54c2b230dedecd82b84229690f9d56c6b6be7566391e6235a32a394ea
+  recipe-sha   1fdbad4832642ad1724630344e16f60278078ed2d6ffd94722fa92f1c5e96257
 
   source
     url        https://github.com/libexpat/libexpat/releases/download/R_2_7_4/expat-2.7.4.tar.xz
@@ -159,7 +159,7 @@ package expat 2.7.4
     build        -
     link         -
     runtime      -
-    optional_off docbook
+    optional_off cmake, docbook
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -276,7 +276,7 @@ package hello 2.12.3
 package icu 78.2
   group        build-substrate
   license      ICU
-  recipe-sha   661491a6b42cb69315625d4d6f7176c54042e6fd516387a4b52d8ada1f3939cf
+  recipe-sha   00f5ae6b62c4ca1011be41f29ecafda9222b16c0be229de68b58320ebc7593b3
 
   source
     url        https://github.com/unicode-org/icu/releases/download/release-78.2/icu4c-78.2-sources.tgz
@@ -288,7 +288,7 @@ package icu 78.2
     build        -
     link         -
     runtime      -
-    optional_off icuio-static, samples, tests
+    optional_off icuio-static, python, samples, tests
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -340,7 +340,7 @@ package libffi 3.5.2
 package m4 1.4.21
   group        build-substrate
   license      GPL-3.0-or-later
-  recipe-sha   b6ea231fff985456bd0c9880ddce6112d3704c8a25dec151e37a8f1163dda4bf
+  recipe-sha   df59f6cac2550e4a6f791f7c8b057db399738b976436044e190894d5938dfe70
 
   source
     url        https://ftp.gnu.org/gnu/m4/m4-1.4.21.tar.xz
@@ -352,7 +352,7 @@ package m4 1.4.21
     build        -
     link         -
     runtime      -
-    optional_off gettext, libiconv, libintl, libsigsegv
+    optional_off gettext, gperf, libiconv, libintl, libsigsegv, python
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -436,7 +436,7 @@ package pcre2 10.47
 package pkgconf 3.0.5
   group        build-substrate
   license      ISC
-  recipe-sha   ff96c1fe05daed276859b4fd7d0e337165f48dc8db8967afa02cd0debbb16584
+  recipe-sha   e657a5d2d88c8306279c05b4a20ba91a6e66e227f7f33460606e3fa1b73d1022
 
   source
     url        https://github.com/pkgconf/pkgconf/releases/download/pkgconf-3.0.5/pkgconf-3.0.5.tar.xz
@@ -450,7 +450,7 @@ package pkgconf 3.0.5
     build        -
     link         -
     runtime      -
-    optional_off static
+    optional_off meson, static
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -665,7 +665,7 @@ package readline 8.3
 package zstd 1.5.7
   group        build-substrate
   license      GPL-2.0-or-later
-  recipe-sha   d8a1b071e926db814f9cb4d6ab424428e8d22bfe9095ddf9152fd6b1be349674
+  recipe-sha   c45b1e0a3a1a647207cddd29bdc0729e38c8e78cde667ba8c3d099ea71486e03
 
   source
     url        https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
@@ -677,7 +677,7 @@ package zstd 1.5.7
     build        file
     link         -
     runtime      -
-    optional_off LZ4, LZMA, ZLIB, lz4, lzma, zlib
+    optional_off LZ4, LZMA, ZLIB, cmake, lz4, lzma, ninja, zlib
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -795,7 +795,7 @@ package freetype-bootstrap 2.14.1
   group        text-rendering
   build-only   yes -- staged for later packages, not installed into the image
   license      FTL-or-GPL-2.0
-  recipe-sha   2a19c3d18fddc07c0940314fd89155ac04b249de688ccffbcf02626d77f9a47c
+  recipe-sha   7e8c692c96019529e070b7d103a550eb2b4ec05c54b9c4a477587c4350d47499
 
   source
     url        https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz
@@ -807,7 +807,7 @@ package freetype-bootstrap 2.14.1
     build        libpng, zlib
     link         libpng, zlib
     runtime      libpng, zlib
-    optional_off brotli, bzip2, harfbuzz
+    optional_off brotli, bzip2, cairo, harfbuzz, meson
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -859,7 +859,7 @@ package libarchive 3.8.5
 package libxml2 2.15.1
   group        build-substrate
   license      MIT
-  recipe-sha   ec0d693d1e3048970c214e954eab0453afdd2da334411aa99f19fdc846d92d8b
+  recipe-sha   a70fb5e91ff8a616ba0d5266391cb1b83980133cf308540cf8562304bbccbee2
 
   source
     url        https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.1.tar.xz
@@ -871,7 +871,7 @@ package libxml2 2.15.1
     build        readline, xz, zlib
     link         readline, xz, zlib
     runtime      readline, xz, zlib
-    optional_off icu, lzma-static, python
+    optional_off icu, lzma-static, meson, python
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -1057,7 +1057,7 @@ package meson 1.10.1
 package ninja 1.13.2
   group        build-substrate
   license      Apache-2.0
-  recipe-sha   071dbad64fc985c289dc7bc9acaca470692449a7d37d0844a24da10345a5ea35
+  recipe-sha   068d219315890a7f9d336b9c843a3102b6a53e52f7c858e907e137b99f0d54c3
 
   source
     url        https://github.com/ninja-build/ninja/archive/v1.13.2/ninja-1.13.2.tar.gz
@@ -1069,7 +1069,7 @@ package ninja 1.13.2
     build        python
     link         -
     runtime      -
-    optional_off -
+    optional_off cmake
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -1216,7 +1216,7 @@ package fribidi 1.0.16
 package glib 2.86.4
   group        text-rendering
   license      LGPL-2.1-or-later
-  recipe-sha   81ed0284977cf39be908cadd7c82e8e3d903fd8882179b65a3221d26c2e2dfcb
+  recipe-sha   95100c62b9365831e446fa0811e948705e568e326af0d8144d44039f97eeb06a
 
   source
     url        https://download.gnome.org/sources/glib/2.86/glib-2.86.4.tar.xz
@@ -1228,7 +1228,7 @@ package glib 2.86.4
     build        bash, libffi, meson, ninja, pcre2, python, zlib
     link         libffi, pcre2, zlib
     runtime      libffi, pcre2, zlib
-    optional_off dtrace, gtk_doc, introspection, libmount, man-pages, selinux, sysprof, systemtap, tests
+    optional_off dtrace, gtk_doc, introspection, libmount, man-pages, packaging, selinux, sysprof, systemtap, tests
 
   patches (applied after unpack, in this order)
     0001-bash-completion-pkg-config-only.patch
@@ -1289,7 +1289,7 @@ package libsfdo 0.1.4
 package libxkbcommon 1.13.2
   group        graphics-substrate
   license      MIT
-  recipe-sha   83bd4da1d2ebd4ff389d40eac8d975e7f565d13bfc9e84affe41cd3d3f9a03f1
+  recipe-sha   22b30b3cff2c41278019fa3b17bbaf03d084830562091953eb8f08ee1ca5c36e
 
   source
     url        https://github.com/xkbcommon/libxkbcommon.git
@@ -1303,7 +1303,7 @@ package libxkbcommon 1.13.2
     build        meson, ninja
     link         -
     runtime      -
-    optional_off bash-completion, cool-uris, docs, tools, wayland, x11, xkbregistry
+    optional_off bash-completion, cool-uris, docs, libxml2, tools, wayland, x11, xkbregistry
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -1390,7 +1390,7 @@ package pixman 0.46.4
 package graphite2 1.3.14
   group        text-rendering
   license      LGPL-2.1-or-later
-  recipe-sha   7720f12e59f78086446b02d162d34ce71f8a1abd35a11734291eeac4984405bd
+  recipe-sha   f3c9fa18bfd0605f2c03232e2aeb910fd95863188e709a2a9254802df4d9e9ab
 
   source
     url        https://github.com/silnrsi/graphite/releases/download/1.3.14/graphite2-1.3.14.tgz
@@ -1402,7 +1402,7 @@ package graphite2 1.3.14
     build        cmake, ninja
     link         -
     runtime      -
-    optional_off comparerenderer, docs, tests
+    optional_off comparerenderer, docs, python, tests
 
   patches (applied after unpack, in this order)
     0001-featuremaptest-include-cstdint.patch
@@ -1459,7 +1459,7 @@ package libjpeg-turbo 3.1.3
 package harfbuzz 12.3.2
   group        text-rendering
   license      MIT
-  recipe-sha   f848e4b6c8cae40d5ae4fb83c082c0e69b155d94e03ef25fde546c180c808ee8
+  recipe-sha   088a88ea5ca0738744edc58fadfd69a68dfb806447cbbbc7c0a8117aded20c37
 
   source
     url        https://github.com/harfbuzz/harfbuzz/releases/download/12.3.2/harfbuzz-12.3.2.tar.xz
@@ -1471,7 +1471,7 @@ package harfbuzz 12.3.2
     build        freetype-bootstrap, glib, graphite2, icu, meson, ninja
     link         freetype-bootstrap, glib, graphite2, icu
     runtime      freetype, glib, graphite2, icu
-    optional_off cairo, chafa, docs, introspection, tests
+    optional_off cairo, chafa, docs, introspection, libpng, python, tests, zlib
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -1493,7 +1493,7 @@ package harfbuzz 12.3.2
 package libwebp 1.6.0
   group        text-rendering
   license      BSD-3-Clause
-  recipe-sha   d8c4fd3a76e78251ac8ad9a54c2880275c740ed2b4862d3592cef99c30df87d9
+  recipe-sha   0a8844440fb724ec8a3ff30289ffc1f6d0341943c4be847840be784809a1794c
 
   source
     url        https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz
@@ -1505,7 +1505,7 @@ package libwebp 1.6.0
     build        libjpeg-turbo, libpng
     link         libjpeg-turbo, libpng
     runtime      libjpeg-turbo, libpng
-    optional_off gif, gl, sdl, tiff
+    optional_off cmake, gif, gl, ninja, sdl, tiff
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -1525,7 +1525,7 @@ package libwebp 1.6.0
 package freetype 2.14.1
   group        text-rendering
   license      FTL-or-GPL-2.0
-  recipe-sha   904b7fb17052fd770858fe5e9dfc9eae646976670875e2bb5b4753c53a4ea60d
+  recipe-sha   c327037861e15313849e1c07d82dfa25c9daa1043f7f35d069f760c4e54e0839
 
   source
     url        https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz
@@ -1537,7 +1537,7 @@ package freetype 2.14.1
     build        harfbuzz, libpng, zlib
     link         harfbuzz, libpng, zlib
     runtime      harfbuzz, libpng, zlib
-    optional_off brotli, bzip2
+    optional_off brotli, bzip2, cairo, meson
 
   commands (literal; this is exactly what runs)
     [01] unpack

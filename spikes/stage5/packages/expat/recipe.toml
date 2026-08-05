@@ -17,7 +17,10 @@ crosschecked_against = []
 build        = []
 link         = []
 runtime      = []
-optional_off = ["docbook"]
+# CORROBORATIVE DECLINE. Arch builds expat with cmake; upstream ships both
+# CMakeLists.txt and a configure script, and this recipe drives configure.
+# Their cmake is a packaging choice, not a dependency of the software.
+optional_off = ["docbook", "cmake"]
 
 [declared]
 configure_flags = ["--prefix=/usr", "--disable-static", "--without-docbook"]

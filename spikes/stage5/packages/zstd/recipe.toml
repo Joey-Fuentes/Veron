@@ -39,7 +39,10 @@ runtime      = []
 # variables rather than configure flags -- zstd has no configure.
 # All three ARE in this set, so without them zstd would link them and
 # the recipe would understate its own dependencies.
-optional_off = ["lz4", "zlib", "lzma", "ZLIB", "LZMA", "LZ4"]
+# CORROBORATIVE DECLINE. Arch builds zstd with cmake + ninja; upstream
+# ships a plain Makefile and this recipe uses it. zstd is at rung 4, well
+# before either exists.
+optional_off = ["lz4", "zlib", "lzma", "ZLIB", "LZMA", "LZ4", "cmake", "ninja"]
 
 [declared]
 configure_flags = ["HAVE_ZLIB=0", "HAVE_LZMA=0", "HAVE_LZ4=0"]

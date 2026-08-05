@@ -15,7 +15,9 @@ crosschecked_against = []
 build        = ["libpng", "libjpeg-turbo"]
 link         = ["libpng", "libjpeg-turbo"]
 runtime      = ["libpng", "libjpeg-turbo"]
-optional_off = ["gl", "sdl", "tiff", "gif"]
+# CORROBORATIVE DECLINE. Arch builds libwebp with cmake + ninja; upstream
+# ships both build systems and this recipe uses ./configure.
+optional_off = ["gl", "sdl", "tiff", "gif", "cmake", "ninja"]
 
 [declared]
 configure_flags = ["--prefix=/usr", "--disable-static", "--enable-libwebpmux", "--enable-libwebpdemux", "--disable-gl"]

@@ -35,7 +35,10 @@ crosschecked_against = []
 build        = ["zlib", "libpng"]
 link         = ["zlib", "libpng"]
 runtime      = ["zlib", "libpng"]
-optional_off = ["harfbuzz", "brotli", "bzip2"]
+# CORROBORATIVE DECLINES -- same two as freetype, same reasons. This
+# package is the same tarball built without harfbuzz to break the
+# freetype/harfbuzz cycle, so its answer cannot differ from freetype's.
+optional_off = ["harfbuzz", "brotli", "bzip2", "meson", "cairo"]
 
 [declared]
 configure_flags = ["--prefix=/usr", "--disable-static", "--without-harfbuzz", "--without-brotli", "--enable-freetype-config"]

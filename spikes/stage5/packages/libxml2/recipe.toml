@@ -15,7 +15,11 @@ crosschecked_against = []
 build        = ["zlib", "xz", "readline"]
 link         = ["zlib", "xz", "readline"]
 runtime      = ["zlib", "xz", "readline"]
-optional_off = ["python", "icu", "lzma-static"]
+# CORROBORATIVE DECLINE. Arch has moved libxml2 to meson; upstream still
+# ships autotools and this recipe uses it. Their meson.build is never read
+# here, which is also why every finding from that file is declined in
+# [undeclarable] rather than acted on.
+optional_off = ["python", "icu", "lzma-static", "meson"]
 
 [declared]
 configure_flags = ["--prefix=/usr", "--disable-static", "--with-history", "--without-python", "--without-icu"]

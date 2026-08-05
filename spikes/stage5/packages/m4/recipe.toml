@@ -29,7 +29,10 @@ runtime      = []
 # if found. None is in this set, so the flags stop m4 acquiring a
 # dependency the day one of them arrives for another package's sake --
 # the `auto` failure this project keeps finding.
-optional_off = ["libsigsegv", "libiconv", "gettext", "libintl"]
+# CORROBORATIVE DECLINES. Arch's m4 runs gnulib's suite, which uses gperf
+# to regenerate a hash and python to drive tests. Neither is needed to
+# build m4 itself.
+optional_off = ["libsigsegv", "libiconv", "gettext", "libintl", "gperf", "python"]
 
 [declared]
 configure_flags = ["--prefix=/usr", "--disable-nls", "--without-libsigsegv-prefix", "--without-libiconv-prefix", "--without-libintl-prefix"]

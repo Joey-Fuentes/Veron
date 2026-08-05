@@ -15,7 +15,14 @@ crosschecked_against = []
 build        = ["meson", "ninja", "freetype-bootstrap", "graphite2", "glib", "icu"]
 link         = ["freetype-bootstrap", "graphite2", "glib", "icu"]
 runtime      = ["freetype", "graphite2", "glib", "icu"]
-optional_off = ["cairo", "tests", "docs", "introspection", "chafa"]
+# CORROBORATIVE DECLINES. Arch enables harfbuzz's utilities and runs its
+# suite; we do neither.
+#   libpng -- hb-view renders to PNG. -Dutilities is not built here.
+#   zlib   -- only used by those same utilities.
+#   python -- the test suite driver. -Dtests=disabled.
+# All three ARE in this set, so these are real choices rather than
+# constraints: enabling the utilities would make them dependencies.
+optional_off = ["cairo", "tests", "docs", "introspection", "chafa", "libpng", "zlib", "python"]
 
 [declared]
 configure_flags = ["-Dgraphite2=enabled", "-Dfreetype=enabled", "-Dglib=enabled", "-Dicu=enabled", "-Dcairo=disabled"]

@@ -15,7 +15,9 @@ crosschecked_against = []
 build        = ["cmake", "ninja"]
 link         = []
 runtime      = []
-optional_off = ["comparerenderer", "docs", "tests"]
+# CORROBORATIVE DECLINE. Arch's graphite runs the test suite, which is
+# python-driven. -DGRAPHITE2_NTRACING and tests are off here.
+optional_off = ["comparerenderer", "docs", "tests", "python"]
 
 [declared]
 configure_flags = ["-DCMAKE_POLICY_VERSION_MINIMUM=3.5", "-DCMAKE_INSTALL_PREFIX=/usr", "-DBUILD_SHARED_LIBS=ON", "-DGRAPHITE2_COMPARE_RENDERER=OFF"]

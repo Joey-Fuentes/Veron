@@ -38,7 +38,13 @@ on:
         description: 'mode -- warn (report only) or fail (exit non-zero on findings)'
         type: choice
         options: [warn, fail]
-        default: warn
+        # DEFAULT fail, AND THE SWEEP EARNED IT. warn was the default while
+        # 82 findings were unread; all 82 are now answered -- 61 disclosed in
+        # [undeclarable] across 12 packages, 21 declined in optional_off with
+        # a reason each. A gate whose output has been read and acted on is a
+        # gate that should block, and one left on warn after that point is
+        # decoration.
+        default: fail
       packages:
         description: 'packages -- space-separated names (blank = all)'
         required: false

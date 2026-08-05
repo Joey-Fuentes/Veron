@@ -15,7 +15,14 @@ crosschecked_against = []
 build        = ["zlib", "libpng", "harfbuzz"]
 link         = ["zlib", "libpng", "harfbuzz"]
 runtime      = ["zlib", "libpng", "harfbuzz"]
-optional_off = ["brotli", "bzip2"]
+# CORROBORATIVE DECLINES, TWO DIFFERENT KINDS.
+#   meson  -- Arch builds freetype2 with meson; upstream ships both and
+#             this recipe uses ./configure.
+#   cairo  -- Arch's freetype2 builds the ftview/ftbench DEMO programs,
+#             which link cairo. We build neither, and cairo is at rung 45
+#             against freetype's 40: a freetype that needed cairo would be
+#             a cycle, which is why upstream keeps the demos separate.
+optional_off = ["brotli", "bzip2", "meson", "cairo"]
 
 [declared]
 configure_flags = ["--prefix=/usr", "--disable-static", "--with-harfbuzz", "--without-brotli", "--enable-freetype-config"]

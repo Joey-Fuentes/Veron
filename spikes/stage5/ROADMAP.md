@@ -828,3 +828,38 @@ function, each looking correct and each failing the same test. It is the same
 failure as `packager_deps`, which was eventually rewritten whole rather than
 patched again — and it was only caught because the timeout path was tested
 rather than assumed.
+
+
+---
+
+## The 21 corroborative declines — and `--mode fail`
+
+All 21 written, verified against the sweep's own findings: **21 of 21 now
+accounted for.** With the 61 disclosures already in place, every one of the
+sweep's 82 findings has an answer, so `stage5-reconcile` defaults to
+**`--mode fail`**. A gate whose output has been read and acted on should
+block; one left on warn past that point is decoration.
+
+They fall into four kinds, and two of them are more than bookkeeping:
+
+**Build-system differences (10).** Arch builds expat, libwebp and zstd with
+cmake, libxml2 and pkgconf with meson, ninja with cmake, freetype with meson.
+Upstream ships both in every case. **Two of these are forced rather than
+chosen**: pkgconf cannot use meson because meson is built *later* in the plan,
+and ninja cannot use cmake because cmake is built *after* ninja and needs it.
+The bootstrap order decides those, not preference.
+
+**Features we disable (5).** harfbuzz's `libpng`, `zlib` and `python` are the
+utilities and the test suite; freetype's `cairo` is the ftview/ftbench demos.
+**All of them are in this set**, so these are real choices — enabling the
+utilities would make them dependencies. freetype's is also a cycle: cairo is
+rung 45 against freetype's 40, which is why upstream keeps the demos separate.
+
+**Test tooling (4).** m4's `gperf` and `python` drive gnulib's suite, icu's
+and graphite2's `python` the same. Upstream suites are not run here.
+
+**And one answered empirically.** Arch's glib2 lists `python-packaging` —
+the same shape as mesa's `import mako`, which no `.pc` file can see and which
+cost this project a missing package once already. It is not needed here, and
+the evidence is a build rather than a reading: **glib built green in run 54,
+before a `packaging` recipe existed anywhere in the set.**

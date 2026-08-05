@@ -61,7 +61,11 @@ link         = []
 runtime      = []
 # --disable-static is a decline: a static libpkgconf nothing links
 # would ship in the image and appear in the manifest.
-optional_off = ["static"]
+# CORROBORATIVE DECLINE. Arch builds pkgconf with meson. This recipe uses
+# ./configure -- and must: meson is built LATER in the plan, so a pkgconf
+# that needed it could not exist at rung 11. The bootstrap order decides
+# this one, not preference.
+optional_off = ["static", "meson"]
 
 [declared]
 configure_flags = [

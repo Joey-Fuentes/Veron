@@ -17,7 +17,9 @@ crosschecked_against = []
 build        = []
 link         = []
 runtime      = []
-optional_off = ["samples", "tests", "icuio-static"]
+# CORROBORATIVE DECLINE. Arch's icu runs the test suite and regenerates
+# data, both of which need python. Upstream suites are not run here.
+optional_off = ["samples", "tests", "icuio-static", "python"]
 
 [declared]
 configure_flags = ["--prefix=/usr", "--disable-static", "--disable-samples", "--disable-tests"]

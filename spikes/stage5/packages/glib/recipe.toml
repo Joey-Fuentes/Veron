@@ -22,7 +22,15 @@ crosschecked_against = []
 build        = ["meson", "ninja", "libffi", "pcre2", "zlib", "python", "bash"]
 link         = ["libffi", "pcre2", "zlib"]
 runtime      = ["libffi", "pcre2", "zlib"]
-optional_off = ["introspection", "selinux", "libmount", "sysprof", "man-pages", "gtk_doc", "tests", "dtrace", "systemtap"]
+# CORROBORATIVE DECLINE, AND THE ONLY ONE ANSWERED EMPIRICALLY. Arch's
+# glib2 lists python-packaging in makedepends -- the same shape as mesa's
+# `import mako`, which no .pc file can see and which cost this project a
+# missing package once already.
+#
+# It is not needed here, and the evidence is a build rather than a reading:
+# glib built green in run 54, BEFORE a `packaging` recipe existed anywhere
+# in the set. Whatever Arch needs it for is not this configuration.
+optional_off = ["introspection", "selinux", "libmount", "sysprof", "man-pages", "gtk_doc", "tests", "dtrace", "systemtap", "packaging"]
 
 [declared]
 configure_flags = ["-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false", "-Dintrospection=disabled", "-Dselinux=disabled", "-Dlibmount=disabled", "-Dsysprof=disabled"]
