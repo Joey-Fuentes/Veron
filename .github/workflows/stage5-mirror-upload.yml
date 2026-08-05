@@ -109,7 +109,14 @@ jobs:
                 # needs one, so fetch directly and hash what arrives. The
                 # upload records OUR digest of OUR copy, which is exactly what
                 # a mirror row means.
-                printf -- '-\t%s\t%s\n' "$(basename "$u")" "$u"
+                # NOT basename. Forge archive URLs end in the TAG, so
+                # codeberg.org/dnkl/fcft/archive/3.3.1.tar.gz yields
+                # "3.3.1.tar.gz" -- a release nobody can identify, and one
+                # that collides the moment two projects tag the same version.
+                # Four such releases exist right now. mirror.py reads the
+                # project name out of the path instead.
+                n=$(python3 -c 'import sys; sys.path.insert(0, "../../tools"); import mirror; print(mirror.artifact_name(sys.argv[1]))' "$u")
+                printf -- '-\t%s\t%s\n' "$n" "$u"
               done
             done
           } | sort -u -k2,2 > /tmp/all-sources.tsv
