@@ -265,6 +265,44 @@ source URLs and digests. **Arch's mesa PKGBUILD lists `python-mako` in
 `makedepends`.** See [`ROADMAP.md`](./ROADMAP.md) for the three-detector design
 that follows from this.
 
+**45 packages built** — the four Python modules landed and mesa's configure-time
+requirement is satisfied before LLVM's 27 minutes are ever spent. The run then
+died three steps later on a malformed command line:
+
+```
+veron: error: unrecognized arguments: --dest dest --sysroot sysroot
+```
+
+`--dest` and `--sysroot` are registered on the top-level parser and must
+precede the subcommand. Every other call in the workflow already had the order
+right; the new one was written from memory rather than copied.
+
+**The selftest asserted the subcommand existed and could not have caught it.**
+Existing and being called correctly are different claims, and only argparse
+knows the second one. `build_parser()` is now separate from `main()`, and the
+selftest hands **every `veron …` line in every workflow** to the real parser —
+17 of them today. Lines carrying shell substitution are counted as skipped
+rather than quietly passed. Verified it fails on exactly the run-56 line.
+
+**Two dependency declarations were wrong in opposite directions, and neither
+came from the reconciler.**
+
+`fontconfig` declared `libxml2` in `link` and `runtime` and links **expat**.
+The cause was `xml-backend=auto`: fontconfig tries expat first and only reaches
+libxml2 if that lookup fails, so expat won because it was *found*, not because
+anyone chose it. `-Dxml-backend=expat` makes it a decision — a failed expat
+lookup is now a loud error rather than a silent switch that would have made the
+declaration accidentally correct. libxml2 stays in the set for libarchive.
+
+`python` declared `sqlite3` in `optional_off` with the note *"sqlite arrives in
+the next batch"*. **It arrived and nothing noticed.** python built at rung 25
+and sqlite at 26, so configure could never find it — and nothing else in the
+set declared sqlite at all, so it was built, installed and shipped in the image
+for nobody. The recipe was accurate and the intent behind it was never
+completed, which is harder to notice than a wrong declaration because nothing
+is false. Declaring the edge moves sqlite to rung 25 and python to 27, and the
+guest test asserts `import sqlite3` rather than the library's presence.
+
 **The ledger and the manifest now pass on a full set.** Run 55 got past both
 for the first time — `VERON-MANIFEST-OK 14082 paths`, `VERON-LEDGER-OK 41
 record(s)`, `unknown = 0` — and then died in the merge:

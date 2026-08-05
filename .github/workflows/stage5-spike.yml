@@ -273,7 +273,14 @@ jobs:
           # WITHOUT THAT LESSON -- the same defect as the find-list that used to
           # duplicate BUILD_LOGS. One implementation now, in the driver, and
           # `build_only` is honoured there too rather than by a name check here.
-          python3 tools/veron merge --dest dest --sysroot sysroot
+          # GLOBAL OPTIONS COME BEFORE THE SUBCOMMAND. --dest and --sysroot
+          # are registered on the top-level parser, so `veron merge --dest X`
+          # is an error -- which is exactly how run 56 died, three steps after
+          # a clean 45-package build:
+          #     veron: error: unrecognized arguments: --dest dest --sysroot sysroot
+          # Every other call in this file already had the order right; this one
+          # was written from memory rather than copied.
+          python3 tools/veron --dest dest --sysroot sysroot merge
           # Two .pc fixtures, one requiring the other, so pkgconf's transitive
           # resolution and search-path pinning are EXERCISED rather than the
           # binary merely being installed.

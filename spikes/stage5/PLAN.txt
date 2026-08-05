@@ -44,9 +44,9 @@ between this file and the recipes fails the run.
   22. freetype-bootstrap
   23. libarchive
   24. libxml2
-  25. python
-  26. sqlite
-  27. git
+  25. sqlite
+  26. git
+  27. python
   28. markupsafe
   29. meson
   30. ninja
@@ -850,46 +850,6 @@ package libxml2 2.15.1
          argv ["make", "DESTDIR=dest/libxml2", "install"]
 
 ======================================================================
-package python 3.14.6
-  group        build-substrate
-  license      PSF-2.0
-  recipe-sha   ad216a2a27d0f8acc3ffad9b68cbbcfdfa41057e0f06811a8dd91aa12bcfbaac
-
-  source
-    url        https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tar.xz
-    sha256     143b1dddefaec3bd2e21e3b839b34a2b7fb9842272883c576420d605e9f30c63
-    signature  https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tar.xz.sig
-    correspond none
-
-  deps
-    build        bzip2, expat, libffi, ncurses, readline, xz, zlib, zstd
-    link         bzip2, expat, libffi, ncurses, readline, xz, zlib, zstd
-    runtime      bzip2, expat, libffi, ncurses, readline, xz, zlib, zstd
-    optional_off gdbm, libedit, openssl, sqlite3, tkinter, x11
-
-  commands (literal; this is exactly what runs)
-    [01] unpack
-         cwd  build/python-3.14.6
-         argv ["tar", "-xf", "dl/Python-3.14.6.tar.xz", "-C", "build/python-3.14.6"]
-    [02] configure
-         cwd  build/python-3.14.6/Python-3.14.6
-         argv ["./configure", "--prefix=/usr", "--enable-shared", "--with-system-expat", "--without-ensurepip", "--disable-test-modules"]
-    [03] which-modules
-         cwd  build/python-3.14.6/Python-3.14.6
-         SHELL (declared) why=reading configure's own summary of what it will skip is a grep, not an argv
-         | echo '--- modules configure could NOT build ---'; sed -n '/Could not build/,/^$/p' config.log 2>/dev/null | head -20; grep -iE 'MODULE_(ZLIB|BZ2|LZMA|ZSTD|CTYPES|READLINE|CURSES|PYEXPAT)_STATE' Makefile 2>/dev/null | head -12
-    [04] build
-         cwd  build/python-3.14.6/Python-3.14.6
-         argv ["make", "-j1"]
-    [05] install
-         cwd  build/python-3.14.6/Python-3.14.6
-         argv ["make", "DESTDIR=dest/python", "install"]
-    [06] verify-modules
-         cwd  build/python-3.14.6/Python-3.14.6
-         SHELL (declared) why=importing a list of modules and reporting which failed is a loop
-         | set -eu; PYBIN=dest/python/usr/bin/python3.14; PYLIB=dest/python/usr/lib; echo "interpreter: $PYBIN"; fail=0; for m in zlib bz2 lzma ctypes readline curses pyexpat; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  MISSING  $m"; fail=1; fi; done; for m in compression.zstd; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  absent   $m (3.14 feature, not fatal)"; fi; done; echo; echo '--- known-absent until their packages exist ---'; for m in sqlite3 ssl; do LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null && echo "  ok   $m (unexpected -- update optional_off)" || echo "  absent   $m (expected)"; done; [ "$fail" = 0 ] || { echo; echo 'A module this package exists to provide is missing.'; exit 1; }
-
-======================================================================
 package sqlite 3.53.4
   group        build-substrate
   license      public-domain
@@ -952,6 +912,46 @@ package git 2.53.0
     [04] install
          cwd  build/git-2.53.0/git-2.53.0
          argv ["make", "DESTDIR=dest/git", "NO_PERL=1", "NO_PYTHON=1", "NO_GETTEXT=1", "install"]
+
+======================================================================
+package python 3.14.6
+  group        build-substrate
+  license      PSF-2.0
+  recipe-sha   9e59da18175e258fefcef602993ce0a12a03037179b9f739a19d0ad657e1e30f
+
+  source
+    url        https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tar.xz
+    sha256     143b1dddefaec3bd2e21e3b839b34a2b7fb9842272883c576420d605e9f30c63
+    signature  https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tar.xz.sig
+    correspond none
+
+  deps
+    build        bzip2, expat, libffi, ncurses, readline, sqlite, xz, zlib, zstd
+    link         bzip2, expat, libffi, ncurses, readline, sqlite, xz, zlib, zstd
+    runtime      bzip2, expat, libffi, ncurses, readline, sqlite, xz, zlib, zstd
+    optional_off gdbm, libedit, openssl, tkinter, x11
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/python-3.14.6
+         argv ["tar", "-xf", "dl/Python-3.14.6.tar.xz", "-C", "build/python-3.14.6"]
+    [02] configure
+         cwd  build/python-3.14.6/Python-3.14.6
+         argv ["./configure", "--prefix=/usr", "--enable-shared", "--with-system-expat", "--without-ensurepip", "--disable-test-modules"]
+    [03] which-modules
+         cwd  build/python-3.14.6/Python-3.14.6
+         SHELL (declared) why=reading configure's own summary of what it will skip is a grep, not an argv
+         | echo '--- modules configure could NOT build ---'; sed -n '/Could not build/,/^$/p' config.log 2>/dev/null | head -20; grep -iE 'MODULE_(ZLIB|BZ2|LZMA|ZSTD|CTYPES|READLINE|CURSES|PYEXPAT)_STATE' Makefile 2>/dev/null | head -12
+    [04] build
+         cwd  build/python-3.14.6/Python-3.14.6
+         argv ["make", "-j1"]
+    [05] install
+         cwd  build/python-3.14.6/Python-3.14.6
+         argv ["make", "DESTDIR=dest/python", "install"]
+    [06] verify-modules
+         cwd  build/python-3.14.6/Python-3.14.6
+         SHELL (declared) why=importing a list of modules and reporting which failed is a loop
+         | set -eu; PYBIN=dest/python/usr/bin/python3.14; PYLIB=dest/python/usr/lib; echo "interpreter: $PYBIN"; fail=0; for m in zlib bz2 lzma ctypes readline curses pyexpat; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  MISSING  $m"; fail=1; fi; done; for m in compression.zstd; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  absent   $m (3.14 feature, not fatal)"; fi; done; echo; echo '--- known-absent until their packages exist ---'; for m in sqlite3 ssl; do LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null && echo "  ok   $m (unexpected -- update optional_off)" || echo "  absent   $m (expected)"; done; [ "$fail" = 0 ] || { echo; echo 'A module this package exists to provide is missing.'; exit 1; }
 
 ======================================================================
 package markupsafe 3.0.3
@@ -1447,7 +1447,7 @@ package freetype 2.14.1
 package fontconfig 2.17.1
   group        text-rendering
   license      MIT
-  recipe-sha   2e6e7a0f169c64bc0304c58ff92b2212bf9e54be764486eb4840af9e7c29b432
+  recipe-sha   87a5b7fb2325593b381b6761178ad80025829baf1aebfc530276711dfb5d0646
 
   source
     url        https://gitlab.freedesktop.org/api/v4/projects/890/packages/generic/fontconfig/2.17.1/fontconfig-2.17.1.tar.xz
@@ -1456,10 +1456,10 @@ package fontconfig 2.17.1
     correspond none
 
   deps
-    build        expat, freetype, gperf, libxml2, meson, ninja
-    link         expat, freetype, libxml2
-    runtime      expat, freetype, libxml2
-    optional_off cache-build, doc, nls, tests
+    build        expat, freetype, gperf, meson, ninja
+    link         expat, freetype
+    runtime      expat, freetype
+    optional_off cache-build, doc, libxml2, nls, tests
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -1468,7 +1468,7 @@ package fontconfig 2.17.1
     [02] setup
          cwd  build/fontconfig-2.17.1/fontconfig-2.17.1
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Ddoc=disabled", "-Dtests=disabled", "-Dtools=enabled", "-Dnls=disabled", "-Dcache-build=disabled"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dxml-backend=expat", "-Ddoc=disabled", "-Dtests=disabled", "-Dtools=enabled", "-Dnls=disabled", "-Dcache-build=disabled"]
     [03] build
          cwd  build/fontconfig-2.17.1/fontconfig-2.17.1
          argv ["ninja", "-C", "_b"]

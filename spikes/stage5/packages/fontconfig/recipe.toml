@@ -12,13 +12,19 @@ signature = "none -- no detached signature published beside the release"
 crosschecked_against = []
 
 [deps]
-build        = ["meson", "ninja", "freetype", "expat", "gperf", "libxml2"]
-link         = ["freetype", "expat", "libxml2"]
-runtime      = ["freetype", "expat", "libxml2"]
-optional_off = ["doc", "tests", "nls", "cache-build"]
+# libxml2 IS NOT LINKED AND WAS DECLARED ANYWAY. fontconfig can use either
+# expat or libxml2 for its XML parsing and takes exactly one; this build takes
+# expat, pinned above. `link` and `runtime` feed the ledger and the image, so
+# declaring libxml2 there asserted a dependency the built library does not
+# have. libxml2 stays in the SET -- libarchive genuinely wants it -- it is
+# just not fontconfig's.
+build        = ["meson", "ninja", "freetype", "expat", "gperf"]
+link         = ["freetype", "expat"]
+runtime      = ["freetype", "expat"]
+optional_off = ["doc", "tests", "nls", "cache-build", "libxml2"]
 
 [declared]
-configure_flags = ["-Ddoc=disabled", "-Dtests=disabled", "-Dtools=enabled", "-Dnls=disabled", "-Dcache-build=disabled"]
+configure_flags = ["-Dxml-backend=expat", "-Ddoc=disabled", "-Dtests=disabled", "-Dtools=enabled", "-Dnls=disabled", "-Dcache-build=disabled"]
 verification    = "none -- upstream suites are not run"
 deferral        = """
 Internals not reviewed. gperf is a build dependency here and nowhere else in \
@@ -36,7 +42,22 @@ run  = [["tar", "-xf", "$DL/fontconfig-2.17.1.tar.xz", "-C", "$B"]]
 [[steps]]
 name = "setup"
 cwd  = "$S"
+# -Dxml-backend=expat IS A DECISION, AND IT WAS NOT ONE BEFORE.
+#
+# The option defaults to `auto`, and fontconfig's meson.build tries expat
+# first (line 64) and only reaches libxml2 if that lookup FAILS (line 73,
+# guarded by `not xml_dep.found()`). So expat won because it was found, not
+# because anybody chose it -- and the recipe declared libxml2 in `link` and
+# `runtime`, which the build never touched. The ledger asserted a linkage
+# that does not exist.
+#
+# THE SAME SHAPE AS wlroots' `-Dbackends=auto`: with `auto`, what the package
+# becomes is decided by what happened to be installed first. Pinning it means
+# a failed expat lookup is a loud error rather than a silent switch to
+# libxml2 -- which would have made the old declaration accidentally correct,
+# for the wrong reason, and hidden the fault permanently.
 run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Dxml-backend=expat",
          "-Ddoc=disabled", "-Dtests=disabled", "-Dtools=enabled", "-Dnls=disabled", "-Dcache-build=disabled"]]
 
 [[steps]]

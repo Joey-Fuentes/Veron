@@ -1875,6 +1875,71 @@ def cmd_selftest(a):
     except Exception as e:
         print(f"  ok    `sources` not checkable here ({type(e).__name__})")
 
+    # EVERY `veron ...` LINE IN EVERY WORKFLOW, HANDED TO THE REAL PARSER.
+    #
+    # The check above asserts each subcommand EXISTS. Run 56 proved that is
+    # not enough: after a clean 45-package build, the merge step died with
+    #
+    #     veron: error: unrecognized arguments: --dest dest --sysroot sysroot
+    #
+    # because --dest and --sysroot are registered on the TOP-LEVEL parser and
+    # must precede the subcommand. The subcommand existed, was spelled right,
+    # and the call was still malformed. Only argparse itself knows that.
+    #
+    # WHAT IS SKIPPED IS COUNTED, NOT IGNORED. A line carrying shell
+    # substitution or a GitHub expression cannot be tokenised honestly, and
+    # quietly passing it would make this the third decorative gate in this
+    # file's history.
+    import shlex as _shlex
+    checked = skipped = 0
+    bad = []
+    wfdir2 = os.path.join(HERE, "..", "..", ".github", "workflows")
+    if os.path.isdir(wfdir2):
+        parser = build_parser()
+        for fn in sorted(os.listdir(wfdir2)):
+            if not fn.endswith((".yml", ".yaml")):
+                continue
+            text = open(os.path.join(wfdir2, fn), errors="replace").read()
+            # Join shell continuations so a wrapped invocation is one line.
+            text = re.sub(r"\\\s*\n\s*", " ", text)
+            for m in re.finditer(r"(?:python3|/usr/bin/python3)\s+\S*(?:tools/)?veron\s+([^\n]*)",
+                                 text):
+                rest = m.group(1)
+                # Stop at anything that ends the command.
+                rest = re.split(r"[|;>]|&&", rest)[0].strip()
+                if "${{" in rest or "$(" in rest:
+                    skipped += 1
+                    continue
+                try:
+                    toks = _shlex.split(rest)
+                except ValueError:
+                    skipped += 1
+                    continue
+                # A shell variable as a VALUE is fine -- substitute a stand-in
+                # so argparse sees the shape rather than the content.
+                toks = ["PLACEHOLDER" if t.startswith("$") else t for t in toks]
+                if not toks:
+                    skipped += 1
+                    continue
+                checked += 1
+                buf_err = _i.StringIO()
+                try:
+                    with _c.redirect_stderr(buf_err):
+                        parser.parse_args(toks)
+                except SystemExit:
+                    bad.append(f"{fn}: veron {rest}")
+                except Exception:
+                    bad.append(f"{fn}: veron {rest}")
+    if bad:
+        for b in bad:
+            print(f"  FAIL  malformed invocation -- {b}")
+        ok = False
+    elif checked:
+        print(f"  ok    {checked} workflow veron invocation(s) parse "
+              f"({skipped} not tokenisable, skipped)")
+    else:
+        print("  FAIL  found no workflow veron invocations to check")
+        ok = False
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 
@@ -1936,8 +2001,16 @@ def reset_inherited_signals():
             pass
 
 
-def main():
-    reset_inherited_signals()
+def build_parser():
+    """The parser, separately from running it.
+
+    SO THAT SOMETHING CAN CHECK THE WORKFLOWS AGAINST IT. The selftest already
+    asserted that every subcommand a workflow calls exists -- and run 56 still
+    died on `veron merge --dest dest --sysroot sysroot`, because existing and
+    being called correctly are different things. --dest is a GLOBAL option and
+    has to precede the subcommand. Handing the real parser a real command line
+    is the only check that would have caught it.
+    """
     ap = argparse.ArgumentParser(prog="veron")
     ap.add_argument("--dl", default="dl")
     ap.add_argument("--build-dir", default="build")
@@ -2020,7 +2093,12 @@ def main():
     p = sub.add_parser("status", help="verified / nix / opaque / unknown")
     p.set_defaults(fn=cmd_status)
 
-    a = ap.parse_args()
+    return ap
+
+
+def main():
+    reset_inherited_signals()
+    a = build_parser().parse_args()
     sys.exit(a.fn(a))
 
 

@@ -53,16 +53,36 @@ crosschecked_against = []
 #   ncurses  -> curses
 #   readline -> readline, and the interactive prompt
 #   expat    -> xml.parsers.expat, via the system copy rather than a vendored one
+#   sqlite   -> sqlite3
+#
+# sqlite WAS THE "NEXT BATCH" AND IT ARRIVED WITHOUT ANYTHING NOTICING. The
+# note here used to read "sqlite and openssl are NOT in the set yet ... sqlite
+# arrives in the next batch", and by the time it did, two things were true at
+# once:
+#
+#   25. python
+#   26. sqlite      <- built AFTER python, so ./configure could not find it
+#
+# and NOTHING ELSE IN THE SET DECLARED sqlite AT ALL. So sqlite was built,
+# installed and shipped in the image, used by nobody, while the one package it
+# was added for listed it under optional_off as a known absence. The recipe was
+# accurate and the intent behind it was never completed -- which is a harder
+# thing to notice than a wrong declaration, because nothing is false.
+#
+# Declaring the edge is what fixes it: the topological sort moves sqlite ahead
+# of python (it needs only readline and zlib, both earlier), configure finds
+# it, and _sqlite3 is built. The guest test below asserts the module rather
+# than the library, because a library present and a module importable are
+# different claims.
 build        = ["zlib", "bzip2", "xz", "zstd", "libffi", "ncurses",
-                "readline", "expat"]
+                "readline", "expat", "sqlite"]
 link         = ["zlib", "bzip2", "xz", "zstd", "libffi", "ncurses",
-                "readline", "expat"]
+                "readline", "expat", "sqlite"]
 runtime      = ["zlib", "bzip2", "xz", "zstd", "libffi", "ncurses",
-                "readline", "expat"]
-# sqlite and openssl are NOT in the set yet, so _sqlite3 and _ssl will be
-# absent from this build too. Named here so their absence is a known state
-# rather than a second surprise; sqlite arrives in the next batch.
-optional_off = ["sqlite3", "openssl", "gdbm", "tkinter", "libedit", "x11"]
+                "readline", "expat", "sqlite"]
+# openssl is still absent, so _ssl will be. Named so the absence stays a known
+# state rather than a surprise the first time something wants TLS from python.
+optional_off = ["openssl", "gdbm", "tkinter", "libedit", "x11"]
 
 [declared]
 configure_flags = [
@@ -145,5 +165,5 @@ why = "importing a list of modules and reporting which failed is a loop"
 shell = "set -eu; PYBIN=$D/usr/bin/python3.14; PYLIB=$D/usr/lib; echo \"interpreter: $PYBIN\"; fail=0; for m in zlib bz2 lzma ctypes readline curses pyexpat; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=$D/usr \"$PYBIN\" -c \"import $m\" 2>/dev/null; then echo \"  ok   $m\"; else echo \"  MISSING  $m\"; fail=1; fi; done; for m in compression.zstd; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=$D/usr \"$PYBIN\" -c \"import $m\" 2>/dev/null; then echo \"  ok   $m\"; else echo \"  absent   $m (3.14 feature, not fatal)\"; fi; done; echo; echo '--- known-absent until their packages exist ---'; for m in sqlite3 ssl; do LD_LIBRARY_PATH=$PYLIB PYTHONHOME=$D/usr \"$PYBIN\" -c \"import $m\" 2>/dev/null && echo \"  ok   $m (unexpected -- update optional_off)\" || echo \"  absent   $m (expected)\"; done; [ \"$fail\" = 0 ] || { echo; echo 'A module this package exists to provide is missing.'; exit 1; }"
 
 [guest]
-test   = [["/usr/bin/python3", "-c", "import zlib,bz2,lzma,ctypes; print('modules ok')"]]
+test   = [["/usr/bin/python3", "-c", "import zlib,bz2,lzma,ctypes,sqlite3; print('modules ok')"]]
 expect = ["modules ok"]
