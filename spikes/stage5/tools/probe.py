@@ -308,17 +308,36 @@ def packager_source(name):
     the same corroboration argument the digest cross-check uses.
     """
     out = {}
-    arch = try_get("https://gitlab.archlinux.org/archlinux/packaging/packages/"
-                   f"{name}/-/raw/main/PKGBUILD", quiet=True)
+    # THEY DO NOT USE OUR NAMES. The first full sweep reported eight packages
+    # as "neither Arch nor Alpine packages", and that was FALSE for most of
+    # them: Arch calls glib `glib2`, freetype `freetype2`, graphite2
+    # `graphite`, and PyYAML `python-yaml`. Looking up only our own name and
+    # then reporting absence as "not packaged" is the tool asserting something
+    # it did not check -- the exact failure mode this whole reconciler exists
+    # to remove.
+    #
+    # A recipe can name its counterparts in [declared].packaged_as. Guessing
+    # them here was the alternative and it is worse: `glib` -> `glib2` and
+    # `graphite2` -> `graphite` move the digit in OPPOSITE directions, so any
+    # rule that gets one right gets the other wrong.
+    for cand in (name, *aliases):
+        arch = try_get("https://gitlab.archlinux.org/archlinux/packaging/"
+                       f"packages/{cand}/-/raw/main/PKGBUILD", quiet=True)
+        if arch and not _looks_like_html(arch):
+            name_arch = cand
+            break
+    else:
+        arch = None
     if arch and not _looks_like_html(arch):
         t = arch.decode("utf-8", "replace")
         ver = re.search(r"^pkgver=(\S+)", t, re.M)
         urls = re.findall(r"(?:https?|ftp)://[^\s\"')]+", t)
         out["arch"] = {"version": ver.group(1) if ver else None,
                        "urls": sorted(set(u for u in urls if "://" in u))[:6]}
-    for repo in ("main", "community"):
+    for repo, cand in [(r, c) for c in (name, *aliases)
+                       for r in ("main", "community")]:
         alp = try_get("https://gitlab.alpinelinux.org/alpine/aports/-/raw/master/"
-                      f"{repo}/{name}/APKBUILD", quiet=True)
+                      f"{repo}/{cand}/APKBUILD", quiet=True)
         if alp and not _looks_like_html(alp):
             t = alp.decode("utf-8", "replace")
             ver = re.search(r"^pkgver=(\S+)", t, re.M)
@@ -361,7 +380,7 @@ def _bash_array(text, key):
     return sorted(out)
 
 
-def packager_deps(name):
+def packager_deps(name, aliases=()):
     """What Arch and Alpine DECLARE this package needs.
 
     THIS DATA WAS ALREADY BEING DOWNLOADED AND THROWN AWAY. packager_source()
@@ -384,7 +403,11 @@ def packager_deps(name):
         t = arch.decode("utf-8", "replace")
         out["arch"] = {"depends": _bash_array(t, "depends"),
                        "makedepends": _bash_array(t, "makedepends"),
-                       "checkdepends": _bash_array(t, "checkdepends")}
+                       "checkdepends": _bash_array(t, "checkdepends"),
+                       # HOW THEY FETCH, WHICH DECIDES WHETHER SOME OF WHAT
+                       # THEY DECLARE IS A DEPENDENCY AT ALL. See _vcs_only().
+                       "vcs": bool(re.search(r"^source=.*?(git\+|::git)",
+                                             t, re.M | re.S))}
     for repo in ("main", "community"):
         alp = try_get("https://gitlab.alpinelinux.org/alpine/aports/-/raw/master/"
                       f"{repo}/{name}/APKBUILD", quiet=True)
@@ -392,7 +415,9 @@ def packager_deps(name):
             t = alp.decode("utf-8", "replace")
             out["alpine"] = {"depends": _bash_array(t, "depends"),
                              "makedepends": _bash_array(t, "makedepends"),
-                             "checkdepends": _bash_array(t, "checkdepends")}
+                             "checkdepends": _bash_array(t, "checkdepends"),
+                             "vcs": bool(re.search(r"^source=.*?(git\+|::git)",
+                                                   t, re.M | re.S))}
             break
     return out
 
@@ -650,8 +675,30 @@ def declared_deps(root):
              # Silence is what let three whole classes through.
              "undeclarable": set()}
     for dirpath, dirnames, files in os.walk(root):
+        # WHAT NOT TO WALK, AND THE FIRST FULL SWEEP DECIDED THIS LIST.
+        #
+        # 151 findings across 45 packages, and the two biggest classes were
+        # not about the packages at all:
+        #
+        #   meson's tarball ships thousands of `test cases/*/meson.build`,
+        #   including deliberately exotic ones -- dependency('OpenAL',
+        #   method:'cmake'), method:'dub', method:'extraframework'. The old
+        #   list excluded "test" and "tests" but not "test cases", so meson
+        #   reported dozens of lookups from fixtures designed to exercise
+        #   meson itself.
+        #
+        #   pango vendors fontconfig SOURCES under subprojects/, and 15 of
+        #   pango's findings were fontconfig's build file. We never build a
+        #   subproject -- the wrap fallbacks are the thing --wrap-mode
+        #   exists to refuse -- so a vendored tree is not this package's
+        #   dependency surface.
+        #
+        # A test fixture's dependency is not the package's dependency, and
+        # neither is a vendored copy we decline to build.
         dirnames[:] = [d for d in dirnames
-                       if d not in (".git", "tests", "test", "Tests")]
+                       if d not in (".git", "subprojects")
+                       and not re.match(r"^(tests?|Tests?)([ _-]|$)", d)
+                       and d not in ("testsuite", "test-suite")]
         for fn in files:
             # VCPKG MANIFESTS ARE THE ONLY HONEST SOURCE FOR SOME PROJECTS.
             # Ladybird has no distro packaging and is not in BLFS, so nothing
@@ -1992,7 +2039,18 @@ def reconcile(recipe, root, recipes, mode="warn"):
     problems = 0
 
     # --- corroborative -------------------------------------------------
-    pd = packager_deps(name)
+    #
+    # A DEPENDENCY OF THEIR PACKAGING IS NOT A DEPENDENCY OF THE SOFTWARE, and
+    # the first full sweep made that unmissable: 20 of 36 findings were `git`.
+    # Arch builds many packages from a git checkout -- `source=("git+https://
+    # ...")` -- so git is in makedepends as their FETCH MECHANISM. Veron pins
+    # tarballs and no package in the set needs git to build.
+    #
+    # Reported as a class rather than filtered by name, and only when their
+    # source really is a checkout, so a project that genuinely needs git at
+    # build time still surfaces.
+    pd = packager_deps(name, recipe.get("declared", {}).get("packaged_as", ()))
+    VCS_TOOLS = {"git", "mercurial", "subversion", "bzr"}
     for who, fields in sorted(pd.items()):
         for cand in fields.get("makedepends", []):
             norm = _norm_distro_name(cand)
@@ -2000,13 +2058,18 @@ def reconcile(recipe, root, recipes, mode="warn"):
                 continue
             if norm not in ours:
                 continue          # not a package we have -- not our decision
+            if norm in VCS_TOOLS and fields.get("vcs"):
+                continue          # their fetch method, not this software's dep
             problems += 1
             print(f"  {'UNACCOUNTED' if mode == 'fail' else 'unaccounted'}  "
-                  f"{who} makedepends '{cand}' -> our '{norm}', "
+                  f"{name}: {who} makedepends '{cand}' -> our '{norm}', "
                   f"absent from deps and optional_off")
     if not pd:
-        print(f"  --           no packaging metadata found for '{name}' "
-              f"in Arch or Alpine")
+        # ACCURATE ABOUT WHAT WAS AND WAS NOT CHECKED. "not an Arch or
+        # Alpine package" was a claim; "no file under this name" is a fact.
+        print(f"  --           no PKGBUILD or APKBUILD under the name "
+              f"'{name}' -- they may package it differently; set "
+              f"[declared].packaged_as to say so")
 
     # --- static, undisclosed -------------------------------------------
     if root is None:
@@ -2015,8 +2078,13 @@ def reconcile(recipe, root, recipes, mode="warn"):
         if key in declared_und:
             continue
         problems += 1
+        # THE PACKAGE NAME GOES ON EVERY FINDING LINE. The first sweep was
+        # read with `grep unaccounted`, which drops the `== name` headers --
+        # so 36 findings arrived with no way to tell which package any of them
+        # belonged to. A line that is only meaningful in context is a line
+        # that will be read out of context.
         print(f"  {'UNDISCLOSED' if mode == 'fail' else 'undisclosed'}  "
-              f"{key}")
+              f"{name}: {key}")
         print(f"               {where[0]}")
     return problems
 
@@ -2049,6 +2117,7 @@ def cmd_reconcile(a):
 
     wanted = a.names or sorted(recipes)
     total, no_src, no_meta, missing = 0, [], [], []
+    tally = {}
     for n in wanted:
         if n not in recipes:
             missing.append(n)
@@ -2069,14 +2138,25 @@ def cmd_reconcile(a):
         if found:
             print(f"== {n}")
             print(text.rstrip("\n"))
+            for line in text.splitlines():
+                m = re.search(r"makedepends '([^']+)'", line)
+                if m:
+                    tally[m.group(1)] = tally.get(m.group(1), 0) + 1
+                m = re.search(r"(?:UNDISCLOSED|undisclosed)\s+\S+ (\S+)", line)
+                if m:
+                    tally[m.group(1)] = tally.get(m.group(1), 0) + 1
         total += found
 
     print()
     if missing:
         print(f"  {len(missing)} name(s) with no recipe: {', '.join(missing)}")
     if no_meta:
-        print(f"  {len(no_meta)} package(s) neither Arch nor Alpine "
-              f"packages: {', '.join(no_meta)}")
+        print(f"  {len(no_meta)} package(s) NOT FOUND under our own name in "
+              f"Arch or Alpine, so nothing corroborated them:")
+        print(f"    {', '.join(no_meta)}")
+        print("    (they may be packaged under another name -- e.g. Arch "
+              "calls glib 'glib2' and graphite2 'graphite'.")
+        print("     set [declared].packaged_as = [\"their-name\"] in the recipe)")
     if no_src:
         # NOT SILENCE, AND NOT A REASSURING ZERO. Without an unpacked tarball
         # the [undeclarable] half cannot run at all, and a sweep that reports
@@ -2086,6 +2166,13 @@ def cmd_reconcile(a):
               f"[undeclarable] was not checked for them:")
         print(f"    {', '.join(no_src)}")
         print("    (pass --src DIR, where DIR/<name> is the unpacked tree)")
+    if tally:
+        # THE SHAPE, NOT JUST THE COUNT. "36 findings" says nothing; "git x20"
+        # says the sweep is measuring Arch's packaging rather than this
+        # software, which is what the first run actually turned out to mean.
+        print("\n  findings by name:")
+        for k, c in sorted(tally.items(), key=lambda kv: (-kv[1], kv[0])):
+            print(f"    {c:>4}  {k}")
     print(f"\nVERON-RECONCILE-{'FAIL' if (total and a.mode == 'fail') else 'OK'}"
           f"  {total} unaccounted or undisclosed across "
           f"{len(wanted) - len(missing)} package(s)")
@@ -2209,6 +2296,27 @@ if Version(mako.__version__) < Version("0.8.0"):
         print("  ok    an import inside a nested run_command is found")
     else:
         print(f"  FAIL  run_command import missed -- {got}")
+        ok = False
+
+    # A `source=` THAT IS A GIT CHECKOUT MAKES `git` THEIR TOOL, NOT OURS.
+    # 20 of the first sweep's 36 findings were git, from packages Arch builds
+    # from a checkout. Detecting the fetch method is what separates that from
+    # a project that genuinely needs git to build.
+    VCS_PKGBUILD = """
+pkgname=foo
+source=("git+https://example.invalid/foo.git#tag=v1")
+makedepends=(git meson)
+"""
+    TAR_PKGBUILD = """
+pkgname=bar
+source=("https://example.invalid/bar-1.0.tar.xz")
+makedepends=(git meson)
+"""
+    if bool(re.search(r"^source=.*?(git\+|::git)", VCS_PKGBUILD, re.M | re.S)) \
+       and not re.search(r"^source=.*?(git\+|::git)", TAR_PKGBUILD, re.M | re.S):
+        print("  ok    a git+ source is distinguished from a tarball source")
+    else:
+        print("  FAIL  vcs source detection is wrong")
         ok = False
 
     # REQUIRED / optional / conditional -- THREE STATES. Treating anything

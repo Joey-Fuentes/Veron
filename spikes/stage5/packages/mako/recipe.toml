@@ -26,6 +26,10 @@ optional_off = ["pip", "setuptools", "wheel", "lingua", "babel"]
 
 [declared]
 configure_flags = []
+# THEY DO NOT USE OUR NAME. Without this the reconciler looks up
+# "mako", finds no PKGBUILD, and reports the package as
+# uncorroborated -- which is a false absence, not a real one.
+packaged_as     = ["python-mako", "py3-mako"]
 verification    = "none -- upstream suites are not run"
 deferral        = """
 Internals not reviewed. THIS PACKAGE EXISTS FOR MESA AND NOTHING ELSE. \

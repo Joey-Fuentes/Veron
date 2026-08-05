@@ -19,6 +19,10 @@ optional_off = ["comparerenderer", "docs", "tests"]
 
 [declared]
 configure_flags = ["-DCMAKE_POLICY_VERSION_MINIMUM=3.5", "-DCMAKE_INSTALL_PREFIX=/usr", "-DBUILD_SHARED_LIBS=ON", "-DGRAPHITE2_COMPARE_RENDERER=OFF"]
+# THEY DO NOT USE OUR NAME. Without this the reconciler looks up
+# "graphite2", finds no PKGBUILD, and reports the package as
+# uncorroborated -- which is a false absence, not a real one.
+packaged_as     = ["graphite"]
 verification    = "none -- upstream suites are not run"
 deferral        = """
 Internals not reviewed. Smart-font shaping for scripts harfbuzz cannot handle \

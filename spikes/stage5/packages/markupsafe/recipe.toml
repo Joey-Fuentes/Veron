@@ -22,6 +22,10 @@ optional_off = ["pip", "setuptools", "wheel", "_speedups"]
 
 [declared]
 configure_flags = []
+# THEY DO NOT USE OUR NAME. Without this the reconciler looks up
+# "markupsafe", finds no PKGBUILD, and reports the package as
+# uncorroborated -- which is a false absence, not a real one.
+packaged_as     = ["python-markupsafe", "py3-markupsafe"]
 verification    = "none -- upstream suites are not run"
 deferral        = """
 Internals not reviewed. HERE ONLY BECAUSE MAKO NEEDS IT, and mako is here \

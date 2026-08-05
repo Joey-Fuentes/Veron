@@ -217,10 +217,64 @@ REQUIRED fills the report with alarms about tools that are never looked for.
 Three states now: `REQUIRED`, `optional`, `conditional on <expr>`. **A report
 full of false alarms is one nobody finishes reading.**
 
+**The first full sweep ran in CI — 45 packages, 151 findings — and most of it
+was not about these packages.** This is the argument for `warn` first, made
+concrete: read what the gate measures before letting it block anything.
+
+Four classes, each fixed at the cause rather than filtered by name:
+
+**`git` ×20 of the 36 corroborative findings.** Arch builds many packages from
+a checkout — `source=("git+https://…")` — so git is in their makedepends as a
+*fetch mechanism*. Veron pins tarballs. **A dependency of their packaging is
+not a dependency of the software.** Their `source=` is read now, and VCS tools
+are dropped only when the source really is a checkout, so a project that
+genuinely needs git at build time still surfaces.
+
+**meson's own test fixtures.** meson ships thousands of `test cases/*/
+meson.build`, including deliberately exotic ones — `dependency('OpenAL',
+method:'cmake')`, `method:'dub'`, `method:'extraframework'`. The walk excluded
+`test` and `tests` but not `test cases`, so meson reported lookups from
+fixtures written to exercise meson itself.
+
+**Vendored subprojects.** 15 of pango's findings were *fontconfig's* build
+file, from sources pango vendors under `subprojects/`. We never build a
+subproject — refusing them is what `--wrap-mode` is for — so a vendored tree is
+not this package's dependency surface.
+
+**And the tool lied about eight packages.** It reported them as "neither Arch
+nor Alpine packages", which is false: Arch calls glib `glib2`, freetype
+`freetype2`, graphite2 `graphite`, PyYAML `python-yaml`. Looking up only our
+own name and reporting absence as *not packaged* is the tool asserting
+something it never checked — the exact failure this reconciler exists to
+remove. Recipes now carry `[declared].packaged_as`, and the message says *no
+file under this name* rather than *not packaged*.
+
+Guessing the aliases was the alternative and it is worse: `glib → glib2` and
+`graphite2 → graphite` move the digit in **opposite directions**, so any rule
+that gets one right gets the other wrong.
+
+**A dependency of their packaging is not a dependency of the software.** The
+fix reads their `source=` and drops VCS tools only when the source really is a
+checkout, so a project that genuinely needs git at build time still surfaces —
+rather than blacklisting a name, which would hide that case forever.
+
+Two smaller things the same sweep exposed:
+
+- The findings were read with `grep unaccounted`, which drops the `== name`
+  headers, so 36 lines arrived with no way to tell which package any belonged
+  to. **A line that is only meaningful in context is a line that will be read
+  out of context** — the package name is on every finding now.
+- "36 findings" says nothing about shape. A tally by name is printed, which is
+  what made `git ×20` visible as a class rather than as twenty separate
+  puzzles.
+
 **Still to do:**
 
-- Run the first sweep in `warn` and read it. Current counts on the sources
-  read so far: fontconfig 9, cairo 3, harfbuzz ~7, mesa larger.
+- Re-run the sweep. The corroborative half should drop from 36 to ~16, of
+  which `cmake`, `meson`, `ninja` and `python` are real build-system edges
+  worth declaring; the static half loses meson's fixtures and pango's
+  vendored tree.
+- Then write the `[undeclarable]` blocks the remainder calls for.
 - Write the `[undeclarable]` blocks that sweep calls for, per recipe
 - Re-probe all 111 with the new fields, so the output is recorded rather than
   computed ad hoc

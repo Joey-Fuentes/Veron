@@ -31,6 +31,10 @@ optional_off = ["pip", "setuptools", "wheel", "flit_core"]
 
 [declared]
 configure_flags = []
+# THEY DO NOT USE OUR NAME. Without this the reconciler looks up
+# "packaging", finds no PKGBUILD, and reports the package as
+# uncorroborated -- which is a false absence, not a real one.
+packaged_as     = ["python-packaging", "py3-packaging"]
 verification    = "none -- upstream suites are not run"
 deferral        = """
 Internals not reviewed. NOT OPTIONAL, AND THE REASON IS THIS SET'S PYTHON. \
