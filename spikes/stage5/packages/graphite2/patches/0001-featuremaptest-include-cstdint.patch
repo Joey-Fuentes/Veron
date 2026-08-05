@@ -1,0 +1,48 @@
+Include <cstdint> in featuremaptest.cpp.
+
+WHY: run 53 configured graphite2 successfully and then failed at `ninja`,
+rc=1 after four seconds, with every error inside this one file:
+
+    tests/featuremap/featuremaptest.cpp:49:15:
+        error: 'uint8_t' was not declared in this scope
+    tests/featuremap/featuremaptest.cpp:310:14:
+        error: 'uint16_t' was not declared in this scope
+
+and gcc said what to do about it:
+
+    note: 'uint16_t' is defined in header '<cstdint>'; this is probably
+          fixable by adding '#include <cstdint>'
+
+Every other error in the log -- the invalid template arguments at 49:22, the
+`request for member 'data'`, the `no match for 'operator='` and the pages of
+std::pair candidate notes -- CASCADES FROM THOSE TWO. `std::vector<uint8_t>`
+cannot be instantiated when uint8_t is not a type, so every later use of that
+vector is an error about the wrong thing. Fourteen distinct error lines, one
+missing header.
+
+WHY IT COMPILED FOR UPSTREAM AND NOT HERE: graphite2 1.3.14 is from 2018 and
+was written against a libstdc++ that pulled <cstdint> in transitively through
+<string> or <vector>. Later releases tightened those headers, so code that
+never included it directly stopped compiling. This is the same class as the
+gcc 4.7 backport in the bridge: old source, newer toolchain, a header that
+used to arrive by accident.
+
+WHY PATCH RATHER THAN SKIP THE TESTS: `add_subdirectory(tests)` is
+unconditional in graphite2's CMakeLists and there is no option to disable it,
+so the alternative is patching the build description to drop a whole
+subdirectory. This is one line, it is what upstream's own compiler told us to
+write, and it leaves the tree otherwise identical to the tarball. Nothing in
+src/ failed -- the library itself builds clean.
+
+The test binaries are built and never run; `veron` runs no upstream suite.
+They are not installed, so they do not reach the manifest or the image.
+
+--- a/tests/featuremap/featuremaptest.cpp
++++ b/tests/featuremap/featuremaptest.cpp
+@@ -22,5 +22,6 @@
+ #include <cassert>
+ #include <cstdlib>
++#include <cstdint>
+ #include <fstream>
+ #include <iostream>
+ #include <map>
