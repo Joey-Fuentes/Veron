@@ -237,23 +237,25 @@ jobs:
         run: |
           set -eu
           cd spikes/stage5
-          BASE='${{ steps.sysroot.outputs.sysroot_sha }}'
           mkdir -p dest
-          # LONGEST FIRST. `veron keys` emits the plan in order, so walking it
-          # backwards finds the furthest point we have a checkpoint for.
-          python3 tools/veron keys --base "$BASE" | tac | while IFS="$(printf '\t')" read -r i pkg key; do
-            if gh release download "ckpt/$key" --pattern 'dest.tar.zst' \
-                 --dir . 2>/dev/null; then
-              echo "  checkpoint found at $i/$pkg"
-              tar --zstd -xf dest.tar.zst
-              rm -f dest.tar.zst
-              break
-            fi
-          done
-          if [ -f dest/.veron-checkpoint ]; then
-            python3 -c 'import json;m=json.load(open("dest/.veron-checkpoint"));print("  restored",m["index"],"package(s) through",m["packages"][-1])'
+          # ONE TAG, AND THE MARKER DECIDES WHAT IS USABLE.
+          #
+          # This used to walk `veron keys` backwards looking for a release
+          # named after a prefix hash. That made a checkpoint all-or-nothing:
+          # adding seven packages moved 53 of 62 keys, no tag matched, and a
+          # 55-package checkpoint was discarded whole -- "no usable
+          # checkpoint -- building everything".
+          #
+          # The keys are per package now, so the artifact is just "the last
+          # one published" and `veron build --resume` keeps the subset whose
+          # keys still match, deleting the rest. Nothing here needs to know
+          # which packages those are.
+          if gh release download ckpt/latest --pattern 'dest.tar.zst' \
+               --dir . 2>/dev/null; then
+            tar --zstd -xf dest.tar.zst && rm -f dest.tar.zst
+            python3 -c 'import json;m=json.load(open("dest/.veron-checkpoint"));print("  downloaded a checkpoint holding",len(m["keys"]),"package(s)")'
           else
-            echo "  no usable checkpoint -- building everything"
+            echo "  no checkpoint published yet -- building everything"
           fi
 
       - name: 'VERON-SEAL + build both packages'
@@ -346,12 +348,17 @@ jobs:
           cd spikes/stage5
           python3 tools/veron --dest dest linked --mode warn
 
-      # PUBLISH THE CHECKPOINT, KEYED ON THE PREFIX HASH.
+      # PUBLISH THE CHECKPOINT.
       #
-      # Content-addressed, so a prefix that has been built before is never
-      # uploaded again and the steady state is zero traffic. The tag is the
-      # key, which makes a restore a single `gh release download` with no
-      # index to consult and nothing to keep in step.
+      # A CACHE AND NEVER EVIDENCE. `use_checkpoint` is an input rather than
+      # always-on: any run making a reproducibility claim must build every
+      # package, and the ledger records attestations=0 when one was restored.
+      #
+      # ckpt/latest IS CLOBBERED EACH TIME, deliberately. Content-addressing
+      # the tarball bought nothing once the keys went per package -- what
+      # decides reuse is the marker inside, checked entry by entry, so a
+      # single moving tag is both simpler and strictly more useful than a
+      # graveyard of prefix-named releases nothing will ever match again.
       - name: 'Publish a build checkpoint'
         if: ${{ inputs.save_checkpoint }}
         env:
@@ -361,72 +368,21 @@ jobs:
           cd spikes/stage5
           BASE='${{ steps.sysroot.outputs.sysroot_sha }}'
           python3 tools/veron --dest dest checkpoint --base "$BASE"
-          KEY=$(python3 -c 'import json;print(json.load(open("dest/.veron-checkpoint"))["key"])')
-          if gh release view "ckpt/$KEY" >/dev/null 2>&1; then
-            echo "  checkpoint $KEY already published -- nothing to upload"
-            exit 0
-          fi
           tar --zstd -cf dest.tar.zst dest
           echo "  $(du -h dest.tar.zst | cut -f1) for $(ls dest | wc -l) package(s)"
-          # A FAILED CACHE PUBLISH MUST NOT FAIL THE RUN, and this one did.
-          #
-          # The 403 above landed after 48 packages had built, and took the
-          # manifest, the ledger, the merge, the image and the boot down with
-          # it -- none of which depend on a checkpoint existing. The cost of
-          # not publishing is that the NEXT run rebuilds; the cost of aborting
-          # here is the whole run.
-          #
-          # NOT the same judgement as the mirror, and the difference is what
-          # the artifact is FOR. A failed mirror upload leaves a source
-          # unreachable, which is correctness; a failed checkpoint leaves a
-          # cache absent, which is time. Loud either way -- the marker below
-          # is greppable and the step still prints the error.
-          if gh release create "ckpt/$KEY" --title "checkpoint $KEY" \
-               --notes 'build checkpoint -- a CACHE, not evidence' 2>&1 \
-             && gh release upload "ckpt/$KEY" dest.tar.zst --clobber; then
-            echo "VERON-CHECKPOINT-PUBLISHED  $KEY"
+          # A FAILED CACHE PUBLISH MUST NOT FAIL THE RUN. An earlier 403
+          # landed after 48 packages had built and took the manifest, the
+          # ledger, the image and the boot down with it -- none of which
+          # depend on a checkpoint existing.
+          if gh release create ckpt/latest --title 'build checkpoint' \
+               --notes 'a CACHE, not evidence -- see DEPENDENCIES.md' 2>&1 \
+             || true; then :; fi
+          if gh release upload ckpt/latest dest.tar.zst --clobber; then
+            echo "VERON-CHECKPOINT-PUBLISHED  $(ls dest | wc -l) package(s)"
           else
-            echo "VERON-CHECKPOINT-UNPUBLISHED  $KEY -- the next run rebuilds"
-            echo "  a checkpoint is a cache; nothing downstream depends on it"
+            echo "VERON-CHECKPOINT-UNPUBLISHED -- the next run rebuilds"
           fi
           rm -f dest.tar.zst
-
-      # SEED [installs] FROM A BUILD THAT PASSED, AND UPLOAD IT.
-      #
-      # The digest is only worth pinning if it came from a build that is
-      # known good, and the listing can only be computed where dest/ exists --
-      # on the runner, which is then destroyed. Without this step a run
-      # computes all 48 and throws them away.
-      #
-      # It runs AFTER the linked and installs checks deliberately: seeding
-      # from a build whose own gates have not run yet would pin whatever
-      # happened, which is how a cache becomes evidence.
-      - name: 'Seed [installs] from this build'
-        if: ${{ inputs.seed_installs }}
-        run: |
-          set -eu
-          cd spikes/stage5
-          python3 tools/veron --dest dest installs --propose --write \
-            | tee out/installs-propose.txt
-          # PLAN.txt CARRIES recipe-sha PER PACKAGE, so writing a block into
-          # every recipe moves 48 of them. Regenerating here means the
-          # artifact is a drop-in rather than something that fails plan-check
-          # the moment it lands.
-          python3 tools/veron plan --write
-          python3 tools/veron selftest
-          echo "  $(ls packages/*/installs.txt | wc -l) listing(s) written"
-
-      - uses: actions/upload-artifact@v4
-        if: ${{ inputs.seed_installs }}
-        with:
-          name: veron-stage5-installs-${{ github.run_id }}
-          path: |
-            spikes/stage5/packages/*/installs.txt
-            spikes/stage5/packages/*/recipe.toml
-            spikes/stage5/PLAN.txt
-            spikes/stage5/out/installs-propose.txt
-          if-no-files-found: error
-          retention-days: 30
 
       - name: 'VERON-MANIFEST-OK'
         run: cd spikes/stage5 && python3 tools/veron manifest

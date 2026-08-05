@@ -953,54 +953,70 @@ def stage_into(destdir, sysroot):
 CHECKPOINT = ".veron-checkpoint"
 
 
-def prefix_keys(recipes, policy, base):
-    """[(index, package, key)] -- a rolling hash over the plan.
+def package_keys(recipes, policy, base):
+    """{package: key} -- each keyed on its own recipe and its dependencies'.
 
-    THE KEY IS A PREFIX HASH, NOT A PER-PACKAGE ONE, and that is the whole
-    design. `veron plan` already produces a TOTAL ORDER derived from the
-    dependency graph, so "everything before package i" is exactly the closure
-    package i was built against. Hashing the prefix therefore subsumes the
-    dependency closure with no graph walk and no chance of getting the walk
-    wrong:
+    THIS REPLACED A PREFIX HASH, AND THE REPLACEMENT WAS FORCED BY A RUN.
+    The first version hashed the plan as a SEQUENCE: h(i) = sha256(h(i-1) +
+    recipe_sha(i)). The argument was that `veron plan` produces a total order,
+    so "everything before package i" is exactly the closure i was built
+    against -- true, and too coarse by a wide margin.
 
-        h(0) = sha256(base sysroot digest + policy)
-        h(i) = sha256(h(i-1) + recipe_sha256(i))
+    It is right about EDITS and wrong about INSERTIONS. Editing package 43 of
+    48 moved 6 keys, which is what was measured and quoted. Adding seven
+    packages then moved 53 of 62, because the first of them landed at rung 10
+    and every h() after it shifted. A 55-package checkpoint was refused with
+    "no usable checkpoint" and the whole set rebuilt -- correct behaviour from
+    a key that conflates POSITION with DEPENDENCY.
 
-    WHAT THAT BUYS. Edit package 40 and h(1..39) are unchanged while h(40..48)
-    all move -- so the prefix before the edit is still valid and everything
-    after it rebuilds. That is precisely the invalidation a build cache needs,
-    and it falls out of the ordering rather than being computed.
+        key(p) = sha256(base + policy + recipe_sha(p) + each dep's key)
 
-    WHAT GOES IN base. The sysroot artifact's published sha256 and the policy,
-    because both decide output bytes. A checkpoint made against a different
-    base image or a changed SOURCE_DATE_EPOCH is not a checkpoint for this
-    build, and restoring it would be the cache lying rather than helping.
+    Now inserting libudev-zero at rung 10 invalidates libudev-zero and
+    whatever declares it, and nothing else. bzip2 at rung 1 is untouched
+    whether it is rung 1 or rung 8.
 
-    THE DRIVER IS DELIBERATELY NOT IN THE KEY. Hashing tools/veron would
-    invalidate every checkpoint on every edit to a comment, which makes the
-    cache useless during exactly the work that needs it. The consequence is
-    real and stated: a change to HOW a step runs -- not what it runs -- will
-    not invalidate. `--no-cache` exists for that, and any run making a
-    reproducibility claim must use it.
+    THE SOUNDNESS RESTS ON THE DECLARATIONS BEING COMPLETE, and that is worth
+    stating plainly rather than burying. A prefix hash was SOUND under any
+    declarations, because everything earlier was in the hash whether declared
+    or not. This one assumes a package is affected only by what it declares --
+    and `stage_into` puts every earlier package in the shared build root, so
+    an UNDECLARED dependency is an input this key does not cover.
+
+    That is precisely what stage5-isolate measures, and it is the reason that
+    spike is not tidying: it is the thing that validates this cache key. glib
+    needing an undeclared pkgconf was found there, and until that sweep is
+    clean, a stale hit here is possible in principle. `use_checkpoint` is an
+    input, off by default, and the ledger records attestations=0 when one is
+    used.
     """
     pol = json.dumps({"build": policy.get("build", {}),
                       "env": policy.get("env", {}),
                       "tool_env": policy.get("tool_env", {})},
                      sort_keys=True)
-    h = hashlib.sha256((base + "\n" + pol).encode()).hexdigest()
-    out = []
-    for i, name in enumerate(topo_order(recipes), 1):
-        h = hashlib.sha256((h + recipes[name]["_recipe_sha256"]).encode()).hexdigest()
-        out.append((i, name, h))
-    return out
+    root = hashlib.sha256((base + "\n" + pol).encode()).hexdigest()
+    memo = {}
+
+    def key(n):
+        if n in memo:
+            return memo[n]
+        r = recipes[n]
+        d = r.get("deps", {})
+        deps = sorted(set(d.get("build", [])) | set(d.get("link", [])))
+        body = root + r["_recipe_sha256"] + "".join(
+            f"{x}={key(x)}" for x in deps if x in recipes)
+        memo[n] = hashlib.sha256(body.encode()).hexdigest()
+        return memo[n]
+
+    return {n: key(n) for n in topo_order(recipes)}
 
 
 def cmd_keys(a):
     """`<index>\\t<package>\\t<prefix key>` -- what a checkpoint is named by."""
     recipes = load_recipes()
     policy = load_policy()
-    for i, name, key in prefix_keys(recipes, policy, a.base):
-        print(f"{i}\t{name}\t{key}")
+    keys = package_keys(recipes, policy, a.base)
+    for i, name in enumerate(topo_order(recipes), 1):
+        print(f"{i}\t{name}\t{keys[name]}")
     return 0
 
 
@@ -1016,153 +1032,29 @@ def read_checkpoint(dest):
 
 
 def cmd_checkpoint(a):
-    """Write the marker describing what dest/ currently holds.
+    """Record a key for every package dest/ currently holds.
 
-    THE MARKER IS WHAT MAKES RESUMING SAFE. Without it, `--resume` would have
-    to infer "this DESTDIR is valid" from the directory merely existing, which
-    is true of a half-finished build, a build from a different recipe, and a
-    build against a different sysroot alike. The marker records the prefix key
-    and the exact package list, so the driver can REFUSE a checkpoint that
-    does not match the plan in front of it rather than silently building on
-    top of something else.
+    PER PACKAGE, NOT ONE KEY FOR THE WHOLE SET. The marker used to carry a
+    single prefix key and a package list, so a checkpoint was all-or-nothing:
+    any change anywhere before the end made the whole thing unusable. It
+    carries {package: key} now, and `--resume` keeps the subset whose keys
+    still match. Adding seven packages to a 55-package set then reuses 55
+    minus whatever actually depends on them, instead of nothing.
     """
     recipes = load_recipes()
     policy = load_policy()
     roots = roots_from_args(a)
-    keys = prefix_keys(recipes, policy, a.base)
-    have = [n for n in os.listdir(roots["dest"])
-            if os.path.isdir(os.path.join(roots["dest"], n))]
-    # The prefix is the longest run of the plan that is present in dest/.
-    prefix = []
-    for i, name, key in keys:
-        if name not in have:
-            break
-        prefix.append((i, name, key))
-    if not prefix:
+    keys = package_keys(recipes, policy, a.base)
+    have = {n for n in os.listdir(roots["dest"])
+            if os.path.isdir(os.path.join(roots["dest"], n)) and n in keys}
+    if not have:
         print("VERON-CHECKPOINT-EMPTY  nothing built to record")
         return 0
-    i, name, key = prefix[-1]
-    marker = {"key": key, "index": i, "base": a.base,
-              "packages": [n for _, n, _ in prefix]}
+    marker = {"base": a.base, "keys": {n: keys[n] for n in sorted(have)}}
     with open(os.path.join(roots["dest"], CHECKPOINT), "w") as f:
         json.dump(marker, f, indent=2, sort_keys=True)
-    print(f"VERON-CHECKPOINT-OK  {i} package(s) through {name}")
-    print(f"  key {key}")
+    print(f"VERON-CHECKPOINT-OK  {len(have)} package(s) recorded")
     return 0
-
-
-def resolve_provider(owners, own, declared):
-    """Which of several providers of one soname this package actually meant.
-
-    PREFER WHAT THE PACKAGE DECLARES. When two packages install the same
-    soname, the ELF cannot say which copy was linked -- the name is identical.
-    The recipe can: if one of the providers is in deps.link, that is the
-    answer, and reporting the other would be inventing a finding out of an
-    ambiguity the build never had.
-
-    With no declared match it falls back to a stable choice and lets the
-    caller report it, because two providers and no declaration IS worth
-    seeing.
-    """
-    if own in owners:
-        return own
-    inter = owners & declared
-    if inter:
-        return sorted(inter)[0]
-    return sorted(owners)[0] if owners else None
-
-
-def linked_packages(destdir, provider, own, declared=frozenset()):
-    """Which OTHER packages this DESTDIR's binaries link, and what came from
-    the base image.
-
-    MEASURED AT THE PACKAGE THAT CAUSED IT. `veron linked` does this across
-    the whole set after the build, which is the right place for a gate and
-    the wrong place to READ it: an undeclared link shows up in a summary forty
-    packages after the one responsible. Printing it here puts the measurement
-    next to the build that produced it.
-    """
-    linked, sysroot = set(), set()
-    for dirpath, _, files in os.walk(destdir):
-        for fn in files:
-            p = os.path.join(dirpath, fn)
-            if os.path.islink(p):
-                continue
-            _, needed = elf_dynamic(p)
-            for so in needed:
-                owners = provider.get(so)
-                if not owners:
-                    sysroot.add(so)
-                    continue
-                owner = resolve_provider(owners, own, declared)
-                if owner and owner != own:
-                    linked.add(owner)
-    return sorted(linked), sorted(sysroot)
-
-
-def report_package(name, r, destdir, provider, timings, declared_digest):
-    """The high-level record of one package, on the console.
-
-    WHAT THIS REPLACES. The console used to carry every line every compiler
-    emitted -- hundreds of thousands, in which the facts worth keeping were
-    invisible. Compiler output belongs in driver/<pkg>.log and in the
-    collected artifact; what belongs here is what the build DECIDED and what
-    it PRODUCED, because that is what the manifest, the ledger and G3 all read
-    and what anyone auditing an image asks for.
-
-    Every line is a fact this run measured, not narration:
-
-      steps     where the time went, so a slow package is visible as one
-      links     DT_NEEDED resolved to packages -- the observed dependency
-                list, next to the build that created it
-      prefixes  the directories this package wrote into
-      digest    the file listing's hash, compared against [installs].digest
-                when the recipe pins one, which makes every build a
-                per-package reproducibility check against a previous run
-    """
-    if not os.path.isdir(destdir):
-        return
-    lines, digest = install_listing(destdir)
-    total = sum(int(l.split(" ")[2]) for l in lines if l.startswith("f "))
-
-    if timings:
-        print("    steps    " + " · ".join(f"{n} {t:.0f}s" for n, t in timings))
-
-    declared = set(r.get("deps", {}).get("link", []))
-    linked, sysroot = linked_packages(destdir, provider, name, declared)
-    unlinked = sorted(declared - set(linked))
-    if linked or sysroot or unlinked:
-        marks = []
-        for l in linked:
-            # AN UNDECLARED LINK IS FLAGGED WHERE IT HAPPENS. The sweep at the
-            # end of the run is the gate; this is the line that tells you
-            # which package to look at.
-            marks.append(l if l in declared else f"{l}(UNDECLARED)")
-        tail = f"   (+{len(sysroot)} from the sysroot)" if sysroot else ""
-        print(f"    links    {' '.join(marks) if marks else '(nothing)'}{tail}")
-        if unlinked:
-            # DECLARED AND NOT LINKED. Milder than the reverse -- it
-            # over-states rather than under-states -- but it still means
-            # `veron why` would answer with a dependency that does not exist.
-            # fontconfig declared libxml2 and linked expat for its whole life.
-            #
-            # Not every one of these is wrong: a header-only or data
-            # dependency is real and leaves no DT_NEEDED, which is why this
-            # reports rather than accuses.
-            print(f"    declared-not-linked  {' '.join(unlinked)}")
-
-    prefixes = install_prefixes(destdir)
-    if prefixes:
-        print(f"    prefixes {' '.join(prefixes)}")
-
-    pinned = ""
-    if declared_digest:
-        pinned = ("   [pinned: matches]" if declared_digest == digest
-                  else f"   [pinned: CHANGED, recipe has {declared_digest[:12]}]")
-    print(f"    {len(lines)} path(s), {total / 1048576:.1f} MiB, "
-          f"digest {digest[:16]}{pinned}")
-    for l in lines:
-        print(f"      {l}")
 
 
 def cmd_build(a):
@@ -1216,16 +1108,6 @@ def cmd_build(a):
         if not marker:
             print("  no checkpoint marker in dest/ -- building everything")
         else:
-            # THE BASE COMES FROM THE RUN, NEVER FROM THE MARKER. The first
-            # version recomputed the key using marker["base"], which made the
-            # check CIRCULAR: a checkpoint built against a different sysroot
-            # was internally consistent and therefore accepted. A gate that
-            # verifies a document against itself agrees with every forgery.
-            #
-            # The caller knows the base -- the workflow verifies the sysroot
-            # artifact's published sha256 before unpacking it -- so it passes
-            # that in, and a marker naming any other base is refused before
-            # its key is even considered.
             base = getattr(a, "base", "") or ""
             if not base:
                 die("--resume needs --base <sysroot sha256>: without it the "
@@ -1235,45 +1117,25 @@ def cmd_build(a):
                 die(f"checkpoint was built against a different sysroot.\n"
                     f"  marker {marker.get('base')}\n  this run {base}\n"
                     f"Refusing to build on top of it.")
-            keys = dict((n, k) for _, n, k in
-                        prefix_keys(recipes, policy, base))
-            want = keys.get(marker["packages"][-1]) if marker["packages"] else None
-            if want != marker["key"]:
-                die(f"checkpoint key mismatch: it was made for a different "
-                    f"plan or policy.\n  marker {marker['key']}\n"
-                    f"  plan   {want}\nRefusing to build on top of it.")
-            resume = set(marker["packages"])
-            print(f"  checkpoint accepted: {len(resume)} package(s) restored, "
-                  f"through {marker['packages'][-1]}")
-
-    # WHO PROVIDES WHICH SONAME, ACCUMULATED AS THE BUILD GOES.
-    #
-    # Built incrementally rather than in one pass at the end, because the
-    # point is to resolve a package's DT_NEEDED at the moment it finishes --
-    # every library it can possibly link was built before it, so the map is
-    # always complete enough by the time it is read.
-    provider = {}
-
-    def learn(pkg, d):
-        # A SONAME CAN HAVE MORE THAN ONE PROVIDER, and this project has one
-        # by construction: freetype and freetype-bootstrap are the same
-        # tarball built twice to break the freetype/harfbuzz cycle, and both
-        # install libfreetype.so.6. Recording only the first meant harfbuzz --
-        # which declares freetype-bootstrap and links its copy -- was reported
-        # as linking `freetype` undeclared. A set, resolved against what the
-        # package declares.
-        for dirpath, _, files in os.walk(d):
-            for fn in files:
-                fp = os.path.join(dirpath, fn)
-                if os.path.islink(fp):
-                    if ".so" in fn:
-                        provider.setdefault(fn, set()).add(pkg)
-                    continue
-                soname, _ = elf_dynamic(fp)
-                if soname:
-                    provider.setdefault(soname, set()).add(pkg)
-                if ".so" in fn:
-                    provider.setdefault(fn, set()).add(pkg)
+            keys = package_keys(recipes, policy, base)
+            # PER PACKAGE. Every entry whose key still matches is reusable;
+            # the rest are stale and their DESTDIRs are REMOVED, because a
+            # left-behind dest/ from a different recipe is exactly what
+            # `--resume` must never build on top of.
+            stale = []
+            for n, k in marker.get("keys", {}).items():
+                d = os.path.join(roots["dest"], n)
+                if n in keys and keys[n] == k and os.path.isdir(d):
+                    resume.add(n)
+                elif os.path.isdir(d):
+                    stale.append(n)
+                    if not a.dry_run:
+                        shutil.rmtree(d, ignore_errors=True)
+            print(f"  checkpoint: {len(resume)} package(s) reusable, "
+                  f"{len(stale)} stale and discarded")
+            if stale:
+                print(f"    stale: {', '.join(sorted(stale)[:8])}"
+                      + (" ..." if len(stale) > 8 else ""))
 
     for p in plan:
         name = p["pkg"]

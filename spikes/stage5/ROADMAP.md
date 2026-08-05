@@ -952,3 +952,44 @@ closure. The code never reads a dependency's `build` list, so a transitive
 `--overlay-src present`, built from the pinned tarball in this repository
 rather than apt's. The whole result depends on that flag existing, and taking
 the runner's binary would have made the answer depend on what Ubuntu shipped.
+
+
+---
+
+## The checkpoint key was wrong, and a run proved it
+
+`no usable checkpoint -- building everything`, with a 55-package checkpoint
+published and every source unchanged.
+
+**The prefix hash conflated position with dependency.** `h(i) = sha256(h(i-1)
++ recipe_sha(i))` is right about edits and wrong about insertions. Editing
+package 43 of 48 moved 6 keys — that was measured and quoted as evidence the
+design worked. Adding wave 1, wave 2 and wave 3 then moved **53 of 62**,
+because the first new package landed at rung 10 and every `h()` after it
+shifted. The checkpoint was correctly refused; the key was just too coarse.
+
+```
+key(p) = sha256(base + policy + recipe_sha(p) + each dep's key)
+```
+
+Measured on the real set: inserting a package with no dependents now moves
+**0 of 62** keys. Editing zlib moves **38** — everything that transitively
+depends on it, which is the answer. A different base still moves all 62.
+
+**And the marker is per package now.** A checkpoint was all-or-nothing; it
+carries `{package: key}`, and `--resume` keeps the subset that still matches
+and **deletes the DESTDIRs that do not** — a left-behind `dest/` from a
+different recipe is exactly what a resume must never build on top of.
+
+**The soundness argument changed with it, and that is worth stating rather
+than burying.** A prefix hash was sound under *any* declarations: everything
+earlier was in the hash whether declared or not. A dependency key assumes a
+package is affected only by what it declares — and `stage_into` puts every
+earlier package in the shared build root, so an **undeclared** dependency is
+an input this key does not cover.
+
+That is exactly what `stage5-isolate` measures, and it is why that spike is
+not tidying: **it is the thing that validates this cache key.** glib needing
+an undeclared `pkgconf` was found there. Until that sweep is clean, a stale
+hit is possible in principle — which is why `use_checkpoint` is off by
+default and the ledger records `attestations=0` when one is used.
