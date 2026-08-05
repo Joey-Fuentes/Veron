@@ -2302,6 +2302,64 @@ def cmd_selftest(a):
         ok = False
     else:
         print("  ok    no workflow declares a step name twice")
+    # A SHELL `read` MUST CONSUME EVERY FIELD ITS PRODUCER EMITS.
+    #
+    # `veron git-sources` gained a fourth column -- the pinned tar digest --
+    # and one of its three readers was left at three variables. `read -r a b c`
+    # puts THE REST OF THE LINE into the last variable, so a URL became
+    #     https://github.com/davmac314/dinit.git<TAB>d33a44bb...
+    # and git failed with "URL rejected: Malformed input to a URL function",
+    # which names the symptom and not the cause. The spike died before
+    # building anything.
+    #
+    # SHELL `read` FAILS AT THIS SILENTLY BY DESIGN -- absorbing the remainder
+    # is the documented behaviour, so there is no error to notice. That makes
+    # a producer gaining a column a change to every reader, and the only place
+    # that relationship can be checked is here.
+    EMITS = {"sources": 3, "git-sources": 4, "tarball-names": 2}
+    widths = []
+    for sub, want in EMITS.items():
+        try:
+            buf = _i.StringIO()
+            with _c.redirect_stdout(buf):
+                {"sources": cmd_sources, "git-sources": cmd_git_sources,
+                 "tarball-names": cmd_tarball_names}[sub](type("A", (), {})())
+            got = {len(l.split("\t")) for l in buf.getvalue().splitlines()
+                   if l.strip()}
+            if got and got != {want}:
+                print(f"  FAIL  `veron {sub}` emits {sorted(got)} fields, "
+                      f"the readers expect {want}")
+                ok = False
+            else:
+                widths.append(f"{sub}={want}")
+        except Exception as e:
+            print(f"  FAIL  could not sample `veron {sub}`: "
+                  f"{type(e).__name__}: {e}")
+            ok = False
+
+    bad_readers = []
+    if os.path.isdir(wfdir2):
+        for fn in sorted(os.listdir(wfdir2)):
+            if not fn.endswith((".yml", ".yaml")):
+                continue
+            text = open(os.path.join(wfdir2, fn), errors="replace").read()
+            text = re.sub(r"\\\s*\n\s*", " ", text)
+            for sub, want in EMITS.items():
+                for m in re.finditer(
+                        rf"veron\s+{re.escape(sub)}\b[^\n]*?read\s+-r\s+([^\n;]+?)(?:;|\s+do\b)",
+                        text):
+                    n = len(m.group(1).split())
+                    if n != want:
+                        bad_readers.append(
+                            f"{fn}: reads {n} field(s) from `{sub}`, "
+                            f"which emits {want}")
+    if bad_readers:
+        for b in bad_readers:
+            print(f"  FAIL  {b}")
+        ok = False
+    elif widths:
+        print(f"  ok    every shell reader matches its producer "
+              f"({', '.join(widths)})")
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 

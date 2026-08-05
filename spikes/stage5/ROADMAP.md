@@ -483,9 +483,32 @@ static archives leave no DT_NEEDED, `dlopen` is invisible to every detector
 this project has, and build-time tools are not linked at all -- those live in
 `deps.build`, which this does not check.
 
+**A producer gained a column and one of its three readers was left behind.**
+`veron git-sources` grew a fourth field -- the pinned tar digest -- and the
+spike's own fetch step still read three. Shell `read -r a b c` puts THE REST
+OF THE LINE into the last variable, so `$url` became
+
+```
+https://github.com/davmac314/dinit.git<TAB>d33a44bb...
+```
+
+and git failed with *"URL rejected: Malformed input to a URL function"*, which
+names the symptom and not the cause. The spike died at step 10, before
+building anything.
+
+**Shell `read` fails at this silently by design** -- absorbing the remainder is
+its documented behaviour, so there is no error to notice. That makes adding a
+column a change to *every* reader, and the mirror and reconcile workflows were
+updated while the spike was not. The same miss as `cmd_tarball_names` after
+`cmd_fetch` was fixed: **one producer, three consumers, two updated.**
+
+The selftest now samples each list subcommand for its real field count and
+checks every shell `read` in every workflow against it. Verified it fails on
+exactly the line that broke this run.
+
 **Still to do:**
 
-- Read the first sweep's output, then `--mode fail`
+- Read the first `veron linked` sweep, then `--mode fail`
 - The 21 corroborative declines
 - Write the 21 corroborative declines
 - Then `--mode fail`, which is the point of the exercise

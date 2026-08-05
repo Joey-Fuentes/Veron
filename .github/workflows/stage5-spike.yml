@@ -151,9 +151,23 @@ jobs:
         run: |
           set -eu
           cd spikes/stage5
-          python3 tools/veron git-sources | while IFS=$'\t' read -r commit name url; do
+          # FOUR FIELDS, NOT THREE, AND READING THREE BROKE THE RUN.
+          #
+          # `veron git-sources` gained a fourth column -- the pinned digest of
+          # the tar -- and this reader was left at three. Shell `read -r a b c`
+          # puts THE REST OF THE LINE into the last variable, so $url became
+          #     https://github.com/davmac314/dinit.git<TAB>d33a44bb...
+          # and git reported "URL rejected: Malformed input to a URL
+          # function", which names the symptom and not the cause.
+          #
+          # Two of the three consumers were updated when the column was added
+          # and this one was not -- the same miss as `cmd_tarball_names` after
+          # `cmd_fetch` was fixed. A producer gaining a field is a change to
+          # every reader, and shell `read` fails at it silently by design.
+          python3 tools/veron git-sources \
+            | while IFS="$(printf '\t')" read -r commit name url want; do
             [ -n "$commit" ] || continue
-            sh ../../tools/fetch-git.sh "$commit" "$name" "$url" dl
+            sh ../../tools/fetch-git.sh "$commit" "$name" "$url" dl ${want:+"$want"}
           done
 
       - name: 'VERON-FETCH-OK -- sha256 against the manifest'
