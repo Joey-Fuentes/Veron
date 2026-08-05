@@ -110,13 +110,49 @@ site is not a smaller version of a patch per package; it is a larger one.**
 `dependency()` with pkg-config first and its CMake backend second, and looks
 for cmake in the machine file, then `$CMAKE`, then `PATH` — its own log says
 so. `policy/defaults.toml` now sets `$CMAKE` to a path that cannot exist, so
-the backend reports not-found and never enters the trace parser. One line,
-global, no recipe changes, and new meson packages inherit it. The cost is that
-a dependency discoverable *only* through a CMake config file would now be
-missed; nothing in the set is in that position, and a named not-found beats an
-unhandled exception regardless. `cmake_backend_used()` fails the build if
-meson's log ever shows `Found CMake:` again, because a policy nothing checks
-is a belief rather than a fact.
+the backend reports not-found and never enters the trace parser. One line, no
+recipe changes, and new meson packages inherit it. `cmake_backend_used()`
+fails the build if meson's log ever shows `Found CMake:` again, because a
+policy nothing checks is a belief rather than a fact.
+
+**Reading glib's tarball afterwards found a third site and closed the
+question.** `gio/meson.build:978` looks up `libelf`, which is not in the set —
+the next crash, waiting behind inotify. It also settled what the fix could
+break: **none** of glib's *required* dependencies route through that backend.
+`iconv` and `intl` use meson's builtin handlers, `gvdb` resolves from the
+subproject glib ships, and `libffi`, `zlib` and `libpcre2-8` come from
+pkg-config under exactly the names their own guest tests check. Separately,
+`nls` defaults to `auto`, so `xgettext` is optional and `po/` is skipped —
+which is the only reason a set with no `gettext` recipe gets through glib at
+all, and worth knowing before someone sets `-Dnls=enabled`.
+
+**That setting was global first, and it should not have been.** `$CMAKE` began
+in `[env]`, which handed it to every process in the build — cmake's own
+`./bootstrap`, every autotools `configure` — for no benefit to any of them,
+and bought a paragraph of hedging about whether `./bootstrap` reads it. **A
+question that only exists because of where a setting was put is answered by
+moving the setting.** Policy now separates the two cases: `[env]` is what is
+true of the whole build, `[tool_env.<prog>]` is what is true of one tool and
+reaches only steps whose `argv[0]` is that tool. Seven meson steps carry
+`CMAKE`; nothing else does, and PLAN.txt shows both facts.
+
+The same distinction decided where graphite2's fix goes — see below.
+
+**graphite2 1.3.14 cannot be configured by cmake 4.x.** Line 1 of its
+`CMakeLists.txt` is `CMAKE_MINIMUM_REQUIRED(VERSION 2.8.0 FATAL_ERROR)`, and
+cmake 4.0 removed compatibility below 3.5 as a hard error raised before
+anything else is read. The package is from 2018 with no release since, so the
+pin cannot move. `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` is the escape hatch
+cmake 4.0 shipped for it.
+
+**It is declared in the recipe, not in policy, and that is the rule.** `$CMAKE`
+is global because it states something about *this system*: pkg-config is how
+dependencies are discovered. This is a fact about *one old tarball*. Hoisting
+it would quietly configure every future pre-3.5 package the same way instead
+of making each one say so — **the set should have to name its antiques.**
+
+Found by reading the tarball rather than by building: at rung 34 it would have
+cost a run that spends thirty rungs getting there.
 
 **cmake installed nothing, and everything worked.** Its install step was
 `ninja install` with no `DESTDIR`, so it installed to `/usr` — which inside

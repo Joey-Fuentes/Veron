@@ -225,11 +225,27 @@ def expand(recipes, policy, roots):
             else:
                 senv = {k: subst(v, env) for k, v in s.get("env", {}).items()}
                 for argv in s["run"]:
+                    argv = [subst(a, env) for a in argv]
+                    # PER-TOOL ENVIRONMENT. policy [tool_env.<prog>] reaches
+                    # only the steps that actually invoke <prog>, keyed on
+                    # argv[0]. $CMAKE lived in the global [env] first, where
+                    # it was handed to cmake's own bootstrap and to every
+                    # autotools configure in the set for no benefit to any of
+                    # them -- a setting with more reach than audience.
+                    #
+                    # A RECIPE STILL WINS. If a step declares the same name
+                    # explicitly it keeps its value, because a recipe saying
+                    # something outright should not be overridden by a default
+                    # it cannot see.
+                    tenv = policy.get("tool_env", {}).get(
+                        os.path.basename(argv[0]), {})
+                    merged = {**{k: subst(str(v), env) for k, v in tenv.items()},
+                              **senv}
                     steps.append({
                         "name": s["name"],
-                        "argv": [subst(a, env) for a in argv],
+                        "argv": argv,
                         "cwd": subst(s.get("cwd", "$S"), env),
-                        "env": senv,
+                        "env": merged,
                         **carried(s),
                     })
         patches = sorted(f for f in os.listdir(pdir)
@@ -273,6 +289,13 @@ def render_plan(plan, policy):
         L.append(f"  build.{k} = {policy['build'][k]}")
     for k in sorted(policy.get("env", {})):
         L.append(f"  env.{k} = {policy['env'][k]}")
+    # PER-TOOL ENVIRONMENT BELONGS IN THE COMMITTED PLAN. It changes what
+    # steps run with, so leaving it out would make PLAN.txt agree with itself
+    # while describing a build nobody ran -- and the per-step `env` lines
+    # below would appear to come from nowhere.
+    for prog in sorted(policy.get("tool_env", {})):
+        for k in sorted(policy["tool_env"][prog]):
+            L.append(f"  tool_env.{prog}.{k} = {policy['tool_env'][prog][k]}")
     L.append("")
     L.append("-- resolved order --------------------------------------------------")
     L.append("  derived from deps, tie-broken by name; never authored")
@@ -633,35 +656,36 @@ def apply_patches(pkgdir, srcdir, dry):
 MESON_LOGS = ("meson-logs/meson-log.txt", "_b/meson-logs/meson-log.txt")
 
 
-def cmake_backend_used(cwd):
-    """Did meson reach for cmake to resolve a dependency?
+def cmake_log_lines(cwd, limit=12):
+    """The cmake-related lines of any meson log under `cwd`, verbatim.
 
-    THE GATE FOR THE POLICY IN defaults.toml. Setting $CMAKE to a path that
-    cannot exist is an assertion about meson's behaviour, and an assertion
-    nothing checks is how a fix comes to be believed rather than known --
-    which is the failure mode this repository keeps recording.
+    NOT A VERDICT. The previous version of this returned a boolean keyed on
+    the substring "Found CMake:", and a boolean is exactly what nobody could
+    check: the string was taken from a single line of one failing run and was
+    never compared against what meson logs when the lookup does NOT find
+    cmake. If those two messages share a prefix, the gate fires on the absence
+    of the thing it guards -- and it fired, on a `meson setup` that had just
+    succeeded, printing nothing to say why.
 
-    `Found CMake:` in meson's log means the backend is live: meson located a
-    usable cmake and the next absent optional dependency will enter the trace
-    parser that crashes on cmake 4.x. Checking the LOG rather than the exit
-    code is what makes this useful, because the crash happens at the first
-    missing dependency and not at the first one meson looks for -- glib got
-    all the way through `meson setup` twice, on two different lookups, before
-    dying. A green setup is not evidence that the backend is out of the way.
-
-    Returns the log path that shows it, or None.
+    Reporting the lines costs one screen and settles the question on the next
+    run instead of the one after it. A verdict can be written once the strings
+    are known; it cannot be written from a guess about them.
     """
+    out = []
     for rel in MESON_LOGS:
         path = os.path.join(cwd, rel)
         if not os.path.isfile(path):
             continue
         try:
-            text = open(path, errors="replace").read()
+            hits = [ln.rstrip() for ln in open(path, errors="replace")
+                    if "cmake" in ln.lower()]
         except OSError:
             continue
-        if "Found CMake:" in text:
-            return rel
-    return None
+        if hits:
+            extra = ([] if len(hits) <= limit
+                     else [f"... {len(hits) - limit} more (see veron collect)"])
+            out.append((rel, hits[:limit] + extra))
+    return out
 
 
 def build_log_tail(cwd, lines=40):
@@ -838,22 +862,33 @@ def cmd_build(a):
                     continue
                 rc = run_step(s, logf, a.dry_run, may_create=(s is p["steps"][0]))
                 if rc == 0 and not a.dry_run:
-                    # SUCCEEDING IS NOT THE SAME AS SUCCEEDING FOR THE RIGHT
-                    # REASON. See cmake_backend_used().
-                    hit = cmake_backend_used(s["cwd"])
-                    if hit:
-                        print(f"VERON-BUILD-FAIL  {name}: step '{s['name']}' "
-                              f"resolved a dependency through meson's CMake "
-                              f"backend", file=sys.stderr)
-                        print(f"    {hit} contains 'Found CMake:'.")
-                        print(f"    $CMAKE is "
-                              f"{os.environ.get('CMAKE', '(unset)')!r} -- if "
-                              f"that path exists, or policy/defaults.toml no "
-                              f"longer sets it, the backend is reachable and "
-                              f"the next absent optional dependency will "
-                              f"crash meson rather than report not-found.")
-                        logf.write(f"+ FAIL cmake dependency backend live: {hit}\n")
-                        return 1
+                    # REPORTS, DOES NOT DECIDE -- AND THAT IS A CORRECTION.
+                    #
+                    # This was a hard failure keyed on the substring
+                    # "Found CMake:" appearing in meson's log. Run 52 is what
+                    # that cost: glib's `meson setup` SUCCEEDED for the first
+                    # time -- full summary, gvdb subproject resolved, ninja
+                    # located -- and this gate failed the package anyway,
+                    # printing no evidence, and ended the run.
+                    #
+                    # The substring was chosen from ONE line in run 51's log
+                    # and never checked against what meson prints when the
+                    # lookup FAILS. A gate built out of the same assumption it
+                    # is meant to test cannot test it; it only launders the
+                    # guess into something shaped like a measurement.
+                    #
+                    # So: print the lines, verbatim, and let the run continue.
+                    # `veron collect` preserves the whole log. Once the actual
+                    # strings are known -- both the found and the not-found
+                    # form -- this becomes a real gate keyed on the one that
+                    # means the backend is live, and it prints its evidence
+                    # when it fires.
+                    for rel, lines in cmake_log_lines(s["cwd"]):
+                        print(f"    --- cmake mentions in {rel} ---")
+                        for ln in lines:
+                            print(f"    | {ln}")
+                        logf.write(f"+ cmake mentions in {rel}: "
+                                   f"{len(lines)} line(s)\n")
                 if rc == 0 and s is p["steps"][0]:
                     # After the unpack, before anything reads the source.
                     applied = apply_patches(p["recipe"]["_dir"],
@@ -902,6 +937,177 @@ def cmd_build(a):
                         f"the ledger and every reproducibility comparison.")
         print(f"  VERON-PKG-BUILT  {name}")
     print("\nVERON-BUILD-OK  every package built")
+    return 0
+
+
+def cmd_collect(a):
+    """Everything needed to diagnose this run, WITHOUT RE-RUNNING IT.
+
+    THE PROBLEM THIS SOLVES. A stage-5 run is hours long. When it ends badly
+    the runner is destroyed, and until now that destroyed:
+
+      - logs/<pkg>.log, the driver's own record of every argv, every env var,
+        every rc and every step duration. Written on every run since the
+        driver existed, bound into the sandbox, and NEVER ONCE COLLECTED,
+        PRINTED OR UPLOADED. Nobody has read one.
+      - out/logs/, which the workflow populated with `find` and then dropped
+        on the floor, because there was no upload step at all. It printed
+        "collected 32 log files" and preserved none of them.
+
+    So every diagnosis cost another multi-hour run, and a change made in
+    between meant the next run answered a different question than the one
+    that was asked.
+
+    THREE RULES, EACH FROM A SPECIFIC FAILURE.
+
+    1. UNCONDITIONAL. The collector was `if: failure()`. The run that most
+       needed reading was one where `meson setup` SUCCEEDED and the driver
+       failed the package afterwards -- so nothing was collected, because
+       nothing had "failed" in the shape the condition expected. A green run
+       that is wrong is exactly the run whose evidence is hardest to get.
+
+    2. ABSENCE IS EVIDENCE. INDEX.txt lists what was looked for and NOT
+       found, not only what was. "config.log missing" distinguishes a package
+       that died before configure from one that died during it, and a
+       collector that silently omits it makes those two look identical.
+
+    3. ONE LIST, NOT TWO. The workflow used to `find` a hardcoded set of
+       filenames that duplicated BUILD_LOGS in this file. Two lists that must
+       agree and nothing comparing them is the same defect as `[declared]`
+       drifting from the argv -- so the driver, which owns BUILD_LOGS, does
+       the collecting.
+
+    Caps are per-file tails rather than a total cap: truncating the last file
+    because earlier ones were large loses exactly the evidence most likely to
+    matter.
+    """
+    roots = roots_from_args(a)
+    diag = os.path.join(roots["out"], "diag")
+    shutil.rmtree(diag, ignore_errors=True)
+    for sub in ("driver", "buildsys", "probe"):
+        os.makedirs(os.path.join(diag, sub), exist_ok=True)
+
+    index, cap = [], a.max_bytes
+
+    def keep(src, dst, why):
+        """Copy at most `cap` trailing bytes, and say what happened."""
+        try:
+            size = os.path.getsize(src)
+            with open(src, "rb") as f:
+                if size > cap:
+                    f.seek(size - cap)
+                    body = b"[TRUNCATED -- showing the last %d of %d bytes]\n" % (
+                        cap, size) + f.read()
+                else:
+                    body = f.read()
+            with open(dst, "wb") as o:
+                o.write(body)
+            index.append(f"  kept    {why}  ({size} bytes"
+                         f"{', truncated' if size > cap else ''})")
+            return True
+        except OSError as e:
+            index.append(f"  FAILED  {why}: {type(e).__name__}: {e}")
+            return False
+
+    # 1. THE DRIVER'S OWN RECORD. This is the file that says what actually
+    #    ran, in order, with what environment -- and it is the one that has
+    #    never been preserved.
+    if os.path.isdir(a.logs):
+        for fn in sorted(os.listdir(a.logs)):
+            if fn.endswith(".log"):
+                keep(os.path.join(a.logs, fn),
+                     os.path.join(diag, "driver", fn), f"driver/{fn}")
+    else:
+        index.append(f"  ABSENT  driver logs -- {a.logs} does not exist")
+
+    # 2. WHAT EACH BUILD SYSTEM WROTE DOWN, for every package that has a
+    #    build tree, not only the one that failed. A package can succeed and
+    #    still have configured wrong, which is the case that started this.
+    seen = 0
+    if os.path.isdir(roots["build"]):
+        for pkg in sorted(os.listdir(roots["build"])):
+            pdir = os.path.join(roots["build"], pkg)
+            if not os.path.isdir(pdir):
+                continue
+            for sub in sorted(os.listdir(pdir)):
+                for rel in BUILD_LOGS:
+                    src = os.path.join(pdir, sub, rel)
+                    if not os.path.isfile(src):
+                        continue
+                    flat = f"{pkg}__{rel.replace('/', '_')}"
+                    if keep(src, os.path.join(diag, "buildsys", flat),
+                            f"buildsys/{flat}"):
+                        seen += 1
+        if seen == 0:
+            index.append("  ABSENT  no build-system logs under "
+                         f"{roots['build']} -- nothing reached configure")
+    else:
+        index.append(f"  ABSENT  build tree -- {roots['build']} does not exist")
+
+    # 3. THE MECHANISM UNDER TEST, EXTRACTED. A full meson log is 8000 lines
+    #    and the question is usually about six of them. This is deliberately
+    #    a DUMP AND NOT A VERDICT: it reports the lines verbatim so the next
+    #    reader decides what they mean. The gate that tried to decide for
+    #    them matched a substring nobody had ever seen meson emit, and failed
+    #    a build on it.
+    probe = os.path.join(diag, "probe", "meson-cmake.txt")
+    hits = 0
+    with open(probe, "w") as out:
+        out.write("Every line mentioning cmake in every meson log this run.\n"
+                  "Verbatim. No interpretation -- that is the point.\n\n")
+        bs = os.path.join(diag, "buildsys")
+        for fn in sorted(os.listdir(bs)) if os.path.isdir(bs) else []:
+            if "meson-log" not in fn:
+                continue
+            out.write(f"===== {fn}\n")
+            try:
+                for i, ln in enumerate(open(os.path.join(bs, fn),
+                                            errors="replace"), 1):
+                    if "cmake" in ln.lower():
+                        out.write(f"{i:6}| {ln.rstrip()}\n")
+                        hits += 1
+            except OSError as e:
+                out.write(f"  (unreadable: {e})\n")
+            out.write("\n")
+    index.append(f"  kept    probe/meson-cmake.txt  ({hits} matching lines)")
+
+    # 4. WHAT THE BOX WAS. A log without its environment cannot be compared
+    #    against another run, and comparing runs that were not the same build
+    #    is a mistake DERIVATIONS.md records four rounds lost to.
+    with open(os.path.join(diag, "RUN.txt"), "w") as f:
+        f.write("veron collect\n\n")
+        f.write(f"uname            {' '.join(os.uname())}\n")
+        f.write(f"python           {sys.version.split()[0]}\n")
+        f.write(f"cwd              {os.getcwd()}\n")
+        for k in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT",
+                  "GITHUB_WORKFLOW"):
+            f.write(f"{k:16} {os.environ.get(k, '(unset)')}\n")
+        f.write("\n-- resolved environment --\n")
+        for k in sorted(os.environ):
+            f.write(f"  {k}={os.environ[k]}\n")
+        f.write("\n-- policy --\n")
+        try:
+            pol = load_policy()
+            for sec in sorted(pol):
+                f.write(f"  [{sec}] {pol[sec]}\n")
+        except Exception as e:
+            f.write(f"  (unreadable: {type(e).__name__}: {e})\n")
+        f.write("\n-- tools on PATH --\n")
+        for tool in ("meson", "ninja", "cmake", "pkgconf", "pkg-config",
+                     "python3", "gcc", "patch", "tar"):
+            w = shutil.which(tool, path=os.environ.get("PATH", ""))
+            f.write(f"  {tool:12} {w or 'NOT FOUND'}\n")
+
+    with open(os.path.join(diag, "INDEX.txt"), "w") as f:
+        f.write("What this run preserved, and what it looked for and did "
+                "not find.\n\n")
+        f.write("\n".join(index) + "\n")
+
+    print(f"VERON-COLLECT-OK  {len(index)} entries -> {diag}")
+    for line in index[:25]:
+        print(line)
+    if len(index) > 25:
+        print(f"  ... and {len(index) - 25} more (see INDEX.txt)")
     return 0
 
 
@@ -1279,17 +1485,41 @@ def cmd_selftest(a):
     # fail somewhere that looks unrelated. Checking it statically costs
     # nothing and names the cause up front.
     try:
-        cmake_env = load_policy().get("env", {}).get("CMAKE")
-        if not cmake_env:
-            print("  FAIL  policy sets no CMAKE -- meson's CMake dependency "
-                  "backend is reachable")
+        pol = load_policy()
+        cmake_env = pol.get("tool_env", {}).get("meson", {}).get("CMAKE")
+        if pol.get("env", {}).get("CMAKE"):
+            print("  FAIL  CMAKE is in the GLOBAL [env] -- it reaches cmake's "
+                  "own bootstrap and every configure script. It belongs in "
+                  "[tool_env.meson].")
+            ok = False
+        elif not cmake_env:
+            print("  FAIL  policy sets no [tool_env.meson] CMAKE -- meson's "
+                  "CMake dependency backend is reachable")
             ok = False
         elif os.path.exists(cmake_env):
-            print(f"  FAIL  policy CMAKE={cmake_env!r} EXISTS, so meson will "
-                  f"use it as a dependency backend")
+            print(f"  FAIL  CMAKE={cmake_env!r} EXISTS, so meson will use it "
+                  f"as a dependency backend")
             ok = False
         else:
             print("  ok    meson cannot reach its CMake dependency backend")
+        # tool_env IS KEYED ON argv[0], so a step that reaches meson through a
+        # shell never gets it -- and would crash exactly the way glib did,
+        # with the policy looking correct. No recipe does this today; the
+        # check is here so that the day one does, it says so rather than
+        # failing 1500 lines into a meson log.
+        shelled = []
+        for rname, r in sorted(load_recipes().items()):
+            for st in r.get("steps", []):
+                sh = st.get("shell", "")
+                if re.search(r"(^|[;&|\s])meson\s", sh):
+                    shelled.append(f"{rname}/{st['name']}")
+        if shelled:
+            for c in shelled:
+                print(f"  FAIL  {c} invokes meson from a shell step -- "
+                      f"[tool_env.meson] cannot reach it")
+            ok = False
+        else:
+            print("  ok    every meson invocation is an argv step")
     except Exception as e:
         print(f"  FAIL  CMAKE policy check could not run: "
               f"{type(e).__name__}: {e}")
@@ -1448,7 +1678,7 @@ def cmd_selftest(a):
     # stop reading.
     KNOWN = ("plan", "fetch", "build", "manifest", "rootfs", "ledger",
              "selftest", "guest-tests", "compare", "status", "sources",
-             "git-sources")
+             "git-sources", "collect")
     called = set()
     wfdir = os.path.join(HERE, "..", "..", ".github", "workflows")
     if os.path.isdir(wfdir):
@@ -1623,6 +1853,12 @@ def main():
 
     p = sub.add_parser("manifest", help="every installed path -> its package")
     p.set_defaults(fn=cmd_manifest)
+
+    p = sub.add_parser("collect", help="gather everything needed to diagnose "
+                                       "this run without re-running it")
+    p.add_argument("--max-bytes", type=int, default=512 * 1024,
+                   help="per-file tail cap (default 512K)")
+    p.set_defaults(fn=cmd_collect)
 
     p = sub.add_parser("rootfs", help="deterministic rootfs tar")
     p.set_defaults(fn=cmd_rootfs)

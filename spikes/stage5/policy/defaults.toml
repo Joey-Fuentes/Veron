@@ -40,8 +40,9 @@ TERM              = "dumb"
 # A PATCH PER CALL SITE IS NOT A FIX, AND RUN #51 PROVED IT. glib was patched
 # at meson.build:2549 (bash-completion) and the next run failed at
 # gio/inotify/meson.build:32 (libinotify) with the identical crash -- the same
-# package, a different lookup. There is no bound on the number of call sites,
-# and pixman, harfbuzz, fontconfig, cairo and pango are all still ahead.
+# package, a different lookup. Reading the tarball afterwards found a third,
+# `libelf` at gio/meson.build:978, waiting behind it. There is no bound on the
+# number of call sites.
 #
 # HOW IT WORKS. meson looks for cmake in the machine file, then this variable,
 # then PATH -- its own log says so: "CMake binary missing from cross or native
@@ -50,16 +51,30 @@ TERM              = "dumb"
 # and CMakeDependency then returns not-found for any `required: false` lookup
 # instead of entering the trace parser at all.
 #
+# SCOPED TO meson, AND THE FIRST VERSION WAS NOT. This began life in [env]
+# above, which handed $CMAKE to EVERY process in the build -- cmake's own
+# ./bootstrap, every autotools configure that probes it, everything. No
+# non-meson package gains anything from it, and the reach bought nothing but
+# a paragraph of hedging about whether ./bootstrap reads the variable. That
+# question does not need answering if the variable never gets there.
+#
+# The rule is now: [env] states what is true of the whole build; [tool_env]
+# states what is true of one tool, and reaches only the steps that invoke it.
+# A setting whose blast radius exceeds its audience is a setting waiting to be
+# blamed for something unrelated.
+#
 # WHAT IT COSTS. A dependency that is ONLY discoverable through a CMake config
 # file and ships no .pc will now fail with a plain "dependency not found"
 # rather than being found. Nothing in the current set is in that position --
 # graphite2, libjpeg-turbo and icu all ship .pc files -- and a named
 # not-found is a better failure than an unhandled exception either way.
 #
-# WHAT IT DOES NOT AFFECT. Packages whose OWN build system is cmake --
-# graphite2, libjpeg-turbo -- invoke `cmake` by argv and never read this
-# variable. cmake's own ./bootstrap does not consult it either; if that turns
-# out to be wrong it fails at rung 30, loudly, before anything downstream.
+# VERIFIED AGAINST THE TARBALL, not assumed: none of glib's REQUIRED
+# dependencies route through this backend. iconv and intl use meson's builtin
+# handlers, gvdb resolves from the subproject glib ships, and libffi, zlib and
+# libpcre2-8 all come from pkg-config under exactly the names their own guest
+# tests already check.
+[tool_env.meson]
 CMAKE = "/nonexistent/veron-cmake-is-not-a-dependency-backend"
 
 [docs]

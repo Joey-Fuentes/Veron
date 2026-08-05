@@ -427,30 +427,35 @@ jobs:
       # before the upload, throwing that away every time. Two runs were spent
       # watching m4 stop after `PASS: test-error.sh` without ever learning
       # which test came next.
-      - name: 'Collect what a failed build wrote down'
-        if: failure()
+      # EVIDENCE SURVIVES THE RUNNER, OR IT DOES NOT EXIST.
+      #
+      # What this replaces printed "collected 32 log files" and preserved
+      # none of them: it copied into out/logs/ and THERE WAS NO UPLOAD STEP
+      # IN THIS WORKFLOW AT ALL. It was also `if: failure()`, so the run that
+      # most needed reading -- a `meson setup` that succeeded and was failed
+      # afterwards by the driver -- collected nothing, because nothing had
+      # failed in the shape the condition expected.
+      #
+      # And it never touched logs/, the driver's own per-package record of
+      # every argv, env var, rc and duration. That file has been written on
+      # every run the driver has ever made and nobody has read one.
+      #
+      # THE FIND LIST LIVED HERE AND DUPLICATED BUILD_LOGS IN THE DRIVER.
+      # Two lists that must agree with nothing comparing them is the same
+      # defect as [declared] drifting from the argv. `veron collect` owns it.
+      - name: 'VERON-COLLECT -- preserve the evidence'
+        if: always()
         run: |
           set -eu
           cd spikes/stage5
-          mkdir -p out/logs
-          # NOT JUST TEST LOGS. This collected test-suite.log and per-test
-          # logs, which answered nothing when a package failed at CONFIGURE --
-          # and configure is where most of them fail. meson's traceback lives
-          # in meson-logs/meson-log.txt, autotools' actual failing test in
-          # config.log, cmake's in CMakeError.log. Each was previously chased
-          # with a bespoke on_failure step written after the run that needed
-          # it: m4, then libtool, then glib.
-          for pat in 'meson-log.txt' 'config.log' 'CMakeError.log' \
-                     'CMakeOutput.log' 'test-suite.log'; do
-            find build -name "$pat" 2>/dev/null | head -200 | while read -r f; do
-              cp "$f" "out/logs/$(echo "$f" | tr / _)" 2>/dev/null || true
-            done
-          done
-          # Per-test logs too, for the suites that write one file per test.
-          find build -name '*.log' -path '*tests*' 2>/dev/null | head -300 \
-            | while read -r f; do
-              cp "$f" "out/logs/$(echo "$f" | tr / _)" 2>/dev/null || true
-            done
-          echo "  collected $(ls out/logs 2>/dev/null | wc -l) log files"
-          ls out/logs 2>/dev/null | head -20 | sed 's|^|    |'
+          python3 tools/veron --logs logs --out out --build-dir build collect
 
+      # if: always() ON THE UPLOAD TOO. A conditional upload attached to an
+      # unconditional collect just moves the hole one step later.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: veron-stage5-diag-${{ github.run_id }}-${{ github.run_attempt }}
+          path: spikes/stage5/out/diag
+          if-no-files-found: error
+          retention-days: 30
