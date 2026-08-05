@@ -265,6 +265,48 @@ source URLs and digests. **Arch's mesa PKGBUILD lists `python-mako` in
 `makedepends`.** See [`ROADMAP.md`](./ROADMAP.md) for the three-detector design
 that follows from this.
 
+**48 PACKAGES, FULLY GREEN, END TO END.** No step errored:
+
+```
+VERON-BUILD-OK        every package built
+VERON-MANIFEST-OK     14228 paths
+VERON-LEDGER-OK       48 record(s)          VERON-STATUS-OK  unknown = 0
+VERON-IMAGE-REPRO-OK  two builds, identical bytes
+VERON-STAGE5-BOOT-OK  the packages ran under the kernel
+VERON-STAGE5-TESTS    pass=51 fail=0 none=1
+```
+
+**`python: modules ok`** settles the sqlite question: `import zlib, bz2, lzma,
+ctypes, sqlite3` succeeds inside the booted image. sqlite was built, installed
+and used by nobody for as long as python preceded it in the plan; declaring
+the edge moved it to rung 25 and the module exists.
+
+dinit, libsfdo and libxkbcommon all built and tested for the first time.
+
+**`veron linked` ran for the first time — 11 mismatches — and one is real.**
+
+```
+linked-undeclared  readline links ncurses (libncursesw.so.6 via usr/lib/libhistory.so.8.3)
+```
+
+readline declared ncurses under `build` and `runtime` and left **`link` empty**,
+so the ledger understated what that library actually needs. **This is the
+direction no static scan and no distro comparison can reach**: both read
+intent, and this reads the ELF.
+
+**And one was my own false positive.** harfbuzz was reported as linking
+`freetype` undeclared when it declares `freetype-bootstrap` — the same tarball
+built twice to break the freetype/harfbuzz cycle, so **both install
+`libfreetype.so.6`**. The sweep recorded one provider per soname and walked
+`dest/` alphabetically. A soname's providers are a set now, resolved against
+what the package declares: an ambiguity the build never had should not become
+a finding.
+
+The remaining nine are `declared-unlinked`, and most have the same cause:
+**bzip2 builds only `libbz2.a`**, so cmake, libarchive and python link it
+statically and leave no `DT_NEEDED`. That is the documented blind spot rather
+than a fault — worth recording per recipe rather than silencing.
+
 **IT BOOTS, AND THE IMAGE REPRODUCES.** At 48 packages:
 
 ```

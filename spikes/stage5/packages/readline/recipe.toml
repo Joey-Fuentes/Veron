@@ -14,8 +14,14 @@ signature = "https://ftp.gnu.org/gnu/readline/readline-8.3.tar.gz.sig"
 crosschecked_against = []
 
 [deps]
+# link WAS EMPTY AND readline LINKS ncurses. Found by `veron linked` on its
+# first run: libhistory.so.8.3 carries DT_NEEDED libncursesw.so.6. The recipe
+# declared ncurses under `build` and `runtime` and left `link` blank, so the
+# ledger understated what this library actually needs -- the exact direction
+# no static scan and no distro comparison can see, because both read intent
+# and this reads the ELF.
 build        = ["ncurses"]
-link         = []
+link         = ["ncurses"]
 runtime      = ["ncurses"]
 optional_off = ["termcap"]
 

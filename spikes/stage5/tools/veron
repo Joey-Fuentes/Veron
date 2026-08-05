@@ -1024,7 +1024,28 @@ def cmd_checkpoint(a):
     return 0
 
 
-def linked_packages(destdir, provider, own):
+def resolve_provider(owners, own, declared):
+    """Which of several providers of one soname this package actually meant.
+
+    PREFER WHAT THE PACKAGE DECLARES. When two packages install the same
+    soname, the ELF cannot say which copy was linked -- the name is identical.
+    The recipe can: if one of the providers is in deps.link, that is the
+    answer, and reporting the other would be inventing a finding out of an
+    ambiguity the build never had.
+
+    With no declared match it falls back to a stable choice and lets the
+    caller report it, because two providers and no declaration IS worth
+    seeing.
+    """
+    if own in owners:
+        return own
+    inter = owners & declared
+    if inter:
+        return sorted(inter)[0]
+    return sorted(owners)[0] if owners else None
+
+
+def linked_packages(destdir, provider, own, declared=frozenset()):
     """Which OTHER packages this DESTDIR's binaries link, and what came from
     the base image.
 
@@ -1042,10 +1063,12 @@ def linked_packages(destdir, provider, own):
                 continue
             _, needed = elf_dynamic(p)
             for so in needed:
-                owner = provider.get(so)
-                if owner is None:
+                owners = provider.get(so)
+                if not owners:
                     sysroot.add(so)
-                elif owner != own:
+                    continue
+                owner = resolve_provider(owners, own, declared)
+                if owner and owner != own:
                     linked.add(owner)
     return sorted(linked), sorted(sysroot)
 
@@ -1078,8 +1101,8 @@ def report_package(name, r, destdir, provider, timings, declared_digest):
     if timings:
         print("    steps    " + " · ".join(f"{n} {t:.0f}s" for n, t in timings))
 
-    linked, sysroot = linked_packages(destdir, provider, name)
     declared = set(r.get("deps", {}).get("link", []))
+    linked, sysroot = linked_packages(destdir, provider, name, declared)
     unlinked = sorted(declared - set(linked))
     if linked or sysroot or unlinked:
         marks = []
@@ -1205,18 +1228,25 @@ def cmd_build(a):
     provider = {}
 
     def learn(pkg, d):
+        # A SONAME CAN HAVE MORE THAN ONE PROVIDER, and this project has one
+        # by construction: freetype and freetype-bootstrap are the same
+        # tarball built twice to break the freetype/harfbuzz cycle, and both
+        # install libfreetype.so.6. Recording only the first meant harfbuzz --
+        # which declares freetype-bootstrap and links its copy -- was reported
+        # as linking `freetype` undeclared. A set, resolved against what the
+        # package declares.
         for dirpath, _, files in os.walk(d):
             for fn in files:
                 fp = os.path.join(dirpath, fn)
                 if os.path.islink(fp):
                     if ".so" in fn:
-                        provider.setdefault(fn, pkg)
+                        provider.setdefault(fn, set()).add(pkg)
                     continue
                 soname, _ = elf_dynamic(fp)
                 if soname:
-                    provider.setdefault(soname, pkg)
+                    provider.setdefault(soname, set()).add(pkg)
                 if ".so" in fn:
-                    provider.setdefault(fn, pkg)
+                    provider.setdefault(fn, set()).add(pkg)
 
     for p in plan:
         name = p["pkg"]
@@ -1812,15 +1842,19 @@ def cmd_linked(a):
         for dirpath, _, files in os.walk(d):
             for fn in files:
                 p = os.path.join(dirpath, fn)
+                # SET, NOT FIRST-WINS -- see resolve_provider(). freetype and
+                # freetype-bootstrap both install libfreetype.so.6, and
+                # walking dest/ alphabetically made every consumer of the
+                # bootstrap copy look like an undeclared link on `freetype`.
                 if os.path.islink(p):
                     if ".so" in fn:
-                        provider.setdefault(fn, pkg)
+                        provider.setdefault(fn, set()).add(pkg)
                     continue
                 soname, needed = elf_dynamic(p)
                 if soname:
-                    provider.setdefault(soname, pkg)
+                    provider.setdefault(soname, set()).add(pkg)
                 if ".so" in fn:
-                    provider.setdefault(fn, pkg)
+                    provider.setdefault(fn, set()).add(pkg)
                 if needed:
                     mine.append((os.path.relpath(p, d), needed))
         elfs[pkg] = mine
@@ -1834,14 +1868,15 @@ def cmd_linked(a):
         linked, where = set(), {}
         for rel, needed in elfs[pkg]:
             for so in needed:
-                owner = provider.get(so)
-                if owner is None:
+                owners = provider.get(so)
+                if not owners:
                     # NOT A GAP -- the base image. libc, libm, libstdc++ and
                     # friends come from the stage-4 sysroot, which no stage-5
                     # recipe owns. Counted separately so the number is visible
                     # rather than absent, the way `veron status` treats opaque.
                     sysroot_libs.setdefault(so, set()).add(pkg)
                     continue
+                owner = resolve_provider(owners, pkg, declared)
                 if owner == pkg:
                     continue
                 linked.add(owner)
