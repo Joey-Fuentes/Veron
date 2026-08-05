@@ -24,10 +24,15 @@ crosschecked_against = []   # name the packagers whose digest you compared
 build        = []
 link         = []
 runtime      = []
-optional_off = ["libsigsegv", "libiconv", "gettext"]
+# --without-libsigsegv-prefix / -libiconv-prefix / -libintl-prefix are
+# DECLINES, not boilerplate: gnulib probes for all three and links them
+# if found. None is in this set, so the flags stop m4 acquiring a
+# dependency the day one of them arrives for another package's sake --
+# the `auto` failure this project keeps finding.
+optional_off = ["libsigsegv", "libiconv", "gettext", "libintl"]
 
 [declared]
-configure_flags = ["--prefix=/usr", "--disable-nls"]
+configure_flags = ["--prefix=/usr", "--disable-nls", "--without-libsigsegv-prefix", "--without-libiconv-prefix", "--without-libintl-prefix"]
 verification    = "none -- upstream suites are not run; see deferral"
 deferral        = """
 Internals not reviewed; upstream test suite only. libsigsegv, libiconv and \

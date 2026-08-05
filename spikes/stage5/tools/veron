@@ -1692,6 +1692,89 @@ def cmd_linked(a):
     return 1 if (problems and a.mode == "fail") else 0
 
 
+def install_prefixes(destdir, depth=3):
+    """The distinct install prefixes under a DESTDIR, at a fixed depth.
+
+    DEPTH 3 IS THE UNIT A DECISION IS MADE AT. `usr` alone says nothing --
+    every package installs under it. Full paths would list ten thousand files
+    and change on every upstream release. `usr/share/hwdata` and
+    `usr/lib/modprobe.d` are the level at which somebody looks and says yes or
+    no, which is exactly the level hwdata's stray modprobe config would have
+    been caught at.
+    """
+    out = set()
+    for dirpath, _, files in os.walk(destdir):
+        rel = os.path.relpath(dirpath, destdir)
+        if rel == "." or not files:
+            continue
+        parts = rel.split(os.sep)
+        out.add("/".join(parts[:depth]))
+    return sorted(out)
+
+
+def cmd_installs(a):
+    """Check -- or propose -- what each package is allowed to install.
+
+    THE CONTRACT. A recipe declares the prefixes it installs into; anything
+    outside them fails the package by name. `veron build` already refuses a
+    package that installs NOTHING, after cmake spent its whole life writing
+    into /usr instead of its DESTDIR. This is the other half: a package that
+    installs somewhere nobody expected.
+
+    WHY IT MATTERS MORE THAN IT SOUNDS. hwdata drops a modprobe blacklist into
+    $(libdir)/modprobe.d by default, in a system with no kmod to read it.
+    harfbuzz installs three utilities nobody asked for. Neither breaks
+    anything; both put files in the image that no decision put there, and the
+    manifest records them as though someone had chosen.
+
+    --propose EMITS THE CURRENT PREFIXES, because writing 48 of these by hand
+    from memory is how they end up wrong. Run it against a real build, read
+    the output, paste what is correct -- the same shape as the reconciler's
+    proposals, and for the same reason.
+    """
+    recipes = load_recipes()
+    roots = roots_from_args(a)
+    dest = roots["dest"]
+    if not os.path.isdir(dest):
+        die(f"no DESTDIRs at {dest} -- run `veron build` first")
+
+    problems, missing = 0, []
+    for pkg in sorted(os.listdir(dest)):
+        d = os.path.join(dest, pkg)
+        if not os.path.isdir(d) or pkg not in recipes:
+            continue
+        actual = install_prefixes(d)
+        declared = recipes[pkg].get("installs", {}).get("prefixes")
+        if a.propose:
+            lst = ", ".join(f'"{p}"' for p in actual)
+            print(f"# ---- packages/{pkg}/recipe.toml")
+            print("[installs]")
+            print(f"prefixes = [{lst}]\n")
+            continue
+        if declared is None:
+            missing.append(pkg)
+            continue
+        stray = [p for p in actual
+                 if not any(p == d2 or p.startswith(d2 + "/") for d2 in declared)]
+        for p in stray:
+            problems += 1
+            print(f"  {'UNDECLARED-PREFIX' if a.mode == 'fail' else 'undeclared-prefix'}"
+                  f"  {pkg} installs into {p}, which [installs].prefixes does "
+                  f"not allow")
+    if a.propose:
+        return 0
+    if missing:
+        # NOT SILENCE. A package with no [installs] block is UNCHECKED, and a
+        # run that reports zero problems while most packages are unchecked is
+        # the reassuring zero this project keeps finding.
+        print(f"\n  {len(missing)} package(s) declare no [installs].prefixes "
+              f"and were NOT checked:")
+        print(f"    {', '.join(missing)}")
+    print(f"\nVERON-INSTALLS-{'FAIL' if (problems and a.mode == 'fail') else 'OK'}"
+          f"  {problems} stray prefix(es), {len(missing)} unchecked")
+    return 1 if (problems and a.mode == "fail") else 0
+
+
 def cmd_manifest(a):
     recipes = load_recipes()
     roots = roots_from_args(a)
@@ -2270,7 +2353,7 @@ def cmd_selftest(a):
              "selftest", "guest-tests", "compare", "status", "sources",
              "git-sources", "collect", "build-only-names", "merge",
              "tarball-names", "linked",
-             "keys", "checkpoint")
+             "keys", "checkpoint", "installs")
     called = set()
     wfdir = os.path.join(HERE, "..", "..", ".github", "workflows")
     if os.path.isdir(wfdir):
@@ -2537,6 +2620,101 @@ def cmd_selftest(a):
     elif widths:
         print(f"  ok    every shell reader matches its producer "
               f"({', '.join(widths)})")
+    # ---------------------------------------------------------- contracts
+    #
+    # Four rules from ROADMAP.md, checked here because all four are facts
+    # about the recipes and the policy and need no build to verify.
+
+    # CONTRACT 1: THE GLOBAL ENVIRONMENT IS A CLOSED SET.
+    #
+    # policy/[env] states what is true of EVERY process in the build. It grew
+    # a $CMAKE once -- a meson-specific setting handed to cmake's own
+    # bootstrap and to every autotools configure, for no benefit to any of
+    # them -- and the fix was to move it to [tool_env.meson], which reaches
+    # only the steps that invoke meson.
+    #
+    # Nothing stopped that from happening and nothing would stop it again, so
+    # the closed set is a gate rather than a convention: conventions are how
+    # this gets violated one convenient exception at a time. [tool_env] is
+    # deliberately NOT frozen -- a per-tool setting is scoped by construction.
+    FROZEN_ENV = {"SOURCE_DATE_EPOCH", "LC_ALL", "LANG", "TZ", "TERM"}
+    try:
+        have = set(load_policy().get("env", {}))
+        extra, gone = have - FROZEN_ENV, FROZEN_ENV - have
+        if extra:
+            print(f"  FAIL  policy [env] gained {sorted(extra)} -- a global "
+                  f"reaches every process. If it belongs to one tool, put it "
+                  f"in [tool_env.<prog>]")
+            ok = False
+        elif gone:
+            print(f"  FAIL  policy [env] lost {sorted(gone)} -- these decide "
+                  f"output bytes")
+            ok = False
+        else:
+            print(f"  ok    the global environment is the frozen set "
+                  f"({len(FROZEN_ENV)} keys)")
+    except Exception as e:
+        print(f"  FAIL  env freeze check could not run: {type(e).__name__}: {e}")
+        ok = False
+
+    # CONTRACT 2: A DECLARED FLAG MUST ACTUALLY BE PASSED.
+    #
+    # [declared].configure_flags is read by anyone auditing what a package was
+    # built with. A flag listed there and absent from the argv is not a
+    # documentation slip -- it is the record describing a build that did not
+    # happen. cmake's recipe claimed "DESTDIR is passed through ninja install"
+    # for its whole life while the step did not do it, and the consequence was
+    # a package missing from the manifest entirely.
+    fiction = []
+    for rname, r in sorted(load_recipes().items()):
+        argv = [a for s in r.get("steps", []) for run in s.get("run", [])
+                for a in run] + [s.get("shell", "") for s in r.get("steps", [])]
+        for f in r.get("declared", {}).get("configure_flags", []):
+            if not any(f == a or f in str(a) for a in argv):
+                fiction.append(f"{rname}: declares {f!r}, no step passes it")
+    if fiction:
+        for f in fiction:
+            print(f"  FAIL  {f}")
+        ok = False
+    else:
+        print("  ok    every declared flag is actually passed")
+
+    # CONTRACT 3: A DECLINE MUST BE RECORDED.
+    #
+    # The reverse direction, scoped to what matters. Requiring argv ⊆ declared
+    # outright would force --prefix, -DCMAKE_BUILD_TYPE and --bootstrap into
+    # the field and turn a record of DECISIONS into a second copy of the
+    # command line -- and a field that is mostly boilerplate stops being read.
+    #
+    # What must be recorded is what the build DECLINES: those are the choices
+    # that shape the package, the ones another packager would make differently,
+    # and the ones `optional_off` exists for. A flag that turns something off
+    # counts as recorded if it appears in configure_flags OR its feature name
+    # appears in optional_off.
+    OFF = re.compile(r"(=(disabled|false|no|OFF|0)$)|^--(disable|without)-")
+    silent = []
+    for rname, r in sorted(load_recipes().items()):
+        dec = set(r.get("declared", {}).get("configure_flags", []))
+        off = set(r.get("deps", {}).get("optional_off", []))
+        for s in r.get("steps", []):
+            for run in s.get("run", []):
+                for a in run:
+                    if not OFF.search(a) or a in dec:
+                        continue
+                    m = (re.match(r"^-D([A-Za-z0-9_-]+)=", a)
+                         or re.match(r"^--(?:disable|without)-([A-Za-z0-9_-]+)$", a)
+                         or re.match(r"^([A-Za-z0-9_]+)=", a))
+                    if m and m.group(1).lower().replace("_", "-") in {
+                            x.lower().replace("_", "-") for x in off}:
+                        continue
+                    silent.append(f"{rname}: passes {a!r} and neither "
+                                  f"configure_flags nor optional_off says so")
+    if silent:
+        for f in silent:
+            print(f"  FAIL  {f}")
+        ok = False
+    else:
+        print("  ok    every decline is recorded in the recipe")
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 
@@ -2659,6 +2837,13 @@ def build_parser():
 
     p = sub.add_parser("merge", help="merge every DESTDIR into the system root")
     p.set_defaults(fn=cmd_merge)
+
+    p = sub.add_parser("installs",
+                       help="what each package installs, against what it declares")
+    p.add_argument("--propose", action="store_true",
+                   help="emit [installs] blocks from a real build")
+    p.add_argument("--mode", choices=["warn", "fail"], default="warn")
+    p.set_defaults(fn=cmd_installs)
 
     p = sub.add_parser("keys", help="prefix hash per package -- checkpoint names")
     p.add_argument("--base", default="", help="sysroot sha256 the plan builds on")

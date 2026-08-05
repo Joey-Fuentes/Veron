@@ -59,7 +59,9 @@ residue        = "configure, Makefile.in, aclocal.m4, m4/*.m4 -- autotools outpu
 build        = []
 link         = []
 runtime      = []
-optional_off = []
+# --disable-static is a decline: a static libpkgconf nothing links
+# would ship in the image and appear in the manifest.
+optional_off = ["static"]
 
 [declared]
 configure_flags = [

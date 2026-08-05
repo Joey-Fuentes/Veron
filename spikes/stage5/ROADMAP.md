@@ -131,16 +131,17 @@ extracts only `pkgver`, source URLs and digests. **Arch's mesa PKGBUILD lists
 - Rewrite the cmake check as a real gate once **both** the found and not-found
   strings are known, printing its evidence when it fires
 
-### 2. Contracts — self-contained, testable locally, no runs burned
+### 2. Contracts — BUILT
 
-| | rule |
-|---|---|
-| env freeze | 2 |
-| `[installs]` prefixes | 3 |
-| file-list digest | 3 |
-| `[undeclarable]` disclosure | 4 |
-| `declared ⊆ argv` | 5 |
-| `DT_NEEDED ⊆ declared` | 5 |
+| | rule | state |
+|---|---|---|
+| env freeze | 2 | **enforced** — `[env]` is a closed set of 5 |
+| declared flag is passed | 5 | **enforced** — 48/48 clean |
+| a decline is recorded | 5 | **enforced** — found 3, fixed 3 |
+| `[installs]` prefixes | 3 | **warn** — needs one build to seed |
+| `[undeclarable]` disclosure | 4 | **done** — 66 entries, 12 packages |
+| `DT_NEEDED ⊆ deps.link` | 5 | **warn** — `veron linked` |
+| file-list digest | 3 | not built |
 
 ### 3. Probe work
 
@@ -637,3 +638,46 @@ Hashing `tools/veron` would invalidate every checkpoint on every comment edit,
 which makes the cache useless during the work that needs it. So a change to
 *how* a step runs — not what it runs — will not invalidate. That is what
 `use_checkpoint: false` is for.
+
+
+---
+
+## The contracts, and what each one found
+
+**Env freeze.** `policy/[env]` is now a closed set of five keys, checked rather
+than agreed. It grew a `$CMAKE` once — a meson-specific setting handed to
+cmake's own bootstrap and every autotools configure — and nothing would have
+stopped that happening again. `[tool_env]` is deliberately *not* frozen: a
+per-tool setting is scoped by construction.
+
+**A declared flag must actually be passed.** All 48 clean. This is the
+direction cmake failed in for its whole life: the deferral note claimed
+*"DESTDIR is passed through ninja install"* while the step did not do it, and
+the package went missing from the manifest entirely.
+
+**A decline must be recorded — and this one found three.** m4 passes
+`--without-libsigsegv-prefix`, `--without-libiconv-prefix` and
+`--without-libintl-prefix`; pkgconf passes `--disable-static`; zstd passes
+`HAVE_ZLIB=0`, `HAVE_LZMA=0`, `HAVE_LZ4=0`. **zstd's are the interesting
+ones**: all three of those libraries *are* in this set, so without those flags
+zstd would link them and the recipe would understate its own dependencies. m4's
+are the `auto` failure in waiting — gnulib probes for all three and links what
+it finds, so the flags stop m4 acquiring a dependency the day one arrives for
+another package's sake.
+
+**Scoped to declines deliberately.** Requiring `argv ⊆ declared` outright would
+force `--prefix`, `-DCMAKE_BUILD_TYPE` and `--bootstrap` into the field and
+turn a record of *decisions* into a second copy of the command line — and a
+field that is mostly boilerplate stops being read. What must be recorded is
+what the build declines.
+
+**`[installs]` prefixes**, at directory depth 3. `usr` alone says nothing;
+full paths would list ten thousand files and move on every release.
+`usr/share/hwdata` and `usr/lib/modprobe.d` are the level at which somebody
+looks and says yes or no — which is exactly the level hwdata's stray modprobe
+config sits at. `--propose` emits the current prefixes from a real build,
+because writing 48 of these from memory is how they end up wrong.
+
+The count of **unchecked** packages is printed alongside the count of
+problems: a zero over an unchecked set is the reassuring number this project
+keeps catching.

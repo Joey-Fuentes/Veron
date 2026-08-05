@@ -35,10 +35,14 @@ link         = []
 runtime      = []
 # The zstd CLI links lz4, zlib and lzma IF IT FINDS THEM, which would make
 # this package's output depend on build order within its own group.
-optional_off = ["lz4", "zlib", "lzma"]
+# HAVE_ZLIB=0 / HAVE_LZMA=0 / HAVE_LZ4=0 are declines passed as make
+# variables rather than configure flags -- zstd has no configure.
+# All three ARE in this set, so without them zstd would link them and
+# the recipe would understate its own dependencies.
+optional_off = ["lz4", "zlib", "lzma", "ZLIB", "LZMA", "LZ4"]
 
 [declared]
-configure_flags = []
+configure_flags = ["HAVE_ZLIB=0", "HAVE_LZMA=0", "HAVE_LZ4=0"]
 verification    = "none -- upstream suites are not run; see deferral"
 deferral        = """
 Internals not reviewed; upstream test suite only. NO CONFIGURE -- a plain \

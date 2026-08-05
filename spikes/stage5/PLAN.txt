@@ -340,7 +340,7 @@ package libffi 3.5.2
 package m4 1.4.21
   group        build-substrate
   license      GPL-3.0-or-later
-  recipe-sha   a5aa2fbc06f4096bdf574af3478f6f66e1d02c439c86be879711cc385fb6dfe1
+  recipe-sha   b6ea231fff985456bd0c9880ddce6112d3704c8a25dec151e37a8f1163dda4bf
 
   source
     url        https://ftp.gnu.org/gnu/m4/m4-1.4.21.tar.xz
@@ -352,7 +352,7 @@ package m4 1.4.21
     build        -
     link         -
     runtime      -
-    optional_off gettext, libiconv, libsigsegv
+    optional_off gettext, libiconv, libintl, libsigsegv
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -436,7 +436,7 @@ package pcre2 10.47
 package pkgconf 3.0.5
   group        build-substrate
   license      ISC
-  recipe-sha   f272a94e563b2c17fc2a9aa1e6b4107e74aaac9257306c0433d8f9e63a30d3b6
+  recipe-sha   ff96c1fe05daed276859b4fd7d0e337165f48dc8db8967afa02cd0debbb16584
 
   source
     url        https://github.com/pkgconf/pkgconf/releases/download/pkgconf-3.0.5/pkgconf-3.0.5.tar.xz
@@ -450,7 +450,7 @@ package pkgconf 3.0.5
     build        -
     link         -
     runtime      -
-    optional_off -
+    optional_off static
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -665,7 +665,7 @@ package readline 8.3
 package zstd 1.5.7
   group        build-substrate
   license      GPL-2.0-or-later
-  recipe-sha   e36fee7e6c3f9d49ac0922a09966387194641824f368b099f6ac8b19d36e36d1
+  recipe-sha   d8a1b071e926db814f9cb4d6ab424428e8d22bfe9095ddf9152fd6b1be349674
 
   source
     url        https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
@@ -677,7 +677,7 @@ package zstd 1.5.7
     build        file
     link         -
     runtime      -
-    optional_off lz4, lzma, zlib
+    optional_off LZ4, LZMA, ZLIB, lz4, lzma, zlib
 
   commands (literal; this is exactly what runs)
     [01] unpack

@@ -296,6 +296,25 @@ jobs:
       # warn FIRST, for the same reason the reconciler warns: a gate nobody
       # has read the output of is a gate that gets switched off. `--mode fail`
       # is one word away once the first sweep is understood.
+      # WHAT EACH PACKAGE INSTALLED, AGAINST WHAT IT DECLARED.
+      #
+      # `veron build` already fails a package that installs NOTHING -- cmake
+      # spent its whole life writing into /usr instead of its DESTDIR and the
+      # run printed "staged 0 paths" without complaint. This is the other
+      # half: a package that installs somewhere nobody decided on. hwdata
+      # drops a modprobe blacklist into a system with no kmod; harfbuzz
+      # installs three utilities nobody asked for. Neither breaks anything and
+      # both put files in the image that no decision put there.
+      #
+      # warn while most recipes have no [installs] block yet -- and the count
+      # of UNCHECKED packages is printed, because a zero over an unchecked set
+      # is the reassuring number this project keeps catching.
+      - name: 'VERON-INSTALLS -- declared prefixes'
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 tools/veron --dest dest installs --mode warn
+
       - name: 'VERON-LINKED -- DT_NEEDED against deps.link'
         run: |
           set -eu
