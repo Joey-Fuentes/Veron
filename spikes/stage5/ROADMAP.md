@@ -436,6 +436,26 @@ correct cases in `stage0-stage4-complete.yml` and `stage3-hermetic-arm64.yml`,
 where the same name appears once per job on purpose. A gate that fires on
 correct code is one people switch off.
 
+**Three git-pinned artifacts never mirrored, and the job reported success.**
+`gh` needs `GH_TOKEN` and the env block sits on the *upload* step, not on the
+git-pinned step added beside it. So `gh release create` failed on an auth
+error rather than the "already exists" a normal second run produces, mirror.py
+correctly refused to record a route it had not written, and the workflow
+discarded that refusal with `|| echo "  ADD FAILED"`.
+
+The next step then printed **"no new routes -- table unchanged"**, which is
+exactly what a run with nothing to do prints. Three artifacts stayed on one
+route, the job went green, and the only evidence was three `ADD FAILED` lines
+in the middle of a passing log.
+
+**Both upload steps now fail the job when an upload fails.** mirror.py had
+already done the right thing — it refuses to record a route it could not
+write. A workflow that turns that refusal into an echo is the same defect as
+the collector that printed "collected 32 log files" and preserved none, and as
+`fetch-git.sh` printing "wrote" into a directory it then deleted. **This is the
+third instance of the same shape and the first where two steps had it at
+once.**
+
 **Still to do:**
 
 - The 21 corroborative declines

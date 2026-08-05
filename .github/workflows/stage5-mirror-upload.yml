@@ -190,10 +190,20 @@ jobs:
       # artifact, and fetch-git.sh now compares it rather than printing it --
       # which is the one thing llvm-timing.yml did wrong for three runs.
       - name: 'Generate and mirror the git-pinned sources'
+        # GH_TOKEN, WITHOUT WHICH `gh` CANNOT AUTHENTICATE AND THIS STEP DOES
+        # NOTHING. It is set on the upload step below and was not set here,
+        # so `gh release create` failed on an auth error rather than the
+        # "already exists" that the normal second run produces -- and
+        # mirror.py correctly refused to record a route it had not written.
+        # All three git-pinned artifacts reported ADD FAILED and stayed on one
+        # route while the run went green.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           cd spikes/stage5
           mkdir -p dl
+          rm -f /tmp/git-mirror-failures
           # EACH STEP IS ITS OWN SHELL, so DRY has to be derived here too --
           # and with a real `if`, not an and-list, for the reason the upload
           # step records: under `set -e` a false test as the last command
@@ -208,12 +218,25 @@ jobs:
             f="dl/$name.tar.gz"
             [ -f "$f" ] || { echo "  fetch-git.sh wrote nothing"; exit 1; }
             python3 ../../tools/mirror.py add github "$f" \
-              --upstream "$url@$commit" $DRY || echo "  ADD FAILED $name"
+              --upstream "$url@$commit" $DRY || { echo "  ADD FAILED $name"; \
+                echo fail >> /tmp/git-mirror-failures; }
           done
+          # A FAILED UPLOAD MUST FAIL THE STEP. `|| echo "ADD FAILED"` let
+          # three consecutive artifacts fail to mirror while the job reported
+          # success and the next step said "no new routes -- table unchanged",
+          # which reads exactly like a run with nothing to do. mirror.py had
+          # already refused to record a route it could not write; the
+          # workflow then discarded that refusal.
+          if [ -s /tmp/git-mirror-failures ]; then
+            echo "VERON-MIRROR-INCOMPLETE  $(wc -l < /tmp/git-mirror-failures) "\
+                 "git-pinned artifact(s) were not mirrored"
+            exit 1
+          fi
 
       - name: 'Upload each to the mirror and record the locator'
         run: |
           set -eu
+          rm -f /tmp/mirror-failures
           cd spikes/stage5
           # A PROPER `if`, NOT AN AND-LIST. Under `set -e`,
           #     [ "$x" = "true" ] && DRY="--dry-run"
@@ -258,8 +281,18 @@ jobs:
             # so nothing caught either until every fetch failed identically.
             python3 ../../tools/mirror.py add github "$f" \
               ${up:+--upstream "$up"} $DRY \
-              || echo "  ADD FAILED $base"
+              || { echo "  ADD FAILED $base"; echo fail >> /tmp/mirror-failures; }
           done
+          # SAME REASON AS THE GIT-PINNED STEP ABOVE. An `|| echo` here meant
+          # an artifact could fail to upload while the job went green and the
+          # table simply did not grow -- indistinguishable from a run with
+          # nothing new to add. mirror.py already refuses to record a route it
+          # could not write; the workflow must not discard that refusal.
+          if [ -s /tmp/mirror-failures ]; then
+            echo "VERON-MIRROR-INCOMPLETE  $(wc -l < /tmp/mirror-failures) "\
+                 "artifact(s) were not mirrored"
+            exit 1
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
 
