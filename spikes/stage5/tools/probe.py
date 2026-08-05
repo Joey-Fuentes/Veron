@@ -320,7 +320,19 @@ def packager_source(name):
     # them here was the alternative and it is worse: `glib` -> `glib2` and
     # `graphite2` -> `graphite` move the digit in OPPOSITE directions, so any
     # rule that gets one right gets the other wrong.
-    for cand in (name, *aliases):
+    # AN ALIAS REPLACES OUR NAME, IT DOES NOT EXTEND IT -- and the sweep
+    # proved why. Trying `mako` first found Arch's mako, which is EMERSION'S
+    # WAYLAND NOTIFICATION DAEMON, built with meson. Ours is the Python
+    # template engine. The reconciler then reported `mako: arch makedepends
+    # 'meson'` as an unaccounted dependency of a package that does not use
+    # meson at all -- corroboration against entirely different software,
+    # arriving as a confident finding.
+    #
+    # A recipe that says packaged_as is saying "our name is not their name",
+    # so the default lookup must not run. A name collision is not a fallback;
+    # it is a wrong answer that looks like a right one.
+    candidates = tuple(aliases) if aliases else (name,)
+    for cand in candidates:
         arch = try_get("https://gitlab.archlinux.org/archlinux/packaging/"
                        f"packages/{cand}/-/raw/main/PKGBUILD", quiet=True)
         if arch and not _looks_like_html(arch):
@@ -328,13 +340,15 @@ def packager_source(name):
             break
     else:
         arch = None
+        name_arch = None
     if arch and not _looks_like_html(arch):
         t = arch.decode("utf-8", "replace")
         ver = re.search(r"^pkgver=(\S+)", t, re.M)
         urls = re.findall(r"(?:https?|ftp)://[^\s\"')]+", t)
         out["arch"] = {"version": ver.group(1) if ver else None,
                        "urls": sorted(set(u for u in urls if "://" in u))[:6]}
-    for repo, cand in [(r, c) for c in (name, *aliases)
+    name_alpine = None
+    for repo, cand in [(r, c) for c in candidates
                        for r in ("main", "community")]:
         alp = try_get("https://gitlab.alpinelinux.org/alpine/aports/-/raw/master/"
                       f"{repo}/{cand}/APKBUILD", quiet=True)
@@ -395,30 +409,63 @@ def packager_deps(name, aliases=()):
     automatically ours. The useful question is per name: is it in our deps, in
     optional_off with a reason, or unexplained? Unexplained is the interesting
     state, and it is the one nothing could ask before.
+
+    AN ALIAS REPLACES OUR NAME, IT DOES NOT EXTEND IT, and the second sweep
+    proved why. Trying `mako` first found Arch's mako -- EMERSION'S WAYLAND
+    NOTIFICATION DAEMON, which is built with meson. Ours is the Python
+    template engine. The reconciler then reported
+
+        mako: arch makedepends 'meson' -> our 'meson', absent from deps
+
+    as a confident finding about a package that does not use meson at all.
+    A name collision is not a fallback; it is a wrong answer wearing the shape
+    of a right one. A recipe that sets [declared].packaged_as is saying "our
+    name is not their name", so the bare name must not be tried at all.
+
+    The name each answer came from is returned in "as", so a finding can say
+    what it corroborated against instead of leaving the reader to assume.
     """
     out = {}
-    arch = try_get("https://gitlab.archlinux.org/archlinux/packaging/packages/"
-                   f"{name}/-/raw/main/PKGBUILD", quiet=True)
-    if arch and not _looks_like_html(arch):
-        t = arch.decode("utf-8", "replace")
-        out["arch"] = {"depends": _bash_array(t, "depends"),
-                       "makedepends": _bash_array(t, "makedepends"),
-                       "checkdepends": _bash_array(t, "checkdepends"),
-                       # HOW THEY FETCH, WHICH DECIDES WHETHER SOME OF WHAT
-                       # THEY DECLARE IS A DEPENDENCY AT ALL. See _vcs_only().
-                       "vcs": bool(re.search(r"^source=.*?(git\+|::git)",
-                                             t, re.M | re.S))}
-    for repo in ("main", "community"):
-        alp = try_get("https://gitlab.alpinelinux.org/alpine/aports/-/raw/master/"
-                      f"{repo}/{name}/APKBUILD", quiet=True)
-        if alp and not _looks_like_html(alp):
-            t = alp.decode("utf-8", "replace")
-            out["alpine"] = {"depends": _bash_array(t, "depends"),
-                             "makedepends": _bash_array(t, "makedepends"),
-                             "checkdepends": _bash_array(t, "checkdepends"),
-                             "vcs": bool(re.search(r"^source=.*?(git\+|::git)",
-                                                   t, re.M | re.S))}
+    candidates = tuple(aliases) if aliases else (name,)
+
+    for cand in candidates:
+        blob = try_get("https://gitlab.archlinux.org/archlinux/packaging/"
+                       f"packages/{cand}/-/raw/main/PKGBUILD", quiet=True)
+        if blob and not _looks_like_html(blob):
+            t = blob.decode("utf-8", "replace")
+            out["arch"] = {
+                "as": cand,
+                "depends": _bash_array(t, "depends"),
+                "makedepends": _bash_array(t, "makedepends"),
+                "checkdepends": _bash_array(t, "checkdepends"),
+                # HOW THEY FETCH, WHICH DECIDES WHETHER SOME OF WHAT THEY
+                # DECLARE IS A DEPENDENCY AT ALL -- `git` is in makedepends
+                # for every package they build from a checkout.
+                "vcs": bool(re.search(r"^source=.*?(git\+|::git)",
+                                      t, re.M | re.S)),
+            }
             break
+
+    for cand in candidates:
+        found = False
+        for repo in ("main", "community"):
+            blob = try_get("https://gitlab.alpinelinux.org/alpine/aports/-/"
+                           f"raw/master/{repo}/{cand}/APKBUILD", quiet=True)
+            if blob and not _looks_like_html(blob):
+                t = blob.decode("utf-8", "replace")
+                out["alpine"] = {
+                    "as": cand,
+                    "depends": _bash_array(t, "depends"),
+                    "makedepends": _bash_array(t, "makedepends"),
+                    "checkdepends": _bash_array(t, "checkdepends"),
+                    "vcs": bool(re.search(r"^source=.*?(git\+|::git)",
+                                          t, re.M | re.S)),
+                }
+                found = True
+                break
+        if found:
+            break
+
     return out
 
 
@@ -2061,9 +2108,15 @@ def reconcile(recipe, root, recipes, mode="warn"):
             if norm in VCS_TOOLS and fields.get("vcs"):
                 continue          # their fetch method, not this software's dep
             problems += 1
+            # WHICH OF THEIR NAMES THIS CAME FROM, ALWAYS. A finding that
+            # does not say what it corroborated against cannot be checked for
+            # the collision above -- `mako: arch makedepends 'meson'` looks
+            # plausible; `mako: arch(mako) ...` next to a recipe that declares
+            # packaged_as = ["python-mako"] does not.
+            src = fields.get("as") or name
             print(f"  {'UNACCOUNTED' if mode == 'fail' else 'unaccounted'}  "
-                  f"{name}: {who} makedepends '{cand}' -> our '{norm}', "
-                  f"absent from deps and optional_off")
+                  f"{name}: {who}({src}) makedepends '{cand}' -> our "
+                  f"'{norm}', absent from deps and optional_off")
     if not pd:
         # ACCURATE ABOUT WHAT WAS AND WAS NOT CHECKED. "not an Arch or
         # Alpine package" was a claim; "no file under this name" is a fact.
@@ -2296,6 +2349,21 @@ if Version(mako.__version__) < Version("0.8.0"):
         print("  ok    an import inside a nested run_command is found")
     else:
         print(f"  FAIL  run_command import missed -- {got}")
+        ok = False
+
+    # AN ALIAS MUST REPLACE OUR NAME, NOT EXTEND IT. Arch's `mako` is
+    # emersion's Wayland notification daemon; ours is the Python template
+    # engine. Trying our name first corroborated against different software
+    # and reported `mako: arch makedepends 'meson'` about a package that uses
+    # no meson at all. This asserts the candidate list, which is the whole
+    # behaviour -- the fetch itself needs network and is not testable here.
+    import inspect as _insp
+    _src = _insp.getsource(packager_deps)
+    if "candidates = tuple(aliases) if aliases else (name,)" in _src:
+        print("  ok    a declared distro alias replaces our name")
+    else:
+        print("  FAIL  aliases extend rather than replace -- name collisions "
+              "will corroborate against the wrong package")
         ok = False
 
     # A `source=` THAT IS A GIT CHECKOUT MAKES `git` THEIR TOOL, NOT OURS.

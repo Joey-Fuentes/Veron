@@ -268,13 +268,39 @@ Two smaller things the same sweep exposed:
   what made `git ×20` visible as a class rather than as twenty separate
   puzzles.
 
+**Second sweep: 151 -> 77, and all 45 corroborated** — the `packaged_as`
+aliases closed the eight false absences. 16 corroborative findings, 61
+undisclosed.
+
+**And one of the 16 was corroboration against different software.** Arch's
+`mako` is emersion's **Wayland notification daemon**, built with meson. Ours is
+the Python template engine. Trying our own name before the declared alias found
+that package and reported
+
+```
+mako: arch makedepends 'meson' -> our 'meson', absent from deps
+```
+
+about a recipe that uses no meson at all. **A name collision is not a fallback;
+it is a wrong answer wearing the shape of a right one.** A recipe that declares
+`packaged_as` is saying *our name is not their name*, so the bare name is no
+longer tried, and every finding now names which of their packages it came from
+— `arch(python-mako)` rather than an unqualified `arch`.
+
+Worth recording how close that came to landing wrong: patching the same
+function four times in one sitting left it referencing a variable that was
+never assigned, and the selftest passed because nothing in it calls that
+function over the network. It was rewritten whole rather than patched again.
+
+**The remaining 16 are all real and all explainable** — Arch builds expat,
+libwebp and zstd with cmake where we use autotools; libxml2 and pkgconf with
+meson; harfbuzz with libpng, zlib and python enabled where we disable them.
+Each is one `optional_off` line with a reason.
+
 **Still to do:**
 
-- Re-run the sweep. The corroborative half should drop from 36 to ~16, of
-  which `cmake`, `meson`, `ninja` and `python` are real build-system edges
-  worth declaring; the static half loses meson's fixtures and pango's
-  vendored tree.
-- Then write the `[undeclarable]` blocks the remainder calls for.
+- Write those 16 declines and the 61 `[undeclarable]` blocks
+- Then `--mode fail`, which is the point of the exercise
 - Write the `[undeclarable]` blocks that sweep calls for, per recipe
 - Re-probe all 111 with the new fields, so the output is recorded rather than
   computed ad hoc
