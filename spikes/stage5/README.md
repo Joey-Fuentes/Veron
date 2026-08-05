@@ -16,7 +16,7 @@ prediction held, and this is the rewrite.
 | | count | established by |
 |---|---|---|
 | packages pinned | **111** | `probe batch` — digest, signature, licence and declared dependencies read from each tarball |
-| recipes written | **41** | `packages/*/recipe.toml`, ordered by `veron plan` |
+| recipes written | **45** | `packages/*/recipe.toml`, ordered by `veron plan` |
 | built, installed, staged | **41 — all of them** | `stage5-spike` run 54: `VERON-BUILD-OK  every package built` |
 | artifacts with ≥2 fetch routes | **107** | `sources/MIRRORS.tsv`, 239 routes |
 | git-pinned (no tarball exists) | **3** | libsfdo, dinit, libxkbcommon |
@@ -298,6 +298,36 @@ says a package is built and staged so later rungs can link it, and then
 superseded. It is recorded in `PLAN.txt`, excluded from the manifest and the
 image, declared in the guest tests as *nothing ships*, and the workflow asks
 the recipes which packages those are rather than keeping a second list in YAML.
+
+**Four Python packages, and four different layouts.** mesa requires `mako`,
+`packaging` and `PyYAML` at configure time — checked with
+`run_command(python3, '-c', 'import mako')`, which no static dependency scan
+can see — and mako pulls `MarkupSafe`. With no pip, all four install the way
+`meson` does: copy the package tree onto the interpreter path.
+
+The copy path is the whole risk, and it is different in each one: `mako/` at
+the top level, `src/markupsafe/`, `src/packaging/`, `lib/yaml/`. A wrong path
+installs *nothing* and surfaces as an ImportError inside mesa's configure
+several rungs later, so all four were read from the tarball and every
+`verify-install` probe was run against the extracted trees before shipping.
+
+Three things that came out of reading rather than assuming:
+
+- **Neither C extension is built and neither needs to be.** markupsafe guards
+  `_speedups` with an `ImportError` fallback to `_native.py`, which ships;
+  pyyaml guards `cyaml` the same way and reports `__with_libyaml__ = False`
+  honestly. Both verify steps assert the pure-Python path took, so a missing
+  fallback cannot pass.
+- **`lib/_yaml/` is deliberately not installed.** It is a compatibility stub
+  that, without libyaml, does nothing but
+  `raise ModuleNotFoundError("No module named '_yaml'")`. Installing it would
+  put a module in site-packages that can only ever raise.
+- **`packaging` is a genuine `OR`** — `Apache-2.0 OR BSD-2-Clause`, stated in
+  its SPDX expression, in two licence files, and in prose. The AND-vs-OR case
+  STAGE5.md names, met for the first time.
+
+`packaging` is also not optional: mesa falls back to `distutils`, which Python
+3.12 removed and stage 5 builds 3.14.
 
 **Nine tarballs were read source-first**, before building them, and six had
 something that would have cost a run — three of them in sequence, each behind

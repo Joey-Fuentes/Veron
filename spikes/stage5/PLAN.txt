@@ -47,20 +47,24 @@ between this file and the recipes fails the run.
   25. python
   26. sqlite
   27. git
-  28. meson
-  29. ninja
-  30. cmake
-  31. fribidi
-  32. glib
-  33. pixman
-  34. graphite2
-  35. libjpeg-turbo
-  36. harfbuzz
-  37. libwebp
-  38. freetype
-  39. fontconfig
-  40. cairo
-  41. pango
+  28. markupsafe
+  29. meson
+  30. ninja
+  31. packaging
+  32. pyyaml
+  33. cmake
+  34. fribidi
+  35. glib
+  36. mako
+  37. pixman
+  38. graphite2
+  39. libjpeg-turbo
+  40. harfbuzz
+  41. libwebp
+  42. freetype
+  43. fontconfig
+  44. cairo
+  45. pango
 
 ======================================================================
 package bzip2 1.0.8
@@ -950,6 +954,37 @@ package git 2.53.0
          argv ["make", "DESTDIR=dest/git", "NO_PERL=1", "NO_PYTHON=1", "NO_GETTEXT=1", "install"]
 
 ======================================================================
+package markupsafe 3.0.3
+  group        build-substrate
+  license      BSD-3-Clause
+  recipe-sha   38f96cc00707a26dd3c1e45efe7ef7cd4e355fe85fb3545502178c1c605d8760
+
+  source
+    url        https://files.pythonhosted.org/packages/7e/99/7690b6d4034fffd95959cbe0c02de8deb3098cc577c67bb6a24fe5d7caa7/markupsafe-3.0.3.tar.gz
+    sha256     722695808f4b6457b320fdc131280796bdceb04ab50fe1795cd540799ebe1698
+    signature  none -- PyPI publishes per-file digests, not detached signatures
+    correspond none
+
+  deps
+    build        python
+    link         -
+    runtime      python
+    optional_off _speedups, pip, setuptools, wheel
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/markupsafe-3.0.3
+         argv ["tar", "-xf", "dl/markupsafe-3.0.3.tar.gz", "-C", "build/markupsafe-3.0.3"]
+    [02] install
+         cwd  build/markupsafe-3.0.3/markupsafe-3.0.3
+         SHELL (declared) why=copying a python package tree onto the interpreter path is not an argv
+         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo "site-packages: $SITE"; mkdir -p "dest/markupsafe$SITE"; cp -a src/markupsafe "dest/markupsafe$SITE/"; ls "dest/markupsafe$SITE/markupsafe/"
+    [03] verify-install
+         cwd  build/markupsafe-3.0.3/markupsafe-3.0.3
+         SHELL (declared) why=this is a check on a filesystem layout and an import path, as two probes
+         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); PYTHONPATH="dest/markupsafe$SITE" python3 -c 'import markupsafe; print("  markupsafe from", markupsafe.__file__)'; PYTHONPATH="dest/markupsafe$SITE" python3 -c 'import markupsafe._native as n; print("  pure-python escape:", n._escape_inner("<x>"))'
+
+======================================================================
 package meson 1.10.1
   group        build-substrate
   license      Apache-2.0
@@ -1009,6 +1044,68 @@ package ninja 1.13.2
          cwd  build/ninja-1.13.2/ninja-1.13.2
          SHELL (declared) why=installing one binary and one man page is two copies, not a make target
          | install -Dm755 ninja dest/ninja/usr/bin/ninja && install -Dm644 misc/ninja.vim dest/ninja/usr/share/vim/vimfiles/syntax/ninja.vim 2>/dev/null; install -Dm644 doc/manual.asciidoc dest/ninja/usr/share/doc/ninja-1.13.2/manual.asciidoc 2>/dev/null; ls -l dest/ninja/usr/bin/ninja
+
+======================================================================
+package packaging 26.3
+  group        build-substrate
+  license      Apache-2.0 OR BSD-2-Clause
+  recipe-sha   92eed55c6c6aa28ad48cc6da8150b913a78e851dcef028cc9f8dc2c635b399fb
+
+  source
+    url        https://files.pythonhosted.org/packages/7d/fa/3944b40b07da9ce895c0e6303a5ab7d53da063554f534556b134a54d6093/packaging-26.3.tar.gz
+    sha256     94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79
+    signature  none -- PyPI publishes per-file digests, not detached signatures
+    correspond none
+
+  deps
+    build        python
+    link         -
+    runtime      python
+    optional_off flit_core, pip, setuptools, wheel
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/packaging-26.3
+         argv ["tar", "-xf", "dl/packaging-26.3.tar.gz", "-C", "build/packaging-26.3"]
+    [02] install
+         cwd  build/packaging-26.3/packaging-26.3
+         SHELL (declared) why=copying a python package tree onto the interpreter path is not an argv
+         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo "site-packages: $SITE"; mkdir -p "dest/packaging$SITE"; cp -a src/packaging "dest/packaging$SITE/"; ls "dest/packaging$SITE/packaging/" | head -8
+    [03] verify-install
+         cwd  build/packaging-26.3/packaging-26.3
+         SHELL (declared) why=this is a check on an install path and on the exact symbol mesa uses
+         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); PYTHONPATH="dest/packaging$SITE" python3 -c 'import packaging; print("  packaging from", packaging.__file__, packaging.__version__)'; PYTHONPATH="dest/packaging$SITE" python3 -c 'from packaging.version import Version; print("  mesa-style compare:", Version("1.4.0") >= Version("0.8.0"))'
+
+======================================================================
+package pyyaml 6.0.3
+  group        build-substrate
+  license      MIT
+  recipe-sha   bdb1958c768984fd06d5e8a1bda97483bfbe568c575ed723a506a612ffb1c4fc
+
+  source
+    url        https://files.pythonhosted.org/packages/05/8e/961c0007c59b8dd7729d542c61a4d537767a59645b82a0b521206e1e25c2/pyyaml-6.0.3.tar.gz
+    sha256     d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f
+    signature  none -- PyPI publishes per-file digests, not detached signatures
+    correspond none
+
+  deps
+    build        python
+    link         -
+    runtime      python
+    optional_off _yaml, libyaml, pip, setuptools, wheel
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/pyyaml-6.0.3
+         argv ["tar", "-xf", "dl/pyyaml-6.0.3.tar.gz", "-C", "build/pyyaml-6.0.3"]
+    [02] install
+         cwd  build/pyyaml-6.0.3/pyyaml-6.0.3
+         SHELL (declared) why=copying a python package tree onto the interpreter path is not an argv
+         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo "site-packages: $SITE"; mkdir -p "dest/pyyaml$SITE"; cp -a lib/yaml "dest/pyyaml$SITE/"; echo '  lib/_yaml deliberately NOT installed (raises without libyaml)'; ls "dest/pyyaml$SITE/yaml/" | head -8
+    [03] verify-install
+         cwd  build/pyyaml-6.0.3/pyyaml-6.0.3
+         SHELL (declared) why=this is a check on an install path and on the pure-python parser, as two probes
+         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); PYTHONPATH="dest/pyyaml$SITE" python3 -c 'import yaml; print("  yaml from", yaml.__file__, yaml.__version__); print("  with_libyaml:", yaml.__with_libyaml__)'; PYTHONPATH="dest/pyyaml$SITE" python3 -c 'import yaml; print("  parsed:", yaml.safe_load("a: [1, 2]"))'
 
 ======================================================================
 package cmake 4.2.3
@@ -1113,6 +1210,37 @@ package glib 2.86.4
          cwd  build/glib-2.86.4/glib-2.86.4
          env  DESTDIR=dest/glib
          argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package mako 1.4.0
+  group        build-substrate
+  license      MIT
+  recipe-sha   9c08b911cf1d245be533b41257c95cdc7b31fd780d9e8fdf2637b693fd31ef01
+
+  source
+    url        https://files.pythonhosted.org/packages/73/b2/3c025fc185ce755ab39dd88b1971ba9f4bec0a897bda0acc29b6e7676153/mako-1.4.0.tar.gz
+    sha256     61aac9619e1325fa6e7be2f8dd463caef61247b3cd32a41a8692684548269ce3
+    signature  none -- PyPI publishes per-file digests, not detached signatures
+    correspond none
+
+  deps
+    build        markupsafe, python
+    link         -
+    runtime      markupsafe, python
+    optional_off babel, lingua, pip, setuptools, wheel
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/mako-1.4.0
+         argv ["tar", "-xf", "dl/mako-1.4.0.tar.gz", "-C", "build/mako-1.4.0"]
+    [02] install
+         cwd  build/mako-1.4.0/mako-1.4.0
+         SHELL (declared) why=copying a python package tree onto the interpreter path is not an argv
+         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo "site-packages: $SITE"; mkdir -p "dest/mako$SITE"; cp -a mako "dest/mako$SITE/"; ls "dest/mako$SITE/mako/" | head -8
+    [03] verify-install
+         cwd  build/mako-1.4.0/mako-1.4.0
+         SHELL (declared) why=this is a check on an import path and a runtime dependency, as two probes
+         | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); PYTHONPATH="dest/mako$SITE" python3 -c 'import mako; print("  mako from", mako.__file__, mako.__version__)'; PYTHONPATH="dest/mako$SITE" python3 -c 'from mako.template import Template; print("  rendered:", Template("${n} ok").render(n="mako"))'
 
 ======================================================================
 package pixman 0.46.4

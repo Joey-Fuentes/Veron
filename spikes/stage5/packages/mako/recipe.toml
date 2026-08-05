@@ -1,0 +1,72 @@
+name    = "mako"
+version = "1.4.0"
+group   = "build-substrate"
+license = "MIT"
+
+# Version, digest, layout and licence read from the tarball. `license = "MIT"`
+# is pyproject.toml's own SPDX id, with LICENSE beside it.
+
+[source]
+url       = "https://files.pythonhosted.org/packages/73/b2/3c025fc185ce755ab39dd88b1971ba9f4bec0a897bda0acc29b6e7676153/mako-1.4.0.tar.gz"
+sha256    = "61aac9619e1325fa6e7be2f8dd463caef61247b3cd32a41a8692684548269ce3"
+signature = "none -- PyPI publishes per-file digests, not detached signatures"
+crosschecked_against = []
+srcdir    = "mako-1.4.0"
+
+[deps]
+# markupsafe IS A HARD DEPENDENCY, read from mako's own pyproject.toml:
+#     dependencies = ["MarkupSafe >= 2.0"]
+# 3.0.3 satisfies it. This is the kind of edge `probe.py` cannot see -- there
+# is no .pc file anywhere in a Python package, which is the same blind spot
+# that let mako itself escape the 111. See ROADMAP.md on the three detectors.
+build        = ["python", "markupsafe"]
+link         = []
+runtime      = ["python", "markupsafe"]
+optional_off = ["pip", "setuptools", "wheel", "lingua", "babel"]
+
+[declared]
+configure_flags = []
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. THIS PACKAGE EXISTS FOR MESA AND NOTHING ELSE. \
+mesa's meson.build runs `python3 -c 'import mako'` and hard-errors with \
+"Python (3.x) mako module >= 0.8.0 required to build mesa"; 1.4.0 is far \
+past that floor. Mesa uses it for code generation only -- no mako code runs \
+in the built system.
+
+INSTALLED THE WAY meson IS, AND FOR THE SAME REASON: there is no pip in this \
+sysroot, and adding pip/setuptools/wheel to reach one build-time template \
+engine would mean importing a Python packaging stack the ledger cannot \
+itemise. mako is pure Python with nothing compiled.
+
+THE mako-render ENTRY POINT IS NOT INSTALLED. pyproject.toml declares \
+`mako-render = "mako.cmd:cmdline"`, and nothing here invokes it -- mesa \
+imports the library. Writing a console script by hand would be inventing a \
+file upstream generates from metadata we are not processing."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/mako-1.4.0.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+# mako/ IS AT THE TOP LEVEL here -- unlike markupsafe and packaging, which
+# use src/, and pyyaml, which uses lib/. Read from the tarball, not assumed.
+why  = "copying a python package tree onto the interpreter path is not an argv"
+shell = "set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo \"site-packages: $SITE\"; mkdir -p \"$D$SITE\"; cp -a mako \"$D$SITE/\"; ls \"$D$SITE/mako/\" | head -8"
+
+[[steps]]
+name = "verify-install"
+cwd  = "$S"
+# THE SECOND PROBE IS THE POINT. mako imports markupsafe at runtime, so an
+# import that succeeds only because markupsafe happens to be on the build
+# root's path would hide a missing dependency. Rendering a template exercises
+# the edge rather than asserting it.
+why  = "this is a check on an import path and a runtime dependency, as two probes"
+shell = "set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); PYTHONPATH=\"$D$SITE\" python3 -c 'import mako; print(\"  mako from\", mako.__file__, mako.__version__)'; PYTHONPATH=\"$D$SITE\" python3 -c 'from mako.template import Template; print(\"  rendered:\", Template(\"${n} ok\").render(n=\"mako\"))'"
+
+[guest]
+test   = [["/usr/bin/python3", "-c", "import mako; print(mako.__version__)"]]
+expect = ["1.4.0"]

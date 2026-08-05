@@ -1,0 +1,88 @@
+name    = "markupsafe"
+version = "3.0.3"
+group   = "build-substrate"
+license = "BSD-3-Clause"
+
+# Version, digest, layout and licence all read from the tarball itself, not
+# from an index. `license = "BSD-3-Clause"` is pyproject.toml's own SPDX id,
+# with LICENSE.txt beside it.
+
+[source]
+url       = "https://files.pythonhosted.org/packages/7e/99/7690b6d4034fffd95959cbe0c02de8deb3098cc577c67bb6a24fe5d7caa7/markupsafe-3.0.3.tar.gz"
+sha256    = "722695808f4b6457b320fdc131280796bdceb04ab50fe1795cd540799ebe1698"
+signature = "none -- PyPI publishes per-file digests, not detached signatures"
+crosschecked_against = []
+srcdir    = "markupsafe-3.0.3"
+
+[deps]
+build        = ["python"]
+link         = []
+runtime      = ["python"]
+optional_off = ["pip", "setuptools", "wheel", "_speedups"]
+
+[declared]
+configure_flags = []
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. HERE ONLY BECAUSE MAKO NEEDS IT, and mako is here \
+only because MESA DOES: mesa's meson.build runs `python3 -c 'import mako'` \
+and errors out with "Python (3.x) mako module >= 0.8.0 required to build \
+mesa" when it fails. Nothing else in the set imports markupsafe.
+
+THE C EXTENSION IS DELIBERATELY NOT BUILT. src/markupsafe/_speedups.c is an \
+optional accelerator, and __init__.py guards it:
+
+    try:
+        from ._speedups import _escape_inner
+    except ImportError:
+        from ._native import _escape_inner
+
+_native.py ships in the sdist, so copying the package tree gives a working \
+module with no compiler step and no build backend. What is lost is speed in \
+HTML escaping, which nothing on mesa's codegen path is bound by."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/markupsafe-3.0.3.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+# THE PACKAGE IS UNDER src/, NOT AT THE TOP LEVEL. Four Python packages are
+# being added here and they have FOUR DIFFERENT LAYOUTS -- mako/ at the top,
+# src/markupsafe/, src/packaging/, lib/yaml/. Copying the wrong directory
+# installs nothing at all and the failure surfaces as an ImportError inside
+# mesa's configure, three rungs later.
+why  = "copying a python package tree onto the interpreter path is not an argv"
+shell = "set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo \"site-packages: $SITE\"; mkdir -p \"$D$SITE\"; cp -a src/markupsafe \"$D$SITE/\"; ls \"$D$SITE/markupsafe/\""
+
+[[steps]]
+name = "verify-install"
+cwd  = "$S"
+# IMPORT IT FROM WHERE IT WAS PUT, AND PROVE THE FALLBACK TOOK. A hand-rolled
+# install has no `make install` to be wrong in a familiar way. The second
+# check is the one that matters: it asserts _escape_inner resolved to the
+# PURE-PYTHON module, so a silently-missing _native.py cannot pass.
+why  = "this is a check on a filesystem layout and an import path, as two probes"
+shell = "set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); PYTHONPATH=\"$D$SITE\" python3 -c 'import markupsafe; print(\"  markupsafe from\", markupsafe.__file__)'; PYTHONPATH=\"$D$SITE\" python3 -c 'import markupsafe._native as n; print(\"  pure-python escape:\", n._escape_inner(\"<x>\"))'"
+
+[guest]
+# NOT __version__, THOUGH THE OTHER THREE USE IT. Running the verify probes
+# against the real tarball printed:
+#
+#   DeprecationWarning: The '__version__' attribute is deprecated and will be
+#   removed in MarkupSafe 3.1. Use feature detection, or
+#   importlib.metadata.version("markupsafe"), instead.
+#
+# And the alternative it suggests is unavailable here: copying a package tree
+# installs no .dist-info, so importlib.metadata cannot see any of these four.
+# That is the same consequence the meson recipe records -- nothing here
+# queries a Python package database, but a future tool that does will not
+# find them.
+#
+# So the test exercises the FUNCTION instead of a version string, which is
+# both stable across the 3.1 removal and a stronger check: it proves the
+# pure-Python _native path actually escapes.
+test   = [["/usr/bin/python3", "-c", "import markupsafe; print(markupsafe.escape('<x>'))"]]
+expect = ["&lt;x&gt;"]

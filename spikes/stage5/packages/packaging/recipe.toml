@@ -1,0 +1,77 @@
+name    = "packaging"
+version = "26.3"
+group   = "build-substrate"
+license = "Apache-2.0 OR BSD-2-Clause"
+
+# Version, digest, layout and licence read from the tarball.
+#
+# THE LICENCE IS A GENUINE `OR`, AND THE TARBALL SAYS SO THREE WAYS: the SPDX
+# expression in pyproject.toml is `Apache-2.0 OR BSD-2-Clause`, LICENSE.APACHE
+# and LICENSE.BSD both ship, and LICENSE itself reads "made available under the
+# terms of *either* of the licenses found in LICENSE.APACHE or LICENSE.BSD".
+# STAGE5.md names AND-vs-OR as the distinction that changes what a distributor
+# must do; this is the case that exercises it, and it was read rather than
+# guessed from a filename.
+
+[source]
+url       = "https://files.pythonhosted.org/packages/7d/fa/3944b40b07da9ce895c0e6303a5ab7d53da063554f534556b134a54d6093/packaging-26.3.tar.gz"
+sha256    = "94edc256424af38762eb31306eed28beb9f0efc50a8837492c9d6fd6004aed79"
+signature = "none -- PyPI publishes per-file digests, not detached signatures"
+crosschecked_against = []
+srcdir    = "packaging-26.3"
+
+[deps]
+# `dependencies = []` in its own pyproject.toml -- packaging has no runtime
+# dependencies at all. flit_core is its BUILD backend and is not needed here,
+# because nothing builds it: the package tree is copied.
+build        = ["python"]
+link         = []
+runtime      = ["python"]
+optional_off = ["pip", "setuptools", "wheel", "flit_core"]
+
+[declared]
+configure_flags = []
+verification    = "none -- upstream suites are not run"
+deferral        = """
+Internals not reviewed. NOT OPTIONAL, AND THE REASON IS THIS SET'S PYTHON. \
+mesa probes for a version-comparison module like this:
+
+    try:
+        from packaging.version import Version
+    except:
+        try: from distutils.version import StrictVersion as Version
+        except: sys.exit(2)
+
+and exit 2 becomes "One of Python (3.x) packaging or distutils module is \
+required." DISTUTILS WAS REMOVED IN PYTHON 3.12 and stage 5 builds 3.14.6, \
+so the fallback arm is dead here and `packaging` is a hard requirement rather \
+than a convenience.
+
+Nothing in the built system imports it; it is a build-time module for mesa's \
+configure only."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/packaging-26.3.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+# src/ LAYOUT, like markupsafe and unlike mako. Read from the tarball.
+why  = "copying a python package tree onto the interpreter path is not an argv"
+shell = "set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); echo \"site-packages: $SITE\"; mkdir -p \"$D$SITE\"; cp -a src/packaging \"$D$SITE/\"; ls \"$D$SITE/packaging/\" | head -8"
+
+[[steps]]
+name = "verify-install"
+cwd  = "$S"
+# THE SECOND PROBE IS MESA'S OWN IMPORT, spelled exactly as mesa spells it.
+# Checking that `packaging` imports is weaker than checking that
+# `packaging.version.Version` resolves, which is the symbol mesa actually
+# reaches for and the one whose absence exits 2.
+why  = "this is a check on an install path and on the exact symbol mesa uses"
+shell = "set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); PYTHONPATH=\"$D$SITE\" python3 -c 'import packaging; print(\"  packaging from\", packaging.__file__, packaging.__version__)'; PYTHONPATH=\"$D$SITE\" python3 -c 'from packaging.version import Version; print(\"  mesa-style compare:\", Version(\"1.4.0\") >= Version(\"0.8.0\"))'"
+
+[guest]
+test   = [["/usr/bin/python3", "-c", "import packaging; print(packaging.__version__)"]]
+expect = ["26.3"]
