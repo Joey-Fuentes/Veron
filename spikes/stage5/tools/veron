@@ -224,7 +224,11 @@ def expand(recipes, policy, roots):
                         "env": senv,
                         **carried(s),
                     })
-        plan.append({"pkg": name, "recipe": r, "env": env, "steps": steps})
+            pdir = os.path.join(r["_dir"], "patches")
+        patches = sorted(f for f in os.listdir(pdir)
+                         if f.endswith(".patch")) if os.path.isdir(pdir) else []
+        plan.append({"pkg": name, "recipe": r, "env": env, "steps": steps,
+                     "patches": patches})
     return plan
 
 
@@ -293,6 +297,14 @@ def render_plan(plan, policy):
         for kind in ("build", "link", "runtime", "optional_off"):
             v = d.get(kind, [])
             L.append(f"    {kind:<13}{', '.join(sorted(v)) if v else '-'}")
+        if p.get("patches"):
+            # NAMES, NOT PATHS. The path they live at differs between a laptop
+            # and a runner and belongs nowhere near a hashed plan; which
+            # patches apply is a fact about the build and belongs here.
+            L.append("")
+            L.append("  patches (applied after unpack, in this order)")
+            for fn in p["patches"]:
+                L.append(f"    {fn}")
         L.append("")
         L.append("  commands (literal; this is exactly what runs)")
         for i, s in enumerate(p["steps"], 1):
@@ -530,6 +542,63 @@ BUILD_LOGS = (
 )
 
 
+def apply_patches(pkgdir, srcdir, dry):
+    """Apply patches/*.patch after unpack, in sorted order.
+
+    NOT A RECIPE STEP, and the reason is a gate catching it. A patch step has
+    to name the patches directory, and $P expands to an ABSOLUTE path -- so
+    PLAN.txt held /home/claude/... on one machine and /home/runner/... on the
+    other, and `plan --check` failed before a single package built. That is
+    the gate working, and it is also the wrong place for the mechanism.
+
+    Yocto and Buildroot both apply patches automatically rather than making
+    each recipe spell it out. The plan then records WHICH patches applied --
+    a fact about the build -- instead of a path that happens to be where the
+    tree was checked out.
+
+    Applied after the first step, which is always the unpack, and failing here
+    is fatal: a patch that does not apply means the source is not what the
+    recipe was written against, and building anyway produces something nobody
+    described.
+    """
+    pdir = os.path.join(pkgdir, "patches")
+    if not os.path.isdir(pdir):
+        return []
+    names = sorted(f for f in os.listdir(pdir) if f.endswith(".patch"))
+    for fn in names:
+        # ABSOLUTE. `patch` runs with cwd=srcdir, so a path relative to the
+        # driver's cwd resolves to nothing there -- and with --dry-run that
+        # reads as "already applied" rather than as a missing file. A fresh
+        # tree reported the patch as already applied and built unpatched.
+        full = os.path.abspath(os.path.join(pdir, fn))
+        print(f"    patch {fn}")
+        if dry:
+            continue
+        # --dry-run first, so an already-applied patch is reported rather than
+        # failing and leaving a .rej behind.
+        probe_rc = subprocess.run(
+            ["patch", "-p1", "--batch", "--forward", "--dry-run", "-i", full],
+            cwd=srcdir, capture_output=True, text=True).returncode
+        if probe_rc != 0:
+            # Distinguish the two cases the dry run conflates, because one is
+            # benign and the other means the source is not what the recipe
+            # was written against.
+            rev = subprocess.run(
+                ["patch", "-p1", "--batch", "--reverse", "--dry-run", "-i", full],
+                cwd=srcdir, capture_output=True, text=True).returncode
+            if rev == 0:
+                print(f"      already applied: {fn}")
+                continue
+            die(f"patch {fn} does not apply in {srcdir} -- the source is not "
+                f"what this recipe was written against")
+        r = subprocess.run(["patch", "-p1", "--batch", "--forward", "-i", full],
+                           cwd=srcdir, capture_output=True, text=True)
+        if r.returncode != 0:
+            die(f"patch {fn} failed to apply in {srcdir}:\n"
+                f"{(r.stderr or r.stdout).strip()[:400]}")
+    return names
+
+
 def build_log_tail(cwd, lines=40):
     """The build system's own explanation of what went wrong."""
     out = []
@@ -703,6 +772,12 @@ def cmd_build(a):
                     logf.write(f"+ SKIPPED optional step: {s['name']}\n")
                     continue
                 rc = run_step(s, logf, a.dry_run, may_create=(s is p["steps"][0]))
+                if rc == 0 and s is p["steps"][0]:
+                    # After the unpack, before anything reads the source.
+                    applied = apply_patches(p["recipe"]["_dir"],
+                                            p["env"]["S"], a.dry_run)
+                    for fn in applied:
+                        logf.write(f"+ patch {fn}\n")
                 if rc != 0:
                     print(f"VERON-BUILD-FAIL  {name}: step '{s['name']}' rc={rc}",
                           file=sys.stderr)
@@ -1152,6 +1227,44 @@ def cmd_selftest(a):
         # printed "ok ... skipped" on every run -- a gate that reads green and
         # verifies nothing is worse than no gate.
         print(f"  FAIL  guest-test syntax check itself failed: "
+              f"{type(e).__name__}: {e}")
+        ok = False
+
+    # NO ABSOLUTE PATHS IN THE PLAN. PLAN.txt is generated and committed, so
+    # anything machine-specific in it makes `plan --check` fail everywhere
+    # else -- which is exactly what a patch step did, embedding
+    # /home/claude/... on one machine and /home/runner/... on the other. The
+    # gate failed correctly and told nobody why.
+    try:
+        import io as _i2, contextlib as _c2
+
+        class _P:
+            write = False
+            check = False
+            # cmd_plan resolves the roots, so the fixture has to supply them.
+            # The defaults are what the workflow passes; any value works
+            # because the check is for absolute paths, not for these values.
+            dl = "dl"
+            build_dir = "build"
+            dest = "dest"
+            sysroot = "sysroot"
+            out = "out"
+        buf2 = _i2.StringIO()
+        with _c2.redirect_stdout(buf2):
+            cmd_plan(_P())
+        bad = [ln.strip()[:70] for ln in buf2.getvalue().splitlines()
+               if re.search(r"/(home|Users|root)/", ln)]
+        if bad:
+            print(f"  FAIL  the plan contains {len(bad)} machine-specific "
+                  f"path(s): {bad[0]!r}")
+            ok = False
+        else:
+            print("  ok    the plan has no machine-specific paths")
+    except Exception as e:
+        # NOT "ok". A check that cannot run is a check that is not running,
+        # and printing ok for it is how a gate comes to read green while
+        # verifying nothing -- which has already happened twice in this file.
+        print(f"  FAIL  plan path check could not run: "
               f"{type(e).__name__}: {e}")
         ok = False
 

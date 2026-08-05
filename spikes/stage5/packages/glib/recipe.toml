@@ -41,18 +41,6 @@ cwd  = "$B"
 run  = [["tar", "-xf", "$DL/glib-2.86.4.tar.xz", "-C", "$B"]]
 
 [[steps]]
-# APPLIED BEFORE CONFIGURE, and it fails loudly if it does not apply -- a
-# patch that silently misses is worse than no patch, because the build then
-# fails somewhere else for a reason that looks unrelated.
-name = "patch"
-cwd  = "$S"
-# A dry run first, so an already-applied patch is REPORTED rather than
-# failing the step and leaving a .rej file behind. Builds here are --clean so
-# it should never happen; a step that breaks confusingly on the one occasion
-# it does is not worth the two extra words.
-run  = [["sh", "-c", "for p in $P/*.patch; do [ -e \"$p\" ] || continue; if patch -p1 --batch --forward --dry-run < \"$p\" >/dev/null 2>&1; then echo \"  applying $(basename $p)\"; patch -p1 --batch --forward < \"$p\"; else echo \"  already applied: $(basename $p)\"; fi; done"]]
-
-[[steps]]
 name = "setup"
 cwd  = "$S"
 # WHAT MAKES THIS BUILD IS THE PATCH, NOT A FLAG. See

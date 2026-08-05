@@ -23,7 +23,9 @@ import subprocess
 import sys
 import socket
 import tomllib
+import re
 import urllib.request
+from urllib.parse import urlparse
 
 # FORCE IPv4. ftp.gnu.org publishes an AAAA record; a runner with no IPv6
 # route fails INSTANTLY with "[Errno 101] Network is unreachable" rather than
@@ -138,6 +140,35 @@ def locators(sha256, name, rows, hosts):
             found.append((h["priority"], hname,
                           expand(h["template"], h, sha256, name)))
     return [(hn, loc) for _, hn, loc in sorted(found)]
+
+
+def artifact_name(url):
+    """A tarball's name, made navigable when upstream's is not.
+
+    Forge archive URLs end in the TAG, not the project: Codeberg serves
+    /dnkl/fcft/archive/3.3.1.tar.gz and GitHub /labwc/labwc/archive/refs/tags/
+    0.9.1.tar.gz. Taking the basename gives "3.3.1.tar.gz", which names a
+    release nobody can identify and collides the moment two projects tag the
+    same version -- and both those things happened: src/3.3.1.tar.gz and
+    src/0.9.1.tar.gz are live releases right now.
+
+    The project name is in the path. Use it.
+    """
+    parts = [p for p in urlparse(url).path.split("/") if p]
+    base = parts[-1] if parts else url
+    # A name that starts with a digit is a version, not a package.
+    if not re.match(r"^\d", base):
+        return base
+    for marker in ("archive", "tags", "downloads", "releases", "download"):
+        if marker in parts:
+            i = parts.index(marker)
+            # The last path segment before the marker that is not a version
+            # and not a user handle.
+            for cand in reversed(parts[:i]):
+                if not re.match(r"^[v~]?\d", cand) and cand not in ("-", "refs"):
+                    return f"{cand}-{base}"
+            break
+    return base
 
 
 def sha256_file(p):
@@ -401,6 +432,28 @@ def cmd_selftest(a):
         ok = False
     finally:
         TABLE = _saved
+
+    # ARTIFACT NAMES MUST BE NAVIGABLE. Forge archive URLs end in the tag, so
+    # a plain basename produced releases called src/3.3.1.tar.gz and
+    # src/0.9.1.tar.gz -- unidentifiable, and colliding the moment two
+    # projects tag the same version.
+    for url, want in (
+        ("https://codeberg.org/dnkl/fcft/archive/3.3.1.tar.gz",
+         "fcft-3.3.1.tar.gz"),
+        ("https://github.com/labwc/labwc/archive/refs/tags/0.9.1.tar.gz",
+         "labwc-0.9.1.tar.gz"),
+        ("https://git.sr.ht/~sircmpwn/scdoc/archive/1.11.3.tar.gz",
+         "scdoc-1.11.3.tar.gz"),
+        # And a name that is already fine must pass through untouched.
+        ("https://ftp.gnu.org/gnu/bash/bash-5.3.tar.gz", "bash-5.3.tar.gz"),
+        ("https://archive.mesa3d.org/mesa-26.1.6.tar.xz", "mesa-26.1.6.tar.xz"),
+    ):
+        got = artifact_name(url)
+        if got == want:
+            print(f"  ok    names {want}")
+        else:
+            print(f"  FAIL  {url} -> {got}, wanted {want}")
+            ok = False
 
     print("VERON-MIRROR-SELFTEST-OK" if ok else "VERON-MIRROR-SELFTEST-FAIL")
     return 0 if ok else 1

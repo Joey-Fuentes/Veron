@@ -1077,7 +1077,7 @@ package fribidi 1.0.16
 package glib 2.86.4
   group        text-rendering
   license      LGPL-2.1-or-later
-  recipe-sha   77365bbb7fc52f821b019edeb469b2876aa5c707d2c405403ac8470d2ebfd9b3
+  recipe-sha   dfc29de53501701190b5f4fe8a4388f4fc61b478b6083d9b8802ac07e2fd9ef3
 
   source
     url        https://download.gnome.org/sources/glib/2.86/glib-2.86.4.tar.xz
@@ -1091,20 +1091,20 @@ package glib 2.86.4
     runtime      libffi, pcre2, zlib
     optional_off dtrace, gtk_doc, introspection, libmount, man-pages, selinux, sysprof, systemtap, tests
 
+  patches (applied after unpack, in this order)
+    0001-bash-completion-pkg-config-only.patch
+
   commands (literal; this is exactly what runs)
     [01] unpack
          cwd  build/glib-2.86.4
          argv ["tar", "-xf", "dl/glib-2.86.4.tar.xz", "-C", "build/glib-2.86.4"]
-    [02] patch
-         cwd  build/glib-2.86.4/glib-2.86.4
-         argv ["sh", "-c", "for p in /home/claude/work/D/spikes/stage5/packages/glib/patches/*.patch; do [ -e \"$p\" ] || continue; if patch -p1 --batch --forward --dry-run < \"$p\" >/dev/null 2>&1; then echo \"  applying $(basename $p)\"; patch -p1 --batch --forward < \"$p\"; else echo \"  already applied: $(basename $p)\"; fi; done"]
-    [03] setup
+    [02] setup
          cwd  build/glib-2.86.4/glib-2.86.4
          argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false", "-Dintrospection=disabled", "-Dselinux=disabled", "-Dlibmount=disabled", "-Dsysprof=disabled"]
-    [04] build
+    [03] build
          cwd  build/glib-2.86.4/glib-2.86.4
          argv ["ninja", "-C", "_b"]
-    [05] install
+    [04] install
          cwd  build/glib-2.86.4/glib-2.86.4
          env  DESTDIR=dest/glib
          argv ["ninja", "-C", "_b", "install"]
