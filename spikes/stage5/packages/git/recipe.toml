@@ -74,6 +74,12 @@ TLS comes from the sysroot's openssl, the same undeclared edge curl carries \
 # Documentation/meson.build:443 xsltproc (REQUIRED)
 "program:xsltproc" = "NOT THIS PACKAGE'S BUILD. Documentation/meson.build is meson's; this recipe drives ./configure, so that file is never read."
 
+[installs]
+prefixes = ["usr/bin", "usr/libexec/git-core", "usr/share/bash-completion", "usr/share/git-core"]
+files    = 224
+digest   = "54d4dbab64944fbe920c51a9953b3df124ec5797d83c765a72e2456f36ac002a"
+
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

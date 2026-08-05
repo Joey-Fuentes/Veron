@@ -19,7 +19,18 @@ crosschecked_against = []
 # Nothing in BLFS, Arch or the declared-dependency scan mentions it, because
 # it is a build-time tool rather than a library. Only running the build finds
 # this class of edge.
-build        = ["meson", "ninja", "libffi", "pcre2", "zlib", "python", "bash"]
+# pkgconf IS A REAL BUILD DEPENDENCY AND WAS INVISIBLE FOR 55 PACKAGES.
+# meson's dependency() resolves through pkg-config first, so without it every
+# external library lookup fails -- and in the shared build root pkgconf has
+# been present since rung 11, so nothing ever noticed. stage5-isolate found it
+# the moment glib was built from its declarations alone:
+#
+#     Did not find pkg-config by name 'pkg-config'
+#     Run-time dependency libpcre2-8 found: NO (tried pkgconfig and cmake)
+#     Downloading pcre2 source from https://github.com/PCRE2Project/...
+#
+# pcre2 WAS in the layer stack. Nothing could find it.
+build        = ["meson", "ninja", "libffi", "pcre2", "zlib", "python", "bash", "pkgconf"]
 link         = ["libffi", "pcre2", "zlib"]
 runtime      = ["libffi", "pcre2", "zlib"]
 # CORROBORATIVE DECLINE, AND THE ONLY ONE ANSWERED EMPIRICALLY. Arch's
@@ -75,6 +86,12 @@ that is glib being glib, and nothing here runs a bus."""
 "program:valgrind" = "Instrumentation for the test suite. -Dtests=false."
 # meson.build:2736 xgettext (conditional on get_option('nls'))
 "program:xgettext" = "required: get_option('nls'), a feature defaulting to 'auto'. LOAD-BEARING: xgettext being absent is the only reason `subdir('po')` is skipped, and therefore the only reason a set with no gettext recipe gets through glib at all. -Dnls=enabled would make gettext a hard dependency."
+
+[installs]
+prefixes = ["usr/bin", "usr/include/gio-unix-2.0", "usr/include/glib-2.0", "usr/lib", "usr/lib/glib-2.0", "usr/lib/pkgconfig", "usr/libexec", "usr/share/aclocal", "usr/share/bash-completion", "usr/share/gdb", "usr/share/gettext", "usr/share/glib-2.0"]
+files    = 379
+digest   = "2470434f30be228bdd63c906aaa99871130414858ad7f39b29f3ae45a9392788"
+
 
 [[steps]]
 name = "unpack"

@@ -109,6 +109,12 @@ package when there is a reason to; the step is one block."""
 # meson.build:491 wix (optional)
 "program:wix" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
 
+[installs]
+prefixes = ["usr/bin", "usr/include/pkgconf", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal", "usr/share/doc", "usr/share/man"]
+files    = 28
+digest   = "8d91b97656348572fd591adf65955796b3be28694d474bbe4cf3e8e039d43d08"
+
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

@@ -1,0 +1,75 @@
+name    = "seatd"
+version = "0.9.3"
+group   = "input"
+license = "MIT"
+srcdir  = "seatd-0.9.3"
+
+[source]
+url       = "https://github.com/kennylevinsen/seatd/archive/0.9.3/seatd-0.9.3.tar.gz"
+sha256    = "302564d54d8e28191fadfd734f2675ecb0c9e0615a58011b89ef15dfa4dbaa96"
+signature = "none published"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja"]
+link         = []
+runtime      = []
+# libseat-logind IS 'auto' AND WOULD FIND NOTHING, WHICH IS THE PROBLEM.
+# The logind backend needs systemd or elogind; neither is here, so `auto`
+# resolves to disabled -- by absence, not by decision, which is the failure
+# this project keeps recording. Pinned so it stays a choice.
+#
+# man-pages is 'auto' and needs scdoc, which is pinned but has no recipe.
+optional_off = ["logind", "builtin", "examples", "man-pages"]
+
+[declared]
+configure_flags = ["-Dlibseat-logind=disabled", "-Dlibseat-builtin=disabled",
+                   "-Dexamples=disabled", "-Dman-pages=disabled",
+                   "-Dlibseat-seatd=enabled", "-Dserver=enabled"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["seatd"]
+deferral        = """
+Internals not reviewed. WHAT IT IS FOR: wlroots needs a session provider to \
+open DRM devices and input devices without being root. seatd is the \
+non-systemd answer -- a small daemon plus libseat, which is what \
+-Dsession=enabled in wlroots resolves against.
+
+-Dlibseat-seatd=enabled AND -Dserver=enabled ARE BOTH REQUIRED, and they are \
+different things: the first builds the libseat backend that talks to the \
+daemon, the second builds the daemon itself. Enabling the backend without the \
+server would produce a library with nothing to connect to.
+
+-Dlibseat-builtin=disabled is the one worth arguing about. The builtin backend \
+lets a compositor do seat management in-process with no daemon, which is \
+simpler to boot; it also requires the compositor to run as root or with \
+CAP_SYS_ADMIN. The daemon exists so that is not necessary, and taking the \
+shortcut here would make the first login look easier and the security story \
+worse."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/seatd-0.9.3.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Dlibseat-logind=disabled", "-Dlibseat-builtin=disabled",
+         "-Dlibseat-seatd=enabled", "-Dserver=enabled",
+         "-Dexamples=disabled", "-Dman-pages=disabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libseat"]]
+expect = ["0.9.3"]

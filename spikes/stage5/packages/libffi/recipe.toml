@@ -32,6 +32,12 @@ two builders with different CPUs could produce different bytes. It is used \
 here because LFS does and because the runners are uniform; if G3 ever \
 disagrees across machines, this flag is the first thing to remove."""
 
+[installs]
+prefixes = ["usr/include", "usr/lib", "usr/lib/pkgconfig", "usr/share/info", "usr/share/man"]
+files    = 12
+digest   = "56472d9810f5f2c5f23d8b394353efe9df5e013a660f8ac8a7f6c4746b7c7e20"
+
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

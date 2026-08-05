@@ -75,6 +75,12 @@ name the same version."""
 # meson.build:38 python3 (REQUIRED)
 "program:python3" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
 
+[installs]
+prefixes = ["usr/bin", "usr/include/freetype2", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal", "usr/share/man"]
+files    = 63
+digest   = "d67380b842894ab933a34c95826fc1d95a97a601c15c1674ddcbe233a54ba9ce"
+
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

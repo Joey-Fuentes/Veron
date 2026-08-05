@@ -84,8 +84,9 @@ cwd  = "$B"
 run  = [["sh", "-c", "mkdir -p \"$D\" && cp -a /packages/veron-system/files/. \"$D/\""]]
 
 [installs]
-prefixes = ["etc", "etc/dinit.d"]
-
+prefixes = ["etc", "etc/dinit.d", "etc/dinit.d/boot.d"]
+files    = 12
+digest   = "c5246a22c6743309a0dbe47d528e8b4592036bb71f68af1eb8b79d5cb26aeff1"
 [guest]
 test   = [["/bin/sh", "-c", "cat /etc/os-release | grep -c veron"]]
 expect = ["1"]

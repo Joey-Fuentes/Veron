@@ -55,6 +55,12 @@ Evidence now comes from the guest sanity tests, which run against the booted \
 image and check that each package actually works. Re-enable a suite per \
 package when there is a reason to; the step is one block."""
 
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/include/libltdl", "usr/lib", "usr/share/aclocal", "usr/share/info", "usr/share/libtool", "usr/share/man"]
+files    = 66
+digest   = "49c1c16a8b8842b1a957021bb86304cb585bb46139c51483342577a950567840"
+
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

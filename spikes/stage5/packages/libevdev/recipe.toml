@@ -51,6 +51,12 @@ that are the library's whole point, and it is not gated on any option."""
 "program:doxygen" = "meson.build:234 -- required: get_option('documentation'), a feature this recipe sets to disabled. 'enabled' is meson's default and means REQUIRED, which is why the flag is not optional tidying."
 "program:valgrind" = "meson.build:209 -- instrumentation for the test suite. -Dtests=disabled."
 
+[installs]
+prefixes = ["usr/include/libevdev-1.0", "usr/lib", "usr/lib/pkgconfig", "usr/share/man"]
+files    = 7
+digest   = "e90e5a3d072af5f0bbd3ccd66509eccd41ec2140e468ed394b77e221e3cdff47"
+
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

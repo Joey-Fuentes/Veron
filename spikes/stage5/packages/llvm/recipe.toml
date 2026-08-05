@@ -1,0 +1,139 @@
+name    = "llvm"
+version = "22.1.8"
+group   = "graphics-substrate"
+license = "Apache-2.0 WITH LLVM-exception"
+srcdir  = "llvm-project-22.1.8.src"
+
+[source]
+# THE MONOREPO, NOT THE SPLIT TARBALLS. An earlier pin fetched llvm-*.src and
+# cmake-*.src separately; the second exists only because the first cannot
+# configure without it, and pinning two halves of one thing is two chances to
+# get the pair wrong.
+url       = "https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/llvm-project-22.1.8.src.tar.xz"
+sha256    = "922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888"
+signature = "PGP signature published alongside; sha256 above is the audited result"
+crosschecked_against = []
+
+[deps]
+# pkgconf IS A REAL BUILD DEPENDENCY AND WAS INVISIBLE FOR 55 PACKAGES.
+# meson's dependency() resolves through pkg-config first, so without it every
+# external library lookup fails -- and in the shared build root pkgconf has
+# been present since rung 11, so nothing ever noticed. stage5-isolate found it
+# the moment glib was built from its declarations alone:
+#
+#     Did not find pkg-config by name 'pkg-config'
+#     Run-time dependency libpcre2-8 found: NO (tried pkgconfig and cmake)
+#     Downloading pcre2 source from https://github.com/PCRE2Project/...
+#
+# pcre2 WAS in the layer stack. Nothing could find it.
+build        = ["cmake", "ninja", "python", "zlib", "zstd", "pkgconf"]
+link         = ["zlib", "zstd"]
+runtime      = ["zlib", "zstd"]
+# EVERY ONE OF THESE DEFAULTS TO ON OR "available", AND THREE OF THEM WOULD
+# SILENTLY PICK UP A LIBRARY FROM THIS SET:
+#   LLVM_ENABLE_LIBXML2  "ON" -- meaning "if available". libxml2 IS here.
+#   LLVM_ENABLE_LIBEDIT  ON   -- libedit is not, so it would find nothing:
+#                               off by absence, which is the failure this
+#                               project keeps recording.
+#   LLVM_ENABLE_BINDINGS ON   -- OCaml and Go bindings.
+# tests, examples and benchmarks are all ON and are most of what is not
+# backend compilation.
+optional_off = ["libxml2", "libedit", "bindings", "tests", "examples",
+                "benchmarks", "ffi", "libpfm", "docs", "ocamldoc"]
+
+[declared]
+configure_flags = ["-DLLVM_TARGETS_TO_BUILD=AArch64;AMDGPU",
+                   "-DLLVM_BUILD_LLVM_DYLIB=ON", "-DLLVM_LINK_LLVM_DYLIB=ON",
+                   "-DLLVM_ENABLE_ZLIB=FORCE_ON",
+                   "-DLLVM_ENABLE_ZSTD=FORCE_ON",
+                   "-DLLVM_ENABLE_LIBXML2=OFF", "-DLLVM_ENABLE_LIBEDIT=OFF",
+                   "-DLLVM_ENABLE_FFI=OFF", "-DLLVM_ENABLE_BINDINGS=OFF",
+                   "-DLLVM_INCLUDE_TESTS=OFF", "-DLLVM_INCLUDE_EXAMPLES=OFF",
+                   "-DLLVM_INCLUDE_BENCHMARKS=OFF",
+                   "-DLLVM_ENABLE_PROJECTS=", "-DLLVM_ENABLE_RUNTIMES=",
+                   "-DCMAKE_BUILD_TYPE=Release",
+                   "-DLLVM_ENABLE_ASSERTIONS=OFF"]
+verification    = "none -- LLVM's own suite is hours and is not run here"
+packaged_as     = ["llvm"]
+deferral        = """
+Internals not reviewed, and this is the largest single package in the set by a \
+wide margin -- 27 minutes measured by llvm-timing.yml with the DEFAULTS. The \
+options below are most of why that number can come down.
+
+LLVM_TARGETS_TO_BUILD DEFAULTS TO "all", WHICH IS ABOUT TWENTY BACKENDS. mesa \
+needs exactly two on this architecture: AArch64 for llvmpipe (the software \
+rasteriser, which JITs for the host) and AMDGPU for radeonsi. Every other \
+backend is code generation for hardware this image will never run on. This is \
+the single largest lever on build time in the entire project and it is a \
+default nobody would think to question.
+
+LLVM_BUILD_LLVM_DYLIB AND LLVM_LINK_LLVM_DYLIB BOTH DEFAULT TO OFF, and mesa \
+needs the shared library. Read from CMakeLists.txt:912 -- LLVM_LINK_LLVM_DYLIB \
+is a cmake_dependent_option defaulting OFF, and LLVM_BUILD_LLVM_DYLIB defaults \
+to OFF unless LLVM_LINK_LLVM_DYLIB is on. Left alone, this builds a hundred \
+static archives and mesa cannot link it. Both are stated because one without \
+the other is a half-configured build.
+
+FORCE_ON RATHER THAN ON FOR zlib AND zstd. LLVM's "ON" means "use it if \
+available", which makes the result depend on what happened to be installed -- \
+and both ARE installed here, so it would work and would work by accident. \
+FORCE_ON fails configure if they are missing, which turns a silent difference \
+into an error. That is the same argument as pinning wlroots' backends.
+
+LLVM_ENABLE_PROJECTS AND LLVM_ENABLE_RUNTIMES ARE SET EMPTY EXPLICITLY. They \
+already default to empty; stating them means a future edit that adds clang has \
+to do it here rather than inherit it. mesa needs no clang for graphics -- \
+clang enters only with OpenCL, which -Dgallium-opencl=disabled declines.
+
+NOT YET BUILT. Every other recipe in this set describes a tarball that was \
+read and, for most, built. This one was read -- llvm/CMakeLists.txt, 1540 \
+lines, from the pinned tarball -- and has never been configured with these \
+flags. Treat the flag list as the reviewed part and the build as unproven \
+until a run says otherwise."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/llvm-project-22.1.8.src.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+# -S llvm: THE MONOREPO'S ROOT IS NOT A CMAKE PROJECT. The buildable tree is
+# the llvm/ subdirectory; pointing cmake at the top produces a confusing
+# "no CMakeLists.txt" rather than anything about layout.
+run  = [["cmake", "-S", "llvm", "-B", "_b", "-G", "Ninja",
+         "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release",
+         "-DLLVM_TARGETS_TO_BUILD=AArch64;AMDGPU",
+         "-DLLVM_BUILD_LLVM_DYLIB=ON", "-DLLVM_LINK_LLVM_DYLIB=ON",
+         "-DLLVM_ENABLE_ZLIB=FORCE_ON", "-DLLVM_ENABLE_ZSTD=FORCE_ON",
+         "-DLLVM_ENABLE_LIBXML2=OFF", "-DLLVM_ENABLE_LIBEDIT=OFF",
+         "-DLLVM_ENABLE_FFI=OFF", "-DLLVM_ENABLE_BINDINGS=OFF",
+         "-DLLVM_INCLUDE_TESTS=OFF", "-DLLVM_INCLUDE_EXAMPLES=OFF",
+         "-DLLVM_INCLUDE_BENCHMARKS=OFF", "-DLLVM_ENABLE_ASSERTIONS=OFF",
+         "-DLLVM_ENABLE_PROJECTS=", "-DLLVM_ENABLE_RUNTIMES="]]
+timeout = 3600
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+# THE ONLY STEP IN THIS PROJECT THAT NEEDS MORE THAN THE DEFAULT HOUR.
+timeout = 7200
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+timeout = 1800
+
+[undeclarable]
+# llvm-config IS HOW mesa FINDS THIS PACKAGE, and it is the reason llvm was
+# missing from the pinned set for so long: LLVM ships no .pc file at all, so
+# probe.py -- which resolves names through .pc -- could not see the edge.
+"program:llvm-config" = "Installed BY this package, not required by it. mesa finds LLVM with dependency('llvm', method: 'config-tool'), which runs llvm-config; there is no llvm.pc for a .pc-based scan to resolve. Recorded here because it is the mechanism that hid this package from the set."
+
+[guest]
+test   = [["/usr/bin/llvm-config", "--version"]]
+expect = ["22.1.8"]

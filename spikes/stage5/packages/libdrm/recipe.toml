@@ -1,0 +1,96 @@
+name    = "libdrm"
+version = "2.4.134"
+group   = "graphics-substrate"
+license = "MIT"
+srcdir  = "libdrm-libdrm-2.4.134-e984d448b8b17aab853369e6c203e53719f46de1"
+
+[source]
+# THE ARCHIVE UNPACKS TO A NAME WITH THE COMMIT IN IT. GitLab archive tarballs
+# are `<project>-<ref>-<sha>/`, so srcdir above is not a typo and would break
+# silently on a re-tag.
+url       = "https://gitlab.freedesktop.org/mesa/drm/-/archive/libdrm-2.4.134/drm-libdrm-2.4.134.tar.gz"
+sha256    = "6b18e4834b0c061232cb5c11e98a6ecdc72ebc6bc282d124406b7a9d4e089ce2"
+signature = "none published"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja"]
+link         = []
+runtime      = []
+# ELEVEN GPU DRIVERS, ALL 'auto', AND THAT IS THE wlroots FAILURE IN ADVANCE.
+# `auto` means the build becomes whatever the environment happened to permit,
+# and nothing records which. Every one is pinned below.
+#
+# cairo-tests IS THE DANGEROUS ONE: it is 'auto', and cairo IS in this set at
+# rung 45. Left alone, libdrm would grow a dependency on cairo -- inverting
+# the order, since libdrm must precede mesa which precedes nothing cairo needs
+# -- purely because a test helper found a library it could use.
+optional_off = ["intel", "radeon", "vmwgfx", "omap", "exynos", "tegra",
+                "etnaviv", "cairo-tests", "man-pages", "valgrind", "tests",
+                "udev", "install-test-programs", "freedreno-kgsl"]
+
+[declared]
+configure_flags = ["-Dintel=disabled", "-Dradeon=disabled",
+                   "-Dvmwgfx=disabled", "-Domap=disabled",
+                   "-Dexynos=disabled", "-Dtegra=disabled",
+                   "-Detnaviv=disabled", "-Dcairo-tests=disabled",
+                   "-Dman-pages=disabled", "-Dvalgrind=disabled",
+                   "-Dtests=false", "-Damdgpu=enabled", "-Dnouveau=enabled",
+                   "-Dfreedreno=enabled", "-Dvc4=enabled"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libdrm"]
+deferral        = """
+Internals not reviewed. WHICH DRIVERS ARE ON, AND WHY THOSE: mesa's \
+vulkan-drivers on aarch64 resolve to swrast, intel, panfrost, freedreno and \
+asahi, and its gallium drivers want amdgpu and nouveau where present. libdrm's \
+per-driver options control which libdrm_<driver>.so gets built, and a mesa \
+driver whose libdrm counterpart is missing fails at link rather than at \
+configure.
+
+amdgpu, nouveau, freedreno and vc4 are ON; the rest are OFF. That is a \
+judgement about which hardware this system targets and it is written here so \
+the next person can disagree with it in one place -- which is the entire \
+argument against leaving fourteen options at 'auto'.
+
+-Dtests=false ALSO REMOVES A REAL RISK. cairo-tests defaults to auto and cairo \
+is in this set; with tests on, libdrm would link cairo and invert the build \
+order for the sake of a helper nothing here runs."""
+
+[undeclarable]
+# Lookups no .pc name can answer, per ROADMAP.md rule 4.
+#
+# nm IS THE SAME CLASS AS libxkbcommon's bison: REQUIRED, real, and not
+# declarable because binutils has no stage-5 recipe.
+"program:nm" = "meson.build:65 -- REQUIRED, and provided by the stage-4 sysroot rather than by any stage-5 recipe. Paired with the in-tree symbols-check.py to verify the exported ABI. binutils is stage 4's; there is nothing here to declare."
+"program:rst2man" = "meson.build:220 -- required: get_option('man-pages'), which this recipe disables. docutils is not in this set."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/drm-libdrm-2.4.134.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Dintel=disabled", "-Dradeon=disabled", "-Dvmwgfx=disabled",
+         "-Domap=disabled", "-Dexynos=disabled", "-Dtegra=disabled",
+         "-Detnaviv=disabled", "-Dcairo-tests=disabled",
+         "-Dman-pages=disabled", "-Dvalgrind=disabled", "-Dtests=false",
+         "-Damdgpu=enabled", "-Dnouveau=enabled", "-Dfreedreno=enabled",
+         "-Dvc4=enabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libdrm"]]
+expect = ["2.4.134"]

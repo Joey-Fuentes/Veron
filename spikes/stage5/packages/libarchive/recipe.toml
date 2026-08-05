@@ -28,6 +28,12 @@ leaving it to detection would make libarchive's feature set depend on build \
 order. --without-openssl drops the cryptographic digest support in mtree and \
 xar; nothing here reads either format."""
 
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/lib", "usr/lib/pkgconfig", "usr/share/man"]
+files    = 56
+digest   = "0911e34407e58a5e3cc6f56e5a429a48d1c7359148c82fc6e5b75e7b235077f7"
+
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

@@ -1,0 +1,78 @@
+name    = "elfutils"
+version = "0.192"
+group   = "graphics-substrate"
+license = "GPL-3.0-or-later AND LGPL-3.0-or-later"
+srcdir  = "elfutils-0.192"
+
+[source]
+url       = "https://sourceware.org/pub/elfutils/0.192/elfutils-0.192.tar.bz2"
+sha256    = "616099beae24aba11f9b63d86ca6cc8d566d968b802391334c91df54eab416b4"
+signature = "PGP signed by Mark Wielaard; not verified per-build -- the pinned sha256 is the result of that audit"
+crosschecked_against = []
+
+[deps]
+# zlib IS UNCONDITIONAL -- elfutils reads compressed ELF sections. bzip2 and
+# xz are optional decompressors for the same purpose and both are already in
+# this set, so declining them is a real choice rather than a constraint.
+build        = ["zlib"]
+link         = ["zlib"]
+runtime      = ["zlib"]
+# debuginfod IS THE ONE THAT MATTERS. --enable-debuginfod builds a client that
+# FETCHES DEBUG INFORMATION OVER HTTP, and libdebuginfod would then be linked
+# into anything using libelf. In a system whose whole claim is that every byte
+# traces to a pinned source, a library that downloads more at runtime is not a
+# feature to leave at its default.
+optional_off = ["debuginfod", "libdebuginfod", "nls", "demangler",
+                "bzip2", "lzma", "static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-debuginfod",
+                   "--disable-libdebuginfod", "--disable-nls",
+                   "--without-bzlib", "--without-lzma", "--disable-static",
+                   "--program-prefix=eu-"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["elfutils", "libelf"]
+deferral        = """
+Internals not reviewed. WHY IT IS HERE: mesa links libelf, and elfutils is \
+what provides it. libelf appears in NO STAGE5.md group list and has no recipe \
+-- the same class as hwdata and libdisplay-info: pinned and mirrored by an \
+earlier sweep, then absent from every plan that was supposed to be complete. \
+Found by reading mesa's meson.build, not by any tool.
+
+--program-prefix=eu- IS UPSTREAM'S OWN CONVENTION and stated so it stays one. \
+elfutils ships tools called nm, size, strip, ar and ranlib; without the prefix \
+they would collide with binutils' in /usr/bin, and the manifest's collision \
+check would fail the run -- which is the good outcome, but only after a build. \
+With the prefix they install as eu-nm, eu-strip and so on.
+
+LICENCE IS A GENUINE `AND`, not an OR. The tools are GPL-3.0-or-later and the \
+libraries -- libelf and libdw, which are what mesa actually links -- are \
+LGPL-3.0-or-later. Both apply to what ships. That distinction is the reason \
+license.py reports AND separately from hwdata's OR."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/elfutils-0.192.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-debuginfod",
+         "--disable-libdebuginfod", "--disable-nls", "--without-bzlib",
+         "--without-lzma", "--disable-static", "--program-prefix=eu-"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libelf"]]
+expect = ["0.192"]

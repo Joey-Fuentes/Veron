@@ -2268,6 +2268,19 @@ def cmd_isolate(a):
                 if rt not in deps:
                     deps.add(rt)
                     queue.append(rt)
+        # A PACKAGE IS NOT ITS OWN DEPENDENCY, AND THE CLOSURE FOUND ONE.
+        #
+        #     == freetype: SKIPPED, declared deps not built here: freetype
+        #
+        # freetype declares harfbuzz; harfbuzz's RUNTIME declares freetype --
+        # both correct, and together a cycle the runtime walk follows straight
+        # back to where it started. It then cascaded: fontconfig, cairo and
+        # pango were all skipped because freetype was.
+        #
+        # The data is right and the walk was naive. That cycle is the reason
+        # freetype-bootstrap exists at all, so it was always going to appear
+        # here; discarding the package itself is the whole fix.
+        deps.discard(name)
         deps = sorted(deps)
         layers, absent = [], []
         for d in deps:

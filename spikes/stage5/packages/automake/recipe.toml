@@ -49,6 +49,12 @@ Evidence now comes from the guest sanity tests, which run against the booted \
 image and check that each package actually works. Re-enable a suite per \
 package when there is a reason to; the step is one block."""
 
+[installs]
+prefixes = ["usr/bin", "usr/share/aclocal", "usr/share/aclocal-1.18", "usr/share/automake-1.18", "usr/share/doc", "usr/share/info", "usr/share/man"]
+files    = 125
+digest   = "5191fd44244f3b397dd962e96b9923bb4ff5719d826f89173f0829a1265da2ee"
+
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

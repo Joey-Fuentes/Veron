@@ -1,0 +1,63 @@
+name    = "libudev-zero"
+version = "1.0.3"
+group   = "input"
+license = "MIT"
+srcdir  = "libudev-zero-1.0.3"
+
+[source]
+url       = "https://github.com/illiliti/libudev-zero/archive/1.0.3/libudev-zero-1.0.3.tar.gz"
+sha256    = "0bd89b657d62d019598e6c7ed726ff8fed80e8ba092a83b484d66afb80b77da5"
+signature = "none published -- GitHub archive, digest is ours"
+crosschecked_against = []
+
+[deps]
+# NOTHING. A plain Makefile, no configure, no meson, no external library. That
+# is the point of the package: it is a reimplementation of libudev's API with
+# none of systemd behind it.
+build        = []
+link         = []
+runtime      = []
+optional_off = ["static"]
+
+[declared]
+configure_flags = []
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libudev-zero"]
+deferral        = """
+Internals not reviewed. WHY THIS AND NOT systemd's libudev: libinput opens \
+with `dep_udev = dependency('libudev')` -- unconditional, no `required: \
+false`, no option to turn off. So SOMETHING must provide libudev.pc, and the \
+alternatives are systemd or eudev. systemd is the dependency tail this whole \
+project declines; libudev-zero is one Makefile and no daemon.
+
+WHAT IT COSTS, stated because it is not free: libudev-zero implements the \
+enumeration and device-property API and does NOT implement the netlink hotplug \
+monitor the real libudev has. Devices present at start are seen; devices \
+plugged in later are not, unless something else rescans. For a system whose \
+current test is booting to a console that is invisible, and it will stop being \
+invisible the first time somebody expects a hotplugged keyboard to work. \
+Written down here rather than discovered then.
+
+install DEPENDS ON install-static AS WELL AS install-shared, so libudev.a \
+ships whether or not anything links it. There is no --disable-static to pass; \
+the Makefile has no options at all."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libudev-zero-1.0.3.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "PREFIX=/usr"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libudev"]]
+expect = ["243"]

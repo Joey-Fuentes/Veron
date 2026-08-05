@@ -58,6 +58,12 @@ browser without WOFF2 cannot load a large fraction of web fonts."""
 # meson.build:38 python3 (REQUIRED)
 "program:python3" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
 
+[installs]
+prefixes = ["usr/bin", "usr/include/freetype2", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal", "usr/share/man"]
+files    = 63
+digest   = "eb8090bb7f54bd8d4acb73b51e59106ced18a3cd664063bbe23fe6a174f8b92e"
+
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

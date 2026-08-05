@@ -29,58 +29,65 @@ between this file and the recipes fails the run.
   7. hwdata
   8. icu
   9. libffi
-  10. m4
-  11. mtdev
-  12. ncurses
-  13. pcre2
-  14. pkgconf
-  15. veron-system
-  16. xz
-  17. zlib
-  18. autoconf
-  19. libpng
-  20. libtool
-  21. readline
-  22. zstd
-  23. automake
-  24. bash
-  25. curl
-  26. freetype-bootstrap
-  27. libarchive
-  28. libxml2
-  29. sqlite
-  30. git
-  31. python
-  32. markupsafe
-  33. meson
-  34. ninja
-  35. packaging
-  36. pyyaml
-  37. cmake
-  38. fribidi
-  39. glib
-  40. libdisplay-info
-  41. libevdev
-  42. libsfdo
-  43. libxkbcommon
-  44. mako
-  45. pixman
-  46. wayland-protocols
-  47. xkeyboard-config
-  48. graphite2
-  49. libjpeg-turbo
-  50. harfbuzz
-  51. libwebp
-  52. freetype
-  53. fontconfig
-  54. cairo
-  55. pango
+  10. libudev-zero
+  11. m4
+  12. mtdev
+  13. ncurses
+  14. pcre2
+  15. pkgconf
+  16. veron-system
+  17. xz
+  18. zlib
+  19. autoconf
+  20. elfutils
+  21. libpng
+  22. libtool
+  23. readline
+  24. zstd
+  25. automake
+  26. bash
+  27. curl
+  28. freetype-bootstrap
+  29. libarchive
+  30. libxml2
+  31. sqlite
+  32. git
+  33. python
+  34. markupsafe
+  35. meson
+  36. ninja
+  37. packaging
+  38. pyyaml
+  39. cmake
+  40. fribidi
+  41. glib
+  42. libdisplay-info
+  43. libdrm
+  44. libevdev
+  45. libsfdo
+  46. libxkbcommon
+  47. mako
+  48. pixman
+  49. seatd
+  50. wayland
+  51. wayland-protocols
+  52. xkeyboard-config
+  53. graphite2
+  54. libinput
+  55. libjpeg-turbo
+  56. llvm
+  57. harfbuzz
+  58. libwebp
+  59. freetype
+  60. fontconfig
+  61. cairo
+  62. pango
 
 ======================================================================
 package bzip2 1.0.8
   group        build-substrate
   license      bzip2-1.0.6
-  recipe-sha   8bd5881092a7e3d10ecfda354ce28f0b0eafbc91addab6ae6eaba3a7e9db2f8a
+  recipe-sha   bffbf9db3c2beb509ed39f562ff158717b5ac8b5be0fb2a528aa65482f557a39
 
   source
     url        https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz
@@ -119,7 +126,7 @@ package bzip2 1.0.8
 package dinit 0.22.1
   group        system
   license      Apache-2.0
-  recipe-sha   c2b35b1e553f6964de08a489bc8c7f70ec90e273ee58582ae70262b983cb19f0
+  recipe-sha   609c61b6a5e182d3354703c76169f54a0d25bc7336481d97c8dbdbda6a3308d3
 
   source
     url        https://github.com/davmac314/dinit.git
@@ -154,7 +161,7 @@ package dinit 0.22.1
 package expat 2.7.4
   group        build-substrate
   license      MIT
-  recipe-sha   1fdbad4832642ad1724630344e16f60278078ed2d6ffd94722fa92f1c5e96257
+  recipe-sha   fd2533da3bff0105251db91e7e855b14e07343835caeb5d48794a7811ca74f64
 
   source
     url        https://github.com/libexpat/libexpat/releases/download/R_2_7_4/expat-2.7.4.tar.xz
@@ -186,7 +193,7 @@ package expat 2.7.4
 package file 5.48
   group        build-substrate
   license      ISC
-  recipe-sha   592b19fe0786e8f61aef98194e931c8e37b5330de71cdaf176881a5285713fe0
+  recipe-sha   ef13e12068f7da1bba8673efaf4846247586b0d4e1644c88e02745559e167552
 
   source
     url        https://astron.com/pub/file/file-5.48.tar.gz
@@ -218,7 +225,7 @@ package file 5.48
 package gperf 3.3
   group        build-substrate
   license      GPL-3.0-or-later
-  recipe-sha   2c6e61d7c5b00ea0b1981776782ec6d0c1df8eca5b91100fd5ba7ca4899bd752
+  recipe-sha   203330a595f3d4a69da5dac1a97e0b5be850269e1c42e92f51a6ac7f4250fab1
 
   source
     url        https://ftp.gnu.org/gnu/gperf/gperf-3.3.tar.gz
@@ -250,7 +257,7 @@ package gperf 3.3
 package hello 2.12.3
   group        spike-probe
   license      GPL-3.0-or-later
-  recipe-sha   284f3f7921f8610525d6b169bb4d4a8f37152c8b6312a5600d4f9b124f9f5c5e
+  recipe-sha   05cfc4a522d22a335f055367c418e85e2e0a4537e32124427407da175156af88
 
   source
     url        https://ftp.gnu.org/gnu/hello/hello-2.12.3.tar.gz
@@ -283,7 +290,7 @@ package hello 2.12.3
 package hwdata 0.410
   group        graphics-substrate
   license      GPL-2.0-or-later OR XFree86-1.0
-  recipe-sha   54f8ee6a965314a2fdbbf30ce636c78a3de3e03a899edf90c8c3ead01a4762fe
+  recipe-sha   602edb4c20f28328cdb2e1910aafbfa8c659cec2abe51bce53bc1fd3e8265ae4
 
   source
     url        https://github.com/vcrhonek/hwdata/archive/v0.410/hwdata-0.410.tar.gz
@@ -313,7 +320,7 @@ package hwdata 0.410
 package icu 78.2
   group        build-substrate
   license      ICU
-  recipe-sha   00f5ae6b62c4ca1011be41f29ecafda9222b16c0be229de68b58320ebc7593b3
+  recipe-sha   d125380ab76778b5b078d95e36f620b90c751359f1086edd517ed9e29051570d
 
   source
     url        https://github.com/unicode-org/icu/releases/download/release-78.2/icu4c-78.2-sources.tgz
@@ -345,7 +352,7 @@ package icu 78.2
 package libffi 3.5.2
   group        build-substrate
   license      MIT
-  recipe-sha   4a8f76d58753fb80b41f27ce956e3c947a21bf8b26cd5347322ff391fd4642bb
+  recipe-sha   ae5cad0f5f2170b44d6a03a36c16f509c1659060980a5d45d962933a0feb8eee
 
   source
     url        https://github.com/libffi/libffi/releases/download/v3.5.2/libffi-3.5.2.tar.gz
@@ -374,10 +381,40 @@ package libffi 3.5.2
          argv ["make", "DESTDIR=dest/libffi", "install"]
 
 ======================================================================
+package libudev-zero 1.0.3
+  group        input
+  license      MIT
+  recipe-sha   7440a1e8b32e5bf04bf0ee91834076f1bbe6ceb1b4c0d586a390bb356616146d
+
+  source
+    url        https://github.com/illiliti/libudev-zero/archive/1.0.3/libudev-zero-1.0.3.tar.gz
+    sha256     0bd89b657d62d019598e6c7ed726ff8fed80e8ba092a83b484d66afb80b77da5
+    signature  none published -- GitHub archive, digest is ours
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off static
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libudev-zero-1.0.3
+         argv ["tar", "-xf", "dl/libudev-zero-1.0.3.tar.gz", "-C", "build/libudev-zero-1.0.3"]
+    [02] build
+         cwd  build/libudev-zero-1.0.3/libudev-zero-1.0.3
+         argv ["make", "-j1"]
+    [03] install
+         cwd  build/libudev-zero-1.0.3/libudev-zero-1.0.3
+         env  DESTDIR=dest/libudev-zero
+         argv ["make", "install", "PREFIX=/usr"]
+
+======================================================================
 package m4 1.4.21
   group        build-substrate
   license      GPL-3.0-or-later
-  recipe-sha   df59f6cac2550e4a6f791f7c8b057db399738b976436044e190894d5938dfe70
+  recipe-sha   5260d9a5b760a0d644ad00e6852cc7edbba362aa9d40c8ab35c3ae635f30c8a3
 
   source
     url        https://ftp.gnu.org/gnu/m4/m4-1.4.21.tar.xz
@@ -409,7 +446,7 @@ package m4 1.4.21
 package mtdev 1.1.7
   group        input
   license      MIT
-  recipe-sha   b83f48fbc737fca62eadec3da03e587af53571d7747f131f5a63ea48b79b9e5a
+  recipe-sha   ba3f3fe7cd31b5c398c1283fb561660df8b133b7a2b2298297a703254995161a
 
   source
     url        http://bitmath.org/code/mtdev/mtdev-1.1.7.tar.bz2
@@ -442,7 +479,7 @@ package mtdev 1.1.7
 package ncurses 6.6
   group        build-substrate
   license      MIT
-  recipe-sha   63e9e28913088e420fbf6686d07bd2f84b69c0855c0963dfb0b724c89a8e28e2
+  recipe-sha   7444f8b6939fe652bc57fdb1c565dec4c469be466e504f1005feb5c88fe49e37
 
   source
     url        https://ftp.gnu.org/gnu/ncurses/ncurses-6.6.tar.gz
@@ -474,7 +511,7 @@ package ncurses 6.6
 package pcre2 10.47
   group        build-substrate
   license      BSD-3-Clause-with-exception
-  recipe-sha   30f676f121a924034a618f038483e168ffca813517de9ced8b19f85e6ad8b575
+  recipe-sha   55f727e085a68dc0afef2d039ec404bbc74019f591275abbb79e2776de6f3ccd
 
   source
     url        https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.47/pcre2-10.47.tar.bz2
@@ -506,7 +543,7 @@ package pcre2 10.47
 package pkgconf 3.0.5
   group        build-substrate
   license      ISC
-  recipe-sha   e657a5d2d88c8306279c05b4a20ba91a6e66e227f7f33460606e3fa1b73d1022
+  recipe-sha   3adb8b76a8a61e6e201a8725a2992d330e1d21ea840653c9b6870cb0ba6dff6c
 
   source
     url        https://github.com/pkgconf/pkgconf/releases/download/pkgconf-3.0.5/pkgconf-3.0.5.tar.xz
@@ -543,7 +580,7 @@ package pkgconf 3.0.5
 package veron-system 0.1.0
   group        system
   license      MIT
-  recipe-sha   2f708a56d1d5a76eedc0b5efc950ca2d5bcbedce2fd6b2f21477e43196446b45
+  recipe-sha   2c5a5f6a09e629366e86ce8a10172c6cfb3aaa32c960d9f94e2ba29795e068ba
 
   source
     url        this repository
@@ -566,7 +603,7 @@ package veron-system 0.1.0
 package xz 5.8.3
   group        build-substrate
   license      0BSD AND GPL-2.0-or-later AND LGPL-2.1-or-later
-  recipe-sha   4a85f6dd881f533ece2ba5d8a3ae0d34df385319b14a256d0846af92371b8a71
+  recipe-sha   03379242441f6cbb6f4382184b1bae30612ac76aed75b35d8fd326cb4ebb5d2d
 
   source
     url        https://github.com/tukaani-project/xz/releases/download/v5.8.3/xz-5.8.3.tar.xz
@@ -598,7 +635,7 @@ package xz 5.8.3
 package zlib 1.3.2
   group        build-substrate
   license      Zlib
-  recipe-sha   c39eb9221b9d2d764641ef96ec3da7d4deb3cd5fb0acaa206e32d83da6f3b6ad
+  recipe-sha   1146866111c626961fd3caac0368e0b6759828d166d03278ad687b60724afba2
 
   source
     url        https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.xz
@@ -630,7 +667,7 @@ package zlib 1.3.2
 package autoconf 2.73
   group        build-substrate
   license      GPL-2.0-or-later
-  recipe-sha   96dc86bdfe35d0c8c466be1a68c2401ded60de0b525fe7d4746327c7a308bcae
+  recipe-sha   604f0f3eb8e37e34b1e1b3009458ee61c8dbdf0efc2fe19b075b379ad1cd1c7b
 
   source
     url        https://ftp.gnu.org/gnu/autoconf/autoconf-2.73.tar.xz
@@ -659,10 +696,43 @@ package autoconf 2.73
          argv ["make", "DESTDIR=dest/autoconf", "install"]
 
 ======================================================================
+package elfutils 0.192
+  group        graphics-substrate
+  license      GPL-3.0-or-later AND LGPL-3.0-or-later
+  recipe-sha   5833355f403b51d79031ec5704f0ed457aa0c58dc635bae1a6621c598f160069
+
+  source
+    url        https://sourceware.org/pub/elfutils/0.192/elfutils-0.192.tar.bz2
+    sha256     616099beae24aba11f9b63d86ca6cc8d566d968b802391334c91df54eab416b4
+    signature  PGP signed by Mark Wielaard; not verified per-build -- the pinned sha256 is the result of that audit
+    correspond none
+
+  deps
+    build        zlib
+    link         zlib
+    runtime      zlib
+    optional_off bzip2, debuginfod, demangler, libdebuginfod, lzma, nls, static
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/elfutils-0.192
+         argv ["tar", "-xf", "dl/elfutils-0.192.tar.bz2", "-C", "build/elfutils-0.192"]
+    [02] configure
+         cwd  build/elfutils-0.192/elfutils-0.192
+         argv ["./configure", "--prefix=/usr", "--disable-debuginfod", "--disable-libdebuginfod", "--disable-nls", "--without-bzlib", "--without-lzma", "--disable-static", "--program-prefix=eu-"]
+    [03] build
+         cwd  build/elfutils-0.192/elfutils-0.192
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/elfutils-0.192/elfutils-0.192
+         env  DESTDIR=dest/elfutils
+         argv ["make", "install"]
+
+======================================================================
 package libpng 1.6.55
   group        text-rendering
   license      libpng-2.0
-  recipe-sha   a594cac267900fa0f6dc0057ebc379cdf9bca9e764dc8f3b2380e55decc7d9dc
+  recipe-sha   f88e2c76186896637ec46ef60447e892f58a98ec5e1bb804f347f49f4a67d263
 
   source
     url        https://downloads.sourceforge.net/libpng/libpng-1.6.55.tar.xz
@@ -694,7 +764,7 @@ package libpng 1.6.55
 package libtool 2.6.2
   group        build-substrate
   license      GPL-2.0-or-later
-  recipe-sha   ed6444a44465d664e4e3af00835dd0d85c15bb109bca169eeff9749fbe1d5cb3
+  recipe-sha   2b399143f8976c0891f620e6f5755a7ffbdbc693a18134f7ebc7ea8e922a2997
 
   source
     url        https://ftp.gnu.org/gnu/libtool/libtool-2.6.2.tar.xz
@@ -726,7 +796,7 @@ package libtool 2.6.2
 package readline 8.3
   group        build-substrate
   license      GPL-3.0-or-later
-  recipe-sha   a0687a6bab73d45908c7134a8f3b71d3914595240d5c4131bf5d2355d87f5abb
+  recipe-sha   b2b0f84bfbcf8d1a785f8bfb554ef39ae0e1ff07665b40c4368926eef5b84e7f
 
   source
     url        https://ftp.gnu.org/gnu/readline/readline-8.3.tar.gz
@@ -758,7 +828,7 @@ package readline 8.3
 package zstd 1.5.7
   group        build-substrate
   license      GPL-2.0-or-later
-  recipe-sha   c45b1e0a3a1a647207cddd29bdc0729e38c8e78cde667ba8c3d099ea71486e03
+  recipe-sha   b06f955cf8e31366cc233de852edb5dcfa305e462f183a62e7e9fc419679976c
 
   source
     url        https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz
@@ -787,7 +857,7 @@ package zstd 1.5.7
 package automake 1.18.1
   group        build-substrate
   license      GPL-2.0-or-later
-  recipe-sha   23981001adc02d4f34b36d8d0ee71c9a56818e2ad61a1ad38e48c380b36f9d08
+  recipe-sha   df36f9f89f50095192f7e300ee3561fa41c62ad9ecf0f5aea70b32817c61c2fc
 
   source
     url        https://ftp.gnu.org/gnu/automake/automake-1.18.1.tar.xz
@@ -819,7 +889,7 @@ package automake 1.18.1
 package bash 5.3
   group        build-substrate
   license      GPL-3.0-or-later
-  recipe-sha   eac6101abcbe7c51d2704ef25d8323e6bf88df6aea78cb9c75d4d062036fc4d4
+  recipe-sha   1f5563579dad3db63875aab5f748b88234894de0bc872ec8cf6c5be9abc47fe0
 
   source
     url        https://ftp.gnu.org/gnu/bash/bash-5.3.tar.gz
@@ -855,7 +925,7 @@ package bash 5.3
 package curl 8.18.0
   group        build-substrate
   license      curl
-  recipe-sha   63213b4e884da6264cbff0c31723d80bf18064853dd58fe85a0b995732872be4
+  recipe-sha   5dde52ceade668dc0df6b55ede8ce4eec9bfcb9b3e5669f5a1e8f3cae22b2b0e
 
   source
     url        https://curl.se/download/curl-8.18.0.tar.xz
@@ -888,7 +958,7 @@ package freetype-bootstrap 2.14.1
   group        text-rendering
   build-only   yes -- staged for later packages, not installed into the image
   license      FTL-or-GPL-2.0
-  recipe-sha   7e8c692c96019529e070b7d103a550eb2b4ec05c54b9c4a477587c4350d47499
+  recipe-sha   d0671920f5dcb102b34f8ab1f89c064f5c0ec5e6897704e8637ea5e342d3c3fe
 
   source
     url        https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz
@@ -920,7 +990,7 @@ package freetype-bootstrap 2.14.1
 package libarchive 3.8.5
   group        build-substrate
   license      BSD-2-Clause
-  recipe-sha   4d9bab90210a95219469fa7475e700905ccb882421a555cd06588b26d5e30ad1
+  recipe-sha   cc0801c215e579ad924e46b717187ad6c11d3abc3b86feab7e56b7f9db0ab979
 
   source
     url        https://github.com/libarchive/libarchive/releases/download/v3.8.5/libarchive-3.8.5.tar.xz
@@ -952,7 +1022,7 @@ package libarchive 3.8.5
 package libxml2 2.15.1
   group        build-substrate
   license      MIT
-  recipe-sha   980e8916719fc13f2f11dc6770b31634235e5dafceefc6792db238db31344d4c
+  recipe-sha   d49e3ce8da3a12215553d16969fd21578c73cab74e7f00e01ed31cd86226a488
 
   source
     url        https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.1.tar.xz
@@ -984,7 +1054,7 @@ package libxml2 2.15.1
 package sqlite 3.53.4
   group        build-substrate
   license      public-domain
-  recipe-sha   9d6848456b00864b74f4a65e4cdd3a6e82fc63b3ed5bb47f8b517a3312a4a0cc
+  recipe-sha   42aa98ba7c1d8bc6dab2ac0c2f66a685167512e392e74922b1782fe24eb07ae4
 
   source
     url        https://www.sqlite.org/2026/sqlite-autoconf-3530400.tar.gz
@@ -1016,7 +1086,7 @@ package sqlite 3.53.4
 package git 2.53.0
   group        build-substrate
   license      GPL-2.0-only
-  recipe-sha   6326447fca8d4b43d745162a88ce73544e78791ee2654b21241d21e93a680476
+  recipe-sha   b16a6f642fccc64ee9241e6f2d55620f1945e7fa8d00b15982100b2dca54ae85
 
   source
     url        https://www.kernel.org/pub/software/scm/git/git-2.53.0.tar.xz
@@ -1048,7 +1118,7 @@ package git 2.53.0
 package python 3.14.6
   group        build-substrate
   license      PSF-2.0
-  recipe-sha   9e59da18175e258fefcef602993ce0a12a03037179b9f739a19d0ad657e1e30f
+  recipe-sha   d7f613ef4f3027aa35fadafb2fe56fa68072eb6c3e873debeaa4aec1479c1d83
 
   source
     url        https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tar.xz
@@ -1088,7 +1158,7 @@ package python 3.14.6
 package markupsafe 3.0.3
   group        build-substrate
   license      BSD-3-Clause
-  recipe-sha   06905438bb70f72c451dc3942f97c2f79615081ebe5f0b0535402403b98d8f1b
+  recipe-sha   7d59a6e02295da8672b605d23e3d3402fa46df4e940b701a221f0e612690cd6b
 
   source
     url        https://files.pythonhosted.org/packages/7e/99/7690b6d4034fffd95959cbe0c02de8deb3098cc577c67bb6a24fe5d7caa7/markupsafe-3.0.3.tar.gz
@@ -1119,7 +1189,7 @@ package markupsafe 3.0.3
 package meson 1.10.1
   group        build-substrate
   license      Apache-2.0
-  recipe-sha   4621b2bf1d5ac77f369515ab93aa2b47fa57c9d446b2d8ba3b285645683574f1
+  recipe-sha   6956917b442d1e01df1d243706240e7f30bb0f6a9f608273506dfd437c310ace
 
   source
     url        https://github.com/mesonbuild/meson/releases/download/1.10.1/meson-1.10.1.tar.gz
@@ -1150,7 +1220,7 @@ package meson 1.10.1
 package ninja 1.13.2
   group        build-substrate
   license      Apache-2.0
-  recipe-sha   068d219315890a7f9d336b9c843a3102b6a53e52f7c858e907e137b99f0d54c3
+  recipe-sha   832fac5480d86e52396e75b343c19bcf0e4d02f0e765b90023384c5e338a2f34
 
   source
     url        https://github.com/ninja-build/ninja/archive/v1.13.2/ninja-1.13.2.tar.gz
@@ -1180,7 +1250,7 @@ package ninja 1.13.2
 package packaging 26.3
   group        build-substrate
   license      Apache-2.0 OR BSD-2-Clause
-  recipe-sha   4e0ecd8baa9e9baa0886a2cfbfe1a63b1f11d493bb041810d9abc520b4f7b14f
+  recipe-sha   10f9926170a168beff0499265f8e6d106705a9c04e604b72f07c3481a6592239
 
   source
     url        https://files.pythonhosted.org/packages/7d/fa/3944b40b07da9ce895c0e6303a5ab7d53da063554f534556b134a54d6093/packaging-26.3.tar.gz
@@ -1211,7 +1281,7 @@ package packaging 26.3
 package pyyaml 6.0.3
   group        build-substrate
   license      MIT
-  recipe-sha   b88f918fd63c5547a837251305a4e2dd824413831dc95c0f2e489009198dad6e
+  recipe-sha   b3c4cc54f3168af6f219e074083efe9dd8e5788423ee8d47373f320e286d5aea
 
   source
     url        https://files.pythonhosted.org/packages/05/8e/961c0007c59b8dd7729d542c61a4d537767a59645b82a0b521206e1e25c2/pyyaml-6.0.3.tar.gz
@@ -1242,7 +1312,7 @@ package pyyaml 6.0.3
 package cmake 4.2.3
   group        build-substrate
   license      BSD-3-Clause
-  recipe-sha   8ab61df5ef52147bd752ff45ba1d3dbdc6a6a58407e4614186e61360c6c3394d
+  recipe-sha   29fe27e4fea8080153a4a08e15cdbd4070350add95e89c50ff339407d66f7d2f
 
   source
     url        https://cmake.org/files/v4.2/cmake-4.2.3.tar.gz
@@ -1275,7 +1345,7 @@ package cmake 4.2.3
 package fribidi 1.0.16
   group        text-rendering
   license      LGPL-2.1-or-later
-  recipe-sha   2f5871443270c62ee9fd230b3493e3bd7662c70a319c3dbe9252bb863aa2e86e
+  recipe-sha   2966e007786de29d039e0ac3bf6501358da1e83b9e4ea861e22e02b479e53b25
 
   source
     url        https://github.com/fribidi/fribidi/releases/download/v1.0.16/fribidi-1.0.16.tar.xz
@@ -1309,7 +1379,7 @@ package fribidi 1.0.16
 package glib 2.86.4
   group        text-rendering
   license      LGPL-2.1-or-later
-  recipe-sha   95100c62b9365831e446fa0811e948705e568e326af0d8144d44039f97eeb06a
+  recipe-sha   73ce270b834229b791ed77d0f744a2245771e24dfeb9446e421714113d7bcd96
 
   source
     url        https://download.gnome.org/sources/glib/2.86/glib-2.86.4.tar.xz
@@ -1318,7 +1388,7 @@ package glib 2.86.4
     correspond none
 
   deps
-    build        bash, libffi, meson, ninja, pcre2, python, zlib
+    build        bash, libffi, meson, ninja, pcre2, pkgconf, python, zlib
     link         libffi, pcre2, zlib
     runtime      libffi, pcre2, zlib
     optional_off dtrace, gtk_doc, introspection, libmount, man-pages, packaging, selinux, sysprof, systemtap, tests
@@ -1346,7 +1416,7 @@ package glib 2.86.4
 package libdisplay-info 0.4.0
   group        graphics-substrate
   license      MIT
-  recipe-sha   e8991da7cded2ab257c5a83510b5b801a44d6dda4f03a95dac395c6909128882
+  recipe-sha   8cc3a8ca5d25374aac9caf7236908c70b2b254c82c9baa0bfa166e6f41c8b659
 
   source
     url        https://gitlab.freedesktop.org/emersion/libdisplay-info/-/releases/0.4.0/downloads/libdisplay-info-0.4.0.tar.xz
@@ -1377,10 +1447,44 @@ package libdisplay-info 0.4.0
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package libdrm 2.4.134
+  group        graphics-substrate
+  license      MIT
+  recipe-sha   0ed629365770fd196a77dcf13f03b619d74cf8b9601153f6d64cba4fa0c9254c
+
+  source
+    url        https://gitlab.freedesktop.org/mesa/drm/-/archive/libdrm-2.4.134/drm-libdrm-2.4.134.tar.gz
+    sha256     6b18e4834b0c061232cb5c11e98a6ecdc72ebc6bc282d124406b7a9d4e089ce2
+    signature  none published
+    correspond none
+
+  deps
+    build        meson, ninja
+    link         -
+    runtime      -
+    optional_off cairo-tests, etnaviv, exynos, freedreno-kgsl, install-test-programs, intel, man-pages, omap, radeon, tegra, tests, udev, valgrind, vmwgfx
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libdrm-2.4.134
+         argv ["tar", "-xf", "dl/drm-libdrm-2.4.134.tar.gz", "-C", "build/libdrm-2.4.134"]
+    [02] setup
+         cwd  build/libdrm-2.4.134/libdrm-libdrm-2.4.134-e984d448b8b17aab853369e6c203e53719f46de1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dintel=disabled", "-Dradeon=disabled", "-Dvmwgfx=disabled", "-Domap=disabled", "-Dexynos=disabled", "-Dtegra=disabled", "-Detnaviv=disabled", "-Dcairo-tests=disabled", "-Dman-pages=disabled", "-Dvalgrind=disabled", "-Dtests=false", "-Damdgpu=enabled", "-Dnouveau=enabled", "-Dfreedreno=enabled", "-Dvc4=enabled"]
+    [03] build
+         cwd  build/libdrm-2.4.134/libdrm-libdrm-2.4.134-e984d448b8b17aab853369e6c203e53719f46de1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/libdrm-2.4.134/libdrm-libdrm-2.4.134-e984d448b8b17aab853369e6c203e53719f46de1
+         env  DESTDIR=dest/libdrm
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package libevdev 1.13.4
   group        input
   license      MIT
-  recipe-sha   c53d4dab8f198cefea4431fce28c59bf5c590c100fc9f9dc1e3d683ab3d385da
+  recipe-sha   1492be40db33bd406c658c580c0b11d4b7858a8dcc1f87548c9eddb0d01bd6fd
 
   source
     url        https://gitlab.freedesktop.org/libevdev/libevdev/-/archive/libevdev-1.13.4/libevdev-libevdev-1.13.4.tar.gz
@@ -1414,7 +1518,7 @@ package libevdev 1.13.4
 package libsfdo 0.1.4
   group        desktop
   license      BSD-2-Clause
-  recipe-sha   412de32bb92001a22379b6c19669337f534c27d50d086e54cb33c08b1f2f391e
+  recipe-sha   87e35ca6a2b80299d547d5718dbd80bd58d9586655dea47d17ddd7028aad0161
 
   source
     url        https://gitlab.freedesktop.org/vyivel/libsfdo.git
@@ -1450,7 +1554,7 @@ package libsfdo 0.1.4
 package libxkbcommon 1.13.2
   group        graphics-substrate
   license      MIT
-  recipe-sha   22b30b3cff2c41278019fa3b17bbaf03d084830562091953eb8f08ee1ca5c36e
+  recipe-sha   fcc01a3a6e3851501ee85da0e9e810db6b5058150eb5c1b99e9142182e90dc98
 
   source
     url        https://github.com/xkbcommon/libxkbcommon.git
@@ -1486,7 +1590,7 @@ package libxkbcommon 1.13.2
 package mako 1.4.0
   group        build-substrate
   license      MIT
-  recipe-sha   9a4937c8a40011ebd3f9d86142527b6be8cc0d6c6bfc356b9c37e22fcd84a2d6
+  recipe-sha   7f7ef3a66d576651bfd0925a270fc486865509b9b133f10396e601ea4860524b
 
   source
     url        https://files.pythonhosted.org/packages/73/b2/3c025fc185ce755ab39dd88b1971ba9f4bec0a897bda0acc29b6e7676153/mako-1.4.0.tar.gz
@@ -1517,7 +1621,7 @@ package mako 1.4.0
 package pixman 0.46.4
   group        text-rendering
   license      MIT
-  recipe-sha   781e9487a5f9ac97313ef903b9ee55e51096fd05ba6e435fefc898eebc8f186c
+  recipe-sha   9a6437eb9a091ce618e88d2caa304f843742b6f92649c6a7ceb0454f5d5ac379
 
   source
     url        https://www.cairographics.org/releases/pixman-0.46.4.tar.gz
@@ -1548,10 +1652,78 @@ package pixman 0.46.4
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package seatd 0.9.3
+  group        input
+  license      MIT
+  recipe-sha   bfc98a206c1df66b20ca1544a06c8a95f9fe42a6c4b34216f9fb97d344057535
+
+  source
+    url        https://github.com/kennylevinsen/seatd/archive/0.9.3/seatd-0.9.3.tar.gz
+    sha256     302564d54d8e28191fadfd734f2675ecb0c9e0615a58011b89ef15dfa4dbaa96
+    signature  none published
+    correspond none
+
+  deps
+    build        meson, ninja
+    link         -
+    runtime      -
+    optional_off builtin, examples, logind, man-pages
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/seatd-0.9.3
+         argv ["tar", "-xf", "dl/seatd-0.9.3.tar.gz", "-C", "build/seatd-0.9.3"]
+    [02] setup
+         cwd  build/seatd-0.9.3/seatd-0.9.3
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dlibseat-logind=disabled", "-Dlibseat-builtin=disabled", "-Dlibseat-seatd=enabled", "-Dserver=enabled", "-Dexamples=disabled", "-Dman-pages=disabled"]
+    [03] build
+         cwd  build/seatd-0.9.3/seatd-0.9.3
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/seatd-0.9.3/seatd-0.9.3
+         env  DESTDIR=dest/seatd
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package wayland 1.26.0
+  group        wayland
+  license      MIT
+  recipe-sha   0f10ec1f3add1cd0215a85fc3a70b7d1cefdd59ca27874390911c829af9ad9a5
+
+  source
+    url        https://gitlab.freedesktop.org/wayland/wayland/-/releases/1.26.0/downloads/wayland-1.26.0.tar.xz
+    sha256     64176eaa46e4969903e286f8e5ef8331affc17fdf03ac9b58381d2b23162b7a3
+    signature  none published
+    correspond none
+
+  deps
+    build        expat, libffi, meson, ninja, pkgconf
+    link         expat, libffi
+    runtime      expat, libffi
+    optional_off docbook_validation, documentation, dtd_validation, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/wayland-1.26.0
+         argv ["tar", "-xf", "dl/wayland-1.26.0.tar.xz", "-C", "build/wayland-1.26.0"]
+    [02] setup
+         cwd  build/wayland-1.26.0/wayland-1.26.0
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Ddocumentation=false", "-Ddtd_validation=false", "-Dtests=false", "-Dlibraries=true", "-Dscanner=true"]
+    [03] build
+         cwd  build/wayland-1.26.0/wayland-1.26.0
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/wayland-1.26.0/wayland-1.26.0
+         env  DESTDIR=dest/wayland
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package wayland-protocols 1.49
   group        wayland
   license      MIT
-  recipe-sha   2bb5ae43cabb3922cd515f7a4b13dcc4f572536749f57a51895937b037fdc0be
+  recipe-sha   5f37abba81b2dce2dc79bfe6d9996c6e4a7c18bf750f2be624d892f2ab131316
 
   source
     url        https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/1.49/downloads/wayland-protocols-1.49.tar.xz
@@ -1585,7 +1757,7 @@ package wayland-protocols 1.49
 package xkeyboard-config 2.48
   group        input
   license      MIT
-  recipe-sha   c0bffab653f5260d9cb1de1cc3a810bc67eb73165eb54b3ac349a9372a5df571
+  recipe-sha   7bd599e50f7930cc8aaf43cf851549b5fa3e833958f9e6835878fed3b543b12a
 
   source
     url        https://gitlab.freedesktop.org/xkeyboard_config/xkeyboard-config/-/releases/xkeyboard-config-2.48/downloads/xkeyboard-config-2.48.tar.xz
@@ -1619,7 +1791,7 @@ package xkeyboard-config 2.48
 package graphite2 1.3.14
   group        text-rendering
   license      LGPL-2.1-or-later
-  recipe-sha   f3c9fa18bfd0605f2c03232e2aeb910fd95863188e709a2a9254802df4d9e9ab
+  recipe-sha   b41e6420075b844b52076355c5ccb8ec5e824583a8ea21855b8c88e53de5fced
 
   source
     url        https://github.com/silnrsi/graphite/releases/download/1.3.14/graphite2-1.3.14.tgz
@@ -1652,10 +1824,44 @@ package graphite2 1.3.14
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package libinput 1.31.3
+  group        input
+  license      MIT
+  recipe-sha   136200f23d32f09d1fa86fdbf692f7445e0c5204acfa7fffc14a9e4005023373
+
+  source
+    url        https://gitlab.freedesktop.org/libinput/libinput/-/archive/1.31.3/libinput-1.31.3.tar.gz
+    sha256     b6749bf6f1890f6631c0a70a027c35fec9d2e096a39f720548896e41474a9854
+    signature  none published
+    correspond none
+
+  deps
+    build        libevdev, libudev-zero, meson, mtdev, ninja, pkgconf
+    link         libevdev, libudev-zero, mtdev
+    runtime      libevdev, libudev-zero, mtdev
+    optional_off debug-gui, documentation, install-tests, libwacom, lua-plugins, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libinput-1.31.3
+         argv ["tar", "-xf", "dl/libinput-1.31.3.tar.gz", "-C", "build/libinput-1.31.3"]
+    [02] setup
+         cwd  build/libinput-1.31.3/libinput-1.31.3
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dlibwacom=false", "-Ddebug-gui=false", "-Dtests=false", "-Dlua-plugins=disabled", "-Ddocumentation=false", "-Dmtdev=true"]
+    [03] build
+         cwd  build/libinput-1.31.3/libinput-1.31.3
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/libinput-1.31.3/libinput-1.31.3
+         env  DESTDIR=dest/libinput
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package libjpeg-turbo 3.1.3
   group        text-rendering
   license      IJG-and-BSD-3-Clause
-  recipe-sha   e78b3b399699f54c8fbaa3e7847fb58a4575ec07613c9e9ed3e5d0d878ea32aa
+  recipe-sha   7e0e2a5f5b03a8b4847a7c7208b2d57b84eff2a5b1f60e0df778bc441758eb36
 
   source
     url        https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/3.1.3/libjpeg-turbo-3.1.3.tar.gz
@@ -1685,10 +1891,43 @@ package libjpeg-turbo 3.1.3
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package llvm 22.1.8
+  group        graphics-substrate
+  license      Apache-2.0 WITH LLVM-exception
+  recipe-sha   91b52a0d86bc8e27f5d0bb136798f4b3d8b25096b2345954bff668dfcdabc036
+
+  source
+    url        https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/llvm-project-22.1.8.src.tar.xz
+    sha256     922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888
+    signature  PGP signature published alongside; sha256 above is the audited result
+    correspond none
+
+  deps
+    build        cmake, ninja, pkgconf, python, zlib, zstd
+    link         zlib, zstd
+    runtime      zlib, zstd
+    optional_off benchmarks, bindings, docs, examples, ffi, libedit, libpfm, libxml2, ocamldoc, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/llvm-22.1.8
+         argv ["tar", "-xf", "dl/llvm-project-22.1.8.src.tar.xz", "-C", "build/llvm-22.1.8"]
+    [02] configure
+         cwd  build/llvm-22.1.8/llvm-project-22.1.8.src
+         argv ["cmake", "-S", "llvm", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release", "-DLLVM_TARGETS_TO_BUILD=AArch64;AMDGPU", "-DLLVM_BUILD_LLVM_DYLIB=ON", "-DLLVM_LINK_LLVM_DYLIB=ON", "-DLLVM_ENABLE_ZLIB=FORCE_ON", "-DLLVM_ENABLE_ZSTD=FORCE_ON", "-DLLVM_ENABLE_LIBXML2=OFF", "-DLLVM_ENABLE_LIBEDIT=OFF", "-DLLVM_ENABLE_FFI=OFF", "-DLLVM_ENABLE_BINDINGS=OFF", "-DLLVM_INCLUDE_TESTS=OFF", "-DLLVM_INCLUDE_EXAMPLES=OFF", "-DLLVM_INCLUDE_BENCHMARKS=OFF", "-DLLVM_ENABLE_ASSERTIONS=OFF", "-DLLVM_ENABLE_PROJECTS=", "-DLLVM_ENABLE_RUNTIMES="]
+    [03] build
+         cwd  build/llvm-22.1.8/llvm-project-22.1.8.src
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/llvm-22.1.8/llvm-project-22.1.8.src
+         env  DESTDIR=dest/llvm
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package harfbuzz 12.3.2
   group        text-rendering
   license      MIT
-  recipe-sha   088a88ea5ca0738744edc58fadfd69a68dfb806447cbbbc7c0a8117aded20c37
+  recipe-sha   e89c423b60af9146cb0f9128d6f7021d9992c94bee03c2b3df8b67403b75b221
 
   source
     url        https://github.com/harfbuzz/harfbuzz/releases/download/12.3.2/harfbuzz-12.3.2.tar.xz
@@ -1697,7 +1936,7 @@ package harfbuzz 12.3.2
     correspond none
 
   deps
-    build        freetype-bootstrap, glib, graphite2, icu, meson, ninja
+    build        freetype-bootstrap, glib, graphite2, icu, meson, ninja, pkgconf
     link         freetype-bootstrap, glib, graphite2, icu
     runtime      freetype, glib, graphite2, icu
     optional_off cairo, chafa, docs, introspection, libpng, python, tests, zlib
@@ -1722,7 +1961,7 @@ package harfbuzz 12.3.2
 package libwebp 1.6.0
   group        text-rendering
   license      BSD-3-Clause
-  recipe-sha   0a8844440fb724ec8a3ff30289ffc1f6d0341943c4be847840be784809a1794c
+  recipe-sha   6f4d28611b988eba63b8e32f894bd54e3809e1f9971adc568ec27d893d3656c5
 
   source
     url        https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz
@@ -1754,7 +1993,7 @@ package libwebp 1.6.0
 package freetype 2.14.1
   group        text-rendering
   license      FTL-or-GPL-2.0
-  recipe-sha   c327037861e15313849e1c07d82dfa25c9daa1043f7f35d069f760c4e54e0839
+  recipe-sha   5f4868be987754b52a1cc9c08d98a90031d8b9793b8421c71506ebdc1d5d73fa
 
   source
     url        https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz
@@ -1786,7 +2025,7 @@ package freetype 2.14.1
 package fontconfig 2.17.1
   group        text-rendering
   license      MIT
-  recipe-sha   e5e34414527d0b5d41b431a80b6251b42f517317c4afda0bd4d23ed184bc0c6f
+  recipe-sha   28dec1e7495e76acdc96f86b7e227475ac66bccd4f9f2940c39108a3e8ae240b
 
   source
     url        https://gitlab.freedesktop.org/api/v4/projects/890/packages/generic/fontconfig/2.17.1/fontconfig-2.17.1.tar.xz
@@ -1795,7 +2034,7 @@ package fontconfig 2.17.1
     correspond none
 
   deps
-    build        expat, freetype, gperf, meson, ninja
+    build        expat, freetype, gperf, meson, ninja, pkgconf
     link         expat, freetype
     runtime      expat, freetype
     optional_off cache-build, doc, libxml2, nls, tests
@@ -1820,7 +2059,7 @@ package fontconfig 2.17.1
 package cairo 1.18.4
   group        text-rendering
   license      LGPL-2.1-or-later-or-MPL-1.1
-  recipe-sha   a23b947ba9ebb12d3e09092751e41f85a38731cb1f75c2820e899663a810c749
+  recipe-sha   e99b1043c18d4f8df94d026d711be3b93dba9825f82bc66ba70426d644f2f291
 
   source
     url        https://www.cairographics.org/releases/cairo-1.18.4.tar.xz
@@ -1829,7 +2068,7 @@ package cairo 1.18.4
     correspond none
 
   deps
-    build        fontconfig, freetype, glib, libpng, meson, ninja, pixman, zlib
+    build        fontconfig, freetype, glib, libpng, meson, ninja, pixman, pkgconf, zlib
     link         fontconfig, freetype, glib, libpng, pixman, zlib
     runtime      fontconfig, freetype, glib, libpng, pixman, zlib
     optional_off gtk2-utils, quartz, spectre, symbol-lookup, tests, xcb, xlib
@@ -1854,7 +2093,7 @@ package cairo 1.18.4
 package pango 1.57.0
   group        text-rendering
   license      LGPL-2.1-or-later
-  recipe-sha   316e0e70d081c0ccca3075c8090b50c6bb5c3480b6dd6473e865f33edcd88b5c
+  recipe-sha   1e2fbcd29d366ad7a6fee5ea9a772edccb514d34cb2cb48b51bb5649a3f6ee16
 
   source
     url        https://download.gnome.org/sources/pango/1.57/pango-1.57.0.tar.xz
@@ -1863,7 +2102,7 @@ package pango 1.57.0
     correspond none
 
   deps
-    build        cairo, fontconfig, freetype, fribidi, glib, harfbuzz, meson, ninja
+    build        cairo, fontconfig, freetype, fribidi, glib, harfbuzz, meson, ninja, pkgconf
     link         cairo, fontconfig, freetype, fribidi, glib, harfbuzz
     runtime      cairo, fontconfig, freetype, fribidi, glib, harfbuzz
     optional_off build-testsuite, documentation, introspection, libthai, xft

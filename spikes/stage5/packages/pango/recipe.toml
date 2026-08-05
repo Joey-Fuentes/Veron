@@ -12,7 +12,18 @@ signature = "none -- download.gnome.org publishes no detached signature"
 crosschecked_against = []
 
 [deps]
-build        = ["meson", "ninja", "cairo", "harfbuzz", "fribidi", "fontconfig", "freetype", "glib"]
+# pkgconf IS A REAL BUILD DEPENDENCY AND WAS INVISIBLE FOR 55 PACKAGES.
+# meson's dependency() resolves through pkg-config first, so without it every
+# external library lookup fails -- and in the shared build root pkgconf has
+# been present since rung 11, so nothing ever noticed. stage5-isolate found it
+# the moment glib was built from its declarations alone:
+#
+#     Did not find pkg-config by name 'pkg-config'
+#     Run-time dependency libpcre2-8 found: NO (tried pkgconfig and cmake)
+#     Downloading pcre2 source from https://github.com/PCRE2Project/...
+#
+# pcre2 WAS in the layer stack. Nothing could find it.
+build        = ["meson", "ninja", "cairo", "harfbuzz", "fribidi", "fontconfig", "freetype", "glib", "pkgconf"]
 link         = ["cairo", "harfbuzz", "fribidi", "fontconfig", "freetype", "glib"]
 runtime      = ["cairo", "harfbuzz", "fribidi", "fontconfig", "freetype", "glib"]
 optional_off = ["introspection", "documentation", "build-testsuite", "xft", "libthai"]
@@ -40,6 +51,12 @@ titlebar text."""
 "program:rst2html5" = "Looked for only when 'documentation' is on, and this recipe disables it: get_option('documentation')"
 # docs/meson.build:221 rst2man (conditional on get_option('man-pages'))
 "program:rst2man" = "required: get_option('man-pages'). Documentation is off; -Ddocumentation=false."
+
+[installs]
+prefixes = ["usr/bin", "usr/include/pango-1.0", "usr/lib", "usr/lib/pkgconfig"]
+files    = 53
+digest   = "308b5fa8e16872efc779c5208b3b24d1823ae10c2c117d5c3e94b390d477d67e"
+
 
 [[steps]]
 name = "unpack"

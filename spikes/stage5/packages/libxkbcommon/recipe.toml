@@ -140,6 +140,12 @@ is `required: false` and only supplies a default config path."""
 "program:xkbcomp" = "X11 keymap compiler, used only by the X11 tests. Same reason as Xvfb."
 "program:valgrind" = "Instrumentation for the test suite. Upstream suites are not run here."
 
+[installs]
+prefixes = ["usr/include/xkbcommon", "usr/lib", "usr/lib/pkgconfig"]
+files    = 9
+digest   = "32635c61dfdd0a7655e3842a376b62322ad3452da8950f21f893594fd4903e0f"
+
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

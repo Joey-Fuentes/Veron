@@ -1,0 +1,112 @@
+name    = "libinput"
+version = "1.31.3"
+group   = "input"
+license = "MIT"
+srcdir  = "libinput-1.31.3"
+
+[source]
+url       = "https://gitlab.freedesktop.org/libinput/libinput/-/archive/1.31.3/libinput-1.31.3.tar.gz"
+sha256    = "b6749bf6f1890f6631c0a70a027c35fec9d2e096a39f720548896e41474a9854"
+signature = "none published"
+crosschecked_against = []
+
+[deps]
+# libudev IS UNCONDITIONAL: meson.build:166 is `dependency('libudev')` with no
+# `required: false` and no option behind it. libudev-zero provides libudev.pc,
+# which is the entire reason that package is in this set.
+# pkgconf IS A REAL BUILD DEPENDENCY AND WAS INVISIBLE FOR 55 PACKAGES.
+# meson's dependency() resolves through pkg-config first, so without it every
+# external library lookup fails -- and in the shared build root pkgconf has
+# been present since rung 11, so nothing ever noticed. stage5-isolate found it
+# the moment glib was built from its declarations alone:
+#
+#     Did not find pkg-config by name 'pkg-config'
+#     Run-time dependency libpcre2-8 found: NO (tried pkgconfig and cmake)
+#     Downloading pcre2 source from https://github.com/PCRE2Project/...
+#
+# pcre2 WAS in the layer stack. Nothing could find it.
+build        = ["meson", "ninja", "libudev-zero", "libevdev", "mtdev", "pkgconf"]
+link         = ["libudev-zero", "libevdev", "mtdev"]
+runtime      = ["libudev-zero", "libevdev", "mtdev"]
+# FOUR DEFAULTS THAT WOULD EACH FAIL THE BUILD, and none is obvious from the
+# option name:
+#   libwacom   true  -> dependency('libwacom', >= 0.27). Not in this set.
+#   debug-gui  true  -> GTK. Not in this set and never will be.
+#   tests      true  -> the litest suite and check.
+#   lua-plugins auto -> dependency('lua-5.4','lua5.4','lua'). Not here.
+optional_off = ["libwacom", "debug-gui", "tests", "lua-plugins",
+                "documentation", "install-tests"]
+
+[declared]
+configure_flags = ["-Dlibwacom=false", "-Ddebug-gui=false", "-Dtests=false",
+                   "-Dlua-plugins=disabled", "-Ddocumentation=false",
+                   "-Dmtdev=true"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libinput"]
+deferral        = """
+Internals not reviewed. WHY IT IS HERE: wlroots' -Dbackends=drm,libinput makes \
+this the only path from a keypress to a compositor. Without it a compositor \
+builds green and reads no input at all -- which is the wlroots `auto` failure \
+recorded in PACKAGES.md.
+
+FOUR OF THE DEFAULTS ARE ON AND EACH NEEDS SOMETHING ABSENT. libwacom, \
+debug-gui, tests and lua-plugins are all enabled or auto out of the box, and \
+they want libwacom, GTK, the check framework and Lua respectively. libinput is \
+a library for reading input devices; nothing about its purpose suggests it \
+pulls a GUI toolkit by default, and that is exactly why the option list has to \
+be read rather than assumed.
+
+-Dmtdev=true IS STATED EVEN THOUGH IT IS THE DEFAULT, because mtdev is in this \
+set specifically to serve this package, and a silent flip to false would leave \
+the older type-A multitouch protocol unhandled with nothing pointing at the \
+cause.
+
+libudev-zero's MISSING HOTPLUG MONITOR LANDS HERE. libinput uses libudev to \
+enumerate devices and to hear about new ones; libudev-zero implements the \
+first and not the second, so devices present at start work and hotplug does \
+not. Recorded in that recipe and repeated here because this is where it will \
+be noticed."""
+
+[undeclarable]
+# Lookups no .pc name can answer, per ROADMAP.md rule 4.
+#
+# wayland-scanner IS THE INTERESTING ONE. It reads REQUIRED and is
+# unreachable: the guard is `if have_gtk_wayland and dep_wayland_client.found()
+# and dep_wayland_protocols.found()`, inside the debug-gui block. -Ddebug-gui=
+# false means libinput does not become a wayland client -- which would
+# otherwise invert the order against wlroots.
+"program:wayland-scanner" = "meson.build:705 -- REQUIRED but unreachable: it sits inside the debug-gui block, behind `have_gtk_wayland`. -Ddebug-gui=false, and GTK is not in this set."
+"program:doxygen" = "doc/api/meson.build:3 -- required:false. -Ddocumentation=false."
+"program:dot" = "doc/api/meson.build:7 -- required:false, graphviz."
+"program:install" = "doc/api/meson.build:1 -- coreutils install(1), from the stage-4 sysroot. The doc subdir is not built."
+"program:sphinx-build-3" = "doc/user/meson.build:2 -- required:false. -Ddocumentation=false."
+"program:yq" = "doc/user/meson.build:7 -- required:false, same guard."
+"program:gstack" = "meson.build:859 -- required:false. A gdb wrapper used to dump stacks when a test hangs. -Dtests=false."
+"program:valgrind" = "meson.build:1142 -- required:false. Instrumentation for the test suite."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libinput-1.31.3.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Dlibwacom=false", "-Ddebug-gui=false", "-Dtests=false",
+         "-Dlua-plugins=disabled", "-Ddocumentation=false", "-Dmtdev=true"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libinput"]]
+expect = ["1.31.3"]

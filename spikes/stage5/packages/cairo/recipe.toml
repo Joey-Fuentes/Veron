@@ -12,7 +12,18 @@ signature = "none -- cairographics.org publishes no detached signature"
 crosschecked_against = []
 
 [deps]
-build        = ["meson", "ninja", "pixman", "freetype", "fontconfig", "libpng", "glib", "zlib"]
+# pkgconf IS A REAL BUILD DEPENDENCY AND WAS INVISIBLE FOR 55 PACKAGES.
+# meson's dependency() resolves through pkg-config first, so without it every
+# external library lookup fails -- and in the shared build root pkgconf has
+# been present since rung 11, so nothing ever noticed. stage5-isolate found it
+# the moment glib was built from its declarations alone:
+#
+#     Did not find pkg-config by name 'pkg-config'
+#     Run-time dependency libpcre2-8 found: NO (tried pkgconfig and cmake)
+#     Downloading pcre2 source from https://github.com/PCRE2Project/...
+#
+# pcre2 WAS in the layer stack. Nothing could find it.
+build        = ["meson", "ninja", "pixman", "freetype", "fontconfig", "libpng", "glib", "zlib", "pkgconf"]
 link         = ["pixman", "freetype", "fontconfig", "libpng", "glib", "zlib"]
 runtime      = ["pixman", "freetype", "fontconfig", "libpng", "glib", "zlib"]
 optional_off = ["xlib", "xcb", "tests", "spectre", "symbol-lookup", "gtk2-utils", "quartz"]
@@ -38,6 +49,12 @@ set at all."""
 "program:sh" = "Provided by busybox in the sandbox; the box is busybox throughout. src/meson.build:273 sh (optional)"
 # meson.build:300 ttx (optional)
 "program:ttx" = "fonttools' ttx, used to build the test fonts. -Dtests=disabled."
+
+[installs]
+prefixes = ["usr/bin", "usr/include/cairo", "usr/lib", "usr/lib/cairo", "usr/lib/pkgconfig"]
+files    = 35
+digest   = "04a2eaf686f8931fc5da5c0b6ffe211d921236226550b04d1ef18ab4f2043120"
+
 
 [[steps]]
 name = "unpack"

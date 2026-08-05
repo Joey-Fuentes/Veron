@@ -58,6 +58,12 @@ Evidence now comes from the guest sanity tests, which run against the booted \
 image and check that each package actually works. Re-enable a suite per \
 package when there is a reason to; the step is one block."""
 
+[installs]
+prefixes = ["usr/bin", "usr/share/autoconf", "usr/share/info", "usr/share/man"]
+files    = 64
+digest   = "a9a3ec009c1a6af53ccb7d258cdb61247384d8e6d3f1fd3af236f3adc6b2c624"
+
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

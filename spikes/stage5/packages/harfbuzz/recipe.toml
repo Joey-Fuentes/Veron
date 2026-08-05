@@ -12,7 +12,18 @@ signature = "none -- no detached signature published beside the release"
 crosschecked_against = []
 
 [deps]
-build        = ["meson", "ninja", "freetype-bootstrap", "graphite2", "glib", "icu"]
+# pkgconf IS A REAL BUILD DEPENDENCY AND WAS INVISIBLE FOR 55 PACKAGES.
+# meson's dependency() resolves through pkg-config first, so without it every
+# external library lookup fails -- and in the shared build root pkgconf has
+# been present since rung 11, so nothing ever noticed. stage5-isolate found it
+# the moment glib was built from its declarations alone:
+#
+#     Did not find pkg-config by name 'pkg-config'
+#     Run-time dependency libpcre2-8 found: NO (tried pkgconfig and cmake)
+#     Downloading pcre2 source from https://github.com/PCRE2Project/...
+#
+# pcre2 WAS in the layer stack. Nothing could find it.
+build        = ["meson", "ninja", "freetype-bootstrap", "graphite2", "glib", "icu", "pkgconf"]
 link         = ["freetype-bootstrap", "graphite2", "glib", "icu"]
 runtime      = ["freetype", "graphite2", "glib", "icu"]
 # CORROBORATIVE DECLINES. Arch enables harfbuzz's utilities and runs its
@@ -67,6 +78,12 @@ place it can be said."""
 "program:ragel" = "The release tarball ships pre-generated ragel output, so the generator is never needed from a release. It would be from a git checkout."
 # src/rust/meson.build:14 rustfmt (REQUIRED)
 "program:rustfmt" = "Same directory, same gate as cargo."
+
+[installs]
+prefixes = ["usr/bin", "usr/include/harfbuzz", "usr/lib", "usr/lib/cmake", "usr/lib/pkgconfig"]
+files    = 61
+digest   = "1393b22b6611e94c5c5d77e6e6df665e4dafdfbbd5ca50b9131b22eb992a5917"
+
 
 [[steps]]
 name = "unpack"

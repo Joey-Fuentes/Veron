@@ -18,7 +18,18 @@ crosschecked_against = []
 # declaring libxml2 there asserted a dependency the built library does not
 # have. libxml2 stays in the SET -- libarchive genuinely wants it -- it is
 # just not fontconfig's.
-build        = ["meson", "ninja", "freetype", "expat", "gperf"]
+# pkgconf IS A REAL BUILD DEPENDENCY AND WAS INVISIBLE FOR 55 PACKAGES.
+# meson's dependency() resolves through pkg-config first, so without it every
+# external library lookup fails -- and in the shared build root pkgconf has
+# been present since rung 11, so nothing ever noticed. stage5-isolate found it
+# the moment glib was built from its declarations alone:
+#
+#     Did not find pkg-config by name 'pkg-config'
+#     Run-time dependency libpcre2-8 found: NO (tried pkgconfig and cmake)
+#     Downloading pcre2 source from https://github.com/PCRE2Project/...
+#
+# pcre2 WAS in the layer stack. Nothing could find it.
+build        = ["meson", "ninja", "freetype", "expat", "gperf", "pkgconf"]
 link         = ["freetype", "expat"]
 runtime      = ["freetype", "expat"]
 optional_off = ["doc", "tests", "nls", "cache-build", "libxml2"]
@@ -58,6 +69,12 @@ what happened to be installed."""
 "program:pytest" = "Upstream test suite. -Dtests=disabled, and suites are not run here by policy."
 # meson.build:574 xgettext (conditional on opt_nls)
 "program:xgettext" = "Looked for only when 'nls' is on, and this recipe disables it: opt_nls"
+
+[installs]
+prefixes = ["etc/fonts", "etc/fonts/conf.d", "usr/bin", "usr/include/fontconfig", "usr/lib", "usr/lib/pkgconfig", "usr/share/fontconfig", "usr/share/gettext", "usr/share/xml"]
+files    = 87
+digest   = "dcd1c6133bf91ed8041336f0b90f2547ba60e7485290949b1daa6e009abe5aef"
+
 
 [[steps]]
 name = "unpack"

@@ -51,6 +51,12 @@ xmllint's shell, which is why readline appears above."""
 # doc/meson.build:32 xsltproc (REQUIRED)
 "program:xsltproc" = "NOT THIS PACKAGE'S BUILD. doc/meson.build is meson's; this recipe drives ./configure, so that file is never read."
 
+[installs]
+prefixes = ["usr/bin", "usr/include/libxml2", "usr/lib", "usr/lib/cmake", "usr/lib/pkgconfig"]
+files    = 55
+digest   = "8829f3279ba8393ea6951e39dc2656113256c0842c3cdd7b486648af26d0b1b3"
+
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"
