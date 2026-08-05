@@ -265,6 +265,37 @@ source URLs and digests. **Arch's mesa PKGBUILD lists `python-mako` in
 `makedepends`.** See [`ROADMAP.md`](./ROADMAP.md) for the three-detector design
 that follows from this.
 
+**The three git-pinned packages have recipes: 48.** libxkbcommon 1.13.2,
+libsfdo 0.1.4 and dinit 0.22.1, each read from the tree `fetch-git.sh`
+generated rather than from a guess.
+
+Three things came out of resolving them that a tarball would never have shown:
+
+- **Two of the three tags are annotated and one is not.** `v0.1.4` and
+  `xkbcommon-1.13.2` resolve to a TAG OBJECT; the commit is the `^{}`
+  dereference. `v0.22.1` is lightweight and resolves straight to the commit.
+  Pinning the first hash for either annotated one fails `fetch-git.sh`'s
+  rev-parse check — loud, but only after a full clone.
+- **`git ls-remote` sorts lexicographically, and that hid twelve releases.**
+  A `tail` of the tag list gave dinit `v0.9.1` and libxkbcommon
+  `xkbcommon-1.9.2`; the real newest are `v0.22.1` and `1.13.2`, because
+  `0.22` sorts before `0.9` as a string. `--sort=-v:refname` fixes it.
+  **`probe.py`'s `latest_tag()` has the same shape** — it returns whatever
+  order the forge API gives, unsorted, for exactly the packages it exists to
+  serve.
+- **`gap-urls.txt` says libxkbcommon "moved to freedesktop GitLab" and the
+  opposite is true.** That path carries two tags and stops in 2013; GitHub is
+  the live repository. Found by asking the forge — which the same file already
+  warns about: *"four of the last six URL failures in this project were
+  invented paths, not missing packages"*.
+
+And three defaults that would each have cost a run: libxkbcommon's `enable-x11`
+and `enable-wayland` are **true**, and `meson.build` calls `error()` when their
+dependencies are absent rather than degrading; `enable-xkbregistry` is true and
+does `dependency('libxml-2.0')` with no `required:false` at all. dinit's
+configure probes pkg-config for libcap and links it if found — the `auto`
+failure again, so `--disable-capabilities` is stated rather than inherited.
+
 **Git-pinned sources were never stored anywhere.** `libxkbcommon`, `dinit` and
 `libsfdo` publish no tarball; `fetch-git.sh` clones the pinned commit and
 generates one, and every run threw it away. `stage5-mirror-upload` had zero

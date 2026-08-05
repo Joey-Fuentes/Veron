@@ -1,0 +1,110 @@
+name    = "libxkbcommon"
+version = "1.13.2"
+group   = "graphics-substrate"
+license = "MIT"
+srcdir  = "libxkbcommon-1.13.2"
+
+# Version, options, dependencies and licence read from the tree fetch-git.sh
+# generated.
+
+[source]
+# NO TARBALL EXISTS, AND THE REPOSITORY IS NOT WHERE THIS TREE SAID IT WAS.
+# gap-urls.txt records "libxkbcommon moved to freedesktop GitLab"; the
+# opposite is true. gitlab.freedesktop.org/xorg/lib/libxkbcommon carries two
+# tags, 0.2.0 and 0.3.0, and stops in 2013. GitHub is the live repository.
+# That note is corrected here rather than left to mislead the next reader --
+# and it was found by ASKING the forge, which the same file already warns
+# about: "four of the last six URL failures in this project were invented
+# paths, not missing packages".
+#
+# The GitHub releases carry only auto-generated archives, whose digests GitHub
+# does not guarantee, so the pin is the COMMIT.
+#
+# ANNOTATED TAG: refs/tags/xkbcommon-1.13.2 is 322bf223..., the tag object.
+# The commit is the ^{} dereference below.
+#
+# 1.13.2 AND NOT 1.14.0-beta1, which is the newest tag. probe.py has a rule
+# against pinning pre-releases, added after it pinned one.
+kind      = "git"
+url       = "https://github.com/xkbcommon/libxkbcommon.git"
+commit    = "d1442aaa6b635551182e83c3b55037f4c118c962"
+sha256    = "8956282268db8884c76fc564361d5d74fe3ff8a1d1818dc184de6de9a3c3a4b6"
+signature = "none -- the commit IS the provenance; the sha256 is of our derived archive"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja"]
+link         = []
+runtime      = []
+# THREE OF THESE DEFAULT TO true AND EACH PULLS SOMETHING WE DO NOT HAVE.
+# This is not a tidy-up list; without it the build fails or grows edges:
+#   x11          -> xcb, xcb-xkb, and meson.build ERRORS if they are missing
+#   wayland      -> wayland-client, wayland-protocols, wayland-scanner, none
+#                   of which are built yet; also errors when absent
+#   xkbregistry  -> dependency('libxml-2.0') with NO required:false at all
+optional_off = ["x11", "wayland", "xkbregistry", "docs", "bash-completion",
+                "cool-uris"]
+
+[declared]
+configure_flags = ["-Denable-x11=false", "-Denable-wayland=false",
+                   "-Denable-xkbregistry=false", "-Denable-docs=false",
+                   "-Denable-bash-completion=false"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libxkbcommon"]
+deferral        = """
+Internals not reviewed. WHY IT IS HERE: wlroots links xkbcommon for keymap \
+handling, and no compositor works without it.
+
+-Denable-wayland=false COSTS NOTHING HERE and is not a contradiction. The \
+option does not affect the library; it builds the `xkbcli interactive-wayland` \
+TOOL, which needs wayland-client and wayland-protocols. Those arrive in the \
+same batch as wlroots, so this could be revisited then -- but nothing in the \
+set runs that tool.
+
+-Denable-xkbregistry=false DROPS A REQUIRED libxml2 EDGE. libxkbregistry \
+lists available layouts for graphical control panels; labwc and wlroots do \
+not consume it. We have libxml2, so this is a choice rather than a \
+constraint, and taking the smaller surface is the choice.
+
+-Denable-bash-completion=false AVOIDS A LOOKUP RATHER THAN A DEPENDENCY. \
+meson.build does `dependency('bash-completion', required: false)` with a \
+datadir fallback -- exactly glib's shape, and exactly what sent meson into \
+its CMake backend and crashed it on cmake 4.x. $CMAKE now makes that a clean \
+not-found, so this would work either way; turning the option off means the \
+lookup never happens at all, which is the narrower fix and belongs in the \
+recipe rather than relying on a global.
+
+RUNTIME GAP, DECLARED: libxkbcommon needs xkeyboard-config's data at RUNTIME \
+to resolve any real keymap. That package is pinned and mirrored but has no \
+recipe yet, so it cannot be named in `runtime` -- topo_order requires every \
+dep to exist. Recorded here so the absence is a known state rather than a \
+surprise the first time a compositor cannot map a key. The build-time lookup \
+is `required: false` and only supplies a default config path."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libxkbcommon-1.13.2.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Denable-x11=false", "-Denable-wayland=false",
+         "-Denable-xkbregistry=false", "-Denable-docs=false",
+         "-Denable-bash-completion=false"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "xkbcommon"]]
+expect = ["1.13.2"]

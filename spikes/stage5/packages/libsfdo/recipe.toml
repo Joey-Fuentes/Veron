@@ -1,0 +1,77 @@
+name    = "libsfdo"
+version = "0.1.4"
+group   = "desktop"
+license = "BSD-2-Clause"
+srcdir  = "libsfdo-0.1.4"
+
+# Version, layout, options, dependencies and licence all read from the tree
+# fetch-git.sh generated. `license: 'BSD-2-Clause'` is meson.build's own SPDX
+# id, with LICENSE beside it.
+
+[source]
+# NO TARBALL EXISTS. libsfdo publishes tags and nothing else, so the pin is
+# the COMMIT -- a Merkle hash over the whole tree, which cannot be repointed
+# the way a tag can. tools/fetch-git.sh verifies HEAD against it, then makes
+# the archive itself with a fixed prefix and `gzip -n`, deterministically.
+#
+# THE TAG IS ANNOTATED AND THAT MATTERS. `refs/tags/v0.1.4` resolves to
+# c03ba0e8... which is the TAG OBJECT, not a commit; the commit is the
+# `^{}` dereference below. Pinning the first hash would fail fetch-git.sh's
+# rev-parse check after a full clone -- loud, but expensively so.
+kind      = "git"
+url       = "https://gitlab.freedesktop.org/vyivel/libsfdo.git"
+commit    = "82115b19317f065ea3c4f52e62549bec81521203"
+sha256    = "8296010d31663ffea9e1d26e99d4b90b9b7724c1d54d135c85d7ca07a4989565"
+signature = "none -- the commit IS the provenance; the sha256 is of our derived archive"
+crosschecked_against = []
+
+[deps]
+# NOTHING. Read from the tree rather than assumed: libsfdo's meson.build
+# declares no `dependency()` at all -- it is plain C11 with four small
+# libraries and no external links. That is unusual enough to be worth stating,
+# because a dependency list this short normally means the reading was
+# incomplete.
+build        = ["meson", "ninja"]
+link         = []
+runtime      = []
+optional_off = ["examples", "tests"]
+
+[declared]
+configure_flags = ["-Dexamples=false", "-Dtests=false"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libsfdo"]
+deferral        = """
+Internals not reviewed. WHAT IT IS: four freedesktop.org spec implementations \
+-- basedir, desktop, desktop-file and icon -- which labwc and fuzzel use to \
+find .desktop entries and icon themes. It ships four separate .pc files, one \
+per component, named libsfdo-basedir and so on.
+
+BOTH OPTIONS DEFAULT TO true. examples and tests are on unless turned off, \
+and neither ships. Naming them is the difference between a decision and \
+inheriting whatever upstream happened to choose."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libsfdo-0.1.4.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Dexamples=false", "-Dtests=false"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libsfdo-basedir"]]
+expect = ["0.1.4"]

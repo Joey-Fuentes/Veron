@@ -21,50 +21,53 @@ between this file and the recipes fails the run.
 -- resolved order --------------------------------------------------
   derived from deps, tie-broken by name; never authored
   1. bzip2
-  2. expat
-  3. file
-  4. gperf
-  5. hello
-  6. icu
-  7. libffi
-  8. m4
-  9. ncurses
-  10. pcre2
-  11. pkgconf
-  12. xz
-  13. zlib
-  14. autoconf
-  15. libpng
-  16. libtool
-  17. readline
-  18. zstd
-  19. automake
-  20. bash
-  21. curl
-  22. freetype-bootstrap
-  23. libarchive
-  24. libxml2
-  25. sqlite
-  26. git
-  27. python
-  28. markupsafe
-  29. meson
-  30. ninja
-  31. packaging
-  32. pyyaml
-  33. cmake
-  34. fribidi
-  35. glib
-  36. mako
-  37. pixman
-  38. graphite2
-  39. libjpeg-turbo
-  40. harfbuzz
-  41. libwebp
-  42. freetype
-  43. fontconfig
-  44. cairo
-  45. pango
+  2. dinit
+  3. expat
+  4. file
+  5. gperf
+  6. hello
+  7. icu
+  8. libffi
+  9. m4
+  10. ncurses
+  11. pcre2
+  12. pkgconf
+  13. xz
+  14. zlib
+  15. autoconf
+  16. libpng
+  17. libtool
+  18. readline
+  19. zstd
+  20. automake
+  21. bash
+  22. curl
+  23. freetype-bootstrap
+  24. libarchive
+  25. libxml2
+  26. sqlite
+  27. git
+  28. python
+  29. markupsafe
+  30. meson
+  31. ninja
+  32. packaging
+  33. pyyaml
+  34. cmake
+  35. fribidi
+  36. glib
+  37. libsfdo
+  38. libxkbcommon
+  39. mako
+  40. pixman
+  41. graphite2
+  42. libjpeg-turbo
+  43. harfbuzz
+  44. libwebp
+  45. freetype
+  46. fontconfig
+  47. cairo
+  48. pango
 
 ======================================================================
 package bzip2 1.0.8
@@ -104,6 +107,41 @@ package bzip2 1.0.8
          cwd  dest/bzip2/usr/bin
          SHELL (declared) why=rewriting a set of symlinks in place is a loop over readlink, not an argv
          | for l in *; do [ -L "$l" ] || continue; t=$(readlink "$l"); case "$t" in /*) ln -sf "$(basename "$t")" "$l"; echo "  relinked $l -> $(basename "$t")";; esac; done; ls -l | head -12
+
+======================================================================
+package dinit 0.22.1
+  group        system
+  license      Apache-2.0
+  recipe-sha   865ebf5b66ce112f95c0c3de15fc9bda292b88740c75604c08b09901cbde9917
+
+  source
+    url        https://github.com/davmac314/dinit.git
+    kind       git
+    commit     b3ba792ca723e2c137cbc64d8967387039dbac16
+    sha256     a464bff67a00d2f5b317b5176208407504ab99d202bd58057ff9821d099b69d9  (of OUR generated archive)
+    signature  none -- the commit IS the provenance; the sha256 is of our derived archive
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off capabilities, libcap
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/dinit-0.22.1
+         argv ["tar", "-xf", "dl/dinit-0.22.1.tar.gz", "-C", "build/dinit-0.22.1"]
+    [02] configure
+         cwd  build/dinit-0.22.1/dinit-0.22.1
+         argv ["./configure", "--prefix=/usr", "--sbindir=/usr/sbin", "--disable-capabilities"]
+    [03] build
+         cwd  build/dinit-0.22.1/dinit-0.22.1
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/dinit-0.22.1/dinit-0.22.1
+         env  DESTDIR=dest/dinit
+         argv ["make", "install"]
 
 ======================================================================
 package expat 2.7.4
@@ -1209,6 +1247,78 @@ package glib 2.86.4
     [04] install
          cwd  build/glib-2.86.4/glib-2.86.4
          env  DESTDIR=dest/glib
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package libsfdo 0.1.4
+  group        desktop
+  license      BSD-2-Clause
+  recipe-sha   8a4f791f4508ace29a13ca5da03316db939d9e2b380c7cb0c56eefe612ddd9b7
+
+  source
+    url        https://gitlab.freedesktop.org/vyivel/libsfdo.git
+    kind       git
+    commit     82115b19317f065ea3c4f52e62549bec81521203
+    sha256     8296010d31663ffea9e1d26e99d4b90b9b7724c1d54d135c85d7ca07a4989565  (of OUR generated archive)
+    signature  none -- the commit IS the provenance; the sha256 is of our derived archive
+    correspond none
+
+  deps
+    build        meson, ninja
+    link         -
+    runtime      -
+    optional_off examples, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libsfdo-0.1.4
+         argv ["tar", "-xf", "dl/libsfdo-0.1.4.tar.gz", "-C", "build/libsfdo-0.1.4"]
+    [02] setup
+         cwd  build/libsfdo-0.1.4/libsfdo-0.1.4
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dexamples=false", "-Dtests=false"]
+    [03] build
+         cwd  build/libsfdo-0.1.4/libsfdo-0.1.4
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/libsfdo-0.1.4/libsfdo-0.1.4
+         env  DESTDIR=dest/libsfdo
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package libxkbcommon 1.13.2
+  group        graphics-substrate
+  license      MIT
+  recipe-sha   dc8f3584019cac194b0c05d6eb073d3196241d12a043900a170a14de016a04b4
+
+  source
+    url        https://github.com/xkbcommon/libxkbcommon.git
+    kind       git
+    commit     d1442aaa6b635551182e83c3b55037f4c118c962
+    sha256     8956282268db8884c76fc564361d5d74fe3ff8a1d1818dc184de6de9a3c3a4b6  (of OUR generated archive)
+    signature  none -- the commit IS the provenance; the sha256 is of our derived archive
+    correspond none
+
+  deps
+    build        meson, ninja
+    link         -
+    runtime      -
+    optional_off bash-completion, cool-uris, docs, wayland, x11, xkbregistry
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libxkbcommon-1.13.2
+         argv ["tar", "-xf", "dl/libxkbcommon-1.13.2.tar.gz", "-C", "build/libxkbcommon-1.13.2"]
+    [02] setup
+         cwd  build/libxkbcommon-1.13.2/libxkbcommon-1.13.2
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Denable-x11=false", "-Denable-wayland=false", "-Denable-xkbregistry=false", "-Denable-docs=false", "-Denable-bash-completion=false"]
+    [03] build
+         cwd  build/libxkbcommon-1.13.2/libxkbcommon-1.13.2
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/libxkbcommon-1.13.2/libxkbcommon-1.13.2
+         env  DESTDIR=dest/libxkbcommon
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================

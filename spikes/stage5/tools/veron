@@ -321,7 +321,19 @@ def render_plan(plan, policy):
         L.append("")
         L.append("  source")
         L.append(f"    url        {src['url']}")
-        L.append(f"    sha256     {src['sha256']}")
+        # THE COMMIT IS THE PIN FOR A GIT SOURCE, AND THE PLAN MUST SAY SO.
+        # `git_commit` below is a different field -- provenance metadata on a
+        # TARBALL-pinned recipe, recording which commit the tarball claims to
+        # correspond to. This one is the thing fetch-git.sh verifies HEAD
+        # against and the reason there is an artifact at all. A plan that
+        # showed only the sha256 would describe the derived archive while
+        # silently omitting what it was derived from.
+        if source_kind(r) == "git":
+            L.append(f"    kind       git")
+            L.append(f"    commit     {src['commit']}")
+            L.append(f"    sha256     {src['sha256']}  (of OUR generated archive)")
+        else:
+            L.append(f"    sha256     {src['sha256']}")
         L.append(f"    signature  {src.get('signature', 'none')}")
         if src.get("git_commit"):
             L.append(f"    git        {src['git_commit']}")

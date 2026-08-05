@@ -1,0 +1,91 @@
+name    = "dinit"
+version = "0.22.1"
+group   = "system"
+license = "Apache-2.0"
+srcdir  = "dinit-0.22.1"
+
+# Version, build system, options and licence read from the tree fetch-git.sh
+# generated.
+
+[source]
+# NO TARBALL EXISTS -- dinit publishes tags only, so the pin is the COMMIT.
+#
+# LIGHTWEIGHT TAG, UNLIKE THE OTHER TWO. `refs/tags/v0.22.1` resolves to one
+# line, so that hash IS the commit and there is no ^{} dereference. Worth
+# recording because libsfdo and libxkbcommon are annotated and their first
+# hash is a tag object -- the three are not consistent with each other, which
+# is precisely why each was resolved rather than assumed.
+kind      = "git"
+url       = "https://github.com/davmac314/dinit.git"
+commit    = "b3ba792ca723e2c137cbc64d8967387039dbac16"
+sha256    = "a464bff67a00d2f5b317b5176208407504ab99d202bd58057ff9821d099b69d9"
+signature = "none -- the commit IS the provenance; the sha256 is of our derived archive"
+crosschecked_against = []
+
+[deps]
+# NO LIBRARIES. dinit is C++ with a vendored header-only event loop (dasynq/),
+# and its only optional external is libcap, turned off below. The C++ runtime
+# comes from the stage-4 sysroot, which is why nothing is named here.
+build        = []
+link         = []
+runtime      = []
+optional_off = ["capabilities", "libcap"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--sbindir=/usr/sbin", "--disable-capabilities"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["dinit"]
+deferral        = """
+Internals not reviewed. WHY dinit: STAGE5.md settled it -- s6 is three \
+packages and a different model, systemd would pull dbus, kmod and a large \
+policy surface. dinit is one package.
+
+NOT AUTOTOOLS, THOUGH IT LOOKS LIKE IT. `configure` is hand-written and \
+writes mconfig; there is no configure.ac, no libtool and no generated \
+residue. It takes --prefix, --sbindir and --mandir and a set of \
+--enable/--disable switches, and nothing else. `make install` honours DESTDIR \
+in src/Makefile, checked by reading it.
+
+--disable-capabilities IS LOAD-BEARING. Without it, configure probes \
+pkg-config for libcap and links it if found. libcap is not in the set, so \
+today it would silently build without -- and silently gain the dependency the \
+day something else installs libcap. That is the `auto` failure this project \
+keeps finding: what the package becomes decided by what happened to be \
+installed first. Stated, so it cannot drift.
+
+cgroups, ioprio, oom-adj, utmpx and initgroups are LEFT AT THEIR DEFAULTS \
+deliberately. They are kernel and libc interfaces the stage-4 glibc sysroot \
+already provides, not external packages, so turning them off would remove \
+capability without removing a dependency.
+
+WHAT THIS PACKAGE DOES NOT GIVE YOU: dinit is the supervisor binary. The \
+service definitions, the /etc skeleton, getty autologin and the boot itself \
+are not packages and do not exist -- STAGE5.md calls that the biggest unknown \
+in the project. Installing dinit is a prerequisite for B5.5, not a step \
+into it."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/dinit-0.22.1.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--sbindir=/usr/sbin",
+         "--disable-capabilities"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/dinit", "--version"]]
+expect = ["Dinit version 0.22.1"]
