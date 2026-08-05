@@ -253,24 +253,27 @@ jobs:
         run: |
           set -eu
           cd spikes/stage5
-          # BUILD-ONLY PACKAGES DO NOT MERGE. `for d in dest/*/` is sorted by
-          # the shell, so dest/freetype/ copies before dest/freetype-bootstrap/
-          # and the bootstrap -- the same freetype built WITHOUT harfbuzz --
-          # would copy straight over the real one. The image would ship the
-          # wrong library under a manifest naming the right one.
+          # THE DRIVER MERGES, BECAUSE THE DRIVER ALREADY KNOWS HOW.
           #
-          # The list comes from the recipes, not from a name pattern here: a
-          # second copy of that knowledge in YAML is the same defect as the
-          # find-list this workflow used to keep beside BUILD_LOGS.
-          SKIP=$(python3 tools/veron build-only-names)
-          echo "  build-only, not merged: ${SKIP:-none}"
-          for d in dest/*/; do
-            [ -d "$d" ] || continue
-            b=$(basename "$d")
-            case " $SKIP " in *" $b "*) echo "  skipping $b (build-only)"; continue ;; esac
-            echo "  merging $b"
-            cp -a "$d". sysroot/
-          done
+          # This was `cp -a "$d". sysroot/` in a loop here, and run 55 died on
+          # it three packages in:
+          #
+          #     merging bash
+          #     cp: cannot create regular file 'sysroot/./usr/bin/bashbug':
+          #         Permission denied
+          #
+          # stage_into() had already copied bash into the build root during the
+          # build, so the merge was writing over existing files -- and `cp`
+          # opens the destination rather than replacing it, which fails on any
+          # mode that is not user-writable.
+          #
+          # stage_into() has unlinked first ever since staging bzip2 wrote
+          # through /usr/bin's busybox symlinks and destroyed the binary that
+          # `tar` resolved to. THIS LOOP WAS A SECOND IMPLEMENTATION OF STAGING
+          # WITHOUT THAT LESSON -- the same defect as the find-list that used to
+          # duplicate BUILD_LOGS. One implementation now, in the driver, and
+          # `build_only` is honoured there too rather than by a name check here.
+          python3 tools/veron merge --dest dest --sysroot sysroot
           # Two .pc fixtures, one requiring the other, so pkgconf's transitive
           # resolution and search-path pinning are EXERCISED rather than the
           # binary merely being installed.

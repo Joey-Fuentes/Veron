@@ -265,6 +265,31 @@ source URLs and digests. **Arch's mesa PKGBUILD lists `python-mako` in
 `makedepends`.** See [`ROADMAP.md`](./ROADMAP.md) for the three-detector design
 that follows from this.
 
+**The ledger and the manifest now pass on a full set.** Run 55 got past both
+for the first time — `VERON-MANIFEST-OK 14082 paths`, `VERON-LEDGER-OK 41
+record(s)`, `unknown = 0` — and then died in the merge:
+
+```
+merging bash
+cp: cannot create regular file 'sysroot/./usr/bin/bashbug': Permission denied
+```
+
+Not the runner's permissions — the *file's*. `stage_into()` had already copied
+bash's 121 paths into the build root during the build, so the merge was writing
+over files that already existed, and `cp` opens the destination rather than
+replacing it, which fails on any mode that is not user-writable.
+
+**The driver had fixed this once already.** `stage_into()` has unlinked before
+writing ever since staging bzip2 wrote *through* `/usr/bin`'s busybox symlinks
+and destroyed the binary `tar` resolved to. **The workflow held a second
+implementation of staging, and it was the one without the lesson** — the same
+defect as the `find` list that duplicated `BUILD_LOGS` and as `[declared]`
+drifting from the argv. There is one implementation now, `veron merge`, and it
+honours `build_only` there rather than by a name check in YAML.
+
+Reproduced as a non-root user before and after: `cp -a` fails exactly as run 55
+did, `veron merge` replaces the file.
+
 **The set closed.** Run 54 built all 41 packages — glib, pixman, graphite2,
 libjpeg-turbo, harfbuzz, libwebp, freetype, fontconfig, cairo and pango, seven
 of which had never been built here. The three fixes that got it there were each

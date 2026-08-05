@@ -947,6 +947,55 @@ def cmd_build(a):
     return 0
 
 
+def cmd_merge(a):
+    """Merge every package's DESTDIR into the system root.
+
+    THIS WAS A `cp -a` LOOP IN THE WORKFLOW, AND IT WAS THE SAME BUG THE
+    DRIVER ALREADY FIXED ONCE. Run 55 got all the way past the manifest and
+    the ledger and then died three packages into the merge:
+
+        merging bash
+        cp: cannot create regular file 'sysroot/./usr/bin/bashbug':
+            Permission denied
+
+    Not a permissions problem with the runner -- a permissions problem with
+    the FILE. stage_into() had already copied bash's 121 paths into the build
+    root during the build, so the merge was writing over files that already
+    existed, and `cp` opens the destination for writing instead of replacing
+    it. A mode that is not user-writable then fails outright.
+
+    stage_into() has carried the fix for this since it destroyed busybox:
+    ALWAYS UNLINK FIRST. Replacing the link or file is what installing over an
+    existing path should do; writing through it is how bzip2 once overwrote
+    the busybox binary that `tar` was a symlink to.
+
+    THE WORKFLOW HAD A SECOND IMPLEMENTATION OF STAGING AND IT WAS THE ONE
+    WITHOUT THE LESSON. That is the same defect as the `find` list that used
+    to duplicate BUILD_LOGS and as `[declared]` drifting from the argv: two
+    copies of one fact, and nothing comparing them. There is one implementation
+    now, in the driver, where the comment explaining why lives next to the code.
+    """
+    recipes = load_recipes()
+    roots = roots_from_args(a)
+    if not os.path.isdir(a.sysroot):
+        die(f"merge target {a.sysroot!r} does not exist")
+    total, skipped = 0, []
+    for name in sorted(os.listdir(roots["dest"])):
+        d = os.path.join(roots["dest"], name)
+        if not os.path.isdir(d):
+            continue
+        if build_only(recipes, name):
+            skipped.append(name)
+            continue
+        n = stage_into(d, a.sysroot)
+        total += n
+        print(f"  merged {name}  ({n} paths)")
+    for name in skipped:
+        print(f"  build-only, not merged: {name}")
+    print(f"VERON-MERGE-OK  {total} paths into {a.sysroot}")
+    return 0
+
+
 def cmd_build_only_names(a):
     """The build-only package names, space-separated, for the merge step.
 
@@ -1739,7 +1788,7 @@ def cmd_selftest(a):
     # stop reading.
     KNOWN = ("plan", "fetch", "build", "manifest", "rootfs", "ledger",
              "selftest", "guest-tests", "compare", "status", "sources",
-             "git-sources", "collect", "build-only-names")
+             "git-sources", "collect", "build-only-names", "merge")
     called = set()
     wfdir = os.path.join(HERE, "..", "..", ".github", "workflows")
     if os.path.isdir(wfdir):
@@ -1914,6 +1963,9 @@ def main():
 
     p = sub.add_parser("manifest", help="every installed path -> its package")
     p.set_defaults(fn=cmd_manifest)
+
+    p = sub.add_parser("merge", help="merge every DESTDIR into the system root")
+    p.set_defaults(fn=cmd_merge)
 
     p = sub.add_parser("build-only-names",
                        help="packages that are staged but never installed")
