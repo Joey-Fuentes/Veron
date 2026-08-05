@@ -1712,6 +1712,57 @@ def install_prefixes(destdir, depth=3):
     return sorted(out)
 
 
+def install_listing(destdir):
+    """(lines, digest) -- every path a package installs, with size and sha256.
+
+    FILE-LEVEL, NOT SET-LEVEL, AND THE FIRST VERSION OF THIS WAS WEAKER FOR A
+    REASON THAT DOES NOT APPLY HERE. It hashed only the path set, on the
+    argument that content hashes churn on any rebuild that is not
+    bit-reproducible and that reproducibility is G3's job.
+
+    But this project MEASURES byte-reproducibility and has it:
+
+        VERON-IMAGE-REPRO-OK  two builds, identical bytes
+
+    so per-file digests are stable, and a digest that moved would be either a
+    real change or a reproducibility REGRESSION -- both of which are worth
+    stopping for. Leaving contents out would have thrown away the strongest
+    property the build already has.
+
+    IT IS ALSO ALREADY COMPUTED. `file_manifest` has recorded sha256 per file
+    and the target per symlink since n=2; it was simply never pinned per
+    package. This records the same facts where a recipe can carry them.
+
+    AND IT IS CHEAPER THAN G3. G3 builds everything a SECOND time in the same
+    run and compares -- which is why it was switched off, since it doubles
+    every build. Comparing this run's bytes against a digest committed by a
+    previous run is per-package reproducibility across TIME, for the cost of
+    a hash of files that were just written.
+
+        f <sha256> <size> <path>
+        l <target> <path>
+
+    Symlinks carry their target rather than a hash: the target is what a
+    symlink IS, and hashing what it points at would make a link's identity
+    depend on a file that may belong to another package.
+    """
+    lines = []
+    for dirpath, _, files in os.walk(destdir):
+        for fn in files:
+            p = os.path.join(dirpath, fn)
+            rel = os.path.relpath(p, destdir)
+            if os.path.islink(p):
+                lines.append(f"l {os.readlink(p)} {rel}")
+            else:
+                try:
+                    lines.append(f"f {sha256_file(p)} {os.path.getsize(p)} {rel}")
+                except OSError as e:
+                    lines.append(f"? unreadable:{type(e).__name__} 0 {rel}")
+    lines.sort(key=lambda l: l.rsplit(" ", 1)[-1])
+    body = "\n".join(lines) + ("\n" if lines else "")
+    return lines, hashlib.sha256(body.encode()).hexdigest()
+
+
 def cmd_installs(a):
     """Check -- or propose -- what each package is allowed to install.
 
@@ -1738,18 +1789,30 @@ def cmd_installs(a):
     if not os.path.isdir(dest):
         die(f"no DESTDIRs at {dest} -- run `veron build` first")
 
-    problems, missing = 0, []
+    # COUNTED SEPARATELY. The first version added both to one total and
+    # then called it "stray prefix(es)", so a content change was reported
+    # under the name of a different check. A summary that misnames what
+    # it counted is worse than one that counts nothing.
+    stray_n, changed_n, missing = 0, 0, []
     for pkg in sorted(os.listdir(dest)):
         d = os.path.join(dest, pkg)
         if not os.path.isdir(d) or pkg not in recipes:
             continue
         actual = install_prefixes(d)
-        declared = recipes[pkg].get("installs", {}).get("prefixes")
+        lines, digest = install_listing(d)
+        ins = recipes[pkg].get("installs", {})
+        declared = ins.get("prefixes")
         if a.propose:
             lst = ", ".join(f'"{p}"' for p in actual)
             print(f"# ---- packages/{pkg}/recipe.toml")
             print("[installs]")
-            print(f"prefixes = [{lst}]\n")
+            print(f"prefixes = [{lst}]")
+            print(f"files    = {len(lines)}")
+            print(f"digest   = \"{digest}\"\n")
+            listing = os.path.join(recipes[pkg]["_dir"], "installs.txt")
+            with open(listing, "w") as f:
+                f.write("\n".join(lines) + ("\n" if lines else ""))
+            print(f"# wrote {listing} ({len(lines)} paths)\n")
             continue
         if declared is None:
             missing.append(pkg)
@@ -1757,10 +1820,39 @@ def cmd_installs(a):
         stray = [p for p in actual
                  if not any(p == d2 or p.startswith(d2 + "/") for d2 in declared)]
         for p in stray:
-            problems += 1
+            stray_n += 1
             print(f"  {'UNDECLARED-PREFIX' if a.mode == 'fail' else 'undeclared-prefix'}"
                   f"  {pkg} installs into {p}, which [installs].prefixes does "
                   f"not allow")
+
+        # THE FILE SET, WHICH prefixes CANNOT SEE. An upstream that starts
+        # shipping one more binary installs it into a prefix already allowed,
+        # so the prefix check passes and the image quietly grows. The digest
+        # turns that into a decision: the gate fails, somebody looks, and
+        # either the recipe or the flags change.
+        want = ins.get("digest")
+        if want and want != digest:
+            changed_n += 1
+            print(f"  {'INSTALL-SET-CHANGED' if a.mode == 'fail' else 'install-set-changed'}"
+                  f"  {pkg}: {len(lines)} path(s) now, digest {digest[:16]}, "
+                  f"recipe pins {want[:16]}")
+            # AND SAY WHICH FILES, because "the digest moved" is a fact nobody
+            # can act on. installs.txt is the committed expansion of that
+            # digest, so the diff is available without a second build.
+            listing = os.path.join(recipes[pkg]["_dir"], "installs.txt")
+            if os.path.isfile(listing):
+                was = set(open(listing).read().splitlines())
+                now = set(lines)
+                for x in sorted(now - was)[:8]:
+                    print(f"      + {x}")
+                for x in sorted(was - now)[:8]:
+                    print(f"      - {x}")
+                extra = len(now ^ was) - min(len(now ^ was), 16)
+                if extra > 0:
+                    print(f"      ... and {extra} more")
+            else:
+                print(f"      no installs.txt to diff against -- run "
+                      f"`veron installs --propose` to write one")
     if a.propose:
         return 0
     if missing:
@@ -1770,8 +1862,10 @@ def cmd_installs(a):
         print(f"\n  {len(missing)} package(s) declare no [installs].prefixes "
               f"and were NOT checked:")
         print(f"    {', '.join(missing)}")
+    problems = stray_n + changed_n
     print(f"\nVERON-INSTALLS-{'FAIL' if (problems and a.mode == 'fail') else 'OK'}"
-          f"  {problems} stray prefix(es), {len(missing)} unchecked")
+          f"  {stray_n} stray prefix(es), {changed_n} changed install set(s), "
+          f"{len(missing)} unchecked")
     return 1 if (problems and a.mode == "fail") else 0
 
 

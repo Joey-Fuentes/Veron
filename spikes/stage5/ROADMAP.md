@@ -671,6 +671,51 @@ turn a record of *decisions* into a second copy of the command line — and a
 field that is mostly boilerplate stops being read. What must be recorded is
 what the build declines.
 
+**The file list is file-level: size and sha256 per path.** `installs.txt` sits
+beside each recipe and the recipe carries the count and one digest over it:
+
+```
+f 5891b5b5...be03  6      usr/bin/dinit
+l dinit                   usr/bin/dinitctl
+```
+
+**The first version of this hashed only the path SET**, on the argument that
+content hashes churn on any rebuild that is not bit-reproducible and that
+reproducibility is G3's job. That reasoning does not survive contact with what
+this project has already measured:
+
+```
+VERON-IMAGE-REPRO-OK  two builds, identical bytes
+```
+
+Per-file digests are therefore **stable**, and one that moved would be either
+a real change or a **reproducibility regression** — both worth stopping for.
+Leaving contents out would have discarded the strongest property the build
+already has.
+
+**It was also already computed.** `file_manifest` has recorded sha256 per file
+and the target per symlink since n=2; it was simply never pinned where a
+recipe could carry it.
+
+**And it is cheaper than G3.** G3 builds everything a *second* time in the same
+run and compares, which is why it was switched off — it doubles every build.
+Comparing this run's bytes against a digest a previous run committed is
+per-package reproducibility across *time*, for the cost of hashing files that
+were just written.
+
+Symlinks record their target rather than a hash: the target is what a symlink
+*is*, and hashing what it points at would make a link's identity depend on a
+file that may belong to another package.
+
+When the digest moves the check **names the files**, because "the digest
+moved" is a fact nobody can act on:
+
+```
+install-set-changed  dinit: 2 path(s) now, digest 391c96e1, recipe pins bff8e7bd
+    + f 83ced3e4...8d76 14 usr/bin/dinit
+    - f 5891b5b5...be03  6 usr/bin/dinit
+```
+
 **`[installs]` prefixes**, at directory depth 3. `usr` alone says nothing;
 full paths would list ten thousand files and move on every release.
 `usr/share/hwdata` and `usr/lib/modprobe.d` are the level at which somebody
