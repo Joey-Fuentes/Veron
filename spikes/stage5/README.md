@@ -17,7 +17,7 @@ prediction held, and this is the rewrite.
 |---|---|---|
 | packages pinned | **111** | `probe batch` — digest, signature, licence and declared dependencies read from each tarball |
 | recipes written | **41** | `packages/*/recipe.toml`, ordered by `veron plan` |
-| built, installed, staged | **31** | `stage5-spike`, blocked at `glib` |
+| built, installed, staged | **41 — all of them** | `stage5-spike` run 54: `VERON-BUILD-OK  every package built` |
 | artifacts with ≥2 fetch routes | **107** | `sources/MIRRORS.tsv`, 239 routes |
 | git-pinned (no tarball exists) | **3** | libsfdo, dinit, libxkbcommon |
 
@@ -264,6 +264,40 @@ PKGBUILD and Alpine's APKBUILD for every package and extracts only `pkgver`,
 source URLs and digests. **Arch's mesa PKGBUILD lists `python-mako` in
 `makedepends`.** See [`ROADMAP.md`](./ROADMAP.md) for the three-detector design
 that follows from this.
+
+**The set closed.** Run 54 built all 41 packages — glib, pixman, graphite2,
+libjpeg-turbo, harfbuzz, libwebp, freetype, fontconfig, cairo and pango, seven
+of which had never been built here. The three fixes that got it there were each
+found by reading rather than by hitting them: `$CMAKE` out of meson's
+dependency path (confirmed verbatim in `probe/meson-cmake.txt` —
+`Found CMake: NO`, `libinotify … NO (tried pkgconfig and cmake)`),
+`-DCMAKE_POLICY_VERSION_MINIMUM=3.5` for graphite2's 2018 `CMakeLists`, and one
+`#include <cstdint>` gcc 15 no longer supplies transitively.
+
+**And then the manifest refused it, correctly.**
+
+```
+veron: path collision: usr/bin/freetype-config
+       claimed by freetype and freetype-bootstrap
+```
+
+Both are freetype 2.14.1 at the same prefix — one `--without-harfbuzz` so
+harfbuzz has something to link, one `--with-harfbuzz` for the system — so
+*every* path collides and the manifest reported the first alphabetically.
+
+**The collision was the smaller problem.** The merge step is `for d in
+dest/*/`, which the shell sorts, so `dest/freetype/` copies first and
+`dest/freetype-bootstrap/` copies straight over it. **The image would have
+shipped the freetype built without harfbuzz, under a manifest naming the other
+one, with every gate green.** The manifest gate stopped the run one step before
+that merge — a gate earning its keep at n=41 exactly as its comment predicted it
+would at n=200.
+
+The fix is a declared category rather than an exception: `build_only = true`
+says a package is built and staged so later rungs can link it, and then
+superseded. It is recorded in `PLAN.txt`, excluded from the manifest and the
+image, declared in the guest tests as *nothing ships*, and the workflow asks
+the recipes which packages those are rather than keeping a second list in YAML.
 
 **Nine tarballs were read source-first**, before building them, and six had
 something that would have cost a run — three of them in sequence, each behind

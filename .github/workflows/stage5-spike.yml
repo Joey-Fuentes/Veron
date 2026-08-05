@@ -253,9 +253,22 @@ jobs:
         run: |
           set -eu
           cd spikes/stage5
+          # BUILD-ONLY PACKAGES DO NOT MERGE. `for d in dest/*/` is sorted by
+          # the shell, so dest/freetype/ copies before dest/freetype-bootstrap/
+          # and the bootstrap -- the same freetype built WITHOUT harfbuzz --
+          # would copy straight over the real one. The image would ship the
+          # wrong library under a manifest naming the right one.
+          #
+          # The list comes from the recipes, not from a name pattern here: a
+          # second copy of that knowledge in YAML is the same defect as the
+          # find-list this workflow used to keep beside BUILD_LOGS.
+          SKIP=$(python3 tools/veron build-only-names)
+          echo "  build-only, not merged: ${SKIP:-none}"
           for d in dest/*/; do
             [ -d "$d" ] || continue
-            echo "  merging $(basename "$d")"
+            b=$(basename "$d")
+            case " $SKIP " in *" $b "*) echo "  skipping $b (build-only)"; continue ;; esac
+            echo "  merging $b"
             cp -a "$d". sysroot/
           done
           # Two .pc fixtures, one requiring the other, so pkgconf's transitive

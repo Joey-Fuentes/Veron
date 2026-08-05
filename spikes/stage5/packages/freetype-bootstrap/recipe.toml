@@ -1,5 +1,23 @@
 name    = "freetype-bootstrap"
 version = "2.14.1"
+
+# NOTHING THIS PACKAGE INSTALLS REACHES THE IMAGE, AND THAT IS THE POINT.
+#
+# This is freetype 2.14.1 built --without-harfbuzz so harfbuzz has something
+# to link against; `freetype` is the SAME source built --with-harfbuzz and is
+# what ships. Every path this installs therefore collides with that one, and
+# run 54 found it the moment all 41 packages built:
+#
+#   veron: path collision: usr/bin/freetype-config claimed by freetype
+#                          and freetype-bootstrap
+#
+# THE COLLISION WAS THE SMALLER PROBLEM. The image merge is `for d in dest/*/`,
+# which the shell sorts -- so dest/freetype/ copies first and
+# dest/freetype-bootstrap/ copies straight over it. Without this flag the image
+# ships the freetype built WITHOUT harfbuzz, described by a manifest naming the
+# other one, and every gate stays green. The manifest gate stopped the run one
+# step before that merge.
+build_only = true
 group   = "text-rendering"
 license = "FTL-or-GPL-2.0"
 # The tarball is the same as `freetype`'s -- same URL, same digest. What

@@ -309,6 +309,13 @@ def render_plan(plan, policy):
         L.append("=" * 70)
         L.append(f"package {r['name']} {r['version']}")
         L.append(f"  group        {r.get('group', '-')}")
+        # A PACKAGE THAT SHIPS NOTHING MUST SAY SO IN THE PLAN. Otherwise the
+        # only visible difference between freetype-bootstrap and freetype is
+        # two configure flags, and which one reaches the image is decided by
+        # shell glob order in a workflow.
+        if r.get("build_only"):
+            L.append("  build-only   yes -- staged for later packages, "
+                     "not installed into the image")
         L.append(f"  license      {r['license']}")
         L.append(f"  recipe-sha   {r['_recipe_sha256']}")
         L.append("")
@@ -940,6 +947,18 @@ def cmd_build(a):
     return 0
 
 
+def cmd_build_only_names(a):
+    """The build-only package names, space-separated, for the merge step.
+
+    DERIVED, NEVER LISTED IN YAML. The workflow needs to know which DESTDIRs
+    not to merge, and a name pattern or a hardcoded list there would be a
+    second copy of a fact the recipes already carry -- the same defect as the
+    `find` list that used to duplicate BUILD_LOGS.
+    """
+    print(" ".join(n for n in sorted(load_recipes()) if build_only(load_recipes(), n)))
+    return 0
+
+
 def cmd_collect(a):
     """Everything needed to diagnose this run, WITHOUT RE-RUNNING IT.
 
@@ -1131,12 +1150,46 @@ def file_manifest(root):
     return sorted(out)
 
 
+def build_only(recipes, name):
+    """Is this package a build-time rung that ships nothing?
+
+    THE CASE THAT FORCED THIS. freetype-bootstrap and freetype are the SAME
+    freetype 2.14.1 at the same prefix, built twice: once --without-harfbuzz so
+    harfbuzz has something to link, once --with-harfbuzz for the system. So
+    every path the bootstrap installs collides with the real one, and
+    `veron manifest` failed on the first alphabetically:
+
+        path collision: usr/bin/freetype-config claimed by freetype
+                        and freetype-bootstrap
+
+    THE GATE WAS RIGHT, AND IT STOPPED SOMETHING WORSE. The merge step is
+    `for d in dest/*/`, which the shell sorts -- so `dest/freetype/` copies
+    first and `dest/freetype-bootstrap/` copies OVER it. The image would have
+    shipped the freetype built WITHOUT harfbuzz, under a manifest naming the
+    other one, and everything would have looked green.
+
+    A bootstrap rung is a real category, not an exception: it is built, it is
+    staged so later packages can link it, and then it is superseded. Saying so
+    in the recipe is the difference between a declared supersession and a
+    collision nobody can attribute.
+    """
+    return bool(recipes.get(name, {}).get("build_only", False))
+
+
 def cmd_manifest(a):
+    recipes = load_recipes()
     roots = roots_from_args(a)
     total = {}
+    skipped = []
     for name in sorted(os.listdir(roots["dest"])):
         d = os.path.join(roots["dest"], name)
         if not os.path.isdir(d):
+            continue
+        if build_only(recipes, name):
+            # DECLARED, NOT SILENTLY DROPPED. The count is printed so a
+            # package that vanishes from the image is visible in the log
+            # rather than merely absent from a list.
+            skipped.append(name)
             continue
         for rel, kind, val in file_manifest(d):
             if rel in total:
@@ -1154,6 +1207,8 @@ def cmd_manifest(a):
             f.write(f"{rel}\t{pkg}\t{kind}\t{val}\n")
     print(f"VERON-MANIFEST-OK  {len(total)} paths, {mf}")
     print(f"  manifest-sha256  {sha256_file(mf)}")
+    for name in skipped:
+        print(f"  build-only, not in the image: {name}")
     return 0
 
 
@@ -1356,6 +1411,12 @@ def cmd_guesttests(a):
          'none() { skip=$((skip+1)); echo "  none  $1 (declared: no guest test)"; }',
          'echo "VERON-STAGE5-GUEST begin"']
     for name in topo_order(recipes):
+        if recipes[name].get("build_only"):
+            # NOT "no test" -- NOTHING TO TEST. A build-only rung installs no
+            # file into the image, so a guest test would be checking a path
+            # another package owns.
+            L.append(f'none "{name} (build-only: nothing ships)"')
+            continue
         g = recipes[name].get("guest", {})
         if not g.get("test"):
             L.append(f'none "{name}"')
@@ -1678,7 +1739,7 @@ def cmd_selftest(a):
     # stop reading.
     KNOWN = ("plan", "fetch", "build", "manifest", "rootfs", "ledger",
              "selftest", "guest-tests", "compare", "status", "sources",
-             "git-sources", "collect")
+             "git-sources", "collect", "build-only-names")
     called = set()
     wfdir = os.path.join(HERE, "..", "..", ".github", "workflows")
     if os.path.isdir(wfdir):
@@ -1853,6 +1914,10 @@ def main():
 
     p = sub.add_parser("manifest", help="every installed path -> its package")
     p.set_defaults(fn=cmd_manifest)
+
+    p = sub.add_parser("build-only-names",
+                       help="packages that are staged but never installed")
+    p.set_defaults(fn=cmd_build_only_names)
 
     p = sub.add_parser("collect", help="gather everything needed to diagnose "
                                        "this run without re-running it")
