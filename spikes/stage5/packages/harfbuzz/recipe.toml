@@ -42,6 +42,25 @@ builds; deps.runtime names freetype because that is what will be installed \
 when this runs. The distinction is real and the two fields are the only \
 place it can be said."""
 
+[undeclarable]
+# Lookups that no .pc name can answer, disclosed per ROADMAP.md rule 4.
+# Locations come from `probe.py reconcile`; every reason is read from the
+# tarball. Entries whose reason could be DERIVED -- a build file this recipe
+# never invokes, an option the argv disables, an applet busybox provides --
+# were drafted by `--propose`; the rest were answered by hand.
+# src/rust/meson.build:13 cargo (REQUIRED)
+"program:cargo" = "src/rust/meson.build -- entered only when harfrust or fontations is enabled. Both default to 'disabled' and both gate on .enabled(). No Rust anywhere, by policy."
+# src/meson.build:1009 g-ir-scanner (conditional on get_option('introspection'))
+"program:g-ir-scanner" = "Looked for only when 'introspection' is on, and this recipe disables it: get_option('introspection')"
+# docs/meson.build:1 gtkdoc-scan (conditional on get_option('docs'))
+"program:gtkdoc-scan" = "Looked for only when 'docs' is on, and this recipe disables it: get_option('docs')"
+# util/meson.build:20 help2man (optional)
+"program:help2man" = "Man pages for the hb-view/hb-shape utilities, which are not built."
+# src/meson.build:444 ragel (optional)
+"program:ragel" = "The release tarball ships pre-generated ragel output, so the generator is never needed from a release. It would be from a git checkout."
+# src/rust/meson.build:14 rustfmt (REQUIRED)
+"program:rustfmt" = "Same directory, same gate as cargo."
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

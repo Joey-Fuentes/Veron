@@ -374,9 +374,42 @@ genuine gap in the audit story rather than a false alarm — fine today, and
 exactly what breaks if that sysroot is trimmed further, which `stage5-entry`
 already does six times.
 
+**The disclosures are written: 66 entries across 12 packages, no TODOs left.**
+`--propose` derived **42 of 60** and left 18 for a person, which is close to
+the split that made the feature worth building — the derivable ones are
+mechanical (a build file the recipe never invokes, an option the argv
+disables, a busybox applet) and the rest genuinely needed the tarball read.
+
+Four of the eighteen are worth carrying up here:
+
+- **glib's `xgettext` is load-bearing.** It is `required: get_option('nls')`,
+  a feature defaulting to `auto` — so xgettext being *absent* is the only
+  reason `subdir('po')` is skipped, and therefore the only reason a set with
+  no `gettext` recipe gets through glib at all. `-Dnls=enabled` would make
+  gettext a hard dependency.
+- **glib's `gi-docgen` reports REQUIRED and is unreachable.** The lookup is
+  `required: true`, but it sits inside
+  `if get_option('documentation') and enable_gir` — and `subdir('docs/
+  reference')` is entered unconditionally. The guard is one line above the
+  call and invisible to a per-call scan, which is the general limit of this
+  detector stated concretely.
+- **glib's `dtrace` is off by absence, not by decision.** A feature defaulting
+  to `auto`, listed in `optional_off` with no flag behind it. Worth converting
+  to `-Ddtrace=disabled`.
+- **fontconfig's two `config-tool` entries are rescue paths.** It is the only
+  package in the set naming a non-pkg-config method at all, and it names both
+  as fallbacks behind a pkg-config lookup that succeeds.
+
+**And the propose checkbox could not be identified in the UI.** GitHub's
+dispatch form shows an input's *description*, never its name, and the
+description never said "propose". Every description now leads with the input
+name.
+
 **Still to do:**
 
-- Run `--propose` over all 48 with the fixes, review the drafts, paste them in
+- Re-run the sweep to confirm the 60 undisclosed go to zero
+- The 21 corroborative declines
+- Then `--mode fail`
 - Write the 21 corroborative declines
 - Then `--mode fail`, which is the point of the exercise
 - Write the `[undeclarable]` blocks that sweep calls for, per recipe

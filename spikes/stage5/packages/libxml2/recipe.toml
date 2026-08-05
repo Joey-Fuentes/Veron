@@ -29,6 +29,19 @@ enabling it would make libxml2 depend on a 30 MB library for a feature no \
 consumer here asks for. --with-history is the readline integration in \
 xmllint's shell, which is why readline appears above."""
 
+[undeclarable]
+# Lookups that no .pc name can answer, disclosed per ROADMAP.md rule 4.
+# Locations come from `probe.py reconcile`; every reason is read from the
+# tarball. Entries whose reason could be DERIVED -- a build file this recipe
+# never invokes, an option the argv disables, an applet busybox provides --
+# were drafted by `--propose`; the rest were answered by hand.
+# doc/meson.build:3 doxygen (REQUIRED)
+"program:doxygen" = "NOT THIS PACKAGE'S BUILD. doc/meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# meson.build:532 sh (optional)
+"program:sh" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# doc/meson.build:32 xsltproc (REQUIRED)
+"program:xsltproc" = "NOT THIS PACKAGE'S BUILD. doc/meson.build is meson's; this recipe drives ./configure, so that file is never read."
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

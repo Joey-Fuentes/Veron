@@ -39,6 +39,35 @@ typelibs nothing here consumes. -Dlibmount=disabled avoids util-linux, which \
 is not in the set. GIO will still expose a D-Bus API surface at build time; \
 that is glib being glib, and nothing here runs a bus."""
 
+[undeclarable]
+# Lookups that no .pc name can answer, disclosed per ROADMAP.md rule 4.
+# Locations come from `probe.py reconcile`; every reason is read from the
+# tarball. Entries whose reason could be DERIVED -- a build file this recipe
+# never invokes, an option the argv disables, an applet busybox provides --
+# were drafted by `--propose`; the rest were answered by hand.
+# meson.build:2547 bash (optional)
+"program:bash" = "A real build dependency and DECLARED -- glib's meson.build crashes outright without it, which is why bash is in deps.build. Found by building, not by any scan."
+# meson.build:2635 dtrace (conditional on dtrace_option)
+"program:dtrace" = "A feature option defaulting to 'auto', so it is off because dtrace is ABSENT rather than because anyone chose. Listed in optional_off with no flag behind it; worth converting to -Ddtrace=disabled so it becomes a decision."
+# meson.build:2554 env (conditional on installed_tests_enabled)
+"program:env" = "Looked for only when 'tests' is on, and this recipe disables it: installed_tests_enabled"
+# meson.build:2702 g-ir-scanner (conditional on get_option('introspection'))
+"program:g-ir-scanner" = "Looked for only when 'introspection' is on, and this recipe disables it: get_option('introspection')"
+# docs/reference/meson.build:10 gi-docgen (REQUIRED)
+"program:gi-docgen" = "docs/reference/meson.build:10, inside `if get_option('documentation') and enable_gir`. documentation is a boolean defaulting to false. The subdir is entered UNCONDITIONALLY, which is why this reports REQUIRED -- the guard is one line above the lookup and invisible to a per-call scan."
+# meson.build:2551 pkg-config (optional)
+"program:pkg-config" = "Provided by pkgconf, built at rung 11 and on PATH for everything after it."
+# meson.build:2770 rst2html5 (conditional on get_option('documentation'))
+"program:rst2html5" = "required: get_option('documentation'), a boolean defaulting to false."
+# meson.build:2762 rst2man (conditional on get_option('man-pages'))
+"program:rst2man" = "Looked for only when 'man-pages' is on, and this recipe disables it: get_option('man-pages')"
+# meson.build:2550 sh (optional)
+"program:sh" = "Provided by busybox in the sandbox; the box is busybox throughout. meson.build:2550 sh (optional)"
+# meson.build:224 valgrind (optional)
+"program:valgrind" = "Instrumentation for the test suite. -Dtests=false."
+# meson.build:2736 xgettext (conditional on get_option('nls'))
+"program:xgettext" = "required: get_option('nls'), a feature defaulting to 'auto'. LOAD-BEARING: xgettext being absent is the only reason `subdir('po')` is skipped, and therefore the only reason a set with no gettext recipe gets through glib at all. -Dnls=enabled would make gettext a hard dependency."
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

@@ -26,6 +26,21 @@ cairo. libthai is off: Thai word-breaking would be a further dependency for \
 one script, and it can be added when someone needs it. labwc uses pango for \
 titlebar text."""
 
+[undeclarable]
+# Lookups that no .pc name can answer, disclosed per ROADMAP.md rule 4.
+# Locations come from `probe.py reconcile`; every reason is read from the
+# tarball. Entries whose reason could be DERIVED -- a build file this recipe
+# never invokes, an option the argv disables, an applet busybox provides --
+# were drafted by `--propose`; the rest were answered by hand.
+# meson.build:530 g-ir-scanner (conditional on get_option('introspection'))
+"program:g-ir-scanner" = "Looked for only when 'introspection' is on, and this recipe disables it: get_option('introspection')"
+# docs/meson.build:1 gi-docgen (conditional on get_option('documentation'))
+"program:gi-docgen" = "Looked for only when 'documentation' is on, and this recipe disables it: get_option('documentation')"
+# docs/meson.build:222 rst2html5 (conditional on get_option('documentation'))
+"program:rst2html5" = "Looked for only when 'documentation' is on, and this recipe disables it: get_option('documentation')"
+# docs/meson.build:221 rst2man (conditional on get_option('man-pages'))
+"program:rst2man" = "required: get_option('man-pages'). Documentation is off; -Ddocumentation=false."
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

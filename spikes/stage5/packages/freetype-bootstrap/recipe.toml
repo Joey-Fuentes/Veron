@@ -63,6 +63,15 @@ describes an artifact that is deliberately transient, which is unusual enough \
 to be worth saying rather than leaving someone to work out why two records \
 name the same version."""
 
+[undeclarable]
+# Lookups that no .pc name can answer, disclosed per ROADMAP.md rule 4.
+# Locations come from `probe.py reconcile`; every reason is read from the
+# tarball. Entries whose reason could be DERIVED -- a build file this recipe
+# never invokes, an option the argv disables, an applet busybox provides --
+# were drafted by `--propose`; the rest were answered by hand.
+# meson.build:38 python3 (REQUIRED)
+"program:python3" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

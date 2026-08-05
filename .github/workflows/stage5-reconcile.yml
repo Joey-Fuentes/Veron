@@ -26,25 +26,30 @@ name: stage5-reconcile
 # NO BUILD LOGIC IN THIS FILE. Every `run:` is environment setup or a call to
 # spikes/stage5/tools. The fetch step is the spike's, unchanged.
 
+# EVERY DESCRIPTION LEADS WITH THE INPUT NAME. GitHub's dispatch form shows
+# the description and NOT the name, so a description that never says "propose"
+# leaves no way to tell which checkbox `--propose` is. That is exactly what
+# happened: the flag was added, the box was on the form, and it could not be
+# identified from the UI.
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'warn (report only) or fail (exit non-zero on findings)'
+        description: 'mode -- warn (report only) or fail (exit non-zero on findings)'
         type: choice
         options: [warn, fail]
         default: warn
       packages:
-        description: 'Space-separated package names (blank = all)'
+        description: 'packages -- space-separated names (blank = all)'
         required: false
         default: ''
       skip_sources:
-        description: 'Skip fetching/unpacking tarballs -- distro half only, much faster'
+        description: 'skip_sources -- distro half only, no tarballs, much faster'
         type: boolean
         required: false
         default: false
       propose:
-        description: 'Emit draft [undeclarable] blocks instead of a report'
+        description: 'propose -- emit draft [undeclarable] blocks instead of a report'
         type: boolean
         required: false
         default: false

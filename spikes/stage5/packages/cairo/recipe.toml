@@ -26,6 +26,19 @@ cairo would otherwise detect and link X11, and there is no X11 here by \
 policy. labwc uses cairo for window decorations, which is why it is in the \
 set at all."""
 
+[undeclarable]
+# Lookups that no .pc name can answer, disclosed per ROADMAP.md rule 4.
+# Locations come from `probe.py reconcile`; every reason is read from the
+# tarball. Entries whose reason could be DERIVED -- a build file this recipe
+# never invokes, an option the argv disables, an applet busybox provides --
+# were drafted by `--propose`; the rest were answered by hand.
+# meson.build:602 gs (conditional on get_option('tests'))
+"program:gs" = "Looked for only when 'tests' is on, and this recipe disables it: get_option('tests')"
+# src/meson.build:273 sh (optional)
+"program:sh" = "Provided by busybox in the sandbox; the box is busybox throughout. src/meson.build:273 sh (optional)"
+# meson.build:300 ttx (optional)
+"program:ttx" = "fonttools' ttx, used to build the test fonts. -Dtests=disabled."
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

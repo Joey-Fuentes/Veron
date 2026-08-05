@@ -34,6 +34,31 @@ skips building the font cache at install time: there are no fonts in the \
 DESTDIR to cache, and doing it would write a file whose contents depend on \
 what happened to be installed."""
 
+[undeclarable]
+# Lookups that no .pc name can answer, disclosed per ROADMAP.md rule 4.
+# Locations come from `probe.py reconcile`; every reason is read from the
+# tarball. Entries whose reason could be DERIVED -- a build file this recipe
+# never invokes, an option the argv disables, an applet busybox provides --
+# were drafted by `--propose`; the rest were answered by hand.
+# meson.build:68 dependency('expat', method: 'system' | 'expat')
+"config-tool:expat" = "meson.build:68 -- same shape: line 64 finds expat via pkg-config and this branch is guarded by `not xml_dep.found()`. We pin -Dxml-backend=expat."
+# meson.build:42 dependency('freetype', method: 'cmake')
+"config-tool:freetype" = "meson.build:42 -- a RESCUE path, reached only when the pkg-config lookup at line 38 fails. freetype ships freetype2.pc, so it does not. This is the only genuine consumer of a non-pkg-config method in the set, and it is a fallback."
+# doc/meson.build:16 docbook2html (conditional on get_option('doc-html'))
+"program:docbook2html" = "Looked for only when 'doc' is on, and this recipe disables it: get_option('doc-html')"
+# doc/meson.build:13 docbook2man (conditional on get_option('doc-man'))
+"program:docbook2man" = "Looked for only when 'doc' is on, and this recipe disables it: get_option('doc-man')"
+# doc/meson.build:15 docbook2pdf (conditional on get_option('doc-pdf'))
+"program:docbook2pdf" = "Looked for only when 'doc' is on, and this recipe disables it: get_option('doc-pdf')"
+# doc/meson.build:14 docbook2txt (conditional on get_option('doc-txt'))
+"program:docbook2txt" = "Looked for only when 'doc' is on, and this recipe disables it: get_option('doc-txt')"
+# meson.build:431 gperf (optional)
+"program:gperf" = "required:false because fontconfig can use a pre-generated header, but we DO supply it -- gperf is in deps.build and exists in this set for this package alone."
+# meson.build:90 pytest (optional)
+"program:pytest" = "Upstream test suite. -Dtests=disabled, and suites are not run here by policy."
+# meson.build:574 xgettext (conditional on opt_nls)
+"program:xgettext" = "Looked for only when 'nls' is on, and this recipe disables it: opt_nls"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

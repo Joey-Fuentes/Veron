@@ -29,6 +29,51 @@ git subcommands that depend on it would repeat the mistake python taught. \
 TLS comes from the sysroot's openssl, the same undeclared edge curl carries \
 -- see that recipe for why it is acceptable and where it is recorded."""
 
+[undeclarable]
+# Lookups that no .pc name can answer, disclosed per ROADMAP.md rule 4.
+# Locations come from `probe.py reconcile`; every reason is read from the
+# tarball. Entries whose reason could be DERIVED -- a build file this recipe
+# never invokes, an option the argv disables, an applet busybox provides --
+# were drafted by `--propose`; the rest were answered by hand.
+# Documentation/meson.build:222 asciidoc (optional)
+"program:asciidoc" = "NOT THIS PACKAGE'S BUILD. Documentation/meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# Documentation/meson.build:224 asciidoctor (optional)
+"program:asciidoctor" = "NOT THIS PACKAGE'S BUILD. Documentation/meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# meson.build:1723 cargo (conditional on get_option('rust'))
+"program:cargo" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# meson.build:236 cygpath (optional)
+"program:cygpath" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# meson.build:237 diff (REQUIRED)
+"program:diff" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# meson.build:238 git (optional)
+"program:git" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# meson.build:2214 git-clang-format (optional)
+"program:git-clang-format" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# git-gui/po/meson.build:18 msgfmt (optional)
+"program:msgfmt" = "NOT THIS PACKAGE'S BUILD. git-gui/po/meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# meson.build:920 perl (conditional on perl_required)
+"program:perl" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# meson.build:890 python3 (conditional on get_option('python'))
+"program:python3" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# meson.build:239 sed (REQUIRED)
+"program:sed" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# git-gui/meson.build:7 sh (REQUIRED)
+"program:sh" = "NOT THIS PACKAGE'S BUILD. git-gui/meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# contrib/coccinelle/meson.build:6 spatch (conditional on coccinelle_opt)
+"program:spatch" = "NOT THIS PACKAGE'S BUILD. contrib/coccinelle/meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# meson.build:241 tar (REQUIRED)
+"program:tar" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# git-gui/meson.build:8 tclsh (REQUIRED)
+"program:tclsh" = "NOT THIS PACKAGE'S BUILD. git-gui/meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# meson.build:242 time (conditional on get_option('benchmarks'))
+"program:time" = "NOT THIS PACKAGE'S BUILD. meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# git-gui/meson.build:9 wish (REQUIRED)
+"program:wish" = "NOT THIS PACKAGE'S BUILD. git-gui/meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# Documentation/meson.build:323 xmlto (REQUIRED)
+"program:xmlto" = "NOT THIS PACKAGE'S BUILD. Documentation/meson.build is meson's; this recipe drives ./configure, so that file is never read."
+# Documentation/meson.build:443 xsltproc (REQUIRED)
+"program:xsltproc" = "NOT THIS PACKAGE'S BUILD. Documentation/meson.build is meson's; this recipe drives ./configure, so that file is never read."
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

@@ -25,6 +25,15 @@ Internals not reviewed. Bidirectional text -- Arabic and Hebrew -- and pango \
 requires it. Docs need c2man, which is not here and would be a documentation \
 toolchain rather than a library."""
 
+[undeclarable]
+# Lookups that no .pc name can answer, disclosed per ROADMAP.md rule 4.
+# Locations come from `probe.py reconcile`; every reason is read from the
+# tarball. Entries whose reason could be DERIVED -- a build file this recipe
+# never invokes, an option the argv disables, an applet busybox provides --
+# were drafted by `--propose`; the rest were answered by hand.
+# doc/meson.build:34 c2man (optional)
+"program:c2man" = "Generates man pages from source comments. -Ddocs=false."
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"
