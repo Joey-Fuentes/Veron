@@ -881,6 +881,109 @@ def stage_into(destdir, sysroot):
     return n
 
 
+# ---------------------------------------------------------------- resume
+
+CHECKPOINT = ".veron-checkpoint"
+
+
+def prefix_keys(recipes, policy, base):
+    """[(index, package, key)] -- a rolling hash over the plan.
+
+    THE KEY IS A PREFIX HASH, NOT A PER-PACKAGE ONE, and that is the whole
+    design. `veron plan` already produces a TOTAL ORDER derived from the
+    dependency graph, so "everything before package i" is exactly the closure
+    package i was built against. Hashing the prefix therefore subsumes the
+    dependency closure with no graph walk and no chance of getting the walk
+    wrong:
+
+        h(0) = sha256(base sysroot digest + policy)
+        h(i) = sha256(h(i-1) + recipe_sha256(i))
+
+    WHAT THAT BUYS. Edit package 40 and h(1..39) are unchanged while h(40..48)
+    all move -- so the prefix before the edit is still valid and everything
+    after it rebuilds. That is precisely the invalidation a build cache needs,
+    and it falls out of the ordering rather than being computed.
+
+    WHAT GOES IN base. The sysroot artifact's published sha256 and the policy,
+    because both decide output bytes. A checkpoint made against a different
+    base image or a changed SOURCE_DATE_EPOCH is not a checkpoint for this
+    build, and restoring it would be the cache lying rather than helping.
+
+    THE DRIVER IS DELIBERATELY NOT IN THE KEY. Hashing tools/veron would
+    invalidate every checkpoint on every edit to a comment, which makes the
+    cache useless during exactly the work that needs it. The consequence is
+    real and stated: a change to HOW a step runs -- not what it runs -- will
+    not invalidate. `--no-cache` exists for that, and any run making a
+    reproducibility claim must use it.
+    """
+    pol = json.dumps({"build": policy.get("build", {}),
+                      "env": policy.get("env", {}),
+                      "tool_env": policy.get("tool_env", {})},
+                     sort_keys=True)
+    h = hashlib.sha256((base + "\n" + pol).encode()).hexdigest()
+    out = []
+    for i, name in enumerate(topo_order(recipes), 1):
+        h = hashlib.sha256((h + recipes[name]["_recipe_sha256"]).encode()).hexdigest()
+        out.append((i, name, h))
+    return out
+
+
+def cmd_keys(a):
+    """`<index>\\t<package>\\t<prefix key>` -- what a checkpoint is named by."""
+    recipes = load_recipes()
+    policy = load_policy()
+    for i, name, key in prefix_keys(recipes, policy, a.base):
+        print(f"{i}\t{name}\t{key}")
+    return 0
+
+
+def read_checkpoint(dest):
+    """The marker a restored checkpoint carries, or None."""
+    p = os.path.join(dest, CHECKPOINT)
+    if not os.path.isfile(p):
+        return None
+    try:
+        return json.load(open(p))
+    except Exception:
+        return None
+
+
+def cmd_checkpoint(a):
+    """Write the marker describing what dest/ currently holds.
+
+    THE MARKER IS WHAT MAKES RESUMING SAFE. Without it, `--resume` would have
+    to infer "this DESTDIR is valid" from the directory merely existing, which
+    is true of a half-finished build, a build from a different recipe, and a
+    build against a different sysroot alike. The marker records the prefix key
+    and the exact package list, so the driver can REFUSE a checkpoint that
+    does not match the plan in front of it rather than silently building on
+    top of something else.
+    """
+    recipes = load_recipes()
+    policy = load_policy()
+    roots = roots_from_args(a)
+    keys = prefix_keys(recipes, policy, a.base)
+    have = [n for n in os.listdir(roots["dest"])
+            if os.path.isdir(os.path.join(roots["dest"], n))]
+    # The prefix is the longest run of the plan that is present in dest/.
+    prefix = []
+    for i, name, key in keys:
+        if name not in have:
+            break
+        prefix.append((i, name, key))
+    if not prefix:
+        print("VERON-CHECKPOINT-EMPTY  nothing built to record")
+        return 0
+    i, name, key = prefix[-1]
+    marker = {"key": key, "index": i, "base": a.base,
+              "packages": [n for _, n, _ in prefix]}
+    with open(os.path.join(roots["dest"], CHECKPOINT), "w") as f:
+        json.dump(marker, f, indent=2, sort_keys=True)
+    print(f"VERON-CHECKPOINT-OK  {i} package(s) through {name}")
+    print(f"  key {key}")
+    return 0
+
+
 def cmd_build(a):
     recipes = load_recipes()
     policy = load_policy()
@@ -903,14 +1006,74 @@ def cmd_build(a):
         # files and DESTDIR, so it compares a build against itself and reports
         # reproducibility it never tested -- green for the wrong reason, which
         # is worse than no gate.
-        for d in (roots["build"], roots["dest"]):
+        # --clean AND --resume ARE NOT CONTRADICTORY, BUT THEY WOULD BE IF
+        # THIS WIPED dest/. The build tree is always disposable -- reusing
+        # object files is what makes a "second build" compare itself and
+        # report reproducibility it never tested. dest/ is different: under
+        # --resume it holds the restored checkpoint, and deleting it here
+        # would remove the thing the previous step just downloaded, then
+        # rebuild everything while reporting that a checkpoint was accepted.
+        wipe = [roots["build"]]
+        if not getattr(a, "resume", False):
+            wipe.append(roots["dest"])
+        for d in wipe:
             shutil.rmtree(d, ignore_errors=True)
     os.makedirs(a.logs, exist_ok=True)
     for d in (roots["build"], roots["dest"], roots["out"]):
         os.makedirs(d, exist_ok=True)
 
+    # RESTORED PACKAGES ARE STAGED, NOT REBUILT -- AND ONLY IF THE KEY MATCHES.
+    #
+    # The marker records the prefix key dest/ was built against. If it does
+    # not match the plan in front of us, the checkpoint describes a different
+    # build and is refused: a cache that silently builds on top of the wrong
+    # base is worse than no cache, because everything downstream inherits the
+    # mismatch and nothing says so.
+    resume = set()
+    if getattr(a, "resume", False):
+        marker = read_checkpoint(roots["dest"])
+        if not marker:
+            print("  no checkpoint marker in dest/ -- building everything")
+        else:
+            # THE BASE COMES FROM THE RUN, NEVER FROM THE MARKER. The first
+            # version recomputed the key using marker["base"], which made the
+            # check CIRCULAR: a checkpoint built against a different sysroot
+            # was internally consistent and therefore accepted. A gate that
+            # verifies a document against itself agrees with every forgery.
+            #
+            # The caller knows the base -- the workflow verifies the sysroot
+            # artifact's published sha256 before unpacking it -- so it passes
+            # that in, and a marker naming any other base is refused before
+            # its key is even considered.
+            base = getattr(a, "base", "") or ""
+            if not base:
+                die("--resume needs --base <sysroot sha256>: without it the "
+                    "checkpoint can only be checked against itself, which "
+                    "accepts a checkpoint built on any other image.")
+            if marker.get("base") != base:
+                die(f"checkpoint was built against a different sysroot.\n"
+                    f"  marker {marker.get('base')}\n  this run {base}\n"
+                    f"Refusing to build on top of it.")
+            keys = dict((n, k) for _, n, k in
+                        prefix_keys(recipes, policy, base))
+            want = keys.get(marker["packages"][-1]) if marker["packages"] else None
+            if want != marker["key"]:
+                die(f"checkpoint key mismatch: it was made for a different "
+                    f"plan or policy.\n  marker {marker['key']}\n"
+                    f"  plan   {want}\nRefusing to build on top of it.")
+            resume = set(marker["packages"])
+            print(f"  checkpoint accepted: {len(resume)} package(s) restored, "
+                  f"through {marker['packages'][-1]}")
+
     for p in plan:
         name = p["pkg"]
+        if name in resume:
+            d = os.path.join(roots["dest"], name)
+            if a.stage and not a.dry_run:
+                n = stage_into(d, roots["sysroot"])
+                print(f"== {name} {p['recipe']['version']}  RESTORED "
+                      f"({n} paths staged, not rebuilt)")
+            continue
         print(f"\n== {name} {p['recipe']['version']}")
         os.makedirs(p["env"]["B"], exist_ok=True)
         os.makedirs(p["env"]["D"], exist_ok=True)
@@ -1619,8 +1782,21 @@ def cmd_ledger(a):
     # tree and compares per file; its marker is the only thing that can
     # honestly raise this above 1. Independent REBUILDERS -- other machines,
     # other people -- are what would raise it further, and none exist yet.
+    # A RESTORED CHECKPOINT MUST APPEAR IN THE RECORD. If some packages were
+    # staged from a cache rather than built, this run did not build them, and
+    # a ledger that does not say so describes work it did not do. The
+    # checkpoint is content-addressed and its key is recorded, so the claim
+    # stays checkable -- but it is a weaker claim than a full build and the
+    # record has to be the thing that says which.
+    ckpt = read_checkpoint(roots["dest"])
     g3 = os.path.join(roots["out"], "G3-OK")
-    if os.path.exists(g3):
+    if ckpt:
+        attestations = 0
+        attest_note = (f"NOT A FULL BUILD: {ckpt['index']} package(s) were "
+                       f"restored from checkpoint {ckpt['key'][:16]} rather "
+                       f"than built in this run. No reproducibility claim "
+                       f"follows from it.")
+    elif os.path.exists(g3):
         attestations = 2
         attest_note = ("two independent builds on one runner, compared per "
                        "file (G3). No third-party rebuilder has attested.")
@@ -2093,7 +2269,8 @@ def cmd_selftest(a):
     KNOWN = ("plan", "fetch", "build", "manifest", "rootfs", "ledger",
              "selftest", "guest-tests", "compare", "status", "sources",
              "git-sources", "collect", "build-only-names", "merge",
-             "tarball-names", "linked")
+             "tarball-names", "linked",
+             "keys", "checkpoint")
     called = set()
     wfdir = os.path.join(HERE, "..", "..", ".github", "workflows")
     if os.path.isdir(wfdir):
@@ -2463,6 +2640,12 @@ def build_parser():
     p = sub.add_parser("build", help="execute exactly the plan")
     p.add_argument("pkg", nargs="*")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--resume", action="store_true",
+                   help="stage packages a restored checkpoint already built")
+    p.add_argument("--base", default="",
+                   help="sysroot sha256 this run builds on; required by "
+                        "--resume so the checkpoint is checked against the "
+                        "run rather than against itself")
     p.add_argument("--no-stage", dest="stage", action="store_false", default=True,
                    help="do not copy each package into the build root after install")
     p.add_argument("--optional", action="store_true",
@@ -2476,6 +2659,14 @@ def build_parser():
 
     p = sub.add_parser("merge", help="merge every DESTDIR into the system root")
     p.set_defaults(fn=cmd_merge)
+
+    p = sub.add_parser("keys", help="prefix hash per package -- checkpoint names")
+    p.add_argument("--base", default="", help="sysroot sha256 the plan builds on")
+    p.set_defaults(fn=cmd_keys)
+
+    p = sub.add_parser("checkpoint", help="record what dest/ currently holds")
+    p.add_argument("--base", default="", help="sysroot sha256 the plan builds on")
+    p.set_defaults(fn=cmd_checkpoint)
 
     p = sub.add_parser("linked",
                        help="DT_NEEDED against deps.link, both directions")

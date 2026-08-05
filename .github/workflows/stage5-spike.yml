@@ -27,6 +27,16 @@ on:
         type: boolean
         required: false
         default: false
+      use_checkpoint:
+        description: 'use_checkpoint -- restore a prior build checkpoint instead of building everything. NEVER for a reproducibility claim'
+        type: boolean
+        required: false
+        default: false
+      save_checkpoint:
+        description: 'save_checkpoint -- publish dest/ as a checkpoint for later runs'
+        type: boolean
+        required: false
+        default: false
       selfrebuild:
         description: 'Rebuild the packages INSIDE the guest (slow: ~12 min for two)'
         type: boolean
@@ -112,6 +122,7 @@ jobs:
           github-token: ${{ github.token }}
 
       - name: 'Unpack the sysroot and verify its published hash'
+        id: sysroot
         run: |
           set -eu
           want=$(awk '{print $1}' dl-sysroot/report/SYSROOT-SHA256)
@@ -121,6 +132,10 @@ jobs:
           tar -xf dl-sysroot/sysroot.tar -C spikes/stage5/sysroot
           du -sh spikes/stage5/sysroot | sed 's/^/    /'
           echo "VERON-ENTRY-OK  $got"
+          # THE CHECKPOINT BASE. Already verified against the published
+          # digest one line above, so it is the strongest identity this run
+          # has for the image everything is built on top of.
+          echo "sysroot_sha=$got" >> "$GITHUB_OUTPUT"
 
       # AIRLOCK. Network lives here and nowhere else. Fetch goes through the
       # mirror so a dead upstream costs a fallback rather than the run.
@@ -177,6 +192,45 @@ jobs:
       # host /etc. Same shape as phase B and hermetic-gcc15's box15.sh, and the
       # reason it is worth anything: if a host header were reachable, a missing
       # one in the sysroot would not show up.
+      # RESTORE THE LONGEST VALID PREFIX, FROM RELEASES RATHER THAN THE CACHE.
+      #
+      # Actions cache is 10 GB per repository with LRU eviction; dest/ is
+      # ~3.3 GB uncompressed for 48 packages and the set is heading for 111,
+      # so the cache would thrash exactly when the build got long enough to
+      # need it. Releases are separate storage, already used by the mirror,
+      # and an asset is permanent until deleted.
+      #
+      # A CHECKPOINT IS A CACHE AND MUST NEVER BE EVIDENCE. `use_checkpoint`
+      # is an input rather than always-on: any run making a reproducibility
+      # claim -- G3, or a ledger record anyone relies on -- must build every
+      # package, and this step is the thing it has to turn off. The ledger
+      # records whether one was used.
+      - name: 'Restore a build checkpoint'
+        if: ${{ inputs.use_checkpoint }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          cd spikes/stage5
+          BASE='${{ steps.sysroot.outputs.sysroot_sha }}'
+          mkdir -p dest
+          # LONGEST FIRST. `veron keys` emits the plan in order, so walking it
+          # backwards finds the furthest point we have a checkpoint for.
+          python3 tools/veron keys --base "$BASE" | tac | while IFS="$(printf '\t')" read -r i pkg key; do
+            if gh release download "ckpt/$key" --pattern 'dest.tar.zst' \
+                 --dir . 2>/dev/null; then
+              echo "  checkpoint found at $i/$pkg"
+              tar --zstd -xf dest.tar.zst
+              rm -f dest.tar.zst
+              break
+            fi
+          done
+          if [ -f dest/.veron-checkpoint ]; then
+            python3 -c 'import json;m=json.load(open("dest/.veron-checkpoint"));print("  restored",m["index"],"package(s) through",m["packages"][-1])'
+          else
+            echo "  no usable checkpoint -- building everything"
+          fi
+
       - name: 'VERON-SEAL + build both packages'
         timeout-minutes: 150      # < the job's 180. See the note above.
         run: |
@@ -228,7 +282,7 @@ jobs:
             /usr/bin/python3 /tools/veron \
               --dl /dl --build-dir /build --dest /dest --logs /logs --out /out \
               --sysroot / \
-              build --clean
+              build --clean ${{ inputs.use_checkpoint && format('--resume --base {0}', steps.sysroot.outputs.sysroot_sha) || '' }}
 
       # WHAT THE BUILD ACTUALLY LINKED, AGAINST WHAT THE RECIPES CLAIM.
       #
@@ -247,6 +301,33 @@ jobs:
           set -eu
           cd spikes/stage5
           python3 tools/veron --dest dest linked --mode warn
+
+      # PUBLISH THE CHECKPOINT, KEYED ON THE PREFIX HASH.
+      #
+      # Content-addressed, so a prefix that has been built before is never
+      # uploaded again and the steady state is zero traffic. The tag is the
+      # key, which makes a restore a single `gh release download` with no
+      # index to consult and nothing to keep in step.
+      - name: 'Publish a build checkpoint'
+        if: ${{ inputs.save_checkpoint }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          cd spikes/stage5
+          BASE='${{ steps.sysroot.outputs.sysroot_sha }}'
+          python3 tools/veron --dest dest checkpoint --base "$BASE"
+          KEY=$(python3 -c 'import json;print(json.load(open("dest/.veron-checkpoint"))["key"])')
+          if gh release view "ckpt/$KEY" >/dev/null 2>&1; then
+            echo "  checkpoint $KEY already published -- nothing to upload"
+            exit 0
+          fi
+          tar --zstd -cf dest.tar.zst dest
+          echo "  $(du -h dest.tar.zst | cut -f1) for $(ls dest | wc -l) package(s)"
+          gh release create "ckpt/$KEY" --title "checkpoint $KEY" \
+            --notes 'build checkpoint -- a CACHE, not evidence' || true
+          gh release upload "ckpt/$KEY" dest.tar.zst --clobber
+          rm -f dest.tar.zst
 
       - name: 'VERON-MANIFEST-OK'
         run: cd spikes/stage5 && python3 tools/veron manifest

@@ -556,10 +556,7 @@ unchecked declarations.
 
 ### 7. Deferred by decision
 
-- **Caching / resume.** A failure at package 33 costs a full 32-package rebuild
-  to retest. `dest/` is content-addressable by the `_recipe_sha256` the driver
-  already computes. Deliberately not designed yet; it is the load-bearing
-  decision under everything below it.
+- **~~Caching / resume~~ — BUILT.** See below.
 - **Per-package build roots** — compose each build from the base sysroot plus
   only its declared DESTDIRs, making an undeclared dependency *impossible*
   rather than merely detected. Right end state; needs cheap retest first,
@@ -588,3 +585,55 @@ the four Python packages makes ~22 the honest number.
 
 And the last stretch is not packages at all. The 41 are most of the count and
 perhaps a third of the effort.
+
+
+---
+
+## Resume: prefix checkpoints in Releases
+
+**The key is a rolling hash over the plan, not a per-package hash.**
+
+```
+h(0) = sha256(sysroot sha256 + policy)
+h(i) = sha256(h(i-1) + recipe_sha256(i))
+```
+
+`veron plan` already produces a **total order** derived from the dependency
+graph, so "everything before package i" *is* the closure package i was built
+against. Hashing the prefix subsumes the dependency closure with no graph walk
+and therefore no chance of getting the walk wrong.
+
+Measured on the real set: editing harfbuzz — package 43 of 48 — changes **6
+keys**, harfbuzz and the five after it, and leaves the other 42 untouched. A
+different base image changes all 48. That is exactly the invalidation a build
+cache needs, and it falls out of the ordering rather than being computed.
+
+**Releases, not the Actions cache.** The cache is 10 GB per repository with LRU
+eviction; `dest/` is ~3.3 GB uncompressed for 48 packages and the set is
+heading for 111, so the cache would thrash precisely when the build got long
+enough to need it. Releases are separate storage, already used by the mirror,
+and content-addressing means a prefix built once is never uploaded again.
+
+**Three things that make it safe rather than merely fast:**
+
+- **`--clean` no longer wipes `dest/` when resuming.** It would have deleted
+  the checkpoint the previous step had just downloaded, then rebuilt
+  everything while reporting that a checkpoint was accepted. The build tree is
+  still always wiped — reusing object files is what makes a "second build"
+  compare itself.
+- **The base comes from the run, never from the marker.** The first version
+  recomputed the key using `marker["base"]`, which made the check **circular**:
+  a checkpoint built against a *different sysroot* was internally consistent
+  and therefore accepted. A gate that verifies a document against itself
+  agrees with every forgery. `--resume` now requires `--base` and refuses a
+  marker naming any other image.
+- **The ledger records it.** A run that restored a checkpoint did not build
+  those packages, so `attestations` drops to **0** with a note naming the key.
+  A checkpoint is a cache and must never be evidence; `use_checkpoint` is an
+  input precisely so a reproducibility run can turn it off.
+
+**What it does not cover, stated:** the driver itself is not in the key.
+Hashing `tools/veron` would invalidate every checkpoint on every comment edit,
+which makes the cache useless during the work that needs it. So a change to
+*how* a step runs — not what it runs — will not invalidate. That is what
+`use_checkpoint: false` is for.
