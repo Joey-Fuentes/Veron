@@ -99,6 +99,40 @@ optional dependency is missing, and most of what remains is meson: mesa,
 wlroots, pango, cairo, harfbuzz, gstreamer, foot, fuzzel. A patch per package
 does not scale, and whether meson 1.10 and cmake 4.x can coexist is unanswered.
 
+**It recurred inside the same package, one run later.** Run 51 applied the
+glib patch cleanly — the busybox `patch` fix worked — got past
+`meson.build:2549`, and died at `gio/inotify/meson.build:32` looking up
+`libinotify`, with the identical unhandled exception. Two call sites in one
+`meson.build`, and no reason to think there were only two. **A patch per call
+site is not a smaller version of a patch per package; it is a larger one.**
+
+**The answer is that they do not have to coexist.** meson resolves
+`dependency()` with pkg-config first and its CMake backend second, and looks
+for cmake in the machine file, then `$CMAKE`, then `PATH` — its own log says
+so. `policy/defaults.toml` now sets `$CMAKE` to a path that cannot exist, so
+the backend reports not-found and never enters the trace parser. One line,
+global, no recipe changes, and new meson packages inherit it. The cost is that
+a dependency discoverable *only* through a CMake config file would now be
+missed; nothing in the set is in that position, and a named not-found beats an
+unhandled exception regardless. `cmake_backend_used()` fails the build if
+meson's log ever shows `Found CMake:` again, because a policy nothing checks
+is a belief rather than a fact.
+
+**cmake installed nothing, and everything worked.** Its install step was
+`ninja install` with no `DESTDIR`, so it installed to `/usr` — which inside
+the sandbox *is* the build root. cmake ran, its guest test passed, packages
+built against it, and `dest/cmake/` stayed empty: absent from the manifest,
+described in the ledger as a package that installed no files, and trivially
+"reproducible" under G3 because both sides were empty directories. The run
+printed `staged 0 paths into the build root` and carried on.
+
+The recipe's own deferral note had said *"DESTDIR is passed through ninja
+install"* since it was written. **The prose and the step disagreed and nothing
+compared them** — which is the same shape as the three decorative gates below,
+and the argument for deriving `[declared]` from the argv rather than authoring
+it beside them. A zero-path staging is now fatal, and the selftest fails
+statically on any recipe that never references `$D`.
+
 **`deps.build` was decoration.** Each package installed into its own DESTDIR
 and nothing put that on `PATH`, so an edge ordered the build correctly and did
 nothing. Twelve packages went by before a package needed a neighbour.

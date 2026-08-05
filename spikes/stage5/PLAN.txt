@@ -11,6 +11,7 @@ between this file and the recipes fails the run.
   build.path = /usr/bin:/bin
   build.prefix = /usr
   build.sysroot_id = stage4
+  env.CMAKE = /nonexistent/veron-cmake-is-not-a-dependency-backend
   env.LANG = C
   env.LC_ALL = C
   env.SOURCE_DATE_EPOCH = 0
@@ -1012,7 +1013,7 @@ package ninja 1.13.2
 package cmake 4.2.3
   group        build-substrate
   license      BSD-3-Clause
-  recipe-sha   51af7f34a67ad92bd080da1260a36f11413ab14e4e725f7b6e772ac57c746e81
+  recipe-sha   1ebede955861d84771452570446dc57ee10cd258bd2348f3e92bc06c18d89af0
 
   source
     url        https://cmake.org/files/v4.2/cmake-4.2.3.tar.gz
@@ -1038,6 +1039,7 @@ package cmake 4.2.3
          argv ["ninja"]
     [04] install
          cwd  build/cmake-4.2.3/cmake-4.2.3
+         env  DESTDIR=dest/cmake
          argv ["ninja", "install"]
 
 ======================================================================
@@ -1077,7 +1079,7 @@ package fribidi 1.0.16
 package glib 2.86.4
   group        text-rendering
   license      LGPL-2.1-or-later
-  recipe-sha   dfc29de53501701190b5f4fe8a4388f4fc61b478b6083d9b8802ac07e2fd9ef3
+  recipe-sha   c993a6aa39b94d847d8717c7c173089dcc37aa8be49a27b04e56b75e2c3048ea
 
   source
     url        https://download.gnome.org/sources/glib/2.86/glib-2.86.4.tar.xz

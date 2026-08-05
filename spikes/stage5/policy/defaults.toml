@@ -19,6 +19,49 @@ LANG              = "C"
 TZ                = "UTC"
 TERM              = "dumb"
 
+# PKG-CONFIG IS THE DEPENDENCY-DISCOVERY MECHANISM. CMAKE IS NOT.
+#
+# This is a policy decision of the same kind as "no dbus" and "no Rust", and
+# it is here rather than in a recipe because it is true of every meson package
+# in the set.
+#
+# WHAT IT FIXES. meson's `dependency()` defaults to method:'auto', which means
+# pkg-config first and then THE CMAKE BACKEND. Every optional dependency that
+# is absent -- and in a system this small most of them are -- reaches that
+# backend, which runs
+#
+#     cmake --trace-expand --trace-format=json-v1
+#
+# and dies parsing cmake 4.2.3's output:
+#
+#     ERROR: Unhandled python exception
+#     This is a Meson bug and should be reported!
+#
+# A PATCH PER CALL SITE IS NOT A FIX, AND RUN #51 PROVED IT. glib was patched
+# at meson.build:2549 (bash-completion) and the next run failed at
+# gio/inotify/meson.build:32 (libinotify) with the identical crash -- the same
+# package, a different lookup. There is no bound on the number of call sites,
+# and pixman, harfbuzz, fontconfig, cairo and pango are all still ahead.
+#
+# HOW IT WORKS. meson looks for cmake in the machine file, then this variable,
+# then PATH -- its own log says so: "CMake binary missing from cross or native
+# file, or env var undefined. Trying a default CMake fallback at cmake."
+# Pointing it at a path that cannot exist makes CMakeExecutor report not-found,
+# and CMakeDependency then returns not-found for any `required: false` lookup
+# instead of entering the trace parser at all.
+#
+# WHAT IT COSTS. A dependency that is ONLY discoverable through a CMake config
+# file and ships no .pc will now fail with a plain "dependency not found"
+# rather than being found. Nothing in the current set is in that position --
+# graphite2, libjpeg-turbo and icu all ship .pc files -- and a named
+# not-found is a better failure than an unhandled exception either way.
+#
+# WHAT IT DOES NOT AFFECT. Packages whose OWN build system is cmake --
+# graphite2, libjpeg-turbo -- invoke `cmake` by argv and never read this
+# variable. cmake's own ./bootstrap does not consult it either; if that turns
+# out to be wrong it fails at rung 30, loudly, before anything downstream.
+CMAKE = "/nonexistent/veron-cmake-is-not-a-dependency-backend"
+
 [docs]
 # ONE POLICY, NOT 200 DECISIONS. Documentation toolchains -- docbook-xml,
 # docbook-xsl, libxslt, gtk-doc, sphinx, doxygen, asciidoc -- are most of the

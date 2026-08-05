@@ -78,7 +78,27 @@ run  = [["ninja"]]
 [[steps]]
 name = "install"
 cwd  = "$S"
+# THE DEFERRAL NOTE ABOVE HAS CLAIMED THIS SINCE THE RECIPE WAS WRITTEN --
+# "DESTDIR is passed through ninja install rather than a configure flag
+# because there is no configure" -- and until now the step did not do it.
+#
+# WHAT THAT COST. `ninja install` with no DESTDIR installs to /usr, and inside
+# the sandbox / IS THE BUILD ROOT, so cmake wrote itself straight into the
+# system and dest/cmake/ stayed empty. Everything downstream then worked for
+# the wrong reason: cmake ran, the guest test passed, and the run printed
+#
+#     staged 0 paths into the build root
+#
+# without complaint. The manifest never listed a cmake file, the ledger record
+# described a package that installed nothing, and G3 would have compared two
+# empty directories and called cmake reproducible. The one package that
+# bypassed its DESTDIR was the one package whose absence from the manifest
+# nobody could see.
+#
+# The driver now treats a zero-path staging as fatal, so this cannot come back
+# quietly.
 run  = [["ninja", "install"]]
+env  = { DESTDIR = "$D" }
 [guest]
 test   = [["/usr/bin/cmake", "--version"]]
 expect = ["4.2.3"]

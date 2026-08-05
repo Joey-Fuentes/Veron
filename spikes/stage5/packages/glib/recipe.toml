@@ -49,11 +49,20 @@ cwd  = "$S"
 # 4.2.3's trace output. There is NO -Dbash_completion option -- that was
 # shipped as a fix and was wrong, and reading the tarball is what settled it.
 #
-# THIS WILL RECUR. Every meson package reaches the same backend the moment an
-# optional dependency is missing, and most of what remains is meson: mesa,
-# wlroots, pango, cairo, harfbuzz, gstreamer, foot, fuzzel. A patch per
-# package does not scale; whether meson 1.10 and cmake 4.x can coexist is the
-# question this raises and does not answer.
+# IT RECURRED, IN THIS FILE, ONE RUN LATER. With the patch applied run 51 got
+# past meson.build:2549 and died at gio/inotify/meson.build:32 on
+# `libinotify` -- same crash, same package, a different lookup. A patch per
+# call site is not a smaller problem than a patch per package.
+#
+# THE ANSWER IS IN policy/defaults.toml, NOT HERE. $CMAKE now points at a path
+# that cannot exist, so meson's CMake backend reports not-found for every
+# absent optional dependency and never runs the trace parser at all. That is
+# one line for the whole set rather than one patch per meson package.
+#
+# THIS PATCH IS KEPT ANYWAY, and the reason is not caution about glib. It is
+# the only place in the tree where the two mechanisms are exercised together,
+# so if the policy is ever dropped this file still builds -- and the
+# cmake_backend_used() gate, not this patch, is what reports the loss.
 run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
          "-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false",
          "-Dintrospection=disabled", "-Dselinux=disabled",

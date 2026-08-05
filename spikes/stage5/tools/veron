@@ -198,6 +198,14 @@ def expand(recipes, policy, roots):
         r = recipes[name]
         env = step_env(name, r, policy, roots)
         steps = []
+        # OUTSIDE THE STEP LOOP, DELIBERATELY. This was assigned on the last
+        # iteration of the loop below and read after it, so a recipe with NO
+        # steps did not get an empty patch list -- it inherited whatever
+        # package was expanded before it, because the name survives across
+        # iterations of the outer loop too. The first such recipe in the order
+        # would instead raise NameError. Nothing in the set has zero steps
+        # today, which is the only reason this has never fired.
+        pdir = os.path.join(r["_dir"], "patches")
         for s in r.get("steps", []):
             if "shell" in s:
                 # THE ESCAPE HATCH, AND IT MUST BE DECLARED. Real builds need
@@ -224,7 +232,6 @@ def expand(recipes, policy, roots):
                         "env": senv,
                         **carried(s),
                     })
-            pdir = os.path.join(r["_dir"], "patches")
         patches = sorted(f for f in os.listdir(pdir)
                          if f.endswith(".patch")) if os.path.isdir(pdir) else []
         plan.append({"pkg": name, "recipe": r, "env": env, "steps": steps,
@@ -623,6 +630,40 @@ def apply_patches(pkgdir, srcdir, dry):
     return names
 
 
+MESON_LOGS = ("meson-logs/meson-log.txt", "_b/meson-logs/meson-log.txt")
+
+
+def cmake_backend_used(cwd):
+    """Did meson reach for cmake to resolve a dependency?
+
+    THE GATE FOR THE POLICY IN defaults.toml. Setting $CMAKE to a path that
+    cannot exist is an assertion about meson's behaviour, and an assertion
+    nothing checks is how a fix comes to be believed rather than known --
+    which is the failure mode this repository keeps recording.
+
+    `Found CMake:` in meson's log means the backend is live: meson located a
+    usable cmake and the next absent optional dependency will enter the trace
+    parser that crashes on cmake 4.x. Checking the LOG rather than the exit
+    code is what makes this useful, because the crash happens at the first
+    missing dependency and not at the first one meson looks for -- glib got
+    all the way through `meson setup` twice, on two different lookups, before
+    dying. A green setup is not evidence that the backend is out of the way.
+
+    Returns the log path that shows it, or None.
+    """
+    for rel in MESON_LOGS:
+        path = os.path.join(cwd, rel)
+        if not os.path.isfile(path):
+            continue
+        try:
+            text = open(path, errors="replace").read()
+        except OSError:
+            continue
+        if "Found CMake:" in text:
+            return rel
+    return None
+
+
 def build_log_tail(cwd, lines=40):
     """The build system's own explanation of what went wrong."""
     out = []
@@ -796,6 +837,23 @@ def cmd_build(a):
                     logf.write(f"+ SKIPPED optional step: {s['name']}\n")
                     continue
                 rc = run_step(s, logf, a.dry_run, may_create=(s is p["steps"][0]))
+                if rc == 0 and not a.dry_run:
+                    # SUCCEEDING IS NOT THE SAME AS SUCCEEDING FOR THE RIGHT
+                    # REASON. See cmake_backend_used().
+                    hit = cmake_backend_used(s["cwd"])
+                    if hit:
+                        print(f"VERON-BUILD-FAIL  {name}: step '{s['name']}' "
+                              f"resolved a dependency through meson's CMake "
+                              f"backend", file=sys.stderr)
+                        print(f"    {hit} contains 'Found CMake:'.")
+                        print(f"    $CMAKE is "
+                              f"{os.environ.get('CMAKE', '(unset)')!r} -- if "
+                              f"that path exists, or policy/defaults.toml no "
+                              f"longer sets it, the backend is reachable and "
+                              f"the next absent optional dependency will "
+                              f"crash meson rather than report not-found.")
+                        logf.write(f"+ FAIL cmake dependency backend live: {hit}\n")
+                        return 1
                 if rc == 0 and s is p["steps"][0]:
                     # After the unpack, before anything reads the source.
                     applied = apply_patches(p["recipe"]["_dir"],
@@ -820,6 +878,28 @@ def cmd_build(a):
                 n = stage_into(os.path.join(roots["dest"], name),
                                roots["sysroot"])
                 print(f"    staged {n} paths into the build root")
+                # A PACKAGE THAT INSTALLS NOTHING IS NOT A PACKAGE.
+                #
+                # cmake's install step had no DESTDIR, so `ninja install`
+                # wrote to /usr -- which inside the sandbox IS the build root.
+                # cmake therefore worked: it ran, its guest test passed, and
+                # everything built against it. dest/cmake/ stayed empty, so
+                # the manifest never listed a cmake file, the ledger record
+                # described a package that installed nothing, and G3 would
+                # have compared two empty directories and reported cmake
+                # reproducible. The run printed "staged 0 paths" and carried
+                # on, which is the whole problem: the evidence was on screen
+                # and nothing was watching for it.
+                #
+                # There is no legitimate zero-install package in this set, so
+                # this is a hard failure rather than a warning.
+                if n == 0:
+                    die(f"{name}: installed 0 paths into {roots['dest']}/"
+                        f"{name}. Its install step is almost certainly "
+                        f"missing `env = {{ DESTDIR = \"$D\" }}` and wrote "
+                        f"into the build root directly -- which appears to "
+                        f"work and leaves the package out of the manifest, "
+                        f"the ledger and every reproducibility comparison.")
         print(f"  VERON-PKG-BUILT  {name}")
     print("\nVERON-BUILD-OK  every package built")
     return 0
@@ -1189,6 +1269,69 @@ def cmd_selftest(a):
             print(f"  FAIL  staged={n} file={staged} link={linked} "
                   f"multicall-intact={survived}")
             ok = False
+
+    # THE CMAKE POLICY MUST BE IN FORCE. policy/defaults.toml sets $CMAKE to a
+    # path that cannot exist so that meson's CMake dependency backend reports
+    # not-found instead of crashing on cmake 4.x trace output. That is an
+    # assertion about how the build behaves, and the build only demonstrates
+    # it on a package that has a missing optional dependency -- so if the line
+    # were dropped, the set would keep building until it reached one and then
+    # fail somewhere that looks unrelated. Checking it statically costs
+    # nothing and names the cause up front.
+    try:
+        cmake_env = load_policy().get("env", {}).get("CMAKE")
+        if not cmake_env:
+            print("  FAIL  policy sets no CMAKE -- meson's CMake dependency "
+                  "backend is reachable")
+            ok = False
+        elif os.path.exists(cmake_env):
+            print(f"  FAIL  policy CMAKE={cmake_env!r} EXISTS, so meson will "
+                  f"use it as a dependency backend")
+            ok = False
+        else:
+            print("  ok    meson cannot reach its CMake dependency backend")
+    except Exception as e:
+        print(f"  FAIL  CMAKE policy check could not run: "
+              f"{type(e).__name__}: {e}")
+        ok = False
+
+    # EVERY RECIPE MUST INSTALL INTO ITS OWN DESTDIR. A step that installs to
+    # /usr succeeds inside the sandbox, because / IS the build root -- so the
+    # package works, and is simultaneously absent from the manifest, from the
+    # ledger and from every reproducibility comparison. cmake did exactly this
+    # for the whole life of the recipe while its own deferral note claimed
+    # otherwise. `veron build` now fails on a zero-path staging, but that only
+    # fires on a run that gets that far; this fires on a laptop in a second.
+    #
+    # $D AND $DL ARE DIFFERENT NAMES. The expander matches whole names, and a
+    # check that did not would count `$DL/foo.tar.gz` as a DESTDIR reference
+    # and pass every recipe in the tree -- the same prefix bug subst() was
+    # rewritten to avoid.
+    try:
+        dref = re.compile(r"\$D(?![A-Za-z0-9_])")
+        missing = []
+        for rname, r in sorted(load_recipes().items()):
+            found = False
+            for st in r.get("steps", []):
+                blobs = list(st.get("env", {}).values())
+                blobs += [t for argv in st.get("run", []) for t in argv]
+                if st.get("shell"):
+                    blobs.append(st["shell"])
+                if any(dref.search(str(b)) for b in blobs):
+                    found = True
+                    break
+            if not found:
+                missing.append(rname)
+        if missing:
+            for m in missing:
+                print(f"  FAIL  {m} never references $D -- nothing it builds "
+                      f"reaches its DESTDIR")
+            ok = False
+        else:
+            print("  ok    every recipe installs into its own DESTDIR")
+    except Exception as e:
+        print(f"  FAIL  DESTDIR check could not run: {type(e).__name__}: {e}")
+        ok = False
 
     # SHELL STEPS MUST NOT NAME A VARIABLE THE EXPANDER OWNS. A recipe wrote
     # `P=$D/usr/bin/python3.14` and then used "$P" -- but $P is the patches
