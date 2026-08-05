@@ -1024,6 +1024,97 @@ def cmd_checkpoint(a):
     return 0
 
 
+def linked_packages(destdir, provider, own):
+    """Which OTHER packages this DESTDIR's binaries link, and what came from
+    the base image.
+
+    MEASURED AT THE PACKAGE THAT CAUSED IT. `veron linked` does this across
+    the whole set after the build, which is the right place for a gate and
+    the wrong place to READ it: an undeclared link shows up in a summary forty
+    packages after the one responsible. Printing it here puts the measurement
+    next to the build that produced it.
+    """
+    linked, sysroot = set(), set()
+    for dirpath, _, files in os.walk(destdir):
+        for fn in files:
+            p = os.path.join(dirpath, fn)
+            if os.path.islink(p):
+                continue
+            _, needed = elf_dynamic(p)
+            for so in needed:
+                owner = provider.get(so)
+                if owner is None:
+                    sysroot.add(so)
+                elif owner != own:
+                    linked.add(owner)
+    return sorted(linked), sorted(sysroot)
+
+
+def report_package(name, r, destdir, provider, timings, declared_digest):
+    """The high-level record of one package, on the console.
+
+    WHAT THIS REPLACES. The console used to carry every line every compiler
+    emitted -- hundreds of thousands, in which the facts worth keeping were
+    invisible. Compiler output belongs in driver/<pkg>.log and in the
+    collected artifact; what belongs here is what the build DECIDED and what
+    it PRODUCED, because that is what the manifest, the ledger and G3 all read
+    and what anyone auditing an image asks for.
+
+    Every line is a fact this run measured, not narration:
+
+      steps     where the time went, so a slow package is visible as one
+      links     DT_NEEDED resolved to packages -- the observed dependency
+                list, next to the build that created it
+      prefixes  the directories this package wrote into
+      digest    the file listing's hash, compared against [installs].digest
+                when the recipe pins one, which makes every build a
+                per-package reproducibility check against a previous run
+    """
+    if not os.path.isdir(destdir):
+        return
+    lines, digest = install_listing(destdir)
+    total = sum(int(l.split(" ")[2]) for l in lines if l.startswith("f "))
+
+    if timings:
+        print("    steps    " + " · ".join(f"{n} {t:.0f}s" for n, t in timings))
+
+    linked, sysroot = linked_packages(destdir, provider, name)
+    declared = set(r.get("deps", {}).get("link", []))
+    unlinked = sorted(declared - set(linked))
+    if linked or sysroot or unlinked:
+        marks = []
+        for l in linked:
+            # AN UNDECLARED LINK IS FLAGGED WHERE IT HAPPENS. The sweep at the
+            # end of the run is the gate; this is the line that tells you
+            # which package to look at.
+            marks.append(l if l in declared else f"{l}(UNDECLARED)")
+        tail = f"   (+{len(sysroot)} from the sysroot)" if sysroot else ""
+        print(f"    links    {' '.join(marks) if marks else '(nothing)'}{tail}")
+        if unlinked:
+            # DECLARED AND NOT LINKED. Milder than the reverse -- it
+            # over-states rather than under-states -- but it still means
+            # `veron why` would answer with a dependency that does not exist.
+            # fontconfig declared libxml2 and linked expat for its whole life.
+            #
+            # Not every one of these is wrong: a header-only or data
+            # dependency is real and leaves no DT_NEEDED, which is why this
+            # reports rather than accuses.
+            print(f"    declared-not-linked  {' '.join(unlinked)}")
+
+    prefixes = install_prefixes(destdir)
+    if prefixes:
+        print(f"    prefixes {' '.join(prefixes)}")
+
+    pinned = ""
+    if declared_digest:
+        pinned = ("   [pinned: matches]" if declared_digest == digest
+                  else f"   [pinned: CHANGED, recipe has {declared_digest[:12]}]")
+    print(f"    {len(lines)} path(s), {total / 1048576:.1f} MiB, "
+          f"digest {digest[:16]}{pinned}")
+    for l in lines:
+        print(f"      {l}")
+
+
 def cmd_build(a):
     recipes = load_recipes()
     policy = load_policy()
@@ -1105,18 +1196,51 @@ def cmd_build(a):
             print(f"  checkpoint accepted: {len(resume)} package(s) restored, "
                   f"through {marker['packages'][-1]}")
 
+    # WHO PROVIDES WHICH SONAME, ACCUMULATED AS THE BUILD GOES.
+    #
+    # Built incrementally rather than in one pass at the end, because the
+    # point is to resolve a package's DT_NEEDED at the moment it finishes --
+    # every library it can possibly link was built before it, so the map is
+    # always complete enough by the time it is read.
+    provider = {}
+
+    def learn(pkg, d):
+        for dirpath, _, files in os.walk(d):
+            for fn in files:
+                fp = os.path.join(dirpath, fn)
+                if os.path.islink(fp):
+                    if ".so" in fn:
+                        provider.setdefault(fn, pkg)
+                    continue
+                soname, _ = elf_dynamic(fp)
+                if soname:
+                    provider.setdefault(soname, pkg)
+                if ".so" in fn:
+                    provider.setdefault(fn, pkg)
+
     for p in plan:
         name = p["pkg"]
         if name in resume:
             d = os.path.join(roots["dest"], name)
+            learn(name, d)
             if a.stage and not a.dry_run:
                 n = stage_into(d, roots["sysroot"])
                 print(f"== {name} {p['recipe']['version']}  RESTORED "
                       f"({n} paths staged, not rebuilt)")
             continue
-        print(f"\n== {name} {p['recipe']['version']}")
+        idx = plan.index(p) + 1
+        src = p["recipe"]["source"]
+        print(f"\n[{idx}/{len(plan)}] {name} {p['recipe']['version']}"
+              f"    group {p['recipe'].get('group', '?')}")
+        if source_kind(p["recipe"]) == "git":
+            print(f"    source   {source_filename(name, p['recipe'])}  "
+                  f"commit {src['commit'][:12]}")
+        else:
+            print(f"    source   {source_filename(name, p['recipe'])}  "
+                  f"sha256 {src['sha256'][:12]}")
         os.makedirs(p["env"]["B"], exist_ok=True)
         os.makedirs(p["env"]["D"], exist_ok=True)
+        timings = []
         with open(os.path.join(a.logs, f"{name}.log"), "w") as logf:
             logf.write(f"package {name} {p['recipe']['version']}\n")
             for s in p["steps"]:
@@ -1126,7 +1250,9 @@ def cmd_build(a):
                     print(f"    - skipped (optional): {s['name']}")
                     logf.write(f"+ SKIPPED optional step: {s['name']}\n")
                     continue
+                _t0 = time.time()
                 rc = run_step(s, logf, a.dry_run, may_create=(s is p["steps"][0]))
+                timings.append((s["name"], time.time() - _t0))
                 if rc == 0 and not a.dry_run:
                     # REPORTS, DOES NOT DECIDE -- AND THAT IS A CORRECTION.
                     #
@@ -1175,6 +1301,25 @@ def cmd_build(a):
                             print(f"  --- diagnostic: {d['name']} ---")
                             run_step(d, logf, a.dry_run)
                     return 1
+            # WHAT THIS PACKAGE PUT IN THE IMAGE, ON THE CONSOLE, EVERY FILE.
+            #
+            # The console used to carry every line every compiler emitted --
+            # hundreds of thousands of them, in which the one fact worth
+            # keeping was invisible. What matters afterwards is not how a file
+            # was produced but WHICH files exist, how big they are and what
+            # they hash to; that is what the manifest, the ledger and G3 all
+            # read, and it is what someone auditing an image asks for.
+            #
+            # Compiler output is in driver/<pkg>.log and in the collected
+            # artifact. This is the summary that replaces it, and it is the
+            # same listing that seeds [installs] -- one computation, printed
+            # here and pinned there, rather than two that can disagree.
+            if not a.dry_run:
+                learn(name, os.path.join(roots["dest"], name))
+                report_package(name, p["recipe"],
+                               os.path.join(roots["dest"], name), provider,
+                               timings,
+                               p["recipe"].get("installs", {}).get("digest"))
             if a.stage and not a.dry_run:
                 n = stage_into(os.path.join(roots["dest"], name),
                                roots["sysroot"])
@@ -3190,6 +3335,22 @@ def build_parser():
 
 
 def main():
+    # LINE BUFFERING, OR THE CONSOLE SHOWS NOTHING UNTIL THE END.
+    #
+    # Step output used to go straight to fd 1 from the child process, so a
+    # build looked alive even though the driver's own `print()` calls were
+    # sitting in Python's block buffer. Sending step output to the log file
+    # instead removed that accident, and the console went silent: a
+    # thirty-minute build printed its preamble and nothing else until it
+    # finished.
+    #
+    # A build that shows no progress is one nobody can tell from a hung one,
+    # which is the exact confusion the heartbeat exists to prevent.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     reset_inherited_signals()
     a = build_parser().parse_args()
     sys.exit(a.fn(a))

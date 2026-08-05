@@ -863,3 +863,52 @@ the same shape as mesa's `import mako`, which no `.pc` file can see and which
 cost this project a missing package once already. It is not needed here, and
 the evidence is a build rather than a reading: **glib built green in run 54,
 before a `packaging` recipe existed anywhere in the set.**
+
+
+---
+
+## The build console: evidence instead of narration
+
+The console used to carry every line every compiler emitted — hundreds of
+thousands, in which the facts worth keeping were invisible. Sending step
+output to `driver/<pkg>.log` fixed that and created the opposite problem: a
+thirty-minute build printed its preamble and **nothing else**, because the
+driver's own `print()` calls were sitting in Python's block buffer with no
+child output to force them out. **A build that shows no progress cannot be
+told from a hung one**, which is what the heartbeat exists to prevent. Line
+buffering is now set explicitly at startup.
+
+What replaces the compiler output is what the build **decided** and what it
+**produced** — the things the manifest, the ledger and G3 all read:
+
+```
+[27/48] python 3.14.0    group toolchain
+    source   Python-3.14.0.tar.xz  sha256 9c1a2f4b7e03
+    + ./configure --prefix=/usr --enable-shared ...
+    + make -j4
+    + make install
+    steps    configure 34s · build 252s · install 8s
+    links    zlib bzip2 xz libffi ncurses readline expat sqlite   (+3 from the sysroot)
+    prefixes usr/bin usr/include/python3.14 usr/lib
+    3021 path(s), 118.4 MiB, digest 9f2e1a34c8b70d51   [pinned: matches]
+      f a948904f… 12 usr/bin/demo
+      l demo usr/bin/democtl
+```
+
+Every line is measured by this run rather than narrated.
+
+**`links` is the one that earns its place.** `DT_NEEDED` resolved to packages,
+printed **at the package that produced it**. `veron linked` already does this
+across the whole set afterwards, which is the right place for a *gate* and the
+wrong place to *read* — an undeclared link surfaces in a summary forty
+packages after the one responsible. Here it appears as
+`zlib(UNDECLARED)` on the build that caused it, and `declared-not-linked`
+catches the reverse, which is the shape fontconfig carried for its whole life.
+
+**`[pinned: matches]`** appears once `[installs].digest` is seeded, and makes
+every build a per-package reproducibility check against a previous one — for
+the cost of hashing files that were just written, rather than G3's second full
+build.
+
+The full argv still prints. It is one line per step and it is the honest
+record of what ran.
