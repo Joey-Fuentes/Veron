@@ -24,9 +24,22 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: 'Print what would be uploaded, change nothing'
+        description: 'dry_run -- print what would be uploaded, change nothing'
         type: boolean
-        default: true
+        # DEFAULT false, AND THIS COST THREE RUNS. The default was true, and
+        # GitHub's dispatch form shows an input's DESCRIPTION and never its
+        # name -- so the box read "Print what would be uploaded, change
+        # nothing" with no indication it was the dry-run switch or that it was
+        # already ticked. Three consecutive runs processed everything, printed
+        # every locator, and committed nothing, each looking like a successful
+        # mirror.
+        #
+        # A job whose default behaviour is to do nothing is a job that will be
+        # run and believed. Uploading is idempotent -- `gh release upload
+        # --clobber` and a table that dedupes by sha -- so the safe default is
+        # the one that works, and the caution belongs on the checkbox for
+        # whoever wants a preview.
+        default: false
         # ASSETS DO NOT ENTER GIT. `gh release upload` writes to GitHub
         # Releases, which is separate storage: the object database is
         # untouched, a clone does not fetch them, and the repository's size

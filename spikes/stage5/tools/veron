@@ -1241,8 +1241,15 @@ def cmd_collect(a):
         except Exception as e:
             f.write(f"  (unreadable: {type(e).__name__}: {e})\n")
         f.write("\n-- tools on PATH --\n")
+        # BISON, FLEX, M4 AND PERL ARE NOT STAGE-5 PACKAGES and are required
+        # by things that are -- libxkbcommon will not build without bison
+        # >= 3.6. They come from the stage-4 sysroot, which stage5-entry
+        # trims six things out of. Recording where each resolves means a trim
+        # that removes one shows up in this file rather than in a build
+        # failure three rungs later.
         for tool in ("meson", "ninja", "cmake", "pkgconf", "pkg-config",
-                     "python3", "gcc", "patch", "tar"):
+                     "python3", "gcc", "g++", "patch", "tar",
+                     "bison", "flex", "m4", "perl"):
             w = shutil.which(tool, path=os.environ.get("PATH", ""))
             f.write(f"  {tool:12} {w or 'NOT FOUND'}\n")
 
