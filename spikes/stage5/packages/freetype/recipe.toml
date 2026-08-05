@@ -12,7 +12,24 @@ signature = "https://downloads.sourceforge.net/freetype/freetype-2.14.1.tar.xz.s
 crosschecked_against = []
 
 [deps]
-build        = ["zlib", "libpng", "harfbuzz"]
+# pkgconf, ADDED BECAUSE stage5-isolate MEASURED IT rather than because it
+# seemed likely. Eight meson/cmake recipes got pkgconf on the argument that
+# meson's dependency() always resolves through pkg-config; the fourteen
+# autotools ones were deliberately left alone, because some use
+# PKG_CHECK_MODULES and some use AC_CHECK_LIB, and adding it to all of them
+# would be over-declaring -- the same error in the other direction.
+#
+# freetype uses PKG_CHECK_MODULES, and in a root composed only of its
+# declarations it fails:
+#
+#   checking for HARFBUZZ... no
+#   configure: error: harfbuzz support requested but library not found
+#
+# harfbuzz WAS in the layer stack. Nothing could find it. Note the shape of
+# the surrounding checks -- ZLIB no, BZIP2 no, LIBPNG no, then a working
+# `-lz` fallback -- every pkg-config lookup failing while the direct link
+# tests pass, which is what a missing pkg-config looks like from configure.
+build        = ["zlib", "libpng", "harfbuzz", "pkgconf"]
 link         = ["zlib", "libpng", "harfbuzz"]
 runtime      = ["zlib", "libpng", "harfbuzz"]
 # CORROBORATIVE DECLINES, TWO DIFFERENT KINDS.

@@ -993,3 +993,38 @@ not tidying: **it is the thing that validates this cache key.** glib needing
 an undeclared `pkgconf` was found there. Until that sweep is clean, a stale
 hit is possible in principle — which is why `use_checkpoint` is off by
 default and the ledger records `attestations=0` when one is used.
+
+
+---
+
+## The isolate sweep after the runtime-closure fix: 58 of 62
+
+31 -> 42 -> **58 built from their declared dependencies alone, 0 skipped.** The
+remaining four are one chain: freetype fails, and fontconfig, cairo and pango
+declare it.
+
+**And the cause is the question the previous sweep left open.** `pkgconf` was
+added to the eight meson/cmake recipes on the argument that meson's
+`dependency()` always resolves through pkg-config. The fourteen autotools ones
+were deliberately left alone — some use `PKG_CHECK_MODULES` and some use
+`AC_CHECK_LIB`, and adding it to all of them would be over-declaring, the same
+error in the other direction. The stated plan was to let the next sweep settle
+it empirically. It did:
+
+```
+checking for HARFBUZZ... no
+configure: error: harfbuzz support requested but library not found
+```
+
+harfbuzz **was** in the layer stack. Nothing could find it. The surrounding
+checks are the giveaway — ZLIB no, BZIP2 no, LIBPNG no, then a working `-lz`
+fallback: every pkg-config lookup failing while the direct link tests pass is
+what a missing pkg-config looks like from configure.
+
+freetype and freetype-bootstrap now declare it. **Twelve autotools recipes
+remain undetermined** — bash, cmake, curl, elfutils, git, libarchive, libpng,
+libwebp, libxml2, python, readline, sqlite — and the next sweep answers those
+the same way rather than by guessing.
+
+This is the loop working as designed: the spike is not a gate, its output is a
+list, and each round converts a guess into a measured declaration.
