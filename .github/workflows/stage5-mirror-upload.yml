@@ -64,6 +64,23 @@ jobs:
           ref: ${{ github.ref_name }}
           persist-credentials: true
 
+      - name: 'Discover free routes by rewriting the upstream URL'
+        run: |
+          set -eu
+          cd spikes/stage5
+          # `probe mirrors` walks packages/, so it finds rewrites only for
+          # packages that have recipes -- the same recipes-only assumption
+          # that left 71 artifacts on a single host. It still only covers the
+          # 41 here; the other 67 get their second route from the upload
+          # below, which is the route that does not depend on anyone else.
+          # ALL 111, not the 41 with recipes. This walked packages/ only, so
+          # 70 artifacts never got a discovered route and sat on one host
+          # through every probe and every build -- which is what the order
+          # run's seven 502s and timeouts were.
+          python3 -u tools/probe.py mirrors --packages packages \
+            --urls remaining-urls.txt gap-urls.txt gap3-urls.txt \
+            --out "$GITHUB_WORKSPACE/sources/MIRRORS.tsv" || true
+
       - name: 'Fetch everything in the set, recipe or not'
         run: |
           set -eu
@@ -116,6 +133,15 @@ jobs:
               # --http1.1 and --retry-all-errors are stage 4's lessons: h2
               # stream errors are not on curl's default retry list, and long
               # transfers on shared runners fail that way.
+              # Discovery runs BEFORE this, so by now the table already has
+              # routes for artifacts with no recipe -- and mirror.py will use
+              # them. Passing "unpinned" as the digest means "take what
+              # arrives"; the upload then records OUR hash of OUR copy, which
+              # is what a mirror row asserts anyway.
+              #
+              # --http1.1 and --retry-all-errors are stage 4's findings: h2
+              # stream errors are not on curl's default retry list, and long
+              # transfers over h2 on shared runners fail exactly that way.
               curl -fsSL --http1.1 --retry 3 --retry-all-errors \
                    --connect-timeout 20 --max-time 300 \
                    -o "dl/$name" "$url" || echo "  FETCH FAILED $name"
@@ -124,24 +150,18 @@ jobs:
           echo ""
           echo "  $(ls dl | wc -l) tarballs in dl/"
 
-      - name: 'Discover free routes by rewriting the upstream URL'
-        run: |
-          set -eu
-          cd spikes/stage5
-          # `probe mirrors` walks packages/, so it finds rewrites only for
-          # packages that have recipes -- the same recipes-only assumption
-          # that left 71 artifacts on a single host. It still only covers the
-          # 41 here; the other 67 get their second route from the upload
-          # below, which is the route that does not depend on anyone else.
-          python3 -u tools/probe.py mirrors --packages packages \
-            --out "$GITHUB_WORKSPACE/sources/MIRRORS.tsv" || true
-
       - name: 'Upload each to the mirror and record the locator'
         run: |
           set -eu
           cd spikes/stage5
+          # A PROPER `if`, NOT AN AND-LIST. Under `set -e`,
+          #     [ "$x" = "true" ] && DRY="--dry-run"
+          # exits the step with status 1 whenever the test is false AND it is
+          # the last command -- verified. It is not last today, so it works;
+          # it would break the moment anyone appended a line, and that is a
+          # bad way to find out.
           DRY=""
-          [ "${{ inputs.dry_run }}" = "true" ] && DRY="--dry-run"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then DRY="--dry-run"; fi
           # THE TAG IS PER PACKAGE, so a release page stays navigable and a
           # single artifact can be withdrawn without touching the others.
           # `gh release create` is idempotent enough here: it fails loudly if

@@ -1098,7 +1098,18 @@ def cmd_mirrors(a):
     import tomllib
     from concurrent.futures import ThreadPoolExecutor
 
-    rows, checked, found = [], 0, 0
+    # EVERY ARTIFACT IN THE SET, NOT ONLY THOSE WITH RECIPES.
+    #
+    # This walked packages/ alone, so it discovered routes for the 41 written
+    # recipes and nothing else -- leaving 70 artifacts on a single upstream
+    # host through every probe and every build. The order run then failed on
+    # exactly those: 502s and timeouts, seven of them, none with a fallback.
+    #
+    # The URL lists are committed and are already the probe's own input, so
+    # they belong here too. An artifact with no recipe has no pinned digest
+    # yet, so its digest is whatever upstream serves right now -- which is the
+    # correct thing to compare a candidate mirror against anyway.
+    targets = []
     for pkg in sorted(os.listdir(a.packages)):
         rp = os.path.join(a.packages, pkg, "recipe.toml")
         if not os.path.exists(rp):
@@ -1107,8 +1118,20 @@ def cmd_mirrors(a):
         src = r.get("source", {})
         if src.get("kind") == "git" or "sha256" not in src:
             continue
-        sha, url = src["sha256"], src["url"]
+        targets.append((r["name"], r["version"], src["sha256"], src["url"]))
+    seen_urls = {t[3] for t in targets}
+    for lst in (a.urls or []):
+        if not os.path.exists(lst):
+            continue
+        for ln in open(lst):
+            u = ln.strip()
+            if u.startswith("http") and u not in seen_urls:
+                seen_urls.add(u)
+                targets.append((os.path.basename(u), "", None, u))
+
+    for pname, pver, sha, url in targets:
         fname = os.path.basename(url)
+        r = {"name": pname, "version": pver}
 
         cands = mirror_candidates(url, fname)
         d = packager_source(r["name"])
@@ -1128,7 +1151,12 @@ def cmd_mirrors(a):
         # ONE HEAD TO UPSTREAM for the canonical size. Without it there is
         # nothing to compare a candidate's Content-Length against, and a host
         # serving a stub or an error page would look like a working route.
-        _, want_len, _ = head(url, a.timeout)
+        st_up, want_len, _ = head(url, a.timeout)
+        # AND RECORD UPSTREAM ITSELF. Provenance belongs in the table beside
+        # the routes; without it an artifact reads as having one fewer route
+        # than it has, which is exactly the THIN report that misled us before.
+        if st_up == 200:
+            rows.append((sha or "unpinned", fname, "upstream", url))
         if want_len is None:
             print("   upstream gave no Content-Length -- length cannot be compared")
 
@@ -1151,7 +1179,7 @@ def cmd_mirrors(a):
                 print(f"                {length} bytes, upstream has {want_len}")
             else:
                 print(f"   ok           {c}")
-                rows.append((sha, fname, "mirror", c))
+                rows.append((sha or "unpinned", fname, "mirror", c))
                 found += 1
 
     print(f"\n  === {found} routes recorded from {checked} candidates ===")
@@ -1692,6 +1720,8 @@ def main():
     p = sub.add_parser("mirrors",
                        help="find and verify alternate routes for every pin")
     p.add_argument("--packages", default="packages")
+    p.add_argument("--urls", nargs="*",
+                   help="URL lists to cover as well as the recipes")
     p.add_argument("--out", help="MIRRORS.tsv to write")
     p.add_argument("--timeout", type=int, default=8,
                    help="per-request seconds; a slower mirror is not a mirror")
