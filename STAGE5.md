@@ -28,10 +28,36 @@ set is complete over names expressible in a machine-readable dependency syntax
 and blind to three classes that are not:
 
 - **config-tool discovery.** mesa finds LLVM with `dependency('llvm', method:
-  'config-tool')`, and LLVM ships no `.pc` at all. **`llvm` — one of the five
-  packages named below as most of the work — is absent from
-  `sources/MIRRORS.tsv` entirely**, and `llvm-timing.yml` fetches it from
-  upstream while *printing* the sha256 rather than verifying one.
+  'config-tool')`, and LLVM ships no `.pc` at all — so there was no name for
+  the graph to match and nothing reported a gap. **`llvm` was the one package
+  in the set with no pin anywhere**: absent from `sources/MIRRORS.tsv`, absent
+  from every URL list, and fetched by `llvm-timing.yml` straight from upstream
+  while merely *printing* the sha256.
+
+  **Now closed, and on a better route than the one it was on.**
+  `llvm-project-22.1.8.src.tar.xz` is pinned at `922f1817…5888`, with its
+  detached GPG signature pinned beside it at `052eeebd…5910` — LLVM is one of
+  the few packages in this set that publishes one at all.
+
+  The route matters as much as the pin. `llvm-timing.yml` had been fetching
+  the **split** component tarballs, where `llvm-<v>.src.tar.xz` does not build
+  without `cmake-<v>.src.tar.xz` and the companion was fetched inside an
+  `if curl … 2>/dev/null` that swallowed its own failure — a missing download
+  that would have surfaced as an LLVM build error. The monorepo archive is
+  what upstream's release page documents, is self-contained, and is what BLFS
+  builds. Three other downloads on that same page are traps: the
+  `LLVM-<v>-Linux-ARM64` tarball is **prebuilt binaries**, the
+  `/archive/refs/tags/` URL is GitHub's auto-generated archive whose digest is
+  not guaranteed stable, and `test-suite-<v>.src` is a different repository.
+
+  `llvm-timing.yml` now verifies both digests instead of printing one, and the
+  monorepo URL is in `remaining-urls.txt` so the mirror covers it.
+
+  Two things remain: the digests are **reported by GitHub, not yet measured
+  here** — which is why they are checked on every run rather than trusted —
+  and BLFS carries a required upstream patch for 22.1.8 fixing *"a bug causing
+  wrong code on some conditions"*. A miscompilation in the compiler that builds
+  mesa belongs in the recipe as a declared patch.
 - **interpreter modules.** mesa requires `mako`, `packaging` and `PyYAML` at
   configure time, checked with `run_command(python3, '-c', 'import mako')`.
   None are pinned. Nothing short of executing the build can find that

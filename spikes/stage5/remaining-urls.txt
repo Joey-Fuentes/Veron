@@ -31,6 +31,53 @@ https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/0.19.1/downloads/wlroo
 https://github.com/vcrhonek/hwdata/archive/v0.410/hwdata-0.410.tar.gz
 https://gitlab.freedesktop.org/emersion/libdisplay-info/-/releases/0.4.0/downloads/libdisplay-info-0.4.0.tar.xz
 
+# LLVM, AND IT IS TWO ARTIFACTS, NOT ONE. `llvm-<v>.src.tar.xz` is a SPLIT
+# tarball: it does not build without `cmake-<v>.src.tar.xz` from the same
+# release, which carries the shared CMake modules the other components
+# include. llvm-timing.yml already fetches both and the second is easy to
+# forget, because its absence looks like an LLVM build error rather than a
+# missing download.
+#
+# WHY THIS LINE EXISTS AT ALL. llvm was the one package in the whole set with
+# NO PIN ANYWHERE -- absent from MIRRORS.tsv, absent from every URL list, and
+# fetched by llvm-timing.yml straight from upstream while merely *printing*
+# the sha256 rather than checking it. It is also one of the five packages
+# STAGE5.md names as most of the work.
+#
+# IT ESCAPED FOR A REASON WORTH KEEPING. probe.py maps a dependency name to a
+# package through the `.pc` files a tarball ships, and mesa asks for LLVM with
+# `dependency('llvm', method: 'config-tool')` -- llvm-config, not pkg-config.
+# LLVM ships no .pc file at all, so there was no name for the graph to match
+# and nothing reported a gap. See ROADMAP.md on the three detectors.
+#
+# ONE ARTIFACT, NOT TWO, AND NOT THE OTHER THREE ON THAT PAGE.
+#
+# llvm-project-<V>.src.tar.xz is the archive LLVM's release page documents.
+# The alternatives on the same page are all worse:
+#   llvm-<V>.src.tar.xz     a SPLIT tarball needing cmake-<V>.src.tar.xz from
+#                           the same release; a missing companion looks like
+#                           an LLVM build error, not a missing download
+#   LLVM-<V>-Linux-ARM64    PREBUILT BINARIES -- upstream says so plainly, and
+#                           LLVM builds from source, so there is no excuse
+#   /archive/refs/tags/...  GitHub's auto-generated tag archive, whose digest
+#                           is not guaranteed: Git 2.38 changed the
+#                           compression and every checksum for every tag moved
+#                           at once. GitHub's own guidance afterwards was to
+#                           use release assets instead. No signature either.
+#   test-suite-<V>.src      a different repository; nothing to do with
+#                           building LLVM
+#
+# Anything >= 15.0.0 satisfies llvmpipe's ORCJIT path; >= 18.0.0 is only for
+# the AMD drivers, which are not built here. 22.1.8 is pinned at
+# 922f1817...5888 with a detached GPG signature beside it -- one of the few
+# packages in this set that publishes one.
+#
+# NOTE FOR THE RECIPE, NOT FOR THE MIRROR: BLFS carries a required upstream
+# patch for 22.1.8 described as fixing "a bug causing wrong code on some
+# conditions". A miscompilation in the compiler that builds mesa is worth
+# carrying as a declared patch rather than meeting during a 27-minute build.
+https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8/llvm-project-22.1.8.src.tar.xz
+
 # batch: B6-system
 https://www.gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.56.tar.bz2
 https://www.gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.3.tar.bz2

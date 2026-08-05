@@ -30,7 +30,7 @@ on:
       version:
         description: 'LLVM version'
         required: false
-        default: '21.1.8'
+        default: '22.1.8'
       targets:
         description: 'LLVM_TARGETS_TO_BUILD (native only is what llvmpipe needs)'
         required: false
@@ -88,24 +88,112 @@ jobs:
             zlib1g-dev libzstd-dev libxml2-dev)
           echo "  apt done"
 
-      - name: 'Fetch the pinned LLVM source'
+      # ONE SOURCE ARCHIVE, THE ONE UPSTREAM DOCUMENTS.
+      #
+      # This used to fetch the SPLIT component tarballs -- llvm-$V.src.tar.xz
+      # plus cmake-$V.src.tar.xz -- and the second was fetched inside an
+      # `if curl ... 2>/dev/null` that swallowed its own failure. A missing
+      # companion does not look like a missing download; it looks like an
+      # LLVM build error, because llvm/CMakeLists.txt includes ../cmake.
+      #
+      # LLVM's release page names exactly one source archive:
+      #
+      #   "To get all the llvm-project source code for this release, choose
+      #    llvm-project-<V>.src.tar.xz"
+      #
+      # It is self-contained -- cmake/ is inside it -- so the companion
+      # problem stops existing. It is also what BLFS builds, which puts a
+      # second packager on the same route. ~160 MB against 77 MB is the cost.
+      #
+      # NOT the /archive/refs/tags/ tarball. GitHub generates those on demand
+      # and does not guarantee their bytes: on 2023-01-30 a Git 2.38 upgrade
+      # changed the compressor and every checksum for every existing tag moved
+      # at once. Their own guidance afterwards was to use release ASSETS if
+      # you depend on stable hashes. The auto-archive also carries no .sig and
+      # downloads named after the tag rather than the project.
+      #
+      # NOT LLVM-$V-Linux-ARM64.tar.xz either. That is a PREBUILT BINARY
+      # toolchain -- upstream says so plainly, "contains LLVM binaries for
+      # Arm64 Linux". It would put an opaque vendor binary underneath mesa,
+      # and unlike linux-firmware, LLVM can be built from source.
+      #
+      # THE DIGEST BELOW IS EMPTY AND THAT IS HONEST. Runs 83733772717,
+      # 83734996374 and 83923847938 each measured
+      # d9022ddadb40a15015f6b27e6549a7144704ded8828ba036ffe4b8165707de21
+      # for the SPLIT llvm-21.1.8.src.tar.xz. That is a different artifact
+      # from this one, so it does not carry over. The first run after this
+      # change measures the monorepo and prints it; add a case arm then.
+      - name: 'Fetch the pinned LLVM source, and verify it'
         run: |
           set -eu
           V='${{ inputs.version }}'
-          URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-$V/llvm-$V.src.tar.xz"
-          echo "  $URL"
-          curl -4 -fL --connect-timeout 20 --retry 3 -o llvm.tar.xz "$URL"
-          echo "  bytes  $(stat -c%s llvm.tar.xz)"
-          echo "  sha256 $(sha256sum llvm.tar.xz | cut -d' ' -f1)"
-          echo "  ^ RECORD THIS -- the pin a recipe would use, and the one"
-          echo "    durable artifact of a non-hermetic run."
-          tar xf llvm.tar.xz && mv "llvm-$V.src" src
-          # llvm-*.src.tar.xz needs the cmake modules from the same release.
-          CURL="https://github.com/llvm/llvm-project/releases/download/llvmorg-$V/cmake-$V.src.tar.xz"
-          if curl -4 -fL --connect-timeout 20 -o cmake.tar.xz "$CURL" 2>/dev/null; then
-            tar xf cmake.tar.xz && mv "cmake-$V.src" cmake
-            echo "  fetched the companion cmake modules (llvm-*.src needs them)"
+          BASE="https://github.com/llvm/llvm-project/releases/download/llvmorg-$V"
+          TARBALL="llvm-project-$V.src.tar.xz"
+
+          # PINS FOR THIS ARTIFACT. These are the digests GitHub publishes
+          # for the uploaded release assets -- REPORTED, not measured here,
+          # which is exactly why they are checked on every run rather than
+          # trusted. A wrong value fails this step immediately instead of
+          # building something nobody described.
+          #
+          # They are for llvm-project-$V.src.tar.xz. The d9022dda... digest
+          # this workflow printed on runs 83733772717 / 83734996374 /
+          # 83923847938 was for the SPLIT llvm-$V.src.tar.xz at 21.1.8 and
+          # does not carry over -- different artifact, different bytes.
+          case "$V" in
+            22.1.8)
+              WANT=922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888
+              WANT_SIG=052eeebd58a2df67db066c6defb3ae67572bdf098d3064b8ed111b5385d45910
+              ;;
+            *) WANT=''; WANT_SIG='' ;;
+          esac
+
+          echo "  $BASE/$TARBALL"
+          curl -4 -fL --connect-timeout 20 --retry 3 -o src.tar.xz \
+            "$BASE/$TARBALL"
+          GOT=$(sha256sum src.tar.xz | cut -d' ' -f1)
+          echo "  bytes  $(stat -c%s src.tar.xz)"
+          echo "  sha256 $GOT"
+          if [ -n "$WANT" ]; then
+            [ "$GOT" = "$WANT" ] || {
+              echo "LLVM SHA256 MISMATCH"
+              echo "  want $WANT"
+              echo "  got  $GOT"
+              exit 1
+            }
+            echo "  VERIFIED against the pin"
+          else
+            echo ""
+            echo "  NO PIN FOR $V YET. Add a case arm above with the sha256"
+            echo "  printed here before treating this run as reproducible."
+            echo "  A digest that is printed and never compared is a"
+            echo "  measurement nobody is using -- which is how llvm ended up"
+            echo "  the one package in the set with no pin anywhere."
           fi
+
+          # THE SIGNATURE EXISTS, WHICH IS RARE HERE. Most pins in this set
+          # record `signature = none`. LLVM publishes a detached GPG .sig for
+          # every release asset, with keys at releases.llvm.org/release-keys.asc.
+          #
+          # PINNING THE .sig IS NOT VERIFYING THE SIGNATURE, and the difference
+          # is worth stating rather than blurring. Checking its sha256 fixes
+          # WHICH signature file we mean; `gpg --verify` against the published
+          # keys is a separate act and belongs in the recipe's airlock, where
+          # fetching is allowed and where the keyring can be pinned too.
+          echo "  $BASE/$TARBALL.sig"
+          curl -4 -fL --connect-timeout 20 --retry 3 -o src.tar.xz.sig \
+            "$BASE/$TARBALL.sig" || { echo "SIGNATURE NOT FETCHED"; exit 1; }
+          GOTS=$(sha256sum src.tar.xz.sig | cut -d' ' -f1)
+          echo "  sig sha256 $GOTS"
+          if [ -n "$WANT_SIG" ]; then
+            [ "$GOTS" = "$WANT_SIG" ] || {
+              echo "SIGNATURE SHA256 MISMATCH"; echo "  got $GOTS"; exit 1; }
+            echo "  signature file VERIFIED against the pin"
+          fi
+
+          tar xf src.tar.xz
+          mv "llvm-project-$V.src" llvm-project-src
+          echo "  unpacked -> llvm-project-src (cmake/ included, no companion needed)"
 
       - name: 'Configure'
         run: |
@@ -120,7 +208,9 @@ jobs:
             # this project would run.
             EXTRA="-DLLVM_TARGETS_TO_BUILD=${{ inputs.targets }}"
           fi
-          cmake -S src -B build -G Ninja \
+          # -S points INSIDE the monorepo: llvm/ is the project root and
+          # it includes ../cmake from the same tree.
+          cmake -S llvm-project-src/llvm -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ inputs.build_type }} \
             -DCMAKE_INSTALL_PREFIX=/usr \
             -DLLVM_ENABLE_PROJECTS= \
