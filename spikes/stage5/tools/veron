@@ -436,6 +436,26 @@ def source_kind(r):
     return r["source"].get("kind", "tarball")
 
 
+def source_is_local(r):
+    """kind = "local" -- the source is this repository.
+
+    THE FIRST PACKAGE WHOSE UPSTREAM IS US. /etc and the dinit service
+    definitions are not something anyone publishes a tarball of; they are
+    decisions this project makes about the system it produces.
+
+    Making them a PACKAGE rather than a step in the workflow is the whole
+    point. A workflow step that copies files into the image would bypass the
+    DESTDIR, and therefore the manifest, the ledger, `[installs]` and the
+    collision check -- so /etc would be the one part of the system with no
+    record of where it came from, in a project whose claim is that every file
+    traces to a recorded source. As a package it goes through all of them, and
+    `veron why /etc/fstab` answers.
+
+    Its provenance is the repository commit, which is exactly what the
+    git-pinned packages already record for someone else's tree."""
+    return source_kind(r) == "local"
+
+
 def source_filename(name, r):
     """The file this recipe's source arrives as, for BOTH kinds of pin.
 
@@ -495,7 +515,7 @@ def cmd_sources(a):
         # tools/fetch-git.sh -- so emitting a URL here would send the mirror
         # to a git remote expecting a tarball. `veron git-sources` is the
         # list for those, and stage5-mirror-upload iterates both.
-        if source_kind(r) == "git":
+        if source_kind(r) in ("git", "local"):
             continue
         print(f"{src['sha256']}\t{source_filename(name, r)}\t{src['url']}")
     return 0
@@ -514,6 +534,13 @@ def cmd_fetch(a):
     os.makedirs(a.dl, exist_ok=True)
     bad = 0
     for name in topo_order(recipes):
+        if source_is_local(recipes[name]):
+            # NOTHING TO FETCH AND NOTHING TO VERIFY AGAINST. The bytes are in
+            # this checkout; the thing that pins them is the commit, and the
+            # thing that detects a change is [installs].digest, same as any
+            # other package.
+            print(f"  local   {name}  (source is this repository)")
+            continue
         src = recipes[name]["source"]
         fn = os.path.join(a.dl, source_filename(name, recipes[name]))
         if src["sha256"].startswith("PENDING"):
@@ -1883,10 +1910,45 @@ def cmd_linked(a):
                 where.setdefault(owner, (so, rel))
 
         undeclared = sorted(linked - declared)
-        unlinked = sorted(declared - linked)
-        if not undeclared and not unlinked:
+        # A DEPENDENCY THAT SHIPS NO SHARED LIBRARY CANNOT APPEAR IN
+        # DT_NEEDED, AND REPORTING IT AS UNLINKED IS THE DETECTOR ACCUSING
+        # SOMETHING IT CANNOT SEE.
+        #
+        # bzip2's recipe runs `make`, which builds libbz2.a and the bzip2
+        # binary -- the shared library needs a separate Makefile-libbz2_so
+        # that we do not invoke. So cmake, libarchive and python link bzip2
+        # STATICALLY, correctly declare it in deps.link, and leave no
+        # DT_NEEDED behind. Nine of the first sweep's eleven findings had this
+        # single cause.
+        #
+        # Static linking IS linking; the declaration is right and the
+        # measurement is blind. Skipping providers with no shared object is
+        # the honest scope, and it is checkable rather than a judgement: if a
+        # package installs a .so, it is in scope; if it does not, it is not.
+        def ships_shared(pkg):
+            dd = os.path.join(dest, pkg)
+            for dp, _, fs in os.walk(dd):
+                for fn in fs:
+                    if ".so" in fn:
+                        return True
+            return False
+
+        unlinked = sorted(d for d in (declared - linked)
+                          if d in recipes and ships_shared(d))
+        static_only = sorted(d for d in (declared - linked)
+                             if d in recipes and not ships_shared(d))
+        if static_only:
+            # SAID, NOT SILENT. These are real declarations this detector is
+            # structurally unable to confirm, and a run that never mentions
+            # them reads as though it checked them.
+            print(f"== {pkg}\n  static-only  {' '.join(static_only)} "
+                  f"ship no shared library; linkage not observable here")
+            if not undeclared and not unlinked:
+                continue
+        elif not undeclared and not unlinked:
             continue
-        print(f"== {pkg}")
+        if not static_only:
+            print(f"== {pkg}")
         for u in undeclared:
             so, rel = where[u]
             problems += 1
@@ -2103,7 +2165,14 @@ def cmd_installs(a):
         print(f"\n  {len(missing)} package(s) declare no [installs].prefixes "
               f"and were NOT checked:")
         print(f"    {', '.join(missing)}")
-    problems = stray_n + changed_n
+    # IN fail MODE, UNCHECKED IS A FAILURE.
+    #
+    # With no [installs] block a package is not checked at all, so a run over
+    # 48 unseeded recipes reports "0 stray prefixes" and passes -- a zero over
+    # an unchecked set, which is the reassuring number this project has caught
+    # three times now. Turning the mode up must therefore also require that
+    # there is something to check, or the gate certifies its own blindness.
+    problems = stray_n + changed_n + (len(missing) if a.mode == "fail" else 0)
     print(f"\nVERON-INSTALLS-{'FAIL' if (problems and a.mode == 'fail') else 'OK'}"
           f"  {stray_n} stray prefix(es), {changed_n} changed install set(s), "
           f"{len(missing)} unchecked")

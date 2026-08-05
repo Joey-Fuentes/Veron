@@ -1,0 +1,86 @@
+name    = "xkeyboard-config"
+version = "2.48"
+group   = "input"
+license = "MIT"
+srcdir  = "xkeyboard-config-2.48"
+
+[source]
+url       = "https://gitlab.freedesktop.org/xkeyboard_config/xkeyboard-config/-/releases/xkeyboard-config-2.48/downloads/xkeyboard-config-2.48.tar.xz"
+sha256    = "b77041324f0109f77161ee43743fe04baa485866af8460d31e476ad3f7648fd5"
+signature = "none published"
+crosschecked_against = []
+
+[deps]
+# DATA, NOT CODE -- no compiler, no library, nothing linked. meson is here to
+# copy files and substitute a version.
+build        = ["meson", "ninja"]
+link         = []
+runtime      = []
+# nls DEFAULTS TO true AND WOULD FAIL THE BUILD. po/meson.build calls
+# i18n.gettext(), which needs msgfmt. There is no gettext in this set -- glib
+# gets through only because xgettext's ABSENCE makes it skip its own po/
+# directory, which is recorded in glib's [undeclarable]. Here the option is
+# explicit, so the absence has to be a decision.
+#
+# non-latin-layouts-list defaults to false and must stay there: it would make
+# xkbcli REQUIRED, which inverts the order against libxkbcommon, and would
+# also demand python3 with the yaml module.
+optional_off = ["nls", "non-latin-layouts-list", "xorg-rules-symlinks"]
+
+[declared]
+configure_flags = ["-Dnls=false", "-Dxorg-rules-symlinks=false"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["xkeyboard-config"]
+deferral        = """
+Internals not reviewed. WHY IT IS HERE, AND WHAT IT CLOSES: libxkbcommon's \
+disclosure block records a RUNTIME GAP -- it needs xkeyboard-config's data \
+to resolve any real keymap, and that package had no recipe, so the gap could \
+only be written down rather than fixed. This is the fix. A compositor with \
+libxkbcommon and without this maps no keys.
+
+THE DEPENDENCY RUNS THE OTHER WAY FROM WHAT IT LOOKS LIKE. libxkbcommon does \
+`dependency('xkeyboard-config', required: false)` purely to learn the data \
+directory at build time; the real relationship is at runtime, and this package \
+does not depend on libxkbcommon at all -- unless \
+non-latin-layouts-list is turned on, which makes xkbcli required and creates \
+the cycle. Left at its default of false.
+
+compat-rules IS LEFT ON, deliberately. It installs the rules files that map \
+model/layout/variant names to symbol definitions; without them the data is \
+present and unusable."""
+
+[undeclarable]
+# Lookups no .pc name can answer, per ROADMAP.md rule 4.
+#
+# THE xkbcli ENTRY IS THE ONE THAT MATTERS. The scanner reports it REQUIRED
+# because the find_program says so; the guard is two lines above and invisible
+# to a per-call scan -- the same shape as glib's gi-docgen.
+"program:xkbcli" = "meson.build:102 -- REQUIRED, and unreachable: it sits inside `if get_option('non-latin-layouts-list')`, which defaults to false and stays there. Turning it on would make libxkbcommon a build dependency of the data package libxkbcommon needs at runtime -- a cycle -- and would also demand python3 with the yaml module."
+"program:xsltproc" = "meson.build:56 -- required:false. libxslt is not in this set; the rules documentation it would generate is not shipped."
+"program:pytest-3" = "meson.build:133 -- required:false. Upstream suites are not run here."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/xkeyboard-config-2.48.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Dnls=false", "-Dxorg-rules-symlinks=false"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "xkeyboard-config"]]
+expect = ["2.48"]

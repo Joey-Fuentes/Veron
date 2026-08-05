@@ -1,0 +1,66 @@
+name    = "mtdev"
+version = "1.1.7"
+group   = "input"
+license = "MIT"
+srcdir  = "mtdev-1.1.7"
+
+[source]
+# NOT ON GitHub, and the URL was wrong once. gap-urls.txt records the
+# correction: upstream is bitmath.org, which is a personal site with no
+# mirror -- so the two routes in MIRRORS.tsv are doing real work here.
+url       = "http://bitmath.org/code/mtdev/mtdev-1.1.7.tar.bz2"
+sha256    = "a107adad2101fecac54ac7f9f0e0a0dd155d954193da55c2340c97f2ff1d814e"
+signature = "none published"
+crosschecked_against = []
+
+[deps]
+# NOTHING. configure.ac has no PKG_CHECK_MODULES and no AC_CHECK_LIB at all --
+# checked rather than assumed, because a touch-protocol translator sounds like
+# it should need libevdev and does not. It reads raw kernel input events.
+build        = []
+link         = []
+runtime      = []
+optional_off = ["static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["mtdev"]
+deferral        = """
+Internals not reviewed. WHY IT IS HERE: libinput uses mtdev to normalise the \
+older kernel multitouch protocol (type A) into the newer slotted one, so every \
+touchpad on a pre-3.x-era protocol goes through it.
+
+A SHIPPED configure, NOT autogen.sh. The tarball is a real autotools release \
+with configure, Makefile.in and aclocal.m4 already generated -- so nothing here \
+needs autoconf, automake or libtool at build time. That generated machinery is \
+also the residue class the xz backdoor lived in, and it is irreducibly trusted \
+here as it is for every autotools tarball in this set.
+
+--disable-static because a libmtdev.a nothing links would ship in the image and \
+appear in the manifest."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/mtdev-1.1.7.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "mtdev"]]
+expect = ["1.1.7"]

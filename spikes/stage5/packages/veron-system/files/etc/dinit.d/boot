@@ -1,0 +1,8 @@
+# The root service. dinit starts this and nothing else; everything that should
+# run at boot gets a symlink in boot.d/ rather than an edit to this file.
+#
+# `type = internal` means dinit runs no process for it -- it exists purely as
+# the thing other services attach to. That indirection is what makes adding a
+# service a file rather than a diff.
+type = internal
+waits-for.d = boot.d

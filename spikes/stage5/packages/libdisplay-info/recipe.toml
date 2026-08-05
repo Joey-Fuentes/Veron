@@ -1,0 +1,85 @@
+name    = "libdisplay-info"
+version = "0.4.0"
+group   = "graphics-substrate"
+license = "MIT"
+srcdir  = "libdisplay-info-0.4.0"
+
+# Read source-first; the findings are in PACKAGES.md.
+
+[source]
+url       = "https://gitlab.freedesktop.org/emersion/libdisplay-info/-/releases/0.4.0/downloads/libdisplay-info-0.4.0.tar.xz"
+sha256    = "43b180baa143e2035654759d84e2b2f5ee77d5fe817c423838c7fe59c0d68459"
+signature = "none published"
+crosschecked_against = []
+
+[deps]
+# hwdata IS REQUIRED, AND meson.build SAYS `required: false`. The else branch
+# is a HARDCODED ABSOLUTE PATH:
+#
+#   dep_hwdata = dependency('hwdata', required: false, native: true)
+#   if dep_hwdata.found()  pnp_ids = files(hwdata_dir / 'pnp.ids')
+#   else                   pnp_ids = files('/usr/share/hwdata/pnp.ids')
+#
+# so a missing hwdata does not degrade -- it produces a file-not-found on a
+# path that reads like it has nothing to do with a dependency lookup. Both
+# branches land on the same file here because our hwdata recipe installs the
+# .pc AND that exact path. Declared as the hard dependency it actually is.
+build        = ["meson", "ninja", "python", "hwdata"]
+link         = []
+runtime      = ["hwdata"]
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "none -- and tests cannot be disabled; see the deferral"
+packaged_as     = ["libdisplay-info"]
+deferral        = """
+Internals not reviewed. WHERE IT SITS: the chain is hwdata -> libdisplay-info \
+-> wlroots, and pnp.ids is consumed TWICE by different mechanisms -- \
+libdisplay-info compiles it into a C search table via gen-search-table.py, and \
+wlroots separately runs gen_pnpids.sh over the same file.
+
+MIT, C11, meson >= 0.57, NO RUST, and the only Python script imports `sys` and \
+nothing else. After mesa's mako requirement that is worth stating rather than \
+assuming.
+
+THERE ARE NO OPTIONS AT ALL -- no meson.options, and both \
+subdir('di-edid-decode') and subdir('test') are unconditional. Tests CANNOT be \
+disabled, which is why configure_flags is empty rather than carrying the \
+-Dtests=disabled every other meson package here passes. They degrade cleanly: \
+the v4l-utils subproject and the reference edid-decode are both required: \
+false.
+
+`wrap_mode=nodownload` IS SET BY UPSTREAM in project() default_options -- \
+stating in the build configuration exactly the guarantee cairo leaves to \
+bwrap. Not exotic hardening; what a careful upstream already does.
+
+THREE IN-TREE SHELL SCRIPTS ARE find_program'd AS REQUIRED, so the executable \
+bit surviving extraction is load-bearing at configure time. tar preserves it \
+from a .tar.xz; a zip-based fetch route would not, which is one more reason \
+the mirror stores what upstream published."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libdisplay-info-0.4.0.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libdisplay-info"]]
+expect = ["0.4.0"]

@@ -1,0 +1,11 @@
+# /etc/fstab -- what dinit's early-filesystems service mounts.
+#
+# The root is mounted by the kernel from the rdinit handoff and is NOT listed
+# here: listing it would mean re-mounting a filesystem that is already the one
+# this file was read from.
+proc            /proc     proc      nosuid,noexec,nodev   0 0
+sysfs           /sys      sysfs     nosuid,noexec,nodev   0 0
+devtmpfs        /dev      devtmpfs  mode=0755,nosuid      0 0
+devpts          /dev/pts  devpts    gid=5,mode=620        0 0
+tmpfs           /run      tmpfs     nosuid,nodev,mode=755 0 0
+tmpfs           /tmp      tmpfs     nosuid,nodev          0 0

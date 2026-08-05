@@ -1,0 +1,75 @@
+name    = "wayland-protocols"
+version = "1.49"
+group   = "wayland"
+license = "MIT"
+srcdir  = "wayland-protocols-1.49"
+
+[source]
+url       = "https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/1.49/downloads/wayland-protocols-1.49.tar.xz"
+sha256    = "ec4c8f74942d6dff7ace8b4ce4764f0ef9ff618a935d974ea77edee2ad240b14"
+signature = "none published"
+crosschecked_against = []
+
+[deps]
+# NO wayland, AND THAT IS THE WHOLE REASON THIS SITS IN THE FIRST WAVE.
+#
+#   dep_scanner = dependency('wayland-scanner',
+#       version: get_option('tests') ? '>=1.25.0' : '>=1.22.90',
+#       required: get_option('tests'),
+#       native: true,
+#       fallback: 'wayland')
+#
+# `required:` is the tests option. With -Dtests=false the scanner is not
+# required, nothing calls prog_scanner, and this package installs XML and a
+# .pc file with no build tool at all. With tests ON it becomes a hard
+# dependency on wayland -- and worse, `fallback: 'wayland'` would send meson
+# to fetch wayland as a subproject.
+build        = ["meson", "ninja"]
+link         = []
+runtime      = []
+optional_off = ["tests"]
+
+[declared]
+configure_flags = ["-Dtests=false"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["wayland-protocols"]
+deferral        = """
+Internals not reviewed. WHAT IT IS: XML protocol definitions and a .pc file \
+naming the directory they live in. No code, no library, nothing linked -- \
+consumers run wayland-scanner over these files to generate their own C.
+
+-Dtests=false IS LOAD-BEARING AND NOT TIDINESS. `tests` defaults to TRUE, and \
+with it on, wayland-scanner becomes required and carries a `fallback: \
+'wayland'` wrap. In a sandbox with no network that is a build failure; with \
+network it would be meson silently vendoring wayland as a subproject -- the \
+exact class --wrap-mode exists to refuse, arriving through an option that \
+sounds like it only affects testing.
+
+It also inverts the build order: wayland-protocols would have to follow \
+wayland rather than precede it, and wlroots needs both."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/wayland-protocols-1.49.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Dtests=false"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "wayland-protocols"]]
+expect = ["1.49"]

@@ -26,48 +26,55 @@ between this file and the recipes fails the run.
   4. file
   5. gperf
   6. hello
-  7. icu
-  8. libffi
-  9. m4
-  10. ncurses
-  11. pcre2
-  12. pkgconf
-  13. xz
-  14. zlib
-  15. autoconf
-  16. libpng
-  17. libtool
-  18. readline
-  19. zstd
-  20. automake
-  21. bash
-  22. curl
-  23. freetype-bootstrap
-  24. libarchive
-  25. libxml2
-  26. sqlite
-  27. git
-  28. python
-  29. markupsafe
-  30. meson
-  31. ninja
-  32. packaging
-  33. pyyaml
-  34. cmake
-  35. fribidi
-  36. glib
-  37. libsfdo
-  38. libxkbcommon
-  39. mako
-  40. pixman
-  41. graphite2
-  42. libjpeg-turbo
-  43. harfbuzz
-  44. libwebp
-  45. freetype
-  46. fontconfig
-  47. cairo
-  48. pango
+  7. hwdata
+  8. icu
+  9. libffi
+  10. m4
+  11. mtdev
+  12. ncurses
+  13. pcre2
+  14. pkgconf
+  15. veron-system
+  16. xz
+  17. zlib
+  18. autoconf
+  19. libpng
+  20. libtool
+  21. readline
+  22. zstd
+  23. automake
+  24. bash
+  25. curl
+  26. freetype-bootstrap
+  27. libarchive
+  28. libxml2
+  29. sqlite
+  30. git
+  31. python
+  32. markupsafe
+  33. meson
+  34. ninja
+  35. packaging
+  36. pyyaml
+  37. cmake
+  38. fribidi
+  39. glib
+  40. libdisplay-info
+  41. libevdev
+  42. libsfdo
+  43. libxkbcommon
+  44. mako
+  45. pixman
+  46. wayland-protocols
+  47. xkeyboard-config
+  48. graphite2
+  49. libjpeg-turbo
+  50. harfbuzz
+  51. libwebp
+  52. freetype
+  53. fontconfig
+  54. cairo
+  55. pango
 
 ======================================================================
 package bzip2 1.0.8
@@ -273,6 +280,36 @@ package hello 2.12.3
          argv ["make", "DESTDIR=dest/hello", "install"]
 
 ======================================================================
+package hwdata 0.410
+  group        graphics-substrate
+  license      GPL-2.0-or-later OR XFree86-1.0
+  recipe-sha   54f8ee6a965314a2fdbbf30ce636c78a3de3e03a899edf90c8c3ead01a4762fe
+
+  source
+    url        https://github.com/vcrhonek/hwdata/archive/v0.410/hwdata-0.410.tar.gz
+    sha256     2864b061b179b8ad8cb6a7339ca07678240a183d9cedce8677a4950acaf798e0
+    signature  none published -- GitHub archive, digest is ours
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off blacklist
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/hwdata-0.410
+         argv ["tar", "-xf", "dl/hwdata-0.410.tar.gz", "-C", "build/hwdata-0.410"]
+    [02] configure
+         cwd  build/hwdata-0.410/hwdata-0.410
+         argv ["./configure", "--prefix=/usr", "--disable-blacklist"]
+    [03] install
+         cwd  build/hwdata-0.410/hwdata-0.410
+         env  DESTDIR=dest/hwdata
+         argv ["make", "install"]
+
+======================================================================
 package icu 78.2
   group        build-substrate
   license      ICU
@@ -367,6 +404,39 @@ package m4 1.4.21
     [04] install
          cwd  build/m4-1.4.21/m4-1.4.21
          argv ["make", "DESTDIR=dest/m4", "install"]
+
+======================================================================
+package mtdev 1.1.7
+  group        input
+  license      MIT
+  recipe-sha   b83f48fbc737fca62eadec3da03e587af53571d7747f131f5a63ea48b79b9e5a
+
+  source
+    url        http://bitmath.org/code/mtdev/mtdev-1.1.7.tar.bz2
+    sha256     a107adad2101fecac54ac7f9f0e0a0dd155d954193da55c2340c97f2ff1d814e
+    signature  none published
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off static
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/mtdev-1.1.7
+         argv ["tar", "-xf", "dl/mtdev-1.1.7.tar.bz2", "-C", "build/mtdev-1.1.7"]
+    [02] configure
+         cwd  build/mtdev-1.1.7/mtdev-1.1.7
+         argv ["./configure", "--prefix=/usr", "--disable-static"]
+    [03] build
+         cwd  build/mtdev-1.1.7/mtdev-1.1.7
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/mtdev-1.1.7/mtdev-1.1.7
+         env  DESTDIR=dest/mtdev
+         argv ["make", "install"]
 
 ======================================================================
 package ncurses 6.6
@@ -468,6 +538,29 @@ package pkgconf 3.0.5
     [05] install-pkg-config-alias
          cwd  build/pkgconf-3.0.5/pkgconf-3.0.5
          argv ["ln", "-sf", "pkgconf", "dest/pkgconf/usr/bin/pkg-config"]
+
+======================================================================
+package veron-system 0.1.0
+  group        system
+  license      MIT
+  recipe-sha   2f708a56d1d5a76eedc0b5efc950ca2d5bcbedce2fd6b2f21477e43196446b45
+
+  source
+    url        this repository
+    sha256     n/a -- see [installs].digest, which pins every file
+    signature  n/a -- the provenance is the commit that carries these files
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      dinit
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] install
+         cwd  build/veron-system-0.1.0
+         argv ["sh", "-c", "mkdir -p \"dest/veron-system\" && cp -a /packages/veron-system/files/. \"dest/veron-system/\""]
 
 ======================================================================
 package xz 5.8.3
@@ -1250,6 +1343,74 @@ package glib 2.86.4
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package libdisplay-info 0.4.0
+  group        graphics-substrate
+  license      MIT
+  recipe-sha   e8991da7cded2ab257c5a83510b5b801a44d6dda4f03a95dac395c6909128882
+
+  source
+    url        https://gitlab.freedesktop.org/emersion/libdisplay-info/-/releases/0.4.0/downloads/libdisplay-info-0.4.0.tar.xz
+    sha256     43b180baa143e2035654759d84e2b2f5ee77d5fe817c423838c7fe59c0d68459
+    signature  none published
+    correspond none
+
+  deps
+    build        hwdata, meson, ninja, python
+    link         -
+    runtime      hwdata
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libdisplay-info-0.4.0
+         argv ["tar", "-xf", "dl/libdisplay-info-0.4.0.tar.xz", "-C", "build/libdisplay-info-0.4.0"]
+    [02] setup
+         cwd  build/libdisplay-info-0.4.0/libdisplay-info-0.4.0
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release"]
+    [03] build
+         cwd  build/libdisplay-info-0.4.0/libdisplay-info-0.4.0
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/libdisplay-info-0.4.0/libdisplay-info-0.4.0
+         env  DESTDIR=dest/libdisplay-info
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package libevdev 1.13.4
+  group        input
+  license      MIT
+  recipe-sha   c53d4dab8f198cefea4431fce28c59bf5c590c100fc9f9dc1e3d683ab3d385da
+
+  source
+    url        https://gitlab.freedesktop.org/libevdev/libevdev/-/archive/libevdev-1.13.4/libevdev-libevdev-1.13.4.tar.gz
+    sha256     0cfa48d1dddac26988ae9ce16282eff97683f1adcd3f5d4312f86d714565d890
+    signature  none published
+    correspond none
+
+  deps
+    build        meson, ninja, python
+    link         -
+    runtime      -
+    optional_off coverity, documentation, tests, tools
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libevdev-1.13.4
+         argv ["tar", "-xf", "dl/libevdev-libevdev-1.13.4.tar.gz", "-C", "build/libevdev-1.13.4"]
+    [02] setup
+         cwd  build/libevdev-1.13.4/libevdev-libevdev-1.13.4
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dtests=disabled", "-Dtools=disabled", "-Ddocumentation=disabled"]
+    [03] build
+         cwd  build/libevdev-1.13.4/libevdev-libevdev-1.13.4
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/libevdev-1.13.4/libevdev-libevdev-1.13.4
+         env  DESTDIR=dest/libevdev
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package libsfdo 0.1.4
   group        desktop
   license      BSD-2-Clause
@@ -1384,6 +1545,74 @@ package pixman 0.46.4
     [04] install
          cwd  build/pixman-0.46.4/pixman-0.46.4
          env  DESTDIR=dest/pixman
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package wayland-protocols 1.49
+  group        wayland
+  license      MIT
+  recipe-sha   2bb5ae43cabb3922cd515f7a4b13dcc4f572536749f57a51895937b037fdc0be
+
+  source
+    url        https://gitlab.freedesktop.org/wayland/wayland-protocols/-/releases/1.49/downloads/wayland-protocols-1.49.tar.xz
+    sha256     ec4c8f74942d6dff7ace8b4ce4764f0ef9ff618a935d974ea77edee2ad240b14
+    signature  none published
+    correspond none
+
+  deps
+    build        meson, ninja
+    link         -
+    runtime      -
+    optional_off tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/wayland-protocols-1.49
+         argv ["tar", "-xf", "dl/wayland-protocols-1.49.tar.xz", "-C", "build/wayland-protocols-1.49"]
+    [02] setup
+         cwd  build/wayland-protocols-1.49/wayland-protocols-1.49
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dtests=false"]
+    [03] build
+         cwd  build/wayland-protocols-1.49/wayland-protocols-1.49
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/wayland-protocols-1.49/wayland-protocols-1.49
+         env  DESTDIR=dest/wayland-protocols
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package xkeyboard-config 2.48
+  group        input
+  license      MIT
+  recipe-sha   c0bffab653f5260d9cb1de1cc3a810bc67eb73165eb54b3ac349a9372a5df571
+
+  source
+    url        https://gitlab.freedesktop.org/xkeyboard_config/xkeyboard-config/-/releases/xkeyboard-config-2.48/downloads/xkeyboard-config-2.48.tar.xz
+    sha256     b77041324f0109f77161ee43743fe04baa485866af8460d31e476ad3f7648fd5
+    signature  none published
+    correspond none
+
+  deps
+    build        meson, ninja
+    link         -
+    runtime      -
+    optional_off nls, non-latin-layouts-list, xorg-rules-symlinks
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/xkeyboard-config-2.48
+         argv ["tar", "-xf", "dl/xkeyboard-config-2.48.tar.xz", "-C", "build/xkeyboard-config-2.48"]
+    [02] setup
+         cwd  build/xkeyboard-config-2.48/xkeyboard-config-2.48
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dnls=false", "-Dxorg-rules-symlinks=false"]
+    [03] build
+         cwd  build/xkeyboard-config-2.48/xkeyboard-config-2.48
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/xkeyboard-config-2.48/xkeyboard-config-2.48
+         env  DESTDIR=dest/xkeyboard-config
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================

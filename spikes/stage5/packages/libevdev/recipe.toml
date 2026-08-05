@@ -1,0 +1,78 @@
+name    = "libevdev"
+version = "1.13.4"
+group   = "input"
+license = "MIT"
+srcdir  = "libevdev-libevdev-1.13.4"
+
+[source]
+# A REPOSITORY ARCHIVE, NOT A RELEASE TARBALL -- the doubled name gives it
+# away, and so does what is missing: configure.ac and autogen.sh ship but
+# `configure` does NOT. So the autotools path would need autoconf, automake
+# and libtool at build time; the meson path needs none of them. meson it is.
+url       = "https://gitlab.freedesktop.org/libevdev/libevdev/-/archive/libevdev-1.13.4/libevdev-libevdev-1.13.4.tar.gz"
+sha256    = "0cfa48d1dddac26988ae9ce16282eff97683f1adcd3f5d4312f86d714565d890"
+signature = "none published"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "python"]
+link         = []
+runtime      = []
+# ALL THREE OF THESE DEFAULT TO 'enabled', AND TWO WOULD FAIL THE BUILD:
+#   tests         -> dependency('check', version: '>= 0.9.9'). check is not in
+#                    this set and is not planned for it.
+#   documentation -> find_program('doxygen', required: get_option(...)), so
+#                    'enabled' makes doxygen REQUIRED. Not in the set either.
+#   tools         -> builds evtest and friends; nothing here runs them.
+optional_off = ["tests", "tools", "documentation", "coverity"]
+
+[declared]
+configure_flags = ["-Dtests=disabled", "-Dtools=disabled",
+                   "-Ddocumentation=disabled"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libevdev"]
+deferral        = """
+Internals not reviewed. WHY IT IS HERE: libinput reads every input device \
+through libevdev; there is no keyboard or touchpad without it.
+
+THE THREE DEFAULTS ARE THE WHOLE STORY. `tests`, `tools` and `documentation` \
+are all features defaulting to 'enabled', and meson's 'enabled' means REQUIRED \
+-- not "use it if present". Two of them then demand packages this system does \
+not have and will not get: `check` for the test suite and `doxygen` for the \
+docs. Left alone, libevdev fails at configure for reasons that have nothing to \
+do with libevdev.
+
+python IS A REAL BUILD DEPENDENCY, not a convenience: \
+`find_program('libevdev/make-event-names.py')` generates the event-name tables \
+that are the library's whole point, and it is not gated on any option."""
+
+[undeclarable]
+# Lookups no .pc name can answer, per ROADMAP.md rule 4.
+"program:doxygen" = "meson.build:234 -- required: get_option('documentation'), a feature this recipe sets to disabled. 'enabled' is meson's default and means REQUIRED, which is why the flag is not optional tidying."
+"program:valgrind" = "meson.build:209 -- instrumentation for the test suite. -Dtests=disabled."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libevdev-libevdev-1.13.4.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "-Dtests=disabled", "-Dtools=disabled", "-Ddocumentation=disabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libevdev"]]
+expect = ["1.13.4"]

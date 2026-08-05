@@ -1,0 +1,16 @@
+# An autologin root shell on the console.
+#
+# WHY busybox getty AND NOT agetty. agetty is util-linux, which is not in this
+# set and is not planned for it. busybox is in the sysroot, statically linked,
+# and already PID 1's shell in the initramfs -- so this adds no package.
+#
+# `-n -l /bin/sh` skips the login prompt and execs a shell directly. There is
+# no password database worth authenticating against yet: /etc/passwd names root
+# with an `x` and there is no /etc/shadow, so a real login would fail closed
+# and leave an unusable console. Autologin is the honest state of a system that
+# has no user management, and saying so here is better than shipping a prompt
+# nobody can satisfy.
+type = process
+command = /bin/busybox getty -n -l /bin/sh 115200 ttyAMA0
+restart = true
+depends-on = early-filesystems

@@ -1,0 +1,90 @@
+name    = "hwdata"
+version = "0.410"
+group   = "graphics-substrate"
+license = "GPL-2.0-or-later OR XFree86-1.0"
+srcdir  = "hwdata-0.410"
+
+# Read source-first; the findings are in PACKAGES.md. A GENUINE `OR`: LICENSE
+# states the data is available under either, distributor's choice. It is the
+# case that exercises the AND-vs-OR distinction license.py reports on -- and
+# what is licensed here is DATA, not code.
+
+[source]
+url       = "https://github.com/vcrhonek/hwdata/archive/v0.410/hwdata-0.410.tar.gz"
+sha256    = "2864b061b179b8ad8cb6a7339ca07678240a183d9cedce8677a4950acaf798e0"
+signature = "none published -- GitHub archive, digest is ours"
+crosschecked_against = []
+
+[deps]
+# NOTHING. Data only: no compiler, no autotools, a 47-line BSD shell
+# `configure` that writes Makefile.inc.
+build        = []
+link         = []
+runtime      = []
+# blacklist defaults to TRUE and installs dist-blacklist.conf into
+# $(libdir)/modprobe.d. There is no kmod and no modprobe in this system, so the
+# file would sit in the image doing nothing, recorded in the manifest as though
+# somebody had chosen it.
+optional_off = ["blacklist"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-blacklist"]
+verification    = "none -- upstream suites are not run, and `make check` must NOT be run here"
+packaged_as     = ["hwdata"]
+deferral        = """
+Internals not reviewed. WHY IT IS HERE: wlroots and libdisplay-info both \
+consume pnp.ids, and hwdata appears in no STAGE5.md group list -- it was found \
+by reading wlroots' meson.build, not by any tool.
+
+A BARE `make` FAILS BY DESIGN. `Makefile.inc: configure` runs ./configure, \
+prints "Run the make again", and exits 1. The configure step is not optional \
+politeness; it is the first half of the build.
+
+A NETWORK FETCH SITS ONE DEPENDENCY EDGE AWAY, and the only thing keeping it \
+out of reach is which target make evaluates. `install` depends on `Makefile.inc \
+hwdata.pc` and NOT on `IDFILES`, so the `pnp.ids:` rule is never considered. \
+That rule depends on pnp.ids.orig, which is not in the tarball, whose own rule \
+downloads pnp.ids.csv from uefi.org -- which upstream's Makefile admits is \
+behind Cloudflare and cannot be automated. The prebuilt pnp.ids (63,481 bytes) \
+ships and is the file both consumers read.
+
+Secondary protection is THIN: pnp.ids and pnp.ids.patch carry identical mtimes, \
+because GitHub archive tarballs stamp everything with the commit time, and make \
+rebuilds only on strictly newer. NEVER run `make download` or `make check`. The \
+sandbox has no network, so this would fail rather than fetch -- but it would \
+fail confusingly, and the reason belongs written down.
+
+TWO $(shell) CALLS PRINT ERRORS THAT ARE NOT ERRORS. `RELEASE=$(shell rpm -q \
+--specfile ...)` and an `ifeq` on `git rev-parse` evaluate at parse time on \
+EVERY make invocation. rpm is absent and there is no .git in the tree, so both \
+write to stderr and yield empty. Make does not fail on a failing $(shell) and \
+both feed only RPM tag names -- but step_context prints stderr, so this noise \
+will appear in the log and would otherwise cost somebody an afternoon.
+
+THE .pc GOES TO share, NOT lib. hwdata installs hwdata.pc into \
+$(datadir)/pkgconfig. The pkgconf recipe pins \
+--with-pkg-config-dir=$PREFIX/lib/pkgconfig:$PREFIX/share/pkgconfig, so it \
+resolves -- a hermeticity control written for another reason that paid off \
+here."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/hwdata-0.410.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-blacklist"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+# NO `build` STEP. There is nothing to compile; `make install` is the whole
+# build, and it depends on Makefile.inc which configure just wrote.
+run  = [["make", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "hwdata"]]
+expect = ["0.410"]
