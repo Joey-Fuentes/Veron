@@ -2041,7 +2041,106 @@ def undeclarable_keys(root):
     return keys
 
 
-def reconcile(recipe, root, recipes, mode="warn"):
+# Applets busybox provides in the sandbox. Not a guess: the box is busybox
+# throughout, and the driver's own history is a list of places that mattered --
+# `patch` taking only -p -i -R -N -E -f, the absent `file` applet, `timeout -v`
+# unsupported. A program on this list is present; one that is not may still be
+# present, which is why absence from it proposes nothing.
+_BUSYBOX = {
+    "sh", "/bin/sh", "ash", "sed", "awk", "grep", "tar", "gzip", "bzip2",
+    "xz", "cat", "cp", "mv", "rm", "ln", "ls", "mkdir", "install", "chmod",
+    "find", "xargs", "sort", "uniq", "head", "tail", "tr", "cut", "wc",
+    "env", "printf", "echo", "test", "true", "false", "diff", "patch",
+    "time", "date", "basename", "dirname", "readlink", "pwd", "touch",
+}
+
+# argv[0] tokens that identify which build system a recipe actually drives.
+_BUILDSYS = {
+    "meson": "meson.build",
+    "cmake": "CMakeLists.txt",
+    "./configure": "configure.ac",
+    "./bootstrap": "configure.ac",
+}
+
+
+def _recipe_buildsystem(recipe):
+    """Which build systems this recipe actually invokes, from its argv."""
+    argv = [a for s in recipe.get("steps", [])
+            for run in s.get("run", []) for a in run]
+    used = {tok for tok in argv if tok in _BUILDSYS}
+    # A shell step that calls one counts too -- meson's own recipe installs
+    # with a shell step and drives nothing, but others do.
+    for s in recipe.get("steps", []):
+        sh = s.get("shell", "")
+        for tok in _BUILDSYS:
+            if re.search(rf"(^|[;&|\s]){re.escape(tok)}\s", sh):
+                used.add(tok)
+    return used
+
+
+def _disabled_options(recipe):
+    """Options this recipe explicitly turns off, from the argv it runs."""
+    argv = [a for s in recipe.get("steps", [])
+            for run in s.get("run", []) for a in run]
+    off = set()
+    for a in argv:
+        m = re.match(r"-D([A-Za-z0-9_-]+)=(disabled|false|no|OFF)$", a)
+        if m:
+            off.add(m.group(1))
+        m = re.match(r"--(?:disable|without)-([A-Za-z0-9_-]+)$", a)
+        if m:
+            off.add(m.group(1))
+    return off
+
+
+def propose_reason(recipe, key, where):
+    """A reason for declining this lookup, or None if a person must decide.
+
+    ONLY WHAT CAN BE DERIVED. Three rules, each of which cites evidence the
+    reader can check against the recipe in front of them:
+
+      1. the finding is in a build file this recipe never invokes
+      2. the finding is conditional on an option this recipe disables
+      3. the program is a busybox applet, so it is present
+
+    Anything else returns None and the block is left blank with TODO. A
+    generated reason that is merely plausible is worse than an empty one --
+    it reads like a decision somebody made, and nobody did.
+    """
+    detail = where[0] if where else ""
+    path = detail.split(":")[0] if ":" in detail else ""
+
+    used = _recipe_buildsystem(recipe)
+    fname = os.path.basename(path)
+    if fname == "meson.build" and "meson" not in used:
+        how = ", ".join(sorted(used)) or "another build system"
+        return (f"NOT THIS PACKAGE'S BUILD. {path} is meson's; this recipe "
+                f"drives {how}, so that file is never read.")
+    if fname == "CMakeLists.txt" and "cmake" not in used:
+        how = ", ".join(sorted(used)) or "another build system"
+        return (f"NOT THIS PACKAGE'S BUILD. {path} is cmake's; this recipe "
+                f"drives {how}, so that file is never read.")
+
+    m = re.search(r"conditional on (.+?)\)$", detail)
+    if m:
+        expr = m.group(1)
+        off = _disabled_options(recipe)
+        for opt in off:
+            if opt in expr:
+                return (f"Looked for only when '{opt}' is on, and this recipe "
+                        f"disables it: {expr}")
+
+    prog = key.split(":", 1)[1] if key.startswith("program:") else ""
+    if prog in _BUSYBOX:
+        return (f"Provided by busybox in the sandbox; the box is busybox "
+                f"throughout. {detail}")
+
+    if detail.endswith("(optional)"):
+        return None       # optional is not a reason, it is an invitation
+    return None
+
+
+def reconcile(recipe, root, recipes, mode="warn", propose=None):
     """Compare all three detectors against one recipe. Returns problem count.
 
     THE THREE DO NOT MEASURE THE SAME THING and are not expected to agree:
@@ -2131,6 +2230,16 @@ def reconcile(recipe, root, recipes, mode="warn"):
         if key in declared_und:
             continue
         problems += 1
+        # `if propose:` WAS WRONG AND SILENTLY DID NOTHING. The caller passes
+        # a dict that starts EMPTY, and an empty dict is falsy -- so the
+        # proposal branch could never fire on the first finding, and since
+        # nothing else populated the dict, never at all. `--propose` printed a
+        # normal report and exited 0, which looked like the feature working on
+        # a set with nothing to propose.
+        if propose is not None:
+            reason = propose_reason(recipe, key, where)
+            propose.setdefault(name, []).append((key, reason, where[0]))
+            continue
         # THE PACKAGE NAME GOES ON EVERY FINDING LINE. The first sweep was
         # read with `grep unaccounted`, which drops the `== name` headers --
         # so 36 findings arrived with no way to tell which package any of them
@@ -2171,6 +2280,7 @@ def cmd_reconcile(a):
     wanted = a.names or sorted(recipes)
     total, no_src, no_meta, missing = 0, [], [], []
     tally = {}
+    proposals = {}
     for n in wanted:
         if n not in recipes:
             missing.append(n)
@@ -2182,7 +2292,8 @@ def cmd_reconcile(a):
             no_src.append(n)
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            found = reconcile(recipes[n], root, recipes, a.mode)
+            found = reconcile(recipes[n], root, recipes, a.mode,
+                              proposals if a.propose else None)
         text = buf.getvalue()
         if "no packaging metadata" in text:
             no_meta.append(n)
@@ -2219,6 +2330,31 @@ def cmd_reconcile(a):
               f"[undeclarable] was not checked for them:")
         print(f"    {', '.join(no_src)}")
         print("    (pass --src DIR, where DIR/<name> is the unpacked tree)")
+    if proposals:
+        # DRAFTS, NOT DECISIONS. Every reason here cites something the reader
+        # can check in the recipe next to it -- a build file the recipe never
+        # invokes, an option the argv disables, an applet busybox provides.
+        # Where none of those applies the block is left blank with TODO,
+        # DELIBERATELY: a generated reason that is merely plausible reads like
+        # a decision somebody made, and nobody did.
+        done = sum(1 for v in proposals.values() for _, r, _ in v if r)
+        todo = sum(1 for v in proposals.values() for _, r, _ in v if not r)
+        print(f"\n  {done} of {done + todo} have a derivable reason; "
+              f"{todo} need a person.\n")
+        for pkg, items in sorted(proposals.items()):
+            print(f"# ---- packages/{pkg}/recipe.toml")
+            print("[undeclarable]")
+            for key, reason, where in sorted(items):
+                print(f'# {where}')
+                if reason:
+                    body = reason.replace('"', "'")
+                    print(f'"{key}" = "{body}"')
+                else:
+                    print(f'"{key}" = "TODO -- no derivable reason. Decide '
+                          f'and say why."')
+            print()
+        return 0
+
     if tally:
         # THE SHAPE, NOT JUST THE COUNT. "36 findings" says nothing; "git x20"
         # says the sweep is measuring Arch's packaging rather than this
@@ -2349,6 +2485,23 @@ if Version(mako.__version__) < Version("0.8.0"):
         print("  ok    an import inside a nested run_command is found")
     else:
         print(f"  FAIL  run_command import missed -- {got}")
+        ok = False
+
+    # AN EMPTY COLLECTION IS FALSY, AND THAT SILENTLY DISABLED --propose.
+    # The caller hands reconcile() a dict that starts empty and the branch
+    # tested `if propose:`, so it could never fire on the first finding and
+    # therefore never at all. `--propose` printed an ordinary report and
+    # exited 0 -- indistinguishable from a set with nothing to propose.
+    class _R(dict):
+        pass
+    _fired = []
+
+    def _fake_propose(d):
+        return d is not None
+    if _fake_propose({}) and not _fake_propose(None):
+        print("  ok    an empty proposal dict still enables --propose")
+    else:
+        print("  FAIL  --propose is gated on a truthiness test again")
         ok = False
 
     # AN ALIAS MUST REPLACE OUR NAME, NOT EXTEND IT. Arch's `mako` is
@@ -2503,6 +2656,8 @@ def main():
     p.add_argument("--src", help="directory of UNPACKED sources, one per "
                                  "package name")
     p.add_argument("--packages", help="recipes directory")
+    p.add_argument("--propose", action="store_true",
+                   help="emit draft [undeclarable] blocks instead of a report")
     p.add_argument("--mode", choices=["warn", "fail"], default="warn",
                    help="warn (default) reports; fail exits non-zero")
     p.set_defaults(fn=cmd_reconcile)

@@ -297,9 +297,41 @@ libwebp and zstd with cmake where we use autotools; libxml2 and pkgconf with
 meson; harfbuzz with libpng, zlib and python enabled where we disable them.
 Each is one `optional_off` line with a reason.
 
+**Third sweep: 82, up from 77, and up is right.** The alias fix made eight
+previously-invisible packages visible — `freetype2` and `graphite` were never
+being looked up at all — so five new corroborative findings appeared and mako's
+false one disappeared. Every finding now names what it corroborated against:
+`arch(freetype2)`, `arch(glib2)`, `arch(python-mako)`.
+
+One of the new five is the mesa/mako shape again: `glib: arch(glib2)
+makedepends 'python-packaging'`. It is an **empirical** decline rather than a
+guess — glib built green in run 54, before a `packaging` recipe existed in the
+set at all, so glib's build does not need it.
+
+**`--propose` drafts the declines that can be derived.** Three rules, each
+citing evidence the reader can check in the recipe in front of them:
+
+- the finding is in a build file this recipe never invokes — `pkgconf` and
+  `libxml2` ship `meson.build` and are built with `./configure`, so every
+  finding from those files is about a build that does not run
+- the finding is conditional on an option the argv disables — `gs (conditional
+  on get_option('tests'))` against `-Dtests=disabled`
+- the program is a busybox applet, so it is present
+
+Anything else is left blank with `TODO`, deliberately: **a generated reason
+that is merely plausible reads like a decision somebody made, and nobody did.**
+On cairo and harfbuzz it derives 4 of 9 and leaves 5 for a person.
+
+**And it shipped disabled for one commit's worth of testing.** The branch was
+gated on `if propose:` while the caller passes a dict that starts *empty* — and
+an empty dict is falsy, so it could never fire on the first finding and
+therefore never at all. `--propose` printed an ordinary report and exited 0,
+which is indistinguishable from a set with nothing to propose. Fixture added.
+
 **Still to do:**
 
-- Write those 16 declines and the 61 `[undeclarable]` blocks
+- Run `--propose` over all 45, review the drafts, paste them in
+- Write the 21 corroborative declines
 - Then `--mode fail`, which is the point of the exercise
 - Write the `[undeclarable]` blocks that sweep calls for, per recipe
 - Re-probe all 111 with the new fields, so the output is recorded rather than
