@@ -41,10 +41,34 @@ runtime      = ["libffi", "pcre2", "zlib"]
 # It is not needed here, and the evidence is a build rather than a reading:
 # glib built green in run 54, BEFORE a `packaging` recipe existed anywhere
 # in the set. Whatever Arch needs it for is not this configuration.
-optional_off = ["introspection", "selinux", "libmount", "sysprof", "man-pages", "gtk_doc", "tests", "dtrace", "systemtap", "packaging"]
+# -Dlibelf=disabled, AND THIS ONE AROSE FROM ADDING AN UNRELATED PACKAGE.
+#
+# glib's `libelf` is a feature defaulting to 'auto' -- it lets `gresource`
+# list and extract resources embedded in ELF binaries. It was off for 61
+# builds because nothing provided libelf. elfutils entered the set at rung 20
+# for mesa's sake, glib builds at 41, and glib silently grew a new link:
+#
+#   linked-undeclared  glib links elfutils (libelf.so.1 via usr/bin/gresource)
+#   install-set-changed  glib: gresource 75808 -> 76768 bytes
+#
+# NOTHING IN glib's RECIPE CHANGED. A package added twenty rungs earlier
+# changed what glib is, and both the DT_NEEDED sweep and the install digest
+# caught it independently -- which is the whole argument for having two
+# detectors that measure rather than read.
+#
+# THE CHECKPOINT WOULD NOT HAVE CAUGHT IT, and that is worth stating. A
+# package's key is its recipe plus its DECLARED dependencies; elfutils was
+# not declared, so glib's key did not move and a cached glib would have been
+# reused with different build inputs. That is the exact soundness caveat
+# DEPENDENCIES.md records, happening for real.
+#
+# Disabled rather than declared: nothing here extracts resources from ELF
+# binaries, so the smaller surface is the right answer and it restores the
+# behaviour every previous build had.
+optional_off = ["introspection", "selinux", "libmount", "sysprof", "man-pages", "gtk_doc", "tests", "dtrace", "systemtap", "packaging", "libelf"]
 
 [declared]
-configure_flags = ["-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false", "-Dintrospection=disabled", "-Dselinux=disabled", "-Dlibmount=disabled", "-Dsysprof=disabled"]
+configure_flags = ["-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false", "-Dintrospection=disabled", "-Dselinux=disabled", "-Dlibmount=disabled", "-Dsysprof=disabled", "-Dlibelf=disabled"]
 # THEY DO NOT USE OUR NAME. Without this the reconciler looks up
 # "glib", finds no PKGBUILD, and reports the package as
 # uncorroborated -- which is a false absence, not a real one.
@@ -124,7 +148,7 @@ cwd  = "$S"
 run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
          "-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false",
          "-Dintrospection=disabled", "-Dselinux=disabled",
-         "-Dlibmount=disabled", "-Dsysprof=disabled"]]
+         "-Dlibmount=disabled", "-Dsysprof=disabled", "-Dlibelf=disabled"]]
 
 [[steps]]
 name = "build"

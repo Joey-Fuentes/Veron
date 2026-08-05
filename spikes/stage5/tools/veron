@@ -2482,10 +2482,20 @@ def cmd_ledger(a):
     g3 = os.path.join(roots["out"], "G3-OK")
     if ckpt:
         attestations = 0
-        attest_note = (f"NOT A FULL BUILD: {ckpt['index']} package(s) were "
-                       f"restored from checkpoint {ckpt['key'][:16]} rather "
-                       f"than built in this run. No reproducibility claim "
-                       f"follows from it.")
+        # READ THE MARKER THE WAY cmd_checkpoint WRITES IT. This used to read
+        # ckpt['index'] and ckpt['key'], which was the shape before the
+        # checkpoint key became per package -- and the run died here with
+        # KeyError: 'index' AFTER all 62 packages had built, the manifest had
+        # passed and the ledger was the next thing to write.
+        #
+        # Second time a producer change has broken a reader: `veron
+        # git-sources` gained a fourth column and the spike's shell `read` was
+        # left at three. The name-binding gate cannot see this one, because a
+        # dict key is not a name.
+        n = len(ckpt.get("keys", {}))
+        attest_note = (f"NOT A FULL BUILD: {n} package(s) were restored from "
+                       f"a checkpoint rather than built in this run. No "
+                       f"reproducibility claim follows from it.")
     elif os.path.exists(g3):
         attestations = 2
         attest_note = ("two independent builds on one runner, compared per "
@@ -3122,6 +3132,57 @@ def cmd_selftest(a):
     except Exception as e:
         print(f"  FAIL  ELF reader raised: {type(e).__name__}: {e}")
         ok = False
+
+    # EVERY KEY A READER TAKES FROM THE CHECKPOINT MARKER MUST BE ONE
+    # cmd_checkpoint ACTUALLY WRITES.
+    #
+    # The marker went from {"key", "index", "packages"} to {"base", "keys"}
+    # when the checkpoint key became per package, and cmd_ledger was left
+    # reading the old shape. The run died with `KeyError: 'index'` AFTER all
+    # 62 packages had built, the manifest had passed, and the ledger was the
+    # next thing to write -- so the cost was a full build.
+    #
+    # THE NAME-BINDING GATE CANNOT SEE THIS: a dict key is not a name. This is
+    # the same failure as `veron git-sources` gaining a fourth column while
+    # the spike's shell `read` stayed at three -- a producer changed and one
+    # of its readers did not. Both are only checkable by comparing the two
+    # ends, which is what this does.
+    # MATCHED ON THE AST, NOT THE TEXT. The first version used a regex over
+    # the source and flagged `index` and `key` -- from the COMMENT above
+    # explaining that those were the old names. A checker that reads its own
+    # documentation as code is worse than none, because the fix is to delete
+    # the explanation.
+    written, read = set(), set()
+    _mtree = ast.parse(open(os.path.abspath(__file__)).read())
+    for node in ast.walk(_mtree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict) \
+           and any(isinstance(t, ast.Name) and t.id == "marker"
+                   for t in node.targets):
+            written |= {k.value for k in node.value.keys
+                        if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) \
+           and node.value.id in ("ckpt", "marker") \
+           and isinstance(node.slice, ast.Constant) \
+           and isinstance(node.slice.value, str):
+            read.add(node.slice.value)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+           and node.func.attr == "get" \
+           and isinstance(node.func.value, ast.Name) \
+           and node.func.value.id in ("ckpt", "marker") and node.args \
+           and isinstance(node.args[0], ast.Constant) \
+           and isinstance(node.args[0].value, str):
+            read.add(node.args[0].value)
+    unknown = read - written
+    if not written:
+        print("  FAIL  could not find the checkpoint marker literal to check")
+        ok = False
+    elif unknown:
+        print(f"  FAIL  checkpoint marker read with key(s) it never writes: "
+              f"{sorted(unknown)} -- writes {sorted(written)}")
+        ok = False
+    else:
+        print(f"  ok    every checkpoint marker key read is one it writes "
+              f"({', '.join(sorted(written))})")
 
     # EVERY NAME THE DRIVER USES MUST EXIST, CHECKED WITHOUT RUNNING IT.
     #

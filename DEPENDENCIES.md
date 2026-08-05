@@ -75,6 +75,30 @@ already correct; the composition rule was not.
 
 ---
 
+## The case this was built for, when it happened
+
+`elfutils` entered the set at rung 20, for mesa's sake. `glib` builds at rung
+41. Nothing in glib's recipe changed. Both measuring detectors reported the
+same event independently:
+
+```
+linked-undeclared    glib links elfutils (libelf.so.1 via usr/bin/gresource)
+install-set-changed  glib: gresource 75808 -> 76768 bytes
+```
+
+glib's `libelf` is a **feature defaulting to `auto`** — off for sixty-one
+builds because nothing provided libelf, silently on the moment something did.
+**A package added twenty rungs earlier changed what glib is.**
+
+That is the direction no static scan and no distro comparison can reach: both
+read intent, and nobody's intent changed.
+
+**And the checkpoint would not have caught it.** A package's key is its recipe
+plus its **declared** dependencies; elfutils was not declared, so glib's key
+did not move and a cached glib would have been reused with different build
+inputs. That is the soundness caveat recorded below, occurring for real — and
+the concrete reason `stage5-isolate` is load-bearing rather than tidying.
+
 ## What no detector can see
 
 Written down because a gate that passes over an unchecked set is worse than no

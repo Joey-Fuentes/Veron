@@ -1379,7 +1379,7 @@ package fribidi 1.0.16
 package glib 2.86.4
   group        text-rendering
   license      LGPL-2.1-or-later
-  recipe-sha   73ce270b834229b791ed77d0f744a2245771e24dfeb9446e421714113d7bcd96
+  recipe-sha   4639598ab582babf5b2a29841330e8d0547cf66eda4feb86063df681a294b78e
 
   source
     url        https://download.gnome.org/sources/glib/2.86/glib-2.86.4.tar.xz
@@ -1391,7 +1391,7 @@ package glib 2.86.4
     build        bash, libffi, meson, ninja, pcre2, pkgconf, python, zlib
     link         libffi, pcre2, zlib
     runtime      libffi, pcre2, zlib
-    optional_off dtrace, gtk_doc, introspection, libmount, man-pages, packaging, selinux, sysprof, systemtap, tests
+    optional_off dtrace, gtk_doc, introspection, libelf, libmount, man-pages, packaging, selinux, sysprof, systemtap, tests
 
   patches (applied after unpack, in this order)
     0001-bash-completion-pkg-config-only.patch
@@ -1403,7 +1403,7 @@ package glib 2.86.4
     [02] setup
          cwd  build/glib-2.86.4/glib-2.86.4
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false", "-Dintrospection=disabled", "-Dselinux=disabled", "-Dlibmount=disabled", "-Dsysprof=disabled"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Dman-pages=disabled", "-Dgtk_doc=false", "-Dtests=false", "-Dintrospection=disabled", "-Dselinux=disabled", "-Dlibmount=disabled", "-Dsysprof=disabled", "-Dlibelf=disabled"]
     [03] build
          cwd  build/glib-2.86.4/glib-2.86.4
          argv ["ninja", "-C", "_b"]
