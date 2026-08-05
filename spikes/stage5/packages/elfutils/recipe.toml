@@ -26,7 +26,8 @@ optional_off = ["debuginfod", "libdebuginfod", "nls", "demangler",
                 "bzip2", "lzma", "static"]
 
 [declared]
-configure_flags = ["--prefix=/usr", "--disable-debuginfod",
+configure_flags = ["CFLAGS=-g -O2 -Wno-error=discarded-qualifiers",
+                   "--prefix=/usr", "--disable-debuginfod",
                    "--disable-libdebuginfod", "--disable-nls",
                    "--without-bzlib", "--without-lzma", "--disable-static",
                    "--program-prefix=eu-"]
@@ -58,9 +59,32 @@ run  = [["tar", "-xf", "$DL/elfutils-0.192.tar.bz2", "-C", "$B"]]
 [[steps]]
 name = "configure"
 cwd  = "$S"
+# CFLAGS CARRIES ONE UN-PROMOTION, AND IT IS NOT A STYLE CHOICE.
+#
+# elfutils builds with -Werror from config/eu.am, and gcc 15 rejects code
+# upstream compiled cleanly on the compilers it was tested against:
+#
+#   riscv_disasm.c:1259: error: initialization discards 'const' qualifier
+#   from pointer target type [-Werror=discarded-qualifiers]
+#   cc1: all warnings being treated as errors
+#
+# There is no --disable-werror in this configure. Automake emits
+# $(AM_CFLAGS) $(CFLAGS), so a user CFLAGS lands AFTER the -Werror and can
+# un-promote a specific warning -- which is why this is a configure variable
+# rather than a patch.
+#
+# TARGETED RATHER THAN BLANKET, deliberately. `-Wno-error` alone would work
+# and would also silence every future strictness gcc gains, turning a real
+# incompatibility into a silence. Naming the one warning means the next one
+# fails the build and gets recorded too, the way graphite2's missing
+# <cstdint> did.
+#
+# -g -O2 is restated because setting CFLAGS at all replaces autoconf's
+# default; omitting them would quietly build elfutils unoptimised.
 run  = [["./configure", "--prefix=/usr", "--disable-debuginfod",
          "--disable-libdebuginfod", "--disable-nls", "--without-bzlib",
-         "--without-lzma", "--disable-static", "--program-prefix=eu-"]]
+         "--without-lzma", "--disable-static", "--program-prefix=eu-",
+         "CFLAGS=-g -O2 -Wno-error=discarded-qualifiers"]]
 
 [[steps]]
 name = "build"

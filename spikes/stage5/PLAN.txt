@@ -699,7 +699,7 @@ package autoconf 2.73
 package elfutils 0.192
   group        graphics-substrate
   license      GPL-3.0-or-later AND LGPL-3.0-or-later
-  recipe-sha   5833355f403b51d79031ec5704f0ed457aa0c58dc635bae1a6621c598f160069
+  recipe-sha   78a1a102709ba1be141bcb802a555b4116bd1ceaf22ee4b9dafcb573f69cacc1
 
   source
     url        https://sourceware.org/pub/elfutils/0.192/elfutils-0.192.tar.bz2
@@ -719,7 +719,7 @@ package elfutils 0.192
          argv ["tar", "-xf", "dl/elfutils-0.192.tar.bz2", "-C", "build/elfutils-0.192"]
     [02] configure
          cwd  build/elfutils-0.192/elfutils-0.192
-         argv ["./configure", "--prefix=/usr", "--disable-debuginfod", "--disable-libdebuginfod", "--disable-nls", "--without-bzlib", "--without-lzma", "--disable-static", "--program-prefix=eu-"]
+         argv ["./configure", "--prefix=/usr", "--disable-debuginfod", "--disable-libdebuginfod", "--disable-nls", "--without-bzlib", "--without-lzma", "--disable-static", "--program-prefix=eu-", "CFLAGS=-g -O2 -Wno-error=discarded-qualifiers"]
     [03] build
          cwd  build/elfutils-0.192/elfutils-0.192
          argv ["make", "-j1"]
