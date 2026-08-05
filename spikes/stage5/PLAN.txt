@@ -1289,7 +1289,7 @@ package libsfdo 0.1.4
 package libxkbcommon 1.13.2
   group        graphics-substrate
   license      MIT
-  recipe-sha   48bd6fd405584b4a5f1c030dcd2d62c292bbfba6cadfa680e6e311b426d1811f
+  recipe-sha   83bd4da1d2ebd4ff389d40eac8d975e7f565d13bfc9e84affe41cd3d3f9a03f1
 
   source
     url        https://github.com/xkbcommon/libxkbcommon.git
@@ -1303,7 +1303,7 @@ package libxkbcommon 1.13.2
     build        meson, ninja
     link         -
     runtime      -
-    optional_off bash-completion, cool-uris, docs, wayland, x11, xkbregistry
+    optional_off bash-completion, cool-uris, docs, tools, wayland, x11, xkbregistry
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -1312,7 +1312,7 @@ package libxkbcommon 1.13.2
     [02] setup
          cwd  build/libxkbcommon-1.13.2/libxkbcommon-1.13.2
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Denable-x11=false", "-Denable-wayland=false", "-Denable-xkbregistry=false", "-Denable-docs=false", "-Denable-bash-completion=false"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "-Denable-x11=false", "-Denable-wayland=false", "-Denable-xkbregistry=false", "-Denable-docs=false", "-Denable-bash-completion=false", "-Denable-tools=false"]
     [03] build
          cwd  build/libxkbcommon-1.13.2/libxkbcommon-1.13.2
          argv ["ninja", "-C", "_b"]

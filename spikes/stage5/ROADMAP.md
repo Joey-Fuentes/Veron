@@ -778,3 +778,53 @@ written in, so the layer stack was verified by inspecting the composed argv
 mechanics are the first run's experiment. Unprivileged overlayfs is a kernel
 property; the job prints `uname -r` so a failure there is attributable rather
 than looking like a bubblewrap bug.
+
+
+---
+
+## Two failures, and what each cost
+
+**libxkbcommon cannot build its own tools without xkeyboard-config.**
+
+```
+tools/info.c:89: error: 'DFLT_XKB_CONFIG_UNVERSIONED_EXTENSIONS_PATH' undeclared
+```
+
+That macro is set at `meson.build:180` only `if
+XKB_CONFIG_UNVERSIONED_EXTENSIONS_PATH != ''`, which is empty unless a
+*versioned* xkeyboard-config is found by pkg-config. `tools/info.c` references
+it unconditionally. **An upstream bug in 1.13.2**, not a configuration
+mistake, and one that only appears in a system that genuinely lacks the
+package.
+
+I read this tarball's options, turned five off, judged `xkbcli` "small" and
+left `enable-tools` at its default. Nothing here wants xkbcli — wlroots links
+the **library** — so `-Denable-tools=false` removes the failure at its cause
+rather than patching a source file around a missing dependency. The runtime
+gap on xkeyboard-config was already recorded in `[undeclarable]`; it turns out
+to be a build-time gap for the tools as well.
+
+**And the diagnostics did not contain the error.** The driver log had the argv
+and `rc=1 (6s)`; `BUILD_LOGS` collects meson's *configure* log, which was clean
+because configure succeeded. The one line explaining the failure existed only
+in the GitHub job log, which is not the artifact anyone is handed. Step output
+now goes into the per-package log, and the last 40 lines print on failure.
+
+**That change broke the step timeout three times before it worked.** Teeing
+through `subprocess.PIPE` means reading blocks until EOF, EOF waits for every
+*grandchild* that inherited the pipe, and a 2-second limit on
+`sh -c 'sleep 30'` took the full thirty and left `sleep` running. A pump
+thread did not fix it. A process-group kill did not fix it, because the join
+happened before the kill. **The timeout is not decorative** — a run once sat
+sixty-six minutes on one line of m4's gnulib suite.
+
+Handing `subprocess.run` a real file descriptor instead of a pipe keeps its
+timeout handling exactly as it was and still puts every byte in the log. The
+console loses live output; the heartbeat already exists to keep the job alive
+without it. Verified: `rc=124` at 2.0s, and both streams in the file.
+
+**Worth being plain about the shape of that**: four consecutive patches to one
+function, each looking correct and each failing the same test. It is the same
+failure as `packager_deps`, which was eventually rewritten whole rather than
+patched again — and it was only caught because the timeout path was tested
+rather than assumed.

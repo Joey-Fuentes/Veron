@@ -17,7 +17,9 @@
 # acquire a dependency that could reach the artifact path.
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -623,9 +625,47 @@ def run_step(s, logf, dry, may_create=False):
     t = threading.Thread(target=tick, daemon=True)
     t.start()
     try:
+        # THE STEP'S OWN OUTPUT GOES INTO THE LOG, NOT ONLY THE CONSOLE.
+        #
+        # libxkbcommon failed at `ninja -C _b` with a compile error naming an
+        # undefined macro, and `veron collect` preserved none of it. The
+        # driver log had the argv and `rc=1 (6s)`; BUILD_LOGS collects meson's
+        # CONFIGURE log, which was clean because configure succeeded. The one
+        # line explaining the failure existed only in the GitHub job log,
+        # which is not the artifact anyone is handed.
+        #
+        # WRITTEN STRAIGHT TO THE FILE, NOT THROUGH A PIPE, AND THAT MATTERS.
+        # Teeing through subprocess.PIPE was tried first and quietly destroyed
+        # the step timeout: reading the pipe blocks until EOF, EOF waits for
+        # every GRANDCHILD that inherited it, and a 2-second limit on
+        # `sh -c 'sleep 30'` took the full thirty seconds and left sleep
+        # running. Three attempts to rescue that with threads and process
+        # groups each failed the same test.
+        #
+        # That timeout is not decorative -- a run once sat SIXTY-SIX MINUTES
+        # on one line of m4's gnulib suite. Handing subprocess.run a real file
+        # descriptor keeps its timeout handling exactly as it was and still
+        # puts every byte in the log. The console loses live output; the
+        # heartbeat below already exists to keep the job alive without it, and
+        # on failure the tail is printed.
+        logf.flush()
         p = subprocess.run(argv, cwd=s["cwd"], shell=shell, env=e,
-                           stdin=subprocess.DEVNULL, timeout=limit)
+                           stdin=subprocess.DEVNULL,
+                           stdout=logf, stderr=subprocess.STDOUT,
+                           timeout=limit)
+        logf.flush()
         rc = p.returncode
+        if rc != 0:
+            # THE TAIL, ON THE CONSOLE, BECAUSE A FAILURE MUST BE READABLE
+            # WITHOUT DOWNLOADING AN ARTIFACT.
+            try:
+                with open(logf.name, errors="replace") as rf:
+                    tail = rf.read().splitlines()[-40:]
+                print("    --- last 40 lines of this step ---")
+                for t in tail:
+                    print(f"    {t}")
+            except Exception:
+                pass
     except subprocess.TimeoutExpired:
         rc = 124
         mins = int(limit / 60)
@@ -1965,7 +2005,30 @@ def cmd_isolate(a):
                  # NO STAGING. Staging exists to make a package visible to the
                  # ones after it in a SHARED root; here the layers do that,
                  # and writing into an overlay tmpfs would vanish anyway.
-                 "build", "--pkg", name, "--no-stage"]
+                 # POSITIONAL, NOT --pkg. `build` takes package names as
+                 # positionals; `--pkg` is not an option and argparse exits 2.
+                 # Every one of the 48 packages failed that way on the first
+                 # run -- a uniform rc=2 that looks like a structural problem
+                 # with the overlay and was a typo in this list.
+                 "build", name, "--no-stage"]
+
+        # AND THE COMPOSED COMMAND IS CHECKED AGAINST THE REAL PARSER.
+        #
+        # The selftest validates every `veron ...` line in every WORKFLOW, and
+        # could not see this one: an argv built in Python is not a line of
+        # YAML. So the check moves to where the argv is built. This is the
+        # third veron invocation this project has got wrong -- `merge --dest`
+        # with a global after the subcommand, a three-field read of a
+        # four-field producer, and now this -- and the first two each cost a
+        # full run to discover.
+        tail = argv[argv.index("/tools/veron") + 1:]
+        try:
+            buf_e = io.StringIO()
+            with contextlib.redirect_stderr(buf_e):
+                build_parser().parse_args(tail)
+        except SystemExit:
+            die(f"the composed command for {name} does not parse:\n"
+                f"  veron {' '.join(tail)}\n{buf_e.getvalue().strip()}")
 
         print(f"== {name}  ({len(layers)} declared dep layer(s))")
         if a.dry_run:

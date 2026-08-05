@@ -50,12 +50,12 @@ runtime      = []
 #                   of which are built yet; also errors when absent
 #   xkbregistry  -> dependency('libxml-2.0') with NO required:false at all
 optional_off = ["x11", "wayland", "xkbregistry", "docs", "bash-completion",
-                "cool-uris"]
+                "cool-uris", "tools"]
 
 [declared]
 configure_flags = ["-Denable-x11=false", "-Denable-wayland=false",
                    "-Denable-xkbregistry=false", "-Denable-docs=false",
-                   "-Denable-bash-completion=false"]
+                   "-Denable-bash-completion=false", "-Denable-tools=false"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["libxkbcommon"]
 deferral        = """
@@ -80,6 +80,24 @@ its CMake backend and crashed it on cmake 4.x. $CMAKE now makes that a clean \
 not-found, so this would work either way; turning the option off means the \
 lookup never happens at all, which is the narrower fix and belongs in the \
 recipe rather than relying on a global.
+
+-Denable-tools=false IS NOT TIDYING -- THE TOOLS DO NOT COMPILE HERE. I read \
+this package's options and turned five off, judged xkbcli "small" and left it \
+on. It fails:
+
+    tools/info.c:89: error: 'DFLT_XKB_CONFIG_UNVERSIONED_EXTENSIONS_PATH' \
+    undeclared
+
+That macro is set at meson.build:180 only `if \
+XKB_CONFIG_UNVERSIONED_EXTENSIONS_PATH != ''`, which is empty unless a \
+VERSIONED xkeyboard-config is found by pkg-config. tools/info.c references it \
+unconditionally. So libxkbcommon 1.13.2 cannot build its own tools without \
+xkeyboard-config present -- an upstream bug, not a configuration mistake, and \
+one that only shows up in a system that genuinely lacks it.
+
+Nothing here wants xkbcli: wlroots links the LIBRARY. Turning the tools off \
+is the smaller surface and removes the failure at its cause rather than \
+patching a source file to work around a missing dependency.
 
 RUNTIME GAP, DECLARED: libxkbcommon needs xkeyboard-config's data at RUNTIME \
 to resolve any real keymap. That package is pinned and mirrored but has no \
@@ -129,7 +147,7 @@ cwd  = "$S"
 run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
          "-Denable-x11=false", "-Denable-wayland=false",
          "-Denable-xkbregistry=false", "-Denable-docs=false",
-         "-Denable-bash-completion=false"]]
+         "-Denable-bash-completion=false", "-Denable-tools=false"]]
 
 [[steps]]
 name = "build"
