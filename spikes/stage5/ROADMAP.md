@@ -912,3 +912,43 @@ build.
 
 The full argv still prints. It is one line per step and it is the honest
 record of what ran.
+
+
+---
+
+## The isolate spike ran: 31 of 48 built from their declared dependencies
+
+And the 17 failures were **not** missing declarations. Every dominant cause was
+one shape:
+
+```
+ImportError: libz.so.1: cannot open shared object file
+cmake: error while loading shared libraries: libcurl.so.4
+libncursesw.so.6, needed by libreadline.so, not found
+```
+
+`meson` declares `python`. python was in the root. **python could not start**,
+because python's own runtime closure was not. And the recipes were already
+right — `python runtime=[zlib, …]`, `cmake runtime=[curl, …]`,
+`readline runtime=[ncurses]`.
+
+**The composition rule was wrong.** A build tool you cannot execute is not a
+build tool. Each declared dependency now brings its **runtime closure**,
+transitively.
+
+**This is not the transitive-build-deps reading, and the distinction is the
+whole point of the exercise.** glib still does not see zlib because pcre2
+needed zlib to *build*. It sees zlib because it declares python and python
+needs zlib to *run*. Build closure stays strict; runtime closure travels with
+the thing that has it — which is what declaring a dependency has to mean if it
+means anything.
+
+Verified on the real set: fribidi declares only `meson` and `ninja`, and its
+root composes to meson, ninja, python (meson's runtime) and python's runtime
+closure. The code never reads a dependency's `build` list, so a transitive
+*build* edge cannot leak.
+
+**And the spike's own bubblewrap worked**: `bubblewrap 0.11.0`,
+`--overlay-src present`, built from the pinned tarball in this repository
+rather than apt's. The whole result depends on that flag existing, and taking
+the runner's binary would have made the answer depend on what Ubuntu shipped.

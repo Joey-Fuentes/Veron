@@ -2162,8 +2162,44 @@ def cmd_isolate(a):
 
     for name in order:
         r = recipes[name]
-        deps = sorted(set(r.get("deps", {}).get("build", []))
-                      | set(r.get("deps", {}).get("link", [])))
+        # EACH DECLARED DEPENDENCY, PLUS WHAT IT NEEDS TO RUN.
+        #
+        # The first sweep failed 17 of 48 and every dominant cause was the
+        # same shape:
+        #
+        #     ImportError: libz.so.1: cannot open shared object file
+        #     cmake: error while loading shared libraries: libcurl.so.4
+        #     libncursesw.so.6, needed by libreadline.so, not found
+        #
+        # meson declares `python`; python was in the root; python could not
+        # START, because python's own runtime closure was not. The recipes
+        # were right -- `python runtime=[zlib, ...]`, `cmake runtime=[curl,
+        # ...]` -- and the composition rule was wrong. A BUILD TOOL YOU CANNOT
+        # EXECUTE IS NOT A BUILD TOOL.
+        #
+        # This is NOT the transitive-build-deps reading, and the distinction
+        # is the whole point of the exercise: glib still does not see zlib
+        # merely because pcre2 needed zlib to BUILD. It sees zlib because it
+        # declares python and python needs zlib to RUN. Build closure stays
+        # strict; runtime closure travels with the thing that has it, which is
+        # what "declaring a dependency" has to mean if it means anything.
+        direct = set(r.get("deps", {}).get("build", [])) \
+            | set(r.get("deps", {}).get("link", []))
+        deps, seen = set(direct), set()
+        queue = list(direct)
+        while queue:
+            d = queue.pop()
+            if d in seen:
+                continue
+            seen.add(d)
+            rr = recipes.get(d)
+            if not rr:
+                continue
+            for rt in rr.get("deps", {}).get("runtime", []):
+                if rt not in deps:
+                    deps.add(rt)
+                    queue.append(rt)
+        deps = sorted(deps)
         layers, absent = [], []
         for d in deps:
             dd = os.path.join(roots["dest"], d)
