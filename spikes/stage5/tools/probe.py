@@ -20,7 +20,9 @@
 # without a human reading it first.
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -2026,6 +2028,14 @@ def cmd_reconcile(a):
     over the whole set has to be READ before it is allowed to block anything;
     turning a gate on before anyone has seen its output is how a gate gets
     disabled a week later. Pass --mode fail once the output is understood.
+
+    QUIET WHERE THERE IS NOTHING TO SAY. The first version printed a header
+    and a "[undeclarable] NOT CHECKED" line for every package, so a 45-package
+    sweep was 90 lines of noise around a handful of findings -- and the one
+    real result, automake pulling `git` from Arch's makedepends, was somewhere
+    in the middle of it. What could not be checked is still reported, but once
+    at the end as a count, because a report nobody finishes reading is not a
+    report.
     """
     import tomllib
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -2038,26 +2048,47 @@ def cmd_reconcile(a):
                 recipes[n] = tomllib.load(f)
 
     wanted = a.names or sorted(recipes)
-    total = 0
+    total, no_src, no_meta, missing = 0, [], [], []
     for n in wanted:
         if n not in recipes:
-            print(f"== {n}\n  no recipe")
+            missing.append(n)
             continue
-        print(f"== {n}")
         root = os.path.join(a.src, n) if a.src else None
         if root and not os.path.isdir(root):
             root = None
         if root is None:
-            # SAID, NOT SKIPPED SILENTLY. Without an unpacked tarball the
-            # [undeclarable] half cannot run at all, and a reconcile that
-            # reports "0 problems" because it checked nothing is worse than
-            # one that reports it could not check.
-            print("  --           no unpacked source at "
-                  f"{a.src or '(--src not given)'}; "
-                  "[undeclarable] NOT CHECKED")
-        total += reconcile(recipes[n], root, recipes, a.mode)
+            no_src.append(n)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            found = reconcile(recipes[n], root, recipes, a.mode)
+        text = buf.getvalue()
+        if "no packaging metadata" in text:
+            no_meta.append(n)
+            text = "\n".join(l for l in text.splitlines()
+                              if "no packaging metadata" not in l)
+        if found:
+            print(f"== {n}")
+            print(text.rstrip("\n"))
+        total += found
+
+    print()
+    if missing:
+        print(f"  {len(missing)} name(s) with no recipe: {', '.join(missing)}")
+    if no_meta:
+        print(f"  {len(no_meta)} package(s) neither Arch nor Alpine "
+              f"packages: {', '.join(no_meta)}")
+    if no_src:
+        # NOT SILENCE, AND NOT A REASSURING ZERO. Without an unpacked tarball
+        # the [undeclarable] half cannot run at all, and a sweep that reports
+        # no problems because it checked nothing is the exact failure this
+        # project keeps recording.
+        print(f"  {len(no_src)} package(s) had NO UNPACKED SOURCE, so "
+              f"[undeclarable] was not checked for them:")
+        print(f"    {', '.join(no_src)}")
+        print("    (pass --src DIR, where DIR/<name> is the unpacked tree)")
     print(f"\nVERON-RECONCILE-{'FAIL' if (total and a.mode == 'fail') else 'OK'}"
-          f"  {total} unaccounted or undisclosed")
+          f"  {total} unaccounted or undisclosed across "
+          f"{len(wanted) - len(missing)} package(s)")
     return 1 if (total and a.mode == "fail") else 0
 
 

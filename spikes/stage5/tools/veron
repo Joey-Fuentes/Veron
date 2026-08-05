@@ -996,6 +996,22 @@ def cmd_merge(a):
     return 0
 
 
+def cmd_tarball_names(a):
+    """`<package>\t<tarball filename>`, one per line.
+
+    THE TARBALL NAME IS NOT THE PACKAGE NAME and there is no rule connecting
+    them: freetype-bootstrap unpacks freetype-2.14.1, sqlite ships as
+    sqlite-autoconf-3530400, icu's tarball is icu4c-78_2-src. Anything that
+    needs to find a package's tarball has to read the recipe, and the
+    alternative -- a mapping table in a workflow -- is a second copy of a fact
+    the recipes already carry, which is the defect this repository keeps
+    finding in its own gates.
+    """
+    for name, r in sorted(load_recipes().items()):
+        print(f"{name}\t{r['source']['url'].rsplit('/', 1)[-1]}")
+    return 0
+
+
 def cmd_build_only_names(a):
     """The build-only package names, space-separated, for the merge step.
 
@@ -1788,7 +1804,8 @@ def cmd_selftest(a):
     # stop reading.
     KNOWN = ("plan", "fetch", "build", "manifest", "rootfs", "ledger",
              "selftest", "guest-tests", "compare", "status", "sources",
-             "git-sources", "collect", "build-only-names", "merge")
+             "git-sources", "collect", "build-only-names", "merge",
+             "tarball-names")
     called = set()
     wfdir = os.path.join(HERE, "..", "..", ".github", "workflows")
     if os.path.isdir(wfdir):
@@ -1966,6 +1983,10 @@ def main():
 
     p = sub.add_parser("merge", help="merge every DESTDIR into the system root")
     p.set_defaults(fn=cmd_merge)
+
+    p = sub.add_parser("tarball-names",
+                       help="package -> the tarball filename its recipe pins")
+    p.set_defaults(fn=cmd_tarball_names)
 
     p = sub.add_parser("build-only-names",
                        help="packages that are staged but never installed")

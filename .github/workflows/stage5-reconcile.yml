@@ -1,0 +1,163 @@
+name: stage5-reconcile
+
+# EVERY DEPENDENCY NAME ACCOUNTED FOR, OR NAMED AS UNACCOUNTED.
+#
+# WHY THIS IS A JOB AND NOT A COMMAND SOMEBODY RUNS. The sweep has two halves
+# and neither is practical by hand:
+#
+#   corroborative  up to three HTTPS fetches per package to gitlab.archlinux
+#                  and gitlab.alpinelinux -- 45 packages, serial, and slow
+#                  enough on a phone that the run gets interrupted
+#   static         needs every pinned tarball UNPACKED, which is ~1 GB of
+#                  downloads and extraction
+#
+# The second is the half that matters. It is the one that finds
+# `dependency('llvm', method:'config-tool')` and
+# `run_command(python3, '-c', 'import mako')` -- the two shapes that let llvm
+# and mako escape the pinned set entirely, because probe.py resolves names
+# through .pc files and neither of those has one.
+#
+# WARN, NOT FAIL, TO BEGIN WITH. `--mode fail` exists and is one input away.
+# It is not the default because the first sweep has to be READ before it
+# blocks anything: turning a gate on before anyone has seen its output is how
+# a gate comes to be disabled a week later, and this repository already has
+# three decorative gates in its history for exactly that reason.
+#
+# NO BUILD LOGIC IN THIS FILE. Every `run:` is environment setup or a call to
+# spikes/stage5/tools. The fetch step is the spike's, unchanged.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'warn (report only) or fail (exit non-zero on findings)'
+        type: choice
+        options: [warn, fail]
+        default: warn
+      packages:
+        description: 'Space-separated package names (blank = all)'
+        required: false
+        default: ''
+      skip_sources:
+        description: 'Skip fetching/unpacking tarballs -- distro half only, much faster'
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: stage5-reconcile-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: 'What this checks, and what it cannot'
+        run: |
+          set -eu
+          echo "  mode      ${{ inputs.mode }}"
+          echo "  packages  ${{ inputs.packages || '(all)' }}"
+          echo "  sources   ${{ inputs.skip_sources && 'SKIPPED -- [undeclarable] will not be checked' || 'fetched and unpacked' }}"
+          echo ""
+          echo "  THREE DETECTORS, EACH WITH ITS OWN BLIND SPOT:"
+          echo "    static        what this tarball's build files ask for"
+          echo "    corroborative what Arch and Alpine declare -- a SUPERSET,"
+          echo "                  because their lists follow THEIR configure flags"
+          echo "    observed      DT_NEEDED after a build -- authoritative, and"
+          echo "                  NOT RUN HERE because it needs a built DESTDIR"
+          echo ""
+          echo "  The rule is not that they agree. It is that no name is"
+          echo "  unaccounted for."
+          python3 -c 'import tomllib' || { echo "python 3.11+ required"; exit 1; }
+
+      - name: 'VERON-PROBE-SELFTEST-OK -- the parsers before the sweep'
+        run: |
+          set -eu
+          cd spikes/stage5
+          # THE SCANNER HAS BEEN WRONG THREE TIMES AND LOOKED RIGHT EACH TIME:
+          # [^)] call bodies that stopped at the first nested paren, a ternary
+          # method: read as its own condition, and find_program requiredness
+          # with two states where the source has three. A sweep run with a
+          # broken scanner produces a plausible number and no alarm, so the
+          # fixtures run first.
+          python3 tools/probe.py selftest
+
+      - name: 'Fetch pinned sources through the mirror'
+        if: ${{ !inputs.skip_sources }}
+        run: |
+          set -eu
+          cd spikes/stage5
+          mkdir -p dl
+          fail=0
+          python3 tools/veron sources | while IFS="$(printf '\t')" read -r sha name url; do
+            python3 ../../tools/mirror.py fetch "$sha" "$name" --url "$url" --dest dl \
+              || { echo "  FAILED $name"; exit 1; }
+          done || fail=1
+          [ "$fail" = 0 ] || { echo "VERON-FETCH-INCOMPLETE"; exit 1; }
+
+      - name: 'Unpack each tarball as src/<package>'
+        if: ${{ !inputs.skip_sources }}
+        run: |
+          set -eu
+          cd spikes/stage5
+          mkdir -p src
+          # THE DIRECTORY MUST BE NAMED FOR THE PACKAGE, NOT THE TARBALL.
+          # reconcile looks for src/<name>, and tarball names do not match
+          # recipe names: freetype-bootstrap unpacks freetype-2.14.1,
+          # sqlite unpacks sqlite-autoconf-3530400, icu unpacks `icu`. Mapping
+          # through `veron sources` -- which emits the recipe name beside the
+          # file -- is the only way that does not need a table here.
+          # THE MAPPING COMES FROM THE RECIPES. `veron tarball-names` emits
+          # `<package>\t<file>`, because the two are not derivable from each
+          # other: freetype-bootstrap unpacks freetype-2.14.1, sqlite ships as
+          # sqlite-autoconf-3530400, icu as icu4c-78_2-src. A table here would
+          # be a second copy of a fact the recipes already carry.
+          python3 tools/veron tarball-names | while IFS="$(printf '\t')" read -r pkg file; do
+            [ -f "dl/$file" ] || { echo "  no tarball for $pkg ($file)"; continue; }
+            rm -rf "src/$pkg"; mkdir -p "src/$pkg"
+            tar -xf "dl/$file" -C "src/$pkg" 2>/dev/null \
+              || { echo "  unreadable: $file"; continue; }
+            # FLATTEN A SINGLE TOP-LEVEL DIRECTORY. Almost every tarball has
+            # one and its name is the tarball's, not the package's. Leaving it
+            # would put a redundant component in front of every path in every
+            # finding, and would break nothing loudly.
+            inner=$(ls "src/$pkg")
+            if [ "$(echo "$inner" | wc -l)" = 1 ] && [ -d "src/$pkg/$inner" ]; then
+              mv "src/$pkg/$inner" "src/$pkg.tmp"
+              rm -rf "src/$pkg"
+              mv "src/$pkg.tmp" "src/$pkg"
+            fi
+          done
+          echo "  unpacked $(ls src | wc -l) source trees"
+
+      - name: 'VERON-RECONCILE -- the sweep'
+        run: |
+          set -eu
+          cd spikes/stage5
+          # `[ -d src ] && SRC=...` WOULD KILL THIS STEP under `set -e` when
+          # the directory is absent, because the && returns 1 as the last
+          # command of the line. skip_sources exists precisely to reach that
+          # state.
+          SRC=""
+          if [ -d src ]; then SRC="--src src"; fi
+          mkdir -p out
+          python3 tools/probe.py reconcile ${{ inputs.packages }} \
+            $SRC --mode "${{ inputs.mode }}" 2>&1 | tee out/reconcile.txt
+          echo ""
+          echo "  --- summary ---"
+          grep -cE '^  (unaccounted|undisclosed|UNACCOUNTED|UNDISCLOSED)' \
+            out/reconcile.txt || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: veron-stage5-reconcile-${{ github.run_id }}
+          path: spikes/stage5/out/reconcile.txt
+          if-no-files-found: error
+          retention-days: 30
