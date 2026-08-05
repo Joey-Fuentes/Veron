@@ -144,14 +144,52 @@ extracts only `pkgver`, source URLs and digests. **Arch's mesa PKGBUILD lists
 
 ### 3. Probe work
 
-- Parse `depends=` / `makedepends=` from the PKGBUILD and APKBUILD already
-  being downloaded
-- Emit unresolvable names — `run_command`, `find_program`,
-  `method:'config-tool'`, interpreter `import` — as a first-class output rather
-  than silence
-- Reconcile all three detectors; unaccounted name is a failure
-- Re-probe all 111 with the new fields. Expect llvm, mako, MarkupSafe,
-  packaging and PyYAML to surface
+**Done — both detectors are in `probe.py` and covered by its selftest.**
+
+- `packager_deps()` parses `depends` / `makedepends` / `checkdepends` from the
+  PKGBUILD and APKBUILD that were already being downloaded and read for
+  `pkgver` alone. Version constraints, alternates and Alpine's `so:` / `cmd:` /
+  `pc:` provider prefixes are stripped, and multi-line arrays are handled.
+  Reported as **a superset to explain, not a list to adopt**: their lists
+  follow their configure flags.
+- `_unresolvable()` reports the three shapes no `.pc` name can answer —
+  `method:` naming a non-pkg-config backend, `run_command` invoking an
+  interpreter (with the imports pulled out), and `find_program` on a tool not
+  shipped in the tarball — each with `file:line`.
+
+**The scanner needed a real parser, and a fixture is what proved it.** The
+first version found call bodies with `[^)]`, which terminates on the first
+nested paren — so `host_machine.system()` and `sys.exit(2)` cut both of mesa's
+lookups short. It reported 34 findings for mesa and **missed the only two the
+scanner exists for**: `dependency('llvm', method: … 'config-tool')` and the
+`run_command` that imports `mako`. It looked like it worked. Depth counting
+with quote awareness is a dozen lines and is simply correct.
+
+The second bug was subtler: mesa writes
+`method : host_machine.system() == 'windows' ? 'auto' : 'config-tool'`, and
+taking the first quoted token reported `method:'windows'` — a name that means
+nothing and sends the reader to the wrong line. Every literal in the expression
+is reported now, because which branch is taken is not a static fact.
+
+Current sweep over the tarballs read so far:
+
+| | unresolvable |
+|---|---|
+| mesa | 35 — incl. the llvm config-tool and 3 interpreter imports |
+| glib | 11 |
+| fontconfig | 10 — incl. the `method:'cmake'` freetype rescue |
+| harfbuzz | 6 |
+| cairo | 3 |
+| wlroots | 2 |
+| libdisplay-info | 0 |
+
+**Still to do:**
+
+- Reconcile all three detectors; an unaccounted name is a failure
+- Re-probe all 111 with the new fields, so the output is recorded rather than
+  computed ad hoc
+- The recipe side: `[undeclarable]` must become **required** disclosure, so a
+  lookup the probe finds and the recipe does not name fails the build (rule 4)
 
 ### 4. Missing pins
 

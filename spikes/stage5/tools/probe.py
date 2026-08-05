@@ -327,6 +327,74 @@ def packager_source(name):
     return out
 
 
+def _bash_array(text, key):
+    """Value of `key=(...)` or `key="..."`, as a list of bare names.
+
+    PKGBUILD writes bash arrays -- depends=('a' 'b>=1.2') -- possibly over
+    several lines. APKBUILD writes a quoted string -- depends="a b c" -- also
+    possibly over several lines. One reader handles both because the only
+    difference that matters here is the closing delimiter.
+
+    Version constraints, alternates and sonames are stripped: `b>=1.2`,
+    `a|b` and `so:libfoo.so.1` all reduce to a bare name, because the point
+    is to compare against OUR package names, not to reimplement a solver.
+    """
+    m = re.search(rf"^{re.escape(key)}=(\(|\")", text, re.M)
+    if not m:
+        return []
+    close = ")" if m.group(1) == "(" else '"'
+    end = text.find(close, m.end())
+    if end < 0:
+        return []
+    body = text[m.end():end]
+    body = re.sub(r"#.*", "", body)
+    out = set()
+    for tok in body.replace("'", " ").replace('"', " ").split():
+        tok = tok.split("|")[0]                       # alternates
+        tok = re.split(r"[<>=]", tok)[0]              # version constraints
+        tok = re.sub(r"^(so|cmd|pc):", "", tok)       # alpine provider prefixes
+        tok = tok.strip().rstrip(":")
+        if tok and not tok.startswith("$"):
+            out.add(tok)
+    return sorted(out)
+
+
+def packager_deps(name):
+    """What Arch and Alpine DECLARE this package needs.
+
+    THIS DATA WAS ALREADY BEING DOWNLOADED AND THROWN AWAY. packager_source()
+    fetches the same two files and reads only pkgver, source URLs and digests.
+    Arch's mesa PKGBUILD lists `python-mako` in makedepends -- the dependency
+    that let mako escape the pinned set entirely, because mesa asks for it
+    with `run_command(python3, '-c', 'import mako')` and no .pc file exists
+    for a Python module to match on.
+
+    A SUPERSET TO EXPLAIN, NOT A LIST TO ADOPT. Their dependency lists follow
+    THEIR configure flags, and Veron disables more -- so a name here is not
+    automatically ours. The useful question is per name: is it in our deps, in
+    optional_off with a reason, or unexplained? Unexplained is the interesting
+    state, and it is the one nothing could ask before.
+    """
+    out = {}
+    arch = try_get("https://gitlab.archlinux.org/archlinux/packaging/packages/"
+                   f"{name}/-/raw/main/PKGBUILD", quiet=True)
+    if arch and not _looks_like_html(arch):
+        t = arch.decode("utf-8", "replace")
+        out["arch"] = {"depends": _bash_array(t, "depends"),
+                       "makedepends": _bash_array(t, "makedepends"),
+                       "checkdepends": _bash_array(t, "checkdepends")}
+    for repo in ("main", "community"):
+        alp = try_get("https://gitlab.alpinelinux.org/alpine/aports/-/raw/master/"
+                      f"{repo}/{name}/APKBUILD", quiet=True)
+        if alp and not _looks_like_html(alp):
+            t = alp.decode("utf-8", "replace")
+            out["alpine"] = {"depends": _bash_array(t, "depends"),
+                             "makedepends": _bash_array(t, "makedepends"),
+                             "checkdepends": _bash_array(t, "checkdepends")}
+            break
+    return out
+
+
 def cmd_source(a):
     for name in a.name:
         print(f"== {name}")
@@ -557,7 +625,28 @@ def declared_deps(root):
     # are already being opened to read what the package needs.
     found = {"provides": set(),
              "pkg_config": set(), "check_lib": set(), "pc_requires": set(),
-             "vcpkg": set(), "cmake_find": set(), "cargo": set()}
+             "vcpkg": set(), "cmake_find": set(), "cargo": set(),
+             # NAMES THIS MECHANISM CANNOT RESOLVE, REPORTED RATHER THAN
+             # OMITTED. Everything above is a name with a .pc file somewhere
+             # that can be mapped to a package. These are the three shapes
+             # that have no such name, each of which has already cost this
+             # project something:
+             #
+             #   config-tool   mesa finds LLVM with
+             #                 dependency('llvm', method:'config-tool').
+             #                 LLVM ships no .pc, so nothing matched and llvm
+             #                 was the one package in the set with no pin.
+             #   run_command   mesa checks mako with
+             #                 run_command(python3, '-c', 'import mako').
+             #                 A python program inside a string inside a call
+             #                 -- no parser short of running the build sees it.
+             #   find_program  zstd's suite calls file(1); hwdata's Makefile
+             #                 shells out to rpm. Tools invoked, never linked.
+             #
+             # STATIC ANALYSIS CANNOT BE COMPLETE, so the design is not to
+             # keep widening the parser -- it is to make the boundary visible.
+             # Silence is what let three whole classes through.
+             "undeclarable": set()}
     for dirpath, dirnames, files in os.walk(root):
         dirnames[:] = [d for d in dirnames
                        if d not in (".git", "tests", "test", "Tests")]
@@ -611,7 +700,121 @@ def declared_deps(root):
                     found["pc_requires"].add(m.group(1).strip())
                 for m in re.finditer(r"dependency\(\s*'([^']+)'", t):
                     found["pkg_config"].add(m.group(1))
+                rel = os.path.relpath(os.path.join(dirpath, fn), root)
+                for kind, detail in _unresolvable(t, rel):
+                    found["undeclarable"].add(f"{kind}: {detail}")
     return {k: sorted(v) for k, v in found.items()}
+
+
+def _calls(text, fname):
+    """Every `fname(...)` call, as (line, body), with parens matched properly.
+
+    A REGEX WITH [^)] IS NOT GOOD ENOUGH HERE, and the first version of this
+    proved it by missing the only two cases that matter. Both of mesa's are
+    nested:
+
+        dependency('llvm',
+          method : host_machine.system() == 'windows' ? 'auto' : 'config-tool',
+
+        run_command(prog_python, '-c', '''... sys.exit(2) ...''')
+
+    The `)` inside `system()` and `exit(2)` ends a [^)] body immediately, so
+    the first scanner reported 34 findings for mesa and neither of the two
+    that let llvm and mako escape the pinned set in the first place. Depth
+    counting with quote awareness is a dozen lines and is simply correct.
+    """
+    TRIPLES = ("'''", '"""')
+    out = []
+    for m in re.finditer(rf"\b{re.escape(fname)}\s*\(", text):
+        i, depth, quote = m.end(), 1, None
+        while i < len(text) and depth:
+            c = text[i]
+            if quote:
+                if text.startswith(quote, i):
+                    i += len(quote)
+                    quote = None
+                    continue
+                if c == "\\":
+                    i += 2
+                    continue
+            elif text.startswith(TRIPLES, i):
+                quote = text[i:i + 3]
+                i += 3
+                continue
+            elif c == "'" or c == '"':
+                quote = c
+            elif c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if not depth:
+                    break
+            i += 1
+        out.append((text[:m.start()].count("\n") + 1, text[m.end():i]))
+    return out
+
+
+def _unresolvable(text, rel):
+    """The lookups in one build file that no .pc name can answer.
+
+    Reports LOCATIONS, not just names -- `meson.build:1913` is actionable,
+    `llvm` on its own is a name somebody has to go find again.
+    """
+    out = []
+
+    # A dependency() naming a non-pkg-config method. Searching the whole call
+    # body rather than immediately after `method:` is what catches mesa's
+    # ternary, where the literal sits behind a host_machine.system() test.
+    for line, body in _calls(text, "dependency"):
+        nm = re.match(r"\s*'([^']+)'", body)
+        if not nm:
+            continue
+        # THE METHOD MAY BE AN EXPRESSION, NOT A LITERAL, and reporting the
+        # first quoted token in it is worse than useless. mesa writes
+        #
+        #   method : host_machine.system() == 'windows' ? 'auto' : 'config-tool'
+        #
+        # where the first literal is the ternary's CONDITION -- so the earlier
+        # version flagged llvm as `method:'windows'`, which names nothing and
+        # sends the reader to the wrong line. Every literal in the expression
+        # is reported instead, because which branch is taken is not a static
+        # fact and pretending otherwise is how a probe starts lying quietly.
+        meth_expr = re.search(r"method\s*:([^\n]*)", body)
+        if meth_expr:
+            lits = re.findall(r"'([a-z-]+)'", meth_expr.group(1))
+            if [x for x in lits if x not in ("pkg-config", "pkgconfig", "auto")]:
+                shown = " | ".join(f"'{x}'" for x in lits)
+                out.append(("config-tool",
+                            f"{rel}:{line} dependency('{nm.group(1)}', "
+                            f"method: {shown})"))
+
+    # run_command invoking an interpreter. The import inside IS the
+    # dependency, and it is the shape nothing else can see.
+    for line, body in _calls(text, "run_command"):
+        mods = set(re.findall(r"^\s*import\s+([A-Za-z_][\w.]*)", body, re.M))
+        mods |= set(re.findall(r"^\s*from\s+([A-Za-z_][\w.]*)\s+import",
+                               body, re.M))
+        if mods:
+            out.append(("interpreter-module",
+                        f"{rel}:{line} run_command imports "
+                        f"{', '.join(sorted(mods))}"))
+        elif re.search(r"prog_python|'python", body):
+            out.append(("run_command",
+                        f"{rel}:{line} run_command invokes an interpreter"))
+
+    # find_program on something not shipped in the tarball. A relative path or
+    # a .py/.sh is the project's own script; a bare name is a tool the system
+    # must already provide.
+    for line, body in _calls(text, "find_program"):
+        nm = re.match(r"\s*'([^']+)'", body)
+        if not nm:
+            continue
+        prog = nm.group(1)
+        if prog.startswith(("./", "../")) or prog.endswith((".py", ".sh")):
+            continue
+        req = "optional" if re.search(r"required\s*:\s*false", body) else "REQUIRED"
+        out.append(("find_program", f"{rel}:{line} {prog} ({req})"))
+    return out
 
 
 def meson_options(root):
@@ -880,6 +1083,7 @@ def probe(url, keep=False, quiet_report=False):
         "cmake_find": "may be optional -- find_package without REQUIRED is a hint",
         "check_lib":  "probed, often optional",
         "cargo":      "crates, not system packages -- a separate bootstrap problem",
+        "undeclarable": "NO .pc NAME EXISTS -- must be disclosed in the recipe",
     }
     for k, v in d.items():
         if not v:
@@ -888,6 +1092,25 @@ def probe(url, keep=False, quiet_report=False):
         print(f"     {'':<12} ^ {WORTH.get(k, '')}")
     if not any(d.values()):
         print("     nothing declared -- either a leaf, or it vendors everything")
+
+    if d["undeclarable"]:
+        print(f"\n   {len(d['undeclarable'])} lookups NO DEPENDENCY GRAPH CAN "
+              f"RESOLVE")
+        print("     each needs an [undeclarable] entry in the recipe, with a "
+              "reason -- see spikes/stage5/ROADMAP.md rule 4")
+
+    dep = packager_deps(name.split("-")[0] if "-" in name else name)
+    if dep:
+        print("\n   what other packagers DECLARE (a superset to explain, "
+              "not a list to adopt)")
+        print("     their lists follow THEIR configure flags; Veron disables "
+              "more. Per name:")
+        print("     in our deps, or in optional_off with a reason, or "
+              "UNEXPLAINED.")
+        for who, fields in sorted(dep.items()):
+            for field, names in sorted(fields.items()):
+                if names:
+                    print(f"     {who}/{field:<13} {', '.join(names)}")
 
     opts = configure_options(root)
     if opts is None:
@@ -1716,6 +1939,77 @@ def cmd_selftest(a):
         ok = False
 
     try_get = saved
+    # THE TWO SHAPES THAT LET llvm AND mako ESCAPE THE PINNED SET.
+    #
+    # Both are nested calls, and the first version of this scanner used
+    # [^)] to find the call body -- so `host_machine.system()` and
+    # `sys.exit(2)` terminated the body at the wrong paren and NEITHER of
+    # the two cases the scanner exists for was found. It reported 34
+    # findings for mesa and missed both. A fixture is the only thing that
+    # would have caught that, because the scanner looked like it worked.
+    MESA_LLVM = """
+dep_llvm = dependency(
+  'llvm',
+  method : host_machine.system() == 'windows' ? 'auto' : 'config-tool',
+  version : _llvm_version,
+  required : with_llvm,
+)
+"""
+    MESA_MAKO = '''
+  has_mako = run_command(
+    prog_python, '-c',
+    """
+try:
+    from packaging.version import Version
+except:
+    sys.exit(2)
+import mako
+if Version(mako.__version__) < Version("0.8.0"):
+    sys.exit(1)
+""", check: false)
+'''
+    got = _unresolvable(MESA_LLVM, "meson.build")
+    if any(k == "config-tool" and "'llvm'" in v and "config-tool" in v
+           for k, v in got):
+        print("  ok    a ternary method: expression is still resolved")
+    else:
+        print(f"  FAIL  ternary method: missed -- {got}")
+        ok = False
+
+    got = _unresolvable(MESA_MAKO, "meson.build")
+    if any(k == "interpreter-module" and "mako" in v for k, v in got):
+        print("  ok    an import inside a nested run_command is found")
+    else:
+        print(f"  FAIL  run_command import missed -- {got}")
+        ok = False
+
+    # PKGBUILD arrays and APKBUILD strings, including the forms that carry
+    # version constraints and Alpine's so:/cmd: provider prefixes. Arch's
+    # mesa PKGBUILD is where python-mako was sitting the whole time.
+    PKGBUILD = """
+pkgname=mesa
+depends=('libdrm' 'wayland' 'zstd>=1.5.0')
+makedepends=(python-mako
+             python-yaml 'llvm' rust)
+"""
+    APKBUILD = 'makedepends="py3-mako so:libz.so.1 cmd:bison meson>=1.4"\n'
+    a = _bash_array(PKGBUILD, "makedepends")
+    if a == ["llvm", "python-mako", "python-yaml", "rust"]:
+        print("  ok    PKGBUILD makedepends parses across lines")
+    else:
+        print(f"  FAIL  PKGBUILD makedepends -> {a}")
+        ok = False
+    if _bash_array(PKGBUILD, "depends") == ["libdrm", "wayland", "zstd"]:
+        print("  ok    version constraints are stripped")
+    else:
+        print(f"  FAIL  constraints -> {_bash_array(PKGBUILD, 'depends')}")
+        ok = False
+    b = _bash_array(APKBUILD, "makedepends")
+    if b == ["bison", "libz.so.1", "meson", "py3-mako"]:
+        print("  ok    APKBUILD provider prefixes are stripped")
+    else:
+        print(f"  FAIL  APKBUILD makedepends -> {b}")
+        ok = False
     print("VERON-PROBE-SELFTEST-OK" if ok else "VERON-PROBE-SELFTEST-FAIL")
     return 0 if ok else 1
 
