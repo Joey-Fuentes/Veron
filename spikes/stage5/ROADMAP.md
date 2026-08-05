@@ -405,9 +405,39 @@ dispatch form shows an input's *description*, never its name, and the
 description never said "propose". Every description now leads with the input
 name.
 
+**Confirmed by the sweep: undisclosed 60 -> 0.** 82 findings became 21, all of
+them corroborative, and all 48 packages were read this time -- the git-pinned
+three included, which the previous run had silently skipped.
+
+**And that run proved the tar-not-gzip pin was right, on hardware.** For
+libxkbcommon the runner reported
+
+```
+tar    ffc7e2c3...   <- THE PIN, compressor-independent
+tar.gz 58c4d004...   <- varies with gzip
+```
+
+The tar digest matched the recipe exactly -- pinned from a phone, verified on a
+CI runner -- while the compressed digest differed from the one that phone
+produced. Two machines, same tree, same tar, different gzip. That is the
+measurement the earlier failure predicted.
+
+**One thing the run also showed: the same step ran twice.** stage5-reconcile
+generated the git-pinned sources at step 6 and again at step 7, identical names
+and bodies, because one edit was applied to two copies of the tree and both
+were merged forward. Nothing failed -- `fetch-git.sh` caches, so the second
+call printed "cached" and exited 0. **A duplicate that is merely wasteful is
+the kind that survives**, because the only symptom is a step nobody reads
+twice.
+
+The selftest now rejects a repeated step name **within one job**. Scoped that
+way deliberately: the first version scanned whole files and flagged five
+correct cases in `stage0-stage4-complete.yml` and `stage3-hermetic-arm64.yml`,
+where the same name appears once per job on purpose. A gate that fires on
+correct code is one people switch off.
+
 **Still to do:**
 
-- Re-run the sweep to confirm the 60 undisclosed go to zero
 - The 21 corroborative declines
 - Then `--mode fail`
 - Write the 21 corroborative declines

@@ -2004,6 +2004,53 @@ def cmd_selftest(a):
     else:
         print("  FAIL  found no workflow veron invocations to check")
         ok = False
+    # NO WORKFLOW MAY DECLARE THE SAME STEP NAME TWICE.
+    #
+    # stage5-reconcile ran its git-pinned generation step TWICE, and the run
+    # log showed it plainly -- steps 6 and 7, identical names, identical
+    # bodies. Nothing failed: fetch-git.sh caches, so the second call printed
+    # "cached" and exited 0. A duplicate that is merely wasteful is exactly
+    # the kind that survives, because the only symptom is a step nobody reads
+    # twice.
+    #
+    # It happened because the same edit was applied to two copies of the tree
+    # and both were merged forward -- the same way cmake's --system-* flags
+    # were once lost and restored, and the same way a corrected recipe was
+    # replaced by its predecessor a week later. Carrying one tree forward is
+    # the fix; a gate is what notices when that fails.
+    dupes = []
+    if os.path.isdir(wfdir2):
+        for fn in sorted(os.listdir(wfdir2)):
+            if not fn.endswith((".yml", ".yaml")):
+                continue
+            # PER JOB, NOT PER FILE. The first version scanned whole files
+            # and reported five "duplicates" in stage0-stage4-complete.yml and
+            # stage3-hermetic-arm64.yml -- all of them the SAME step name in
+            # DIFFERENT jobs, which is normal and often deliberate ('Fetch
+            # pinned upstreams' appears once per job that needs it). A gate
+            # that fires on correct code is one people switch off.
+            seen, injobs = set(), False
+            for line in open(os.path.join(wfdir2, fn),
+                             errors="replace").read().splitlines():
+                if re.match(r"^jobs:\s*$", line):
+                    injobs = True
+                    continue
+                if injobs and re.match(r"^  [A-Za-z0-9_-]+:\s*$", line):
+                    seen = set()          # a new job starts its own namespace
+                    continue
+                m = re.match(r"^\s+- name: ['\"]?(.+?)['\"]?\s*$", line)
+                if not m:
+                    continue
+                nm = m.group(1).strip()
+                if nm in seen:
+                    dupes.append(f"{fn}: {nm!r}")
+                seen.add(nm)
+    if dupes:
+        for d in dupes:
+            print(f"  FAIL  duplicate step name -- {d}")
+        ok = False
+    else:
+        print("  ok    no workflow declares a step name twice")
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 

@@ -129,25 +129,6 @@ jobs:
             sh ../../tools/fetch-git.sh "$commit" "$name" "$url" dl ${want:+"$want"}
           done
 
-      # GIT-PINNED SOURCES HAVE TO BE GENERATED FIRST. `veron sources` omits
-      # them deliberately -- their bytes do not exist upstream -- so without
-      # this the sweep reported
-      #     no tarball for libsfdo (libsfdo.git)
-      #     3 package(s) had NO UNPACKED SOURCE
-      # and silently checked nothing for all three. The spike has had this
-      # step since git pins were designed; this workflow was written from the
-      # spike's fetch step alone and inherited only half of it.
-      - name: 'Generate the git-pinned sources'
-        if: ${{ !inputs.skip_sources }}
-        run: |
-          set -eu
-          cd spikes/stage5
-          python3 tools/veron git-sources \
-            | while IFS="$(printf '\t')" read -r commit name url want; do
-            [ -n "$commit" ] || continue
-            sh ../../tools/fetch-git.sh "$commit" "$name" "$url" dl ${want:+"$want"}
-          done
-
       - name: 'Unpack each tarball as src/<package>'
         if: ${{ !inputs.skip_sources }}
         run: |
