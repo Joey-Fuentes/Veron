@@ -359,3 +359,22 @@ git status                       # expect no a.elf, *.o, seed-as, etc.
 - [`spikes/README.md`](./spikes/README.md) — spike conventions
 - [`spikes/PROGRESS.md`](./spikes/PROGRESS.md) — bootstrap-spike progress + toolkit state
 - per-directory `README.md` files — what belongs in each directory
+
+## Dependency declarations
+
+Every dependency name any detector can see must be **declared**, **declined**
+with a reason, or **disclosed** as undeclarable. `stage5-reconcile` runs in
+`--mode fail` and enforces this; a new recipe with an unexplained dependency
+fails the run. See [`DEPENDENCIES.md`](./DEPENDENCIES.md).
+
+Two rules that are easy to get backwards:
+
+- **`deps.build` and `deps.link` are direct.** A package does not reach
+  something because a package it depends on happened to need it.
+- **A declared dependency brings its runtime closure.** A build tool you
+  cannot execute is not a build tool.
+
+`[installs].digest` pins the file listing — size and sha256 per path — so an
+upstream that starts shipping one more binary becomes a decision rather than a
+quiet growth in the image. Seed it with `veron installs --propose --write`
+from a build whose gates have already passed, never from an arbitrary one.

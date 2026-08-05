@@ -14,12 +14,43 @@ with no release tarball at all.
 | | count |
 |---|---|
 | pinned — digest, signature, licence, declared dependencies all read from the tarball | **111** |
-| recipes written | **41** |
-| built, installed and staged | **31** |
-| artifacts with two or more verified fetch routes | **107** |
+| recipes written | **48** |
+| built, installed, staged and booted | **48** |
+| artifacts mirrored | **115** |
+| artifacts with fewer than two fetch routes | **0** |
+
+**All 48 build, the image reproduces byte-for-byte, and it boots:**
+
+```
+VERON-BUILD-OK        every package built
+VERON-MANIFEST-OK     14228 paths
+VERON-LEDGER-OK       48 record(s)          VERON-STATUS-OK  unknown = 0
+VERON-IMAGE-REPRO-OK  two builds, identical bytes
+VERON-STAGE5-BOOT-OK  the packages ran under the kernel
+VERON-STAGE5-TESTS    pass=51 fail=0 none=1
+```
+
+**And 31 of the 48 build from their declared dependencies alone** — measured
+by `stage5-isolate`, which composes each package's root from the stage-4
+sysroot plus only what its recipe declares. The remaining 17 are being closed;
+the first sweep's failures were a fault in the composition rule rather than in
+the recipes, described in `spikes/stage5/ROADMAP.md`.
 
 Counts below that are not in that table are still from reading dependency
 graphs rather than building them. Treat those as planning numbers.
+
+**111 was also wrong in a direction worth recording.** Seven packages have
+been added to the set since it was measured, and none was found by any tool:
+
+| added | how it was missed |
+|---|---|
+| `llvm` | mesa finds it with `method: 'config-tool'` — LLVM ships no `.pc` file |
+| `mako`, `markupsafe`, `packaging`, `pyyaml` | mesa asks with `run_command(python3, '-c', 'import mako')` |
+| `hwdata`, `libdisplay-info` | pinned and mirrored, absent from every group list below |
+
+All seven were found by reading tarballs. That is the concrete form of the
+blindness the next paragraphs describe, and the reason `probe.py reconcile`
+now exists as a **gate** rather than a report.
 
 **And 111 is complete over a narrower thing than it sounds.** The table header
 says it: *declared dependencies read from the tarball*. `probe.py` resolves a
@@ -486,7 +517,7 @@ scoped as a stage 6 item — "reproducible from pinned sources" is false the day
 an upstream tarball moves. It is now the reason a shipped Veron does **not**
 need to carry every build-only package: a user with a network rebuilds any
 package from its recipe, same pins, same commands, same hashes. See
-[`sources/MIRROR.md`](./sources/MIRROR.md). **134 routes across 107 artifacts,
+[`sources/MIRROR.md`](./sources/MIRROR.md). **255 routes across 115 artifacts,
 every one reachable from at least two places** — and it stopped being
 theoretical the day three consecutive runs died on a single slow host.
 

@@ -109,9 +109,26 @@ Release assets give the storage without any of it.
 
 ## Where it stands
 
-**239 routes across 107 artifacts, and nothing is THIN.** Every artifact has
+**255 routes across 115 artifacts, and nothing is THIN.** Every artifact has
 its upstream recorded as provenance plus at least one route that does not
 depend on anyone else's uptime.
+
+**Three of them have no upstream file to point at.** `libxkbcommon`, `libsfdo`
+and `dinit` publish tags and nothing else; what a forge offers as an "archive"
+is synthesised on request with that forge's git and gzip, and GitHub moved
+every one of theirs once already. `tools/fetch-git.sh` verifies HEAD against
+the pinned commit — a Merkle hash over the whole tree — then generates the
+tarball itself with a fixed prefix and `gzip -n`. Their `upstream` row records
+`<repo>@<commit>` as provenance rather than as a fetchable route.
+
+**The digest for those three is over the UNCOMPRESSED tar, and that was
+measured rather than chosen.** The first mirror run failed with the commit
+verifying and the bytes not: 414836 bytes from one machine, 414922 from
+another. Decompressing the first and recompressing it with the second's gzip
+reproduced the second exactly. `git archive --format=tar` is reproducible
+across machines; gzip is not. Hashing the compressed file made a portable
+artifact look unportable and would have forced a repin every time a runner
+image changed its gzip.
 
 It stopped being an obligation and became load-bearing the week three
 consecutive runs died on a single slow host — `git` at kernel.org, then

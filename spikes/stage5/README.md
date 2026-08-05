@@ -16,10 +16,13 @@ prediction held, and this is the rewrite.
 | | count | established by |
 |---|---|---|
 | packages pinned | **111** | `probe batch` — digest, signature, licence and declared dependencies read from each tarball |
-| recipes written | **45** | `packages/*/recipe.toml`, ordered by `veron plan` |
-| built, installed, staged | **41 — all of them** | `stage5-spike` run 54: `VERON-BUILD-OK  every package built` |
-| artifacts with ≥2 fetch routes | **107** | `sources/MIRRORS.tsv`, 239 routes |
+| recipes written | **48** | `packages/*/recipe.toml`, ordered by `veron plan` |
+| built, installed, staged, booted | **48 — all of them** | `VERON-BUILD-OK`, `VERON-STAGE5-BOOT-OK`, `pass=51 fail=0` |
+| build from declared dependencies alone | **31 of 48** | `stage5-isolate`, per-package overlay roots |
+| artifacts with ≥2 fetch routes | **115 — all of them** | `sources/MIRRORS.tsv`, 255 routes, nothing THIN |
 | git-pinned (no tarball exists) | **3** | libsfdo, dinit, libxkbcommon |
+| dependency names unaccounted for | **0** | `stage5-reconcile --mode fail` across 48 |
+| `[undeclarable]` disclosures | **66** across 12 packages | lookups no `.pc` name can answer |
 
 **What is proven, not asserted:**
 
@@ -35,6 +38,21 @@ G3 was then removed. It doubles every build, which is the wrong trade while the
 set grows and most runs exist to find out whether a new recipe works at all.
 Restoring it is putting the step back; `veron compare` and the `--mark`
 plumbing are untouched.
+
+**`[installs].digest` is the cheaper half of the same question.** It pins a
+per-package listing — `f <sha256> <size> <path>` for every file, symlink
+targets recorded rather than hashed — so comparing this run's bytes against a
+digest a previous run committed is per-package reproducibility **across time**,
+for the cost of hashing files that were just written. G3 compares two builds in
+one run; this compares every run against the last one that was pinned.
+
+- **Every dependency name is accounted for.** `stage5-reconcile` runs in
+  `--mode fail` and reports 0 across 48. Three detectors feed it and none is
+  sufficient alone — see [`DEPENDENCIES.md`](../../DEPENDENCIES.md).
+- **31 of 48 build from their declared dependencies alone**, in overlay roots
+  composed of the stage-4 sysroot plus only what the recipe declares, on a
+  bubblewrap built from this repository's own pinned tarball rather than the
+  runner's.
 
 ---
 
@@ -420,7 +438,7 @@ git and gzip, and both are the *runner's*, so a change in either moves the
 bytes while the commit stays identical. That is the drift a recipe's sha256
 exists to catch and it can only be caught there.
 
-**45 packages built** — the four Python modules landed and mesa's configure-time
+**45 packages built at the time** — the four Python modules landed and mesa's configure-time
 requirement is satisfied before LLVM's 27 minutes are ever spent. The run then
 died three steps later on a malformed command line:
 
@@ -483,7 +501,7 @@ honours `build_only` there rather than by a name check in YAML.
 Reproduced as a non-root user before and after: `cp -a` fails exactly as run 55
 did, `veron merge` replaces the file.
 
-**The set closed.** Run 54 built all 41 packages — glib, pixman, graphite2,
+**The set closed.** Run 54 built all 41 packages of the time — glib, pixman, graphite2,
 libjpeg-turbo, harfbuzz, libwebp, freetype, fontconfig, cairo and pango, seven
 of which had never been built here. The three fixes that got it there were each
 found by reading rather than by hitting them: `$CMAKE` out of meson's
