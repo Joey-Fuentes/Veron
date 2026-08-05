@@ -592,11 +592,21 @@ jobs:
             -drive file=spikes/stage5/out/rootfs-boot.img,format=raw,if=virtio \
             -fsdev local,id=vs,path="$PWD/spikes/stage5/sysroot",security_model=none,readonly=on \
             -device virtio-9p-pci,fsdev=vs,mount_tag=veronsysroot \
+            -device virtio-gpu-pci -device virtio-keyboard-pci \
             -kernel boot/Image -initrd spikes/stage5/out/initramfs.cpio.gz \
             -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7${SR}" \
             > boot.log 2>&1
           echo "  qemu rc=$?"
           set -e
+          # THE PROBE'S ANSWER, LIFTED OUT OF THE BOOT LOG.
+          #
+          # It is reported and never enforced: nothing in the set needs DRM or
+          # evdev yet, and failing a green run over a capability no package
+          # uses would be a gate that fires on correct code. What it buys is
+          # knowing the answer before wlroots, mesa and labwc are written
+          # against it.
+          grep -E "VERON-(DRM|EVDEV)-(OK|ABSENT)" boot.log | sed 's/^ */  /' || \
+            echo "  VERON-GRAPHICS-PROBE-ABSENT  the probe did not run"
           if grep -q VERON-STAGE5-INIT boot.log; then
             sed -n '/VERON-STAGE5-INIT/,$p' boot.log | sed 's/^/    /'
           else

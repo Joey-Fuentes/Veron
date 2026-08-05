@@ -17,6 +17,7 @@
 # acquire a dependency that could reach the artifact path.
 
 import argparse
+import ast
 import contextlib
 import hashlib
 import io
@@ -1057,6 +1058,120 @@ def cmd_checkpoint(a):
     return 0
 
 
+def resolve_provider(owners, own, declared):
+    """Which of several providers of one soname this package actually meant.
+
+    PREFER WHAT THE PACKAGE DECLARES. When two packages install the same
+    soname, the ELF cannot say which copy was linked -- the name is identical.
+    The recipe can: if one of the providers is in deps.link, that is the
+    answer, and reporting the other would be inventing a finding out of an
+    ambiguity the build never had.
+
+    With no declared match it falls back to a stable choice and lets the
+    caller report it, because two providers and no declaration IS worth
+    seeing.
+    """
+    if own in owners:
+        return own
+    inter = owners & declared
+    if inter:
+        return sorted(inter)[0]
+    return sorted(owners)[0] if owners else None
+
+
+def linked_packages(destdir, provider, own, declared=frozenset()):
+    """Which OTHER packages this DESTDIR's binaries link, and what came from
+    the base image.
+
+    MEASURED AT THE PACKAGE THAT CAUSED IT. `veron linked` does this across
+    the whole set after the build, which is the right place for a gate and
+    the wrong place to READ it: an undeclared link shows up in a summary forty
+    packages after the one responsible. Printing it here puts the measurement
+    next to the build that produced it.
+    """
+    linked, sysroot = set(), set()
+    for dirpath, _, files in os.walk(destdir):
+        for fn in files:
+            p = os.path.join(dirpath, fn)
+            if os.path.islink(p):
+                continue
+            _, needed = elf_dynamic(p)
+            for so in needed:
+                owners = provider.get(so)
+                if not owners:
+                    sysroot.add(so)
+                    continue
+                owner = resolve_provider(owners, own, declared)
+                if owner and owner != own:
+                    linked.add(owner)
+    return sorted(linked), sorted(sysroot)
+
+
+def report_package(name, r, destdir, provider, timings, declared_digest):
+    """The high-level record of one package, on the console.
+
+    WHAT THIS REPLACES. The console used to carry every line every compiler
+    emitted -- hundreds of thousands, in which the facts worth keeping were
+    invisible. Compiler output belongs in driver/<pkg>.log and in the
+    collected artifact; what belongs here is what the build DECIDED and what
+    it PRODUCED, because that is what the manifest, the ledger and G3 all read
+    and what anyone auditing an image asks for.
+
+    Every line is a fact this run measured, not narration:
+
+      steps     where the time went, so a slow package is visible as one
+      links     DT_NEEDED resolved to packages -- the observed dependency
+                list, next to the build that created it
+      prefixes  the directories this package wrote into
+      digest    the file listing's hash, compared against [installs].digest
+                when the recipe pins one, which makes every build a
+                per-package reproducibility check against a previous run
+    """
+    if not os.path.isdir(destdir):
+        return
+    lines, digest = install_listing(destdir)
+    total = sum(int(l.split(" ")[2]) for l in lines if l.startswith("f "))
+
+    if timings:
+        print("    steps    " + " · ".join(f"{n} {t:.0f}s" for n, t in timings))
+
+    declared = set(r.get("deps", {}).get("link", []))
+    linked, sysroot = linked_packages(destdir, provider, name, declared)
+    unlinked = sorted(declared - set(linked))
+    if linked or sysroot or unlinked:
+        marks = []
+        for l in linked:
+            # AN UNDECLARED LINK IS FLAGGED WHERE IT HAPPENS. The sweep at the
+            # end of the run is the gate; this is the line that tells you
+            # which package to look at.
+            marks.append(l if l in declared else f"{l}(UNDECLARED)")
+        tail = f"   (+{len(sysroot)} from the sysroot)" if sysroot else ""
+        print(f"    links    {' '.join(marks) if marks else '(nothing)'}{tail}")
+        if unlinked:
+            # DECLARED AND NOT LINKED. Milder than the reverse -- it
+            # over-states rather than under-states -- but it still means
+            # `veron why` would answer with a dependency that does not exist.
+            # fontconfig declared libxml2 and linked expat for its whole life.
+            #
+            # Not every one of these is wrong: a header-only or data
+            # dependency is real and leaves no DT_NEEDED, which is why this
+            # reports rather than accuses.
+            print(f"    declared-not-linked  {' '.join(unlinked)}")
+
+    prefixes = install_prefixes(destdir)
+    if prefixes:
+        print(f"    prefixes {' '.join(prefixes)}")
+
+    pinned = ""
+    if declared_digest:
+        pinned = ("   [pinned: matches]" if declared_digest == digest
+                  else f"   [pinned: CHANGED, recipe has {declared_digest[:12]}]")
+    print(f"    {len(lines)} path(s), {total / 1048576:.1f} MiB, "
+          f"digest {digest[:16]}{pinned}")
+    for l in lines:
+        print(f"      {l}")
+
+
 def cmd_build(a):
     recipes = load_recipes()
     policy = load_policy()
@@ -1102,6 +1217,36 @@ def cmd_build(a):
     # build and is refused: a cache that silently builds on top of the wrong
     # base is worse than no cache, because everything downstream inherits the
     # mismatch and nothing says so.
+    # WHO PROVIDES WHICH SONAME, ACCUMULATED AS THE BUILD GOES.
+    #
+    # THIS WAS DELETED BY A PATCH THAT DID NOT MEAN TO TOUCH IT. Rewriting the
+    # resume block replaced a span that happened to contain this definition,
+    # and the run died at package 1 with `NameError: name 'learn' is not
+    # defined` -- after the build had already succeeded. Third collision in
+    # one function; the lesson recorded for packager_deps and run_step applies
+    # here too: rewrite whole rather than patch again.
+    #
+    # Built incrementally rather than in one pass at the end, because the
+    # point is to resolve a package's DT_NEEDED at the moment it finishes.
+    provider = {}
+
+    def learn(pkg, d):
+        # A SONAME CAN HAVE MORE THAN ONE PROVIDER, and this project has one
+        # by construction: freetype and freetype-bootstrap are the same
+        # tarball built twice, and both install libfreetype.so.6.
+        for dirpath, _, files in os.walk(d):
+            for fn in files:
+                fp = os.path.join(dirpath, fn)
+                if os.path.islink(fp):
+                    if ".so" in fn:
+                        provider.setdefault(fn, set()).add(pkg)
+                    continue
+                soname, _ = elf_dynamic(fp)
+                if soname:
+                    provider.setdefault(soname, set()).add(pkg)
+                if ".so" in fn:
+                    provider.setdefault(fn, set()).add(pkg)
+
     resume = set()
     if getattr(a, "resume", False):
         marker = read_checkpoint(roots["dest"])
@@ -2977,6 +3122,89 @@ def cmd_selftest(a):
     except Exception as e:
         print(f"  FAIL  ELF reader raised: {type(e).__name__}: {e}")
         ok = False
+
+    # EVERY NAME THE DRIVER USES MUST EXIST, CHECKED WITHOUT RUNNING IT.
+    #
+    # `NameError: name 'learn' is not defined` reached CI and killed a run at
+    # package 1 -- AFTER that package had built. A patch to the resume block
+    # replaced a span that happened to contain the definition, which is the
+    # third collision in this one function: packager_deps and run_step each
+    # had the same accident and each was eventually rewritten whole.
+    #
+    # Python resolves names at CALL time, so a deleted helper is invisible to
+    # import, invisible to `ast.parse`, and invisible to every selftest that
+    # does not execute that exact branch. `compile()` will not catch it and
+    # neither will anything short of running the build.
+    #
+    # So walk the AST: for each function, every Name it LOADS must be bound
+    # somewhere reachable -- its own locals, an enclosing function, module
+    # scope, or builtins. This is the check that would have failed here
+    # instead of in CI, in under a second.
+    import builtins as _bi
+    src = open(os.path.abspath(__file__)).read()
+    tree = ast.parse(src)
+    module_names = set(dir(_bi))
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+            module_names.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            for t in ast.walk(node):
+                if isinstance(t, ast.Name):
+                    module_names.add(t.id)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for al in node.names:
+                module_names.add((al.asname or al.name).split(".")[0])
+
+    def _bound(fn):
+        # PERMISSIVE ON PURPOSE. Proper scoping would track each nested
+        # function separately; this unions everything bound ANYWHERE inside,
+        # including nested functions' parameters and comprehension targets.
+        # A union can miss a name bound only on a branch that never runs --
+        # but it cannot report a name that is genuinely there, and a checker
+        # with false positives is one that gets deleted. The failure it exists
+        # to catch is a definition DELETED outright, which no scope contains.
+        out = set()
+        for n in ast.walk(fn):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef,
+                              ast.Lambda)):
+                a = n.args
+                out.update(x.arg for x in a.args + a.kwonlyargs + a.posonlyargs)
+                if a.vararg:
+                    out.add(a.vararg.arg)
+                if a.kwarg:
+                    out.add(a.kwarg.arg)
+        for n in ast.walk(fn):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                out.add(n.name)
+            elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+                out.add(n.id)
+            elif isinstance(n, ast.ExceptHandler) and n.name:
+                out.add(n.name)
+            elif isinstance(n, (ast.Import, ast.ImportFrom)):
+                for al in n.names:
+                    out.add((al.asname or al.name).split(".")[0])
+            elif isinstance(n, ast.Global) or isinstance(n, ast.Nonlocal):
+                out.update(n.names)
+        return out
+
+    unbound = []
+    for fn in [n for n in tree.body if isinstance(n, ast.FunctionDef)]:
+        a = fn.args
+        scope = module_names | _bound(fn) \
+            | {x.arg for x in a.args + a.kwonlyargs + a.posonlyargs} \
+            | ({a.vararg.arg} if a.vararg else set()) \
+            | ({a.kwarg.arg} if a.kwarg else set())
+        for n in ast.walk(fn):
+            if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load) \
+               and n.id not in scope:
+                unbound.append(f"{fn.name}(): {n.id} (line {n.lineno})")
+    if unbound:
+        for u in sorted(set(unbound))[:8]:
+            print(f"  FAIL  name used and never bound -- {u}")
+        ok = False
+    else:
+        print(f"  ok    every name the driver uses is bound "
+              f"({len(tree.body)} top-level definitions)")
 
     # NO WORKFLOW MAY DECLARE THE SAME STEP NAME TWICE.
     #

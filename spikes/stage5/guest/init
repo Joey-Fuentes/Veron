@@ -72,6 +72,44 @@ mount -t tmpfs none "$ROOT/tmp"  2>/dev/null
 mount -t devtmpfs none "$ROOT/dev" 2>/dev/null \
     || mount --bind /dev "$ROOT/dev" 2>/dev/null
 
+# ---- 3a. WHAT A COMPOSITOR WOULD NEED, MEASURED BEFORE ANYTHING NEEDS IT ---
+#
+# QEMU is given -device virtio-gpu-pci and -device virtio-keyboard-pci. Whether
+# the guest SEES them is a property of this kernel, not of the command line,
+# and it decides whether wlroots has anything to bind to:
+#
+#   /dev/dri/card0     the DRM device  -Dbackends=drm resolves against
+#   /dev/input/event*  the evdev nodes libinput reads
+#
+# THE KERNEL SHIPS AS Image AND NOTHING ELSE. stage4-complete copies
+# arch/arm64/boot/Image and never runs modules_install, and this system has no
+# kmod and no modprobe -- so a symbol left at =m by arm64 defconfig is not
+# merely unloaded, it does not exist. DRM_VIRTIO_GPU=m would be indistinguish-
+# able from DRM_VIRTIO_GPU=n here.
+#
+# Reported, NOT enforced. Nothing today needs either node, and failing the
+# boot over them would stop a green run for a capability no package uses yet.
+# The point is to know the answer BEFORE six recipes are written against it --
+# the same mistake as -Dbackends=auto, one layer down: a compositor that builds
+# green and finds no device.
+echo "=== VERON-GRAPHICS-PROBE: what this kernel gives a compositor ==="
+if [ -e /dev/dri/card0 ]; then
+    echo "  VERON-DRM-OK        /dev/dri/card0 present"
+else
+    echo "  VERON-DRM-ABSENT    no /dev/dri/card0 -- DRM or virtio-gpu is not"
+    echo "                      built in. wlroots -Dbackends=drm has nothing"
+    echo "                      to open; fix is set_cfg DRM y / DRM_VIRTIO_GPU y"
+    echo "                      in stage4-complete, beside DEVTMPFS."
+fi
+if [ -e /dev/input/event0 ]; then
+    echo "  VERON-EVDEV-OK      $(ls /dev/input/event* 2>/dev/null | wc -l) event node(s)"
+else
+    echo "  VERON-EVDEV-ABSENT  no /dev/input/event* -- INPUT_EVDEV or"
+    echo "                      VIRTIO_INPUT is not built in. libinput reads"
+    echo "                      these and nothing else."
+fi
+echo "  drm modules: $(ls /sys/class/drm 2>/dev/null | tr '\n' ' ')"
+
 if [ -x "$ROOT/usr/bin/veron-stage5-test" ]; then
     echo "=== VERON-STAGE5-GUEST: the packages, under the kernel this chain built ==="
     echo "  root via: $VIA"
