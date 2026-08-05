@@ -183,13 +183,49 @@ Current sweep over the tarballs read so far:
 | wlroots | 2 |
 | libdisplay-info | 0 |
 
+**Reconciliation is built — `probe.py reconcile`.** The rule is not that the
+three detectors agree; they measure different things and are not expected to.
+It is that **no name is unaccounted for**: declared in `deps`, declined in
+`optional_off`, disclosed in `[undeclarable]`, or the run says so.
+
+The strictness is narrow on two axes, and both were chosen deliberately:
+
+- **`makedepends` only.** A distro's runtime `depends` describes *their*
+  package's install closure and has almost nothing to do with what this build
+  needs. Including it would bury the signal.
+- **Only names that resolve to our packages.** Arch's mesa lists `libx11`,
+  `rust`, `clang`, `glslang` — none of which exist here, and none of which are
+  decisions anybody needs to record. Arch listing `zlib` when we build zlib and
+  did not declare it *is* a decision.
+
+**`[undeclarable]` is strict with no such filter**, because those are lookups
+in our tarball on our build path, and they are the class that already cost this
+project llvm and mako. Keys are canonical — `config-tool:llvm`, `python:mako`,
+`program:flex` — **not `file:line`**, because a version bump moves a line and a
+required field that needs editing every release is one people delete.
+
+**`--mode warn` is the default, and not as a softening.** The first sweep over
+the whole set has to be *read* before it blocks anything; turning a gate on
+before anyone has seen its output is how a gate gets disabled a week later.
+`--mode fail` exits non-zero once the output is understood.
+
+A third accuracy bug turned up while reading real output, the same shape as the
+ternary one: treating anything without `required: false` as REQUIRED. fontconfig
+writes `find_program('xgettext', required: opt_nls)` and cairo writes
+`required: get_option('tests')` — neither is a literal, and labelling them
+REQUIRED fills the report with alarms about tools that are never looked for.
+Three states now: `REQUIRED`, `optional`, `conditional on <expr>`. **A report
+full of false alarms is one nobody finishes reading.**
+
 **Still to do:**
 
-- Reconcile all three detectors; an unaccounted name is a failure
+- Run the first sweep in `warn` and read it. Current counts on the sources
+  read so far: fontconfig 9, cairo 3, harfbuzz ~7, mesa larger.
+- Write the `[undeclarable]` blocks that sweep calls for, per recipe
 - Re-probe all 111 with the new fields, so the output is recorded rather than
   computed ad hoc
-- The recipe side: `[undeclarable]` must become **required** disclosure, so a
-  lookup the probe finds and the recipe does not name fails the build (rule 4)
+- `DT_NEEDED ⊆ deps.link` — the observed detector. Needs a successful build
+  first, so it belongs with the §2 contracts rather than here.
 
 ### 4. Missing pins
 

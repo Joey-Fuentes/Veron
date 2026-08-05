@@ -812,7 +812,22 @@ def _unresolvable(text, rel):
         prog = nm.group(1)
         if prog.startswith(("./", "../")) or prog.endswith((".py", ".sh")):
             continue
-        req = "optional" if re.search(r"required\s*:\s*false", body) else "REQUIRED"
+        # THREE STATES, NOT TWO. Calling anything without `required: false`
+        # REQUIRED is the same mistake as reading a ternary's condition as its
+        # result: fontconfig writes `find_program('xgettext', required:
+        # opt_nls)` and cairo writes `required: get_option('tests')`, neither
+        # of which is a literal. Labelling those REQUIRED fills the first sweep
+        # with alarms about tools that are never looked for, and a report full
+        # of false alarms is one nobody finishes reading.
+        m = re.search(r"required\s*:\s*([^,\n]+)", body)
+        if not m:
+            req = "REQUIRED"
+        elif m.group(1).strip() == "false":
+            req = "optional"
+        elif m.group(1).strip() == "true":
+            req = "REQUIRED"
+        else:
+            req = f"conditional on {m.group(1).strip()}"
         out.append(("find_program", f"{rel}:{line} {prog} ({req})"))
     return out
 
@@ -1864,6 +1879,188 @@ def cmd_index(a):
     return 0
 
 
+# ---------------------------------------------------------------- reconcile
+
+
+# Modules that are part of Python itself. An `import sys` inside a
+# run_command is not a dependency anybody can package, and reporting it
+# would bury the one name that matters -- mesa's meson.build:1058 imports
+# sys, distutils.version, packaging.version AND mako, and only two of those
+# four are things this project has to supply.
+_PY_STDLIB = {
+    "sys", "os", "re", "json", "shutil", "subprocess", "platform", "string",
+    "textwrap", "argparse", "pathlib", "itertools", "functools", "math",
+    "time", "datetime", "collections", "typing", "errno", "glob", "hashlib",
+    "struct", "tempfile", "io", "copy", "enum", "abc", "warnings", "logging",
+    "distutils",
+}
+
+
+def _norm_distro_name(n):
+    """A distro package name reduced to something comparable with ours.
+
+    Arch says `python-mako`, Alpine says `py3-mako`, we say `mako`. Alpine
+    suffixes headers with `-dev`. None of that is a real difference, and
+    comparing raw strings would report every package in the set as
+    unaccounted.
+
+    DELIBERATELY NOT CLEVER. `lib` is not stripped, because `libdrm` and
+    `libxml2` are our own names; stripping it would map `libdrm` onto a
+    `drm` that does not exist and quietly drop a real edge.
+    """
+    n = n.lower().strip()
+    n = re.sub(r"-(dev|devel|libs|doc|docs|static|tools)$", "", n)
+    n = re.sub(r"^(python3?-|py3-)", "", n)
+    return n
+
+
+def undeclarable_keys(root):
+    """The canonical keys a recipe must disclose, from the static scan.
+
+    NOT KEYED ON file:line. A finding reads
+    `config-tool: meson.build:1913 dependency('llvm', ...)`, and a version
+    bump moves that line. A recipe keyed on it would need editing every time
+    upstream inserts a comment, which is how a required field becomes one
+    people delete. The key is the NAME; the location is reported alongside so
+    the reader can still go look.
+    """
+    keys = {}
+    for finding in declared_deps(root)["undeclarable"]:
+        kind, _, detail = finding.partition(": ")
+        if kind == "config-tool":
+            m = re.search(r"dependency\('([^']+)'", detail)
+            if m:
+                keys.setdefault(f"config-tool:{m.group(1)}", []).append(detail)
+        elif kind == "interpreter-module":
+            for mod in re.sub(r".*imports ", "", detail).split(", "):
+                top = mod.split(".")[0].strip()
+                if top and top not in _PY_STDLIB:
+                    keys.setdefault(f"python:{top}", []).append(detail)
+        elif kind == "find_program":
+            m = re.match(r"\S+ (\S+) \(", detail)
+            if m:
+                keys.setdefault(f"program:{m.group(1)}", []).append(detail)
+        elif kind == "run_command":
+            keys.setdefault("run_command:interpreter", []).append(detail)
+    return keys
+
+
+def reconcile(recipe, root, recipes, mode="warn"):
+    """Compare all three detectors against one recipe. Returns problem count.
+
+    THE THREE DO NOT MEASURE THE SAME THING and are not expected to agree:
+
+      static       what this tarball's build files ask for
+      corroborative what Arch and Alpine DECLARE -- a superset, because their
+                   lists follow THEIR configure flags and Veron disables more
+      observed     DT_NEEDED after a build -- authoritative, and not available
+                   here because it needs a successful build first
+
+    So the rule is not agreement. It is that NO NAME IS UNACCOUNTED FOR:
+    declared in deps, or declined in optional_off, or the run says so.
+    Silence is what let llvm, mako, packaging and PyYAML through.
+
+    THE STRICTNESS IS DELIBERATE AND NARROW, on two axes:
+
+    1. makedepends ONLY. A distro's runtime `depends` describes THEIR
+       package's install closure and has almost nothing to do with what this
+       build needs; including it would bury the signal in noise.
+    2. Only names that RESOLVE TO OUR PACKAGES count. Arch's mesa lists
+       libx11, rust, clang and glslang -- none of which exist here, and none
+       of which are decisions anybody needs to record. Arch listing zlib when
+       we build zlib and did not declare it IS a decision.
+
+    [undeclarable] is strict with no such filter, because those are lookups in
+    OUR tarball on OUR build path, and they are the class that has already
+    cost this project two packages.
+    """
+    name = recipe["name"]
+    deps = recipe.get("deps", {})
+    accounted = {_norm_distro_name(x) for x in
+                 deps.get("build", []) + deps.get("link", [])
+                 + deps.get("runtime", []) + deps.get("optional_off", [])}
+    # A recipe may also decline a name in [undeclarable]; that counts too.
+    declared_und = set(recipe.get("undeclarable", {}))
+
+    ours = set()
+    for n, r in recipes.items():
+        ours.add(_norm_distro_name(n))
+        ours.update(_norm_distro_name(p) for p in r.get("provides", []))
+
+    problems = 0
+
+    # --- corroborative -------------------------------------------------
+    pd = packager_deps(name)
+    for who, fields in sorted(pd.items()):
+        for cand in fields.get("makedepends", []):
+            norm = _norm_distro_name(cand)
+            if norm in accounted or norm == _norm_distro_name(name):
+                continue
+            if norm not in ours:
+                continue          # not a package we have -- not our decision
+            problems += 1
+            print(f"  {'UNACCOUNTED' if mode == 'fail' else 'unaccounted'}  "
+                  f"{who} makedepends '{cand}' -> our '{norm}', "
+                  f"absent from deps and optional_off")
+    if not pd:
+        print(f"  --           no packaging metadata found for '{name}' "
+              f"in Arch or Alpine")
+
+    # --- static, undisclosed -------------------------------------------
+    if root is None:
+        return problems
+    for key, where in sorted(undeclarable_keys(root).items()):
+        if key in declared_und:
+            continue
+        problems += 1
+        print(f"  {'UNDISCLOSED' if mode == 'fail' else 'undisclosed'}  "
+              f"{key}")
+        print(f"               {where[0]}")
+    return problems
+
+
+def cmd_reconcile(a):
+    """`probe.py reconcile` -- every name accounted for, or not.
+
+    WARN IS THE DEFAULT ON PURPOSE, AND NOT AS A SOFTENING. The first sweep
+    over the whole set has to be READ before it is allowed to block anything;
+    turning a gate on before anyone has seen its output is how a gate gets
+    disabled a week later. Pass --mode fail once the output is understood.
+    """
+    import tomllib
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    pkgdir = a.packages or os.path.join(here, "packages")
+    recipes = {}
+    for n in sorted(os.listdir(pkgdir)):
+        rp = os.path.join(pkgdir, n, "recipe.toml")
+        if os.path.isfile(rp):
+            with open(rp, "rb") as f:
+                recipes[n] = tomllib.load(f)
+
+    wanted = a.names or sorted(recipes)
+    total = 0
+    for n in wanted:
+        if n not in recipes:
+            print(f"== {n}\n  no recipe")
+            continue
+        print(f"== {n}")
+        root = os.path.join(a.src, n) if a.src else None
+        if root and not os.path.isdir(root):
+            root = None
+        if root is None:
+            # SAID, NOT SKIPPED SILENTLY. Without an unpacked tarball the
+            # [undeclarable] half cannot run at all, and a reconcile that
+            # reports "0 problems" because it checked nothing is worse than
+            # one that reports it could not check.
+            print("  --           no unpacked source at "
+                  f"{a.src or '(--src not given)'}; "
+                  "[undeclarable] NOT CHECKED")
+        total += reconcile(recipes[n], root, recipes, a.mode)
+    print(f"\nVERON-RECONCILE-{'FAIL' if (total and a.mode == 'fail') else 'OK'}"
+          f"  {total} unaccounted or undisclosed")
+    return 1 if (total and a.mode == "fail") else 0
+
+
 def cmd_selftest(a):
     """Check the parsers against the HTML shapes hosts actually serve.
 
@@ -1983,6 +2180,26 @@ if Version(mako.__version__) < Version("0.8.0"):
         print(f"  FAIL  run_command import missed -- {got}")
         ok = False
 
+    # REQUIRED / optional / conditional -- THREE STATES. Treating anything
+    # without `required: false` as REQUIRED filled the first sweep with alarms
+    # about tools that are never looked for, because fontconfig writes
+    # `required: opt_nls` and cairo writes `required: get_option('tests')`.
+    FP = """
+a = find_program('flex')
+b = find_program('ttx', required: false)
+c = find_program('xgettext', required : opt_nls)
+"""
+    got = dict((v.split()[1], v) for k, v in _unresolvable(FP, "m.build")
+               if k == "find_program")
+    checks = [("flex", "(REQUIRED)"), ("ttx", "(optional)"),
+              ("xgettext", "conditional on opt_nls")]
+    bad = [n for n, want in checks if want not in got.get(n, "")]
+    if bad:
+        print(f"  FAIL  find_program requiredness mislabelled: {bad} -- {got}")
+        ok = False
+    else:
+        print("  ok    find_program requiredness has three states")
+
     # PKGBUILD arrays and APKBUILD strings, including the forms that carry
     # version constraints and Alpine's so:/cmd: provider prefixes. Arch's
     # mesa PKGBUILD is where python-mako was sitting the whole time.
@@ -2072,6 +2289,16 @@ def main():
     p.add_argument("--jobs", type=int, default=8,
                    help="candidates checked in parallel")
     p.set_defaults(fn=cmd_mirrors)
+
+    p = sub.add_parser("reconcile",
+                       help="every dependency name accounted for, or not")
+    p.add_argument("names", nargs="*", help="packages (default: all)")
+    p.add_argument("--src", help="directory of UNPACKED sources, one per "
+                                 "package name")
+    p.add_argument("--packages", help="recipes directory")
+    p.add_argument("--mode", choices=["warn", "fail"], default="warn",
+                   help="warn (default) reports; fail exits non-zero")
+    p.set_defaults(fn=cmd_reconcile)
 
     p = sub.add_parser("linked", help="the real deps: what a built DESTDIR links")
     p.add_argument("destdir")
