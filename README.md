@@ -256,7 +256,7 @@ The empty directories are Veron proper and are written against the invariants. `
 - [`spikes/README.md`](./spikes/README.md) — the live pipeline, and what each spike answered
 - [`TRUST-BOUNDARY.md`](./TRUST-BOUNDARY.md) — what is trusted, what is verified, and the order that makes it a chain rather than a circle
 - [`AUDIT.md`](./AUDIT.md) — the seven audit criteria and where the ledger record schema will live
-- [`sources/MIRROR.md`](./sources/MIRROR.md) — the pinned-source mirror: 105 routes, every artifact reachable from at least two places, hash-verified on every fetch
+- [`sources/MIRROR.md`](./sources/MIRROR.md) — the pinned-source mirror: 134 routes across 107 artifacts, every one reachable from at least two places, hash-verified on every fetch
 - [`STAGE5.md`](./STAGE5.md) — the package set, and which jobs now answer its open questions: ~150 upstreams in dependency order, the five that are most of the work, networking, and the firmware-blob problem
 - [`DERIVATIONS.md`](./DERIVATIONS.md) — the derivation phase: content-addressed inputs and outputs, one script for laptop and runner, the reproducibility check, and a provenance graph that expands from any installed file down to the exact commands and back to the seed
 - [`spikes/builder/DESIGN.md`](./spikes/builder/DESIGN.md) — the driver shell and the bare-metal ARM64 builder: measured surface, syscall inventory, boot protocol, test targets

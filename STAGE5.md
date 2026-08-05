@@ -1,11 +1,25 @@
 # Stage 5 — the package set
 
 The target: a system that browses the web, on Wayland, that can rebuild itself
-from source with no host. Roughly **130–150 upstreams**, and 200+ is the honest
-budget once dependency tails are resolved rather than estimated.
+from source with no host.
 
-Counts below are from reading dependency graphs, not from building them. Treat
-them as planning numbers.
+**The estimate was 130–150 upstreams, with 200+ as the honest budget. The
+measured set is 111.** That is smaller than planned for a reason worth keeping:
+every optional feature this system declines removes a dependency tail, and the
+declines are numerous — no X11, no Rust, no systemd, no Qt, no GTK, no pip, and
+a codec set chosen for what a browser plays rather than for completeness.
+Dropping `gst-plugins-ugly` alone removed `x264`, the one package in the set
+with no release tarball at all.
+
+| | count |
+|---|---|
+| pinned — digest, signature, licence, declared dependencies all read from the tarball | **111** |
+| recipes written | **41** |
+| built, installed and staged | **31** |
+| artifacts with two or more verified fetch routes | **107** |
+
+Counts below that are not in that table are still from reading dependency
+graphs rather than building them. Treat those as planning numbers.
 
 ---
 
@@ -19,13 +33,15 @@ they disagree with the estimates below.
 |---|---|
 | `sysroot-inventory` | where the 5.6 GB is, without re-running the ladder |
 | `stage5-entry` | **the entry contract** — does the trimmed sysroot still compile C, C++ and `-flto`, and still boot? Cutting is easy; a 500 MB sysroot that cannot compile is worse than a 5.6 GB one that can |
-| `stage5-probe` | what a package actually is — its real dependencies and flags — instead of guessing |
-| `stage5-spike` | two packages (`pkgconf`, `hello`) built on the proven entry contract, merged, booted |
+| `stage5-probe` | what a package actually is — version, digest, signature, licence, declared dependencies — instead of guessing |
+| `stage5-probe-remaining` | the same, for every package that does not yet have a recipe |
+| `stage5-probe-required` | the packages the dependency scan says are required and absent, **and what those in turn require** |
+| `stage5-order` | does the build order **close** across the whole set, with edges derived from the `.pc` names each tarball ships |
+| `stage5-spike` | the recipes built on the proven entry contract, merged, imaged, booted |
 | `stage5-closure` | the package set mapped **backwards**: name what the system must do, and let the closure say what it costs |
-| `wpe-timing` | how long WPE WebKit takes to compile — a stopwatch, deliberately not hermetic |
-| `llvm-timing` | the same question for LLVM, which arrives through mesa whether or not anyone chose it |
-| `stage5-license` | what licence each package actually carries, detected against the SPDX guidelines rather than guessed from a filename |
-| `mirror-verify` | that every pinned tarball is still reachable from more than one place, and still hashes to its pin |
+| `stage5-mirror-upload` | every artifact fetchable from more than one place, verified and committed |
+| `stage5-license` | what licence each package actually carries, matched against the SPDX guidelines rather than guessed from a filename |
+| `wpe-timing`, `llvm-timing` | how long the two expensive builds take — stopwatches, deliberately not hermetic |
 
 Two of those change how this document should be read.
 
@@ -48,9 +64,9 @@ a bwrap smoke test that compiles inside the trimmed root, and a real qemu boot.
 ## The shape
 
 ```
-tier 1   self-hosting CLI system          ~60 upstreams   the real milestone
-tier 2   Wayland + graphics               ~35             a demo
-tier 3   Qt6, SDDM, Ladybird              ~35             a hard package
+tier 1   self-hosting CLI system          ~55 upstreams   the real milestone
+tier 2   Wayland + graphics               ~30             a demo
+tier 3   WPE WebKit + media               ~26             one hard package
 ```
 
 **Tier 1 is the goal that matters.** A system that rebuilds itself, on itself,
@@ -95,13 +111,18 @@ Both are required before anything in tier 2.
 ### 2 — system
 
 ```
-util-linux  e2fsprogs  dosfstools  shadow  tzdata  ca-certificates
-init: dinit          (or s6 + skalibs + execline)
+dinit  dosfstools  tzdata  tzcode  make-ca
+libgpg-error  libgcrypt  libtasn1  nettle  gmp  gnutls  p11-kit
+nspr  nss  brotli  libidn2  nghttp2  libpsl
 ```
 
-`dinit` is the smaller decision; `s6` is three packages and a different model.
-Either avoids systemd, which would pull dbus, kmod, libcap and a large policy
-surface.
+**`dinit`, decided.** `s6` is three packages and a different model; both avoid
+systemd, which would pull dbus, kmod and a large policy surface. dinit is one
+package and the smaller commitment.
+
+**`gmp` is here because of `nettle`.** nettle builds `hogweed` — its public-key
+half — against gmp, and gnutls needs hogweed. No gmp, no TLS. That edge was
+found by reading declared dependencies, not from any package list.
 
 ### 3 — networking
 
@@ -143,60 +164,59 @@ foot  fcft  tllist
 `foot` is the terminal even though Qt is present later: C, Wayland-native, no
 toolkit, and one of the smallest serious terminals there is.
 
-### 7 — Qt and session
+### 7 — session and desktop
 
 ```
-double-conversion  qtbase  qtdeclarative  qtsvg
-sddm
-lxqt-build-tools  libfm-qt  pcmanfm-qt
+dinit  labwc  foot  fcft  tllist  fuzzel  yambar  swaybg  nnn  dejavu-fonts
+libsfdo  libutf8proc  lcms2  graphene  alsa-lib  libudev-zero
 ```
 
-**Conditional on Ladybird needing Qt.** If Ladybird has moved to its own UI,
-this group collapses: no SDDM, no pcmanfm-qt, and the login becomes `agetty
---autologin` with `exec labwc` from the profile, with `nnn` in `foot` as the
-file manager. That is a much smaller system and the recommendation if Qt is not
-otherwise required.
+**Qt is gone, and so is SDDM.** This group was written as conditional on
+Ladybird needing Qt; that condition resolved the other way. The login is
+`getty --autologin` with `exec labwc` from the profile, `nnn` in `foot` as the
+file manager. Much the smaller system, and it was the recommendation even then.
 
-### 8 — Ladybird
+`foot` is the terminal: C, Wayland-native, no toolkit, one of the smallest
+serious terminals there is.
+
+**`libudev-zero` is the entry nobody planned.** libinput, mesa, wlroots and
+yambar all link `libudev.so`, and busybox does not provide it — `mdev` creates
+device nodes, which is the daemon half, not the library. No libudev means no
+input, which means no compositor. It was found by reading declared dependencies
+across the whole set, not by planning.
+
+### 8 — the browser: WPE WebKit
 
 ```
-icu  simdutf  woff2  libavif  sqlite  skia  ladybird
+bubblewrap  libhyphen  opus  libvpx  dav1d  ffmpeg  ogg  vorbis
+gstreamer  gst-plugins-base  gst-plugins-good  gst-plugins-bad  gst-libav
+wpewebkit
 ```
 
-**Ladybird uses vcpkg**, which vendors its dependencies. A hermetic build means
-unbundling that and supplying each one from the ledger. This is why the tier-3
-estimate is the softest number in this document.
+**Chosen over Ladybird, and the reason changed.** Both are C++ and both avoid
+Rust, so both sit outside the mrustc bootstrap problem that rules out Firefox.
+The decision turned on what Ladybird has become: it now requires **Rust 1.96+**,
+Qt6, dbus and roughly 46 vcpkg dependencies. The thing that made it attractive
+— an ordinary hard package rather than a second bootstrap problem — is no
+longer true.
 
-Chosen over Firefox for one reason: **it is C++, not Rust.** Firefox would put
-the mrustc chain — rustc bootstrapped through a long series of its own
-versions — on the critical path. Ladybird is an ordinary hard package instead
-of a second bootstrap problem, and it shares this project's thesis: an
-independent engine written from scratch because the incumbents are too large to
-be understood.
+WPE renders the real web today, needs no Rust and no X11, and its cost is
+measured rather than estimated: **136 minutes, `rc=0`, on a hosted runner with
+107 GB free.** That number decided something larger than a package. Combined
+with LLVM's 27 minutes it is 163 against a 360-minute cap, so **self-hosted
+runners are not needed** — which had been the open question this whole
+measurement existed to answer.
 
-### 8b — WPE WebKit, the other candidate
+**`gst-plugins-ugly` is dropped.** Reading what it declares showed `dvdread`
+and nothing on a browser's path: H.264 *decoding* comes from ffmpeg via
+gst-libav, and x264 is an *encoder* wanted only for WebRTC, which is off. That
+removed `x264` from the set — the one package with no release tarball at all,
+only a git snapshot.
 
-`wpe-timing` measures WPE WebKit rather than Ladybird, and the reason is worth
-recording: **the browser decision rests on a number nobody has.** Estimates for
-how long a modern engine takes to compile range from a few hours to a full day
-on a Pi, and that gap decides something much larger than a package — whether
-stage 5 needs **self-hosted runners**, which is a bigger commitment than any
-recipe in this file.
-
-WPE is also C++ and also avoids Rust, so it sits in the same bracket as
-Ladybird on the bootstrap question. Where they differ:
-
-- **WPE is production WebKit**, so it renders the real web today. Ladybird is
-  an independent engine and does not yet.
-- **WPE is larger and has a heavier dependency tail** — GStreamer, ICU, and a
-  long list this file has not priced.
-- **Ladybird is the better thesis fit**: from scratch, because the incumbents
-  are too large to understand. That is this project's own argument one layer up.
-
-Neither is chosen. The measurement comes first, which is why `wpe-timing` is
-explicitly **not hermetic** — dependencies come from apt because the question is
-how long the *engine* takes, not whether its dependency tree can be
-bootstrapped. Mixing the two would measure neither. Nothing it produces enters
+What WPE still owes: **it has never rendered a page.** 136 minutes and `rc=0`
+is a compile, not a browser. And **the shell does not exist** — MiniBrowser is
+a bare view with keyboard shortcuts and no URL bar, so the chrome is ours to
+write.
 the ladder and the budget claim does not apply to it. It is a stopwatch.
 
 ---
@@ -276,20 +296,44 @@ deliberate decision rather than a transitive dependency.
 - **Two libcs on the system** if Nix is installed alongside — see
   `DERIVATIONS.md`. Nix packages use nixpkgs' own glibc; nothing links across.
 
-## Open questions to settle before building
+## Open questions
 
-0. **Ladybird or WPE?** Blocked on `wpe-timing`. The answer decides whether
-   stage 5 needs self-hosted runners, which outranks every other question here.
-1. **Does Ladybird still require Qt6?** Decides whether group 7 exists at all,
-   and therefore whether the login is SDDM or autologin. Largest single fork in
-   this plan.
-2. **Can mesa be built without llvm** for the target hardware? One of the five
-   giants.
+Four of the five that were here are answered, and the answers are recorded
+where they were decided rather than only here.
+
+**Settled.**
+
+0. **Ladybird or WPE?** WPE. Measured at 136 minutes, `rc=0`, on a hosted
+   runner — which also settled the question behind it: with LLVM's 27 minutes
+   that is 163 against a 360-minute cap, so **self-hosted runners are not
+   needed**. Ladybird moved to requiring Rust 1.96+, Qt6 and dbus, which is
+   the opposite of why it was attractive.
+1. **Does Ladybird still require Qt6?** Moot — but yes, and that is why it was
+   dropped. Group 7 collapsed to autologin + labwc, the smaller system this
+   file already recommended.
+2. **Can mesa be built without llvm?** No. LLVM is required for llvmpipe, which
+   is required for WPE on any machine without a supported GPU. Scoped to core
+   plus the AArch64 target: 27 minutes, 659 MB. `mesa` also needs `libelf`,
+   which no book mentioned.
+
+**Still open.**
+
 3. **Does the musl flavor go to tier 2?** mesa and most desktop software assume
-   glibc; Alpine carries real patch sets to make them work on musl. If the musl
-   branch is meant to reach a desktop, that patch burden is where it lives.
-4. **Where do firmware blobs live in the ledger**, and does `veron status`
-   grow an `opaque` category? Recommended above; not yet decided.
+   glibc; Alpine carries real patch sets. If the musl branch is meant to reach
+   a desktop, that patch burden is where it lives.
+4. **Where do firmware blobs live in the ledger**, and does `veron status` grow
+   an `opaque` category? `linux-firmware` is ~1 GB of binaries that provably
+   cannot be built from source — the only such thing in the system. The
+   decision is that it ships **optionally, pulled by the user**, so the audit
+   claim stays intact; the mechanism is not built.
+5. **Can mesa be built without Rust?** `rustc`, `zerocopy` and `syn` all appear
+   in mesa 26's declared dependencies. Configure returned `rc=0` with our
+   options, but configure succeeding is not compiling. This is the single most
+   likely thing to break the no-Rust policy, and it will break it late.
+6. **What makes it boot?** `dinit` is pinned. Service definitions, the `/etc`
+   skeleton, getty autologin, kernel installation into the image and the EFI
+   stub are not packages and do not exist anywhere. Every boot so far has been
+   `qemu -kernel` running a harness that mounts, checks and exits.
 
 ## Two things this file predicted and the work has since changed
 
@@ -298,8 +342,9 @@ scoped as a stage 6 item — "reproducible from pinned sources" is false the day
 an upstream tarball moves. It is now the reason a shipped Veron does **not**
 need to carry every build-only package: a user with a network rebuilds any
 package from its recipe, same pins, same commands, same hashes. See
-[`sources/MIRROR.md`](./sources/MIRROR.md). 105 routes, every artifact reachable
-from at least two.
+[`sources/MIRROR.md`](./sources/MIRROR.md). **134 routes across 107 artifacts,
+every one reachable from at least two places** — and it stopped being
+theoretical the day three consecutive runs died on a single slow host.
 
 **Licensing moved from a ledger field to its own detector.** `ledger/README.md`
 asks for an SPDX id per source, and this file assumed that was a lookup. It is

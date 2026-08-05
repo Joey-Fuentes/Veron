@@ -107,15 +107,37 @@ that; and tarballs are already compressed, so delta compression buys nothing.
 
 Release assets give the storage without any of it.
 
+## Where it stands
+
+**134 routes across 107 artifacts, and nothing is THIN.** Every artifact has
+its upstream recorded as provenance plus at least one route that does not
+depend on anyone else's uptime.
+
+It stopped being an obligation and became load-bearing the week three
+consecutive runs died on a single slow host — `git` at kernel.org, then
+`freetype` at SourceForge, then `bash` at ftp.gnu.org. Each was reachable
+elsewhere the whole time.
+
+**Two kinds of route, and the cheap one comes first.** A *rewrite* costs
+nothing — `ftp.gnu.org`, `ftpmirror.gnu.org` and `mirrors.kernel.org/gnu` serve
+the same bytes at computable paths, as do kernel.org's three names and
+SourceForge's named mirrors. `probe mirrors` finds those and **verifies each
+one serves the right length before recording it**, which is what keeps adding
+hosts an availability decision rather than a trust one. Everything else — the
+GitHub, GitLab and Codeberg tail, which has no mirror network at all — gets its
+second route from our own release namespace.
+
 ## Open
 
-- **The `min_hosts_warn` threshold is 2.** Every pin currently has one route
-  (upstream), so a first `check --offline` reports everything as THIN. That is
-  accurate, not a bug.
-- **The tail has no mirror network.** GNU, kernel.org and glibc are mirrored
-  worldwide; Ladybird, labwc, wlroots, foot, fcft, tllist, seatd, dinit and
-  pkgconf are single-origin GitHub projects whose release assets can be
-  deleted or replaced at the same URL. Those are the ones that most need our
-  own copy.
+- **Three artifacts have one route**, and by design: `libsfdo`, `dinit` and
+  `libxkbcommon` publish no tarball at all, only git tags, so they are pinned
+  by **commit** and their tarball is generated deterministically by
+  `tools/fetch-git.sh`. A commit is a stronger pin than a tarball digest — but
+  if the forge is down they cannot be fetched. Uploading the generated tarball
+  as a derived artifact would close that.
+- **Some assets are keyed by a bare version.** Codeberg and GitHub archive URLs
+  end in the tag rather than the project, so labwc's mirror is
+  `src/0.9.1.tar.gz`. Unnavigable, and two projects tagging the same version
+  would collide.
 - **Which host is second** is undecided. It must be a different operator, not
   a second repo.
