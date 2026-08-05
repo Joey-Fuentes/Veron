@@ -255,7 +255,9 @@ The empty directories are Veron proper and are written against the invariants. `
 - [`AGENTS.md`](./AGENTS.md) — invariants and working rules, if you are contributing
 - [`spikes/README.md`](./spikes/README.md) — the live pipeline, and what each spike answered
 - [`TRUST-BOUNDARY.md`](./TRUST-BOUNDARY.md) — what is trusted, what is verified, and the order that makes it a chain rather than a circle
+- [`research/`](./research/) — point-in-time research reports, kept verbatim and dated. They are here because a summary is not checkable: when a decision looks wrong later, the question is what we knew when we made it, and that is only answerable if the reasoning survives beside the conclusion
 - [`AUDIT.md`](./AUDIT.md) — the seven audit criteria and where the ledger record schema will live
+- [`AUTHENTICATION.md`](./AUTHENTICATION.md) — how this system logs in, and why it is PAM-free: FIDO2 against libfido2 directly, an SSH server that needs no FIDO2 code at all, and the one surface that is genuinely blocked (WebKit implements no WebAuthn on Linux, so the backend is ours to write)
 - [`DEPENDENCIES.md`](./DEPENDENCIES.md) — three detectors, none sufficient, and the rule that binds them: no dependency name is unaccounted for. What each one found that the others structurally could not, and what none of them can see
 - [`sources/MIRROR.md`](./sources/MIRROR.md) — the pinned-source mirror: 255 routes across 115 artifacts, every one reachable from at least two places, hash-verified on every fetch. Three of them publish no tarball at all and are generated from a pinned commit by `tools/fetch-git.sh` — the pin is the commit, and the digest is over the uncompressed tar, because `git archive` is reproducible across machines and gzip is not
 - [`STAGE5.md`](./STAGE5.md) — the package set, and which jobs now answer its open questions: ~150 upstreams in dependency order, the five that are most of the work, networking, and the firmware-blob problem

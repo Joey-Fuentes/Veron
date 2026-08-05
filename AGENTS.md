@@ -378,3 +378,20 @@ Two rules that are easy to get backwards:
 upstream that starts shipping one more binary becomes a decision rather than a
 quiet growth in the image. Seed it with `veron installs --propose --write`
 from a build whose gates have already passed, never from an arbitrary one.
+
+## Authentication
+
+The system is **PAM-free** and passwordless by design — see
+[`AUTHENTICATION.md`](./AUTHENTICATION.md). Two rules that are easy to get
+backwards:
+
+- **Never add a default password.** A published credential is worse than none;
+  it is remotely guessable and scanned for. Autologin root on the console is
+  what ships, and it is safe *only because there is no network* — that is a
+  trigger to revisit, not a settled state.
+- **Anything non-deterministic is generated at first boot**, into the writable
+  layer, never baked into the image. Machine id, credential registrations,
+  hashes. This is what keeps `VERON-IMAGE-REPRO-OK` meaning what it says.
+
+`libcbor`, `libfido2`, an SSH server and `libxcrypt` are the packages this
+implies and none is pinned yet.

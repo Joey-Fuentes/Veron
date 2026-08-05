@@ -384,8 +384,20 @@ deliberate decision rather than a transitive dependency.
   manager can browse without udisks2; mounting is manual, or dbus is taken
   deliberately later.
 - **No X11 and no XWayland**, until something needs it.
-- **No PAM**, if there is no display manager. If SDDM lands, PAM likely
-  follows.
+- **Passwordless from the start, and no default password ever.** A published
+  default credential is worse than none — it is remotely guessable and scanned
+  for. Autologin root on the console is what ships, and it is defensible only
+  because there is no network; that is a trigger, not a state. Anything
+  non-deterministic — machine id, credential registrations, any hash — is
+  generated at first boot into a writable layer, never baked into the image,
+  which is how the byte-identical guarantee survives contact with per-instance
+  state.
+- **No PAM** — decided, not assumed. This used to read *"if there is no display
+  manager; if SDDM lands, PAM likely follows"*, which was a guess. It is now a
+  decision with a reason: linux-pam's own tail is modest, but **busybox's
+  `login` and `su` bypass PAM entirely**, so adopting it also means adopting
+  shadow or util-linux for a PAM-aware login. PAM-free costs roughly half the
+  packages and none of the large ones. See `AUTHENTICATION.md`.
 - **Two libcs on the system** if Nix is installed alongside — see
   `DERIVATIONS.md`. Nix packages use nixpkgs' own glibc; nothing links across.
 
@@ -403,7 +415,12 @@ for `libxkbcommon`.
 
 **B5.5 — it boots to a login.** Not packages, and the biggest unknown in the
 project: dinit service definitions, the `/etc` skeleton, getty autologin, the
-kernel installed into the image, the EFI stub. Doing it here rather than after
+kernel installed into the image, the EFI stub. The first three now exist as a
+package — `veron-system`, the first recipe whose upstream is this repository —
+so `/etc` goes through a DESTDIR, the manifest and the ledger like everything
+else, and `veron why /etc/fstab` answers. What is still missing is the handoff:
+`guest/init` mounts read-only, runs the tests and powers off, so dinit is never
+PID 1 and the console service never starts. Doing it here rather than after
 the browser means a system that boots and logs in at **~57 packages instead of
 ~100**, with everything after it additive — and it turns the guest tests from a
 harness into a real session.
@@ -419,6 +436,17 @@ underneath them.
 The **browser shell does not exist** and is ours to write — MiniBrowser has
 keyboard shortcuts and no URL bar — which is worth starting during B7 rather
 than discovering at B8.
+
+**And passkeys are part of B8, not an addition to it.** WebKitGTK and WPE
+implement **no WebAuthn on Linux at all** — `ENABLE_WEB_AUTHN` is `PRIVATE OFF`
+and the only transport backend in the tree is macOS/IOKit; the bug has been
+open since 2019. But WebKit's CTAP1/CTAP2, CBOR and HID framing are already
+platform-independent C++, so a Linux backend supplies **device I/O only**:
+enumerate `/dev/hidraw*`, filter on FIDO usage page `0xF1D0`, read and write
+reports. Roughly 1,000–2,000 lines, **no new dependencies**, and it is more of
+the browser code this section already commits to writing. The one difference
+worth naming: it is a patch against WebKit's tree and rebases every release,
+where the shell is ours and does not. See `AUTHENTICATION.md`.
 
 **What changes when B5 lands:** LLVM is 27 minutes by itself, so a spike run
 stops being something to do casually. That is a workflow decision, not a recipe
