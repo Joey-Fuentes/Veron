@@ -21,6 +21,31 @@ with no release tarball at all.
 Counts below that are not in that table are still from reading dependency
 graphs rather than building them. Treat those as planning numbers.
 
+**And 111 is complete over a narrower thing than it sounds.** The table header
+says it: *declared dependencies read from the tarball*. `probe.py` resolves a
+dependency name to a package through the `.pc` files each tarball ships, so the
+set is complete over names expressible in a machine-readable dependency syntax
+and blind to three classes that are not:
+
+- **config-tool discovery.** mesa finds LLVM with `dependency('llvm', method:
+  'config-tool')`, and LLVM ships no `.pc` at all. **`llvm` — one of the five
+  packages named below as most of the work — is absent from
+  `sources/MIRRORS.tsv` entirely**, and `llvm-timing.yml` fetches it from
+  upstream while *printing* the sha256 rather than verifying one.
+- **interpreter modules.** mesa requires `mako`, `packaging` and `PyYAML` at
+  configure time, checked with `run_command(python3, '-c', 'import mako')`.
+  None are pinned. Nothing short of executing the build can find that
+  statically, which is why the design in
+  [`spikes/stage5/ROADMAP.md`](./spikes/stage5/ROADMAP.md) requires them to be
+  *disclosed per recipe* rather than detected.
+- **tools invoked rather than linked.** zstd's suite calls `file(1)`; hwdata's
+  Makefile shells out to `rpm` and `git`.
+
+The corroboration was already being downloaded and thrown away: `probe.py`
+fetches Arch's PKGBUILD and Alpine's APKBUILD for every package and reads only
+`pkgver`, source URLs and digests. Arch's mesa PKGBUILD lists `python-mako` in
+`makedepends`.
+
 ---
 
 ## What exists now, and what each job answers
@@ -138,10 +163,21 @@ project's sharpest unresolved question.
 ```
 libdrm  llvm  mesa
 libinput  libevdev  mtdev  libxkbcommon  xkeyboard-config  seatd
+hwdata  libdisplay-info
 ```
 
 `seatd` is what makes logind — and therefore systemd — avoidable. `labwc`,
 `cage` and `sway` all support it.
+
+**`hwdata` and `libdisplay-info` were missing from this list and are required.**
+wlroots' DRM backend needs both — `hwdata` is not even a library, it is a data
+package whose `pnp.ids` gets compiled into a C table by libdisplay-info's
+`gen-search-table.py` *and* separately fed to wlroots' own `gen_pnpids.sh`. The
+build order is `hwdata → libdisplay-info → wlroots`.
+
+Both were already pinned in `sources/MIRRORS.tsv` with two routes each, so
+`stage5-probe-required` found them and this document never learned. **The plan
+and the pinned data disagreed, and the pinned data was right.**
 
 ### 5 — text and rendering
 
@@ -333,8 +369,11 @@ one, and it has not been made.
 
 ## Open questions
 
-Four of the five that were here are answered, and the answers are recorded
-where they were decided rather than only here.
+Four of the original five are answered, and the answers are recorded where they
+were decided rather than only here. Question 5 is now answered too — by reading
+mesa's tarball rather than by building it — but it is left below rather than
+moved up, because what it uncovered replaced it with a harder problem in the
+same package. Two new questions (6 and 7) came out of reading wlroots and cairo.
 
 **Settled.**
 
@@ -361,11 +400,55 @@ where they were decided rather than only here.
    cannot be built from source — the only such thing in the system. The
    decision is that it ships **optionally, pulled by the user**, so the audit
    claim stays intact; the mechanism is not built.
-5. **Can mesa be built without Rust?** `rustc`, `zerocopy` and `syn` all appear
-   in mesa 26's declared dependencies. Configure returned `rc=0` with our
-   options, but configure succeeding is not compiling. This is the single most
-   likely thing to break the no-Rust policy, and it will break it late.
-6. **What makes it boot?** `dinit` is pinned. Service definitions, the `/etc`
+5. **Can mesa be built without Rust?** **Answered by reading mesa 26.1.6:
+   yes on aarch64 — and only by an architecture accident.** The trigger is one
+   line, `meson.build:835`:
+
+   ```meson
+   if with_gallium_rusticl or with_nouveau_vk or with_tools.contains('etnaviv') or with_virtgpu_kumquat
+     add_languages('rust', required: true)
+   ```
+
+   `gallium-rusticl` and `virtgpu_kumquat` default false, `tools` to `[]`.
+   `with_nouveau_vk` comes from `vulkan-drivers`, which defaults to `auto` and
+   expands **per architecture**: x86 gets `nouveau` and therefore Rust,
+   aarch64 does not. So `vulkan-drivers` must be **pinned explicitly** rather
+   than inherited — upstream adding nouveau to the aarch64 list would switch
+   the no-Rust policy off silently.
+
+   The `*-rs.wrap` files that made `rustc`, `zerocopy` and `syn` appear in the
+   declared set are subproject wraps: the union of every optional feature, not
+   what our flags need.
+
+   **What replaces this as mesa's hard problem is Python.** mesa requires
+   `mako >= 0.8.0` (hard error), `packaging` (its `distutils` fallback was
+   removed in Python 3.12 and stage 5 builds 3.14), and `PyYAML` — where a
+   missing module surfaces as the misleading `Python <version> not found`.
+   With MarkupSafe that is four packages, none pinned, and **no pip**. How a
+   Python library gets installed at all is an open design question; the
+   `meson` recipe's copy-into-site-packages is the only precedent in the tree.
+6. **Does `auto` mean what the recipes assume?** No, and wlroots is the proof.
+   `-Dbackends=auto` does **not** expand to the available backends unless
+   `auto_features` is explicitly `enabled`; it stays literally `['auto']`, which
+   makes `'drm' in backends` false, which makes `hwdata`, `libdisplay-info`,
+   `libseat`, `libudev` and `libinput` all `required: false` — and then
+   `subdir('drm')` is entered anyway and bails with `subdir_done()`. The result
+   configures, compiles and installs green with **no DRM backend, no input and
+   no session**, and says nothing. Pin `-Dbackends=drm,libinput
+   -Dsession=enabled`. Full trace in
+   [`spikes/stage5/PACKAGES.md`](./spikes/stage5/PACKAGES.md).
+
+7. **Do the recipes' wrap fallbacks need closing?** cairo names subproject
+   fallbacks for all seven of its dependencies, so a failed pkg-config lookup
+   attempts a download rather than reporting not-found. Only
+   `bwrap --unshare-all` stops that — but `guest/selfrebuild.sh` runs the same
+   recipes inside the booted image, where a network may exist, and a vendored
+   pixman would enter a system claiming every byte traces to a recorded source
+   with no ledger record describing it. libdisplay-info sets
+   `wrap_mode=nodownload` in its own `project()` defaults, so it is not an
+   exotic hardening. Genuinely cross-cutting, therefore a policy decision.
+
+8. **What makes it boot?** `dinit` is pinned. Service definitions, the `/etc`
    skeleton, getty autologin, kernel installation into the image and the EFI
    stub are not packages and do not exist anywhere. Every boot so far has been
    `qemu -kernel` running a harness that mounts, checks and exits.

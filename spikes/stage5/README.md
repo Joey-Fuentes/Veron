@@ -211,6 +211,65 @@ maintained by hand.
 **A gate that cannot fail is worse than no gate**, because it occupies the
 place where a real one would go.
 
+**And a gate built out of the assumption it exists to test is worse still.**
+The CMake-backend check was keyed on the substring `Found CMake:`, taken from
+one line of run 51's log and never compared against what meson prints when the
+lookup *fails*. Run 52 is what that cost: glib's `meson setup` succeeded for the
+first time — full summary, `gvdb` resolved, ninja located — and the gate failed
+the package anyway, printing no evidence, ending the run. It now reports the
+lines verbatim and lets the build continue; a verdict can be written once both
+strings are known, and not before.
+
+**Nothing was preserving the evidence.** Three separate holes, found while
+trying to read run 52:
+
+- `stage5-spike.yml` had **no `upload-artifact` step at all**. The collector
+  copied 32 files into `out/logs/`, printed `collected 32 log files`, and the
+  runner was destroyed with them.
+- It was `if: failure()`, so the run that most needed reading — a `meson setup`
+  that succeeded and was failed afterwards by the driver — collected nothing,
+  because nothing had failed in the shape the condition expected.
+- **`logs/` had never been collected, printed or uploaded.** The driver writes a
+  per-package log with every argv, every env var, every rc and every duration.
+  It is created in the workflow, bound into the sandbox and written on every run
+  the driver has ever made. Nobody had read one.
+
+`veron collect` now owns collection, because the driver owns `BUILD_LOGS` — the
+workflow's `find` list was a second copy of it with nothing comparing them,
+which is the same defect as `[declared]` drifting from the argv. It records
+absence as well as presence, since "config.log missing" distinguishes dying
+before configure from dying during it. The upload is `if: always()`, and the
+build step now has a budget strictly smaller than the job's: **a job timeout is
+a cancellation and skips `if: always()` steps**, so without that the diagnostics
+work would have been defeated by the one failure mode it exists to prevent.
+
+**The probe cannot see three whole classes of dependency, and said nothing.**
+`probe.py` resolves names to packages through `.pc` files — its own docstring
+says so. That is complete over what a tarball declares in a machine-readable
+dependency syntax, and blind to everything else:
+
+| escaped | why |
+|---|---|
+| `llvm` | mesa finds it via `method: 'config-tool'`; LLVM ships no `.pc` |
+| `mako`, `packaging`, `PyYAML` | interpreter modules; mesa checks them with `run_command(python3, '-c', 'import mako')` |
+| `file(1)`, hwdata's `rpm` | tools invoked at build time, not linked |
+
+The third class was already recorded here as a zstd finding. The first two mean
+**one of the five packages named as most of the work is absent from
+`MIRRORS.tsv` entirely**, and mesa needs four Python packages that are not in
+the 111.
+
+Worse, the corroboration was already in hand: `probe.py` downloads Arch's
+PKGBUILD and Alpine's APKBUILD for every package and extracts only `pkgver`,
+source URLs and digests. **Arch's mesa PKGBUILD lists `python-mako` in
+`makedepends`.** See [`ROADMAP.md`](./ROADMAP.md) for the three-detector design
+that follows from this.
+
+**Nine tarballs were read source-first**, before building them, and six had
+something that would have cost a run — three of them in sequence, each behind
+the last. Including a wlroots configuration that builds green while silently
+omitting the DRM backend. See [`PACKAGES.md`](./PACKAGES.md).
+
 ---
 
 ## Decisions this set encodes
@@ -226,6 +285,14 @@ place where a real one would go.
 | **kernel EFI stub**, no bootloader | zero bootloader packages for ARM64 UEFI |
 
 ---
+
+## Where to read next
+
+- [`PACKAGES.md`](./PACKAGES.md) — nine tarballs read source-first, digests
+  verified, before building them. What each actually requires and what breaks.
+- [`ROADMAP.md`](./ROADMAP.md) — the rules the driver enforces (a package's
+  peculiarity stays in its recipe; global policy is a closed set; declare what
+  you install; disclose what static analysis cannot find) and the ordered work.
 
 ## What is not done
 
