@@ -67,6 +67,11 @@ jobs:
       # The signature's own digest, so it can be located and checked later
       # rather than merely known to exist. llvm's pin carries the same.
       QEMU_SIG_SHA256: '719f32c491ee724629f7d5918a6ff04ddc115d92a597b504cc4f12191e4a5e77'
+      # THE SAME TARBALL stage5-isolate ALREADY PINS, mirrored with two
+      # routes. Built here as well so the sandbox ships beside the emulator
+      # rather than existing only inside a runner that is then destroyed.
+      BWRAP_VER: '0.11.0'
+      BWRAP_SHA256: '988fd6b232dafa04b8b8198723efeaccdb3c6aa9c1c7936219d5791a8b7a8646'
     steps:
       - uses: actions/checkout@v5
 
@@ -268,6 +273,52 @@ jobs:
             done
             printf '  packed %s shared libraries + loader shims\n' "$(ls out/lib | wc -l)"
           fi
+
+      # BUBBLEWRAP, STATIC, BECAUSE THE SANDBOX IS AS MUCH A TOOL AS THE
+      # EMULATOR AND WE WERE THROWING IT AWAY.
+      #
+      # stage5-isolate already builds bwrap from this pinned tarball -- and
+      # deliberately NOT from apt, because the whole result depends on
+      # --overlay-src existing, which is a property of the version. Then it
+      # installs it into the runner and the runner is destroyed. So the
+      # argument that convinced us not to trust the host's bwrap was never
+      # extended to anyone else: a person reproducing a Veron build still has
+      # to get bwrap from whatever their distro ships.
+      #
+      # Static here rather than dynamic: bwrap's only dependency is libcap,
+      # apt ships libcap.a, and one file that runs anywhere is the entire
+      # point of a toolbox artifact.
+      - name: 'Build bubblewrap from its pin, static'
+        run: |
+          set -eu
+          sudo apt-get install -y -qq libcap-dev >/dev/null
+          python3 tools/mirror.py fetch \
+            "$BWRAP_SHA256" "bubblewrap-${BWRAP_VER}.tar.xz" \
+            --url "https://github.com/containers/bubblewrap/releases/download/v${BWRAP_VER}/bubblewrap-${BWRAP_VER}.tar.xz" \
+            --dest dl
+          tar -xf "dl/bubblewrap-${BWRAP_VER}.tar.xz"
+          cd "bubblewrap-${BWRAP_VER}"
+          meson setup _b --prefix=/usr --buildtype=release \
+            -Dtests=false -Dman=disabled -Dpython=/usr/bin/python3 \
+            -Dc_link_args=-static > cfg.log 2>&1 || {
+              echo "  static configure failed"; tail -5 cfg.log | sed 's/^/    /'; exit 1; }
+          ninja -C _b > b.log 2>&1 || {
+              echo "  static build failed"
+              grep -iE "cannot find|undefined reference|error:" b.log \
+                | sort -u | head -8 | sed 's/^/    /'; exit 1; }
+          cd ..
+          cp "bubblewrap-${BWRAP_VER}/_b/bwrap" out/
+          chmod +x out/bwrap
+          printf '  %s\n' "$(file -b out/bwrap | cut -c1-70)"
+          # THE FLAG THE SPIKE DEPENDS ON, CHECKED HERE TOO. isolate asserts
+          # --overlay-src exists before it trusts a composed root; the copy
+          # people download deserves the same assertion.
+          out/bwrap --version | sed 's/^/  /'
+          out/bwrap --help 2>&1 | grep -q -- '--overlay-src' \
+            && echo "  --overlay-src present" \
+            || { echo "  this bwrap has no --overlay-src"; exit 1; }
+          out/bwrap --unshare-all --ro-bind / / /bin/true \
+            && echo "  it sandboxes: --unshare-all ran a command"
 
       - name: 'PROVE IT: run an aarch64 binary on this x86_64 runner'
         run: |

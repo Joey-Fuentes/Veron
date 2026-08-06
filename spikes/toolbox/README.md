@@ -203,3 +203,46 @@ built and tested. Once stage 5 boots well enough to host a build, qemu is
 compiled by the compiler this chain produced, against libraries this chain
 built, and the emulator traces back to stage 0 like everything else. At that
 point the tier-2 caveat above disappears entirely.
+
+## Static is the goal, and one of the two gets there today
+
+**bwrap does.** Its only dependency is libcap, apt ships `libcap.a`, and the
+result is one file that runs anywhere. It is built here from the same pinned
+tarball `stage5-isolate` uses, and checked the same way -- `--overlay-src`
+present, `--unshare-all` actually sandboxes -- because the copy people
+download deserves the assertion the spike makes for itself.
+
+**Until now it did not ship at all.** stage5-isolate built it, installed it
+into the runner, and the runner was destroyed. The argument that convinced us
+not to trust the host's bwrap -- that `--overlay-src` is a property of the
+VERSION -- was never extended to anyone else, who still had to get bwrap from
+whatever their distro packages.
+
+**qemu does not get there yet, and the reason is not qemu.** Static linking
+qemu means static linking glib, and glib's `Libs.private` pulls libmount,
+libblkid, libselinux, pcre2 and libffi. Debian and Ubuntu stopped shipping
+static archives for several of those, so `--static` fails at link time on a
+`.a` that apt cannot provide -- which is why the job falls back to dynamic and
+packs the libraries with a loader shim.
+
+Two ways out, and the second is the one this project is already walking
+toward:
+
+- **Build glib and its chain from pinned source here**, statically, and link
+  qemu against those. More pinned sources, all of which stage 5 already has
+  recipes for.
+- **Build qemu as a stage-5 package.** glib, pixman, zlib, meson, ninja and
+  python are already in the set. At that point qemu is compiled by the
+  compiler this chain produced, against libraries this chain built, and
+  static linking is a flag rather than a fight with someone else's packaging.
+
+The second answers portability and provenance at once, which is why it is
+worth waiting for rather than working around.
+
+## What the artifact is for
+
+Two static-or-shimmed tools and a tcc tree, so somebody with neither qemu nor
+bubblewrap can **run** a Veron image and **build** one, without their distro
+having a say in either. That is the same reason the sources are mirrored: a
+build that depends on what a host happened to install is not reproducible by
+anyone who does not have that host.
