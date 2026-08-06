@@ -101,7 +101,7 @@ jobs:
           # What remains from apt is qemu's own build surface. That is the
           # same position busybox is in, and it is stated rather than implied.
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu git \
-            ninja-build python3-venv pkg-config \
+            meson ninja-build python3-venv pkg-config \
             libglib2.0-dev libpixman-1-dev zlib1g-dev \
             libglib2.0-dev-bin \
             libmount-dev libblkid-dev libselinux1-dev \
@@ -310,6 +310,12 @@ jobs:
       - name: 'Build bubblewrap from its pin, static'
         run: |
           set -eu
+          # meson IS INSTALLED IN THE Install STEP, NOT HERE, AND THAT IS WHY
+          # THIS FAILED. qemu ships its own meson inside the tarball and runs
+          # it from a venv, so building qemu proved nothing about the system
+          # having one -- and bubblewrap, which uses the system meson, died
+          # with `meson: command not found` immediately after a qemu build
+          # that had just run meson several thousand times.
           sudo apt-get install -y -qq libcap-dev >/dev/null
           python3 tools/mirror.py fetch \
             "$BWRAP_SHA256" "bubblewrap-${BWRAP_VER}.tar.xz" \
@@ -317,14 +323,31 @@ jobs:
             --dest dl
           tar -xf "dl/bubblewrap-${BWRAP_VER}.tar.xz"
           cd "bubblewrap-${BWRAP_VER}"
-          meson setup _b --prefix=/usr --buildtype=release \
-            -Dtests=false -Dman=disabled -Dpython=/usr/bin/python3 \
-            -Dc_link_args=-static > cfg.log 2>&1 || {
-              echo "  static configure failed"; tail -5 cfg.log | sed 's/^/    /'; exit 1; }
-          ninja -C _b > b.log 2>&1 || {
-              echo "  static build failed"
-              grep -iE "cannot find|undefined reference|error:" b.log \
-                | sort -u | head -8 | sed 's/^/    /'; exit 1; }
+          # STATIC IS ATTEMPTED AND FALLS BACK, LIKE qemu's. A static bwrap
+          # failing must not take the emulator down with it -- and it just
+          # did: `meson: command not found` in this step aborted a job whose
+          # qemu build had already succeeded, so the whole artifact was lost
+          # to a missing package in a later step.
+          bw() {
+            rm -rf _b
+            meson setup _b --prefix=/usr --buildtype=release \
+              -Dtests=false -Dman=disabled -Dpython=/usr/bin/python3 \
+              $1 > "cfg-$2.log" 2>&1 && ninja -C _b > "b-$2.log" 2>&1
+          }
+          if bw "-Dc_link_args=-static" static; then
+            echo "  bwrap: static"
+          else
+            echo "  bwrap static FAILED -- falling back to dynamic"
+            grep -hiE "cannot find|undefined reference|error:" \
+              cfg-static.log b-static.log 2>/dev/null \
+              | sort -u | head -6 | sed 's/^/    /'
+            bw "" dynamic || {
+              echo "  bwrap dynamic FAILED too"
+              tail -15 b-dynamic.log 2>/dev/null | sed 's/^/    /'
+              exit 1
+            }
+            echo "  bwrap: dynamic -- NOT portable, needs libcap on the host"
+          fi
           cd ..
           cp "bubblewrap-${BWRAP_VER}/_b/bwrap" out/
           chmod +x out/bwrap
