@@ -3673,12 +3673,28 @@ jobs:
             /bin/sh spikes/stage4/bridge/sysroot-trim.sh lfs 2>&1 | sed 's/^/    /'
           after=$(du -sm lfs | cut -f1)
           echo "  trimmed: ${before} MB -> ${after} MB"
-          # A TRIM THAT REMOVED NOTHING IS A BUG, NOT A SMALL SYSROOT. The
-          # measured result is ~481 MB from ~5.7 GB; anything above a
-          # gigabyte means the trim did not run, and uploading it wastes six
-          # minutes to hit a 2 GB refusal.
-          [ "$after" -lt 1024 ] || {
-            echo "  TRIM DID NOT RUN: ${after} MB is not a trimmed sysroot"
+          # TWO CHECKS, EACH FOR A FAILURE THAT ACTUALLY HAPPENED, AND
+          # NEITHER ENCODING A NUMBER I DID NOT MEASURE.
+          #
+          # The first version demanded < 1024 MB, from a "~481 MB" figure
+          # quoted elsewhere in the repo. The trim then ran correctly --
+          # 5707 MB -> 1761 MB, VERON-TRIM-OK -- and this guard failed the
+          # run anyway. 1761 MB is comfortably under the 2 GB release limit,
+          # so the upload it existed to protect would have succeeded. A guard
+          # built on an unverified expectation cost a green chain.
+          #
+          # What the two real failures were:
+          #   the trim silently doing nothing   (5707 -> 5707, TRIM_LOG unset)
+          #   an asset over GitHub's 2 GB limit (HTTP 422, six minutes wasted)
+          # so those are what is checked, and nothing else.
+          [ "$after" -lt "$before" ] || {
+            echo "  TRIM REMOVED NOTHING: ${before} MB -> ${after} MB"
+            echo "  the trim did not run; check TRIM_LOG is writable"
+            exit 1
+          }
+          [ "$after" -lt 1900 ] || {
+            echo "  TOO BIG TO PUBLISH: ${after} MB will be refused at 2 GB"
+            echo "  consider TRIM_STRIP_ARCHIVES=1, which this run did not use"
             exit 1
           }
           tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
