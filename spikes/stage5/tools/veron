@@ -1629,9 +1629,34 @@ def cmd_collect(a):
        drifting from the argv -- so the driver, which owns BUILD_LOGS, does
        the collecting.
 
-    Caps are per-file tails rather than a total cap: truncating the last file
-    because earlier ones were large loses exactly the evidence most likely to
-    matter.
+    NOTHING IS TRUNCATED. NOT LOGS, NOT RECORDS, NOT EVER.
+
+    This used to keep the last 512 KiB of each file. Nobody asked for that and
+    no run has ever benefited from it. What it did:
+
+      - `files.tsv` shipped as **4815 of 17531 paths** -- 27%, keeping the
+        alphabetical TAIL, so `a` through `t` were thrown away and `u`
+        through `z` survived, for a file that is one line per installed path
+        and cannot run away.
+      - the surviving file started MID-RECORD: `d08f556e6a9\t3081`, half a
+        sha256 with no path, so the boundary line did not even parse.
+      - `installs/cmake.txt` sat at 518285 bytes against the 524288 cap --
+        1.1% of headroom, silently, for every run since the listings were
+        added. Sixty more files in cmake and it would have gone the same way.
+
+    WHERE 512 KiB CAME FROM: nowhere. It is a round number typed into an
+    argparse default with no measurement behind it, in a tree whose own
+    handoff lists `ZSTD_CLEVEL=19`, a `< 1024 MB` trim guard and qemu 9.2.4 as
+    the same mistake. The commit that added it argued carefully for per-file
+    caps over a total cap and never said why 512.
+
+    THE ARGUMENT FOR CAPPING AT ALL DOES NOT SURVIVE CONTACT. A runaway log is
+    a fault to diagnose, not a thing to hide; truncating it removes the
+    evidence of the runaway along with everything else. The whole bundle is
+    4.7 MB uncompressed, so there was never a size cost to trade against.
+
+    A collector's one job is to preserve. If the output is enormous, that is
+    a finding.
     """
     roots = roots_from_args(a)
     diag = os.path.join(roots["out"], "diag")
@@ -1640,26 +1665,23 @@ def cmd_collect(a):
     # why the listings never arrived. keep() opens the destination for
     # writing; with no directory to open it into, every copy raised
     # FileNotFoundError and was recorded as FAILED in an index nobody read.
-    for sub in ("driver", "buildsys", "probe", "installs", "boot", "manifest"):
+    for sub in ("driver", "buildsys", "probe", "installs", "boot", "manifest",
+                "repro"):
         os.makedirs(os.path.join(diag, sub), exist_ok=True)
 
-    index, cap = [], a.max_bytes
+    index = []
 
     def keep(src, dst, why):
-        """Copy at most `cap` trailing bytes, and say what happened."""
+        """Copy the file. All of it. Every time.
+
+        There is no cap and no `whole=` parameter to forget to pass, because a
+        knob that can hide evidence is a knob that eventually will.
+        `shutil.copyfile` rather than a read-into-memory, so a genuinely huge
+        log streams instead of being loaded whole.
+        """
         try:
-            size = os.path.getsize(src)
-            with open(src, "rb") as f:
-                if size > cap:
-                    f.seek(size - cap)
-                    body = b"[TRUNCATED -- showing the last %d of %d bytes]\n" % (
-                        cap, size) + f.read()
-                else:
-                    body = f.read()
-            with open(dst, "wb") as o:
-                o.write(body)
-            index.append(f"  kept    {why}  ({size} bytes"
-                         f"{', truncated' if size > cap else ''})")
+            shutil.copyfile(src, dst)
+            index.append(f"  kept    {why}  ({os.path.getsize(dst)} bytes)")
             return True
         except OSError as e:
             index.append(f"  FAILED  {why}: {type(e).__name__}: {e}")
@@ -1706,6 +1728,15 @@ def cmd_collect(a):
         if os.path.isfile(p):
             keep(p, os.path.join(diag, "manifest", fn),
                  f"manifest/{fn}  every path in the merged image")
+
+    # THE REPRODUCIBILITY DIFF. Written only when the two image builds differ,
+    # which is the one run where it is the whole diagnosis. It used to be
+    # `cmp -l | head -20` straight to the console and nowhere else.
+    for fn in ("image-diff.txt",):
+        p = os.path.join(a.out, fn)
+        if os.path.isfile(p):
+            keep(p, os.path.join(diag, "repro", fn),
+                 f"repro/{fn}  every differing byte between the two builds")
 
     lst = os.path.join(a.out, "installs")
 
@@ -3247,6 +3278,32 @@ def cmd_guesttests(a):
     return 0
 
 
+def _code_of(fn):
+    """A function's EXECUTABLE code as text -- no comments, no docstring.
+
+    Gates that grep a function's source keep flagging the prose that explains
+    them. The checkpoint-marker gate read its own comment as code and failed
+    the keys it was documenting; the first version of the truncation gate
+    below failed on the words "NOTHING IS TRUNCATED" in its own docstring.
+
+    `ast.unparse` of the parsed body returns only what runs: comments are not
+    in the AST at all, and the docstring is dropped explicitly. A gate that
+    fires on correct code is one people switch off.
+    """
+    import inspect
+    import textwrap
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    except (OSError, SyntaxError):
+        return ""
+    body = tree.body[0].body
+    if (body and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)):
+        body = body[1:]
+    return "\n".join(ast.unparse(n) for n in body)
+
+
 def cmd_selftest(a):
     """Assert the driver still honours what the recipes declare.
 
@@ -4187,6 +4244,28 @@ def cmd_selftest(a):
                       f"{type(_e).__name__}: {_e}")
                 ok = False
 
+    # NOTHING IN THE COLLECTOR MAY TRUNCATE.
+    #
+    # A 512 KiB per-file tail cap lived in `veron collect` for weeks, shipped
+    # `files.tsv` as 27% of itself starting mid-record, and sat 1.1% away from
+    # doing the same to installs/cmake.txt. It was never asked for and no run
+    # ever benefited from it. This gate exists so it cannot come back quietly
+    # under a different spelling.
+    _collect_code = _code_of(cmd_collect)
+    _trunc = []
+    for _pat, _what in ((r"\bmax_bytes\b", "a byte cap"),
+                        (r"TRUNCAT", "a truncation marker"),
+                        (r"\.seek\(", "a seek (tail-reading)")):
+        for _ln in _collect_code.splitlines():
+            if re.search(_pat, _ln):
+                _trunc.append(f"{_what}: {_ln.strip()[:70]}")
+    if _trunc:
+        for _t in _trunc:
+            print(f"  FAIL  cmd_collect truncates -- {_t}")
+        ok = False
+    else:
+        print("  ok    cmd_collect keeps every byte of every file it collects")
+
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 
@@ -4358,8 +4437,11 @@ def build_parser():
 
     p = sub.add_parser("collect", help="gather everything needed to diagnose "
                                        "this run without re-running it")
-    p.add_argument("--max-bytes", type=int, default=512 * 1024,
-                   help="per-file tail cap (default 512K)")
+    # --max-bytes IS GONE, DELIBERATELY, AND IS NOT COMING BACK AS A DEFAULT
+    # OF ZERO OR ANY OTHER SPELLING. It capped every collected file at the
+    # last 512 KiB and shipped `files.tsv` as 27% of itself, starting
+    # mid-record. An option that can silently discard evidence is worse than
+    # no option, because the run still says OK.
     p.set_defaults(fn=cmd_collect)
 
     p = sub.add_parser("rootfs", help="deterministic rootfs tar")

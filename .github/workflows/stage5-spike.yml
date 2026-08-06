@@ -612,7 +612,25 @@ jobs:
             echo "  The packages may still be byte-identical; a filesystem is"
             echo "  full of exactly the metadata that varies. Record the cause"
             echo "  in policy/expected-differences.toml or fix the knob."
-            cmp -l /tmp/img1 rootfs.img | head -20 || true
+            # THE WHOLE DIFF IS WRITTEN, NOT THE FIRST 20 BYTES OF IT.
+            #
+            # `cmp -l | head -20` was the only copy of this comparison, so
+            # twenty differing bytes were kept and every other one was thrown
+            # away -- for the one failure where knowing WHICH bytes moved is
+            # the entire diagnosis. A pattern in the offsets is what tells a
+            # timestamp from a UUID from a build path, and twenty samples
+            # cannot show a pattern.
+            #
+            # It goes to a file because this is the one output here that can
+            # genuinely be enormous: a 4.5 GB image with a shifted layout
+            # differs in most of its bytes. That is a fault to diagnose and
+            # not a reason to discard it -- `veron collect` picks the file up,
+            # and the console gets a count and a sample rather than a silent
+            # sample presented as the answer.
+            cmp -l /tmp/img1 rootfs.img > image-diff.txt 2>&1 || true
+            printf '  %s differing byte(s); full list in the diag bundle as repro/image-diff.txt\n' \
+              "$(wc -l < image-diff.txt)"
+            head -20 image-diff.txt | sed 's/^/    /'
           fi
 
           # PUBLISH THE IMAGE, FOR THE SAME REASON THE SYSROOT AND THE TOOLBOX
@@ -803,7 +821,11 @@ jobs:
           if grep -aq VERON-STAGE5-INIT "$O/boot-harness.log"; then
             sed -n '/VERON-STAGE5-INIT/,$p' "$O/boot-harness.log" | sed 's/^/    /'
           else
-            tail -40 "$O/boot-harness.log" | sed 's/^/    /'
+            # THE WHOLE LOG, NOT THE LAST 40 LINES. This is the branch where
+            # the guest never reached userspace, so the interesting part is
+            # the kernel coming up -- which is at the TOP. `tail -40` kept the
+            # panic and threw away the boot that led to it.
+            sed 's/^/    /' "$O/boot-harness.log"
             echo "VERON-STAGE5-BOOT-FAIL  the stage-5 init never reached userspace"
             harness_fail=1
           fi
@@ -912,8 +934,13 @@ jobs:
             kill -9 "$qpid" 2>/dev/null
             wait "$qpid" 2>/dev/null
             set -e
+            # EVERY MARKER LINE, NOT THE FIRST 20. dinit prints one per
+            # service; capping at 20 means the system that fails is the one
+            # whose output gets cut. The full console is in the diag bundle
+            # either way, and this grep is already selecting the lines worth
+            # reading.
             sed 's/^/    /' "$O/boot-system.log" \
-              | grep -aE "VERON-|OK  \]|FAILED\]" | head -20
+              | grep -aE "VERON-|OK  \]|FAILED\]"
             # rc=124 IS THE EXPECTED ENDING HERE, not a fault. What decides
             # the result is whether dinit started what it was asked to.
             for svc in early-filesystems console boot; do
@@ -921,7 +948,7 @@ jobs:
                 echo "  VERON-DINIT-OK      $svc"
               else
                 echo "  VERON-DINIT-FAIL    $svc did not start"
-                grep -a "$svc" "$O/boot-system.log" | tail -2 | sed 's/^/      /'
+                grep -a "$svc" "$O/boot-system.log" | sed 's/^/      /'
                 system_fail=1
               fi
             done

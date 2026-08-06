@@ -731,6 +731,63 @@ escalates to KILL so no qemu can outlive the step. Measured against a stub
 that hangs like a real getty: **3s instead of 180s**, and the failure path
 still gives up and still names the missing service.
 
+### Nothing is truncated. Not logs, not records, not ever.
+
+`veron collect` kept the last 512 KiB of each file. The diag bundle from a
+green run showed what that costs:
+
+```
+[TRUNCATED -- showing the last 524288 of 2192405 bytes]
+d08f556e6a9	3081
+```
+
+`files.tsv` shipped as **4815 of 17531 paths — 27%** — keeping the
+*alphabetical tail*, so `a` through `t` were discarded and `u` through `z`
+survived, for a file that is one line per installed path and cannot run away.
+The first surviving line was half a sha256 with no path: the boundary record
+did not even parse.
+
+And `installs/cmake.txt` was at **518285 bytes against a 524288 cap** — 1.1% of
+headroom, silently, on every run since the listings were added. About sixty
+more files in cmake and it would have gone the same way, with the run still
+printing OK.
+
+**Where 512 KiB came from: nowhere.** It is a round number typed into an
+argparse default in `72e45d8`. That commit argues carefully for per-file caps
+over a total cap — real reasoning about the *shape* — and never says why 512.
+It is `ZSTD_CLEVEL=19`, the `< 1024 MB` trim guard and qemu 9.2.4 again: a
+value that reads as considered and was never measured.
+
+**The argument for capping does not survive contact.** A runaway log is a fault
+to diagnose, not a thing to hide, and truncating it removes the evidence of the
+runaway along with everything else. The whole bundle is 4.7 MB, so there was
+never a size cost to trade against.
+
+Removed everywhere:
+
+- `keep()` copies whole files with `shutil.copyfile`. There is no cap and no
+  `whole=` parameter to forget to pass, because a knob that can hide evidence
+  eventually will.
+- `--max-bytes` is **deleted**, not defaulted to zero.
+- `cmp -l | head -20` on a failed image reproduction — the only copy of that
+  comparison — now writes every differing byte to `repro/image-diff.txt` and
+  the console reports the count. Twenty samples cannot show the pattern in the
+  offsets that distinguishes a timestamp from a UUID from a build path, which
+  is the entire diagnosis.
+- `tail -40` on a harness log that never reached userspace kept the panic and
+  threw away the boot that led to it. Whole log.
+- `head -20` on the dinit markers, `tail -2` on a failed service. Whole.
+
+Verified at real sizes: a 17531-line `files.tsv`, the actual 518285-byte
+cmake listing and a 900 KB log all arrive intact, no truncation marker
+anywhere, first line parses.
+
+A gate now reads `cmd_collect`'s **executable code** — `ast.unparse` of the
+parsed body, docstring dropped — and fails on `max_bytes`, `TRUNCAT` or a
+`seek(`. Its first version flagged the words "NOTHING IS TRUNCATED" in its own
+docstring, which is the checkpoint-marker gate reading its own comment as code,
+for the second time in this tree. Comments are not in the AST at all.
+
 ### The CI loginkit boots, and the control socket was being hidden
 
 The kit built by CI — the whole closure this time, `bash` with `libreadline`
