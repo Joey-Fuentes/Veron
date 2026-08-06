@@ -3649,6 +3649,7 @@ jobs:
         if: always() && hashFiles('lfs/.chapter5-complete') != ''
         env:
           GH_TOKEN: ${{ github.token }}
+          ZSTD_CLEVEL: '19'
         run: |
           set -eu
           before=$(du -sm lfs | cut -f1)
@@ -3692,14 +3693,32 @@ jobs:
             echo "  the trim did not run; check TRIM_LOG is writable"
             exit 1
           }
-          [ "$after" -lt 1900 ] || {
-            echo "  TOO BIG TO PUBLISH: ${after} MB will be refused at 2 GB"
-            echo "  consider TRIM_STRIP_ARCHIVES=1, which this run did not use"
-            exit 1
-          }
+          # THE LIMIT APPLIES TO THE ASSET, NOT THE TREE, so it is checked
+          # after compression rather than guessed from the directory size.
+          # The tree being 1761 MB says nothing about whether GitHub will
+          # take it; the .zst is what gets uploaded and what gets refused.
           tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
-              --format=gnu -cf rel/sysroot.tar -C lfs .
-          sha256sum rel/sysroot.tar | tee rel/SYSROOT-SHA256
+              --format=gnu --zstd -cf rel/sysroot.tar.zst -C lfs .
+          # COMPRESSED, AND IT WAS NOT. The tar was written raw, so a 1761 MB
+          # tree became a 1761 MB asset -- and the 5707 MB one before the trim
+          # became the 5.96 GB upload GitHub refused at its 2 GB limit. zstd
+          # takes it to a few hundred megabytes, which makes the size guard
+          # nearly moot and the download bearable for anyone who wants to try
+          # Veron rather than build it.
+          #
+          # `tar --zstd` RATHER THAN A PIPE INTO zstd(1): the checkpoint step
+          # in stage5-spike already uses this exact form and it is proven on
+          # this runner, where a bare `zstd` binary is not. ZSTD_CLEVEL below
+          # raises the level without changing the mechanism -- this is written
+          # once per green chain and downloaded by every stage-5 run and every
+          # user, so the asymmetry is worth the minutes.
+          # --sort/--mtime/--owner above still
+          # do the real work -- compression does not make a tar reproducible,
+          # it only makes it smaller, and zstd is deterministic at a fixed
+          # level.
+          sha256sum rel/sysroot.tar.zst | tee rel/SYSROOT-SHA256
+          printf '  sysroot.tar.zst: %s (from %s MB of files)\n' \
+            "$(du -h rel/sysroot.tar.zst | cut -f1)" "$after"
           for f in Image initramfs.cpio.gz; do
             [ -s "boot/$f" ] && cp "boot/$f" rel/ || true
           done
@@ -3714,6 +3733,12 @@ jobs:
             echo "sysroot  $(cut -d' ' -f1 rel/SYSROOT-SHA256)"
           } > rel/PROVENANCE
           ls -l rel/ | sed 's/^/    /'
+          asset=$(stat -c%s rel/sysroot.tar.zst)
+          [ "$asset" -lt 2000000000 ] || {
+            echo "  TOO BIG TO PUBLISH: $((asset/1048576)) MB, refused at 2 GB"
+            echo "  consider TRIM_STRIP_ARCHIVES=1, which this run did not use"
+            exit 1
+          }
           # ONE MOVING TAG, CLOBBERED. Per-run tags would give a release per
           # green run and nothing would ever link to them; the commit is
           # recorded in PROVENANCE and in manifest.tsv, so history is not lost

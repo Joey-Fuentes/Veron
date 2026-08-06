@@ -147,7 +147,7 @@ jobs:
           set -eu
           mkdir -p dl-sysroot
           gh release download stage4/latest \
-            --pattern 'sysroot.tar' --pattern 'SYSROOT-SHA256' \
+            --pattern 'sysroot.tar.zst' --pattern 'SYSROOT-SHA256' \
             --pattern 'PROVENANCE' --dir dl-sysroot || {
             echo "No stage4/latest release. stage0-stage4-complete publishes it"
             echo "on every green run; if none has run since this step landed,"
@@ -158,11 +158,11 @@ jobs:
           # was against the artifact. A release is a friendlier delivery
           # mechanism and not a more trusted one.
           want=$(awk '{print $1}' dl-sysroot/SYSROOT-SHA256)
-          got=$(sha256sum dl-sysroot/sysroot.tar | cut -d' ' -f1)
+          got=$(sha256sum dl-sysroot/sysroot.tar.zst | cut -d' ' -f1)
           [ "$want" = "$got" ] || { echo "SYSROOT HASH MISMATCH"; exit 1; }
           sed 's/^/    /' dl-sysroot/PROVENANCE 2>/dev/null || true
           mkdir -p spikes/stage5/sysroot
-          tar -xf dl-sysroot/sysroot.tar -C spikes/stage5/sysroot
+          tar --zstd -xf dl-sysroot/sysroot.tar.zst -C spikes/stage5/sysroot
           du -sh spikes/stage5/sysroot | sed 's/^/    /'
           echo "VERON-ENTRY-OK  $got"
           # THE CHECKPOINT BASE. Verified against the published digest one

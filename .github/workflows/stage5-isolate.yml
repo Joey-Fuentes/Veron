@@ -109,16 +109,16 @@ jobs:
           set -eu
           mkdir -p dl-sysroot
           gh release download stage4/latest \
-            --pattern 'sysroot.tar' --pattern 'SYSROOT-SHA256' \
+            --pattern 'sysroot.tar.zst' --pattern 'SYSROOT-SHA256' \
             --dir dl-sysroot || {
             echo "No stage4/latest release -- dispatch stage0-stage4-complete once."
             exit 1
           }
           want=$(awk '{print $1}' dl-sysroot/SYSROOT-SHA256)
-          got=$(sha256sum dl-sysroot/sysroot.tar | cut -d' ' -f1)
+          got=$(sha256sum dl-sysroot/sysroot.tar.zst | cut -d' ' -f1)
           [ "$want" = "$got" ] || { echo "SYSROOT HASH MISMATCH"; exit 1; }
           mkdir -p spikes/stage5/sysroot
-          tar -xf dl-sysroot/sysroot.tar -C spikes/stage5/sysroot
+          tar --zstd -xf dl-sysroot/sysroot.tar.zst -C spikes/stage5/sysroot
           echo "VERON-ENTRY-OK  $got"
 
       - name: 'Fetch pinned sources through the mirror'
