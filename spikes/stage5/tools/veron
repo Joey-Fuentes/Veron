@@ -18,6 +18,7 @@
 
 import argparse
 import ast
+import glob
 import contextlib
 import hashlib
 import io
@@ -3293,6 +3294,48 @@ def cmd_selftest(a):
     else:
         print(f"  ok    every name the driver uses is bound "
               f"({len(tree.body)} top-level definitions)")
+
+    # EVERY WORKFLOW INPUT MUST BE REFERENCED BY SOMETHING IN ITS WORKFLOW.
+    #
+    # `seed_installs` kept its description -- "write [installs] blocks and
+    # installs.txt from this build, and upload them" -- for two dispatches
+    # after a splice deleted the step it described. Both runs ticked the box,
+    # produced no listings, and reported success, because an input that
+    # drives nothing cannot fail. The description was the only surviving
+    # evidence that the feature had ever existed.
+    #
+    # A step is not a name, so the AST gate cannot see this. What it IS is a
+    # producer/consumer pair -- an input declared and never consumed -- which
+    # is the same shape as the checkpoint marker keys, and checkable the same
+    # way: grep the file for `inputs.<name>` outside its own declaration.
+    _wfdir = os.path.join(HERE, "..", "..", ".github", "workflows")
+    _found = sorted(glob.glob(os.path.join(_wfdir, "*.yml")))
+    if not _found:
+        # A CHECK THAT FINDS NO FILES PASSES, AND THAT IS THE FAILURE MODE
+        # THIS WHOLE GATE EXISTS TO CATCH. The first version had the wrong
+        # number of `..` and reported "ok" over zero workflows.
+        print(f"  FAIL  no workflows found under {_wfdir}")
+        ok = False
+    for wf in _found:
+        body = open(wf).read()
+        m = re.search(r"^  workflow_dispatch:\n(?:    inputs:\n)?"
+                      r"((?:      \S.*\n(?:        .*\n)*)*)", body, re.M)
+        if not m:
+            continue
+        declared = re.findall(r"^      (\w+):", m.group(1), re.M)
+        unused = [d for d in declared
+                  if f"inputs.{d}" not in body and f"inputs['{d}']" not in body]
+        if unused:
+            # WARN, NOT FAIL, AND ONLY BECAUSE TWO PRE-EXISTING ONES EXIST.
+            # stage3-watchpoint's `width` and stage5-order's `reuse` are dead
+            # today; failing on them would block every run over something
+            # unrelated to the change that introduced this check. They should
+            # be deleted, and when they are this should become a FAIL -- a
+            # warning that is never acted on is the same as no check.
+            print(f"  warn  {os.path.basename(wf)}: input(s) declared and "
+                  f"never used: {', '.join(unused)}")
+    if _found:
+        print(f"  ok    {len(_found)} workflow(s) checked for dead inputs")
 
     # NO WORKFLOW MAY DECLARE THE SAME STEP NAME TWICE.
     #

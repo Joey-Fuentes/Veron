@@ -367,6 +367,48 @@ jobs:
       # decides reuse is the marker inside, checked entry by entry, so a
       # single moving tag is both simpler and strictly more useful than a
       # graveyard of prefix-named releases nothing will ever match again.
+      # SEED [installs] FROM THIS BUILD, AND UPLOAD IT.
+      #
+      # THIS STEP WENT MISSING AND NOTHING NOTICED. The `seed_installs` input
+      # kept its description -- "write [installs] blocks and installs.txt from
+      # this build, and upload them" -- while the step it described was gone,
+      # deleted by a splice that meant to touch a neighbouring step. Two runs
+      # were dispatched with the box ticked and produced no listings; the
+      # workflow reported success both times because an input that drives
+      # nothing cannot fail.
+      #
+      # Fifth collision of this shape in this project. The others were caught
+      # by gates -- unbound names, checkpoint marker keys -- and this one is
+      # not statically checkable: a YAML step is not a name. What catches it
+      # is the marker below being absent from the log.
+      - name: 'Seed [installs] from this build'
+        if: ${{ inputs.seed_installs }}
+        run: |
+          set -eu
+          cd spikes/stage5
+          python3 tools/veron --dest dest installs --propose --write \
+            | tee out/installs-propose.txt
+          # PLAN.txt CARRIES recipe-sha PER PACKAGE, so writing a block into
+          # every recipe moves all of them. Regenerating here means the
+          # artifact is a drop-in rather than something that fails plan-check
+          # the moment it lands.
+          python3 tools/veron plan --write
+          python3 tools/veron selftest
+          n=$(ls packages/*/installs.txt | wc -l)
+          echo "VERON-INSTALLS-SEEDED  $n listing(s) written"
+          [ "$n" -gt 0 ] || { echo "seed_installs wrote nothing"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ inputs.seed_installs }}
+        with:
+          name: veron-stage5-installs-${{ github.run_id }}
+          path: |
+            spikes/stage5/packages/*/recipe.toml
+            spikes/stage5/packages/*/installs.txt
+            spikes/stage5/PLAN.txt
+            spikes/stage5/out/installs-propose.txt
+          if-no-files-found: error
+
       - name: 'Publish a build checkpoint'
         if: ${{ inputs.save_checkpoint }}
         env:
