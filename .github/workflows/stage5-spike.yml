@@ -608,18 +608,49 @@ jobs:
           # release asset is capped at 2 GB. The stage-4 sysroot went from
           # 619 MB to 122 MB the same way; an ext4 image full of the same
           # binaries compresses similarly.
-          ZSTD_CLEVEL=19 tar --zstd -cf rootfs.img.tar.zst rootfs.img
+          # CHECK THE INPUTS BEFORE SPENDING THIRTY MINUTES ON THE OUTPUT.
+          #
+          # The first version compressed first and validated last, so a
+          # missing `Image` -- a path bug worth one millisecond to detect --
+          # was found only after zstd had ground through 4.5 GB. The order
+          # was free to get right and I got it backwards.
+          R=../../..
+          missing=""
+          for f in "$R/boot/Image" files.tsv initramfs.cpio.gz; do
+            [ -e "$f" ] || missing="$missing $f"
+          done
+          if [ -n "$missing" ]; then
+            echo "  not publishing -- missing:$missing"
+            echo "VERON-STAGE5-UNPUBLISHED  inputs absent, nothing compressed"
+          else
+          # ZSTD_CLEVEL=10, NOT 19. Level 19 was chosen for the stage-4
+          # sysroot -- 619 MB, written once per chain run -- and then reused
+          # here on an image seven times larger without rethinking it. That
+          # cost about thirty minutes per run for a few percent of size, on
+          # something every stage-5 run produces.
+          ZSTD_CLEVEL=10 tar --zstd -cf rootfs.img.tar.zst rootfs.img
           asset=$(stat -c%s rootfs.img.tar.zst)
           printf '  rootfs.img.tar.zst: %s\n' "$(du -h rootfs.img.tar.zst | cut -f1)"
           if [ "$asset" -lt 2000000000 ]; then
             gh release create stage5/latest --title 'Veron stage 5' \
               --notes 'The stage-5 system image, and the kernel and initramfs that boot it. Open with the zstd in toolbox/latest.' \
               2>/dev/null || true
-            cp boot/Image . 2>/dev/null || true
-            cp spikes/stage5/out/initramfs.cpio.gz . 2>/dev/null || true
-            cp spikes/stage5/out/files.tsv . 2>/dev/null || true
-            if gh release upload stage5/latest rootfs.img.tar.zst IMAGE-SHA256 \
-                 Image initramfs.cpio.gz files.tsv --clobber; then
+            # PATHS RELATIVE TO THIS STEP'S cwd, WHICH IS spikes/stage5/out.
+            # The first version copied `boot/Image` and
+            # `spikes/stage5/out/files.tsv` as if it were at the repo root,
+            # found neither, and each `|| true` swallowed it -- so the upload
+            # ran with a missing filename and gh answered "no matches found
+            # for `Image`" after the 1.7 GB compression had already happened.
+            #
+            # No `|| true` here. A file that should exist and does not is a
+            # fault, and initramfs.cpio.gz is in this directory already.
+            assets="rootfs.img.tar.zst IMAGE-SHA256"
+            for f in "$R/boot/Image" files.tsv initramfs.cpio.gz; do
+              [ "$f" = "${f#$R/}" ] || cp "$f" .
+              assets="$assets $(basename "$f")"
+            done
+            echo "  uploading: $assets"
+            if gh release upload stage5/latest $assets --clobber; then
               echo "VERON-STAGE5-PUBLISHED  $(cut -d' ' -f1 IMAGE-SHA256)"
             else
               # NOT FATAL. The build is the result; the release is delivery.
@@ -639,18 +670,30 @@ jobs:
           #
           # Built from the merged sysroot rather than from the recipes, so it
           # is the real thing rather than a reconstruction.
+          # THE SYSROOT IS ONE LEVEL UP, NOT HERE. This looked in ./sysroot
+          # from spikes/stage5/out, found nothing, and produced a 4 KB
+          # "loginkit" containing an empty directory -- which reported success
+          # because every miss was `|| true`.
+          SR=../sysroot
           mkdir -p loginkit
+          got=0
           for f in bin/busybox bin/sh usr/bin/dinit usr/bin/dinitctl \
                    usr/bin/dinit-check usr/bin/bash sbin/dinit; do
-            [ -e "sysroot/$f" ] && { mkdir -p "loginkit/$(dirname "$f")"; \
-              cp -a "sysroot/$f" "loginkit/$f"; } || true
+            if [ -e "$SR/$f" ]; then
+              mkdir -p "loginkit/$(dirname "$f")"
+              cp -a "$SR/$f" "loginkit/$f"
+              got=$((got + 1))
+            fi
           done
-          cp -a sysroot/etc loginkit/etc 2>/dev/null || true
+          [ -d "$SR/etc" ] && cp -a "$SR/etc" loginkit/etc
+          # A BUNDLE WITH NOTHING IN IT IS A BUG, NOT A SMALL BUNDLE.
+          [ "$got" -gt 0 ] || { echo "  loginkit found nothing under $SR"; exit 1; }
           tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
               -czf loginkit.tar.gz loginkit
           printf '  loginkit.tar.gz: %s (dinit, busybox, a shell and /etc)\n' \
             "$(du -h loginkit.tar.gz | cut -f1)"
           rm -f rootfs.img.tar.zst
+          fi
 
       # BOOT. The ladder's initramfs already mounts mount_tag veronsysroot over
       # 9p and runs gcc inside it, so pointing 9p at OUR merged tree reuses that

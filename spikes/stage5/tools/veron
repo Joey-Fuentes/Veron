@@ -80,7 +80,37 @@ def load_recipes():
         raw = open(rp, "rb").read()
         r = tomllib.loads(raw.decode())
         r["_dir"] = os.path.join(PKGDIR, name)
-        r["_recipe_sha256"] = sha256_bytes(raw)
+        # THE RECIPE IS NOT THE WHOLE INPUT FOR A LOCAL PACKAGE, AND THAT
+        # SHIPPED A STALE /etc.
+        #
+        # For every other package the source is a pinned tarball, so hashing
+        # recipe.toml identifies the build completely. `kind = "local"` breaks
+        # that: veron-system's source IS its files/ directory, and editing
+        # /etc/dinit.d/early-filesystems does not touch recipe.toml.
+        #
+        # So the key did not move, the checkpoint restored the old DESTDIR,
+        # and a boot fixed and tested locally failed in CI with the identical
+        # error -- because the image still carried the previous /etc. The
+        # restore was correct about the key and the key was wrong about the
+        # inputs.
+        #
+        # files/ is folded in, sorted, path and content both, so a rename is
+        # as visible as an edit.
+        h = hashlib.sha256(raw)
+        fdir = os.path.join(PKGDIR, name, "files")
+        if os.path.isdir(fdir):
+            for root, dirs, fs in os.walk(fdir):
+                dirs.sort()
+                for fn in sorted(fs):
+                    fp = os.path.join(root, fn)
+                    rel = os.path.relpath(fp, fdir).encode()
+                    h.update(b"\0" + rel + b"\0")
+                    if os.path.islink(fp):
+                        h.update(b"L" + os.readlink(fp).encode())
+                    else:
+                        with open(fp, "rb") as fh:
+                            h.update(b"F" + fh.read())
+        r["_recipe_sha256"] = h.hexdigest()
         if r["name"] != name:
             die(f"{rp}: name '{r['name']}' does not match directory '{name}'")
         out[r["name"]] = r
