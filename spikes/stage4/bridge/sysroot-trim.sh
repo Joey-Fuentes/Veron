@@ -43,11 +43,23 @@ set -u
 
 ROOT=${1:-/}
 LOG=${TRIM_LOG:-/out/trim.txt}
-NATIVE=${NATIVE_TRIPLET:-aarch64-unknown-linux-gnu}
+# THE DEFAULTS FOLLOWED THE RENAME. The system is aarch64-veron-linux-gnu and
+# the scaffolding is aarch64-toolchain-linux-gnu; this script tells one from
+# the other by name, so a stale default here does not fail -- it keeps the
+# wrong toolchain, or removes the right one, and reports success either way.
+NATIVE=${NATIVE_TRIPLET:-aarch64-veron-linux-gnu}
 CROSS=${CROSS_TRIPLET:-aarch64-toolchain-linux-gnu}
 
+# IF THE LOG CANNOT BE OPENED, SAY SO AND CARRY ON. `: > "$LOG"` is a
+# redirect on a SPECIAL BUILTIN, so a POSIX shell exits the whole script on
+# failure -- which is how a caller that forgot TRIM_LOG got one "cannot
+# create" line and a sysroot that was never trimmed, with an exit status
+# nobody checked. The log is a convenience; the trim is the point.
 mkdir -p "$(dirname "$LOG")" 2>/dev/null || true
-: > "$LOG"
+if ! : > "$LOG" 2>/dev/null; then
+    printf '%s\n' "  trim: cannot write $LOG -- logging to stdout only" >&2
+    LOG=/dev/null
+fi
 emit() { printf '%s\n' "$*" | tee -a "$LOG"; }
 sz()   { du -s "$1" 2>/dev/null | awk '{print $1*1024}'; }
 mb()   { awk -v b="$1" 'BEGIN{printf "%.0f", b/1048576}'; }

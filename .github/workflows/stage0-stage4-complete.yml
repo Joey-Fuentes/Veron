@@ -3652,11 +3652,35 @@ jobs:
         run: |
           set -eu
           before=$(du -sm lfs | cut -f1)
+          mkdir -p rel
+          # TRIM_LOG IS NOT OPTIONAL, AND OMITTING IT MADE THE TRIM A NO-OP.
+          # It defaults to /out/trim.txt, which exists inside the box and not
+          # on the runner. `: > "$LOG"` is a redirect on a SPECIAL BUILTIN, so
+          # a POSIX shell exits the script outright rather than carrying on --
+          # the run printed one "cannot create" line, reported 5707 MB before
+          # and 5707 MB after, and pushed a 5.96 GB tarball at a 2 GB limit.
+          #
+          # NATIVE_TRIPLET IS NOT OPTIONAL EITHER, NOW. The trim tells the
+          # native toolchain from the cross one by triplet, and its default is
+          # still aarch64-unknown-linux-gnu -- which stopped being this
+          # system's name in the same change that added this step. Left
+          # unset, the trim would either keep the cross toolchain or delete
+          # the native one, and both look like success.
           VERON_TRIM=1 TRIM_STRIP_ARCHIVES=0 \
+          TRIM_LOG=rel/trim.txt \
+          NATIVE_TRIPLET=aarch64-veron-linux-gnu \
+          CROSS_TRIPLET=aarch64-toolchain-linux-gnu \
             /bin/sh spikes/stage4/bridge/sysroot-trim.sh lfs 2>&1 | sed 's/^/    /'
           after=$(du -sm lfs | cut -f1)
           echo "  trimmed: ${before} MB -> ${after} MB"
-          mkdir -p rel
+          # A TRIM THAT REMOVED NOTHING IS A BUG, NOT A SMALL SYSROOT. The
+          # measured result is ~481 MB from ~5.7 GB; anything above a
+          # gigabyte means the trim did not run, and uploading it wastes six
+          # minutes to hit a 2 GB refusal.
+          [ "$after" -lt 1024 ] || {
+            echo "  TRIM DID NOT RUN: ${after} MB is not a trimmed sysroot"
+            exit 1
+          }
           tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
               --format=gnu -cf rel/sysroot.tar -C lfs .
           sha256sum rel/sysroot.tar | tee rel/SYSROOT-SHA256

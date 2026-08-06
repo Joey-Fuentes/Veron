@@ -143,3 +143,43 @@ plus `spikes/stage3/patches/`. It sat 56 commits past the pin for weeks, which
 meant the patch series would not apply and micro-c could not be built outside
 CI at all — see that directory's README for the check that would have caught
 it.
+
+## qemu is built from pinned source now, and there are two of them
+
+It used to be `apt-get install qemu-user-static` and a `cp` out of `/usr/bin`
+-- an opaque host binary in an artifact this repository ships. That is below
+the bar `TRUST-BOUNDARY.md` sets for tier 2, which busybox meets: *"the source
+is ours to choose and PINNED; the compiler that turned it into a binary is the
+runner's."* An apt package meets neither half, and the tool used to check that
+this chain's output runs was the one thing here with no provenance.
+
+`local-toolbox.yml` now fetches a pinned qemu tarball through the mirror and
+builds both targets from the one tree:
+
+| | what it is for |
+|---|---|
+| `qemu-system-aarch64` | boots a stage-4 `Image` -- **new**, and the reason for the change |
+| `qemu-aarch64-static` | runs an aarch64 binary on x86-64, as before |
+
+**Why the system emulator matters more than it sounds.** B5.5 -- `switch_root`,
+dinit as PID 1, the writable overlay -- is the one piece of this project only
+testable at the END of a full run. Iterating on it through CI is forty minutes
+a cycle. With a local `qemu-system-aarch64` the same loop is seconds, against
+the same `Image` the release publishes.
+
+**The digest starts as `PENDING` on purpose.** The first dispatch fetches the
+tarball, prints the sha256 it measured, and refuses to build. Paste it in and
+dispatch again. Two recipes in this repository already carry a comment about a
+digest that was invented rather than read; a wrong one here would be a pinned
+lie about the only tool that checks whether the chain's output runs.
+
+**`--static` is attempted, not required.** Ubuntu ships no static glib, so the
+link may fail; the job falls back to dynamic and packs the shared libraries
+beside the binaries. Worse for portability, still better than an apt binary.
+
+**And it is a stage-5 recipe eventually.** qemu's build dependencies -- glib,
+pixman, zlib, meson, ninja, python -- are *already* stage-5 packages, all six
+built and tested. Once stage 5 boots well enough to host a build, qemu is
+compiled by the compiler this chain produced, against libraries this chain
+built, and the emulator traces back to stage 0 like everything else. At that
+point the tier-2 caveat above disappears entirely.

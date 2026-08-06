@@ -39,6 +39,27 @@ jobs:
     timeout-minutes: 20
     env:
       TCC_SHA: 5ec0e6f84b47ebd8c269b581712666313f5edaef
+      # PINNED, AND MIRRORED LIKE EVERY OTHER SOURCE. Until now the emulator
+      # came from `apt-get install qemu-user-static` and there was no system
+      # emulator at all -- so the one tool used to check that this chain's
+      # output runs was the one thing in the repository with no provenance.
+      #
+      # ONCE STAGE 5 BOOTS, THIS BECOMES A RECIPE. qemu's build dependencies
+      # -- glib, pixman, zlib, meson, ninja, python -- are ALREADY stage-5
+      # packages, all six built and tested. At that point qemu is compiled by
+      # the compiler this chain produced, against libraries this chain built,
+      # and the emulator traces to stage 0 like everything else.
+      QEMU_VER: '9.2.4'
+      # PENDING UNTIL A RUN MEASURES IT. This value is not guessable and must
+      # never be typed from memory -- two recipes in this repository already
+      # carry a comment about a digest that was invented rather than read, and
+      # a wrong one here would be a pinned lie about the only tool used to
+      # check that the chain's output runs.
+      #
+      # The first dispatch fetches the tarball, prints the sha256 it measured,
+      # and FAILS. Paste that value here and dispatch again; from then on the
+      # fetch verifies against it like every other pinned source.
+      QEMU_SHA256: 'PENDING'
     steps:
       - uses: actions/checkout@v5
 
@@ -58,17 +79,97 @@ jobs:
         run: |
           set -eu
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-user-static gcc-aarch64-linux-gnu git >/dev/null
+          # qemu-user-static IS GONE FROM THIS LIST. It used to be copied out
+          # of /usr/bin, which put an opaque host binary in an artifact this
+          # repository ships -- below the bar TRUST-BOUNDARY.md sets for
+          # tier 2, where busybox sits: "the source is ours to choose and
+          # PINNED; the compiler that turned it into a binary is the
+          # runner's." An apt binary meets neither half.
+          #
+          # What remains from apt is qemu's own build surface. That is the
+          # same position busybox is in, and it is stated rather than implied.
+          sudo apt-get install -y -qq gcc-aarch64-linux-gnu git \
+            ninja-build python3-venv pkg-config \
+            libglib2.0-dev libpixman-1-dev zlib1g-dev \
+            libglib2.0-dev-bin >/dev/null
 
-      - name: 'Pack qemu-aarch64-static'
+      - name: 'Fetch qemu at its pin, through the mirror'
+        run: |
+          set -eu
+          mkdir -p dl
+          url="https://download.qemu.org/qemu-${QEMU_VER}.tar.xz"
+          if [ "$QEMU_SHA256" = PENDING ]; then
+            # MEASURE, REPORT, REFUSE. Building from an unverified tarball
+            # would produce a working emulator with no provenance, which is
+            # the state this change exists to end.
+            curl -fsSL -o "dl/qemu-${QEMU_VER}.tar.xz" "$url"
+            got=$(sha256sum "dl/qemu-${QEMU_VER}.tar.xz" | cut -d' ' -f1)
+            echo ""
+            echo "  qemu ${QEMU_VER} sha256, measured by this run:"
+            echo "    $got"
+            echo ""
+            echo "  Put it in QEMU_SHA256 above, add it to sources/MIRRORS.tsv,"
+            echo "  and dispatch again. Refusing to build from an unverified"
+            echo "  tarball."
+            exit 1
+          fi
+          python3 tools/mirror.py fetch \
+            "$QEMU_SHA256" "qemu-${QEMU_VER}.tar.xz" \
+            --url "$url" --dest dl
+          tar -xf "dl/qemu-${QEMU_VER}.tar.xz"
+
+      - name: 'Build qemu from that source: system AND user, one tree'
         run: |
           set -eu
           mkdir -p out
-          cp /usr/bin/qemu-aarch64-static out/
-          chmod +x out/qemu-aarch64-static
-          printf '  %s\n' "$(file -b out/qemu-aarch64-static | cut -c1-90)"
-          printf '  %s bytes\n' "$(stat -c%s out/qemu-aarch64-static)"
-          out/qemu-aarch64-static --version | head -1 | sed 's/^/  /'
+          cd "qemu-${QEMU_VER}"
+          # ONE SOURCE, BOTH TARGETS. aarch64-softmmu is what boots an Image;
+          # aarch64-linux-user is what runs a binary. They were previously two
+          # different provenances -- one apt package and nothing at all -- and
+          # are now one pinned tarball.
+          #
+          # --static IS ATTEMPTED AND NOT REQUIRED. A static qemu is one file
+          # that runs anywhere, which is the whole point of a toolbox
+          # artifact; but Ubuntu ships no static glib, so it may not link.
+          # Falling back to dynamic and packing the libraries alongside is
+          # worse for portability and still better than an apt binary, so the
+          # fallback is taken rather than the job failed.
+          COMMON="--target-list=aarch64-softmmu,aarch64-linux-user
+                  --disable-docs --disable-gtk --disable-sdl --disable-vnc
+                  --disable-spice --disable-curses --disable-opengl
+                  --disable-virglrenderer --disable-libssh --disable-bzip2
+                  --disable-snappy --disable-lzo --disable-curl
+                  --disable-guest-agent --disable-tools --disable-capstone
+                  --disable-vde --disable-brlapi --disable-tpm"
+          if ./configure --static $COMMON > cfg-static.log 2>&1; then
+            echo "  static configure ok"
+            LINK=static
+          else
+            echo "  static configure FAILED -- falling back to dynamic"
+            tail -5 cfg-static.log | sed 's/^/    /'
+            ./configure $COMMON > cfg.log 2>&1
+            LINK=dynamic
+          fi
+          ninja -C build
+          cd ..
+          cp "qemu-${QEMU_VER}/build/qemu-system-aarch64" out/
+          cp "qemu-${QEMU_VER}/build/qemu-aarch64" out/qemu-aarch64-static
+          chmod +x out/qemu-system-aarch64 out/qemu-aarch64-static
+          echo "  link mode: $LINK"
+          for b in qemu-system-aarch64 qemu-aarch64-static; do
+            printf '  %-24s %s bytes\n' "$b" "$(stat -c%s out/$b)"
+            printf '  %-24s %s\n' "" "$(file -b out/$b | cut -c1-70)"
+          done
+          if [ "$LINK" = dynamic ]; then
+            # PACK WHAT IT NEEDS, or the artifact is a binary that will not
+            # start on the machine it was made for.
+            mkdir -p out/lib
+            for b in out/qemu-system-aarch64 out/qemu-aarch64-static; do
+              ldd "$b" | awk '/=> \//{print $3}'
+            done | sort -u | while read -r l; do cp -L "$l" out/lib/; done
+            cp -L /lib64/ld-linux-x86-64.so.2 out/lib/ 2>/dev/null || true
+            printf '  packed %s shared libraries\n' "$(ls out/lib | wc -l)"
+          fi
 
       - name: 'PROVE IT: run an aarch64 binary on this x86_64 runner'
         run: |
@@ -88,6 +189,42 @@ jobs:
           [ "$rc" = 42 ] || { echo "FAIL: expected 42"; exit 1; }
           echo "  aarch64 executed on x86_64 via the packed emulator"
 
+      - name: 'PROVE IT: boot a kernel with the system emulator'
+        run: |
+          set -eu
+          # THE USER EMULATOR RUNNING A BINARY DOES NOT SHOW THAT THE SYSTEM
+          # EMULATOR BOOTS. They are different programs from the same tree,
+          # and only one of them can answer the question this artifact now
+          # exists for -- whether a stage-4 Image comes up locally.
+          #
+          # The stage-4 release is the input, because that is exactly what a
+          # local run would boot. If no release exists yet the check is
+          # skipped rather than failed: this job predates the release step and
+          # must not start depending on it.
+          export PATH="$PWD/out:$PATH"
+          if [ -d out/lib ]; then export LD_LIBRARY_PATH="$PWD/out/lib"; fi
+          out/qemu-system-aarch64 --version | head -1 | sed 's/^/  /'
+          if gh release download stage4/latest --pattern Image \
+               --pattern 'initramfs.cpio.gz' --dir bootcheck 2>/dev/null; then
+            timeout 600 out/qemu-system-aarch64 -machine virt -cpu max \
+              -m 2048 -nographic -no-reboot \
+              -device virtio-gpu-pci -device virtio-keyboard-pci \
+              -kernel bootcheck/Image -initrd bootcheck/initramfs.cpio.gz \
+              -append "console=ttyAMA0 rdinit=/init panic=1" \
+              > boot.log 2>&1 || true
+            tail -25 boot.log | sed 's/^/    /'
+            grep -q VERON-DONE boot.log \
+              && echo "  VERON-TOOLBOX-BOOT-OK  the packed emulator booted stage 4" \
+              || { echo "  VERON-TOOLBOX-BOOT-FAIL"; exit 1; }
+          else
+            echo "  no stage4/latest release yet -- boot check skipped"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: 'PROVE IT: the user emulator still runs an aarch64 binary'
+        run: |
+          set -eu
           # And the repo's own committed aarch64 artifact, which is the thing
           # that will actually be run locally.
           if [ -x spikes/stage0-as/stage0-as ]; then

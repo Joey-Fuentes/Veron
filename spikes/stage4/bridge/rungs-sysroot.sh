@@ -671,7 +671,21 @@ if [ "$B2" = ok ]; then
     # everything above it, rather than as AR_FLAGS on each package, so it holds
     # for every archive the system ever creates instead of the ones someone
     # remembered to flag.
+    # --build/--host/--target MUST MATCH THE gcc B4 BUILDS, and this is what
+    # `cannot find 'ld'` meant. gcc searches for its linker under
+    # $prefix/<target-triplet>/bin/ before falling back to PATH. B4 now
+    # configures gcc as aarch64-veron-linux-gnu, so it looks in
+    # /usr/aarch64-veron-linux-gnu/bin/ -- and binutils, configured natively,
+    # had installed its copy under whatever config.guess returned instead.
+    #
+    # The in-guest compile is the only thing that exercises this: the runner
+    # never invokes the final gcc, so a mismatch here builds a complete system
+    # and fails the first time somebody compiles ON it. That is exactly the
+    # test VERON-GCC-IN-GUEST exists to be.
     if "$_d/configure" --prefix=/usr \
+         --build=aarch64-veron-linux-gnu \
+         --host=aarch64-veron-linux-gnu \
+         --target=aarch64-veron-linux-gnu \
          --enable-plugins --enable-shared --disable-werror \
          --enable-deterministic-archives \
          --enable-64-bit-bfd --enable-new-dtags --enable-gprofng=no \
