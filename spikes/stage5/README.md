@@ -731,6 +731,65 @@ escalates to KILL so no qemu can outlive the step. Measured against a stub
 that hangs like a real getty: **3s instead of 180s**, and the failure path
 still gives up and still names the missing service.
 
+### The CI loginkit boots, and the control socket was being hidden
+
+The kit built by CI — the whole closure this time, `bash` with `libreadline`
+and `libncursesw` included — was booted as the root over 9p with
+`veron.boot=system`:
+
+```
+VERON-SWITCHROOT-EXEC  /usr/bin/dinit
+[  OK  ] early-filesystems
+[  OK  ] console
+[  OK  ] boot
+veron# echo "PATH=[$PATH]"
+PATH=[/usr/bin:/usr/sbin:/bin:/sbin]
+veron# echo "host=[$(hostname)]"
+host=[veron]
+veron# /usr/bin/dinit --version
+Dinit version 0.22.1.
+veron# bash -c 'echo $BASH_VERSION'
+5.3.0(1)-release
+```
+
+`lib -> usr/lib` and `bin -> usr/bin` both survive the tar, so the merged-usr
+layout reaches the artifact.
+
+**`dinitctl` could not connect, and the cause was ordering.** dinit creates its
+control socket at startup, before it runs a single service. `/etc/fstab` asks
+`early-filesystems` for a tmpfs on `/run` — which runs *after* dinit is already
+up, so the mount lands on top of the socket and hides it. Measured both ways:
+
+```
+veron# ls -la /run/          (as shipped)      veron# ls -la /run/   (/run out of fstab)
+total 0                                        srw------- 1 root root 0 dinitctl
+veron# dinitctl list                           veron# dinitctl list
+dinitctl: connecting to socket:                [[+]     ] boot
+/run/dinitctl: No such file or directory       [{+}     ] early-filesystems
+                                               [{+}     ] console (pid: 89)
+```
+
+So the system booted and could not be inspected, controlled or shut down
+cleanly. `[  OK  ] boot` was true and said nothing about it — a service manager
+with no control channel still reports every service started.
+
+`guest/init` now mounts the tmpfs on `/run` before exec'ing dinit. **Mounted
+there rather than dropped from fstab:** removing the entry also works, because
+the overlay's upper is a tmpfs and `/run` is writable regardless — but that
+makes `/run`'s writability a property of one boot path rather than of the
+system. Mounting it early gives dinit a real tmpfs whichever way the root
+arrived, and `early-filesystems` skips it, because that script mounts what is
+missing rather than running `mount -a`. Verified against the untouched CI kit:
+one `tmpfs /run` in `/proc/mounts`, the socket present, `dinitctl list`
+answering.
+
+**And one non-finding, recorded because it looked like one.**
+`dinit-check /etc/dinit.d/boot` reported `error reading dependencies from
+directory boot.d: No such file or directory`. That is not a defect: `boot.d`
+resolves relative to the working directory, and from `/etc/dinit.d` the same
+command says `No problems found` across all three services. Checked before
+reporting, which is the only reason it is not in the list above.
+
 ### The size column broke the ledger, and the failure proved the point
 
 Adding a fourth field to `file_manifest` broke `cmd_ledger`, which died at step

@@ -166,7 +166,45 @@ if [ "$BOOTMODE" = system ] && [ "$VIA" != none ]; then
                     echo "    with \`veron loginkit\`, which refuses this."
                 fi
             else
-                # ONLY NOW. /proc, /sys and /dev MOVE rather than being
+                # /run IS MOUNTED BEFORE dinit STARTS, AND THAT IS NOT
+                # COSMETIC ORDERING.
+                #
+                # dinit creates its control socket at startup, before it runs
+                # a single service. /etc/fstab asks early-filesystems for a
+                # tmpfs on /run -- which runs AFTER dinit is already up, so
+                # the mount lands on top of the socket and hides it.
+                # Measured, both ways, on the real kernel:
+                #
+                #   veron# ls -la /run/          (as shipped)
+                #   total 0                      <- empty
+                #   veron# dinitctl list
+                #   dinitctl: connecting to socket: /run/dinitctl:
+                #   No such file or directory
+                #
+                #   veron# ls -la /run/          (with /run out of fstab)
+                #   srw------- 1 root root 0 dinitctl
+                #   veron# dinitctl list
+                #   [[+]     ] boot
+                #   [{+}     ] early-filesystems
+                #   [{+}     ] console (pid: 89)
+                #
+                # So the system booted and could not be inspected, controlled
+                # or shut down cleanly, and nothing said why. `[  OK  ] boot`
+                # was true and told you nothing about it.
+                #
+                # MOUNTED HERE RATHER THAN REMOVED FROM fstab. Dropping the
+                # entry also works -- the overlay's upper is a tmpfs, so /run
+                # is writable regardless -- but that makes /run's writability
+                # a property of ONE BOOT PATH rather than of the system.
+                # Mounting it here gives dinit a real tmpfs whichever way the
+                # root arrived, and early-filesystems then SKIPS it, because
+                # that script mounts what is missing rather than running
+                # `mount -a`.
+                mkdir -p "$OVL/merged/run"
+                mount -t tmpfs -o mode=0755,nosuid,nodev tmpfs \
+                      "$OVL/merged/run" 2>/dev/null || \
+                    echo "  VERON-RUN-WARN  no tmpfs on /run -- dinitctl will not connect"
+                # /proc, /sys and /dev MOVE rather than being
                 # remounted: the new root needs them and they are already
                 # correct. --move keeps the same mount, so nothing is set up
                 # twice and nothing is lost.
