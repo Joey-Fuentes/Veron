@@ -98,7 +98,9 @@ jobs:
           sudo apt-get install -y -qq gcc-aarch64-linux-gnu git \
             ninja-build python3-venv pkg-config \
             libglib2.0-dev libpixman-1-dev zlib1g-dev \
-            libglib2.0-dev-bin >/dev/null
+            libglib2.0-dev-bin \
+            libmount-dev libblkid-dev libselinux1-dev \
+            libpcre2-dev libffi-dev >/dev/null
 
       - name: 'Fetch qemu at its pin, through the mirror'
         run: |
@@ -175,16 +177,36 @@ jobs:
                   --disable-snappy --disable-lzo --disable-curl
                   --disable-guest-agent --disable-tools --disable-capstone
                   --disable-vde --disable-brlapi --disable-tpm"
-          if ./configure --static $COMMON > cfg-static.log 2>&1; then
-            echo "  static configure ok"
+          # THE FALLBACK IS ON THE WHOLE BUILD, NOT ON configure. The first
+          # attempt fell back only when `./configure --static` failed -- and
+          # static configure SUCCEEDED, then the link died three thousand
+          # targets later:
+          #
+          #   /usr/bin/ld: cannot find -lmount
+          #
+          # glib's static build pulls libmount, libblkid, libselinux, pcre2
+          # and libffi, and a missing .a for any of them surfaces at link
+          # time, not at configure time. A fallback that cannot see the
+          # failure it exists for is decoration.
+          attempt() {
+            rm -rf build
+            ./configure $1 $COMMON > "cfg-$2.log" 2>&1 \
+              && ninja -C build > "build-$2.log" 2>&1
+          }
+          if attempt --static static; then
+            echo "  static: configured and linked"
             LINK=static
           else
-            echo "  static configure FAILED -- falling back to dynamic"
-            tail -5 cfg-static.log | sed 's/^/    /'
-            ./configure $COMMON > cfg.log 2>&1
+            echo "  static build FAILED -- falling back to dynamic"
+            tail -6 cfg-static.log build-static.log 2>/dev/null \
+              | grep -iE "error|cannot find" | head -4 | sed 's/^/    /'
+            attempt "" dynamic || {
+              echo "  dynamic build FAILED too"
+              tail -20 build-dynamic.log 2>/dev/null | sed 's/^/    /'
+              exit 1
+            }
             LINK=dynamic
           fi
-          ninja -C build
           cd ..
           cp "qemu-${QEMU_VER}/build/qemu-system-aarch64" out/
           cp "qemu-${QEMU_VER}/build/qemu-aarch64" out/qemu-aarch64-static

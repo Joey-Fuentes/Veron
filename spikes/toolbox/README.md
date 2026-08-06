@@ -180,9 +180,22 @@ dispatch again. Two recipes in this repository already carry a comment about a
 digest that was invented rather than read; a wrong one here would be a pinned
 lie about the only tool that checks whether the chain's output runs.
 
-**`--static` is attempted, not required.** Ubuntu ships no static glib, so the
-link may fail; the job falls back to dynamic and packs the shared libraries
-beside the binaries. Worse for portability, still better than an apt binary.
+**`--static` is attempted, not required**, and the fallback had to be moved
+once. It originally triggered on `./configure --static` failing -- but static
+configure *succeeded*, and the build died three thousand targets later:
+
+```
+/usr/bin/ld: cannot find -lmount
+```
+
+glib's static build pulls libmount, libblkid, libselinux, pcre2 and libffi,
+and a missing `.a` for any of them surfaces at LINK time, not at configure
+time. **A fallback that cannot see the failure it exists for is decoration.**
+It now covers configure and build together, and the `-dev` packages those five
+need are installed so the static path has a chance of succeeding rather than
+merely being attempted. If it still fails, the job builds dynamically and
+packs the shared libraries beside the binaries -- worse for portability, still
+better than an apt binary.
 
 **And it is a stage-5 recipe eventually.** qemu's build dependencies -- glib,
 pixman, zlib, meson, ninja, python -- are *already* stage-5 packages, all six
