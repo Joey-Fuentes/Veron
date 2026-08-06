@@ -4,13 +4,20 @@
 # set and is not planned for it. busybox is in the sysroot, statically linked,
 # and already PID 1's shell in the initramfs -- so this adds no package.
 #
-# `-n -l /bin/sh` skips the login prompt and execs a shell directly. There is
-# no password database worth authenticating against yet: /etc/passwd names root
-# with an `x` and there is no /etc/shadow, so a real login would fail closed
-# and leave an unusable console. Autologin is the honest state of a system that
-# has no user management, and saying so here is better than shipping a prompt
-# nobody can satisfy.
+# `-n` skips the login prompt. There is no password database worth
+# authenticating against yet: /etc/passwd names root with an `x` and there is
+# no /etc/shadow, so a real login would fail closed and leave an unusable
+# console. Autologin is the honest state of a system that has no user
+# management, and saying so here is better than shipping a prompt nobody can
+# satisfy.
+#
+# `-l` NAMES A WRAPPER, NOT /bin/sh, AND THAT IS NOT A STYLE CHOICE. getty
+# execs the -l program with argv[0] set to the path given, so /bin/sh started
+# as a NON-login shell and /etc/profile was never sourced -- measured on the
+# real kernel as PATH=/sbin:/usr/sbin:/bin:/usr/bin, which is busybox's
+# built-in default and the REVERSE of the one /etc/profile sets. See
+# scripts/console-shell for why that ordering matters.
 type = process
-command = /bin/busybox getty -n -l /bin/sh 115200 ttyAMA0
+command = /bin/busybox getty -n -l /etc/dinit.d/scripts/console-shell 115200 ttyAMA0
 restart = true
 depends-on = early-filesystems

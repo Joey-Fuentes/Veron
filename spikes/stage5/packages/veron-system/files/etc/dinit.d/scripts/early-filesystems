@@ -34,4 +34,20 @@ while read -r src dst rest; do
         rc=1
     fi
 done < /etc/fstab
+
+# THE HOSTNAME, BECAUSE /etc/hostname HAD NO READER EITHER.
+#
+# Measured on the booted system: /etc/hostname contains `veron` and
+# `hostname` answered `(none)`. The file was shipped, was correct, and
+# nothing applied it -- the same shape as /etc/profile one service over.
+#
+# IT LIVES HERE RATHER THAN IN ITS OWN SERVICE because it is one syscall with
+# no dependencies and no failure mode worth supervising, and a service per
+# line would make boot.d a list of trivia. If it grows a second concern it
+# should move.
+if [ -r /etc/hostname ]; then
+    read -r hn < /etc/hostname
+    [ -n "$hn" ] && /bin/busybox hostname "$hn"
+fi
+
 exit $rc

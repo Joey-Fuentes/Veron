@@ -39,15 +39,26 @@ configure_flags = []
 verification    = "none -- and none of this has booted yet; see the deferral"
 packaged_as     = []
 deferral        = """
-NOT REVIEWED BY RUNNING IT. Every other recipe here describes a tarball that \
-was read; this one describes files that were WRITTEN, and none of them has \
-booted. Treat the whole package as a proposal until a run says otherwise. The \
-specific things most likely to be wrong:
+PARTS OF THIS HAVE NOW BEEN BOOTED, and the parts that had not were wrong. \
+Everything below marked MEASURED was run against the stage-4 kernel under \
+qemu; the rest is still a proposal.
 
 BUSYBOX getty, NOT agetty. agetty is util-linux, which is not in this set and \
 is not planned for it. busybox is in the sysroot, statically linked, and \
-already PID 1's shell in the initramfs -- so the console costs no package. \
-`-n -l /bin/sh` skips the login prompt and execs a shell.
+already PID 1's shell in the initramfs -- so the console costs no package.
+
+MEASURED, AND THE FIRST VERSION DID NOT WORK. `-l /bin/sh` execs the shell \
+with argv[0]=/bin/sh, which is not a login shell, so /etc/profile was never \
+sourced: the booted console had PATH=/sbin:/usr/sbin:/bin:/usr/bin -- \
+busybox's built-in default and the REVERSE of the one /etc/profile sets -- \
+and PS1 was busybox's rather than `veron# `. Reversed, every busybox applet \
+in /bin shadows the real binary in /usr/bin, so the system would resolve \
+busybox's tools in preference to the packages this project builds. `-l` now \
+names scripts/console-shell, which sources the file and then becomes the \
+shell. Verified: PATH and prompt both correct.
+
+MEASURED: /etc/hostname SAID veron AND `hostname` SAID (none). Nothing read \
+the file. early-filesystems now applies it.
 
 AUTOLOGIN IS THE HONEST STATE, not a shortcut. /etc/passwd names root with an \
 `x` and there is no /etc/shadow, so a real login would fail closed and leave \
@@ -55,20 +66,17 @@ an unusable console. A system with no user management should say so rather \
 than ship a prompt nobody can satisfy.
 
 THE ROOT IS NOT IN /etc/fstab. Listing it would mean re-mounting the \
-filesystem the file was read from. early-filesystems runs `mount -a`, which \
-covers everything else; /dev is already a devtmpfs from the initramfs and \
-mount is a no-op on an existing mount rather than an error, which is why this \
-does not need to know how it was booted.
+filesystem the file was read from. early-filesystems mounts what is missing \
+and skips what is not, so it does not need to know how it was booted -- \
+MEASURED as rc=0 with /proc, /sys and /dev already mounted by the initramfs.
 
 boot.d IS A DIRECTORY OF SYMLINKS, deliberately. Adding a service becomes a \
 file rather than a diff to `boot`, and dinit's `waits-for.d` is built for \
 exactly that.
 
-WHAT IS STILL MISSING FROM B5.5, so this is not read as complete: the kernel \
-is not in the image (the boot test supplies it from stage 4), there is no EFI \
-stub, and nothing switches root from the initramfs into this system -- \
-guest/init still mounts the image read-only, runs the generated tests and \
-powers off. This package is the prerequisite for that step, not that step."""
+WHAT IS STILL MISSING FROM B5.5: the kernel is not in the image (the boot \
+test supplies it from stage 4), and there is no EFI stub. switch_root into \
+dinit works and is exercised on every run with boot_system."""
 
 [[steps]]
 name = "install"
@@ -84,9 +92,9 @@ cwd  = "$B"
 run  = [["sh", "-c", "mkdir -p \"$D\" && cp -a /packages/veron-system/files/. \"$D/\""]]
 
 [installs]
-prefixes = ["etc", "etc/dinit.d", "etc/dinit.d/boot.d"]
-files    = 13
-digest   = "c235d588c08a04fd512288b809c666d63d5739d7e70824f3bc6a37259d73a5e0"
+prefixes = ["etc", "etc/dinit.d", "etc/dinit.d/boot.d", "etc/dinit.d/scripts"]
+files    = 14
+digest   = "cf0f4a9d23a800d73a0bd09cfdbe588f9e05908bde75fec64df83d660dd723e3"
 [guest]
 test   = [["/bin/sh", "-c", "cat /etc/os-release | grep -c veron"]]
 expect = ["1"]

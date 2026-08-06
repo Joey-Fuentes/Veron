@@ -570,6 +570,218 @@ something that would have cost a run — three of them in sequence, each behind
 the last. Including a wlroots configuration that builds green while silently
 omitting the DRM backend. See [`PACKAGES.md`](./PACKAGES.md).
 
+### The boot ran the package tests and never reported them
+
+`boot_system=true` was fixed once already — the harness boot had been
+*replaced* by the system boot, so a run reported `VERON-STAGE5-LOGIN-OK` and
+said nothing about the packages. The fix made the harness boot run again. It
+did not make it report, and the difference was invisible because the run was
+green either way.
+
+Three faults in one step, and all three are the same shape as ones already in
+the record:
+
+- **The reporting sat after an `exit 0`.** The `boot_system` branch ended by
+  exiting, so the DRM/evdev probe, the per-package dump, `VERON-STAGE5-BOOT-OK`
+  and the selfhost gate were all unreachable. Two boots ran; one was described.
+- **`cp boot-system.log boot.log` overwrote the evidence** before anything read
+  it, so the harness console did not survive the step, let alone the runner.
+- **The second boot's timeout was applied to the first.** `QEMU_TIMEOUT=180`
+  was chosen for dinit-which-never-exits and then used on the *harness*
+  invocation, which runs 65 tests under TCG. The system boot has its own
+  literal `timeout 180`, so the variable never reached the boot it was written
+  for — it cut the harness window from 900s to 180s and bought nothing.
+
+And the harness `rc` was captured, printed, and never read, so a qemu that
+timed out after printing its markers passed.
+
+Both boots now write their own log, both are reported in full, both logs reach
+the diag bundle, and one verdict at the end covers both. `pass=65` in the
+console is the **native** run under the merged sysroot; the number under the
+kernel is a different measurement and now appears beside it.
+
+**The shell gate could not have caught any of it**, because it skipped every
+`run:` block containing a `${{ }}` expression — 72 of 531, and not a random 72:
+a block has an expression exactly when it branches on an input, which is the
+code most likely to be restructured and least likely to run by default.
+Substituting each expression for one metacharacter-free token makes the block
+checkable without changing its structure. All 72 parse today, so this was
+coverage with no noise attached, and an injected stray `fi` in the boot step is
+now caught where before it would have shipped.
+
+### The loginkit could not boot anything, and the panic proved it
+
+Booted locally against the stage-4 kernel under qemu, with the published
+`loginkit.tar.gz` as the root and `veron.boot=system`:
+
+```
+VERON-OVERLAY-OK    lower=9p (ro)  upper=tmpfs
+VERON-SWITCHROOT-EXEC  /usr/bin/dinit
+switch_root: can't execute '/usr/bin/dinit': No such file or directory
+Kernel panic - not syncing: Attempted to kill init!
+```
+
+dinit was present, at that exact path, with the executable bit set. **The
+ENOENT names the interpreter.** The kit copied seven binaries and no libraries
+at all; four of the five that landed are dynamically linked, so exactly one
+program in it could run — the static busybox. The step printed
+`(dinit, busybox, a shell and /etc)`, which is true about the file list and
+false about everything it implies.
+
+Three faults, and each one is separately load-bearing:
+
+- **`-x` is not loadability.** `guest/init` tested the executable bit and
+  exec'd. Nothing anywhere read `PT_INTERP`.
+- **The fallback was fiction.** The comment promised that a failure here
+  "falls back rather than leaving a kernel with no shell". `exec switch_root`
+  replaces the script, so after it fails there is no init left to fall back
+  *to* — what actually happened was a panic. The check has to precede the
+  exec, because after it there is nothing to check with.
+- **The kit had no closure.** A hand-written list of file names cannot express
+  "and everything these load", and no amount of care makes it able to.
+
+`veron loginkit` now resolves `PT_INTERP` and the transitive `DT_NEEDED`
+closure out of the sysroot with the driver's own pure-Python ELF reader,
+follows each soname to the versioned file behind it, drops the sysroot's
+`ld.so.cache` (it names paths the kit does not reproduce), and **refuses** to
+write a kit whose programs cannot be loaded from it. Run against the kit as
+published: `VERON-LOGINKIT-FAIL 24 unresolved name(s)`.
+
+With the ordering fixed, the same broken kit now produces a diagnosis instead
+of a panic, and the harness fallback genuinely runs.
+
+### An absence manufactured by the order of two blocks
+
+The first version of that check sat *after* the loop that `mount --move`s
+`/proc`, `/sys` and `/dev` into the overlay. Correct when switch_root
+succeeds; ruinous when it does not, because the fallback harness then runs in
+a root with no `/dev`. The graphics probe duly reported
+
+```
+VERON-DRM-ABSENT    no /dev/dri/card0
+VERON-EVDEV-ABSENT  no /dev/input/event*
+```
+
+on a kernel whose own embedded config says `CONFIG_DRM_VIRTIO_GPU=y`,
+`CONFIG_INPUT_EVDEV=y`, `CONFIG_VIRTIO_INPUT=y`, and which has a live
+`/dev/dri/card0` and two event nodes — confirmed by booting a diagnostic
+initramfs and reading `/proc/config.gz`. Nothing is moved now until the exec
+is known to be worth doing, and the probe reports `VERON-DRM-OK` again.
+
+Worth stating plainly: that finding was manufactured by the fix, not found by
+it. It is in the record because a probe that reports a capability as absent
+when it is present is exactly as expensive as one that misses a real absence.
+
+### /etc/profile and /etc/hostname were shipped and had no readers
+
+Measured on the booted console:
+
+```
+PATH=[/sbin:/usr/sbin:/bin:/usr/bin]     busybox's built-in default
+PS1=[\w \$ ]                             busybox's built-in default
+hostname=[(none)]                        /etc/hostname says veron
+```
+
+`busybox getty -n -l /bin/sh` execs the shell with `argv[0]=/bin/sh`. A shell
+sources `/etc/profile` only when `argv[0]` begins with `-`, so it never ran.
+**The PATH difference is not cosmetic:** busybox puts `/sbin` and `/bin`
+first, `/etc/profile` puts `/usr/bin` first *deliberately*, because that is
+the build's PATH. Reversed, every busybox applet in `/bin` shadows the real
+binary in `/usr/bin` — so the booted system resolves busybox's tools in
+preference to the sixty-two packages this project builds, and the file whose
+own comment says it "mirrors policy/defaults.toml's build PATH" was achieving
+the opposite of that.
+
+`-l` now names `scripts/console-shell`, which sources the file and then
+becomes the shell; `exec -a -sh` was not used because it is a bashism and
+busybox ash does not take it. `early-filesystems` applies `/etc/hostname`.
+Both verified on the real kernel:
+
+```
+veron# echo "PATH=[$PATH]"
+PATH=[/usr/bin:/usr/sbin:/bin:/sbin]
+PROFILE-SOURCED-OK
+HOSTNAME-OK
+```
+
+That prompt is a real login session on the stage-4 kernel, taking typed
+commands. `veron-system`'s `[installs]` digest and `installs.txt` were
+re-measured by `veron installs --propose --write` rather than edited, and
+`PLAN.txt` regenerated.
+
+---
+
+Measured from the last green run's own timestamps:
+
+```
+harness boot    34.0s    exits by itself, powers off
+system boot    180.0s    <- the timeout, to the hundredth
+```
+
+dinit as PID 1 does not exit, so `timeout 180` was the *normal* ending — the
+step paid the full 180s whatever happened. Three services come up in seconds
+and the remaining ~165s was pure waiting. That is the whole reason the boot
+went from seconds to minutes.
+
+It now waits for the marker rather than the clock. `boot` is `type = internal`
+with `waits-for.d = boot.d`, so dinit reports it only once every service in
+`boot.d` is up; it is the last line the gate reads and there is nothing after
+it worth waiting for. The 180s stays as the *failure* ending, and TERM
+escalates to KILL so no qemu can outlive the step. Measured against a stub
+that hangs like a real getty: **3s instead of 180s**, and the failure path
+still gives up and still names the missing service.
+
+### The install listings, and where they go
+
+Every installed path with its size and sha256 used to go to the console —
+14,632 lines across 62 packages — and was replaced by a one-line digest, which
+was the right call. The listing was supposed to move into a file that gets
+uploaded. It did not, and it took three separate faults to make that true:
+
+- **`veron collect` wrote them nowhere.** `keep()` was handed
+  `installs/<pkg>.txt` — a *relative* path, resolved against `spikes/stage5`
+  where no such directory exists — while every other call passes an absolute
+  path under `diag`. `"installs"` was also missing from the `makedirs` tuple.
+  So all 62 copies raised `FileNotFoundError`, were recorded as `FAILED` in an
+  index nobody reads, and the step printed `VERON-COLLECT-OK`. That is
+  `cp boot/Image .` from a step that had already `cd`'d into `out/`, again: a
+  path written as though the code ran elsewhere, behind an error path quiet
+  enough to look like success.
+- **The gate is not a safe place to keep evidence.** `veron installs` runs
+  after the build, so a build that died at package 40 never reached it — the 39
+  that *did* install had their listings computed for the digest line and thrown
+  away, in exactly the run someone needs them for.
+- **`veron build` did not write them either**, though it already computes them:
+  `report_package` produces `(lines, digest)`, prints the digest, and dropped
+  the lines.
+
+Three writers now, one directory, and the listing is computed once:
+
+| writer | covers | cost |
+|---|---|---|
+| `veron build` → `report_package` | every package as it finishes, so a partial build keeps what it built | none — already computed for the digest |
+| `veron installs` | packages a **checkpoint restored** rather than built, which the build step never sees | already paid by the gate |
+| `veron collect` | backfills anything neither wrote | only for what is missing |
+
+That last row matters more than it sounds: in the last green run **all 62 were
+restored**, so the build wrote nothing, and had the gate not run there would
+have been no listings at all.
+
+`veron collect` runs `if: always()` and the diag upload is `if: always()` with
+`if-no-files-found: error`, so **the listings ship on pass or fail**. They land
+in `veron-stage5-diag-<run>-<attempt>` under `installs/<pkg>.txt`, one line per
+path:
+
+```
+f <sha256> <size> <path>
+l <target> <path>
+```
+
+Both boot consoles ship beside them under `boot/`, in full rather than the
+capped dump the step prints. The marker now distinguishes
+`VERON-COLLECT-INCOMPLETE` from `VERON-COLLECT-OK` and prints failures first
+rather than truncating them away behind the successes.
+
 ---
 
 ## Decisions this set encodes

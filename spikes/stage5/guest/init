@@ -104,24 +104,83 @@ if [ "$BOOTMODE" = system ] && [ "$VIA" != none ]; then
             -o "lowerdir=$ROOT,upperdir=$OVL/upper,workdir=$OVL/work" \
             "$OVL/merged" 2>/dev/null; then
         echo "  VERON-OVERLAY-OK    lower=$VIA (ro)  upper=tmpfs"
-        # /proc, /sys and /dev MOVE rather than being remounted: the new root
-        # needs them and they are already correct. --move keeps the same
-        # mount, so nothing is set up twice and nothing is lost.
-        for m in proc sys dev; do
-            mkdir -p "$OVL/merged/$m"
-            mount --move "/$m" "$OVL/merged/$m" 2>/dev/null || \
-                mount --bind "/$m" "$OVL/merged/$m" 2>/dev/null
+        # THE LOADABILITY CHECK COMES BEFORE THE MOUNTS ARE MOVED.
+        #
+        # Ordering matters and got this wrong once already. The move loop
+        # below relocates /proc, /sys and /dev OUT of this root and into the
+        # overlay; that is correct on the path where switch_root succeeds and
+        # ruinous on the path where it does not, because the fallback harness
+        # then runs in a root with no /dev. The first version of this check
+        # sat after the move, and the graphics probe duly reported
+        #
+        #   VERON-DRM-ABSENT    no /dev/dri/card0
+        #   VERON-EVDEV-ABSENT  no /dev/input/event*
+        #
+        # on a kernel with CONFIG_DRM_VIRTIO_GPU=y, INPUT_EVDEV=y and a live
+        # /dev/dri/card0 -- an absence manufactured entirely by the order of
+        # two blocks. Nothing is moved until the exec is known to be worth
+        # doing.
+        DINIT=""
+        for c in /sbin/dinit /usr/bin/dinit; do
+            [ -x "$OVL/merged$c" ] && { DINIT=$c; break; }
         done
-        if [ -x "$OVL/merged/sbin/dinit" ] || [ -x "$OVL/merged/usr/bin/dinit" ]; then
-            DINIT=/sbin/dinit
-            [ -x "$OVL/merged/sbin/dinit" ] || DINIT=/usr/bin/dinit
-            echo "  VERON-SWITCHROOT-EXEC  $DINIT"
-            exec switch_root "$OVL/merged" "$DINIT"
-            # switch_root REPLACES this process. Reaching the next line means
-            # it failed, and the message says which half.
-            echo "  VERON-SWITCHROOT-FAIL  switch_root returned"
-        else
+        if [ -z "$DINIT" ]; then
             echo "  VERON-SWITCHROOT-FAIL  no dinit in the image"
+        else
+            # THE EXECUTABLE BIT IS NOT LOADABILITY, AND -x SAID YES TO A
+            # KERNEL PANIC. dinit is a PIE needing
+            # /lib/ld-linux-aarch64.so.1. Booted against a root that shipped
+            # dinit and no loader, `[ -x ]` passed, switch_root exec'd, and:
+            #
+            #   switch_root: can't execute '/usr/bin/dinit': No such file or
+            #   directory
+            #   Kernel panic - not syncing: Attempted to kill init!
+            #
+            # The ENOENT names the INTERPRETER, not dinit -- which is why it
+            # reads as though the binary were missing when it was sitting
+            # right there, executable, at the path in the message.
+            #
+            # AND THE FALLBACK BELOW WAS FICTION. `exec switch_root` replaces
+            # this script, so once switch_root fails there is no init left to
+            # fall back to: the comment above promised "a failure here falls
+            # back rather than leaving a kernel with no shell", and what
+            # happened was a panic. The check has to come BEFORE the exec,
+            # because after it there is nothing left to check with.
+            #
+            # 126/127 ARE THE SHELL'S "CANNOT EXECUTE" AND "NOT FOUND". Any
+            # other code means dinit loaded and merely disliked its
+            # arguments, so this does not depend on dinit accepting
+            # --version.
+            chroot "$OVL/merged" /bin/sh -c "exec $DINIT --version" \
+                >/dev/null 2>&1
+            rc=$?
+            if [ "$rc" = 126 ] || [ "$rc" = 127 ]; then
+                echo "  VERON-SWITCHROOT-FAIL  $DINIT is present and"
+                echo "    executable but cannot be LOADED -- almost always a"
+                echo "    missing dynamic loader or shared library."
+                if [ -e "$OVL/merged/lib/ld-linux-aarch64.so.1" ]; then
+                    echo "    /lib/ld-linux-aarch64.so.1 is present"
+                else
+                    echo "    /lib/ld-linux-aarch64.so.1 IS MISSING -- the"
+                    echo "    image ships no dynamic loader. Build the kit"
+                    echo "    with \`veron loginkit\`, which refuses this."
+                fi
+            else
+                # ONLY NOW. /proc, /sys and /dev MOVE rather than being
+                # remounted: the new root needs them and they are already
+                # correct. --move keeps the same mount, so nothing is set up
+                # twice and nothing is lost.
+                for m in proc sys dev; do
+                    mkdir -p "$OVL/merged/$m"
+                    mount --move "/$m" "$OVL/merged/$m" 2>/dev/null || \
+                        mount --bind "/$m" "$OVL/merged/$m" 2>/dev/null
+                done
+                echo "  VERON-SWITCHROOT-EXEC  $DINIT"
+                exec switch_root "$OVL/merged" "$DINIT"
+                # switch_root REPLACES this process. Reaching the next line
+                # means it failed, and the message says which half.
+                echo "  VERON-SWITCHROOT-FAIL  switch_root returned"
+            fi
         fi
     else
         echo "  VERON-OVERLAY-FAIL  could not assemble the overlay"

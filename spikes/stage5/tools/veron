@@ -1142,7 +1142,8 @@ def linked_packages(destdir, provider, own, declared=frozenset()):
     return sorted(linked), sorted(sysroot)
 
 
-def report_package(name, r, destdir, provider, timings, declared_digest):
+def report_package(name, r, destdir, provider, timings, declared_digest,
+                   listing_dir=None):
     """The high-level record of one package, on the console.
 
     WHAT THIS REPLACES. The console used to carry every line every compiler
@@ -1220,6 +1221,32 @@ def report_package(name, r, destdir, provider, timings, declared_digest):
     #
     # --verbose-listing prints it anyway, for the case where the artifact is
     # not to hand and a single package is being stared at.
+    # WRITTEN HERE, AS EACH PACKAGE FINISHES, AND THAT IS THE POINT.
+    #
+    # `lines` was computed above to produce the digest and then discarded.
+    # Persisting it costs nothing -- no second walk, no second hash -- and it
+    # is the difference between evidence that survives a failure and evidence
+    # that only exists if the whole run succeeds.
+    #
+    # THE GATE IS NOT A SAFE PLACE TO KEEP THIS. `veron installs` runs at step
+    # 11, after the build; a build that dies at package 40 never reaches it,
+    # so the 39 that DID install had their listings computed, printed as a
+    # digest, and thrown away -- exactly when someone needs to know what
+    # landed on disk. The gate still writes them too, for the packages a
+    # checkpoint restored rather than built, and `veron collect` backfills
+    # anything neither produced. Three writers, one directory, last-writer-
+    # wins on identical bytes.
+    if listing_dir:
+        try:
+            os.makedirs(listing_dir, exist_ok=True)
+            with open(os.path.join(listing_dir, f"{name}.txt"), "w") as lf:
+                lf.write("\n".join(lines) + ("\n" if lines else ""))
+        except OSError as e:
+            # NOT FATAL AND NOT SILENT. Failing a package build because its
+            # evidence could not be filed would trade the thing for the
+            # record of the thing.
+            print(f"    WARN  could not write the install listing: {e}")
+
     if os.environ.get("VERON_LIST_FILES") == "1":
         for l in lines:
             print(f"      {l}")
@@ -1445,7 +1472,9 @@ def cmd_build(a):
                 report_package(name, p["recipe"],
                                os.path.join(roots["dest"], name), provider,
                                timings,
-                               p["recipe"].get("installs", {}).get("digest"))
+                               p["recipe"].get("installs", {}).get("digest"),
+                               listing_dir=os.path.join(roots["out"],
+                                                        "installs"))
             if a.stage and not a.dry_run:
                 n = stage_into(os.path.join(roots["dest"], name),
                                roots["sysroot"])
@@ -1606,7 +1635,11 @@ def cmd_collect(a):
     roots = roots_from_args(a)
     diag = os.path.join(roots["out"], "diag")
     shutil.rmtree(diag, ignore_errors=True)
-    for sub in ("driver", "buildsys", "probe"):
+    # "installs" AND "boot" WERE MISSING FROM THIS TUPLE, and that is half of
+    # why the listings never arrived. keep() opens the destination for
+    # writing; with no directory to open it into, every copy raised
+    # FileNotFoundError and was recorded as FAILED in an index nobody read.
+    for sub in ("driver", "buildsys", "probe", "installs", "boot"):
         os.makedirs(os.path.join(diag, sub), exist_ok=True)
 
     index, cap = [], a.max_bytes
@@ -1650,11 +1683,65 @@ def cmd_collect(a):
     # earlier in the day; that was replaced with a one-line digest and the
     # evidence was supposed to move into the artifact. It never did -- this is
     # the half of that change that was missing.
+    # AND THE DESTINATION WAS RELATIVE. Every other keep() call passes an
+    # absolute path under `diag`; this one passed "installs/<pkg>.txt", which
+    # resolves against the process's cwd -- spikes/stage5, where no such
+    # directory exists. So the copy failed for all 62 packages, collect
+    # printed VERON-COLLECT-OK anyway, and the diag bundle shipped without the
+    # one thing this change existed to add.
+    #
+    # It is the same fault as `cp boot/Image .` in a step that had already
+    # cd'd into out/: a path written as though the code ran somewhere else,
+    # and an error path quiet enough that the result looked like success.
     lst = os.path.join(a.out, "installs")
+
+    # BACKFILL, BECAUSE THE TWO WRITERS ABOVE BOTH HAVE FAILURE MODES.
+    #
+    # `veron build` writes a listing as each package finishes, so a build that
+    # dies at package 40 keeps 39. But a package the CHECKPOINT RESTORED was
+    # never built this run, so nothing wrote its listing -- and in the last
+    # green run all 62 were restored. `veron installs` covers those, and it
+    # runs at step 11, so a failure anywhere before it means it never ran.
+    #
+    # Between them the gap is real: a build that fails while most of dest/ came
+    # from a checkpoint produces almost no listings at all. collect runs
+    # `if: always()`, so it is the one place that can close it. Anything
+    # already written is left alone -- this hashes only what is missing, so the
+    # normal path pays nothing and the failure path pays only for what it must.
+    if os.path.isdir(roots["dest"]):
+        os.makedirs(lst, exist_ok=True)
+        made = 0
+        for pkg in sorted(os.listdir(roots["dest"])):
+            d = os.path.join(roots["dest"], pkg)
+            if not os.path.isdir(d):
+                continue
+            if os.path.isfile(os.path.join(lst, f"{pkg}.txt")):
+                continue
+            try:
+                lines, _ = install_listing(d)
+                with open(os.path.join(lst, f"{pkg}.txt"), "w") as lf:
+                    lf.write("\n".join(lines) + ("\n" if lines else ""))
+                made += 1
+            except OSError as e:
+                index.append(f"  FAILED  backfill listing for {pkg}: {e}")
+        if made:
+            index.append(f"  built   {made} install listing(s) that no earlier "
+                         f"step had written")
+
     if os.path.isdir(lst):
         for fn in sorted(os.listdir(lst)):
-            keep(os.path.join(lst, fn), os.path.join("installs", fn),
+            keep(os.path.join(lst, fn), os.path.join(diag, "installs", fn),
                  f"every path {fn[:-4]} installs, with size and sha256")
+
+    # THE BOOT CONSOLES. Two boots, two logs, and until now neither survived
+    # the runner: the harness log was overwritten by the system boot's before
+    # anything read it, and no upload step ever looked at either. The dump in
+    # the step output is capped and scrolls; these are the whole thing.
+    for fn in ("boot-harness.log", "boot-system.log"):
+        p = os.path.join(a.out, fn)
+        if os.path.isfile(p):
+            keep(p, os.path.join(diag, "boot", fn),
+                 f"boot/{fn}  the guest console, in full")
 
     # 2. WHAT EACH BUILD SYSTEM WROTE DOWN, for every package that has a
     #    build tree, not only the one that failed. A package can succeed and
@@ -1746,11 +1833,29 @@ def cmd_collect(a):
                 "not find.\n\n")
         f.write("\n".join(index) + "\n")
 
-    print(f"VERON-COLLECT-OK  {len(index)} entries -> {diag}")
-    for line in index[:25]:
+    # A COLLECTOR THAT FAILS TO COLLECT MUST NOT REPORT OK.
+    #
+    # This printed VERON-COLLECT-OK unconditionally and returned 0, so 62
+    # FAILED entries sat in an index behind a green marker. That is the
+    # `|| true` shape again -- a missing file becoming a smaller artifact
+    # instead of an error -- and it is what let the relative-path bug above
+    # survive a run.
+    #
+    # It still returns 0. Collection is evidence-gathering and failing the
+    # whole build over it would throw away the artifact for the sake of
+    # reporting that the artifact is incomplete. But the MARKER tells the
+    # truth, and the failures print first rather than being truncated away
+    # behind twenty-five successes.
+    failed = [l for l in index if l.lstrip().startswith("FAILED")]
+    print(f"VERON-COLLECT-{'INCOMPLETE' if failed else 'OK'}  "
+          f"{len(index)} entries ({len(failed)} failed) -> {diag}")
+    for line in failed[:25]:
         print(line)
-    if len(index) > 25:
-        print(f"  ... and {len(index) - 25} more (see INDEX.txt)")
+    for line in [l for l in index if l not in failed][:25]:
+        print(line)
+    shown = min(len(failed), 25) + min(len(index) - len(failed), 25)
+    if len(index) > shown:
+        print(f"  ... and {len(index) - shown} more (see INDEX.txt)")
     return 0
 
 
@@ -1801,6 +1906,51 @@ def build_only(recipes, name):
 
 
 # ---------------------------------------------------------------- DT_NEEDED
+
+
+def elf_interp(path):
+    """The ELF's PT_INTERP, or None for a static binary / non-ELF.
+
+    THE EXECUTABLE BIT IS NOT LOADABILITY, AND A KERNEL PANIC IS HOW THAT GETS
+    LEARNED. guest/init tested `[ -x .../usr/bin/dinit ]`, found it true, and
+    exec'd switch_root into it. dinit is a PIE needing
+    /lib/ld-linux-aarch64.so.1, the loginkit ships no loader, and the kernel
+    answered:
+
+        switch_root: can't execute '/usr/bin/dinit': No such file or directory
+        Kernel panic - not syncing: Attempted to kill init!
+
+    The ENOENT names the INTERPRETER, not the binary -- which is why the
+    message reads as though dinit were missing when it was sitting right
+    there. Anything that asks "can this run as init" has to read this field.
+    """
+    try:
+        with open(path, "rb") as f:
+            b = f.read(65536)
+    except OSError:
+        return None
+    if len(b) < 64 or b[:4] != b"\x7fELF":
+        return None
+    bits, endian = b[4], b[5]
+    order = "little" if endian == 1 else "big"
+
+    def u(off, size):
+        return int.from_bytes(b[off:off + size], order)
+
+    if bits == 2:
+        phoff, phentsize, phnum = u(0x20, 8), u(0x36, 2), u(0x38, 2)
+        PT_OFF, PT_FILESZ, W = 0x08, 0x20, 8
+    else:
+        phoff, phentsize, phnum = u(0x1C, 4), u(0x2A, 2), u(0x2C, 2)
+        PT_OFF, PT_FILESZ, W = 0x04, 0x10, 4
+    for i in range(phnum):
+        p = phoff + i * phentsize
+        if p + phentsize > len(b):
+            return None
+        if u(p, 4) == 3:                    # PT_INTERP
+            off, sz = u(p + PT_OFF, W), u(p + PT_FILESZ, W)
+            return b[off:off + sz].rstrip(b"\x00").decode("utf-8", "replace")
+    return None
 
 
 def elf_dynamic(path):
@@ -1902,6 +2052,164 @@ def elf_dynamic(path):
         elif tag == 14:                     # DT_SONAME
             soname = s(val)
     return soname, needed
+
+
+def cmd_loginkit(a):
+    """Assemble the login kit, and REFUSE to ship one that cannot boot.
+
+    WHAT WAS WRONG WITH IT. The workflow copied a hand-written list of seven
+    binaries plus /etc and no libraries whatsoever. Four of the five that
+    landed -- dinit, dinitctl, dinit-check, bash -- are dynamically linked and
+    none of their dependencies came with them, so the kit contained exactly one
+    binary that could run: the static busybox. The step then printed
+
+        loginkit.tar.gz: 2.9M (dinit, busybox, a shell and /etc)
+
+    which is true about the file list and false about every claim it implies.
+
+    MEASURED, NOT ARGUED. Booted locally against the real kernel with the kit
+    as the root and veron.boot=system:
+
+        VERON-OVERLAY-OK    lower=9p (ro)  upper=tmpfs
+        VERON-SWITCHROOT-EXEC  /usr/bin/dinit
+        switch_root: can't execute '/usr/bin/dinit': No such file or directory
+        Kernel panic - not syncing: Attempted to kill init!
+
+    The ENOENT is the LOADER, not dinit. dinit was present and executable.
+
+    SO THE KIT CARRIES ITS CLOSURE. Every binary's PT_INTERP and the transitive
+    DT_NEEDED closure are resolved against the sysroot and copied in. A name
+    that cannot be resolved is a hard failure here, in a step that takes a
+    second, rather than a panic at the end of a forty-minute run.
+
+    THE SEARCH PATH IS EXPLICIT. Resolving through the host's ld.so.cache would
+    make the kit depend on the machine that built it -- and /etc/ld.so.cache is
+    already being copied in from the sysroot's /etc, where it names paths that
+    mean nothing in the kit.
+    """
+    sr = a.sysroot
+    if not os.path.isdir(sr):
+        die(f"no sysroot at {sr}")
+    kit = a.kit
+    shutil.rmtree(kit, ignore_errors=True)
+
+    libdirs = ["lib", "usr/lib", "lib64", "usr/lib64"]
+
+    def find(soname):
+        for d in libdirs:
+            p = os.path.join(sr, d, soname)
+            if os.path.exists(p):
+                return d + "/" + soname
+        return None
+
+    def copy(rel):
+        src, dst = os.path.join(sr, rel), os.path.join(kit, rel)
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if os.path.islink(src):
+            t = os.readlink(src)
+            if not os.path.lexists(dst):
+                os.symlink(t, dst)
+            # A SONAME IS USUALLY A LINK, and copying the link without its
+            # target ships a dangling name that fails identically to a missing
+            # one. Follow it, in the same directory, until it lands.
+            nxt = os.path.normpath(os.path.join(os.path.dirname(rel), t))
+            if os.path.exists(os.path.join(sr, nxt)):
+                copy(nxt)
+        else:
+            shutil.copy2(src, dst)
+
+    # THE ROOTS: what someone booting this kit needs to get to a shell.
+    wanted = ["bin/busybox", "bin/sh", "usr/bin/dinit", "usr/bin/dinitctl",
+              "usr/bin/dinit-check", "usr/bin/bash", "sbin/dinit"]
+    roots = [f for f in wanted if os.path.exists(os.path.join(sr, f))]
+    if not roots:
+        die(f"loginkit found none of {', '.join(wanted)} under {sr}")
+
+    queue, seen = list(roots), set()
+    while queue:
+        rel = queue.pop()
+        if rel in seen:
+            continue
+        seen.add(rel)
+        copy(rel)
+        p = os.path.join(sr, rel)
+        if os.path.islink(p):
+            p = os.path.realpath(p)
+        interp = elf_interp(p)
+        if interp:
+            # PT_INTERP is an ABSOLUTE PATH the kernel opens verbatim. It must
+            # exist at exactly that path inside the kit, not merely somewhere.
+            # Anything it cannot supply is reported by the check below, which
+            # reads the KIT rather than the sysroot and is the authority.
+            rp = interp.lstrip("/")
+            if os.path.exists(os.path.join(sr, rp)):
+                queue.append(rp)
+        for n in elf_dynamic(p)[1]:
+            got = find(n)
+            if got:
+                queue.append(got)
+    if os.path.isdir(os.path.join(sr, "etc")):
+        shutil.copytree(os.path.join(sr, "etc"), os.path.join(kit, "etc"),
+                        symlinks=True, dirs_exist_ok=True)
+        # THE HOST'S CACHE DESCRIBES THE HOST. ld.so.cache names absolute
+        # paths in the sysroot that the kit does not reproduce; a stale cache
+        # is worse than none, because ld.so trusts it before it searches.
+        c = os.path.join(kit, "etc", "ld.so.cache")
+        if os.path.exists(c):
+            os.remove(c)
+            print("  removed etc/ld.so.cache -- it describes the sysroot, not this kit")
+
+    for d in ("proc", "sys", "dev", "run", "tmp", "root", "mnt"):
+        os.makedirs(os.path.join(kit, d), exist_ok=True)
+
+    n_files = sum(len(f) for _, _, f in os.walk(kit))
+    libs = sorted(x for x in seen if "/lib" in x or x.startswith("lib"))
+    print(f"  {len(roots)} program(s), {len(libs)} library file(s), "
+          f"{n_files} file(s) total")
+
+    # THE CHECK THAT WOULD HAVE CAUGHT THE PANIC. Every program in the kit is
+    # re-read FROM THE KIT -- not from the sysroot it was copied out of --
+    # and must be either static or fully satisfied inside it.
+    #
+    # ONE LINE PER UNRESOLVED NAME. The first version reported the same name
+    # twice, once for "the sysroot could not supply it" and once for "it is
+    # not in the kit", which for a kit with no libraries at all meant 48 lines
+    # describing 24 facts. Where the name came from is the useful half: a name
+    # the sysroot HAS is a copy bug here, and one it lacks is a build problem
+    # upstream, and those want different people.
+    broken = []
+    for rel in roots:
+        p = os.path.join(kit, rel)
+        if os.path.islink(p):
+            p = os.path.realpath(p)
+        interp = elf_interp(p)
+        names = []
+        if interp:
+            names.append(("interpreter", interp, interp.lstrip("/")))
+        for n in elf_dynamic(p)[1]:
+            names.append(("library", n, None))
+        for kind, name, exact in names:
+            if exact is not None:
+                ok = os.path.exists(os.path.join(kit, exact))
+                in_sr = os.path.exists(os.path.join(sr, exact))
+            else:
+                ok = any(os.path.exists(os.path.join(kit, d, name))
+                         for d in libdirs)
+                in_sr = find(name) is not None
+            if not ok:
+                where = ("the sysroot has it -- this is a copy bug"
+                         if in_sr else "the SYSROOT does not have it either")
+                broken.append(f"{rel}: no {kind} {name} in the kit "
+                              f"({where})")
+        print(f"    {rel:<24} {'static' if not interp else 'needs ' + interp}")
+    if broken:
+        for m in sorted(set(broken)):
+            print(f"  UNRESOLVED  {m}")
+        print(f"VERON-LOGINKIT-FAIL  {len(set(broken))} unresolved name(s) -- "
+              f"this kit would panic the kernel as init", file=sys.stderr)
+        return 1
+    print("VERON-LOGINKIT-OK  every program in the kit can be loaded from it")
+    return 0
 
 
 def cmd_linked(a):
@@ -3431,9 +3739,21 @@ def cmd_selftest(a):
     # cannot see it -- to YAML a `run:` block is a string -- and `sh -n` finds
     # it in milliseconds.
     #
-    # Skips blocks containing ${{ }}, since those are not shell until Actions
-    # substitutes them and a bare `${{ inputs.x }}` is a syntax error on its
-    # own.
+    # BLOCKS WITH ${{ }} ARE CHECKED TOO, AND THEY WERE THE GAP THAT MATTERED.
+    #
+    # This used to skip any block containing an Actions expression, on the
+    # correct observation that a bare `${{ inputs.x }}` is not shell. That
+    # skipped 72 of 531 run: blocks -- and they are not a random 72. A block
+    # has an expression precisely when it branches on an input, which is the
+    # code most likely to be restructured and least likely to be exercised by
+    # the default run. The stage-5 boot step is one of them: it grew an
+    # unreachable `exit 0` that hid the entire package-test report, and this
+    # gate could not have seen it.
+    #
+    # Substituting each expression for one metacharacter-free token makes the
+    # block shell again without changing its structure. Applied to the tree as
+    # it stands, all 72 parse -- so this adds coverage without adding noise.
+    _EXPR = re.compile(r"\$\{\{.*?\}\}", re.S)
     import subprocess as _sp
     _bad_shell = []
     for wf in (_found if yaml else []):
@@ -3444,8 +3764,9 @@ def cmd_selftest(a):
         for job in (y or {}).get("jobs", {}).values():
             for st in job.get("steps", []) or []:
                 body = st.get("run")
-                if not body or "${{" in body:
+                if not body:
                     continue
+                body = _EXPR.sub("VERON_EXPR", body)
                 # bash -n, NOT sh -n. GitHub's default shell on Linux is
                 # `bash -e`, and checking with sh flagged five steps that use
                 # arrays and [[ ]] -- correct bash, and the checker was the
@@ -3820,6 +4141,12 @@ def build_parser():
     p = sub.add_parser("checkpoint", help="record what dest/ currently holds")
     p.add_argument("--base", default="", help="sysroot sha256 the plan builds on")
     p.set_defaults(fn=cmd_checkpoint)
+
+    p = sub.add_parser("loginkit",
+                       help="assemble the login kit with its full load closure")
+    p.add_argument("--kit", default="loginkit",
+                   help="directory to assemble into")
+    p.set_defaults(fn=cmd_loginkit)
 
     p = sub.add_parser("linked",
                        help="DT_NEEDED against deps.link, both directions")

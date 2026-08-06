@@ -348,6 +348,24 @@ jobs:
       # warn while most recipes have no [installs] block yet -- and the count
       # of UNCHECKED packages is printed, because a zero over an unchecked set
       # is the reassuring number this project keeps catching.
+      # THE EVIDENCE IS NOT THE GATE'S TO WITHHOLD.
+      #
+      # `VERON-INSTALLS` below is a gate, and a gate does not run when an
+      # earlier step failed -- so a build that died at package 40 produced no
+      # listings at all, which is precisely the run somebody needs them for.
+      # `veron build` now writes each package's listing as it finishes and
+      # `veron collect` backfills whatever neither produced, so the diag
+      # artifact carries them on pass or fail. This step exists so that
+      # ordering is visible in the workflow rather than implied by the driver.
+      - name: 'The install listings exist before anything can fail on them'
+        if: always()
+        run: |
+          set -eu
+          cd spikes/stage5
+          [ -d dest ] || { echo "  no dest/ -- the build produced nothing to list"; exit 0; }
+          n=$(ls out/installs 2>/dev/null | wc -l)
+          echo "  $n listing(s) written during the build; collect backfills the rest"
+
       - name: 'VERON-INSTALLS -- declared prefixes'
         run: |
           set -eu
@@ -623,20 +641,28 @@ jobs:
           # from spikes/stage5/out, found nothing, and produced a 4 KB
           # "loginkit" containing an empty directory -- which reported success
           # because every miss was `|| true`.
-          SR=../sysroot
-          mkdir -p loginkit
-          got=0
-          for f in bin/busybox bin/sh usr/bin/dinit usr/bin/dinitctl \
-                   usr/bin/dinit-check usr/bin/bash sbin/dinit; do
-            if [ -e "$SR/$f" ]; then
-              mkdir -p "loginkit/$(dirname "$f")"
-              cp -a "$SR/$f" "loginkit/$f"
-              got=$((got + 1))
-            fi
-          done
-          [ -d "$SR/etc" ] && cp -a "$SR/etc" loginkit/etc
-          # A BUNDLE WITH NOTHING IN IT IS A BUG, NOT A SMALL BUNDLE.
-          [ "$got" -gt 0 ] || { echo "  loginkit found nothing under $SR"; exit 1; }
+          # THE KIT MUST CARRY ITS OWN LOAD CLOSURE, AND IT DID NOT.
+          #
+          # This copied seven names and no libraries. Four of the five that
+          # landed -- dinit, dinitctl, dinit-check, bash -- are dynamically
+          # linked, so exactly one binary in the "loginkit" could run: the
+          # static busybox. Booted locally against the real kernel with that
+          # kit as the root:
+          #
+          #   VERON-SWITCHROOT-EXEC  /usr/bin/dinit
+          #   switch_root: can't execute '/usr/bin/dinit': No such file or
+          #   directory
+          #   Kernel panic - not syncing: Attempted to kill init!
+          #
+          # The ENOENT is the LOADER. dinit was present and executable.
+          #
+          # `veron loginkit` resolves PT_INTERP and the transitive DT_NEEDED
+          # closure out of the sysroot, follows each soname to the versioned
+          # file behind it, drops the sysroot's ld.so.cache (it names paths
+          # the kit does not reproduce), and REFUSES to write a kit whose
+          # programs cannot be loaded from it. A hand-written file list
+          # cannot do that and cannot be made to.
+          python3 ../tools/veron --sysroot ../sysroot loginkit --kit loginkit
           # WRITTEN WHERE THE UPLOAD LOOKS, WHICH IS NOT WHERE THIS STEP
           # STANDS. The artifact declares spikes/stage5/loginkit.tar.gz and
           # this step runs in spikes/stage5/out, so the first version wrote it
@@ -646,7 +672,7 @@ jobs:
           tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
               -czf ../loginkit.tar.gz loginkit
           ls -la ../loginkit.tar.gz | sed 's/^/    /'
-          printf '  loginkit.tar.gz: %s (dinit, busybox, a shell and /etc)\n' \
+          printf '  loginkit.tar.gz: %s (every program plus the libraries it loads)\n' \
             "$(du -h ../loginkit.tar.gz | cut -f1)"
 
       # BOOT. The ladder's initramfs already mounts mount_tag veronsysroot over
@@ -695,111 +721,67 @@ jobs:
         run: |
           set -eu
           [ -s boot/Image ] || { echo "VERON-BOOT-SKIP  no kernel artifact"; exit 0; }
+          O=spikes/stage5/out
+
           # The in-guest rebuild is opt-in and off by default: twelve minutes
           # for two packages under TCG, answering a question G3 already
           # answers natively in seconds. Passed on the KERNEL CMDLINE so the
           # image contents -- and therefore its hash -- do not depend on it.
-          SR=""; QEMU_TIMEOUT=900
+          SR=""; HARNESS_TIMEOUT=900
           if [ "${{ inputs.selfrebuild }}" = "true" ]; then
-            SR=" veron.selfrebuild=1"; QEMU_TIMEOUT=2400
+            SR=" veron.selfrebuild=1"; HARNESS_TIMEOUT=2400
           fi
 
           # BOOT A COPY. The gate remounts the root read-write to get scratch
           # space, so booting the published image directly would mutate the
           # artifact whose hash was just recorded -- and the reproducibility
           # claim with it.
-          cp spikes/stage5/out/rootfs.img spikes/stage5/out/rootfs-boot.img
+          cp "$O/rootfs.img" "$O/rootfs-boot.img"
+
+          # ================= BOOT 1: THE TEST HARNESS =================
+          #
+          # THIS BOOT IS WHAT PROVES THE PACKAGES. guest/init runs
+          # veron-stage5-test under the kernel this chain built and prints one
+          # line per package. It runs on every green build and its OUTPUT IS
+          # REPORTED UNCONDITIONALLY -- see the three faults below.
+          #
+          # FAULT 1: THE REPORTING SAT AFTER AN `exit 0`. boot_system=true ran
+          # this boot and then took a branch ending in `exit 0`, so the DRM
+          # probe, the per-package dump, VERON-STAGE5-BOOT-OK and the selfhost
+          # gate were all unreachable. The previous fix made the harness boot
+          # RUN again; it did not make it REPORT. A run showed
+          # VERON-STAGE5-LOGIN-OK, three dinit services, and not one word
+          # about the 62 packages -- which is the same silence the fix was
+          # written to end.
+          #
+          # FAULT 2: `cp boot-system.log boot.log` DESTROYED THE EVIDENCE. The
+          # harness log was overwritten by the second boot's before anything
+          # read it, so even the artifact could not show what the tests said.
+          # The two boots now write two files and neither touches the other.
+          #
+          # FAULT 3: THE SECOND BOOT'S TIMEOUT WAS APPLIED TO THE FIRST.
+          # QEMU_TIMEOUT=180 was set for dinit-that-never-exits and then used
+          # on the qemu invocation BELOW -- the harness, which runs 65 tests
+          # under TCG. The second boot has its own literal `timeout 180`, so
+          # the variable never reached the boot it was written for. It cut the
+          # harness window from 900s to 180s and bought nothing. The harness
+          # keeps its own timeout under its own name.
           set +e
-          # The DISK is offered first: init prefers /dev/vda so the test runs
-          # against the ext4 image a user would flash, not a 9p share. 9p is
-          # still offered as the fallback if virtio-blk or ext4 are absent
-          # from this kernel.
-          # veron.boot=system SWITCHES ROOT INTO dinit INSTEAD OF RUNNING THE
-          # TEST HARNESS. Off by default: the harness is what proves the 62
-          # packages work under a real kernel, and it must keep running on
-          # every green build. This input proves the BOOT PATH, which is a
-          # different question and a newer one -- and guest/init falls back to
-          # the harness if the overlay or switch_root fails, so a bad boot
-          # reports rather than hanging with no shell.
-          # THE HARNESS BOOT ALWAYS RUNS. boot_system adds a SECOND boot; it
-          # does not replace the first.
-          #
-          # The first version set veron.boot=system on the only qemu
-          # invocation, so guest/init switch_rooted into dinit and
-          # veron-stage5-test never ran. The run reported
-          # VERON-STAGE5-LOGIN-OK and said nothing at all about the 62
-          # packages -- trading a proof for a different proof rather than
-          # adding one.
-          #
-          # They answer different questions and both are wanted: the harness
-          # proves the packages work under this kernel, the system boot proves
-          # the machine comes up. Two boots, and the second is three minutes.
-          if [ "${{ inputs.boot_system }}" = "true" ]; then
-            echo "  boot_system: a second boot follows the test harness"
-            # AN INIT SYSTEM DOES NOT EXIT, SO THE TEST CANNOT WAIT FOR IT TO.
-            # The harness runs its tests and powers off, so `timeout` never
-            # fires and rc=0 means success. dinit as PID 1 runs forever by
-            # definition -- the first boot_system run sat for fifteen minutes
-            # and reported rc=124 while every service had already started.
-            #
-            # So the timeout becomes the normal ending rather than the
-            # failure, and success is judged from what reached the console.
-            # Three minutes is enough for dinit to bring up three services;
-            # if it is not, the markers will say which one is missing.
-            QEMU_TIMEOUT=180
-          fi
-          timeout ${QEMU_TIMEOUT:-900} qemu-system-aarch64 \
+          timeout "$HARNESS_TIMEOUT" qemu-system-aarch64 \
             -M virt -cpu cortex-a57 -smp 4 -m 4096 \
             -nographic -no-reboot -nic none \
-            -drive file=spikes/stage5/out/rootfs-boot.img,format=raw,if=virtio \
+            -drive file=$O/rootfs-boot.img,format=raw,if=virtio \
             -fsdev local,id=vs,path="$PWD/spikes/stage5/sysroot",security_model=none,readonly=on \
             -device virtio-9p-pci,fsdev=vs,mount_tag=veronsysroot \
             -device virtio-gpu-pci -device virtio-keyboard-pci \
-            -kernel boot/Image -initrd spikes/stage5/out/initramfs.cpio.gz \
+            -kernel boot/Image -initrd "$O/initramfs.cpio.gz" \
             -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7${SR}" \
-            > boot.log 2>&1
-          rc=$?
-          echo "  qemu rc=$rc"
+            > "$O/boot-harness.log" 2>&1
+          harness_rc=$?
           set -e
-          if [ "${{ inputs.boot_system }}" = "true" ]; then
-            # THE SECOND BOOT. Same image, same kernel, veron.boot=system --
-            # and an init that does not exit, so the timeout is the ending and
-            # the services decide the result.
-            echo ""
-            echo "=== second boot: switch_root into dinit ==="
-            set +e
-            timeout 180 qemu-system-aarch64 \
-              -M virt -cpu cortex-a57 -smp 4 -m 4096 \
-              -nographic -no-reboot -nic none \
-              -drive file=spikes/stage5/out/rootfs-boot.img,format=raw,if=virtio \
-              -device virtio-gpu-pci -device virtio-keyboard-pci \
-              -kernel boot/Image -initrd spikes/stage5/out/initramfs.cpio.gz \
-              -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7 veron.boot=system" \
-              > boot-system.log 2>&1
-            echo "  qemu rc=$? (124 is expected: an init does not exit)"
-            set -e
-            sed 's/^/    /' boot-system.log | grep -aE "VERON-|OK  \]|FAILED\]" | head -20
-            cp boot-system.log boot.log
-            # rc=124 IS THE EXPECTED ENDING HERE, not a fault. What decides
-            # the result is whether dinit started what it was asked to.
-            fail=0
-            for svc in early-filesystems console boot; do
-              if grep -q "\[  OK  \] $svc" boot.log; then
-                echo "  VERON-DINIT-OK      $svc"
-              else
-                echo "  VERON-DINIT-FAIL    $svc did not start"
-                grep -a "$svc" boot.log | tail -2 | sed 's/^/      /'
-                fail=1
-              fi
-            done
-            if [ "$fail" = 0 ]; then
-              echo "VERON-STAGE5-LOGIN-OK  dinit brought up every service"
-            else
-              echo "VERON-STAGE5-LOGIN-FAIL"
-              exit 1
-            fi
-            exit 0
-          fi
+          echo "=== boot 1: the test harness ==="
+          echo "  qemu rc=$harness_rc (0 expected: the harness powers off)"
+
           # THE PROBE'S ANSWER, LIFTED OUT OF THE BOOT LOG.
           #
           # It is reported and never enforced: nothing in the set needs DRM or
@@ -807,37 +789,156 @@ jobs:
           # uses would be a gate that fires on correct code. What it buys is
           # knowing the answer before wlroots, mesa and labwc are written
           # against it.
-          grep -E "VERON-(DRM|EVDEV)-(OK|ABSENT)" boot.log | sed 's/^ */  /' || \
-            echo "  VERON-GRAPHICS-PROBE-ABSENT  the probe did not run"
-          if grep -q VERON-STAGE5-INIT boot.log; then
-            sed -n '/VERON-STAGE5-INIT/,$p' boot.log | sed 's/^/    /'
+          grep -aE "VERON-(DRM|EVDEV)-(OK|ABSENT)" "$O/boot-harness.log" \
+            | sed 's/^ */  /' \
+            || echo "  VERON-GRAPHICS-PROBE-ABSENT  the probe did not run"
+
+          harness_fail=0
+          if grep -aq VERON-STAGE5-INIT "$O/boot-harness.log"; then
+            sed -n '/VERON-STAGE5-INIT/,$p' "$O/boot-harness.log" | sed 's/^/    /'
           else
-            tail -40 boot.log | sed 's/^/    /'
-            echo "  the stage-5 init never reached userspace"; exit 1
+            tail -40 "$O/boot-harness.log" | sed 's/^/    /'
+            echo "VERON-STAGE5-BOOT-FAIL  the stage-5 init never reached userspace"
+            harness_fail=1
           fi
-          grep -q "VERON-STAGE5-OK" boot.log \
-            && echo "VERON-STAGE5-BOOT-OK  the packages ran under the kernel" \
-            || { echo "VERON-STAGE5-BOOT-FAIL  init ran, tests did not pass"; exit 1; }
+          if [ "$harness_fail" = 0 ]; then
+            if grep -aq "VERON-STAGE5-OK" "$O/boot-harness.log"; then
+              echo "VERON-STAGE5-BOOT-OK  the packages ran under the kernel"
+            else
+              echo "VERON-STAGE5-BOOT-FAIL  init ran, tests did not pass"
+              harness_fail=1
+            fi
+          fi
+          # THE RETURN CODE IS CHECKED, NOT MERELY ECHOED. It was captured
+          # into `rc`, printed, and never read again -- so a harness that
+          # timed out or panicked after printing its markers passed. A qemu
+          # that did not exit cleanly is a finding even when the console
+          # looked right.
+          if [ "$harness_rc" != 0 ] && [ "$harness_fail" = 0 ]; then
+            echo "VERON-STAGE5-BOOT-FAIL  markers present but qemu exited $harness_rc"
+            harness_fail=1
+          fi
 
           # THE TIER-1 CLAIM. Reported separately from the boot, because they
           # are different claims: the boot says the packages work, the gate
           # says the system can rebuild them. A DIFF here is a finding worth
           # having, not a broken system -- so it is surfaced loudly and does
           # not fail the run while the spike is still learning what varies.
-          if grep -q "VERON-SELFREBUILD-OK" boot.log; then
+          if grep -aq "VERON-SELFREBUILD-OK" "$O/boot-harness.log"; then
             echo "VERON-SELFHOST-OK  rebuilt inside the image, byte-identical"
-          elif grep -q "VERON-SELFREBUILD-DIFF" boot.log; then
+          elif grep -aq "VERON-SELFREBUILD-DIFF" "$O/boot-harness.log"; then
             echo "VERON-SELFHOST-DIFF  it rebuilt, and some bytes differ."
             echo "  That is a reproducibility finding across two genuinely"
             echo "  different environments -- see the diff above and record"
             echo "  each cause in policy/expected-differences.toml."
-          elif grep -q "VERON-SELFREBUILD-SKIP" boot.log; then
+          elif grep -aq "VERON-SELFREBUILD-SKIP" "$O/boot-harness.log"; then
             echo "VERON-SELFHOST-SKIPPED  in-guest rebuild is off by default."
             echo "  Reproducibility is answered by G3 above, natively and in"
             echo "  seconds. Re-run with selfrebuild=true for the in-guest"
             echo "  confirmation -- about 12 minutes for two packages."
           else
             echo "VERON-SELFHOST-ABSENT  the gate did not run and did not skip"
+          fi
+
+          # ================= BOOT 2: THE SYSTEM =================
+          #
+          # A SECOND BOOT, ADDING A PROOF RATHER THAN TRADING ONE. Same image,
+          # same kernel, veron.boot=system -- guest/init switch_roots into
+          # dinit instead of running the harness. They answer different
+          # questions and both are wanted: the harness proves the packages
+          # work under this kernel, this proves the machine comes up.
+          system_fail=0
+          if [ "${{ inputs.boot_system }}" = "true" ]; then
+            echo ""
+            echo "=== boot 2: switch_root into dinit ==="
+            # 180 SECONDS WAS BEING SPENT IN FULL, EVERY RUN, DOING NOTHING.
+            #
+            # dinit as PID 1 does not exit, so `timeout 180` was the normal
+            # ending -- which meant the step always paid the whole 180s
+            # whatever happened. Measured on the last green run:
+            #
+            #   harness boot   34.0s   (exits by itself, powers off)
+            #   system boot   180.0s   <- the timeout, to the hundredth
+            #
+            # Three services come up in seconds; the remaining ~165s was the
+            # step watching an idle getty. That is the whole reason the boot
+            # went from seconds to minutes.
+            #
+            # So: WAIT FOR THE MARKER, NOT THE CLOCK. `boot` is
+            # `type = internal` with `waits-for.d = boot.d`, so dinit reports
+            # it only once every service in boot.d is up -- it is the last
+            # line the gate below reads, and there is nothing after it worth
+            # waiting for. The timeout stays as the FAILURE ending: if the
+            # marker never comes, this still gives up at 180s and the log
+            # says which service is missing.
+            #
+            # < /dev/null because qemu -nographic takes the console, and this
+            # invocation is now backgrounded rather than run in the foreground.
+            set +e
+            qemu-system-aarch64 \
+              -M virt -cpu cortex-a57 -smp 4 -m 4096 \
+              -nographic -no-reboot -nic none \
+              -drive file=$O/rootfs-boot.img,format=raw,if=virtio \
+              -device virtio-gpu-pci -device virtio-keyboard-pci \
+              -kernel boot/Image -initrd "$O/initramfs.cpio.gz" \
+              -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7 veron.boot=system" \
+              > "$O/boot-system.log" 2>&1 < /dev/null &
+            qpid=$!
+            waited=0
+            while [ "$waited" -lt 180 ]; do
+              if grep -aq "\[  OK  \] boot" "$O/boot-system.log" 2>/dev/null; then
+                echo "  dinit reached its root service after ${waited}s -- not waiting out the timeout"
+                break
+              fi
+              kill -0 "$qpid" 2>/dev/null || { echo "  qemu exited on its own after ${waited}s"; break; }
+              sleep 1
+              waited=$((waited + 1))
+            done
+            [ "$waited" -lt 180 ] || echo "  no root service after 180s -- giving up"
+            # TERM, THEN KILL. A qemu that ignores TERM would otherwise hold
+            # the runner open for the rest of the job -- the step would have
+            # finished and the process would not have.
+            kill "$qpid" 2>/dev/null
+            for _ in 1 2 3 4 5; do
+              kill -0 "$qpid" 2>/dev/null || break
+              sleep 1
+            done
+            kill -9 "$qpid" 2>/dev/null
+            wait "$qpid" 2>/dev/null
+            set -e
+            sed 's/^/    /' "$O/boot-system.log" \
+              | grep -aE "VERON-|OK  \]|FAILED\]" | head -20
+            # rc=124 IS THE EXPECTED ENDING HERE, not a fault. What decides
+            # the result is whether dinit started what it was asked to.
+            for svc in early-filesystems console boot; do
+              if grep -aq "\[  OK  \] $svc" "$O/boot-system.log"; then
+                echo "  VERON-DINIT-OK      $svc"
+              else
+                echo "  VERON-DINIT-FAIL    $svc did not start"
+                grep -a "$svc" "$O/boot-system.log" | tail -2 | sed 's/^/      /'
+                system_fail=1
+              fi
+            done
+            if [ "$system_fail" = 0 ]; then
+              echo "VERON-STAGE5-LOGIN-OK  dinit brought up every service"
+            else
+              echo "VERON-STAGE5-LOGIN-FAIL"
+            fi
+          fi
+
+          # ONE VERDICT, AT THE END, OVER BOTH BOOTS. Neither branch exits
+          # early any more: an early `exit 0` is what made the harness silent,
+          # and an early `exit 1` would have made the system boot's failure
+          # hide the harness result the same way in reverse.
+          echo ""
+          echo "  harness  $([ "$harness_fail" = 0 ] && echo OK || echo FAIL)"
+          if [ "${{ inputs.boot_system }}" = "true" ]; then
+            echo "  system   $([ "$system_fail" = 0 ] && echo OK || echo FAIL)"
+          else
+            echo "  system   not requested (boot_system=false)"
+          fi
+          if [ "$harness_fail" != 0 ] || [ "$system_fail" != 0 ]; then
+            exit 1
           fi
 
       # WHEN A TEST SUITE HANGS, THE ANSWER IS ALREADY ON DISK. automake's
