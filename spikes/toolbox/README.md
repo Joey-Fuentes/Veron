@@ -246,3 +246,42 @@ bubblewrap can **run** a Veron image and **build** one, without their distro
 having a say in either. That is the same reason the sources are mirrored: a
 build that depends on what a host happened to install is not reproducible by
 anyone who does not have that host.
+
+## It is published, and here is the loop it enables
+
+`toolbox/latest` carries the tarball. Two commands and a foreign host can run
+Veron:
+
+```sh
+gh release download toolbox/latest -p veron-toolbox.tar.gz && tar xzf veron-toolbox.tar.gz
+gh release download stage4/latest  -p Image -p initramfs.cpio.gz
+./qemu-system-aarch64.sh -machine virt -cpu max -m 2048 -nographic \
+  -no-reboot -nic none -device virtio-gpu-pci -device virtio-keyboard-pci \
+  -kernel Image -initrd initramfs.cpio.gz \
+  -append "console=ttyAMA0 rdinit=/init panic=1"
+```
+
+**This was used to verify the kernel change before any CI run.** A modified
+initramfs was built, booted, and its output read in about a minute:
+
+```
+PROBE-DRM    card0
+PROBE-EVDEV  event0 event1
+PROBE-FS     ext4, overlay
+```
+
+That is the same probe that reported `VERON-DRM-ABSENT` from a stage-5 run,
+answering. `/dev/dri/card0` exists, so wlroots has a device to open; `overlay`
+is in `/proc/filesystems`, so B5.5's writable-layer design has its kernel
+support.
+
+**The loop matters more than the result.** B5.5 -- `switch_root`, dinit as
+PID 1 -- is the one piece of this project only testable at the END of a full
+run, and iterating on it through CI is forty minutes a cycle. With this it is
+seconds, against the same Image the release publishes.
+
+**One thing it cannot test yet:** `efi: UEFI not found`. `-machine virt` with
+no `-bios` gives no UEFI firmware, so the EFI stub has nothing to attach to.
+The symbols are in the kernel; exercising that path needs
+`edk2-aarch64-code.fd`, which is already in the `pc-bios` directory this
+artifact packs.

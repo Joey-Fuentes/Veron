@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write        # `gh release upload` publishes the toolbox
 
 jobs:
   pack:
@@ -451,7 +451,29 @@ jobs:
             echo "runner: $(uname -m) $(lsb_release -ds 2>/dev/null || echo linux)"
             echo "date:   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
             echo
-            echo "qemu-aarch64-static"
+            echo "qemu-system-aarch64  (+ .sh shim)"
+            echo "  $(out/qemu-system-aarch64 --version 2>/dev/null | head -1 || echo 'see the shim')"
+            echo "  boot a Veron image with:"
+            echo "      ./qemu-system-aarch64.sh -machine virt -cpu max -m 2048 \\"
+            echo "        -nographic -no-reboot -nic none \\"
+            echo "        -device virtio-gpu-pci -device virtio-keyboard-pci \\"
+            echo "        -kernel Image -initrd initramfs.cpio.gz \\"
+            echo "        -append 'console=ttyAMA0 rdinit=/init panic=1'"
+            echo "  the .sh shim uses the PACKED loader and libraries, so the"
+            echo "  host's glibc does not have to match the one this was built"
+            echo "  against. Use it in preference to the bare binary."
+            echo
+            echo "bwrap  (static)"
+            echo "  $(out/bwrap --version 2>/dev/null || echo 'not built')"
+            echo "  the sandbox stage5-isolate composes per-package build"
+            echo "  roots with. --overlay-src is checked at build time."
+            echo
+            echo "pc-bios/"
+            echo "  qemu's firmware and option ROMs. -L points at it; the"
+            echo "  shims already do. Without it qemu reports a missing"
+            echo "  romfile and looks broken."
+            echo
+            echo "qemu-aarch64-static  (+ .sh shim)"
             echo "  $(out/qemu-aarch64-static --version | head -1)"
             echo "  run an aarch64 binary on x86_64 with:"
             echo "      ./qemu-aarch64-static ./some-aarch64-binary"
@@ -470,6 +492,31 @@ jobs:
             (cd out && sha256sum *) | sed 's/^/  /'
           } > out/MANIFEST.txt
           cat out/MANIFEST.txt
+
+      # PUBLISH IT, FOR THE SAME REASON THE SYSROOT IS PUBLISHED. A 30-day
+      # artifact behind a login is not something a person can be pointed at.
+      # Anyone who wants to run or build Veron on a foreign host needs qemu
+      # and bubblewrap; the whole argument for building them from our pins
+      # rather than taking the host's is wasted if the result is thrown away
+      # with the runner.
+      - name: 'Publish the toolbox'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          tar --sort=name --owner=0 --group=0 --numeric-owner \
+              -czf veron-toolbox.tar.gz -C out .
+          printf '  %s\n' "$(du -h veron-toolbox.tar.gz | cut -f1)"
+          gh release create toolbox/latest --title 'Veron toolbox' \
+            --notes 'qemu (system + user), bubblewrap and tcc, built from pinned sources. See MANIFEST.txt inside.' \
+            2>/dev/null || true
+          if gh release upload toolbox/latest veron-toolbox.tar.gz --clobber; then
+            echo "VERON-TOOLBOX-PUBLISHED"
+          else
+            # NOT FATAL. The artifact still carries everything; a failed
+            # release costs a re-dispatch, not the build.
+            echo "VERON-TOOLBOX-UNPUBLISHED -- the artifact stands"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
