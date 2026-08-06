@@ -688,10 +688,17 @@ jobs:
           [ -d "$SR/etc" ] && cp -a "$SR/etc" loginkit/etc
           # A BUNDLE WITH NOTHING IN IT IS A BUG, NOT A SMALL BUNDLE.
           [ "$got" -gt 0 ] || { echo "  loginkit found nothing under $SR"; exit 1; }
+          # WRITTEN WHERE THE UPLOAD LOOKS, WHICH IS NOT WHERE THIS STEP
+          # STANDS. The artifact declares spikes/stage5/loginkit.tar.gz and
+          # this step runs in spikes/stage5/out, so the first version wrote it
+          # one directory too deep and the upload reported "No files were
+          # found with the provided path". Third path bug of the same shape in
+          # this one step.
           tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
-              -czf loginkit.tar.gz loginkit
+              -czf ../loginkit.tar.gz loginkit
+          ls -la ../loginkit.tar.gz | sed 's/^/    /'
           printf '  loginkit.tar.gz: %s (dinit, busybox, a shell and /etc)\n' \
-            "$(du -h loginkit.tar.gz | cut -f1)"
+            "$(du -h ../loginkit.tar.gz | cut -f1)"
           rm -f rootfs.img.tar.zst
           fi
 
