@@ -3,10 +3,12 @@
 # `type = scripted` because this is one action with a defined end, not a
 # process to supervise. dinit considers it started when the command exits 0.
 #
-# busybox mount reads /etc/fstab and `-a` mounts every entry; the root is not
-# listed there, so there is nothing to re-mount. /dev is already a devtmpfs
-# from the initramfs, and mount is a no-op on an existing mount rather than an
-# error -- which is why this does not need to know how it was booted.
+# A SCRIPT RATHER THAN `mount -a`, because `mount -a` failed the first boot
+# that reached it: busybox returns non-zero when an entry is already mounted,
+# and guest/init moves /proc, /sys and /dev into the new root before
+# switch_root. The script mounts what is missing and skips what is not, so
+# this still does not need to know how it was booted -- it asks instead of
+# assuming.
 type = scripted
-command = /bin/busybox mount -a
+command = /bin/busybox sh /etc/dinit.d/scripts/early-filesystems
 restart = false

@@ -1,0 +1,37 @@
+#!/bin/busybox sh
+# Mount everything in /etc/fstab that is NOT ALREADY MOUNTED.
+#
+# `mount -a` was here and it failed the boot:
+#
+#   dinit: Service early-filesystems command failed with exit code 1
+#
+# The service's own comment claimed "mount is a no-op on an existing mount
+# rather than an error -- which is why this does not need to know how it was
+# booted." That was an assumption, and it was wrong: busybox `mount -a`
+# returns non-zero when an entry is already mounted, and dinit treats a
+# scripted service's non-zero exit as a failed start.
+#
+# AND THE SYSTEM DOES NOT NEED TO KNOW HOW IT WAS BOOTED -- that part of the
+# claim is worth keeping, which is why this checks rather than branching.
+# guest/init mounts /proc, /sys and /dev before switch_root and MOVES them
+# into the new root, because they are already correct and remounting them
+# would be work for nothing. A direct boot with no initramfs would arrive
+# with none of them. Both are handled by asking.
+#
+# /proc must exist before /proc/mounts can be read, so its absence is the
+# first thing tested and the grep failing IS the answer.
+set -u
+rc=0
+while read -r src dst rest; do
+    case "$src" in ''|'#'*) continue ;; esac
+    case "$dst" in ''|/) continue ;; esac
+    if [ -e /proc/mounts ] && /bin/busybox grep -q " $dst " /proc/mounts; then
+        continue
+    fi
+    /bin/busybox mkdir -p "$dst" 2>/dev/null
+    if ! /bin/busybox mount "$dst" 2>/dev/null; then
+        echo "early-filesystems: could not mount $dst"
+        rc=1
+    fi
+done < /etc/fstab
+exit $rc

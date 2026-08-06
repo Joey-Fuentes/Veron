@@ -699,6 +699,17 @@ jobs:
           if [ "${{ inputs.boot_system }}" = "true" ]; then
             BOOTMODE=" veron.boot=system"
             echo "  veron.boot=system: switching root into dinit"
+            # AN INIT SYSTEM DOES NOT EXIT, SO THE TEST CANNOT WAIT FOR IT TO.
+            # The harness runs its tests and powers off, so `timeout` never
+            # fires and rc=0 means success. dinit as PID 1 runs forever by
+            # definition -- the first boot_system run sat for fifteen minutes
+            # and reported rc=124 while every service had already started.
+            #
+            # So the timeout becomes the normal ending rather than the
+            # failure, and success is judged from what reached the console.
+            # Three minutes is enough for dinit to bring up three services;
+            # if it is not, the markers will say which one is missing.
+            QEMU_TIMEOUT=180
           fi
           timeout ${QEMU_TIMEOUT:-900} qemu-system-aarch64 \
             -M virt -cpu cortex-a57 -smp 4 -m 4096 \
@@ -710,8 +721,30 @@ jobs:
             -kernel boot/Image -initrd spikes/stage5/out/initramfs.cpio.gz \
             -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7${SR}${BOOTMODE}" \
             > boot.log 2>&1
-          echo "  qemu rc=$?"
+          rc=$?
+          echo "  qemu rc=$rc"
           set -e
+          if [ -n "$BOOTMODE" ]; then
+            # rc=124 IS THE EXPECTED ENDING HERE, not a fault. What decides
+            # the result is whether dinit started what it was asked to.
+            fail=0
+            for svc in early-filesystems console boot; do
+              if grep -q "\[  OK  \] $svc" boot.log; then
+                echo "  VERON-DINIT-OK      $svc"
+              else
+                echo "  VERON-DINIT-FAIL    $svc did not start"
+                grep -a "$svc" boot.log | tail -2 | sed 's/^/      /'
+                fail=1
+              fi
+            done
+            if [ "$fail" = 0 ]; then
+              echo "VERON-STAGE5-LOGIN-OK  dinit brought up every service"
+            else
+              echo "VERON-STAGE5-LOGIN-FAIL"
+              exit 1
+            fi
+            exit 0
+          fi
           # THE PROBE'S ANSWER, LIFTED OUT OF THE BOOT LOG.
           #
           # It is reported and never enforced: nothing in the set needs DRM or
