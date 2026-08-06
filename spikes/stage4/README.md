@@ -1360,3 +1360,60 @@ property to carry across, and it is worth more than any particular tool.
 Add to this table whenever a stage-4 failure turns out to have a stage-5 answer.
 It costs a line and it is the only version of this specification that will be
 written from evidence.
+
+## What the 619 MB sysroot is, measured
+
+From the `stage4/latest` release, `sysroot.tar.zst` `fa1c677e…`, unpacked and
+measured rather than inferred. **Not acted on yet** — recorded so the
+optimisation is a decision taken against numbers instead of a guess.
+
+`/usr/lib` is a symlink to `/lib`; the real tree is 382 MB there, 197 MB under
+`/usr`, 39 MB in `/bin`.
+
+| block | MB | |
+|---|---|---|
+| static archives (30 `.a`) | 151 | `libstdc++.a` 47, `libc.a` 26, `libbfd.a` 17 |
+| shared libraries (406 `.so`) | 120 | already stripped |
+| `cc1` + `cc1plus` + `lto1` | 124 | **was ~400 MB each** before the strip fix |
+| python 3.14 | 71 | |
+| perl 5.44 | 64 | |
+| headers | 34 | `c++` 15, `linux` 8 |
+| `share` | 30 | `i18n` 17, `info` 8, `man` 5 |
+| gconv | 27 | glibc's charset converters |
+
+### Candidates, by how sure we are
+
+**Nothing in the 62 packages uses them (~100 MB).** `perl` — exactly one
+recipe mentions it, `git`, and its `optional_off` declines it while passing
+`NO_PERL=1`; its `deps.build` is `curl, expat, zlib`. `gconv` — three recipes
+mention iconv and `git` declines it, and `[env]` pins `LC_ALL=C`.
+`share/i18n` — locale *source* definitions, input to `localedef`, which
+nothing runs. `idlelib`/`tkinter`/`turtledemo` — python's Tk IDE, and there is
+no Tk.
+
+**Documentation (~14 MB).** `share/info`, `share/man`, `share/doc`. There is no
+`info` or `man` binary in the image to read them.
+
+**Debug info in archives (~97 MB).** `TRIM_STRIP_ARCHIVES=1` strips `.a` files
+without deleting them, so `-static` still links. **Gated on `-flto -static`
+still passing**, because gcc keeps LTO bytecode in `.gnu.lto_*` sections inside
+object files and `strip` has a history of damaging them — this chain tests
+`-flto` in stage5-entry, so the claim "stripping only removes debugging" is
+true for ordinary linking and NOT established for LTO. The script already
+warns as much: *"Separable: TRIM_STRIP_ARCHIVES=0 if anything downstream
+objects."*
+
+```
+619 - 100 - 14 - 97 = ~408 MB, roughly 80 MB compressed
+```
+
+**And the way to establish it rather than argue it:** cut, then run
+`stage5-isolate`. Every package builds from the stage-4 sysroot plus its own
+declarations, so 62/62 still passing means the removals were safe and any
+failure names exactly what wanted the file. Same loop that found glib's
+missing `pkgconf`.
+
+**The one most likely to be wrong** is `share/i18n`. Nothing uses it across 62
+packages — and "today" is 62 packages, not the ~111 the browser needs. A
+locale generated for UTF-8 would want it. Same shape as gconv: absent from the
+current evidence, not absent from the future.
