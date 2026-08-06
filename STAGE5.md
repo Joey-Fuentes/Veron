@@ -504,6 +504,36 @@ by the packaging:
   `root=PARTUUID=…` as a constant, and *helps* reproducibility — or the ESP
   carries a UEFI shell script.
 
+### The EFI stub boots, and it arrives with no command line
+
+Measured locally, with the toolbox emulator and the firmware it packs: an ESP
+holding the kernel as `\EFI\BOOT\BOOTAA64.EFI`, booted with
+`-bios edk2-aarch64-code.fd` and **no `-kernel`**:
+
+```
+BdsDxe: starting Boot0001
+Booting Linux
+Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)
+```
+
+**The stub works.** UEFI found the fallback path, loaded the kernel as an EFI
+application and started Linux with no bootloader anywhere. That is the design
+working.
+
+**What it has no way to get is arguments.** The firmware starts the fallback
+path with empty `LoadOptions`; a freshly written disk has no NVRAM boot entry
+to carry any; and a `cmdline` file beside the kernel does nothing, because
+that is a systemd-boot convention rather than something the stub reads. So the
+only sources are a boot entry created by `efibootmgr` on an already-running
+system, or **`CONFIG_CMDLINE` baked into the kernel** -- which is now set,
+without `_FORCE`, so `-kernel`/`-append` still wins for every test that boots
+that way.
+
+`root=` is deliberately **not** in it yet: it needs a stable `PARTUUID` from a
+GPT whose GUIDs are pinned for reproducibility, and that partition does not
+exist until the `.img` builder does. Adding it now would be guessing at a
+value.
+
 ### What does not work, so nobody promises it
 
 **Apple Silicon on bare metal: no.** Macs expose no UEFI; they boot through
