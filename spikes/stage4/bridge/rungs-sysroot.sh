@@ -1151,38 +1151,25 @@ if [ "$B5" = ok ]; then
     # partition table an ESP lives in.
     set_cfg EFI y
     set_cfg EFI_STUB y
-    # A BUILT-IN COMMAND LINE, BECAUSE AN EFI-STUB BOOT HAS NO OTHER SOURCE
-    # FOR ONE. Measured, not assumed: an ESP holding the kernel as
-    # \EFI\BOOT\BOOTAA64.EFI boots under edk2 and panics --
+    # NO CONFIG_CMDLINE, AND THE REASON IS MEASURED.
     #
-    #   BdsDxe: starting Boot0001
-    #   Booting Linux
-    #   Kernel panic - not syncing: VFS: Unable to mount root fs on
-    #     unknown-block(0,0)
+    # A built-in command line was added here and is now removed. The argument
+    # for it was that an EFI-stub boot has no other source for one -- true of
+    # the FALLBACK path, not of the mechanism. Tested by booting this kernel
+    # from a UEFI Shell with arguments on the line:
     #
-    # -- because the firmware starts the fallback path with EMPTY LoadOptions.
-    # There is no bootloader to hold a config file, and a freshly written disk
-    # has no NVRAM boot entry to carry arguments. A `cmdline` file beside the
-    # kernel does nothing; that is a systemd-boot convention, not something
-    # the stub reads.
+    #     Kernel command line: linux console=ttyAMA0 root=/dev/vdb rw ...
+    #     VERON-PID1-OK
     #
-    # So the boot contract lives inside the kernel, which is the same artifact
-    # that IS the bootloader here -- one reproducible file carrying both.
+    # LoadOptions reaches the stub correctly and the kernel needs no help.
+    # What was missing is something in the ESP to SET LoadOptions, which is
+    # spikes/stage5/boot's job.
     #
-    # NOT _FORCE: qemu's -append must still win, because every test in this
-    # project boots with -kernel and passes its own arguments. CMDLINE is the
-    # fallback used only when the firmware supplies nothing, which is exactly
-    # the self-booting case.
-    #
-    # root= IS DELIBERATELY ABSENT AND MUST BE ADDED WITH THE .img BUILDER.
-    # It needs a stable identifier -- PARTUUID from a GPT whose GUIDs are
-    # pinned for reproducibility -- and that partition does not exist yet.
-    # Until it does, this gets a self-booting kernel as far as a console
-    # rather than pretending to know where its root will be.
-    set_cfg CMDLINE_BOOL y
-    sed -i 's|^CONFIG_CMDLINE=.*|CONFIG_CMDLINE="console=ttyAMA0 earlycon"|' .config
-    grep -q '^CONFIG_CMDLINE=' .config || \
-        echo 'CONFIG_CMDLINE="console=ttyAMA0 earlycon"' >> .config
+    # AND BAKING IT IN WOULD BE ACTIVELY WRONG. root= names one partition, and
+    # this kernel has to serve the .img, an ISO whose root is a squashfs, and
+    # Android's AVF which passes its own line. One kernel, three roots: the
+    # variable part belongs to the wrapper. Stage 4's job ends at a generic
+    # kernel.
     set_cfg EFI_PARTITION y
     set_cfg EFIVAR_FS y
     # NETWORKING, AHEAD OF NEED AND DELIBERATELY SO. Nothing in stage 5 uses
@@ -1207,9 +1194,6 @@ if [ "$B5" = ok ]; then
     # Fatal, unlike the 9p symbols below: a missing 9p costs one skipped
     # in-guest test, a missing DRM costs a compositor that builds green and
     # opens nothing.
-    grep -q '^CONFIG_CMDLINE_BOOL=y' .config || {
-        say "    CMDLINE_BOOL did not take -- an EFI-stub boot will have no"
-        say "    command line and will panic on root"; _bad=1; }
     for _sym in DRM DRM_VIRTIO_GPU DRM_FBDEV_EMULATION INPUT_EVDEV \
                 VIRTIO_INPUT OVERLAY_FS EFI EFI_STUB EFI_PARTITION \
                 EFIVAR_FS VIRTIO_NET PACKET; do

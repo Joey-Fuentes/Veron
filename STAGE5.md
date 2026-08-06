@@ -525,14 +525,31 @@ path with empty `LoadOptions`; a freshly written disk has no NVRAM boot entry
 to carry any; and a `cmdline` file beside the kernel does nothing, because
 that is a systemd-boot convention rather than something the stub reads. So the
 only sources are a boot entry created by `efibootmgr` on an already-running
-system, or **`CONFIG_CMDLINE` baked into the kernel** -- which is now set,
-without `_FORCE`, so `-kernel`/`-append` still wins for every test that boots
-that way.
+system, or something in the ESP that sets `LoadOptions` before starting the
+kernel.
 
-`root=` is deliberately **not** in it yet: it needs a stable `PARTUUID` from a
-GPT whose GUIDs are pinned for reproducibility, and that partition does not
-exist until the `.img` builder does. Adding it now would be guessing at a
-value.
+**`CONFIG_CMDLINE` was added here and then removed, because the test that
+settled it also showed it was the wrong fix.** Booting this kernel from a
+UEFI Shell with arguments on the line:
+
+```
+Kernel command line: linux console=ttyAMA0 root=/dev/vdb rw init=/sbin/dinit
+mounted filesystem
+VERON-PID1-OK
+```
+
+That is a full boot to userland through firmware, with no `-kernel`, no
+initramfs and no bootloader -- so **`LoadOptions` reaches the stub correctly
+and the kernel needs no help.** What was missing is something to set it.
+
+And baking `root=` into the kernel would be actively wrong: it names one
+partition, while the same kernel has to serve the `.img`, an ISO whose root is
+a squashfs, and Android's AVF which passes its own line. One kernel, three
+roots -- the variable part belongs to the wrapper.
+
+`spikes/stage5/boot/` is that piece. It compiles cleanly with the chain's own
+gcc and converts to PE with its own binutils; the firmware does not yet accept
+the image, and `spikes/stage5/boot/README.md` says exactly where that stands.
 
 ### The disk image builds, boots itself, and reproduces
 
