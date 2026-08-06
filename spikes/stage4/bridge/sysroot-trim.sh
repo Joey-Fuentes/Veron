@@ -392,7 +392,22 @@ if [ -z "$STRIP" ] && { [ "$T_STRIP" = 1 ] || [ "$T_ARCHIVES" = 1 ]; }; then
     emit "VERON-TRIM-NO-STRIP"
     exit 1
 fi
-if [ "$T_STRIP" = 1 ] && [ -x "$STRIP" ]; then
+# `[ -x "$STRIP" ]` IS FALSE WHEN $STRIP IS THE STRING "OWN", AND THAT
+# SILENTLY SKIPPED THE LARGEST CUT IN THIS SCRIPT.
+#
+# The probe sets STRIP=OWN to mean "run the sysroot's own /usr/bin/strip
+# under bwrap" -- a sentinel, not a path -- and do_strip() above already
+# branches on exactly that. This gate then tested it as a path, so a run
+# that printed "strip: the sysroot's own /usr/bin/strip (probed OK)" did no
+# stripping at all and reported a size as if it had.
+#
+# Measured cost: a 5707 MB sysroot trimmed to 1761 MB with every megabyte
+# accounted for by the five deletions above and nothing by stripping. This
+# script's own text puts stripping at 88-89% of cc1/cc1plus/lto1, and those
+# three were 397 MB, 415 MB and comparable -- so roughly 700 MB stayed in
+# every published sysroot because a sentinel was tested with -x.
+strip_available() { [ "$STRIP" = OWN ] || [ -x "$STRIP" ]; }
+if [ "$T_STRIP" = 1 ] && strip_available; then
     emit ""
     emit "  --- strip executables (--strip-debug, keeps the symbol table) ---"
     emit "  strip output is deterministic for a pinned binutils, so this does"
@@ -420,7 +435,7 @@ if [ "$T_STRIP" = 1 ] && [ -x "$STRIP" ]; then
 fi
 
 # ------------------------------------------------------------ 6 archives
-if [ "$T_ARCHIVES" = 1 ] && [ -x "$STRIP" ]; then
+if [ "$T_ARCHIVES" = 1 ] && strip_available; then
     emit ""
     emit "  --- strip static archives (.a) ---"
     emit "  --strip-debug ONLY, never --strip-all: the linker needs the symbol"
@@ -459,4 +474,14 @@ emit "  before: $(mb "$BEFORE") MB"
 emit "  after:  $(mb "$AFTER") MB"
 emit "  saved:  $(mb $(( BEFORE - AFTER ))) MB"
 emit "  ============================================================"
+# THE CUT THAT WAS SKIPPED FOR EVERY PREVIOUS RUN MUST NOT BE SKIPPABLE IN
+# SILENCE AGAIN. A trim that reports a size without stripping is not a
+# smaller failure than one that crashes -- it is a worse one, because the
+# number looks like an answer.
+if [ "$T_STRIP" = 1 ] && ! strip_available; then
+    emit ""
+    emit "  VERON-TRIM-NO-STRIP  T_STRIP=1 and no usable strip: refusing to"
+    emit "  report a trimmed size that omits the largest cut."
+    exit 1
+fi
 emit "VERON-TRIM-OK"
