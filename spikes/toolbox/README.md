@@ -167,6 +167,13 @@ testable at the END of a full run. Iterating on it through CI is forty minutes
 a cycle. With a local `qemu-system-aarch64` the same loop is seconds, against
 the same `Image` the release publishes.
 
+**The version has to be checked, not remembered.** The first attempt pinned
+qemu 9.2.4 -- a version recalled rather than read from download.qemu.org, when
+the current stable was 11.0.3. The digest for it was measured honestly and was
+still the wrong pin, because *a correctly measured digest of the wrong tarball
+is still wrong*. The `PENDING` mechanism catches an invented digest; it cannot
+catch an invented version, and nothing else here can either.
+
 **The digest starts as `PENDING` on purpose.** The first dispatch fetches the
 tarball, prints the sha256 it measured, and refuses to build. Paste it in and
 dispatch again. Two recipes in this repository already carry a comment about a

@@ -49,16 +49,22 @@ jobs:
       # packages, all six built and tested. At that point qemu is compiled by
       # the compiler this chain produced, against libraries this chain built,
       # and the emulator traces to stage 0 like everything else.
-      QEMU_VER: '9.2.4'
+      QEMU_VER: '11.0.3'
       # PENDING UNTIL A RUN MEASURES IT. This value is not guessable and must
       # never be typed from memory -- two recipes in this repository already
       # carry a comment about a digest that was invented rather than read, and
       # a wrong one here would be a pinned lie about the only tool used to
       # check that the chain's output runs.
       #
-      # The first dispatch fetches the tarball, prints the sha256 it measured,
-      # and FAILS. Paste that value here and dispatch again; from then on the
-      # fetch verifies against it like every other pinned source.
+      # PENDING AGAIN, BECAUSE THE VERSION MOVED AND THE DIGEST IS OF A FILE.
+      # The first pin was measured honestly -- run 84261082089 fetched
+      # qemu-9.2.4 and printed f3cc1c4e... -- but 9.2.4 was chosen from
+      # memory rather than from download.qemu.org, and the current stable is
+      # 11.0.3. A correctly measured digest of the wrong tarball is still the
+      # wrong pin.
+      #
+      # The same measure-and-refuse cycle applies: dispatch, read the digest
+      # it prints, paste it here and into sources/MIRRORS.tsv, dispatch again.
       QEMU_SHA256: 'PENDING'
     steps:
       - uses: actions/checkout@v5
@@ -104,9 +110,18 @@ jobs:
             # the state this change exists to end.
             curl -fsSL -o "dl/qemu-${QEMU_VER}.tar.xz" "$url"
             got=$(sha256sum "dl/qemu-${QEMU_VER}.tar.xz" | cut -d' ' -f1)
+            # THE SIGNATURE IS PUBLISHED, SO ITS DIGEST IS RECORDED TOO.
+            # qemu signs its releases; llvm's pin carries the .sig digest
+            # beside the tarball's for the same reason -- a signature nobody
+            # can locate later is a signature nobody checked.
+            sig=""
+            if curl -fsSL -o "dl/qemu-${QEMU_VER}.tar.xz.sig" "$url.sig" 2>/dev/null; then
+              sig=$(sha256sum "dl/qemu-${QEMU_VER}.tar.xz.sig" | cut -d' ' -f1)
+            fi
             echo ""
             echo "  qemu ${QEMU_VER} sha256, measured by this run:"
             echo "    $got"
+            [ -n "$sig" ] && echo "  its .sig sha256: $sig"
             echo ""
             echo "  Put it in QEMU_SHA256 above, add it to sources/MIRRORS.tsv,"
             echo "  and dispatch again. Refusing to build from an unverified"
