@@ -731,6 +731,79 @@ escalates to KILL so no qemu can outlive the step. Measured against a stub
 that hangs like a real getty: **3s instead of 180s**, and the failure path
 still gives up and still names the missing service.
 
+### The image contained the repo, and that is why two runs disagreed
+
+Two runs with **byte-identical package contents** published different images:
+
+```
+manifest-sha256   8504bee5…   both runs, 17531 paths, 3638.4 MiB
+IMAGE-SHA256      0e27d149…   run 31129354053
+                  252dd20a…   run 31131543695
+```
+
+Joining the two `files.tsv` over their 4813 comparable paths: **0 sha
+differences, 0 size differences.** The packages reproduce. The image did not.
+
+The cause was not the filesystem. After the merge, the workflow did:
+
+```
+cp -a dl sysroot/veron/dl
+cp -a packages policy tools sysroot/veron/
+cp out/files.tsv sysroot/veron/expected/files.tsv
+```
+
+**The image carried the pinned source tarballs, all 62 recipes, the policy and
+the driver — 970 MiB, 21% of a shipped operating system.** `tools/veron` grew
+four kilobytes between those two commits, so the image changed. `files.tsv`
+could not explain it, because `files.tsv` describes the merged *packages* and
+this payload is copied in afterwards.
+
+Ruled out first, by measurement rather than argument, using mke2fs 1.47.0
+locally — the same version the workflow pins against:
+
+| hypothesis | test | result |
+|---|---|---|
+| mkfs nondeterminism | same tree, twice | identical — matches CI's `REPRO-OK` |
+| readdir / creation order | same content, files created forward and reversed | identical, and equal to a third independently built tree |
+| source mtimes | those trees had different mtimes throughout | no effect; `normalize-ext4` zeroes all four inode times and the superblock times across 8 copies |
+| `du -sm` size drift | `SZ` printed per build | stable; both CI runs reported 307648 inodes |
+
+Then reproduced the real thing: two trees identical except one file under
+`veron/` → same content digest over the merged part, different image. Same
+shape as CI.
+
+**So it was never a reproducibility bug. The image was reflecting a changed
+input, and the input did not belong in it.**
+
+`guest/init` reads that payload for exactly one thing — `veron.selfrebuild=1`,
+off by default. Nothing in the running system touches it. It is a test
+fixture, and it was also making the artifact carry its own verifier *and* the
+manifest of the tree it sits in.
+
+It is now built beside the image and attached at boot over a second 9p share
+with `mount_tag=veronpayload`. The test is stronger for it: selfrebuild
+rebuilds a system it is not part of.
+
+Three things fell out of doing it properly, each found by running it:
+
+- **`$ROOT/veron` cannot be the mount point.** The root is read-only, so
+  `mkdir` fails and the mount has nowhere to land. The old code only worked
+  because `/veron` was baked in. It now mounts under `$ROOT/tmp`, which this
+  script already made a tmpfs.
+- **That removed `mount -o remount,rw "$ROOT"`**, which was making the image
+  writable in order to run a test against it — the one thing a read-only base
+  exists to prevent. The test can no longer modify the artifact it measures.
+- **A fallback dropped the argument that mattered.** The first attempt used
+  `chroot "$ROOT" /usr/bin/env VERON_PAYLOAD=… ` with `|| chroot … ` behind
+  it. The kit has no `/usr/bin/env`, so the fallback ran without the variable
+  and selfrebuild reported `no /veron payload` while the payload sat mounted
+  three directories away. `chroot` passes its environment through; the
+  fallback is gone.
+
+Verified on the real kernel: payload mounts, `selfrebuild.sh` runs from it,
+reads `expected/files.tsv` off the share, and fails honestly with
+`the image has no gcc` against a root that genuinely has none.
+
 ### Nothing is truncated. Not logs, not records, not ever.
 
 `veron collect` kept the last 512 KiB of each file. The diag bundle from a

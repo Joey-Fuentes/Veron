@@ -546,18 +546,37 @@ jobs:
           # its test, in the same file as its pin and its flags.
           python3 tools/veron guest-tests --out sysroot/usr/bin/veron-stage5-test
 
-          # THE SELF-REBUILD PAYLOAD. Everything the image needs to rebuild
-          # itself with no network: the pinned tarballs, the recipes, the
-          # policy, the driver, and the runner's manifest as the thing to
-          # compare against. This is also what makes the shipped system able
-          # to rebuild a package a user removed -- the same data, used the
-          # same way.
-          mkdir -p sysroot/veron/expected sysroot/build sysroot/dest sysroot/out
-          cp -a dl sysroot/veron/dl
-          cp -a packages policy tools sysroot/veron/
-          cp out/files.tsv sysroot/veron/expected/files.tsv
-          install -D -m755 guest/selfrebuild.sh sysroot/veron/selfrebuild.sh
-          du -sh sysroot | sed 's/^/    /'
+          # THE SELF-REBUILD PAYLOAD IS NOT PART OF THE OPERATING SYSTEM.
+          #
+          # This used to `cp -a dl packages policy tools sysroot/veron/`, which
+          # put the pinned source tarballs, all 62 recipes, the policy and the
+          # DRIVER ITSELF inside the shipped image -- 970 MiB, 21% of it, that
+          # nothing in the running system reads. `guest/init` touches it for
+          # exactly one thing: `veron.selfrebuild=1`, which is off by default.
+          #
+          # It is a TEST FIXTURE. Shipping it made the published artifact
+          # change whenever the driver changed, with nothing in files.tsv able
+          # to explain why -- two runs with byte-identical package contents
+          # (manifest-sha256 8504bee5 both) produced different images, and the
+          # cause was `tools/veron` having grown four kilobytes between them.
+          # Reproduced locally: same merged tree, one differing file under
+          # veron/, different image.
+          #
+          # It also meant the artifact carried its own verifier. A payload
+          # that ships the tool that checks it, plus the manifest of the tree
+          # it sits in, vouches for itself.
+          #
+          # So it is built BESIDE the image and attached at boot time. The
+          # test is stronger for it: selfrebuild now exercises a system it is
+          # not part of.
+          mkdir -p out/selfrebuild/expected
+          cp -a dl out/selfrebuild/dl
+          cp -a packages policy tools out/selfrebuild/
+          cp out/files.tsv out/selfrebuild/expected/files.tsv
+          install -D -m755 guest/selfrebuild.sh out/selfrebuild/selfrebuild.sh
+          printf '    payload %s (attached at boot, NOT in the image)\n' \
+            "$(du -sh out/selfrebuild | cut -f1)"
+          du -sh sysroot | sed 's/^/    image  /'
 
       # Native aarch64, so these are the real binaries executing.
       - name: 'VERON-STAGE5-OK -- hello and pkgconf in the system they belong to'
@@ -751,9 +770,18 @@ jobs:
           # for two packages under TCG, answering a question G3 already
           # answers natively in seconds. Passed on the KERNEL CMDLINE so the
           # image contents -- and therefore its hash -- do not depend on it.
-          SR=""; HARNESS_TIMEOUT=900
+          SR=""; HARNESS_TIMEOUT=900; PAYLOAD=""
           if [ "${{ inputs.selfrebuild }}" = "true" ]; then
             SR=" veron.selfrebuild=1"; HARNESS_TIMEOUT=2400
+            # THE PAYLOAD IS ATTACHED, NOT EMBEDDED. It used to be copied into
+            # the image; it is a test fixture, so it now rides on a second 9p
+            # share and the image ships without it. If the directory is not
+            # there the guest says so and skips rather than pretending.
+            if [ -d "$O/selfrebuild" ]; then
+              PAYLOAD="-fsdev local,id=pl,path=$PWD/$O/selfrebuild,security_model=none,readonly=on -device virtio-9p-pci,fsdev=pl,mount_tag=veronpayload"
+            else
+              echo "  selfrebuild requested but $O/selfrebuild does not exist"
+            fi
           fi
 
           # BOOT A COPY. The gate remounts the root read-write to get scratch
@@ -798,6 +826,7 @@ jobs:
             -fsdev local,id=vs,path="$PWD/spikes/stage5/sysroot",security_model=none,readonly=on \
             -device virtio-9p-pci,fsdev=vs,mount_tag=veronsysroot \
             -device virtio-gpu-pci -device virtio-keyboard-pci \
+            $PAYLOAD \
             -kernel boot/Image -initrd "$O/initramfs.cpio.gz" \
             -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7${SR}" \
             > "$O/boot-harness.log" 2>&1

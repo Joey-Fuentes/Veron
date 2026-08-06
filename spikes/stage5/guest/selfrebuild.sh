@@ -27,7 +27,20 @@
 
 set -u
 
-VERON=/veron
+# THE PAYLOAD IS NOT AT A FIXED PATH ANY MORE, AND THAT IS THE POINT.
+#
+# /veron used to be baked into the image -- 970 MiB of source tarballs,
+# recipes, policy and the driver itself, 21% of a shipped operating system,
+# read by nothing except this script. It also meant the published image
+# changed whenever the DRIVER changed: two runs with byte-identical package
+# contents produced different IMAGE-SHA256 and files.tsv could not say why,
+# because files.tsv describes the merged packages and not the payload.
+#
+# It is now built beside the image and attached at boot over a 9p share, so
+# this script is handed where it landed. The default keeps an image that
+# still carries /veron working, so this file does not have to change in
+# lockstep with a rebuilt initramfs.
+VERON="${VERON_PAYLOAD:-/veron}"
 EXPECT="$VERON/expected/files.tsv"
 
 echo "VERON-SELFREBUILD begin"

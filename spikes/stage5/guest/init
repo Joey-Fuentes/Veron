@@ -306,9 +306,65 @@ fi
 SELFREBUILD=0
 grep -q 'veron.selfrebuild=1' /proc/cmdline 2>/dev/null && SELFREBUILD=1
 
-if [ "$SELFREBUILD" = 1 ] && [ -x "$ROOT/veron/selfrebuild.sh" ]; then
-    mount -o remount,rw "$ROOT" 2>/dev/null || true
-    chroot "$ROOT" /veron/selfrebuild.sh
+if [ "$SELFREBUILD" = 1 ]; then
+    # THE PAYLOAD ARRIVES FROM OUTSIDE THE IMAGE, BECAUSE IT IS NOT PART OF
+    # THE OPERATING SYSTEM.
+    #
+    # It used to live at /veron inside the root: the pinned tarballs, every
+    # recipe, the policy and the driver -- 970 MiB, 21% of the image, read by
+    # nothing in the running system. It also made the published image change
+    # whenever the DRIVER changed, which is how two runs with byte-identical
+    # package contents ended up with different IMAGE-SHA256 and nothing in
+    # files.tsv able to say why.
+    #
+    # Attached over a second 9p share instead. The test is stronger this way:
+    # it rebuilds a system it is not part of, rather than one carrying its own
+    # verifier and its own expected-output manifest.
+    #
+    # READ-ONLY. Nothing here should write back to the runner's tree;
+    # selfrebuild.sh mounts its own tmpfs on /build, /dest and /out.
+    # PYTHONDONTWRITEBYTECODE stops the interpreter trying to leave .pyc files
+    # on a read-only mount, which is a warning nobody needs to read.
+    # MOUNTED UNDER $ROOT/tmp, WHICH IS ALREADY A tmpfs THIS SCRIPT PUT THERE.
+    #
+    # The obvious place is $ROOT/veron, and it does not work: the root is
+    # mounted read-only, so `mkdir` fails and the mount has nowhere to land.
+    # The previous code got away with it because /veron was baked into the
+    # image, so the directory already existed.
+    #
+    # Using $ROOT/tmp also removes `mount -o remount,rw "$ROOT"`, which was
+    # making the image WRITABLE to run a test against it -- the one thing the
+    # read-only-base design exists to prevent. The test now cannot modify the
+    # artifact it is measuring, which is a property worth having rather than a
+    # side effect worth tolerating.
+    #
+    # READ-ONLY, and PYTHONDONTWRITEBYTECODE so the interpreter does not try
+    # to leave .pyc files on it.
+    mkdir -p "$ROOT/tmp/veron" 2>/dev/null
+    if mount -t 9p -o trans=virtio,version=9p2000.L,ro,msize=262144 \
+             veronpayload "$ROOT/tmp/veron" 2>/dev/null; then
+        if [ -x "$ROOT/tmp/veron/selfrebuild.sh" ]; then
+            # SET ON THE chroot ITSELF, NOT VIA /usr/bin/env. The first
+            # version ran `chroot "$ROOT" /usr/bin/env VERON_PAYLOAD=... `,
+            # with a `|| chroot ... selfrebuild.sh` fallback. The kit has no
+            # /usr/bin/env, so the first form failed, the fallback ran WITHOUT
+            # the variable, and selfrebuild dutifully reported
+            # `VERON-SELFREBUILD-SKIP  no /veron payload` while the payload
+            # was mounted three directories away. A fallback that drops the
+            # one argument that matters is worse than no fallback.
+            #
+            # chroot(1) passes its environment through, so this needs nothing
+            # from inside the image.
+            VERON_PAYLOAD=/tmp/veron PYTHONDONTWRITEBYTECODE=1 \
+                chroot "$ROOT" /tmp/veron/selfrebuild.sh
+        else
+            echo "VERON-SELFREBUILD-SKIP  payload mounted but has no selfrebuild.sh"
+        fi
+    else
+        echo "VERON-SELFREBUILD-SKIP  no veronpayload 9p share offered."
+        echo "  The payload is built beside the image, not inside it -- the"
+        echo "  boot must attach it with -fsdev/-device mount_tag=veronpayload."
+    fi
 else
     echo "VERON-SELFREBUILD-SKIP  off by default (boot with veron.selfrebuild=1)"
 fi
