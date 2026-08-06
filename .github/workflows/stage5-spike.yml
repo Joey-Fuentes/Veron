@@ -38,6 +38,10 @@ on:
         type: boolean
         required: false
         default: false
+      boot_system:
+        description: 'boot_system -- switch_root into dinit instead of running the test harness'
+        type: boolean
+        default: false
       seed_installs:
         description: 'seed_installs -- write [installs] blocks and installs.txt from this build, and upload them'
         type: boolean
@@ -586,6 +590,39 @@ jobs:
             cmp -l /tmp/img1 rootfs.img | head -20 || true
           fi
 
+          # PUBLISH THE IMAGE, FOR THE SAME REASON THE SYSROOT AND THE TOOLBOX
+          # ARE PUBLISHED. rootfs.img is what this entire pipeline exists to
+          # produce -- built, hashed, proven byte-identical across two builds,
+          # booted under a kernel this chain compiled -- and it was being
+          # destroyed with the runner. The one artifact a person would actually
+          # want was the one nothing kept.
+          #
+          # Compressed, because the tree is several gigabytes and a GitHub
+          # release asset is capped at 2 GB. The stage-4 sysroot went from
+          # 619 MB to 122 MB the same way; an ext4 image full of the same
+          # binaries compresses similarly.
+          ZSTD_CLEVEL=19 tar --zstd -cf rootfs.img.tar.zst rootfs.img
+          asset=$(stat -c%s rootfs.img.tar.zst)
+          printf '  rootfs.img.tar.zst: %s\n' "$(du -h rootfs.img.tar.zst | cut -f1)"
+          if [ "$asset" -lt 2000000000 ]; then
+            gh release create stage5/latest --title 'Veron stage 5' \
+              --notes 'The stage-5 system image, and the kernel and initramfs that boot it. Open with the zstd in toolbox/latest.' \
+              2>/dev/null || true
+            cp boot/Image . 2>/dev/null || true
+            cp spikes/stage5/out/initramfs.cpio.gz . 2>/dev/null || true
+            cp spikes/stage5/out/files.tsv . 2>/dev/null || true
+            if gh release upload stage5/latest rootfs.img.tar.zst IMAGE-SHA256 \
+                 Image initramfs.cpio.gz files.tsv --clobber; then
+              echo "VERON-STAGE5-PUBLISHED  $(cut -d' ' -f1 IMAGE-SHA256)"
+            else
+              # NOT FATAL. The build is the result; the release is delivery.
+              echo "VERON-STAGE5-UNPUBLISHED -- the image stands"
+            fi
+          else
+            echo "  image too large to publish: $((asset/1048576)) MB, cap is 2 GB"
+          fi
+          rm -f rootfs.img.tar.zst
+
       # BOOT. The ladder's initramfs already mounts mount_tag veronsysroot over
       # 9p and runs gcc inside it, so pointing 9p at OUR merged tree reuses that
       # test unchanged against the stage-5 system.
@@ -651,6 +688,18 @@ jobs:
           # against the ext4 image a user would flash, not a 9p share. 9p is
           # still offered as the fallback if virtio-blk or ext4 are absent
           # from this kernel.
+          # veron.boot=system SWITCHES ROOT INTO dinit INSTEAD OF RUNNING THE
+          # TEST HARNESS. Off by default: the harness is what proves the 62
+          # packages work under a real kernel, and it must keep running on
+          # every green build. This input proves the BOOT PATH, which is a
+          # different question and a newer one -- and guest/init falls back to
+          # the harness if the overlay or switch_root fails, so a bad boot
+          # reports rather than hanging with no shell.
+          BOOTMODE=""
+          if [ "${{ inputs.boot_system }}" = "true" ]; then
+            BOOTMODE=" veron.boot=system"
+            echo "  veron.boot=system: switching root into dinit"
+          fi
           timeout ${QEMU_TIMEOUT:-900} qemu-system-aarch64 \
             -M virt -cpu cortex-a57 -smp 4 -m 4096 \
             -nographic -no-reboot -nic none \
@@ -659,7 +708,7 @@ jobs:
             -device virtio-9p-pci,fsdev=vs,mount_tag=veronsysroot \
             -device virtio-gpu-pci -device virtio-keyboard-pci \
             -kernel boot/Image -initrd spikes/stage5/out/initramfs.cpio.gz \
-            -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7${SR}" \
+            -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7${SR}${BOOTMODE}" \
             > boot.log 2>&1
           echo "  qemu rc=$?"
           set -e

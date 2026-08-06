@@ -60,6 +60,76 @@ if [ "$VIA" = none ]; then
     poweroff -f
 fi
 
+# ---- 2.5 BOOT THE SYSTEM, IF ASKED --------------------------------------
+#
+# READ-ONLY BASE + tmpfs OVERLAY, WHICH IS THE LIVE-IMAGE DESIGN AND NOT AN
+# INVENTION. OpenWrt mounts squashfs at /rom with a writable overlay on top;
+# casper and live-boot do squashfs + tmpfs; Alpine's diskless mode runs
+# entirely from RAM and persists only an explicit named blob. This is the
+# same shape, with ext4 as the lower.
+#
+# WHY NOT A WRITABLE ROOT: the image on disk stays byte-identical to the one
+# that was built, so `veron compare` against files.tsv works on a RUNNING
+# system rather than being a claim about build time. That is the project's
+# central claim, made checkable after boot.
+#
+# WHY tmpfs AND NOT A SECOND PARTITION: nothing needs to survive a reboot.
+# There is no machine-id consumer, no sshd host keys, no passwords, no user
+# data, no package manager. The first thing that will need persistence is
+# FIDO2 credential enrollment, and a second partition can be added then --
+# `AUTHENTICATION.md` records that. Persisting nothing is not a limitation
+# here, it is an accurate description of the system.
+#
+# CONFIG_TMPFS_XATTR=y IS REQUIRED AND IS SET. overlayfs needs trusted.* or
+# user.* xattrs on the upper filesystem; without it this mount fails with
+# "upper fs does not support xattr". Verified present in the running kernel's
+# own embedded config, not assumed.
+#
+# GATED ON THE COMMAND LINE, DEFAULT OFF. `veron.boot=system` switches root
+# into dinit; anything else runs the tests and powers off exactly as before.
+# The boot path is the one thing in this project that can only be tested at
+# the END of a full run, so the old path stays reachable and a failure here
+# falls back to it rather than leaving a kernel with no shell.
+BOOTMODE=test
+for w in $(cat /proc/cmdline 2>/dev/null); do
+    case "$w" in veron.boot=*) BOOTMODE="${w#veron.boot=}" ;; esac
+done
+
+if [ "$BOOTMODE" = system ] && [ "$VIA" != none ]; then
+    echo "=== VERON-SWITCHROOT: read-only base, tmpfs overlay, dinit as PID 1 ==="
+    OVL=/mnt/ovl
+    if mkdir -p "$OVL" && mount -t tmpfs -o mode=0755 tmpfs "$OVL" 2>/dev/null \
+       && mkdir -p "$OVL/upper" "$OVL/work" "$OVL/merged" \
+       && mount -t overlay overlay \
+            -o "lowerdir=$ROOT,upperdir=$OVL/upper,workdir=$OVL/work" \
+            "$OVL/merged" 2>/dev/null; then
+        echo "  VERON-OVERLAY-OK    lower=$VIA (ro)  upper=tmpfs"
+        # /proc, /sys and /dev MOVE rather than being remounted: the new root
+        # needs them and they are already correct. --move keeps the same
+        # mount, so nothing is set up twice and nothing is lost.
+        for m in proc sys dev; do
+            mkdir -p "$OVL/merged/$m"
+            mount --move "/$m" "$OVL/merged/$m" 2>/dev/null || \
+                mount --bind "/$m" "$OVL/merged/$m" 2>/dev/null
+        done
+        if [ -x "$OVL/merged/sbin/dinit" ] || [ -x "$OVL/merged/usr/bin/dinit" ]; then
+            DINIT=/sbin/dinit
+            [ -x "$OVL/merged/sbin/dinit" ] || DINIT=/usr/bin/dinit
+            echo "  VERON-SWITCHROOT-EXEC  $DINIT"
+            exec switch_root "$OVL/merged" "$DINIT"
+            # switch_root REPLACES this process. Reaching the next line means
+            # it failed, and the message says which half.
+            echo "  VERON-SWITCHROOT-FAIL  switch_root returned"
+        else
+            echo "  VERON-SWITCHROOT-FAIL  no dinit in the image"
+        fi
+    else
+        echo "  VERON-OVERLAY-FAIL  could not assemble the overlay"
+        echo "    tmpfs xattr support (CONFIG_TMPFS_XATTR) is what this needs"
+    fi
+    echo "  falling back to the test harness rather than leaving no shell"
+fi
+
 # ---- 3. run the stage 5 tests in it ------------------------------------
 mkdir -p "$ROOT/proc" "$ROOT/tmp" "$ROOT/dev" 2>/dev/null
 mount -t proc  none "$ROOT/proc" 2>/dev/null
