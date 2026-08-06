@@ -348,7 +348,22 @@ jobs:
         run: |
           set -eu
           cd spikes/stage5
-          python3 tools/veron --dest dest installs --mode warn
+          # --mode fail, NOW THAT ALL 62 ARE SEEDED. This was warn because
+          # `7 unchecked` would have failed every run for a reason that was
+          # not a fault: waves 2 and 3 had never been through a seeding run,
+          # so their [installs] blocks did not exist. A gate that fires on
+          # correct code gets disabled, so it stayed warn until the seeding
+          # actually happened -- which took restoring a step a splice had
+          # deleted.
+          #
+          # It is now the third detector that refuses rather than reports,
+          # beside the reconciler and `veron linked`. What it catches: a
+          # package installing outside its declared prefixes, or installing a
+          # different set of files than the recipe pins. The 36 changed sets
+          # in the previous run were the stripped sysroot moving every binary
+          # by a few bytes -- real, expected, and exactly what a digest over
+          # file content is for.
+          python3 tools/veron --dest dest installs --mode fail
 
       - name: 'VERON-LINKED -- DT_NEEDED against deps.link'
         run: |

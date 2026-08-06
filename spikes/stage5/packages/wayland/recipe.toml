@@ -69,6 +69,12 @@ wlroots needs them."""
 "program:mdbook" = "doc/meson.build:9 -- same guard; mdbook is Rust, which this system declines entirely."
 "program:wayland-egl-symbols-check" = "egl/meson.build:24 -- an IN-TREE SCRIPT, egl/wayland-egl-symbols-check, not a system tool. It is the command of a `test()`, so -Dtests=false means it is never run; the find_program still evaluates, which is why it appears here at all."
 
+[installs]
+prefixes = ["usr/bin", "usr/include", "usr/lib", "usr/lib/pkgconfig", "usr/share/aclocal", "usr/share/wayland"]
+files    = 35
+digest   = "ef10a9ed2e503014e32853e1d344b0160898900ae7d45b44c0343a9eb6ed5b21"
+
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

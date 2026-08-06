@@ -64,6 +64,12 @@ order for the sake of a helper nothing here runs."""
 "program:nm" = "meson.build:65 -- REQUIRED, and provided by the stage-4 sysroot rather than by any stage-5 recipe. Paired with the in-tree symbols-check.py to verify the exported ABI. binutils is stage 4's; there is nothing here to declare."
 "program:rst2man" = "meson.build:220 -- required: get_option('man-pages'), which this recipe disables. docutils is not in this set."
 
+[installs]
+prefixes = ["usr/include", "usr/include/freedreno", "usr/include/libdrm", "usr/lib", "usr/lib/pkgconfig", "usr/share/libdrm"]
+files    = 53
+digest   = "0421664d943873f7763e90689a1bf37f9cc352dcf7b79beffc35f9bc3ae3dfdb"
+
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"
