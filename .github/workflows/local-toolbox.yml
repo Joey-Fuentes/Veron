@@ -70,6 +70,8 @@ jobs:
       # THE SAME TARBALL stage5-isolate ALREADY PINS, mirrored with two
       # routes. Built here as well so the sandbox ships beside the emulator
       # rather than existing only inside a runner that is then destroyed.
+      ZSTD_VER: '1.5.7'
+      ZSTD_SHA256: 'eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3'
       BWRAP_VER: '0.11.0'
       BWRAP_SHA256: '988fd6b232dafa04b8b8198723efeaccdb3c6aa9c1c7936219d5791a8b7a8646'
     steps:
@@ -383,6 +385,43 @@ jobs:
             echo "    (a runner restriction, not necessarily a broken bwrap)"
           fi
 
+      # zstd, BECAUSE THE RELEASE IS .tar.zst AND NOTHING WE SHIP COULD OPEN
+      # IT.
+      #
+      # The whole argument for this artifact is that a foreign host should
+      # not need to supply the tools -- and stage4/latest publishes
+      # sysroot.tar.zst, so anyone who downloads it needs a zstd their distro
+      # happened to package. Exactly the hole qemu and bwrap were built to
+      # close, left open in the format of the thing they are for.
+      #
+      # Pinned already: zstd 1.5.7 is a stage-5 package with two mirror
+      # routes, so this reuses the same tarball rather than introducing one.
+      # Pure C, no dependencies, links static without a fight -- unlike the
+      # other two.
+      - name: 'Build zstd from its pin, static'
+        run: |
+          set -eu
+          python3 tools/mirror.py fetch \
+            "$ZSTD_SHA256" "zstd-${ZSTD_VER}.tar.gz" \
+            --url "https://github.com/facebook/zstd/releases/download/v${ZSTD_VER}/zstd-${ZSTD_VER}.tar.gz" \
+            --dest dl
+          tar -xf "dl/zstd-${ZSTD_VER}.tar.gz"
+          make -C "zstd-${ZSTD_VER}/programs" -j"$(nproc)" \
+            LDFLAGS=-static HAVE_ZLIB=0 HAVE_LZMA=0 HAVE_LZ4=0 \
+            > zstd-build.log 2>&1 || {
+              echo "  zstd static build failed"
+              grep -iE "cannot find|undefined reference|error:" zstd-build.log \
+                | sort -u | head -6 | sed 's/^/    /'
+              exit 1; }
+          cp "zstd-${ZSTD_VER}/programs/zstd" out/
+          chmod +x out/zstd
+          printf '  %s\n' "$(file -b out/zstd | cut -c1-70)"
+          out/zstd --version | sed 's/^/  /'
+          # PROVE IT OPENS THE THING IT EXISTS FOR, not merely that it runs.
+          echo veron | out/zstd -q -o /tmp/t.zst && \
+            [ "$(out/zstd -dc /tmp/t.zst)" = veron ] && \
+            echo "  round-trips"
+
       - name: 'PROVE IT: run an aarch64 binary on this x86_64 runner'
         run: |
           set -eu
@@ -530,6 +569,14 @@ jobs:
             echo "  $(out/bwrap --version 2>/dev/null || echo 'not built')"
             echo "  the sandbox stage5-isolate composes per-package build"
             echo "  roots with. --overlay-src is checked at build time."
+            echo
+            echo "zstd  (static)"
+            echo "  $(out/zstd --version 2>/dev/null | head -1 || echo 'not built')"
+            echo "  opens sysroot.tar.zst from the stage4/latest release:"
+            echo "      ./zstd -dc sysroot.tar.zst | tar -x"
+            echo "  the release is .tar.zst, so without this an otherwise"
+            echo "  self-contained toolbox still needed the host to supply a"
+            echo "  decompressor for the one file it exists to unpack."
             echo
             echo "pc-bios/"
             echo "  qemu's firmware and option ROMs. -L points at it; the"
