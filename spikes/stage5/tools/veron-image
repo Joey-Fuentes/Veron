@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+"""veron-image -- write a bootable GPT disk image, byte for byte the same
+every time.
+
+WHY THIS IS PYTHON AND NOT sgdisk + mkfs.vfat + mcopy.
+
+Every one of those tools puts something random or time-dependent in the
+image. sgdisk generates a fresh disk GUID and a fresh GUID per partition.
+mkfs.vfat writes a volume ID from the clock. mcopy stamps each directory
+entry with the current time. Each has a flag to override -- and mkosi's own
+experience report is that even after pinning the obvious ones, directory
+mtimes still leaked through mcopy and had to be chased separately.
+
+The alternative is to write the bytes. GPT is a header, a CRC32 and an array
+of entries; FAT32 is a BPB, two allocation tables and a chain of clusters.
+Both are small, both are specified, and writing them directly means there is
+no field this file does not choose. `veron rootfs` already writes its tar
+this way rather than trusting a host tar, for the same reason.
+
+It also means the builder needs nothing installed. The runner has sgdisk
+today and might not tomorrow; a from-source distribution that cannot build
+its own disk image without three packages from someone else's archive has
+missed its own point.
+
+WHAT IS DELIBERATELY FIXED, AND WHY EACH ONE WOULD OTHERWISE VARY:
+
+  disk GUID, partition GUIDs   sgdisk draws these from /dev/urandom
+  FAT volume ID                normally the creation timestamp
+  FAT directory timestamps     normally the wall clock, per entry
+  partition offsets and sizes  computed from inputs, never from free space
+
+The kernel is the bootloader here: it goes in the ESP as
+EFI/BOOT/BOOTAA64.EFI, which is the path UEFI falls back to when there is no
+boot entry. There is no GRUB and nothing to configure. The command line
+cannot be delivered this way at all -- measured, see STAGE5.md -- so it is
+built into the kernel with CONFIG_CMDLINE.
+"""
+
+import argparse
+import os
+import struct
+import sys
+import zlib
+
+SECTOR = 512
+ESP_TYPE = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"   # EFI System Partition
+LINUX_TYPE = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"  # Linux filesystem
+
+# PINNED, NOT GENERATED. These are constants of the Veron image, the way a
+# version number is. Two builds of the same tree produce the same disk, and
+# `root=PARTUUID=...` in the kernel command line can name a value that is
+# known before the image exists.
+DISK_GUID = "56455230-4e00-4000-8000-000000000000"
+ESP_GUID = "56455230-4e00-4000-8000-000000000001"
+ROOT_GUID = "56455230-4e00-4000-8000-000000000002"
+
+
+def guid_bytes(s):
+    """GUID text to its on-disk form.
+
+    The first three fields are little-endian and the last two are not. This
+    is not a quirk of GPT -- it is Microsoft's GUID layout, inherited -- and
+    getting it wrong produces an image that looks right in a hex dump and is
+    rejected by firmware.
+    """
+    h = s.replace("-", "")
+    a, b, c = int(h[0:8], 16), int(h[8:12], 16), int(h[12:16], 16)
+    return struct.pack("<IHH", a, b, c) + bytes.fromhex(h[16:32])
+
+
+class Fat32:
+    """A FAT32 filesystem, written whole.
+
+    FAT32 RATHER THAN FAT16, EVEN THOUGH THE ESP IS SMALL. The UEFI
+    specification requires FAT32 on the EFI System Partition of removable
+    media, and while edk2 tolerates FAT16 in practice, "works on the
+    firmware I tested" is not the claim this project makes about anything
+    else.
+
+    The minimum cluster count for FAT32 is 65525; below that the driver is
+    entitled to read the volume as FAT16 and find nonsense. With 512-byte
+    sectors and 1 sector per cluster that is a floor of about 32 MiB, which
+    is why small ESPs are awkward and why this uses 1-sector clusters and
+    sizes the partition to suit.
+    """
+
+    def __init__(self, size_bytes, volume_id=0x56455230, label=b"VERON      "):
+        self.sectors = size_bytes // SECTOR
+        self.volume_id = volume_id
+        self.label = label
+        self.spc = 1                      # sectors per cluster
+        self.reserved = 32
+        self.nfats = 2
+        data_sectors = self.sectors - self.reserved
+        # Each FAT entry is 4 bytes and covers one cluster, so the table and
+        # the data area are solved together rather than guessed.
+        # SOLVED IN INTEGERS THROUGHOUT. The first version divided by SECTOR
+        # in the middle of this and produced a float, which struct.pack_into
+        # rejected several hundred lines later with "required argument is not
+        # an integer" -- a long way from the cause.
+        #
+        # The table and the data area size each other: n clusters need
+        # (n+2)*4 bytes of FAT, and every sector spent on the FAT is a sector
+        # the data cannot use. Rather than solve the recurrence, take an
+        # upper bound and step down until it is consistent, which converges
+        # immediately and is obviously correct.
+        data_sectors = self.sectors - self.reserved
+        fat_sectors = (((data_sectors // self.spc) + 2) * 4
+                       + SECTOR - 1) // SECTOR
+        while True:
+            clusters = (self.sectors - self.reserved
+                        - self.nfats * fat_sectors) // self.spc
+            need = ((clusters + 2) * 4 + SECTOR - 1) // SECTOR
+            if need <= fat_sectors:
+                break
+            fat_sectors = need
+        self.fat_sectors = int(fat_sectors)
+        self.clusters = int(clusters)
+        if self.clusters < 65525:
+            raise SystemExit(
+                f"ESP too small for FAT32: {self.clusters} clusters, "
+                f"65525 is the specified minimum. Give it at least 40 MiB.")
+        self.fat = [0x0FFFFFF8, 0x0FFFFFFF]      # entries 0 and 1 are reserved
+        self.data = {}                            # cluster -> bytes
+        self.root = []                            # directory entries
+        self.next_free = 3                        # 2 is the root directory
+        self.fat.append(0x0FFFFFFF)               # root dir occupies cluster 2
+        self.dirs = {"": (2, self.root)}
+
+    def _alloc(self, payload):
+        """Write payload into a chain of clusters and return the first."""
+        csize = self.spc * SECTOR
+        chunks = [payload[i:i + csize] for i in range(0, len(payload), csize)]
+        if not chunks:
+            return 0
+        first = self.next_free
+        for n, chunk in enumerate(chunks):
+            c = self.next_free
+            self.next_free += 1
+            while len(self.fat) <= c:
+                self.fat.append(0)
+            self.data[c] = chunk.ljust(csize, b"\0")
+            self.fat[c] = (self.next_free if n + 1 < len(chunks)
+                           else 0x0FFFFFFF)
+        return first
+
+    @staticmethod
+    def _short_name(name):
+        """8.3, upper case, space padded.
+
+        LONG FILE NAMES ARE NOT IMPLEMENTED AND DO NOT NEED TO BE. Every path
+        this image contains -- EFI, BOOT, BOOTAA64.EFI -- fits 8.3 exactly,
+        because the UEFI fallback path was defined when that was the only
+        option. A long-name implementation would be checksummed VFAT entries
+        for no file that exists here.
+        """
+        base, _, ext = name.upper().rpartition(".")
+        if not base:
+            base, ext = ext, ""
+        if len(base) > 8 or len(ext) > 3:
+            raise SystemExit(f"{name!r} does not fit 8.3 and LFN is not "
+                             f"implemented -- see _short_name")
+        return base.ljust(8).encode() + ext.ljust(3).encode()
+
+    def _entry(self, name, attr, cluster, size):
+        # TIME AND DATE ARE ZERO, WHICH IS THE WHOLE POINT. mcopy writes the
+        # wall clock into every entry, and that alone makes two identical
+        # trees produce different images.
+        return (self._short_name(name) + bytes([attr]) + b"\0" * 8
+                + struct.pack("<H", (cluster >> 16) & 0xFFFF)
+                + b"\0" * 4
+                + struct.pack("<HI", cluster & 0xFFFF, size))
+
+    def mkdir(self, path):
+        parent, _, name = path.rpartition("/")
+        pc, plist = self.dirs[parent]
+        c = self.next_free
+        self.next_free += 1
+        while len(self.fat) <= c:
+            self.fat.append(0)
+        self.fat[c] = 0x0FFFFFFF
+        entries = [self._entry(".", 0x10, c, 0),
+                   self._entry("..", 0x10, 0 if pc == 2 else pc, 0)]
+        self.dirs[path] = (c, entries)
+        plist.append(self._entry(name, 0x10, c, 0))
+        return c
+
+    def addfile(self, path, payload):
+        parent, _, name = path.rpartition("/")
+        _, plist = self.dirs[parent]
+        first = self._alloc(payload)
+        plist.append(self._entry(name, 0x20, first, len(payload)))
+
+    def write(self, out):
+        csize = self.spc * SECTOR
+        for path, (c, entries) in self.dirs.items():
+            blob = b"".join(entries).ljust(csize, b"\0")
+            if len(blob) > csize:
+                raise SystemExit(f"directory {path!r} needs more than one "
+                                 f"cluster; not implemented")
+            self.data[c] = blob
+
+        bpb = bytearray(SECTOR)
+        bpb[0:3] = b"\xEB\x58\x90"
+        bpb[3:11] = b"VERON1.0"
+        struct.pack_into("<HBHBHHBHHHII", bpb, 11,
+                         SECTOR, self.spc, self.reserved, self.nfats,
+                         0, 0, 0xF8, 0, 32, 2, 0, self.sectors)
+        struct.pack_into("<IHHIHH", bpb, 36,
+                         self.fat_sectors, 0, 0, 2, 1, 6)
+        bpb[64] = 0x80
+        bpb[66] = 0x29
+        struct.pack_into("<I", bpb, 67, self.volume_id)
+        bpb[71:82] = self.label
+        bpb[82:90] = b"FAT32   "
+        bpb[510:512] = b"\x55\xAA"
+
+        fsinfo = bytearray(SECTOR)
+        fsinfo[0:4] = b"RRaA"
+        fsinfo[484:488] = b"rrAa"
+        struct.pack_into("<II", fsinfo, 488, 0xFFFFFFFF, 0xFFFFFFFF)
+        fsinfo[510:512] = b"\x55\xAA"
+
+        out.write(bytes(bpb))
+        out.write(bytes(fsinfo))
+        out.write(b"\0" * SECTOR * 4)
+        out.write(bytes(bpb))          # backup boot sector at 6
+        out.write(bytes(fsinfo))
+        out.write(b"\0" * SECTOR * (self.reserved - 8))
+
+        table = bytearray(self.fat_sectors * SECTOR)
+        for i, v in enumerate(self.fat):
+            if (i + 1) * 4 <= len(table):
+                struct.pack_into("<I", table, i * 4, v)
+        for _ in range(self.nfats):
+            out.write(bytes(table))
+
+        for c in range(2, 2 + self.clusters):
+            out.write(self.data.get(c, b"\0" * csize))
+
+
+def build(kernel, rootfs, out_path, esp_mb):
+    root_size = os.path.getsize(rootfs)
+    esp_size = esp_mb * 1024 * 1024
+    align = 1024 * 1024                      # 1 MiB, as every partitioner does
+    esp_lba = align // SECTOR
+    esp_sectors = esp_size // SECTOR
+    root_lba = esp_lba + esp_sectors
+    root_sectors = (root_size + SECTOR - 1) // SECTOR
+    total = root_lba + root_sectors + 34     # 33 for the backup GPT, +1 slack
+
+    esp = Fat32(esp_size)
+    esp.mkdir("EFI")
+    esp.mkdir("EFI/BOOT")
+    with open(kernel, "rb") as f:
+        # BOOTAA64.EFI IS NOT A NAME WE CHOSE. UEFI, with no boot entry to
+        # follow, looks for exactly \EFI\BOOT\BOOTAA64.EFI on aarch64. The
+        # kernel's EFI stub makes the kernel a valid EFI application, so the
+        # kernel IS the bootloader and this is where it must live.
+        esp.addfile("EFI/BOOT/BOOTAA64.EFI", f.read())
+
+    def gpt_entries():
+        e = b""
+        for tguid, pguid, first, last, name in (
+                (ESP_TYPE, ESP_GUID, esp_lba, root_lba - 1, "EFI System"),
+                (LINUX_TYPE, ROOT_GUID, root_lba,
+                 root_lba + root_sectors - 1, "veron-root")):
+            e += (guid_bytes(tguid) + guid_bytes(pguid)
+                  + struct.pack("<QQQ", first, last, 0)
+                  + name.encode("utf-16-le").ljust(72, b"\0"))
+        return e.ljust(128 * 128, b"\0")
+
+    entries = gpt_entries()
+
+    def header(current, backup, entries_lba):
+        h = bytearray(92)
+        h[0:8] = b"EFI PART"
+        struct.pack_into("<IIII", h, 8, 0x00010000, 92, 0, 0)
+        struct.pack_into("<QQQQ", h, 24, current, backup, 34, total - 34)
+        h[56:72] = guid_bytes(DISK_GUID)
+        struct.pack_into("<QIII", h, 72, entries_lba, 128, 128,
+                         zlib.crc32(entries))
+        struct.pack_into("<I", h, 16, zlib.crc32(bytes(h)))
+        return bytes(h).ljust(SECTOR, b"\0")
+
+    with open(out_path, "wb") as o:
+        # Protective MBR: one 0xEE partition spanning the disk, so a tool that
+        # only understands MBR sees a full disk rather than free space.
+        mbr = bytearray(SECTOR)
+        mbr[446] = 0x00
+        mbr[450] = 0xEE
+        struct.pack_into("<II", mbr, 454, 1,
+                         min(total - 1, 0xFFFFFFFF))
+        mbr[510:512] = b"\x55\xAA"
+        o.write(bytes(mbr))
+        o.write(header(1, total - 1, 2))
+        o.write(entries)
+        o.write(b"\0" * (esp_lba * SECTOR - o.tell()))
+        esp.write(o)
+        with open(rootfs, "rb") as f:
+            while True:
+                b = f.read(1 << 20)
+                if not b:
+                    break
+                o.write(b)
+        o.write(b"\0" * ((total - 33) * SECTOR - o.tell()))
+        o.write(entries)
+        o.write(header(total - 1, 1, total - 33))
+
+    return total * SECTOR
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--kernel", required=True)
+    ap.add_argument("--rootfs", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--esp-mb", type=int, default=64)
+    a = ap.parse_args()
+    size = build(a.kernel, a.rootfs, a.out, a.esp_mb)
+    print(f"  {a.out}: {size // (1024*1024)} MiB")
+    print(f"    ESP   {a.esp_mb} MiB, FAT32, EFI/BOOT/BOOTAA64.EFI")
+    print(f"    root  PARTUUID={ROOT_GUID}")
+    print(f"  every GUID, volume id and timestamp is a constant of this file,")
+    print(f"  so two builds of the same inputs are the same bytes.")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -534,6 +534,33 @@ GPT whose GUIDs are pinned for reproducibility, and that partition does not
 exist until the `.img` builder does. Adding it now would be guessing at a
 value.
 
+### The disk image builds, boots itself, and reproduces
+
+`spikes/stage5/tools/veron-image` writes the GPT and the FAT32 ESP directly
+rather than calling `sgdisk`, `mkfs.vfat` and `mcopy`. Tested end to end:
+real edk2 firmware read the partition table, mounted the filesystem, found
+`\EFI\BOOT\BOOTAA64.EFI` at the fallback path and the stub booted Linux --
+with no `-kernel`, no bootloader and nothing on the QEMU line but the disk.
+
+**Written rather than delegated, because every one of those tools puts
+something random or time-dependent in the image**: `sgdisk` draws GUIDs from
+`/dev/urandom`, `mkfs.vfat` takes the volume id from the clock, and `mcopy`
+stamps each directory entry with the wall time. Each has an override, and
+mkosi's own experience report is that after pinning the obvious ones,
+directory mtimes still leaked through `mcopy` and had to be chased
+separately. Writing the bytes means there is no field this tool does not
+choose -- and `veron rootfs` already writes its tar this way rather than
+trusting a host tar.
+
+It also removes three build dependencies. A from-source distribution that
+cannot produce its own disk image without three packages from someone else's
+archive has missed its own point.
+
+Two builds, two seconds apart, are the same bytes. The `PARTUUID` is a
+constant of the tool, so `root=PARTUUID=56455230-4e00-4000-8000-000000000002`
+can go into `CONFIG_CMDLINE` before the partition exists -- which is what the
+EFI-stub boot needs, since it has no other way to receive one.
+
 ### What does not work, so nobody promises it
 
 **Apple Silicon on bare metal: no.** Macs expose no UEFI; they boot through
