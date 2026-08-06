@@ -731,6 +731,60 @@ escalates to KILL so no qemu can outlive the step. Measured against a stub
 that hangs like a real getty: **3s instead of 180s**, and the failure path
 still gives up and still names the missing service.
 
+### The size column broke the ledger, and the failure proved the point
+
+Adding a fourth field to `file_manifest` broke `cmd_ledger`, which died at step
+19 after every package had built:
+
+```
+ValueError: too many values to unpack (expected 3)
+```
+
+Two call sites were updated by searching for readers of `files.tsv`.
+`cmd_ledger` calls the function directly and writes no tsv, so that search
+could not find it — **one producer, several consumers, not all updated**, which
+is `cmd_tarball_names` after `cmd_fetch` and the shell `read` gate, for the
+third time in this repository.
+
+Then the gate written for it missed too. The first version matched
+`for ... in file_manifest(` with a regex, caught that site, and **missed a
+second one four lines later in the same function** because that one unpacks a
+*variable* the result was assigned to. A pattern that has to anticipate how
+callers spell themselves is the same mistake as the search that started it.
+
+The gate now builds a one-file DESTDIR and **runs `veron manifest` and
+`veron ledger`**. An unpack that does not match cannot survive being executed,
+however it is written. Verified against both sites individually:
+
+```
+FAIL  `veron manifest` raised ValueError: too many values to unpack (expected 3)
+FAIL  `veron ledger` raised ValueError: too many values to unpack (expected 3)
+VERON-SELFTEST-FAIL
+```
+
+A third thing was caught only by reading the output: the edit that added the
+first gate **deleted the `VERON-SELFTEST-OK` print**, so the selftest ran every
+check and ended silently. It was noticed because a `FAIL` line appeared with no
+marker after it — the exit code was still correct, and a marker-driven CI step
+would have gone green on a run that printed no verdict.
+
+**And the failure demonstrated the thing it interrupted.** The run died at step
+19 and the evidence still shipped:
+
+```
+VERON-COLLECT-OK  65 entries (0 failed) -> out/diag
+  installs/     62 file(s),   1974.4 KiB  autoconf.txt, automake.txt, +60 more
+  manifest/      1 file(s),    512.1 KiB  files.tsv
+  probe/         1 file(s),      0.1 KiB  meson-cmake.txt
+```
+
+62 per-package listings — every path with its sha256 and exact size, ~2 MB —
+plus the whole-image manifest, from a run that failed. `boot/` is empty and
+says so, because the boot step never ran. That is the guarantee working on a
+real failure rather than a simulated one.
+
+`veron manifest` also now reports the total: **17531 paths, 3638.4 MiB**.
+
 ### Every file, its sha256 and its exact size — on pass or fail
 
 Two records, and they did not carry the same facts.

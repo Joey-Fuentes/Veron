@@ -36,6 +36,7 @@ import threading
 import time
 import subprocess
 import sys
+import tempfile
 import tarfile
 import tomllib
 
@@ -3058,8 +3059,19 @@ def cmd_ledger(a):
             print(f"  skip {name}: not installed")
             continue
         files = file_manifest(dest)
+        # THE SIZE IS DELIBERATELY NOT IN THIS HASH.
+        #
+        # file_manifest grew a fourth field and this unpack was not updated,
+        # so the run died with `too many values to unpack (expected 3)` after
+        # the packages had built -- one producer, three consumers, two
+        # updated, which is a defect this repository has now committed twice
+        # and written a gate about once.
+        #
+        # It is unpacked and dropped rather than folded in: output_hash is a
+        # package's IDENTITY, content already determines size, and adding a
+        # field would move every ledger hash in the tree for no new fact.
         outhash = sha256_bytes(
-            "\n".join(f"{p}\t{k}\t{v}" for p, k, v in files).encode())
+            "\n".join(f"{p}\t{k}\t{v}" for p, k, v, _size in files).encode())
         rec = {
             "output_hash": outhash,
             "name": name,
@@ -3092,7 +3104,12 @@ def cmd_ledger(a):
             "verification": r.get("declared", {}).get("verification", "none declared"),
             "deferral": r.get("declared", {}).get("deferral", "NOT DECLARED"),
             "license": r["license"],
-            "files": [{"path": p, "kind": k, "value": v} for p, k, v in files],
+            # SIZE IS RECORDED HERE EVEN THOUGH IT IS NOT IN output_hash.
+            # The hash is identity and content already fixes size; the record
+            # is an SBOM entry, and "how big is this file" is exactly the sort
+            # of thing an SBOM is read for.
+            "files": [{"path": p, "kind": k, "value": v, "size": sz}
+                      for p, k, v, sz in files],
         }
         path = os.path.join(a.ledger, f"{outhash}.json")
         with open(path, "w") as f:
@@ -4127,6 +4144,49 @@ def cmd_selftest(a):
         ok = False
     else:
         print("  ok    every decline is recorded in the recipe")
+    # THE COMMANDS THAT CONSUME file_manifest ARE RUN, NOT READ.
+    #
+    # THIS GATE EXISTS BECAUSE THE MISS HAPPENED TWICE IN ONE CHANGE.
+    # file_manifest grew a fourth field (size). Two call sites were updated by
+    # searching for readers of `files.tsv`; `cmd_ledger` calls the function
+    # directly and writes no tsv, so that search could not find it. The run
+    # died at step 19, after every package had built:
+    #
+    #     ValueError: too many values to unpack (expected 3)
+    #
+    # The first version of this gate matched `for ... in file_manifest(` with
+    # a regex. It caught that site and MISSED THE SECOND ONE in the same
+    # function, four lines later, because that one unpacks a VARIABLE the
+    # result was assigned to. A pattern that has to anticipate how callers
+    # spell themselves is the same class of mistake as the search that started
+    # this.
+    #
+    # So: build a one-file DESTDIR named after a real recipe and actually
+    # invoke the commands. An unpack that does not match cannot survive being
+    # executed, however it is written.
+    import types as _types
+    with tempfile.TemporaryDirectory() as _td:
+        _pkg = topo_order(load_recipes())[0]
+        _d = os.path.join(_td, "dest", _pkg)
+        os.makedirs(_d)
+        open(os.path.join(_d, "probe.txt"), "w").write("x")
+        os.symlink("probe.txt", os.path.join(_d, "probe.link"))
+        for _cmd, _fn in (("manifest", cmd_manifest), ("ledger", cmd_ledger)):
+            _a = _types.SimpleNamespace(
+                dl=os.path.join(_td, "dl"), build_dir=os.path.join(_td, "b"),
+                dest=os.path.join(_td, "dest"), out=os.path.join(_td, "out"),
+                logs=os.path.join(_td, "logs"), ledger=os.path.join(_td, "led"),
+                sysroot="/")
+            os.makedirs(_a.ledger, exist_ok=True)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    _fn(_a)
+                print(f"  ok    `veron {_cmd}` runs against a real DESTDIR")
+            except Exception as _e:
+                print(f"  FAIL  `veron {_cmd}` raised "
+                      f"{type(_e).__name__}: {_e}")
+                ok = False
+
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
 
