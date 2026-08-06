@@ -608,57 +608,6 @@ jobs:
           # release asset is capped at 2 GB. The stage-4 sysroot went from
           # 619 MB to 122 MB the same way; an ext4 image full of the same
           # binaries compresses similarly.
-          # CHECK THE INPUTS BEFORE SPENDING THIRTY MINUTES ON THE OUTPUT.
-          #
-          # The first version compressed first and validated last, so a
-          # missing `Image` -- a path bug worth one millisecond to detect --
-          # was found only after zstd had ground through 4.5 GB. The order
-          # was free to get right and I got it backwards.
-          R=../../..
-          missing=""
-          for f in "$R/boot/Image" files.tsv initramfs.cpio.gz; do
-            [ -e "$f" ] || missing="$missing $f"
-          done
-          if [ -n "$missing" ]; then
-            echo "  not publishing -- missing:$missing"
-            echo "VERON-STAGE5-UNPUBLISHED  inputs absent, nothing compressed"
-          else
-          # ZSTD_CLEVEL=10, NOT 19. Level 19 was chosen for the stage-4
-          # sysroot -- 619 MB, written once per chain run -- and then reused
-          # here on an image seven times larger without rethinking it. That
-          # cost about thirty minutes per run for a few percent of size, on
-          # something every stage-5 run produces.
-          ZSTD_CLEVEL=10 tar --zstd -cf rootfs.img.tar.zst rootfs.img
-          asset=$(stat -c%s rootfs.img.tar.zst)
-          printf '  rootfs.img.tar.zst: %s\n' "$(du -h rootfs.img.tar.zst | cut -f1)"
-          if [ "$asset" -lt 2000000000 ]; then
-            gh release create stage5/latest --title 'Veron stage 5' \
-              --notes 'The stage-5 system image, and the kernel and initramfs that boot it. Open with the zstd in toolbox/latest.' \
-              2>/dev/null || true
-            # PATHS RELATIVE TO THIS STEP'S cwd, WHICH IS spikes/stage5/out.
-            # The first version copied `boot/Image` and
-            # `spikes/stage5/out/files.tsv` as if it were at the repo root,
-            # found neither, and each `|| true` swallowed it -- so the upload
-            # ran with a missing filename and gh answered "no matches found
-            # for `Image`" after the 1.7 GB compression had already happened.
-            #
-            # No `|| true` here. A file that should exist and does not is a
-            # fault, and initramfs.cpio.gz is in this directory already.
-            assets="rootfs.img.tar.zst IMAGE-SHA256"
-            for f in "$R/boot/Image" files.tsv initramfs.cpio.gz; do
-              [ "$f" = "${f#$R/}" ] || cp "$f" .
-              assets="$assets $(basename "$f")"
-            done
-            echo "  uploading: $assets"
-            if gh release upload stage5/latest $assets --clobber; then
-              echo "VERON-STAGE5-PUBLISHED  $(cut -d' ' -f1 IMAGE-SHA256)"
-            else
-              # NOT FATAL. The build is the result; the release is delivery.
-              echo "VERON-STAGE5-UNPUBLISHED -- the image stands"
-            fi
-          else
-            echo "  image too large to publish: $((asset/1048576)) MB, cap is 2 GB"
-          fi
           # A SMALL BUNDLE OF EXACTLY WHAT LOGIN NEEDS, BESIDE THE FULL IMAGE.
           #
           # rootfs.img.tar.zst is 1.7 GB -- fine for a release, useless for
@@ -774,10 +723,21 @@ jobs:
           # different question and a newer one -- and guest/init falls back to
           # the harness if the overlay or switch_root fails, so a bad boot
           # reports rather than hanging with no shell.
-          BOOTMODE=""
+          # THE HARNESS BOOT ALWAYS RUNS. boot_system adds a SECOND boot; it
+          # does not replace the first.
+          #
+          # The first version set veron.boot=system on the only qemu
+          # invocation, so guest/init switch_rooted into dinit and
+          # veron-stage5-test never ran. The run reported
+          # VERON-STAGE5-LOGIN-OK and said nothing at all about the 62
+          # packages -- trading a proof for a different proof rather than
+          # adding one.
+          #
+          # They answer different questions and both are wanted: the harness
+          # proves the packages work under this kernel, the system boot proves
+          # the machine comes up. Two boots, and the second is three minutes.
           if [ "${{ inputs.boot_system }}" = "true" ]; then
-            BOOTMODE=" veron.boot=system"
-            echo "  veron.boot=system: switching root into dinit"
+            echo "  boot_system: a second boot follows the test harness"
             # AN INIT SYSTEM DOES NOT EXIT, SO THE TEST CANNOT WAIT FOR IT TO.
             # The harness runs its tests and powers off, so `timeout` never
             # fires and rc=0 means success. dinit as PID 1 runs forever by
@@ -798,12 +758,30 @@ jobs:
             -device virtio-9p-pci,fsdev=vs,mount_tag=veronsysroot \
             -device virtio-gpu-pci -device virtio-keyboard-pci \
             -kernel boot/Image -initrd spikes/stage5/out/initramfs.cpio.gz \
-            -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7${SR}${BOOTMODE}" \
+            -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7${SR}" \
             > boot.log 2>&1
           rc=$?
           echo "  qemu rc=$rc"
           set -e
-          if [ -n "$BOOTMODE" ]; then
+          if [ "${{ inputs.boot_system }}" = "true" ]; then
+            # THE SECOND BOOT. Same image, same kernel, veron.boot=system --
+            # and an init that does not exit, so the timeout is the ending and
+            # the services decide the result.
+            echo ""
+            echo "=== second boot: switch_root into dinit ==="
+            set +e
+            timeout 180 qemu-system-aarch64 \
+              -M virt -cpu cortex-a57 -smp 4 -m 4096 \
+              -nographic -no-reboot -nic none \
+              -drive file=spikes/stage5/out/rootfs-boot.img,format=raw,if=virtio \
+              -device virtio-gpu-pci -device virtio-keyboard-pci \
+              -kernel boot/Image -initrd spikes/stage5/out/initramfs.cpio.gz \
+              -append "console=ttyAMA0 earlycon rdinit=/init panic=1 loglevel=7 veron.boot=system" \
+              > boot-system.log 2>&1
+            echo "  qemu rc=$? (124 is expected: an init does not exit)"
+            set -e
+            sed 's/^/    /' boot-system.log | grep -aE "VERON-|OK  \]|FAILED\]" | head -20
+            cp boot-system.log boot.log
             # rc=124 IS THE EXPECTED ENDING HERE, not a fault. What decides
             # the result is whether dinit started what it was asked to.
             fail=0
@@ -886,6 +864,67 @@ jobs:
       # THE FIND LIST LIVED HERE AND DUPLICATED BUILD_LOGS IN THE DRIVER.
       # Two lists that must agree with nothing comparing them is the same
       # defect as [declared] drifting from the argv. `veron collect` owns it.
+      # PUBLISH AFTER THE BOOT, BECAUSE THAT IS WHEN THE PIECES EXIST.
+      #
+      # This lived in the image step, which runs at 20 -- before the kernel is
+      # downloaded at 21 and before the initramfs is built at 23. So it looked
+      # for files that were not there yet and said so:
+      #
+      #   not publishing -- missing: ../../../boot/Image initramfs.cpio.gz
+      #
+      # The check that printed that was added one commit earlier to stop a
+      # missing file costing thirty minutes of compression, and it worked --
+      # it just found an ordering fault rather than a path fault. Both were
+      # mine, and the second was invisible while the first was in the way.
+      #
+      # `always()` so a red boot still publishes: the image built and
+      # reproduced either way, and an image nobody can download is not more
+      # useful for having failed a service.
+      - name: 'Publish the image'
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          cd spikes/stage5/out
+          [ -e rootfs.img ] || { echo "  no image was built"; exit 0; }
+          R=../../..
+          missing=""
+          for f in "$R/boot/Image" files.tsv initramfs.cpio.gz; do
+            [ -e "$f" ] || missing="$missing $f"
+          done
+          if [ -n "$missing" ]; then
+            echo "  not publishing -- missing:$missing"
+            echo "VERON-STAGE5-UNPUBLISHED  inputs absent, nothing compressed"
+            exit 0
+          fi
+          # ZSTD_CLEVEL=10, NOT 19. Level 19 was chosen for the stage-4
+          # sysroot -- 619 MB, written once per chain -- and reused here on an
+          # image seven times larger without rethinking it, which cost about
+          # thirty minutes a run for a few percent of size.
+          ZSTD_CLEVEL=10 tar --zstd -cf rootfs.img.tar.zst rootfs.img
+          printf '  rootfs.img.tar.zst: %s\n' "$(du -h rootfs.img.tar.zst | cut -f1)"
+          asset=$(stat -c%s rootfs.img.tar.zst)
+          if [ "$asset" -lt 2000000000 ]; then
+            gh release create stage5/latest --title 'Veron stage 5' \
+              --notes 'The stage-5 system image, and the kernel and initramfs that boot it. Open with the zstd in toolbox/latest.' \
+              2>/dev/null || true
+            assets="rootfs.img.tar.zst IMAGE-SHA256"
+            for f in "$R/boot/Image" files.tsv initramfs.cpio.gz; do
+              [ "$f" = "${f#$R/}" ] || cp "$f" .
+              assets="$assets $(basename "$f")"
+            done
+            echo "  uploading: $assets"
+            if gh release upload stage5/latest $assets --clobber; then
+              echo "VERON-STAGE5-PUBLISHED  $(cut -d' ' -f1 IMAGE-SHA256)"
+            else
+              echo "VERON-STAGE5-UNPUBLISHED -- the image stands"
+            fi
+          else
+            echo "  too large to publish: $((asset/1048576)) MB, cap is 2 GB"
+          fi
+          rm -f rootfs.img.tar.zst
+
       - name: 'VERON-COLLECT -- preserve the evidence'
         if: always()
         run: |
