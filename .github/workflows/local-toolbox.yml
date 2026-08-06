@@ -198,8 +198,18 @@ jobs:
             LINK=static
           else
             echo "  static build FAILED -- falling back to dynamic"
-            tail -6 cfg-static.log build-static.log 2>/dev/null \
-              | grep -iE "error|cannot find" | head -4 | sed 's/^/    /'
+            # GREP THE WHOLE LOG, NOT ITS TAIL. `tail -6 | grep` printed
+            # NOTHING on the run that mattered: a link error sits thousands
+            # of lines above the end of a 3189-target ninja log, so the six
+            # last lines are ninja's summary and contain no error at all.
+            # The step reported "static build FAILED" and said nothing about
+            # why, which is the failure-that-reports-nothing shape this
+            # project keeps finding in its own tooling.
+            grep -hiE "cannot find -l|undefined reference|error:" \
+              cfg-static.log build-static.log 2>/dev/null \
+              | sort -u | head -12 | sed 's/^/    /' \
+              || echo "    (no recognisable error line -- see the artifact)"
+            cp cfg-static.log build-static.log ../out/ 2>/dev/null || true
             attempt "" dynamic || {
               echo "  dynamic build FAILED too"
               tail -20 build-dynamic.log 2>/dev/null | sed 's/^/    /'
@@ -210,6 +220,18 @@ jobs:
           cd ..
           cp "qemu-${QEMU_VER}/build/qemu-system-aarch64" out/
           cp "qemu-${QEMU_VER}/build/qemu-aarch64" out/qemu-aarch64-static
+          # pc-bios IS NOT OPTIONAL, AND A BINARY WITHOUT IT LOOKS BROKEN.
+          # qemu-system loads firmware and option ROMs from its data
+          # directory at RUN time; packing only the executable produced
+          #
+          #   qemu-system-aarch64: failed to find romfile "efi-virtio.rom"
+          #
+          # which reads like a qemu bug and is a packaging omission. The
+          # emulator is invoked with -L pointing here.
+          cp -r "qemu-${QEMU_VER}/pc-bios" out/pc-bios
+          find out/pc-bios -name '*.dtb' -delete 2>/dev/null || true
+          printf '  pc-bios: %s files, %s\n' \
+            "$(find out/pc-bios -type f | wc -l)" "$(du -sh out/pc-bios | cut -f1)"
           chmod +x out/qemu-system-aarch64 out/qemu-aarch64-static
           echo "  link mode: $LINK"
           for b in qemu-system-aarch64 qemu-aarch64-static; do
@@ -224,7 +246,27 @@ jobs:
               ldd "$b" | awk '/=> \//{print $3}'
             done | sort -u | while read -r l; do cp -L "$l" out/lib/; done
             cp -L /lib64/ld-linux-x86-64.so.2 out/lib/ 2>/dev/null || true
-            printf '  packed %s shared libraries\n' "$(ls out/lib | wc -l)"
+            # A LOADER SHIM, SO THE HOST'S glibc DOES NOT HAVE TO MATCH.
+            # A dynamic binary hard-codes its interpreter path, so on a host
+            # with an older glibc it fails with a symbol error rather than a
+            # missing-file one. Invoking the PACKED loader explicitly and
+            # pointing it at the packed libraries sidesteps that entirely --
+            # which is what makes the dynamic fallback genuinely usable
+            # locally rather than merely produced.
+            #
+            # printf, NOT A HEREDOC: an unindented EOF terminator inside a
+            # YAML block scalar ends the BLOCK, and the workflow stops
+            # parsing. Caught by the yaml check, not by the run.
+            for b in qemu-system-aarch64 qemu-aarch64-static; do
+              {
+                printf '#!/bin/sh\n'
+                printf 'd=$(cd "$(dirname "$0")" && pwd)\n'
+                printf 'exec "$d/lib/ld-linux-x86-64.so.2" \\\n'
+                printf '  --library-path "$d/lib" "$d/%s" -L "$d/pc-bios" "$@"\n' "$b"
+              } > "out/$b.sh"
+              chmod +x "out/$b.sh"
+            done
+            printf '  packed %s shared libraries + loader shims\n' "$(ls out/lib | wc -l)"
           fi
 
       - name: 'PROVE IT: run an aarch64 binary on this x86_64 runner'
@@ -262,7 +304,12 @@ jobs:
           out/qemu-system-aarch64 --version | head -1 | sed 's/^/  /'
           if gh release download stage4/latest --pattern Image \
                --pattern 'initramfs.cpio.gz' --dir bootcheck 2>/dev/null; then
+            # -L FOR THE ROMS, -nic none BECAUSE THE DEFAULT MACHINE ADDS A
+            # NIC WHOSE OPTION ROM WE DO NOT NEED. The stage-4 initramfs test
+            # touches no network; leaving the NIC on cost a romfile lookup
+            # and nothing else.
             timeout 600 out/qemu-system-aarch64 -machine virt -cpu max \
+              -L out/pc-bios -nic none \
               -m 2048 -nographic -no-reboot \
               -device virtio-gpu-pci -device virtio-keyboard-pci \
               -kernel bootcheck/Image -initrd bootcheck/initramfs.cpio.gz \
