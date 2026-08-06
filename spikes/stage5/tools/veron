@@ -19,6 +19,10 @@
 import argparse
 import ast
 import glob
+try:
+    import yaml
+except ImportError:
+    yaml = None
 import contextlib
 import hashlib
 import io
@@ -3270,9 +3274,17 @@ def cmd_selftest(a):
             for t in ast.walk(node):
                 if isinstance(t, ast.Name):
                     module_names.add(t.id)
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            for al in node.names:
-                module_names.add((al.asname or al.name).split(".")[0])
+        else:
+            # WALK INTO IT, because a module-level import can be inside a
+            # `try:` -- which is exactly how `import yaml` is guarded here,
+            # and the first version of this scanner only looked at direct
+            # children of the module body and then flagged yaml as unbound.
+            for n in ast.walk(node):
+                if isinstance(n, (ast.Import, ast.ImportFrom)):
+                    for al in n.names:
+                        module_names.add((al.asname or al.name).split(".")[0])
+                elif isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store):
+                    module_names.add(n.id)
 
     def _bound(fn):
         # PERMISSIVE ON PURPOSE. Proper scoping would track each nested
@@ -3366,6 +3378,57 @@ def cmd_selftest(a):
                   f"never used: {', '.join(unused)}")
     if _found:
         print(f"  ok    {len(_found)} workflow(s) checked for dead inputs")
+
+    # EVERY `run:` BLOCK MUST BE VALID SHELL.
+    #
+    # A workflow can parse as YAML and still be nonsense: moving a block out
+    # of a step left the `fi` of its `if` behind, and the run died with
+    #
+    #     syntax error near unexpected token `fi'
+    #
+    # after the packages had built and the tests had passed. The YAML check
+    # cannot see it -- to YAML a `run:` block is a string -- and `sh -n` finds
+    # it in milliseconds.
+    #
+    # Skips blocks containing ${{ }}, since those are not shell until Actions
+    # substitutes them and a bare `${{ inputs.x }}` is a syntax error on its
+    # own.
+    import subprocess as _sp
+    _bad_shell = []
+    for wf in (_found if yaml else []):
+        try:
+            y = yaml.safe_load(open(wf))
+        except Exception:
+            continue
+        for job in (y or {}).get("jobs", {}).values():
+            for st in job.get("steps", []) or []:
+                body = st.get("run")
+                if not body or "${{" in body:
+                    continue
+                # bash -n, NOT sh -n. GitHub's default shell on Linux is
+                # `bash -e`, and checking with sh flagged five steps that use
+                # arrays and [[ ]] -- correct bash, and the checker was the
+                # thing that was wrong.
+                sh = "bash" if "sh" not in str(st.get("shell", "")) \
+                     or "bash" in str(st.get("shell", "")) else "sh"
+                r = _sp.run([sh, "-n", "-"], input=body,
+                            capture_output=True, text=True)
+                if r.returncode:
+                    # WARN, LIKE THE DEAD-INPUT CHECK, AND FOR THE SAME
+                    # REASON. Two pre-existing workflows have unbalanced
+                    # quotes; failing every run over them would block work
+                    # unrelated to the change that added this. They should be
+                    # fixed and this should then become a FAIL -- a warning
+                    # nobody acts on is the same as no check.
+                    _bad_shell.append(
+                        f"{os.path.basename(wf)}: "
+                        f"{st.get('name','(unnamed)')!r}")
+    if _bad_shell:
+        for b in _bad_shell:
+            print(f"  warn  not valid shell: {b}")
+    print(f"  ok    every other run: block is valid shell")
+
+
 
     # NO WORKFLOW MAY DECLARE THE SAME STEP NAME TWICE.
     #

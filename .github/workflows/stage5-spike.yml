@@ -648,8 +648,6 @@ jobs:
           ls -la ../loginkit.tar.gz | sed 's/^/    /'
           printf '  loginkit.tar.gz: %s (dinit, busybox, a shell and /etc)\n' \
             "$(du -h ../loginkit.tar.gz | cut -f1)"
-          rm -f rootfs.img.tar.zst
-          fi
 
       # BOOT. The ladder's initramfs already mounts mount_tag veronsysroot over
       # 9p and runs gcc inside it, so pointing 9p at OUR merged tree reuses that
