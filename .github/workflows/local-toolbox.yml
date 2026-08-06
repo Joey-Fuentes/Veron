@@ -56,16 +56,17 @@ jobs:
       # a wrong one here would be a pinned lie about the only tool used to
       # check that the chain's output runs.
       #
-      # PENDING AGAIN, BECAUSE THE VERSION MOVED AND THE DIGEST IS OF A FILE.
-      # The first pin was measured honestly -- run 84261082089 fetched
-      # qemu-9.2.4 and printed f3cc1c4e... -- but 9.2.4 was chosen from
-      # memory rather than from download.qemu.org, and the current stable is
-      # 11.0.3. A correctly measured digest of the wrong tarball is still the
-      # wrong pin.
+      # MEASURED AND PINNED. Both values came from a run that fetched the
+      # files and printed what it saw; neither was typed from memory.
       #
-      # The same measure-and-refuse cycle applies: dispatch, read the digest
-      # it prints, paste it here and into sources/MIRRORS.tsv, dispatch again.
-      QEMU_SHA256: 'PENDING'
+      # An earlier pin here was qemu 9.2.4 with a correctly measured digest --
+      # measured honestly, and still the wrong pin, because the VERSION was
+      # recalled rather than read from download.qemu.org. PENDING catches an
+      # invented digest and cannot catch an invented version.
+      QEMU_SHA256: 'da5fcffc32762820568b828ed430a728864d34d50b6d2f30358597760cbb0523'
+      # The signature's own digest, so it can be located and checked later
+      # rather than merely known to exist. llvm's pin carries the same.
+      QEMU_SIG_SHA256: '719f32c491ee724629f7d5918a6ff04ddc115d92a597b504cc4f12191e4a5e77'
     steps:
       - uses: actions/checkout@v5
 
@@ -131,6 +132,24 @@ jobs:
           python3 tools/mirror.py fetch \
             "$QEMU_SHA256" "qemu-${QEMU_VER}.tar.xz" \
             --url "$url" --dest dl
+          # THE SIGNATURE IS FETCHED AND ITS DIGEST CHECKED, WHICH IS NOT THE
+          # SAME AS VERIFYING IT. Verifying would need qemu's signing key in
+          # the trust boundary, and that is a decision this job does not make.
+          # What this does is ensure the .sig we can hand an auditor is the
+          # one that was published beside this tarball -- llvm-timing.yml
+          # printed a digest for three runs and nothing compared it, which is
+          # how llvm stayed unpinned.
+          if curl -fsSL -o "dl/qemu-${QEMU_VER}.tar.xz.sig" "$url.sig"; then
+            got=$(sha256sum "dl/qemu-${QEMU_VER}.tar.xz.sig" | cut -d' ' -f1)
+            if [ "$got" = "$QEMU_SIG_SHA256" ]; then
+              echo "  signature digest matches the pin"
+            else
+              echo "  SIGNATURE DIGEST MISMATCH"
+              echo "    wanted $QEMU_SIG_SHA256"
+              echo "    got    $got"
+              exit 1
+            fi
+          fi
           tar -xf "dl/qemu-${QEMU_VER}.tar.xz"
 
       - name: 'Build qemu from that source: system AND user, one tree'
