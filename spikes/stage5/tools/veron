@@ -1642,6 +1642,20 @@ def cmd_collect(a):
     else:
         index.append(f"  ABSENT  driver logs -- {a.logs} does not exist")
 
+    # THE INSTALL LISTINGS, WHICH IS WHERE "WHICH FILE CHANGED" LIVES.
+    #
+    # INSTALL-SET-CHANGED reported that cmake's digest had moved and could not
+    # say which of its 4007 files did, because the listing was computed,
+    # compared and discarded. The console had carried every path and sha
+    # earlier in the day; that was replaced with a one-line digest and the
+    # evidence was supposed to move into the artifact. It never did -- this is
+    # the half of that change that was missing.
+    lst = os.path.join(a.out, "installs")
+    if os.path.isdir(lst):
+        for fn in sorted(os.listdir(lst)):
+            keep(os.path.join(lst, fn), os.path.join("installs", fn),
+                 f"every path {fn[:-4]} installs, with size and sha256")
+
     # 2. WHAT EACH BUILD SYSTEM WROTE DOWN, for every package that has a
     #    build tree, not only the one that failed. A package can succeed and
     #    still have configured wrong, which is the case that started this.
@@ -1930,6 +1944,7 @@ def cmd_linked(a):
     # `libfoo.so.1` is usually a link to `libfoo.so.1.2.3` and DT_NEEDED
     # names the link.
     provider, elfs = {}, {}
+    observed = {}
     for pkg in sorted(os.listdir(dest)):
         d = os.path.join(dest, pkg)
         if not os.path.isdir(d):
@@ -2145,12 +2160,14 @@ def cmd_installs(a):
     # under the name of a different check. A summary that misnames what
     # it counted is worse than one that counts nothing.
     stray_n, changed_n, missing = 0, 0, []
+    observed = {}
     for pkg in sorted(os.listdir(dest)):
         d = os.path.join(dest, pkg)
         if not os.path.isdir(d) or pkg not in recipes:
             continue
         actual = install_prefixes(d)
         lines, digest = install_listing(d)
+        observed[pkg] = lines
         ins = recipes[pkg].get("installs", {})
         declared = ins.get("prefixes")
         if a.propose:
@@ -2225,6 +2242,30 @@ def cmd_installs(a):
             else:
                 print(f"      no installs.txt to diff against -- run "
                       f"`veron installs --propose` to write one")
+    # ALWAYS WRITE THE LISTINGS, EVEN WHEN NOT SEEDING.
+    #
+    # The build console used to print every installed path with its sha256 --
+    # 14632 lines across 62 packages -- and that was replaced with a one-line
+    # digest on the argument that "the listing lives in installs.txt and in
+    # the collected artifact." Half of that was false: `--write` only runs
+    # when seed_installs is ticked, and the diag bundle carries no listings at
+    # all. So an ordinary run computed the listing, hashed it, compared it,
+    # and threw it away.
+    #
+    # Which meant INSTALL-SET-CHANGED could say a digest moved and nothing
+    # anywhere could say WHICH FILE. That is a check that reports a problem
+    # and withholds the evidence for it.
+    #
+    # These go to out/installs/ rather than into the recipes: seeding is a
+    # deliberate act that rewrites committed files, and capturing evidence is
+    # not. VERON-COLLECT picks the directory up.
+    _ldir = os.path.join(roots["out"], "installs")
+    os.makedirs(_ldir, exist_ok=True)
+    for _p, _l in observed.items():
+        with open(os.path.join(_ldir, f"{_p}.txt"), "w") as _f:
+            _f.write("\n".join(_l) + ("\n" if _l else ""))
+    print(f"  listings written to out/installs/ ({len(observed)} package(s))")
+
     if a.propose:
         return 0
     if missing:
