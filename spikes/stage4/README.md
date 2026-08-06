@@ -1330,3 +1330,33 @@ tools/port_gcc47_api.py         the transplant's rule table -- four kinds now
 tools/fetch-pinned.sh           pinned fetch, shared with stage 3
 .github/workflows/hermetic-*    one box per rung; each triggers on itself only
 ```
+
+## Failures this chain has that stage 5 already catches
+
+**Not a merge plan, and deliberately not one.** Stage 5's model assumes a
+*sysroot* — a fixed base to build against — and stage 4 is the thing that
+produces that base. Its rungs are ordered by bootstrap necessity rather than by
+dependency: rung 1 has no compiler, and every stage-5 recipe assumes one. Until
+stage 5 boots and rebuilds itself we do not know which parts of that model
+survive contact with a bootstrap, so designing the merge now would be guessing.
+
+**What this is instead: evidence, accumulated as it arrives.** Each row is a
+real failure in this chain that turned out to be a shape stage 5 already
+handles. When the merge is designed, this is the list it has to answer —
+written from what went wrong rather than from what someone expected to.
+
+| what happened here | what it is | what stage 5 does about it |
+|---|---|---|
+| The trim printed `5707 MB -> 1761 MB` and `VERON-TRIM-OK` while the strip pass had silently not run | a gate that **reports** instead of **refusing** | `--mode fail` on the reconciler, installs and linked: the check is a gate, and unchecked is a failure |
+| `[ -x "$STRIP" ]` where `$STRIP` is the sentinel string `OWN`, skipping the largest cut in the script | a name used in a way nothing verifies | the selftest walks the AST and fails on any name a function loads but nothing binds |
+| A size guard demanding `< 1024 MB` from a "~481 MB" figure never measured, which failed a correct run | a number typed from memory | `PENDING` digests: measure, print, refuse — a value enters the tree only after a run produced it |
+| `TRIM_LOG` unset, so a special-builtin redirect killed the script and the trim became a no-op | a producer changed and a consumer was left behind | the marker-key gate compares what `cmd_checkpoint` writes against every key any reader takes |
+| A `--static` fallback that triggered on configure failing, when it was the **link** that failed | a fallback that cannot see the failure it exists for | every detector reports what it measured, and its own coverage: `54 unchecked` is printed, not hidden |
+
+**The pattern underneath all five:** stage 4 tells you what it did; stage 5
+tells you what it *proved*, and refuses when it proved nothing. That is the
+property to carry across, and it is worth more than any particular tool.
+
+Add to this table whenever a stage-4 failure turns out to have a stage-5 answer.
+It costs a line and it is the only version of this specification that will be
+written from evidence.
