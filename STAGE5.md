@@ -448,6 +448,74 @@ stage4-complete and **verified as `=y`, hard** — `olddefconfig` can silently
 demote a symbol to `=m`, and only a `grep "=y"` tells that from success.
 **This requires a stage 0–4 rerun before wlroots is worth writing.**
 
+### The boot artefact: an ESP tree, and wrappers around it
+
+**The base is a directory, not an image.** Everything a user might want is a
+different way of wrapping the same files:
+
+```
+EFI/BOOT/BOOTAA64.EFI       <- Image, renamed. The kernel's EFI stub IS the
+                               bootloader, so there is no GRUB to configure.
+EFI/BOOT/initramfs.cpio.gz  <- only if the overlay design keeps one
+```
+
+| output | how it is made | for |
+|---|---|---|
+| `.img` | GPT + FAT partition holding the tree, plus an ext4 root | `dd` to USB, any UEFI aarch64 machine, qemu, UTM |
+| hybrid ISO | `xorriso -e` with the tree as the El Torito EFI image, squashfs root | Ventoy, and a live-try image — the same work |
+| dual boot | copy the tree into an existing ESP under `EFI/veron/`, then `efibootmgr` | a machine that already has an OS |
+| AVF / crosvm / `-kernel` | the two files used directly, no wrapper | Android's Virtualization Framework, CI |
+
+**Why the tree and not the image.** An ISO cannot be derived from a GPT image
+without unpacking it, and the dual-boot case wants the files rather than a
+disk. With the tree as the artefact every wrapper is additive and none depends
+on another; with the image as the artefact the ISO becomes an unpack-and-repack,
+which is the shape that goes stale.
+
+**The root filesystem is the split that cannot be avoided:** `.img` wants
+ext4-in-a-partition, ISO wants squashfs-in-a-file. Same content, different
+container — and `veron rootfs` already produces the canonical tar, so both are
+packagings of *that*. So the base is two artefacts, the **ESP tree** and
+**`rootfs.tar`**, and each output is a recipe for combining them.
+
+**Determinism lives in the wrappers, and that is the argument for the split.**
+A directory of files is trivially reproducible. GPT disk and partition GUIDs,
+FAT volume IDs and per-file timestamps, ISO creation dates — every one is a
+place a random value appears and breaks `VERON-IMAGE-REPRO-OK` in a way that
+looks like a real regression. All are settable (`mkfs.vfat -i`, `sgdisk -U`,
+`SOURCE_DATE_EPOCH`), and keeping the tree as the base makes each wrapper's
+determinism a separate small problem instead of one large one.
+
+**Build order:** the tree first, booted with `-bios edk2-aarch64-code.fd` and
+`-drive file=fat:rw:esp/` — no partition table, no filesystem image, which
+tests the EFI stub and the kernel command line in isolation. Then `.img`, which
+is the only wrapper B5.5 needs. The ISO is worth doing when there is a desktop
+to try rather than a console.
+
+**Two things this leaves open**, both decided by the storage model rather than
+by the packaging:
+
+- **Whether an initramfs survives at all.** With `EXT4_FS=y` and virtio-blk the
+  kernel can mount root directly. But assembling a read-only base plus a
+  writable overlay needs something to run before `/` is final, and an initramfs
+  is where that normally lives. Overlay ⇒ keep one; read-write root ⇒ drop it.
+- **Where the kernel command line comes from.** No bootloader means no
+  `cmdline` file. Either `CONFIG_CMDLINE` is baked in — which fixes
+  `root=PARTUUID=…` as a constant, and *helps* reproducibility — or the ESP
+  carries a UEFI shell script.
+
+### What does not work, so nobody promises it
+
+**Apple Silicon on bare metal: no.** Macs expose no UEFI; they boot through
+iBoot, so Linux there means the Asahi chain (`m1n1` → U-Boot → EFI) and our
+image would be booting someone else's bootloader stack. **As a VM it is one of
+the better places to run Veron** — UTM or qemu with Hypervisor.framework gives
+near-native aarch64. Intel Macs are x86-64 and out of scope entirely.
+
+**Ventoy wants an ISO.** It chainloads an ISO's own EFI bootloader out of an
+El Torito structure; raw `.img` support exists and is the weaker path. That is
+the reason the ISO is a real second output rather than a rename.
+
 **Two toolbox compromises come due here.** qemu is linked dynamically because
 Ubuntu no longer ships `libmount.a` and glib's static chain cannot be completed
 from apt; and the UEFI firmware is the prebuilt blob qemu vendors, covered by
