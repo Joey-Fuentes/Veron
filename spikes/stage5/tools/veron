@@ -1168,8 +1168,26 @@ def report_package(name, r, destdir, provider, timings, declared_digest):
                   else f"   [pinned: CHANGED, recipe has {declared_digest[:12]}]")
     print(f"    {len(lines)} path(s), {total / 1048576:.1f} MiB, "
           f"digest {digest[:16]}{pinned}")
-    for l in lines:
-        print(f"      {l}")
+    # THE LISTING IS CAPTURED, NOT DISPLAYED, AND THAT WAS THE WRONG WAY
+    # ROUND. Every path with its sha256 and size went to the console -- 14632
+    # of them across 62 packages -- so a build log became several megabytes of
+    # `usr/lib/python3.14/site-packages/yaml/scanner.py` and the four lines
+    # somebody actually opens the log to read were buried in it.
+    #
+    # THE EVIDENCE DOES NOT MOVE. `veron installs --write` puts the same
+    # listing in packages/<name>/installs.txt, the digest above is over
+    # exactly those bytes, and both travel in the artifact. Printing it as
+    # well never added a fact -- it added scroll.
+    #
+    # The digest is the console's version of the listing: sixteen characters
+    # that change if any path, size or byte does. A summary that can be
+    # verified is worth more than a listing nobody reads.
+    #
+    # --verbose-listing prints it anyway, for the case where the artifact is
+    # not to hand and a single package is being stared at.
+    if os.environ.get("VERON_LIST_FILES") == "1":
+        for l in lines:
+            print(f"      {l}")
 
 
 def cmd_build(a):
@@ -1365,19 +1383,28 @@ def cmd_build(a):
                             print(f"  --- diagnostic: {d['name']} ---")
                             run_step(d, logf, a.dry_run)
                     return 1
-            # WHAT THIS PACKAGE PUT IN THE IMAGE, ON THE CONSOLE, EVERY FILE.
+            # WHAT THIS PACKAGE PUT IN THE IMAGE -- COUNTED AND HASHED HERE,
+            # LISTED IN THE ARTIFACT.
             #
             # The console used to carry every line every compiler emitted --
             # hundreds of thousands of them, in which the one fact worth
-            # keeping was invisible. What matters afterwards is not how a file
-            # was produced but WHICH files exist, how big they are and what
-            # they hash to; that is what the manifest, the ledger and G3 all
-            # read, and it is what someone auditing an image asks for.
+            # keeping was invisible. Replacing that with every INSTALLED path
+            # was a large improvement and still the same mistake one size
+            # down: 14632 lines of sha256-and-path across 62 packages, in
+            # which the four lines somebody opens a log to read were again
+            # invisible.
             #
-            # Compiler output is in driver/<pkg>.log and in the collected
-            # artifact. This is the summary that replaces it, and it is the
-            # same listing that seeds [installs] -- one computation, printed
+            # What matters afterwards is not how a file was produced but WHICH
+            # files exist, how big they are and what they hash to -- and the
+            # DIGEST answers all three in sixteen characters that change if
+            # any of them do. The listing itself lives in
+            # packages/<pkg>/installs.txt and in the collected artifact, which
+            # is where an audit reads it from anyway.
+            #
+            # Compiler output is in driver/<pkg>.log. One computation, summarised
             # here and pinned there, rather than two that can disagree.
+            # VERON_LIST_FILES=1 prints the full listing when a single package
+            # is being stared at and the artifact is not to hand.
             if not a.dry_run:
                 learn(name, os.path.join(roots["dest"], name))
                 report_package(name, p["recipe"],
