@@ -555,6 +555,13 @@ jobs:
       # something that VARIES. A first run failing to reproduce is the spike
       # working; the divergence goes on the declared list.
       - name: 'Build the image and probe reproducibility'
+        env:
+          # THIRD TIME. The git-pinned mirror step needed this and lacked it;
+          # the checkpoint step got HTTP 403 for want of it; and now a 1.7 GB
+          # image that built and reproduced byte-for-byte went nowhere because
+          # `gh` had no token. Each time the step failed AFTER doing all its
+          # real work, and each time the fix was two lines.
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           cd spikes/stage5/out
@@ -621,6 +628,28 @@ jobs:
           else
             echo "  image too large to publish: $((asset/1048576)) MB, cap is 2 GB"
           fi
+          # A SMALL BUNDLE OF EXACTLY WHAT LOGIN NEEDS, BESIDE THE FULL IMAGE.
+          #
+          # rootfs.img.tar.zst is 1.7 GB -- fine for a release, useless for
+          # anyone iterating on the boot path who has to move it first. The
+          # boot question is only about dinit, busybox, a shell and /etc, and
+          # those are a few megabytes. Testing `console` against this bundle
+          # answers the same question as testing against the full image, and
+          # answers it in a minute instead of a download.
+          #
+          # Built from the merged sysroot rather than from the recipes, so it
+          # is the real thing rather than a reconstruction.
+          mkdir -p loginkit
+          for f in bin/busybox bin/sh usr/bin/dinit usr/bin/dinitctl \
+                   usr/bin/dinit-check usr/bin/bash sbin/dinit; do
+            [ -e "sysroot/$f" ] && { mkdir -p "loginkit/$(dirname "$f")"; \
+              cp -a "sysroot/$f" "loginkit/$f"; } || true
+          done
+          cp -a sysroot/etc loginkit/etc 2>/dev/null || true
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+              -czf loginkit.tar.gz loginkit
+          printf '  loginkit.tar.gz: %s (dinit, busybox, a shell and /etc)\n' \
+            "$(du -h loginkit.tar.gz | cut -f1)"
           rm -f rootfs.img.tar.zst
 
       # BOOT. The ladder's initramfs already mounts mount_tag veronsysroot over
@@ -816,6 +845,13 @@ jobs:
 
       # if: always() ON THE UPLOAD TOO. A conditional upload attached to an
       # unconditional collect just moves the hole one step later.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: veron-stage5-loginkit-${{ github.run_id }}
+          path: spikes/stage5/loginkit.tar.gz
+          if-no-files-found: ignore
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
