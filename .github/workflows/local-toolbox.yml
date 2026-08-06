@@ -338,9 +338,15 @@ jobs:
             echo "  bwrap: static"
           else
             echo "  bwrap static FAILED -- falling back to dynamic"
-            grep -hiE "cannot find|undefined reference|error:" \
+            # THE LINE ABOVE collect2 IS THE ONE THAT SAYS WHY. `grep error:`
+            # matched only "collect2: error: ld returned 1 exit status",
+            # which reports that the link failed and not what it could not
+            # find -- the same uselessness as tailing six lines of a ninja
+            # log. ld's own message is the line before.
+            grep -hB2 -iE "collect2:|cannot find|undefined reference" \
               cfg-static.log b-static.log 2>/dev/null \
-              | sort -u | head -6 | sed 's/^/    /'
+              | grep -viE "^--$" | sort -u | head -8 | sed 's/^/    /'
+            cp cfg-static.log b-static.log ../out/ 2>/dev/null || true
             bw "" dynamic || {
               echo "  bwrap dynamic FAILED too"
               tail -15 b-dynamic.log 2>/dev/null | sed 's/^/    /'
@@ -359,8 +365,23 @@ jobs:
           out/bwrap --help 2>&1 | grep -q -- '--overlay-src' \
             && echo "  --overlay-src present" \
             || { echo "  this bwrap has no --overlay-src"; exit 1; }
-          out/bwrap --unshare-all --ro-bind / / /bin/true \
-            && echo "  it sandboxes: --unshare-all ran a command"
+          # THE SYSCTL, BECAUSE UBUNTU 24.04 RESTRICTS UNPRIVILEGED USERNS.
+          # stage5-isolate has carried this since it was written; this job did
+          # not, so `--unshare-all` failed with
+          #   bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted
+          # which reads like a bwrap fault and is an AppArmor policy.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 \
+            2>/dev/null || true
+          # AND THE SMOKE TEST DOES NOT FAIL THE JOB. Whether THIS runner
+          # permits a user namespace says little about the machine someone
+          # downloads the artifact onto, and losing qemu over it is the
+          # mistake the fallback above already fixed once.
+          if out/bwrap --unshare-all --ro-bind / / /bin/true 2>/tmp/bw.err; then
+            echo "  it sandboxes: --unshare-all ran a command"
+          else
+            echo "  --unshare-all did not run here: $(head -1 /tmp/bw.err)"
+            echo "    (a runner restriction, not necessarily a broken bwrap)"
+          fi
 
       - name: 'PROVE IT: run an aarch64 binary on this x86_64 runner'
         run: |

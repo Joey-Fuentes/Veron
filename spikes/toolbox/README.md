@@ -206,8 +206,15 @@ point the tier-2 caveat above disappears entirely.
 
 ## Static is the goal, and one of the two gets there today
 
-**bwrap does.** Its only dependency is libcap, apt ships `libcap.a`, and the
-result is one file that runs anywhere. It is built here from the same pinned
+**bwrap was supposed to.** Its only dependency is libcap and the intent was
+one file that runs anywhere -- but the static link fails on Ubuntu 24.04 for
+the same reason qemu's does: apt ships the shared library and not the archive.
+The job falls back to dynamic and says so, because a dynamic bwrap needs
+libcap on the host and is not the portable thing this artifact is for.
+
+Both therefore wait on the same fix -- built as stage-5 packages, against
+libraries this chain built, where static is a flag rather than a fight with
+someone else's packaging. It is built here from the same pinned
 tarball `stage5-isolate` uses, and checked the same way -- `--overlay-src`
 present, `--unshare-all` actually sandboxes -- because the copy people
 download deserves the assertion the spike makes for itself.
