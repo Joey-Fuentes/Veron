@@ -658,10 +658,16 @@ jobs:
           #
           # `veron loginkit` resolves PT_INTERP and the transitive DT_NEEDED
           # closure out of the sysroot, follows each soname to the versioned
-          # file behind it, drops the sysroot's ld.so.cache (it names paths
-          # the kit does not reproduce), and REFUSES to write a kit whose
-          # programs cannot be loaded from it. A hand-written file list
-          # cannot do that and cannot be made to.
+          # file behind it, REPRODUCES THE SYSROOT'S LAYOUT rather than just
+          # its contents, and REFUSES to write a kit whose programs cannot be
+          # loaded from it. A hand-written file list cannot do that and cannot
+          # be made to.
+          #
+          # THE LAYOUT HALF WAS LEARNED THE SAME WAY. The sysroot is
+          # merged-usr -- /lib is a SYMLINK to usr/lib -- and the first
+          # version materialised it as a real directory, so the libraries
+          # landed at lib/ while ld.so searched usr/lib. It reported
+          # VERON-LOGINKIT-OK and the guest still could not load dinit.
           python3 ../tools/veron --sysroot ../sysroot loginkit --kit loginkit
           # WRITTEN WHERE THE UPLOAD LOOKS, WHICH IS NOT WHERE THIS STEP
           # STANDS. The artifact declares spikes/stage5/loginkit.tar.gz and

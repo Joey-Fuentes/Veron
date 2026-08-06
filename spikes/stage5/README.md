@@ -731,6 +731,123 @@ escalates to KILL so no qemu can outlive the step. Measured against a stub
 that hangs like a real getty: **3s instead of 180s**, and the failure path
 still gives up and still names the missing service.
 
+### Every file, its sha256 and its exact size — on pass or fail
+
+Two records, and they did not carry the same facts.
+
+**`installs/<pkg>.txt`** — one per package, over the DESTDIR, `f <sha256>
+<size> <path>` and `l <target> <path>` for symlinks. This is the 14,632 lines
+that used to scroll past on the console, moved to a file instead of deleted.
+62 packages, ~765 KB in the last run.
+
+**`manifest/files.tsv`** — every path in the *merged* image, which is a larger
+set: the 62 DESTDIRs plus the stage-4 sysroot underneath them. It recorded
+path, owning package, kind and sha256 — **and no size**, while the listings
+beside it recorded size for the same files. Two records of one fact
+disagreeing about what the fact includes. It was also written to `out/` and
+collected by nothing, so the single file answering "what is actually in this
+image" did not survive the runner.
+
+Both fixed. `files.tsv` gains a fifth column, *appended* rather than inserted,
+because `veron compare` reads `parts[0..3]` behind a `len(parts) >= 4` guard
+and `selfrebuild.sh` uses `cut -f2` — both verified still working against a
+regenerated manifest. `veron manifest` also now prints the total size, so
+"where did 619 MB go" is answerable from the log rather than by walking a
+filesystem that may no longer exist.
+
+Where they end up, and when:
+
+| record | written by | covers | survives a failed build |
+|---|---|---|---|
+| `installs/<pkg>.txt` | `veron build`, per package as it finishes | that package's DESTDIR | **yes** — whatever built is kept |
+| `installs/<pkg>.txt` | `veron installs` | packages a checkpoint restored | yes, if the gate ran |
+| `installs/<pkg>.txt` | `veron collect` backfill | anything neither wrote | **yes** — collect is `always()` |
+| `manifest/files.tsv` | `veron manifest` | the whole merged image | only if the build got that far |
+
+`veron collect` is `if: always()` and the diag upload is `if: always()` with
+`if-no-files-found: error`, so the per-package listings ship on pass or fail
+unconditionally. `files.tsv` describes a merged image, so it exists only when
+there was one to merge — that is a real limit and is stated rather than
+papered over.
+
+### The kit reported OK and still could not load
+
+With the closure resolver in place the kit built clean —
+`VERON-LOGINKIT-OK`, 8 library files, 17 MB — and the guest still said:
+
+```
+/usr/bin/dinit: error while loading shared libraries:
+libstdc++.so.6: cannot open shared object file
+```
+
+with the file present, readable, and 21 MB of it sitting on the mount.
+`LD_LIBRARY_PATH=/lib:/usr/lib` then printed `Dinit version 0.22.1.`, which
+cleared the bytes and convicted the path.
+
+**The sysroot is merged-usr: `/lib` is a symlink to `usr/lib`.** The copy step
+called `os.makedirs` on the kit side and turned that symlink into a real
+directory, so every library landed at `kit/lib/...` while `kit/usr/lib/`
+stayed empty — and this glibc's built-in search path is `/usr/lib`. The check
+searched both `lib` and `usr/lib`, found the files, and passed. **A false
+green, which is the worst kind, and it shipped one round before it was
+caught.**
+
+Two fixes, because the copy bug and the check that missed it are different
+faults:
+
+- The kit now **reproduces the sysroot's layout**, recreating any path
+  component that is a symlink rather than materialising it, and ensuring the
+  realpath directory behind it exists.
+- The check resolves each soname on **both** sides and compares where it
+  lands. Against a deliberately flattened kit it names all five:
+  `libstdc++.so.6 resolves to lib/... in the kit but usr/lib/... in the
+  sysroot`.
+
+A layout is part of what makes a root work. A tree holding every required file
+in the wrong shape contains everything and runs nothing.
+
+Verified by booting the real dinit as PID 1, over 9p, against the stage-4
+sysroot plus the stage-5 dinit:
+
+```
+VERON-SWITCHROOT-EXEC  /usr/bin/dinit
+[  OK  ] early-filesystems
+[  OK  ] console
+[  OK  ] boot
+veron# /usr/bin/dinit --version
+Dinit version 0.22.1.
+veron# echo "PATH=[$PATH]"
+PATH=[/usr/bin:/usr/sbin:/bin:/sbin]
+```
+
+Also `dinitctl list` answers `connecting to socket: /run/dinitctl: No such
+file or directory` — dinit is not started with `--socket-path` and does not
+place one where dinitctl looks. Recorded, not fixed.
+
+### The collect report hid the two entries worth reading
+
+`VERON-COLLECT-OK 67 entries (0 failed)` was true and useless. Entries are
+added driver-logs first, then 62 install listings, then the boot consoles — so
+the boot logs ranked 64th and 65th and the console said
+`... and 42 more (see INDEX.txt)`. They *were* collected; nothing on screen
+said so, and confirming it meant reconciling a count by hand against an
+artifact nobody had downloaded.
+
+A count that has to be checked by arithmetic is not a report. Collect now
+walks the bundle it just wrote and says what is in each directory:
+
+```
+VERON-COLLECT-OK  14 entries (0 failed) -> out/diag
+  boot/          2 file(s)   boot-harness.log, boot-system.log
+  driver/        1 file(s)   veron-system.log
+  installs/      8 file(s)   cairo.txt, cmake.txt, curl.txt, git.txt, +4 more
+  probe/         1 file(s)   meson-cmake.txt
+```
+
+Failures print first and unconditionally. The summary is read back **off
+disk** rather than accumulated as the copies are attempted, because those two
+disagreed once already — which is the entire reason this section exists.
+
 ### The install listings, and where they go
 
 Every installed path with its size and sha256 used to go to the console —

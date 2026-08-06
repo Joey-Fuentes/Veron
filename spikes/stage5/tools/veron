@@ -1639,7 +1639,7 @@ def cmd_collect(a):
     # why the listings never arrived. keep() opens the destination for
     # writing; with no directory to open it into, every copy raised
     # FileNotFoundError and was recorded as FAILED in an index nobody read.
-    for sub in ("driver", "buildsys", "probe", "installs", "boot"):
+    for sub in ("driver", "buildsys", "probe", "installs", "boot", "manifest"):
         os.makedirs(os.path.join(diag, sub), exist_ok=True)
 
     index, cap = [], a.max_bytes
@@ -1693,6 +1693,19 @@ def cmd_collect(a):
     # It is the same fault as `cp boot/Image .` in a step that had already
     # cd'd into out/: a path written as though the code ran somewhere else,
     # and an error path quiet enough that the result looked like success.
+    # THE WHOLE-IMAGE MANIFEST, WHICH IS A DIFFERENT SET FROM THE LISTINGS.
+    #
+    # `installs/` covers the 62 DESTDIRs -- what stage 5 BUILT. The image also
+    # carries the stage-4 sysroot underneath it, and files.tsv is the only
+    # record of every path in the merged system with its owner and digest.
+    # It was written to out/ and collected by nothing, so the one file that
+    # answers "what is actually in this image" did not survive the runner.
+    for fn in ("files.tsv", "IMAGE-SHA256"):
+        p = os.path.join(a.out, fn)
+        if os.path.isfile(p):
+            keep(p, os.path.join(diag, "manifest", fn),
+                 f"manifest/{fn}  every path in the merged image")
+
     lst = os.path.join(a.out, "installs")
 
     # BACKFILL, BECAUSE THE TWO WRITERS ABOVE BOTH HAVE FAILURE MODES.
@@ -1846,16 +1859,39 @@ def cmd_collect(a):
     # reporting that the artifact is incomplete. But the MARKER tells the
     # truth, and the failures print first rather than being truncated away
     # behind twenty-five successes.
+    # WHAT THE BUNDLE CONTAINS, READ BACK OFF DISK.
+    #
+    # THE FIRST VERSION PRINTED THE FIRST 25 ENTRIES IN INSERTION ORDER AND
+    # TRUNCATED THE REST, WHICH HID THE TWO THAT MATTER MOST. Driver logs are
+    # added first, then 62 install listings, then the boot consoles -- so the
+    # boot logs ranked 64th and 65th and the console said
+    # `... and 42 more (see INDEX.txt)`. They WERE collected; the run had no
+    # way to say so, and confirming it took counting entries by hand against
+    # an artifact nobody had downloaded.
+    #
+    # A count that has to be reconciled by arithmetic is not a report. This
+    # walks `diag` itself and says what is in each directory, so the answer to
+    # "did the boot logs survive" is on screen rather than inferred. Reading
+    # the tree back also means the summary describes what was WRITTEN rather
+    # than what was attempted -- the two disagreed once already.
     failed = [l for l in index if l.lstrip().startswith("FAILED")]
     print(f"VERON-COLLECT-{'INCOMPLETE' if failed else 'OK'}  "
           f"{len(index)} entries ({len(failed)} failed) -> {diag}")
-    for line in failed[:25]:
+    for line in failed:
         print(line)
-    for line in [l for l in index if l not in failed][:25]:
-        print(line)
-    shown = min(len(failed), 25) + min(len(index) - len(failed), 25)
-    if len(index) > shown:
-        print(f"  ... and {len(index) - shown} more (see INDEX.txt)")
+    for sub in sorted(os.listdir(diag)):
+        p = os.path.join(diag, sub)
+        if not os.path.isdir(p):
+            continue
+        names = sorted(os.listdir(p))
+        size = sum(os.path.getsize(os.path.join(p, n)) for n in names)
+        shown = ", ".join(names[:4]) + (f", +{len(names) - 4} more"
+                                        if len(names) > 4 else "")
+        print(f"  {sub + '/':<12} {len(names):>3} file(s), {size / 1024:>8.1f} KiB"
+              f"{'  ' + shown if names else ''}")
+    for line in index:
+        if line.lstrip().startswith("ABSENT"):
+            print(line)
     return 0
 
 
@@ -1865,6 +1901,22 @@ def file_manifest(root):
     Required whether the system ends up FHS or content-addressed, and the one
     part that is genuinely painful to retrofit -- which is why it exists at
     n=2 rather than being deferred.
+
+    THE SIZE IS RECORDED, AND IT WAS NOT. This carried path, kind and sha256
+    and nothing else, so the image-wide manifest could say a file's contents
+    had changed and not how big it was -- while the per-package listings
+    beside it recorded `f <sha256> <size> <path>` for the same files. Two
+    records of the same fact, disagreeing on what the fact includes.
+
+    Size is not redundant with the digest. A digest answers "is this the same
+    file"; a size answers "what is in this image and where did 619 MB go",
+    which is the question the trim work is made of, and answering it should
+    not require walking a filesystem that may no longer exist.
+
+    A FIFTH COLUMN IS APPENDED RATHER THAN INSERTED. `veron compare` reads
+    parts[0..3] behind a `len(parts) >= 4` guard and selfrebuild.sh uses
+    `cut -f2` -- both keep working. Inserting would have broken both silently,
+    which is the shape of the `read` bug the selftest now watches for.
     """
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
@@ -1873,9 +1925,13 @@ def file_manifest(root):
             full = os.path.join(dirpath, fn)
             rel = os.path.relpath(full, root)
             if os.path.islink(full):
-                out.append((rel, "symlink", os.readlink(full)))
+                out.append((rel, "symlink", os.readlink(full), 0))
             else:
-                out.append((rel, "file", sha256_file(full)))
+                try:
+                    out.append((rel, "file", sha256_file(full),
+                                os.path.getsize(full)))
+                except OSError as e:
+                    out.append((rel, "unreadable", type(e).__name__, 0))
     return sorted(out)
 
 
@@ -2102,9 +2158,48 @@ def cmd_loginkit(a):
                 return d + "/" + soname
         return None
 
+    def ensure_dir(rel_dir):
+        """Recreate rel_dir in the kit, PRESERVING any component that is a
+        symlink in the sysroot.
+
+        THE SYSROOT IS MERGED-USR AND THE FIRST VERSION OF THIS FLATTENED IT.
+        `/lib` is a symlink to `usr/lib`. `os.makedirs` on the kit side turned
+        that into a real directory, so every library landed at
+        `kit/lib/libstdc++.so.6` while `kit/usr/lib/` stayed empty -- and this
+        glibc's built-in search path is /usr/lib. The kit passed its own
+        check, because the check looked in `lib` too, and the guest said:
+
+            /usr/bin/dinit: error while loading shared libraries:
+            libstdc++.so.6: cannot open shared object file
+
+        with the file present, readable, and 21 MB of it sitting right there
+        on the 9p mount. Proved by re-running with LD_LIBRARY_PATH=/lib:/usr/lib,
+        which printed `Dinit version 0.22.1.` -- so the bytes were fine and
+        only the path was wrong.
+
+        A layout is part of what makes a root work. Copying files out of one
+        and into a different shape produces a tree that contains everything
+        and runs nothing.
+        """
+        cur = ""
+        for part in (rel_dir.split("/") if rel_dir else []):
+            cur = f"{cur}/{part}" if cur else part
+            src, dst = os.path.join(sr, cur), os.path.join(kit, cur)
+            if os.path.islink(src):
+                if not os.path.lexists(dst):
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    os.symlink(os.readlink(src), dst)
+            elif not os.path.isdir(dst):
+                os.makedirs(dst, exist_ok=True)
+        # AND THE TARGET OF ANY SYMLINKED COMPONENT MUST EXIST, or writing
+        # through the link fails. realpath resolves the whole chain at once.
+        real = os.path.relpath(os.path.realpath(os.path.join(sr, rel_dir)), sr)
+        if not real.startswith(".."):
+            os.makedirs(os.path.join(kit, real), exist_ok=True)
+
     def copy(rel):
         src, dst = os.path.join(sr, rel), os.path.join(kit, rel)
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        ensure_dir(os.path.dirname(rel))
         if os.path.islink(src):
             t = os.readlink(src)
             if not os.path.lexists(dst):
@@ -2115,7 +2210,7 @@ def cmd_loginkit(a):
             nxt = os.path.normpath(os.path.join(os.path.dirname(rel), t))
             if os.path.exists(os.path.join(sr, nxt)):
                 copy(nxt)
-        else:
+        elif not os.path.exists(dst):
             shutil.copy2(src, dst)
 
     # THE ROOTS: what someone booting this kit needs to get to a shell.
@@ -2151,13 +2246,18 @@ def cmd_loginkit(a):
     if os.path.isdir(os.path.join(sr, "etc")):
         shutil.copytree(os.path.join(sr, "etc"), os.path.join(kit, "etc"),
                         symlinks=True, dirs_exist_ok=True)
-        # THE HOST'S CACHE DESCRIBES THE HOST. ld.so.cache names absolute
-        # paths in the sysroot that the kit does not reproduce; a stale cache
-        # is worse than none, because ld.so trusts it before it searches.
-        c = os.path.join(kit, "etc", "ld.so.cache")
-        if os.path.exists(c):
-            os.remove(c)
-            print("  removed etc/ld.so.cache -- it describes the sysroot, not this kit")
+        # ld.so.cache IS KEPT, AND THE FIRST VERSION DELETED IT.
+        #
+        # The reasoning for deleting was that the cache "describes the sysroot,
+        # not this kit". Plausible, and wrong on both halves: the sysroot IS a
+        # root, so the paths it names are the same ones the kit reproduces, and
+        # an entry pointing at a library the kit does not carry costs one failed
+        # open before ld.so falls back to searching.
+        #
+        # It was also not the fault it was blamed for. Booted with the cache
+        # restored, dinit failed identically -- so the cache was never the
+        # thing, and deleting it only made the kit differ from the image it is
+        # supposed to be a slice of. Measured, then reverted.
 
     for d in ("proc", "sys", "dev", "run", "tmp", "root", "mnt"):
         os.makedirs(os.path.join(kit, d), exist_ok=True)
@@ -2201,6 +2301,39 @@ def cmd_loginkit(a):
                          if in_sr else "the SYSROOT does not have it either")
                 broken.append(f"{rel}: no {kind} {name} in the kit "
                               f"({where})")
+            elif exact is None:
+                # PRESENT IS NOT THE SAME AS FINDABLE, AND THAT SHIPPED A
+                # FALSE GREEN.
+                #
+                # The sysroot is merged-usr: /lib is a SYMLINK to usr/lib. An
+                # earlier copy step materialised it as a real directory, so
+                # every library landed at kit/lib/... while kit/usr/lib/
+                # stayed empty. This check searched both and said OK. The
+                # guest disagreed:
+                #
+                #   /usr/bin/dinit: error while loading shared libraries:
+                #   libstdc++.so.6: cannot open shared object file
+                #
+                # with the file present and readable. ld.so's built-in search
+                # path is /usr/lib; nothing consults `lib` unless something
+                # points it there. `LD_LIBRARY_PATH=/lib:/usr/lib` then
+                # printed `Dinit version 0.22.1.`, which is how the bytes were
+                # cleared and the path convicted.
+                #
+                # So the kit must reproduce the sysroot's LAYOUT, not merely
+                # its contents, and the way to check that is to resolve the
+                # same name on both sides and compare where it lands.
+                kd = next(d for d in libdirs
+                          if os.path.exists(os.path.join(kit, d, name)))
+                k_real = os.path.relpath(
+                    os.path.realpath(os.path.join(kit, kd, name)), kit)
+                s_real = os.path.relpath(
+                    os.path.realpath(os.path.join(sr, find(name))), sr)
+                if k_real != s_real:
+                    broken.append(
+                        f"{rel}: {name} resolves to {k_real} in the kit but "
+                        f"{s_real} in the sysroot -- the layout was not "
+                        f"preserved, and ld.so searches the sysroot's")
         print(f"    {rel:<24} {'static' if not interp else 'needs ' + interp}")
     if broken:
         for m in sorted(set(broken)):
@@ -2808,21 +2941,23 @@ def cmd_manifest(a):
             # rather than merely absent from a list.
             skipped.append(name)
             continue
-        for rel, kind, val in file_manifest(d):
+        for rel, kind, val, size in file_manifest(d):
             if rel in total:
                 # TWO PACKAGES CLAIMING ONE PATH. At n=2 this cannot happen and
                 # the check looks pointless; at n=200 it is how a file gets
                 # attributed to the wrong derivation and `veron why` starts
                 # lying. Loud now, cheap now.
                 die(f"path collision: {rel} claimed by {total[rel][0]} and {name}")
-            total[rel] = (name, kind, val)
+            total[rel] = (name, kind, val, size)
     os.makedirs(roots["out"], exist_ok=True)
     mf = os.path.join(roots["out"], "files.tsv")
     with open(mf, "w") as f:
         for rel in sorted(total):
-            pkg, kind, val = total[rel]
-            f.write(f"{rel}\t{pkg}\t{kind}\t{val}\n")
-    print(f"VERON-MANIFEST-OK  {len(total)} paths, {mf}")
+            pkg, kind, val, size = total[rel]
+            f.write(f"{rel}\t{pkg}\t{kind}\t{val}\t{size}\n")
+    _bytes = sum(v[3] for v in total.values())
+    print(f"VERON-MANIFEST-OK  {len(total)} paths, "
+          f"{_bytes / 1048576:.1f} MiB, {mf}")
     print(f"  manifest-sha256  {sha256_file(mf)}")
     for name in skipped:
         print(f"  build-only, not in the image: {name}")
