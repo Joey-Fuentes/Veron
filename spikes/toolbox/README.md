@@ -280,6 +280,27 @@ PID 1 -- is the one piece of this project only testable at the END of a full
 run, and iterating on it through CI is forty minutes a cycle. With this it is
 seconds, against the same Image the release publishes.
 
+## Two things shipped pragmatically, both to be done properly in stage 5
+
+They are the same shape: take the workable answer now, and record that it is
+not the intended one, so nobody later mistakes the compromise for the design.
+
+| | now | in stage 5 |
+|---|---|---|
+| qemu linking | **dynamic**, with a loader shim, because Ubuntu no longer ships `libmount.a` and glib's static chain cannot be completed from apt | **static**, built against Veron's own glib, pixman and zlib -- all six of qemu's build dependencies are already recipes |
+| UEFI firmware | **the prebuilt blob qemu vendors** as `pc-bios/edk2-aarch64-code.fd.bz2`, covered by the qemu pin and signature but not built by anyone here | **EDK2 from source**, so `-bios` loads something this project compiled |
+
+**The firmware one is the more interesting admission.** qemu does not build
+EDK2; it ships the binary the EDK2 project built. So a boot using `-bios` runs
+firmware whose provenance stops at *"it was inside a tarball we verified"* --
+which is exactly the category `STAGE5.md` already flags as the firmware-blob
+problem, arriving early and by a side door.
+
+It touches nothing the chain BUILDS -- it is part of the machine the artifacts
+run on, like qemu itself -- and today it is packed and unused, because nothing
+passes `-bios` yet. When the EFI path is wired up, `TRUST-BOUNDARY.md` should
+say so at that point rather than carry a caveat about something we do not do.
+
 **One thing it cannot test yet:** `efi: UEFI not found`. `-machine virt` with
 no `-bios` gives no UEFI firmware, so the EFI stub has nothing to attach to.
 The symbols are in the kernel; exercising that path needs

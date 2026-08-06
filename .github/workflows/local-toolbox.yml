@@ -233,8 +233,27 @@ jobs:
           #
           # which reads like a qemu bug and is a packaging omission. The
           # emulator is invoked with -L pointing here.
+          # build/pc-bios, NOT THE SOURCE pc-bios. qemu ships its firmware
+          # COMPRESSED -- edk2-aarch64-code.fd.bz2 -- and decompresses it
+          # during the build; those "Generating pc-bios/edk2-*.fd with a
+          # custom command" lines in the ninja log are exactly that. Copying
+          # the source directory packs the .bz2 and qemu then cannot find the
+          # firmware, which is how a boot reported `efi: UEFI not found` with
+          # the file apparently right there.
+          #
+          # Both are merged: the build tree has the decompressed firmware, the
+          # source tree has everything the build did not touch.
           cp -r "qemu-${QEMU_VER}/pc-bios" out/pc-bios
+          cp -f "qemu-${QEMU_VER}"/build/pc-bios/*.fd out/pc-bios/ 2>/dev/null || true
+          cp -f "qemu-${QEMU_VER}"/build/pc-bios/*.bin out/pc-bios/ 2>/dev/null || true
           find out/pc-bios -name '*.dtb' -delete 2>/dev/null || true
+          # THE ONE THIS PROJECT ACTUALLY NEEDS, checked rather than assumed:
+          # aarch64 UEFI, without which -bios has nothing to load and the
+          # kernel's EFI stub cannot be exercised at all.
+          [ -s out/pc-bios/edk2-aarch64-code.fd ] \
+            && printf '  edk2-aarch64-code.fd: %s bytes\n' \
+                 "$(stat -c%s out/pc-bios/edk2-aarch64-code.fd)" \
+            || echo "  WARNING: no decompressed edk2-aarch64-code.fd -- EFI boot untestable"
           printf '  pc-bios: %s files, %s\n' \
             "$(find out/pc-bios -type f | wc -l)" "$(du -sh out/pc-bios | cut -f1)"
           chmod +x out/qemu-system-aarch64 out/qemu-aarch64-static
