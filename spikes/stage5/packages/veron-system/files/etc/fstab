@@ -7,6 +7,27 @@ proc            /proc     proc      nosuid,noexec,nodev   0 0
 sysfs           /sys      sysfs     nosuid,noexec,nodev   0 0
 devtmpfs        /dev      devtmpfs  mode=0755,nosuid      0 0
 devpts          /dev/pts  devpts    gid=5,mode=620        0 0
+# /dev/shm IS WHERE glibc PUTS POSIX SHARED MEMORY, AND WITHOUT IT NO WAYLAND
+# COMPOSITOR STARTS. shm_open(3) is implemented as open(2) under /dev/shm; with
+# nothing mounted there the call fails and wlroots reports
+#
+#     [types/wlr_linux_dmabuf_v1.c:537] Failed to allocate shm file for format table
+#     [types/wlr_keyboard.c:212] Failed to allocate shm file for keymap
+#     Segmentation fault
+#
+# -- and the segfault is wlroots dereferencing the failed keymap. That read as
+# a graphics bug for three runs: the visible errors were EGL and DRI2, and
+# /dev/dri/card0, /dev/dri/renderD128, both input nodes and a healthy
+# /run/seatd.sock were all present and correct.
+#
+# mode=1777 IS NOT DECORATION. /dev/shm is world-writable with the sticky bit
+# exactly like /tmp, because every user's client library creates files there
+# and none may delete another's.
+#
+# nosuid,nodev FOR THE SAME REASON /tmp CARRIES THEM: it is a world-writable
+# directory and neither a setuid binary nor a device node has any business
+# being created in one.
+tmpfs           /dev/shm  tmpfs     nosuid,nodev,mode=1777  0 0
 tmpfs           /run      tmpfs     nosuid,nodev,mode=755 0 0
 tmpfs           /tmp      tmpfs     nosuid,nodev          0 0
 
