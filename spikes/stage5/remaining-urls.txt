@@ -89,6 +89,22 @@ https://github.com/nghttp2/nghttp2/releases/download/v1.68.0/nghttp2-1.68.0.tar.
 https://download.gnome.org/sources/glib-networking/2.80/glib-networking-2.80.1.tar.xz
 https://download.gnome.org/sources/libsoup/3.6/libsoup-3.6.5.tar.xz
 https://github.com/p11-glue/p11-kit/releases/download/0.25.5/p11-kit-0.25.5.tar.xz
+# THE COMBINED DISTRIBUTION SUPERSEDES THESE TWO, and the reason is structural
+# rather than cosmetic: nothing in this set can build from two sources. Every
+# recipe has exactly one [source] and the driver has no second. tzcode without
+# tzdata is a zone compiler with no zones; tzdata without tzcode is data with
+# nothing to compile it. IANA also publishes tzdb-<version>.tar.lz containing
+# both, so one artifact makes one recipe possible.
+#
+# BLOCKED ON COMPRESSION. .tar.lz is LZIP -- not gzip, not xz, not lzma_alone.
+# `tar -xf` auto-detects gz, xz and bz2 and all 112 other recipes use one of
+# those; lzip needs an external binary that is not in the sysroot, not in
+# busybox, and not pinned. Mirroring it is still correct -- the bytes should be
+# ours either way -- but the recipe cannot fetch it until lzip is resolved.
+https://www.iana.org/time-zones/repository/releases/tzdb-2026c.tar.lz
+# Kept mirrored: the two-artifact form is what MIRRORS.tsv already carries, and
+# it is the fallback if the driver grows a second [source] instead of gaining
+# lzip.
 https://www.iana.org/time-zones/repository/releases/tzdata2026c.tar.gz
 https://www.iana.org/time-zones/repository/releases/tzcode2026c.tar.gz
 https://github.com/dosfstools/dosfstools/releases/download/v4.2/dosfstools-4.2.tar.gz
@@ -143,3 +159,27 @@ https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.28.1.t
 https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.28.1.tar.xz
 https://gstreamer.freedesktop.org/src/gst-libav/gst-libav-1.28.1.tar.xz
 https://wpewebkit.org/releases/wpewebkit-2.52.5.tar.xz
+
+# THREE PINS ADDED AFTER OPENING wpewebkit AND yambar, and one of them is a
+# RE-PIN that supersedes a line further up this file.
+#
+# unifdef: Source/cmake/OptionsWPE.cmake:25 is find_package(Unifdef REQUIRED).
+# WPE cannot configure without it. Not previously pinned, not in the sysroot,
+# and found only by reading WPE's cmake rather than by planning.
+https://dotat.at/prog/unifdef/unifdef-2.12.tar.xz
+# libyaml: yambar's meson.build:54 is dependency('yaml-0.1'), unguarded. The
+# artifact is named yaml-, not libyaml-, so artifact_name yields
+# yaml-0.2.5.tar.gz. A second upstream exists at
+# pyyaml.org/download/libyaml/yaml-0.2.5.tar.gz and is worth mirroring too.
+https://github.com/yaml/libyaml/releases/download/0.2.5/yaml-0.2.5.tar.gz
+# libidn2 2.3.8 SUPERSEDES the v2.3.7 GitLab archive pinned earlier. That one
+# is an archive of a tag: no configure, and its bootstrap fetches gnulib --
+# a network operation inside a sealed sandbox, so the pinned artifact was
+# unbuildable and gnutls carried --without-idn as a deferral. The GNU release
+# tarball ships configure and a detached signature.
+#
+# THE OLD ROW IS NOT REMOVED BY THIS FILE. mirror.py only adds, so
+# libidn2-v2.3.7.tar.gz stays in MIRRORS.tsv as a superseded artifact nothing
+# references. Whether the mirror should ever drop rows is unresolved and worth
+# deciding before the set grows much further.
+https://ftp.gnu.org/gnu/libidn/libidn2-2.3.8.tar.gz

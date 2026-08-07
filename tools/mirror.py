@@ -156,8 +156,17 @@ def artifact_name(url):
     """
     parts = [p for p in urlparse(url).path.split("/") if p]
     base = parts[-1] if parts else url
-    # A name that starts with a digit is a version, not a package.
-    if not re.match(r"^\d", base):
+    # A name that starts with a digit -- OR WITH v FOLLOWED BY ONE -- is a
+    # version, not a package.
+    #
+    # The `v` case was missed and nnn is where it showed: GitHub serves
+    # /jarun/nnn/archive/refs/tags/v5.2.tar.gz, whose basename is
+    # "v5.2.tar.gz" -- precisely the "release nobody can identify" this
+    # function exists to prevent, waved through because it does not begin with
+    # a digit. The candidate loop three lines down already used `^[v~]?\d`
+    # for the same job; this test did not, so the two halves of one rule
+    # disagreed.
+    if not re.match(r"^[v~]?\d", base):
         return base
     for marker in ("archive", "tags", "downloads", "releases", "download"):
         if marker in parts:
