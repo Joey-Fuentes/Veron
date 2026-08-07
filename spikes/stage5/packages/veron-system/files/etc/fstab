@@ -9,3 +9,51 @@ devtmpfs        /dev      devtmpfs  mode=0755,nosuid      0 0
 devpts          /dev/pts  devpts    gid=5,mode=620        0 0
 tmpfs           /run      tmpfs     nosuid,nodev,mode=755 0 0
 tmpfs           /tmp      tmpfs     nosuid,nodev          0 0
+
+# FIRMWARE IS A SEPARATE IMAGE, AND VERON SHIPS NONE.
+#
+# Nearly every WiFi chipset needs a vendor firmware blob loaded at runtime.
+# It is redistributable and it is not source: it cannot be built, only copied,
+# so it does not trace to the seed and it does not belong in an image whose
+# whole claim is that everything in it does. The same argument that moved the
+# selfrebuild payload out of the image applies here and is stronger, because
+# this is someone else's binary rather than our own build tree.
+#
+# So Veron provides the MECHANISM and the PLACE, and nothing else. The kernel
+# already has the firmware loader; this line is the mount point. A user who
+# wants firmware builds an ext4 image whose ROOT IS THE FIRMWARE TREE -- so
+# ath10k/, regulatory.db and so on sit at the top level, NOT under a nested
+# lib/firmware, because this image is mounted AT /lib/firmware and a nested
+# copy would land at /lib/firmware/lib/firmware. linux-firmware unpacks
+# straight into one, with any distro's tools, needing nothing Veron-specific.
+# A user who does not want firmware gets a silent skip.
+#
+#     mke2fs -t ext4 -L veron-firmware -d <tree> firmware.img 256M
+#
+# MEASURED, BOTH WAYS, ON THE REAL KERNEL:
+#   attached  ->  early-filesystems: mounted /dev/vda on /lib/firmware   rc=0
+#   absent    ->  /lib/firmware not mounted, no device ... (nofail)      rc=0
+#
+# THIS IS WHY A SEPARATE IMAGE RATHER THAN A WRITABLE DIRECTORY. The root is
+# read-only with a tmpfs overlay, so a blob dropped into /lib/firmware would
+# live in RAM and vanish on reboot. Mounting a second read-only image needs no
+# persistence, no writable root, and no change to the overlay -- and it keeps
+# the firmware out of files.tsv and IMAGE-SHA256, so a user swapping their
+# blobs does not invalidate the system's own integrity.
+#
+# LABEL RATHER THAN /dev/vdb. Device names are enumeration order: vdb under
+# qemu is whatever happens to attach second, and on real hardware it is
+# whatever the kernel probes second. A label is a property of the filesystem
+# the user made.
+#
+# nofail IS LOAD-BEARING -- see scripts/early-filesystems. Without it the
+# common case, no such device, would fail the service and take the console
+# down with it.
+#
+# WHAT THIS IS NOT: a claim that Veron supports any particular hardware.
+# ath9k is the interesting counter-case and is worth stating precisely rather
+# than loosely: most ath9k PCI parts need no firmware at all, while ath9k_htc
+# (USB) does. "Needs no firmware" and "has free firmware" are different
+# properties and only some hardware has the first. Which parts, exactly, is
+# research nobody has done here yet.
+LABEL=veron-firmware  /lib/firmware  ext4  ro,nosuid,nodev,nofail  0 0

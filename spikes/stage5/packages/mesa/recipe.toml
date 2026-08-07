@@ -48,7 +48,7 @@ optional_off = ["glx", "gles1", "gallium-rusticl", "gallium-va", "tools",
 [declared]
 configure_flags = [
   "-Dplatforms=wayland", "-Degl-native-platform=drm",
-  "-Dgallium-drivers=llvmpipe,softpipe,virgl", "-Dvulkan-drivers=swrast",
+  "-Dgallium-drivers=llvmpipe,softpipe,virgl", "-Dvulkan-drivers=",
   "-Dllvm=enabled", "-Dglx=disabled", "-Degl=enabled", "-Dgbm=enabled",
   "-Dgles1=disabled", "-Dgles2=enabled", "-Dshared-glapi=enabled",
   "-Dgallium-rusticl=false", "-Dgallium-va=disabled", "-Dvideo-codecs=",
@@ -74,6 +74,22 @@ a time, and every flag above exists.
 NO RUST, AND IT IS TRUE BY ACCIDENT RATHER THAN BY POLICY. meson.build:835 is \
 `if with_gallium_rusticl or with_nouveau_vk or with_tools.contains('etnaviv') \
 or with_virtgpu_kumquat` then `add_languages('rust', required: true)`. \
+NO VULKAN AT ALL, AND THE FIRST VERSION OF THIS RECIPE GOT IT WRONG. \
+-Dvulkan-drivers=swrast was chosen on the correct instinct -- pin it rather \
+than inherit ['auto'] -- and the wrong value. swrast is lavapipe, and \
+meson.build:697 is `with_bvh = with_amd_vk or with_intel_vk or with_swrast_vk \
+or with_freedreno_vk`, which at :705 makes `glslangValidator` REQUIRED. \
+glslang is not in this set and is not pinned, so configure died:
+
+    meson.build:702:15: ERROR: Program 'glslangValidator' not found
+
+Nothing in this stack uses Vulkan. wlroots is pinned to -Drenderers=gles2, \
+labwc renders through wlroots, and the EGL/GBM/GLES2 path mesa exists here to \
+provide needs none of it. The empty value pins the option just as firmly \
+against an upstream default change, costs a large build, and removes a build \
+tool the set does not have. `tools=` and `video-codecs=` are empty for the \
+same reason.
+
 `vulkan-drivers` defaults to ['auto'], and the auto expansion is per \
 architecture: x86 gets ['amd','intel','intel_hasvk','nouveau','swrast'] and \
 WOULD require Rust; aarch64 gets \
@@ -121,7 +137,7 @@ run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
          "--wrap-mode=nofallback",
          "-Dplatforms=wayland", "-Degl-native-platform=drm",
          "-Dgallium-drivers=llvmpipe,softpipe,virgl",
-         "-Dvulkan-drivers=swrast",
+         "-Dvulkan-drivers=",
          "-Dllvm=enabled", "-Dglx=disabled", "-Degl=enabled", "-Dgbm=enabled",
          "-Dgles1=disabled", "-Dgles2=enabled", "-Dshared-glapi=enabled",
          "-Dgallium-rusticl=false", "-Dgallium-va=disabled",
