@@ -94,6 +94,11 @@ one that is source."""
 "library:ssl" = "Makefile:1175 -- CONFIG_TLS defaults to openssl; -lssl -lcrypto come from the stage-4 sysroot, owned by no stage-5 recipe. The same sonames curl, git and python link."
 "program:pkg-config" = "the Makefile shells out to PKG_CONFIG to resolve libnl-3.0 and libnl-genl-3.0 cflags and libs. Provided by pkgconf."
 
+[installs]
+prefixes = ["usr/sbin"]
+files    = 3
+digest   = "237ac480aa98d97a9d29fa525bfda0ac6d877bba8a51c7116148bee38b2aedd8"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

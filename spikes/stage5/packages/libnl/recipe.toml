@@ -144,6 +144,11 @@ needs. Trading a signed upstream release for roughly a megabyte, against a \
 "library:pthread" = "configure.ac:120 -- AC_CHECK_LIB, a HARD error if absent. Provided by glibc in the stage-4 sysroot, not by a stage-5 recipe."
 "pkg:check" = "configure.ac:87 -- PKG_CHECK_MODULES for the unit-test framework. Warns and disables the tests; not in this set."
 
+[installs]
+prefixes = ["etc/libnl", "usr/include/libnl3", "usr/lib", "usr/lib/pkgconfig", "usr/share/man"]
+files    = 159
+digest   = "1a2bfe9742a335eb935af8566eae05084a58ecfefa6ce58a30bb1f4cf9a89d9c"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

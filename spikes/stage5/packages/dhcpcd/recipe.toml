@@ -80,6 +80,11 @@ interface is a claim only hardware can settle."""
 "user:_dhcpcd" = "configure:573 probes getent for _dhcpcd/_dhcp/dhcpcd ON THE BUILD HOST and compiles the answer into config.h. Stated with --privsepuser and provided by veron-system; no package dependency can express a passwd entry."
 "probe:strlcpy" = "configure --without-strlcpy exists; the probe otherwise tests whether libc provides it. glibc 2.44 does, from the stage-4 sysroot."
 
+[installs]
+prefixes = ["etc", "usr/lib/dhcpcd", "usr/libexec/dhcpcd", "usr/sbin", "usr/share/dhcpcd", "usr/share/man"]
+files    = 15
+digest   = "99849886be2a032610e3ea0bfba2e3ba9af3e496e4907d8c15dc30161179b177"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

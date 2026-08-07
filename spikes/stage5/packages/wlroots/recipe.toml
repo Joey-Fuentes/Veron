@@ -124,6 +124,11 @@ noticed."""
 "library:rt" = "meson.build -- cc.find_library('rt'), librt from the stage-4 sysroot."
 "header-symbol:EGL_EGLEXT_VERSION" = "render/meson.build -- cc.get_define() against EGL/eglext.h, demoting the gles2 renderer if older than 20210604. A header value, not a package."
 
+[installs]
+prefixes = ["usr/include/wlroots-0.19", "usr/lib", "usr/lib/pkgconfig"]
+files    = 118
+digest   = "f7c0bb4a3189a31fc59d49ca1c6978985470535a67e34b7df490d7c3fb44721f"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

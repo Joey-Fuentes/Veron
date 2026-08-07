@@ -145,6 +145,11 @@ feature rather than anything these flags need."""
 "module:yaml" = "meson.build:1083 -- `run_command(prog_python, '-c', 'import yaml')`. Failure makes the interpreter-candidate loop continue, so the eventual error names Python rather than yaml."
 "config-tool:llvm" = "dependency('llvm', method: 'config-tool') -- LLVM ships no .pc file, so llvm-config is the only route and no pkg-config name can express it."
 
+[installs]
+prefixes = ["usr/include", "usr/include/EGL", "usr/include/GL", "usr/include/GLES2", "usr/include/GLES3", "usr/include/KHR", "usr/lib", "usr/lib/gbm", "usr/lib/pkgconfig", "usr/share/drirc.d"]
+files    = 36
+digest   = "309be05515665148d91fc9352216f149bdc42f67d2d5d69c10d936e79f15589d"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"

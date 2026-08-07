@@ -112,6 +112,11 @@ surprise."""
 "pkg:cmocka" = "meson.build:184 -- required: get_option('test'). -Dtest=disabled."
 "variable:have_xwayland" = "meson.build:59 -- wlroots.get_variable('have_xwayland'), a pkg-config VARIABLE rather than a package. wlroots exports have_* for every feature unconditionally."
 
+[installs]
+prefixes = ["usr/bin", "usr/share/doc", "usr/share/icons", "usr/share/wayland-sessions", "usr/share/xdg-desktop-portal"]
+files    = 14
+digest   = "e1ccddf8b47f24818be93a6be2333b90465143a6dc58d5f325865ebf8284d0df"
+
 [[steps]]
 name = "unpack"
 cwd  = "$B"
