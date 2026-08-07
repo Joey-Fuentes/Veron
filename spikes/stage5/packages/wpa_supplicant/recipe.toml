@@ -148,5 +148,46 @@ cwd  = "$S/wpa_supplicant"
 run  = [["make", "install", "DESTDIR=$D", "BINDIR=/usr/sbin", "LIBDIR=/usr/lib"]]
 
 [guest]
-test   = [["/usr/sbin/wpa_supplicant", "-v"]]
-expect = ["2.11"]
+# WHAT CAN BE ASSERTED ABOUT WiFi WITH NO RADIO, WHICH IS MORE THAN NOTHING.
+#
+# There is no 802.11 device in the boot test and there will not be one until
+# the kernel question in KERNEL-CHANGES.md is settled -- CFG80211 and MAC80211
+# are at =m today, and this system installs no modules, so cfg80211 is not in
+# the running kernel at all. Two checks do not need a radio and are worth more
+# than a version string.
+#
+# 1. wpa_passphrase IS A CRYPTOGRAPHIC KNOWN-ANSWER TEST. It is pure
+#    PBKDF2-HMAC-SHA1, 4096 iterations, 32 bytes, with no kernel or hardware
+#    involvement: PSK = PBKDF2(passphrase, ssid). The two vectors below are
+#    IEEE 802.11i-2004 Annex H.4, and they were DERIVED rather than recalled --
+#    computed independently with hashlib.pbkdf2_hmac before being written here,
+#    which is the only reason they are trustworthy in a file like this. This
+#    exercises the shipped binary's real crypto path against a published
+#    standard, which no other WiFi test available here does.
+#
+#    wpa_passphrase.c prints `\tpsk=<64 hex>`, so the match is exact.
+#
+# 2. `-h` LISTS THE DRIVERS THAT WERE COMPILED IN, one per line as
+#    `  <name> = <desc>` (main.c:57). driver_nl80211.c:14001 registers as
+#    "nl80211" with desc "Linux nl80211/cfg80211". So this asserts, directly
+#    from the binary, the two things this recipe claims: that
+#    CONFIG_DRIVER_NL80211 landed and that the libnl linkage resolved. A build
+#    that silently fell back to something else would show it here.
+#
+#    It also proves WEXT is ABSENT, which is the other thing the recipe
+#    declares -- but asserting an absence needs a different mechanism than a
+#    substring match, so it is recorded rather than tested.
+#
+# STILL BLOCKED ON THE KERNEL, and listed in KERNEL-CHANGES.md so they land in
+# the same pass: /sys/class/ieee80211 existing at all, and running
+# `-Dnl80211 -iwlan0` to assert the error is "No such device" (nl80211
+# initialised, only the radio missing) rather than "Unsupported driver"
+# (the build is wrong). Both need CFG80211=y.
+test   = [["/usr/sbin/wpa_supplicant", "-v"],
+          ["/usr/sbin/wpa_supplicant", "-h"],
+          ["/usr/sbin/wpa_passphrase", "IEEE", "password"],
+          ["/usr/sbin/wpa_passphrase", "ThisIsASSID", "ThisIsAPassword"]]
+expect = ["2.11",
+          "nl80211 = Linux nl80211/cfg80211",
+          "psk=f42c6fc52df0ebef9ebb4b90b38a5f902e83fe1b135a70e23aed762e9710a12e",
+          "psk=0dc0d6eb90555ed6419756b9a15ec3e3209b63df707dd508d14581f8982721af"]

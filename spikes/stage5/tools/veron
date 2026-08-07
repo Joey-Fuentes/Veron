@@ -1814,7 +1814,8 @@ def cmd_collect(a):
     # the runner: the harness log was overwritten by the system boot's before
     # anything read it, and no upload step ever looked at either. The dump in
     # the step output is capped and scrolls; these are the whole thing.
-    for fn in ("boot-harness.log", "boot-system.log"):
+    for fn in ("boot-harness.log", "boot-system.log",
+               "net-server.log", "net-client.log"):
         p = os.path.join(a.out, fn)
         if os.path.isfile(p):
             keep(p, os.path.join(diag, "boot", fn),

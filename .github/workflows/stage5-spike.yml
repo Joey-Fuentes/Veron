@@ -42,6 +42,10 @@ on:
         description: 'boot_system -- switch_root into dinit instead of running the test harness'
         type: boolean
         default: false
+      net_test:
+        description: 'net_test -- boot TWO instances on a private L2 segment and prove DHCP end to end'
+        type: boolean
+        default: true
       seed_installs:
         description: 'seed_installs -- write [installs] blocks and installs.txt from this build, and upload them'
         type: boolean
@@ -1002,6 +1006,129 @@ jobs:
           if [ "$harness_fail" != 0 ] || [ "$system_fail" != 0 ]; then
             exit 1
           fi
+      # THE NETWORK TEST IS TWO VERON INSTANCES, NOT QEMU'S BUILT-IN DHCP.
+      #
+      # `-netdev user` (SLIRP) has a DHCP server built in and testing dhcpcd
+      # against it would be one line. It would also be testing SLIRP: a
+      # minimal server with fixed lease semantics that nobody ships. Two Veron
+      # instances on a plain L2 segment test what this project produces --
+      # busybox udhcpd on one side, the packaged dhcpcd with its _dhcpcd
+      # privsep user on the other, iproute2 in between.
+      #
+      # UNPRIVILEGED AND HERMETIC. `-netdev socket` wires two QEMU processes
+      # together directly: no TAP, no bridge, no /dev/net/tun, no
+      # CAP_NET_ADMIN, no host network stack and no internet. It behaves the
+      # same on a GitHub runner and on a laptop. The kernel needs nothing new
+      # -- VIRTIO_NET=y and PACKET=y, read out of the published Image's own
+      # embedded config.
+      #
+      # SEPARATE STEP, NOT FOLDED INTO THE BOOT. The boot step answers "do the
+      # packages work under this kernel" and "does the machine come up". This
+      # answers a third question and needs two machines to do it; merging them
+      # would make one failure look like another.
+      - name: 'VERON-DHCP -- two instances, one L2 segment'
+        if: '!inputs.skip_boot && inputs.net_test'
+        run: |
+          set -eu
+          O=spikes/stage5/out
+          [ -s boot/Image ] || { echo "VERON-NET-SKIP  no kernel artifact"; exit 0; }
+          [ -s "$O/rootfs.img" ] || { echo "VERON-NET-SKIP  no image"; exit 0; }
+
+          # A COPY EACH. Both guests remount nothing, but they share a file if
+          # given one, and the published artifact must not be touched by a
+          # test at all -- the same reason the boot step copies it.
+          cp "$O/rootfs.img" "$O/rootfs-net-a.img"
+          cp "$O/rootfs.img" "$O/rootfs-net-b.img"
+
+          PORT=11242
+          echo "=== VM-A: the DHCP server ==="
+          set +e
+          qemu-system-aarch64 \
+            -M virt -cpu cortex-a57 -smp 2 -m 2048 \
+            -nographic -no-reboot \
+            -drive file=$O/rootfs-net-a.img,format=raw,if=virtio \
+            -netdev socket,id=n0,listen=127.0.0.1:$PORT \
+            -device virtio-net-pci,netdev=n0 \
+            -kernel boot/Image -initrd "$O/initramfs.cpio.gz" \
+            -append "console=ttyAMA0 rdinit=/init panic=1 loglevel=3 veron.net=server" \
+            > "$O/net-server.log" 2>&1 < /dev/null &
+          SRV=$!
+          set -e
+
+          # WAIT FOR THE MARKER, NOT A FIXED SLEEP, AND THIS COST A ROUND.
+          # The first local run slept a few seconds and then started the
+          # client; the server had already finished its work and powered off,
+          # so the client sent five DISCOVERs into a dead socket and reported
+          # "no lease, failing" -- which looks exactly like a broken L2 link
+          # and was a timing bug. The server now blocks serving until killed,
+          # and this waits for it to say so.
+          ready=0
+          for i in $(seq 1 120); do
+            if grep -aq "VERON-NET-SERVER-UP" "$O/net-server.log" 2>/dev/null; then
+              ready=$i; break
+            fi
+            if ! kill -0 "$SRV" 2>/dev/null; then
+              echo "VERON-NET-FAIL  the server VM exited before it was ready"
+              sed 's/^/    /' "$O/net-server.log" | tail -30
+              exit 1
+            fi
+            sleep 1
+          done
+          if [ "$ready" = 0 ]; then
+            echo "VERON-NET-FAIL  server never reported VERON-NET-SERVER-UP in 120s"
+            sed 's/^/    /' "$O/net-server.log" | tail -30
+            kill "$SRV" 2>/dev/null; exit 1
+          fi
+          grep -a "VERON-NET-SERVER-UP" "$O/net-server.log" | sed 's/^/  /'
+          echo "  server ready after ${ready}s"
+
+          echo ""
+          echo "=== VM-B: the DHCP client ==="
+          set +e
+          timeout 300 qemu-system-aarch64 \
+            -M virt -cpu cortex-a57 -smp 2 -m 2048 \
+            -nographic -no-reboot \
+            -drive file=$O/rootfs-net-b.img,format=raw,if=virtio \
+            -netdev socket,id=n0,connect=127.0.0.1:$PORT \
+            -device virtio-net-pci,netdev=n0 \
+            -kernel boot/Image -initrd "$O/initramfs.cpio.gz" \
+            -append "console=ttyAMA0 rdinit=/init panic=1 loglevel=3 veron.net=client" \
+            > "$O/net-client.log" 2>&1 < /dev/null
+          crc=$?
+          set -e
+          echo "  client qemu rc=$crc"
+
+          # THE SERVER IS A FIXTURE AND IS TORN DOWN HERE. TERM then KILL, for
+          # the same reason the system boot does it: a qemu that ignores TERM
+          # would hold the runner open after the step had finished.
+          kill "$SRV" 2>/dev/null || true
+          for _ in 1 2 3 4 5; do kill -0 "$SRV" 2>/dev/null || break; sleep 1; done
+          kill -9 "$SRV" 2>/dev/null || true
+          wait "$SRV" 2>/dev/null || true
+
+          sed -n '/VERON-NET/,$p' "$O/net-client.log" | sed 's/^/    /'
+
+          # THE VERDICT READS THE CLIENT'S OWN MEASUREMENT. guest/init emits
+          # VERON-DHCP-OK only from an address it observed on the interface,
+          # not from dhcpcd's exit status -- "it exited 0" and "the interface
+          # has an address" are different claims, and the local run proved it:
+          # busybox udhcpc obtained a lease and configured nothing, and the
+          # check correctly refused to call that success.
+          fail=0
+          if grep -aq "VERON-DHCP-OK" "$O/net-client.log"; then
+            echo "VERON-DHCP-OK  the client leased an address from the server VM"
+          else
+            echo "VERON-DHCP-FAIL  no lease applied to the interface"
+            fail=1
+          fi
+          if grep -aq "VERON-NET-PING-OK" "$O/net-client.log"; then
+            echo "VERON-NET-PING-OK  and the two machines exchanged packets"
+          else
+            echo "VERON-NET-PING-FAIL  no round trip to 10.42.0.1"
+            fail=1
+          fi
+          [ "$fail" = 0 ]
+
 
       # WHEN A TEST SUITE HANGS, THE ANSWER IS ALREADY ON DISK. automake's
       # harness writes a .log per test as it runs, so the test that hung has

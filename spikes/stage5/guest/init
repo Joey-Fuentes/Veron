@@ -91,9 +91,143 @@ fi
 # the END of a full run, so the old path stays reachable and a failure here
 # falls back to it rather than leaving a kernel with no shell.
 BOOTMODE=test
+NETROLE=none
 for w in $(cat /proc/cmdline 2>/dev/null); do
-    case "$w" in veron.boot=*) BOOTMODE="${w#veron.boot=}" ;; esac
+    case "$w" in
+      veron.boot=*) BOOTMODE="${w#veron.boot=}" ;;
+      veron.net=*)  NETROLE="${w#veron.net=}" ;;
+    esac
 done
+
+# ---- 2.4 THE TWO-VM ETHERNET TEST ---------------------------------------
+#
+# WHY TWO VMs AND NOT QEMU'S BUILT-IN DHCP. `-netdev user` (SLIRP) has a
+# built-in DHCP server, and testing dhcpcd against it would be easier. It
+# would also be testing SLIRP: a minimal server with fixed lease semantics
+# that is not the code anyone ships. Two Veron instances on a plain L2 segment
+# test the thing this project actually produces -- busybox udhcpd on one side,
+# the packaged dhcpcd with its _dhcpcd privsep user on the other, iproute2 in
+# between -- against each other.
+#
+# It is also hermetic and unprivileged. `-netdev socket` connects two QEMU
+# processes directly: no TAP, no bridge, no /dev/net/tun, no CAP_NET_ADMIN,
+# no host stack and no internet. It works the same on a GitHub runner and on a
+# laptop. The kernel already has what it needs -- VIRTIO_NET=y and PACKET=y,
+# confirmed in the published Image's own embedded config.
+#
+# EVERY MARKER NAMES WHAT IT MEASURED. "VERON-DHCP-OK" alone would be the
+# reassuring-zero shape this project keeps finding, so the address is printed
+# with it and a failure says which stage failed rather than that something did.
+if [ "$NETROLE" != none ]; then
+    echo "=== VERON-NET: two-VM ethernet, role=$NETROLE ==="
+    NIC=
+    for i in /sys/class/net/*; do
+        n=${i##*/}
+        [ "$n" = lo ] && continue
+        NIC=$n; break
+    done
+    if [ -z "$NIC" ]; then
+        # NOT "the test failed" -- the kernel produced no interface at all,
+        # which is a different fault from DHCP not completing.
+        echo "VERON-NET-FAIL  no non-loopback interface; VIRTIO_NET missing?"
+    else
+        echo "  interface: $NIC"
+        ip link set "$NIC" up 2>/dev/null || ifconfig "$NIC" up 2>/dev/null
+    fi
+fi
+
+if [ "$NETROLE" = server ] && [ -n "$NIC" ]; then
+    # THE SERVER IS busybox udhcpd, WHICH COSTS NO PACKAGE. It is already in
+    # the initramfs and in the image. dnsmasq or ISC dhcpd would be a truer
+    # server and a new dependency; udhcpd is a real implementation and the
+    # question here is whether OUR CLIENT works, not whose server is better.
+    #
+    # /tmp AND /var/lib/misc ARE CREATED FIRST, and the first version did not.
+    # mkinitramfs makes bin, proc, sys, dev and mnt/root and nothing else, so
+    # the config write failed with "can't create /tmp/udhcpd.conf: nonexistent
+    # directory" -- and the run still printed VERON-NET-SERVER-UP, because the
+    # marker came after the write with nothing between them checking it. That
+    # is the reassuring-marker shape this project keeps finding, committed
+    # here by the code that was supposed to be testing for it.
+    mkdir -p /tmp /var/lib/misc
+    ip addr add 10.42.0.1/24 dev "$NIC" 2>/dev/null
+    : > /var/lib/misc/udhcpd.leases
+    # WRITTEN WITH THE INTERFACE ALREADY SUBSTITUTED. The first version wrote
+    # a placeholder and sed'd it afterwards, which is two chances to fail
+    # instead of one.
+    {
+        echo "start           10.42.0.100"
+        echo "end             10.42.0.120"
+        echo "interface       $NIC"
+        echo "lease_file      /var/lib/misc/udhcpd.leases"
+        echo "option subnet   255.255.255.0"
+        echo "option router   10.42.0.1"
+        echo "option dns      10.42.0.1"
+        echo "option lease    600"
+    } > /tmp/udhcpd.conf
+    if [ ! -s /tmp/udhcpd.conf ]; then
+        echo "VERON-NET-SERVER-FAIL  could not write /tmp/udhcpd.conf"
+    else
+        # -f FOREGROUND so it does not daemonise out from under this script.
+        udhcpd -f /tmp/udhcpd.conf 2>&1 | sed 's/^/    udhcpd: /' &
+        _pid=$!
+        # THE MARKER COMES AFTER THE PROCESS IS CONFIRMED ALIVE, not after it
+        # is launched. udhcpd prints "started" even when its config is
+        # missing, so "it ran" is not evidence that it is serving.
+        sleep 1
+        if kill -0 "$_pid" 2>/dev/null; then
+            echo "VERON-NET-SERVER-UP  10.42.0.1 on $NIC, leases 10.42.0.100-120"
+            # THE SERVER VM IS A FIXTURE AND MUST NOT PROCEED. The first
+            # version fell through to the test harness, which finished in
+            # about four seconds and powered the machine off -- so by the time
+            # the client had booted and broadcast, there was nothing on the
+            # other end of the socket. The client reported five DISCOVERs and
+            # "no lease, failing", which looks exactly like a broken L2 link
+            # and was in fact a server that had already gone home.
+            #
+            # Same shape as dinit in the system boot: a process whose job is
+            # to keep running cannot be treated as a step that completes. It
+            # waits here forever and the caller kills the VM when the client
+            # is done.
+            echo "VERON-NET-SERVER-WAIT  serving until killed; this VM runs no tests"
+            wait "$_pid"
+            echo "VERON-NET-SERVER-EXIT  udhcpd stopped"
+            poweroff -f
+        else
+            echo "VERON-NET-SERVER-FAIL  udhcpd exited immediately"
+        fi
+    fi
+fi
+
+if [ "$NETROLE" = client ] && [ -n "$NIC" ]; then
+    # THE CLIENT IS THE PACKAGED dhcpcd, NOT busybox udhcpc. udhcpc would
+    # prove the link works and nothing about the package this test exists for.
+    # -1 exits after one lease, -t bounds the wait, and the marker is emitted
+    # from the ADDRESS THAT ARRIVED rather than from dhcpcd's exit status --
+    # "it exited 0" and "the interface has an address" are different claims.
+    if [ -x /usr/sbin/dhcpcd ]; then
+        /usr/sbin/dhcpcd -1 -t 30 "$NIC" 2>&1 | sed 's/^/    dhcpcd: /'
+    else
+        echo "VERON-NET-FAIL  no /usr/sbin/dhcpcd in the image"
+    fi
+    addr=$(ip -o -4 addr show dev "$NIC" 2>/dev/null | sed -n 's/.* inet \([0-9.]*\)\/.*/\1/p')
+    case "$addr" in
+      10.42.0.*)
+        echo "VERON-DHCP-OK  $NIC has $addr from the server VM"
+        # THE ROUTE AND A REAL PACKET, because an address alone does not mean
+        # the two machines can talk. ping to the server is the one ICMP that
+        # is meaningful here: both ends are ours and there is no NAT.
+        ip route show | sed 's/^/    route: /'
+        if ping -c 2 -W 3 10.42.0.1 >/dev/null 2>&1; then
+            echo "VERON-NET-PING-OK  reached the server at 10.42.0.1"
+        else
+            echo "VERON-NET-PING-FAIL  have $addr but cannot reach 10.42.0.1"
+        fi
+        ;;
+      "") echo "VERON-DHCP-FAIL  no IPv4 address on $NIC after dhcpcd" ;;
+      *)  echo "VERON-DHCP-FAIL  $NIC has $addr, not from 10.42.0.0/24" ;;
+    esac
+fi
 
 if [ "$BOOTMODE" = system ] && [ "$VIA" != none ]; then
     echo "=== VERON-SWITCHROOT: read-only base, tmpfs overlay, dinit as PID 1 ==="
