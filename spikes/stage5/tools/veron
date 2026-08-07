@@ -4453,6 +4453,24 @@ def cmd_selftest(a):
         if not _mism:
             print("  ok    every meson option value matches its declared type")
 
+        # A CMake-MINIMUM CHECK WAS TRIED HERE AND REMOVED, which is worth
+        # recording so it is not tried again the same way. json-c failed
+        # because apps/CMakeLists.txt still asks for CMake 2.8 and CMake 4
+        # refuses anything below 3.5, so a walk over every CMakeLists in every
+        # unpacked source looked like the general answer.
+        #
+        # IT PRODUCED OVER 150 WARNINGS AND ALL BUT ONE WERE NOISE. qemu
+        # vendors the whole edk2 firmware tree, which carries libspdm,
+        # mbedtls, oniguruma and jansson, each with its own ancient
+        # CMakeLists; nss ships a bundled gtest. None of those directories is
+        # ever configured by these recipes. A check that reports 150 things to
+        # ignore teaches people to ignore the list, which is worse than not
+        # having it.
+        #
+        # The narrow version -- only the directories a recipe's cmake step
+        # actually configures -- would need to model CMake's add_subdirectory
+        # graph, and that is a real tool rather than a selftest clause.
+
     # SOURCE IS MODIFIED BY A PATCH, NEVER BY A STEP.
     #
     # ROADMAP.md's first rule makes the recipe the unit: "a reader of one

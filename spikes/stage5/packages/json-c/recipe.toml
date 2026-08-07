@@ -14,13 +14,13 @@ crosschecked_against = []
 build        = ["cmake", "ninja", "pkgconf"]
 link         = []
 runtime      = []
-optional_off = ["static", "rdrand", "threading", "tests"]
+optional_off = ["static", "rdrand", "threading", "tests", "apps"]
 
 [declared]
 configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release",
                    "-DBUILD_SHARED_LIBS=ON", "-DBUILD_STATIC_LIBS=OFF",
                    "-DDISABLE_WERROR=ON", "-DENABLE_RDRAND=OFF",
-                   "-DBUILD_TESTING=OFF"]
+                   "-DBUILD_TESTING=OFF", "-DBUILD_APPS=OFF"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["json-c"]
 deferral        = """
@@ -48,6 +48,27 @@ ENABLE_RDRAND IS OFF BY DEFAULT AND STATED. It is an x86 instruction; on \
 aarch64 it is meaningless, and a hardware RNG seed that silently is not one is \
 worth naming.
 
+-DBUILD_APPS=OFF BECAUSE apps/CMakeLists.txt STILL ASKS FOR CMake 2.8 AND \
+CMake 4 REFUSES:
+
+    CMake Error at apps/CMakeLists.txt:2 (cmake_minimum_required):
+      Compatibility with CMake < 3.5 has been removed from CMake.
+
+The top-level CMakeLists asks for 3.9 and is fine; the apps subdirectory was \
+never updated, and its own comment points at the parent for the reasoning. \
+This set builds cmake 4.2.3.
+
+BUILD_APPS DEFAULTS ON AND GATES THE WHOLE SUBDIRECTORY (CMakeLists.txt:74 and \
+:582), so turning it off skips the offending file entirely. That is better \
+than the two alternatives: -DCMAKE_POLICY_VERSION_MINIMUM=3.5, which CMake \
+itself suggests in the error, silently re-enables every removed policy across \
+the ENTIRE project rather than the one directory that needs it; and patching \
+apps/CMakeLists.txt would modify source to build a thing nothing wants.
+
+WHAT IS LOST IS json_parse, a command-line pretty-printer. Nothing in this set \
+calls it, and the library -- which is the only reason json-c is here -- is \
+unaffected.
+
 WHY IT IS HERE AT ALL IS NOT YET ESTABLISHED. json-c is pinned and nothing in \
 this set has been shown to require it -- libsoup does not, gnutls does not. It \
 is likely a WPE dependency, and that will be confirmed or refuted when \
@@ -65,7 +86,8 @@ cwd  = "$S"
 run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
          "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release",
          "-DBUILD_SHARED_LIBS=ON", "-DBUILD_STATIC_LIBS=OFF",
-         "-DDISABLE_WERROR=ON", "-DENABLE_RDRAND=OFF", "-DBUILD_TESTING=OFF"]]
+         "-DDISABLE_WERROR=ON", "-DENABLE_RDRAND=OFF", "-DBUILD_TESTING=OFF",
+         "-DBUILD_APPS=OFF"]]
 
 [[steps]]
 name = "build"
