@@ -25,7 +25,7 @@ optional_off = ["right_only", "slim"]
 # as nnn's O_NOMOUSE and wpa_supplicant's .config settings: a default is a fact
 # about the package and belongs in the deferral, not in a list of flags the
 # plan is supposed to corroborate.
-configure_flags = ["TOPDIR=/usr", "LOCALTIME=UTC", "REDO=posix_only"]
+configure_flags = ["CC=gcc", "LOCALTIME=UTC", "REDO=posix_only"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["tzdb"]
 deferral        = """
@@ -64,10 +64,30 @@ the only one of its kind here.
 WHAT THE FLAGS MEAN, since none is a conventional configure switch -- tzdb \
 uses a plain Makefile with variables:
 
-  TOPDIR=/usr        installs zoneinfo under /usr/share and zic under
-                     /usr/sbin. Without it the Makefile's TOPDIR is EMPTY,
-                     so TZDIR becomes /usr/share/zoneinfo by accident of
-                     string concatenation rather than by choice.
+  CC=gcc             the Makefile's default compiler is c99, a POSIX
+                     name this system does not provide -- "make: c99: No
+                     such file or directory". Every other package here
+                     reaches gcc through autotools or meson, which probe
+                     for it; tzdb has a hand-written Makefile that just
+                     names c99 and expects it on PATH.
+
+  TOPDIR IS NOT PASSED, AND PASSING IT WAS A BUG.
+                     An earlier version of this recipe set TOPDIR=/usr with
+                     a note claiming the empty default produced the right
+                     path "by accident of string concatenation rather than
+                     by choice". That was backwards. Makefile:88 says
+                     "TOPDIR should be empty (meaning the root directory)"
+                     and USRDIR is already `usr`, so TZDIR is
+                     $(TOPDIR)/$(USRSHAREDIR)/zoneinfo. Empty gives
+                     /usr/share/zoneinfo; /usr gives
+                     /usr/usr/share/zoneinfo, and TZDEFAULT likewise became
+                     /usr/etc/localtime. The generated header showed both:
+
+                         # define TZDEFAULT "/usr/etc/localtime"
+                         # define TZDIR "/usr/usr/share/zoneinfo"
+
+                     Defending a default in prose is not the same as
+                     checking what it expands to.
   LOCALTIME=UTC      the default is `Factory`, a placeholder zone whose only
                      content is a message telling you the timezone was never
                      set. UTC is the honest default for an image that does not
@@ -109,17 +129,24 @@ declared in deps.build, which puts it at rung 20 against this package's 40.
 [[steps]]
 name = "build"
 cwd  = "$S"
-run  = [["make", "-j$J", "TOPDIR=/usr", "LOCALTIME=UTC", "REDO=posix_only"]]
+run  = [["make", "-j$J", "CC=gcc", "LOCALTIME=UTC", "REDO=posix_only"]]
 
 [[steps]]
 name = "install"
 cwd  = "$S"
-run  = [["make", "install", "TOPDIR=/usr", "LOCALTIME=UTC",
+run  = [["make", "install", "CC=gcc", "LOCALTIME=UTC",
          "REDO=posix_only", "DESTDIR=$D"]]
 
 [guest]
 # ASSERT A ZONE RESOLVES, not that a file exists. zdump reads the compiled
 # binary zoneinfo the way libc does, so this proves zic ran and produced
 # something libc can consume.
-test   = [["/usr/sbin/zdump", "UTC"]]
+#
+# /usr/bin/zdump AND NOT /usr/sbin. This test named /usr/sbin/zdump for one
+# revision, on the assumption that a timezone tool is administrative. It is
+# not: BINDIR gets zdump and tzselect, ZICDIR gets zic alone. Measured from a
+# real `make install DESTDIR=...` rather than assumed -- the whole tree is
+# /etc/localtime, /usr/share/zoneinfo with 604 zones, /usr/bin/{zdump,
+# tzselect} and /usr/sbin/zic.
+test   = [["/usr/bin/zdump", "UTC"]]
 expect = ["UTC"]

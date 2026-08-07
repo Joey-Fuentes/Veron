@@ -1384,7 +1384,7 @@ package readline 8.3
 package tzdb 2026c
   group        system
   license      LicenseRef-Public-Domain
-  recipe-sha   0050431ecf3658642a8978d76b1bb9a5af3417a67dfcf91b14768f0d42d6869b
+  recipe-sha   a4f11c088cd6e533969edd1606fbad8fcbe6ff9ad8bf5cf3a7e34483f3b53589
 
   source
     url        https://www.iana.org/time-zones/repository/releases/tzdb-2026c.tar.lz
@@ -1421,10 +1421,10 @@ declared in deps.build, which puts it at rung 20 against this package's 40.
          | xz -dc "dl/tzdb-2026c.tar.lz" | tar -xf - -C "build/tzdb-2026c"
     [02] build
          cwd  build/tzdb-2026c/tzdb-2026c
-         argv ["make", "-j1", "TOPDIR=/usr", "LOCALTIME=UTC", "REDO=posix_only"]
+         argv ["make", "-j1", "CC=gcc", "LOCALTIME=UTC", "REDO=posix_only"]
     [03] install
          cwd  build/tzdb-2026c/tzdb-2026c
-         argv ["make", "install", "TOPDIR=/usr", "LOCALTIME=UTC", "REDO=posix_only", "DESTDIR=dest/tzdb"]
+         argv ["make", "install", "CC=gcc", "LOCALTIME=UTC", "REDO=posix_only", "DESTDIR=dest/tzdb"]
 
 ======================================================================
 package zstd 1.5.7
