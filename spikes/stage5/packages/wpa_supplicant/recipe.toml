@@ -1,0 +1,152 @@
+name    = "wpa_supplicant"
+version = "2.11"
+group   = "network"
+license = "BSD-3-Clause"
+srcdir  = "wpa_supplicant-2.11"
+
+[source]
+url       = "https://w1.fi/releases/wpa_supplicant-2.11.tar.gz"
+sha256    = "912ea06f74e30a8e36fbb68064d6cdff218d8d591db0fc5d75dee6c81ac7fc0a"
+signature = "none -- w1.fi publishes no detached signature beside the release"
+crosschecked_against = []
+
+[deps]
+# libnl IS THE REASON THAT PACKAGE EXISTS IN THIS SET, and it was measured
+# rather than assumed. CONFIG_DRIVER_NL80211=y sets NEED_LIBNL=y at
+# src/drivers/drivers.mak:59, every branch of the ifndef chain below it links
+# some libnl, and driver_nl80211.c:18-20 includes
+# <netlink/genl/{genl,ctrl,family}.h> unconditionally. nl80211 needs two of
+# libnl's seven libraries: libnl-3 and libnl-genl-3.
+build        = ["pkgconf", "libnl"]
+link         = ["libnl"]
+runtime      = ["libnl"]
+# THE SHIPPED defconfig TURNS ON THINGS THIS SYSTEM EXISTS TO AVOID. dbus is
+# the headline; see the deferral.
+optional_off = ["dbus", "smartcard", "readline", "eap-methods-as-modules"]
+
+[declared]
+# ONLY WHAT A STEP ACTUALLY PASSES. The selftest checks every entry here
+# against the expanded argv, and it was right to reject the first version of
+# this list: the .config settings are written to a FILE by the configure step,
+# not passed as arguments, so listing them here claimed something the plan
+# could not corroborate. What the .config contains is in the deferral and in
+# the shell step itself, both of which PLAN.txt reproduces verbatim.
+configure_flags = ["BINDIR=/usr/sbin", "LIBDIR=/usr/lib"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["wpa_supplicant"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes and whose contents were compared against the \
+signature Veron verified for libnl in the same session.
+
+THIS PACKAGE HAS NO ./configure, AND THAT MAKES THE RECIPE UNUSUAL. The build \
+is specified entirely by a hand-written wpa_supplicant/.config, which upstream \
+ships an example of as `defconfig`. There is nothing to probe and nothing to \
+pass on a command line: the .config IS the configuration. So this recipe \
+WRITES that file rather than copying defconfig, because defconfig's contents \
+are upstream's choices and several of them are wrong for this system.
+
+dbus IS ON IN THE SHIPPED defconfig, AND THIS SYSTEM EXISTS PARTLY TO AVOID \
+IT. Lines 378 and 381 are CONFIG_CTRL_IFACE_DBUS_NEW=y and \
+CONFIG_CTRL_IFACE_DBUS_INTRO=y. STAGE5.md's whole argument for choosing \
+wpa_supplicant over iwd, NetworkManager and connman is that its control \
+interface is a plain Unix socket and wpa_cli talks to it directly -- so \
+copying defconfig would have silently pulled in the dependency the package was \
+selected to avoid, and would have failed the build outright since dbus is not \
+in this set. CONFIG_CTRL_IFACE=y is kept: that is the Unix socket, and it is \
+a different setting from the two dbus ones.
+
+CONFIG_SMARTCARD=y IS ALSO ON BY DEFAULT (line 197) and wants an OpenSSL \
+engine plus pcsc-lite. Off.
+
+CONFIG_DRIVER_WEXT=y IS ON BY DEFAULT (line 29) and is the DEPRECATED \
+pre-nl80211 interface. Modern drivers do not implement it, and building it \
+adds a second driver backend nothing will select. Off, stated rather than \
+inherited.
+
+CONFIG_TLS IS NOT SET IN defconfig AND DEFAULTS TO openssl at Makefile:1175. \
+That default is correct here -- libssl and libcrypto come from the stage-4 \
+sysroot and curl, git and python already link them -- but it is stated \
+explicitly because a silent default deciding the crypto backend is exactly \
+the class of thing this project writes down.
+
+CONFIG_READLINE IS OFF IN defconfig (line 234, commented) AND STAYS OFF. \
+Upstream's own comment says readline is GPL and may change the licence of the \
+resulting binary. wpa_cli's internal line editing is used instead.
+
+BINDIR DEFAULTS TO /usr/local/sbin (Makefile:46) and is overridden to \
+/usr/sbin, matching every other package here.
+
+NOT VERIFIABLE IN CI, AND MORE SO THAN dhcpcd. The boot test runs qemu with \
+-nic none and there is no radio at all, so nothing about association, nl80211 \
+or the supplicant's actual function can be exercised. The guest test asserts \
+the binary loads and reports its version -- which does prove the libnl linkage \
+resolved, and nothing more.
+
+AND THE FIRMWARE IS NOT HERE. Nearly every WiFi chipset needs a vendor blob \
+loaded at runtime; Veron ships none and provides /lib/firmware as a mount \
+point for a separate image the user supplies. A working supplicant on real \
+hardware needs that image; this package is one of three parts and the only \
+one that is source."""
+
+[undeclarable]
+# Lookups no .pc name can answer, per ROADMAP.md rule 4.
+"library:ssl" = "Makefile:1175 -- CONFIG_TLS defaults to openssl; -lssl -lcrypto come from the stage-4 sysroot, owned by no stage-5 recipe. The same sonames curl, git and python link."
+"program:pkg-config" = "the Makefile shells out to PKG_CONFIG to resolve libnl-3.0 and libnl-genl-3.0 cflags and libs. Provided by pkgconf."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/wpa_supplicant-2.11.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S/wpa_supplicant"
+# THE .config IS WRITTEN, NOT COPIED FROM defconfig. Every line here is a
+# decision; defconfig's are upstream's, and four of them are wrong for this
+# system. A `shell` step is declared because this writes a file rather than
+# running a program, and the driver requires a `why` for that.
+shell = """
+cat > .config <<'EOF'
+CONFIG_DRIVER_NL80211=y
+CONFIG_LIBNL32=y
+CONFIG_TLS=openssl
+CONFIG_CTRL_IFACE=y
+CONFIG_BACKEND=file
+CONFIG_IEEE8021X_EAPOL=y
+CONFIG_EAP_MD5=y
+CONFIG_EAP_MSCHAPV2=y
+CONFIG_EAP_TLS=y
+CONFIG_EAP_PEAP=y
+CONFIG_EAP_TTLS=y
+CONFIG_EAP_GTC=y
+CONFIG_EAP_OTP=y
+CONFIG_EAP_LEAP=y
+CONFIG_WPS=y
+CONFIG_IPV6=y
+CONFIG_DEBUG_FILE=y
+CONFIG_DEBUG_SYSLOG=y
+CONFIG_PEERKEY=y
+EOF
+"""
+why = """
+wpa_supplicant has no configure script; the build is specified by a
+hand-written .config. This writes it rather than copying defconfig, because
+defconfig enables dbus (CONFIG_CTRL_IFACE_DBUS_NEW and _INTRO), SMARTCARD and
+the deprecated WEXT driver -- and dbus is the dependency this package was
+chosen over iwd and NetworkManager specifically to avoid.
+"""
+
+[[steps]]
+name = "build"
+cwd  = "$S/wpa_supplicant"
+run  = [["make", "-j$J", "BINDIR=/usr/sbin", "LIBDIR=/usr/lib"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S/wpa_supplicant"
+run  = [["make", "install", "DESTDIR=$D", "BINDIR=/usr/sbin", "LIBDIR=/usr/lib"]]
+
+[guest]
+test   = [["/usr/sbin/wpa_supplicant", "-v"]]
+expect = ["2.11"]

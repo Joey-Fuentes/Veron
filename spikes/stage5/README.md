@@ -804,6 +804,61 @@ Verified on the real kernel: payload mounts, `selfrebuild.sh` runs from it,
 reads `expected/files.tsv` off the share, and fails honestly with
 `the image has no gcc` against a root that genuinely has none.
 
+### The cmake digest was the sort key, not cmake and not the checkpoint
+
+`INSTALL-SET-CHANGED cmake: 4007 path(s) now, digest 73143e59, recipe pins
+2d45f590` had been open since the handoff, which framed it as *"either the
+checkpoint carried stale bytes forward — they chain, so a stale DESTDIR can
+ride indefinitely — or cmake is not reproducible across runs"* and said
+plainly: **do not re-seed before knowing which.**
+
+It is neither. With the install listings finally reaching the diag artifact —
+the r145 half that never worked — the committed `installs.txt` could be
+compared against the listing a run actually produced:
+
+```
+committed pin : 4007 lines
+this run      : 4007 lines
+identical line sets : True
+identical ORDER     : False    <- first divergence at line 18
+```
+
+**Same 4007 paths, same sha256 for every one, same sizes. Different order.**
+
+`install_listing` sorted by `l.rsplit(" ", 1)[-1]` — a key that assumes a path
+contains no space. **cmake ships 24 that do:**
+
+```
+usr/share/cmake-4.2/Help/generator/MinGW Makefiles.rst
+usr/share/cmake-4.2/Help/generator/Visual Studio 17 2022.rst
+usr/share/cmake-4.2/Help/generator/Sublime Text 2.rst
+```
+
+Five of them reduce to the same key, `Makefiles.rst`. Python's sort is stable,
+so a tie is broken by **input order** — and the input is `os.walk`, which is
+readdir order, which is filesystem state rather than content.
+
+So a package's pinned digest was a function of how its DESTDIR happened to be
+laid out on disk. **cmake is reproducible. The checkpoint was not stale. The
+hash over the listing was.**
+
+This is the tie-break trap `topo_order` already documents in its own docstring
+— *"if the tie is broken by dict order then PLAN.txt does not regenerate
+identically and the diff gate produces false failures until somebody disables
+it"* — in the one place nobody thought to look.
+
+The key is now the whole line. Not a `maxsplit=3` parse, because the format
+cannot be parsed back reliably: `f <sha> <size> <path>` could be, but
+`l <target> <path>` cannot, since a symlink target may itself contain spaces.
+The raw line needs no parse, is unique per DESTDIR, and cannot tie.
+
+**Every pin moved, and none of them needed a build to move.** 61 of the 62
+committed listings are byte-identical to the ones this run collected, so the
+digests were re-derived from committed data and checked back against the
+driver: 62 agree, 0 disagree, and cmake's new pin matches the listing the run
+actually produced. The one difference — `veron-system`'s `passwd` and `group` —
+is the `_dhcpcd` user this session added, which that run predates.
+
 ### Nothing is truncated. Not logs, not records, not ever.
 
 `veron collect` kept the last 512 KiB of each file. The diag bundle from a

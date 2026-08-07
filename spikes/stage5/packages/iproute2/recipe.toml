@@ -1,0 +1,106 @@
+name    = "iproute2"
+version = "6.18.0"
+group   = "network"
+license = "GPL-2.0-only"
+srcdir  = "iproute2-6.18.0"
+
+[source]
+url       = "https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-6.18.0.tar.xz"
+sha256    = "6ba520e1975e4c50dc931eeae91ea37c198b8a173744885f8895b84325f9d456"
+signature = "https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-6.18.0.tar.sign"
+crosschecked_against = []
+
+[deps]
+# NOT libnl. iproute2 speaks netlink through its OWN code in lib/, and the
+# only netlink library it probes for is libmnl (configure:369, check_mnl),
+# which is a different project and is not in this set. That was checked
+# rather than assumed -- libnl exists here for wpa_supplicant and nothing
+# else touches it.
+build        = ["pkgconf"]
+link         = ["elfutils"]
+runtime      = ["elfutils"]
+# iproute2 HAS NO --disable FLAGS. Its configure is a probe script: it
+# compiles a test program per feature and writes HAVE_x:=y into config.mk for
+# whatever it finds. There is nothing to turn off, so this list records what
+# the probes will DECIDE rather than what a flag will set. See the deferral.
+optional_off = ["libmnl", "libbpf", "selinux", "tirpc", "berkeley-db",
+                "libcap", "xtables", "ipset"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--libbpf_force=off"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["iproute2"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+ITS CONFIGURE IS A PROBE SCRIPT, NOT A FLAG PARSER, AND THAT IS A \
+HERMETICITY PROBLEM WORTH STATING. `./configure --help` offers exactly four \
+options: --include_dir, --libbpf_dir, --libbpf_force and --prefix. Everything \
+else -- xtables, setns, ipset, elf, libbpf, selinux, tirpc, libmnl, berkeley \
+db, strlcpy, libcap, colour -- is decided by compiling a test program and \
+writing HAVE_x:=y into config.mk if it links. So the feature set is a \
+function of WHAT HAPPENS TO BE VISIBLE IN THE SYSROOT, not of anything this \
+recipe says.
+
+That is the opposite of every other recipe here, and it means [installs].digest \
+is doing more work than usual: it is the only thing that would notice the \
+feature set changing because some unrelated package added a library.
+
+--libbpf_force=off IS THE ONE PROBE THAT CAN BE PINNED, so it is. libbpf is \
+not in this set; without the flag the probe merely fails and moves on, and \
+with it the answer is stated rather than discovered.
+
+HAVE_ELF WILL BE SET, and that is a real edge. configure:218 check_elf links \
+against libelf, elfutils is in this set for mesa's sake, so iproute2 will \
+find it and enable ELF support in tc. elfutils is therefore declared as a \
+link dependency -- discovered by reading the probe, not by waiting for \
+`veron linked` to report it undeclared, which is how glib's libelf edge was \
+found.
+
+WHAT THIS BUILDS THAT NOTHING HERE USES: tc's traffic-control machinery, \
+rdma, devlink, dcb, vdpa, tipc and netshaper. None is gated by a flag. `ip` \
+is the reason this package is in the set -- address and route configuration \
+for the ethernet path -- and the rest arrives with it.
+
+bison IS REQUIRED. configure writes YACC into config.mk and tc's f_ematch \
+parser is generated from a .y. It comes from the stage-4 sysroot rather than \
+a stage-5 recipe, so it is disclosed under [undeclarable].
+
+BLFS CROSS-CHECK: BLFS builds this with `make` then `make DESTDIR= SBINDIR=... \
+install`, and does not pass --prefix. Veron installs into /usr like every \
+other package here; BLFS's default puts `ip` in /sbin, which is the same \
+binary in a different place."""
+
+[undeclarable]
+# Lookups no .pc name can answer, per ROADMAP.md rule 4.
+"program:bison" = "configure writes YACC into config.mk; tc's ematch parser is generated from a .y. From the stage-4 sysroot."
+"program:flex" = "tc's lexers are generated from .l sources. From the stage-4 sysroot."
+"probe:libmnl" = "configure:369 check_mnl -- compiles a test against libmnl and sets HAVE_MNL if it links. Not in this set, so the probe fails and the feature is absent. No flag exists to state this."
+"probe:libcap" = "configure:428 check_cap. Not in this set."
+"probe:selinux" = "configure:342 check_selinux. Not in this set and never will be."
+"probe:xtables" = "configure:29 check_xtables -- iptables' libxtables, for tc's ipt action. Not in this set."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/iproute2-6.18.0.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--libbpf_force=off"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D", "PREFIX=/usr", "SBINDIR=/usr/sbin"]]
+
+[guest]
+test   = [["/usr/sbin/ip", "-V"]]
+expect = ["6.18.0"]

@@ -60,6 +60,23 @@ shell. Verified: PATH and prompt both correct.
 MEASURED: /etc/hostname SAID veron AND `hostname` SAID (none). Nothing read \
 the file. early-filesystems now applies it.
 
+THE _dhcpcd USER IS HERE BECAUSE dhcpcd COMPILES ITS NAME IN. dhcpcd's \
+configure defaults PRIVSEP=yes on Linux and then probes the BUILD host with \
+`getent passwd _dhcpcd _dhcp dhcpcd` to choose the account, baking the answer \
+into config.h as -DPRIVSEP_USER. The sandbox has none of them, so it would \
+fall back to "dhcpcd", print "No suitable user found for Priviledge \
+Separation!", CONFIGURE SUCCESSFULLY, and then refuse to start on the target. \
+The dhcpcd recipe states --privsepuser=_dhcpcd; this is the other half, and \
+neither works alone. uid/gid 52 is unused elsewhere in this file; the home \
+directory is the chroot dhcpcd drops into and its dbdir; the shell is \
+/bin/false because nothing ever logs in as this.
+
+NO COMMENTS IN passwd OR group, DELIBERATELY. glibc skips lines beginning \
+with # and busybox's parser was not verified to, and a silent difference \
+between the two in the file that decides who a daemon runs as is not worth a \
+documentation win. Every other passwd file in the world has no comments; the \
+reasoning lives here instead.
+
 AUTOLOGIN IS THE HONEST STATE, not a shortcut. /etc/passwd names root with an \
 `x` and there is no /etc/shadow, so a real login would fail closed and leave \
 an unusable console. A system with no user management should say so rather \
@@ -94,7 +111,7 @@ run  = [["sh", "-c", "mkdir -p \"$D\" && cp -a /packages/veron-system/files/. \"
 [installs]
 prefixes = ["etc", "etc/dinit.d", "etc/dinit.d/boot.d", "etc/dinit.d/scripts"]
 files    = 14
-digest   = "7341cfef011025c7dc886442f33bbcd261ad974bc40afabf45219eff00ce5dd1"
+digest   = "9d7242114c5d84005710d713bfa26449eb0aef646dfb5f50d82375020a009a9a"
 [guest]
 test   = [["/bin/sh", "-c", "cat /etc/os-release | grep -c veron"]]
 expect = ["1"]

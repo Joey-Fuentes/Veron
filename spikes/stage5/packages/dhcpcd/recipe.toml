@@ -1,0 +1,107 @@
+name    = "dhcpcd"
+version = "10.2.4"
+group   = "network"
+license = "BSD-2-Clause"
+srcdir  = "dhcpcd-10.2.4"
+
+[source]
+url       = "https://github.com/NetworkConfiguration/dhcpcd/releases/download/v10.2.4/dhcpcd-10.2.4.tar.xz"
+sha256    = "6721e606609226dbf4d864a78802a9e96beec0ee034a1bd84138b3e037bba7d9"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+# NOTHING. dhcpcd speaks raw netlink and BPF directly; it needs no libnl, no
+# libmnl and no openssl. veron-system is a RUNTIME dependency because privilege
+# separation needs the _dhcpcd user and its home directory to exist in the
+# image -- see the deferral, this is the part that fails silently.
+build        = ["pkgconf"]
+link         = []
+runtime      = ["veron-system"]
+optional_off = ["debug", "static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--sysconfdir=/etc",
+                   "--libexecdir=/usr/libexec/dhcpcd",
+                   "--dbdir=/var/lib/dhcpcd", "--runstatedir=/run",
+                   "--privsepuser=_dhcpcd", "--disable-debug"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["dhcpcd"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+PRIVILEGE SEPARATION IS ON BY DEFAULT AND ITS USER IS COMPILED IN FROM THE \
+BUILD HOST. This is the libnl --sysconfdir shape again and it is worse, \
+because it fails at RUNTIME rather than at install. configure:561 defaults \
+PRIVSEP=yes on everything except Solaris, then :573 probes the machine doing \
+the BUILD:
+
+    for x in _dhcpcd _dhcp dhcpcd; do
+        home=$(getent passwd $x 2>/dev/null | cut -d: -f6)
+        if [ -d "$home" ]; then PRIVSEP_USER="$x"; break; fi
+    done
+
+The sandbox has a busybox passwd with none of those, so the loop finds \
+nothing, prints "No suitable user found for Priviledge Separation!", and falls \
+back to PRIVSEP_USER=dhcpcd -- which is then baked into config.h as \
+-DPRIVSEP_USER="dhcpcd". Configure still succeeds. The daemon then refuses to \
+start on the target because no such user exists there either.
+
+TWO HALVES, AND BOTH ARE NEEDED. --privsepuser=_dhcpcd states the name instead \
+of letting a probe of the wrong machine choose it, and veron-system now ships \
+that user in /etc/passwd and /etc/group with /var/lib/dhcpcd as its home. \
+Privsep is KEPT rather than disabled: --disable-privsep would also work and \
+would drop the one piece of hardening a DHCP client has, on a daemon that \
+parses attacker-supplied packets as root.
+
+EVERY PATH IS STATED BECAUSE THE DEFAULT PREFIX IS "/". configure's own help \
+says `--prefix=PREFIX ... [/]`, so an unqualified build installs to /sbin, \
+/libexec and /etc rather than under /usr -- a different layout from every \
+other package here. sysconfdir, libexecdir, dbdir and runstatedir are all \
+named for the same reason.
+
+IPv6 AND DHCPv6 ARE LEFT ON. They default to enabled, this system has a \
+working IPv6 stack in the kernel, and turning them off would be a policy \
+decision nobody has made. Stated here so it is a decision rather than an \
+oversight.
+
+WHAT VERON DOES NOT SHIP: any hook script beyond the ones dhcpcd installs \
+itself, and no resolv.conf writer integration. The default hooks write \
+/etc/resolv.conf directly, which is what a system with no resolvconf wants.
+
+NOT VERIFIABLE IN CI. The boot test runs qemu with -nic none, so there is no \
+link, no DHCP server and nothing to acquire. The guest test can only assert \
+the binary runs and reports its version; that dhcpcd actually configures an \
+interface is a claim only hardware can settle."""
+
+[undeclarable]
+# Lookups no .pc name can answer, per ROADMAP.md rule 4.
+"user:_dhcpcd" = "configure:573 probes getent for _dhcpcd/_dhcp/dhcpcd ON THE BUILD HOST and compiles the answer into config.h. Stated with --privsepuser and provided by veron-system; no package dependency can express a passwd entry."
+"probe:strlcpy" = "configure --without-strlcpy exists; the probe otherwise tests whether libc provides it. glibc 2.44 does, from the stage-4 sysroot."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/dhcpcd-10.2.4.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--sysconfdir=/etc",
+         "--libexecdir=/usr/libexec/dhcpcd", "--dbdir=/var/lib/dhcpcd",
+         "--runstatedir=/run", "--privsepuser=_dhcpcd", "--disable-debug"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/sbin/dhcpcd", "--version"]]
+expect = ["10.2.4"]

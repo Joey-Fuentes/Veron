@@ -2629,7 +2629,46 @@ def install_listing(destdir):
                     lines.append(f"f {sha256_file(p)} {os.path.getsize(p)} {rel}")
                 except OSError as e:
                     lines.append(f"? unreadable:{type(e).__name__} 0 {rel}")
-    lines.sort(key=lambda l: l.rsplit(" ", 1)[-1])
+    # SORTED BY THE WHOLE LINE, NOT BY A GUESS AT WHERE THE PATH STARTS.
+    #
+    # THIS WAS THE cmake DIGEST MYSTERY, AND IT WAS NEITHER OF THE TWO
+    # HYPOTHESES. `INSTALL-SET-CHANGED cmake: 4007 path(s) now, digest
+    # 73143e59, recipe pins 2d45f590` had been open since the handoff, which
+    # framed it as "either the checkpoint carried stale bytes forward ... or
+    # cmake is not reproducible across runs."
+    #
+    # It is neither. Comparing the committed installs.txt against the listing
+    # this run collected: 4007 lines both, IDENTICAL LINE SETS, zero content
+    # differences -- and a different digest, because the ORDER differed from
+    # line 18 onward.
+    #
+    # The key was `l.rsplit(" ", 1)[-1]`, which assumes a path contains no
+    # space. cmake ships 24 that do -- `Help/generator/MinGW Makefiles.rst`,
+    # `Visual Studio 17 2022.rst`, `Sublime Text 2.rst` -- so five of them
+    # reduce to the same key, `Makefiles.rst`. Python's sort is stable, so a
+    # tie is broken by INPUT order, and the input is os.walk: readdir order,
+    # which is filesystem state rather than content.
+    #
+    # So the digest of a package was a function of how its DESTDIR happened to
+    # be laid out on disk. cmake is reproducible; the checkpoint was not stale;
+    # the hash over the listing was.
+    #
+    # This is the tie-break trap `topo_order` already documents -- "if the tie
+    # is broken by dict order then PLAN.txt does not regenerate identically" --
+    # in the one place nobody looked for it.
+    #
+    # THE WHOLE LINE IS THE KEY BECAUSE THE FORMAT CANNOT BE PARSED BACK
+    # RELIABLY. `f <sha> <size> <path>` could be split on maxsplit=3, but
+    # `l <target> <path>` cannot: a symlink target may itself contain spaces,
+    # so there is no field count that recovers the path in both cases. Sorting
+    # the raw line needs no parse, is total (every line is unique -- paths are
+    # unique within a DESTDIR), and cannot tie.
+    #
+    # EVERY PINNED DIGEST MOVES. This changes the byte order of every listing,
+    # so all 66 [installs].digest values must be re-seeded once. That is the
+    # cost of the fix and it is a one-time cost; the alternative is a gate that
+    # fires on correct builds, which is the thing this project switches off.
+    lines.sort()
     body = "\n".join(lines) + ("\n" if lines else "")
     return lines, hashlib.sha256(body.encode()).hexdigest()
 
