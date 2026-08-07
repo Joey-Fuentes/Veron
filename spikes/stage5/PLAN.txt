@@ -1384,7 +1384,7 @@ package readline 8.3
 package tzdb 2026c
   group        system
   license      LicenseRef-Public-Domain
-  recipe-sha   0c8d260f01a6c2e94752546affca66a5ba66d3f24d6c1372427662be82197248
+  recipe-sha   0050431ecf3658642a8978d76b1bb9a5af3417a67dfcf91b14768f0d42d6869b
 
   source
     url        https://www.iana.org/time-zones/repository/releases/tzdb-2026c.tar.lz
@@ -1401,7 +1401,24 @@ package tzdb 2026c
   commands (literal; this is exactly what runs)
     [01] unpack
          cwd  build/tzdb-2026c
-         argv ["tar", "--use-compress-program=xz -dc", "-xf", "dl/tzdb-2026c.tar.lz", "-C", "build/tzdb-2026c"]
+         SHELL (declared) why=tar IS busybox HERE AND busybox tar HAS NO --use-compress-program. The first
+version of this step passed that flag, which GNU tar supports and this system's
+does not:
+
+    tar -> /usr/bin/tar
+    /usr/bin/tar is a symlink -> busybox
+
+busybox's own help lists --lzma and --exclude and no --use-compress-program, so
+the flag was parsed as a filename and tar printed its usage. Piping is what
+busybox offers instead: its -f documentation reads "-f FILE  Name of TARFILE
+('-' for stdin/out)".
+
+xz IS THE REAL ONE BY THEN, NOT busybox's. The sysroot ships /usr/bin/xz as a
+symlink to busybox, whose xz applet is a minimal decoder that does not know
+lzip. The xz PACKAGE installs a real 5.8.3 binary over that path and is
+declared in deps.build, which puts it at rung 20 against this package's 40.
+
+         | xz -dc "dl/tzdb-2026c.tar.lz" | tar -xf - -C "build/tzdb-2026c"
     [02] build
          cwd  build/tzdb-2026c/tzdb-2026c
          argv ["make", "-j1", "TOPDIR=/usr", "LOCALTIME=UTC", "REDO=posix_only"]

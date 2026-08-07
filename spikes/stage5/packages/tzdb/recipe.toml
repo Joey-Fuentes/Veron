@@ -50,12 +50,12 @@ stream, and python's lzma module -- which binds the same liblzma -- does too:
     lzma.decompress(open('tzdb-2026c.tar.lz','rb').read())  ->  2775040 bytes
     bytes 257..262 of the result                            ->  b'ustar'
 
-WHY `tar -xf` ALONE FAILS AND THE FLAG IS NEEDED. tar recognises the .lz \
-extension and shells out to a program literally named `lzip`, which does not \
-exist here -- "tar (child): lzip: Cannot exec". It does NOT fall back to \
-liblzma. --use-compress-program='xz -dc' names the decompressor that can \
-already do it. This is the only recipe in the set that needs the flag; the \
-other 115 use gz, xz or bz2, all of which tar auto-detects internally.
+WHY tar CANNOT DO IT ALONE. GNU tar recognises the .lz extension and shells \
+out to a program literally named `lzip`, which does not exist here; busybox \
+tar does not recognise .lz at all. Neither falls back to liblzma. So the \
+decompression is done by xz and the result piped in, which is the only recipe \
+in the set that needs a pipe -- the other 115 use gz, xz or bz2, all of which \
+tar auto-detects internally.
 
 xz IS THEREFORE A BUILD DEPENDENCY of a package that contains no compressed \
 data of its own -- an unpack-time dependency rather than a link-time one, and \
@@ -86,8 +86,25 @@ show it as its own class rather than folding it into a permissive bucket."""
 [[steps]]
 name = "unpack"
 cwd  = "$B"
-run  = [["tar", "--use-compress-program=xz -dc", "-xf",
-         "$DL/tzdb-2026c.tar.lz", "-C", "$B"]]
+shell = 'xz -dc "$DL/tzdb-2026c.tar.lz" | tar -xf - -C "$B"'
+why = """
+tar IS busybox HERE AND busybox tar HAS NO --use-compress-program. The first
+version of this step passed that flag, which GNU tar supports and this system's
+does not:
+
+    tar -> /usr/bin/tar
+    /usr/bin/tar is a symlink -> busybox
+
+busybox's own help lists --lzma and --exclude and no --use-compress-program, so
+the flag was parsed as a filename and tar printed its usage. Piping is what
+busybox offers instead: its -f documentation reads "-f FILE  Name of TARFILE
+('-' for stdin/out)".
+
+xz IS THE REAL ONE BY THEN, NOT busybox's. The sysroot ships /usr/bin/xz as a
+symlink to busybox, whose xz applet is a minimal decoder that does not know
+lzip. The xz PACKAGE installs a real 5.8.3 binary over that path and is
+declared in deps.build, which puts it at rung 20 against this package's 40.
+"""
 
 [[steps]]
 name = "build"
