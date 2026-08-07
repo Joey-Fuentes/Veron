@@ -275,6 +275,7 @@ jobs:
           fi
 
       - name: 'VERON-SEAL + build both packages'
+        id: build
         timeout-minutes: 150      # < the job's 180. See the note above.
         run: |
           set -eu
@@ -392,7 +393,7 @@ jobs:
           python3 tools/veron --dest dest installs --mode fail
 
       - name: 'VERON-LINKED -- DT_NEEDED against deps.link'
-        if: always()
+        if: ${{ always() && steps.build.outcome == 'success' }}
         run: |
           set -eu
           cd spikes/stage5
@@ -436,7 +437,7 @@ jobs:
       # produces the evidence sat behind the gate that needed it. `always()`
       # is what `veron collect` already uses for the same reason.
       - name: 'Seed [installs] from this build'
-        if: ${{ always() && inputs.seed_installs }}
+        if: ${{ always() && steps.build.outcome == 'success' && inputs.seed_installs }}
         run: |
           set -eu
           cd spikes/stage5
@@ -455,7 +456,7 @@ jobs:
       # always() FOR THE UPLOAD TOO. A conditional upload attached to an
       # unconditional producer just moves the hole one step later.
       - uses: actions/upload-artifact@v4
-        if: ${{ always() && inputs.seed_installs }}
+        if: ${{ always() && steps.build.outcome == 'success' && inputs.seed_installs }}
         with:
           name: veron-stage5-installs-${{ github.run_id }}
           path: |
@@ -465,22 +466,26 @@ jobs:
             spikes/stage5/out/installs-propose.txt
           if-no-files-found: error
 
-      # SAVING RUNS EVEN WHEN AN EARLIER GATE FAILED, AND NOT SAVING COST A
-      # FULL REBUILD. `if: ${{ inputs.save_checkpoint }}` is not enough: a step
-      # is ALSO skipped once the job has failed. VERON-INSTALLS fails whenever
-      # a package has no [installs] block -- the exact state of a run that is
+      # SURVIVES A FAILED GATE, NOT A FAILED BUILD, AND THE DISTINCTION IS THE
+      # WHOLE FIX.
+      #
+      # `if: ${{ inputs.save_checkpoint }}` alone is not enough: a step is also
+      # skipped once the JOB has failed. VERON-INSTALLS fails whenever a
+      # package has no [installs] block -- the exact state of a run that is
       # ADDING packages -- so the checkpoint was never published by any run
-      # that introduced new work, and the next run rebuilt everything.
+      # that introduced new work, and the next run rebuilt everything from
+      # source. Measured on run 31147347611: save_checkpoint was ON, 69
+      # packages built, gate failed, NOTHING published, log jumps 16 -> 28.
       #
-      # Measured on run 31147347611: save_checkpoint was ON, all 69 packages
-      # built from source, the gate failed at step 12, and NOTHING was
-      # published. Its log jumps from step 16 to step 28.
-      #
-      # A checkpoint is a cache of work that already happened. Whether a later
-      # gate liked the result does not un-compile it -- VERON-BUILD-OK is what
-      # says the build itself succeeded.
+      # But a bare always() is wrong in the other direction, and that was
+      # measured too: run 31148... failed at VERON-PLAN before the build ran
+      # at all, and this step then tried to publish a dest/ that did not exist
+      # -- "No such file". So the condition asks the BUILD whether it
+      # succeeded. A checkpoint is a cache of compiles that happened; if they
+      # did not happen there is nothing to cache, and if a later gate disliked
+      # the result the compiles are still valid.
       - name: 'Publish a build checkpoint'
-        if: ${{ always() && inputs.save_checkpoint }}
+        if: ${{ always() && steps.build.outcome == 'success' && inputs.save_checkpoint }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -505,7 +510,7 @@ jobs:
           rm -f dest.tar.zst
 
       - name: 'VERON-MANIFEST-OK'
-        if: always()
+        if: ${{ always() && steps.build.outcome == 'success' }}
         run: cd spikes/stage5 && python3 tools/veron manifest
 
       # MERGE. The sysroot IS the base of the final system, not merely the
@@ -530,7 +535,7 @@ jobs:
       # constant: turning the gate off lowers the claim automatically instead
       # of leaving a 2 behind that nothing checked.
       - name: 'VERON-LEDGER-OK -- records carry what this run proved'
-        if: always()
+        if: ${{ always() && steps.build.outcome == 'success' }}
         run: |
           set -eu
           cd spikes/stage5
@@ -540,7 +545,7 @@ jobs:
           grep -h '"attestations"' ledger/*.json | sed 's/^/    /'
 
       - name: 'Merge the DESTDIRs into the system'
-        if: always()
+        if: ${{ always() && steps.build.outcome == 'success' }}
         run: |
           set -eu
           cd spikes/stage5
@@ -616,7 +621,7 @@ jobs:
 
       # Native aarch64, so these are the real binaries executing.
       - name: 'VERON-STAGE5-OK -- hello and pkgconf in the system they belong to'
-        if: always()
+        if: ${{ always() && steps.build.outcome == 'success' }}
         run: |
           set -eu
           cd spikes/stage5
@@ -629,7 +634,7 @@ jobs:
       # something that VARIES. A first run failing to reproduce is the spike
       # working; the divergence goes on the declared list.
       - name: 'Build the image and probe reproducibility'
-        if: always()
+        if: ${{ always() && steps.build.outcome == 'success' }}
         env:
           # THIRD TIME. The git-pinned mirror step needed this and lacked it;
           # the checkpoint step got HTTP 403 for want of it; and now a 1.7 GB
@@ -766,7 +771,7 @@ jobs:
       # on real aarch64 binaries. Two claims, two places.
       - name: 'Find the latest stage-4 run'
         id: s4
-        if: always() && !inputs.skip_boot
+        if: ${{ always() && steps.build.outcome == 'success' && !inputs.skip_boot }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -776,7 +781,7 @@ jobs:
           echo "run_id=${id:-}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/download-artifact@v4
-        if: ${{ always() && !inputs.skip_boot && steps.s4.outputs.run_id != '' }}
+        if: ${{ always() && steps.build.outcome == 'success' && !inputs.skip_boot && steps.s4.outputs.run_id != '' }}
         continue-on-error: true
         with:
           name: veron-boot
@@ -791,14 +796,14 @@ jobs:
       # "a booting system". This is also the first small piece of the init
       # work group 2 needs for a login prompt.
       - name: 'Build stage 5 initramfs'
-        if: always() && !inputs.skip_boot
+        if: ${{ always() && steps.build.outcome == 'success' && !inputs.skip_boot }}
         run: |
           set -eu
           cd spikes/stage5
           python3 guest/mkinitramfs.py sysroot out/initramfs.cpio.gz
 
       - name: 'Boot the stage-5 system and run its own tests'
-        if: always() && !inputs.skip_boot
+        if: ${{ always() && steps.build.outcome == 'success' && !inputs.skip_boot }}
         run: |
           set -eu
           [ -s boot/Image ] || { echo "VERON-BOOT-SKIP  no kernel artifact"; exit 0; }
@@ -1061,7 +1066,7 @@ jobs:
       # answers a third question and needs two machines to do it; merging them
       # would make one failure look like another.
       - name: 'VERON-DHCP -- two instances, one L2 segment'
-        if: always() && !inputs.skip_boot && inputs.net_test
+        if: ${{ always() && steps.build.outcome == 'success' && !inputs.skip_boot && inputs.net_test }}
         run: |
           set -eu
           O=spikes/stage5/out
