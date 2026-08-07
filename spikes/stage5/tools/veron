@@ -4403,6 +4403,45 @@ def cmd_selftest(a):
     # ordering is real: recipe first, upload second, build third. A gate that
     # failed here would fire on correct work and get switched off. It names
     # what to do instead.
+    # SOURCE IS MODIFIED BY A PATCH, NEVER BY A STEP.
+    #
+    # ROADMAP.md's first rule makes the recipe the unit: "a reader of one
+    # recipe should be able to see everything strange about that package".
+    # apply_patches serves that -- it records each patch in PLAN.txt by name
+    # and FAILS THE BUILD if one no longer applies, because "a patch that does
+    # not apply means the source is not what the recipe was written against".
+    #
+    # A `sed -i` inside a shell step has neither property. It appears in the
+    # plan only as part of a shell blob, and A SED THAT MATCHES NOTHING EXITS
+    # 0 -- shipping an unmodified file that looks exactly like a fix that
+    # worked. rungs-sysroot.sh already learned this and asserts its anchor
+    # before seding gcc's t-aarch64-linux.
+    #
+    # Two recipes drifted from this and both were caught here: gmp's C23
+    # configure probe and libvpx's `cp -p` install rule, each of which took the
+    # book's inline sed verbatim. Both are patches now.
+    #
+    # $D IS EXEMPT. Editing something already installed into the DESTDIR is not
+    # a source modification -- meson rewrites its own entry point's shebang
+    # there, which no patch could express because the file does not exist until
+    # the install step runs.
+    _seds = []
+    for _n, _r in sorted(load_recipes().items()):
+        for _s in _r.get("steps", []):
+            _sh = _s.get("shell") or ""
+            for _line in _sh.splitlines():
+                if "sed -i" not in _line:
+                    continue
+                if "$D" in _line:          # editing installed output, not source
+                    continue
+                _seds.append(f"{_n}/{_s.get('name')}: {_line.strip()[:60]}")
+    if _seds:
+        for _x in _seds:
+            print(f"  FAIL  source edited by a step, not a patch -- {_x}")
+        ok = False
+    else:
+        print("  ok    source is modified only by patches/, never by a step")
+
     # A TRIPLET A RECIPE NAMES MUST BE THE ONE THE TOOLCHAIN TARGETS.
     #
     # gmp's recipe passed --build=aarch64-unknown-linux-gnu and

@@ -46,9 +46,10 @@ quietly drop one.
 BLFS CROSS-CHECK, AND IT CHANGED TWO THINGS. multimedia/libvpx.html agrees on \
 --enable-shared and --disable-static, and adds two steps this recipe did not \
 have: a dedicated build directory, because "the libvpx developers recommend \
-building in a dedicated build directory", and `sed -i 's/cp -p/cp/'` on \
-build/make/Makefile to correct installed ownership and permissions. Both are \
-now here. BLFS also documents --disable-vp8 and --disable-vp9 as OPT-OUT \
+building in a dedicated build directory", and an edit to build/make/Makefile \
+correcting installed ownership and permissions. Both are now here -- the second \
+as patches/0001 rather than as the book's inline sed, because it modifies \
+source and every other source edit in this set is a patch. See that file. BLFS also documents --disable-vp8 and --disable-vp9 as OPT-OUT \
 switches, confirming both codecs are on by default -- the --enable-vp8 and \
 --enable-vp9 passed here are therefore statements rather than changes.
 
@@ -63,19 +64,6 @@ that looks like a regression later."""
 name = "unpack"
 cwd  = "$B"
 run  = [["tar", "-xf", "$DL/libvpx-1.16.0.tar.gz", "-C", "$B"]]
-
-[[steps]]
-name = "fix-install-mode"
-cwd  = "$S"
-shell = "sed -i 's/cp -p/cp/' build/make/Makefile"
-why = """
-libvpx's install rules use `cp -p`, which preserves the SOURCE file's ownership
-and permissions rather than applying the install target's. BLFS carries this
-same sed and explains it as correcting "the ownership and permissions of
-installed files". It matters more here than there: every path in the image is
-recorded in files.tsv with its mode, and a library whose permissions came from
-whatever the tarball happened to carry is a mode nobody chose.
-"""
 
 [[steps]]
 name = "configure"

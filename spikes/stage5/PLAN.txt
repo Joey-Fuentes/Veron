@@ -961,7 +961,7 @@ package elfutils 0.192
 package gmp 6.3.0
   group        tls
   license      LGPL-3.0-or-later OR GPL-2.0-or-later
-  recipe-sha   650957b8a8ac7edf33f0e9dbb3d5e6d01a6bfe7ee148814f113a1f343e7754a0
+  recipe-sha   3b3b15243e3db0599dfdc4128c93d7c82d3de2fc061d02fc93d01af9bcedef2d
 
   source
     url        https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
@@ -974,6 +974,9 @@ package gmp 6.3.0
     link         -
     runtime      -
     optional_off cxx, fat, static
+
+  patches (applied after unpack, in this order)
+    0001-configure-c23-empty-parameter-list.patch
 
   commands (literal; this is exactly what runs)
     [01] unpack
@@ -1278,7 +1281,7 @@ package libtool 2.6.2
 package libvpx 1.16.0
   group        media
   license      BSD-3-Clause
-  recipe-sha   7561dfa9ef2ff826dc63e675bdb7a44ff3f122e8563080779ce7d8d8b98d01ae
+  recipe-sha   db01dd3583c74e087c3a90bc8a4cef87836805975a0df0a8e34e5b292bc04d39
 
   source
     url        https://github.com/webmproject/libvpx/archive/v1.16.0/libvpx-1.16.0.tar.gz
@@ -1292,27 +1295,20 @@ package libvpx 1.16.0
     runtime      -
     optional_off docs, examples, tools, unit-tests
 
+  patches (applied after unpack, in this order)
+    0001-install-without-cp-p.patch
+
   commands (literal; this is exactly what runs)
     [01] unpack
          cwd  build/libvpx-1.16.0
          argv ["tar", "-xf", "dl/libvpx-1.16.0.tar.gz", "-C", "build/libvpx-1.16.0"]
-    [02] fix-install-mode
-         cwd  build/libvpx-1.16.0/libvpx-1.16.0
-         SHELL (declared) why=libvpx's install rules use `cp -p`, which preserves the SOURCE file's ownership
-and permissions rather than applying the install target's. BLFS carries this
-same sed and explains it as correcting "the ownership and permissions of
-installed files". It matters more here than there: every path in the image is
-recorded in files.tsv with its mode, and a library whose permissions came from
-whatever the tarball happened to carry is a mode nobody chose.
-
-         | sed -i 's/cp -p/cp/' build/make/Makefile
-    [03] configure
+    [02] configure
          cwd  build/libvpx-1.16.0/libvpx-1.16.0
          argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --enable-shared --disable-static --disable-examples --disable-tools --disable-docs --enable-vp8 --enable-vp9 --enable-pic"]
-    [04] build
+    [03] build
          cwd  build/libvpx-1.16.0/libvpx-1.16.0
          argv ["make", "-C", "_b", "-j1"]
-    [05] install
+    [04] install
          cwd  build/libvpx-1.16.0/libvpx-1.16.0
          argv ["make", "-C", "_b", "install", "DESTDIR=dest/libvpx"]
 

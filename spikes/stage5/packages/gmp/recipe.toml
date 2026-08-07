@@ -47,16 +47,62 @@ under it. `aarch64-unknown-linux-gnu-gcc` does not exist in this sysroot; \
 `aarch64-veron-linux-gnu-gcc` does, along with -g++, -ar, -nm and -ranlib. The \
 wrong vendor pointed the entire toolchain lookup at names nothing answers to.
 
-A FIRST DIAGNOSIS OF THIS BLAMED C23 AND WAS WRONG. gmp's test program at \
-configure:6564 declares `void g(){}` and calls it with six arguments, which \
-C23 forbids -- a real hazard, and not this one. Compiling that exact program \
-with the actual stage-4 compiler settles it:
+gcc 15 REJECTS gmp's OWN COMPILER PROBE, AND THE FIX IS A PATCH. configure \
+declares `void g(){}` and calls it with six arguments -- legal through C17, an \
+error in C23, which gcc 15 defaults to. All four attempts fail and configure \
+says "could not find a working compiler", which reads as a broken toolchain. \
+LFS 13.0 chapter 8 carries the same edit for the same stated reason; see \
+patches/0001 for why it is a patch here rather than the book's sed, and for why \
+CC="gcc -std=gnu17" was tried first and withdrawn.
 
-    aarch64-veron-linux-gnu-gcc 15.2.0
-    gcc -O2 -pedantic -c <gmp's test program>   ->  rc=0
+THE VENDOR FIELD IS veron, NOT unknown, AND GETTING IT WRONG BROKE THE BUILD \
+OUTRIGHT. configure died with:
 
-Clean at the default standard. The language was never the problem; the \
-compiler simply was not being found. The stage-4 toolchain is aarch64-veron-linux-gnu-gcc -- its \
+    checking compiler gcc -O2 -pedantic ... no, long long reliability test 1
+    configure: error: could not find a working compiler
+
+-- which reads as a broken toolchain and is nothing of the kind. \
+configure:1338 is
+
+    ac_tool_prefix=
+    test -n "$host_alias" && ac_tool_prefix=$host_alias-
+
+so PASSING --host AT ALL SETS A TOOL PREFIX, and every tool is then looked for \
+under it. `aarch64-unknown-linux-gnu-gcc` does not exist in this sysroot; \
+`aarch64-veron-linux-gnu-gcc` does, along with -g++, -ar, -nm and -ranlib. The \
+wrong vendor pointed the entire toolchain lookup at names nothing answers to.
+
+CC="gcc -std=gnu17" BECAUSE gmp's OWN COMPILER TEST IS PRE-C23 C. That was the \
+first diagnosis, it was then WITHDRAWN ON A BAD MEASUREMENT, and config.log \
+from the run settles it:
+
+    configure:6585: gcc -O2 -pedantic  conftest.c >&5
+    conftest.c:12:48: error: too many arguments to function 'g';
+                      expected 0, have 6
+    conftest.c:7:6: note: declared here
+        7 | void g(){}
+
+The test program at configure:6564 declares `void g(){}` and calls it with six \
+arguments. In C17 an empty parameter list means UNSPECIFIED parameters and the \
+call is legal; IN C23 IT MEANS (void). gcc 15 defaults to gnu23, so all four \
+attempts fail identically -- gcc and cc, ABI=64 and ABI=32 -- and configure \
+reports "could not find a working compiler", which reads as a broken toolchain \
+and is a language change.
+
+CC RATHER THAN CFLAGS. gmp builds its own optimisation and ABI flag lists and \
+setting CFLAGS replaces them wholesale, discarding the tuning this package \
+exists to get right. A multi-word CC is explicitly supported -- configure:5828 \
+names `CC="/usr/local/bin/gcc -pipe"` as the case it handles.
+
+HOW THE WITHDRAWAL HAPPENED IS WORTH RECORDING, because the reasoning looked \
+sound. The fix was removed after "testing" the program against the real \
+stage-4 gcc under bwrap plus qemu-aarch64-static and reading rc=0. Both halves \
+were wrong: the exit status came from a pipeline, so it was `head`'s and not \
+gcc's -- and qemu-user CANNOT EXEC AARCH64 CHILDREN, so the gcc driver never \
+reached cc1 and returns 1 with empty output whatever it is asked to compile. \
+That harness cannot answer a compilation question at all, in either direction. \
+The only authority for "does this compile with our toolchain" is a real run's \
+config.log or build log. The stage-4 toolchain is aarch64-veron-linux-gnu-gcc -- its \
 libdir is /usr/lib/gcc/aarch64-veron-linux-gnu and every driver in the sysroot \
 carries that prefix. Writing aarch64-unknown-linux-gnu asserts a host the \
 compiler does not agree it targets, and gmp's configure ECHOED IT BACK \
