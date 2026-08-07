@@ -17,7 +17,8 @@ runtime      = []
 optional_off = ["tests", "docs", "extra-programs", "deep-plc", "dred", "osce"]
 
 [declared]
-configure_flags = ["-Dtests=disabled", "-Ddocs=disabled",
+configure_flags = ["--libdir=lib",
+                   "-Dtests=disabled", "-Ddocs=disabled",
                    "-Dextra-programs=disabled", "-Dintrinsics=enabled",
                    "-Drtcd=enabled", "--wrap-mode=nofallback"]
 verification    = "none -- upstream suites are not run"
@@ -54,7 +55,7 @@ run  = [["tar", "-xf", "$DL/opus-1.6.1.tar.gz", "-C", "$B"]]
 [[steps]]
 name = "setup"
 cwd  = "$S"
-run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
          "--wrap-mode=nofallback",
          "-Dtests=disabled", "-Ddocs=disabled", "-Dextra-programs=disabled",
          "-Dintrinsics=enabled", "-Drtcd=enabled"]]

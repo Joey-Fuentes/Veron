@@ -28,7 +28,8 @@ optional_off = ["backend-x11", "plugin-alsa", "plugin-pulse",
                 "plugin-backlight", "plugin-disk-io"]
 
 [declared]
-configure_flags = ["-Dbackend-x11=disabled", "-Dbackend-wayland=enabled",
+configure_flags = ["--libdir=lib",
+                   "-Dbackend-x11=disabled", "-Dbackend-wayland=enabled",
                    "-Dplugin-alsa=disabled", "-Dplugin-pulse=disabled",
                    "-Dplugin-pipewire=disabled", "-Dplugin-mpd=disabled",
                    "-Dplugin-i3=disabled", "-Dplugin-sway-xkb=disabled",
@@ -96,7 +97,7 @@ run  = [["tar", "-xf", "$DL/yambar-1.11.0.tar.gz", "-C", "$B"]]
 [[steps]]
 name = "setup"
 cwd  = "$S"
-run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
          "--wrap-mode=nofallback",
          "-Dbackend-x11=disabled", "-Dbackend-wayland=enabled",
          "-Dplugin-alsa=disabled", "-Dplugin-pulse=disabled",

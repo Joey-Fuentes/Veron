@@ -106,31 +106,39 @@ between this file and the recipes fails the run.
   84. wayland-protocols
   85. xkeyboard-config
   86. brotli
-  87. gnutls
-  88. graphene
-  89. graphite2
-  90. json-c
-  91. libinput
-  92. libjpeg-turbo
-  93. llvm
-  94. utf8proc
-  95. glib-networking
-  96. harfbuzz
-  97. libwebp
-  98. mesa
-  99. freetype
-  100. libepoxy
-  101. libsoup
-  102. wlroots
-  103. fontconfig
-  104. cairo
-  105. fcft
-  106. foot
-  107. fuzzel
-  108. pango
-  109. swaybg
-  110. yambar
-  111. labwc
+  87. ffmpeg
+  88. gnutls
+  89. graphene
+  90. graphite2
+  91. gstreamer
+  92. json-c
+  93. libinput
+  94. libjpeg-turbo
+  95. llvm
+  96. qemu
+  97. utf8proc
+  98. glib-networking
+  99. harfbuzz
+  100. libwebp
+  101. mesa
+  102. freetype
+  103. libepoxy
+  104. libsoup
+  105. wlroots
+  106. fontconfig
+  107. cairo
+  108. fcft
+  109. foot
+  110. fuzzel
+  111. pango
+  112. swaybg
+  113. yambar
+  114. gst-plugins-base
+  115. labwc
+  116. gst-libav
+  117. gst-plugins-bad
+  118. gst-plugins-good
+  119. wpewebkit
 
 ======================================================================
 package bzip2 1.0.8
@@ -2277,7 +2285,7 @@ package pyyaml 6.0.3
 package bubblewrap 0.11.0
   group        browser-substrate
   license      LGPL-2.0-or-later
-  recipe-sha   5e8ea0d581492e289e15dfd816122bc8beb86987148ad7e9605fc67c5a59ac24
+  recipe-sha   1f0a65a562cdcacaf16a419d64985c3ca51e87654c547593e445713e5672d813
 
   source
     url        https://github.com/containers/bubblewrap/releases/download/v0.11.0/bubblewrap-0.11.0.tar.xz
@@ -2298,7 +2306,7 @@ package bubblewrap 0.11.0
     [02] setup
          cwd  build/bubblewrap-0.11.0/bubblewrap-0.11.0
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dbash_completion=disabled", "-Dzsh_completion=disabled", "-Dman=disabled", "-Dtests=false", "-Dselinux=disabled"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dbash_completion=disabled", "-Dzsh_completion=disabled", "-Dman=disabled", "-Dtests=false", "-Dselinux=disabled"]
     [03] build
          cwd  build/bubblewrap-0.11.0/bubblewrap-0.11.0
          argv ["ninja", "-C", "_b"]
@@ -2344,7 +2352,7 @@ package cmake 4.2.3
 package dav1d 1.5.4
   group        media
   license      BSD-2-Clause
-  recipe-sha   3787c941ec7a415e1cc8d847bccf20da181486ca523fc0bfd8cd2cbcbdd03ee8
+  recipe-sha   9b2107c39babef96614803567f538bccc4a17f6bbf6bd3ffca0e098cb4f80104
 
   source
     url        https://downloads.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz
@@ -2365,7 +2373,7 @@ package dav1d 1.5.4
     [02] setup
          cwd  build/dav1d-1.5.4/dav1d-1.5.4
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Denable_tools=false", "-Denable_tests=false", "-Denable_examples=false", "-Denable_asm=true"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Denable_tools=false", "-Denable_tests=false", "-Denable_examples=false", "-Denable_asm=true"]
     [03] build
          cwd  build/dav1d-1.5.4/dav1d-1.5.4
          argv ["ninja", "-C", "_b"]
@@ -2551,7 +2559,7 @@ package libevdev 1.13.4
 package libpsl 0.21.5
   group        browser-substrate
   license      MIT
-  recipe-sha   19033b4ab0e34a8292559722ddada3b521851e6c29f36af8e79687e809824b8a
+  recipe-sha   28299272826a90b4438fd4a31b1f22824a7df2f5f90383534defd54b30642bb6
 
   source
     url        https://github.com/rockdaboot/libpsl/releases/download/0.21.5/libpsl-0.21.5.tar.gz
@@ -2572,7 +2580,7 @@ package libpsl 0.21.5
     [02] setup
          cwd  build/libpsl-0.21.5/libpsl-0.21.5
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Druntime=libicu", "-Dbuiltin=true", "-Ddocs=false", "-Dtests=false"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Druntime=libicu", "-Dbuiltin=true", "-Ddocs=false", "-Dtests=false"]
     [03] build
          cwd  build/libpsl-0.21.5/libpsl-0.21.5
          argv ["ninja", "-C", "_b"]
@@ -2688,7 +2696,7 @@ package mako 1.4.0
 package opus 1.6.1
   group        media
   license      BSD-3-Clause
-  recipe-sha   82b879d41cc2d0d655852ae90d068ad4c6f64cffbe844f7739e444fa5c30971c
+  recipe-sha   51ba3de0fb36bdae36a01575494000292d7043afb72dc76b24e78d26d0745c43
 
   source
     url        https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
@@ -2709,7 +2717,7 @@ package opus 1.6.1
     [02] setup
          cwd  build/opus-1.6.1/opus-1.6.1
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dtests=disabled", "-Ddocs=disabled", "-Dextra-programs=disabled", "-Dintrinsics=enabled", "-Drtcd=enabled"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dtests=disabled", "-Ddocs=disabled", "-Dextra-programs=disabled", "-Dintrinsics=enabled", "-Drtcd=enabled"]
     [03] build
          cwd  build/opus-1.6.1/opus-1.6.1
          argv ["ninja", "-C", "_b"]
@@ -2722,7 +2730,7 @@ package opus 1.6.1
 package orc 0.4.41
   group        media
   license      BSD-2-Clause
-  recipe-sha   6e3e4232ecff519974801d3c2c79c56507f9501334a6530db3090b394038d8cc
+  recipe-sha   acdee9530a4d99134b0441e63d654f8732255e3f8c2b6807e114ffb07ed79ff0
 
   source
     url        https://gstreamer.freedesktop.org/src/orc/orc-0.4.41.tar.xz
@@ -2743,7 +2751,7 @@ package orc 0.4.41
     [02] setup
          cwd  build/orc-0.4.41/orc-0.4.41
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dorc-test=disabled", "-Dbenchmarks=disabled", "-Dexamples=disabled", "-Dgtk_doc=disabled", "-Dtests=disabled", "-Dtools=enabled", "-Dorc-target=neon"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dorc-test=disabled", "-Dbenchmarks=disabled", "-Dexamples=disabled", "-Dgtk_doc=disabled", "-Dtests=disabled", "-Dtools=enabled", "-Dorc-target=neon"]
     [03] build
          cwd  build/orc-0.4.41/orc-0.4.41
          argv ["ninja", "-C", "_b"]
@@ -2756,7 +2764,7 @@ package orc 0.4.41
 package p11-kit 0.25.5
   group        tls
   license      BSD-3-Clause
-  recipe-sha   13a3d6ef4f1e6238cf8e8368133984d76afbec6d63bf55ebcf20a07236302f5b
+  recipe-sha   c828224b0772ffb3d28d4e1dd2252b847018af1b208d834945e765b202433204
 
   source
     url        https://github.com/p11-glue/p11-kit/releases/download/0.25.5/p11-kit-0.25.5.tar.xz
@@ -2777,7 +2785,7 @@ package p11-kit 0.25.5
     [02] setup
          cwd  build/p11-kit-0.25.5/p11-kit-0.25.5
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dtrust_module=enabled", "-Dhash_impl=internal", "-Dlibffi=enabled", "-Dsystemd=disabled", "-Dbash_completion=disabled", "-Dnls=false", "-Dgtk_doc=false"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dtrust_module=enabled", "-Dhash_impl=internal", "-Dlibffi=enabled", "-Dsystemd=disabled", "-Dbash_completion=disabled", "-Dnls=false", "-Dgtk_doc=false"]
     [03] build
          cwd  build/p11-kit-0.25.5/p11-kit-0.25.5
          argv ["ninja", "-C", "_b"]
@@ -2858,7 +2866,7 @@ package seatd 0.9.3
 package tllist 1.1.0
   group        desktop
   license      MIT
-  recipe-sha   ffb19eb25d5490be193b90bbcf16d94f5335aed84fdd0889f159682313f626e2
+  recipe-sha   b517b6923ae01c745ecfe0d1a57811ea1c3bff87463363f8787d76571f745975
 
   source
     url        https://codeberg.org/dnkl/tllist/archive/1.1.0.tar.gz
@@ -2879,7 +2887,7 @@ package tllist 1.1.0
     [02] setup
          cwd  build/tllist-1.1.0/tllist
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback"]
     [03] install
          cwd  build/tllist-1.1.0/tllist
          env  DESTDIR=dest/tllist
@@ -2991,7 +2999,7 @@ package xkeyboard-config 2.48
 package brotli 1.1.0
   group        browser-substrate
   license      MIT
-  recipe-sha   3b955be928f7e61f57600c8452885ca7a59d1fa0da25c80e0385944922c5a7fd
+  recipe-sha   7fdccef087f29edd4960ed51f750d8dc044514223e3d06f8003e927c8d6df5b6
 
   source
     url        https://github.com/google/brotli/archive/v1.1.0/brotli-1.1.0.tar.gz
@@ -3011,7 +3019,7 @@ package brotli 1.1.0
          argv ["tar", "-xf", "dl/brotli-1.1.0.tar.gz", "-C", "build/brotli-1.1.0"]
     [02] configure
          cwd  build/brotli-1.1.0/brotli-1.1.0
-         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=ON", "-DBROTLI_DISABLE_TESTS=ON"]
+         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=ON", "-DBROTLI_DISABLE_TESTS=ON"]
     [03] build
          cwd  build/brotli-1.1.0/brotli-1.1.0
          argv ["ninja", "-C", "_b"]
@@ -3019,6 +3027,38 @@ package brotli 1.1.0
          cwd  build/brotli-1.1.0/brotli-1.1.0
          env  DESTDIR=dest/brotli
          argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package ffmpeg 8.1.2
+  group        media
+  license      LGPL-2.1-or-later
+  recipe-sha   0272988752ecc9c607faddeeb2c26ba0dd1335055045822836148d3523a09799
+
+  source
+    url        https://ffmpeg.org/releases/ffmpeg-8.1.2.tar.xz
+    sha256     464beb5e7bf0c311e68b45ae2f04e9cc2af88851abb4082231742a74d97b524c
+    signature  none -- ffmpeg.org publishes no detached signature beside the release
+    correspond none
+
+  deps
+    build        dav1d, libdrm, libogg, libvorbis, libvpx, opus, pkgconf, zlib
+    link         dav1d, libogg, libvorbis, libvpx, opus, zlib
+    runtime      dav1d, libogg, libvorbis, libvpx, opus, zlib
+    optional_off alsa, autodetect, debug, doc, gpl, libwebp, nonfree, programs, sdl2, version3, x11grab
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/ffmpeg-8.1.2
+         argv ["tar", "-xf", "dl/ffmpeg-8.1.2.tar.xz", "-C", "build/ffmpeg-8.1.2"]
+    [02] configure
+         cwd  build/ffmpeg-8.1.2/ffmpeg-8.1.2
+         argv ["./configure", "--prefix=/usr", "--enable-shared", "--disable-static", "--disable-autodetect", "--disable-programs", "--disable-doc", "--disable-debug", "--enable-pic", "--enable-libdav1d", "--enable-libvpx", "--enable-libopus", "--enable-libvorbis", "--enable-zlib"]
+    [03] build
+         cwd  build/ffmpeg-8.1.2/ffmpeg-8.1.2
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/ffmpeg-8.1.2/ffmpeg-8.1.2
+         argv ["make", "install", "DESTDIR=dest/ffmpeg"]
 
 ======================================================================
 package gnutls 3.8.10
@@ -3056,7 +3096,7 @@ package gnutls 3.8.10
 package graphene 1.10.8
   group        browser-substrate
   license      MIT
-  recipe-sha   eb00e7466644569ac38da5cf2339e487c525bd277ccd8cb76205f79358174175
+  recipe-sha   8c4e66fab6ab864a6da55fb1a9431b057a911d9a106924801e9e935c61ad06ec
 
   source
     url        https://download.gnome.org/sources/graphene/1.10/graphene-1.10.8.tar.xz
@@ -3077,7 +3117,7 @@ package graphene 1.10.8
     [02] setup
          cwd  build/graphene-1.10.8/graphene-1.10.8
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dgtk_doc=false", "-Dintrospection=disabled", "-Dgobject_types=true", "-Dtests=false", "-Dinstalled_tests=false"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dgtk_doc=false", "-Dintrospection=disabled", "-Dgobject_types=true", "-Dtests=false", "-Dinstalled_tests=false"]
     [03] build
          cwd  build/graphene-1.10.8/graphene-1.10.8
          argv ["ninja", "-C", "_b"]
@@ -3123,10 +3163,44 @@ package graphite2 1.3.14
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package gstreamer 1.28.1
+  group        media
+  license      LGPL-2.1-or-later
+  recipe-sha   411866d53881bc0055f04a6514c260701e94d9ff33c7efb369bc1dfd9da04628
+
+  source
+    url        https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.28.1.tar.xz
+    sha256     b65e2ffa35bdbf8798cb75c23ffc3d05e484e48346ff7546844ba85217664504
+    signature  none -- gstreamer.freedesktop.org publishes no detached signature
+    correspond none
+
+  deps
+    build        glib, meson, ninja, pkgconf, python
+    link         glib
+    runtime      glib
+    optional_off bash-completion, benchmarks, coretracers, dbghelp, doc, examples, introspection, libdw, libunwind, nls, ptp-helper, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/gstreamer-1.28.1
+         argv ["tar", "-xf", "dl/gstreamer-1.28.1.tar.xz", "-C", "build/gstreamer-1.28.1"]
+    [02] setup
+         cwd  build/gstreamer-1.28.1/gstreamer-1.28.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dauto_features=disabled", "-Dptp-helper=disabled", "-Dexamples=disabled", "-Dtests=disabled", "-Dbenchmarks=disabled", "-Dintrospection=disabled", "-Dnls=disabled", "-Ddoc=disabled", "-Dtools=enabled", "-Dgst_debug=true", "-Dregistry=true"]
+    [03] build
+         cwd  build/gstreamer-1.28.1/gstreamer-1.28.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/gstreamer-1.28.1/gstreamer-1.28.1
+         env  DESTDIR=dest/gstreamer
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package json-c 0.18
   group        browser-substrate
   license      MIT
-  recipe-sha   96b18a6f32a70c2452db8258a79477dc944a107f87cfbb51df49700d02349ad7
+  recipe-sha   8b8d4319ffb49471454559c8a1662cd028fa27ce0f0610661c341cf913702da2
 
   source
     url        https://github.com/json-c/json-c/archive/json-c-0.18-20240915/json-c-0.18.tar.gz
@@ -3146,7 +3220,7 @@ package json-c 0.18
          argv ["tar", "-xf", "dl/json-c-0.18.tar.gz", "-C", "build/json-c-0.18"]
     [02] configure
          cwd  build/json-c-0.18/json-c-json-c-0.18-20240915
-         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=ON", "-DBUILD_STATIC_LIBS=OFF", "-DDISABLE_WERROR=ON", "-DENABLE_RDRAND=OFF", "-DBUILD_TESTING=OFF", "-DBUILD_APPS=OFF"]
+         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=ON", "-DBUILD_STATIC_LIBS=OFF", "-DDISABLE_WERROR=ON", "-DENABLE_RDRAND=OFF", "-DBUILD_TESTING=OFF", "-DBUILD_APPS=OFF"]
     [03] build
          cwd  build/json-c-0.18/json-c-json-c-0.18-20240915
          argv ["ninja", "-C", "_b"]
@@ -3256,10 +3330,42 @@ package llvm 22.1.8
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package qemu 11.0.3
+  group        system
+  license      GPL-2.0-only AND BSD-3-Clause AND MIT
+  recipe-sha   4ef742d8c7e4bafdecbbbfac0a1139456a712b185e32a3b4f53e8ccfc9c3a903
+
+  source
+    url        https://download.qemu.org/qemu-11.0.3.tar.xz
+    sha256     da5fcffc32762820568b828ed430a728864d34d50b6d2f30358597760cbb0523
+    signature  https://download.qemu.org/qemu-11.0.3.tar.xz.sig
+    correspond none
+
+  deps
+    build        glib, meson, ninja, pixman, pkgconf, python, zlib
+    link         glib, pixman, zlib
+    runtime      glib, pixman, zlib
+    optional_off blkio, capstone, curl, curses, docs, gtk, guest-agent, kvm, libssh, sdl, slirp, spice, vnc
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/qemu-11.0.3
+         argv ["tar", "-xf", "dl/qemu-11.0.3.tar.xz", "-C", "build/qemu-11.0.3"]
+    [02] configure
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["./configure", "--prefix=/usr", "--target-list=aarch64-softmmu,x86_64-softmmu", "--disable-slirp", "--disable-capstone", "--disable-gtk", "--disable-sdl", "--disable-spice", "--disable-curses", "--disable-vnc", "--disable-curl", "--disable-libssh", "--disable-blkio", "--disable-docs", "--disable-guest-agent", "--enable-tcg"]
+    [03] build
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/qemu-11.0.3/qemu-11.0.3
+         argv ["make", "install", "DESTDIR=dest/qemu"]
+
+======================================================================
 package utf8proc 2.11.3
   group        desktop
   license      MIT
-  recipe-sha   aae64d660203337fdb1a805dfbdc7a029e3b77005a8eafc657268b0a936a014d
+  recipe-sha   1070531bb4ad8b333dc65a203758735b63fa017e60b84bb7680a5f0038bafe11
 
   source
     url        https://github.com/JuliaStrings/utf8proc/releases/download/v2.11.3/utf8proc-2.11.3.tar.gz
@@ -3279,7 +3385,7 @@ package utf8proc 2.11.3
          argv ["tar", "-xf", "dl/utf8proc-2.11.3.tar.gz", "-C", "build/utf8proc-2.11.3"]
     [02] configure
          cwd  build/utf8proc-2.11.3/utf8proc-2.11.3
-         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=ON", "-DUTF8PROC_ENABLE_TESTING=OFF", "-DUTF8PROC_INSTALL=ON"]
+         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=ON", "-DUTF8PROC_ENABLE_TESTING=OFF", "-DUTF8PROC_INSTALL=ON"]
     [03] build
          cwd  build/utf8proc-2.11.3/utf8proc-2.11.3
          argv ["ninja", "-C", "_b"]
@@ -3292,7 +3398,7 @@ package utf8proc 2.11.3
 package glib-networking 2.80.1
   group        browser-substrate
   license      LGPL-2.1-or-later
-  recipe-sha   314a99a04c64a9f6e914ac3e8902029a8309c832938adcbead82bb58c2741325
+  recipe-sha   9cb7a7662e99fd2f71232c44eb5a33240e45cdc49823004adebadcd8e127f0a1
 
   source
     url        https://download.gnome.org/sources/glib-networking/2.80/glib-networking-2.80.1.tar.xz
@@ -3313,7 +3419,7 @@ package glib-networking 2.80.1
     [02] setup
          cwd  build/glib-networking-2.80.1/glib-networking-2.80.1
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dgnutls=enabled", "-Dopenssl=disabled", "-Dlibproxy=disabled", "-Dgnome_proxy=disabled", "-Denvironment_proxy=enabled", "-Dinstalled_tests=false"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dgnutls=enabled", "-Dopenssl=disabled", "-Dlibproxy=disabled", "-Dgnome_proxy=disabled", "-Denvironment_proxy=enabled", "-Dinstalled_tests=false"]
     [03] build
          cwd  build/glib-networking-2.80.1/glib-networking-2.80.1
          argv ["ninja", "-C", "_b"]
@@ -3458,7 +3564,7 @@ package freetype 2.14.1
 package libepoxy 1.5.10
   group        browser-substrate
   license      MIT
-  recipe-sha   6a676bfd0e3c640957c008e60c13ee9050cf9ef116c366154a8388af7e0f28d9
+  recipe-sha   ee91a07a3215fd811205d82192a374cb189072221debbd07648ba3c728cf900d
 
   source
     url        https://github.com/anholt/libepoxy/archive/1.5.10/libepoxy-1.5.10.tar.gz
@@ -3479,7 +3585,7 @@ package libepoxy 1.5.10
     [02] setup
          cwd  build/libepoxy-1.5.10/libepoxy-1.5.10
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dx11=false", "-Dglx=no", "-Degl=yes", "-Ddocs=false", "-Dtests=false"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dx11=false", "-Dglx=no", "-Degl=yes", "-Ddocs=false", "-Dtests=false"]
     [03] build
          cwd  build/libepoxy-1.5.10/libepoxy-1.5.10
          argv ["ninja", "-C", "_b"]
@@ -3492,7 +3598,7 @@ package libepoxy 1.5.10
 package libsoup 3.6.5
   group        browser-substrate
   license      LGPL-2.1-or-later
-  recipe-sha   003f4e2e678f275684b43e5424d7e0a56f611a1c87e3c25fd7f7c551fc51bc13
+  recipe-sha   68b67c4a2157feb8b672a8b86363fd95a9e580ad7a02adccf0d0a120402a0c05
 
   source
     url        https://download.gnome.org/sources/libsoup/3.6/libsoup-3.6.5.tar.xz
@@ -3513,7 +3619,7 @@ package libsoup 3.6.5
     [02] setup
          cwd  build/libsoup-3.6.5/libsoup-3.6.5
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dgssapi=disabled", "-Dntlm=disabled", "-Dbrotli=enabled", "-Dtls_check=true", "-Dintrospection=disabled", "-Dvapi=disabled", "-Ddocs=disabled", "-Dtests=false", "-Dsysprof=disabled", "-Dpkcs11_tests=disabled"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dgssapi=disabled", "-Dntlm=disabled", "-Dbrotli=enabled", "-Dtls_check=true", "-Dintrospection=disabled", "-Dvapi=disabled", "-Ddocs=disabled", "-Dtests=false", "-Dsysprof=disabled", "-Dpkcs11_tests=disabled"]
     [03] build
          cwd  build/libsoup-3.6.5/libsoup-3.6.5
          argv ["ninja", "-C", "_b"]
@@ -3632,7 +3738,7 @@ package cairo 1.18.4
 package fcft 3.3.1
   group        desktop
   license      MIT
-  recipe-sha   1f657471c580fe6fa0d3bb7e2ecda2e4ace39e53cb5d71cd8ccd75a4bd624d32
+  recipe-sha   fec8e130752c5782de80d2f4471fe60fe74db6e2ecc3212391f39b74a6e59af5
 
   source
     url        https://codeberg.org/dnkl/fcft/archive/3.3.1.tar.gz
@@ -3653,7 +3759,7 @@ package fcft 3.3.1
     [02] setup
          cwd  build/fcft-3.3.1/fcft
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Ddocs=enabled", "-Dgrapheme-shaping=enabled", "-Drun-shaping=enabled", "-Dsvg-backend=nanosvg", "-Dsystem-nanosvg=disabled", "-Dexamples=false", "-Dtest-text-shaping=false"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Ddocs=enabled", "-Dgrapheme-shaping=enabled", "-Drun-shaping=enabled", "-Dsvg-backend=nanosvg", "-Dsystem-nanosvg=disabled", "-Dexamples=false", "-Dtest-text-shaping=false"]
     [03] build
          cwd  build/fcft-3.3.1/fcft
          argv ["ninja", "-C", "_b"]
@@ -3666,7 +3772,7 @@ package fcft 3.3.1
 package foot 1.27.0
   group        desktop
   license      MIT
-  recipe-sha   a407304efdc091a729100eaf48760366b15d0e151dbc8e73660565562d2ec2ce
+  recipe-sha   706399a082dc0cebd4603de507cfe8b15cb9b38ae5debb26c92a769547d71b2a
 
   source
     url        https://codeberg.org/dnkl/foot/archive/1.27.0.tar.gz
@@ -3687,7 +3793,7 @@ package foot 1.27.0
     [02] setup
          cwd  build/foot-1.27.0/foot-1.27.0
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Ddocs=enabled", "-Dutmp-backend=none", "-Dtests=false", "-Dgrapheme-clustering=enabled", "-Dime=false", "-Dterminfo=enabled", "-Dthemes=true"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Ddocs=enabled", "-Dutmp-backend=none", "-Dtests=false", "-Dgrapheme-clustering=enabled", "-Dime=false", "-Dterminfo=enabled", "-Dthemes=true"]
     [03] build
          cwd  build/foot-1.27.0/foot-1.27.0
          argv ["ninja", "-C", "_b"]
@@ -3700,7 +3806,7 @@ package foot 1.27.0
 package fuzzel 1.14.1
   group        desktop
   license      MIT
-  recipe-sha   2327ccd7e4c5fdf7be177cb750423d186a0f3dfa5cd275f18c9daa85ab26081d
+  recipe-sha   947a30ac62e2e768ca2ede8163beacccb15c965f2cb9f670a1a1e4069b03d262
 
   source
     url        https://codeberg.org/dnkl/fuzzel/archive/1.14.1.tar.gz
@@ -3721,7 +3827,7 @@ package fuzzel 1.14.1
     [02] setup
          cwd  build/fuzzel-1.14.1/fuzzel-1.14.1
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dpng-backend=libpng", "-Dsvg-backend=nanosvg", "-Dsystem-nanosvg=disabled", "-Denable-cairo=enabled"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dpng-backend=libpng", "-Dsvg-backend=nanosvg", "-Dsystem-nanosvg=disabled", "-Denable-cairo=enabled"]
     [03] build
          cwd  build/fuzzel-1.14.1/fuzzel-1.14.1
          argv ["ninja", "-C", "_b"]
@@ -3768,7 +3874,7 @@ package pango 1.57.0
 package swaybg 1.2.2
   group        desktop
   license      MIT
-  recipe-sha   fdb9eeb1a4e362fe3bef23c965dd15f51ec35335142f064c2b8871e7e63cc4fa
+  recipe-sha   ab591067342a0181b733b22f4633180a6f27249d8a5614b534ca5971d8910ef0
 
   source
     url        https://github.com/swaywm/swaybg/releases/download/v1.2.2/swaybg-1.2.2.tar.gz
@@ -3789,7 +3895,7 @@ package swaybg 1.2.2
     [02] setup
          cwd  build/swaybg-1.2.2/swaybg-1.2.2
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dgdk-pixbuf=disabled", "-Dman-pages=enabled"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dgdk-pixbuf=disabled", "-Dman-pages=enabled"]
     [03] build
          cwd  build/swaybg-1.2.2/swaybg-1.2.2
          argv ["ninja", "-C", "_b"]
@@ -3802,7 +3908,7 @@ package swaybg 1.2.2
 package yambar 1.11.0
   group        desktop
   license      MIT
-  recipe-sha   d13fe1c1a441716a0d1418442792a32cf06123888ae4b0d08bb4baac70d973a3
+  recipe-sha   00c4b3c7584d87b80461ccc74dc83180b318cf42f0b0c2e253760134ee1da58f
 
   source
     url        https://codeberg.org/dnkl/yambar/releases/download/1.11.0/yambar-1.11.0.tar.gz
@@ -3823,13 +3929,47 @@ package yambar 1.11.0
     [02] setup
          cwd  build/yambar-1.11.0/yambar-1.11.0
          env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
-         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dbackend-x11=disabled", "-Dbackend-wayland=enabled", "-Dplugin-alsa=disabled", "-Dplugin-pulse=disabled", "-Dplugin-pipewire=disabled", "-Dplugin-mpd=disabled", "-Dplugin-i3=disabled", "-Dplugin-sway-xkb=disabled", "-Dplugin-xkb=disabled", "-Dplugin-xwindow=disabled", "-Dplugin-dwl=disabled", "-Dplugin-river=disabled", "-Dplugin-removables=disabled", "-Dplugin-backlight=enabled", "-Dplugin-battery=enabled", "-Dplugin-clock=enabled", "-Dplugin-cpu=enabled", "-Dplugin-mem=enabled", "-Dplugin-network=enabled", "-Dplugin-label=enabled", "-Dplugin-script=enabled", "-Dplugin-disk-io=enabled", "-Dplugin-foreign-toplevel=enabled"]
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dbackend-x11=disabled", "-Dbackend-wayland=enabled", "-Dplugin-alsa=disabled", "-Dplugin-pulse=disabled", "-Dplugin-pipewire=disabled", "-Dplugin-mpd=disabled", "-Dplugin-i3=disabled", "-Dplugin-sway-xkb=disabled", "-Dplugin-xkb=disabled", "-Dplugin-xwindow=disabled", "-Dplugin-dwl=disabled", "-Dplugin-river=disabled", "-Dplugin-removables=disabled", "-Dplugin-backlight=enabled", "-Dplugin-battery=enabled", "-Dplugin-clock=enabled", "-Dplugin-cpu=enabled", "-Dplugin-mem=enabled", "-Dplugin-network=enabled", "-Dplugin-label=enabled", "-Dplugin-script=enabled", "-Dplugin-disk-io=enabled", "-Dplugin-foreign-toplevel=enabled"]
     [03] build
          cwd  build/yambar-1.11.0/yambar-1.11.0
          argv ["ninja", "-C", "_b"]
     [04] install
          cwd  build/yambar-1.11.0/yambar-1.11.0
          env  DESTDIR=dest/yambar
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package gst-plugins-base 1.28.1
+  group        media
+  license      LGPL-2.1-or-later
+  recipe-sha   2a5b21f53a93361cd669d8435e46a37320f844af4bad9ed31f240a74dd137e78
+
+  source
+    url        https://gstreamer.freedesktop.org/src/gst-plugins-base/gst-plugins-base-1.28.1.tar.xz
+    sha256     1446a4c2a92ff5d78d88e85a599f0038441d53333236f0c72d72f21a9c132497
+    signature  none -- gstreamer.freedesktop.org publishes no detached signature
+    correspond none
+
+  deps
+    build        alsa-lib, cairo, glib, gstreamer, libogg, libvorbis, meson, ninja, opus, orc, pango, pkgconf
+    link         alsa-lib, glib, gstreamer, libogg, libvorbis, opus, orc
+    runtime      alsa-lib, glib, gstreamer, libogg, libvorbis, opus, orc
+    optional_off cdparanoia, doc, examples, gl, introspection, iso-codes, libvisual, nls, pango, tests, theora, tremor, x11, xi, xshm, xvideo
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/gst-plugins-base-1.28.1
+         argv ["tar", "-xf", "dl/gst-plugins-base-1.28.1.tar.xz", "-C", "build/gst-plugins-base-1.28.1"]
+    [02] setup
+         cwd  build/gst-plugins-base-1.28.1/gst-plugins-base-1.28.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dauto_features=disabled", "-Dorc=enabled", "-Dapp=enabled", "-Daudioconvert=enabled", "-Daudioresample=enabled", "-Dplayback=enabled", "-Dtypefind=enabled", "-Dvideoconvertscale=enabled", "-Dvolume=enabled", "-Dogg=enabled", "-Dopus=enabled", "-Dvorbis=enabled", "-Dalsa=enabled", "-Dx11=disabled", "-Dgl=disabled", "-Dpango=disabled", "-Dintrospection=disabled", "-Dnls=disabled", "-Dexamples=disabled", "-Dtests=disabled", "-Ddoc=disabled"]
+    [03] build
+         cwd  build/gst-plugins-base-1.28.1/gst-plugins-base-1.28.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/gst-plugins-base-1.28.1/gst-plugins-base-1.28.1
+         env  DESTDIR=dest/gst-plugins-base
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
@@ -3864,5 +4004,140 @@ package labwc 0.9.1
     [04] install
          cwd  build/labwc-0.9.1/labwc-0.9.1
          env  DESTDIR=dest/labwc
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package gst-libav 1.28.1
+  group        media
+  license      LGPL-2.1-or-later
+  recipe-sha   695764c3ceec76377e717f1ff3fdf0e3521c89f4cfc05d77fbe68a0ceb4d490e
+
+  source
+    url        https://gstreamer.freedesktop.org/src/gst-libav/gst-libav-1.28.1.tar.xz
+    sha256     bfa91aaca38d0fd8addcdd559e35b7541e3f32a5f410194ec4ba18040defee9b
+    signature  none -- gstreamer.freedesktop.org publishes no detached signature
+    correspond none
+
+  deps
+    build        ffmpeg, glib, gst-plugins-base, gstreamer, meson, ninja, pkgconf
+    link         ffmpeg, glib, gst-plugins-base, gstreamer
+    runtime      ffmpeg, glib, gst-plugins-base, gstreamer
+    optional_off doc, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/gst-libav-1.28.1
+         argv ["tar", "-xf", "dl/gst-libav-1.28.1.tar.xz", "-C", "build/gst-libav-1.28.1"]
+    [02] setup
+         cwd  build/gst-libav-1.28.1/gst-libav-1.28.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dtests=disabled", "-Ddoc=disabled"]
+    [03] build
+         cwd  build/gst-libav-1.28.1/gst-libav-1.28.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/gst-libav-1.28.1/gst-libav-1.28.1
+         env  DESTDIR=dest/gst-libav
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package gst-plugins-bad 1.28.1
+  group        media
+  license      LGPL-2.1-or-later
+  recipe-sha   df23c08eb2027ec38cb5fbec038edff8d74052b1e5e5b249fdf6952c458dae5b
+
+  source
+    url        https://gstreamer.freedesktop.org/src/gst-plugins-bad/gst-plugins-bad-1.28.1.tar.xz
+    sha256     56c1593787f8b5550893d59e4ff29e6bcccf34973316fa55e34ce493e04313a2
+    signature  none -- gstreamer.freedesktop.org publishes no detached signature
+    correspond none
+
+  deps
+    build        glib, gst-plugins-base, gstreamer, meson, ninja, orc, pkgconf
+    link         glib, gst-plugins-base, gstreamer, orc
+    runtime      glib, gst-plugins-base, gstreamer, orc
+    optional_off doc, examples, gpl, introspection, nls, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/gst-plugins-bad-1.28.1
+         argv ["tar", "-xf", "dl/gst-plugins-bad-1.28.1.tar.xz", "-C", "build/gst-plugins-bad-1.28.1"]
+    [02] setup
+         cwd  build/gst-plugins-bad-1.28.1/gst-plugins-bad-1.28.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dauto_features=disabled", "-Dvideoparsers=enabled", "-Dintrospection=disabled", "-Dnls=disabled", "-Dexamples=disabled", "-Dtests=disabled", "-Ddoc=disabled", "-Dgpl=disabled"]
+    [03] build
+         cwd  build/gst-plugins-bad-1.28.1/gst-plugins-bad-1.28.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/gst-plugins-bad-1.28.1/gst-plugins-bad-1.28.1
+         env  DESTDIR=dest/gst-plugins-bad
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package gst-plugins-good 1.28.1
+  group        media
+  license      LGPL-2.1-or-later
+  recipe-sha   78cd938deb0556e5f94d37f21df137a374f5cfaf84b10d41c4be3733bee76e96
+
+  source
+    url        https://gstreamer.freedesktop.org/src/gst-plugins-good/gst-plugins-good-1.28.1.tar.xz
+    sha256     738e26aee41b7a62050e40b81adc017a110a7f32d1ec49fa6a0300846c44368d
+    signature  none -- gstreamer.freedesktop.org publishes no detached signature
+    correspond none
+
+  deps
+    build        glib, gst-plugins-base, gstreamer, libvpx, meson, ninja, orc, pkgconf
+    link         glib, gst-plugins-base, gstreamer, libvpx, orc
+    runtime      glib, gst-plugins-base, gstreamer, libvpx, orc
+    optional_off doc, examples, gtk3, jack, nls, pulse, qt5, soup, tests, v4l2, ximagesrc
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/gst-plugins-good-1.28.1
+         argv ["tar", "-xf", "dl/gst-plugins-good-1.28.1.tar.xz", "-C", "build/gst-plugins-good-1.28.1"]
+    [02] setup
+         cwd  build/gst-plugins-good-1.28.1/gst-plugins-good-1.28.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib", "--wrap-mode=nofallback", "-Dauto_features=disabled", "-Disomp4=enabled", "-Dmatroska=enabled", "-Daudioparsers=enabled", "-Dautodetect=enabled", "-Dvideofilter=enabled", "-Dwavparse=enabled", "-Ddeinterlace=enabled", "-Dvpx=enabled", "-Dsoup=disabled", "-Dnls=disabled", "-Dexamples=disabled", "-Dtests=disabled", "-Ddoc=disabled"]
+    [03] build
+         cwd  build/gst-plugins-good-1.28.1/gst-plugins-good-1.28.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/gst-plugins-good-1.28.1/gst-plugins-good-1.28.1
+         env  DESTDIR=dest/gst-plugins-good
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package wpewebkit 2.52.5
+  group        browser
+  license      LGPL-2.1-or-later AND BSD-2-Clause
+  recipe-sha   abffb8918a379dbbcd859da90cfccd95901546c3a7cdc9240917a3f1a06e28d9
+
+  source
+    url        https://wpewebkit.org/releases/wpewebkit-2.52.5.tar.xz
+    sha256     bcfc6c91db7659dcf24f6ff79ad27ac1eae1bc61dca0dbfee154706926740b3b
+    signature  none -- wpewebkit.org publishes .asc signatures; not yet pinned here
+    correspond none
+
+  deps
+    build        bubblewrap, cairo, cmake, fontconfig, freetype, glib, gperf, gst-plugins-base, gstreamer, harfbuzz, icu, libepoxy, libgcrypt, libhyphen, libjpeg-turbo, libpng, libsoup, libtasn1, libwebp, libxkbcommon, libxml2, mesa, ninja, pkgconf, python, sqlite, unifdef, wayland, wayland-protocols, zlib
+    link         cairo, fontconfig, freetype, glib, gst-plugins-base, gstreamer, harfbuzz, icu, libepoxy, libgcrypt, libhyphen, libjpeg-turbo, libpng, libsoup, libtasn1, libwebp, libxkbcommon, libxml2, mesa, sqlite, wayland, zlib
+    runtime      bubblewrap, cairo, fontconfig, freetype, glib, glib-networking, gst-libav, gst-plugins-bad, gst-plugins-base, gst-plugins-good, gstreamer, harfbuzz, icu, libepoxy, libgcrypt, libhyphen, libjpeg-turbo, libpng, libsoup, libtasn1, libwebp, libxkbcommon, libxml2, mesa, sqlite, wayland, zlib
+    optional_off documentation, encrypted-media, gamepad, introspection, journald-log, media-stream, pdfjs, speech-synthesis, webdriver
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/wpewebkit-2.52.5
+         argv ["tar", "-xf", "dl/wpewebkit-2.52.5.tar.xz", "-C", "build/wpewebkit-2.52.5"]
+    [02] configure
+         cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
+         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DPORT=WPE", "-DENABLE_JOURNALD_LOG=OFF", "-DENABLE_INTROSPECTION=OFF", "-DENABLE_DOCUMENTATION=OFF", "-DENABLE_GAMEPAD=OFF", "-DENABLE_SPEECH_SYNTHESIS=OFF", "-DENABLE_WEBDRIVER=OFF", "-DENABLE_MEDIA_STREAM=OFF", "-DENABLE_BUBBLEWRAP_SANDBOX=ON", "-DUSE_LIBHYPHEN=ON", "-DENABLE_PDFJS=OFF", "-DUSE_SYSTEM_MALLOC=ON"]
+    [03] build
+         cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
+         env  DESTDIR=dest/wpewebkit
          argv ["ninja", "-C", "_b", "install"]
 

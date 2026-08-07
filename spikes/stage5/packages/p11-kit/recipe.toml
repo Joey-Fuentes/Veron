@@ -18,7 +18,8 @@ optional_off = ["nls", "systemd", "bash_completion", "doc", "gtk_doc",
                 "trust_paths"]
 
 [declared]
-configure_flags = ["-Dtrust_module=enabled", "-Dhash_impl=internal",
+configure_flags = ["--libdir=lib",
+                   "-Dtrust_module=enabled", "-Dhash_impl=internal",
                    "-Dlibffi=enabled", "-Dsystemd=disabled",
                    "-Dbash_completion=disabled", "-Dnls=false",
                    "-Dgtk_doc=false", "--wrap-mode=nofallback"]
@@ -79,7 +80,7 @@ run  = [["tar", "-xf", "$DL/p11-kit-0.25.5.tar.xz", "-C", "$B"]]
 [[steps]]
 name = "setup"
 cwd  = "$S"
-run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
          "--wrap-mode=nofallback",
          "-Dtrust_module=enabled", "-Dhash_impl=internal", "-Dlibffi=enabled",
          "-Dsystemd=disabled", "-Dbash_completion=disabled",

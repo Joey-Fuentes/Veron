@@ -24,7 +24,8 @@ runtime      = ["fcft", "fontconfig", "pixman", "wayland", "libxkbcommon",
 optional_off = ["utmp-backend", "tests", "ime"]
 
 [declared]
-configure_flags = ["-Ddocs=enabled", "-Dutmp-backend=none", "-Dtests=false",
+configure_flags = ["--libdir=lib",
+                   "-Ddocs=enabled", "-Dutmp-backend=none", "-Dtests=false",
                    "-Dgrapheme-clustering=enabled", "-Dime=false",
                    "-Dterminfo=enabled", "-Dthemes=true",
                    "--wrap-mode=nofallback"]
@@ -90,7 +91,7 @@ run  = [["tar", "-xf", "$DL/foot-1.27.0.tar.gz", "-C", "$B"]]
 [[steps]]
 name = "setup"
 cwd  = "$S"
-run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
          "--wrap-mode=nofallback",
          "-Ddocs=enabled", "-Dutmp-backend=none", "-Dtests=false",
          "-Dgrapheme-clustering=enabled", "-Dime=false",

@@ -1,0 +1,84 @@
+name    = "gst-libav"
+version = "1.28.1"
+group   = "media"
+license = "LGPL-2.1-or-later"
+srcdir  = "gst-libav-1.28.1"
+
+[source]
+url       = "https://gstreamer.freedesktop.org/src/gst-libav/gst-libav-1.28.1.tar.xz"
+sha256    = "bfa91aaca38d0fd8addcdd559e35b7541e3f32a5f410194ec4ba18040defee9b"
+signature = "none -- gstreamer.freedesktop.org publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "gstreamer", "gst-plugins-base",
+                "glib", "ffmpeg"]
+link         = ["gstreamer", "gst-plugins-base", "glib", "ffmpeg"]
+runtime      = ["gstreamer", "gst-plugins-base", "glib", "ffmpeg"]
+optional_off = ["tests", "doc"]
+
+[declared]
+configure_flags = ["--libdir=lib",
+                   "-Dtests=disabled", "-Ddoc=disabled",
+                   "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["gst-libav"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+FOUR OPTIONS TOTAL, WHICH MAKES THIS THE SIMPLEST RECIPE IN THE GSTREAMER \
+BATCH AND THE ONE CARRYING THE MOST WEIGHT. STAGE5.md's whole codec argument \
+rests on it: H.264 DECODING COMES FROM ffmpeg VIA THIS PLUGIN, which is why \
+gst-plugins-ugly was dropped and why x264 -- the one pinned artifact with no \
+release tarball at all -- left the set entirely.
+
+IT REQUIRES FOUR ffmpeg LIBRARIES BY NAME AND VERSION (meson.build:21-25):
+
+    libavcodec  >= 58.18.100     libavfilter >= 7.16.100
+    libavformat >= 58.12.100     libavutil   >= 56.14.100
+
+This set builds 62.28, 11.14, 62.12 and 60.26 -- all well clear. Those floors \
+are why ffmpeg's guest test asserts the four SONAMES rather than the package \
+version: they are unrelated numbers and a test expecting 8.1.2 would fail \
+against a correct build.
+
+IT ALSO CHECKS THAT THE PROVIDER IS ACTUALLY FFMPEG. meson.build:32-36 \
+compiles a probe with `#error libav provider should be FFmpeg`, rejecting the \
+Libav fork. Nothing here would supply Libav, but the check means a wrong \
+provider fails loudly rather than producing a plugin that misbehaves.
+
+allow_fallback: true ON libavcodec MEANS meson WOULD BUILD ITS OWN FFMPEG if \
+none were installed. --wrap-mode=nofallback forbids it, turning a silent \
+several-hundred-megabyte subproject into a configure failure -- the same trap \
+orc carries in gst-plugins-base.
+
+NO BLFS PAGE. gst-libav is absent from all 862 pages of BLFS 13.0, which \
+covers gstreamer, base, good and even gst-plugins-rs but not this one. It \
+rests entirely on reading the tarball."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/gst-libav-1.28.1.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
+         "--wrap-mode=nofallback", "-Dtests=disabled", "-Ddoc=disabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/gst-inspect-1.0", "--exists", "--atleast-version=1.28.1", "libav"]]
+expect = [""]

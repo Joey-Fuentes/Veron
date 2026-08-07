@@ -17,7 +17,7 @@ runtime      = []
 optional_off = ["static", "rdrand", "threading", "tests", "apps"]
 
 [declared]
-configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release",
+configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release",
                    "-DBUILD_SHARED_LIBS=ON", "-DBUILD_STATIC_LIBS=OFF",
                    "-DDISABLE_WERROR=ON", "-DENABLE_RDRAND=OFF",
                    "-DBUILD_TESTING=OFF", "-DBUILD_APPS=OFF"]
@@ -84,7 +84,7 @@ run  = [["tar", "-xf", "$DL/json-c-0.18.tar.gz", "-C", "$B"]]
 name = "configure"
 cwd  = "$S"
 run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
-         "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release",
+         "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release",
          "-DBUILD_SHARED_LIBS=ON", "-DBUILD_STATIC_LIBS=OFF",
          "-DDISABLE_WERROR=ON", "-DENABLE_RDRAND=OFF", "-DBUILD_TESTING=OFF",
          "-DBUILD_APPS=OFF"]]

@@ -20,7 +20,8 @@ optional_off = ["bash_completion", "zsh_completion", "man", "tests",
                 "selinux", "require_userns"]
 
 [declared]
-configure_flags = ["-Dbash_completion=disabled", "-Dzsh_completion=disabled",
+configure_flags = ["--libdir=lib",
+                   "-Dbash_completion=disabled", "-Dzsh_completion=disabled",
                    "-Dman=disabled", "-Dtests=false", "-Dselinux=disabled",
                    "--wrap-mode=nofallback"]
 verification    = "none -- upstream suites are not run"
@@ -86,7 +87,7 @@ run  = [["tar", "-xf", "$DL/bubblewrap-0.11.0.tar.xz", "-C", "$B"]]
 [[steps]]
 name = "setup"
 cwd  = "$S"
-run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
          "--wrap-mode=nofallback",
          "-Dbash_completion=disabled", "-Dzsh_completion=disabled",
          "-Dman=disabled", "-Dtests=false", "-Dselinux=disabled"]]

@@ -17,7 +17,8 @@ runtime      = []
 optional_off = []
 
 [declared]
-configure_flags = []
+configure_flags = ["--libdir=lib",
+                   ]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["tllist"]
 deferral        = """
@@ -45,7 +46,7 @@ run  = [["tar", "-xf", "$DL/tllist-1.1.0.tar.gz", "-C", "$B"]]
 [[steps]]
 name = "setup"
 cwd  = "$S"
-run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
          "--wrap-mode=nofallback"]]
 
 [[steps]]

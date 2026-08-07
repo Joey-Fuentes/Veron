@@ -4471,6 +4471,98 @@ def cmd_selftest(a):
         # actually configures -- would need to model CMake's add_subdirectory
         # graph, and that is a real tool rather than a selftest clause.
 
+    # A FLAG A STEP PASSES MUST ALSO BE DECLARED, not only the reverse.
+    #
+    # The existing check asks whether every declared flag reaches a step. The
+    # other direction was never checked, and --libdir went into 23 steps while
+    # [declared].configure_flags stayed silent -- so PLAN.txt and the recipe
+    # header described a build that was not the one running. A flag nobody
+    # declared is exactly the kind of thing this project puts in `declared` so
+    # a reader of one recipe sees it.
+    #
+    # ONLY LONG OPTIONS ARE CHECKED. Steps legitimately carry positional
+    # arguments, subcommands and paths -- `meson setup _b`, `ninja -C _b`,
+    # `make install` -- and none of those is a configure flag.
+    _undecl = []
+    for _n, _r in sorted(load_recipes().items()):
+        _dec = set(str(x) for x in _r.get("declared", {}).get("configure_flags", []))
+        for _s in _r.get("steps", []):
+            if _s.get("name") not in ("configure", "setup"):
+                continue
+            for _argv in _s.get("run", []):
+                for _a in _argv:
+                    _a = str(_a)
+                    if not (_a.startswith("--") or _a.startswith("-D")):
+                        continue
+                    if _a in ("--prefix=/usr", "--buildtype=release"):
+                        continue
+                    if _a not in _dec:
+                        _undecl.append(f"{_n}: {_a}")
+    if _undecl:
+        for _x in _undecl:
+            print(f"  warn  step passes a flag [declared] does not name -- {_x}")
+    else:
+        print("  ok    every flag a configure step passes is also declared")
+
+    # EVERY meson AND cmake RECIPE NAMES ITS libdir, AND NOTHING LANDS IN lib64.
+    #
+    # THIS SET HAS ONE LIBRARY DIRECTORY AND IT IS /usr/lib. There is no
+    # multilib here: the stage-4 sysroot contains no lib64 at any depth, ships
+    # no ld.so.conf, and all 69 packages built before this check landed in
+    # usr/lib. lib64 is a Fedora/RHEL convention for systems carrying 32- and
+    # 64-bit libraries side by side, and Veron carries one architecture.
+    #
+    # BUT THE BUILD SYSTEMS GUESS, AND THE GUESS DEPENDS ON BUILD ORDER.
+    # CMake's GNUInstallDirs picks lib64 on a 64-bit host unless told
+    # otherwise; meson then picks lib64 because /usr/lib64 now EXISTS in the
+    # shared build root. Measured: brotli (cmake) installed to usr/lib64, and
+    # graphene, libepoxy, glib-networking, json-c and utf8proc followed it
+    # there. libsoup then died with
+    #
+    #     meson.build:137:16: ERROR: Dependency "libbrotlidec" not found
+    #
+    # because pkg-config does not look in lib64. The earlier 69 were fine only
+    # because no cmake package had run yet -- THE OUTPUT DEPENDED ON THE ORDER,
+    # which is the precise failure this project's determinism work exists to
+    # prevent.
+    _nolib = []
+    for _n, _r in sorted(load_recipes().items()):
+        _argvs = [a for _s in _r.get("steps", []) for a in _s.get("run", [])]
+        _flat = [str(x) for a in _argvs for x in a]
+        if any(a and a[0] == "meson" for a in _argvs) and \
+           not any("--libdir" in x for x in _flat):
+            _nolib.append(f"{_n}: meson setup without --libdir")
+        if any(a and a[0] == "cmake" for a in _argvs) and \
+           not any("CMAKE_INSTALL_LIBDIR" in x for x in _flat):
+            _nolib.append(f"{_n}: cmake without -DCMAKE_INSTALL_LIBDIR")
+        for _pfx in _r.get("installs", {}).get("prefixes", []):
+            if _pfx.split("/")[:2] == ["usr", "lib64"] or _pfx.startswith("lib64"):
+                _nolib.append(f"{_n}: [installs] prefix {_pfx}")
+    # WARN, NOT FAIL, AND THE REASON IS THE CHECKPOINT RATHER THAN THE RULE.
+    #
+    # 23 packages that already build correctly and are already in a published
+    # checkpoint reach usr/lib without saying so. Adding --libdir to them is
+    # right and costs a rebuild of all 23, llvm among them. That is a separate
+    # decision from fixing the six that actually broke, and bundling the two
+    # would have made a correctness fix expensive enough to argue about.
+    #
+    # THE lib64 PREFIX CHECK BELOW IS STILL A HARD FAIL, because a package that
+    # HAS installed to lib64 is broken now, not untidy. The flag check is the
+    # preventive half and the prefix check is the detective half.
+    _hard = [x for x in _nolib if "[installs] prefix" in x]
+    _soft = [x for x in _nolib if x not in _hard]
+    for _x in _soft:
+        print(f"  warn  libdir not stated, relies on the build system -- {_x}")
+    if _hard:
+        for _x in _hard:
+            print(f"  FAIL  installed into lib64 -- {_x}")
+        ok = False
+    elif not _soft:
+        print("  ok    every meson/cmake recipe states libdir, nothing in lib64")
+    else:
+        print(f"  ok    nothing installs into lib64 ({len(_soft)} recipe(s) "
+              f"do not state libdir)")
+
     # SOURCE IS MODIFIED BY A PATCH, NEVER BY A STEP.
     #
     # ROADMAP.md's first rule makes the recipe the unit: "a reader of one

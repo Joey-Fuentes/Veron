@@ -18,7 +18,8 @@ runtime      = []
 optional_off = ["static", "java", "turbojpeg-java"]
 
 [declared]
-configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DENABLE_STATIC=OFF", "-DWITH_JPEG8=ON"]
+configure_flags = ["-DCMAKE_INSTALL_DEFAULT_LIBDIR=lib",
+                   "-DCMAKE_INSTALL_PREFIX=/usr", "-DENABLE_STATIC=OFF", "-DWITH_JPEG8=ON"]
 verification    = "none -- upstream suites are not run"
 deferral        = """
 Internals not reviewed. WITH_JPEG8 provides the libjpeg 8 ABI, which is what \

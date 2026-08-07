@@ -18,7 +18,8 @@ runtime      = []
 optional_off = ["tools", "tests", "examples"]
 
 [declared]
-configure_flags = ["-Denable_tools=false", "-Denable_tests=false",
+configure_flags = ["--libdir=lib",
+                   "-Denable_tools=false", "-Denable_tests=false",
                    "-Denable_examples=false", "-Denable_asm=true",
                    "--wrap-mode=nofallback"]
 verification    = "none -- upstream suites are not run"
@@ -55,7 +56,7 @@ run  = [["tar", "-xf", "$DL/dav1d-1.5.4.tar.xz", "-C", "$B"]]
 [[steps]]
 name = "setup"
 cwd  = "$S"
-run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
          "--wrap-mode=nofallback",
          "-Denable_tools=false", "-Denable_tests=false",
          "-Denable_examples=false", "-Denable_asm=true"]]

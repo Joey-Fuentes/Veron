@@ -19,7 +19,7 @@ runtime      = []
 optional_off = ["testing"]
 
 [declared]
-configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release",
+configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release",
                    "-DBUILD_SHARED_LIBS=ON", "-DUTF8PROC_ENABLE_TESTING=OFF",
                    "-DUTF8PROC_INSTALL=ON"]
 verification    = "none -- upstream suites are not run"
@@ -72,7 +72,7 @@ run  = [["tar", "-xf", "$DL/utf8proc-2.11.3.tar.gz", "-C", "$B"]]
 name = "configure"
 cwd  = "$S"
 run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
-         "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release",
+         "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release",
          "-DBUILD_SHARED_LIBS=ON", "-DUTF8PROC_ENABLE_TESTING=OFF",
          "-DUTF8PROC_INSTALL=ON"]]
 

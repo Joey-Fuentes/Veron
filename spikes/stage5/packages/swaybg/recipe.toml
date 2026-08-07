@@ -19,7 +19,8 @@ runtime      = ["wayland", "cairo"]
 optional_off = ["gdk-pixbuf"]
 
 [declared]
-configure_flags = ["-Dgdk-pixbuf=disabled", "-Dman-pages=enabled",
+configure_flags = ["--libdir=lib",
+                   "-Dgdk-pixbuf=disabled", "-Dman-pages=enabled",
                    "--wrap-mode=nofallback"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["swaybg"]
@@ -59,7 +60,7 @@ run  = [["tar", "-xf", "$DL/swaybg-1.2.2.tar.gz", "-C", "$B"]]
 [[steps]]
 name = "setup"
 cwd  = "$S"
-run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
          "--wrap-mode=nofallback",
          "-Dgdk-pixbuf=disabled", "-Dman-pages=enabled"]]
 

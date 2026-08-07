@@ -20,7 +20,8 @@ runtime      = ["fontconfig", "freetype", "harfbuzz", "pixman", "utf8proc"]
 optional_off = ["examples", "test-text-shaping", "system-nanosvg"]
 
 [declared]
-configure_flags = ["-Ddocs=enabled", "-Dgrapheme-shaping=enabled",
+configure_flags = ["--libdir=lib",
+                   "-Ddocs=enabled", "-Dgrapheme-shaping=enabled",
                    "-Drun-shaping=enabled", "-Dsvg-backend=nanosvg",
                    "-Dsystem-nanosvg=disabled", "-Dexamples=false",
                    "-Dtest-text-shaping=false", "--wrap-mode=nofallback"]
@@ -71,7 +72,7 @@ run  = [["tar", "-xf", "$DL/fcft-3.3.1.tar.gz", "-C", "$B"]]
 [[steps]]
 name = "setup"
 cwd  = "$S"
-run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
          "--wrap-mode=nofallback",
          "-Ddocs=enabled", "-Dgrapheme-shaping=enabled",
          "-Drun-shaping=enabled", "-Dsvg-backend=nanosvg",

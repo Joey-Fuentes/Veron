@@ -1,0 +1,118 @@
+name    = "qemu"
+version = "11.0.3"
+group   = "system"
+license = "GPL-2.0-only AND BSD-3-Clause AND MIT"
+srcdir  = "qemu-11.0.3"
+
+[source]
+url       = "https://download.qemu.org/qemu-11.0.3.tar.xz"
+sha256    = "da5fcffc32762820568b828ed430a728864d34d50b6d2f30358597760cbb0523"
+signature = "https://download.qemu.org/qemu-11.0.3.tar.xz.sig"
+# READ FROM THE SIGNATURE WITH AN EMPTY KEYRING. gpgv reached "Can't check
+# signature: No public key" -- which means the signature PARSED AND BINDS TO
+# THESE BYTES, and only the key's authenticity is unproven. Not yet in
+# policy/keyring.toml; that entry is a trust claim and needs a source.
+signing_key = "CEACC9E15534EBABB82D3FA03353C9CEF108B584"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "python", "glib", "pixman", "zlib"]
+link         = ["glib", "pixman", "zlib"]
+runtime      = ["glib", "pixman", "zlib"]
+# slirp AND capstone ARE NOT PINNED, so user-mode networking and the
+# disassembler are absent -- see the deferral. Both are declined explicitly
+# rather than left to a probe.
+optional_off = ["slirp", "capstone", "gtk", "sdl", "spice", "curses", "vnc",
+                "curl", "libssh", "blkio", "docs", "guest-agent", "kvm"]
+
+[declared]
+configure_flags = ["--prefix=/usr",
+                   "--target-list=aarch64-softmmu,x86_64-softmmu",
+                   "--disable-slirp", "--disable-capstone", "--disable-gtk",
+                   "--disable-sdl", "--disable-spice", "--disable-curses",
+                   "--disable-vnc", "--disable-curl", "--disable-libssh",
+                   "--disable-blkio", "--disable-docs",
+                   "--disable-guest-agent", "--enable-tcg"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["qemu"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball.
+
+THIS IS NOT THE TOOLBOX qemu AND THE DISTINCTION IS THE WHOLE REASON THE \
+RECIPE EXISTS. local-toolbox.yml builds qemu-system-aarch64 to run on a \
+DEVELOPER'S x86-64 laptop, so they can boot an aarch64 Veron image. That is \
+cross-architecture host tooling and stays where it is -- it cannot be a stage-5 \
+package, because stage 5 produces aarch64 binaries that run INSIDE Veron. This \
+one is aarch64-hosted and gives a Veron user virtualisation. Same source, same \
+pin, two hosts, two artifacts -- the same shape as bubblewrap, which the \
+toolbox and the image both build.
+
+THE PIN WAS DOUBTED AND IS CORRECT. local-toolbox.yml's own comment records \
+that an earlier pin here was qemu 9.2.4 with a correctly measured digest and \
+the WRONG VERSION, because the version was recalled rather than read. That \
+made 11.0.3 suspect by association. Measured against the uploaded tarball: \
+sha256 da5fcffc... matches QEMU_SHA256 and MIRRORS.tsv exactly, the signature's \
+own digest matches QEMU_SIG_SHA256, and gpgv confirms the signature binds to \
+those bytes. The version exists and the pin is right.
+
+--target-list IS THE SIZE DECISION AND IT IS NOT A DEFAULT. `--help` says \
+"default: build all", which is every emulated architecture QEMU supports -- \
+tens of gigabytes of generated code for machines nobody here will emulate. \
+aarch64-softmmu is what Veron runs on; x86_64-softmmu is what a Veron user \
+most likely wants to run. Two targets, named.
+
+slirp IS DECLINED AND THAT COSTS USER-MODE NETWORKING. libslirp is not pinned, \
+so `-netdev user` -- the unprivileged NAT backend with its own DHCP server -- \
+will not exist. A Veron user wanting a network in their VM would need TAP and \
+root. That is a real capability gap and the fix is one pin, not a redesign; it \
+is stated here rather than discovered when a guest has no network.
+
+capstone IS DECLINED for the same reason: not pinned. It costs `-d in_asm` \
+disassembly, which is a debugging convenience rather than a function.
+
+kvm IS DISABLED, DELIBERATELY, AND THIS IS THE ONE MOST LIKELY TO LOOK WRONG. \
+KVM needs /dev/kvm and matching host and guest architectures. Veron on aarch64 \
+hardware COULD use it -- but the GitHub arm64 runners have no /dev/kvm at all, \
+so a build enabling it would produce a binary whose acceleration path is \
+untestable here, and TCG is what every test in this project has ever \
+exercised. Turning it on is a decision to make when there is aarch64 hardware \
+to verify it on.
+
+EVERY UI IS OFF -- gtk, sdl, spice, curses, vnc. QEMU built without any of \
+them still has -nographic and the serial console, which is how every boot in \
+this project has ever been driven. gtk and sdl are not in this set at all; \
+curses would link ncurses, which is.
+
+THE LICENCE IS A COMPOSITE, NOT A CHOICE. QEMU is GPL-2.0-only overall with \
+BSD and MIT components inside it -- an AND across parts, like dejavu's, rather \
+than the OR that gmp and hwdata offer."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/qemu-11.0.3.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr",
+         "--target-list=aarch64-softmmu,x86_64-softmmu",
+         "--disable-slirp", "--disable-capstone", "--disable-gtk",
+         "--disable-sdl", "--disable-spice", "--disable-curses",
+         "--disable-vnc", "--disable-curl", "--disable-libssh",
+         "--disable-blkio", "--disable-docs", "--disable-guest-agent",
+         "--enable-tcg"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/qemu-system-aarch64", "--version"]]
+expect = ["11.0.3"]

@@ -23,7 +23,8 @@ optional_off = ["gssapi", "ntlm", "introspection", "vapi", "docs",
                 "sysprof", "fuzzing", "pkcs11_tests"]
 
 [declared]
-configure_flags = ["-Dgssapi=disabled", "-Dntlm=disabled",
+configure_flags = ["--libdir=lib",
+                   "-Dgssapi=disabled", "-Dntlm=disabled",
                    "-Dbrotli=enabled", "-Dtls_check=true",
                    "-Dintrospection=disabled", "-Dvapi=disabled",
                    "-Ddocs=disabled", "-Dtests=false", "-Dsysprof=disabled",
@@ -78,7 +79,7 @@ run  = [["tar", "-xf", "$DL/libsoup-3.6.5.tar.xz", "-C", "$B"]]
 [[steps]]
 name = "setup"
 cwd  = "$S"
-run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
          "--wrap-mode=nofallback",
          "-Dgssapi=disabled", "-Dntlm=disabled", "-Dbrotli=enabled",
          "-Dtls_check=true", "-Dintrospection=disabled", "-Dvapi=disabled",

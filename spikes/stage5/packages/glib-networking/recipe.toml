@@ -20,7 +20,8 @@ optional_off = ["libproxy", "gnome_proxy", "openssl", "environment_proxy",
                 "installed_tests"]
 
 [declared]
-configure_flags = ["-Dgnutls=enabled", "-Dopenssl=disabled",
+configure_flags = ["--libdir=lib",
+                   "-Dgnutls=enabled", "-Dopenssl=disabled",
                    "-Dlibproxy=disabled", "-Dgnome_proxy=disabled",
                    "-Denvironment_proxy=enabled",
                    "-Dinstalled_tests=false", "--wrap-mode=nofallback"]
@@ -70,7 +71,7 @@ run  = [["tar", "-xf", "$DL/glib-networking-2.80.1.tar.xz", "-C", "$B"]]
 [[steps]]
 name = "setup"
 cwd  = "$S"
-run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
          "--wrap-mode=nofallback",
          "-Dgnutls=enabled", "-Dopenssl=disabled", "-Dlibproxy=disabled",
          "-Dgnome_proxy=disabled", "-Denvironment_proxy=enabled",

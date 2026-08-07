@@ -17,7 +17,8 @@ runtime      = []
 optional_off = ["orc-test", "benchmarks", "examples", "gtk_doc", "tests"]
 
 [declared]
-configure_flags = ["-Dorc-test=disabled", "-Dbenchmarks=disabled",
+configure_flags = ["--libdir=lib",
+                   "-Dorc-test=disabled", "-Dbenchmarks=disabled",
                    "-Dexamples=disabled", "-Dgtk_doc=disabled",
                    "-Dtests=disabled", "-Dtools=enabled",
                    "-Dorc-target=neon", "--wrap-mode=nofallback"]
@@ -61,7 +62,7 @@ run  = [["tar", "-xf", "$DL/orc-0.4.41.tar.xz", "-C", "$B"]]
 [[steps]]
 name = "setup"
 cwd  = "$S"
-run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
          "--wrap-mode=nofallback",
          "-Dorc-test=disabled", "-Dbenchmarks=disabled", "-Dexamples=disabled",
          "-Dgtk_doc=disabled", "-Dtests=disabled", "-Dtools=enabled",

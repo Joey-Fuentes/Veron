@@ -804,6 +804,47 @@ Verified on the real kernel: payload mounts, `selfrebuild.sh` runs from it,
 reads `expected/files.tsv` off the share, and fails honestly with
 `the image has no gcc` against a root that genuinely has none.
 
+### Cross-checking every recipe against BLFS, and the rule it produced
+
+BLFS caught libnl's missing `--sysconfdir=/etc` — a flag whose absence would
+have compiled `/usr/etc/libnl` into the library rather than failing the build.
+That was found by chance, so the check was then run over the whole set:
+**27 of 76 recipes have a BLFS 13.0 page**, and their flags were diffed against
+ours mechanically.
+
+The result is one real signal and a rule that explains it.
+
+**fontconfig** was the only hit that looked like libnl: BLFS passes
+`--sysconfdir=/etc --localstatedir=/var` and this recipe passes neither. But
+its `installs.txt` has **zero paths under `usr/etc` or `usr/var`** — everything
+landed in `/etc/fonts` as intended.
+
+The difference is the build system, and it is worth stating because it decides
+whether the flag is needed at all:
+
+| | `sysconfdir` with `--prefix=/usr` |
+|---|---|
+| **autotools** | `${prefix}/etc` → **`/usr/etc`**, silently wrong |
+| **meson** | special-cased to **`/etc`** when the prefix is `/usr` |
+
+So libnl needed the flag because it is autotools; fontconfig does not because
+it is meson. That rule now covers the rest of the set, and it means the
+remaining autotools recipes are the ones worth re-reading if this class of bug
+appears again.
+
+Everything else the diff surfaced is a decline rather than an omission: BLFS
+enables `--with-gnutls`, `--with-libssh2` and `--enable-ares` for curl,
+`--with-nettle` for libarchive, `--enable-libwebpextras` for libwebp — all
+optional features whose dependencies are not in this set — and
+`--prefix=$XORG_PREFIX` for the X11 packages, which is BLFS's own variable for
+a tree Veron does not have.
+
+**And for six of batch A there was no second source at all.** `tllist`, `fcft`,
+`foot`, `swaybg`, `fuzzel`, `nnn`, plus `scdoc`, `utf8proc` and `libutempter`
+are absent from all 862 BLFS pages — the book is X11-centric and its only
+Wayland entry is `xwayland`. Those recipes rest entirely on reading the
+tarballs, which is worth knowing rather than assuming a cross-check happened.
+
 ### The checkpoint key ate itself
 
 `[installs].digest` describes what a build **produced**. It was hashed into the

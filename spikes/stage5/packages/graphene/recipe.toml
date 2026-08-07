@@ -17,7 +17,8 @@ runtime      = ["glib"]
 optional_off = ["gtk_doc", "introspection", "tests", "installed_tests"]
 
 [declared]
-configure_flags = ["-Dgtk_doc=false", "-Dintrospection=disabled",
+configure_flags = ["--libdir=lib",
+                   "-Dgtk_doc=false", "-Dintrospection=disabled",
                    "-Dgobject_types=true", "-Dtests=false",
                    "-Dinstalled_tests=false", "--wrap-mode=nofallback"]
 verification    = "none -- upstream suites are not run"
@@ -62,7 +63,7 @@ run  = [["tar", "-xf", "$DL/graphene-1.10.8.tar.xz", "-C", "$B"]]
 [[steps]]
 name = "setup"
 cwd  = "$S"
-run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
          "--wrap-mode=nofallback",
          "-Dgtk_doc=false", "-Dintrospection=disabled",
          "-Dgobject_types=true", "-Dtests=false", "-Dinstalled_tests=false"]]

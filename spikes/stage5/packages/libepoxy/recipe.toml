@@ -19,7 +19,8 @@ runtime      = ["mesa"]
 optional_off = ["x11", "glx", "docs", "tests"]
 
 [declared]
-configure_flags = ["-Dx11=false", "-Dglx=no", "-Degl=yes", "-Ddocs=false",
+configure_flags = ["--libdir=lib",
+                   "-Dx11=false", "-Dglx=no", "-Degl=yes", "-Ddocs=false",
                    "-Dtests=false", "--wrap-mode=nofallback"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["libepoxy"]
@@ -67,7 +68,7 @@ run  = [["tar", "-xf", "$DL/libepoxy-1.5.10.tar.gz", "-C", "$B"]]
 [[steps]]
 name = "setup"
 cwd  = "$S"
-run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
          "--wrap-mode=nofallback",
          "-Dx11=false", "-Dglx=no", "-Degl=yes", "-Ddocs=false",
          "-Dtests=false"]]

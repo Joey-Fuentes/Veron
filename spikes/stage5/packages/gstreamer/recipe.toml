@@ -1,0 +1,115 @@
+name    = "gstreamer"
+version = "1.28.1"
+group   = "media"
+license = "LGPL-2.1-or-later"
+srcdir  = "gstreamer-1.28.1"
+
+[source]
+url       = "https://gstreamer.freedesktop.org/src/gstreamer/gstreamer-1.28.1.tar.xz"
+sha256    = "b65e2ffa35bdbf8798cb75c23ffc3d05e484e48346ff7546844ba85217664504"
+signature = "none -- gstreamer.freedesktop.org publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "glib", "python"]
+link         = ["glib"]
+runtime      = ["glib"]
+# ptp-helper IS THE DANGEROUS ONE. Its default would install a SETUID-ROOT
+# binary, and the only thing stopping it today is that Veron has no Rust
+# compiler. See the deferral.
+optional_off = ["ptp-helper", "examples", "tests", "benchmarks",
+                "introspection", "nls", "doc", "libunwind", "libdw",
+                "bash-completion", "coretracers", "dbghelp"]
+
+[declared]
+configure_flags = ["--libdir=lib",
+                   "-Dauto_features=disabled", "-Dptp-helper=disabled",
+                   "-Dexamples=disabled", "-Dtests=disabled",
+                   "-Dbenchmarks=disabled", "-Dintrospection=disabled",
+                   "-Dnls=disabled", "-Ddoc=disabled", "-Dtools=enabled",
+                   "-Dgst_debug=true", "-Dregistry=true",
+                   "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["gstreamer"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+-Dptp-helper=disabled, AND THE DEFAULT WOULD INSTALL A SETUID-ROOT BINARY. \
+This is the most serious default found in the media batch. meson.options:6 is \
+`option('ptp-helper', type: 'feature', ...)` with NO stated value, so it is \
+`auto`; and libs/gst/helpers/ptp/meson.build:75-83 resolves the PERMISSIONS \
+option, also auto, like this:
+
+    if setcap_prog.found() and cap_dep.found()   -> 'capabilities'
+    elif host_system == 'windows'                -> 'none'
+    else                                         -> 'setuid-root'
+
+On Linux without setcap that falls through to setuid-root, and the helper is \
+then installed with the setuid bit on a read-only image that has no setuid \
+story at all.
+
+WHAT IS CURRENTLY PREVENTING IT IS AN ACCIDENT. Line 23 is \
+`have_rust = add_languages('rust', native: false, required: false)` and line \
+28 is `subdir_done()` -- the PTP helper is written in RUST, so with no Rust \
+compiler the whole subdirectory is skipped and nothing is installed. Veron has \
+no Rust by design, so today the outcome is right. But it is right BY ABSENCE: \
+the day a Rust toolchain appears in the sysroot for any reason, gstreamer \
+would silently begin installing a setuid-root binary and nothing in this \
+recipe would have said otherwise. Disabling it makes the outcome a decision.
+
+libcap IS IN THIS SET NOW (for bubblewrap), WHICH MAKES THIS WORSE RATHER THAN \
+BETTER. `cap_dep.found()` would succeed; only `setcap_prog` is missing. So two \
+of the three conditions for the capabilities path are already met, and the \
+remaining fallback is the setuid one.
+
+-Dauto_features=disabled IS THE SAME MOVE AS ffmpeg's --disable-autodetect. \
+GStreamer's modules probe for every optional dependency they know about, so \
+the feature set would be a function of what happens to be installed. With \
+auto_features off, nothing is enabled unless named. This is the standard way \
+distributions build GStreamer minimally and it is what makes the plugin \
+modules tractable at all -- gst-plugins-bad alone has 248 options.
+
+gst_debug AND registry STAY true. gst_debug is the logging infrastructure, and \
+without it GST_DEBUG produces nothing -- on a system whose whole method is \
+"measure, do not assert", removing the only way to see what a pipeline did is \
+the wrong economy. registry is the plugin cache; without it every process \
+rescans every plugin at startup.
+
+tools STAYS ENABLED for gst-inspect-1.0, which is how the guest test can \
+assert that a plugin actually loaded rather than that a file exists."""
+
+[undeclarable]
+"language:rust" = "libs/gst/helpers/ptp/meson.build:23 -- add_languages('rust', required: false). Absent by design, which is what currently suppresses the setuid-root PTP helper. -Dptp-helper=disabled makes that suppression explicit rather than incidental."
+"program:setcap" = "libs/gst/helpers/ptp/meson.build:76 -- probed to decide between capabilities and setuid-root. From libcap's progs/, which this set builds but does not put on the build PATH."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/gstreamer-1.28.1.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--libdir=lib",
+         "--wrap-mode=nofallback",
+         "-Dauto_features=disabled", "-Dptp-helper=disabled",
+         "-Dexamples=disabled", "-Dtests=disabled", "-Dbenchmarks=disabled",
+         "-Dintrospection=disabled", "-Dnls=disabled", "-Ddoc=disabled",
+         "-Dtools=enabled", "-Dgst_debug=true", "-Dregistry=true"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "gstreamer-1.0"],
+          ["/usr/bin/gst-inspect-1.0", "--version"]]
+expect = ["1.28.1", "1.28.1"]
