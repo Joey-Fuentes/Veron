@@ -101,7 +101,40 @@ def load_recipes():
         #
         # files/ is folded in, sorted, path and content both, so a rename is
         # as visible as an edit.
-        h = hashlib.sha256(raw)
+        # THE KEY HASHES BUILD INPUTS, NOT ASSERTIONS ABOUT THE OUTPUT.
+        #
+        # It used to hash the whole recipe.toml, and that made the checkpoint
+        # eat itself. `[installs].digest` DESCRIBES WHAT THE BUILD PRODUCED;
+        # it is not an input to producing it. So re-deriving those pins moved
+        # every key and rebuilt all 69 packages -- bzip2's entire diff was one
+        # digest line, and it rebuilt from source.
+        #
+        # Worse, it is self-perpetuating: `seed_installs` writes an [installs]
+        # block into every recipe, so the run that records what a build
+        # produced guarantees the next run cannot reuse it. The cache was
+        # invalidated by the act of describing its own contents.
+        #
+        # EXCLUDED BY NAME, AND EXCLUSION IS THE SAFE DIRECTION. A section
+        # added later is included automatically, so a genuine new input
+        # invalidates the key rather than being silently ignored -- which is
+        # the failure that would be expensive. Each of these four is an
+        # assertion or a description, checked elsewhere:
+        #
+        #   installs      output pins; `veron installs` compares them
+        #   guest         post-build sanity tests, run on every boot anyway
+        #   declared      documentation of flags; the selftest cross-checks it
+        #                 against the argv in [[steps]], which IS hashed
+        #   undeclarable  prose, per ROADMAP.md rule 4
+        #
+        # HASHED FROM THE PARSED DOCUMENT, NOT THE TEXT. Stripping sections
+        # out of the raw bytes would make the key depend on comment placement
+        # and key order -- so a reflowed comment would rebuild the world for
+        # the same reason this comment block exists.
+        _inputs = {k: v for k, v in r.items()
+                   if k not in ("installs", "guest", "declared",
+                                "undeclarable", "_dir")}
+        h = hashlib.sha256(
+            json.dumps(_inputs, sort_keys=True, default=str).encode())
         fdir = os.path.join(PKGDIR, name, "files")
         if os.path.isdir(fdir):
             for root, dirs, fs in os.walk(fdir):
@@ -115,6 +148,17 @@ def load_recipes():
                     else:
                         with open(fp, "rb") as fh:
                             h.update(b"F" + fh.read())
+        # PATCHES ARE INPUTS AND WERE ONLY HASHED BY ACCIDENT. They used to
+        # ride along inside the raw recipe bytes -- they did not; the recipe
+        # only names the directory. A patch edit changed what got built and
+        # moved no key. Folded in explicitly now, same shape as files/.
+        pdir = os.path.join(PKGDIR, name, "patches")
+        if os.path.isdir(pdir):
+            for fn in sorted(f for f in os.listdir(pdir)
+                             if f.endswith(".patch")):
+                h.update(b"\0P" + fn.encode() + b"\0")
+                with open(os.path.join(pdir, fn), "rb") as fh:
+                    h.update(fh.read())
         r["_recipe_sha256"] = h.hexdigest()
         if r["name"] != name:
             die(f"{rp}: name '{r['name']}' does not match directory '{name}'")

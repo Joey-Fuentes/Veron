@@ -804,6 +804,58 @@ Verified on the real kernel: payload mounts, `selfrebuild.sh` runs from it,
 reads `expected/files.tsv` off the share, and fails honestly with
 `the image has no gcc` against a root that genuinely has none.
 
+### The checkpoint key ate itself
+
+`[installs].digest` describes what a build **produced**. It was hashed into the
+checkpoint key, which decides whether that build can be **reused**. So
+recording what came out invalidated the cache of what came out.
+
+Seen plainly: re-deriving the install pins changed exactly one line of bzip2's
+recipe —
+
+```
+-digest   = "c104c5afaf3f2ff33fcce3094a8ce73e055137e1f5310e0464721a9a37ca62d0"
++digest   = "b168d8a7a92ab8d47613add3d4707cd431bb47daddba63a8e1c1a0f88672d90c"
+```
+
+— and bzip2 rebuilt from source, along with the other 68. Its build inputs were
+byte-identical.
+
+**And it is self-perpetuating.** `seed_installs` writes an `[installs]` block
+into every recipe, so the run whose whole purpose is to record what a build
+produced guarantees the next run cannot reuse it. Every seeding run costs a
+full rebuild, forever.
+
+The key now hashes **build inputs only**. Four sections are excluded because
+each is an assertion or a description, checked elsewhere: `installs` (output
+pins, compared by `veron installs`), `guest` (sanity tests, run every boot),
+`declared` (flag documentation, cross-checked against the argv by the
+selftest), and `undeclarable` (prose).
+
+Exclusion rather than inclusion, deliberately: a section added later is hashed
+automatically, so a genuine new input invalidates the key instead of being
+silently ignored. Wrong in the safe direction.
+
+Measured per field class rather than argued:
+
+| change | key |
+|---|---|
+| `[installs].files` — output pin | reused |
+| `[guest].expect` — a test | reused |
+| `source.sha256` — real input | **moved** |
+| `version` — real input | **moved** |
+| `[[steps]]` argv — real input | **moved** |
+
+**And it found a latent bug going the other way.** Patches were never hashed at
+all — the recipe only names the directory, so editing
+`patches/0002-xcursor-c23-const-generic-strchr.patch` moved **nothing** and the
+next run would have restored a build made with the old patch. They are folded
+in explicitly now, same shape as `files/`, and an edit moves `wlroots`.
+
+The hash is taken over the parsed document rather than the raw bytes, so
+reflowing a comment no longer rebuilds the world — which is the same class of
+problem one layer up.
+
 ### The cmake digest was the sort key, not cmake and not the checkpoint
 
 `INSTALL-SET-CHANGED cmake: 4007 path(s) now, digest 73143e59, recipe pins
