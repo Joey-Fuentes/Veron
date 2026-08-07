@@ -3874,7 +3874,7 @@ package swaybg 1.2.2
 package yambar 1.11.0
   group        desktop
   license      MIT
-  recipe-sha   00c4b3c7584d87b80461ccc74dc83180b318cf42f0b0c2e253760134ee1da58f
+  recipe-sha   6bdebf01a7065542c76f5800da12c3a6d657e795633f0fa06a5811277f79442d
 
   source
     url        https://codeberg.org/dnkl/yambar/releases/download/1.11.0/yambar-1.11.0.tar.gz
@@ -3887,6 +3887,9 @@ package yambar 1.11.0
     link         fcft, fontconfig, libxkbcommon, libyaml, pixman, wayland
     runtime      fcft, fontconfig, libxkbcommon, libyaml, pixman, wayland
     optional_off backend-x11, plugin-alsa, plugin-backlight, plugin-disk-io, plugin-dwl, plugin-i3, plugin-mpd, plugin-pipewire, plugin-pulse, plugin-removables, plugin-river, plugin-sway-xkb, plugin-xkb, plugin-xwindow
+
+  patches (applied after unpack, in this order)
+    0001-tag-args-is-not-const.patch
 
   commands (literal; this is exactly what runs)
     [01] unpack

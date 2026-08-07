@@ -1,0 +1,67 @@
+tag_args points into a mutable buffer; stop calling it const.
+
+WHY THE BUILD FAILS:
+
+    ../tag.c:564:29: error: assignment discards 'const' qualifier from
+                     pointer target type [-Werror=discarded-qualifiers]
+    cc1: all warnings being treated as errors
+
+Line 564 is `point = strchr(tag_args[i], '.')` assigning to `char *point`.
+tag_args is declared `const char *[]`, so under C23 glibc's const-generic
+strchr returns `const char *` and the assignment drops the qualifier. yambar
+builds with -Werror, so a warning is fatal.
+
+-std=c18 IS ALREADY REQUESTED AND DOES NOT HELP, which is the interesting part
+and different from every other C23 casualty in this set. yambar's meson.build
+sets c_std=c18, and the failing compile line shows `-std=c18`. glibc's
+string.h:120 gates the const-generic macro on
+
+    __GLIBC_USE (ISOC23) && defined __glibc_const_generic && !defined _LIBC
+
+and __GLIBC_USE(ISOC23) is not driven by -std alone. So pinning the language
+version -- which fixed gmp and unifdef -- cannot fix this one.
+
+THE const WAS WRONG, AND THE CODE ALREADY SAID SO. tag_args[i] is assigned
+from strtok_r(tag_name_and_arg, ...), which returns a pointer INTO A MUTABLE
+BUFFER, and line 565 immediately writes through it:
+
+    *point = '\0';
+
+So the array was declared const and then mutated. Dropping const makes the
+declaration describe what the code does, rather than casting the qualifier away
+at the one line that trips the compiler. Every other use of tag_args -- 14
+strcmp calls, is_number, an index, a LOG_WARN -- takes const char * and accepts
+a char * unchanged.
+
+WHY NOT -Wno-discarded-qualifiers OR -Wno-error. Both would silence this
+instance and every future one, in a package that compiles with -Werror
+deliberately. The fault is two lines of over-restrictive typing, not the
+warning.
+
+THIRD strchr CASUALTY. wlroots hit the same glibc change at xcursor.c:605 and
+carries patches/0002 for it; that one is fixed by widening the variable to
+const, because wlroots only READS through the result. Here the opposite
+direction is correct, because yambar writes.
+
+Generated with `diff -u`, not written by hand.
+
+--- a/tag.c
++++ b/tag.c
+@@ -476,7 +476,7 @@
+ 
+         static const size_t MAX_TAG_ARGS = 4;
+         const char *tag_name = NULL;
+-        const char *tag_args[MAX_TAG_ARGS];
++        char *tag_args[MAX_TAG_ARGS];
+         memset(tag_args, 0, sizeof(tag_args));
+ 
+         {
+@@ -484,7 +484,7 @@
+             tag_name = strtok_r(tag_name_and_arg, ":", &saveptr);
+ 
+             for (size_t i = 0; i < MAX_TAG_ARGS; i++) {
+-                const char *arg = strtok_r(NULL, ":", &saveptr);
++                char *arg = strtok_r(NULL, ":", &saveptr);
+                 if (arg == NULL)
+                     break;
+                 tag_args[i] = arg;
