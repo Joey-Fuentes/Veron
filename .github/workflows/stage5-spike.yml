@@ -422,8 +422,20 @@ jobs:
       # by gates -- unbound names, checkpoint marker keys -- and this one is
       # not statically checkable: a YAML step is not a name. What catches it
       # is the marker below being absent from the log.
+      # SEEDING IS EVIDENCE, NOT A GATE, SO IT RUNS EVEN WHEN THE GATE FAILED.
+      #
+      # `if: ${{ inputs.seed_installs }}` alone meant this step was skipped
+      # whenever an earlier step failed -- and the earlier step is
+      # VERON-INSTALLS, which fails precisely when a package has no [installs]
+      # block. So the run that NEEDS seeding was the one run that could never
+      # produce it: tick the box, watch the gate fail at step 13, and get no
+      # artifact from steps 14 and 15.
+      #
+      # Same shape as the install listings before r145: the thing that
+      # produces the evidence sat behind the gate that needed it. `always()`
+      # is what `veron collect` already uses for the same reason.
       - name: 'Seed [installs] from this build'
-        if: ${{ inputs.seed_installs }}
+        if: ${{ always() && inputs.seed_installs }}
         run: |
           set -eu
           cd spikes/stage5
@@ -439,8 +451,10 @@ jobs:
           echo "VERON-INSTALLS-SEEDED  $n listing(s) written"
           [ "$n" -gt 0 ] || { echo "seed_installs wrote nothing"; exit 1; }
 
+      # always() FOR THE UPLOAD TOO. A conditional upload attached to an
+      # unconditional producer just moves the hole one step later.
       - uses: actions/upload-artifact@v4
-        if: ${{ inputs.seed_installs }}
+        if: ${{ always() && inputs.seed_installs }}
         with:
           name: veron-stage5-installs-${{ github.run_id }}
           path: |
