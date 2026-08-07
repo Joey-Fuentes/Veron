@@ -1,0 +1,53 @@
+Handle LIBINPUT_SWITCH_KEYPAD_SLIDE in handle_switch_toggle.
+
+WHY: wlroots 0.19.1 builds with -Werror and -Wswitch, and libinput 1.31.3
+defines a switch type that wlroots 0.19.1 predates. The build failed at
+object 205 of 342:
+
+    ../backend/libinput/switch.c:32:9: error: enumeration value
+        'LIBINPUT_SWITCH_KEYPAD_SLIDE' not handled in switch [-Werror=switch]
+    cc1: all warnings being treated as errors
+
+THIS IS VERSION SKEW BETWEEN TWO PINS, NOT A BUG IN EITHER. `switch` over an
+enum with no `default:` is deliberate style in wlroots -- it is what makes
+-Wswitch tell you when upstream libinput grows a case -- and libinput adding
+one is ordinary. The two pins were chosen independently and this is where
+they meet.
+
+WHY THIS PATCH RATHER THAN -Dwerror=false. Turning off -Werror would silence
+every warning in 342 objects to fix one, and would hide exactly the class of
+message that produced this one. wlroots' own choice not to write `default:`
+is the mechanism working; the answer is to add the case, not to disable the
+check that found it.
+
+WHY NOT MAP IT TO A wlr_switch_type. wlroots has WLR_SWITCH_TYPE_LID and
+WLR_SWITCH_TYPE_TABLET_MODE and nothing else -- adding a third is a public
+API change to a pinned library, which is a much larger claim than this patch
+should make. The event is ignored instead, which is what wlroots 0.19.1
+already does with it today: with no case and no default, the switch falls
+through and `wlr_event.switch_type` keeps its zero-initialised value. This
+makes that behaviour EXPLICIT and silent rather than implicit and fatal.
+
+WHAT THAT COSTS, STATED: a keypad-slide switch event is delivered to the
+compositor as switch_type 0, which is WLR_SWITCH_TYPE_LID. That is wrong, and
+it is what the unpatched code would do if -Werror were merely disabled. The
+`return` avoids it -- the event is dropped rather than mislabelled, which is
+the honest reading of "wlroots 0.19.1 does not know what this is".
+
+Hardware affected: none in this set. No keypad-slide device exists under
+qemu, and the boot probe reports two evdev nodes, both virtio.
+
+--- a/backend/libinput/switch.c
++++ b/backend/libinput/switch.c
+@@ -36,6 +36,11 @@
+ 	case LIBINPUT_SWITCH_TABLET_MODE:
+ 		wlr_event.switch_type = WLR_SWITCH_TYPE_TABLET_MODE;
+ 		break;
++	case LIBINPUT_SWITCH_KEYPAD_SLIDE:
++		/* libinput 1.31 added this; wlroots 0.19 has no wlr_switch_type
++		 * for it. Drop the event rather than deliver it as switch_type 0,
++		 * which is WLR_SWITCH_TYPE_LID. */
++		return;
+ 	}
+ 	switch (libinput_event_switch_get_switch_state(sevent)) {
+ 	case LIBINPUT_SWITCH_STATE_OFF:

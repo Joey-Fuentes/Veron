@@ -2095,7 +2095,7 @@ package freetype 2.14.1
 package wlroots 0.19.1
   group        graphics
   license      MIT
-  recipe-sha   3d8319cc0a0dfa8dfb5ede480acafb01e31fd54401b7c8f2d6c1cc480be48b7e
+  recipe-sha   8eb7c0ad7218f48c132b85e08cb031d1bd221fe7d58c6cf74c010de06fb2ab55
 
   source
     url        https://gitlab.freedesktop.org/wlroots/wlroots/-/releases/0.19.1/downloads/wlroots-0.19.1.tar.gz
@@ -2108,6 +2108,9 @@ package wlroots 0.19.1
     link         libdisplay-info, libdrm, libinput, libudev-zero, libxkbcommon, mesa, pixman, seatd, wayland
     runtime      libdisplay-info, libdrm, libinput, libudev-zero, libxkbcommon, mesa, pixman, seatd, wayland
     optional_off color-management, examples, libliftoff, xcb-errors, xwayland
+
+  patches (applied after unpack, in this order)
+    0001-handle-libinput-keypad-slide-switch.patch
 
   commands (literal; this is exactly what runs)
     [01] unpack

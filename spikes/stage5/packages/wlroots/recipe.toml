@@ -76,6 +76,22 @@ already builds, inverting the build order silently. That is the \
 wayland-protocols `fallback: 'wayland'` incident from wave 1, one layer up and \
 eight times over.
 
+A PATCH IS APPLIED, AND IT IS VERSION SKEW BETWEEN TWO PINS RATHER THAN A BUG \
+IN EITHER. wlroots 0.19.1 builds with -Werror and -Wswitch, and libinput \
+1.31.3 defines LIBINPUT_SWITCH_KEYPAD_SLIDE, which wlroots 0.19.1 predates. \
+The build died at object 205 of 342:
+
+    backend/libinput/switch.c:32:9: error: enumeration value
+        'LIBINPUT_SWITCH_KEYPAD_SLIDE' not handled in switch [-Werror=switch]
+
+wlroots writes that switch with no `default:` deliberately -- that omission IS \
+the mechanism telling you upstream libinput grew a case. So the answer is to \
+add the case, not -Dwerror=false, which would silence every warning in 342 \
+objects to fix one and hide the next instance of exactly this. See \
+patches/0001 for why the event is dropped rather than mapped: wlroots 0.19 has \
+only WLR_SWITCH_TYPE_LID and _TABLET_MODE, and inventing a third would be a \
+public API change to a pinned library.
+
 VERSION FLOORS, all satisfied by what this set ships: libdrm >=2.4.122 (have \
 2.4.134), pixman-1 >=0.43.0 (have 0.46.4), libseat >=0.2.0 (have 0.9.3), \
 libinput >=1.19.0 (have 1.31.3).
