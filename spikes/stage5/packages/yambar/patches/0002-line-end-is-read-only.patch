@@ -1,0 +1,48 @@
+line_end only reads; declare it const like its three neighbours.
+
+WHY THE BUILD FAILS:
+
+    ../modules/script.c:268:26: error: initialization discards 'const'
+                     qualifier from pointer target type
+                     [-Werror=discarded-qualifiers]
+
+`const char *line` at :247, memchr returns `const void *` under glibc's
+const-generic macros, and the result is initialised into a `char *`.
+
+memchr, NOT strchr, AND string.h:120 COVERS BOTH:
+
+    # if __GLIBC_USE (ISOC23) && defined __glibc_const_generic && !defined _LIBC
+    #  define memchr(S, C, N) __glibc_const_generic (S, const void *, memchr (S, C, N))
+
+So this is the same glibc change as patches/0001 arriving through a different
+function. Fixing one file did not fix the package, and would not have been
+found by grepping for strchr alone.
+
+const IS THE RIGHT DIRECTION HERE, UNLIKE patches/0001. line_end has exactly
+two uses -- an assert that it is non-NULL, and `line_end - line` for a length.
+Nothing writes through it. patches/0001 went the other way because tag.c
+genuinely mutates its buffer; the test is what the code does with the pointer,
+not which function returned it.
+
+THE SAME FILE ALREADY DOES THIS THREE TIMES. script.c:98, :105 and :170 all
+assign memchr results to `const char *`. Line 268 is the outlier, so this
+matches the file's own convention rather than imposing one.
+
+SWEPT, AND THIS IS THE LAST ONE IN yambar. Every `char *x = memchr|strchr|
+strrchr|strstr(...)` in the tree was checked: modules/i3.c and tag.c:455/464
+already use const, and particle.c:105 is fine because its haystack `p` is a
+plain `char *` so strchr returns `char *`.
+
+Generated with `diff -u`, not written by hand.
+
+--- a/modules/script.c
++++ b/modules/script.c
+@@ -265,7 +265,7 @@
+     size_t idx = 0;
+ 
+     while (left > 0) {
+-        char *line_end = memchr(line, '\n', left);
++        const char *line_end = memchr(line, '\n', left);
+         assert(line_end != NULL);
+ 
+         size_t line_len = line_end - line;
