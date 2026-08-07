@@ -1132,8 +1132,24 @@ jobs:
           # the session with it. This background writer keeps it open for the
           # life of the step.
           ( sleep 45
+            # RUN seatd IN THE FOREGROUND FIRST, PURELY TO SEE ITS ERROR.
+            # Under dinit its stderr goes nowhere, so two runs reported only
+            #
+            #     dinit: Service seatd process terminated with exit code 1
+            #
+            # which says that it failed and nothing about why. The first guess
+            # -- that `-g video` named a group /etc/group did not have -- was
+            # wrong: the group was added and seatd still exits 1. Guessing
+            # again is worse than spending three seconds on the answer.
+            printf 'echo ---SEATD-DIRECT---\n'
+            printf 'timeout 3 /usr/bin/seatd -g video; echo SEATD-EXIT=$?\n'
+            sleep 6
+            printf 'ls -l /dev/dri /dev/input 2>&1 | head -20\n'
+            sleep 3
             printf 'dinitctl start labwc\n'
             sleep 25
+            printf '/usr/bin/labwc 2>&1 | head -20\n'
+            sleep 10
             printf '/usr/bin/foot &\n'
             sleep 20
             printf 'echo VERON-SHOT-READY\n'
