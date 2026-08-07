@@ -1065,6 +1065,122 @@ jobs:
       # packages work under this kernel" and "does the machine come up". This
       # answers a third question and needs two machines to do it; merging them
       # would make one failure look like another.
+      # A SCREENSHOT OF THE DESKTOP, TAKEN FROM OUTSIDE THE GUEST.
+      #
+      # WHY THIS EXISTS. labwc, wlroots, mesa, foot, fuzzel, swaybg and yambar
+      # are all built, pinned and asserted by the guest tests -- and NOTHING
+      # HAS EVER STARTED THEM. `labwc --version` printing is not the same as a
+      # compositor acquiring a seat, opening a DRM device and putting pixels on
+      # a screen. This step is the first thing in the project that answers
+      # "does it render".
+      #
+      # CAPTURED FROM QEMU'S MONITOR, NOT FROM INSIDE THE IMAGE. The obvious
+      # approach is a Wayland screenshot client -- grim, which is not pinned
+      # and would be a new package, a new mirror upload and a new dependency
+      # for a test. `screendump` on qemu's human monitor writes the
+      # framebuffer straight out, so the guest needs no capture tool at all and
+      # what is captured is what the hardware was shown rather than what a
+      # client asked the compositor for.
+      #
+      # -display none STILL RENDERS. The virtio-gpu device draws into its
+      # surface whether or not a display backend shows it; screendump reads
+      # that surface. -nographic is NOT used here because it multiplexes the
+      # monitor onto the serial console, and this step needs them separate:
+      # the console to type on, the monitor to capture from.
+      #
+      # labwc IS STARTED BY HAND, NOT FROM boot.d. It is deliberately not a
+      # boot service -- a compositor that fails during a package test would
+      # look like a broken system -- so this sends `dinitctl start labwc` down
+      # the serial line, the same way the two-VM network test drives its
+      # guests.
+      #
+      # THE FRAME IS CHECKED, NOT JUST UPLOADED. A screenshot nobody looks at
+      # proves nothing, and a black one looks like a small file rather than a
+      # failure. ppm2png.py counts distinct colours: the wallpaper is a
+      # gradient with a centred marker precisely so that a rendered desktop and
+      # an untouched framebuffer cannot produce the same number.
+      - name: 'Screenshot the desktop'
+        if: ${{ always() && steps.build.outcome == 'success' && !inputs.skip_boot && inputs.boot_system }}
+        run: |
+          set -eu
+          cd spikes/stage5
+          O=out
+          rm -f "$O/mon.sock" "$O/desktop.ppm" "$O/desktop.png" "$O/console.in"
+          mkfifo "$O/console.in"
+
+          # HOLD THE FIFO OPEN. A `>` redirect that finishes closes the write
+          # end, the reader sees EOF, and the guest's shell exits -- taking
+          # the session with it. This background writer keeps it open for the
+          # life of the step.
+          ( sleep 45
+            printf 'dinitctl start labwc\n'
+            sleep 25
+            printf '/usr/bin/foot &\n'
+            sleep 20
+            printf 'echo VERON-SHOT-READY\n'
+            sleep 600 ) > "$O/console.in" &
+          feeder=$!
+
+          set +e
+          qemu-system-aarch64 \
+            -M virt -cpu cortex-a57 -smp 4 -m 4096 \
+            -display none -no-reboot -nic none \
+            -drive file=$O/rootfs-boot.img,format=raw,if=virtio \
+            -device virtio-gpu-pci -device virtio-keyboard-pci \
+            -serial file:"$O/desktop-console.log" \
+            -monitor unix:"$O/mon.sock",server,nowait \
+            -kernel boot/Image -initrd "$O/initramfs.cpio.gz" \
+            -append "console=ttyAMA0 rdinit=/init panic=1 loglevel=4 veron.boot=system" \
+            < "$O/console.in" > "$O/desktop-qemu.log" 2>&1 &
+          qpid=$!
+
+          # WAIT FOR THE SOCKET, NOT A FIXED SLEEP. qemu creates it during
+          # startup and a laptop and a runner do not agree on how long that is.
+          for _ in $(seq 1 30); do
+            [ -S "$O/mon.sock" ] && break
+            sleep 1
+          done
+
+          waited=0
+          while [ "$waited" -lt 140 ]; do
+            grep -aq "VERON-SHOT-READY" "$O/desktop-console.log" 2>/dev/null && break
+            kill -0 "$qpid" 2>/dev/null || break
+            sleep 2
+            waited=$((waited + 2))
+          done
+          echo "  guest ready after ${waited}s"
+
+          python3 tools/qemu-monitor.py "$O/mon.sock" "screendump $PWD/$O/desktop.ppm" \
+            | sed 's/^/    /'
+          sleep 3
+          kill "$feeder" "$qpid" 2>/dev/null
+          sleep 2
+          kill -9 "$feeder" "$qpid" 2>/dev/null
+          wait "$qpid" 2>/dev/null
+          set -e
+
+          echo "  --- what the session said ---"
+          grep -aE "labwc|seatd|swaybg|yambar|foot|OK  \]|FAILED\]" \
+            "$O/desktop-console.log" 2>/dev/null | tail -25 | sed 's/^/    /' || true
+
+          if [ ! -s "$O/desktop.ppm" ]; then
+            echo "VERON-SHOT-FAIL  no frame captured"
+            exit 1
+          fi
+          python3 tools/ppm2png.py "$O/desktop.ppm" "$O/desktop.png"
+          rm -f "$O/desktop.ppm" "$O/mon.sock" "$O/console.in"
+          echo "VERON-SHOT-OK  $O/desktop.png"
+
+      - name: 'Upload the desktop screenshot'
+        if: ${{ always() && steps.build.outcome == 'success' && !inputs.skip_boot && inputs.boot_system }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: veron-stage5-desktop-${{ github.run_id }}
+          path: |
+            spikes/stage5/out/desktop.png
+            spikes/stage5/out/desktop-console.log
+          if-no-files-found: warn
+
       - name: 'VERON-DHCP -- two instances, one L2 segment'
         if: ${{ always() && steps.build.outcome == 'success' && !inputs.skip_boot && inputs.net_test }}
         run: |
