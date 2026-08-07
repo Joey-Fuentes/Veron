@@ -95,6 +95,25 @@ https://github.com/dosfstools/dosfstools/releases/download/v4.2/dosfstools-4.2.t
 https://www.kernel.org/pub/linux/utils/net/iproute2/iproute2-6.18.0.tar.xz
 https://github.com/NetworkConfiguration/dhcpcd/releases/download/v10.2.4/dhcpcd-10.2.4.tar.xz
 https://w1.fi/releases/wpa_supplicant-2.11.tar.gz
+# libnl IS NOT OPTIONAL FOR WiFi, AND THAT WAS MEASURED RATHER THAN ASSUMED.
+# wpa_supplicant's CONFIG_DRIVER_NL80211=y sets NEED_LIBNL=y in
+# src/drivers/drivers.mak:59, and every branch of the four-deep ifndef chain
+# below it links SOME libnl -- LIBNL32, LIBNL20, LIBNL_TINY, or a pkg-config
+# probe falling through to -lnl -lnl-genl. driver_nl80211.c:18-20 also
+# includes <netlink/genl/{genl,ctrl,family}.h> unconditionally, so it will not
+# compile without the headers either. The defconfig says so outright:
+# "driver_nl80211.c requires libnl."
+#
+# nl80211 needs TWO of the seven libraries -- libnl-3 and libnl-genl-3.
+# libnl-route-3 arrives only with CONFIG_LIBNL3_ROUTE, which macsec sets and
+# CONFIG_DRIVER_NL80211 does not.
+#
+# libnl-tiny was considered and declined: it publishes no release tarball, so
+# pinning it means fetch-git.sh, which MIRROR.md records as the weaker case
+# for the three packages already using it. Trading a real signed release for
+# roughly a megabyte -- 0.03% of a 3638 MiB image -- is the wrong side of this
+# project's own priorities.
+https://github.com/thom311/libnl/releases/download/libnl3_12_0/libnl-3.12.0.tar.gz
 
 # batch: B7-desktop
 https://github.com/labwc/labwc/archive/refs/tags/0.9.1.tar.gz

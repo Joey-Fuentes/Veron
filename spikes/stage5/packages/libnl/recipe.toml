@@ -1,0 +1,131 @@
+name    = "libnl"
+version = "3.12.0"
+group   = "network"
+license = "LGPL-2.1-only"
+srcdir  = "libnl-3.12.0"
+
+[source]
+url       = "https://github.com/thom311/libnl/releases/download/libnl3_12_0/libnl-3.12.0.tar.gz"
+sha256    = "fc51ca7196f1a3f5fdf6ffd3864b50f4f9c02333be28be4eeca057e103c0dd18"
+signature = "https://github.com/thom311/libnl/releases/download/libnl3_12_0/libnl-3.12.0.tar.gz.sig"
+# VERIFIED, NOT ASSERTED. `gpg --verify` returned Good signature against these
+# exact bytes, from the key recorded in policy/keyring.toml. The key is
+# EXPIRED (2026-06-11) and the signature predates expiry (2025-12-04), which
+# is why gpg reports both "Good signature" and "Note: This key has expired!"
+# and exits 0. See keyring.toml for what that entry is and is not sourced
+# from -- it is weaker than the GNU entry beside it and says so.
+signing_key = "67DA3FAEBAE276BA58FC6CE314F18A98993AECD5"
+crosschecked_against = []   # name the packagers whose digest you compared
+
+[deps]
+# THE ONLY REASON THIS PACKAGE EXISTS HERE IS WiFi, and that was measured
+# rather than assumed. wpa_supplicant's CONFIG_DRIVER_NL80211=y sets
+# NEED_LIBNL=y at src/drivers/drivers.mak:59, and every branch of the
+# four-deep ifndef chain below it links SOME libnl -- LIBNL32, LIBNL20,
+# LIBNL_TINY, or a pkg-config probe falling through to `-lnl -lnl-genl`.
+# driver_nl80211.c:18-20 also includes <netlink/genl/{genl,ctrl,family}.h>
+# unconditionally, so it does not compile without the headers either. The
+# shipped defconfig says it outright: "driver_nl80211.c requires libnl."
+#
+# NOTHING ELSE IN THE SET NEEDS IT. iproute2 carries its own netlink code and
+# dhcpcd needs none, so ethernet is unblocked without this package.
+#
+# flex AND bison ARE REAL BUILD DEPENDENCIES, and the tarball is why. The
+# release ships a built `configure` -- so no autoreconf -- but does NOT ship
+# the four generated parsers:
+#   lib/route/pktloc_grammar.c      lib/route/pktloc_syntax.c
+#   lib/route/cls/ematch_grammar.c  lib/route/cls/ematch_syntax.c
+# Makefile.am:377-395 regenerates each from its .l/.y. Both tools come from
+# the stage-4 sysroot rather than from a stage-5 recipe, which is why they are
+# disclosed under [undeclarable] rather than listed here.
+build        = ["pkgconf"]
+link         = []
+runtime      = []
+# --enable-cli DEFAULTS TO "yes", WHICH MEANS "yes, AND INSTALL". See below.
+optional_off = ["cli", "debug"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-cli", "--disable-debug",
+                   "--disable-static"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libnl"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 and \
+detached signature were both verified before any of this was written.
+
+TWO DEFAULTS ARE ON AND BOTH SHIP THINGS NOBODY CHOSE.
+
+--enable-cli DEFAULTS TO "yes", and configure.ac:98 makes "yes" a synonym for \
+"bin" -- build the nl-* command line utilities AND install them into \
+/usr/bin. This set has no use for them: the one consumer is \
+wpa_supplicant, which links two libraries and calls no tools. Left alone they \
+would appear in the image with no decision behind them, which is exactly what \
+[installs] exists to make visible.
+
+--enable-debug DEFAULTS TO "yes" and defines NL_DEBUG. Upstream ships \
+debugging on; a system image should not.
+
+pthreads STAYS ON AND IS A HARD ERROR RATHER THAN A PROBE. configure.ac:120 \
+is AC_CHECK_LIB([pthread], [pthread_mutex_lock], [], \
+AC_MSG_ERROR([libpthread is required])). glibc provides it, so this is \
+satisfied -- but it fails the configure outright rather than degrading, which \
+is worth knowing before it happens.
+
+`check` IS PROBED AND MERELY WARNS. configure.ac:87 PKG_CHECK_MODULES for \
+check >= 0.9.0 prints "*** Disabling building of unit tests" and continues, so \
+the absence of a test framework is safe rather than silent.
+
+SEVEN .pc FILES ARE BUILT AND wpa_supplicant NEEDS TWO. libnl-3.0 and \
+libnl-genl-3.0 are what -lnl-3 -lnl-genl-3 resolve through. libnl-route-3.0 \
+arrives only with CONFIG_LIBNL3_ROUTE, which macsec and a couple of others \
+set and CONFIG_DRIVER_NL80211 does not. cli, idiag, nf and xfrm have no \
+consumer here at all. They are built anyway because configure offers no switch \
+to drop individual libraries, and that is a fact about the package rather than \
+a choice -- [installs] records what lands.
+
+LGPL-2.1-only IS A NEW LICENCE CLASS FOR THIS SET. Everything in the graphics \
+group is MIT except labwc's GPL-2.0-only. COPYING is the LGPL 2.1 text and \
+the tarball carries no separate SPDX expression, so the identifier here comes \
+from reading the file rather than from a tag.
+
+libnl-tiny WAS CONSIDERED AND DECLINED. It is smaller and exists for exactly \
+this kind of system, but it publishes no release tarball -- pinning it means \
+tools/fetch-git.sh, which MIRROR.md records as the weaker case for the three \
+packages already on it, and it is a subset API maintained for one downstream's \
+needs. Trading a signed upstream release for roughly a megabyte, against a \
+3638 MiB image, is the wrong side of this project's own priorities."""
+
+[undeclarable]
+# Lookups no .pc name can answer, per ROADMAP.md rule 4.
+"program:flex" = "Makefile.am:377,389 -- regenerates pktloc_grammar.c and ematch_grammar.c from .l sources the release does not ship. From the stage-4 sysroot."
+"program:bison" = "Makefile.am:383,395 -- regenerates pktloc_syntax.c and ematch_syntax.c from .y sources the release does not ship. From the stage-4 sysroot."
+"library:pthread" = "configure.ac:120 -- AC_CHECK_LIB, a HARD error if absent. Provided by glibc in the stage-4 sysroot, not by a stage-5 recipe."
+"pkg:check" = "configure.ac:87 -- PKG_CHECK_MODULES for the unit-test framework. Warns and disables the tests; not in this set."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libnl-3.12.0.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+# NO autoreconf. The release ships a built `configure` (714514 bytes, dated
+# with the release), so the autotools are not on this package's build path.
+run  = [["./configure", "--prefix=/usr", "--disable-cli", "--disable-debug",
+         "--disable-static"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libnl-3.0"],
+          ["/usr/bin/pkgconf", "--modversion", "libnl-genl-3.0"]]
+expect = ["3.12.0", "3.12.0"]

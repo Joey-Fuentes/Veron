@@ -40,51 +40,52 @@ between this file and the recipes fails the run.
   18. zlib
   19. autoconf
   20. elfutils
-  21. libpng
-  22. libtool
-  23. readline
-  24. zstd
-  25. automake
-  26. bash
-  27. curl
-  28. freetype-bootstrap
-  29. libarchive
-  30. libxml2
-  31. sqlite
-  32. git
-  33. python
-  34. markupsafe
-  35. meson
-  36. ninja
-  37. packaging
-  38. pyyaml
-  39. cmake
-  40. fribidi
-  41. glib
-  42. libdisplay-info
-  43. libdrm
-  44. libevdev
-  45. libsfdo
-  46. libxkbcommon
-  47. mako
-  48. pixman
-  49. seatd
-  50. wayland
-  51. wayland-protocols
-  52. xkeyboard-config
-  53. graphite2
-  54. libinput
-  55. libjpeg-turbo
-  56. llvm
-  57. harfbuzz
-  58. libwebp
-  59. mesa
-  60. freetype
-  61. wlroots
-  62. fontconfig
-  63. cairo
-  64. pango
-  65. labwc
+  21. libnl
+  22. libpng
+  23. libtool
+  24. readline
+  25. zstd
+  26. automake
+  27. bash
+  28. curl
+  29. freetype-bootstrap
+  30. libarchive
+  31. libxml2
+  32. sqlite
+  33. git
+  34. python
+  35. markupsafe
+  36. meson
+  37. ninja
+  38. packaging
+  39. pyyaml
+  40. cmake
+  41. fribidi
+  42. glib
+  43. libdisplay-info
+  44. libdrm
+  45. libevdev
+  46. libsfdo
+  47. libxkbcommon
+  48. mako
+  49. pixman
+  50. seatd
+  51. wayland
+  52. wayland-protocols
+  53. xkeyboard-config
+  54. graphite2
+  55. libinput
+  56. libjpeg-turbo
+  57. llvm
+  58. harfbuzz
+  59. libwebp
+  60. mesa
+  61. freetype
+  62. wlroots
+  63. fontconfig
+  64. cairo
+  65. pango
+  66. labwc
 
 ======================================================================
 package bzip2 1.0.8
@@ -730,6 +731,38 @@ package elfutils 0.192
          cwd  build/elfutils-0.192/elfutils-0.192
          env  DESTDIR=dest/elfutils
          argv ["make", "install"]
+
+======================================================================
+package libnl 3.12.0
+  group        network
+  license      LGPL-2.1-only
+  recipe-sha   7a0c584a323d2a1f925be4e3f936094101098a34c15dffd08e6dc86a7db06675
+
+  source
+    url        https://github.com/thom311/libnl/releases/download/libnl3_12_0/libnl-3.12.0.tar.gz
+    sha256     fc51ca7196f1a3f5fdf6ffd3864b50f4f9c02333be28be4eeca057e103c0dd18
+    signature  https://github.com/thom311/libnl/releases/download/libnl3_12_0/libnl-3.12.0.tar.gz.sig
+    correspond none
+
+  deps
+    build        pkgconf
+    link         -
+    runtime      -
+    optional_off cli, debug
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libnl-3.12.0
+         argv ["tar", "-xf", "dl/libnl-3.12.0.tar.gz", "-C", "build/libnl-3.12.0"]
+    [02] configure
+         cwd  build/libnl-3.12.0/libnl-3.12.0
+         argv ["./configure", "--prefix=/usr", "--disable-cli", "--disable-debug", "--disable-static"]
+    [03] build
+         cwd  build/libnl-3.12.0/libnl-3.12.0
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/libnl-3.12.0/libnl-3.12.0
+         argv ["make", "install", "DESTDIR=dest/libnl"]
 
 ======================================================================
 package libpng 1.6.55

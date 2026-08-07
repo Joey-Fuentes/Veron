@@ -13,6 +13,39 @@
 # circularity of needing gpg to verify the sources that build gpg.
 
 [[key]]
+upstream    = "libnl"
+purpose     = "libnl release tarballs -- wpa_supplicant's nl80211 driver"
+# WHAT THIS ENTRY IS SOURCED FROM, STATED EXACTLY, BECAUSE THE OTHER ENTRY IN
+# THIS FILE COMES FROM A PUBLISHED KEYRING AND THIS ONE DOES NOT.
+#
+# The fingerprint was first read out of the signature itself with an EMPTY
+# keyring -- which proves the signature binds to those bytes and proves
+# nothing about who made it. It was then fetched from keys.openpgp.org, which
+# publishes a user ID only when someone controlling that address answers an
+# email challenge, so the key is bound to thom311@gmail.com by something other
+# than the download. That address matches the owner of github.com/thom311/libnl
+# by name, which is corroboration and not proof.
+#
+# NOT cross-checked against a distro's own pin. `crosschecked_against` is
+# empty and should stay empty until someone actually looks -- Arch's PKGBUILD
+# `validpgpkeys` is the obvious place and takes thirty seconds.
+source      = "hkps://keys.openpgp.org (uid confirmed by email challenge); first read from the .sig with an empty keyring"
+fingerprint = "67DA3FAEBAE276BA58FC6CE314F18A98993AECD5"  # Thomas Haller <thom311@gmail.com>
+# THE KEY IS EXPIRED AND THE SIGNATURE STILL STANDS, which is worth writing
+# down because the two look like a contradiction and are not. rsa2048, created
+# 2010-02-26, expired 2026-06-11. The signature on 3.12.0 was made 2025-12-04,
+# BEFORE expiry, and expiry is not retroactive:
+#
+#   gpg: Good signature from "Thomas Haller <thom311@gmail.com>" [expired]
+#   gpg: Note: This key has expired!
+#
+# CONSEQUENCE FOR THE NEXT VERSION BUMP: libnl 3.13 cannot be signed by this
+# key unless it is extended. Whoever pins it must notice a CHANGED fingerprint
+# rather than assume continuity -- and 2048 bits from 2010 is below current
+# practice, so a rotation is likely rather than an extension.
+crosschecked_against = []
+
+[[key]]
 upstream    = "gnu"
 purpose     = "GNU release tarballs, incl. hello"
 source      = "https://ftp.gnu.org/gnu/gnu-keyring.gpg"
