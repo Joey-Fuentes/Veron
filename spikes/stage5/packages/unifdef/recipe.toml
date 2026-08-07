@@ -6,7 +6,7 @@ srcdir  = "unifdef-2.12"
 
 [source]
 url       = "https://dotat.at/prog/unifdef/unifdef-2.12.tar.xz"
-sha256    = "fba564a24db7b97ebe9329713ac970627b902e5e9e8b14e19e024eb6e278d10b"
+sha256    = "43ce0f02ecdcdc723b2475575563ddb192e988c886d368260bc0a63aee3ac400"
 signature = "none -- dotat.at publishes no detached signature"
 crosschecked_against = []
 
@@ -40,10 +40,34 @@ THERE IS NO configure AND NOTHING TO CONFIGURE. unifdef is one C file and a \
 hand-written Makefile with no dependencies at all -- not even pkgconf. That is \
 why [deps].build is empty, which is otherwise almost unheard of in this set.
 
-DIGEST MEASURED ONLY. Unlike every other pin here, no digest was stated \
-alongside the tarball, so the usual measured-vs-stated-vs-pinned check is one \
-leg short. The value recorded here is what the file hashes to; it becomes a \
-three-way check once MIRRORS.tsv carries it."""
+THE FIRST DIGEST HERE WAS THE WRONG ARTIFACT, AND THE MISSING THIRD LEG IS \
+EXACTLY WHY IT SURVIVED. The URL is unifdef-2.12.tar.xz. The file handed over \
+was named unifdef-2_12_tar.gz -- same project, same version, DIFFERENT \
+COMPRESSION, and therefore different bytes and a different sha256. The gz \
+hashes to fba564a2...; that value was measured honestly off real bytes and \
+then paired with an xz URL it does not belong to.
+
+No digest was stated alongside the upload, so the usual \
+measured-vs-stated-vs-pinned check was one leg short -- and the recipe SAID SO \
+in this very paragraph while still shipping the mismatch. A missing leg is a \
+reason to check the remaining two harder, not a footnote.
+
+IT FAILED AT FETCH, WHICH IS THE CHEAP PLACE. The mirror had correctly fetched \
+and uploaded the real .tar.xz as 43ce0f02-unifdef-2.12.tar.xz; the build then \
+asked for fba564a2 and got:
+
+    mirror: every route failed for unifdef-2.12.tar.xz
+      miss    github     HTTP Error 404: Not Found
+
+The routing is by sha256, so a wrong digest cannot silently fetch the wrong \
+file -- it fetches nothing. That is the property working.
+
+WHAT 43ce0f02 RESTS ON, STATED PLAINLY. Both MIRRORS.tsv rows agree on it -- \
+the upstream fetch and the mirrored asset -- so it is two independent \
+measurements of the same bytes by the mirror job. It has NOT been verified \
+against a copy held here: the .tar.xz was never uploaded to this session. That \
+is one leg weaker than every other pin in this set, and it should be closed by \
+hashing the .tar.xz directly the next time it is to hand."""
 
 [[steps]]
 name = "unpack"

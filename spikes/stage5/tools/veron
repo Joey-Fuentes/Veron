@@ -4403,8 +4403,47 @@ def cmd_selftest(a):
     # ordering is real: recipe first, upload second, build third. A gate that
     # failed here would fire on correct work and get switched off. It names
     # what to do instead.
+    # AND THE sha256 MUST AGREE WITH THE ROW, NOT MERELY HAVE ONE.
+    #
+    # unifdef shipped a digest measured off a .tar.GZ and pinned against a
+    # .tar.XZ url -- same project, same version, different compression,
+    # different bytes. The name matched a row, so the check above passed; the
+    # DIGEST did not, and the fetch died with:
+    #
+    #     mirror: every route failed for unifdef-2.12.tar.xz
+    #       miss    github     HTTP Error 404: Not Found
+    #
+    # Routes resolve by sha256, so a wrong digest cannot fetch the wrong file
+    # -- it fetches nothing. That is safe and it is also late: the run had
+    # already downloaded the stage-4 sysroot and every other source.
+    #
+    # WARN RATHER THAN FAIL, for the same reason as the row check: a recipe
+    # written before its mirror run legitimately has no row to agree with.
     _mt = os.path.join(HERE, "..", "..", "sources", "MIRRORS.tsv")
     if os.path.isfile(_mt):
+        _digests = {}
+        for _ln in open(_mt):
+            if _ln.startswith("#") or not _ln.strip():
+                continue
+            _p = _ln.rstrip("\n").split("\t")
+            if len(_p) >= 2:
+                _digests.setdefault(_p[1], set()).add(_p[0])
+        _wrong = []
+        for _n, _r in sorted(load_recipes().items()):
+            if source_is_local(_r) or source_kind(_r) == "git":
+                continue
+            _fn = source_filename(_n, _r)
+            _pin = _r["source"]["sha256"]
+            if _fn in _digests and _pin not in _digests[_fn]:
+                _wrong.append(f"{_n}: recipe {_pin[:12]} vs mirror "
+                              f"{sorted(_digests[_fn])[0][:12]} for {_fn}")
+        if _wrong:
+            for _w in _wrong:
+                print(f"  FAIL  sha256 disagrees with MIRRORS.tsv -- {_w}")
+            ok = False
+        else:
+            print("  ok    every pinned sha256 agrees with its mirror row")
+
         _rows = set()
         for _ln in open(_mt):
             if _ln.startswith("#") or not _ln.strip():
