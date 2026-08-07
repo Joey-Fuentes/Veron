@@ -1141,15 +1141,34 @@ jobs:
             # -- that `-g video` named a group /etc/group did not have -- was
             # wrong: the group was added and seatd still exits 1. Guessing
             # again is worse than spending three seconds on the answer.
-            printf 'echo ---SEATD-DIRECT---\n'
-            printf 'timeout 3 /usr/bin/seatd -g video; echo SEATD-EXIT=$?\n'
-            sleep 6
-            printf 'ls -l /dev/dri /dev/input 2>&1 | head -20\n'
-            sleep 3
-            printf 'dinitctl start labwc\n'
-            sleep 25
-            printf '/usr/bin/labwc 2>&1 | head -20\n'
-            sleep 10
+            # DO NOT START seatd HERE. An earlier version ran
+            # `timeout 3 /usr/bin/seatd -g video` to see its output, and seatd
+            # opens with
+            #
+            #     [seatd/seatd.c:167] Removing leftover socket at /run/seatd.sock
+            #
+            # -- it DELETED the socket belonging to the dinit-managed seatd,
+            # ran for three seconds, and was killed. labwc then found nothing
+            # to connect to and libseat reported "No backend was able to open
+            # a seat". The probe caused the failure it was meant to explain,
+            # and cost a run.
+            #
+            # What that run did establish, and worth keeping: seatd itself is
+            # fine -- it logs "Created VT-bound seat seat0", "seatd started",
+            # and exits 0 -- and /dev/dri/card0, /dev/dri/renderD128 and two
+            # /dev/input/event nodes all exist in the running system.
+            printf 'echo ---SEAT-STATE---\n'
+            printf 'ls -l /run/seatd.sock /dev/dri /dev/input 2>&1 | head -20\n'
+            printf 'dinitctl status seatd 2>&1 | head -6\n'
+            sleep 4
+            # labwc IN THE FOREGROUND, WITH seatd STILL UP. This is the only
+            # probe that matters now: the service form died with SIGNAL 11 on
+            # a run with a healthy seatd, and dinit swallows its stderr.
+            # /etc/profile already exports XDG_RUNTIME_DIR and XDG_CONFIG_DIRS,
+            # so a login shell has what the wrapper would have set.
+            printf 'echo ---LABWC-DIRECT---\n'
+            printf '/usr/bin/labwc 2>&1 | head -40\n'
+            sleep 20
             printf '/usr/bin/foot &\n'
             sleep 20
             printf 'echo VERON-SHOT-READY\n'
