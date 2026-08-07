@@ -736,7 +736,7 @@ package elfutils 0.192
 package libnl 3.12.0
   group        network
   license      LGPL-2.1-only
-  recipe-sha   8f3d67ac74c2f3b0a72b4cc568574342e134b974f5a56ad39bdc8007b76ee109
+  recipe-sha   2234c1161cfc076c8fd5413952cca9b03ceeb3ab8f80c484d2c65fe3c03b1e65
 
   source
     url        https://github.com/thom311/libnl/releases/download/libnl3_12_0/libnl-3.12.0.tar.gz
@@ -756,7 +756,7 @@ package libnl 3.12.0
          argv ["tar", "-xf", "dl/libnl-3.12.0.tar.gz", "-C", "build/libnl-3.12.0"]
     [02] configure
          cwd  build/libnl-3.12.0/libnl-3.12.0
-         argv ["./configure", "--prefix=/usr", "--disable-cli", "--disable-debug", "--disable-static"]
+         argv ["./configure", "--prefix=/usr", "--sysconfdir=/etc", "--disable-cli", "--disable-debug", "--disable-static"]
     [03] build
          cwd  build/libnl-3.12.0/libnl-3.12.0
          argv ["make", "-j1"]

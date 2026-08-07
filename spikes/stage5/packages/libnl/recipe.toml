@@ -69,13 +69,31 @@ runtime      = []
 optional_off = ["cli", "debug"]
 
 [declared]
-configure_flags = ["--prefix=/usr", "--disable-cli", "--disable-debug",
-                   "--disable-static"]
+configure_flags = ["--prefix=/usr", "--sysconfdir=/etc", "--disable-cli",
+                   "--disable-debug", "--disable-static"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["libnl"]
 deferral        = """
 Internals not reviewed. Read out of the pinned tarball, whose sha256 and \
 detached signature were both verified before any of this was written.
+
+--sysconfdir=/etc, AND WITHOUT IT THE LIBRARY LOOKS IN THE WRONG PLACE. \
+autoconf defaults sysconfdir to ${prefix}/etc, so --prefix=/usr alone yields \
+/usr/etc -- and Makefile.am:53 COMPILES THAT PATH IN:
+
+    -D_NL_SYSCONFDIR_LIBNL=\"$(sysconfdir)/libnl\"
+
+with Makefile.am:1247 installing etc/pktloc and etc/classid to \
+$(sysconfdir)/libnl. So the wrong flag does not fail the build; it produces a \
+library that installs its data to /usr/etc/libnl and searches there at \
+runtime, on a system whose config lives in /etc. Silent, and only visible when \
+something asks libnl to resolve a classid.
+
+CAUGHT BY BLFS, NOT BY READING THE TARBALL. The BLFS page for this exact \
+version passes --prefix=/usr --sysconfdir=/etc --disable-static, and the \
+difference against what was written here was the flag that matters. Reading \
+configure.ac found the OPTIONS; it did not find the DEFAULT that was wrong. A \
+second source of truth earned its place.
 
 TWO DEFAULTS ARE ON AND BOTH SHIP THINGS NOBODY CHOSE.
 
@@ -136,8 +154,8 @@ name = "configure"
 cwd  = "$S"
 # NO autoreconf. The release ships a built `configure` (714514 bytes, dated
 # with the release), so the autotools are not on this package's build path.
-run  = [["./configure", "--prefix=/usr", "--disable-cli", "--disable-debug",
-         "--disable-static"]]
+run  = [["./configure", "--prefix=/usr", "--sysconfdir=/etc",
+         "--disable-cli", "--disable-debug", "--disable-static"]]
 
 [[steps]]
 name = "build"
