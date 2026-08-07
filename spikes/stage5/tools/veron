@@ -504,10 +504,42 @@ def source_filename(name, r):
     than broken only because no recipe uses a commit pin yet.
 
     fetch-git.sh writes `<name>-<version>.tar.gz`, so that is the name here.
+
+    AND FOR A TARBALL, THE RULE IS mirror.artifact_name -- NOT basename.
+    TWO PRODUCERS OF ONE NAME, DISAGREEING, WHICH IS THIS REPOSITORY'S
+    FAVOURITE DEFECT.
+
+    stage5-mirror-upload names artifacts with `mirror.artifact_name`, which
+    reads the project out of the path, because forge archive URLs end in the
+    TAG: github.com/labwc/labwc/archive/refs/tags/0.9.1.tar.gz has basename
+    `0.9.1.tar.gz` -- a name identifying no project and colliding the moment
+    two of them tag the same version. So the mirror holds
+    `labwc-0.9.1.tar.gz` while this function said `0.9.1.tar.gz`, and the two
+    were never compared. The fetcher resolves routes by SHA, so it downloaded
+    the right bytes under the wrong name, and the build died at the last of 66
+    packages on a file that was sitting in /dl under another name:
+
+        tar: can't open '/dl/labwc-0.9.1.tar.gz': No such file or directory
+        arg /dl/labwc-0.9.1.tar.gz exists=False
+
+    Checked across the whole set before changing it: labwc is the ONLY recipe
+    where the two rules disagree, so this aligns one name and moves none of
+    the other 65.
+
+    IMPORTED LAZILY AND WITH A FALLBACK. tools/ is outside this package and
+    `veron` is deliberately standard-library-only on the build path; if the
+    import fails the basename rule still applies, which is correct for every
+    URL that is not a forge archive.
     """
     if source_kind(r) == "git":
         return f"{name}-{r['version']}.tar.gz"
-    return r["source"]["url"].rsplit("/", 1)[-1]
+    url = r["source"]["url"]
+    try:
+        sys.path.insert(0, os.path.join(HERE, "..", "..", "tools"))
+        from mirror import artifact_name
+        return artifact_name(url)
+    except Exception:
+        return url.rsplit("/", 1)[-1]
 
 
 def cmd_git_sources(a):
@@ -4265,6 +4297,52 @@ def cmd_selftest(a):
         ok = False
     else:
         print("  ok    cmd_collect keeps every byte of every file it collects")
+
+    # EVERY SOURCE NAME MUST NAME A ROW IN MIRRORS.tsv.
+    #
+    # THIS GATE EXISTS BECAUSE THE NAME HAD TWO PRODUCERS. `veron
+    # source_filename` took the URL's basename; stage5-mirror-upload names
+    # artifacts with `mirror.artifact_name`, which reads the project out of
+    # the path because forge archive URLs end in the TAG. So the mirror held
+    # `labwc-0.9.1.tar.gz` and the driver asked for `0.9.1.tar.gz`. The
+    # fetcher resolves routes by SHA, so it downloaded the RIGHT BYTES UNDER
+    # THE WRONG NAME and the build died at package 66 of 66:
+    #
+    #     tar: can't open '/dl/labwc-0.9.1.tar.gz': No such file or directory
+    #
+    # source_filename now delegates to artifact_name, so the two agree by
+    # construction. This checks the thing that actually matters afterwards --
+    # that the name the driver will ask for is a name the mirror knows.
+    #
+    # WARN, NOT FAIL, AND FOR A SPECIFIC REASON. A newly written recipe
+    # legitimately has no mirror row until stage5-mirror-upload runs, and that
+    # ordering is real: recipe first, upload second, build third. A gate that
+    # failed here would fire on correct work and get switched off. It names
+    # what to do instead.
+    _mt = os.path.join(HERE, "..", "..", "sources", "MIRRORS.tsv")
+    if os.path.isfile(_mt):
+        _rows = set()
+        for _ln in open(_mt):
+            if _ln.startswith("#") or not _ln.strip():
+                continue
+            _p = _ln.rstrip("\n").split("\t")
+            if len(_p) >= 2:
+                _rows.add(_p[1])
+        _unmirrored = []
+        for _n, _r in sorted(load_recipes().items()):
+            if source_is_local(_r):
+                continue
+            _fn = source_filename(_n, _r)
+            if _fn not in _rows:
+                _unmirrored.append(f"{_n} -> {_fn}")
+        if _unmirrored:
+            for _u in _unmirrored:
+                print(f"  warn  no MIRRORS.tsv row: {_u}")
+            print(f"  warn  {len(_unmirrored)} source(s) not mirrored -- run "
+                  f"stage5-mirror-upload before the next build")
+        else:
+            print(f"  ok    every source name matches a mirror row "
+                  f"({len(_rows)} artifact(s) known)")
 
     print("VERON-SELFTEST-OK" if ok else "VERON-SELFTEST-FAIL")
     return 0 if ok else 1
