@@ -49,7 +49,20 @@ have: a dedicated build directory, because "the libvpx developers recommend \
 building in a dedicated build directory", and an edit to build/make/Makefile \
 correcting installed ownership and permissions. Both are now here -- the second \
 as patches/0001 rather than as the book's inline sed, because it modifies \
-source and every other source edit in this set is a patch. See that file. BLFS also documents --disable-vp8 and --disable-vp9 as OPT-OUT \
+source and every other source edit in this set is a patch. See that file.
+
+configure PROBED diff BY ASKING ITS VERSION, WHICH busybox DOES NOT ANSWER. \
+configure:194 runs `diff --version` and dies with "diff missing: Try installing \
+diffutils via your package manager" -- on a system whose diff works. NO \
+busybox applet supports --version: diff, sed, awk, grep, find and sort were all \
+checked and none does. patches/0002 changes the probe to `diff /dev/null \
+/dev/null`, which tests the capability rather than the implementation. libvpx \
+uses diff exactly once for real, at build/make/version.sh:77, and busybox \
+handles it.
+
+THE REST OF THIS BATCH WAS SWEPT FOR THE SAME PATTERN and libvpx is the only \
+one: no other recipe's configure, configure.ac, meson.build or CMakeLists \
+probes a coreutils-style tool for its version. BLFS also documents --disable-vp8 and --disable-vp9 as OPT-OUT \
 switches, confirming both codecs are on by default -- the --enable-vp8 and \
 --enable-vp9 passed here are therefore statements rather than changes.
 
