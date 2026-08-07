@@ -1088,6 +1088,14 @@ jobs:
       # monitor onto the serial console, and this step needs them separate:
       # the console to type on, the monitor to capture from.
       #
+      # -serial stdio, NOT -serial file:. The first version used
+      # `-serial file:"$O/desktop-console.log"`, which is OUTPUT ONLY -- there
+      # is no way to send input to a chardev opened as a file, so the FIFO on
+      # stdin was connected to nothing and `dinitctl start labwc` was never
+      # typed. -serial stdio puts the guest console on stdin and stdout, so
+      # the FIFO drives it and the redirect captures it, which is how the
+      # two-VM network test has always worked.
+      #
       # labwc IS STARTED BY HAND, NOT FROM boot.d. It is deliberately not a
       # boot service -- a compositor that fails during a package test would
       # look like a broken system -- so this sends `dinitctl start labwc` down
@@ -1127,11 +1135,11 @@ jobs:
             -display none -no-reboot -nic none \
             -drive file=$O/rootfs-boot.img,format=raw,if=virtio \
             -device virtio-gpu-pci -device virtio-keyboard-pci \
-            -serial file:"$O/desktop-console.log" \
+            -serial stdio \
             -monitor unix:"$O/mon.sock",server,nowait \
             -kernel boot/Image -initrd "$O/initramfs.cpio.gz" \
             -append "console=ttyAMA0 rdinit=/init panic=1 loglevel=4 veron.boot=system" \
-            < "$O/console.in" > "$O/desktop-qemu.log" 2>&1 &
+            < "$O/console.in" > "$O/desktop-console.log" 2>&1 &
           qpid=$!
 
           # WAIT FOR THE SOCKET, NOT A FIXED SLEEP. qemu creates it during
@@ -1144,7 +1152,10 @@ jobs:
           waited=0
           while [ "$waited" -lt 140 ]; do
             grep -aq "VERON-SHOT-READY" "$O/desktop-console.log" 2>/dev/null && break
-            kill -0 "$qpid" 2>/dev/null || break
+            if ! kill -0 "$qpid" 2>/dev/null; then
+              echo "  qemu exited after ${waited}s -- it did not stay up"
+              break
+            fi
             sleep 2
             waited=$((waited + 2))
           done
@@ -1164,6 +1175,17 @@ jobs:
             "$O/desktop-console.log" 2>/dev/null | tail -25 | sed 's/^/    /' || true
 
           if [ ! -s "$O/desktop.ppm" ]; then
+            # THE FIRST FAILURE PRINTED NOTHING USEFUL. It said "no frame
+            # captured" and exited, and the qemu log -- which is the only
+            # thing that knows why -- was never shown. `guest ready after 2s`
+            # meant the wait loop had broken on `kill -0`, i.e. qemu was
+            # already dead, and nothing said so.
+            echo "  --- qemu / console output ---"
+            tail -40 "$O/desktop-console.log" 2>/dev/null | sed 's/^/    /' \
+              || echo "    (no log at all -- qemu never started)"
+            echo "  --- monitor socket ---"
+            ls -l "$O/mon.sock" 2>/dev/null | sed 's/^/    /' \
+              || echo "    (no socket)"
             echo "VERON-SHOT-FAIL  no frame captured"
             exit 1
           fi
