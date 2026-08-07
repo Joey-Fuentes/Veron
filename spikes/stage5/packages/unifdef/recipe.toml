@@ -17,7 +17,7 @@ runtime      = []
 optional_off = []
 
 [declared]
-configure_flags = ["prefix=/usr"]
+configure_flags = ["prefix=/usr", "CFLAGS=-std=gnu17 -O2"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["unifdef"]
 deferral        = """
@@ -28,6 +28,28 @@ Source/cmake/OptionsWPE.cmake:25 is `find_package(Unifdef REQUIRED)` -- one of \
 eighteen REQUIRED packages, seventeen of which this set already had. WPE \
 CANNOT CONFIGURE WITHOUT IT. WebKit uses it during the build to strip #ifdef \
 blocks out of generated headers.
+
+CFLAGS=-std=gnu17 BECAUSE constexpr IS A C23 KEYWORD AND unifdef USES IT AS A \
+VARIABLE. Line 205 is `static bool constexpr;` -- written when constexpr was \
+an ordinary identifier. The Makefile passes no -std at all (line 14 is just \
+`${CC} ${CFLAGS} ${LDFLAGS} -o unifdef unifdef.c`), so the compiler's default \
+decides, and gcc 15 defaults to gnu23:
+
+    unifdef.c:1173:19: error: expected identifier or '(' before '=' token
+     1173 |         constexpr = killconsts ? false : true;
+
+THIRD C23 CASUALTY IN THIS SET, AND EACH ARRIVED DIFFERENTLY. wlroots ASKS for \
+-std=c23 in its own meson.build and was bitten by glibc making strchr \
+const-generic; foot and fcft were unaffected; this one asks for nothing and is \
+bitten by the compiler's default moving underneath it. A package that names no \
+standard is not standard-neutral -- it inherits whatever the toolchain decides \
+this year.
+
+-std=gnu17 RATHER THAN A PATCH. The alternative is renaming the variable, \
+which is a source change to a program whose entire job is textual \
+transformation of C -- and unifdef 2.12 is the current release, so upstream has \
+not needed to move. Pinning the standard says what the code was written \
+against.
 
 prefix DEFAULTS TO ${HOME}, WHICH IS THE WORST DEFAULT SEEN SO FAR AND IS \
 HARMLESS ONLY BECAUSE IT IS SO OBVIOUS. Makefile:3 is `prefix = ${HOME}`, so \
@@ -77,12 +99,12 @@ run  = [["tar", "-xf", "$DL/unifdef-2.12.tar.xz", "-C", "$B"]]
 [[steps]]
 name = "build"
 cwd  = "$S"
-run  = [["make", "-j$J", "prefix=/usr"]]
+run  = [["make", "-j$J", "prefix=/usr", "CFLAGS=-std=gnu17 -O2"]]
 
 [[steps]]
 name = "install"
 cwd  = "$S"
-run  = [["make", "install", "prefix=/usr", "DESTDIR=$D"]]
+run  = [["make", "install", "prefix=/usr", "CFLAGS=-std=gnu17 -O2", "DESTDIR=$D"]]
 
 [guest]
 test   = [["/usr/bin/unifdef", "-V"]]

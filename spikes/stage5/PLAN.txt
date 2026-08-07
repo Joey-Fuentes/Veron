@@ -684,7 +684,7 @@ package scdoc 1.11.3
 package unifdef 2.12
   group        build-substrate
   license      BSD-2-Clause
-  recipe-sha   dd55ca49991e7e0e3c884c8824e684afa0a8facedd5fd23d861e2c5b8e9db82c
+  recipe-sha   b5c3c4899f452722540d8c91f8593e3c3754cb56b996681b2fb0cebdeff99dcf
 
   source
     url        https://dotat.at/prog/unifdef/unifdef-2.12.tar.xz
@@ -704,10 +704,10 @@ package unifdef 2.12
          argv ["tar", "-xf", "dl/unifdef-2.12.tar.xz", "-C", "build/unifdef-2.12"]
     [02] build
          cwd  build/unifdef-2.12/unifdef-2.12
-         argv ["make", "-j1", "prefix=/usr"]
+         argv ["make", "-j1", "prefix=/usr", "CFLAGS=-std=gnu17 -O2"]
     [03] install
          cwd  build/unifdef-2.12/unifdef-2.12
-         argv ["make", "install", "prefix=/usr", "DESTDIR=dest/unifdef"]
+         argv ["make", "install", "prefix=/usr", "CFLAGS=-std=gnu17 -O2", "DESTDIR=dest/unifdef"]
 
 ======================================================================
 package veron-system 0.1.0
