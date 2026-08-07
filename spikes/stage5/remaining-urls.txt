@@ -183,3 +183,22 @@ https://github.com/yaml/libyaml/releases/download/0.2.5/yaml-0.2.5.tar.gz
 # references. Whether the mirror should ever drop rows is unresolved and worth
 # deciding before the set grows much further.
 https://ftp.gnu.org/gnu/libidn/libidn2-2.3.8.tar.gz
+
+# qemu, AND IT IS THE ONLY ARTIFACT IN THE SET WITH ONE ROUTE.
+#
+# MIRROR.md claims "Every artifact has its upstream recorded as provenance plus
+# at least one route that does not depend on anyone else's uptime". That has
+# been false for this one since the file was written: qemu-11.0.3.tar.xz is in
+# MIRRORS.tsv with an upstream row and nothing else, so the local toolbox
+# depends entirely on download.qemu.org staying up.
+#
+# It was missed because this list is where a pin goes BEFORE its recipe exists,
+# and qemu's pin predates the list. Every other artifact added recently --
+# unifdef, libyaml, libidn2, tzdb -- was put here at the same time as its
+# recipe; qemu's recipe was written and this line was not.
+#
+# THE PIN IS VERIFIED. sha256 da5fcffc... matches QEMU_SHA256 in
+# local-toolbox.yml and the MIRRORS.tsv row exactly, the signature's own digest
+# matches QEMU_SIG_SHA256, and gpgv confirms the signature binds to those
+# bytes.
+https://download.qemu.org/qemu-11.0.3.tar.xz
