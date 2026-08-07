@@ -115,30 +115,28 @@ between this file and the recipes fails the run.
   93. libinput
   94. libjpeg-turbo
   95. llvm
-  96. qemu
-  97. utf8proc
-  98. glib-networking
-  99. harfbuzz
-  100. libwebp
-  101. mesa
-  102. freetype
-  103. libepoxy
-  104. libsoup
-  105. wlroots
-  106. fontconfig
-  107. cairo
-  108. fcft
-  109. foot
-  110. fuzzel
-  111. pango
-  112. swaybg
-  113. yambar
-  114. gst-plugins-base
-  115. labwc
-  116. gst-libav
-  117. gst-plugins-bad
-  118. gst-plugins-good
-  119. wpewebkit
+  96. utf8proc
+  97. glib-networking
+  98. harfbuzz
+  99. libwebp
+  100. mesa
+  101. freetype
+  102. libepoxy
+  103. libsoup
+  104. wlroots
+  105. fontconfig
+  106. cairo
+  107. fcft
+  108. foot
+  109. fuzzel
+  110. pango
+  111. swaybg
+  112. yambar
+  113. gst-plugins-base
+  114. labwc
+  115. gst-libav
+  116. gst-plugins-bad
+  117. gst-plugins-good
 
 ======================================================================
 package bzip2 1.0.8
@@ -3330,38 +3328,6 @@ package llvm 22.1.8
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
-package qemu 11.0.3
-  group        system
-  license      GPL-2.0-only AND BSD-3-Clause AND MIT
-  recipe-sha   4ef742d8c7e4bafdecbbbfac0a1139456a712b185e32a3b4f53e8ccfc9c3a903
-
-  source
-    url        https://download.qemu.org/qemu-11.0.3.tar.xz
-    sha256     da5fcffc32762820568b828ed430a728864d34d50b6d2f30358597760cbb0523
-    signature  https://download.qemu.org/qemu-11.0.3.tar.xz.sig
-    correspond none
-
-  deps
-    build        glib, meson, ninja, pixman, pkgconf, python, zlib
-    link         glib, pixman, zlib
-    runtime      glib, pixman, zlib
-    optional_off blkio, capstone, curl, curses, docs, gtk, guest-agent, kvm, libssh, sdl, slirp, spice, vnc
-
-  commands (literal; this is exactly what runs)
-    [01] unpack
-         cwd  build/qemu-11.0.3
-         argv ["tar", "-xf", "dl/qemu-11.0.3.tar.xz", "-C", "build/qemu-11.0.3"]
-    [02] configure
-         cwd  build/qemu-11.0.3/qemu-11.0.3
-         argv ["./configure", "--prefix=/usr", "--target-list=aarch64-softmmu,x86_64-softmmu", "--disable-slirp", "--disable-capstone", "--disable-gtk", "--disable-sdl", "--disable-spice", "--disable-curses", "--disable-vnc", "--disable-curl", "--disable-libssh", "--disable-blkio", "--disable-docs", "--disable-guest-agent", "--enable-tcg"]
-    [03] build
-         cwd  build/qemu-11.0.3/qemu-11.0.3
-         argv ["make", "-j1"]
-    [04] install
-         cwd  build/qemu-11.0.3/qemu-11.0.3
-         argv ["make", "install", "DESTDIR=dest/qemu"]
-
-======================================================================
 package utf8proc 2.11.3
   group        desktop
   license      MIT
@@ -4106,38 +4072,5 @@ package gst-plugins-good 1.28.1
     [04] install
          cwd  build/gst-plugins-good-1.28.1/gst-plugins-good-1.28.1
          env  DESTDIR=dest/gst-plugins-good
-         argv ["ninja", "-C", "_b", "install"]
-
-======================================================================
-package wpewebkit 2.52.5
-  group        browser
-  license      LGPL-2.1-or-later AND BSD-2-Clause
-  recipe-sha   abffb8918a379dbbcd859da90cfccd95901546c3a7cdc9240917a3f1a06e28d9
-
-  source
-    url        https://wpewebkit.org/releases/wpewebkit-2.52.5.tar.xz
-    sha256     bcfc6c91db7659dcf24f6ff79ad27ac1eae1bc61dca0dbfee154706926740b3b
-    signature  none -- wpewebkit.org publishes .asc signatures; not yet pinned here
-    correspond none
-
-  deps
-    build        bubblewrap, cairo, cmake, fontconfig, freetype, glib, gperf, gst-plugins-base, gstreamer, harfbuzz, icu, libepoxy, libgcrypt, libhyphen, libjpeg-turbo, libpng, libsoup, libtasn1, libwebp, libxkbcommon, libxml2, mesa, ninja, pkgconf, python, sqlite, unifdef, wayland, wayland-protocols, zlib
-    link         cairo, fontconfig, freetype, glib, gst-plugins-base, gstreamer, harfbuzz, icu, libepoxy, libgcrypt, libhyphen, libjpeg-turbo, libpng, libsoup, libtasn1, libwebp, libxkbcommon, libxml2, mesa, sqlite, wayland, zlib
-    runtime      bubblewrap, cairo, fontconfig, freetype, glib, glib-networking, gst-libav, gst-plugins-bad, gst-plugins-base, gst-plugins-good, gstreamer, harfbuzz, icu, libepoxy, libgcrypt, libhyphen, libjpeg-turbo, libpng, libsoup, libtasn1, libwebp, libxkbcommon, libxml2, mesa, sqlite, wayland, zlib
-    optional_off documentation, encrypted-media, gamepad, introspection, journald-log, media-stream, pdfjs, speech-synthesis, webdriver
-
-  commands (literal; this is exactly what runs)
-    [01] unpack
-         cwd  build/wpewebkit-2.52.5
-         argv ["tar", "-xf", "dl/wpewebkit-2.52.5.tar.xz", "-C", "build/wpewebkit-2.52.5"]
-    [02] configure
-         cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
-         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_BUILD_TYPE=Release", "-DPORT=WPE", "-DENABLE_JOURNALD_LOG=OFF", "-DENABLE_INTROSPECTION=OFF", "-DENABLE_DOCUMENTATION=OFF", "-DENABLE_GAMEPAD=OFF", "-DENABLE_SPEECH_SYNTHESIS=OFF", "-DENABLE_WEBDRIVER=OFF", "-DENABLE_MEDIA_STREAM=OFF", "-DENABLE_BUBBLEWRAP_SANDBOX=ON", "-DUSE_LIBHYPHEN=ON", "-DENABLE_PDFJS=OFF", "-DUSE_SYSTEM_MALLOC=ON"]
-    [03] build
-         cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
-         argv ["ninja", "-C", "_b"]
-    [04] install
-         cwd  build/wpewebkit-2.52.5/wpewebkit-2.52.5
-         env  DESTDIR=dest/wpewebkit
          argv ["ninja", "-C", "_b", "install"]
 
