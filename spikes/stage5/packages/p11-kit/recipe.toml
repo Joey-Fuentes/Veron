@@ -1,0 +1,87 @@
+name    = "p11-kit"
+version = "0.25.5"
+group   = "tls"
+license = "BSD-3-Clause"
+srcdir  = "p11-kit-0.25.5"
+
+[source]
+url       = "https://github.com/p11-glue/p11-kit/releases/download/0.25.5/p11-kit-0.25.5.tar.xz"
+sha256    = "04d0a86450cdb1be018f26af6699857171a188ac6d5b8c90786a60854e1198e5"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "libtasn1", "libffi"]
+link         = ["libtasn1", "libffi"]
+runtime      = ["libtasn1", "libffi"]
+optional_off = ["nls", "systemd", "bash_completion", "doc", "gtk_doc",
+                "trust_paths"]
+
+[declared]
+configure_flags = ["-Dtrust_module=enabled", "-Dhash_impl=internal",
+                   "-Dlibffi=enabled", "-Dsystemd=disabled",
+                   "-Dbash_completion=disabled", "-Dnls=disabled",
+                   "-Dgtk_doc=false", "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["p11-kit"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+WHY IT IS NOT OPTIONAL DESPITE HAVING AN OPT-OUT. gnutls offers \
+--without-p11-kit, and taking it would remove the mechanism by which gnutls \
+finds the SYSTEM TRUST STORE. A browser without CA roots fails TLS \
+verification on every site, so the flag exists and cannot be used here.
+
+AND THE TRUST STORE ITSELF DOES NOT EXIST YET, WHICH IS A LARGER PROBLEM THAN \
+THIS RECIPE. meson_options.txt sets `trust_paths` to '' by default -- an empty \
+string, meaning the trust module is built with NO INPUT. Nothing in this set \
+provides CA certificates: `grep -ic "ca-cert|make-ca|certdata"` over \
+MIRRORS.tsv returns 0. So the full chain will build, link and load, and then \
+reject every certificate on the internet.
+
+THAT IS A DECISION NOBODY HAS MADE, NOT A BUG. CA roots are someone else's \
+data, they change on a schedule Veron does not control, and they are exactly \
+the shape of thing this project has already decided to keep outside its root \
+of trust once -- firmware. Whether they ship in the image, ride on a separate \
+artifact like firmware does, or are extracted from NSS's certdata.txt by \
+something like make-ca is unresolved and is recorded in the batch summary \
+rather than guessed at here. trust_paths is left empty deliberately so the \
+absence is visible rather than half-configured.
+
+hash_impl=internal RATHER THAN freebl. freebl is NSS's crypto, which would \
+make p11-kit depend on NSS -- a second TLS stack underneath the first. \
+Internal is the default and is stated because the alternative is a large \
+architectural consequence hidden behind a combo option.
+
+libffi IS auto AND IS STATED enabled: it is in this set already, and p11-kit \
+uses it to build PKCS#11 closures. Left at auto it would resolve on presence."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/p11-kit-0.25.5.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dtrust_module=enabled", "-Dhash_impl=internal", "-Dlibffi=enabled",
+         "-Dsystemd=disabled", "-Dbash_completion=disabled",
+         "-Dnls=disabled", "-Dgtk_doc=false"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "p11-kit-1"]]
+expect = ["0.25.5"]

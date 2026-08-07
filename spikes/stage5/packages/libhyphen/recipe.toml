@@ -1,0 +1,84 @@
+name    = "libhyphen"
+version = "2.8.9"
+group   = "browser-substrate"
+license = "GPL-2.0-or-later OR LGPL-2.1-or-later OR MPL-1.1"
+srcdir  = "hyphen-2.8.9"
+
+[source]
+url       = "https://github.com/hunspell/hyphen/archive/refs/tags/v2.8.9.tar.gz"
+sha256    = "d6fc75d8500094903b119a45667fed91fe665e5f6f106029a4d3b4e26f3d8d6f"
+signature = "none published -- GitHub archive, digest is ours"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf", "autoconf", "automake", "libtool"]
+link         = []
+runtime      = []
+optional_off = ["static", "perl-bindings"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libhyphen"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+THE PACKAGE IS CALLED libhyphen AND THE ARTIFACT IS CALLED hyphen, WHICH IS \
+CORRECT AND WORTH EXPLAINING ONCE. The upstream project is github.com/hunspell/ \
+hyphen -- the repo, the tag and the tarball all say `hyphen`. `libhyphen` is \
+what STAGE5.md and several distributions call it, matching the soname. \
+mirror.artifact_name reads the project out of the URL path, so the mirrored \
+name is hyphen-v2.8.9.tar.gz; srcdir is hyphen-2.8.9 because that is what the \
+archive unpacks to. Three names for one thing, each right in its own place, \
+and the same shape as libdrm's drm-libdrm-2.4.134.tar.gz.
+
+IT SHIPS NO configure AND autoreconf IS RUN HERE. The GitHub archive has \
+configure.ac and Makefile.am and no generated build system. That is the same \
+problem libidn2 has and it is TRACTABLE HERE where it is not there: hyphen \
+vendors no gnulib and has no `bootstrap` script, so plain `autoreconf -fi` \
+suffices, and autoconf, automake and libtool are all in this set. libidn2's \
+bootstrap FETCHES gnulib, which is a network operation inside a sealed \
+sandbox, and needs a re-pin instead.
+
+TRIPLE-LICENSED GPL-2.0-or-later OR LGPL-2.1-or-later OR MPL-1.1, a genuine \
+three-way OR -- the tarball carries COPYING, COPYING.LGPL and COPYING.MPL \
+side by side. That is a wider choice than hwdata's or gmp's two-way OR, and \
+license.py should show it as such.
+
+WHY IT IS HERE: WPE uses it for CSS hyphenation. Nothing else in this set \
+does."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/hyphen-v2.8.9.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "autoreconf"
+cwd  = "$S"
+shell = "autoreconf -fi"
+why = """
+The GitHub archive ships configure.ac and Makefile.am with no generated
+configure. autoconf, automake and libtool are in this set, and hyphen vendors
+no gnulib, so this is a local regeneration with no network and no fetch.
+"""
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/bin/sh", "-c", "test -f /usr/lib/libhyphen.so && echo present"]]
+expect = ["present"]

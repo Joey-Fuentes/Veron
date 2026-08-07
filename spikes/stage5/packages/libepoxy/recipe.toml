@@ -1,0 +1,93 @@
+name    = "libepoxy"
+version = "1.5.10"
+group   = "browser-substrate"
+license = "MIT"
+srcdir  = "libepoxy-1.5.10"
+
+[source]
+url       = "https://github.com/anholt/libepoxy/archive/1.5.10/libepoxy-1.5.10.tar.gz"
+sha256    = "a7ced37f4102b745ac86d6a70a9da399cc139ff168ba6b8002b4d8d43c900c15"
+signature = "none published -- GitHub archive, digest is ours"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "python", "mesa"]
+link         = ["mesa"]
+runtime      = ["mesa"]
+# x11 AND glx ARE ON BY DEFAULT AND THIS SYSTEM HAS NEITHER. This is the one
+# recipe in the batch where BLFS's commands would have broken the build.
+optional_off = ["x11", "glx", "docs", "tests"]
+
+[declared]
+configure_flags = ["-Dx11=false", "-Dglx=no", "-Degl=yes", "-Ddocs=false",
+                   "-Dtests=false", "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libepoxy"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+THIS IS THE ONE PACKAGE IN THE BATCH WHERE BLFS'S COMMANDS WOULD HAVE BROKEN \
+THE BUILD, AND IT IS WORTH SAYING PLAINLY. x/libepoxy.html gives
+
+    meson setup --prefix=/usr --buildtype=release ..
+
+and nothing else. That works in BLFS because BLFS is an X11 book. Here:
+
+  meson.options   x11    boolean, value: TRUE
+  meson.build:37  glx    combo 'auto' -> build_glx = true on Linux
+
+so an unqualified setup enables GLX and X11 on a system that has neither, and \
+the build looks for Xlib headers that do not exist. The book being a second \
+source of truth does not make it a source of truth about THIS system -- it \
+caught libnl's --sysconfdir and it would have caused this.
+
+meson.build:52-54 ALSO REFUSES AN INCONSISTENT PAIR: with x11 false and glx \
+explicitly 'yes' it errors outright. So the two are set together and \
+deliberately, not one and then the other.
+
+-Degl=yes IS STATED THOUGH auto WOULD REACH IT. auto resolves to true on \
+anything that is not Windows or Darwin, so the value is right by accident. EGL \
+is the entire reason this package is here -- it is what WPE dispatches GL \
+through -- so it is stated rather than inherited.
+
+mesa IS THE LINK DEPENDENCY and is what makes the EGL path real: libepoxy \
+resolves GL entry points at runtime, and with no GLX and no X11 the provider \
+is mesa's EGL and GLES2, which the mesa recipe pins to \
+-Dgallium-drivers=llvmpipe,softpipe,virgl.
+
+python IS A BUILD DEPENDENCY, not an accident: libepoxy generates its \
+dispatch tables from XML at build time with python scripts."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libepoxy-1.5.10.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dx11=false", "-Dglx=no", "-Degl=yes", "-Ddocs=false",
+         "-Dtests=false"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+# ASSERT THE CAPABILITY, NOT THE VERSION. epoxy's .pc carries an `epoxy_has_glx`
+# variable; this set needs it FALSE, and a build that silently re-enabled GLX
+# would show here rather than at WPE's link step.
+test   = [["/usr/bin/pkgconf", "--modversion", "epoxy"],
+          ["/usr/bin/pkgconf", "--variable=epoxy_has_glx", "epoxy"],
+          ["/usr/bin/pkgconf", "--variable=epoxy_has_egl", "epoxy"]]
+expect = ["1.5.10", "0", "1"]

@@ -1,0 +1,107 @@
+name    = "bubblewrap"
+version = "0.11.0"
+group   = "browser-substrate"
+license = "LGPL-2.0-or-later"
+srcdir  = "bubblewrap-0.11.0"
+
+[source]
+url       = "https://github.com/containers/bubblewrap/releases/download/v0.11.0/bubblewrap-0.11.0.tar.xz"
+sha256    = "988fd6b232dafa04b8b8198723efeaccdb3c6aa9c1c7936219d5791a8b7a8646"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "python", "libcap"]
+link         = ["libcap"]
+runtime      = ["libcap"]
+# bash_completion IS enabled BY DEFAULT and there is no bash-completion
+# package here -- see the deferral, the fallback path is the interesting part.
+optional_off = ["bash_completion", "zsh_completion", "man", "tests",
+                "selinux", "require_userns"]
+
+[declared]
+configure_flags = ["-Dbash_completion=disabled", "-Dzsh_completion=disabled",
+                   "-Dman=disabled", "-Dtests=false", "-Dselinux=disabled",
+                   "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["bubblewrap"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+THIS PIN IS ALREADY BUILT ONCE IN THIS PROJECT -- the local toolbox uses \
+bubblewrap from the same sha256 -- so unlike everything else in this batch \
+there is a known-good reference for how it compiles. What is new here is that \
+it becomes part of the IMAGE rather than part of the build environment: WPE \
+uses it to sandbox its web and network processes.
+
+bash_completion DEFAULTS TO enabled AND THE FALLBACK IS THE PROBLEM, NOT THE \
+DEPENDENCY. completions/bash/meson.build:5 looks for the `bash-completion` \
+.pc with `required: false`, and when it is absent -- it is; that package is \
+not in this set -- line 32 falls back to installing into \
+`datadir/bash-completion/completions` anyway. So the missing dependency does \
+NOT disable the feature; it just picks a path. The result would be a file in \
+/usr/share/bash-completion/completions on a system with no completion loader \
+to read it, arriving from a probe that failed. glib hit the same shape and \
+carries a patch for it; here an option exists, so disabling is enough.
+
+require_userns IS LEFT OFF, DELIBERATELY, AND IT IS A RUNTIME CLAIM RATHER \
+THAN A BUILD ONE. meson.build:90 gates a build-time assertion that unprivileged \
+user namespaces are available. Turning it on would make the BUILD fail on a \
+runner whose kernel restricts them -- which Ubuntu 24.04 does by AppArmor \
+default -- to assert something about the TARGET kernel, which is a different \
+machine. Whether Veron's kernel permits userns is a question for \
+KERNEL-CHANGES.md, not for this configure line.
+
+libcap IS A HARD REQUIREMENT AND IS NOT IN THIS SET YET. meson.build:68 is
+
+    libcap_dep = dependency('libcap', required : true)
+
+-- required: true, no option, no fallback. libcap was not in this set when \
+this recipe was first written, and it is not in the stage-4 sysroot either \
+(checked, not assumed), so the driver refused the plan outright:
+
+    veron: bubblewrap: depends on 'libcap', which has no recipe
+
+That refusal is the dependency graph doing its job -- a recipe naming a \
+package nobody has written is caught before a build starts rather than at a \
+link step twenty packages later. libcap now has a recipe and the resolver \
+orders it first.
+
+libcap is what lets bwrap drop capabilities rather than rely on being \
+installed setuid, which is the difference between a sandbox and a \
+liability.
+
+BLFS CROSS-CHECK: general/bubblewrap.html gives \
+`meson setup --prefix=/usr --buildtype=release ..` with no further flags, and \
+notes that upstream once expected it to be installed setuid. That default \
+setup is what would install the orphan completion file; BLFS has \
+bash-completion and Veron does not."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/bubblewrap-0.11.0.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dbash_completion=disabled", "-Dzsh_completion=disabled",
+         "-Dman=disabled", "-Dtests=false", "-Dselinux=disabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/bwrap", "--version"]]
+expect = ["0.11.0"]

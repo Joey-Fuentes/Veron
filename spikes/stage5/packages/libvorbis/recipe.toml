@@ -1,0 +1,67 @@
+name    = "libvorbis"
+version = "1.3.7"
+group   = "media"
+license = "BSD-3-Clause"
+srcdir  = "libvorbis-1.3.7"
+
+[source]
+url       = "https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.xz"
+sha256    = "b33cc4934322bcbf6efcbacf49e3ca01aadbea4114ec9589d1b1e9d20f72954b"
+signature = "none -- downloads.xiph.org publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf", "libogg"]
+link         = ["libogg"]
+runtime      = ["libogg"]
+optional_off = ["static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libvorbis"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+THREE LIBRARIES, NOT ONE: libvorbis, libvorbisenc and libvorbisfile, each with \
+its own .pc. A consumer asking for `vorbis` gets the decoder only, so the \
+guest test names all three -- gst-plugins-base's vorbis plugin uses the \
+encoder and the file reader as well.
+
+libogg IS A HARD DEPENDENCY and is why it is ordered first. Vorbis packets \
+only exist inside an Ogg container as far as this stack is concerned.
+
+docs AND examples ARE OPT-IN HERE, NOT OPT-OUT, AND THE FIRST VERSION OF THIS \
+RECIPE GOT THAT BACKWARDS. It passed --disable-docs and --disable-examples, \
+which do not exist: `./configure --help` offers --enable-docs and \
+--enable-examples, both off unless asked for. autotools accepts unknown \
+--disable-* silently by default, so the flags would have been ignored rather \
+than rejected and the recipe would have claimed two decisions it never made. \
+Caught by reading --help instead of assuming the shape of the option."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libvorbis-1.3.7.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "vorbis"],
+          ["/usr/bin/pkgconf", "--modversion", "vorbisenc"],
+          ["/usr/bin/pkgconf", "--modversion", "vorbisfile"]]
+expect = ["1.3.7", "1.3.7", "1.3.7"]

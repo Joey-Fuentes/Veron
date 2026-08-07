@@ -1,0 +1,84 @@
+name    = "dosfstools"
+version = "4.2"
+group   = "system"
+license = "GPL-3.0-or-later"
+srcdir  = "dosfstools-4.2"
+
+[source]
+url       = "https://github.com/dosfstools/dosfstools/releases/download/v4.2/dosfstools-4.2.tar.gz"
+sha256    = "64926eebf90092dca21b14259a5301b7b98e7b1943e8a201c7d726084809b527"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf"]
+link         = []
+runtime      = []
+optional_off = ["compat-symlinks", "atari-check", "iconv"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--sbindir=/usr/sbin", "--disable-rpath"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["dosfstools"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+WHY IT IS HERE: mkfs.vfat, to create the EFI system partition. The stage-4 \
+kernel already carries CONFIG_EFI, EFI_STUB and EFI_PARTITION so the image can \
+boot itself; an ESP is FAT32 by specification, and nothing else in this set can \
+make one. This is a BUILD-TIME need of stage 6's installer rather than \
+something a running Veron uses, but it ships because a user who wants to \
+install to a second disk needs it on the machine they are installing from.
+
+--enable-compat-symlinks IS OFF, AND THAT IS THE ONE REAL DECISION. It installs \
+mkdosfs, dosfsck and dosfslabel as aliases for mkfs.fat, fsck.fat and \
+fatlabel -- names deprecated for over a decade. Off means three fewer paths in \
+files.tsv that nothing calls.
+
+--enable-atari-check IS OFF. It makes the tools inspect a partition and switch \
+to Atari ST semantics, which is a behaviour change triggered by data. \
+Declining it is the safer default for a tool that formats disks.
+
+--sbindir=/usr/sbin IS STATED. autotools defaults sbindir to $exec_prefix/sbin, \
+which with --prefix=/usr already gives /usr/sbin -- but dosfstools' own \
+Makefile.am has historically moved these tools between sbin and bin, and this \
+set puts everything under /usr. Stated so the location is a decision.
+
+THERE IS NO udev OPTION AND ONE WAS WRITTEN HERE BEFORE BEING CHECKED. \
+`--without-udev` was added by pattern -- hwdata declines a modprobe.d file, \
+bubblewrap declines bash completion, so a disk tool declining a udev rule \
+looked right. It is not: dosfstools references udev NOWHERE. `grep -c udev` \
+over Makefile.am and configure.ac returns 0 for both, and --help offers no \
+such flag. Removed. autotools would have ignored the unknown --without-* \
+silently, so the recipe would have claimed a decision it never made -- the \
+same failure as libvorbis's --disable-docs and alsa-lib's --disable-debug.
+
+--without-iconv IS THE OPTION THAT DOES EXIST, and it is left ON. iconv comes \
+from glibc here, and it is what lets fatlabel handle a non-ASCII volume \
+name."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/dosfstools-4.2.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--sbindir=/usr/sbin",
+         "--disable-rpath"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/sbin/mkfs.fat", "--help"]]
+expect = ["mkfs.fat"]

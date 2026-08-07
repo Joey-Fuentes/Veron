@@ -1,0 +1,19 @@
+# Run when labwc starts.
+#
+# UPSTREAM SHIPS AN autostart EXAMPLE TO share/doc/labwc/ AND INSTALLS NOTHING.
+# Without this file the session starts with a bare compositor: no wallpaper, no
+# status bar, nothing but whatever the user launches by hand.
+#
+# EACH LINE IS GUARDED because this file runs on every start and a missing
+# binary would print a shell error into the session log on every boot. The
+# guard makes an absent package silent rather than noisy -- and the packages
+# ARE optional: labwc runs without any of them.
+
+# A background, so an empty desktop is visibly a desktop rather than a failure.
+# swaybg reads PNG only here -- gdk-pixbuf is declined in its recipe -- and
+# Veron ships no wallpaper, so this sets a solid colour.
+[ -x /usr/bin/swaybg ] && /usr/bin/swaybg -c '#1a1a1a' &
+
+# The status bar. yambar's foreign-toplevel plugin is what shows a window list,
+# and labwc implements that protocol through wlroots.
+[ -x /usr/bin/yambar ] && [ -f /etc/xdg/yambar/config.yml ] && /usr/bin/yambar &

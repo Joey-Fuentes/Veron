@@ -1,0 +1,70 @@
+name    = "libyaml"
+version = "0.2.5"
+group   = "desktop"
+license = "MIT"
+srcdir  = "yaml-0.2.5"
+
+[source]
+url       = "https://github.com/yaml/libyaml/releases/download/0.2.5/yaml-0.2.5.tar.gz"
+sha256    = "c642ae9b75fee120b2d96c712538bd2cf283228d2337df2cf2988e3c02678ef4"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf"]
+link         = []
+runtime      = []
+optional_off = ["static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libyaml"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball.
+
+THE PACKAGE IS libyaml AND THE ARTIFACT IS yaml-0.2.5.tar.gz. Upstream is \
+github.com/yaml/libyaml but the release asset is named for the library's \
+soname rather than the repository, so mirror.artifact_name gives \
+`yaml-0.2.5.tar.gz` and srcdir is `yaml-0.2.5`. Third instance of this in the \
+set after libdrm's drm-libdrm-2.4.134.tar.gz and hyphen's hyphen-v2.8.9.tar.gz; \
+the recipe directory, the artifact and the source tree are three names and \
+each is right where it sits.
+
+WHY IT IS HERE: yambar declares `dependency('yaml-0.1')` at meson.build:54 with \
+no required: guard and no option -- a status bar that reads a YAML config \
+cannot be built without a YAML parser. Nothing else in this set uses it. Note \
+the .pc is called yaml-0.1 even at version 0.2.5, which is upstream's own \
+versioning of the API rather than the release.
+
+--disable-static, per policy; autotools defaults --enable-static to yes here \
+(checked against --help, not assumed).
+
+DIGEST MEASURED ONLY -- no digest was stated alongside the upload, so the usual \
+three-way check is one leg short until MIRRORS.tsv carries it. Two upstream \
+routes exist and are worth mirroring both: github.com/yaml/libyaml/releases and \
+pyyaml.org/download/libyaml."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/yaml-0.2.5.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "yaml-0.1"]]
+expect = ["0.2.5"]

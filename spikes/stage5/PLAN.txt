@@ -21,74 +21,116 @@ between this file and the recipes fails the run.
 -- resolved order --------------------------------------------------
   derived from deps, tie-broken by name; never authored
   1. bzip2
-  2. dinit
-  3. expat
-  4. file
-  5. gperf
-  6. hello
-  7. hwdata
-  8. icu
-  9. libffi
-  10. libudev-zero
-  11. m4
-  12. mtdev
-  13. ncurses
-  14. pcre2
-  15. pkgconf
-  16. veron-system
-  17. xz
-  18. zlib
-  19. autoconf
-  20. dhcpcd
-  21. elfutils
-  22. libnl
-  23. libpng
-  24. libtool
-  25. readline
-  26. zstd
-  27. automake
-  28. bash
-  29. curl
-  30. freetype-bootstrap
-  31. iproute2
-  32. libarchive
-  33. libxml2
-  34. sqlite
-  35. wpa_supplicant
-  36. git
-  37. python
-  38. markupsafe
-  39. meson
-  40. ninja
-  41. packaging
-  42. pyyaml
-  43. cmake
-  44. fribidi
-  45. glib
-  46. libdisplay-info
-  47. libdrm
-  48. libevdev
-  49. libsfdo
-  50. libxkbcommon
-  51. mako
-  52. pixman
-  53. seatd
-  54. wayland
-  55. wayland-protocols
-  56. xkeyboard-config
-  57. graphite2
-  58. libinput
-  59. libjpeg-turbo
-  60. llvm
-  61. harfbuzz
-  62. libwebp
-  63. mesa
-  64. freetype
-  65. wlroots
-  66. fontconfig
-  67. cairo
-  68. pango
-  69. labwc
+  2. dejavu-fonts
+  3. dinit
+  4. expat
+  5. file
+  6. gperf
+  7. hello
+  8. hwdata
+  9. icu
+  10. libffi
+  11. libudev-zero
+  12. m4
+  13. mtdev
+  14. ncurses
+  15. pcre2
+  16. pkgconf
+  17. scdoc
+  18. unifdef
+  19. veron-system
+  20. xz
+  21. zlib
+  22. alsa-lib
+  23. autoconf
+  24. dhcpcd
+  25. dosfstools
+  26. elfutils
+  27. gmp
+  28. lcms2
+  29. libcap
+  30. libgpg-error
+  31. libidn2
+  32. libnl
+  33. libogg
+  34. libpng
+  35. libtasn1
+  36. libtool
+  37. libvpx
+  38. libyaml
+  39. nghttp2
+  40. readline
+  41. tzdb
+  42. zstd
+  43. automake
+  44. bash
+  45. curl
+  46. freetype-bootstrap
+  47. iproute2
+  48. libarchive
+  49. libgcrypt
+  50. libvorbis
+  51. libxml2
+  52. nettle
+  53. nnn
+  54. sqlite
+  55. wpa_supplicant
+  56. git
+  57. libhyphen
+  58. python
+  59. ca-certificates
+  60. markupsafe
+  61. meson
+  62. ninja
+  63. packaging
+  64. pyyaml
+  65. bubblewrap
+  66. cmake
+  67. dav1d
+  68. fribidi
+  69. glib
+  70. libdisplay-info
+  71. libdrm
+  72. libevdev
+  73. libpsl
+  74. libsfdo
+  75. libxkbcommon
+  76. mako
+  77. opus
+  78. orc
+  79. p11-kit
+  80. pixman
+  81. seatd
+  82. tllist
+  83. wayland
+  84. wayland-protocols
+  85. xkeyboard-config
+  86. brotli
+  87. gnutls
+  88. graphene
+  89. graphite2
+  90. json-c
+  91. libinput
+  92. libjpeg-turbo
+  93. llvm
+  94. utf8proc
+  95. glib-networking
+  96. harfbuzz
+  97. libwebp
+  98. mesa
+  99. freetype
+  100. libepoxy
+  101. libsoup
+  102. wlroots
+  103. fontconfig
+  104. cairo
+  105. fcft
+  106. foot
+  107. fuzzel
+  108. pango
+  109. swaybg
+  110. yambar
+  111. labwc
 
 ======================================================================
 package bzip2 1.0.8
@@ -128,6 +170,32 @@ package bzip2 1.0.8
          cwd  dest/bzip2/usr/bin
          SHELL (declared) why=rewriting a set of symlinks in place is a loop over readlink, not an argv
          | for l in *; do [ -L "$l" ] || continue; t=$(readlink "$l"); case "$t" in /*) ln -sf "$(basename "$t")" "$l"; echo "  relinked $l -> $(basename "$t")";; esac; done; ls -l | head -12
+
+======================================================================
+package dejavu-fonts 2.37
+  group        desktop
+  license      Bitstream-Vera
+  recipe-sha   7fbe0f627ecb1a56dc31ac7b1af5863b086fd41b05da418ff854b735c1ffeed0
+
+  source
+    url        https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.tar.bz2
+    sha256     fa9ca4d13871dd122f61258a80d01751d603b4d3ee14095d65453b4e846e17d7
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      fontconfig
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/dejavu-fonts-2.37
+         argv ["tar", "-xf", "dl/dejavu-fonts-ttf-2.37.tar.bz2", "-C", "build/dejavu-fonts-2.37"]
+    [02] install
+         cwd  build/dejavu-fonts-2.37/dejavu-fonts-ttf-2.37
+         argv ["sh", "-c", "mkdir -p \"dest/dejavu-fonts/usr/share/fonts/dejavu\" \"dest/dejavu-fonts/etc/fonts/conf.d\" && cp -a ttf/. \"dest/dejavu-fonts/usr/share/fonts/dejavu/\" && cp -a fontconfig/. \"dest/dejavu-fonts/etc/fonts/conf.d/\""]
 
 ======================================================================
 package dinit 0.22.1
@@ -584,10 +652,68 @@ package pkgconf 3.0.5
          argv ["ln", "-sf", "pkgconf", "dest/pkgconf/usr/bin/pkg-config"]
 
 ======================================================================
+package scdoc 1.11.3
+  group        build-substrate
+  license      MIT
+  recipe-sha   ef33a83fbe6a2db31cc5129d2a32bf316dec85772134fa91b3f9c82325ad1e8d
+
+  source
+    url        https://git.sr.ht/~sircmpwn/scdoc/archive/1.11.3.tar.gz
+    sha256     4c5c6136540384e5455b250f768e7ca11b03fdba1a8efc2341ee0f1111e57612
+    signature  none published -- forge archive, digest is ours
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/scdoc-1.11.3
+         argv ["tar", "-xf", "dl/scdoc-1.11.3.tar.gz", "-C", "build/scdoc-1.11.3"]
+    [02] build
+         cwd  build/scdoc-1.11.3/scdoc-1.11.3
+         argv ["make", "-j1", "PREFIX=/usr"]
+    [03] install
+         cwd  build/scdoc-1.11.3/scdoc-1.11.3
+         argv ["make", "install", "PREFIX=/usr", "DESTDIR=dest/scdoc"]
+
+======================================================================
+package unifdef 2.12
+  group        build-substrate
+  license      BSD-2-Clause
+  recipe-sha   9c1d168fe4598d54fae46694194651ee2e3c8bcfd2a325f810f3f20affafb586
+
+  source
+    url        https://dotat.at/prog/unifdef/unifdef-2.12.tar.xz
+    sha256     fba564a24db7b97ebe9329713ac970627b902e5e9e8b14e19e024eb6e278d10b
+    signature  none -- dotat.at publishes no detached signature
+    correspond none
+
+  deps
+    build        -
+    link         -
+    runtime      -
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/unifdef-2.12
+         argv ["tar", "-xf", "dl/unifdef-2.12.tar.xz", "-C", "build/unifdef-2.12"]
+    [02] build
+         cwd  build/unifdef-2.12/unifdef-2.12
+         argv ["make", "-j1", "prefix=/usr"]
+    [03] install
+         cwd  build/unifdef-2.12/unifdef-2.12
+         argv ["make", "install", "prefix=/usr", "DESTDIR=dest/unifdef"]
+
+======================================================================
 package veron-system 0.1.0
   group        system
   license      MIT
-  recipe-sha   bdf392db6cbcf5e49070f3a37ae1446da43f5b761d849cfa97635d4ab9e77227
+  recipe-sha   1498999b18de8f82f9bc7c654324211d8a036f965722c845c0f88a2789d35b1d
 
   source
     url        this repository
@@ -671,6 +797,38 @@ package zlib 1.3.2
          argv ["make", "DESTDIR=dest/zlib", "install"]
 
 ======================================================================
+package alsa-lib 1.2.14
+  group        media
+  license      LGPL-2.1-or-later
+  recipe-sha   ef824d48a77a50add2334d527f79e9b116b05ba244c6a3ca7495a701c690f734
+
+  source
+    url        https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.14.tar.bz2
+    sha256     be9c88a0b3604367dd74167a2b754a35e142f670292ae47a2fdef27a2ee97a32
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        pkgconf
+    link         -
+    runtime      -
+    optional_off hwdep, python, rawmidi, seq, topology, ucm
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/alsa-lib-1.2.14
+         argv ["tar", "-xf", "dl/alsa-lib-1.2.14.tar.bz2", "-C", "build/alsa-lib-1.2.14"]
+    [02] configure
+         cwd  build/alsa-lib-1.2.14/alsa-lib-1.2.14
+         argv ["./configure", "--prefix=/usr", "--disable-python", "--disable-rawmidi", "--disable-seq", "--disable-topology", "--disable-ucm"]
+    [03] build
+         cwd  build/alsa-lib-1.2.14/alsa-lib-1.2.14
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/alsa-lib-1.2.14/alsa-lib-1.2.14
+         argv ["make", "install", "DESTDIR=dest/alsa-lib"]
+
+======================================================================
 package autoconf 2.73
   group        build-substrate
   license      GPL-2.0-or-later
@@ -735,6 +893,38 @@ package dhcpcd 10.2.4
          argv ["make", "install", "DESTDIR=dest/dhcpcd"]
 
 ======================================================================
+package dosfstools 4.2
+  group        system
+  license      GPL-3.0-or-later
+  recipe-sha   ced96c9fb2b37cc6dbd9adfef0116748082ff386878bcee7011e1e4463ad60e8
+
+  source
+    url        https://github.com/dosfstools/dosfstools/releases/download/v4.2/dosfstools-4.2.tar.gz
+    sha256     64926eebf90092dca21b14259a5301b7b98e7b1943e8a201c7d726084809b527
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        pkgconf
+    link         -
+    runtime      -
+    optional_off atari-check, compat-symlinks, iconv
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/dosfstools-4.2
+         argv ["tar", "-xf", "dl/dosfstools-4.2.tar.gz", "-C", "build/dosfstools-4.2"]
+    [02] configure
+         cwd  build/dosfstools-4.2/dosfstools-4.2
+         argv ["./configure", "--prefix=/usr", "--sbindir=/usr/sbin", "--disable-rpath"]
+    [03] build
+         cwd  build/dosfstools-4.2/dosfstools-4.2
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/dosfstools-4.2/dosfstools-4.2
+         argv ["make", "install", "DESTDIR=dest/dosfstools"]
+
+======================================================================
 package elfutils 0.192
   group        graphics-substrate
   license      GPL-3.0-or-later AND LGPL-3.0-or-later
@@ -766,6 +956,163 @@ package elfutils 0.192
          cwd  build/elfutils-0.192/elfutils-0.192
          env  DESTDIR=dest/elfutils
          argv ["make", "install"]
+
+======================================================================
+package gmp 6.3.0
+  group        tls
+  license      LGPL-3.0-or-later OR GPL-2.0-or-later
+  recipe-sha   9cc1a06d1f06e46cc99bd42151a352f132ad356296e5d23f37bd93674aaeabf2
+
+  source
+    url        https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
+    sha256     a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898
+    signature  https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz.sig
+    correspond none
+
+  deps
+    build        m4, pkgconf
+    link         -
+    runtime      -
+    optional_off cxx, fat, static
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/gmp-6.3.0
+         argv ["tar", "-xf", "dl/gmp-6.3.0.tar.xz", "-C", "build/gmp-6.3.0"]
+    [02] configure
+         cwd  build/gmp-6.3.0/gmp-6.3.0
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--enable-cxx=no", "--build=aarch64-unknown-linux-gnu", "--host=aarch64-unknown-linux-gnu"]
+    [03] build
+         cwd  build/gmp-6.3.0/gmp-6.3.0
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/gmp-6.3.0/gmp-6.3.0
+         argv ["make", "install", "DESTDIR=dest/gmp"]
+
+======================================================================
+package lcms2 2.19.1
+  group        browser-substrate
+  license      MIT
+  recipe-sha   f4fdf136a4a46a692ced1f733f6c90e8f6b66c5d359d7e0b394a49a6d60a93b4
+
+  source
+    url        https://github.com/mm2/Little-CMS/releases/download/lcms2.19.1/lcms2-2.19.1.tar.gz
+    sha256     bfc54f7bab59fbc921012014a8032e4cba4abd46db47d46b76416a8c0b2815c8
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        pkgconf, zlib
+    link         zlib
+    runtime      zlib
+    optional_off fastfloat, jpeg, static, threaded, tiff
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/lcms2-2.19.1
+         argv ["tar", "-xf", "dl/lcms2-2.19.1.tar.gz", "-C", "build/lcms2-2.19.1"]
+    [02] configure
+         cwd  build/lcms2-2.19.1/lcms2-2.19.1
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--without-jpeg", "--without-tiff"]
+    [03] build
+         cwd  build/lcms2-2.19.1/lcms2-2.19.1
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/lcms2-2.19.1/lcms2-2.19.1
+         argv ["make", "install", "DESTDIR=dest/lcms2"]
+
+======================================================================
+package libcap 2.76
+  group        browser-substrate
+  license      BSD-3-Clause OR GPL-2.0-only
+  recipe-sha   cf4f83c662f04a5b96b1ed6a0968f9021909146340b22f0ce844c4a7c76b88a9
+
+  source
+    url        https://git.kernel.org/pub/scm/libs/libcap/libcap.git/snapshot/libcap-2.76.tar.gz
+    sha256     f6662862cb2727dcdbcd52a19c239eecb9d29c285c3768e9fb557cb027322034
+    signature  none -- kernel.org cgit snapshots publish no detached signature
+    correspond none
+
+  deps
+    build        pkgconf
+    link         -
+    runtime      -
+    optional_off golang, kdebug, pam_cap
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libcap-2.76
+         argv ["tar", "-xf", "dl/libcap-2.76.tar.gz", "-C", "build/libcap-2.76"]
+    [02] build
+         cwd  build/libcap-2.76/libcap-2.76
+         argv ["make", "-j1", "prefix=/usr", "lib=lib", "SHARED=yes", "GOLANG=no", "PAM_CAP=no"]
+    [03] install
+         cwd  build/libcap-2.76/libcap-2.76
+         argv ["make", "install", "prefix=/usr", "lib=lib", "SHARED=yes", "GOLANG=no", "PAM_CAP=no", "DESTDIR=dest/libcap"]
+
+======================================================================
+package libgpg-error 1.56
+  group        tls
+  license      LGPL-2.1-or-later
+  recipe-sha   ba694f9ee406f663f87c3a3aa2833cafb9047141542261b372935a1c0f6af637
+
+  source
+    url        https://www.gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.56.tar.bz2
+    sha256     82c3d2deb4ad96ad3925d6f9f124fe7205716055ab50e291116ef27975d169c0
+    signature  https://www.gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.56.tar.bz2.sig
+    correspond none
+
+  deps
+    build        pkgconf
+    link         -
+    runtime      -
+    optional_off doc, nls, static, tests, werror
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libgpg-error-1.56
+         argv ["tar", "-xf", "dl/libgpg-error-1.56.tar.bz2", "-C", "build/libgpg-error-1.56"]
+    [02] configure
+         cwd  build/libgpg-error-1.56/libgpg-error-1.56
+         argv ["./configure", "--prefix=/usr", "--disable-nls", "--disable-rpath", "--enable-threads=posix"]
+    [03] build
+         cwd  build/libgpg-error-1.56/libgpg-error-1.56
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/libgpg-error-1.56/libgpg-error-1.56
+         argv ["make", "install", "DESTDIR=dest/libgpg-error"]
+
+======================================================================
+package libidn2 2.3.8
+  group        tls
+  license      GPL-2.0-or-later OR LGPL-3.0-or-later
+  recipe-sha   887503d14316cc5c171cf729cd50fe22ec9c6bacf1def7ad946e7d24f822f877
+
+  source
+    url        https://ftp.gnu.org/gnu/libidn/libidn2-2.3.8.tar.gz
+    sha256     f557911bf6171621e1f72ff35f5b1825bb35b52ed45325dcdee931e5d3c0787a
+    signature  https://ftp.gnu.org/gnu/libidn/libidn2-2.3.8.tar.gz.sig
+    correspond none
+
+  deps
+    build        pkgconf
+    link         -
+    runtime      -
+    optional_off doc, gtk-doc, nls, static, valgrind-tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libidn2-2.3.8
+         argv ["tar", "-xf", "dl/libidn2-2.3.8.tar.gz", "-C", "build/libidn2-2.3.8"]
+    [02] configure
+         cwd  build/libidn2-2.3.8/libidn2-2.3.8
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--disable-nls", "--disable-rpath", "--disable-gtk-doc", "--disable-valgrind-tests"]
+    [03] build
+         cwd  build/libidn2-2.3.8/libidn2-2.3.8
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/libidn2-2.3.8/libidn2-2.3.8
+         argv ["make", "install", "DESTDIR=dest/libidn2"]
 
 ======================================================================
 package libnl 3.12.0
@@ -800,6 +1147,38 @@ package libnl 3.12.0
          argv ["make", "install", "DESTDIR=dest/libnl"]
 
 ======================================================================
+package libogg 1.3.6
+  group        media
+  license      BSD-3-Clause
+  recipe-sha   870927ce195e6ca8ae0c79c54b7219a4b34ff9f0ccd227b2a37ec93ec9beca18
+
+  source
+    url        https://downloads.xiph.org/releases/ogg/libogg-1.3.6.tar.xz
+    sha256     5c8253428e181840cd20d41f3ca16557a9cc04bad4a3d04cce84808677fa1061
+    signature  none -- downloads.xiph.org publishes no detached signature
+    correspond none
+
+  deps
+    build        pkgconf
+    link         -
+    runtime      -
+    optional_off docs, static
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libogg-1.3.6
+         argv ["tar", "-xf", "dl/libogg-1.3.6.tar.xz", "-C", "build/libogg-1.3.6"]
+    [02] configure
+         cwd  build/libogg-1.3.6/libogg-1.3.6
+         argv ["./configure", "--prefix=/usr", "--disable-static"]
+    [03] build
+         cwd  build/libogg-1.3.6/libogg-1.3.6
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/libogg-1.3.6/libogg-1.3.6
+         argv ["make", "install", "DESTDIR=dest/libogg"]
+
+======================================================================
 package libpng 1.6.55
   group        text-rendering
   license      libpng-2.0
@@ -830,6 +1209,38 @@ package libpng 1.6.55
     [04] install
          cwd  build/libpng-1.6.55/libpng-1.6.55
          argv ["make", "DESTDIR=dest/libpng", "install"]
+
+======================================================================
+package libtasn1 4.21.0
+  group        tls
+  license      LGPL-2.1-or-later
+  recipe-sha   382a92afd11a3766ff8b8f5a1c549d8a05ac833af09e35d73b7f698a5a5b248e
+
+  source
+    url        https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.21.0.tar.gz
+    sha256     1d8a444a223cc5464240777346e125de51d8e6abf0b8bac742ac84609167dc87
+    signature  https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.21.0.tar.gz.sig
+    correspond none
+
+  deps
+    build        pkgconf
+    link         -
+    runtime      -
+    optional_off doc, gtk-doc, static, valgrind-tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libtasn1-4.21.0
+         argv ["tar", "-xf", "dl/libtasn1-4.21.0.tar.gz", "-C", "build/libtasn1-4.21.0"]
+    [02] configure
+         cwd  build/libtasn1-4.21.0/libtasn1-4.21.0
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--disable-doc"]
+    [03] build
+         cwd  build/libtasn1-4.21.0/libtasn1-4.21.0
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/libtasn1-4.21.0/libtasn1-4.21.0
+         argv ["make", "install", "DESTDIR=dest/libtasn1"]
 
 ======================================================================
 package libtool 2.6.2
@@ -864,6 +1275,112 @@ package libtool 2.6.2
          argv ["make", "DESTDIR=dest/libtool", "install"]
 
 ======================================================================
+package libvpx 1.16.0
+  group        media
+  license      BSD-3-Clause
+  recipe-sha   7561dfa9ef2ff826dc63e675bdb7a44ff3f122e8563080779ce7d8d8b98d01ae
+
+  source
+    url        https://github.com/webmproject/libvpx/archive/v1.16.0/libvpx-1.16.0.tar.gz
+    sha256     7a479a3c66b9f5d5542a4c6a1b7d3768a983b1e5c14c60a9396edc9b649e015c
+    signature  none published -- GitHub archive, digest is ours
+    correspond none
+
+  deps
+    build        pkgconf
+    link         -
+    runtime      -
+    optional_off docs, examples, tools, unit-tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libvpx-1.16.0
+         argv ["tar", "-xf", "dl/libvpx-1.16.0.tar.gz", "-C", "build/libvpx-1.16.0"]
+    [02] fix-install-mode
+         cwd  build/libvpx-1.16.0/libvpx-1.16.0
+         SHELL (declared) why=libvpx's install rules use `cp -p`, which preserves the SOURCE file's ownership
+and permissions rather than applying the install target's. BLFS carries this
+same sed and explains it as correcting "the ownership and permissions of
+installed files". It matters more here than there: every path in the image is
+recorded in files.tsv with its mode, and a library whose permissions came from
+whatever the tarball happened to carry is a mode nobody chose.
+
+         | sed -i 's/cp -p/cp/' build/make/Makefile
+    [03] configure
+         cwd  build/libvpx-1.16.0/libvpx-1.16.0
+         argv ["sh", "-c", "mkdir -p _b && cd _b && ../configure --prefix=/usr --enable-shared --disable-static --disable-examples --disable-tools --disable-docs --enable-vp8 --enable-vp9 --enable-pic"]
+    [04] build
+         cwd  build/libvpx-1.16.0/libvpx-1.16.0
+         argv ["make", "-C", "_b", "-j1"]
+    [05] install
+         cwd  build/libvpx-1.16.0/libvpx-1.16.0
+         argv ["make", "-C", "_b", "install", "DESTDIR=dest/libvpx"]
+
+======================================================================
+package libyaml 0.2.5
+  group        desktop
+  license      MIT
+  recipe-sha   9f38970aa31c11a0fc3f0ba5f2ea3d8202b376ccc7008310dfad990bf37d25aa
+
+  source
+    url        https://github.com/yaml/libyaml/releases/download/0.2.5/yaml-0.2.5.tar.gz
+    sha256     c642ae9b75fee120b2d96c712538bd2cf283228d2337df2cf2988e3c02678ef4
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        pkgconf
+    link         -
+    runtime      -
+    optional_off static
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libyaml-0.2.5
+         argv ["tar", "-xf", "dl/yaml-0.2.5.tar.gz", "-C", "build/libyaml-0.2.5"]
+    [02] configure
+         cwd  build/libyaml-0.2.5/yaml-0.2.5
+         argv ["./configure", "--prefix=/usr", "--disable-static"]
+    [03] build
+         cwd  build/libyaml-0.2.5/yaml-0.2.5
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/libyaml-0.2.5/yaml-0.2.5
+         argv ["make", "install", "DESTDIR=dest/libyaml"]
+
+======================================================================
+package nghttp2 1.68.0
+  group        browser-substrate
+  license      MIT
+  recipe-sha   f29460f025ee76ebac812328ab85f056520d50bf327c472545974bf1bf0f350e
+
+  source
+    url        https://github.com/nghttp2/nghttp2/releases/download/v1.68.0/nghttp2-1.68.0.tar.xz
+    sha256     5511d3128850e01b5b26ec92bf39df15381c767a63441438b25ad6235def902c
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        pkgconf
+    link         -
+    runtime      -
+    optional_off app, examples, failmalloc, hpack-tools, python-bindings, static
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/nghttp2-1.68.0
+         argv ["tar", "-xf", "dl/nghttp2-1.68.0.tar.xz", "-C", "build/nghttp2-1.68.0"]
+    [02] configure
+         cwd  build/nghttp2-1.68.0/nghttp2-1.68.0
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--enable-lib-only"]
+    [03] build
+         cwd  build/nghttp2-1.68.0/nghttp2-1.68.0
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/nghttp2-1.68.0/nghttp2-1.68.0
+         argv ["make", "install", "DESTDIR=dest/nghttp2"]
+
+======================================================================
 package readline 8.3
   group        build-substrate
   license      GPL-3.0-or-later
@@ -894,6 +1411,35 @@ package readline 8.3
     [04] install
          cwd  build/readline-8.3/readline-8.3
          argv ["make", "DESTDIR=dest/readline", "SHLIB_LIBS=-lncursesw", "install"]
+
+======================================================================
+package tzdb 2026c
+  group        system
+  license      LicenseRef-Public-Domain
+  recipe-sha   0c8d260f01a6c2e94752546affca66a5ba66d3f24d6c1372427662be82197248
+
+  source
+    url        https://www.iana.org/time-zones/repository/releases/tzdb-2026c.tar.lz
+    sha256     427a11b1c5f2ebccad18f11650221c4f0465b4f1bb7f44dd02ff192d2808d944
+    signature  none -- IANA publishes .asc signatures beside the releases; not yet pinned here
+    correspond none
+
+  deps
+    build        xz
+    link         -
+    runtime      -
+    optional_off right_only, slim
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/tzdb-2026c
+         argv ["tar", "--use-compress-program=xz -dc", "-xf", "dl/tzdb-2026c.tar.lz", "-C", "build/tzdb-2026c"]
+    [02] build
+         cwd  build/tzdb-2026c/tzdb-2026c
+         argv ["make", "-j1", "TOPDIR=/usr", "LOCALTIME=UTC", "REDO=posix_only"]
+    [03] install
+         cwd  build/tzdb-2026c/tzdb-2026c
+         argv ["make", "install", "TOPDIR=/usr", "LOCALTIME=UTC", "REDO=posix_only", "DESTDIR=dest/tzdb"]
 
 ======================================================================
 package zstd 1.5.7
@@ -1122,6 +1668,70 @@ package libarchive 3.8.5
          argv ["make", "DESTDIR=dest/libarchive", "install"]
 
 ======================================================================
+package libgcrypt 1.11.3
+  group        tls
+  license      LGPL-2.1-or-later
+  recipe-sha   54d36f28ce270e69f0f4847b79f0954a9d319dd56c0f16fdb2aede254b11109a
+
+  source
+    url        https://www.gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.3.tar.bz2
+    sha256     2c6d562e894b2b06eefbc427d12d51ee9d3e50e90012ad6596b4cb3e421a95f2
+    signature  https://www.gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.3.tar.bz2.sig
+    correspond none
+
+  deps
+    build        libgpg-error, pkgconf
+    link         libgpg-error
+    runtime      libgpg-error
+    optional_off aesni, doc, padlock, static, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libgcrypt-1.11.3
+         argv ["tar", "-xf", "dl/libgcrypt-1.11.3.tar.bz2", "-C", "build/libgcrypt-1.11.3"]
+    [02] configure
+         cwd  build/libgcrypt-1.11.3/libgcrypt-1.11.3
+         argv ["./configure", "--prefix=/usr", "--disable-rpath", "--disable-doc", "--disable-padlock-support", "--disable-aesni-support"]
+    [03] build
+         cwd  build/libgcrypt-1.11.3/libgcrypt-1.11.3
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/libgcrypt-1.11.3/libgcrypt-1.11.3
+         argv ["make", "install", "DESTDIR=dest/libgcrypt"]
+
+======================================================================
+package libvorbis 1.3.7
+  group        media
+  license      BSD-3-Clause
+  recipe-sha   326e2d13213a08a21612dbcd74780d300c075ad3223dae743bd08deccaa653c3
+
+  source
+    url        https://downloads.xiph.org/releases/vorbis/libvorbis-1.3.7.tar.xz
+    sha256     b33cc4934322bcbf6efcbacf49e3ca01aadbea4114ec9589d1b1e9d20f72954b
+    signature  none -- downloads.xiph.org publishes no detached signature
+    correspond none
+
+  deps
+    build        libogg, pkgconf
+    link         libogg
+    runtime      libogg
+    optional_off static
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libvorbis-1.3.7
+         argv ["tar", "-xf", "dl/libvorbis-1.3.7.tar.xz", "-C", "build/libvorbis-1.3.7"]
+    [02] configure
+         cwd  build/libvorbis-1.3.7/libvorbis-1.3.7
+         argv ["./configure", "--prefix=/usr", "--disable-static"]
+    [03] build
+         cwd  build/libvorbis-1.3.7/libvorbis-1.3.7
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/libvorbis-1.3.7/libvorbis-1.3.7
+         argv ["make", "install", "DESTDIR=dest/libvorbis"]
+
+======================================================================
 package libxml2 2.15.1
   group        build-substrate
   license      MIT
@@ -1152,6 +1762,67 @@ package libxml2 2.15.1
     [04] install
          cwd  build/libxml2-2.15.1/libxml2-2.15.1
          argv ["make", "DESTDIR=dest/libxml2", "install"]
+
+======================================================================
+package nettle 3.10.2
+  group        tls
+  license      LGPL-3.0-or-later OR GPL-2.0-or-later
+  recipe-sha   61c17e1e6333192c44fc0e81d65f9073d6a6c3f6da825990cb7b1e5d2d9f00d8
+
+  source
+    url        https://ftp.gnu.org/gnu/nettle/nettle-3.10.2.tar.gz
+    sha256     fe9ff51cb1f2abb5e65a6b8c10a92da0ab5ab6eaf26e7fc2b675c45f1fb519b5
+    signature  https://ftp.gnu.org/gnu/nettle/nettle-3.10.2.tar.gz.sig
+    correspond none
+
+  deps
+    build        gmp, m4, pkgconf
+    link         gmp
+    runtime      gmp
+    optional_off documentation, fat, gcov, openssl, static
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/nettle-3.10.2
+         argv ["tar", "-xf", "dl/nettle-3.10.2.tar.gz", "-C", "build/nettle-3.10.2"]
+    [02] configure
+         cwd  build/nettle-3.10.2/nettle-3.10.2
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--disable-documentation", "--disable-openssl", "--disable-fat", "--enable-arm-neon"]
+    [03] build
+         cwd  build/nettle-3.10.2/nettle-3.10.2
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/nettle-3.10.2/nettle-3.10.2
+         argv ["make", "install", "DESTDIR=dest/nettle"]
+
+======================================================================
+package nnn 5.2
+  group        desktop
+  license      BSD-2-Clause
+  recipe-sha   09af326294074ccda4d11e74edac43835ba930d429197a7cb9393b55c52227f6
+
+  source
+    url        https://github.com/jarun/nnn/archive/refs/tags/v5.2.tar.gz
+    sha256     cb31dd220f74d15744e3fcbf402a99a426301b207babc6ffe7a6e33a06b1bd0c
+    signature  none published -- GitHub archive, digest is ours
+    correspond none
+
+  deps
+    build        ncurses, pkgconf, readline
+    link         ncurses, readline
+    runtime      ncurses, readline
+    optional_off bench, emoji, icons, nerd, pcre2, qsort, x11
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/nnn-5.2
+         argv ["tar", "-xf", "dl/nnn-v5.2.tar.gz", "-C", "build/nnn-5.2"]
+    [02] build
+         cwd  build/nnn-5.2/nnn-5.2
+         argv ["make", "-j1", "PREFIX=/usr", "O_NOX11=1"]
+    [03] install
+         cwd  build/nnn-5.2/nnn-5.2
+         argv ["make", "install", "PREFIX=/usr", "O_NOX11=1", "DESTDIR=dest/nnn"]
 
 ======================================================================
 package sqlite 3.53.4
@@ -1276,6 +1947,45 @@ package git 2.53.0
          argv ["make", "DESTDIR=dest/git", "NO_PERL=1", "NO_PYTHON=1", "NO_GETTEXT=1", "install"]
 
 ======================================================================
+package libhyphen 2.8.9
+  group        browser-substrate
+  license      GPL-2.0-or-later OR LGPL-2.1-or-later OR MPL-1.1
+  recipe-sha   22fc5b359ca6ffa004b7550afd8dfe9c4595f17d46bffeee0ffbecd5bd137f0a
+
+  source
+    url        https://github.com/hunspell/hyphen/archive/refs/tags/v2.8.9.tar.gz
+    sha256     d6fc75d8500094903b119a45667fed91fe665e5f6f106029a4d3b4e26f3d8d6f
+    signature  none published -- GitHub archive, digest is ours
+    correspond none
+
+  deps
+    build        autoconf, automake, libtool, pkgconf
+    link         -
+    runtime      -
+    optional_off perl-bindings, static
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libhyphen-2.8.9
+         argv ["tar", "-xf", "dl/hyphen-v2.8.9.tar.gz", "-C", "build/libhyphen-2.8.9"]
+    [02] autoreconf
+         cwd  build/libhyphen-2.8.9/hyphen-2.8.9
+         SHELL (declared) why=The GitHub archive ships configure.ac and Makefile.am with no generated
+configure. autoconf, automake and libtool are in this set, and hyphen vendors
+no gnulib, so this is a local regeneration with no network and no fetch.
+
+         | autoreconf -fi
+    [03] configure
+         cwd  build/libhyphen-2.8.9/hyphen-2.8.9
+         argv ["./configure", "--prefix=/usr", "--disable-static"]
+    [04] build
+         cwd  build/libhyphen-2.8.9/hyphen-2.8.9
+         argv ["make", "-j1"]
+    [05] install
+         cwd  build/libhyphen-2.8.9/hyphen-2.8.9
+         argv ["make", "install", "DESTDIR=dest/libhyphen"]
+
+======================================================================
 package python 3.14.6
   group        build-substrate
   license      PSF-2.0
@@ -1314,6 +2024,86 @@ package python 3.14.6
          cwd  build/python-3.14.6/Python-3.14.6
          SHELL (declared) why=importing a list of modules and reporting which failed is a loop
          | set -eu; PYBIN=dest/python/usr/bin/python3.14; PYLIB=dest/python/usr/lib; echo "interpreter: $PYBIN"; fail=0; for m in zlib bz2 lzma ctypes readline curses pyexpat; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  MISSING  $m"; fail=1; fi; done; for m in compression.zstd; do if LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null; then echo "  ok   $m"; else echo "  absent   $m (3.14 feature, not fatal)"; fi; done; echo; echo '--- known-absent until their packages exist ---'; for m in sqlite3 ssl; do LD_LIBRARY_PATH=$PYLIB PYTHONHOME=dest/python/usr "$PYBIN" -c "import $m" 2>/dev/null && echo "  ok   $m (unexpected -- update optional_off)" || echo "  absent   $m (expected)"; done; [ "$fail" = 0 ] || { echo; echo 'A module this package exists to provide is missing.'; exit 1; }
+
+======================================================================
+package ca-certificates 3.126
+  group        tls
+  license      MPL-2.0
+  recipe-sha   22858626dbff64674fe82932726ab9bd49e2f9814a6d909edc681fa451a09b04
+
+  source
+    url        https://archive.mozilla.org/pub/security/nss/releases/NSS_3_126_RTM/src/nss-3.126.tar.gz
+    sha256     7aa07c758be1453d82d739240b249ffb7aef0041be488067e1c0f348e1f9e337
+    signature  none -- archive.mozilla.org publishes no detached signature
+    correspond none
+
+  deps
+    build        python
+    link         -
+    runtime      -
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/ca-certificates-3.126
+         argv ["tar", "-xf", "dl/nss-3.126.tar.gz", "-C", "build/ca-certificates-3.126"]
+    [02] install
+         cwd  build/ca-certificates-3.126/nss-3.126
+         SHELL (declared) why=The conversion is inlined rather than shipped as files/certdata2pem.py because
+a step cannot reference the recipe's own files/ directory portably: the build
+runs with cwd=$S, so a relative path does not resolve, and an absolute one puts
+a build-machine home directory into PLAN.txt and breaks `plan --check`
+elsewhere -- the same trap apply_patches documents for $P, and the selftest
+rejected an earlier draft of this very comment for naming such a path
+literally. Inlining makes the plan carry the converter verbatim, which is the
+stronger outcome anyway: the code deciding which 121 roots the system trusts
+sits in the committed plan rather than beside it.
+
+         | set -eu
+         | mkdir -p "dest/ca-certificates/etc/ssl/certs"
+         | python3 - nss/lib/ckfw/builtins/certdata.txt "dest/ca-certificates/etc/ssl/certs/ca-certificates.crt" <<'CERTDATA2PEM'
+         | import base64, re, sys
+         | 
+         | src, dst = sys.argv[1], sys.argv[2]
+         | text = open(src, encoding="utf-8", errors="replace").read()
+         | 
+         | # Records begin with CKA_CLASS. The DER and the trust decision are SEPARATE
+         | # objects joined by CKA_LABEL -- see the deferral for why conflating them
+         | # ships roots Mozilla has distrusted.
+         | certs, trusted = {}, set()
+         | for b in re.split(r"\n(?=CKA_CLASS )", text):
+         |     m = re.search(r'CKA_LABEL UTF8 "([^"]*)"', b)
+         |     if not m:
+         |         continue
+         |     name = m.group(1)
+         |     if "CKO_CERTIFICATE" in b:
+         |         v = re.search(r"CKA_VALUE MULTILINE_OCTAL\n(.*?)\nEND", b, re.S)
+         |         if v:
+         |             certs[name] = bytes(int(o, 8)
+         |                                 for o in re.findall(r"\\([0-7]{3})", v.group(1)))
+         |     elif "CKO_NSS_TRUST" in b:
+         |         # SERVER AUTH ONLY. A root trusted for e-mail or code signing is not
+         |         # one a browser may accept for TLS.
+         |         tr = re.search(r"CKA_TRUST_SERVER_AUTH CK_TRUST (\w+)", b)
+         |         if tr and tr.group(1) == "CKT_NSS_TRUSTED_DELEGATOR":
+         |             trusted.add(name)
+         | 
+         | # SORTED so the bundle is byte-identical between runs.
+         | keep = sorted(n for n in certs if n in trusted)
+         | if not keep:
+         |     sys.exit("certdata2pem: no trusted roots -- refusing to write an empty bundle")
+         | 
+         | # UTF-8, not ASCII: the comment carries upstream's CA name and at least one
+         | # contains a Hungarian o-double-acute. The certificate data itself is base64.
+         | with open(dst, "w", encoding="utf-8") as out:
+         |     for n in keep:
+         |         b64 = base64.standard_b64encode(certs[n]).decode("ascii")
+         |         body = "\n".join(b64[k:k + 64] for k in range(0, len(b64), 64))
+         |         out.write("# %s\n-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n"
+         |                   % (n, body))
+         | sys.stderr.write("certdata2pem: %d certificate(s), %d trusted for TLS server auth, %d written\n"
+         |                  % (len(certs), len(trusted), len(keep)))
+         | CERTDATA2PEM
 
 ======================================================================
 package markupsafe 3.0.3
@@ -1470,6 +2260,40 @@ package pyyaml 6.0.3
          | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); PYTHONPATH="dest/pyyaml$SITE" python3 -c 'import yaml; print("  yaml from", yaml.__file__, yaml.__version__); print("  with_libyaml:", yaml.__with_libyaml__)'; PYTHONPATH="dest/pyyaml$SITE" python3 -c 'import yaml; print("  parsed:", yaml.safe_load("a: [1, 2]"))'
 
 ======================================================================
+package bubblewrap 0.11.0
+  group        browser-substrate
+  license      LGPL-2.0-or-later
+  recipe-sha   5e8ea0d581492e289e15dfd816122bc8beb86987148ad7e9605fc67c5a59ac24
+
+  source
+    url        https://github.com/containers/bubblewrap/releases/download/v0.11.0/bubblewrap-0.11.0.tar.xz
+    sha256     988fd6b232dafa04b8b8198723efeaccdb3c6aa9c1c7936219d5791a8b7a8646
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        libcap, meson, ninja, pkgconf, python
+    link         libcap
+    runtime      libcap
+    optional_off bash_completion, man, require_userns, selinux, tests, zsh_completion
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/bubblewrap-0.11.0
+         argv ["tar", "-xf", "dl/bubblewrap-0.11.0.tar.xz", "-C", "build/bubblewrap-0.11.0"]
+    [02] setup
+         cwd  build/bubblewrap-0.11.0/bubblewrap-0.11.0
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dbash_completion=disabled", "-Dzsh_completion=disabled", "-Dman=disabled", "-Dtests=false", "-Dselinux=disabled"]
+    [03] build
+         cwd  build/bubblewrap-0.11.0/bubblewrap-0.11.0
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/bubblewrap-0.11.0/bubblewrap-0.11.0
+         env  DESTDIR=dest/bubblewrap
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package cmake 4.2.3
   group        build-substrate
   license      BSD-3-Clause
@@ -1501,6 +2325,40 @@ package cmake 4.2.3
          cwd  build/cmake-4.2.3/cmake-4.2.3
          env  DESTDIR=dest/cmake
          argv ["ninja", "install"]
+
+======================================================================
+package dav1d 1.5.4
+  group        media
+  license      BSD-2-Clause
+  recipe-sha   3787c941ec7a415e1cc8d847bccf20da181486ca523fc0bfd8cd2cbcbdd03ee8
+
+  source
+    url        https://downloads.videolan.org/pub/videolan/dav1d/1.5.4/dav1d-1.5.4.tar.xz
+    sha256     686616b7c69eb88d44459391ab25cac13b6647a3b288835c5784e71c1514a5c5
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        meson, ninja, pkgconf
+    link         -
+    runtime      -
+    optional_off examples, tests, tools
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/dav1d-1.5.4
+         argv ["tar", "-xf", "dl/dav1d-1.5.4.tar.xz", "-C", "build/dav1d-1.5.4"]
+    [02] setup
+         cwd  build/dav1d-1.5.4/dav1d-1.5.4
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Denable_tools=false", "-Denable_tests=false", "-Denable_examples=false", "-Denable_asm=true"]
+    [03] build
+         cwd  build/dav1d-1.5.4/dav1d-1.5.4
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/dav1d-1.5.4/dav1d-1.5.4
+         env  DESTDIR=dest/dav1d
+         argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
 package fribidi 1.0.16
@@ -1676,6 +2534,40 @@ package libevdev 1.13.4
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package libpsl 0.21.5
+  group        browser-substrate
+  license      MIT
+  recipe-sha   19033b4ab0e34a8292559722ddada3b521851e6c29f36af8e79687e809824b8a
+
+  source
+    url        https://github.com/rockdaboot/libpsl/releases/download/0.21.5/libpsl-0.21.5.tar.gz
+    sha256     1dcc9ceae8b128f3c0b3f654decd0e1e891afc6ff81098f227ef260449dae208
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        icu, meson, ninja, pkgconf, python
+    link         icu
+    runtime      icu
+    optional_off docs, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libpsl-0.21.5
+         argv ["tar", "-xf", "dl/libpsl-0.21.5.tar.gz", "-C", "build/libpsl-0.21.5"]
+    [02] setup
+         cwd  build/libpsl-0.21.5/libpsl-0.21.5
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Druntime=libicu", "-Dbuiltin=true", "-Ddocs=false", "-Dtests=false"]
+    [03] build
+         cwd  build/libpsl-0.21.5/libpsl-0.21.5
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/libpsl-0.21.5/libpsl-0.21.5
+         env  DESTDIR=dest/libpsl
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package libsfdo 0.1.4
   group        desktop
   license      BSD-2-Clause
@@ -1779,6 +2671,108 @@ package mako 1.4.0
          | set -eu; SITE=$(python3 -c 'import site; print(site.getsitepackages()[0])'); PYTHONPATH="dest/mako$SITE" python3 -c 'import mako; print("  mako from", mako.__file__, mako.__version__)'; PYTHONPATH="dest/mako$SITE" python3 -c 'from mako.template import Template; print("  rendered:", Template("${n} ok").render(n="mako"))'
 
 ======================================================================
+package opus 1.6.1
+  group        media
+  license      BSD-3-Clause
+  recipe-sha   82b879d41cc2d0d655852ae90d068ad4c6f64cffbe844f7739e444fa5c30971c
+
+  source
+    url        https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz
+    sha256     6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1
+    signature  none -- downloads.xiph.org publishes no detached signature
+    correspond none
+
+  deps
+    build        meson, ninja, pkgconf
+    link         -
+    runtime      -
+    optional_off deep-plc, docs, dred, extra-programs, osce, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/opus-1.6.1
+         argv ["tar", "-xf", "dl/opus-1.6.1.tar.gz", "-C", "build/opus-1.6.1"]
+    [02] setup
+         cwd  build/opus-1.6.1/opus-1.6.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dtests=disabled", "-Ddocs=disabled", "-Dextra-programs=disabled", "-Dintrinsics=enabled", "-Drtcd=enabled"]
+    [03] build
+         cwd  build/opus-1.6.1/opus-1.6.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/opus-1.6.1/opus-1.6.1
+         env  DESTDIR=dest/opus
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package orc 0.4.41
+  group        media
+  license      BSD-2-Clause
+  recipe-sha   6e3e4232ecff519974801d3c2c79c56507f9501334a6530db3090b394038d8cc
+
+  source
+    url        https://gstreamer.freedesktop.org/src/orc/orc-0.4.41.tar.xz
+    sha256     cb1bfd4f655289cd39bc04642d597be9de5427623f0861c1fc19c08d98467fa2
+    signature  none -- gstreamer.freedesktop.org publishes no detached signature
+    correspond none
+
+  deps
+    build        meson, ninja, pkgconf
+    link         -
+    runtime      -
+    optional_off benchmarks, examples, gtk_doc, orc-test, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/orc-0.4.41
+         argv ["tar", "-xf", "dl/orc-0.4.41.tar.xz", "-C", "build/orc-0.4.41"]
+    [02] setup
+         cwd  build/orc-0.4.41/orc-0.4.41
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dorc-test=disabled", "-Dbenchmarks=disabled", "-Dexamples=disabled", "-Dgtk_doc=disabled", "-Dtests=disabled", "-Dtools=enabled", "-Dorc-target=neon"]
+    [03] build
+         cwd  build/orc-0.4.41/orc-0.4.41
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/orc-0.4.41/orc-0.4.41
+         env  DESTDIR=dest/orc
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package p11-kit 0.25.5
+  group        tls
+  license      BSD-3-Clause
+  recipe-sha   ff66d0355a12a48d8a909d47fa8b651b00132668f3c5c2af1919eeb4dc891558
+
+  source
+    url        https://github.com/p11-glue/p11-kit/releases/download/0.25.5/p11-kit-0.25.5.tar.xz
+    sha256     04d0a86450cdb1be018f26af6699857171a188ac6d5b8c90786a60854e1198e5
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        libffi, libtasn1, meson, ninja, pkgconf
+    link         libffi, libtasn1
+    runtime      libffi, libtasn1
+    optional_off bash_completion, doc, gtk_doc, nls, systemd, trust_paths
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/p11-kit-0.25.5
+         argv ["tar", "-xf", "dl/p11-kit-0.25.5.tar.xz", "-C", "build/p11-kit-0.25.5"]
+    [02] setup
+         cwd  build/p11-kit-0.25.5/p11-kit-0.25.5
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dtrust_module=enabled", "-Dhash_impl=internal", "-Dlibffi=enabled", "-Dsystemd=disabled", "-Dbash_completion=disabled", "-Dnls=disabled", "-Dgtk_doc=false"]
+    [03] build
+         cwd  build/p11-kit-0.25.5/p11-kit-0.25.5
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/p11-kit-0.25.5/p11-kit-0.25.5
+         env  DESTDIR=dest/p11-kit
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package pixman 0.46.4
   group        text-rendering
   license      MIT
@@ -1844,6 +2838,37 @@ package seatd 0.9.3
     [04] install
          cwd  build/seatd-0.9.3/seatd-0.9.3
          env  DESTDIR=dest/seatd
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package tllist 1.1.0
+  group        desktop
+  license      MIT
+  recipe-sha   ffb19eb25d5490be193b90bbcf16d94f5335aed84fdd0889f159682313f626e2
+
+  source
+    url        https://codeberg.org/dnkl/tllist/archive/1.1.0.tar.gz
+    sha256     0e7b7094a02550dd80b7243bcffc3671550b0f1d8ba625e4dff52517827d5d23
+    signature  none published -- forge archive, digest is ours
+    correspond none
+
+  deps
+    build        meson, ninja, pkgconf
+    link         -
+    runtime      -
+    optional_off -
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/tllist-1.1.0
+         argv ["tar", "-xf", "dl/tllist-1.1.0.tar.gz", "-C", "build/tllist-1.1.0"]
+    [02] setup
+         cwd  build/tllist-1.1.0/tllist
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback"]
+    [03] install
+         cwd  build/tllist-1.1.0/tllist
+         env  DESTDIR=dest/tllist
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
@@ -1949,6 +2974,105 @@ package xkeyboard-config 2.48
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package brotli 1.1.0
+  group        browser-substrate
+  license      MIT
+  recipe-sha   3b955be928f7e61f57600c8452885ca7a59d1fa0da25c80e0385944922c5a7fd
+
+  source
+    url        https://github.com/google/brotli/archive/v1.1.0/brotli-1.1.0.tar.gz
+    sha256     e720a6ca29428b803f4ad165371771f5398faba397edf6778837a18599ea13ff
+    signature  none published -- GitHub archive, digest is ours
+    correspond none
+
+  deps
+    build        cmake, ninja, pkgconf
+    link         -
+    runtime      -
+    optional_off testing
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/brotli-1.1.0
+         argv ["tar", "-xf", "dl/brotli-1.1.0.tar.gz", "-C", "build/brotli-1.1.0"]
+    [02] configure
+         cwd  build/brotli-1.1.0/brotli-1.1.0
+         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=ON", "-DBROTLI_DISABLE_TESTS=ON"]
+    [03] build
+         cwd  build/brotli-1.1.0/brotli-1.1.0
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/brotli-1.1.0/brotli-1.1.0
+         env  DESTDIR=dest/brotli
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package gnutls 3.8.10
+  group        tls
+  license      LGPL-2.1-or-later
+  recipe-sha   7ef926c75a45cdf1e6c5e1a535b9b94b46e18a0d4eeffa8b5b58ecbef27f1142
+
+  source
+    url        https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.10.tar.xz
+    sha256     db7fab7cce791e7727ebbef2334301c821d79a550ec55c9ef096b610b03eb6b7
+    signature  https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.10.tar.xz.sig
+    correspond none
+
+  deps
+    build        gmp, libtasn1, nettle, p11-kit, pkgconf, zlib
+    link         gmp, libtasn1, nettle, p11-kit, zlib
+    runtime      ca-certificates, gmp, libtasn1, nettle, p11-kit, zlib
+    optional_off doc, idn, included-libtasn1, libdane, static, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/gnutls-3.8.10
+         argv ["tar", "-xf", "dl/gnutls-3.8.10.tar.xz", "-C", "build/gnutls-3.8.10"]
+    [02] configure
+         cwd  build/gnutls-3.8.10/gnutls-3.8.10
+         argv ["./configure", "--prefix=/usr", "--disable-static", "--without-idn", "--with-included-unistring", "--disable-doc", "--disable-tests", "--disable-libdane", "--with-p11-kit", "--with-default-trust-store-file=/etc/ssl/certs/ca-certificates.crt"]
+    [03] build
+         cwd  build/gnutls-3.8.10/gnutls-3.8.10
+         argv ["make", "-j1"]
+    [04] install
+         cwd  build/gnutls-3.8.10/gnutls-3.8.10
+         argv ["make", "install", "DESTDIR=dest/gnutls"]
+
+======================================================================
+package graphene 1.10.8
+  group        browser-substrate
+  license      MIT
+  recipe-sha   eb00e7466644569ac38da5cf2339e487c525bd277ccd8cb76205f79358174175
+
+  source
+    url        https://download.gnome.org/sources/graphene/1.10/graphene-1.10.8.tar.xz
+    sha256     a37bb0e78a419dcbeaa9c7027bcff52f5ec2367c25ec859da31dfde2928f279a
+    signature  none -- download.gnome.org publishes no detached signature
+    correspond none
+
+  deps
+    build        glib, meson, ninja, pkgconf
+    link         glib
+    runtime      glib
+    optional_off gtk_doc, installed_tests, introspection, tests
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/graphene-1.10.8
+         argv ["tar", "-xf", "dl/graphene-1.10.8.tar.xz", "-C", "build/graphene-1.10.8"]
+    [02] setup
+         cwd  build/graphene-1.10.8/graphene-1.10.8
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dgtk_doc=false", "-Dintrospection=disabled", "-Dgobject_types=true", "-Dtests=false", "-Dinstalled_tests=false"]
+    [03] build
+         cwd  build/graphene-1.10.8/graphene-1.10.8
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/graphene-1.10.8/graphene-1.10.8
+         env  DESTDIR=dest/graphene
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package graphite2 1.3.14
   group        text-rendering
   license      LGPL-2.1-or-later
@@ -1982,6 +3106,39 @@ package graphite2 1.3.14
     [04] install
          cwd  build/graphite2-1.3.14/graphite2-1.3.14
          env  DESTDIR=dest/graphite2
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package json-c 0.18
+  group        browser-substrate
+  license      MIT
+  recipe-sha   9750fc11968b4275133c42f04fee5e675be85accd05f796ffd91012728fb51f3
+
+  source
+    url        https://github.com/json-c/json-c/archive/json-c-0.18-20240915/json-c-0.18.tar.gz
+    sha256     3112c1f25d39eca661fe3fc663431e130cc6e2f900c081738317fba49d29e298
+    signature  none published -- GitHub archive, digest is ours
+    correspond none
+
+  deps
+    build        cmake, ninja, pkgconf
+    link         -
+    runtime      -
+    optional_off rdrand, static, tests, threading
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/json-c-0.18
+         argv ["tar", "-xf", "dl/json-c-0.18.tar.gz", "-C", "build/json-c-0.18"]
+    [02] configure
+         cwd  build/json-c-0.18/json-c-json-c-0.18-20240915
+         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=ON", "-DBUILD_STATIC_LIBS=OFF", "-DDISABLE_WERROR=ON", "-DENABLE_RDRAND=OFF", "-DBUILD_TESTING=OFF"]
+    [03] build
+         cwd  build/json-c-0.18/json-c-json-c-0.18-20240915
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/json-c-0.18/json-c-json-c-0.18-20240915
+         env  DESTDIR=dest/json-c
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
@@ -2082,6 +3239,73 @@ package llvm 22.1.8
     [04] install
          cwd  build/llvm-22.1.8/llvm-project-22.1.8.src
          env  DESTDIR=dest/llvm
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package utf8proc 2.11.3
+  group        desktop
+  license      MIT
+  recipe-sha   aae64d660203337fdb1a805dfbdc7a029e3b77005a8eafc657268b0a936a014d
+
+  source
+    url        https://github.com/JuliaStrings/utf8proc/releases/download/v2.11.3/utf8proc-2.11.3.tar.gz
+    sha256     415189fd2c85cd6ee5ff26af500fa387de9ada1e3e316e93f7338551481d557d
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        cmake, ninja, pkgconf
+    link         -
+    runtime      -
+    optional_off testing
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/utf8proc-2.11.3
+         argv ["tar", "-xf", "dl/utf8proc-2.11.3.tar.gz", "-C", "build/utf8proc-2.11.3"]
+    [02] configure
+         cwd  build/utf8proc-2.11.3/utf8proc-2.11.3
+         argv ["cmake", "-S", ".", "-B", "_b", "-G", "Ninja", "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=ON", "-DUTF8PROC_ENABLE_TESTING=OFF", "-DUTF8PROC_INSTALL=ON"]
+    [03] build
+         cwd  build/utf8proc-2.11.3/utf8proc-2.11.3
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/utf8proc-2.11.3/utf8proc-2.11.3
+         env  DESTDIR=dest/utf8proc
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package glib-networking 2.80.1
+  group        browser-substrate
+  license      LGPL-2.1-or-later
+  recipe-sha   314a99a04c64a9f6e914ac3e8902029a8309c832938adcbead82bb58c2741325
+
+  source
+    url        https://download.gnome.org/sources/glib-networking/2.80/glib-networking-2.80.1.tar.xz
+    sha256     b80e2874157cd55071f1b6710fa0b911d5ac5de106a9ee2a4c9c7bee61782f8e
+    signature  none -- download.gnome.org publishes no detached signature
+    correspond none
+
+  deps
+    build        glib, gnutls, meson, ninja, pkgconf
+    link         glib, gnutls
+    runtime      glib, gnutls
+    optional_off environment_proxy, gnome_proxy, installed_tests, libproxy, openssl
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/glib-networking-2.80.1
+         argv ["tar", "-xf", "dl/glib-networking-2.80.1.tar.xz", "-C", "build/glib-networking-2.80.1"]
+    [02] setup
+         cwd  build/glib-networking-2.80.1/glib-networking-2.80.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dgnutls=enabled", "-Dopenssl=disabled", "-Dlibproxy=disabled", "-Dgnome_proxy=disabled", "-Denvironment_proxy=enabled", "-Dinstalled_tests=false"]
+    [03] build
+         cwd  build/glib-networking-2.80.1/glib-networking-2.80.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/glib-networking-2.80.1/glib-networking-2.80.1
+         env  DESTDIR=dest/glib-networking
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
@@ -2217,6 +3441,74 @@ package freetype 2.14.1
          argv ["make", "DESTDIR=dest/freetype", "install"]
 
 ======================================================================
+package libepoxy 1.5.10
+  group        browser-substrate
+  license      MIT
+  recipe-sha   6a676bfd0e3c640957c008e60c13ee9050cf9ef116c366154a8388af7e0f28d9
+
+  source
+    url        https://github.com/anholt/libepoxy/archive/1.5.10/libepoxy-1.5.10.tar.gz
+    sha256     a7ced37f4102b745ac86d6a70a9da399cc139ff168ba6b8002b4d8d43c900c15
+    signature  none published -- GitHub archive, digest is ours
+    correspond none
+
+  deps
+    build        mesa, meson, ninja, pkgconf, python
+    link         mesa
+    runtime      mesa
+    optional_off docs, glx, tests, x11
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libepoxy-1.5.10
+         argv ["tar", "-xf", "dl/libepoxy-1.5.10.tar.gz", "-C", "build/libepoxy-1.5.10"]
+    [02] setup
+         cwd  build/libepoxy-1.5.10/libepoxy-1.5.10
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dx11=false", "-Dglx=no", "-Degl=yes", "-Ddocs=false", "-Dtests=false"]
+    [03] build
+         cwd  build/libepoxy-1.5.10/libepoxy-1.5.10
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/libepoxy-1.5.10/libepoxy-1.5.10
+         env  DESTDIR=dest/libepoxy
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package libsoup 3.6.5
+  group        browser-substrate
+  license      LGPL-2.1-or-later
+  recipe-sha   003f4e2e678f275684b43e5424d7e0a56f611a1c87e3c25fd7f7c551fc51bc13
+
+  source
+    url        https://download.gnome.org/sources/libsoup/3.6/libsoup-3.6.5.tar.xz
+    sha256     6891765aac3e949017945c3eaebd8cc8216df772456dc9f460976fbdb7ada234
+    signature  none -- download.gnome.org publishes no detached signature
+    correspond none
+
+  deps
+    build        brotli, glib, glib-networking, libpsl, meson, nghttp2, ninja, pkgconf, python, sqlite, zlib
+    link         brotli, glib, libpsl, nghttp2, sqlite, zlib
+    runtime      brotli, glib, glib-networking, libpsl, nghttp2, sqlite, zlib
+    optional_off autobahn, doc_tests, docs, fuzzing, gssapi, installed_tests, introspection, ntlm, pkcs11_tests, sysprof, tests, vapi
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/libsoup-3.6.5
+         argv ["tar", "-xf", "dl/libsoup-3.6.5.tar.xz", "-C", "build/libsoup-3.6.5"]
+    [02] setup
+         cwd  build/libsoup-3.6.5/libsoup-3.6.5
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dgssapi=disabled", "-Dntlm=disabled", "-Dbrotli=enabled", "-Dtls_check=true", "-Dintrospection=disabled", "-Dvapi=disabled", "-Ddocs=disabled", "-Dtests=false", "-Dsysprof=disabled", "-Dpkcs11_tests=disabled"]
+    [03] build
+         cwd  build/libsoup-3.6.5/libsoup-3.6.5
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/libsoup-3.6.5/libsoup-3.6.5
+         env  DESTDIR=dest/libsoup
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package wlroots 0.19.1
   group        graphics
   license      MIT
@@ -2323,6 +3615,108 @@ package cairo 1.18.4
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================
+package fcft 3.3.1
+  group        desktop
+  license      MIT
+  recipe-sha   1f657471c580fe6fa0d3bb7e2ecda2e4ace39e53cb5d71cd8ccd75a4bd624d32
+
+  source
+    url        https://codeberg.org/dnkl/fcft/archive/3.3.1.tar.gz
+    sha256     9949fbce0826669369c3b9361ac04b0459fdc51037e2ccf2e2483794909903f4
+    signature  none published -- forge archive, digest is ours
+    correspond none
+
+  deps
+    build        fontconfig, freetype, harfbuzz, meson, ninja, pixman, pkgconf, scdoc, tllist, utf8proc
+    link         fontconfig, freetype, harfbuzz, pixman, utf8proc
+    runtime      fontconfig, freetype, harfbuzz, pixman, utf8proc
+    optional_off examples, system-nanosvg, test-text-shaping
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/fcft-3.3.1
+         argv ["tar", "-xf", "dl/fcft-3.3.1.tar.gz", "-C", "build/fcft-3.3.1"]
+    [02] setup
+         cwd  build/fcft-3.3.1/fcft
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Ddocs=enabled", "-Dgrapheme-shaping=enabled", "-Drun-shaping=enabled", "-Dsvg-backend=nanosvg", "-Dsystem-nanosvg=disabled", "-Dexamples=false", "-Dtest-text-shaping=false"]
+    [03] build
+         cwd  build/fcft-3.3.1/fcft
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/fcft-3.3.1/fcft
+         env  DESTDIR=dest/fcft
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package foot 1.27.0
+  group        desktop
+  license      MIT
+  recipe-sha   a407304efdc091a729100eaf48760366b15d0e151dbc8e73660565562d2ec2ce
+
+  source
+    url        https://codeberg.org/dnkl/foot/archive/1.27.0.tar.gz
+    sha256     d1e1d04cd7a3a1615b4d8dbf9645b9a35cdc3f36fba4e1c0fd252ad0bd6651c8
+    signature  none published -- forge archive, digest is ours
+    correspond none
+
+  deps
+    build        fcft, fontconfig, libxkbcommon, meson, ncurses, ninja, pixman, pkgconf, python, scdoc, tllist, utf8proc, wayland, wayland-protocols
+    link         fcft, fontconfig, libxkbcommon, pixman, utf8proc, wayland
+    runtime      fcft, fontconfig, libxkbcommon, ncurses, pixman, utf8proc, wayland
+    optional_off ime, tests, utmp-backend
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/foot-1.27.0
+         argv ["tar", "-xf", "dl/foot-1.27.0.tar.gz", "-C", "build/foot-1.27.0"]
+    [02] setup
+         cwd  build/foot-1.27.0/foot-1.27.0
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Ddocs=enabled", "-Dutmp-backend=none", "-Dtests=false", "-Dgrapheme-clustering=enabled", "-Dime=false", "-Dterminfo=enabled", "-Dthemes=true"]
+    [03] build
+         cwd  build/foot-1.27.0/foot-1.27.0
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/foot-1.27.0/foot-1.27.0
+         env  DESTDIR=dest/foot
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package fuzzel 1.14.1
+  group        desktop
+  license      MIT
+  recipe-sha   2327ccd7e4c5fdf7be177cb750423d186a0f3dfa5cd275f18c9daa85ab26081d
+
+  source
+    url        https://codeberg.org/dnkl/fuzzel/archive/1.14.1.tar.gz
+    sha256     a3af48d00d5cb7cb5526ab86bd632c62dbea5901693fdd746a2e7bb5bd64cf04
+    signature  none published -- forge archive, digest is ours
+    correspond none
+
+  deps
+    build        cairo, fcft, fontconfig, libpng, libxkbcommon, meson, ninja, pixman, pkgconf, scdoc, tllist, wayland, wayland-protocols
+    link         cairo, fcft, fontconfig, libpng, libxkbcommon, pixman, wayland
+    runtime      cairo, fcft, fontconfig, libpng, libxkbcommon, pixman, wayland
+    optional_off system-nanosvg
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/fuzzel-1.14.1
+         argv ["tar", "-xf", "dl/fuzzel-1.14.1.tar.gz", "-C", "build/fuzzel-1.14.1"]
+    [02] setup
+         cwd  build/fuzzel-1.14.1/fuzzel-1.14.1
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dpng-backend=libpng", "-Dsvg-backend=nanosvg", "-Dsystem-nanosvg=disabled", "-Denable-cairo=enabled"]
+    [03] build
+         cwd  build/fuzzel-1.14.1/fuzzel-1.14.1
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/fuzzel-1.14.1/fuzzel-1.14.1
+         env  DESTDIR=dest/fuzzel
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
 package pango 1.57.0
   group        text-rendering
   license      LGPL-2.1-or-later
@@ -2354,6 +3748,74 @@ package pango 1.57.0
     [04] install
          cwd  build/pango-1.57.0/pango-1.57.0
          env  DESTDIR=dest/pango
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package swaybg 1.2.2
+  group        desktop
+  license      MIT
+  recipe-sha   fdb9eeb1a4e362fe3bef23c965dd15f51ec35335142f064c2b8871e7e63cc4fa
+
+  source
+    url        https://github.com/swaywm/swaybg/releases/download/v1.2.2/swaybg-1.2.2.tar.gz
+    sha256     a6652a0060a0bea3c3318d9d03b6dddac34f6aeca01b883eef9e58281f5202a1
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        cairo, meson, ninja, pkgconf, scdoc, wayland, wayland-protocols
+    link         cairo, wayland
+    runtime      cairo, wayland
+    optional_off gdk-pixbuf
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/swaybg-1.2.2
+         argv ["tar", "-xf", "dl/swaybg-1.2.2.tar.gz", "-C", "build/swaybg-1.2.2"]
+    [02] setup
+         cwd  build/swaybg-1.2.2/swaybg-1.2.2
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dgdk-pixbuf=disabled", "-Dman-pages=enabled"]
+    [03] build
+         cwd  build/swaybg-1.2.2/swaybg-1.2.2
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/swaybg-1.2.2/swaybg-1.2.2
+         env  DESTDIR=dest/swaybg
+         argv ["ninja", "-C", "_b", "install"]
+
+======================================================================
+package yambar 1.11.0
+  group        desktop
+  license      MIT
+  recipe-sha   d13fe1c1a441716a0d1418442792a32cf06123888ae4b0d08bb4baac70d973a3
+
+  source
+    url        https://codeberg.org/dnkl/yambar/releases/download/1.11.0/yambar-1.11.0.tar.gz
+    sha256     9859ef16ba16069c3442283d76607712c0b7bc602b6fadf41b2c3d97a754d5f9
+    signature  none -- no detached signature published beside the release
+    correspond none
+
+  deps
+    build        fcft, fontconfig, libxkbcommon, libyaml, meson, ninja, pixman, pkgconf, scdoc, tllist, wayland, wayland-protocols
+    link         fcft, fontconfig, libxkbcommon, libyaml, pixman, wayland
+    runtime      fcft, fontconfig, libxkbcommon, libyaml, pixman, wayland
+    optional_off backend-x11, plugin-alsa, plugin-backlight, plugin-disk-io, plugin-dwl, plugin-i3, plugin-mpd, plugin-pipewire, plugin-pulse, plugin-removables, plugin-river, plugin-sway-xkb, plugin-xkb, plugin-xwindow
+
+  commands (literal; this is exactly what runs)
+    [01] unpack
+         cwd  build/yambar-1.11.0
+         argv ["tar", "-xf", "dl/yambar-1.11.0.tar.gz", "-C", "build/yambar-1.11.0"]
+    [02] setup
+         cwd  build/yambar-1.11.0/yambar-1.11.0
+         env  CMAKE=/nonexistent/veron-cmake-is-not-a-dependency-backend
+         argv ["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release", "--wrap-mode=nofallback", "-Dbackend-x11=disabled", "-Dbackend-wayland=enabled", "-Dplugin-alsa=disabled", "-Dplugin-pulse=disabled", "-Dplugin-pipewire=disabled", "-Dplugin-mpd=disabled", "-Dplugin-i3=disabled", "-Dplugin-sway-xkb=disabled", "-Dplugin-xkb=disabled", "-Dplugin-xwindow=disabled", "-Dplugin-dwl=disabled", "-Dplugin-river=disabled", "-Dplugin-removables=disabled", "-Dplugin-backlight=enabled", "-Dplugin-battery=enabled", "-Dplugin-clock=enabled", "-Dplugin-cpu=enabled", "-Dplugin-mem=enabled", "-Dplugin-network=enabled", "-Dplugin-label=enabled", "-Dplugin-script=enabled", "-Dplugin-disk-io=enabled", "-Dplugin-foreign-toplevel=enabled"]
+    [03] build
+         cwd  build/yambar-1.11.0/yambar-1.11.0
+         argv ["ninja", "-C", "_b"]
+    [04] install
+         cwd  build/yambar-1.11.0/yambar-1.11.0
+         env  DESTDIR=dest/yambar
          argv ["ninja", "-C", "_b", "install"]
 
 ======================================================================

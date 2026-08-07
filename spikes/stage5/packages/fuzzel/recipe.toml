@@ -1,0 +1,98 @@
+name    = "fuzzel"
+version = "1.14.1"
+group   = "desktop"
+license = "MIT"
+srcdir  = "fuzzel-1.14.1"
+
+[source]
+url       = "https://codeberg.org/dnkl/fuzzel/archive/1.14.1.tar.gz"
+sha256    = "a3af48d00d5cb7cb5526ab86bd632c62dbea5901693fdd746a2e7bb5bd64cf04"
+signature = "none published -- forge archive, digest is ours"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "tllist", "fcft", "fontconfig",
+                "pixman", "wayland", "wayland-protocols", "libxkbcommon",
+                "libpng", "cairo", "scdoc"]
+link         = ["fcft", "fontconfig", "pixman", "wayland", "libxkbcommon",
+                "libpng", "cairo"]
+runtime      = ["fcft", "fontconfig", "pixman", "wayland", "libxkbcommon",
+                "libpng", "cairo"]
+optional_off = ["system-nanosvg"]
+
+[declared]
+configure_flags = ["-Dpng-backend=libpng", "-Dsvg-backend=nanosvg",
+                   "-Dsystem-nanosvg=disabled", "-Denable-cairo=enabled",
+                   "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["fuzzel"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+svg-backend HAS FOUR CHOICES AND ONLY ONE IS AVAILABLE HERE. It defaults to \
+nanosvg, which is BUNDLED, and that is the right answer: librsvg is Rust, \
+resvg is Rust, and `none` would drop SVG icons entirely. Stated rather than \
+inherited so a default change upstream cannot pull a Rust toolchain into a \
+set that has none.
+
+enable-cairo IS auto AND IS STATED enabled BECAUSE THE OPTION'S OWN \
+DESCRIPTION IS CONDITIONAL: "required by the librsvg SVG icon backend, \
+disabled by default with resvg". With nanosvg the requirement is neither \
+forced nor forbidden, so `auto` would resolve on whether cairo happens to be \
+installed -- which it is, for pango's sake. Saying enabled makes it a choice.
+
+scdoc IS A HARD REQUIREMENT HERE, NOT AN OPTION, AND THE FIRST VERSION OF THIS \
+RECIPE MISSED IT. fuzzel has no `docs` option, which was read as "nothing to \
+decline" -- the opposite of the truth. meson.build:268 is an unconditional \
+`subdir('doc')`, and doc/meson.build:2 is
+
+    scdoc = dependency('scdoc', native: true)
+
+with NO `required:` guard. So fuzzel would have died at configure with an \
+scdoc lookup failure, and the recipe's dependency list would have said nothing \
+about why. The absence of an option meant the dependency was MANDATORY rather \
+than absent -- a reading error that only surfaced because scdoc was added for \
+foot and swaybg and the fuzzel case was re-checked.
+
+Like foot and unlike swaybg, this is a .pc lookup rather than find_program, so \
+scdoc's PCDIR of share/pkgconfig has to be on pkgconf's search path. It is.
+
+VERSION FLOORS, and one is tight: pixman-1 >=0.46.0 against 0.46.4 in this \
+set -- four patch releases of headroom. wayland-protocols >=1.41 (have 1.49), \
+fcft >=3.3.1 <4.0.0 (have exactly 3.3.1, the floor), tllist >=1.0.1 (have \
+1.1.0). The fcft pin is worth noticing: this set is at the minimum, so an \
+fcft downgrade breaks fuzzel and an fcft 4.x upgrade breaks it too."""
+
+[undeclarable]
+"pkg:scdoc" = "doc/meson.build:2 -- dependency('scdoc', native: true), UNGUARDED. Not optional and not switchable; the doc subdir is entered unconditionally at meson.build:268."
+"pkg:threads" = "meson.build:57 -- meson's built-in pthread lookup plus cc.find_library('stdthreads', required: false). Satisfied by glibc."
+"pkg:epoll-shim" = "meson.build:72 -- required: false, a BSD compatibility shim. Linux has epoll natively."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/fuzzel-1.14.1.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dpng-backend=libpng", "-Dsvg-backend=nanosvg",
+         "-Dsystem-nanosvg=disabled", "-Denable-cairo=enabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/fuzzel", "--version"]]
+expect = ["1.14.1"]

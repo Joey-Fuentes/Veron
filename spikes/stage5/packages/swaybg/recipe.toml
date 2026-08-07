@@ -1,0 +1,79 @@
+name    = "swaybg"
+version = "1.2.2"
+group   = "desktop"
+license = "MIT"
+srcdir  = "swaybg-1.2.2"
+
+[source]
+url       = "https://github.com/swaywm/swaybg/releases/download/v1.2.2/swaybg-1.2.2.tar.gz"
+sha256    = "a6652a0060a0bea3c3318d9d03b6dddac34f6aeca01b883eef9e58281f5202a1"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "wayland", "wayland-protocols",
+                "cairo", "scdoc"]
+link         = ["wayland", "cairo"]
+runtime      = ["wayland", "cairo"]
+# gdk-pixbuf IS auto AND ABSENT. Without it swaybg reads PNG only, via cairo.
+optional_off = ["gdk-pixbuf"]
+
+[declared]
+configure_flags = ["-Dgdk-pixbuf=disabled", "-Dman-pages=enabled",
+                   "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["swaybg"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+WHY IT IS HERE: it is the smallest possible proof that a wlroots compositor \
+accepts a client. labwc with no client is a coloured rectangle, and swaybg \
+is one binary that connects, binds wlr-layer-shell and draws -- a much \
+narrower failure surface than starting with a terminal.
+
+gdk-pixbuf IS auto AND NOT IN THIS SET, so it resolves to disabled and \
+swaybg supports FEWER IMAGE FORMATS than its documentation implies -- PNG \
+through cairo, and not JPEG or the rest. Stated rather than discovered later \
+by a wallpaper that will not load. Pulling gdk-pixbuf in would mean glib's \
+image stack for a feature nothing here needs.
+
+man-pages IS ENABLED NOW THAT scdoc EXISTS. It was `auto`, which would have \
+resolved to disabled and produced no pages with nothing said about it. \
+meson.build:39 uses find_program('scdoc') here rather than a .pc lookup, so \
+only the binary is needed -- unlike foot, which asks for scdoc's .pc.
+
+VERSION FLOORS, satisfied: wayland-protocols >=1.31 (have 1.49), \
+wayland-scanner >=1.14.91 (have 1.26.0)."""
+
+[undeclarable]
+"program:wayland-scanner" = "meson.build:61 -- found through the wayland-scanner .pc's `wayland_scanner` variable rather than as a library. From the wayland recipe."
+"program:git" = "meson.build:38 -- required: false, native, used only to stamp a version string. There is no .git in an unpacked tarball."
+"program:scdoc" = "meson.build:39 -- native, required by -Dman-pages=enabled. A find_program lookup, so the binary alone satisfies it. From the scdoc package."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/swaybg-1.2.2.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dgdk-pixbuf=disabled", "-Dman-pages=enabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/swaybg", "--version"]]
+expect = ["1.2.2"]

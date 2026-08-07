@@ -1,0 +1,67 @@
+name    = "scdoc"
+version = "1.11.3"
+group   = "build-substrate"
+license = "MIT"
+srcdir  = "scdoc-1.11.3"
+
+[source]
+url       = "https://git.sr.ht/~sircmpwn/scdoc/archive/1.11.3.tar.gz"
+sha256    = "4c5c6136540384e5455b250f768e7ca11b03fdba1a8efc2341ee0f1111e57612"
+signature = "none published -- forge archive, digest is ours"
+crosschecked_against = []
+
+[deps]
+# NOTHING. scdoc is a few hundred lines of C with no library dependencies at
+# all -- the Makefile has no LDLIBS, no pkg-config call and no -l anywhere.
+# That is the whole argument for adding it rather than declining man pages in
+# three separate recipes.
+build        = []
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+configure_flags = ["PREFIX=/usr"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["scdoc"]
+deferral        = """
+WHY IT IS HERE, AND IT IS A CORRECTION. foot, fuzzel and swaybg all build man \
+pages with scdoc, and all three were written with docs declined on the \
+assumption that man pages would be dead weight in an image with no reader. \
+THAT ASSUMPTION WAS WRONG AND WAS CHECKED AFTERWARDS: busybox provides a `man` \
+applet and the stage-4 sysroot ships /usr/bin/man, so the pages are readable. \
+One small C program with no dependencies gives man pages to three packages \
+that already want it.
+
+PREFIX DEFAULTS TO /usr/local (Makefile:6), so it is stated. BINDIR, MANDIR \
+and PCDIR all derive from it.
+
+ITS .pc GOES IN share/pkgconfig, NOT lib/pkgconfig. Makefile:9 is \
+`PCDIR?=$(PREFIX)/share/pkgconfig`, which matters because foot finds scdoc \
+with `dependency('scdoc', native: true)` rather than find_program -- so the \
+.pc has to be discoverable, not just the binary. It is: the pkgconf recipe \
+pins --with-pkg-config-dir to lib/pkgconfig:share/pkgconfig, a decision made \
+for hwdata and paying off again here. swaybg uses find_program('scdoc') and \
+needs only the binary.
+
+NO BLFS PAGE. scdoc is absent from all 862 pages of BLFS 13.0, so this recipe \
+rests entirely on reading the tarball."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/scdoc-1.11.3.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J", "PREFIX=/usr"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "PREFIX=/usr", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "scdoc"]]
+expect = ["1.11.3"]

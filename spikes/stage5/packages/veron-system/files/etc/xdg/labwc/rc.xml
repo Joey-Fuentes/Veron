@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Veron's labwc configuration.
+
+  UPSTREAM INSTALLS ITS OWN rc.xml TO share/doc/labwc/ AS DOCUMENTATION
+  (meson.build:27), not to /etc/xdg. So labwc starts with NO configuration at
+  all unless a distribution supplies one, and labwc's src/common/dir.c:28
+  searches XDG_CONFIG_HOME then XDG_CONFIG_DIRS — which /etc/profile sets to
+  /etc/xdg. This file is that supply.
+
+  DELIBERATELY MINIMAL. Every binding here names a program this set actually
+  builds; nothing refers to a terminal or launcher that does not exist. The
+  full option surface is in share/doc/labwc/rc.xml.all for anyone who wants it.
+-->
+<labwc_config>
+
+  <core>
+    <!-- FOLLOW THE MOUSE is the openbox default labwc inherits. Stated so it
+         is a choice rather than an inheritance. -->
+    <gap>0</gap>
+    <adaptiveSync>no</adaptiveSync>
+  </core>
+
+  <theme>
+    <!-- NO THEME NAME ELEMENT: naming a theme that is not installed makes
+         labwc fall back silently. The built-in theme is what this image has.
+         (A bare element name in an XML comment is itself a parse error, which
+         is how the first draft of this file failed.) -->
+    <cornerRadius>4</cornerRadius>
+    <font place="ActiveWindow">
+      <!-- monospace RESOLVES THROUGH fontconfig TO DejaVu Sans Mono via the
+           57-dejavu-sans-mono.conf snippet the dejavu-fonts package installs.
+           Without that package this renders nothing — which is why fonts were
+           in the same batch as the terminal. -->
+      <name>sans-serif</name>
+      <size>10</size>
+    </font>
+  </theme>
+
+  <keyboard>
+    <!-- W- IS THE SUPER KEY. These four are the whole interface: a terminal,
+         a launcher, close, and a way out. -->
+    <keybind key="W-Return">
+      <action name="Execute" command="/usr/bin/foot" />
+    </keybind>
+    <keybind key="W-d">
+      <action name="Execute" command="/usr/bin/fuzzel" />
+    </keybind>
+    <keybind key="W-q">
+      <action name="Close" />
+    </keybind>
+    <!-- EXIT IS BOUND BECAUSE THIS RUNS BESIDE A CONSOLE, NOT INSTEAD OF ONE.
+         Leaving the compositor returns to a machine that still has a shell. -->
+    <keybind key="W-S-e">
+      <action name="Exit" />
+    </keybind>
+  </keyboard>
+
+  <mouse>
+    <context name="Root">
+      <mousebind button="Right" action="Press">
+        <action name="ShowMenu" menu="root-menu" />
+      </mousebind>
+    </context>
+  </mouse>
+
+</labwc_config>

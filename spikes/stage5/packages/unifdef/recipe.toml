@@ -1,0 +1,65 @@
+name    = "unifdef"
+version = "2.12"
+group   = "build-substrate"
+license = "BSD-2-Clause"
+srcdir  = "unifdef-2.12"
+
+[source]
+url       = "https://dotat.at/prog/unifdef/unifdef-2.12.tar.xz"
+sha256    = "fba564a24db7b97ebe9329713ac970627b902e5e9e8b14e19e024eb6e278d10b"
+signature = "none -- dotat.at publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = []
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+configure_flags = ["prefix=/usr"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["unifdef"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball.
+
+WHY IT IS HERE, AND IT WAS FOUND BY OPENING WPE RATHER THAN BY PLANNING. \
+Source/cmake/OptionsWPE.cmake:25 is `find_package(Unifdef REQUIRED)` -- one of \
+eighteen REQUIRED packages, seventeen of which this set already had. WPE \
+CANNOT CONFIGURE WITHOUT IT. WebKit uses it during the build to strip #ifdef \
+blocks out of generated headers.
+
+prefix DEFAULTS TO ${HOME}, WHICH IS THE WORST DEFAULT SEEN SO FAR AND IS \
+HARMLESS ONLY BECAUSE IT IS SO OBVIOUS. Makefile:3 is `prefix = ${HOME}`, so \
+an unqualified `make install` writes into whatever home directory the build \
+happens to run as -- root's, in this sandbox. It would not fail; it would \
+install to /root/bin and the package would appear to have built with nothing \
+in the DESTDIR. Stated as prefix=/usr.
+
+THERE IS NO configure AND NOTHING TO CONFIGURE. unifdef is one C file and a \
+hand-written Makefile with no dependencies at all -- not even pkgconf. That is \
+why [deps].build is empty, which is otherwise almost unheard of in this set.
+
+DIGEST MEASURED ONLY. Unlike every other pin here, no digest was stated \
+alongside the tarball, so the usual measured-vs-stated-vs-pinned check is one \
+leg short. The value recorded here is what the file hashes to; it becomes a \
+three-way check once MIRRORS.tsv carries it."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/unifdef-2.12.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J", "prefix=/usr"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "prefix=/usr", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/unifdef", "-V"]]
+expect = ["2.12"]

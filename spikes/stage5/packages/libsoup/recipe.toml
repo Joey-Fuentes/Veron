@@ -1,0 +1,101 @@
+name    = "libsoup"
+version = "3.6.5"
+group   = "browser-substrate"
+license = "LGPL-2.1-or-later"
+srcdir  = "libsoup-3.6.5"
+
+[source]
+url       = "https://download.gnome.org/sources/libsoup/3.6/libsoup-3.6.5.tar.xz"
+sha256    = "6891765aac3e949017945c3eaebd8cc8216df772456dc9f460976fbdb7ada234"
+signature = "none -- download.gnome.org publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+# glib-networking IS A BUILD DEPENDENCY AND NOT A LINK ONE -- tls_check runs a
+# program at configure time that needs a working GIO TLS backend installed.
+build        = ["meson", "ninja", "pkgconf", "python", "glib", "nghttp2",
+                "sqlite", "libpsl", "brotli", "zlib", "glib-networking"]
+link         = ["glib", "nghttp2", "sqlite", "libpsl", "brotli", "zlib"]
+runtime      = ["glib", "nghttp2", "sqlite", "libpsl", "brotli", "zlib",
+                "glib-networking"]
+optional_off = ["gssapi", "ntlm", "introspection", "vapi", "docs",
+                "doc_tests", "tests", "autobahn", "installed_tests",
+                "sysprof", "fuzzing", "pkcs11_tests"]
+
+[declared]
+configure_flags = ["-Dgssapi=disabled", "-Dntlm=disabled",
+                   "-Dbrotli=enabled", "-Dtls_check=true",
+                   "-Dintrospection=disabled", "-Dvapi=disabled",
+                   "-Ddocs=disabled", "-Dtests=false", "-Dsysprof=disabled",
+                   "-Dpkcs11_tests=disabled", "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libsoup"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+-Dtls_check=true IS KEPT, AND IT CREATES AN ORDERING CONSTRAINT THAT IS EASY \
+TO MISS. meson.build:188-195 compiles AND RUNS a program:
+
+    return !g_tls_backend_supports_tls (g_tls_backend_get_default ());
+
+So at configure time libsoup asks a live GIO whether any TLS backend exists. \
+That means GLIB-NETWORKING MUST ALREADY BE INSTALLED -- a build dependency \
+that libsoup never links against and that no DT_NEEDED will ever show. \
+`veron linked` cannot see it and the resolver only knows because [deps].build \
+says so.
+
+IT IS KEPT RATHER THAN DISABLED BECAUSE THE CHECK IS THE POINT. An HTTP client \
+that silently builds without TLS support is a browser that cannot open an \
+https:// URL, and this probe is the only thing in the chain that would say so \
+at build time rather than at first use.
+
+libnghttp2 IS MANDATORY, NOT OPTIONAL (meson.build:118): no `required:` guard \
+and no option. HTTP/2 is not a feature of libsoup 3, it is a floor.
+
+gssapi AND ntlm ARE BOTH auto AND BOTH DISABLED. gssapi would want krb5 \
+(meson.build:316) and ntlm shells out to an `ntlm_auth` helper from Samba. \
+Neither is in this set; both would have resolved to disabled by absence, which \
+is the right answer arrived at by the wrong route.
+
+brotli IS auto AND IS STATED enabled -- brotli is in this set and \
+Content-Encoding: br is common enough on the web that leaving it to a probe is \
+the kind of silent capability loss this project keeps finding.
+
+sqlite IS `required: false` AT :123 AND UNCONDITIONALLY REQUIRED AT :134 in a \
+branch. It is in this set, so the question does not arise, but the two lines \
+disagreeing is worth noting for anyone who later tries to drop it.
+
+gnutls APPEARS AT :296 ONLY UNDER pkcs11_tests, which is disabled -- libsoup \
+does not link gnutls directly. Its TLS arrives through gio and therefore \
+through glib-networking."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libsoup-3.6.5.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dgssapi=disabled", "-Dntlm=disabled", "-Dbrotli=enabled",
+         "-Dtls_check=true", "-Dintrospection=disabled", "-Dvapi=disabled",
+         "-Ddocs=disabled", "-Dtests=false", "-Dsysprof=disabled",
+         "-Dpkcs11_tests=disabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libsoup-3.0"]]
+expect = ["3.6.5"]

@@ -1,0 +1,94 @@
+name    = "glib-networking"
+version = "2.80.1"
+group   = "browser-substrate"
+license = "LGPL-2.1-or-later"
+srcdir  = "glib-networking-2.80.1"
+
+[source]
+url       = "https://download.gnome.org/sources/glib-networking/2.80/glib-networking-2.80.1.tar.xz"
+sha256    = "b80e2874157cd55071f1b6710fa0b911d5ac5de106a9ee2a4c9c7bee61782f8e"
+signature = "none -- download.gnome.org publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "glib", "gnutls"]
+link         = ["glib", "gnutls"]
+runtime      = ["glib", "gnutls"]
+# libproxy AND gnome_proxy ARE BOTH `enabled` BY DEFAULT AND NEITHER LIBRARY
+# IS IN THIS SET -- an unqualified build fails. See the deferral.
+optional_off = ["libproxy", "gnome_proxy", "openssl", "environment_proxy",
+                "installed_tests"]
+
+[declared]
+configure_flags = ["-Dgnutls=enabled", "-Dopenssl=disabled",
+                   "-Dlibproxy=disabled", "-Dgnome_proxy=disabled",
+                   "-Denvironment_proxy=enabled",
+                   "-Dinstalled_tests=false", "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["glib-networking"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+THIS PACKAGE IS WHY gnutls IS THE TLS BACKEND, AND ITS OPTIONS FILE SETTLED \
+THAT QUESTION FOR THE WHOLE SET. It offers exactly two backends -- `gnutls` \
+(value: 'enabled') and `openssl` (value: 'disabled') -- and NO NSS backend at \
+all. Upstream's own comment above them: "The OpenSSL backend is provided for \
+systems where licensing considerations prohibit use of certain dependencies of \
+GnuTLS. General-purpose Linux distros should leave it disabled. Please don't \
+second-guess our defaults." So nss and nspr, both pinned, are for something \
+else, and what remains open until wpewebkit's source is read.
+
+TWO OPTIONS DEFAULT TO enabled AND WOULD FAIL THE BUILD. meson.build:71 is \
+`dependency('libproxy-1.0', ..., required: get_option('libproxy'))` with \
+libproxy at value 'enabled', and :74 is `gsettings-desktop-schemas` with \
+gnome_proxy also 'enabled'. NEITHER IS IN THIS SET. These are not silent \
+degradations like most `auto` options -- `enabled` means REQUIRED, so an \
+unqualified `meson setup` dies at configure on a missing dependency. Both \
+disabled.
+
+-Denvironment_proxy=enabled IS TURNED ON, AND THE OPTIONS FILE SAYS WHY: "The \
+environment variable proxy backend is intended for use if you are building \
+without libproxy." That is exactly this build. Without it there is no proxy \
+support at all -- not even http_proxy from the environment -- on a system \
+whose only network client is a browser.
+
+WHAT THIS PACKAGE ACTUALLY IS: a set of GIO modules, not a library anyone \
+links. It installs into lib/gio/modules and glib loads it at runtime, which is \
+why it has no .pc file and why its guest test checks for the module rather \
+than a pkgconf version. libsoup does not link it either -- it dispatches \
+through gio, and libsoup's own tls_check probe EXECUTES a program at configure \
+time to confirm a TLS backend is present. That makes this package a BUILD \
+dependency of libsoup without being a link dependency of it, which is unusual \
+enough to state."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/glib-networking-2.80.1.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dgnutls=enabled", "-Dopenssl=disabled", "-Dlibproxy=disabled",
+         "-Dgnome_proxy=disabled", "-Denvironment_proxy=enabled",
+         "-Dinstalled_tests=false"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+# NO .pc TO ASK FOR -- these are GIO modules loaded by glib at runtime. The
+# assertion is that the TLS module landed where glib will look for it.
+test   = [["/bin/sh", "-c", "ls /usr/lib/gio/modules/libgiognutls.so >/dev/null 2>&1 && echo gnutls-module-present"]]
+expect = ["gnutls-module-present"]

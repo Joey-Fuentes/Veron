@@ -1,0 +1,89 @@
+name    = "gmp"
+version = "6.3.0"
+group   = "tls"
+license = "LGPL-3.0-or-later OR GPL-2.0-or-later"
+srcdir  = "gmp-6.3.0"
+
+[source]
+url       = "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz"
+sha256    = "a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898"
+signature = "https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf", "m4"]
+link         = []
+runtime      = []
+optional_off = ["cxx", "fat", "static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--enable-cxx=no",
+                   "--build=aarch64-unknown-linux-gnu",
+                   "--host=aarch64-unknown-linux-gnu"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["gmp"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+WHY IT IS HERE: nettle's public-key half (hogweed) links gmp, and gnutls \
+requires hogweed. It is three packages below the browser and none of the three \
+is optional.
+
+--build AND --host ARE PINNED, AND THIS IS A REPRODUCIBILITY FIX RATHER THAN A \
+CROSS-COMPILATION ONE. gmp ships its OWN config.guess, not the FSF's -- both \
+files are in the tarball -- and it reads /proc/cpuinfo to pick an `exact_cpu`:
+
+    config.guess:189    0x51_0x800) exact_cpu=armcortexa57 ;;
+    config.guess:212    0xc05) exact_cpu="armcortexa5";;
+
+That selects microarchitecture-specific assembly paths. So the SAME SOURCE on \
+two different aarch64 machines produces DIFFERENT BINARIES -- a Neoverse \
+runner and a Cortex-A57 laptop would each get code tuned for themselves, and \
+files.tsv would differ with nothing in the recipe having changed. Naming a \
+generic triple stops config.guess from looking.
+
+THIS IS THE FIRST PACKAGE IN THE SET WHERE THE BUILD MACHINE'S CPU MODEL COULD \
+CHANGE THE ARTIFACT. Others read the host's filesystem (dhcpcd's passwd probe, \
+libcap's ldd) or its installed libraries (ffmpeg's autodetect); this one reads \
+its silicon.
+
+--enable-cxx=no IS THE DEFAULT AND IS STATED. The C++ bindings would add \
+libgmpxx, which nothing here uses, and would make libstdc++ a runtime \
+dependency of the TLS stack.
+
+--enable-fat IS NOT PASSED. It builds runtime CPU dispatch, which would be \
+another answer to the tuning problem -- one binary carrying every variant. It \
+is x86-oriented in practice and larger; pinning the triple is the smaller fix.
+
+DUAL-LICENSED LGPL-3.0-or-later OR GPL-2.0-or-later, a genuine OR at the \
+recipient's choice."""
+
+[undeclarable]
+"program:m4" = "gmp's build generates code with m4 during compilation, not merely during autoreconf. From the stage-4 sysroot."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/gmp-6.3.0.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--enable-cxx=no",
+         "--build=aarch64-unknown-linux-gnu",
+         "--host=aarch64-unknown-linux-gnu"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "gmp"]]
+expect = ["6.3.0"]

@@ -1,0 +1,66 @@
+name    = "nghttp2"
+version = "1.68.0"
+group   = "browser-substrate"
+license = "MIT"
+srcdir  = "nghttp2-1.68.0"
+
+[source]
+url       = "https://github.com/nghttp2/nghttp2/releases/download/v1.68.0/nghttp2-1.68.0.tar.xz"
+sha256    = "5511d3128850e01b5b26ec92bf39df15381c767a63441438b25ad6235def902c"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf"]
+link         = []
+runtime      = []
+# --enable-app BUILDS nghttp, nghttpd AND nghttpx, WHICH DRAG IN openssl,
+# libev, c-ares, jansson, libxml2 AND zlib. Off.
+optional_off = ["app", "hpack-tools", "examples", "python-bindings",
+                "failmalloc", "static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--enable-lib-only"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["nghttp2"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+WHY IT IS HERE: HTTP/2. libsoup declares `dependency('libnghttp2')` at \
+meson.build:118 with NO required: guard and no option -- it is mandatory, not \
+a feature.
+
+--enable-lib-only IS THE WHOLE RECIPE. Without it nghttp2 builds its \
+application suite -- nghttp, nghttpd, nghttpx -- and those pull openssl, \
+libev, c-ares, jansson and libxml2. nghttpx is a full reverse proxy. This set \
+wants one shared library, and lib-only is upstream's own switch for exactly \
+that case rather than six separate --disable flags.
+
+ONLY libnghttp2 IS INSTALLED, not libnghttp2_asio -- the C++ binding was \
+removed upstream and is not in 1.68.0. Recorded because its absence looks like \
+a missing feature if you go looking for it."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/nghttp2-1.68.0.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--enable-lib-only"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libnghttp2"]]
+expect = ["1.68.0"]

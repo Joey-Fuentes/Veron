@@ -1,0 +1,83 @@
+name    = "graphene"
+version = "1.10.8"
+group   = "browser-substrate"
+license = "MIT"
+srcdir  = "graphene-1.10.8"
+
+[source]
+url       = "https://download.gnome.org/sources/graphene/1.10/graphene-1.10.8.tar.xz"
+sha256    = "a37bb0e78a419dcbeaa9c7027bcff52f5ec2367c25ec859da31dfde2928f279a"
+signature = "none -- download.gnome.org publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "glib"]
+link         = ["glib"]
+runtime      = ["glib"]
+optional_off = ["gtk_doc", "introspection", "tests", "installed_tests"]
+
+[declared]
+configure_flags = ["-Dgtk_doc=false", "-Dintrospection=disabled",
+                   "-Dgobject_types=true", "-Dtests=false",
+                   "-Dinstalled_tests=false", "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["graphene"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+WHY IT IS HERE: WPE's graphics types. Nothing else in the set uses it.
+
+introspection IS auto AND WOULD RESOLVE TO DISABLED, so it is stated. \
+gobject-introspection is not in this set and is unlikely to be -- it is a \
+build-time code generator with its own toolchain -- so `auto` here means the \
+answer is decided by absence rather than by choice. WPE does not need the \
+typelib.
+
+gobject_types STAYS true, WHICH MAKES glib A REAL DEPENDENCY. It defaults on \
+and needs GObject; glib is in this set for pango's sake, so this is satisfied \
+rather than lucky, and it is declared in [deps] rather than discovered by \
+`veron linked`.
+
+sse2 AND gcc_vector ARE LEFT AT true AND THAT IS SAFE, WHICH WAS CHECKED \
+RATHER THAN ASSUMED. meson.build:294 gates SSE2 behind \
+`cc.compiles(sse_prog, args: test_sse2_cflags, name: 'SSE intrinsics')` -- a \
+COMPILE TEST, not a flag. On aarch64 that test fails, sse2_cflags stays empty, \
+and 'sse2' is simply not added to graphene_simd. So a x86-named option left on \
+for an ARM build degrades correctly instead of emitting -msse2 to a compiler \
+that would reject it. The aarch64 path is the NEON block at :358.
+
+BLFS CROSS-CHECK: x/graphene.html gives \
+`meson setup --prefix=/usr --buildtype=release ..` and mentions -Dgtk_doc=true \
+as an opt-in. It passes no other flags, which for this package is compatible \
+with what is here -- the defaults it inherits are the ones stated above, and \
+stating them is the difference between a default that happens to be right and \
+a decision."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/graphene-1.10.8.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dgtk_doc=false", "-Dintrospection=disabled",
+         "-Dgobject_types=true", "-Dtests=false", "-Dinstalled_tests=false"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "graphene-1.0"]]
+expect = ["1.10.8"]

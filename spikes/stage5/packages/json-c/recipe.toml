@@ -1,0 +1,83 @@
+name    = "json-c"
+version = "0.18"
+group   = "browser-substrate"
+license = "MIT"
+srcdir  = "json-c-json-c-0.18-20240915"
+
+[source]
+url       = "https://github.com/json-c/json-c/archive/json-c-0.18-20240915/json-c-0.18.tar.gz"
+sha256    = "3112c1f25d39eca661fe3fc663431e130cc6e2f900c081738317fba49d29e298"
+signature = "none published -- GitHub archive, digest is ours"
+crosschecked_against = []
+
+[deps]
+build        = ["cmake", "ninja", "pkgconf"]
+link         = []
+runtime      = []
+optional_off = ["static", "rdrand", "threading", "tests"]
+
+[declared]
+configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release",
+                   "-DBUILD_SHARED_LIBS=ON", "-DBUILD_STATIC_LIBS=OFF",
+                   "-DDISABLE_WERROR=ON", "-DENABLE_RDRAND=OFF",
+                   "-DBUILD_TESTING=OFF"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["json-c"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+srcdir IS json-c-json-c-0.18-20240915, WHICH LOOKS LIKE A TYPO AND IS NOT. \
+The GitHub archive is of a tag named `json-c-0.18-20240915`, so the directory \
+is <repo>-<tag>. The driver's name-version default would look for `json-c-0.18` \
+and find nothing.
+
+BUILD_STATIC_LIBS DEFAULTS TO ON HERE, SEPARATELY FROM BUILD_SHARED_LIBS \
+(CMakeLists.txt:45-46). Most CMake projects have one switch; this has two and \
+both default on, so an unqualified build installs libjson-c.a beside the shared \
+library. Turned off explicitly.
+
+-DDISABLE_WERROR=ON, AND THIS IS DEFENSIVE RATHER THAN COSMETIC. json-c \
+compiles with warnings as errors by default. wlroots taught this lesson twice \
+in one week: a -Werror build against a newer toolchain fails on warnings the \
+author never saw, and both times the failure was a C23 or libinput change \
+rather than a bug. This set builds with gcc 15.2.0 against glibc 2.44, which is \
+newer than most projects test against.
+
+ENABLE_RDRAND IS OFF BY DEFAULT AND STATED. It is an x86 instruction; on \
+aarch64 it is meaningless, and a hardware RNG seed that silently is not one is \
+worth naming.
+
+WHY IT IS HERE AT ALL IS NOT YET ESTABLISHED. json-c is pinned and nothing in \
+this set has been shown to require it -- libsoup does not, gnutls does not. It \
+is likely a WPE dependency, and that will be confirmed or refuted when \
+wpewebkit's source is read. Written now because it is small and its absence \
+would block a later batch."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/json-c-0.18.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
+         "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release",
+         "-DBUILD_SHARED_LIBS=ON", "-DBUILD_STATIC_LIBS=OFF",
+         "-DDISABLE_WERROR=ON", "-DENABLE_RDRAND=OFF", "-DBUILD_TESTING=OFF"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "json-c"]]
+expect = ["0.18"]

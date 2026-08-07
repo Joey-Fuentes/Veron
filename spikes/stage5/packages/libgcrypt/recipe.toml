@@ -1,0 +1,80 @@
+name    = "libgcrypt"
+version = "1.11.3"
+group   = "tls"
+license = "LGPL-2.1-or-later"
+srcdir  = "libgcrypt-1.11.3"
+
+[source]
+url       = "https://www.gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.3.tar.bz2"
+sha256    = "2c6d562e894b2b06eefbc427d12d51ee9d3e50e90012ad6596b4cb3e421a95f2"
+signature = "https://www.gnupg.org/ftp/gcrypt/libgcrypt/libgcrypt-1.11.3.tar.bz2.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf", "libgpg-error"]
+link         = ["libgpg-error"]
+runtime      = ["libgpg-error"]
+optional_off = ["doc", "tests", "padlock", "aesni", "static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-rpath", "--disable-doc",
+                   "--disable-padlock-support", "--disable-aesni-support"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libgcrypt"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+WHY IT IS HERE IS NOT YET ESTABLISHED, AND THAT IS WORTH SAYING RATHER THAN \
+INVENTING A REASON. gnutls uses nettle, not libgcrypt -- the two are \
+alternative crypto backends and this set chose nettle by following \
+glib-networking. libgcrypt is pinned, so something wants it, and the likeliest \
+consumer is WPE. It is written now because it is small and blocks nothing; if \
+wpewebkit's source turns out not to need it, this recipe should be deleted \
+rather than kept for tidiness.
+
+--disable-padlock-support AND --disable-aesni-support ARE X86 INSTRUCTION SETS. \
+Both default to enabled and both are probed; on aarch64 the probes fail and \
+the features are absent. Naming them says the absence is intended rather than \
+architectural luck -- the same reason nettle's --enable-arm64-crypto is \
+declined and its --enable-arm-neon is stated.
+
+--disable-asm IS NOT PASSED, DELIBERATELY. libgcrypt's aarch64 assembly is \
+NEON and base-ARMv8, not the optional crypto extensions, so it runs on every \
+aarch64 CPU. That is the same line nettle draws.
+
+--enable-random IS LEFT AT ITS DEFAULT, which on Linux is the getrandom/ \
+/dev/urandom generator. Naming a different one would be a cryptographic \
+decision, and the default here is the one every distribution ships.
+
+--enable-ciphers, --enable-pubkey-ciphers AND --enable-digests CAN NARROW WHAT \
+IS BUILT and are left alone. A consumer that is not yet identified must not \
+have algorithms removed underneath it; if WPE turns out to be the caller, this \
+is where the set can be trimmed once its requirements are read.
+
+--enable-static DEFAULTS TO no, checked against --help."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libgcrypt-1.11.3.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-rpath", "--disable-doc",
+         "--disable-padlock-support", "--disable-aesni-support"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libgcrypt"]]
+expect = ["1.11.3"]

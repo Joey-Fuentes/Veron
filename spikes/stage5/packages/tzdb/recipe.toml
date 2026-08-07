@@ -1,0 +1,108 @@
+name    = "tzdb"
+version = "2026c"
+group   = "system"
+license = "LicenseRef-Public-Domain"
+srcdir  = "tzdb-2026c"
+
+[source]
+url       = "https://www.iana.org/time-zones/repository/releases/tzdb-2026c.tar.lz"
+sha256    = "427a11b1c5f2ebccad18f11650221c4f0465b4f1bb7f44dd02ff192d2808d944"
+signature = "none -- IANA publishes .asc signatures beside the releases; not yet pinned here"
+crosschecked_against = []
+
+[deps]
+# lzip IS NOT IN THIS SET AND THIS TARBALL IS .tar.lz -- see the deferral.
+# That is a blocker on the ARTIFACT, not on this recipe's content.
+build        = ["xz"]
+link         = []
+runtime      = []
+optional_off = ["right_only", "slim"]
+
+[declared]
+# ONLY WHAT A STEP PASSES. TZDIR_BASENAME was listed here and is not passed --
+# it is the Makefile's DEFAULT (line 105, `TZDIR_BASENAME= zoneinfo`), not an
+# argument this recipe supplies, and the selftest rejected it. Same correction
+# as nnn's O_NOMOUSE and wpa_supplicant's .config settings: a default is a fact
+# about the package and belongs in the deferral, not in a list of flags the
+# plan is supposed to corroborate.
+configure_flags = ["TOPDIR=/usr", "LOCALTIME=UTC", "REDO=posix_only"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["tzdb"]
+deferral        = """
+Internals not reviewed. Read out of the uploaded tarball.
+
+ONE TARBALL INSTEAD OF TWO, WHICH IS WHY THIS PIN CHANGED. MIRRORS.tsv carries \
+tzcode2026c.tar.gz and tzdata2026c.tar.gz as separate artifacts, and IANA \
+distributes them that way -- but nothing in this set can build from two \
+sources: every recipe has exactly one [source], and the driver has no second. \
+Building tzcode without tzdata gives a zone compiler and no zones; the reverse \
+gives data and nothing to compile it. IANA also publishes the COMBINED \
+tzdb-<version>.tar.lz, which contains both -- zic.c and the zone files in one \
+tree, confirmed by unpacking it -- so a single artifact makes a single recipe \
+possible. That is a re-pin rather than a workaround.
+
+IT IS .tar.lz AND THAT NEEDED NO NEW PACKAGE, WHICH THIS RECIPE FIRST CLAIMED \
+IT DID. The first version said lzip was a blocker requiring a new pin. That \
+was wrong, and measuring it is what showed so: LIBLZMA GAINED LZIP DECODE \
+SUPPORT IN 5.4.0, and this set builds xz 5.8.3. So `xz -dc` reads a .lz \
+stream, and python's lzma module -- which binds the same liblzma -- does too:
+
+    lzma.decompress(open('tzdb-2026c.tar.lz','rb').read())  ->  2775040 bytes
+    bytes 257..262 of the result                            ->  b'ustar'
+
+WHY `tar -xf` ALONE FAILS AND THE FLAG IS NEEDED. tar recognises the .lz \
+extension and shells out to a program literally named `lzip`, which does not \
+exist here -- "tar (child): lzip: Cannot exec". It does NOT fall back to \
+liblzma. --use-compress-program='xz -dc' names the decompressor that can \
+already do it. This is the only recipe in the set that needs the flag; the \
+other 115 use gz, xz or bz2, all of which tar auto-detects internally.
+
+xz IS THEREFORE A BUILD DEPENDENCY of a package that contains no compressed \
+data of its own -- an unpack-time dependency rather than a link-time one, and \
+the only one of its kind here.
+
+WHAT THE FLAGS MEAN, since none is a conventional configure switch -- tzdb \
+uses a plain Makefile with variables:
+
+  TOPDIR=/usr        installs zoneinfo under /usr/share and zic under
+                     /usr/sbin. Without it the Makefile's TOPDIR is EMPTY,
+                     so TZDIR becomes /usr/share/zoneinfo by accident of
+                     string concatenation rather than by choice.
+  LOCALTIME=UTC      the default is `Factory`, a placeholder zone whose only
+                     content is a message telling you the timezone was never
+                     set. UTC is the honest default for an image that does not
+                     know where it will run.
+  REDO=posix_only    the alternative is right_only, which builds zones with
+                     LEAP SECONDS included. POSIX time ignores leap seconds
+                     and every libc in common use expects posix_only; right_
+                     zones make time() disagree with the rest of the world by
+                     the current leap-second count.
+
+PUBLIC DOMAIN, AND THAT IS AN UNUSUAL LICENCE FOR THIS SET. The tzdb LICENSE \
+file states the database and code are in the public domain. There is no SPDX \
+identifier for that, so LicenseRef-Public-Domain is used -- license.py should \
+show it as its own class rather than folding it into a permissive bucket."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "--use-compress-program=xz -dc", "-xf",
+         "$DL/tzdb-2026c.tar.lz", "-C", "$B"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J", "TOPDIR=/usr", "LOCALTIME=UTC", "REDO=posix_only"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "TOPDIR=/usr", "LOCALTIME=UTC",
+         "REDO=posix_only", "DESTDIR=$D"]]
+
+[guest]
+# ASSERT A ZONE RESOLVES, not that a file exists. zdump reads the compiled
+# binary zoneinfo the way libc does, so this proves zic ran and produced
+# something libc can consume.
+test   = [["/usr/sbin/zdump", "UTC"]]
+expect = ["UTC"]

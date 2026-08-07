@@ -1,0 +1,75 @@
+name    = "libgpg-error"
+version = "1.56"
+group   = "tls"
+license = "LGPL-2.1-or-later"
+srcdir  = "libgpg-error-1.56"
+
+[source]
+url       = "https://www.gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.56.tar.bz2"
+sha256    = "82c3d2deb4ad96ad3925d6f9f124fe7205716055ab50e291116ef27975d169c0"
+signature = "https://www.gnupg.org/ftp/gcrypt/libgpg-error/libgpg-error-1.56.tar.bz2.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf"]
+link         = []
+runtime      = []
+optional_off = ["nls", "static", "doc", "tests", "werror"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-nls", "--disable-rpath",
+                   "--enable-threads=posix"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libgpg-error"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+IT EXISTS ONLY TO CARRY ERROR CODES, AND EVERYTHING IN THE GnuPG FAMILY \
+REQUIRES IT. libgcrypt's configure mentions gpg-error 22 times; it cannot be \
+built without this first. Nothing else in this set uses it directly.
+
+--enable-threads=posix IS STATED RATHER THAN PROBED. The option is a combo \
+over {isoc|posix|isoc+posix|windows} and the configure picks by inspection. \
+Naming posix means the thread-safety mode of the error layer under all of \
+libgcrypt is a decision rather than a detection.
+
+--disable-rpath, AND IT MATTERS MORE HERE THAN THE FLAG NAME SUGGESTS. GnuPG \
+packages hardcode runtime library paths by default, which bakes the BUILD \
+tree's layout into the installed binary -- an absolute path from a DESTDIR \
+that will not exist on the target. Same family of problem as libcap's ldd \
+derivation and dhcpcd's privsep probe: a build-host fact compiled into a \
+shipped artifact.
+
+--enable-static DEFAULTS TO no HERE, unlike most autotools packages, so no \
+--disable-static is passed. Checked against --help rather than assumed -- the \
+alsa-lib lesson.
+
+libgpg-error ALSO INSTALLS gpg-error-config, a shell script of the kind \
+pkg-config replaced. --enable-install-gpg-error-config is off by default in \
+1.56 and is left off."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libgpg-error-1.56.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-nls", "--disable-rpath",
+         "--enable-threads=posix"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "gpg-error"]]
+expect = ["1.56"]

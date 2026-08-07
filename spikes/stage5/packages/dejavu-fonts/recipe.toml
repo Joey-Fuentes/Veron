@@ -1,0 +1,109 @@
+name    = "dejavu-fonts"
+version = "2.37"
+group   = "desktop"
+license = "Bitstream-Vera"
+srcdir  = "dejavu-fonts-ttf-2.37"
+
+[source]
+url       = "https://github.com/dejavu-fonts/dejavu-fonts/releases/download/version_2_37/dejavu-fonts-ttf-2.37.tar.bz2"
+sha256    = "fa9ca4d13871dd122f61258a80d01751d603b4d3ee14095d65453b4e846e17d7"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+# DATA ONLY. No compiler, no build system, no configure -- 22 .ttf files and
+# a set of fontconfig snippets. fontconfig is a RUNTIME dependency because it
+# is what makes these findable; nothing links against a font.
+build        = []
+link         = []
+runtime      = ["fontconfig"]
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "none -- nothing to run"
+packaged_as     = ["dejavu-fonts"]
+deferral        = """
+WITHOUT A FONT THE COMPOSITOR DRAWS NOTHING, AND THAT IS THE WHOLE REASON \
+THIS IS IN BATCH A. labwc renders titlebars through pangocairo, foot renders \
+cells through fcft, and both resolve faces through fontconfig -- which, with \
+no font installed, resolves nothing. Every one of those packages would build \
+green, start, and produce blank text. It is the DRM-backend failure shape one \
+layer up: the capability is absent and nothing says so.
+
+BLFS CROSS-CHECK, AND IT AGREES ON THE PATH AND ADDS A STEP. BLFS 13.0 covers \
+DejaVu inside x/TTF-and-OTF-fonts.html rather than on its own page, and gives:
+
+    install -v -d -m755 /usr/share/fonts/dejavu &&
+    install -v -m644 ttf/*.ttf /usr/share/fonts/dejavu &&
+    fc-cache -v /usr/share/fonts/dejavu
+
+The directory matches what this recipe already used. The third line does not, \
+and cannot: fc-cache writes absolute paths and mtimes into a binary cache, so \
+running it against a DESTDIR at build time would put build-machine state into \
+the image and move the [installs] digest between runs -- the reproducibility \
+hazard this project spends most of its gates on.
+
+SO THE CACHE IS BUILT AT RUNTIME, AND THAT WORKS ONLY BECAUSE OF THE OVERLAY. \
+The base is a read-only ext4 image, so /var/cache/fontconfig is not writable \
+in the image -- but guest/init assembles a tmpfs overlay over it, so \
+fontconfig can write its cache into the upper layer on first use. The cost is \
+a slower first font lookup and a cache that does not survive a reboot, which \
+is the same trade the whole read-only-base design already makes. Worth stating \
+because "BLFS runs fc-cache and we do not" looks like an omission and is a \
+consequence.
+
+BLFS DOES NOT INSTALL DejaVu's OWN fontconfig SNIPPETS; this recipe does. \
+fontconfig's built-in 60-latin.conf already lists DejaVu among preferred \
+families, so BLFS relies on that. The snippets upstream ships -- \
+57-dejavu-sans-mono.conf and friends -- state the alias explicitly instead, \
+which is what makes `fc-match monospace` a meaningful assertion rather than a \
+test of fontconfig's generic defaults. Note they land as REAL FILES in \
+/etc/fonts/conf.d while fontconfig's own entries there are symlinks into \
+conf.avail; that difference is upstream's layout, not a mistake, and the \
+[installs] listing records which is which.
+
+NOTHING ELSE IN BATCH A IS IN BLFS AT ALL. tllist, fcft, foot, swaybg, \
+fuzzel, nnn, scdoc, utf8proc and libutempter are all absent from BLFS 13.0's \
+862 pages -- the book is X11-centric and its only Wayland page is xwayland. \
+So for six of the seven packages there was no second source of truth to check \
+against, and the recipes rest entirely on reading the tarballs.
+
+INSTALLED BY COPY, NOT BY A BUILD. There is no Makefile worth using -- \
+upstream's install target has its own prefix conventions -- so the recipe \
+places the files where fontconfig looks and the [installs] digest records \
+exactly what landed.
+
+THE fontconfig SNIPPETS ARE SHIPPED TOO, in /etc/fonts/conf.d. Upstream \
+provides 57-dejavu-sans-mono.conf and friends, which is what makes \
+`monospace` resolve to DejaVu Sans Mono rather than to nothing. foot's \
+default font is `monospace`, so without these the terminal has no face even \
+with the .ttf files present.
+
+THE LICENCE IS A COMPOSITE AND SHOULD BE READ AS ONE. LICENSE says: "Fonts \
+are (c) Bitstream (see below). DejaVu changes are in public domain. Glyphs \
+imported from Arev fonts are (c) Tavmjong Bah". So the identifier here is \
+Bitstream-Vera as the governing term, with public-domain and Arev components \
+inside it -- one of the composite cases license.py reports on, and unlike \
+hwdata's genuine OR this is an AND of three sets of terms over different \
+parts of the same artifact."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/dejavu-fonts-ttf-2.37.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+# cp -a AND NOT install(1) PER FILE: 22 fonts and 10 snippets, and the
+# [installs] listing is what records the result either way.
+run  = [["sh", "-c", "mkdir -p \"$D/usr/share/fonts/dejavu\" \"$D/etc/fonts/conf.d\" && cp -a ttf/. \"$D/usr/share/fonts/dejavu/\" && cp -a fontconfig/. \"$D/etc/fonts/conf.d/\""]]
+
+[guest]
+# THE ASSERTION IS THAT fontconfig CAN RESOLVE A FACE, not that a file exists.
+# `fc-match monospace` answering with a DejaVu file proves the fonts are
+# installed AND that the conf.d snippets took effect -- which is the pair that
+# actually makes text appear.
+test   = [["/usr/bin/fc-match", "monospace"]]
+expect = ["DejaVu"]

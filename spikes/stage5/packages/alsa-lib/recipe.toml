@@ -1,0 +1,100 @@
+name    = "alsa-lib"
+version = "1.2.14"
+group   = "media"
+license = "LGPL-2.1-or-later"
+srcdir  = "alsa-lib-1.2.14"
+
+[source]
+url       = "https://www.alsa-project.org/files/pub/lib/alsa-lib-1.2.14.tar.bz2"
+sha256    = "be9c88a0b3604367dd74167a2b754a35e142f670292ae47a2fdef27a2ee97a32"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf"]
+link         = []
+runtime      = []
+optional_off = ["python", "rawmidi", "seq", "topology", "ucm", "hwdep"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-python", "--disable-rawmidi",
+                   "--disable-seq", "--disable-topology", "--disable-ucm"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["alsa-lib"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+THIS IS THE ONE PACKAGE IN THE MEDIA BATCH THAT IS NOT FOR DECODING. It is the \
+audio OUTPUT path: gst-plugins-base's alsasink is how a decoded stream reaches \
+a sound card. Everything else here turns bytes into frames; this turns frames \
+into sound.
+
+AND IT IS UNTESTABLE IN CI, WHICH IS WORTH STATING BEFORE IT LOOKS LIKE AN \
+OMISSION. The boot test runs qemu with no audio device at all, so nothing \
+about playback can be exercised -- the guest test asserts the library is \
+present and reports its version, and no more. The same shape as \
+wpa_supplicant: buildable, and verifiable only on hardware.
+
+alsa-lib LOOKS FOR ITS CONFIGURATION AT RUNTIME under \
+/usr/share/alsa, which this package installs. A system with the library and \
+without that tree gets "cannot find card" errors that read like missing \
+hardware. The [installs] listing records the tree.
+
+--disable-python IS STATED. alsa-lib can build a Python binding, and python IS \
+in this set -- so the probe would succeed and add a module nothing imports, \
+arriving from a default rather than a decision. Same shape as lcms2's jpeg \
+probe.
+
+NO --disable-static HERE, AND THE FIRST VERSION OF THIS RECIPE PASSED ONE. \
+`--enable-static[=PKGS] ... [default=no]` -- alsa-lib already defaults to \
+shared-only, unlike every other autotools package in this set. It also passed \
+--disable-debug and --without-debug, and neither exists: the option is \
+--enable-debug, opt-in, already off. Three invented flags, caught by reading \
+--help instead of assuming the autotools shape. autotools ignores unknown \
+--disable-* silently, so they would have looked like decisions and been \
+nothing.
+
+BLFS CROSS-CHECK: multimedia/alsa-lib.html runs a BARE `./configure` with no \
+--prefix at all, which works because alsa-lib overrides autoconf's default -- \
+`ac_default_prefix=/usr` in its configure, not /usr/local. So --prefix=/usr \
+here is a statement rather than a correction, and it is kept for the same \
+reason every other recipe states it.
+
+BLFS DOES NOT PASS --disable-python AND IT SHOULD MATTER. Checked in the \
+configure script rather than assumed: the else branch of the \
+--enable-python test sets `build_python="yes"`, so the binding is ON by \
+default and BLFS builds it. python is in this set, so the probe would succeed \
+here too. Disabled.
+
+FOUR COMPONENTS ARE DISABLED AND NONE OF THEM IS PLAYBACK. rawmidi, seq \
+(the ALSA sequencer), ucm (use-case manager) and topology (DSP topology) are \
+each --disable-able and none is on the path from a decoded audio buffer to a \
+sound card. mixer, pcm and hwdep stay: pcm IS the playback path, mixer is \
+volume, and hwdep is what several drivers need to initialise."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/alsa-lib-1.2.14.tar.bz2", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-python",
+         "--disable-rawmidi", "--disable-seq", "--disable-topology",
+         "--disable-ucm"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "alsa"]]
+expect = ["1.2.14"]

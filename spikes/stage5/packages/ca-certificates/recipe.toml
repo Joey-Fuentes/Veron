@@ -1,0 +1,154 @@
+name    = "ca-certificates"
+version = "3.126"
+group   = "tls"
+license = "MPL-2.0"
+srcdir  = "nss-3.126"
+
+[source]
+url       = "https://archive.mozilla.org/pub/security/nss/releases/NSS_3_126_RTM/src/nss-3.126.tar.gz"
+sha256    = "7aa07c758be1453d82d739240b249ffb7aef0041be488067e1c0f348e1f9e337"
+signature = "none -- archive.mozilla.org publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+# python IS THE ONLY DEPENDENCY. The conversion is one script; no compiler, no
+# build system, and deliberately no p11-kit -- see the deferral.
+build        = ["python"]
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "121 certificates parsed as X.509 by openssl on the machine that wrote this recipe; not re-verified in the sandbox"
+packaged_as     = ["ca-certificates"]
+deferral        = """
+THE CA BUNDLE IS GENERATED AT BUILD TIME FROM A PINNED TEXT FILE, WHICH IS THE \
+WHOLE POINT. gnutls names /etc/ssl/certs/ca-certificates.crt as its default \
+trust store and nothing was creating it, so the entire TLS chain would build, \
+link and load and then reject every certificate on the internet.
+
+WHY THE SOURCE IS THE NSS TARBALL. Mozilla's root program IS \
+nss/lib/ckfw/builtins/certdata.txt -- 1.3 MB of text, 172 certificates -- and \
+every distribution's CA bundle derives from it. NSS was pinned in this project \
+with no identified consumer; reading wpewebkit's source found none either. \
+THIS IS THE CONSUMER. Not a linked library: a data file inside a tarball whose \
+code is never compiled. nspr, pinned alongside it, remains unexplained.
+
+WHY NOT SHIP A PRE-BUILT BUNDLE. Pinning someone's ca-certificates.crt would \
+mean trusting their conversion, and the 172 roots would be an opaque blob. \
+certdata.txt is readable text with a licence; converting it here means the \
+trust decisions are auditable in the tree and the output is reproducible from \
+an input that has a sha256.
+
+WHY NOT make-ca AND NOT p11-kit. BLFS uses make-ca, a shell script that writes \
+p11-kit trust anchors and then runs `trust extract`. That is the right \
+architecture for a system where a user edits per-certificate trust; this image \
+has no such user yet. files/certdata2pem.py is ~90 lines doing one format \
+conversion with python, which is already in the set. If Veron later wants \
+trust editing, that is when p11-kit's trust module earns a place here, and \
+this recipe should be replaced rather than extended.
+
+TWO RECORD TYPES, AND CONFLATING THEM SHIPS DISTRUSTED ROOTS. certdata.txt \
+stores the DER (CKO_CERTIFICATE) and the trust decision (CKO_NSS_TRUST) as \
+SEPARATE objects joined by CKA_LABEL. A first pass that emitted every \
+CKO_CERTIFICATE would have shipped the two Mozilla has explicitly distrusted. \
+Filtering further, on CKA_TRUST_SERVER_AUTH == CKT_NSS_TRUSTED_DELEGATOR \
+rather than on any trust bit, drops it again from 170 to 121: THE OTHER 49 ARE \
+TRUSTED FOR E-MAIL OR CODE SIGNING AND NOT FOR TLS. A browser must not accept \
+an S/MIME root for an https:// connection.
+
+    172 certificates in certdata.txt
+    121 trusted for TLS server auth   <- what ships
+    all 121 parsed as X.509 by openssl
+
+THE BUNDLE IS SORTED BY LABEL so it is byte-identical between runs -- verified \
+by generating twice and comparing. certdata's own order is stable, but relying \
+on it would make this file's digest depend on something nobody here controls.
+
+A NON-ASCII LABEL BROKE THE FIRST VERSION, and it is worth recording because \
+it is the kind of thing only running the code finds: writing with \
+encoding="ascii" failed with UnicodeEncodeError on '\\u0151', a Hungarian \
+o-double-acute in a CA name. The certificate data is base64 and therefore \
+ASCII; the human-readable comment above each is upstream's text. Written UTF-8.
+
+THE ROOTS AGE WITH THE PIN, AND THAT IS THE REAL COST OF BUILD-TIME \
+GENERATION. A CA distrusted by Mozilla after NSS 3.126 stays trusted in this \
+image until the pin moves and the system is rebuilt. That is the same \
+staleness every pinned package carries, but the consequence is sharper here \
+because it is a security boundary rather than a feature set. There is no \
+updater and no revocation path; adding one is a stage-6 question."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/nss-3.126.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+shell = '''
+set -eu
+mkdir -p "$D/etc/ssl/certs"
+python3 - nss/lib/ckfw/builtins/certdata.txt "$D/etc/ssl/certs/ca-certificates.crt" <<'CERTDATA2PEM'
+import base64, re, sys
+
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src, encoding="utf-8", errors="replace").read()
+
+# Records begin with CKA_CLASS. The DER and the trust decision are SEPARATE
+# objects joined by CKA_LABEL -- see the deferral for why conflating them
+# ships roots Mozilla has distrusted.
+certs, trusted = {}, set()
+for b in re.split(r"\n(?=CKA_CLASS )", text):
+    m = re.search(r'CKA_LABEL UTF8 "([^"]*)"', b)
+    if not m:
+        continue
+    name = m.group(1)
+    if "CKO_CERTIFICATE" in b:
+        v = re.search(r"CKA_VALUE MULTILINE_OCTAL\n(.*?)\nEND", b, re.S)
+        if v:
+            certs[name] = bytes(int(o, 8)
+                                for o in re.findall(r"\\([0-7]{3})", v.group(1)))
+    elif "CKO_NSS_TRUST" in b:
+        # SERVER AUTH ONLY. A root trusted for e-mail or code signing is not
+        # one a browser may accept for TLS.
+        tr = re.search(r"CKA_TRUST_SERVER_AUTH CK_TRUST (\w+)", b)
+        if tr and tr.group(1) == "CKT_NSS_TRUSTED_DELEGATOR":
+            trusted.add(name)
+
+# SORTED so the bundle is byte-identical between runs.
+keep = sorted(n for n in certs if n in trusted)
+if not keep:
+    sys.exit("certdata2pem: no trusted roots -- refusing to write an empty bundle")
+
+# UTF-8, not ASCII: the comment carries upstream's CA name and at least one
+# contains a Hungarian o-double-acute. The certificate data itself is base64.
+with open(dst, "w", encoding="utf-8") as out:
+    for n in keep:
+        b64 = base64.standard_b64encode(certs[n]).decode("ascii")
+        body = "\n".join(b64[k:k + 64] for k in range(0, len(b64), 64))
+        out.write("# %s\n-----BEGIN CERTIFICATE-----\n%s\n-----END CERTIFICATE-----\n"
+                  % (n, body))
+sys.stderr.write("certdata2pem: %d certificate(s), %d trusted for TLS server auth, %d written\n"
+                 % (len(certs), len(trusted), len(keep)))
+CERTDATA2PEM
+'''
+why = """
+The conversion is inlined rather than shipped as files/certdata2pem.py because
+a step cannot reference the recipe's own files/ directory portably: the build
+runs with cwd=$S, so a relative path does not resolve, and an absolute one puts
+a build-machine home directory into PLAN.txt and breaks `plan --check`
+elsewhere -- the same trap apply_patches documents for $P, and the selftest
+rejected an earlier draft of this very comment for naming such a path
+literally. Inlining makes the plan carry the converter verbatim, which is the
+stronger outcome anyway: the code deciding which 121 roots the system trusts
+sits in the committed plan rather than beside it.
+"""
+
+[guest]
+# COUNT THE CERTIFICATES, do not merely check the file exists. An empty or
+# truncated bundle is a file too, and it would fail silently at the first
+# https:// request rather than here.
+test   = [["/bin/sh", "-c", "grep -c 'BEGIN CERTIFICATE' /etc/ssl/certs/ca-certificates.crt"]]
+expect = ["121"]

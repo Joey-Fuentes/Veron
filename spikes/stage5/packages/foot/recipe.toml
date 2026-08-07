@@ -1,0 +1,112 @@
+name    = "foot"
+version = "1.27.0"
+group   = "desktop"
+license = "MIT"
+srcdir  = "foot-1.27.0"
+
+[source]
+url       = "https://codeberg.org/dnkl/foot/archive/1.27.0.tar.gz"
+sha256    = "d1e1d04cd7a3a1615b4d8dbf9645b9a35cdc3f36fba4e1c0fd252ad0bd6651c8"
+signature = "none published -- forge archive, digest is ours"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "python", "ncurses", "tllist",
+                "fcft", "fontconfig", "pixman", "wayland", "wayland-protocols",
+                "libxkbcommon", "utf8proc", "scdoc"]
+link         = ["fcft", "fontconfig", "pixman", "wayland", "libxkbcommon",
+                "utf8proc"]
+runtime      = ["fcft", "fontconfig", "pixman", "wayland", "libxkbcommon",
+                "ncurses", "utf8proc"]
+# EVERY ONE OF THESE IS ON BY DEFAULT. utmp-backend is the dangerous one --
+# see the deferral; it does not fail the build, it bakes in a path to a
+# binary that does not exist.
+optional_off = ["utmp-backend", "tests", "ime"]
+
+[declared]
+configure_flags = ["-Ddocs=enabled", "-Dutmp-backend=none", "-Dtests=false",
+                   "-Dgrapheme-clustering=enabled", "-Dime=false",
+                   "-Dterminfo=enabled", "-Dthemes=true",
+                   "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["foot"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+utmp-backend DEFAULTS TO auto, WHICH ON LINUX MEANS libutempter, AND THAT IS \
+THE COMPILED-IN-PATH TRAP AGAIN. meson.build:40 resolves `auto` to \
+'libutempter' on Linux, and :63 then sets
+
+    utmp_default_helper_path = /usr/<libdir>/utempter/utempter
+
+which is baked into the binary with -DUTMP_ADD/-DUTMP_DEL. foot does not LINK \
+libutempter -- it execs that helper -- so the build succeeds and the failure \
+is deferred to runtime, where the helper does not exist. Same shape as libnl's \
+--sysconfdir and dhcpcd's privsep user: a default derived from what a normal \
+distro looks like, wrong here, and silent. -Dutmp-backend=none removes it; \
+Veron has no utmp/wtmp consumer.
+
+tests DEFAULTS TO true. That is a whole subdir compiled for a suite nothing \
+runs.
+
+grapheme-clustering IS ENABLED, AND IT AND fcft's run-shaping FLIPPED \
+TOGETHER. Both resolve `dependency('libutf8proc', ...)`, both were declined \
+when utf8proc had no recipe, and upstream's own option text says this one \
+"requires fcft with harfbuzz support to be useful" -- so enabling it while \
+fcft was still built without shaping would have produced a terminal that asks \
+for something its font library cannot do.
+
+ime DEFAULTS TO true and is input-method support nothing in this set provides.
+
+terminfo IS KEPT ENABLED, DELIBERATELY, AND IT IS WHY ncurses IS A BUILD \
+DEPENDENCY. meson.build:410 is `tic = find_program('tic', native: true, \
+required: get_option('terminfo'))`; ncurses supplies tic. Without foot's own \
+terminfo entry, every program run inside foot sees TERM=foot and no \
+description, which breaks curses applications -- including nnn, the file \
+manager this terminal exists to host.
+
+docs IS ENABLED NOW THAT scdoc EXISTS. meson.build:392 resolves it as \
+`dependency('scdoc', native: true, ...)` -- a .pc lookup rather than a program \
+lookup, which is why scdoc's PCDIR of share/pkgconfig matters and why pkgconf \
+was pinned to search it.
+
+systemd IS PROBED AT meson.build:367 WITH required: false and is absent, so \
+no unit files are installed. Recorded because the option \
+`systemd-units-dir` exists and could look like a decision that was skipped."""
+
+[undeclarable]
+"program:tic" = "meson.build:410 -- native, required by -Dterminfo=enabled. From the ncurses package, which is why ncurses is a build dependency of a terminal emulator."
+"program:python3" = "meson.build:226 -- native, used to generate sources at build time."
+"program:env" = "meson.build:218 -- native, coreutils env(1) from the stage-4 sysroot."
+"pkg:threads" = "meson.build:146 -- meson's built-in pthread lookup, satisfied by glibc."
+"pkg:epoll-shim" = "meson.build:147 -- required: false, a BSD compatibility shim. Linux has epoll natively."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/foot-1.27.0.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Ddocs=enabled", "-Dutmp-backend=none", "-Dtests=false",
+         "-Dgrapheme-clustering=enabled", "-Dime=false",
+         "-Dterminfo=enabled", "-Dthemes=true"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/foot", "--version"]]
+expect = ["1.27.0"]

@@ -1,0 +1,115 @@
+name    = "libcap"
+version = "2.76"
+group   = "browser-substrate"
+license = "BSD-3-Clause OR GPL-2.0-only"
+srcdir  = "libcap-2.76"
+
+[source]
+url       = "https://git.kernel.org/pub/scm/libs/libcap/libcap.git/snapshot/libcap-2.76.tar.gz"
+sha256    = "f6662862cb2727dcdbcd52a19c239eecb9d29c285c3768e9fb557cb027322034"
+signature = "none -- kernel.org cgit snapshots publish no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf"]
+link         = []
+runtime      = []
+# GOLANG AND PAM_CAP ARE BOTH AUTO-DETECTED FROM THE BUILD HOST -- see the
+# deferral. Neither is in this set; both are pinned off so the answer does not
+# depend on what happens to be installed beside the build.
+optional_off = ["golang", "pam_cap", "kdebug"]
+
+[declared]
+configure_flags = ["prefix=/usr", "lib=lib", "SHARED=yes", "GOLANG=no",
+                   "PAM_CAP=no"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libcap"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+WHY IT IS HERE: bubblewrap declares `dependency('libcap', required : true)` at \
+meson.build:68 -- no option, no fallback -- and bubblewrap is what WPE uses to \
+sandbox its web and network processes. libcap is also what lets bwrap drop \
+capabilities instead of being installed setuid, which is the difference \
+between a sandbox and a liability.
+
+lib IS DERIVED BY RUNNING ldd ON THE BUILD HOST, AND THAT IS THE WORST DEFAULT \
+IN THIS PACKAGE. Make.Rules:21 is
+
+    lib=$(shell ldd /usr/bin/ld|grep -E "ld-linux|ld.so"|cut -d/ -f2)
+
+-- it inspects the build machine's dynamic loader path and takes the second \
+component, yielding "lib" on this aarch64 chain (/lib/ld-linux-aarch64.so.1) \
+and "lib64" on a typical x86-64 host. So the INSTALL DIRECTORY of a library \
+depends on a shell pipeline over another binary's ldd output. If ldd is \
+missing, or /usr/bin/ld is not dynamic, or the grep misses, `lib` comes back \
+EMPTY and LIBDIR collapses to $(prefix)/ -- installing libcap.so directly into \
+/usr. Stated as lib=lib so none of that can happen.
+
+prefix MUST BE PASSED OR THE LAYOUT CHANGES SHAPE, not just location. \
+Make.Rules:32-43 branches on whether prefix is defined: WITH it, \
+exec_prefix=prefix and everything lands under /usr. WITHOUT it, prefix=/usr \
+but exec_prefix is EMPTY, so SBINDIR=/sbin and LIBDIR=/lib -- upstream's \
+deliberate choice, explained in the comment at :15, because getcap and setcap \
+are recovery tools. Veron puts everything under /usr, so prefix=/usr is \
+passed and the split-root layout is declined.
+
+DESTDIR DOES WORK, DESPITE APPEARANCES. The Makefiles use $(FAKEROOT) \
+everywhere and never mention DESTDIR -- but Make.Rules:12 is \
+`FAKEROOT=$(DESTDIR)`, so the standard variable feeds the internal one. \
+Checked rather than assumed, because a staging variable that silently did \
+nothing would install into the build root and the failure would look like a \
+missing file much later.
+
+GOLANG AND PAM_CAP AUTO-DETECT AND ARE PINNED OFF. Make.Rules:138 runs \
+`go version` and enables Go bindings if it succeeds; :123 looks for \
+/usr/include/security/pam_modules.h and builds a PAM module if present. \
+Neither Go nor PAM is in this set, so both would resolve to no -- but by \
+absence rather than by decision, and the PAM one probes an ABSOLUTE HOST PATH \
+rather than the sysroot, so it is answering a question about the wrong \
+machine.
+
+THE STATIC LIBRARY SHIPS AND THERE IS NO SWITCH FOR IT. libcap/Makefile:168 is \
+`install: install-static`, unconditionally, with the shared install appended \
+when SHARED=yes. So libcap.a lands in the image alongside libcap.so. Recorded \
+rather than fought: suppressing it would mean patching the install target, and \
+the [installs] listing makes the .a visible.
+
+DUAL-LICENSED, AND THIS IS A GENUINE OR. The License file offers BSD-3-Clause \
+or GPL-2.0-only at the recipient's choice -- the same shape as hwdata's, and \
+unlike dejavu's composite, which is an AND over different parts."""
+
+[undeclarable]
+"program:ldd" = "Make.Rules:21 -- run against /usr/bin/ld to derive the library directory name. Overridden with lib=lib, so this records what WOULD be consulted rather than what is."
+"host-path:/usr/include/security/pam_modules.h" = "Make.Rules:123 -- an absolute path on the BUILD host, not in the sysroot, probed to decide whether to build a PAM module. Pinned off with PAM_CAP=no."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libcap-2.76.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J", "prefix=/usr", "lib=lib", "SHARED=yes",
+         "GOLANG=no", "PAM_CAP=no"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "prefix=/usr", "lib=lib", "SHARED=yes",
+         "GOLANG=no", "PAM_CAP=no", "DESTDIR=$D"]]
+
+[guest]
+# NOT `getcap -v`. That was written first and checked afterwards: progs/getcap.c
+# parses "rvhnl", so -v is VERBOSE, not version, and the program requires a
+# filename -- so `getcap -v` alone prints usage and exits 1. It would have
+# failed the gate while saying nothing about libcap.
+#
+# libpsx IS ASSERTED TOO because it is a second library this package installs
+# (libcap/libpsx.pc.in) whenever PTHREADS is yes, which is the default. A test
+# naming only libcap would leave half the install unchecked.
+test   = [["/usr/bin/pkgconf", "--modversion", "libcap"],
+          ["/usr/bin/pkgconf", "--modversion", "libpsx"]]
+expect = ["2.76", "2.76"]

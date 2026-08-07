@@ -1,0 +1,127 @@
+name    = "yambar"
+version = "1.11.0"
+group   = "desktop"
+license = "MIT"
+srcdir  = "yambar-1.11.0"
+
+[source]
+url       = "https://codeberg.org/dnkl/yambar/releases/download/1.11.0/yambar-1.11.0.tar.gz"
+sha256    = "9859ef16ba16069c3442283d76607712c0b7bc602b6fadf41b2c3d97a754d5f9"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "tllist", "fcft", "libyaml",
+                "pixman", "wayland", "wayland-protocols", "libxkbcommon",
+                "fontconfig", "scdoc"]
+link         = ["fcft", "libyaml", "pixman", "wayland", "libxkbcommon",
+                "fontconfig"]
+runtime      = ["fcft", "libyaml", "pixman", "wayland", "libxkbcommon",
+                "fontconfig"]
+# EVERY PLUGIN IS `auto`. Twenty-one of them, each resolving on whatever is
+# installed. See the deferral -- this is the auto_features problem again with
+# no auto_features switch.
+optional_off = ["backend-x11", "plugin-alsa", "plugin-pulse",
+                "plugin-pipewire", "plugin-mpd", "plugin-i3",
+                "plugin-sway-xkb", "plugin-xkb", "plugin-xwindow",
+                "plugin-dwl", "plugin-river", "plugin-removables",
+                "plugin-backlight", "plugin-disk-io"]
+
+[declared]
+configure_flags = ["-Dbackend-x11=disabled", "-Dbackend-wayland=enabled",
+                   "-Dplugin-alsa=disabled", "-Dplugin-pulse=disabled",
+                   "-Dplugin-pipewire=disabled", "-Dplugin-mpd=disabled",
+                   "-Dplugin-i3=disabled", "-Dplugin-sway-xkb=disabled",
+                   "-Dplugin-xkb=disabled", "-Dplugin-xwindow=disabled",
+                   "-Dplugin-dwl=disabled", "-Dplugin-river=disabled",
+                   "-Dplugin-removables=disabled",
+                   "-Dplugin-backlight=enabled", "-Dplugin-battery=enabled",
+                   "-Dplugin-clock=enabled", "-Dplugin-cpu=enabled",
+                   "-Dplugin-mem=enabled", "-Dplugin-network=enabled",
+                   "-Dplugin-label=enabled", "-Dplugin-script=enabled",
+                   "-Dplugin-disk-io=enabled",
+                   "-Dplugin-foreign-toplevel=enabled",
+                   "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["yambar"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+libyaml WAS THE BLOCKER AND IS NOW A DEPENDENCY. meson.build:54 is \
+`dependency('yaml-0.1')` -- no required: guard, no option. yambar's entire \
+configuration format is YAML, so this is a floor rather than a feature. \
+libyaml was not pinned at all when this recipe was first attempted; it is \
+pinned and written now.
+
+TWENTY-ONE PLUGINS, EVERY ONE OF THEM `auto`, AND NO auto_features SWITCH. \
+This is the same problem gst-plugins-bad has at 248 options and ffmpeg has \
+across its whole external-library set -- but meson's built-in \
+-Dauto_features=disabled cannot help here, because these are the package's own \
+feature options and turning them all off would leave a status bar with nothing \
+to display. So every one is named individually. That is verbose and it is the \
+only way the built set is a decision rather than a survey of what happened to \
+be installed.
+
+WHAT IS DISABLED AND WHY, in three groups. X11: backend-x11 plus \
+plugin-xkb, plugin-xwindow and plugin-sway-xkb. backend-x11 IS `enabled` BY \
+DEFAULT, NOT `auto` -- meson_options.txt:2 -- so unlike the twenty-one plugins \
+this one does not degrade quietly: meson.build:57-63 requires six xcb \
+libraries (xcb-aux, xcb-cursor, xcb-event, xcb-ewmh, xcb-randr, xcb-render) \
+and the build DIES at configure. Same shape as glib-networking's libproxy. It \
+is also the reason backend-wayland is stated: with x11 off, an unstated \
+wayland backend would be the only one left and worth naming rather than \
+inferring. AUDIO: alsa, pulse and \
+pipewire -- alsa-lib IS in this set for GStreamer's sake, so plugin-alsa \
+would have resolved to ENABLED by accident and put a volume widget in the bar \
+that no sound device backs. OTHER COMPOSITORS: i3, dwl and river are \
+protocols labwc does not speak.
+
+plugin-foreign-toplevel IS ENABLED AND IS THE ONE THAT MAKES THIS USEFUL. It \
+uses wlr-foreign-toplevel-management, which labwc implements through wlroots, \
+and is how the bar shows a window list. Without it yambar under labwc is a \
+clock and a battery meter.
+
+plugin-removables IS DISABLED because it wants udev for device events, and \
+this system has libudev-zero -- a library-only shim whose known gap is exactly \
+hotplug notification. The plugin would build and never fire.
+
+scdoc IS A BUILD DEPENDENCY for the man pages, as with foot and swaybg."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/yambar-1.11.0.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dbackend-x11=disabled", "-Dbackend-wayland=enabled",
+         "-Dplugin-alsa=disabled", "-Dplugin-pulse=disabled",
+         "-Dplugin-pipewire=disabled", "-Dplugin-mpd=disabled",
+         "-Dplugin-i3=disabled", "-Dplugin-sway-xkb=disabled",
+         "-Dplugin-xkb=disabled", "-Dplugin-xwindow=disabled",
+         "-Dplugin-dwl=disabled", "-Dplugin-river=disabled",
+         "-Dplugin-removables=disabled", "-Dplugin-backlight=enabled",
+         "-Dplugin-battery=enabled", "-Dplugin-clock=enabled",
+         "-Dplugin-cpu=enabled", "-Dplugin-mem=enabled",
+         "-Dplugin-network=enabled", "-Dplugin-label=enabled",
+         "-Dplugin-script=enabled", "-Dplugin-disk-io=enabled",
+         "-Dplugin-foreign-toplevel=enabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/yambar", "--version"]]
+expect = ["1.11.0"]

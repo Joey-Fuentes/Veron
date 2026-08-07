@@ -1,0 +1,90 @@
+name    = "libidn2"
+version = "2.3.8"
+group   = "tls"
+license = "GPL-2.0-or-later OR LGPL-3.0-or-later"
+srcdir  = "libidn2-2.3.8"
+
+[source]
+url       = "https://ftp.gnu.org/gnu/libidn/libidn2-2.3.8.tar.gz"
+sha256    = "f557911bf6171621e1f72ff35f5b1825bb35b52ed45325dcdee931e5d3c0787a"
+signature = "https://ftp.gnu.org/gnu/libidn/libidn2-2.3.8.tar.gz.sig"
+# READ FROM THE SIGNATURE WITH AN EMPTY KEYRING, which proves the signature
+# binds to these bytes and proves nothing about who holds the key. Compare
+# against an independently published fingerprint before treating the pin as
+# trusted, and record the result in policy/keyring.toml -- that entry does not
+# exist yet and this field is a claim about provenance, not about identity.
+signing_key = "A3CC9C870B9D310ABAD4CF2F51722B08FE4745A2"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf"]
+link         = []
+runtime      = []
+optional_off = ["static", "nls", "gtk-doc", "valgrind-tests", "doc"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--disable-nls",
+                   "--disable-rpath", "--disable-gtk-doc",
+                   "--disable-valgrind-tests"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libidn2"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball.
+
+THIS IS A RE-PIN, NOT A VERSION BUMP FOR ITS OWN SAKE, AND IT FIXES A REAL \
+BLOCKER. The previous pin was libidn2-v2.3.7.tar.gz -- a GitLab ARCHIVE OF THE \
+TAG, which ships configure.ac, Makefile.am and `bootstrap` and NO configure \
+script. Building it needs autoreconf, and its bootstrap FETCHES GNULIB, which \
+is a network operation inside a sandbox that is sealed by construction. So the \
+pinned artifact was unbuildable, and gnutls carried --without-idn as a \
+deferral.
+
+THE GNU RELEASE TARBALL SHIPS configure -- checked, not assumed -- so there is \
+no autoreconf step, no gnulib, and no network. That is the difference between \
+an archive of a tag and a release, and it is the same distinction hyphen sits \
+on the other side of: hyphen also lacks configure, but vendors no gnulib and \
+has no bootstrap, so a plain autoreconf suffices there.
+
+IT ALSO UPGRADES PROVENANCE. ftp.gnu.org publishes a detached signature, so \
+this is the second package in the set with a real signing_key rather than \
+"none published" -- and the FIRST whose key is not yet in policy/keyring.toml. \
+That entry is a TRUST CLAIM and must record where the fingerprint came from \
+and who cross-checked it; reading it out of the signature that shipped beside \
+the artifact proves the binding and nothing else.
+
+WHAT IT UNBLOCKS: gnutls's --without-idn can become IDNA support, which is how \
+a browser reaches münchen.de. libpsl does NOT need it -- that recipe names \
+libicu explicitly, precisely because libidn2 was unbuildable, and that choice \
+should be revisited now rather than left as a workaround that outlived its \
+cause.
+
+--enable-static DEFAULTS TO yes HERE (checked against --help), unlike \
+libgpg-error and libgcrypt in the same group where it defaults to no. Three \
+packages, two conventions; assuming either one costs a wrong flag.
+
+DUAL-LICENSED GPL-2.0-or-later OR LGPL-3.0-or-later, a genuine OR."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libidn2-2.3.8.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--disable-nls",
+         "--disable-rpath", "--disable-gtk-doc", "--disable-valgrind-tests"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libidn2"]]
+expect = ["2.3.8"]

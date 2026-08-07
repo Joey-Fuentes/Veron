@@ -1,0 +1,61 @@
+name    = "libtasn1"
+version = "4.21.0"
+group   = "tls"
+license = "LGPL-2.1-or-later"
+srcdir  = "libtasn1-4.21.0"
+
+[source]
+url       = "https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.21.0.tar.gz"
+sha256    = "1d8a444a223cc5464240777346e125de51d8e6abf0b8bac742ac84609167dc87"
+signature = "https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.21.0.tar.gz.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf"]
+link         = []
+runtime      = []
+optional_off = ["static", "doc", "gtk-doc", "valgrind-tests"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--disable-doc"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["libtasn1"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+IT PARSES ASN.1, WHICH IS WHAT AN X.509 CERTIFICATE IS. gnutls cannot read a \
+certificate without it.
+
+IT COULD HAVE BEEN AVOIDED AND WAS NOT, DELIBERATELY. gnutls offers \
+--with-included-libtasn1 (configure:13724), and its default is `no` -- so \
+gnutls uses the system copy unless told otherwise. Vendoring would have saved \
+a package and cost the thing this project is built on: the bundled copy inside \
+gnutls's tarball is not separately pinned, not separately mirrored, and would \
+appear in no manifest as its own artifact. A dependency that is invisible \
+because it is bundled is worse than one that is visible because it is \
+packaged."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/libtasn1-4.21.0.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--disable-doc"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libtasn1"]]
+expect = ["4.21.0"]

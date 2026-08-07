@@ -1,0 +1,59 @@
+name    = "tllist"
+version = "1.1.0"
+group   = "desktop"
+license = "MIT"
+srcdir  = "tllist"
+
+[source]
+url       = "https://codeberg.org/dnkl/tllist/archive/1.1.0.tar.gz"
+sha256    = "0e7b7094a02550dd80b7243bcffc3671550b0f1d8ba625e4dff52517827d5d23"
+signature = "none published -- forge archive, digest is ours"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf"]
+link         = []
+runtime      = []
+optional_off = []
+
+[declared]
+configure_flags = []
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["tllist"]
+deferral        = """
+HEADER-ONLY, AND THE WHOLE meson.build IS TWO LINES OF SUBSTANCE:
+
+    tllist = declare_dependency(include_directories: '.')
+    meson.override_dependency('tllist', tllist)
+
+There is no library, no options file and no dependency of its own. It exists \
+in this set because fcft, foot and fuzzel all declare `dependency('tllist', \
+version: '>=1.0.1', fallback: 'tllist')` -- and that fallback is the reason it \
+is a package rather than a vendored subproject: without it installed, meson \
+clones tllist and builds a second copy inside each of the three.
+
+srcdir IS "tllist" WITH NO VERSION, AND THAT IS MEASURED. The Codeberg archive \
+unpacks to a bare `tllist/` directory rather than `tllist-1.1.0/`, so the \
+driver's default -- name-version -- would point at a directory that does not \
+exist and the configure step would die on a cwd that was never created."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/tllist-1.1.0.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "tllist"]]
+expect = ["1.1.0"]

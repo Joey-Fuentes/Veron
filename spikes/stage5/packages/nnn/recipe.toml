@@ -1,0 +1,87 @@
+name    = "nnn"
+version = "5.2"
+group   = "desktop"
+license = "BSD-2-Clause"
+srcdir  = "nnn-5.2"
+
+[source]
+url       = "https://github.com/jarun/nnn/archive/refs/tags/v5.2.tar.gz"
+sha256    = "cb31dd220f74d15744e3fcbf402a99a426301b207babc6ffe7a6e33a06b1bd0c"
+signature = "none published -- GitHub archive, digest is ours"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf", "ncurses", "readline"]
+link         = ["ncurses", "readline"]
+runtime      = ["ncurses", "readline"]
+# O_NOX11 IS SET EVEN THOUGH X11 IS ABSENT -- see the deferral, the default
+# is to COMPILE the integration in.
+optional_off = ["pcre2", "icons", "nerd", "emoji", "x11", "qsort", "bench"]
+
+[declared]
+# ONLY WHAT A STEP PASSES. The selftest rejected O_NOMOUSE=0 and O_NORL=0
+# here and was right to: they are the Makefile's DEFAULTS, not arguments this
+# recipe supplies, so listing them claimed the plan would show something it
+# does not. What those defaults are and why they are kept is in the deferral,
+# which is the right place for a fact about the package rather than about the
+# command line.
+configure_flags = ["PREFIX=/usr", "O_NOX11=1"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["nnn"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+A PLAIN MAKEFILE WITH O_* TOGGLES, NOT autotools AND NOT meson. Every feature \
+is an `O_NAME := 0|1` variable at the top of the Makefile, so there is no \
+configure step and no options file -- the flags are make variables passed on \
+the command line, which is why [declared].configure_flags names them in that \
+form.
+
+PREFIX DEFAULTS TO /usr/local (Makefile:3), so it is stated. MANPREFIX \
+follows PREFIX, and nnn ships a pre-written nnn.1 rather than generating one, \
+so this is the one package in batch A that installs a man page WITHOUT \
+needing scdoc.
+
+O_NOX11 IS SET, AND THE DEFAULT IS THE WRONG WAY ROUND. The variable is \
+`O_NOX11 := 0` -- zero meaning "do not disable", so X11 integration is \
+COMPILED IN by default. Under the no-X11 policy that is a link nobody chose. \
+The naming is inverted throughout this Makefile and reading it quickly gives \
+the opposite answer, which is the reason each one is stated here rather than \
+inherited.
+
+READLINE IS KEPT (O_NORL=0, i.e. readline enabled) because readline is in \
+this set already -- bash links it -- and it is what makes nnn's prompt \
+usable. Makefile:62 adds -lreadline.
+
+ncurses IS RESOLVED THROUGH pkg-config, ncursesw FIRST. Makefile:149 tries \
+`pkg-config ncursesw`, falls back to `ncurses`, then to a bare -lncurses. The \
+wide build is what this set installs, so the first branch is taken -- and \
+wide is what a file manager showing arbitrary filenames needs.
+
+IT RUNS INSIDE foot, WHICH IS WHY BOTH ARE IN THIS BATCH. nnn is a curses \
+program with no window of its own; without a terminal emulator it has nowhere \
+to draw, and without foot's terminfo entry curses cannot describe the \
+terminal it is drawing to."""
+
+[undeclarable]
+"program:pkg-config" = "Makefile:8 -- PKG_CONFIG, used to resolve ncursesw's cflags and libs. Provided by pkgconf."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/nnn-v5.2.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J", "PREFIX=/usr", "O_NOX11=1"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "PREFIX=/usr", "O_NOX11=1", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/nnn", "-V"]]
+expect = ["5.2"]

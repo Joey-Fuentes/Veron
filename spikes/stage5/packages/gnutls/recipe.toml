@@ -1,0 +1,129 @@
+name    = "gnutls"
+version = "3.8.10"
+group   = "tls"
+license = "LGPL-2.1-or-later"
+srcdir  = "gnutls-3.8.10"
+
+[source]
+url       = "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.10.tar.xz"
+sha256    = "db7fab7cce791e7727ebbef2334301c821d79a550ec55c9ef096b610b03eb6b7"
+signature = "https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.10.tar.xz.sig"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf", "nettle", "gmp", "libtasn1", "p11-kit", "zlib"]
+# ca-certificates IS A RUNTIME DEPENDENCY, NOT A BUILD ONE: gnutls compiles the
+# trust-store PATH in and reads the file at handshake time.
+link         = ["nettle", "gmp", "libtasn1", "p11-kit", "zlib"]
+runtime      = ["nettle", "gmp", "libtasn1", "p11-kit", "zlib",
+                "ca-certificates"]
+# idn IS DECLINED FOR NOW BECAUSE libidn2's PIN IS A GIT ARCHIVE WITH NO
+# configure -- see the deferral. This is a deferral, not a decision.
+optional_off = ["idn", "doc", "tests", "static", "included-libtasn1",
+                "libdane"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--without-idn",
+                   "--with-included-unistring", "--disable-doc",
+                   "--disable-tests", "--disable-libdane", "--with-p11-kit",
+                   "--with-default-trust-store-file=/etc/ssl/certs/ca-certificates.crt"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["gnutls"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+WHY gnutls AND NOT NSS, SETTLED FROM SOURCE RATHER THAN PREFERENCE. Both were \
+pinned and both were uploaded, which looked like a choice to make. \
+glib-networking's meson_options.txt settles it: it offers exactly two TLS \
+backends, `gnutls` (value: 'enabled') and `openssl` (value: 'disabled'), and \
+THERE IS NO NSS BACKEND AT ALL. Upstream's own comment above them reads: "The \
+OpenSSL backend is provided for systems where licensing considerations \
+prohibit use of certain dependencies of GnuTLS. General-purpose Linux distros \
+should leave it disabled. Please don't second-guess our defaults." So gnutls \
+is not a preference here, it is the supported path. What nss and nspr are for \
+remains open until WPE's own source is read.
+
+--without-idn IS A DEFERRAL AND NOT A DECISION. gnutls uses libidn2 for IDNA, \
+which is how a browser reaches münchen.de. The pinned libidn2 artifact is a \
+GITHUB ARCHIVE OF THE TAG (v2.3.7.tar.gz) and ships configure.ac, Makefile.am \
+and bootstrap with NO configure script -- so it needs autoreconf, and its \
+`bootstrap` fetches gnulib, which is a network operation inside a sealed \
+sandbox. Upstream publishes a real release tarball on ftp.gnu.org that does \
+ship configure; the fix is a re-pin rather than a redesign, and this flag flips \
+when that lands.
+
+--with-included-unistring, WHICH IS THE OPPOSITE CHOICE FROM libtasn1 AND \
+DELIBERATELY SO. libunistring is not pinned at all -- not in MIRRORS.tsv, not \
+in the sysroot -- so there is no separately-pinned copy to prefer. libtasn1 IS \
+pinned, so its bundled copy is declined in favour of the packaged one. The rule \
+is the same in both cases: prefer the artifact that appears in the manifest.
+
+--with-p11-kit IS STATED THOUGH IT IS THE DEFAULT, because the alternative is \
+losing the system trust store entirely and that should not be reachable by \
+omission.
+
+THE TRUST STORE IS STILL EMPTY, BUT ITS PATH IS NOW NAMED, AND BLFS IS WHERE \
+THAT CAME FROM. postlfs/gnutls.html passes \
+--with-default-trust-store-file=/etc/pki/tls/certs/ca-bundle.crt, which is the \
+flag that tells gnutls WHERE to look for CA roots. Without it gnutls falls back \
+to a compiled-in guess, and a bundle dropped in later would not be found. The \
+path here is /etc/ssl/certs/ca-certificates.crt rather than BLFS's -- BLFS \
+inherits Fedora's layout via make-ca, and /etc/ssl is the more common \
+convention and the one this set has no reason to depart from.
+
+AND THE BUNDLE NOW EXISTS. The ca-certificates recipe generates \
+/etc/ssl/certs/ca-certificates.crt at build time from Mozilla's certdata.txt, \
+which ships inside the pinned NSS tarball -- 121 roots trusted for TLS server \
+auth, sorted, byte-identical between runs. That is why ca-certificates is a \
+RUNTIME dependency here and not a build one: gnutls compiles the path in and \
+reads the file at handshake time, so the two packages need not be ordered \
+against each other.
+
+THE ROOTS AGE WITH THE NSS PIN. A CA distrusted by Mozilla after 3.126 stays \
+trusted until that pin moves. There is no updater and no revocation path; that \
+is a stage-6 question and is recorded in the ca-certificates deferral.
+
+BLFS ALSO PASSES --enable-openssl-compatibility AND --disable-dsa. The first \
+builds a libgnutls-openssl shim for programs written against OpenSSL's API; \
+nothing here wants it. The second is a hardening choice worth revisiting \
+separately -- DSA is deprecated in TLS 1.3 -- but disabling an algorithm is a \
+cryptographic decision and not one to make as a side effect of a flag diff.
+
+--disable-libdane DROPS DNSSEC-BASED CERTIFICATE VALIDATION, which needs \
+unbound. Not in this set.
+
+NO --disable-guile OPTION EXISTS in 3.8.10, and one was written here before \
+being checked. gnutls's Guile bindings moved out of the main tarball; \
+`./configure --help` offers no such flag. Every flag in this recipe was then \
+verified against --help and this was the only one that did not exist. \
+--disable-tools was ALSO considered and NOT taken: certtool and p11tool are \
+how a human inspects a certificate on a system with no other TLS utility, and \
+this image has none."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/gnutls-3.8.10.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static", "--without-idn",
+         "--with-included-unistring", "--disable-doc", "--disable-tests",
+         "--disable-libdane", "--with-p11-kit",
+                   "--with-default-trust-store-file=/etc/ssl/certs/ca-certificates.crt"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "gnutls"]]
+expect = ["3.8.10"]

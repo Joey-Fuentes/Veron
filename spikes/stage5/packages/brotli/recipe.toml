@@ -1,0 +1,77 @@
+name    = "brotli"
+version = "1.1.0"
+group   = "browser-substrate"
+license = "MIT"
+srcdir  = "brotli-1.1.0"
+
+[source]
+url       = "https://github.com/google/brotli/archive/v1.1.0/brotli-1.1.0.tar.gz"
+sha256    = "e720a6ca29428b803f4ad165371771f5398faba397edf6778837a18599ea13ff"
+signature = "none published -- GitHub archive, digest is ours"
+crosschecked_against = []
+
+[deps]
+build        = ["cmake", "ninja", "pkgconf"]
+link         = []
+runtime      = []
+optional_off = ["testing"]
+
+[declared]
+configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release",
+                   "-DBUILD_SHARED_LIBS=ON", "-DBROTLI_DISABLE_TESTS=ON"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["brotli"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+WHY IT IS HERE: WPE decompresses Brotli-encoded HTTP responses and Brotli \
+web fonts. It has no dependencies of its own -- no zlib, no pkg-config \
+lookups, nothing.
+
+BUILD_SHARED_LIBS IS ALREADY ON HERE (CMakeLists.txt:13 sets it explicitly), \
+WHICH IS THE OPPOSITE OF utf8proc IN THE PREVIOUS BATCH. There CMake's own \
+default of OFF produced a static archive and stamped UTF8PROC_STATIC into \
+consumers; here upstream overrides the default. It is stated anyway, because \
+the two packages differing on a flag whose default is invisible is exactly the \
+situation where inheriting is a coin toss.
+
+THREE .pc FILES, NOT ONE: libbrotlicommon, libbrotlidec and libbrotlienc \
+(CMakeLists.txt:347-351). Consumers ask for the decoder and encoder \
+separately, and both depend on common -- so a guest test naming only one would \
+prove less than it appears to. All three are asserted.
+
+BLFS CROSS-CHECK: general/brotli.html builds with cmake, \
+-DCMAKE_INSTALL_PREFIX=/usr and -DCMAKE_BUILD_TYPE=Release, which agrees. It \
+then does `pip3 install ... Brotli` for the Python bindings; that is skipped \
+here -- nothing in this set imports brotli from Python, and BLFS's own note \
+says the bindings need a pkgconfig module BLFS does not provide."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/brotli-1.1.0.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
+         "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release",
+         "-DBUILD_SHARED_LIBS=ON", "-DBROTLI_DISABLE_TESTS=ON"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libbrotlicommon"],
+          ["/usr/bin/pkgconf", "--modversion", "libbrotlidec"],
+          ["/usr/bin/pkgconf", "--modversion", "libbrotlienc"]]
+expect = ["1.1.0", "1.1.0", "1.1.0"]

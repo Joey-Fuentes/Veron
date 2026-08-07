@@ -1,0 +1,75 @@
+name    = "opus"
+version = "1.6.1"
+group   = "media"
+license = "BSD-3-Clause"
+srcdir  = "opus-1.6.1"
+
+[source]
+url       = "https://downloads.xiph.org/releases/opus/opus-1.6.1.tar.gz"
+sha256    = "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1"
+signature = "none -- downloads.xiph.org publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf"]
+link         = []
+runtime      = []
+optional_off = ["tests", "docs", "extra-programs", "deep-plc", "dred", "osce"]
+
+[declared]
+configure_flags = ["-Dtests=disabled", "-Ddocs=disabled",
+                   "-Dextra-programs=disabled", "-Dintrinsics=enabled",
+                   "-Drtcd=enabled", "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["opus"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+FOUR OPTIONS ARE auto AND THREE OF THEM DECIDE HOW FAST THE CODEC IS. \
+`rtcd` (run-time CPU capability detection), `asm` and `intrinsics` all default \
+to auto, so on an aarch64 build the NEON paths are taken or not depending on \
+what the compiler happens to accept -- and nothing records which happened. \
+rtcd and intrinsics are stated enabled; asm is left at auto because upstream's \
+own description scopes it to "ARM (fixed-point)" and this build is \
+floating-point, so forcing it would assert something about a code path that is \
+not compiled.
+
+fixed-point IS LEFT false, WHICH IS THE FLOATING-POINT BUILD. aarch64 has a \
+hardware FPU; the fixed-point path exists for machines without one.
+
+deep-plc, dred AND osce ARE ALREADY disabled UPSTREAM and are listed in \
+optional_off rather than passed, because passing a flag that matches the \
+default adds noise to the plan without adding a decision. They are neural \
+network features that would pull weight files into the image.
+
+extra-programs IS auto AND BUILDS DEMO AND TEST BINARIES. Disabled: this is a \
+library for GStreamer, not a toolkit."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/opus-1.6.1.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dtests=disabled", "-Ddocs=disabled", "-Dextra-programs=disabled",
+         "-Dintrinsics=enabled", "-Drtcd=enabled"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "opus"]]
+expect = ["1.6.1"]

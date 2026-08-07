@@ -1,0 +1,80 @@
+name    = "lcms2"
+version = "2.19.1"
+group   = "browser-substrate"
+license = "MIT"
+srcdir  = "lcms2-2.19.1"
+
+[source]
+url       = "https://github.com/mm2/Little-CMS/releases/download/lcms2.19.1/lcms2-2.19.1.tar.gz"
+sha256    = "bfc54f7bab59fbc921012014a8032e4cba4abd46db47d46b76416a8c0b2815c8"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["pkgconf", "zlib"]
+link         = ["zlib"]
+runtime      = ["zlib"]
+# jpeg AND tiff ARE PROBED AND DECLINED -- see the deferral. They build the
+# tificc/jpgicc TOOLS, not the library WPE needs.
+optional_off = ["jpeg", "tiff", "fastfloat", "threaded", "static"]
+
+[declared]
+configure_flags = ["--prefix=/usr", "--disable-static", "--without-jpeg",
+                   "--without-tiff"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["lcms2"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+WHY IT IS HERE: colour management for WPE. Nothing else in this set uses it, \
+and it is in the WPE-prerequisite group rather than desktop for that reason.
+
+--without-jpeg AND --without-tiff ARE STATED BECAUSE THE PROBE IS SILENT. \
+`--with-jpeg=DIR` and `--with-tiff=DIR` default to searching, and what they \
+gate is the jpgicc and tificc COMMAND-LINE TOOLS rather than anything in \
+liblcms2. libjpeg-turbo IS in this set, so the jpeg probe would succeed and \
+quietly add a tool nobody asked for and a link nothing declared -- which is \
+the shape `veron linked` exists to catch, arriving from an unstated default \
+rather than from a recipe. tiff is not in the set and would fail the probe \
+anyway; both are stated so the answer does not depend on what else happens to \
+be installed.
+
+--with-fastfloat AND --with-threaded ARE DECLINED, AND THE REASON IS IN \
+UPSTREAM'S OWN HELP TEXT: "use only if GPL". lcms2 is MIT and those two \
+plugins are not; enabling them would change this package's licence, which is \
+a decision that belongs nowhere near a default. license.py reports on \
+composition and this would have quietly moved it.
+
+--disable-static, PER POLICY AND PER BLFS -- autotools defaults \
+--enable-static to yes.
+
+BLFS CROSS-CHECK: general/lcms2.html gives exactly \
+`./configure --prefix=/usr --disable-static && make install`, which agrees on \
+the two flags it passes. It does NOT pass --without-jpeg or --without-tiff, \
+because BLFS has both libraries and wants the tools. Veron does not."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/lcms2-2.19.1.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["./configure", "--prefix=/usr", "--disable-static",
+         "--without-jpeg", "--without-tiff"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["make", "-j$J"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["make", "install", "DESTDIR=$D"]]
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "lcms2"]]
+expect = ["2.19"]

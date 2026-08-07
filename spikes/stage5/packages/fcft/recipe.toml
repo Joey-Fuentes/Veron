@@ -1,0 +1,94 @@
+name    = "fcft"
+version = "3.3.1"
+group   = "desktop"
+license = "MIT"
+srcdir  = "fcft"
+
+[source]
+url       = "https://codeberg.org/dnkl/fcft/archive/3.3.1.tar.gz"
+sha256    = "9949fbce0826669369c3b9361ac04b0459fdc51037e2ccf2e2483794909903f4"
+signature = "none published -- forge archive, digest is ours"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf", "tllist", "fontconfig",
+                "freetype", "harfbuzz", "pixman", "utf8proc", "scdoc"]
+link         = ["fontconfig", "freetype", "harfbuzz", "pixman", "utf8proc"]
+runtime      = ["fontconfig", "freetype", "harfbuzz", "pixman", "utf8proc"]
+# run-shaping AND docs ARE NOW ENABLED -- utf8proc and scdoc exist. What
+# remains off is genuinely unwanted rather than merely unavailable.
+optional_off = ["examples", "test-text-shaping", "system-nanosvg"]
+
+[declared]
+configure_flags = ["-Ddocs=enabled", "-Dgrapheme-shaping=enabled",
+                   "-Drun-shaping=enabled", "-Dsvg-backend=nanosvg",
+                   "-Dsystem-nanosvg=disabled", "-Dexamples=false",
+                   "-Dtest-text-shaping=false", "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["fcft"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+run-shaping IS ENABLED, AND THIS IS THE LINE THAT FLIPPED. meson.build:77 is \
+`utf8proc = dependency('libutf8proc', required: get_option('run-shaping'))`, \
+and the option is a feature with NO stated value -- so at `auto` it would \
+silently resolve to disabled. It was declined when utf8proc had no recipe and \
+is now enabled because it does. Stated either way: `auto` here means the \
+answer depends on what happens to be installed, which is the property this \
+whole set exists to remove.
+
+grapheme-shaping IS ENABLED AND CAN BE, because it needs only harfbuzz \
+(meson.build:75), which this set builds. It is stated rather than left at \
+`auto` for the reason `auto` keeps earning: a harfbuzz that failed to install \
+would silently produce an fcft that shapes nothing, and foot's own \
+grapheme-clustering option says it "requires fcft with harfbuzz support to be \
+useful".
+
+svg-backend STAYS AT ITS DEFAULT, nanosvg, WHICH IS BUNDLED. The alternative \
+is librsvg, which is Rust and not in this set. -Dsystem-nanosvg=disabled says \
+to use the vendored copy; there is no system nanosvg here and the option \
+already defaults that way, so this is a statement rather than a change.
+
+docs IS ENABLED NOW THAT scdoc EXISTS. It was declined on the assumption that \
+man pages would be dead weight, and that assumption was wrong: busybox \
+provides a `man` applet and the stage-4 sysroot ships /usr/bin/man, so the \
+pages are readable. scdoc has no dependencies of its own, so the cost of the \
+correction was one small C program for four packages.
+
+srcdir IS "fcft" WITH NO VERSION. The Codeberg archive unpacks to a bare \
+`fcft/`, so the driver's name-version default would name a directory that \
+does not exist."""
+
+[undeclarable]
+"pkg:threads" = "meson.build:72 -- dependency('threads'), meson's built-in pthread lookup, satisfied by glibc from the stage-4 sysroot."
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/fcft-3.3.1.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Ddocs=enabled", "-Dgrapheme-shaping=enabled",
+         "-Drun-shaping=enabled", "-Dsvg-backend=nanosvg",
+         "-Dsystem-nanosvg=disabled", "-Dexamples=false",
+         "-Dtest-text-shaping=false"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "fcft"]]
+expect = ["3.3.1"]

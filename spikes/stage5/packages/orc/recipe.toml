@@ -1,0 +1,83 @@
+name    = "orc"
+version = "0.4.41"
+group   = "media"
+license = "BSD-2-Clause"
+srcdir  = "orc-0.4.41"
+
+[source]
+url       = "https://gstreamer.freedesktop.org/src/orc/orc-0.4.41.tar.xz"
+sha256    = "cb1bfd4f655289cd39bc04642d597be9de5427623f0861c1fc19c08d98467fa2"
+signature = "none -- gstreamer.freedesktop.org publishes no detached signature"
+crosschecked_against = []
+
+[deps]
+build        = ["meson", "ninja", "pkgconf"]
+link         = []
+runtime      = []
+optional_off = ["orc-test", "benchmarks", "examples", "gtk_doc", "tests"]
+
+[declared]
+configure_flags = ["-Dorc-test=disabled", "-Dbenchmarks=disabled",
+                   "-Dexamples=disabled", "-Dgtk_doc=disabled",
+                   "-Dtests=disabled", "-Dtools=enabled",
+                   "-Dorc-target=neon", "--wrap-mode=nofallback"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["orc"]
+deferral        = """
+Internals not reviewed. Read out of the pinned tarball, whose sha256 matches \
+MIRRORS.tsv on both routes.
+
+WHY IT IS A PACKAGE AND NOT A SUBPROJECT. gst-plugins-base/meson.build:399 is
+
+    orc_dep = dependency('orc-0.4', version: orc_req,
+                         required: get_option('orc'), allow_fallback: true)
+
+-- and `allow_fallback: true` means that without an installed orc, meson would \
+CLONE AND BUILD ITS OWN COPY as a subproject. --wrap-mode=nofallback forbids \
+that, which turns a silent second build into a configure failure. Installing \
+orc properly is the answer to both.
+
+WHAT IT DOES: orc is a just-in-time compiler for SIMD array operations. \
+GStreamer's audio conversion, resampling and video scaling dispatch through it \
+at runtime, so its absence is not a build failure -- it is a large and \
+invisible slowdown, which is the class of thing this project keeps declining \
+to leave to chance.
+
+orc-target=neon RATHER THAN THE DEFAULT all. The option selects which SIMD \
+backends are compiled in, and `all` includes avx, sse, mmx, mips, altivec and \
+c64x -- none of which an aarch64 machine can execute. Naming neon states the \
+one that is real here. THIS IS A JIT, so the backend decides what code gets \
+GENERATED at runtime rather than merely which functions exist.
+
+tools STAYS ENABLED. `orcc` is the Orc compiler, and gst-plugins-base uses it \
+at BUILD time to turn .orc source files into C. Disabling it would not save \
+much and would break a consumer."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/orc-0.4.41.tar.xz", "-C", "$B"]]
+
+[[steps]]
+name = "setup"
+cwd  = "$S"
+run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
+         "--wrap-mode=nofallback",
+         "-Dorc-test=disabled", "-Dbenchmarks=disabled", "-Dexamples=disabled",
+         "-Dgtk_doc=disabled", "-Dtests=disabled", "-Dtools=enabled",
+         "-Dorc-target=neon"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "orc-0.4"]]
+expect = ["0.4.41"]

@@ -1,0 +1,92 @@
+name    = "utf8proc"
+version = "2.11.3"
+group   = "desktop"
+license = "MIT"
+srcdir  = "utf8proc-2.11.3"
+
+[source]
+url       = "https://github.com/JuliaStrings/utf8proc/releases/download/v2.11.3/utf8proc-2.11.3.tar.gz"
+sha256    = "415189fd2c85cd6ee5ff26af500fa387de9ada1e3e316e93f7338551481d557d"
+signature = "none -- no detached signature published beside the release"
+crosschecked_against = []
+
+[deps]
+build        = ["cmake", "ninja", "pkgconf"]
+link         = []
+runtime      = []
+# UTF8PROC_ENABLE_TESTING IS OFF BY DEFAULT AND MUST STAY OFF -- it FETCHES
+# FROM THE NETWORK at configure time. See the deferral.
+optional_off = ["testing"]
+
+[declared]
+configure_flags = ["-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release",
+                   "-DBUILD_SHARED_LIBS=ON", "-DUTF8PROC_ENABLE_TESTING=OFF",
+                   "-DUTF8PROC_INSTALL=ON"]
+verification    = "none -- upstream suites are not run"
+packaged_as     = ["utf8proc"]
+deferral        = """
+WHY IT IS HERE, AND IT FLIPS TWO DECLINES ALREADY WRITTEN. fcft's \
+-Drun-shaping and foot's -Dgrapheme-clustering both resolve \
+`dependency('libutf8proc', ...)` and both were declined because this package \
+did not exist. They go together -- foot's own option text says grapheme \
+clustering "requires fcft with harfbuzz support to be useful" -- and this is \
+the package that lets both be enabled.
+
+BUILD_SHARED_LIBS DEFAULTS TO OFF, WHICH IS CMAKE'S DEFAULT AND NOT UPSTREAM'S \
+CHOICE, AND IT IS NOT A COSMETIC ONE. CMakeLists.txt:33 is
+
+    target_compile_definitions(utf8proc PUBLIC "UTF8PROC_STATIC")
+
+under `if (NOT BUILD_SHARED_LIBS)`, so the default produces a static archive \
+AND stamps UTF8PROC_STATIC into every consumer's compile line. fcft and foot \
+would each link their own copy, the symbols would be baked in, and \
+`veron linked` would see no DT_NEEDED at all -- a dependency that is real and \
+invisible to the observed detector. Every other library in this set is shared; \
+this makes it match.
+
+-DUTF8PROC_ENABLE_TESTING=OFF IS STATED EVEN THOUGH IT IS THE DEFAULT, and \
+this one is worth more than the usual "a default is not a decision" argument. \
+CMakeLists.txt:88-90 is:
+
+    set(UNICODE_VERSION 17.0.0)
+    file(DOWNLOAD https://www.unicode.org/Public/${UNICODE_VERSION}/ucd/...)
+
+-- a NETWORK FETCH AT CONFIGURE TIME, inside a sandbox that has no network by \
+construction. Turning it on would not merely add tests; it would fail the \
+build at configure with a download error, or worse, reach the network from a \
+step that is supposed to be sealed. Stated so that nobody enables it \
+casually.
+
+THE .pc IS libutf8proc.pc, NOT utf8proc.pc (CMakeLists.txt:63), which is the \
+name fcft and foot actually ask for. It goes to lib/pkgconfig, so no \
+share/pkgconfig question arises here.
+
+NO BLFS PAGE. Absent from all 862 pages of BLFS 13.0."""
+
+[[steps]]
+name = "unpack"
+cwd  = "$B"
+run  = [["tar", "-xf", "$DL/utf8proc-2.11.3.tar.gz", "-C", "$B"]]
+
+[[steps]]
+name = "configure"
+cwd  = "$S"
+run  = [["cmake", "-S", ".", "-B", "_b", "-G", "Ninja",
+         "-DCMAKE_INSTALL_PREFIX=/usr", "-DCMAKE_BUILD_TYPE=Release",
+         "-DBUILD_SHARED_LIBS=ON", "-DUTF8PROC_ENABLE_TESTING=OFF",
+         "-DUTF8PROC_INSTALL=ON"]]
+
+[[steps]]
+name = "build"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b"]]
+
+[[steps]]
+name = "install"
+cwd  = "$S"
+run  = [["ninja", "-C", "_b", "install"]]
+env  = { DESTDIR = "$D" }
+
+[guest]
+test   = [["/usr/bin/pkgconf", "--modversion", "libutf8proc"]]
+expect = ["2.11.3"]
