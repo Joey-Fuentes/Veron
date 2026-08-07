@@ -1161,14 +1161,20 @@ jobs:
             printf 'ls -l /run/seatd.sock /dev/dri /dev/input 2>&1 | head -20\n'
             printf 'dinitctl status seatd 2>&1 | head -6\n'
             sleep 4
-            # labwc IN THE FOREGROUND, WITH seatd STILL UP. This is the only
-            # probe that matters now: the service form died with SIGNAL 11 on
-            # a run with a healthy seatd, and dinit swallows its stderr.
-            # /etc/profile already exports XDG_RUNTIME_DIR and XDG_CONFIG_DIRS,
-            # so a login shell has what the wrapper would have set.
-            printf 'echo ---LABWC-DIRECT---\n'
-            printf '/usr/bin/labwc 2>&1 | head -40\n'
-            sleep 20
+            # BACK TO THE SERVICE, NOW THAT IT SURVIVES. The foreground probe
+            # did its job -- it found the /dev/shm segfault -- and then became
+            # the wrong tool: labwc in the foreground BLOCKS THE SHELL, so
+            # every later line sat unread in the FIFO. The tty still echoed
+            # them, so VERON-SHOT-READY appeared in the log and the wait loop
+            # matched on text that had been TYPED rather than RUN. The capture
+            # then happened while labwc was still painting its first frame
+            # under kms_swrast, and caught the top-left 192x24 of a 1280x800
+            # wallpaper.
+            #
+            # dinitctl start returns immediately, so the shell stays live and
+            # the settle below is real time rather than an echo race.
+            printf 'dinitctl start labwc\n'
+            sleep 45
             printf '/usr/bin/foot &\n'
             sleep 20
             printf 'echo VERON-SHOT-READY\n'

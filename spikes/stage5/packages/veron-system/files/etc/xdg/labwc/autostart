@@ -35,4 +35,17 @@ fi
 # wlr-foreign-toplevel-management through wlroots, so opening a terminal makes
 # an entry appear in the bar. That is the cheapest end-to-end proof that
 # compositor, protocol and bar are all talking.
-[ -x /usr/bin/yambar ] && [ -f /etc/xdg/yambar/config.yml ] && /usr/bin/yambar &
+#
+# -c IS REQUIRED: yambar DOES NOT SEARCH XDG_CONFIG_DIRS. main.c's
+# get_config_path checks $HOME/.config/yambar/config.yml and then
+# $XDG_CONFIG_HOME/yambar/config.yml, and stops. /etc/xdg is in
+# XDG_CONFIG_DIRS, which it never consults -- so the file shipped beside this
+# one was invisible and yambar died with
+#
+#     err: main.c:316: could not find a configuration (see man 5 yambar)
+#
+# labwc reads /etc/xdg through XDG_CONFIG_DIRS and yambar does not; assuming
+# one spec-adjacent behaviour implies the other is what cost this. -c names
+# the path outright (main.c:220, which stats it before accepting).
+[ -x /usr/bin/yambar ] && [ -f /etc/xdg/yambar/config.yml ] && \
+    /usr/bin/yambar -c /etc/xdg/yambar/config.yml &
