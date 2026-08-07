@@ -54,7 +54,7 @@ configure_flags = [
   "-Dgallium-rusticl=false", "-Dgallium-va=disabled", "-Dvideo-codecs=",
   "-Dtools=", "-Dbuild-tests=false", "-Dvalgrind=disabled",
   "-Dlibunwind=disabled", "-Dlmsensors=disabled", "-Dhtml-docs=disabled",
-  "-Dperfetto=false", "--wrap-mode=nofallback",
+  "-Dperfetto=false", "-Dcpp_rtti=false", "--wrap-mode=nofallback",
 ]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["mesa"]
@@ -74,6 +74,26 @@ a time, and every flag above exists.
 NO RUST, AND IT IS TRUE BY ACCIDENT RATHER THAN BY POLICY. meson.build:835 is \
 `if with_gallium_rusticl or with_nouveau_vk or with_tools.contains('etnaviv') \
 or with_virtgpu_kumquat` then `add_languages('rust', required: true)`. \
+-Dcpp_rtti=false BECAUSE OUR LLVM HAS NO RTTI, AND MESA REFUSES TO DISAGREE. \
+meson.build:1951 compares mesa's `cpp_rtti` against LLVM's own `has-rtti`, \
+read from llvm-config, and ERRORS on a mismatch in EITHER direction:
+
+    LLVM was built without RTTI, so Mesa must also disable RTTI.
+    Use an LLVM built with LLVM_ENABLE_RTTI or add cpp_rtti=false.
+
+That is a good check -- mixing the two produces link failures far from the \
+cause -- and it names both remedies. Mesa moved rather than LLVM for three \
+reasons: LLVM_ENABLE_RTTI defaults OFF upstream, so this is the ordinary \
+configuration rather than a quirk of ours; mesa is LLVM's ONLY consumer in \
+this set, so nothing else has an opinion; and turning it on in the llvm recipe \
+means a 27-minute rebuild and a moved install digest to satisfy a flag that \
+costs one line here.
+
+FOUND BY BUILDING, NOT BY READING. The first run of this recipe died at \
+glslangValidator; the second got past it, resolved LLVM cleanly -- all twelve \
+modules including mcjit, `-lLLVM-22`, 22.1.8 -- and died here instead. Both \
+were configure errors, which is the cheap end of the build to be wrong at.
+
 NO VULKAN AT ALL, AND THE FIRST VERSION OF THIS RECIPE GOT IT WRONG. \
 -Dvulkan-drivers=swrast was chosen on the correct instinct -- pin it rather \
 than inherit ['auto'] -- and the wrong value. swrast is lavapipe, and \
@@ -143,7 +163,8 @@ run  = [["meson", "setup", "_b", "--prefix=/usr", "--buildtype=release",
          "-Dgallium-rusticl=false", "-Dgallium-va=disabled",
          "-Dvideo-codecs=", "-Dtools=", "-Dbuild-tests=false",
          "-Dvalgrind=disabled", "-Dlibunwind=disabled",
-         "-Dlmsensors=disabled", "-Dhtml-docs=disabled", "-Dperfetto=false"]]
+         "-Dlmsensors=disabled", "-Dhtml-docs=disabled", "-Dperfetto=false",
+         "-Dcpp_rtti=false"]]
 
 [[steps]]
 name = "build"

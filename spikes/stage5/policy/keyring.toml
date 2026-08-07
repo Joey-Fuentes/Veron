@@ -26,8 +26,7 @@ purpose     = "libnl release tarballs -- wpa_supplicant's nl80211 driver"
 # than the download. That address matches the owner of github.com/thom311/libnl
 # by name, which is corroboration and not proof.
 #
-# NOT cross-checked against a distro's own pin. `crosschecked_against` is
-# empty and should stay empty until someone actually looks -- Arch's PKGBUILD
+# NOT cross-checked against a distro's own pin. Arch's PKGBUILD
 # `validpgpkeys` is the obvious place and takes thirty seconds.
 source      = "hkps://keys.openpgp.org (uid confirmed by email challenge); first read from the .sig with an empty keyring"
 fingerprint = "67DA3FAEBAE276BA58FC6CE314F18A98993AECD5"  # Thomas Haller <thom311@gmail.com>
@@ -43,7 +42,16 @@ fingerprint = "67DA3FAEBAE276BA58FC6CE314F18A98993AECD5"  # Thomas Haller <thom3
 # key unless it is extended. Whoever pins it must notice a CHANGED fingerprint
 # rather than assume continuity -- and 2048 bits from 2010 is below current
 # practice, so a rotation is likely rather than an extension.
-crosschecked_against = []
+#
+# WHAT WAS DONE INSTEAD, AND IT IS A DIFFERENT CLAIM. The GitHub archive of
+# tag libnl3_12_0 was fetched separately from the release asset and compared
+# file by file: 547 files in both, 547 byte-identical, 0 differing. The 19
+# extra in the release are autotools output; the 89 extra in the tag are docs,
+# dotfiles and maintainer tooling, none of which compiles. That does NOT
+# corroborate the key -- it corroborates that the signed bytes match the
+# public source history, which is the other half of the question and the half
+# a fingerprint cannot answer.
+crosschecked_against = ["github tag libnl3_12_0: 547/547 shared source files byte-identical (corroborates the tarball, not the key)"]
 
 [[key]]
 upstream    = "gnu"

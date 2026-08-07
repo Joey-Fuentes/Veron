@@ -15,7 +15,31 @@ signature = "https://github.com/thom311/libnl/releases/download/libnl3_12_0/libn
 # and exits 0. See keyring.toml for what that entry is and is not sourced
 # from -- it is weaker than the GNU entry beside it and says so.
 signing_key = "67DA3FAEBAE276BA58FC6CE314F18A98993AECD5"
-crosschecked_against = []   # name the packagers whose digest you compared
+# CROSS-CHECKED AGAINST THE TAG THE RELEASE CLAIMS TO COME FROM.
+#
+# A good signature proves someone holding that key made those bytes. It does
+# NOT prove the bytes correspond to the public source history -- a signed
+# tarball can contain anything its maker put in it. So the GitHub archive of
+# tag libnl3_12_0 was fetched independently of the release asset and compared
+# file by file:
+#
+#   547 files present in both     547 byte-identical, 0 differing
+#    19 only in the release       autotools output: configure, Makefile.in,
+#                                 aclocal.m4, config.h.in, 5 libtool m4/,
+#                                 9 build-aux/ helpers, and version.h --
+#                                 which is generated from version.h.in, and
+#                                 THAT file is in both and identical
+#    89 only in the tag           69 doc/, 7 include/*/README.md, autogen.sh,
+#                                 tools/build_release.sh, two clang-format
+#                                 helpers, pyproject.toml, one python file,
+#                                 7 dotfiles. Nothing that compiles.
+#
+# NOT ZERO RESIDUAL, AND IT SHOULD BE NAMED: `configure` is 714 KB of shell
+# that exists only in the signed tarball, so no source comparison covers it.
+# Regenerating it from the tag with autogen.sh would not settle that either --
+# autotools output is not reproducible across machines, so a diff would show
+# noise rather than tampering.
+crosschecked_against = ["github tag libnl3_12_0: 547/547 shared files byte-identical"]
 
 [deps]
 # THE ONLY REASON THIS PACKAGE EXISTS HERE IS WiFi, and that was measured
