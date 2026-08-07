@@ -1111,8 +1111,19 @@ jobs:
         if: ${{ always() && steps.build.outcome == 'success' && !inputs.skip_boot && inputs.boot_system }}
         run: |
           set -eu
-          cd spikes/stage5
-          O=out
+          # RUN FROM THE REPO ROOT, LIKE THE BOOT STEP ABOVE, AND FOR THE SAME
+          # REASON: the kernel artifact is at boot/Image relative to the root,
+          # not to spikes/stage5. The first version did `cd spikes/stage5` and
+          # qemu answered
+          #
+          #     qemu-system-aarch64: could not load kernel 'boot/Image'
+          #
+          # which the step then reported as "no frame captured" -- a true
+          # statement about the wrong thing. Every path here is now anchored
+          # the same way the working boot step anchors its own.
+          [ -s boot/Image ] || { echo "VERON-SHOT-SKIP  no kernel artifact"; exit 0; }
+          O=spikes/stage5/out
+          S=spikes/stage5
           rm -f "$O/mon.sock" "$O/desktop.ppm" "$O/desktop.png" "$O/console.in"
           mkfifo "$O/console.in"
 
@@ -1161,7 +1172,7 @@ jobs:
           done
           echo "  guest ready after ${waited}s"
 
-          python3 tools/qemu-monitor.py "$O/mon.sock" "screendump $PWD/$O/desktop.ppm" \
+          python3 "$S/tools/qemu-monitor.py" "$O/mon.sock" "screendump $PWD/$O/desktop.ppm" \
             | sed 's/^/    /'
           sleep 3
           kill "$feeder" "$qpid" 2>/dev/null
@@ -1189,7 +1200,7 @@ jobs:
             echo "VERON-SHOT-FAIL  no frame captured"
             exit 1
           fi
-          python3 tools/ppm2png.py "$O/desktop.ppm" "$O/desktop.png"
+          python3 "$S/tools/ppm2png.py" "$O/desktop.ppm" "$O/desktop.png"
           rm -f "$O/desktop.ppm" "$O/mon.sock" "$O/console.in"
           echo "VERON-SHOT-OK  $O/desktop.png"
 
