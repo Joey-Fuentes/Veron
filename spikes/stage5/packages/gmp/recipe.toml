@@ -18,8 +18,8 @@ optional_off = ["cxx", "fat", "static"]
 
 [declared]
 configure_flags = ["--prefix=/usr", "--disable-static", "--enable-cxx=no",
-                   "--build=aarch64-unknown-linux-gnu",
-                   "--host=aarch64-unknown-linux-gnu"]
+                   "--build=aarch64-veron-linux-gnu",
+                   "--host=aarch64-veron-linux-gnu"]
 verification    = "none -- upstream suites are not run"
 packaged_as     = ["gmp"]
 deferral        = """
@@ -30,12 +30,44 @@ WHY IT IS HERE: nettle's public-key half (hogweed) links gmp, and gnutls \
 requires hogweed. It is three packages below the browser and none of the three \
 is optional.
 
---build AND --host ARE PINNED, AND THIS IS A REPRODUCIBILITY FIX RATHER THAN A \
-CROSS-COMPILATION ONE. gmp ships its OWN config.guess, not the FSF's -- both \
-files are in the tarball -- and it reads /proc/cpuinfo to pick an `exact_cpu`:
+THE VENDOR FIELD IS veron, NOT unknown, AND GETTING IT WRONG BROKE THE BUILD \
+OUTRIGHT. configure died with:
 
-    config.guess:189    0x51_0x800) exact_cpu=armcortexa57 ;;
-    config.guess:212    0xc05) exact_cpu="armcortexa5";;
+    checking compiler gcc -O2 -pedantic ... no, long long reliability test 1
+    configure: error: could not find a working compiler
+
+-- which reads as a broken toolchain and is nothing of the kind. \
+configure:1338 is
+
+    ac_tool_prefix=
+    test -n "$host_alias" && ac_tool_prefix=$host_alias-
+
+so PASSING --host AT ALL SETS A TOOL PREFIX, and every tool is then looked for \
+under it. `aarch64-unknown-linux-gnu-gcc` does not exist in this sysroot; \
+`aarch64-veron-linux-gnu-gcc` does, along with -g++, -ar, -nm and -ranlib. The \
+wrong vendor pointed the entire toolchain lookup at names nothing answers to.
+
+A FIRST DIAGNOSIS OF THIS BLAMED C23 AND WAS WRONG. gmp's test program at \
+configure:6564 declares `void g(){}` and calls it with six arguments, which \
+C23 forbids -- a real hazard, and not this one. Compiling that exact program \
+with the actual stage-4 compiler settles it:
+
+    aarch64-veron-linux-gnu-gcc 15.2.0
+    gcc -O2 -pedantic -c <gmp's test program>   ->  rc=0
+
+Clean at the default standard. The language was never the problem; the \
+compiler simply was not being found. The stage-4 toolchain is aarch64-veron-linux-gnu-gcc -- its \
+libdir is /usr/lib/gcc/aarch64-veron-linux-gnu and every driver in the sysroot \
+carries that prefix. Writing aarch64-unknown-linux-gnu asserts a host the \
+compiler does not agree it targets, and gmp's configure ECHOED IT BACK \
+unchallenged:
+
+    checking build system type... aarch64-unknown-linux-gnu
+    checking host system type... aarch64-unknown-linux-gnu
+
+-- which looks like confirmation and is only repetition. autoconf compares \
+build against host to decide whether it is cross-compiling; it does not check \
+either against the compiler.
 
 That selects microarchitecture-specific assembly paths. So the SAME SOURCE on \
 two different aarch64 machines produces DIFFERENT BINARIES -- a Neoverse \
@@ -71,8 +103,8 @@ run  = [["tar", "-xf", "$DL/gmp-6.3.0.tar.xz", "-C", "$B"]]
 name = "configure"
 cwd  = "$S"
 run  = [["./configure", "--prefix=/usr", "--disable-static", "--enable-cxx=no",
-         "--build=aarch64-unknown-linux-gnu",
-         "--host=aarch64-unknown-linux-gnu"]]
+         "--build=aarch64-veron-linux-gnu",
+         "--host=aarch64-veron-linux-gnu"]]
 
 [[steps]]
 name = "build"
