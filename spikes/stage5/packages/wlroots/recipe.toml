@@ -92,6 +92,16 @@ patches/0001 for why the event is dropped rather than mapped: wlroots 0.19 has \
 only WLR_SWITCH_TYPE_LID and _TABLET_MODE, and inventing a third would be a \
 public API change to a pinned library.
 
+A SECOND PATCH, AND A DIFFERENT KIND OF SKEW: C23 RATHER THAN A PIN. wlroots \
+0.19.1 asks for -std=c23 in its own meson.build, and this chain's glibc \
+implements C23's const-generic string functions -- string.h wraps strchr in \
+`__glibc_const_generic` under `__GLIBC_USE (ISOC23)`. So `strchr(const char *)` \
+now returns `const char *` where it returned `char *` for decades, and \
+xcursor.c:605 discards the qualifier. Object 341 of 342, one short of linking. \
+One occurrence in the whole tree, and the fix is the qualifier the enclosing \
+function already implies -- xcursor_next_path RETURNS const char * and uses \
+`colon` only as `colon + 1`. See patches/0002.
+
 VERSION FLOORS, all satisfied by what this set ships: libdrm >=2.4.122 (have \
 2.4.134), pixman-1 >=0.43.0 (have 0.46.4), libseat >=0.2.0 (have 0.9.3), \
 libinput >=1.19.0 (have 1.31.3).

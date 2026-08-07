@@ -1,0 +1,46 @@
+Take strchr's const-qualified return in xcursor_next_path.
+
+WHY: wlroots 0.19.1 builds with -std=c23 and -Werror, and this chain's glibc
+implements C23's const-generic string functions. The build failed at object
+341 of 342 -- one short of linking:
+
+    ../xcursor/xcursor.c: In function 'xcursor_next_path':
+    ../xcursor/xcursor.c:605:23: error: initialization discards 'const'
+        qualifier from pointer target type [-Werror=discarded-qualifiers]
+      605 |         char *colon = strchr(path, ':');
+    cc1: all warnings being treated as errors
+
+THE CAUSE IS C23, NOT A BUG IN wlroots. Historically `strchr(const char *)`
+returned a plain `char *` -- a deliberate hole in const-correctness that C
+carried for decades. C23 closed it: the return is now qualified to match the
+argument. This glibc's string.h says so directly:
+
+    extern char *strchr (const char *__s, int __c) ...
+    # if __GLIBC_USE (ISOC23) && defined __glibc_const_generic && !defined _LIBC
+    #  define strchr(S, C) \
+      __glibc_const_generic (S, const char *, strchr (S, C))
+    # endif
+
+So with -std=c23 the call returns `const char *` and assigning it to
+`char *` discards the qualifier. wlroots 0.19.1 asks for c23 in its own
+meson.build and predates that reaching a released glibc.
+
+WHY THIS AND NOT -Dwerror=false OR -std=c11. The declaration is simply less
+const-correct than it can now be, and the fix is the qualifier the function
+already implies: xcursor_next_path RETURNS const char *, and `colon` is used
+only as `colon + 1` in that return. Nothing casts it, nothing writes through
+it, and no other site in the tree hits this -- one grep, one occurrence.
+Dropping to -std=c11 would change how 342 objects compile to fix one line,
+and -Dwerror=false would silence the mechanism that found it.
+
+--- a/xcursor/xcursor.c
++++ b/xcursor/xcursor.c
+@@ -602,7 +602,7 @@
+ static const char *
+ xcursor_next_path(const char *path)
+ {
+-	char *colon = strchr(path, ':');
++	const char *colon = strchr(path, ':');
+ 
+ 	if (!colon)
+ 		return NULL;
